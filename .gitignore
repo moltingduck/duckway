@@ -1,7 +1,7 @@
-# Binaries
-server
-client
-duckway
+# Binaries (root only)
+/server
+/client
+/duckway
 *.exe
 
 # Data

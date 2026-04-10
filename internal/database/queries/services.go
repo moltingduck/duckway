@@ -79,3 +79,9 @@ func (q *ServiceQueries) Delete(id string) error {
 	_, err := q.db.Exec("DELETE FROM services WHERE id = ?", id)
 	return err
 }
+
+func (q *ServiceQueries) Count() (int, error) {
+	var count int
+	err := q.db.QueryRow("SELECT COUNT(*) FROM services").Scan(&count)
+	return count, err
+}
