@@ -1,0 +1,54 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>API Keys</h1>
+  <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Add API Key</button>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Service</th><th>Usage</th><th>Last Used</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range .Keys}}
+      <tr id="key-{{.ID}}">
+        <td><strong>{{.Name}}</strong></td>
+        <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
+        <td>{{.UsageCount}}</td>
+        <td class="text-muted text-sm">{{if .LastUsedAt}}{{deref .LastUsedAt}}{{else}}Never{{end}}</td>
+        <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
+        <td class="text-right">
+          <button class="btn btn-sm btn-danger"
+            hx-delete="/api/keys/{{.ID}}"
+            hx-target="#key-{{.ID}}"
+            hx-swap="outerHTML"
+            hx-confirm="Delete this API key?">Delete</button>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="6" class="text-muted">No API keys. Add a service first, then add keys.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Add API Key</h2>
+    <form hx-post="/api/keys" hx-on::after-request="if(event.detail.successful){document.getElementById('add-modal').style.display='none';location.reload()}">
+      <div class="form-group"><label>Service</label>
+        <select name="service_id" required>
+          <option value="">Select a service...</option>
+          {{range .Services}}<option value="{{.ID}}">{{.DisplayName}} ({{.Name}})</option>{{end}}
+        </select>
+      </div>
+      <div class="form-group"><label>Label</label><input type="text" name="name" placeholder="Production Key 1" required></div>
+      <div class="form-group"><label>API Key</label><input type="text" name="key" placeholder="sk-..." required></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Key</button>
+      </div>
+    </form>
+  </div>
+</div>
+{{end}}

@@ -1,0 +1,36 @@
+# Duckway Permission Config Template
+#
+# AI agents: read the API documentation for your target service,
+# then create a config like this to define fine-grained access.
+#
+# Place this file at: permissions/providers/<service-name>.yaml
+# Then paste the JSON version into a placeholder key's permission_config field.
+
+version: "1"
+provider: "<service-name>"  # Must match the service name in Duckway
+
+rules:
+  - name: "<rule-name>"    # Human-readable label
+    endpoints:
+      - method: POST       # GET, POST, PUT, PATCH, DELETE, or * for any
+        path: /v1/endpoint  # URL path. Use * for wildcards: /v1/files/*
+        allow: true         # true = allow, false = deny
+        constraints:        # Optional: restrict request content
+          body:             # JSON body field constraints
+            model:
+              oneOf: ["model-a", "model-b"]   # Field must be one of these
+            max_tokens:
+              max: 4096     # Numeric field must be <= this value
+              min: 1        # Numeric field must be >= this value
+            unsafe_field:
+              forbidden: true  # Field must not be present
+          headers:          # Header constraints (same format as body)
+            X-Custom-Header:
+              oneOf: ["value1", "value2"]
+
+    rate_limit:             # Optional: per-placeholder rate limiting
+      requests_per_minute: 60
+      requests_per_hour: 1000
+      requests_per_day: 10000
+
+    deny_all_other: true    # If true, unlisted endpoints are denied

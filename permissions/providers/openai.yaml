@@ -1,0 +1,26 @@
+# Duckway Permission Config — OpenAI
+# This template restricts a placeholder key to chat completions only.
+# AI agents can customize this by reading OpenAI API docs.
+
+version: "1"
+provider: openai
+
+rules:
+  - name: chat-only
+    endpoints:
+      - method: POST
+        path: /v1/chat/completions
+        allow: true
+        constraints:
+          body:
+            model:
+              oneOf: ["gpt-4o", "gpt-4o-mini"]
+            max_tokens:
+              max: 4096
+      - method: GET
+        path: /v1/models
+        allow: true
+    rate_limit:
+      requests_per_minute: 60
+      requests_per_day: 1000
+    deny_all_other: true

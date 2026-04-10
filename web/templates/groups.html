@@ -1,0 +1,59 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Key Groups</h1>
+  <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Create Group</button>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Service</th><th>Strategy</th><th>Members</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range .Groups}}
+      <tr id="group-{{.ID}}">
+        <td><strong>{{.Name}}</strong></td>
+        <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
+        <td><span class="badge badge-gray">{{.Strategy}}</span></td>
+        <td>{{len .Members}} keys</td>
+        <td class="text-right">
+          <button class="btn btn-sm btn-danger"
+            hx-delete="/api/groups/{{.ID}}"
+            hx-target="#group-{{.ID}}"
+            hx-swap="outerHTML"
+            hx-confirm="Delete group '{{.Name}}'?">Delete</button>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="5" class="text-muted">No key groups. Groups enable load balancing across multiple API keys.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Create Key Group</h2>
+    <form hx-post="/api/groups" hx-on::after-request="if(event.detail.successful){document.getElementById('add-modal').style.display='none';location.reload()}">
+      <div class="form-group"><label>Group Name</label><input type="text" name="name" placeholder="OpenAI Production Pool" required></div>
+      <div class="form-group"><label>Service</label>
+        <select name="service_id" required>
+          <option value="">Select...</option>
+          {{range .Services}}<option value="{{.ID}}">{{.DisplayName}}</option>{{end}}
+        </select>
+      </div>
+      <div class="form-group"><label>Strategy</label>
+        <select name="strategy">
+          <option value="round-robin">Round Robin</option>
+          <option value="least-used">Least Used</option>
+          <option value="failover">Failover</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create Group</button>
+      </div>
+    </form>
+  </div>
+</div>
+{{end}}

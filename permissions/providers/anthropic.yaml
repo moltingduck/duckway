@@ -1,0 +1,22 @@
+# Duckway Permission Config — Anthropic
+# Restricts to messages API with model constraints.
+
+version: "1"
+provider: anthropic
+
+rules:
+  - name: messages-only
+    endpoints:
+      - method: POST
+        path: /v1/messages
+        allow: true
+        constraints:
+          body:
+            model:
+              oneOf: ["claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+            max_tokens:
+              max: 8192
+    rate_limit:
+      requests_per_minute: 30
+      requests_per_day: 500
+    deny_all_other: true

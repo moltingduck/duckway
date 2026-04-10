@@ -1,0 +1,71 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Placeholder Keys</h1>
+  <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Generate Placeholder</button>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Env Name</th><th>Service</th><th>Client</th><th>Placeholder</th><th>Approval</th><th>Usage</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range .Placeholders}}
+      <tr id="ph-{{.ID}}">
+        <td><strong>{{.EnvName}}</strong></td>
+        <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
+        <td>{{.ClientName}}</td>
+        <td class="mono text-sm" title="{{.Placeholder}}">{{truncate .Placeholder 20}}</td>
+        <td>{{if .RequiresApproval}}<span class="badge badge-yellow">Required</span>{{else}}<span class="badge badge-green">Auto</span>{{end}}</td>
+        <td>{{.UsageCount}}</td>
+        <td class="text-right">
+          <button class="btn btn-sm btn-danger"
+            hx-delete="/api/placeholders/{{.ID}}"
+            hx-target="#ph-{{.ID}}"
+            hx-swap="outerHTML"
+            hx-confirm="Delete this placeholder?">Delete</button>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="7" class="text-muted">No placeholder keys. Create a service, add an API key, register a client, then generate placeholders.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Generate Placeholder Key</h2>
+    <form hx-post="/api/placeholders" hx-on::after-request="if(event.detail.successful){document.getElementById('add-modal').style.display='none';location.reload()}">
+      <div class="form-group"><label>Service</label>
+        <select name="service_id" required>
+          <option value="">Select...</option>
+          {{range .Services}}<option value="{{.ID}}">{{.DisplayName}}</option>{{end}}
+        </select>
+      </div>
+      <div class="form-group"><label>Client</label>
+        <select name="client_id" required>
+          <option value="">Select...</option>
+          {{range .Clients}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+        </select>
+      </div>
+      <div class="form-group"><label>API Key (or leave blank for group)</label>
+        <select name="api_key_id">
+          <option value="">Select API key...</option>
+          {{range .Keys}}<option value="{{.ID}}">{{.Name}} ({{.ServiceName}})</option>{{end}}
+        </select>
+      </div>
+      <div class="form-group"><label>Env Name (auto-generated if blank)</label>
+        <input type="text" name="env_name" placeholder="OPENAI_API_KEY">
+      </div>
+      <div class="form-group">
+        <label><input type="checkbox" name="requires_approval" value="true"> Require admin approval on first use</label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Generate</button>
+      </div>
+    </form>
+  </div>
+</div>
+{{end}}

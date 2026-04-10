@@ -1,0 +1,41 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Approvals</h1>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Placeholder</th><th>Status</th><th>Requested</th><th>Expires</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range .Approvals}}
+      <tr id="approval-{{.ID}}">
+        <td class="mono text-sm">{{.PlaceholderID}}</td>
+        <td>
+          {{if eq .Status "pending"}}<span class="badge badge-yellow">Pending</span>
+          {{else if eq .Status "approved"}}<span class="badge badge-green">Approved</span>
+          {{else}}<span class="badge badge-red">Rejected</span>{{end}}
+        </td>
+        <td class="text-muted text-sm">{{.CreatedAt}}</td>
+        <td class="text-muted text-sm">{{if .ExpiresAt}}{{deref .ExpiresAt}}{{else}}—{{end}}</td>
+        <td class="text-right">
+          {{if eq .Status "pending"}}
+          <button class="btn btn-sm btn-primary"
+            hx-post="/admin/approvals/{{.ID}}/approve"
+            hx-target="#approval-{{.ID}}"
+            hx-swap="outerHTML">Approve (24h)</button>
+          <button class="btn btn-sm btn-danger"
+            hx-post="/admin/approvals/{{.ID}}/reject"
+            hx-target="#approval-{{.ID}}"
+            hx-swap="outerHTML">Reject</button>
+          {{end}}
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="5" class="text-muted">No approval requests.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

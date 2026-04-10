@@ -1,0 +1,26 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Request Log</h1>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Time</th><th>Service</th><th>Method</th><th>Path</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      {{range .Logs}}
+      <tr>
+        <td class="text-muted text-sm">{{.CreatedAt}}</td>
+        <td>{{.ServiceName}}</td>
+        <td><span class="badge badge-blue">{{.Method}}</span></td>
+        <td class="mono text-sm">{{.Path}}</td>
+        <td>{{if .StatusCode}}<span class="badge {{if lt (deref .StatusCode) 400}}badge-green{{else}}badge-red{{end}}">{{deref .StatusCode}}</span>{{end}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="5" class="text-muted">No requests logged yet.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

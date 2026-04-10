@@ -1,0 +1,55 @@
+{{define "layout"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{.Title}} — Duckway</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar">
+      <div class="sidebar-brand">Duckway<small>API Proxy Manager</small></div>
+      <a href="/admin/" {{if eq .Active "dashboard"}}class="active"{{end}}>Dashboard</a>
+      <a href="/admin/services" {{if eq .Active "services"}}class="active"{{end}}>Services</a>
+      <a href="/admin/keys" {{if eq .Active "keys"}}class="active"{{end}}>API Keys</a>
+      <a href="/admin/placeholders" {{if eq .Active "placeholders"}}class="active"{{end}}>Placeholders</a>
+      <a href="/admin/groups" {{if eq .Active "groups"}}class="active"{{end}}>Key Groups</a>
+      <a href="/admin/clients" {{if eq .Active "clients"}}class="active"{{end}}>Clients</a>
+      <a href="/admin/approvals" {{if eq .Active "approvals"}}class="active"{{end}}>Approvals</a>
+      <a href="/admin/logs" {{if eq .Active "logs"}}class="active"{{end}}>Request Log</a>
+      <a href="/admin/notifications" {{if eq .Active "notifications"}}class="active"{{end}}>Notifications</a>
+      <div style="margin-top:auto;padding:1rem 1.25rem;border-top:1px solid var(--border)">
+        <a href="#" hx-post="/api/auth/logout" hx-target="body" onclick="window.location='/admin/login'">Logout</a>
+      </div>
+    </nav>
+    <main class="main">
+      {{template "content" .}}
+    </main>
+  </div>
+  <div id="toast"></div>
+  <script>
+    document.body.addEventListener('htmx:afterRequest', function(e) {
+      if (e.detail.xhr && e.detail.xhr.status >= 400) {
+        try {
+          const err = JSON.parse(e.detail.xhr.responseText);
+          showToast(err.error || 'Request failed', 'error');
+        } catch(ex) {
+          showToast('Request failed', 'error');
+        }
+      }
+    });
+    function showToast(msg, type) {
+      const t = document.getElementById('toast');
+      const el = document.createElement('div');
+      el.className = 'toast-msg ' + (type || '');
+      el.textContent = msg;
+      t.appendChild(el);
+      setTimeout(() => el.remove(), 4000);
+    }
+  </script>
+</body>
+</html>
+{{end}}

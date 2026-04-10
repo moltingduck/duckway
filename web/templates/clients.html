@@ -1,0 +1,67 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Clients</h1>
+  <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Register Client</button>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Last Seen</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range .Clients}}
+      <tr id="client-{{.ID}}">
+        <td><strong>{{.Name}}</strong><br><span class="text-muted text-sm mono">{{.ID}}</span></td>
+        <td class="text-muted text-sm">{{if .LastSeenAt}}{{deref .LastSeenAt}}{{else}}Never{{end}}</td>
+        <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
+        <td class="text-right">
+          <button class="btn btn-sm btn-danger"
+            hx-delete="/api/clients/{{.ID}}"
+            hx-target="#client-{{.ID}}"
+            hx-swap="outerHTML"
+            hx-confirm="Delete client '{{.Name}}'?">Delete</button>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="4" class="text-muted">No clients registered.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div id="token-display" style="display:none" class="card" style="margin-top:1rem">
+  <h3>Client Token (save this — shown only once)</h3>
+  <code id="token-value" style="display:block;padding:1rem;word-break:break-all;font-size:1rem"></code>
+</div>
+
+<div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Register Client</h2>
+    <form id="add-client-form" hx-post="/api/clients"
+      hx-on::after-request="handleClientCreated(event)">
+      <div class="form-group"><label>Client Name</label><input type="text" name="name" placeholder="my-laptop" required></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Register</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function handleClientCreated(event) {
+  if (!event.detail.successful) return;
+  document.getElementById('add-modal').style.display = 'none';
+  try {
+    const data = JSON.parse(event.detail.xhr.responseText);
+    if (data.token) {
+      document.getElementById('token-value').textContent = data.token;
+      document.getElementById('token-display').style.display = 'block';
+      showToast('Client registered! Save the token below.', 'success');
+    }
+  } catch(e) {}
+  setTimeout(() => location.reload(), 500);
+}
+</script>
+{{end}}

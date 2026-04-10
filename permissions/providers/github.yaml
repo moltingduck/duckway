@@ -1,0 +1,22 @@
+# Duckway Permission Config — GitHub
+# Read-only access to repos and issues.
+
+version: "1"
+provider: github
+
+rules:
+  - name: read-only
+    endpoints:
+      - method: GET
+        path: /repos/*
+        allow: true
+      - method: GET
+        path: /user
+        allow: true
+      - method: GET
+        path: /orgs/*
+        allow: true
+    rate_limit:
+      requests_per_minute: 30
+      requests_per_hour: 500
+    deny_all_other: true

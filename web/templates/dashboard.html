@@ -1,0 +1,46 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Dashboard</h1>
+</div>
+
+<div class="stats">
+  <div class="stat-card">
+    <div class="label">Services</div>
+    <div class="value">{{.ServiceCount}}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">API Keys</div>
+    <div class="value">{{.KeyCount}}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Clients</div>
+    <div class="value">{{.ClientCount}}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Placeholders</div>
+    <div class="value">{{.PlaceholderCount}}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Recent Requests</h3>
+  <table>
+    <thead>
+      <tr><th>Time</th><th>Service</th><th>Method</th><th>Path</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      {{range .RecentLogs}}
+      <tr>
+        <td class="text-muted text-sm">{{.CreatedAt}}</td>
+        <td>{{.ServiceName}}</td>
+        <td><span class="badge badge-blue">{{.Method}}</span></td>
+        <td class="mono text-sm">{{.Path}}</td>
+        <td>{{if .StatusCode}}<span class="badge {{if lt (deref .StatusCode) 400}}badge-green{{else}}badge-red{{end}}">{{deref .StatusCode}}</span>{{end}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="5" class="text-muted">No requests yet</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

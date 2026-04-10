@@ -1,0 +1,67 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Notification Channels</h1>
+  <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Add Channel</button>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Type</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range .Channels}}
+      <tr id="notif-{{.ID}}">
+        <td><strong>{{.Name}}</strong></td>
+        <td><span class="badge badge-blue">{{.ChannelType}}</span></td>
+        <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
+        <td class="text-right">
+          <button class="btn btn-sm btn-danger"
+            hx-delete="/api/notifications/{{.ID}}"
+            hx-target="#notif-{{.ID}}"
+            hx-swap="outerHTML"
+            hx-confirm="Delete channel '{{.Name}}'?">Delete</button>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="4" class="text-muted">No notification channels configured. Add one to receive approval alerts.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card mt-2">
+  <h3>Channel Config Reference</h3>
+  <table>
+    <thead><tr><th>Type</th><th>Config JSON</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-blue">telegram</span></td><td class="mono text-sm">{"bot_token": "123:ABC...", "chat_id": "-100..."}</td></tr>
+      <tr><td><span class="badge badge-blue">discord</span></td><td class="mono text-sm">{"webhook_url": "https://discord.com/api/webhooks/..."}</td></tr>
+      <tr><td><span class="badge badge-blue">webhook</span></td><td class="mono text-sm">{"url": "https://...", "secret": "optional-secret"}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Add Notification Channel</h2>
+    <form hx-post="/api/notifications" hx-on::after-request="if(event.detail.successful){document.getElementById('add-modal').style.display='none';location.reload()}">
+      <div class="form-group"><label>Name</label><input type="text" name="name" placeholder="My Telegram Bot" required></div>
+      <div class="form-group"><label>Type</label>
+        <select name="channel_type" required>
+          <option value="telegram">Telegram</option>
+          <option value="discord">Discord</option>
+          <option value="webhook">Webhook</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Config (JSON)</label>
+        <textarea name="config" placeholder='{"bot_token": "...", "chat_id": "..."}'></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Channel</button>
+      </div>
+    </form>
+  </div>
+</div>
+{{end}}

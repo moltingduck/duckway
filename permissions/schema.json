@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Duckway Permission Config",
+  "description": "Defines fine-grained access control for a placeholder key. AI agents can read API documentation and generate these configs.",
+  "type": "object",
+  "required": ["version", "provider"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1",
+      "description": "Schema version"
+    },
+    "provider": {
+      "type": "string",
+      "description": "Provider name matching the service (e.g., openai, anthropic, github)"
+    },
+    "rules": {
+      "type": "array",
+      "description": "Permission rules evaluated in order. First matching rule wins.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Human-readable rule name"
+          },
+          "endpoints": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["method", "path"],
+              "properties": {
+                "method": {
+                  "type": "string",
+                  "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "*"],
+                  "description": "HTTP method or * for any"
+                },
+                "path": {
+                  "type": "string",
+                  "description": "URL path pattern. Supports * wildcards (e.g., /v1/files/*)"
+                },
+                "allow": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "constraints": {
+                  "type": "object",
+                  "description": "Optional constraints on request body or headers",
+                  "properties": {
+                    "body": {
+                      "type": "object",
+                      "description": "JSON body field constraints",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "oneOf": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Field value must be one of these strings"
+                          },
+                          "max": {
+                            "type": "number",
+                            "description": "Numeric field must be <= this value"
+                          },
+                          "min": {
+                            "type": "number",
+                            "description": "Numeric field must be >= this value"
+                          },
+                          "forbidden": {
+                            "type": "boolean",
+                            "description": "If true, this field must not be present"
+                          }
+                        }
+                      }
+                    },
+                    "headers": {
+                      "type": "object",
+                      "description": "Header constraints",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "oneOf": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                          },
+                          "forbidden": { "type": "boolean" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "rate_limit": {
+            "type": "object",
+            "properties": {
+              "requests_per_minute": { "type": "integer", "minimum": 1 },
+              "requests_per_hour": { "type": "integer", "minimum": 1 },
+              "requests_per_day": { "type": "integer", "minimum": 1 }
+            }
+          },
+          "deny_all_other": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, any endpoint not explicitly listed is denied"
+          }
+        }
+      }
+    }
+  }
+}
