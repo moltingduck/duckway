@@ -30,17 +30,12 @@
   </table>
 </div>
 
-<div id="token-display" style="display:none" class="card" style="margin-top:1rem">
-  <h3>Client Token (save this — shown only once)</h3>
-  <code id="token-value" style="display:block;padding:1rem;word-break:break-all;font-size:1rem"></code>
-</div>
-
+<!-- Register modal -->
 <div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
   <div class="modal">
     <h2>Register Client</h2>
-    <form id="add-client-form" hx-post="/api/clients"
-      hx-on::after-request="handleClientCreated(event)">
-      <div class="form-group"><label>Client Name</label><input type="text" name="name" placeholder="my-laptop" required></div>
+    <form id="add-client-form">
+      <div class="form-group"><label>Client Name</label><input type="text" id="client-name" name="name" placeholder="my-laptop" required></div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
         <button type="submit" class="btn btn-primary">Register</button>
@@ -49,19 +44,70 @@
   </div>
 </div>
 
+<!-- Token display modal -->
+<div id="token-modal" class="modal-backdrop" style="display:none">
+  <div class="modal">
+    <h2>Client Registered</h2>
+    <p class="text-sm text-muted mb-1">Save this token — it will only be shown once.</p>
+
+    <div class="form-group">
+      <label>Client Token</label>
+      <div style="position:relative">
+        <input type="text" id="token-value" readonly style="font-family:monospace;padding-right:4rem">
+        <button type="button" class="btn btn-sm" onclick="copyToken()" style="position:absolute;right:4px;top:4px">Copy</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Quick Setup Command</label>
+      <code id="init-cmd" style="display:block;padding:0.75rem;word-break:break-all;font-size:0.8rem;background:var(--bg-input);border-radius:var(--radius)"></code>
+    </div>
+
+    <div class="modal-actions">
+      <button type="button" class="btn btn-primary" onclick="dismissToken()">I've saved the token</button>
+    </div>
+  </div>
+</div>
+
 <script>
-function handleClientCreated(event) {
-  if (!event.detail.successful) return;
-  document.getElementById('add-modal').style.display = 'none';
-  try {
-    const data = JSON.parse(event.detail.xhr.responseText);
-    if (data.token) {
-      document.getElementById('token-value').textContent = data.token;
-      document.getElementById('token-display').style.display = 'block';
-      showToast('Client registered! Save the token below.', 'success');
+document.getElementById('add-client-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var name = document.getElementById('client-name').value.trim();
+  if (!name) return;
+
+  fetch('/api/clients', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) {
+      showToast(data.error, 'error');
+      return;
     }
-  } catch(e) {}
-  setTimeout(() => location.reload(), 500);
+    document.getElementById('add-modal').style.display = 'none';
+    document.getElementById('token-value').value = data.token;
+    document.getElementById('init-cmd').textContent =
+      'printf "' + window.location.origin + '\\n' + data.name + '\\n1\\n' + data.token + '\\n" | duckway init';
+    document.getElementById('token-modal').style.display = 'flex';
+  })
+  .catch(function(err) {
+    showToast('Failed: ' + err.message, 'error');
+  });
+});
+
+function copyToken() {
+  var el = document.getElementById('token-value');
+  el.select();
+  document.execCommand('copy');
+  showToast('Token copied to clipboard', 'success');
+}
+
+function dismissToken() {
+  document.getElementById('token-modal').style.display = 'none';
+  location.reload();
 }
 </script>
 {{end}}
