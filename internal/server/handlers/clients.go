@@ -1,9 +1,7 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -35,22 +33,14 @@ func (h *ClientHandler) List(w http.ResponseWriter, r *http.Request) {
 
 // Admin: create a client and return the token (shown once)
 func (h *ClientHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var name string
-
-	ct := r.Header.Get("Content-Type")
-	if ct == "application/x-www-form-urlencoded" || strings.HasPrefix(ct, "multipart/form-data") {
-		r.ParseForm()
-		name = r.FormValue("name")
-	} else {
-		var req struct {
-			Name string `json:"name"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			jsonError(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
-		name = req.Name
+	var req struct {
+		Name string `json:"name"`
 	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	name := req.Name
 
 	if name == "" {
 		jsonError(w, "name is required", http.StatusBadRequest)
