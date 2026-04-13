@@ -4,31 +4,33 @@
   <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Register Client</button>
 </div>
 
-<div class="card">
+{{range .Clients}}
+<div class="card" id="client-card-{{.ID}}">
+  <div class="flex-between mb-1">
+    <div>
+      <strong>{{.Name}}</strong>
+      {{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}
+      <div class="text-muted text-sm">Last seen: {{if .LastSeenAt}}{{deref .LastSeenAt}}{{else}}Never{{end}}</div>
+    </div>
+    <div class="flex gap-sm">
+      <button class="btn btn-sm btn-primary" onclick="openAssignModal('{{.ID}}','{{.Name}}')">Assign Key</button>
+      <button class="btn btn-sm btn-danger"
+        hx-delete="/api/clients/{{.ID}}"
+        hx-target="#client-card-{{.ID}}"
+        hx-swap="outerHTML"
+        hx-confirm="Delete client '{{.Name}}'?">Delete</button>
+    </div>
+  </div>
+
   <table>
-    <thead>
-      <tr><th>Name</th><th>Last Seen</th><th>Status</th><th></th></tr>
-    </thead>
-    <tbody>
-      {{range .Clients}}
-      <tr id="client-{{.ID}}">
-        <td><strong>{{.Name}}</strong><br><span class="text-muted text-sm mono">{{.ID}}</span></td>
-        <td class="text-muted text-sm">{{if .LastSeenAt}}{{deref .LastSeenAt}}{{else}}Never{{end}}</td>
-        <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
-        <td class="text-right">
-          <button class="btn btn-sm btn-danger"
-            hx-delete="/api/clients/{{.ID}}"
-            hx-target="#client-{{.ID}}"
-            hx-swap="outerHTML"
-            hx-confirm="Delete client '{{.Name}}'?">Delete</button>
-        </td>
-      </tr>
-      {{else}}
-      <tr><td colspan="4" class="text-muted">No clients registered.</td></tr>
-      {{end}}
+    <thead><tr><th>Env Name</th><th>Service</th><th>Placeholder</th><th>Approval</th><th>Usage</th><th></th></tr></thead>
+    <tbody id="keys-{{.ID}}">
     </tbody>
   </table>
 </div>
+{{else}}
+<div class="card"><p class="text-muted">No clients registered.</p></div>
+{{end}}
 
 <!-- Register modal -->
 <div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
@@ -49,7 +51,6 @@
   <div class="modal">
     <h2>Client Registered</h2>
     <p class="text-sm text-muted mb-1">Save this token — it will only be shown once.</p>
-
     <div class="form-group">
       <label>Client Token</label>
       <div style="position:relative">
@@ -57,19 +58,186 @@
         <button type="button" class="btn btn-sm" onclick="copyToken()" style="position:absolute;right:4px;top:4px">Copy</button>
       </div>
     </div>
-
     <div class="form-group">
       <label>Quick Setup Command</label>
       <code id="init-cmd" style="display:block;padding:0.75rem;word-break:break-all;font-size:0.8rem;background:var(--bg-input);border-radius:var(--radius)"></code>
     </div>
-
     <div class="modal-actions">
       <button type="button" class="btn btn-primary" onclick="dismissToken()">I've saved the token</button>
     </div>
   </div>
 </div>
 
+<!-- Assign key modal -->
+<div id="assign-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Assign API Key to <span id="assign-client-name"></span></h2>
+    <input type="hidden" id="assign-client-id">
+    <div class="form-group">
+      <label>API Key</label>
+      <select id="assign-key-select">
+        <option value="">Select an API key...</option>
+      </select>
+    </div>
+    <div id="assign-preview" style="display:none" class="card mt-1">
+      <div class="text-sm">
+        <div><strong>Service:</strong> <span id="assign-svc-name"></span></div>
+        <div><strong>Env Name:</strong> <span id="assign-env-name"></span></div>
+      </div>
+    </div>
+    <div class="form-group mt-1">
+      <label><input type="checkbox" id="assign-approval" checked> Require admin approval on first use</label>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn" onclick="document.getElementById('assign-modal').style.display='none'">Cancel</button>
+      <button type="button" class="btn btn-primary" id="assign-submit" onclick="submitAssign()">Assign &amp; Generate Placeholder</button>
+    </div>
+  </div>
+</div>
+
 <script>
+// API keys data from server
+var apiKeys = [
+  {{range .Keys}}
+  {id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}"},
+  {{end}}
+];
+
+// Existing placeholders
+var placeholders = [
+  {{range .Placeholders}}
+  {id:"{{.ID}}", envName:"{{.EnvName}}", placeholder:"{{.Placeholder}}", serviceName:"{{.ServiceName}}", clientId:"{{.ClientID}}", clientName:"{{.ClientName}}", requiresApproval:{{.RequiresApproval}}, usageCount:{{.UsageCount}}},
+  {{end}}
+];
+
+// Env name mapping
+var svcEnvMap = {
+  "openai": "OPENAI_API_KEY",
+  "anthropic": "ANTHROPIC_API_KEY",
+  "github": "GITHUB_TOKEN",
+  "discord": "DISCORD_BOT_TOKEN",
+  "telegram": "TELEGRAM_BOT_TOKEN"
+};
+
+// Populate assigned keys per client on load
+document.addEventListener('DOMContentLoaded', function() {
+  placeholders.forEach(function(ph) {
+    var tbody = document.getElementById('keys-' + ph.clientId);
+    if (!tbody) return;
+    var tr = document.createElement('tr');
+    tr.id = 'ph-' + ph.id;
+    tr.innerHTML =
+      '<td><strong>' + ph.envName + '</strong></td>' +
+      '<td><span class="badge badge-blue">' + ph.serviceName + '</span></td>' +
+      '<td class="mono text-sm" title="' + ph.placeholder + '">' + ph.placeholder.substring(0,20) + '...</td>' +
+      '<td>' + (ph.requiresApproval ? '<span class="badge badge-yellow">Required</span>' : '<span class="badge badge-green">Auto</span>') + '</td>' +
+      '<td>' + ph.usageCount + '</td>' +
+      '<td class="text-right"><button class="btn btn-sm btn-danger" onclick="deletePh(\'' + ph.id + '\')">Remove</button></td>';
+    tbody.appendChild(tr);
+  });
+
+  // Show empty message for clients with no keys
+  document.querySelectorAll('tbody[id^="keys-"]').forEach(function(tbody) {
+    if (tbody.children.length === 0) {
+      var tr = document.createElement('tr');
+      tr.className = 'empty-row';
+      tr.innerHTML = '<td colspan="6" class="text-muted text-sm">No keys assigned. Click "Assign Key" to add one.</td>';
+      tbody.appendChild(tr);
+    }
+  });
+});
+
+function openAssignModal(clientId, clientName) {
+  document.getElementById('assign-client-id').value = clientId;
+  document.getElementById('assign-client-name').textContent = clientName;
+  document.getElementById('assign-preview').style.display = 'none';
+
+  // Build key select — filter out keys already assigned to this client
+  var assigned = placeholders.filter(function(p) { return p.clientId === clientId; });
+  var assignedKeyIds = assigned.map(function(p) { return p.id; });
+
+  var sel = document.getElementById('assign-key-select');
+  sel.innerHTML = '<option value="">Select an API key...</option>';
+  apiKeys.forEach(function(k) {
+    var opt = document.createElement('option');
+    opt.value = k.id;
+    opt.textContent = k.name + ' (' + k.serviceName + ')';
+    opt.dataset.serviceId = k.serviceId;
+    opt.dataset.serviceName = k.serviceName;
+    sel.appendChild(opt);
+  });
+
+  sel.onchange = function() {
+    var opt = sel.options[sel.selectedIndex];
+    if (!opt.value) {
+      document.getElementById('assign-preview').style.display = 'none';
+      return;
+    }
+    var svcName = opt.dataset.serviceName;
+    var envName = svcEnvMap[svcName] || svcName.toUpperCase() + '_API_KEY';
+    document.getElementById('assign-svc-name').textContent = svcName;
+    document.getElementById('assign-env-name').textContent = envName;
+    document.getElementById('assign-preview').style.display = 'block';
+  };
+
+  document.getElementById('assign-modal').style.display = 'flex';
+}
+
+function submitAssign() {
+  var clientId = document.getElementById('assign-client-id').value;
+  var sel = document.getElementById('assign-key-select');
+  var opt = sel.options[sel.selectedIndex];
+  if (!opt || !opt.value) {
+    showToast('Select an API key', 'error');
+    return;
+  }
+
+  var keyId = opt.value;
+  var serviceId = opt.dataset.serviceId;
+  var requiresApproval = document.getElementById('assign-approval').checked;
+
+  fetch('/api/placeholders', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      service_id: serviceId,
+      api_key_id: keyId,
+      client_id: clientId,
+      requires_approval: requiresApproval
+    }),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) {
+      showToast(data.error, 'error');
+      return;
+    }
+    document.getElementById('assign-modal').style.display = 'none';
+    showToast('Placeholder key generated: ' + data.env_name, 'success');
+    location.reload();
+  })
+  .catch(function(err) {
+    showToast('Failed: ' + err.message, 'error');
+  });
+}
+
+function deletePh(id) {
+  if (!confirm('Remove this placeholder key?')) return;
+  fetch('/api/placeholders/' + id, {
+    method: 'DELETE',
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    var row = document.getElementById('ph-' + id);
+    if (row) row.remove();
+    showToast('Placeholder removed', 'success');
+  });
+}
+
+// Register client
 document.getElementById('add-client-form').addEventListener('submit', function(e) {
   e.preventDefault();
   var name = document.getElementById('client-name').value.trim();
@@ -83,19 +251,14 @@ document.getElementById('add-client-form').addEventListener('submit', function(e
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
-    if (data.error) {
-      showToast(data.error, 'error');
-      return;
-    }
+    if (data.error) { showToast(data.error, 'error'); return; }
     document.getElementById('add-modal').style.display = 'none';
     document.getElementById('token-value').value = data.token;
     document.getElementById('init-cmd').textContent =
       'printf "' + window.location.origin + '\\n' + data.name + '\\n1\\n' + data.token + '\\n" | duckway init';
     document.getElementById('token-modal').style.display = 'flex';
   })
-  .catch(function(err) {
-    showToast('Failed: ' + err.message, 'error');
-  });
+  .catch(function(err) { showToast('Failed: ' + err.message, 'error'); });
 });
 
 function copyToken() {

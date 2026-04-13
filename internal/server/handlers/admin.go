@@ -221,10 +221,14 @@ func (h *AdminHandler) PlaceholdersPage(w http.ResponseWriter, r *http.Request) 
 
 func (h *AdminHandler) ClientsPage(w http.ResponseWriter, r *http.Request) {
 	clients, _ := h.clients.List()
+	keys, _ := h.apiKeys.List("")
+	placeholders, _ := h.placeholders.List("", "")
 	h.render(w, "clients", pageData{
-		Title:   "Clients",
-		Active:  "clients",
-		Clients: clients,
+		Title:        "Clients",
+		Active:       "clients",
+		Clients:      clients,
+		Keys:         keys,
+		Placeholders: placeholders,
 	})
 }
 
