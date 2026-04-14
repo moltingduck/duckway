@@ -324,10 +324,10 @@ HB_DIRECT=$(docker exec duckway-e2e-client curl -s \
 assert_contains "Direct heartbeat (no proxy)" "duckway-heartbeat" "$HB_DIRECT"
 
 # Test 6: Verify the proxy resolved placeholder and logged the request
-# Check admin request log for heartbeat entries
-ADMIN_LOGS=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/admin/logs" 2>&1)
-assert_contains "Request log captured heartbeat" "heartbeat" "$ADMIN_LOGS"
-assert_contains "Request log captured openai" "openai" "$ADMIN_LOGS"
+# Check via logs API
+LOGS_API=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/logs" 2>&1)
+assert_contains "Request log captured heartbeat" "heartbeat" "$LOGS_API"
+assert_contains "Request log captured openai" "openai" "$LOGS_API"
 
 
 # === Test 10: Proxy Key Injection (direct, no client proxy) ===

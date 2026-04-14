@@ -4,23 +4,167 @@
 </div>
 
 <div class="card">
+  <div class="flex gap-md mb-1" style="flex-wrap:wrap">
+    <div class="form-group" style="flex:1;min-width:150px">
+      <label>Service</label>
+      <select id="f-service" onchange="applyFilters()">
+        <option value="">All services</option>
+      </select>
+    </div>
+    <div class="form-group" style="flex:1;min-width:150px">
+      <label>Client</label>
+      <select id="f-client" onchange="applyFilters()">
+        <option value="">All clients</option>
+      </select>
+    </div>
+    <div class="form-group" style="flex:1;min-width:120px">
+      <label>Key</label>
+      <select id="f-key" onchange="applyFilters()">
+        <option value="">All keys</option>
+      </select>
+    </div>
+    <div class="form-group" style="flex:1;min-width:100px">
+      <label>Method</label>
+      <select id="f-method" onchange="applyFilters()">
+        <option value="">All</option>
+        <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
+      </select>
+    </div>
+    <div class="form-group" style="flex:1;min-width:100px">
+      <label>Status</label>
+      <select id="f-status" onchange="applyFilters()">
+        <option value="">All</option>
+        <option value="ok">2xx OK</option>
+        <option value="err">4xx/5xx Error</option>
+      </select>
+    </div>
+    <div class="form-group" style="flex:1;min-width:120px">
+      <label>Search path</label>
+      <input type="text" id="f-path" placeholder="/v1/chat/..." oninput="applyFilters()">
+    </div>
+  </div>
+  <div class="flex-between mb-1">
+    <span id="log-count" class="text-muted text-sm"></span>
+    <button class="btn btn-sm" onclick="loadLogs()">Refresh</button>
+  </div>
+
   <table>
     <thead>
-      <tr><th>Time</th><th>Service</th><th>Method</th><th>Path</th><th>Status</th></tr>
-    </thead>
-    <tbody>
-      {{range .Logs}}
       <tr>
-        <td class="text-muted text-sm">{{.CreatedAt}}</td>
-        <td>{{.ServiceName}}</td>
-        <td><span class="badge badge-blue">{{.Method}}</span></td>
-        <td class="mono text-sm">{{.Path}}</td>
-        <td>{{if .StatusCode}}<span class="badge {{if lt (deref .StatusCode) 400}}badge-green{{else}}badge-red{{end}}">{{deref .StatusCode}}</span>{{end}}</td>
+        <th>Time</th>
+        <th>Client</th>
+        <th>Service</th>
+        <th>Key</th>
+        <th>Method</th>
+        <th>Path</th>
+        <th>Status</th>
       </tr>
-      {{else}}
-      <tr><td colspan="5" class="text-muted">No requests logged yet.</td></tr>
-      {{end}}
-    </tbody>
+    </thead>
+    <tbody id="log-body"></tbody>
   </table>
 </div>
+
+<script>
+var allLogs = [];
+
+function loadLogs() {
+  fetch('/api/logs', {credentials:'same-origin'})
+    .then(function(r) {
+      if (r.status === 401) { window.location = '/admin/login'; return; }
+      return r.json();
+    })
+    .then(function(data) {
+      if (!data) return;
+      allLogs = data;
+      buildFilterOptions();
+      applyFilters();
+    });
+}
+
+function buildFilterOptions() {
+  var services = {}, clients = {}, keys = {};
+  allLogs.forEach(function(l) {
+    services[l.service_name] = true;
+    if (l.client_name) clients[l.client_name] = true;
+    if (l.env_name) keys[l.env_name] = true;
+  });
+
+  fillSelect('f-service', services, 'All services');
+  fillSelect('f-client', clients, 'All clients');
+  fillSelect('f-key', keys, 'All keys');
+}
+
+function fillSelect(id, obj, allLabel) {
+  var sel = document.getElementById(id);
+  var current = sel.value;
+  sel.innerHTML = '<option value="">' + allLabel + '</option>';
+  Object.keys(obj).sort().forEach(function(k) {
+    var opt = document.createElement('option');
+    opt.value = k;
+    opt.textContent = k;
+    if (k === current) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+function applyFilters() {
+  var fService = document.getElementById('f-service').value;
+  var fClient = document.getElementById('f-client').value;
+  var fKey = document.getElementById('f-key').value;
+  var fMethod = document.getElementById('f-method').value;
+  var fStatus = document.getElementById('f-status').value;
+  var fPath = document.getElementById('f-path').value.toLowerCase();
+
+  var filtered = allLogs.filter(function(l) {
+    if (fService && l.service_name !== fService) return false;
+    if (fClient && l.client_name !== fClient) return false;
+    if (fKey && l.env_name !== fKey) return false;
+    if (fMethod && l.method !== fMethod) return false;
+    if (fStatus === 'ok' && l.status_code >= 400) return false;
+    if (fStatus === 'err' && l.status_code < 400) return false;
+    if (fPath && l.path.toLowerCase().indexOf(fPath) < 0) return false;
+    return true;
+  });
+
+  document.getElementById('log-count').textContent = filtered.length + ' of ' + allLogs.length + ' requests';
+
+  var tbody = document.getElementById('log-body');
+  tbody.innerHTML = '';
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="text-muted">No matching requests.</td></tr>';
+    return;
+  }
+
+  filtered.forEach(function(l) {
+    var tr = document.createElement('tr');
+    var statusBadge = '';
+    if (l.status_code) {
+      var cls = l.status_code < 400 ? 'badge-green' : 'badge-red';
+      statusBadge = '<span class="badge ' + cls + '">' + l.status_code + '</span>';
+    }
+    tr.innerHTML =
+      '<td class="text-muted text-sm" style="white-space:nowrap">' + formatTime(l.created_at) + '</td>' +
+      '<td>' + (l.client_name || '<span class="text-muted">—</span>') + '</td>' +
+      '<td><span class="badge badge-blue">' + l.service_name + '</span></td>' +
+      '<td class="text-sm">' + (l.env_name || '<span class="text-muted">—</span>') + '</td>' +
+      '<td><span class="badge badge-blue">' + l.method + '</span></td>' +
+      '<td class="mono text-sm">' + l.path + '</td>' +
+      '<td>' + statusBadge + '</td>';
+    tbody.appendChild(tr);
+  });
+}
+
+function formatTime(ts) {
+  if (!ts) return '';
+  // SQLite format: 2026-04-14 03:32:06
+  var parts = ts.split(' ');
+  if (parts.length === 2) {
+    return '<span class="text-muted">' + parts[0] + '</span> ' + parts[1];
+  }
+  return ts;
+}
+
+document.addEventListener('DOMContentLoaded', loadLogs);
+</script>
 {{end}}

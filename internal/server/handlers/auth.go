@@ -58,6 +58,9 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
 
+func JsonErrorPublic(w http.ResponseWriter, msg string, code int) { jsonError(w, msg, code) }
+func JsonResponsePublic(w http.ResponseWriter, data interface{})  { jsonResponse(w, data) }
+
 func jsonError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

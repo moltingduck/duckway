@@ -159,6 +159,18 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	adminAPIMux.HandleFunc("POST /api/notifications", notifH.Create)
 	adminAPIMux.HandleFunc("DELETE /api/notifications/{id}", notifH.Delete)
 
+	adminAPIMux.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
+		logs, err := requestLogQ.Recent(500)
+		if err != nil {
+			handlers.JsonErrorPublic(w, "failed to list logs", 500)
+			return
+		}
+		if logs == nil {
+			logs = []queries.RequestLogEntry{}
+		}
+		handlers.JsonResponsePublic(w, logs)
+	})
+
 	adminAPIMux.HandleFunc("GET /api/canary/settings", canaryH.GetSettings)
 	adminAPIMux.HandleFunc("POST /api/canary/settings", canaryH.SaveSettings)
 	adminAPIMux.HandleFunc("GET /api/canary/clients/{clientId}", canaryH.ListByClient)

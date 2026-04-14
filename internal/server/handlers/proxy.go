@@ -114,7 +114,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			"path":    upstreamPath,
 		})
 		if h.requestLog != nil {
-			h.requestLog.Log(client.ID, serviceName, r.Method, upstreamPath, 200)
+			h.requestLog.Log(client.ID, result.PlaceholderID, serviceName, r.Method, upstreamPath, 200)
 		}
 		return
 	}
@@ -184,7 +184,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	if h.requestLog != nil {
-		h.requestLog.Log(client.ID, serviceName, r.Method, upstreamPath, resp.StatusCode)
+		h.requestLog.Log(client.ID, result.PlaceholderID, serviceName, r.Method, upstreamPath, resp.StatusCode)
 	}
 
 	for key, values := range resp.Header {
