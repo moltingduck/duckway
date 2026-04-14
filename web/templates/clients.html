@@ -77,7 +77,10 @@
     </div>
     <div class="form-group">
       <label>Quick Setup Command</label>
-      <code id="init-cmd" style="display:block;padding:0.75rem;word-break:break-all;font-size:0.8rem;background:var(--bg-input);border-radius:var(--radius)"></code>
+      <div style="position:relative">
+        <code id="init-cmd" style="display:block;padding:0.75rem;padding-right:4rem;word-break:break-all;font-size:0.8rem;background:var(--bg-input);border-radius:var(--radius)"></code>
+        <button type="button" class="btn btn-sm" onclick="copyCmd()" style="position:absolute;right:4px;top:4px">Copy</button>
+      </div>
     </div>
     <div class="modal-actions">
       <button type="button" class="btn btn-primary" onclick="dismissToken()">I've saved the token</button>
@@ -279,6 +282,21 @@ function copyToken() {
   document.getElementById('token-value').select();
   document.execCommand('copy');
   showToast('Token copied', 'success');
+}
+function copyCmd() {
+  var text = document.getElementById('init-cmd').textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    showToast('Command copied', 'success');
+  }, function() {
+    // Fallback
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('Command copied', 'success');
+  });
 }
 function dismissToken() {
   document.getElementById('token-modal').style.display = 'none';
