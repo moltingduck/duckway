@@ -76,24 +76,34 @@ document.addEventListener('DOMContentLoaded', function() {
       var localDiv = document.getElementById('canary-types-local');
       var refTbody = document.getElementById('types-reference');
 
-      allTypes.forEach(function(t) {
+      // Sort: default-enabled first, then alphabetical
+      var apiTypes = allTypes.filter(function(t) { return t.category === 'api'; });
+      var localTypes = allTypes.filter(function(t) { return t.category !== 'api'; });
+      function sortByDefault(a, b) {
+        if (a.default_enabled === b.default_enabled) return a.name < b.name ? -1 : 1;
+        return a.default_enabled === 'true' ? -1 : 1;
+      }
+      apiTypes.sort(sortByDefault);
+      localTypes.sort(sortByDefault);
+
+      function renderType(t, container) {
         var checked = enabled.length === 0 ? (t.default_enabled === 'true') : (enabled.indexOf(t.type) >= 0);
-        var mode = t.deploy_mode === 'append' ? '<span class="badge badge-yellow" style="font-size:0.6rem;vertical-align:middle">append</span>' : '';
+        var mode = t.deploy_mode === 'append' ? '<span class="badge badge-yellow" style="font-size:0.6rem;vertical-align:middle">merge</span>' : '';
         var path = t.deploy_path ? ' <code style="font-size:0.75rem">~/' + t.deploy_path + '</code>' : '';
         var label = document.createElement('label');
         label.style.display = 'block';
         label.style.marginBottom = '0.5rem';
         label.style.lineHeight = '1.6';
+        if (t.default_enabled !== 'true') label.style.opacity = '0.7';
         label.innerHTML = '<input type="checkbox" name="canary_type" value="' + t.type + '"' +
           (checked ? ' checked' : '') + '> <strong>' + t.name + '</strong> ' + mode +
           '<br><span style="margin-left:1.25rem" class="text-muted text-sm">' + t.description + '</span>' +
           '<br><span style="margin-left:1.25rem">' + path + '</span>';
+        container.appendChild(label);
+      }
 
-        if (t.category === 'api') {
-          apiDiv.appendChild(label);
-        } else {
-          localDiv.appendChild(label);
-        }
+      apiTypes.forEach(function(t) { renderType(t, apiDiv); });
+      localTypes.forEach(function(t) { renderType(t, localDiv); });
 
         var tr = document.createElement('tr');
         tr.innerHTML = '<td><span class="badge badge-blue">' + t.type + '</span></td>' +
