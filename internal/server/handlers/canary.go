@@ -28,13 +28,18 @@ func (h *CanaryHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 
 	var types []map[string]string
 	for _, t := range services.SupportedCanaryTypes {
+		defaultStr := "false"
+		if t.DefaultEnabled {
+			defaultStr = "true"
+		}
 		types = append(types, map[string]string{
-			"type":        t.Type,
-			"name":        t.DisplayName,
-			"description": t.Description,
-			"category":    t.Category,
-			"deploy_path": t.DeployPath,
-			"deploy_mode": t.DeployMode,
+			"type":            t.Type,
+			"name":            t.DisplayName,
+			"description":     t.Description,
+			"category":        t.Category,
+			"deploy_path":     t.DeployPath,
+			"deploy_mode":     t.DeployMode,
+			"default_enabled": defaultStr,
 		})
 	}
 

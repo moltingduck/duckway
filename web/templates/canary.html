@@ -77,7 +77,7 @@ document.addEventListener('DOMContentLoaded', function() {
       var refTbody = document.getElementById('types-reference');
 
       allTypes.forEach(function(t) {
-        var checked = enabled.length === 0 || enabled.indexOf(t.type) >= 0;
+        var checked = enabled.length === 0 ? (t.default_enabled === 'true') : (enabled.indexOf(t.type) >= 0);
         var mode = t.deploy_mode === 'append' ? '<span class="badge badge-yellow" style="font-size:0.6rem;vertical-align:middle">append</span>' : '';
         var path = t.deploy_path ? ' <code style="font-size:0.75rem">~/' + t.deploy_path + '</code>' : '';
         var label = document.createElement('label');

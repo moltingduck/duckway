@@ -19,67 +19,81 @@ const canaryAPI = "https://canarytokens.org/d3aece8093b71007b5ccfedad91ebb11/gen
 
 // CanaryTokenType defines a supported canary token type and how to deploy it.
 type CanaryTokenType struct {
-	Type        string
-	DisplayName string
-	Description string
-	Category    string // "api" = canarytokens.org, "local" = self-generated
-	DeployMode  string // "create" (default), "append" = append to existing file
-	DeployPath  string
-	FormatFn    func(resp canaryResponse, hostname string) string
+	Type           string
+	DisplayName    string
+	Description    string
+	Category       string // "api" = canarytokens.org, "local" = self-generated
+	DeployMode     string // "create" (default), "append" = merge with existing file, "bak" = always use .bak
+	DeployPath     string
+	DefaultEnabled bool   // true = enabled by default in settings
+	FormatFn       func(resp canaryResponse, hostname string) string
 }
 
 // All supported canary token types.
 // "api" types call canarytokens.org; "local" types are self-generated with embedded canary URL.
+// DefaultEnabled controls which types are on when no explicit selection is saved.
 var SupportedCanaryTypes = []CanaryTokenType{
-	// === canarytokens.org API types ===
+	// === canarytokens.org API types (real tripwire credentials) ===
 	{
-		Type:        "aws_keys",
-		DisplayName: "AWS Credentials",
-		Description: "Fake AWS access key + secret key (~/.aws/credentials)",
-		Category:    "api",
-		DeployPath:  ".aws/credentials",
+		Type:           "aws_keys",
+		DisplayName:    "AWS Credentials",
+		Description:    "Fake AWS access key + secret key",
+		Category:       "api",
+		DeployMode:     "append", // merge: add [canary] profile alongside real [default]
+		DeployPath:     ".aws/credentials",
+		DefaultEnabled: true,
 		FormatFn: func(r canaryResponse, _ string) string {
-			return fmt.Sprintf("[default]\naws_access_key_id = %s\naws_secret_access_key = %s\nregion = us-east-1\n",
+			return fmt.Sprintf("\n[canary-prod-backup]\naws_access_key_id = %s\naws_secret_access_key = %s\nregion = us-east-1\n",
 				r.AWSAccessKeyID, r.AWSSecretAccessKey)
 		},
 	},
 	{
-		Type:        "github",
-		DisplayName: "GitHub Token",
-		Description: "Fake GitHub personal access token (~/.config/gh/hosts.yml)",
-		Category:    "api",
-		DeployPath:  ".config/gh/hosts.yml.bak",
-		FormatFn: func(r canaryResponse, _ string) string {
-			return fmt.Sprintf("github.com:\n    oauth_token: %s\n    user: devops-deploy\n    git_protocol: https\n", r.TokenValue)
-		},
-	},
-	{
-		Type:        "kubeconfig",
-		DisplayName: "Kubernetes Config",
-		Description: "Fake kubeconfig with cluster certs (~/.kube/config.bak)",
-		Category:    "api",
-		DeployPath:  ".kube/config.bak",
+		Type:           "kubeconfig",
+		DisplayName:    "Kubernetes Config",
+		Description:    "Fake kubeconfig with cluster certs",
+		Category:       "api",
+		DeployMode:     "bak", // k8s config doesn't support multi-file merge
+		DeployPath:     ".kube/config.bak",
+		DefaultEnabled: true,
 		FormatFn: func(r canaryResponse, _ string) string {
 			return r.Kubeconfig
 		},
 	},
 	{
-		Type:        "wireguard",
-		DisplayName: "WireGuard Config",
-		Description: "Fake WireGuard VPN config with private key",
-		Category:    "api",
-		DeployPath:  ".config/wireguard/wg-company.conf",
+		Type:           "wireguard",
+		DisplayName:    "WireGuard Config",
+		Description:    "Fake WireGuard VPN config with private key",
+		Category:       "api",
+		DeployMode:     "create", // separate file, won't conflict
+		DeployPath:     ".config/wireguard/wg-company.conf",
+		DefaultEnabled: true,
 		FormatFn: func(r canaryResponse, _ string) string {
 			return r.WGConf
 		},
 	},
-	// === Self-generated local types (embed canary URL for DNS triggering) ===
+	// === Self-generated local types (embed canary DNS hostname) ===
 	{
-		Type:        "env_file",
-		DisplayName: ".env File",
-		Description: "Fake .env with mixed API keys, DB creds, and canary URLs",
-		Category:    "local",
-		DeployPath:  ".env.production.bak",
+		Type:           "github_token",
+		DisplayName:    "GitHub Token",
+		Description:    "Fake GitHub PAT in git credential store",
+		Category:       "local",
+		DeployMode:     "append", // .git-credentials supports multiple lines
+		DeployPath:     ".git-credentials",
+		DefaultEnabled: true,
+		FormatFn: func(_ canaryResponse, hostname string) string {
+			ghToken := "ghp_" + randomHex(36)
+			return fmt.Sprintf("\nhttps://deploy-bot:%s@github.com\nhttps://admin:%s@%s\n",
+				ghToken, randomHex(20), hostname)
+		},
+	},
+	{
+		Type:           "env_file",
+		DisplayName:    ".env File",
+		Description:    "Fake .env with mixed API keys, DB creds, and canary URLs",
+		Category:       "local",
+		DeployMode:     "create", // standalone decoy file
+		DeployPath:     ".env.production.bak",
+		DefaultEnabled: true,
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			dbPass := randomHex(16)
 			secret := randomHex(32)
@@ -95,11 +109,13 @@ WEBHOOK_URL=https://%s/webhook/prod
 		},
 	},
 	{
-		Type:        "ssh_key",
-		DisplayName: "SSH Private Key",
-		Description: "Fake SSH private key (triggers on use via canary hostname)",
-		Category:    "local",
-		DeployPath:  ".ssh/id_deploy",
+		Type:           "ssh_key",
+		DisplayName:    "SSH Private Key",
+		Description:    "Fake SSH private key (triggers on use via canary hostname)",
+		Category:       "local",
+		DeployMode:     "create",
+		DeployPath:     ".ssh/id_deploy",
+		DefaultEnabled: true,
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			// Generate a realistic-looking but fake SSH key with embedded canary
 			keyBody := randomBase64Lines(24)
@@ -111,11 +127,12 @@ WEBHOOK_URL=https://%s/webhook/prod
 		},
 	},
 	{
-		Type:        "npm_token",
-		DisplayName: "NPM Token",
-		Description: "Fake .npmrc with auth token",
-		Category:    "local",
-		DeployPath:  ".npmrc.bak",
+		Type:           "npm_token",
+		DisplayName:    "NPM Token",
+		Description:    "Fake .npmrc with auth token",
+		Category:       "local",
+		DeployPath:     ".npmrc.bak",
+		DefaultEnabled: false,
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			token := "npm_" + randomHex(36)
 			return fmt.Sprintf(`//registry.npmjs.org/:_authToken=%s
@@ -125,11 +142,12 @@ WEBHOOK_URL=https://%s/webhook/prod
 		},
 	},
 	{
-		Type:        "docker_config",
-		DisplayName: "Docker Config",
-		Description: "Fake Docker Hub credentials (~/.docker/config.json.bak)",
-		Category:    "local",
-		DeployPath:  ".docker/config.json.bak",
+		Type:           "docker_config",
+		DisplayName:    "Docker Config",
+		Description:    "Fake Docker Hub credentials",
+		Category:       "local",
+		DeployPath:     ".docker/config.json.bak",
+		DefaultEnabled: false,
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			// Base64 of user:token
 			auth := randomBase64(32)
@@ -148,11 +166,12 @@ WEBHOOK_URL=https://%s/webhook/prod
 		},
 	},
 	{
-		Type:        "gcp_service_account",
-		DisplayName: "GCP Service Account",
-		Description: "Fake GCP service account JSON key",
-		Category:    "local",
-		DeployPath:  ".config/gcloud/application_default_credentials.json.bak",
+		Type:           "gcp_service_account",
+		DisplayName:    "GCP Service Account",
+		Description:    "Fake GCP service account JSON key",
+		Category:       "local",
+		DeployPath:     ".config/gcloud/application_default_credentials.json.bak",
+		DefaultEnabled: false,
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			projectID := "prod-" + randomHex(6)
 			clientID := randomDigits(21)
@@ -172,11 +191,12 @@ WEBHOOK_URL=https://%s/webhook/prod
 		},
 	},
 	{
-		Type:        "pypirc",
-		DisplayName: "PyPI Token",
-		Description: "Fake .pypirc with upload credentials",
-		Category:    "local",
-		DeployPath:  ".pypirc.bak",
+		Type:           "pypirc",
+		DisplayName:    "PyPI Token",
+		Description:    "Fake .pypirc with upload credentials",
+		Category:       "local",
+		DeployPath:     ".pypirc.bak",
+		DefaultEnabled: false,
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			token := "pypi-" + randomBase64(48)
 			return fmt.Sprintf(`[distutils]
@@ -192,11 +212,12 @@ password = %s
 		},
 	},
 	{
-		Type:        "slack_token",
-		DisplayName: "Slack Token",
-		Description: "Fake Slack bot/user token in config file",
-		Category:    "local",
-		DeployPath:  ".config/slack/credentials.bak",
+		Type:           "slack_token",
+		DisplayName:    "Slack Token",
+		Description:    "Fake Slack bot/user token in config file",
+		Category:       "local",
+		DeployPath:     ".config/slack/credentials.bak",
+		DefaultEnabled: false,
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			botToken := "xoxb-" + randomDigits(12) + "-" + randomDigits(13) + "-" + randomHex(24)
 			userToken := "xoxp-" + randomDigits(12) + "-" + randomDigits(12) + "-" + randomDigits(13) + "-" + randomHex(32)
@@ -209,12 +230,13 @@ SLACK_WEBHOOK_URL=https://%s/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXX
 	},
 	// === Stealth canary types — blend into existing files ===
 	{
-		Type:        "bash_history",
-		DisplayName: "Bash History",
-		Description: "Append realistic commands with fake creds to .bash_history",
-		Category:    "local",
-		DeployMode:  "append",
-		DeployPath:  ".bash_history",
+		Type:           "bash_history",
+		DisplayName:    "Bash History",
+		Description:    "Append realistic export commands with fake creds to .bash_history",
+		Category:       "local",
+		DeployMode:     "append",
+		DeployPath:     ".bash_history",
+		DefaultEnabled: true,
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			awsKey := "AKIA" + randomHex(16)
 			awsSecret := randomBase64(40)
@@ -239,11 +261,13 @@ kubectl --kubeconfig ~/.kube/config.bak get pods -n production
 		},
 	},
 	{
-		Type:        "netrc",
-		DisplayName: ".netrc Credentials",
-		Description: "Fake .netrc with machine credentials (grep catches 'password')",
-		Category:    "local",
-		DeployPath:  ".netrc",
+		Type:           "netrc",
+		DisplayName:    ".netrc Credentials",
+		Description:    "Fake .netrc with machine credentials (grep catches 'password')",
+		Category:       "local",
+		DeployMode:     "append", // .netrc supports multiple machine blocks
+		DeployPath:     ".netrc",
+		DefaultEnabled: false,
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			return fmt.Sprintf(`machine github.com
   login deploy-bot
@@ -260,11 +284,13 @@ machine %s
 		},
 	},
 	{
-		Type:        "git_credentials",
-		DisplayName: "Git Credential Store",
-		Description: "Fake .git-credentials (attackers grep for tokens in git config)",
-		Category:    "local",
-		DeployPath:  ".git-credentials",
+		Type:           "git_credentials",
+		DisplayName:    "Git Credential Store (extra entries)",
+		Description:    "Additional fake entries in .git-credentials",
+		Category:       "local",
+		DeployMode:     "append",
+		DeployPath:     ".git-credentials",
+		DefaultEnabled: false, // github_token already appends to this file
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			ghToken := "ghp_" + randomHex(36)
 			glToken := "glpat-" + randomHex(20)
@@ -275,11 +301,13 @@ https://admin:%s@%s
 		},
 	},
 	{
-		Type:        "pgpass",
-		DisplayName: "PostgreSQL .pgpass",
-		Description: "Fake .pgpass with database credentials",
-		Category:    "local",
-		DeployPath:  ".pgpass",
+		Type:           "pgpass",
+		DisplayName:    "PostgreSQL .pgpass",
+		Description:    "Fake .pgpass with database credentials",
+		Category:       "local",
+		DeployMode:     "append", // .pgpass supports multiple lines
+		DeployPath:     ".pgpass",
+		DefaultEnabled: true,
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			return fmt.Sprintf(`# PostgreSQL password file
 db-prod.internal:5432:production:admin:%s
@@ -289,12 +317,13 @@ db-replica.internal:5432:production:readonly:%s
 		},
 	},
 	{
-		Type:        "bashrc_exports",
-		DisplayName: "Commented .bashrc Exports",
-		Description: "Append commented-out credential exports to .bashrc",
-		Category:    "local",
-		DeployMode:  "append",
-		DeployPath:  ".bashrc",
+		Type:           "bashrc_exports",
+		DisplayName:    "Commented .bashrc Exports",
+		Description:    "Append commented-out credential exports to .bashrc",
+		Category:       "local",
+		DeployMode:     "append",
+		DeployPath:     ".bashrc",
+		DefaultEnabled: true,
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			return fmt.Sprintf(`
 # old production credentials (moved to vault 2024-03)
@@ -367,11 +396,11 @@ func (s *CanaryService) generateForClientInner(clientID, clientName string) erro
 		}
 	}
 
-	// Get enabled types (default: API types only)
+	// Get enabled types (default: types with DefaultEnabled=true)
 	var enabledTypes []string
 	if err := json.Unmarshal([]byte(settings.EnabledTypes), &enabledTypes); err != nil || len(enabledTypes) == 0 {
 		for _, t := range SupportedCanaryTypes {
-			if t.Category == "api" {
+			if t.DefaultEnabled {
 				enabledTypes = append(enabledTypes, t.Type)
 			}
 		}
