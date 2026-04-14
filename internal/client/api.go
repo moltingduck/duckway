@@ -27,6 +27,7 @@ type PlaceholderKeyInfo struct {
 	EnvName     string `json:"env_name"`
 	Placeholder string `json:"placeholder"`
 	ServiceName string `json:"service_name"`
+	KeyPath     string `json:"key_path,omitempty"`
 }
 
 func (c *APIClient) FetchKeys() ([]PlaceholderKeyInfo, error) {

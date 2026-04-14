@@ -32,6 +32,23 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 		return 0, fmt.Errorf("write keys.env: %w", err)
 	}
 
+	// Deploy keys to their configured paths (e.g., ~/.config/openai/credentials)
+	home, _ := os.UserHomeDir()
+	for _, k := range keys {
+		if k.KeyPath == "" {
+			continue
+		}
+		keyFilePath := filepath.Join(home, k.KeyPath)
+		if err := os.MkdirAll(filepath.Dir(keyFilePath), 0700); err != nil {
+			log.Printf("Warning: cannot create dir for %s: %v", k.KeyPath, err)
+			continue
+		}
+		content := fmt.Sprintf("%s=%s\n", k.EnvName, k.Placeholder)
+		if err := os.WriteFile(keyFilePath, []byte(content), 0600); err != nil {
+			log.Printf("Warning: cannot write key to %s: %v", k.KeyPath, err)
+		}
+	}
+
 	// Sync canary tokens
 	canaryCount, err := SyncCanaries(configDir, cfg)
 	if err != nil {

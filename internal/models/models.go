@@ -8,18 +8,19 @@ type AdminUser struct {
 }
 
 type Service struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	DisplayName string `json:"display_name"`
-	UpstreamURL string `json:"upstream_url"`
-	HostPattern string `json:"host_pattern"`
-	AuthType    string `json:"auth_type"`   // bearer, header, query, basic
-	AuthHeader  string `json:"auth_header"` // e.g. "Authorization"
-	AuthPrefix  string `json:"auth_prefix"` // e.g. "Bearer "
-	KeyPrefix   string `json:"key_prefix"`  // e.g. "sk-", "ghp_"
-	KeyLength   int    `json:"key_length"`  // real key total length
-	IsActive    bool   `json:"is_active"`
-	CreatedAt   string `json:"created_at"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	DisplayName  string `json:"display_name"`
+	UpstreamURL  string `json:"upstream_url"`
+	HostPattern  string `json:"host_pattern"`
+	AuthType     string `json:"auth_type"`     // bearer, header, query, basic
+	AuthHeader   string `json:"auth_header"`   // e.g. "Authorization"
+	AuthPrefix   string `json:"auth_prefix"`   // e.g. "Bearer "
+	KeyPrefix    string `json:"key_prefix"`    // e.g. "sk-", "ghp_"
+	KeyLength    int    `json:"key_length"`    // real key total length
+	KeyDirectory string `json:"key_directory"` // default key file path, e.g. ".config/openai/credentials"
+	IsActive     bool   `json:"is_active"`
+	CreatedAt    string `json:"created_at"`
 }
 
 type APIKey struct {
@@ -74,6 +75,7 @@ type PlaceholderKey struct {
 	PermissionConfig   *string `json:"permission_config"`
 	RequiresApproval   bool    `json:"requires_approval"`
 	ApprovalTTLMinutes int     `json:"approval_ttl_minutes"`
+	KeyPath            string  `json:"key_path"` // override path, falls back to service.key_directory
 	IsActive           bool    `json:"is_active"`
 	UsageCount         int64   `json:"usage_count"`
 	LastUsedAt         *string `json:"last_used_at"`

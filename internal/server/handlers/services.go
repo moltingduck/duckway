@@ -30,15 +30,16 @@ func (h *ServiceHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name        string `json:"name"`
-		DisplayName string `json:"display_name"`
-		UpstreamURL string `json:"upstream_url"`
-		HostPattern string `json:"host_pattern"`
-		AuthType    string `json:"auth_type"`
-		AuthHeader  string `json:"auth_header"`
-		AuthPrefix  string `json:"auth_prefix"`
-		KeyPrefix   string `json:"key_prefix"`
-		KeyLength   int    `json:"key_length"`
+		Name         string `json:"name"`
+		DisplayName  string `json:"display_name"`
+		UpstreamURL  string `json:"upstream_url"`
+		HostPattern  string `json:"host_pattern"`
+		AuthType     string `json:"auth_type"`
+		AuthHeader   string `json:"auth_header"`
+		AuthPrefix   string `json:"auth_prefix"`
+		KeyPrefix    string `json:"key_prefix"`
+		KeyLength    int    `json:"key_length"`
+		KeyDirectory string `json:"key_directory"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -71,17 +72,18 @@ func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	svc := &models.Service{
-		ID:          id,
-		Name:        req.Name,
-		DisplayName: req.DisplayName,
-		UpstreamURL: req.UpstreamURL,
-		HostPattern: req.HostPattern,
-		AuthType:    req.AuthType,
-		AuthHeader:  req.AuthHeader,
-		AuthPrefix:  req.AuthPrefix,
-		KeyPrefix:   req.KeyPrefix,
-		KeyLength:   req.KeyLength,
-		IsActive:    true,
+		ID:           id,
+		Name:         req.Name,
+		DisplayName:  req.DisplayName,
+		UpstreamURL:  req.UpstreamURL,
+		HostPattern:  req.HostPattern,
+		AuthType:     req.AuthType,
+		AuthHeader:   req.AuthHeader,
+		AuthPrefix:   req.AuthPrefix,
+		KeyPrefix:    req.KeyPrefix,
+		KeyLength:    req.KeyLength,
+		KeyDirectory: req.KeyDirectory,
+		IsActive:     true,
 	}
 
 	if err := h.services.Create(svc); err != nil {
@@ -119,9 +121,10 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		AuthType    *string `json:"auth_type"`
 		AuthHeader  *string `json:"auth_header"`
 		AuthPrefix  *string `json:"auth_prefix"`
-		KeyPrefix   *string `json:"key_prefix"`
-		KeyLength   *int    `json:"key_length"`
-		IsActive    *bool   `json:"is_active"`
+		KeyPrefix    *string `json:"key_prefix"`
+		KeyLength    *int    `json:"key_length"`
+		KeyDirectory *string `json:"key_directory"`
+		IsActive     *bool   `json:"is_active"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -154,6 +157,9 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.KeyLength != nil {
 		svc.KeyLength = *req.KeyLength
+	}
+	if req.KeyDirectory != nil {
+		svc.KeyDirectory = *req.KeyDirectory
 	}
 	if req.IsActive != nil {
 		svc.IsActive = *req.IsActive

@@ -7,7 +7,7 @@
 <div class="card">
   <table>
     <thead>
-      <tr><th>Name</th><th>Upstream URL</th><th>Auth</th><th>Key Format</th><th>Status</th><th></th></tr>
+      <tr><th>Name</th><th>Upstream URL</th><th>Auth</th><th>Key Format</th><th>Key Path</th><th>Status</th><th></th></tr>
     </thead>
     <tbody id="services-list">
       {{range .Services}}
@@ -16,6 +16,7 @@
         <td class="mono text-sm">{{.UpstreamURL}}</td>
         <td><span class="badge badge-blue">{{.AuthType}}</span></td>
         <td class="mono text-sm">{{.KeyPrefix}}*** ({{.KeyLength}} chars)</td>
+        <td class="mono text-sm">{{if .KeyDirectory}}~/{{.KeyDirectory}}{{else}}—{{end}}</td>
         <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
         <td class="text-right">
           <button class="btn btn-sm btn-danger"
@@ -26,7 +27,7 @@
         </td>
       </tr>
       {{else}}
-      <tr><td colspan="6" class="text-muted">No services configured. Add one to get started.</td></tr>
+      <tr><td colspan="7" class="text-muted">No services configured. Add one to get started.</td></tr>
       {{end}}
     </tbody>
   </table>
@@ -49,6 +50,9 @@
       <div class="flex gap-md">
         <div class="form-group" style="flex:1"><label>Key Prefix</label><input type="text" name="key_prefix" placeholder="sk-"></div>
         <div class="form-group" style="flex:1"><label>Key Length</label><input type="number" name="key_length" value="64"></div>
+      </div>
+      <div class="form-group"><label>Key Directory</label><input type="text" name="key_directory" placeholder=".config/openai/credentials">
+        <span class="text-muted text-sm">Path under ~/ where keys are stored on client machines</span>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>

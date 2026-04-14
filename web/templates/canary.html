@@ -25,9 +25,16 @@
     </div>
 
     <div class="form-group">
-      <label>Exclude Clients (comma-separated names that should NOT get canary tokens)</label>
-      <input type="text" id="canary-exclude" placeholder="ci-runner, test-bot">
-      <div class="text-sm text-muted mt-1">Leave empty to apply canary tokens to all clients.</div>
+      <label>Exclude Clients</label>
+      <div class="text-sm text-muted mb-1">Clients that should NOT receive canary tokens.</div>
+      <div class="flex gap-sm mb-1">
+        <input type="text" id="exclude-search" placeholder="Search clients..." style="flex:1" oninput="filterExcludeList()">
+        <button type="button" class="btn btn-sm" onclick="showExcludeDropdown()">+ Add</button>
+      </div>
+      <div id="exclude-dropdown" style="display:none;position:relative">
+        <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);max-height:150px;overflow-y:auto;position:absolute;width:100%;z-index:10" id="exclude-dropdown-list"></div>
+      </div>
+      <div id="exclude-list" style="display:flex;flex-wrap:wrap;gap:0.375rem"></div>
     </div>
 
     <button type="submit" class="btn btn-primary">Save Settings</button>
@@ -93,13 +100,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
       // Exclude list
       var exclude = data.exclude_clients || [];
-      document.getElementById('canary-exclude').value = exclude.join(', ');
+      exclude.forEach(function(name) { addExcludeTag(name); });
     });
 
   // Load clients
   fetch('/api/clients', {credentials:'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(clients) {
+      allClients = clients;
       var sel = document.getElementById('canary-client-select');
       clients.forEach(function(c) {
         var opt = document.createElement('option');
@@ -119,8 +127,7 @@ document.getElementById('canary-settings-form').addEventListener('submit', funct
     types.push(cb.value);
   });
 
-  var excludeRaw = document.getElementById('canary-exclude').value;
-  var exclude = excludeRaw.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
+  var exclude = getExcludeList();
 
   fetch('/api/canary/settings', {
     method: 'POST',
@@ -166,6 +173,80 @@ function loadClientCanaries() {
       div.innerHTML = html;
     });
 }
+
+// Exclude list management
+var allClients = [];
+var excludeSet = new Set();
+
+function addExcludeTag(name) {
+  if (excludeSet.has(name)) return;
+  excludeSet.add(name);
+  var list = document.getElementById('exclude-list');
+  var tag = document.createElement('span');
+  tag.className = 'badge badge-gray';
+  tag.style.cursor = 'pointer';
+  tag.style.padding = '0.25rem 0.5rem';
+  tag.dataset.name = name;
+  tag.innerHTML = name + ' <span style="margin-left:0.25rem;opacity:0.6">x</span>';
+  tag.onclick = function() {
+    excludeSet.delete(name);
+    tag.remove();
+  };
+  list.appendChild(tag);
+}
+
+function getExcludeList() {
+  return Array.from(excludeSet);
+}
+
+function showExcludeDropdown() {
+  var dd = document.getElementById('exclude-dropdown');
+  dd.style.display = dd.style.display === 'none' ? 'block' : 'none';
+  renderExcludeDropdown('');
+}
+
+function filterExcludeList() {
+  var q = document.getElementById('exclude-search').value.toLowerCase();
+  renderExcludeDropdown(q);
+  document.getElementById('exclude-dropdown').style.display = 'block';
+}
+
+function renderExcludeDropdown(query) {
+  var list = document.getElementById('exclude-dropdown-list');
+  list.innerHTML = '';
+  allClients.forEach(function(c) {
+    if (excludeSet.has(c.name)) return;
+    if (query && c.name.toLowerCase().indexOf(query) < 0) return;
+    var item = document.createElement('div');
+    item.style.padding = '0.5rem 0.75rem';
+    item.style.cursor = 'pointer';
+    item.style.fontSize = '0.875rem';
+    item.textContent = c.name;
+    item.onmouseover = function() { item.style.background = 'var(--border)'; };
+    item.onmouseout = function() { item.style.background = ''; };
+    item.onclick = function() {
+      addExcludeTag(c.name);
+      document.getElementById('exclude-dropdown').style.display = 'none';
+      document.getElementById('exclude-search').value = '';
+    };
+    list.appendChild(item);
+  });
+  if (list.children.length === 0) {
+    var empty = document.createElement('div');
+    empty.style.padding = '0.5rem 0.75rem';
+    empty.className = 'text-muted text-sm';
+    empty.textContent = query ? 'No matching clients' : 'All clients excluded';
+    list.appendChild(empty);
+  }
+}
+
+// Close dropdown on outside click
+document.addEventListener('click', function(e) {
+  var dd = document.getElementById('exclude-dropdown');
+  if (!e.target.closest('#exclude-dropdown') && !e.target.closest('#exclude-search') && e.target.textContent !== '+ Add') {
+    dd.style.display = 'none';
+  }
+});
 
 function generateCanaries(clientId, clientName) {
   showToast('Generating canary tokens... this may take a moment', '');

@@ -13,11 +13,12 @@ import (
 type ClientHandler struct {
 	clients      *queries.ClientQueries
 	placeholders *queries.PlaceholderQueries
+	services     *queries.ServiceQueries
 	canarySvc    *svc.CanaryService
 }
 
-func NewClientHandler(clients *queries.ClientQueries, placeholders *queries.PlaceholderQueries, canarySvc *svc.CanaryService) *ClientHandler {
-	return &ClientHandler{clients: clients, placeholders: placeholders, canarySvc: canarySvc}
+func NewClientHandler(clients *queries.ClientQueries, placeholders *queries.PlaceholderQueries, services *queries.ServiceQueries, canarySvc *svc.CanaryService) *ClientHandler {
+	return &ClientHandler{clients: clients, placeholders: placeholders, services: services, canarySvc: canarySvc}
 }
 
 // Admin: list all clients
@@ -128,20 +129,29 @@ func (h *ClientHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return in env-friendly format
 	type envKey struct {
 		EnvName     string `json:"env_name"`
 		Placeholder string `json:"placeholder"`
 		ServiceName string `json:"service_name"`
+		KeyPath     string `json:"key_path,omitempty"`
 	}
 
 	result := make([]envKey, 0, len(keys))
 	for _, k := range keys {
 		if k.IsActive {
+			keyPath := k.KeyPath
+			// Fall back to service's key_directory if not overridden
+			if keyPath == "" && h.services != nil {
+				svc, err := h.services.GetByID(k.ServiceID)
+				if err == nil && svc.KeyDirectory != "" {
+					keyPath = svc.KeyDirectory
+				}
+			}
 			result = append(result, envKey{
 				EnvName:     k.EnvName,
 				Placeholder: k.Placeholder,
 				ServiceName: k.ServiceName,
+				KeyPath:     keyPath,
 			})
 		}
 	}

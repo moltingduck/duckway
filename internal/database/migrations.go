@@ -24,6 +24,7 @@ var migrations = []string{
 		auth_prefix   TEXT NOT NULL DEFAULT 'Bearer ',
 		key_prefix    TEXT NOT NULL DEFAULT '',
 		key_length    INTEGER NOT NULL DEFAULT 64,
+		key_directory TEXT NOT NULL DEFAULT '',
 		is_active     INTEGER NOT NULL DEFAULT 1,
 		created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
@@ -76,6 +77,7 @@ var migrations = []string{
 		permission_config   TEXT,
 		requires_approval   INTEGER NOT NULL DEFAULT 1,
 		approval_ttl_minutes INTEGER NOT NULL DEFAULT 1440,
+		key_path            TEXT NOT NULL DEFAULT '',
 		is_active           INTEGER NOT NULL DEFAULT 1,
 		usage_count         INTEGER NOT NULL DEFAULT 0,
 		last_used_at        TEXT,
@@ -160,6 +162,8 @@ func runMigrations(db *sql.DB) error {
 	safeAlters := []string{
 		"ALTER TABLE clients ADD COLUMN canary_enabled INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE canary_settings ADD COLUMN exclude_clients TEXT NOT NULL DEFAULT '[]'",
+		"ALTER TABLE services ADD COLUMN key_directory TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE placeholder_keys ADD COLUMN key_path TEXT NOT NULL DEFAULT ''",
 	}
 	for _, alt := range safeAlters {
 		db.Exec(alt) // ignore "duplicate column" errors

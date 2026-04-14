@@ -220,18 +220,22 @@ SLACK_WEBHOOK_URL=https://%s/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXX
 			awsSecret := randomBase64(40)
 			ghToken := "ghp_" + randomHex(36)
 			apiKey := "sk-proj-" + randomHex(48)
+			antKey := "sk-ant-" + randomHex(40)
+			slackToken := "xoxb-" + randomDigits(12) + "-" + randomDigits(13) + "-" + randomHex(24)
 			dbPass := randomHex(16)
-			return fmt.Sprintf(`aws configure set aws_access_key_id %s
-aws configure set aws_secret_access_key %s
-aws s3 ls s3://company-backups-prod/
+			stripeKey := "sk_live_" + randomHex(24)
+			return fmt.Sprintf(`export AWS_ACCESS_KEY_ID=%s
+export AWS_SECRET_ACCESS_KEY=%s
 export OPENAI_API_KEY=%s
-curl -H "Authorization: token %s" https://api.github.com/repos/company/infrastructure/contents/deploy.yml
-PGPASSWORD=%s psql -h db-prod.internal -U admin -d production -c "SELECT count(*) FROM users"
+export ANTHROPIC_API_KEY=%s
+export GITHUB_TOKEN=%s
+export SLACK_BOT_TOKEN=%s
+export STRIPE_SECRET_KEY=%s
+export DATABASE_URL=postgres://admin:%s@db-prod.internal:5432/production
+curl -X POST https://%s/webhook/deploy -d '{"status":"complete"}'
 ssh -i ~/.ssh/id_deploy deploy@prod-worker-03.internal
 kubectl --kubeconfig ~/.kube/config.bak get pods -n production
-curl -X POST https://%s/webhook/deploy -d '{"status":"complete"}'
-docker login ghcr.io -u deploy -p ghp_%s
-`, awsKey, awsSecret, apiKey, ghToken, dbPass, hostname, randomHex(36))
+`, awsKey, awsSecret, apiKey, antKey, ghToken, slackToken, stripeKey, dbPass, hostname)
 		},
 	},
 	{
