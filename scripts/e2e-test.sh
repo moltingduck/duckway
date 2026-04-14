@@ -381,7 +381,7 @@ assert_eq "Client canary endpoint returns array" '"array"' "$CANARY_SYNC_STATUS"
 echo ""
 echo -e "${YELLOW}[13] Admin Panel Pages${NC}"
 
-for page in "" services keys placeholders clients groups approvals logs notifications canary; do
+for page in "" services keys placeholders clients groups approvals logs notifications canary docs; do
   STATUS=$(curl -s -b /tmp/dw-e2e-cookies -o /dev/null -w "%{http_code}" "$BASE/admin/$page")
   assert_eq "GET /admin/$page returns 200" "200" "$STATUS"
 done

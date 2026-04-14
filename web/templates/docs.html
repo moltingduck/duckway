@@ -1,0 +1,407 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Documentation</h1>
+</div>
+
+<div class="card" id="toc">
+  <h3>Table of Contents</h3>
+  <ul style="list-style:none;padding:0;line-height:2">
+    <li><a href="#overview">1. Overview</a></li>
+    <li><a href="#architecture">2. Architecture</a></li>
+    <li><a href="#quickstart">3. Quick Start</a></li>
+    <li><a href="#services">4. Services &amp; API Keys</a></li>
+    <li><a href="#clients">5. Client Setup</a></li>
+    <li><a href="#placeholders">6. Placeholder Keys</a></li>
+    <li><a href="#proxy">7. Proxy — How It Works</a></li>
+    <li><a href="#permissions">8. Permission System</a></li>
+    <li><a href="#approvals">9. Approval Workflow</a></li>
+    <li><a href="#groups">10. Key Groups &amp; Load Balancing</a></li>
+    <li><a href="#canary">11. Canary Tokens</a></li>
+    <li><a href="#notifications">12. Notifications</a></li>
+    <li><a href="#cli">13. CLI Reference</a></li>
+    <li><a href="#api">14. API Reference</a></li>
+  </ul>
+</div>
+
+<!-- 1. Overview -->
+<div class="card" id="overview">
+  <h3>1. Overview</h3>
+  <p>Duckway is an API proxy that manages real API keys centrally. AI agents and other clients never see real keys — they use <strong>placeholder keys</strong> that look identical in format but are swapped for real keys by the proxy.</p>
+  <p class="mt-1">Key benefits:</p>
+  <ul>
+    <li><strong>No key leakage</strong> — agents only have fake keys; real keys never leave the server</li>
+    <li><strong>Fine-grained permissions</strong> — restrict which endpoints, models, and rate limits each client can use</li>
+    <li><strong>Approval workflow</strong> — require admin consent before a key is first used</li>
+    <li><strong>Load balancing</strong> — rotate across multiple API keys to avoid rate limits</li>
+    <li><strong>Canary tokens</strong> — detect if a client machine is compromised</li>
+    <li><strong>Audit trail</strong> — log every proxied request</li>
+  </ul>
+</div>
+
+<!-- 2. Architecture -->
+<div class="card" id="architecture">
+  <h3>2. Architecture</h3>
+  <pre style="background:var(--bg-input);padding:1rem;border-radius:var(--radius);overflow-x:auto;font-size:0.8rem;line-height:1.5">
+┌─────────────────────┐       Tailscale        ┌──────────────────────────────┐
+│   Agent Machine      │ ◄────────────────────► │   Duckway Server              │
+│                      │                        │                               │
+│  ┌──────────────┐    │   /proxy/openai        │  ┌────────────────────────┐   │
+│  │ AI Agent     │────┼──────────────────────► │  │ Go HTTP Server         │   │
+│  └──────────────┘    │                        │  │                        │   │
+│         │            │                        │  │ /proxy/{svc} → upstream│   │
+│    HTTPS_PROXY       │                        │  │ /api/*    admin API    │   │
+│         ▼            │                        │  │ /admin/*  web panel    │   │
+│  ┌──────────────┐    │                        │  │ /client/* client API   │   │
+│  │ duckway      │────┼── sync keys ─────────► │  └──────────┬───────────┘    │
+│  │ client       │    │                        │             │                │
+│  └──────────────┘    │                        │     ┌───────▼──────────┐     │
+│                      │                        │     │ SQLite DB        │     │
+│  ~/.duckway/         │                        │     └──────────────────┘     │
+│  ├── config.yaml     │                        │                              │
+│  ├── keys.env        │                        └──────────────────────────────┘
+│  └── canaries/       │
+└─────────────────────┘</pre>
+  <p class="mt-1">The entire server is a <strong>single Go binary</strong> (~19MB) with SQLite embedded. No external database, no npm, no runtime dependencies. Admin panel uses Go templates + HTMX.</p>
+</div>
+
+<!-- 3. Quick Start -->
+<div class="card" id="quickstart">
+  <h3>3. Quick Start</h3>
+  <h4>Server</h4>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Start server (first run generates admin password)
+./scripts/dev.sh --port 8080
+
+# Or directly:
+go run ./cmd/server/ --port 8080</code></pre>
+
+  <h4 class="mt-1">Initial Setup (this panel)</h4>
+  <ol>
+    <li>Login with the generated credentials shown in the terminal</li>
+    <li>Default services (OpenAI, Anthropic, GitHub, Discord, Telegram) are pre-configured</li>
+    <li>Go to <strong>API Keys</strong> → add your real API keys for each service</li>
+    <li>Go to <strong>Clients</strong> → register a client machine → save the token</li>
+    <li>On the client card, click <strong>Assign Key</strong> to generate placeholder keys</li>
+  </ol>
+
+  <h4 class="mt-1">Client Machine</h4>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Register with server (interactive)
+duckway init
+
+# Or non-interactive with token from admin panel:
+printf "http://server:8080\nmy-laptop\n1\n&lt;token&gt;\n" | duckway init
+
+# Sync placeholder keys
+duckway sync
+
+# Show keys as env vars
+duckway env
+eval $(duckway env)
+
+# Check status
+duckway status</code></pre>
+</div>
+
+<!-- 4. Services & API Keys -->
+<div class="card" id="services">
+  <h3>4. Services &amp; API Keys</h3>
+  <p>A <strong>Service</strong> represents an upstream API (e.g., OpenAI, GitHub). Each service has:</p>
+  <table>
+    <tr><td><strong>Name</strong></td><td>Slug used in proxy URL: <code>/proxy/{name}/...</code></td></tr>
+    <tr><td><strong>Upstream URL</strong></td><td>Where requests are forwarded (e.g., <code>https://api.openai.com</code>)</td></tr>
+    <tr><td><strong>Auth Type</strong></td><td>How to inject the key: <code>bearer</code>, <code>header</code>, or <code>query</code></td></tr>
+    <tr><td><strong>Auth Header</strong></td><td>Header name (e.g., <code>Authorization</code>, <code>x-api-key</code>)</td></tr>
+    <tr><td><strong>Auth Prefix</strong></td><td>Value prefix (e.g., <code>Bearer </code>, <code>Bot </code>)</td></tr>
+    <tr><td><strong>Key Prefix</strong></td><td>Real key prefix for format matching (e.g., <code>sk-</code>, <code>ghp_</code>)</td></tr>
+    <tr><td><strong>Key Length</strong></td><td>Expected key length for validation</td></tr>
+  </table>
+  <p class="mt-1"><strong>API Keys</strong> are your real credentials, stored encrypted (AES-256-GCM) in the database. They are never exposed to clients — only the server uses them when proxying requests.</p>
+  <p>When adding a key, the input field shows the expected format and validates prefix + length before submission.</p>
+</div>
+
+<!-- 5. Clients -->
+<div class="card" id="clients">
+  <h3>5. Client Setup</h3>
+  <p>Each AI agent machine registers as a <strong>Client</strong>. Registration generates a pre-shared token (shown once — save it).</p>
+
+  <h4>Registration Flow</h4>
+  <ol>
+    <li>Admin creates client in <strong>Clients</strong> page → gets a token</li>
+    <li>On the agent machine: <code>duckway init</code> with the token</li>
+    <li>Client config saved to <code>~/.duckway/config.yaml</code></li>
+    <li>Admin assigns API keys to the client → placeholder keys auto-generated</li>
+    <li>Client runs <code>duckway sync</code> → keys written to <code>~/.duckway/keys.env</code></li>
+  </ol>
+
+  <h4 class="mt-1">Docker Client</h4>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Build and run
+docker build -f Dockerfile.client -t duckway-client .
+docker run -d --name duckway-client --network host duckway-client
+docker exec -it duckway-client /bin/bash
+# Then: duckway init</code></pre>
+</div>
+
+<!-- 6. Placeholder Keys -->
+<div class="card" id="placeholders">
+  <h3>6. Placeholder Keys</h3>
+  <p>Placeholder keys are <strong>fake credentials that look real</strong>. They match the format of the actual API key:</p>
+  <table>
+    <thead><tr><th>Provider</th><th>Real Format</th><th>Placeholder Format</th></tr></thead>
+    <tbody>
+      <tr><td>OpenAI</td><td><code>sk-proj-ABC...</code></td><td><code>sk-proj-dw_a8f3b1...</code></td></tr>
+      <tr><td>Anthropic</td><td><code>sk-ant-ABC...</code></td><td><code>sk-ant-dw_7e2f9a...</code></td></tr>
+      <tr><td>GitHub</td><td><code>ghp_ABC...</code></td><td><code>ghp_dw_9c3e5f...</code></td></tr>
+    </tbody>
+  </table>
+  <p class="mt-1">The <code>dw_</code> marker identifies them as Duckway placeholders. Same prefix, same length — API client libraries accept them without validation errors.</p>
+  <p>Each placeholder is bound to <strong>one client + one API key (or key group)</strong>. Assign them from the Clients page.</p>
+  <p>Clients sync these via <code>duckway sync</code> → stored in <code>~/.duckway/keys.env</code>:</p>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code>OPENAI_API_KEY=sk-proj-dw_a8f3b1c2d4e5...
+ANTHROPIC_API_KEY=sk-ant-dw_7e2f9a1b3c...
+GITHUB_TOKEN=ghp_dw_9c3e5f7a1b2d4e...</code></pre>
+</div>
+
+<!-- 7. Proxy -->
+<div class="card" id="proxy">
+  <h3>7. Proxy — How It Works</h3>
+  <p>The proxy is a <strong>reverse proxy</strong> at <code>/proxy/{serviceName}/</code>. When an agent makes a request:</p>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Agent sends:
+POST http://duckway-server/proxy/openai/v1/chat/completions
+X-Duckway-Token: &lt;client-token&gt;
+Content-Type: application/json
+{"model": "gpt-4o", "messages": [...]}
+
+# Server does:
+1. Authenticate client via X-Duckway-Token
+2. Look up service "openai" → upstream https://api.openai.com
+3. Find placeholder key for this client + service
+4. Resolve placeholder → real API key (decrypt from DB)
+5. Check approval status
+6. Check permissions (endpoint, method, body constraints)
+7. Forward to: POST https://api.openai.com/v1/chat/completions
+   with: Authorization: Bearer sk-real-key-here
+8. Stream response back to agent
+9. Log request</code></pre>
+  <p class="mt-1">The agent never sees the real key. The proxy handles auth injection based on the service config (Bearer, header, query param).</p>
+</div>
+
+<!-- 8. Permission System -->
+<div class="card" id="permissions">
+  <h3>8. Permission System</h3>
+  <p>Each placeholder key can have a <strong>permission config</strong> (JSON) that restricts what the client can do. This is designed so AI agents can read API docs and generate configs.</p>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code>{
+  "version": "1",
+  "provider": "openai",
+  "rules": [{
+    "name": "chat-only",
+    "endpoints": [
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "allow": true,
+        "constraints": {
+          "body": {
+            "model": { "oneOf": ["gpt-4o-mini"] },
+            "max_tokens": { "max": 1024 }
+          }
+        }
+      },
+      { "method": "GET", "path": "/v1/models", "allow": true }
+    ],
+    "rate_limit": {
+      "requests_per_minute": 60,
+      "requests_per_day": 1000
+    },
+    "deny_all_other": true
+  }]
+}</code></pre>
+  <h4 class="mt-1">Constraint Types</h4>
+  <table>
+    <thead><tr><th>Constraint</th><th>What it does</th><th>Example</th></tr></thead>
+    <tbody>
+      <tr><td><code>oneOf</code></td><td>Field must be one of listed values</td><td><code>"model": {"oneOf": ["gpt-4o-mini"]}</code></td></tr>
+      <tr><td><code>max</code></td><td>Numeric field must be ≤ value</td><td><code>"max_tokens": {"max": 4096}</code></td></tr>
+      <tr><td><code>min</code></td><td>Numeric field must be ≥ value</td><td><code>"temperature": {"min": 0}</code></td></tr>
+      <tr><td><code>forbidden</code></td><td>Field must not be present</td><td><code>"stream": {"forbidden": true}</code></td></tr>
+    </tbody>
+  </table>
+  <p class="mt-1">Path patterns support wildcards: <code>/v1/files/*</code> matches <code>/v1/files/abc</code>.</p>
+  <p>Provider templates are available at <code>permissions/providers/</code> (OpenAI, Anthropic, GitHub).</p>
+</div>
+
+<!-- 9. Approval Workflow -->
+<div class="card" id="approvals">
+  <h3>9. Approval Workflow</h3>
+  <p>When a placeholder key has <strong>Require Approval</strong> enabled:</p>
+  <ol>
+    <li>First request → proxy returns <code>403 duckway_approval_pending</code></li>
+    <li>Pending approval appears in <strong>Approvals</strong> page (and notifications sent)</li>
+    <li>Admin approves with a time window (e.g., 24 hours)</li>
+    <li>Subsequent requests within the window proceed automatically</li>
+    <li>After expiry, approval is needed again</li>
+  </ol>
+  <p class="mt-1">This prevents unauthorized API usage even if a placeholder key is leaked — the admin must explicitly approve each client.</p>
+</div>
+
+<!-- 10. Key Groups -->
+<div class="card" id="groups">
+  <h3>10. Key Groups &amp; Load Balancing</h3>
+  <p>A <strong>Key Group</strong> pools multiple API keys for a service. When a placeholder key points to a group, the server picks a key using the configured strategy:</p>
+  <table>
+    <thead><tr><th>Strategy</th><th>Behavior</th></tr></thead>
+    <tbody>
+      <tr><td><code>round-robin</code></td><td>Cycles through keys in order</td></tr>
+      <tr><td><code>least-used</code></td><td>Picks the key with lowest usage count</td></tr>
+      <tr><td><code>failover</code></td><td>Uses first active key; falls back to next on failure</td></tr>
+    </tbody>
+  </table>
+  <p class="mt-1">This helps avoid API rate limit outages by spreading requests across multiple keys.</p>
+</div>
+
+<!-- 11. Canary Tokens -->
+<div class="card" id="canary">
+  <h3>11. Canary Tokens</h3>
+  <p>Duckway integrates with <a href="https://canarytokens.org" target="_blank">canarytokens.org</a> to deploy <strong>decoy credentials</strong> on client machines. If an attacker steals these and tries to use them, you get an email alert.</p>
+
+  <h4>Setup</h4>
+  <ol>
+    <li>Go to <strong>Canary Tokens</strong> page</li>
+    <li>Enter your alert email</li>
+    <li>Select token types (AWS Keys, GitHub Token)</li>
+    <li>Save — new clients will automatically get canary tokens on registration</li>
+  </ol>
+
+  <h4 class="mt-1">How it works</h4>
+  <ul>
+    <li>On client registration, server calls canarytokens.org API to generate fake credentials</li>
+    <li>Each token is labeled with the machine name for identification</li>
+    <li>Client syncs canary tokens via <code>duckway sync</code></li>
+    <li>Tokens deployed to realistic paths:
+      <ul>
+        <li><code>~/.aws/credentials</code> — fake AWS access key + secret</li>
+        <li><code>~/.config/gh/canary_token</code> — fake GitHub PAT</li>
+      </ul>
+    </li>
+    <li>These are <strong>NOT</strong> in <code>keys.env</code> — AI agents use real placeholder keys and ignore these files</li>
+    <li>Attackers who exfiltrate the machine find them and trigger alerts</li>
+  </ul>
+</div>
+
+<!-- 12. Notifications -->
+<div class="card" id="notifications">
+  <h3>12. Notifications</h3>
+  <p>When an approval is needed, Duckway can notify you via:</p>
+  <table>
+    <thead><tr><th>Channel</th><th>Config JSON</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-blue">Telegram</span></td><td><code>{"bot_token": "123:ABC...", "chat_id": "-100..."}</code></td></tr>
+      <tr><td><span class="badge badge-blue">Discord</span></td><td><code>{"webhook_url": "https://discord.com/api/webhooks/..."}</code></td></tr>
+      <tr><td><span class="badge badge-blue">Webhook</span></td><td><code>{"url": "https://...", "secret": "optional"}</code></td></tr>
+    </tbody>
+  </table>
+  <p class="mt-1">Configure in <strong>Notifications</strong> page. Multiple channels can be active simultaneously.</p>
+</div>
+
+<!-- 13. CLI Reference -->
+<div class="card" id="cli">
+  <h3>13. CLI Reference</h3>
+  <h4>Server</h4>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Start server
+go run ./cmd/server/ --port 8080 --data /path/to/data
+
+# Flags:
+#   --port    Listen port (default: 8080, or DUCKWAY_LISTEN env)
+#   --listen  Listen address (e.g., :8080, 127.0.0.1:9090)
+#   --data    Data directory (default: ~/.duckway-server, or DUCKWAY_DATA_DIR env)</code></pre>
+
+  <h4 class="mt-1">Client</h4>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code>duckway init          # Register with server (interactive)
+duckway sync          # Fetch placeholder keys + canary tokens
+duckway env           # Print keys as shell exports
+duckway proxy         # Start local proxy on :18080
+duckway proxy --port 9999  # Custom port
+duckway status        # Show connection info + assigned keys</code></pre>
+</div>
+
+<!-- 14. API Reference -->
+<div class="card" id="api">
+  <h3>14. API Reference</h3>
+  <p>All API endpoints require admin session cookie (from <code>POST /api/auth/login</code>) unless noted.</p>
+
+  <h4>Auth</h4>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/auth/login</code></td><td>Login (JSON: username, password)</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/auth/logout</code></td><td>Logout</td></tr>
+    </tbody>
+  </table>
+
+  <h4 class="mt-1">Services</h4>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/api/services</code></td><td>List all services</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/services</code></td><td>Create service</td></tr>
+      <tr><td><span class="badge badge-yellow">PUT</span></td><td><code>/api/services/{id}</code></td><td>Update service</td></tr>
+      <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/services/{id}</code></td><td>Delete service</td></tr>
+    </tbody>
+  </table>
+
+  <h4 class="mt-1">API Keys</h4>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/api/keys</code></td><td>List keys (redacted)</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/keys</code></td><td>Add key (service_id, name, key)</td></tr>
+      <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/keys/{id}</code></td><td>Delete key</td></tr>
+    </tbody>
+  </table>
+
+  <h4 class="mt-1">Clients</h4>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/api/clients</code></td><td>List clients</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/clients</code></td><td>Register client (returns token once)</td></tr>
+      <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/clients/{id}</code></td><td>Delete client</td></tr>
+    </tbody>
+  </table>
+
+  <h4 class="mt-1">Placeholders</h4>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/api/placeholders</code></td><td>List all placeholders</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/placeholders</code></td><td>Generate placeholder (service_id, api_key_id, client_id)</td></tr>
+      <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/placeholders/{id}</code></td><td>Delete placeholder</td></tr>
+    </tbody>
+  </table>
+
+  <h4 class="mt-1">Proxy (client auth via X-Duckway-Token)</h4>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-blue">ANY</span></td><td><code>/proxy/{service}/{path}</code></td><td>Forward to upstream with real key injected</td></tr>
+    </tbody>
+  </table>
+
+  <h4 class="mt-1">Client API (auth via X-Duckway-Token)</h4>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/keys</code></td><td>Fetch assigned placeholder keys</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/canaries</code></td><td>Fetch canary tokens to deploy</td></tr>
+    </tbody>
+  </table>
+
+  <h4 class="mt-1">Public (no auth)</h4>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/skill/duckway-agent.md</code></td><td>Agent skill file</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div style="height:2rem"></div>
+{{end}}

@@ -115,6 +115,7 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	adminPageMux.HandleFunc("GET /admin/logs", adminPageH.LogsPage)
 	adminPageMux.HandleFunc("GET /admin/notifications", adminPageH.NotificationsPage)
 	adminPageMux.HandleFunc("GET /admin/canary", adminPageH.CanaryPage)
+	adminPageMux.HandleFunc("GET /admin/docs", adminPageH.DocsPage)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/approve", adminPageH.ApproveAction)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/reject", adminPageH.RejectAction)
 	s.mux.Handle("/admin/", adminAuth.Middleware(adminPageMux))
