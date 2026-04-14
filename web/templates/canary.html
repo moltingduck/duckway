@@ -5,6 +5,9 @@
 
 <div class="card">
   <h3>Settings</h3>
+  <div id="canary-warning" style="display:none;background:rgba(239,68,68,0.1);border:1px solid var(--danger);border-radius:var(--radius);padding:0.75rem;margin-bottom:1rem">
+    <strong style="color:var(--danger)">Canary tokens inactive</strong> — enter an alert email below to enable them.
+  </div>
   <p class="text-sm text-muted mb-1">Canary tokens are <strong>enabled by default</strong> for all new clients. When a client registers, Duckway auto-generates decoy credentials via <a href="https://canarytokens.org" target="_blank">canarytokens.org</a>. If an attacker steals and uses them, you get an email alert.</p>
 
   <form id="canary-settings-form" class="mt-2">
@@ -69,6 +72,9 @@ document.addEventListener('DOMContentLoaded', function() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
       document.getElementById('canary-email').value = data.email || '';
+      if (!data.email) {
+        document.getElementById('canary-warning').style.display = 'block';
+      }
       allTypes = data.available_types || [];
 
       var enabled = data.enabled_types || [];

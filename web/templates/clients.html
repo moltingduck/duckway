@@ -3,6 +3,9 @@
   <h1>Clients</h1>
   <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Register Client</button>
 </div>
+<div id="canary-alert" style="display:none;background:rgba(245,158,11,0.1);border:1px solid var(--warning);border-radius:var(--radius);padding:0.75rem;margin-bottom:1rem">
+  Canary tokens require an alert email. <a href="/admin/canary">Configure in Canary Tokens settings</a>.
+</div>
 
 {{range .Clients}}
 <div class="card" id="client-card-{{.ID}}">
@@ -161,6 +164,14 @@ var canaryTokens = [
 var svcEnvMap = {"openai":"OPENAI_API_KEY","anthropic":"ANTHROPIC_API_KEY","github":"GITHUB_TOKEN","discord":"DISCORD_BOT_TOKEN","telegram":"TELEGRAM_BOT_TOKEN"};
 
 document.addEventListener('DOMContentLoaded', function() {
+  // Check canary settings
+  fetch('/api/canary/settings', {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.email) document.getElementById('canary-alert').style.display = 'block';
+    })
+    .catch(function() {});
+
   // Count keys per client
   var keyCounts = {};
   var canaryCounts = {};
