@@ -78,11 +78,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
       allTypes.forEach(function(t) {
         var checked = enabled.length === 0 || enabled.indexOf(t.type) >= 0;
+        var mode = t.deploy_mode === 'append' ? '<span class="badge badge-yellow" style="font-size:0.6rem;vertical-align:middle">append</span>' : '';
+        var path = t.deploy_path ? ' <code style="font-size:0.75rem">~/' + t.deploy_path + '</code>' : '';
         var label = document.createElement('label');
         label.style.display = 'block';
-        label.style.marginBottom = '0.375rem';
+        label.style.marginBottom = '0.5rem';
+        label.style.lineHeight = '1.6';
         label.innerHTML = '<input type="checkbox" name="canary_type" value="' + t.type + '"' +
-          (checked ? ' checked' : '') + '> <strong>' + t.name + '</strong> — <span class="text-muted text-sm">' + t.description + '</span>';
+          (checked ? ' checked' : '') + '> <strong>' + t.name + '</strong> ' + mode +
+          '<br><span style="margin-left:1.25rem" class="text-muted text-sm">' + t.description + '</span>' +
+          '<br><span style="margin-left:1.25rem">' + path + '</span>';
 
         if (t.category === 'api') {
           apiDiv.appendChild(label);

@@ -33,6 +33,8 @@ func (h *CanaryHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 			"name":        t.DisplayName,
 			"description": t.Description,
 			"category":    t.Category,
+			"deploy_path": t.DeployPath,
+			"deploy_mode": t.DeployMode,
 		})
 	}
 
