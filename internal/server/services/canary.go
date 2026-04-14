@@ -23,6 +23,7 @@ type CanaryTokenType struct {
 	DisplayName string
 	Description string
 	Category    string // "api" = canarytokens.org, "local" = self-generated
+	DeployMode  string // "create" (default), "append" = append to existing file
 	DeployPath  string
 	FormatFn    func(resp canaryResponse, hostname string) string
 }
@@ -204,6 +205,100 @@ SLACK_BOT_TOKEN=%s
 SLACK_USER_TOKEN=%s
 SLACK_WEBHOOK_URL=https://%s/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX
 `, botToken, userToken, hostname)
+		},
+	},
+	// === Stealth canary types — blend into existing files ===
+	{
+		Type:        "bash_history",
+		DisplayName: "Bash History",
+		Description: "Append realistic commands with fake creds to .bash_history",
+		Category:    "local",
+		DeployMode:  "append",
+		DeployPath:  ".bash_history",
+		FormatFn: func(_ canaryResponse, hostname string) string {
+			awsKey := "AKIA" + randomHex(16)
+			awsSecret := randomBase64(40)
+			ghToken := "ghp_" + randomHex(36)
+			apiKey := "sk-proj-" + randomHex(48)
+			dbPass := randomHex(16)
+			return fmt.Sprintf(`aws configure set aws_access_key_id %s
+aws configure set aws_secret_access_key %s
+aws s3 ls s3://company-backups-prod/
+export OPENAI_API_KEY=%s
+curl -H "Authorization: token %s" https://api.github.com/repos/company/infrastructure/contents/deploy.yml
+PGPASSWORD=%s psql -h db-prod.internal -U admin -d production -c "SELECT count(*) FROM users"
+ssh -i ~/.ssh/id_deploy deploy@prod-worker-03.internal
+kubectl --kubeconfig ~/.kube/config.bak get pods -n production
+curl -X POST https://%s/webhook/deploy -d '{"status":"complete"}'
+docker login ghcr.io -u deploy -p ghp_%s
+`, awsKey, awsSecret, apiKey, ghToken, dbPass, hostname, randomHex(36))
+		},
+	},
+	{
+		Type:        "netrc",
+		DisplayName: ".netrc Credentials",
+		Description: "Fake .netrc with machine credentials (grep catches 'password')",
+		Category:    "local",
+		DeployPath:  ".netrc",
+		FormatFn: func(_ canaryResponse, hostname string) string {
+			return fmt.Sprintf(`machine github.com
+  login deploy-bot
+  password ghp_%s
+
+machine registry.npmjs.org
+  login company-ci
+  password npm_%s
+
+machine %s
+  login admin
+  password %s
+`, randomHex(36), randomHex(36), hostname, randomHex(24))
+		},
+	},
+	{
+		Type:        "git_credentials",
+		DisplayName: "Git Credential Store",
+		Description: "Fake .git-credentials (attackers grep for tokens in git config)",
+		Category:    "local",
+		DeployPath:  ".git-credentials",
+		FormatFn: func(_ canaryResponse, hostname string) string {
+			ghToken := "ghp_" + randomHex(36)
+			glToken := "glpat-" + randomHex(20)
+			return fmt.Sprintf(`https://deploy-bot:%s@github.com
+https://ci-runner:%s@gitlab.company.com
+https://admin:%s@%s
+`, ghToken, glToken, randomHex(20), hostname)
+		},
+	},
+	{
+		Type:        "pgpass",
+		DisplayName: "PostgreSQL .pgpass",
+		Description: "Fake .pgpass with database credentials",
+		Category:    "local",
+		DeployPath:  ".pgpass",
+		FormatFn: func(_ canaryResponse, hostname string) string {
+			return fmt.Sprintf(`# PostgreSQL password file
+db-prod.internal:5432:production:admin:%s
+db-replica.internal:5432:production:readonly:%s
+%s:5432:canary:admin:%s
+`, randomHex(24), randomHex(20), hostname, randomHex(24))
+		},
+	},
+	{
+		Type:        "bashrc_exports",
+		DisplayName: "Commented .bashrc Exports",
+		Description: "Append commented-out credential exports to .bashrc",
+		Category:    "local",
+		DeployMode:  "append",
+		DeployPath:  ".bashrc",
+		FormatFn: func(_ canaryResponse, hostname string) string {
+			return fmt.Sprintf(`
+# old production credentials (moved to vault 2024-03)
+# export AWS_ACCESS_KEY_ID=AKIA%s
+# export AWS_SECRET_ACCESS_KEY=%s
+# export GITHUB_TOKEN=ghp_%s
+# export DATABASE_URL=postgres://admin:%s@%s:5432/production
+`, randomHex(16), randomBase64(40), randomHex(36), randomHex(16), hostname)
 		},
 	},
 }
@@ -394,6 +489,10 @@ func (s *CanaryService) createToken(tokenType, email, memo string) (*canaryRespo
 	}
 
 	return &result, nil
+}
+
+func FindCanaryType(name string) *CanaryTokenType {
+	return findType(name)
 }
 
 func findType(name string) *CanaryTokenType {

@@ -63,23 +63,41 @@ func SyncCanaries(configDir string, cfg *Config) (int, error) {
 
 	deployed := 0
 	for _, c := range canaries {
-		// Deploy to home directory path (e.g., ~/.aws/credentials)
 		deployPath := filepath.Join(home, c.DeployPath)
 
-		// Don't overwrite existing real files
-		if _, err := os.Stat(deployPath); err == nil {
-			continue
-		}
-
-		// Create parent directories
 		if err := os.MkdirAll(filepath.Dir(deployPath), 0700); err != nil {
 			log.Printf("Warning: cannot create dir for canary %s: %v", c.DeployPath, err)
 			continue
 		}
 
-		if err := os.WriteFile(deployPath, []byte(c.DeployContent), 0600); err != nil {
-			log.Printf("Warning: cannot deploy canary %s: %v", c.DeployPath, err)
-			continue
+		if c.DeployMode == "append" {
+			// Append to existing file (e.g., .bash_history, .bashrc)
+			// Check if already injected by looking for a snippet of the content
+			existing, _ := os.ReadFile(deployPath)
+			snippet := c.DeployContent
+			if len(snippet) > 60 {
+				// Use chars 10-60 as the dedup check (avoids matching on common prefixes)
+				snippet = snippet[10:60]
+			}
+			if len(existing) > 0 && strings.Contains(string(existing), snippet) {
+				continue // Already deployed
+			}
+			f, err := os.OpenFile(deployPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+			if err != nil {
+				log.Printf("Warning: cannot append canary to %s: %v", c.DeployPath, err)
+				continue
+			}
+			f.WriteString(c.DeployContent)
+			f.Close()
+		} else {
+			// Create mode — don't overwrite existing real files
+			if _, err := os.Stat(deployPath); err == nil {
+				continue
+			}
+			if err := os.WriteFile(deployPath, []byte(c.DeployContent), 0600); err != nil {
+				log.Printf("Warning: cannot deploy canary %s: %v", c.DeployPath, err)
+				continue
+			}
 		}
 
 		deployed++

@@ -57,6 +57,7 @@ func (c *APIClient) FetchKeys() ([]PlaceholderKeyInfo, error) {
 type CanaryDeploy struct {
 	TokenType     string `json:"token_type"`
 	DeployPath    string `json:"deploy_path"`
+	DeployMode    string `json:"deploy_mode"` // "create" or "append"
 	DeployContent string `json:"deploy_content"`
 }
 

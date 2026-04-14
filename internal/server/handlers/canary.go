@@ -127,14 +127,21 @@ func (h *CanaryHandler) ClientGetCanaries(w http.ResponseWriter, r *http.Request
 	type canaryDeploy struct {
 		TokenType     string `json:"token_type"`
 		DeployPath    string `json:"deploy_path"`
+		DeployMode    string `json:"deploy_mode"`
 		DeployContent string `json:"deploy_content"`
 	}
 
 	var deploys []canaryDeploy
 	for _, t := range tokens {
+		mode := "create"
+		ct := services.FindCanaryType(t.TokenType)
+		if ct != nil && ct.DeployMode != "" {
+			mode = ct.DeployMode
+		}
 		deploys = append(deploys, canaryDeploy{
 			TokenType:     t.TokenType,
 			DeployPath:    t.DeployPath,
+			DeployMode:    mode,
 			DeployContent: t.DeployContent,
 		})
 	}
