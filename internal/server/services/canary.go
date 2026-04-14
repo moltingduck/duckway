@@ -337,6 +337,15 @@ func NewCanaryService(canaryQ *queries.CanaryQueries) *CanaryService {
 // Called automatically on client registration unless the client is excluded
 // or has canary_enabled=false.
 func (s *CanaryService) GenerateForClient(clientID, clientName string) error {
+	// Skip if tokens already exist for this client
+	existing, _ := s.canaryQ.ListByClient(clientID)
+	if len(existing) > 0 {
+		return nil
+	}
+	return s.generateForClientInner(clientID, clientName)
+}
+
+func (s *CanaryService) generateForClientInner(clientID, clientName string) error {
 	settings, err := s.canaryQ.GetSettings()
 	if err != nil {
 		return fmt.Errorf("get settings: %w", err)
@@ -384,6 +393,13 @@ func (s *CanaryService) GenerateForClient(clientID, clientName string) error {
 	}
 
 	return nil
+}
+
+// RegenerateForClient deletes existing tokens and generates fresh ones.
+func (s *CanaryService) RegenerateForClient(clientID, clientName string) error {
+	s.canaryQ.DeleteByClient(clientID)
+	// Clear the skip check by calling the inner logic directly
+	return s.generateForClientInner(clientID, clientName)
 }
 
 func (s *CanaryService) generateAPIToken(tokenType *CanaryTokenType, clientID, clientName, email, memo string) {

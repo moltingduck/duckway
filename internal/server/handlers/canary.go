@@ -95,7 +95,7 @@ func (h *CanaryHandler) ListByClient(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, tokens)
 }
 
-// Admin: manually generate canary tokens for a client
+// Admin: manually (re)generate canary tokens for a client
 func (h *CanaryHandler) GenerateForClient(w http.ResponseWriter, r *http.Request) {
 	clientID := r.PathValue("clientId")
 	clientName := r.URL.Query().Get("name")
@@ -103,7 +103,7 @@ func (h *CanaryHandler) GenerateForClient(w http.ResponseWriter, r *http.Request
 		clientName = clientID
 	}
 
-	if err := h.service.GenerateForClient(clientID, clientName); err != nil {
+	if err := h.service.RegenerateForClient(clientID, clientName); err != nil {
 		jsonError(w, "failed to generate canary tokens: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -112,12 +112,21 @@ func (h *CanaryHandler) GenerateForClient(w http.ResponseWriter, r *http.Request
 	jsonResponse(w, tokens)
 }
 
-// Client: get canary tokens to deploy
+// Client: get canary tokens to deploy.
+// If the client has canary_enabled but no tokens yet, generate them on-demand.
 func (h *CanaryHandler) ClientGetCanaries(w http.ResponseWriter, r *http.Request) {
 	client := middleware.GetClient(r)
 	if client == nil {
 		jsonError(w, "client not found", http.StatusUnauthorized)
 		return
+	}
+
+	// Auto-generate if client has canary enabled but no tokens yet
+	if client.CanaryEnabled {
+		existing, _ := h.canaryQ.ListByClient(client.ID)
+		if len(existing) == 0 {
+			h.service.GenerateForClient(client.ID, client.Name)
+		}
 	}
 
 	tokens, err := h.canaryQ.ListByClient(client.ID)
