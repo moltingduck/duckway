@@ -213,6 +213,15 @@ code, .mono {
 .text-sm { font-size: 0.8125rem; }
 .text-right { text-align: right; }
 
+/* Collapsible toggle */
+.toggle-arrow {
+  display: inline-block;
+  font-size: 0.7rem;
+  margin-left: 0.25rem;
+  transition: transform 0.15s;
+  color: var(--text-muted);
+}
+
 /* HTMX loading indicator */
 .htmx-indicator { display: none; }
 .htmx-request .htmx-indicator { display: inline-block; }

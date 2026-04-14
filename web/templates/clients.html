@@ -6,10 +6,11 @@
 
 {{range .Clients}}
 <div class="card" id="client-card-{{.ID}}">
-  <div class="flex-between mb-1">
+  <div class="flex-between">
     <div>
       <strong style="font-size:1.1rem">{{.Name}}</strong>
       {{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}
+      <span class="text-muted text-sm" id="key-count-{{.ID}}"></span>
       <div class="text-muted text-sm">Last seen: {{if .LastSeenAt}}{{deref .LastSeenAt}}{{else}}Never{{end}}</div>
     </div>
     <div class="flex gap-sm">
@@ -26,28 +27,56 @@
     </div>
   </div>
 
-  <!-- Placeholder Keys (API key → placeholder mapping) -->
-  <div class="mb-1">
-    <strong class="text-sm">API Key → Placeholder Mapping</strong>
+  <!-- Collapsible: API Keys -->
+  <div class="mt-1">
+    <div class="flex-between" style="cursor:pointer;padding:0.375rem 0" onclick="toggleSection('keys-section-{{.ID}}', this)">
+      <strong class="text-sm">API Keys &amp; Placeholders <span class="toggle-arrow">&#9654;</span></strong>
+    </div>
+    <div id="keys-section-{{.ID}}" style="display:none">
+      <table>
+        <thead><tr><th>Env Name</th><th>Service</th><th>Placeholder Key</th><th>Approval</th><th>Usage</th><th></th></tr></thead>
+        <tbody id="keys-{{.ID}}"></tbody>
+      </table>
+    </div>
   </div>
-  <table>
-    <thead><tr><th>Env Name</th><th>Service</th><th>Placeholder Key</th><th>Approval</th><th>Usage</th><th></th></tr></thead>
-    <tbody id="keys-{{.ID}}"></tbody>
-  </table>
 
-  <!-- Canary Tokens -->
-  <div class="mt-2 mb-1">
-    <strong class="text-sm">Canary Tokens</strong>
-    {{if not .CanaryEnabled}}<span class="badge badge-gray">Disabled</span>{{end}}
+  <!-- Collapsible: Canary Tokens -->
+  <div>
+    <div class="flex-between" style="cursor:pointer;padding:0.375rem 0" onclick="toggleSection('canary-section-{{.ID}}', this)">
+      <strong class="text-sm">Canary Tokens {{if not .CanaryEnabled}}<span class="badge badge-gray">Disabled</span>{{end}} <span class="toggle-arrow">&#9654;</span></strong>
+    </div>
+    <div id="canary-section-{{.ID}}" style="display:none">
+      <table>
+        <thead><tr><th>Type</th><th>Token / Hostname</th><th>Deploy Path</th><th>Created</th></tr></thead>
+        <tbody id="canaries-{{.ID}}"></tbody>
+      </table>
+    </div>
   </div>
-  <table>
-    <thead><tr><th>Type</th><th>Token / Hostname</th><th>Deploy Path</th><th>Created</th></tr></thead>
-    <tbody id="canaries-{{.ID}}"></tbody>
-  </table>
 </div>
 {{else}}
 <div class="card"><p class="text-muted">No clients registered.</p></div>
 {{end}}
+
+<!-- Placeholder detail popup -->
+<div id="ph-detail-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Placeholder Key Details</h2>
+    <table id="ph-detail-table">
+      <tbody>
+        <tr><td class="text-muted">Env Name</td><td id="phd-env" class="mono"></td></tr>
+        <tr><td class="text-muted">Service</td><td id="phd-service"></td></tr>
+        <tr><td class="text-muted">Placeholder Key</td><td id="phd-placeholder" class="mono text-sm" style="word-break:break-all"></td></tr>
+        <tr><td class="text-muted">Linked API Key</td><td id="phd-apikey"></td></tr>
+        <tr><td class="text-muted">Key Path</td><td id="phd-keypath" class="mono text-sm"></td></tr>
+        <tr><td class="text-muted">Approval</td><td id="phd-approval"></td></tr>
+        <tr><td class="text-muted">Usage Count</td><td id="phd-usage"></td></tr>
+      </tbody>
+    </table>
+    <div class="modal-actions">
+      <button type="button" class="btn" onclick="document.getElementById('ph-detail-modal').style.display='none'">Close</button>
+    </div>
+  </div>
+</div>
 
 <!-- Register modal -->
 <div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
@@ -121,7 +150,7 @@ var apiKeys = [
 ];
 
 var placeholders = [
-  {{range .Placeholders}}{id:"{{.ID}}", envName:"{{.EnvName}}", placeholder:"{{.Placeholder}}", serviceName:"{{.ServiceName}}", clientId:"{{.ClientID}}", clientName:"{{.ClientName}}", requiresApproval:{{.RequiresApproval}}, usageCount:{{.UsageCount}}},{{end}}
+  {{range .Placeholders}}{id:"{{.ID}}", envName:"{{.EnvName}}", placeholder:"{{.Placeholder}}", serviceName:"{{.ServiceName}}", serviceId:"{{.ServiceID}}", apiKeyId:"{{if .APIKeyID}}{{deref .APIKeyID}}{{end}}", groupId:"{{if .GroupID}}{{deref .GroupID}}{{end}}", clientId:"{{.ClientID}}", clientName:"{{.ClientName}}", keyPath:"{{.KeyPath}}", requiresApproval:{{.RequiresApproval}}, usageCount:{{.UsageCount}}},{{end}}
 ];
 
 var canaryTokens = [
@@ -131,17 +160,22 @@ var canaryTokens = [
 var svcEnvMap = {"openai":"OPENAI_API_KEY","anthropic":"ANTHROPIC_API_KEY","github":"GITHUB_TOKEN","discord":"DISCORD_BOT_TOKEN","telegram":"TELEGRAM_BOT_TOKEN"};
 
 document.addEventListener('DOMContentLoaded', function() {
+  // Count keys per client
+  var keyCounts = {};
+  var canaryCounts = {};
+
   // Populate placeholder keys per client
   placeholders.forEach(function(ph) {
     var tbody = document.getElementById('keys-' + ph.clientId);
     if (!tbody) return;
+    keyCounts[ph.clientId] = (keyCounts[ph.clientId] || 0) + 1;
     var tr = document.createElement('tr');
     tr.id = 'ph-' + ph.id;
     var phShort = ph.placeholder.length > 28 ? ph.placeholder.substring(0,28)+'...' : ph.placeholder;
     tr.innerHTML =
       '<td><strong>' + ph.envName + '</strong></td>' +
       '<td><span class="badge badge-blue">' + ph.serviceName + '</span></td>' +
-      '<td class="mono text-sm" title="' + ph.placeholder + '">' + phShort + '</td>' +
+      '<td class="mono text-sm" style="cursor:pointer;text-decoration:underline dotted" onclick="showPhDetail(\'' + ph.id + '\')" title="Click for details">' + phShort + '</td>' +
       '<td>' + (ph.requiresApproval ? '<span class="badge badge-yellow">Required</span>' : '<span class="badge badge-green">Auto</span>') + '</td>' +
       '<td>' + ph.usageCount + '</td>' +
       '<td class="text-right"><button class="btn btn-sm btn-danger" onclick="deletePh(\'' + ph.id + '\')">Remove</button></td>';
@@ -152,6 +186,7 @@ document.addEventListener('DOMContentLoaded', function() {
   canaryTokens.forEach(function(ct) {
     var tbody = document.getElementById('canaries-' + ct.clientId);
     if (!tbody) return;
+    canaryCounts[ct.clientId] = (canaryCounts[ct.clientId] || 0) + 1;
     var tr = document.createElement('tr');
     var val = ct.tokenValue || '';
     var valShort = val.length > 28 ? val.substring(0,28)+'...' : val;
@@ -174,13 +209,61 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   document.querySelectorAll('tbody[id^="canaries-"]').forEach(function(tbody) {
     if (tbody.children.length === 0) {
-      var clientId = tbody.id.replace('canaries-','');
       var tr = document.createElement('tr');
       tr.innerHTML = '<td colspan="4" class="text-muted text-sm">No canary tokens. Configure in <a href="/admin/canary">Canary Tokens</a> settings.</td>';
       tbody.appendChild(tr);
     }
   });
+
+  // Update summary counts
+  Object.keys(keyCounts).forEach(function(cid) {
+    var el = document.getElementById('key-count-' + cid);
+    if (el) {
+      var kc = keyCounts[cid] || 0;
+      var cc = canaryCounts[cid] || 0;
+      el.textContent = kc + ' key' + (kc !== 1 ? 's' : '') + ', ' + cc + ' canary';
+    }
+  });
 });
+
+function toggleSection(id, header) {
+  var el = document.getElementById(id);
+  var arrow = header.querySelector('.toggle-arrow');
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    arrow.innerHTML = '&#9660;';
+  } else {
+    el.style.display = 'none';
+    arrow.innerHTML = '&#9654;';
+  }
+}
+
+function showPhDetail(phId) {
+  var ph = placeholders.find(function(p) { return p.id === phId; });
+  if (!ph) return;
+
+  document.getElementById('phd-env').textContent = ph.envName;
+  document.getElementById('phd-service').innerHTML = '<span class="badge badge-blue">' + ph.serviceName + '</span>';
+  document.getElementById('phd-placeholder').textContent = ph.placeholder;
+  document.getElementById('phd-approval').innerHTML = ph.requiresApproval
+    ? '<span class="badge badge-yellow">Required</span>'
+    : '<span class="badge badge-green">Auto</span>';
+  document.getElementById('phd-usage').textContent = ph.usageCount;
+  document.getElementById('phd-keypath').textContent = ph.keyPath ? '~/' + ph.keyPath : '(keys.env only)';
+
+  // Find linked API key
+  var ak = apiKeys.find(function(k) { return k.id === ph.apiKeyId; });
+  if (ak) {
+    document.getElementById('phd-apikey').innerHTML =
+      '<strong>' + ak.name + '</strong> <span class="badge badge-blue">' + ak.serviceName + '</span>';
+  } else if (ph.groupId) {
+    document.getElementById('phd-apikey').innerHTML = '<span class="badge badge-gray">Key Group</span>';
+  } else {
+    document.getElementById('phd-apikey').textContent = '—';
+  }
+
+  document.getElementById('ph-detail-modal').style.display = 'flex';
+}
 
 function toggleCanary(clientId, enable) {
   fetch('/api/clients/' + clientId + '/canary', {
