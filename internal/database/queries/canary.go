@@ -3,8 +3,9 @@ package queries
 import "database/sql"
 
 type CanarySettings struct {
-	Email        string `json:"email"`
-	EnabledTypes string `json:"enabled_types"` // JSON array: ["aws_keys","github"]
+	Email          string `json:"email"`
+	EnabledTypes   string `json:"enabled_types"`   // JSON array: ["aws_keys","github",...]
+	ExcludeClients string `json:"exclude_clients"` // JSON array of client names to skip
 }
 
 type CanaryToken struct {
@@ -31,9 +32,9 @@ func NewCanaryQueries(db *sql.DB) *CanaryQueries {
 
 func (q *CanaryQueries) GetSettings() (*CanarySettings, error) {
 	var s CanarySettings
-	err := q.db.QueryRow("SELECT email, enabled_types FROM canary_settings WHERE id = 'default'").Scan(&s.Email, &s.EnabledTypes)
+	err := q.db.QueryRow("SELECT email, enabled_types, exclude_clients FROM canary_settings WHERE id = 'default'").Scan(&s.Email, &s.EnabledTypes, &s.ExcludeClients)
 	if err == sql.ErrNoRows {
-		return &CanarySettings{EnabledTypes: "[]"}, nil
+		return &CanarySettings{EnabledTypes: "[]", ExcludeClients: "[]"}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -42,10 +43,13 @@ func (q *CanaryQueries) GetSettings() (*CanarySettings, error) {
 }
 
 func (q *CanaryQueries) SaveSettings(s *CanarySettings) error {
+	if s.ExcludeClients == "" {
+		s.ExcludeClients = "[]"
+	}
 	_, err := q.db.Exec(
-		`INSERT INTO canary_settings (id, email, enabled_types) VALUES ('default', ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET email = ?, enabled_types = ?`,
-		s.Email, s.EnabledTypes, s.Email, s.EnabledTypes,
+		`INSERT INTO canary_settings (id, email, enabled_types, exclude_clients) VALUES ('default', ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET email = ?, enabled_types = ?, exclude_clients = ?`,
+		s.Email, s.EnabledTypes, s.ExcludeClients, s.Email, s.EnabledTypes, s.ExcludeClients,
 	)
 	return err
 }

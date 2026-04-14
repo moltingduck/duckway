@@ -266,24 +266,33 @@ Content-Type: application/json
   <ol>
     <li>Go to <strong>Canary Tokens</strong> page</li>
     <li>Enter your alert email</li>
-    <li>Select token types (AWS Keys, GitHub Token)</li>
-    <li>Save — new clients will automatically get canary tokens on registration</li>
+    <li>Select which token types to deploy (default: all enabled)</li>
+    <li>Optionally add client names to the exclude list</li>
+    <li>Save — all new clients automatically get canary tokens on registration</li>
   </ol>
 
-  <h4 class="mt-1">How it works</h4>
+  <h4 class="mt-1">Canary tokens are ON by default</h4>
+  <p>Every new client gets canary tokens unless excluded. Use the exclude list for CI runners or test bots that shouldn't have decoys.</p>
+
+  <h4 class="mt-1">Available types (11)</h4>
+  <p><strong>API tokens</strong> (via canarytokens.org — real tripwire credentials):</p>
   <ul>
-    <li>On client registration, server calls canarytokens.org API to generate fake credentials</li>
-    <li>Each token is labeled with the machine name for identification</li>
-    <li>Client syncs canary tokens via <code>duckway sync</code></li>
-    <li>Tokens deployed to realistic paths:
-      <ul>
-        <li><code>~/.aws/credentials</code> — fake AWS access key + secret</li>
-        <li><code>~/.config/gh/canary_token</code> — fake GitHub PAT</li>
-      </ul>
-    </li>
-    <li>These are <strong>NOT</strong> in <code>keys.env</code> — AI agents use real placeholder keys and ignore these files</li>
-    <li>Attackers who exfiltrate the machine find them and trigger alerts</li>
+    <li>AWS Credentials — fake AKIA key + secret in <code>~/.aws/credentials</code></li>
+    <li>GitHub Token — fake PAT in <code>~/.config/gh/hosts.yml.bak</code></li>
+    <li>Kubernetes Config — full kubeconfig in <code>~/.kube/config.bak</code></li>
+    <li>WireGuard Config — VPN config with private key</li>
   </ul>
+  <p><strong>Local decoys</strong> (self-generated with embedded DNS canary):</p>
+  <ul>
+    <li>.env File — mixed DB/API/webhook creds in <code>~/.env.production.bak</code></li>
+    <li>SSH Private Key — fake key in <code>~/.ssh/id_deploy</code></li>
+    <li>NPM Token — <code>~/.npmrc.bak</code></li>
+    <li>Docker Config — <code>~/.docker/config.json.bak</code></li>
+    <li>GCP Service Account — <code>~/.config/gcloud/application_default_credentials.json.bak</code></li>
+    <li>PyPI Token — <code>~/.pypirc.bak</code></li>
+    <li>Slack Token — bot + user tokens in <code>~/.config/slack/credentials.bak</code></li>
+  </ul>
+  <p>All decoy files are <strong>NOT</strong> in <code>keys.env</code> — AI agents use real placeholder keys and ignore these.</p>
 </div>
 
 <!-- 12. Notifications -->

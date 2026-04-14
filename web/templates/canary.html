@@ -5,17 +5,31 @@
 
 <div class="card">
   <h3>Settings</h3>
-  <p class="text-sm text-muted mb-1">When a client registers, Duckway auto-generates canary tokens via <a href="https://canarytokens.org" target="_blank">canarytokens.org</a>. If an attacker steals these decoy credentials and uses them, you'll get an email alert.</p>
+  <p class="text-sm text-muted mb-1">Canary tokens are <strong>enabled by default</strong> for all new clients. When a client registers, Duckway auto-generates decoy credentials via <a href="https://canarytokens.org" target="_blank">canarytokens.org</a>. If an attacker steals and uses them, you get an email alert.</p>
 
   <form id="canary-settings-form" class="mt-2">
     <div class="form-group">
-      <label>Alert Email</label>
+      <label>Alert Email (required for canary tokens to work)</label>
       <input type="email" id="canary-email" placeholder="you@example.com">
     </div>
+
     <div class="form-group">
-      <label>Canary Token Types</label>
-      <div id="canary-types"></div>
+      <label>Token Types to Deploy</label>
+      <p class="text-sm text-muted">If none selected, all types are deployed by default.</p>
+
+      <div class="mt-1 mb-1"><strong class="text-sm">API Tokens</strong> <span class="badge badge-green">via canarytokens.org</span></div>
+      <div id="canary-types-api"></div>
+
+      <div class="mt-1 mb-1"><strong class="text-sm">Local Decoy Files</strong> <span class="badge badge-blue">self-generated with DNS canary</span></div>
+      <div id="canary-types-local"></div>
     </div>
+
+    <div class="form-group">
+      <label>Exclude Clients (comma-separated names that should NOT get canary tokens)</label>
+      <input type="text" id="canary-exclude" placeholder="ci-runner, test-bot">
+      <div class="text-sm text-muted mt-1">Leave empty to apply canary tokens to all clients.</div>
+    </div>
+
     <button type="submit" class="btn btn-primary">Save Settings</button>
   </form>
 </div>
@@ -23,58 +37,66 @@
 <div class="card mt-2">
   <h3>How It Works</h3>
   <table>
-    <thead><tr><th>Type</th><th>What gets deployed</th><th>Where on client</th></tr></thead>
-    <tbody>
-      <tr>
-        <td><span class="badge badge-blue">aws_keys</span></td>
-        <td>Fake AWS access key + secret key</td>
-        <td class="mono text-sm">~/.aws/credentials</td>
-      </tr>
-      <tr>
-        <td><span class="badge badge-blue">github</span></td>
-        <td>Fake GitHub personal access token</td>
-        <td class="mono text-sm">~/.config/gh/canary_token</td>
-      </tr>
-    </tbody>
+    <thead><tr><th>Type</th><th>Category</th><th>What gets deployed</th><th>Deploy Path</th></tr></thead>
+    <tbody id="types-reference"></tbody>
   </table>
-  <p class="text-sm text-muted mt-1">Canary tokens are placed in realistic paths but NOT in <code>keys.env</code>, so AI agents use the real placeholder keys. Attackers who steal files from the machine will find these decoys and trigger an alert when they use them.</p>
+  <p class="text-sm text-muted mt-1"><strong>API tokens</strong> call canarytokens.org to generate real tripwire credentials. <strong>Local decoy files</strong> are self-generated with embedded DNS canary hostnames — when an attacker resolves the hostname (e.g., by curling a URL in the file), you get alerted.</p>
+  <p class="text-sm text-muted">All canary files are placed at paths that look realistic but use <code>.bak</code> suffixes or non-standard locations. They are <strong>NOT</strong> in <code>keys.env</code>, so AI agents use the real placeholder keys and ignore these decoys.</p>
 </div>
 
 <div class="card mt-2">
   <h3>Deployed Canary Tokens</h3>
-  <div id="canary-tokens-list">
-    <p class="text-muted text-sm">Select a client to view their canary tokens.</p>
-    <div class="form-group mt-1">
-      <select id="canary-client-select" onchange="loadClientCanaries()">
-        <option value="">Select client...</option>
-      </select>
-    </div>
-    <div id="canary-tokens-table"></div>
+  <div class="form-group mt-1">
+    <select id="canary-client-select" onchange="loadClientCanaries()">
+      <option value="">Select client...</option>
+    </select>
   </div>
+  <div id="canary-tokens-table"></div>
 </div>
 
 <script>
-// Load settings on page load
+var allTypes = [];
+
 document.addEventListener('DOMContentLoaded', function() {
   fetch('/api/canary/settings', {credentials:'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(data) {
       document.getElementById('canary-email').value = data.email || '';
+      allTypes = data.available_types || [];
 
-      var typesDiv = document.getElementById('canary-types');
       var enabled = data.enabled_types || [];
-      (data.available_types || []).forEach(function(t) {
-        var checked = enabled.indexOf(t.type) >= 0;
+      var apiDiv = document.getElementById('canary-types-api');
+      var localDiv = document.getElementById('canary-types-local');
+      var refTbody = document.getElementById('types-reference');
+
+      allTypes.forEach(function(t) {
+        var checked = enabled.length === 0 || enabled.indexOf(t.type) >= 0;
         var label = document.createElement('label');
         label.style.display = 'block';
-        label.style.marginBottom = '0.5rem';
+        label.style.marginBottom = '0.375rem';
         label.innerHTML = '<input type="checkbox" name="canary_type" value="' + t.type + '"' +
           (checked ? ' checked' : '') + '> <strong>' + t.name + '</strong> — <span class="text-muted text-sm">' + t.description + '</span>';
-        typesDiv.appendChild(label);
+
+        if (t.category === 'api') {
+          apiDiv.appendChild(label);
+        } else {
+          localDiv.appendChild(label);
+        }
+
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td><span class="badge badge-blue">' + t.type + '</span></td>' +
+          '<td><span class="badge ' + (t.category === 'api' ? 'badge-green' : 'badge-gray') + '">' + t.category + '</span></td>' +
+          '<td class="text-sm">' + t.description + '</td>' +
+          '<td class="mono text-sm">~/' + (t.deploy_path || '') + '</td>';
+        refTbody.appendChild(tr);
       });
+
+      // Exclude list
+      var exclude = data.exclude_clients || [];
+      document.getElementById('canary-exclude').value = exclude.join(', ');
     });
 
-  // Load clients into dropdown
+  // Load clients
   fetch('/api/clients', {credentials:'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(clients) {
@@ -89,7 +111,6 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-// Save settings
 document.getElementById('canary-settings-form').addEventListener('submit', function(e) {
   e.preventDefault();
   var email = document.getElementById('canary-email').value;
@@ -98,10 +119,13 @@ document.getElementById('canary-settings-form').addEventListener('submit', funct
     types.push(cb.value);
   });
 
+  var excludeRaw = document.getElementById('canary-exclude').value;
+  var exclude = excludeRaw.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
+
   fetch('/api/canary/settings', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({email: email, enabled_types: types}),
+    body: JSON.stringify({email: email, enabled_types: types, exclude_clients: exclude}),
     credentials: 'same-origin'
   })
   .then(function(r) { return r.json(); })
@@ -130,18 +154,21 @@ function loadClientCanaries() {
 
       var html = '<table class="mt-1"><thead><tr><th>Type</th><th>Token Value</th><th>Deploy Path</th><th>Created</th></tr></thead><tbody>';
       tokens.forEach(function(t) {
+        var val = t.token_value || '';
         html += '<tr>' +
           '<td><span class="badge badge-blue">' + t.token_type + '</span></td>' +
-          '<td class="mono text-sm">' + t.token_value.substring(0, 20) + '...</td>' +
+          '<td class="mono text-sm">' + val.substring(0, 24) + (val.length > 24 ? '...' : '') + '</td>' +
           '<td class="mono text-sm">~/' + t.deploy_path + '</td>' +
           '<td class="text-muted text-sm">' + t.created_at + '</td></tr>';
       });
       html += '</tbody></table>';
+      html += '<p class="mt-1"><button class="btn btn-sm" onclick="generateCanaries(\'' + clientId + '\',\'' + clientName + '\')">Regenerate</button></p>';
       div.innerHTML = html;
     });
 }
 
 function generateCanaries(clientId, clientName) {
+  showToast('Generating canary tokens... this may take a moment', '');
   fetch('/api/canary/clients/' + clientId + '/generate?name=' + encodeURIComponent(clientName), {
     method: 'POST',
     credentials: 'same-origin'

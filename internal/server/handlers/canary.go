@@ -26,19 +26,20 @@ func (h *CanaryHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Include available types
 	var types []map[string]string
 	for _, t := range services.SupportedCanaryTypes {
 		types = append(types, map[string]string{
 			"type":        t.Type,
 			"name":        t.DisplayName,
 			"description": t.Description,
+			"category":    t.Category,
 		})
 	}
 
 	jsonResponse(w, map[string]interface{}{
 		"email":           settings.Email,
 		"enabled_types":   json.RawMessage(settings.EnabledTypes),
+		"exclude_clients": json.RawMessage(settings.ExcludeClients),
 		"available_types": types,
 	})
 }
@@ -46,18 +47,29 @@ func (h *CanaryHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 // Admin: save canary settings
 func (h *CanaryHandler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Email        string   `json:"email"`
-		EnabledTypes []string `json:"enabled_types"`
+		Email          string   `json:"email"`
+		EnabledTypes   []string `json:"enabled_types"`
+		ExcludeClients []string `json:"exclude_clients"`
 	}
-	if err := parseRequest(r, &req); err != nil {
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
+	if req.EnabledTypes == nil {
+		req.EnabledTypes = []string{}
+	}
+	if req.ExcludeClients == nil {
+		req.ExcludeClients = []string{}
+	}
+
 	typesJSON, _ := json.Marshal(req.EnabledTypes)
+	excludeJSON, _ := json.Marshal(req.ExcludeClients)
 	settings := &queries.CanarySettings{
-		Email:        req.Email,
-		EnabledTypes: string(typesJSON),
+		Email:          req.Email,
+		EnabledTypes:   string(typesJSON),
+		ExcludeClients: string(excludeJSON),
 	}
 
 	if err := h.canaryQ.SaveSettings(settings); err != nil {

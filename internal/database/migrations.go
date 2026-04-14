@@ -121,10 +121,11 @@ var migrations = []string{
 	)`,
 
 	`CREATE TABLE IF NOT EXISTS canary_settings (
-		id            TEXT PRIMARY KEY DEFAULT 'default',
-		email         TEXT NOT NULL DEFAULT '',
-		enabled_types TEXT NOT NULL DEFAULT '[]',
-		created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+		id              TEXT PRIMARY KEY DEFAULT 'default',
+		email           TEXT NOT NULL DEFAULT '',
+		enabled_types   TEXT NOT NULL DEFAULT '[]',
+		exclude_clients TEXT NOT NULL DEFAULT '[]',
+		created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
 
 	`CREATE TABLE IF NOT EXISTS canary_tokens (
