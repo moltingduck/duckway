@@ -54,12 +54,13 @@ type APIKeyGroupMember struct {
 }
 
 type Client struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	TokenHash  string  `json:"-"`
-	IsActive   bool    `json:"is_active"`
-	LastSeenAt *string `json:"last_seen_at"`
-	CreatedAt  string  `json:"created_at"`
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	TokenHash      string  `json:"-"`
+	IsActive       bool    `json:"is_active"`
+	CanaryEnabled  bool    `json:"canary_enabled"`
+	LastSeenAt     *string `json:"last_seen_at"`
+	CreatedAt      string  `json:"created_at"`
 }
 
 type PlaceholderKey struct {

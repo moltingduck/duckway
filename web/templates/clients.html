@@ -8,12 +8,16 @@
 <div class="card" id="client-card-{{.ID}}">
   <div class="flex-between mb-1">
     <div>
-      <strong>{{.Name}}</strong>
+      <strong style="font-size:1.1rem">{{.Name}}</strong>
       {{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}
       <div class="text-muted text-sm">Last seen: {{if .LastSeenAt}}{{deref .LastSeenAt}}{{else}}Never{{end}}</div>
     </div>
     <div class="flex gap-sm">
       <button class="btn btn-sm btn-primary" onclick="openAssignModal('{{.ID}}','{{.Name}}')">Assign Key</button>
+      <button class="btn btn-sm {{if .CanaryEnabled}}btn-primary{{else}}{{end}}" id="canary-btn-{{.ID}}"
+        onclick="toggleCanary('{{.ID}}', {{if .CanaryEnabled}}false{{else}}true{{end}})">
+        {{if .CanaryEnabled}}Canary: ON{{else}}Canary: OFF{{end}}
+      </button>
       <button class="btn btn-sm btn-danger"
         hx-delete="/api/clients/{{.ID}}"
         hx-target="#client-card-{{.ID}}"
@@ -22,10 +26,23 @@
     </div>
   </div>
 
+  <!-- Placeholder Keys (API key → placeholder mapping) -->
+  <div class="mb-1">
+    <strong class="text-sm">API Key → Placeholder Mapping</strong>
+  </div>
   <table>
-    <thead><tr><th>Env Name</th><th>Service</th><th>Placeholder</th><th>Approval</th><th>Usage</th><th></th></tr></thead>
-    <tbody id="keys-{{.ID}}">
-    </tbody>
+    <thead><tr><th>Env Name</th><th>Service</th><th>Placeholder Key</th><th>Approval</th><th>Usage</th><th></th></tr></thead>
+    <tbody id="keys-{{.ID}}"></tbody>
+  </table>
+
+  <!-- Canary Tokens -->
+  <div class="mt-2 mb-1">
+    <strong class="text-sm">Canary Tokens</strong>
+    {{if not .CanaryEnabled}}<span class="badge badge-gray">Disabled</span>{{end}}
+  </div>
+  <table>
+    <thead><tr><th>Type</th><th>Token / Hostname</th><th>Deploy Path</th><th>Created</th></tr></thead>
+    <tbody id="canaries-{{.ID}}"></tbody>
   </table>
 </div>
 {{else}}
@@ -90,71 +107,97 @@
     </div>
     <div class="modal-actions">
       <button type="button" class="btn" onclick="document.getElementById('assign-modal').style.display='none'">Cancel</button>
-      <button type="button" class="btn btn-primary" id="assign-submit" onclick="submitAssign()">Assign &amp; Generate Placeholder</button>
+      <button type="button" class="btn btn-primary" onclick="submitAssign()">Assign &amp; Generate Placeholder</button>
     </div>
   </div>
 </div>
 
 <script>
-// API keys data from server
 var apiKeys = [
-  {{range .Keys}}
-  {id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}"},
-  {{end}}
+  {{range .Keys}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}"},{{end}}
 ];
 
-// Existing placeholders
 var placeholders = [
-  {{range .Placeholders}}
-  {id:"{{.ID}}", envName:"{{.EnvName}}", placeholder:"{{.Placeholder}}", serviceName:"{{.ServiceName}}", clientId:"{{.ClientID}}", clientName:"{{.ClientName}}", requiresApproval:{{.RequiresApproval}}, usageCount:{{.UsageCount}}},
-  {{end}}
+  {{range .Placeholders}}{id:"{{.ID}}", envName:"{{.EnvName}}", placeholder:"{{.Placeholder}}", serviceName:"{{.ServiceName}}", clientId:"{{.ClientID}}", clientName:"{{.ClientName}}", requiresApproval:{{.RequiresApproval}}, usageCount:{{.UsageCount}}},{{end}}
 ];
 
-// Env name mapping
-var svcEnvMap = {
-  "openai": "OPENAI_API_KEY",
-  "anthropic": "ANTHROPIC_API_KEY",
-  "github": "GITHUB_TOKEN",
-  "discord": "DISCORD_BOT_TOKEN",
-  "telegram": "TELEGRAM_BOT_TOKEN"
-};
+var canaryTokens = [
+  {{range .CanaryTokens}}{id:"{{.ID}}", clientId:"{{.ClientID}}", tokenType:"{{.TokenType}}", tokenValue:"{{.TokenValue}}", deployPath:"{{.DeployPath}}", createdAt:"{{.CreatedAt}}"},{{end}}
+];
 
-// Populate assigned keys per client on load
+var svcEnvMap = {"openai":"OPENAI_API_KEY","anthropic":"ANTHROPIC_API_KEY","github":"GITHUB_TOKEN","discord":"DISCORD_BOT_TOKEN","telegram":"TELEGRAM_BOT_TOKEN"};
+
 document.addEventListener('DOMContentLoaded', function() {
+  // Populate placeholder keys per client
   placeholders.forEach(function(ph) {
     var tbody = document.getElementById('keys-' + ph.clientId);
     if (!tbody) return;
     var tr = document.createElement('tr');
     tr.id = 'ph-' + ph.id;
+    var phShort = ph.placeholder.length > 28 ? ph.placeholder.substring(0,28)+'...' : ph.placeholder;
     tr.innerHTML =
       '<td><strong>' + ph.envName + '</strong></td>' +
       '<td><span class="badge badge-blue">' + ph.serviceName + '</span></td>' +
-      '<td class="mono text-sm" title="' + ph.placeholder + '">' + ph.placeholder.substring(0,20) + '...</td>' +
+      '<td class="mono text-sm" title="' + ph.placeholder + '">' + phShort + '</td>' +
       '<td>' + (ph.requiresApproval ? '<span class="badge badge-yellow">Required</span>' : '<span class="badge badge-green">Auto</span>') + '</td>' +
       '<td>' + ph.usageCount + '</td>' +
       '<td class="text-right"><button class="btn btn-sm btn-danger" onclick="deletePh(\'' + ph.id + '\')">Remove</button></td>';
     tbody.appendChild(tr);
   });
 
-  // Show empty message for clients with no keys
+  // Populate canary tokens per client
+  canaryTokens.forEach(function(ct) {
+    var tbody = document.getElementById('canaries-' + ct.clientId);
+    if (!tbody) return;
+    var tr = document.createElement('tr');
+    var val = ct.tokenValue || '';
+    var valShort = val.length > 28 ? val.substring(0,28)+'...' : val;
+    tr.innerHTML =
+      '<td><span class="badge badge-blue">' + ct.tokenType + '</span></td>' +
+      '<td class="mono text-sm" title="' + val + '">' + valShort + '</td>' +
+      '<td class="mono text-sm">~/' + ct.deployPath + '</td>' +
+      '<td class="text-muted text-sm">' + ct.createdAt + '</td>';
+    tbody.appendChild(tr);
+  });
+
+  // Show empty messages
   document.querySelectorAll('tbody[id^="keys-"]').forEach(function(tbody) {
     if (tbody.children.length === 0) {
       var tr = document.createElement('tr');
       tr.className = 'empty-row';
-      tr.innerHTML = '<td colspan="6" class="text-muted text-sm">No keys assigned. Click "Assign Key" to add one.</td>';
+      tr.innerHTML = '<td colspan="6" class="text-muted text-sm">No keys assigned. Click "Assign Key" to add.</td>';
+      tbody.appendChild(tr);
+    }
+  });
+  document.querySelectorAll('tbody[id^="canaries-"]').forEach(function(tbody) {
+    if (tbody.children.length === 0) {
+      var clientId = tbody.id.replace('canaries-','');
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td colspan="4" class="text-muted text-sm">No canary tokens. Configure in <a href="/admin/canary">Canary Tokens</a> settings.</td>';
       tbody.appendChild(tr);
     }
   });
 });
 
+function toggleCanary(clientId, enable) {
+  fetch('/api/clients/' + clientId + '/canary', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enabled: enable}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Canary tokens ' + (enable ? 'enabled' : 'disabled'), 'success');
+    location.reload();
+  });
+}
+
 function openAssignModal(clientId, clientName) {
   document.getElementById('assign-client-id').value = clientId;
   document.getElementById('assign-client-name').textContent = clientName;
   document.getElementById('assign-preview').style.display = 'none';
-
-  // Build key select — filter out keys already assigned to this client
-  var assigned = placeholders.filter(function(p) { return p.clientId === clientId; });
-  var assignedKeyIds = assigned.map(function(p) { return p.id; });
 
   var sel = document.getElementById('assign-key-select');
   sel.innerHTML = '<option value="">Select an API key...</option>';
@@ -169,14 +212,10 @@ function openAssignModal(clientId, clientName) {
 
   sel.onchange = function() {
     var opt = sel.options[sel.selectedIndex];
-    if (!opt.value) {
-      document.getElementById('assign-preview').style.display = 'none';
-      return;
-    }
+    if (!opt.value) { document.getElementById('assign-preview').style.display = 'none'; return; }
     var svcName = opt.dataset.serviceName;
-    var envName = svcEnvMap[svcName] || svcName.toUpperCase() + '_API_KEY';
     document.getElementById('assign-svc-name').textContent = svcName;
-    document.getElementById('assign-env-name').textContent = envName;
+    document.getElementById('assign-env-name').textContent = svcEnvMap[svcName] || svcName.toUpperCase() + '_API_KEY';
     document.getElementById('assign-preview').style.display = 'block';
   };
 
@@ -187,54 +226,37 @@ function submitAssign() {
   var clientId = document.getElementById('assign-client-id').value;
   var sel = document.getElementById('assign-key-select');
   var opt = sel.options[sel.selectedIndex];
-  if (!opt || !opt.value) {
-    showToast('Select an API key', 'error');
-    return;
-  }
-
-  var keyId = opt.value;
-  var serviceId = opt.dataset.serviceId;
-  var requiresApproval = document.getElementById('assign-approval').checked;
+  if (!opt || !opt.value) { showToast('Select an API key', 'error'); return; }
 
   fetch('/api/placeholders', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
-      service_id: serviceId,
-      api_key_id: keyId,
+      service_id: opt.dataset.serviceId,
+      api_key_id: opt.value,
       client_id: clientId,
-      requires_approval: requiresApproval
+      requires_approval: document.getElementById('assign-approval').checked
     }),
     credentials: 'same-origin'
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
-    if (data.error) {
-      showToast(data.error, 'error');
-      return;
-    }
+    if (data.error) { showToast(data.error, 'error'); return; }
     document.getElementById('assign-modal').style.display = 'none';
     showToast('Placeholder key generated: ' + data.env_name, 'success');
     location.reload();
-  })
-  .catch(function(err) {
-    showToast('Failed: ' + err.message, 'error');
   });
 }
 
 function deletePh(id) {
   if (!confirm('Remove this placeholder key?')) return;
-  fetch('/api/placeholders/' + id, {
-    method: 'DELETE',
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    var row = document.getElementById('ph-' + id);
-    if (row) row.remove();
-    showToast('Placeholder removed', 'success');
-  });
+  fetch('/api/placeholders/' + id, {method:'DELETE',credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { showToast(data.error, 'error'); return; }
+      document.getElementById('ph-' + id).remove();
+      showToast('Placeholder removed', 'success');
+    });
 }
 
 // Register client
@@ -242,32 +264,22 @@ document.getElementById('add-client-form').addEventListener('submit', function(e
   e.preventDefault();
   var name = document.getElementById('client-name').value.trim();
   if (!name) return;
-
-  fetch('/api/clients', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name: name}),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    document.getElementById('add-modal').style.display = 'none';
-    document.getElementById('token-value').value = data.token;
-    document.getElementById('init-cmd').textContent =
-      'printf "' + window.location.origin + '\\n' + data.name + '\\n1\\n' + data.token + '\\n" | duckway init';
-    document.getElementById('token-modal').style.display = 'flex';
-  })
-  .catch(function(err) { showToast('Failed: ' + err.message, 'error'); });
+  fetch('/api/clients', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name}),credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { showToast(data.error, 'error'); return; }
+      document.getElementById('add-modal').style.display = 'none';
+      document.getElementById('token-value').value = data.token;
+      document.getElementById('init-cmd').textContent = 'printf "' + window.location.origin + '\\n' + data.name + '\\n1\\n' + data.token + '\\n" | duckway init';
+      document.getElementById('token-modal').style.display = 'flex';
+    });
 });
 
 function copyToken() {
-  var el = document.getElementById('token-value');
-  el.select();
+  document.getElementById('token-value').select();
   document.execCommand('copy');
-  showToast('Token copied to clipboard', 'success');
+  showToast('Token copied', 'success');
 }
-
 function dismissToken() {
   document.getElementById('token-modal').style.display = 'none';
   location.reload();

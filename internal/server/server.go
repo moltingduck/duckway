@@ -90,7 +90,7 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	notifH := handlers.NewNotificationHandler(notifQ)
 	canaryH := handlers.NewCanaryHandler(canaryQ, canarySvc)
 	proxyH := handlers.NewProxyHandler(serviceQ, resolver, requestLogQ, approvalQ, notifier)
-	adminPageH := handlers.NewAdminHandler(contentFS, userQ, serviceQ, apiKeyQ, placeholderQ, clientQ, groupQ, approvalQ, requestLogQ, notifQ, adminAuth)
+	adminPageH := handlers.NewAdminHandler(contentFS, userQ, serviceQ, apiKeyQ, placeholderQ, clientQ, groupQ, approvalQ, requestLogQ, notifQ, canaryQ, adminAuth)
 
 	// Static files
 	staticFS, err := fs.Sub(contentFS, "static")
@@ -143,6 +143,7 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	adminAPIMux.HandleFunc("GET /api/clients", clientH.List)
 	adminAPIMux.HandleFunc("POST /api/clients", clientH.Create)
 	adminAPIMux.HandleFunc("DELETE /api/clients/{id}", clientH.Delete)
+	adminAPIMux.HandleFunc("POST /api/clients/{id}/canary", clientH.ToggleCanary)
 
 	adminAPIMux.HandleFunc("GET /api/groups", groupH.List)
 	adminAPIMux.HandleFunc("POST /api/groups", groupH.Create)

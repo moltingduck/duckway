@@ -235,7 +235,8 @@ func NewCanaryService(canaryQ *queries.CanaryQueries) *CanaryService {
 }
 
 // GenerateForClient creates canary tokens for a client based on settings.
-// Called automatically on client registration unless the client is in the exclude list.
+// Called automatically on client registration unless the client is excluded
+// or has canary_enabled=false.
 func (s *CanaryService) GenerateForClient(clientID, clientName string) error {
 	settings, err := s.canaryQ.GetSettings()
 	if err != nil {
@@ -258,12 +259,13 @@ func (s *CanaryService) GenerateForClient(clientID, clientName string) error {
 		}
 	}
 
-	// Get enabled types (default: all if empty)
+	// Get enabled types (default: API types only)
 	var enabledTypes []string
 	if err := json.Unmarshal([]byte(settings.EnabledTypes), &enabledTypes); err != nil || len(enabledTypes) == 0 {
-		// Default: enable all types
 		for _, t := range SupportedCanaryTypes {
-			enabledTypes = append(enabledTypes, t.Type)
+			if t.Category == "api" {
+				enabledTypes = append(enabledTypes, t.Type)
+			}
 		}
 	}
 

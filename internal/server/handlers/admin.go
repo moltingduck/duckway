@@ -24,6 +24,7 @@ type AdminHandler struct {
 	approvals     *queries.ApprovalQueries
 	requestLog    *queries.RequestLogQueries
 	notifications *queries.NotificationQueries
+	canary        *queries.CanaryQueries
 	auth          *middleware.AdminAuth
 }
 
@@ -38,6 +39,7 @@ func NewAdminHandler(
 	approvals *queries.ApprovalQueries,
 	requestLog *queries.RequestLogQueries,
 	notifications *queries.NotificationQueries,
+	canary *queries.CanaryQueries,
 	auth *middleware.AdminAuth,
 ) *AdminHandler {
 	funcMap := template.FuncMap{
@@ -116,6 +118,7 @@ func NewAdminHandler(
 		approvals:     approvals,
 		requestLog:    requestLog,
 		notifications: notifications,
+		canary:        canary,
 		auth:          auth,
 	}
 }
@@ -138,7 +141,8 @@ type pageData struct {
 	Groups       interface{}
 	Approvals    interface{}
 	Logs         interface{}
-	Channels     interface{}
+	Channels      interface{}
+	CanaryTokens  interface{}
 }
 
 func (h *AdminHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
@@ -223,12 +227,21 @@ func (h *AdminHandler) ClientsPage(w http.ResponseWriter, r *http.Request) {
 	clients, _ := h.clients.List()
 	keys, _ := h.apiKeys.List("")
 	placeholders, _ := h.placeholders.List("", "")
+
+	// Collect canary tokens for all clients
+	var allCanaries []queries.CanaryToken
+	for _, c := range clients {
+		ct, _ := h.canary.ListByClient(c.ID)
+		allCanaries = append(allCanaries, ct...)
+	}
+
 	h.render(w, "clients", pageData{
 		Title:        "Clients",
 		Active:       "clients",
 		Clients:      clients,
 		Keys:         keys,
 		Placeholders: placeholders,
+		CanaryTokens: allCanaries,
 	})
 }
 

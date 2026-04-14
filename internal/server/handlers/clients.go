@@ -57,10 +57,11 @@ func (h *ClientHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	id, _ := svc.GenerateToken(16)
 	client := &models.Client{
-		ID:        id,
-		Name:      name,
-		TokenHash: svc.HashToken(token),
-		IsActive:  true,
+		ID:            id,
+		Name:          name,
+		TokenHash:     svc.HashToken(token),
+		IsActive:      true,
+		CanaryEnabled: true, // default on
 	}
 
 	if err := h.clients.Create(client); err != nil {
@@ -93,6 +94,24 @@ func (h *ClientHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]string{"status": "deleted"})
+}
+
+// Admin: toggle canary enabled for a client
+func (h *ClientHandler) ToggleCanary(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.clients.UpdateCanaryEnabled(id, req.Enabled); err != nil {
+		jsonError(w, "failed to update", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{"status": "ok", "canary_enabled": req.Enabled})
 }
 
 // Client API: get assigned placeholder keys for this client

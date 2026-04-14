@@ -56,12 +56,13 @@ var migrations = []string{
 	)`,
 
 	`CREATE TABLE IF NOT EXISTS clients (
-		id            TEXT PRIMARY KEY,
-		name          TEXT NOT NULL,
-		token_hash    TEXT NOT NULL UNIQUE,
-		is_active     INTEGER NOT NULL DEFAULT 1,
-		last_seen_at  TEXT,
-		created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+		id              TEXT PRIMARY KEY,
+		name            TEXT NOT NULL,
+		token_hash      TEXT NOT NULL UNIQUE,
+		is_active       INTEGER NOT NULL DEFAULT 1,
+		canary_enabled  INTEGER NOT NULL DEFAULT 1,
+		last_seen_at    TEXT,
+		created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
 
 	`CREATE TABLE IF NOT EXISTS placeholder_keys (
@@ -143,6 +144,7 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_canary_client ON canary_tokens(client_id)`,
 
+
 	// Migration version tracking
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)`,
 }
@@ -153,5 +155,15 @@ func runMigrations(db *sql.DB) error {
 			return fmt.Errorf("migration %d: %w", i, err)
 		}
 	}
+
+	// Safe column additions for existing databases
+	safeAlters := []string{
+		"ALTER TABLE clients ADD COLUMN canary_enabled INTEGER NOT NULL DEFAULT 1",
+		"ALTER TABLE canary_settings ADD COLUMN exclude_clients TEXT NOT NULL DEFAULT '[]'",
+	}
+	for _, alt := range safeAlters {
+		db.Exec(alt) // ignore "duplicate column" errors
+	}
+
 	return nil
 }
