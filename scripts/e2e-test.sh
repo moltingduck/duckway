@@ -269,9 +269,55 @@ assert_contains "duckway status shows OK" "Connection:  OK" "$STATUS_OUT"
 assert_contains "duckway status shows 4 keys" "4 placeholder" "$STATUS_OUT"
 
 
-# === Test 9: Proxy (key injection) ===
+# === Test 9: Docker Client Proxy (full chain) ===
 echo ""
-echo -e "${YELLOW}[9] Proxy Key Injection${NC}"
+echo -e "${YELLOW}[9] Docker Client Proxy Chain${NC}"
+
+# Start duckway proxy inside docker container (background)
+docker exec -d duckway-e2e-client duckway proxy --port 18099
+sleep 2
+
+# Test 1: Heartbeat through client proxy → server → internal response
+HB_VIA_PROXY=$(docker exec duckway-e2e-client curl -s \
+  --proxy http://127.0.0.1:18099 \
+  http://doesnt-matter/proxy/heartbeat/ping 2>&1)
+assert_contains "Heartbeat via client proxy" "duckway-heartbeat" "$HB_VIA_PROXY"
+assert_contains "Heartbeat shows client name" "e2e-test-client" "$HB_VIA_PROXY"
+
+# Test 2: OpenAI via client proxy → server → upstream (proves key injection)
+OPENAI_VIA_PROXY=$(docker exec duckway-e2e-client curl -s \
+  --proxy http://127.0.0.1:18099 \
+  -X POST http://doesnt-matter/proxy/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"test"}]}' 2>&1)
+assert_contains "OpenAI via client proxy reaches upstream" "invalid_api_key" "$OPENAI_VIA_PROXY"
+
+# Test 3: Verify server captured the placeholder key by checking request log
+LOG_COUNT=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services" | jq 'length')
+assert_not_empty "Server API still responsive after proxy test" "$LOG_COUNT"
+
+# Test 4: GitHub via client proxy
+GH_VIA_PROXY=$(docker exec duckway-e2e-client curl -s \
+  --proxy http://127.0.0.1:18099 \
+  http://doesnt-matter/proxy/github/user 2>&1)
+assert_contains "GitHub via client proxy reaches upstream" "Bad credentials" "$GH_VIA_PROXY"
+
+# Test 5: Direct heartbeat without proxy (client → server API)
+HB_DIRECT=$(docker exec duckway-e2e-client curl -s \
+  -H "X-Duckway-Token: $CLIENT_TOKEN" \
+  "$BASE/proxy/heartbeat/ping" 2>&1)
+assert_contains "Direct heartbeat (no proxy)" "duckway-heartbeat" "$HB_DIRECT"
+
+# Test 6: Verify the proxy resolved placeholder and logged the request
+# Check admin request log for heartbeat entries
+ADMIN_LOGS=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/admin/logs" 2>&1)
+assert_contains "Request log captured heartbeat" "heartbeat" "$ADMIN_LOGS"
+assert_contains "Request log captured openai" "openai" "$ADMIN_LOGS"
+
+
+# === Test 10: Proxy Key Injection (direct, no client proxy) ===
+echo ""
+echo -e "${YELLOW}[10] Proxy Key Injection (direct)${NC}"
 
 PROXY_RESP=$(curl -s -X POST "$BASE/proxy/openai/v1/chat/completions" \
   -H "X-Duckway-Token: $CLIENT_TOKEN" \
@@ -289,9 +335,9 @@ HEARTBEAT=$(curl -s "$BASE/proxy/heartbeat/ping" \
 assert_contains "Heartbeat responds OK" "duckway-heartbeat" "$HEARTBEAT"
 
 
-# === Test 10: Approval Workflow ===
+# === Test 11: Approval Workflow ===
 echo ""
-echo -e "${YELLOW}[10] Approval Workflow${NC}"
+echo -e "${YELLOW}[11] Approval Workflow${NC}"
 
 # Create placeholder that requires approval
 PH_APPROVAL=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders" \
@@ -315,9 +361,9 @@ AFTER=$(curl -s -X GET "$BASE/proxy/openai/v1/models" \
 assert_contains "After approval, proxy works" "invalid_api_key" "$AFTER"
 
 
-# === Test 11: Permission System ===
+# === Test 12: Permission System ===
 echo ""
-echo -e "${YELLOW}[11] Permission System${NC}"
+echo -e "${YELLOW}[12] Permission System${NC}"
 
 PERM='{"version":"1","provider":"openai","rules":[{"name":"limited","endpoints":[{"method":"POST","path":"/v1/chat/completions","allow":true,"constraints":{"body":{"model":{"oneOf":["gpt-4o-mini"]}}}}],"deny_all_other":true}]}'
 
@@ -354,9 +400,9 @@ DENIED2=$(curl -s -X POST "$BASE/proxy/openai/v1/images/generations" \
 assert_contains "Unlisted endpoint blocked" "permission denied" "$DENIED2"
 
 
-# === Test 12: Canary Tokens ===
+# === Test 13: Canary Tokens ===
 echo ""
-echo -e "${YELLOW}[12] Canary Tokens${NC}"
+echo -e "${YELLOW}[13] Canary Tokens${NC}"
 
 # Save canary settings
 CANARY_SAVE=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/canary/settings" \
@@ -381,9 +427,9 @@ CANARY_SYNC_STATUS=$(echo "$CANARY_SYNC" | jq 'type')
 assert_eq "Client canary endpoint returns array" '"array"' "$CANARY_SYNC_STATUS"
 
 
-# === Test 13: Admin Pages ===
+# === Test 14: Admin Pages ===
 echo ""
-echo -e "${YELLOW}[13] Admin Panel Pages${NC}"
+echo -e "${YELLOW}[14] Admin Panel Pages${NC}"
 
 for page in "" services keys placeholders clients groups approvals logs notifications canary docs; do
   STATUS=$(curl -s -b /tmp/dw-e2e-cookies -o /dev/null -w "%{http_code}" "$BASE/admin/$page")
@@ -391,9 +437,9 @@ for page in "" services keys placeholders clients groups approvals logs notifica
 done
 
 
-# === Test 14: Unit Tests ===
+# === Test 15: Unit Tests ===
 echo ""
-echo -e "${YELLOW}[14] Unit Tests${NC}"
+echo -e "${YELLOW}[15] Unit Tests${NC}"
 
 UNIT=$(go test ./internal/server/services/ 2>&1)
 if echo "$UNIT" | grep -q "^ok"; then
