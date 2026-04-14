@@ -120,6 +120,28 @@ var migrations = []string{
 		created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
 
+	`CREATE TABLE IF NOT EXISTS canary_settings (
+		id            TEXT PRIMARY KEY DEFAULT 'default',
+		email         TEXT NOT NULL DEFAULT '',
+		enabled_types TEXT NOT NULL DEFAULT '[]',
+		created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+
+	`CREATE TABLE IF NOT EXISTS canary_tokens (
+		id              TEXT PRIMARY KEY,
+		client_id       TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+		token_type      TEXT NOT NULL,
+		canary_token    TEXT NOT NULL,
+		auth_token      TEXT NOT NULL,
+		token_value     TEXT NOT NULL,
+		secret_value    TEXT,
+		memo            TEXT NOT NULL,
+		deploy_path     TEXT NOT NULL,
+		deploy_content  TEXT NOT NULL,
+		created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_canary_client ON canary_tokens(client_id)`,
+
 	// Migration version tracking
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)`,
 }

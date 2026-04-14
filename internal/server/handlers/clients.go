@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -12,10 +13,11 @@ import (
 type ClientHandler struct {
 	clients      *queries.ClientQueries
 	placeholders *queries.PlaceholderQueries
+	canarySvc    *svc.CanaryService
 }
 
-func NewClientHandler(clients *queries.ClientQueries, placeholders *queries.PlaceholderQueries) *ClientHandler {
-	return &ClientHandler{clients: clients, placeholders: placeholders}
+func NewClientHandler(clients *queries.ClientQueries, placeholders *queries.PlaceholderQueries, canarySvc *svc.CanaryService) *ClientHandler {
+	return &ClientHandler{clients: clients, placeholders: placeholders, canarySvc: canarySvc}
 }
 
 // Admin: list all clients
@@ -64,6 +66,15 @@ func (h *ClientHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err := h.clients.Create(client); err != nil {
 		jsonError(w, "failed to create client: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Generate canary tokens in background
+	if h.canarySvc != nil {
+		go func() {
+			if err := h.canarySvc.GenerateForClient(id, name); err != nil {
+				log.Printf("Canary token generation failed for %s: %v", name, err)
+			}
+		}()
 	}
 
 	w.WriteHeader(http.StatusCreated)

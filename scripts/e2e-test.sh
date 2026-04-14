@@ -350,19 +350,46 @@ DENIED2=$(curl -s -X POST "$BASE/proxy/openai/v1/images/generations" \
 assert_contains "Unlisted endpoint blocked" "permission denied" "$DENIED2"
 
 
-# === Test 12: Admin Pages ===
+# === Test 12: Canary Tokens ===
 echo ""
-echo -e "${YELLOW}[12] Admin Panel Pages${NC}"
+echo -e "${YELLOW}[12] Canary Tokens${NC}"
 
-for page in "" services keys placeholders clients groups approvals logs notifications; do
+# Save canary settings
+CANARY_SAVE=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/canary/settings" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","enabled_types":["aws_keys","github"]}')
+assert_eq "Save canary settings" "ok" "$(echo "$CANARY_SAVE" | jq -r '.status')"
+
+# Get canary settings
+CANARY_GET=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/canary/settings")
+assert_eq "Canary email saved" "test@example.com" "$(echo "$CANARY_GET" | jq -r '.email')"
+assert_eq "2 types enabled" "2" "$(echo "$CANARY_GET" | jq '.enabled_types | length')"
+
+# Generate canary tokens for e2e-test-client (skips canarytokens.org API in test)
+# Just verify the endpoint exists and responds
+GEN_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -b /tmp/dw-e2e-cookies \
+  -X POST "$BASE/api/canary/clients/$CLIENT_ID/generate?name=e2e-test-client")
+assert_eq "Generate canary endpoint responds" "200" "$GEN_STATUS"
+
+# Client canary sync endpoint
+CANARY_SYNC=$(curl -s -H "X-Duckway-Token: $CLIENT_TOKEN" "$BASE/client/canaries")
+CANARY_SYNC_STATUS=$(echo "$CANARY_SYNC" | jq 'type')
+assert_eq "Client canary endpoint returns array" '"array"' "$CANARY_SYNC_STATUS"
+
+
+# === Test 13: Admin Pages ===
+echo ""
+echo -e "${YELLOW}[13] Admin Panel Pages${NC}"
+
+for page in "" services keys placeholders clients groups approvals logs notifications canary; do
   STATUS=$(curl -s -b /tmp/dw-e2e-cookies -o /dev/null -w "%{http_code}" "$BASE/admin/$page")
   assert_eq "GET /admin/$page returns 200" "200" "$STATUS"
 done
 
 
-# === Test 13: Unit Tests ===
+# === Test 14: Unit Tests ===
 echo ""
-echo -e "${YELLOW}[13] Unit Tests${NC}"
+echo -e "${YELLOW}[14] Unit Tests${NC}"
 
 UNIT=$(go test ./internal/server/services/ 2>&1)
 if echo "$UNIT" | grep -q "^ok"; then

@@ -1,0 +1,157 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Canary Tokens</h1>
+</div>
+
+<div class="card">
+  <h3>Settings</h3>
+  <p class="text-sm text-muted mb-1">When a client registers, Duckway auto-generates canary tokens via <a href="https://canarytokens.org" target="_blank">canarytokens.org</a>. If an attacker steals these decoy credentials and uses them, you'll get an email alert.</p>
+
+  <form id="canary-settings-form" class="mt-2">
+    <div class="form-group">
+      <label>Alert Email</label>
+      <input type="email" id="canary-email" placeholder="you@example.com">
+    </div>
+    <div class="form-group">
+      <label>Canary Token Types</label>
+      <div id="canary-types"></div>
+    </div>
+    <button type="submit" class="btn btn-primary">Save Settings</button>
+  </form>
+</div>
+
+<div class="card mt-2">
+  <h3>How It Works</h3>
+  <table>
+    <thead><tr><th>Type</th><th>What gets deployed</th><th>Where on client</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="badge badge-blue">aws_keys</span></td>
+        <td>Fake AWS access key + secret key</td>
+        <td class="mono text-sm">~/.aws/credentials</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-blue">github</span></td>
+        <td>Fake GitHub personal access token</td>
+        <td class="mono text-sm">~/.config/gh/canary_token</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="text-sm text-muted mt-1">Canary tokens are placed in realistic paths but NOT in <code>keys.env</code>, so AI agents use the real placeholder keys. Attackers who steal files from the machine will find these decoys and trigger an alert when they use them.</p>
+</div>
+
+<div class="card mt-2">
+  <h3>Deployed Canary Tokens</h3>
+  <div id="canary-tokens-list">
+    <p class="text-muted text-sm">Select a client to view their canary tokens.</p>
+    <div class="form-group mt-1">
+      <select id="canary-client-select" onchange="loadClientCanaries()">
+        <option value="">Select client...</option>
+      </select>
+    </div>
+    <div id="canary-tokens-table"></div>
+  </div>
+</div>
+
+<script>
+// Load settings on page load
+document.addEventListener('DOMContentLoaded', function() {
+  fetch('/api/canary/settings', {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      document.getElementById('canary-email').value = data.email || '';
+
+      var typesDiv = document.getElementById('canary-types');
+      var enabled = data.enabled_types || [];
+      (data.available_types || []).forEach(function(t) {
+        var checked = enabled.indexOf(t.type) >= 0;
+        var label = document.createElement('label');
+        label.style.display = 'block';
+        label.style.marginBottom = '0.5rem';
+        label.innerHTML = '<input type="checkbox" name="canary_type" value="' + t.type + '"' +
+          (checked ? ' checked' : '') + '> <strong>' + t.name + '</strong> — <span class="text-muted text-sm">' + t.description + '</span>';
+        typesDiv.appendChild(label);
+      });
+    });
+
+  // Load clients into dropdown
+  fetch('/api/clients', {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(clients) {
+      var sel = document.getElementById('canary-client-select');
+      clients.forEach(function(c) {
+        var opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name;
+        opt.dataset.name = c.name;
+        sel.appendChild(opt);
+      });
+    });
+});
+
+// Save settings
+document.getElementById('canary-settings-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var email = document.getElementById('canary-email').value;
+  var types = [];
+  document.querySelectorAll('input[name="canary_type"]:checked').forEach(function(cb) {
+    types.push(cb.value);
+  });
+
+  fetch('/api/canary/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({email: email, enabled_types: types}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Canary settings saved', 'success');
+  });
+});
+
+function loadClientCanaries() {
+  var sel = document.getElementById('canary-client-select');
+  var clientId = sel.value;
+  var clientName = sel.options[sel.selectedIndex].dataset.name || '';
+  var div = document.getElementById('canary-tokens-table');
+
+  if (!clientId) { div.innerHTML = ''; return; }
+
+  fetch('/api/canary/clients/' + clientId, {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(tokens) {
+      if (!tokens || tokens.length === 0) {
+        div.innerHTML = '<p class="text-muted text-sm mt-1">No canary tokens for this client. ' +
+          '<button class="btn btn-sm btn-primary" onclick="generateCanaries(\'' + clientId + '\',\'' + clientName + '\')">Generate Now</button></p>';
+        return;
+      }
+
+      var html = '<table class="mt-1"><thead><tr><th>Type</th><th>Token Value</th><th>Deploy Path</th><th>Created</th></tr></thead><tbody>';
+      tokens.forEach(function(t) {
+        html += '<tr>' +
+          '<td><span class="badge badge-blue">' + t.token_type + '</span></td>' +
+          '<td class="mono text-sm">' + t.token_value.substring(0, 20) + '...</td>' +
+          '<td class="mono text-sm">~/' + t.deploy_path + '</td>' +
+          '<td class="text-muted text-sm">' + t.created_at + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      div.innerHTML = html;
+    });
+}
+
+function generateCanaries(clientId, clientName) {
+  fetch('/api/canary/clients/' + clientId + '/generate?name=' + encodeURIComponent(clientName), {
+    method: 'POST',
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Canary tokens generated', 'success');
+    loadClientCanaries();
+  });
+}
+</script>
+{{end}}

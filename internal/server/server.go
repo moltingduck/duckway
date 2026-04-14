@@ -67,11 +67,13 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	requestLogQ := queries.NewRequestLogQueries(s.db)
 
 	notifQ := queries.NewNotificationQueries(s.db)
+	canaryQ := queries.NewCanaryQueries(s.db)
 
 	// Services
 	crypto := services.NewCrypto(s.config.EncryptionKey)
 	resolver := services.NewKeyResolver(crypto, apiKeyQ, placeholderQ, groupQ, approvalQ)
 	notifier := services.NewNotifier(notifQ)
+	canarySvc := services.NewCanaryService(canaryQ)
 
 	// Middleware
 	adminAuth := middleware.NewAdminAuth(s.config.SessionSecret)
@@ -82,10 +84,11 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	serviceH := handlers.NewServiceHandler(serviceQ)
 	apiKeyH := handlers.NewAPIKeyHandler(apiKeyQ, serviceQ, crypto)
 	placeholderH := handlers.NewPlaceholderHandler(placeholderQ, serviceQ, clientQ)
-	clientH := handlers.NewClientHandler(clientQ, placeholderQ)
+	clientH := handlers.NewClientHandler(clientQ, placeholderQ, canarySvc)
 	groupH := handlers.NewGroupHandler(groupQ, serviceQ)
 	approvalH := handlers.NewApprovalHandler(approvalQ, placeholderQ)
 	notifH := handlers.NewNotificationHandler(notifQ)
+	canaryH := handlers.NewCanaryHandler(canaryQ, canarySvc)
 	proxyH := handlers.NewProxyHandler(serviceQ, resolver, requestLogQ, approvalQ, notifier)
 	adminPageH := handlers.NewAdminHandler(contentFS, userQ, serviceQ, apiKeyQ, placeholderQ, clientQ, groupQ, approvalQ, requestLogQ, notifQ, adminAuth)
 
@@ -111,6 +114,7 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	adminPageMux.HandleFunc("GET /admin/approvals", adminPageH.ApprovalsPage)
 	adminPageMux.HandleFunc("GET /admin/logs", adminPageH.LogsPage)
 	adminPageMux.HandleFunc("GET /admin/notifications", adminPageH.NotificationsPage)
+	adminPageMux.HandleFunc("GET /admin/canary", adminPageH.CanaryPage)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/approve", adminPageH.ApproveAction)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/reject", adminPageH.RejectAction)
 	s.mux.Handle("/admin/", adminAuth.Middleware(adminPageMux))
@@ -153,11 +157,17 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	adminAPIMux.HandleFunc("POST /api/notifications", notifH.Create)
 	adminAPIMux.HandleFunc("DELETE /api/notifications/{id}", notifH.Delete)
 
+	adminAPIMux.HandleFunc("GET /api/canary/settings", canaryH.GetSettings)
+	adminAPIMux.HandleFunc("POST /api/canary/settings", canaryH.SaveSettings)
+	adminAPIMux.HandleFunc("GET /api/canary/clients/{clientId}", canaryH.ListByClient)
+	adminAPIMux.HandleFunc("POST /api/canary/clients/{clientId}/generate", canaryH.GenerateForClient)
+
 	s.mux.Handle("/api/", adminAuth.Middleware(adminAPIMux))
 
 	// Client routes (require client auth)
 	clientMux := http.NewServeMux()
 	clientMux.HandleFunc("GET /client/keys", clientH.GetKeys)
+	clientMux.HandleFunc("GET /client/canaries", canaryH.ClientGetCanaries)
 	s.mux.Handle("/client/", clientAuth.Middleware(clientMux))
 
 	// Proxy routes (require client auth)
