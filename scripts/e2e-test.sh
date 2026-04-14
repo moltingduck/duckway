@@ -109,7 +109,7 @@ SKILL=$(curl -s "$BASE/skill/duckway-agent.md" | head -1)
 assert_contains "Skill file serves" "Duckway" "$SKILL"
 
 
-# === Test 2: Auth ===
+# === Test 2: Auth + Session Redirect ===
 echo ""
 echo -e "${YELLOW}[2] Authentication${NC}"
 
@@ -117,6 +117,21 @@ RESULT=$(curl -s -X POST "$BASE/api/auth/login" \
   -H "Content-Type: application/json" \
   -d '{"username":"wrong","password":"wrong"}' | jq -r '.error // ""')
 assert_eq "Bad credentials rejected" "invalid credentials" "$RESULT"
+
+# No cookie → admin pages redirect to login
+REDIR=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/admin/")
+assert_eq "No session → admin page redirects (303)" "303" "$REDIR"
+
+REDIR_LOC=$(curl -s -o /dev/null -w "%{redirect_url}" "$BASE/admin/services")
+assert_contains "Redirect goes to /admin/login" "/admin/login" "$REDIR_LOC"
+
+# No cookie → API returns JSON 401
+API_NO_AUTH=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/api/services")
+assert_eq "No session → API returns 401" "401" "$API_NO_AUTH"
+
+# Expired/fake cookie → redirect
+REDIR_BAD=$(curl -s -o /dev/null -w "%{http_code}" -b "duckway_session=invalid_garbage" "$BASE/admin/clients")
+assert_eq "Bad session → admin page redirects (303)" "303" "$REDIR_BAD"
 
 RESULT=$(curl -s -c /tmp/dw-e2e-cookies -X POST "$BASE/api/auth/login" \
   -H "Content-Type: application/json" \
@@ -425,6 +440,24 @@ assert_eq "Generate canary endpoint responds" "200" "$GEN_STATUS"
 CANARY_SYNC=$(curl -s -H "X-Duckway-Token: $CLIENT_TOKEN" "$BASE/client/canaries")
 CANARY_SYNC_STATUS=$(echo "$CANARY_SYNC" | jq 'type')
 assert_eq "Client canary endpoint returns array" '"array"' "$CANARY_SYNC_STATUS"
+
+# Verify available types are returned with all fields
+AVAIL_COUNT=$(echo "$CANARY_GET" | jq '.available_types | length')
+assert_eq "16 canary types available" "16" "$AVAIL_COUNT"
+
+# Check types have required fields
+FIRST_TYPE=$(echo "$CANARY_GET" | jq -r '.available_types[0].type')
+assert_not_empty "Type has 'type' field" "$FIRST_TYPE"
+
+HAS_PATH=$(echo "$CANARY_GET" | jq -r '.available_types[0].deploy_path')
+assert_not_empty "Type has 'deploy_path' field" "$HAS_PATH"
+
+HAS_DEFAULT=$(echo "$CANARY_GET" | jq -r '.available_types[0].default_enabled')
+assert_not_empty "Type has 'default_enabled' field" "$HAS_DEFAULT"
+
+# Verify no canary API works without auth
+CANARY_NO_AUTH=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/api/canary/settings")
+assert_eq "Canary settings requires auth" "401" "$CANARY_NO_AUTH"
 
 
 # === Test 14: Admin Pages ===
