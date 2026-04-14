@@ -103,6 +103,22 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Heartbeat service: respond directly, no upstream
+	if strings.HasPrefix(svc.UpstreamURL, "internal://") {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "ok",
+			"service": "duckway-heartbeat",
+			"client":  client.Name,
+			"proxy":   true,
+			"path":    upstreamPath,
+		})
+		if h.requestLog != nil {
+			h.requestLog.Log(client.ID, serviceName, r.Method, upstreamPath, 200)
+		}
+		return
+	}
+
 	// Buffer body for permission checking
 	var bodyBytes []byte
 	if r.Body != nil {

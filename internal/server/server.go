@@ -84,7 +84,7 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	serviceH := handlers.NewServiceHandler(serviceQ)
 	apiKeyH := handlers.NewAPIKeyHandler(apiKeyQ, serviceQ, crypto)
 	placeholderH := handlers.NewPlaceholderHandler(placeholderQ, serviceQ, clientQ)
-	clientH := handlers.NewClientHandler(clientQ, placeholderQ, serviceQ, canarySvc)
+	clientH := handlers.NewClientHandler(clientQ, placeholderQ, serviceQ, apiKeyQ, canarySvc)
 	groupH := handlers.NewGroupHandler(groupQ, serviceQ)
 	approvalH := handlers.NewApprovalHandler(approvalQ, placeholderQ)
 	notifH := handlers.NewNotificationHandler(notifQ)
@@ -246,6 +246,19 @@ func (s *Server) seedDefaultServices() error {
 
 	defaults := []models.Service{
 		{
+			Name:         "heartbeat",
+			DisplayName:  "Duckway Heartbeat",
+			UpstreamURL:  "internal://heartbeat",
+			HostPattern:  "heartbeat",
+			AuthType:     "bearer",
+			AuthHeader:   "Authorization",
+			AuthPrefix:   "Bearer ",
+			KeyPrefix:    "dw-hb-",
+			KeyLength:    32,
+			KeyDirectory: "",
+			IsActive:     true,
+		},
+		{
 			Name:         "openai",
 			DisplayName:  "OpenAI API",
 			UpstreamURL:  "https://api.openai.com",
@@ -320,6 +333,22 @@ func (s *Server) seedDefaultServices() error {
 		}
 	}
 
-	log.Printf("Seeded %d default services (openai, anthropic, github, discord, telegram)", len(defaults))
+	// Create a dummy API key for the heartbeat service
+	hbSvc, err := svcQ.GetByName("heartbeat")
+	if err == nil {
+		crypto := services.NewCrypto(s.config.EncryptionKey)
+		enc, _ := crypto.Encrypt("internal-heartbeat-key")
+		apiKeyQ := queries.NewAPIKeyQueries(s.db)
+		keyID, _ := services.GenerateToken(16)
+		apiKeyQ.Create(&models.APIKey{
+			ID:           keyID,
+			ServiceID:    hbSvc.ID,
+			Name:         "Heartbeat Internal",
+			KeyEncrypted: enc,
+			IsActive:     true,
+		})
+	}
+
+	log.Printf("Seeded %d default services (heartbeat, openai, anthropic, github, discord, telegram)", len(defaults))
 	return nil
 }

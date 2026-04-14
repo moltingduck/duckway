@@ -14,11 +14,12 @@ type ClientHandler struct {
 	clients      *queries.ClientQueries
 	placeholders *queries.PlaceholderQueries
 	services     *queries.ServiceQueries
+	apiKeys      *queries.APIKeyQueries
 	canarySvc    *svc.CanaryService
 }
 
-func NewClientHandler(clients *queries.ClientQueries, placeholders *queries.PlaceholderQueries, services *queries.ServiceQueries, canarySvc *svc.CanaryService) *ClientHandler {
-	return &ClientHandler{clients: clients, placeholders: placeholders, services: services, canarySvc: canarySvc}
+func NewClientHandler(clients *queries.ClientQueries, placeholders *queries.PlaceholderQueries, services *queries.ServiceQueries, apiKeys *queries.APIKeyQueries, canarySvc *svc.CanaryService) *ClientHandler {
+	return &ClientHandler{clients: clients, placeholders: placeholders, services: services, apiKeys: apiKeys, canarySvc: canarySvc}
 }
 
 // Admin: list all clients
@@ -70,6 +71,9 @@ func (h *ClientHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-assign heartbeat placeholder key
+	h.assignHeartbeat(id)
+
 	// Generate canary tokens in background
 	if h.canarySvc != nil {
 		go func() {
@@ -95,6 +99,52 @@ func (h *ClientHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]string{"status": "deleted"})
+}
+
+func (h *ClientHandler) assignHeartbeat(clientID string) {
+	if h.services == nil {
+		return
+	}
+	hbSvc, err := h.services.GetByName("heartbeat")
+	if err != nil {
+		return
+	}
+
+	// Check if already assigned
+	_, err = h.placeholders.GetByClientAndService(clientID, hbSvc.ID)
+	if err == nil {
+		return
+	}
+
+	// Find the heartbeat API key
+	keys, err := h.apiKeys.List(hbSvc.ID)
+	if err != nil || len(keys) == 0 {
+		log.Printf("No heartbeat API key found, skipping")
+		return
+	}
+	keyID := keys[0].ID
+
+	placeholder, err := svc.GeneratePlaceholder(hbSvc.KeyPrefix, hbSvc.KeyLength)
+	if err != nil {
+		log.Printf("Failed to generate heartbeat placeholder: %v", err)
+		return
+	}
+
+	phID, _ := svc.GenerateToken(16)
+	ph := &models.PlaceholderKey{
+		ID:                 phID,
+		EnvName:            "DUCKWAY_HEARTBEAT",
+		Placeholder:        placeholder,
+		ServiceID:          hbSvc.ID,
+		APIKeyID:           &keyID,
+		ClientID:           clientID,
+		RequiresApproval:   false,
+		ApprovalTTLMinutes: 0,
+		IsActive:           true,
+	}
+	if err := h.placeholders.Create(ph); err != nil {
+		log.Printf("Failed to create heartbeat placeholder: %v", err)
+	}
 }
 
 // Admin: toggle canary enabled for a client

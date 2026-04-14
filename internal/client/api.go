@@ -86,6 +86,27 @@ func (c *APIClient) FetchCanaries() ([]CanaryDeploy, error) {
 	return canaries, nil
 }
 
+// Heartbeat tests the proxy path by calling /proxy/heartbeat/ping
+func (c *APIClient) Heartbeat() error {
+	req, err := http.NewRequest("GET", c.baseURL+"/proxy/heartbeat/ping", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("proxy unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("heartbeat returned %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 func (c *APIClient) Ping() error {
 	req, err := http.NewRequest("GET", c.baseURL+"/client/keys", nil)
 	if err != nil {

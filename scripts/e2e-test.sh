@@ -134,9 +134,9 @@ echo -e "${YELLOW}[3] Default Services${NC}"
 
 SERVICES=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services")
 SVC_COUNT=$(echo "$SERVICES" | jq 'length')
-assert_eq "5 default services seeded" "5" "$SVC_COUNT"
+assert_eq "6 default services seeded" "6" "$SVC_COUNT"
 
-for name in openai anthropic github discord telegram; do
+for name in heartbeat openai anthropic github discord telegram; do
   FOUND=$(echo "$SERVICES" | jq -r ".[] | select(.name==\"$name\") | .name")
   assert_eq "Service '$name' exists" "$name" "$FOUND"
 done
@@ -170,7 +170,7 @@ KEY3_ID=$(echo "$KEY3" | jq -r '.id')
 assert_not_empty "Create GitHub key" "$KEY3_ID"
 
 KEY_COUNT=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/keys" | jq 'length')
-assert_eq "3 API keys exist" "3" "$KEY_COUNT"
+assert_eq "4 API keys exist (3 + heartbeat)" "4" "$KEY_COUNT"
 
 
 # === Test 5: Client Registration ===
@@ -225,7 +225,7 @@ echo -e "${YELLOW}[7] Client Key Sync (API)${NC}"
 
 KEYS=$(curl -s -H "X-Duckway-Token: $CLIENT_TOKEN" "$BASE/client/keys")
 SYNC_COUNT=$(echo "$KEYS" | jq 'length')
-assert_eq "Client syncs 3 keys" "3" "$SYNC_COUNT"
+assert_eq "Client syncs 4 keys (3 + heartbeat)" "4" "$SYNC_COUNT"
 
 SYNCED_ENVS=$(echo "$KEYS" | jq -r '.[].env_name' | sort | tr '\n' ',')
 assert_contains "Has OPENAI_API_KEY" "OPENAI_API_KEY" "$SYNCED_ENVS"
@@ -250,7 +250,7 @@ DEOF"
 
 # Run sync
 SYNC_OUT=$(docker exec duckway-e2e-client duckway sync 2>&1)
-assert_contains "Docker sync succeeds" "Synced 3" "$SYNC_OUT"
+assert_contains "Docker sync succeeds" "Synced 4" "$SYNC_OUT"
 
 # Check keys.env
 KEYS_ENV=$(docker exec duckway-e2e-client cat /root/.duckway/keys.env)
@@ -266,7 +266,7 @@ assert_contains "duckway env exports OPENAI_API_KEY" "export OPENAI_API_KEY=" "$
 # Run status
 STATUS_OUT=$(docker exec duckway-e2e-client duckway status 2>&1)
 assert_contains "duckway status shows OK" "Connection:  OK" "$STATUS_OUT"
-assert_contains "duckway status shows 3 keys" "3 placeholder" "$STATUS_OUT"
+assert_contains "duckway status shows 4 keys" "4 placeholder" "$STATUS_OUT"
 
 
 # === Test 9: Proxy (key injection) ===
@@ -283,6 +283,10 @@ assert_contains "Proxy injects real key (OpenAI)" "invalid_api_key" "$PROXY_RESP
 PROXY_RESP2=$(curl -s -X GET "$BASE/proxy/github/user" \
   -H "X-Duckway-Token: $CLIENT_TOKEN")
 assert_contains "Proxy reaches GitHub upstream" "Bad credentials" "$PROXY_RESP2"
+
+HEARTBEAT=$(curl -s "$BASE/proxy/heartbeat/ping" \
+  -H "X-Duckway-Token: $CLIENT_TOKEN")
+assert_contains "Heartbeat responds OK" "duckway-heartbeat" "$HEARTBEAT"
 
 
 # === Test 10: Approval Workflow ===
