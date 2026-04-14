@@ -69,8 +69,12 @@ var allTypes = [];
 
 document.addEventListener('DOMContentLoaded', function() {
   fetch('/api/canary/settings', {credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      if (r.status === 401 || r.redirected) { window.location = '/admin/login'; return; }
+      return r.json();
+    })
     .then(function(data) {
+      if (!data) return;
       document.getElementById('canary-email').value = data.email || '';
       if (!data.email) {
         document.getElementById('canary-warning').style.display = 'block';
