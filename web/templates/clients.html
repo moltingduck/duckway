@@ -361,25 +361,23 @@ document.getElementById('add-client-form').addEventListener('submit', function(e
     });
 });
 
-function copyToken() {
-  document.getElementById('token-value').select();
+function copyToClipboard(text) {
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
   document.execCommand('copy');
+  document.body.removeChild(ta);
+}
+function copyToken() {
+  copyToClipboard(document.getElementById('token-value').value);
   showToast('Token copied', 'success');
 }
 function copyCmd() {
-  var text = document.getElementById('init-cmd').textContent;
-  navigator.clipboard.writeText(text).then(function() {
-    showToast('Command copied', 'success');
-  }, function() {
-    // Fallback
-    var ta = document.createElement('textarea');
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    showToast('Command copied', 'success');
-  });
+  copyToClipboard(document.getElementById('init-cmd').textContent);
+  showToast('Command copied', 'success');
 }
 function dismissToken() {
   document.getElementById('token-modal').style.display = 'none';
