@@ -3,6 +3,7 @@
 /client
 /duckway
 *.exe
+/dist/
 
 # Data
 *.db
