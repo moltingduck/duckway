@@ -120,6 +120,21 @@ func cmdInit(configDir string) {
 	// Write proxy env script
 	client.WriteProxyEnvScript(configDir, cfg.ProxyPort)
 
+	// Download CA cert for HTTPS proxy
+	if err := api.DownloadCA(configDir); err != nil {
+		log.Printf("Warning: CA cert download failed: %v", err)
+		log.Printf("HTTPS proxy MITM will not work — only HTTP proxy mode available")
+	} else {
+		fmt.Println("CA certificate downloaded for HTTPS proxy")
+		// Try to install to system trust store
+		if err := client.InstallCACert(configDir); err != nil {
+			log.Printf("Warning: could not install CA to system trust store: %v", err)
+			fmt.Printf("Manually install: sudo cp %s/ca.pem /usr/local/share/ca-certificates/duckway.crt && sudo update-ca-certificates\n", configDir)
+		} else {
+			fmt.Println("CA certificate installed to system trust store")
+		}
+	}
+
 	// Initial sync
 	count, err := client.SyncKeys(configDir, cfg)
 	if err != nil {
@@ -129,10 +144,10 @@ func cmdInit(configDir string) {
 	}
 
 	fmt.Printf("\nConfig saved to %s/config.yaml\n", configDir)
-	fmt.Println("Next steps:")
-	fmt.Println("  duckway proxy    — start local proxy")
-	fmt.Println("  duckway env      — print env vars")
-	fmt.Printf("  source %s/proxy-env.sh — set proxy env vars\n", configDir)
+	fmt.Println("\nNext steps:")
+	fmt.Println("  duckway proxy              — start HTTPS proxy")
+	fmt.Printf("  export HTTPS_PROXY=http://localhost:%d\n", cfg.ProxyPort)
+	fmt.Printf("  export HTTP_PROXY=http://localhost:%d\n", cfg.ProxyPort)
 }
 
 func cmdSync(configDir string) {
@@ -169,7 +184,7 @@ func cmdProxy(configDir string) {
 	}
 
 	syncInterval := 5 * time.Minute
-	if err := client.RunProxy(cfg, syncInterval); err != nil {
+	if err := client.RunHTTPSProxy(cfg, syncInterval); err != nil {
 		log.Fatal(err)
 	}
 }

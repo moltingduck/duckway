@@ -3,10 +3,12 @@ package server
 import (
 	"database/sql"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -178,10 +180,22 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 
 	s.mux.Handle("/api/", adminAuth.Middleware(adminAPIMux))
 
+	// CA certificate (generate early so client routes can reference it)
+	ca, caErr := services.LoadOrCreateCA(s.config.DataDir)
+	if caErr != nil {
+		log.Printf("Warning: CA cert generation failed: %v", caErr)
+	}
+
 	// Client routes (require client auth)
 	clientMux := http.NewServeMux()
 	clientMux.HandleFunc("GET /client/keys", clientH.GetKeys)
 	clientMux.HandleFunc("GET /client/canaries", canaryH.ClientGetCanaries)
+	if ca != nil {
+		clientMux.HandleFunc("GET /client/ca-key", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/x-pem-file")
+			w.Write(ca.KeyPEM)
+		})
+	}
 	s.mux.Handle("/client/", clientAuth.Middleware(clientMux))
 
 	// Proxy routes (require client auth)
@@ -193,7 +207,7 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	internalH := handlers.NewInternalHandler(resolver)
 	s.mux.HandleFunc("POST /internal/resolve", internalH.Resolve)
 
-	// Skill file (public, no auth)
+	// Skill + CA cert (public, no auth)
 	s.mux.HandleFunc("GET /skill/duckway-agent.md", func(w http.ResponseWriter, r *http.Request) {
 		data, err := skill.Content.ReadFile("duckway-agent.md")
 		if err != nil {
@@ -203,6 +217,34 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 		w.Write(data)
 	})
+
+	// Service host map for HTTPS proxy (public, tells client which hosts to MITM)
+	s.mux.HandleFunc("GET /client/services", func(w http.ResponseWriter, r *http.Request) {
+		svcs, _ := serviceQ.List()
+		type svcInfo struct {
+			Name        string `json:"name"`
+			HostPattern string `json:"host_pattern"`
+			UpstreamURL string `json:"upstream_url"`
+		}
+		var result []svcInfo
+		for _, svc := range svcs {
+			if svc.IsActive && !strings.HasPrefix(svc.UpstreamURL, "internal://") {
+				result = append(result, svcInfo{Name: svc.Name, HostPattern: svc.HostPattern, UpstreamURL: svc.UpstreamURL})
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	})
+
+	// CA certificate download (public)
+	if ca != nil {
+		s.mux.HandleFunc("GET /skill/ca.pem", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/x-pem-file")
+			w.Header().Set("Content-Disposition", "attachment; filename=duckway-ca.pem")
+			w.Write(ca.CertPEM)
+		})
+		log.Printf("CA certificate available at /skill/ca.pem")
+	}
 
 	// Root redirect to admin
 	s.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {

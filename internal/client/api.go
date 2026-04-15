@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 )
 
 // APIClient talks to the Duckway server.
@@ -104,6 +105,37 @@ func (c *APIClient) Heartbeat() error {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("heartbeat returned %d: %s", resp.StatusCode, string(body))
 	}
+	return nil
+}
+
+// DownloadCA downloads the CA cert and key from the server.
+func (c *APIClient) DownloadCA(configDir string) error {
+	// Download cert
+	resp, err := c.httpClient.Get(c.baseURL + "/skill/ca.pem")
+	if err != nil {
+		return fmt.Errorf("download CA cert: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("CA cert not available (status %d)", resp.StatusCode)
+	}
+	certPEM, _ := io.ReadAll(resp.Body)
+
+	// Download key (requires client auth)
+	req, _ := http.NewRequest("GET", c.baseURL+"/client/ca-key", nil)
+	req.Header.Set("X-Duckway-Token", c.token)
+	resp2, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("download CA key: %w", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		return fmt.Errorf("CA key not available (status %d)", resp2.StatusCode)
+	}
+	keyPEM, _ := io.ReadAll(resp2.Body)
+
+	os.WriteFile(configDir+"/ca.pem", certPEM, 0644)
+	os.WriteFile(configDir+"/ca-key.pem", keyPEM, 0600)
 	return nil
 }
 
