@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -227,5 +228,32 @@ func cmdStatus(configDir string) {
 		fmt.Println("Heartbeat:   OK (proxy reachable)")
 	} else {
 		fmt.Printf("Heartbeat:   FAILED (%v)\n", hbResult)
+	}
+
+	// Check if local proxy is running
+	proxyURL := fmt.Sprintf("http://localhost:%d", cfg.ProxyPort)
+	proxyRunning := false
+	resp, err := http.Get(proxyURL + "/proxy/heartbeat/ping")
+	if err == nil {
+		resp.Body.Close()
+		// The proxy doesn't handle plain GET without token, but if we get a response it's alive
+		proxyRunning = true
+	}
+
+	if proxyRunning {
+		fmt.Printf("Local proxy: RUNNING on %s\n", proxyURL)
+		fmt.Printf("  export HTTPS_PROXY=%s\n", proxyURL)
+		fmt.Printf("  export HTTP_PROXY=%s\n", proxyURL)
+	} else {
+		fmt.Printf("Local proxy: NOT RUNNING (start with: duckway proxy)\n")
+		fmt.Printf("  Will listen on %s\n", proxyURL)
+	}
+
+	// Check CA cert
+	caPath := configDir + "/ca.pem"
+	if _, err := os.Stat(caPath); err == nil {
+		fmt.Println("CA cert:     installed")
+	} else {
+		fmt.Println("CA cert:     MISSING (run duckway init to download)")
 	}
 }
