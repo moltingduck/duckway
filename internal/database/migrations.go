@@ -58,7 +58,8 @@ var migrations = []string{
 
 	`CREATE TABLE IF NOT EXISTS clients (
 		id              TEXT PRIMARY KEY,
-		name            TEXT NOT NULL,
+		short_id        TEXT NOT NULL DEFAULT '',
+		name            TEXT NOT NULL UNIQUE,
 		token_hash      TEXT NOT NULL UNIQUE,
 		is_active       INTEGER NOT NULL DEFAULT 1,
 		canary_enabled  INTEGER NOT NULL DEFAULT 1,
@@ -161,6 +162,7 @@ func runMigrations(db *sql.DB) error {
 	// Safe column additions for existing databases
 	safeAlters := []string{
 		"ALTER TABLE clients ADD COLUMN canary_enabled INTEGER NOT NULL DEFAULT 1",
+		"ALTER TABLE clients ADD COLUMN short_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE canary_settings ADD COLUMN exclude_clients TEXT NOT NULL DEFAULT '[]'",
 		"ALTER TABLE services ADD COLUMN key_directory TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE placeholder_keys ADD COLUMN key_path TEXT NOT NULL DEFAULT ''",

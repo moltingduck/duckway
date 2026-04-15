@@ -365,16 +365,16 @@ func NewCanaryService(canaryQ *queries.CanaryQueries) *CanaryService {
 // GenerateForClient creates canary tokens for a client based on settings.
 // Called automatically on client registration unless the client is excluded
 // or has canary_enabled=false.
-func (s *CanaryService) GenerateForClient(clientID, clientName string) error {
+func (s *CanaryService) GenerateForClient(clientID, clientName, shortID string) error {
 	// Skip if tokens already exist for this client
 	existing, _ := s.canaryQ.ListByClient(clientID)
 	if len(existing) > 0 {
 		return nil
 	}
-	return s.generateForClientInner(clientID, clientName)
+	return s.generateForClientInner(clientID, clientName, shortID)
 }
 
-func (s *CanaryService) generateForClientInner(clientID, clientName string) error {
+func (s *CanaryService) generateForClientInner(clientID, clientName, shortID string) error {
 	settings, err := s.canaryQ.GetSettings()
 	if err != nil {
 		return fmt.Errorf("get settings: %w", err)
@@ -383,6 +383,9 @@ func (s *CanaryService) generateForClientInner(clientID, clientName string) erro
 	if settings.Email == "" {
 		return nil
 	}
+
+	// Build per-client tagged email: user+shortid@gmail.com
+	email := tagEmail(settings.Email, shortID)
 
 	// Check exclude list
 	var excludeList []string
@@ -415,9 +418,9 @@ func (s *CanaryService) generateForClientInner(clientID, clientName string) erro
 		memo := fmt.Sprintf("duckway-canary/%s/%s", clientName, typeName)
 
 		if tokenType.Category == "api" {
-			s.generateAPIToken(tokenType, clientID, clientName, settings.Email, memo)
+			s.generateAPIToken(tokenType, clientID, clientName, email, memo)
 		} else {
-			s.generateLocalToken(tokenType, clientID, clientName, settings.Email, memo)
+			s.generateLocalToken(tokenType, clientID, clientName, email, memo)
 		}
 	}
 
@@ -425,10 +428,9 @@ func (s *CanaryService) generateForClientInner(clientID, clientName string) erro
 }
 
 // RegenerateForClient deletes existing tokens and generates fresh ones.
-func (s *CanaryService) RegenerateForClient(clientID, clientName string) error {
+func (s *CanaryService) RegenerateForClient(clientID, clientName, shortID string) error {
 	s.canaryQ.DeleteByClient(clientID)
-	// Clear the skip check by calling the inner logic directly
-	return s.generateForClientInner(clientID, clientName)
+	return s.generateForClientInner(clientID, clientName, shortID)
 }
 
 func (s *CanaryService) generateAPIToken(tokenType *CanaryTokenType, clientID, clientName, email, memo string) {
@@ -579,6 +581,20 @@ func randomBase64(n int) string {
 		b[i] = charset[int(b[i])%len(charset)]
 	}
 	return string(b)
+}
+
+// tagEmail adds a +shortid tag to an email address for per-client identification.
+// e.g., user@gmail.com + "abc123" → user+abc123@gmail.com
+// Works with Gmail, Outlook, and most email providers that support + addressing.
+func tagEmail(email, shortID string) string {
+	if shortID == "" {
+		return email
+	}
+	at := strings.LastIndex(email, "@")
+	if at < 0 {
+		return email
+	}
+	return email[:at] + "+" + shortID + email[at:]
 }
 
 func randomBase64Lines(lines int) string {

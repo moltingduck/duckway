@@ -108,7 +108,8 @@ func (h *CanaryHandler) GenerateForClient(w http.ResponseWriter, r *http.Request
 		clientName = clientID
 	}
 
-	if err := h.service.RegenerateForClient(clientID, clientName); err != nil {
+	shortID := r.URL.Query().Get("short_id")
+	if err := h.service.RegenerateForClient(clientID, clientName, shortID); err != nil {
 		jsonError(w, "failed to generate canary tokens: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -130,7 +131,7 @@ func (h *CanaryHandler) ClientGetCanaries(w http.ResponseWriter, r *http.Request
 	if client.CanaryEnabled {
 		existing, _ := h.canaryQ.ListByClient(client.ID)
 		if len(existing) == 0 {
-			h.service.GenerateForClient(client.ID, client.Name)
+			h.service.GenerateForClient(client.ID, client.Name, client.ShortID)
 		}
 	}
 

@@ -12,13 +12,14 @@
   <div class="flex-between">
     <div>
       <strong style="font-size:1.1rem">{{.Name}}</strong>
+      <code class="text-muted" style="font-size:0.75rem">{{.ShortID}}</code>
       {{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}
       <span class="text-muted text-sm" id="key-count-{{.ID}}"></span>
       <div class="text-muted text-sm">Last seen: {{if .LastSeenAt}}{{deref .LastSeenAt}}{{else}}Never{{end}}</div>
     </div>
     <div class="flex gap-sm">
       <button class="btn btn-sm btn-primary" onclick="openAssignModal('{{.ID}}','{{.Name}}')">Assign Key</button>
-      {{if .CanaryEnabled}}<button class="btn btn-sm" onclick="genCanary('{{.ID}}','{{.Name}}')">Gen Canary</button>{{end}}
+      {{if .CanaryEnabled}}<button class="btn btn-sm" onclick="genCanary('{{.ID}}','{{.Name}}','{{.ShortID}}')">Gen Canary</button>{{end}}
       <button class="btn btn-sm {{if .CanaryEnabled}}btn-primary{{else}}{{end}}" id="canary-btn-{{.ID}}"
         onclick="toggleCanary('{{.ID}}', {{if .CanaryEnabled}}false{{else}}true{{end}})">
         {{if .CanaryEnabled}}Canary: ON{{else}}Canary: OFF{{end}}
@@ -277,9 +278,9 @@ function showPhDetail(phId) {
   document.getElementById('ph-detail-modal').style.display = 'flex';
 }
 
-function genCanary(clientId, clientName) {
+function genCanary(clientId, clientName, shortId) {
   showToast('Generating canary tokens...', '');
-  fetch('/api/canary/clients/' + clientId + '/generate?name=' + encodeURIComponent(clientName), {
+  fetch('/api/canary/clients/' + clientId + '/generate?name=' + encodeURIComponent(clientName) + '&short_id=' + encodeURIComponent(shortId), {
     method: 'POST', credentials: 'same-origin'
   })
   .then(function(r) { return r.json(); })

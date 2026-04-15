@@ -56,6 +56,7 @@ type APIKeyGroupMember struct {
 
 type Client struct {
 	ID             string  `json:"id"`
+	ShortID        string  `json:"short_id"` // 6 alphanumeric chars, used for canary email tagging
 	Name           string  `json:"name"`
 	TokenHash      string  `json:"-"`
 	IsActive       bool    `json:"is_active"`

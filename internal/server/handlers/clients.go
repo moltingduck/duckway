@@ -51,6 +51,12 @@ func (h *ClientHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce unique name
+	if existing, _ := h.clients.GetByName(name); existing != nil {
+		jsonError(w, "client name '"+name+"' already exists", http.StatusConflict)
+		return
+	}
+
 	token, err := svc.GenerateToken(32)
 	if err != nil {
 		jsonError(w, "failed to generate token", http.StatusInternalServerError)
@@ -58,12 +64,14 @@ func (h *ClientHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id, _ := svc.GenerateToken(16)
+	shortID := svc.GenerateShortID()
 	client := &models.Client{
 		ID:            id,
+		ShortID:       shortID,
 		Name:          name,
 		TokenHash:     svc.HashToken(token),
 		IsActive:      true,
-		CanaryEnabled: true, // default on
+		CanaryEnabled: true,
 	}
 
 	if err := h.clients.Create(client); err != nil {
@@ -77,7 +85,7 @@ func (h *ClientHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Generate canary tokens in background
 	if h.canarySvc != nil {
 		go func() {
-			if err := h.canarySvc.GenerateForClient(id, name); err != nil {
+			if err := h.canarySvc.GenerateForClient(id, name, shortID); err != nil {
 				log.Printf("Canary token generation failed for %s: %v", name, err)
 			}
 		}()
@@ -85,9 +93,10 @@ func (h *ClientHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, map[string]string{
-		"id":    id,
-		"name":  name,
-		"token": token, // Shown only once
+		"id":       id,
+		"short_id": shortID,
+		"name":     name,
+		"token":    token, // Shown only once
 	})
 }
 

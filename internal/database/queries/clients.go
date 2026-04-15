@@ -14,10 +14,10 @@ func NewClientQueries(db *sql.DB) *ClientQueries {
 	return &ClientQueries{db: db}
 }
 
-const clientCols = "id, name, token_hash, is_active, canary_enabled, last_seen_at, created_at"
+const clientCols = "id, short_id, name, token_hash, is_active, canary_enabled, last_seen_at, created_at"
 
 func scanClient(row interface{ Scan(...interface{}) error }, c *models.Client) error {
-	return row.Scan(&c.ID, &c.Name, &c.TokenHash, &c.IsActive, &c.CanaryEnabled, &c.LastSeenAt, &c.CreatedAt)
+	return row.Scan(&c.ID, &c.ShortID, &c.Name, &c.TokenHash, &c.IsActive, &c.CanaryEnabled, &c.LastSeenAt, &c.CreatedAt)
 }
 
 func (q *ClientQueries) List() ([]models.Client, error) {
@@ -58,10 +58,19 @@ func (q *ClientQueries) GetByTokenHash(hash string) (*models.Client, error) {
 
 func (q *ClientQueries) Create(c *models.Client) error {
 	_, err := q.db.Exec(
-		"INSERT INTO clients (id, name, token_hash, canary_enabled) VALUES (?, ?, ?, ?)",
-		c.ID, c.Name, c.TokenHash, c.CanaryEnabled,
+		"INSERT INTO clients (id, short_id, name, token_hash, canary_enabled) VALUES (?, ?, ?, ?, ?)",
+		c.ID, c.ShortID, c.Name, c.TokenHash, c.CanaryEnabled,
 	)
 	return err
+}
+
+func (q *ClientQueries) GetByName(name string) (*models.Client, error) {
+	var c models.Client
+	err := scanClient(q.db.QueryRow("SELECT "+clientCols+" FROM clients WHERE name = ?", name), &c)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 func (q *ClientQueries) UpdateLastSeen(id string) error {
