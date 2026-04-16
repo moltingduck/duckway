@@ -437,6 +437,48 @@ curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/services/$OPENAI_ID/acl-templa
   -d '{"template_id":"allow-all"}' >/dev/null
 
 
+# === Test 11c: Per-API-key ACL ===
+echo ""
+echo -e "${YELLOW}[11c] API Key ACL${NC}"
+
+# List ACL templates for an API key
+KEY_TMPL=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/keys/$KEY1_ID/acl-templates")
+KEY_TMPL_COUNT=$(echo "$KEY_TMPL" | jq '.templates | length')
+if [ "$KEY_TMPL_COUNT" -ge 4 ]; then
+  echo -e "  ${GREEN}PASS${NC} API key has $KEY_TMPL_COUNT ACL templates"
+  PASS=$((PASS + 1))
+else
+  echo -e "  ${RED}FAIL${NC} Expected >=4 templates for key, got $KEY_TMPL_COUNT"
+  FAIL=$((FAIL + 1))
+fi
+
+# Apply chat-only to the API key
+KEY_APPLY=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY1_ID/acl-templates" \
+  -H "Content-Type: application/json" \
+  -d '{"template_id":"chat-only"}')
+assert_eq "Apply chat-only to API key" "ok" "$(echo "$KEY_APPLY" | jq -r '.status')"
+
+# Verify key has ACL set
+KEY_ACL=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/keys" | jq -r ".[] | select(.id==\"$KEY1_ID\") | .acl")
+assert_contains "API key ACL contains chat-only" "chat-only" "$KEY_ACL"
+
+# Test ACL blocks unlisted endpoint via the placeholder that uses this key
+ACL_KEY_DENIED=$(curl -s -X POST "$BASE/proxy/openai/v1/images/generations" \
+  -H "X-Duckway-Token: $CLIENT_ACL_TOKEN" \
+  -H "Content-Type: application/json" -d '{"prompt":"cat"}')
+assert_contains "API key ACL blocks images endpoint" "permission denied" "$ACL_KEY_DENIED"
+
+# Set custom ACL JSON
+CUSTOM_SET=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY1_ID/acl" \
+  -H "Content-Type: application/json" \
+  -d '{"acl":""}')
+assert_eq "Clear API key ACL" "ok" "$(echo "$CUSTOM_SET" | jq -r '.status')"
+
+# Verify it's cleared
+KEY_ACL_CLEARED=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/keys" | jq -r ".[] | select(.id==\"$KEY1_ID\") | .acl")
+assert_eq "API key ACL is empty after clear" "" "$KEY_ACL_CLEARED"
+
+
 # === Test 12: Permission System ===
 echo ""
 echo -e "${YELLOW}[12] Permission System${NC}"

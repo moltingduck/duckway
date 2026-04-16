@@ -25,14 +25,15 @@ type Service struct {
 }
 
 type APIKey struct {
-	ID           string `json:"id"`
-	ServiceID    string `json:"service_id"`
-	Name         string `json:"name"`
-	KeyEncrypted string `json:"-"`
-	IsActive     bool   `json:"is_active"`
-	UsageCount   int64  `json:"usage_count"`
+	ID           string  `json:"id"`
+	ServiceID    string  `json:"service_id"`
+	Name         string  `json:"name"`
+	KeyEncrypted string  `json:"-"`
+	ACL          string  `json:"acl"` // JSON permission config — overrides service default_acl
+	IsActive     bool    `json:"is_active"`
+	UsageCount   int64   `json:"usage_count"`
 	LastUsedAt   *string `json:"last_used_at"`
-	CreatedAt    string `json:"created_at"`
+	CreatedAt    string  `json:"created_at"`
 	// Joined fields
 	ServiceName string `json:"service_name,omitempty"`
 }

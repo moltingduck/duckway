@@ -30,7 +30,8 @@ type ResolveResult struct {
 	RealKey          string
 	APIKeyID         string
 	PlaceholderID    string
-	PermissionConfig string
+	PermissionConfig string // from placeholder_keys.permission_config
+	APIKeyACL        string // from api_keys.acl
 	Permitted        bool
 	NeedApproval     bool
 	Error            string
@@ -108,6 +109,7 @@ func (r *KeyResolver) Resolve(placeholder string, clientID string) (*ResolveResu
 		APIKeyID:         apiKey.ID,
 		PlaceholderID:    ph.ID,
 		PermissionConfig: permConfig,
+		APIKeyACL:        apiKey.ACL,
 		Permitted:        true,
 	}, nil
 }

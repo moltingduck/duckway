@@ -7,17 +7,19 @@
 <div class="card">
   <table>
     <thead>
-      <tr><th>Name</th><th>Service</th><th>Usage</th><th>Last Used</th><th>Status</th><th></th></tr>
+      <tr><th>Name</th><th>Service</th><th>ACL</th><th>Usage</th><th>Last Used</th><th>Status</th><th></th></tr>
     </thead>
     <tbody>
       {{range .Keys}}
       <tr id="key-{{.ID}}">
         <td><strong>{{.Name}}</strong></td>
         <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
+        <td>{{if .ACL}}<span class="badge badge-yellow">custom</span>{{else}}<span class="badge badge-gray">inherit</span>{{end}}</td>
         <td>{{.UsageCount}}</td>
         <td class="text-muted text-sm">{{if .LastUsedAt}}{{deref .LastUsedAt}}{{else}}Never{{end}}</td>
         <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
         <td class="text-right">
+          <button class="btn btn-sm" onclick="openKeyACL('{{.ID}}','{{.Name}}','{{.ServiceName}}')">ACL</button>
           <button class="btn btn-sm btn-danger"
             hx-delete="/api/keys/{{.ID}}"
             hx-target="#key-{{.ID}}"
@@ -26,7 +28,7 @@
         </td>
       </tr>
       {{else}}
-      <tr><td colspan="6" class="text-muted">No API keys. Add a service first, then add keys.</td></tr>
+      <tr><td colspan="7" class="text-muted">No API keys. Add a service first, then add keys.</td></tr>
       {{end}}
     </tbody>
   </table>
@@ -56,6 +58,124 @@
     </form>
   </div>
 </div>
+
+<!-- ACL modal -->
+<div id="acl-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:720px">
+    <h2>ACL for <span id="acl-key-name"></span></h2>
+    <p class="text-sm text-muted mb-1">
+      Restrict what this specific API key can do. This ACL applies to all placeholder keys using this key,
+      unless the placeholder has its own permission_config.
+      <br>Priority: <strong>placeholder</strong> > <strong>api key</strong> > <strong>service default</strong> > allow-all.
+    </p>
+
+    <input type="hidden" id="acl-key-id">
+    <div id="acl-templates-list"></div>
+
+    <div class="mt-2">
+      <label class="text-sm">Current ACL JSON</label>
+      <textarea id="acl-current-json" style="min-height:150px;font-family:monospace;font-size:0.75rem"></textarea>
+      <div class="flex gap-sm mt-1">
+        <button type="button" class="btn btn-sm" onclick="saveCustomACL()">Save Custom JSON</button>
+        <button type="button" class="btn btn-sm" onclick="clearACL()">Clear (inherit from service)</button>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button type="button" class="btn" onclick="document.getElementById('acl-modal').style.display='none'">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function openKeyACL(keyId, keyName, svcName) {
+  document.getElementById('acl-key-id').value = keyId;
+  document.getElementById('acl-key-name').textContent = keyName + ' (' + svcName + ')';
+  document.getElementById('acl-templates-list').innerHTML = '<p class="text-muted">Loading...</p>';
+  document.getElementById('acl-current-json').value = '';
+
+  fetch('/api/keys/' + keyId + '/acl-templates', {credentials:'same-origin'})
+    .then(function(r) {
+      if (r.status === 401) { window.location = '/admin/login'; return; }
+      return r.json();
+    })
+    .then(function(data) {
+      if (!data) return;
+      document.getElementById('acl-current-json').value = data.current || '';
+
+      var list = document.getElementById('acl-templates-list');
+      if (!data.templates || data.templates.length === 0) {
+        list.innerHTML = '<p class="text-muted">No templates available for this service.</p>';
+        return;
+      }
+
+      list.innerHTML = '';
+      data.templates.forEach(function(t) {
+        var isActive = (data.current || '') === t.config;
+        var card = document.createElement('div');
+        card.className = 'card';
+        card.style.marginBottom = '0.5rem';
+        card.style.padding = '0.75rem';
+        if (isActive) card.style.borderColor = 'var(--accent)';
+        card.innerHTML =
+          '<div class="flex-between">' +
+            '<div>' +
+              '<strong>' + t.name + '</strong>' +
+              (isActive ? ' <span class="badge badge-blue">active</span>' : '') +
+              '<div class="text-sm text-muted">' + t.description + '</div>' +
+            '</div>' +
+            '<button class="btn btn-sm btn-primary" onclick="applyKeyACL(\'' + keyId + '\',\'' + t.id + '\')">Apply</button>' +
+          '</div>';
+        list.appendChild(card);
+      });
+    });
+
+  document.getElementById('acl-modal').style.display = 'flex';
+}
+
+function applyKeyACL(keyId, templateId) {
+  if (!confirm('Apply this ACL template? It will replace the current ACL on this key.')) return;
+  fetch('/api/keys/' + keyId + '/acl-templates', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({template_id: templateId}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Applied: ' + data.template, 'success');
+    location.reload();
+  });
+}
+
+function saveCustomACL() {
+  var keyId = document.getElementById('acl-key-id').value;
+  var acl = document.getElementById('acl-current-json').value;
+  // Validate JSON if non-empty
+  if (acl.trim()) {
+    try { JSON.parse(acl); } catch(e) { showToast('Invalid JSON: ' + e.message, 'error'); return; }
+  }
+  fetch('/api/keys/' + keyId + '/acl', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({acl: acl}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('ACL saved', 'success');
+    location.reload();
+  });
+}
+
+function clearACL() {
+  if (!confirm('Clear ACL on this key? It will fall back to the service default.')) return;
+  document.getElementById('acl-current-json').value = '';
+  saveCustomACL();
+}
+</script>
 
 <script>
 function getSelectedService() {

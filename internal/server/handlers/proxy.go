@@ -126,9 +126,12 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		r.Body.Close()
 	}
 
-	// Check ACL: placeholder-specific config takes precedence, else fall back to service default_acl
+	// ACL priority: placeholder permission_config > api_key.acl > service.default_acl
 	aclConfig := result.PermissionConfig
-	if aclConfig == "" && svc.DefaultACL != "" {
+	if aclConfig == "" {
+		aclConfig = result.APIKeyACL
+	}
+	if aclConfig == "" {
 		aclConfig = svc.DefaultACL
 	}
 	if aclConfig != "" {

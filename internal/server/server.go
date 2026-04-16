@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -139,6 +140,9 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	adminAPIMux.HandleFunc("GET /api/keys", apiKeyH.List)
 	adminAPIMux.HandleFunc("POST /api/keys", apiKeyH.Create)
 	adminAPIMux.HandleFunc("DELETE /api/keys/{id}", apiKeyH.Delete)
+	adminAPIMux.HandleFunc("GET /api/keys/{id}/acl-templates", apiKeyH.ListACLTemplates)
+	adminAPIMux.HandleFunc("POST /api/keys/{id}/acl-templates", apiKeyH.ApplyACLTemplate)
+	adminAPIMux.HandleFunc("POST /api/keys/{id}/acl", apiKeyH.SetACL)
 
 	adminAPIMux.HandleFunc("GET /api/placeholders", placeholderH.List)
 	adminAPIMux.HandleFunc("POST /api/placeholders", placeholderH.Create)
@@ -265,14 +269,20 @@ func (s *Server) ensureAdminUser() error {
 		return nil
 	}
 
-	password, err := services.GeneratePassword(16)
-	if err != nil {
-		return err
+	var password string
+	if os.Getenv("DUCKWAY_DEV") == "1" {
+		password = "duckway"
+	} else {
+		var err error
+		password, err = services.GeneratePassword(16)
+		if err != nil {
+			return err
+		}
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return err
+	hash, hashErr := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if hashErr != nil {
+		return hashErr
 	}
 
 	id, _ := services.GenerateToken(16)

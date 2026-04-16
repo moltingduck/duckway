@@ -35,6 +35,7 @@ var migrations = []string{
 		service_id    TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
 		name          TEXT NOT NULL,
 		key_encrypted TEXT NOT NULL,
+		acl           TEXT NOT NULL DEFAULT '',
 		is_active     INTEGER NOT NULL DEFAULT 1,
 		usage_count   INTEGER NOT NULL DEFAULT 0,
 		last_used_at  TEXT,
@@ -167,6 +168,7 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE canary_settings ADD COLUMN exclude_clients TEXT NOT NULL DEFAULT '[]'",
 		"ALTER TABLE services ADD COLUMN key_directory TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE services ADD COLUMN default_acl TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE api_keys ADD COLUMN acl TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE placeholder_keys ADD COLUMN key_path TEXT NOT NULL DEFAULT ''",
 	}
 	for _, alt := range safeAlters {

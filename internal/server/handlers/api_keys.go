@@ -83,6 +83,82 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, key)
 }
 
+// ListACLTemplates returns available templates for this API key (based on its service).
+// GET /api/keys/{id}/acl-templates
+func (h *APIKeyHandler) ListACLTemplates(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	key, err := h.apiKeys.GetByID(id)
+	if err != nil {
+		jsonError(w, "key not found", http.StatusNotFound)
+		return
+	}
+
+	templates := svc.GetACLTemplates(key.ServiceName)
+	if templates == nil {
+		templates = []svc.ACLTemplate{}
+	}
+	jsonResponse(w, map[string]interface{}{
+		"key_id":   key.ID,
+		"service":  key.ServiceName,
+		"current":  key.ACL,
+		"templates": templates,
+	})
+}
+
+// ApplyACLTemplate sets an API key's ACL to a template's config.
+// POST /api/keys/{id}/acl-templates  body: {"template_id":"read-only"}
+func (h *APIKeyHandler) ApplyACLTemplate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	key, err := h.apiKeys.GetByID(id)
+	if err != nil {
+		jsonError(w, "key not found", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		TemplateID string `json:"template_id"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	tmpl := svc.GetACLTemplate(key.ServiceName, req.TemplateID)
+	if tmpl == nil {
+		jsonError(w, "template not found for service "+key.ServiceName, http.StatusNotFound)
+		return
+	}
+
+	if err := h.apiKeys.UpdateACL(id, tmpl.Config); err != nil {
+		jsonError(w, "failed to apply template", http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, map[string]string{
+		"status":      "ok",
+		"template_id": tmpl.ID,
+		"template":    tmpl.Name,
+	})
+}
+
+// SetACL lets admin set custom ACL JSON directly.
+// POST /api/keys/{id}/acl  body: {"acl":"{...}"}
+func (h *APIKeyHandler) SetACL(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		ACL string `json:"acl"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if err := h.apiKeys.UpdateACL(id, req.ACL); err != nil {
+		jsonError(w, "failed to update ACL", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "ok"})
+}
+
 func (h *APIKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := h.apiKeys.Delete(id); err != nil {
