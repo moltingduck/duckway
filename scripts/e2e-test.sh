@@ -378,6 +378,65 @@ AFTER=$(curl -s -X GET "$BASE/proxy/openai/v1/models" \
 assert_contains "After approval, proxy works" "invalid_api_key" "$AFTER"
 
 
+# === Test 11b: Service-level ACL templates ===
+echo ""
+echo -e "${YELLOW}[11b] Service ACL Templates${NC}"
+
+# List templates for openai
+TEMPLATES=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services/$OPENAI_ID/acl-templates")
+TEMPL_COUNT=$(echo "$TEMPLATES" | jq '.templates | length')
+# Should have at least: allow-all, chat-only, chat-embeddings, inference-all, no-admin
+if [ "$TEMPL_COUNT" -ge 4 ]; then
+  echo -e "  ${GREEN}PASS${NC} OpenAI has $TEMPL_COUNT ACL templates (>=4)"
+  PASS=$((PASS + 1))
+else
+  echo -e "  ${RED}FAIL${NC} Expected >=4 OpenAI templates, got $TEMPL_COUNT"
+  FAIL=$((FAIL + 1))
+fi
+
+assert_contains "Has chat-only template" "chat-only" "$TEMPLATES"
+assert_contains "Has allow-all template" "allow-all" "$TEMPLATES"
+
+# Apply chat-only template
+APPLY=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/services/$OPENAI_ID/acl-templates" \
+  -H "Content-Type: application/json" \
+  -d '{"template_id":"chat-only"}')
+assert_eq "Apply chat-only template" "ok" "$(echo "$APPLY" | jq -r '.status')"
+
+# Verify service now has ACL set
+SVC_WITH_ACL=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services" | jq -r ".[] | select(.id==\"$OPENAI_ID\") | .default_acl")
+assert_contains "Service default_acl contains chat-only rule" "chat-only" "$SVC_WITH_ACL"
+
+# Test ACL blocks unlisted endpoint (using a placeholder without its own config)
+# Create a new client + placeholder without permission_config
+CLIENT_ACL=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" \
+  -H "Content-Type: application/json" -d '{"name":"acl-test-client"}')
+CLIENT_ACL_ID=$(echo "$CLIENT_ACL" | jq -r '.id')
+CLIENT_ACL_TOKEN=$(echo "$CLIENT_ACL" | jq -r '.token')
+
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders" \
+  -H "Content-Type: application/json" \
+  -d "{\"service_id\":\"$OPENAI_ID\",\"api_key_id\":\"$KEY1_ID\",\"client_id\":\"$CLIENT_ACL_ID\",\"requires_approval\":false}" >/dev/null
+
+# Allowed: POST /v1/chat/completions
+ACL_OK=$(curl -s -X POST "$BASE/proxy/openai/v1/chat/completions" \
+  -H "X-Duckway-Token: $CLIENT_ACL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"test"}]}')
+assert_contains "Service ACL allows chat completions" "invalid_api_key" "$ACL_OK"
+
+# Denied: POST /v1/images/generations
+ACL_DENIED=$(curl -s -X POST "$BASE/proxy/openai/v1/images/generations" \
+  -H "X-Duckway-Token: $CLIENT_ACL_TOKEN" \
+  -H "Content-Type: application/json" -d '{"prompt":"cat"}')
+assert_contains "Service ACL blocks images endpoint" "permission denied" "$ACL_DENIED"
+
+# Reset to allow-all for remaining tests
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/services/$OPENAI_ID/acl-templates" \
+  -H "Content-Type: application/json" \
+  -d '{"template_id":"allow-all"}' >/dev/null
+
+
 # === Test 12: Permission System ===
 echo ""
 echo -e "${YELLOW}[12] Permission System${NC}"

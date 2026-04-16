@@ -133,6 +133,8 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	adminAPIMux.HandleFunc("GET /api/services/{id}", serviceH.Get)
 	adminAPIMux.HandleFunc("PUT /api/services/{id}", serviceH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/services/{id}", serviceH.Delete)
+	adminAPIMux.HandleFunc("GET /api/services/{id}/acl-templates", serviceH.ListACLTemplates)
+	adminAPIMux.HandleFunc("POST /api/services/{id}/acl-templates", serviceH.ApplyACLTemplate)
 
 	adminAPIMux.HandleFunc("GET /api/keys", apiKeyH.List)
 	adminAPIMux.HandleFunc("POST /api/keys", apiKeyH.Create)

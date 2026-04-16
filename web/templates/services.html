@@ -7,7 +7,7 @@
 <div class="card">
   <table>
     <thead>
-      <tr><th>Name</th><th>Upstream URL</th><th>Auth</th><th>Key Format</th><th>Key Path</th><th>Status</th><th></th></tr>
+      <tr><th>Name</th><th>Upstream URL</th><th>Auth</th><th>Key Format</th><th>Key Path</th><th>ACL</th><th>Status</th><th></th></tr>
     </thead>
     <tbody id="services-list">
       {{range .Services}}
@@ -17,8 +17,10 @@
         <td><span class="badge badge-blue">{{.AuthType}}</span></td>
         <td class="mono text-sm">{{.KeyPrefix}}*** ({{.KeyLength}} chars)</td>
         <td class="mono text-sm">{{if .KeyDirectory}}~/{{.KeyDirectory}}{{else}}—{{end}}</td>
+        <td>{{if .DefaultACL}}<span class="badge badge-yellow">custom</span>{{else}}<span class="badge badge-green">allow-all</span>{{end}}</td>
         <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
         <td class="text-right">
+          <button class="btn btn-sm" onclick="openACL('{{.ID}}','{{.Name}}')">ACL</button>
           <button class="btn btn-sm btn-danger"
             hx-delete="/api/services/{{.ID}}"
             hx-target="#svc-{{.ID}}"
@@ -27,7 +29,7 @@
         </td>
       </tr>
       {{else}}
-      <tr><td colspan="7" class="text-muted">No services configured. Add one to get started.</td></tr>
+      <tr><td colspan="8" class="text-muted">No services configured. Add one to get started.</td></tr>
       {{end}}
     </tbody>
   </table>
@@ -61,4 +63,87 @@
     </form>
   </div>
 </div>
+
+<!-- ACL template modal -->
+<div id="acl-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:720px">
+    <h2>ACL Templates for <span id="acl-svc-name"></span></h2>
+    <p class="text-sm text-muted mb-1">Pick a pre-built ACL template to apply as the service's default. This restricts what any placeholder key can do unless the key has its own permission config. Based on official API docs.</p>
+
+    <input type="hidden" id="acl-svc-id">
+    <div id="acl-templates-list"></div>
+
+    <div class="mt-2">
+      <label class="text-sm">Current ACL JSON (read-only)</label>
+      <textarea id="acl-current-json" readonly style="min-height:150px;font-family:monospace;font-size:0.75rem"></textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button type="button" class="btn" onclick="document.getElementById('acl-modal').style.display='none'">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function openACL(svcId, svcName) {
+  document.getElementById('acl-svc-id').value = svcId;
+  document.getElementById('acl-svc-name').textContent = svcName;
+  document.getElementById('acl-templates-list').innerHTML = '<p class="text-muted">Loading...</p>';
+  document.getElementById('acl-current-json').value = '';
+
+  fetch('/api/services/' + svcId + '/acl-templates', {credentials:'same-origin'})
+    .then(function(r) {
+      if (r.status === 401) { window.location = '/admin/login'; return; }
+      return r.json();
+    })
+    .then(function(data) {
+      if (!data) return;
+      document.getElementById('acl-current-json').value = data.current || '(empty — allow all)';
+
+      var list = document.getElementById('acl-templates-list');
+      if (!data.templates || data.templates.length === 0) {
+        list.innerHTML = '<p class="text-muted">No templates available for this service.</p>';
+        return;
+      }
+
+      list.innerHTML = '';
+      data.templates.forEach(function(t) {
+        var isActive = (data.current || '') === t.config;
+        var card = document.createElement('div');
+        card.className = 'card';
+        card.style.marginBottom = '0.5rem';
+        card.style.padding = '0.75rem';
+        if (isActive) card.style.borderColor = 'var(--accent)';
+        card.innerHTML =
+          '<div class="flex-between">' +
+            '<div>' +
+              '<strong>' + t.name + '</strong>' +
+              (isActive ? ' <span class="badge badge-blue">active</span>' : '') +
+              '<div class="text-sm text-muted">' + t.description + '</div>' +
+            '</div>' +
+            '<button class="btn btn-sm btn-primary" onclick="applyACL(\'' + svcId + '\',\'' + t.id + '\')">Apply</button>' +
+          '</div>';
+        list.appendChild(card);
+      });
+    });
+
+  document.getElementById('acl-modal').style.display = 'flex';
+}
+
+function applyACL(svcId, templateId) {
+  if (!confirm('Apply this ACL template? It will replace the current default ACL.')) return;
+  fetch('/api/services/' + svcId + '/acl-templates', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({template_id: templateId}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Applied: ' + data.template, 'success');
+    location.reload();
+  });
+}
+</script>
 {{end}}

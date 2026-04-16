@@ -40,6 +40,7 @@ func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		KeyPrefix    string `json:"key_prefix"`
 		KeyLength    int    `json:"key_length"`
 		KeyDirectory string `json:"key_directory"`
+		DefaultACL   string `json:"default_acl"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -83,6 +84,7 @@ func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		KeyPrefix:    req.KeyPrefix,
 		KeyLength:    req.KeyLength,
 		KeyDirectory: req.KeyDirectory,
+		DefaultACL:   req.DefaultACL,
 		IsActive:     true,
 	}
 
@@ -124,6 +126,7 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		KeyPrefix    *string `json:"key_prefix"`
 		KeyLength    *int    `json:"key_length"`
 		KeyDirectory *string `json:"key_directory"`
+		DefaultACL   *string `json:"default_acl"`
 		IsActive     *bool   `json:"is_active"`
 	}
 	if err := parseRequest(r, &req); err != nil {
@@ -161,6 +164,9 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.KeyDirectory != nil {
 		svc.KeyDirectory = *req.KeyDirectory
 	}
+	if req.DefaultACL != nil {
+		svc.DefaultACL = *req.DefaultACL
+	}
 	if req.IsActive != nil {
 		svc.IsActive = *req.IsActive
 	}
@@ -170,6 +176,64 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, svc)
+}
+
+// ListACLTemplates returns the available ACL templates for a service.
+// GET /api/services/{id}/acl-templates
+func (h *ServiceHandler) ListACLTemplates(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	svc, err := h.services.GetByID(id)
+	if err != nil {
+		jsonError(w, "service not found", http.StatusNotFound)
+		return
+	}
+
+	templates := services.GetACLTemplates(svc.Name)
+	if templates == nil {
+		templates = []services.ACLTemplate{}
+	}
+	jsonResponse(w, map[string]interface{}{
+		"service":   svc.Name,
+		"current":   svc.DefaultACL,
+		"templates": templates,
+	})
+}
+
+// ApplyACLTemplate sets the service's default_acl to a template's config.
+// POST /api/services/{id}/acl-templates  body: {"template_id":"chat-only"}
+func (h *ServiceHandler) ApplyACLTemplate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	svc, err := h.services.GetByID(id)
+	if err != nil {
+		jsonError(w, "service not found", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		TemplateID string `json:"template_id"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	tmpl := services.GetACLTemplate(svc.Name, req.TemplateID)
+	if tmpl == nil {
+		jsonError(w, "template not found for service "+svc.Name, http.StatusNotFound)
+		return
+	}
+
+	svc.DefaultACL = tmpl.Config
+	if err := h.services.Update(svc); err != nil {
+		jsonError(w, "failed to apply template", http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, map[string]string{
+		"status":      "ok",
+		"template_id": tmpl.ID,
+		"template":    tmpl.Name,
+	})
 }
 
 func (h *ServiceHandler) Delete(w http.ResponseWriter, r *http.Request) {

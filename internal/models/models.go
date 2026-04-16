@@ -19,6 +19,7 @@ type Service struct {
 	KeyPrefix    string `json:"key_prefix"`    // e.g. "sk-", "ghp_"
 	KeyLength    int    `json:"key_length"`    // real key total length
 	KeyDirectory string `json:"key_directory"` // default key file path, e.g. ".config/openai/credentials"
+	DefaultACL   string `json:"default_acl"`   // JSON ACL config, applied when placeholder has no permission_config
 	IsActive     bool   `json:"is_active"`
 	CreatedAt    string `json:"created_at"`
 }

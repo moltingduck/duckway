@@ -25,6 +25,7 @@ var migrations = []string{
 		key_prefix    TEXT NOT NULL DEFAULT '',
 		key_length    INTEGER NOT NULL DEFAULT 64,
 		key_directory TEXT NOT NULL DEFAULT '',
+		default_acl   TEXT NOT NULL DEFAULT '',
 		is_active     INTEGER NOT NULL DEFAULT 1,
 		created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
@@ -165,6 +166,7 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE clients ADD COLUMN short_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE canary_settings ADD COLUMN exclude_clients TEXT NOT NULL DEFAULT '[]'",
 		"ALTER TABLE services ADD COLUMN key_directory TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE services ADD COLUMN default_acl TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE placeholder_keys ADD COLUMN key_path TEXT NOT NULL DEFAULT ''",
 	}
 	for _, alt := range safeAlters {

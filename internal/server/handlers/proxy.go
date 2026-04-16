@@ -126,9 +126,13 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		r.Body.Close()
 	}
 
-	// Check permissions if configured
-	if result.PermissionConfig != "" {
-		permResult := h.permissions.Check(result.PermissionConfig, result.PlaceholderID, r.Method, upstreamPath, bodyBytes)
+	// Check ACL: placeholder-specific config takes precedence, else fall back to service default_acl
+	aclConfig := result.PermissionConfig
+	if aclConfig == "" && svc.DefaultACL != "" {
+		aclConfig = svc.DefaultACL
+	}
+	if aclConfig != "" {
+		permResult := h.permissions.Check(aclConfig, result.PlaceholderID, r.Method, upstreamPath, bodyBytes)
 		if !permResult.Allowed {
 			jsonError(w, "permission denied: "+permResult.Reason, http.StatusForbidden)
 			return
