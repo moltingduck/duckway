@@ -74,7 +74,7 @@ echo -e "${YELLOW}[Setup]${NC} Building binaries..."
 go build -o /tmp/duckway-e2e-server ./cmd/server/ 2>&1
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o client ./cmd/client/ 2>&1
 echo -e "${YELLOW}[Setup]${NC} Building Docker client..."
-docker build -f Dockerfile.client -t duckway-client . -q 2>&1 >/dev/null
+docker build --target client -t duckway-client . -q 2>&1 >/dev/null
 
 # Cleanup old runs
 cleanup 2>/dev/null || true
@@ -256,7 +256,7 @@ docker rm -f duckway-e2e-client 2>/dev/null || true
 docker run -d --name duckway-e2e-client --network host duckway-client >/dev/null
 
 # Write config into the container
-docker exec duckway-e2e-client bash -c "cat > /root/.duckway/config.yaml << DEOF
+docker exec duckway-e2e-client sh -c "cat > /root/.duckway/config.yaml << DEOF
 server_url: $BASE
 client_name: e2e-test-client
 token: $CLIENT_TOKEN
@@ -282,6 +282,8 @@ assert_contains "duckway env exports OPENAI_API_KEY" "export OPENAI_API_KEY=" "$
 STATUS_OUT=$(docker exec duckway-e2e-client duckway status 2>&1)
 assert_contains "duckway status shows OK" "Connection:  OK" "$STATUS_OUT"
 assert_contains "duckway status shows 4 keys" "4 placeholder" "$STATUS_OUT"
+assert_contains "duckway status heartbeat OK" "Heartbeat:   OK" "$STATUS_OUT"
+assert_contains "duckway status shows CA cert" "CA cert:" "$STATUS_OUT"
 
 
 # === Test 9: Docker Client Proxy (full chain) ===
