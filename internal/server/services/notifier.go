@@ -77,15 +77,26 @@ func (n *Notifier) sendTelegram(configJSON string, notif ApprovalNotification) e
 	}
 
 	text := fmt.Sprintf(
-		"🔑 *Duckway Approval Required*\n\nClient: `%s`\nService: `%s`\nRequest: `%s %s`\n\n[Approve in Admin Panel](%s)",
-		notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.AdminURL,
+		"🔑 *Duckway Approval Required*\n\nClient: `%s`\nService: `%s`\nRequest: `%s %s`\nApproval ID: `%s`",
+		notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID,
 	)
 
+	// Inline keyboard with Approve/Reject buttons
+	keyboard := map[string]interface{}{
+		"inline_keyboard": [][]map[string]string{
+			{
+				{"text": "✅ Approve (24h)", "callback_data": "approve:" + notif.ApprovalID},
+				{"text": "❌ Reject", "callback_data": "reject:" + notif.ApprovalID},
+			},
+		},
+	}
+
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", cfg.BotToken)
-	body, _ := json.Marshal(map[string]string{
-		"chat_id":    cfg.ChatID,
-		"text":       text,
-		"parse_mode": "Markdown",
+	body, _ := json.Marshal(map[string]interface{}{
+		"chat_id":      cfg.ChatID,
+		"text":         text,
+		"parse_mode":   "Markdown",
+		"reply_markup": keyboard,
 	})
 
 	resp, err := n.client.Post(apiURL, "application/json", bytes.NewReader(body))
@@ -110,10 +121,10 @@ func (n *Notifier) sendDiscord(configJSON string, notif ApprovalNotification) er
 	}
 
 	embed := map[string]interface{}{
-		"title":       "Duckway Approval Required",
-		"color":       16750848, // Orange
-		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`", notif.ClientName, notif.ServiceName, notif.Method, notif.Path),
-		"footer":      map[string]string{"text": "Approve at " + notif.AdminURL},
+		"title":       "🔑 Duckway Approval Required",
+		"color":       16750848,
+		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`", notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID),
+		"footer":      map[string]string{"text": "Reply: !approve " + notif.ApprovalID},
 	}
 
 	body, _ := json.Marshal(map[string]interface{}{
@@ -143,10 +154,10 @@ func (n *Notifier) sendDiscordBot(configJSON string, notif ApprovalNotification)
 	}
 
 	embed := map[string]interface{}{
-		"title":       "Duckway Approval Required",
+		"title":       "🔑 Duckway Approval Required",
 		"color":       16750848,
-		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`", notif.ClientName, notif.ServiceName, notif.Method, notif.Path),
-		"footer":      map[string]string{"text": "Approve at " + notif.AdminURL},
+		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`", notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID),
+		"footer":      map[string]string{"text": "Reply: !approve " + notif.ApprovalID + "  or  !reject " + notif.ApprovalID},
 	}
 
 	body, _ := json.Marshal(map[string]interface{}{

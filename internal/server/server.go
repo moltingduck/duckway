@@ -42,6 +42,10 @@ func New(config *Config, db *sql.DB, contentFS embed.FS) (*Server, error) {
 	}
 
 	s.setupRoutes(contentFS)
+
+	// Start interactive approval listeners (Discord Gateway + Telegram poller)
+	s.startApprovalListeners()
+
 	return s, nil
 }
 
@@ -513,4 +517,49 @@ func (s *Server) seedDefaultServices() error {
 
 	log.Printf("Seeded %d default services (heartbeat, openai, anthropic, github, discord, telegram)", len(defaults))
 	return nil
+}
+
+func (s *Server) startApprovalListeners() {
+	notifQ := queries.NewNotificationQueries(s.db)
+	approvalQ := queries.NewApprovalQueries(s.db)
+
+	channels, err := notifQ.ListActive()
+	if err != nil {
+		return
+	}
+
+	approveFunc := func(approvalID string) error {
+		return approvalQ.Approve(approvalID, "datetime('now', '+24 hours')")
+	}
+	rejectFunc := func(approvalID string) error {
+		return approvalQ.Reject(approvalID)
+	}
+
+	for _, ch := range channels {
+		switch ch.ChannelType {
+		case "discord_bot":
+			var cfg struct {
+				BotToken  string `json:"bot_token"`
+				ChannelID string `json:"channel_id"`
+			}
+			if err := json.Unmarshal([]byte(ch.Config), &cfg); err != nil || cfg.BotToken == "" {
+				continue
+			}
+			gw := services.NewDiscordGateway(cfg.BotToken, cfg.ChannelID, approveFunc, rejectFunc)
+			gw.Start()
+			log.Printf("Started Discord Gateway for channel %s (%s)", cfg.ChannelID, ch.Name)
+
+		case "telegram":
+			var cfg struct {
+				BotToken string `json:"bot_token"`
+				ChatID   string `json:"chat_id"`
+			}
+			if err := json.Unmarshal([]byte(ch.Config), &cfg); err != nil || cfg.BotToken == "" {
+				continue
+			}
+			poller := services.NewTelegramPoller(cfg.BotToken, cfg.ChatID, approveFunc, rejectFunc)
+			poller.Start()
+			log.Printf("Started Telegram poller for chat %s (%s)", cfg.ChatID, ch.Name)
+		}
+	}
 }
