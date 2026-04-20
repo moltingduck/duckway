@@ -180,7 +180,7 @@ var placeholders = [
 ];
 
 var canaryTokens = [
-  {{range .CanaryTokens}}{id:"{{.ID}}", clientId:"{{.ClientID}}", tokenType:"{{.TokenType}}", tokenValue:"{{.TokenValue}}", deployPath:"{{.DeployPath}}", createdAt:"{{.CreatedAt}}"},{{end}}
+  {{range .CanaryTokens}}{id:"{{.ID}}", clientId:"{{.ClientID}}", tokenType:"{{.TokenType}}", tokenValue:"{{.TokenValue}}", canaryToken:"{{.CanaryToken}}", authToken:"{{.AuthToken}}", deployPath:"{{.DeployPath}}", createdAt:"{{.CreatedAt}}"},{{end}}
 ];
 
 var svcEnvMap = {"openai":"OPENAI_API_KEY","anthropic":"ANTHROPIC_API_KEY","github":"GITHUB_TOKEN","discord":"DISCORD_BOT_TOKEN","telegram":"TELEGRAM_BOT_TOKEN"};
@@ -226,11 +226,16 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!tbody) return;
     canaryCounts[ct.clientId] = (canaryCounts[ct.clientId] || 0) + 1;
     var tr = document.createElement('tr');
-    var val = ct.tokenValue || '';
-    var valShort = val.length > 28 ? val.substring(0,28)+'...' : val;
+    var tokenCell = '';
+    if (ct.canaryToken && ct.authToken) {
+      var manageURL = 'https://canarytokens.org/d3aece8093b71007b5ccfedad91ebb11/manage?token=' + ct.canaryToken + '&auth=' + ct.authToken;
+      tokenCell = '<a href="' + manageURL + '" target="_blank" class="mono text-sm" title="Manage on canarytokens.org">' + ct.canaryToken.substring(0,12) + '...</a>';
+    } else {
+      tokenCell = '<span class="text-muted text-sm">local</span>';
+    }
     tr.innerHTML =
       '<td><span class="badge badge-blue">' + ct.tokenType + '</span></td>' +
-      '<td class="mono text-sm" title="' + val + '">' + valShort + '</td>' +
+      '<td>' + tokenCell + '</td>' +
       '<td class="mono text-sm">~/' + ct.deployPath + '</td>' +
       '<td class="text-muted text-sm">' + ct.createdAt + '</td>';
     tbody.appendChild(tr);

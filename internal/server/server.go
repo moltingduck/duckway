@@ -183,6 +183,8 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	adminAPIMux.HandleFunc("POST /api/canary/settings", canaryH.SaveSettings)
 	adminAPIMux.HandleFunc("GET /api/canary/clients/{clientId}", canaryH.ListByClient)
 	adminAPIMux.HandleFunc("POST /api/canary/clients/{clientId}/generate", canaryH.GenerateForClient)
+	adminAPIMux.HandleFunc("DELETE /api/canary/clients/{clientId}", canaryH.DeleteClientTokens)
+	adminAPIMux.HandleFunc("DELETE /api/canary/tokens/{tokenId}", canaryH.DeleteToken)
 
 	s.mux.Handle("/api/", adminAuth.Middleware(adminAPIMux))
 

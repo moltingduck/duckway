@@ -13,7 +13,7 @@ type CanaryToken struct {
 	ClientID      string  `json:"client_id"`
 	TokenType     string  `json:"token_type"`
 	CanaryToken   string  `json:"canary_token"` // canarytokens.org token ID
-	AuthToken     string  `json:"-"`             // canarytokens.org auth token
+	AuthToken     string  `json:"auth_token"`    // canarytokens.org auth token (needed for management)
 	TokenValue    string  `json:"token_value"`   // the fake credential value
 	SecretValue   *string `json:"secret_value"`  // secondary value (e.g., AWS secret key)
 	Memo          string  `json:"memo"`
@@ -80,6 +80,22 @@ func (q *CanaryQueries) Create(t *CanaryToken) error {
 		`INSERT INTO canary_tokens (id, client_id, token_type, canary_token, auth_token, token_value, secret_value, memo, deploy_path, deploy_content) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.ClientID, t.TokenType, t.CanaryToken, t.AuthToken, t.TokenValue, t.SecretValue, t.Memo, t.DeployPath, t.DeployContent,
 	)
+	return err
+}
+
+func (q *CanaryQueries) GetByID(id string) (*CanaryToken, error) {
+	var t CanaryToken
+	err := q.db.QueryRow(
+		"SELECT id, client_id, token_type, canary_token, auth_token, token_value, secret_value, memo, deploy_path, deploy_content, created_at FROM canary_tokens WHERE id = ?", id,
+	).Scan(&t.ID, &t.ClientID, &t.TokenType, &t.CanaryToken, &t.AuthToken, &t.TokenValue, &t.SecretValue, &t.Memo, &t.DeployPath, &t.DeployContent, &t.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (q *CanaryQueries) DeleteByID(id string) error {
+	_, err := q.db.Exec("DELETE FROM canary_tokens WHERE id = ?", id)
 	return err
 }
 

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -86,7 +87,7 @@ func (h *CanaryHandler) SaveSettings(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
 
-// Admin: list canary tokens for a client
+// Admin: list canary tokens for a client with management URLs
 func (h *CanaryHandler) ListByClient(w http.ResponseWriter, r *http.Request) {
 	clientID := r.PathValue("clientId")
 	tokens, err := h.canaryQ.ListByClient(clientID)
@@ -94,10 +95,56 @@ func (h *CanaryHandler) ListByClient(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to list canary tokens", http.StatusInternalServerError)
 		return
 	}
-	if tokens == nil {
-		tokens = []queries.CanaryToken{}
+
+	type tokenWithURL struct {
+		queries.CanaryToken
+		ManageURL string `json:"manage_url"`
 	}
-	jsonResponse(w, tokens)
+
+	var result []tokenWithURL
+	for _, t := range tokens {
+		result = append(result, tokenWithURL{
+			CanaryToken: t,
+			ManageURL:   services.ManageURL(t.CanaryToken, t.AuthToken),
+		})
+	}
+	if result == nil {
+		result = []tokenWithURL{}
+	}
+	jsonResponse(w, result)
+}
+
+// Admin: delete a single canary token (from DB + canarytokens.org)
+func (h *CanaryHandler) DeleteToken(w http.ResponseWriter, r *http.Request) {
+	tokenID := r.PathValue("tokenId")
+	token, err := h.canaryQ.GetByID(tokenID)
+	if err != nil {
+		jsonError(w, "token not found", http.StatusNotFound)
+		return
+	}
+
+	// Delete from canarytokens.org
+	if err := h.service.DeleteRemoteToken(token.CanaryToken, token.AuthToken); err != nil {
+		// Log but don't fail — still delete from our DB
+		log.Printf("Warning: remote delete failed for %s: %v", token.CanaryToken, err)
+	}
+
+	if err := h.canaryQ.DeleteByID(tokenID); err != nil {
+		jsonError(w, "failed to delete token", http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, map[string]string{"status": "deleted"})
+}
+
+// Admin: delete ALL canary tokens for a client (DB + canarytokens.org)
+func (h *CanaryHandler) DeleteClientTokens(w http.ResponseWriter, r *http.Request) {
+	clientID := r.PathValue("clientId")
+	if err := h.service.DeleteClientTokens(clientID); err != nil {
+		jsonError(w, "failed to delete tokens: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "deleted"})
 }
 
 // Admin: manually (re)generate canary tokens for a client

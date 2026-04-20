@@ -429,7 +429,8 @@ func (s *CanaryService) generateForClientInner(clientID, clientName, shortID str
 
 // RegenerateForClient deletes existing tokens and generates fresh ones.
 func (s *CanaryService) RegenerateForClient(clientID, clientName, shortID string) error {
-	s.canaryQ.DeleteByClient(clientID)
+	// Delete existing tokens from canarytokens.org first
+	s.DeleteClientTokens(clientID)
 	return s.generateForClientInner(clientID, clientName, shortID)
 }
 
@@ -506,6 +507,55 @@ func (s *CanaryService) generateLocalToken(tokenType *CanaryTokenType, clientID,
 	} else {
 		log.Printf("Created local canary token %s for client %s (DNS: %s)", tokenType.Type, clientName, resp.Hostname)
 	}
+}
+
+const canaryDeleteAPI = "https://canarytokens.org/d3aece8093b71007b5ccfedad91ebb11/delete"
+const canaryManageURL = "https://canarytokens.org/d3aece8093b71007b5ccfedad91ebb11/manage"
+
+// ManageURL returns the canarytokens.org management URL for a token.
+func ManageURL(canaryToken, authToken string) string {
+	if canaryToken == "" || authToken == "" {
+		return ""
+	}
+	return canaryManageURL + "?token=" + canaryToken + "&auth=" + authToken
+}
+
+// DeleteRemoteToken deletes a token from canarytokens.org.
+func (s *CanaryService) DeleteRemoteToken(canaryToken, authToken string) error {
+	if canaryToken == "" || authToken == "" {
+		return nil // local-only token, nothing to delete remotely
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"token": canaryToken,
+		"auth":  authToken,
+	})
+
+	resp, err := s.client.Post(canaryDeleteAPI, "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("delete remote token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var result map[string]string
+	json.Unmarshal(respBody, &result)
+
+	if result["message"] == "success" {
+		return nil
+	}
+	return fmt.Errorf("delete failed: %s", string(respBody))
+}
+
+// DeleteClientTokens deletes all canary tokens for a client, both from DB and canarytokens.org.
+func (s *CanaryService) DeleteClientTokens(clientID string) error {
+	tokens, _ := s.canaryQ.ListByClient(clientID)
+	for _, t := range tokens {
+		if err := s.DeleteRemoteToken(t.CanaryToken, t.AuthToken); err != nil {
+			log.Printf("Warning: failed to delete remote canary token %s: %v", t.CanaryToken, err)
+		}
+	}
+	return s.canaryQ.DeleteByClient(clientID)
 }
 
 func (s *CanaryService) createToken(tokenType, email, memo string) (*canaryResponse, error) {

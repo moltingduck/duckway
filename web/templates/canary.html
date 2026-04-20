@@ -189,18 +189,46 @@ function loadClientCanaries() {
         return;
       }
 
-      var html = '<table class="mt-1"><thead><tr><th>Type</th><th>Token Value</th><th>Deploy Path</th><th>Created</th></tr></thead><tbody>';
+      var html = '<table class="mt-1"><thead><tr><th>Type</th><th>Token ID</th><th>Deploy Path</th><th>Created</th><th></th></tr></thead><tbody>';
       tokens.forEach(function(t) {
-        var val = t.token_value || '';
-        html += '<tr>' +
+        var tokenShort = t.canary_token ? t.canary_token.substring(0, 12) + '...' : '(local)';
+        var manageLink = t.manage_url ? '<a href="' + t.manage_url + '" target="_blank" class="mono text-sm" title="View on canarytokens.org">' + tokenShort + '</a>' : '<span class="mono text-sm text-muted">' + tokenShort + '</span>';
+        html += '<tr id="ct-' + t.id + '">' +
           '<td><span class="badge badge-blue">' + t.token_type + '</span></td>' +
-          '<td class="mono text-sm">' + val.substring(0, 24) + (val.length > 24 ? '...' : '') + '</td>' +
+          '<td>' + manageLink + '</td>' +
           '<td class="mono text-sm">~/' + t.deploy_path + '</td>' +
-          '<td class="text-muted text-sm">' + t.created_at + '</td></tr>';
+          '<td class="text-muted text-sm">' + t.created_at + '</td>' +
+          '<td class="text-right"><button class="btn btn-sm btn-danger" onclick="deleteCanaryToken(\'' + t.id + '\')">Delete</button></td></tr>';
       });
       html += '</tbody></table>';
-      html += '<p class="mt-1"><button class="btn btn-sm" onclick="generateCanaries(\'' + clientId + '\',\'' + clientName + '\')">Regenerate</button></p>';
+      html += '<div class="mt-1 flex gap-sm">' +
+        '<button class="btn btn-sm" onclick="generateCanaries(\'' + clientId + '\',\'' + clientName + '\')">Regenerate All</button>' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteAllCanaries(\'' + clientId + '\')">Delete All</button>' +
+        '</div>';
       div.innerHTML = html;
+    });
+}
+
+function deleteCanaryToken(tokenId) {
+  if (!confirm('Delete this canary token? It will also be removed from canarytokens.org.')) return;
+  fetch('/api/canary/tokens/' + tokenId, {method:'DELETE',credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { showToast(data.error, 'error'); return; }
+      var row = document.getElementById('ct-' + tokenId);
+      if (row) row.remove();
+      showToast('Token deleted (DB + canarytokens.org)', 'success');
+    });
+}
+
+function deleteAllCanaries(clientId) {
+  if (!confirm('Delete ALL canary tokens for this client? This removes them from canarytokens.org too.')) return;
+  fetch('/api/canary/clients/' + clientId, {method:'DELETE',credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { showToast(data.error, 'error'); return; }
+      showToast('All tokens deleted', 'success');
+      loadClientCanaries();
     });
 }
 
