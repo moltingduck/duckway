@@ -124,10 +124,17 @@
       </div>
     </div>
     <div class="form-group">
-      <label>Quick Setup Command</label>
+      <label>Quick Setup (duckway already installed)</label>
       <div style="position:relative">
         <code id="init-cmd" style="display:block;padding:0.75rem;padding-right:4rem;word-break:break-all;font-size:0.8rem;background:var(--bg-input);border-radius:var(--radius)"></code>
         <button type="button" class="btn btn-sm" onclick="copyCmd()" style="position:absolute;right:4px;top:4px">Copy</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Full Setup (install + register in one command)</label>
+      <div style="position:relative">
+        <code id="full-setup-cmd" style="display:block;padding:0.75rem;padding-right:4rem;word-break:break-all;font-size:0.8rem;background:var(--bg-input);border-radius:var(--radius)"></code>
+        <button type="button" class="btn btn-sm" onclick="copyFullSetup()" style="position:absolute;right:4px;top:4px">Copy</button>
       </div>
     </div>
     <div class="modal-actions">
@@ -401,7 +408,10 @@ document.getElementById('add-client-form').addEventListener('submit', function(e
       if (data.error) { showToast(data.error, 'error'); return; }
       document.getElementById('add-modal').style.display = 'none';
       document.getElementById('token-value').value = data.token;
-      document.getElementById('init-cmd').textContent = 'printf "' + window.location.origin + '\\n' + data.name + '\\n1\\n' + data.token + '\\n" | duckway init';
+      var origin = window.location.origin;
+      var initCmd = 'printf "' + origin + '\\n' + data.name + '\\n1\\n' + data.token + '\\n" | duckway init';
+      document.getElementById('init-cmd').textContent = initCmd;
+      document.getElementById('full-setup-cmd').textContent = 'curl -fsSL ' + origin + '/install.sh | sh && ' + initCmd;
       document.getElementById('token-modal').style.display = 'flex';
     });
 });
@@ -428,6 +438,10 @@ function copyToken() {
 function copyCmd() {
   copyToClipboard(document.getElementById('init-cmd').textContent);
   showToast('Command copied', 'success');
+}
+function copyFullSetup() {
+  copyToClipboard(document.getElementById('full-setup-cmd').textContent);
+  showToast('Full setup command copied', 'success');
 }
 function dismissToken() {
   document.getElementById('token-modal').style.display = 'none';
