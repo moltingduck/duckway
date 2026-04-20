@@ -3,6 +3,20 @@
   <h1>Clients</h1>
   <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Register Client</button>
 </div>
+
+<div class="card mb-1">
+  <div class="flex-between">
+    <div>
+      <strong>Quick Client Install</strong>
+      <div class="text-sm text-muted">Run this on any machine to install the Duckway client:</div>
+    </div>
+    <button class="btn btn-sm" onclick="copyInstallCmd()">Copy</button>
+  </div>
+  <div style="position:relative;margin-top:0.5rem">
+    <code id="install-cmd" style="display:block;padding:0.75rem;word-break:break-all;font-size:0.85rem;background:var(--bg-input);border-radius:var(--radius)"></code>
+  </div>
+</div>
+
 <div id="canary-alert" style="display:none;background:rgba(245,158,11,0.1);border:1px solid var(--warning);border-radius:var(--radius);padding:0.75rem;margin-bottom:1rem">
   Canary tokens require an alert email. <a href="/admin/canary">Configure in Canary Tokens settings</a>.
 </div>
@@ -165,6 +179,10 @@ var canaryTokens = [
 var svcEnvMap = {"openai":"OPENAI_API_KEY","anthropic":"ANTHROPIC_API_KEY","github":"GITHUB_TOKEN","discord":"DISCORD_BOT_TOKEN","telegram":"TELEGRAM_BOT_TOKEN"};
 
 document.addEventListener('DOMContentLoaded', function() {
+  // Set install command
+  var installCmd = 'curl -fsSL ' + window.location.origin + '/install.sh | sh';
+  document.getElementById('install-cmd').textContent = installCmd;
+
   // Check canary settings
   fetch('/api/canary/settings', {credentials:'same-origin'})
     .then(function(r) { return r.json(); })
@@ -387,6 +405,11 @@ document.getElementById('add-client-form').addEventListener('submit', function(e
       document.getElementById('token-modal').style.display = 'flex';
     });
 });
+
+function copyInstallCmd() {
+  copyToClipboard(document.getElementById('install-cmd').textContent);
+  showToast('Install command copied', 'success');
+}
 
 function copyToClipboard(text) {
   var ta = document.createElement('textarea');

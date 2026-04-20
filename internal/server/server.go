@@ -213,6 +213,99 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	internalH := handlers.NewInternalHandler(resolver)
 	s.mux.HandleFunc("POST /internal/resolve", internalH.Resolve)
 
+	// Download client binaries (public, no auth)
+	downloadDir := os.Getenv("DUCKWAY_DOWNLOAD_DIR")
+	if downloadDir == "" {
+		downloadDir = "/srv/downloads"
+	}
+	if info, err := os.Stat(downloadDir); err == nil && info.IsDir() {
+		s.mux.Handle("GET /download/", http.StripPrefix("/download/", http.FileServer(http.Dir(downloadDir))))
+		log.Printf("Client binaries available at /download/")
+	}
+
+	// Install script (public, no auth) — curl <server>/install.sh | bash
+	s.mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
+		serverURL := r.Host
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
+			scheme = fwd
+		}
+		baseURL := scheme + "://" + serverURL
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprintf(w, `#!/bin/sh
+set -e
+
+# Duckway client installer
+# Usage: curl -fsSL %s/install.sh | sh
+
+DUCKWAY_SERVER="%s"
+
+echo "Duckway client installer"
+echo "Server: $DUCKWAY_SERVER"
+echo ""
+
+# Detect OS and arch
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64|amd64) ARCH="amd64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
+  *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+esac
+
+BINARY="duckway-client-${OS}-${ARCH}"
+DEST="/usr/local/bin/duckway"
+
+echo "Detected: ${OS}/${ARCH}"
+echo "Downloading: $DUCKWAY_SERVER/download/$BINARY"
+echo ""
+
+# Download binary
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "$DUCKWAY_SERVER/download/$BINARY" -o /tmp/duckway
+elif command -v wget >/dev/null 2>&1; then
+  wget -q "$DUCKWAY_SERVER/download/$BINARY" -O /tmp/duckway
+else
+  echo "Error: curl or wget required"
+  exit 1
+fi
+
+chmod +x /tmp/duckway
+
+# Install
+if [ -w /usr/local/bin ]; then
+  mv /tmp/duckway "$DEST"
+else
+  echo "Need sudo to install to $DEST"
+  sudo mv /tmp/duckway "$DEST"
+fi
+
+echo "Installed: $DEST"
+echo ""
+
+# Download CA cert
+echo "Downloading CA certificate..."
+mkdir -p ~/.duckway
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "$DUCKWAY_SERVER/skill/ca.pem" -o ~/.duckway/ca.pem
+else
+  wget -q "$DUCKWAY_SERVER/skill/ca.pem" -O ~/.duckway/ca.pem
+fi
+
+echo ""
+echo "======================================"
+echo "  Duckway client installed!"
+echo ""
+echo "  Next: run 'duckway init' to register"
+echo "  Server URL: $DUCKWAY_SERVER"
+echo "======================================"
+`, baseURL, baseURL)
+	})
+
 	// Skill + CA cert (public, no auth)
 	s.mux.HandleFunc("GET /skill/duckway-agent.md", func(w http.ResponseWriter, r *http.Request) {
 		data, err := skill.Content.ReadFile("duckway-agent.md")
