@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -50,6 +51,8 @@ func (n *Notifier) NotifyApprovalNeeded(notif ApprovalNotification) {
 				err = n.sendTelegram(ch.Config, notif)
 			case "discord":
 				err = n.sendDiscord(ch.Config, notif)
+			case "discord_bot":
+				err = n.sendDiscordBot(ch.Config, notif)
 			case "webhook":
 				err = n.sendWebhook(ch.Config, notif)
 			default:
@@ -125,6 +128,48 @@ func (n *Notifier) sendDiscord(configJSON string, notif ApprovalNotification) er
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("discord webhook returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// Discord Bot: config = {"bot_token": "...", "channel_id": "..."}
+func (n *Notifier) sendDiscordBot(configJSON string, notif ApprovalNotification) error {
+	var cfg struct {
+		BotToken  string `json:"bot_token"`
+		ChannelID string `json:"channel_id"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+		return fmt.Errorf("parse discord bot config: %w", err)
+	}
+
+	embed := map[string]interface{}{
+		"title":       "Duckway Approval Required",
+		"color":       16750848,
+		"description": fmt.Sprintf("**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`", notif.ClientName, notif.ServiceName, notif.Method, notif.Path),
+		"footer":      map[string]string{"text": "Approve at " + notif.AdminURL},
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"embeds": []interface{}{embed},
+	})
+
+	apiURL := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", cfg.ChannelID)
+	req, err := http.NewRequest("POST", apiURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bot "+cfg.BotToken)
+
+	resp, err := n.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("discord bot API returned %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
 }

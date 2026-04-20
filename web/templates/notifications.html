@@ -46,6 +46,7 @@
         <select id="ch-type" onchange="onTypeChange()">
           <option value="telegram">Telegram Bot</option>
           <option value="discord">Discord Webhook</option>
+          <option value="discord_bot">Discord Bot</option>
           <option value="webhook">Generic Webhook</option>
         </select>
       </div>
@@ -64,12 +65,26 @@
         </div>
       </div>
 
-      <!-- Discord fields -->
+      <!-- Discord Webhook fields -->
       <div id="fields-discord" style="display:none">
         <div class="form-group">
           <label>Webhook URL</label>
           <input type="url" id="dc-webhook-url" placeholder="https://discord.com/api/webhooks/1234567890/abcdef...">
           <span class="text-muted text-sm">Server Settings → Integrations → Webhooks → Copy Webhook URL</span>
+        </div>
+      </div>
+
+      <!-- Discord Bot fields -->
+      <div id="fields-discord_bot" style="display:none">
+        <div class="form-group">
+          <label>Bot Token</label>
+          <input type="text" id="dcbot-token" placeholder="MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.XXXXXX.XXXXXXXXXX">
+          <span class="text-muted text-sm">From <a href="https://discord.com/developers/applications" target="_blank">Discord Developer Portal</a> → Bot → Token</span>
+        </div>
+        <div class="form-group">
+          <label>Channel ID</label>
+          <input type="text" id="dcbot-channel" placeholder="1234567890123456789">
+          <span class="text-muted text-sm">Right-click channel → Copy Channel ID (enable Developer Mode in Discord settings)</span>
         </div>
       </div>
 
@@ -114,6 +129,10 @@ document.addEventListener('DOMContentLoaded', function() {
         var urlShort = (cfg.webhook_url || '').replace('https://discord.com/api/webhooks/', '').substring(0, 20) + '...';
         el.innerHTML = 'Webhook: <code>' + urlShort + '</code>';
         break;
+      case 'discord_bot':
+        var botShort = (cfg.bot_token || '').substring(0, 12) + '...';
+        el.innerHTML = 'Bot: <code>' + botShort + '</code> Channel: <code>' + (cfg.channel_id || '') + '</code>';
+        break;
       case 'webhook':
         el.innerHTML = 'URL: <code>' + (cfg.url || '').substring(0, 40) + '</code>' +
           (cfg.secret ? ' (with secret)' : '');
@@ -131,9 +150,10 @@ function openAddModal() {
 
 function onTypeChange() {
   var type = document.getElementById('ch-type').value;
-  document.getElementById('fields-telegram').style.display = type === 'telegram' ? 'block' : 'none';
-  document.getElementById('fields-discord').style.display = type === 'discord' ? 'block' : 'none';
-  document.getElementById('fields-webhook').style.display = type === 'webhook' ? 'block' : 'none';
+  ['telegram','discord','discord_bot','webhook'].forEach(function(t) {
+    var el = document.getElementById('fields-' + t);
+    if (el) el.style.display = t === type ? 'block' : 'none';
+  });
 }
 
 document.getElementById('add-channel-form').addEventListener('submit', function(e) {
@@ -159,6 +179,16 @@ document.getElementById('add-channel-form').addEventListener('submit', function(
       };
       if (!config.webhook_url) {
         showToast('Webhook URL is required', 'error');
+        return;
+      }
+      break;
+    case 'discord_bot':
+      config = {
+        bot_token: document.getElementById('dcbot-token').value.trim(),
+        channel_id: document.getElementById('dcbot-channel').value.trim()
+      };
+      if (!config.bot_token || !config.channel_id) {
+        showToast('Bot token and channel ID are required', 'error');
         return;
       }
       break;
