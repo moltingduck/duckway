@@ -90,7 +90,7 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	clientH := handlers.NewClientHandler(clientQ, placeholderQ, serviceQ, apiKeyQ, canarySvc)
 	groupH := handlers.NewGroupHandler(groupQ, serviceQ)
 	approvalH := handlers.NewApprovalHandler(approvalQ, placeholderQ)
-	notifH := handlers.NewNotificationHandler(notifQ)
+	notifH := handlers.NewNotificationHandler(notifQ, notifier)
 	canaryH := handlers.NewCanaryHandler(canaryQ, canarySvc)
 	proxyH := handlers.NewProxyHandler(serviceQ, resolver, requestLogQ, approvalQ, notifier)
 	adminPageH := handlers.NewAdminHandler(contentFS, userQ, serviceQ, apiKeyQ, placeholderQ, clientQ, groupQ, approvalQ, requestLogQ, notifQ, canaryQ, adminAuth)
@@ -166,6 +166,7 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	adminAPIMux.HandleFunc("GET /api/notifications", notifH.List)
 	adminAPIMux.HandleFunc("POST /api/notifications", notifH.Create)
 	adminAPIMux.HandleFunc("DELETE /api/notifications/{id}", notifH.Delete)
+	adminAPIMux.HandleFunc("POST /api/notifications/{id}/test", notifH.Test)
 
 	adminAPIMux.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
 		logs, err := requestLogQ.Recent(500)

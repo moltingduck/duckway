@@ -10,10 +10,11 @@ import (
 
 type NotificationHandler struct {
 	channels *queries.NotificationQueries
+	notifier *svc.Notifier
 }
 
-func NewNotificationHandler(channels *queries.NotificationQueries) *NotificationHandler {
-	return &NotificationHandler{channels: channels}
+func NewNotificationHandler(channels *queries.NotificationQueries, notifier *svc.Notifier) *NotificationHandler {
+	return &NotificationHandler{channels: channels, notifier: notifier}
 }
 
 func (h *NotificationHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +75,42 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, ch)
+}
+
+func (h *NotificationHandler) Test(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	// Find the channel
+	channels, err := h.channels.List()
+	if err != nil {
+		jsonError(w, "failed to list channels", http.StatusInternalServerError)
+		return
+	}
+
+	var target *queries.NotificationChannel
+	for i := range channels {
+		if channels[i].ID == id {
+			target = &channels[i]
+			break
+		}
+	}
+	if target == nil {
+		jsonError(w, "channel not found", http.StatusNotFound)
+		return
+	}
+
+	// Send a test notification through the notifier
+	h.notifier.NotifyApprovalNeeded(svc.ApprovalNotification{
+		ApprovalID:    "test-000",
+		PlaceholderID: "test-placeholder",
+		ClientName:    "test-client",
+		ServiceName:   "test-service",
+		Method:        "POST",
+		Path:          "/v1/test",
+		AdminURL:      "/admin/approvals",
+	})
+
+	jsonResponse(w, map[string]string{"status": "sent"})
 }
 
 func (h *NotificationHandler) Delete(w http.ResponseWriter, r *http.Request) {
