@@ -12,7 +12,7 @@
     <li><a href="#services">4. Services &amp; API Keys</a></li>
     <li><a href="#acl">5. ACL System</a></li>
     <li><a href="#clients">6. Client Setup</a></li>
-    <li><a href="#placeholders">7. Placeholder Keys</a></li>
+    <li><a href="#placeholders">7. Phantom Tokens</a></li>
     <li><a href="#proxy">8. Proxy Modes</a></li>
     <li><a href="#approvals">9. Approval Workflow</a></li>
     <li><a href="#groups">10. Key Groups &amp; Load Balancing</a></li>
@@ -27,7 +27,7 @@
 <!-- 1 -->
 <div class="card" id="overview">
   <h3>1. Overview</h3>
-  <p>Duckway is an API proxy that manages real API keys centrally. AI agents and other clients never see real keys — they use <strong>placeholder keys</strong> that look identical in format but are swapped for real keys by the proxy.</p>
+  <p>Duckway is an API proxy that manages real API keys centrally. AI agents and other clients never see real keys — they use <strong>phantom tokens</strong> that look identical in format but are swapped for real keys by the proxy.</p>
   <ul>
     <li><strong>No key leakage</strong> — agents only have fake keys; real keys never leave the server</li>
     <li><strong>ACL system</strong> — 22 pre-built templates from official API docs + custom JSON rules</li>
@@ -88,7 +88,7 @@ duckway init</code></pre>
     <li>Default services pre-configured: OpenAI, Anthropic, GitHub, Discord, Telegram</li>
     <li><strong>API Keys</strong> → add your real keys (encrypted at rest)</li>
     <li><strong>Clients</strong> → register a machine → copy the full setup command</li>
-    <li>Assign keys to the client → placeholder keys auto-generated</li>
+    <li>Assign keys to the client → phantom tokens auto-generated</li>
     <li>Optionally: set ACL, configure canary tokens, add notification channels</li>
   </ol>
 </div>
@@ -101,7 +101,7 @@ duckway init</code></pre>
     <tr><td><strong>Name</strong></td><td>Slug for proxy URL: <code>/proxy/{name}/...</code></td></tr>
     <tr><td><strong>Upstream URL</strong></td><td>e.g., <code>https://api.openai.com</code></td></tr>
     <tr><td><strong>Auth Type</strong></td><td><code>bearer</code>, <code>header</code>, or <code>query</code></td></tr>
-    <tr><td><strong>Key Prefix + Length</strong></td><td>For placeholder format matching (e.g., <code>sk-</code>, 164 chars)</td></tr>
+    <tr><td><strong>Key Prefix + Length</strong></td><td>For phantom token format matching (e.g., <code>sk-</code>, 164 chars)</td></tr>
     <tr><td><strong>Key Directory</strong></td><td>Where keys are deployed on client (e.g., <code>~/.config/openai/credentials</code>)</td></tr>
     <tr><td><strong>Default ACL</strong></td><td>Service-level access control — applies to all keys unless overridden</td></tr>
   </table>
@@ -115,9 +115,9 @@ duckway init</code></pre>
   <ol>
     <li><strong>Service</strong> <code>default_acl</code> — widest scope, applies to all keys in service</li>
     <li><strong>API Key</strong> <code>acl</code> — narrows further per real key</li>
-    <li><strong>Placeholder</strong> <code>permission_config</code> — narrowest, per client+service</li>
+    <li><strong>Phantom Token</strong> <code>permission_config</code> — narrowest, per client+service</li>
   </ol>
-  <p class="text-sm text-muted">Example: Service allows all OpenAI endpoints. Key restricts to chat + embeddings. Placeholder restricts to gpt-4o-mini only. An agent using this placeholder can only call chat completions with gpt-4o-mini — the intersection of all three layers.</p>
+  <p class="text-sm text-muted">Example: Service allows all OpenAI endpoints. Key restricts to chat + embeddings. Phantom token restricts to gpt-4o-mini only. An agent using this phantom token can only call chat completions with gpt-4o-mini — the intersection of all three layers.</p>
 
   <h4 class="mt-1">Pre-built templates (22)</h4>
   <table>
@@ -158,31 +158,31 @@ duckway init</code></pre>
     <li>Admin creates client → gets token + full setup command</li>
     <li>On the machine: <code>curl -fsSL http://server/install.sh | sh && duckway init</code></li>
     <li>Client downloads CA cert, installs to system trust store</li>
-    <li>Admin assigns API keys → placeholder keys generated</li>
+    <li>Admin assigns API keys → phantom tokens generated</li>
     <li><code>duckway sync</code> → keys in <code>~/.duckway/keys.env</code> + canary files deployed</li>
   </ol>
 
   <h4 class="mt-1">Per-client settings</h4>
   <table>
     <tr><td><strong>Canary: ON/OFF</strong></td><td>Toggle canary token deployment per client</td></tr>
-    <tr><td><strong>Placeholder keys</strong></td><td>Each editable: env name, key path, approval, TTL</td></tr>
+    <tr><td><strong>Phantom tokens</strong></td><td>Each editable: env name, key path, approval, TTL</td></tr>
     <tr><td><strong>Canary tokens</strong></td><td>View deployed tokens, links to canarytokens.org management</td></tr>
   </table>
 </div>
 
 <!-- 7 -->
 <div class="card" id="placeholders">
-  <h3>7. Placeholder Keys</h3>
+  <h3>7. Phantom Tokens</h3>
   <p>Fake credentials matching real key format with <code>dw_</code> marker:</p>
   <table>
-    <thead><tr><th>Service</th><th>Real</th><th>Placeholder</th></tr></thead>
+    <thead><tr><th>Service</th><th>Real</th><th>Phantom Token</th></tr></thead>
     <tbody>
       <tr><td>OpenAI</td><td><code>sk-proj-ABC...</code></td><td><code>sk-proj-dw_a8f3...</code></td></tr>
       <tr><td>Anthropic</td><td><code>sk-ant-ABC...</code></td><td><code>sk-ant-dw_7e2f...</code></td></tr>
       <tr><td>GitHub</td><td><code>ghp_ABC...</code></td><td><code>ghp_dw_9c3e...</code></td></tr>
     </tbody>
   </table>
-  <p class="mt-1">Each placeholder has configurable:</p>
+  <p class="mt-1">Each phantom token has configurable:</p>
   <table>
     <tr><td><strong>Env Name</strong></td><td>e.g., <code>OPENAI_API_KEY</code></td></tr>
     <tr><td><strong>Key Path</strong></td><td>Deploy location (inherits from service, overridable)</td></tr>
@@ -220,7 +220,7 @@ curl https://api.openai.com/v1/chat/completions ...
     <li>Approval valid for the configured TTL (default 24h)</li>
     <li>After TTL expires → needs re-approval</li>
   </ol>
-  <p class="mt-1">TTL is per-placeholder, editable from the Clients page. Set to 0 to disable approval entirely.</p>
+  <p class="mt-1">TTL is per-phantom-token, editable from the Clients page. Set to 0 to disable approval entirely.</p>
 </div>
 
 <!-- 10 -->
@@ -357,7 +357,7 @@ duckway status            # Server, keys, heartbeat, local proxy, CA cert</code>
     </tbody>
   </table>
 
-  <h4 class="mt-1">Placeholders (admin)</h4>
+  <h4 class="mt-1">Phantom Tokens (admin)</h4>
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -407,7 +407,7 @@ duckway status            # Server, keys, heartbeat, local proxy, CA cert</code>
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/keys</code></td><td>Fetch placeholder keys</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/keys</code></td><td>Fetch phantom tokens</td></tr>
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/canaries</code></td><td>Fetch canary tokens to deploy</td></tr>
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/services</code></td><td>Service host map for HTTPS proxy</td></tr>
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/ca-key</code></td><td>CA private key for MITM</td></tr>

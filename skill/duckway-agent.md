@@ -7,7 +7,7 @@ You are working behind a **Duckway API proxy**. All API calls are routed through
 Your environment has been configured with:
 - `HTTPS_PROXY` and `HTTP_PROXY` pointing to the local Duckway proxy
 - The Duckway CA certificate installed in the system trust store
-- Placeholder API keys in `~/.duckway/keys.env`
+- Phantom token API keys in `~/.duckway/keys.env`
 
 ## How to Make API Calls
 
@@ -30,7 +30,7 @@ curl https://api.anthropic.com/v1/messages \
 
 The proxy:
 1. Intercepts the HTTPS connection
-2. Finds your placeholder key for this service
+2. Finds your phantom token for this service
 3. Replaces it with the real API key
 4. Forwards to the upstream API
 5. Returns the response to you
@@ -59,7 +59,7 @@ eval $(duckway env)
 # Exports: OPENAI_API_KEY, ANTHROPIC_API_KEY, GITHUB_TOKEN, etc.
 ```
 
-These are placeholder keys (contain `dw_` marker). They work through the proxy but are not real API keys.
+These are phantom tokens (contain `dw_` marker). They work through the proxy but are not real API keys.
 
 ## Commands
 
@@ -76,4 +76,4 @@ Some keys require admin approval on first use. If you get a `403` with `duckway_
 
 ## Permissions
 
-Your placeholder key may have restricted permissions. If you get a `permission denied` error, the admin has limited which endpoints or models you can use.
+Your phantom token may have restricted permissions. If you get a `permission denied` error, the admin has limited which endpoints or models you can use.
