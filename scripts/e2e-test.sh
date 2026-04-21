@@ -550,40 +550,52 @@ assert_contains "Anthropic messages-only: batches denied" "permission denied" "$
 curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY2_ID/acl" \
   -H "Content-Type: application/json" -d '{"acl":""}' > /dev/null
 
-# --- ACL priority: placeholder > key > service ---
+# --- ACL layering: all layers checked, can only narrow ---
 echo ""
-echo -e "${YELLOW}[11e] ACL Priority Chain${NC}"
+echo -e "${YELLOW}[11e] ACL Layering (narrow-only)${NC}"
 
-# Set service ACL to allow-all (no restriction)
+# Service = chat-only (allows chat + models)
 curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/services/$OPENAI_ID/acl-templates" \
-  -H "Content-Type: application/json" -d '{"template_id":"allow-all"}' > /dev/null
-
-# Set key ACL to chat-only (restrictive)
-curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY1_ID/acl-templates" \
   -H "Content-Type: application/json" -d '{"template_id":"chat-only"}' > /dev/null
 
-# Key ACL should block images even though service allows all
-PRIORITY_DENIED=$(curl -s -X POST "$BASE/proxy/openai/v1/images/generations" \
+# Key = allow-all (does NOT widen — service still blocks images)
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY1_ID/acl" \
+  -H "Content-Type: application/json" -d '{"acl":""}' > /dev/null
+
+# Service blocks images even though key has no restriction
+LAYER_SVC=$(curl -s -X POST "$BASE/proxy/openai/v1/images/generations" \
   -H "X-Duckway-Token: $CLIENT_ACL_TOKEN" \
   -H "Content-Type: application/json" -d '{"prompt":"cat"}')
-assert_contains "Priority: key ACL overrides service allow-all" "permission denied" "$PRIORITY_DENIED"
+assert_contains "Layering: service blocks images (key can't widen)" "permission denied (service)" "$LAYER_SVC"
 
-# Now set a placeholder-level permission that allows everything
-PH_ID=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/placeholders?client_id=$CLIENT_ACL_ID" | jq -r '.[0].id')
-curl -s -b /tmp/dw-e2e-cookies -X PUT "$BASE/api/placeholders/$PH_ID" \
-  -H "Content-Type: application/json" \
-  -d '{"env_name":"OPENAI_API_KEY"}' > /dev/null
-
-# With a wide-open placeholder permission_config, it should override the key ACL
-# (We need to set permission_config directly — use the update endpoint isn't wired for that yet,
-#  so we test the opposite: key ACL takes effect when placeholder has no config)
-PRIORITY_CHAT=$(curl -s -X POST "$BASE/proxy/openai/v1/chat/completions" \
+# Chat still allowed (service permits it)
+LAYER_CHAT=$(curl -s -X POST "$BASE/proxy/openai/v1/chat/completions" \
   -H "X-Duckway-Token: $CLIENT_ACL_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"test"}]}')
-assert_contains "Priority: key ACL allows chat" "invalid_api_key" "$PRIORITY_CHAT"
+assert_contains "Layering: chat still allowed through service ACL" "invalid_api_key" "$LAYER_CHAT"
+
+# Now add key ACL that also restricts (both service + key checked)
+# Service = chat-only, Key = no-admin (blocks org + fine-tuning)
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY1_ID/acl-templates" \
+  -H "Content-Type: application/json" -d '{"template_id":"no-admin"}' > /dev/null
+
+# Images blocked by service layer
+LAYER_BOTH1=$(curl -s -X POST "$BASE/proxy/openai/v1/images/generations" \
+  -H "X-Duckway-Token: $CLIENT_ACL_TOKEN" \
+  -H "Content-Type: application/json" -d '{"prompt":"cat"}')
+assert_contains "Layering: service still blocks images with key ACL set" "permission denied (service)" "$LAYER_BOTH1"
+
+# Chat allowed by both layers
+LAYER_BOTH2=$(curl -s -X POST "$BASE/proxy/openai/v1/chat/completions" \
+  -H "X-Duckway-Token: $CLIENT_ACL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"test"}]}')
+assert_contains "Layering: chat passes both service + key ACL" "invalid_api_key" "$LAYER_BOTH2"
 
 # Clean up
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/services/$OPENAI_ID/acl-templates" \
+  -H "Content-Type: application/json" -d '{"template_id":"allow-all"}' > /dev/null
 curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY1_ID/acl" \
   -H "Content-Type: application/json" -d '{"acl":""}' > /dev/null
 

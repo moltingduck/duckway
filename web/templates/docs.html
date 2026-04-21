@@ -111,13 +111,13 @@ duckway init</code></pre>
 <!-- 5 -->
 <div class="card" id="acl">
   <h3>5. ACL System</h3>
-  <p>Three-layer access control. First non-empty wins:</p>
+  <p>Three-layer access control. Request must pass <strong>ALL</strong> non-empty layers — each can only narrow, never widen:</p>
   <ol>
-    <li><strong>Placeholder</strong> <code>permission_config</code> — per client+service (most specific)</li>
-    <li><strong>API Key</strong> <code>acl</code> — per real key</li>
-    <li><strong>Service</strong> <code>default_acl</code> — service-wide</li>
-    <li>Allow all (if none set)</li>
+    <li><strong>Service</strong> <code>default_acl</code> — widest scope, applies to all keys in service</li>
+    <li><strong>API Key</strong> <code>acl</code> — narrows further per real key</li>
+    <li><strong>Placeholder</strong> <code>permission_config</code> — narrowest, per client+service</li>
   </ol>
+  <p class="text-sm text-muted">Example: Service allows all OpenAI endpoints. Key restricts to chat + embeddings. Placeholder restricts to gpt-4o-mini only. An agent using this placeholder can only call chat completions with gpt-4o-mini — the intersection of all three layers.</p>
 
   <h4 class="mt-1">Pre-built templates (22)</h4>
   <table>

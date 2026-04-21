@@ -126,18 +126,26 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		r.Body.Close()
 	}
 
-	// ACL priority: placeholder permission_config > api_key.acl > service.default_acl
-	aclConfig := result.PermissionConfig
-	if aclConfig == "" {
-		aclConfig = result.APIKeyACL
+	// Three-level ACL: request must pass ALL non-empty layers.
+	// Each layer can only shrink (restrict further), never widen.
+	//   1. Service default_acl (widest)
+	//   2. API Key acl
+	//   3. Placeholder permission_config (narrowest)
+	aclLayers := []struct {
+		name   string
+		config string
+	}{
+		{"service", svc.DefaultACL},
+		{"api_key", result.APIKeyACL},
+		{"placeholder", result.PermissionConfig},
 	}
-	if aclConfig == "" {
-		aclConfig = svc.DefaultACL
-	}
-	if aclConfig != "" {
-		permResult := h.permissions.Check(aclConfig, result.PlaceholderID, r.Method, upstreamPath, bodyBytes)
+	for _, layer := range aclLayers {
+		if layer.config == "" {
+			continue
+		}
+		permResult := h.permissions.Check(layer.config, result.PlaceholderID, r.Method, upstreamPath, bodyBytes)
 		if !permResult.Allowed {
-			jsonError(w, "permission denied: "+permResult.Reason, http.StatusForbidden)
+			jsonError(w, "permission denied ("+layer.name+"): "+permResult.Reason, http.StatusForbidden)
 			return
 		}
 	}
