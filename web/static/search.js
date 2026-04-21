@@ -26,13 +26,32 @@ function initSmartSearch(config) {
   input.parentNode.style.position = 'relative';
   input.parentNode.appendChild(dropdown);
 
-  // Hint
-  var hint = document.createElement('div');
-  hint.className = 'search-hint';
-  hint.innerHTML = config.filters.map(function(f) {
-    return '<code>' + f.key + ':</code>';
-  }).join(' ') + ' <span class="text-muted">or type to search all</span>';
-  input.parentNode.appendChild(hint);
+  // Help icon with tooltip
+  var helpIcon = document.createElement('span');
+  helpIcon.className = 'search-help-icon';
+  helpIcon.innerHTML = '?';
+  helpIcon.title = 'Filter syntax help';
+
+  var tooltip = document.createElement('div');
+  tooltip.className = 'search-tooltip';
+  tooltip.innerHTML = '<strong>Filter syntax:</strong><br>' +
+    config.filters.map(function(f) {
+      return '<code>' + f.key + ':value</code> ' + f.label;
+    }).join('<br>') +
+    '<br><br><span class="text-muted">Combine filters: <code>service:openai status:active</code><br>Quote spaces: <code>name:"my key"</code><br>Or just type to search all fields</span>';
+  tooltip.style.display = 'none';
+
+  helpIcon.addEventListener('mouseenter', function() { tooltip.style.display = 'block'; });
+  helpIcon.addEventListener('mouseleave', function() { tooltip.style.display = 'none'; });
+  helpIcon.addEventListener('click', function() {
+    tooltip.style.display = tooltip.style.display === 'none' ? 'block' : 'none';
+  });
+
+  var helpWrap = document.createElement('div');
+  helpWrap.className = 'search-help-wrap';
+  helpWrap.appendChild(helpIcon);
+  helpWrap.appendChild(tooltip);
+  input.parentNode.appendChild(helpWrap);
 
   // Pagination container
   var pager = document.createElement('div');
