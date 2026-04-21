@@ -116,6 +116,70 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, pk)
 }
 
+// ListWithApprovals returns placeholders enriched with latest approval status.
+func (h *PlaceholderHandler) ListWithApprovals(w http.ResponseWriter, r *http.Request, approvalQ interface{ LatestByPlaceholder(string) (*models.Approval, error) }) {
+	clientID := r.URL.Query().Get("client_id")
+	serviceID := r.URL.Query().Get("service_id")
+	list, err := h.placeholders.List(clientID, serviceID)
+	if err != nil {
+		jsonError(w, "failed to list", http.StatusInternalServerError)
+		return
+	}
+
+	type phWithApproval struct {
+		models.PlaceholderKey
+		ApprovalStatus string  `json:"approval_status"`
+		ApprovedAt     *string `json:"approved_at"`
+		ExpiresAt      *string `json:"expires_at"`
+	}
+
+	var result []phWithApproval
+	for _, p := range list {
+		pa := phWithApproval{PlaceholderKey: p}
+		if a, err := approvalQ.LatestByPlaceholder(p.ID); err == nil {
+			pa.ApprovalStatus = a.Status
+			pa.ApprovedAt = a.ApprovedAt
+			pa.ExpiresAt = a.ExpiresAt
+		}
+		result = append(result, pa)
+	}
+	if result == nil {
+		result = []phWithApproval{}
+	}
+	jsonResponse(w, result)
+}
+
+func (h *PlaceholderHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ph, err := h.placeholders.GetByID(id)
+	if err != nil {
+		jsonError(w, "placeholder not found", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		RequiresApproval   *bool `json:"requires_approval"`
+		ApprovalTTLMinutes *int  `json:"approval_ttl_minutes"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.RequiresApproval != nil {
+		ph.RequiresApproval = *req.RequiresApproval
+	}
+	if req.ApprovalTTLMinutes != nil {
+		ph.ApprovalTTLMinutes = *req.ApprovalTTLMinutes
+	}
+
+	if err := h.placeholders.Update(ph); err != nil {
+		jsonError(w, "failed to update", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, ph)
+}
+
 func (h *PlaceholderHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := h.placeholders.Delete(id); err != nil {

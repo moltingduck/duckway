@@ -151,6 +151,10 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	adminAPIMux.HandleFunc("POST /api/keys/{id}/acl", apiKeyH.SetACL)
 
 	adminAPIMux.HandleFunc("GET /api/placeholders", placeholderH.List)
+	adminAPIMux.HandleFunc("GET /api/placeholders/with-approvals", func(w http.ResponseWriter, r *http.Request) {
+		placeholderH.ListWithApprovals(w, r, approvalQ)
+	})
+	adminAPIMux.HandleFunc("PUT /api/placeholders/{id}", placeholderH.Update)
 	adminAPIMux.HandleFunc("POST /api/placeholders", placeholderH.Create)
 	adminAPIMux.HandleFunc("DELETE /api/placeholders/{id}", placeholderH.Delete)
 

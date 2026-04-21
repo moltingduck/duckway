@@ -53,7 +53,7 @@
     </div>
     <div id="keys-section-{{.ID}}" style="display:none">
       <table>
-        <thead><tr><th>Env Name</th><th>Service</th><th>Placeholder Key</th><th>Approval</th><th>Usage</th><th></th></tr></thead>
+        <thead><tr><th>Env Name</th><th>Service</th><th>Placeholder Key</th><th>Approval</th><th>Valid Until</th><th>TTL</th><th>Usage</th><th></th></tr></thead>
         <tbody id="keys-{{.ID}}"></tbody>
       </table>
     </div>
@@ -176,8 +176,11 @@ var apiKeys = [
 ];
 
 var placeholders = [
-  {{range .Placeholders}}{id:"{{.ID}}", envName:"{{.EnvName}}", placeholder:"{{.Placeholder}}", serviceName:"{{.ServiceName}}", serviceId:"{{.ServiceID}}", apiKeyId:"{{if .APIKeyID}}{{deref .APIKeyID}}{{end}}", groupId:"{{if .GroupID}}{{deref .GroupID}}{{end}}", clientId:"{{.ClientID}}", clientName:"{{.ClientName}}", keyPath:"{{.KeyPath}}", requiresApproval:{{.RequiresApproval}}, usageCount:{{.UsageCount}}},{{end}}
+  {{range .Placeholders}}{id:"{{.ID}}", envName:"{{.EnvName}}", placeholder:"{{.Placeholder}}", serviceName:"{{.ServiceName}}", serviceId:"{{.ServiceID}}", apiKeyId:"{{if .APIKeyID}}{{deref .APIKeyID}}{{end}}", groupId:"{{if .GroupID}}{{deref .GroupID}}{{end}}", clientId:"{{.ClientID}}", clientName:"{{.ClientName}}", keyPath:"{{.KeyPath}}", requiresApproval:{{.RequiresApproval}}, approvalTTL:{{.ApprovalTTLMinutes}}, usageCount:{{.UsageCount}}},{{end}}
 ];
+
+// Will be enriched with approval data
+var approvalData = {}; // placeholderID → {status, approved_at, expires_at}
 
 var canaryTokens = [
   {{range .CanaryTokens}}{id:"{{.ID}}", clientId:"{{.ClientID}}", tokenType:"{{.TokenType}}", tokenValue:"{{.TokenValue}}", canaryToken:"{{.CanaryToken}}", authToken:"{{.AuthToken}}", deployPath:"{{.DeployPath}}", createdAt:"{{.CreatedAt}}"},{{end}}
@@ -202,23 +205,54 @@ document.addEventListener('DOMContentLoaded', function() {
   var keyCounts = {};
   var canaryCounts = {};
 
-  // Populate placeholder keys per client
-  placeholders.forEach(function(ph) {
-    var tbody = document.getElementById('keys-' + ph.clientId);
-    if (!tbody) return;
-    keyCounts[ph.clientId] = (keyCounts[ph.clientId] || 0) + 1;
-    var tr = document.createElement('tr');
-    tr.id = 'ph-' + ph.id;
-    var phShort = ph.placeholder.length > 28 ? ph.placeholder.substring(0,28)+'...' : ph.placeholder;
-    tr.innerHTML =
-      '<td><strong>' + ph.envName + '</strong></td>' +
-      '<td><span class="badge badge-blue">' + ph.serviceName + '</span></td>' +
-      '<td class="mono text-sm" style="cursor:pointer;text-decoration:underline dotted" onclick="showPhDetail(\'' + ph.id + '\')" title="Click for details">' + phShort + '</td>' +
-      '<td>' + (ph.requiresApproval ? '<span class="badge badge-yellow">Required</span>' : '<span class="badge badge-green">Auto</span>') + '</td>' +
-      '<td>' + ph.usageCount + '</td>' +
-      '<td class="text-right"><button class="btn btn-sm btn-danger" onclick="deletePh(\'' + ph.id + '\')">Remove</button></td>';
-    tbody.appendChild(tr);
-  });
+  // Fetch approval data then populate
+  fetch('/api/placeholders/with-approvals', {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      data.forEach(function(p) {
+        approvalData[p.id] = {status: p.approval_status, approved_at: p.approved_at, expires_at: p.expires_at};
+      });
+      renderPlaceholders();
+    })
+    .catch(function() { renderPlaceholders(); });
+
+  function renderPlaceholders() {
+    placeholders.forEach(function(ph) {
+      var tbody = document.getElementById('keys-' + ph.clientId);
+      if (!tbody) return;
+      keyCounts[ph.clientId] = (keyCounts[ph.clientId] || 0) + 1;
+      var tr = document.createElement('tr');
+      tr.id = 'ph-' + ph.id;
+      var phShort = ph.placeholder.length > 28 ? ph.placeholder.substring(0,28)+'...' : ph.placeholder;
+
+      var ad = approvalData[ph.id] || {};
+      var approvalBadge = ph.requiresApproval ? '<span class="badge badge-yellow">Required</span>' : '<span class="badge badge-green">Auto</span>';
+      if (ad.status === 'approved') approvalBadge += ' <span class="badge badge-green">Approved</span>';
+      else if (ad.status === 'pending') approvalBadge += ' <span class="badge badge-yellow">Pending</span>';
+
+      var validUntil = '—';
+      if (ad.expires_at) {
+        var exp = ad.expires_at;
+        var isExpired = new Date(exp + 'Z') < new Date();
+        validUntil = '<span class="text-sm ' + (isExpired ? 'badge badge-red' : '') + '">' + exp + (isExpired ? ' (expired)' : '') + '</span>';
+      }
+
+      var ttlText = ph.approvalTTL ? (ph.approvalTTL >= 1440 ? (ph.approvalTTL/1440) + 'd' : ph.approvalTTL + 'm') : '24h';
+
+      tr.innerHTML =
+        '<td><strong>' + ph.envName + '</strong></td>' +
+        '<td><span class="badge badge-blue">' + ph.serviceName + '</span></td>' +
+        '<td class="mono text-sm" style="cursor:pointer;text-decoration:underline dotted" onclick="showPhDetail(\'' + ph.id + '\')" title="Click for details">' + phShort + '</td>' +
+        '<td>' + approvalBadge + '</td>' +
+        '<td>' + validUntil + '</td>' +
+        '<td><a href="#" onclick="editPhTTL(\'' + ph.id + '\',' + ph.requiresApproval + ',' + ph.approvalTTL + ');return false" class="text-sm">' + ttlText + '</a></td>' +
+        '<td>' + ph.usageCount + '</td>' +
+        '<td class="text-right"><button class="btn btn-sm btn-danger" onclick="deletePh(\'' + ph.id + '\')">Remove</button></td>';
+      tbody.appendChild(tr);
+    });
+
+    renderEmptyMessages();
+  }
 
   // Populate canary tokens per client
   canaryTokens.forEach(function(ct) {
@@ -241,15 +275,17 @@ document.addEventListener('DOMContentLoaded', function() {
     tbody.appendChild(tr);
   });
 
-  // Show empty messages
-  document.querySelectorAll('tbody[id^="keys-"]').forEach(function(tbody) {
-    if (tbody.children.length === 0) {
-      var tr = document.createElement('tr');
-      tr.className = 'empty-row';
-      tr.innerHTML = '<td colspan="6" class="text-muted text-sm">No keys assigned. Click "Assign Key" to add.</td>';
-      tbody.appendChild(tr);
-    }
-  });
+  function renderEmptyMessages() {
+    document.querySelectorAll('tbody[id^="keys-"]').forEach(function(tbody) {
+      if (tbody.children.length === 0) {
+        var tr = document.createElement('tr');
+        tr.className = 'empty-row';
+        tr.innerHTML = '<td colspan="8" class="text-muted text-sm">No keys assigned. Click "Assign Key" to add.</td>';
+        tbody.appendChild(tr);
+      }
+    });
+  }
+
   document.querySelectorAll('tbody[id^="canaries-"]').forEach(function(tbody) {
     if (tbody.children.length === 0) {
       var tr = document.createElement('tr');
@@ -318,6 +354,35 @@ function genCanary(clientId, clientName, shortId) {
     if (data.error) { showToast(data.error, 'error'); return; }
     var count = Array.isArray(data) ? data.length : 0;
     showToast(count + ' canary tokens generated', 'success');
+    location.reload();
+  });
+}
+
+function editPhTTL(phId, requiresApproval, ttlMinutes) {
+  var newTTL = prompt(
+    'Approval TTL (minutes):\n' +
+    '  60 = 1 hour\n' +
+    '  1440 = 1 day\n' +
+    '  10080 = 1 week\n' +
+    '  0 = no approval required\n\n' +
+    'Current: ' + ttlMinutes + ' minutes',
+    ttlMinutes
+  );
+  if (newTTL === null) return;
+  newTTL = parseInt(newTTL);
+  if (isNaN(newTTL) || newTTL < 0) { showToast('Invalid value', 'error'); return; }
+
+  var needsApproval = newTTL > 0;
+  fetch('/api/placeholders/' + phId, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({requires_approval: needsApproval, approval_ttl_minutes: newTTL}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('TTL updated: ' + (needsApproval ? newTTL + ' minutes' : 'no approval'), 'success');
     location.reload();
   });
 }
