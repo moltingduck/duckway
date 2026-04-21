@@ -46,9 +46,9 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Validate channel type
 	switch req.ChannelType {
-	case "telegram", "discord", "webhook":
+	case "telegram", "discord", "discord_bot", "webhook":
 	default:
-		jsonError(w, "channel_type must be telegram, discord, or webhook", http.StatusBadRequest)
+		jsonError(w, "channel_type must be telegram, discord, discord_bot, or webhook", http.StatusBadRequest)
 		return
 	}
 
@@ -80,7 +80,6 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *NotificationHandler) Test(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	// Find the channel
 	channels, err := h.channels.List()
 	if err != nil {
 		jsonError(w, "failed to list channels", http.StatusInternalServerError)
@@ -99,18 +98,9 @@ func (h *NotificationHandler) Test(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send a test notification through the notifier
-	h.notifier.NotifyApprovalNeeded(svc.ApprovalNotification{
-		ApprovalID:    "test-000",
-		PlaceholderID: "test-placeholder",
-		ClientName:    "test-client",
-		ServiceName:   "test-service",
-		Method:        "POST",
-		Path:          "/v1/test",
-		AdminURL:      "/admin/approvals",
-	})
-
-	jsonResponse(w, map[string]string{"status": "sent"})
+	// Test the specific channel with round-trip verification
+	result := h.notifier.TestChannel(*target)
+	jsonResponse(w, result)
 }
 
 func (h *NotificationHandler) Delete(w http.ResponseWriter, r *http.Request) {
