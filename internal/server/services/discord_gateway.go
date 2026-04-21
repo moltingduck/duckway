@@ -13,14 +13,20 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-// DiscordGateway manages a persistent WSS connection to Discord for receiving
-// message events. When a user types !approve or !reject in the channel,
-// it calls the approval callback.
+// DiscordGateway manages a persistent WSS connection to Discord.
+// Approval messages are sent with ✅/❌ reactions — when a user clicks
+// a reaction, the Gateway receives MESSAGE_REACTION_ADD and processes it.
+// Also supports !approve / !reject text commands as fallback.
 type DiscordGateway struct {
-	botToken    string
-	channelID   string
-	onApprove   func(approvalID string) error
-	onReject    func(approvalID string) error
+	botToken  string
+	channelID string
+	botUserID string // filled on READY
+	onApprove func(approvalID string) error
+	onReject  func(approvalID string) error
+
+	// Maps message ID → approval ID (for reaction-based approval)
+	pendingApprovals sync.Map // string → string
+
 	ws          *websocket.Conn
 	heartbeatMs int
 	sessionID   string
@@ -42,6 +48,9 @@ type helloData struct {
 
 type readyData struct {
 	SessionID string `json:"session_id"`
+	User      struct {
+		ID string `json:"id"`
+	} `json:"user"`
 }
 
 type messageCreateData struct {
@@ -55,6 +64,21 @@ type messageCreateData struct {
 	ID string `json:"id"`
 }
 
+type reactionAddData struct {
+	UserID    string `json:"user_id"`
+	ChannelID string `json:"channel_id"`
+	MessageID string `json:"message_id"`
+	Emoji     struct {
+		Name string `json:"name"`
+	} `json:"emoji"`
+	Member struct {
+		User struct {
+			Username string `json:"username"`
+			Bot      bool   `json:"bot"`
+		} `json:"user"`
+	} `json:"member"`
+}
+
 func NewDiscordGateway(botToken, channelID string, onApprove, onReject func(string) error) *DiscordGateway {
 	return &DiscordGateway{
 		botToken:  botToken,
@@ -63,6 +87,57 @@ func NewDiscordGateway(botToken, channelID string, onApprove, onReject func(stri
 		onReject:  onReject,
 		stopCh:    make(chan struct{}),
 	}
+}
+
+// RegisterApprovalMessage maps a Discord message ID to an approval ID.
+// Called after sending an approval notification so reactions can be tracked.
+func (g *DiscordGateway) RegisterApprovalMessage(messageID, approvalID string) {
+	g.pendingApprovals.Store(messageID, approvalID)
+}
+
+// SendApprovalMessage sends an approval notification with pre-added reactions.
+func (g *DiscordGateway) SendApprovalMessage(notif ApprovalNotification) {
+	embed := map[string]interface{}{
+		"title": "🔑 Duckway Approval Required",
+		"color": 16750848,
+		"description": fmt.Sprintf(
+			"**Client:** `%s`\n**Service:** `%s`\n**Request:** `%s %s`\n**Approval ID:** `%s`\n\n"+
+				"React ✅ to approve (24h) or ❌ to reject",
+			notif.ClientName, notif.ServiceName, notif.Method, notif.Path, notif.ApprovalID),
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"embeds": []interface{}{embed},
+	})
+
+	apiURL := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", g.channelID)
+	req, _ := http.NewRequest("POST", apiURL, strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bot "+g.botToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("[discord-gw] Failed to send approval message: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	var msg struct{ ID string `json:"id"` }
+	json.Unmarshal(respBody, &msg)
+
+	if msg.ID == "" {
+		log.Printf("[discord-gw] No message ID in response: %s", string(respBody))
+		return
+	}
+
+	// Register for reaction tracking
+	g.RegisterApprovalMessage(msg.ID, notif.ApprovalID)
+
+	// Add ✅ and ❌ reactions to the message
+	g.react(g.channelID, msg.ID, "✅")
+	time.Sleep(300 * time.Millisecond) // Rate limit
+	g.react(g.channelID, msg.ID, "❌")
 }
 
 func (g *DiscordGateway) Start() {
@@ -100,7 +175,6 @@ func (g *DiscordGateway) connectLoop() {
 }
 
 func (g *DiscordGateway) connect() error {
-	// Get gateway URL
 	gwURL, err := g.getGatewayURL()
 	if err != nil {
 		return fmt.Errorf("get gateway URL: %w", err)
@@ -135,20 +209,16 @@ func (g *DiscordGateway) connect() error {
 	json.Unmarshal(hello.D, &hd)
 	g.heartbeatMs = hd.HeartbeatInterval
 
-	// Start heartbeat
 	go g.heartbeat(ws)
 
-	// Send Identify
-	// Intents: GUILDS(1<<0) | GUILD_MESSAGES(1<<9) | MESSAGE_CONTENT(1<<15)
+	// Intents: GUILDS(0) | GUILD_MESSAGES(9) | GUILD_MESSAGE_REACTIONS(10) | MESSAGE_CONTENT(15)
 	identify := map[string]interface{}{
 		"op": 2,
 		"d": map[string]interface{}{
 			"token":   g.botToken,
-			"intents": (1 << 0) | (1 << 9) | (1 << 15),
+			"intents": (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15),
 			"properties": map[string]string{
-				"os":      "linux",
-				"browser": "duckway",
-				"device":  "duckway",
+				"os": "linux", "browser": "duckway", "device": "duckway",
 			},
 		},
 	}
@@ -156,9 +226,8 @@ func (g *DiscordGateway) connect() error {
 		return fmt.Errorf("send identify: %w", err)
 	}
 
-	log.Printf("[discord-gw] Connected, listening for commands in channel %s", g.channelID)
+	log.Printf("[discord-gw] Connected, listening in channel %s (commands + reactions)", g.channelID)
 
-	// Event loop
 	for {
 		select {
 		case <-g.stopCh:
@@ -176,16 +245,16 @@ func (g *DiscordGateway) connect() error {
 		}
 
 		switch payload.Op {
-		case 0: // Dispatch
+		case 0:
 			g.handleDispatch(payload.T, payload.D, ws)
-		case 1: // Heartbeat request
+		case 1:
 			g.sendHeartbeat(ws)
-		case 7: // Reconnect
+		case 7:
 			return fmt.Errorf("server requested reconnect")
-		case 9: // Invalid session
+		case 9:
 			return fmt.Errorf("invalid session")
-		case 11: // Heartbeat ACK
-			// OK
+		case 11:
+			// Heartbeat ACK
 		}
 	}
 }
@@ -196,18 +265,57 @@ func (g *DiscordGateway) handleDispatch(eventType string, data json.RawMessage, 
 		var rd readyData
 		json.Unmarshal(data, &rd)
 		g.sessionID = rd.SessionID
-		log.Printf("[discord-gw] Ready, session: %s", rd.SessionID)
+		g.botUserID = rd.User.ID
+		log.Printf("[discord-gw] Ready, session: %s, bot user: %s", rd.SessionID, rd.User.ID)
 
 	case "MESSAGE_CREATE":
 		var msg messageCreateData
 		json.Unmarshal(data, &msg)
-
-		// Ignore bot messages and messages in other channels
 		if msg.Author.Bot || msg.ChannelID != g.channelID {
 			return
 		}
-
 		g.handleCommand(msg)
+
+	case "MESSAGE_REACTION_ADD":
+		var reaction reactionAddData
+		json.Unmarshal(data, &reaction)
+		if reaction.ChannelID != g.channelID {
+			return
+		}
+		// Ignore bot's own reactions
+		if reaction.UserID == g.botUserID {
+			return
+		}
+		g.handleReaction(reaction)
+	}
+}
+
+func (g *DiscordGateway) handleReaction(reaction reactionAddData) {
+	// Look up if this message has a pending approval
+	val, ok := g.pendingApprovals.Load(reaction.MessageID)
+	if !ok {
+		return
+	}
+	approvalID := val.(string)
+	username := reaction.Member.User.Username
+
+	switch reaction.Emoji.Name {
+	case "✅":
+		if err := g.onApprove(approvalID); err != nil {
+			g.sendMessage(g.channelID, fmt.Sprintf("❌ Failed to approve `%s`: %s", approvalID, err.Error()))
+		} else {
+			g.pendingApprovals.Delete(reaction.MessageID)
+			g.editMessage(g.channelID, reaction.MessageID,
+				fmt.Sprintf("✅ **Approved** `%s` for 24h by %s", approvalID, username))
+		}
+	case "❌":
+		if err := g.onReject(approvalID); err != nil {
+			g.sendMessage(g.channelID, fmt.Sprintf("❌ Failed to reject `%s`: %s", approvalID, err.Error()))
+		} else {
+			g.pendingApprovals.Delete(reaction.MessageID)
+			g.editMessage(g.channelID, reaction.MessageID,
+				fmt.Sprintf("🚫 **Rejected** `%s` by %s", approvalID, username))
+		}
 	}
 }
 
@@ -224,7 +332,7 @@ func (g *DiscordGateway) handleCommand(msg messageCreateData) {
 			g.sendMessage(msg.ChannelID, fmt.Sprintf("Failed to approve `%s`: %s", approvalID, err.Error()))
 		} else {
 			g.react(msg.ChannelID, msg.ID, "✅")
-			g.sendMessage(msg.ChannelID, fmt.Sprintf("Approved `%s` for 24h by %s", approvalID, msg.Author.Username))
+			g.sendMessage(msg.ChannelID, fmt.Sprintf("✅ Approved `%s` for 24h by %s", approvalID, msg.Author.Username))
 		}
 	} else if strings.HasPrefix(content, "!reject ") {
 		approvalID := strings.TrimSpace(strings.TrimPrefix(content, "!reject "))
@@ -235,7 +343,7 @@ func (g *DiscordGateway) handleCommand(msg messageCreateData) {
 			g.react(msg.ChannelID, msg.ID, "❌")
 		} else {
 			g.react(msg.ChannelID, msg.ID, "🚫")
-			g.sendMessage(msg.ChannelID, fmt.Sprintf("Rejected `%s` by %s", approvalID, msg.Author.Username))
+			g.sendMessage(msg.ChannelID, fmt.Sprintf("🚫 Rejected `%s` by %s", approvalID, msg.Author.Username))
 		}
 	}
 }
@@ -243,7 +351,6 @@ func (g *DiscordGateway) handleCommand(msg messageCreateData) {
 func (g *DiscordGateway) heartbeat(ws *websocket.Conn) {
 	ticker := time.NewTicker(time.Duration(g.heartbeatMs) * time.Millisecond)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-g.stopCh:
@@ -270,6 +377,18 @@ func (g *DiscordGateway) sendMessage(channelID, content string) {
 	url := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", channelID)
 	body, _ := json.Marshal(map[string]string{"content": content})
 	req, _ := http.NewRequest("POST", url, strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bot "+g.botToken)
+	req.Header.Set("Content-Type", "application/json")
+	http.DefaultClient.Do(req)
+}
+
+func (g *DiscordGateway) editMessage(channelID, messageID, content string) {
+	url := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages/%s", channelID, messageID)
+	body, _ := json.Marshal(map[string]interface{}{
+		"content": content,
+		"embeds":  []interface{}{}, // Clear embeds after approval
+	})
+	req, _ := http.NewRequest("PATCH", url, strings.NewReader(string(body)))
 	req.Header.Set("Authorization", "Bot "+g.botToken)
 	req.Header.Set("Content-Type", "application/json")
 	http.DefaultClient.Do(req)

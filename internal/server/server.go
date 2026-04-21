@@ -21,9 +21,10 @@ import (
 )
 
 type Server struct {
-	config *Config
-	db     *sql.DB
-	mux    *http.ServeMux
+	config   *Config
+	db       *sql.DB
+	mux      *http.ServeMux
+	notifier *services.Notifier
 }
 
 func New(config *Config, db *sql.DB, contentFS embed.FS) (*Server, error) {
@@ -80,6 +81,7 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 	crypto := services.NewCrypto(s.config.EncryptionKey)
 	resolver := services.NewKeyResolver(crypto, apiKeyQ, placeholderQ, groupQ, approvalQ)
 	notifier := services.NewNotifier(notifQ)
+	s.notifier = notifier
 	canarySvc := services.NewCanaryService(canaryQ)
 
 	// Middleware
@@ -524,6 +526,7 @@ func (s *Server) seedDefaultServices() error {
 func (s *Server) startApprovalListeners() {
 	notifQ := queries.NewNotificationQueries(s.db)
 	approvalQ := queries.NewApprovalQueries(s.db)
+	notifier := s.notifier
 
 	channels, err := notifQ.ListActive()
 	if err != nil {
@@ -549,6 +552,8 @@ func (s *Server) startApprovalListeners() {
 			}
 			gw := services.NewDiscordGateway(cfg.BotToken, cfg.ChannelID, approveFunc, rejectFunc)
 			gw.Start()
+			// Register gateway in notifier so it can use reaction-based approval
+			notifier.Gateways.Store(cfg.ChannelID, gw)
 			log.Printf("Started Discord Gateway for channel %s (%s)", cfg.ChannelID, ch.Name)
 
 		case "telegram":

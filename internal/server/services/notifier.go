@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"net/url"
 	"strings"
 	"time"
@@ -17,6 +18,8 @@ import (
 type Notifier struct {
 	channels *queries.NotificationQueries
 	client   *http.Client
+	// Discord gateways by channel ID — used for reaction-based approvals
+	Gateways sync.Map // channelID → *DiscordGateway
 }
 
 func NewNotifier(channels *queries.NotificationQueries) *Notifier {
@@ -145,6 +148,7 @@ func (n *Notifier) sendDiscord(configJSON string, notif ApprovalNotification) er
 }
 
 // Discord Bot: config = {"bot_token": "...", "channel_id": "..."}
+// Uses the Gateway's SendApprovalMessage for reaction-based approval if available.
 func (n *Notifier) sendDiscordBot(configJSON string, notif ApprovalNotification) error {
 	var cfg struct {
 		BotToken  string `json:"bot_token"`
@@ -154,6 +158,14 @@ func (n *Notifier) sendDiscordBot(configJSON string, notif ApprovalNotification)
 		return fmt.Errorf("parse discord bot config: %w", err)
 	}
 
+	// Use Gateway if running (reaction-based approval)
+	if gw, ok := n.Gateways.Load(cfg.ChannelID); ok {
+		gateway := gw.(*DiscordGateway)
+		gateway.SendApprovalMessage(notif)
+		return nil
+	}
+
+	// Fallback: send via REST API without reaction tracking
 	embed := map[string]interface{}{
 		"title":       "🔑 Duckway Approval Required",
 		"color":       16750848,
