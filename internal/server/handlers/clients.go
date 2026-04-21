@@ -115,7 +115,8 @@ func (h *ClientHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to delete client", http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]string{"status": "deleted"})
+	// Return empty body so HTMX outerHTML swap removes the card cleanly
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *ClientHandler) assignHeartbeat(clientID string) {

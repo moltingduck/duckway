@@ -140,5 +140,5 @@ func (h *NotificationHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to delete channel", http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]string{"status": "deleted"})
+	w.WriteHeader(http.StatusOK)
 }

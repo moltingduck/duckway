@@ -203,5 +203,5 @@ func (h *APIKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to delete key", http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]string{"status": "deleted"})
+	w.WriteHeader(http.StatusOK)
 }

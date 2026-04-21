@@ -242,5 +242,5 @@ func (h *ServiceHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to delete service", http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]string{"status": "deleted"})
+	w.WriteHeader(http.StatusOK)
 }

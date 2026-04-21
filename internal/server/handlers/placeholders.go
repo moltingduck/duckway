@@ -194,7 +194,7 @@ func (h *PlaceholderHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to delete placeholder", http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, map[string]string{"status": "deleted"})
+	w.WriteHeader(http.StatusOK)
 }
 
 func defaultEnvName(serviceName string) string {
