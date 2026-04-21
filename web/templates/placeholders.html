@@ -22,7 +22,8 @@
         <td class="mono text-sm" title="{{.Placeholder}}">{{truncate .Placeholder 20}}</td>
         <td>{{if .RequiresApproval}}<span class="badge badge-yellow">Required</span>{{else}}<span class="badge badge-green">Auto</span>{{end}}</td>
         <td>{{.UsageCount}}</td>
-        <td class="text-right">
+        <td class="text-right flex gap-sm" style="justify-content:flex-end">
+          <button class="btn btn-sm" onclick="editPh('{{.ID}}','{{.EnvName}}','{{.KeyPath}}',{{.RequiresApproval}},{{.ApprovalTTLMinutes}})">Edit</button>
           <button class="btn btn-sm btn-danger"
             hx-delete="/api/placeholders/{{.ID}}"
             hx-target="#ph-{{.ID}}"
@@ -72,6 +73,63 @@
     </form>
   </div>
 </div>
+
+<!-- Edit placeholder modal -->
+<div id="edit-ph-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Edit Placeholder Key</h2>
+    <input type="hidden" id="eph-id">
+    <form id="edit-ph-form">
+      <div class="form-group"><label>Env Name</label><input type="text" id="eph-env" required></div>
+      <div class="form-group"><label>Key Path (under ~/)</label><input type="text" id="eph-path" placeholder=".config/openai/credentials"></div>
+      <div class="form-group">
+        <label><input type="checkbox" id="eph-approval"> Require approval</label>
+      </div>
+      <div class="form-group"><label>Approval TTL (minutes, 0 = no approval)</label><input type="number" id="eph-ttl" min="0">
+        <span class="text-muted text-sm">60 = 1h, 1440 = 1d, 10080 = 1w</span>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('edit-ph-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function editPh(phId, envName, keyPath, requiresApproval, ttl) {
+  document.getElementById('eph-id').value = phId;
+  document.getElementById('eph-env').value = envName;
+  document.getElementById('eph-path').value = keyPath || '';
+  document.getElementById('eph-approval').checked = requiresApproval;
+  document.getElementById('eph-ttl').value = ttl || 1440;
+  document.getElementById('edit-ph-modal').style.display = 'flex';
+}
+
+document.getElementById('edit-ph-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var id = document.getElementById('eph-id').value;
+  var body = {
+    env_name: document.getElementById('eph-env').value,
+    key_path: document.getElementById('eph-path').value,
+    requires_approval: document.getElementById('eph-approval').checked,
+    approval_ttl_minutes: parseInt(document.getElementById('eph-ttl').value) || 0
+  };
+
+  fetch('/api/placeholders/' + id, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Placeholder updated', 'success');
+    location.reload();
+  });
+});
+</script>
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
