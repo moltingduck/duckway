@@ -6,7 +6,7 @@
 
 <div class="card">
   <div class="search-bar">
-    <input type="text" id="search-services" placeholder="Search services..." oninput="filterTable('services-list', this.value)">
+    <input type="text" id="search-services" placeholder="Search or filter (e.g. auth:bearer name:openai)">
     <span class="count" id="count-services"></span>
   </div>
   <table>
@@ -89,20 +89,22 @@
 </div>
 
 <script>
-function filterTable(tbodyId, query) {
-  var tbody = document.getElementById(tbodyId);
-  var rows = tbody.querySelectorAll('tr');
-  var q = query.toLowerCase();
-  var visible = 0;
-  rows.forEach(function(tr) {
-    var text = tr.textContent.toLowerCase();
-    var show = !q || text.indexOf(q) >= 0;
-    tr.style.display = show ? '' : 'none';
-    if (show) visible++;
+document.addEventListener('DOMContentLoaded', function() {
+  initSmartSearch({
+    inputId: 'search-services',
+    targetId: 'services-list',
+    type: 'table',
+    countId: 'count-services',
+    filters: [
+      {key: 'name', label: 'Service name', col: 0, values: function() {
+        return Array.from(document.querySelectorAll('#services-list td:first-child strong')).map(function(e){return e.textContent});
+      }},
+      {key: 'auth', label: 'Auth type (bearer/header/query)', col: 2, values: ['bearer','header','query']},
+      {key: 'status', label: 'Active/Inactive', col: 5, values: ['Active','Inactive']},
+      {key: 'acl', label: 'ACL status (allow-all/custom)', col: 5, values: ['allow-all','custom']},
+    ]
   });
-  var countEl = document.getElementById('count-' + tbodyId.replace('-list',''));
-  if (countEl) countEl.textContent = q ? visible + ' / ' + rows.length : '';
-}
+});
 
 function openACL(svcId, svcName) {
   document.getElementById('acl-svc-id').value = svcId;

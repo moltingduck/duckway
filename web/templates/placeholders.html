@@ -6,7 +6,7 @@
 
 <div class="card">
   <div class="search-bar">
-    <input type="text" id="search-ph" placeholder="Search by env name, service, client..." oninput="filterTable('ph-list', this.value)">
+    <input type="text" id="search-ph" placeholder="Search or filter (e.g. service:openai client:laptop approval:auto)">
     <span class="count" id="count-ph"></span>
   </div>
   <table>
@@ -74,19 +74,25 @@
 </div>
 
 <script>
-function filterTable(tbodyId, query) {
-  var tbody = document.getElementById(tbodyId);
-  var rows = tbody.querySelectorAll('tr');
-  var q = query.toLowerCase();
-  var visible = 0;
-  rows.forEach(function(tr) {
-    var text = tr.textContent.toLowerCase();
-    var show = !q || text.indexOf(q) >= 0;
-    tr.style.display = show ? '' : 'none';
-    if (show) visible++;
+document.addEventListener('DOMContentLoaded', function() {
+  initSmartSearch({
+    inputId: 'search-ph',
+    targetId: 'ph-list',
+    type: 'table',
+    countId: 'count-ph',
+    filters: [
+      {key: 'env', label: 'Env name', col: 0, values: function() {
+        return Array.from(document.querySelectorAll('#ph-list td:first-child strong')).map(function(e){return e.textContent});
+      }},
+      {key: 'service', label: 'Service name', col: 1, values: function() {
+        var s = new Set(); document.querySelectorAll('#ph-list td:nth-child(2) .badge').forEach(function(e){s.add(e.textContent);}); return Array.from(s);
+      }},
+      {key: 'client', label: 'Client name', col: 2, values: function() {
+        var s = new Set(); document.querySelectorAll('#ph-list td:nth-child(3)').forEach(function(e){if(e.textContent.trim()) s.add(e.textContent.trim());}); return Array.from(s);
+      }},
+      {key: 'approval', label: 'Required/Auto', col: 4, values: ['Required','Auto']},
+    ]
   });
-  var countEl = document.getElementById('count-' + tbodyId.replace('-list',''));
-  if (countEl) countEl.textContent = q ? visible + ' / ' + rows.length : '';
-}
+});
 </script>
 {{end}}

@@ -6,7 +6,7 @@
 
 <div class="card">
   <div class="search-bar">
-    <input type="text" id="search-keys" placeholder="Search keys..." oninput="filterTable('keys-list', this.value)">
+    <input type="text" id="search-keys" placeholder="Search or filter (e.g. service:openai acl:custom)">
     <span class="count" id="count-keys"></span>
   </div>
   <table>
@@ -112,20 +112,24 @@
 </div>
 
 <script>
-function filterTable(tbodyId, query) {
-  var tbody = document.getElementById(tbodyId);
-  var rows = tbody.querySelectorAll('tr');
-  var q = query.toLowerCase();
-  var visible = 0;
-  rows.forEach(function(tr) {
-    var text = tr.textContent.toLowerCase();
-    var show = !q || text.indexOf(q) >= 0;
-    tr.style.display = show ? '' : 'none';
-    if (show) visible++;
+document.addEventListener('DOMContentLoaded', function() {
+  initSmartSearch({
+    inputId: 'search-keys',
+    targetId: 'keys-list',
+    type: 'table',
+    countId: 'count-keys',
+    filters: [
+      {key: 'name', label: 'Key name', col: 0, values: function() {
+        return Array.from(document.querySelectorAll('#keys-list td:first-child strong')).map(function(e){return e.textContent});
+      }},
+      {key: 'service', label: 'Service name', col: 1, values: function() {
+        var s = new Set(); document.querySelectorAll('#keys-list td:nth-child(2) .badge').forEach(function(e){s.add(e.textContent);}); return Array.from(s);
+      }},
+      {key: 'acl', label: 'ACL (custom/inherit)', col: 2, values: ['custom','inherit']},
+      {key: 'status', label: 'Active/Inactive', col: 5, values: ['Active','Inactive']},
+    ]
   });
-  var countEl = document.getElementById('count-' + tbodyId.replace('-list',''));
-  if (countEl) countEl.textContent = q ? visible + ' / ' + rows.length : '';
-}
+});
 
 function editKey(keyId, keyName) {
   document.getElementById('ek-id').value = keyId;
