@@ -18,7 +18,8 @@
         <td>{{.UsageCount}}</td>
         <td class="text-muted text-sm">{{if .LastUsedAt}}{{deref .LastUsedAt}}{{else}}Never{{end}}</td>
         <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
-        <td class="text-right">
+        <td class="text-right flex gap-sm" style="justify-content:flex-end">
+          <button class="btn btn-sm" onclick="editKey('{{.ID}}','{{.Name}}')">Edit</button>
           <button class="btn btn-sm" onclick="openKeyACL('{{.ID}}','{{.Name}}','{{.ServiceName}}')">ACL</button>
           <button class="btn btn-sm btn-danger"
             hx-delete="/api/keys/{{.ID}}"
@@ -59,6 +60,25 @@
   </div>
 </div>
 
+<!-- Edit Key modal -->
+<div id="edit-key-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Edit API Key</h2>
+    <input type="hidden" id="ek-id">
+    <form id="edit-key-form">
+      <div class="form-group"><label>Name</label><input type="text" id="ek-name" required></div>
+      <div class="form-group">
+        <label>API Key (leave blank to keep current)</label>
+        <input type="text" id="ek-key" placeholder="Leave blank to keep unchanged">
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('edit-key-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- ACL modal -->
 <div id="acl-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
   <div class="modal" style="max-width:720px">
@@ -88,6 +108,34 @@
 </div>
 
 <script>
+function editKey(keyId, keyName) {
+  document.getElementById('ek-id').value = keyId;
+  document.getElementById('ek-name').value = keyName;
+  document.getElementById('ek-key').value = '';
+  document.getElementById('edit-key-modal').style.display = 'flex';
+}
+
+document.getElementById('edit-key-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var id = document.getElementById('ek-id').value;
+  var body = {name: document.getElementById('ek-name').value};
+  var key = document.getElementById('ek-key').value.trim();
+  if (key) body.key = key;
+
+  fetch('/api/keys/' + id, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Key updated', 'success');
+    location.reload();
+  });
+});
+
 function openKeyACL(keyId, keyName, svcName) {
   document.getElementById('acl-key-id').value = keyId;
   document.getElementById('acl-key-name').textContent = keyName + ' (' + svcName + ')';

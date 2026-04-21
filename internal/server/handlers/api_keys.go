@@ -83,6 +83,44 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, key)
 }
 
+func (h *APIKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	key, err := h.apiKeys.GetByID(id)
+	if err != nil {
+		jsonError(w, "key not found", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+		Key  string `json:"key"` // optional — only update if non-empty
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name != "" {
+		key.Name = req.Name
+	}
+	if req.Key != "" {
+		encrypted, err := h.crypto.Encrypt(req.Key)
+		if err != nil {
+			jsonError(w, "failed to encrypt key", http.StatusInternalServerError)
+			return
+		}
+		key.KeyEncrypted = encrypted
+	}
+
+	if err := h.apiKeys.Update(key); err != nil {
+		jsonError(w, "failed to update", http.StatusInternalServerError)
+		return
+	}
+
+	key.KeyEncrypted = ""
+	jsonResponse(w, key)
+}
+
 // ListACLTemplates returns available templates for this API key (based on its service).
 // GET /api/keys/{id}/acl-templates
 func (h *APIKeyHandler) ListACLTemplates(w http.ResponseWriter, r *http.Request) {

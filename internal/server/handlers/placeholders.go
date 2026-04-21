@@ -158,19 +158,27 @@ func (h *PlaceholderHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		RequiresApproval   *bool `json:"requires_approval"`
-		ApprovalTTLMinutes *int  `json:"approval_ttl_minutes"`
+		EnvName            string  `json:"env_name"`
+		RequiresApproval   *bool   `json:"requires_approval"`
+		ApprovalTTLMinutes *int    `json:"approval_ttl_minutes"`
+		KeyPath            *string `json:"key_path"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
 
+	if req.EnvName != "" {
+		ph.EnvName = req.EnvName
+	}
 	if req.RequiresApproval != nil {
 		ph.RequiresApproval = *req.RequiresApproval
 	}
 	if req.ApprovalTTLMinutes != nil {
 		ph.ApprovalTTLMinutes = *req.ApprovalTTLMinutes
+	}
+	if req.KeyPath != nil {
+		ph.KeyPath = *req.KeyPath
 	}
 
 	if err := h.placeholders.Update(ph); err != nil {

@@ -145,6 +145,7 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 
 	adminAPIMux.HandleFunc("GET /api/keys", apiKeyH.List)
 	adminAPIMux.HandleFunc("POST /api/keys", apiKeyH.Create)
+	adminAPIMux.HandleFunc("PUT /api/keys/{id}", apiKeyH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/keys/{id}", apiKeyH.Delete)
 	adminAPIMux.HandleFunc("GET /api/keys/{id}/acl-templates", apiKeyH.ListACLTemplates)
 	adminAPIMux.HandleFunc("POST /api/keys/{id}/acl-templates", apiKeyH.ApplyACLTemplate)

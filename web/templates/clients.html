@@ -143,6 +143,26 @@
   </div>
 </div>
 
+<!-- Edit placeholder modal -->
+<div id="edit-ph-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Edit Placeholder Key</h2>
+    <input type="hidden" id="eph-id">
+    <form id="edit-ph-form">
+      <div class="form-group"><label>Env Name</label><input type="text" id="eph-env" required></div>
+      <div class="form-group"><label>Key Path (under ~/)</label><input type="text" id="eph-path" placeholder=".config/openai/credentials"></div>
+      <div class="form-group">
+        <label><input type="checkbox" id="eph-approval"> Require approval</label>
+      </div>
+      <div class="form-group"><label>Approval TTL (minutes, 0 = no approval)</label><input type="number" id="eph-ttl" min="0"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('edit-ph-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- Assign key modal -->
 <div id="assign-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
   <div class="modal">
@@ -247,7 +267,10 @@ document.addEventListener('DOMContentLoaded', function() {
         '<td>' + validUntil + '</td>' +
         '<td><a href="#" onclick="editPhTTL(\'' + ph.id + '\',' + ph.requiresApproval + ',' + ph.approvalTTL + ');return false" class="text-sm">' + ttlText + '</a></td>' +
         '<td>' + ph.usageCount + '</td>' +
-        '<td class="text-right"><button class="btn btn-sm btn-danger" onclick="deletePh(\'' + ph.id + '\')">Remove</button></td>';
+        '<td class="text-right flex gap-sm" style="justify-content:flex-end">' +
+          '<button class="btn btn-sm" onclick="editPh(\'' + ph.id + '\',\'' + ph.envName + '\',\'' + (ph.keyPath||'') + '\')">Edit</button>' +
+          '<button class="btn btn-sm btn-danger" onclick="deletePh(\'' + ph.id + '\')">Remove</button>' +
+        '</td>';
       tbody.appendChild(tr);
     });
 
@@ -357,6 +380,40 @@ function genCanary(clientId, clientName, shortId) {
     location.reload();
   });
 }
+
+function editPh(phId, envName, keyPath) {
+  var ph = placeholders.find(function(p) { return p.id === phId; });
+  document.getElementById('eph-id').value = phId;
+  document.getElementById('eph-env').value = envName;
+  document.getElementById('eph-path').value = keyPath;
+  document.getElementById('eph-approval').checked = ph ? ph.requiresApproval : false;
+  document.getElementById('eph-ttl').value = ph ? ph.approvalTTL : 1440;
+  document.getElementById('edit-ph-modal').style.display = 'flex';
+}
+
+document.getElementById('edit-ph-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var id = document.getElementById('eph-id').value;
+  var body = {
+    env_name: document.getElementById('eph-env').value,
+    key_path: document.getElementById('eph-path').value,
+    requires_approval: document.getElementById('eph-approval').checked,
+    approval_ttl_minutes: parseInt(document.getElementById('eph-ttl').value) || 0
+  };
+
+  fetch('/api/placeholders/' + id, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Placeholder updated', 'success');
+    location.reload();
+  });
+});
 
 function editPhTTL(phId, requiresApproval, ttlMinutes) {
   var newTTL = prompt(
