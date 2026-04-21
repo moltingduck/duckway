@@ -17,6 +17,7 @@
         <td class="text-sm text-muted" id="detail-{{.ID}}"></td>
         <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
         <td class="text-right flex gap-sm" style="justify-content:flex-end">
+          <button class="btn btn-sm" onclick="editChannel('{{.ID}}')">Edit</button>
           <button class="btn btn-sm" onclick="testChannel('{{.ID}}')">Test</button>
           <button class="btn btn-sm btn-danger"
             hx-delete="/api/notifications/{{.ID}}"
@@ -104,6 +105,51 @@
       <div class="modal-actions">
         <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
         <button type="submit" class="btn btn-primary">Add Channel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Channel Modal -->
+<div id="edit-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Edit Channel: <span id="edit-ch-name-title"></span></h2>
+    <input type="hidden" id="edit-ch-id">
+    <input type="hidden" id="edit-ch-type-val">
+    <form id="edit-channel-form">
+      <div class="form-group">
+        <label>Name</label>
+        <input type="text" id="edit-ch-name" required>
+      </div>
+      <div class="form-group">
+        <label>Type</label>
+        <span id="edit-ch-type-badge" class="badge badge-blue"></span>
+      </div>
+
+      <!-- Telegram edit fields -->
+      <div id="edit-fields-telegram" style="display:none">
+        <div class="form-group"><label>Bot Token</label><input type="text" id="edit-tg-bot-token"></div>
+        <div class="form-group"><label>Chat ID</label><input type="text" id="edit-tg-chat-id"></div>
+      </div>
+      <!-- Discord Webhook edit fields -->
+      <div id="edit-fields-discord" style="display:none">
+        <div class="form-group"><label>Webhook URL</label><input type="url" id="edit-dc-webhook-url"></div>
+      </div>
+      <!-- Discord Bot edit fields -->
+      <div id="edit-fields-discord_bot" style="display:none">
+        <div class="form-group"><label>Bot Token</label><input type="text" id="edit-dcbot-token"></div>
+        <div class="form-group"><label>Channel ID</label><input type="text" id="edit-dcbot-channel"></div>
+      </div>
+      <!-- Webhook edit fields -->
+      <div id="edit-fields-webhook" style="display:none">
+        <div class="form-group"><label>URL</label><input type="url" id="edit-wh-url"></div>
+        <div class="form-group"><label>Secret</label><input type="text" id="edit-wh-secret"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('edit-modal').style.display='none'">Cancel</button>
+        <button type="button" class="btn" id="edit-test-btn" onclick="testEditChannel()">Test</button>
+        <button type="submit" class="btn btn-primary">Save</button>
       </div>
     </form>
   </div>
@@ -221,6 +267,127 @@ document.getElementById('add-channel-form').addEventListener('submit', function(
     location.reload();
   });
 });
+
+function editChannel(channelId) {
+  fetch('/api/notifications/' + channelId, {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(ch) {
+      if (ch.error) { showToast(ch.error, 'error'); return; }
+
+      document.getElementById('edit-ch-id').value = ch.id;
+      document.getElementById('edit-ch-type-val').value = ch.channel_type;
+      document.getElementById('edit-ch-name').value = ch.name;
+      document.getElementById('edit-ch-name-title').textContent = ch.name;
+      document.getElementById('edit-ch-type-badge').textContent = ch.channel_type;
+
+      // Show the right fields
+      ['telegram','discord','discord_bot','webhook'].forEach(function(t) {
+        var el = document.getElementById('edit-fields-' + t);
+        if (el) el.style.display = t === ch.channel_type ? 'block' : 'none';
+      });
+
+      // Parse config and fill fields
+      var cfg = {};
+      try { cfg = JSON.parse(ch.config); } catch(e) {}
+
+      switch(ch.channel_type) {
+        case 'telegram':
+          document.getElementById('edit-tg-bot-token').value = cfg.bot_token || '';
+          document.getElementById('edit-tg-chat-id').value = cfg.chat_id || '';
+          break;
+        case 'discord':
+          document.getElementById('edit-dc-webhook-url').value = cfg.webhook_url || '';
+          break;
+        case 'discord_bot':
+          document.getElementById('edit-dcbot-token').value = cfg.bot_token || '';
+          document.getElementById('edit-dcbot-channel').value = cfg.channel_id || '';
+          break;
+        case 'webhook':
+          document.getElementById('edit-wh-url').value = cfg.url || '';
+          document.getElementById('edit-wh-secret').value = cfg.secret || '';
+          break;
+      }
+
+      document.getElementById('edit-modal').style.display = 'flex';
+    });
+}
+
+function getEditConfig() {
+  var type = document.getElementById('edit-ch-type-val').value;
+  var config = {};
+  switch(type) {
+    case 'telegram':
+      config = {bot_token: document.getElementById('edit-tg-bot-token').value.trim(), chat_id: document.getElementById('edit-tg-chat-id').value.trim()};
+      break;
+    case 'discord':
+      config = {webhook_url: document.getElementById('edit-dc-webhook-url').value.trim()};
+      break;
+    case 'discord_bot':
+      config = {bot_token: document.getElementById('edit-dcbot-token').value.trim(), channel_id: document.getElementById('edit-dcbot-channel').value.trim()};
+      break;
+    case 'webhook':
+      config = {url: document.getElementById('edit-wh-url').value.trim()};
+      var secret = document.getElementById('edit-wh-secret').value.trim();
+      if (secret) config.secret = secret;
+      break;
+  }
+  return config;
+}
+
+document.getElementById('edit-channel-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var id = document.getElementById('edit-ch-id').value;
+  var name = document.getElementById('edit-ch-name').value;
+  var config = getEditConfig();
+
+  fetch('/api/notifications/' + id, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name, config: JSON.stringify(config)}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Channel updated', 'success');
+    location.reload();
+  });
+});
+
+function testEditChannel() {
+  // Save first, then test
+  var id = document.getElementById('edit-ch-id').value;
+  var name = document.getElementById('edit-ch-name').value;
+  var config = getEditConfig();
+
+  var btn = document.getElementById('edit-test-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving + Testing...';
+
+  fetch('/api/notifications/' + id, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name, config: JSON.stringify(config)}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast('Save failed: ' + data.error, 'error'); btn.disabled = false; btn.textContent = 'Test'; return; }
+
+    // Now test
+    return fetch('/api/notifications/' + id + '/test', {method:'POST', credentials:'same-origin'})
+      .then(function(r) { return r.json(); });
+  })
+  .then(function(data) {
+    btn.disabled = false;
+    btn.textContent = 'Test';
+    if (!data) return;
+    var sendIcon = data.send_ok ? '✅' : '❌';
+    var recvIcon = data.receive_ok ? '✅' : '⏳';
+    showToast(sendIcon + ' Send  ' + recvIcon + ' Receive — ' + data.message,
+              data.send_ok && data.receive_ok ? 'success' : (data.send_ok ? '' : 'error'));
+  });
+}
 
 function testChannel(channelId) {
   var btn = event.target;

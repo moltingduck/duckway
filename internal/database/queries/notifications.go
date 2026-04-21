@@ -76,3 +76,19 @@ func (q *NotificationQueries) Update(id string, isActive bool) error {
 	_, err := q.db.Exec("UPDATE notification_channels SET is_active = ? WHERE id = ?", isActive, id)
 	return err
 }
+
+func (q *NotificationQueries) UpdateFull(id, name, config string) error {
+	_, err := q.db.Exec("UPDATE notification_channels SET name = ?, config = ? WHERE id = ?", name, config, id)
+	return err
+}
+
+func (q *NotificationQueries) GetByID(id string) (*NotificationChannel, error) {
+	var c NotificationChannel
+	err := q.db.QueryRow(
+		"SELECT id, channel_type, name, config, is_active, created_at FROM notification_channels WHERE id = ?", id,
+	).Scan(&c.ID, &c.ChannelType, &c.Name, &c.Config, &c.IsActive, &c.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}

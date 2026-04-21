@@ -169,6 +169,8 @@ func (s *Server) setupRoutes(contentFS embed.FS) {
 
 	adminAPIMux.HandleFunc("GET /api/notifications", notifH.List)
 	adminAPIMux.HandleFunc("POST /api/notifications", notifH.Create)
+	adminAPIMux.HandleFunc("GET /api/notifications/{id}", notifH.Get)
+	adminAPIMux.HandleFunc("PUT /api/notifications/{id}", notifH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/notifications/{id}", notifH.Delete)
 	adminAPIMux.HandleFunc("POST /api/notifications/{id}/test", notifH.Test)
 

@@ -103,6 +103,37 @@ func (h *NotificationHandler) Test(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, result)
 }
 
+func (h *NotificationHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Name   string `json:"name"`
+		Config string `json:"config"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" || req.Config == "" {
+		jsonError(w, "name and config required", http.StatusBadRequest)
+		return
+	}
+	if err := h.channels.UpdateFull(id, req.Name, req.Config); err != nil {
+		jsonError(w, "failed to update", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "ok"})
+}
+
+func (h *NotificationHandler) Get(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ch, err := h.channels.GetByID(id)
+	if err != nil {
+		jsonError(w, "channel not found", http.StatusNotFound)
+		return
+	}
+	jsonResponse(w, ch)
+}
+
 func (h *NotificationHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := h.channels.Delete(id); err != nil {
