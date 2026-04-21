@@ -479,6 +479,115 @@ KEY_ACL_CLEARED=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/keys" | jq -r ".[] |
 assert_eq "API key ACL is empty after clear" "" "$KEY_ACL_CLEARED"
 
 
+# === Test 11d: ACL across different services ===
+echo ""
+echo -e "${YELLOW}[11d] ACL Across Services${NC}"
+
+# --- GitHub read-only ACL ---
+GH_SVC_ID=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services" | jq -r '.[] | select(.name=="github") | .id')
+
+# Apply read-only to GitHub service
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/services/$GH_SVC_ID/acl-templates" \
+  -H "Content-Type: application/json" \
+  -d '{"template_id":"read-only"}' > /dev/null
+
+# Create client + placeholder for GitHub
+CLIENT_GH=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" \
+  -H "Content-Type: application/json" -d '{"name":"gh-acl-test"}')
+CLIENT_GH_ID=$(echo "$CLIENT_GH" | jq -r '.id')
+CLIENT_GH_TOKEN=$(echo "$CLIENT_GH" | jq -r '.token')
+
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders" \
+  -H "Content-Type: application/json" \
+  -d "{\"service_id\":\"$GH_SVC_ID\",\"api_key_id\":\"$KEY3_ID\",\"client_id\":\"$CLIENT_GH_ID\",\"requires_approval\":false}" > /dev/null
+
+# GET should work (read-only allows GET /*)
+GH_GET=$(curl -s "$BASE/proxy/github/user" -H "X-Duckway-Token: $CLIENT_GH_TOKEN")
+assert_contains "GitHub read-only: GET allowed" "Bad credentials" "$GH_GET"
+
+# POST should be denied
+GH_POST=$(curl -s -X POST "$BASE/proxy/github/repos/owner/repo/issues" \
+  -H "X-Duckway-Token: $CLIENT_GH_TOKEN" \
+  -H "Content-Type: application/json" -d '{"title":"test"}')
+assert_contains "GitHub read-only: POST denied" "permission denied" "$GH_POST"
+
+# Reset GitHub ACL
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/services/$GH_SVC_ID/acl-templates" \
+  -H "Content-Type: application/json" -d '{"template_id":"allow-all"}' > /dev/null
+
+# --- Anthropic messages-only ACL on API key ---
+AN_SVC_ID=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services" | jq -r '.[] | select(.name=="anthropic") | .id')
+
+# Apply messages-only to the Anthropic key
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY2_ID/acl-templates" \
+  -H "Content-Type: application/json" -d '{"template_id":"messages-only"}' > /dev/null
+
+# Create client + placeholder for Anthropic
+CLIENT_AN=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" \
+  -H "Content-Type: application/json" -d '{"name":"an-acl-test"}')
+CLIENT_AN_ID=$(echo "$CLIENT_AN" | jq -r '.id')
+CLIENT_AN_TOKEN=$(echo "$CLIENT_AN" | jq -r '.token')
+
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders" \
+  -H "Content-Type: application/json" \
+  -d "{\"service_id\":\"$AN_SVC_ID\",\"api_key_id\":\"$KEY2_ID\",\"client_id\":\"$CLIENT_AN_ID\",\"requires_approval\":false}" > /dev/null
+
+# POST /v1/messages should work
+AN_MSG=$(curl -s -X POST "$BASE/proxy/anthropic/v1/messages" \
+  -H "X-Duckway-Token: $CLIENT_AN_TOKEN" \
+  -H "Content-Type: application/json" -d '{"model":"claude-sonnet-4-6","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}')
+# Should reach upstream (not permission denied)
+AN_MSG_DENIED=$(echo "$AN_MSG" | grep -c "permission denied" || true)
+assert_eq "Anthropic messages-only: POST /v1/messages allowed" "0" "$AN_MSG_DENIED"
+
+# POST /v1/messages/batches should be denied (not in messages-only)
+AN_BATCH=$(curl -s -X POST "$BASE/proxy/anthropic/v1/messages/batches" \
+  -H "X-Duckway-Token: $CLIENT_AN_TOKEN" \
+  -H "Content-Type: application/json" -d '{}')
+assert_contains "Anthropic messages-only: batches denied" "permission denied" "$AN_BATCH"
+
+# Clear key ACL
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY2_ID/acl" \
+  -H "Content-Type: application/json" -d '{"acl":""}' > /dev/null
+
+# --- ACL priority: placeholder > key > service ---
+echo ""
+echo -e "${YELLOW}[11e] ACL Priority Chain${NC}"
+
+# Set service ACL to allow-all (no restriction)
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/services/$OPENAI_ID/acl-templates" \
+  -H "Content-Type: application/json" -d '{"template_id":"allow-all"}' > /dev/null
+
+# Set key ACL to chat-only (restrictive)
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY1_ID/acl-templates" \
+  -H "Content-Type: application/json" -d '{"template_id":"chat-only"}' > /dev/null
+
+# Key ACL should block images even though service allows all
+PRIORITY_DENIED=$(curl -s -X POST "$BASE/proxy/openai/v1/images/generations" \
+  -H "X-Duckway-Token: $CLIENT_ACL_TOKEN" \
+  -H "Content-Type: application/json" -d '{"prompt":"cat"}')
+assert_contains "Priority: key ACL overrides service allow-all" "permission denied" "$PRIORITY_DENIED"
+
+# Now set a placeholder-level permission that allows everything
+PH_ID=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/placeholders?client_id=$CLIENT_ACL_ID" | jq -r '.[0].id')
+curl -s -b /tmp/dw-e2e-cookies -X PUT "$BASE/api/placeholders/$PH_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"env_name":"OPENAI_API_KEY"}' > /dev/null
+
+# With a wide-open placeholder permission_config, it should override the key ACL
+# (We need to set permission_config directly — use the update endpoint isn't wired for that yet,
+#  so we test the opposite: key ACL takes effect when placeholder has no config)
+PRIORITY_CHAT=$(curl -s -X POST "$BASE/proxy/openai/v1/chat/completions" \
+  -H "X-Duckway-Token: $CLIENT_ACL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"test"}]}')
+assert_contains "Priority: key ACL allows chat" "invalid_api_key" "$PRIORITY_CHAT"
+
+# Clean up
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys/$KEY1_ID/acl" \
+  -H "Content-Type: application/json" -d '{"acl":""}' > /dev/null
+
+
 # === Test 12: Permission System ===
 echo ""
 echo -e "${YELLOW}[12] Permission System${NC}"
