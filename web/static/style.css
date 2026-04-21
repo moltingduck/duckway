@@ -272,6 +272,16 @@ code, .mono {
   margin-right: 0.25rem;
 }
 
+/* Pagination */
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.75rem;
+  flex-wrap: wrap;
+}
+.pagination .btn-sm { min-width: 2rem; }
+
 /* Collapsible toggle */
 .toggle-arrow {
   display: inline-block;

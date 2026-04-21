@@ -1,5 +1,5 @@
 /**
- * Duckway Smart Search
+ * Duckway Smart Search + Pagination
  *
  * Supports:
  * - Plain text search (matches any column)
@@ -7,14 +7,18 @@
  * - Multiple filters: service:openai client:laptop
  * - Quoted values: name:"my key"
  * - Autocomplete dropdown with suggestions
+ * - Pagination (default 15 per page, search across ALL data)
  */
 
 function initSmartSearch(config) {
-  // config: { inputId, targetId (tbody or card container), type: 'table'|'cards',
-  //           filters: [{key, label, values: fn or array}], countId }
+  // config: { inputId, targetId, type: 'table'|'cards',
+  //           filters: [{key, label, values, col}], countId, perPage }
 
   var input = document.getElementById(config.inputId);
   if (!input) return;
+
+  config.perPage = config.perPage || 15;
+  config.currentPage = 1;
 
   var dropdown = document.createElement('div');
   dropdown.className = 'search-dropdown';
@@ -30,13 +34,19 @@ function initSmartSearch(config) {
   }).join(' ') + ' <span class="text-muted">or type to search all</span>';
   input.parentNode.appendChild(hint);
 
-  var lastQuery = '';
+  // Pagination container
+  var pager = document.createElement('div');
+  pager.className = 'pagination';
+  pager.id = config.inputId + '-pager';
+  var target = document.getElementById(config.targetId);
+  if (target && target.parentNode) {
+    target.parentNode.insertBefore(pager, target.nextSibling);
+  }
 
   input.addEventListener('input', function() {
-    var val = input.value;
-    lastQuery = val;
-    applyFilter(config, val);
-    showSuggestions(config, dropdown, val, input);
+    config.currentPage = 1; // Reset to page 1 on new search
+    applyFilter(config, input.value);
+    showSuggestions(config, dropdown, input.value, input);
   });
 
   input.addEventListener('focus', function() {
@@ -73,6 +83,9 @@ function initSmartSearch(config) {
       dropdown.style.display = 'none';
     }
   });
+
+  // Initial render with pagination
+  applyFilter(config, '');
 }
 
 function showSuggestions(config, dropdown, query, input) {
@@ -105,7 +118,6 @@ function getSuggestions(config, query) {
   var prefix = parts.slice(0, -1).join(' ');
   if (prefix) prefix += ' ';
 
-  // If typing a filter key (before colon)
   if (!lastPart.includes(':')) {
     config.filters.forEach(function(f) {
       if (!lastPart || f.key.startsWith(lastPart.toLowerCase())) {
@@ -118,7 +130,6 @@ function getSuggestions(config, query) {
     return suggestions.slice(0, 8);
   }
 
-  // If typing a filter value (after colon)
   var colonIdx = lastPart.indexOf(':');
   var filterKey = lastPart.substring(0, colonIdx).toLowerCase();
   var filterVal = lastPart.substring(colonIdx + 1).toLowerCase();
@@ -145,6 +156,7 @@ function selectSuggestion(input, insert, config, dropdown) {
   input.value = insert;
   dropdown.style.display = 'none';
   input.focus();
+  config.currentPage = 1;
   applyFilter(config, insert);
 }
 
@@ -154,20 +166,17 @@ function applyFilter(config, query) {
   if (!target) return;
 
   var elements = config.type === 'cards'
-    ? target.querySelectorAll('[id^="client-card-"]')
-    : target.querySelectorAll('tr');
+    ? Array.from(target.querySelectorAll('[id^="client-card-"]'))
+    : Array.from(target.querySelectorAll('tr'));
 
-  var visible = 0;
-  var total = elements.length;
-
+  // Filter all elements
+  var matched = [];
   elements.forEach(function(el) {
     var text = el.textContent.toLowerCase();
     var show = true;
 
-    // Check each filter
     for (var key in parsed.filters) {
       var val = parsed.filters[key].toLowerCase();
-      // Get the specific column/field value if possible
       var colText = getFieldText(el, key, config);
       if (colText !== null) {
         if (colText.toLowerCase().indexOf(val) < 0) { show = false; break; }
@@ -176,42 +185,107 @@ function applyFilter(config, query) {
       }
     }
 
-    // Check free text
     if (show && parsed.text) {
       if (text.indexOf(parsed.text.toLowerCase()) < 0) show = false;
     }
 
-    el.style.display = show ? '' : 'none';
-    if (show) visible++;
+    if (show) matched.push(el);
   });
 
+  // Paginate
+  var total = matched.length;
+  var totalPages = Math.ceil(total / config.perPage) || 1;
+  if (config.currentPage > totalPages) config.currentPage = totalPages;
+  var start = (config.currentPage - 1) * config.perPage;
+  var end = start + config.perPage;
+
+  // Hide all, show only current page
+  elements.forEach(function(el) { el.style.display = 'none'; });
+  matched.slice(start, end).forEach(function(el) { el.style.display = ''; });
+
+  // Update count
   var countEl = document.getElementById(config.countId);
   if (countEl) {
-    countEl.textContent = (parsed.text || Object.keys(parsed.filters).length) ? visible + ' / ' + total : '';
+    var showing = Math.min(end, total) - start;
+    if (total === elements.length && totalPages === 1) {
+      countEl.textContent = total + ' items';
+    } else {
+      countEl.textContent = (start + 1) + '–' + (start + showing) + ' of ' + total + (total !== elements.length ? ' (filtered from ' + elements.length + ')' : '');
+    }
   }
+
+  // Render pagination controls
+  renderPager(config, totalPages, total, query);
 }
+
+function renderPager(config, totalPages, total, query) {
+  var pager = document.getElementById(config.inputId + '-pager');
+  if (!pager) return;
+
+  if (totalPages <= 1) {
+    pager.innerHTML = '';
+    return;
+  }
+
+  var html = '';
+  // Prev
+  if (config.currentPage > 1) {
+    html += '<button class="btn btn-sm" onclick="goPage(\'' + config.inputId + '\',' + (config.currentPage - 1) + ')">← Prev</button> ';
+  }
+
+  // Page numbers
+  for (var i = 1; i <= totalPages; i++) {
+    if (totalPages > 7 && i > 3 && i < totalPages - 2 && Math.abs(i - config.currentPage) > 1) {
+      if (html.slice(-3) !== '...') html += '<span class="text-muted text-sm"> ... </span>';
+      continue;
+    }
+    if (i === config.currentPage) {
+      html += '<button class="btn btn-sm btn-primary" disabled>' + i + '</button> ';
+    } else {
+      html += '<button class="btn btn-sm" onclick="goPage(\'' + config.inputId + '\',' + i + ')">' + i + '</button> ';
+    }
+  }
+
+  // Next
+  if (config.currentPage < totalPages) {
+    html += '<button class="btn btn-sm" onclick="goPage(\'' + config.inputId + '\',' + (config.currentPage + 1) + ')">Next →</button>';
+  }
+
+  pager.innerHTML = html;
+}
+
+// Global page navigation (called from rendered buttons)
+var _searchConfigs = {};
+function goPage(inputId, page) {
+  var cfg = _searchConfigs[inputId];
+  if (!cfg) return;
+  cfg.currentPage = page;
+  var input = document.getElementById(inputId);
+  applyFilter(cfg, input ? input.value : '');
+}
+
+// Wrap initSmartSearch to register config globally
+var _origInit = initSmartSearch;
+initSmartSearch = function(config) {
+  _searchConfigs[config.inputId] = config;
+  _origInit(config);
+};
 
 function parseQuery(query) {
   var filters = {};
   var textParts = [];
 
-  // Match key:value or key:"quoted value" pairs
   var regex = /(\w+):(?:"([^"]+)"|(\S+))/g;
   var match;
   var lastIdx = 0;
 
   while ((match = regex.exec(query)) !== null) {
-    // Collect text before this match
     var before = query.substring(lastIdx, match.index).trim();
     if (before) textParts.push(before);
     lastIdx = match.index + match[0].length;
-
-    var key = match[1];
-    var val = match[2] || match[3]; // quoted or unquoted
-    filters[key] = val;
+    filters[match[1]] = match[2] || match[3];
   }
 
-  // Remaining text after last match
   var remaining = query.substring(lastIdx).trim();
   if (remaining) textParts.push(remaining);
 
@@ -219,16 +293,14 @@ function parseQuery(query) {
 }
 
 function getFieldText(el, fieldKey, config) {
-  // Try to find the column by data attribute or position
   var cell = el.querySelector('[data-field="' + fieldKey + '"]');
   if (cell) return cell.textContent;
 
-  // Fallback: match by column index from config
   var filterDef = config.filters.find(function(f) { return f.key === fieldKey; });
   if (filterDef && filterDef.col !== undefined) {
     var cells = el.querySelectorAll('td');
     if (cells[filterDef.col]) return cells[filterDef.col].textContent;
   }
 
-  return null; // Fall back to full text search
+  return null;
 }
