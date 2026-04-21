@@ -538,8 +538,18 @@ func (s *Server) startApprovalListeners() {
 		return
 	}
 
+	placeholderQ := queries.NewPlaceholderQueries(s.db)
 	approveFunc := func(approvalID string) error {
-		return approvalQ.Approve(approvalID, "datetime('now', '+24 hours')")
+		// Look up the approval to find the placeholder, then read its TTL
+		approval, err := approvalQ.GetByID(approvalID)
+		ttl := 1440 // default 24h
+		if err == nil && approval != nil {
+			ph, phErr := placeholderQ.GetByID(approval.PlaceholderID)
+			if phErr == nil && ph.ApprovalTTLMinutes > 0 {
+				ttl = ph.ApprovalTTLMinutes
+			}
+		}
+		return approvalQ.Approve(approvalID, fmt.Sprintf("datetime('now', '+%d minutes')", ttl))
 	}
 	rejectFunc := func(approvalID string) error {
 		return approvalQ.Reject(approvalID)

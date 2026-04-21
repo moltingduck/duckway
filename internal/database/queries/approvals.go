@@ -42,6 +42,18 @@ func (q *ApprovalQueries) GetPending(placeholderID string) (*models.Approval, er
 	return &a, nil
 }
 
+func (q *ApprovalQueries) GetByID(id string) (*models.Approval, error) {
+	var a models.Approval
+	err := q.db.QueryRow(
+		`SELECT id, placeholder_id, status, approved_at, expires_at, request_info, created_at
+		 FROM approvals WHERE id = ?`, id,
+	).Scan(&a.ID, &a.PlaceholderID, &a.Status, &a.ApprovedAt, &a.ExpiresAt, &a.RequestInfo, &a.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
 func (q *ApprovalQueries) ListPending() ([]models.Approval, error) {
 	rows, err := q.db.Query(
 		`SELECT id, placeholder_id, status, approved_at, expires_at, request_info, created_at
