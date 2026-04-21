@@ -162,6 +162,7 @@ func (h *PlaceholderHandler) Update(w http.ResponseWriter, r *http.Request) {
 		RequiresApproval   *bool   `json:"requires_approval"`
 		ApprovalTTLMinutes *int    `json:"approval_ttl_minutes"`
 		KeyPath            *string `json:"key_path"`
+		PermissionConfig   *string `json:"permission_config"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
@@ -179,6 +180,9 @@ func (h *PlaceholderHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.KeyPath != nil {
 		ph.KeyPath = *req.KeyPath
+	}
+	if req.PermissionConfig != nil {
+		ph.PermissionConfig = req.PermissionConfig
 	}
 
 	if err := h.placeholders.Update(ph); err != nil {

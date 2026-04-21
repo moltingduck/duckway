@@ -162,6 +162,12 @@
         <label><input type="checkbox" id="eph-approval"> Require approval</label>
       </div>
       <div class="form-group"><label>Approval TTL (minutes, 0 = no approval)</label><input type="number" id="eph-ttl" min="0"></div>
+      <div class="form-group">
+        <label>ACL (JSON permission config)</label>
+        <div id="eph-acl-templates" class="mb-1"></div>
+        <textarea id="eph-acl" style="min-height:100px;font-family:monospace;font-size:0.75rem" placeholder="Leave empty to inherit from API key / service"></textarea>
+        <span class="text-muted text-sm">Narrowest layer — can only restrict, not widen</span>
+      </div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="document.getElementById('edit-ph-modal').style.display='none'">Cancel</button>
         <button type="submit" class="btn btn-primary">Save</button>
@@ -395,17 +401,47 @@ function editPh(phId, envName, keyPath) {
   document.getElementById('eph-path').value = keyPath;
   document.getElementById('eph-approval').checked = ph ? ph.requiresApproval : false;
   document.getElementById('eph-ttl').value = ph ? ph.approvalTTL : 1440;
+  document.getElementById('eph-acl').value = '';
+  document.getElementById('eph-acl-templates').innerHTML = '';
+
+  // Load current permission_config + ACL templates
+  fetch('/api/placeholders/with-approvals?', {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(phs) {
+      var p = phs.find(function(x) { return x.id === phId; });
+      if (!p) return;
+      document.getElementById('eph-acl').value = p.permission_config || '';
+      if (p.service_id) {
+        fetch('/api/services/' + p.service_id + '/acl-templates', {credentials:'same-origin'})
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var container = document.getElementById('eph-acl-templates');
+            (data.templates || []).forEach(function(t) {
+              var btn = document.createElement('button');
+              btn.type = 'button'; btn.className = 'btn btn-sm';
+              btn.style.marginRight = '0.25rem'; btn.style.marginBottom = '0.25rem';
+              btn.textContent = t.name; btn.title = t.description;
+              btn.onclick = function() { document.getElementById('eph-acl').value = t.config; };
+              container.appendChild(btn);
+            });
+          });
+      }
+    });
+
   document.getElementById('edit-ph-modal').style.display = 'flex';
 }
 
 document.getElementById('edit-ph-form').addEventListener('submit', function(e) {
   e.preventDefault();
   var id = document.getElementById('eph-id').value;
+  var acl = document.getElementById('eph-acl').value.trim();
+  if (acl) { try { JSON.parse(acl); } catch(e) { showToast('Invalid ACL JSON: ' + e.message, 'error'); return; } }
   var body = {
     env_name: document.getElementById('eph-env').value,
     key_path: document.getElementById('eph-path').value,
     requires_approval: document.getElementById('eph-approval').checked,
-    approval_ttl_minutes: parseInt(document.getElementById('eph-ttl').value) || 0
+    approval_ttl_minutes: parseInt(document.getElementById('eph-ttl').value) || 0,
+    permission_config: acl
   };
 
   fetch('/api/placeholders/' + id, {
