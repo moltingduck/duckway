@@ -103,6 +103,14 @@ func (h *ClientHandler) Create(w http.ResponseWriter, r *http.Request) {
 // Admin: delete a client
 func (h *ClientHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+
+	// Delete canary tokens from canarytokens.org + DB
+	if h.canarySvc != nil {
+		if err := h.canarySvc.DeleteClientTokens(id); err != nil {
+			log.Printf("Warning: failed to clean up canary tokens for client %s: %v", id, err)
+		}
+	}
+
 	if err := h.clients.Delete(id); err != nil {
 		jsonError(w, "failed to delete client", http.StatusInternalServerError)
 		return
