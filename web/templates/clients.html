@@ -292,7 +292,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var tr = document.createElement('tr');
     var tokenCell = '';
     if (ct.canaryToken && ct.authToken) {
-      var manageURL = 'https://canarytokens.org/d3aece8093b71007b5ccfedad91ebb11/manage?token=' + ct.canaryToken + '&auth=' + ct.authToken;
+      var manageURL = 'https://canarytokens.org/manage?token=' + ct.canaryToken + '&auth=' + ct.authToken;
       tokenCell = '<a href="' + manageURL + '" target="_blank" class="mono text-sm" title="Manage on canarytokens.org">' + ct.canaryToken.substring(0,12) + '...</a>';
     } else {
       tokenCell = '<span class="text-muted text-sm">local</span>';

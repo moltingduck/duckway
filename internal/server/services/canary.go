@@ -510,7 +510,7 @@ func (s *CanaryService) generateLocalToken(tokenType *CanaryTokenType, clientID,
 }
 
 const canaryDeleteAPI = "https://canarytokens.org/d3aece8093b71007b5ccfedad91ebb11/delete"
-const canaryManageURL = "https://canarytokens.org/d3aece8093b71007b5ccfedad91ebb11/manage"
+const canaryManageURL = "https://canarytokens.org/manage"
 
 // ManageURL returns the canarytokens.org management URL for a token.
 func ManageURL(canaryToken, authToken string) string {
