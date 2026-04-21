@@ -1,10 +1,11 @@
 package handlers
 
 import (
-	"embed"
 	"html/template"
+	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -15,6 +16,9 @@ import (
 type AdminHandler struct {
 	pages         map[string]*template.Template
 	loginTmpl     *template.Template
+	templateFS    fs.FS
+	funcMap       template.FuncMap
+	liveReload    bool // true = re-parse templates on every request
 	users         *queries.AdminUserQueries
 	services      *queries.ServiceQueries
 	apiKeys       *queries.APIKeyQueries
@@ -29,7 +33,7 @@ type AdminHandler struct {
 }
 
 func NewAdminHandler(
-	templateFS embed.FS,
+	templateFS fs.FS,
 	users *queries.AdminUserQueries,
 	services *queries.ServiceQueries,
 	apiKeys *queries.APIKeyQueries,
@@ -69,7 +73,7 @@ func NewAdminHandler(
 	}
 
 	// Parse layout once as the base
-	layoutContent, err := templateFS.ReadFile("templates/layout.html")
+	layoutContent, err := fs.ReadFile(templateFS, "templates/layout.html")
 	if err != nil {
 		log.Fatalf("Failed to read layout template: %v", err)
 	}
@@ -82,7 +86,7 @@ func NewAdminHandler(
 
 	pages := make(map[string]*template.Template)
 	for _, name := range pageNames {
-		pageContent, err := templateFS.ReadFile("templates/" + name + ".html")
+		pageContent, err := fs.ReadFile(templateFS, "templates/" + name + ".html")
 		if err != nil {
 			log.Fatalf("Failed to read template %s: %v", name, err)
 		}
@@ -106,9 +110,14 @@ func NewAdminHandler(
 		log.Fatalf("Failed to parse login template: %v", err)
 	}
 
+	liveReload := os.Getenv("DUCKWAY_WEB_DIR") != ""
+
 	return &AdminHandler{
 		pages:         pages,
 		loginTmpl:     loginTmpl,
+		templateFS:    templateFS,
+		funcMap:       funcMap,
+		liveReload:    liveReload,
 		users:         users,
 		services:      services,
 		apiKeys:       apiKeys,
@@ -314,10 +323,39 @@ func (h *AdminHandler) RejectAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminHandler) render(w http.ResponseWriter, page string, data pageData) {
-	tmpl, ok := h.pages[page]
-	if !ok {
-		http.Error(w, "Page not found", http.StatusNotFound)
-		return
+	var tmpl *template.Template
+
+	if h.liveReload {
+		// Re-parse from disk on every request (dev mode)
+		layoutContent, err := fs.ReadFile(h.templateFS, "templates/layout.html")
+		if err != nil {
+			http.Error(w, "layout template not found", http.StatusInternalServerError)
+			return
+		}
+		pageContent, err := fs.ReadFile(h.templateFS, "templates/"+page+".html")
+		if err != nil {
+			http.Error(w, "page template not found: "+page, http.StatusNotFound)
+			return
+		}
+		tmpl, err = template.New("layout").Funcs(h.funcMap).Parse(string(layoutContent))
+		if err != nil {
+			log.Printf("Template parse error (layout): %v", err)
+			http.Error(w, "template error", http.StatusInternalServerError)
+			return
+		}
+		if _, err = tmpl.New(page).Parse(string(pageContent)); err != nil {
+			log.Printf("Template parse error (%s): %v", page, err)
+			http.Error(w, "template error", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Use pre-parsed templates (production)
+		var ok bool
+		tmpl, ok = h.pages[page]
+		if !ok {
+			http.Error(w, "Page not found", http.StatusNotFound)
+			return
+		}
 	}
 
 	if err := tmpl.ExecuteTemplate(w, "layout", data); err != nil {

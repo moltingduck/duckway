@@ -2,7 +2,6 @@ package server
 
 import (
 	"database/sql"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -27,7 +26,7 @@ type Server struct {
 	notifier *services.Notifier
 }
 
-func New(config *Config, db *sql.DB, contentFS embed.FS) (*Server, error) {
+func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s := &Server{
 		config: config,
 		db:     db,
@@ -63,7 +62,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-func (s *Server) setupRoutes(contentFS embed.FS) {
+func (s *Server) setupRoutes(contentFS fs.FS) {
 	// Query objects
 	userQ := queries.NewAdminUserQueries(s.db)
 	serviceQ := queries.NewServiceQueries(s.db)

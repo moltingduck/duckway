@@ -3,8 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/hackerduck/duckway/internal/database"
 	"github.com/hackerduck/duckway/internal/server"
@@ -39,7 +41,18 @@ func main() {
 	}
 	defer db.Close()
 
-	srv, err := server.New(config, db, web.Content)
+	// In dev mode, serve templates + static from disk (live reload on refresh)
+	// In production, use embedded FS (single binary)
+	var contentFS fs.FS
+	webDir := os.Getenv("DUCKWAY_WEB_DIR")
+	if webDir != "" {
+		contentFS = os.DirFS(webDir)
+		log.Printf("Dev mode: serving web assets from %s (live reload)", webDir)
+	} else {
+		contentFS = web.Content
+	}
+
+	srv, err := server.New(config, db, contentFS)
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
 	}
