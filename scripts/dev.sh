@@ -8,11 +8,22 @@ cd "$PROJECT_DIR"
 
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml"
 
+  # Load .env if exists
+if [ -f "$PROJECT_DIR/.env" ]; then
+  set -a
+  . "$PROJECT_DIR/.env"
+  set +a
+fi
+
 case "${1:-up}" in
   up|start)
     echo "Building and starting Duckway (dev mode) in Docker..."
     $COMPOSE up --build -d
-    sleep 3
+    sleep 4
+
+    # Auto-seed dev data
+    "$SCRIPT_DIR/seed-dev.sh"
+
     echo ""
     echo "Server:   http://localhost:9090/admin/"
     echo "Username: duckway"
