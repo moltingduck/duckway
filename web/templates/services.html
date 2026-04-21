@@ -5,6 +5,10 @@
 </div>
 
 <div class="card">
+  <div class="search-bar">
+    <input type="text" id="search-services" placeholder="Search services..." oninput="filterTable('services-list', this.value)">
+    <span class="count" id="count-services"></span>
+  </div>
   <table>
     <thead>
       <tr><th>Name</th><th>Upstream URL</th><th>Auth</th><th>Key Format</th><th>Key Path</th><th>ACL</th><th>Status</th><th></th></tr>
@@ -85,6 +89,21 @@
 </div>
 
 <script>
+function filterTable(tbodyId, query) {
+  var tbody = document.getElementById(tbodyId);
+  var rows = tbody.querySelectorAll('tr');
+  var q = query.toLowerCase();
+  var visible = 0;
+  rows.forEach(function(tr) {
+    var text = tr.textContent.toLowerCase();
+    var show = !q || text.indexOf(q) >= 0;
+    tr.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  var countEl = document.getElementById('count-' + tbodyId.replace('-list',''));
+  if (countEl) countEl.textContent = q ? visible + ' / ' + rows.length : '';
+}
+
 function openACL(svcId, svcName) {
   document.getElementById('acl-svc-id').value = svcId;
   document.getElementById('acl-svc-name').textContent = svcName;

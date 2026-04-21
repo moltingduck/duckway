@@ -213,6 +213,24 @@ code, .mono {
 .text-sm { font-size: 0.8125rem; }
 .text-right { text-align: right; }
 
+/* Search bar */
+.search-bar {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.search-bar input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.875rem;
+}
+.search-bar input:focus { border-color: var(--accent); outline: none; }
+.search-bar .count { color: var(--text-muted); font-size: 0.8rem; align-self: center; white-space: nowrap; }
+
 /* Collapsible toggle */
 .toggle-arrow {
   display: inline-block;

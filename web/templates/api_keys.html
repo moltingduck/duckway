@@ -5,11 +5,15 @@
 </div>
 
 <div class="card">
+  <div class="search-bar">
+    <input type="text" id="search-keys" placeholder="Search keys..." oninput="filterTable('keys-list', this.value)">
+    <span class="count" id="count-keys"></span>
+  </div>
   <table>
     <thead>
       <tr><th>Name</th><th>Service</th><th>ACL</th><th>Usage</th><th>Last Used</th><th>Status</th><th></th></tr>
     </thead>
-    <tbody>
+    <tbody id="keys-list">
       {{range .Keys}}
       <tr id="key-{{.ID}}">
         <td><strong>{{.Name}}</strong></td>
@@ -108,6 +112,21 @@
 </div>
 
 <script>
+function filterTable(tbodyId, query) {
+  var tbody = document.getElementById(tbodyId);
+  var rows = tbody.querySelectorAll('tr');
+  var q = query.toLowerCase();
+  var visible = 0;
+  rows.forEach(function(tr) {
+    var text = tr.textContent.toLowerCase();
+    var show = !q || text.indexOf(q) >= 0;
+    tr.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  var countEl = document.getElementById('count-' + tbodyId.replace('-list',''));
+  if (countEl) countEl.textContent = q ? visible + ' / ' + rows.length : '';
+}
+
 function editKey(keyId, keyName) {
   document.getElementById('ek-id').value = keyId;
   document.getElementById('ek-name').value = keyName;

@@ -5,11 +5,15 @@
 </div>
 
 <div class="card">
+  <div class="search-bar">
+    <input type="text" id="search-ph" placeholder="Search by env name, service, client..." oninput="filterTable('ph-list', this.value)">
+    <span class="count" id="count-ph"></span>
+  </div>
   <table>
     <thead>
       <tr><th>Env Name</th><th>Service</th><th>Client</th><th>Placeholder</th><th>Approval</th><th>Usage</th><th></th></tr>
     </thead>
-    <tbody>
+    <tbody id="ph-list">
       {{range .Placeholders}}
       <tr id="ph-{{.ID}}">
         <td><strong>{{.EnvName}}</strong></td>
@@ -68,4 +72,21 @@
     </form>
   </div>
 </div>
+
+<script>
+function filterTable(tbodyId, query) {
+  var tbody = document.getElementById(tbodyId);
+  var rows = tbody.querySelectorAll('tr');
+  var q = query.toLowerCase();
+  var visible = 0;
+  rows.forEach(function(tr) {
+    var text = tr.textContent.toLowerCase();
+    var show = !q || text.indexOf(q) >= 0;
+    tr.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  var countEl = document.getElementById('count-' + tbodyId.replace('-list',''));
+  if (countEl) countEl.textContent = q ? visible + ' / ' + rows.length : '';
+}
+</script>
 {{end}}

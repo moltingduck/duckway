@@ -4,6 +4,11 @@
   <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Register Client</button>
 </div>
 
+<div class="search-bar">
+  <input type="text" id="search-clients" placeholder="Search clients, keys, services..." oninput="filterClients(this.value)">
+  <span class="count" id="count-clients"></span>
+</div>
+
 <div class="card mb-1">
   <div class="flex-between">
     <div>
@@ -542,6 +547,20 @@ document.getElementById('add-client-form').addEventListener('submit', function(e
       document.getElementById('token-modal').style.display = 'flex';
     });
 });
+
+function filterClients(query) {
+  var q = query.toLowerCase();
+  var cards = document.querySelectorAll('[id^="client-card-"]');
+  var visible = 0;
+  cards.forEach(function(card) {
+    var text = card.textContent.toLowerCase();
+    var show = !q || text.indexOf(q) >= 0;
+    card.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  var countEl = document.getElementById('count-clients');
+  if (countEl) countEl.textContent = q ? visible + ' / ' + cards.length : '';
+}
 
 function copyInstallCmd() {
   copyToClipboard(document.getElementById('install-cmd').textContent);
