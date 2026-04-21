@@ -97,7 +97,8 @@
 
     <div class="mt-2">
       <label class="text-sm">Current ACL JSON</label>
-      <textarea id="acl-current-json" style="min-height:150px;font-family:monospace;font-size:0.75rem"></textarea>
+      <textarea id="acl-current-json" style="min-height:150px;font-family:monospace;font-size:0.75rem" oninput="renderACLPreview('acl-current-json','acl-key-preview')"></textarea>
+      <div id="acl-key-preview" class="acl-preview"></div>
       <div class="flex gap-sm mt-1">
         <button type="button" class="btn btn-sm" onclick="saveCustomACL()">Save Custom JSON</button>
         <button type="button" class="btn btn-sm" onclick="clearACL()">Clear (inherit from service)</button>
@@ -173,6 +174,13 @@ function openKeyACL(keyId, keyName, svcName) {
       if (!data) return;
       document.getElementById('acl-current-json').value = data.current || '';
 
+      // Load inherited ACL from service
+      var svcId = data.service_id || '';
+      if (svcId) {
+        loadInheritedACL('acl-current-json', 'acl-key-preview', svcId, '');
+      }
+      renderACLPreview('acl-current-json', 'acl-key-preview');
+
       var list = document.getElementById('acl-templates-list');
       if (!data.templates || data.templates.length === 0) {
         list.innerHTML = '<p class="text-muted">No templates available for this service.</p>';
@@ -194,13 +202,22 @@ function openKeyACL(keyId, keyName, svcName) {
               (isActive ? ' <span class="badge badge-blue">active</span>' : '') +
               '<div class="text-sm text-muted">' + t.description + '</div>' +
             '</div>' +
-            '<button class="btn btn-sm btn-primary" onclick="applyKeyACL(\'' + keyId + '\',\'' + t.id + '\')">Apply</button>' +
+            '<div class="flex gap-sm">' +
+              '<button class="btn btn-sm" onclick="previewKeyACL(\'' + encodeURIComponent(t.config) + '\')">Preview</button>' +
+              '<button class="btn btn-sm btn-primary" onclick="applyKeyACL(\'' + keyId + '\',\'' + t.id + '\')">Apply</button>' +
+            '</div>' +
           '</div>';
         list.appendChild(card);
       });
     });
 
   document.getElementById('acl-modal').style.display = 'flex';
+}
+
+function previewKeyACL(encodedConfig) {
+  var config = decodeURIComponent(encodedConfig);
+  document.getElementById('acl-current-json').value = config;
+  renderACLPreview('acl-current-json', 'acl-key-preview');
 }
 
 function applyKeyACL(keyId, templateId) {

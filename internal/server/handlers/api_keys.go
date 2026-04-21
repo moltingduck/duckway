@@ -136,10 +136,11 @@ func (h *APIKeyHandler) ListACLTemplates(w http.ResponseWriter, r *http.Request)
 		templates = []svc.ACLTemplate{}
 	}
 	jsonResponse(w, map[string]interface{}{
-		"key_id":   key.ID,
-		"service":  key.ServiceName,
-		"current":  key.ACL,
-		"templates": templates,
+		"key_id":     key.ID,
+		"service":    key.ServiceName,
+		"service_id": key.ServiceID,
+		"current":    key.ACL,
+		"templates":  templates,
 	})
 }
 

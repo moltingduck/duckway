@@ -165,8 +165,9 @@
       <div class="form-group">
         <label>ACL (JSON permission config)</label>
         <div id="eph-acl-templates" class="mb-1"></div>
-        <textarea id="eph-acl" style="min-height:100px;font-family:monospace;font-size:0.75rem" placeholder="Leave empty to inherit from API key / service"></textarea>
+        <textarea id="eph-acl" style="min-height:100px;font-family:monospace;font-size:0.75rem" placeholder="Leave empty to inherit from API key / service" oninput="renderACLPreview('eph-acl','eph-acl-preview')"></textarea>
         <span class="text-muted text-sm">Narrowest layer — can only restrict, not widen</span>
+        <div id="eph-acl-preview" class="acl-preview"></div>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="document.getElementById('edit-ph-modal').style.display='none'">Cancel</button>
@@ -411,6 +412,8 @@ function editPh(phId, envName, keyPath) {
       var p = phs.find(function(x) { return x.id === phId; });
       if (!p) return;
       document.getElementById('eph-acl').value = p.permission_config || '';
+      loadInheritedACL('eph-acl', 'eph-acl-preview', p.service_id, p.api_key_id || '');
+      renderACLPreview('eph-acl', 'eph-acl-preview');
       if (p.service_id) {
         fetch('/api/services/' + p.service_id + '/acl-templates', {credentials:'same-origin'})
           .then(function(r) { return r.json(); })
@@ -421,7 +424,7 @@ function editPh(phId, envName, keyPath) {
               btn.type = 'button'; btn.className = 'btn btn-sm';
               btn.style.marginRight = '0.25rem'; btn.style.marginBottom = '0.25rem';
               btn.textContent = t.name; btn.title = t.description;
-              btn.onclick = function() { document.getElementById('eph-acl').value = t.config; };
+              btn.onclick = function() { document.getElementById('eph-acl').value = t.config; renderACLPreview('eph-acl','eph-acl-preview'); };
               container.appendChild(btn);
             });
           });

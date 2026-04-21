@@ -91,8 +91,9 @@
       <div class="form-group">
         <label>ACL (JSON permission config)</label>
         <div id="eph-acl-templates" class="mb-1"></div>
-        <textarea id="eph-acl" style="min-height:100px;font-family:monospace;font-size:0.75rem" placeholder="Leave empty to inherit from API key / service"></textarea>
+        <textarea id="eph-acl" style="min-height:100px;font-family:monospace;font-size:0.75rem" placeholder="Leave empty to inherit from API key / service" oninput="renderACLPreview('eph-acl','eph-acl-preview')"></textarea>
         <span class="text-muted text-sm">Narrowest layer — can only restrict, not widen access beyond service/key ACL</span>
+        <div id="eph-acl-preview" class="acl-preview"></div>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="document.getElementById('edit-ph-modal').style.display='none'">Cancel</button>
@@ -120,6 +121,10 @@ function editPh(phId, envName, keyPath, requiresApproval, ttl) {
       if (!ph) return;
       document.getElementById('eph-acl').value = ph.permission_config || '';
 
+      // Load inherited ACL + render preview
+      loadInheritedACL('eph-acl', 'eph-acl-preview', ph.service_id, ph.api_key_id || '');
+      renderACLPreview('eph-acl', 'eph-acl-preview');
+
       // Load ACL templates for this service
       if (ph.service_id) {
         fetch('/api/services/' + ph.service_id + '/acl-templates', {credentials:'same-origin'})
@@ -135,7 +140,7 @@ function editPh(phId, envName, keyPath, requiresApproval, ttl) {
               btn.style.marginBottom = '0.25rem';
               btn.textContent = t.name;
               btn.title = t.description;
-              btn.onclick = function() { document.getElementById('eph-acl').value = t.config; };
+              btn.onclick = function() { document.getElementById('eph-acl').value = t.config; renderACLPreview('eph-acl','eph-acl-preview'); };
               container.appendChild(btn);
             });
           });
