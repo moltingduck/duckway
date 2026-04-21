@@ -89,15 +89,23 @@
         <span class="text-muted text-sm">60 = 1h, 1440 = 1d, 10080 = 1w</span>
       </div>
       <div class="form-group">
-        <label>ACL (JSON permission config)</label>
-        <div id="eph-acl-templates" class="mb-1"></div>
+        <label class="text-sm">ACL Pre-set Rules <span class="text-muted">(click to load)</span></label>
+        <div id="eph-acl-templates" style="display:flex;flex-wrap:wrap;gap:0.25rem"></div>
+      </div>
+      <div class="form-group">
+        <label class="text-sm">ACL JSON Editor</label>
         <textarea id="eph-acl" style="min-height:100px;font-family:monospace;font-size:0.75rem" placeholder="Leave empty to inherit from API key / service" oninput="renderACLPreview('eph-acl','eph-acl-preview')"></textarea>
-        <span class="text-muted text-sm">Narrowest layer — can only restrict, not widen access beyond service/key ACL</span>
+        <span class="text-muted text-sm">Narrowest layer — can only restrict, not widen</span>
+      </div>
+      <div class="form-group">
+        <label class="text-sm">Preview</label>
         <div id="eph-acl-preview" class="acl-preview"></div>
       </div>
       <div class="modal-actions">
-        <button type="button" class="btn" onclick="document.getElementById('edit-ph-modal').style.display='none'">Cancel</button>
-        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="button" class="btn btn-sm" onclick="document.getElementById('eph-acl').value=''; renderACLPreview('eph-acl','eph-acl-preview');">Clear</button>
+        <div style="flex:1"></div>
+        <button type="button" class="btn" onclick="document.getElementById('edit-ph-modal').style.display='none'">Close</button>
+        <button type="submit" class="btn btn-primary">Apply</button>
       </div>
     </form>
   </div>
@@ -133,14 +141,19 @@ function editPh(phId, envName, keyPath, requiresApproval, ttl) {
             var container = document.getElementById('eph-acl-templates');
             if (!data.templates || data.templates.length === 0) return;
             data.templates.forEach(function(t) {
+              var currentACL = document.getElementById('eph-acl').value;
+              var isActive = currentACL === t.config;
               var btn = document.createElement('button');
               btn.type = 'button';
-              btn.className = 'btn btn-sm';
-              btn.style.marginRight = '0.25rem';
-              btn.style.marginBottom = '0.25rem';
+              btn.className = 'btn btn-sm' + (isActive ? ' btn-primary' : '');
               btn.textContent = t.name;
               btn.title = t.description;
-              btn.onclick = function() { document.getElementById('eph-acl').value = t.config; renderACLPreview('eph-acl','eph-acl-preview'); };
+              btn.onclick = function() {
+                document.getElementById('eph-acl').value = t.config;
+                renderACLPreview('eph-acl','eph-acl-preview');
+                container.querySelectorAll('.btn').forEach(function(b) { b.classList.remove('btn-primary'); });
+                btn.classList.add('btn-primary');
+              };
               container.appendChild(btn);
             });
           });

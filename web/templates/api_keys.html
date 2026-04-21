@@ -88,25 +88,31 @@
   <div class="modal" style="max-width:720px">
     <h2>ACL for <span id="acl-key-name"></span></h2>
     <p class="text-sm text-muted mb-1">
-      Restrict what this API key can do. All three ACL layers are checked — request must pass all of them.
-      <br>Layers (wide → narrow): <strong>service</strong> → <strong>api key</strong> → <strong>placeholder</strong>. Each can only narrow, never widen.
+      Layers (wide → narrow): <strong>service</strong> → <strong>api key</strong> → <strong>placeholder</strong>. Each can only narrow, never widen.
     </p>
 
     <input type="hidden" id="acl-key-id">
-    <div id="acl-templates-list"></div>
 
-    <div class="mt-2">
-      <label class="text-sm">Current ACL JSON</label>
-      <textarea id="acl-current-json" style="min-height:150px;font-family:monospace;font-size:0.75rem" oninput="renderACLPreview('acl-current-json','acl-key-preview')"></textarea>
+    <div class="form-group">
+      <label class="text-sm">Pre-set Rules <span class="text-muted">(click to load into editor)</span></label>
+      <div id="acl-templates-list" style="display:flex;flex-wrap:wrap;gap:0.25rem"></div>
+    </div>
+
+    <div class="form-group">
+      <label class="text-sm">ACL JSON Editor</label>
+      <textarea id="acl-current-json" style="min-height:150px;font-family:monospace;font-size:0.75rem" oninput="renderACLPreview('acl-current-json','acl-key-preview')" placeholder="Leave empty to inherit from service"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label class="text-sm">Preview</label>
       <div id="acl-key-preview" class="acl-preview"></div>
-      <div class="flex gap-sm mt-1">
-        <button type="button" class="btn btn-sm" onclick="saveCustomACL()">Save Custom JSON</button>
-        <button type="button" class="btn btn-sm" onclick="clearACL()">Clear (inherit from service)</button>
-      </div>
     </div>
 
     <div class="modal-actions">
+      <button type="button" class="btn btn-sm" onclick="clearACL()">Clear</button>
+      <div style="flex:1"></div>
       <button type="button" class="btn" onclick="document.getElementById('acl-modal').style.display='none'">Close</button>
+      <button type="button" class="btn btn-primary" onclick="saveCustomACL()">Apply</button>
     </div>
   </div>
 </div>
@@ -190,50 +196,23 @@ function openKeyACL(keyId, keyName, svcName) {
       list.innerHTML = '';
       data.templates.forEach(function(t) {
         var isActive = (data.current || '') === t.config;
-        var card = document.createElement('div');
-        card.className = 'card';
-        card.style.marginBottom = '0.5rem';
-        card.style.padding = '0.75rem';
-        if (isActive) card.style.borderColor = 'var(--accent)';
-        card.innerHTML =
-          '<div class="flex-between">' +
-            '<div>' +
-              '<strong>' + t.name + '</strong>' +
-              (isActive ? ' <span class="badge badge-blue">active</span>' : '') +
-              '<div class="text-sm text-muted">' + t.description + '</div>' +
-            '</div>' +
-            '<div class="flex gap-sm">' +
-              '<button class="btn btn-sm" onclick="previewKeyACL(\'' + encodeURIComponent(t.config) + '\')">Preview</button>' +
-              '<button class="btn btn-sm btn-primary" onclick="applyKeyACL(\'' + keyId + '\',\'' + t.id + '\')">Apply</button>' +
-            '</div>' +
-          '</div>';
-        list.appendChild(card);
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-sm' + (isActive ? ' btn-primary' : '');
+        btn.textContent = t.name;
+        btn.title = t.description;
+        btn.onclick = function() {
+          document.getElementById('acl-current-json').value = t.config;
+          renderACLPreview('acl-current-json', 'acl-key-preview');
+          // Highlight active
+          list.querySelectorAll('.btn').forEach(function(b) { b.classList.remove('btn-primary'); });
+          btn.classList.add('btn-primary');
+        };
+        list.appendChild(btn);
       });
     });
 
   document.getElementById('acl-modal').style.display = 'flex';
-}
-
-function previewKeyACL(encodedConfig) {
-  var config = decodeURIComponent(encodedConfig);
-  document.getElementById('acl-current-json').value = config;
-  renderACLPreview('acl-current-json', 'acl-key-preview');
-}
-
-function applyKeyACL(keyId, templateId) {
-  if (!confirm('Apply this ACL template? It will replace the current ACL on this key.')) return;
-  fetch('/api/keys/' + keyId + '/acl-templates', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({template_id: templateId}),
-    credentials: 'same-origin'
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast('Applied: ' + data.template, 'success');
-    location.reload();
-  });
 }
 
 function saveCustomACL() {
