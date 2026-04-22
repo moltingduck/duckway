@@ -298,12 +298,18 @@ duckway env               # Print keys as shell exports
 duckway proxy [--port N]  # Start HTTPS MITM proxy (default :18080)
 duckway status            # Server, keys, heartbeat, local proxy, CA cert</code></pre>
 
-  <h4 class="mt-1">Dev scripts</h4>
-  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code>./scripts/dev.sh up       # Docker build + start + seed test data
-./scripts/dev.sh restart  # Rebuild after code changes
-./scripts/dev.sh down     # Stop (keep data)
-./scripts/dev.sh nuke     # Stop + wipe data volume
-./scripts/dev.sh logs     # Follow server logs</code></pre>
+  <h4 class="mt-1">Scripts</h4>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Development
+./scripts/dev.sh up       # Build + start + seed test data
+./scripts/dev.sh split    # Split mode (admin :9099, gateway :8080)
+./scripts/dev.sh nuke     # Wipe data + containers
+./scripts/dev.sh logs     # Follow logs
+
+# Production
+./scripts/prod.sh up      # Start with Tailscale
+./scripts/prod.sh status  # Container + Tailscale status
+./scripts/prod.sh logs    # Follow logs
+./scripts/prod.sh password # Show admin password</code></pre>
 </div>
 
 <!-- 14 -->
@@ -430,25 +436,61 @@ duckway status            # Server, keys, heartbeat, local proxy, CA cert</code>
 <div class="card" id="docker">
   <h3>15. Docker &amp; Deployment</h3>
 
-  <h4>Production</h4>
-  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code>docker compose up -d
-# Server on :8080, data in duckway-data volume</code></pre>
+  <h4>Production (Tailscale — no exposed ports)</h4>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># 1. Configure
+cp .env.example .prod.env
+# Edit .prod.env: TS_AUTHKEY, TS_HOSTNAME
 
-  <h4 class="mt-1">Development</h4>
-  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Create .env with secrets (gitignored)
-echo 'DISCORD_BOT_TOKEN=...' > .env
-echo 'DISCORD_CHANNEL_ID=...' >> .env
+# 2. Start
+./scripts/prod.sh up
 
-./scripts/dev.sh up    # Build + start + seed test data
-# Server on :9090, password: duckway
-# Auto-seeds: 3 API keys, 2 clients, Discord notification</code></pre>
+# Access via Tailscale HTTPS:
+#   Admin:   https://duckway-admin.tailnet
+#   Gateway: https://duckway-gw.tailnet</code></pre>
 
-  <h4 class="mt-1">Multi-stage Dockerfile</h4>
+  <h4 class="mt-1">Development (localhost ports)</h4>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># 1. Configure (optional — Discord bot)
+cp .env.example .dev.env
+
+# 2. Start
+./scripts/dev.sh up
+# Admin: http://localhost:9090/admin/ (duckway/duckway)
+# Auto-seeds: 8 API keys, 6 clients, 18 phantom tokens</code></pre>
+
+  <h4 class="mt-1">Compose Files</h4>
   <table>
-    <tr><td><strong>Builder</strong></td><td>golang:1.25-alpine — compiles server + cross-platform client binaries</td></tr>
-    <tr><td><strong>Server</strong></td><td>alpine:3.21 + server binary + client downloads (~14MB)</td></tr>
-    <tr><td><strong>Client</strong></td><td>alpine:3.21 + linux-amd64 client + curl/jq (~10MB)</td></tr>
+    <thead><tr><th>File</th><th>Mode</th><th>Tailscale</th><th>Ports</th></tr></thead>
+    <tbody>
+      <tr><td class="mono text-sm">docker-compose.prod.yml</td><td>Split</td><td>2 sidecars</td><td>None</td></tr>
+      <tr><td class="mono text-sm">docker-compose.combined.yml</td><td>Combined</td><td>1 sidecar</td><td>None</td></tr>
+      <tr><td class="mono text-sm">docker-compose.yml + .dev.yml</td><td>Dev</td><td>No</td><td>127.0.0.1</td></tr>
+    </tbody>
   </table>
+
+  <h4 class="mt-1">Environment Files</h4>
+  <table>
+    <thead><tr><th>File</th><th>Purpose</th><th>In git</th></tr></thead>
+    <tbody>
+      <tr><td class="mono text-sm">.env.example</td><td>Template</td><td>Yes</td></tr>
+      <tr><td class="mono text-sm">.dev.env</td><td>Dev secrets</td><td>No</td></tr>
+      <tr><td class="mono text-sm">.prod.env</td><td>Prod secrets (Tailscale key)</td><td>No</td></tr>
+    </tbody>
+  </table>
+
+  <h4 class="mt-1">Docker Images</h4>
+  <table>
+    <thead><tr><th>Target</th><th>Binary</th><th>Size</th></tr></thead>
+    <tbody>
+      <tr><td>server</td><td>duckway-server (combined)</td><td>~14MB</td></tr>
+      <tr><td>admin</td><td>duckway-admin</td><td>~14MB</td></tr>
+      <tr><td>gateway</td><td>duckway-gateway + client downloads</td><td>~14MB</td></tr>
+      <tr><td>client</td><td>duckway client CLI</td><td>~10MB</td></tr>
+    </tbody>
+  </table>
+
+  <h4 class="mt-1">Tailscale Integration</h4>
+  <p>Production compose uses Tailscale sidecar containers. Each service shares its network stack with the Tailscale container via <code>network_mode: "service:ts-*"</code>. Tailscale terminates HTTPS and forwards plain HTTP to the service.</p>
+  <p class="text-sm text-muted">Zero ports exposed to host or LAN. Only accessible via Tailscale.</p>
 </div>
 
 <div style="height:2rem"></div>
