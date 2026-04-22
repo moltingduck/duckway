@@ -1,28 +1,43 @@
-# Duckway Production — Combined Mode (admin + gateway on one port)
+# Duckway Production — Combined Mode with Tailscale
 #
-# Usage:
-#   docker compose -f docker-compose.combined.yml up -d
+# No ports exposed to host. All access via Tailscale only.
 #
-# Expose via Tailscale:
-#   tailscale serve --http 8080 http://127.0.0.1:8080
-#
-# First-run admin password shown in logs:
-#   docker compose -f docker-compose.combined.yml logs server
+# Setup:
+#   1. Copy .env.example to .env, fill in TS_AUTHKEY
+#   2. docker compose -f docker-compose.combined.yml up -d
+#   3. Access via https://${TS_HOSTNAME}.tailnet:443
 
 services:
+  # Tailscale sidecar
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: duckway-tailscale
+    hostname: ${TS_HOSTNAME:-duckway}
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/ts-combined.json
+      - TS_USERSPACE=true
+    volumes:
+      - ts-state:/var/lib/tailscale
+      - ./tailscale:/config:ro
+    restart: unless-stopped
+
   server:
     build:
       context: .
       target: server
     container_name: duckway-server
-    ports:
-      - "127.0.0.1:8080:8080"
+    network_mode: "service:tailscale"
     volumes:
       - duckway-data:/data
     restart: unless-stopped
     environment:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_LISTEN=:8080
+    depends_on:
+      - tailscale
 
 volumes:
   duckway-data:
+  ts-state:

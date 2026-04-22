@@ -1,23 +1,55 @@
-# Duckway Production — Split Mode (admin + gateway on separate ports)
+# Duckway Production — Split Mode with Tailscale
 #
-# Usage:
-#   docker compose -f docker-compose.prod.yml up -d
+# No ports exposed to host. All access via Tailscale only.
+# Tailscale terminates HTTPS and forwards HTTP to services.
 #
-# Expose via Tailscale:
-#   tailscale serve --http 9091 http://127.0.0.1:9091  # admin (trusted only)
-#   tailscale serve --http 8080 http://127.0.0.1:8080  # gateway (agents)
+# Setup:
+#   1. Copy .env.example to .env, fill in TS_AUTHKEY
+#   2. docker compose -f docker-compose.prod.yml up -d
+#   3. Access via https://${TS_HOSTNAME}-admin.tailnet:443 (admin)
+#                 https://${TS_HOSTNAME}-gw.tailnet:443 (gateway)
 #
-# First-run admin password shown in logs:
-#   docker compose -f docker-compose.prod.yml logs admin
+# First-run admin password:
+#   docker compose -f docker-compose.prod.yml logs admin | grep Password
 
 services:
+  # Tailscale sidecar for admin
+  ts-admin:
+    image: tailscale/tailscale:latest
+    container_name: duckway-ts-admin
+    hostname: ${TS_HOSTNAME:-duckway}-admin
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/ts-admin.json
+      - TS_USERSPACE=true
+    volumes:
+      - ts-admin-state:/var/lib/tailscale
+      - ./tailscale:/config:ro
+    restart: unless-stopped
+
+  # Tailscale sidecar for gateway
+  ts-gateway:
+    image: tailscale/tailscale:latest
+    container_name: duckway-ts-gateway
+    hostname: ${TS_HOSTNAME:-duckway}-gw
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/ts-gateway.json
+      - TS_USERSPACE=true
+    volumes:
+      - ts-gateway-state:/var/lib/tailscale
+      - ./tailscale:/config:ro
+    restart: unless-stopped
+
+  # Admin server (no ports exposed — accessed via ts-admin)
   admin:
     build:
       context: .
       target: admin
     container_name: duckway-admin
-    ports:
-      - "127.0.0.1:9091:9091"
+    network_mode: "service:ts-admin"
     volumes:
       - duckway-data:/data
     restart: unless-stopped
@@ -25,14 +57,16 @@ services:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_ADMIN_LISTEN=:9091
     command: ["--data", "/data", "--port", "9091"]
+    depends_on:
+      - ts-admin
 
+  # Gateway server (no ports exposed — accessed via ts-gateway)
   gateway:
     build:
       context: .
       target: gateway
     container_name: duckway-gateway
-    ports:
-      - "127.0.0.1:8080:8080"
+    network_mode: "service:ts-gateway"
     volumes:
       - duckway-data:/data
     restart: unless-stopped
@@ -41,7 +75,9 @@ services:
       - DUCKWAY_GATEWAY_LISTEN=:8080
     command: ["--data", "/data", "--port", "8080"]
     depends_on:
-      - admin
+      - ts-gateway
 
 volumes:
   duckway-data:
+  ts-admin-state:
+  ts-gateway-state:
