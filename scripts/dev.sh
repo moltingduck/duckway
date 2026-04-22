@@ -23,11 +23,15 @@ case "${1:-up}" in
     sleep 4
 
     # Auto-seed dev data
-    "$SCRIPT_DIR/seed-dev.sh"
+    if [ "$MODE" = "split" ]; then
+      DUCKWAY_URL=http://127.0.0.1:9099 "$SCRIPT_DIR/seed-dev.sh"
+    else
+      "$SCRIPT_DIR/seed-dev.sh"
+    fi
 
     echo ""
     if [ "$MODE" = "split" ]; then
-      echo "Admin:   http://localhost:9090/admin/ (management only)"
+      echo "Admin:   http://localhost:9099/admin/ (management only)"
       echo "Gateway: http://localhost:8080 (proxy + client API)"
     else
       echo "Server:  http://localhost:9090/admin/ (combined)"

@@ -2,21 +2,14 @@ services:
   admin:
     environment:
       - DUCKWAY_DEV=1
-      - DUCKWAY_DATA_DIR=/data
-      - DUCKWAY_ADMIN_LISTEN=:9090
       - DUCKWAY_WEB_DIR=/web
     ports:
-      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:9099:9091"
     volumes:
       - ./web:/web:ro
     profiles: ["split"]
 
   gateway:
-    environment:
-      - DUCKWAY_DATA_DIR=/data
-      - DUCKWAY_GATEWAY_LISTEN=:8080
-    ports:
-      - "127.0.0.1:8080:8080"
     profiles: ["split"]
 
   # Combined mode (default for dev)
