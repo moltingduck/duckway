@@ -1,0 +1,28 @@
+# Duckway Production — Combined Mode (admin + gateway on one port)
+#
+# Usage:
+#   docker compose -f docker-compose.combined.yml up -d
+#
+# Expose via Tailscale:
+#   tailscale serve --http 8080 http://127.0.0.1:8080
+#
+# First-run admin password shown in logs:
+#   docker compose -f docker-compose.combined.yml logs server
+
+services:
+  server:
+    build:
+      context: .
+      target: server
+    container_name: duckway-server
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - duckway-data:/data
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_LISTEN=:8080
+
+volumes:
+  duckway-data:

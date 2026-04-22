@@ -1,0 +1,47 @@
+# Duckway Production — Split Mode (admin + gateway on separate ports)
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Expose via Tailscale:
+#   tailscale serve --http 9091 http://127.0.0.1:9091  # admin (trusted only)
+#   tailscale serve --http 8080 http://127.0.0.1:8080  # gateway (agents)
+#
+# First-run admin password shown in logs:
+#   docker compose -f docker-compose.prod.yml logs admin
+
+services:
+  admin:
+    build:
+      context: .
+      target: admin
+    container_name: duckway-admin
+    ports:
+      - "127.0.0.1:9091:9091"
+    volumes:
+      - duckway-data:/data
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_ADMIN_LISTEN=:9091
+    command: ["--data", "/data", "--port", "9091"]
+
+  gateway:
+    build:
+      context: .
+      target: gateway
+    container_name: duckway-gateway
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - duckway-data:/data
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_GATEWAY_LISTEN=:8080
+    command: ["--data", "/data", "--port", "8080"]
+    depends_on:
+      - admin
+
+volumes:
+  duckway-data:
