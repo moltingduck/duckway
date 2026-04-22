@@ -6,7 +6,7 @@ services:
       target: server
     container_name: duckway-server
     ports:
-      - "${DUCKWAY_PORT:-8080}:8080"
+      - "127.0.0.1:${DUCKWAY_PORT:-8080}:8080"
     volumes:
       - duckway-data:/data
     restart: unless-stopped
@@ -22,7 +22,7 @@ services:
       target: admin
     container_name: duckway-admin
     ports:
-      - "${DUCKWAY_ADMIN_PORT:-9091}:9091"
+      - "127.0.0.1:${DUCKWAY_ADMIN_PORT:-9091}:9091"
     volumes:
       - duckway-data:/data
     restart: unless-stopped
@@ -39,7 +39,7 @@ services:
       target: gateway
     container_name: duckway-gateway
     ports:
-      - "${DUCKWAY_GATEWAY_PORT:-8080}:8080"
+      - "127.0.0.1:${DUCKWAY_GATEWAY_PORT:-8080}:8080"
     volumes:
       - duckway-data:/data
     restart: unless-stopped
