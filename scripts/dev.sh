@@ -6,10 +6,10 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_DIR"
 
-# Load .env if exists
-if [ -f "$PROJECT_DIR/.env" ]; then
+# Load .dev.env if exists
+if [ -f "$PROJECT_DIR/.dev.env" ]; then
   set -a
-  . "$PROJECT_DIR/.env"
+  . "$PROJECT_DIR/.dev.env"
   set +a
 fi
 
