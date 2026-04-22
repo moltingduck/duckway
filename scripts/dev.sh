@@ -6,18 +6,19 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_DIR"
 
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml"
-
-  # Load .env if exists
+# Load .env if exists
 if [ -f "$PROJECT_DIR/.env" ]; then
   set -a
   . "$PROJECT_DIR/.env"
   set +a
 fi
 
+MODE="${DUCKWAY_MODE:-combined}"
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile $MODE"
+
 case "${1:-up}" in
   up|start)
-    echo "Building and starting Duckway (dev mode) in Docker..."
+    echo "Building and starting Duckway ($MODE mode) in Docker..."
     $COMPOSE up --build -d
     sleep 4
 
@@ -25,16 +26,22 @@ case "${1:-up}" in
     "$SCRIPT_DIR/seed-dev.sh"
 
     echo ""
-    echo "Server:   http://localhost:9090/admin/"
+    if [ "$MODE" = "split" ]; then
+      echo "Admin:   http://localhost:9090/admin/ (management only)"
+      echo "Gateway: http://localhost:8080 (proxy + client API)"
+    else
+      echo "Server:  http://localhost:9090/admin/ (combined)"
+    fi
     echo "Username: duckway"
     echo "Password: duckway"
     echo ""
-    echo "Logs:   $COMPOSE logs -f server"
+    echo "Mode: $MODE (set DUCKWAY_MODE=split for separate admin/gateway)"
+    echo "Logs:   $COMPOSE logs -f"
     echo "Client: docker exec -it duckway-client sh"
     ;;
 
   restart)
-    echo "Rebuilding and restarting..."
+    echo "Rebuilding ($MODE mode)..."
     $COMPOSE up --build -d
     sleep 3
     echo "Done."
@@ -45,16 +52,25 @@ case "${1:-up}" in
     ;;
 
   nuke)
-    echo "Removing containers + volumes (wipe data)..."
+    echo "Removing containers + volumes..."
     $COMPOSE down -v
     ;;
 
   logs)
-    $COMPOSE logs -f server
+    $COMPOSE logs -f
+    ;;
+
+  split)
+    export DUCKWAY_MODE=split
+    exec "$0" up
+    ;;
+
+  combined)
+    export DUCKWAY_MODE=combined
+    exec "$0" up
     ;;
 
   bare)
-    # Old bare-metal mode for fast debugging
     shift
     echo "Running bare binary..."
     go build -o "$PROJECT_DIR/server" ./cmd/server/
@@ -63,7 +79,13 @@ case "${1:-up}" in
     ;;
 
   *)
-    echo "Usage: $0 {up|restart|down|nuke|logs|bare}"
+    echo "Usage: $0 {up|restart|down|nuke|logs|split|combined|bare}"
+    echo ""
+    echo "Modes:"
+    echo "  combined  — admin + gateway on one port (default)"
+    echo "  split     — admin (:9090) + gateway (:8080) on separate ports"
+    echo ""
+    echo "Set DUCKWAY_MODE=split in .env for persistent split mode"
     exit 1
     ;;
 esac

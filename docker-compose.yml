@@ -1,4 +1,5 @@
 services:
+  # Combined mode (backwards compatible — admin + gateway on one port)
   server:
     build:
       context: .
@@ -12,17 +13,49 @@ services:
     environment:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_LISTEN=:8080
+    profiles: ["combined"]
+
+  # Split mode — admin (management only, no proxy)
+  admin:
+    build:
+      context: .
+      target: admin
+    container_name: duckway-admin
+    ports:
+      - "${DUCKWAY_ADMIN_PORT:-9090}:9090"
+    volumes:
+      - duckway-data:/data
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_ADMIN_LISTEN=:9090
+    profiles: ["split"]
+
+  # Split mode — gateway (proxy + client API, no admin)
+  gateway:
+    build:
+      context: .
+      target: gateway
+    container_name: duckway-gateway
+    ports:
+      - "${DUCKWAY_GATEWAY_PORT:-8080}:8080"
+    volumes:
+      - duckway-data:/data
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_GATEWAY_LISTEN=:8080
+    profiles: ["split"]
 
   client:
     build:
       context: .
       target: client
     container_name: duckway-client
-    depends_on:
-      - server
+    depends_on: []
     restart: unless-stopped
     environment:
-      - DUCKWAY_SERVER=http://server:8080
+      - DUCKWAY_SERVER=http://gateway:8080
 
 volumes:
   duckway-data:
