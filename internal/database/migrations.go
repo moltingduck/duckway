@@ -150,6 +150,11 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_canary_client ON canary_tokens(client_id)`,
 
 
+	`CREATE TABLE IF NOT EXISTS settings (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL DEFAULT ''
+	)`,
+
 	// Migration version tracking
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)`,
 }

@@ -76,6 +76,7 @@ func (s *Server) initShared() *SharedServices {
 
 // SetupAdminRoutes adds admin panel + management API routes.
 func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
+	settingsQ := queries.NewSettingsQueries(s.db)
 	authH := handlers.NewAuthHandler(ss.UserQ, ss.AdminAuth)
 	serviceH := handlers.NewServiceHandler(ss.ServiceQ)
 	apiKeyH := handlers.NewAPIKeyHandler(ss.APIKeyQ, ss.ServiceQ, ss.Crypto)
@@ -109,6 +110,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/logs", adminPageH.LogsPage)
 	adminPageMux.HandleFunc("GET /admin/notifications", adminPageH.NotificationsPage)
 	adminPageMux.HandleFunc("GET /admin/canary", adminPageH.CanaryPage)
+	adminPageMux.HandleFunc("GET /admin/settings", adminPageH.SettingsPage)
 	adminPageMux.HandleFunc("GET /admin/docs", adminPageH.DocsPage)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/approve", adminPageH.ApproveAction)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/reject", adminPageH.RejectAction)
@@ -173,6 +175,21 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("DELETE /api/canary/clients/{clientId}", canaryH.DeleteClientTokens)
 	adminAPIMux.HandleFunc("DELETE /api/canary/tokens/{tokenId}", canaryH.DeleteToken)
 
+	adminAPIMux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		handlers.JsonResponsePublic(w, settingsQ.GetAll())
+	})
+	adminAPIMux.HandleFunc("POST /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			handlers.JsonErrorPublic(w, "invalid request", 400)
+			return
+		}
+		for k, v := range req {
+			settingsQ.Set(k, v)
+		}
+		handlers.JsonResponsePublic(w, map[string]string{"status": "ok"})
+	})
+
 	adminAPIMux.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
 		logs, err := ss.RequestLogQ.Recent(500)
 		if err != nil {
@@ -195,6 +212,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 
 // SetupGatewayRoutes adds proxy, client API, and public endpoints.
 func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
+	settingsQ := queries.NewSettingsQueries(s.db)
 	clientH := handlers.NewClientHandler(ss.ClientQ, ss.PlaceholderQ, ss.ServiceQ, ss.APIKeyQ, ss.CanarySvc)
 	canaryH := handlers.NewCanaryHandler(ss.CanaryQ, ss.CanarySvc)
 	proxyH := handlers.NewProxyHandler(ss.ServiceQ, ss.Resolver, ss.RequestLogQ, ss.ApprovalQ, ss.Notifier)
@@ -216,6 +234,20 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 			w.Write(ca.KeyPEM)
 		})
 	}
+
+	// Client config (no auth — needed during duckway init before token is verified)
+	s.mux.HandleFunc("GET /client/config", func(w http.ResponseWriter, r *http.Request) {
+		gwURL := settingsQ.Get(queries.SettingGatewayURL)
+		proxyPort := settingsQ.Get(queries.SettingProxyPort)
+		if proxyPort == "" {
+			proxyPort = "18080"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"gateway_url": gwURL,
+			"proxy_port":  proxyPort,
+		})
+	})
 
 	s.mux.Handle("/client/", ss.ClientAuth.Middleware(clientMux))
 

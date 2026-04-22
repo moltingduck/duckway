@@ -139,6 +139,21 @@ func (c *APIClient) DownloadCA(configDir string) error {
 	return nil
 }
 
+// FetchConfig gets gateway configuration (proxy port, etc.)
+func (c *APIClient) FetchConfig() (map[string]string, error) {
+	resp, err := c.httpClient.Get(c.baseURL + "/client/config")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("config endpoint returned %d", resp.StatusCode)
+	}
+	var cfg map[string]string
+	json.NewDecoder(resp.Body).Decode(&cfg)
+	return cfg, nil
+}
+
 func (c *APIClient) Ping() error {
 	req, err := http.NewRequest("GET", c.baseURL+"/client/keys", nil)
 	if err != nil {

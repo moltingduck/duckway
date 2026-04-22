@@ -231,9 +231,17 @@ var canaryTokens = [
 var svcEnvMap = {"openai":"OPENAI_API_KEY","anthropic":"ANTHROPIC_API_KEY","github":"GITHUB_TOKEN","discord":"DISCORD_BOT_TOKEN","telegram":"TELEGRAM_BOT_TOKEN"};
 
 document.addEventListener('DOMContentLoaded', function() {
-  // Set install command
-  var installCmd = 'curl -fsSL ' + window.location.origin + '/install.sh | sh';
-  document.getElementById('install-cmd').textContent = installCmd;
+  // Load gateway URL from settings, fall back to current origin
+  var gatewayURL = window.location.origin;
+  fetch('/api/settings', {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(s) {
+      if (s.gateway_url) gatewayURL = s.gateway_url;
+      document.getElementById('install-cmd').textContent = 'curl -fsSL ' + gatewayURL + '/install.sh | sh';
+    })
+    .catch(function() {
+      document.getElementById('install-cmd').textContent = 'curl -fsSL ' + gatewayURL + '/install.sh | sh';
+    });
 
   // Check canary settings
   fetch('/api/canary/settings', {credentials:'same-origin'})
@@ -596,10 +604,10 @@ document.getElementById('add-client-form').addEventListener('submit', function(e
       if (data.error) { showToast(data.error, 'error'); return; }
       document.getElementById('add-modal').style.display = 'none';
       document.getElementById('token-value').value = data.token;
-      var origin = window.location.origin;
-      var initCmd = 'printf "' + origin + '\\n' + data.name + '\\n1\\n' + data.token + '\\n" | duckway init';
+      var gw = gatewayURL || window.location.origin;
+      var initCmd = 'printf "' + gw + '\\n' + data.name + '\\n1\\n' + data.token + '\\n" | duckway init';
       document.getElementById('init-cmd').textContent = initCmd;
-      document.getElementById('full-setup-cmd').textContent = 'curl -fsSL ' + origin + '/install.sh | sh && ' + initCmd;
+      document.getElementById('full-setup-cmd').textContent = 'curl -fsSL ' + gw + '/install.sh | sh && ' + initCmd;
       document.getElementById('token-modal').style.display = 'flex';
     });
 });

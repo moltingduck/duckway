@@ -1,0 +1,74 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Settings</h1>
+</div>
+
+<div class="card">
+  <h3>Gateway Configuration</h3>
+  <p class="text-sm text-muted mb-1">Configure how clients connect to the Duckway gateway. These values are used in setup commands and client config.</p>
+
+  <form id="settings-form">
+    <div class="form-group">
+      <label>Gateway URL</label>
+      <input type="url" id="s-gateway-url" placeholder="http://duckway-gateway.tailnet:8080">
+      <span class="text-muted text-sm">The URL agents use to reach the gateway. Used in install commands and client init. Leave empty to use the admin panel URL (combined mode).</span>
+    </div>
+    <div class="form-group">
+      <label>Client Proxy Port</label>
+      <input type="number" id="s-proxy-port" placeholder="18080" min="1024" max="65535">
+      <span class="text-muted text-sm">Suggested port for <code>duckway proxy</code> on client machines. Default: 18080.</span>
+    </div>
+    <button type="submit" class="btn btn-primary">Save Settings</button>
+  </form>
+</div>
+
+<div class="card mt-2">
+  <h3>Architecture</h3>
+  <table>
+    <thead><tr><th>Mode</th><th>Compose File</th><th>Ports</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Split</strong> (recommended)</td>
+        <td class="mono text-sm">docker-compose.prod.yml</td>
+        <td>Admin :9091 + Gateway :8080</td>
+      </tr>
+      <tr>
+        <td><strong>Combined</strong></td>
+        <td class="mono text-sm">docker-compose.combined.yml</td>
+        <td>Everything :8080</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="text-sm text-muted mt-1">In split mode, agents only access the gateway. Admin panel is on a separate port protected by Tailscale ACL.</p>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  fetch('/api/settings', {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(s) {
+      document.getElementById('s-gateway-url').value = s.gateway_url || '';
+      document.getElementById('s-proxy-port').value = s.proxy_port || '18080';
+    });
+});
+
+document.getElementById('settings-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var body = {
+    gateway_url: document.getElementById('s-gateway-url').value.trim(),
+    proxy_port: document.getElementById('s-proxy-port').value.trim() || '18080'
+  };
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Settings saved', 'success');
+  });
+});
+</script>
+{{end}}
