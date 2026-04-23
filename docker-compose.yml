@@ -46,7 +46,7 @@ services:
     profiles: ["tailscale-combined"]
 
   ts-server:
-    image: tailscale/tailscale:latest
+    image: tailscale/tailscale@sha256:dbeff02d2337344b351afac203427218c4d0a06c43fc10a865184063498472a6
     container_name: duckway-ts-server
     hostname: ${TS_HOSTNAME:-duckway}
     environment:
@@ -128,7 +128,7 @@ services:
     profiles: ["tailscale"]
 
   ts-admin:
-    image: tailscale/tailscale:latest
+    image: tailscale/tailscale@sha256:dbeff02d2337344b351afac203427218c4d0a06c43fc10a865184063498472a6
     container_name: duckway-ts-admin
     hostname: ${TS_HOSTNAME:-duckway}-admin
     environment:
@@ -143,7 +143,7 @@ services:
     profiles: ["tailscale"]
 
   ts-gateway:
-    image: tailscale/tailscale:latest
+    image: tailscale/tailscale@sha256:dbeff02d2337344b351afac203427218c4d0a06c43fc10a865184063498472a6
     container_name: duckway-ts-gateway
     hostname: ${TS_HOSTNAME:-duckway}-gw
     environment:
