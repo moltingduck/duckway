@@ -19,21 +19,23 @@ set +a
 
 # Validate required vars
 if [ -z "$TS_AUTHKEY" ]; then
-  echo "Error: TS_AUTHKEY not set in .env"
+  echo "Error: TS_AUTHKEY not set in .prod.env"
   echo "  Get one from https://login.tailscale.com/admin/settings/keys"
   exit 1
 fi
 
 MODE="${DUCKWAY_PROD_MODE:-split}"
 case "$MODE" in
-  split)    COMPOSE="docker compose -f docker-compose.prod.yml" ;;
-  combined) COMPOSE="docker compose -f docker-compose.combined.yml" ;;
+  split)    PROFILES="--profile tailscale" ;;
+  combined) PROFILES="--profile tailscale-combined" ;;
   *) echo "Error: DUCKWAY_PROD_MODE must be 'split' or 'combined'"; exit 1 ;;
 esac
 
+COMPOSE="docker compose -f docker-compose.yml $PROFILES"
+
 case "${1:-up}" in
   up|start)
-    echo "Starting Duckway production ($MODE mode)..."
+    echo "Starting Duckway production ($MODE mode + Tailscale)..."
     $COMPOSE up --build -d
     sleep 5
 
@@ -46,10 +48,10 @@ case "${1:-up}" in
     fi
     echo ""
     echo "Admin password (first run only):"
-    $COMPOSE logs 2>&1 | grep "Password:" | tail -1 || echo "  (check logs: $0 logs)"
+    $COMPOSE logs 2>&1 | grep "Password:" | tail -1 || echo "  (check: $0 logs)"
     echo ""
     echo "Tailscale nodes:"
-    $COMPOSE ps --format "table {{.Name}}\t{{.Status}}" | grep -E "NAME|ts-|tailscale"
+    $COMPOSE ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null | grep -E "NAME|ts-|tailscale" || true
     ;;
 
   down|stop)
@@ -86,7 +88,7 @@ case "${1:-up}" in
       docker exec duckway-ts-admin tailscale status 2>/dev/null || echo "  ts-admin not running"
       docker exec duckway-ts-gateway tailscale status 2>/dev/null || echo "  ts-gateway not running"
     else
-      docker exec duckway-tailscale tailscale status 2>/dev/null || echo "  tailscale not running"
+      docker exec duckway-ts-server tailscale status 2>/dev/null || echo "  ts-server not running"
     fi
     ;;
 
@@ -100,16 +102,16 @@ case "${1:-up}" in
     echo "Usage: $0 {up|down|restart|nuke|logs|status|password}"
     echo ""
     echo "Commands:"
-    echo "  up        Build and start all services"
-    echo "  down      Stop all services (keep data)"
+    echo "  up        Build and start with Tailscale"
+    echo "  down      Stop (keep data)"
     echo "  restart   Rebuild and restart"
-    echo "  nuke      Stop and delete all data + Tailscale state"
+    echo "  nuke      Stop and delete all data (asks confirmation)"
     echo "  logs      Follow logs (optional: service name)"
     echo "  status    Show container + Tailscale status"
-    echo "  password  Show admin password from logs"
+    echo "  password  Show admin password"
     echo ""
-    echo "Mode: $MODE (set DUCKWAY_PROD_MODE in .env)"
-    echo "  split    — admin + gateway on separate Tailscale nodes"
+    echo "Mode: $MODE (set DUCKWAY_PROD_MODE in .prod.env)"
+    echo "  split    — admin + gateway on separate Tailscale nodes (default)"
     echo "  combined — everything on one Tailscale node"
     exit 1
     ;;

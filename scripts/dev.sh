@@ -16,6 +16,8 @@ fi
 MODE="${DUCKWAY_MODE:-combined}"
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile $MODE"
 
+# Dev never uses tailscale profiles
+
 case "${1:-up}" in
   up|start)
     echo "Building and starting Duckway ($MODE mode) in Docker..."

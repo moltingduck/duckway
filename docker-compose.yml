@@ -1,5 +1,18 @@
+# Duckway Docker Compose
+#
+# Profiles:
+#   combined              — admin + gateway on one port (default)
+#   split                 — admin + gateway on separate ports
+#   tailscale             — Tailscale sidecars (HTTPS, no exposed ports)
+#
+# Usage:
+#   docker compose --profile combined up -d                    # dev: combined, localhost ports
+#   docker compose --profile split up -d                       # dev: split, localhost ports
+#   docker compose --profile split --profile tailscale up -d   # prod: split + Tailscale HTTPS
+#   docker compose --profile combined --profile tailscale up -d # prod: combined + Tailscale HTTPS
+
 services:
-  # Combined mode (backwards compatible — admin + gateway on one port)
+  # === Combined mode ===
   server:
     build:
       context: .
@@ -15,7 +28,39 @@ services:
       - DUCKWAY_LISTEN=:8080
     profiles: ["combined"]
 
-  # Split mode — admin (management only, no proxy)
+  # Combined + Tailscale: server shares network with ts-server
+  server-ts:
+    build:
+      context: .
+      target: server
+    container_name: duckway-server
+    network_mode: "service:ts-server"
+    volumes:
+      - duckway-data:/data
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_LISTEN=:8080
+    depends_on:
+      - ts-server
+    profiles: ["tailscale-combined"]
+
+  ts-server:
+    image: tailscale/tailscale:latest
+    container_name: duckway-ts-server
+    hostname: ${TS_HOSTNAME:-duckway}
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/ts-combined.json
+      - TS_USERSPACE=true
+    volumes:
+      - ts-server-state:/var/lib/tailscale
+      - ./tailscale:/config:ro
+    restart: unless-stopped
+    profiles: ["tailscale-combined"]
+
+  # === Split mode ===
   admin:
     build:
       context: .
@@ -32,7 +77,6 @@ services:
     command: ["--data", "/data", "--port", "9091"]
     profiles: ["split"]
 
-  # Split mode — gateway (proxy + client API, no admin)
   gateway:
     build:
       context: .
@@ -48,15 +92,83 @@ services:
       - DUCKWAY_GATEWAY_LISTEN=:8080
     profiles: ["split"]
 
+  # Split + Tailscale: services share network with ts sidecars
+  admin-ts:
+    build:
+      context: .
+      target: admin
+    container_name: duckway-admin
+    network_mode: "service:ts-admin"
+    volumes:
+      - duckway-data:/data
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_ADMIN_LISTEN=:9091
+    command: ["--data", "/data", "--port", "9091"]
+    depends_on:
+      - ts-admin
+    profiles: ["tailscale"]
+
+  gateway-ts:
+    build:
+      context: .
+      target: gateway
+    container_name: duckway-gateway
+    network_mode: "service:ts-gateway"
+    volumes:
+      - duckway-data:/data
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_GATEWAY_LISTEN=:8080
+    command: ["--data", "/data", "--port", "8080"]
+    depends_on:
+      - ts-gateway
+    profiles: ["tailscale"]
+
+  ts-admin:
+    image: tailscale/tailscale:latest
+    container_name: duckway-ts-admin
+    hostname: ${TS_HOSTNAME:-duckway}-admin
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/ts-admin.json
+      - TS_USERSPACE=true
+    volumes:
+      - ts-admin-state:/var/lib/tailscale
+      - ./tailscale:/config:ro
+    restart: unless-stopped
+    profiles: ["tailscale"]
+
+  ts-gateway:
+    image: tailscale/tailscale:latest
+    container_name: duckway-ts-gateway
+    hostname: ${TS_HOSTNAME:-duckway}-gw
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/ts-gateway.json
+      - TS_USERSPACE=true
+    volumes:
+      - ts-gateway-state:/var/lib/tailscale
+      - ./tailscale:/config:ro
+    restart: unless-stopped
+    profiles: ["tailscale"]
+
+  # === Client (always available) ===
   client:
     build:
       context: .
       target: client
     container_name: duckway-client
-    depends_on: []
     restart: unless-stopped
     environment:
       - DUCKWAY_SERVER=http://gateway:8080
 
 volumes:
   duckway-data:
+  ts-server-state:
+  ts-admin-state:
+  ts-gateway-state:
