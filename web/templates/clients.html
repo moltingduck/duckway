@@ -230,9 +230,10 @@ var canaryTokens = [
 
 var svcEnvMap = {"openai":"OPENAI_API_KEY","anthropic":"ANTHROPIC_API_KEY","github":"GITHUB_TOKEN","discord":"DISCORD_BOT_TOKEN","telegram":"TELEGRAM_BOT_TOKEN"};
 
+var gatewayURL = window.location.origin;
+
 document.addEventListener('DOMContentLoaded', function() {
   // Load gateway URL from settings, fall back to current origin
-  var gatewayURL = window.location.origin;
   fetch('/api/settings', {credentials:'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(s) {
