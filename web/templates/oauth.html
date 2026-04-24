@@ -1,0 +1,113 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>OAuth Tokens</h1>
+  <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Upload Credentials</button>
+</div>
+
+<div class="card">
+  <p class="text-sm text-muted mb-1">Store Claude OAuth credentials here. The server auto-refreshes access tokens before expiry. Agents get phantom tokens in <code>~/.claude/.credentials.json</code> via <code>duckway sync</code>.</p>
+  <table>
+    <thead><tr><th>Name</th><th>Subscription</th><th>Expires</th><th>Last Refreshed</th><th>Status</th><th></th></tr></thead>
+    <tbody id="oauth-list"></tbody>
+  </table>
+</div>
+
+<!-- Upload modal -->
+<div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Upload Claude OAuth Credentials</h2>
+    <p class="text-sm text-muted mb-1">Paste the contents of <code>~/.claude/.credentials.json</code> or fill in manually.</p>
+
+    <div class="form-group">
+      <label>Paste .credentials.json (auto-fills fields below)</label>
+      <textarea id="oauth-paste" style="min-height:80px;font-family:monospace;font-size:0.75rem" placeholder='{"claudeAiOauth":{"accessToken":"sk-ant-o...","refreshToken":"sk-ant-o...","expiresAt":...}}' oninput="parseOAuthPaste()"></textarea>
+    </div>
+
+    <form id="oauth-form">
+      <div class="form-group"><label>Name</label><input type="text" id="oauth-name" value="Claude OAuth" required></div>
+      <div class="form-group"><label>Access Token</label><input type="text" id="oauth-access" placeholder="sk-ant-o..." required></div>
+      <div class="form-group"><label>Refresh Token</label><input type="text" id="oauth-refresh" placeholder="sk-ant-o..." required></div>
+      <div class="flex gap-md">
+        <div class="form-group" style="flex:1"><label>Subscription Type</label><input type="text" id="oauth-sub" placeholder="max"></div>
+        <div class="form-group" style="flex:1"><label>Rate Limit Tier</label><input type="text" id="oauth-tier" placeholder="default_..._20x"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Upload</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function parseOAuthPaste() {
+  try {
+    var d = JSON.parse(document.getElementById('oauth-paste').value);
+    var oauth = d.claudeAiOauth || d;
+    if (oauth.accessToken) document.getElementById('oauth-access').value = oauth.accessToken;
+    if (oauth.refreshToken) document.getElementById('oauth-refresh').value = oauth.refreshToken;
+    if (oauth.subscriptionType) document.getElementById('oauth-sub').value = oauth.subscriptionType;
+    if (oauth.rateLimitTier) document.getElementById('oauth-tier').value = oauth.rateLimitTier;
+  } catch(e) {}
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  fetch('/api/oauth', {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(list) {
+      var tbody = document.getElementById('oauth-list');
+      if (!list || list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-muted">No OAuth credentials. Upload Claude credentials to get started.</td></tr>';
+        return;
+      }
+      list.forEach(function(c) {
+        var now = Date.now();
+        var expired = c.expires_at > 0 && c.expires_at < now;
+        var expiresIn = c.expires_at > 0 ? Math.round((c.expires_at - now) / 60000) + ' min' : '—';
+        var tr = document.createElement('tr');
+        tr.id = 'oauth-' + c.id;
+        tr.innerHTML =
+          '<td><strong>' + c.name + '</strong></td>' +
+          '<td><span class="badge badge-blue">' + (c.subscription_type || '—') + '</span></td>' +
+          '<td>' + (expired ? '<span class="badge badge-red">Expired</span>' : expiresIn) + '</td>' +
+          '<td class="text-muted text-sm">' + (c.last_refreshed || 'Never') + '</td>' +
+          '<td>' + (c.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>') + '</td>' +
+          '<td class="text-right"><button class="btn btn-sm btn-danger" onclick="deleteOAuth(\'' + c.id + '\')">Delete</button></td>';
+        tbody.appendChild(tr);
+      });
+    });
+});
+
+document.getElementById('oauth-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var body = {
+    name: document.getElementById('oauth-name').value,
+    access_token: document.getElementById('oauth-access').value,
+    refresh_token: document.getElementById('oauth-refresh').value,
+    subscription_type: document.getElementById('oauth-sub').value,
+    rate_limit_tier: document.getElementById('oauth-tier').value
+  };
+  fetch('/api/oauth', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('OAuth credentials uploaded', 'success');
+    location.reload();
+  });
+});
+
+function deleteOAuth(id) {
+  if (!confirm('Delete these OAuth credentials?')) return;
+  fetch('/api/oauth/' + id, {method:'DELETE', credentials:'same-origin'})
+    .then(function() {
+      document.getElementById('oauth-' + id).remove();
+      showToast('Deleted', 'success');
+    });
+}
+</script>
+{{end}}

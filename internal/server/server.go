@@ -37,6 +37,7 @@ func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s.SetupAdminRoutes(contentFS, ss)
 	s.SetupGatewayRoutes(ss)
 	s.startApprovalListeners()
+	s.startOAuthRefresher(ss)
 
 	return s, nil
 }
@@ -55,6 +56,7 @@ func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	ss := s.initShared()
 	s.SetupAdminRoutes(contentFS, ss)
 	s.startApprovalListeners()
+	s.startOAuthRefresher(ss)
 
 	return s, nil
 }
@@ -162,6 +164,12 @@ func (s *Server) seedDefaultServices() error {
 
 	log.Printf("Seeded %d default services", len(defaults))
 	return nil
+}
+
+func (s *Server) startOAuthRefresher(ss *SharedServices) {
+	oauthQ := queries.NewOAuthQueries(s.db)
+	refresher := services.NewOAuthRefresher(oauthQ, ss.Crypto)
+	refresher.Start()
 }
 
 func (s *Server) startApprovalListeners() {

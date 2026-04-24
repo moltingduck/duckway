@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -57,7 +58,44 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 		log.Printf("Deployed %d canary tokens", canaryCount)
 	}
 
+	// Sync Claude OAuth credentials (phantom tokens → ~/.claude/.credentials.json)
+	SyncClaudeCredentials(cfg)
+
 	return len(keys), nil
+}
+
+// SyncClaudeCredentials fetches phantom Claude OAuth credentials and writes
+// to ~/.claude/.credentials.json. If no OAuth credentials are configured
+// on the server, this is a no-op.
+func SyncClaudeCredentials(cfg *Config) {
+	api := NewAPIClient(cfg.ServerURL, cfg.Token)
+	creds, err := api.FetchClaudeCredentials()
+	if err != nil || creds == nil {
+		return // no OAuth credentials configured
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0700); err != nil {
+		log.Printf("Warning: cannot create ~/.claude: %v", err)
+		return
+	}
+
+	credPath := filepath.Join(claudeDir, ".credentials.json")
+	data, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		return
+	}
+
+	if err := os.WriteFile(credPath, data, 0600); err != nil {
+		log.Printf("Warning: cannot write Claude credentials: %v", err)
+		return
+	}
+	log.Printf("Claude credentials synced to %s (phantom tokens)", credPath)
 }
 
 // SyncCanaries fetches canary tokens and deploys them as decoy files.

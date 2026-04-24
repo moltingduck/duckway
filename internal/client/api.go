@@ -56,6 +56,35 @@ func (c *APIClient) FetchKeys() ([]PlaceholderKeyInfo, error) {
 	return keys, nil
 }
 
+// FetchClaudeCredentials gets phantom Claude OAuth credentials.
+func (c *APIClient) FetchClaudeCredentials() (map[string]interface{}, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/client/claude-credentials", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, nil // endpoint may not exist on older servers
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, nil
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, nil
+	}
+	// Only return if it has actual OAuth data
+	if _, ok := result["claudeAiOauth"]; !ok {
+		return nil, nil
+	}
+	return result, nil
+}
+
 type CanaryDeploy struct {
 	TokenType     string `json:"token_type"`
 	DeployPath    string `json:"deploy_path"`

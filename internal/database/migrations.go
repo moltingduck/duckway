@@ -150,6 +150,23 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_canary_client ON canary_tokens(client_id)`,
 
 
+	`CREATE TABLE IF NOT EXISTS oauth_credentials (
+		id                TEXT PRIMARY KEY,
+		service_id        TEXT NOT NULL REFERENCES services(id),
+		name              TEXT NOT NULL,
+		access_token      TEXT NOT NULL,
+		refresh_token     TEXT NOT NULL,
+		expires_at        INTEGER NOT NULL DEFAULT 0,
+		token_endpoint    TEXT NOT NULL DEFAULT 'https://console.anthropic.com/v1/oauth/token',
+		client_id_oauth   TEXT NOT NULL DEFAULT '',
+		scopes            TEXT NOT NULL DEFAULT '[]',
+		subscription_type TEXT NOT NULL DEFAULT '',
+		rate_limit_tier   TEXT NOT NULL DEFAULT '',
+		is_active         INTEGER NOT NULL DEFAULT 1,
+		last_refreshed    TEXT,
+		created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+
 	`CREATE TABLE IF NOT EXISTS settings (
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL DEFAULT ''

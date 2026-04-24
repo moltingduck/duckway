@@ -110,6 +110,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/logs", adminPageH.LogsPage)
 	adminPageMux.HandleFunc("GET /admin/notifications", adminPageH.NotificationsPage)
 	adminPageMux.HandleFunc("GET /admin/canary", adminPageH.CanaryPage)
+	adminPageMux.HandleFunc("GET /admin/oauth", adminPageH.OAuthPage)
 	adminPageMux.HandleFunc("GET /admin/settings", adminPageH.SettingsPage)
 	adminPageMux.HandleFunc("GET /admin/docs", adminPageH.DocsPage)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/approve", adminPageH.ApproveAction)
@@ -190,6 +191,11 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 		handlers.JsonResponsePublic(w, map[string]string{"status": "ok"})
 	})
 
+	oauthH := handlers.NewOAuthHandler(queries.NewOAuthQueries(s.db), ss.PlaceholderQ, ss.ServiceQ, ss.Crypto)
+	adminAPIMux.HandleFunc("GET /api/oauth", oauthH.List)
+	adminAPIMux.HandleFunc("POST /api/oauth", oauthH.Create)
+	adminAPIMux.HandleFunc("DELETE /api/oauth/{id}", oauthH.Delete)
+
 	adminAPIMux.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
 		logs, err := ss.RequestLogQ.Recent(500)
 		if err != nil {
@@ -234,6 +240,10 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 			w.Write(ca.KeyPEM)
 		})
 	}
+
+	// Claude credentials endpoint (client auth required)
+	oauthClientH := handlers.NewOAuthHandler(queries.NewOAuthQueries(s.db), ss.PlaceholderQ, ss.ServiceQ, ss.Crypto)
+	clientMux.HandleFunc("GET /client/claude-credentials", oauthClientH.ClientGetCredentials)
 
 	// Client config (no auth — needed during duckway init before token is verified)
 	s.mux.HandleFunc("GET /client/config", func(w http.ResponseWriter, r *http.Request) {
