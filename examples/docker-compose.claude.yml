@@ -1,0 +1,144 @@
+# Example: Claude Code Agent with Duckway proxy + Tailscale sidecars
+#
+# Claude Code runs with ZERO API keys on the machine.
+# The Duckway proxy intercepts HTTPS traffic to known API hosts,
+# forwards to the gateway which injects real keys.
+# Claude never sees or stores any real credentials.
+#
+# Traffic flow:
+#   Claude → curl https://api.anthropic.com/v1/messages
+#         → HTTPS_PROXY=localhost:18080
+#         → duckway proxy (MITM: api.anthropic.com is a known host)
+#         → duckway gateway (resolves client → phantom token → real key)
+#         → Anthropic API (with real key injected by gateway)
+#
+# Non-API traffic (npm, github clone, etc.) passes through transparently.
+#
+# Prerequisites:
+#   - Duckway gateway running with Anthropic API key + phantom tokens configured
+#   - Client registered in admin panel (get the pre-shared token)
+#   - Tailscale auth key
+#
+# Setup:
+#   1. cp .env.claude.example .env
+#   2. docker compose -f docker-compose.claude.yml up -d
+#   3. First run: docker exec -it claude-agent claude (OAuth login once)
+#   4. Credentials saved in volume — survives container recreation
+
+services:
+  # --- Tailscale ---
+  # Connects to tailnet so duckway-proxy can reach the gateway
+  tailscale:
+    image: tailscale/tailscale@sha256:dbeff02d2337344b351afac203427218c4d0a06c43fc10a865184063498472a6
+    container_name: claude-tailscale
+    hostname: ${TS_HOSTNAME:-claude-agent}
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=true
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+    restart: unless-stopped
+
+  # --- Duckway client proxy ---
+  # MITM proxy that intercepts HTTPS to known API hosts.
+  # No API keys stored here — it only knows the client auth token
+  # to identify itself to the gateway.
+  duckway-proxy:
+    image: alpine:3.21
+    container_name: claude-duckway-proxy
+    network_mode: "service:tailscale"
+    depends_on:
+      - tailscale
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_GATEWAY=${DUCKWAY_GATEWAY}
+      - DUCKWAY_CLIENT_TOKEN=${DUCKWAY_CLIENT_TOKEN}
+      - DUCKWAY_CLIENT_NAME=${DUCKWAY_CLIENT_NAME:-claude-agent}
+    volumes:
+      - duckway-config:/root/.duckway
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        # Install duckway client from gateway
+        if [ ! -f /usr/local/bin/duckway ]; then
+          apk add --no-cache curl ca-certificates
+          curl -fsSL "$$DUCKWAY_GATEWAY/install.sh" | sh
+        fi
+
+        # Register with gateway (stores only client auth token, no API keys)
+        if [ ! -f /root/.duckway/config.yaml ]; then
+          printf "$$DUCKWAY_GATEWAY\n$$DUCKWAY_CLIENT_NAME\n1\n$$DUCKWAY_CLIENT_TOKEN\n" | duckway init
+        fi
+
+        # Sync service host map (which hosts to MITM) — no keys downloaded
+        duckway sync
+
+        # Start HTTPS proxy
+        # Known hosts (api.openai.com, api.anthropic.com, etc.) → MITM → gateway
+        # Unknown hosts → transparent passthrough
+        exec duckway proxy --port 18080
+
+  # --- Claude Code ---
+  # No API keys in env vars. No phantom tokens. Nothing.
+  # Just HTTPS_PROXY pointing to the duckway proxy.
+  # Claude authenticates via OAuth (session saved in volume).
+  claude:
+    image: node:22-alpine
+    container_name: claude-agent
+    network_mode: "service:tailscale"
+    depends_on:
+      - duckway-proxy
+    restart: unless-stopped
+    environment:
+      # All HTTPS traffic goes through Duckway proxy
+      - HTTPS_PROXY=http://127.0.0.1:18080
+      - HTTP_PROXY=http://127.0.0.1:18080
+      - NO_PROXY=localhost,127.0.0.1
+      # No ANTHROPIC_API_KEY needed — proxy handles it
+      - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+      - HOME=/home/claude
+    volumes:
+      # Persist Claude OAuth session + settings (survives recreation)
+      - claude-home:/home/claude
+      # Mount your project workspace
+      - ${WORKSPACE_DIR:-.}:/workspace
+    working_dir: /workspace
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        echo "Waiting for Duckway proxy..."
+        sleep 5
+
+        # Install Claude Code
+        if ! command -v claude >/dev/null 2>&1; then
+          npm install -g @anthropic-ai/claude-code
+        fi
+
+        # Check saved OAuth session
+        if [ -d /home/claude/.claude ]; then
+          echo "Claude session found — reusing saved credentials"
+        else
+          echo ""
+          echo "========================================"
+          echo "  First run: login required"
+          echo "  docker exec -it claude-agent claude"
+          echo "========================================"
+        fi
+
+        echo ""
+        echo "Ready. No API keys on this machine."
+        echo "All API calls routed through Duckway proxy."
+        echo ""
+        echo "  docker exec -it claude-agent claude"
+        echo ""
+        sleep infinity
+
+volumes:
+  tailscale-state:
+  duckway-config:   # Client auth token + CA cert only (no API keys)
+  claude-home:      # Claude OAuth session + npm installs

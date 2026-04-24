@@ -92,30 +92,37 @@ services:
       - HTTPS_PROXY=http://127.0.0.1:18080
       - HTTP_PROXY=http://127.0.0.1:18080
       - NO_PROXY=localhost,127.0.0.1
-      # Your app's own env vars
+      # No API keys here — proxy handles everything
       - APP_ENV=production
-    # Example: run a Python script that calls OpenAI
+    # Example: Python script calling OpenAI through the proxy
     command:
       - python
       - -c
       - |
-        import urllib.request, json, os, time
+        import urllib.request, json, time
         print("Waiting for proxy...")
         time.sleep(5)
 
-        # This works transparently — proxy swaps phantom token for real key
-        print("Testing via Duckway proxy...")
+        # Call OpenAI normally — proxy intercepts, gateway injects real key
+        print("Calling OpenAI via Duckway proxy...")
+        data = json.dumps({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "Say hello"}]
+        }).encode()
         req = urllib.request.Request(
-            "http://127.0.0.1:18080/proxy/heartbeat/ping",
-            headers={"X-Duckway-Token": os.environ.get("DUCKWAY_CLIENT_TOKEN", "")}
+            "https://api.openai.com/v1/chat/completions",
+            data=data,
+            headers={"Content-Type": "application/json"}
+            # No Authorization header needed — proxy adds it
         )
         try:
             resp = urllib.request.urlopen(req)
-            print("Heartbeat:", resp.read().decode())
+            result = json.loads(resp.read())
+            print("Response:", result["choices"][0]["message"]["content"])
         except Exception as e:
-            print("Error:", e)
+            print("Response:", e)  # 401 = proxy working but test key is fake
 
-        print("Agent running. Press Ctrl+C to stop.")
+        print("No API keys on this machine. All handled by Duckway.")
         while True:
             time.sleep(60)
 
