@@ -17,16 +17,17 @@ func NewPlaceholderQueries(db *sql.DB) *PlaceholderQueries {
 const phSelect = `SELECT p.id, p.env_name, p.placeholder, p.service_id, p.api_key_id, p.group_id,
 	p.client_id, p.permission_config, p.requires_approval, p.approval_ttl_minutes,
 	p.key_path, p.is_active, p.usage_count, p.last_used_at, p.created_at,
-	s.name, c.name
+	s.name, c.name, k.name
 	FROM placeholder_keys p
 	JOIN services s ON p.service_id = s.id
-	JOIN clients c ON p.client_id = c.id`
+	JOIN clients c ON p.client_id = c.id
+	LEFT JOIN api_keys k ON p.api_key_id = k.id`
 
 func scanPH(row interface{ Scan(...interface{}) error }, p *models.PlaceholderKey) error {
 	return row.Scan(&p.ID, &p.EnvName, &p.Placeholder, &p.ServiceID, &p.APIKeyID, &p.GroupID,
 		&p.ClientID, &p.PermissionConfig, &p.RequiresApproval, &p.ApprovalTTLMinutes,
 		&p.KeyPath, &p.IsActive, &p.UsageCount, &p.LastUsedAt, &p.CreatedAt,
-		&p.ServiceName, &p.ClientName)
+		&p.ServiceName, &p.ClientName, &p.APIKeyName)
 }
 
 func (q *PlaceholderQueries) List(clientID, serviceID string) ([]models.PlaceholderKey, error) {

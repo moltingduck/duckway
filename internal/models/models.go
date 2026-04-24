@@ -90,8 +90,9 @@ type PlaceholderKey struct {
 	LastUsedAt         *string `json:"last_used_at"`
 	CreatedAt          string  `json:"created_at"`
 	// Joined
-	ServiceName string `json:"service_name,omitempty"`
-	ClientName  string `json:"client_name,omitempty"`
+	ServiceName string  `json:"service_name,omitempty"`
+	ClientName  string  `json:"client_name,omitempty"`
+	APIKeyName  *string `json:"api_key_name,omitempty"`
 }
 
 type Approval struct {

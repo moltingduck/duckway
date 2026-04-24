@@ -11,14 +11,14 @@
   </div>
   <table>
     <thead>
-      <tr><th>Env Name</th><th>Service</th><th>Client</th><th>Phantom Token</th><th>Approval</th><th>Usage</th><th></th></tr>
+      <tr><th>Client</th><th>API Key</th><th>Service</th><th>Phantom Token</th><th>Approval</th><th>Usage</th><th></th></tr>
     </thead>
     <tbody id="ph-list">
       {{range .Placeholders}}
       <tr id="ph-{{.ID}}">
-        <td><strong>{{.EnvName}}</strong></td>
+        <td><strong>{{.ClientName}}</strong></td>
+        <td>{{if .APIKeyName}}{{deref .APIKeyName}}{{else}}<span class="text-muted">—</span>{{end}}</td>
         <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
-        <td>{{.ClientName}}</td>
         <td class="mono text-sm" title="{{.Placeholder}}">{{truncate .Placeholder 20}}</td>
         <td>{{if .RequiresApproval}}<span class="badge badge-yellow">Required</span>{{else}}<span class="badge badge-green">Auto</span>{{end}}</td>
         <td>{{.UsageCount}}</td>
@@ -199,14 +199,14 @@ document.addEventListener('DOMContentLoaded', function() {
     type: 'table',
     countId: 'count-ph',
     filters: [
-      {key: 'env', label: 'Env name', col: 0, values: function() {
-        return Array.from(document.querySelectorAll('#ph-list td:first-child strong')).map(function(e){return e.textContent});
+      {key: 'client', label: 'Client name', col: 0, values: function() {
+        var s = new Set(); document.querySelectorAll('#ph-list td:first-child strong').forEach(function(e){s.add(e.textContent);}); return Array.from(s);
       }},
-      {key: 'service', label: 'Service name', col: 1, values: function() {
-        var s = new Set(); document.querySelectorAll('#ph-list td:nth-child(2) .badge').forEach(function(e){s.add(e.textContent);}); return Array.from(s);
+      {key: 'key', label: 'API Key name', col: 1, values: function() {
+        var s = new Set(); document.querySelectorAll('#ph-list td:nth-child(2)').forEach(function(e){var t=e.textContent.trim(); if(t && t!=='—') s.add(t);}); return Array.from(s);
       }},
-      {key: 'client', label: 'Client name', col: 2, values: function() {
-        var s = new Set(); document.querySelectorAll('#ph-list td:nth-child(3)').forEach(function(e){if(e.textContent.trim()) s.add(e.textContent.trim());}); return Array.from(s);
+      {key: 'service', label: 'Service name', col: 2, values: function() {
+        var s = new Set(); document.querySelectorAll('#ph-list td:nth-child(3) .badge').forEach(function(e){s.add(e.textContent);}); return Array.from(s);
       }},
       {key: 'approval', label: 'Required/Auto', col: 4, values: ['Required','Auto']},
     ]
