@@ -133,6 +133,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 
 	adminAPIMux.HandleFunc("GET /api/keys", apiKeyH.List)
 	adminAPIMux.HandleFunc("POST /api/keys", apiKeyH.Create)
+	adminAPIMux.HandleFunc("GET /api/keys/{id}", apiKeyH.Get)
 	adminAPIMux.HandleFunc("PUT /api/keys/{id}", apiKeyH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/keys/{id}", apiKeyH.Delete)
 	adminAPIMux.HandleFunc("GET /api/keys/{id}/acl-templates", apiKeyH.ListACLTemplates)
@@ -143,17 +144,22 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("GET /api/placeholders/with-approvals", func(w http.ResponseWriter, r *http.Request) {
 		placeholderH.ListWithApprovals(w, r, ss.ApprovalQ)
 	})
+	adminAPIMux.HandleFunc("GET /api/placeholders/{id}", placeholderH.Get)
 	adminAPIMux.HandleFunc("POST /api/placeholders", placeholderH.Create)
 	adminAPIMux.HandleFunc("PUT /api/placeholders/{id}", placeholderH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/placeholders/{id}", placeholderH.Delete)
 
 	adminAPIMux.HandleFunc("GET /api/clients", clientH.List)
 	adminAPIMux.HandleFunc("POST /api/clients", clientH.Create)
+	adminAPIMux.HandleFunc("GET /api/clients/{id}", clientH.Get)
+	adminAPIMux.HandleFunc("PUT /api/clients/{id}", clientH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/clients/{id}", clientH.Delete)
 	adminAPIMux.HandleFunc("POST /api/clients/{id}/canary", clientH.ToggleCanary)
 
 	adminAPIMux.HandleFunc("GET /api/groups", groupH.List)
 	adminAPIMux.HandleFunc("POST /api/groups", groupH.Create)
+	adminAPIMux.HandleFunc("GET /api/groups/{id}", groupH.Get)
+	adminAPIMux.HandleFunc("PUT /api/groups/{id}", groupH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/groups/{id}", groupH.Delete)
 	adminAPIMux.HandleFunc("POST /api/groups/{id}/members", groupH.AddMember)
 	adminAPIMux.HandleFunc("DELETE /api/groups/{id}/members/{keyId}", groupH.RemoveMember)

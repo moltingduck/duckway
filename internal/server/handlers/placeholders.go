@@ -33,6 +33,16 @@ func (h *PlaceholderHandler) List(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, list)
 }
 
+func (h *PlaceholderHandler) Get(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ph, err := h.placeholders.GetByID(id)
+	if err != nil {
+		jsonError(w, "placeholder not found", http.StatusNotFound)
+		return
+	}
+	jsonResponse(w, ph)
+}
+
 func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		EnvName            string  `json:"env_name"`

@@ -74,6 +74,52 @@ func (h *GroupHandler) Create(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, group)
 }
 
+func (h *GroupHandler) Get(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	group, err := h.groups.GetByID(id)
+	if err != nil {
+		jsonError(w, "group not found", http.StatusNotFound)
+		return
+	}
+	members, _ := h.groups.GetMembers(id)
+	group.Members = members
+	for i := range group.Members {
+		group.Members[i].KeyEncrypted = ""
+	}
+	jsonResponse(w, group)
+}
+
+func (h *GroupHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	group, err := h.groups.GetByID(id)
+	if err != nil {
+		jsonError(w, "group not found", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		Name     *string `json:"name"`
+		Strategy *string `json:"strategy"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name != nil {
+		group.Name = *req.Name
+	}
+	if req.Strategy != nil {
+		group.Strategy = *req.Strategy
+	}
+
+	if err := h.groups.Update(group); err != nil {
+		jsonError(w, "failed to update group", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, group)
+}
+
 func (h *GroupHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := h.groups.Delete(id); err != nil {

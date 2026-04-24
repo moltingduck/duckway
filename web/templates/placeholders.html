@@ -16,14 +16,13 @@
     <tbody id="ph-list">
       {{range .Placeholders}}
       <tr id="ph-{{.ID}}">
-        <td><strong>{{.ClientName}}</strong></td>
+        <td><a href="#" onclick="openDetail('{{.ID}}');return false"><strong>{{.ClientName}}</strong></a></td>
         <td>{{if .APIKeyName}}{{deref .APIKeyName}}{{else}}<span class="text-muted">—</span>{{end}}</td>
         <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
         <td class="mono text-sm" title="{{.Placeholder}}">{{truncate .Placeholder 20}}</td>
         <td>{{if .RequiresApproval}}<span class="badge badge-yellow">Required</span>{{else}}<span class="badge badge-green">Auto</span>{{end}}</td>
         <td>{{.UsageCount}}</td>
-        <td class="text-right flex gap-sm" style="justify-content:flex-end">
-          <button class="btn btn-sm" onclick="editPh('{{.ID}}','{{.EnvName}}','{{.KeyPath}}',{{.RequiresApproval}},{{.ApprovalTTLMinutes}})">Edit</button>
+        <td class="text-right">
           <button class="btn btn-sm btn-danger"
             hx-delete="/api/placeholders/{{.ID}}"
             hx-target="#ph-{{.ID}}"
@@ -74,112 +73,154 @@
   </div>
 </div>
 
-<!-- Edit placeholder modal -->
-<div id="edit-ph-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
-  <div class="modal">
-    <h2>Edit Phantom Token</h2>
-    <input type="hidden" id="eph-id">
-    <form id="edit-ph-form">
-      <div class="form-group"><label>Env Name</label><input type="text" id="eph-env" required></div>
-      <div class="form-group"><label>Key Path (under ~/)</label><input type="text" id="eph-path" placeholder=".config/openai/credentials"></div>
-      <div class="form-group">
-        <label><input type="checkbox" id="eph-approval"> Require approval</label>
+<!-- Detail / Edit modal -->
+<div id="detail-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:720px">
+    <h2 id="detail-title">Phantom Token Details</h2>
+    <div id="detail-view">
+      <table class="detail-table">
+        <tr><td class="text-muted">ID</td><td id="d-id" class="mono text-sm"></td></tr>
+        <tr><td class="text-muted">Client</td><td id="d-client"></td></tr>
+        <tr><td class="text-muted">API Key</td><td id="d-apikey"></td></tr>
+        <tr><td class="text-muted">Service</td><td id="d-service"></td></tr>
+        <tr><td class="text-muted">Env Name</td><td id="d-env" class="mono"></td></tr>
+        <tr><td class="text-muted">Phantom Token</td><td id="d-token" class="mono text-sm" style="word-break:break-all"></td></tr>
+        <tr><td class="text-muted">Key Path</td><td id="d-path" class="mono text-sm"></td></tr>
+        <tr><td class="text-muted">Approval</td><td id="d-approval"></td></tr>
+        <tr><td class="text-muted">TTL</td><td id="d-ttl"></td></tr>
+        <tr><td class="text-muted">Usage</td><td id="d-usage"></td></tr>
+        <tr><td class="text-muted">Created</td><td id="d-created"></td></tr>
+      </table>
+      <div class="modal-actions mt-1">
+        <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
+        <button type="button" class="btn btn-primary" onclick="switchToEdit()">Edit</button>
       </div>
-      <div class="form-group"><label>Approval TTL (minutes, 0 = no approval)</label><input type="number" id="eph-ttl" min="0">
-        <span class="text-muted text-sm">60 = 1h, 1440 = 1d, 10080 = 1w</span>
-      </div>
-      <div class="form-group">
-        <label class="text-sm">ACL Pre-set Rules <span class="text-muted">(click to load)</span></label>
-        <div id="eph-acl-templates" style="display:flex;flex-wrap:wrap;gap:0.25rem"></div>
-      </div>
-      <div class="form-group">
-        <label class="text-sm">ACL JSON Editor</label>
-        <textarea id="eph-acl" style="min-height:100px;font-family:monospace;font-size:0.75rem" placeholder="Leave empty to inherit from API key / service" oninput="renderACLPreview('eph-acl','eph-acl-preview')"></textarea>
-        <span class="text-muted text-sm">Narrowest layer — can only restrict, not widen</span>
-      </div>
-      <div class="form-group">
-        <label class="text-sm">Preview</label>
-        <div id="eph-acl-preview" class="acl-preview"></div>
-      </div>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-sm" onclick="document.getElementById('eph-acl').value=''; renderACLPreview('eph-acl','eph-acl-preview');">Clear</button>
-        <div style="flex:1"></div>
-        <button type="button" class="btn" onclick="document.getElementById('edit-ph-modal').style.display='none'">Close</button>
-        <button type="submit" class="btn btn-primary">Apply</button>
-      </div>
-    </form>
+    </div>
+    <div id="detail-edit" style="display:none">
+      <form id="edit-form">
+        <input type="hidden" id="e-id">
+        <div class="form-group"><label>Env Name</label><input type="text" id="e-env" required></div>
+        <div class="form-group"><label>Key Path (under ~/)</label><input type="text" id="e-path" placeholder=".config/openai/credentials"></div>
+        <div class="form-group"><label><input type="checkbox" id="e-approval"> Require approval</label></div>
+        <div class="form-group"><label>Approval TTL (minutes)</label><input type="number" id="e-ttl" min="0">
+          <span class="text-muted text-sm">60 = 1h, 1440 = 1d, 10080 = 1w</span>
+        </div>
+        <div class="form-group">
+          <label class="text-sm">ACL Pre-set Rules <span class="text-muted">(click to load)</span></label>
+          <div id="e-acl-templates" style="display:flex;flex-wrap:wrap;gap:0.25rem"></div>
+        </div>
+        <div class="form-group">
+          <label class="text-sm">ACL JSON Editor</label>
+          <textarea id="e-acl" style="min-height:100px;font-family:monospace;font-size:0.75rem" placeholder="Leave empty to inherit" oninput="renderACLPreview('e-acl','e-acl-preview')"></textarea>
+          <span class="text-muted text-sm">Narrowest layer — can only restrict, not widen</span>
+        </div>
+        <div class="form-group">
+          <label class="text-sm">Preview</label>
+          <div id="e-acl-preview" class="acl-preview"></div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-sm" onclick="document.getElementById('e-acl').value=''; renderACLPreview('e-acl','e-acl-preview');">Clear ACL</button>
+          <div style="flex:1"></div>
+          <button type="button" class="btn" onclick="switchToView()">Back</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
   </div>
 </div>
 
 <script>
-function editPh(phId, envName, keyPath, requiresApproval, ttl) {
-  document.getElementById('eph-id').value = phId;
-  document.getElementById('eph-env').value = envName;
-  document.getElementById('eph-path').value = keyPath || '';
-  document.getElementById('eph-approval').checked = requiresApproval;
-  document.getElementById('eph-ttl').value = ttl || 1440;
-  document.getElementById('eph-acl').value = '';
-  document.getElementById('eph-acl-templates').innerHTML = '';
+var currentPh = null;
 
-  // Load current placeholder to get permission_config + service for templates
-  fetch('/api/placeholders/with-approvals?', {credentials:'same-origin'})
+function openDetail(id) {
+  fetch('/api/placeholders/' + id, {credentials:'same-origin'})
     .then(function(r) { return r.json(); })
-    .then(function(phs) {
-      var ph = phs.find(function(p) { return p.id === phId; });
-      if (!ph) return;
-      document.getElementById('eph-acl').value = ph.permission_config || '';
-
-      // Load inherited ACL + render preview
-      loadInheritedACL('eph-acl', 'eph-acl-preview', ph.service_id, ph.api_key_id || '');
-      renderACLPreview('eph-acl', 'eph-acl-preview');
-
-      // Load ACL templates for this service
-      if (ph.service_id) {
-        fetch('/api/services/' + ph.service_id + '/acl-templates', {credentials:'same-origin'})
-          .then(function(r) { return r.json(); })
-          .then(function(data) {
-            var container = document.getElementById('eph-acl-templates');
-            if (!data.templates || data.templates.length === 0) return;
-            data.templates.forEach(function(t) {
-              var currentACL = document.getElementById('eph-acl').value;
-              var isActive = currentACL === t.config;
-              var btn = document.createElement('button');
-              btn.type = 'button';
-              btn.className = 'btn btn-sm' + (isActive ? ' btn-primary' : '');
-              btn.textContent = t.name;
-              btn.title = t.description;
-              btn.onclick = function() {
-                document.getElementById('eph-acl').value = t.config;
-                renderACLPreview('eph-acl','eph-acl-preview');
-                container.querySelectorAll('.btn').forEach(function(b) { b.classList.remove('btn-primary'); });
-                btn.classList.add('btn-primary');
-              };
-              container.appendChild(btn);
-            });
-          });
-      }
+    .then(function(ph) {
+      if (ph.error) { showToast(ph.error, 'error'); return; }
+      currentPh = ph;
+      document.getElementById('detail-title').textContent = ph.client_name + ' — ' + ph.service_name;
+      document.getElementById('d-id').textContent = ph.id;
+      document.getElementById('d-client').textContent = ph.client_name;
+      document.getElementById('d-apikey').textContent = ph.api_key_name || '—';
+      document.getElementById('d-service').innerHTML = '<span class="badge badge-blue">' + ph.service_name + '</span>';
+      document.getElementById('d-env').textContent = ph.env_name;
+      document.getElementById('d-token').textContent = ph.placeholder;
+      document.getElementById('d-path').textContent = ph.key_path ? '~/' + ph.key_path : '—';
+      document.getElementById('d-approval').innerHTML = ph.requires_approval ? '<span class="badge badge-yellow">Required</span>' : '<span class="badge badge-green">Auto</span>';
+      var ttl = ph.approval_ttl_minutes;
+      document.getElementById('d-ttl').textContent = ttl >= 1440 ? (ttl/1440) + ' days' : (ttl + ' min');
+      document.getElementById('d-usage').textContent = ph.usage_count;
+      document.getElementById('d-created').textContent = ph.created_at;
+      document.getElementById('detail-view').style.display = '';
+      document.getElementById('detail-edit').style.display = 'none';
+      document.getElementById('detail-modal').style.display = 'flex';
     });
-
-  document.getElementById('edit-ph-modal').style.display = 'flex';
 }
 
-document.getElementById('edit-ph-form').addEventListener('submit', function(e) {
+function switchToEdit() {
+  if (!currentPh) return;
+  var ph = currentPh;
+  document.getElementById('e-id').value = ph.id;
+  document.getElementById('e-env').value = ph.env_name;
+  document.getElementById('e-path').value = ph.key_path || '';
+  document.getElementById('e-approval').checked = ph.requires_approval;
+  document.getElementById('e-ttl').value = ph.approval_ttl_minutes || 1440;
+  document.getElementById('e-acl').value = ph.permission_config || '';
+  document.getElementById('e-acl-templates').innerHTML = '';
+
+  // Load ACL templates
+  if (ph.service_id) {
+    loadInheritedACL('e-acl', 'e-acl-preview', ph.service_id, ph.api_key_id || '');
+    renderACLPreview('e-acl', 'e-acl-preview');
+    fetch('/api/services/' + ph.service_id + '/acl-templates', {credentials:'same-origin'})
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var container = document.getElementById('e-acl-templates');
+        if (!data.templates || data.templates.length === 0) return;
+        data.templates.forEach(function(t) {
+          var currentACL = document.getElementById('e-acl').value;
+          var isActive = currentACL === t.config;
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn btn-sm' + (isActive ? ' btn-primary' : '');
+          btn.textContent = t.name;
+          btn.title = t.description;
+          btn.onclick = function() {
+            document.getElementById('e-acl').value = t.config;
+            renderACLPreview('e-acl','e-acl-preview');
+            container.querySelectorAll('.btn').forEach(function(b) { b.classList.remove('btn-primary'); });
+            btn.classList.add('btn-primary');
+          };
+          container.appendChild(btn);
+        });
+      });
+  }
+
+  document.getElementById('detail-view').style.display = 'none';
+  document.getElementById('detail-edit').style.display = '';
+}
+
+function switchToView() {
+  document.getElementById('detail-view').style.display = '';
+  document.getElementById('detail-edit').style.display = 'none';
+}
+
+document.getElementById('edit-form').addEventListener('submit', function(e) {
   e.preventDefault();
-  var id = document.getElementById('eph-id').value;
-  var acl = document.getElementById('eph-acl').value.trim();
-  if (acl) { try { JSON.parse(acl); } catch(e) { showToast('Invalid ACL JSON: ' + e.message, 'error'); return; } }
-  var body = {
-    env_name: document.getElementById('eph-env').value,
-    key_path: document.getElementById('eph-path').value,
-    requires_approval: document.getElementById('eph-approval').checked,
-    approval_ttl_minutes: parseInt(document.getElementById('eph-ttl').value) || 0,
-    permission_config: acl
-  };
+  var id = document.getElementById('e-id').value;
+  var acl = document.getElementById('e-acl').value.trim();
+  if (acl) { try { JSON.parse(acl); } catch(ex) { showToast('Invalid ACL JSON: ' + ex.message, 'error'); return; } }
 
   fetch('/api/placeholders/' + id, {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      env_name: document.getElementById('e-env').value,
+      key_path: document.getElementById('e-path').value,
+      requires_approval: document.getElementById('e-approval').checked,
+      approval_ttl_minutes: parseInt(document.getElementById('e-ttl').value) || 0,
+      permission_config: acl
+    }),
     credentials: 'same-origin'
   })
   .then(function(r) { return r.json(); })
@@ -189,9 +230,7 @@ document.getElementById('edit-ph-form').addEventListener('submit', function(e) {
     location.reload();
   });
 });
-</script>
 
-<script>
 document.addEventListener('DOMContentLoaded', function() {
   initSmartSearch({
     inputId: 'search-ph',

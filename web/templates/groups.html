@@ -9,10 +9,10 @@
     <thead>
       <tr><th>Name</th><th>Service</th><th>Strategy</th><th>Members</th><th></th></tr>
     </thead>
-    <tbody>
+    <tbody id="groups-list">
       {{range .Groups}}
       <tr id="group-{{.ID}}">
-        <td><strong>{{.Name}}</strong></td>
+        <td><a href="#" onclick="openDetail('{{.ID}}');return false"><strong>{{.Name}}</strong></a></td>
         <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
         <td><span class="badge badge-gray">{{.Strategy}}</span></td>
         <td>{{len .Members}} keys</td>
@@ -56,4 +56,184 @@
     </form>
   </div>
 </div>
+
+<!-- Detail / Edit modal -->
+<div id="detail-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:640px">
+    <h2 id="detail-title">Group Details</h2>
+    <div id="detail-view">
+      <table class="detail-table">
+        <tr><td class="text-muted">ID</td><td id="d-id" class="mono text-sm"></td></tr>
+        <tr><td class="text-muted">Name</td><td id="d-name"></td></tr>
+        <tr><td class="text-muted">Service</td><td id="d-service"></td></tr>
+        <tr><td class="text-muted">Strategy</td><td id="d-strategy"></td></tr>
+      </table>
+
+      <div class="mt-1">
+        <strong class="text-sm">Members</strong>
+        <table class="mt-1">
+          <thead><tr><th>Key Name</th><th>Service</th><th>Usage</th><th></th></tr></thead>
+          <tbody id="d-members"></tbody>
+        </table>
+      </div>
+
+      <div class="mt-1" id="add-member-section">
+        <div class="flex gap-sm">
+          <select id="add-member-key" style="flex:1">
+            <option value="">Add API key to group...</option>
+          </select>
+          <button type="button" class="btn btn-sm btn-primary" onclick="addMember()">Add</button>
+        </div>
+      </div>
+
+      <div class="modal-actions mt-1">
+        <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
+        <button type="button" class="btn btn-primary" onclick="switchToEdit()">Edit</button>
+      </div>
+    </div>
+    <div id="detail-edit" style="display:none">
+      <form id="edit-form">
+        <input type="hidden" id="e-id">
+        <div class="form-group"><label>Name</label><input type="text" id="e-name" required></div>
+        <div class="form-group"><label>Strategy</label>
+          <select id="e-strategy">
+            <option value="round-robin">Round Robin</option>
+            <option value="least-used">Least Used</option>
+            <option value="failover">Failover</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" onclick="switchToView()">Back</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+var currentGroup = null;
+var allKeys = [];
+
+// Load all keys for member dropdown
+document.addEventListener('DOMContentLoaded', function() {
+  fetch('/api/keys', {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(keys) { allKeys = keys; });
+});
+
+function openDetail(id) {
+  fetch('/api/groups/' + id, {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(g) {
+      if (g.error) { showToast(g.error, 'error'); return; }
+      currentGroup = g;
+      document.getElementById('detail-title').textContent = g.name;
+      document.getElementById('d-id').textContent = g.id;
+      document.getElementById('d-name').textContent = g.name;
+      document.getElementById('d-service').innerHTML = '<span class="badge badge-blue">' + g.service_name + '</span>';
+      document.getElementById('d-strategy').innerHTML = '<span class="badge badge-gray">' + g.strategy + '</span>';
+
+      var tbody = document.getElementById('d-members');
+      tbody.innerHTML = '';
+      var members = g.members || [];
+      if (members.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No members</td></tr>';
+      } else {
+        members.forEach(function(m) {
+          var tr = document.createElement('tr');
+          tr.innerHTML =
+            '<td>' + m.name + '</td>' +
+            '<td><span class="badge badge-blue">' + m.service_name + '</span></td>' +
+            '<td>' + m.usage_count + '</td>' +
+            '<td class="text-right"><button class="btn btn-sm btn-danger" onclick="removeMember(\'' + g.id + '\',\'' + m.id + '\')">Remove</button></td>';
+          tbody.appendChild(tr);
+        });
+      }
+
+      // Populate add-member dropdown with keys for same service
+      var sel = document.getElementById('add-member-key');
+      sel.innerHTML = '<option value="">Add API key...</option>';
+      var memberIds = members.map(function(m) { return m.id; });
+      allKeys.forEach(function(k) {
+        if (k.service_id === g.service_id && memberIds.indexOf(k.id) === -1) {
+          var opt = document.createElement('option');
+          opt.value = k.id;
+          opt.textContent = k.name;
+          sel.appendChild(opt);
+        }
+      });
+
+      document.getElementById('detail-view').style.display = '';
+      document.getElementById('detail-edit').style.display = 'none';
+      document.getElementById('detail-modal').style.display = 'flex';
+    });
+}
+
+function switchToEdit() {
+  if (!currentGroup) return;
+  document.getElementById('e-id').value = currentGroup.id;
+  document.getElementById('e-name').value = currentGroup.name;
+  document.getElementById('e-strategy').value = currentGroup.strategy;
+  document.getElementById('detail-view').style.display = 'none';
+  document.getElementById('detail-edit').style.display = '';
+}
+
+function switchToView() {
+  document.getElementById('detail-view').style.display = '';
+  document.getElementById('detail-edit').style.display = 'none';
+}
+
+document.getElementById('edit-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var id = document.getElementById('e-id').value;
+  fetch('/api/groups/' + id, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      name: document.getElementById('e-name').value,
+      strategy: document.getElementById('e-strategy').value
+    }),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Group updated', 'success');
+    location.reload();
+  });
+});
+
+function addMember() {
+  if (!currentGroup) return;
+  var keyId = document.getElementById('add-member-key').value;
+  if (!keyId) { showToast('Select a key', 'error'); return; }
+  fetch('/api/groups/' + currentGroup.id + '/members', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({api_key_id: keyId}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Member added', 'success');
+    openDetail(currentGroup.id);
+  });
+}
+
+function removeMember(groupId, keyId) {
+  if (!confirm('Remove this key from the group?')) return;
+  fetch('/api/groups/' + groupId + '/members/' + keyId, {
+    method: 'DELETE',
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Member removed', 'success');
+    openDetail(groupId);
+  });
+}
+</script>
 {{end}}

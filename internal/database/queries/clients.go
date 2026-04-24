@@ -78,6 +78,11 @@ func (q *ClientQueries) UpdateLastSeen(id string) error {
 	return err
 }
 
+func (q *ClientQueries) Update(c *models.Client) error {
+	_, err := q.db.Exec("UPDATE clients SET name = ?, is_active = ? WHERE id = ?", c.Name, c.IsActive, c.ID)
+	return err
+}
+
 func (q *ClientQueries) UpdateCanaryEnabled(id string, enabled bool) error {
 	_, err := q.db.Exec("UPDATE clients SET canary_enabled = ? WHERE id = ?", enabled, id)
 	return err

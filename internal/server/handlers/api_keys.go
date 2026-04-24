@@ -83,6 +83,17 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, key)
 }
 
+func (h *APIKeyHandler) Get(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	key, err := h.apiKeys.GetByID(id)
+	if err != nil {
+		jsonError(w, "key not found", http.StatusNotFound)
+		return
+	}
+	key.KeyEncrypted = ""
+	jsonResponse(w, key)
+}
+
 func (h *APIKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	key, err := h.apiKeys.GetByID(id)

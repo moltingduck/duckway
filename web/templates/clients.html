@@ -31,7 +31,7 @@
 <div class="card" id="client-card-{{.ID}}">
   <div class="flex-between">
     <div>
-      <strong style="font-size:1.1rem">{{.Name}}</strong>
+      <a href="#" onclick="openClientDetail('{{.ID}}');return false" style="text-decoration:none"><strong style="font-size:1.1rem">{{.Name}}</strong></a>
       <code class="text-muted" style="font-size:0.75rem">{{.ShortID}}</code>
       {{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}
       <span class="text-muted text-sm" id="key-count-{{.ID}}"></span>
@@ -211,6 +211,97 @@
     </div>
   </div>
 </div>
+
+<!-- Client Detail / Edit modal -->
+<div id="client-detail-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2 id="cd-title">Client Details</h2>
+    <div id="cd-view">
+      <table class="detail-table">
+        <tr><td class="text-muted">ID</td><td id="cd-id" class="mono text-sm"></td></tr>
+        <tr><td class="text-muted">Short ID</td><td id="cd-short" class="mono"></td></tr>
+        <tr><td class="text-muted">Name</td><td id="cd-name"></td></tr>
+        <tr><td class="text-muted">Status</td><td id="cd-status"></td></tr>
+        <tr><td class="text-muted">Canary</td><td id="cd-canary"></td></tr>
+        <tr><td class="text-muted">Last Seen</td><td id="cd-seen"></td></tr>
+        <tr><td class="text-muted">Created</td><td id="cd-created"></td></tr>
+      </table>
+      <div class="modal-actions mt-1">
+        <button type="button" class="btn" onclick="document.getElementById('client-detail-modal').style.display='none'">Close</button>
+        <button type="button" class="btn btn-primary" onclick="switchToClientEdit()">Edit</button>
+      </div>
+    </div>
+    <div id="cd-edit" style="display:none">
+      <form id="client-edit-form">
+        <input type="hidden" id="ce-id">
+        <div class="form-group"><label>Name</label><input type="text" id="ce-name" required></div>
+        <div class="form-group"><label><input type="checkbox" id="ce-active"> Active</label></div>
+        <div class="modal-actions">
+          <button type="button" class="btn" onclick="switchToClientView()">Back</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+var currentClient = null;
+
+function openClientDetail(id) {
+  fetch('/api/clients/' + id, {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(c) {
+      if (c.error) { showToast(c.error, 'error'); return; }
+      currentClient = c;
+      document.getElementById('cd-title').textContent = c.name;
+      document.getElementById('cd-id').textContent = c.id;
+      document.getElementById('cd-short').textContent = c.short_id;
+      document.getElementById('cd-name').textContent = c.name;
+      document.getElementById('cd-status').innerHTML = c.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>';
+      document.getElementById('cd-canary').innerHTML = c.canary_enabled ? '<span class="badge badge-green">Enabled</span>' : '<span class="badge badge-gray">Disabled</span>';
+      document.getElementById('cd-seen').textContent = c.last_seen_at || 'Never';
+      document.getElementById('cd-created').textContent = c.created_at;
+      document.getElementById('cd-view').style.display = '';
+      document.getElementById('cd-edit').style.display = 'none';
+      document.getElementById('client-detail-modal').style.display = 'flex';
+    });
+}
+
+function switchToClientEdit() {
+  if (!currentClient) return;
+  document.getElementById('ce-id').value = currentClient.id;
+  document.getElementById('ce-name').value = currentClient.name;
+  document.getElementById('ce-active').checked = currentClient.is_active;
+  document.getElementById('cd-view').style.display = 'none';
+  document.getElementById('cd-edit').style.display = '';
+}
+
+function switchToClientView() {
+  document.getElementById('cd-view').style.display = '';
+  document.getElementById('cd-edit').style.display = 'none';
+}
+
+document.getElementById('client-edit-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var id = document.getElementById('ce-id').value;
+  fetch('/api/clients/' + id, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      name: document.getElementById('ce-name').value,
+      is_active: document.getElementById('ce-active').checked
+    }),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Client updated', 'success');
+    location.reload();
+  });
+});
+</script>
 
 <script>
 var apiKeys = [

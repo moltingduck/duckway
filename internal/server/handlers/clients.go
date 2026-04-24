@@ -100,6 +100,49 @@ func (h *ClientHandler) Create(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Admin: get single client
+func (h *ClientHandler) Get(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	client, err := h.clients.GetByID(id)
+	if err != nil {
+		jsonError(w, "client not found", http.StatusNotFound)
+		return
+	}
+	jsonResponse(w, client)
+}
+
+// Admin: update client
+func (h *ClientHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	client, err := h.clients.GetByID(id)
+	if err != nil {
+		jsonError(w, "client not found", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		Name     *string `json:"name"`
+		IsActive *bool   `json:"is_active"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name != nil {
+		client.Name = *req.Name
+	}
+	if req.IsActive != nil {
+		client.IsActive = *req.IsActive
+	}
+
+	if err := h.clients.Update(client); err != nil {
+		jsonError(w, "failed to update client", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, client)
+}
+
 // Admin: delete a client
 func (h *ClientHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

@@ -11,20 +11,17 @@
   </div>
   <table>
     <thead>
-      <tr><th>Name</th><th>Upstream URL</th><th>Auth</th><th>Key Format</th><th>Key Path</th><th>ACL</th><th>Status</th><th></th></tr>
+      <tr><th>Name</th><th>Upstream URL</th><th>Auth</th><th>Key Format</th><th>Status</th><th></th></tr>
     </thead>
     <tbody id="services-list">
       {{range .Services}}
       <tr id="svc-{{.ID}}">
-        <td><strong>{{.DisplayName}}</strong><br><span class="text-muted text-sm">{{.Name}}</span></td>
+        <td><a href="#" onclick="openDetail('{{.ID}}');return false"><strong>{{.DisplayName}}</strong></a><br><span class="text-muted text-sm">{{.Name}}</span></td>
         <td class="mono text-sm">{{.UpstreamURL}}</td>
         <td><span class="badge badge-blue">{{.AuthType}}</span></td>
-        <td class="mono text-sm">{{.KeyPrefix}}*** ({{.KeyLength}} chars)</td>
-        <td class="mono text-sm">{{if .KeyDirectory}}~/{{.KeyDirectory}}{{else}}—{{end}}</td>
-        <td>{{if .DefaultACL}}<span class="badge badge-yellow">custom</span>{{else}}<span class="badge badge-green">allow-all</span>{{end}}</td>
+        <td class="mono text-sm">{{.KeyPrefix}}*** ({{.KeyLength}})</td>
         <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
         <td class="text-right">
-          <button class="btn btn-sm" onclick="openACL('{{.ID}}','{{.Name}}')">ACL</button>
           <button class="btn btn-sm btn-danger"
             hx-delete="/api/services/{{.ID}}"
             hx-target="#svc-{{.ID}}"
@@ -33,7 +30,7 @@
         </td>
       </tr>
       {{else}}
-      <tr><td colspan="8" class="text-muted">No services configured. Add one to get started.</td></tr>
+      <tr><td colspan="6" class="text-muted">No services configured. Add one to get started.</td></tr>
       {{end}}
     </tbody>
   </table>
@@ -68,20 +65,69 @@
   </div>
 </div>
 
+<!-- Detail / Edit modal -->
+<div id="detail-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:640px">
+    <h2 id="detail-title">Service Details</h2>
+    <div id="detail-view">
+      <table class="detail-table">
+        <tr><td class="text-muted">ID</td><td id="d-id" class="mono text-sm"></td></tr>
+        <tr><td class="text-muted">Name (slug)</td><td id="d-name"></td></tr>
+        <tr><td class="text-muted">Display Name</td><td id="d-display"></td></tr>
+        <tr><td class="text-muted">Upstream URL</td><td id="d-upstream" class="mono text-sm"></td></tr>
+        <tr><td class="text-muted">Host Pattern</td><td id="d-host" class="mono text-sm"></td></tr>
+        <tr><td class="text-muted">Auth</td><td id="d-auth"></td></tr>
+        <tr><td class="text-muted">Key Format</td><td id="d-format" class="mono text-sm"></td></tr>
+        <tr><td class="text-muted">Key Directory</td><td id="d-dir" class="mono text-sm"></td></tr>
+        <tr><td class="text-muted">Default ACL</td><td id="d-acl"></td></tr>
+        <tr><td class="text-muted">Status</td><td id="d-status"></td></tr>
+      </table>
+      <div class="modal-actions mt-1">
+        <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
+        <button type="button" class="btn" onclick="openACLFromDetail()">ACL</button>
+        <button type="button" class="btn btn-primary" onclick="switchToEdit()">Edit</button>
+      </div>
+    </div>
+    <div id="detail-edit" style="display:none">
+      <form id="edit-form">
+        <input type="hidden" id="e-id">
+        <div class="form-group"><label>Name (slug)</label><input type="text" id="e-name" required></div>
+        <div class="form-group"><label>Display Name</label><input type="text" id="e-display" required></div>
+        <div class="form-group"><label>Upstream URL</label><input type="url" id="e-upstream" required></div>
+        <div class="form-group"><label>Host Pattern</label><input type="text" id="e-host"></div>
+        <div class="flex gap-md">
+          <div class="form-group" style="flex:1"><label>Auth Type</label>
+            <select id="e-auth-type"><option value="bearer">Bearer</option><option value="header">Header</option><option value="query">Query Param</option></select>
+          </div>
+          <div class="form-group" style="flex:1"><label>Auth Header</label><input type="text" id="e-auth-header"></div>
+        </div>
+        <div class="form-group"><label>Auth Prefix</label><input type="text" id="e-auth-prefix" placeholder="Bearer "></div>
+        <div class="flex gap-md">
+          <div class="form-group" style="flex:1"><label>Key Prefix</label><input type="text" id="e-prefix"></div>
+          <div class="form-group" style="flex:1"><label>Key Length</label><input type="number" id="e-length"></div>
+        </div>
+        <div class="form-group"><label>Key Directory</label><input type="text" id="e-dir" placeholder=".config/openai/credentials"></div>
+        <div class="form-group"><label><input type="checkbox" id="e-active"> Active</label></div>
+        <div class="modal-actions">
+          <button type="button" class="btn" onclick="switchToView()">Back</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <!-- ACL template modal -->
 <div id="acl-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
   <div class="modal" style="max-width:720px">
     <h2>ACL Templates for <span id="acl-svc-name"></span></h2>
-    <p class="text-sm text-muted mb-1">Pick a pre-built ACL template to apply as the service's default. This restricts what any phantom token can do unless the key has its own permission config. Based on official API docs.</p>
-
+    <p class="text-sm text-muted mb-1">Pick a pre-built ACL template to apply as the service's default.</p>
     <input type="hidden" id="acl-svc-id">
     <div id="acl-templates-list"></div>
-
     <div class="mt-2">
       <label class="text-sm">Current ACL JSON (read-only)</label>
       <textarea id="acl-current-json" readonly style="min-height:150px;font-family:monospace;font-size:0.75rem"></textarea>
     </div>
-
     <div class="modal-actions">
       <button type="button" class="btn" onclick="document.getElementById('acl-modal').style.display='none'">Close</button>
     </div>
@@ -89,6 +135,90 @@
 </div>
 
 <script>
+var currentSvc = null;
+
+function openDetail(id) {
+  fetch('/api/services/' + id, {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(s) {
+      if (s.error) { showToast(s.error, 'error'); return; }
+      currentSvc = s;
+      document.getElementById('detail-title').textContent = s.display_name;
+      document.getElementById('d-id').textContent = s.id;
+      document.getElementById('d-name').textContent = s.name;
+      document.getElementById('d-display').textContent = s.display_name;
+      document.getElementById('d-upstream').textContent = s.upstream_url;
+      document.getElementById('d-host').textContent = s.host_pattern || '—';
+      document.getElementById('d-auth').innerHTML = '<span class="badge badge-blue">' + s.auth_type + '</span> ' + s.auth_header + (s.auth_prefix ? ' (' + s.auth_prefix.trim() + ')' : '');
+      document.getElementById('d-format').textContent = s.key_prefix + '*** (' + s.key_length + ' chars)';
+      document.getElementById('d-dir').textContent = s.key_directory ? '~/' + s.key_directory : '—';
+      document.getElementById('d-acl').innerHTML = s.default_acl ? '<span class="badge badge-yellow">custom</span>' : '<span class="badge badge-green">allow-all</span>';
+      document.getElementById('d-status').innerHTML = s.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>';
+      document.getElementById('detail-view').style.display = '';
+      document.getElementById('detail-edit').style.display = 'none';
+      document.getElementById('detail-modal').style.display = 'flex';
+    });
+}
+
+function switchToEdit() {
+  if (!currentSvc) return;
+  var s = currentSvc;
+  document.getElementById('e-id').value = s.id;
+  document.getElementById('e-name').value = s.name;
+  document.getElementById('e-display').value = s.display_name;
+  document.getElementById('e-upstream').value = s.upstream_url;
+  document.getElementById('e-host').value = s.host_pattern;
+  document.getElementById('e-auth-type').value = s.auth_type;
+  document.getElementById('e-auth-header').value = s.auth_header;
+  document.getElementById('e-auth-prefix').value = s.auth_prefix;
+  document.getElementById('e-prefix').value = s.key_prefix;
+  document.getElementById('e-length').value = s.key_length;
+  document.getElementById('e-dir').value = s.key_directory;
+  document.getElementById('e-active').checked = s.is_active;
+  document.getElementById('detail-view').style.display = 'none';
+  document.getElementById('detail-edit').style.display = '';
+}
+
+function switchToView() {
+  document.getElementById('detail-view').style.display = '';
+  document.getElementById('detail-edit').style.display = 'none';
+}
+
+function openACLFromDetail() {
+  if (!currentSvc) return;
+  document.getElementById('detail-modal').style.display = 'none';
+  openACL(currentSvc.id, currentSvc.name);
+}
+
+document.getElementById('edit-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var id = document.getElementById('e-id').value;
+  fetch('/api/services/' + id, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      name: document.getElementById('e-name').value,
+      display_name: document.getElementById('e-display').value,
+      upstream_url: document.getElementById('e-upstream').value,
+      host_pattern: document.getElementById('e-host').value,
+      auth_type: document.getElementById('e-auth-type').value,
+      auth_header: document.getElementById('e-auth-header').value,
+      auth_prefix: document.getElementById('e-auth-prefix').value,
+      key_prefix: document.getElementById('e-prefix').value,
+      key_length: parseInt(document.getElementById('e-length').value) || 64,
+      key_directory: document.getElementById('e-dir').value,
+      is_active: document.getElementById('e-active').checked
+    }),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Service updated', 'success');
+    location.reload();
+  });
+});
+
 document.addEventListener('DOMContentLoaded', function() {
   initSmartSearch({
     inputId: 'search-services',
@@ -99,9 +229,8 @@ document.addEventListener('DOMContentLoaded', function() {
       {key: 'name', label: 'Service name', col: 0, values: function() {
         return Array.from(document.querySelectorAll('#services-list td:first-child strong')).map(function(e){return e.textContent});
       }},
-      {key: 'auth', label: 'Auth type (bearer/header/query)', col: 2, values: ['bearer','header','query']},
-      {key: 'status', label: 'Active/Inactive', col: 5, values: ['Active','Inactive']},
-      {key: 'acl', label: 'ACL status (allow-all/custom)', col: 5, values: ['allow-all','custom']},
+      {key: 'auth', label: 'Auth type', col: 2, values: ['bearer','header','query']},
+      {key: 'status', label: 'Active/Inactive', col: 4, values: ['Active','Inactive']},
     ]
   });
 });
@@ -113,46 +242,36 @@ function openACL(svcId, svcName) {
   document.getElementById('acl-current-json').value = '';
 
   fetch('/api/services/' + svcId + '/acl-templates', {credentials:'same-origin'})
-    .then(function(r) {
-      if (r.status === 401) { window.location = '/admin/login'; return; }
-      return r.json();
-    })
+    .then(function(r) { return r.json(); })
     .then(function(data) {
       if (!data) return;
       document.getElementById('acl-current-json').value = data.current || '(empty — allow all)';
-
       var list = document.getElementById('acl-templates-list');
       if (!data.templates || data.templates.length === 0) {
         list.innerHTML = '<p class="text-muted">No templates available for this service.</p>';
         return;
       }
-
       list.innerHTML = '';
       data.templates.forEach(function(t) {
         var isActive = (data.current || '') === t.config;
         var card = document.createElement('div');
         card.className = 'card';
-        card.style.marginBottom = '0.5rem';
-        card.style.padding = '0.75rem';
+        card.style.cssText = 'margin-bottom:0.5rem;padding:0.75rem';
         if (isActive) card.style.borderColor = 'var(--accent)';
         card.innerHTML =
           '<div class="flex-between">' +
-            '<div>' +
-              '<strong>' + t.name + '</strong>' +
-              (isActive ? ' <span class="badge badge-blue">active</span>' : '') +
-              '<div class="text-sm text-muted">' + t.description + '</div>' +
-            '</div>' +
+            '<div><strong>' + t.name + '</strong>' + (isActive ? ' <span class="badge badge-blue">active</span>' : '') +
+            '<div class="text-sm text-muted">' + t.description + '</div></div>' +
             '<button class="btn btn-sm btn-primary" onclick="applyACL(\'' + svcId + '\',\'' + t.id + '\')">Apply</button>' +
           '</div>';
         list.appendChild(card);
       });
     });
-
   document.getElementById('acl-modal').style.display = 'flex';
 }
 
 function applyACL(svcId, templateId) {
-  if (!confirm('Apply this ACL template? It will replace the current default ACL.')) return;
+  if (!confirm('Apply this ACL template?')) return;
   fetch('/api/services/' + svcId + '/acl-templates', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},

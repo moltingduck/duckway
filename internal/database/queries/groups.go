@@ -107,6 +107,11 @@ func (q *GroupQueries) RemoveMember(groupID, apiKeyID string) error {
 	return err
 }
 
+func (q *GroupQueries) Update(g *models.APIKeyGroup) error {
+	_, err := q.db.Exec("UPDATE api_key_groups SET name = ?, strategy = ? WHERE id = ?", g.Name, g.Strategy, g.ID)
+	return err
+}
+
 func (q *GroupQueries) UpdateLastIndex(groupID string, index int) error {
 	_, err := q.db.Exec("UPDATE api_key_groups SET last_index = ? WHERE id = ?", index, groupID)
 	return err

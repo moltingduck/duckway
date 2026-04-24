@@ -11,20 +11,17 @@
   </div>
   <table>
     <thead>
-      <tr><th>Name</th><th>Service</th><th>ACL</th><th>Usage</th><th>Last Used</th><th>Status</th><th></th></tr>
+      <tr><th>Name</th><th>Service</th><th>ACL</th><th>Usage</th><th>Status</th><th></th></tr>
     </thead>
     <tbody id="keys-list">
       {{range .Keys}}
       <tr id="key-{{.ID}}">
-        <td><strong>{{.Name}}</strong></td>
+        <td><a href="#" onclick="openDetail('{{.ID}}');return false"><strong>{{.Name}}</strong></a></td>
         <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
         <td>{{if .ACL}}<span class="badge badge-yellow">custom</span>{{else}}<span class="badge badge-gray">inherit</span>{{end}}</td>
         <td>{{.UsageCount}}</td>
-        <td class="text-muted text-sm">{{if .LastUsedAt}}{{deref .LastUsedAt}}{{else}}Never{{end}}</td>
         <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
-        <td class="text-right flex gap-sm" style="justify-content:flex-end">
-          <button class="btn btn-sm" onclick="editKey('{{.ID}}','{{.Name}}')">Edit</button>
-          <button class="btn btn-sm" onclick="openKeyACL('{{.ID}}','{{.Name}}','{{.ServiceName}}')">ACL</button>
+        <td class="text-right">
           <button class="btn btn-sm btn-danger"
             hx-delete="/api/keys/{{.ID}}"
             hx-target="#key-{{.ID}}"
@@ -33,7 +30,7 @@
         </td>
       </tr>
       {{else}}
-      <tr><td colspan="7" class="text-muted">No API keys. Add a service first, then add keys.</td></tr>
+      <tr><td colspan="6" class="text-muted">No API keys. Add a service first, then add keys.</td></tr>
       {{end}}
     </tbody>
   </table>
@@ -64,22 +61,42 @@
   </div>
 </div>
 
-<!-- Edit Key modal -->
-<div id="edit-key-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
-  <div class="modal">
-    <h2>Edit API Key</h2>
-    <input type="hidden" id="ek-id">
-    <form id="edit-key-form">
-      <div class="form-group"><label>Name</label><input type="text" id="ek-name" required></div>
-      <div class="form-group">
-        <label>API Key (leave blank to keep current)</label>
-        <input type="text" id="ek-key" placeholder="Leave blank to keep unchanged">
+<!-- Detail / Edit modal -->
+<div id="detail-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:640px">
+    <h2 id="detail-title">API Key Details</h2>
+    <div id="detail-view">
+      <table class="detail-table">
+        <tr><td class="text-muted">ID</td><td id="d-id" class="mono text-sm"></td></tr>
+        <tr><td class="text-muted">Name</td><td id="d-name"></td></tr>
+        <tr><td class="text-muted">Service</td><td id="d-service"></td></tr>
+        <tr><td class="text-muted">ACL</td><td id="d-acl"></td></tr>
+        <tr><td class="text-muted">Refreshable</td><td id="d-refresh"></td></tr>
+        <tr><td class="text-muted">Usage</td><td id="d-usage"></td></tr>
+        <tr><td class="text-muted">Last Used</td><td id="d-last-used"></td></tr>
+        <tr><td class="text-muted">Created</td><td id="d-created"></td></tr>
+        <tr><td class="text-muted">Status</td><td id="d-status"></td></tr>
+      </table>
+      <div class="modal-actions mt-1">
+        <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
+        <button type="button" class="btn" onclick="openKeyACLFromDetail()">ACL</button>
+        <button type="button" class="btn btn-primary" onclick="switchToEdit()">Edit</button>
       </div>
-      <div class="modal-actions">
-        <button type="button" class="btn" onclick="document.getElementById('edit-key-modal').style.display='none'">Cancel</button>
-        <button type="submit" class="btn btn-primary">Save</button>
-      </div>
-    </form>
+    </div>
+    <div id="detail-edit" style="display:none">
+      <form id="edit-form">
+        <input type="hidden" id="e-id">
+        <div class="form-group"><label>Name</label><input type="text" id="e-name" required></div>
+        <div class="form-group">
+          <label>API Key <span class="text-muted">(leave blank to keep current)</span></label>
+          <input type="text" id="e-key" placeholder="Leave blank to keep unchanged">
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" onclick="switchToView()">Back</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
   </div>
 </div>
 
@@ -87,27 +104,20 @@
 <div id="acl-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
   <div class="modal" style="max-width:720px">
     <h2>ACL for <span id="acl-key-name"></span></h2>
-    <p class="text-sm text-muted mb-1">
-      Layers (wide → narrow): <strong>service</strong> → <strong>api key</strong> → <strong>placeholder</strong>. Each can only narrow, never widen.
-    </p>
-
+    <p class="text-sm text-muted mb-1">Layers (wide to narrow): <strong>service</strong> → <strong>api key</strong> → <strong>placeholder</strong>. Each can only narrow, never widen.</p>
     <input type="hidden" id="acl-key-id">
-
     <div class="form-group">
-      <label class="text-sm">Pre-set Rules <span class="text-muted">(click to load into editor)</span></label>
+      <label class="text-sm">Pre-set Rules <span class="text-muted">(click to load)</span></label>
       <div id="acl-templates-list" style="display:flex;flex-wrap:wrap;gap:0.25rem"></div>
     </div>
-
     <div class="form-group">
       <label class="text-sm">ACL JSON Editor</label>
       <textarea id="acl-current-json" style="min-height:150px;font-family:monospace;font-size:0.75rem" oninput="renderACLPreview('acl-current-json','acl-key-preview')" placeholder="Leave empty to inherit from service"></textarea>
     </div>
-
     <div class="form-group">
       <label class="text-sm">Preview</label>
       <div id="acl-key-preview" class="acl-preview"></div>
     </div>
-
     <div class="modal-actions">
       <button type="button" class="btn btn-sm" onclick="clearACL()">Clear</button>
       <div style="flex:1"></div>
@@ -118,37 +128,55 @@
 </div>
 
 <script>
-document.addEventListener('DOMContentLoaded', function() {
-  initSmartSearch({
-    inputId: 'search-keys',
-    targetId: 'keys-list',
-    type: 'table',
-    countId: 'count-keys',
-    filters: [
-      {key: 'name', label: 'Key name', col: 0, values: function() {
-        return Array.from(document.querySelectorAll('#keys-list td:first-child strong')).map(function(e){return e.textContent});
-      }},
-      {key: 'service', label: 'Service name', col: 1, values: function() {
-        var s = new Set(); document.querySelectorAll('#keys-list td:nth-child(2) .badge').forEach(function(e){s.add(e.textContent);}); return Array.from(s);
-      }},
-      {key: 'acl', label: 'ACL (custom/inherit)', col: 2, values: ['custom','inherit']},
-      {key: 'status', label: 'Active/Inactive', col: 5, values: ['Active','Inactive']},
-    ]
-  });
-});
+var currentKey = null;
 
-function editKey(keyId, keyName) {
-  document.getElementById('ek-id').value = keyId;
-  document.getElementById('ek-name').value = keyName;
-  document.getElementById('ek-key').value = '';
-  document.getElementById('edit-key-modal').style.display = 'flex';
+function openDetail(id) {
+  fetch('/api/keys/' + id, {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(k) {
+      if (k.error) { showToast(k.error, 'error'); return; }
+      currentKey = k;
+      document.getElementById('detail-title').textContent = k.name;
+      document.getElementById('d-id').textContent = k.id;
+      document.getElementById('d-name').textContent = k.name;
+      document.getElementById('d-service').innerHTML = '<span class="badge badge-blue">' + k.service_name + '</span>';
+      document.getElementById('d-acl').innerHTML = k.acl ? '<span class="badge badge-yellow">custom</span>' : '<span class="badge badge-gray">inherit</span>';
+      document.getElementById('d-refresh').innerHTML = k.is_refreshable ? '<span class="badge badge-blue">Yes</span>' : 'No';
+      document.getElementById('d-usage').textContent = k.usage_count;
+      document.getElementById('d-last-used').textContent = k.last_used_at || 'Never';
+      document.getElementById('d-created').textContent = k.created_at;
+      document.getElementById('d-status').innerHTML = k.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>';
+      document.getElementById('detail-view').style.display = '';
+      document.getElementById('detail-edit').style.display = 'none';
+      document.getElementById('detail-modal').style.display = 'flex';
+    });
 }
 
-document.getElementById('edit-key-form').addEventListener('submit', function(e) {
+function switchToEdit() {
+  if (!currentKey) return;
+  document.getElementById('e-id').value = currentKey.id;
+  document.getElementById('e-name').value = currentKey.name;
+  document.getElementById('e-key').value = '';
+  document.getElementById('detail-view').style.display = 'none';
+  document.getElementById('detail-edit').style.display = '';
+}
+
+function switchToView() {
+  document.getElementById('detail-view').style.display = '';
+  document.getElementById('detail-edit').style.display = 'none';
+}
+
+function openKeyACLFromDetail() {
+  if (!currentKey) return;
+  document.getElementById('detail-modal').style.display = 'none';
+  openKeyACL(currentKey.id, currentKey.name, currentKey.service_name);
+}
+
+document.getElementById('edit-form').addEventListener('submit', function(e) {
   e.preventDefault();
-  var id = document.getElementById('ek-id').value;
-  var body = {name: document.getElementById('ek-name').value};
-  var key = document.getElementById('ek-key').value.trim();
+  var id = document.getElementById('e-id').value;
+  var body = {name: document.getElementById('e-name').value};
+  var key = document.getElementById('e-key').value.trim();
   if (key) body.key = key;
 
   fetch('/api/keys/' + id, {
@@ -165,6 +193,25 @@ document.getElementById('edit-key-form').addEventListener('submit', function(e) 
   });
 });
 
+document.addEventListener('DOMContentLoaded', function() {
+  initSmartSearch({
+    inputId: 'search-keys',
+    targetId: 'keys-list',
+    type: 'table',
+    countId: 'count-keys',
+    filters: [
+      {key: 'name', label: 'Key name', col: 0, values: function() {
+        return Array.from(document.querySelectorAll('#keys-list td:first-child strong')).map(function(e){return e.textContent});
+      }},
+      {key: 'service', label: 'Service name', col: 1, values: function() {
+        var s = new Set(); document.querySelectorAll('#keys-list td:nth-child(2) .badge').forEach(function(e){s.add(e.textContent);}); return Array.from(s);
+      }},
+      {key: 'acl', label: 'ACL', col: 2, values: ['custom','inherit']},
+      {key: 'status', label: 'Status', col: 4, values: ['Active','Inactive']},
+    ]
+  });
+});
+
 function openKeyACL(keyId, keyName, svcName) {
   document.getElementById('acl-key-id').value = keyId;
   document.getElementById('acl-key-name').textContent = keyName + ' (' + svcName + ')';
@@ -172,27 +219,19 @@ function openKeyACL(keyId, keyName, svcName) {
   document.getElementById('acl-current-json').value = '';
 
   fetch('/api/keys/' + keyId + '/acl-templates', {credentials:'same-origin'})
-    .then(function(r) {
-      if (r.status === 401) { window.location = '/admin/login'; return; }
-      return r.json();
-    })
+    .then(function(r) { return r.json(); })
     .then(function(data) {
       if (!data) return;
       document.getElementById('acl-current-json').value = data.current || '';
-
-      // Load inherited ACL from service
       var svcId = data.service_id || '';
-      if (svcId) {
-        loadInheritedACL('acl-current-json', 'acl-key-preview', svcId, '');
-      }
+      if (svcId) loadInheritedACL('acl-current-json', 'acl-key-preview', svcId, '');
       renderACLPreview('acl-current-json', 'acl-key-preview');
 
       var list = document.getElementById('acl-templates-list');
       if (!data.templates || data.templates.length === 0) {
-        list.innerHTML = '<p class="text-muted">No templates available for this service.</p>';
+        list.innerHTML = '<p class="text-muted">No templates available.</p>';
         return;
       }
-
       list.innerHTML = '';
       data.templates.forEach(function(t) {
         var isActive = (data.current || '') === t.config;
@@ -204,24 +243,19 @@ function openKeyACL(keyId, keyName, svcName) {
         btn.onclick = function() {
           document.getElementById('acl-current-json').value = t.config;
           renderACLPreview('acl-current-json', 'acl-key-preview');
-          // Highlight active
           list.querySelectorAll('.btn').forEach(function(b) { b.classList.remove('btn-primary'); });
           btn.classList.add('btn-primary');
         };
         list.appendChild(btn);
       });
     });
-
   document.getElementById('acl-modal').style.display = 'flex';
 }
 
 function saveCustomACL() {
   var keyId = document.getElementById('acl-key-id').value;
   var acl = document.getElementById('acl-current-json').value;
-  // Validate JSON if non-empty
-  if (acl.trim()) {
-    try { JSON.parse(acl); } catch(e) { showToast('Invalid JSON: ' + e.message, 'error'); return; }
-  }
+  if (acl.trim()) { try { JSON.parse(acl); } catch(e) { showToast('Invalid JSON: ' + e.message, 'error'); return; } }
   fetch('/api/keys/' + keyId + '/acl', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -237,98 +271,56 @@ function saveCustomACL() {
 }
 
 function clearACL() {
-  if (!confirm('Clear ACL on this key? It will fall back to the service default.')) return;
+  if (!confirm('Clear ACL? Key will inherit from service default.')) return;
   document.getElementById('acl-current-json').value = '';
   saveCustomACL();
 }
-</script>
 
-<script>
 function getSelectedService() {
   var sel = document.getElementById('ak-service');
   var opt = sel.options[sel.selectedIndex];
   if (!opt || !opt.value) return null;
-  return {
-    id: opt.value,
-    prefix: opt.getAttribute('data-prefix') || '',
-    length: parseInt(opt.getAttribute('data-length')) || 0,
-    name: opt.getAttribute('data-name') || ''
-  };
+  return { id: opt.value, prefix: opt.getAttribute('data-prefix') || '', length: parseInt(opt.getAttribute('data-length')) || 0, name: opt.getAttribute('data-name') || '' };
 }
 
 function onServiceChange() {
   var svc = getSelectedService();
   var keyInput = document.getElementById('ak-key');
   var hint = document.getElementById('ak-hint');
-  var error = document.getElementById('ak-error');
-
-  error.style.display = 'none';
-
-  if (!svc) {
-    keyInput.placeholder = '';
-    hint.style.display = 'none';
-    return;
-  }
-
-  var example = svc.prefix + 'x'.repeat(Math.max(0, svc.length - svc.prefix.length));
-  keyInput.placeholder = example;
-
+  document.getElementById('ak-error').style.display = 'none';
+  if (!svc) { keyInput.placeholder = ''; hint.style.display = 'none'; return; }
+  keyInput.placeholder = svc.prefix + 'x'.repeat(Math.max(0, svc.length - svc.prefix.length));
   var parts = [];
   if (svc.prefix) parts.push('starts with <code>' + svc.prefix + '</code>');
   if (svc.length > 0) parts.push(svc.length + ' characters');
   hint.innerHTML = 'Expected format: ' + parts.join(', ');
   hint.style.display = 'block';
-
-  // Re-validate if there's already a value
   if (keyInput.value) validateKey();
 }
 
 function validateKey() {
   var svc = getSelectedService();
-  var keyInput = document.getElementById('ak-key');
+  var val = document.getElementById('ak-key').value.trim();
   var error = document.getElementById('ak-error');
   var submit = document.getElementById('ak-submit');
-  var val = keyInput.value.trim();
-
-  if (!svc || !val) {
-    error.style.display = 'none';
-    submit.disabled = false;
-    return;
-  }
-
+  if (!svc || !val) { error.style.display = 'none'; submit.disabled = false; return; }
   var errors = [];
-
-  if (svc.prefix && !val.startsWith(svc.prefix)) {
-    errors.push('Key must start with <code>' + svc.prefix + '</code>');
-  }
-
+  if (svc.prefix && !val.startsWith(svc.prefix)) errors.push('Must start with <code>' + svc.prefix + '</code>');
   if (svc.length > 0) {
-    var tolerance = Math.max(10, Math.floor(svc.length * 0.2));
-    if (val.length < svc.length - tolerance) {
-      errors.push('Key seems too short (expected ~' + svc.length + ' chars, got ' + val.length + ')');
-    }
-    if (val.length > svc.length + tolerance) {
-      errors.push('Key seems too long (expected ~' + svc.length + ' chars, got ' + val.length + ')');
-    }
+    var tol = Math.max(10, Math.floor(svc.length * 0.2));
+    if (val.length < svc.length - tol) errors.push('Too short (expected ~' + svc.length + ', got ' + val.length + ')');
+    if (val.length > svc.length + tol) errors.push('Too long (expected ~' + svc.length + ', got ' + val.length + ')');
   }
-
-  if (errors.length > 0) {
-    error.innerHTML = errors.join('<br>');
-    error.style.display = 'block';
-    submit.disabled = true;
-  } else {
-    error.style.display = 'none';
-    submit.disabled = false;
-  }
+  if (errors.length) { error.innerHTML = errors.join('<br>'); error.style.display = 'block'; submit.disabled = true; }
+  else { error.style.display = 'none'; submit.disabled = false; }
 }
 
-// Intercept form submit for final validation
 document.getElementById('add-key-form').addEventListener('htmx:confirm', function(e) {
   var svc = getSelectedService();
   var val = document.getElementById('ak-key').value.trim();
   if (svc && svc.prefix && !val.startsWith(svc.prefix)) {
     e.preventDefault();
-    document.getElementById('ak-error').innerHTML = 'Key must start with <code>' + svc.prefix + '</code>';
+    document.getElementById('ak-error').innerHTML = 'Must start with <code>' + svc.prefix + '</code>';
     document.getElementById('ak-error').style.display = 'block';
   }
 });
