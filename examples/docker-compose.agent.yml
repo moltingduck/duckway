@@ -1,0 +1,124 @@
+# Example: Application with Duckway client proxy + Tailscale sidecars
+#
+# This shows how to run your AI agent application with:
+#   1. Tailscale sidecar — connects to your tailnet (reaches Duckway gateway)
+#   2. Duckway client sidecar — HTTPS proxy that swaps phantom tokens for real keys
+#   3. Your application — just sets HTTPS_PROXY and calls APIs normally
+#
+# Prerequisites:
+#   - Duckway gateway running (docker-compose.yml --profile tailscale)
+#   - Client registered in Duckway admin panel (get the token)
+#   - Tailscale auth key (from https://login.tailscale.com/admin/settings/keys)
+#
+# Setup:
+#   1. Copy this file to your project
+#   2. Create .env with your values
+#   3. docker compose -f docker-compose.agent.yml up -d
+#
+# Your app calls APIs normally — the proxy handles everything:
+#   curl https://api.openai.com/v1/chat/completions ...
+#   → duckway-proxy (MITM) → duckway-gateway (key swap) → OpenAI
+
+services:
+  # --- Tailscale sidecar ---
+  # Connects this stack to your tailnet so it can reach the Duckway gateway.
+  # All other containers share this network via network_mode.
+  tailscale:
+    image: tailscale/tailscale@sha256:dbeff02d2337344b351afac203427218c4d0a06c43fc10a865184063498472a6
+    container_name: agent-tailscale
+    hostname: ${TS_HOSTNAME:-my-agent}
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=true
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+    restart: unless-stopped
+
+  # --- Duckway client proxy sidecar ---
+  # Downloads binary from gateway, registers, syncs keys, runs HTTPS proxy.
+  # Shares network with Tailscale (can reach gateway via tailnet).
+  duckway-proxy:
+    image: alpine:3.21
+    container_name: agent-duckway-proxy
+    network_mode: "service:tailscale"
+    depends_on:
+      - tailscale
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_GATEWAY=${DUCKWAY_GATEWAY}
+      - DUCKWAY_CLIENT_TOKEN=${DUCKWAY_CLIENT_TOKEN}
+      - DUCKWAY_CLIENT_NAME=${DUCKWAY_CLIENT_NAME:-my-agent}
+    volumes:
+      - duckway-config:/root/.duckway
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        # Install duckway client if not present
+        if [ ! -f /usr/local/bin/duckway ]; then
+          echo "Installing duckway client from $$DUCKWAY_GATEWAY..."
+          apk add --no-cache curl ca-certificates
+          curl -fsSL "$$DUCKWAY_GATEWAY/install.sh" | sh
+        fi
+
+        # Init if not configured
+        if [ ! -f /root/.duckway/config.yaml ]; then
+          echo "Registering with gateway..."
+          printf "$$DUCKWAY_GATEWAY\n$$DUCKWAY_CLIENT_NAME\n1\n$$DUCKWAY_CLIENT_TOKEN\n" | duckway init
+        fi
+
+        # Sync keys
+        duckway sync
+
+        # Start HTTPS proxy (foreground)
+        echo "Starting HTTPS proxy on :18080..."
+        exec duckway proxy --port 18080
+
+  # --- Your application ---
+  # Shares network with Tailscale + Duckway proxy.
+  # Just set HTTPS_PROXY and call APIs normally.
+  app:
+    # Replace with your application image
+    image: python:3.12-alpine
+    container_name: agent-app
+    network_mode: "service:tailscale"
+    depends_on:
+      - duckway-proxy
+    restart: unless-stopped
+    environment:
+      # Route all HTTPS traffic through Duckway proxy
+      - HTTPS_PROXY=http://127.0.0.1:18080
+      - HTTP_PROXY=http://127.0.0.1:18080
+      - NO_PROXY=localhost,127.0.0.1
+      # Your app's own env vars
+      - APP_ENV=production
+    # Example: run a Python script that calls OpenAI
+    command:
+      - python
+      - -c
+      - |
+        import urllib.request, json, os, time
+        print("Waiting for proxy...")
+        time.sleep(5)
+
+        # This works transparently — proxy swaps phantom token for real key
+        print("Testing via Duckway proxy...")
+        req = urllib.request.Request(
+            "http://127.0.0.1:18080/proxy/heartbeat/ping",
+            headers={"X-Duckway-Token": os.environ.get("DUCKWAY_CLIENT_TOKEN", "")}
+        )
+        try:
+            resp = urllib.request.urlopen(req)
+            print("Heartbeat:", resp.read().decode())
+        except Exception as e:
+            print("Error:", e)
+
+        print("Agent running. Press Ctrl+C to stop.")
+        while True:
+            time.sleep(60)
+
+volumes:
+  tailscale-state:
+  duckway-config:
