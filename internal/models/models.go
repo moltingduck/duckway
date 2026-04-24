@@ -25,17 +25,23 @@ type Service struct {
 }
 
 type APIKey struct {
-	ID           string  `json:"id"`
-	ServiceID    string  `json:"service_id"`
-	Name         string  `json:"name"`
-	KeyEncrypted string  `json:"-"`
-	ACL          string  `json:"acl"` // JSON permission config — overrides service default_acl
-	IsActive     bool    `json:"is_active"`
-	UsageCount   int64   `json:"usage_count"`
-	LastUsedAt   *string `json:"last_used_at"`
-	CreatedAt    string  `json:"created_at"`
-	// Joined fields
+	ID               string  `json:"id"`
+	ServiceID        string  `json:"service_id"`
+	Name             string  `json:"name"`
+	KeyEncrypted     string  `json:"-"`
+	ACL              string  `json:"acl"`
+	RefreshToken     string  `json:"-"`                 // encrypted, empty = static key
+	ExpiresAt        int64   `json:"expires_at"`        // Unix ms, 0 = no expiry
+	TokenEndpoint    string  `json:"token_endpoint"`    // OAuth refresh URL
+	SubscriptionInfo string  `json:"subscription_info"` // JSON: type, tier, scopes, etc.
+	IsActive         bool    `json:"is_active"`
+	UsageCount       int64   `json:"usage_count"`
+	LastUsedAt       *string `json:"last_used_at"`
+	CreatedAt        string  `json:"created_at"`
+	// Joined
 	ServiceName string `json:"service_name,omitempty"`
+	// Derived
+	IsRefreshable bool `json:"is_refreshable"` // true if refresh_token is set
 }
 
 type APIKeyGroup struct {

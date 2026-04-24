@@ -191,6 +191,10 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE services ADD COLUMN key_directory TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE services ADD COLUMN default_acl TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE api_keys ADD COLUMN acl TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE api_keys ADD COLUMN refresh_token TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE api_keys ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE api_keys ADD COLUMN token_endpoint TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE api_keys ADD COLUMN subscription_info TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE placeholder_keys ADD COLUMN key_path TEXT NOT NULL DEFAULT ''",
 	}
 	for _, alt := range safeAlters {

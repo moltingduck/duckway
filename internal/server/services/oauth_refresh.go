@@ -11,36 +11,37 @@ import (
 	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
+	"github.com/hackerduck/duckway/internal/models"
 )
 
-type OAuthRefresher struct {
-	oauthQ *queries.OAuthQueries
-	crypto *Crypto
-	client *http.Client
-	stopCh chan struct{}
+// TokenRefresher automatically refreshes API keys that have a refresh_token set.
+// Works for any OAuth-based key (Claude, GitHub Apps, etc.)
+type TokenRefresher struct {
+	apiKeyQ *queries.APIKeyQueries
+	crypto  *Crypto
+	client  *http.Client
+	stopCh  chan struct{}
 }
 
-func NewOAuthRefresher(oauthQ *queries.OAuthQueries, crypto *Crypto) *OAuthRefresher {
-	return &OAuthRefresher{
-		oauthQ: oauthQ,
-		crypto: crypto,
-		client: &http.Client{Timeout: 30 * time.Second},
-		stopCh: make(chan struct{}),
+func NewTokenRefresher(apiKeyQ *queries.APIKeyQueries, crypto *Crypto) *TokenRefresher {
+	return &TokenRefresher{
+		apiKeyQ: apiKeyQ,
+		crypto:  crypto,
+		client:  &http.Client{Timeout: 30 * time.Second},
+		stopCh:  make(chan struct{}),
 	}
 }
 
-// Start begins the background refresh loop (every 5 minutes).
-func (r *OAuthRefresher) Start() {
+func (r *TokenRefresher) Start() {
 	go r.refreshLoop()
-	log.Printf("OAuth refresh job started (checking every 5 minutes)")
+	log.Printf("Token refresh job started (checking every 5 minutes)")
 }
 
-func (r *OAuthRefresher) Stop() {
+func (r *TokenRefresher) Stop() {
 	close(r.stopCh)
 }
 
-func (r *OAuthRefresher) refreshLoop() {
-	// Check immediately on startup
+func (r *TokenRefresher) refreshLoop() {
 	r.refreshExpiring()
 
 	ticker := time.NewTicker(5 * time.Minute)
@@ -56,43 +57,40 @@ func (r *OAuthRefresher) refreshLoop() {
 	}
 }
 
-func (r *OAuthRefresher) refreshExpiring() {
-	// Find tokens expiring within 10 minutes
-	expiring, err := r.oauthQ.ListExpiring(10)
+func (r *TokenRefresher) refreshExpiring() {
+	expiring, err := r.apiKeyQ.ListExpiring(10)
 	if err != nil {
-		log.Printf("[oauth-refresh] Error listing expiring tokens: %v", err)
+		log.Printf("[token-refresh] Error listing expiring keys: %v", err)
 		return
 	}
 
-	for _, cred := range expiring {
-		if err := r.refreshToken(&cred); err != nil {
-			log.Printf("[oauth-refresh] Failed to refresh %s (%s): %v", cred.Name, cred.ID, err)
+	for i := range expiring {
+		if err := r.refreshKey(&expiring[i]); err != nil {
+			log.Printf("[token-refresh] Failed to refresh %s (%s): %v", expiring[i].Name, expiring[i].ID, err)
 		} else {
-			log.Printf("[oauth-refresh] Refreshed %s (%s)", cred.Name, cred.ID)
+			log.Printf("[token-refresh] Refreshed %s (%s)", expiring[i].Name, expiring[i].ID)
 		}
 	}
 }
 
-// RefreshToken refreshes a single OAuth credential.
-func (r *OAuthRefresher) refreshToken(cred *queries.OAuthCredential) error {
-	// Decrypt refresh token
-	refreshToken, err := r.crypto.Decrypt(cred.RefreshToken)
+func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
+	refreshToken, err := r.crypto.Decrypt(key.RefreshToken)
 	if err != nil {
 		return fmt.Errorf("decrypt refresh token: %w", err)
 	}
 
-	// Call token endpoint
+	if key.TokenEndpoint == "" {
+		return fmt.Errorf("no token_endpoint configured")
+	}
+
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
 	}
-	if cred.ClientIDOAuth != "" {
-		form.Set("client_id", cred.ClientIDOAuth)
-	}
 
-	resp, err := r.client.Post(cred.TokenEndpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	resp, err := r.client.Post(key.TokenEndpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
 	if err != nil {
-		return fmt.Errorf("token endpoint request: %w", err)
+		return fmt.Errorf("token request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -104,32 +102,30 @@ func (r *OAuthRefresher) refreshToken(cred *queries.OAuthCredential) error {
 	var tokenResp struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int64  `json:"expires_in"` // seconds
+		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return fmt.Errorf("parse token response: %w", err)
+		return fmt.Errorf("parse response: %w", err)
 	}
 
 	if tokenResp.AccessToken == "" {
-		return fmt.Errorf("empty access token in response")
+		return fmt.Errorf("empty access token")
 	}
 
-	// Encrypt and store new access token
 	encAccess, err := r.crypto.Encrypt(tokenResp.AccessToken)
 	if err != nil {
-		return fmt.Errorf("encrypt new access token: %w", err)
+		return fmt.Errorf("encrypt: %w", err)
 	}
 
 	expiresAt := time.Now().UnixMilli() + tokenResp.ExpiresIn*1000
-	if err := r.oauthQ.UpdateTokens(cred.ID, encAccess, expiresAt); err != nil {
-		return fmt.Errorf("store refreshed token: %w", err)
+	if err := r.apiKeyQ.UpdateTokens(key.ID, encAccess, expiresAt); err != nil {
+		return fmt.Errorf("store: %w", err)
 	}
 
-	// If a new refresh token was returned, update it too
 	if tokenResp.RefreshToken != "" && tokenResp.RefreshToken != refreshToken {
 		encRefresh, err := r.crypto.Encrypt(tokenResp.RefreshToken)
 		if err == nil {
-			r.oauthQ.UpdateRefreshToken(cred.ID, encRefresh)
+			r.apiKeyQ.UpdateRefreshToken(key.ID, encRefresh)
 		}
 	}
 

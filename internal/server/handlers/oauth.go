@@ -5,105 +5,77 @@ import (
 	"net/http"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
+	"github.com/hackerduck/duckway/internal/models"
 	"github.com/hackerduck/duckway/internal/server/middleware"
 	svc "github.com/hackerduck/duckway/internal/server/services"
 )
 
 type OAuthHandler struct {
-	oauthQ       *queries.OAuthQueries
+	apiKeyQ      *queries.APIKeyQueries
 	placeholderQ *queries.PlaceholderQueries
 	serviceQ     *queries.ServiceQueries
 	crypto       *svc.Crypto
 }
 
-func NewOAuthHandler(oauthQ *queries.OAuthQueries, placeholderQ *queries.PlaceholderQueries, serviceQ *queries.ServiceQueries, crypto *svc.Crypto) *OAuthHandler {
-	return &OAuthHandler{oauthQ: oauthQ, placeholderQ: placeholderQ, serviceQ: serviceQ, crypto: crypto}
+func NewOAuthHandler(apiKeyQ *queries.APIKeyQueries, placeholderQ *queries.PlaceholderQueries, serviceQ *queries.ServiceQueries, crypto *svc.Crypto) *OAuthHandler {
+	return &OAuthHandler{apiKeyQ: apiKeyQ, placeholderQ: placeholderQ, serviceQ: serviceQ, crypto: crypto}
 }
 
-// Admin: list OAuth credentials
-func (h *OAuthHandler) List(w http.ResponseWriter, r *http.Request) {
-	list, err := h.oauthQ.List()
-	if err != nil {
-		jsonError(w, "failed to list", http.StatusInternalServerError)
-		return
-	}
-	if list == nil {
-		list = []queries.OAuthCredential{}
-	}
-	jsonResponse(w, list)
-}
-
-// Admin: upload OAuth credentials (from Claude .credentials.json)
-func (h *OAuthHandler) Create(w http.ResponseWriter, r *http.Request) {
+// Admin: upload refreshable API key (OAuth token with refresh)
+func (h *OAuthHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name             string `json:"name"`
 		ServiceID        string `json:"service_id"`
 		AccessToken      string `json:"access_token"`
 		RefreshToken     string `json:"refresh_token"`
 		ExpiresAt        int64  `json:"expires_at"`
-		SubscriptionType string `json:"subscription_type"`
-		RateLimitTier    string `json:"rate_limit_tier"`
-		Scopes           string `json:"scopes"`
 		TokenEndpoint    string `json:"token_endpoint"`
+		SubscriptionInfo string `json:"subscription_info"` // JSON string
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
 
-	if req.AccessToken == "" || req.RefreshToken == "" {
-		jsonError(w, "access_token and refresh_token required", http.StatusBadRequest)
+	if req.AccessToken == "" {
+		jsonError(w, "access_token required", http.StatusBadRequest)
 		return
 	}
-
-	if req.ServiceID == "" {
-		// Default to anthropic service
-		svcObj, err := h.serviceQ.GetByName("anthropic")
-		if err != nil {
-			jsonError(w, "anthropic service not found", http.StatusBadRequest)
-			return
-		}
-		req.ServiceID = svcObj.ID
-	}
-
 	if req.Name == "" {
-		req.Name = "Claude OAuth"
+		req.Name = "OAuth Token"
 	}
 	if req.TokenEndpoint == "" {
 		req.TokenEndpoint = "https://console.anthropic.com/v1/oauth/token"
 	}
-	if req.Scopes == "" {
-		req.Scopes = "[]"
-	}
 
-	// Encrypt tokens
 	encAccess, err := h.crypto.Encrypt(req.AccessToken)
 	if err != nil {
 		jsonError(w, "encryption failed", http.StatusInternalServerError)
 		return
 	}
-	encRefresh, err := h.crypto.Encrypt(req.RefreshToken)
-	if err != nil {
-		jsonError(w, "encryption failed", http.StatusInternalServerError)
-		return
+	var encRefresh string
+	if req.RefreshToken != "" {
+		encRefresh, err = h.crypto.Encrypt(req.RefreshToken)
+		if err != nil {
+			jsonError(w, "encryption failed", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	id, _ := svc.GenerateToken(16)
-	cred := &queries.OAuthCredential{
+	key := &models.APIKey{
 		ID:               id,
 		ServiceID:        req.ServiceID,
 		Name:             req.Name,
-		AccessToken:      encAccess,
+		KeyEncrypted:     encAccess,
 		RefreshToken:     encRefresh,
 		ExpiresAt:        req.ExpiresAt,
 		TokenEndpoint:    req.TokenEndpoint,
-		Scopes:           req.Scopes,
-		SubscriptionType: req.SubscriptionType,
-		RateLimitTier:    req.RateLimitTier,
+		SubscriptionInfo: req.SubscriptionInfo,
 		IsActive:         true,
 	}
 
-	if err := h.oauthQ.Create(cred); err != nil {
+	if err := h.apiKeyQ.Create(key); err != nil {
 		jsonError(w, "failed to create: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -112,17 +84,7 @@ func (h *OAuthHandler) Create(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"id": id, "status": "created"})
 }
 
-// Admin: delete OAuth credential
-func (h *OAuthHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := h.oauthQ.Delete(id); err != nil {
-		jsonError(w, "failed to delete", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-}
-
-// Client: get Claude credentials for this client (phantom tokens)
+// Client: get credentials.json with phantom tokens for Claude/OAuth services.
 func (h *OAuthHandler) ClientGetCredentials(w http.ResponseWriter, r *http.Request) {
 	client := middleware.GetClient(r)
 	if client == nil {
@@ -130,35 +92,54 @@ func (h *OAuthHandler) ClientGetCredentials(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Find OAuth credentials for the Anthropic service
+	// Find the Anthropic service
 	anthSvc, err := h.serviceQ.GetByName("anthropic")
 	if err != nil {
-		jsonResponse(w, map[string]interface{}{}) // No anthropic service
+		jsonResponse(w, map[string]interface{}{})
 		return
 	}
 
-	oauthCred, err := h.oauthQ.GetByServiceID(anthSvc.ID)
-	if err != nil {
-		jsonResponse(w, map[string]interface{}{}) // No OAuth credentials
-		return
-	}
-
-	// Find the client's phantom token for the Anthropic service
+	// Find the client's phantom token for Anthropic
 	ph, err := h.placeholderQ.GetByClientAndService(client.ID, anthSvc.ID)
 	if err != nil {
-		jsonResponse(w, map[string]interface{}{}) // No phantom token assigned
+		jsonResponse(w, map[string]interface{}{})
 		return
 	}
 
-	// Return credential structure matching Claude's .credentials.json
+	// Find the API key behind this phantom token to get subscription info
+	var subInfo map[string]interface{}
+	if ph.APIKeyID != nil {
+		apiKey, err := h.apiKeyQ.GetByID(*ph.APIKeyID)
+		if err == nil && apiKey.SubscriptionInfo != "" {
+			json.Unmarshal([]byte(apiKey.SubscriptionInfo), &subInfo)
+		}
+	}
+
+	subType := ""
+	rateTier := ""
+	scopes := json.RawMessage("[]")
+	if subInfo != nil {
+		if v, ok := subInfo["subscriptionType"].(string); ok {
+			subType = v
+		}
+		if v, ok := subInfo["rateLimitTier"].(string); ok {
+			rateTier = v
+		}
+		if v, ok := subInfo["scopes"]; ok {
+			if b, err := json.Marshal(v); err == nil {
+				scopes = b
+			}
+		}
+	}
+
 	jsonResponse(w, map[string]interface{}{
 		"claudeAiOauth": map[string]interface{}{
-			"accessToken":      ph.Placeholder,     // Phantom token — proxy swaps for real
-			"refreshToken":     ph.Placeholder,      // Same phantom — refresh handled by server
-			"expiresAt":        9999999999999,        // Never expires locally
-			"scopes":           json.RawMessage(oauthCred.Scopes),
-			"subscriptionType": oauthCred.SubscriptionType,
-			"rateLimitTier":    oauthCred.RateLimitTier,
+			"accessToken":      ph.Placeholder,
+			"refreshToken":     ph.Placeholder,
+			"expiresAt":        9999999999999,
+			"scopes":           scopes,
+			"subscriptionType": subType,
+			"rateLimitTier":    rateTier,
 		},
 	})
 }

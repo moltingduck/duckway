@@ -191,10 +191,8 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 		handlers.JsonResponsePublic(w, map[string]string{"status": "ok"})
 	})
 
-	oauthH := handlers.NewOAuthHandler(queries.NewOAuthQueries(s.db), ss.PlaceholderQ, ss.ServiceQ, ss.Crypto)
-	adminAPIMux.HandleFunc("GET /api/oauth", oauthH.List)
-	adminAPIMux.HandleFunc("POST /api/oauth", oauthH.Create)
-	adminAPIMux.HandleFunc("DELETE /api/oauth/{id}", oauthH.Delete)
+	oauthH := handlers.NewOAuthHandler(ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.Crypto)
+	adminAPIMux.HandleFunc("POST /api/oauth/upload", oauthH.Upload)
 
 	adminAPIMux.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
 		logs, err := ss.RequestLogQ.Recent(500)
@@ -241,8 +239,8 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 		})
 	}
 
-	// Claude credentials endpoint (client auth required)
-	oauthClientH := handlers.NewOAuthHandler(queries.NewOAuthQueries(s.db), ss.PlaceholderQ, ss.ServiceQ, ss.Crypto)
+	// Claude/OAuth credentials endpoint (client auth required)
+	oauthClientH := handlers.NewOAuthHandler(ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.Crypto)
 	clientMux.HandleFunc("GET /client/claude-credentials", oauthClientH.ClientGetCredentials)
 
 	// Client config (no auth — needed during duckway init before token is verified)

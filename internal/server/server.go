@@ -167,8 +167,7 @@ func (s *Server) seedDefaultServices() error {
 }
 
 func (s *Server) startOAuthRefresher(ss *SharedServices) {
-	oauthQ := queries.NewOAuthQueries(s.db)
-	refresher := services.NewOAuthRefresher(oauthQ, ss.Crypto)
+	refresher := services.NewTokenRefresher(ss.APIKeyQ, ss.Crypto)
 	refresher.Start()
 }
 
