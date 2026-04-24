@@ -85,10 +85,10 @@ case "${1:-up}" in
     echo ""
     echo "=== Tailscale Status ==="
     if [ "$MODE" = "split" ]; then
-      docker exec duckway-ts-admin tailscale status 2>/dev/null || echo "  ts-admin not running"
-      docker exec duckway-ts-gateway tailscale status 2>/dev/null || echo "  ts-gateway not running"
+      docker exec duckway-tailscale-admin tailscale status 2>/dev/null || echo "  tailscale-admin not running"
+      docker exec duckway-tailscale-gateway tailscale status 2>/dev/null || echo "  tailscale-gateway not running"
     else
-      docker exec duckway-ts-server tailscale status 2>/dev/null || echo "  ts-server not running"
+      docker exec duckway-tailscale-server tailscale status 2>/dev/null || echo "  tailscale-server not running"
     fi
     ;;
 
