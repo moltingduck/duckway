@@ -1,0 +1,106 @@
+# Test: Claude Code with Duckway-managed .credentials.json
+#
+# Fetches phantom OAuth credentials from the Duckway server and mounts
+# them as ~/.claude/.credentials.json so Claude uses the phantom tokens.
+# Use this to manually verify the credential flow works.
+#
+# Usage:
+#   # 1. Duckway server must be running
+#   docker compose --profile combined up -d
+#
+#   # 2. Set your client token (from admin panel → Clients)
+#   #    The client must have a refreshable Anthropic token assigned.
+#   export DUCKWAY_CLIENT_TOKEN=<your-client-token>
+#
+#   # 3. Start
+#   docker compose -f examples/docker-compose.claude-test.yml up -d
+#
+#   # 4. Check credentials were fetched
+#   docker exec claude-test cat /home/claude/.claude/.credentials.json
+#
+#   # 5. Use Claude interactively
+#   docker exec -it claude-test claude
+#
+# Notes:
+#   - The init container fetches credentials from the server on startup
+#   - Claude sees phantom tokens that look like real OAuth tokens
+#   - Without a duckway proxy, Claude will send phantom tokens directly
+#     to Anthropic (which will reject them) — this is expected for testing
+#     the credential format. For full E2E, use docker-compose.claude.yml.
+
+services:
+  # Fetch phantom .credentials.json from Duckway server
+  init:
+    image: alpine:3.21
+    container_name: claude-test-init
+    networks:
+      - duckway_default
+    environment:
+      - DUCKWAY_GATEWAY=${DUCKWAY_GATEWAY:-http://duckway-server:8080}
+      - DUCKWAY_CLIENT_TOKEN=${DUCKWAY_CLIENT_TOKEN}
+    volumes:
+      - claude-home:/home/claude
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        apk add --no-cache curl >/dev/null 2>&1
+        mkdir -p /home/claude/.claude
+
+        echo "Fetching phantom credentials..."
+        HTTP_CODE=$$(curl -sf -w '%%{http_code}' \
+          -H "X-Duckway-Token: $$DUCKWAY_CLIENT_TOKEN" \
+          "$$DUCKWAY_GATEWAY/client/claude-credentials" \
+          -o /home/claude/.claude/.credentials.json)
+
+        if [ "$$HTTP_CODE" != "200" ] && [ ! -s /home/claude/.claude/.credentials.json ]; then
+          echo "Failed to fetch credentials (HTTP $$HTTP_CODE)"
+          echo "Check: DUCKWAY_CLIENT_TOKEN is set and client has a refreshable Anthropic token assigned"
+          exit 1
+        fi
+
+        echo ""
+        echo "=== ~/.claude/.credentials.json ==="
+        cat /home/claude/.claude/.credentials.json
+        echo ""
+
+  # Claude Code with mounted credentials
+  claude:
+    image: node:22-alpine
+    container_name: claude-test
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      - HOME=/home/claude
+    volumes:
+      - claude-home:/home/claude
+      - ${WORKSPACE_DIR:-/tmp/claude-workspace}:/workspace
+    working_dir: /workspace
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        if ! command -v claude >/dev/null 2>&1; then
+          echo "Installing Claude Code..."
+          npm install -g @anthropic-ai/claude-code
+        fi
+
+        echo ""
+        echo "========================================"
+        echo "  Credentials mounted:"
+        echo "  $$(cat /home/claude/.claude/.credentials.json | head -1)"
+        echo ""
+        echo "  docker exec -it claude-test claude"
+        echo "========================================"
+        echo ""
+        sleep infinity
+
+volumes:
+  claude-home:
+
+networks:
+  duckway_default:
+    external: true
