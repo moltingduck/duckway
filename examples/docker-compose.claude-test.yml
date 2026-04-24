@@ -48,21 +48,50 @@ services:
         apk add --no-cache curl >/dev/null 2>&1
         mkdir -p /home/claude/.claude
 
+        apk add --no-cache jq >/dev/null 2>&1 || true
+
+        # 1. Fetch full response (credentials + config)
         echo "Fetching phantom credentials..."
-        HTTP_CODE=$$(curl -sf -w '%%{http_code}' \
+        curl -sf \
           -H "X-Duckway-Token: $$DUCKWAY_CLIENT_TOKEN" \
           "$$DUCKWAY_GATEWAY/client/claude-credentials" \
-          -o /home/claude/.claude/.credentials.json)
+          -o /tmp/response.json
 
-        if [ "$$HTTP_CODE" != "200" ] && [ ! -s /home/claude/.claude/.credentials.json ]; then
-          echo "Failed to fetch credentials (HTTP $$HTTP_CODE)"
+        if [ ! -s /tmp/response.json ]; then
+          echo "Failed to fetch credentials"
           echo "Check: DUCKWAY_CLIENT_TOKEN is set and client has a refreshable Anthropic token assigned"
           exit 1
         fi
 
+        # 2. Extract .credentials.json (claudeAiOauth only, always overwrite)
+        jq '{claudeAiOauth: .claudeAiOauth}' /tmp/response.json \
+          > /home/claude/.claude/.credentials.json
+        echo "Written ~/.claude/.credentials.json"
+
+        # 3. Extract .claude.json from server response (always overwrite — server controls display)
+        if jq -e '.claudeConfig' /tmp/response.json >/dev/null 2>&1; then
+          jq '.claudeConfig' /tmp/response.json > /home/claude/.claude.json
+          echo "Written ~/.claude.json (from server)"
+        elif [ ! -f /home/claude/.claude.json ]; then
+          printf '{\n  "hasCompletedOnboarding": true,\n  "lastOnboardingVersion": "2.1.119"\n}\n' \
+            > /home/claude/.claude.json
+          echo "Written ~/.claude.json (defaults)"
+        fi
+
+        # 4. Default settings (don't overwrite if exists — user may customize)
+        if [ ! -f /home/claude/.claude/settings.json ]; then
+          printf '{\n  "theme": "dark"\n}\n' \
+            > /home/claude/.claude/settings.json
+          echo "Written ~/.claude/settings.json (defaults)"
+        fi
+
+        rm -f /tmp/response.json
         echo ""
         echo "=== ~/.claude/.credentials.json ==="
         cat /home/claude/.claude/.credentials.json
+        echo ""
+        echo "=== ~/.claude.json ==="
+        cat /home/claude/.claude.json
         echo ""
 
   # Claude Code with mounted credentials

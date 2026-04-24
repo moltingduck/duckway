@@ -30,6 +30,9 @@
       <div class="form-group"><label>Access Token</label><input type="text" id="oauth-access" placeholder="sk-ant-o..." required></div>
       <div class="form-group"><label>Refresh Token</label><input type="text" id="oauth-refresh" placeholder="sk-ant-o..."></div>
       <div class="form-group"><label>Token Endpoint</label><input type="url" id="oauth-endpoint" value="https://console.anthropic.com/v1/oauth/token"></div>
+      <div class="form-group"><label>Agent Display Name <span class="text-muted">(shown in agent's .claude.json)</span></label>
+        <input type="text" id="oauth-display" placeholder="Duckway Agent" value="Duckway Agent">
+      </div>
       <div class="form-group"><label>Subscription Info (JSON, optional)</label>
         <textarea id="oauth-sub" style="min-height:40px;font-family:monospace;font-size:0.75rem" placeholder='{"subscriptionType":"max","rateLimitTier":"..."}'></textarea>
       </div>
@@ -67,6 +70,9 @@
         <input type="hidden" id="edit-id">
         <div class="form-group"><label>Name</label><input type="text" id="edit-name" required></div>
         <div class="form-group"><label>Token Endpoint</label><input type="url" id="edit-endpoint"></div>
+        <div class="form-group"><label>Agent Display Name <span class="text-muted">(shown in agent's .claude.json)</span></label>
+          <input type="text" id="edit-display" placeholder="Duckway Agent">
+        </div>
         <div class="form-group"><label>Subscription Info (JSON)</label>
           <textarea id="edit-sub" style="min-height:40px;font-family:monospace;font-size:0.75rem"></textarea>
         </div>
@@ -168,6 +174,10 @@ function switchToEdit() {
   document.getElementById('edit-name').value = currentDetail.name;
   document.getElementById('edit-endpoint').value = currentDetail.token_endpoint;
   document.getElementById('edit-sub').value = currentDetail.subscription_info || '';
+  // Extract displayName from subscription_info
+  var displayName = 'Duckway Agent';
+  try { var si = JSON.parse(currentDetail.subscription_info || '{}'); if (si.displayName) displayName = si.displayName; } catch(e) {}
+  document.getElementById('edit-display').value = displayName;
   document.getElementById('edit-access').value = '';
   document.getElementById('edit-refresh').value = '';
   document.getElementById('edit-paste').value = '';
@@ -231,7 +241,10 @@ document.addEventListener('DOMContentLoaded', function() {
 document.getElementById('oauth-form').addEventListener('submit', function(e) {
   e.preventDefault();
   var subInfo = document.getElementById('oauth-sub').value.trim();
-  if (subInfo) { try { JSON.parse(subInfo); } catch(ex) { showToast('Invalid subscription JSON', 'error'); return; } }
+  var subObj = {};
+  if (subInfo) { try { subObj = JSON.parse(subInfo); } catch(ex) { showToast('Invalid subscription JSON', 'error'); return; } }
+  var displayName = document.getElementById('oauth-display').value.trim();
+  if (displayName) subObj.displayName = displayName;
 
   var body = {
     name: document.getElementById('oauth-name').value,
@@ -239,7 +252,7 @@ document.getElementById('oauth-form').addEventListener('submit', function(e) {
     access_token: document.getElementById('oauth-access').value,
     refresh_token: document.getElementById('oauth-refresh').value,
     token_endpoint: document.getElementById('oauth-endpoint').value,
-    subscription_info: subInfo || '{}'
+    subscription_info: JSON.stringify(subObj)
   };
 
   fetch('/api/oauth/upload', {
@@ -260,12 +273,15 @@ document.getElementById('edit-form').addEventListener('submit', function(e) {
   e.preventDefault();
   var id = document.getElementById('edit-id').value;
   var subInfo = document.getElementById('edit-sub').value.trim();
-  if (subInfo) { try { JSON.parse(subInfo); } catch(ex) { showToast('Invalid subscription JSON', 'error'); return; } }
+  var subObj = {};
+  if (subInfo) { try { subObj = JSON.parse(subInfo); } catch(ex) { showToast('Invalid subscription JSON', 'error'); return; } }
+  var displayName = document.getElementById('edit-display').value.trim();
+  if (displayName) subObj.displayName = displayName;
 
   var body = {
     name: document.getElementById('edit-name').value,
     token_endpoint: document.getElementById('edit-endpoint').value,
-    subscription_info: subInfo || ''
+    subscription_info: JSON.stringify(subObj)
   };
 
   var accessToken = document.getElementById('edit-access').value.trim();

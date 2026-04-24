@@ -65,8 +65,12 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 }
 
 // SyncClaudeCredentials fetches phantom Claude OAuth credentials and writes
-// to ~/.claude/.credentials.json. If no OAuth credentials are configured
-// on the server, this is a no-op.
+// the three files Claude needs to skip onboarding and use the subscription:
+//   - ~/.claude/.credentials.json  (phantom OAuth tokens — always overwritten)
+//   - ~/.claude/settings.json      (default settings — only if not exists)
+//   - ~/.claude.json               (onboarding flag — only if not exists)
+//
+// If no OAuth credentials are configured on the server, this is a no-op.
 func SyncClaudeCredentials(cfg *Config) {
 	api := NewAPIClient(cfg.ServerURL, cfg.Token)
 	creds, err := api.FetchClaudeCredentials()
@@ -85,17 +89,46 @@ func SyncClaudeCredentials(cfg *Config) {
 		return
 	}
 
+	// Extract claudeAiOauth for .credentials.json
+	oauthData := map[string]interface{}{}
+	if v, ok := creds["claudeAiOauth"]; ok {
+		oauthData["claudeAiOauth"] = v
+	}
+
+	// 1. Always write .credentials.json (phantom tokens from server)
 	credPath := filepath.Join(claudeDir, ".credentials.json")
-	data, err := json.MarshalIndent(creds, "", "  ")
+	data, err := json.MarshalIndent(oauthData, "", "  ")
 	if err != nil {
 		return
 	}
-
 	if err := os.WriteFile(credPath, data, 0600); err != nil {
 		log.Printf("Warning: cannot write Claude credentials: %v", err)
 		return
 	}
-	log.Printf("Claude credentials synced to %s (phantom tokens)", credPath)
+	log.Printf("Claude credentials synced to %s", credPath)
+
+	// 2. Write settings.json only if it doesn't exist (don't overwrite user prefs)
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if _, err := os.Stat(settingsPath); os.IsNotExist(err) {
+		defaultSettings := []byte("{\n  \"theme\": \"dark\"\n}\n")
+		if err := os.WriteFile(settingsPath, defaultSettings, 0600); err != nil {
+			log.Printf("Warning: cannot write Claude settings: %v", err)
+		}
+	}
+
+	// 3. Write ~/.claude.json (from server's claudeConfig, or defaults)
+	//    Always overwrite — server controls the oauthAccount display info
+	onboardingPath := filepath.Join(home, ".claude.json")
+	if claudeConfig, ok := creds["claudeConfig"].(map[string]interface{}); ok {
+		configData, err := json.MarshalIndent(claudeConfig, "", "  ")
+		if err == nil {
+			os.WriteFile(onboardingPath, configData, 0600)
+		}
+	} else if _, err := os.Stat(onboardingPath); os.IsNotExist(err) {
+		// Fallback if server doesn't send claudeConfig
+		fallback := []byte("{\n  \"hasCompletedOnboarding\": true,\n  \"lastOnboardingVersion\": \"2.1.119\"\n}\n")
+		os.WriteFile(onboardingPath, fallback, 0600)
+	}
 }
 
 // SyncCanaries fetches canary tokens and deploys them as decoy files.

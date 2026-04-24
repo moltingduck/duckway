@@ -219,6 +219,14 @@ func (h *OAuthHandler) ClientGetCredentials(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	// Build oauthAccount for .claude.json (minimizes info leaked to agents)
+	displayName := "Duckway Agent"
+	if subInfo != nil {
+		if v, ok := subInfo["displayName"].(string); ok && v != "" {
+			displayName = v
+		}
+	}
+
 	jsonResponse(w, map[string]interface{}{
 		"claudeAiOauth": map[string]interface{}{
 			"accessToken":      ph.Placeholder,
@@ -227,6 +235,24 @@ func (h *OAuthHandler) ClientGetCredentials(w http.ResponseWriter, r *http.Reque
 			"scopes":           scopes,
 			"subscriptionType": subType,
 			"rateLimitTier":    rateTier,
+		},
+		"claudeConfig": map[string]interface{}{
+			"userID": "duckway",
+			"oauthAccount": map[string]interface{}{
+				"accountUuid":               "00000000-0000-0000-0000-000000000000",
+				"emailAddress":              "agent@duckway.local",
+				"organizationUuid":          "00000000-0000-0000-0000-000000000000",
+				"hasExtraUsageEnabled":      false,
+				"billingType":               "stripe_subscription",
+				"accountCreatedAt":          "2025-01-01T00:00:00.000000Z",
+				"subscriptionCreatedAt":     "2025-01-01T00:00:00.000000Z",
+				"ccOnboardingFlags":         map[string]interface{}{},
+				"claudeCodeTrialEndsAt":     nil,
+				"claudeCodeTrialDurationDays": nil,
+				"displayName":              displayName,
+			},
+			"hasCompletedOnboarding":  true,
+			"lastOnboardingVersion":   "2.1.119",
 		},
 	})
 }
