@@ -52,7 +52,7 @@ add_placeholder() {
     -d "{\"service_id\":\"$1\",\"api_key_id\":\"$2\",\"client_id\":\"$3\",\"requires_approval\":$4}" > /dev/null
 }
 
-echo "Adding API keys (8)..."
+echo "Adding API keys (9)..."
 OA_KEY1=$(add_key "$OPENAI_ID" "OpenAI Production" "sk-proj-fake-prod-openai-key-1234567890abcdef1234567890")
 OA_KEY2=$(add_key "$OPENAI_ID" "OpenAI Staging" "sk-proj-fake-staging-openai-key-abcdef1234567890abcdef")
 OA_KEY3=$(add_key "$OPENAI_ID" "OpenAI Batch" "sk-proj-fake-batch-openai-key-9876543210fedcba9876543210")
@@ -61,7 +61,13 @@ AN_KEY2=$(add_key "$ANTHROPIC_ID" "Anthropic Dev" "sk-ant-fake-dev-anthropic-key
 GH_KEY1=$(add_key "$GITHUB_ID" "GitHub Deploy Bot" "ghp_fakeDeployBotToken1234567890abcd")
 GH_KEY2=$(add_key "$GITHUB_ID" "GitHub CI Runner" "ghp_fakeCIRunnerToken9876543210wxyz")
 GH_KEY3=$(add_key "$GITHUB_ID" "GitHub Read-Only" "ghp_fakeReadOnlyToken5555666677778888")
-echo "  8 API keys created"
+
+# Refreshable token (Claude OAuth)
+AN_OAUTH=$(curl -s -b /tmp/dw-seed-cookies -X POST "$BASE/api/oauth/upload" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"Claude OAuth (Max)\",\"service_id\":\"$ANTHROPIC_ID\",\"access_token\":\"sk-ant-oaat01-fake-claude-oauth-access-token-1234567890abcdef1234567890abcdef1234567890abcdef\",\"refresh_token\":\"sk-ant-oart01-fake-claude-oauth-refresh-token-abcdef1234567890abcdef1234567890abcdef1234567890\",\"token_endpoint\":\"https://console.anthropic.com/v1/oauth/token\",\"subscription_info\":\"{\\\"subscriptionType\\\":\\\"max\\\",\\\"rateLimitTier\\\":\\\"default_max_20x\\\"}\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" 2>/dev/null)
+echo "  9 API keys created"
 
 echo "Creating clients (6)..."
 C1=$(add_client "dev-laptop")
@@ -110,9 +116,9 @@ add_placeholder "$GITHUB_ID" "$GH_KEY1" "$C4_ID" "false"
 add_placeholder "$OPENAI_ID" "$OA_KEY1" "$C5_ID" "true"
 add_placeholder "$ANTHROPIC_ID" "$AN_KEY1" "$C5_ID" "true"
 
-# claude-agent: all services, auto
+# claude-agent: all services + Claude OAuth, auto
 add_placeholder "$OPENAI_ID" "$OA_KEY1" "$C6_ID" "false"
-add_placeholder "$ANTHROPIC_ID" "$AN_KEY1" "$C6_ID" "false"
+add_placeholder "$ANTHROPIC_ID" "$AN_OAUTH" "$C6_ID" "false"
 add_placeholder "$GITHUB_ID" "$GH_KEY3" "$C6_ID" "false"
 
 echo "  18 placeholder keys assigned"
@@ -142,7 +148,7 @@ fi
 
 echo ""
 echo "=== Dev seed complete ==="
-echo "  8 API keys | 6 clients | 18 placeholders | 6 log entries"
+echo "  9 API keys (1 refreshable) | 6 clients | 18 placeholders | 6 log entries"
 echo ""
 echo "Clients:"
 echo "  dev-laptop    token: $C1_TOKEN"
