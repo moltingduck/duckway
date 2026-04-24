@@ -84,6 +84,93 @@ func (h *OAuthHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"id": id, "status": "created"})
 }
 
+// Admin: get refreshable key details (without decrypted tokens)
+func (h *OAuthHandler) Get(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	key, err := h.apiKeyQ.GetByID(id)
+	if err != nil {
+		jsonError(w, "key not found", http.StatusNotFound)
+		return
+	}
+	if !key.IsRefreshable {
+		jsonError(w, "not a refreshable key", http.StatusBadRequest)
+		return
+	}
+
+	jsonResponse(w, map[string]interface{}{
+		"id":                key.ID,
+		"name":              key.Name,
+		"service_id":        key.ServiceID,
+		"service_name":      key.ServiceName,
+		"token_endpoint":    key.TokenEndpoint,
+		"subscription_info": key.SubscriptionInfo,
+		"expires_at":        key.ExpiresAt,
+		"is_active":         key.IsActive,
+		"usage_count":       key.UsageCount,
+		"last_used_at":      key.LastUsedAt,
+		"created_at":        key.CreatedAt,
+	})
+}
+
+// Admin: update refreshable key (name, endpoint, subscription, optionally tokens)
+func (h *OAuthHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	key, err := h.apiKeyQ.GetByID(id)
+	if err != nil {
+		jsonError(w, "key not found", http.StatusNotFound)
+		return
+	}
+	if !key.IsRefreshable {
+		jsonError(w, "not a refreshable key", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Name             string `json:"name"`
+		AccessToken      string `json:"access_token"`
+		RefreshToken     string `json:"refresh_token"`
+		TokenEndpoint    string `json:"token_endpoint"`
+		SubscriptionInfo string `json:"subscription_info"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		req.Name = key.Name
+	}
+	if req.TokenEndpoint == "" {
+		req.TokenEndpoint = key.TokenEndpoint
+	}
+	if req.SubscriptionInfo == "" {
+		req.SubscriptionInfo = key.SubscriptionInfo
+	}
+
+	var encAccess, encRefresh string
+	if req.AccessToken != "" {
+		encAccess, err = h.crypto.Encrypt(req.AccessToken)
+		if err != nil {
+			jsonError(w, "encryption failed", http.StatusInternalServerError)
+			return
+		}
+	}
+	if req.RefreshToken != "" {
+		encRefresh, err = h.crypto.Encrypt(req.RefreshToken)
+		if err != nil {
+			jsonError(w, "encryption failed", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := h.apiKeyQ.UpdateRefreshable(id, req.Name, encAccess, encRefresh, req.TokenEndpoint, req.SubscriptionInfo); err != nil {
+		jsonError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, map[string]string{"status": "updated"})
+}
+
 // Client: get credentials.json with phantom tokens for Claude/OAuth services.
 func (h *OAuthHandler) ClientGetCredentials(w http.ResponseWriter, r *http.Request) {
 	client := middleware.GetClient(r)

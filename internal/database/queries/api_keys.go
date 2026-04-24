@@ -102,6 +102,23 @@ func (q *APIKeyQueries) UpdateRefreshToken(id, refreshToken string) error {
 	return err
 }
 
+func (q *APIKeyQueries) UpdateRefreshable(id, name, keyEncrypted, refreshToken, tokenEndpoint, subscriptionInfo string) error {
+	query := "UPDATE api_keys SET name = ?, token_endpoint = ?, subscription_info = ?"
+	args := []interface{}{name, tokenEndpoint, subscriptionInfo}
+	if keyEncrypted != "" {
+		query += ", key_encrypted = ?"
+		args = append(args, keyEncrypted)
+	}
+	if refreshToken != "" {
+		query += ", refresh_token = ?"
+		args = append(args, refreshToken)
+	}
+	query += " WHERE id = ?"
+	args = append(args, id)
+	_, err := q.db.Exec(query, args...)
+	return err
+}
+
 func (q *APIKeyQueries) ListExpiring(withinMinutes int) ([]models.APIKey, error) {
 	rows, err := q.db.Query(
 		`SELECT `+apiKeyCols+` FROM api_keys k JOIN services s ON k.service_id = s.id
