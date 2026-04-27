@@ -52,10 +52,10 @@ case "${1:-up}" in
     echo ""
     if [ "$USE_TAILSCALE" = "true" ]; then
       if [ "$MODE" = "split" ]; then
-        echo "Admin:   https://$TS_HOSTNAME-admin (Tailscale HTTPS)"
-        echo "Gateway: https://$TS_HOSTNAME-gw (Tailscale HTTPS)"
+        echo "Admin:   http://$TS_HOSTNAME-admin/  (port 80, tailnet only)"
+        echo "Gateway: http://$TS_HOSTNAME-gw/     (port 80, tailnet only)"
       else
-        echo "Server:  https://$TS_HOSTNAME (Tailscale HTTPS)"
+        echo "Server:  http://$TS_HOSTNAME/        (port 80, tailnet only)"
       fi
     else
       echo "No ports exposed. Use a reverse proxy to reach the containers."

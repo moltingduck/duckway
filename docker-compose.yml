@@ -90,7 +90,7 @@ services:
     restart: unless-stopped
     environment:
       - DUCKWAY_DATA_DIR=/data
-      - DUCKWAY_LISTEN=:8080
+      - DUCKWAY_LISTEN=:80
     depends_on:
       - tailscale-server
     profiles: ["tailscale-combined"]
@@ -104,6 +104,7 @@ services:
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/ts-combined.json
       - TS_USERSPACE=true
+      - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
     volumes:
       - tailscale-server-state:/var/lib/tailscale
       - ./tailscale:/config:ro
@@ -152,8 +153,8 @@ services:
     restart: unless-stopped
     environment:
       - DUCKWAY_DATA_DIR=/data
-      - DUCKWAY_ADMIN_LISTEN=:9091
-    command: ["--data", "/data", "--port", "9091"]
+      - DUCKWAY_ADMIN_LISTEN=:80
+    command: ["--data", "/data", "--port", "80"]
     depends_on:
       - tailscale-admin
     profiles: ["tailscale"]
@@ -167,8 +168,8 @@ services:
     restart: unless-stopped
     environment:
       - DUCKWAY_DATA_DIR=/data
-      - DUCKWAY_GATEWAY_LISTEN=:8080
-    command: ["--data", "/data", "--port", "8080"]
+      - DUCKWAY_GATEWAY_LISTEN=:80
+    command: ["--data", "/data", "--port", "80"]
     depends_on:
       - tailscale-gateway
     profiles: ["tailscale"]
@@ -182,6 +183,7 @@ services:
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/ts-admin.json
       - TS_USERSPACE=true
+      - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
     volumes:
       - tailscale-admin-state:/var/lib/tailscale
       - ./tailscale:/config:ro
@@ -197,6 +199,7 @@ services:
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/ts-gateway.json
       - TS_USERSPACE=true
+      - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
     volumes:
       - tailscale-gateway-state:/var/lib/tailscale
       - ./tailscale:/config:ro
