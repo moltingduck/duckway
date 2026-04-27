@@ -1,14 +1,18 @@
 # Duckway Docker Compose
 #
 # Profiles:
-#   combined              — admin + gateway on one port (localhost)
-#   split                 — admin + gateway on separate ports (localhost)
+#   combined              — admin + gateway on one port (localhost, dev)
+#   split                 — admin + gateway on separate ports (localhost, dev)
+#   prod                  — combined, no exposed ports (use behind reverse proxy)
+#   prod-split            — split, no exposed ports (use behind reverse proxy)
 #   tailscale             — split + Tailscale sidecars (HTTPS, no exposed ports)
 #   tailscale-combined    — combined + Tailscale sidecar (HTTPS, no exposed ports)
 #
 # Usage:
 #   docker compose --profile combined up -d                        # dev: combined
 #   docker compose --profile split up -d                           # dev: split
+#   docker compose --profile prod up -d                            # prod: no ports
+#   docker compose --profile prod-split up -d                      # prod: split, no ports
 #   docker compose --profile tailscale up -d                       # prod: split + Tailscale
 #   docker compose --profile tailscale-combined up -d              # prod: combined + Tailscale
 #
@@ -33,6 +37,46 @@ services:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_LISTEN=:8080
     profiles: ["combined"]
+
+  # ============================================================
+  # Production combined (no exposed ports — use behind reverse proxy)
+  # ============================================================
+  server-prod:
+    build: { context: ., target: server }
+    container_name: duckway-server
+    volumes:
+      - duckway-data:/data
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_LISTEN=:8080
+    profiles: ["prod"]
+
+  # ============================================================
+  # Production split (no exposed ports — use behind reverse proxy)
+  # ============================================================
+  admin-prod:
+    build: { context: ., target: admin }
+    container_name: duckway-admin
+    volumes:
+      - duckway-data:/data
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_ADMIN_LISTEN=:9091
+    command: ["--data", "/data", "--port", "9091"]
+    profiles: ["prod-split"]
+
+  gateway-prod:
+    build: { context: ., target: gateway }
+    container_name: duckway-gateway
+    volumes:
+      - duckway-data:/data
+    restart: unless-stopped
+    environment:
+      - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_GATEWAY_LISTEN=:8080
+    profiles: ["prod-split"]
 
   # ============================================================
   # Combined mode + Tailscale

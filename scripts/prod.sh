@@ -17,19 +17,28 @@ set -a
 . "$PROJECT_DIR/.prod.env"
 set +a
 
-# Validate required vars
-if [ -z "$TS_AUTHKEY" ]; then
-  echo "Error: TS_AUTHKEY not set in .prod.env"
-  echo "  Get one from https://login.tailscale.com/admin/settings/keys"
-  exit 1
-fi
-
 MODE="${DUCKWAY_PROD_MODE:-split}"
-case "$MODE" in
-  split)    PROFILES="--profile tailscale" ;;
-  combined) PROFILES="--profile tailscale-combined" ;;
-  *) echo "Error: DUCKWAY_PROD_MODE must be 'split' or 'combined'"; exit 1 ;;
-esac
+USE_TAILSCALE="${DUCKWAY_TAILSCALE:-true}"
+
+if [ "$USE_TAILSCALE" = "true" ]; then
+  if [ -z "$TS_AUTHKEY" ]; then
+    echo "Error: TS_AUTHKEY not set in .prod.env"
+    echo "  Get one from https://login.tailscale.com/admin/settings/keys"
+    echo "  Or set DUCKWAY_TAILSCALE=false to run without Tailscale"
+    exit 1
+  fi
+  case "$MODE" in
+    split)    PROFILES="--profile tailscale" ;;
+    combined) PROFILES="--profile tailscale-combined" ;;
+    *) echo "Error: DUCKWAY_PROD_MODE must be 'split' or 'combined'"; exit 1 ;;
+  esac
+else
+  case "$MODE" in
+    split)    PROFILES="--profile prod-split" ;;
+    combined) PROFILES="--profile prod" ;;
+    *) echo "Error: DUCKWAY_PROD_MODE must be 'split' or 'combined'"; exit 1 ;;
+  esac
+fi
 
 COMPOSE="docker compose -f docker-compose.yml $PROFILES"
 
@@ -40,11 +49,21 @@ case "${1:-up}" in
     sleep 5
 
     echo ""
-    if [ "$MODE" = "split" ]; then
-      echo "Admin:   https://${TS_HOSTNAME:-duckway}-admin (Tailscale HTTPS)"
-      echo "Gateway: https://${TS_HOSTNAME:-duckway}-gw (Tailscale HTTPS)"
+    if [ "$USE_TAILSCALE" = "true" ]; then
+      if [ "$MODE" = "split" ]; then
+        echo "Admin:   https://${TS_HOSTNAME:-duckway}-admin (Tailscale HTTPS)"
+        echo "Gateway: https://${TS_HOSTNAME:-duckway}-gw (Tailscale HTTPS)"
+      else
+        echo "Server:  https://${TS_HOSTNAME:-duckway} (Tailscale HTTPS)"
+      fi
     else
-      echo "Server:  https://${TS_HOSTNAME:-duckway} (Tailscale HTTPS)"
+      echo "No ports exposed. Use a reverse proxy to reach the containers."
+      if [ "$MODE" = "split" ]; then
+        echo "Admin:   duckway-admin:9091"
+        echo "Gateway: duckway-gateway:8080"
+      else
+        echo "Server:  duckway-server:8080"
+      fi
     fi
     echo ""
     echo "Admin password (first run only):"
@@ -111,8 +130,10 @@ case "${1:-up}" in
     echo "  password  Show admin password"
     echo ""
     echo "Mode: $MODE (set DUCKWAY_PROD_MODE in .prod.env)"
-    echo "  split    — admin + gateway on separate Tailscale nodes (default)"
-    echo "  combined — everything on one Tailscale node"
+    echo "  split    — admin + gateway on separate containers (default)"
+    echo "  combined — everything on one container"
+    echo ""
+    echo "Tailscale: $USE_TAILSCALE (set DUCKWAY_TAILSCALE=false to disable)"
     exit 1
     ;;
 esac
