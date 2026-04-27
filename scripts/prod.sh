@@ -19,6 +19,7 @@ set +a
 
 MODE="${DUCKWAY_PROD_MODE:-split}"
 USE_TAILSCALE="${DUCKWAY_TAILSCALE:-true}"
+TS_HOSTNAME="$TS_HOSTNAME"
 
 if [ "$USE_TAILSCALE" = "true" ]; then
   if [ -z "$TS_AUTHKEY" ]; then
@@ -51,10 +52,10 @@ case "${1:-up}" in
     echo ""
     if [ "$USE_TAILSCALE" = "true" ]; then
       if [ "$MODE" = "split" ]; then
-        echo "Admin:   https://${TS_HOSTNAME:-duckway}-admin (Tailscale HTTPS)"
-        echo "Gateway: https://${TS_HOSTNAME:-duckway}-gw (Tailscale HTTPS)"
+        echo "Admin:   https://$TS_HOSTNAME-admin (Tailscale HTTPS)"
+        echo "Gateway: https://$TS_HOSTNAME-gw (Tailscale HTTPS)"
       else
-        echo "Server:  https://${TS_HOSTNAME:-duckway} (Tailscale HTTPS)"
+        echo "Server:  https://$TS_HOSTNAME (Tailscale HTTPS)"
       fi
     else
       echo "No ports exposed. Use a reverse proxy to reach the containers."
