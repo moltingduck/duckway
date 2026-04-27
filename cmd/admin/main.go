@@ -16,6 +16,8 @@ import (
 func main() {
 	port := flag.Int("port", 0, "Listen port (default: 9090 or DUCKWAY_ADMIN_LISTEN)")
 	dataDir := flag.String("data", "", "Data directory")
+	resetPassword := flag.Bool("reset-password", false, "Reset admin password to a fresh random value and exit")
+	resetUsername := flag.String("reset-username", "duckway", "Username to reset (with --reset-password)")
 	flag.Parse()
 
 	config := server.DefaultConfig()
@@ -37,6 +39,19 @@ func main() {
 		log.Fatalf("Database: %v", err)
 	}
 	defer db.Close()
+
+	if *resetPassword {
+		newPw, err := server.ResetAdminPassword(db, *resetUsername)
+		if err != nil {
+			log.Fatalf("Reset failed: %v", err)
+		}
+		fmt.Println("========================================")
+		fmt.Printf("  Admin password reset for: %s\n", *resetUsername)
+		fmt.Printf("  New password: %s\n", newPw)
+		fmt.Println("  (shown once — save it now)")
+		fmt.Println("========================================")
+		return
+	}
 
 	var contentFS fs.FS
 	if webDir := os.Getenv("DUCKWAY_WEB_DIR"); webDir != "" {

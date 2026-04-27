@@ -84,6 +84,35 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
+// ResetAdminPassword sets the admin user's password to a fresh random value.
+// Returns the new password (printed once) and any error.
+// If the user doesn't exist, it is created.
+func ResetAdminPassword(db *sql.DB, username string) (string, error) {
+	if username == "" {
+		username = "duckway"
+	}
+
+	password, err := services.GeneratePassword(16)
+	if err != nil {
+		return "", err
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+
+	userQ := queries.NewAdminUserQueries(db)
+	if err := userQ.UpdatePassword(username, string(hash)); err != nil {
+		// User doesn't exist yet — create them
+		id, _ := services.GenerateToken(16)
+		if cerr := userQ.Create(id, username, string(hash)); cerr != nil {
+			return "", fmt.Errorf("update failed: %w; create failed: %v", err, cerr)
+		}
+	}
+	return password, nil
+}
+
 func (s *Server) ensureAdminUser() error {
 	userQ := queries.NewAdminUserQueries(s.db)
 	count, err := userQ.Count()

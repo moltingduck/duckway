@@ -17,6 +17,8 @@ func main() {
 	port := flag.Int("port", 0, "Listen port (overrides DUCKWAY_LISTEN)")
 	addr := flag.String("listen", "", "Listen address, e.g. :8080 (overrides DUCKWAY_LISTEN)")
 	dataDir := flag.String("data", "", "Data directory (overrides DUCKWAY_DATA_DIR)")
+	resetPassword := flag.Bool("reset-password", false, "Reset admin password to a fresh random value and exit")
+	resetUsername := flag.String("reset-username", "duckway", "Username to reset (with --reset-password)")
 	flag.Parse()
 
 	config := server.DefaultConfig()
@@ -40,6 +42,19 @@ func main() {
 		log.Fatalf("Failed to open database: %v", err)
 	}
 	defer db.Close()
+
+	if *resetPassword {
+		newPw, err := server.ResetAdminPassword(db, *resetUsername)
+		if err != nil {
+			log.Fatalf("Reset failed: %v", err)
+		}
+		fmt.Println("========================================")
+		fmt.Printf("  Admin password reset for: %s\n", *resetUsername)
+		fmt.Printf("  New password: %s\n", newPw)
+		fmt.Println("  (shown once — save it now)")
+		fmt.Println("========================================")
+		return
+	}
 
 	// In dev mode, serve templates + static from disk (live reload on refresh)
 	// In production, use embedded FS (single binary)

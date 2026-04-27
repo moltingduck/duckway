@@ -39,3 +39,18 @@ func (q *AdminUserQueries) Count() (int, error) {
 	err := q.db.QueryRow("SELECT COUNT(*) FROM admin_users").Scan(&count)
 	return count, err
 }
+
+func (q *AdminUserQueries) UpdatePassword(username, passwordHash string) error {
+	res, err := q.db.Exec(
+		"UPDATE admin_users SET password_hash = ? WHERE username = ?",
+		passwordHash, username,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
