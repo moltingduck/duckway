@@ -100,7 +100,7 @@ services:
     container_name: duckway-tailscale-server
     hostname: ${TS_HOSTNAME:-duckway}
     environment:
-      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/ts-combined.json
       - TS_USERSPACE=true
@@ -178,7 +178,7 @@ services:
     container_name: duckway-tailscale-admin
     hostname: ${TS_HOSTNAME:-duckway}-admin
     environment:
-      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/ts-admin.json
       - TS_USERSPACE=true
@@ -193,7 +193,7 @@ services:
     container_name: duckway-tailscale-gateway
     hostname: ${TS_HOSTNAME:-duckway}-gw
     environment:
-      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/ts-gateway.json
       - TS_USERSPACE=true
