@@ -322,17 +322,38 @@ var canaryTokens = [
 var svcEnvMap = {"openai":"OPENAI_API_KEY","anthropic":"ANTHROPIC_API_KEY","github":"GITHUB_TOKEN","discord":"DISCORD_BOT_TOKEN","telegram":"TELEGRAM_BOT_TOKEN"};
 
 var gatewayURL = window.location.origin;
+var gatewayURLValid = false;  // true once we confirm gateway URL is set or admin serves /install.sh
 
 document.addEventListener('DOMContentLoaded', function() {
-  // Load gateway URL from settings, fall back to current origin
+  // Load gateway URL from settings. If empty, verify current origin actually serves
+  // /install.sh (combined mode does, split-mode admin does NOT).
   fetch('/api/settings', {credentials:'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(s) {
-      if (s.gateway_url) gatewayURL = s.gateway_url;
-      document.getElementById('install-cmd').textContent = 'curl -fsSL ' + gatewayURL + '/install.sh | sh';
-    })
-    .catch(function() {
-      document.getElementById('install-cmd').textContent = 'curl -fsSL ' + gatewayURL + '/install.sh | sh';
+      if (s.gateway_url) {
+        gatewayURL = s.gateway_url;
+        gatewayURLValid = true;
+        document.getElementById('install-cmd').textContent = 'curl -fsSL ' + gatewayURL + '/install.sh | sh';
+      } else {
+        // Probe current origin for /install.sh
+        fetch('/install.sh', {method: 'HEAD'})
+          .then(function(r) {
+            if (r.ok) {
+              gatewayURLValid = true;
+              document.getElementById('install-cmd').textContent = 'curl -fsSL ' + gatewayURL + '/install.sh | sh';
+            } else {
+              document.getElementById('install-cmd').innerHTML =
+                '<span style="color:var(--danger)">Gateway URL not configured.</span> ' +
+                'Set it in <a href="/admin/settings">Settings</a> ' +
+                '(this admin panel does not serve <code>/install.sh</code> in split mode).';
+            }
+          })
+          .catch(function() {
+            document.getElementById('install-cmd').innerHTML =
+              '<span style="color:var(--danger)">Gateway URL not configured.</span> ' +
+              'Set it in <a href="/admin/settings">Settings</a>.';
+          });
+      }
     });
 
   // Check canary settings
@@ -696,10 +717,15 @@ document.getElementById('add-client-form').addEventListener('submit', function(e
       if (data.error) { showToast(data.error, 'error'); return; }
       document.getElementById('add-modal').style.display = 'none';
       document.getElementById('token-value').value = data.token;
-      var gw = gatewayURL || window.location.origin;
-      var initCmd = 'printf "' + gw + '\\n' + data.name + '\\n1\\n' + data.token + '\\n" | duckway init';
-      document.getElementById('init-cmd').textContent = initCmd;
-      document.getElementById('full-setup-cmd').textContent = 'curl -fsSL ' + gw + '/install.sh | sh && ' + initCmd;
+      if (!gatewayURLValid) {
+        var warn = '# Set Gateway URL in Settings first — current admin URL does not serve /install.sh\n# https://github.com/anthropics/duckway#split-mode-setup';
+        document.getElementById('init-cmd').textContent = warn;
+        document.getElementById('full-setup-cmd').textContent = warn;
+      } else {
+        var initCmd = 'printf "' + gatewayURL + '\\n' + data.name + '\\n1\\n' + data.token + '\\n" | duckway init';
+        document.getElementById('init-cmd').textContent = initCmd;
+        document.getElementById('full-setup-cmd').textContent = 'curl -fsSL ' + gatewayURL + '/install.sh | sh && ' + initCmd;
+      }
       document.getElementById('token-modal').style.display = 'flex';
     });
 });
