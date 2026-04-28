@@ -6,7 +6,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/client"
@@ -44,13 +49,23 @@ func printUsage() {
 	fmt.Println(`duckway — API proxy client for AI agents
 
 Usage:
-  duckway init     Register this machine with a Duckway server
-  duckway sync     Fetch placeholder keys from server
-  duckway env      Print keys as shell export statements
-  duckway proxy    Start local proxy (forwards to server)
-  duckway status   Show connection status
+  duckway init           Register this machine with a Duckway server
+  duckway sync           Fetch placeholder keys from server
+  duckway env            Print keys as shell export statements
+  duckway proxy          Start local proxy (foreground)
+  duckway proxy -d       Start local proxy as background daemon
+  duckway proxy stop     Stop the running daemon
+  duckway proxy status   Show daemon status
+  duckway status         Show connection status
 
-Config directory: ~/.duckway/`)
+Proxy flags:
+  --port N               Override proxy port
+  --daemon, -d           Run in background
+
+Config directory: ~/.duckway/
+Daemon files:
+  ~/.duckway/proxy.pid   PID of the running daemon
+  ~/.duckway/proxy.log   Daemon logs (stdout + stderr)`)
 }
 
 func cmdInit(configDir string) {
@@ -172,22 +187,180 @@ func cmdEnv(configDir string) {
 }
 
 func cmdProxy(configDir string) {
+	pidFile := filepath.Join(configDir, "proxy.pid")
+	logFile := filepath.Join(configDir, "proxy.log")
+
+	// Parse subcommands and flags
+	daemon := false
+	stop := false
+	status := false
+	port := 0
+	for i := 2; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		switch arg {
+		case "--daemon", "-d":
+			daemon = true
+		case "stop":
+			stop = true
+		case "status":
+			status = true
+		case "--port":
+			if i+1 < len(os.Args) {
+				port, _ = strconv.Atoi(os.Args[i+1])
+				i++
+			}
+		}
+	}
+
+	if stop {
+		stopProxyDaemon(pidFile)
+		return
+	}
+	if status {
+		statusProxyDaemon(pidFile)
+		return
+	}
+
 	cfg, err := client.LoadConfig(configDir)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// Parse port from args if provided
-	for i, arg := range os.Args {
-		if arg == "--port" && i+1 < len(os.Args) {
-			fmt.Sscanf(os.Args[i+1], "%d", &cfg.ProxyPort)
-		}
+	if port > 0 {
+		cfg.ProxyPort = port
 	}
+
+	if daemon {
+		startProxyDaemon(pidFile, logFile)
+		return
+	}
+
+	// Refuse to start if a daemon is already running (unless this IS the daemon child)
+	if pid, alive := readPID(pidFile); alive && pid != os.Getpid() {
+		log.Fatalf("duckway proxy is already running (PID %d). Run 'duckway proxy stop' first.", pid)
+	}
+
+	// On SIGTERM/SIGINT, clean up our PID file (only if it matches our PID)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-sigCh
+		if pid, _ := readPID(pidFile); pid == os.Getpid() {
+			os.Remove(pidFile)
+		}
+		os.Exit(0)
+	}()
 
 	syncInterval := 5 * time.Minute
 	if err := client.RunHTTPSProxy(cfg, syncInterval); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// startProxyDaemon re-execs duckway proxy without --daemon, detaches from the
+// terminal, redirects output to a log file, writes a PID file, and exits the
+// parent so the shell prompt returns.
+func startProxyDaemon(pidFile, logFilePath string) {
+	if pid, alive := readPID(pidFile); alive {
+		fmt.Fprintf(os.Stderr, "duckway proxy already running (PID %d)\n", pid)
+		os.Exit(1)
+	}
+
+	logF, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		log.Fatalf("Cannot open log file %s: %v", logFilePath, err)
+	}
+	defer logF.Close()
+
+	// Strip --daemon/-d from args before re-exec
+	args := []string{}
+	for i := 1; i < len(os.Args); i++ {
+		if os.Args[i] == "--daemon" || os.Args[i] == "-d" {
+			continue
+		}
+		args = append(args, os.Args[i])
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		log.Fatalf("Cannot find own executable: %v", err)
+	}
+
+	cmd := exec.Command(exe, args...)
+	cmd.Stdin = nil
+	cmd.Stdout = logF
+	cmd.Stderr = logF
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		log.Fatalf("Failed to start daemon: %v", err)
+	}
+
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0600); err != nil {
+		log.Printf("Warning: cannot write PID file: %v", err)
+	}
+
+	fmt.Printf("duckway proxy started in background (PID %d)\n", cmd.Process.Pid)
+	fmt.Printf("  Logs:  %s\n", logFilePath)
+	fmt.Printf("  Stop:  duckway proxy stop\n")
+	// Detach from child so it survives parent exit
+	cmd.Process.Release()
+}
+
+func stopProxyDaemon(pidFile string) {
+	pid, alive := readPID(pidFile)
+	if pid == 0 {
+		fmt.Println("No PID file — daemon does not appear to be running.")
+		return
+	}
+	if !alive {
+		fmt.Printf("Stale PID file (PID %d not running). Removing.\n", pid)
+		os.Remove(pidFile)
+		return
+	}
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		log.Fatalf("Failed to send SIGTERM to PID %d: %v", pid, err)
+	}
+	// Wait briefly for graceful shutdown
+	for i := 0; i < 20; i++ {
+		if _, alive := readPID(pidFile); !alive {
+			os.Remove(pidFile)
+			fmt.Printf("Stopped duckway proxy (PID %d)\n", pid)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	fmt.Printf("PID %d did not exit within 2s — sent SIGTERM, check 'ps' if it lingers.\n", pid)
+	os.Remove(pidFile)
+}
+
+func statusProxyDaemon(pidFile string) {
+	pid, alive := readPID(pidFile)
+	if pid == 0 {
+		fmt.Println("Status: not running (no PID file)")
+		return
+	}
+	if alive {
+		fmt.Printf("Status: running (PID %d)\n", pid)
+	} else {
+		fmt.Printf("Status: stale PID file (PID %d not running)\n", pid)
+	}
+}
+
+// readPID returns the recorded PID and whether that process is alive.
+func readPID(pidFile string) (int, bool) {
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	// Signal 0 = check existence
+	if err := syscall.Kill(pid, 0); err != nil {
+		return pid, false
+	}
+	return pid, true
 }
 
 func cmdStatus(configDir string) {
