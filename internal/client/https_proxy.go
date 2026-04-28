@@ -567,7 +567,12 @@ func (p *httpsProxy) forwardLoan(tlsConn *tls.Conn, req *http.Request, entry hos
 		Status:        resp.StatusCode,
 	})
 
-	// Stream response back to the agent
+	// Force connection close so single-shot clients (curl, one-off git ops)
+	// exit cleanly after reading the body. Without this the agent's TLS
+	// connection stays open up to the 30s read deadline waiting for another
+	// request, which makes curl --max-time appear to hang.
+	resp.Header.Set("Connection", "close")
+	resp.Close = true
 	resp.Write(tlsConn)
 }
 

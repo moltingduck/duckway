@@ -216,6 +216,131 @@ run_test "discord" "$DISCORD_ID" "$DISCORD_BOT_TOKEN" \
 # doesn't fit the phantom-in-header model. Would need a path-substitution
 # feature to support cleanly.
 
+# ====================================================================
+# loan_proxy end-to-end test: real GitHub PAT through duckway-client
+# MITM proxy (HTTPS_PROXY → sidecar → cached real token → upstream).
+# Proves the full sidecar flow, not just the gateway endpoints.
+# Skipped if GITHUB_TOKEN isn't set or duckway-client container isn't running.
+# ====================================================================
+
+run_loan_proxy_github_test() {
+  if [ -z "$GITHUB_TOKEN" ]; then
+    SKIP=$((SKIP+1))
+    printf "${YELLOW}SKIP${NC} %-10s no GITHUB_TOKEN for loan_proxy MITM test\n" "github-loan"
+    return
+  fi
+  if ! docker ps --format '{{.Names}}' | grep -qx 'duckway-client'; then
+    SKIP=$((SKIP+1))
+    printf "${YELLOW}SKIP${NC} %-10s duckway-client container not running\n" "github-loan"
+    return
+  fi
+  if [ -z "$GITHUB_ID" ]; then
+    SKIP=$((SKIP+1))
+    printf "${YELLOW}SKIP${NC} %-10s github service not found\n" "github-loan"
+    return
+  fi
+
+  printf "      %-10s setting up loan_proxy test...                     \r" "github-loan"
+
+  # Make sure the github service is in loan_proxy mode (it's the default,
+  # but reset just in case).
+  curl -s -b "$COOKIES" -X PUT "$BASE/api/services/$GITHUB_ID" \
+    -H "Content-Type: application/json" \
+    -d '{"delivery_mode":"loan_proxy","host_pattern":"api.github.com,github.com"}' > /dev/null
+
+  # 1. Upload the real key
+  KEY_ID=$(curl -s -b "$COOKIES" -X POST "$BASE/api/keys" \
+    -H "Content-Type: application/json" \
+    -d "{\"service_id\":\"$GITHUB_ID\",\"name\":\"${RUN_ID}-loan\",\"key\":\"$GITHUB_TOKEN\"}" \
+    | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('id',''))" 2>/dev/null)
+  if [ -z "$KEY_ID" ]; then
+    FAIL=$((FAIL+1))
+    printf "${RED}FAIL${NC} %-10s could not upload github key                    \n" "github-loan"
+    return
+  fi
+
+  # 2. Register a fresh client
+  CLIENT_JSON=$(curl -s -b "$COOKIES" -X POST "$BASE/api/clients" \
+    -H "Content-Type: application/json" \
+    -d "{\"name\":\"${RUN_ID}-loan\"}")
+  CLIENT_ID=$(echo "$CLIENT_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+  CLIENT_TOKEN=$(echo "$CLIENT_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('token',''))" 2>/dev/null)
+
+  # 3. Bind a phantom for github
+  curl -s -b "$COOKIES" -X POST "$BASE/api/placeholders" \
+    -H "Content-Type: application/json" \
+    -d "{\"service_id\":\"$GITHUB_ID\",\"api_key_id\":\"$KEY_ID\",\"client_id\":\"$CLIENT_ID\",\"requires_approval\":false}" > /dev/null
+
+  # 4. Configure duckway-client and start the proxy daemon inside it
+  printf "      %-10s starting duckway proxy in container...           \r" "github-loan"
+  docker exec duckway-client sh -c '
+    rm -f /root/.duckway/config.yaml /root/.duckway/proxy.pid
+    mkdir -p /root/.duckway
+  ' > /dev/null
+
+  docker exec duckway-client sh -c "
+    echo 'server_url: http://duckway-server:8080' > /root/.duckway/config.yaml
+    echo 'token: $CLIENT_TOKEN' >> /root/.duckway/config.yaml
+    echo 'client_name: ${RUN_ID}-loan' >> /root/.duckway/config.yaml
+    echo 'proxy_port: 18080' >> /root/.duckway/config.yaml
+  " > /dev/null
+
+  # CA cert is required for the MITM. duckway sync doesn't fetch it; pull
+  # it from the server's public /skill/ca.pem and the auth'd /client/ca-key.
+  docker exec duckway-client pkill -9 -f 'duckway proxy' >/dev/null 2>&1 || true
+  docker exec duckway-client rm -f /root/.duckway/proxy.pid /root/.duckway/proxy.log >/dev/null 2>&1
+  docker exec duckway-client sh -c "curl -sf -o /root/.duckway/ca.pem http://duckway-server:8080/skill/ca.pem" >/dev/null 2>&1
+  docker exec duckway-client sh -c "curl -sf -H 'X-Duckway-Token: $CLIENT_TOKEN' -o /root/.duckway/ca-key.pem http://duckway-server:8080/client/ca-key" >/dev/null 2>&1
+  docker exec duckway-client duckway sync >/dev/null 2>&1
+  docker exec duckway-client duckway proxy -d >/dev/null 2>&1
+  sleep 2
+
+  # 5. Make a request through HTTPS_PROXY to api.github.com (loan_proxy MITM)
+  #    Phantom token is sent as Authorization Bearer; duckway-client should
+  #    swap it for the real one via /client/loan.
+  printf "      %-10s curl https://api.github.com/user via MITM...     \r" "github-loan"
+
+  PHANTOM=$(docker exec duckway-client sh -c '. /root/.duckway/keys.env 2>/dev/null && echo "$GITHUB_TOKEN"' | tr -d "\r\n")
+
+  # Run curl in the container, status into one file, body into another.
+  # `set +e` locally so curl timeouts don't trip the surrounding `set -e`.
+  set +e
+  docker exec duckway-client sh -c "
+    curl -s --max-time 20 -o /tmp/loan-resp -w '%{http_code}' \
+      --cacert /root/.duckway/ca.pem \
+      -x http://127.0.0.1:18080 \
+      -H 'Authorization: Bearer $PHANTOM' \
+      'https://api.github.com/user' > /tmp/loan-status 2>&1
+    echo \"curl_exit=\$?\" > /tmp/loan-exit
+  " >/dev/null 2>&1
+  set -e
+
+  STATUS=$(docker exec duckway-client cat /tmp/loan-status 2>/dev/null | tr -d '\r\n ')
+  CURL_EXIT=$(docker exec duckway-client cat /tmp/loan-exit 2>/dev/null | sed 's/.*=//')
+
+  if [ "$STATUS" = "200" ]; then
+    PASS=$((PASS+1))
+    LOGIN=$(docker exec duckway-client cat /tmp/loan-resp 2>/dev/null | python3 -c "
+import sys,json
+try: print(json.load(sys.stdin).get('login','?'))
+except: print('?')
+" 2>/dev/null)
+    printf "${GREEN}PASS${NC} %-12s loan_proxy MITM works  (login=%s)                    \n" "github-loan" "$LOGIN"
+  else
+    FAIL=$((FAIL+1))
+    BODY=$(docker exec duckway-client cat /tmp/loan-resp 2>/dev/null | head -c 200 | tr '\n' ' ')
+    ERRORS="$ERRORS\n  - github-loan: status=$STATUS curl_exit=$CURL_EXIT body=$BODY"
+    printf "${RED}FAIL${NC} %-12s loan_proxy status=%s curl_exit=%s                  \n" "github-loan" "$STATUS" "$CURL_EXIT"
+  fi
+
+  # 6. Cleanup
+  docker exec duckway-client duckway proxy stop 2>/dev/null > /dev/null || true
+  curl -s -b "$COOKIES" -X DELETE "$BASE/api/clients/$CLIENT_ID" > /dev/null
+  curl -s -b "$COOKIES" -X DELETE "$BASE/api/keys/$KEY_ID" > /dev/null
+}
+
+run_loan_proxy_github_test
+
 echo ""
 echo "============================================"
 if [ "$FAIL" -eq 0 ]; then
