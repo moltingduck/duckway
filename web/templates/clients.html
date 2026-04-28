@@ -188,14 +188,32 @@
 <!-- Assign key modal -->
 <div id="assign-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
   <div class="modal">
-    <h2>Assign API Key to <span id="assign-client-name"></span></h2>
+    <h2>Assign Key to <span id="assign-client-name"></span></h2>
     <input type="hidden" id="assign-client-id">
+
     <div class="form-group">
+      <label class="text-sm">Bind to</label>
+      <div class="flex gap-md">
+        <label><input type="radio" name="assign-bind-type" value="key" checked onchange="onAssignBindTypeChange()"> Single API Key</label>
+        <label><input type="radio" name="assign-bind-type" value="group" onchange="onAssignBindTypeChange()"> Key Group</label>
+      </div>
+    </div>
+
+    <div class="form-group" id="assign-key-row">
       <label>API Key</label>
       <select id="assign-key-select">
         <option value="">Select an API key...</option>
       </select>
     </div>
+
+    <div class="form-group" id="assign-group-row" style="display:none">
+      <label>Key Group</label>
+      <select id="assign-group-select">
+        <option value="">Select a key group...</option>
+      </select>
+      <span class="text-muted text-sm">Manage groups in <a href="/admin/groups">Key Groups</a></span>
+    </div>
+
     <div id="assign-preview" style="display:none" class="card mt-1">
       <div class="text-sm">
         <div><strong>Service:</strong> <span id="assign-svc-name"></span></div>
@@ -306,6 +324,10 @@ document.getElementById('client-edit-form').addEventListener('submit', function(
 <script>
 var apiKeys = [
   {{range .Keys}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}"},{{end}}
+];
+
+var keyGroups = [
+  {{range .Groups}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}", strategy:"{{.Strategy}}", memberCount: {{len .Members}}},{{end}}
 ];
 
 var placeholders = [
@@ -641,29 +663,69 @@ function toggleCanary(clientId, enable) {
   });
 }
 
+function onAssignBindTypeChange() {
+  var t = document.querySelector('input[name="assign-bind-type"]:checked').value;
+  var keyRow = document.getElementById('assign-key-row');
+  var grpRow = document.getElementById('assign-group-row');
+  document.getElementById('assign-preview').style.display = 'none';
+  if (t === 'group') {
+    keyRow.style.display = 'none';
+    grpRow.style.display = '';
+  } else {
+    keyRow.style.display = '';
+    grpRow.style.display = 'none';
+  }
+}
+
+function buildAssignPreview(svcName) {
+  document.getElementById('assign-svc-name').textContent = svcName;
+  document.getElementById('assign-env-name').textContent = svcEnvMap[svcName] || svcName.toUpperCase() + '_API_KEY';
+  document.getElementById('assign-preview').style.display = 'block';
+}
+
 function openAssignModal(clientId, clientName) {
   document.getElementById('assign-client-id').value = clientId;
   document.getElementById('assign-client-name').textContent = clientName;
   document.getElementById('assign-preview').style.display = 'none';
 
-  var sel = document.getElementById('assign-key-select');
-  sel.innerHTML = '<option value="">Select an API key...</option>';
+  // Reset radio to "key"
+  document.querySelectorAll('input[name="assign-bind-type"]').forEach(function(r) {
+    r.checked = (r.value === 'key');
+  });
+  onAssignBindTypeChange();
+
+  // Populate API key dropdown
+  var keySel = document.getElementById('assign-key-select');
+  keySel.innerHTML = '<option value="">Select an API key...</option>';
   apiKeys.forEach(function(k) {
     var opt = document.createElement('option');
     opt.value = k.id;
     opt.textContent = k.name + ' (' + k.serviceName + ')';
     opt.dataset.serviceId = k.serviceId;
     opt.dataset.serviceName = k.serviceName;
-    sel.appendChild(opt);
+    keySel.appendChild(opt);
   });
-
-  sel.onchange = function() {
-    var opt = sel.options[sel.selectedIndex];
+  keySel.onchange = function() {
+    var opt = keySel.options[keySel.selectedIndex];
     if (!opt.value) { document.getElementById('assign-preview').style.display = 'none'; return; }
-    var svcName = opt.dataset.serviceName;
-    document.getElementById('assign-svc-name').textContent = svcName;
-    document.getElementById('assign-env-name').textContent = svcEnvMap[svcName] || svcName.toUpperCase() + '_API_KEY';
-    document.getElementById('assign-preview').style.display = 'block';
+    buildAssignPreview(opt.dataset.serviceName);
+  };
+
+  // Populate Key Group dropdown
+  var grpSel = document.getElementById('assign-group-select');
+  grpSel.innerHTML = '<option value="">Select a key group...</option>';
+  keyGroups.forEach(function(g) {
+    var opt = document.createElement('option');
+    opt.value = g.id;
+    opt.textContent = g.name + ' (' + g.serviceName + ', ' + g.strategy + ', ' + g.memberCount + ' members)';
+    opt.dataset.serviceId = g.serviceId;
+    opt.dataset.serviceName = g.serviceName;
+    grpSel.appendChild(opt);
+  });
+  grpSel.onchange = function() {
+    var opt = grpSel.options[grpSel.selectedIndex];
+    if (!opt.value) { document.getElementById('assign-preview').style.display = 'none'; return; }
+    buildAssignPreview(opt.dataset.serviceName);
   };
 
   document.getElementById('assign-modal').style.display = 'flex';
@@ -671,19 +733,26 @@ function openAssignModal(clientId, clientName) {
 
 function submitAssign() {
   var clientId = document.getElementById('assign-client-id').value;
-  var sel = document.getElementById('assign-key-select');
+  var bindType = document.querySelector('input[name="assign-bind-type"]:checked').value;
+  var sel = document.getElementById(bindType === 'group' ? 'assign-group-select' : 'assign-key-select');
   var opt = sel.options[sel.selectedIndex];
-  if (!opt || !opt.value) { showToast('Select an API key', 'error'); return; }
+  if (!opt || !opt.value) {
+    showToast(bindType === 'group' ? 'Select a key group' : 'Select an API key', 'error');
+    return;
+  }
+
+  var body = {
+    service_id: opt.dataset.serviceId,
+    client_id: clientId,
+    requires_approval: document.getElementById('assign-approval').checked
+  };
+  if (bindType === 'group') body.group_id = opt.value;
+  else body.api_key_id = opt.value;
 
   fetch('/api/placeholders', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      service_id: opt.dataset.serviceId,
-      api_key_id: opt.value,
-      client_id: clientId,
-      requires_approval: document.getElementById('assign-approval').checked
-    }),
+    body: JSON.stringify(body),
     credentials: 'same-origin'
   })
   .then(function(r) { return r.json(); })

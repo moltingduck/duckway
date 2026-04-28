@@ -222,6 +222,7 @@ func (h *AdminHandler) PlaceholdersPage(w http.ResponseWriter, r *http.Request) 
 	svcs, _ := h.services.List()
 	clients, _ := h.clients.List()
 	keys, _ := h.apiKeys.List("")
+	groups, _ := h.groups.List("")
 	h.render(w, "placeholders", pageData{
 		Title:        "Placeholders",
 		Active:       "placeholders",
@@ -229,12 +230,14 @@ func (h *AdminHandler) PlaceholdersPage(w http.ResponseWriter, r *http.Request) 
 		Services:     svcs,
 		Clients:      clients,
 		Keys:         keys,
+		Groups:       groups,
 	})
 }
 
 func (h *AdminHandler) ClientsPage(w http.ResponseWriter, r *http.Request) {
 	clients, _ := h.clients.List()
 	keys, _ := h.apiKeys.List("")
+	groups, _ := h.groups.List("")
 	placeholders, _ := h.placeholders.List("", "")
 
 	// Collect canary tokens for all clients
@@ -249,6 +252,7 @@ func (h *AdminHandler) ClientsPage(w http.ResponseWriter, r *http.Request) {
 		Active:       "clients",
 		Clients:      clients,
 		Keys:         keys,
+		Groups:       groups,
 		Placeholders: placeholders,
 		CanaryTokens: allCanaries,
 	})

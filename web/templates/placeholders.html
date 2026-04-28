@@ -40,9 +40,9 @@
 <div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
   <div class="modal">
     <h2>Generate Phantom Token</h2>
-    <form hx-post="/api/placeholders" hx-on::after-request="if(event.detail.successful){document.getElementById('add-modal').style.display='none';location.reload()}">
+    <form id="add-ph-form">
       <div class="form-group"><label>Service</label>
-        <select name="service_id" required>
+        <select id="add-svc" name="service_id" required>
           <option value="">Select...</option>
           {{range .Services}}<option value="{{.ID}}">{{.DisplayName}}</option>{{end}}
         </select>
@@ -53,11 +53,25 @@
           {{range .Clients}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
         </select>
       </div>
-      <div class="form-group"><label>API Key (or leave blank for group)</label>
-        <select name="api_key_id">
+      <div class="form-group">
+        <label class="text-sm">Bind to</label>
+        <div class="flex gap-md">
+          <label><input type="radio" name="bind_type" value="key" checked onchange="onBindTypeChange()"> Single API Key</label>
+          <label><input type="radio" name="bind_type" value="group" onchange="onBindTypeChange()"> Key Group <span class="text-muted text-sm">(round-robin / failover / least-used)</span></label>
+        </div>
+      </div>
+      <div class="form-group" id="add-key-row"><label>API Key</label>
+        <select id="add-key" name="api_key_id">
           <option value="">Select API key...</option>
-          {{range .Keys}}<option value="{{.ID}}">{{.Name}} ({{.ServiceName}})</option>{{end}}
+          {{range .Keys}}<option value="{{.ID}}" data-service="{{.ServiceID}}">{{.Name}} ({{.ServiceName}})</option>{{end}}
         </select>
+      </div>
+      <div class="form-group" id="add-group-row" style="display:none"><label>Key Group</label>
+        <select id="add-group" name="group_id">
+          <option value="">Select key group...</option>
+          {{range .Groups}}<option value="{{.ID}}" data-service="{{.ServiceID}}">{{.Name}} ({{.ServiceName}}, {{.Strategy}}, {{len .Members}} members)</option>{{end}}
+        </select>
+        <span class="text-muted text-sm">Manage groups in <a href="/admin/groups">Key Groups</a></span>
       </div>
       <div class="form-group"><label>Env Name (auto-generated if blank)</label>
         <input type="text" name="env_name" placeholder="OPENAI_API_KEY">
@@ -131,6 +145,72 @@
 
 <script>
 var currentPh = null;
+
+// --- Generate Phantom Token: bind type toggle + service-scoped dropdowns ---
+function onBindTypeChange() {
+  var t = document.querySelector('input[name="bind_type"]:checked').value;
+  var keyRow = document.getElementById('add-key-row');
+  var grpRow = document.getElementById('add-group-row');
+  if (t === 'group') {
+    keyRow.style.display = 'none';
+    grpRow.style.display = '';
+    document.getElementById('add-key').value = '';
+  } else {
+    keyRow.style.display = '';
+    grpRow.style.display = 'none';
+    document.getElementById('add-group').value = '';
+  }
+}
+
+// Hide options for keys/groups that don't match the selected service
+function filterDropdownsByService() {
+  var svcId = document.getElementById('add-svc').value;
+  ['add-key', 'add-group'].forEach(function(id) {
+    var sel = document.getElementById(id);
+    Array.prototype.forEach.call(sel.options, function(opt) {
+      if (!opt.value) { opt.hidden = false; return; }
+      opt.hidden = svcId && opt.dataset.service && opt.dataset.service !== svcId;
+    });
+    // Reset selection if it became hidden
+    if (sel.selectedOptions[0] && sel.selectedOptions[0].hidden) sel.value = '';
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  var svc = document.getElementById('add-svc');
+  if (svc) svc.addEventListener('change', filterDropdownsByService);
+
+  var form = document.getElementById('add-ph-form');
+  if (form) form.addEventListener('submit', function(e) {
+    e.preventDefault();
+    var bindType = document.querySelector('input[name="bind_type"]:checked').value;
+    var body = {
+      service_id: document.getElementById('add-svc').value,
+      client_id: form.client_id.value,
+      env_name: form.env_name.value || '',
+      requires_approval: form.requires_approval.checked
+    };
+    if (bindType === 'group') {
+      body.group_id = document.getElementById('add-group').value;
+      if (!body.group_id) { showToast('Pick a key group', 'error'); return; }
+    } else {
+      body.api_key_id = document.getElementById('add-key').value;
+      if (!body.api_key_id) { showToast('Pick an API key', 'error'); return; }
+    }
+    fetch('/api/placeholders', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+      credentials: 'same-origin'
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { showToast(d.error, 'error'); return; }
+      document.getElementById('add-modal').style.display = 'none';
+      location.reload();
+    });
+  });
+});
 
 function openDetail(id) {
   fetch('/api/placeholders/' + id, {credentials:'same-origin'})
