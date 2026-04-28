@@ -10,8 +10,8 @@
   <form id="settings-form">
     <div class="form-group">
       <label>Gateway URL</label>
-      <input type="url" id="s-gateway-url" placeholder="http://duckway-gateway.tailnet:8080">
-      <span class="text-muted text-sm">The URL agents use to reach the gateway. Used in install commands and client init. Leave empty to use the admin panel URL (combined mode).</span>
+      <input type="url" id="s-gateway-url" placeholder="http://duckway-gw">
+      <span class="text-muted text-sm">The URL agents use to reach the gateway. Used in install commands and client init. Required in split mode (admin panel does not serve <code>/install.sh</code>). Leave empty in combined mode to fall back to the admin panel URL.</span>
     </div>
     <div class="form-group">
       <label>Client Proxy Port</label>
@@ -25,21 +25,41 @@
 <div class="card mt-2">
   <h3>Architecture</h3>
   <table>
-    <thead><tr><th>Mode</th><th>Compose File</th><th>Ports</th></tr></thead>
+    <thead><tr><th>Profile</th><th>Containers</th><th>Ports</th></tr></thead>
     <tbody>
       <tr>
-        <td><strong>Split</strong> (recommended)</td>
-        <td class="mono text-sm">docker-compose.prod.yml</td>
-        <td>Admin :9091 + Gateway :8080</td>
+        <td><strong>combined</strong></td>
+        <td><code>duckway-server</code></td>
+        <td>127.0.0.1:8080 (dev)</td>
       </tr>
       <tr>
-        <td><strong>Combined</strong></td>
-        <td class="mono text-sm">docker-compose.combined.yml</td>
-        <td>Everything :8080</td>
+        <td><strong>split</strong></td>
+        <td><code>duckway-admin</code> + <code>duckway-gateway</code></td>
+        <td>127.0.0.1:9091 + 127.0.0.1:8080 (dev)</td>
+      </tr>
+      <tr>
+        <td><strong>prod</strong></td>
+        <td><code>duckway-server</code></td>
+        <td>none — reverse proxy or Tailscale</td>
+      </tr>
+      <tr>
+        <td><strong>prod-split</strong></td>
+        <td><code>duckway-admin</code> + <code>duckway-gateway</code></td>
+        <td>none — reverse proxy or Tailscale</td>
+      </tr>
+      <tr>
+        <td><strong>tailscale-combined</strong></td>
+        <td><code>duckway-server</code> + Tailscale sidecar</td>
+        <td>:80 inside tailnet</td>
+      </tr>
+      <tr>
+        <td><strong>tailscale</strong></td>
+        <td><code>duckway-admin</code> + <code>duckway-gateway</code> + 2 Tailscale sidecars</td>
+        <td>:80 each inside tailnet</td>
       </tr>
     </tbody>
   </table>
-  <p class="text-sm text-muted mt-1">In split mode, agents only access the gateway. Admin panel is on a separate port protected by Tailscale ACL.</p>
+  <p class="text-sm text-muted mt-1">In split mode, agents only access the gateway. Admin panel runs on a separate node protected by Tailscale ACL. Use <code>./scripts/prod.sh</code> to start production profiles.</p>
 </div>
 
 <script>
