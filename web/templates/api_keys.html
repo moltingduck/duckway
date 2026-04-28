@@ -70,6 +70,7 @@
         <tr><td class="text-muted">ID</td><td id="d-id" class="mono text-sm"></td></tr>
         <tr><td class="text-muted">Name</td><td id="d-name"></td></tr>
         <tr><td class="text-muted">Service</td><td id="d-service"></td></tr>
+        <tr><td class="text-muted">Key Preview</td><td id="d-key-preview" class="mono text-sm"></td></tr>
         <tr><td class="text-muted">ACL</td><td id="d-acl"></td></tr>
         <tr><td class="text-muted">Refreshable</td><td id="d-refresh"></td></tr>
         <tr><td class="text-muted">Usage</td><td id="d-usage"></td></tr>
@@ -140,6 +141,7 @@ function openDetail(id) {
       document.getElementById('d-id').textContent = k.id;
       document.getElementById('d-name').textContent = k.name;
       document.getElementById('d-service').innerHTML = '<span class="badge badge-blue">' + k.service_name + '</span>';
+      document.getElementById('d-key-preview').textContent = k.key_preview || '—';
       document.getElementById('d-acl').innerHTML = k.acl ? '<span class="badge badge-yellow">custom</span>' : '<span class="badge badge-gray">inherit</span>';
       document.getElementById('d-refresh').innerHTML = k.is_refreshable ? '<span class="badge badge-blue">Yes</span>' : 'No';
       document.getElementById('d-usage').textContent = k.usage_count;

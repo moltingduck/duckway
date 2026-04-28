@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -90,8 +91,41 @@ func (h *APIKeyHandler) Get(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "key not found", http.StatusNotFound)
 		return
 	}
+
+	// Compute a masked preview: first 6 + last 4 chars of the decrypted key.
+	// Never return the full secret. For very short keys, just show stars.
+	preview := ""
+	if key.KeyEncrypted != "" {
+		if plain, derr := h.crypto.Decrypt(key.KeyEncrypted); derr == nil && plain != "" {
+			preview = maskKey(plain)
+		}
+	}
 	key.KeyEncrypted = ""
-	jsonResponse(w, key)
+
+	resp := map[string]interface{}{
+		"id":              key.ID,
+		"service_id":      key.ServiceID,
+		"service_name":    key.ServiceName,
+		"name":            key.Name,
+		"acl":             key.ACL,
+		"is_refreshable":  key.IsRefreshable,
+		"is_active":       key.IsActive,
+		"usage_count":     key.UsageCount,
+		"last_used_at":    key.LastUsedAt,
+		"created_at":      key.CreatedAt,
+		"key_preview":     preview,
+		"expires_at":      key.ExpiresAt,
+		"token_endpoint":  key.TokenEndpoint,
+	}
+	jsonResponse(w, resp)
+}
+
+// maskKey returns "<first6>...<last4>" for keys long enough; otherwise stars.
+func maskKey(s string) string {
+	if len(s) <= 12 {
+		return strings.Repeat("*", len(s))
+	}
+	return s[:6] + "..." + s[len(s)-4:]
 }
 
 func (h *APIKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
