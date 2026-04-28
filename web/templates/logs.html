@@ -7,32 +7,32 @@
   <div class="flex gap-md mb-1" style="flex-wrap:wrap">
     <div class="form-group" style="flex:1;min-width:150px">
       <label>Service</label>
-      <select id="f-service" onchange="applyFilters()">
+      <select id="f-service" onchange="onFilterChange()">
         <option value="">All services</option>
       </select>
     </div>
     <div class="form-group" style="flex:1;min-width:150px">
       <label>Client</label>
-      <select id="f-client" onchange="applyFilters()">
+      <select id="f-client" onchange="onFilterChange()">
         <option value="">All clients</option>
       </select>
     </div>
     <div class="form-group" style="flex:1;min-width:120px">
       <label>Key</label>
-      <select id="f-key" onchange="applyFilters()">
+      <select id="f-key" onchange="onFilterChange()">
         <option value="">All keys</option>
       </select>
     </div>
     <div class="form-group" style="flex:1;min-width:100px">
       <label>Method</label>
-      <select id="f-method" onchange="applyFilters()">
+      <select id="f-method" onchange="onFilterChange()">
         <option value="">All</option>
         <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
       </select>
     </div>
     <div class="form-group" style="flex:1;min-width:100px">
       <label>Status</label>
-      <select id="f-status" onchange="applyFilters()">
+      <select id="f-status" onchange="onFilterChange()">
         <option value="">All</option>
         <option value="ok">2xx OK</option>
         <option value="err">4xx/5xx Error</option>
@@ -40,12 +40,21 @@
     </div>
     <div class="form-group" style="flex:1;min-width:120px">
       <label>Search path</label>
-      <input type="text" id="f-path" placeholder="/v1/chat/..." oninput="applyFilters()">
+      <input type="text" id="f-path" placeholder="/v1/chat/..." oninput="onFilterChange()">
     </div>
   </div>
   <div class="flex-between mb-1">
     <span id="log-count" class="text-muted text-sm"></span>
-    <button class="btn btn-sm" onclick="loadLogs()">Refresh</button>
+    <div class="flex gap-sm" style="align-items:center">
+      <label class="text-sm text-muted" for="f-perpage">Per page</label>
+      <select id="f-perpage" onchange="onPerPageChange()" style="width:auto">
+        <option value="15">15</option>
+        <option value="30">30</option>
+        <option value="50">50</option>
+        <option value="100">100</option>
+      </select>
+      <button class="btn btn-sm" onclick="loadLogs()">Refresh</button>
+    </div>
   </div>
 
   <table>
@@ -62,10 +71,13 @@
     </thead>
     <tbody id="log-body"></tbody>
   </table>
+  <div id="log-pager" class="pagination" style="display:none"></div>
 </div>
 
 <script>
 var allLogs = [];
+var currentPage = 1;
+var perPage = 15;
 
 function loadLogs() {
   fetch('/api/logs', {credentials:'same-origin'})
@@ -76,9 +88,29 @@ function loadLogs() {
     .then(function(data) {
       if (!data) return;
       allLogs = data;
+      currentPage = 1;
       buildFilterOptions();
       applyFilters();
     });
+}
+
+function onPerPageChange() {
+  perPage = parseInt(document.getElementById('f-perpage').value, 10) || 15;
+  currentPage = 1;
+  applyFilters();
+}
+
+// Any filter change resets pagination back to page 1.
+function onFilterChange() {
+  currentPage = 1;
+  applyFilters();
+}
+
+function goToPage(p) {
+  currentPage = p;
+  applyFilters();
+  // Scroll the table back to the top so the user sees the new page from row 1
+  document.getElementById('log-body').scrollIntoView({behavior:'smooth', block:'start'});
 }
 
 function buildFilterOptions() {
@@ -126,17 +158,30 @@ function applyFilters() {
     return true;
   });
 
-  document.getElementById('log-count').textContent = filtered.length + ' of ' + allLogs.length + ' requests';
+  // Clamp current page to a valid range for the new filtered set
+  var totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
+  if (currentPage > totalPages) currentPage = totalPages;
+  if (currentPage < 1) currentPage = 1;
+
+  var start = (currentPage - 1) * perPage;
+  var end = Math.min(start + perPage, filtered.length);
+  var page = filtered.slice(start, end);
+
+  document.getElementById('log-count').textContent =
+    filtered.length === 0
+      ? '0 of ' + allLogs.length + ' requests'
+      : 'Showing ' + (start + 1) + '–' + end + ' of ' + filtered.length + ' (filtered from ' + allLogs.length + ')';
 
   var tbody = document.getElementById('log-body');
   tbody.innerHTML = '';
 
   if (filtered.length === 0) {
     tbody.innerHTML = '<tr><td colspan="7" class="text-muted">No matching requests.</td></tr>';
+    renderPager(filtered.length, totalPages);
     return;
   }
 
-  filtered.forEach(function(l) {
+  page.forEach(function(l) {
     var tr = document.createElement('tr');
     var statusBadge = '';
     if (l.status_code) {
@@ -153,6 +198,58 @@ function applyFilters() {
       '<td>' + statusBadge + '</td>';
     tbody.appendChild(tr);
   });
+
+  renderPager(filtered.length, totalPages);
+}
+
+// Render Prev / [pages] / Next pagination controls.
+function renderPager(filteredCount, totalPages) {
+  var pager = document.getElementById('log-pager');
+  if (totalPages <= 1) {
+    pager.style.display = 'none';
+    pager.innerHTML = '';
+    return;
+  }
+  pager.style.display = '';
+  pager.innerHTML = '';
+
+  function makeBtn(label, page, opts) {
+    opts = opts || {};
+    var b = document.createElement('button');
+    b.className = 'btn btn-sm' + (opts.active ? ' btn-primary' : '');
+    b.textContent = label;
+    if (opts.disabled) {
+      b.disabled = true;
+    } else {
+      b.onclick = function() { goToPage(page); };
+    }
+    return b;
+  }
+
+  pager.appendChild(makeBtn('‹ Prev', currentPage - 1, {disabled: currentPage <= 1}));
+
+  // Page-number window: always show 1, last, current ±2; ellipsis for gaps.
+  var pages = [];
+  var add = function(p) { if (p >= 1 && p <= totalPages && pages.indexOf(p) === -1) pages.push(p); };
+  add(1);
+  for (var i = currentPage - 2; i <= currentPage + 2; i++) add(i);
+  add(totalPages);
+  pages.sort(function(a, b) { return a - b; });
+
+  var prev = 0;
+  pages.forEach(function(p) {
+    if (p - prev > 1) {
+      var span = document.createElement('span');
+      span.className = 'text-muted';
+      span.style.padding = '0 0.25rem';
+      span.textContent = '…';
+      pager.appendChild(span);
+    }
+    pager.appendChild(makeBtn(String(p), p, {active: p === currentPage}));
+    prev = p;
+  });
+
+  pager.appendChild(makeBtn('Next ›', currentPage + 1, {disabled: currentPage >= totalPages}));
 }
 
 function formatTime(ts) {
