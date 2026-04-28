@@ -3,58 +3,8 @@
   <h1>Canary Tokens</h1>
 </div>
 
+<!-- Deployed Canary Tokens (now at top, always expanded) -->
 <div class="card">
-  <h3>Settings</h3>
-  <div id="canary-warning" style="display:none;background:rgba(239,68,68,0.1);border:1px solid var(--danger);border-radius:var(--radius);padding:0.75rem;margin-bottom:1rem">
-    <strong style="color:var(--danger)">Canary tokens inactive</strong> — enter an alert email below to enable them.
-  </div>
-  <p class="text-sm text-muted mb-1">Canary tokens are <strong>enabled by default</strong> for all new clients. When a client registers, Duckway auto-generates decoy credentials via <a href="https://canarytokens.org" target="_blank">canarytokens.org</a>. If an attacker steals and uses them, you get an email alert.</p>
-
-  <form id="canary-settings-form" class="mt-2">
-    <div class="form-group">
-      <label>Alert Email (required for canary tokens to work)</label>
-      <input type="email" id="canary-email" placeholder="you@example.com">
-    </div>
-
-    <div class="form-group">
-      <label>Token Types to Deploy</label>
-      <p class="text-sm text-muted">If none selected, all types are deployed by default.</p>
-
-      <div class="mt-1 mb-1"><strong class="text-sm">API Tokens</strong> <span class="badge badge-green">via canarytokens.org</span></div>
-      <div id="canary-types-api"></div>
-
-      <div class="mt-1 mb-1"><strong class="text-sm">Local Decoy Files</strong> <span class="badge badge-blue">self-generated with DNS canary</span></div>
-      <div id="canary-types-local"></div>
-    </div>
-
-    <div class="form-group">
-      <label>Exclude Clients</label>
-      <div class="text-sm text-muted mb-1">Clients that should NOT receive canary tokens.</div>
-      <div class="flex gap-sm mb-1">
-        <input type="text" id="exclude-search" placeholder="Search clients..." style="flex:1" oninput="filterExcludeList()">
-        <button type="button" class="btn btn-sm" onclick="showExcludeDropdown()">+ Add</button>
-      </div>
-      <div id="exclude-dropdown" style="display:none;position:relative">
-        <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);max-height:150px;overflow-y:auto;position:absolute;width:100%;z-index:10" id="exclude-dropdown-list"></div>
-      </div>
-      <div id="exclude-list" style="display:flex;flex-wrap:wrap;gap:0.375rem"></div>
-    </div>
-
-    <button type="submit" class="btn btn-primary">Save Settings</button>
-  </form>
-</div>
-
-<div class="card mt-2">
-  <h3>How It Works</h3>
-  <table>
-    <thead><tr><th>Type</th><th>Category</th><th>What gets deployed</th><th>Deploy Path</th></tr></thead>
-    <tbody id="types-reference"></tbody>
-  </table>
-  <p class="text-sm text-muted mt-1"><strong>API tokens</strong> call canarytokens.org to generate real tripwire credentials. <strong>Local decoy files</strong> are self-generated with embedded DNS canary hostnames — when an attacker resolves the hostname (e.g., by curling a URL in the file), you get alerted.</p>
-  <p class="text-sm text-muted">All canary files are placed at paths that look realistic but use <code>.bak</code> suffixes or non-standard locations. They are <strong>NOT</strong> in <code>keys.env</code>, so AI agents use the real phantom tokens and ignore these decoys.</p>
-</div>
-
-<div class="card mt-2">
   <h3>Deployed Canary Tokens</h3>
   <div class="form-group mt-1">
     <select id="canary-client-select" onchange="loadClientCanaries()">
@@ -64,7 +14,80 @@
   <div id="canary-tokens-table"></div>
 </div>
 
+<!-- Settings (collapsible) -->
+<div class="card mt-2">
+  <div class="flex-between" style="cursor:pointer" onclick="toggleSection('settings-body', this)">
+    <h3 style="margin:0">Settings <span class="toggle-arrow">&#9654;</span></h3>
+  </div>
+  <div id="settings-body" style="display:none;margin-top:1rem">
+    <div id="canary-warning" style="display:none;background:rgba(239,68,68,0.1);border:1px solid var(--danger);border-radius:var(--radius);padding:0.75rem;margin-bottom:1rem">
+      <strong style="color:var(--danger)">Canary tokens inactive</strong> — enter an alert email below to enable them.
+    </div>
+    <p class="text-sm text-muted mb-1">Canary tokens are <strong>enabled by default</strong> for all new clients. When a client registers, Duckway auto-generates decoy credentials via <a href="https://canarytokens.org" target="_blank">canarytokens.org</a>. If an attacker steals and uses them, you get an email alert.</p>
+
+    <form id="canary-settings-form" class="mt-2">
+      <div class="form-group">
+        <label>Alert Email (required for canary tokens to work)</label>
+        <input type="email" id="canary-email" placeholder="you@example.com">
+      </div>
+
+      <div class="form-group">
+        <label>Token Types to Deploy</label>
+        <p class="text-sm text-muted">If none selected, all types are deployed by default.</p>
+
+        <div class="mt-1 mb-1"><strong class="text-sm">API Tokens</strong> <span class="badge badge-green">via canarytokens.org</span></div>
+        <div id="canary-types-api"></div>
+
+        <div class="mt-1 mb-1"><strong class="text-sm">Local Decoy Files</strong> <span class="badge badge-blue">self-generated with DNS canary</span></div>
+        <div id="canary-types-local"></div>
+      </div>
+
+      <div class="form-group">
+        <label>Exclude Clients</label>
+        <div class="text-sm text-muted mb-1">Clients that should NOT receive canary tokens.</div>
+        <div class="flex gap-sm mb-1">
+          <input type="text" id="exclude-search" placeholder="Search clients..." style="flex:1" oninput="filterExcludeList()">
+          <button type="button" class="btn btn-sm" onclick="showExcludeDropdown()">+ Add</button>
+        </div>
+        <div id="exclude-dropdown" style="display:none;position:relative">
+          <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);max-height:150px;overflow-y:auto;position:absolute;width:100%;z-index:10" id="exclude-dropdown-list"></div>
+        </div>
+        <div id="exclude-list" style="display:flex;flex-wrap:wrap;gap:0.375rem"></div>
+      </div>
+
+      <button type="submit" class="btn btn-primary">Save Settings</button>
+    </form>
+  </div>
+</div>
+
+<!-- How It Works (collapsible) -->
+<div class="card mt-2">
+  <div class="flex-between" style="cursor:pointer" onclick="toggleSection('howitworks-body', this)">
+    <h3 style="margin:0">How It Works <span class="toggle-arrow">&#9654;</span></h3>
+  </div>
+  <div id="howitworks-body" style="display:none;margin-top:1rem">
+    <table>
+      <thead><tr><th>Type</th><th>Category</th><th>What gets deployed</th><th>Deploy Path</th></tr></thead>
+      <tbody id="types-reference"></tbody>
+    </table>
+    <p class="text-sm text-muted mt-1"><strong>API tokens</strong> call canarytokens.org to generate real tripwire credentials. <strong>Local decoy files</strong> are self-generated with embedded DNS canary hostnames — when an attacker resolves the hostname (e.g., by curling a URL in the file), you get alerted.</p>
+    <p class="text-sm text-muted">All canary files are placed at paths that look realistic but use <code>.bak</code> suffixes or non-standard locations. They are <strong>NOT</strong> in <code>keys.env</code>, so AI agents use the real phantom tokens and ignore these decoys.</p>
+  </div>
+</div>
+
 <script>
+function toggleSection(id, header) {
+  var el = document.getElementById(id);
+  var arrow = header.querySelector('.toggle-arrow');
+  if (el.style.display === 'none') {
+    el.style.display = '';
+    if (arrow) arrow.innerHTML = '&#9660;';
+  } else {
+    el.style.display = 'none';
+    if (arrow) arrow.innerHTML = '&#9654;';
+  }
+}
+
 var allTypes = [];
 
 document.addEventListener('DOMContentLoaded', function() {
