@@ -41,73 +41,121 @@ cp .env.example .dev.env
 
 ### Production
 
+`scripts/prod.sh` reads `.prod.env` and dispatches to a docker-compose profile:
+
+| `DUCKWAY_PROD_MODE` | `DUCKWAY_TAILSCALE` | Profile used | Ports |
+|---|---|---|---|
+| `split` (default) | `true` (default) | `tailscale` | `:80` inside tailnet on `duckway-admin` and `duckway-gw` |
+| `combined` | `true` | `tailscale-combined` | `:80` inside tailnet on `duckway` |
+| `split` | `false` | `prod-split` | none — put a reverse proxy in front |
+| `combined` | `false` | `prod` | none — put a reverse proxy in front |
+
+#### With Tailscale (recommended)
+
 ```bash
-# Configure
 cp .env.example .prod.env
 # Edit .prod.env:
-#   TS_AUTHKEY=tskey-auth-xxxxx  (from Tailscale admin)
+#   TS_AUTHKEY=tskey-auth-xxxxx        (Tailscale admin)
 #   TS_HOSTNAME=duckway
+#   DUCKWAY_PROD_MODE=split            (default)
+# Optional for headscale:
+#   TS_EXTRA_ARGS=--login-server=https://hs.example.com
 
-# Start (split mode with Tailscale)
 ./scripts/prod.sh up
 
-# Access via Tailscale HTTPS:
-#   Admin:   https://duckway-admin.your-tailnet.ts.net
-#   Gateway: https://duckway-gw.your-tailnet.ts.net
+# Access from any node on your tailnet:
+#   Admin:   http://duckway-admin/
+#   Gateway: http://duckway-gw/
 ```
+
+The first-run admin password prints once; recover later with:
+
+```bash
+./scripts/prod.sh password           # tries to grep it from logs
+./scripts/reset-password.sh          # generates a fresh random password
+```
+
+> **Tailscale ports note**: services bind directly to `:80` inside the
+> Tailscale node's network namespace. `tailscale serve` HTTPS is not used
+> because headscale doesn't issue HTTPS certs, and the tailnet is already
+> private — no need to MITM-terminate again.
+
+#### Without Tailscale (behind a reverse proxy)
+
+```bash
+# .prod.env
+DUCKWAY_TAILSCALE=false
+DUCKWAY_PROD_MODE=split
+
+./scripts/prod.sh up
+# Containers expose nothing — point your reverse proxy at:
+#   duckway-admin:9091
+#   duckway-gateway:8080
+```
+
+#### Split-mode required setting
+
+In split mode, the **gateway** serves `/install.sh` and `/proxy/*`; the
+**admin** does not. Set the gateway URL in **Settings → Gateway URL**
+(e.g. `http://duckway-gw`) so the Quick Install command on the Clients
+page and the registration token modal point agents at the right host.
 
 ### Client Setup (on agent machines)
 
 ```bash
 # One-liner install + register
-curl -fsSL https://duckway-gw.tailnet/install.sh | sh
-duckway init
+curl -fsSL http://duckway-gw/install.sh | sh
+duckway init        # interactive: server URL, client name, paste token
 
-# Or use the full setup command from admin panel → Clients → Register
+# Or copy the full setup command from admin panel → Clients →
+# Register Client → "Full Setup" — installs and registers in one shot.
 ```
+
+For more, see the [User Guide](docs/user-guide.md).
 
 ## Architecture
 
 ```
-┌─────────────────────┐                  ┌──────────────────────────────┐
-│   Agent Machine      │                  │   Duckway (Docker)            │
-│                      │                  │                               │
-│  AI Agent            │  HTTPS_PROXY     │  ┌─── ts-admin ────────────┐ │
-│  └→ duckway proxy    │─────────────────→│  │ Tailscale HTTPS → :9091 │ │
-│     (MITM, CONNECT)  │                  │  │ Admin Panel + API       │ │
-│                      │                  │  └─────────────────────────┘ │
-│  ~/.duckway/         │  /proxy/{svc}    │  ┌─── ts-gateway ─────────┐ │
-│  ├── config.yaml     │─────────────────→│  │ Tailscale HTTPS → :8080 │ │
-│  ├── keys.env        │                  │  │ Proxy + Client API      │ │
-│  ├── ca.pem          │                  │  └─────────────────────────┘ │
-│  └── canary files    │                  │          │                   │
-│                      │                  │  ┌───────▼──────────┐       │
-└─────────────────────┘                  │  │ SQLite + AES-256  │       │
-                                          │  └──────────────────┘       │
-                                          └──────────────────────────────┘
+┌─────────────────────┐                ┌──────────────────────────────────┐
+│  Agent Machine      │                │  Duckway prod (split + Tailscale) │
+│                     │                │                                  │
+│  AI Agent           │ HTTPS_PROXY    │  ┌─ tailscale-admin ─────────┐  │
+│  └→ duckway proxy   │───────────────→│  │ duckway-admin :80         │  │
+│     (MITM, CONNECT) │                │  │ Web panel + management API│  │
+│                     │                │  └───────────────────────────┘  │
+│  ~/.duckway/        │ /proxy/{svc}   │  ┌─ tailscale-gateway ───────┐  │
+│  ├── config.yaml    │───────────────→│  │ duckway-gateway :80       │  │
+│  ├── keys.env       │                │  │ Proxy + client API + dl   │  │
+│  ├── ca.pem         │                │  └───────────────────────────┘  │
+│  └── canary files   │                │            │                    │
+│                     │                │   ┌────────▼─────────┐          │
+└─────────────────────┘                │   │ SQLite + AES-256 │          │
+                                       │   └──────────────────┘          │
+                                       └──────────────────────────────────┘
 ```
 
 ### Split Mode (recommended)
 
-| Service | Port | Access | Purpose |
-|---------|------|--------|---------|
-| `duckway-admin` | 9091 | Tailscale (admins only) | Web panel, management API |
-| `duckway-gateway` | 8080 | Tailscale (agents) | Proxy, client API, downloads |
+| Container | Port (internal) | Reachable from | Purpose |
+|---|---|---|---|
+| `duckway-admin` | `:80` (or `:9091` non-Tailscale) | admins only | Web panel, management API |
+| `duckway-gateway` | `:80` (or `:8080` non-Tailscale) | agents | Proxy, client API, downloads, `/install.sh` |
 
-Agents **cannot** access the admin panel. Enforced by Tailscale ACL + separate Tailscale nodes.
+Agents **cannot** reach the admin panel. With Tailscale, enforce by ACL on the admin tailnet hostname. Without Tailscale, put a reverse proxy in front and route only `duckway-gw` to public agents.
 
 ## Scripts
 
 | Script | Purpose |
 |--------|---------|
 | `./scripts/dev.sh up` | Build + start dev containers + seed test data |
-| `./scripts/dev.sh split` | Dev in split mode (admin :9099, gateway :8080) |
 | `./scripts/dev.sh nuke` | Wipe data + containers |
-| `./scripts/prod.sh up` | Production start with Tailscale |
+| `./scripts/prod.sh up` | Production start (Tailscale or `prod` profile via `.prod.env`) |
 | `./scripts/prod.sh status` | Container + Tailscale node status |
 | `./scripts/prod.sh logs` | Follow logs |
-| `./scripts/prod.sh password` | Show admin password |
-| `./scripts/e2e-test.sh` | Run 104 E2E tests |
+| `./scripts/prod.sh password` | Show admin password (if still in logs) |
+| `./scripts/reset-password.sh` | Generate a fresh random admin password (prod) |
+| `./scripts/e2e-test.sh` | Run the full E2E suite (105 tests) |
+| `./scripts/phantom-proxy-test.sh` | Real-API test against OpenAI/Anthropic/GitHub/Discord |
 
 ## Environment Files
 
@@ -117,13 +165,23 @@ Agents **cannot** access the admin panel. Enforced by Tailscale ACL + separate T
 | `.dev.env` | Dev secrets | No |
 | `.prod.env` | Prod secrets (Tailscale auth key) | No |
 
-## Docker Compose Files
+## Docker Compose Profiles
 
-| File | Mode | Tailscale | Ports |
-|------|------|-----------|-------|
-| `docker-compose.prod.yml` | Split | Yes (2 sidecars) | None (Tailscale only) |
-| `docker-compose.combined.yml` | Combined | Yes (1 sidecar) | None (Tailscale only) |
-| `docker-compose.yml` + `.dev.yml` | Dev | No | 127.0.0.1 only |
+A single `docker-compose.yml` with profiles for every deployment mode:
+
+| Profile | Containers | Tailscale | Ports exposed |
+|---|---|---|---|
+| `combined` | `duckway-server` | No | `127.0.0.1:8080` (dev) |
+| `split` | `duckway-admin` + `duckway-gateway` | No | `127.0.0.1:9091` + `127.0.0.1:8080` (dev) |
+| `prod` | `duckway-server` | No | none — reverse proxy in front |
+| `prod-split` | `duckway-admin` + `duckway-gateway` | No | none — reverse proxy in front |
+| `tailscale-combined` | `duckway-server` + Tailscale sidecar | Yes | none, `:80` inside tailnet |
+| `tailscale` | `duckway-admin` + `duckway-gateway` + 2 Tailscale sidecars | Yes | none, `:80` each inside tailnet |
+
+```bash
+docker compose --profile tailscale up -d              # what prod.sh does by default
+docker compose --profile prod-split up -d             # split, no Tailscale, no exposed ports
+```
 
 ## Proxy Modes
 
@@ -216,11 +274,21 @@ duckway-gateway --port 8080 --data /path/to/data
 ### Client
 
 ```bash
-duckway init              # Register + download CA + sync
-duckway sync              # Refresh keys + canary tokens
-duckway env               # Print keys as shell exports
-duckway proxy [--port N]  # Start HTTPS MITM proxy
-duckway status            # Server, keys, heartbeat, proxy, CA
+duckway init                # Register + download CA + sync
+duckway sync                # Refresh keys + canary tokens + Claude config
+duckway env                 # Print keys as shell exports
+duckway proxy [--port N]    # Start HTTPS MITM proxy (foreground)
+duckway proxy -d            # Start as background daemon
+duckway proxy stop          # Stop the running daemon
+duckway proxy status        # Show daemon status
+duckway status              # Server, keys, heartbeat, proxy, CA
+```
+
+Server-side admin password reset (random, prints once):
+
+```bash
+./scripts/reset-password.sh             # default user "duckway"
+./scripts/reset-password.sh -u alice
 ```
 
 ## License
