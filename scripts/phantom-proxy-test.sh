@@ -23,8 +23,28 @@
 # Usage:
 #   export OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-...
 #   ./scripts/phantom-proxy-test.sh
+#
+# OR drop the same exports into scripts/phantom-test.env (gitignored)
+# and the script will auto-source it on startup. Example:
+#   cat > scripts/phantom-test.env <<'EOF'
+#   export OPENAI_API_KEY=sk-...
+#   export ANTHROPIC_API_KEY=sk-ant-...
+#   export GITHUB_TOKEN=ghp_...
+#   export DISCORD_BOT_TOKEN=...
+#   EOF
+#   chmod 600 scripts/phantom-test.env
 
 set -e
+
+# Auto-load credentials from scripts/phantom-test.env if present.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/phantom-test.env"
+if [ -f "$ENV_FILE" ]; then
+  echo "Loading credentials from $ENV_FILE"
+  set -a
+  . "$ENV_FILE"
+  set +a
+fi
 
 BASE="${DUCKWAY_URL:-http://127.0.0.1:9090}"
 PW="${DUCKWAY_ADMIN_PW:-duckway}"
