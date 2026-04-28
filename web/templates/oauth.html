@@ -5,7 +5,18 @@
 </div>
 
 <div class="card">
-  <p class="text-sm text-muted mb-1">API keys with refresh tokens are auto-refreshed by the server before expiry. Works for any OAuth-based service (Claude, GitHub Apps, etc.). These are stored in the same API Keys table — clients assign them like normal keys.</p>
+  <p class="text-sm text-muted mb-1">
+    API keys with refresh tokens are auto-refreshed by the server before expiry.
+    Works for any OAuth-based service (Claude, GitHub Apps, etc.). Stored in the
+    same API Keys table — clients assign them like normal keys.
+  </p>
+  <p class="text-sm text-muted mb-1">
+    <strong>Delivery on the client:</strong> Anthropic refreshable tokens are written as a
+    file at <code>~/.claude/.credentials.json</code> (with companion <code>~/.claude.json</code> and
+    <code>~/.claude/settings.json</code>) — not as the <code>ANTHROPIC_API_KEY</code> environment
+    variable. Claude Code reads the credentials file directly. Other refreshable
+    services follow the same file-based pattern when supported.
+  </p>
   <table>
     <thead><tr><th>Name</th><th>Service</th><th>Info</th><th>Expires</th><th>Status</th><th></th></tr></thead>
     <tbody id="refreshable-list"></tbody>

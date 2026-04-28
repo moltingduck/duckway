@@ -113,6 +113,8 @@ func SyncClaudeCredentials(cfg *Config) {
 		defaultSettings := []byte("{\n  \"theme\": \"dark\"\n}\n")
 		if err := os.WriteFile(settingsPath, defaultSettings, 0600); err != nil {
 			log.Printf("Warning: cannot write Claude settings: %v", err)
+		} else {
+			log.Printf("Claude settings written to %s (defaults)", settingsPath)
 		}
 	}
 
@@ -122,12 +124,20 @@ func SyncClaudeCredentials(cfg *Config) {
 	if claudeConfig, ok := creds["claudeConfig"].(map[string]interface{}); ok {
 		configData, err := json.MarshalIndent(claudeConfig, "", "  ")
 		if err == nil {
-			os.WriteFile(onboardingPath, configData, 0600)
+			if werr := os.WriteFile(onboardingPath, configData, 0600); werr != nil {
+				log.Printf("Warning: cannot write Claude onboarding config: %v", werr)
+			} else {
+				log.Printf("Claude config synced to %s", onboardingPath)
+			}
 		}
 	} else if _, err := os.Stat(onboardingPath); os.IsNotExist(err) {
 		// Fallback if server doesn't send claudeConfig
 		fallback := []byte("{\n  \"hasCompletedOnboarding\": true,\n  \"lastOnboardingVersion\": \"2.1.119\"\n}\n")
-		os.WriteFile(onboardingPath, fallback, 0600)
+		if werr := os.WriteFile(onboardingPath, fallback, 0600); werr != nil {
+			log.Printf("Warning: cannot write Claude onboarding config: %v", werr)
+		} else {
+			log.Printf("Claude config written to %s (defaults)", onboardingPath)
+		}
 	}
 }
 
