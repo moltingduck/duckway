@@ -190,6 +190,7 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE canary_settings ADD COLUMN exclude_clients TEXT NOT NULL DEFAULT '[]'",
 		"ALTER TABLE services ADD COLUMN key_directory TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE services ADD COLUMN default_acl TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE services ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'proxy'",
 		"ALTER TABLE api_keys ADD COLUMN acl TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE api_keys ADD COLUMN refresh_token TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE api_keys ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0",

@@ -20,6 +20,11 @@ type Service struct {
 	KeyLength    int    `json:"key_length"`    // real key total length
 	KeyDirectory string `json:"key_directory"` // default key file path, e.g. ".config/openai/credentials"
 	DefaultACL   string `json:"default_acl"`   // JSON ACL config, applied when placeholder has no permission_config
+	// DeliveryMode controls how the duckway-client sidecar handles requests for this service.
+	//   "proxy"      — full MITM via gateway. Gateway sees every request, enforces ACL per-request.
+	//   "loan_proxy" — sidecar caches the real token from gateway and forwards directly to upstream.
+	//                  Lower latency, no body buffering on gateway. Coarse-grained ACL only.
+	DeliveryMode string `json:"delivery_mode"`
 	IsActive     bool   `json:"is_active"`
 	CreatedAt    string `json:"created_at"`
 }

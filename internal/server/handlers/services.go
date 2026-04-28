@@ -41,6 +41,7 @@ func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		KeyLength    int    `json:"key_length"`
 		KeyDirectory string `json:"key_directory"`
 		DefaultACL   string `json:"default_acl"`
+		DeliveryMode string `json:"delivery_mode"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -49,6 +50,10 @@ func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	if req.Name == "" || req.UpstreamURL == "" {
 		jsonError(w, "name and upstream_url are required", http.StatusBadRequest)
+		return
+	}
+	if req.DeliveryMode != "" && req.DeliveryMode != "proxy" && req.DeliveryMode != "loan_proxy" {
+		jsonError(w, "delivery_mode must be 'proxy' or 'loan_proxy'", http.StatusBadRequest)
 		return
 	}
 
@@ -72,6 +77,10 @@ func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		req.KeyLength = 64
 	}
 
+	deliveryMode := req.DeliveryMode
+	if deliveryMode == "" {
+		deliveryMode = "proxy"
+	}
 	svc := &models.Service{
 		ID:           id,
 		Name:         req.Name,
@@ -85,6 +94,7 @@ func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		KeyLength:    req.KeyLength,
 		KeyDirectory: req.KeyDirectory,
 		DefaultACL:   req.DefaultACL,
+		DeliveryMode: deliveryMode,
 		IsActive:     true,
 	}
 
@@ -127,6 +137,7 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		KeyLength    *int    `json:"key_length"`
 		KeyDirectory *string `json:"key_directory"`
 		DefaultACL   *string `json:"default_acl"`
+		DeliveryMode *string `json:"delivery_mode"`
 		IsActive     *bool   `json:"is_active"`
 	}
 	if err := parseRequest(r, &req); err != nil {
@@ -166,6 +177,13 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.DefaultACL != nil {
 		svc.DefaultACL = *req.DefaultACL
+	}
+	if req.DeliveryMode != nil {
+		if *req.DeliveryMode != "proxy" && *req.DeliveryMode != "loan_proxy" {
+			jsonError(w, "delivery_mode must be 'proxy' or 'loan_proxy'", http.StatusBadRequest)
+			return
+		}
+		svc.DeliveryMode = *req.DeliveryMode
 	}
 	if req.IsActive != nil {
 		svc.IsActive = *req.IsActive

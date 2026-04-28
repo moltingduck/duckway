@@ -11,7 +11,7 @@
   </div>
   <table>
     <thead>
-      <tr><th>Name</th><th>Upstream URL</th><th>Auth</th><th>Key Format</th><th>Status</th><th></th></tr>
+      <tr><th>Name</th><th>Upstream URL</th><th>Auth</th><th>Mode</th><th>Key Format</th><th>Status</th><th></th></tr>
     </thead>
     <tbody id="services-list">
       {{range .Services}}
@@ -19,6 +19,7 @@
         <td><a href="#" onclick="openDetail('{{.ID}}');return false"><strong>{{.DisplayName}}</strong></a><br><span class="text-muted text-sm">{{.Name}}</span></td>
         <td class="mono text-sm">{{.UpstreamURL}}</td>
         <td><span class="badge badge-blue">{{.AuthType}}</span></td>
+        <td>{{if eq .DeliveryMode "loan_proxy"}}<span class="badge badge-blue">loan_proxy</span>{{else}}<span class="badge badge-gray">proxy</span>{{end}}</td>
         <td class="mono text-sm">{{.KeyPrefix}}*** ({{.KeyLength}})</td>
         <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
         <td class="text-right">
@@ -30,7 +31,7 @@
         </td>
       </tr>
       {{else}}
-      <tr><td colspan="6" class="text-muted">No services configured. Add one to get started.</td></tr>
+      <tr><td colspan="7" class="text-muted">No services configured. Add one to get started.</td></tr>
       {{end}}
     </tbody>
   </table>
@@ -80,6 +81,7 @@
         <tr><td class="text-muted">Key Format</td><td id="d-format" class="mono text-sm"></td></tr>
         <tr><td class="text-muted">Key Directory</td><td id="d-dir" class="mono text-sm"></td></tr>
         <tr><td class="text-muted">Default ACL</td><td id="d-acl"></td></tr>
+        <tr><td class="text-muted">Delivery Mode</td><td id="d-delivery"></td></tr>
         <tr><td class="text-muted">Status</td><td id="d-status"></td></tr>
       </table>
       <div class="modal-actions mt-1">
@@ -107,6 +109,14 @@
           <div class="form-group" style="flex:1"><label>Key Length</label><input type="number" id="e-length"></div>
         </div>
         <div class="form-group"><label>Key Directory</label><input type="text" id="e-dir" placeholder=".config/openai/credentials"></div>
+        <div class="form-group">
+          <label>Delivery Mode</label>
+          <select id="e-delivery">
+            <option value="proxy">proxy — full MITM via gateway, per-request ACL</option>
+            <option value="loan_proxy">loan_proxy — sidecar caches token, direct to upstream (for git/large bodies)</option>
+          </select>
+          <span class="text-muted text-sm">Use <code>loan_proxy</code> for high-bandwidth services like git over HTTPS. Coarse-grained approval/audit only — relies on the upstream's permissions for enforcement.</span>
+        </div>
         <div class="form-group"><label><input type="checkbox" id="e-active"> Active</label></div>
         <div class="modal-actions">
           <button type="button" class="btn" onclick="switchToView()">Back</button>
@@ -153,6 +163,10 @@ function openDetail(id) {
       document.getElementById('d-format').textContent = s.key_prefix + '*** (' + s.key_length + ' chars)';
       document.getElementById('d-dir').textContent = s.key_directory ? '~/' + s.key_directory : '—';
       document.getElementById('d-acl').innerHTML = s.default_acl ? '<span class="badge badge-yellow">custom</span>' : '<span class="badge badge-green">allow-all</span>';
+      var mode = s.delivery_mode || 'proxy';
+      document.getElementById('d-delivery').innerHTML = mode === 'loan_proxy'
+        ? '<span class="badge badge-blue">loan_proxy</span> <span class="text-muted text-sm">— sidecar caches token, direct to upstream</span>'
+        : '<span class="badge badge-gray">proxy</span> <span class="text-muted text-sm">— full MITM via gateway</span>';
       document.getElementById('d-status').innerHTML = s.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>';
       document.getElementById('detail-view').style.display = '';
       document.getElementById('detail-edit').style.display = 'none';
@@ -174,6 +188,7 @@ function switchToEdit() {
   document.getElementById('e-prefix').value = s.key_prefix;
   document.getElementById('e-length').value = s.key_length;
   document.getElementById('e-dir').value = s.key_directory;
+  document.getElementById('e-delivery').value = s.delivery_mode || 'proxy';
   document.getElementById('e-active').checked = s.is_active;
   document.getElementById('detail-view').style.display = 'none';
   document.getElementById('detail-edit').style.display = '';
@@ -207,6 +222,7 @@ document.getElementById('edit-form').addEventListener('submit', function(e) {
       key_prefix: document.getElementById('e-prefix').value,
       key_length: parseInt(document.getElementById('e-length').value) || 64,
       key_directory: document.getElementById('e-dir').value,
+      delivery_mode: document.getElementById('e-delivery').value,
       is_active: document.getElementById('e-active').checked
     }),
     credentials: 'same-origin'

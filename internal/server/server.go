@@ -165,12 +165,14 @@ func (s *Server) seedDefaultServices() error {
 	}
 
 	defaults := []models.Service{
-		{Name: "heartbeat", DisplayName: "Duckway Heartbeat", UpstreamURL: "internal://heartbeat", HostPattern: "heartbeat", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "dw-hb-", KeyLength: 32, IsActive: true},
-		{Name: "openai", DisplayName: "OpenAI API", UpstreamURL: "https://api.openai.com", HostPattern: "api.openai.com", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "sk-", KeyLength: 164, KeyDirectory: ".config/openai/credentials", IsActive: true},
-		{Name: "anthropic", DisplayName: "Anthropic API", UpstreamURL: "https://api.anthropic.com", HostPattern: "api.anthropic.com", AuthType: "header", AuthHeader: "x-api-key", KeyPrefix: "sk-ant-", KeyLength: 108, KeyDirectory: ".config/anthropic/credentials", IsActive: true},
-		{Name: "github", DisplayName: "GitHub API", UpstreamURL: "https://api.github.com", HostPattern: "api.github.com", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "ghp_", KeyLength: 40, KeyDirectory: ".config/gh/credentials", IsActive: true},
-		{Name: "discord", DisplayName: "Discord API", UpstreamURL: "https://discord.com/api", HostPattern: "discord.com", AuthType: "header", AuthHeader: "Authorization", AuthPrefix: "Bot ", KeyLength: 72, KeyDirectory: ".config/discord/credentials", IsActive: true},
-		{Name: "telegram", DisplayName: "Telegram Bot API", UpstreamURL: "https://api.telegram.org", HostPattern: "api.telegram.org", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyLength: 46, KeyDirectory: ".config/telegram/credentials", IsActive: true},
+		{Name: "heartbeat", DisplayName: "Duckway Heartbeat", UpstreamURL: "internal://heartbeat", HostPattern: "heartbeat", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "dw-hb-", KeyLength: 32, DeliveryMode: "proxy", IsActive: true},
+		{Name: "openai", DisplayName: "OpenAI API", UpstreamURL: "https://api.openai.com", HostPattern: "api.openai.com", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "sk-", KeyLength: 164, KeyDirectory: ".config/openai/credentials", DeliveryMode: "proxy", IsActive: true},
+		{Name: "anthropic", DisplayName: "Anthropic API", UpstreamURL: "https://api.anthropic.com", HostPattern: "api.anthropic.com", AuthType: "header", AuthHeader: "x-api-key", KeyPrefix: "sk-ant-", KeyLength: 108, KeyDirectory: ".config/anthropic/credentials", DeliveryMode: "proxy", IsActive: true},
+		// GitHub: default to loan_proxy + multi-host (api.github.com,github.com) so git
+		// clone/pull/push work without buffering large packfiles through the gateway.
+		{Name: "github", DisplayName: "GitHub API + Git", UpstreamURL: "https://api.github.com", HostPattern: "api.github.com,github.com", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "ghp_", KeyLength: 40, KeyDirectory: ".config/gh/credentials", DeliveryMode: "loan_proxy", IsActive: true},
+		{Name: "discord", DisplayName: "Discord API", UpstreamURL: "https://discord.com/api", HostPattern: "discord.com", AuthType: "header", AuthHeader: "Authorization", AuthPrefix: "Bot ", KeyLength: 72, KeyDirectory: ".config/discord/credentials", DeliveryMode: "proxy", IsActive: true},
+		{Name: "telegram", DisplayName: "Telegram Bot API", UpstreamURL: "https://api.telegram.org", HostPattern: "api.telegram.org", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyLength: 46, KeyDirectory: ".config/telegram/credentials", DeliveryMode: "proxy", IsActive: true},
 	}
 
 	for _, svc := range defaults {

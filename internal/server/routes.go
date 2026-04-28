@@ -251,6 +251,14 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	oauthClientH := handlers.NewOAuthHandler(ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.Crypto)
 	clientMux.HandleFunc("GET /client/claude-credentials", oauthClientH.ClientGetCredentials)
 
+	// Token-loan endpoint for loan_proxy delivery mode (client auth required).
+	// Sidecar fetches the real token here once per TTL, caches it, and forwards
+	// requests directly to upstream. Audit endpoint receives the per-request
+	// log entries the sidecar collects.
+	loanH := handlers.NewLoanHandler(ss.Resolver, ss.ServiceQ, ss.ApprovalQ, ss.RequestLogQ, s.notifier)
+	clientMux.HandleFunc("GET /client/loan", loanH.Issue)
+	clientMux.HandleFunc("POST /client/audit", loanH.Audit)
+
 	// Client config (no auth — needed during duckway init before token is verified)
 	s.mux.HandleFunc("GET /client/config", func(w http.ResponseWriter, r *http.Request) {
 		gwURL := settingsQ.Get(queries.SettingGatewayURL)
@@ -267,18 +275,24 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 
 	s.mux.Handle("/client/", ss.ClientAuth.Middleware(clientMux))
 
-	// Service host map (for HTTPS proxy client)
+	// Service host map (for HTTPS proxy client). Includes delivery_mode so the
+	// sidecar knows whether to MITM via gateway (proxy) or fetch a real-token
+	// loan once and forward direct to upstream (loan_proxy).
 	s.mux.HandleFunc("GET /client/services", func(w http.ResponseWriter, r *http.Request) {
 		svcs, _ := ss.ServiceQ.List()
 		type svcInfo struct {
-			Name        string `json:"name"`
-			HostPattern string `json:"host_pattern"`
-			UpstreamURL string `json:"upstream_url"`
+			Name         string `json:"name"`
+			HostPattern  string `json:"host_pattern"`
+			UpstreamURL  string `json:"upstream_url"`
+			DeliveryMode string `json:"delivery_mode"`
 		}
 		var result []svcInfo
 		for _, svc := range svcs {
 			if svc.IsActive && !strings.HasPrefix(svc.UpstreamURL, "internal://") {
-				result = append(result, svcInfo{Name: svc.Name, HostPattern: svc.HostPattern, UpstreamURL: svc.UpstreamURL})
+				result = append(result, svcInfo{
+					Name: svc.Name, HostPattern: svc.HostPattern,
+					UpstreamURL: svc.UpstreamURL, DeliveryMode: svc.DeliveryMode,
+				})
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
