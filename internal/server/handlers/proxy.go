@@ -167,14 +167,13 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Copy headers (excluding proxy-specific and incoming auth headers — we
-	// inject our own auth below, the client's auth value is the phantom token).
+	// Copy headers, stripping anything that should not leak to upstream:
+	//   - All X-Duckway-* headers (internal auth + bookkeeping)
+	//   - Authorization / X-Api-Key (client sent the phantom — we inject the real one below)
+	//   - Hop-by-hop headers per RFC 7230 §6.1
+	//   - Host (Go sets this from the URL)
 	for key, values := range r.Header {
-		lower := strings.ToLower(key)
-		if lower == "x-duckway-token" || lower == "x-duckway-key" || lower == "host" {
-			continue
-		}
-		if lower == "authorization" || lower == "x-api-key" {
+		if shouldStripHeader(key) {
 			continue
 		}
 		for _, v := range values {
@@ -223,4 +222,27 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+// shouldStripHeader returns true if a request header from the client must NOT
+// be forwarded to the upstream. This covers Duckway-internal auth headers,
+// the client's own auth (which carries the phantom token — we inject the real
+// one separately), and hop-by-hop headers per RFC 7230 §6.1.
+func shouldStripHeader(name string) bool {
+	lower := strings.ToLower(name)
+	// Any X-Duckway-* header — internal-only, must never leak upstream.
+	if strings.HasPrefix(lower, "x-duckway-") {
+		return true
+	}
+	switch lower {
+	case "authorization", "x-api-key":
+		return true
+	case "host":
+		return true
+	// Hop-by-hop headers — RFC 7230 §6.1
+	case "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+		"te", "trailer", "transfer-encoding", "upgrade":
+		return true
+	}
+	return false
 }
