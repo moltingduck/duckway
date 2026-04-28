@@ -57,6 +57,8 @@ services:
       - DUCKWAY_CLIENT_NAME=${DUCKWAY_CLIENT_NAME:-claude-agent}
     volumes:
       - duckway-config:/root/.duckway
+      # Share CA cert with the claude container (read-only on the other side)
+      - duckway-ca:/shared-ca
     entrypoint: /bin/sh
     command:
       - -c
@@ -71,6 +73,12 @@ services:
         # Register with gateway (stores only client auth token, no API keys)
         if [ ! -f /root/.duckway/config.yaml ]; then
           printf "$$DUCKWAY_GATEWAY\n$$DUCKWAY_CLIENT_NAME\n1\n$$DUCKWAY_CLIENT_TOKEN\n" | duckway init
+        fi
+
+        # Copy CA cert to shared volume so claude container can trust it
+        if [ -f /root/.duckway/ca.pem ]; then
+          cp /root/.duckway/ca.pem /shared-ca/ca.pem
+          chmod 644 /shared-ca/ca.pem
         fi
 
         # Sync service host map (which hosts to MITM) — no keys downloaded
@@ -97,12 +105,16 @@ services:
       - HTTPS_PROXY=http://127.0.0.1:18080
       - HTTP_PROXY=http://127.0.0.1:18080
       - NO_PROXY=localhost,127.0.0.1
+      # Trust the Duckway MITM CA so Node.js (Claude Code) accepts proxy certs
+      - NODE_EXTRA_CA_CERTS=/duckway-ca/ca.pem
       # No ANTHROPIC_API_KEY needed — proxy handles it
       - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
       - HOME=/home/claude
     volumes:
       # Persist Claude OAuth session + settings (survives recreation)
       - claude-home:/home/claude
+      # Read-only access to the Duckway CA cert
+      - duckway-ca:/duckway-ca:ro
       # Mount your project workspace
       - ${WORKSPACE_DIR:-.}:/workspace
     working_dir: /workspace
@@ -141,4 +153,5 @@ services:
 volumes:
   tailscale-state:
   duckway-config:   # Client auth token + CA cert only (no API keys)
+  duckway-ca:       # CA cert shared with the claude container (read-only)
   claude-home:      # Claude OAuth session + npm installs

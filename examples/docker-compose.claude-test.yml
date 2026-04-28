@@ -85,6 +85,12 @@ services:
           echo "Written ~/.claude/settings.json (defaults)"
         fi
 
+        # 5. Fetch Duckway CA cert so Node.js trusts the MITM proxy if user
+        #    later adds HTTPS_PROXY in front. Stored alongside the Claude home.
+        curl -sf "$$DUCKWAY_GATEWAY/skill/ca.pem" \
+          -o /home/claude/.duckway-ca.pem 2>/dev/null && \
+          echo "Fetched Duckway CA → /home/claude/.duckway-ca.pem (set NODE_EXTRA_CA_CERTS to use it)"
+
         rm -f /tmp/response.json
         echo ""
         echo "=== ~/.claude/.credentials.json ==="
@@ -103,6 +109,9 @@ services:
         condition: service_completed_successfully
     environment:
       - HOME=/home/claude
+      # Trust the Duckway CA in case user routes through the MITM proxy.
+      # Harmless even when no proxy is configured — Node still trusts public CAs.
+      - NODE_EXTRA_CA_CERTS=/home/claude/.duckway-ca.pem
     volumes:
       - claude-home:/home/claude
       - ${WORKSPACE_DIR:-/tmp/claude-workspace}:/workspace
