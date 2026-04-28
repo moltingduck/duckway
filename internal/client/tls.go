@@ -26,30 +26,42 @@ func InstallCACert(configDir string) error {
 }
 
 func installCALinux(certPath string) error {
-	// Try different distro paths
+	// (anchor dir, update command) for known distros.
+	// Detect by which update binary is in PATH — directory may not exist yet.
 	targets := []struct {
 		dir    string
 		update string
 	}{
-		{"/usr/local/share/ca-certificates", "update-ca-certificates"},
-		{"/etc/pki/ca-trust/source/anchors", "update-ca-trust"},
+		{"/usr/local/share/ca-certificates", "update-ca-certificates"}, // Debian/Ubuntu/Alpine/Kali
+		{"/etc/pki/ca-trust/source/anchors", "update-ca-trust"},        // RHEL/Fedora/CentOS
+		{"/etc/ca-certificates/trust-source/anchors", "trust"},         // Arch (uses `trust extract-compat`)
 	}
 
 	for _, t := range targets {
-		if _, err := os.Stat(t.dir); err == nil {
-			dest := filepath.Join(t.dir, "duckway-ca.crt")
-			data, _ := os.ReadFile(certPath)
-			if err := os.WriteFile(dest, data, 0644); err != nil {
-				return fmt.Errorf("copy cert: %w (try with sudo)", err)
-			}
-			cmd := exec.Command(t.update)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("%s failed: %s", t.update, string(out))
-			}
-			return nil
+		if _, err := exec.LookPath(t.update); err != nil {
+			continue
 		}
+		// Binary exists — ensure the anchor dir is present, then copy.
+		if err := os.MkdirAll(t.dir, 0755); err != nil {
+			return fmt.Errorf("create %s: %w (try with sudo)", t.dir, err)
+		}
+		dest := filepath.Join(t.dir, "duckway-ca.crt")
+		data, _ := os.ReadFile(certPath)
+		if err := os.WriteFile(dest, data, 0644); err != nil {
+			return fmt.Errorf("copy cert to %s: %w (try with sudo)", dest, err)
+		}
+		var cmd *exec.Cmd
+		if t.update == "trust" {
+			cmd = exec.Command("trust", "extract-compat")
+		} else {
+			cmd = exec.Command(t.update)
+		}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("%s failed: %s", t.update, string(out))
+		}
+		return nil
 	}
-	return fmt.Errorf("could not find system CA directory")
+	return fmt.Errorf("no supported CA update tool found (install 'ca-certificates' package)")
 }
 
 func installCAMacOS(certPath string) error {
