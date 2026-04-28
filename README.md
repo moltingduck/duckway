@@ -12,7 +12,12 @@ API proxy that manages real API keys centrally. AI agents use **phantom tokens**
 - **16 canary token types** — auto-deployed honeypots via [canarytokens.org](https://canarytokens.org), per-client Gmail `+` tagging
 - **Admin panel** — dark theme, Go templates + HTMX, search/filter/pagination, live ACL preview
 - **Discord Gateway WSS + Telegram polling** — interactive approval without public endpoints
-- **104 E2E tests** + unit tests
+- **105 E2E tests** + unit tests
+
+## Documentation
+
+- **[User Guide](docs/user-guide.md)** — installation, configuration, daily operations, production deployment, troubleshooting
+- **[Developer Guide](docs/developer-guide.md)** — architecture, code layout, proxy flow, header stripping, adding services, testing
 
 ## Quick Start
 
