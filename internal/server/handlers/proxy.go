@@ -167,10 +167,14 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Copy headers (excluding proxy-specific ones)
+	// Copy headers (excluding proxy-specific and incoming auth headers — we
+	// inject our own auth below, the client's auth value is the phantom token).
 	for key, values := range r.Header {
 		lower := strings.ToLower(key)
 		if lower == "x-duckway-token" || lower == "x-duckway-key" || lower == "host" {
+			continue
+		}
+		if lower == "authorization" || lower == "x-api-key" {
 			continue
 		}
 		for _, v := range values {
@@ -178,15 +182,25 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Inject real API key
-	switch svc.AuthType {
+	// Inject real API key. Refreshable (OAuth) keys always go in
+	// Authorization: Bearer regardless of the service's default auth_type,
+	// since Anthropic and similar APIs require Bearer for OAuth access tokens.
+	authType := svc.AuthType
+	authHeader := svc.AuthHeader
+	authPrefix := svc.AuthPrefix
+	if result.IsRefreshable {
+		authType = "bearer"
+		authHeader = "Authorization"
+		authPrefix = "Bearer "
+	}
+	switch authType {
 	case "bearer":
-		upstreamReq.Header.Set(svc.AuthHeader, svc.AuthPrefix+result.RealKey)
+		upstreamReq.Header.Set(authHeader, authPrefix+result.RealKey)
 	case "header":
-		upstreamReq.Header.Set(svc.AuthHeader, result.RealKey)
+		upstreamReq.Header.Set(authHeader, result.RealKey)
 	case "query":
 		q := upstreamReq.URL.Query()
-		q.Set(svc.AuthHeader, result.RealKey)
+		q.Set(authHeader, result.RealKey)
 		upstreamReq.URL.RawQuery = q.Encode()
 	}
 

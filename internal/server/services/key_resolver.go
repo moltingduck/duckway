@@ -32,6 +32,7 @@ type ResolveResult struct {
 	PlaceholderID    string
 	PermissionConfig string // from placeholder_keys.permission_config
 	APIKeyACL        string // from api_keys.acl
+	IsRefreshable    bool   // true if the underlying api_key has a refresh token (OAuth)
 	Permitted        bool
 	NeedApproval     bool
 	Error            string
@@ -110,6 +111,7 @@ func (r *KeyResolver) Resolve(placeholder string, clientID string) (*ResolveResu
 		PlaceholderID:    ph.ID,
 		PermissionConfig: permConfig,
 		APIKeyACL:        apiKey.ACL,
+		IsRefreshable:    apiKey.RefreshToken != "",
 		Permitted:        true,
 	}, nil
 }
