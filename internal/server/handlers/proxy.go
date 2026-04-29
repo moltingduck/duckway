@@ -114,6 +114,28 @@ func (lw *capLimitedWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// flushingWriter wraps an http.ResponseWriter so every Write is followed by
+// an explicit Flush. Without this, the http server's bufio buffer holds up
+// to ~4KB of body before sending. For streaming responses (SSE on
+// /v1/messages, OpenAI streaming chat, etc.) this delays small events
+// (keepalive pings, partial tokens) past the agent's idle-timeout window.
+//
+// The non-capture path uses Go's optimised ReadFrom which has internal
+// flushing; the capture path goes through MultiWriter which doesn't, so we
+// need to flush explicitly here to keep SSE working.
+type flushingWriter struct {
+	w io.Writer
+	f http.Flusher
+}
+
+func (fw *flushingWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	if fw.f != nil && n > 0 {
+		fw.f.Flush()
+	}
+	return n, err
+}
+
 // formatHeaders renders an http.Header as a JSON object string for storage.
 func formatHeaders(h http.Header) string {
 	if len(h) == 0 {
@@ -331,7 +353,14 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 		if shouldCaptureContentType(ct) {
 			cap := &capLimitedWriter{buf: &bytes.Buffer{}, limit: maxCapturedBytes}
-			multi := io.MultiWriter(w, cap)
+			// Wrap the agent-facing writer so each chunk is flushed —
+			// otherwise streaming responses (SSE) sit in Go's bufio
+			// buffer and the agent times out.
+			var agent io.Writer = w
+			if fl, ok := w.(http.Flusher); ok {
+				agent = &flushingWriter{w: w, f: fl}
+			}
+			multi := io.MultiWriter(agent, cap)
 			respSize, _ = io.Copy(multi, resp.Body)
 			respBodyStored = cap.buf.Bytes()
 			respTrunc = respSize > int64(maxCapturedBytes)
