@@ -73,6 +73,7 @@
       </table>
       <div class="modal-actions mt-1">
         <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
+        <button type="button" class="btn" id="refresh-now-btn" onclick="refreshNow()">Refresh Now</button>
         <button type="button" class="btn btn-primary" onclick="switchToEdit()">Edit</button>
       </div>
     </div>
@@ -199,6 +200,36 @@ function switchToEdit() {
 function switchToView() {
   document.getElementById('detail-view').style.display = '';
   document.getElementById('detail-edit').style.display = 'none';
+}
+
+function refreshNow() {
+  if (!currentDetail) return;
+  var btn = document.getElementById('refresh-now-btn');
+  var orig = btn.textContent;
+  btn.textContent = 'Refreshing...';
+  btn.disabled = true;
+  fetch('/api/oauth/' + currentDetail.id + '/refresh', {
+    method: 'POST',
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    btn.textContent = orig;
+    btn.disabled = false;
+    if (data.error) {
+      showToast('Refresh failed: ' + data.error, 'error');
+      return;
+    }
+    var mins = Math.round((data.expires_at - Date.now()) / 60000);
+    showToast('Token refreshed — expires in ' + mins + ' min', 'success');
+    // Reload the detail view to show the new expiry
+    openDetail(currentDetail.id);
+  })
+  .catch(function(err) {
+    btn.textContent = orig;
+    btn.disabled = false;
+    showToast('Refresh error: ' + err.message, 'error');
+  });
 }
 
 document.addEventListener('DOMContentLoaded', function() {

@@ -34,10 +34,12 @@ func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	}
 
 	ss := s.initShared()
+	// Refresher must be on ss before SetupAdminRoutes so the OAuth handler
+	// can wire its manual-refresh endpoint to it.
+	s.startOAuthRefresher(ss)
 	s.SetupAdminRoutes(contentFS, ss)
 	s.SetupGatewayRoutes(ss)
 	s.startApprovalListeners()
-	s.startOAuthRefresher(ss)
 
 	return s, nil
 }
@@ -54,9 +56,9 @@ func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	}
 
 	ss := s.initShared()
+	s.startOAuthRefresher(ss)
 	s.SetupAdminRoutes(contentFS, ss)
 	s.startApprovalListeners()
-	s.startOAuthRefresher(ss)
 
 	return s, nil
 }
@@ -200,6 +202,7 @@ func (s *Server) seedDefaultServices() error {
 func (s *Server) startOAuthRefresher(ss *SharedServices) {
 	refresher := services.NewTokenRefresher(ss.APIKeyQ, ss.Crypto)
 	refresher.Start()
+	ss.Refresher = refresher
 }
 
 func (s *Server) startApprovalListeners() {

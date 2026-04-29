@@ -15,10 +15,49 @@ type OAuthHandler struct {
 	placeholderQ *queries.PlaceholderQueries
 	serviceQ     *queries.ServiceQueries
 	crypto       *svc.Crypto
+	refresher    *svc.TokenRefresher
 }
 
 func NewOAuthHandler(apiKeyQ *queries.APIKeyQueries, placeholderQ *queries.PlaceholderQueries, serviceQ *queries.ServiceQueries, crypto *svc.Crypto) *OAuthHandler {
 	return &OAuthHandler{apiKeyQ: apiKeyQ, placeholderQ: placeholderQ, serviceQ: serviceQ, crypto: crypto}
+}
+
+// SetRefresher wires a TokenRefresher so the admin can trigger manual
+// refreshes via POST /api/oauth/{id}/refresh. Optional — endpoint returns
+// 503 if not set.
+func (h *OAuthHandler) SetRefresher(r *svc.TokenRefresher) {
+	h.refresher = r
+}
+
+// Refresh forces an immediate token refresh for the given refreshable key.
+// Useful for verifying the refresh path works without waiting for natural
+// expiry, or for recovering after a manual rotation upstream.
+func (h *OAuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if h.refresher == nil {
+		jsonError(w, "refresher not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	key, err := h.apiKeyQ.GetByID(id)
+	if err != nil {
+		jsonError(w, "key not found", http.StatusNotFound)
+		return
+	}
+	if !key.IsRefreshable {
+		jsonError(w, "not a refreshable key", http.StatusBadRequest)
+		return
+	}
+
+	expiresAt, err := h.refresher.RefreshNow(id)
+	if err != nil {
+		jsonError(w, "refresh failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{
+		"status":     "refreshed",
+		"expires_at": expiresAt,
+		"id":         id,
+	})
 }
 
 // Admin: upload refreshable API key (OAuth token with refresh)

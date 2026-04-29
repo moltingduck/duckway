@@ -33,6 +33,7 @@ type SharedServices struct {
 	Resolver  *services.KeyResolver
 	Notifier  *services.Notifier
 	CanarySvc *services.CanaryService
+	Refresher *services.TokenRefresher
 
 	AdminAuth  *middleware.AdminAuth
 	ClientAuth *middleware.ClientAuth
@@ -198,9 +199,11 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	})
 
 	oauthH := handlers.NewOAuthHandler(ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.Crypto)
+	oauthH.SetRefresher(ss.Refresher)
 	adminAPIMux.HandleFunc("POST /api/oauth/upload", oauthH.Upload)
 	adminAPIMux.HandleFunc("GET /api/oauth/{id}", oauthH.Get)
 	adminAPIMux.HandleFunc("PUT /api/oauth/{id}", oauthH.Update)
+	adminAPIMux.HandleFunc("POST /api/oauth/{id}/refresh", oauthH.Refresh)
 
 	adminAPIMux.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
 		logs, err := ss.RequestLogQ.Recent(500)

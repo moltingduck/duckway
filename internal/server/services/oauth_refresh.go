@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,10 @@ import (
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
 )
+
+// Claude Code's public OAuth client_id — baked into the official Claude Code
+// binary, required by Anthropic's token endpoint for refresh requests.
+const claudeOAuthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 // TokenRefresher automatically refreshes API keys that have a refresh_token set.
 // Works for any OAuth-based key (Claude, GitHub Apps, etc.)
@@ -73,6 +78,27 @@ func (r *TokenRefresher) refreshExpiring() {
 	}
 }
 
+// RefreshNow performs an immediate refresh for the given key id, bypassing
+// the schedule. Returns the new expires_at on success.
+func (r *TokenRefresher) RefreshNow(id string) (int64, error) {
+	key, err := r.apiKeyQ.GetByID(id)
+	if err != nil {
+		return 0, fmt.Errorf("key not found: %w", err)
+	}
+	if key.RefreshToken == "" {
+		return 0, fmt.Errorf("key has no refresh_token (not refreshable)")
+	}
+	if err := r.refreshKey(key); err != nil {
+		return 0, err
+	}
+	// Re-read to get the persisted expires_at
+	updated, err := r.apiKeyQ.GetByID(id)
+	if err != nil {
+		return 0, err
+	}
+	return updated.ExpiresAt, nil
+}
+
 func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 	refreshToken, err := r.crypto.Decrypt(key.RefreshToken)
 	if err != nil {
@@ -83,12 +109,42 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 		return fmt.Errorf("no token_endpoint configured")
 	}
 
-	form := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {refreshToken},
-	}
+	// Anthropic's OAuth token endpoint expects JSON with client_id, not the
+	// generic OAuth 2.0 form-urlencoded body. Detect by token endpoint host or
+	// the refresh token's prefix (sk-ant-ort01-... / sk-ant-oart01-...).
+	useAnthropic := strings.Contains(key.TokenEndpoint, "anthropic") ||
+		strings.HasPrefix(refreshToken, "sk-ant-ort01") ||
+		strings.HasPrefix(refreshToken, "sk-ant-oart01")
 
-	resp, err := r.client.Post(key.TokenEndpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	var resp *http.Response
+	if useAnthropic {
+		clientID := claudeOAuthClientID
+		// Allow override via subscription_info JSON {"clientId": "..."}
+		if key.SubscriptionInfo != "" {
+			var si map[string]interface{}
+			if json.Unmarshal([]byte(key.SubscriptionInfo), &si) == nil {
+				if v, ok := si["clientId"].(string); ok && v != "" {
+					clientID = v
+				}
+			}
+		}
+		body, _ := json.Marshal(map[string]string{
+			"grant_type":    "refresh_token",
+			"refresh_token": refreshToken,
+			"client_id":     clientID,
+		})
+		req, _ := http.NewRequest("POST", key.TokenEndpoint, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		resp, err = r.client.Do(req)
+	} else {
+		// Generic OAuth 2.0 — form-urlencoded body
+		form := url.Values{
+			"grant_type":    {"refresh_token"},
+			"refresh_token": {refreshToken},
+		}
+		resp, err = r.client.Post(key.TokenEndpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	}
 	if err != nil {
 		return fmt.Errorf("token request: %w", err)
 	}
