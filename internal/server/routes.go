@@ -169,6 +169,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("DELETE /api/groups/{id}/members/{keyId}", groupH.RemoveMember)
 
 	adminAPIMux.HandleFunc("GET /api/approvals", approvalH.ListPending)
+	adminAPIMux.HandleFunc("GET /api/approvals/list", approvalH.List) // enriched + filterable
 	adminAPIMux.HandleFunc("POST /api/approvals/{id}/approve", approvalH.Approve)
 	adminAPIMux.HandleFunc("POST /api/approvals/{id}/reject", approvalH.Reject)
 

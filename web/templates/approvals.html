@@ -1,41 +1,269 @@
 {{define "content"}}
 <div class="page-header">
   <h1>Approvals</h1>
+  <div class="flex gap-sm">
+    <button class="btn btn-sm btn-primary" id="tab-pending" onclick="switchTab('pending')">Pending <span id="pending-count" class="text-muted text-sm"></span></button>
+    <button class="btn btn-sm" id="tab-history" onclick="switchTab('history')">History</button>
+  </div>
 </div>
 
 <div class="card">
+  <div class="flex gap-md mb-1" style="flex-wrap:wrap">
+    <div class="form-group" style="flex:1;min-width:180px">
+      <label>Client</label>
+      <select id="f-client" onchange="onFilterChange()">
+        <option value="">All clients</option>
+      </select>
+    </div>
+    <div class="form-group" style="flex:1;min-width:180px">
+      <label>Service</label>
+      <select id="f-service" onchange="onFilterChange()">
+        <option value="">All services</option>
+      </select>
+    </div>
+    <div class="form-group" id="status-filter-row" style="flex:1;min-width:180px;display:none">
+      <label>Status</label>
+      <select id="f-status" onchange="onFilterChange()">
+        <option value="approved,rejected,ignored">All non-pending</option>
+        <option value="approved">Approved only</option>
+        <option value="rejected">Rejected only</option>
+        <option value="ignored">Ignored only</option>
+      </select>
+    </div>
+  </div>
+  <div class="flex-between mb-1">
+    <span id="approval-count" class="text-muted text-sm"></span>
+    <div class="flex gap-sm" style="align-items:center">
+      <label class="text-sm text-muted" for="f-perpage">Per page</label>
+      <select id="f-perpage" onchange="onPerPageChange()" style="width:auto">
+        <option value="15">15</option>
+        <option value="30">30</option>
+        <option value="50">50</option>
+        <option value="100">100</option>
+      </select>
+      <button class="btn btn-sm" onclick="loadApprovals()">Refresh</button>
+    </div>
+  </div>
+
   <table>
     <thead>
-      <tr><th>Placeholder</th><th>Status</th><th>Requested</th><th>Expires</th><th></th></tr>
+      <tr><th>Time</th><th>Client</th><th>Service</th><th>Env</th><th>Method</th><th>Path</th><th>Status</th><th></th></tr>
     </thead>
-    <tbody>
-      {{range .Approvals}}
-      <tr id="approval-{{.ID}}">
-        <td class="mono text-sm">{{.PlaceholderID}}</td>
-        <td>
-          {{if eq .Status "pending"}}<span class="badge badge-yellow">Pending</span>
-          {{else if eq .Status "approved"}}<span class="badge badge-green">Approved</span>
-          {{else}}<span class="badge badge-red">Rejected</span>{{end}}
-        </td>
-        <td class="text-muted text-sm">{{.CreatedAt}}</td>
-        <td class="text-muted text-sm">{{if .ExpiresAt}}{{deref .ExpiresAt}}{{else}}—{{end}}</td>
-        <td class="text-right">
-          {{if eq .Status "pending"}}
-          <button class="btn btn-sm btn-primary"
-            hx-post="/admin/approvals/{{.ID}}/approve"
-            hx-target="#approval-{{.ID}}"
-            hx-swap="outerHTML">Approve (24h)</button>
-          <button class="btn btn-sm btn-danger"
-            hx-post="/admin/approvals/{{.ID}}/reject"
-            hx-target="#approval-{{.ID}}"
-            hx-swap="outerHTML">Reject</button>
-          {{end}}
-        </td>
-      </tr>
-      {{else}}
-      <tr><td colspan="5" class="text-muted">No approval requests.</td></tr>
-      {{end}}
-    </tbody>
+    <tbody id="approval-body"></tbody>
   </table>
+  <div id="approval-pager" class="pagination" style="display:none"></div>
+
+  <p class="text-sm text-muted mt-1" id="ttl-note"></p>
 </div>
+
+<script>
+var allApprovals = [];
+var allClients = [];
+var allServices = [];
+var currentPage = 1;
+var perPage = 15;
+var currentTab = 'pending'; // 'pending' or 'history'
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById('tab-pending').className = tab === 'pending' ? 'btn btn-sm btn-primary' : 'btn btn-sm';
+  document.getElementById('tab-history').className = tab === 'history' ? 'btn btn-sm btn-primary' : 'btn btn-sm';
+  document.getElementById('status-filter-row').style.display = tab === 'history' ? '' : 'none';
+  currentPage = 1;
+  loadApprovals();
+}
+
+function loadApprovals() {
+  var statuses = currentTab === 'pending' ? 'pending' : document.getElementById('f-status').value;
+  var url = '/api/approvals/list?status=' + encodeURIComponent(statuses);
+  var clientID = document.getElementById('f-client').value;
+  var serviceID = document.getElementById('f-service').value;
+  if (clientID) url += '&client_id=' + encodeURIComponent(clientID);
+  if (serviceID) url += '&service_id=' + encodeURIComponent(serviceID);
+
+  fetch(url, {credentials:'same-origin'})
+    .then(function(r) {
+      if (r.status === 401) { window.location = '/admin/login'; return; }
+      return r.json();
+    })
+    .then(function(data) {
+      if (!data) return;
+      allApprovals = data;
+      render();
+    });
+}
+
+function onFilterChange() { currentPage = 1; render(); }
+function onPerPageChange() {
+  perPage = parseInt(document.getElementById('f-perpage').value, 10) || 15;
+  currentPage = 1;
+  render();
+}
+function goToPage(p) { currentPage = p; render(); }
+
+function render() {
+  var totalPages = Math.max(1, Math.ceil(allApprovals.length / perPage));
+  if (currentPage > totalPages) currentPage = totalPages;
+  if (currentPage < 1) currentPage = 1;
+
+  var start = (currentPage - 1) * perPage;
+  var end = Math.min(start + perPage, allApprovals.length);
+  var page = allApprovals.slice(start, end);
+
+  var counter = document.getElementById('approval-count');
+  if (allApprovals.length === 0) {
+    counter.textContent = 'No ' + currentTab + ' approvals matching filters';
+  } else {
+    counter.textContent = 'Showing ' + (start + 1) + '–' + end + ' of ' + allApprovals.length;
+  }
+
+  var tbody = document.getElementById('approval-body');
+  tbody.innerHTML = '';
+
+  if (allApprovals.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="text-muted">No approvals.</td></tr>';
+    renderPager(totalPages);
+    return;
+  }
+
+  page.forEach(function(a) {
+    var info = {};
+    try { info = JSON.parse(a.request_info || '{}'); } catch(e) {}
+    var statusBadge = renderStatus(a.status);
+    var actions = '';
+    if (a.status === 'pending') {
+      actions = '<button class="btn btn-sm btn-primary" onclick="approveOne(\'' + a.id + '\')">Approve</button> ' +
+                '<button class="btn btn-sm btn-danger" onclick="rejectOne(\'' + a.id + '\')">Reject</button>';
+    }
+    var tr = document.createElement('tr');
+    tr.id = 'approval-' + a.id;
+    tr.innerHTML =
+      '<td class="text-muted text-sm" style="white-space:nowrap">' + a.created_at + '</td>' +
+      '<td>' + (a.client_name || '<span class="text-muted">—</span>') + '</td>' +
+      '<td><span class="badge badge-blue">' + (a.service_name || '?') + '</span></td>' +
+      '<td class="text-sm">' + (a.env_name || '<span class="text-muted">—</span>') + '</td>' +
+      '<td>' + (info.method ? '<span class="badge badge-blue">' + info.method + '</span>' : '—') + '</td>' +
+      '<td class="mono text-sm">' + (info.path || '—') + '</td>' +
+      '<td>' + statusBadge + '</td>' +
+      '<td class="text-right" style="white-space:nowrap">' + actions + '</td>';
+    tbody.appendChild(tr);
+  });
+
+  renderPager(totalPages);
+
+  // Update tab pending counter
+  if (currentTab === 'pending') {
+    document.getElementById('pending-count').textContent = '(' + allApprovals.length + ')';
+  }
+}
+
+function renderStatus(s) {
+  switch (s) {
+    case 'pending':  return '<span class="badge badge-yellow">Pending</span>';
+    case 'approved': return '<span class="badge badge-green">Approved</span>';
+    case 'rejected': return '<span class="badge badge-red">Rejected</span>';
+    case 'ignored':  return '<span class="badge badge-gray">Ignored</span>';
+    default:         return '<span class="badge badge-gray">' + s + '</span>';
+  }
+}
+
+function renderPager(totalPages) {
+  var pager = document.getElementById('approval-pager');
+  if (totalPages <= 1) { pager.style.display = 'none'; pager.innerHTML = ''; return; }
+  pager.style.display = '';
+  pager.innerHTML = '';
+
+  function btn(label, page, opts) {
+    opts = opts || {};
+    var b = document.createElement('button');
+    b.className = 'btn btn-sm' + (opts.active ? ' btn-primary' : '');
+    b.textContent = label;
+    if (opts.disabled) b.disabled = true;
+    else b.onclick = function() { goToPage(page); };
+    return b;
+  }
+  pager.appendChild(btn('‹ Prev', currentPage - 1, {disabled: currentPage <= 1}));
+
+  var pages = [];
+  var add = function(p) { if (p >= 1 && p <= totalPages && pages.indexOf(p) === -1) pages.push(p); };
+  add(1);
+  for (var i = currentPage - 2; i <= currentPage + 2; i++) add(i);
+  add(totalPages);
+  pages.sort(function(a, b) { return a - b; });
+
+  var prev = 0;
+  pages.forEach(function(p) {
+    if (p - prev > 1) {
+      var span = document.createElement('span');
+      span.className = 'text-muted';
+      span.style.padding = '0 0.25rem';
+      span.textContent = '…';
+      pager.appendChild(span);
+    }
+    pager.appendChild(btn(String(p), p, {active: p === currentPage}));
+    prev = p;
+  });
+  pager.appendChild(btn('Next ›', currentPage + 1, {disabled: currentPage >= totalPages}));
+}
+
+function approveOne(id) {
+  fetch('/api/approvals/' + id + '/approve', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: '{}',
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (d.error) { showToast(d.error, 'error'); return; }
+    showToast('Approved', 'success');
+    loadApprovals();
+  });
+}
+
+function rejectOne(id) {
+  fetch('/api/approvals/' + id + '/reject', {
+    method: 'POST',
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (d.error) { showToast(d.error, 'error'); return; }
+    showToast('Rejected', 'success');
+    loadApprovals();
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  // Populate filter dropdowns from /api/clients and /api/services
+  fetch('/api/clients', {credentials:'same-origin'}).then(function(r) { return r.json(); }).then(function(cs) {
+    allClients = cs || [];
+    var sel = document.getElementById('f-client');
+    allClients.forEach(function(c) {
+      var opt = document.createElement('option');
+      opt.value = c.id; opt.textContent = c.name;
+      sel.appendChild(opt);
+    });
+  });
+  fetch('/api/services', {credentials:'same-origin'}).then(function(r) { return r.json(); }).then(function(ss) {
+    allServices = ss || [];
+    var sel = document.getElementById('f-service');
+    allServices.forEach(function(s) {
+      if (!s.is_active) return;
+      var opt = document.createElement('option');
+      opt.value = s.id; opt.textContent = s.display_name || s.name;
+      sel.appendChild(opt);
+    });
+  });
+
+  // Show TTL note
+  fetch('/api/settings', {credentials:'same-origin'}).then(function(r) { return r.json(); }).then(function(s) {
+    var ttl = s.approval_request_ttl_minutes || '60';
+    document.getElementById('ttl-note').textContent =
+      'Pending approvals are auto-marked as "ignored" after ' + ttl + ' minutes (configurable in Settings).';
+  });
+
+  loadApprovals();
+});
+</script>
 {{end}}

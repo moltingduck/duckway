@@ -40,6 +40,7 @@ func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s.SetupAdminRoutes(contentFS, ss)
 	s.SetupGatewayRoutes(ss)
 	s.startApprovalListeners()
+	s.startApprovalSweeper(ss)
 
 	return s, nil
 }
@@ -59,6 +60,7 @@ func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s.startOAuthRefresher(ss)
 	s.SetupAdminRoutes(contentFS, ss)
 	s.startApprovalListeners()
+	s.startApprovalSweeper(ss)
 
 	return s, nil
 }
@@ -203,6 +205,11 @@ func (s *Server) startOAuthRefresher(ss *SharedServices) {
 	refresher := services.NewTokenRefresher(ss.APIKeyQ, ss.Crypto)
 	refresher.Start()
 	ss.Refresher = refresher
+}
+
+func (s *Server) startApprovalSweeper(ss *SharedServices) {
+	sweeper := services.NewApprovalSweeper(ss.ApprovalQ, ss.SettingsQ)
+	sweeper.Start()
 }
 
 func (s *Server) startApprovalListeners() {

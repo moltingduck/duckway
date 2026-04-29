@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -28,6 +30,66 @@ func (h *ApprovalHandler) ListPending(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []models.Approval{}
 	}
+	jsonResponse(w, list)
+}
+
+// List returns enriched approvals filtered by status / client / service. Query params:
+//
+//	status=pending,approved,rejected,ignored  (comma-separated, default: pending only)
+//	client_id=<id>                            (optional)
+//	service_id=<id>                           (optional)
+//	limit=<n>                                 (default 500)
+//
+// The returned rows include client_name + service_name + env_name so the UI
+// can render and filter without a second round-trip.
+func (h *ApprovalHandler) List(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	statusParam := q.Get("status")
+	if statusParam == "" {
+		statusParam = "pending"
+	}
+	statuses := []string{}
+	for _, s := range strings.Split(statusParam, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			statuses = append(statuses, s)
+		}
+	}
+
+	limit := 500
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 5000 {
+			limit = n
+		}
+	}
+
+	list, err := h.approvals.ListEnriched(statuses, limit)
+	if err != nil {
+		jsonError(w, "failed to list approvals", http.StatusInternalServerError)
+		return
+	}
+	if list == nil {
+		list = []queries.ApprovalListItem{}
+	}
+
+	// Apply client_id / service_id filters in Go since the query already
+	// joined those tables — keeps SQL composition simple.
+	clientID := q.Get("client_id")
+	serviceID := q.Get("service_id")
+	if clientID != "" || serviceID != "" {
+		filtered := make([]queries.ApprovalListItem, 0, len(list))
+		for _, a := range list {
+			if clientID != "" && a.ClientID != clientID {
+				continue
+			}
+			if serviceID != "" && a.ServiceID != serviceID {
+				continue
+			}
+			filtered = append(filtered, a)
+		}
+		list = filtered
+	}
+
 	jsonResponse(w, list)
 }
 

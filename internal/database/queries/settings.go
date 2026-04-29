@@ -41,8 +41,9 @@ func (q *SettingsQueries) GetAll() map[string]string {
 
 // Well-known setting keys
 const (
-	SettingGatewayURL              = "gateway_url"                    // e.g., http://duckway-gw.tailnet:8080
-	SettingProxyPort               = "proxy_port"                     // suggested client proxy port, default 18080
-	SettingRequestLogCaptureOn     = "request_log_capture_enabled"    // "1" / "0"
-	SettingRequestLogCaptureClients = "request_log_capture_clients"   // JSON array of client IDs; empty = all
+	SettingGatewayURL               = "gateway_url"                    // e.g., http://duckway-gw.tailnet:8080
+	SettingProxyPort                = "proxy_port"                     // suggested client proxy port, default 18080
+	SettingRequestLogCaptureOn      = "request_log_capture_enabled"    // "1" / "0"
+	SettingRequestLogCaptureClients = "request_log_capture_clients"    // JSON array of client IDs; empty = all
+	SettingApprovalRequestTTL       = "approval_request_ttl_minutes"   // pending approvals auto-marked "ignored" after this; default 60
 )
