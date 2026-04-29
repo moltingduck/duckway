@@ -247,6 +247,45 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 		handlers.JsonResponsePublic(w, map[string]string{"status": "dropped"})
 	})
 
+	// POST /api/logs/capture — atomic toggle. The admin UI calls this single
+	// endpoint instead of POSTing settings + DELETEing details separately,
+	// which left a race window where requests arriving between the two calls
+	// could persist detail rows after the user thought the feature was off.
+	//
+	// Body: {"enabled": bool, "clients": ["id", ...]}
+	//   enabled=false → in one transaction: set toggle="0", set client filter,
+	//                   drop all stored detail rows
+	//   enabled=true  → in one transaction: set toggle="1", set client filter
+	adminAPIMux.HandleFunc("POST /api/logs/capture", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Enabled bool     `json:"enabled"`
+			Clients []string `json:"clients"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			handlers.JsonErrorPublic(w, "invalid body", 400)
+			return
+		}
+		clientsJSON := "[]"
+		if len(req.Clients) > 0 {
+			b, _ := json.Marshal(req.Clients)
+			clientsJSON = string(b)
+		}
+		var err error
+		if req.Enabled {
+			err = ss.RequestLogQ.SetCaptureEnabled(clientsJSON)
+		} else {
+			err = ss.RequestLogQ.SetCaptureDisabledAndDrop(clientsJSON)
+		}
+		if err != nil {
+			handlers.JsonErrorPublic(w, "update failed: "+err.Error(), 500)
+			return
+		}
+		handlers.JsonResponsePublic(w, map[string]interface{}{
+			"status":  "ok",
+			"enabled": req.Enabled,
+		})
+	})
+
 	s.mux.Handle("/api/", ss.AdminAuth.Middleware(adminAPIMux))
 
 	// Root redirect

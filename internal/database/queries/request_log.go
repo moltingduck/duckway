@@ -93,6 +93,59 @@ func (q *RequestLogQueries) DropAllDetails() error {
 	return err
 }
 
+// SetCaptureDisabledAndDrop flips the capture toggle to "0" AND drops all
+// existing detail rows in a single transaction. This closes the race where
+// a request that read the old toggle (= ON) at start-of-handler could write
+// a detail row AFTER a separate DELETE has already cleaned up. SQLite
+// serialises writers, so any in-flight INSERT has either already committed
+// (its row is wiped by our DELETE) or hasn't started (it'll see the new
+// toggle when it does its own re-check before writing).
+//
+// Pass clientsJSON to also persist the client filter in the same TX.
+// If clientsJSON is empty string, the existing filter is left as-is.
+func (q *RequestLogQueries) SetCaptureDisabledAndDrop(clientsJSON string) error {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	upsert := `INSERT INTO settings (key, value) VALUES (?, ?)
+	           ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+	if _, err := tx.Exec(upsert, "request_log_capture_enabled", "0"); err != nil {
+		return err
+	}
+	if clientsJSON != "" {
+		if _, err := tx.Exec(upsert, "request_log_capture_clients", clientsJSON); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec("DELETE FROM request_log_detail"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SetCaptureEnabled flips the toggle to "1" and updates the client filter,
+// in a single transaction. No drop — enabling shouldn't lose existing data.
+func (q *RequestLogQueries) SetCaptureEnabled(clientsJSON string) error {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	upsert := `INSERT INTO settings (key, value) VALUES (?, ?)
+	           ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+	if _, err := tx.Exec(upsert, "request_log_capture_enabled", "1"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(upsert, "request_log_capture_clients", clientsJSON); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 type RequestLogEntry struct {
 	ID            int64   `json:"id"`
 	ServiceName   string  `json:"service_name"`

@@ -340,15 +340,16 @@ function renderCaptureClientChips() {
   });
 }
 
+// saveCaptureSettings POSTs to the atomic /api/logs/capture endpoint that
+// updates the toggle + client filter + (when disabling) drops detail rows
+// in a single transaction. Avoids the race window we'd have if we updated
+// settings and dropped details in two separate calls.
 function saveCaptureSettings() {
-  var body = {
-    request_log_capture_enabled: document.getElementById('capture-toggle').checked ? '1' : '0',
-    request_log_capture_clients: JSON.stringify(captureClientIds)
-  };
-  fetch('/api/settings', {
+  var enabled = document.getElementById('capture-toggle').checked;
+  return fetch('/api/logs/capture', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body),
+    body: JSON.stringify({enabled: enabled, clients: captureClientIds}),
     credentials: 'same-origin'
   })
   .then(function() { renderCaptureClientChips(); });
@@ -356,8 +357,6 @@ function saveCaptureSettings() {
 
 function onCaptureToggle() {
   var enabled = document.getElementById('capture-toggle').checked;
-  updateCaptureLabel(enabled);
-  document.getElementById('capture-clients-row').style.display = enabled ? '' : 'none';
 
   if (!enabled) {
     if (!confirm('Disable detail capture? This drops all previously stored request/response bodies.')) {
@@ -367,12 +366,14 @@ function onCaptureToggle() {
       document.getElementById('capture-clients-row').style.display = '';
       return;
     }
-    fetch('/api/logs/details', {method: 'DELETE', credentials: 'same-origin'})
-      .then(function() { showToast('Detail recording disabled, stored bodies dropped', 'success'); });
-  } else {
-    showToast('Detail recording enabled', 'success');
   }
-  saveCaptureSettings();
+
+  updateCaptureLabel(enabled);
+  document.getElementById('capture-clients-row').style.display = enabled ? '' : 'none';
+
+  saveCaptureSettings().then(function() {
+    showToast(enabled ? 'Detail recording enabled' : 'Detail recording disabled, stored bodies dropped', 'success');
+  });
 }
 
 // === Detail modal ===

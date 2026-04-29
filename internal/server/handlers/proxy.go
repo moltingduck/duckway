@@ -354,17 +354,23 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		_ = h.requestLog.StoreDetail(&queries.RequestLogDetail{
-			LogID:           logID,
-			RequestHeaders:  formatHeaders(r.Header),
-			RequestBody:     reqBodyStored,
-			RequestSize:     reqSize,
-			ResponseHeaders: formatHeaders(resp.Header),
-			ResponseBody:    string(respBodyStored),
-			ResponseSize:    respSize,
-			DurationMs:      time.Since(startTime).Milliseconds(),
-			Truncated:       reqTrunc || respTrunc,
-		})
+		// Re-check the toggle before persisting. If the admin flipped it to OFF
+		// during the upstream call, we drop the captured-in-memory data on
+		// the floor instead of writing it to disk. Closes the race where the
+		// admin's atomic disable+drop happened before our INSERT.
+		if h.captureDetailEnabledFor(client.ID) {
+			_ = h.requestLog.StoreDetail(&queries.RequestLogDetail{
+				LogID:           logID,
+				RequestHeaders:  formatHeaders(r.Header),
+				RequestBody:     reqBodyStored,
+				RequestSize:     reqSize,
+				ResponseHeaders: formatHeaders(resp.Header),
+				ResponseBody:    string(respBodyStored),
+				ResponseSize:    respSize,
+				DurationMs:      time.Since(startTime).Milliseconds(),
+				Truncated:       reqTrunc || respTrunc,
+			})
+		}
 	} else {
 		io.Copy(w, resp.Body)
 	}
