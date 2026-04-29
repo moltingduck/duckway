@@ -77,6 +77,8 @@ Usage:
 Proxy flags:
   --port N               Override proxy port
   --daemon, -d           Run in background
+  --debug, -D            Log every request/response (stdout in foreground,
+                         ~/.duckway/proxy.log in daemon mode)
 
 Config directory: ~/.duckway/
 Daemon files:
@@ -210,6 +212,7 @@ func cmdProxy(configDir string) {
 	daemon := false
 	stop := false
 	status := false
+	debug := false
 	port := 0
 	for i := 2; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -220,6 +223,8 @@ func cmdProxy(configDir string) {
 			stop = true
 		case "status":
 			status = true
+		case "--debug", "-D":
+			debug = true
 		case "--port":
 			if i+1 < len(os.Args) {
 				port, _ = strconv.Atoi(os.Args[i+1])
@@ -267,7 +272,7 @@ func cmdProxy(configDir string) {
 	}()
 
 	syncInterval := 5 * time.Minute
-	if err := client.RunHTTPSProxy(cfg, syncInterval); err != nil {
+	if err := client.RunHTTPSProxy(cfg, syncInterval, debug); err != nil {
 		log.Fatal(err)
 	}
 }

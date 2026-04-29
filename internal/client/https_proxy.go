@@ -55,6 +55,7 @@ type httpsProxy struct {
 	certCache  sync.Map // hostname -> *tls.Certificate
 	hostMap    map[string]hostEntry
 	httpClient *http.Client
+	debug      bool // when true, log every request/response
 
 	// loan_proxy state — only populated for services whose delivery_mode is loan_proxy
 	loanMu    sync.RWMutex
@@ -67,7 +68,10 @@ type httpsProxy struct {
 }
 
 // RunHTTPSProxy starts the proxy that handles both HTTP and HTTPS CONNECT.
-func RunHTTPSProxy(cfg *Config, syncInterval time.Duration) error {
+// When debug is true, every request and response is logged via the standard
+// log package (stdout in foreground, ~/.duckway/proxy.log in daemon mode
+// since the daemon redirects stdout/stderr there).
+func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 	configDir := DefaultConfigDir()
 
 	// Initial sync
@@ -115,6 +119,10 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration) error {
 		}()
 	}
 
+	if debug {
+		log.Printf("Debug mode ON — logging every request/response")
+	}
+
 	proxy := &httpsProxy{
 		serverURL:   cfg.ServerURL,
 		token:       cfg.Token,
@@ -123,6 +131,7 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration) error {
 		httpClient:  &http.Client{Timeout: 120 * time.Second},
 		loanCache:   make(map[string]*loanedToken),
 		auditClient: &http.Client{Timeout: 10 * time.Second},
+		debug:       debug,
 	}
 
 	// Periodic audit-log flush + cache eviction
@@ -148,6 +157,7 @@ func (p *httpsProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleHTTP forwards regular HTTP requests to the Duckway server.
 func (p *httpsProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	targetURL := strings.TrimRight(p.serverURL, "/") + r.URL.Path
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
@@ -172,6 +182,10 @@ func (p *httpsProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	if p.debug {
+		p.logDebug("http", "", r, resp, r.Host, time.Since(start))
+	}
 
 	for key, values := range resp.Header {
 		for _, v := range values {
@@ -250,6 +264,7 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *httpsProxy) forwardMITM(tlsConn *tls.Conn, req *http.Request, svcName, host string) {
+	start := time.Now()
 	path := req.URL.Path
 	if req.URL.RawQuery != "" {
 		path += "?" + req.URL.RawQuery
@@ -282,10 +297,18 @@ func (p *httpsProxy) forwardMITM(tlsConn *tls.Conn, req *http.Request, svcName, 
 
 	resp, err := p.httpClient.Do(proxyReq)
 	if err != nil {
+		if p.debug {
+			log.Printf("[proxy %s] %s %s://%s%s → ERR %v (%s)",
+				svcName, req.Method, "https", host, path, err, time.Since(start).Round(time.Millisecond))
+		}
 		writeHTTPError(tlsConn, 502, "upstream error")
 		return
 	}
 	defer resp.Body.Close()
+
+	if p.debug {
+		p.logDebug("proxy", svcName, req, resp, host, time.Since(start))
+	}
 
 	resp.Write(tlsConn)
 }
@@ -508,6 +531,7 @@ func (p *httpsProxy) getLoanedToken(svc string) (*loanedToken, error) {
 // is NOT in the data path. This means git pushes / large bodies stream through
 // the sidecar without buffering.
 func (p *httpsProxy) forwardLoan(tlsConn *tls.Conn, req *http.Request, entry hostEntry, host string) {
+	start := time.Now()
 	tok, err := p.getLoanedToken(entry.Service)
 	if err != nil {
 		log.Printf("loan_proxy %s: token loan failed: %v", entry.Service, err)
@@ -569,6 +593,10 @@ func (p *httpsProxy) forwardLoan(tlsConn *tls.Conn, req *http.Request, entry hos
 		return
 	}
 	defer resp.Body.Close()
+
+	if p.debug {
+		p.logDebug("loan", entry.Service, req, resp, host, time.Since(start))
+	}
 
 	// Buffer audit entry — flushed asynchronously to gateway
 	p.recordAudit(auditEntry{
@@ -644,4 +672,52 @@ func (p *httpsProxy) evictExpiredLoans() {
 		}
 	}
 	p.loanMu.Unlock()
+}
+
+// logDebug emits a one-line summary of a proxied request/response.
+//
+// Format:
+//
+//	[mode service] METHOD https://host/path → 200 (req=1.2KB → resp=4.8KB, 543ms) ct=application/json
+//
+// mode is "proxy", "loan", or "http". service is the duckway service name
+// (empty for plain HTTP). req size is the agent's Content-Length when set;
+// resp size comes from the upstream's Content-Length (may be empty for
+// chunked responses).
+func (p *httpsProxy) logDebug(mode, service string, req *http.Request, resp *http.Response, host string, dur time.Duration) {
+	tag := "[" + mode
+	if service != "" {
+		tag += " " + service
+	}
+	tag += "]"
+
+	reqSize := humanSize(req.ContentLength)
+	respSize := humanSize(resp.ContentLength)
+
+	path := req.URL.Path
+	if req.URL.RawQuery != "" {
+		path += "?" + req.URL.RawQuery
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "-"
+	}
+
+	log.Printf("%s %s https://%s%s → %d (req=%s → resp=%s, %s) ct=%s",
+		tag, req.Method, host, path, resp.StatusCode,
+		reqSize, respSize, dur.Round(time.Millisecond), ct)
+}
+
+func humanSize(n int64) string {
+	if n < 0 {
+		return "?"
+	}
+	if n < 1024 {
+		return fmt.Sprintf("%dB", n)
+	}
+	if n < 1024*1024 {
+		return fmt.Sprintf("%.1fKB", float64(n)/1024)
+	}
+	return fmt.Sprintf("%.1fMB", float64(n)/(1024*1024))
 }
