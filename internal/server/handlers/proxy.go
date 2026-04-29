@@ -92,21 +92,26 @@ func (h *ProxyHandler) captureDetailEnabledFor(clientID string) bool {
 	return false
 }
 
-// readUpToCap reads from r and returns up to cap bytes, plus a flag if more
-// bytes existed beyond the cap. Always drains r so the caller can close it.
-func readUpToCap(r io.Reader, cap int) (data []byte, truncated bool, total int64, err error) {
-	buf := make([]byte, cap)
-	n, err := io.ReadFull(r, buf)
-	switch err {
-	case nil:
-		// We filled the buffer — there might be more.
-		extra, _ := io.Copy(io.Discard, r)
-		return buf, extra > 0, int64(n) + extra, nil
-	case io.EOF, io.ErrUnexpectedEOF:
-		return buf[:n], false, int64(n), nil
-	default:
-		return buf[:n], false, int64(n), err
+// capLimitedWriter is like an io.MultiWriter target that records only the
+// first `limit` bytes and silently discards the rest, but reports success on
+// Write so io.Copy keeps streaming. Used to capture a prefix of a streaming
+// response (e.g. SSE from /v1/messages) without buffering the whole thing.
+type capLimitedWriter struct {
+	buf   *bytes.Buffer
+	limit int
+}
+
+func (lw *capLimitedWriter) Write(p []byte) (int, error) {
+	remaining := lw.limit - lw.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil
 	}
+	if len(p) <= remaining {
+		lw.buf.Write(p)
+		return len(p), nil
+	}
+	lw.buf.Write(p[:remaining])
+	return len(p), nil
 }
 
 // formatHeaders renders an http.Header as a JSON object string for storage.
@@ -315,17 +320,21 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if captureDetail && logID > 0 {
-		// Buffer the response body up to the cap so we can both stream it
-		// to the agent AND store it for later inspection.
+		// Tee the response body: stream it to the agent unchanged AND save
+		// up to maxCapturedBytes on the side. This is critical for streaming
+		// responses (SSE from /v1/messages, server-sent events in general) —
+		// buffering the full body would block the agent indefinitely.
 		ct := resp.Header.Get("Content-Type")
 		var respBodyStored []byte
 		var respTrunc bool
 		var respSize int64
+
 		if shouldCaptureContentType(ct) {
-			respBodyStored, respTrunc, respSize, _ = readUpToCap(resp.Body, maxCapturedBytes)
-			if _, err := w.Write(respBodyStored); err != nil {
-				return
-			}
+			cap := &capLimitedWriter{buf: &bytes.Buffer{}, limit: maxCapturedBytes}
+			multi := io.MultiWriter(w, cap)
+			respSize, _ = io.Copy(multi, resp.Body)
+			respBodyStored = cap.buf.Bytes()
+			respTrunc = respSize > int64(maxCapturedBytes)
 		} else {
 			// Binary — skip body capture but still record metadata.
 			respSize, _ = io.Copy(w, resp.Body)
