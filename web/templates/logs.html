@@ -378,17 +378,18 @@ function onCaptureToggle() {
 
 // === Detail modal ===
 
+// openLogDetail always opens the detail modal — the metadata block
+// (client, service, env, phantom token, time, status) is always available.
+// If capture was on for this request, the modal also shows headers + bodies;
+// otherwise that section says "no details recorded".
 function openLogDetail(l) {
   fetch('/api/logs/' + l.id + '/detail', {credentials:'same-origin'})
     .then(function(r) {
-      if (r.status === 404) {
-        showToast('No details recorded for this request (capture was OFF or it was loan-proxy traffic)', '');
-        return null;
-      }
+      if (r.status === 404) return null; // expected when capture was off
       return r.json();
     })
     .then(function(d) {
-      if (!d || d.error) return;
+      if (d && d.error) d = null; // treat errors the same as "no details"
       renderLogDetail(l, d);
     });
 }
@@ -410,10 +411,11 @@ function renderLogDetail(l, d) {
   }
 
   var body = modal.querySelector('#log-detail-body');
+  var hasDetail = !!d;
   var statusBadge = l.status_code
     ? '<span class="badge ' + (l.status_code < 400 ? 'badge-green' : 'badge-red') + '">' + l.status_code + '</span>'
     : '';
-  var truncatedBadge = d.truncated
+  var truncatedBadge = (hasDetail && d.truncated)
     ? ' <span class="badge badge-yellow">truncated to 64KB</span>'
     : '';
 
@@ -459,21 +461,42 @@ function renderLogDetail(l, d) {
           'title="Click to view phantom-token details">' + escapeHTML(short) + '</a></td></tr>';
   }
 
+  // Always-available metadata block.
+  var metaRows =
+    '<tr><td class="text-muted">Client</td><td>' + escapeHTML(l.client_name || '—') + '</td></tr>' +
+    '<tr><td class="text-muted">Service</td><td><span class="badge badge-blue">' + escapeHTML(l.service_name || '?') + '</span></td></tr>' +
+    '<tr><td class="text-muted">Env Name</td><td>' + escapeHTML(l.env_name || '—') + '</td></tr>' +
+    phRow +
+    '<tr><td class="text-muted">Time</td><td>' + escapeHTML(l.created_at) + '</td></tr>';
+  if (hasDetail) {
+    metaRows +=
+      '<tr><td class="text-muted">Duration</td><td>' + d.duration_ms + ' ms</td></tr>' +
+      '<tr><td class="text-muted">Sizes</td><td>req=' + d.request_size + 'B · resp=' + d.response_size + 'B</td></tr>';
+  }
+
+  // Detail block only present when capture was on at request time.
+  var detailBlock;
+  if (hasDetail) {
+    detailBlock =
+      '<h3 style="margin-top:1rem">Request Headers</h3>' + fmtHeaders(d.request_headers) +
+      '<h3 style="margin-top:1rem">Request Body</h3>' + fmtBody(d.request_body) +
+      '<h3 style="margin-top:1rem">Response Headers</h3>' + fmtHeaders(d.response_headers) +
+      '<h3 style="margin-top:1rem">Response Body</h3>' + fmtBody(d.response_body);
+  } else {
+    detailBlock =
+      '<div class="card mt-1" style="background:var(--bg-input)">' +
+        '<strong>No request/response details recorded.</strong><br>' +
+        '<span class="text-muted text-sm">' +
+          'Detail capture was OFF at the time of this request, or the request used loan_proxy delivery (gateway is not in the data path). ' +
+          'Enable capture above to record full headers and bodies for future requests.' +
+        '</span>' +
+      '</div>';
+  }
+
   body.innerHTML =
     '<h2 style="margin-top:0">' + (l.method || '?') + ' ' + (l.path || '') + ' ' + statusBadge + truncatedBadge + '</h2>' +
-    '<table class="detail-table" style="width:100%;margin-bottom:0.5rem">' +
-      '<tr><td class="text-muted">Client</td><td>' + escapeHTML(l.client_name || '—') + '</td></tr>' +
-      '<tr><td class="text-muted">Service</td><td><span class="badge badge-blue">' + escapeHTML(l.service_name || '?') + '</span></td></tr>' +
-      '<tr><td class="text-muted">Env Name</td><td>' + escapeHTML(l.env_name || '—') + '</td></tr>' +
-      phRow +
-      '<tr><td class="text-muted">Time</td><td>' + escapeHTML(l.created_at) + '</td></tr>' +
-      '<tr><td class="text-muted">Duration</td><td>' + d.duration_ms + ' ms</td></tr>' +
-      '<tr><td class="text-muted">Sizes</td><td>req=' + d.request_size + 'B · resp=' + d.response_size + 'B</td></tr>' +
-    '</table>' +
-    '<h3 style="margin-top:1rem">Request Headers</h3>' + fmtHeaders(d.request_headers) +
-    '<h3 style="margin-top:1rem">Request Body</h3>' + fmtBody(d.request_body) +
-    '<h3 style="margin-top:1rem">Response Headers</h3>' + fmtHeaders(d.response_headers) +
-    '<h3 style="margin-top:1rem">Response Body</h3>' + fmtBody(d.response_body) +
+    '<table class="detail-table" style="width:100%;margin-bottom:0.5rem">' + metaRows + '</table>' +
+    detailBlock +
     '<div class="modal-actions mt-1" style="justify-content:flex-end"><button class="btn" onclick="document.getElementById(\'log-detail-modal\').style.display=\'none\'">Close</button></div>';
 
   // Wire the phantom-token link inside this modal to open the phantom detail
