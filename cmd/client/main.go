@@ -48,6 +48,8 @@ func main() {
 			log.Fatalf("CA install failed: %v", err)
 		}
 		fmt.Println("CA certificate installed to system trust store")
+	case "update":
+		cmdUpdate(configDir)
 	case "version", "--version", "-v":
 		fmt.Println("duckway", version.Get())
 	case "help", "--help", "-h":
@@ -72,6 +74,7 @@ Usage:
   duckway proxy status   Show daemon status
   duckway status         Show connection status, CA cert expiry
   duckway install-ca     Re-install the Duckway CA into the system trust store
+  duckway update         Compare local version with server, download + replace if drifted
   duckway version        Print the duckway version
 
 Proxy flags:
@@ -196,6 +199,48 @@ func cmdSync(configDir string) {
 	}
 
 	fmt.Printf("Synced %d placeholder keys to %s\n", count, client.KeysEnvPath(configDir))
+}
+
+func cmdUpdate(configDir string) {
+	cfg, err := client.LoadConfig(configDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	current := version.Get()
+	fmt.Printf("Current: %s\n", current)
+
+	serverVer, err := client.CheckServerVersion(cfg.ServerURL)
+	if err != nil {
+		log.Fatalf("Could not reach server: %v", err)
+	}
+	fmt.Printf("Server:  %s\n", serverVer)
+
+	if serverVer == current {
+		fmt.Println("Already up to date.")
+		return
+	}
+
+	fmt.Println("New version available — downloading...")
+	if err := client.DownloadAndReplaceClient(cfg.ServerURL); err != nil {
+		log.Fatalf("Update failed: %v", err)
+	}
+
+	// Verify the new binary reports the server's version. We can't import-and-call
+	// the new code from this process, so just shell out and run it.
+	exe, _ := os.Executable()
+	out, err := exec.Command(exe, "version").Output()
+	if err == nil {
+		fmt.Printf("\nUpdated. New binary: %s", string(out))
+	} else {
+		fmt.Println("\nUpdated. Run 'duckway version' to confirm.")
+	}
+
+	if pid, alive := readPID(filepath.Join(configDir, "proxy.pid")); alive {
+		fmt.Printf("\nNote: a proxy daemon is running (PID %d) using the OLD binary.\n", pid)
+		fmt.Println("      Restart it to pick up the new code:")
+		fmt.Println("        duckway proxy stop && duckway proxy -d")
+	}
 }
 
 func cmdEnv(configDir string) {

@@ -13,6 +13,7 @@ import (
 	"github.com/hackerduck/duckway/internal/server/handlers"
 	"github.com/hackerduck/duckway/internal/server/middleware"
 	"github.com/hackerduck/duckway/internal/server/services"
+	"github.com/hackerduck/duckway/internal/version"
 	"github.com/hackerduck/duckway/skill"
 )
 
@@ -338,6 +339,14 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	if info, err := os.Stat(downloadDir); err == nil && info.IsDir() {
 		s.mux.Handle("GET /download/", http.StripPrefix("/download/", http.FileServer(http.Dir(downloadDir))))
 	}
+
+	// Public version endpoint — used by `duckway update` to detect drift
+	// before downloading a new binary. No auth: it leaks only the build
+	// commit, which is also visible in /install.sh and the binaries.
+	s.mux.HandleFunc("GET /version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"version": version.Get()})
+	})
 
 	// Install script
 	s.mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
