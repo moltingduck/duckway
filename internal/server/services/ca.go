@@ -116,9 +116,13 @@ func (ca *CAManager) SignHost(hostname string) (certPEM, keyPEM []byte, err erro
 		Subject: pkix.Name{
 			CommonName: hostname,
 		},
-		DNSNames:  []string{hostname},
-		NotBefore: time.Now(),
-		NotAfter:  time.Now().Add(24 * time.Hour),
+		DNSNames: []string{hostname},
+		// Backdate by 5 minutes to absorb clock skew between proxy and client.
+		// 90-day validity — long enough that long-running proxy daemons keep
+		// working without periodic restarts, short enough to still be a
+		// reasonable security horizon for a private MITM cert.
+		NotBefore: time.Now().Add(-5 * time.Minute),
+		NotAfter:  time.Now().Add(90 * 24 * time.Hour),
 		KeyUsage:  x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{
 			x509.ExtKeyUsageServerAuth,

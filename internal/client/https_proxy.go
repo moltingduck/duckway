@@ -317,8 +317,16 @@ func (p *httpsProxy) tunnelConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *httpsProxy) getCert(hostname string) *tls.Certificate {
+	// Cached cert: only reuse if it's not within 1 hour of expiry. This stops
+	// a long-running daemon from handing out an expired cert just because we
+	// cached it before it aged out. We pre-parse Leaf for cheap NotAfter access.
 	if cached, ok := p.certCache.Load(hostname); ok {
-		return cached.(*tls.Certificate)
+		c := cached.(*tls.Certificate)
+		if c.Leaf != nil && time.Now().Add(time.Hour).Before(c.Leaf.NotAfter) {
+			return c
+		}
+		// Stale — drop and regenerate
+		p.certCache.Delete(hostname)
 	}
 
 	certPEM, keyPEM, err := p.ca.SignHost(hostname)
@@ -331,6 +339,10 @@ func (p *httpsProxy) getCert(hostname string) *tls.Certificate {
 	if err != nil {
 		log.Printf("Parse cert error for %s: %v", hostname, err)
 		return nil
+	}
+	// Parse Leaf so the expiry check above doesn't have to re-parse on every call.
+	if leaf, perr := x509.ParseCertificate(cert.Certificate[0]); perr == nil {
+		cert.Leaf = leaf
 	}
 
 	p.certCache.Store(hostname, &cert)
