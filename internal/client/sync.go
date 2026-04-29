@@ -107,15 +107,14 @@ func SyncClaudeCredentials(cfg *Config) {
 	}
 	log.Printf("Claude credentials synced to %s", credPath)
 
-	// 2. Write settings.json only if it doesn't exist (don't overwrite user prefs)
+	// 2. Write settings.json — preserve any existing user prefs but always
+	//    refresh the proxy env vars so Claude Code routes through the local
+	//    duckway proxy without the user having to export HTTPS_PROXY manually.
 	settingsPath := filepath.Join(claudeDir, "settings.json")
-	if _, err := os.Stat(settingsPath); os.IsNotExist(err) {
-		defaultSettings := []byte("{\n  \"theme\": \"dark\"\n}\n")
-		if err := os.WriteFile(settingsPath, defaultSettings, 0600); err != nil {
-			log.Printf("Warning: cannot write Claude settings: %v", err)
-		} else {
-			log.Printf("Claude settings written to %s (defaults)", settingsPath)
-		}
+	if err := mergeProxySettings(settingsPath, cfg.ProxyPort); err != nil {
+		log.Printf("Warning: cannot update Claude settings: %v", err)
+	} else {
+		log.Printf("Claude settings synced to %s (proxy env)", settingsPath)
 	}
 
 	// 3. Write ~/.claude.json (from server's claudeConfig, or defaults)
@@ -227,4 +226,67 @@ func PrintEnv(configDir string) error {
 		fmt.Printf("export %s\n", line)
 	}
 	return nil
+}
+
+// mergeProxySettings reads ~/.claude/settings.json (if any), refreshes the
+// HTTPS_PROXY / HTTP_PROXY / NO_PROXY entries under settings.env so Claude
+// Code's process picks up the local duckway proxy automatically, then writes
+// the file back. All other user-defined settings keys are preserved.
+//
+// Idempotent: re-running just refreshes the proxy values to match the current
+// proxy_port (useful if the admin changes the port via Settings).
+func mergeProxySettings(path string, proxyPort int) error {
+	settings := map[string]interface{}{}
+	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+		// Best-effort parse — if the existing file is malformed JSON we
+		// start from a blank slate rather than crash.
+		_ = json.Unmarshal(data, &settings)
+	}
+
+	// Default visible theme on first write — won't clobber if user customised.
+	if _, ok := settings["theme"]; !ok {
+		settings["theme"] = "dark"
+	}
+
+	env, _ := settings["env"].(map[string]interface{})
+	if env == nil {
+		env = map[string]interface{}{}
+	}
+	proxyURL := fmt.Sprintf("http://localhost:%d", proxyPort)
+	env["HTTPS_PROXY"] = proxyURL
+	env["HTTP_PROXY"] = proxyURL
+	// Always include localhost loopback. Preserve any user-added NO_PROXY
+	// entries, just guarantee the loopback set is present.
+	if existing, ok := env["NO_PROXY"].(string); ok && existing != "" {
+		env["NO_PROXY"] = ensureLoopbackInNoProxy(existing)
+	} else {
+		env["NO_PROXY"] = "localhost,127.0.0.1"
+	}
+	settings["env"] = env
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0600)
+}
+
+// ensureLoopbackInNoProxy returns the NO_PROXY string with localhost and
+// 127.0.0.1 guaranteed present (added if missing, comma-separated).
+func ensureLoopbackInNoProxy(existing string) string {
+	hosts := strings.Split(existing, ",")
+	have := map[string]bool{}
+	for _, h := range hosts {
+		have[strings.TrimSpace(h)] = true
+	}
+	for _, must := range []string{"localhost", "127.0.0.1"} {
+		if !have[must] {
+			hosts = append(hosts, must)
+		}
+	}
+	// Trim spaces on each entry for tidy output
+	for i := range hosts {
+		hosts[i] = strings.TrimSpace(hosts[i])
+	}
+	return strings.Join(hosts, ",")
 }
