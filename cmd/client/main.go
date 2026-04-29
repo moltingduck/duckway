@@ -36,6 +36,15 @@ func main() {
 		cmdProxy(configDir)
 	case "status":
 		cmdStatus(configDir)
+	case "install-ca":
+		// Manually re-install the Duckway CA cert to the system trust store.
+		// Useful when the original `duckway init` ran on a system that was
+		// later upgraded (e.g. ca-certificates package added) or to recover
+		// after the cert was removed.
+		if err := client.InstallCACert(configDir); err != nil {
+			log.Fatalf("CA install failed: %v", err)
+		}
+		fmt.Println("CA certificate installed to system trust store")
 	case "help", "--help", "-h":
 		printUsage()
 	default:
