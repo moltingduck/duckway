@@ -29,6 +29,7 @@ type SharedServices struct {
 	RequestLogQ  *queries.RequestLogQueries
 	NotifQ       *queries.NotificationQueries
 	CanaryQ      *queries.CanaryQueries
+	SettingsQ    *queries.SettingsQueries
 
 	Crypto    *services.Crypto
 	Resolver  *services.KeyResolver
@@ -56,6 +57,7 @@ func (s *Server) initShared() *SharedServices {
 	requestLogQ := queries.NewRequestLogQueries(s.db)
 	notifQ := queries.NewNotificationQueries(s.db)
 	canaryQ := queries.NewCanaryQueries(s.db)
+	settingsQ := queries.NewSettingsQueries(s.db)
 
 	crypto := services.NewCrypto(s.config.EncryptionKey)
 	resolver := services.NewKeyResolver(crypto, apiKeyQ, placeholderQ, groupQ, approvalQ)
@@ -70,7 +72,7 @@ func (s *Server) initShared() *SharedServices {
 		UserQ: userQ, ServiceQ: serviceQ, APIKeyQ: apiKeyQ,
 		PlaceholderQ: placeholderQ, ClientQ: clientQ, GroupQ: groupQ,
 		ApprovalQ: approvalQ, RequestLogQ: requestLogQ,
-		NotifQ: notifQ, CanaryQ: canaryQ,
+		NotifQ: notifQ, CanaryQ: canaryQ, SettingsQ: settingsQ,
 		Crypto: crypto, Resolver: resolver, Notifier: notifier, CanarySvc: canarySvc,
 		AdminAuth: adminAuth, ClientAuth: clientAuth,
 	}
@@ -218,6 +220,33 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 		handlers.JsonResponsePublic(w, logs)
 	})
 
+	// GET /api/logs/{id}/detail — full request/response payload (only present
+	// when detail capture was enabled at request time).
+	adminAPIMux.HandleFunc("GET /api/logs/{id}/detail", func(w http.ResponseWriter, r *http.Request) {
+		var id int64
+		fmt.Sscanf(r.PathValue("id"), "%d", &id)
+		if id <= 0 {
+			handlers.JsonErrorPublic(w, "invalid id", 400)
+			return
+		}
+		d, err := ss.RequestLogQ.GetDetail(id)
+		if err != nil {
+			handlers.JsonErrorPublic(w, "no detail recorded for this request", 404)
+			return
+		}
+		handlers.JsonResponsePublic(w, d)
+	})
+
+	// DELETE /api/logs/details — drop all stored detail rows. Called by the
+	// admin UI when the user toggles the capture feature OFF.
+	adminAPIMux.HandleFunc("DELETE /api/logs/details", func(w http.ResponseWriter, r *http.Request) {
+		if err := ss.RequestLogQ.DropAllDetails(); err != nil {
+			handlers.JsonErrorPublic(w, "drop failed", 500)
+			return
+		}
+		handlers.JsonResponsePublic(w, map[string]string{"status": "dropped"})
+	})
+
 	s.mux.Handle("/api/", ss.AdminAuth.Middleware(adminAPIMux))
 
 	// Root redirect
@@ -231,7 +260,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	settingsQ := queries.NewSettingsQueries(s.db)
 	clientH := handlers.NewClientHandler(ss.ClientQ, ss.PlaceholderQ, ss.ServiceQ, ss.APIKeyQ, ss.CanarySvc)
 	canaryH := handlers.NewCanaryHandler(ss.CanaryQ, ss.CanarySvc)
-	proxyH := handlers.NewProxyHandler(ss.ServiceQ, ss.Resolver, ss.RequestLogQ, ss.ApprovalQ, ss.Notifier)
+	proxyH := handlers.NewProxyHandler(ss.ServiceQ, ss.Resolver, ss.RequestLogQ, ss.ApprovalQ, ss.SettingsQ, ss.Notifier)
 	internalH := handlers.NewInternalHandler(ss.Resolver)
 
 	// Client routes (require client auth)

@@ -3,6 +3,30 @@
   <h1>Request Log</h1>
 </div>
 
+<!-- Detail capture controls -->
+<div class="card mb-1">
+  <div class="flex-between" style="align-items:flex-start">
+    <div>
+      <strong>Record request &amp; response details</strong>
+      <div class="text-sm text-muted mt-1" style="max-width:60ch">
+        When ON, full headers and bodies (capped at 64KB each, text-only)
+        are stored alongside each request — click a row below to inspect.
+        When OFF, previously stored details are dropped immediately.
+        Loan-proxy traffic (e.g. github) is not captured because the gateway
+        isn't in the data path.
+      </div>
+    </div>
+    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;white-space:nowrap">
+      <input type="checkbox" id="capture-toggle" onchange="onCaptureToggle()">
+      <span id="capture-label" class="badge badge-gray">OFF</span>
+    </label>
+  </div>
+  <div id="capture-clients-row" class="form-group mt-1" style="display:none">
+    <label class="text-sm">Only record for selected clients <span class="text-muted">(empty = all clients)</span></label>
+    <div id="capture-clients-list" style="display:flex;flex-wrap:wrap;gap:0.375rem"></div>
+  </div>
+</div>
+
 <div class="card">
   <div class="flex gap-md mb-1" style="flex-wrap:wrap">
     <div class="form-group" style="flex:1;min-width:150px">
@@ -183,6 +207,9 @@ function applyFilters() {
 
   page.forEach(function(l) {
     var tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    tr.title = 'Click to view details (only present if capture was ON when this request ran)';
+    tr.onclick = function() { openLogDetail(l); };
     var statusBadge = '';
     if (l.status_code) {
       var cls = l.status_code < 400 ? 'badge-green' : 'badge-red';
@@ -262,6 +289,186 @@ function formatTime(ts) {
   return ts;
 }
 
-document.addEventListener('DOMContentLoaded', loadLogs);
+// === Detail capture toggle + per-client filter ===
+
+var allClients = [];
+var captureClientIds = []; // selected client IDs (empty = all)
+
+function loadCaptureSettings() {
+  fetch('/api/clients', {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(cs) {
+      allClients = cs || [];
+      return fetch('/api/settings', {credentials:'same-origin'});
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(s) {
+      var enabled = s.request_log_capture_enabled === '1';
+      try {
+        captureClientIds = JSON.parse(s.request_log_capture_clients || '[]');
+        if (!Array.isArray(captureClientIds)) captureClientIds = [];
+      } catch(e) { captureClientIds = []; }
+      document.getElementById('capture-toggle').checked = enabled;
+      updateCaptureLabel(enabled);
+      document.getElementById('capture-clients-row').style.display = enabled ? '' : 'none';
+      renderCaptureClientChips();
+    });
+}
+
+function updateCaptureLabel(enabled) {
+  var span = document.getElementById('capture-label');
+  span.textContent = enabled ? 'ON' : 'OFF';
+  span.className = enabled ? 'badge badge-green' : 'badge badge-gray';
+}
+
+function renderCaptureClientChips() {
+  var box = document.getElementById('capture-clients-list');
+  box.innerHTML = '';
+  allClients.forEach(function(c) {
+    var on = captureClientIds.indexOf(c.id) >= 0;
+    var chip = document.createElement('span');
+    chip.className = 'badge ' + (on ? 'badge-blue' : 'badge-gray');
+    chip.style.cssText = 'cursor:pointer;padding:0.25rem 0.5rem';
+    chip.textContent = c.name;
+    chip.onclick = function() {
+      var i = captureClientIds.indexOf(c.id);
+      if (i >= 0) captureClientIds.splice(i, 1);
+      else captureClientIds.push(c.id);
+      saveCaptureSettings();
+    };
+    box.appendChild(chip);
+  });
+}
+
+function saveCaptureSettings() {
+  var body = {
+    request_log_capture_enabled: document.getElementById('capture-toggle').checked ? '1' : '0',
+    request_log_capture_clients: JSON.stringify(captureClientIds)
+  };
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+    credentials: 'same-origin'
+  })
+  .then(function() { renderCaptureClientChips(); });
+}
+
+function onCaptureToggle() {
+  var enabled = document.getElementById('capture-toggle').checked;
+  updateCaptureLabel(enabled);
+  document.getElementById('capture-clients-row').style.display = enabled ? '' : 'none';
+
+  if (!enabled) {
+    if (!confirm('Disable detail capture? This drops all previously stored request/response bodies.')) {
+      // user cancelled — flip back
+      document.getElementById('capture-toggle').checked = true;
+      updateCaptureLabel(true);
+      document.getElementById('capture-clients-row').style.display = '';
+      return;
+    }
+    fetch('/api/logs/details', {method: 'DELETE', credentials: 'same-origin'})
+      .then(function() { showToast('Detail recording disabled, stored bodies dropped', 'success'); });
+  } else {
+    showToast('Detail recording enabled', 'success');
+  }
+  saveCaptureSettings();
+}
+
+// === Detail modal ===
+
+function openLogDetail(l) {
+  fetch('/api/logs/' + l.id + '/detail', {credentials:'same-origin'})
+    .then(function(r) {
+      if (r.status === 404) {
+        showToast('No details recorded for this request (capture was OFF or it was loan-proxy traffic)', '');
+        return null;
+      }
+      return r.json();
+    })
+    .then(function(d) {
+      if (!d || d.error) return;
+      renderLogDetail(l, d);
+    });
+}
+
+function renderLogDetail(l, d) {
+  var modal = document.getElementById('log-detail-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'log-detail-modal';
+    modal.className = 'modal-backdrop';
+    modal.style.display = 'flex';
+    modal.onclick = function(e) {
+      if (e.target === modal) modal.style.display = 'none';
+    };
+    modal.innerHTML = '<div class="modal" style="max-width:900px;max-height:90vh;overflow-y:auto"><div id="log-detail-body"></div></div>';
+    document.body.appendChild(modal);
+  } else {
+    modal.style.display = 'flex';
+  }
+
+  var body = modal.querySelector('#log-detail-body');
+  var statusBadge = l.status_code
+    ? '<span class="badge ' + (l.status_code < 400 ? 'badge-green' : 'badge-red') + '">' + l.status_code + '</span>'
+    : '';
+  var truncatedBadge = d.truncated
+    ? ' <span class="badge badge-yellow">truncated to 64KB</span>'
+    : '';
+
+  function fmtHeaders(jsonStr) {
+    try {
+      var obj = JSON.parse(jsonStr || '{}');
+      var lines = [];
+      Object.keys(obj).sort().forEach(function(k) {
+        var v = Array.isArray(obj[k]) ? obj[k].join(', ') : obj[k];
+        // Mask secrets just in case
+        if (/^authorization$|x-api-key|x-duckway/i.test(k)) v = '<redacted>';
+        lines.push('<tr><td class="text-muted mono text-sm">' + k + '</td><td class="mono text-sm" style="word-break:break-all">' + v + '</td></tr>');
+      });
+      if (lines.length === 0) return '<span class="text-muted text-sm">(none)</span>';
+      return '<table class="detail-table" style="width:100%">' + lines.join('') + '</table>';
+    } catch(e) { return '<pre class="text-sm">' + jsonStr + '</pre>'; }
+  }
+
+  function fmtBody(b) {
+    if (!b) return '<span class="text-muted text-sm">(empty)</span>';
+    // Try pretty-print JSON
+    try {
+      var parsed = JSON.parse(b);
+      return '<pre class="mono text-sm" style="white-space:pre-wrap;background:var(--bg-input);padding:0.5rem;border-radius:4px;max-height:300px;overflow:auto">' +
+        escapeHTML(JSON.stringify(parsed, null, 2)) + '</pre>';
+    } catch(e) {
+      return '<pre class="mono text-sm" style="white-space:pre-wrap;background:var(--bg-input);padding:0.5rem;border-radius:4px;max-height:300px;overflow:auto">' +
+        escapeHTML(b) + '</pre>';
+    }
+  }
+
+  body.innerHTML =
+    '<h2 style="margin-top:0">' + (l.method || '?') + ' ' + (l.path || '') + ' ' + statusBadge + truncatedBadge + '</h2>' +
+    '<div class="text-sm text-muted mb-1">' +
+      'client: <strong>' + (l.client_name || '—') + '</strong> · ' +
+      'service: <span class="badge badge-blue">' + l.service_name + '</span> · ' +
+      'time: ' + l.created_at + ' · ' +
+      'duration: ' + d.duration_ms + 'ms · ' +
+      'sizes: req=' + d.request_size + 'B / resp=' + d.response_size + 'B' +
+    '</div>' +
+    '<h3 style="margin-top:1rem">Request Headers</h3>' + fmtHeaders(d.request_headers) +
+    '<h3 style="margin-top:1rem">Request Body</h3>' + fmtBody(d.request_body) +
+    '<h3 style="margin-top:1rem">Response Headers</h3>' + fmtHeaders(d.response_headers) +
+    '<h3 style="margin-top:1rem">Response Body</h3>' + fmtBody(d.response_body) +
+    '<div class="modal-actions mt-1" style="justify-content:flex-end"><button class="btn" onclick="document.getElementById(\'log-detail-modal\').style.display=\'none\'">Close</button></div>';
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  loadLogs();
+  loadCaptureSettings();
+});
 </script>
 {{end}}

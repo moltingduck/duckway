@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/server/middleware"
@@ -18,24 +19,107 @@ type ProxyHandler struct {
 	resolver    *services.KeyResolver
 	requestLog  *queries.RequestLogQueries
 	approvals   *queries.ApprovalQueries
+	settings    *queries.SettingsQueries
 	permissions *services.PermissionChecker
 	notifier    *services.Notifier
 	httpClient  *http.Client
 }
 
-func NewProxyHandler(svcQueries *queries.ServiceQueries, resolver *services.KeyResolver, requestLog *queries.RequestLogQueries, approvals *queries.ApprovalQueries, notifier *services.Notifier) *ProxyHandler {
+func NewProxyHandler(svcQueries *queries.ServiceQueries, resolver *services.KeyResolver, requestLog *queries.RequestLogQueries, approvals *queries.ApprovalQueries, settings *queries.SettingsQueries, notifier *services.Notifier) *ProxyHandler {
 	return &ProxyHandler{
 		services:    svcQueries,
 		resolver:    resolver,
 		requestLog:  requestLog,
 		approvals:   approvals,
+		settings:    settings,
 		permissions: services.NewPermissionChecker(),
 		notifier:    notifier,
 		httpClient:  &http.Client{},
 	}
 }
 
+const maxCapturedBytes = 64 * 1024 // 64 KB cap per body
+
+// shouldCaptureContentType returns true for text-like content types where
+// capturing the body in the request log is useful (and safe to store as a
+// string). Binary blobs (images, packfiles, gzip) are skipped.
+func shouldCaptureContentType(ct string) bool {
+	ct = strings.ToLower(ct)
+	if i := strings.Index(ct, ";"); i >= 0 {
+		ct = ct[:i]
+	}
+	ct = strings.TrimSpace(ct)
+	if ct == "" {
+		// Many JSON APIs omit Content-Type on small responses; assume capturable.
+		return true
+	}
+	if strings.HasPrefix(ct, "text/") {
+		return true
+	}
+	switch ct {
+	case "application/json", "application/xml", "application/x-www-form-urlencoded",
+		"application/javascript", "application/ld+json", "application/problem+json":
+		return true
+	}
+	return false
+}
+
+// captureDetailEnabledFor checks the toggle + per-client filter settings.
+// Filter empty == capture for everyone.
+func (h *ProxyHandler) captureDetailEnabledFor(clientID string) bool {
+	if h.settings == nil {
+		return false
+	}
+	if h.settings.Get(queries.SettingRequestLogCaptureOn) != "1" {
+		return false
+	}
+	raw := h.settings.Get(queries.SettingRequestLogCaptureClients)
+	if raw == "" || raw == "[]" {
+		return true
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(raw), &ids); err != nil {
+		return true // fail-open if filter is malformed — toggle still gates
+	}
+	if len(ids) == 0 {
+		return true
+	}
+	for _, id := range ids {
+		if id == clientID {
+			return true
+		}
+	}
+	return false
+}
+
+// readUpToCap reads from r and returns up to cap bytes, plus a flag if more
+// bytes existed beyond the cap. Always drains r so the caller can close it.
+func readUpToCap(r io.Reader, cap int) (data []byte, truncated bool, total int64, err error) {
+	buf := make([]byte, cap)
+	n, err := io.ReadFull(r, buf)
+	switch err {
+	case nil:
+		// We filled the buffer — there might be more.
+		extra, _ := io.Copy(io.Discard, r)
+		return buf, extra > 0, int64(n) + extra, nil
+	case io.EOF, io.ErrUnexpectedEOF:
+		return buf[:n], false, int64(n), nil
+	default:
+		return buf[:n], false, int64(n), err
+	}
+}
+
+// formatHeaders renders an http.Header as a JSON object string for storage.
+func formatHeaders(h http.Header) string {
+	if len(h) == 0 {
+		return "{}"
+	}
+	out, _ := json.Marshal(h)
+	return string(out)
+}
+
 func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
 	path := r.URL.Path
 	if !strings.HasPrefix(path, "/proxy/") {
 		jsonError(w, "invalid proxy path", http.StatusBadRequest)
@@ -211,8 +295,16 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	captureDetail := h.captureDetailEnabledFor(client.ID)
+
+	// Always log the metadata row. Use LogWithReturn so we have an id to
+	// attach detail to if capture is on.
+	var logID int64
 	if h.requestLog != nil {
-		h.requestLog.Log(client.ID, result.PlaceholderID, serviceName, r.Method, upstreamPath, resp.StatusCode)
+		id, lerr := h.requestLog.LogWithReturn(client.ID, result.PlaceholderID, serviceName, r.Method, upstreamPath, resp.StatusCode)
+		if lerr == nil {
+			logID = id
+		}
 	}
 
 	for key, values := range resp.Header {
@@ -221,7 +313,52 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+
+	if captureDetail && logID > 0 {
+		// Buffer the response body up to the cap so we can both stream it
+		// to the agent AND store it for later inspection.
+		ct := resp.Header.Get("Content-Type")
+		var respBodyStored []byte
+		var respTrunc bool
+		var respSize int64
+		if shouldCaptureContentType(ct) {
+			respBodyStored, respTrunc, respSize, _ = readUpToCap(resp.Body, maxCapturedBytes)
+			if _, err := w.Write(respBodyStored); err != nil {
+				return
+			}
+		} else {
+			// Binary — skip body capture but still record metadata.
+			respSize, _ = io.Copy(w, resp.Body)
+		}
+
+		// Request body: bodyBytes is what we read for ACL above. Cap it.
+		var reqBodyStored string
+		reqTrunc := false
+		reqSize := int64(len(bodyBytes))
+		reqCT := r.Header.Get("Content-Type")
+		if shouldCaptureContentType(reqCT) {
+			if reqSize > maxCapturedBytes {
+				reqBodyStored = string(bodyBytes[:maxCapturedBytes])
+				reqTrunc = true
+			} else {
+				reqBodyStored = string(bodyBytes)
+			}
+		}
+
+		_ = h.requestLog.StoreDetail(&queries.RequestLogDetail{
+			LogID:           logID,
+			RequestHeaders:  formatHeaders(r.Header),
+			RequestBody:     reqBodyStored,
+			RequestSize:     reqSize,
+			ResponseHeaders: formatHeaders(resp.Header),
+			ResponseBody:    string(respBodyStored),
+			ResponseSize:    respSize,
+			DurationMs:      time.Since(startTime).Milliseconds(),
+			Truncated:       reqTrunc || respTrunc,
+		})
+	} else {
+		io.Copy(w, resp.Body)
+	}
 }
 
 // shouldStripHeader returns true if a request header from the client must NOT

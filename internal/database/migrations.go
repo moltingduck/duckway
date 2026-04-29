@@ -117,6 +117,21 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_request_log_time ON request_log(created_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_placeholder_client ON placeholder_keys(client_id, service_id)`,
 
+	// Optional per-request detail capture. Only populated when the admin
+	// toggles record-details on (request_log_capture_enabled setting).
+	// Not part of request_log itself so the list view stays cheap.
+	`CREATE TABLE IF NOT EXISTS request_log_detail (
+		log_id            INTEGER PRIMARY KEY REFERENCES request_log(id) ON DELETE CASCADE,
+		request_headers   TEXT NOT NULL DEFAULT '',
+		request_body      TEXT NOT NULL DEFAULT '',
+		request_size      INTEGER NOT NULL DEFAULT 0,
+		response_headers  TEXT NOT NULL DEFAULT '',
+		response_body     TEXT NOT NULL DEFAULT '',
+		response_size     INTEGER NOT NULL DEFAULT 0,
+		duration_ms       INTEGER NOT NULL DEFAULT 0,
+		truncated         INTEGER NOT NULL DEFAULT 0
+	)`,
+
 	`CREATE TABLE IF NOT EXISTS notification_channels (
 		id            TEXT PRIMARY KEY,
 		channel_type  TEXT NOT NULL,
