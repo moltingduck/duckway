@@ -10,6 +10,7 @@ import (
 
 	"github.com/hackerduck/duckway/internal/database"
 	"github.com/hackerduck/duckway/internal/server"
+	"github.com/hackerduck/duckway/internal/version"
 	"github.com/hackerduck/duckway/web"
 )
 
@@ -19,7 +20,13 @@ func main() {
 	dataDir := flag.String("data", "", "Data directory (overrides DUCKWAY_DATA_DIR)")
 	resetPassword := flag.Bool("reset-password", false, "Reset admin password to a fresh random value and exit")
 	resetUsername := flag.String("reset-username", "duckway", "Username to reset (with --reset-password)")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("duckway-server", version.Get())
+		return
+	}
 
 	config := server.DefaultConfig()
 

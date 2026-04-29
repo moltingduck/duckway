@@ -9,12 +9,19 @@ import (
 
 	"github.com/hackerduck/duckway/internal/database"
 	"github.com/hackerduck/duckway/internal/server"
+	"github.com/hackerduck/duckway/internal/version"
 )
 
 func main() {
 	port := flag.Int("port", 0, "Listen port (default: 8080 or DUCKWAY_GATEWAY_LISTEN)")
 	dataDir := flag.String("data", "", "Data directory")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("duckway-gateway", version.Get())
+		return
+	}
 
 	config := server.DefaultConfig()
 	config.ListenAddr = envOrDefault("DUCKWAY_GATEWAY_LISTEN", ":8080")

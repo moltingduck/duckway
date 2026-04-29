@@ -26,7 +26,11 @@ services:
   # Combined mode (localhost)
   # ============================================================
   server:
-    build: { context: ., target: server }
+    build:
+      context: .
+      target: server
+      args:
+        DUCKWAY_VERSION: ${DUCKWAY_VERSION:-docker}
     container_name: duckway-server
     ports:
       - "127.0.0.1:${DUCKWAY_PORT:-8080}:8080"
@@ -42,7 +46,11 @@ services:
   # Production combined (no exposed ports — use behind reverse proxy)
   # ============================================================
   server-prod:
-    build: { context: ., target: server }
+    build:
+      context: .
+      target: server
+      args:
+        DUCKWAY_VERSION: ${DUCKWAY_VERSION:-docker}
     container_name: duckway-server
     volumes:
       - duckway-data:/data
@@ -56,7 +64,11 @@ services:
   # Production split (no exposed ports — use behind reverse proxy)
   # ============================================================
   admin-prod:
-    build: { context: ., target: admin }
+    build:
+      context: .
+      target: admin
+      args:
+        DUCKWAY_VERSION: ${DUCKWAY_VERSION:-docker}
     container_name: duckway-admin
     volumes:
       - duckway-data:/data
@@ -68,7 +80,11 @@ services:
     profiles: ["prod-split"]
 
   gateway-prod:
-    build: { context: ., target: gateway }
+    build:
+      context: .
+      target: gateway
+      args:
+        DUCKWAY_VERSION: ${DUCKWAY_VERSION:-docker}
     container_name: duckway-gateway
     volumes:
       - duckway-data:/data
@@ -82,7 +98,11 @@ services:
   # Combined mode + Tailscale
   # ============================================================
   server-tailscale:
-    build: { context: ., target: server }
+    build:
+      context: .
+      target: server
+      args:
+        DUCKWAY_VERSION: ${DUCKWAY_VERSION:-docker}
     container_name: duckway-server
     network_mode: "service:tailscale-server"
     volumes:
@@ -115,7 +135,11 @@ services:
   # Split mode (localhost)
   # ============================================================
   admin:
-    build: { context: ., target: admin }
+    build:
+      context: .
+      target: admin
+      args:
+        DUCKWAY_VERSION: ${DUCKWAY_VERSION:-docker}
     container_name: duckway-admin
     ports:
       - "127.0.0.1:${DUCKWAY_ADMIN_PORT:-9091}:9091"
@@ -129,7 +153,11 @@ services:
     profiles: ["split"]
 
   gateway:
-    build: { context: ., target: gateway }
+    build:
+      context: .
+      target: gateway
+      args:
+        DUCKWAY_VERSION: ${DUCKWAY_VERSION:-docker}
     container_name: duckway-gateway
     ports:
       - "127.0.0.1:${DUCKWAY_GATEWAY_PORT:-8080}:8080"
@@ -145,7 +173,11 @@ services:
   # Split mode + Tailscale
   # ============================================================
   admin-tailscale:
-    build: { context: ., target: admin }
+    build:
+      context: .
+      target: admin
+      args:
+        DUCKWAY_VERSION: ${DUCKWAY_VERSION:-docker}
     container_name: duckway-admin
     network_mode: "service:tailscale-admin"
     volumes:
@@ -160,7 +192,11 @@ services:
     profiles: ["tailscale"]
 
   gateway-tailscale:
-    build: { context: ., target: gateway }
+    build:
+      context: .
+      target: gateway
+      args:
+        DUCKWAY_VERSION: ${DUCKWAY_VERSION:-docker}
     container_name: duckway-gateway
     network_mode: "service:tailscale-gateway"
     volumes:
@@ -210,7 +246,11 @@ services:
   # Client (always available)
   # ============================================================
   client:
-    build: { context: ., target: client }
+    build:
+      context: .
+      target: client
+      args:
+        DUCKWAY_VERSION: ${DUCKWAY_VERSION:-docker}
     container_name: duckway-client
     restart: unless-stopped
     environment:

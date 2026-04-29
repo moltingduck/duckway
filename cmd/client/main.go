@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/hackerduck/duckway/internal/client"
+	"github.com/hackerduck/duckway/internal/version"
 )
 
 func main() {
@@ -45,6 +48,8 @@ func main() {
 			log.Fatalf("CA install failed: %v", err)
 		}
 		fmt.Println("CA certificate installed to system trust store")
+	case "version", "--version", "-v":
+		fmt.Println("duckway", version.Get())
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -65,7 +70,9 @@ Usage:
   duckway proxy -d       Start local proxy as background daemon
   duckway proxy stop     Stop the running daemon
   duckway proxy status   Show daemon status
-  duckway status         Show connection status
+  duckway status         Show connection status, CA cert expiry
+  duckway install-ca     Re-install the Duckway CA into the system trust store
+  duckway version        Print the duckway version
 
 Proxy flags:
   --port N               Override proxy port
@@ -431,11 +438,34 @@ func cmdStatus(configDir string) {
 		fmt.Printf("  Will listen on %s\n", proxyURL)
 	}
 
-	// Check CA cert
+	// Check CA cert and report expiry
 	caPath := configDir + "/ca.pem"
-	if _, err := os.Stat(caPath); err == nil {
-		fmt.Println("CA cert:     installed")
-	} else {
+	caData, err := os.ReadFile(caPath)
+	if err != nil {
 		fmt.Println("CA cert:     MISSING (run duckway init to download)")
+		return
+	}
+	block, _ := pem.Decode(caData)
+	if block == nil {
+		fmt.Println("CA cert:     installed (could not parse PEM)")
+		return
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		fmt.Printf("CA cert:     installed (parse error: %v)\n", err)
+		return
+	}
+	now := time.Now()
+	expiresIn := cert.NotAfter.Sub(now)
+	exp := cert.NotAfter.Format("2006-01-02")
+	switch {
+	case now.After(cert.NotAfter):
+		fmt.Printf("CA cert:     EXPIRED on %s — re-run 'duckway init'\n", exp)
+	case expiresIn < 30*24*time.Hour:
+		days := int(expiresIn / (24 * time.Hour))
+		fmt.Printf("CA cert:     expires %s (%d days — consider re-running 'duckway init')\n", exp, days)
+	default:
+		days := int(expiresIn / (24 * time.Hour))
+		fmt.Printf("CA cert:     expires %s (%d days)\n", exp, days)
 	}
 }

@@ -1,22 +1,30 @@
 # === Build stage ===
 FROM golang:1.25-alpine AS builder
 
+# Optional version string passed in via:
+#   docker build --build-arg DUCKWAY_VERSION=$(git describe --always --dirty) ...
+# Falls back to "docker" if not set so binaries still report something useful.
+ARG DUCKWAY_VERSION=docker
+
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
 
-# Build all binaries
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /duckway-server ./cmd/server/
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /duckway-admin ./cmd/admin/
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /duckway-gateway ./cmd/gateway/
+ENV LDFLAGS="-s -w -X github.com/hackerduck/duckway/internal/version.Embedded=${DUCKWAY_VERSION}"
+
+# Build all binaries (-buildvcs=false because bind-mounted .git fails the
+# dubious-ownership check inside the container; we inject version via ldflags)
+RUN CGO_ENABLED=0 go build -buildvcs=false -ldflags="$LDFLAGS" -o /duckway-server ./cmd/server/
+RUN CGO_ENABLED=0 go build -buildvcs=false -ldflags="$LDFLAGS" -o /duckway-admin ./cmd/admin/
+RUN CGO_ENABLED=0 go build -buildvcs=false -ldflags="$LDFLAGS" -o /duckway-gateway ./cmd/gateway/
 
 # Cross-compile client for downloads
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /dist/duckway-client-linux-amd64 ./cmd/client/
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o /dist/duckway-client-linux-arm64 ./cmd/client/
-RUN CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o /dist/duckway-client-darwin-amd64 ./cmd/client/
-RUN CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o /dist/duckway-client-darwin-arm64 ./cmd/client/
+RUN CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/duckway-client-linux-amd64 ./cmd/client/
+RUN CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/duckway-client-linux-arm64 ./cmd/client/
+RUN CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/duckway-client-darwin-amd64 ./cmd/client/
+RUN CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/duckway-client-darwin-arm64 ./cmd/client/
 
 # === Combined server (backwards compat) ===
 FROM alpine:3.21 AS server

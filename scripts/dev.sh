@@ -16,6 +16,10 @@ fi
 MODE="${DUCKWAY_MODE:-combined}"
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile $MODE"
 
+# Stamp builds with the current git revision so `duckway version` reports it.
+# Falls back to "docker" when not in a clean repo (rare in dev).
+export DUCKWAY_VERSION="$(git -C "$PROJECT_DIR" describe --tags --always --dirty 2>/dev/null || echo docker)"
+
 # Dev never uses tailscale profiles
 
 case "${1:-up}" in

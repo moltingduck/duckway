@@ -43,6 +43,9 @@ fi
 
 COMPOSE="docker compose -f docker-compose.yml $PROFILES"
 
+# Stamp builds with the current git revision so `duckway version` reports it.
+export DUCKWAY_VERSION="$(git -C "$PROJECT_DIR" describe --tags --always --dirty 2>/dev/null || echo docker)"
+
 case "${1:-up}" in
   up|start)
     echo "Starting Duckway production ($MODE mode + Tailscale)..."
