@@ -39,6 +39,7 @@ type APIKey struct {
 	ExpiresAt        int64   `json:"expires_at"`        // Unix ms, 0 = no expiry
 	TokenEndpoint    string  `json:"token_endpoint"`    // OAuth refresh URL
 	SubscriptionInfo string  `json:"subscription_info"` // JSON: type, tier, scopes, etc.
+	UsageSnapshot    string  `json:"usage_snapshot"`    // JSON: latest upstream rate-limit headers
 	IsActive         bool    `json:"is_active"`
 	UsageCount       int64   `json:"usage_count"`
 	LastUsedAt       *string `json:"last_used_at"`

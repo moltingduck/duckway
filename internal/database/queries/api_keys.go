@@ -14,10 +14,10 @@ func NewAPIKeyQueries(db *sql.DB) *APIKeyQueries {
 	return &APIKeyQueries{db: db}
 }
 
-const apiKeyCols = "k.id, k.service_id, k.name, k.key_encrypted, k.acl, k.refresh_token, k.expires_at, k.token_endpoint, k.subscription_info, k.is_active, k.usage_count, k.last_used_at, k.created_at, s.name"
+const apiKeyCols = "k.id, k.service_id, k.name, k.key_encrypted, k.acl, k.refresh_token, k.expires_at, k.token_endpoint, k.subscription_info, k.usage_snapshot, k.is_active, k.usage_count, k.last_used_at, k.created_at, s.name"
 
 func scanAPIKey(row interface{ Scan(...interface{}) error }, k *models.APIKey) error {
-	err := row.Scan(&k.ID, &k.ServiceID, &k.Name, &k.KeyEncrypted, &k.ACL, &k.RefreshToken, &k.ExpiresAt, &k.TokenEndpoint, &k.SubscriptionInfo, &k.IsActive, &k.UsageCount, &k.LastUsedAt, &k.CreatedAt, &k.ServiceName)
+	err := row.Scan(&k.ID, &k.ServiceID, &k.Name, &k.KeyEncrypted, &k.ACL, &k.RefreshToken, &k.ExpiresAt, &k.TokenEndpoint, &k.SubscriptionInfo, &k.UsageSnapshot, &k.IsActive, &k.UsageCount, &k.LastUsedAt, &k.CreatedAt, &k.ServiceName)
 	if err == nil {
 		k.IsRefreshable = k.RefreshToken != ""
 	}
@@ -146,5 +146,13 @@ func (q *APIKeyQueries) IncrementUsage(id string) error {
 	_, err := q.db.Exec(
 		"UPDATE api_keys SET usage_count = usage_count + 1, last_used_at = datetime('now') WHERE id = ?", id,
 	)
+	return err
+}
+
+// UpdateUsageSnapshot stores the JSON-encoded rate-limit snapshot from the
+// most recent upstream response. snapshot must be a JSON object string —
+// pass "" to clear.
+func (q *APIKeyQueries) UpdateUsageSnapshot(id, snapshot string) error {
+	_, err := q.db.Exec("UPDATE api_keys SET usage_snapshot = ? WHERE id = ?", snapshot, id)
 	return err
 }

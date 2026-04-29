@@ -72,10 +72,11 @@
       <div class="mt-1">
         <strong class="text-sm">Members</strong>
         <table class="mt-1">
-          <thead><tr><th>Key Name</th><th>Service</th><th>Usage</th><th></th></tr></thead>
+          <thead><tr><th>Key Name</th><th>Service</th><th>Total calls</th><th>Rate-limit usage</th><th></th></tr></thead>
           <tbody id="d-members"></tbody>
         </table>
       </div>
+      <div id="d-member-details" class="mt-1"></div>
 
       <div class="mt-1" id="add-member-section">
         <div class="flex gap-sm">
@@ -135,19 +136,31 @@ function openDetail(id) {
       document.getElementById('d-strategy').innerHTML = '<span class="badge badge-gray">' + g.strategy + '</span>';
 
       var tbody = document.getElementById('d-members');
+      var details = document.getElementById('d-member-details');
       tbody.innerHTML = '';
+      details.innerHTML = '';
       var members = g.members || [];
       if (members.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No members</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="text-muted">No members</td></tr>';
       } else {
         members.forEach(function(m) {
           var tr = document.createElement('tr');
+          var refreshBadge = m.is_refreshable ? ' <span class="badge badge-gray">refreshable</span>' : '';
           tr.innerHTML =
-            '<td>' + m.name + '</td>' +
+            '<td>' + m.name + refreshBadge + '</td>' +
             '<td><span class="badge badge-blue">' + m.service_name + '</span></td>' +
             '<td>' + m.usage_count + '</td>' +
+            '<td>' + renderUsageCompact(m.usage_snapshot) + '</td>' +
             '<td class="text-right"><button class="btn btn-sm btn-danger" onclick="removeMember(\'' + g.id + '\',\'' + m.id + '\')">Remove</button></td>';
           tbody.appendChild(tr);
+
+          // Expanded per-key rate-limit block, only for keys that have a snapshot
+          var block = renderUsageSnapshot(m.usage_snapshot);
+          if (block) {
+            var wrap = document.createElement('div');
+            wrap.innerHTML = '<div class="text-sm text-muted mt-1"><strong>' + m.name + '</strong></div>' + block;
+            details.appendChild(wrap);
+          }
         });
       }
 

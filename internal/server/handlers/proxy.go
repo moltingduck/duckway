@@ -16,6 +16,7 @@ import (
 
 type ProxyHandler struct {
 	services    *queries.ServiceQueries
+	apiKeys     *queries.APIKeyQueries
 	resolver    *services.KeyResolver
 	requestLog  *queries.RequestLogQueries
 	approvals   *queries.ApprovalQueries
@@ -25,9 +26,10 @@ type ProxyHandler struct {
 	httpClient  *http.Client
 }
 
-func NewProxyHandler(svcQueries *queries.ServiceQueries, resolver *services.KeyResolver, requestLog *queries.RequestLogQueries, approvals *queries.ApprovalQueries, settings *queries.SettingsQueries, notifier *services.Notifier) *ProxyHandler {
+func NewProxyHandler(svcQueries *queries.ServiceQueries, apiKeys *queries.APIKeyQueries, resolver *services.KeyResolver, requestLog *queries.RequestLogQueries, approvals *queries.ApprovalQueries, settings *queries.SettingsQueries, notifier *services.Notifier) *ProxyHandler {
 	return &ProxyHandler{
 		services:    svcQueries,
+		apiKeys:     apiKeys,
 		resolver:    resolver,
 		requestLog:  requestLog,
 		approvals:   approvals,
@@ -331,6 +333,16 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		id, lerr := h.requestLog.LogWithReturn(client.ID, result.PlaceholderID, serviceName, r.Method, upstreamPath, resp.StatusCode)
 		if lerr == nil {
 			logID = id
+		}
+	}
+
+	// Persist rate-limit snapshot for LLM providers (Anthropic, OpenAI). The
+	// upstream response carries headers like `anthropic-ratelimit-tokens-remaining`
+	// — we record them on the api_key so the OAuth detail and key-group views
+	// can show "X tokens used / Y remaining".
+	if h.apiKeys != nil && result.APIKeyID != "" && resp.StatusCode < 500 {
+		if snap := services.ParseRateLimits(resp.Header); snap != nil {
+			_ = h.apiKeys.UpdateUsageSnapshot(result.APIKeyID, snap.String())
 		}
 	}
 

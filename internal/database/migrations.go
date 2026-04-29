@@ -211,6 +211,7 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE api_keys ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE api_keys ADD COLUMN token_endpoint TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE api_keys ADD COLUMN subscription_info TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE api_keys ADD COLUMN usage_snapshot TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE placeholder_keys ADD COLUMN key_path TEXT NOT NULL DEFAULT ''",
 	}
 	for _, alt := range safeAlters {

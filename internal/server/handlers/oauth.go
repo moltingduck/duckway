@@ -143,6 +143,7 @@ func (h *OAuthHandler) Get(w http.ResponseWriter, r *http.Request) {
 		"service_name":      key.ServiceName,
 		"token_endpoint":    key.TokenEndpoint,
 		"subscription_info": key.SubscriptionInfo,
+		"usage_snapshot":    key.UsageSnapshot,
 		"expires_at":        key.ExpiresAt,
 		"is_active":         key.IsActive,
 		"usage_count":       key.UsageCount,

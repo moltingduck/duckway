@@ -300,7 +300,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	settingsQ := queries.NewSettingsQueries(s.db)
 	clientH := handlers.NewClientHandler(ss.ClientQ, ss.PlaceholderQ, ss.ServiceQ, ss.APIKeyQ, ss.CanarySvc)
 	canaryH := handlers.NewCanaryHandler(ss.CanaryQ, ss.CanarySvc)
-	proxyH := handlers.NewProxyHandler(ss.ServiceQ, ss.Resolver, ss.RequestLogQ, ss.ApprovalQ, ss.SettingsQ, ss.Notifier)
+	proxyH := handlers.NewProxyHandler(ss.ServiceQ, ss.APIKeyQ, ss.Resolver, ss.RequestLogQ, ss.ApprovalQ, ss.SettingsQ, ss.Notifier)
 	internalH := handlers.NewInternalHandler(ss.Resolver)
 
 	// Client routes (require client auth)

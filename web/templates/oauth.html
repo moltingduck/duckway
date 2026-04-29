@@ -71,6 +71,7 @@
         <tr><td class="text-muted">Last Used</td><td id="d-last-used"></td></tr>
         <tr><td class="text-muted">Created</td><td id="d-created"></td></tr>
       </table>
+      <div id="d-rate-limits" class="mt-1"></div>
       <div class="modal-actions mt-1">
         <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
         <button type="button" class="btn" id="refresh-now-btn" onclick="refreshNow()">Refresh Now</button>
@@ -173,6 +174,7 @@ function openDetail(id) {
       document.getElementById('d-usage').textContent = data.usage_count;
       document.getElementById('d-last-used').textContent = data.last_used_at || 'Never';
       document.getElementById('d-created').textContent = data.created_at;
+      document.getElementById('d-rate-limits').innerHTML = renderUsageSnapshot(data.usage_snapshot);
 
       document.getElementById('detail-view').style.display = '';
       document.getElementById('detail-edit').style.display = 'none';
