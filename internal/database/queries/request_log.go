@@ -156,13 +156,19 @@ type RequestLogEntry struct {
 	ClientName    string  `json:"client_name"`
 	PlaceholderID *string `json:"placeholder_id"`
 	EnvName       string  `json:"env_name"`
-	CreatedAt     string  `json:"created_at"`
+	// Placeholder is the actual phantom-token string (sk-ant-dw_..., ghp_dw_..., etc.)
+	// surfaced here so the logs UI can show it next to the request and link
+	// back to the phantom-token detail view.
+	Placeholder string `json:"placeholder"`
+	CreatedAt   string `json:"created_at"`
 }
 
 func (q *RequestLogQueries) Recent(limit int) ([]RequestLogEntry, error) {
 	rows, err := q.db.Query(
 		`SELECT r.id, r.service_name, r.method, r.path, r.status_code,
-		 r.client_id, COALESCE(c.name, ''), r.placeholder_id, COALESCE(p.env_name, ''), r.created_at
+		 r.client_id, COALESCE(c.name, ''),
+		 r.placeholder_id, COALESCE(p.env_name, ''), COALESCE(p.placeholder, ''),
+		 r.created_at
 		 FROM request_log r
 		 LEFT JOIN clients c ON r.client_id = c.id
 		 LEFT JOIN placeholder_keys p ON r.placeholder_id = p.id
@@ -177,7 +183,8 @@ func (q *RequestLogQueries) Recent(limit int) ([]RequestLogEntry, error) {
 	for rows.Next() {
 		var l RequestLogEntry
 		if err := rows.Scan(&l.ID, &l.ServiceName, &l.Method, &l.Path, &l.StatusCode,
-			&l.ClientID, &l.ClientName, &l.PlaceholderID, &l.EnvName, &l.CreatedAt); err != nil {
+			&l.ClientID, &l.ClientName, &l.PlaceholderID, &l.EnvName, &l.Placeholder,
+			&l.CreatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, l)

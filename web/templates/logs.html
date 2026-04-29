@@ -87,7 +87,7 @@
         <th>Time</th>
         <th>Client</th>
         <th>Service</th>
-        <th>Key</th>
+        <th>Phantom Token</th>
         <th>Method</th>
         <th>Path</th>
         <th>Status</th>
@@ -207,22 +207,50 @@ function applyFilters() {
 
   page.forEach(function(l) {
     var tr = document.createElement('tr');
-    tr.style.cursor = 'pointer';
-    tr.title = 'Click to view details (only present if capture was ON when this request ran)';
-    tr.onclick = function() { openLogDetail(l); };
     var statusBadge = '';
     if (l.status_code) {
       var cls = l.status_code < 400 ? 'badge-green' : 'badge-red';
       statusBadge = '<span class="badge ' + cls + '">' + l.status_code + '</span>';
     }
+
+    // Phantom token cell: short preview, click → phantom detail modal.
+    // Other cells stay row-clickable for the request-detail modal.
+    var phCell;
+    if (l.placeholder && l.placeholder_id) {
+      var short = l.placeholder.length > 18
+        ? l.placeholder.substring(0, 14) + '...' + l.placeholder.substring(l.placeholder.length - 4)
+        : l.placeholder;
+      phCell = '<td class="mono text-sm" data-ph-id="' + l.placeholder_id + '" data-ph-name="' + (l.env_name || '') + '" ' +
+        'style="cursor:pointer;text-decoration:underline dotted" ' +
+        'title="Click to view phantom-token details">' + short + '</td>';
+    } else {
+      phCell = '<td class="text-sm"><span class="text-muted">—</span></td>';
+    }
+
     tr.innerHTML =
-      '<td class="text-muted text-sm" style="white-space:nowrap">' + formatTime(l.created_at) + '</td>' +
-      '<td>' + (l.client_name || '<span class="text-muted">—</span>') + '</td>' +
-      '<td><span class="badge badge-blue">' + l.service_name + '</span></td>' +
-      '<td class="text-sm">' + (l.env_name || '<span class="text-muted">—</span>') + '</td>' +
-      '<td><span class="badge badge-blue">' + l.method + '</span></td>' +
-      '<td class="mono text-sm">' + l.path + '</td>' +
-      '<td>' + statusBadge + '</td>';
+      '<td class="text-muted text-sm log-row-click" style="white-space:nowrap">' + formatTime(l.created_at) + '</td>' +
+      '<td class="log-row-click">' + (l.client_name || '<span class="text-muted">—</span>') + '</td>' +
+      '<td class="log-row-click"><span class="badge badge-blue">' + l.service_name + '</span></td>' +
+      phCell +
+      '<td class="log-row-click"><span class="badge badge-blue">' + l.method + '</span></td>' +
+      '<td class="mono text-sm log-row-click">' + l.path + '</td>' +
+      '<td class="log-row-click">' + statusBadge + '</td>';
+
+    // Wire click handlers: phantom-token cell → phantom detail modal,
+    // every other cell → request detail modal.
+    Array.prototype.forEach.call(tr.querySelectorAll('.log-row-click'), function(td) {
+      td.style.cursor = 'pointer';
+      td.title = 'Click to view request details (only present if capture was ON when this request ran)';
+      td.onclick = function() { openLogDetail(l); };
+    });
+    var phTd = tr.querySelector('[data-ph-id]');
+    if (phTd) {
+      phTd.onclick = function(e) {
+        e.stopPropagation();
+        openPhantomDetail(phTd.dataset.phId, phTd.dataset.phName);
+      };
+    }
+
     tbody.appendChild(tr);
   });
 
@@ -459,6 +487,63 @@ function renderLogDetail(l, d) {
     '<h3 style="margin-top:1rem">Response Headers</h3>' + fmtHeaders(d.response_headers) +
     '<h3 style="margin-top:1rem">Response Body</h3>' + fmtBody(d.response_body) +
     '<div class="modal-actions mt-1" style="justify-content:flex-end"><button class="btn" onclick="document.getElementById(\'log-detail-modal\').style.display=\'none\'">Close</button></div>';
+}
+
+// openPhantomDetail mirrors the detail modal on the Phantom Tokens page —
+// shows the same fields (env, full token, key path, approval, ACL, usage,
+// created) by fetching from /api/placeholders/{id}. Read-only here; for
+// editing the user can open the dedicated Phantom Tokens page.
+function openPhantomDetail(phId, hint) {
+  fetch('/api/placeholders/' + phId, {credentials:'same-origin'})
+    .then(function(r) {
+      if (r.status === 404) {
+        showToast('Phantom token no longer exists (was it deleted?)', 'error');
+        return null;
+      }
+      return r.json();
+    })
+    .then(function(ph) {
+      if (!ph || ph.error) return;
+
+      var modal = document.getElementById('phantom-detail-modal');
+      if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'phantom-detail-modal';
+        modal.className = 'modal-backdrop';
+        modal.style.display = 'flex';
+        modal.onclick = function(e) {
+          if (e.target === modal) modal.style.display = 'none';
+        };
+        modal.innerHTML = '<div class="modal" style="max-width:720px"><div id="phantom-detail-body"></div></div>';
+        document.body.appendChild(modal);
+      } else {
+        modal.style.display = 'flex';
+      }
+
+      var ttl = ph.approval_ttl_minutes || 0;
+      var ttlText = ttl >= 1440 ? (ttl / 1440) + ' days' : (ttl + ' min');
+
+      var body = modal.querySelector('#phantom-detail-body');
+      body.innerHTML =
+        '<h2 style="margin-top:0">' + escapeHTML(ph.client_name || '') + ' — ' + escapeHTML(ph.service_name || '') + '</h2>' +
+        '<table class="detail-table">' +
+          '<tr><td class="text-muted">ID</td><td class="mono text-sm">' + escapeHTML(ph.id) + '</td></tr>' +
+          '<tr><td class="text-muted">Client</td><td>' + escapeHTML(ph.client_name || '—') + '</td></tr>' +
+          '<tr><td class="text-muted">API Key</td><td>' + escapeHTML(ph.api_key_name || '—') + '</td></tr>' +
+          '<tr><td class="text-muted">Service</td><td><span class="badge badge-blue">' + escapeHTML(ph.service_name || '?') + '</span></td></tr>' +
+          '<tr><td class="text-muted">Env Name</td><td class="mono">' + escapeHTML(ph.env_name || '') + '</td></tr>' +
+          '<tr><td class="text-muted">Phantom Token</td><td class="mono text-sm" style="word-break:break-all">' + escapeHTML(ph.placeholder || '') + '</td></tr>' +
+          '<tr><td class="text-muted">Key Path</td><td class="mono text-sm">' + (ph.key_path ? '~/' + escapeHTML(ph.key_path) : '—') + '</td></tr>' +
+          '<tr><td class="text-muted">Approval</td><td>' + (ph.requires_approval ? '<span class="badge badge-yellow">Required</span>' : '<span class="badge badge-green">Auto</span>') + '</td></tr>' +
+          '<tr><td class="text-muted">TTL</td><td>' + escapeHTML(ttlText) + '</td></tr>' +
+          '<tr><td class="text-muted">Usage</td><td>' + (ph.usage_count || 0) + '</td></tr>' +
+          '<tr><td class="text-muted">Created</td><td>' + escapeHTML(ph.created_at || '') + '</td></tr>' +
+        '</table>' +
+        '<div class="modal-actions mt-1">' +
+          '<button class="btn" onclick="document.getElementById(\'phantom-detail-modal\').style.display=\'none\'">Close</button>' +
+          '<a href="/admin/placeholders" class="btn btn-primary">Open in Phantom Tokens →</a>' +
+        '</div>';
+    });
 }
 
 function escapeHTML(s) {
