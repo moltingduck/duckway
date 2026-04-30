@@ -23,8 +23,9 @@ NC='\033[0m'
 
 cleanup() {
   fuser -k "$PORT/tcp" 2>/dev/null || true
+  fuser -k "$((PORT + 100))/tcp" 2>/dev/null || true
   docker rm -f duckway-e2e-client 2>/dev/null || true
-  rm -rf "$DATA_DIR" /tmp/dw-e2e-cookies /tmp/dw-e2e-server.log
+  rm -rf "$DATA_DIR" /tmp/dw-e2e-cookies /tmp/dw-e2e-server.log /tmp/dw-e2e-discord.log
 }
 
 assert_eq() {
@@ -79,8 +80,58 @@ docker build --target client -t duckway-client . -q 2>&1 >/dev/null
 # Cleanup old runs
 cleanup 2>/dev/null || true
 
-echo -e "${YELLOW}[Setup]${NC} Starting server on :$PORT..."
-DUCKWAY_DATA_DIR="$DATA_DIR" DUCKWAY_LISTEN="127.0.0.1:$PORT" /tmp/duckway-e2e-server &>/tmp/dw-e2e-server.log &
+# Mock Discord upstream so [17] CC tests can drive the real assign path
+# without going to the network. Channel IDs are deterministic (incrementing
+# from 1000) so assertions can pin them.
+DISCORD_MOCK_PORT=$((PORT + 100))
+python3 - <<PYEOF >/tmp/dw-e2e-discord.log 2>&1 &
+import http.server, json, sys, threading
+counter = [1000]
+lock = threading.Lock()
+class H(http.server.BaseHTTPRequestHandler):
+    def _send(self, code, body):
+        self.send_response(code)
+        self.send_header('Content-Type','application/json')
+        b = json.dumps(body).encode()
+        self.send_header('Content-Length', str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def do_POST(self):
+        ln = int(self.headers.get('Content-Length','0'))
+        raw = self.rfile.read(ln) if ln else b''
+        body = json.loads(raw or b'{}')
+        if '/guilds/' in self.path and self.path.endswith('/channels'):
+            with lock:
+                counter[0] += 1
+                cid = str(counter[0])
+            return self._send(200, {
+              'id': cid, 'name': body.get('name','x'), 'type': 0,
+              'parent_id': body.get('parent_id'),
+              'guild_id': self.path.split('/')[2],
+            })
+        if '/messages' in self.path:
+            return self._send(200, {'id':'9999','channel_id':self.path.split('/')[2]})
+        return self._send(404, {'message':'mock: unknown POST '+self.path})
+    def do_PATCH(self):
+        ln = int(self.headers.get('Content-Length','0'))
+        self.rfile.read(ln) if ln else None
+        return self._send(200, {'id': self.path.split('/')[-1]})
+    def do_GET(self):
+        if self.path.endswith('/channels'):
+            return self._send(200, [])
+        if '/messages' in self.path:
+            return self._send(200, [])
+        return self._send(404, {'message':'mock: unknown GET '+self.path})
+    def log_message(self, *a, **k): pass
+http.server.HTTPServer(('127.0.0.1', $DISCORD_MOCK_PORT), H).serve_forever()
+PYEOF
+DISCORD_MOCK_PID=$!
+sleep 0.5
+
+echo -e "${YELLOW}[Setup]${NC} Starting server on :$PORT (Discord mock on :$DISCORD_MOCK_PORT)..."
+DUCKWAY_DATA_DIR="$DATA_DIR" DUCKWAY_LISTEN="127.0.0.1:$PORT" \
+  DUCKWAY_DISCORD_BASE_URL="http://127.0.0.1:$DISCORD_MOCK_PORT" \
+  /tmp/duckway-e2e-server &>/tmp/dw-e2e-server.log &
 SERVER_PID=$!
 sleep 3
 
@@ -846,7 +897,7 @@ CC_DETAIL=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc/$CC_ID")
 CC_ASN=$(echo "$CC_DETAIL" | python3 -c "import sys,json;d=json.load(sys.stdin);a=d.get('assignments',[]);print(len(a) if isinstance(a,list) else -1)")
 assert_eq "CC detail assignments empty" "0" "$CC_ASN"
 
-# 17h: Create test client + assign CC
+# 17h: Create test client + assign CC (real Discord call → mock returns numeric id)
 CC_CLIENT_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" -H "Content-Type: application/json" -d '{"name":"cc-e2e-client"}')
 CC_CLIENT_ID=$(echo "$CC_CLIENT_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
 
@@ -854,8 +905,27 @@ ASSIGN_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CC_CLIE
   -d "{\"cc_id\":\"$CC_ID\",\"agent_type\":\"claude_code\"}")
 ASSIGN_STATUS=$(echo "$ASSIGN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
 ASSIGN_HANDLE=$(echo "$ASSIGN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('home_handle',''))")
+ASSIGN_REAL_CHID=$(echo "$ASSIGN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('home_channel_id',''))")
+ASSIGN_REAL_NAME=$(echo "$ASSIGN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('home_channel_name',''))")
+ASSIGN_PHID=$(echo "$ASSIGN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('placeholder_id',''))")
 assert_eq "Assign CC succeeds" "assigned" "$ASSIGN_STATUS"
 assert_contains "Assign returns handle (dwch_ prefix)" "dwch_" "$ASSIGN_HANDLE"
+assert_not_empty "Assign returns real Discord channel id" "$ASSIGN_REAL_CHID"
+assert_eq "Assign returns sanitized channel name" "cc-e2e-client" "$ASSIGN_REAL_NAME"
+assert_not_empty "Assign issues a placeholder_id" "$ASSIGN_PHID"
+
+# 17h-2: Phantom token row was created and bound to the bot api_key
+PH_BIND=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/placeholders" | python3 -c "
+import sys,json
+phs = json.load(sys.stdin)
+match = [p for p in phs if p.get('id') == '$ASSIGN_PHID']
+if not match: print('missing'); sys.exit()
+p = match[0]
+print('|'.join([p.get('client_id',''), p.get('api_key_id',''), p.get('env_name','')]))
+")
+assert_contains "Placeholder bound to client" "$CC_CLIENT_ID" "$PH_BIND"
+assert_contains "Placeholder bound to bot key" "$CC_BOT_KEY" "$PH_BIND"
+assert_contains "Placeholder env name" "DISCORD_BOT_TOKEN" "$PH_BIND"
 
 # 17i: Reject duplicate assignment
 DUP_ASSIGN=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CC_CLIENT_ID/cc" -H "Content-Type: application/json" \
@@ -888,10 +958,17 @@ CC_DETAIL2=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc/$CC_ID")
 ASN_COUNT=$(echo "$CC_DETAIL2" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('assignments',[])))")
 assert_eq "CC detail shows 2 assignments" "2" "$ASN_COUNT"
 
-# 17n: Unassign one client + verify CC detail drops to 1
+# 17n: Unassign one client + verify CC detail drops to 1, placeholder gone
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$CC_CLIENT_ID/cc/$CC_ID" > /dev/null
 ASN_AFTER=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc/$CC_ID" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('assignments',[])))")
 assert_eq "Unassign drops CC assignments to 1" "1" "$ASN_AFTER"
+
+PH_AFTER_UNASSIGN=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/placeholders" | python3 -c "
+import sys,json
+phs = json.load(sys.stdin)
+print(len([p for p in phs if p.get('id') == '$ASSIGN_PHID']))
+")
+assert_eq "Unassign deletes the placeholder" "0" "$PH_AFTER_UNASSIGN"
 
 # 17o: PUT update CC name + is_active
 curl -s -b /tmp/dw-e2e-cookies -X PUT "$BASE/api/cc/$CC_ID" -H "Content-Type: application/json" \

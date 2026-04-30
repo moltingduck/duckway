@@ -91,7 +91,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	notifH := handlers.NewNotificationHandler(ss.NotifQ, ss.Notifier)
 	canaryH := handlers.NewCanaryHandler(ss.CanaryQ, ss.CanarySvc)
 	ccQ := queries.NewControlChannelQueries(s.db)
-	ccH := handlers.NewControlChannelHandler(ccQ, ss.APIKeyQ, ss.ServiceQ, ss.ClientQ, ss.SettingsQ)
+	ccH := handlers.NewControlChannelHandler(ccQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ, ss.SettingsQ, ss.Crypto, services.NewDiscordBot())
 	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth)
 
 	// Static files

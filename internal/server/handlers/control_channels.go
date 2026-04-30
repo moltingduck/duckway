@@ -9,19 +9,26 @@ import (
 	svc "github.com/hackerduck/duckway/internal/server/services"
 )
 
-// ControlChannelHandler covers admin CRUD for the CC concept. The actual
-// Discord bot work (creating channels, archiving, gateway routing) lives in
-// a separate service so this handler stays focused on persistence.
+// ControlChannelHandler covers admin CRUD for the CC concept and the
+// Discord-bot side-effects that go with assignment (auto-creating a home
+// channel, archiving on tear-down).
 type ControlChannelHandler struct {
-	cc        *queries.ControlChannelQueries
-	apiKeys   *queries.APIKeyQueries
-	services  *queries.ServiceQueries
-	clients   *queries.ClientQueries
-	settings  *queries.SettingsQueries
+	cc           *queries.ControlChannelQueries
+	apiKeys      *queries.APIKeyQueries
+	placeholders *queries.PlaceholderQueries
+	services     *queries.ServiceQueries
+	clients      *queries.ClientQueries
+	settings     *queries.SettingsQueries
+	crypto       *svc.Crypto
+	bot          *svc.DiscordBot
 }
 
-func NewControlChannelHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, services *queries.ServiceQueries, clients *queries.ClientQueries, settings *queries.SettingsQueries) *ControlChannelHandler {
-	return &ControlChannelHandler{cc: cc, apiKeys: apiKeys, services: services, clients: clients, settings: settings}
+func NewControlChannelHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, placeholders *queries.PlaceholderQueries, services *queries.ServiceQueries, clients *queries.ClientQueries, settings *queries.SettingsQueries, crypto *svc.Crypto, bot *svc.DiscordBot) *ControlChannelHandler {
+	return &ControlChannelHandler{
+		cc: cc, apiKeys: apiKeys, placeholders: placeholders,
+		services: services, clients: clients, settings: settings,
+		crypto: crypto, bot: bot,
+	}
 }
 
 // GET /api/cc — list all CCs.
@@ -164,17 +171,45 @@ func (h *ControlChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "updated"})
 }
 
-// DELETE /api/cc/{id} — Phase A: just delete the row + cascading rows. Phase
-// B will pre-archive Discord channels here.
+// DELETE /api/cc/{id} — archive every Discord channel belonging to this CC,
+// then drop the row (FK cascade clears assignments + channel cache).
+// Discord errors are logged but don't block the delete — the archive is a
+// best-effort cleanup; if the bot lost access, the row should still go.
 func (h *ControlChannelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := h.cc.GetByID(id); err != nil {
+	cc, err := h.cc.GetByID(id)
+	if err != nil {
 		jsonError(w, "not found", http.StatusNotFound)
 		return
 	}
+
+	// Best-effort archive of every channel belonging to this CC.
+	channels, _ := h.cc.ListChannels(id)
+	if len(channels) > 0 && h.bot != nil {
+		botToken, decErr := h.decryptBotToken(cc.APIKeyID)
+		if decErr == nil {
+			ctx := r.Context()
+			for _, ch := range channels {
+				if ch.ChannelID == "" || ch.Archived {
+					continue
+				}
+				if err := h.bot.ArchiveChannel(ctx, botToken, ch.ChannelID, ch.Name); err != nil {
+					// Log but don't fail the delete.
+					continue
+				}
+			}
+		}
+	}
+
+	// Collect placeholder ids so we can drop them after the cascade.
+	asn, _ := h.cc.AssignmentsForCC(id)
+
 	if err := h.cc.Delete(id); err != nil {
 		jsonError(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+	for _, a := range asn {
+		_ = h.placeholders.Delete(a.PlaceholderID)
 	}
 	jsonResponse(w, map[string]string{"status": "deleted"})
 }
@@ -197,10 +232,10 @@ func (h *ControlChannelHandler) ListAssignmentsForClient(w http.ResponseWriter, 
 	jsonResponse(w, out)
 }
 
-// POST /api/clients/{id}/cc — assign CC to client. Phase A: stub the Discord
-// channel-create step (creates a placeholder cc_channels row + placeholder
-// token, but does not call Discord). Phase B replaces the stub with a real
-// API call inside a TX.
+// POST /api/clients/{id}/cc — assign CC to client. Calls Discord to provision
+// a home channel under the CC's category, issues a phantom token bound to
+// the bot key + this client, and persists the assignment row. Any failure
+// rolls back the partial state so retries are safe.
 func (h *ControlChannelHandler) AssignToClient(w http.ResponseWriter, r *http.Request) {
 	clientID := r.PathValue("id")
 	cl, err := h.clients.GetByID(clientID)
@@ -244,62 +279,140 @@ func (h *ControlChannelHandler) AssignToClient(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Phase A stub: Discord channel creation lives in Phase B. We DO need a
-	// home_handle row to satisfy the FK, so write a placeholder with
-	// channel_id="" + archived=0 + a deterministic name from the client.
-	// Phase B will replace this with the real Discord ID before exposing the
-	// channel to agents.
+	svcRow, err := h.services.GetByID(cc.ServiceID)
+	if err != nil {
+		jsonError(w, "service lookup failed", http.StatusInternalServerError)
+		return
+	}
+
+	// 1. Decrypt bot token.
+	botToken, err := h.decryptBotToken(cc.APIKeyID)
+	if err != nil {
+		jsonError(w, "decrypt bot token: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 2. Provision the channel via Discord. Currently only `discord` is
+	// supported — other services would plug in here.
+	var realChannelID, channelName string
+	switch svcRow.Name {
+	case "discord":
+		var cfg struct {
+			GuildID    string `json:"guild_id"`
+			CategoryID string `json:"category_id"`
+		}
+		if err := json.Unmarshal([]byte(cc.Config), &cfg); err != nil || cfg.GuildID == "" || cfg.CategoryID == "" {
+			jsonError(w, "cc config missing guild_id/category_id", http.StatusInternalServerError)
+			return
+		}
+		ch, err := h.bot.CreateChannel(r.Context(), botToken, svc.CreateChannelOpts{
+			GuildID:  cfg.GuildID,
+			ParentID: cfg.CategoryID,
+			Name:     cl.Name,
+			Topic:    "Duckway agent channel for " + cl.Name,
+		})
+		if err != nil {
+			jsonError(w, "discord create channel: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		realChannelID = ch.ID
+		channelName = ch.Name
+	default:
+		jsonError(w, "service "+svcRow.Name+" not supported for CC assignment yet", http.StatusBadRequest)
+		return
+	}
+
+	// 3. Persist channel row.
 	handle, _ := svc.GenerateToken(12)
 	handle = "dwch_" + handle
 	homeChan := &models.CCChannel{
 		Handle:    handle,
 		CCID:      cc.ID,
 		ClientID:  &clientID,
-		ChannelID: "", // populated by Phase B
-		Name:      cl.Name,
+		ChannelID: realChannelID,
+		Name:      channelName,
 		IsHome:    true,
 	}
 	if err := h.cc.CreateChannel(homeChan); err != nil {
-		jsonError(w, "create channel row: "+err.Error(), http.StatusInternalServerError)
+		// Roll back the Discord channel — we can't honour the assign.
+		_ = h.bot.ArchiveChannel(r.Context(), botToken, realChannelID, channelName)
+		jsonError(w, "persist channel: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Phantom token bound to the bot key + this client. Phase A: empty
-	// PlaceholderID since we haven't built that link yet — Phase B/C will
-	// generate a real placeholder_keys row and link it. For now we use the
-	// CC id itself so the FK we declared isn't violated. Skip FK with an
-	// empty string when the placeholder isn't issued.
-	// NOTE: schema declares placeholder_id REFERENCES placeholder_keys(id);
-	// in Phase A we just don't enforce it (SQLite FK is typically off in this
-	// project; if on, the Phase B work issues a real phantom).
+	// 4. Issue phantom token bound to bot api_key + this client.
+	envName := "DUCKWAY_CC_TOKEN"
+	if svcRow.Name == "discord" {
+		envName = "DISCORD_BOT_TOKEN"
+	}
+	keyPrefix := svcRow.KeyPrefix
+	if keyPrefix == "" {
+		keyPrefix = "dw_cc_"
+	}
+	keyLength := svcRow.KeyLength
+	if keyLength <= 0 {
+		keyLength = 64
+	}
+	placeholderStr, err := svc.GeneratePlaceholder(keyPrefix, keyLength)
+	if err != nil {
+		_ = h.cc.MarkChannelArchived(handle)
+		_ = h.bot.ArchiveChannel(r.Context(), botToken, realChannelID, channelName)
+		jsonError(w, "generate placeholder: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	phID, _ := svc.GenerateToken(16)
+	apiKeyIDPtr := cc.APIKeyID
+	ph := &models.PlaceholderKey{
+		ID:                 phID,
+		EnvName:            envName,
+		Placeholder:        placeholderStr,
+		ServiceID:          cc.ServiceID,
+		APIKeyID:           &apiKeyIDPtr,
+		ClientID:           clientID,
+		RequiresApproval:   false,
+		ApprovalTTLMinutes: 1440,
+		IsActive:           true,
+	}
+	if err := h.placeholders.Create(ph); err != nil {
+		_ = h.cc.MarkChannelArchived(handle)
+		_ = h.bot.ArchiveChannel(r.Context(), botToken, realChannelID, channelName)
+		jsonError(w, "issue placeholder: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 5. Persist assignment row.
 	a := &models.ClientCC{
 		ClientID:      clientID,
 		CCID:          cc.ID,
 		AgentType:     req.AgentType,
 		HomeHandle:    handle,
-		PlaceholderID: "phaseA-pending-" + handle,
+		PlaceholderID: phID,
 	}
 	if err := h.cc.Assign(a); err != nil {
-		// Roll back the channel row we created so the FK stays clean.
+		_ = h.placeholders.Delete(phID)
 		_ = h.cc.MarkChannelArchived(handle)
+		_ = h.bot.ArchiveChannel(r.Context(), botToken, realChannelID, channelName)
 		jsonError(w, "assign failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, map[string]interface{}{
-		"status":          "assigned",
-		"cc_id":           cc.ID,
-		"client_id":       clientID,
-		"agent_type":      req.AgentType,
-		"home_handle":     handle,
-		"home_channel_id": "",
-		"note":            "Phase A: home channel record created without Discord API call. Phase B will provision real channel.",
+		"status":            "assigned",
+		"cc_id":             cc.ID,
+		"client_id":         clientID,
+		"agent_type":        req.AgentType,
+		"home_handle":       handle,
+		"home_channel_id":   realChannelID,
+		"home_channel_name": channelName,
+		"placeholder_id":    phID,
 	})
 }
 
-// DELETE /api/clients/{id}/cc/{cc_id} — unassign. Phase A: archive the row;
-// Phase B will rename + remove parent_id on Discord side.
+// DELETE /api/clients/{id}/cc/{cc_id} — archive the home channel on Discord
+// (rename + drop parent_id), drop the placeholder, then drop the assignment.
+// Discord errors don't block local cleanup — once we've decided to unassign,
+// we want the row gone even if the bot can't reach Discord.
 func (h *ControlChannelHandler) UnassignFromClient(w http.ResponseWriter, r *http.Request) {
 	clientID := r.PathValue("id")
 	ccID := r.PathValue("cc_id")
@@ -308,10 +421,30 @@ func (h *ControlChannelHandler) UnassignFromClient(w http.ResponseWriter, r *htt
 		jsonError(w, "assignment not found", http.StatusNotFound)
 		return
 	}
+	cc, err := h.cc.GetByID(ccID)
+	if err == nil && h.bot != nil {
+		ch, _ := h.cc.GetChannelByHandle(a.HomeHandle)
+		if ch != nil && ch.ChannelID != "" && !ch.Archived {
+			botToken, decErr := h.decryptBotToken(cc.APIKeyID)
+			if decErr == nil {
+				_ = h.bot.ArchiveChannel(r.Context(), botToken, ch.ChannelID, ch.Name)
+			}
+		}
+	}
 	if err := h.cc.Unassign(clientID, ccID); err != nil {
 		jsonError(w, "unassign failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	_ = h.cc.MarkChannelArchived(a.HomeHandle)
+	_ = h.placeholders.Delete(a.PlaceholderID)
 	jsonResponse(w, map[string]string{"status": "unassigned"})
+}
+
+// decryptBotToken fetches an api_key by id and returns its decrypted value.
+func (h *ControlChannelHandler) decryptBotToken(apiKeyID string) (string, error) {
+	key, err := h.apiKeys.GetByID(apiKeyID)
+	if err != nil {
+		return "", err
+	}
+	return h.crypto.Decrypt(key.KeyEncrypted)
 }
