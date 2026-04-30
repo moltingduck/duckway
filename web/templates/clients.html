@@ -244,6 +244,26 @@
         <tr><td class="text-muted">Last Seen</td><td id="cd-seen"></td></tr>
         <tr><td class="text-muted">Created</td><td id="cd-created"></td></tr>
       </table>
+
+      <div class="mt-1">
+        <strong class="text-sm">Control Channels</strong>
+        <table class="mt-1">
+          <thead><tr><th>CC</th><th>Agent type</th><th>Channel</th><th>Channel ID</th><th></th></tr></thead>
+          <tbody id="cd-cc"><tr><td colspan="5" class="text-muted">None</td></tr></tbody>
+        </table>
+        <div class="flex gap-sm mt-1">
+          <select id="cd-cc-pick" style="flex:1"><option value="">Assign CC…</option></select>
+          <select id="cd-cc-agent" style="width:auto">
+            <option value="claude_code">claude_code</option>
+            <option value="openclaw">openclaw</option>
+            <option value="harmes">harmes</option>
+            <option value="cursor">cursor</option>
+            <option value="copilot_cli">copilot_cli</option>
+          </select>
+          <button type="button" class="btn btn-sm btn-primary" onclick="assignCC()">Assign</button>
+        </div>
+      </div>
+
       <div class="modal-actions mt-1">
         <button type="button" class="btn" onclick="document.getElementById('client-detail-modal').style.display='none'">Close</button>
         <button type="button" class="btn btn-primary" onclick="switchToClientEdit()">Edit</button>
@@ -283,6 +303,75 @@ function openClientDetail(id) {
       document.getElementById('cd-view').style.display = '';
       document.getElementById('cd-edit').style.display = 'none';
       document.getElementById('client-detail-modal').style.display = 'flex';
+      loadClientCCs(c.id);
+    });
+}
+
+function loadClientCCs(clientID) {
+  // Load assignments for this client + all available CCs in parallel.
+  Promise.all([
+    fetch('/api/clients/'+clientID+'/cc', {credentials:'same-origin'}).then(function(r){return r.json();}),
+    fetch('/api/cc', {credentials:'same-origin'}).then(function(r){return r.json();})
+  ]).then(function(out) {
+    var assigned = Array.isArray(out[0]) ? out[0] : [];
+    var allCC = Array.isArray(out[1]) ? out[1] : [];
+    var assignedIDs = assigned.map(function(a){return a.cc_id;});
+
+    var tbody = document.getElementById('cd-cc');
+    if (assigned.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="text-muted">No CCs assigned</td></tr>';
+    } else {
+      tbody.innerHTML = '';
+      assigned.forEach(function(a) {
+        var tr = document.createElement('tr');
+        var realID = a.home_channel_id || '<span class="text-muted">(pending)</span>';
+        tr.innerHTML =
+          '<td>'+(a.cc_name||'?')+'</td>' +
+          '<td><code>'+a.agent_type+'</code></td>' +
+          '<td>'+(a.home_channel_name||'(pending)')+'</td>' +
+          '<td class="mono text-sm">'+realID+'</td>' +
+          '<td class="text-right"><button class="btn btn-sm btn-danger" onclick="unassignCC(\''+clientID+'\',\''+a.cc_id+'\')">Unassign</button></td>';
+        tbody.appendChild(tr);
+      });
+    }
+
+    // Populate CC picker with not-yet-assigned active CCs only
+    var sel = document.getElementById('cd-cc-pick');
+    sel.innerHTML = '<option value="">Assign CC…</option>';
+    allCC.forEach(function(c) {
+      if (!c.is_active) return;
+      if (assignedIDs.indexOf(c.id) !== -1) return;
+      var opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = c.name + ' (' + c.service_name + ')';
+      sel.appendChild(opt);
+    });
+  });
+}
+
+function assignCC() {
+  if (!currentClient) return;
+  var ccID = document.getElementById('cd-cc-pick').value;
+  if (!ccID) { showToast('Pick a CC', 'error'); return; }
+  var agentType = document.getElementById('cd-cc-agent').value;
+  fetch('/api/clients/'+currentClient.id+'/cc', {
+    method: 'POST', credentials: 'same-origin',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({cc_id: ccID, agent_type: agentType})
+  }).then(function(r){return r.json();}).then(function(d) {
+    if (d.error) { showToast(d.error, 'error'); return; }
+    showToast('CC assigned', 'success');
+    loadClientCCs(currentClient.id);
+  });
+}
+
+function unassignCC(clientID, ccID) {
+  if (!confirm('Unassign this CC? The home channel will be archived.')) return;
+  fetch('/api/clients/'+clientID+'/cc/'+ccID, {method:'DELETE', credentials:'same-origin'})
+    .then(function(r){return r.json();}).then(function(d) {
+      if (d.error) { showToast(d.error, 'error'); return; }
+      showToast('Unassigned', 'success');
+      loadClientCCs(clientID);
     });
 }
 

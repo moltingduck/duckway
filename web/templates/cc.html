@@ -1,0 +1,254 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Control Channels</h1>
+  <button class="btn btn-primary" onclick="openCreate()">New CC</button>
+</div>
+
+<div class="card">
+  <p class="text-sm text-muted mb-1">
+    A <strong>Control Channel (CC)</strong> binds a bot token to a service-specific scope (e.g. a Discord category).
+    Clients assigned to a CC each get a home channel auto-provisioned under that scope, and their agent gets
+    an MCP/skill bundle written by <code>duckway sync</code>.
+    Bot token = security boundary — clients sharing one CC can interact with each other&rsquo;s channels.
+  </p>
+  <table>
+    <thead><tr><th>Name</th><th>Service</th><th>Bot Token</th><th>Config</th><th>Active</th><th></th></tr></thead>
+    <tbody id="cc-list"><tr><td colspan="6" class="text-muted">Loading…</td></tr></tbody>
+  </table>
+</div>
+
+<!-- Create modal -->
+<div id="create-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:560px">
+    <h2>New Control Channel</h2>
+    <form id="create-form">
+      <div class="form-group">
+        <label>Name</label>
+        <input type="text" id="cc-name" placeholder="Project Alpha CC" required>
+      </div>
+      <div class="form-group">
+        <label>Service</label>
+        <select id="cc-service" required onchange="renderConfigFields()"></select>
+        <span class="text-muted text-sm">Currently only Discord is fully supported.</span>
+      </div>
+      <div class="form-group">
+        <label>Bot Token (API Key)</label>
+        <select id="cc-key" required></select>
+        <span class="text-muted text-sm">Pick an existing API key for the chosen service. Add one in API Keys first if missing.</span>
+      </div>
+      <div id="config-fields"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('create-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Detail modal -->
+<div id="detail-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:640px">
+    <h2 id="d-title">CC Detail</h2>
+    <table class="detail-table">
+      <tr><td class="text-muted">ID</td><td id="d-id" class="mono text-sm"></td></tr>
+      <tr><td class="text-muted">Name</td><td id="d-name"></td></tr>
+      <tr><td class="text-muted">Service</td><td id="d-service"></td></tr>
+      <tr><td class="text-muted">Bot Token</td><td id="d-key"></td></tr>
+      <tr><td class="text-muted">Config</td><td id="d-config" class="mono text-sm" style="white-space:pre-wrap"></td></tr>
+      <tr><td class="text-muted">Active</td><td id="d-active"></td></tr>
+      <tr><td class="text-muted">Created</td><td id="d-created"></td></tr>
+    </table>
+    <div class="mt-1">
+      <strong class="text-sm">Assignments</strong>
+      <table class="mt-1">
+        <thead><tr><th>Client</th><th>Agent type</th><th>Home channel</th><th>Channel ID</th></tr></thead>
+        <tbody id="d-assignments"><tr><td colspan="4" class="text-muted">None</td></tr></tbody>
+      </table>
+    </div>
+    <div class="modal-actions mt-1">
+      <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
+      <button type="button" class="btn btn-danger" id="d-delete-btn">Delete CC</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var allKeys = [];
+var allServices = [];
+var currentCC = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+  fetch('/api/services', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s){
+    allServices = s || [];
+    var sel = document.getElementById('cc-service');
+    sel.innerHTML = '';
+    allServices.forEach(function(svc) {
+      var opt = document.createElement('option');
+      opt.value = svc.id;
+      opt.textContent = svc.display_name + ' (' + svc.name + ')';
+      if (svc.name === 'discord') opt.selected = true;
+      sel.appendChild(opt);
+    });
+    renderConfigFields();
+  });
+  fetch('/api/keys', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(k){
+    allKeys = k || [];
+  });
+  loadCCs();
+});
+
+function loadCCs() {
+  fetch('/api/cc', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(list) {
+    var tbody = document.getElementById('cc-list');
+    if (!Array.isArray(list) || list.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="text-muted">No control channels.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = '';
+    list.forEach(function(c) {
+      var cfgPreview = '';
+      try {
+        var cfg = JSON.parse(c.config || '{}');
+        cfgPreview = Object.keys(cfg).map(function(k){return k+'='+escapeShort(cfg[k]);}).join(', ');
+      } catch(e) { cfgPreview = '(invalid)'; }
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td><a href="#" onclick="openDetail(\''+c.id+'\');return false"><strong>'+escapeHTML(c.name)+'</strong></a></td>' +
+        '<td><span class="badge badge-blue">'+escapeHTML(c.service_name)+'</span></td>' +
+        '<td class="text-sm">'+escapeHTML(c.api_key_name)+'</td>' +
+        '<td class="text-sm mono">'+escapeHTML(cfgPreview)+'</td>' +
+        '<td>'+(c.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>')+'</td>' +
+        '<td class="text-right"><button class="btn btn-sm" onclick="openDetail(\''+c.id+'\')">Detail</button></td>';
+      tbody.appendChild(tr);
+    });
+  });
+}
+
+function escapeShort(v) {
+  v = String(v||'');
+  if (v.length > 20) v = v.substring(0,16)+'…';
+  return v;
+}
+function escapeHTML(s) {
+  return String(s==null?'':s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function renderConfigFields() {
+  var svcId = document.getElementById('cc-service').value;
+  var svc = allServices.filter(function(s){return s.id === svcId;})[0];
+  var div = document.getElementById('config-fields');
+  if (!svc) { div.innerHTML = ''; return; }
+  // Filter the API key dropdown to keys of this service
+  var keySel = document.getElementById('cc-key');
+  keySel.innerHTML = '';
+  var matches = allKeys.filter(function(k){return k.service_id === svcId;});
+  if (matches.length === 0) {
+    var opt = document.createElement('option');
+    opt.value = ''; opt.textContent = '(no keys for this service — add one first)';
+    keySel.appendChild(opt);
+  } else {
+    matches.forEach(function(k){
+      var opt = document.createElement('option');
+      opt.value = k.id; opt.textContent = k.name;
+      keySel.appendChild(opt);
+    });
+  }
+  if (svc.name === 'discord') {
+    div.innerHTML =
+      '<div class="form-group"><label>Discord Guild ID</label><input type="text" id="cc-cfg-guild" placeholder="123456789012345678" required></div>' +
+      '<div class="form-group"><label>Discord Category ID</label><input type="text" id="cc-cfg-category" placeholder="987654321098765432" required>' +
+      '<span class="text-muted text-sm">Bot must be in this guild with <code>MANAGE_CHANNELS</code> on the category.</span></div>';
+  } else {
+    div.innerHTML = '<div class="text-muted text-sm">No service-specific config required.</div>';
+  }
+}
+
+function openCreate() {
+  document.getElementById('cc-name').value = '';
+  renderConfigFields();
+  document.getElementById('create-modal').style.display = 'flex';
+}
+
+document.getElementById('create-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var svcId = document.getElementById('cc-service').value;
+  var svc = allServices.filter(function(s){return s.id === svcId;})[0];
+  var config = {};
+  if (svc && svc.name === 'discord') {
+    config.guild_id = document.getElementById('cc-cfg-guild').value.trim();
+    config.category_id = document.getElementById('cc-cfg-category').value.trim();
+    if (!config.guild_id || !config.category_id) {
+      showToast('Guild ID and Category ID are required for Discord', 'error');
+      return;
+    }
+  }
+  fetch('/api/cc', {
+    method: 'POST', credentials: 'same-origin',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      name: document.getElementById('cc-name').value.trim(),
+      service_id: svcId,
+      api_key_id: document.getElementById('cc-key').value,
+      config: config
+    })
+  })
+  .then(function(r){return r.json();})
+  .then(function(d) {
+    if (d.error) { showToast(d.error, 'error'); return; }
+    showToast('CC created', 'success');
+    document.getElementById('create-modal').style.display = 'none';
+    loadCCs();
+  });
+});
+
+function openDetail(id) {
+  fetch('/api/cc/'+id, {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(c) {
+    if (c.error) { showToast(c.error, 'error'); return; }
+    currentCC = c;
+    document.getElementById('d-title').textContent = c.name;
+    document.getElementById('d-id').textContent = c.id;
+    document.getElementById('d-name').textContent = c.name;
+    document.getElementById('d-service').innerHTML = '<span class="badge badge-blue">'+escapeHTML(c.service_name)+'</span>';
+    document.getElementById('d-key').textContent = c.api_key_name;
+    var pretty = c.config;
+    try { pretty = JSON.stringify(JSON.parse(c.config), null, 2); } catch(e) {}
+    document.getElementById('d-config').textContent = pretty;
+    document.getElementById('d-active').innerHTML = c.is_active
+      ? '<span class="badge badge-green">Active</span>'
+      : '<span class="badge badge-gray">Inactive</span>';
+    document.getElementById('d-created').textContent = c.created_at;
+
+    var tbody = document.getElementById('d-assignments');
+    var asn = c.assignments || [];
+    if (asn.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No assignments yet</td></tr>';
+    } else {
+      tbody.innerHTML = '';
+      asn.forEach(function(a) {
+        var tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td>'+escapeHTML(a.client_name||'?')+'</td>' +
+          '<td><code>'+escapeHTML(a.agent_type)+'</code></td>' +
+          '<td>'+escapeHTML(a.home_channel_name||'(pending)')+'</td>' +
+          '<td class="mono text-sm">'+escapeHTML(a.home_channel_id||'(pending)')+'</td>';
+        tbody.appendChild(tr);
+      });
+    }
+
+    document.getElementById('d-delete-btn').onclick = function() {
+      if (!confirm('Delete CC "'+c.name+'"? Assigned clients will lose access; channels are archived.')) return;
+      fetch('/api/cc/'+c.id, {method:'DELETE', credentials:'same-origin'})
+        .then(function(r){return r.json();}).then(function(d){
+          if (d.error) { showToast(d.error,'error'); return; }
+          document.getElementById('detail-modal').style.display = 'none';
+          loadCCs();
+          showToast('Deleted','success');
+        });
+    };
+    document.getElementById('detail-modal').style.display = 'flex';
+  });
+}
+</script>
+{{end}}

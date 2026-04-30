@@ -187,6 +187,63 @@ var migrations = []string{
 		value TEXT NOT NULL DEFAULT ''
 	)`,
 
+	// Control Channels (CC) — per-bot, per-category logical group. One CC ≈
+	// "this bot, this category" — clients assigned to a CC each get a home
+	// channel under that category and can create more via the MCP server.
+	`CREATE TABLE IF NOT EXISTS control_channels (
+		id          TEXT PRIMARY KEY,
+		name        TEXT NOT NULL,
+		service_id  TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+		api_key_id  TEXT NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+		config      TEXT NOT NULL DEFAULT '{}',
+		is_active   INTEGER NOT NULL DEFAULT 1,
+		created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+
+	// cc_channels caches every channel under a CC's category. handle is the
+	// opaque ID exposed to agents (real Discord channel_id never leaks).
+	// is_home=1 = the per-client home channel auto-created on assign.
+	`CREATE TABLE IF NOT EXISTS cc_channels (
+		handle        TEXT PRIMARY KEY,
+		cc_id         TEXT NOT NULL REFERENCES control_channels(id) ON DELETE CASCADE,
+		client_id     TEXT REFERENCES clients(id) ON DELETE SET NULL,
+		channel_id    TEXT NOT NULL,
+		name          TEXT NOT NULL,
+		topic         TEXT NOT NULL DEFAULT '',
+		is_home       INTEGER NOT NULL DEFAULT 0,
+		archived      INTEGER NOT NULL DEFAULT 0,
+		created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+		last_seen_at  TEXT,
+		UNIQUE(cc_id, channel_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_cc_channels_cc ON cc_channels(cc_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_cc_channels_client ON cc_channels(client_id)`,
+
+	// client_cc — assignment row. agent_type drives what duckway sync writes.
+	`CREATE TABLE IF NOT EXISTS client_cc (
+		client_id       TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+		cc_id           TEXT NOT NULL REFERENCES control_channels(id) ON DELETE CASCADE,
+		agent_type      TEXT NOT NULL DEFAULT 'claude_code',
+		home_handle     TEXT NOT NULL REFERENCES cc_channels(handle) ON DELETE CASCADE,
+		placeholder_id  TEXT NOT NULL REFERENCES placeholder_keys(id) ON DELETE CASCADE,
+		created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (client_id, cc_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_client_cc_cc ON client_cc(cc_id)`,
+
+	// discord_inbox — gateway events ingested server-side, polled by clients.
+	// payload is the (filtered) JSON from Discord's gateway dispatch.
+	`CREATE TABLE IF NOT EXISTS discord_inbox (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		cc_id       TEXT NOT NULL REFERENCES control_channels(id) ON DELETE CASCADE,
+		channel_handle TEXT REFERENCES cc_channels(handle) ON DELETE CASCADE,
+		event_type  TEXT NOT NULL,
+		payload     TEXT NOT NULL DEFAULT '{}',
+		created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_inbox_cc_id ON discord_inbox(cc_id, id)`,
+	`CREATE INDEX IF NOT EXISTS idx_inbox_created ON discord_inbox(created_at)`,
+
 	// Migration version tracking
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)`,
 }
@@ -217,6 +274,15 @@ func runMigrations(db *sql.DB) error {
 	for _, alt := range safeAlters {
 		db.Exec(alt) // ignore "duplicate column" errors
 	}
+
+	// Widen the existing `discord` service's host_pattern so the duckway-client
+	// MITM proxy can also intercept the WSS gateway + CDN hosts that the
+	// Control Channel feature needs. Only touches rows that still hold the
+	// old narrow pattern — leaves admin-customised values alone.
+	db.Exec(`UPDATE services
+		SET host_pattern = 'discord.com,api.discord.com,gateway.discord.gg,*.discordapp.net',
+		    upstream_url = 'https://discord.com/api/v10'
+		WHERE name = 'discord' AND host_pattern = 'discord.com'`)
 
 	return nil
 }

@@ -298,6 +298,13 @@ func (h *AdminHandler) OAuthPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *AdminHandler) CCPage(w http.ResponseWriter, r *http.Request) {
+	h.render(w, "cc", pageData{
+		Title:  "Control Channels",
+		Active: "cc",
+	})
+}
+
 func (h *AdminHandler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "settings", pageData{
 		Title:  "Settings",

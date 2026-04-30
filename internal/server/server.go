@@ -160,11 +160,10 @@ func (s *Server) ensureAdminUser() error {
 
 func (s *Server) seedDefaultServices() error {
 	svcQ := queries.NewServiceQueries(s.db)
-	count, err := svcQ.Count()
-	if err != nil {
-		return err
-	}
-	if count > 0 {
+	// Use heartbeat as the canonical marker for "defaults already seeded".
+	// Don't use total count — migrations may pre-seed individual rows
+	// (e.g. discord_api for the Control Channel feature).
+	if _, err := svcQ.GetByName("heartbeat"); err == nil {
 		return nil
 	}
 
@@ -175,7 +174,7 @@ func (s *Server) seedDefaultServices() error {
 		// GitHub: default to loan_proxy + multi-host (api.github.com,github.com) so git
 		// clone/pull/push work without buffering large packfiles through the gateway.
 		{Name: "github", DisplayName: "GitHub API + Git", UpstreamURL: "https://api.github.com", HostPattern: "api.github.com,github.com", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "ghp_", KeyLength: 40, KeyDirectory: ".config/gh/credentials", DeliveryMode: "loan_proxy", IsActive: true},
-		{Name: "discord", DisplayName: "Discord API", UpstreamURL: "https://discord.com/api", HostPattern: "discord.com", AuthType: "header", AuthHeader: "Authorization", AuthPrefix: "Bot ", KeyLength: 72, KeyDirectory: ".config/discord/credentials", DeliveryMode: "proxy", IsActive: true},
+		{Name: "discord", DisplayName: "Discord API", UpstreamURL: "https://discord.com/api/v10", HostPattern: "discord.com,api.discord.com,gateway.discord.gg,*.discordapp.net", AuthType: "header", AuthHeader: "Authorization", AuthPrefix: "Bot ", KeyLength: 72, KeyDirectory: ".config/discord/credentials", DeliveryMode: "proxy", IsActive: true},
 		{Name: "telegram", DisplayName: "Telegram Bot API", UpstreamURL: "https://api.telegram.org", HostPattern: "api.telegram.org", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyLength: 46, KeyDirectory: ".config/telegram/credentials", DeliveryMode: "proxy", IsActive: true},
 	}
 

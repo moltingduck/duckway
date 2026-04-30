@@ -90,6 +90,8 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	approvalH := handlers.NewApprovalHandler(ss.ApprovalQ, ss.PlaceholderQ)
 	notifH := handlers.NewNotificationHandler(ss.NotifQ, ss.Notifier)
 	canaryH := handlers.NewCanaryHandler(ss.CanaryQ, ss.CanarySvc)
+	ccQ := queries.NewControlChannelQueries(s.db)
+	ccH := handlers.NewControlChannelHandler(ccQ, ss.APIKeyQ, ss.ServiceQ, ss.ClientQ, ss.SettingsQ)
 	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth)
 
 	// Static files
@@ -115,6 +117,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/notifications", adminPageH.NotificationsPage)
 	adminPageMux.HandleFunc("GET /admin/canary", adminPageH.CanaryPage)
 	adminPageMux.HandleFunc("GET /admin/oauth", adminPageH.OAuthPage)
+	adminPageMux.HandleFunc("GET /admin/cc", adminPageH.CCPage)
 	adminPageMux.HandleFunc("GET /admin/settings", adminPageH.SettingsPage)
 	adminPageMux.HandleFunc("GET /admin/docs", adminPageH.DocsPage)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/approve", adminPageH.ApproveAction)
@@ -208,6 +211,16 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("GET /api/oauth/{id}", oauthH.Get)
 	adminAPIMux.HandleFunc("PUT /api/oauth/{id}", oauthH.Update)
 	adminAPIMux.HandleFunc("POST /api/oauth/{id}/refresh", oauthH.Refresh)
+
+	// Control Channels (CC) — admin CRUD
+	adminAPIMux.HandleFunc("GET /api/cc", ccH.List)
+	adminAPIMux.HandleFunc("POST /api/cc", ccH.Create)
+	adminAPIMux.HandleFunc("GET /api/cc/{id}", ccH.Get)
+	adminAPIMux.HandleFunc("PUT /api/cc/{id}", ccH.Update)
+	adminAPIMux.HandleFunc("DELETE /api/cc/{id}", ccH.Delete)
+	adminAPIMux.HandleFunc("GET /api/clients/{id}/cc", ccH.ListAssignmentsForClient)
+	adminAPIMux.HandleFunc("POST /api/clients/{id}/cc", ccH.AssignToClient)
+	adminAPIMux.HandleFunc("DELETE /api/clients/{id}/cc/{cc_id}", ccH.UnassignFromClient)
 
 	adminAPIMux.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
 		logs, err := ss.RequestLogQ.Recent(500)

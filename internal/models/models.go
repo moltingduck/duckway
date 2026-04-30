@@ -121,3 +121,70 @@ type RequestLog struct {
 	StatusCode    *int    `json:"status_code"`
 	CreatedAt     string  `json:"created_at"`
 }
+
+// ControlChannel groups a bot token with a service-specific config (e.g.
+// Discord guild_id + category_id). Clients assigned to a CC each get a
+// home channel auto-created under that category.
+type ControlChannel struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	ServiceID  string `json:"service_id"`
+	APIKeyID   string `json:"api_key_id"`
+	Config     string `json:"config"` // JSON; shape is per-service
+	IsActive   bool   `json:"is_active"`
+	CreatedAt  string `json:"created_at"`
+	// Joined
+	ServiceName string `json:"service_name,omitempty"`
+	APIKeyName  string `json:"api_key_name,omitempty"`
+	// Optional eager-loaded
+	Assignments []ClientCCDetail `json:"assignments,omitempty"`
+}
+
+// CCChannel mirrors a Discord channel under a CC's category. handle is the
+// opaque token agents see; channel_id is the real Discord ID, kept server-side.
+type CCChannel struct {
+	Handle     string  `json:"handle"`
+	CCID       string  `json:"cc_id"`
+	ClientID   *string `json:"client_id"`
+	ChannelID  string  `json:"channel_id"`
+	Name       string  `json:"name"`
+	Topic      string  `json:"topic"`
+	IsHome     bool    `json:"is_home"`
+	Archived   bool    `json:"archived"`
+	CreatedAt  string  `json:"created_at"`
+	LastSeenAt *string `json:"last_seen_at"`
+}
+
+// ClientCC is the assignment row.
+type ClientCC struct {
+	ClientID      string `json:"client_id"`
+	CCID          string `json:"cc_id"`
+	AgentType     string `json:"agent_type"`
+	HomeHandle    string `json:"home_handle"`
+	PlaceholderID string `json:"placeholder_id"`
+	CreatedAt     string `json:"created_at"`
+}
+
+// ClientCCDetail is ClientCC joined with display fields.
+type ClientCCDetail struct {
+	ClientID        string `json:"client_id"`
+	CCID            string `json:"cc_id"`
+	AgentType       string `json:"agent_type"`
+	HomeHandle      string `json:"home_handle"`
+	PlaceholderID   string `json:"placeholder_id"`
+	CreatedAt       string `json:"created_at"`
+	CCName          string `json:"cc_name"`
+	HomeChannelName string `json:"home_channel_name"`
+	HomeChannelID   string `json:"home_channel_id"`
+	ClientName      string `json:"client_name,omitempty"`
+}
+
+// InboxEvent is one buffered Discord gateway dispatch ready to be polled.
+type InboxEvent struct {
+	ID            int64   `json:"id"`
+	CCID          string  `json:"cc_id"`
+	ChannelHandle *string `json:"channel_handle"`
+	EventType     string  `json:"event_type"`
+	Payload       string  `json:"payload"`
+	CreatedAt     string  `json:"created_at"`
+}
