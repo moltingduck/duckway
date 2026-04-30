@@ -41,6 +41,7 @@ func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s.SetupGatewayRoutes(ss)
 	s.startApprovalListeners()
 	s.startApprovalSweeper(ss)
+	s.startCCBackground(ss)
 
 	return s, nil
 }
@@ -61,6 +62,7 @@ func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s.SetupAdminRoutes(contentFS, ss)
 	s.startApprovalListeners()
 	s.startApprovalSweeper(ss)
+	s.startCCBackground(ss)
 
 	return s, nil
 }
@@ -209,6 +211,23 @@ func (s *Server) startOAuthRefresher(ss *SharedServices) {
 func (s *Server) startApprovalSweeper(ss *SharedServices) {
 	sweeper := services.NewApprovalSweeper(ss.ApprovalQ, ss.SettingsQ)
 	sweeper.Start()
+}
+
+// startCCBackground spins up the multi-bot Discord gateway connections used
+// by Control Channels and the inbox cleanup goroutine. Both are best-effort:
+// gateway errors retry forever, cleanup errors are logged.
+//
+// In test/dev environments without a real Discord, set
+// DUCKWAY_CC_DISABLE_GATEWAY=1 to skip the WSS dial — the inbox cleanup
+// loop still runs and the REST/CRUD paths work normally.
+func (s *Server) startCCBackground(ss *SharedServices) {
+	ccQ := queries.NewControlChannelQueries(s.db)
+	if os.Getenv("DUCKWAY_CC_DISABLE_GATEWAY") != "1" {
+		mgr := services.NewCCGatewayManager(ccQ, ss.APIKeyQ, ss.Crypto)
+		mgr.Start()
+	}
+	stop := make(chan struct{})
+	services.StartInboxCleanup(ccQ, ss.SettingsQ, stop)
 }
 
 func (s *Server) startApprovalListeners() {

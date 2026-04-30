@@ -131,6 +131,7 @@ sleep 0.5
 echo -e "${YELLOW}[Setup]${NC} Starting server on :$PORT (Discord mock on :$DISCORD_MOCK_PORT)..."
 DUCKWAY_DATA_DIR="$DATA_DIR" DUCKWAY_LISTEN="127.0.0.1:$PORT" \
   DUCKWAY_DISCORD_BASE_URL="http://127.0.0.1:$DISCORD_MOCK_PORT" \
+  DUCKWAY_CC_DISABLE_GATEWAY=1 \
   /tmp/duckway-e2e-server &>/tmp/dw-e2e-server.log &
 SERVER_PID=$!
 sleep 3
@@ -989,10 +990,12 @@ curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$CC_BOT_KEY" > /dev/nul
 echo ""
 echo -e "${YELLOW}[15] Unit Tests${NC}"
 
-UNIT=$(go test ./internal/server/services/ 2>&1)
-if echo "$UNIT" | grep -q "^ok"; then
+UNIT=$(go test ./internal/server/services/ ./internal/database/queries/ ./internal/server/handlers/ 2>&1)
+UNIT_OK=$(echo "$UNIT" | grep -c "^ok" || true)
+UNIT_FAIL=$(echo "$UNIT" | grep -c "^FAIL" || true)
+if [ "$UNIT_FAIL" = "0" ] && [ "$UNIT_OK" -ge "1" ]; then
   PASS=$((PASS + 1))
-  echo -e "  ${GREEN}PASS${NC} Unit tests pass"
+  echo -e "  ${GREEN}PASS${NC} Unit tests pass ($UNIT_OK packages)"
 else
   FAIL=$((FAIL + 1))
   echo -e "  ${RED}FAIL${NC} Unit tests failed"
