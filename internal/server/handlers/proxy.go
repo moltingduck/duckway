@@ -376,6 +376,14 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			respSize, _ = io.Copy(multi, resp.Body)
 			respBodyStored = cap.buf.Bytes()
 			respTrunc = respSize > int64(maxCapturedBytes)
+			// If the upstream sent a compressed body, the agent decompresses
+			// on its end (it set Accept-Encoding) — but our captured copy is
+			// still the compressed bytes, which look like garbage in the UI.
+			// Decompress just the captured copy. Headers are kept as-is so
+			// the original Content-Encoding stays visible in the modal.
+			if decoded, ok := decodeBody(respBodyStored, resp.Header.Get("Content-Encoding")); ok {
+				respBodyStored = decoded
+			}
 		} else {
 			// Binary — skip body capture but still record metadata.
 			respSize, _ = io.Copy(w, resp.Body)
@@ -387,11 +395,15 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		reqSize := int64(len(bodyBytes))
 		reqCT := r.Header.Get("Content-Type")
 		if shouldCaptureContentType(reqCT) {
-			if reqSize > maxCapturedBytes {
-				reqBodyStored = string(bodyBytes[:maxCapturedBytes])
+			toStore := bodyBytes
+			if decoded, ok := decodeBody(bodyBytes, r.Header.Get("Content-Encoding")); ok {
+				toStore = decoded
+			}
+			if int64(len(toStore)) > maxCapturedBytes {
+				reqBodyStored = string(toStore[:maxCapturedBytes])
 				reqTrunc = true
 			} else {
-				reqBodyStored = string(bodyBytes)
+				reqBodyStored = string(toStore)
 			}
 		}
 

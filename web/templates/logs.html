@@ -474,14 +474,35 @@ function renderLogDetail(l, d) {
       '<tr><td class="text-muted">Sizes</td><td>req=' + d.request_size + 'B · resp=' + d.response_size + 'B</td></tr>';
   }
 
+  // If the original headers had a Content-Encoding (gzip/br/deflate), the
+  // server decompressed the captured body before storing — show a small
+  // note so the admin knows the displayed text is post-decompression even
+  // though the headers above still claim Content-Encoding: gzip.
+  function decodeNote(headersJSON) {
+    try {
+      var h = JSON.parse(headersJSON || '{}');
+      var enc = '';
+      Object.keys(h).forEach(function(k) {
+        if (k.toLowerCase() === 'content-encoding') {
+          var v = h[k];
+          enc = Array.isArray(v) ? v.join(', ') : v;
+        }
+      });
+      if (!enc || /^identity$/i.test(enc)) return '';
+      return '<div class="text-muted text-sm" style="margin-top:0.25rem;font-style:italic">' +
+             '↑ shown decompressed (original Content-Encoding: ' + escapeHTML(enc) + ')' +
+             '</div>';
+    } catch (e) { return ''; }
+  }
+
   // Detail block only present when capture was on at request time.
   var detailBlock;
   if (hasDetail) {
     detailBlock =
       '<h3 style="margin-top:1rem">Request Headers</h3>' + fmtHeaders(d.request_headers) +
-      '<h3 style="margin-top:1rem">Request Body</h3>' + fmtBody(d.request_body) +
+      '<h3 style="margin-top:1rem">Request Body</h3>' + fmtBody(d.request_body) + decodeNote(d.request_headers) +
       '<h3 style="margin-top:1rem">Response Headers</h3>' + fmtHeaders(d.response_headers) +
-      '<h3 style="margin-top:1rem">Response Body</h3>' + fmtBody(d.response_body);
+      '<h3 style="margin-top:1rem">Response Body</h3>' + fmtBody(d.response_body) + decodeNote(d.response_headers);
   } else {
     detailBlock =
       '<div class="card mt-1" style="background:var(--bg-input)">' +
