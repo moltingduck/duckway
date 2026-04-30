@@ -207,15 +207,20 @@ var migrations = []string{
 		handle        TEXT PRIMARY KEY,
 		cc_id         TEXT NOT NULL REFERENCES control_channels(id) ON DELETE CASCADE,
 		client_id     TEXT REFERENCES clients(id) ON DELETE SET NULL,
-		channel_id    TEXT NOT NULL,
+		channel_id    TEXT NOT NULL DEFAULT '',
 		name          TEXT NOT NULL,
 		topic         TEXT NOT NULL DEFAULT '',
 		is_home       INTEGER NOT NULL DEFAULT 0,
 		archived      INTEGER NOT NULL DEFAULT 0,
 		created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-		last_seen_at  TEXT,
-		UNIQUE(cc_id, channel_id)
+		last_seen_at  TEXT
 	)`,
+	// channel_id is the real Discord ID. Phase A leaves it empty until
+	// Phase B provisions the channel and writes it back. Once non-empty,
+	// it must be unique within a CC. We enforce that with a partial unique
+	// index instead of a table-level UNIQUE, so multiple Phase-A stubs
+	// (channel_id='') don't collide.
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_channels_unique ON cc_channels(cc_id, channel_id) WHERE channel_id != ''`,
 	`CREATE INDEX IF NOT EXISTS idx_cc_channels_cc ON cc_channels(cc_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_cc_channels_client ON cc_channels(client_id)`,
 

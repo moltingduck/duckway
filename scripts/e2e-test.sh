@@ -688,7 +688,7 @@ assert_eq "Canary settings requires auth" "401" "$CANARY_NO_AUTH"
 echo ""
 echo -e "${YELLOW}[14] Admin Panel Pages${NC}"
 
-for page in "" services keys placeholders clients groups approvals logs notifications canary docs oauth; do
+for page in "" services keys placeholders clients groups approvals logs notifications canary docs oauth cc; do
   STATUS=$(curl -s -b /tmp/dw-e2e-cookies -o /dev/null -w "%{http_code}" "$BASE/admin/$page")
   assert_eq "GET /admin/$page returns 200" "200" "$STATUS"
 done
@@ -786,6 +786,126 @@ assert_eq "PUT delivery_mode=bogus → 400" "400" "$BAD_MODE"
 # Cleanup
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$LOAN_CLIENT_ID" > /dev/null
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$LOAN_KEY_ID" > /dev/null
+
+
+# === Test 17: Control Channels (Phase A — schema + admin CRUD only) ===
+echo ""
+echo -e "${YELLOW}[17] Control Channels (Phase A)${NC}"
+
+# 17a: discord service has been widened by migration to include gateway host
+DISCORD_HOSTS=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services" | python3 -c "import sys,json;print([s for s in json.load(sys.stdin) if s['name']=='discord'][0]['host_pattern'])")
+assert_contains "discord host_pattern includes gateway.discord.gg" "gateway.discord.gg" "$DISCORD_HOSTS"
+assert_contains "discord host_pattern includes discordapp.net" "discordapp.net" "$DISCORD_HOSTS"
+
+DISCORD_SVC_ID=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services" | python3 -c "import sys,json;print([s['id'] for s in json.load(sys.stdin) if s['name']=='discord'][0])")
+
+# 17b: empty CC list initially
+CC_LIST=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc")
+CC_LEN=$(echo "$CC_LIST" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+assert_eq "CC list returns array" "0" "$CC_LEN"
+
+# 17c: Reject CC creation without bot token
+BAD_KEY=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+  -d "{\"name\":\"x\",\"service_id\":\"$DISCORD_SVC_ID\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
+assert_contains "CC create rejects missing api_key_id" "required" "$BAD_KEY"
+
+# Add a fake bot key under discord
+CC_BOT_KEY=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
+  -d "{\"service_id\":\"$DISCORD_SVC_ID\",\"name\":\"e2e-bot\",\"key\":\"NzAtest.test.testbot1234567890\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+assert_not_empty "Bot token uploaded" "$CC_BOT_KEY"
+
+# 17d: Reject CC creation without discord guild_id/category_id
+BAD_CFG=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+  -d "{\"name\":\"x\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$CC_BOT_KEY\",\"config\":{\"guild_id\":\"\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
+assert_contains "CC discord requires guild_id+category_id" "guild_id" "$BAD_CFG"
+
+# 17e: Reject api_key from a different service
+OPENAI_KEY_ID=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/keys" | python3 -c "import sys,json;[print(k['id']) for k in json.load(sys.stdin) if k.get('service_name')=='openai'][:1]" | head -1)
+if [ -n "$OPENAI_KEY_ID" ]; then
+  WRONG_SVC=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+    -d "{\"name\":\"x\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$OPENAI_KEY_ID\",\"config\":{\"guild_id\":\"1\",\"category_id\":\"2\"}}" \
+    | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
+  assert_contains "CC rejects api_key from other service" "does not belong" "$WRONG_SVC"
+fi
+
+# 17f: Successful CC creation populates joined fields
+CC_CREATED=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+  -d "{\"name\":\"e2e-cc\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$CC_BOT_KEY\",\"config\":{\"guild_id\":\"111\",\"category_id\":\"222\"}}")
+CC_ID=$(echo "$CC_CREATED" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+CC_SERVICE_NAME=$(echo "$CC_CREATED" | python3 -c "import sys,json;print(json.load(sys.stdin).get('service_name',''))")
+CC_KEY_NAME=$(echo "$CC_CREATED" | python3 -c "import sys,json;print(json.load(sys.stdin).get('api_key_name',''))")
+assert_not_empty "CC created" "$CC_ID"
+assert_eq "CC create response includes service_name" "discord" "$CC_SERVICE_NAME"
+assert_eq "CC create response includes api_key_name" "e2e-bot" "$CC_KEY_NAME"
+
+# 17g: CC detail returns assignments as []
+CC_DETAIL=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc/$CC_ID")
+CC_ASN=$(echo "$CC_DETAIL" | python3 -c "import sys,json;d=json.load(sys.stdin);a=d.get('assignments',[]);print(len(a) if isinstance(a,list) else -1)")
+assert_eq "CC detail assignments empty" "0" "$CC_ASN"
+
+# 17h: Create test client + assign CC
+CC_CLIENT_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" -H "Content-Type: application/json" -d '{"name":"cc-e2e-client"}')
+CC_CLIENT_ID=$(echo "$CC_CLIENT_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+
+ASSIGN_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CC_CLIENT_ID/cc" -H "Content-Type: application/json" \
+  -d "{\"cc_id\":\"$CC_ID\",\"agent_type\":\"claude_code\"}")
+ASSIGN_STATUS=$(echo "$ASSIGN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
+ASSIGN_HANDLE=$(echo "$ASSIGN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('home_handle',''))")
+assert_eq "Assign CC succeeds" "assigned" "$ASSIGN_STATUS"
+assert_contains "Assign returns handle (dwch_ prefix)" "dwch_" "$ASSIGN_HANDLE"
+
+# 17i: Reject duplicate assignment
+DUP_ASSIGN=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CC_CLIENT_ID/cc" -H "Content-Type: application/json" \
+  -d "{\"cc_id\":\"$CC_ID\",\"agent_type\":\"claude_code\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
+assert_contains "Reject duplicate assignment" "already assigned" "$DUP_ASSIGN"
+
+# 17j: Reject unknown agent_type
+CC_CLIENT2=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" -H "Content-Type: application/json" -d '{"name":"cc-e2e-client-2"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+BAD_AGENT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CC_CLIENT2/cc" -H "Content-Type: application/json" \
+  -d "{\"cc_id\":\"$CC_ID\",\"agent_type\":\"vim\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
+assert_contains "Reject unknown agent_type" "unknown agent_type" "$BAD_AGENT"
+
+# 17k: Allow alternative agent_types reserved in v1
+ALT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CC_CLIENT2/cc" -H "Content-Type: application/json" \
+  -d "{\"cc_id\":\"$CC_ID\",\"agent_type\":\"cursor\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
+assert_eq "Reserved agent_type 'cursor' accepted" "assigned" "$ALT"
+
+# 17l: Per-client CC list shows the assignment with cc_name + home_channel_name
+CLIENT_CC_LIST=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/clients/$CC_CLIENT_ID/cc")
+CC_NAME_IN_LIST=$(echo "$CLIENT_CC_LIST" | python3 -c "import sys,json;print(json.load(sys.stdin)[0].get('cc_name',''))")
+HOME_NAME=$(echo "$CLIENT_CC_LIST" | python3 -c "import sys,json;print(json.load(sys.stdin)[0].get('home_channel_name',''))")
+assert_eq "Client CC list — cc_name joined" "e2e-cc" "$CC_NAME_IN_LIST"
+assert_eq "Client CC list — channel name = client name" "cc-e2e-client" "$HOME_NAME"
+
+# 17m: CC detail shows 2 assignments after both clients assigned
+CC_DETAIL2=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc/$CC_ID")
+ASN_COUNT=$(echo "$CC_DETAIL2" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('assignments',[])))")
+assert_eq "CC detail shows 2 assignments" "2" "$ASN_COUNT"
+
+# 17n: Unassign one client + verify CC detail drops to 1
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$CC_CLIENT_ID/cc/$CC_ID" > /dev/null
+ASN_AFTER=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc/$CC_ID" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('assignments',[])))")
+assert_eq "Unassign drops CC assignments to 1" "1" "$ASN_AFTER"
+
+# 17o: PUT update CC name + is_active
+curl -s -b /tmp/dw-e2e-cookies -X PUT "$BASE/api/cc/$CC_ID" -H "Content-Type: application/json" \
+  -d '{"name":"renamed-cc","is_active":false}' > /dev/null
+RENAMED=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc/$CC_ID" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['name']+'|'+str(d['is_active']))")
+assert_eq "PUT updates name+is_active" "renamed-cc|False" "$RENAMED"
+
+# 17p: Cleanup CC + clients + bot key
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$CC_ID" > /dev/null
+DEL_CHECK=$(curl -s -b /tmp/dw-e2e-cookies -o /dev/null -w "%{http_code}" "$BASE/api/cc/$CC_ID")
+assert_eq "Deleted CC returns 404" "404" "$DEL_CHECK"
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$CC_CLIENT_ID" > /dev/null
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$CC_CLIENT2" > /dev/null
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$CC_BOT_KEY" > /dev/null
 
 
 # === Test 15: Unit Tests ===
