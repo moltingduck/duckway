@@ -489,8 +489,8 @@ function renderLogDetail(l, d) {
         }
       });
       if (!enc || /^identity$/i.test(enc)) return '';
-      return '<div class="text-muted text-sm" style="margin-top:0.25rem;font-style:italic">' +
-             '↑ shown decompressed (original Content-Encoding: ' + escapeHTML(enc) + ')' +
+      return '<div class="text-muted text-sm" style="margin-bottom:0.25rem;font-style:italic">' +
+             'shown decompressed (original Content-Encoding: ' + escapeHTML(enc) + ')' +
              '</div>';
     } catch (e) { return ''; }
   }
@@ -500,9 +500,9 @@ function renderLogDetail(l, d) {
   if (hasDetail) {
     detailBlock =
       '<h3 style="margin-top:1rem">Request Headers</h3>' + fmtHeaders(d.request_headers) +
-      '<h3 style="margin-top:1rem">Request Body</h3>' + fmtBody(d.request_body) + decodeNote(d.request_headers) +
+      '<h3 style="margin-top:1rem">Request Body</h3>' + decodeNote(d.request_headers) + fmtBody(d.request_body) +
       '<h3 style="margin-top:1rem">Response Headers</h3>' + fmtHeaders(d.response_headers) +
-      '<h3 style="margin-top:1rem">Response Body</h3>' + fmtBody(d.response_body) + decodeNote(d.response_headers);
+      '<h3 style="margin-top:1rem">Response Body</h3>' + decodeNote(d.response_headers) + fmtBody(d.response_body);
   } else {
     detailBlock =
       '<div class="card mt-1" style="background:var(--bg-input)">' +
