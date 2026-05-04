@@ -1080,11 +1080,56 @@ curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$CC_CLIENT2" > /dev/
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$CC_BOT_KEY" > /dev/null
 
 
+# === Test 18: CC sync writes state file + Claude Code MCP config (Phase D) ===
+echo ""
+echo -e "${YELLOW}[18] CC Sync (Phase D)${NC}"
+
+# Re-create a CC + bot key for this section, then assign the *docker* client
+# (CLIENT_ID + CLIENT_TOKEN are the e2e-test-client from section [5/8]).
+PD_BOT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
+  -d "{\"service_id\":\"$DISCORD_SVC_ID\",\"name\":\"phaseD-bot\",\"key\":\"NzPhase.D.testbot\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+PD_CC=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+  -d "{\"name\":\"phaseD-cc\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$PD_BOT\",\"config\":{\"guild_id\":\"7\",\"category_id\":\"8\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CLIENT_ID/cc" -H "Content-Type: application/json" \
+  -d "{\"cc_id\":\"$PD_CC\",\"agent_type\":\"claude_code\"}" > /dev/null
+
+# Run sync inside the docker client container.
+SYNC_PD=$(docker exec duckway-e2e-client duckway sync 2>&1)
+assert_contains "Sync logs CC count" "Synced 1 Control Channel" "$SYNC_PD"
+
+# State file: ~/.duckway/cc.json (container's HOME=/root)
+CC_JSON=$(docker exec duckway-e2e-client cat /root/.duckway/cc.json 2>/dev/null)
+assert_contains "cc.json contains the CC name" "phaseD-cc" "$CC_JSON"
+assert_contains "cc.json contains the agent type" "claude_code" "$CC_JSON"
+assert_contains "cc.json contains a home handle" "dwch_" "$CC_JSON"
+NO_TOKEN_LEAK=$(echo "$CC_JSON" | grep -c "$CLIENT_TOKEN" || true)
+assert_eq "cc.json does NOT leak the client token" "0" "$NO_TOKEN_LEAK"
+
+# Claude Code MCP entry: ~/.claude/mcp.json
+MCP_JSON=$(docker exec duckway-e2e-client cat /root/.claude/mcp.json 2>/dev/null)
+assert_contains "Claude mcp.json has duckway-cc server" "duckway-cc" "$MCP_JSON"
+assert_contains "Claude mcp.json command is duckway" "\"command\": \"duckway\"" "$MCP_JSON"
+assert_contains "Claude mcp.json args includes mcp serve" "\"mcp\"" "$MCP_JSON"
+
+# Unassign and re-sync — state file should clear.
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$CLIENT_ID/cc/$PD_CC" > /dev/null
+docker exec duckway-e2e-client duckway sync >/dev/null 2>&1
+CC_JSON_EMPTY=$(docker exec duckway-e2e-client cat /root/.duckway/cc.json 2>/dev/null)
+EMPTY_COUNT=$(echo "$CC_JSON_EMPTY" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('ccs',[])))")
+assert_eq "Re-sync after unassign clears cc.json" "0" "$EMPTY_COUNT"
+
+# Cleanup
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$PD_CC" > /dev/null
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$PD_BOT" > /dev/null
+
+
 # === Test 15: Unit Tests ===
 echo ""
 echo -e "${YELLOW}[15] Unit Tests${NC}"
 
-UNIT=$(go test ./internal/server/services/ ./internal/database/queries/ ./internal/server/handlers/ 2>&1)
+UNIT=$(go test ./internal/server/services/ ./internal/database/queries/ ./internal/server/handlers/ ./internal/client/ 2>&1)
 UNIT_OK=$(echo "$UNIT" | grep -c "^ok" || true)
 UNIT_FAIL=$(echo "$UNIT" | grep -c "^FAIL" || true)
 if [ "$UNIT_FAIL" = "0" ] && [ "$UNIT_OK" -ge "1" ]; then

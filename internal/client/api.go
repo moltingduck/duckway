@@ -183,6 +183,46 @@ func (c *APIClient) FetchConfig() (map[string]string, error) {
 	return cfg, nil
 }
 
+// CCAssignment mirrors what GET /client/cc returns. Only the fields the
+// client side actually uses are pulled out; the rest of the JSON is
+// preserved as RawAssignment in case Phase E wants more.
+type CCAssignment struct {
+	CCID            string `json:"cc_id"`
+	CCName          string `json:"cc_name"`
+	AgentType       string `json:"agent_type"`
+	HomeHandle      string `json:"home_handle"`
+	HomeChannelName string `json:"home_channel_name"`
+	PlaceholderID   string `json:"placeholder_id"`
+}
+
+// FetchCC asks the server which Control Channels this client is assigned
+// to. Returns an empty slice when none are configured.
+func (c *APIClient) FetchCC() ([]CCAssignment, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/client/cc", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch cc: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 {
+		return nil, nil // older server without CC support
+	}
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+	}
+	var out []CCAssignment
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("parse cc: %w", err)
+	}
+	return out, nil
+}
+
 func (c *APIClient) Ping() error {
 	req, err := http.NewRequest("GET", c.baseURL+"/client/keys", nil)
 	if err != nil {
