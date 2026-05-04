@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -50,6 +51,8 @@ func main() {
 		fmt.Println("CA certificate installed to system trust store")
 	case "update":
 		cmdUpdate(configDir)
+	case "mcp":
+		cmdMCP(configDir)
 	case "version", "--version", "-v":
 		fmt.Println("duckway", version.Get())
 	case "help", "--help", "-h":
@@ -75,6 +78,8 @@ Usage:
   duckway status         Show connection status, CA cert expiry
   duckway install-ca     Re-install the Duckway CA into the system trust store
   duckway update         Compare local version with server, download + replace if drifted
+  duckway mcp serve      Run the Control-Channel MCP server over stdio
+                         (launched by Claude Code from ~/.claude/mcp.json)
   duckway version        Print the duckway version
 
 Proxy flags:
@@ -199,6 +204,36 @@ func cmdSync(configDir string) {
 	}
 
 	fmt.Printf("Synced %d placeholder keys to %s\n", count, client.KeysEnvPath(configDir))
+}
+
+// cmdMCP implements the `duckway mcp serve` subcommand. Reads requests
+// from stdin and writes responses to stdout per the MCP spec — Claude
+// Code's mcp.json launches it for the duckway-cc server entry.
+//
+// `--config-dir <path>` overrides the default ~/.duckway/ — Phase D's
+// SyncCC writes the same flag if the user is on a non-default config dir.
+func cmdMCP(configDir string) {
+	if len(os.Args) < 3 || os.Args[2] != "serve" {
+		fmt.Fprintln(os.Stderr, "Usage: duckway mcp serve [--config-dir <path>]")
+		os.Exit(1)
+	}
+	for i := 3; i < len(os.Args)-1; i++ {
+		if os.Args[i] == "--config-dir" {
+			configDir = os.Args[i+1]
+		}
+	}
+	cfg, err := client.LoadConfig(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "duckway mcp: %v\n", err)
+		os.Exit(1)
+	}
+	srv := client.NewMCPServer(configDir, cfg)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	if err := srv.Run(ctx, os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "duckway mcp: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func cmdUpdate(configDir string) {

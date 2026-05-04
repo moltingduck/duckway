@@ -927,7 +927,7 @@ print('|'.join([p.get('client_id',''), p.get('api_key_id',''), p.get('env_name',
 ")
 assert_contains "Placeholder bound to client" "$CC_CLIENT_ID" "$PH_BIND"
 assert_contains "Placeholder bound to bot key" "$CC_BOT_KEY" "$PH_BIND"
-assert_contains "Placeholder env name" "DISCORD_BOT_TOKEN" "$PH_BIND"
+assert_contains "Placeholder env name carries CC id prefix" "DUCKWAY_CC_" "$PH_BIND"
 
 # 17i: Reject duplicate assignment
 DUP_ASSIGN=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CC_CLIENT_ID/cc" -H "Content-Type: application/json" \
@@ -1123,6 +1123,88 @@ assert_eq "Re-sync after unassign clears cc.json" "0" "$EMPTY_COUNT"
 # Cleanup
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$PD_CC" > /dev/null
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$PD_BOT" > /dev/null
+
+
+# === Test 19: MCP server (Phase E) ===
+echo ""
+echo -e "${YELLOW}[19] MCP server (Phase E)${NC}"
+
+# Re-create CC + assign so the docker client has something to expose.
+PE_BOT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
+  -d "{\"service_id\":\"$DISCORD_SVC_ID\",\"name\":\"phaseE-bot\",\"key\":\"NzPhase.E.testbot\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+PE_CC=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+  -d "{\"name\":\"phaseE-cc\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$PE_BOT\",\"config\":{\"guild_id\":\"77\",\"category_id\":\"88\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+PE_ASSIGN=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CLIENT_ID/cc" -H "Content-Type: application/json" \
+  -d "{\"cc_id\":\"$PE_CC\",\"agent_type\":\"claude_code\"}")
+PE_HOME_HANDLE=$(echo "$PE_ASSIGN" | python3 -c "import sys,json;print(json.load(sys.stdin).get('home_handle',''))")
+docker exec duckway-e2e-client duckway sync >/dev/null 2>&1
+
+# 19a: tools/list — should expose at least 9 discord_* tools
+TOOLS_REQ='{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+TOOLS_OUT=$(echo "$TOOLS_REQ" | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
+TOOL_COUNT=$(echo "$TOOLS_OUT" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['result']['tools']))")
+assert_eq "MCP tools/list returns >= 9 tools" "9" "$TOOL_COUNT"
+
+assert_contains "tools/list includes discord_post"          "discord_post"          "$TOOLS_OUT"
+assert_contains "tools/list includes discord_create_task"   "discord_create_task_channel" "$TOOLS_OUT"
+assert_contains "tools/list includes discord_wait_for_msg"  "discord_wait_for_message"    "$TOOLS_OUT"
+
+# 19b: initialize handshake
+INIT_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
+PROTO_VER=$(echo "$INIT_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['protocolVersion'])")
+SERVER_NAME=$(echo "$INIT_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['serverInfo']['name'])")
+assert_eq "MCP initialize protocolVersion" "2024-11-05" "$PROTO_VER"
+assert_eq "MCP initialize serverInfo.name" "duckway-cc" "$SERVER_NAME"
+
+# 19c: discord_list_assigned_ccs — should show the phaseE-cc
+LIST_CC_OUT=$(echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"discord_list_assigned_ccs","arguments":{}}}' \
+  | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
+assert_contains "discord_list_assigned_ccs includes phaseE-cc" "phaseE-cc" "$LIST_CC_OUT"
+
+# 19d: discord_list_channels — should round-trip through duckway server and
+# return the home channel only.
+LIST_CH_OUT=$(echo "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"discord_list_channels\",\"arguments\":{\"cc_id\":\"$PE_CC\"}}}" \
+  | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
+assert_contains "discord_list_channels routes through server" "$PE_HOME_HANDLE" "$LIST_CH_OUT"
+NO_RAW_ID=$(echo "$LIST_CH_OUT" | grep -c "channel_id" || true)
+assert_eq "discord_list_channels does NOT leak channel_id" "0" "$NO_RAW_ID"
+
+# 19e: discord_post — exercise the full tool→server→Discord-mock chain
+POST_OUT=$(echo "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"discord_post\",\"arguments\":{\"cc_id\":\"$PE_CC\",\"channel_handle\":\"$PE_HOME_HANDLE\",\"content\":\"hello via mcp\"}}}" \
+  | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
+assert_contains "discord_post returns message_id" "message_id" "$POST_OUT"
+
+# 19f: ambiguous cc (assign a 2nd CC, drop cc_id) → isError
+PE_BOT2=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
+  -d "{\"service_id\":\"$DISCORD_SVC_ID\",\"name\":\"phaseE-bot2\",\"key\":\"NzPhase.E.testbot2\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+PE_CC2=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+  -d "{\"name\":\"phaseE-cc-2\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$PE_BOT2\",\"config\":{\"guild_id\":\"99\",\"category_id\":\"100\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+ASSIGN2_OUT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CLIENT_ID/cc" -H "Content-Type: application/json" \
+  -d "{\"cc_id\":\"$PE_CC2\",\"agent_type\":\"claude_code\"}")
+ASSIGN2_STATUS=$(echo "$ASSIGN2_OUT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('status') or d.get('error',''))")
+assert_eq "Assign CC2 to client succeeds" "assigned" "$ASSIGN2_STATUS"
+docker exec duckway-e2e-client duckway sync >/dev/null 2>&1
+
+CC_JSON_DEBUG=$(docker exec duckway-e2e-client cat /root/.duckway/cc.json 2>/dev/null | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('ccs',[])))")
+assert_eq "cc.json has 2 CCs after re-sync" "2" "$CC_JSON_DEBUG"
+
+AMBIG_OUT=$(echo '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"discord_list_channels","arguments":{}}}' \
+  | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
+IS_ERR=$(echo "$AMBIG_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin)['result'].get('isError', False))")
+if [ "$IS_ERR" != "True" ]; then
+  echo "DEBUG ambig response: $AMBIG_OUT"
+fi
+assert_eq "Ambiguous cc → isError" "True" "$IS_ERR"
+
+# Cleanup
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$PE_CC" > /dev/null
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$PE_CC2" > /dev/null
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$PE_BOT" > /dev/null
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$PE_BOT2" > /dev/null
 
 
 # === Test 15: Unit Tests ===

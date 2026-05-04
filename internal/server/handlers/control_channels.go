@@ -340,10 +340,14 @@ func (h *ControlChannelHandler) AssignToClient(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// 4. Issue phantom token bound to bot api_key + this client.
-	envName := "DUCKWAY_CC_TOKEN"
-	if svcRow.Name == "discord" {
-		envName = "DISCORD_BOT_TOKEN"
+	// 4. Issue phantom token bound to bot api_key + this client. env_name
+	// must be unique per (client, service) — placeholder_keys has a UNIQUE
+	// constraint on that triple — so a client can be assigned to multiple
+	// CCs on the same bot (and therefore same service). Suffix with a
+	// short slice of cc_id to keep them distinct.
+	envName := "DUCKWAY_CC_" + cc.ID
+	if len(envName) > 60 {
+		envName = envName[:60]
 	}
 	keyPrefix := svcRow.KeyPrefix
 	if keyPrefix == "" {
