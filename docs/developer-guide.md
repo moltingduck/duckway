@@ -357,7 +357,7 @@ internal/server/services/discord_bot.go      Thin REST client (CreateChannel, Ar
 internal/server/services/cc_gateway.go       Multi-bot WSS manager + inbox cleanup goroutine
 internal/server/handlers/control_channels.go Admin CRUD + assign/unassign (calls discord_bot)
 internal/server/handlers/cc_client.go        /client/cc/* — handle-based, NEVER returns real channel_id
-internal/client/sync_cc.go                   Writes ~/.duckway/cc.json + merges ~/.claude/mcp.json
+internal/client/sync_cc.go                   Writes ~/.duckway/cc.json + merges ~/.claude.json
 internal/client/mcp.go                       Stdio MCP server (JSON-RPC 2.0)
 internal/client/mcp_tools.go                 9 discord_* tool implementations (delegate to /client/cc/*)
 cmd/client/main.go                           `duckway mcp serve` subcommand
@@ -371,7 +371,7 @@ Admin assigns CC                           agent runs `duckway sync`         cla
 POST /api/clients/{id}/cc                    GET /client/cc                   spawn `duckway mcp serve`
         ▼                                          ▼                                │
 decrypt bot token                           write ~/.duckway/cc.json                ▼
-Discord POST /guilds/{g}/channels           merge ~/.claude/mcp.json         tools/list → 9 discord_* tools
+Discord POST /guilds/{g}/channels           merge ~/.claude.json         tools/list → 9 discord_* tools
 issue placeholder DUCKWAY_CC_<cc_id>                                         tools/call discord_post
 persist client_cc + cc_channels                                                     │
                                                                               POST /client/cc/{id}/channels/{handle}/messages

@@ -261,7 +261,7 @@ Admin → New CC (Discord bot + guild_id + category_id)
                                                        phantom token issued to client
 
 Agent  duckway sync                                ──→ ~/.duckway/cc.json
-                                                       ~/.claude/mcp.json (writes "duckway-cc")
+                                                       ~/.claude.json (writes "duckway-cc")
        claude                                       ──→ launches `duckway mcp serve`
        (model calls discord_post / discord_create_task_channel / …)
 ```

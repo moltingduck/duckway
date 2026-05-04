@@ -261,7 +261,7 @@ Lets a Claude Code agent talk to humans inside a Discord category — one channe
 
 1. **Clients** → open the client → **Assign CC** → pick the CC + agent type (`claude_code`).
    Server calls Discord, creates a home channel named after the client, issues a phantom token bound to (client, bot, CC), and stores the binding.
-2. On the agent machine: `duckway sync` writes `~/.duckway/cc.json` and merges a `duckway-cc` entry into `~/.claude/mcp.json`.
+2. On the agent machine: `duckway sync` writes `~/.duckway/cc.json` and merges a `duckway-cc` entry into `~/.claude.json`.
 3. Next `claude` session sees these tools (only when at least one CC is assigned):
    `discord_list_assigned_ccs`, `discord_list_channels`, `discord_create_task_channel`, `discord_archive_channel`, `discord_post`, `discord_edit_message`, `discord_delete_message`, `discord_read_recent`, `discord_wait_for_message`.
 

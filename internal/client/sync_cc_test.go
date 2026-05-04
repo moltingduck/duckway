@@ -95,7 +95,8 @@ func TestWriteClaudeCodeMCP_PreservesUserKeys(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", tmp)
 
-	// User already has an MCP entry — we must keep it.
+	// User already has an MCP entry + other top-level Claude config keys
+	// (oauthAccount, projects, …) — every non-`duckway-cc` key must survive.
 	user := map[string]interface{}{
 		"mcpServers": map[string]interface{}{
 			"my-other-mcp": map[string]interface{}{
@@ -103,10 +104,11 @@ func TestWriteClaudeCodeMCP_PreservesUserKeys(t *testing.T) {
 				"args":    []interface{}{"server.js"},
 			},
 		},
-		"someOtherKey": "preserved",
+		"oauthAccount":           map[string]interface{}{"emailAddress": "u@x"},
+		"hasCompletedOnboarding": true,
 	}
 	ub, _ := json.MarshalIndent(user, "", "  ")
-	if err := os.WriteFile(filepath.Join(tmp, "mcp.json"), ub, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, ".claude.json"), ub, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,12 +118,15 @@ func TestWriteClaudeCodeMCP_PreservesUserKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	raw, _ := os.ReadFile(filepath.Join(tmp, "mcp.json"))
+	raw, _ := os.ReadFile(filepath.Join(tmp, ".claude.json"))
 	var got map[string]interface{}
 	_ = json.Unmarshal(raw, &got)
 
-	if got["someOtherKey"] != "preserved" {
-		t.Error("non-mcp key wiped")
+	if got["hasCompletedOnboarding"] != true {
+		t.Error("hasCompletedOnboarding wiped")
+	}
+	if oa, _ := got["oauthAccount"].(map[string]interface{}); oa["emailAddress"] != "u@x" {
+		t.Error("oauthAccount wiped")
 	}
 	servers := got["mcpServers"].(map[string]interface{})
 	if _, ok := servers["my-other-mcp"]; !ok {
@@ -130,6 +135,9 @@ func TestWriteClaudeCodeMCP_PreservesUserKeys(t *testing.T) {
 	dw, ok := servers["duckway-cc"].(map[string]interface{})
 	if !ok {
 		t.Fatal("duckway-cc entry missing")
+	}
+	if dw["type"] != "stdio" {
+		t.Errorf("type = %v, want stdio", dw["type"])
 	}
 	if dw["command"] != "duckway" {
 		t.Errorf("command = %v", dw["command"])
@@ -146,7 +154,7 @@ func TestWriteClaudeCodeMCP_NewFile(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(filepath.Join(tmp, "mcp.json"))
+	raw, err := os.ReadFile(filepath.Join(tmp, ".claude.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,18 +172,76 @@ func TestWriteClaudeCodeMCP_BackupOnInvalidJSON(t *testing.T) {
 
 	// Pre-write garbage.
 	garbage := []byte("not json {{{")
-	_ = os.WriteFile(filepath.Join(tmp, "mcp.json"), garbage, 0600)
+	_ = os.WriteFile(filepath.Join(tmp, ".claude.json"), garbage, 0600)
 
 	if err := writeClaudeCodeMCP(t.TempDir(), []CCStateAssignment{
 		{CCID: "cc1", CCName: "x", AgentType: "claude_code"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(tmp, "mcp.json.duckway-backup")); err != nil {
+	if _, err := os.Stat(filepath.Join(tmp, ".claude.json.duckway-backup")); err != nil {
 		t.Errorf("expected backup file: %v", err)
 	}
-	raw, _ := os.ReadFile(filepath.Join(tmp, "mcp.json"))
+	raw, _ := os.ReadFile(filepath.Join(tmp, ".claude.json"))
 	if string(raw) == string(garbage) {
 		t.Error("garbage was not replaced with valid JSON")
+	}
+}
+
+// TestWriteClaudeCodeMCP_LegacyCleanup verifies the writer removes the
+// stale ~/.claude/mcp.json a previous duckway version wrote, but only if
+// it's empty or contains nothing other than our duckway-cc entry.
+func TestWriteClaudeCodeMCP_LegacyCleanup(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", "") // ensure HOME is used
+
+	legacyPath := filepath.Join(tmpHome, ".claude", "mcp.json")
+	_ = os.MkdirAll(filepath.Dir(legacyPath), 0700)
+
+	legacy := map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			"duckway-cc": map[string]interface{}{"command": "duckway", "args": []interface{}{"mcp", "serve"}},
+		},
+	}
+	lb, _ := json.Marshal(legacy)
+	_ = os.WriteFile(legacyPath, lb, 0600)
+
+	if err := writeClaudeCodeMCP(t.TempDir(), []CCStateAssignment{
+		{CCID: "cc1", CCName: "x", AgentType: "claude_code"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Errorf("expected legacy ~/.claude/mcp.json removed, still exists: %v", err)
+	}
+}
+
+func TestWriteClaudeCodeMCP_LegacyKeptIfHasOtherEntries(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+
+	legacyPath := filepath.Join(tmpHome, ".claude", "mcp.json")
+	_ = os.MkdirAll(filepath.Dir(legacyPath), 0700)
+
+	legacy := map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			"duckway-cc": map[string]interface{}{"command": "duckway"},
+			"user-mcp":   map[string]interface{}{"command": "node"},
+		},
+	}
+	lb, _ := json.Marshal(legacy)
+	_ = os.WriteFile(legacyPath, lb, 0600)
+
+	if err := writeClaudeCodeMCP(t.TempDir(), []CCStateAssignment{
+		{CCID: "cc1", CCName: "x", AgentType: "claude_code"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Errorf("expected legacy file kept (had user-mcp entry), got: %v", err)
 	}
 }

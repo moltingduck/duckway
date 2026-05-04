@@ -102,38 +102,45 @@ func SyncCC(configDir string, cfg *Config) (int, error) {
 	return len(assignments), nil
 }
 
-// claudeCodeMCPPath returns the location to write Claude Code's MCP server
-// config to. Honours $CLAUDE_CONFIG_DIR if set; otherwise defaults to
-// ~/.claude/mcp.json (which Claude Code reads on startup).
+// claudeCodeMCPPath returns the path to Claude Code's main config file —
+// `~/.claude.json`. The user-scope MCP servers live under the top-level
+// `mcpServers` key in this file. Override with $CLAUDE_CONFIG_DIR (where
+// the file becomes `<dir>/.claude.json`) for tests or non-default
+// installs.
 func claudeCodeMCPPath() (string, error) {
 	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
-		return filepath.Join(d, "mcp.json"), nil
+		return filepath.Join(d, ".claude.json"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".claude", "mcp.json"), nil
+	return filepath.Join(home, ".claude.json"), nil
 }
 
-// writeClaudeCodeMCP merges a `duckway-cc` entry into the user's MCP server
-// config. Existing entries are preserved verbatim — we only own the
-// "duckway-cc" key.
+// writeClaudeCodeMCP merges a `duckway-cc` entry into the user's MCP
+// server config (~/.claude.json, top-level `mcpServers` key — the
+// "user scope" per Claude Code's docs).
 //
-// Shape we write (Claude Code's "Stdio MCP server" form):
+// Existing entries (mcpServers + every other top-level key like
+// `oauthAccount`, `projects`, `hasCompletedOnboarding` …) are preserved
+// verbatim — we only own the "duckway-cc" name.
+//
+// Shape we write:
 //
 //	{
 //	  "mcpServers": {
 //	    "duckway-cc": {
+//	      "type":    "stdio",
 //	      "command": "duckway",
-//	      "args": ["mcp", "serve"]
+//	      "args":    ["mcp", "serve"]
 //	    }
 //	  }
 //	}
 //
-// The `duckway mcp serve` subcommand (Phase E) reads cc.json from the same
-// configDir, so we don't need to pass IDs on the command line — the agent
-// will see all CCs the user is assigned to as MCP tools.
+// The `duckway mcp serve` subcommand reads cc.json from the same
+// configDir, so we don't need to pass IDs on the command line — the
+// agent sees all CCs the user is assigned to as MCP tools.
 func writeClaudeCodeMCP(configDir string, ccs []CCStateAssignment) error {
 	mcpPath, err := claudeCodeMCPPath()
 	if err != nil {
@@ -165,6 +172,7 @@ func writeClaudeCodeMCP(configDir string, ccs []CCStateAssignment) error {
 		args = append(args, "--config-dir", configDir)
 	}
 	servers["duckway-cc"] = map[string]interface{}{
+		"type":    "stdio",
 		"command": "duckway",
 		"args":    args,
 	}
@@ -177,6 +185,33 @@ func writeClaudeCodeMCP(configDir string, ccs []CCStateAssignment) error {
 	if err := os.WriteFile(mcpPath, out, 0600); err != nil {
 		return err
 	}
+
+	// Best-effort cleanup of the legacy ~/.claude/mcp.json that earlier
+	// duckway versions wrote — Claude Code never read it but it's
+	// confusing to leave behind. Silent if missing.
+	if home, hErr := os.UserHomeDir(); hErr == nil {
+		legacy := filepath.Join(home, ".claude", "mcp.json")
+		if data, rErr := os.ReadFile(legacy); rErr == nil {
+			var legacyRoot map[string]interface{}
+			if json.Unmarshal(data, &legacyRoot) == nil {
+				if servers, ok := legacyRoot["mcpServers"].(map[string]interface{}); ok {
+					// Only delete if the legacy file's only mcpServers entry
+					// was ours (or empty) — don't touch user data.
+					onlyOurs := true
+					for name := range servers {
+						if name != "duckway-cc" {
+							onlyOurs = false
+							break
+						}
+					}
+					if onlyOurs {
+						_ = os.Remove(legacy)
+					}
+				}
+			}
+		}
+	}
+
 	names := make([]string, 0, len(ccs))
 	for _, c := range ccs {
 		names = append(names, c.CCName)

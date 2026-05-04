@@ -323,7 +323,7 @@ curl https://api.openai.com/v1/chat/completions ...
 
   <h4 class="mt-1">Agent flow (Claude Code)</h4>
   <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># On the agent machine
-duckway sync                 # writes ~/.duckway/cc.json + ~/.claude/mcp.json
+duckway sync                 # writes ~/.duckway/cc.json + ~/.claude.json
 claude                       # spawns `duckway mcp serve` automatically</code></pre>
   <p>Inside a Claude session the model sees these tools (only when at least one CC is assigned):</p>
   <table class="mt-1">

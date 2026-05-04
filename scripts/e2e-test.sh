@@ -1122,11 +1122,13 @@ assert_contains "cc.json contains a home handle" "dwch_" "$CC_JSON"
 NO_TOKEN_LEAK=$(echo "$CC_JSON" | grep -c "$CLIENT_TOKEN" || true)
 assert_eq "cc.json does NOT leak the client token" "0" "$NO_TOKEN_LEAK"
 
-# Claude Code MCP entry: ~/.claude/mcp.json
-MCP_JSON=$(docker exec duckway-e2e-client cat /root/.claude/mcp.json 2>/dev/null)
-assert_contains "Claude mcp.json has duckway-cc server" "duckway-cc" "$MCP_JSON"
-assert_contains "Claude mcp.json command is duckway" "\"command\": \"duckway\"" "$MCP_JSON"
-assert_contains "Claude mcp.json args includes mcp serve" "\"mcp\"" "$MCP_JSON"
+# Claude Code MCP entry: ~/.claude.json (top-level mcpServers — Claude Code's
+# user scope; never ~/.claude/mcp.json which Claude Code does not read)
+MCP_JSON=$(docker exec duckway-e2e-client cat /root/.claude.json 2>/dev/null)
+assert_contains "Claude .claude.json has duckway-cc server" "duckway-cc" "$MCP_JSON"
+assert_contains "Claude .claude.json command is duckway" "\"command\": \"duckway\"" "$MCP_JSON"
+assert_contains "Claude .claude.json args includes mcp serve" "\"mcp\"" "$MCP_JSON"
+assert_contains "Claude .claude.json declares stdio transport" "\"type\": \"stdio\"" "$MCP_JSON"
 
 # Unassign and re-sync — state file should clear.
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$CLIENT_ID/cc/$PD_CC" > /dev/null

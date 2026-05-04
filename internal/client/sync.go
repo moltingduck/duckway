@@ -124,11 +124,27 @@ func SyncClaudeCredentials(cfg *Config) {
 		log.Printf("Claude settings synced to %s (proxy env)", settingsPath)
 	}
 
-	// 3. Write ~/.claude.json (from server's claudeConfig, or defaults)
-	//    Always overwrite — server controls the oauthAccount display info
+	// 3. Merge server's claudeConfig into ~/.claude.json. The server owns
+	// the oauthAccount/onboarding fields; everything else (mcpServers,
+	// projects, user prefs added by Claude itself, etc.) MUST be preserved.
+	// Earlier versions blindly overwrote the whole file, which wiped the
+	// duckway-cc MCP entry on every sync.
 	onboardingPath := filepath.Join(home, ".claude.json")
 	if claudeConfig, ok := creds["claudeConfig"].(map[string]interface{}); ok {
-		configData, err := json.MarshalIndent(claudeConfig, "", "  ")
+		root := map[string]interface{}{}
+		if existing, err := os.ReadFile(onboardingPath); err == nil && len(existing) > 0 {
+			if err := json.Unmarshal(existing, &root); err != nil {
+				backup := onboardingPath + ".duckway-backup"
+				_ = os.WriteFile(backup, existing, 0600)
+				log.Printf("Existing %s was not valid JSON — backed up to %s", onboardingPath, backup)
+				root = map[string]interface{}{}
+			}
+		}
+		// Server-controlled fields overwrite. Non-server keys stay.
+		for k, v := range claudeConfig {
+			root[k] = v
+		}
+		configData, err := json.MarshalIndent(root, "", "  ")
 		if err == nil {
 			if werr := os.WriteFile(onboardingPath, configData, 0600); werr != nil {
 				log.Printf("Warning: cannot write Claude onboarding config: %v", werr)
