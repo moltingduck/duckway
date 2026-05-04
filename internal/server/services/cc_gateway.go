@@ -25,6 +25,7 @@ type CCGatewayManager struct {
 	cc      *queries.ControlChannelQueries
 	apiKeys *queries.APIKeyQueries
 	crypto  *Crypto
+	hub     *CCEventHub
 
 	mu      sync.Mutex
 	conns   map[string]*ccBotConn // keyed by api_key_id
@@ -32,11 +33,12 @@ type CCGatewayManager struct {
 	stopped bool
 }
 
-func NewCCGatewayManager(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, crypto *Crypto) *CCGatewayManager {
+func NewCCGatewayManager(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, crypto *Crypto, hub *CCEventHub) *CCGatewayManager {
 	return &CCGatewayManager{
 		cc:      cc,
 		apiKeys: apiKeys,
 		crypto:  crypto,
+		hub:     hub,
 		conns:   map[string]*ccBotConn{},
 		stopCh:  make(chan struct{}),
 	}
@@ -106,6 +108,7 @@ func (m *CCGatewayManager) startConn(apiKeyID string) {
 		apiKeyID: apiKeyID,
 		botToken: tok,
 		cc:       m.cc,
+		hub:      m.hub,
 		stopCh:   make(chan struct{}),
 	}
 	m.conns[apiKeyID] = conn
@@ -119,6 +122,7 @@ type ccBotConn struct {
 	apiKeyID string
 	botToken string
 	cc       *queries.ControlChannelQueries
+	hub      *CCEventHub
 
 	mu      sync.Mutex
 	ws      *websocket.Conn
@@ -254,12 +258,8 @@ func (c *ccBotConn) handleDispatch(eventType string, data json.RawMessage) {
 		if msg.Author.Bot {
 			return
 		}
-		// Look up the channel in the cc_channels cache to find which CC owns
-		// it. Channels not under any CC (e.g. the admin's general chat) are
-		// silently ignored.
 		c.routeMessageEvent(eventType, msg.ChannelID, data)
 	case "MESSAGE_UPDATE", "MESSAGE_DELETE":
-		// Same routing; agents can poll for these too.
 		var generic struct {
 			ChannelID string `json:"channel_id"`
 		}
@@ -267,13 +267,35 @@ func (c *ccBotConn) handleDispatch(eventType string, data json.RawMessage) {
 			return
 		}
 		c.routeMessageEvent(eventType, generic.ChannelID, data)
+	case "CHANNEL_DELETE":
+		// User deleted a channel directly in Discord. Resolve, drop the
+		// cc_channels row so the daemon clears its session map, and notify
+		// the daemon via the hub.
+		var generic struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(data, &generic); err != nil {
+			return
+		}
+		c.handleChannelDelete(generic.ID, data)
+	case "CHANNEL_UPDATE":
+		// Channel rename / topic change — refresh our cached metadata.
+		var ch struct {
+			ID    string `json:"id"`
+			Name  string `json:"name"`
+			Topic string `json:"topic"`
+		}
+		if err := json.Unmarshal(data, &ch); err != nil {
+			return
+		}
+		c.handleChannelUpdate(ch.ID, ch.Name, ch.Topic, data)
 	}
 }
 
+// routeMessageEvent looks the channel up in our cache, appends the event
+// to discord_inbox, and publishes a "live tail" event to any subscribed
+// SSE client.
 func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload json.RawMessage) {
-	// Unscoped lookup across all CCs (since one bot may serve multiple
-	// CCs). The cache layer may not have the channel if it was created
-	// outside the duckway-managed flow — those are dropped on the floor.
 	all, err := c.cc.List()
 	if err != nil {
 		return
@@ -287,8 +309,84 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 			continue
 		}
 		_ = c.cc.AppendInbox(cc.ID, &ch.Handle, eventType, string(payload))
+		if c.hub != nil && cc.ClientID != "" {
+			c.hub.Publish(cc.ClientID, CCEvent{
+				Type:    sseTypeFromGateway(eventType),
+				CCID:    cc.ID,
+				Handle:  ch.Handle,
+				Payload: payload,
+			})
+		}
 		return
 	}
+}
+
+func (c *ccBotConn) handleChannelDelete(realChannelID string, payload json.RawMessage) {
+	all, err := c.cc.List()
+	if err != nil {
+		return
+	}
+	for _, cc := range all {
+		if cc.APIKeyID != c.apiKeyID {
+			continue
+		}
+		ch, err := c.cc.GetChannelByRealID(cc.ID, realChannelID)
+		if err != nil || ch == nil {
+			continue
+		}
+		// Drop the cache row entirely so daemon's "clear session" hook
+		// fires from a single signal.
+		_ = c.cc.DeleteChannelByRealID(cc.ID, realChannelID)
+		if c.hub != nil && cc.ClientID != "" {
+			c.hub.Publish(cc.ClientID, CCEvent{
+				Type:    "channel_delete",
+				CCID:    cc.ID,
+				Handle:  ch.Handle,
+				Payload: payload,
+			})
+		}
+		return
+	}
+}
+
+func (c *ccBotConn) handleChannelUpdate(realChannelID, name, topic string, payload json.RawMessage) {
+	all, err := c.cc.List()
+	if err != nil {
+		return
+	}
+	for _, cc := range all {
+		if cc.APIKeyID != c.apiKeyID {
+			continue
+		}
+		ch, err := c.cc.GetChannelByRealID(cc.ID, realChannelID)
+		if err != nil || ch == nil {
+			continue
+		}
+		_ = c.cc.UpdateChannelMeta(ch.Handle, name, topic)
+		if c.hub != nil && cc.ClientID != "" {
+			c.hub.Publish(cc.ClientID, CCEvent{
+				Type:    "channel_update",
+				CCID:    cc.ID,
+				Handle:  ch.Handle,
+				Payload: payload,
+			})
+		}
+		return
+	}
+}
+
+// sseTypeFromGateway lowercases Discord's SCREAMING_CASE event names into
+// the snake_case used in our SSE stream.
+func sseTypeFromGateway(s string) string {
+	switch s {
+	case "MESSAGE_CREATE":
+		return "message_create"
+	case "MESSAGE_UPDATE":
+		return "message_update"
+	case "MESSAGE_DELETE":
+		return "message_delete"
+	}
+	return s
 }
 
 func (c *ccBotConn) heartbeat(ws *websocket.Conn) {

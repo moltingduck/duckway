@@ -36,6 +36,7 @@ type SharedServices struct {
 	Notifier  *services.Notifier
 	CanarySvc *services.CanaryService
 	Refresher *services.TokenRefresher
+	CCHub     *services.CCEventHub // CC live-tail pub/sub
 
 	AdminAuth  *middleware.AdminAuth
 	ClientAuth *middleware.ClientAuth
@@ -74,6 +75,7 @@ func (s *Server) initShared() *SharedServices {
 		ApprovalQ: approvalQ, RequestLogQ: requestLogQ,
 		NotifQ: notifQ, CanaryQ: canaryQ, SettingsQ: settingsQ,
 		Crypto: crypto, Resolver: resolver, Notifier: notifier, CanarySvc: canarySvc,
+		CCHub:     services.NewCCEventHub(),
 		AdminAuth: adminAuth, ClientAuth: clientAuth,
 	}
 }
@@ -347,9 +349,10 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	// Control Channel client API (client auth required). Real Discord IDs
 	// stay server-side — agents see only opaque handles.
 	ccQ := queries.NewControlChannelQueries(s.db)
-	ccClientH := handlers.NewCCClientHandler(ccQ, ss.APIKeyQ, ss.Crypto, services.NewDiscordBot())
+	ccClientH := handlers.NewCCClientHandler(ccQ, ss.APIKeyQ, ss.Crypto, services.NewDiscordBot(), ss.CCHub)
 	// CC v2 client API — cc_id is implicit (1:1 client↔CC).
 	clientMux.HandleFunc("GET /client/cc", ccClientH.GetMyCC)
+	clientMux.HandleFunc("GET /client/cc/events", ccClientH.Events)
 	clientMux.HandleFunc("GET /client/cc/channels", ccClientH.ListChannels)
 	clientMux.HandleFunc("POST /client/cc/channels", ccClientH.CreateChannel)
 	clientMux.HandleFunc("POST /client/cc/channels/{handle}/archive", ccClientH.ArchiveChannel)

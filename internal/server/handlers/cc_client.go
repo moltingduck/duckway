@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,7 +16,8 @@ import (
 
 // CCClientHandler exposes the CC operations agents need: list channels under
 // the client's CC, create / archive task channels, post / read / edit /
-// delete messages, long-poll the inbox.
+// delete messages, long-poll the inbox, AND a server-sent-event stream of
+// live gateway events for the `duckway cc watch` daemon.
 //
 // CC v2: 1:1 client↔CC, so cc_id is implicit (looked up by client_id).
 // All real Discord IDs (channel_id, guild_id, category_id) stay server-side.
@@ -24,10 +26,11 @@ type CCClientHandler struct {
 	apiKeys *queries.APIKeyQueries
 	crypto  *svc.Crypto
 	bot     *svc.DiscordBot
+	hub     *svc.CCEventHub
 }
 
-func NewCCClientHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, crypto *svc.Crypto, bot *svc.DiscordBot) *CCClientHandler {
-	return &CCClientHandler{cc: cc, apiKeys: apiKeys, crypto: crypto, bot: bot}
+func NewCCClientHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, crypto *svc.Crypto, bot *svc.DiscordBot, hub *svc.CCEventHub) *CCClientHandler {
+	return &CCClientHandler{cc: cc, apiKeys: apiKeys, crypto: crypto, bot: bot, hub: hub}
 }
 
 // resolveCC fetches the client's CC + decrypted bot token, or writes the
@@ -400,6 +403,73 @@ func (h *CCClientHandler) PullInbox(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, map[string]interface{}{"cursor": since, "events": []models.InboxEvent{}})
 			return
 		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// GET /client/cc/events — Server-Sent Events stream of live gateway
+// dispatches for this client's CC. Used by `duckway cc watch` to wake up
+// the moment a Discord message arrives instead of polling the inbox.
+//
+// Wire shape (one event per "frame"):
+//
+//	event: ready
+//	data: {}
+//
+//	event: message_create
+//	data: {"type":"message_create","cc_id":"...","channel_handle":"dwch_...","payload":{...}}
+//
+//	: heartbeat   ← every 30s, keeps the connection alive through proxies
+//
+// The inbox table is still authoritative for cold-start replay — if a
+// daemon's connection drops it can /client/cc/inbox?since=<last_id> to
+// fill the gap.
+func (h *CCClientHandler) Events(w http.ResponseWriter, r *http.Request) {
+	client, _, _, ok := h.resolveCC(w, r)
+	if !ok {
+		return
+	}
+	if h.hub == nil {
+		jsonError(w, "event hub not configured", http.StatusServiceUnavailable)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		jsonError(w, "streaming not supported by this transport", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
+
+	sub, unsub := h.hub.Subscribe(client.ID)
+	defer unsub()
+
+	// Initial ready frame so the daemon knows the connection is live.
+	fmt.Fprintf(w, "event: ready\ndata: {}\n\n")
+	flusher.Flush()
+
+	heartbeat := time.NewTicker(30 * time.Second)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev, ok := <-sub:
+			if !ok {
+				return
+			}
+			data, _ := json.Marshal(ev)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, data)
+			flusher.Flush()
+		case <-heartbeat.C:
+			// SSE comment frame — clients ignore it but it keeps any
+			// idle-timeout proxies from killing the connection.
+			fmt.Fprint(w, ": heartbeat\n\n")
+			flusher.Flush()
 		}
 	}
 }

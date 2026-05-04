@@ -986,6 +986,14 @@ INBOX_EVENTS=$(curl -s -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc/i
   | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('events',[])))")
 assert_eq "Inbox empty (gateway disabled)" "0" "$INBOX_EVENTS"
 
+# 17p-2: SSE endpoint sends a `ready` frame and stays open
+SSE_OUT=$(curl -s --max-time 1 -H "X-Duckway-Token: $CC_CLIENT_TOKEN" -H "Accept: text/event-stream" "$BASE/client/cc/events" || true)
+assert_contains "/client/cc/events emits ready frame" "event: ready" "$SSE_OUT"
+
+# 17p-3: SSE rejects unauthenticated
+SSE_NOAUTH=$(curl -s -o /dev/null -w "%{http_code}" --max-time 1 "$BASE/client/cc/events" || true)
+assert_eq "/client/cc/events rejects unauthenticated" "401" "$SSE_NOAUTH"
+
 # 17q: ACL — request without auth
 NOAUTH=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/client/cc")
 assert_eq "/client/cc rejects unauthenticated" "401" "$NOAUTH"
