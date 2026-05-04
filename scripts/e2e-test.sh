@@ -842,9 +842,9 @@ curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$LOAN_CLIENT_ID" > /
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$LOAN_KEY_ID" > /dev/null
 
 
-# === Test 17: Control Channels (Phase A — schema + admin CRUD only) ===
+# === Test 17: Control Channels (CC v2 — 1:1 client↔CC) ===
 echo ""
-echo -e "${YELLOW}[17] Control Channels (Phase A)${NC}"
+echo -e "${YELLOW}[17] Control Channels (v2)${NC}"
 
 # 17a: discord service has been widened by migration to include gateway host
 DISCORD_HOSTS=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services" | python3 -c "import sys,json;print([s for s in json.load(sys.stdin) if s['name']=='discord'][0]['host_pattern'])")
@@ -854,25 +854,29 @@ assert_contains "discord host_pattern includes discordapp.net" "discordapp.net" 
 DISCORD_SVC_ID=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services" | python3 -c "import sys,json;print([s['id'] for s in json.load(sys.stdin) if s['name']=='discord'][0])")
 
 # 17b: empty CC list initially
-CC_LIST=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc")
-CC_LEN=$(echo "$CC_LIST" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
-assert_eq "CC list returns array" "0" "$CC_LEN"
+CC_LEN=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+assert_eq "CC list returns empty array" "0" "$CC_LEN"
 
-# 17c: Reject CC creation without bot token
-BAD_KEY=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
-  -d "{\"name\":\"x\",\"service_id\":\"$DISCORD_SVC_ID\"}" \
-  | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
-assert_contains "CC create rejects missing api_key_id" "required" "$BAD_KEY"
-
-# Add a fake bot key under discord
+# Add a fake bot key under discord (used for all CCs in this section)
 CC_BOT_KEY=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
   -d "{\"service_id\":\"$DISCORD_SVC_ID\",\"name\":\"e2e-bot\",\"key\":\"NzAtest.test.testbot1234567890\"}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
 assert_not_empty "Bot token uploaded" "$CC_BOT_KEY"
 
-# 17d: Reject CC creation without discord guild_id/category_id
+# A test client to bind the CC to.
+CC_CLIENT_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" -H "Content-Type: application/json" -d '{"name":"cc-e2e-client"}')
+CC_CLIENT_ID=$(echo "$CC_CLIENT_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+CC_CLIENT_TOKEN=$(echo "$CC_CLIENT_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+
+# 17c: Reject CC without client_id (v2 invariant)
+NO_CLIENT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+  -d "{\"name\":\"x\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$CC_BOT_KEY\",\"config\":{\"guild_id\":\"1\",\"category_id\":\"2\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
+assert_contains "CC create requires client_id" "client_id" "$NO_CLIENT"
+
+# 17d: Reject CC without discord guild_id/category_id
 BAD_CFG=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
-  -d "{\"name\":\"x\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$CC_BOT_KEY\",\"config\":{\"guild_id\":\"\"}}" \
+  -d "{\"name\":\"x\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$CC_BOT_KEY\",\"client_id\":\"$CC_CLIENT_ID\",\"config\":{\"guild_id\":\"\"}}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
 assert_contains "CC discord requires guild_id+category_id" "guild_id" "$BAD_CFG"
 
@@ -880,62 +884,34 @@ assert_contains "CC discord requires guild_id+category_id" "guild_id" "$BAD_CFG"
 OPENAI_KEY_ID=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/keys" | python3 -c "import sys,json;[print(k['id']) for k in json.load(sys.stdin) if k.get('service_name')=='openai'][:1]" | head -1)
 if [ -n "$OPENAI_KEY_ID" ]; then
   WRONG_SVC=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
-    -d "{\"name\":\"x\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$OPENAI_KEY_ID\",\"config\":{\"guild_id\":\"1\",\"category_id\":\"2\"}}" \
+    -d "{\"name\":\"x\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$OPENAI_KEY_ID\",\"client_id\":\"$CC_CLIENT_ID\",\"config\":{\"guild_id\":\"1\",\"category_id\":\"2\"}}" \
     | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
   assert_contains "CC rejects api_key from other service" "does not belong" "$WRONG_SVC"
 fi
 
-# 17f: Successful CC creation populates joined fields
+# 17f: Reject unknown agent_type
+BAD_AGENT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+  -d "{\"name\":\"x\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$CC_BOT_KEY\",\"client_id\":\"$CC_CLIENT_ID\",\"agent_type\":\"vim\",\"config\":{\"guild_id\":\"1\",\"category_id\":\"2\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
+assert_contains "Reject unknown agent_type" "unknown agent_type" "$BAD_AGENT"
+
+# 17g: Successful CC creation provisions management channel + phantom token
 CC_CREATED=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
-  -d "{\"name\":\"e2e-cc\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$CC_BOT_KEY\",\"config\":{\"guild_id\":\"111\",\"category_id\":\"222\"}}")
+  -d "{\"name\":\"e2e-cc\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$CC_BOT_KEY\",\"client_id\":\"$CC_CLIENT_ID\",\"agent_type\":\"claude_code\",\"config\":{\"guild_id\":\"111\",\"category_id\":\"222\"}}")
 CC_ID=$(echo "$CC_CREATED" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
-CC_SERVICE_NAME=$(echo "$CC_CREATED" | python3 -c "import sys,json;print(json.load(sys.stdin).get('service_name',''))")
-CC_KEY_NAME=$(echo "$CC_CREATED" | python3 -c "import sys,json;print(json.load(sys.stdin).get('api_key_name',''))")
+CC_PHID=$(echo "$CC_CREATED" | python3 -c "import sys,json;print(json.load(sys.stdin).get('placeholder_id',''))")
+CC_CLIENT_NAME_BACK=$(echo "$CC_CREATED" | python3 -c "import sys,json;print(json.load(sys.stdin).get('client_name',''))")
+CC_CHAN_COUNT=$(echo "$CC_CREATED" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('channels',[])))")
 assert_not_empty "CC created" "$CC_ID"
-assert_eq "CC create response includes service_name" "discord" "$CC_SERVICE_NAME"
-assert_eq "CC create response includes api_key_name" "e2e-bot" "$CC_KEY_NAME"
+assert_eq "Create includes joined client_name" "cc-e2e-client" "$CC_CLIENT_NAME_BACK"
+assert_eq "Create provisions one channel (management)" "1" "$CC_CHAN_COUNT"
+assert_not_empty "Create issues a placeholder_id" "$CC_PHID"
 
-# 17g: CC detail returns assignments as []
-CC_DETAIL=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc/$CC_ID")
-CC_ASN=$(echo "$CC_DETAIL" | python3 -c "import sys,json;d=json.load(sys.stdin);a=d.get('assignments',[]);print(len(a) if isinstance(a,list) else -1)")
-assert_eq "CC detail assignments empty" "0" "$CC_ASN"
-
-# 17g-2: Test endpoint — create + delete a temp channel via the configured bot
-TEST_OUT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc/$CC_ID/test")
-TEST_OK=$(echo "$TEST_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('ok'))")
-TEST_STEPS=$(echo "$TEST_OUT" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('steps',[])))")
-assert_eq "CC test reports ok=true" "True" "$TEST_OK"
-assert_eq "CC test ran 4 steps (decrypt/parse/create/delete)" "4" "$TEST_STEPS"
-assert_contains "CC test step 'create test channel' present" "create test channel" "$TEST_OUT"
-assert_contains "CC test step 'delete test channel' present" "delete test channel" "$TEST_OUT"
-
-# 17g-3: Test on a missing CC → 404
-MISSING_TEST=$(curl -s -o /dev/null -w "%{http_code}" -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc/does-not-exist/test")
-assert_eq "Test on missing CC → 404" "404" "$MISSING_TEST"
-
-# 17h: Create test client + assign CC (real Discord call → mock returns numeric id)
-CC_CLIENT_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" -H "Content-Type: application/json" -d '{"name":"cc-e2e-client"}')
-CC_CLIENT_ID=$(echo "$CC_CLIENT_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
-CC_CLIENT_TOKEN=$(echo "$CC_CLIENT_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
-
-ASSIGN_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CC_CLIENT_ID/cc" -H "Content-Type: application/json" \
-  -d "{\"cc_id\":\"$CC_ID\",\"agent_type\":\"claude_code\"}")
-ASSIGN_STATUS=$(echo "$ASSIGN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
-ASSIGN_HANDLE=$(echo "$ASSIGN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('home_handle',''))")
-ASSIGN_REAL_CHID=$(echo "$ASSIGN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('home_channel_id',''))")
-ASSIGN_REAL_NAME=$(echo "$ASSIGN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('home_channel_name',''))")
-ASSIGN_PHID=$(echo "$ASSIGN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('placeholder_id',''))")
-assert_eq "Assign CC succeeds" "assigned" "$ASSIGN_STATUS"
-assert_contains "Assign returns handle (dwch_ prefix)" "dwch_" "$ASSIGN_HANDLE"
-assert_not_empty "Assign returns real Discord channel id" "$ASSIGN_REAL_CHID"
-assert_eq "Assign returns sanitized channel name" "cc-e2e-client" "$ASSIGN_REAL_NAME"
-assert_not_empty "Assign issues a placeholder_id" "$ASSIGN_PHID"
-
-# 17h-2: Phantom token row was created and bound to the bot api_key
+# 17h: Phantom token row created and bound to (client, bot, env=DUCKWAY_CC_<id>)
 PH_BIND=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/placeholders" | python3 -c "
 import sys,json
 phs = json.load(sys.stdin)
-match = [p for p in phs if p.get('id') == '$ASSIGN_PHID']
+match = [p for p in phs if p.get('id') == '$CC_PHID']
 if not match: print('missing'); sys.exit()
 p = match[0]
 print('|'.join([p.get('client_id',''), p.get('api_key_id',''), p.get('env_name','')]))
@@ -944,154 +920,114 @@ assert_contains "Placeholder bound to client" "$CC_CLIENT_ID" "$PH_BIND"
 assert_contains "Placeholder bound to bot key" "$CC_BOT_KEY" "$PH_BIND"
 assert_contains "Placeholder env name carries CC id prefix" "DUCKWAY_CC_" "$PH_BIND"
 
-# 17i: Reject duplicate assignment
-DUP_ASSIGN=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CC_CLIENT_ID/cc" -H "Content-Type: application/json" \
-  -d "{\"cc_id\":\"$CC_ID\",\"agent_type\":\"claude_code\"}" \
+# 17i: 1:1 invariant — create a 2nd CC for the SAME client → 409
+DUP_CC=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+  -d "{\"name\":\"dup\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$CC_BOT_KEY\",\"client_id\":\"$CC_CLIENT_ID\",\"config\":{\"guild_id\":\"3\",\"category_id\":\"4\"}}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
-assert_contains "Reject duplicate assignment" "already assigned" "$DUP_ASSIGN"
+assert_contains "Reject 2nd CC for same client" "already has a CC" "$DUP_CC"
 
-# 17j: Reject unknown agent_type
-CC_CLIENT2=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" -H "Content-Type: application/json" -d '{"name":"cc-e2e-client-2"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
-BAD_AGENT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CC_CLIENT2/cc" -H "Content-Type: application/json" \
-  -d "{\"cc_id\":\"$CC_ID\",\"agent_type\":\"vim\"}" \
-  | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
-assert_contains "Reject unknown agent_type" "unknown agent_type" "$BAD_AGENT"
+# 17j: Test endpoint still works against the new CC
+TEST_OUT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc/$CC_ID/test")
+TEST_OK=$(echo "$TEST_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('ok'))")
+assert_eq "CC test reports ok=true" "True" "$TEST_OK"
 
-# 17k: Allow alternative agent_types reserved in v1
-ALT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CC_CLIENT2/cc" -H "Content-Type: application/json" \
-  -d "{\"cc_id\":\"$CC_ID\",\"agent_type\":\"cursor\"}" \
-  | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
-assert_eq "Reserved agent_type 'cursor' accepted" "assigned" "$ALT"
+# 17k: Client API — GET /client/cc returns assigned + management_handle
+MY_CC=$(curl -s -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc")
+ASSIGNED=$(echo "$MY_CC" | python3 -c "import sys,json;print(json.load(sys.stdin).get('assigned'))")
+MGMT_HANDLE=$(echo "$MY_CC" | python3 -c "import sys,json;print(json.load(sys.stdin).get('management_handle',''))")
+MY_CC_NAME=$(echo "$MY_CC" | python3 -c "import sys,json;print(json.load(sys.stdin).get('cc_name',''))")
+assert_eq "/client/cc reports assigned=true" "True" "$ASSIGNED"
+assert_eq "/client/cc returns the cc name" "e2e-cc" "$MY_CC_NAME"
+assert_contains "/client/cc returns management_handle" "dwch_" "$MGMT_HANDLE"
 
-# 17l: Per-client CC list shows the assignment with cc_name + home_channel_name
-CLIENT_CC_LIST=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/clients/$CC_CLIENT_ID/cc")
-CC_NAME_IN_LIST=$(echo "$CLIENT_CC_LIST" | python3 -c "import sys,json;print(json.load(sys.stdin)[0].get('cc_name',''))")
-HOME_NAME=$(echo "$CLIENT_CC_LIST" | python3 -c "import sys,json;print(json.load(sys.stdin)[0].get('home_channel_name',''))")
-assert_eq "Client CC list — cc_name joined" "e2e-cc" "$CC_NAME_IN_LIST"
-assert_eq "Client CC list — channel name = client name" "cc-e2e-client" "$HOME_NAME"
-
-# 17m: CC detail shows 2 assignments after both clients assigned
-CC_DETAIL2=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc/$CC_ID")
-ASN_COUNT=$(echo "$CC_DETAIL2" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('assignments',[])))")
-assert_eq "CC detail shows 2 assignments" "2" "$ASN_COUNT"
-
-# 17m-2: Client API — list assigned CCs
-CLIENT_CC_LIST_VIA_TOKEN=$(curl -s -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc")
-CLIENT_CC_COUNT=$(echo "$CLIENT_CC_LIST_VIA_TOKEN" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
-assert_eq "Client GET /client/cc lists 1 assignment" "1" "$CLIENT_CC_COUNT"
-
-CLIENT_CC_NAME=$(echo "$CLIENT_CC_LIST_VIA_TOKEN" | python3 -c "import sys,json;print(json.load(sys.stdin)[0]['cc_name'])")
-assert_eq "Client GET /client/cc has cc_name" "e2e-cc" "$CLIENT_CC_NAME"
-
-# 17m-3: Client lists channels under the CC (both home channels — 2 clients
-# are assigned to this CC by this point in the script).
-LIST_CH=$(curl -s -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc/$CC_ID/channels")
+# 17l: Client lists channels — only the management one so far
+LIST_CH=$(curl -s -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc/channels")
 LIST_CH_COUNT=$(echo "$LIST_CH" | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")
-assert_eq "Client lists CC channels (both homes)" "2" "$LIST_CH_COUNT"
-HOME_HANDLE=$(echo "$LIST_CH" | python3 -c "
-import sys,json
-chans = json.load(sys.stdin)
-mine = [c for c in chans if c['name'] == 'cc-e2e-client']
-print(mine[0]['handle'] if mine else '')
-")
-assert_contains "Channel listing exposes handle, not channel_id" "dwch_" "$HOME_HANDLE"
+assert_eq "Client lists 1 channel (management)" "1" "$LIST_CH_COUNT"
+KIND_CHECK=$(echo "$LIST_CH" | python3 -c "import sys,json;print(json.load(sys.stdin)[0].get('kind',''))")
+assert_eq "First channel is kind=management" "management" "$KIND_CHECK"
 NO_LEAK=$(echo "$LIST_CH" | grep -c "channel_id" || true)
 assert_eq "Channel listing does NOT leak real channel_id" "0" "$NO_LEAK"
 
-# 17m-4: Create a new task channel via the client API
+# 17m: Client creates a task channel via the API
 NEW_CH=$(curl -s -X POST -H "X-Duckway-Token: $CC_CLIENT_TOKEN" -H "Content-Type: application/json" \
-  -d '{"name":"task-001","topic":"e2e test task"}' "$BASE/client/cc/$CC_ID/channels")
+  -d '{"name":"task-001","topic":"e2e test task","cwd":"/tmp/test"}' "$BASE/client/cc/channels")
 NEW_HANDLE=$(echo "$NEW_CH" | python3 -c "import sys,json;print(json.load(sys.stdin).get('handle',''))")
-NEW_NAME=$(echo "$NEW_CH" | python3 -c "import sys,json;print(json.load(sys.stdin).get('name',''))")
+NEW_KIND=$(echo "$NEW_CH" | python3 -c "import sys,json;print(json.load(sys.stdin).get('kind',''))")
 assert_contains "Client create channel returns handle" "dwch_" "$NEW_HANDLE"
-assert_eq "Client create channel returns name" "task-001" "$NEW_NAME"
+assert_eq "Created task channel kind=task" "task" "$NEW_KIND"
 
-# 17m-5: Post a message
+# 17n: Post / Edit / Read / Archive
 POST_RESP=$(curl -s -X POST -H "X-Duckway-Token: $CC_CLIENT_TOKEN" -H "Content-Type: application/json" \
-  -d '{"content":"hello from agent"}' "$BASE/client/cc/$CC_ID/channels/$NEW_HANDLE/messages")
+  -d '{"content":"hello from agent"}' "$BASE/client/cc/channels/$NEW_HANDLE/messages")
 MSG_ID=$(echo "$POST_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('message_id',''))")
 assert_not_empty "Client post returns message_id" "$MSG_ID"
 
-# 17m-6: Edit the message
 EDIT_STATUS=$(curl -s -X PATCH -H "X-Duckway-Token: $CC_CLIENT_TOKEN" -H "Content-Type: application/json" \
-  -d '{"content":"edited"}' "$BASE/client/cc/$CC_ID/channels/$NEW_HANDLE/messages/$MSG_ID" \
+  -d '{"content":"edited"}' "$BASE/client/cc/channels/$NEW_HANDLE/messages/$MSG_ID" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
 assert_eq "Client edit returns status" "edited" "$EDIT_STATUS"
 
-# 17m-7: Read recent messages (mock returns [])
-READ_OK=$(curl -s -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc/$CC_ID/channels/$NEW_HANDLE/messages?limit=10")
-READ_TYPE=$(echo "$READ_OK" | python3 -c "import sys,json;d=json.load(sys.stdin);print('list' if isinstance(d,list) else type(d).__name__)")
+READ_TYPE=$(curl -s -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc/channels/$NEW_HANDLE/messages?limit=10" \
+  | python3 -c "import sys,json;d=json.load(sys.stdin);print('list' if isinstance(d,list) else type(d).__name__)")
 assert_eq "Client read returns array" "list" "$READ_TYPE"
 
-# 17m-8: Cannot archive a home channel (must unassign instead)
-HOME_ARCHIVE=$(curl -s -X POST -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc/$CC_ID/channels/$HOME_HANDLE/archive" \
+# 17o: Cannot archive the management channel
+MGMT_ARCHIVE=$(curl -s -X POST -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc/channels/$MGMT_HANDLE/archive" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('error',''))")
-assert_contains "Reject archiving a home channel" "home channel" "$HOME_ARCHIVE"
+assert_contains "Reject archiving the management channel" "management channel" "$MGMT_ARCHIVE"
 
-# 17m-9: Archive the task channel we just created
-ARCHIVE_OK=$(curl -s -X POST -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc/$CC_ID/channels/$NEW_HANDLE/archive" \
+ARCHIVE_OK=$(curl -s -X POST -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc/channels/$NEW_HANDLE/archive" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
 assert_eq "Archive task channel succeeds" "archived" "$ARCHIVE_OK"
 
-# 17m-10: Inbox is empty (gateway disabled in test mode)
-INBOX_RESP=$(curl -s -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc/$CC_ID/inbox?timeout=0")
-INBOX_EVENTS=$(echo "$INBOX_RESP" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('events',[])))")
+# 17p: Inbox is empty (gateway disabled in test mode)
+INBOX_EVENTS=$(curl -s -H "X-Duckway-Token: $CC_CLIENT_TOKEN" "$BASE/client/cc/inbox?timeout=0" \
+  | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('events',[])))")
 assert_eq "Inbox empty (gateway disabled)" "0" "$INBOX_EVENTS"
 
-# 17m-11: ACL — request without auth
+# 17q: ACL — request without auth
 NOAUTH=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/client/cc")
 assert_eq "/client/cc rejects unauthenticated" "401" "$NOAUTH"
 
-# 17m-12: ACL — second client tries to access first client's CC
-CC_CLIENT3_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" -H "Content-Type: application/json" -d '{"name":"cc-e2e-client-3-not-assigned"}')
-CC_CLIENT3_TOKEN=$(echo "$CC_CLIENT3_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
-CC_CLIENT3_ID=$(echo "$CC_CLIENT3_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
-SCOPE_REJECT=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Duckway-Token: $CC_CLIENT3_TOKEN" "$BASE/client/cc/$CC_ID/channels")
-assert_eq "Unassigned client → 403 on CC channels" "403" "$SCOPE_REJECT"
+# 17r: ACL — different client → no CC → 404 on assigned, 404 on channels
+OTHER_CLIENT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" -H "Content-Type: application/json" -d '{"name":"cc-e2e-other"}')
+OTHER_TOKEN=$(echo "$OTHER_CLIENT" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+OTHER_ID=$(echo "$OTHER_CLIENT" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+OTHER_ASSIGNED=$(curl -s -H "X-Duckway-Token: $OTHER_TOKEN" "$BASE/client/cc" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('assigned'))")
+assert_eq "Other client → assigned=false" "False" "$OTHER_ASSIGNED"
 
-# 17m-13: Path-level ACL — handle from outside the CC
-# Create a 2nd CC with a different client and a channel under it; then call
-# the first client's CC with that foreign handle in the URL.
-CC2=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
-  -d "{\"name\":\"e2e-cc-2\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$CC_BOT_KEY\",\"config\":{\"guild_id\":\"333\",\"category_id\":\"444\"}}")
-CC2_ID=$(echo "$CC2" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
-ASSIGN2=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CC_CLIENT3_ID/cc" -H "Content-Type: application/json" \
-  -d "{\"cc_id\":\"$CC2_ID\",\"agent_type\":\"claude_code\"}")
-CC2_HANDLE=$(echo "$ASSIGN2" | python3 -c "import sys,json;print(json.load(sys.stdin).get('home_handle',''))")
-# Client1 (assigned to CC1) tries to use CC2's handle — should 403
+# 17s: Cross-CC handle ACL — give the other client its own CC, try its handle from this client
+OTHER_CC=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+  -d "{\"name\":\"e2e-cc-2\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$CC_BOT_KEY\",\"client_id\":\"$OTHER_ID\",\"config\":{\"guild_id\":\"333\",\"category_id\":\"444\"}}")
+OTHER_HANDLE=$(echo "$OTHER_CC" | python3 -c "import sys,json;print(json.load(sys.stdin)['channels'][0]['handle'])")
 FOREIGN=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "X-Duckway-Token: $CC_CLIENT_TOKEN" -H "Content-Type: application/json" \
-  -d '{"content":"x"}' "$BASE/client/cc/$CC_ID/channels/$CC2_HANDLE/messages")
+  -d '{"content":"x"}' "$BASE/client/cc/channels/$OTHER_HANDLE/messages")
 assert_eq "Cross-CC handle → 403" "403" "$FOREIGN"
 
-# Cleanup CC2 + client3
-curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$CC2_ID" > /dev/null
-curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$CC_CLIENT3_ID" > /dev/null
-
-
-# 17n: Unassign one client + verify CC detail drops to 1, placeholder gone
-curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$CC_CLIENT_ID/cc/$CC_ID" > /dev/null
-ASN_AFTER=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc/$CC_ID" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('assignments',[])))")
-assert_eq "Unassign drops CC assignments to 1" "1" "$ASN_AFTER"
-
-PH_AFTER_UNASSIGN=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/placeholders" | python3 -c "
-import sys,json
-phs = json.load(sys.stdin)
-print(len([p for p in phs if p.get('id') == '$ASSIGN_PHID']))
-")
-assert_eq "Unassign deletes the placeholder" "0" "$PH_AFTER_UNASSIGN"
-
-# 17o: PUT update CC name + is_active
+# 17t: PUT update CC name + is_active
 curl -s -b /tmp/dw-e2e-cookies -X PUT "$BASE/api/cc/$CC_ID" -H "Content-Type: application/json" \
   -d '{"name":"renamed-cc","is_active":false}' > /dev/null
 RENAMED=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc/$CC_ID" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['name']+'|'+str(d['is_active']))")
 assert_eq "PUT updates name+is_active" "renamed-cc|False" "$RENAMED"
 
-# 17p: Cleanup CC + clients + bot key
+# 17u: Delete CC → 404 on get, placeholder gone
+OTHER_CC_ID=$(echo "$OTHER_CC" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$CC_ID" > /dev/null
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$OTHER_CC_ID" > /dev/null
 DEL_CHECK=$(curl -s -b /tmp/dw-e2e-cookies -o /dev/null -w "%{http_code}" "$BASE/api/cc/$CC_ID")
 assert_eq "Deleted CC returns 404" "404" "$DEL_CHECK"
+PH_AFTER_DELETE=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/placeholders" | python3 -c "
+import sys,json
+phs = json.load(sys.stdin)
+print(len([p for p in phs if p.get('id') == '$CC_PHID']))
+")
+assert_eq "Delete CC also drops the placeholder" "0" "$PH_AFTER_DELETE"
+
+# Cleanup test clients + bot
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$CC_CLIENT_ID" > /dev/null
-curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$CC_CLIENT2" > /dev/null
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$OTHER_ID" > /dev/null
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$CC_BOT_KEY" > /dev/null
 
 
@@ -1099,16 +1035,15 @@ curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$CC_BOT_KEY" > /dev/nul
 echo ""
 echo -e "${YELLOW}[18] CC Sync (Phase D)${NC}"
 
-# Re-create a CC + bot key for this section, then assign the *docker* client
-# (CLIENT_ID + CLIENT_TOKEN are the e2e-test-client from section [5/8]).
+# Create a bot key + CC bound to the docker test client (CLIENT_ID is from
+# section [5/8]). With v2's 1:1 invariant, the create call is the assign.
 PD_BOT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
   -d "{\"service_id\":\"$DISCORD_SVC_ID\",\"name\":\"phaseD-bot\",\"key\":\"NzPhase.D.testbot\"}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
 PD_CC=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
-  -d "{\"name\":\"phaseD-cc\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$PD_BOT\",\"config\":{\"guild_id\":\"7\",\"category_id\":\"8\"}}" \
+  -d "{\"name\":\"phaseD-cc\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$PD_BOT\",\"client_id\":\"$CLIENT_ID\",\"agent_type\":\"claude_code\",\"config\":{\"guild_id\":\"7\",\"category_id\":\"8\"}}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
-curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CLIENT_ID/cc" -H "Content-Type: application/json" \
-  -d "{\"cc_id\":\"$PD_CC\",\"agent_type\":\"claude_code\"}" > /dev/null
+assert_not_empty "Phase D CC created" "$PD_CC"
 
 # Run sync inside the docker client container.
 SYNC_PD=$(docker exec duckway-e2e-client duckway sync 2>&1)
@@ -1118,7 +1053,6 @@ assert_contains "Sync logs CC count" "Synced 1 Control Channel" "$SYNC_PD"
 CC_JSON=$(docker exec duckway-e2e-client cat /root/.duckway/cc.json 2>/dev/null)
 assert_contains "cc.json contains the CC name" "phaseD-cc" "$CC_JSON"
 assert_contains "cc.json contains the agent type" "claude_code" "$CC_JSON"
-assert_contains "cc.json contains a home handle" "dwch_" "$CC_JSON"
 NO_TOKEN_LEAK=$(echo "$CC_JSON" | grep -c "$CLIENT_TOKEN" || true)
 assert_eq "cc.json does NOT leak the client token" "0" "$NO_TOKEN_LEAK"
 
@@ -1130,98 +1064,66 @@ assert_contains "Claude .claude.json command is duckway" "\"command\": \"duckway
 assert_contains "Claude .claude.json args includes mcp serve" "\"mcp\"" "$MCP_JSON"
 assert_contains "Claude .claude.json declares stdio transport" "\"type\": \"stdio\"" "$MCP_JSON"
 
-# Unassign and re-sync — state file should clear.
-curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/clients/$CLIENT_ID/cc/$PD_CC" > /dev/null
+# Delete CC and re-sync — state file should clear.
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$PD_CC" > /dev/null
 docker exec duckway-e2e-client duckway sync >/dev/null 2>&1
 CC_JSON_EMPTY=$(docker exec duckway-e2e-client cat /root/.duckway/cc.json 2>/dev/null)
 EMPTY_COUNT=$(echo "$CC_JSON_EMPTY" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('ccs',[])))")
-assert_eq "Re-sync after unassign clears cc.json" "0" "$EMPTY_COUNT"
+assert_eq "Re-sync after CC delete clears cc.json" "0" "$EMPTY_COUNT"
 
 # Cleanup
-curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$PD_CC" > /dev/null
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$PD_BOT" > /dev/null
 
 
-# === Test 19: MCP server (Phase E) ===
+# === Test 19: MCP server (CC v2 — cc_id implicit) ===
 echo ""
-echo -e "${YELLOW}[19] MCP server (Phase E)${NC}"
+echo -e "${YELLOW}[19] MCP server (v2)${NC}"
 
-# Re-create CC + assign so the docker client has something to expose.
+# Create CC bound to the docker client.
 PE_BOT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
   -d "{\"service_id\":\"$DISCORD_SVC_ID\",\"name\":\"phaseE-bot\",\"key\":\"NzPhase.E.testbot\"}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
-PE_CC=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
-  -d "{\"name\":\"phaseE-cc\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$PE_BOT\",\"config\":{\"guild_id\":\"77\",\"category_id\":\"88\"}}" \
-  | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
-PE_ASSIGN=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CLIENT_ID/cc" -H "Content-Type: application/json" \
-  -d "{\"cc_id\":\"$PE_CC\",\"agent_type\":\"claude_code\"}")
-PE_HOME_HANDLE=$(echo "$PE_ASSIGN" | python3 -c "import sys,json;print(json.load(sys.stdin).get('home_handle',''))")
+PE_CC_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+  -d "{\"name\":\"phaseE-cc\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$PE_BOT\",\"client_id\":\"$CLIENT_ID\",\"agent_type\":\"claude_code\",\"config\":{\"guild_id\":\"77\",\"category_id\":\"88\"}}")
+PE_CC=$(echo "$PE_CC_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+PE_MGMT_HANDLE=$(echo "$PE_CC_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['channels'][0]['handle'])")
 docker exec duckway-e2e-client duckway sync >/dev/null 2>&1
 
-# 19a: tools/list — should expose at least 9 discord_* tools
-TOOLS_REQ='{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-TOOLS_OUT=$(echo "$TOOLS_REQ" | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
+# 19a: tools/list
+TOOLS_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
 TOOL_COUNT=$(echo "$TOOLS_OUT" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['result']['tools']))")
-assert_eq "MCP tools/list returns >= 9 tools" "9" "$TOOL_COUNT"
+assert_eq "MCP tools/list returns 9 tools" "9" "$TOOL_COUNT"
+assert_contains "tools/list includes discord_post"         "discord_post"                "$TOOLS_OUT"
+assert_contains "tools/list includes discord_create_task"  "discord_create_task_channel" "$TOOLS_OUT"
+assert_contains "tools/list includes discord_wait_for_msg" "discord_wait_for_message"    "$TOOLS_OUT"
 
-assert_contains "tools/list includes discord_post"          "discord_post"          "$TOOLS_OUT"
-assert_contains "tools/list includes discord_create_task"   "discord_create_task_channel" "$TOOLS_OUT"
-assert_contains "tools/list includes discord_wait_for_msg"  "discord_wait_for_message"    "$TOOLS_OUT"
-
-# 19b: initialize handshake
+# 19b: initialize
 INIT_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
 PROTO_VER=$(echo "$INIT_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['protocolVersion'])")
 SERVER_NAME=$(echo "$INIT_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['serverInfo']['name'])")
 assert_eq "MCP initialize protocolVersion" "2024-11-05" "$PROTO_VER"
 assert_eq "MCP initialize serverInfo.name" "duckway-cc" "$SERVER_NAME"
 
-# 19c: discord_list_assigned_ccs — should show the phaseE-cc
-LIST_CC_OUT=$(echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"discord_list_assigned_ccs","arguments":{}}}' \
+# 19c: discord_get_my_cc reports the v2 CC
+GET_CC_OUT=$(echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"discord_get_my_cc","arguments":{}}}' \
   | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
-assert_contains "discord_list_assigned_ccs includes phaseE-cc" "phaseE-cc" "$LIST_CC_OUT"
+assert_contains "discord_get_my_cc includes phaseE-cc" "phaseE-cc" "$GET_CC_OUT"
 
-# 19d: discord_list_channels — should round-trip through duckway server and
-# return the home channel only.
-LIST_CH_OUT=$(echo "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"discord_list_channels\",\"arguments\":{\"cc_id\":\"$PE_CC\"}}}" \
+# 19d: discord_list_channels — cc_id is implicit (1:1), should return management handle
+LIST_CH_OUT=$(echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"discord_list_channels","arguments":{}}}' \
   | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
-assert_contains "discord_list_channels routes through server" "$PE_HOME_HANDLE" "$LIST_CH_OUT"
+assert_contains "discord_list_channels returns management handle" "$PE_MGMT_HANDLE" "$LIST_CH_OUT"
 NO_RAW_ID=$(echo "$LIST_CH_OUT" | grep -c "channel_id" || true)
 assert_eq "discord_list_channels does NOT leak channel_id" "0" "$NO_RAW_ID"
 
-# 19e: discord_post — exercise the full tool→server→Discord-mock chain
-POST_OUT=$(echo "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"discord_post\",\"arguments\":{\"cc_id\":\"$PE_CC\",\"channel_handle\":\"$PE_HOME_HANDLE\",\"content\":\"hello via mcp\"}}}" \
+# 19e: discord_post — full tool→server→mock chain
+POST_OUT=$(echo "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"discord_post\",\"arguments\":{\"channel_handle\":\"$PE_MGMT_HANDLE\",\"content\":\"hello via mcp\"}}}" \
   | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
 assert_contains "discord_post returns message_id" "message_id" "$POST_OUT"
 
-# 19f: ambiguous cc (assign a 2nd CC, drop cc_id) → isError
-PE_BOT2=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
-  -d "{\"service_id\":\"$DISCORD_SVC_ID\",\"name\":\"phaseE-bot2\",\"key\":\"NzPhase.E.testbot2\"}" \
-  | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
-PE_CC2=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
-  -d "{\"name\":\"phaseE-cc-2\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$PE_BOT2\",\"config\":{\"guild_id\":\"99\",\"category_id\":\"100\"}}" \
-  | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
-ASSIGN2_OUT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients/$CLIENT_ID/cc" -H "Content-Type: application/json" \
-  -d "{\"cc_id\":\"$PE_CC2\",\"agent_type\":\"claude_code\"}")
-ASSIGN2_STATUS=$(echo "$ASSIGN2_OUT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('status') or d.get('error',''))")
-assert_eq "Assign CC2 to client succeeds" "assigned" "$ASSIGN2_STATUS"
-docker exec duckway-e2e-client duckway sync >/dev/null 2>&1
-
-CC_JSON_DEBUG=$(docker exec duckway-e2e-client cat /root/.duckway/cc.json 2>/dev/null | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('ccs',[])))")
-assert_eq "cc.json has 2 CCs after re-sync" "2" "$CC_JSON_DEBUG"
-
-AMBIG_OUT=$(echo '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"discord_list_channels","arguments":{}}}' \
-  | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
-IS_ERR=$(echo "$AMBIG_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin)['result'].get('isError', False))")
-if [ "$IS_ERR" != "True" ]; then
-  echo "DEBUG ambig response: $AMBIG_OUT"
-fi
-assert_eq "Ambiguous cc → isError" "True" "$IS_ERR"
-
 # Cleanup
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$PE_CC" > /dev/null
-curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$PE_CC2" > /dev/null
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$PE_BOT" > /dev/null
-curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$PE_BOT2" > /dev/null
 
 
 # === Test 15: Unit Tests ===

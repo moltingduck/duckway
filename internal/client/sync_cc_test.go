@@ -10,8 +10,9 @@ import (
 )
 
 // mockServer returns canned /client/cc responses so tests don't need a real
-// duckway server.
-func mockServer(t *testing.T, payload []CCAssignment, status int) *httptest.Server {
+// duckway server. Server v2 returns a single object; mockServer takes the
+// object literal (or nil for "not assigned").
+func mockServer(t *testing.T, payload map[string]interface{}, status int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/client/cc" {
@@ -22,14 +23,20 @@ func mockServer(t *testing.T, payload []CCAssignment, status int) *httptest.Serv
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
+		if payload == nil {
+			payload = map[string]interface{}{"assigned": false}
+		}
 		_ = json.NewEncoder(w).Encode(payload)
 	}))
 }
 
 func TestSyncCC_WritesStateFile(t *testing.T) {
-	srv := mockServer(t, []CCAssignment{
-		{CCID: "cc1", CCName: "alpha", AgentType: "claude_code", HomeHandle: "dwch_a", HomeChannelName: "client-a"},
-		{CCID: "cc2", CCName: "beta", AgentType: "cursor", HomeHandle: "dwch_b", HomeChannelName: "client-b"},
+	srv := mockServer(t, map[string]interface{}{
+		"assigned":          true,
+		"cc_id":             "cc1",
+		"cc_name":           "alpha",
+		"agent_type":        "claude_code",
+		"management_handle": "dwch_a",
 	}, 200)
 	defer srv.Close()
 
@@ -41,8 +48,8 @@ func TestSyncCC_WritesStateFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 {
-		t.Errorf("expected 2 assignments, got %d", n)
+	if n != 1 {
+		t.Errorf("expected 1 assignment, got %d", n)
 	}
 
 	raw, err := os.ReadFile(filepath.Join(configDir, "cc.json"))
@@ -56,25 +63,21 @@ func TestSyncCC_WritesStateFile(t *testing.T) {
 	if state.ServerURL != srv.URL {
 		t.Errorf("server_url = %q", state.ServerURL)
 	}
-	if len(state.CCs) != 2 {
-		t.Fatalf("ccs = %d", len(state.CCs))
-	}
-	if state.CCs[0].CCID != "cc1" || state.CCs[1].AgentType != "cursor" {
+	if len(state.CCs) != 1 || state.CCs[0].CCID != "cc1" || state.CCs[0].AgentType != "claude_code" {
 		t.Errorf("contents wrong: %+v", state.CCs)
 	}
-	// Token must NEVER be persisted.
 	if state.Token != "" {
 		t.Error("token leaked into state file")
 	}
 }
 
 func TestSyncCC_EmptyAssignmentsClearsState(t *testing.T) {
-	srv := mockServer(t, []CCAssignment{}, 200)
+	srv := mockServer(t, nil, 200) // {"assigned": false}
 	defer srv.Close()
 	configDir := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
 
-	// Pre-write a stale state file with old assignments.
+	// Pre-write a stale state file with an old assignment.
 	stale := CCStateFile{ServerURL: "http://old", CCs: []CCStateAssignment{{CCID: "stale"}}}
 	b, _ := json.Marshal(stale)
 	_ = os.WriteFile(filepath.Join(configDir, "cc.json"), b, 0600)
@@ -113,7 +116,7 @@ func TestWriteClaudeCodeMCP_PreservesUserKeys(t *testing.T) {
 	}
 
 	if err := writeClaudeCodeMCP(t.TempDir(), []CCStateAssignment{
-		{CCID: "cc1", CCName: "alpha", AgentType: "claude_code", HomeHandle: "dwch_a"},
+		{CCID: "cc1", CCName: "alpha", AgentType: "claude_code", ManagementHandle: "dwch_a"},
 	}); err != nil {
 		t.Fatal(err)
 	}

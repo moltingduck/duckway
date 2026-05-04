@@ -13,13 +13,12 @@ import (
 	svc "github.com/hackerduck/duckway/internal/server/services"
 )
 
-// CCClientHandler exposes the CC operations agents need: list assigned CCs,
-// create/list/archive channels under a CC's category, post/edit/delete/read
-// messages, long-poll the inbox.
+// CCClientHandler exposes the CC operations agents need: list channels under
+// the client's CC, create / archive task channels, post / read / edit /
+// delete messages, long-poll the inbox.
 //
-// All endpoints authenticate via the existing ClientAuth middleware
-// (X-Duckway-Token). Real Discord IDs (channel_id, guild_id, category_id)
-// never leave the server — agents work with opaque "handles" instead.
+// CC v2: 1:1 client↔CC, so cc_id is implicit (looked up by client_id).
+// All real Discord IDs (channel_id, guild_id, category_id) stay server-side.
 type CCClientHandler struct {
 	cc      *queries.ControlChannelQueries
 	apiKeys *queries.APIKeyQueries
@@ -31,22 +30,17 @@ func NewCCClientHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIK
 	return &CCClientHandler{cc: cc, apiKeys: apiKeys, crypto: crypto, bot: bot}
 }
 
-// resolveAssignment looks up the (client, cc) binding and returns the bot
-// token + cc detail. Returns nil + writes the response on auth/scoping
-// failure.
-func (h *CCClientHandler) resolveAssignment(w http.ResponseWriter, r *http.Request, ccID string) (*models.Client, *models.ControlChannel, string, bool) {
+// resolveCC fetches the client's CC + decrypted bot token, or writes the
+// appropriate response on failure.
+func (h *CCClientHandler) resolveCC(w http.ResponseWriter, r *http.Request) (*models.Client, *models.ControlChannel, string, bool) {
 	client := middleware.GetClient(r)
 	if client == nil {
 		jsonError(w, "client auth required", http.StatusUnauthorized)
 		return nil, nil, "", false
 	}
-	if _, err := h.cc.GetAssignment(client.ID, ccID); err != nil {
-		jsonError(w, "client not assigned to this CC", http.StatusForbidden)
-		return nil, nil, "", false
-	}
-	cc, err := h.cc.GetByID(ccID)
+	cc, err := h.cc.GetByClientID(client.ID)
 	if err != nil {
-		jsonError(w, "cc not found", http.StatusNotFound)
+		jsonError(w, "no CC assigned to this client", http.StatusNotFound)
 		return nil, nil, "", false
 	}
 	if !cc.IsActive {
@@ -66,10 +60,7 @@ func (h *CCClientHandler) resolveAssignment(w http.ResponseWriter, r *http.Reque
 	return client, cc, tok, true
 }
 
-// resolveHandle translates a handle on a path into the real Discord channel
-// id, after verifying the handle belongs to the requested CC. Path-level
-// ACL: a client cannot mention a handle that isn't in their CC even if they
-// guess a valid one.
+// resolveHandle checks the handle belongs to the requested CC.
 func (h *CCClientHandler) resolveHandle(w http.ResponseWriter, ccID, handle string) (*models.CCChannel, bool) {
 	ch, err := h.cc.GetChannelByHandle(handle)
 	if err != nil {
@@ -83,32 +74,39 @@ func (h *CCClientHandler) resolveHandle(w http.ResponseWriter, ccID, handle stri
 	return ch, true
 }
 
-// GET /client/cc — list CCs this client is assigned to.
-func (h *CCClientHandler) ListAssigned(w http.ResponseWriter, r *http.Request) {
+// GET /client/cc — return the (single) CC the client is bound to.
+func (h *CCClientHandler) GetMyCC(w http.ResponseWriter, r *http.Request) {
 	client := middleware.GetClient(r)
 	if client == nil {
 		jsonError(w, "client auth required", http.StatusUnauthorized)
 		return
 	}
-	out, err := h.cc.AssignmentsForClient(client.ID)
+	cc, err := h.cc.GetByClientID(client.ID)
 	if err != nil {
-		jsonError(w, "list failed: "+err.Error(), http.StatusInternalServerError)
+		jsonResponse(w, map[string]interface{}{"assigned": false})
 		return
 	}
-	if out == nil {
-		out = []models.ClientCCDetail{}
+	mgmt, _ := h.cc.GetManagementChannel(cc.ID)
+	mgmtHandle := ""
+	if mgmt != nil {
+		mgmtHandle = mgmt.Handle
 	}
-	jsonResponse(w, out)
+	jsonResponse(w, map[string]interface{}{
+		"assigned":              true,
+		"cc_id":                 cc.ID,
+		"cc_name":               cc.Name,
+		"agent_type":            cc.AgentType,
+		"management_handle":     mgmtHandle,
+	})
 }
 
-// GET /client/cc/{cc_id}/channels — list channels in this CC. handle/name/
-// topic only. real channel_id stays server-side.
+// GET /client/cc/channels — list channels in the client's CC.
 func (h *CCClientHandler) ListChannels(w http.ResponseWriter, r *http.Request) {
-	ccID := r.PathValue("cc_id")
-	if _, _, _, ok := h.resolveAssignment(w, r, ccID); !ok {
+	_, cc, _, ok := h.resolveCC(w, r)
+	if !ok {
 		return
 	}
-	chans, err := h.cc.ListChannels(ccID)
+	chans, err := h.cc.ListChannels(cc.ID)
 	if err != nil {
 		jsonError(w, "list channels: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -117,31 +115,33 @@ func (h *CCClientHandler) ListChannels(w http.ResponseWriter, r *http.Request) {
 		Handle    string `json:"handle"`
 		Name      string `json:"name"`
 		Topic     string `json:"topic"`
-		IsHome    bool   `json:"is_home"`
+		Kind      string `json:"kind"`
+		SessionID string `json:"session_id,omitempty"`
+		Cwd       string `json:"cwd,omitempty"`
 		Archived  bool   `json:"archived"`
 		CreatedAt string `json:"created_at"`
 	}
 	out := make([]publicCh, 0, len(chans))
 	for _, c := range chans {
 		out = append(out, publicCh{
-			Handle: c.Handle, Name: c.Name, Topic: c.Topic,
-			IsHome: c.IsHome, Archived: c.Archived, CreatedAt: c.CreatedAt,
+			Handle: c.Handle, Name: c.Name, Topic: c.Topic, Kind: c.Kind,
+			SessionID: c.SessionID, Cwd: c.Cwd, Archived: c.Archived, CreatedAt: c.CreatedAt,
 		})
 	}
 	jsonResponse(w, out)
 }
 
-// POST /client/cc/{cc_id}/channels — create new channel under the CC's
-// category. body: {name, topic?}. Returns the new handle.
+// POST /client/cc/channels — create a new task channel.
+// body: {name, topic?, cwd?}.
 func (h *CCClientHandler) CreateChannel(w http.ResponseWriter, r *http.Request) {
-	ccID := r.PathValue("cc_id")
-	client, cc, botTok, ok := h.resolveAssignment(w, r, ccID)
+	client, cc, botTok, ok := h.resolveCC(w, r)
 	if !ok {
 		return
 	}
 	var req struct {
 		Name  string `json:"name"`
 		Topic string `json:"topic"`
+		Cwd   string `json:"cwd"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
@@ -182,35 +182,33 @@ func (h *CCClientHandler) CreateChannel(w http.ResponseWriter, r *http.Request) 
 		ChannelID: created.ID,
 		Name:      created.Name,
 		Topic:     req.Topic,
-		IsHome:    false,
+		Kind:      "task",
+		Cwd:       req.Cwd,
 	}
 	if err := h.cc.CreateChannel(row); err != nil {
-		// Local persist failed — undo the Discord side so we don't leak a
-		// channel without a handle.
 		_ = h.bot.ArchiveChannel(r.Context(), botTok, created.ID, created.Name)
 		jsonError(w, "persist channel: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, map[string]interface{}{
-		"handle": handle, "name": created.Name, "topic": req.Topic,
+		"handle": handle, "name": created.Name, "topic": req.Topic, "cwd": req.Cwd, "kind": "task",
 	})
 }
 
-// POST /client/cc/{cc_id}/channels/{handle}/archive — archive channel.
+// POST /client/cc/channels/{handle}/archive — archive a task channel.
 func (h *CCClientHandler) ArchiveChannel(w http.ResponseWriter, r *http.Request) {
-	ccID := r.PathValue("cc_id")
 	handle := r.PathValue("handle")
-	_, _, botTok, ok := h.resolveAssignment(w, r, ccID)
+	_, cc, botTok, ok := h.resolveCC(w, r)
 	if !ok {
 		return
 	}
-	ch, ok := h.resolveHandle(w, ccID, handle)
+	ch, ok := h.resolveHandle(w, cc.ID, handle)
 	if !ok {
 		return
 	}
-	if ch.IsHome {
-		jsonError(w, "cannot archive a home channel — unassign the CC instead", http.StatusBadRequest)
+	if ch.Kind == "management" {
+		jsonError(w, "cannot archive the management channel — delete the CC instead", http.StatusBadRequest)
 		return
 	}
 	if err := h.bot.ArchiveChannel(r.Context(), botTok, ch.ChannelID, ch.Name); err != nil {
@@ -221,15 +219,14 @@ func (h *CCClientHandler) ArchiveChannel(w http.ResponseWriter, r *http.Request)
 	jsonResponse(w, map[string]string{"status": "archived"})
 }
 
-// POST /client/cc/{cc_id}/channels/{handle}/messages — post a message.
+// POST /client/cc/channels/{handle}/messages — post a message.
 func (h *CCClientHandler) PostMessage(w http.ResponseWriter, r *http.Request) {
-	ccID := r.PathValue("cc_id")
 	handle := r.PathValue("handle")
-	_, _, botTok, ok := h.resolveAssignment(w, r, ccID)
+	_, cc, botTok, ok := h.resolveCC(w, r)
 	if !ok {
 		return
 	}
-	ch, ok := h.resolveHandle(w, ccID, handle)
+	ch, ok := h.resolveHandle(w, cc.ID, handle)
 	if !ok {
 		return
 	}
@@ -252,16 +249,15 @@ func (h *CCClientHandler) PostMessage(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"message_id": id})
 }
 
-// PATCH /client/cc/{cc_id}/channels/{handle}/messages/{message_id} — edit.
+// PATCH /client/cc/channels/{handle}/messages/{message_id} — edit.
 func (h *CCClientHandler) EditMessage(w http.ResponseWriter, r *http.Request) {
-	ccID := r.PathValue("cc_id")
 	handle := r.PathValue("handle")
 	msgID := r.PathValue("message_id")
-	_, _, botTok, ok := h.resolveAssignment(w, r, ccID)
+	_, cc, botTok, ok := h.resolveCC(w, r)
 	if !ok {
 		return
 	}
-	ch, ok := h.resolveHandle(w, ccID, handle)
+	ch, ok := h.resolveHandle(w, cc.ID, handle)
 	if !ok {
 		return
 	}
@@ -279,16 +275,15 @@ func (h *CCClientHandler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "edited"})
 }
 
-// DELETE /client/cc/{cc_id}/channels/{handle}/messages/{message_id} — delete.
+// DELETE /client/cc/channels/{handle}/messages/{message_id} — delete.
 func (h *CCClientHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
-	ccID := r.PathValue("cc_id")
 	handle := r.PathValue("handle")
 	msgID := r.PathValue("message_id")
-	_, _, botTok, ok := h.resolveAssignment(w, r, ccID)
+	_, cc, botTok, ok := h.resolveCC(w, r)
 	if !ok {
 		return
 	}
-	ch, ok := h.resolveHandle(w, ccID, handle)
+	ch, ok := h.resolveHandle(w, cc.ID, handle)
 	if !ok {
 		return
 	}
@@ -299,15 +294,14 @@ func (h *CCClientHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) 
 	jsonResponse(w, map[string]string{"status": "deleted"})
 }
 
-// GET /client/cc/{cc_id}/channels/{handle}/messages?limit=N — read recent.
+// GET /client/cc/channels/{handle}/messages?limit=N — read recent.
 func (h *CCClientHandler) GetMessages(w http.ResponseWriter, r *http.Request) {
-	ccID := r.PathValue("cc_id")
 	handle := r.PathValue("handle")
-	_, _, botTok, ok := h.resolveAssignment(w, r, ccID)
+	_, cc, botTok, ok := h.resolveCC(w, r)
 	if !ok {
 		return
 	}
-	ch, ok := h.resolveHandle(w, ccID, handle)
+	ch, ok := h.resolveHandle(w, cc.ID, handle)
 	if !ok {
 		return
 	}
@@ -322,7 +316,6 @@ func (h *CCClientHandler) GetMessages(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "discord get messages: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	// Repackage so we don't leak channel_id; expose handle instead.
 	type publicMsg struct {
 		MessageID string `json:"message_id"`
 		Handle    string `json:"channel_handle"`
@@ -343,20 +336,10 @@ func (h *CCClientHandler) GetMessages(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
-// GET /client/cc/{cc_id}/inbox — long-poll for queued gateway events.
-//
-// Query params:
-//
-//	since=N        — only events with id > N (cursor)
-//	channels=h1,h2 — optional handle filter (comma-separated)
-//	timeout=30     — seconds to wait for new events (default 25, max 60).
-//	                 Returns immediately if events are already buffered.
-//	limit=N        — max events to return per call (default 200, max 500).
-//
-// Response: {"cursor": <highest_id>, "events": [...]}
+// GET /client/cc/inbox — long-poll for queued gateway events.
 func (h *CCClientHandler) PullInbox(w http.ResponseWriter, r *http.Request) {
-	ccID := r.PathValue("cc_id")
-	if _, _, _, ok := h.resolveAssignment(w, r, ccID); !ok {
+	_, cc, _, ok := h.resolveCC(w, r)
+	if !ok {
 		return
 	}
 	q := r.URL.Query()
@@ -382,12 +365,8 @@ func (h *CCClientHandler) PullInbox(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-
-	// Validate filter handles belong to this CC. Defensive — keeps a
-	// compromised agent from peeking into another CC's events even if the
-	// inbox accidentally cross-tagged.
 	for _, h2 := range handles {
-		if ch, err := h.cc.GetChannelByHandle(h2); err != nil || ch.CCID != ccID {
+		if ch, err := h.cc.GetChannelByHandle(h2); err != nil || ch.CCID != cc.ID {
 			jsonError(w, "channel filter contains handle outside this cc", http.StatusForbidden)
 			return
 		}
@@ -395,7 +374,7 @@ func (h *CCClientHandler) PullInbox(w http.ResponseWriter, r *http.Request) {
 
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 	for {
-		events, err := h.cc.PullInbox(ccID, since, handles, limit)
+		events, err := h.cc.PullInbox(cc.ID, since, handles, limit)
 		if err != nil {
 			jsonError(w, "inbox pull: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -416,8 +395,6 @@ func (h *CCClientHandler) PullInbox(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		// Cheap idle wait. Long-poll callers should set timeout=0 for
-		// no-wait mode if they're polling on their own cadence.
 		select {
 		case <-r.Context().Done():
 			jsonResponse(w, map[string]interface{}{"cursor": since, "events": []models.InboxEvent{}})

@@ -22,8 +22,8 @@ func openTestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 
 	stmts := []string{
-		`CREATE TABLE control_channels (id TEXT PRIMARY KEY, name TEXT, service_id TEXT, api_key_id TEXT, config TEXT, is_active INT, created_at TEXT)`,
-		`CREATE TABLE cc_channels (handle TEXT PRIMARY KEY, cc_id TEXT, client_id TEXT, channel_id TEXT, name TEXT, topic TEXT, is_home INT, archived INT, created_at TEXT, last_seen_at TEXT)`,
+		`CREATE TABLE control_channels (id TEXT PRIMARY KEY, name TEXT, service_id TEXT, api_key_id TEXT, client_id TEXT, agent_type TEXT, placeholder_id TEXT, config TEXT, is_active INT, created_at TEXT)`,
+		`CREATE TABLE cc_channels (handle TEXT PRIMARY KEY, cc_id TEXT, client_id TEXT, channel_id TEXT, name TEXT, topic TEXT, kind TEXT, session_id TEXT, cwd TEXT, archived INT, created_at TEXT, last_seen_at TEXT)`,
 		`CREATE TABLE discord_inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, cc_id TEXT, channel_handle TEXT, event_type TEXT, payload TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
 	}
 	for _, s := range stmts {
@@ -31,10 +31,10 @@ func openTestDB(t *testing.T) *sql.DB {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO control_channels VALUES ('cc1','x','svc','key','{}',1,datetime('now'))`); err != nil {
+	if _, err := db.Exec(`INSERT INTO control_channels VALUES ('cc1','x','svc','key','client1','claude_code','ph1','{}',1,datetime('now'))`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO cc_channels VALUES ('h1','cc1','c1','D1','home1','',1,0,datetime('now'),null)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO cc_channels VALUES ('h1','cc1','c1','D1','home1','','management','','',0,datetime('now'),null)`); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -78,7 +78,7 @@ func TestInboxAppendAndPull(t *testing.T) {
 func TestInboxFilterByHandle(t *testing.T) {
 	db := openTestDB(t)
 	q := NewControlChannelQueries(db)
-	if _, err := db.Exec(`INSERT INTO cc_channels VALUES ('h2','cc1','c2','D2','home2','',1,0,datetime('now'),null)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO cc_channels VALUES ('h2','cc1','c2','D2','home2','','task','','',0,datetime('now'),null)`); err != nil {
 		t.Fatal(err)
 	}
 	h1, h2 := "h1", "h2"

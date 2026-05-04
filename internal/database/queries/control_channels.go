@@ -7,6 +7,9 @@ import (
 	"github.com/hackerduck/duckway/internal/models"
 )
 
+// ControlChannelQueries owns the CC + cc_channels + discord_inbox tables.
+// Schema v2 (post-redesign): control_channels.client_id is unique, no
+// separate assignment table.
 type ControlChannelQueries struct {
 	db *sql.DB
 }
@@ -15,16 +18,23 @@ func NewControlChannelQueries(db *sql.DB) *ControlChannelQueries {
 	return &ControlChannelQueries{db: db}
 }
 
-// List returns all CCs joined with the underlying service + bot key name.
+const ccCols = `cc.id, cc.name, cc.service_id, cc.api_key_id, cc.client_id,
+                cc.agent_type, cc.placeholder_id, cc.config, cc.is_active, cc.created_at,
+                s.name, k.name, c.name`
+
+func scanCC(row interface{ Scan(...interface{}) error }, cc *models.ControlChannel) error {
+	return row.Scan(&cc.ID, &cc.Name, &cc.ServiceID, &cc.APIKeyID, &cc.ClientID,
+		&cc.AgentType, &cc.PlaceholderID, &cc.Config, &cc.IsActive, &cc.CreatedAt,
+		&cc.ServiceName, &cc.APIKeyName, &cc.ClientName)
+}
+
+const ccSelect = `SELECT ` + ccCols + ` FROM control_channels cc
+                  JOIN services s ON cc.service_id = s.id
+                  JOIN api_keys k ON cc.api_key_id = k.id
+                  JOIN clients  c ON cc.client_id  = c.id`
+
 func (q *ControlChannelQueries) List() ([]models.ControlChannel, error) {
-	rows, err := q.db.Query(
-		`SELECT cc.id, cc.name, cc.service_id, cc.api_key_id, cc.config, cc.is_active, cc.created_at,
-		        s.name, k.name
-		 FROM control_channels cc
-		 JOIN services s ON cc.service_id = s.id
-		 JOIN api_keys k ON cc.api_key_id = k.id
-		 ORDER BY cc.created_at DESC`,
-	)
+	rows, err := q.db.Query(ccSelect + ` ORDER BY cc.created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -33,8 +43,7 @@ func (q *ControlChannelQueries) List() ([]models.ControlChannel, error) {
 	var out []models.ControlChannel
 	for rows.Next() {
 		var c models.ControlChannel
-		if err := rows.Scan(&c.ID, &c.Name, &c.ServiceID, &c.APIKeyID, &c.Config, &c.IsActive, &c.CreatedAt,
-			&c.ServiceName, &c.APIKeyName); err != nil {
+		if err := scanCC(rows, &c); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -44,15 +53,18 @@ func (q *ControlChannelQueries) List() ([]models.ControlChannel, error) {
 
 func (q *ControlChannelQueries) GetByID(id string) (*models.ControlChannel, error) {
 	var c models.ControlChannel
-	err := q.db.QueryRow(
-		`SELECT cc.id, cc.name, cc.service_id, cc.api_key_id, cc.config, cc.is_active, cc.created_at,
-		        s.name, k.name
-		 FROM control_channels cc
-		 JOIN services s ON cc.service_id = s.id
-		 JOIN api_keys k ON cc.api_key_id = k.id
-		 WHERE cc.id = ?`, id,
-	).Scan(&c.ID, &c.Name, &c.ServiceID, &c.APIKeyID, &c.Config, &c.IsActive, &c.CreatedAt,
-		&c.ServiceName, &c.APIKeyName)
+	err := scanCC(q.db.QueryRow(ccSelect+` WHERE cc.id = ?`, id), &c)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetByClientID looks up the (only) CC bound to a client. The client API
+// uses this to resolve "the current CC" without making the agent pass an id.
+func (q *ControlChannelQueries) GetByClientID(clientID string) (*models.ControlChannel, error) {
+	var c models.ControlChannel
+	err := scanCC(q.db.QueryRow(ccSelect+` WHERE cc.client_id = ?`, clientID), &c)
 	if err != nil {
 		return nil, err
 	}
@@ -61,9 +73,11 @@ func (q *ControlChannelQueries) GetByID(id string) (*models.ControlChannel, erro
 
 func (q *ControlChannelQueries) Create(c *models.ControlChannel) error {
 	_, err := q.db.Exec(
-		`INSERT INTO control_channels (id, name, service_id, api_key_id, config, is_active)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		c.ID, c.Name, c.ServiceID, c.APIKeyID, c.Config, boolToInt(c.IsActive),
+		`INSERT INTO control_channels
+		 (id, name, service_id, api_key_id, client_id, agent_type, placeholder_id, config, is_active)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.Name, c.ServiceID, c.APIKeyID, c.ClientID, c.AgentType, c.PlaceholderID,
+		c.Config, boolToInt(c.IsActive),
 	)
 	return err
 }
@@ -83,21 +97,25 @@ func (q *ControlChannelQueries) Delete(id string) error {
 
 // --- channels under a CC -------------------------------------------------
 
+const channelCols = `handle, cc_id, client_id, channel_id, name, topic, kind, session_id, cwd, archived, created_at, last_seen_at`
+
+func scanChannel(row interface{ Scan(...interface{}) error }, c *models.CCChannel) error {
+	return row.Scan(&c.Handle, &c.CCID, &c.ClientID, &c.ChannelID, &c.Name, &c.Topic,
+		&c.Kind, &c.SessionID, &c.Cwd, &c.Archived, &c.CreatedAt, &c.LastSeenAt)
+}
+
 func (q *ControlChannelQueries) ListChannels(ccID string) ([]models.CCChannel, error) {
 	rows, err := q.db.Query(
-		`SELECT handle, cc_id, client_id, channel_id, name, topic, is_home, archived, created_at, last_seen_at
-		 FROM cc_channels WHERE cc_id = ? ORDER BY created_at DESC`, ccID,
+		`SELECT `+channelCols+` FROM cc_channels WHERE cc_id = ? ORDER BY kind = 'management' DESC, created_at DESC`, ccID,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
 	var out []models.CCChannel
 	for rows.Next() {
 		var c models.CCChannel
-		if err := rows.Scan(&c.Handle, &c.CCID, &c.ClientID, &c.ChannelID, &c.Name, &c.Topic,
-			&c.IsHome, &c.Archived, &c.CreatedAt, &c.LastSeenAt); err != nil {
+		if err := scanChannel(rows, &c); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -107,26 +125,39 @@ func (q *ControlChannelQueries) ListChannels(ccID string) ([]models.CCChannel, e
 
 func (q *ControlChannelQueries) GetChannelByHandle(handle string) (*models.CCChannel, error) {
 	var c models.CCChannel
-	err := q.db.QueryRow(
-		`SELECT handle, cc_id, client_id, channel_id, name, topic, is_home, archived, created_at, last_seen_at
-		 FROM cc_channels WHERE handle = ?`, handle,
-	).Scan(&c.Handle, &c.CCID, &c.ClientID, &c.ChannelID, &c.Name, &c.Topic,
-		&c.IsHome, &c.Archived, &c.CreatedAt, &c.LastSeenAt)
+	err := scanChannel(
+		q.db.QueryRow(`SELECT `+channelCols+` FROM cc_channels WHERE handle = ?`, handle),
+		&c,
+	)
 	if err != nil {
 		return nil, err
 	}
 	return &c, nil
 }
 
-// GetChannelByRealID looks up a channel by its real Discord channel_id (used
-// when the gateway delivers an event and we need to map back to a handle).
+// GetChannelByRealID is the gateway's reverse lookup — given a channel_id
+// from a Discord event, find which CC + handle it belongs to. Scoped to
+// a CC so a bot serving multiple CCs doesn't cross-write events.
 func (q *ControlChannelQueries) GetChannelByRealID(ccID, realID string) (*models.CCChannel, error) {
 	var c models.CCChannel
-	err := q.db.QueryRow(
-		`SELECT handle, cc_id, client_id, channel_id, name, topic, is_home, archived, created_at, last_seen_at
-		 FROM cc_channels WHERE cc_id = ? AND channel_id = ?`, ccID, realID,
-	).Scan(&c.Handle, &c.CCID, &c.ClientID, &c.ChannelID, &c.Name, &c.Topic,
-		&c.IsHome, &c.Archived, &c.CreatedAt, &c.LastSeenAt)
+	err := scanChannel(
+		q.db.QueryRow(`SELECT `+channelCols+` FROM cc_channels WHERE cc_id = ? AND channel_id = ?`, ccID, realID),
+		&c,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetManagementChannel returns the kind='management' row for a CC.
+func (q *ControlChannelQueries) GetManagementChannel(ccID string) (*models.CCChannel, error) {
+	var c models.CCChannel
+	err := scanChannel(
+		q.db.QueryRow(
+			`SELECT `+channelCols+` FROM cc_channels WHERE cc_id = ? AND kind = 'management' LIMIT 1`, ccID),
+		&c,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -134,10 +165,13 @@ func (q *ControlChannelQueries) GetChannelByRealID(ccID, realID string) (*models
 }
 
 func (q *ControlChannelQueries) CreateChannel(c *models.CCChannel) error {
+	if c.Kind == "" {
+		c.Kind = "task"
+	}
 	_, err := q.db.Exec(
-		`INSERT INTO cc_channels (handle, cc_id, client_id, channel_id, name, topic, is_home, archived)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.Handle, c.CCID, c.ClientID, c.ChannelID, c.Name, c.Topic, boolToInt(c.IsHome), boolToInt(c.Archived),
+		`INSERT INTO cc_channels (handle, cc_id, client_id, channel_id, name, topic, kind, session_id, cwd, archived)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.Handle, c.CCID, c.ClientID, c.ChannelID, c.Name, c.Topic, c.Kind, c.SessionID, c.Cwd, boolToInt(c.Archived),
 	)
 	return err
 }
@@ -147,94 +181,32 @@ func (q *ControlChannelQueries) MarkChannelArchived(handle string) error {
 	return err
 }
 
+func (q *ControlChannelQueries) DeleteChannel(handle string) error {
+	_, err := q.db.Exec("DELETE FROM cc_channels WHERE handle = ?", handle)
+	return err
+}
+
+func (q *ControlChannelQueries) DeleteChannelByRealID(ccID, realID string) error {
+	_, err := q.db.Exec("DELETE FROM cc_channels WHERE cc_id = ? AND channel_id = ?", ccID, realID)
+	return err
+}
+
 func (q *ControlChannelQueries) UpdateChannelMeta(handle, name, topic string) error {
-	_, err := q.db.Exec("UPDATE cc_channels SET name = ?, topic = ?, last_seen_at = datetime('now') WHERE handle = ?",
-		name, topic, handle)
-	return err
-}
-
-// --- assignments ---------------------------------------------------------
-
-func (q *ControlChannelQueries) Assign(a *models.ClientCC) error {
 	_, err := q.db.Exec(
-		`INSERT INTO client_cc (client_id, cc_id, agent_type, home_handle, placeholder_id)
-		 VALUES (?, ?, ?, ?, ?)`,
-		a.ClientID, a.CCID, a.AgentType, a.HomeHandle, a.PlaceholderID,
+		"UPDATE cc_channels SET name = ?, topic = ?, last_seen_at = datetime('now') WHERE handle = ?",
+		name, topic, handle,
 	)
 	return err
 }
 
-func (q *ControlChannelQueries) Unassign(clientID, ccID string) error {
-	_, err := q.db.Exec("DELETE FROM client_cc WHERE client_id = ? AND cc_id = ?", clientID, ccID)
+// SetChannelSession records the claude session_id and (optionally) the cwd
+// the daemon used. Called the first time a channel sees `claude -p`.
+func (q *ControlChannelQueries) SetChannelSession(handle, sessionID, cwd string) error {
+	_, err := q.db.Exec(
+		"UPDATE cc_channels SET session_id = ?, cwd = ?, last_seen_at = datetime('now') WHERE handle = ?",
+		sessionID, cwd, handle,
+	)
 	return err
-}
-
-func (q *ControlChannelQueries) GetAssignment(clientID, ccID string) (*models.ClientCC, error) {
-	var a models.ClientCC
-	err := q.db.QueryRow(
-		`SELECT client_id, cc_id, agent_type, home_handle, placeholder_id, created_at
-		 FROM client_cc WHERE client_id = ? AND cc_id = ?`, clientID, ccID,
-	).Scan(&a.ClientID, &a.CCID, &a.AgentType, &a.HomeHandle, &a.PlaceholderID, &a.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return &a, nil
-}
-
-// AssignmentsForClient lists CCs the client is currently assigned to.
-func (q *ControlChannelQueries) AssignmentsForClient(clientID string) ([]models.ClientCCDetail, error) {
-	rows, err := q.db.Query(
-		`SELECT a.client_id, a.cc_id, a.agent_type, a.home_handle, a.placeholder_id, a.created_at,
-		        cc.name, ch.name, ch.channel_id
-		 FROM client_cc a
-		 JOIN control_channels cc ON a.cc_id = cc.id
-		 JOIN cc_channels ch ON a.home_handle = ch.handle
-		 WHERE a.client_id = ?
-		 ORDER BY a.created_at DESC`, clientID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []models.ClientCCDetail
-	for rows.Next() {
-		var d models.ClientCCDetail
-		if err := rows.Scan(&d.ClientID, &d.CCID, &d.AgentType, &d.HomeHandle, &d.PlaceholderID, &d.CreatedAt,
-			&d.CCName, &d.HomeChannelName, &d.HomeChannelID); err != nil {
-			return nil, err
-		}
-		out = append(out, d)
-	}
-	return out, rows.Err()
-}
-
-func (q *ControlChannelQueries) AssignmentsForCC(ccID string) ([]models.ClientCCDetail, error) {
-	rows, err := q.db.Query(
-		`SELECT a.client_id, a.cc_id, a.agent_type, a.home_handle, a.placeholder_id, a.created_at,
-		        cc.name, ch.name, ch.channel_id, c.name
-		 FROM client_cc a
-		 JOIN control_channels cc ON a.cc_id = cc.id
-		 JOIN cc_channels ch ON a.home_handle = ch.handle
-		 JOIN clients c ON a.client_id = c.id
-		 WHERE a.cc_id = ?
-		 ORDER BY a.created_at DESC`, ccID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []models.ClientCCDetail
-	for rows.Next() {
-		var d models.ClientCCDetail
-		if err := rows.Scan(&d.ClientID, &d.CCID, &d.AgentType, &d.HomeHandle, &d.PlaceholderID, &d.CreatedAt,
-			&d.CCName, &d.HomeChannelName, &d.HomeChannelID, &d.ClientName); err != nil {
-			return nil, err
-		}
-		out = append(out, d)
-	}
-	return out, rows.Err()
 }
 
 // --- inbox ---------------------------------------------------------------
@@ -247,8 +219,6 @@ func (q *ControlChannelQueries) AppendInbox(ccID string, channelHandle *string, 
 	return err
 }
 
-// PullInbox returns events with id > sinceID for the given CC, optionally
-// filtered to a set of channel handles. Cap by limit.
 func (q *ControlChannelQueries) PullInbox(ccID string, sinceID int64, channelHandles []string, limit int) ([]models.InboxEvent, error) {
 	args := []interface{}{ccID, sinceID}
 	q1 := `SELECT id, cc_id, channel_handle, event_type, payload, created_at
@@ -298,7 +268,6 @@ func (q *ControlChannelQueries) CleanupInbox(retentionHours, perChannelMax int) 
 		}
 	}
 	if perChannelMax > 0 {
-		// For each channel_handle, keep only the newest perChannelMax rows.
 		_, err := q.db.Exec(
 			`DELETE FROM discord_inbox WHERE id NOT IN (
 				SELECT id FROM (

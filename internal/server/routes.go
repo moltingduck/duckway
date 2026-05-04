@@ -213,15 +213,13 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/oauth/{id}/refresh", oauthH.Refresh)
 
 	// Control Channels (CC) — admin CRUD
+	// CC v2: 1:1 client↔CC, all admin endpoints under /api/cc.
 	adminAPIMux.HandleFunc("GET /api/cc", ccH.List)
 	adminAPIMux.HandleFunc("POST /api/cc", ccH.Create)
 	adminAPIMux.HandleFunc("GET /api/cc/{id}", ccH.Get)
 	adminAPIMux.HandleFunc("PUT /api/cc/{id}", ccH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/cc/{id}", ccH.Delete)
 	adminAPIMux.HandleFunc("POST /api/cc/{id}/test", ccH.Test)
-	adminAPIMux.HandleFunc("GET /api/clients/{id}/cc", ccH.ListAssignmentsForClient)
-	adminAPIMux.HandleFunc("POST /api/clients/{id}/cc", ccH.AssignToClient)
-	adminAPIMux.HandleFunc("DELETE /api/clients/{id}/cc/{cc_id}", ccH.UnassignFromClient)
 
 	adminAPIMux.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
 		logs, err := ss.RequestLogQ.Recent(500)
@@ -350,15 +348,16 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	// stay server-side — agents see only opaque handles.
 	ccQ := queries.NewControlChannelQueries(s.db)
 	ccClientH := handlers.NewCCClientHandler(ccQ, ss.APIKeyQ, ss.Crypto, services.NewDiscordBot())
-	clientMux.HandleFunc("GET /client/cc", ccClientH.ListAssigned)
-	clientMux.HandleFunc("GET /client/cc/{cc_id}/channels", ccClientH.ListChannels)
-	clientMux.HandleFunc("POST /client/cc/{cc_id}/channels", ccClientH.CreateChannel)
-	clientMux.HandleFunc("POST /client/cc/{cc_id}/channels/{handle}/archive", ccClientH.ArchiveChannel)
-	clientMux.HandleFunc("GET /client/cc/{cc_id}/channels/{handle}/messages", ccClientH.GetMessages)
-	clientMux.HandleFunc("POST /client/cc/{cc_id}/channels/{handle}/messages", ccClientH.PostMessage)
-	clientMux.HandleFunc("PATCH /client/cc/{cc_id}/channels/{handle}/messages/{message_id}", ccClientH.EditMessage)
-	clientMux.HandleFunc("DELETE /client/cc/{cc_id}/channels/{handle}/messages/{message_id}", ccClientH.DeleteMessage)
-	clientMux.HandleFunc("GET /client/cc/{cc_id}/inbox", ccClientH.PullInbox)
+	// CC v2 client API — cc_id is implicit (1:1 client↔CC).
+	clientMux.HandleFunc("GET /client/cc", ccClientH.GetMyCC)
+	clientMux.HandleFunc("GET /client/cc/channels", ccClientH.ListChannels)
+	clientMux.HandleFunc("POST /client/cc/channels", ccClientH.CreateChannel)
+	clientMux.HandleFunc("POST /client/cc/channels/{handle}/archive", ccClientH.ArchiveChannel)
+	clientMux.HandleFunc("GET /client/cc/channels/{handle}/messages", ccClientH.GetMessages)
+	clientMux.HandleFunc("POST /client/cc/channels/{handle}/messages", ccClientH.PostMessage)
+	clientMux.HandleFunc("PATCH /client/cc/channels/{handle}/messages/{message_id}", ccClientH.EditMessage)
+	clientMux.HandleFunc("DELETE /client/cc/channels/{handle}/messages/{message_id}", ccClientH.DeleteMessage)
+	clientMux.HandleFunc("GET /client/cc/inbox", ccClientH.PullInbox)
 
 	// Client config (no auth — needed during duckway init before token is verified)
 	s.mux.HandleFunc("GET /client/config", func(w http.ResponseWriter, r *http.Request) {

@@ -12,7 +12,7 @@
     Bot token = security boundary — clients sharing one CC can interact with each other&rsquo;s channels.
   </p>
   <table>
-    <thead><tr><th>Name</th><th>Service</th><th>Bot Token</th><th>Config</th><th>Active</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Client (agent)</th><th>Bot Token</th><th>Config</th><th>Active</th><th></th></tr></thead>
     <tbody id="cc-list"><tr><td colspan="6" class="text-muted">Loading…</td></tr></tbody>
   </table>
 </div>
@@ -25,6 +25,21 @@
       <div class="form-group">
         <label>Name</label>
         <input type="text" id="cc-name" placeholder="Project Alpha CC" required>
+      </div>
+      <div class="form-group">
+        <label>Client</label>
+        <select id="cc-client" required></select>
+        <span class="text-muted text-sm">CC v2: 1:1 client↔CC. Pick a client that doesn't already have a CC.</span>
+      </div>
+      <div class="form-group">
+        <label>Agent type</label>
+        <select id="cc-agent">
+          <option value="claude_code">claude_code</option>
+          <option value="openclaw">openclaw</option>
+          <option value="harmes">harmes</option>
+          <option value="cursor">cursor</option>
+          <option value="copilot_cli">copilot_cli</option>
+        </select>
       </div>
       <div class="form-group">
         <label>Service</label>
@@ -59,10 +74,10 @@
       <tr><td class="text-muted">Created</td><td id="d-created"></td></tr>
     </table>
     <div class="mt-1">
-      <strong class="text-sm">Assignments</strong>
+      <strong class="text-sm">Channels</strong>
       <table class="mt-1">
-        <thead><tr><th>Client</th><th>Agent type</th><th>Home channel</th><th>Channel ID</th></tr></thead>
-        <tbody id="d-assignments"><tr><td colspan="4" class="text-muted">None</td></tr></tbody>
+        <thead><tr><th>Kind</th><th>Name</th><th>Handle</th><th>Session id</th></tr></thead>
+        <tbody id="d-channels"><tr><td colspan="4" class="text-muted">None</td></tr></tbody>
       </table>
     </div>
     <div id="d-test-result" class="mt-1"></div>
@@ -77,6 +92,8 @@
 <script>
 var allKeys = [];
 var allServices = [];
+var allClients = [];
+var allCCs = [];
 var currentCC = null;
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -96,18 +113,42 @@ document.addEventListener('DOMContentLoaded', function() {
   fetch('/api/keys', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(k){
     allKeys = k || [];
   });
+  fetch('/api/clients', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(c){
+    allClients = c || [];
+    repopulateClientPicker();
+  });
   loadCCs();
 });
 
+function repopulateClientPicker() {
+  var sel = document.getElementById('cc-client');
+  sel.innerHTML = '';
+  var assigned = {};
+  allCCs.forEach(function(c){ assigned[c.client_id] = c.name; });
+  allClients.forEach(function(cl) {
+    var opt = document.createElement('option');
+    opt.value = cl.id;
+    if (assigned[cl.id]) {
+      opt.disabled = true;
+      opt.textContent = cl.name + '  (already in CC: ' + assigned[cl.id] + ')';
+    } else {
+      opt.textContent = cl.name;
+    }
+    sel.appendChild(opt);
+  });
+}
+
 function loadCCs() {
   fetch('/api/cc', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(list) {
+    allCCs = Array.isArray(list) ? list : [];
+    repopulateClientPicker();
     var tbody = document.getElementById('cc-list');
-    if (!Array.isArray(list) || list.length === 0) {
+    if (allCCs.length === 0) {
       tbody.innerHTML = '<tr><td colspan="6" class="text-muted">No control channels.</td></tr>';
       return;
     }
     tbody.innerHTML = '';
-    list.forEach(function(c) {
+    allCCs.forEach(function(c) {
       var cfgPreview = '';
       try {
         var cfg = JSON.parse(c.config || '{}');
@@ -116,7 +157,7 @@ function loadCCs() {
       var tr = document.createElement('tr');
       tr.innerHTML =
         '<td><a href="#" onclick="openDetail(\''+c.id+'\');return false"><strong>'+escapeHTML(c.name)+'</strong></a></td>' +
-        '<td><span class="badge badge-blue">'+escapeHTML(c.service_name)+'</span></td>' +
+        '<td>'+escapeHTML(c.client_name||'?')+'  <span class="text-muted text-sm">(' + escapeHTML(c.agent_type) + ')</span></td>' +
         '<td class="text-sm">'+escapeHTML(c.api_key_name)+'</td>' +
         '<td class="text-sm mono">'+escapeHTML(cfgPreview)+'</td>' +
         '<td>'+(c.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>')+'</td>' +
@@ -191,6 +232,8 @@ document.getElementById('create-form').addEventListener('submit', function(e) {
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({
       name: document.getElementById('cc-name').value.trim(),
+      client_id: document.getElementById('cc-client').value,
+      agent_type: document.getElementById('cc-agent').value,
       service_id: svcId,
       api_key_id: document.getElementById('cc-key').value,
       config: config
@@ -222,19 +265,24 @@ function openDetail(id) {
       : '<span class="badge badge-gray">Inactive</span>';
     document.getElementById('d-created').textContent = c.created_at;
 
-    var tbody = document.getElementById('d-assignments');
-    var asn = c.assignments || [];
-    if (asn.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No assignments yet</td></tr>';
+    var tbody = document.getElementById('d-channels');
+    var chans = c.channels || [];
+    if (chans.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No channels yet</td></tr>';
     } else {
       tbody.innerHTML = '';
-      asn.forEach(function(a) {
+      chans.forEach(function(ch) {
+        var kindBadge = ch.kind === 'management'
+          ? '<span class="badge badge-blue">management</span>'
+          : '<span class="badge badge-gray">task</span>';
+        var name = escapeHTML(ch.name||'?');
+        if (ch.archived) name += '  <span class="text-muted text-sm">(archived)</span>';
         var tr = document.createElement('tr');
         tr.innerHTML =
-          '<td>'+escapeHTML(a.client_name||'?')+'</td>' +
-          '<td><code>'+escapeHTML(a.agent_type)+'</code></td>' +
-          '<td>'+escapeHTML(a.home_channel_name||'(pending)')+'</td>' +
-          '<td class="mono text-sm">'+escapeHTML(a.home_channel_id||'(pending)')+'</td>';
+          '<td>' + kindBadge + '</td>' +
+          '<td>' + name + '</td>' +
+          '<td class="mono text-sm">' + escapeHTML(ch.handle||'') + '</td>' +
+          '<td class="mono text-sm">' + escapeHTML(ch.session_id||'<none>') + '</td>';
         tbody.appendChild(tr);
       });
     }

@@ -183,20 +183,20 @@ func (c *APIClient) FetchConfig() (map[string]string, error) {
 	return cfg, nil
 }
 
-// CCAssignment mirrors what GET /client/cc returns. Only the fields the
-// client side actually uses are pulled out; the rest of the JSON is
-// preserved as RawAssignment in case Phase E wants more.
+// CCAssignment mirrors what GET /client/cc returns. CC v2: a client has
+// AT MOST one CC, so the response is a single object, not a list. We keep
+// the slice-returning Fetch helper so callers (sync, daemon) treat 0 vs 1
+// uniformly.
 type CCAssignment struct {
-	CCID            string `json:"cc_id"`
-	CCName          string `json:"cc_name"`
-	AgentType       string `json:"agent_type"`
-	HomeHandle      string `json:"home_handle"`
-	HomeChannelName string `json:"home_channel_name"`
-	PlaceholderID   string `json:"placeholder_id"`
+	CCID             string `json:"cc_id"`
+	CCName           string `json:"cc_name"`
+	AgentType        string `json:"agent_type"`
+	ManagementHandle string `json:"management_handle"`
 }
 
-// FetchCC asks the server which Control Channels this client is assigned
-// to. Returns an empty slice when none are configured.
+// FetchCC asks the server for the (single) CC bound to this client.
+// Returns nil when none is assigned. Returns nil on 404 too — that means
+// the server is older or the endpoint doesn't exist.
 func (c *APIClient) FetchCC() ([]CCAssignment, error) {
 	req, err := http.NewRequest("GET", c.baseURL+"/client/cc", nil)
 	if err != nil {
@@ -210,17 +210,29 @@ func (c *APIClient) FetchCC() ([]CCAssignment, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 404 {
-		return nil, nil // older server without CC support
+		return nil, nil
 	}
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
 	}
-	var out []CCAssignment
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	var raw struct {
+		Assigned         bool   `json:"assigned"`
+		CCID             string `json:"cc_id"`
+		CCName           string `json:"cc_name"`
+		AgentType        string `json:"agent_type"`
+		ManagementHandle string `json:"management_handle"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("parse cc: %w", err)
 	}
-	return out, nil
+	if !raw.Assigned {
+		return nil, nil
+	}
+	return []CCAssignment{{
+		CCID: raw.CCID, CCName: raw.CCName, AgentType: raw.AgentType,
+		ManagementHandle: raw.ManagementHandle,
+	}}, nil
 }
 
 func (c *APIClient) Ping() error {

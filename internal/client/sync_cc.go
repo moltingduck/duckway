@@ -20,13 +20,12 @@ type CCStateFile struct {
 	CCs       []CCStateAssignment     `json:"ccs"`
 }
 
-// CCStateAssignment is one CC the client is assigned to.
+// CCStateAssignment is the (single) CC the client is bound to.
 type CCStateAssignment struct {
-	CCID            string `json:"cc_id"`
-	CCName          string `json:"cc_name"`
-	AgentType       string `json:"agent_type"`
-	HomeHandle      string `json:"home_handle"`
-	HomeChannelName string `json:"home_channel_name"`
+	CCID             string `json:"cc_id"`
+	CCName           string `json:"cc_name"`
+	AgentType        string `json:"agent_type"`
+	ManagementHandle string `json:"management_handle"`
 }
 
 func ccStateFilePath(configDir string) string {
@@ -59,11 +58,10 @@ func SyncCC(configDir string, cfg *Config) (int, error) {
 	}
 	for _, a := range assignments {
 		state.CCs = append(state.CCs, CCStateAssignment{
-			CCID:            a.CCID,
-			CCName:          a.CCName,
-			AgentType:       a.AgentType,
-			HomeHandle:      a.HomeHandle,
-			HomeChannelName: a.HomeChannelName,
+			CCID:             a.CCID,
+			CCName:           a.CCName,
+			AgentType:        a.AgentType,
+			ManagementHandle: a.ManagementHandle,
 		})
 	}
 

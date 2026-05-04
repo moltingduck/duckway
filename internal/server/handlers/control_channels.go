@@ -11,9 +11,9 @@ import (
 	svc "github.com/hackerduck/duckway/internal/server/services"
 )
 
-// ControlChannelHandler covers admin CRUD for the CC concept and the
-// Discord-bot side-effects that go with assignment (auto-creating a home
-// channel, archiving on tear-down).
+// ControlChannelHandler covers admin CRUD for the CC concept. CC v2:
+// 1:1 client↔CC. Create both provisions the management channel and
+// issues the bot phantom token in one go.
 type ControlChannelHandler struct {
 	cc           *queries.ControlChannelQueries
 	apiKeys      *queries.APIKeyQueries
@@ -46,7 +46,7 @@ func (h *ControlChannelHandler) List(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, list)
 }
 
-// GET /api/cc/{id} — detail with assignments.
+// GET /api/cc/{id} — detail with the channel list.
 func (h *ControlChannelHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	c, err := h.cc.GetByID(id)
@@ -54,31 +54,54 @@ func (h *ControlChannelHandler) Get(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "not found", http.StatusNotFound)
 		return
 	}
-	c.Assignments, _ = h.cc.AssignmentsForCC(id)
-	if c.Assignments == nil {
-		c.Assignments = []models.ClientCCDetail{}
+	c.Channels, _ = h.cc.ListChannels(id)
+	if c.Channels == nil {
+		c.Channels = []models.CCChannel{}
 	}
 	jsonResponse(w, c)
 }
 
-// POST /api/cc — create.
+// POST /api/cc — create a CC for a specific client. Provisions the
+// management channel under the configured Discord category and issues a
+// phantom token bound to the bot api_key + this client. Refuses if the
+// client already has a CC (1:1 invariant).
 func (h *ControlChannelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name      string          `json:"name"`
 		ServiceID string          `json:"service_id"`
 		APIKeyID  string          `json:"api_key_id"`
+		ClientID  string          `json:"client_id"`
+		AgentType string          `json:"agent_type"`
 		Config    json.RawMessage `json:"config"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if req.Name == "" || req.ServiceID == "" || req.APIKeyID == "" {
-		jsonError(w, "name, service_id, api_key_id are required", http.StatusBadRequest)
+	if req.Name == "" || req.ServiceID == "" || req.APIKeyID == "" || req.ClientID == "" {
+		jsonError(w, "name, service_id, api_key_id, client_id are required", http.StatusBadRequest)
+		return
+	}
+	if req.AgentType == "" {
+		req.AgentType = "claude_code"
+	}
+	switch req.AgentType {
+	case "claude_code", "openclaw", "harmes", "cursor", "copilot_cli":
+	default:
+		jsonError(w, "unknown agent_type: "+req.AgentType, http.StatusBadRequest)
 		return
 	}
 
-	// Validate the API key belongs to the same service.
+	cl, err := h.clients.GetByID(req.ClientID)
+	if err != nil {
+		jsonError(w, "client not found", http.StatusBadRequest)
+		return
+	}
+	if existing, _ := h.cc.GetByClientID(req.ClientID); existing != nil {
+		jsonError(w, "client already has a CC: "+existing.Name, http.StatusConflict)
+		return
+	}
+
 	key, err := h.apiKeys.GetByID(req.APIKeyID)
 	if err != nil {
 		jsonError(w, "api_key not found", http.StatusBadRequest)
@@ -89,7 +112,6 @@ func (h *ControlChannelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Service-specific config validation.
 	svcRow, err := h.services.GetByID(req.ServiceID)
 	if err != nil {
 		jsonError(w, "service not found", http.StatusBadRequest)
@@ -114,25 +136,122 @@ func (h *ControlChannelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	id, _ := svc.GenerateToken(8)
+	// Decrypt bot token + provision management channel before persisting.
+	botToken, err := h.crypto.Decrypt(key.KeyEncrypted)
+	if err != nil {
+		jsonError(w, "decrypt bot token: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var realChannelID, channelName string
+	switch svcRow.Name {
+	case "discord":
+		var cfg struct {
+			GuildID    string `json:"guild_id"`
+			CategoryID string `json:"category_id"`
+		}
+		_ = json.Unmarshal([]byte(configStr), &cfg)
+		ch, err := h.bot.CreateChannel(r.Context(), botToken, svc.CreateChannelOpts{
+			GuildID:  cfg.GuildID,
+			ParentID: cfg.CategoryID,
+			Name:     cl.Name + "-control",
+			Topic:    "Duckway control channel for " + cl.Name + " — type !help to see commands.",
+		})
+		if err != nil {
+			jsonError(w, "discord create channel: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		realChannelID = ch.ID
+		channelName = ch.Name
+	default:
+		jsonError(w, "service "+svcRow.Name+" not supported for CC yet", http.StatusBadRequest)
+		return
+	}
+
+	// Issue phantom token — env_name suffixed with cc_id so a client can
+	// theoretically hold multiple CCs across different services.
+	ccID, _ := svc.GenerateToken(8)
+	envName := "DUCKWAY_CC_" + ccID
+	if len(envName) > 60 {
+		envName = envName[:60]
+	}
+	keyPrefix := svcRow.KeyPrefix
+	if keyPrefix == "" {
+		keyPrefix = "dw_cc_"
+	}
+	keyLength := svcRow.KeyLength
+	if keyLength <= 0 {
+		keyLength = 64
+	}
+	placeholderStr, err := svc.GeneratePlaceholder(keyPrefix, keyLength)
+	if err != nil {
+		_ = h.bot.ArchiveChannel(r.Context(), botToken, realChannelID, channelName)
+		jsonError(w, "generate placeholder: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	phID, _ := svc.GenerateToken(16)
+	apiKeyIDPtr := req.APIKeyID
+	ph := &models.PlaceholderKey{
+		ID:                 phID,
+		EnvName:            envName,
+		Placeholder:        placeholderStr,
+		ServiceID:          req.ServiceID,
+		APIKeyID:           &apiKeyIDPtr,
+		ClientID:           req.ClientID,
+		RequiresApproval:   false,
+		ApprovalTTLMinutes: 1440,
+		IsActive:           true,
+	}
+	if err := h.placeholders.Create(ph); err != nil {
+		_ = h.bot.ArchiveChannel(r.Context(), botToken, realChannelID, channelName)
+		jsonError(w, "issue placeholder: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	c := &models.ControlChannel{
-		ID:        id,
-		Name:      req.Name,
-		ServiceID: req.ServiceID,
-		APIKeyID:  req.APIKeyID,
-		Config:    configStr,
-		IsActive:  true,
+		ID:            ccID,
+		Name:          req.Name,
+		ServiceID:     req.ServiceID,
+		APIKeyID:      req.APIKeyID,
+		ClientID:      req.ClientID,
+		AgentType:     req.AgentType,
+		PlaceholderID: phID,
+		Config:        configStr,
+		IsActive:      true,
 	}
 	if err := h.cc.Create(c); err != nil {
-		jsonError(w, "create failed: "+err.Error(), http.StatusInternalServerError)
+		_ = h.placeholders.Delete(phID)
+		_ = h.bot.ArchiveChannel(r.Context(), botToken, realChannelID, channelName)
+		jsonError(w, "persist cc: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Re-read with the JOIN so service_name + api_key_name are populated.
-	full, err := h.cc.GetByID(id)
-	if err != nil {
-		jsonResponse(w, c) // fall back to the unjoined row
+
+	// Persist the management channel row.
+	mgmtHandle, _ := svc.GenerateToken(12)
+	mgmtHandle = "dwch_" + mgmtHandle
+	clientIDPtr := req.ClientID
+	if err := h.cc.CreateChannel(&models.CCChannel{
+		Handle:    mgmtHandle,
+		CCID:      ccID,
+		ClientID:  &clientIDPtr,
+		ChannelID: realChannelID,
+		Name:      channelName,
+		Topic:     "Duckway control channel — type !help",
+		Kind:      "management",
+	}); err != nil {
+		// Roll back everything we created.
+		_ = h.cc.Delete(ccID)
+		_ = h.placeholders.Delete(phID)
+		_ = h.bot.ArchiveChannel(r.Context(), botToken, realChannelID, channelName)
+		jsonError(w, "persist channel: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	full, _ := h.cc.GetByID(ccID)
+	if full == nil {
+		full = c
+	}
+	full.Channels, _ = h.cc.ListChannels(ccID)
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, full)
 }
@@ -173,10 +292,8 @@ func (h *ControlChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "updated"})
 }
 
-// DELETE /api/cc/{id} — archive every Discord channel belonging to this CC,
-// then drop the row (FK cascade clears assignments + channel cache).
-// Discord errors are logged but don't block the delete — the archive is a
-// best-effort cleanup; if the bot lost access, the row should still go.
+// DELETE /api/cc/{id} — archive every channel under the CC, drop the
+// placeholder, then drop the row (cascades cc_channels rows).
 func (h *ControlChannelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	cc, err := h.cc.GetByID(id)
@@ -185,281 +302,40 @@ func (h *ControlChannelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Best-effort archive of every channel belonging to this CC.
 	channels, _ := h.cc.ListChannels(id)
 	if len(channels) > 0 && h.bot != nil {
-		botToken, decErr := h.decryptBotToken(cc.APIKeyID)
+		botToken, decErr := h.crypto.Decrypt("")
 		if decErr == nil {
+			botToken = ""
+		}
+		if k, kerr := h.apiKeys.GetByID(cc.APIKeyID); kerr == nil {
+			if t, terr := h.crypto.Decrypt(k.KeyEncrypted); terr == nil {
+				botToken = t
+			}
+		}
+		if botToken != "" {
 			ctx := r.Context()
 			for _, ch := range channels {
 				if ch.ChannelID == "" || ch.Archived {
 					continue
 				}
-				if err := h.bot.ArchiveChannel(ctx, botToken, ch.ChannelID, ch.Name); err != nil {
-					// Log but don't fail the delete.
-					continue
-				}
+				_ = h.bot.ArchiveChannel(ctx, botToken, ch.ChannelID, ch.Name)
 			}
 		}
 	}
-
-	// Collect placeholder ids so we can drop them after the cascade.
-	asn, _ := h.cc.AssignmentsForCC(id)
 
 	if err := h.cc.Delete(id); err != nil {
 		jsonError(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	for _, a := range asn {
-		_ = h.placeholders.Delete(a.PlaceholderID)
+	if cc.PlaceholderID != "" {
+		_ = h.placeholders.Delete(cc.PlaceholderID)
 	}
 	jsonResponse(w, map[string]string{"status": "deleted"})
 }
 
-// GET /api/clients/{id}/cc — list CC assignments for a client.
-func (h *ControlChannelHandler) ListAssignmentsForClient(w http.ResponseWriter, r *http.Request) {
-	clientID := r.PathValue("id")
-	if _, err := h.clients.GetByID(clientID); err != nil {
-		jsonError(w, "client not found", http.StatusNotFound)
-		return
-	}
-	out, err := h.cc.AssignmentsForClient(clientID)
-	if err != nil {
-		jsonError(w, "list failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if out == nil {
-		out = []models.ClientCCDetail{}
-	}
-	jsonResponse(w, out)
-}
-
-// POST /api/clients/{id}/cc — assign CC to client. Calls Discord to provision
-// a home channel under the CC's category, issues a phantom token bound to
-// the bot key + this client, and persists the assignment row. Any failure
-// rolls back the partial state so retries are safe.
-func (h *ControlChannelHandler) AssignToClient(w http.ResponseWriter, r *http.Request) {
-	clientID := r.PathValue("id")
-	cl, err := h.clients.GetByID(clientID)
-	if err != nil {
-		jsonError(w, "client not found", http.StatusNotFound)
-		return
-	}
-	var req struct {
-		CCID      string `json:"cc_id"`
-		AgentType string `json:"agent_type"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "invalid request", http.StatusBadRequest)
-		return
-	}
-	if req.CCID == "" {
-		jsonError(w, "cc_id required", http.StatusBadRequest)
-		return
-	}
-	if req.AgentType == "" {
-		req.AgentType = "claude_code"
-	}
-	switch req.AgentType {
-	case "claude_code", "openclaw", "harmes", "cursor", "copilot_cli":
-	default:
-		jsonError(w, "unknown agent_type: "+req.AgentType, http.StatusBadRequest)
-		return
-	}
-
-	cc, err := h.cc.GetByID(req.CCID)
-	if err != nil {
-		jsonError(w, "cc not found", http.StatusBadRequest)
-		return
-	}
-	if !cc.IsActive {
-		jsonError(w, "cc is inactive", http.StatusBadRequest)
-		return
-	}
-	if existing, _ := h.cc.GetAssignment(clientID, req.CCID); existing != nil {
-		jsonError(w, "client already assigned to this CC", http.StatusConflict)
-		return
-	}
-
-	svcRow, err := h.services.GetByID(cc.ServiceID)
-	if err != nil {
-		jsonError(w, "service lookup failed", http.StatusInternalServerError)
-		return
-	}
-
-	// 1. Decrypt bot token.
-	botToken, err := h.decryptBotToken(cc.APIKeyID)
-	if err != nil {
-		jsonError(w, "decrypt bot token: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// 2. Provision the channel via Discord. Currently only `discord` is
-	// supported — other services would plug in here.
-	var realChannelID, channelName string
-	switch svcRow.Name {
-	case "discord":
-		var cfg struct {
-			GuildID    string `json:"guild_id"`
-			CategoryID string `json:"category_id"`
-		}
-		if err := json.Unmarshal([]byte(cc.Config), &cfg); err != nil || cfg.GuildID == "" || cfg.CategoryID == "" {
-			jsonError(w, "cc config missing guild_id/category_id", http.StatusInternalServerError)
-			return
-		}
-		ch, err := h.bot.CreateChannel(r.Context(), botToken, svc.CreateChannelOpts{
-			GuildID:  cfg.GuildID,
-			ParentID: cfg.CategoryID,
-			Name:     cl.Name,
-			Topic:    "Duckway agent channel for " + cl.Name,
-		})
-		if err != nil {
-			jsonError(w, "discord create channel: "+err.Error(), http.StatusBadGateway)
-			return
-		}
-		realChannelID = ch.ID
-		channelName = ch.Name
-	default:
-		jsonError(w, "service "+svcRow.Name+" not supported for CC assignment yet", http.StatusBadRequest)
-		return
-	}
-
-	// 3. Persist channel row.
-	handle, _ := svc.GenerateToken(12)
-	handle = "dwch_" + handle
-	homeChan := &models.CCChannel{
-		Handle:    handle,
-		CCID:      cc.ID,
-		ClientID:  &clientID,
-		ChannelID: realChannelID,
-		Name:      channelName,
-		IsHome:    true,
-	}
-	if err := h.cc.CreateChannel(homeChan); err != nil {
-		// Roll back the Discord channel — we can't honour the assign.
-		_ = h.bot.ArchiveChannel(r.Context(), botToken, realChannelID, channelName)
-		jsonError(w, "persist channel: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// 4. Issue phantom token bound to bot api_key + this client. env_name
-	// must be unique per (client, service) — placeholder_keys has a UNIQUE
-	// constraint on that triple — so a client can be assigned to multiple
-	// CCs on the same bot (and therefore same service). Suffix with a
-	// short slice of cc_id to keep them distinct.
-	envName := "DUCKWAY_CC_" + cc.ID
-	if len(envName) > 60 {
-		envName = envName[:60]
-	}
-	keyPrefix := svcRow.KeyPrefix
-	if keyPrefix == "" {
-		keyPrefix = "dw_cc_"
-	}
-	keyLength := svcRow.KeyLength
-	if keyLength <= 0 {
-		keyLength = 64
-	}
-	placeholderStr, err := svc.GeneratePlaceholder(keyPrefix, keyLength)
-	if err != nil {
-		_ = h.cc.MarkChannelArchived(handle)
-		_ = h.bot.ArchiveChannel(r.Context(), botToken, realChannelID, channelName)
-		jsonError(w, "generate placeholder: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	phID, _ := svc.GenerateToken(16)
-	apiKeyIDPtr := cc.APIKeyID
-	ph := &models.PlaceholderKey{
-		ID:                 phID,
-		EnvName:            envName,
-		Placeholder:        placeholderStr,
-		ServiceID:          cc.ServiceID,
-		APIKeyID:           &apiKeyIDPtr,
-		ClientID:           clientID,
-		RequiresApproval:   false,
-		ApprovalTTLMinutes: 1440,
-		IsActive:           true,
-	}
-	if err := h.placeholders.Create(ph); err != nil {
-		_ = h.cc.MarkChannelArchived(handle)
-		_ = h.bot.ArchiveChannel(r.Context(), botToken, realChannelID, channelName)
-		jsonError(w, "issue placeholder: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// 5. Persist assignment row.
-	a := &models.ClientCC{
-		ClientID:      clientID,
-		CCID:          cc.ID,
-		AgentType:     req.AgentType,
-		HomeHandle:    handle,
-		PlaceholderID: phID,
-	}
-	if err := h.cc.Assign(a); err != nil {
-		_ = h.placeholders.Delete(phID)
-		_ = h.cc.MarkChannelArchived(handle)
-		_ = h.bot.ArchiveChannel(r.Context(), botToken, realChannelID, channelName)
-		jsonError(w, "assign failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusCreated)
-	jsonResponse(w, map[string]interface{}{
-		"status":            "assigned",
-		"cc_id":             cc.ID,
-		"client_id":         clientID,
-		"agent_type":        req.AgentType,
-		"home_handle":       handle,
-		"home_channel_id":   realChannelID,
-		"home_channel_name": channelName,
-		"placeholder_id":    phID,
-	})
-}
-
-// DELETE /api/clients/{id}/cc/{cc_id} — archive the home channel on Discord
-// (rename + drop parent_id), drop the placeholder, then drop the assignment.
-// Discord errors don't block local cleanup — once we've decided to unassign,
-// we want the row gone even if the bot can't reach Discord.
-func (h *ControlChannelHandler) UnassignFromClient(w http.ResponseWriter, r *http.Request) {
-	clientID := r.PathValue("id")
-	ccID := r.PathValue("cc_id")
-	a, err := h.cc.GetAssignment(clientID, ccID)
-	if err != nil {
-		jsonError(w, "assignment not found", http.StatusNotFound)
-		return
-	}
-	cc, err := h.cc.GetByID(ccID)
-	if err == nil && h.bot != nil {
-		ch, _ := h.cc.GetChannelByHandle(a.HomeHandle)
-		if ch != nil && ch.ChannelID != "" && !ch.Archived {
-			botToken, decErr := h.decryptBotToken(cc.APIKeyID)
-			if decErr == nil {
-				_ = h.bot.ArchiveChannel(r.Context(), botToken, ch.ChannelID, ch.Name)
-			}
-		}
-	}
-	if err := h.cc.Unassign(clientID, ccID); err != nil {
-		jsonError(w, "unassign failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = h.cc.MarkChannelArchived(a.HomeHandle)
-	_ = h.placeholders.Delete(a.PlaceholderID)
-	jsonResponse(w, map[string]string{"status": "unassigned"})
-}
-
-// decryptBotToken fetches an api_key by id and returns its decrypted value.
-func (h *ControlChannelHandler) decryptBotToken(apiKeyID string) (string, error) {
-	key, err := h.apiKeys.GetByID(apiKeyID)
-	if err != nil {
-		return "", err
-	}
-	return h.crypto.Decrypt(key.KeyEncrypted)
-}
-
-// POST /api/cc/{id}/test — round-trip Discord with the CC's credentials:
-// create a temporary text channel under the configured category, then
-// delete it. Reports each step so the admin can pinpoint exactly what's
-// wrong (bad token / wrong guild / missing MANAGE_CHANNELS / wrong
-// category id) without leaving the browser.
+// POST /api/cc/{id}/test — round-trip Discord with the CC's credentials.
+// Unchanged from v1 — useful for verifying bot/category access after creating.
 func (h *ControlChannelHandler) Test(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	cc, err := h.cc.GetByID(id)
@@ -477,8 +353,6 @@ func (h *ControlChannelHandler) Test(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build the result up step-by-step so the UI can show "decrypt OK,
-	// create OK, delete failed".
 	type step struct {
 		Name string `json:"name"`
 		OK   bool   `json:"ok"`
@@ -486,7 +360,13 @@ func (h *ControlChannelHandler) Test(w http.ResponseWriter, r *http.Request) {
 	}
 	steps := []step{}
 
-	botToken, err := h.decryptBotToken(cc.APIKeyID)
+	key, err := h.apiKeys.GetByID(cc.APIKeyID)
+	if err != nil {
+		steps = append(steps, step{Name: "load bot key", OK: false, Note: err.Error()})
+		jsonResponse(w, map[string]interface{}{"ok": false, "steps": steps})
+		return
+	}
+	botToken, err := h.crypto.Decrypt(key.KeyEncrypted)
 	if err != nil {
 		steps = append(steps, step{Name: "decrypt bot token", OK: false, Note: err.Error()})
 		jsonResponse(w, map[string]interface{}{"ok": false, "steps": steps})
@@ -521,9 +401,6 @@ func (h *ControlChannelHandler) Test(w http.ResponseWriter, r *http.Request) {
 	steps = append(steps, step{Name: "create test channel", OK: true,
 		Note: fmt.Sprintf("name=%s id=%s", created.Name, created.ID)})
 
-	// Delete it. If this fails, surface the error AND warn the admin to
-	// clean up by hand — leaving an orphan channel under the category is
-	// not ideal but the bot-test signal is still useful.
 	if err := h.bot.DeleteChannel(r.Context(), botToken, created.ID); err != nil {
 		steps = append(steps, step{Name: "delete test channel", OK: false,
 			Note: err.Error() + " — please remove " + testName + " manually"})

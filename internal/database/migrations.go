@@ -224,17 +224,9 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_cc_channels_cc ON cc_channels(cc_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_cc_channels_client ON cc_channels(client_id)`,
 
-	// client_cc — assignment row. agent_type drives what duckway sync writes.
-	`CREATE TABLE IF NOT EXISTS client_cc (
-		client_id       TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
-		cc_id           TEXT NOT NULL REFERENCES control_channels(id) ON DELETE CASCADE,
-		agent_type      TEXT NOT NULL DEFAULT 'claude_code',
-		home_handle     TEXT NOT NULL REFERENCES cc_channels(handle) ON DELETE CASCADE,
-		placeholder_id  TEXT NOT NULL REFERENCES placeholder_keys(id) ON DELETE CASCADE,
-		created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-		PRIMARY KEY (client_id, cc_id)
-	)`,
-	`CREATE INDEX IF NOT EXISTS idx_client_cc_cc ON client_cc(cc_id)`,
+	// CC v2: client_id + agent_type + placeholder_id moved onto control_channels
+	// (1:1 client↔CC). The previous client_cc table is dropped at runtime
+	// migration time — see runMigrations below.
 
 	// discord_inbox — gateway events ingested server-side, polled by clients.
 	// payload is the (filtered) JSON from Discord's gateway dispatch.
@@ -275,10 +267,31 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE api_keys ADD COLUMN subscription_info TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE api_keys ADD COLUMN usage_snapshot TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE placeholder_keys ADD COLUMN key_path TEXT NOT NULL DEFAULT ''",
+		// CC v2 — collapse the multi-client-per-CC concept into a 1:1
+		// client↔CC binding. client_id moves onto control_channels;
+		// agent_type + placeholder_id likewise. cc_channels gains the
+		// session_id (claude resume id), cwd (per-channel project dir)
+		// and kind ("management" | "task") that the new daemon needs.
+		"ALTER TABLE control_channels ADD COLUMN client_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE control_channels ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'claude_code'",
+		"ALTER TABLE control_channels ADD COLUMN placeholder_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE cc_channels ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE cc_channels ADD COLUMN cwd TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE cc_channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'",
 	}
 	for _, alt := range safeAlters {
 		db.Exec(alt) // ignore "duplicate column" errors
 	}
+
+	// CC v2: drop the old assignment table (subsumed by control_channels.client_id)
+	// and clear out any stale rows that pre-date the redesign — the user agreed
+	// to scrap old CC data when planning this change.
+	db.Exec("DROP TABLE IF EXISTS client_cc")
+	db.Exec("DELETE FROM cc_channels WHERE client_id IS NULL OR client_id = ''")
+	db.Exec("DELETE FROM control_channels WHERE client_id = ''")
+	// Enforce 1:1 client↔CC at the index level. Partial index so empty
+	// values during the alter window above don't trip the constraint.
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_client ON control_channels(client_id) WHERE client_id != ''`)
 
 	// Widen the existing `discord` service's host_pattern so the duckway-client
 	// MITM proxy can also intercept the WSS gateway + CDN hosts that the

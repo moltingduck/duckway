@@ -85,13 +85,19 @@ func TestMCP_ToolsList(t *testing.T) {
 	}
 }
 
-func TestMCP_ListAssignedCCs(t *testing.T) {
+func TestMCP_GetMyCC(t *testing.T) {
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/cc" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Write([]byte(`{"assigned":true,"cc_id":"cc1","cc_name":"alpha","agent_type":"claude_code","management_handle":"dwch_a"}`))
+	}))
+	defer mock.Close()
+
 	srv := newTestServer(t, CCStateFile{
-		CCs: []CCStateAssignment{
-			{CCID: "cc1", CCName: "alpha", AgentType: "claude_code", HomeHandle: "dwch_a"},
-		},
-	}, "")
-	resp := runOne(t, srv, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"discord_list_assigned_ccs","arguments":{}}}`)
+		CCs: []CCStateAssignment{{CCID: "cc1", CCName: "alpha"}},
+	}, mock.URL)
+	resp := runOne(t, srv, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"discord_get_my_cc","arguments":{}}}`)
 	r, _ := resp.Result.(map[string]interface{})
 	if isErr, _ := r["isError"].(bool); isErr {
 		t.Fatalf("got error result: %+v", r)
@@ -106,30 +112,12 @@ func TestMCP_ListAssignedCCs(t *testing.T) {
 
 func TestMCP_ToolCall_NoCCAssigned(t *testing.T) {
 	srv := newTestServer(t, CCStateFile{CCs: []CCStateAssignment{}}, "")
+	// discord_post requires a CC. With empty state, it should bail before
+	// hitting the server.
 	resp := runOne(t, srv, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"discord_post","arguments":{"channel_handle":"x","content":"hi"}}}`)
 	r, _ := resp.Result.(map[string]interface{})
 	if isErr, _ := r["isError"].(bool); !isErr {
 		t.Errorf("expected isError=true when no CCs assigned")
-	}
-}
-
-func TestMCP_ToolCall_AmbiguousCC(t *testing.T) {
-	srv := newTestServer(t, CCStateFile{CCs: []CCStateAssignment{
-		{CCID: "cc1"}, {CCID: "cc2"},
-	}}, "")
-	resp := runOne(t, srv, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"discord_post","arguments":{"channel_handle":"x","content":"hi"}}}`)
-	r, _ := resp.Result.(map[string]interface{})
-	if isErr, _ := r["isError"].(bool); !isErr {
-		t.Error("expected error when cc_id omitted with multiple CCs")
-	}
-}
-
-func TestMCP_ToolCall_UnassignedCC(t *testing.T) {
-	srv := newTestServer(t, CCStateFile{CCs: []CCStateAssignment{{CCID: "cc1"}}}, "")
-	resp := runOne(t, srv, `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"discord_post","arguments":{"cc_id":"foreign","channel_handle":"x","content":"hi"}}}`)
-	r, _ := resp.Result.(map[string]interface{})
-	if isErr, _ := r["isError"].(bool); !isErr {
-		t.Error("expected error for cc_id not in state")
 	}
 }
 
@@ -156,7 +144,7 @@ func TestMCP_ToolCall_PassThrough(t *testing.T) {
 		content, _ := r["content"].([]interface{})
 		t.Fatalf("unexpected error: %+v", content)
 	}
-	if len(hits) != 1 || hits[0] != "POST /client/cc/cc1/channels/H/messages" {
+	if len(hits) != 1 || hits[0] != "POST /client/cc/channels/H/messages" {
 		t.Errorf("expected proxied POST, got %v", hits)
 	}
 	content, _ := r["content"].([]interface{})
@@ -216,11 +204,11 @@ func TestMCP_NotificationNoResponse(t *testing.T) {
 	}
 }
 
-func TestMCP_DefaultsToOnlyCC(t *testing.T) {
+func TestMCP_ImplicitCC(t *testing.T) {
+	// CC v2: 1:1 client↔CC, so cc_id is implicit. Tools always hit
+	// /client/cc/... with no per-CC segment.
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Confirm path uses the only assigned cc id without the agent
-		// having to pass cc_id explicitly.
-		if !strings.HasPrefix(r.URL.Path, "/client/cc/only-cc/channels") {
+		if r.URL.Path != "/client/cc/channels" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.Write([]byte(`[]`))

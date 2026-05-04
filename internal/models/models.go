@@ -122,26 +122,39 @@ type RequestLog struct {
 	CreatedAt     string  `json:"created_at"`
 }
 
-// ControlChannel groups a bot token with a service-specific config (e.g.
-// Discord guild_id + category_id). Clients assigned to a CC each get a
-// home channel auto-created under that category.
+// ControlChannel binds one client to one Discord category via a bot.
+// The 1:1 invariant is enforced by a UNIQUE index on client_id.
 type ControlChannel struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	ServiceID  string `json:"service_id"`
-	APIKeyID   string `json:"api_key_id"`
-	Config     string `json:"config"` // JSON; shape is per-service
-	IsActive   bool   `json:"is_active"`
-	CreatedAt  string `json:"created_at"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ServiceID     string `json:"service_id"`
+	APIKeyID      string `json:"api_key_id"`
+	ClientID      string `json:"client_id"`
+	AgentType     string `json:"agent_type"`     // claude_code, openclaw, ...
+	PlaceholderID string `json:"placeholder_id"` // phantom token for the bot
+	Config        string `json:"config"`         // JSON; shape is per-service
+	IsActive      bool   `json:"is_active"`
+	CreatedAt     string `json:"created_at"`
 	// Joined
 	ServiceName string `json:"service_name,omitempty"`
 	APIKeyName  string `json:"api_key_name,omitempty"`
+	ClientName  string `json:"client_name,omitempty"`
 	// Optional eager-loaded
-	Assignments []ClientCCDetail `json:"assignments,omitempty"`
+	Channels []CCChannel `json:"channels,omitempty"`
 }
 
 // CCChannel mirrors a Discord channel under a CC's category. handle is the
-// opaque token agents see; channel_id is the real Discord ID, kept server-side.
+// opaque token agents see; channel_id is the real Discord ID, kept
+// server-side.
+//
+// kind:
+//
+//	"management" — the per-client control channel (one per CC). Daemon
+//	               parses commands here, doesn't start sessions.
+//	"task"       — every other channel. Each maps to one claude session.
+//
+// session_id + cwd are populated as the daemon runs the first prompt; cwd
+// can be set up-front via `!new --cwd` or channel topic `cwd:/path`.
 type CCChannel struct {
 	Handle     string  `json:"handle"`
 	CCID       string  `json:"cc_id"`
@@ -149,34 +162,12 @@ type CCChannel struct {
 	ChannelID  string  `json:"channel_id"`
 	Name       string  `json:"name"`
 	Topic      string  `json:"topic"`
-	IsHome     bool    `json:"is_home"`
+	Kind       string  `json:"kind"`
+	SessionID  string  `json:"session_id"`
+	Cwd        string  `json:"cwd"`
 	Archived   bool    `json:"archived"`
 	CreatedAt  string  `json:"created_at"`
 	LastSeenAt *string `json:"last_seen_at"`
-}
-
-// ClientCC is the assignment row.
-type ClientCC struct {
-	ClientID      string `json:"client_id"`
-	CCID          string `json:"cc_id"`
-	AgentType     string `json:"agent_type"`
-	HomeHandle    string `json:"home_handle"`
-	PlaceholderID string `json:"placeholder_id"`
-	CreatedAt     string `json:"created_at"`
-}
-
-// ClientCCDetail is ClientCC joined with display fields.
-type ClientCCDetail struct {
-	ClientID        string `json:"client_id"`
-	CCID            string `json:"cc_id"`
-	AgentType       string `json:"agent_type"`
-	HomeHandle      string `json:"home_handle"`
-	PlaceholderID   string `json:"placeholder_id"`
-	CreatedAt       string `json:"created_at"`
-	CCName          string `json:"cc_name"`
-	HomeChannelName string `json:"home_channel_name"`
-	HomeChannelID   string `json:"home_channel_id"`
-	ClientName      string `json:"client_name,omitempty"`
 }
 
 // InboxEvent is one buffered Discord gateway dispatch ready to be polled.
