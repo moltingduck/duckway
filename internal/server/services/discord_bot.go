@@ -166,6 +166,20 @@ func (b *DiscordBot) ArchiveChannel(ctx context.Context, botToken, channelID, cu
 	return err
 }
 
+// DeleteChannel removes a channel entirely (DELETE /channels/{id}). Used by
+// the CC test flow — for normal teardown we prefer ArchiveChannel which
+// preserves message history.
+func (b *DiscordBot) DeleteChannel(ctx context.Context, botToken, channelID string) error {
+	if channelID == "" {
+		return nil
+	}
+	_, err := b.do(ctx, botToken, "DELETE", "/channels/"+channelID, nil)
+	if derr, ok := err.(*DiscordError); ok && derr.IsNotFound() {
+		return nil
+	}
+	return err
+}
+
 // PostMessage sends content to a channel and returns the new message id.
 func (b *DiscordBot) PostMessage(ctx context.Context, botToken, channelID, content string) (string, error) {
 	raw, err := b.do(ctx, botToken, "POST", "/channels/"+channelID+"/messages", map[string]interface{}{

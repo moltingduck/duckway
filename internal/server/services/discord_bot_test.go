@@ -136,6 +136,39 @@ func TestArchiveChannel_EmptyID(t *testing.T) {
 	}
 }
 
+func TestDeleteChannel(t *testing.T) {
+	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/channels/CH9" || r.Method != "DELETE" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		w.Write([]byte(`{"id":"CH9"}`))
+	})
+	defer srv.Close()
+	b := &DiscordBot{BaseURL: srv.URL, HTTP: srv.Client()}
+	if err := b.DeleteChannel(context.Background(), "tok", "CH9"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteChannel_404IsIdempotent(t *testing.T) {
+	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		w.Write([]byte(`{"code":10003,"message":"Unknown Channel"}`))
+	})
+	defer srv.Close()
+	b := &DiscordBot{BaseURL: srv.URL, HTTP: srv.Client()}
+	if err := b.DeleteChannel(context.Background(), "tok", "CH"); err != nil {
+		t.Fatalf("404 should swallow: %v", err)
+	}
+}
+
+func TestDeleteChannel_EmptyID(t *testing.T) {
+	b := NewDiscordBot()
+	if err := b.DeleteChannel(context.Background(), "tok", ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPostMessage(t *testing.T) {
 	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/channels/CH/messages" || r.Method != "POST" {

@@ -116,6 +116,8 @@ class H(http.server.BaseHTTPRequestHandler):
         ln = int(self.headers.get('Content-Length','0'))
         self.rfile.read(ln) if ln else None
         return self._send(200, {'id': self.path.split('/')[-1]})
+    def do_DELETE(self):
+        return self._send(200, {'id': self.path.split('/')[-1]})
     def do_GET(self):
         if self.path.endswith('/channels'):
             return self._send(200, [])
@@ -897,6 +899,19 @@ assert_eq "CC create response includes api_key_name" "e2e-bot" "$CC_KEY_NAME"
 CC_DETAIL=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/cc/$CC_ID")
 CC_ASN=$(echo "$CC_DETAIL" | python3 -c "import sys,json;d=json.load(sys.stdin);a=d.get('assignments',[]);print(len(a) if isinstance(a,list) else -1)")
 assert_eq "CC detail assignments empty" "0" "$CC_ASN"
+
+# 17g-2: Test endpoint — create + delete a temp channel via the configured bot
+TEST_OUT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc/$CC_ID/test")
+TEST_OK=$(echo "$TEST_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('ok'))")
+TEST_STEPS=$(echo "$TEST_OUT" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('steps',[])))")
+assert_eq "CC test reports ok=true" "True" "$TEST_OK"
+assert_eq "CC test ran 4 steps (decrypt/parse/create/delete)" "4" "$TEST_STEPS"
+assert_contains "CC test step 'create test channel' present" "create test channel" "$TEST_OUT"
+assert_contains "CC test step 'delete test channel' present" "delete test channel" "$TEST_OUT"
+
+# 17g-3: Test on a missing CC → 404
+MISSING_TEST=$(curl -s -o /dev/null -w "%{http_code}" -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc/does-not-exist/test")
+assert_eq "Test on missing CC → 404" "404" "$MISSING_TEST"
 
 # 17h: Create test client + assign CC (real Discord call → mock returns numeric id)
 CC_CLIENT_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" -H "Content-Type: application/json" -d '{"name":"cc-e2e-client"}')

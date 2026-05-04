@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -451,4 +453,84 @@ func (h *ControlChannelHandler) decryptBotToken(apiKeyID string) (string, error)
 		return "", err
 	}
 	return h.crypto.Decrypt(key.KeyEncrypted)
+}
+
+// POST /api/cc/{id}/test — round-trip Discord with the CC's credentials:
+// create a temporary text channel under the configured category, then
+// delete it. Reports each step so the admin can pinpoint exactly what's
+// wrong (bad token / wrong guild / missing MANAGE_CHANNELS / wrong
+// category id) without leaving the browser.
+func (h *ControlChannelHandler) Test(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	cc, err := h.cc.GetByID(id)
+	if err != nil {
+		jsonError(w, "not found", http.StatusNotFound)
+		return
+	}
+	svcRow, err := h.services.GetByID(cc.ServiceID)
+	if err != nil {
+		jsonError(w, "service lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if svcRow.Name != "discord" {
+		jsonError(w, "test only supports discord CCs", http.StatusBadRequest)
+		return
+	}
+
+	// Build the result up step-by-step so the UI can show "decrypt OK,
+	// create OK, delete failed".
+	type step struct {
+		Name string `json:"name"`
+		OK   bool   `json:"ok"`
+		Note string `json:"note,omitempty"`
+	}
+	steps := []step{}
+
+	botToken, err := h.decryptBotToken(cc.APIKeyID)
+	if err != nil {
+		steps = append(steps, step{Name: "decrypt bot token", OK: false, Note: err.Error()})
+		jsonResponse(w, map[string]interface{}{"ok": false, "steps": steps})
+		return
+	}
+	steps = append(steps, step{Name: "decrypt bot token", OK: true})
+
+	var cfg struct {
+		GuildID    string `json:"guild_id"`
+		CategoryID string `json:"category_id"`
+	}
+	if err := json.Unmarshal([]byte(cc.Config), &cfg); err != nil || cfg.GuildID == "" || cfg.CategoryID == "" {
+		steps = append(steps, step{Name: "parse cc config", OK: false, Note: "guild_id/category_id missing"})
+		jsonResponse(w, map[string]interface{}{"ok": false, "steps": steps})
+		return
+	}
+	steps = append(steps, step{Name: "parse cc config", OK: true,
+		Note: fmt.Sprintf("guild=%s category=%s", cfg.GuildID, cfg.CategoryID)})
+
+	testName := fmt.Sprintf("duckway-test-%d", time.Now().Unix())
+	created, err := h.bot.CreateChannel(r.Context(), botToken, svc.CreateChannelOpts{
+		GuildID:  cfg.GuildID,
+		ParentID: cfg.CategoryID,
+		Name:     testName,
+		Topic:    "Temporary channel created by Duckway to verify CC connectivity.",
+	})
+	if err != nil {
+		steps = append(steps, step{Name: "create test channel", OK: false, Note: err.Error()})
+		jsonResponse(w, map[string]interface{}{"ok": false, "steps": steps})
+		return
+	}
+	steps = append(steps, step{Name: "create test channel", OK: true,
+		Note: fmt.Sprintf("name=%s id=%s", created.Name, created.ID)})
+
+	// Delete it. If this fails, surface the error AND warn the admin to
+	// clean up by hand — leaving an orphan channel under the category is
+	// not ideal but the bot-test signal is still useful.
+	if err := h.bot.DeleteChannel(r.Context(), botToken, created.ID); err != nil {
+		steps = append(steps, step{Name: "delete test channel", OK: false,
+			Note: err.Error() + " — please remove " + testName + " manually"})
+		jsonResponse(w, map[string]interface{}{"ok": false, "steps": steps})
+		return
+	}
+	steps = append(steps, step{Name: "delete test channel", OK: true})
+
+	jsonResponse(w, map[string]interface{}{"ok": true, "steps": steps})
 }

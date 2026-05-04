@@ -218,6 +218,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("GET /api/cc/{id}", ccH.Get)
 	adminAPIMux.HandleFunc("PUT /api/cc/{id}", ccH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/cc/{id}", ccH.Delete)
+	adminAPIMux.HandleFunc("POST /api/cc/{id}/test", ccH.Test)
 	adminAPIMux.HandleFunc("GET /api/clients/{id}/cc", ccH.ListAssignmentsForClient)
 	adminAPIMux.HandleFunc("POST /api/clients/{id}/cc", ccH.AssignToClient)
 	adminAPIMux.HandleFunc("DELETE /api/clients/{id}/cc/{cc_id}", ccH.UnassignFromClient)

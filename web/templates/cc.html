@@ -65,8 +65,10 @@
         <tbody id="d-assignments"><tr><td colspan="4" class="text-muted">None</td></tr></tbody>
       </table>
     </div>
+    <div id="d-test-result" class="mt-1"></div>
     <div class="modal-actions mt-1">
       <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
+      <button type="button" class="btn" id="d-test-btn" onclick="testCC()">Test (create + delete channel)</button>
       <button type="button" class="btn btn-danger" id="d-delete-btn">Delete CC</button>
     </div>
   </div>
@@ -237,6 +239,7 @@ function openDetail(id) {
       });
     }
 
+    document.getElementById('d-test-result').innerHTML = '';
     document.getElementById('d-delete-btn').onclick = function() {
       if (!confirm('Delete CC "'+c.name+'"? Assigned clients will lose access; channels are archived.')) return;
       fetch('/api/cc/'+c.id, {method:'DELETE', credentials:'same-origin'})
@@ -249,6 +252,45 @@ function openDetail(id) {
     };
     document.getElementById('detail-modal').style.display = 'flex';
   });
+}
+
+function testCC() {
+  if (!currentCC) return;
+  var btn = document.getElementById('d-test-btn');
+  var panel = document.getElementById('d-test-result');
+  var orig = btn.textContent;
+  btn.textContent = 'Testing…';
+  btn.disabled = true;
+  panel.innerHTML = '<div class="text-muted text-sm">Calling Discord — this opens then immediately closes a channel under the configured category.</div>';
+
+  fetch('/api/cc/' + currentCC.id + '/test', {method:'POST', credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      btn.textContent = orig;
+      btn.disabled = false;
+      if (d.error) {
+        panel.innerHTML = '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid var(--red,#ef4444);padding:0.75rem">' +
+          '<strong>Test failed</strong><br><span class="text-sm">' + escapeHTML(d.error) + '</span></div>';
+        return;
+      }
+      var rows = (d.steps || []).map(function(s) {
+        var icon = s.ok ? '<span style="color:#22c55e">✓</span>' : '<span style="color:#ef4444">✗</span>';
+        return '<tr><td style="width:1.5rem">' + icon + '</td>' +
+               '<td>' + escapeHTML(s.name) + '</td>' +
+               '<td class="text-muted text-sm mono" style="word-break:break-all">' + escapeHTML(s.note || '') + '</td></tr>';
+      }).join('');
+      var border = d.ok ? '#22c55e' : '#ef4444';
+      var summary = d.ok
+        ? '<strong style="color:#22c55e">All steps passed</strong> — bot token, guild + category access, and create/delete permissions all work.'
+        : '<strong style="color:#ef4444">Test failed</strong> — see the failing step below.';
+      panel.innerHTML = '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ' + border + ';padding:0.75rem">' +
+        summary + '<table class="mt-1" style="width:100%">' + rows + '</table></div>';
+    })
+    .catch(function(err) {
+      btn.textContent = orig;
+      btn.disabled = false;
+      panel.innerHTML = '<div class="text-muted text-sm" style="color:#ef4444">Test request failed: ' + escapeHTML(err.message) + '</div>';
+    });
 }
 </script>
 {{end}}
