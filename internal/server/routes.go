@@ -345,6 +345,20 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	clientMux.HandleFunc("GET /client/loan", loanH.Issue)
 	clientMux.HandleFunc("POST /client/audit", loanH.Audit)
 
+	// Control Channel client API (client auth required). Real Discord IDs
+	// stay server-side — agents see only opaque handles.
+	ccQ := queries.NewControlChannelQueries(s.db)
+	ccClientH := handlers.NewCCClientHandler(ccQ, ss.APIKeyQ, ss.Crypto, services.NewDiscordBot())
+	clientMux.HandleFunc("GET /client/cc", ccClientH.ListAssigned)
+	clientMux.HandleFunc("GET /client/cc/{cc_id}/channels", ccClientH.ListChannels)
+	clientMux.HandleFunc("POST /client/cc/{cc_id}/channels", ccClientH.CreateChannel)
+	clientMux.HandleFunc("POST /client/cc/{cc_id}/channels/{handle}/archive", ccClientH.ArchiveChannel)
+	clientMux.HandleFunc("GET /client/cc/{cc_id}/channels/{handle}/messages", ccClientH.GetMessages)
+	clientMux.HandleFunc("POST /client/cc/{cc_id}/channels/{handle}/messages", ccClientH.PostMessage)
+	clientMux.HandleFunc("PATCH /client/cc/{cc_id}/channels/{handle}/messages/{message_id}", ccClientH.EditMessage)
+	clientMux.HandleFunc("DELETE /client/cc/{cc_id}/channels/{handle}/messages/{message_id}", ccClientH.DeleteMessage)
+	clientMux.HandleFunc("GET /client/cc/{cc_id}/inbox", ccClientH.PullInbox)
+
 	// Client config (no auth — needed during duckway init before token is verified)
 	s.mux.HandleFunc("GET /client/config", func(w http.ResponseWriter, r *http.Request) {
 		gwURL := settingsQ.Get(queries.SettingGatewayURL)
