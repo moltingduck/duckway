@@ -134,6 +134,7 @@ echo -e "${YELLOW}[Setup]${NC} Starting server on :$PORT (Discord mock on :$DISC
 DUCKWAY_DATA_DIR="$DATA_DIR" DUCKWAY_LISTEN="127.0.0.1:$PORT" \
   DUCKWAY_DISCORD_BASE_URL="http://127.0.0.1:$DISCORD_MOCK_PORT" \
   DUCKWAY_CC_DISABLE_GATEWAY=1 \
+  DUCKWAY_CC_DEBUG_INJECT=1 \
   /tmp/duckway-e2e-server &>/tmp/dw-e2e-server.log &
 SERVER_PID=$!
 sleep 3
@@ -1132,6 +1133,83 @@ assert_contains "discord_post returns message_id" "message_id" "$POST_OUT"
 # Cleanup
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$PE_CC" > /dev/null
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$PE_BOT" > /dev/null
+
+
+# === Test 20: duckway cc watch daemon (F4) ===
+echo ""
+echo -e "${YELLOW}[20] CC watch daemon${NC}"
+
+# Set up: bot key + CC bound to docker client + a task channel via API.
+F4_BOT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
+  -d "{\"service_id\":\"$DISCORD_SVC_ID\",\"name\":\"f4-bot\",\"key\":\"NzF4.bot\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+F4_CC_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: application/json" \
+  -d "{\"name\":\"f4-cc\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$F4_BOT\",\"client_id\":\"$CLIENT_ID\",\"agent_type\":\"claude_code\",\"config\":{\"guild_id\":\"55\",\"category_id\":\"66\"}}")
+F4_CC=$(echo "$F4_CC_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+F4_TASK=$(curl -s -X POST -H "X-Duckway-Token: $CLIENT_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"f4-task"}' "$BASE/client/cc/channels" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('handle',''))")
+assert_not_empty "Task channel created for daemon test" "$F4_TASK"
+
+# Install a fake `claude` binary in the docker container that prints
+# JSON the runner can parse.
+docker exec duckway-e2e-client sh -c 'cat > /usr/local/bin/claude <<"CLAUDE_EOF"
+#!/bin/sh
+# Fake claude binary used by the e2e — prints the prompt back as result.
+PROMPT="$@"
+printf "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"sess-fake-1\",\"result\":\"echo: %s\",\"is_error\":false}\n" "$(echo "$PROMPT" | sed "s/.*-p //;s/ --.*//;s/\"/\\\\\"/g")"
+CLAUDE_EOF
+chmod +x /usr/local/bin/claude'
+
+# Start the daemon in background, capture log
+docker exec -d duckway-e2e-client sh -c "duckway cc watch >/tmp/cc-watch.log 2>&1"
+sleep 1
+
+# Verify it connected
+WATCH_LOG=$(docker exec duckway-e2e-client cat /tmp/cc-watch.log 2>/dev/null)
+assert_contains "Daemon connected to SSE" "SSE connected" "$WATCH_LOG"
+assert_contains "Daemon got server ready frame" "server: ready" "$WATCH_LOG"
+
+# Inject a synthetic message_create event for that task channel
+INJECT_OUT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc/$F4_CC/inject_event" \
+  -H "Content-Type: application/json" \
+  -d "{\"type\":\"message_create\",\"channel_handle\":\"$F4_TASK\",\"payload\":{\"id\":\"M1\",\"channel_id\":\"D1\",\"content\":\"hello daemon\",\"author\":{\"id\":\"U1\",\"username\":\"alice\",\"bot\":false}}}")
+INJECT_STATUS=$(echo "$INJECT_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
+assert_eq "Inject event accepted" "published" "$INJECT_STATUS"
+
+# Daemon should: see SSE → enqueue → run fake claude → POST back to mock
+sleep 2
+WATCH_LOG=$(docker exec duckway-e2e-client cat /tmp/cc-watch.log 2>/dev/null)
+assert_contains "Daemon ran claude" "running claude" "$WATCH_LOG"
+
+# Session id should be persisted
+SESSIONS_JSON=$(docker exec duckway-e2e-client cat /root/.duckway/cc-sessions.json 2>/dev/null)
+assert_contains "Session id persisted to cc-sessions.json" "sess-fake-1" "$SESSIONS_JSON"
+assert_contains "Session id keyed by handle" "$F4_TASK" "$SESSIONS_JSON"
+
+# Daemon's POST to discord (via /client/cc/.../messages → mock) should
+# have hit the mock at least once.
+sleep 0.3
+
+# Inject channel_delete and verify session_id is dropped
+INJECT2=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc/$F4_CC/inject_event" \
+  -H "Content-Type: application/json" \
+  -d "{\"type\":\"channel_delete\",\"channel_handle\":\"$F4_TASK\"}")
+INJECT2_STATUS=$(echo "$INJECT2" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
+assert_eq "Inject channel_delete accepted" "published" "$INJECT2_STATUS"
+sleep 1
+
+SESSIONS_AFTER=$(docker exec duckway-e2e-client cat /root/.duckway/cc-sessions.json 2>/dev/null)
+SESSION_GONE=$(echo "$SESSIONS_AFTER" | grep -c "$F4_TASK" || true)
+assert_eq "Session dropped on channel_delete" "0" "$SESSION_GONE"
+
+# Stop the daemon (force SIGTERM, ignore errors — cleanup() at the end
+# does docker rm -f anyway)
+docker exec duckway-e2e-client sh -c "pkill -TERM -f 'cc watch' >/dev/null 2>&1; true" || true
+
+# Cleanup
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$F4_CC" > /dev/null 2>&1 || true
+curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$F4_BOT" > /dev/null 2>&1 || true
 
 
 # === Test 15: Unit Tests ===

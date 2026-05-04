@@ -53,6 +53,8 @@ func main() {
 		cmdUpdate(configDir)
 	case "mcp":
 		cmdMCP(configDir)
+	case "cc":
+		cmdCC(configDir)
 	case "version", "--version", "-v":
 		fmt.Println("duckway", version.Get())
 	case "help", "--help", "-h":
@@ -80,6 +82,8 @@ Usage:
   duckway update         Compare local version with server, download + replace if drifted
   duckway mcp serve      Run the Control-Channel MCP server over stdio
                          (launched by Claude Code from ~/.claude/mcp.json)
+  duckway cc watch       Connect to the server's SSE feed and run a
+                         claude session per Discord task channel
   duckway version        Print the duckway version
 
 Proxy flags:
@@ -204,6 +208,42 @@ func cmdSync(configDir string) {
 	}
 
 	fmt.Printf("Synced %d placeholder keys to %s\n", count, client.KeysEnvPath(configDir))
+}
+
+// cmdCC dispatches `duckway cc <subcommand>`. Currently only `watch`.
+func cmdCC(configDir string) {
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "Usage: duckway cc watch [--config-dir <path>]")
+		os.Exit(1)
+	}
+	switch os.Args[2] {
+	case "watch":
+		cmdCCWatch(configDir)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown cc subcommand: %s\n", os.Args[2])
+		os.Exit(1)
+	}
+}
+
+func cmdCCWatch(configDir string) {
+	for i := 3; i < len(os.Args)-1; i++ {
+		if os.Args[i] == "--config-dir" {
+			configDir = os.Args[i+1]
+		}
+	}
+	cfg, err := client.LoadConfig(configDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	w, err := client.NewCCWatch(configDir, cfg)
+	if err != nil {
+		log.Fatalf("cc watch: %v", err)
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	if err := w.Run(ctx); err != nil {
+		log.Fatalf("cc watch: %v", err)
+	}
 }
 
 // cmdMCP implements the `duckway mcp serve` subcommand. Reads requests

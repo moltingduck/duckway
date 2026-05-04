@@ -23,6 +23,7 @@ type ControlChannelHandler struct {
 	settings     *queries.SettingsQueries
 	crypto       *svc.Crypto
 	bot          *svc.DiscordBot
+	hub          *svc.CCEventHub // optional, set via SetHub
 }
 
 func NewControlChannelHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, placeholders *queries.PlaceholderQueries, services *queries.ServiceQueries, clients *queries.ClientQueries, settings *queries.SettingsQueries, crypto *svc.Crypto, bot *svc.DiscordBot) *ControlChannelHandler {
@@ -410,4 +411,43 @@ func (h *ControlChannelHandler) Test(w http.ResponseWriter, r *http.Request) {
 	steps = append(steps, step{Name: "delete test channel", OK: true})
 
 	jsonResponse(w, map[string]interface{}{"ok": true, "steps": steps})
+}
+
+// SetHub wires an event hub into the handler so the debug InjectEvent
+// endpoint can publish synthetic events for e2e tests. Optional.
+func (h *ControlChannelHandler) SetHub(hub *svc.CCEventHub) { h.hub = hub }
+
+// POST /api/cc/{id}/inject_event — DEBUG ONLY. Publishes a synthetic
+// CCEvent to the hub for the CC's client. Used by the e2e suite to drive
+// the daemon end-to-end without a real Discord WSS gateway. Gated at
+// route registration on DUCKWAY_CC_DEBUG_INJECT=1.
+//
+// body: {"type":"message_create","channel_handle":"dwch_x","payload":{"content":"...","author":{...}}}
+func (h *ControlChannelHandler) InjectEvent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	cc, err := h.cc.GetByID(id)
+	if err != nil {
+		jsonError(w, "not found", http.StatusNotFound)
+		return
+	}
+	if h.hub == nil {
+		jsonError(w, "hub not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Type    string          `json:"type"`
+		Handle  string          `json:"channel_handle"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	h.hub.Publish(cc.ClientID, svc.CCEvent{
+		Type:    req.Type,
+		CCID:    cc.ID,
+		Handle:  req.Handle,
+		Payload: req.Payload,
+	})
+	jsonResponse(w, map[string]string{"status": "published"})
 }

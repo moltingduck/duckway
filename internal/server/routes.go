@@ -94,6 +94,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	canaryH := handlers.NewCanaryHandler(ss.CanaryQ, ss.CanarySvc)
 	ccQ := queries.NewControlChannelQueries(s.db)
 	ccH := handlers.NewControlChannelHandler(ccQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ, ss.SettingsQ, ss.Crypto, services.NewDiscordBot())
+	ccH.SetHub(ss.CCHub)
 	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth)
 
 	// Static files
@@ -222,6 +223,11 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("PUT /api/cc/{id}", ccH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/cc/{id}", ccH.Delete)
 	adminAPIMux.HandleFunc("POST /api/cc/{id}/test", ccH.Test)
+	if os.Getenv("DUCKWAY_CC_DEBUG_INJECT") == "1" {
+		// Debug-only: synthetic SSE events for e2e tests.
+		adminAPIMux.HandleFunc("POST /api/cc/{id}/inject_event", ccH.InjectEvent)
+		log.Printf("[cc] debug inject_event endpoint enabled (DUCKWAY_CC_DEBUG_INJECT=1)")
+	}
 
 	adminAPIMux.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
 		logs, err := ss.RequestLogQ.Recent(500)

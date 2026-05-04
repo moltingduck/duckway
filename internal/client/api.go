@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -233,6 +234,59 @@ func (c *APIClient) FetchCC() ([]CCAssignment, error) {
 		CCID: raw.CCID, CCName: raw.CCName, AgentType: raw.AgentType,
 		ManagementHandle: raw.ManagementHandle,
 	}}, nil
+}
+
+// CCChannelInfo mirrors the public fields /client/cc/channels exposes.
+type CCChannelInfo struct {
+	Handle    string `json:"handle"`
+	Name      string `json:"name"`
+	Topic     string `json:"topic"`
+	Kind      string `json:"kind"`
+	SessionID string `json:"session_id,omitempty"`
+	Cwd       string `json:"cwd,omitempty"`
+	Archived  bool   `json:"archived"`
+}
+
+// FetchCCChannels returns the channels under this client's CC.
+func (c *APIClient) FetchCCChannels() ([]CCChannelInfo, error) {
+	req, _ := http.NewRequest("GET", c.baseURL+"/client/cc/channels", nil)
+	req.Header.Set("X-Duckway-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch channels: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("server %d: %s", resp.StatusCode, string(body))
+	}
+	var out []CCChannelInfo
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("parse channels: %w", err)
+	}
+	return out, nil
+}
+
+// PostCC posts a bot-author message to a CC channel by handle.
+func (c *APIClient) PostCC(ctx context.Context, handle, content string) error {
+	body, _ := json.Marshal(map[string]string{"content": content})
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		c.baseURL+"/client/cc/channels/"+handle+"/messages", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("post: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 func (c *APIClient) Ping() error {
