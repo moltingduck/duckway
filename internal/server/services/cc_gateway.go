@@ -22,10 +22,11 @@ import (
 // and putting all CCs that share a bot behind a single connection avoids
 // hitting session-count limits.
 type CCGatewayManager struct {
-	cc      *queries.ControlChannelQueries
-	apiKeys *queries.APIKeyQueries
-	crypto  *Crypto
-	hub     *CCEventHub
+	cc       *queries.ControlChannelQueries
+	apiKeys  *queries.APIKeyQueries
+	crypto   *Crypto
+	hub      *CCEventHub
+	commands *CCCommandHandler
 
 	mu      sync.Mutex
 	conns   map[string]*ccBotConn // keyed by api_key_id
@@ -35,12 +36,13 @@ type CCGatewayManager struct {
 
 func NewCCGatewayManager(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, crypto *Crypto, hub *CCEventHub) *CCGatewayManager {
 	return &CCGatewayManager{
-		cc:      cc,
-		apiKeys: apiKeys,
-		crypto:  crypto,
-		hub:     hub,
-		conns:   map[string]*ccBotConn{},
-		stopCh:  make(chan struct{}),
+		cc:       cc,
+		apiKeys:  apiKeys,
+		crypto:   crypto,
+		hub:      hub,
+		commands: NewCCCommandHandler(cc, apiKeys, crypto, NewDiscordBot(), hub),
+		conns:    map[string]*ccBotConn{},
+		stopCh:   make(chan struct{}),
 	}
 }
 
@@ -109,6 +111,7 @@ func (m *CCGatewayManager) startConn(apiKeyID string) {
 		botToken: tok,
 		cc:       m.cc,
 		hub:      m.hub,
+		commands: m.commands,
 		stopCh:   make(chan struct{}),
 	}
 	m.conns[apiKeyID] = conn
@@ -123,6 +126,7 @@ type ccBotConn struct {
 	botToken string
 	cc       *queries.ControlChannelQueries
 	hub      *CCEventHub
+	commands *CCCommandHandler
 
 	mu      sync.Mutex
 	ws      *websocket.Conn
@@ -292,9 +296,9 @@ func (c *ccBotConn) handleDispatch(eventType string, data json.RawMessage) {
 	}
 }
 
-// routeMessageEvent looks the channel up in our cache, appends the event
-// to discord_inbox, and publishes a "live tail" event to any subscribed
-// SSE client.
+// routeMessageEvent looks the channel up in our cache, runs any !command
+// inline, then either skips forwarding (commands aren't messages for the
+// daemon) or appends to discord_inbox and publishes a live event.
 func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload json.RawMessage) {
 	all, err := c.cc.List()
 	if err != nil {
@@ -308,6 +312,21 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 		if err != nil || ch == nil {
 			continue
 		}
+
+		// !-prefix messages on MESSAGE_CREATE are commands. Run them
+		// server-side and don't forward — daemons should never see
+		// human commands as agent input.
+		if eventType == "MESSAGE_CREATE" && c.commands != nil {
+			var msg struct {
+				Content string `json:"content"`
+			}
+			_ = json.Unmarshal(payload, &msg)
+			if LooksLikeCommand(msg.Content) {
+				go c.commands.Handle(context.Background(), cc.ID, ch, msg.Content)
+				return
+			}
+		}
+
 		_ = c.cc.AppendInbox(cc.ID, &ch.Handle, eventType, string(payload))
 		if c.hub != nil && cc.ClientID != "" {
 			c.hub.Publish(cc.ClientID, CCEvent{
