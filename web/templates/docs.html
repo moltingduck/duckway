@@ -18,9 +18,10 @@
     <li><a href="#groups">10. Key Groups &amp; Load Balancing</a></li>
     <li><a href="#canary">11. Canary Tokens</a></li>
     <li><a href="#notifications">12. Notifications &amp; Interactive Approval</a></li>
-    <li><a href="#cli">13. CLI Reference</a></li>
-    <li><a href="#api">14. API Reference</a></li>
-    <li><a href="#docker">15. Docker &amp; Deployment</a></li>
+    <li><a href="#cc">13. Control Channels (Discord)</a></li>
+    <li><a href="#cli">14. CLI Reference</a></li>
+    <li><a href="#api">15. API Reference</a></li>
+    <li><a href="#docker">16. Docker &amp; Deployment</a></li>
   </ul>
 </div>
 
@@ -285,18 +286,102 @@ curl https://api.openai.com/v1/chat/completions ...
 </div>
 
 <!-- 13 -->
+<div class="card" id="cc">
+  <h3>13. Control Channels (Discord)</h3>
+
+  <p>A <strong>Control Channel (CC)</strong> lets an agent talk to humans in a Discord category — one channel per task — without ever seeing the bot token or the real Discord IDs. The agent calls duckway-defined MCP tools; duckway translates handles to real channel IDs server-side.</p>
+
+  <h4>Mental model</h4>
+  <table>
+    <thead><tr><th>Concept</th><th>What it is</th><th>Where it lives</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Bot token</strong></td><td>The Discord bot's API key</td><td>Encrypted in <code>api_keys</code></td></tr>
+      <tr><td><strong>CC</strong></td><td>{bot, guild_id, category_id} bundle</td><td><code>control_channels</code> table</td></tr>
+      <tr><td><strong>Assignment</strong></td><td>One client ↔ one CC + agent_type</td><td><code>client_cc</code></td></tr>
+      <tr><td><strong>Home channel</strong></td><td>Auto-created on assign, named after the client</td><td><code>cc_channels</code> (is_home=1)</td></tr>
+      <tr><td><strong>Task channel</strong></td><td>Created by the agent at runtime</td><td><code>cc_channels</code> (is_home=0)</td></tr>
+      <tr><td><strong>Handle</strong></td><td>Opaque <code>dwch_…</code> id the agent sees</td><td>Maps to real <code>channel_id</code> server-side</td></tr>
+    </tbody>
+  </table>
+  <p class="text-sm text-muted mt-1">Real Discord IDs (channel_id, guild_id, category_id) never leave the server. The agent only ever holds opaque handles.</p>
+
+  <h4 class="mt-1">Admin setup</h4>
+  <ol>
+    <li>Discord developer portal → create an Application + Bot. Enable the <code>MESSAGE CONTENT INTENT</code> if you want to read message bodies via <code>discord_wait_for_message</code>.</li>
+    <li>Invite the bot to your guild with <code>Manage Channels</code> + <code>Send Messages</code> on the target category.</li>
+    <li><strong>API Keys</strong> page → add the bot token under service <code>discord</code>.</li>
+    <li><strong>Control Channels</strong> page → New CC → name it, pick the bot, fill in <code>guild_id</code> + <code>category_id</code>.</li>
+    <li><strong>Clients</strong> page → open a client → Assign CC → pick the CC + agent type. Duckway calls Discord to provision the home channel and stores the binding.</li>
+  </ol>
+
+  <h4 class="mt-1">Security boundary</h4>
+  <ul>
+    <li><strong>Bot token = boundary.</strong> Two CCs that share a bot can technically reach each other's channels (and clients in those CCs can too). Use <em>different bots</em> to isolate teams/projects.</li>
+    <li><strong>Path-level ACL</strong> stops cross-CC handle abuse: every <code>{handle}</code> in a path is checked to belong to the requested <code>cc_id</code>; a client can only operate within CCs it's assigned to (HTTP 403 otherwise).</li>
+    <li><strong>Phantom token</strong> is bound to (client, bot, CC) — <code>placeholder_keys.env_name</code> is <code>DUCKWAY_CC_&lt;cc_id&gt;</code> so each (client, CC) gets its own row even when the bot is shared.</li>
+  </ul>
+
+  <h4 class="mt-1">Agent flow (Claude Code)</h4>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># On the agent machine
+duckway sync                 # writes ~/.duckway/cc.json + ~/.claude/mcp.json
+claude                       # spawns `duckway mcp serve` automatically</code></pre>
+  <p>Inside a Claude session the model sees these tools (only when at least one CC is assigned):</p>
+  <table class="mt-1">
+    <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>discord_list_assigned_ccs</code></td><td>What CCs am I in?</td></tr>
+      <tr><td><code>discord_list_channels</code></td><td>Channels under a CC's category (handles only)</td></tr>
+      <tr><td><code>discord_create_task_channel</code></td><td>Open a new task channel</td></tr>
+      <tr><td><code>discord_archive_channel</code></td><td>Rename + remove from category (non-destructive)</td></tr>
+      <tr><td><code>discord_post</code></td><td>Send a message; returns <code>message_id</code></td></tr>
+      <tr><td><code>discord_edit_message</code> / <code>discord_delete_message</code></td><td>Bot-own messages only</td></tr>
+      <tr><td><code>discord_read_recent</code></td><td>Pull recent messages, cheap, doesn't block</td></tr>
+      <tr><td><code>discord_wait_for_message</code></td><td>Long-poll inbox for human replies (up to 60s)</td></tr>
+    </tbody>
+  </table>
+  <p class="text-sm text-muted mt-1">If the client has only one CC assigned, <code>cc_id</code> can be omitted — the tool defaults to the only one. With multiple, the tool returns <code>isError</code> and asks the model to specify.</p>
+
+  <h4 class="mt-1">Inbox runtime</h4>
+  <p>A server-side WSS gateway connects to Discord per unique bot token, filters <code>MESSAGE_CREATE/UPDATE/DELETE</code> events to channels owned by a CC, and writes them into <code>discord_inbox</code>. <code>discord_wait_for_message</code> long-polls this inbox.</p>
+  <p class="text-sm text-muted">Tunable via Settings:</p>
+  <table>
+    <thead><tr><th>Key</th><th>Default</th></tr></thead>
+    <tbody>
+      <tr><td><code>cc_inbox_retention_hours</code></td><td>24</td></tr>
+      <tr><td><code>cc_inbox_max_per_channel</code></td><td>1000</td></tr>
+      <tr><td><code>cc_inbox_cleanup_interval_minutes</code></td><td>10</td></tr>
+    </tbody>
+  </table>
+  <p class="text-sm text-muted">Disable the gateway in test/dev with <code>DUCKWAY_CC_DISABLE_GATEWAY=1</code> — REST + provisioning still work.</p>
+
+  <h4 class="mt-1">Lifecycle</h4>
+  <ul>
+    <li><strong>Unassign</strong> a client from a CC → home channel is renamed to <code>archived-…</code> and moved out of category; placeholder is deleted. Discord errors don't block the local cleanup.</li>
+    <li><strong>Delete CC</strong> → every channel under it is best-effort archived first, then the row is removed (cascades assignments).</li>
+    <li><strong>Agent-created task channels</strong> can be archived by any client in the same CC (acceptable trade-off; bot token is the real boundary).</li>
+  </ul>
+
+  <h4 class="mt-1">Non-claude_code agents</h4>
+  <p>The schema reserves <code>openclaw</code>, <code>harmes</code>, <code>cursor</code>, <code>copilot_cli</code> as agent types. Only <code>claude_code</code> has a config writer in v1; selecting another type stores the assignment but logs <em>writer not implemented yet</em>. The MCP server itself is agent-agnostic — once an agent supports stdio MCP, plugging it in is a matter of writing the config-file mapping.</p>
+</div>
+
+<!-- 14 -->
 <div class="card" id="cli">
-  <h3>13. CLI Reference</h3>
+  <h3>14. CLI Reference</h3>
   <h4>Server</h4>
   <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code>duckway-server --port 8080 --data /path/to/data
-# Env: DUCKWAY_LISTEN, DUCKWAY_DATA_DIR, DUCKWAY_DEV=1 (password=duckway)</code></pre>
+# Env: DUCKWAY_LISTEN, DUCKWAY_DATA_DIR, DUCKWAY_DEV=1 (password=duckway)
+#      DUCKWAY_CC_DISABLE_GATEWAY=1   skip Discord WSS (CC REST still works)
+#      DUCKWAY_DISCORD_BASE_URL=...   override discord.com/api (testing)</code></pre>
 
   <h4 class="mt-1">Client</h4>
   <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code>duckway init              # Register + download CA cert + sync keys
-duckway sync              # Refresh keys + canary tokens
+duckway sync              # Refresh keys + canary tokens + CC state
 duckway env               # Print keys as shell exports
 duckway proxy [--port N]  # Start HTTPS MITM proxy (default :18080)
-duckway status            # Server, keys, heartbeat, local proxy, CA cert</code></pre>
+duckway status            # Server, keys, heartbeat, local proxy, CA cert
+duckway mcp serve         # Stdio MCP server (launched by Claude Code)
+duckway update            # Compare with server, replace binary if drifted</code></pre>
 
   <h4 class="mt-1">Scripts</h4>
   <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Development
@@ -312,9 +397,9 @@ duckway status            # Server, keys, heartbeat, local proxy, CA cert</code>
 ./scripts/prod.sh password # Show admin password</code></pre>
 </div>
 
-<!-- 14 -->
+<!-- 15 -->
 <div class="card" id="api">
-  <h3>14. API Reference</h3>
+  <h3>15. API Reference</h3>
 
   <h4>Auth</h4>
   <table>
@@ -417,6 +502,41 @@ duckway status            # Server, keys, heartbeat, local proxy, CA cert</code>
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/canaries</code></td><td>Fetch canary tokens to deploy</td></tr>
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/services</code></td><td>Service host map for HTTPS proxy</td></tr>
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/ca-key</code></td><td>CA private key for MITM</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/loan</code></td><td>Issue loaned token (loan_proxy mode)</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/client/audit</code></td><td>Sidecar audit log batch upload</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/claude-credentials</code></td><td>Phantom Claude OAuth credentials.json</td></tr>
+    </tbody>
+  </table>
+
+  <h4 class="mt-1">Control Channel client API (X-Duckway-Token)</h4>
+  <p class="text-sm text-muted">Real Discord IDs (channel_id, guild_id, category_id) never appear in responses — agents see opaque <code>dwch_…</code> handles. Used by <code>duckway mcp serve</code>.</p>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/cc</code></td><td>List CCs assigned to this client</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/cc/{cc_id}/channels</code></td><td>List channels under the CC's category</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/client/cc/{cc_id}/channels</code></td><td>Create a new task channel</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/client/cc/{cc_id}/channels/{handle}/archive</code></td><td>Rename + remove from category</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/cc/{cc_id}/channels/{handle}/messages</code></td><td>Read recent messages</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/client/cc/{cc_id}/channels/{handle}/messages</code></td><td>Post a message</td></tr>
+      <tr><td><span class="badge badge-yellow">PATCH</span></td><td><code>/client/cc/{cc_id}/channels/{handle}/messages/{message_id}</code></td><td>Edit message</td></tr>
+      <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/client/cc/{cc_id}/channels/{handle}/messages/{message_id}</code></td><td>Delete message</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/cc/{cc_id}/inbox?since=N&amp;channels=h1,h2&amp;timeout=30</code></td><td>Long-poll buffered gateway events</td></tr>
+    </tbody>
+  </table>
+
+  <h4 class="mt-1">Control Channel admin API (session cookie)</h4>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/api/cc</code></td><td>List CCs</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/cc</code></td><td>Create CC</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/api/cc/{id}</code></td><td>Get CC + assignments</td></tr>
+      <tr><td><span class="badge badge-yellow">PUT</span></td><td><code>/api/cc/{id}</code></td><td>Update CC name / config / is_active</td></tr>
+      <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/cc/{id}</code></td><td>Archive all channels + delete CC</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/api/clients/{id}/cc</code></td><td>List CC assignments for a client</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/clients/{id}/cc</code></td><td>Assign CC + auto-provision home channel</td></tr>
+      <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/clients/{id}/cc/{cc_id}</code></td><td>Unassign + archive home channel</td></tr>
     </tbody>
   </table>
 
@@ -432,9 +552,9 @@ duckway status            # Server, keys, heartbeat, local proxy, CA cert</code>
   </table>
 </div>
 
-<!-- 15 -->
+<!-- 16 -->
 <div class="card" id="docker">
-  <h3>15. Docker &amp; Deployment</h3>
+  <h3>16. Docker &amp; Deployment</h3>
 
   <h4>Production (Tailscale — no exposed ports)</h4>
   <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># 1. Configure

@@ -12,7 +12,8 @@ API proxy that manages real API keys centrally. AI agents use **phantom tokens**
 - **16 canary token types** — auto-deployed honeypots via [canarytokens.org](https://canarytokens.org), per-client Gmail `+` tagging
 - **Admin panel** — dark theme, Go templates + HTMX, search/filter/pagination, live ACL preview
 - **Discord Gateway WSS + Telegram polling** — interactive approval without public endpoints
-- **105 E2E tests** + unit tests
+- **Control Channels (Discord)** — agents talk to humans in a Discord category via MCP tools; real channel IDs / guild IDs / bot tokens never leave the server
+- **190 E2E tests** + unit tests
 
 ## Documentation
 
@@ -154,7 +155,7 @@ Agents **cannot** reach the admin panel. With Tailscale, enforce by ACL on the a
 | `./scripts/prod.sh logs` | Follow logs |
 | `./scripts/prod.sh password` | Show admin password (if still in logs) |
 | `./scripts/reset-password.sh` | Generate a fresh random admin password (prod) |
-| `./scripts/e2e-test.sh` | Run the full E2E suite (105 tests) |
+| `./scripts/e2e-test.sh` | Run the full E2E suite (190 tests) |
 | `./scripts/phantom-proxy-test.sh` | Real-API test against OpenAI/Anthropic/GitHub/Discord |
 
 ## Environment Files
@@ -250,6 +251,25 @@ Per-client email tagging: `admin+shortid@gmail.com` identifies which machine was
 
 No public endpoints needed — all outbound connections.
 
+## Control Channels (Discord)
+
+A **Control Channel (CC)** = `{bot, guild, category}`. Each assigned client gets a home text channel under the category, plus the ability to create per-task channels at runtime — all driven through MCP tools the agent's Claude Code session sees automatically.
+
+```
+Admin → New CC (Discord bot + guild_id + category_id)
+      → Assign CC to client + agent_type           ──→ Discord auto-creates channel
+                                                       phantom token issued to client
+
+Agent  duckway sync                                ──→ ~/.duckway/cc.json
+                                                       ~/.claude/mcp.json (writes "duckway-cc")
+       claude                                       ──→ launches `duckway mcp serve`
+       (model calls discord_post / discord_create_task_channel / …)
+```
+
+Real Discord IDs (channel_id, guild_id, category_id) **never leave the server** — agents only ever hold opaque `dwch_…` handles. Two-layer ACL: the client must be assigned to the CC, AND any handle in a path must belong to that CC. A server-side gateway WSS connection per bot writes `MESSAGE_CREATE` events into a SQLite inbox; `discord_wait_for_message` long-polls it.
+
+Bot token = security boundary. Two CCs sharing one bot can technically reach each other's channels — use a different bot to isolate teams. See the **Control Channels** section in `/admin/docs` for the full walkthrough.
+
 ## Tech Stack
 
 - **Server**: Go, single binary (~14MB)
@@ -275,13 +295,15 @@ duckway-gateway --port 8080 --data /path/to/data
 
 ```bash
 duckway init                # Register + download CA + sync
-duckway sync                # Refresh keys + canary tokens + Claude config
+duckway sync                # Refresh keys + canary tokens + Claude config + CC state
 duckway env                 # Print keys as shell exports
 duckway proxy [--port N]    # Start HTTPS MITM proxy (foreground)
 duckway proxy -d            # Start as background daemon
 duckway proxy stop          # Stop the running daemon
 duckway proxy status        # Show daemon status
 duckway status              # Server, keys, heartbeat, proxy, CA
+duckway mcp serve           # Stdio MCP server for Control Channels
+duckway update              # Compare with server, replace binary if drifted
 ```
 
 Server-side admin password reset (random, prints once):

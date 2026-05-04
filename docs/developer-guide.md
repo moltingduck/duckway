@@ -11,6 +11,7 @@ For installation, configuration, and daily operations, see [user-guide.md](user-
 - [Phantom token swap — the proxy flow](#phantom-token-swap--the-proxy-flow)
 - [Header stripping](#header-stripping)
 - [Refreshable (OAuth) tokens](#refreshable-oauth-tokens)
+- [Control Channels (Discord)](#control-channels-discord)
 - [Adding a new service](#adding-a-new-service)
 - [Testing](#testing)
 - [Build and release](#build-and-release)
@@ -331,6 +332,67 @@ The client splits this into three files in `internal/client/sync.go > SyncClaude
 - `~/.claude/settings.json`      ← `{"theme":"dark"}` (only if missing — preserves user prefs)
 
 The phantom tokens look exactly like real Anthropic OAuth tokens (`sk-ant-dw_...` with the right length) so Claude Code accepts them locally without complaint and uses them as `Authorization: Bearer ...` in API calls.
+
+---
+
+## Control Channels (Discord)
+
+A Control Channel binds `{discord_bot_token, guild_id, category_id}`. Assigned clients each get a home text channel under the category and an MCP tool surface for posting / creating task channels / reading replies — without ever seeing the bot token or the real Discord IDs.
+
+### Tables
+
+| Table | Purpose |
+|---|---|
+| `control_channels` | One row per CC; references `services` + `api_keys`; config JSON holds `{guild_id, category_id}` |
+| `cc_channels` | Cache of every channel under a CC (real `channel_id` → opaque `dwch_…` handle, `is_home` flag) |
+| `client_cc` | Assignment row: `(client_id, cc_id, agent_type, home_handle, placeholder_id)` |
+| `discord_inbox` | Buffered gateway events (`MESSAGE_CREATE/UPDATE/DELETE`) for long-poll |
+
+`placeholder_keys.env_name` for CC phantoms is `DUCKWAY_CC_<cc_id>` so the table-level `UNIQUE(client_id, service_id, env_name)` doesn't collide when one client is assigned to multiple CCs on the same bot.
+
+### Components
+
+```
+internal/server/services/discord_bot.go      Thin REST client (CreateChannel, ArchiveChannel, PostMessage, …)
+internal/server/services/cc_gateway.go       Multi-bot WSS manager + inbox cleanup goroutine
+internal/server/handlers/control_channels.go Admin CRUD + assign/unassign (calls discord_bot)
+internal/server/handlers/cc_client.go        /client/cc/* — handle-based, NEVER returns real channel_id
+internal/client/sync_cc.go                   Writes ~/.duckway/cc.json + merges ~/.claude/mcp.json
+internal/client/mcp.go                       Stdio MCP server (JSON-RPC 2.0)
+internal/client/mcp_tools.go                 9 discord_* tool implementations (delegate to /client/cc/*)
+cmd/client/main.go                           `duckway mcp serve` subcommand
+```
+
+### Flow at runtime
+
+```
+Admin assigns CC                           agent runs `duckway sync`         claude session
+        │                                          │                                │
+POST /api/clients/{id}/cc                    GET /client/cc                   spawn `duckway mcp serve`
+        ▼                                          ▼                                │
+decrypt bot token                           write ~/.duckway/cc.json                ▼
+Discord POST /guilds/{g}/channels           merge ~/.claude/mcp.json         tools/list → 9 discord_* tools
+issue placeholder DUCKWAY_CC_<cc_id>                                         tools/call discord_post
+persist client_cc + cc_channels                                                     │
+                                                                              POST /client/cc/{id}/channels/{handle}/messages
+                                                                                    │
+                                                                              decrypt bot token
+                                                                              POST discord.com/api/v10/channels/{real_id}/messages
+                                                                                    │
+                                                                              ◀ message_id
+```
+
+A separate goroutine (`CCGatewayManager`) holds one Discord WSS connection per unique bot token, filters dispatched events by `cc_channels` lookup, and writes them into `discord_inbox`. `discord_wait_for_message` long-polls that table.
+
+### Security boundary
+
+- Bot token = real boundary. Two CCs sharing one bot can reach each other's channels (Discord can't tell them apart).
+- Admin sets the boundary by giving the bot only `MANAGE_CHANNELS` on the target category, not the whole guild.
+- `cc_client.go` enforces two ACL layers: client must be assigned to the CC; any handle in the URL must belong to that CC.
+
+### Test environment
+
+Set `DUCKWAY_CC_DISABLE_GATEWAY=1` to skip the WSS dial (REST + provisioning still work). Set `DUCKWAY_DISCORD_BASE_URL=http://...` to point the bot client at a mock server — the e2e suite uses both.
 
 ---
 
