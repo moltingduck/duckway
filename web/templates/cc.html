@@ -200,9 +200,12 @@ function renderConfigFields() {
   }
   if (svc.name === 'discord') {
     div.innerHTML =
-      '<div class="form-group"><label>Discord Guild ID</label><input type="text" id="cc-cfg-guild" placeholder="123456789012345678" required></div>' +
-      '<div class="form-group"><label>Discord Category ID</label><input type="text" id="cc-cfg-category" placeholder="987654321098765432" required>' +
-      '<span class="text-muted text-sm">Bot must be in this guild with <code>MANAGE_CHANNELS</code> on the category.</span></div>';
+      '<div class="form-group"><label>Discord Guild ID</label>' +
+      '<input type="text" id="cc-cfg-guild" placeholder="123456789012345678" required>' +
+      '<span class="text-muted text-sm">Right-click your guild icon → <strong>Copy Server ID</strong>. Need Developer Mode on (Settings → Advanced).</span></div>' +
+      '<div class="form-group"><label>Discord Category ID</label>' +
+      '<input type="text" id="cc-cfg-category" placeholder="987654321098765432" required>' +
+      '<span class="text-muted text-sm">Right-click the category header → <strong>Copy Channel ID</strong>. Bot must have <code>Manage Channels</code> + <code>Send Messages</code> + <code>Add Reactions</code> + <code>Read Message History</code> on this category. Full walkthrough in <a href="/admin/docs#cc">Docs § Control Channels</a>.</span></div>';
   } else {
     div.innerHTML = '<div class="text-muted text-sm">No service-specific config required.</div>';
   }

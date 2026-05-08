@@ -305,12 +305,31 @@ curl https://api.openai.com/v1/chat/completions ...
   </table>
   <p class="text-sm text-muted mt-1">Real Discord IDs (channel_id, guild_id, category_id) never leave the server. Agents and the daemon only hold opaque handles.</p>
 
-  <h4 class="mt-1">Admin setup</h4>
+  <h4 class="mt-1">Discord bot setup (one-time, ~10 min)</h4>
+  <p>This part isn't duckway-specific — you do it at <a href="https://discord.com/developers/applications" target="_blank">discord.com/developers/applications</a>.</p>
   <ol>
-    <li>Discord developer portal → create an Application + Bot. Enable the <strong>MESSAGE CONTENT INTENT</strong> (you want to read what humans type) and the <strong>SERVER MEMBERS INTENT</strong> if you'll restrict approvals to specific users.</li>
-    <li>Invite the bot to your guild with <code>Manage Channels</code> + <code>Send Messages</code> + <code>Add Reactions</code> + <code>Read Message History</code> on the target category.</li>
-    <li><strong>API Keys</strong> page → add the bot token under service <code>discord</code>.</li>
-    <li><strong>Control Channels</strong> page → <strong>New CC</strong> → fill name, <em>pick a client</em>, agent type, the bot, <code>guild_id</code>, <code>category_id</code>. On save, duckway provisions <code>&lt;client&gt;-control</code> under the category and issues a phantom bot token bound to that client.</li>
+    <li><strong>Create the bot.</strong> New Application → name it → left sidebar <strong>Bot</strong> → click <strong>Reset Token</strong> → copy the token now (shown once). Treat like a password.</li>
+    <li><strong>Flip privileged intents.</strong> Same page, scroll to <em>Privileged Gateway Intents</em>:
+      <ul>
+        <li>✅ <strong>Message Content Intent</strong> — required (without it, message bodies arrive empty)</li>
+        <li>✅ <strong>Server Members Intent</strong> — optional, only if you'll use <code>required_reactors</code> on approvals</li>
+      </ul>
+    </li>
+    <li><strong>Build the invite link.</strong> <strong>OAuth2 → URL Generator</strong>: scopes <code>bot</code> + <code>applications.commands</code>; bot permissions <code>Manage Channels</code> + <code>Send Messages</code> + <code>Add Reactions</code> + <code>Read Message History</code>. Copy the URL → paste in a browser → pick the guild → Authorize.</li>
+    <li><strong>Lock down to one category (recommended).</strong> The invite grants <code>Manage Channels</code> guild-wide. Narrow it: right-click the bot's role → uncheck <code>Manage Channels</code> globally. Then right-click the target category → <strong>Edit Category → Permissions</strong> → add the bot with the four perms above. Now a leaked token's blast radius is one category, not the guild.</li>
+    <li><strong>Get the IDs.</strong> Discord client → <em>User Settings</em> (cog) → <em>Advanced</em> → toggle <strong>Developer Mode</strong> on. Then:
+      <ul>
+        <li><code>guild_id</code> = right-click your guild icon → <strong>Copy Server ID</strong></li>
+        <li><code>category_id</code> = right-click the category header → <strong>Copy Channel ID</strong> (Discord internally treats categories as channels with <code>type=4</code>)</li>
+      </ul>
+    </li>
+  </ol>
+
+  <h4 class="mt-1">Admin one-time setup (in duckway)</h4>
+  <ol>
+    <li><strong>API Keys</strong> → add the bot token from above. Service <code>discord</code>.</li>
+    <li><strong>Control Channels</strong> → <strong>New CC</strong> → fill name + pick client + agent type (<code>claude_code</code>) + the bot + paste <code>guild_id</code> and <code>category_id</code>. On save, duckway provisions <code>&lt;client&gt;-control</code> under the category and issues a phantom bot token bound to that client. If a step fails, the create rolls back and tells you which one.</li>
+    <li>Click into the CC → <strong>Test (create + delete channel)</strong> to verify the bot can do its job before pointing real workloads at it.</li>
     <li>Clients with a CC show a one-line summary on their detail page; the full state (channels, sessions) lives on the CC detail.</li>
   </ol>
 

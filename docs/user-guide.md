@@ -247,15 +247,76 @@ Key points:
 
 ## Control Channels (Discord-as-comms)
 
-A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to a claude session — every message a human types triggers `claude -p --resume <session_id>` on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!list` / `!status` / `!help` text commands.
+A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to a claude session — every message a human types triggers `claude -p --resume <session_id>` on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!reset` / `!list` / `!status` / `!help` text commands.
 
-### Admin one-time setup
+### Discord bot setup (first time, ~10 min)
 
-1. Discord developer portal → make a bot. Enable **Message Content Intent** (you want to read what humans type) and **Server Members Intent** (only if you'll restrict approvals to specific users).
-2. Invite the bot to your guild with `Manage Channels` + `Send Messages` + `Add Reactions` + `Read Message History` on the target category.
-3. Admin panel:
-   - **API Keys** → add the bot token under service `discord`
-   - **Control Channels** → **New CC** → fill name, **pick a client**, agent type, the bot, `guild_id`, `category_id`. duckway provisions `<client>-control` under the category and issues a phantom bot token bound to the chosen client.
+This is the part that's not duckway-specific — you do it once at <https://discord.com/developers/applications/>.
+
+**1. Create the application + bot**
+
+- Open <https://discord.com/developers/applications> → **New Application** → name it (e.g. "Duckway Agent").
+- Left sidebar **Bot** → Discord auto-creates one. Click **Reset Token** → copy the token NOW (it's shown once). This is the value you'll paste into duckway later. Treat like any password.
+
+**2. Flip the privileged intents**
+
+Same **Bot** page, scroll down to *Privileged Gateway Intents*:
+
+- ✅ **Message Content Intent** — REQUIRED. Without it the bot sees every event but the message body arrives empty, so the daemon has nothing to forward to claude.
+- ✅ **Server Members Intent** — OPTIONAL. Only flip if you'll use `discord_request_approval` with `required_reactors` (whitelist of who can decide).
+- ✅ **Presence Intent** — leave OFF unless you have a separate need.
+
+Save. ⚠️ If your app is verified (in 100+ servers) you'd need to apply for these — small / personal bots get them by toggling.
+
+**3. Build the invite link**
+
+Left sidebar **OAuth2** → **URL Generator**:
+
+- *Scopes*: tick **`bot`** and **`applications.commands`**.
+- *Bot Permissions*: tick:
+  - **Manage Channels** (create / archive / move task channels)
+  - **Send Messages**
+  - **Add Reactions** (for `discord_request_approval` votes)
+  - **Read Message History** (so the agent can read the channel above the latest message)
+
+Copy the generated URL at the bottom, paste into a browser, pick the guild you want the bot in, and click **Authorize**.
+
+**4. Per-category permission lock-down (recommended)**
+
+The OAuth link above grants `Manage Channels` guild-wide. To narrow that to one category:
+
+- In your guild: right-click the bot's role → **Edit Role** → uncheck **Manage Channels** in the global permissions.
+- Right-click the **target category** → **Edit Category** → **Permissions** tab → **+ Add member or role** → pick the bot → grant **Manage Channels** + **Send Messages** + **Add Reactions** + **Read Message History** ONLY here.
+
+Now if a CC's bot token leaks, blast radius is one category, not the whole guild.
+
+**5. Find your `guild_id` and `category_id`**
+
+Discord IDs aren't shown in the UI by default. Turn on Developer Mode first:
+
+- Discord client → **User Settings** (cog icon) → **Advanced** → toggle **Developer Mode** on.
+
+Then:
+
+- *guild_id*: right-click your guild (the icon in the top-left server list) → **Copy Server ID**.
+- *category_id*: right-click the category header (collapsible group above channels) → **Copy Channel ID**. Yes, "Channel ID" — Discord categories ARE channels internally with `type=4`.
+
+Stash both. You'll paste them into the CC create form next.
+
+### Admin one-time setup (in duckway)
+
+1. **API Keys** → add the bot token from step 1 above. Pick service `discord`, paste the token.
+2. **Control Channels** → **New CC** →
+   - **Name** — anything you'll recognise (e.g. "Project Alpha CC").
+   - **Client** — the duckway client this CC belongs to.
+   - **Agent type** — `claude_code` (others reserved).
+   - **Service** — `discord`.
+   - **Bot Token** — the API key you uploaded in (1).
+   - **Guild ID** + **Category ID** — what you copied from Discord.
+
+   On save, duckway calls Discord to create `<client>-control` under the category and issues a phantom bot token bound to the client. If anything fails (bot lacks permission, wrong category id, etc.) the create rolls back and tells you which step failed.
+
+3. Click into the CC → **Test (create + delete channel)** to verify connectivity end-to-end before assigning real workloads. Each step is reported individually so you know whether the failure is the token, the guild, the category, or the bot's perms.
 
 ### Per-client wire-up (agent machine)
 
