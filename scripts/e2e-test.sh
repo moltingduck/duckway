@@ -1101,7 +1101,7 @@ docker exec duckway-e2e-client duckway sync >/dev/null 2>&1
 # 19a: tools/list
 TOOLS_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
 TOOL_COUNT=$(echo "$TOOLS_OUT" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['result']['tools']))")
-assert_eq "MCP tools/list returns 9 tools" "9" "$TOOL_COUNT"
+assert_eq "MCP tools/list returns 10 tools" "10" "$TOOL_COUNT"
 assert_contains "tools/list includes discord_post"         "discord_post"                "$TOOLS_OUT"
 assert_contains "tools/list includes discord_create_task"  "discord_create_task_channel" "$TOOLS_OUT"
 assert_contains "tools/list includes discord_wait_for_msg" "discord_wait_for_message"    "$TOOLS_OUT"
@@ -1206,6 +1206,47 @@ assert_eq "Session dropped on channel_delete" "0" "$SESSION_GONE"
 # Stop the daemon (force SIGTERM, ignore errors — cleanup() at the end
 # does docker rm -f anyway)
 docker exec duckway-e2e-client sh -c "pkill -TERM -f 'cc watch' >/dev/null 2>&1; true" || true
+
+
+# === Test 21: discord_request_approval (F5) ===
+echo ""
+echo -e "${YELLOW}[21] approval reaction vote${NC}"
+
+# Reuse F4_CC + F4_TASK from above. Send the approval request in
+# background (it long-polls), inject a reaction, verify the response.
+APPROVAL_OUT=/tmp/dw-approval.json
+(curl -s -X POST -H "X-Duckway-Token: $CLIENT_TOKEN" -H "Content-Type: application/json" \
+  -d '{"question":"Deploy?","options":["approve","reject"],"timeout_seconds":10}' \
+  "$BASE/client/cc/channels/$F4_TASK/approval" > "$APPROVAL_OUT") &
+APPROVAL_PID=$!
+sleep 0.5
+
+# Find the message id the bot just posted (mock returned id=9999 for any
+# /messages POST). Inject a reaction that resolves the approval.
+INJECT_REACT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc/$F4_CC/inject_event" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"reaction_add","message_id":"9999","emoji":"✅","reactor_user_id":"U-admin"}')
+INJECT_RESOLVED=$(echo "$INJECT_REACT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('resolved',False))")
+assert_eq "Reaction inject resolved" "True" "$INJECT_RESOLVED"
+
+wait $APPROVAL_PID
+APPROVAL_RESP=$(cat "$APPROVAL_OUT")
+APPROVAL_CHOSEN=$(echo "$APPROVAL_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('chosen',''))")
+APPROVAL_REACTOR=$(echo "$APPROVAL_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('reactor_user_id',''))")
+APPROVAL_TIMED_OUT=$(echo "$APPROVAL_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('timed_out',False))")
+assert_eq "Approval returns chosen=approve" "approve" "$APPROVAL_CHOSEN"
+assert_eq "Approval returns reactor_user_id" "U-admin" "$APPROVAL_REACTOR"
+assert_eq "Approval not timed out" "False" "$APPROVAL_TIMED_OUT"
+
+# Timeout path: short timeout, no reaction injected
+TIMEOUT_OUT=$(curl -s -X POST -H "X-Duckway-Token: $CLIENT_TOKEN" -H "Content-Type: application/json" \
+  -d '{"question":"Anyone there?","timeout_seconds":1}' \
+  "$BASE/client/cc/channels/$F4_TASK/approval")
+TIMED_OUT=$(echo "$TIMEOUT_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('timed_out',False))")
+assert_eq "Approval times out cleanly" "True" "$TIMED_OUT"
+
+rm -f "$APPROVAL_OUT"
+
 
 # Cleanup
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$F4_CC" > /dev/null 2>&1 || true

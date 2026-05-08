@@ -22,11 +22,12 @@ import (
 // and putting all CCs that share a bot behind a single connection avoids
 // hitting session-count limits.
 type CCGatewayManager struct {
-	cc       *queries.ControlChannelQueries
-	apiKeys  *queries.APIKeyQueries
-	crypto   *Crypto
-	hub      *CCEventHub
-	commands *CCCommandHandler
+	cc        *queries.ControlChannelQueries
+	apiKeys   *queries.APIKeyQueries
+	crypto    *Crypto
+	hub       *CCEventHub
+	commands  *CCCommandHandler
+	approvals *CCApprovalRegistry
 
 	mu      sync.Mutex
 	conns   map[string]*ccBotConn // keyed by api_key_id
@@ -34,15 +35,16 @@ type CCGatewayManager struct {
 	stopped bool
 }
 
-func NewCCGatewayManager(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, crypto *Crypto, hub *CCEventHub) *CCGatewayManager {
+func NewCCGatewayManager(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, crypto *Crypto, hub *CCEventHub, approvals *CCApprovalRegistry) *CCGatewayManager {
 	return &CCGatewayManager{
-		cc:       cc,
-		apiKeys:  apiKeys,
-		crypto:   crypto,
-		hub:      hub,
-		commands: NewCCCommandHandler(cc, apiKeys, crypto, NewDiscordBot(), hub),
-		conns:    map[string]*ccBotConn{},
-		stopCh:   make(chan struct{}),
+		cc:        cc,
+		apiKeys:   apiKeys,
+		crypto:    crypto,
+		hub:       hub,
+		commands:  NewCCCommandHandler(cc, apiKeys, crypto, NewDiscordBot(), hub),
+		approvals: approvals,
+		conns:     map[string]*ccBotConn{},
+		stopCh:    make(chan struct{}),
 	}
 }
 
@@ -107,12 +109,13 @@ func (m *CCGatewayManager) startConn(apiKeyID string) {
 		return
 	}
 	conn := &ccBotConn{
-		apiKeyID: apiKeyID,
-		botToken: tok,
-		cc:       m.cc,
-		hub:      m.hub,
-		commands: m.commands,
-		stopCh:   make(chan struct{}),
+		apiKeyID:  apiKeyID,
+		botToken:  tok,
+		cc:        m.cc,
+		hub:       m.hub,
+		commands:  m.commands,
+		approvals: m.approvals,
+		stopCh:    make(chan struct{}),
 	}
 	m.conns[apiKeyID] = conn
 	m.mu.Unlock()
@@ -122,11 +125,12 @@ func (m *CCGatewayManager) startConn(apiKeyID string) {
 
 // ccBotConn is one bot's WSS gateway connection.
 type ccBotConn struct {
-	apiKeyID string
-	botToken string
-	cc       *queries.ControlChannelQueries
-	hub      *CCEventHub
-	commands *CCCommandHandler
+	apiKeyID  string
+	botToken  string
+	cc        *queries.ControlChannelQueries
+	hub       *CCEventHub
+	commands  *CCCommandHandler
+	approvals *CCApprovalRegistry
 
 	mu      sync.Mutex
 	ws      *websocket.Conn
@@ -202,15 +206,15 @@ func (c *ccBotConn) connect() error {
 	c.hbMs = hd.HeartbeatInterval
 	go c.heartbeat(ws)
 
-	// Intents: GUILDS(0) | GUILD_MESSAGES(9) | MESSAGE_CONTENT(15).
+	// Intents: GUILDS(0) | GUILD_MESSAGES(9) | GUILD_MESSAGE_REACTIONS(10) | MESSAGE_CONTENT(15).
 	// MESSAGE_CONTENT is privileged — bot owner must enable it in the
-	// developer portal. Without it, message content arrives empty but we
-	// still record the metadata.
+	// developer portal. GUILD_MESSAGE_REACTIONS is needed for the
+	// discord_request_approval reaction-vote flow.
 	identify := map[string]interface{}{
 		"op": 2,
 		"d": map[string]interface{}{
 			"token":   c.botToken,
-			"intents": (1 << 0) | (1 << 9) | (1 << 15),
+			"intents": (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15),
 			"properties": map[string]string{
 				"os": "linux", "browser": "duckway-cc", "device": "duckway-cc",
 			},
@@ -282,6 +286,22 @@ func (c *ccBotConn) handleDispatch(eventType string, data json.RawMessage) {
 			return
 		}
 		c.handleChannelDelete(generic.ID, data)
+	case "MESSAGE_REACTION_ADD":
+		// Used by discord_request_approval. Look the message_id up in
+		// the approval registry; if it's a tracked vote, resolve.
+		var data2 struct {
+			MessageID string `json:"message_id"`
+			UserID    string `json:"user_id"`
+			Emoji     struct {
+				Name string `json:"name"`
+			} `json:"emoji"`
+		}
+		if err := json.Unmarshal(data, &data2); err != nil {
+			return
+		}
+		if c.approvals != nil {
+			c.approvals.Resolve(data2.MessageID, data2.Emoji.Name, data2.UserID)
+		}
 	case "CHANNEL_UPDATE":
 		// Channel rename / topic change — refresh our cached metadata.
 		var ch struct {

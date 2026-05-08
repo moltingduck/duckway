@@ -223,7 +223,7 @@ func (s *Server) startApprovalSweeper(ss *SharedServices) {
 func (s *Server) startCCBackground(ss *SharedServices) {
 	ccQ := queries.NewControlChannelQueries(s.db)
 	if os.Getenv("DUCKWAY_CC_DISABLE_GATEWAY") != "1" {
-		mgr := services.NewCCGatewayManager(ccQ, ss.APIKeyQ, ss.Crypto, ss.CCHub)
+		mgr := services.NewCCGatewayManager(ccQ, ss.APIKeyQ, ss.Crypto, ss.CCHub, ss.CCApprovals)
 		mgr.Start()
 	}
 	stop := make(chan struct{})

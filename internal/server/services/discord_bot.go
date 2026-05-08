@@ -7,10 +7,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 )
+
+// urlPathEscape returns a URL-path-encoded form of s. Unicode emoji
+// pass through net/url's PathEscape.
+func urlPathEscape(s string) string { return url.PathEscape(s) }
 
 // DiscordBot is a thin REST client for the bits of the Discord HTTP API the
 // Control Channel feature needs. It deliberately exposes a small surface —
@@ -178,6 +183,23 @@ func (b *DiscordBot) DeleteChannel(ctx context.Context, botToken, channelID stri
 		return nil
 	}
 	return err
+}
+
+// AddReaction makes the bot react to a message with the given emoji.
+// emoji must be the unicode codepoint (e.g. "✅") — custom emoji use
+// "name:id" form. Discord requires the emoji URL-encoded in the path.
+func (b *DiscordBot) AddReaction(ctx context.Context, botToken, channelID, messageID, emoji string) error {
+	path := fmt.Sprintf("/channels/%s/messages/%s/reactions/%s/@me",
+		channelID, messageID, urlEscapeEmoji(emoji))
+	_, err := b.do(ctx, botToken, "PUT", path, nil)
+	return err
+}
+
+// urlEscapeEmoji URL-encodes a Discord emoji for use in a request path.
+// Unicode emoji like "✅" need percent-encoding because Discord routes
+// on the raw bytes.
+func urlEscapeEmoji(emoji string) string {
+	return urlPathEscape(emoji)
 }
 
 // PostMessage sends content to a channel and returns the new message id.

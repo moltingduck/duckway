@@ -22,15 +22,16 @@ import (
 // CC v2: 1:1 client↔CC, so cc_id is implicit (looked up by client_id).
 // All real Discord IDs (channel_id, guild_id, category_id) stay server-side.
 type CCClientHandler struct {
-	cc      *queries.ControlChannelQueries
-	apiKeys *queries.APIKeyQueries
-	crypto  *svc.Crypto
-	bot     *svc.DiscordBot
-	hub     *svc.CCEventHub
+	cc        *queries.ControlChannelQueries
+	apiKeys   *queries.APIKeyQueries
+	crypto    *svc.Crypto
+	bot       *svc.DiscordBot
+	hub       *svc.CCEventHub
+	approvals *svc.CCApprovalRegistry
 }
 
-func NewCCClientHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, crypto *svc.Crypto, bot *svc.DiscordBot, hub *svc.CCEventHub) *CCClientHandler {
-	return &CCClientHandler{cc: cc, apiKeys: apiKeys, crypto: crypto, bot: bot, hub: hub}
+func NewCCClientHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, crypto *svc.Crypto, bot *svc.DiscordBot, hub *svc.CCEventHub, approvals *svc.CCApprovalRegistry) *CCClientHandler {
+	return &CCClientHandler{cc: cc, apiKeys: apiKeys, crypto: crypto, bot: bot, hub: hub, approvals: approvals}
 }
 
 // resolveCC fetches the client's CC + decrypted bot token, or writes the
@@ -471,5 +472,116 @@ func (h *CCClientHandler) Events(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, ": heartbeat\n\n")
 			flusher.Flush()
 		}
+	}
+}
+
+// POST /client/cc/channels/{handle}/approval — start a reaction-based
+// approval. Posts the question to the channel, pre-adds emoji
+// reactions, blocks for up to timeout_seconds, returns the chosen
+// option (or timed_out=true).
+//
+// body:
+//
+//	{
+//	  "question": "Approve deploy?",          // required
+//	  "options": ["approve","reject"],         // optional; default ["yes","no"]
+//	  "timeout_seconds": 300,                  // optional 1..3600
+//	  "required_reactors": ["123","456"]       // optional Discord user_ids
+//	}
+//
+// response:
+//
+//	{
+//	  "chosen": "approve",
+//	  "emoji": "✅",
+//	  "reactor_user_id": "123",
+//	  "message_id": "1234567890",
+//	  "timed_out": false
+//	}
+func (h *CCClientHandler) RequestApproval(w http.ResponseWriter, r *http.Request) {
+	handle := r.PathValue("handle")
+	_, cc, botTok, ok := h.resolveCC(w, r)
+	if !ok {
+		return
+	}
+	ch, ok := h.resolveHandle(w, cc.ID, handle)
+	if !ok {
+		return
+	}
+	if h.approvals == nil {
+		jsonError(w, "approval registry not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		Question         string   `json:"question"`
+		Options          []string `json:"options"`
+		TimeoutSeconds   int      `json:"timeout_seconds"`
+		RequiredReactors []string `json:"required_reactors"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Question) == "" {
+		jsonError(w, "question required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Options) == 0 {
+		req.Options = []string{"yes", "no"}
+	}
+	if len(req.Options) > 10 {
+		jsonError(w, "max 10 options", http.StatusBadRequest)
+		return
+	}
+	if req.TimeoutSeconds <= 0 {
+		req.TimeoutSeconds = 300
+	}
+	if req.TimeoutSeconds > 3600 {
+		req.TimeoutSeconds = 3600
+	}
+
+	// Build the question text + emoji map.
+	emojiToOpt := map[string]string{}
+	emojis := make([]string, len(req.Options))
+	var body strings.Builder
+	body.WriteString("**🗳️ Approval requested:** ")
+	body.WriteString(req.Question)
+	body.WriteString("\n")
+	for i, opt := range req.Options {
+		e := svc.DefaultEmojiForOption(i, len(req.Options))
+		emojis[i] = e
+		emojiToOpt[e] = opt
+		fmt.Fprintf(&body, "  %s  %s\n", e, opt)
+	}
+	if len(req.RequiredReactors) > 0 {
+		fmt.Fprintf(&body, "_Only these users can decide: <@%s>_", strings.Join(req.RequiredReactors, ">, <@"))
+	}
+
+	msgID, err := h.bot.PostMessage(r.Context(), botTok, ch.ChannelID, body.String())
+	if err != nil {
+		jsonError(w, "discord post: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	for _, e := range emojis {
+		if err := h.bot.AddReaction(r.Context(), botTok, ch.ChannelID, msgID, e); err != nil {
+			// Best-effort — partial reactions still let humans choose
+			// the ones the bot did manage to add.
+		}
+	}
+
+	resultCh := h.approvals.Register(msgID, emojiToOpt, req.RequiredReactors)
+	timer := time.NewTimer(time.Duration(req.TimeoutSeconds) * time.Second)
+	defer timer.Stop()
+
+	select {
+	case res := <-resultCh:
+		jsonResponse(w, res)
+	case <-r.Context().Done():
+		h.approvals.Cancel(msgID)
+		jsonResponse(w, svc.ApprovalResult{MessageID: msgID, TimedOut: true})
+	case <-timer.C:
+		h.approvals.Cancel(msgID)
+		jsonResponse(w, svc.ApprovalResult{MessageID: msgID, TimedOut: true})
 	}
 }

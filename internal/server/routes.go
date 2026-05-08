@@ -31,12 +31,13 @@ type SharedServices struct {
 	CanaryQ      *queries.CanaryQueries
 	SettingsQ    *queries.SettingsQueries
 
-	Crypto    *services.Crypto
-	Resolver  *services.KeyResolver
-	Notifier  *services.Notifier
-	CanarySvc *services.CanaryService
-	Refresher *services.TokenRefresher
-	CCHub     *services.CCEventHub // CC live-tail pub/sub
+	Crypto       *services.Crypto
+	Resolver     *services.KeyResolver
+	Notifier     *services.Notifier
+	CanarySvc    *services.CanaryService
+	Refresher    *services.TokenRefresher
+	CCHub        *services.CCEventHub        // CC live-tail pub/sub
+	CCApprovals  *services.CCApprovalRegistry // discord_request_approval state
 
 	AdminAuth  *middleware.AdminAuth
 	ClientAuth *middleware.ClientAuth
@@ -75,8 +76,9 @@ func (s *Server) initShared() *SharedServices {
 		ApprovalQ: approvalQ, RequestLogQ: requestLogQ,
 		NotifQ: notifQ, CanaryQ: canaryQ, SettingsQ: settingsQ,
 		Crypto: crypto, Resolver: resolver, Notifier: notifier, CanarySvc: canarySvc,
-		CCHub:     services.NewCCEventHub(),
-		AdminAuth: adminAuth, ClientAuth: clientAuth,
+		CCHub:       services.NewCCEventHub(),
+		CCApprovals: services.NewCCApprovalRegistry(),
+		AdminAuth:   adminAuth, ClientAuth: clientAuth,
 	}
 }
 
@@ -95,6 +97,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	ccQ := queries.NewControlChannelQueries(s.db)
 	ccH := handlers.NewControlChannelHandler(ccQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ, ss.SettingsQ, ss.Crypto, services.NewDiscordBot())
 	ccH.SetHub(ss.CCHub)
+	ccH.SetApprovals(ss.CCApprovals)
 	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth)
 
 	// Static files
@@ -355,7 +358,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	// Control Channel client API (client auth required). Real Discord IDs
 	// stay server-side — agents see only opaque handles.
 	ccQ := queries.NewControlChannelQueries(s.db)
-	ccClientH := handlers.NewCCClientHandler(ccQ, ss.APIKeyQ, ss.Crypto, services.NewDiscordBot(), ss.CCHub)
+	ccClientH := handlers.NewCCClientHandler(ccQ, ss.APIKeyQ, ss.Crypto, services.NewDiscordBot(), ss.CCHub, ss.CCApprovals)
 	// CC v2 client API — cc_id is implicit (1:1 client↔CC).
 	clientMux.HandleFunc("GET /client/cc", ccClientH.GetMyCC)
 	clientMux.HandleFunc("GET /client/cc/events", ccClientH.Events)
@@ -366,6 +369,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	clientMux.HandleFunc("POST /client/cc/channels/{handle}/messages", ccClientH.PostMessage)
 	clientMux.HandleFunc("PATCH /client/cc/channels/{handle}/messages/{message_id}", ccClientH.EditMessage)
 	clientMux.HandleFunc("DELETE /client/cc/channels/{handle}/messages/{message_id}", ccClientH.DeleteMessage)
+	clientMux.HandleFunc("POST /client/cc/channels/{handle}/approval", ccClientH.RequestApproval)
 	clientMux.HandleFunc("GET /client/cc/inbox", ccClientH.PullInbox)
 
 	// Client config (no auth — needed during duckway init before token is verified)

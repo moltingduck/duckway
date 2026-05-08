@@ -118,6 +118,21 @@ func (s *MCPServer) toolDefinitions() []map[string]interface{} {
 				},
 			},
 		},
+		{
+			"name":        "discord_request_approval",
+			"description": "Ask a human in Discord to approve / pick an option via reaction vote. Posts the question, pre-adds emoji reactions (✅/❌ for default yes/no, or 1️⃣2️⃣3️⃣… for multi-option), and BLOCKS until someone reacts or the timeout fires. Returns {chosen, reactor_user_id, timed_out}. Use before destructive or significant actions.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"channel_handle":    map[string]interface{}{"type": "string", "description": "Channel to ask in. Use the current task channel handle from your context."},
+					"question":          map[string]interface{}{"type": "string", "description": "What to ask the human (markdown OK)."},
+					"options":           map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional list of choices. Default is [\"yes\",\"no\"]. Max 10."},
+					"timeout_seconds":   map[string]interface{}{"type": "number", "description": "How long to wait (1..3600). Default 300 = 5 minutes."},
+					"required_reactors": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional list of Discord user_ids — only these users can decide."},
+				},
+				"required": []string{"channel_handle", "question"},
+			},
+		},
 	}
 }
 
@@ -180,6 +195,19 @@ func (s *MCPServer) handleToolCall(ctx context.Context, req jsonrpcRequest) json
 			path += fmt.Sprintf("?limit=%d", int(v))
 		}
 		out, err2 = s.callServer(ctx, "GET", path, nil)
+	case "discord_request_approval":
+		handle, _ := args["channel_handle"].(string)
+		body := map[string]interface{}{"question": args["question"]}
+		if v, ok := args["options"]; ok {
+			body["options"] = v
+		}
+		if v, ok := args["timeout_seconds"].(float64); ok {
+			body["timeout_seconds"] = int(v)
+		}
+		if v, ok := args["required_reactors"]; ok {
+			body["required_reactors"] = v
+		}
+		out, err2 = s.callServer(ctx, "POST", fmt.Sprintf("/client/cc/channels/%s/approval", handle), body)
 	case "discord_wait_for_message":
 		path := "/client/cc/inbox"
 		q := url.Values{}

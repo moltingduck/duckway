@@ -23,7 +23,8 @@ type ControlChannelHandler struct {
 	settings     *queries.SettingsQueries
 	crypto       *svc.Crypto
 	bot          *svc.DiscordBot
-	hub          *svc.CCEventHub // optional, set via SetHub
+	hub          *svc.CCEventHub          // optional, set via SetHub
+	approvals    *svc.CCApprovalRegistry // optional, set via SetApprovals
 }
 
 func NewControlChannelHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, placeholders *queries.PlaceholderQueries, services *queries.ServiceQueries, clients *queries.ClientQueries, settings *queries.SettingsQueries, crypto *svc.Crypto, bot *svc.DiscordBot) *ControlChannelHandler {
@@ -417,12 +418,17 @@ func (h *ControlChannelHandler) Test(w http.ResponseWriter, r *http.Request) {
 // endpoint can publish synthetic events for e2e tests. Optional.
 func (h *ControlChannelHandler) SetHub(hub *svc.CCEventHub) { h.hub = hub }
 
-// POST /api/cc/{id}/inject_event — DEBUG ONLY. Publishes a synthetic
-// CCEvent to the hub for the CC's client. Used by the e2e suite to drive
-// the daemon end-to-end without a real Discord WSS gateway. Gated at
-// route registration on DUCKWAY_CC_DEBUG_INJECT=1.
+// SetApprovals lets the debug InjectEvent endpoint resolve approval
+// reactions in tests. Optional.
+func (h *ControlChannelHandler) SetApprovals(r *svc.CCApprovalRegistry) { h.approvals = r }
+
+// POST /api/cc/{id}/inject_event — DEBUG ONLY. Either:
+//  • publishes a synthetic CCEvent to the hub (default), or
+//  • triggers an approval reaction (when type="reaction_add", body
+//    carries message_id + emoji + reactor_user_id).
 //
-// body: {"type":"message_create","channel_handle":"dwch_x","payload":{"content":"...","author":{...}}}
+// Used by the e2e suite to drive the daemon + approval flows without a
+// real Discord WSS gateway. Gated on DUCKWAY_CC_DEBUG_INJECT=1.
 func (h *ControlChannelHandler) InjectEvent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	cc, err := h.cc.GetByID(id)
@@ -430,17 +436,31 @@ func (h *ControlChannelHandler) InjectEvent(w http.ResponseWriter, r *http.Reque
 		jsonError(w, "not found", http.StatusNotFound)
 		return
 	}
-	if h.hub == nil {
-		jsonError(w, "hub not configured", http.StatusServiceUnavailable)
-		return
-	}
 	var req struct {
-		Type    string          `json:"type"`
-		Handle  string          `json:"channel_handle"`
-		Payload json.RawMessage `json:"payload"`
+		Type      string          `json:"type"`
+		Handle    string          `json:"channel_handle"`
+		Payload   json.RawMessage `json:"payload"`
+		MessageID string          `json:"message_id"`
+		Emoji     string          `json:"emoji"`
+		UserID    string          `json:"reactor_user_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Type == "reaction_add" {
+		if h.approvals == nil {
+			jsonError(w, "approvals registry not configured", http.StatusServiceUnavailable)
+			return
+		}
+		ok := h.approvals.Resolve(req.MessageID, req.Emoji, req.UserID)
+		jsonResponse(w, map[string]interface{}{"status": "published", "resolved": ok})
+		return
+	}
+
+	if h.hub == nil {
+		jsonError(w, "hub not configured", http.StatusServiceUnavailable)
 		return
 	}
 	h.hub.Publish(cc.ClientID, svc.CCEvent{
