@@ -558,7 +558,8 @@ func (h *CCClientHandler) RequestApproval(w http.ResponseWriter, r *http.Request
 		fmt.Fprintf(&body, "_Only these users can decide: <@%s>_", strings.Join(req.RequiredReactors, ">, <@"))
 	}
 
-	msgID, err := h.bot.PostMessage(r.Context(), botTok, ch.ChannelID, body.String())
+	originalBody := body.String()
+	msgID, err := h.bot.PostMessage(r.Context(), botTok, ch.ChannelID, originalBody)
 	if err != nil {
 		jsonError(w, "discord post: "+err.Error(), http.StatusBadGateway)
 		return
@@ -574,14 +575,25 @@ func (h *CCClientHandler) RequestApproval(w http.ResponseWriter, r *http.Request
 	timer := time.NewTimer(time.Duration(req.TimeoutSeconds) * time.Second)
 	defer timer.Stop()
 
+	// editWithFinal rewrites the question message with the resolution
+	// so humans see what was chosen + by whom without hunting for the
+	// reaction. Best-effort — Discord errors don't change the response.
+	editWithFinal := func(footer string) {
+		final := originalBody + "\n" + footer
+		_ = h.bot.EditMessage(r.Context(), botTok, ch.ChannelID, msgID, final)
+	}
+
 	select {
 	case res := <-resultCh:
+		editWithFinal(fmt.Sprintf("\n**✅ Decided:** %s %s by <@%s>",
+			res.Emoji, res.Chosen, res.ReactorUserID))
 		jsonResponse(w, res)
 	case <-r.Context().Done():
 		h.approvals.Cancel(msgID)
 		jsonResponse(w, svc.ApprovalResult{MessageID: msgID, TimedOut: true})
 	case <-timer.C:
 		h.approvals.Cancel(msgID)
+		editWithFinal("\n**⏱️ Timed out** without a response.")
 		jsonResponse(w, svc.ApprovalResult{MessageID: msgID, TimedOut: true})
 	}
 }

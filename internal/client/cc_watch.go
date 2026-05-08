@@ -160,6 +160,8 @@ func (w *CCWatch) handleEvent(eventType string, data []byte) {
 		w.handleMessageCreate(data)
 	case "channel_delete":
 		w.handleChannelDelete(data)
+	case "session_reset":
+		w.handleSessionReset(data)
 	default:
 		// message_update, channel_update, etc — currently ignored. The
 		// session model assumes prompts come from message_create only.
@@ -216,6 +218,22 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		_ = w.api.PostCC(context.Background(), env.Handle,
 			"⚠️ session queue full (10 messages backed up) — your message was dropped, please retry once claude catches up.")
 	}
+}
+
+// handleSessionReset clears the daemon's cached session_id for a handle
+// (server-side `!reset` command). The runner stays alive — only the
+// session map entry is dropped, so the next message starts claude
+// without --resume.
+func (w *CCWatch) handleSessionReset(data []byte) {
+	var env sseEnvelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return
+	}
+	if env.Handle == "" {
+		return
+	}
+	_ = w.sessions.Drop(env.Handle)
+	log.Printf("[cc-watch] %s: session reset", env.Handle)
 }
 
 func (w *CCWatch) handleChannelDelete(data []byte) {

@@ -81,6 +81,13 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 		}
 		h.handleEnd(ctx, botToken, cc, ch)
 
+	case "!reset":
+		if ch.Kind == "management" {
+			h.reply(ctx, botToken, ch.ChannelID, "❌ `!reset` clears the *current* channel's session — run it inside a task channel.")
+			return
+		}
+		h.handleReset(ctx, botToken, cc, ch)
+
 	case "!list":
 		if ch.Kind != "management" {
 			h.reply(ctx, botToken, ch.ChannelID, "❌ `!list` only works in the management channel.")
@@ -154,6 +161,35 @@ func (h *CCCommandHandler) handleNew(ctx context.Context, botToken string, cc *m
 		"✅ Created **#"+created.Name+"** — `"+handle+"`\n"+
 			"   cwd: `"+cwdNote+"`\n"+
 			"   Send a message in that channel to start a claude session.")
+}
+
+// handleReset wipes the channel's session_id without archiving the channel.
+// The next message starts a fresh claude session in the same cwd. Useful
+// when the agent wedges itself or you want a clean context but want to
+// keep the channel + history.
+func (h *CCCommandHandler) handleReset(ctx context.Context, botToken string, cc *models.ControlChannel, ch *models.CCChannel) {
+	prev := ch.SessionID
+	if err := h.cc.SetChannelSession(ch.Handle, "", ch.Cwd); err != nil {
+		h.reply(ctx, botToken, ch.ChannelID, "❌ reset failed: "+err.Error())
+		return
+	}
+	if h.hub != nil && cc.ClientID != "" {
+		// Daemons watching this channel should drop their cached
+		// session_id too. Reuse the channel_delete event shape — the
+		// daemon's runner will drop the session map entry. The Discord
+		// channel itself is NOT deleted; only the daemon's local
+		// session_id binding is.
+		h.hub.Publish(cc.ClientID, CCEvent{
+			Type:   "session_reset",
+			CCID:   cc.ID,
+			Handle: ch.Handle,
+		})
+	}
+	if prev == "" {
+		h.reply(ctx, botToken, ch.ChannelID, "♻️ No session was active. Next message starts a fresh one.")
+	} else {
+		h.reply(ctx, botToken, ch.ChannelID, "♻️ Session `"+short(prev, 8)+"` cleared. Next message starts fresh.")
+	}
 }
 
 func (h *CCCommandHandler) handleEnd(ctx context.Context, botToken string, cc *models.ControlChannel, ch *models.CCChannel) {
@@ -259,6 +295,7 @@ func (h *CCCommandHandler) decryptBotToken(apiKeyID string) (string, error) {
 const helpText = "**Duckway CC commands**\n" +
 	"`!new <slug> [--cwd <path>] [--topic <text>]` — create a task channel\n" +
 	"`!end` — end the *current* task channel's session and archive it\n" +
+	"`!reset` — wipe the *current* task channel's session_id; next message starts fresh\n" +
 	"`!list` — list active task channels\n" +
 	"`!status` — daemon + session counts\n" +
 	"`!help` — this message"

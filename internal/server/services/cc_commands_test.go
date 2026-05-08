@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -308,6 +309,48 @@ func TestHandle_End_FromTaskChannel(t *testing.T) {
 func TestHandle_End_RejectsInManagement(t *testing.T) {
 	h := newCommandHarness(t)
 	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!end")
+	if !h.lastReplyContains("inside a task channel") {
+		t.Errorf("expected scope error, got %v", h.reqs)
+	}
+}
+
+func TestHandle_Reset_FromTaskChannel(t *testing.T) {
+	h := newCommandHarness(t)
+	if _, err := h.db.Exec(`INSERT INTO cc_channels VALUES ('dwch_t','cc1','client1','T1','t','','task','sess-aaa','/cwd',0,datetime('now'),null)`); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := h.cc.GetChannelByHandle("dwch_t")
+	sub, unsub := h.hub.Subscribe("client1")
+	defer unsub()
+
+	h.handler.Handle(context.Background(), "cc1", task, "!reset")
+
+	// Session_id cleared in DB
+	updated, _ := h.cc.GetChannelByHandle("dwch_t")
+	if updated.SessionID != "" {
+		t.Errorf("session_id should be cleared, got %q", updated.SessionID)
+	}
+	// Channel still exists (NOT archived)
+	if updated.Archived {
+		t.Error("!reset should not archive the channel")
+	}
+	// Hub fired session_reset
+	select {
+	case ev := <-sub:
+		if ev.Type != "session_reset" || ev.Handle != "dwch_t" {
+			t.Errorf("unexpected event: %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Error("expected session_reset event")
+	}
+	if !h.lastReplyContains("Session") {
+		t.Errorf("expected reset reply, got %v", h.reqs)
+	}
+}
+
+func TestHandle_Reset_RejectsInManagement(t *testing.T) {
+	h := newCommandHarness(t)
+	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!reset")
 	if !h.lastReplyContains("inside a task channel") {
 		t.Errorf("expected scope error, got %v", h.reqs)
 	}
