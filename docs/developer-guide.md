@@ -337,58 +337,93 @@ The phantom tokens look exactly like real Anthropic OAuth tokens (`sk-ant-dw_...
 
 ## Control Channels (Discord)
 
-A Control Channel binds `{discord_bot_token, guild_id, category_id}`. Assigned clients each get a home text channel under the category and an MCP tool surface for posting / creating task channels / reading replies — without ever seeing the bot token or the real Discord IDs.
+CC v2: a Control Channel binds **one client to one Discord category** via a bot. Channels under the category are either:
 
-### Tables
+- a single **management channel** (auto-created on CC create, named `<client>-control`, parses `!`-prefix commands server-side), or
+- **task channels** (one per claude session — created via `!new` or the `discord_create_task_channel` MCP tool).
+
+When a human posts in a task channel, the gateway forwards the event over SSE to the on-machine `duckway cc watch` daemon, which runs `claude -p [--resume <session_id>] --dangerously-skip-permissions` and posts the JSON output back to the channel.
+
+### Tables (v2 — `client_cc` is gone)
 
 | Table | Purpose |
 |---|---|
-| `control_channels` | One row per CC; references `services` + `api_keys`; config JSON holds `{guild_id, category_id}` |
-| `cc_channels` | Cache of every channel under a CC (real `channel_id` → opaque `dwch_…` handle, `is_home` flag) |
-| `client_cc` | Assignment row: `(client_id, cc_id, agent_type, home_handle, placeholder_id)` |
-| `discord_inbox` | Buffered gateway events (`MESSAGE_CREATE/UPDATE/DELETE`) for long-poll |
+| `control_channels` | One row per CC. Carries `client_id` (UNIQUE), `agent_type`, `placeholder_id`, plus the bot reference. `config` JSON holds `{guild_id, category_id}`. |
+| `cc_channels` | Cache of every channel under a CC. `kind ∈ {management, task}`, plus `session_id` + `cwd` written by the daemon. |
+| `discord_inbox` | Buffered gateway events for cold-start replay — long-polled by `/client/cc/inbox`. |
 
-`placeholder_keys.env_name` for CC phantoms is `DUCKWAY_CC_<cc_id>` so the table-level `UNIQUE(client_id, service_id, env_name)` doesn't collide when one client is assigned to multiple CCs on the same bot.
+`placeholder_keys.env_name` for CC phantoms is `DUCKWAY_CC_<cc_id>` so the `UNIQUE(client_id, service_id, env_name)` triple doesn't collide.
 
 ### Components
 
 ```
-internal/server/services/discord_bot.go      Thin REST client (CreateChannel, ArchiveChannel, PostMessage, …)
-internal/server/services/cc_gateway.go       Multi-bot WSS manager + inbox cleanup goroutine
-internal/server/handlers/control_channels.go Admin CRUD + assign/unassign (calls discord_bot)
-internal/server/handlers/cc_client.go        /client/cc/* — handle-based, NEVER returns real channel_id
-internal/client/sync_cc.go                   Writes ~/.duckway/cc.json + merges ~/.claude.json
-internal/client/mcp.go                       Stdio MCP server (JSON-RPC 2.0)
-internal/client/mcp_tools.go                 9 discord_* tool implementations (delegate to /client/cc/*)
-cmd/client/main.go                           `duckway mcp serve` subcommand
+internal/server/services/discord_bot.go      Thin REST client (Create/Archive/Delete channel, Post/Edit/Delete msg,
+                                             AddReaction)
+internal/server/services/cc_gateway.go       Per-bot WSS manager. Dispatches MESSAGE_CREATE/UPDATE/DELETE,
+                                             CHANNEL_DELETE/UPDATE, MESSAGE_REACTION_ADD.
+internal/server/services/cc_event_hub.go     In-process pub/sub. Per-client buffered chans, non-blocking publish.
+internal/server/services/cc_commands.go      `!new` / `!end` / `!list` / `!status` / `!help` parser
+internal/server/services/cc_approvals.go     Reaction-vote registry for discord_request_approval
+internal/server/handlers/control_channels.go Admin CRUD; Create provisions the management channel + phantom token
+internal/server/handlers/cc_client.go        /client/cc/* — implicit cc_id (1:1), real IDs never returned
+
+internal/client/sync_cc.go                   Writes ~/.duckway/cc.json + merges ~/.claude.json mcpServers entry
+internal/client/mcp.go + mcp_tools.go        Stdio MCP server (JSON-RPC 2.0) — 10 discord_* tools
+internal/client/cc_watch.go                  SSE consumer + reconnect loop
+internal/client/cc_runner.go                 Per-channel FIFO queue + `claude -p` exec wrapper
+internal/client/cc_session_store.go          ~/.duckway/cc-sessions.json persistence
+cmd/client/main.go                           `duckway mcp serve` + `duckway cc watch` subcommands
+
+examples/duckway-cc-watch.service            Sample systemd user unit
 ```
 
-### Flow at runtime
+### Runtime flow (full round-trip)
 
 ```
-Admin assigns CC                           agent runs `duckway sync`         claude session
-        │                                          │                                │
-POST /api/clients/{id}/cc                    GET /client/cc                   spawn `duckway mcp serve`
-        ▼                                          ▼                                │
-decrypt bot token                           write ~/.duckway/cc.json                ▼
-Discord POST /guilds/{g}/channels           merge ~/.claude.json         tools/list → 9 discord_* tools
-issue placeholder DUCKWAY_CC_<cc_id>                                         tools/call discord_post
-persist client_cc + cc_channels                                                     │
-                                                                              POST /client/cc/{id}/channels/{handle}/messages
-                                                                                    │
-                                                                              decrypt bot token
-                                                                              POST discord.com/api/v10/channels/{real_id}/messages
-                                                                                    │
-                                                                              ◀ message_id
+Admin                     duckway-server                              agent machine
+─────                     ──────────────                              ─────────────
+POST /api/cc          ──→ decrypt bot token
+                          Discord POST /guilds/{g}/channels      ┐
+                          issue phantom DUCKWAY_CC_<cc_id>       │   <-- CC create
+                          persist control_channels + cc_channels ┘
+
+                                                                 ┌─→  duckway sync
+                                                                 │      ~/.duckway/cc.json
+                                                                 │      ~/.claude.json (mcpServers entry)
+                                                                 │
+                                                                 └─→  duckway cc watch
+                                                                        SSE: GET /client/cc/events
+
+                          (Discord gateway WSS)
+human types in task ────→ MESSAGE_CREATE (Discord WSS)
+                          cc_gateway looks up cc_channels      ──→ SSE message_create event
+                          publishes to hub + writes inbox           ▼
+                                                                  cc_runner enqueue → claude -p --resume sess-X "msg"
+                                                                  (in cwd from cc_channels.cwd or default)
+                                                                  parse JSON output → SessionStore.Set(handle, sess-X')
+                          ◀── POST /client/cc/.../messages ────  post result back
+                          bot.PostMessage → Discord
+
+human deletes channel ──→ CHANNEL_DELETE
+                          cc_channels row dropped
+                          channel_delete event → SSE             ──→ cc_runner.Stop + SessionStore.Drop(handle)
 ```
 
-A separate goroutine (`CCGatewayManager`) holds one Discord WSS connection per unique bot token, filters dispatched events by `cc_channels` lookup, and writes them into `discord_inbox`. `discord_wait_for_message` long-polls that table.
+For the `!cmd` flow, `routeMessageEvent` peels `!`-prefix messages off before they reach the inbox or SSE — they're handled in-process by `cc_commands.Handle` and the bot replies directly.
+
+For `discord_request_approval`, the server posts the question + reactions, registers `(message_id → resultChan)` in `CCApprovalRegistry`, and blocks on the chan until the gateway routes a `MESSAGE_REACTION_ADD` to `Resolve()`.
 
 ### Security boundary
 
-- Bot token = real boundary. Two CCs sharing one bot can reach each other's channels (Discord can't tell them apart).
-- Admin sets the boundary by giving the bot only `MANAGE_CHANNELS` on the target category, not the whole guild.
-- `cc_client.go` enforces two ACL layers: client must be assigned to the CC; any handle in the URL must belong to that CC.
+- Bot token = the only real boundary. Different teams → different bots.
+- `cc_client.go` enforces two ACL layers: client must be bound to the CC (1:1), and every `{handle}` in a URL must belong to that CC.
+- Daemon spawns claude with `--dangerously-skip-permissions` — the Discord channel is the trust boundary, anyone in the category can drive the agent.
+
+### Test hooks
+
+- `DUCKWAY_CC_DISABLE_GATEWAY=1` skips the WSS dial (REST + provisioning + SSE still work).
+- `DUCKWAY_CC_DEBUG_INJECT=1` exposes `POST /api/cc/{id}/inject_event` so e2e can publish synthetic CCEvents (or resolve approvals via `type=reaction_add`) without a real Discord WSS.
+- The runner tests use a fake `claude` shell script that prints deterministic JSON; `cc_session_store_test.go` covers persistence + atomic writes.
 
 ### Test environment
 

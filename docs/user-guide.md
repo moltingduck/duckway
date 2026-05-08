@@ -247,31 +247,55 @@ Key points:
 
 ## Control Channels (Discord-as-comms)
 
-Lets a Claude Code agent talk to humans inside a Discord category — one channel per task — without seeing the bot token or any real Discord IDs.
+A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to a claude session — every message a human types triggers `claude -p --resume <session_id>` on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!list` / `!status` / `!help` text commands.
 
 ### Admin one-time setup
 
-1. Discord developer portal → make a bot, enable **Message Content Intent** if you want the agent to read replies.
-2. Invite the bot to your guild with `Manage Channels` + `Send Messages` on the target category.
+1. Discord developer portal → make a bot. Enable **Message Content Intent** (you want to read what humans type) and **Server Members Intent** (only if you'll restrict approvals to specific users).
+2. Invite the bot to your guild with `Manage Channels` + `Send Messages` + `Add Reactions` + `Read Message History` on the target category.
 3. Admin panel:
    - **API Keys** → add the bot token under service `discord`
-   - **Control Channels** → New CC → name it, pick the bot, fill `guild_id` + `category_id`
+   - **Control Channels** → **New CC** → fill name, **pick a client**, agent type, the bot, `guild_id`, `category_id`. duckway provisions `<client>-control` under the category and issues a phantom bot token bound to the chosen client.
 
-### Per-client wire-up
+### Per-client wire-up (agent machine)
 
-1. **Clients** → open the client → **Assign CC** → pick the CC + agent type (`claude_code`).
-   Server calls Discord, creates a home channel named after the client, issues a phantom token bound to (client, bot, CC), and stores the binding.
-2. On the agent machine: `duckway sync` writes `~/.duckway/cc.json` and merges a `duckway-cc` entry into `~/.claude.json`.
-3. Next `claude` session sees these tools (only when at least one CC is assigned):
-   `discord_list_assigned_ccs`, `discord_list_channels`, `discord_create_task_channel`, `discord_archive_channel`, `discord_post`, `discord_edit_message`, `discord_delete_message`, `discord_read_recent`, `discord_wait_for_message`.
+```bash
+duckway sync                                  # writes ~/.duckway/cc.json + ~/.claude.json mcp entry
 
-If the client has only one CC, `cc_id` can be omitted on tool calls.
+# Run the watcher daemon in foreground to test:
+duckway cc watch
+
+# Or install the systemd user unit (Linux):
+mkdir -p ~/.config/systemd/user/
+cp examples/duckway-cc-watch.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now duckway-cc-watch
+journalctl --user -u duckway-cc-watch -f
+```
+
+The daemon needs the `claude` binary in `$PATH`. Per-channel `cwd` defaults to `~/.duckway/cc-workspace/<handle>/` (auto-created); override with `!new --cwd /path` from the management channel.
+
+### Inside a claude session, the model sees these MCP tools
+
+`discord_get_my_cc`, `discord_list_channels`, `discord_create_task_channel`, `discord_archive_channel`, `discord_post`, `discord_edit_message`, `discord_delete_message`, `discord_read_recent`, `discord_wait_for_message`, `discord_request_approval` (reaction-vote — blocks until ✅/❌).
+
+### Management channel commands
+
+In `<client>-control`:
+- `!new <slug> [--cwd <path>] [--topic "…"]` → create a task channel + register a session for it
+- `!list` → table of task channels + which have running sessions
+- `!status` → daemon up? agent type? counts?
+- `!help`
+
+In any task channel:
+- `!end` → end the current claude session, archive the Discord channel
 
 ### Security boundary
 
-- The **bot token** is the only real boundary. Two CCs that share a bot can reach each other's channels — use **different bots** to isolate teams.
+- The **bot token** is the only real boundary. Two CCs sharing a bot can reach each other's channels — use **different bots** to isolate teams.
 - The agent never sees `channel_id`, `guild_id`, or `category_id` — only opaque `dwch_…` handles.
-- A client can only operate within CCs it's assigned to (HTTP 403 otherwise) AND any handle in a path is checked to belong to that CC.
+- A client can only operate within its own CC (HTTP 403 otherwise) AND any handle in a path is checked to belong to that CC.
+- The daemon spawns claude with `--dangerously-skip-permissions` — anyone in the Discord category can make the agent act. Trust the channel.
 
 ### Inbox tuning (Settings page)
 
@@ -281,7 +305,7 @@ If the client has only one CC, `cc_id` can be omitted on tool calls.
 | `cc_inbox_max_per_channel` | 1000 |
 | `cc_inbox_cleanup_interval_minutes` | 10 |
 
-`DUCKWAY_CC_DISABLE_GATEWAY=1` skips the Discord WSS connection at server startup (REST + provisioning still work) — useful in test environments.
+`DUCKWAY_CC_DISABLE_GATEWAY=1` skips the Discord WSS connection at server startup (REST + provisioning still work) — useful in test environments. `DUCKWAY_CC_DEBUG_INJECT=1` exposes a synthetic event endpoint for e2e (off by default in prod).
 
 ---
 

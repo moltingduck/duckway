@@ -1,0 +1,46 @@
+# systemd user unit for `duckway cc watch` — the daemon that consumes
+# the Discord SSE stream from duckway-server and runs `claude -p` per
+# task channel.
+#
+# Install (per-user, no root):
+#   mkdir -p ~/.config/systemd/user/
+#   cp duckway-cc-watch.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now duckway-cc-watch
+#
+# Tail the log:
+#   journalctl --user -u duckway-cc-watch -f
+#
+# Stop / disable:
+#   systemctl --user stop duckway-cc-watch
+#   systemctl --user disable duckway-cc-watch
+#
+# Notes:
+# * Claude Code must already be installed (the daemon shells out to
+#   `claude`). Run `which claude` to confirm.
+# * `loginctl enable-linger <username>` lets the unit run when you
+#   are not logged in. Without it the daemon stops when you log out.
+# * The daemon reads ~/.duckway/config.yaml + cc.json, so it inherits
+#   the same client_token your `duckway sync` uses.
+
+[Unit]
+Description=Duckway Control Channel watcher (Discord ↔ claude)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/duckway cc watch
+Restart=on-failure
+RestartSec=5
+# Limit how aggressively systemd restarts a flapping daemon —
+# duckway already reconnects internally, so retries here are extra.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# Run the agent's claude with the user's normal HOME / shell PATH so
+# `claude` is discoverable and reads ~/.claude/* config.
+Environment=HOME=%h
+
+[Install]
+WantedBy=default.target

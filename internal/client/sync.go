@@ -66,9 +66,20 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 		log.Printf("Warning: cc sync failed: %v", err)
 	} else if ccCount > 0 {
 		log.Printf("Synced %d Control Channel assignment(s)", ccCount)
+		printCCDaemonHint()
 	}
 
 	return len(keys), nil
+}
+
+// printCCDaemonHint nudges the user toward starting the watcher daemon
+// when they've just synced a CC for the first time. Idempotent on
+// repeat syncs — the message is short enough to not be noisy.
+func printCCDaemonHint() {
+	log.Printf("To receive Discord messages in this client, run the watcher:")
+	log.Printf("  duckway cc watch                      # foreground, for testing")
+	log.Printf("Or install the systemd user unit (Linux):")
+	log.Printf("  examples/duckway-cc-watch.service     # see the file for instructions")
 }
 
 // SyncClaudeCredentials fetches phantom Claude OAuth credentials and writes

@@ -13,7 +13,7 @@ API proxy that manages real API keys centrally. AI agents use **phantom tokens**
 - **Admin panel** — dark theme, Go templates + HTMX, search/filter/pagination, live ACL preview
 - **Discord Gateway WSS + Telegram polling** — interactive approval without public endpoints
 - **Control Channels (Discord)** — agents talk to humans in a Discord category via MCP tools; real channel IDs / guild IDs / bot tokens never leave the server
-- **190 E2E tests** + unit tests
+- **196 E2E tests** + unit tests
 
 ## Documentation
 
@@ -155,7 +155,7 @@ Agents **cannot** reach the admin panel. With Tailscale, enforce by ACL on the a
 | `./scripts/prod.sh logs` | Follow logs |
 | `./scripts/prod.sh password` | Show admin password (if still in logs) |
 | `./scripts/reset-password.sh` | Generate a fresh random admin password (prod) |
-| `./scripts/e2e-test.sh` | Run the full E2E suite (190 tests) |
+| `./scripts/e2e-test.sh` | Run the full E2E suite (196 tests) |
 | `./scripts/phantom-proxy-test.sh` | Real-API test against OpenAI/Anthropic/GitHub/Discord |
 
 ## Environment Files
@@ -251,24 +251,57 @@ Per-client email tagging: `admin+shortid@gmail.com` identifies which machine was
 
 No public endpoints needed — all outbound connections.
 
-## Control Channels (Discord)
+## Control Channels (Discord ↔ claude)
 
-A **Control Channel (CC)** = `{bot, guild, category}`. Each assigned client gets a home text channel under the category, plus the ability to create per-task channels at runtime — all driven through MCP tools the agent's Claude Code session sees automatically.
+A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category:
+
+- a **management channel** (auto-created, named `<client>-control`) accepts text commands: `!new`, `!end`, `!list`, `!status`, `!help`
+- **task channels** map 1:1 to claude sessions — every message a human types triggers `claude -p --resume <session_id>` on the agent's machine and the result is posted back
 
 ```
-Admin → New CC (Discord bot + guild_id + category_id)
-      → Assign CC to client + agent_type           ──→ Discord auto-creates channel
-                                                       phantom token issued to client
+Admin                                Server                         Agent machine
+─────                                ──────                         ─────────────
+1. New CC (bot + guild +             2. Provisions <client>-control 3. duckway sync
+   category, picks client               channel + issues phantom       → ~/.duckway/cc.json
+   + agent type)                        bot token                      → ~/.claude.json (mcp.json entry)
 
-Agent  duckway sync                                ──→ ~/.duckway/cc.json
-                                                       ~/.claude.json (writes "duckway-cc")
-       claude                                       ──→ launches `duckway mcp serve`
-       (model calls discord_post / discord_create_task_channel / …)
+                                                                    4. duckway cc watch  (or systemd unit)
+                                                                       → SSE: /client/cc/events
+
+Human types "deploy v2.1?" ────→ MESSAGE_CREATE → SSE ─────────────→ daemon enqueues
+in #task-foo                                                          claude -p --resume sess-... "deploy v2.1?"
+                                                                            │
+                                                                            ▼
+                                ◀── POST /client/cc/.../messages ──── posts result back
+
+Human types "!new fix-bug"  ───→ server-side parser
+in #<client>-control            → bot creates #fix-bug under category
+                                → cc_channels row {kind:"task"}
+                                ◀── "✅ Created **#fix-bug** — `dwch_…`"
 ```
 
-Real Discord IDs (channel_id, guild_id, category_id) **never leave the server** — agents only ever hold opaque `dwch_…` handles. Two-layer ACL: the client must be assigned to the CC, AND any handle in a path must belong to that CC. A server-side gateway WSS connection per bot writes `MESSAGE_CREATE` events into a SQLite inbox; `discord_wait_for_message` long-polls it.
+**MCP tools** available to the model during a claude session: `discord_get_my_cc`, `discord_list_channels`, `discord_create_task_channel`, `discord_archive_channel`, `discord_post`, `discord_edit_message`, `discord_delete_message`, `discord_read_recent`, `discord_wait_for_message`, **`discord_request_approval`** (reaction vote — blocks the tool call until ✅/❌).
 
-Bot token = security boundary. Two CCs sharing one bot can technically reach each other's channels — use a different bot to isolate teams. See the **Control Channels** section in `/admin/docs` for the full walkthrough.
+Real Discord IDs (`channel_id`, `guild_id`, `category_id`) **never leave the server** — agents and the daemon only hold opaque `dwch_…` handles. Two-layer ACL: client must be assigned to the CC, AND any handle in a path must belong to that CC.
+
+Bot token = the only real security boundary. Two CCs sharing one bot can reach each other's channels — use **different bots** to isolate teams. See the **Control Channels** section in `/admin/docs` for the full walkthrough.
+
+### Daemon (`duckway cc watch`)
+
+The watcher is what turns "human typed something" into "claude session ran". After `duckway sync`, start it:
+
+```bash
+duckway cc watch                                      # foreground, for testing
+
+# or as a systemd user unit (Linux):
+mkdir -p ~/.config/systemd/user/
+cp examples/duckway-cc-watch.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now duckway-cc-watch
+journalctl --user -u duckway-cc-watch -f
+```
+
+The daemon reads `~/.duckway/config.yaml` + `cc.json`, connects to the server's SSE feed, runs `claude` per task channel, and persists session ids in `~/.duckway/cc-sessions.json`. It needs the `claude` binary in `$PATH`.
 
 ## Tech Stack
 
@@ -303,6 +336,7 @@ duckway proxy stop          # Stop the running daemon
 duckway proxy status        # Show daemon status
 duckway status              # Server, keys, heartbeat, proxy, CA
 duckway mcp serve           # Stdio MCP server for Control Channels
+duckway cc watch            # SSE → claude exec daemon (Discord ↔ session)
 duckway update              # Compare with server, replace binary if drifted
 ```
 
