@@ -421,6 +421,90 @@ func TestHandle_Destroy_FromTaskChannel(t *testing.T) {
 	}
 }
 
+func TestHandle_Sessions_ForwardsToDaemon(t *testing.T) {
+	h := newCommandHarness(t)
+	sub, unsub := h.hub.Subscribe("client1")
+	defer unsub()
+
+	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!sessions duckway")
+
+	select {
+	case ev := <-sub:
+		if ev.Type != "client_command" || ev.Handle != "dwch_mgmt" {
+			t.Errorf("wrong event: %+v", ev)
+		}
+		var p struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		}
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			t.Fatalf("payload parse: %v", err)
+		}
+		if p.Command != "!sessions" {
+			t.Errorf("command = %q", p.Command)
+		}
+		if len(p.Args) != 1 || p.Args[0] != "duckway" {
+			t.Errorf("args = %v", p.Args)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no client_command event received")
+	}
+
+	// Server should NOT have replied directly via Discord — the daemon
+	// owns the response.
+	if h.hitsFor("POST", "/messages") != 0 {
+		t.Errorf("server should not auto-reply, hits=%v", h.hits)
+	}
+}
+
+func TestHandle_Sessions_NoDaemonReturnsErrorMessage(t *testing.T) {
+	h := newCommandHarness(t)
+	// No subscriber → SubscriberCount=0 → must reply with the offline error.
+	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!sessions")
+	if !h.lastReplyContains("daemon offline") {
+		t.Errorf("expected daemon-offline reply, got reqs=%v", h.reqs)
+	}
+}
+
+func TestHandle_Bind_ForwardsToDaemonWithMultipleIDs(t *testing.T) {
+	h := newCommandHarness(t)
+	sub, unsub := h.hub.Subscribe("client1")
+	defer unsub()
+
+	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!bind sess-1 sess-2 sess-3")
+
+	select {
+	case ev := <-sub:
+		var p struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		}
+		_ = json.Unmarshal(ev.Payload, &p)
+		if p.Command != "!bind" || len(p.Args) != 3 {
+			t.Errorf("unexpected payload: %+v", p)
+		}
+		if p.Args[0] != "sess-1" || p.Args[2] != "sess-3" {
+			t.Errorf("arg ordering broken: %v", p.Args)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no client_command event received")
+	}
+}
+
+func TestHandle_Bind_RejectsInTaskChannel(t *testing.T) {
+	h := newCommandHarness(t)
+	if _, err := h.db.Exec(`INSERT INTO cc_channels VALUES ('dwch_t','cc1','client1','T-real','t','','task','','/cwd',0,datetime('now'),null)`); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := h.cc.GetChannelByHandle("dwch_t")
+
+	h.handler.Handle(context.Background(), "cc1", task, "!bind sess-1")
+
+	if !h.lastReplyContains("only works in the management channel") {
+		t.Errorf("expected mgmt-only error, got %v", h.reqs)
+	}
+}
+
 func TestHandle_Destroy_RejectsInManagement(t *testing.T) {
 	h := newCommandHarness(t)
 	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!destroy")

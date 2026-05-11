@@ -357,7 +357,15 @@ In `<client>-control`:
 - `!new <slug> [--cwd <path>] [--topic "…"]` → create a task channel + register a session for it
 - `!list` → table of task channels + which have running sessions
 - `!status` → daemon up? agent type? counts?
+- `!sessions [<cwd-filter>]` → list local claude sessions on the agent that aren't yet bound to any CC channel
+- `!bind <session_id> [<session_id> …]` → for each id, create a task channel (named after `basename(cwd)`) and attach the session — next message in the new channel resumes the existing conversation
 - `!help`
+
+`!sessions` / `!bind` run on the agent (the daemon owns the filesystem), so the cc-watch daemon must be up. The server posts an "offline" error if it isn't.
+
+### Attaching from the CLI
+
+`duckway cc bind` on the agent box does the same thing without going through Discord. With no args it prints a numbered table and reads selections from stdin — accept `1,3,5`, `1-3`, or `all`, and an empty line cancels. Each selection becomes its own task channel. For scripts: `duckway cc bind --session <id> [--session <id> …] [--cwd <substr>]`.
 
 In any task channel:
 - `!end` → end the current claude session and **archive** the Discord channel (history kept, channel renamed and removed from the category)

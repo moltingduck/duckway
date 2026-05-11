@@ -267,6 +267,42 @@ func (c *APIClient) FetchCCChannels() ([]CCChannelInfo, error) {
 	return out, nil
 }
 
+// CreateCCChannelResult is what POST /client/cc/channels returns.
+type CreateCCChannelResult struct {
+	Handle string `json:"handle"`
+	Name   string `json:"name"`
+	Topic  string `json:"topic"`
+	Cwd    string `json:"cwd"`
+	Kind   string `json:"kind"`
+}
+
+// CreateCCChannel provisions a new task channel under this client's CC.
+// Server picks the dwch_ handle and forwards to Discord.
+func (c *APIClient) CreateCCChannel(ctx context.Context, name, topic, cwd string) (*CreateCCChannelResult, error) {
+	body, _ := json.Marshal(map[string]string{"name": name, "topic": topic, "cwd": cwd})
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		c.baseURL+"/client/cc/channels", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("create channel: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("server %d: %s", resp.StatusCode, string(raw))
+	}
+	var out CreateCCChannelResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("parse: %w", err)
+	}
+	return &out, nil
+}
+
 // PostCC posts a bot-author message to a CC channel by handle.
 func (c *APIClient) PostCC(ctx context.Context, handle, content string) error {
 	body, _ := json.Marshal(map[string]string{"content": content})

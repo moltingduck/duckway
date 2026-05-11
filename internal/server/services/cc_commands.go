@@ -109,6 +109,17 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 		}
 		h.handleStatus(ctx, botToken, cc, ch.ChannelID)
 
+	case "!sessions", "!bind":
+		// These are client-handled — the agent machine owns the filesystem
+		// state (~/.claude/projects/) and the cc-sessions.json binding, so
+		// the daemon is the only place that can do useful work. We just
+		// forward the raw command via SSE and let the daemon reply.
+		if ch.Kind != "management" {
+			h.reply(ctx, botToken, ch.ChannelID, "❌ `"+cmd+"` only works in the management channel.")
+			return
+		}
+		h.forwardToDaemon(ctx, botToken, cc, ch, cmd, args[1:])
+
 	default:
 		h.reply(ctx, botToken, ch.ChannelID, unknownCommandReply(cmd))
 	}
@@ -117,7 +128,7 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 // knownCommands is the canonical list used for `!help` discovery + the
 // fuzzy "did you mean" suggestion. Order is the user-facing display
 // order in !help.
-var knownCommands = []string{"!help", "!new", "!end", "!destroy", "!reset", "!list", "!status"}
+var knownCommands = []string{"!help", "!new", "!end", "!destroy", "!reset", "!list", "!status", "!sessions", "!bind"}
 
 // unknownCommandReply formats the friendly response for an unrecognised
 // !-prefix command. Suggests close matches (Levenshtein distance ≤ 2)
@@ -433,6 +444,32 @@ func (h *CCCommandHandler) handleStatus(ctx context.Context, botToken string, cc
 	h.reply(ctx, botToken, replyChannelID, msg)
 }
 
+// forwardToDaemon hands a !-prefix command off to the cc-watch daemon via
+// SSE. Used for commands that need filesystem access on the agent box
+// (!sessions, !bind). If no daemon is connected we fall back to a polite
+// error in the channel so the user knows to start one.
+func (h *CCCommandHandler) forwardToDaemon(ctx context.Context, botToken string, cc *models.ControlChannel, ch *models.CCChannel, cmd string, args []string) {
+	if h.hub == nil || cc.ClientID == "" {
+		h.reply(ctx, botToken, ch.ChannelID, "❌ `"+cmd+"` needs the cc-watch daemon on the agent — start one with `duckway cc watch -d`.")
+		return
+	}
+	if h.hub.SubscriberCount(cc.ClientID) == 0 {
+		h.reply(ctx, botToken, ch.ChannelID, "❌ daemon offline — start `duckway cc watch -d` on the agent box, then retry.")
+		return
+	}
+	payload, _ := json.Marshal(map[string]interface{}{
+		"command": cmd,
+		"args":    args,
+	})
+	h.hub.Publish(cc.ClientID, CCEvent{
+		Type:    "client_command",
+		CCID:    cc.ID,
+		Handle:  ch.Handle,
+		Kind:    ch.Kind,
+		Payload: payload,
+	})
+}
+
 func (h *CCCommandHandler) reply(ctx context.Context, botToken, channelID, content string) {
 	_, _ = h.bot.PostMessage(ctx, botToken, channelID, content)
 }
@@ -452,6 +489,8 @@ const helpText = "**Duckway CC commands**\n" +
 	"`!reset` — wipe the *current* task channel's session_id; next message starts fresh\n" +
 	"`!list` — list active task channels\n" +
 	"`!status` — daemon + session counts\n" +
+	"`!sessions [<cwd-filter>]` — list local claude sessions on the agent that aren't yet bound to a CC channel\n" +
+	"`!bind <session_id> [<session_id> …]` — create a task channel for each session_id and attach it (run `!sessions` first to find IDs)\n" +
 	"`!help` — this message"
 
 // BuildWelcomeMessage returns the message the server posts in a freshly
@@ -477,9 +516,11 @@ func BuildWelcomeMessage(clientName string) string {
 		"`!destroy` — close session and **hard-delete** the channel (history gone)\n" +
 		"\n" +
 		"**Here in this channel**\n" +
-		"`!list`   — active task channels + which have running sessions\n" +
-		"`!status` — daemon connection + session counts\n" +
-		"`!help`   — full command list\n" +
+		"`!list`     — active task channels + which have running sessions\n" +
+		"`!status`   — daemon connection + session counts\n" +
+		"`!sessions` — list local claude sessions on the agent that aren't bound yet\n" +
+		"`!bind <session_id>` — create a task channel and resume that session (one channel per id, repeat for more)\n" +
+		"`!help`     — full command list\n" +
 		"\n" +
 		"_Make sure the daemon is running on the agent machine: `duckway cc watch -d`._"
 }

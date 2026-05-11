@@ -162,6 +162,8 @@ func (w *CCWatch) handleEvent(eventType string, data []byte) {
 		w.handleChannelDelete(data)
 	case "session_reset":
 		w.handleSessionReset(data)
+	case "client_command":
+		w.handleClientCommand(data)
 	default:
 		// message_update, channel_update, etc — currently ignored. The
 		// session model assumes prompts come from message_create only.

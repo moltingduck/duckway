@@ -363,6 +363,8 @@ internal/server/services/cc_gateway.go       Per-bot WSS manager. Dispatches MES
                                              CHANNEL_DELETE/UPDATE, MESSAGE_REACTION_ADD.
 internal/server/services/cc_event_hub.go     In-process pub/sub. Per-client buffered chans, non-blocking publish.
 internal/server/services/cc_commands.go      `!new` / `!end` / `!destroy` / `!reset` / `!list` / `!status` / `!help` parser
+                                             plus `!sessions` / `!bind` which forward to the daemon
+                                             via a `client_command` SSE event (agent owns the FS)
 internal/server/services/cc_approvals.go     Reaction-vote registry for discord_request_approval
 internal/server/handlers/control_channels.go Admin CRUD; Create provisions the management channel + phantom token
 internal/server/handlers/cc_client.go        /client/cc/* — implicit cc_id (1:1), real IDs never returned
@@ -374,6 +376,9 @@ internal/client/cc_watch.go                  SSE consumer + reconnect loop
 internal/client/cc_runner.go                 Per-channel FIFO queue + `claude -p` exec wrapper
 internal/client/cc_session_store.go          ~/.duckway/cc-sessions.json persistence
 internal/client/local_sessions.go            Scans ~/.claude/projects/*.jsonl for the session picker
+internal/client/cc_client_commands.go        Daemon-side handlers for `!sessions` / `!bind`. Bind
+                                             creates one task channel per session and writes the
+                                             cc-sessions.json mapping. Reused by `duckway cc bind`.
 cmd/client/main.go                           `duckway mcp serve` + `duckway cc watch` subcommands
 
 examples/duckway-cc-watch.service            Sample systemd user unit

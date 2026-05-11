@@ -87,6 +87,9 @@ Usage:
   duckway cc watch -d    Same, but run in background as a daemon
   duckway cc watch stop  Stop the running daemon
   duckway cc watch status  Show daemon status
+  duckway cc bind        Interactive picker: pick existing local claude
+                         sessions and create a CC channel + binding for
+                         each. Use --session <id> for headless mode.
   duckway version        Print the duckway version
 
 Proxy flags:
@@ -214,15 +217,19 @@ func cmdSync(configDir string) {
 	fmt.Printf("Synced %d placeholder keys to %s\n", count, client.KeysEnvPath(configDir))
 }
 
-// cmdCC dispatches `duckway cc <subcommand>`. Currently only `watch`.
+// cmdCC dispatches `duckway cc <subcommand>`.
 func cmdCC(configDir string) {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "Usage: duckway cc watch [-d|--daemon|stop|status] [--config-dir <path>]")
+		fmt.Fprintln(os.Stderr, "Usage:")
+		fmt.Fprintln(os.Stderr, "  duckway cc watch [-d|--daemon|stop|status]")
+		fmt.Fprintln(os.Stderr, "  duckway cc bind [--session <id>...] [--cwd <substr>]")
 		os.Exit(1)
 	}
 	switch os.Args[2] {
 	case "watch":
 		cmdCCWatch(configDir)
+	case "bind":
+		cmdCCBind(configDir)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown cc subcommand: %s\n", os.Args[2])
 		os.Exit(1)
@@ -298,6 +305,204 @@ func cmdCCWatch(configDir string) {
 	defer cancel()
 	if err := w.Run(ctx); err != nil {
 		log.Fatalf("cc watch: %v", err)
+	}
+}
+
+// cmdCCBind lists local claude sessions that aren't bound to a CC channel
+// and creates a task channel + binding for each one the user picks.
+//
+// Two modes:
+//   - Interactive (no args): prints a numbered table, reads selections
+//     from stdin (formats: "1,3,5" or "1-3" or "all").
+//   - Headless: `--session <id>` (repeatable) skips the prompt entirely.
+//     `--cwd <substr>` filters the listing in both modes.
+func cmdCCBind(configDir string) {
+	var (
+		sessionIDs []string
+		cwdFilter  string
+	)
+	for i := 3; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--session", "-s":
+			if i+1 < len(os.Args) {
+				sessionIDs = append(sessionIDs, os.Args[i+1])
+				i++
+			}
+		case "--cwd":
+			if i+1 < len(os.Args) {
+				cwdFilter = os.Args[i+1]
+				i++
+			}
+		case "--config-dir":
+			if i+1 < len(os.Args) {
+				configDir = os.Args[i+1]
+				i++
+			}
+		case "-h", "--help":
+			fmt.Println("Usage: duckway cc bind [--session <id>...] [--cwd <substr>]")
+			fmt.Println("       (no args) opens an interactive picker with multi-select")
+			return
+		}
+	}
+
+	cfg, err := client.LoadConfig(configDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	api := client.NewAPIClient(cfg.ServerURL, cfg.Token)
+	store := client.NewCCSessionStore(configDir)
+
+	root, err := client.ClaudeProjectsRoot()
+	if err != nil {
+		log.Fatalf("locate ~/.claude/projects: %v", err)
+	}
+	all, err := client.ListLocalSessions(root, store.Snapshot())
+	if err != nil {
+		log.Fatalf("scan sessions: %v", err)
+	}
+	var unbound []client.LocalSession
+	for _, s := range all {
+		if s.BoundTo != "" {
+			continue
+		}
+		if cwdFilter != "" && !strings.Contains(s.Cwd, cwdFilter) {
+			continue
+		}
+		unbound = append(unbound, s)
+	}
+	if len(unbound) == 0 {
+		if cwdFilter != "" {
+			fmt.Printf("No unbound local claude sessions matching %q.\n", cwdFilter)
+		} else {
+			fmt.Println("No unbound local claude sessions found under ~/.claude/projects/.")
+		}
+		return
+	}
+
+	// Headless: skip the picker.
+	if len(sessionIDs) == 0 {
+		printSessionTable(unbound)
+		picks, err := promptSessionPicks(os.Stdin, len(unbound))
+		if err != nil {
+			log.Fatalf("read selection: %v", err)
+		}
+		if len(picks) == 0 {
+			fmt.Println("Nothing selected.")
+			return
+		}
+		for _, i := range picks {
+			sessionIDs = append(sessionIDs, unbound[i-1].SessionID)
+		}
+	}
+
+	results := client.BindLocalSessions(context.Background(), api, store, sessionIDs)
+	printBindResults(results)
+}
+
+func printSessionTable(rows []client.LocalSession) {
+	fmt.Printf("\nLocal claude sessions not yet bound to a CC channel:\n\n")
+	fmt.Printf("  %-3s  %-36s  %-19s  %s\n", "#", "session_id", "last_active", "cwd")
+	fmt.Printf("  %-3s  %-36s  %-19s  %s\n", "---", "------------------------------------",
+		"-------------------", "----------------------------------")
+	for i, s := range rows {
+		fmt.Printf("  %-3d  %-36s  %-19s  %s\n",
+			i+1, s.SessionID, s.LastActive.Format("2006-01-02 15:04:05"), s.Cwd)
+		if s.FirstMessage != "" && s.FirstMessage != "(no user message recorded)" {
+			preview := s.FirstMessage
+			if len(preview) > 80 {
+				preview = preview[:80] + "…"
+			}
+			fmt.Printf("       └─ %s\n", preview)
+		}
+	}
+	fmt.Println()
+	fmt.Println("Select one or more (examples: '1', '1,3,5', '1-3', 'all', empty to cancel):")
+	fmt.Print("> ")
+}
+
+// promptSessionPicks reads a single line off `in` and parses it into a set
+// of 1-based indices. Accepts: "1,3,5", "1-3", "all", or empty.
+func promptSessionPicks(in *os.File, max int) ([]int, error) {
+	var line string
+	if _, err := fmt.Fscanln(in, &line); err != nil {
+		// Fscanln returns "unexpected newline" for an empty line — treat
+		// as cancel rather than failure.
+		if err.Error() == "unexpected newline" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return parseSelectionLine(line, max)
+}
+
+func parseSelectionLine(line string, max int) ([]int, error) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil, nil
+	}
+	if line == "all" {
+		out := make([]int, max)
+		for i := range out {
+			out[i] = i + 1
+		}
+		return out, nil
+	}
+	seen := map[int]bool{}
+	var out []int
+	for _, tok := range strings.Split(line, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		if strings.Contains(tok, "-") {
+			parts := strings.SplitN(tok, "-", 2)
+			a, errA := strconv.Atoi(strings.TrimSpace(parts[0]))
+			b, errB := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if errA != nil || errB != nil || a < 1 || b > max || a > b {
+				return nil, fmt.Errorf("bad range %q (valid: 1..%d)", tok, max)
+			}
+			for i := a; i <= b; i++ {
+				if !seen[i] {
+					seen[i] = true
+					out = append(out, i)
+				}
+			}
+			continue
+		}
+		n, err := strconv.Atoi(tok)
+		if err != nil || n < 1 || n > max {
+			return nil, fmt.Errorf("bad index %q (valid: 1..%d)", tok, max)
+		}
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
+func printBindResults(rs []client.BindResult) {
+	if len(rs) == 0 {
+		fmt.Println("Nothing to bind.")
+		return
+	}
+	var ok, dup, fail int
+	for _, r := range rs {
+		switch {
+		case r.Error != "":
+			fail++
+			fmt.Printf("  ✗ %s — %s\n", r.SessionID, r.Error)
+		case r.AlreadyBound != "":
+			dup++
+			fmt.Printf("  • %s already bound to %s (skipped)\n", r.SessionID, r.AlreadyBound)
+		default:
+			ok++
+			fmt.Printf("  ✓ %s → #%s (%s)  cwd: %s\n", r.SessionID, r.Name, r.Channel, r.Cwd)
+		}
+	}
+	fmt.Printf("\nBound %d, already-bound %d, failed %d.\n", ok, dup, fail)
+	if ok > 0 {
+		fmt.Println("Send a message in the new channel — claude will resume with the existing history.")
 	}
 }
 

@@ -27,6 +27,13 @@ type LocalSession struct {
 // claudeProjectsRoot returns the default location of claude session files.
 // Overridable for tests.
 func claudeProjectsRoot() (string, error) {
+	return ClaudeProjectsRoot()
+}
+
+// ClaudeProjectsRoot is the exported form. Returns ~/.claude/projects.
+// Used by cmd/client's `duckway cc bind` so it doesn't have to duplicate
+// the home-dir + path logic.
+func ClaudeProjectsRoot() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
