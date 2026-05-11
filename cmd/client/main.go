@@ -631,8 +631,20 @@ func cmdStatus(configDir string) {
 		fmt.Printf("  export HTTPS_PROXY=%s\n", proxyURL)
 		fmt.Printf("  export HTTP_PROXY=%s\n", proxyURL)
 	} else {
-		fmt.Printf("Local proxy: NOT RUNNING (start with: duckway proxy)\n")
+		fmt.Printf("Local proxy: NOT RUNNING (start with: duckway proxy -d)\n")
 		fmt.Printf("  Will listen on %s\n", proxyURL)
+	}
+
+	// CC watch daemon — only mention it when a CC is actually assigned to
+	// this client, otherwise the hint is just noise.
+	if state, err := client.LoadCCState(configDir); err == nil && len(state.CCs) > 0 {
+		ccPid := filepath.Join(configDir, "cc-watch.pid")
+		if pid, alive := readPID(ccPid); alive {
+			fmt.Printf("CC watch:    RUNNING (PID %d, %d CC assigned)\n", pid, len(state.CCs))
+		} else {
+			fmt.Printf("CC watch:    NOT RUNNING (start with: duckway cc watch -d)\n")
+			fmt.Printf("  %d CC assigned — the daemon delivers Discord messages to claude\n", len(state.CCs))
+		}
 	}
 
 	// Check CA cert and report expiry

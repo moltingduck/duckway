@@ -32,6 +32,14 @@ func ccStateFilePath(configDir string) string {
 	return filepath.Join(configDir, "cc.json")
 }
 
+// LoadCCState returns the CCs this client has been assigned (as last written
+// by `duckway sync`). Returns an empty struct (not an error) when cc.json is
+// missing — same shape the MCP server uses, so callers like `duckway status`
+// see exactly what the agent sees.
+func LoadCCState(configDir string) (*CCStateFile, error) {
+	return readCCState(configDir)
+}
+
 // SyncCC fetches the assigned CCs from the server, writes the state file
 // (~/.duckway/cc.json), then drops per-agent config files for each
 // agent_type seen. Returns (count_assigned, error).

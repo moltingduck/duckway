@@ -1065,6 +1065,12 @@ assert_contains "cc.json contains the agent type" "claude_code" "$CC_JSON"
 NO_TOKEN_LEAK=$(echo "$CC_JSON" | grep -c "$CLIENT_TOKEN" || true)
 assert_eq "cc.json does NOT leak the client token" "0" "$NO_TOKEN_LEAK"
 
+# duckway status should now hint at `cc watch -d` since a CC is assigned and
+# no daemon is running. (Detection is via $configDir/cc-watch.pid + cc.json.)
+STATUS_WITH_CC=$(docker exec duckway-e2e-client duckway status 2>&1)
+assert_contains "duckway status hints at cc watch -d when CC assigned but daemon down" "duckway cc watch -d" "$STATUS_WITH_CC"
+assert_contains "duckway status proxy hint includes -d" "duckway proxy -d" "$STATUS_WITH_CC"
+
 # Claude Code MCP entry: ~/.claude.json (top-level mcpServers — Claude Code's
 # user scope; never ~/.claude/mcp.json which Claude Code does not read)
 MCP_JSON=$(docker exec duckway-e2e-client cat /root/.claude.json 2>/dev/null)
