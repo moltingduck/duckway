@@ -69,6 +69,25 @@ func TestSplitSlugAndFlags_DuplicatePositional(t *testing.T) {
 	}
 }
 
+func TestBuildWelcomeMessage(t *testing.T) {
+	got := BuildWelcomeMessage("my-laptop")
+	want := []string{
+		"my-laptop",  // client name appears
+		"!new",       // every command is mentioned
+		"!end",
+		"!reset",
+		"!list",
+		"!status",
+		"!help",
+		"cc watch",   // operator nudge about the daemon
+	}
+	for _, w := range want {
+		if !strings.Contains(got, w) {
+			t.Errorf("welcome message missing %q\n---\n%s", w, got)
+		}
+	}
+}
+
 func TestLooksLikeCommand(t *testing.T) {
 	for _, in := range []string{"!help", "!new task", "  !list ", "!"} {
 		if !LooksLikeCommand(in) {

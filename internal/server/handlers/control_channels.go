@@ -249,6 +249,13 @@ func (h *ControlChannelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Post a welcome / how-to message so the first thing the user sees
+	// in the brand-new channel is the command list. Best-effort.
+	welcome := svc.BuildWelcomeMessage(cl.Name)
+	if _, err := h.bot.PostMessage(r.Context(), botToken, realChannelID, welcome); err != nil {
+		// non-fatal — channel exists, user can still type !help themselves
+	}
+
 	full, _ := h.cc.GetByID(ccID)
 	if full == nil {
 		full = c

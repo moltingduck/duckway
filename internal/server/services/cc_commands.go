@@ -300,6 +300,33 @@ const helpText = "**Duckway CC commands**\n" +
 	"`!status` — daemon + session counts\n" +
 	"`!help` — this message"
 
+// BuildWelcomeMessage returns the message the server posts in a freshly
+// provisioned management channel. Different from helpText (the !help
+// response): the welcome explains the model + what the user does next,
+// not just the command list.
+func BuildWelcomeMessage(clientName string) string {
+	return "**👋 Duckway Control Channel for `" + clientName + "`**\n" +
+		"\n" +
+		"This is the management channel — type `!`-prefix commands here to drive the agent.\n" +
+		"Each **task channel** in this category maps 1:1 to a claude session: post a message there, the daemon on the agent machine runs `claude` and posts the response back.\n" +
+		"\n" +
+		"**Start a task**\n" +
+		"`!new fix-login`                          — opens `#fix-login` with default cwd\n" +
+		"`!new deploy --cwd /home/me/myapp`        — opens `#deploy` rooted at that project\n" +
+		"`!new analyze --topic \"Q2 metrics\"`        — channel topic appears in Discord's UI\n" +
+		"\n" +
+		"**Inside a task channel**\n" +
+		"`!reset` — clear the session id, next message starts a fresh claude\n" +
+		"`!end`   — close the session and archive the channel\n" +
+		"\n" +
+		"**Here in this channel**\n" +
+		"`!list`   — active task channels + which have running sessions\n" +
+		"`!status` — daemon connection + session counts\n" +
+		"`!help`   — full command list\n" +
+		"\n" +
+		"_Make sure the daemon is running on the agent machine: `duckway cc watch -d`._"
+}
+
 // parseArgs is a minimal shell-like splitter: whitespace separates tokens,
 // double-quotes group multi-word values. No backslash escapes — Discord
 // content is short and admin-typed.
