@@ -84,6 +84,9 @@ Usage:
                          (launched by Claude Code from ~/.claude/mcp.json)
   duckway cc watch       Connect to the server's SSE feed and run a
                          claude session per Discord task channel
+  duckway cc watch -d    Same, but run in background as a daemon
+  duckway cc watch stop  Stop the running daemon
+  duckway cc watch status  Show daemon status
   duckway version        Print the duckway version
 
 Proxy flags:
@@ -214,7 +217,7 @@ func cmdSync(configDir string) {
 // cmdCC dispatches `duckway cc <subcommand>`. Currently only `watch`.
 func cmdCC(configDir string) {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "Usage: duckway cc watch [--config-dir <path>]")
+		fmt.Fprintln(os.Stderr, "Usage: duckway cc watch [-d|--daemon|stop|status] [--config-dir <path>]")
 		os.Exit(1)
 	}
 	switch os.Args[2] {
@@ -227,15 +230,66 @@ func cmdCC(configDir string) {
 }
 
 func cmdCCWatch(configDir string) {
-	for i := 3; i < len(os.Args)-1; i++ {
-		if os.Args[i] == "--config-dir" {
-			configDir = os.Args[i+1]
+	pidFile := filepath.Join(configDir, "cc-watch.pid")
+	logFile := filepath.Join(configDir, "cc-watch.log")
+
+	daemon := false
+	stop := false
+	status := false
+	for i := 3; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		switch arg {
+		case "--daemon", "-d":
+			daemon = true
+		case "stop":
+			stop = true
+		case "status":
+			status = true
+		case "--config-dir":
+			if i+1 < len(os.Args) {
+				configDir = os.Args[i+1]
+				pidFile = filepath.Join(configDir, "cc-watch.pid")
+				logFile = filepath.Join(configDir, "cc-watch.log")
+				i++
+			}
 		}
 	}
+
+	if stop {
+		stopBackgroundDaemon("duckway cc watch", pidFile)
+		return
+	}
+	if status {
+		statusBackgroundDaemon(pidFile)
+		return
+	}
+
 	cfg, err := client.LoadConfig(configDir)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	if daemon {
+		startCCWatchDaemon(pidFile, logFile)
+		return
+	}
+
+	if pid, alive := readPID(pidFile); alive && pid != os.Getpid() {
+		log.Fatalf("duckway cc watch is already running (PID %d). Run 'duckway cc watch stop' first.", pid)
+	}
+
+	// Write our PID so `cc watch stop` works even when started in foreground.
+	_ = os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0600)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-sigCh
+		if pid, _ := readPID(pidFile); pid == os.Getpid() {
+			os.Remove(pidFile)
+		}
+		os.Exit(0)
+	}()
+
 	w, err := client.NewCCWatch(configDir, cfg)
 	if err != nil {
 		log.Fatalf("cc watch: %v", err)
@@ -398,12 +452,32 @@ func cmdProxy(configDir string) {
 	}
 }
 
-// startProxyDaemon re-execs duckway proxy without --daemon, detaches from the
-// terminal, redirects output to a log file, writes a PID file, and exits the
-// parent so the shell prompt returns.
+// startProxyDaemon backgrounds `duckway proxy`.
 func startProxyDaemon(pidFile, logFilePath string) {
+	startBackgroundDaemon("duckway proxy", "proxy", pidFile, logFilePath)
+}
+
+// startCCWatchDaemon backgrounds `duckway cc watch`.
+func startCCWatchDaemon(pidFile, logFilePath string) {
+	startBackgroundDaemon("duckway cc watch", "cc watch", pidFile, logFilePath)
+}
+
+func stopProxyDaemon(pidFile string) {
+	stopBackgroundDaemon("duckway proxy", pidFile)
+}
+
+func statusProxyDaemon(pidFile string) {
+	statusBackgroundDaemon(pidFile)
+}
+
+// startBackgroundDaemon re-execs the current binary with --daemon/-d
+// stripped from argv, attaches stdio to a log file, writes a PID file,
+// and exits the parent. `label` is the user-visible name (e.g. "duckway
+// proxy"); `stopVerb` is the subcommand the user types to stop it
+// (e.g. "proxy stop" so the printed instruction is `duckway proxy stop`).
+func startBackgroundDaemon(label, stopVerb, pidFile, logFilePath string) {
 	if pid, alive := readPID(pidFile); alive {
-		fmt.Fprintf(os.Stderr, "duckway proxy already running (PID %d)\n", pid)
+		fmt.Fprintf(os.Stderr, "%s already running (PID %d)\n", label, pid)
 		os.Exit(1)
 	}
 
@@ -413,7 +487,6 @@ func startProxyDaemon(pidFile, logFilePath string) {
 	}
 	defer logF.Close()
 
-	// Strip --daemon/-d from args before re-exec
 	args := []string{}
 	for i := 1; i < len(os.Args); i++ {
 		if os.Args[i] == "--daemon" || os.Args[i] == "-d" {
@@ -441,17 +514,16 @@ func startProxyDaemon(pidFile, logFilePath string) {
 		log.Printf("Warning: cannot write PID file: %v", err)
 	}
 
-	fmt.Printf("duckway proxy started in background (PID %d)\n", cmd.Process.Pid)
+	fmt.Printf("%s started in background (PID %d)\n", label, cmd.Process.Pid)
 	fmt.Printf("  Logs:  %s\n", logFilePath)
-	fmt.Printf("  Stop:  duckway proxy stop\n")
-	// Detach from child so it survives parent exit
+	fmt.Printf("  Stop:  duckway %s stop\n", stopVerb)
 	cmd.Process.Release()
 }
 
-func stopProxyDaemon(pidFile string) {
+func stopBackgroundDaemon(label, pidFile string) {
 	pid, alive := readPID(pidFile)
 	if pid == 0 {
-		fmt.Println("No PID file — daemon does not appear to be running.")
+		fmt.Printf("No PID file — %s does not appear to be running.\n", label)
 		return
 	}
 	if !alive {
@@ -462,11 +534,10 @@ func stopProxyDaemon(pidFile string) {
 	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
 		log.Fatalf("Failed to send SIGTERM to PID %d: %v", pid, err)
 	}
-	// Wait briefly for graceful shutdown
 	for i := 0; i < 20; i++ {
 		if _, alive := readPID(pidFile); !alive {
 			os.Remove(pidFile)
-			fmt.Printf("Stopped duckway proxy (PID %d)\n", pid)
+			fmt.Printf("Stopped %s (PID %d)\n", label, pid)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -475,7 +546,7 @@ func stopProxyDaemon(pidFile string) {
 	os.Remove(pidFile)
 }
 
-func statusProxyDaemon(pidFile string) {
+func statusBackgroundDaemon(pidFile string) {
 	pid, alive := readPID(pidFile)
 	if pid == 0 {
 		fmt.Println("Status: not running (no PID file)")

@@ -76,10 +76,10 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 // when they've just synced a CC for the first time. Idempotent on
 // repeat syncs — the message is short enough to not be noisy.
 func printCCDaemonHint() {
-	log.Printf("To receive Discord messages in this client, run the watcher:")
-	log.Printf("  duckway cc watch                      # foreground, for testing")
-	log.Printf("Or install the systemd user unit (Linux):")
-	log.Printf("  examples/duckway-cc-watch.service     # see the file for instructions")
+	log.Printf("To receive Discord messages in this client, start the watcher:")
+	log.Printf("  duckway cc watch -d                   # background daemon (recommended)")
+	log.Printf("  duckway cc watch status / stop        # check / stop")
+	log.Printf("Or for boot-on-login (Linux): examples/duckway-cc-watch.service")
 }
 
 // SyncClaudeCredentials fetches phantom Claude OAuth credentials and writes
