@@ -233,3 +233,40 @@ func TestDoErrorBubbling(t *testing.T) {
 		t.Errorf("got status %d", derr.Status)
 	}
 }
+
+func TestDiscordError_FieldDetail(t *testing.T) {
+	// Real shape of a 400 Invalid Form Body — the per-field reason is
+	// in errors.<field>._errors[].message.
+	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		w.Write([]byte(`{
+		  "code": 50035,
+		  "message": "Invalid Form Body",
+		  "errors": {
+		    "parent_id": {"_errors":[{"code":"CHANNEL_PARENT_INVALID_TYPE","message":"The parent of a channel must be a category."}]},
+		    "name": {"_errors":[{"code":"STRING_TYPE_REGEX","message":"Must match ^[\\w-]+$"}]}
+		  }
+		}`))
+	})
+	defer srv.Close()
+	b := &DiscordBot{BaseURL: srv.URL, HTTP: srv.Client()}
+	_, err := b.CreateChannel(context.Background(), "tok", CreateChannelOpts{
+		GuildID: "G", ParentID: "BAD", Name: "x",
+	})
+	derr, ok := err.(*DiscordError)
+	if !ok {
+		t.Fatalf("expected DiscordError, got %T: %v", err, err)
+	}
+	msg := derr.Error()
+	if !strings.Contains(msg, "Invalid Form Body") {
+		t.Errorf("missing main message: %q", msg)
+	}
+	// Both field-level reasons should appear so the operator sees the
+	// real problem.
+	if !strings.Contains(msg, "parent_id") || !strings.Contains(msg, "category") {
+		t.Errorf("missing parent_id detail: %q", msg)
+	}
+	if !strings.Contains(msg, "name") {
+		t.Errorf("missing name detail: %q", msg)
+	}
+}

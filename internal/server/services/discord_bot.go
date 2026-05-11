@@ -42,18 +42,54 @@ func NewDiscordBot() *DiscordBot {
 
 // DiscordError carries Discord's structured error response so callers can
 // distinguish "you have no MANAGE_CHANNELS" from "channel not found".
+//
+// On 400 "Invalid Form Body", Discord embeds the field-level reason under
+// `errors.<field>._errors[].message`. FieldErrors flattens that to a
+// readable per-field list so the operator sees "name: must match regex"
+// instead of just "Invalid Form Body".
 type DiscordError struct {
-	Status  int
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Raw     string `json:"-"`
+	Status      int
+	Code        int                        `json:"code"`
+	Message     string                     `json:"message"`
+	FieldErrors map[string]json.RawMessage `json:"errors,omitempty"`
+	Raw         string                     `json:"-"`
 }
 
 func (e *DiscordError) Error() string {
 	if e.Code != 0 || e.Message != "" {
-		return fmt.Sprintf("discord %d (code %d): %s", e.Status, e.Code, e.Message)
+		base := fmt.Sprintf("discord %d (code %d): %s", e.Status, e.Code, e.Message)
+		if detail := e.fieldDetail(); detail != "" {
+			return base + " — " + detail
+		}
+		return base
 	}
 	return fmt.Sprintf("discord %d: %s", e.Status, e.Raw)
+}
+
+// fieldDetail walks `errors.<field>._errors[].message` and returns a
+// "name: too short, parent_id: must be a string" style summary.
+func (e *DiscordError) fieldDetail() string {
+	if len(e.FieldErrors) == 0 {
+		return ""
+	}
+	type inner struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"_errors"`
+	}
+	var parts []string
+	for field, raw := range e.FieldErrors {
+		var in inner
+		if err := json.Unmarshal(raw, &in); err == nil {
+			for _, msg := range in.Errors {
+				parts = append(parts, fmt.Sprintf("%s: %s", field, msg.Message))
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ")
 }
 
 // IsNotFound reports the upstream said the resource doesn't exist.
