@@ -173,6 +173,7 @@ type sseEnvelope struct {
 	Type    string          `json:"type"`
 	CCID    string          `json:"cc_id"`
 	Handle  string          `json:"channel_handle"`
+	Kind    string          `json:"channel_kind"`
 	Payload json.RawMessage `json:"payload"`
 }
 
@@ -213,7 +214,7 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		_ = w.api.PostCC(context.Background(), env.Handle, "❌ daemon could not start a session: "+err.Error())
 		return
 	}
-	if !runner.Enqueue(ccTask{Content: msg.Content, AuthorID: msg.Author.ID, MessageID: msg.ID}) {
+	if !runner.Enqueue(ccTask{Content: msg.Content, AuthorID: msg.Author.ID, MessageID: msg.ID, ChannelKind: env.Kind}) {
 		log.Printf("[cc-watch] %s: queue full, dropping message %s", env.Handle, msg.ID)
 		_ = w.api.PostCC(context.Background(), env.Handle,
 			"⚠️ session queue full (10 messages backed up) — your message was dropped, please retry once claude catches up.")

@@ -353,6 +353,7 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 				Type:    sseTypeFromGateway(eventType),
 				CCID:    cc.ID,
 				Handle:  ch.Handle,
+				Kind:    ch.Kind,
 				Payload: payload,
 			})
 		}

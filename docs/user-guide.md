@@ -247,7 +247,7 @@ Key points:
 
 ## Control Channels (Discord-as-comms)
 
-A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to a claude session — every message a human types triggers `claude -p --resume <session_id>` on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!reset` / `!list` / `!status` / `!help` text commands.
+A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to a claude session — every message a human types triggers `claude -p --resume <session_id>` on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!destroy` / `!reset` / `!list` / `!status` / `!help` text commands.
 
 ### Discord bot setup (first time, ~10 min)
 
@@ -338,7 +338,18 @@ The daemon needs the `claude` binary in `$PATH`. Per-channel `cwd` defaults to `
 
 ### Inside a claude session, the model sees these MCP tools
 
-`discord_get_my_cc`, `discord_list_channels`, `discord_create_task_channel`, `discord_archive_channel`, `discord_post`, `discord_edit_message`, `discord_delete_message`, `discord_read_recent`, `discord_wait_for_message`, `discord_request_approval` (reaction-vote — blocks until ✅/❌).
+`discord_get_my_cc`, `discord_list_channels`, `discord_create_task_channel`, `discord_archive_channel`, `discord_post`, `discord_edit_message`, `discord_delete_message`, `discord_read_recent`, `discord_wait_for_message`, `discord_request_approval` (reaction-vote — blocks until ✅/❌), `duckway_list_local_sessions`, `duckway_bind_session`.
+
+### Attaching to a pre-existing claude session
+
+If you've already been chatting with claude locally on the agent box (a session stored in `~/.claude/projects/`) and want a Discord channel to **continue** that conversation, do this from the management channel:
+
+1. Send any message in `<client>-control` so the daemon spawns a claude — this first turn is a throwaway picker.
+2. Ask the agent: *"list my local sessions"* → it calls `duckway_list_local_sessions` and posts the unbound sessions (newest first, with cwd + first-message preview).
+3. Pick one: *"bind to the duckway one"* → the agent calls `duckway_bind_session(session_id)` (channel handle is auto-picked from the current channel env).
+4. Send your next message → the daemon does `claude --resume <sid>` and the full prior history is restored.
+
+The binding only takes effect on the **next** inbound message; the picker turn itself stays in the throwaway session. Run `!reset` afterwards if you want to forget the throwaway.
 
 ### Management channel commands
 
@@ -349,7 +360,10 @@ In `<client>-control`:
 - `!help`
 
 In any task channel:
-- `!end` → end the current claude session, archive the Discord channel
+- `!end` → end the current claude session and **archive** the Discord channel (history kept, channel renamed and removed from the category)
+- `!destroy` → end the current claude session and **hard-delete** the Discord channel (history gone — useful for one-shot experiments)
+
+The management channel itself also accepts plain text — the message is forwarded to the agent with a system note nudging it to spawn a dedicated task channel via `discord_create_task_channel` for any sustained work, instead of holding a long conversation inline.
 
 ### Security boundary
 

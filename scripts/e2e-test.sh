@@ -1101,10 +1101,12 @@ docker exec duckway-e2e-client duckway sync >/dev/null 2>&1
 # 19a: tools/list
 TOOLS_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
 TOOL_COUNT=$(echo "$TOOLS_OUT" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['result']['tools']))")
-assert_eq "MCP tools/list returns 10 tools" "10" "$TOOL_COUNT"
-assert_contains "tools/list includes discord_post"         "discord_post"                "$TOOLS_OUT"
-assert_contains "tools/list includes discord_create_task"  "discord_create_task_channel" "$TOOLS_OUT"
-assert_contains "tools/list includes discord_wait_for_msg" "discord_wait_for_message"    "$TOOLS_OUT"
+assert_eq "MCP tools/list returns 12 tools" "12" "$TOOL_COUNT"
+assert_contains "tools/list includes discord_post"            "discord_post"                "$TOOLS_OUT"
+assert_contains "tools/list includes discord_create_task"     "discord_create_task_channel" "$TOOLS_OUT"
+assert_contains "tools/list includes discord_wait_for_msg"    "discord_wait_for_message"    "$TOOLS_OUT"
+assert_contains "tools/list includes list_local_sessions"     "duckway_list_local_sessions" "$TOOLS_OUT"
+assert_contains "tools/list includes bind_session"            "duckway_bind_session"        "$TOOLS_OUT"
 
 # 19b: initialize
 INIT_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)

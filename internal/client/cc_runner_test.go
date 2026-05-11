@@ -64,7 +64,7 @@ func TestCCRunner_PostsResult(t *testing.T) {
 	}
 	defer r.Stop()
 
-	ok := r.Enqueue(ccTask{Content: "do a thing"})
+	ok := r.Enqueue(ccTask{Content: "do a thing", ChannelKind: "task"})
 	if !ok {
 		t.Fatal("Enqueue returned false")
 	}
@@ -117,6 +117,85 @@ printf '{"type":"result","subtype":"success","session_id":"s","result":"ok","is_
 	if accepted < ccQueueDepth || accepted > ccQueueDepth+1 {
 		t.Errorf("expected ~%d accepted, got %d", ccQueueDepth, accepted)
 	}
+}
+
+// fakeClaudeEchoArgs writes a shell script that just echoes its full
+// argv as the result, so tests can assert exactly what we passed.
+func fakeClaudeEchoArgs(t *testing.T, sessionID string) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude")
+	script := `#!/bin/sh
+SID="` + sessionID + `"
+# JSON-escape everything we got — naive but enough for ASCII-clean tests.
+PAYLOAD=$(printf "%s" "$*" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr "\n" " ")
+printf '{"type":"result","subtype":"success","session_id":"%s","result":"argv=%s","is_error":false}\n' "$SID" "$PAYLOAD"
+`
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+func TestCCRunner_ManagementPreamble_FirstTurnOnly(t *testing.T) {
+	bin := fakeClaudeEchoArgs(t, "sess-mgmt-1")
+	store := NewCCSessionStore(t.TempDir())
+	pp := &recordingPoster{}
+	r, err := newCCRunner("dwch_mgmt", t.TempDir(), t.TempDir(), bin, store, pp.post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+
+	// First management-channel message: preamble should be injected.
+	r.Enqueue(ccTask{Content: "do something", ChannelKind: "management"})
+	waitForPosts(t, pp, 1)
+
+	first := pp.all()[0]
+	if !strings.Contains(first, "Duckway Control Channel") {
+		t.Errorf("first management turn missing preamble: %q", first)
+	}
+	if !strings.Contains(first, "discord_create_task_channel") {
+		t.Errorf("first management turn missing the create_task_channel nudge: %q", first)
+	}
+
+	// Second message in same session: preamble should NOT be re-injected
+	// (claude remembers via --resume).
+	r.Enqueue(ccTask{Content: "another thing", ChannelKind: "management"})
+	waitForPosts(t, pp, 2)
+	second := pp.all()[1]
+	if strings.Contains(second, "Duckway Control Channel — system note") {
+		t.Errorf("preamble re-injected on follow-up turn: %q", second)
+	}
+}
+
+func TestCCRunner_NoPreambleForTaskChannel(t *testing.T) {
+	bin := fakeClaudeEchoArgs(t, "sess-task-1")
+	store := NewCCSessionStore(t.TempDir())
+	pp := &recordingPoster{}
+	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), bin, store, pp.post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+
+	r.Enqueue(ccTask{Content: "task work", ChannelKind: "task"})
+	waitForPosts(t, pp, 1)
+	if strings.Contains(pp.all()[0], "Duckway Control Channel — system note") {
+		t.Errorf("preamble should not appear in task channel: %q", pp.all()[0])
+	}
+}
+
+func waitForPosts(t *testing.T, pp *recordingPoster, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(pp.all()) >= want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("only %d posts (wanted %d)", len(pp.all()), want)
 }
 
 func TestCCRunner_DefaultsCwd(t *testing.T) {

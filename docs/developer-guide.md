@@ -362,16 +362,18 @@ internal/server/services/discord_bot.go      Thin REST client (Create/Archive/De
 internal/server/services/cc_gateway.go       Per-bot WSS manager. Dispatches MESSAGE_CREATE/UPDATE/DELETE,
                                              CHANNEL_DELETE/UPDATE, MESSAGE_REACTION_ADD.
 internal/server/services/cc_event_hub.go     In-process pub/sub. Per-client buffered chans, non-blocking publish.
-internal/server/services/cc_commands.go      `!new` / `!end` / `!list` / `!status` / `!help` parser
+internal/server/services/cc_commands.go      `!new` / `!end` / `!destroy` / `!reset` / `!list` / `!status` / `!help` parser
 internal/server/services/cc_approvals.go     Reaction-vote registry for discord_request_approval
 internal/server/handlers/control_channels.go Admin CRUD; Create provisions the management channel + phantom token
 internal/server/handlers/cc_client.go        /client/cc/* — implicit cc_id (1:1), real IDs never returned
 
 internal/client/sync_cc.go                   Writes ~/.duckway/cc.json + merges ~/.claude.json mcpServers entry
-internal/client/mcp.go + mcp_tools.go        Stdio MCP server (JSON-RPC 2.0) — 10 discord_* tools
+internal/client/mcp.go + mcp_tools.go        Stdio MCP server (JSON-RPC 2.0) — 10 discord_* tools +
+                                             duckway_list_local_sessions / duckway_bind_session
 internal/client/cc_watch.go                  SSE consumer + reconnect loop
 internal/client/cc_runner.go                 Per-channel FIFO queue + `claude -p` exec wrapper
 internal/client/cc_session_store.go          ~/.duckway/cc-sessions.json persistence
+internal/client/local_sessions.go            Scans ~/.claude/projects/*.jsonl for the session picker
 cmd/client/main.go                           `duckway mcp serve` + `duckway cc watch` subcommands
 
 examples/duckway-cc-watch.service            Sample systemd user unit

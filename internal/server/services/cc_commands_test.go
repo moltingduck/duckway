@@ -391,6 +391,44 @@ func TestHandle_End_RejectsInManagement(t *testing.T) {
 	}
 }
 
+func TestHandle_Destroy_FromTaskChannel(t *testing.T) {
+	h := newCommandHarness(t)
+	if _, err := h.db.Exec(`INSERT INTO cc_channels VALUES ('dwch_d','cc1','client1','D-real','d','','task','sess-1','/cwd',0,datetime('now'),null)`); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := h.cc.GetChannelByHandle("dwch_d")
+	sub, unsub := h.hub.Subscribe("client1")
+	defer unsub()
+
+	h.handler.Handle(context.Background(), "cc1", task, "!destroy")
+
+	// Discord DELETE call fired
+	if h.hitsFor("DELETE", "/channels/D-real") != 1 {
+		t.Errorf("expected DELETE /channels/D-real, hits=%v", h.hits)
+	}
+	// Local row gone
+	if _, err := h.cc.GetChannelByHandle("dwch_d"); err == nil {
+		t.Error("cc_channels row should be deleted")
+	}
+	// channel_delete event fired so daemon clears its session map
+	select {
+	case ev := <-sub:
+		if ev.Type != "channel_delete" || ev.Handle != "dwch_d" {
+			t.Errorf("unexpected event: %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Error("expected channel_delete event")
+	}
+}
+
+func TestHandle_Destroy_RejectsInManagement(t *testing.T) {
+	h := newCommandHarness(t)
+	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!destroy")
+	if !h.lastReplyContains("delete the CC from") {
+		t.Errorf("expected mgmt-scope error pointing at admin UI, got %v", h.reqs)
+	}
+}
+
 func TestHandle_Reset_FromTaskChannel(t *testing.T) {
 	h := newCommandHarness(t)
 	if _, err := h.db.Exec(`INSERT INTO cc_channels VALUES ('dwch_t','cc1','client1','T1','t','','task','sess-aaa','/cwd',0,datetime('now'),null)`); err != nil {

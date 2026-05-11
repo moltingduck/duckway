@@ -176,6 +176,89 @@ func TestMCP_ToolCall_ServerError(t *testing.T) {
 	}
 }
 
+func TestMCP_ListLocalSessions_FiltersBound(t *testing.T) {
+	srv := newTestServer(t, CCStateFile{CCs: []CCStateAssignment{{CCID: "cc1"}}}, "")
+
+	// Point the server at a synthetic claude-projects tree.
+	projects := t.TempDir()
+	srv.claudeProjectsDir = projects
+	writeFakeSession(t, projects, "-home-me-bound", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", []string{
+		`{"type":"user","cwd":"/home/me/bound","message":{"role":"user","content":"already bound"}}`,
+	})
+	writeFakeSession(t, projects, "-home-me-free", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", []string{
+		`{"type":"user","cwd":"/home/me/free","message":{"role":"user","content":"pickable"}}`,
+	})
+	if err := srv.sessions.Set("dwch_taken", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := runOne(t, srv, `{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"duckway_list_local_sessions","arguments":{}}}`)
+	r, _ := resp.Result.(map[string]interface{})
+	if isErr, _ := r["isError"].(bool); isErr {
+		t.Fatalf("unexpected error: %+v", r)
+	}
+	content, _ := r["content"].([]interface{})
+	first, _ := content[0].(map[string]interface{})
+	text, _ := first["text"].(string)
+	if strings.Contains(text, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") {
+		t.Errorf("bound session should be hidden by default, got: %s", text)
+	}
+	if !strings.Contains(text, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb") {
+		t.Errorf("unbound session should appear, got: %s", text)
+	}
+
+	// only_unbound=false should reveal both.
+	resp2 := runOne(t, srv, `{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"duckway_list_local_sessions","arguments":{"only_unbound":false}}}`)
+	r2, _ := resp2.Result.(map[string]interface{})
+	c2, _ := r2["content"].([]interface{})
+	t2 := c2[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(t2, "aaaaaaaa") || !strings.Contains(t2, "bbbbbbbb") {
+		t.Errorf("only_unbound=false should show both, got: %s", t2)
+	}
+}
+
+func TestMCP_BindSession_WritesStore(t *testing.T) {
+	srv := newTestServer(t, CCStateFile{CCs: []CCStateAssignment{{CCID: "cc1"}}}, "")
+
+	// channel_handle is explicit here — no env reliance.
+	resp := runOne(t, srv,
+		`{"jsonrpc":"2.0","id":60,"method":"tools/call","params":{"name":"duckway_bind_session","arguments":{"session_id":"sess-pick","channel_handle":"dwch_target"}}}`)
+	r, _ := resp.Result.(map[string]interface{})
+	if isErr, _ := r["isError"].(bool); isErr {
+		t.Fatalf("unexpected error: %+v", r)
+	}
+	if got := srv.sessions.Get("dwch_target"); got != "sess-pick" {
+		t.Errorf("store did not record bind: got %q", got)
+	}
+}
+
+func TestMCP_BindSession_UsesEnvHandleWhenOmitted(t *testing.T) {
+	srv := newTestServer(t, CCStateFile{CCs: []CCStateAssignment{{CCID: "cc1"}}}, "")
+	t.Setenv("DUCKWAY_CC_CHANNEL_HANDLE", "dwch_envset")
+
+	resp := runOne(t, srv,
+		`{"jsonrpc":"2.0","id":61,"method":"tools/call","params":{"name":"duckway_bind_session","arguments":{"session_id":"sess-env"}}}`)
+	r, _ := resp.Result.(map[string]interface{})
+	if isErr, _ := r["isError"].(bool); isErr {
+		t.Fatalf("unexpected error: %+v", r)
+	}
+	if got := srv.sessions.Get("dwch_envset"); got != "sess-env" {
+		t.Errorf("env-default bind failed: got %q", got)
+	}
+}
+
+func TestMCP_BindSession_RejectsMissingHandle(t *testing.T) {
+	srv := newTestServer(t, CCStateFile{CCs: []CCStateAssignment{{CCID: "cc1"}}}, "")
+	t.Setenv("DUCKWAY_CC_CHANNEL_HANDLE", "")
+
+	resp := runOne(t, srv,
+		`{"jsonrpc":"2.0","id":62,"method":"tools/call","params":{"name":"duckway_bind_session","arguments":{"session_id":"sess-x"}}}`)
+	r, _ := resp.Result.(map[string]interface{})
+	if isErr, _ := r["isError"].(bool); !isErr {
+		t.Error("expected isError=true when channel_handle missing and env unset")
+	}
+}
+
 func TestMCP_ParseError(t *testing.T) {
 	srv := newTestServer(t, CCStateFile{}, "")
 	in := bytes.NewBufferString("not json\n")

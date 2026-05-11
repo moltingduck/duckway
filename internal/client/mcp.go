@@ -31,10 +31,23 @@ type MCPServer struct {
 	mu       sync.Mutex
 	stateAt  string // file mtime cached as ISO; "" means unloaded
 	state    *CCStateFile
+
+	// sessions is the channel_handle ↔ claude session_id store shared with
+	// the cc-watch daemon (~/.duckway/cc-sessions.json). Writes via the
+	// duckway_bind_session tool take effect on the daemon's next run since
+	// both processes read the same file.
+	sessions *CCSessionStore
+
+	// claudeProjectsDir overrides ~/.claude/projects for tests.
+	claudeProjectsDir string
 }
 
 func NewMCPServer(configDir string, cfg *Config) *MCPServer {
-	return &MCPServer{configDir: configDir, cfg: cfg}
+	return &MCPServer{
+		configDir: configDir,
+		cfg:       cfg,
+		sessions:  NewCCSessionStore(configDir),
+	}
 }
 
 // Run reads JSON-RPC requests line by line from in and writes responses to

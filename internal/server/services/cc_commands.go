@@ -81,6 +81,13 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 		}
 		h.handleEnd(ctx, botToken, cc, ch)
 
+	case "!destroy":
+		if ch.Kind == "management" {
+			h.reply(ctx, botToken, ch.ChannelID, "❌ `!destroy` deletes the *current* task channel — run it inside one. (The management channel can't be destroyed; delete the CC from /admin/cc instead.)")
+			return
+		}
+		h.handleDestroy(ctx, botToken, cc, ch)
+
 	case "!reset":
 		if ch.Kind == "management" {
 			h.reply(ctx, botToken, ch.ChannelID, "❌ `!reset` clears the *current* channel's session — run it inside a task channel.")
@@ -110,7 +117,7 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 // knownCommands is the canonical list used for `!help` discovery + the
 // fuzzy "did you mean" suggestion. Order is the user-facing display
 // order in !help.
-var knownCommands = []string{"!help", "!new", "!end", "!reset", "!list", "!status"}
+var knownCommands = []string{"!help", "!new", "!end", "!destroy", "!reset", "!list", "!status"}
 
 // unknownCommandReply formats the friendly response for an unrecognised
 // !-prefix command. Suggests close matches (Levenshtein distance ≤ 2)
@@ -306,6 +313,38 @@ func (h *CCCommandHandler) handleReset(ctx context.Context, botToken string, cc 
 	}
 }
 
+// handleDestroy is the heavier sibling of !end. Both close the session,
+// but !end *archives* the Discord channel (rename + remove from category,
+// history preserved); !destroy hard-deletes via DELETE /channels/{id}
+// (history gone, channel id reused-after-delete is fine because we drop
+// our cache row too). Use !end when you might want to look back; use
+// !destroy when the channel was a one-shot experiment.
+func (h *CCCommandHandler) handleDestroy(ctx context.Context, botToken string, cc *models.ControlChannel, ch *models.CCChannel) {
+	// No farewell post — the channel is about to vanish so a message
+	// would only appear for a millisecond. Discord will broadcast a
+	// CHANNEL_DELETE event when the delete succeeds, which the gateway
+	// also handles (drops the cc_channels row + fires channel_delete
+	// to the daemon). Belt-and-braces: do the local cleanup here too in
+	// case the Discord call fails or we don't hear the event back fast
+	// enough.
+	if err := h.bot.DeleteChannel(ctx, botToken, ch.ChannelID); err != nil {
+		// Channel might already be gone (someone deleted in Discord UI
+		// before us) — still clean local state and let the user know.
+		_ = h.cc.DeleteChannel(ch.Handle)
+		if h.hub != nil && cc.ClientID != "" {
+			h.hub.Publish(cc.ClientID, CCEvent{Type: "channel_delete", CCID: cc.ID, Handle: ch.Handle})
+		}
+		// Can't reply to a destroyed channel; if the destroy itself failed,
+		// the channel still exists so we CAN reply with the error. Try.
+		h.reply(ctx, botToken, ch.ChannelID, "⚠️ discord delete failed: "+err.Error()+" (local state cleared regardless)")
+		return
+	}
+	_ = h.cc.DeleteChannel(ch.Handle)
+	if h.hub != nil && cc.ClientID != "" {
+		h.hub.Publish(cc.ClientID, CCEvent{Type: "channel_delete", CCID: cc.ID, Handle: ch.Handle})
+	}
+}
+
 func (h *CCCommandHandler) handleEnd(ctx context.Context, botToken string, cc *models.ControlChannel, ch *models.CCChannel) {
 	// Post farewell, then archive Discord channel + delete cache row.
 	_, _ = h.bot.PostMessage(ctx, botToken, ch.ChannelID,
@@ -408,7 +447,8 @@ func (h *CCCommandHandler) decryptBotToken(apiKeyID string) (string, error) {
 
 const helpText = "**Duckway CC commands**\n" +
 	"`!new <slug> [--cwd <path>] [--topic <text>]` — create a task channel\n" +
-	"`!end` — end the *current* task channel's session and archive it\n" +
+	"`!end` — end the *current* task channel's session and **archive** it (history kept)\n" +
+	"`!destroy` — end and **hard-delete** the *current* task channel (history gone)\n" +
 	"`!reset` — wipe the *current* task channel's session_id; next message starts fresh\n" +
 	"`!list` — list active task channels\n" +
 	"`!status` — daemon + session counts\n" +
@@ -432,8 +472,9 @@ func BuildWelcomeMessage(clientName string) string {
 		"`!new analyze --topic \"Q2 metrics\"`        — channel topic appears in Discord's UI\n" +
 		"\n" +
 		"**Inside a task channel**\n" +
-		"`!reset` — clear the session id, next message starts a fresh claude\n" +
-		"`!end`   — close the session and archive the channel\n" +
+		"`!reset`   — clear the session id, next message starts a fresh claude\n" +
+		"`!end`     — close session and **archive** the channel (history kept)\n" +
+		"`!destroy` — close session and **hard-delete** the channel (history gone)\n" +
 		"\n" +
 		"**Here in this channel**\n" +
 		"`!list`   — active task channels + which have running sessions\n" +
