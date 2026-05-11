@@ -47,6 +47,12 @@ func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 }
 
 // NewAdmin creates an admin-only server (no proxy/client routes).
+//
+// Important: the Discord WSS gateway does NOT run here — it lives in the
+// gateway process (NewGateway) because CCEventHub is in-process pub/sub
+// and the SSE consumer (`duckway cc watch`) connects to the gateway's
+// /client/cc/events. Running the WSS gateway in admin would publish
+// events to a hub the SSE subscriber can't see.
 func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s := &Server{config: config, db: db, mux: http.NewServeMux()}
 
@@ -62,17 +68,21 @@ func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s.SetupAdminRoutes(contentFS, ss)
 	s.startApprovalListeners()
 	s.startApprovalSweeper(ss)
-	s.startCCBackground(ss)
 
 	return s, nil
 }
 
 // NewGateway creates a gateway-only server (proxy + client API, no admin).
+//
+// The Discord WSS gateway + CC command parser + inbox cleanup all run
+// here so the in-process CCEventHub can fan out to the SSE subscriber
+// (the daemon) that connects on /client/cc/events.
 func NewGateway(config *Config, db *sql.DB) (*Server, error) {
 	s := &Server{config: config, db: db, mux: http.NewServeMux()}
 
 	ss := s.initShared()
 	s.SetupGatewayRoutes(ss)
+	s.startCCBackground(ss)
 
 	return s, nil
 }
