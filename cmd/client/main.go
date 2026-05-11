@@ -191,9 +191,10 @@ func cmdInit(configDir string) {
 
 	fmt.Printf("\nConfig saved to %s/config.yaml\n", configDir)
 	fmt.Println("\nNext steps:")
-	fmt.Println("  duckway proxy              — start HTTPS proxy")
+	fmt.Println("  duckway proxy -d           — start HTTPS proxy (background daemon)")
 	fmt.Printf("  export HTTPS_PROXY=http://localhost:%d\n", cfg.ProxyPort)
 	fmt.Printf("  export HTTP_PROXY=http://localhost:%d\n", cfg.ProxyPort)
+	fmt.Println("\nTo run in foreground for debugging: duckway proxy --debug")
 }
 
 func cmdSync(configDir string) {
