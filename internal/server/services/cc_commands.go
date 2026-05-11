@@ -103,8 +103,122 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 		h.handleStatus(ctx, botToken, cc, ch.ChannelID)
 
 	default:
-		h.reply(ctx, botToken, ch.ChannelID, "❓ Unknown command `"+cmd+"`. Type `!help`.")
+		h.reply(ctx, botToken, ch.ChannelID, unknownCommandReply(cmd))
 	}
+}
+
+// knownCommands is the canonical list used for `!help` discovery + the
+// fuzzy "did you mean" suggestion. Order is the user-facing display
+// order in !help.
+var knownCommands = []string{"!help", "!new", "!end", "!reset", "!list", "!status"}
+
+// unknownCommandReply formats the friendly response for an unrecognised
+// !-prefix command. Suggests close matches (Levenshtein distance ≤ 2)
+// instead of just saying "type !help".
+func unknownCommandReply(typed string) string {
+	suggestions := suggestCommands(typed, 2)
+	base := "❓ Unknown command `" + typed + "`."
+	if len(suggestions) == 0 {
+		return base + " Type `!help` to see the full list."
+	}
+	if len(suggestions) == 1 {
+		return base + " Did you mean `" + suggestions[0] + "`?"
+	}
+	return base + " Did you mean " + joinTicked(suggestions) + "?"
+}
+
+// suggestCommands returns the known commands within `maxDist` Levenshtein
+// edits of `typed`, ordered by distance ascending then alphabetically.
+// Empty when nothing is close enough.
+func suggestCommands(typed string, maxDist int) []string {
+	type scored struct {
+		cmd  string
+		dist int
+	}
+	var hits []scored
+	for _, c := range knownCommands {
+		d := levenshtein(typed, c)
+		if d <= maxDist {
+			hits = append(hits, scored{c, d})
+		}
+	}
+	// Stable sort by distance, then by command name.
+	for i := 1; i < len(hits); i++ {
+		for j := i; j > 0; j-- {
+			a, b := hits[j-1], hits[j]
+			if a.dist > b.dist || (a.dist == b.dist && a.cmd > b.cmd) {
+				hits[j-1], hits[j] = hits[j], hits[j-1]
+			} else {
+				break
+			}
+		}
+	}
+	out := make([]string, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, h.cmd)
+	}
+	if len(out) > 3 {
+		out = out[:3]
+	}
+	return out
+}
+
+// levenshtein returns the edit distance between a and b. Standard
+// DP table, byte-level (good enough for ASCII command names).
+func levenshtein(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if len(a) == 0 {
+		return len(b)
+	}
+	if len(b) == 0 {
+		return len(a)
+	}
+	prev := make([]int, len(b)+1)
+	curr := make([]int, len(b)+1)
+	for j := 0; j <= len(b); j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			del := prev[j] + 1
+			ins := curr[j-1] + 1
+			sub := prev[j-1] + cost
+			m := del
+			if ins < m {
+				m = ins
+			}
+			if sub < m {
+				m = sub
+			}
+			curr[j] = m
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(b)]
+}
+
+func joinTicked(xs []string) string {
+	var b strings.Builder
+	for i, x := range xs {
+		if i > 0 {
+			if i == len(xs)-1 {
+				b.WriteString(" or ")
+			} else {
+				b.WriteString(", ")
+			}
+		}
+		b.WriteByte('`')
+		b.WriteString(x)
+		b.WriteByte('`')
+	}
+	return b.String()
 }
 
 func (h *CCCommandHandler) handleNew(ctx context.Context, botToken string, cc *models.ControlChannel, mgmt *models.CCChannel, args []string) {
@@ -307,8 +421,10 @@ const helpText = "**Duckway CC commands**\n" +
 func BuildWelcomeMessage(clientName string) string {
 	return "**👋 Duckway Control Channel for `" + clientName + "`**\n" +
 		"\n" +
-		"This is the management channel — type `!`-prefix commands here to drive the agent.\n" +
-		"Each **task channel** in this category maps 1:1 to a claude session: post a message there, the daemon on the agent machine runs `claude` and posts the response back.\n" +
+		"**Where to type what**\n" +
+		"• **This channel** is for control: `!`-prefix commands manage the agent.\n" +
+		"• **Task channels** (created with `!new`) are for the actual conversation — every message there goes to a claude session and the response comes back here.\n" +
+		"_(Plain text here also gets forwarded to claude — but task channels keep each conversation focused on one topic, which works better.)_\n" +
 		"\n" +
 		"**Start a task**\n" +
 		"`!new fix-login`                          — opens `#fix-login` with default cwd\n" +

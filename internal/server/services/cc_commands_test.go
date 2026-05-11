@@ -69,6 +69,64 @@ func TestSplitSlugAndFlags_DuplicatePositional(t *testing.T) {
 	}
 }
 
+func TestSuggestCommands(t *testing.T) {
+	cases := []struct {
+		typed string
+		want  []string
+	}{
+		{"!lits", []string{"!list"}},     // 1 edit
+		{"!hep", []string{"!help"}},      // 1 deletion
+		{"!hlep", []string{"!help"}},     // 1 transposition (= 2 edits)
+		{"!resset", []string{"!reset"}},  // 1 insertion
+		{"!frobnicate", nil},             // too far
+		{"!nw", []string{"!new"}},        // 1 deletion
+	}
+	for _, c := range cases {
+		got := suggestCommands(c.typed, 2)
+		if len(got) == 0 && len(c.want) == 0 {
+			continue
+		}
+		if len(got) == 0 || got[0] != c.want[0] {
+			t.Errorf("suggestCommands(%q) = %v, want top=%v", c.typed, got, c.want)
+		}
+	}
+}
+
+func TestUnknownCommandReply(t *testing.T) {
+	cases := []struct {
+		typed string
+		want  string // substring that must appear
+	}{
+		{"!lits", "Did you mean `!list`"},
+		{"!frobnicate", "Type `!help`"},  // no close match → fall back to !help nudge
+	}
+	for _, c := range cases {
+		got := unknownCommandReply(c.typed)
+		if !strings.Contains(got, c.want) {
+			t.Errorf("unknownCommandReply(%q) = %q, want substring %q", c.typed, got, c.want)
+		}
+	}
+}
+
+func TestLevenshtein(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"", "", 0},
+		{"a", "", 1},
+		{"", "abc", 3},
+		{"kitten", "sitting", 3},
+		{"!list", "!list", 0},
+		{"!list", "!lits", 2},
+	}
+	for _, c := range cases {
+		if got := levenshtein(c.a, c.b); got != c.want {
+			t.Errorf("levenshtein(%q,%q) = %d, want %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func TestBuildWelcomeMessage(t *testing.T) {
 	got := BuildWelcomeMessage("my-laptop")
 	want := []string{
@@ -414,10 +472,22 @@ func TestHandle_Status_DaemonConnected(t *testing.T) {
 	}
 }
 
-func TestHandle_UnknownCommand(t *testing.T) {
+func TestHandle_UnknownCommand_NoMatch(t *testing.T) {
 	h := newCommandHarness(t)
 	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!frobnicate")
 	if !h.lastReplyContains("Unknown command") {
 		t.Errorf("expected unknown-command reply, got %v", h.reqs)
+	}
+	// Far-from-anything typos should NOT suggest — they'd be noise.
+	if h.lastReplyContains("Did you mean") {
+		t.Errorf("did not expect a suggestion for !frobnicate: %v", h.reqs)
+	}
+}
+
+func TestHandle_UnknownCommand_Suggests(t *testing.T) {
+	h := newCommandHarness(t)
+	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!lits")
+	if !h.lastReplyContains("Did you mean") || !h.lastReplyContains("!list") {
+		t.Errorf("expected '!list' suggestion for '!lits', got %v", h.reqs)
 	}
 }
