@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -42,6 +43,7 @@ func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s.startApprovalListeners()
 	s.startApprovalSweeper(ss)
 	s.startCCBackground(ss)
+	s.startKeyGroupSweeper()
 
 	return s, nil
 }
@@ -238,6 +240,19 @@ func (s *Server) startCCBackground(ss *SharedServices) {
 	}
 	stop := make(chan struct{})
 	services.StartInboxCleanup(ccQ, ss.SettingsQ, stop)
+}
+
+// startKeyGroupSweeper runs ClearExpiredExhausted every 60 seconds.
+func (s *Server) startKeyGroupSweeper() {
+	go func() {
+		t := time.NewTicker(60 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			if err := queries.ClearExpiredExhausted(s.db); err != nil {
+				log.Printf("key group sweeper: %v", err)
+			}
+		}
+	}()
 }
 
 func (s *Server) startApprovalListeners() {

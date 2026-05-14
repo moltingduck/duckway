@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"html/template"
 	"io/fs"
 	"log"
@@ -30,6 +31,7 @@ type AdminHandler struct {
 	notifications *queries.NotificationQueries
 	canary        *queries.CanaryQueries
 	auth          *middleware.AdminAuth
+	db            *sql.DB
 }
 
 func NewAdminHandler(
@@ -81,7 +83,7 @@ func NewAdminHandler(
 	// Parse each page template paired with the layout
 	pageNames := []string{
 		"dashboard", "services", "api_keys", "oauth", "placeholders",
-		"clients", "groups", "approvals", "logs", "notifications", "canary", "settings", "docs", "cc",
+		"clients", "groups", "key_groups", "approvals", "logs", "notifications", "canary", "settings", "docs", "cc",
 	}
 
 	pages := make(map[string]*template.Template)
@@ -132,6 +134,11 @@ func NewAdminHandler(
 	}
 }
 
+func (h *AdminHandler) WithDB(db *sql.DB) *AdminHandler {
+	h.db = db
+	return h
+}
+
 type pageData struct {
 	Title  string
 	Active string
@@ -148,6 +155,7 @@ type pageData struct {
 	Placeholders interface{}
 	Clients      interface{}
 	Groups       interface{}
+	KeyGroups    interface{}
 	Approvals    interface{}
 	Logs         interface{}
 	Channels      interface{}
@@ -270,6 +278,23 @@ func (h *AdminHandler) GroupsPage(w http.ResponseWriter, r *http.Request) {
 		Active:   "groups",
 		Groups:   groups,
 		Services: svcs,
+	})
+}
+
+func (h *AdminHandler) KeyGroupsPage(w http.ResponseWriter, r *http.Request) {
+	var keyGroups interface{}
+	if h.db != nil {
+		kgs, err := queries.ListKeyGroups(h.db)
+		if err == nil {
+			keyGroups = kgs
+		}
+	}
+	keys, _ := h.apiKeys.List("")
+	h.render(w, "key_groups", pageData{
+		Title:     "Key Groups (Auto-Rotate)",
+		Active:    "key_groups",
+		KeyGroups: keyGroups,
+		Keys:      keys,
 	})
 }
 

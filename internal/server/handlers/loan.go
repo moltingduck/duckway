@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 
@@ -14,11 +15,13 @@ import (
 // directly to upstream — the gateway is only involved at loan time, not
 // per-request. This is the "loan_proxy" delivery mode.
 type LoanHandler struct {
-	resolver  *services.KeyResolver
-	services  *queries.ServiceQueries
-	approvals *queries.ApprovalQueries
-	logs      *queries.RequestLogQueries
-	notifier  *services.Notifier
+	resolver          *services.KeyResolver
+	services          *queries.ServiceQueries
+	approvals         *queries.ApprovalQueries
+	logs              *queries.RequestLogQueries
+	notifier          *services.Notifier
+	crypto            *services.Crypto
+	db                *sql.DB
 	defaultTTLSeconds int
 }
 
@@ -39,11 +42,25 @@ func NewLoanHandler(
 	}
 }
 
-// GET /client/loan?service=<name>
+func (h *LoanHandler) WithCrypto(crypto *services.Crypto) *LoanHandler {
+	h.crypto = crypto
+	return h
+}
+
+func (h *LoanHandler) WithDB(db *sql.DB) *LoanHandler {
+	h.db = db
+	return h
+}
+
+// GET /client/loan?service=<name>[&group=<group_id>[&exclude_key=<key_id>]]
 //
 // Resolves the calling client's phantom binding for the given service and
 // returns a short-lived "loan" of the real token plus the auth scheme the
 // sidecar should use when injecting it into upstream requests.
+//
+// When group is provided, the score-based key selection algorithm is used
+// instead of the placeholder binding. The sidecar should pass exclude_key
+// when retrying after a 429 to skip the exhausted key.
 //
 // The sidecar is expected to:
 //   - Cache (real_token, auth_*) keyed by service for at most ttl_seconds
@@ -61,6 +78,13 @@ func (h *LoanHandler) Issue(w http.ResponseWriter, r *http.Request) {
 	serviceName := r.URL.Query().Get("service")
 	if serviceName == "" {
 		jsonError(w, "service query parameter required", http.StatusBadRequest)
+		return
+	}
+
+	// Group-based loan: score-based key selection, no phantom binding required.
+	groupID := r.URL.Query().Get("group")
+	if groupID != "" {
+		h.issueGroupLoan(w, r, client.ID, client.Name, serviceName, groupID)
 		return
 	}
 
@@ -126,13 +150,104 @@ func (h *LoanHandler) Issue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, map[string]interface{}{
-		"real_token":   result.RealKey,
-		"ttl_seconds":  h.defaultTTLSeconds,
-		"auth_type":    authType,
-		"auth_header":  authHeader,
-		"auth_prefix":  authPrefix,
+		"real_token":     result.RealKey,
+		"ttl_seconds":    h.defaultTTLSeconds,
+		"auth_type":      authType,
+		"auth_header":    authHeader,
+		"auth_prefix":    authPrefix,
 		"placeholder_id": result.PlaceholderID,
 	})
+}
+
+// issueGroupLoan performs key selection from a KeyGroup and returns a loan.
+func (h *LoanHandler) issueGroupLoan(w http.ResponseWriter, r *http.Request, clientID, clientName, serviceName, groupID string) {
+	if h.db == nil || h.crypto == nil {
+		jsonError(w, "group loans not configured on this server", http.StatusInternalServerError)
+		return
+	}
+
+	excludeKey := r.URL.Query().Get("exclude_key")
+
+	apiKeyID, err := queries.SelectKeyForGroup(h.db, groupID, excludeKey)
+	if err != nil {
+		jsonError(w, "no available key in group: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	apiKeyQ := queries.NewAPIKeyQueries(h.db)
+	apiKey, err := apiKeyQ.GetByID(apiKeyID)
+	if err != nil {
+		jsonError(w, "key lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if !apiKey.IsActive {
+		jsonError(w, "selected key is inactive", http.StatusServiceUnavailable)
+		return
+	}
+
+	realKey, err := h.crypto.Decrypt(apiKey.KeyEncrypted)
+	if err != nil {
+		jsonError(w, "decrypt failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Determine auth scheme from service config.
+	authType := "header"
+	authHeader := "x-api-key"
+	authPrefix := ""
+	if svc, svcErr := h.services.GetByName(serviceName); svcErr == nil {
+		authType = svc.AuthType
+		authHeader = svc.AuthHeader
+		authPrefix = svc.AuthPrefix
+	}
+
+	if h.logs != nil {
+		h.logs.Log(clientID, "", serviceName, "LOAN_GROUP", "/loan", 200)
+	}
+
+	jsonResponse(w, map[string]interface{}{
+		"real_token":  realKey,
+		"api_key_id":  apiKeyID,
+		"group_id":    groupID,
+		"ttl_seconds": h.defaultTTLSeconds,
+		"auth_type":   authType,
+		"auth_header": authHeader,
+		"auth_prefix": authPrefix,
+	})
+}
+
+// POST /client/loan/exhaust — sidecar notifies that a key got a 429.
+// Body: {"group_id": "...", "api_key_id": "...", "reset_at": "2026-05-14T17:00:00Z"}
+func (h *LoanHandler) MarkExhausted(w http.ResponseWriter, r *http.Request) {
+	client := middleware.GetClient(r)
+	if client == nil {
+		jsonError(w, "client auth required", http.StatusUnauthorized)
+		return
+	}
+	if h.db == nil {
+		jsonError(w, "not configured", http.StatusInternalServerError)
+		return
+	}
+
+	var req struct {
+		GroupID  string `json:"group_id"`
+		APIKeyID string `json:"api_key_id"`
+		ResetAt  string `json:"reset_at"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.GroupID == "" || req.APIKeyID == "" || req.ResetAt == "" {
+		jsonError(w, "group_id, api_key_id, and reset_at are required", http.StatusBadRequest)
+		return
+	}
+
+	if err := queries.MarkKeyExhausted(h.db, req.GroupID, req.APIKeyID, req.ResetAt); err != nil {
+		jsonError(w, "failed to mark key exhausted: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "ok"})
 }
 
 // POST /client/audit

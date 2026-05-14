@@ -98,7 +98,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	ccH := handlers.NewControlChannelHandler(ccQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ, ss.SettingsQ, ss.Crypto, services.NewDiscordBot())
 	ccH.SetHub(ss.CCHub)
 	ccH.SetApprovals(ss.CCApprovals)
-	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth)
+	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth).WithDB(s.db)
 
 	// Static files
 	staticFS, err := fs.Sub(contentFS, "static")
@@ -118,6 +118,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/placeholders", adminPageH.PlaceholdersPage)
 	adminPageMux.HandleFunc("GET /admin/clients", adminPageH.ClientsPage)
 	adminPageMux.HandleFunc("GET /admin/groups", adminPageH.GroupsPage)
+	adminPageMux.HandleFunc("GET /admin/key-groups", adminPageH.KeyGroupsPage)
 	adminPageMux.HandleFunc("GET /admin/approvals", adminPageH.ApprovalsPage)
 	adminPageMux.HandleFunc("GET /admin/logs", adminPageH.LogsPage)
 	adminPageMux.HandleFunc("GET /admin/notifications", adminPageH.NotificationsPage)
@@ -176,6 +177,15 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("DELETE /api/groups/{id}", groupH.Delete)
 	adminAPIMux.HandleFunc("POST /api/groups/{id}/members", groupH.AddMember)
 	adminAPIMux.HandleFunc("DELETE /api/groups/{id}/members/{keyId}", groupH.RemoveMember)
+
+	// Key Groups v2: score-based selection with 429 auto-rotation
+	keyGroupH := handlers.NewKeyGroupHandler(s.db)
+	adminAPIMux.HandleFunc("GET /api/key-groups", keyGroupH.List)
+	adminAPIMux.HandleFunc("POST /api/key-groups", keyGroupH.Create)
+	adminAPIMux.HandleFunc("GET /api/key-groups/{id}", keyGroupH.Get)
+	adminAPIMux.HandleFunc("DELETE /api/key-groups/{id}", keyGroupH.Delete)
+	adminAPIMux.HandleFunc("POST /api/key-groups/{id}/members", keyGroupH.AddMember)
+	adminAPIMux.HandleFunc("DELETE /api/key-groups/{id}/members/{key_id}", keyGroupH.RemoveMember)
 
 	adminAPIMux.HandleFunc("GET /api/approvals", approvalH.ListPending)
 	adminAPIMux.HandleFunc("GET /api/approvals/list", approvalH.List) // enriched + filterable
@@ -351,9 +361,16 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	// Sidecar fetches the real token here once per TTL, caches it, and forwards
 	// requests directly to upstream. Audit endpoint receives the per-request
 	// log entries the sidecar collects.
-	loanH := handlers.NewLoanHandler(ss.Resolver, ss.ServiceQ, ss.ApprovalQ, ss.RequestLogQ, s.notifier)
+	loanH := handlers.NewLoanHandler(ss.Resolver, ss.ServiceQ, ss.ApprovalQ, ss.RequestLogQ, s.notifier).
+		WithCrypto(ss.Crypto).
+		WithDB(s.db)
 	clientMux.HandleFunc("GET /client/loan", loanH.Issue)
 	clientMux.HandleFunc("POST /client/audit", loanH.Audit)
+	clientMux.HandleFunc("POST /client/loan/exhaust", loanH.MarkExhausted)
+
+	// Usage snapshot reporting for group-based key management.
+	keyGroupH := handlers.NewKeyGroupHandler(s.db)
+	clientMux.HandleFunc("POST /client/usage", keyGroupH.ReportUsage)
 
 	// Control Channel client API (client auth required). Real Discord IDs
 	// stay server-side — agents see only opaque handles.

@@ -243,6 +243,23 @@ var migrations = []string{
 
 	// Migration version tracking
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)`,
+
+	// Key Groups (usage-aware, score-based key selection with 429 auto-rotation)
+	`CREATE TABLE IF NOT EXISTS key_groups (
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL,
+		description  TEXT NOT NULL DEFAULT '',
+		service_name TEXT NOT NULL DEFAULT 'anthropic',
+		created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+
+	`CREATE TABLE IF NOT EXISTS key_group_members (
+		group_id        TEXT NOT NULL REFERENCES key_groups(id) ON DELETE CASCADE,
+		api_key_id      TEXT NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+		position        INTEGER NOT NULL DEFAULT 0,
+		exhausted_until TEXT,
+		PRIMARY KEY (group_id, api_key_id)
+	)`,
 }
 
 func runMigrations(db *sql.DB) error {
@@ -278,6 +295,8 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE cc_channels ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE cc_channels ADD COLUMN cwd TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE cc_channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'",
+		// Key Group v2: score-based selection with 429 auto-rotation
+		"ALTER TABLE placeholder_keys ADD COLUMN key_group_id TEXT REFERENCES key_groups(id)",
 	}
 	for _, alt := range safeAlters {
 		db.Exec(alt) // ignore "duplicate column" errors

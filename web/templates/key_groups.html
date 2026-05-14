@@ -1,0 +1,178 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Key Groups (Auto-Rotate)</h1>
+  <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Add Key Group</button>
+</div>
+
+<div class="card">
+  {{if .KeyGroups}}
+  {{range .KeyGroups}}
+  <div class="group-block" style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin-bottom:1rem">
+    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.75rem">
+      <strong>{{.Name}}</strong>
+      <span class="badge badge-blue">{{.ServiceName}}</span>
+      {{if .Description}}<span class="text-muted text-sm">{{.Description}}</span>{{end}}
+      <div style="margin-left:auto;display:flex;gap:.5rem">
+        <button class="btn btn-sm" onclick="openAddMember('{{.ID}}')">Add Key</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteGroup('{{.ID}}')">Delete</button>
+      </div>
+    </div>
+    <div class="text-muted text-sm" style="margin-bottom:.5rem">ID: <span class="mono">{{.ID}}</span> &middot; Created {{.CreatedAt}}</div>
+    <div id="members-{{.ID}}" hx-get="/api/key-groups/{{.ID}}" hx-trigger="load" hx-swap="innerHTML">
+      <p class="text-muted">Loading members...</p>
+    </div>
+  </div>
+  {{end}}
+  {{else}}
+  <p class="text-muted" style="padding:1rem">No key groups yet. Create one to enable score-based key selection with 429 auto-rotation.</p>
+  {{end}}
+</div>
+
+<!-- Add Group Modal -->
+<div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Add Key Group</h2>
+    <form id="add-group-form" onsubmit="createGroup(event)">
+      <div class="form-group"><label>Name</label><input type="text" id="kg-name" placeholder="Anthropic Production Pool" required></div>
+      <div class="form-group"><label>Description</label><input type="text" id="kg-desc" placeholder="Optional description"></div>
+      <div class="form-group">
+        <label>Service</label>
+        <select id="kg-service">
+          <option value="anthropic">anthropic</option>
+          <option value="openai">openai</option>
+          <option value="github">github</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Add Member Modal -->
+<div id="add-member-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Add Key to Group</h2>
+    <form id="add-member-form" onsubmit="addMember(event)">
+      <input type="hidden" id="am-group-id">
+      <div class="form-group">
+        <label>API Key</label>
+        <select id="am-key-id" required>
+          <option value="">Select a key...</option>
+          {{range .Keys}}<option value="{{.ID}}">{{.Name}} ({{.ServiceName}})</option>{{end}}
+        </select>
+      </div>
+      <div class="form-group"><label>Position (lower = higher priority for untracked keys)</label><input type="number" id="am-position" value="0" min="0"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('add-member-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function formatTokens(remaining, limit) {
+  if (remaining === null || remaining === undefined) return '<span class="text-muted">—</span>';
+  const pct = limit ? Math.round(remaining / limit * 100) : 0;
+  const color = pct > 50 ? 'var(--success)' : pct > 20 ? '#f59e0b' : 'var(--danger)';
+  return `<div style="display:flex;align-items:center;gap:.5rem">
+    <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+      <div style="width:${pct}%;height:100%;background:${color}"></div>
+    </div>
+    <span class="text-sm">${remaining.toLocaleString()}${limit ? ' / ' + limit.toLocaleString() : ''}</span>
+  </div>`;
+}
+
+function formatExhausted(exhaustedUntil) {
+  if (!exhaustedUntil) return '';
+  const reset = new Date(exhaustedUntil);
+  const now = new Date();
+  if (reset <= now) return '';
+  const secs = Math.round((reset - now) / 1000);
+  return `<span class="badge badge-red" title="Resets at ${exhaustedUntil}">exhausted (${secs}s)</span>`;
+}
+
+// Render group members from API response
+document.addEventListener('htmx:afterRequest', function(e) {
+  if (!e.detail.elt || !e.detail.elt.id || !e.detail.elt.id.startsWith('members-')) return;
+  try {
+    const data = JSON.parse(e.detail.xhr.responseText);
+    const members = data.members || [];
+    if (members.length === 0) {
+      e.detail.elt.innerHTML = '<p class="text-muted text-sm">No keys in this group.</p>';
+      return;
+    }
+    let html = '<table><thead><tr><th>Key</th><th>Tokens Remaining</th><th>Bound Clients</th><th>Score</th><th>Status</th><th></th></tr></thead><tbody>';
+    members.forEach(m => {
+      html += `<tr>
+        <td><strong>${m.key_name}</strong><br><span class="mono text-sm text-muted">${m.api_key_id}</span></td>
+        <td>${formatTokens(m.tokens_remaining, m.tokens_limit)}</td>
+        <td>${m.bound_clients}</td>
+        <td class="mono text-sm">${m.score ? m.score.toFixed(0) : '—'}</td>
+        <td>${formatExhausted(m.exhausted_until) || '<span class="badge badge-green">active</span>'}</td>
+        <td><button class="btn btn-sm btn-danger" onclick="removeMember('${data.id}','${m.api_key_id}','${e.detail.elt.id}')">Remove</button></td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    e.detail.elt.innerHTML = html;
+  } catch(ex) {}
+});
+
+function removeMember(groupID, keyID, containerId) {
+  if (!confirm('Remove this key from the group?')) return;
+  fetch(`/api/key-groups/${groupID}/members/${keyID}`, {method:'DELETE'})
+    .then(() => htmx.trigger(document.getElementById(containerId), 'load'));
+}
+
+function openAddMember(groupID) {
+  document.getElementById('am-group-id').value = groupID;
+  document.getElementById('add-member-modal').style.display = 'flex';
+}
+
+function createGroup(e) {
+  e.preventDefault();
+  fetch('/api/key-groups', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      name: document.getElementById('kg-name').value,
+      description: document.getElementById('kg-desc').value,
+      service_name: document.getElementById('kg-service').value,
+    })
+  }).then(r => { if (r.ok) location.reload(); else r.json().then(d => showToast(d.error || 'Failed','error')); });
+}
+
+function addMember(e) {
+  e.preventDefault();
+  const groupID = document.getElementById('am-group-id').value;
+  fetch(`/api/key-groups/${groupID}/members`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      api_key_id: document.getElementById('am-key-id').value,
+      position: parseInt(document.getElementById('am-position').value) || 0,
+    })
+  }).then(r => {
+    if (r.ok) {
+      document.getElementById('add-member-modal').style.display = 'none';
+      const container = document.getElementById('members-' + groupID);
+      if (container) htmx.trigger(container, 'load');
+    } else {
+      r.json().then(d => showToast(d.error || 'Failed','error'));
+    }
+  });
+}
+
+function deleteGroup(groupID) {
+  if (!confirm('Delete this key group?')) return;
+  fetch('/api/key-groups/' + groupID, {method:'DELETE'})
+    .then(r => { if (r.ok) location.reload(); else r.json().then(d => showToast(d.error || 'Failed','error')); });
+}
+
+// Auto-refresh every 30 seconds
+setTimeout(() => location.reload(), 30000);
+</script>
+{{end}}

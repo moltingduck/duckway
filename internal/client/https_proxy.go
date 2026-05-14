@@ -45,6 +45,8 @@ type loanedToken struct {
 	authHeader    string
 	authPrefix    string
 	placeholderID string
+	apiKeyID      string // non-empty when loan came from a key group
+	groupID       string // non-empty when loan came from a key group
 	expiresAt     time.Time
 }
 
@@ -504,6 +506,8 @@ func (p *httpsProxy) getLoanedToken(svc string) (*loanedToken, error) {
 		AuthHeader    string `json:"auth_header"`
 		AuthPrefix    string `json:"auth_prefix"`
 		PlaceholderID string `json:"placeholder_id"`
+		APIKeyID      string `json:"api_key_id"`
+		GroupID       string `json:"group_id"`
 	}
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, fmt.Errorf("decode loan: %w", err)
@@ -517,6 +521,8 @@ func (p *httpsProxy) getLoanedToken(svc string) (*loanedToken, error) {
 		authHeader:    r.AuthHeader,
 		authPrefix:    r.AuthPrefix,
 		placeholderID: r.PlaceholderID,
+		apiKeyID:      r.APIKeyID,
+		groupID:       r.GroupID,
 		// Refresh slightly before the server-side TTL so we never hit an expired token
 		expiresAt: time.Now().Add(time.Duration(r.TTLSeconds-2) * time.Second),
 	}
@@ -598,6 +604,48 @@ func (p *httpsProxy) forwardLoan(tlsConn *tls.Conn, req *http.Request, entry hos
 		p.logDebug("loan", entry.Service, req, resp, host, time.Since(start))
 	}
 
+	// Capture Anthropic rate-limit headers and report them asynchronously.
+	rateLimitHeaders := map[string]string{}
+	for _, h := range []string{
+		"x-ratelimit-limit-requests", "x-ratelimit-remaining-requests",
+		"x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens",
+		"x-ratelimit-reset-tokens",
+	} {
+		if v := resp.Header.Get(h); v != "" {
+			rateLimitHeaders[h] = v
+		}
+	}
+	if len(rateLimitHeaders) > 0 && tok.apiKeyID != "" {
+		go p.reportUsage(tok.apiKeyID, rateLimitHeaders)
+	}
+
+	// Handle 429: mark the key exhausted, re-select from the group, retry.
+	if resp.StatusCode == http.StatusTooManyRequests && tok.groupID != "" {
+		resetAt := resp.Header.Get("x-ratelimit-reset-tokens")
+		if resetAt != "" {
+			go p.markExhausted(tok.groupID, tok.apiKeyID, resetAt)
+		}
+		// Evict cached loan so the next call fetches a fresh key from the group.
+		p.loanMu.Lock()
+		delete(p.loanCache, entry.Service)
+		p.loanMu.Unlock()
+		// Retry with the exhausted key excluded.
+		newTok, retryErr := p.getLoanedTokenExcluding(entry.Service, tok.groupID, tok.apiKeyID)
+		if retryErr == nil {
+			tok = newTok
+			// Re-build and send upstream request with new token.
+			retryResp := p.retryWithToken(req, target, tok, entry)
+			if retryResp != nil {
+				defer retryResp.Body.Close()
+				retryResp.Header.Set("Connection", "close")
+				retryResp.Close = true
+				retryResp.Write(tlsConn)
+				return
+			}
+		}
+		// Retry failed — fall through and return the original 429.
+	}
+
 	// Buffer audit entry — flushed asynchronously to gateway
 	p.recordAudit(auditEntry{
 		PlaceholderID: tok.placeholderID,
@@ -614,6 +662,124 @@ func (p *httpsProxy) forwardLoan(tlsConn *tls.Conn, req *http.Request, entry hos
 	resp.Header.Set("Connection", "close")
 	resp.Close = true
 	resp.Write(tlsConn)
+}
+
+// reportUsage sends captured rate-limit headers to /client/usage asynchronously.
+func (p *httpsProxy) reportUsage(apiKeyID string, headers map[string]string) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"api_key_id": apiKeyID,
+		"headers":    headers,
+	})
+	req, err := http.NewRequest("POST", p.serverURL+"/client/usage", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Duckway-Token", p.token)
+	resp, err := p.auditClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
+// markExhausted notifies the server that a group key is exhausted.
+func (p *httpsProxy) markExhausted(groupID, apiKeyID, resetAt string) {
+	body, _ := json.Marshal(map[string]string{
+		"group_id":   groupID,
+		"api_key_id": apiKeyID,
+		"reset_at":   resetAt,
+	})
+	req, err := http.NewRequest("POST", p.serverURL+"/client/loan/exhaust", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Duckway-Token", p.token)
+	resp, err := p.auditClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
+// getLoanedTokenExcluding fetches a fresh group loan excluding a specific key.
+func (p *httpsProxy) getLoanedTokenExcluding(svc, groupID, excludeKeyID string) (*loanedToken, error) {
+	url := p.serverURL + "/client/loan?service=" + svc + "&group=" + groupID + "&exclude_key=" + excludeKeyID
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Duckway-Token", p.token)
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("loan retry failed (%d): %s", resp.StatusCode, string(body))
+	}
+	var r struct {
+		RealToken  string `json:"real_token"`
+		TTLSeconds int    `json:"ttl_seconds"`
+		AuthType   string `json:"auth_type"`
+		AuthHeader string `json:"auth_header"`
+		AuthPrefix string `json:"auth_prefix"`
+		APIKeyID   string `json:"api_key_id"`
+		GroupID    string `json:"group_id"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, err
+	}
+	if r.TTLSeconds <= 0 {
+		r.TTLSeconds = 60
+	}
+	tok := &loanedToken{
+		realToken:  r.RealToken,
+		authType:   r.AuthType,
+		authHeader: r.AuthHeader,
+		authPrefix: r.AuthPrefix,
+		apiKeyID:   r.APIKeyID,
+		groupID:    r.GroupID,
+		expiresAt:  time.Now().Add(time.Duration(r.TTLSeconds-2) * time.Second),
+	}
+	p.loanMu.Lock()
+	p.loanCache[svc] = tok
+	p.loanMu.Unlock()
+	return tok, nil
+}
+
+// retryWithToken re-sends a request with a new loaned token. Returns the response or nil on error.
+func (p *httpsProxy) retryWithToken(req *http.Request, target string, tok *loanedToken, entry hostEntry) *http.Response {
+	retryReq, err := http.NewRequest(req.Method, target, req.Body)
+	if err != nil {
+		return nil
+	}
+	for key, values := range req.Header {
+		lower := strings.ToLower(key)
+		if lower == "host" || lower == "connection" || lower == "proxy-connection" ||
+			lower == "authorization" || lower == "x-api-key" {
+			continue
+		}
+		for _, v := range values {
+			retryReq.Header.Add(key, v)
+		}
+	}
+	switch tok.authType {
+	case "bearer":
+		retryReq.Header.Set(tok.authHeader, tok.authPrefix+tok.realToken)
+	case "header":
+		retryReq.Header.Set(tok.authHeader, tok.realToken)
+	case "query":
+		q := retryReq.URL.Query()
+		q.Set(tok.authHeader, tok.realToken)
+		retryReq.URL.RawQuery = q.Encode()
+	}
+	resp, err := p.httpClient.Do(retryReq)
+	if err != nil {
+		log.Printf("loan_proxy %s: retry upstream error: %v", entry.Service, err)
+		return nil
+	}
+	return resp
 }
 
 func (p *httpsProxy) recordAudit(e auditEntry) {

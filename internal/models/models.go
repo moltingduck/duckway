@@ -86,6 +86,7 @@ type PlaceholderKey struct {
 	ServiceID          string  `json:"service_id"`
 	APIKeyID           *string `json:"api_key_id"`
 	GroupID            *string `json:"group_id"`
+	KeyGroupID         *string `json:"key_group_id"`
 	ClientID           string  `json:"client_id"`
 	PermissionConfig   *string `json:"permission_config"`
 	RequiresApproval   bool    `json:"requires_approval"`
@@ -120,6 +121,37 @@ type RequestLog struct {
 	Path          string  `json:"path"`
 	StatusCode    *int    `json:"status_code"`
 	CreatedAt     string  `json:"created_at"`
+}
+
+// KeyGroup is a named set of API keys with score-based selection and 429 auto-rotation.
+type KeyGroup struct {
+	ID          string `json:"id" db:"id"`
+	Name        string `json:"name" db:"name"`
+	Description string `json:"description" db:"description"`
+	ServiceName string `json:"service_name" db:"service_name"`
+	CreatedAt   string `json:"created_at" db:"created_at"`
+}
+
+type KeyGroupMember struct {
+	GroupID        string  `json:"group_id" db:"group_id"`
+	APIKeyID       string  `json:"api_key_id" db:"api_key_id"`
+	Position       int     `json:"position" db:"position"`
+	ExhaustedUntil *string `json:"exhausted_until" db:"exhausted_until"`
+}
+
+type KeyGroupWithMembers struct {
+	KeyGroup
+	Members []KeyGroupMemberDetail `json:"members"`
+}
+
+type KeyGroupMemberDetail struct {
+	KeyGroupMember
+	KeyName         string  `json:"key_name"`
+	TokensRemaining *int64  `json:"tokens_remaining"`
+	TokensLimit     *int64  `json:"tokens_limit"`
+	ResetAt         *string `json:"reset_at"`
+	BoundClients    int     `json:"bound_clients"`
+	Score           float64 `json:"score"`
 }
 
 // ControlChannel binds one client to one Discord category via a bot.
