@@ -21,6 +21,22 @@ import (
 	"github.com/hackerduck/duckway/internal/version"
 )
 
+var isTTY = func() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	return err == nil && (fi.Mode()&os.ModeCharDevice) != 0
+}()
+
+// cyan wraps s in cyan ANSI color when stdout is a terminal, for commands the user should run.
+func cyan(s string) string {
+	if !isTTY {
+		return s
+	}
+	return "\033[36m" + s + "\033[0m"
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -181,7 +197,7 @@ func cmdInit(configDir string) {
 		// Try to install to system trust store
 		if err := client.InstallCACert(configDir); err != nil {
 			log.Printf("Warning: could not install CA to system trust store: %v", err)
-			fmt.Printf("Manually install: sudo cp %s/ca.pem /usr/local/share/ca-certificates/duckway.crt && sudo update-ca-certificates\n", configDir)
+			fmt.Printf("Manually install: %s\n", cyan(fmt.Sprintf("sudo cp %s/ca.pem /usr/local/share/ca-certificates/duckway.crt && sudo update-ca-certificates", configDir)))
 		} else {
 			fmt.Println("CA certificate installed to system trust store")
 		}
@@ -197,10 +213,10 @@ func cmdInit(configDir string) {
 
 	fmt.Printf("\nConfig saved to %s/config.yaml\n", configDir)
 	fmt.Println("\nNext steps:")
-	fmt.Println("  duckway proxy -d           — start HTTPS proxy (background daemon)")
-	fmt.Printf("  export HTTPS_PROXY=http://localhost:%d\n", cfg.ProxyPort)
-	fmt.Printf("  export HTTP_PROXY=http://localhost:%d\n", cfg.ProxyPort)
-	fmt.Println("\nTo run in foreground for debugging: duckway proxy --debug")
+	fmt.Printf("  %s           — start HTTPS proxy (background daemon)\n", cyan("duckway proxy -d"))
+	fmt.Printf("  %s\n", cyan(fmt.Sprintf("export HTTPS_PROXY=http://localhost:%d", cfg.ProxyPort)))
+	fmt.Printf("  %s\n", cyan(fmt.Sprintf("export HTTP_PROXY=http://localhost:%d", cfg.ProxyPort)))
+	fmt.Printf("\nTo run in foreground for debugging: %s\n", cyan("duckway proxy --debug"))
 }
 
 func cmdSync(configDir string) {
@@ -568,13 +584,13 @@ func cmdUpdate(configDir string) {
 	if err == nil {
 		fmt.Printf("\nUpdated. New binary: %s", string(out))
 	} else {
-		fmt.Println("\nUpdated. Run 'duckway version' to confirm.")
+		fmt.Printf("\nUpdated. Run %s to confirm.\n", cyan("duckway version"))
 	}
 
 	if pid, alive := readPID(filepath.Join(configDir, "proxy.pid")); alive {
 		fmt.Printf("\nNote: a proxy daemon is running (PID %d) using the OLD binary.\n", pid)
 		fmt.Println("      Restart it to pick up the new code:")
-		fmt.Println("        duckway proxy stop && duckway proxy -d")
+		fmt.Printf("        %s\n", cyan("duckway proxy stop && duckway proxy -d"))
 	}
 }
 
@@ -721,7 +737,7 @@ func startBackgroundDaemon(label, stopVerb, pidFile, logFilePath string) {
 
 	fmt.Printf("%s started in background (PID %d)\n", label, cmd.Process.Pid)
 	fmt.Printf("  Logs:  %s\n", logFilePath)
-	fmt.Printf("  Stop:  duckway %s stop\n", stopVerb)
+	fmt.Printf("  Stop:  %s\n", cyan("duckway "+stopVerb+" stop"))
 	cmd.Process.Release()
 }
 
@@ -785,7 +801,7 @@ func cmdStatus(configDir string) {
 	cfg, err := client.LoadConfig(configDir)
 	if err != nil {
 		fmt.Println("Status: not initialized")
-		fmt.Println("Run 'duckway init' to set up")
+		fmt.Printf("Run %s to set up\n", cyan("duckway init"))
 		return
 	}
 
@@ -833,10 +849,10 @@ func cmdStatus(configDir string) {
 
 	if proxyRunning {
 		fmt.Printf("Local proxy: RUNNING on %s\n", proxyURL)
-		fmt.Printf("  export HTTPS_PROXY=%s\n", proxyURL)
-		fmt.Printf("  export HTTP_PROXY=%s\n", proxyURL)
+		fmt.Printf("  %s\n", cyan("export HTTPS_PROXY="+proxyURL))
+		fmt.Printf("  %s\n", cyan("export HTTP_PROXY="+proxyURL))
 	} else {
-		fmt.Printf("Local proxy: NOT RUNNING (start with: duckway proxy -d)\n")
+		fmt.Printf("Local proxy: NOT RUNNING (start with: %s)\n", cyan("duckway proxy -d"))
 		fmt.Printf("  Will listen on %s\n", proxyURL)
 	}
 
@@ -847,7 +863,7 @@ func cmdStatus(configDir string) {
 		if pid, alive := readPID(ccPid); alive {
 			fmt.Printf("CC watch:    RUNNING (PID %d, %d CC assigned)\n", pid, len(state.CCs))
 		} else {
-			fmt.Printf("CC watch:    NOT RUNNING (start with: duckway cc watch -d)\n")
+			fmt.Printf("CC watch:    NOT RUNNING (start with: %s)\n", cyan("duckway cc watch -d"))
 			fmt.Printf("  %d CC assigned — the daemon delivers Discord messages to claude\n", len(state.CCs))
 		}
 	}
@@ -856,7 +872,7 @@ func cmdStatus(configDir string) {
 	caPath := configDir + "/ca.pem"
 	caData, err := os.ReadFile(caPath)
 	if err != nil {
-		fmt.Println("CA cert:     MISSING (run duckway init to download)")
+		fmt.Printf("CA cert:     MISSING (run %s to download)\n", cyan("duckway init"))
 		return
 	}
 	block, _ := pem.Decode(caData)
@@ -874,10 +890,10 @@ func cmdStatus(configDir string) {
 	exp := cert.NotAfter.Format("2006-01-02")
 	switch {
 	case now.After(cert.NotAfter):
-		fmt.Printf("CA cert:     EXPIRED on %s — re-run 'duckway init'\n", exp)
+		fmt.Printf("CA cert:     EXPIRED on %s — re-run %s\n", exp, cyan("duckway init"))
 	case expiresIn < 30*24*time.Hour:
 		days := int(expiresIn / (24 * time.Hour))
-		fmt.Printf("CA cert:     expires %s (%d days — consider re-running 'duckway init')\n", exp, days)
+		fmt.Printf("CA cert:     expires %s (%d days — consider re-running %s)\n", exp, days, cyan("duckway init"))
 	default:
 		days := int(expiresIn / (24 * time.Hour))
 		fmt.Printf("CA cert:     expires %s (%d days)\n", exp, days)
