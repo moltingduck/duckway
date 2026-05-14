@@ -117,14 +117,16 @@ func (r *ccRunner) run(t ccTask) {
 		prompt = managementPreamble() + "\n\n---\n\n" + t.Content
 	}
 
+	// -p/--print is a boolean flag; prompt is a positional arg and must come last.
 	args := []string{
-		"-p", prompt,
+		"-p",
 		"--dangerously-skip-permissions",
 		"--output-format", "json",
 	}
 	if sid != "" {
 		args = append([]string{"--resume", sid}, args...)
 	}
+	args = append(args, prompt)
 
 	cmd := exec.CommandContext(ctx, r.bin, args...)
 	cmd.Dir = r.cwd
