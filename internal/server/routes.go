@@ -119,6 +119,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/clients", adminPageH.ClientsPage)
 	adminPageMux.HandleFunc("GET /admin/groups", adminPageH.GroupsPage)
 	adminPageMux.HandleFunc("GET /admin/key-groups", adminPageH.KeyGroupsPage)
+	adminPageMux.HandleFunc("GET /admin/key-groups/{id}", adminPageH.KeyGroupDetailPage)
 	adminPageMux.HandleFunc("GET /admin/approvals", adminPageH.ApprovalsPage)
 	adminPageMux.HandleFunc("GET /admin/logs", adminPageH.LogsPage)
 	adminPageMux.HandleFunc("GET /admin/notifications", adminPageH.NotificationsPage)
@@ -178,13 +179,15 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/groups/{id}/members", groupH.AddMember)
 	adminAPIMux.HandleFunc("DELETE /api/groups/{id}/members/{keyId}", groupH.RemoveMember)
 
-	// Key Groups v2: score-based selection with 429 auto-rotation
+	// Key Groups v2: pluggable rotation strategies with 429 auto-rotation
 	keyGroupH := handlers.NewKeyGroupHandler(s.db)
 	adminAPIMux.HandleFunc("GET /api/key-groups", keyGroupH.List)
 	adminAPIMux.HandleFunc("POST /api/key-groups", keyGroupH.Create)
 	adminAPIMux.HandleFunc("GET /api/key-groups/{id}", keyGroupH.Get)
+	adminAPIMux.HandleFunc("PATCH /api/key-groups/{id}", keyGroupH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/key-groups/{id}", keyGroupH.Delete)
 	adminAPIMux.HandleFunc("POST /api/key-groups/{id}/members", keyGroupH.AddMember)
+	adminAPIMux.HandleFunc("PATCH /api/key-groups/{id}/members/{key_id}", keyGroupH.UpdateMember)
 	adminAPIMux.HandleFunc("DELETE /api/key-groups/{id}/members/{key_id}", keyGroupH.RemoveMember)
 
 	adminAPIMux.HandleFunc("GET /api/approvals", approvalH.ListPending)

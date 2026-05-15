@@ -83,7 +83,7 @@ func NewAdminHandler(
 	// Parse each page template paired with the layout
 	pageNames := []string{
 		"dashboard", "services", "api_keys", "oauth", "placeholders",
-		"clients", "groups", "key_groups", "approvals", "logs", "notifications", "canary", "settings", "docs", "cc",
+		"clients", "groups", "key_groups", "key_group_detail", "approvals", "logs", "notifications", "canary", "settings", "docs", "cc",
 	}
 
 	pages := make(map[string]*template.Template)
@@ -156,6 +156,7 @@ type pageData struct {
 	Clients      interface{}
 	Groups       interface{}
 	KeyGroups    interface{}
+	KeyGroup     interface{} // single group detail
 	Approvals    interface{}
 	Logs         interface{}
 	Channels      interface{}
@@ -295,6 +296,27 @@ func (h *AdminHandler) KeyGroupsPage(w http.ResponseWriter, r *http.Request) {
 		Active:    "key_groups",
 		KeyGroups: keyGroups,
 		Keys:      keys,
+	})
+}
+
+func (h *AdminHandler) KeyGroupDetailPage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var group interface{}
+	if h.db != nil {
+		if g, err := queries.GetKeyGroupWithMembers(h.db, id); err == nil {
+			group = g
+		}
+	}
+	if group == nil {
+		http.Error(w, "Key group not found", http.StatusNotFound)
+		return
+	}
+	keys, _ := h.apiKeys.List("")
+	h.render(w, "key_group_detail", pageData{
+		Title:    "Key Group",
+		Active:   "key_groups",
+		KeyGroup: group,
+		Keys:     keys,
 	})
 }
 

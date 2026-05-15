@@ -297,6 +297,9 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE cc_channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'",
 		// Key Group v2: score-based selection with 429 auto-rotation
 		"ALTER TABLE placeholder_keys ADD COLUMN key_group_id TEXT REFERENCES key_groups(id)",
+		// Key Group v3: pluggable rotation strategies + round-robin last_used tracking
+		"ALTER TABLE key_groups ADD COLUMN rotation_strategy TEXT NOT NULL DEFAULT 'score'",
+		"ALTER TABLE key_group_members ADD COLUMN last_used_at TEXT",
 	}
 	for _, alt := range safeAlters {
 		db.Exec(alt) // ignore "duplicate column" errors

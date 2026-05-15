@@ -32,9 +32,10 @@ func (h *KeyGroupHandler) List(w http.ResponseWriter, r *http.Request) {
 // POST /api/key-groups
 func (h *KeyGroupHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		ServiceName string `json:"service_name"`
+		Name             string `json:"name"`
+		Description      string `json:"description"`
+		ServiceName      string `json:"service_name"`
+		RotationStrategy string `json:"rotation_strategy"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -47,14 +48,44 @@ func (h *KeyGroupHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.ServiceName == "" {
 		req.ServiceName = "anthropic"
 	}
+	if !validStrategy(req.RotationStrategy) {
+		req.RotationStrategy = "score"
+	}
 
-	group, err := queries.CreateKeyGroup(h.db, req.Name, req.Description, req.ServiceName)
+	group, err := queries.CreateKeyGroup(h.db, req.Name, req.Description, req.ServiceName, req.RotationStrategy)
 	if err != nil {
 		jsonError(w, "failed to create key group: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, group)
+}
+
+// PATCH /api/key-groups/{id}
+func (h *KeyGroupHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Name             string `json:"name"`
+		Description      string `json:"description"`
+		RotationStrategy string `json:"rotation_strategy"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" {
+		jsonError(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if !validStrategy(req.RotationStrategy) {
+		jsonError(w, "rotation_strategy must be one of: score, round_robin, failover, random", http.StatusBadRequest)
+		return
+	}
+	if err := queries.UpdateKeyGroup(h.db, id, req.Name, req.Description, req.RotationStrategy); err != nil {
+		jsonError(w, "failed to update key group: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "updated"})
 }
 
 // GET /api/key-groups/{id}
@@ -101,6 +132,24 @@ func (h *KeyGroupHandler) AddMember(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "added"})
 }
 
+// PATCH /api/key-groups/{id}/members/{key_id}
+func (h *KeyGroupHandler) UpdateMember(w http.ResponseWriter, r *http.Request) {
+	groupID := r.PathValue("id")
+	keyID := r.PathValue("key_id")
+	var req struct {
+		Position int `json:"position"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if err := queries.UpdateMemberPosition(h.db, groupID, keyID, req.Position); err != nil {
+		jsonError(w, "failed to update member position: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "updated"})
+}
+
 // DELETE /api/key-groups/{id}/members/{key_id}
 func (h *KeyGroupHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 	groupID := r.PathValue("id")
@@ -135,3 +184,10 @@ func (h *KeyGroupHandler) ReportUsage(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
 
+func validStrategy(s string) bool {
+	switch s {
+	case "score", "round_robin", "failover", "random":
+		return true
+	}
+	return false
+}

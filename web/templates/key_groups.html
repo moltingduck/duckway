@@ -11,8 +11,11 @@
     <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.75rem">
       <strong>{{.Name}}</strong>
       <span class="badge badge-blue">{{.ServiceName}}</span>
+      <span class="badge badge-purple" title="Rotation strategy">{{.RotationStrategy}}</span>
       {{if .Description}}<span class="text-muted text-sm">{{.Description}}</span>{{end}}
       <div style="margin-left:auto;display:flex;gap:.5rem">
+        <a href="/admin/key-groups/{{.ID}}" class="btn btn-sm">View</a>
+        <button class="btn btn-sm" onclick="openEdit('{{.ID}}','{{.Name}}','{{.Description}}','{{.RotationStrategy}}')">Edit</button>
         <button class="btn btn-sm" onclick="openAddMember('{{.ID}}')">Add Key</button>
         <button class="btn btn-sm btn-danger" onclick="deleteGroup('{{.ID}}')">Delete</button>
       </div>
@@ -24,7 +27,7 @@
   </div>
   {{end}}
   {{else}}
-  <p class="text-muted" style="padding:1rem">No key groups yet. Create one to enable score-based key selection with 429 auto-rotation.</p>
+  <p class="text-muted" style="padding:1rem">No key groups yet. Create one to enable automatic key rotation.</p>
   {{end}}
 </div>
 
@@ -43,9 +46,43 @@
           <option value="github">github</option>
         </select>
       </div>
+      <div class="form-group">
+        <label>Rotation Strategy</label>
+        <select id="kg-strategy">
+          <option value="score">score — highest remaining tokens per client</option>
+          <option value="round_robin">round_robin — even distribution, least-recently-used first</option>
+          <option value="failover">failover — always use first key, fall back on 429</option>
+          <option value="random">random — random selection on each request</option>
+        </select>
+      </div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
         <button type="submit" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Group Modal -->
+<div id="edit-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Edit Key Group</h2>
+    <form id="edit-group-form" onsubmit="saveGroup(event)">
+      <input type="hidden" id="edit-group-id">
+      <div class="form-group"><label>Name</label><input type="text" id="edit-kg-name" required></div>
+      <div class="form-group"><label>Description</label><input type="text" id="edit-kg-desc"></div>
+      <div class="form-group">
+        <label>Rotation Strategy</label>
+        <select id="edit-kg-strategy">
+          <option value="score">score — highest remaining tokens per client</option>
+          <option value="round_robin">round_robin — even distribution, least-recently-used first</option>
+          <option value="failover">failover — always use first key, fall back on 429</option>
+          <option value="random">random — random selection on each request</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('edit-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
       </div>
     </form>
   </div>
@@ -64,7 +101,7 @@
           {{range .Keys}}<option value="{{.ID}}">{{.Name}} ({{.ServiceName}})</option>{{end}}
         </select>
       </div>
-      <div class="form-group"><label>Position (lower = higher priority for untracked keys)</label><input type="number" id="am-position" value="0" min="0"></div>
+      <div class="form-group"><label>Position (lower = higher priority)</label><input type="number" id="am-position" value="0" min="0"></div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="document.getElementById('add-member-modal').style.display='none'">Cancel</button>
         <button type="submit" class="btn btn-primary">Add</button>
@@ -132,6 +169,14 @@ function openAddMember(groupID) {
   document.getElementById('add-member-modal').style.display = 'flex';
 }
 
+function openEdit(id, name, desc, strategy) {
+  document.getElementById('edit-group-id').value = id;
+  document.getElementById('edit-kg-name').value = name;
+  document.getElementById('edit-kg-desc').value = desc;
+  document.getElementById('edit-kg-strategy').value = strategy;
+  document.getElementById('edit-modal').style.display = 'flex';
+}
+
 function createGroup(e) {
   e.preventDefault();
   fetch('/api/key-groups', {
@@ -141,6 +186,21 @@ function createGroup(e) {
       name: document.getElementById('kg-name').value,
       description: document.getElementById('kg-desc').value,
       service_name: document.getElementById('kg-service').value,
+      rotation_strategy: document.getElementById('kg-strategy').value,
+    })
+  }).then(r => { if (r.ok) location.reload(); else r.json().then(d => showToast(d.error || 'Failed','error')); });
+}
+
+function saveGroup(e) {
+  e.preventDefault();
+  const id = document.getElementById('edit-group-id').value;
+  fetch(`/api/key-groups/${id}`, {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      name: document.getElementById('edit-kg-name').value,
+      description: document.getElementById('edit-kg-desc').value,
+      rotation_strategy: document.getElementById('edit-kg-strategy').value,
     })
   }).then(r => { if (r.ok) location.reload(); else r.json().then(d => showToast(d.error || 'Failed','error')); });
 }

@@ -1,0 +1,250 @@
+{{define "content"}}
+{{with .KeyGroup}}
+<div class="page-header" style="display:flex;align-items:center;gap:1rem">
+  <a href="/admin/key-groups" class="btn btn-sm">&larr; Key Groups</a>
+  <h1 style="margin:0">{{.Name}}</h1>
+  <span class="badge badge-blue">{{.ServiceName}}</span>
+  <span class="badge badge-purple">{{.RotationStrategy}}</span>
+  {{if .Description}}<span class="text-muted text-sm">{{.Description}}</span>{{end}}
+  <div style="margin-left:auto;display:flex;gap:.5rem">
+    <button class="btn btn-sm" onclick="document.getElementById('edit-modal').style.display='flex'">Edit Settings</button>
+    <button class="btn btn-sm" onclick="document.getElementById('add-member-modal').style.display='flex'">Add Key</button>
+  </div>
+</div>
+<div class="text-muted text-sm" style="margin-bottom:1rem">
+  ID: <span class="mono">{{.ID}}</span> &middot; Created {{.CreatedAt}}
+</div>
+
+<!-- Strategy description -->
+<div class="card" style="margin-bottom:1rem;padding:.75rem 1rem;background:var(--bg-alt, #f9fafb)">
+  <span id="strategy-desc"></span>
+</div>
+
+<!-- Members Table -->
+<div class="card">
+  <div style="padding:.75rem 1rem;border-bottom:1px solid var(--border);font-weight:600">Keys ({{len .Members}})</div>
+  {{if .Members}}
+  <table>
+    <thead>
+      <tr>
+        <th>Pos</th>
+        <th>Key</th>
+        <th>Tokens Remaining</th>
+        <th>Requests Remaining</th>
+        <th>Last Used</th>
+        <th>Score</th>
+        <th>Reset At</th>
+        <th>Status</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Members}}
+      <tr id="row-{{.APIKeyID}}">
+        <td style="width:80px">
+          <div style="display:flex;align-items:center;gap:.25rem">
+            <input type="number" value="{{.Position}}" min="0" style="width:52px;padding:2px 4px"
+                   onchange="updatePosition('{{$.ID}}','{{.APIKeyID}}',this.value)">
+          </div>
+        </td>
+        <td>
+          <strong>{{.KeyName}}</strong><br>
+          <span class="mono text-sm text-muted">{{.APIKeyID}}</span>
+        </td>
+        <td style="min-width:180px"
+            id="tokens-{{.APIKeyID}}"
+            data-remaining="{{if .TokensRemaining}}{{.TokensRemaining}}{{end}}"
+            data-limit="{{if .TokensLimit}}{{.TokensLimit}}{{end}}">
+          <span class="text-muted text-sm">loading…</span>
+        </td>
+        <td>
+          {{if .RequestsRemaining}}
+            <span class="text-sm">{{.RequestsRemaining}}{{if .RequestsLimit}} / {{.RequestsLimit}}{{end}}</span>
+          {{else}}
+            <span class="text-muted">—</span>
+          {{end}}
+        </td>
+        <td class="text-sm text-muted">
+          {{if .LastUsedAt}}{{.LastUsedAt}}{{else}}<span>never</span>{{end}}
+        </td>
+        <td class="mono text-sm">{{printf "%.0f" .Score}}</td>
+        <td class="text-sm text-muted">
+          {{if .ResetAt}}{{deref .ResetAt}}{{else}}—{{end}}
+        </td>
+        <td>
+          {{if .ExhaustedUntil}}
+            <span class="badge badge-red" id="status-{{.APIKeyID}}">exhausted</span>
+          {{else}}
+            <span class="badge badge-green">active</span>
+          {{end}}
+        </td>
+        <td>
+          <button class="btn btn-sm btn-danger" onclick="removeMember('{{$.ID}}','{{.APIKeyID}}')">Remove</button>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="text-muted" style="padding:1rem">No keys in this group yet. Click "Add Key" to get started.</p>
+  {{end}}
+</div>
+
+<!-- Edit Settings Modal -->
+<div id="edit-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Edit Group Settings</h2>
+    <form onsubmit="saveSettings(event)">
+      <div class="form-group"><label>Name</label><input type="text" id="edit-name" value="{{.Name}}" required></div>
+      <div class="form-group"><label>Description</label><input type="text" id="edit-desc" value="{{.Description}}"></div>
+      <div class="form-group">
+        <label>Rotation Strategy</label>
+        <select id="edit-strategy">
+          <option value="score"{{if eq .RotationStrategy "score"}} selected{{end}}>score — highest remaining tokens per client</option>
+          <option value="round_robin"{{if eq .RotationStrategy "round_robin"}} selected{{end}}>round_robin — even distribution, least-recently-used first</option>
+          <option value="failover"{{if eq .RotationStrategy "failover"}} selected{{end}}>failover — always use first key, fall back on 429</option>
+          <option value="random"{{if eq .RotationStrategy "random"}} selected{{end}}>random — random selection on each request</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('edit-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Add Member Modal -->
+<div id="add-member-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Add Key to Group</h2>
+    <form onsubmit="addMember(event)">
+      <div class="form-group">
+        <label>API Key</label>
+        <select id="am-key-id" required>
+          <option value="">Select a key...</option>
+          {{range $.Keys}}<option value="{{.ID}}">{{.Name}} ({{.ServiceName}})</option>{{end}}
+        </select>
+      </div>
+      <div class="form-group"><label>Position (lower = higher priority)</label><input type="number" id="am-position" value="0" min="0"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('add-member-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+const GROUP_ID = '{{.ID}}';
+const STRATEGY = '{{.RotationStrategy}}';
+
+const strategyDesc = {
+  score:       'Score-based: selects the key with the most remaining tokens per bound client. Untouched keys (no usage data yet) are tried first.',
+  round_robin: 'Round-robin: cycles through all available keys in order of least-recently-used, ensuring equal distribution.',
+  failover:    'Failover: always uses the highest-priority key (lowest position number). Falls back to the next key only when the current one is rate-limited (429).',
+  random:      'Random: picks a random available key on each request. Useful for spreading load without tracking state.',
+};
+document.getElementById('strategy-desc').textContent = strategyDesc[STRATEGY] || STRATEGY;
+
+function formatTokenBar(remaining, limit) {
+  if (remaining === null || remaining === undefined) return '—';
+  const pct = limit ? Math.round(remaining / limit * 100) : 0;
+  const color = pct > 50 ? 'var(--success)' : pct > 20 ? '#f59e0b' : 'var(--danger)';
+  return `<div style="display:flex;align-items:center;gap:.5rem">
+    <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden;min-width:80px">
+      <div style="width:${pct}%;height:100%;background:${color}"></div>
+    </div>
+    <span class="text-sm">${remaining.toLocaleString()}${limit ? ' / ' + limit.toLocaleString() : ''}</span>
+  </div>`;
+}
+
+function formatExhausted(exhaustedUntil) {
+  if (!exhaustedUntil) return '';
+  const reset = new Date(exhaustedUntil);
+  if (reset <= new Date()) return '';
+  const secs = Math.round((reset - new Date()) / 1000);
+  return secs + 's';
+}
+
+function updatePosition(groupID, keyID, val) {
+  const pos = parseInt(val);
+  if (isNaN(pos) || pos < 0) return;
+  fetch(`/api/key-groups/${groupID}/members/${keyID}`, {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({position: pos})
+  }).then(r => {
+    if (!r.ok) r.json().then(d => showToast(d.error || 'Failed to update position', 'error'));
+  });
+}
+
+function removeMember(groupID, keyID) {
+  if (!confirm('Remove this key from the group?')) return;
+  fetch(`/api/key-groups/${groupID}/members/${keyID}`, {method:'DELETE'})
+    .then(r => { if (r.ok) location.reload(); else r.json().then(d => showToast(d.error || 'Failed','error')); });
+}
+
+function saveSettings(e) {
+  e.preventDefault();
+  fetch(`/api/key-groups/${GROUP_ID}`, {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      name: document.getElementById('edit-name').value,
+      description: document.getElementById('edit-desc').value,
+      rotation_strategy: document.getElementById('edit-strategy').value,
+    })
+  }).then(r => { if (r.ok) location.reload(); else r.json().then(d => showToast(d.error || 'Failed','error')); });
+}
+
+function addMember(e) {
+  e.preventDefault();
+  fetch(`/api/key-groups/${GROUP_ID}/members`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      api_key_id: document.getElementById('am-key-id').value,
+      position: parseInt(document.getElementById('am-position').value) || 0,
+    })
+  }).then(r => {
+    if (r.ok) location.reload();
+    else r.json().then(d => showToast(d.error || 'Failed','error'));
+  });
+}
+
+// Render token bars from data attributes on page load.
+document.querySelectorAll('[id^="tokens-"]').forEach(el => {
+  const rem = parseInt(el.dataset.remaining);
+  const lim = parseInt(el.dataset.limit);
+  el.innerHTML = formatTokenBar(isNaN(rem) ? null : rem, isNaN(lim) ? null : lim);
+});
+
+// Render exhausted countdowns
+document.querySelectorAll('[id^="status-"]').forEach(el => {
+  // exhausted_until is embedded via Go; live update handles countdowns
+});
+
+// Live refresh: poll /api/key-groups/{id} every 15s and update token bars + status badges
+function refreshUsage() {
+  fetch(`/api/key-groups/${GROUP_ID}`)
+    .then(r => r.json())
+    .then(data => {
+      (data.members || []).forEach(m => {
+        const tokEl = document.getElementById('tokens-' + m.api_key_id);
+        if (tokEl) tokEl.innerHTML = formatTokenBar(m.tokens_remaining, m.tokens_limit);
+        const statusEl = document.getElementById('status-' + m.api_key_id);
+        if (statusEl) {
+          const secs = formatExhausted(m.exhausted_until);
+          statusEl.textContent = secs ? 'exhausted (' + secs + ')' : 'active';
+          statusEl.className = secs ? 'badge badge-red' : 'badge badge-green';
+        }
+      });
+    })
+    .catch(() => {});
+}
+setInterval(refreshUsage, 15000);
+</script>
+{{end}}
+{{end}}
+

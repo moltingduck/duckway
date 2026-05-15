@@ -168,7 +168,13 @@ func (h *LoanHandler) issueGroupLoan(w http.ResponseWriter, r *http.Request, cli
 
 	excludeKey := r.URL.Query().Get("exclude_key")
 
-	apiKeyID, err := queries.SelectKeyForGroup(h.db, groupID, excludeKey)
+	// Fetch the group's rotation strategy so SelectKeyForGroup uses the right algorithm.
+	strategy := "score"
+	if grp, grpErr := queries.GetKeyGroup(h.db, groupID); grpErr == nil {
+		strategy = grp.RotationStrategy
+	}
+
+	apiKeyID, err := queries.SelectKeyForGroup(h.db, groupID, excludeKey, strategy)
 	if err != nil {
 		jsonError(w, "no available key in group: "+err.Error(), http.StatusServiceUnavailable)
 		return

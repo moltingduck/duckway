@@ -123,13 +123,14 @@ type RequestLog struct {
 	CreatedAt     string  `json:"created_at"`
 }
 
-// KeyGroup is a named set of API keys with score-based selection and 429 auto-rotation.
+// KeyGroup is a named set of API keys with pluggable rotation strategies and 429 auto-rotation.
 type KeyGroup struct {
-	ID          string `json:"id" db:"id"`
-	Name        string `json:"name" db:"name"`
-	Description string `json:"description" db:"description"`
-	ServiceName string `json:"service_name" db:"service_name"`
-	CreatedAt   string `json:"created_at" db:"created_at"`
+	ID               string `json:"id" db:"id"`
+	Name             string `json:"name" db:"name"`
+	Description      string `json:"description" db:"description"`
+	ServiceName      string `json:"service_name" db:"service_name"`
+	RotationStrategy string `json:"rotation_strategy" db:"rotation_strategy"`
+	CreatedAt        string `json:"created_at" db:"created_at"`
 }
 
 type KeyGroupMember struct {
@@ -137,6 +138,7 @@ type KeyGroupMember struct {
 	APIKeyID       string  `json:"api_key_id" db:"api_key_id"`
 	Position       int     `json:"position" db:"position"`
 	ExhaustedUntil *string `json:"exhausted_until" db:"exhausted_until"`
+	LastUsedAt     *string `json:"last_used_at" db:"last_used_at"`
 }
 
 type KeyGroupWithMembers struct {
@@ -146,12 +148,14 @@ type KeyGroupWithMembers struct {
 
 type KeyGroupMemberDetail struct {
 	KeyGroupMember
-	KeyName         string  `json:"key_name"`
-	TokensRemaining *int64  `json:"tokens_remaining"`
-	TokensLimit     *int64  `json:"tokens_limit"`
-	ResetAt         *string `json:"reset_at"`
-	BoundClients    int     `json:"bound_clients"`
-	Score           float64 `json:"score"`
+	KeyName           string  `json:"key_name"`
+	TokensRemaining   *int64  `json:"tokens_remaining"`
+	TokensLimit       *int64  `json:"tokens_limit"`
+	RequestsRemaining *int64  `json:"requests_remaining"`
+	RequestsLimit     *int64  `json:"requests_limit"`
+	ResetAt           *string `json:"reset_at"`
+	BoundClients      int     `json:"bound_clients"`
+	Score             float64 `json:"score"`
 }
 
 // ControlChannel binds one client to one Discord category via a bot.

@@ -10,25 +10,29 @@ import (
 	"github.com/hackerduck/duckway/internal/models"
 )
 
-func CreateKeyGroup(db *sql.DB, name, description, serviceName string) (*models.KeyGroup, error) {
+func CreateKeyGroup(db *sql.DB, name, description, serviceName, rotationStrategy string) (*models.KeyGroup, error) {
+	if rotationStrategy == "" {
+		rotationStrategy = "score"
+	}
 	id := uuid.New().String()
 	_, err := db.Exec(
-		`INSERT INTO key_groups (id, name, description, service_name) VALUES (?, ?, ?, ?)`,
-		id, name, description, serviceName,
+		`INSERT INTO key_groups (id, name, description, service_name, rotation_strategy) VALUES (?, ?, ?, ?, ?)`,
+		id, name, description, serviceName, rotationStrategy,
 	)
 	if err != nil {
 		return nil, err
 	}
 	return &models.KeyGroup{
-		ID:          id,
-		Name:        name,
-		Description: description,
-		ServiceName: serviceName,
+		ID:               id,
+		Name:             name,
+		Description:      description,
+		ServiceName:      serviceName,
+		RotationStrategy: rotationStrategy,
 	}, nil
 }
 
 func ListKeyGroups(db *sql.DB) ([]models.KeyGroup, error) {
-	rows, err := db.Query(`SELECT id, name, description, service_name, created_at FROM key_groups ORDER BY created_at DESC`)
+	rows, err := db.Query(`SELECT id, name, description, service_name, COALESCE(rotation_strategy,'score'), created_at FROM key_groups ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +41,7 @@ func ListKeyGroups(db *sql.DB) ([]models.KeyGroup, error) {
 	var result []models.KeyGroup
 	for rows.Next() {
 		var g models.KeyGroup
-		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.ServiceName, &g.CreatedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.ServiceName, &g.RotationStrategy, &g.CreatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, g)
@@ -48,12 +52,20 @@ func ListKeyGroups(db *sql.DB) ([]models.KeyGroup, error) {
 func GetKeyGroup(db *sql.DB, id string) (*models.KeyGroup, error) {
 	var g models.KeyGroup
 	err := db.QueryRow(
-		`SELECT id, name, description, service_name, created_at FROM key_groups WHERE id = ?`, id,
-	).Scan(&g.ID, &g.Name, &g.Description, &g.ServiceName, &g.CreatedAt)
+		`SELECT id, name, description, service_name, COALESCE(rotation_strategy,'score'), created_at FROM key_groups WHERE id = ?`, id,
+	).Scan(&g.ID, &g.Name, &g.Description, &g.ServiceName, &g.RotationStrategy, &g.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &g, nil
+}
+
+func UpdateKeyGroup(db *sql.DB, id, name, description, rotationStrategy string) error {
+	_, err := db.Exec(
+		`UPDATE key_groups SET name = ?, description = ?, rotation_strategy = ? WHERE id = ?`,
+		name, description, rotationStrategy, id,
+	)
+	return err
 }
 
 func DeleteKeyGroup(db *sql.DB, id string) error {
@@ -77,6 +89,14 @@ func RemoveKeyFromGroup(db *sql.DB, groupID, apiKeyID string) error {
 	return err
 }
 
+func UpdateMemberPosition(db *sql.DB, groupID, apiKeyID string, position int) error {
+	_, err := db.Exec(
+		`UPDATE key_group_members SET position = ? WHERE group_id = ? AND api_key_id = ?`,
+		position, groupID, apiKeyID,
+	)
+	return err
+}
+
 func GetKeyGroupWithMembers(db *sql.DB, groupID string) (*models.KeyGroupWithMembers, error) {
 	g, err := GetKeyGroup(db, groupID)
 	if err != nil {
@@ -84,9 +104,11 @@ func GetKeyGroupWithMembers(db *sql.DB, groupID string) (*models.KeyGroupWithMem
 	}
 
 	rows, err := db.Query(`
-		SELECT m.api_key_id, k.name, m.position, m.exhausted_until,
+		SELECT m.api_key_id, k.name, m.position, m.exhausted_until, m.last_used_at,
 		       json_extract(k.usage_snapshot, '$.tokens_remaining'),
 		       json_extract(k.usage_snapshot, '$.tokens_limit'),
+		       json_extract(k.usage_snapshot, '$.requests_remaining'),
+		       json_extract(k.usage_snapshot, '$.requests_limit'),
 		       json_extract(k.usage_snapshot, '$.reset_at'),
 		       (SELECT COUNT(*) FROM placeholder_keys p WHERE p.key_group_id = m.group_id AND p.api_key_id = m.api_key_id),
 		       COALESCE(CAST(json_extract(k.usage_snapshot, '$.tokens_remaining') AS REAL), 9999999999.0)
@@ -104,11 +126,11 @@ func GetKeyGroupWithMembers(db *sql.DB, groupID string) (*models.KeyGroupWithMem
 	result := &models.KeyGroupWithMembers{KeyGroup: *g}
 	for rows.Next() {
 		var d models.KeyGroupMemberDetail
-		var tokensRemaining, tokensLimit *float64
+		var tokensRemaining, tokensLimit, requestsRemaining, requestsLimit *float64
 		if err := rows.Scan(
-			&d.APIKeyID, &d.KeyName, &d.Position, &d.ExhaustedUntil,
-			&tokensRemaining, &tokensLimit, &d.ResetAt,
-			&d.BoundClients, &d.Score,
+			&d.APIKeyID, &d.KeyName, &d.Position, &d.ExhaustedUntil, &d.LastUsedAt,
+			&tokensRemaining, &tokensLimit, &requestsRemaining, &requestsLimit,
+			&d.ResetAt, &d.BoundClients, &d.Score,
 		); err != nil {
 			return nil, err
 		}
@@ -121,39 +143,92 @@ func GetKeyGroupWithMembers(db *sql.DB, groupID string) (*models.KeyGroupWithMem
 			v := int64(*tokensLimit)
 			d.TokensLimit = &v
 		}
+		if requestsRemaining != nil {
+			v := int64(*requestsRemaining)
+			d.RequestsRemaining = &v
+		}
+		if requestsLimit != nil {
+			v := int64(*requestsLimit)
+			d.RequestsLimit = &v
+		}
 		result.Members = append(result.Members, d)
 	}
 	return result, rows.Err()
 }
 
-// SelectKeyForGroup implements the score-based selection algorithm.
-// Returns the api_key_id to use. excludeKeyID may be empty string.
-func SelectKeyForGroup(db *sql.DB, groupID, excludeKeyID string) (string, error) {
-	row := db.QueryRow(`
-		SELECT m.api_key_id,
-		       COALESCE(CAST(json_extract(k.usage_snapshot, '$.tokens_remaining') AS REAL), 9999999999.0)
-		         / MAX(CAST(COUNT(p.id) AS REAL), 1.0) AS score,
-		       CASE WHEN json_extract(k.usage_snapshot, '$.tokens_remaining') IS NULL THEN 0 ELSE 1 END AS has_data,
-		       m.position
-		FROM key_group_members m
-		JOIN api_keys k ON k.id = m.api_key_id
-		LEFT JOIN placeholder_keys p ON p.api_key_id = k.id AND p.key_group_id = m.group_id
-		WHERE m.group_id = ?
-		  AND (m.exhausted_until IS NULL OR m.exhausted_until < datetime('now'))
-		  AND (? = '' OR m.api_key_id != ?)
-		GROUP BY m.api_key_id, m.position, k.usage_snapshot
-		ORDER BY has_data ASC, score DESC, m.position ASC
-		LIMIT 1`,
-		groupID, excludeKeyID, excludeKeyID,
-	)
+// SelectKeyForGroup selects a key from the group using the given rotation strategy.
+// strategy must be one of: "score", "round_robin", "failover", "random".
+// excludeKeyID may be empty string (no exclusion).
+func SelectKeyForGroup(db *sql.DB, groupID, excludeKeyID, strategy string) (string, error) {
+	if strategy == "" {
+		strategy = "score"
+	}
+
+	var query string
+	switch strategy {
+	case "round_robin":
+		// Pick the key that was least recently used (NULL = never used, selected first).
+		query = `
+			SELECT m.api_key_id
+			FROM key_group_members m
+			JOIN api_keys k ON k.id = m.api_key_id
+			WHERE m.group_id = ?
+			  AND (m.exhausted_until IS NULL OR m.exhausted_until < datetime('now'))
+			  AND (? = '' OR m.api_key_id != ?)
+			ORDER BY m.last_used_at ASC NULLS FIRST, m.position ASC
+			LIMIT 1`
+	case "failover":
+		// Always use the highest-priority available key.
+		query = `
+			SELECT m.api_key_id
+			FROM key_group_members m
+			JOIN api_keys k ON k.id = m.api_key_id
+			WHERE m.group_id = ?
+			  AND (m.exhausted_until IS NULL OR m.exhausted_until < datetime('now'))
+			  AND (? = '' OR m.api_key_id != ?)
+			ORDER BY m.position ASC
+			LIMIT 1`
+	case "random":
+		query = `
+			SELECT m.api_key_id
+			FROM key_group_members m
+			JOIN api_keys k ON k.id = m.api_key_id
+			WHERE m.group_id = ?
+			  AND (m.exhausted_until IS NULL OR m.exhausted_until < datetime('now'))
+			  AND (? = '' OR m.api_key_id != ?)
+			ORDER BY RANDOM()
+			LIMIT 1`
+	default: // "score"
+		query = `
+			SELECT m.api_key_id
+			FROM key_group_members m
+			JOIN api_keys k ON k.id = m.api_key_id
+			LEFT JOIN placeholder_keys p ON p.api_key_id = k.id AND p.key_group_id = m.group_id
+			WHERE m.group_id = ?
+			  AND (m.exhausted_until IS NULL OR m.exhausted_until < datetime('now'))
+			  AND (? = '' OR m.api_key_id != ?)
+			GROUP BY m.api_key_id, m.position, k.usage_snapshot
+			ORDER BY
+			  CASE WHEN json_extract(k.usage_snapshot, '$.tokens_remaining') IS NULL THEN 0 ELSE 1 END ASC,
+			  COALESCE(CAST(json_extract(k.usage_snapshot, '$.tokens_remaining') AS REAL), 9999999999.0)
+			    / MAX(CAST(COUNT(p.id) AS REAL), 1.0) DESC,
+			  m.position ASC
+			LIMIT 1`
+	}
 
 	var apiKeyID string
-	var score float64
-	var hasData int
-	var position int
-	if err := row.Scan(&apiKeyID, &score, &hasData, &position); err != nil {
+	if err := db.QueryRow(query, groupID, excludeKeyID, excludeKeyID).Scan(&apiKeyID); err != nil {
 		return "", err
 	}
+
+	// Round-robin: stamp last_used_at so the next call picks a different key.
+	if strategy == "round_robin" {
+		db.Exec(
+			`UPDATE key_group_members SET last_used_at = datetime('now') WHERE group_id = ? AND api_key_id = ?`,
+			groupID, apiKeyID,
+		)
+	}
+
 	return apiKeyID, nil
 }
 
