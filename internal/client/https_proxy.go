@@ -130,7 +130,18 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 		token:       cfg.Token,
 		ca:          ca,
 		hostMap:     hostMap,
-		httpClient:  &http.Client{Timeout: 120 * time.Second},
+		httpClient: &http.Client{
+			// No Timeout here — streaming SSE responses (compaction, long generations)
+			// must not be cut off by a total-request deadline. Connection-level
+			// timeouts are set on the Transport instead.
+			Transport: &http.Transport{
+				DialContext:           (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 60 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+				MaxIdleConnsPerHost:   4,
+			},
+		},
 		loanCache:   make(map[string]*loanedToken),
 		auditClient: &http.Client{Timeout: 10 * time.Second},
 		debug:       debug,

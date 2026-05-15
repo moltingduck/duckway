@@ -63,7 +63,7 @@ func newCCRunner(handle, configDir, channelCwd, binPath string, sessions *CCSess
 		handle:      handle,
 		cwd:         cwd,
 		bin:         binPath,
-		runFn:       runViaPTY,
+		runFn:       runViaPrint,
 		queue:       make(chan ccTask, ccQueueDepth),
 		stop:        make(chan struct{}),
 		sessions:    sessions,
@@ -119,7 +119,7 @@ func (r *ccRunner) run(t ccTask) {
 
 	extraEnv := []string{"DUCKWAY_CC_CHANNEL_HANDLE=" + r.handle}
 
-	r.logger("[cc-watch] %s: running claude via PTY (cwd=%s)", r.handle, r.cwd)
+	r.logger("[cc-watch] %s: running claude (cwd=%s)", r.handle, r.cwd)
 	newSID, result, isError, err := r.runFn(ctx, r.bin, r.cwd, prompt, sid, extraEnv)
 	if err != nil {
 		_ = r.postMessage(context.Background(), r.handle, fmt.Sprintf("claude error: %v", err))

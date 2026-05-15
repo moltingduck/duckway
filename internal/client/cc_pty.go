@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -33,9 +34,9 @@ type hookEvent struct {
 	Payload string
 }
 
-// runViaPTY drives claude in interactive PTY mode, injects the prompt via the
-// SessionStart hook, and captures the result from the Stop hook payload.
-// This is the replacement for the deprecated -p/--print flag.
+// runViaPTY drives claude in interactive PTY mode, injects the prompt after
+// Ink's startup terminal queries quiet down, and captures the result from the
+// Stop hook payload.
 func runViaPTY(ctx context.Context, bin, cwd, prompt string, sid string, extraEnv []string) (sessionID, result string, isError bool, err error) {
 	tmpDir, err := os.MkdirTemp("", "duckway-cc-*")
 	if err != nil {
@@ -76,16 +77,29 @@ func runViaPTY(ctx context.Context, bin, cwd, prompt string, sid string, extraEn
 	if err != nil {
 		return "", "", false, fmt.Errorf("pty start: %w", err)
 	}
-	defer ptmx.Close()
 
 	// Open FIFO O_RDWR so we hold both ends open. This prevents our scanner
 	// from blocking waiting for a writer, and prevents hook writes from
 	// blocking waiting for a reader.
 	fifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
 	if err != nil {
+		ptmx.Close()
 		return "", "", false, fmt.Errorf("open fifo: %w", err)
 	}
-	defer fifo.Close()
+
+	// stopCh signals background goroutines to exit without closing writeCh
+	// (which would panic if a goroutine is still trying to send to it).
+	// cleanup() must be called before wg.Wait() to unblock I/O goroutines.
+	stopCh := make(chan struct{})
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			close(stopCh)
+			ptmx.Close()  // unblocks ptyReader
+			fifo.Close()  // unblocks fifoReader
+		})
+	}
+	defer cleanup()
 
 	hookCh := make(chan hookEvent, 4)
 	writeCh := make(chan []byte, 64)
@@ -96,22 +110,80 @@ func runViaPTY(ctx context.Context, bin, cwd, prompt string, sid string, extraEn
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for data := range writeCh {
-			_, _ = ptmx.Write(data)
+		for {
+			select {
+			case data := <-writeCh:
+				_, _ = ptmx.Write(data)
+			case <-stopCh:
+				return
+			}
 		}
 	}()
 
 	// ptyReader: drains PTY output and responds to Ink's terminal queries.
 	// Without responding to DA1/DA2/XTVERSION/DSR, Ink hangs at startup.
+	//
+	// Ready detection: Claude Code has no "SessionStart" hook. Instead we
+	// watch for the burst of DEC/XTerm queries Ink fires at startup. Once
+	// we've replied to at least one query and then seen 600 ms of silence,
+	// the TUI is rendered and ready for input. A 4-second fallback fires if
+	// Ink never queries (e.g. future headless mode).
+	readyCh := make(chan struct{}, 1)
+	signalReady := func() {
+		select {
+		case readyCh <- struct{}{}:
+		default:
+		}
+	}
+	// Fallback: signal ready after 5 seconds regardless.
+	time.AfterFunc(5*time.Second, signalReady)
+
+	// promptSentFlag lets the ptyReader know when to start tracking response
+	// output so it can fire the exit signal after the response quiets down.
+	// exitSentFlag prevents re-sending the exit signal when Ink's shutdown
+	// sequence itself generates PTY output.
+	var promptSentFlag atomic.Bool
+	var exitSentFlag atomic.Bool
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 4096)
+		var startupTimer *time.Timer  // 600ms quiet after startup queries → ready
+		var responseTimer *time.Timer // 2s quiet after prompt → send /exit
 		for {
 			n, readErr := ptmx.Read(buf)
 			if n > 0 {
 				if resp := respondToDecQueries(buf[:n]); len(resp) > 0 {
-					writeCh <- resp
+					select {
+					case writeCh <- resp:
+					case <-stopCh:
+						return
+					}
+					// Use a 3-second quiet period so Ink has time to fully
+				// render its TUI before we inject the prompt.
+					if startupTimer == nil {
+						startupTimer = time.AfterFunc(3*time.Second, signalReady)
+					} else {
+						startupTimer.Reset(3 * time.Second)
+					}
+				}
+				// After the prompt is sent (and before we've sent the exit
+				// signal), reset the response-done timer on every PTY chunk.
+				// 2s of silence → response done → Ctrl+C to quit BubbleTea.
+				if promptSentFlag.Load() && !exitSentFlag.Load() {
+					if responseTimer == nil {
+						responseTimer = time.AfterFunc(2*time.Second, func() {
+							if exitSentFlag.Swap(true) {
+								return // already sent
+							}
+							if cmd.Process != nil {
+								_ = cmd.Process.Signal(syscall.SIGTERM)
+							}
+						})
+					} else {
+						responseTimer.Reset(2 * time.Second)
+					}
 				}
 			}
 			if readErr != nil {
@@ -132,7 +204,11 @@ func runViaPTY(ctx context.Context, bin, cwd, prompt string, sid string, extraEn
 			if len(parts) == 2 {
 				ev.Payload = parts[1]
 			}
-			hookCh <- ev
+			select {
+			case hookCh <- ev:
+			case <-stopCh:
+				return
+			}
 		}
 	}()
 
@@ -143,30 +219,34 @@ func runViaPTY(ctx context.Context, bin, cwd, prompt string, sid string, extraEn
 	for {
 		select {
 		case <-ctx.Done():
-			close(writeCh)
+			cleanup()
 			wg.Wait()
 			return "", "", false, ctx.Err()
 
 		case <-timeout.C:
-			close(writeCh)
+			cleanup()
 			wg.Wait()
 			return "", "", false, fmt.Errorf("timed out waiting for claude after %v", ptyDefaultTimeout)
 
+		case <-readyCh:
+			if !promptSent {
+				promptSent = true
+				promptSentFlag.Store(true)
+				select {
+				case writeCh <- buildPTYInput(prompt):
+				case <-stopCh:
+				}
+			}
+
 		case ev := <-hookCh:
 			switch ev.Name {
-			case "ready":
-				if !promptSent {
-					promptSent = true
-					writeCh <- buildPTYInput(prompt)
-				}
-
 			case "stop":
 				var sp stopPayload
 				if jsonErr := json.Unmarshal([]byte(ev.Payload), &sp); jsonErr == nil {
 					sessionID = sp.SessionID
 					result = sp.LastAssistantMessage
 				}
-				close(writeCh)
+				cleanup()
 				wg.Wait()
 				return sessionID, result, false, nil
 			}
@@ -175,37 +255,30 @@ func runViaPTY(ctx context.Context, bin, cwd, prompt string, sid string, extraEn
 }
 
 // buildHooksSettings produces the inline --settings JSON that registers
-// SessionStart and Stop hooks pointing at hookScript.
+// the Stop hook pointing at hookScript.
 func buildHooksSettings(hookScript string) (string, error) {
-	makeHook := func(event string) []map[string]interface{} {
-		return []map[string]interface{}{
-			{
-				"matcher": "*",
-				"hooks": []map[string]interface{}{
-					{"type": "command", "command": hookScript + " " + event},
-				},
-			},
-		}
-	}
 	settings := map[string]interface{}{
 		"hooks": map[string]interface{}{
-			"SessionStart": makeHook("ready"),
-			"Stop":         makeHook("stop"),
+			"Stop": []map[string]interface{}{
+				{
+					"matcher": "*",
+					"hooks": []map[string]interface{}{
+						{"type": "command", "command": hookScript + " stop"},
+					},
+				},
+			},
 		},
 	}
 	b, err := json.Marshal(settings)
 	return string(b), err
 }
 
-// buildPTYInput wraps the prompt in bracketed paste sequences so that embedded
-// newlines are not interpreted as Enter by Ink, then appends \r to submit.
+// buildPTYInput sends the prompt to Ink. Newlines are replaced with spaces to
+// avoid triggering Enter mid-prompt; a final \r submits.
 func buildPTYInput(prompt string) []byte {
-	var b []byte
-	b = append(b, "\x1b[200~"...) // bracketed paste start
-	b = append(b, prompt...)
-	b = append(b, "\x1b[201~"...) // bracketed paste end
-	b = append(b, '\r')           // submit
-	return b
+	// Replace embedded newlines so they don't submit the form early.
+	safe := strings.ReplaceAll(prompt, "\n", " ")
+	return append([]byte(safe), '\r')
 }
 
 // respondToDecQueries scans buf for the DEC/XTerm terminal queries that Ink
