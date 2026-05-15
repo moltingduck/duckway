@@ -1,16 +1,18 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 )
+
+// ccRunFn executes one prompt and returns the session ID, result text, whether
+// it was an error, and any execution error. Abstracted so tests can inject a
+// stub without spawning a real PTY.
+type ccRunFn func(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []string) (sessionID, result string, isError bool, err error)
 
 // ccRunner owns the per-channel FIFO queue + claude exec for one task
 // channel. One runner per channel handle; the daemon spawns them lazily
@@ -23,6 +25,7 @@ type ccRunner struct {
 	handle      string
 	cwd         string  // resolved at construction
 	bin         string  // resolved path to `claude` binary
+	runFn       ccRunFn // defaults to runViaPTY; injectable for tests
 	queue       chan ccTask
 	stop        chan struct{}
 	wg          sync.WaitGroup
@@ -60,6 +63,7 @@ func newCCRunner(handle, configDir, channelCwd, binPath string, sessions *CCSess
 		handle:      handle,
 		cwd:         cwd,
 		bin:         binPath,
+		runFn:       runViaPTY,
 		queue:       make(chan ccTask, ccQueueDepth),
 		stop:        make(chan struct{}),
 		sessions:    sessions,
@@ -101,7 +105,7 @@ func (r *ccRunner) loop() {
 	}
 }
 
-// run executes one prompt against claude and posts the response back.
+// run executes one prompt against claude via PTY and posts the response back.
 func (r *ccRunner) run(t ccTask) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -109,80 +113,33 @@ func (r *ccRunner) run(t ccTask) {
 	prompt := t.Content
 	sid := r.sessions.Get(r.handle)
 	// Management-channel preamble: only on the FIRST message of a session.
-	// claude remembers the context across --resume turns, so we don't
-	// re-inject on every message. The preamble nudges the model to spin
-	// out a dedicated task channel via discord_create_task_channel rather
-	// than do sustained work in the control channel.
 	if t.ChannelKind == "management" && sid == "" {
 		prompt = managementPreamble() + "\n\n---\n\n" + t.Content
 	}
 
-	// -p/--print is a boolean flag; prompt is a positional arg and must come last.
-	args := []string{
-		"-p",
-		"--dangerously-skip-permissions",
-		"--output-format", "json",
-	}
-	if sid != "" {
-		args = append([]string{"--resume", sid}, args...)
-	}
-	args = append(args, prompt)
+	extraEnv := []string{"DUCKWAY_CC_CHANNEL_HANDLE=" + r.handle}
 
-	cmd := exec.CommandContext(ctx, r.bin, args...)
-	cmd.Dir = r.cwd
-	cmd.Env = append(os.Environ(),
-		// Tell the model which channel it's running in so it can
-		// discord_post back without guessing.
-		"DUCKWAY_CC_CHANNEL_HANDLE="+r.handle,
-	)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	r.logger("[cc-watch] %s: running claude (cwd=%s)", r.handle, r.cwd)
-	err := cmd.Run()
-
+	r.logger("[cc-watch] %s: running claude via PTY (cwd=%s)", r.handle, r.cwd)
+	newSID, result, isError, err := r.runFn(ctx, r.bin, r.cwd, prompt, sid, extraEnv)
 	if err != nil {
-		errMsg := fmt.Sprintf("claude exited with error: %v\n```\n%s\n```", err, tail(stderr.String(), 1500))
-		_ = r.postMessage(context.Background(), r.handle, errMsg)
+		_ = r.postMessage(context.Background(), r.handle, fmt.Sprintf("claude error: %v", err))
 		return
 	}
 
-	// claude -p --output-format json prints a single JSON object on
-	// success: {type, subtype, session_id, result, is_error, ...}
-	var resp struct {
-		Type      string `json:"type"`
-		SessionID string `json:"session_id"`
-		Result    string `json:"result"`
-		IsError   bool   `json:"is_error"`
-	}
-	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &resp); err != nil {
-		// Fallback: post the raw output so the user still sees something.
-		_ = r.postMessage(context.Background(), r.handle, "claude returned non-JSON output:\n```\n"+tail(stdout.String(), 1800)+"\n```")
-		return
-	}
-	if resp.SessionID != "" {
-		_ = r.sessions.Set(r.handle, resp.SessionID)
+	if newSID != "" {
+		_ = r.sessions.Set(r.handle, newSID)
 	}
 
-	body := resp.Result
+	body := result
 	if body == "" {
 		body = "_(claude finished with no response)_"
 	}
-	if resp.IsError {
+	if isError {
 		body = "⚠️ claude reported an error:\n" + body
 	}
 	if err := r.postMessage(context.Background(), r.handle, body); err != nil {
 		r.logger("[cc-watch] %s: discord post failed: %v", r.handle, err)
 	}
-}
-
-// tail returns the last n bytes of s, prefixed with "…" if truncated.
-func tail(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return "…" + s[len(s)-n:]
 }
 
 // managementPreamble is prepended to the FIRST message of a session that
