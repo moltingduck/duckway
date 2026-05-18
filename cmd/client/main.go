@@ -96,6 +96,8 @@ Usage:
   duckway status         Show connection status, CA cert expiry
   duckway install-ca     Re-install the Duckway CA into the system trust store
   duckway update         Compare local version with server, download + replace if drifted
+                         (uses saved config; override with --server <url>
+                          or DUCKWAY_SERVER_URL — works without init)
   duckway mcp serve      Run the Control-Channel MCP server over stdio
                          (launched by Claude Code from ~/.claude/mcp.json)
   duckway cc watch       Connect to the server's SSE feed and run a
@@ -564,15 +566,33 @@ func cmdMCP(configDir string) {
 }
 
 func cmdUpdate(configDir string) {
-	cfg, err := client.LoadConfig(configDir)
-	if err != nil {
-		log.Fatal(err)
+	// `duckway update` only needs a server URL — not auth, not keys.
+	// Don't require `duckway init` to have run; pick the URL from (in
+	// order): --server flag, $DUCKWAY_SERVER_URL, the saved config if
+	// one exists. This lets a user upgrade a freshly downloaded binary
+	// before they've configured it, or upgrade a binary on a host that
+	// never had a client config.
+	serverURL := os.Getenv("DUCKWAY_SERVER_URL")
+	for i := 2; i < len(os.Args); i++ {
+		if os.Args[i] == "--server" && i+1 < len(os.Args) {
+			serverURL = os.Args[i+1]
+			i++
+		}
+	}
+	if serverURL == "" {
+		if cfg, err := client.LoadConfig(configDir); err == nil {
+			serverURL = cfg.ServerURL
+		}
+	}
+	if serverURL == "" {
+		log.Fatalf("no server URL available — pass %s or set DUCKWAY_SERVER_URL, or run %s first",
+			cyan("--server <url>"), cyan("duckway init"))
 	}
 
 	current := version.Get()
 	fmt.Printf("Current: %s\n", current)
 
-	serverVer, err := client.CheckServerVersion(cfg.ServerURL)
+	serverVer, err := client.CheckServerVersion(serverURL)
 	if err != nil {
 		log.Fatalf("Could not reach server: %v", err)
 	}
@@ -584,7 +604,7 @@ func cmdUpdate(configDir string) {
 	}
 
 	fmt.Println("New version available — downloading...")
-	if err := client.DownloadAndReplaceClient(cfg.ServerURL); err != nil {
+	if err := client.DownloadAndReplaceClient(serverURL); err != nil {
 		log.Fatalf("Update failed: %v", err)
 	}
 
