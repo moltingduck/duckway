@@ -79,9 +79,10 @@ func TestSmokeTmuxPasteRoundTrip(t *testing.T) {
 			return false
 		}
 		got := string(b)
-		// Both substrings appear, but the embedded "\n" should have been
-		// replaced with a space — so a literal "tmux\nsecond" must not
-		// appear, and "tmux second" must.
+		// The embedded "\n" should have been replaced with a space, and a
+		// trailing "\r" appended for submit. cat translates CR→LF on
+		// output via the line discipline so we see the full pasted line
+		// terminated by a newline.
 		if strings.Contains(got, "tmux\nsecond") {
 			return false
 		}

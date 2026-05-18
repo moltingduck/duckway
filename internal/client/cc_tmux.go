@@ -39,9 +39,6 @@ const (
 	// takes a couple of seconds to render and start consuming stdin;
 	// keystrokes sent before that are dropped.
 	claudeStartupDelay = 5 * time.Second
-	// claudeSubmitDelay sits between typing the prompt and pressing
-	// Enter. Without it the submit can race the TUI input handler.
-	claudeSubmitDelay = 250 * time.Millisecond
 	// eventPollInterval is how often runViaTmux re-scans the events
 	// directory for new Stop events. The hook fires at most once per turn
 	// so this isn't on a hot path — we trade a bit of latency for cheap
@@ -544,28 +541,22 @@ func tmuxRespawnPane(sess, cwd, launchPath string, extraEnv []string) error {
 	return nil
 }
 
-// tmuxPastePrompt types `prompt` into `sess`'s active pane as raw
-// keystrokes, then sends Enter to submit.
+// tmuxPastePrompt types `prompt` into `sess`'s active pane and submits
+// it with a carriage return.
 //
 // Why not bracketed paste? Claude's Ink TUI doesn't reliably opt in to
 // bracketed paste mode, so tmux's `paste-buffer -p` leaks its ESC[200~
-// / ESC[201~ markers into the input field as literal characters. We
-// also can't send newlines as part of the typed text — Ink would treat
-// each `\n` as Enter and submit a partial prompt; replace them with
-// spaces (matching what runViaPTY already does in buildPTYInput).
-//
-// A short pause sits between the typing pass and Enter so the TUI input
-// handler sees the text before the submit fires.
+// / ESC[201~ markers into the input field as literal characters. And
+// why a CR byte instead of a separate `send-keys Enter` call? A second
+// send-keys command races the TUI's render loop and the submit gets
+// dropped or fires too early — the pattern that already works in
+// runViaPTY is to append `\r` to the prompt bytes and send everything
+// in one shot. Newlines in the prompt are replaced with spaces so Ink
+// doesn't treat each `\n` as Enter and submit a partial prompt.
 func tmuxPastePrompt(sess, prompt string) error {
-	safe := strings.ReplaceAll(prompt, "\n", " ")
-	// `send-keys -l` sends the argument literally — no special-key
-	// interpretation of e.g. "Enter".
+	safe := strings.ReplaceAll(prompt, "\n", " ") + "\r"
 	if out, err := exec.Command("tmux", "send-keys", "-t", sess, "-l", safe).CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys -l: %w (%s)", err, string(out))
-	}
-	time.Sleep(claudeSubmitDelay)
-	if out, err := exec.Command("tmux", "send-keys", "-t", sess, "Enter").CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys Enter: %w (%s)", err, string(out))
+		return fmt.Errorf("tmux send-keys: %w (%s)", err, string(out))
 	}
 	return nil
 }
