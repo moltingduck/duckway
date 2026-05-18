@@ -210,6 +210,101 @@ func TestFindStopEventMissingDir(t *testing.T) {
 	}
 }
 
+func TestExtractAssistantText(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"plain string", `"hello"`, "hello"},
+		{"single text block", `[{"type":"text","text":"hi"}]`, "hi"},
+		{"text + tool_use mixed", `[{"type":"text","text":"part1"},{"type":"tool_use","id":"x","name":"bash","input":{}},{"type":"text","text":"part2"}]`, "part1\npart2"},
+		{"tool_use only", `[{"type":"tool_use","id":"x","name":"bash","input":{}}]`, ""},
+		{"thinking only", `[{"type":"thinking","thinking":"hmm"}]`, ""},
+		{"empty array", `[]`, ""},
+		{"empty raw", ``, ""},
+		{"malformed", `{not json}`, ""},
+	}
+	for _, tt := range tests {
+		got := extractAssistantText([]byte(tt.raw))
+		if got != tt.want {
+			t.Errorf("%s: extractAssistantText(%q) = %q, want %q", tt.name, tt.raw, got, tt.want)
+		}
+	}
+}
+
+func TestReadLastAssistantMessage(t *testing.T) {
+	dir := t.TempDir()
+	transcript := filepath.Join(dir, "transcript.jsonl")
+	// Realistic shape: user turn, assistant tool_use only, tool_result,
+	// final assistant with text. The last assistant text wins.
+	lines := []string{
+		`{"type":"user","message":{"role":"user","content":"hello"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"bash","input":{}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"all done"}]}}`,
+	}
+	if err := os.WriteFile(transcript, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readLastAssistantMessage(transcript)
+	if err != nil {
+		t.Fatalf("readLastAssistantMessage: %v", err)
+	}
+	if got != "all done" {
+		t.Errorf("got %q, want %q", got, "all done")
+	}
+}
+
+func TestReadLastAssistantMessageSkipsToolOnlyTurns(t *testing.T) {
+	dir := t.TempDir()
+	transcript := filepath.Join(dir, "transcript.jsonl")
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"earlier reply"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"bash","input":{}}]}}`,
+	}
+	if err := os.WriteFile(transcript, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readLastAssistantMessage(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The last assistant entry was tool_use only (no text), so we should
+	// fall back to the previous assistant turn that did have text.
+	if got != "earlier reply" {
+		t.Errorf("got %q, want %q", got, "earlier reply")
+	}
+}
+
+func TestResolveAssistantMessagePrefersPayloadField(t *testing.T) {
+	// When the payload itself already carries text, no transcript read.
+	got := resolveAssistantMessage(stopPayload{LastAssistantMessage: "from payload"})
+	if got != "from payload" {
+		t.Errorf("got %q, want %q", got, "from payload")
+	}
+}
+
+func TestResolveAssistantMessageFallsBackToTranscript(t *testing.T) {
+	dir := t.TempDir()
+	transcript := filepath.Join(dir, "transcript.jsonl")
+	line := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"from transcript"}]}}`
+	if err := os.WriteFile(transcript, []byte(line+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveAssistantMessage(stopPayload{TranscriptPath: transcript})
+	if got != "from transcript" {
+		t.Errorf("got %q, want %q", got, "from transcript")
+	}
+}
+
+func TestResolveAssistantMessageMissingTranscript(t *testing.T) {
+	got := resolveAssistantMessage(stopPayload{TranscriptPath: "/no/such/file"})
+	if got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
 func TestInFlightRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "in-flight.json")

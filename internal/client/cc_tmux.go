@@ -1,9 +1,11 @@
 package client
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,10 +186,105 @@ func pollForStop(ctx context.Context, eventsDir string, afterTS int64, timeout t
 			if jerr := json.Unmarshal([]byte(evt.payload), &sp); jerr != nil {
 				return "", "", false, fmt.Errorf("parse stop payload: %w", jerr)
 			}
+			result := resolveAssistantMessage(sp)
 			_ = os.Remove(evt.path)
-			return sp.SessionID, sp.LastAssistantMessage, false, nil
+			return sp.SessionID, result, false, nil
 		}
 	}
+}
+
+// resolveAssistantMessage returns the text we should post to Discord for
+// a Stop event. Claude Code's Stop hook payload usually only carries
+// session_id + transcript_path, so the LastAssistantMessage field is
+// empty — we fall back to reading the transcript jsonl and pulling the
+// latest assistant text out of it.
+func resolveAssistantMessage(sp stopPayload) string {
+	if sp.LastAssistantMessage != "" {
+		return sp.LastAssistantMessage
+	}
+	if sp.TranscriptPath == "" {
+		return ""
+	}
+	msg, err := readLastAssistantMessage(sp.TranscriptPath)
+	if err != nil {
+		log.Printf("[cc-watch] could not read transcript %s: %v", sp.TranscriptPath, err)
+		return ""
+	}
+	return msg
+}
+
+// readLastAssistantMessage walks a Claude Code transcript (one JSON
+// object per line) and returns the concatenated text of the latest
+// assistant turn. Non-text blocks (thinking, tool_use, tool_result)
+// are ignored; if the latest assistant entry has no text content we
+// keep walking and use the previous one.
+func readLastAssistantMessage(transcriptPath string) (string, error) {
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	type entry struct {
+		Type    string `json:"type"`
+		Message struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+
+	scanner := bufio.NewScanner(f)
+	// Transcripts can carry large pasted documents; raise from the
+	// default 64 KB cap so giant lines don't truncate.
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+
+	var latest string
+	for scanner.Scan() {
+		var e entry
+		if jerr := json.Unmarshal(scanner.Bytes(), &e); jerr != nil {
+			continue
+		}
+		if e.Type != "assistant" {
+			continue
+		}
+		if text := extractAssistantText(e.Message.Content); text != "" {
+			latest = text
+		}
+	}
+	return latest, scanner.Err()
+}
+
+// extractAssistantText handles both transcript schemas:
+//   - content is an array of typed blocks (current) — concatenate all
+//     "text" blocks
+//   - content is a plain string (legacy) — return as-is
+func extractAssistantText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if raw[0] == '[' {
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &blocks); err != nil {
+			return ""
+		}
+		var parts []string
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			return s
+		}
+	}
+	return ""
 }
 
 // pendingEvent is one Stop file we found in events/.
@@ -359,7 +456,7 @@ func RecoverPendingTurns() ([]RecoverPendingTurnsResult, error) {
 			Handle:               f.Handle,
 			MessageID:            f.MessageID,
 			SessionID:            sp.SessionID,
-			LastAssistantMessage: sp.LastAssistantMessage,
+			LastAssistantMessage: resolveAssistantMessage(sp),
 			HadResult:            true,
 		})
 	}
