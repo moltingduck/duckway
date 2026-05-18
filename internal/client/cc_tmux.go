@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -39,6 +41,9 @@ const (
 	// takes a couple of seconds to render and start consuming stdin;
 	// keystrokes sent before that are dropped.
 	claudeStartupDelay = 5 * time.Second
+	// claudeSubmitDelay sits between typing the prompt and pressing
+	// Enter. Without it the submit can race the TUI render loop.
+	claudeSubmitDelay = 400 * time.Millisecond
 	// eventPollInterval is how often runViaTmux re-scans the events
 	// directory for new Stop events. The hook fires at most once per turn
 	// so this isn't on a hot path — we trade a bit of latency for cheap
@@ -135,6 +140,15 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 	messageID := envValue(extraEnv, "DUCKWAY_CC_MESSAGE_ID")
 	if err := writeInFlight(inFlightPath, handle, messageID, turnTS); err != nil {
 		return "", "", false, err
+	}
+
+	// Pre-mark the cwd as trusted in claude's per-user state file. The
+	// first time claude opens a directory it shows a modal trust dialog
+	// ("Is this a project you created or one you trust?") that swallows
+	// our typed prompt as an option select. Without this our prompt
+	// never reaches the real input field.
+	if err := markCwdTrustedInClaude(cwd); err != nil {
+		log.Printf("[cc-watch] could not pre-trust cwd %s: %v (claude may show its trust modal and lose the first prompt)", cwd, err)
 	}
 
 	launched, err := ensureClaudeInTmux(sess, cwd, bin, sid, hookPath, settingsPath, launchPath, extraEnv)
@@ -542,21 +556,107 @@ func tmuxRespawnPane(sess, cwd, launchPath string, extraEnv []string) error {
 }
 
 // tmuxPastePrompt types `prompt` into `sess`'s active pane and submits
-// it with a carriage return.
+// it with a named Enter key.
 //
 // Why not bracketed paste? Claude's Ink TUI doesn't reliably opt in to
 // bracketed paste mode, so tmux's `paste-buffer -p` leaks its ESC[200~
-// / ESC[201~ markers into the input field as literal characters. And
-// why a CR byte instead of a separate `send-keys Enter` call? A second
-// send-keys command races the TUI's render loop and the submit gets
-// dropped or fires too early — the pattern that already works in
-// runViaPTY is to append `\r` to the prompt bytes and send everything
-// in one shot. Newlines in the prompt are replaced with spaces so Ink
+// / ESC[201~ markers into the input field as literal characters.
+//
+// Why two send-keys calls instead of "<text>\r" in one? Manual probes
+// against the real claude TUI showed that submitting via tmux's named
+// `Enter` key is more reliable than embedding a CR byte in the literal
+// text — Ink's input handler interprets the named key event directly,
+// where a raw CR can be missed if Ink hasn't finished rendering the
+// pasted text. A small pause between the typing pass and Enter gives
+// Ink one extra render frame to commit the input buffer before the
+// submit fires.
+//
+// Embedded newlines in the prompt are replaced with spaces so Ink
 // doesn't treat each `\n` as Enter and submit a partial prompt.
 func tmuxPastePrompt(sess, prompt string) error {
-	safe := strings.ReplaceAll(prompt, "\n", " ") + "\r"
+	safe := strings.ReplaceAll(prompt, "\n", " ")
 	if out, err := exec.Command("tmux", "send-keys", "-t", sess, "-l", safe).CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys: %w (%s)", err, string(out))
+		return fmt.Errorf("tmux send-keys -l: %w (%s)", err, string(out))
+	}
+	time.Sleep(claudeSubmitDelay)
+	if out, err := exec.Command("tmux", "send-keys", "-t", sess, "Enter").CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux send-keys Enter: %w (%s)", err, string(out))
+	}
+	return nil
+}
+
+// markCwdTrustedInClaude writes hasTrustDialogAccepted=true under
+// projects[cwd] in ~/.claude.json so claude doesn't show its
+// "Is this a project you created or one you trust?" modal when it
+// opens a directory for the first time. The modal blocks all real
+// input — without this, the first prompt we paste into a fresh cwd
+// gets interpreted as a trust-dialog option select and lost.
+//
+// Read-modify-write under an exclusive file lock. claude writes to
+// the same file at startup so the lock matters.
+func markCwdTrustedInClaude(cwd string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(home, ".claude.json")
+
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return fmt.Errorf("open: %w", err)
+	}
+	defer f.Close()
+
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("flock: %w", err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+
+	body, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+
+	var data map[string]interface{}
+	if len(body) > 0 {
+		if jerr := json.Unmarshal(body, &data); jerr != nil {
+			return fmt.Errorf("parse: %w", jerr)
+		}
+	}
+	if data == nil {
+		data = map[string]interface{}{}
+	}
+	projects, _ := data["projects"].(map[string]interface{})
+	if projects == nil {
+		projects = map[string]interface{}{}
+		data["projects"] = projects
+	}
+	project, _ := projects[cwd].(map[string]interface{})
+	if project == nil {
+		project = map[string]interface{}{}
+		projects[cwd] = project
+	}
+	if v, _ := project["hasTrustDialogAccepted"].(bool); v {
+		return nil // already trusted; no rewrite needed
+	}
+	project["hasTrustDialogAccepted"] = true
+
+	out, jerr := json.MarshalIndent(data, "", "  ")
+	if jerr != nil {
+		return jerr
+	}
+
+	// Truncate + write back. Same fd that holds the lock — we don't
+	// rename here because losing the lock between rename and reopen
+	// would re-introduce the race claude could lose updates against.
+	if _, err := f.Seek(0, 0); err != nil {
+		return err
+	}
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := f.Write(out); err != nil {
+		return err
 	}
 	return nil
 }

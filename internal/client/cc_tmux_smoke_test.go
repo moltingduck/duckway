@@ -235,6 +235,71 @@ func TestSmokeRecoverPendingTurns(t *testing.T) {
 	}
 }
 
+// TestSmokeRealClaudeRoundTrip runs the full runViaTmux flow against
+// the real `claude` CLI. Gated by DUCKWAY_TEST_REAL_CLAUDE=1 because it
+// consumes API tokens and requires claude to be authenticated. Use
+// this to verify end-to-end that the prompt actually reaches claude
+// and the Stop hook fires.
+//
+// Run with:
+//
+//	DUCKWAY_TEST_REAL_CLAUDE=1 go test -tags=smoke ./internal/client/ \
+//	    -run TestSmokeRealClaudeRoundTrip -v -count=1
+func TestSmokeRealClaudeRoundTrip(t *testing.T) {
+	requireTmux(t)
+	if os.Getenv("DUCKWAY_TEST_REAL_CLAUDE") != "1" {
+		t.Skip("set DUCKWAY_TEST_REAL_CLAUDE=1 to run (real claude, consumes tokens)")
+	}
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skipf("claude not on PATH: %v", err)
+	}
+
+	// Unique handle so this test doesn't collide with any real cc-watch
+	// state. We DON'T override HOME — claude needs its credentials.
+	handle := "smoke-real-" + uniqueSuffix()
+	t.Cleanup(func() {
+		tmuxKillSession(handle)
+		if chDir, err := tmuxChannelDir(handle); err == nil {
+			_ = os.RemoveAll(chDir)
+		}
+	})
+
+	dumpDiag := func(stage string) {
+		sess := tmuxSessionName(handle)
+		pane, _ := exec.Command("tmux", "capture-pane", "-p", "-t", sess).Output()
+		t.Logf("[%s] pane contents:\n----\n%s\n----", stage, string(pane))
+		chDir, _ := tmuxChannelDir(handle)
+		if entries, err := os.ReadDir(filepath.Join(chDir, "events")); err == nil {
+			var names []string
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			t.Logf("[%s] events/ contents: %v", stage, names)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	extraEnv := []string{
+		"DUCKWAY_CC_CHANNEL_HANDLE=" + handle,
+		"DUCKWAY_CC_MESSAGE_ID=msg-real-1",
+	}
+
+	prompt := "Reply with exactly the word OK and nothing else."
+	sid, result, isErr, err := runViaTmux(ctx, bin, t.TempDir(), prompt, "", extraEnv)
+	if err != nil {
+		dumpDiag("error")
+		t.Fatalf("runViaTmux: %v", err)
+	}
+	dumpDiag("success")
+	t.Logf("sessionID=%q isError=%v result=%q", sid, isErr, result)
+	if !strings.Contains(strings.ToLower(result), "ok") {
+		t.Errorf("result %q doesn't look like an OK reply", result)
+	}
+}
+
 // waitFor polls cond up to timeout, calling t.Fatalf with desc if it
 // never becomes true. Avoids racy sleeps in the smoke tests.
 func waitFor(t *testing.T, cond func() bool, timeout time.Duration, desc string) {
