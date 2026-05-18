@@ -47,7 +47,18 @@ const (
 	ccDefaultDir   = "cc-workspace"
 )
 
-func newCCRunner(handle, configDir, channelCwd, binPath string, sessions *CCSessionStore, postMessage func(ctx context.Context, handle, content string) error) (*ccRunner, error) {
+// chooseCCRunFn picks the runner to use. tmux gives the user a live,
+// attachable per-channel session (`tmux attach -t duckway-<handle>`) so
+// they can watch claude work. When tmux isn't installed — or the user
+// explicitly disabled it — we fall back to the headless --print runner.
+func chooseCCRunFn(noTmux bool) ccRunFn {
+	if !noTmux && tmuxAvailable() {
+		return runViaTmux
+	}
+	return runViaPrint
+}
+
+func newCCRunner(handle, configDir, channelCwd, binPath string, sessions *CCSessionStore, postMessage func(ctx context.Context, handle, content string) error, noTmux bool) (*ccRunner, error) {
 	cwd := channelCwd
 	if cwd == "" {
 		home, err := os.UserHomeDir()
@@ -63,7 +74,7 @@ func newCCRunner(handle, configDir, channelCwd, binPath string, sessions *CCSess
 		handle:      handle,
 		cwd:         cwd,
 		bin:         binPath,
-		runFn:       runViaPrint,
+		runFn:       chooseCCRunFn(noTmux),
 		queue:       make(chan ccTask, ccQueueDepth),
 		stop:        make(chan struct{}),
 		sessions:    sessions,
@@ -117,7 +128,14 @@ func (r *ccRunner) run(t ccTask) {
 		prompt = managementPreamble() + "\n\n---\n\n" + t.Content
 	}
 
-	extraEnv := []string{"DUCKWAY_CC_CHANNEL_HANDLE=" + r.handle}
+	extraEnv := []string{
+		"DUCKWAY_CC_CHANNEL_HANDLE=" + r.handle,
+		// Propagate the Discord message id so the tmux runner can record
+		// it in the in-flight marker. Recovery after a daemon crash uses
+		// this to attribute the recovered Stop event to a specific
+		// message.
+		"DUCKWAY_CC_MESSAGE_ID=" + t.MessageID,
+	}
 
 	r.logger("[cc-watch] %s: running claude (cwd=%s)", r.handle, r.cwd)
 	newSID, result, isError, err := r.runFn(ctx, r.bin, r.cwd, prompt, sid, extraEnv)

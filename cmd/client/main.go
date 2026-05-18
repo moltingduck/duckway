@@ -100,7 +100,12 @@ Usage:
                          (launched by Claude Code from ~/.claude/mcp.json)
   duckway cc watch       Connect to the server's SSE feed and run a
                          claude session per Discord task channel
+                         (when tmux is installed claude runs inside
+                         a session named duckway-<handle>; attach with
+                         "tmux attach -t duckway-<handle>")
   duckway cc watch -d    Same, but run in background as a daemon
+  duckway cc watch --no-tmux  Force the headless --print runner
+                         (also: DUCKWAY_CC_NO_TMUX=1)
   duckway cc watch stop  Stop the running daemon
   duckway cc watch status  Show daemon status
   duckway cc bind        Interactive picker: pick existing local claude
@@ -259,6 +264,10 @@ func cmdCCWatch(configDir string) {
 	daemon := false
 	stop := false
 	status := false
+	// --no-tmux forces the headless --print runner even when tmux is
+	// installed. Also honored via DUCKWAY_CC_NO_TMUX=1 in the environment
+	// so it's settable from a systemd unit without rewriting argv.
+	noTmux := os.Getenv("DUCKWAY_CC_NO_TMUX") == "1"
 	for i := 3; i < len(os.Args); i++ {
 		arg := os.Args[i]
 		switch arg {
@@ -268,6 +277,8 @@ func cmdCCWatch(configDir string) {
 			stop = true
 		case "status":
 			status = true
+		case "--no-tmux":
+			noTmux = true
 		case "--config-dir":
 			if i+1 < len(os.Args) {
 				configDir = os.Args[i+1]
@@ -313,7 +324,7 @@ func cmdCCWatch(configDir string) {
 		os.Exit(0)
 	}()
 
-	w, err := client.NewCCWatch(configDir, cfg)
+	w, err := client.NewCCWatchWithOptions(configDir, cfg, client.CCWatchOptions{NoTmux: noTmux})
 	if err != nil {
 		log.Fatalf("cc watch: %v", err)
 	}

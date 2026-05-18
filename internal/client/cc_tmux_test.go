@@ -1,0 +1,249 @@
+package client
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestTmuxSessionName(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"fix-login", "duckway-fix-login"},
+		{"feat:auth", "duckway-feat-auth"},
+		{"v1.2.3", "duckway-v1-2-3"},
+		{"my channel", "duckway-my-channel"},
+		{"complex:thing.v2 alpha", "duckway-complex-thing-v2-alpha"},
+	}
+	for _, tt := range tests {
+		got := tmuxSessionName(tt.in)
+		if got != tt.want {
+			t.Errorf("tmuxSessionName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestEnvValue(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		"DUCKWAY_CC_CHANNEL_HANDLE=fix-login",
+		"OTHER=value=with=equals",
+	}
+	if got := envValue(env, "DUCKWAY_CC_CHANNEL_HANDLE"); got != "fix-login" {
+		t.Errorf("envValue handle = %q, want fix-login", got)
+	}
+	if got := envValue(env, "OTHER"); got != "value=with=equals" {
+		t.Errorf("envValue OTHER = %q, want value=with=equals", got)
+	}
+	if got := envValue(env, "MISSING"); got != "" {
+		t.Errorf("envValue MISSING = %q, want empty", got)
+	}
+}
+
+func TestShellSingleQuote(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"simple", "'simple'"},
+		{"/path/to/bin", "'/path/to/bin'"},
+		{"has space", "'has space'"},
+		{"with'apostrophe", `'with'\''apostrophe'`},
+		{"", "''"},
+	}
+	for _, tt := range tests {
+		got := shellSingleQuote(tt.in)
+		if got != tt.want {
+			t.Errorf("shellSingleQuote(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestIsClaudeProcess(t *testing.T) {
+	yes := []string{"node", "claude", "claude-cli"}
+	no := []string{"sh", "bash", "vim", ""}
+	for _, c := range yes {
+		if !isClaudeProcess(c) {
+			t.Errorf("isClaudeProcess(%q) = false, want true", c)
+		}
+	}
+	for _, c := range no {
+		if isClaudeProcess(c) {
+			t.Errorf("isClaudeProcess(%q) = true, want false", c)
+		}
+	}
+}
+
+func TestWriteLaunchScript(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "launch.sh")
+	if err := writeLaunchScript(path, "/usr/local/bin/claude", "abc123", "/tmp/settings.json"); err != nil {
+		t.Fatalf("writeLaunchScript: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	s := string(body)
+	if !strings.HasPrefix(s, "#!/bin/sh\n") {
+		t.Errorf("script missing shebang: %q", s)
+	}
+	if !strings.Contains(s, "exec '/usr/local/bin/claude'") {
+		t.Errorf("script missing exec line: %q", s)
+	}
+	if !strings.Contains(s, "'--resume' 'abc123'") {
+		t.Errorf("script missing --resume: %q", s)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if fi.Mode().Perm()&0100 == 0 {
+		t.Errorf("script not executable: %v", fi.Mode().Perm())
+	}
+}
+
+func TestWriteLaunchScriptNoResume(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "launch.sh")
+	if err := writeLaunchScript(path, "/usr/bin/claude", "", "/tmp/settings.json"); err != nil {
+		t.Fatalf("writeLaunchScript: %v", err)
+	}
+	body, _ := os.ReadFile(path)
+	if strings.Contains(string(body), "--resume") {
+		t.Errorf("empty sid should omit --resume; got: %q", string(body))
+	}
+}
+
+func TestWriteHookScriptEscapesEventsDir(t *testing.T) {
+	dir := t.TempDir()
+	hookPath := filepath.Join(dir, "hook.sh")
+	// eventsDir with a single quote — script must single-quote-escape.
+	eventsDir := "/tmp/has'apostrophe/events"
+	if err := writeHookScript(hookPath, eventsDir); err != nil {
+		t.Fatalf("writeHookScript: %v", err)
+	}
+	body, _ := os.ReadFile(hookPath)
+	if !strings.Contains(string(body), `'/tmp/has'\''apostrophe/events'`) {
+		t.Errorf("hook script didn't quote-escape events dir: %q", string(body))
+	}
+	if !strings.Contains(string(body), `date +%s%N`) {
+		t.Errorf("hook script missing nanosecond timestamp: %q", string(body))
+	}
+	fi, _ := os.Stat(hookPath)
+	if fi.Mode().Perm()&0100 == 0 {
+		t.Errorf("hook script not executable: %v", fi.Mode().Perm())
+	}
+}
+
+func TestParseEventFilename(t *testing.T) {
+	tests := []struct {
+		in     string
+		wantTS int64
+		wantEv string
+		ok     bool
+	}{
+		{"1747000000123456789.stop.json", 1747000000123456789, "stop", true},
+		{"42.foo.json", 42, "foo", true},
+		{"notatimestamp.stop.json", 0, "", false},
+		{"42.stop", 0, "", false},
+		{".json", 0, "", false},
+		{"42..json", 0, "", false},
+	}
+	for _, tt := range tests {
+		ts, ev, ok := parseEventFilename(tt.in)
+		if ok != tt.ok || ts != tt.wantTS || ev != tt.wantEv {
+			t.Errorf("parseEventFilename(%q) = (%d, %q, %v), want (%d, %q, %v)",
+				tt.in, ts, ev, ok, tt.wantTS, tt.wantEv, tt.ok)
+		}
+	}
+}
+
+func TestFindStopEventSkipsOlderAndTmp(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Older than afterTS — must be ignored.
+	mustWrite("100.stop.json", `{"session_id":"old","last_assistant_message":"old"}`)
+	// Half-written file with .tmp extension — must be ignored.
+	mustWrite("250.stop.json.tmp", "partial")
+	// Wrong event name — ignored.
+	mustWrite("300.posttooluse.json", `{}`)
+	// Two valid stops; the oldest after afterTS=200 wins.
+	mustWrite("400.stop.json", `{"session_id":"a","last_assistant_message":"first"}`)
+	mustWrite("500.stop.json", `{"session_id":"b","last_assistant_message":"second"}`)
+
+	evt, found, err := findStopEvent(dir, 200)
+	if err != nil {
+		t.Fatalf("findStopEvent: %v", err)
+	}
+	if !found {
+		t.Fatal("expected to find a stop event")
+	}
+	if evt.ts != 400 {
+		t.Errorf("ts = %d, want 400", evt.ts)
+	}
+	if !strings.Contains(evt.payload, `"first"`) {
+		t.Errorf("payload = %q, want one containing \"first\"", evt.payload)
+	}
+}
+
+func TestFindStopEventNoneMatching(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "100.stop.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, found, err := findStopEvent(dir, 200)
+	if err != nil || found {
+		t.Errorf("findStopEvent on stale-only dir: found=%v err=%v, want (false, nil)", found, err)
+	}
+}
+
+func TestFindStopEventMissingDir(t *testing.T) {
+	_, found, err := findStopEvent("/nonexistent/path/that/should/not/exist", 0)
+	if err != nil || found {
+		t.Errorf("missing dir: found=%v err=%v, want (false, nil)", found, err)
+	}
+}
+
+func TestInFlightRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "in-flight.json")
+	if err := writeInFlight(path, "fix-login", "msg123", 1700000000); err != nil {
+		t.Fatalf("writeInFlight: %v", err)
+	}
+	f, err := readInFlight(path)
+	if err != nil {
+		t.Fatalf("readInFlight: %v", err)
+	}
+	if f.Handle != "fix-login" || f.MessageID != "msg123" || f.TurnTS != 1700000000 {
+		t.Errorf("readInFlight got %+v", f)
+	}
+}
+
+func TestChooseCCRunFnPrefersTmux(t *testing.T) {
+	// Reset memo so this test reflects current PATH.
+	tmuxAvailableMemo = nil
+	defer func() { tmuxAvailableMemo = nil }()
+
+	// Default (noTmux=false): want tmux when it's on PATH.
+	got := isRunViaTmux(chooseCCRunFn(false))
+	want := tmuxAvailable()
+	if got != want {
+		t.Errorf("chooseCCRunFn(false) tmux=%v, want %v (tmux on PATH = %v)", got, want, want)
+	}
+
+	// noTmux=true: never use tmux, even if it's on PATH.
+	if isRunViaTmux(chooseCCRunFn(true)) {
+		t.Errorf("chooseCCRunFn(true) returned tmux runner; should fall back to print")
+	}
+}
+
+// isRunViaTmux returns true when fn is the runViaTmux function.
+func isRunViaTmux(fn ccRunFn) bool {
+	return reflect.ValueOf(fn).Pointer() == reflect.ValueOf(ccRunFn(runViaTmux)).Pointer()
+}

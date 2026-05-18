@@ -26,6 +26,9 @@ type CCWatch struct {
 	configDir string
 	bin       string // resolved `claude` binary path
 	sessions  *CCSessionStore
+	// noTmux forces the headless --print runner even when tmux is installed.
+	// Set via `duckway cc watch --no-tmux` or DUCKWAY_CC_NO_TMUX=1.
+	noTmux bool
 
 	mu      sync.Mutex
 	runners map[string]*ccRunner // by channel handle
@@ -33,7 +36,19 @@ type CCWatch struct {
 	api *APIClient
 }
 
+// CCWatchOptions tweaks the daemon without growing NewCCWatch's signature
+// every time we add a knob. Zero value = current defaults.
+type CCWatchOptions struct {
+	// NoTmux disables the tmux runner unconditionally. Falls back to
+	// runViaPrint regardless of whether tmux is on PATH.
+	NoTmux bool
+}
+
 func NewCCWatch(configDir string, cfg *Config) (*CCWatch, error) {
+	return NewCCWatchWithOptions(configDir, cfg, CCWatchOptions{})
+}
+
+func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (*CCWatch, error) {
 	bin, err := exec.LookPath("claude")
 	if err != nil {
 		return nil, fmt.Errorf("claude binary not found in PATH (install Claude Code first): %w", err)
@@ -43,6 +58,7 @@ func NewCCWatch(configDir string, cfg *Config) (*CCWatch, error) {
 		configDir: configDir,
 		bin:       bin,
 		sessions:  NewCCSessionStore(configDir),
+		noTmux:    opts.NoTmux,
 		runners:   map[string]*ccRunner{},
 		api:       NewAPIClient(cfg.ServerURL, cfg.Token),
 	}, nil
@@ -51,6 +67,11 @@ func NewCCWatch(configDir string, cfg *Config) (*CCWatch, error) {
 // Run is the main loop. Blocks until ctx is cancelled.
 func (w *CCWatch) Run(ctx context.Context) error {
 	log.Printf("[cc-watch] starting; claude=%s server=%s", w.bin, w.cfg.ServerURL)
+
+	// Recover any turns whose Stop event arrived while the previous
+	// daemon instance was dead. Best-effort: errors are logged and we
+	// continue starting up.
+	w.recoverPendingTurns(ctx)
 
 	backoff := 5 * time.Second
 	maxBackoff := 60 * time.Second
@@ -254,6 +275,10 @@ func (w *CCWatch) handleChannelDelete(data []byte) {
 	}
 	w.mu.Unlock()
 	_ = w.sessions.Drop(env.Handle)
+	// If this channel had a live tmux pane (tmux runner), kill it now —
+	// otherwise dead sessions accumulate every time a Discord channel is
+	// deleted. No-op when the session doesn't exist.
+	tmuxKillSession(env.Handle)
 	log.Printf("[cc-watch] %s: channel deleted, session dropped", env.Handle)
 }
 
@@ -272,7 +297,7 @@ func (w *CCWatch) runnerFor(handle string) (*ccRunner, error) {
 	if err != nil {
 		return nil, err
 	}
-	r, err := newCCRunner(handle, w.configDir, cwd, w.bin, w.sessions, w.api.PostCC)
+	r, err := newCCRunner(handle, w.configDir, cwd, w.bin, w.sessions, w.api.PostCC, w.noTmux)
 	if err != nil {
 		return nil, err
 	}
@@ -309,4 +334,38 @@ func (w *CCWatch) shutdown() {
 		delete(w.runners, h)
 	}
 	log.Printf("[cc-watch] shutdown complete")
+}
+
+// recoverPendingTurns scans the tmux-runner state files left behind by a
+// previous (crashed) daemon. Any turn whose Stop event was written while
+// the daemon was down gets posted to Discord here, before we connect to
+// the SSE stream. Without this, the user's message would have been
+// answered by claude but the reply would never reach the channel.
+//
+// Best-effort: errors per channel are logged and we keep going.
+func (w *CCWatch) recoverPendingTurns(ctx context.Context) {
+	results, err := RecoverPendingTurns()
+	if err != nil {
+		log.Printf("[cc-watch] recover pending turns: %v", err)
+		return
+	}
+	for _, r := range results {
+		if !r.HadResult {
+			log.Printf("[cc-watch] recover: %s has an in-flight turn but no Stop event yet (claude may still be generating)", r.Handle)
+			continue
+		}
+		body := r.LastAssistantMessage
+		if body == "" {
+			body = "_(claude finished with no response)_"
+		}
+		body = "♻️ (recovered after daemon restart)\n\n" + body
+		if perr := w.api.PostCC(ctx, r.Handle, body); perr != nil {
+			log.Printf("[cc-watch] recover: post to %s failed: %v", r.Handle, perr)
+			continue
+		}
+		if r.SessionID != "" {
+			_ = w.sessions.Set(r.Handle, r.SessionID)
+		}
+		log.Printf("[cc-watch] recover: posted reply for in-flight turn on %s (message_id=%s)", r.Handle, r.MessageID)
+	}
 }

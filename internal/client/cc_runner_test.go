@@ -58,7 +58,7 @@ func newTestRunner(t *testing.T, fn ccRunFn) (*ccRunner, *recordingPoster, *CCSe
 	t.Helper()
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
-	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), "/fake/claude", store, pp.post)
+	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), "/fake/claude", store, pp.post, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestCCRunner_ManagementPreamble_FirstTurnOnly(t *testing.T) {
 	fn, captured := capturingRunFn("sess-mgmt-1", "response")
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
-	r, err := newCCRunner("dwch_mgmt", t.TempDir(), t.TempDir(), "/fake/claude", store, pp.post)
+	r, err := newCCRunner("dwch_mgmt", t.TempDir(), t.TempDir(), "/fake/claude", store, pp.post, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestCCRunner_DefaultsCwd(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
-	r, err := newCCRunner("dwch_x", t.TempDir(), "", "/fake/claude", store, pp.post)
+	r, err := newCCRunner("dwch_x", t.TempDir(), "", "/fake/claude", store, pp.post, true)
 	if err != nil {
 		t.Fatal(err)
 	}
