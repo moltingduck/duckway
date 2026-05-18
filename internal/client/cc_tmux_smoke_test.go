@@ -66,6 +66,8 @@ func TestSmokeTmuxPasteRoundTrip(t *testing.T) {
 		return strings.TrimSpace(string(out)) == "cat"
 	}, 3*time.Second, "cat to start in tmux pane")
 
+	// Pass a multi-line string so we also exercise the newline-to-space
+	// rewrite that keeps Ink from submitting partial prompts.
 	want := "hello tmux\nsecond line"
 	if err := tmuxPastePrompt(sess, want); err != nil {
 		t.Fatalf("tmuxPastePrompt: %v", err)
@@ -77,10 +79,13 @@ func TestSmokeTmuxPasteRoundTrip(t *testing.T) {
 			return false
 		}
 		got := string(b)
-		// bracketed-paste mode injects ESC[200~ / ESC[201~ around the
-		// content; the raw text we wrote is in between. Check for
-		// substring rather than equality.
-		return strings.Contains(got, "hello tmux") && strings.Contains(got, "second line")
+		// Both substrings appear, but the embedded "\n" should have been
+		// replaced with a space — so a literal "tmux\nsecond" must not
+		// appear, and "tmux second" must.
+		if strings.Contains(got, "tmux\nsecond") {
+			return false
+		}
+		return strings.Contains(got, "hello tmux second line")
 	}, 3*time.Second, "pasted text to appear in capture file")
 
 	// Sanity-check helper APIs while we're connected.

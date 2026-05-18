@@ -32,9 +32,16 @@ import (
 // the daemon was down — see RecoverPendingTurns.
 
 const (
-	tmuxSessionPrefix  = "duckway-"
-	tmuxRunTimeout     = 5 * time.Minute
-	claudeStartupDelay = 3 * time.Second
+	tmuxSessionPrefix = "duckway-"
+	tmuxRunTimeout    = 5 * time.Minute
+	// claudeStartupDelay is how long we wait after launching claude in a
+	// fresh tmux pane before sending the first prompt. Claude's Ink TUI
+	// takes a couple of seconds to render and start consuming stdin;
+	// keystrokes sent before that are dropped.
+	claudeStartupDelay = 5 * time.Second
+	// claudeSubmitDelay sits between typing the prompt and pressing
+	// Enter. Without it the submit can race the TUI input handler.
+	claudeSubmitDelay = 250 * time.Millisecond
 	// eventPollInterval is how often runViaTmux re-scans the events
 	// directory for new Stop events. The hook fires at most once per turn
 	// so this isn't on a hot path — we trade a bit of latency for cheap
@@ -537,20 +544,26 @@ func tmuxRespawnPane(sess, cwd, launchPath string, extraEnv []string) error {
 	return nil
 }
 
-// tmuxPastePrompt loads `prompt` into the tmux paste buffer and pastes it
-// into `sess`'s active pane with bracketed paste mode, then sends Enter.
-// Bracketed paste keeps multi-line prompts as one input chunk so embedded
-// newlines don't submit the form early.
+// tmuxPastePrompt types `prompt` into `sess`'s active pane as raw
+// keystrokes, then sends Enter to submit.
+//
+// Why not bracketed paste? Claude's Ink TUI doesn't reliably opt in to
+// bracketed paste mode, so tmux's `paste-buffer -p` leaks its ESC[200~
+// / ESC[201~ markers into the input field as literal characters. We
+// also can't send newlines as part of the typed text — Ink would treat
+// each `\n` as Enter and submit a partial prompt; replace them with
+// spaces (matching what runViaPTY already does in buildPTYInput).
+//
+// A short pause sits between the typing pass and Enter so the TUI input
+// handler sees the text before the submit fires.
 func tmuxPastePrompt(sess, prompt string) error {
-	const bufName = "duckway-cc"
-	load := exec.Command("tmux", "load-buffer", "-b", bufName, "-")
-	load.Stdin = strings.NewReader(prompt)
-	if out, err := load.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux load-buffer: %w (%s)", err, string(out))
+	safe := strings.ReplaceAll(prompt, "\n", " ")
+	// `send-keys -l` sends the argument literally — no special-key
+	// interpretation of e.g. "Enter".
+	if out, err := exec.Command("tmux", "send-keys", "-t", sess, "-l", safe).CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux send-keys -l: %w (%s)", err, string(out))
 	}
-	if out, err := exec.Command("tmux", "paste-buffer", "-p", "-d", "-b", bufName, "-t", sess).CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux paste-buffer: %w (%s)", err, string(out))
-	}
+	time.Sleep(claudeSubmitDelay)
 	if out, err := exec.Command("tmux", "send-keys", "-t", sess, "Enter").CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux send-keys Enter: %w (%s)", err, string(out))
 	}
