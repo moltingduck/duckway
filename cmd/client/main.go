@@ -92,6 +92,7 @@ Usage:
   duckway proxy          Start local proxy (foreground)
   duckway proxy -d       Start local proxy as background daemon
   duckway proxy stop     Stop the running daemon
+  duckway proxy restart  Stop the running daemon and start a fresh one
   duckway proxy status   Show daemon status
   duckway status         Show connection status, CA cert expiry
   duckway install-ca     Re-install the Duckway CA into the system trust store
@@ -109,6 +110,7 @@ Usage:
   duckway cc watch --no-tmux  Force the headless --print runner
                          (also: DUCKWAY_CC_NO_TMUX=1)
   duckway cc watch stop  Stop the running daemon
+  duckway cc watch restart  Stop and start a fresh daemon
   duckway cc watch status  Show daemon status
   duckway cc bind        Interactive picker: pick existing local claude
                          sessions and create a CC channel + binding for
@@ -244,7 +246,7 @@ func cmdSync(configDir string) {
 func cmdCC(configDir string) {
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "Usage:")
-		fmt.Fprintln(os.Stderr, "  duckway cc watch [-d|--daemon|stop|status]")
+		fmt.Fprintln(os.Stderr, "  duckway cc watch [-d|--daemon|stop|restart|status]")
 		fmt.Fprintln(os.Stderr, "  duckway cc bind [--session <id>...] [--cwd <substr>]")
 		os.Exit(1)
 	}
@@ -266,6 +268,7 @@ func cmdCCWatch(configDir string) {
 	daemon := false
 	stop := false
 	status := false
+	restart := false
 	// --no-tmux forces the headless --print runner even when tmux is
 	// installed. Also honored via DUCKWAY_CC_NO_TMUX=1 in the environment
 	// so it's settable from a systemd unit without rewriting argv.
@@ -279,6 +282,8 @@ func cmdCCWatch(configDir string) {
 			stop = true
 		case "status":
 			status = true
+		case "restart":
+			restart = true
 		case "--no-tmux":
 			noTmux = true
 		case "--config-dir":
@@ -298,6 +303,13 @@ func cmdCCWatch(configDir string) {
 	if status {
 		statusBackgroundDaemon(pidFile)
 		return
+	}
+	if restart {
+		// stopBackgroundDaemon waits for the SIGTERMed process to exit
+		// (up to 2s) and removes the PID file. After it returns the next
+		// startBackgroundDaemon won't see a live PID and will spawn cleanly.
+		stopBackgroundDaemon("duckway cc watch", pidFile)
+		daemon = true
 	}
 
 	cfg, err := client.LoadConfig(configDir)
@@ -639,6 +651,7 @@ func cmdProxy(configDir string) {
 	daemon := false
 	stop := false
 	status := false
+	restart := false
 	debug := false
 	port := 0
 	for i := 2; i < len(os.Args); i++ {
@@ -650,6 +663,8 @@ func cmdProxy(configDir string) {
 			stop = true
 		case "status":
 			status = true
+		case "restart":
+			restart = true
 		case "--debug", "-D":
 			debug = true
 		case "--port":
@@ -667,6 +682,13 @@ func cmdProxy(configDir string) {
 	if status {
 		statusProxyDaemon(pidFile)
 		return
+	}
+	if restart {
+		// Stop waits for the previous process to exit and removes the
+		// PID file before returning, so the start path below sees a
+		// clean state.
+		stopProxyDaemon(pidFile)
+		daemon = true
 	}
 
 	cfg, err := client.LoadConfig(configDir)
@@ -741,7 +763,12 @@ func startBackgroundDaemon(label, stopVerb, pidFile, logFilePath string) {
 
 	args := []string{}
 	for i := 1; i < len(os.Args); i++ {
-		if os.Args[i] == "--daemon" || os.Args[i] == "-d" {
+		// Drop --daemon/-d (the parent acts as launcher; the child runs
+		// in foreground inside its own session) and `restart` (we've
+		// already stopped the previous instance; the child must just
+		// start, not re-enter the stop+start loop).
+		switch os.Args[i] {
+		case "--daemon", "-d", "restart":
 			continue
 		}
 		args = append(args, os.Args[i])
@@ -767,8 +794,9 @@ func startBackgroundDaemon(label, stopVerb, pidFile, logFilePath string) {
 	}
 
 	fmt.Printf("%s started in background (PID %d)\n", label, cmd.Process.Pid)
-	fmt.Printf("  Logs:  %s\n", logFilePath)
-	fmt.Printf("  Stop:  %s\n", cyan("duckway "+stopVerb+" stop"))
+	fmt.Printf("  Logs:    %s\n", logFilePath)
+	fmt.Printf("  Stop:    %s\n", cyan("duckway "+stopVerb+" stop"))
+	fmt.Printf("  Restart: %s\n", cyan("duckway "+stopVerb+" restart"))
 	cmd.Process.Release()
 }
 
