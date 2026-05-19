@@ -33,6 +33,7 @@ func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	if err := s.seedDefaultServices(); err != nil {
 		return nil, fmt.Errorf("seed services: %w", err)
 	}
+	services.SeedDefaultStatusline(queries.NewSettingsQueries(s.db))
 
 	ss := s.initShared()
 	// Refresher must be on ss before SetupAdminRoutes so the OAuth handler
@@ -64,6 +65,7 @@ func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	if err := s.seedDefaultServices(); err != nil {
 		return nil, fmt.Errorf("seed services: %w", err)
 	}
+	services.SeedDefaultStatusline(queries.NewSettingsQueries(s.db))
 
 	ss := s.initShared()
 	s.startOAuthRefresher(ss)
@@ -81,6 +83,12 @@ func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 // (the daemon) that connects on /client/cc/events.
 func NewGateway(config *Config, db *sql.DB) (*Server, error) {
 	s := &Server{config: config, db: db, mux: http.NewServeMux()}
+
+	// Seed the default statusline here too: in split deployments the
+	// gateway sometimes boots before the admin process, and the
+	// `agent_statusline_script` setting needs to be populated before
+	// the first /client/statusline fetch lands.
+	services.SeedDefaultStatusline(queries.NewSettingsQueries(s.db))
 
 	ss := s.initShared()
 	s.SetupGatewayRoutes(ss)
