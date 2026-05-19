@@ -344,6 +344,17 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	clientMux.HandleFunc("GET /client/keys", clientH.GetKeys)
 	clientMux.HandleFunc("GET /client/canaries", canaryH.ClientGetCanaries)
 
+	// Agent statusline script — global content set in /admin/settings,
+	// downloaded by `duckway sync` and dropped at ~/.duckway/statusline.sh.
+	// Empty body when nothing is configured; the sync command then skips
+	// the local write rather than blanking out a previously-installed
+	// script.
+	clientMux.HandleFunc("GET /client/statusline", func(w http.ResponseWriter, r *http.Request) {
+		script := settingsQ.Get(queries.SettingAgentStatuslineScript)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(script))
+	})
+
 	// CA cert + key
 	ca, caErr := services.LoadOrCreateCA(s.config.DataDir)
 	if caErr != nil {

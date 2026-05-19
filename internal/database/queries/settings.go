@@ -46,4 +46,5 @@ const (
 	SettingRequestLogCaptureOn      = "request_log_capture_enabled"    // "1" / "0"
 	SettingRequestLogCaptureClients = "request_log_capture_clients"    // JSON array of client IDs; empty = all
 	SettingApprovalRequestTTL       = "approval_request_ttl_minutes"   // pending approvals auto-marked "ignored" after this; default 60
+	SettingAgentStatuslineScript    = "agent_statusline_script"        // shell script body served via GET /client/statusline; agents `duckway sync` writes it to ~/.duckway/statusline.sh
 )

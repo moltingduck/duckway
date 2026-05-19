@@ -28,6 +28,30 @@
 </div>
 
 <div class="card mt-2">
+  <h3>Agent Statusline</h3>
+  <p class="text-sm text-muted mb-1">
+    A shell script body that every agent's <code>duckway sync</code> downloads
+    and installs at <code>~/.duckway/statusline.sh</code>. <code>sync</code>
+    also wires <code>~/.claude/settings.json</code>'s <code>statusLine.command</code>
+    to point at it, backing up any existing file to <code>.duckway-backup</code>
+    first. Leave empty to disable and let agents keep whatever statusline they had.
+  </p>
+  <p class="text-sm text-muted mb-1">
+    The script receives a JSON payload from Claude Code on stdin and prints one line of status to stdout.
+    See <a href="https://docs.claude.com/en/docs/claude-code/statusline" target="_blank">Claude Code statusline docs</a>.
+  </p>
+  <form id="statusline-form">
+    <div class="form-group">
+      <label>Script content</label>
+      <textarea id="s-statusline-script" rows="14"
+        style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:pre"
+        placeholder="#!/bin/sh&#10;input=$(cat)&#10;echo &quot;[duckway] $(date '+%H:%M:%S')&quot;"></textarea>
+    </div>
+    <button type="submit" class="btn btn-primary">Save Statusline</button>
+  </form>
+</div>
+
+<div class="card mt-2">
   <h3>Architecture</h3>
   <table>
     <thead><tr><th>Profile</th><th>Containers</th><th>Ports</th></tr></thead>
@@ -75,6 +99,7 @@ document.addEventListener('DOMContentLoaded', function() {
       document.getElementById('s-gateway-url').value = s.gateway_url || '';
       document.getElementById('s-proxy-port').value = s.proxy_port || '18080';
       document.getElementById('s-approval-ttl').value = s.approval_request_ttl_minutes || '60';
+      document.getElementById('s-statusline-script').value = s.agent_statusline_script || '';
     });
 });
 
@@ -95,6 +120,26 @@ document.getElementById('settings-form').addEventListener('submit', function(e) 
   .then(function(data) {
     if (data.error) { showToast(data.error, 'error'); return; }
     showToast('Settings saved', 'success');
+  });
+});
+
+// Statusline script is saved separately so the big textarea doesn't
+// re-roundtrip with every Gateway-config save (and so the form
+// validation rules on the numeric fields don't fight with multi-line
+// text). Hits the same POST /api/settings backend.
+document.getElementById('statusline-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var body = { agent_statusline_script: document.getElementById('s-statusline-script').value };
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Statusline saved — agents pick it up on next `duckway sync`', 'success');
   });
 });
 </script>

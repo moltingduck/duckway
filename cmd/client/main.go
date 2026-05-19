@@ -71,6 +71,12 @@ func main() {
 		cmdMCP(configDir)
 	case "cc":
 		cmdCC(configDir)
+	case "start":
+		cmdStart(configDir)
+	case "stop":
+		cmdStop(configDir)
+	case "restart":
+		cmdRestart(configDir)
 	case "version", "--version", "-v":
 		fmt.Println("duckway", version.Get())
 	case "help", "--help", "-h":
@@ -87,7 +93,10 @@ func printUsage() {
 
 Usage:
   duckway init           Register this machine with a Duckway server
-  duckway sync           Fetch placeholder keys from server
+  duckway sync           Fetch placeholder keys + statusline from server
+  duckway start          Start both daemons (proxy + cc watch) — daemon mode
+  duckway stop           Stop both daemons
+  duckway restart        Restart both daemons
   duckway env            Print keys as shell export statements
   duckway proxy          Start local proxy (foreground)
   duckway proxy -d       Start local proxy as background daemon
@@ -724,6 +733,96 @@ func cmdProxy(configDir string) {
 	if err := client.RunHTTPSProxy(cfg, syncInterval, debug); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// cmdStart spawns both the proxy and the cc-watch daemons in the
+// background — the single command most users want after `duckway init`.
+// Defaults to daemon mode (no foreground option), since `duckway proxy`
+// and `duckway cc watch` already expose foreground/debug modes
+// individually for users who need them.
+//
+// If a daemon is already running, that subsystem is skipped with a note
+// (idempotent — re-running `duckway start` is safe). cc-watch needs the
+// `claude` binary on PATH; we warn and skip if it's missing, rather
+// than failing the whole command — most users care about the proxy first.
+func cmdStart(configDir string) {
+	proxyPidFile := filepath.Join(configDir, "proxy.pid")
+	proxyLogFile := filepath.Join(configDir, "proxy.log")
+	ccPidFile := filepath.Join(configDir, "cc-watch.pid")
+	ccLogFile := filepath.Join(configDir, "cc-watch.log")
+
+	// Proxy
+	if pid, alive := readPID(proxyPidFile); alive {
+		fmt.Printf("duckway proxy: already running (PID %d)\n", pid)
+	} else if err := spawnDaemonProcess([]string{"proxy"}, proxyPidFile, proxyLogFile); err != nil {
+		log.Fatalf("Failed to start proxy: %v", err)
+	} else {
+		fmt.Printf("duckway proxy: started (logs %s)\n", proxyLogFile)
+	}
+
+	// cc watch — skip cleanly if claude isn't installed
+	if _, err := exec.LookPath("claude"); err != nil {
+		fmt.Printf("duckway cc watch: skipped — `claude` not on PATH (install Claude Code to enable Discord control channels)\n")
+		return
+	}
+	if pid, alive := readPID(ccPidFile); alive {
+		fmt.Printf("duckway cc watch: already running (PID %d)\n", pid)
+	} else if err := spawnDaemonProcess([]string{"cc", "watch"}, ccPidFile, ccLogFile); err != nil {
+		log.Fatalf("Failed to start cc-watch: %v", err)
+	} else {
+		fmt.Printf("duckway cc watch: started (logs %s)\n", ccLogFile)
+	}
+}
+
+// cmdStop terminates both daemons. Each side is independent — a missing
+// daemon prints a "not running" note but doesn't abort the other stop.
+func cmdStop(configDir string) {
+	stopBackgroundDaemon("duckway proxy", filepath.Join(configDir, "proxy.pid"))
+	stopBackgroundDaemon("duckway cc watch", filepath.Join(configDir, "cc-watch.pid"))
+}
+
+// cmdRestart is just stop + start. Sequential (proxy stop → cc stop →
+// proxy start → cc start) so the PID files don't race.
+func cmdRestart(configDir string) {
+	cmdStop(configDir)
+	cmdStart(configDir)
+}
+
+// spawnDaemonProcess re-execs the current binary with an explicit argv
+// slice as the child's command-line. Different from startBackgroundDaemon
+// which strips flags off os.Args and recurses — for `duckway start` we
+// need to spawn TWO children with DIFFERENT argvs (`proxy` vs `cc watch`),
+// so the os.Args-based helper can't be reused.
+//
+// Writes stdio to logFilePath, records the child's PID in pidFile, and
+// detaches via Setsid so the daemon outlives the parent process.
+func spawnDaemonProcess(childArgs []string, pidFile, logFilePath string) error {
+	if pid, alive := readPID(pidFile); alive {
+		return fmt.Errorf("already running (PID %d)", pid)
+	}
+	logF, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return fmt.Errorf("open log %s: %w", logFilePath, err)
+	}
+	defer logF.Close()
+
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("find own executable: %w", err)
+	}
+	cmd := exec.Command(exe, childArgs...)
+	cmd.Stdin = nil
+	cmd.Stdout = logF
+	cmd.Stderr = logF
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start daemon: %w", err)
+	}
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0600); err != nil {
+		log.Printf("Warning: cannot write PID file %s: %v", pidFile, err)
+	}
+	cmd.Process.Release()
+	return nil
 }
 
 // startProxyDaemon backgrounds `duckway proxy`.

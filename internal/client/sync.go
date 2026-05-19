@@ -69,7 +69,109 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 		printCCDaemonHint()
 	}
 
+	// Sync admin-configured Claude Code statusline script.
+	if err := SyncStatusline(configDir, cfg); err != nil {
+		log.Printf("Warning: statusline sync failed: %v", err)
+	}
+
 	return len(keys), nil
+}
+
+// SyncStatusline pulls the admin-configured statusline script body from
+// the server, writes it to ~/.duckway/statusline.sh (executable), and
+// wires ~/.claude/settings.json's statusLine.command to point at it.
+//
+// When ~/.claude/settings.json already exists with non-statusLine
+// content, it's backed up to settings.json.duckway-backup before we
+// merge in the statusLine entry — we never blow away user-edited
+// settings, only the statusLine key.
+//
+// Empty script body from the server means "no statusline configured"
+// — we leave the local script alone (so agents who had a previously
+// installed statusline keep it) and don't touch settings.json.
+func SyncStatusline(configDir string, cfg *Config) error {
+	api := NewAPIClient(cfg.ServerURL, cfg.Token)
+	script, err := api.FetchStatusline()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(script) == "" {
+		return nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	dwDir := filepath.Join(home, ".duckway")
+	if err := os.MkdirAll(dwDir, 0700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dwDir, err)
+	}
+	scriptPath := filepath.Join(dwDir, "statusline.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
+		return fmt.Errorf("write %s: %w", scriptPath, err)
+	}
+	log.Printf("Statusline script written to %s", scriptPath)
+
+	if err := installStatuslineIntoClaudeSettings(home, scriptPath); err != nil {
+		return fmt.Errorf("install statusline into ~/.claude/settings.json: %w", err)
+	}
+	return nil
+}
+
+// installStatuslineIntoClaudeSettings sets the statusLine entry in
+// ~/.claude/settings.json so Claude Code runs scriptPath for its
+// status bar.
+//
+//   - If ~/.claude/settings.json does NOT exist: create it with just
+//     the statusLine entry.
+//   - If it exists: copy the current bytes to settings.json.duckway-backup,
+//     then merge our statusLine into the parsed JSON (preserving every
+//     other key — theme, env, hooks, anything the user has set).
+//
+// Merging keeps other settings intact across syncs; the per-sync backup
+// is a one-step undo in case the merge ever does something surprising.
+func installStatuslineIntoClaudeSettings(homeDir, scriptPath string) error {
+	settingsPath := filepath.Join(homeDir, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0700); err != nil {
+		return err
+	}
+
+	entry := map[string]interface{}{
+		"type":    "command",
+		"command": scriptPath,
+	}
+
+	existing, err := os.ReadFile(settingsPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		// Fresh file — no backup needed, write just our entry.
+		body, _ := json.MarshalIndent(map[string]interface{}{"statusLine": entry}, "", "  ")
+		return os.WriteFile(settingsPath, body, 0644)
+	}
+
+	backupPath := settingsPath + ".duckway-backup"
+	if werr := os.WriteFile(backupPath, existing, 0644); werr != nil {
+		return fmt.Errorf("backup %s: %w", settingsPath, werr)
+	}
+	log.Printf("Existing %s backed up to %s", settingsPath, backupPath)
+
+	root := map[string]interface{}{}
+	if jerr := json.Unmarshal(existing, &root); jerr != nil {
+		// Existing file isn't valid JSON. The backup preserves it
+		// verbatim; replace the file with a fresh one carrying just
+		// the statusLine entry.
+		log.Printf("Existing %s was not valid JSON (backed up); writing fresh statusLine-only file", settingsPath)
+		root = map[string]interface{}{}
+	}
+	root["statusLine"] = entry
+	body, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(settingsPath, body, 0644)
 }
 
 // printCCDaemonHint nudges the user toward starting the watcher daemon

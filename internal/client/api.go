@@ -57,6 +57,32 @@ func (c *APIClient) FetchKeys() ([]PlaceholderKeyInfo, error) {
 	return keys, nil
 }
 
+// FetchStatusline returns the admin-configured statusline script body
+// or an empty string when nothing is set on the server. Errors only
+// for transport failures or non-200 responses — an empty body is a
+// valid "no statusline" signal and surfaces as ("", nil).
+func (c *APIClient) FetchStatusline() (string, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/client/statusline", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch statusline: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
 // FetchClaudeCredentials gets phantom Claude OAuth credentials.
 func (c *APIClient) FetchClaudeCredentials() (map[string]interface{}, error) {
 	req, err := http.NewRequest("GET", c.baseURL+"/client/claude-credentials", nil)
