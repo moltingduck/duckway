@@ -123,11 +123,14 @@ func (r *ccRunner) run(t ccTask) {
 	defer cancel()
 
 	prompt := t.Content
-	// "!/..." is the Discord escape for claude slash commands — Discord
-	// hijacks any message starting with "/" so users prefix `!`. Strip
-	// it here so claude receives the real `/usage`, `/compact`, etc.
-	if strings.HasPrefix(strings.TrimSpace(prompt), "!/") {
-		trimmed := strings.TrimSpace(prompt)
+	// Discord/the daemon eat the `/` and `!` trigger characters claude
+	// uses for its slash and bash modes, so users escape them with a
+	// leading `!`:
+	//   "!/..."  → claude slash command (`/usage`, `/compact`, …)
+	//   "!!..."  → claude bash shell    (`! ls`, `! cargo test`, …)
+	// Strip the leading `!` so claude receives the real `/usage` /
+	// `! ls`.
+	if trimmed := strings.TrimSpace(prompt); strings.HasPrefix(trimmed, "!/") || strings.HasPrefix(trimmed, "!!") {
 		prompt = trimmed[1:]
 	}
 	sid := r.sessions.Get(r.handle)

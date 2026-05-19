@@ -342,6 +342,27 @@ func TestExtractAfterPromptAnchor(t *testing.T) {
 			prompt: "/usage",
 			want:   "no anchor here\nsome content\n",
 		},
+		{
+			// Bash-mode rendering: claude shows "!  ls" with padding
+			// between the indicator and the command. The anchor must be
+			// the command portion ("ls"), not the literal prompt.
+			name:   "shell mode: anchor on command portion",
+			text:   "welcome banner\n!  ls\n  ⎿  CLAUDE.md\n     README.md\n",
+			prompt: "! ls",
+			want:   "  ⎿  CLAUDE.md\n     README.md\n",
+		},
+		{
+			name:   "shell mode: prompt without space after bang",
+			text:   "intro\n! pwd\n  ⎿  /home/user\n",
+			prompt: "!pwd",
+			want:   "  ⎿  /home/user\n",
+		},
+		{
+			name:   "shell mode: command with spaces, last occurrence wins",
+			text:   "echo cargo test ran\n! cargo test\n  ⎿  test passed\n",
+			prompt: "! cargo test",
+			want:   "  ⎿  test passed\n",
+		},
 	}
 	for _, tt := range tests {
 		got := extractAfterPromptAnchor(tt.text, tt.prompt)
@@ -360,6 +381,27 @@ func TestFormatSlashPaneForDiscord(t *testing.T) {
 		{"trims leading blanks", "\n\n\ncontent\n", "```\ncontent\n```"},
 		{"empty input", "", "_(no panel output captured)_"},
 		{"only whitespace", "\n  \n\n", "_(no panel output captured)_"},
+		{
+			// Bash mode leaves the input box separator + ❯ + footer
+			// below the shell output. Strip trailing chrome only.
+			name: "strips input-box chrome below shell output",
+			in:   "  ⎿ alpha.txt\n     beta.txt\n\n──────────────────\n❯ \n──────────\n  ⏵⏵ bypass permissions on\n",
+			want: "```\n  ⎿ alpha.txt\n     beta.txt\n```",
+		},
+		{
+			// MUST NOT strip "──" lines that appear in the middle of
+			// content (slash panels include them as visual separators).
+			name: "keeps mid-content separators",
+			in:   "panel header\n────── section ──────\npanel body\n",
+			want: "```\npanel header\n────── section ──────\npanel body\n```",
+		},
+		{
+			// "──" in chrome at the bottom DOES get stripped, but only
+			// while walking from the end. Content above survives.
+			name: "leading dashes preserved, trailing chrome cut",
+			in:   "─── inside content ───\nbody\n\n──────────\n❯ \n",
+			want: "```\n─── inside content ───\nbody\n```",
+		},
 	}
 	for _, tt := range tests {
 		got := formatSlashPaneForDiscord(tt.in)

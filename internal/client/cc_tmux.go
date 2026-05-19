@@ -177,22 +177,24 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 		return "", "", false, err
 	}
 
-	// Slash commands (`/usage`, `/help`, `/compact`, …) get a different
-	// wait strategy. Local-only commands render a panel in the TUI but
-	// never fire the Stop hook — without this branch the daemon waits
-	// the full tmuxRunTimeout (5 min) and times out. Model-invoking
-	// slash commands (`/compact`) do fire Stop; the slash flow races
-	// pane-stabilization against the Stop event and returns whichever
-	// fires first, then sends Esc to dismiss any open panel so the
-	// next message lands in the empty input box.
-	if strings.HasPrefix(strings.TrimSpace(prompt), "/") {
-		res, sp, perr := runSlashCommand(ctx, sess, eventsDir, turnTS, prompt, slashStableWindow, slashMaxWait)
+	// claude TUI mode commands (slash + bash) get a different wait
+	// strategy. Local-only ones render output to the pane but never fire
+	// the Stop hook, so the regular pollForStop would block for the full
+	// tmuxRunTimeout. Race pane-stabilization against the Stop event and
+	// return whichever fires first. Slash panels need Esc to close;
+	// bash output is inline and shouldn't be Esc'd.
+	trimmedPrompt := strings.TrimSpace(prompt)
+	isSlash := strings.HasPrefix(trimmedPrompt, "/")
+	isShell := strings.HasPrefix(trimmedPrompt, "!")
+	if isSlash || isShell {
+		res, sp, perr := runTUICommand(ctx, sess, eventsDir, turnTS, prompt, isSlash, slashStableWindow, slashMaxWait)
 		if perr != nil {
 			return "", "", false, perr
 		}
 		_ = os.Remove(inFlightPath)
 		if sp != nil {
-			// Model-invoking slash command — Stop fired; use the real result.
+			// Model-invoking command (rare for `!` shell; possible for
+			// `/compact`) — Stop fired; use the real result.
 			return sp.SessionID, resolveAssistantMessage(*sp), false, nil
 		}
 		return "", res, false, nil
@@ -208,22 +210,22 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 	return sid2, res2, isErr2, nil
 }
 
-// runSlashCommand handles claude TUI slash commands. Two outcomes:
+// runTUICommand handles claude TUI mode commands — both slash (`/usage`,
+// `/help`, `/compact`) and bash (`! ls`, `! cargo test`). Two outcomes:
 //
-//  1. The Stop hook fires (model-invoking command like /compact) →
-//     return (nil, stopPayload, nil); caller uses the Stop result.
-//  2. The pane content stops changing for stableWindow (local panel
-//     like /usage rendered and is waiting on Esc) → grab scrollback,
-//     anchor on the user's prompt line, take everything after it,
-//     send Esc, return (formattedPanel, nil, nil).
+//  1. The Stop hook fires (model-invoking command) → return
+//     (nil, stopPayload, nil); caller uses the Stop result.
+//  2. The pane content stops changing for stableWindow (local panel or
+//     shell output settled) → grab scrollback, anchor on the user's
+//     prompt rendering, take everything after, optionally send Esc,
+//     return (formattedOutput, nil, nil).
 //
-// The anchor extraction means we don't need a pre-paste snapshot:
-// "❯ <prompt>" is a unique marker in the scrollback, and panel content
-// always lives after it. The welcome banner and any prior conversation
-// sit before the anchor and get dropped automatically.
+// dismissModal is true for slash commands (the panel needs Esc to close
+// so the next message lands in an empty input box) and false for shell
+// commands (output is inline; Esc would do nothing useful).
 //
 // Bounded by maxWait so a runaway TUI never blocks forever.
-func runSlashCommand(ctx context.Context, sess, eventsDir string, turnTS int64, prompt string, stableWindow, maxWait time.Duration) (paneCapture string, stop *stopPayload, err error) {
+func runTUICommand(ctx context.Context, sess, eventsDir string, turnTS int64, prompt string, dismissModal bool, stableWindow, maxWait time.Duration) (paneCapture string, stop *stopPayload, err error) {
 	deadline := time.Now().Add(maxWait)
 	tick := time.NewTicker(slashPollInterval)
 	defer tick.Stop()
@@ -252,22 +254,20 @@ func runSlashCommand(ctx context.Context, sess, eventsDir string, turnTS int64, 
 			lastSnap = snap
 			lastChange = time.Now()
 		} else if time.Since(lastChange) >= stableWindow && lastSnap != "" {
-			// Pane has been still for `stableWindow` — assume the
-			// panel is fully rendered. Extract the after-anchor
-			// content from scrollback, dismiss, return.
 			body := extractSlashOutput(sess, prompt)
-			dismissTUIModal(sess)
+			if dismissModal {
+				dismissTUIModal(sess)
+			}
 			return formatSlashPaneForDiscord(body), nil, nil
 		}
 
 		if time.Now().After(deadline) {
-			// Timed out — best-effort: send Esc to clear whatever's on
-			// screen, then return whatever we have so the user at
-			// least sees something.
 			body := extractSlashOutput(sess, prompt)
-			dismissTUIModal(sess)
+			if dismissModal {
+				dismissTUIModal(sess)
+			}
 			if body == "" && lastSnap == "" {
-				return "", nil, fmt.Errorf("slash command produced no pane output within %v", maxWait)
+				return "", nil, fmt.Errorf("TUI command produced no pane output within %v", maxWait)
 			}
 			if body == "" {
 				body = lastSnap
@@ -277,13 +277,9 @@ func runSlashCommand(ctx context.Context, sess, eventsDir string, turnTS int64, 
 	}
 }
 
-// extractSlashOutput grabs the pane scrollback, finds the last "❯ <prompt>"
-// line (which is the user-input echo claude renders when the slash
-// command is submitted), and returns everything after it. That's the
-// panel content with no welcome banner / prior conversation noise.
-//
-// Falls back to the full visible pane if the anchor isn't found, e.g.
-// because the prompt wrapped due to narrow pane width.
+// extractSlashOutput grabs the pane scrollback and returns everything
+// after the line where claude echoed the user's prompt. Falls back to
+// the full pane if the anchor isn't found.
 func extractSlashOutput(sess, prompt string) string {
 	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", sess, "-S", "-2000").Output()
 	if err != nil {
@@ -293,9 +289,35 @@ func extractSlashOutput(sess, prompt string) string {
 }
 
 // extractAfterPromptAnchor isolates the pane bytes after the user's
-// echoed prompt. Pure function so it's easy to unit test.
+// echoed prompt. Two cases:
+//
+//	prompt = "/usage"   → claude renders "❯ /usage"   → anchor "❯ /usage"
+//	prompt = "! ls"     → claude renders "!  ls"      → anchor "ls"
+//	                       (indicator "!" + padding + command — search
+//	                        on the command portion because the spacing
+//	                        between indicator and content isn't stable)
+//
+// LastIndex returns the most recent occurrence which, after the user
+// submits a TUI command, is the just-echoed input line.
+//
+// Pure function so it's easy to unit test.
 func extractAfterPromptAnchor(text, prompt string) string {
-	anchor := "❯ " + strings.TrimSpace(prompt)
+	p := strings.TrimSpace(prompt)
+	var anchor string
+	switch {
+	case strings.HasPrefix(p, "/"):
+		anchor = "❯ " + p
+	case strings.HasPrefix(p, "!"):
+		// Shell mode: the indicator "!" is rendered with variable
+		// padding before the command. Anchor on the command portion
+		// (everything after "!") so spacing differences don't matter.
+		anchor = strings.TrimSpace(strings.TrimPrefix(p, "!"))
+	default:
+		anchor = "❯ " + p
+	}
+	if anchor == "" {
+		return text
+	}
 	idx := strings.LastIndex(text, anchor)
 	if idx < 0 {
 		return text
@@ -335,14 +357,27 @@ func dismissTUIModal(sess string) {
 	}
 }
 
-// formatSlashPaneForDiscord trims leading/trailing whitespace-only lines
-// off the extracted panel content and wraps it in a code block for
-// monospace rendering in Discord. Caps length at ~1900 chars so it
-// fits Discord's 2000-char message limit.
+// formatSlashPaneForDiscord trims TUI chrome off the extracted output
+// and wraps the result in a code block. Three trim passes:
+//
+//  1. Trim leading whitespace-only lines.
+//  2. Walk from the bottom skipping trailing chrome — input-box
+//     separator lines (runs of U+2500 "─"), the empty `❯` prompt,
+//     and the bypass-permissions / tmux-focus hint footer that show
+//     up below inline shell output. Stop at the first real content
+//     line.
+//  3. Trim any trailing whitespace-only lines that remain.
+//
+// Modal commands (`/usage`) don't have trailing chrome; this trim is a
+// no-op for them. Inline-output commands (`! ls`) leave the input box
+// and footer visible — those get cut here.
+//
+// Caps length at ~1900 chars so it fits Discord's 2000-char message
+// limit even with the code-block fences.
 func formatSlashPaneForDiscord(content string) string {
 	lines := strings.Split(content, "\n")
 	end := len(lines)
-	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+	for end > 0 && isTrailingTUIChrome(lines[end-1]) {
 		end--
 	}
 	start := 0
@@ -350,7 +385,7 @@ func formatSlashPaneForDiscord(content string) string {
 		start++
 	}
 	trimmed := strings.Join(lines[start:end], "\n")
-	if trimmed == "" {
+	if strings.TrimSpace(trimmed) == "" {
 		return "_(no panel output captured)_"
 	}
 	const maxLen = 1900
@@ -358,6 +393,37 @@ func formatSlashPaneForDiscord(content string) string {
 		trimmed = trimmed[:maxLen] + "\n… (truncated)"
 	}
 	return "```\n" + trimmed + "\n```"
+}
+
+// isTrailingTUIChrome reports whether a line is part of claude's
+// always-on TUI chrome shown below the active content:
+//
+//   - the input-box horizontal separator (a run of "─" U+2500)
+//   - the empty `❯` prompt line
+//   - the bypass-perms hint starting with "⏵⏵"
+//   - the tmux focus-events warning
+//   - status indicators starting with "◉" (effort / model badges)
+//
+// Used to walk back from the bottom of a pane capture until we hit
+// real content. Anchor extraction strips any `❯ <prompt>` echo before
+// this runs, so a remaining `❯`-prefixed line is always chrome.
+func isTrailingTUIChrome(line string) bool {
+	t := strings.TrimSpace(line)
+	switch {
+	case t == "":
+		return true
+	case strings.HasPrefix(t, "──"):
+		return true
+	case strings.HasPrefix(t, "❯"):
+		return true
+	case strings.HasPrefix(t, "⏵⏵"):
+		return true
+	case strings.HasPrefix(t, "tmux focus-events"):
+		return true
+	case strings.HasPrefix(t, "◉"):
+		return true
+	}
+	return false
 }
 
 // pollForStop watches eventsDir until a Stop event newer than afterTS

@@ -39,14 +39,17 @@ func NewCCCommandHandler(cc *queries.ControlChannelQueries, apiKeys *queries.API
 // Used by the gateway to decide whether to also publish the message to
 // the daemon's SSE stream.
 //
-// Exception: messages starting with "!/" are an escape for claude's own
-// slash commands (`/usage`, `/help`, `/compact`, ...). Discord intercepts
-// any message starting with "/" as a slash-command picker, so the user
-// types `!/usage` and the daemon strips the leading `!` before pasting
-// `/usage` into the claude pane.
+// Exceptions, both escapes for claude TUI modes whose trigger character
+// would otherwise be eaten by Discord or by us:
+//
+//   "!/..."  → claude slash command (`/usage`, `/help`, `/compact`, ...)
+//   "!!..."  → claude bash shell    (`! ls`, `! cargo test`, ...)
+//
+// The daemon strips one leading `!` before pasting into claude, so the
+// user types `!/usage` to send `/usage` and `!! ls` to send `! ls`.
 func LooksLikeCommand(content string) bool {
 	t := strings.TrimSpace(content)
-	if strings.HasPrefix(t, "!/") {
+	if strings.HasPrefix(t, "!/") || strings.HasPrefix(t, "!!") {
 		return false
 	}
 	return strings.HasPrefix(t, "!")
@@ -502,9 +505,11 @@ const helpText = "**Duckway CC commands**\n" +
 	"`!bind <session_id> [<session_id> …]` — create a task channel for each session_id and attach it (run `!sessions` first to find IDs)\n" +
 	"`!help` — this message\n" +
 	"\n" +
-	"**Sending claude slash commands**\n" +
-	"Discord eats messages that start with `/`, so prefix claude's own slash commands with `!`: e.g. `!/usage`, `!/compact`, `!/help`. The daemon strips the `!` before pasting into claude. " +
-	"_Heads-up: local-only commands like `/usage` and `/help` render in the tmux pane but don't fire the Stop hook — attach with `tmux attach -t duckway-<handle>` to see the output. Commands that actually call the model (e.g. `/compact`) post their result back here normally._"
+	"**Sending claude slash & shell commands**\n" +
+	"Discord/the daemon eat the `/` and `!` trigger chars, so prefix them with an extra `!`:\n" +
+	"  • `!/usage`, `!/compact`, `!/help` → claude slash command\n" +
+	"  • `!! ls`, `!! cargo test` → claude bash shell (the `!` mode)\n" +
+	"The daemon strips one `!` before pasting into claude and snapshots the panel/output back to the channel."
 
 // BuildWelcomeMessage returns the message the server posts in a freshly
 // provisioned management channel. Different from helpText (the !help

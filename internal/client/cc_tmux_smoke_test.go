@@ -318,6 +318,70 @@ func TestSmokeRealClaudeSlashCommand(t *testing.T) {
 	}
 }
 
+// TestSmokeRealClaudeShellCommand drives runViaTmux with "! ls" (the
+// post-strip form of Discord's "!! ls" escape) against real claude.
+// Verifies that claude's bash-mode output (an `ls` listing of the cwd)
+// makes it back as the Discord reply, the welcome banner is stripped
+// by the anchor extraction, and runViaTmux returns promptly without
+// blocking on a Stop hook that never fires for shell mode.
+//
+// Gated by DUCKWAY_TEST_REAL_CLAUDE=1.
+func TestSmokeRealClaudeShellCommand(t *testing.T) {
+	requireTmux(t)
+	if os.Getenv("DUCKWAY_TEST_REAL_CLAUDE") != "1" {
+		t.Skip("set DUCKWAY_TEST_REAL_CLAUDE=1 to run")
+	}
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skipf("claude not on PATH: %v", err)
+	}
+
+	handle := "smoke-shell-" + uniqueSuffix()
+	t.Cleanup(func() {
+		tmuxKillSession(handle)
+		if chDir, err := tmuxChannelDir(handle); err == nil {
+			_ = os.RemoveAll(chDir)
+		}
+	})
+
+	// Use a temp cwd with known contents we can grep for in the reply.
+	cwd := t.TempDir()
+	for _, name := range []string{"alpha.txt", "beta.txt", "gamma.txt"} {
+		if err := os.WriteFile(filepath.Join(cwd, name), []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, result, isErr, runErr := runViaTmux(ctx, bin, cwd, "! ls",
+		"", []string{"DUCKWAY_CC_CHANNEL_HANDLE=" + handle, "DUCKWAY_CC_MESSAGE_ID=msg-shell-1"})
+	elapsed := time.Since(start)
+	if runErr != nil {
+		t.Fatalf("runViaTmux: %v", runErr)
+	}
+	if isErr {
+		t.Errorf("isError=true, want false")
+	}
+	t.Logf("elapsed=%v\nresult:\n----\n%s\n----", elapsed, result)
+
+	if elapsed > 30*time.Second {
+		t.Errorf("shell command took %v — too close to bailout, stability detection broken", elapsed)
+	}
+	for _, want := range []string{"alpha.txt", "beta.txt", "gamma.txt"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("result missing expected file %q\nresult: %s", want, result)
+		}
+	}
+	for _, leak := range []string{"Welcome back", "Tips for getting started"} {
+		if strings.Contains(result, leak) {
+			t.Errorf("banner leak %q in shell-mode reply", leak)
+		}
+	}
+}
+
 // TestSmokeRealClaudeRoundTrip runs the full runViaTmux flow against
 // the real `claude` CLI. Gated by DUCKWAY_TEST_REAL_CLAUDE=1 because it
 // consumes API tokens and requires claude to be authenticated. Use

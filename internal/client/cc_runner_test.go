@@ -96,19 +96,25 @@ func TestCCRunner_PostsResult(t *testing.T) {
 	}
 }
 
-func TestCCRunner_StripsClaudeSlashEscape(t *testing.T) {
-	// Discord eats "/" prefix messages; users type "!/usage" instead.
-	// The runner must strip the leading "!" before handing the prompt
-	// to claude so claude sees its real "/usage" command.
+func TestCCRunner_StripsClaudeEscapes(t *testing.T) {
+	// Users escape claude trigger chars with a leading "!" because
+	// Discord eats "/" prefixes and the daemon eats "!" prefixes.
+	// "!/X" → "/X", "!!X" → "!X". The runner strips ONE leading "!"
+	// before handing the prompt to claude.
 	cases := []struct {
 		in, want string
 	}{
+		// Slash-command escape
 		{"!/usage", "/usage"},
 		{"!/compact", "/compact"},
 		{"  !/help foo bar  ", "/help foo bar"},
-		// Not the escape — must pass through unchanged.
+		// Bash-shell escape
+		{"!! ls", "! ls"},
+		{"!!cargo test", "!cargo test"},
+		{"  !! cat README  ", "! cat README"},
+		// Not an escape — must pass through unchanged.
 		{"hello world", "hello world"},
-		{"!reset", "!reset"}, // server commands shouldn't reach here in prod but be defensive
+		{"!reset", "!reset"}, // server cmd shouldn't reach here, defensive
 	}
 	for _, tt := range cases {
 		fn, captured := capturingRunFn("sid", "ok")
