@@ -66,8 +66,11 @@ func TestSmokeTmuxPasteRoundTrip(t *testing.T) {
 		return strings.TrimSpace(string(out)) == "cat"
 	}, 3*time.Second, "cat to start in tmux pane")
 
-	// Pass a multi-line string so we also exercise the newline-to-space
-	// rewrite that keeps Ink from submitting partial prompts.
+	// Pass a multi-line string so we exercise the "\"-Enter soft-newline
+	// split (each \n becomes a backslash + named Enter pair). cat sees
+	// both line tokens; what arrives via cooked-mode ICRNL is
+	// "hello tmux\\\nsecond line\n" (the trailing CR gets translated
+	// to LF too). Assert both substrings appear.
 	want := "hello tmux\nsecond line"
 	if err := tmuxPastePrompt(sess, want); err != nil {
 		t.Fatalf("tmuxPastePrompt: %v", err)
@@ -79,14 +82,7 @@ func TestSmokeTmuxPasteRoundTrip(t *testing.T) {
 			return false
 		}
 		got := string(b)
-		// The embedded "\n" should have been replaced with a space, and a
-		// trailing "\r" appended for submit. cat translates CR→LF on
-		// output via the line discipline so we see the full pasted line
-		// terminated by a newline.
-		if strings.Contains(got, "tmux\nsecond") {
-			return false
-		}
-		return strings.Contains(got, "hello tmux second line")
+		return strings.Contains(got, "hello tmux") && strings.Contains(got, "second line")
 	}, 3*time.Second, "pasted text to appear in capture file")
 
 	// Sanity-check helper APIs while we're connected.
@@ -315,6 +311,59 @@ func TestSmokeRealClaudeSlashCommand(t *testing.T) {
 	t.Logf("post-dismiss pane:\n----\n%s\n----", string(pane))
 	if strings.Contains(string(pane), "Esc to cancel") {
 		t.Errorf("panel still visible after runViaTmux returned — dismiss didn't take effect")
+	}
+}
+
+// TestSmokeRealClaudeMultiLinePrompt verifies that prompts containing
+// embedded "\n" are preserved as actual multi-line input in claude's
+// TUI (via the "\"-Enter soft-newline syntax). Without the multi-line
+// support, all newlines would collapse to spaces and the model would
+// see "Reply line1 line2 line3" instead of three distinct lines.
+//
+// Gated by DUCKWAY_TEST_REAL_CLAUDE=1.
+func TestSmokeRealClaudeMultiLinePrompt(t *testing.T) {
+	requireTmux(t)
+	if os.Getenv("DUCKWAY_TEST_REAL_CLAUDE") != "1" {
+		t.Skip("set DUCKWAY_TEST_REAL_CLAUDE=1 to run")
+	}
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skipf("claude not on PATH: %v", err)
+	}
+
+	handle := "smoke-ml-" + uniqueSuffix()
+	t.Cleanup(func() {
+		tmuxKillSession(handle)
+		if chDir, err := tmuxChannelDir(handle); err == nil {
+			_ = os.RemoveAll(chDir)
+		}
+	})
+
+	cwd := t.TempDir()
+	// Use a prompt that makes the model echo distinct words for each
+	// line — if newlines were collapsed to spaces the answer would
+	// show all three words on one line; if they were preserved as
+	// separate inputs the answer reflects that structure.
+	prompt := "Repeat back exactly the THREE distinct words I list below, one per line, no other text:\nAlphaWord\nBetaWord\nGammaWord"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	_, result, isErr, runErr := runViaTmux(ctx, bin, cwd, prompt, "",
+		[]string{"DUCKWAY_CC_CHANNEL_HANDLE=" + handle, "DUCKWAY_CC_MESSAGE_ID=msg-ml-1"})
+	if runErr != nil {
+		t.Fatalf("runViaTmux: %v", runErr)
+	}
+	if isErr {
+		t.Errorf("isError=true, want false")
+	}
+	t.Logf("result:\n----\n%s\n----", result)
+
+	// All three distinct words must be present in the reply.
+	for _, w := range []string{"AlphaWord", "BetaWord", "GammaWord"} {
+		if !strings.Contains(result, w) {
+			t.Errorf("missing word %q in reply", w)
+		}
 	}
 }
 

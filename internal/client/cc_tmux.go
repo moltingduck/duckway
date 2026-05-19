@@ -805,31 +805,57 @@ func tmuxRespawnPane(sess, cwd, launchPath string, extraEnv []string) error {
 }
 
 // tmuxPastePrompt types `prompt` into `sess`'s active pane and submits
-// it with a named Enter key.
+// it with a named Enter key. Multi-line prompts are preserved using
+// claude's `\`-Enter soft-newline syntax (verified by probe: typing
+// "line1", then `\` Enter, then "line2" leaves both lines visible in
+// the input box without submitting).
 //
 // Why not bracketed paste? Claude's Ink TUI doesn't reliably opt in to
 // bracketed paste mode, so tmux's `paste-buffer -p` leaks its ESC[200~
 // / ESC[201~ markers into the input field as literal characters.
 //
-// Why two send-keys calls instead of "<text>\r" in one? Manual probes
-// against the real claude TUI showed that submitting via tmux's named
-// `Enter` key is more reliable than embedding a CR byte in the literal
-// text — Ink's input handler interprets the named key event directly,
-// where a raw CR can be missed if Ink hasn't finished rendering the
-// pasted text. A small pause between the typing pass and Enter gives
-// Ink one extra render frame to commit the input buffer before the
-// submit fires.
-//
-// Embedded newlines in the prompt are replaced with spaces so Ink
-// doesn't treat each `\n` as Enter and submit a partial prompt.
+// Why two send-keys calls per submit instead of "<text>\r" in one?
+// Manual probes against the real claude TUI showed that submitting via
+// tmux's named `Enter` key is more reliable than embedding a CR byte
+// in the literal text — Ink interprets the named key event directly,
+// where a raw CR can be missed if rendering hasn't caught up. A small
+// pause between the typing pass and Enter gives Ink one extra render
+// frame to commit the input buffer before the submit fires.
 func tmuxPastePrompt(sess, prompt string) error {
-	safe := strings.ReplaceAll(prompt, "\n", " ")
-	if out, err := exec.Command("tmux", "send-keys", "-t", sess, "-l", safe).CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys -l: %w (%s)", err, string(out))
+	lines := strings.Split(prompt, "\n")
+	for i, line := range lines {
+		if i > 0 {
+			// `\` then Enter = soft newline in claude's input — adds a
+			// line break without submitting. Two send-keys calls because
+			// tmux's `-l` would otherwise emit "Enter" as five literal
+			// characters.
+			if err := tmuxSendKeys(sess, "-l", "\\"); err != nil {
+				return err
+			}
+			if err := tmuxSendKeys(sess, "Enter"); err != nil {
+				return err
+			}
+		}
+		if line != "" {
+			if err := tmuxSendKeys(sess, "-l", line); err != nil {
+				return err
+			}
+		}
 	}
 	time.Sleep(claudeSubmitDelay)
-	if out, err := exec.Command("tmux", "send-keys", "-t", sess, "Enter").CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys Enter: %w (%s)", err, string(out))
+	if err := tmuxSendKeys(sess, "Enter"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// tmuxSendKeys is a thin error-formatting wrapper around `tmux
+// send-keys -t <sess> <args...>` so callers don't repeat the argv
+// boilerplate.
+func tmuxSendKeys(sess string, args ...string) error {
+	full := append([]string{"send-keys", "-t", sess}, args...)
+	if out, err := exec.Command("tmux", full...).CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux send-keys %v: %w (%s)", args, err, string(out))
 	}
 	return nil
 }
