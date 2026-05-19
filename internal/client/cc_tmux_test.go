@@ -307,36 +307,60 @@ func TestResolveAssistantMessageMissingTranscript(t *testing.T) {
 
 func TestFormatSlashPaneForDiscord(t *testing.T) {
 	tests := []struct {
-		name string
-		in   string
-		want string
+		name           string
+		post, pre, cmd string
+		want           string
 	}{
-		{"basic content", "hello\nworld", "```\nhello\nworld\n```"},
 		{
-			"trims trailing blanks",
-			"line1\nline2\n\n\n",
-			"```\nline1\nline2\n```",
+			name: "diff strips pre content",
+			pre:  "welcome banner\nprior conversation\n❯ \n",
+			post: "welcome banner\nprior conversation\n❯ /usage\nPanel line A\nPanel line B\nEsc to cancel\n",
+			cmd:  "/usage",
+			want: "```\nPanel line A\nPanel line B\nEsc to cancel\n```",
 		},
 		{
-			"trims leading blanks",
-			"\n\n\nactual content\n",
-			"```\nactual content\n```",
+			name: "prompt echo filtered when no pre",
+			pre:  "",
+			post: "❯ /usage\nactual panel content\n",
+			cmd:  "/usage",
+			want: "```\nactual panel content\n```",
 		},
-		{"empty", "", "_(no panel output captured)_"},
-		{"only whitespace", "  \n\n  \n", "_(no panel output captured)_"},
+		{
+			name: "completely empty after diff",
+			pre:  "the same\nthe same\n",
+			post: "the same\nthe same\n",
+			cmd:  "/foo",
+			want: "_(no panel output captured)_",
+		},
+		{
+			name: "only whitespace remains after diff",
+			pre:  "header\n",
+			post: "header\n\n   \n",
+			cmd:  "/foo",
+			want: "_(no panel output captured)_",
+		},
+		{
+			name: "duplicate-line accounting",
+			// "common" appears once in pre, twice in post → one
+			// instance should be considered new content (the panel
+			// re-rendered it).
+			pre:  "common\nheader\n",
+			post: "common\ncommon\nheader\nnew\n",
+			cmd:  "/x",
+			want: "```\ncommon\nnew\n```",
+		},
 	}
 	for _, tt := range tests {
-		got := formatSlashPaneForDiscord(tt.in)
+		got := formatSlashPaneForDiscord(tt.post, tt.pre, tt.cmd)
 		if got != tt.want {
-			t.Errorf("%s: got %q, want %q", tt.name, got, tt.want)
+			t.Errorf("%s:\n  got:  %q\n  want: %q", tt.name, got, tt.want)
 		}
 	}
 }
 
 func TestFormatSlashPaneForDiscordTruncates(t *testing.T) {
-	// Build content larger than the 1900 char cap.
 	huge := strings.Repeat("x", 2500)
-	got := formatSlashPaneForDiscord(huge)
+	got := formatSlashPaneForDiscord(huge, "", "/x")
 	if !strings.Contains(got, "… (truncated)") {
 		t.Errorf("expected truncation marker in oversized output; got len=%d", len(got))
 	}

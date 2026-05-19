@@ -297,6 +297,15 @@ func TestSmokeRealClaudeSlashCommand(t *testing.T) {
 		t.Errorf("result doesn't look like /usage panel output: %q", result)
 	}
 
+	// Welcome banner / pre-existing TUI chrome must NOT leak into the
+	// reply — that's the regression the diff against the pre-pane
+	// snapshot is meant to fix.
+	for _, leak := range []string{"Welcome back", "Try \"", "Tips for getting started"} {
+		if strings.Contains(result, leak) {
+			t.Errorf("welcome banner leaked into reply (substring %q present)\nresult:\n%s", leak, result)
+		}
+	}
+
 	// After runViaTmux returns, the Esc should have dismissed the
 	// panel. dismissTUIModal polls until the pane actually changes, so
 	// by now the panel should be gone. Strongest signal: "Esc to

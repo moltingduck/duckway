@@ -173,6 +173,16 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 		}
 	}
 
+	// Capture pre-paste pane so the slash-command flow can diff against
+	// the post-stabilization snapshot and extract ONLY the new panel
+	// content (without echoing the welcome banner or prior conversation
+	// back to Discord).
+	isSlash := strings.HasPrefix(strings.TrimSpace(prompt), "/")
+	var prePane string
+	if isSlash {
+		prePane = capturePane(sess)
+	}
+
 	if err := tmuxPastePrompt(sess, prompt); err != nil {
 		return "", "", false, err
 	}
@@ -185,8 +195,8 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 	// pane-stabilization against the Stop event and returns whichever
 	// fires first, then sends Esc to dismiss any open panel so the
 	// next message lands in the empty input box.
-	if strings.HasPrefix(strings.TrimSpace(prompt), "/") {
-		res, sp, perr := runSlashCommand(ctx, sess, eventsDir, turnTS, slashStableWindow, slashMaxWait)
+	if isSlash {
+		res, sp, perr := runSlashCommand(ctx, sess, eventsDir, turnTS, prePane, prompt, slashStableWindow, slashMaxWait)
 		if perr != nil {
 			return "", "", false, perr
 		}
@@ -213,11 +223,17 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 //  1. The Stop hook fires (model-invoking command like /compact) →
 //     return (nil, stopPayload, nil); caller uses the Stop result.
 //  2. The pane content stops changing for stableWindow (local panel
-//     like /usage rendered and is waiting on Esc) → capture pane,
-//     send Esc, return (capturedPane, nil, nil).
+//     like /usage rendered and is waiting on Esc) → diff the pane
+//     against prePane to isolate just the new panel content,
+//     send Esc, return (formattedPanel, nil, nil).
+//
+// prePane is the pane snapshot taken BEFORE the prompt was typed; it's
+// what we diff against to strip the welcome banner / prior conversation
+// from the captured output (so the Discord reply only shows the panel,
+// not "previous conversation" the user already sees).
 //
 // Bounded by maxWait so a runaway TUI never blocks forever.
-func runSlashCommand(ctx context.Context, sess, eventsDir string, turnTS int64, stableWindow, maxWait time.Duration) (paneCapture string, stop *stopPayload, err error) {
+func runSlashCommand(ctx context.Context, sess, eventsDir string, turnTS int64, prePane, prompt string, stableWindow, maxWait time.Duration) (paneCapture string, stop *stopPayload, err error) {
 	deadline := time.Now().Add(maxWait)
 	tick := time.NewTicker(slashPollInterval)
 	defer tick.Stop()
@@ -247,9 +263,10 @@ func runSlashCommand(ctx context.Context, sess, eventsDir string, turnTS int64, 
 			lastChange = time.Now()
 		} else if time.Since(lastChange) >= stableWindow && lastSnap != "" {
 			// Pane has been still for `stableWindow` — assume the
-			// panel is fully rendered. Capture, dismiss, return.
+			// panel is fully rendered. Diff against pre-pane, dismiss,
+			// return.
 			dismissTUIModal(sess)
-			return formatSlashPaneForDiscord(lastSnap), nil, nil
+			return formatSlashPaneForDiscord(lastSnap, prePane, prompt), nil, nil
 		}
 
 		if time.Now().After(deadline) {
@@ -260,7 +277,7 @@ func runSlashCommand(ctx context.Context, sess, eventsDir string, turnTS int64, 
 			if lastSnap == "" {
 				return "", nil, fmt.Errorf("slash command produced no pane output within %v", maxWait)
 			}
-			return formatSlashPaneForDiscord(lastSnap), nil, nil
+			return formatSlashPaneForDiscord(lastSnap, prePane, prompt), nil, nil
 		}
 	}
 }
@@ -294,27 +311,58 @@ func dismissTUIModal(sess string) {
 }
 
 // formatSlashPaneForDiscord cleans up the captured pane for posting
-// back to Discord. Trim trailing blank lines (most of the pane is
-// empty padding) and wrap in a code block so Discord renders it in
-// monospace.
-func formatSlashPaneForDiscord(pane string) string {
-	lines := strings.Split(pane, "\n")
-	// Trim trailing whitespace-only lines.
-	end := len(lines)
-	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+// back to Discord. Diffs against the pre-paste snapshot so the welcome
+// banner, prior conversation, and any other pre-existing content stay
+// out of the reply — only the slash-command panel makes it through.
+// Also filters the input-echo line where the TUI displays the prompt
+// the user just typed (we don't need to mirror that back).
+//
+// Trims trailing/leading blank lines and wraps in a code block for
+// monospace rendering in Discord. Caps length at ~1900 chars so it
+// fits Discord's 2000-char message limit.
+func formatSlashPaneForDiscord(post, pre, prompt string) string {
+	preLines := map[string]int{}
+	for _, l := range strings.Split(pre, "\n") {
+		preLines[l]++
+	}
+
+	// Heuristic for the "user just typed this" echo line. claude's
+	// input prompt is `❯ ` followed by the typed text; tolerate
+	// stray whitespace.
+	trimmedPrompt := strings.TrimSpace(prompt)
+	echoMatches := func(line string) bool {
+		t := strings.TrimSpace(line)
+		return t == "❯ "+trimmedPrompt || t == ">"+" "+trimmedPrompt
+	}
+
+	var newLines []string
+	for _, l := range strings.Split(post, "\n") {
+		if preLines[l] > 0 {
+			// Identical line existed in pre-pane → not new content.
+			// Decrement count so a line that appeared N times in pre
+			// can't be silently kept N+1 times in post.
+			preLines[l]--
+			continue
+		}
+		if echoMatches(l) {
+			continue
+		}
+		newLines = append(newLines, l)
+	}
+
+	// Trim leading/trailing whitespace-only lines.
+	end := len(newLines)
+	for end > 0 && strings.TrimSpace(newLines[end-1]) == "" {
 		end--
 	}
-	// Trim leading whitespace-only lines.
 	start := 0
-	for start < end && strings.TrimSpace(lines[start]) == "" {
+	for start < end && strings.TrimSpace(newLines[start]) == "" {
 		start++
 	}
-	trimmed := strings.Join(lines[start:end], "\n")
+	trimmed := strings.Join(newLines[start:end], "\n")
 	if trimmed == "" {
 		return "_(no panel output captured)_"
 	}
-	// Discord message limit is 2000 chars; cap a bit below to leave
-	// room for the code-block fences and any prefix.
 	const maxLen = 1900
 	if len(trimmed) > maxLen {
 		trimmed = trimmed[:maxLen] + "\n… (truncated)"
