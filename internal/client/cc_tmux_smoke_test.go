@@ -314,6 +314,96 @@ func TestSmokeRealClaudeSlashCommand(t *testing.T) {
 	}
 }
 
+// TestSmokeRealClaudeSlashCommandVariants exercises several local-only
+// slash commands through runViaTmux to prove the flow is generic, not
+// just hard-coded for /usage. Each subtest asserts:
+//   - elapsed time is bounded (no Stop-hook hang)
+//   - reply is non-empty and wrapped in a code block
+//   - reply contains a command-specific marker
+//   - welcome banner doesn't leak through
+//
+// Gated by DUCKWAY_TEST_REAL_CLAUDE=1. No API tokens consumed — all
+// these commands render locally.
+func TestSmokeRealClaudeSlashCommandVariants(t *testing.T) {
+	requireTmux(t)
+	if os.Getenv("DUCKWAY_TEST_REAL_CLAUDE") != "1" {
+		t.Skip("set DUCKWAY_TEST_REAL_CLAUDE=1 to run")
+	}
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skipf("claude not on PATH: %v", err)
+	}
+
+	// Marker: a lowercase substring that should appear somewhere in
+	// the captured panel for that command. Chosen to be distinctive
+	// (not a word that's in the welcome banner).
+	cases := []struct {
+		cmd      string
+		markers  []string // at least one must appear (case-insensitive)
+	}{
+		{cmd: "/help", markers: []string{"command", "shortcut", "slash"}},
+		{cmd: "/context", markers: []string{"context", "tokens", "system prompt"}},
+		{cmd: "/release-notes", markers: []string{"release", "version", "added", "fixed"}},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(strings.TrimPrefix(tc.cmd, "/"), func(t *testing.T) {
+			handle := "smoke-var-" + strings.TrimPrefix(tc.cmd, "/") + "-" + uniqueSuffix()
+			t.Cleanup(func() {
+				tmuxKillSession(handle)
+				if chDir, err := tmuxChannelDir(handle); err == nil {
+					_ = os.RemoveAll(chDir)
+				}
+			})
+			cwd := t.TempDir()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			start := time.Now()
+			_, result, isErr, runErr := runViaTmux(ctx, bin, cwd, tc.cmd, "",
+				[]string{"DUCKWAY_CC_CHANNEL_HANDLE=" + handle, "DUCKWAY_CC_MESSAGE_ID=msg-var"})
+			elapsed := time.Since(start)
+			if runErr != nil {
+				t.Fatalf("runViaTmux(%s): %v", tc.cmd, runErr)
+			}
+			if isErr {
+				t.Errorf("%s: isError=true", tc.cmd)
+			}
+			t.Logf("%s elapsed=%v\nresult:\n----\n%s\n----", tc.cmd, elapsed, result)
+
+			if elapsed > 30*time.Second {
+				t.Errorf("%s took %v — too close to bailout, stability detection broken", tc.cmd, elapsed)
+			}
+			if !strings.Contains(result, "```") {
+				t.Errorf("%s: reply should be wrapped in a code block: %q", tc.cmd, result)
+			}
+			if strings.Contains(result, "no panel output captured") {
+				t.Errorf("%s: panel capture failed", tc.cmd)
+			}
+
+			low := strings.ToLower(result)
+			hit := false
+			for _, m := range tc.markers {
+				if strings.Contains(low, strings.ToLower(m)) {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				t.Errorf("%s: reply contained none of %v\nresult: %s", tc.cmd, tc.markers, result)
+			}
+
+			for _, leak := range []string{"Welcome back", "Tips for getting started"} {
+				if strings.Contains(result, leak) {
+					t.Errorf("%s: banner leak %q in reply", tc.cmd, leak)
+				}
+			}
+		})
+	}
+}
+
 // TestSmokeRealClaudeMultiLinePrompt verifies that prompts containing
 // embedded "\n" are preserved as actual multi-line input in claude's
 // TUI (via the "\"-Enter soft-newline syntax). Without the multi-line
