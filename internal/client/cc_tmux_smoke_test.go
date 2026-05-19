@@ -458,6 +458,90 @@ func TestSmokeRealClaudeFileReference(t *testing.T) {
 	}
 }
 
+// TestSmokeRealClaudePickerPassthrough drives a two-turn picker
+// interaction through runViaTmux against real claude:
+//
+//	turn 1: "/release-notes" — opens a numbered picker of versions
+//	turn 2: "2"               — picks the second option (latest version)
+//
+// Verifies:
+//   - turn 1 reply is the "picker open" message containing the picker
+//     options + the reply hint
+//   - turn 2 reply contains the release-notes content for the chosen
+//     version (i.e. selection actually navigated + confirmed)
+//   - both turns return promptly (no 90s bailout)
+//
+// Gated by DUCKWAY_TEST_REAL_CLAUDE=1.
+func TestSmokeRealClaudePickerPassthrough(t *testing.T) {
+	requireTmux(t)
+	if os.Getenv("DUCKWAY_TEST_REAL_CLAUDE") != "1" {
+		t.Skip("set DUCKWAY_TEST_REAL_CLAUDE=1 to run")
+	}
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skipf("claude not on PATH: %v", err)
+	}
+
+	handle := "smoke-pick-" + uniqueSuffix()
+	t.Cleanup(func() {
+		tmuxKillSession(handle)
+		if chDir, err := tmuxChannelDir(handle); err == nil {
+			_ = os.RemoveAll(chDir)
+		}
+	})
+	cwd := t.TempDir()
+	extraEnv := []string{
+		"DUCKWAY_CC_CHANNEL_HANDLE=" + handle,
+		"DUCKWAY_CC_MESSAGE_ID=msg-pick",
+	}
+
+	// Turn 1: open the picker.
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel1()
+	start := time.Now()
+	_, r1, _, err := runViaTmux(ctx1, bin, cwd, "/release-notes", "", extraEnv)
+	if err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	elapsed1 := time.Since(start)
+	t.Logf("turn 1 elapsed=%v\nreply:\n----\n%s\n----", elapsed1, r1)
+	if elapsed1 > 30*time.Second {
+		t.Errorf("turn 1 took %v — picker detection likely missed", elapsed1)
+	}
+	if !strings.Contains(r1, "picker open") {
+		t.Errorf("turn 1 reply should announce the picker; got: %s", r1)
+	}
+	if !strings.Contains(r1, "Version") {
+		t.Errorf("turn 1 reply should list version options; got: %s", r1)
+	}
+
+	// Turn 2: pick option 2.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel2()
+	start = time.Now()
+	_, r2, _, err := runViaTmux(ctx2, bin, cwd, "2", "", extraEnv)
+	if err != nil {
+		t.Fatalf("turn 2: %v", err)
+	}
+	elapsed2 := time.Since(start)
+	t.Logf("turn 2 elapsed=%v\nreply:\n----\n%s\n----", elapsed2, r2)
+	if elapsed2 > 30*time.Second {
+		t.Errorf("turn 2 took %v — selection didn't resolve cleanly", elapsed2)
+	}
+	// The reply should be the release-notes content. Look for any
+	// release-notes-flavored markers; we don't pin a specific version
+	// number because the available versions change over time.
+	low := strings.ToLower(r2)
+	hit := strings.Contains(low, "release") || strings.Contains(low, "version") ||
+		strings.Contains(low, "added") || strings.Contains(low, "fixed")
+	if !hit {
+		t.Errorf("turn 2 reply doesn't look like release-notes content: %s", r2)
+	}
+	if strings.Contains(r2, "picker open") {
+		t.Errorf("turn 2 still shows the picker — selection didn't go through: %s", r2)
+	}
+}
+
 // TestSmokeRealClaudeMultiLinePrompt verifies that prompts containing
 // embedded "\n" are preserved as actual multi-line input in claude's
 // TUI (via the "\"-Enter soft-newline syntax). Without the multi-line

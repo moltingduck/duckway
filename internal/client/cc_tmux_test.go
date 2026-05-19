@@ -363,6 +363,20 @@ func TestExtractAfterPromptAnchor(t *testing.T) {
 			prompt: "! cargo test",
 			want:   "  ⎿  test passed\n",
 		},
+		{
+			// Empty prompt (picker-selection case): fall back to the
+			// most-recent "❯ /xxx" anchor in scrollback.
+			name:   "empty prompt falls back to last slash anchor",
+			text:   "welcome\n❯ /release-notes\npicker stuff\n❯ /effort\nlater output\n",
+			prompt: "",
+			want:   "later output\n",
+		},
+		{
+			name:   "empty prompt with no slash anchor returns full text",
+			text:   "just some text\nno anchor here\n",
+			prompt: "",
+			want:   "just some text\nno anchor here\n",
+		},
 	}
 	for _, tt := range tests {
 		got := extractAfterPromptAnchor(tt.text, tt.prompt)

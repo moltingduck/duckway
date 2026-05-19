@@ -59,6 +59,16 @@ const (
 	// blocks forever. Comfortably longer than /compact's typical run
 	// time on big contexts.
 	slashMaxWait = 90 * time.Second
+	// pickerDetectDelay: how long to wait after a slash/bash submit
+	// before checking whether a picker appeared. Pickers render in
+	// well under a second; this is short enough that we don't add
+	// noticeable latency for non-picker commands but long enough that
+	// we don't miss the picker on first capture.
+	pickerDetectDelay = 600 * time.Millisecond
+	// pickerKeyDelay paces between successive `Down` keypresses when
+	// navigating a long picker. 30ms is below human-perceptible but
+	// above the TUI's input debouncing.
+	pickerKeyDelay = 30 * time.Millisecond
 )
 
 // tmuxAvailable reports whether `tmux` is on PATH. Memoized so repeated
@@ -173,6 +183,22 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 		}
 	}
 
+	// If a previous turn opened a picker (e.g. /release-notes /effort
+	// /model) and left it on screen waiting for input, this incoming
+	// prompt is the user's selection — not a fresh command. Detect that
+	// state and route through the selection handler.
+	if !launched && paneInPicker(sess) {
+		res, sp, perr := runPickerSelection(ctx, sess, eventsDir, turnTS, prompt)
+		if perr != nil {
+			return "", "", false, perr
+		}
+		_ = os.Remove(inFlightPath)
+		if sp != nil {
+			return sp.SessionID, resolveAssistantMessage(*sp), false, nil
+		}
+		return "", res, false, nil
+	}
+
 	if err := tmuxPastePrompt(sess, prompt); err != nil {
 		return "", "", false, err
 	}
@@ -187,6 +213,16 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 	isSlash := strings.HasPrefix(trimmedPrompt, "/")
 	isShell := strings.HasPrefix(trimmedPrompt, "!")
 	if isSlash || isShell {
+		// Briefly wait then check if the command opened a picker
+		// instead of a plain panel. If yes, post the picker contents
+		// to Discord and leave it open for the next message to
+		// resolve.
+		time.Sleep(pickerDetectDelay)
+		if paneInPicker(sess) {
+			body := formatPickerForDiscord(sess, prompt)
+			_ = os.Remove(inFlightPath)
+			return "", body, false, nil
+		}
 		res, sp, perr := runTUICommand(ctx, sess, eventsDir, turnTS, prompt, isSlash, slashStableWindow, slashMaxWait)
 		if perr != nil {
 			return "", "", false, perr
@@ -289,13 +325,17 @@ func extractSlashOutput(sess, prompt string) string {
 }
 
 // extractAfterPromptAnchor isolates the pane bytes after the user's
-// echoed prompt. Two cases:
+// echoed prompt. Three cases:
 //
-//	prompt = "/usage"   → claude renders "❯ /usage"   → anchor "❯ /usage"
-//	prompt = "! ls"     → claude renders "!  ls"      → anchor "ls"
-//	                       (indicator "!" + padding + command — search
-//	                        on the command portion because the spacing
-//	                        between indicator and content isn't stable)
+//	prompt = "/usage"   → claude renders "❯ /usage"  → anchor "❯ /usage"
+//	prompt = "! ls"     → claude renders "!  ls"     → anchor "ls"
+//	                      (indicator "!" + padding + command — search
+//	                       on the command portion because spacing
+//	                       between indicator and content isn't stable)
+//	prompt = ""         → no explicit anchor (e.g. picker-selection
+//	                      output, where the user typed a digit that
+//	                      doesn't render as a prompt line). Fall back
+//	                      to the most-recent "❯ /" line in scrollback.
 //
 // LastIndex returns the most recent occurrence which, after the user
 // submits a TUI command, is the just-echoed input line.
@@ -305,6 +345,8 @@ func extractAfterPromptAnchor(text, prompt string) string {
 	p := strings.TrimSpace(prompt)
 	var anchor string
 	switch {
+	case p == "":
+		return extractAfterLastSlashAnchor(text)
 	case strings.HasPrefix(p, "/"):
 		anchor = "❯ " + p
 	case strings.HasPrefix(p, "!"):
@@ -327,6 +369,23 @@ func extractAfterPromptAnchor(text, prompt string) string {
 		return after[i+1:]
 	}
 	return ""
+}
+
+// extractAfterLastSlashAnchor walks the pane text from the bottom up
+// looking for the most-recent "❯ /<something>" prompt-echo line and
+// returns everything after it. Used when we don't have a specific
+// prompt to anchor on (picker selection: the user typed "2" but that
+// digit was consumed by picker navigation, not rendered as a prompt
+// line).
+func extractAfterLastSlashAnchor(text string) string {
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		t := strings.TrimLeft(lines[i], " \t")
+		if strings.HasPrefix(t, "❯ /") {
+			return strings.Join(lines[i+1:], "\n")
+		}
+	}
+	return text
 }
 
 // capturePane returns the current visible pane contents as plain text.
@@ -1005,4 +1064,86 @@ func envValue(env []string, key string) string {
 		}
 	}
 	return ""
+}
+
+// =====================================================================
+// Picker passthrough
+//
+// Several claude slash commands (/effort, /model, /release-notes,
+// /agents …) open a numbered-list picker:
+//
+//   ❯ 1.   Show all         291 versions
+//     2.   Version 2.1.144  52 items
+//     3.   ...
+//
+//   Enter to confirm · Esc to cancel
+//
+// runViaTmux detects this state when it appears (right after the slash
+// submit, or carried over from a previous turn) and posts the picker
+// contents to Discord with a "reply with the number to pick" hint
+// instead of waiting for Stop. The next Discord message is then
+// interpreted as the selection: a positive integer N navigates with
+// Down×(N-1) + Enter; "cancel" / "esc" sends Escape.
+// =====================================================================
+
+// pickerFooter is the marker that uniquely identifies claude's
+// picker-modal state — any pane containing this string is awaiting a
+// selection. The wording has been stable across recent claude releases
+// but if it ever changes, the symptom is "picker passthrough no longer
+// detects pickers" — update the constant here.
+const pickerFooter = "Enter to confirm · Esc to cancel"
+
+// paneInPicker reports whether the named tmux pane is currently
+// showing claude's picker modal. Best-effort: returns false on any
+// tmux error (treats unknown pane state as "not in picker" so the
+// caller falls back to normal flow).
+func paneInPicker(sess string) bool {
+	return strings.Contains(capturePane(sess), pickerFooter)
+}
+
+// formatPickerForDiscord captures the pane, extracts the picker body
+// using the same after-anchor logic as plain slash commands, wraps it
+// in a code block, and prepends a one-line "how to respond" hint.
+func formatPickerForDiscord(sess, prompt string) string {
+	body := extractSlashOutput(sess, prompt)
+	formatted := formatSlashPaneForDiscord(body)
+	hint := "👇 picker open — reply with the option number, or `cancel` to dismiss.\n"
+	return hint + formatted
+}
+
+// runPickerSelection interprets `prompt` as a selection against an
+// already-open claude picker:
+//
+//   "1"…"99"  → navigate (Down × (N-1)) and confirm with Enter
+//   "cancel"  → send Escape (also matches "esc" case-insensitive)
+//   anything else → dismiss and return a "reply with N or cancel" hint
+//                    so the user can re-send their real prompt
+//
+// After a numeric selection, wait for the resulting content to render
+// using the same race-stability-against-Stop loop as runTUICommand.
+func runPickerSelection(ctx context.Context, sess, eventsDir string, turnTS int64, prompt string) (string, *stopPayload, error) {
+	p := strings.TrimSpace(prompt)
+	if strings.EqualFold(p, "cancel") || strings.EqualFold(p, "esc") {
+		dismissTUIModal(sess)
+		return "✅ picker dismissed", nil, nil
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n < 1 {
+		return "👇 picker is still open — reply with the option number (e.g. `2`) or `cancel` to dismiss.", nil, nil
+	}
+	for i := 0; i < n-1; i++ {
+		if err := tmuxSendKeys(sess, "Down"); err != nil {
+			return "", nil, err
+		}
+		time.Sleep(pickerKeyDelay)
+	}
+	if err := tmuxSendKeys(sess, "Enter"); err != nil {
+		return "", nil, err
+	}
+	// The selection may open another picker, render content, or invoke
+	// the model. Reuse the TUI command loop with "" as the prompt — the
+	// extractor will find the most-recent `❯ /command` line in
+	// scrollback (whichever slash command originally opened the picker)
+	// and slice after it.
+	return runTUICommand(ctx, sess, eventsDir, turnTS, "", true, slashStableWindow, slashMaxWait)
 }
