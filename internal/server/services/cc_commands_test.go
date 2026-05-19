@@ -152,7 +152,12 @@ func TestLooksLikeCommand(t *testing.T) {
 			t.Errorf("LooksLikeCommand(%q) = false, want true", in)
 		}
 	}
-	for _, in := range []string{"hello", " hi", "/help", ""} {
+	for _, in := range []string{
+		"hello", " hi", "/help", "",
+		// "!/..." is the claude slash-command escape. It must be
+		// treated as agent input, not a server command.
+		"!/usage", "!/compact", "  !/help with args  ",
+	} {
 		if LooksLikeCommand(in) {
 			t.Errorf("LooksLikeCommand(%q) = true, want false", in)
 		}

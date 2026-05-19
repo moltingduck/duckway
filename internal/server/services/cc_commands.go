@@ -38,8 +38,17 @@ func NewCCCommandHandler(cc *queries.ControlChannelQueries, apiKeys *queries.API
 // LooksLikeCommand returns true for messages we should hand to Handle.
 // Used by the gateway to decide whether to also publish the message to
 // the daemon's SSE stream.
+//
+// Exception: messages starting with "!/" are an escape for claude's own
+// slash commands (`/usage`, `/help`, `/compact`, ...). Discord intercepts
+// any message starting with "/" as a slash-command picker, so the user
+// types `!/usage` and the daemon strips the leading `!` before pasting
+// `/usage` into the claude pane.
 func LooksLikeCommand(content string) bool {
 	t := strings.TrimSpace(content)
+	if strings.HasPrefix(t, "!/") {
+		return false
+	}
 	return strings.HasPrefix(t, "!")
 }
 
@@ -491,7 +500,11 @@ const helpText = "**Duckway CC commands**\n" +
 	"`!status` — daemon + session counts\n" +
 	"`!sessions [<cwd-filter>]` — list local claude sessions on the agent that aren't yet bound to a CC channel\n" +
 	"`!bind <session_id> [<session_id> …]` — create a task channel for each session_id and attach it (run `!sessions` first to find IDs)\n" +
-	"`!help` — this message"
+	"`!help` — this message\n" +
+	"\n" +
+	"**Sending claude slash commands**\n" +
+	"Discord eats messages that start with `/`, so prefix claude's own slash commands with `!`: e.g. `!/usage`, `!/compact`, `!/help`. The daemon strips the `!` before pasting into claude. " +
+	"_Heads-up: local-only commands like `/usage` and `/help` render in the tmux pane but don't fire the Stop hook — attach with `tmux attach -t duckway-<handle>` to see the output. Commands that actually call the model (e.g. `/compact`) post their result back here normally._"
 
 // BuildWelcomeMessage returns the message the server posts in a freshly
 // provisioned management channel. Different from helpText (the !help

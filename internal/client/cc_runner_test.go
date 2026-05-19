@@ -96,6 +96,32 @@ func TestCCRunner_PostsResult(t *testing.T) {
 	}
 }
 
+func TestCCRunner_StripsClaudeSlashEscape(t *testing.T) {
+	// Discord eats "/" prefix messages; users type "!/usage" instead.
+	// The runner must strip the leading "!" before handing the prompt
+	// to claude so claude sees its real "/usage" command.
+	cases := []struct {
+		in, want string
+	}{
+		{"!/usage", "/usage"},
+		{"!/compact", "/compact"},
+		{"  !/help foo bar  ", "/help foo bar"},
+		// Not the escape — must pass through unchanged.
+		{"hello world", "hello world"},
+		{"!reset", "!reset"}, // server commands shouldn't reach here in prod but be defensive
+	}
+	for _, tt := range cases {
+		fn, captured := capturingRunFn("sid", "ok")
+		r, pp, _ := newTestRunner(t, fn)
+		r.Enqueue(ccTask{Content: tt.in, ChannelKind: "task"})
+		waitForPosts(t, pp, 1)
+		if got := captured(); got != tt.want {
+			t.Errorf("Content=%q → prompt to claude = %q, want %q", tt.in, got, tt.want)
+		}
+		r.Stop()
+	}
+}
+
 func TestCCRunner_QueueOverflow(t *testing.T) {
 	fn := ccRunFn(func(_ context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
 		time.Sleep(200 * time.Millisecond)

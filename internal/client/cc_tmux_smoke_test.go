@@ -235,6 +235,73 @@ func TestSmokeRecoverPendingTurns(t *testing.T) {
 	}
 }
 
+// TestSmokeRealClaudeSlashCommand verifies that the "!/" escape path
+// works end-to-end: paste "/usage" (the result of cc_runner stripping
+// "!" from "!/usage") through tmux into real claude, and confirm
+// claude renders its built-in slash command (not the text literally).
+//
+// Gated by DUCKWAY_TEST_REAL_CLAUDE=1; doesn't hit the API since
+// `/usage` is a local-only TUI command, so this is cheaper than the
+// full round-trip test.
+func TestSmokeRealClaudeSlashCommand(t *testing.T) {
+	requireTmux(t)
+	if os.Getenv("DUCKWAY_TEST_REAL_CLAUDE") != "1" {
+		t.Skip("set DUCKWAY_TEST_REAL_CLAUDE=1 to run")
+	}
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skipf("claude not on PATH: %v", err)
+	}
+
+	handle := "smoke-slash-" + uniqueSuffix()
+	t.Cleanup(func() {
+		tmuxKillSession(handle)
+		if chDir, err := tmuxChannelDir(handle); err == nil {
+			_ = os.RemoveAll(chDir)
+		}
+	})
+
+	cwd := t.TempDir()
+	if err := markCwdTrustedInClaude(cwd); err != nil {
+		t.Fatalf("markCwdTrustedInClaude: %v", err)
+	}
+
+	// Drive runViaTmux end-to-end. We send "/usage" (post-strip
+	// content). /usage is a TUI-only command — claude renders the
+	// usage panel locally without calling the API, so the Stop hook
+	// won't fire. We don't wait for completion; instead we just check
+	// pane content for the slash-command output.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_, _, _, _ = runViaTmux(ctx, bin, cwd, "/usage",
+			"", []string{"DUCKWAY_CC_CHANNEL_HANDLE=" + handle, "DUCKWAY_CC_MESSAGE_ID=msg-slash-1"})
+	}()
+
+	sess := tmuxSessionName(handle)
+	// Wait for the slash command's output — /usage opens a status
+	// panel that mentions "Token usage" / "Session". Match any of the
+	// usage-panel headings to be robust to format changes.
+	found := false
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		pane, _ := exec.Command("tmux", "capture-pane", "-p", "-t", sess, "-S", "-100").Output()
+		text := string(pane)
+		if strings.Contains(text, "Token usage") || strings.Contains(text, "5-hour limit") ||
+			strings.Contains(text, "/usage") && strings.Contains(text, "session") {
+			found = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	pane, _ := exec.Command("tmux", "capture-pane", "-p", "-t", sess, "-S", "-100").Output()
+	t.Logf("final pane:\n----\n%s\n----", string(pane))
+	if !found {
+		t.Errorf("/usage panel never appeared in tmux pane — slash command didn't dispatch")
+	}
+	cancel()
+}
+
 // TestSmokeRealClaudeRoundTrip runs the full runViaTmux flow against
 // the real `claude` CLI. Gated by DUCKWAY_TEST_REAL_CLAUDE=1 because it
 // consumes API tokens and requires claude to be authenticated. Use

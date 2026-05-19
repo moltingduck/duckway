@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -122,10 +123,17 @@ func (r *ccRunner) run(t ccTask) {
 	defer cancel()
 
 	prompt := t.Content
+	// "!/..." is the Discord escape for claude slash commands — Discord
+	// hijacks any message starting with "/" so users prefix `!`. Strip
+	// it here so claude receives the real `/usage`, `/compact`, etc.
+	if strings.HasPrefix(strings.TrimSpace(prompt), "!/") {
+		trimmed := strings.TrimSpace(prompt)
+		prompt = trimmed[1:]
+	}
 	sid := r.sessions.Get(r.handle)
 	// Management-channel preamble: only on the FIRST message of a session.
 	if t.ChannelKind == "management" && sid == "" {
-		prompt = managementPreamble() + "\n\n---\n\n" + t.Content
+		prompt = managementPreamble() + "\n\n---\n\n" + prompt
 	}
 
 	extraEnv := []string{
