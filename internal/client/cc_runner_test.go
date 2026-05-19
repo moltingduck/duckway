@@ -96,6 +96,31 @@ func TestCCRunner_PostsResult(t *testing.T) {
 	}
 }
 
+func TestCCRunner_ClearDropsCachedSessionID(t *testing.T) {
+	// First turn: a normal message returns a session_id which gets
+	// cached in CCSessionStore.
+	fn, _ := capturingRunFn("sid-old", "hi")
+	r, pp, store := newTestRunner(t, fn)
+	defer r.Stop()
+	r.Enqueue(ccTask{Content: "hello", ChannelKind: "task"})
+	waitForPosts(t, pp, 1)
+	if got := store.Get("dwch_t"); got != "sid-old" {
+		t.Fatalf("setup: cached sid = %q, want sid-old", got)
+	}
+
+	// Now send /clear via the !/ escape. The slash flow returns no
+	// session_id, but the runner must still drop the cached mapping
+	// so a daemon restart doesn't `--resume` into the old state.
+	r.runFn = func(_ context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
+		return "", "cleared", false, nil
+	}
+	r.Enqueue(ccTask{Content: "!/clear", ChannelKind: "task"})
+	waitForPosts(t, pp, 2)
+	if got := store.Get("dwch_t"); got != "" {
+		t.Errorf("after /clear: cached sid = %q, want empty", got)
+	}
+}
+
 func TestCCRunner_StripsClaudeEscapes(t *testing.T) {
 	// Users escape claude trigger chars with a leading "!" because
 	// Discord eats "/" prefixes and the daemon eats "!" prefixes.

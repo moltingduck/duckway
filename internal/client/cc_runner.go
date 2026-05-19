@@ -133,6 +133,11 @@ func (r *ccRunner) run(t ccTask) {
 	if trimmed := strings.TrimSpace(prompt); strings.HasPrefix(trimmed, "!/") || strings.HasPrefix(trimmed, "!!") {
 		prompt = trimmed[1:]
 	}
+	// `/clear` wipes claude's running conversation. If we keep the
+	// cached session_id mapped, a daemon restart would `--resume` into
+	// the old (un-cleared) state. Drop the mapping after a successful
+	// turn so the next launch starts fresh.
+	clearedSession := strings.HasPrefix(strings.TrimSpace(prompt), "/clear")
 	sid := r.sessions.Get(r.handle)
 	// Management-channel preamble: only on the FIRST message of a session.
 	if t.ChannelKind == "management" && sid == "" {
@@ -157,6 +162,10 @@ func (r *ccRunner) run(t ccTask) {
 
 	if newSID != "" {
 		_ = r.sessions.Set(r.handle, newSID)
+	}
+	if clearedSession {
+		_ = r.sessions.Drop(r.handle)
+		r.logger("[cc-watch] %s: /clear sent, dropped cached session_id", r.handle)
 	}
 
 	body := result
