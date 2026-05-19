@@ -184,19 +184,26 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 	}
 
 	// If a previous turn opened a picker (e.g. /release-notes /effort
-	// /model) and left it on screen waiting for input, this incoming
-	// prompt is the user's selection — not a fresh command. Detect that
-	// state and route through the selection handler.
+	// /model) and left it on screen, an incoming prompt that LOOKS LIKE
+	// picker input (a digit or "cancel") is treated as the selection.
+	// Anything else (a free-form sentence, a fresh slash/bash command)
+	// auto-dismisses the picker so the message lands as a normal prompt
+	// — saves the user from having to type "cancel" first.
 	if !launched && paneInPicker(sess) {
-		res, sp, perr := runPickerSelection(ctx, sess, eventsDir, turnTS, prompt)
-		if perr != nil {
-			return "", "", false, perr
+		if looksLikePickerInput(prompt) {
+			res, sp, perr := runPickerSelection(ctx, sess, eventsDir, turnTS, prompt)
+			if perr != nil {
+				return "", "", false, perr
+			}
+			_ = os.Remove(inFlightPath)
+			if sp != nil {
+				return sp.SessionID, resolveAssistantMessage(*sp), false, nil
+			}
+			return "", res, false, nil
 		}
-		_ = os.Remove(inFlightPath)
-		if sp != nil {
-			return sp.SessionID, resolveAssistantMessage(*sp), false, nil
-		}
-		return "", res, false, nil
+		// Not picker input — clear the modal and fall through to the
+		// normal-prompt flow below.
+		dismissTUIModal(sess)
 	}
 
 	if err := tmuxPastePrompt(sess, prompt); err != nil {
@@ -1099,6 +1106,30 @@ const pickerFooter = "Enter to confirm · Esc to cancel"
 // caller falls back to normal flow).
 func paneInPicker(sess string) bool {
 	return strings.Contains(capturePane(sess), pickerFooter)
+}
+
+// looksLikePickerInput reports whether `prompt` is plausibly a response
+// to an open picker (a positive integer up to 99, or the case-insensitive
+// words "cancel" / "esc"). Returns false for empty input, anything
+// starting with "/" or "!" (those are fresh TUI-mode commands), and
+// anything longer or shaped like prose.
+//
+// The 2-digit cap is a sanity heuristic — pickers rarely have more than
+// 99 options, and limiting the digit window keeps a stray "12345" log
+// line or message ID from being misread as a selection.
+func looksLikePickerInput(prompt string) bool {
+	p := strings.TrimSpace(prompt)
+	if p == "" {
+		return false
+	}
+	if strings.EqualFold(p, "cancel") || strings.EqualFold(p, "esc") {
+		return true
+	}
+	if len(p) > 2 {
+		return false
+	}
+	n, err := strconv.Atoi(p)
+	return err == nil && n >= 1 && n <= 99
 }
 
 // formatPickerForDiscord captures the pane, extracts the picker body

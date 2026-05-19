@@ -305,6 +305,40 @@ func TestResolveAssistantMessageMissingTranscript(t *testing.T) {
 	}
 }
 
+func TestLooksLikePickerInput(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		// Looks like a picker selection.
+		{"1", true},
+		{"2", true},
+		{"99", true},
+		{"  3  ", true}, // whitespace tolerated
+		{"cancel", true},
+		{"Cancel", true},
+		{"ESC", true},
+		// Doesn't look like a picker selection.
+		{"", false},
+		{"0", false},   // claude pickers are 1-indexed
+		{"100", false}, // too many digits — heuristic guard
+		{"-1", false},
+		{"hello", false},
+		{"what is the weather?", false},
+		{"/usage", false},  // fresh slash command
+		{"! ls", false},    // fresh bash command
+		{"!/help", false},  // unstripped escape
+		{"yes", false},
+		{"12a", false}, // not a pure integer
+	}
+	for _, tt := range tests {
+		got := looksLikePickerInput(tt.in)
+		if got != tt.want {
+			t.Errorf("looksLikePickerInput(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestExtractAfterPromptAnchor(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -599,6 +599,73 @@ func TestSmokeRealClaudeCompact(t *testing.T) {
 	}
 }
 
+// TestSmokeRealClaudePickerAutoDismiss verifies: when a picker is left
+// open from a previous turn and the user sends a fresh slash command
+// (not a number / not "cancel"), the daemon dismisses the picker and
+// processes the new command normally — instead of stalling with a
+// "reply with the option number or cancel" hint.
+//
+// Gated by DUCKWAY_TEST_REAL_CLAUDE=1.
+func TestSmokeRealClaudePickerAutoDismiss(t *testing.T) {
+	requireTmux(t)
+	if os.Getenv("DUCKWAY_TEST_REAL_CLAUDE") != "1" {
+		t.Skip("set DUCKWAY_TEST_REAL_CLAUDE=1 to run")
+	}
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skipf("claude not on PATH: %v", err)
+	}
+
+	handle := "smoke-autodismiss-" + uniqueSuffix()
+	t.Cleanup(func() {
+		tmuxKillSession(handle)
+		if chDir, err := tmuxChannelDir(handle); err == nil {
+			_ = os.RemoveAll(chDir)
+		}
+	})
+	cwd := t.TempDir()
+	extraEnv := []string{
+		"DUCKWAY_CC_CHANNEL_HANDLE=" + handle,
+		"DUCKWAY_CC_MESSAGE_ID=msg-ad",
+	}
+
+	// Turn 1: open the picker.
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel1()
+	_, r1, _, err := runViaTmux(ctx1, bin, cwd, "/release-notes", "", extraEnv)
+	if err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	if !strings.Contains(r1, "picker open") {
+		t.Fatalf("turn 1 didn't open picker: %s", r1)
+	}
+
+	// Turn 2: send a fresh slash command instead of a picker selection.
+	// The daemon should auto-dismiss the picker and run /help normally.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel2()
+	start := time.Now()
+	_, r2, _, err := runViaTmux(ctx2, bin, cwd, "/help", "", extraEnv)
+	if err != nil {
+		t.Fatalf("turn 2: %v", err)
+	}
+	elapsed := time.Since(start)
+	t.Logf("turn 2 elapsed=%v\nreply:\n----\n%s\n----", elapsed, r2)
+	if elapsed > 30*time.Second {
+		t.Errorf("turn 2 took %v — auto-dismiss didn't unblock", elapsed)
+	}
+	if strings.Contains(r2, "picker open") {
+		t.Errorf("turn 2 still says picker is open — auto-dismiss didn't fire: %s", r2)
+	}
+	if strings.Contains(r2, "picker is still open") {
+		t.Errorf("turn 2 stalled on picker-stall hint: %s", r2)
+	}
+	low := strings.ToLower(r2)
+	if !(strings.Contains(low, "command") || strings.Contains(low, "shortcut") || strings.Contains(low, "slash")) {
+		t.Errorf("turn 2 doesn't look like /help output: %s", r2)
+	}
+}
+
 // TestSmokeRealClaudeMultiLinePrompt verifies that prompts containing
 // embedded "\n" are preserved as actual multi-line input in claude's
 // TUI (via the "\"-Enter soft-newline syntax). Without the multi-line
