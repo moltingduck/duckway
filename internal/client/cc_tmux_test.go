@@ -305,53 +305,64 @@ func TestResolveAssistantMessageMissingTranscript(t *testing.T) {
 	}
 }
 
-func TestFormatSlashPaneForDiscord(t *testing.T) {
+func TestExtractAfterPromptAnchor(t *testing.T) {
 	tests := []struct {
-		name           string
-		post, pre, cmd string
-		want           string
+		name   string
+		text   string
+		prompt string
+		want   string
 	}{
 		{
-			name: "diff strips pre content",
-			pre:  "welcome banner\nprior conversation\n❯ \n",
-			post: "welcome banner\nprior conversation\n❯ /usage\nPanel line A\nPanel line B\nEsc to cancel\n",
-			cmd:  "/usage",
-			want: "```\nPanel line A\nPanel line B\nEsc to cancel\n```",
+			name:   "anchor present, content follows",
+			text:   "welcome\nprior chat\n❯ /usage\nPanel A\nPanel B\nEsc to cancel\n",
+			prompt: "/usage",
+			want:   "Panel A\nPanel B\nEsc to cancel\n",
 		},
 		{
-			name: "prompt echo filtered when no pre",
-			pre:  "",
-			post: "❯ /usage\nactual panel content\n",
-			cmd:  "/usage",
-			want: "```\nactual panel content\n```",
+			name:   "uses LAST occurrence when prompt appears multiple times",
+			text:   "❯ /usage\nold panel\n❯ /usage\nnew panel\n",
+			prompt: "/usage",
+			want:   "new panel\n",
 		},
 		{
-			name: "completely empty after diff",
-			pre:  "the same\nthe same\n",
-			post: "the same\nthe same\n",
-			cmd:  "/foo",
-			want: "_(no panel output captured)_",
+			name:   "tolerates whitespace around prompt in arg",
+			text:   "intro\n❯ /help\nhelp content\n",
+			prompt: "  /help  ",
+			want:   "help content\n",
 		},
 		{
-			name: "only whitespace remains after diff",
-			pre:  "header\n",
-			post: "header\n\n   \n",
-			cmd:  "/foo",
-			want: "_(no panel output captured)_",
+			name:   "anchor at very end → empty result",
+			text:   "intro\n❯ /usage",
+			prompt: "/usage",
+			want:   "",
 		},
 		{
-			name: "duplicate-line accounting",
-			// "common" appears once in pre, twice in post → one
-			// instance should be considered new content (the panel
-			// re-rendered it).
-			pre:  "common\nheader\n",
-			post: "common\ncommon\nheader\nnew\n",
-			cmd:  "/x",
-			want: "```\ncommon\nnew\n```",
+			name:   "anchor missing → falls back to full text",
+			text:   "no anchor here\nsome content\n",
+			prompt: "/usage",
+			want:   "no anchor here\nsome content\n",
 		},
 	}
 	for _, tt := range tests {
-		got := formatSlashPaneForDiscord(tt.post, tt.pre, tt.cmd)
+		got := extractAfterPromptAnchor(tt.text, tt.prompt)
+		if got != tt.want {
+			t.Errorf("%s:\n  got:  %q\n  want: %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestFormatSlashPaneForDiscord(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+	}{
+		{"normal", "line1\nline2\n", "```\nline1\nline2\n```"},
+		{"trims trailing blanks", "content\n\n\n", "```\ncontent\n```"},
+		{"trims leading blanks", "\n\n\ncontent\n", "```\ncontent\n```"},
+		{"empty input", "", "_(no panel output captured)_"},
+		{"only whitespace", "\n  \n\n", "_(no panel output captured)_"},
+	}
+	for _, tt := range tests {
+		got := formatSlashPaneForDiscord(tt.in)
 		if got != tt.want {
 			t.Errorf("%s:\n  got:  %q\n  want: %q", tt.name, got, tt.want)
 		}
@@ -360,7 +371,7 @@ func TestFormatSlashPaneForDiscord(t *testing.T) {
 
 func TestFormatSlashPaneForDiscordTruncates(t *testing.T) {
 	huge := strings.Repeat("x", 2500)
-	got := formatSlashPaneForDiscord(huge, "", "/x")
+	got := formatSlashPaneForDiscord(huge)
 	if !strings.Contains(got, "… (truncated)") {
 		t.Errorf("expected truncation marker in oversized output; got len=%d", len(got))
 	}

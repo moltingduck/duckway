@@ -173,16 +173,6 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 		}
 	}
 
-	// Capture pre-paste pane so the slash-command flow can diff against
-	// the post-stabilization snapshot and extract ONLY the new panel
-	// content (without echoing the welcome banner or prior conversation
-	// back to Discord).
-	isSlash := strings.HasPrefix(strings.TrimSpace(prompt), "/")
-	var prePane string
-	if isSlash {
-		prePane = capturePane(sess)
-	}
-
 	if err := tmuxPastePrompt(sess, prompt); err != nil {
 		return "", "", false, err
 	}
@@ -195,8 +185,8 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 	// pane-stabilization against the Stop event and returns whichever
 	// fires first, then sends Esc to dismiss any open panel so the
 	// next message lands in the empty input box.
-	if isSlash {
-		res, sp, perr := runSlashCommand(ctx, sess, eventsDir, turnTS, prePane, prompt, slashStableWindow, slashMaxWait)
+	if strings.HasPrefix(strings.TrimSpace(prompt), "/") {
+		res, sp, perr := runSlashCommand(ctx, sess, eventsDir, turnTS, prompt, slashStableWindow, slashMaxWait)
 		if perr != nil {
 			return "", "", false, perr
 		}
@@ -223,17 +213,17 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 //  1. The Stop hook fires (model-invoking command like /compact) →
 //     return (nil, stopPayload, nil); caller uses the Stop result.
 //  2. The pane content stops changing for stableWindow (local panel
-//     like /usage rendered and is waiting on Esc) → diff the pane
-//     against prePane to isolate just the new panel content,
+//     like /usage rendered and is waiting on Esc) → grab scrollback,
+//     anchor on the user's prompt line, take everything after it,
 //     send Esc, return (formattedPanel, nil, nil).
 //
-// prePane is the pane snapshot taken BEFORE the prompt was typed; it's
-// what we diff against to strip the welcome banner / prior conversation
-// from the captured output (so the Discord reply only shows the panel,
-// not "previous conversation" the user already sees).
+// The anchor extraction means we don't need a pre-paste snapshot:
+// "❯ <prompt>" is a unique marker in the scrollback, and panel content
+// always lives after it. The welcome banner and any prior conversation
+// sit before the anchor and get dropped automatically.
 //
 // Bounded by maxWait so a runaway TUI never blocks forever.
-func runSlashCommand(ctx context.Context, sess, eventsDir string, turnTS int64, prePane, prompt string, stableWindow, maxWait time.Duration) (paneCapture string, stop *stopPayload, err error) {
+func runSlashCommand(ctx context.Context, sess, eventsDir string, turnTS int64, prompt string, stableWindow, maxWait time.Duration) (paneCapture string, stop *stopPayload, err error) {
 	deadline := time.Now().Add(maxWait)
 	tick := time.NewTicker(slashPollInterval)
 	defer tick.Stop()
@@ -263,23 +253,58 @@ func runSlashCommand(ctx context.Context, sess, eventsDir string, turnTS int64, 
 			lastChange = time.Now()
 		} else if time.Since(lastChange) >= stableWindow && lastSnap != "" {
 			// Pane has been still for `stableWindow` — assume the
-			// panel is fully rendered. Diff against pre-pane, dismiss,
-			// return.
+			// panel is fully rendered. Extract the after-anchor
+			// content from scrollback, dismiss, return.
+			body := extractSlashOutput(sess, prompt)
 			dismissTUIModal(sess)
-			return formatSlashPaneForDiscord(lastSnap, prePane, prompt), nil, nil
+			return formatSlashPaneForDiscord(body), nil, nil
 		}
 
 		if time.Now().After(deadline) {
 			// Timed out — best-effort: send Esc to clear whatever's on
 			// screen, then return whatever we have so the user at
 			// least sees something.
+			body := extractSlashOutput(sess, prompt)
 			dismissTUIModal(sess)
-			if lastSnap == "" {
+			if body == "" && lastSnap == "" {
 				return "", nil, fmt.Errorf("slash command produced no pane output within %v", maxWait)
 			}
-			return formatSlashPaneForDiscord(lastSnap, prePane, prompt), nil, nil
+			if body == "" {
+				body = lastSnap
+			}
+			return formatSlashPaneForDiscord(body), nil, nil
 		}
 	}
+}
+
+// extractSlashOutput grabs the pane scrollback, finds the last "❯ <prompt>"
+// line (which is the user-input echo claude renders when the slash
+// command is submitted), and returns everything after it. That's the
+// panel content with no welcome banner / prior conversation noise.
+//
+// Falls back to the full visible pane if the anchor isn't found, e.g.
+// because the prompt wrapped due to narrow pane width.
+func extractSlashOutput(sess, prompt string) string {
+	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", sess, "-S", "-2000").Output()
+	if err != nil {
+		return ""
+	}
+	return extractAfterPromptAnchor(string(out), prompt)
+}
+
+// extractAfterPromptAnchor isolates the pane bytes after the user's
+// echoed prompt. Pure function so it's easy to unit test.
+func extractAfterPromptAnchor(text, prompt string) string {
+	anchor := "❯ " + strings.TrimSpace(prompt)
+	idx := strings.LastIndex(text, anchor)
+	if idx < 0 {
+		return text
+	}
+	after := text[idx+len(anchor):]
+	if i := strings.Index(after, "\n"); i >= 0 {
+		return after[i+1:]
+	}
+	return ""
 }
 
 // capturePane returns the current visible pane contents as plain text.
@@ -310,56 +335,21 @@ func dismissTUIModal(sess string) {
 	}
 }
 
-// formatSlashPaneForDiscord cleans up the captured pane for posting
-// back to Discord. Diffs against the pre-paste snapshot so the welcome
-// banner, prior conversation, and any other pre-existing content stay
-// out of the reply — only the slash-command panel makes it through.
-// Also filters the input-echo line where the TUI displays the prompt
-// the user just typed (we don't need to mirror that back).
-//
-// Trims trailing/leading blank lines and wraps in a code block for
+// formatSlashPaneForDiscord trims leading/trailing whitespace-only lines
+// off the extracted panel content and wraps it in a code block for
 // monospace rendering in Discord. Caps length at ~1900 chars so it
 // fits Discord's 2000-char message limit.
-func formatSlashPaneForDiscord(post, pre, prompt string) string {
-	preLines := map[string]int{}
-	for _, l := range strings.Split(pre, "\n") {
-		preLines[l]++
-	}
-
-	// Heuristic for the "user just typed this" echo line. claude's
-	// input prompt is `❯ ` followed by the typed text; tolerate
-	// stray whitespace.
-	trimmedPrompt := strings.TrimSpace(prompt)
-	echoMatches := func(line string) bool {
-		t := strings.TrimSpace(line)
-		return t == "❯ "+trimmedPrompt || t == ">"+" "+trimmedPrompt
-	}
-
-	var newLines []string
-	for _, l := range strings.Split(post, "\n") {
-		if preLines[l] > 0 {
-			// Identical line existed in pre-pane → not new content.
-			// Decrement count so a line that appeared N times in pre
-			// can't be silently kept N+1 times in post.
-			preLines[l]--
-			continue
-		}
-		if echoMatches(l) {
-			continue
-		}
-		newLines = append(newLines, l)
-	}
-
-	// Trim leading/trailing whitespace-only lines.
-	end := len(newLines)
-	for end > 0 && strings.TrimSpace(newLines[end-1]) == "" {
+func formatSlashPaneForDiscord(content string) string {
+	lines := strings.Split(content, "\n")
+	end := len(lines)
+	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
 		end--
 	}
 	start := 0
-	for start < end && strings.TrimSpace(newLines[start]) == "" {
+	for start < end && strings.TrimSpace(lines[start]) == "" {
 		start++
 	}
-	trimmed := strings.Join(newLines[start:end], "\n")
+	trimmed := strings.Join(lines[start:end], "\n")
 	if trimmed == "" {
 		return "_(no panel output captured)_"
 	}
