@@ -235,14 +235,14 @@ func TestSmokeRecoverPendingTurns(t *testing.T) {
 	}
 }
 
-// TestSmokeRealClaudeSlashCommand verifies that the "!/" escape path
-// works end-to-end: paste "/usage" (the result of cc_runner stripping
-// "!" from "!/usage") through tmux into real claude, and confirm
-// claude renders its built-in slash command (not the text literally).
+// TestSmokeRealClaudeSlashCommand verifies the full slash-command flow
+// end-to-end against real claude: runViaTmux pastes `/usage` into the
+// TUI, waits for the panel to stabilize (Stop hook does NOT fire for
+// local-only commands so this is what unblocks us), captures the pane,
+// sends Esc to dismiss the panel, and returns the captured output.
 //
-// Gated by DUCKWAY_TEST_REAL_CLAUDE=1; doesn't hit the API since
-// `/usage` is a local-only TUI command, so this is cheaper than the
-// full round-trip test.
+// Gated by DUCKWAY_TEST_REAL_CLAUDE=1. Doesn't hit the model — /usage
+// is a TUI-local command — so this is cheap to run.
 func TestSmokeRealClaudeSlashCommand(t *testing.T) {
 	requireTmux(t)
 	if os.Getenv("DUCKWAY_TEST_REAL_CLAUDE") != "1" {
@@ -262,44 +262,51 @@ func TestSmokeRealClaudeSlashCommand(t *testing.T) {
 	})
 
 	cwd := t.TempDir()
-	if err := markCwdTrustedInClaude(cwd); err != nil {
-		t.Fatalf("markCwdTrustedInClaude: %v", err)
-	}
 
-	// Drive runViaTmux end-to-end. We send "/usage" (post-strip
-	// content). /usage is a TUI-only command — claude renders the
-	// usage panel locally without calling the API, so the Stop hook
-	// won't fire. We don't wait for completion; instead we just check
-	// pane content for the slash-command output.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	go func() {
-		_, _, _, _ = runViaTmux(ctx, bin, cwd, "/usage",
-			"", []string{"DUCKWAY_CC_CHANNEL_HANDLE=" + handle, "DUCKWAY_CC_MESSAGE_ID=msg-slash-1"})
-	}()
 
+	start := time.Now()
+	_, result, isErr, runErr := runViaTmux(ctx, bin, cwd, "/usage",
+		"", []string{"DUCKWAY_CC_CHANNEL_HANDLE=" + handle, "DUCKWAY_CC_MESSAGE_ID=msg-slash-1"})
+	elapsed := time.Since(start)
+
+	if runErr != nil {
+		t.Fatalf("runViaTmux(/usage): %v", runErr)
+	}
+	if isErr {
+		t.Errorf("isError=true, want false")
+	}
+	t.Logf("elapsed=%v isError=%v\nresult:\n----\n%s\n----", elapsed, isErr, result)
+
+	// runSlashCommand should return WELL within slashMaxWait (90s).
+	// Anything close to 90s means stable-detection never fired and
+	// we hit the bailout — that's a regression of the "don't block"
+	// guarantee.
+	if elapsed > 30*time.Second {
+		t.Errorf("slash command took %v — too close to the %v bailout, stability detection likely broken", elapsed, slashMaxWait)
+	}
+
+	// Result should contain the /usage panel content (mentions usage,
+	// session, or token info) and be wrapped in a code block.
+	if !strings.Contains(result, "```") {
+		t.Errorf("result should be wrapped in a code block; got: %q", result)
+	}
+	lower := strings.ToLower(result)
+	if !(strings.Contains(lower, "usage") || strings.Contains(lower, "session") || strings.Contains(lower, "token")) {
+		t.Errorf("result doesn't look like /usage panel output: %q", result)
+	}
+
+	// After runViaTmux returns, the Esc should have dismissed the
+	// panel. dismissTUIModal polls until the pane actually changes, so
+	// by now the panel should be gone. Strongest signal: "Esc to
+	// cancel" (the panel's own footer hint) should no longer appear.
 	sess := tmuxSessionName(handle)
-	// Wait for the slash command's output — /usage opens a status
-	// panel that mentions "Token usage" / "Session". Match any of the
-	// usage-panel headings to be robust to format changes.
-	found := false
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		pane, _ := exec.Command("tmux", "capture-pane", "-p", "-t", sess, "-S", "-100").Output()
-		text := string(pane)
-		if strings.Contains(text, "Token usage") || strings.Contains(text, "5-hour limit") ||
-			strings.Contains(text, "/usage") && strings.Contains(text, "session") {
-			found = true
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
+	pane, _ := exec.Command("tmux", "capture-pane", "-p", "-t", sess).Output()
+	t.Logf("post-dismiss pane:\n----\n%s\n----", string(pane))
+	if strings.Contains(string(pane), "Esc to cancel") {
+		t.Errorf("panel still visible after runViaTmux returned — dismiss didn't take effect")
 	}
-	pane, _ := exec.Command("tmux", "capture-pane", "-p", "-t", sess, "-S", "-100").Output()
-	t.Logf("final pane:\n----\n%s\n----", string(pane))
-	if !found {
-		t.Errorf("/usage panel never appeared in tmux pane — slash command didn't dispatch")
-	}
-	cancel()
 }
 
 // TestSmokeRealClaudeRoundTrip runs the full runViaTmux flow against

@@ -49,6 +49,16 @@ const (
 	// so this isn't on a hot path — we trade a bit of latency for cheap
 	// CPU.
 	eventPollInterval = 100 * time.Millisecond
+	// slashPollInterval is how often the slash-command flow re-captures
+	// the pane to check for stability or a Stop event.
+	slashPollInterval = 300 * time.Millisecond
+	// slashStableWindow: once the pane content hasn't changed for this
+	// long, we assume the slash-command panel is fully rendered.
+	slashStableWindow = 1500 * time.Millisecond
+	// slashMaxWait bounds the slash-command flow so a stuck TUI never
+	// blocks forever. Comfortably longer than /compact's typical run
+	// time on big contexts.
+	slashMaxWait = 90 * time.Second
 )
 
 // tmuxAvailable reports whether `tmux` is on PATH. Memoized so repeated
@@ -167,6 +177,27 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 		return "", "", false, err
 	}
 
+	// Slash commands (`/usage`, `/help`, `/compact`, …) get a different
+	// wait strategy. Local-only commands render a panel in the TUI but
+	// never fire the Stop hook — without this branch the daemon waits
+	// the full tmuxRunTimeout (5 min) and times out. Model-invoking
+	// slash commands (`/compact`) do fire Stop; the slash flow races
+	// pane-stabilization against the Stop event and returns whichever
+	// fires first, then sends Esc to dismiss any open panel so the
+	// next message lands in the empty input box.
+	if strings.HasPrefix(strings.TrimSpace(prompt), "/") {
+		res, sp, perr := runSlashCommand(ctx, sess, eventsDir, turnTS, slashStableWindow, slashMaxWait)
+		if perr != nil {
+			return "", "", false, perr
+		}
+		_ = os.Remove(inFlightPath)
+		if sp != nil {
+			// Model-invoking slash command — Stop fired; use the real result.
+			return sp.SessionID, resolveAssistantMessage(*sp), false, nil
+		}
+		return "", res, false, nil
+	}
+
 	sid2, res2, isErr2, perr := pollForStop(ctx, eventsDir, turnTS, tmuxRunTimeout)
 	if perr != nil {
 		return "", "", false, perr
@@ -175,6 +206,120 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 	// doesn't try to re-post the result.
 	_ = os.Remove(inFlightPath)
 	return sid2, res2, isErr2, nil
+}
+
+// runSlashCommand handles claude TUI slash commands. Two outcomes:
+//
+//  1. The Stop hook fires (model-invoking command like /compact) →
+//     return (nil, stopPayload, nil); caller uses the Stop result.
+//  2. The pane content stops changing for stableWindow (local panel
+//     like /usage rendered and is waiting on Esc) → capture pane,
+//     send Esc, return (capturedPane, nil, nil).
+//
+// Bounded by maxWait so a runaway TUI never blocks forever.
+func runSlashCommand(ctx context.Context, sess, eventsDir string, turnTS int64, stableWindow, maxWait time.Duration) (paneCapture string, stop *stopPayload, err error) {
+	deadline := time.Now().Add(maxWait)
+	tick := time.NewTicker(slashPollInterval)
+	defer tick.Stop()
+
+	var lastSnap string
+	var lastChange time.Time = time.Now()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", nil, ctx.Err()
+		case <-tick.C:
+		}
+
+		// Stop hook fired? Use that.
+		if evt, found, ferr := findStopEvent(eventsDir, turnTS); ferr == nil && found {
+			var sp stopPayload
+			if jerr := json.Unmarshal([]byte(evt.payload), &sp); jerr == nil {
+				_ = os.Remove(evt.path)
+				return "", &sp, nil
+			}
+		}
+
+		snap := capturePane(sess)
+		if snap != lastSnap {
+			lastSnap = snap
+			lastChange = time.Now()
+		} else if time.Since(lastChange) >= stableWindow && lastSnap != "" {
+			// Pane has been still for `stableWindow` — assume the
+			// panel is fully rendered. Capture, dismiss, return.
+			dismissTUIModal(sess)
+			return formatSlashPaneForDiscord(lastSnap), nil, nil
+		}
+
+		if time.Now().After(deadline) {
+			// Timed out — best-effort: send Esc to clear whatever's on
+			// screen, then return whatever we have so the user at
+			// least sees something.
+			dismissTUIModal(sess)
+			if lastSnap == "" {
+				return "", nil, fmt.Errorf("slash command produced no pane output within %v", maxWait)
+			}
+			return formatSlashPaneForDiscord(lastSnap), nil, nil
+		}
+	}
+}
+
+// capturePane returns the current visible pane contents as plain text.
+// Empty string on tmux error so the caller can keep polling cleanly.
+func capturePane(sess string) string {
+	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", sess).Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+// dismissTUIModal sends Escape to close any open claude panel (`/usage`,
+// `/help`, etc.) so the next prompt lands in an empty input box. Polls
+// the pane until the panel actually disappears (or a short timeout) so
+// the caller can be confident the TUI is back to input-ready state.
+func dismissTUIModal(sess string) {
+	before := capturePane(sess)
+	_ = exec.Command("tmux", "send-keys", "-t", sess, "Escape").Run()
+	// Wait up to 1.5s for the pane to change — the panel collapsing
+	// back to the input box is a visible content swap.
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if capturePane(sess) != before {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// formatSlashPaneForDiscord cleans up the captured pane for posting
+// back to Discord. Trim trailing blank lines (most of the pane is
+// empty padding) and wrap in a code block so Discord renders it in
+// monospace.
+func formatSlashPaneForDiscord(pane string) string {
+	lines := strings.Split(pane, "\n")
+	// Trim trailing whitespace-only lines.
+	end := len(lines)
+	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	// Trim leading whitespace-only lines.
+	start := 0
+	for start < end && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	trimmed := strings.Join(lines[start:end], "\n")
+	if trimmed == "" {
+		return "_(no panel output captured)_"
+	}
+	// Discord message limit is 2000 chars; cap a bit below to leave
+	// room for the code-block fences and any prefix.
+	const maxLen = 1900
+	if len(trimmed) > maxLen {
+		trimmed = trimmed[:maxLen] + "\n… (truncated)"
+	}
+	return "```\n" + trimmed + "\n```"
 }
 
 // pollForStop watches eventsDir until a Stop event newer than afterTS

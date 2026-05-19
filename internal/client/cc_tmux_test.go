@@ -305,6 +305,46 @@ func TestResolveAssistantMessageMissingTranscript(t *testing.T) {
 	}
 }
 
+func TestFormatSlashPaneForDiscord(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"basic content", "hello\nworld", "```\nhello\nworld\n```"},
+		{
+			"trims trailing blanks",
+			"line1\nline2\n\n\n",
+			"```\nline1\nline2\n```",
+		},
+		{
+			"trims leading blanks",
+			"\n\n\nactual content\n",
+			"```\nactual content\n```",
+		},
+		{"empty", "", "_(no panel output captured)_"},
+		{"only whitespace", "  \n\n  \n", "_(no panel output captured)_"},
+	}
+	for _, tt := range tests {
+		got := formatSlashPaneForDiscord(tt.in)
+		if got != tt.want {
+			t.Errorf("%s: got %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestFormatSlashPaneForDiscordTruncates(t *testing.T) {
+	// Build content larger than the 1900 char cap.
+	huge := strings.Repeat("x", 2500)
+	got := formatSlashPaneForDiscord(huge)
+	if !strings.Contains(got, "… (truncated)") {
+		t.Errorf("expected truncation marker in oversized output; got len=%d", len(got))
+	}
+	if len(got) > 2000 {
+		t.Errorf("output should fit in Discord's 2000-char message limit; got %d", len(got))
+	}
+}
+
 func TestInFlightRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "in-flight.json")
