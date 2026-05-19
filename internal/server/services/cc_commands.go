@@ -509,7 +509,10 @@ const helpText = "**Duckway CC commands**\n" +
 	"Discord/the daemon eat the `/` and `!` trigger chars, so prefix them with an extra `!`:\n" +
 	"  • `!/usage`, `!/compact`, `!/help` → claude slash command\n" +
 	"  • `!! ls`, `!! cargo test` → claude bash shell (the `!` mode)\n" +
-	"The daemon strips one `!` before pasting into claude and snapshots the panel/output back to the channel."
+	"The daemon strips one `!` before pasting into claude and snapshots the panel/output back to the channel.\n" +
+	"\n" +
+	"**Picker commands** (`!/release-notes`, `!/effort`, `!/model`, `!/agents`, …)\n" +
+	"When the slash command opens a numbered picker, the daemon posts the options here and leaves the picker open. Reply with the **option number** (e.g. `2`) to pick it, or `cancel` to dismiss the picker without choosing."
 
 // BuildWelcomeMessage returns the message the server posts in a freshly
 // provisioned management channel. Different from helpText (the !help

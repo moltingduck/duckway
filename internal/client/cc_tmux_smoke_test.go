@@ -542,6 +542,63 @@ func TestSmokeRealClaudePickerPassthrough(t *testing.T) {
 	}
 }
 
+// TestSmokeRealClaudeCompact drives runViaTmux with `/compact`, the
+// canonical model-invoking slash command (asks the model to summarize
+// the conversation context). The interesting property under test: the
+// Stop hook fires for /compact (unlike /usage), so the runTUICommand
+// race-stability-vs-Stop loop must pick Stop, not return a mid-flight
+// pane snapshot. Verifies we get an actual model reply (resolved from
+// the transcript by resolveAssistantMessage), not the picker/spinner
+// pane.
+//
+// Gated by DUCKWAY_TEST_REAL_CLAUDE=1; consumes one model call against
+// an essentially-empty session so the cost is tiny.
+func TestSmokeRealClaudeCompact(t *testing.T) {
+	requireTmux(t)
+	if os.Getenv("DUCKWAY_TEST_REAL_CLAUDE") != "1" {
+		t.Skip("set DUCKWAY_TEST_REAL_CLAUDE=1 to run")
+	}
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skipf("claude not on PATH: %v", err)
+	}
+
+	handle := "smoke-compact-" + uniqueSuffix()
+	t.Cleanup(func() {
+		tmuxKillSession(handle)
+		if chDir, err := tmuxChannelDir(handle); err == nil {
+			_ = os.RemoveAll(chDir)
+		}
+	})
+	cwd := t.TempDir()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	sid, result, isErr, runErr := runViaTmux(ctx, bin, cwd, "/compact", "",
+		[]string{"DUCKWAY_CC_CHANNEL_HANDLE=" + handle, "DUCKWAY_CC_MESSAGE_ID=msg-compact"})
+	elapsed := time.Since(start)
+	if runErr != nil {
+		t.Fatalf("runViaTmux: %v", runErr)
+	}
+	if isErr {
+		t.Errorf("isError=true, want false")
+	}
+	t.Logf("sid=%q elapsed=%v\nresult:\n----\n%s\n----", sid, elapsed, result)
+
+	// We don't pin specific text — the model is free to phrase the
+	// compaction summary however it likes, including "no context to
+	// compact" for a fresh session. But the reply must be non-empty,
+	// non-error, and NOT the "picker open" hint.
+	if strings.TrimSpace(result) == "" || strings.Contains(result, "no panel output captured") {
+		t.Errorf("got empty / no-output result for /compact: %q", result)
+	}
+	if strings.Contains(result, "picker open") {
+		t.Errorf("/compact mistakenly routed through picker passthrough: %q", result)
+	}
+}
+
 // TestSmokeRealClaudeMultiLinePrompt verifies that prompts containing
 // embedded "\n" are preserved as actual multi-line input in claude's
 // TUI (via the "\"-Enter soft-newline syntax). Without the multi-line
