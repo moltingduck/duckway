@@ -404,6 +404,60 @@ func TestSmokeRealClaudeSlashCommandVariants(t *testing.T) {
 	}
 }
 
+// TestSmokeRealClaudeFileReference exercises claude's `@<path>` syntax
+// through runViaTmux. The daemon types `@<file> question` into the TUI,
+// claude expands the @-reference to read the file's contents into the
+// prompt, the model answers, and Stop fires. Without proper handling
+// the @-reference would arrive as literal text and the model wouldn't
+// have the file content to reason about.
+//
+// Gated by DUCKWAY_TEST_REAL_CLAUDE=1 (consumes one model call).
+func TestSmokeRealClaudeFileReference(t *testing.T) {
+	requireTmux(t)
+	if os.Getenv("DUCKWAY_TEST_REAL_CLAUDE") != "1" {
+		t.Skip("set DUCKWAY_TEST_REAL_CLAUDE=1 to run")
+	}
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skipf("claude not on PATH: %v", err)
+	}
+
+	handle := "smoke-at-" + uniqueSuffix()
+	t.Cleanup(func() {
+		tmuxKillSession(handle)
+		if chDir, err := tmuxChannelDir(handle); err == nil {
+			_ = os.RemoveAll(chDir)
+		}
+	})
+
+	cwd := t.TempDir()
+	// Seed a file containing a distinctive token the model can only
+	// know about by actually reading the file.
+	secretToken := "DUCKWAY_AT_REF_MARKER_47291"
+	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("The secret token is "+secretToken+".\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := "@notes.txt — repeat back only the secret token value from this file, exactly as written, with no extra text."
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	_, result, isErr, runErr := runViaTmux(ctx, bin, cwd, prompt, "",
+		[]string{"DUCKWAY_CC_CHANNEL_HANDLE=" + handle, "DUCKWAY_CC_MESSAGE_ID=msg-at-1"})
+	if runErr != nil {
+		t.Fatalf("runViaTmux: %v", runErr)
+	}
+	if isErr {
+		t.Errorf("isError=true, want false")
+	}
+	t.Logf("result:\n----\n%s\n----", result)
+
+	if !strings.Contains(result, secretToken) {
+		t.Errorf("model didn't repeat the secret token %q — @-reference likely didn't expand\nresult: %s", secretToken, result)
+	}
+}
+
 // TestSmokeRealClaudeMultiLinePrompt verifies that prompts containing
 // embedded "\n" are preserved as actual multi-line input in claude's
 // TUI (via the "\"-Enter soft-newline syntax). Without the multi-line
