@@ -1,0 +1,133 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Usage</h1>
+  <button class="btn" onclick="loadUsage();loadSessions()">Refresh</button>
+</div>
+
+<div class="card">
+  <h3>LLM API Key Usage</h3>
+  <p class="text-sm text-muted mb-1">
+    Rate-limit snapshots captured from the most recent upstream response per key
+    (Anthropic / OpenAI). Token &amp; request limits, how much is used, and when
+    each window resets. Keys with no traffic yet show <em>no data</em>.
+  </p>
+  <div id="usage-cards"></div>
+</div>
+
+<div class="card mt-2">
+  <h3>Per-Session Usage <span class="text-muted text-sm">(request volume by agent)</span></h3>
+  <p class="text-sm text-muted mb-1">
+    Request counts per client (agent session) and service from the request log.
+    Token counts aren't recorded per request — this is a call-volume view.
+  </p>
+  <div class="mb-1">
+    <label class="text-sm">Window:
+      <select id="session-window" onchange="loadSessions()">
+        <option value="0">All time</option>
+        <option value="1">Last 1h</option>
+        <option value="24" selected>Last 24h</option>
+        <option value="168">Last 7d</option>
+      </select>
+    </label>
+  </div>
+  <table>
+    <thead><tr><th>Agent</th><th>Service</th><th>Requests</th><th>Errors</th><th>Last seen</th></tr></thead>
+    <tbody id="session-rows"></tbody>
+  </table>
+</div>
+
+<script>
+function fmtInt(n) {
+  if (n === null || n === undefined) return '—';
+  return Number(n).toLocaleString();
+}
+function fmtReset(s) {
+  if (!s) return '';
+  var d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleString();
+}
+function bar(pct) {
+  if (pct === null || pct === undefined || pct < 0) return '';
+  var p = Math.max(0, Math.min(100, pct));
+  var color = p < 70 ? '#22c55e' : (p < 90 ? '#eab308' : '#ef4444');
+  return '<div style="background:#2a2a2a;border-radius:3px;height:8px;width:160px;display:inline-block;vertical-align:middle">' +
+         '<div style="background:' + color + ';height:8px;border-radius:3px;width:' + p + '%"></div></div> ' +
+         '<span class="text-sm">' + p.toFixed(0) + '%</span>';
+}
+
+function loadUsage() {
+  fetch('/api/usage', {credentials:'same-origin'})
+    .then(function(r){ return r.json(); })
+    .then(function(rows){
+      var box = document.getElementById('usage-cards');
+      if (!rows || rows.length === 0) {
+        box.innerHTML = '<p class="text-muted">No LLM API keys found.</p>';
+        return;
+      }
+      box.innerHTML = rows.map(function(k){
+        var head = '<div style="display:flex;align-items:baseline;gap:.5rem;margin-top:1rem">' +
+          '<strong>' + escapeHtml(k.key_name) + '</strong>' +
+          '<span class="badge badge-blue">' + escapeHtml(k.service) + '</span>' +
+          (k.provider ? '<span class="badge badge-gray">' + escapeHtml(k.provider) + '</span>' : '') +
+          (k.is_refreshable ? '<span class="badge badge-green">OAuth</span>' : '') +
+          '</div>';
+        if (!k.has_data) {
+          return head + '<p class="text-muted text-sm">no usage data yet — ' +
+            fmtInt(k.usage_count) + ' proxied calls so far</p>';
+        }
+        var rowsHtml = (k.metrics || []).map(function(m){
+          return '<tr><td>' + escapeHtml(m.name) + '</td>' +
+            '<td>' + fmtInt(m.used) + ' / ' + fmtInt(m.limit) + '</td>' +
+            '<td>' + bar(m.used_pct) + '</td>' +
+            '<td class="text-sm text-muted">' + fmtInt(m.remaining) + ' left</td>' +
+            '<td class="text-sm text-muted">' + fmtReset(m.reset) + '</td></tr>';
+        }).join('');
+        var sub = '';
+        if (k.subscription && Object.keys(k.subscription).length) {
+          sub = '<div class="text-sm" style="margin:.25rem 0 .25rem .5rem">' +
+            Object.keys(k.subscription).sort().map(function(key){
+              return '<span class="badge badge-gray" style="margin:1px">' +
+                escapeHtml(key) + ': ' + escapeHtml(k.subscription[key]) + '</span>';
+            }).join(' ') + '</div>';
+        }
+        var table = rowsHtml ? ('<table style="margin-top:.25rem"><thead><tr>' +
+          '<th>Metric</th><th>Used / Limit</th><th></th><th>Remaining</th><th>Resets</th>' +
+          '</tr></thead><tbody>' + rowsHtml + '</tbody></table>') : '';
+        var updated = k.updated_at ? ('<div class="text-sm text-muted">snapshot: ' + fmtReset(k.updated_at) + '</div>') : '';
+        return head + sub + table + updated;
+      }).join('');
+    });
+}
+
+function loadSessions() {
+  var hours = document.getElementById('session-window').value;
+  fetch('/api/usage/sessions?hours=' + encodeURIComponent(hours), {credentials:'same-origin'})
+    .then(function(r){ return r.json(); })
+    .then(function(rows){
+      var tb = document.getElementById('session-rows');
+      if (!rows || rows.length === 0) {
+        tb.innerHTML = '<tr><td colspan="5" class="text-muted">No requests in this window.</td></tr>';
+        return;
+      }
+      tb.innerHTML = rows.map(function(s){
+        var errCls = s.errors > 0 ? 'badge badge-red' : 'text-muted';
+        return '<tr><td>' + escapeHtml(s.client_name || s.client_id || '(unknown)') + '</td>' +
+          '<td><span class="badge badge-blue">' + escapeHtml(s.service_name) + '</span></td>' +
+          '<td>' + fmtInt(s.requests) + '</td>' +
+          '<td><span class="' + errCls + '">' + fmtInt(s.errors) + '</span></td>' +
+          '<td class="text-sm text-muted">' + fmtReset(s.last_seen) + '</td></tr>';
+      }).join('');
+    });
+}
+
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function(){ loadUsage(); loadSessions(); });
+</script>
+{{end}}

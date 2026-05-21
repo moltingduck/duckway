@@ -115,6 +115,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/", adminPageH.Dashboard)
 	adminPageMux.HandleFunc("GET /admin/services", adminPageH.ServicesPage)
 	adminPageMux.HandleFunc("GET /admin/keys", adminPageH.KeysPage)
+	adminPageMux.HandleFunc("GET /admin/usage", adminPageH.UsagePage)
 	adminPageMux.HandleFunc("GET /admin/placeholders", adminPageH.PlaceholdersPage)
 	adminPageMux.HandleFunc("GET /admin/clients", adminPageH.ClientsPage)
 	adminPageMux.HandleFunc("GET /admin/groups", adminPageH.GroupsPage)
@@ -145,6 +146,10 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("DELETE /api/services/{id}", serviceH.Delete)
 	adminAPIMux.HandleFunc("GET /api/services/{id}/acl-templates", serviceH.ListACLTemplates)
 	adminAPIMux.HandleFunc("POST /api/services/{id}/acl-templates", serviceH.ApplyACLTemplate)
+
+	usageH := handlers.NewUsageHandler(ss.APIKeyQ, ss.RequestLogQ)
+	adminAPIMux.HandleFunc("GET /api/usage", usageH.List)
+	adminAPIMux.HandleFunc("GET /api/usage/sessions", usageH.Sessions)
 
 	adminAPIMux.HandleFunc("GET /api/keys", apiKeyH.List)
 	adminAPIMux.HandleFunc("POST /api/keys", apiKeyH.Create)

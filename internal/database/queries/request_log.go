@@ -197,3 +197,87 @@ func (q *RequestLogQueries) Count() (int, error) {
 	err := q.db.QueryRow("SELECT COUNT(*) FROM request_log").Scan(&count)
 	return count, err
 }
+
+// SessionUsageRow aggregates request activity for one client (= one
+// agent "session" from the operator's point of view) against one
+// service. request_log doesn't store token counts, so this is a
+// request-volume view: total calls, error calls, and last activity.
+type SessionUsageRow struct {
+	ClientID    string `json:"client_id"`
+	ClientName  string `json:"client_name"`
+	ServiceName string `json:"service_name"`
+	Requests    int64  `json:"requests"`
+	Errors      int64  `json:"errors"`     // status_code >= 400
+	LastSeen    string `json:"last_seen"`  // max(created_at)
+}
+
+// SessionUsage returns per-client, per-service request aggregates over
+// the trailing `sinceHours` hours (0 = all time). Ordered by request
+// volume descending so the busiest agents surface first.
+func (q *RequestLogQueries) SessionUsage(sinceHours int) ([]SessionUsageRow, error) {
+	where := ""
+	var args []interface{}
+	if sinceHours > 0 {
+		where = "WHERE r.created_at >= datetime('now', ?)"
+		args = append(args, "-"+itoa(sinceHours)+" hours")
+	}
+	query := `
+		SELECT r.client_id,
+		       COALESCE(c.name, ''),
+		       r.service_name,
+		       COUNT(*),
+		       SUM(CASE WHEN r.status_code >= 400 THEN 1 ELSE 0 END),
+		       MAX(r.created_at)
+		FROM request_log r
+		LEFT JOIN clients c ON r.client_id = c.id
+		` + where + `
+		GROUP BY r.client_id, r.service_name
+		ORDER BY COUNT(*) DESC`
+	rows, err := q.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []SessionUsageRow
+	for rows.Next() {
+		var s SessionUsageRow
+		var clientID, lastSeen *string
+		var errs *int64
+		if err := rows.Scan(&clientID, &s.ClientName, &s.ServiceName, &s.Requests, &errs, &lastSeen); err != nil {
+			return nil, err
+		}
+		if clientID != nil {
+			s.ClientID = *clientID
+		}
+		if errs != nil {
+			s.Errors = *errs
+		}
+		if lastSeen != nil {
+			s.LastSeen = *lastSeen
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// itoa is a tiny strconv.Itoa to avoid importing strconv just for the
+// "-N hours" SQLite modifier string.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	if neg {
+		b = append([]byte{'-'}, b...)
+	}
+	return string(b)
+}
