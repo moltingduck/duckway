@@ -45,6 +45,7 @@ func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s.startApprovalSweeper(ss)
 	s.startCCBackground(ss)
 	s.startKeyGroupSweeper()
+	s.startUsageRetentionSweeper()
 
 	return s, nil
 }
@@ -93,6 +94,7 @@ func NewGateway(config *Config, db *sql.DB) (*Server, error) {
 	ss := s.initShared()
 	s.SetupGatewayRoutes(ss)
 	s.startCCBackground(ss)
+	s.startUsageRetentionSweeper()
 
 	return s, nil
 }
@@ -259,6 +261,33 @@ func (s *Server) startKeyGroupSweeper() {
 			if err := queries.ClearExpiredExhausted(s.db); err != nil {
 				log.Printf("key group sweeper: %v", err)
 			}
+		}
+	}()
+}
+
+// conversationUsageRetentionDays bounds how long per-request token usage
+// rows are kept. 30 days covers monthly billing reconciliation while
+// keeping the table small.
+const conversationUsageRetentionDays = 30
+
+// startUsageRetentionSweeper prunes conversation_usage rows older than
+// the retention window. Runs hourly (the table is append-only and grows
+// slowly, so frequent sweeps aren't needed).
+func (s *Server) startUsageRetentionSweeper() {
+	convQ := queries.NewConversationUsageQueries(s.db)
+	prune := func() {
+		if n, err := convQ.PruneOlderThan(conversationUsageRetentionDays); err != nil {
+			log.Printf("usage retention sweeper: %v", err)
+		} else if n > 0 {
+			log.Printf("usage retention: pruned %d conversation_usage rows older than %dd", n, conversationUsageRetentionDays)
+		}
+	}
+	go func() {
+		prune() // once at startup
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for range t.C {
+			prune()
 		}
 	}()
 }

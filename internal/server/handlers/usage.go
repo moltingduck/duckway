@@ -17,10 +17,25 @@ import (
 type UsageHandler struct {
 	apiKeys    *queries.APIKeyQueries
 	requestLog *queries.RequestLogQueries
+	convUsage  *queries.ConversationUsageQueries
 }
 
-func NewUsageHandler(apiKeys *queries.APIKeyQueries, requestLog *queries.RequestLogQueries) *UsageHandler {
-	return &UsageHandler{apiKeys: apiKeys, requestLog: requestLog}
+func NewUsageHandler(apiKeys *queries.APIKeyQueries, requestLog *queries.RequestLogQueries, convUsage *queries.ConversationUsageQueries) *UsageHandler {
+	return &UsageHandler{apiKeys: apiKeys, requestLog: requestLog, convUsage: convUsage}
+}
+
+// parseHours pulls a non-negative ?hours=N off the query string,
+// defaulting to 0 (= all time) for missing or malformed values.
+func parseHours(r *http.Request) int {
+	v := strings.TrimSpace(r.URL.Query().Get("hours"))
+	n := 0
+	for _, c := range v {
+		if c < '0' || c > '9' {
+			return 0
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
 }
 
 // usageMetricRow is one rate-limited dimension flattened for the UI.
@@ -46,6 +61,17 @@ type usageRow struct {
 	HasData       bool              `json:"has_data"`             // a snapshot was recorded
 	Metrics       []usageMetricRow  `json:"metrics"`
 	Subscription  map[string]string `json:"subscription,omitempty"` // Claude Max 5h/7d windows
+
+	// Token totals parsed from response bodies over the requested window
+	// (all-time by default). Distinct from the rate-limit snapshot above:
+	// these are cumulative captured usage, not the provider's remaining
+	// allowance. Zero when no conversation_usage rows exist for the key.
+	TokensInput         int64 `json:"tokens_input"`
+	TokensOutput        int64 `json:"tokens_output"`
+	TokensCacheRead     int64 `json:"tokens_cache_read"`
+	TokensCacheCreation int64 `json:"tokens_cache_creation"`
+	CapturedRequests    int64 `json:"captured_requests"`
+	Conversations       int64 `json:"conversations"`
 }
 
 // List handles GET /api/usage. Returns one row per API key whose
@@ -57,6 +83,14 @@ func (h *UsageHandler) List(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		JsonErrorPublic(w, "failed to list keys", http.StatusInternalServerError)
 		return
+	}
+
+	// Token rollups keyed by api_key_id over the requested window.
+	tokenTotals := map[string]queries.KeyTokenTotals{}
+	if h.convUsage != nil {
+		if t, terr := h.convUsage.TotalsByKey(parseHours(r)); terr == nil {
+			tokenTotals = t
+		}
 	}
 
 	rows := []usageRow{}
@@ -105,7 +139,21 @@ func (h *UsageHandler) List(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Only include LLM-provider keys (or any key that has data).
+		// Decorate with captured token totals.
+		if tt, ok := tokenTotals[k.ID]; ok {
+			row.TokensInput = tt.InputTokens
+			row.TokensOutput = tt.OutputTokens
+			row.TokensCacheRead = tt.CacheReadTokens
+			row.TokensCacheCreation = tt.CacheCreationTokens
+			row.CapturedRequests = tt.Requests
+			row.Conversations = tt.Conversations
+			if tt.Requests > 0 {
+				row.HasData = true
+			}
+		}
+
+		// Include LLM-provider keys, keys with a rate-limit snapshot, or
+		// keys with captured token data.
 		if row.HasData || isLLMService(row.Service) {
 			rows = append(rows, row)
 		}
@@ -130,26 +178,40 @@ func (h *UsageHandler) List(w http.ResponseWriter, r *http.Request) {
 // has no token data, so this is a call-count view (total + errors + last
 // seen) — the per-key panel covers token/rate-limit usage.
 func (h *UsageHandler) Sessions(w http.ResponseWriter, r *http.Request) {
-	hours := 0 // 0 = all time
-	if v := strings.TrimSpace(r.URL.Query().Get("hours")); v != "" {
-		// Best-effort parse; ignore garbage and fall back to all-time.
-		n := 0
-		for _, c := range v {
-			if c < '0' || c > '9' {
-				n = 0
-				break
-			}
-			n = n*10 + int(c-'0')
-		}
-		hours = n
-	}
-	rows, err := h.requestLog.SessionUsage(hours)
+	rows, err := h.requestLog.SessionUsage(parseHours(r))
 	if err != nil {
 		JsonErrorPublic(w, "failed to aggregate session usage", http.StatusInternalServerError)
 		return
 	}
 	if rows == nil {
 		rows = []queries.SessionUsageRow{}
+	}
+	JsonResponsePublic(w, rows)
+}
+
+// Conversations handles GET /api/usage/conversations?key_id=X[&hours=N].
+// Per-conversation token breakdown for one API key — the drill-down
+// shown when an operator clicks a key on the usage panel. Each row is
+// one claude session (X-Claude-Code-Session-Id), enriched with the CC
+// channel name when the session is bound to one. OpenAI / non-claude
+// traffic collapses into a single empty-conversation row.
+func (h *UsageHandler) Conversations(w http.ResponseWriter, r *http.Request) {
+	keyID := strings.TrimSpace(r.URL.Query().Get("key_id"))
+	if keyID == "" {
+		JsonErrorPublic(w, "key_id required", http.StatusBadRequest)
+		return
+	}
+	if h.convUsage == nil {
+		JsonResponsePublic(w, []queries.ConversationUsageRow{})
+		return
+	}
+	rows, err := h.convUsage.ByKey(keyID, parseHours(r))
+	if err != nil {
+		JsonErrorPublic(w, "failed to aggregate conversation usage", http.StatusInternalServerError)
+		return
+	}
+	if rows == nil {
+		rows = []queries.ConversationUsageRow{}
 	}
 	JsonResponsePublic(w, rows)
 }

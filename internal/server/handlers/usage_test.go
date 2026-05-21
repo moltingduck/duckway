@@ -11,22 +11,36 @@ import (
 	"github.com/hackerduck/duckway/internal/models"
 )
 
-func newUsageTestHandler(t *testing.T) (*UsageHandler, *queries.APIKeyQueries, *queries.ServiceQueries, *queries.RequestLogQueries, *queries.ClientQueries) {
+type usageTestDeps struct {
+	h       *UsageHandler
+	apiKeyQ *queries.APIKeyQueries
+	svcQ    *queries.ServiceQueries
+	logQ    *queries.RequestLogQueries
+	clientQ *queries.ClientQueries
+	convQ   *queries.ConversationUsageQueries
+}
+
+func newUsageTestDeps(t *testing.T) usageTestDeps {
 	t.Helper()
 	db, err := database.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	apiKeyQ := queries.NewAPIKeyQueries(db)
-	svcQ := queries.NewServiceQueries(db)
-	logQ := queries.NewRequestLogQueries(db)
-	clientQ := queries.NewClientQueries(db)
-	return NewUsageHandler(apiKeyQ, logQ), apiKeyQ, svcQ, logQ, clientQ
+	d := usageTestDeps{
+		apiKeyQ: queries.NewAPIKeyQueries(db),
+		svcQ:    queries.NewServiceQueries(db),
+		logQ:    queries.NewRequestLogQueries(db),
+		clientQ: queries.NewClientQueries(db),
+		convQ:   queries.NewConversationUsageQueries(db),
+	}
+	d.h = NewUsageHandler(d.apiKeyQ, d.logQ, d.convQ)
+	return d
 }
 
 func TestUsageList_ParsesSnapshot(t *testing.T) {
-	h, apiKeyQ, svcQ, _, _ := newUsageTestHandler(t)
+	d := newUsageTestDeps(t)
+	h, apiKeyQ, svcQ := d.h, d.apiKeyQ, d.svcQ
 
 	if err := svcQ.Create(&models.Service{ID: "svc-anth", Name: "anthropic", UpstreamURL: "https://api.anthropic.com", HostPattern: "api.anthropic.com", IsActive: true}); err != nil {
 		t.Fatalf("create service: %v", err)
@@ -77,7 +91,8 @@ func TestUsageList_ParsesSnapshot(t *testing.T) {
 }
 
 func TestUsageList_IncludesLLMKeyWithoutData(t *testing.T) {
-	h, apiKeyQ, svcQ, _, _ := newUsageTestHandler(t)
+	d := newUsageTestDeps(t)
+	h, apiKeyQ, svcQ := d.h, d.apiKeyQ, d.svcQ
 	// openai is an LLM service — its keys should appear even with no
 	// snapshot, marked HasData=false.
 	_ = svcQ.Create(&models.Service{ID: "svc-oai", Name: "openai", UpstreamURL: "https://api.openai.com", HostPattern: "api.openai.com", IsActive: true})
@@ -100,7 +115,8 @@ func TestUsageList_IncludesLLMKeyWithoutData(t *testing.T) {
 }
 
 func TestUsageList_ExcludesNonLLMKeyWithoutData(t *testing.T) {
-	h, apiKeyQ, svcQ, _, _ := newUsageTestHandler(t)
+	d := newUsageTestDeps(t)
+	h, apiKeyQ, svcQ := d.h, d.apiKeyQ, d.svcQ
 	// github is not an LLM service and has no snapshot → must NOT appear.
 	_ = svcQ.Create(&models.Service{ID: "svc-gh", Name: "github", UpstreamURL: "https://api.github.com", HostPattern: "api.github.com", IsActive: true})
 	_ = apiKeyQ.Create(&models.APIKey{ID: "k3", ServiceID: "svc-gh", Name: "gh-token", KeyEncrypted: "x"})
@@ -118,8 +134,73 @@ func TestUsageList_ExcludesNonLLMKeyWithoutData(t *testing.T) {
 	}
 }
 
+func TestUsageList_SurfacesTokenTotals(t *testing.T) {
+	d := newUsageTestDeps(t)
+	h, apiKeyQ, svcQ, convQ := d.h, d.apiKeyQ, d.svcQ, d.convQ
+	_ = svcQ.Create(&models.Service{ID: "svc-anth", Name: "anthropic", UpstreamURL: "https://api.anthropic.com", HostPattern: "api.anthropic.com", IsActive: true})
+	_ = apiKeyQ.Create(&models.APIKey{ID: "k1", ServiceID: "svc-anth", Name: "primary", KeyEncrypted: "x"})
+
+	// Insert two captured requests (same conversation) for k1.
+	_ = convQ.Insert(&queries.ConversationUsageRecord{APIKeyID: "k1", ConversationID: "sess1", Model: "claude-opus-4-7", InputTokens: 100, OutputTokens: 20})
+	_ = convQ.Insert(&queries.ConversationUsageRecord{APIKeyID: "k1", ConversationID: "sess1", Model: "claude-opus-4-7", InputTokens: 200, OutputTokens: 30})
+
+	req := httptest.NewRequest("GET", "/api/usage", nil)
+	rec := httptest.NewRecorder()
+	h.List(rec, req)
+
+	var rows []usageRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row, got %d", len(rows))
+	}
+	r := rows[0]
+	if r.TokensInput != 300 || r.TokensOutput != 50 {
+		t.Errorf("token totals wrong: in=%d out=%d", r.TokensInput, r.TokensOutput)
+	}
+	if r.CapturedRequests != 2 || r.Conversations != 1 {
+		t.Errorf("captured=%d conversations=%d, want 2/1", r.CapturedRequests, r.Conversations)
+	}
+	if !r.HasData {
+		t.Error("HasData should be true once token data exists")
+	}
+}
+
+func TestUsageConversations_DrillDown(t *testing.T) {
+	d := newUsageTestDeps(t)
+	h, convQ := d.h, d.convQ
+	_ = convQ.Insert(&queries.ConversationUsageRecord{APIKeyID: "k1", ConversationID: "big", Model: "m", InputTokens: 1000, OutputTokens: 500})
+	_ = convQ.Insert(&queries.ConversationUsageRecord{APIKeyID: "k1", ConversationID: "small", Model: "m", InputTokens: 5, OutputTokens: 2})
+
+	req := httptest.NewRequest("GET", "/api/usage/conversations?key_id=k1", nil)
+	rec := httptest.NewRecorder()
+	h.Conversations(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var rows []queries.ConversationUsageRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].ConversationID != "big" {
+		t.Fatalf("expected big-first, got %+v", rows)
+	}
+}
+
+func TestUsageConversations_RequiresKeyID(t *testing.T) {
+	h := newUsageTestDeps(t).h
+	req := httptest.NewRequest("GET", "/api/usage/conversations", nil)
+	rec := httptest.NewRecorder()
+	h.Conversations(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("missing key_id: status %d, want 400", rec.Code)
+	}
+}
+
 func TestUsageSessions_Aggregates(t *testing.T) {
-	h, _, _, logQ, clientQ := newUsageTestHandler(t)
+	d := newUsageTestDeps(t)
+	h, logQ, clientQ := d.h, d.logQ, d.clientQ
 	_ = clientQ.Create(&models.Client{ID: "c1", Name: "laptop"})
 
 	// 2 OK + 1 error for client c1 / anthropic.

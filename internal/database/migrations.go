@@ -260,6 +260,27 @@ var migrations = []string{
 		exhausted_until TEXT,
 		PRIMARY KEY (group_id, api_key_id)
 	)`,
+
+	// Per-request LLM token usage, parsed from upstream response bodies.
+	// conversation_id is claude's X-Claude-Code-Session-Id header (empty
+	// for OpenAI / non-claude traffic, which buckets together). Used by
+	// the Usage panel for per-key totals and per-conversation drill-down.
+	// Pruned to a trailing window by a background sweeper.
+	`CREATE TABLE IF NOT EXISTS conversation_usage (
+		id                INTEGER PRIMARY KEY AUTOINCREMENT,
+		client_id         TEXT NOT NULL DEFAULT '',
+		api_key_id        TEXT NOT NULL DEFAULT '',
+		service_name      TEXT NOT NULL DEFAULT '',
+		conversation_id   TEXT NOT NULL DEFAULT '',
+		model             TEXT NOT NULL DEFAULT '',
+		input_tokens      INTEGER NOT NULL DEFAULT 0,
+		output_tokens     INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+		created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_conv_usage_key ON conversation_usage(api_key_id, created_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_conv_usage_conv ON conversation_usage(api_key_id, conversation_id)`,
 }
 
 func runMigrations(db *sql.DB) error {

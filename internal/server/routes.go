@@ -30,6 +30,7 @@ type SharedServices struct {
 	NotifQ       *queries.NotificationQueries
 	CanaryQ      *queries.CanaryQueries
 	SettingsQ    *queries.SettingsQueries
+	ConvUsageQ   *queries.ConversationUsageQueries
 
 	Crypto       *services.Crypto
 	Resolver     *services.KeyResolver
@@ -60,6 +61,7 @@ func (s *Server) initShared() *SharedServices {
 	notifQ := queries.NewNotificationQueries(s.db)
 	canaryQ := queries.NewCanaryQueries(s.db)
 	settingsQ := queries.NewSettingsQueries(s.db)
+	convUsageQ := queries.NewConversationUsageQueries(s.db)
 
 	crypto := services.NewCrypto(s.config.EncryptionKey)
 	resolver := services.NewKeyResolver(crypto, apiKeyQ, placeholderQ, groupQ, approvalQ)
@@ -74,7 +76,7 @@ func (s *Server) initShared() *SharedServices {
 		UserQ: userQ, ServiceQ: serviceQ, APIKeyQ: apiKeyQ,
 		PlaceholderQ: placeholderQ, ClientQ: clientQ, GroupQ: groupQ,
 		ApprovalQ: approvalQ, RequestLogQ: requestLogQ,
-		NotifQ: notifQ, CanaryQ: canaryQ, SettingsQ: settingsQ,
+		NotifQ: notifQ, CanaryQ: canaryQ, SettingsQ: settingsQ, ConvUsageQ: convUsageQ,
 		Crypto: crypto, Resolver: resolver, Notifier: notifier, CanarySvc: canarySvc,
 		CCHub:       services.NewCCEventHub(),
 		CCApprovals: services.NewCCApprovalRegistry(),
@@ -147,9 +149,10 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("GET /api/services/{id}/acl-templates", serviceH.ListACLTemplates)
 	adminAPIMux.HandleFunc("POST /api/services/{id}/acl-templates", serviceH.ApplyACLTemplate)
 
-	usageH := handlers.NewUsageHandler(ss.APIKeyQ, ss.RequestLogQ)
+	usageH := handlers.NewUsageHandler(ss.APIKeyQ, ss.RequestLogQ, ss.ConvUsageQ)
 	adminAPIMux.HandleFunc("GET /api/usage", usageH.List)
 	adminAPIMux.HandleFunc("GET /api/usage/sessions", usageH.Sessions)
+	adminAPIMux.HandleFunc("GET /api/usage/conversations", usageH.Conversations)
 
 	adminAPIMux.HandleFunc("GET /api/keys", apiKeyH.List)
 	adminAPIMux.HandleFunc("POST /api/keys", apiKeyH.Create)
@@ -341,7 +344,8 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	settingsQ := queries.NewSettingsQueries(s.db)
 	clientH := handlers.NewClientHandler(ss.ClientQ, ss.PlaceholderQ, ss.ServiceQ, ss.APIKeyQ, ss.CanarySvc)
 	canaryH := handlers.NewCanaryHandler(ss.CanaryQ, ss.CanarySvc)
-	proxyH := handlers.NewProxyHandler(ss.ServiceQ, ss.APIKeyQ, ss.Resolver, ss.RequestLogQ, ss.ApprovalQ, ss.SettingsQ, ss.Notifier)
+	proxyH := handlers.NewProxyHandler(ss.ServiceQ, ss.APIKeyQ, ss.Resolver, ss.RequestLogQ, ss.ApprovalQ, ss.SettingsQ, ss.Notifier).
+		WithConversationUsage(ss.ConvUsageQ)
 	internalH := handlers.NewInternalHandler(ss.Resolver)
 
 	// Client routes (require client auth)

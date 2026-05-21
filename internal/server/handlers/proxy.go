@@ -21,6 +21,7 @@ type ProxyHandler struct {
 	requestLog  *queries.RequestLogQueries
 	approvals   *queries.ApprovalQueries
 	settings    *queries.SettingsQueries
+	convUsage   *queries.ConversationUsageQueries
 	permissions *services.PermissionChecker
 	notifier    *services.Notifier
 	httpClient  *http.Client
@@ -38,6 +39,13 @@ func NewProxyHandler(svcQueries *queries.ServiceQueries, apiKeys *queries.APIKey
 		notifier:    notifier,
 		httpClient:  &http.Client{},
 	}
+}
+
+// WithConversationUsage wires the per-request token-usage recorder.
+// Optional: when nil, the proxy skips token capture entirely.
+func (h *ProxyHandler) WithConversationUsage(q *queries.ConversationUsageQueries) *ProxyHandler {
+	h.convUsage = q
+	return h
 }
 
 const maxCapturedBytes = 64 * 1024 // 64 KB cap per body
@@ -294,6 +302,16 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// For LLM services we parse token usage out of the response body, so
+	// force an uncompressed response (the agent set Accept-Encoding: gzip,
+	// which would otherwise make Go's transport hand us compressed bytes
+	// the scanner can't read). Slightly more bytes on the gateway↔upstream
+	// hop; correctness for the usage panel.
+	scanUsage := h.convUsage != nil && isLLMService(serviceName)
+	if scanUsage {
+		upstreamReq.Header.Set("Accept-Encoding", "identity")
+	}
+
 	// Inject real API key. Refreshable (OAuth) keys always go in
 	// Authorization: Bearer regardless of the service's default auth_type,
 	// since Anthropic and similar APIs require Bearer for OAuth access tokens.
@@ -353,6 +371,20 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 
+	// Token-usage scanner: tee LLM responses through it (always-on for
+	// LLM services). Only count non-5xx responses — a server error has
+	// no meaningful usage.
+	var usageScanner *services.UsageScanner
+	if scanUsage && resp.StatusCode < 500 {
+		usageScanner = services.NewUsageScanner(resp.Header.Get("Content-Type"))
+	}
+
+	// agent-facing writer with per-chunk flush so SSE streams promptly.
+	var agent io.Writer = w
+	if fl, ok := w.(http.Flusher); ok {
+		agent = &flushingWriter{w: w, f: fl}
+	}
+
 	if captureDetail && logID > 0 {
 		// Tee the response body: stream it to the agent unchanged AND save
 		// up to maxCapturedBytes on the side. This is critical for streaming
@@ -365,15 +397,11 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 		if shouldCaptureContentType(ct) {
 			cap := &capLimitedWriter{buf: &bytes.Buffer{}, limit: maxCapturedBytes}
-			// Wrap the agent-facing writer so each chunk is flushed —
-			// otherwise streaming responses (SSE) sit in Go's bufio
-			// buffer and the agent times out.
-			var agent io.Writer = w
-			if fl, ok := w.(http.Flusher); ok {
-				agent = &flushingWriter{w: w, f: fl}
+			writers := []io.Writer{agent, cap}
+			if usageScanner != nil {
+				writers = append(writers, usageScanner)
 			}
-			multi := io.MultiWriter(agent, cap)
-			respSize, _ = io.Copy(multi, resp.Body)
+			respSize, _ = io.Copy(io.MultiWriter(writers...), resp.Body)
 			respBodyStored = cap.buf.Bytes()
 			respTrunc = respSize > int64(maxCapturedBytes)
 			// If the upstream sent a compressed body, the agent decompresses
@@ -384,6 +412,8 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			if decoded, ok := decodeBody(respBodyStored, resp.Header.Get("Content-Encoding")); ok {
 				respBodyStored = decoded
 			}
+		} else if usageScanner != nil {
+			respSize, _ = io.Copy(io.MultiWriter(agent, usageScanner), resp.Body)
 		} else {
 			// Binary — skip body capture but still record metadata.
 			respSize, _ = io.Copy(w, resp.Body)
@@ -424,8 +454,32 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				Truncated:       reqTrunc || respTrunc,
 			})
 		}
+	} else if usageScanner != nil {
+		// No detail capture, but we still want token usage: tee through
+		// the scanner with a flushing agent writer (LLM responses are
+		// usually SSE and must not stall in Go's bufio buffer).
+		io.Copy(io.MultiWriter(agent, usageScanner), resp.Body)
 	} else {
 		io.Copy(w, resp.Body)
+	}
+
+	// Record per-conversation token usage once the body has fully
+	// streamed. conversation_id is claude's session header (empty for
+	// non-claude clients, which bucket together). Best-effort.
+	if usageScanner != nil && h.convUsage != nil {
+		if u := usageScanner.Result(); u != nil {
+			_ = h.convUsage.Insert(&queries.ConversationUsageRecord{
+				ClientID:            client.ID,
+				APIKeyID:            result.APIKeyID,
+				ServiceName:         serviceName,
+				ConversationID:      r.Header.Get("X-Claude-Code-Session-Id"),
+				Model:               u.Model,
+				InputTokens:         u.InputTokens,
+				OutputTokens:        u.OutputTokens,
+				CacheReadTokens:     u.CacheReadTokens,
+				CacheCreationTokens: u.CacheCreationTokens,
+			})
+		}
 	}
 }
 

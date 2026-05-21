@@ -66,12 +66,31 @@ function loadUsage() {
         return;
       }
       box.innerHTML = rows.map(function(k){
-        var head = '<div style="display:flex;align-items:baseline;gap:.5rem;margin-top:1rem">' +
+        var clickable = k.captured_requests > 0;
+        var head = '<div style="display:flex;align-items:baseline;gap:.5rem;margin-top:1rem' +
+          (clickable ? ';cursor:pointer' : '') + '"' +
+          (clickable ? ' onclick="toggleConv(\'' + escapeHtml(k.key_id) + '\')"' : '') + '>' +
+          (clickable ? '<span id="caret-' + escapeHtml(k.key_id) + '" class="text-muted">▸</span> ' : '') +
           '<strong>' + escapeHtml(k.key_name) + '</strong>' +
           '<span class="badge badge-blue">' + escapeHtml(k.service) + '</span>' +
           (k.provider ? '<span class="badge badge-gray">' + escapeHtml(k.provider) + '</span>' : '') +
           (k.is_refreshable ? '<span class="badge badge-green">OAuth</span>' : '') +
           '</div>';
+
+        // Captured token totals (from response bodies).
+        var tok = '';
+        if (k.captured_requests > 0) {
+          tok = '<div class="text-sm" style="margin:.25rem 0 .25rem .5rem">' +
+            '<strong>Tokens</strong> (captured): ' +
+            'in ' + fmtInt(k.tokens_input) +
+            ' · out ' + fmtInt(k.tokens_output) +
+            ' · cache-read ' + fmtInt(k.tokens_cache_read) +
+            ' · cache-write ' + fmtInt(k.tokens_cache_creation) +
+            ' · ' + fmtInt(k.conversations) + ' conversation(s)' +
+            ' · ' + fmtInt(k.captured_requests) + ' calls' +
+            '</div>';
+        }
+
         if (!k.has_data) {
           return head + '<p class="text-muted text-sm">no usage data yet — ' +
             fmtInt(k.usage_count) + ' proxied calls so far</p>';
@@ -95,9 +114,51 @@ function loadUsage() {
           '<th>Metric</th><th>Used / Limit</th><th></th><th>Remaining</th><th>Resets</th>' +
           '</tr></thead><tbody>' + rowsHtml + '</tbody></table>') : '';
         var updated = k.updated_at ? ('<div class="text-sm text-muted">snapshot: ' + fmtReset(k.updated_at) + '</div>') : '';
-        return head + sub + table + updated;
+        var convBox = '<div id="conv-' + escapeHtml(k.key_id) + '" style="display:none;margin:.25rem 0 .5rem 1rem"></div>';
+        return head + tok + sub + table + updated + convBox;
       }).join('');
     });
+}
+
+// toggleConv expands/collapses the per-conversation breakdown for a key,
+// lazy-loading it from /api/usage/conversations on first open.
+function toggleConv(keyId) {
+  var box = document.getElementById('conv-' + keyId);
+  var caret = document.getElementById('caret-' + keyId);
+  if (!box) return;
+  if (box.style.display === 'none') {
+    box.style.display = 'block';
+    if (caret) caret.textContent = '▾';
+    if (!box.dataset.loaded) {
+      box.innerHTML = '<span class="text-muted text-sm">loading…</span>';
+      fetch('/api/usage/conversations?key_id=' + encodeURIComponent(keyId), {credentials:'same-origin'})
+        .then(function(r){ return r.json(); })
+        .then(function(convs){
+          box.dataset.loaded = '1';
+          if (!convs || convs.length === 0) {
+            box.innerHTML = '<span class="text-muted text-sm">no per-conversation data captured yet</span>';
+            return;
+          }
+          box.innerHTML = '<table><thead><tr>' +
+            '<th>Conversation</th><th>Model</th><th>In</th><th>Out</th><th>Cache R/W</th><th>Calls</th><th>Last</th>' +
+            '</tr></thead><tbody>' + convs.map(function(c){
+              var label = c.channel_name
+                ? ('#' + escapeHtml(c.channel_name))
+                : (c.conversation_id ? escapeHtml(c.conversation_id.slice(0,8)) : '(no session)');
+              return '<tr><td>' + label + '</td>' +
+                '<td class="text-sm">' + escapeHtml(c.model || '—') + '</td>' +
+                '<td>' + fmtInt(c.input_tokens) + '</td>' +
+                '<td>' + fmtInt(c.output_tokens) + '</td>' +
+                '<td class="text-sm text-muted">' + fmtInt(c.cache_read_tokens) + ' / ' + fmtInt(c.cache_creation_tokens) + '</td>' +
+                '<td>' + fmtInt(c.requests) + '</td>' +
+                '<td class="text-sm text-muted">' + fmtReset(c.last_seen) + '</td></tr>';
+            }).join('') + '</tbody></table>';
+        });
+    }
+  } else {
+    box.style.display = 'none';
+    if (caret) caret.textContent = '▸';
+  }
 }
 
 function loadSessions() {
