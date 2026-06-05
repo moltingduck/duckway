@@ -46,8 +46,8 @@ func TestRCLines_RelativeAndCommented(t *testing.T) {
 
 func TestSupplyChainDefaultsAllOn(t *testing.T) {
 	get := mapGet(map[string]string{})
-	if SupplyChainMinAgeDays(get) != 1 {
-		t.Errorf("default min age = %d, want 1", SupplyChainMinAgeDays(get))
+	if SupplyChainMinAgeDays(get) != 3 {
+		t.Errorf("default min age = %d, want 3", SupplyChainMinAgeDays(get))
 	}
 	for _, m := range SupplyChainMitigations() {
 		if !SupplyChainEnabled(get, m.ID) {
@@ -82,7 +82,7 @@ func TestResolveSupplyChainRC_MergeDedupeByKey(t *testing.T) {
 		t.Errorf("ignore-scripts should appear once, got %d:\n%s", c, npmrc)
 	}
 	for _, want := range []string{
-		"min-release-age=1", "allow-git=none", "allow-remote=none", "minimum-release-age=1440",
+		"min-release-age=3", "allow-git=none", "allow-remote=none", "minimum-release-age=4320",
 	} {
 		if !strings.Contains(npmrc, want) {
 			t.Errorf(".npmrc missing %q:\n%s", want, npmrc)
@@ -93,7 +93,7 @@ func TestResolveSupplyChainRC_MergeDedupeByKey(t *testing.T) {
 	if strings.Join(rc[".yarnrc.yml"], "\n") != "# 不執行 install 腳本\nenableScripts: false" {
 		t.Errorf(".yarnrc.yml = %v", rc[".yarnrc.yml"])
 	}
-	if !strings.Contains(strings.Join(rc[".config/uv/uv.toml"], "\n"), `exclude-newer = "P1D"`) {
+	if !strings.Contains(strings.Join(rc[".config/uv/uv.toml"], "\n"), `exclude-newer = "P3D"`) {
 		t.Errorf("uv.toml = %v", rc[".config/uv/uv.toml"])
 	}
 
@@ -101,12 +101,12 @@ func TestResolveSupplyChainRC_MergeDedupeByKey(t *testing.T) {
 	npmrc = strings.Join(ResolveSupplyChainRC(mapGet(map[string]string{
 		SettingKeySupplyChainEnabled("npm"): "0",
 	}), now)[".npmrc"], "\n")
-	for _, gone := range []string{"min-release-age=1", "allow-git=none", "allow-remote=none"} {
+	for _, gone := range []string{"min-release-age=3", "allow-git=none", "allow-remote=none"} {
 		if strings.Contains(npmrc, gone) {
 			t.Errorf("%q should be gone when npm disabled:\n%s", gone, npmrc)
 		}
 	}
-	if !strings.Contains(npmrc, "ignore-scripts=true") || !strings.Contains(npmrc, "minimum-release-age=1440") {
+	if !strings.Contains(npmrc, "ignore-scripts=true") || !strings.Contains(npmrc, "minimum-release-age=4320") {
 		t.Errorf("pnpm settings should remain when npm disabled:\n%s", npmrc)
 	}
 }

@@ -66,8 +66,8 @@ func TestSupplyChainHandler_DefaultsAndToggle(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("list status %d", code)
 	}
-	if string(out["min_age_days"]) != "1" {
-		t.Errorf("min_age_days = %s, want 1", out["min_age_days"])
+	if string(out["min_age_days"]) != "3" {
+		t.Errorf("min_age_days = %s, want 3", out["min_age_days"])
 	}
 
 	// ClientRC default: npm before= + pnpm minimum-release-age in .npmrc.
@@ -78,7 +78,7 @@ func TestSupplyChainHandler_DefaultsAndToggle(t *testing.T) {
 	var npmrc []string
 	_ = json.Unmarshal(rc[".npmrc"], &npmrc)
 	joined := strings.Join(npmrc, "\n")
-	for _, want := range []string{"ignore-scripts=true", "min-release-age=1", "allow-git=none", "allow-remote=none", "minimum-release-age=1440"} {
+	for _, want := range []string{"ignore-scripts=true", "min-release-age=3", "allow-git=none", "allow-remote=none", "minimum-release-age=4320"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf(".npmrc default missing %q: %v", want, npmrc)
 		}
@@ -93,10 +93,10 @@ func TestSupplyChainHandler_DefaultsAndToggle(t *testing.T) {
 	npmrc = nil
 	_ = json.Unmarshal(rc[".npmrc"], &npmrc)
 	joined = strings.Join(npmrc, "\n")
-	if strings.Contains(joined, "min-release-age=1") || strings.Contains(joined, "allow-git=none") {
+	if strings.Contains(joined, "min-release-age=3") || strings.Contains(joined, "allow-git=none") {
 		t.Errorf("npm keys should be gone after npm disabled: %v", npmrc)
 	}
-	if !strings.Contains(joined, "minimum-release-age=1440") || !strings.Contains(joined, "ignore-scripts=true") {
+	if !strings.Contains(joined, "minimum-release-age=4320") || !strings.Contains(joined, "ignore-scripts=true") {
 		t.Errorf("pnpm settings should remain: %v", npmrc)
 	}
 

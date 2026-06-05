@@ -19,12 +19,13 @@ import (
 // on every fetch so they stay fresh.
 
 const (
-	// settingMinAgeDays is the global cooldown in days (default 1).
+	// settingMinAgeDays is the global cooldown in days (default 3). Editable
+	// from the admin panel (Supply Chain → Minimum package age).
 	settingMinAgeDays = "supplychain.min_age_days"
 	// settingEnabledPrefix + <id> → "1"/"0". Unset means enabled (default all-on).
 	settingEnabledPrefix = "supplychain.enabled."
 
-	defaultMinAgeDays = 1
+	defaultMinAgeDays = 3
 )
 
 // rcEntry is one config setting plus its explanatory comment. key is used to
