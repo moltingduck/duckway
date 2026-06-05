@@ -98,6 +98,8 @@ Usage:
   duckway stop           Stop both daemons
   duckway restart        Restart both daemons
   duckway env            Print keys as shell export statements
+  duckway env --proxy    Print HTTP(S)_PROXY exports for the local proxy
+                         (eval "$(duckway env --proxy)" or append to ~/.bashrc)
   duckway proxy          Start local proxy (foreground)
   duckway proxy -d       Start local proxy as background daemon
   duckway proxy stop     Stop the running daemon
@@ -647,6 +649,20 @@ func cmdUpdate(configDir string) {
 }
 
 func cmdEnv(configDir string) {
+	// `duckway env --proxy` prints the HTTP(S)_PROXY exports for the local
+	// proxy instead of the placeholder keys, so a shell can route traffic
+	// through duckway via `eval "$(duckway env --proxy)"` or by appending the
+	// output to a startup file.
+	for _, a := range os.Args[2:] {
+		if a == "--proxy" || a == "-p" {
+			cfg, err := client.LoadConfig(configDir)
+			if err != nil {
+				log.Fatal(err)
+			}
+			client.PrintProxyEnv(cfg.ProxyPort)
+			return
+		}
+	}
 	if err := client.PrintEnv(configDir); err != nil {
 		log.Fatal(err)
 	}

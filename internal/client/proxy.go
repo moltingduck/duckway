@@ -105,6 +105,31 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
+// PrintProxyEnv writes shell `export` statements for the local proxy to
+// stdout, so they can be applied to the current shell or appended to a shell
+// startup file:
+//
+//	eval "$(duckway env --proxy)"          # apply to the running shell
+//	duckway env --proxy >> ~/.bashrc       # persist for future shells
+//
+// Both upper- and lower-case variants are emitted because different runtimes
+// read different casings (Go/curl honor the upper-case set; some libraries
+// only read lower-case). NO_PROXY keeps loopback direct so calls to the
+// duckway server / proxy itself don't loop back through the proxy — matching
+// the values mergeProxySettings writes into ~/.claude/settings.json.
+func PrintProxyEnv(port int) {
+	proxyURL := fmt.Sprintf("http://localhost:%d", port)
+	const noProxy = "localhost,127.0.0.1"
+	fmt.Printf("# Duckway proxy env — route agent traffic through the local proxy on port %d\n", port)
+	fmt.Println("# Apply with:  eval \"$(duckway env --proxy)\"   or append to your shell startup file.")
+	fmt.Printf("export HTTP_PROXY=%s\n", proxyURL)
+	fmt.Printf("export HTTPS_PROXY=%s\n", proxyURL)
+	fmt.Printf("export http_proxy=%s\n", proxyURL)
+	fmt.Printf("export https_proxy=%s\n", proxyURL)
+	fmt.Printf("export NO_PROXY=%s\n", noProxy)
+	fmt.Printf("export no_proxy=%s\n", noProxy)
+}
+
 // WriteProxyEnvScript writes a shell script that sets proxy env vars.
 func WriteProxyEnvScript(configDir string, port int) error {
 	script := fmt.Sprintf(`#!/bin/sh
