@@ -83,7 +83,7 @@ func NewAdminHandler(
 	// Parse each page template paired with the layout
 	pageNames := []string{
 		"dashboard", "services", "api_keys", "usage", "oauth", "placeholders",
-		"clients", "groups", "key_groups", "key_group_detail", "approvals", "logs", "notifications", "canary", "settings", "docs", "cc",
+		"clients", "groups", "key_groups", "key_group_detail", "approvals", "logs", "notifications", "canary", "supplychain", "settings", "docs", "cc",
 	}
 
 	pages := make(map[string]*template.Template)
@@ -363,6 +363,13 @@ func (h *AdminHandler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "settings", pageData{
 		Title:  "Settings",
 		Active: "settings",
+	})
+}
+
+func (h *AdminHandler) SupplyChainPage(w http.ResponseWriter, r *http.Request) {
+	h.render(w, "supplychain", pageData{
+		Title:  "Supply Chain",
+		Active: "supplychain",
 	})
 }
 

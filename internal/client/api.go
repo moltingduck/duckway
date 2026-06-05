@@ -112,6 +112,31 @@ func (c *APIClient) FetchClaudeCredentials() (map[string]interface{}, error) {
 	return result, nil
 }
 
+// FetchSupplyChainRC returns the package-manager rc-file hardening settings to
+// apply, keyed by rc file path relative to $HOME (e.g. ".npmrc"). Returns nil
+// (no-op) when the server is older and lacks the endpoint.
+func (c *APIClient) FetchSupplyChainRC() (map[string][]string, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/client/supply-chain-rc", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, nil // older server — skip silently
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, nil
+	}
+	var result map[string][]string
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, nil
+	}
+	return result, nil
+}
+
 type CanaryDeploy struct {
 	TokenType     string `json:"token_type"`
 	DeployPath    string `json:"deploy_path"`

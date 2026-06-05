@@ -94,6 +94,10 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 	// Sync Claude OAuth credentials (phantom tokens → ~/.claude/.credentials.json)
 	SyncClaudeCredentials(cfg)
 
+	// Sync supply-chain hardening into package-manager rc files
+	// (~/.npmrc, ~/.yarnrc.yml, ~/.config/uv/uv.toml, …).
+	SyncSupplyChainRC(cfg)
+
 	// Sync Control Channel assignments → state file + per-agent MCP config.
 	if ccCount, err := SyncCC(configDir, cfg); err != nil {
 		log.Printf("Warning: cc sync failed: %v", err)

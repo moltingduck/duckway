@@ -32,19 +32,21 @@ type SharedServices struct {
 	SettingsQ    *queries.SettingsQueries
 	ConvUsageQ   *queries.ConversationUsageQueries
 
-	Crypto       *services.Crypto
-	Resolver     *services.KeyResolver
-	Notifier     *services.Notifier
-	CanarySvc    *services.CanaryService
-	Refresher    *services.TokenRefresher
-	CCHub        *services.CCEventHub        // CC live-tail pub/sub
-	CCApprovals  *services.CCApprovalRegistry // discord_request_approval state
+	Crypto      *services.Crypto
+	Resolver    *services.KeyResolver
+	Notifier    *services.Notifier
+	CanarySvc   *services.CanaryService
+	Refresher   *services.TokenRefresher
+	CCHub       *services.CCEventHub         // CC live-tail pub/sub
+	CCApprovals *services.CCApprovalRegistry // discord_request_approval state
 
 	AdminAuth  *middleware.AdminAuth
 	ClientAuth *middleware.ClientAuth
 }
 
-func NewSharedServices(config *Config, db interface{ QueryRow(string, ...interface{}) interface{} }) *SharedServices {
+func NewSharedServices(config *Config, db interface {
+	QueryRow(string, ...interface{}) interface{}
+}) *SharedServices {
 	// This is called from the actual server constructors using the real db
 	return nil // placeholder, actual init in initShared
 }
@@ -130,6 +132,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/oauth", adminPageH.OAuthPage)
 	adminPageMux.HandleFunc("GET /admin/cc", adminPageH.CCPage)
 	adminPageMux.HandleFunc("GET /admin/settings", adminPageH.SettingsPage)
+	adminPageMux.HandleFunc("GET /admin/supply-chain", adminPageH.SupplyChainPage)
 	adminPageMux.HandleFunc("GET /admin/docs", adminPageH.DocsPage)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/approve", adminPageH.ApproveAction)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/reject", adminPageH.RejectAction)
@@ -216,6 +219,14 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/canary/clients/{clientId}/generate", canaryH.GenerateForClient)
 	adminAPIMux.HandleFunc("DELETE /api/canary/clients/{clientId}", canaryH.DeleteClientTokens)
 	adminAPIMux.HandleFunc("DELETE /api/canary/tokens/{tokenId}", canaryH.DeleteToken)
+
+	// Supply-chain cooldown: view supported package-manager mitigations and
+	// toggle each on/off (default all-on). The client fetches the resolved env
+	// vars from /client/supply-chain-env.
+	supplyChainH := handlers.NewSupplyChainHandler(settingsQ)
+	adminAPIMux.HandleFunc("GET /api/supply-chain", supplyChainH.List)
+	adminAPIMux.HandleFunc("POST /api/supply-chain/min-age", supplyChainH.SetMinAge)
+	adminAPIMux.HandleFunc("POST /api/supply-chain/{id}", supplyChainH.Toggle)
 
 	adminAPIMux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
 		handlers.JsonResponsePublic(w, settingsQ.GetAll())
@@ -363,6 +374,11 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte(script))
 	})
+
+	// Supply-chain hardening: rc-file settings for the agent's package
+	// managers, resolved server-side so rolling-date cutoffs stay fresh.
+	supplyChainH := handlers.NewSupplyChainHandler(settingsQ)
+	clientMux.HandleFunc("GET /client/supply-chain-rc", supplyChainH.ClientRC)
 
 	// CA cert + key
 	ca, caErr := services.LoadOrCreateCA(s.config.DataDir)
