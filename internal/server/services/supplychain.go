@@ -7,12 +7,12 @@ import (
 )
 
 // Supply-chain hardening: append security settings to each package manager's
-// rc/config file so agents (a) don't run install lifecycle scripts and (b)
-// won't install versions newer than a cooldown window. This defends against
-// the common npm/PyPI attack where a compromised maintainer publishes a
-// malicious version that auto-installs (and runs postinstall scripts) within
-// hours, before the registry yanks it. Skipping freshly-published versions and
-// disabling install scripts removes the two highest-leverage vectors.
+// rc/config file so agents (a) don't run install lifecycle scripts, (b) won't
+// install versions newer than a cooldown window, and (c) for npm, won't pull
+// dependencies straight from git or arbitrary URLs. This defends against the
+// common npm/PyPI attack where a compromised maintainer publishes a malicious
+// version that auto-installs (and runs postinstall scripts) within hours,
+// before the registry yanks it.
 //
 // The registry below is the single source of truth, shared by the server
 // (admin toggles + the /client endpoint). Rolling-date cutoffs are re-rendered
@@ -26,6 +26,15 @@ const (
 
 	defaultMinAgeDays = 1
 )
+
+// rcEntry is one config setting plus its explanatory comment. key is used to
+// dedupe across managers that share a file (npm + pnpm both write ~/.npmrc and
+// both set ignore-scripts — it should appear once).
+type rcEntry struct {
+	key     string
+	comment string
+	line    string
+}
 
 // SupplyChainMitigation describes one package manager's hardening and where to
 // write it.
@@ -42,21 +51,25 @@ type SupplyChainMitigation struct {
 	Supported   bool   `json:"supported"`
 	Description string `json:"description"`
 
-	// render produces the rc lines for this mitigation given the cooldown (in
-	// days) and the current time. Unexported so it doesn't leak into JSON.
-	render func(days int, now time.Time) []string
+	// render produces the rc entries for this mitigation given the cooldown
+	// (in days) and the current time. Unexported so it doesn't leak into JSON.
+	render func(days int, now time.Time) []rcEntry
 }
 
-// RCLines returns the config lines this mitigation contributes to its rc file.
+// RCLines returns the flat config lines (comment then setting, per entry) this
+// mitigation contributes — used for the admin preview of a single manager.
 func (m SupplyChainMitigation) RCLines(days int, now time.Time) []string {
 	if m.render == nil {
 		return nil
 	}
-	return m.render(days, now)
-}
-
-func cutoffRFC3339(days int, now time.Time) string {
-	return now.Add(-time.Duration(days) * 24 * time.Hour).UTC().Format(time.RFC3339)
+	var out []string
+	for _, e := range m.render(days, now) {
+		if e.comment != "" {
+			out = append(out, e.comment)
+		}
+		out = append(out, e.line)
+	}
+	return out
 }
 
 // SupplyChainMitigations is the registry of known mitigations. Add a row here
@@ -66,36 +79,42 @@ func SupplyChainMitigations() []SupplyChainMitigation {
 	return []SupplyChainMitigation{
 		{
 			ID: "npm", Name: "npm", Manager: "npm", RCPath: ".npmrc", Supported: true,
-			Description: "~/.npmrc: disable install scripts and pin resolution to versions published before the cutoff (before=).",
-			render: func(days int, now time.Time) []string {
-				return []string{
-					"ignore-scripts=true",
-					"before=" + cutoffRFC3339(days, now),
+			Description: "~/.npmrc: disable install scripts, refuse packages published in the last N days, and block git/URL dependencies.",
+			render: func(days int, now time.Time) []rcEntry {
+				return []rcEntry{
+					{key: "ignore-scripts", comment: "# 不執行 postinstall 等腳本", line: "ignore-scripts=true"},
+					{key: "min-release-age", comment: fmt.Sprintf("# 不下載 %d 天內發布的套件", days), line: "min-release-age=" + strconv.Itoa(days)},
+					{key: "allow-git", comment: "# 關閉 git 下載", line: "allow-git=none"},
+					{key: "allow-remote", comment: "# 關閉 direct URL 下載", line: "allow-remote=none"},
 				}
 			},
 		},
 		{
 			ID: "pnpm", Name: "pnpm", Manager: "pnpm", RCPath: ".npmrc", Supported: true,
 			Description: "~/.npmrc: disable install scripts and refuse versions published in the last N days (minimum-release-age, minutes).",
-			render: func(days int, now time.Time) []string {
-				return []string{
-					"ignore-scripts=true",
-					"minimum-release-age=" + strconv.Itoa(days*24*60),
+			render: func(days int, now time.Time) []rcEntry {
+				return []rcEntry{
+					{key: "ignore-scripts", comment: "# 不執行 postinstall 等腳本", line: "ignore-scripts=true"},
+					{key: "minimum-release-age", comment: fmt.Sprintf("# pnpm：拒絕 %d 天內發布的版本（分鐘）", days), line: "minimum-release-age=" + strconv.Itoa(days*24*60)},
 				}
 			},
 		},
 		{
 			ID: "yarn", Name: "Yarn (Berry)", Manager: "yarn", RCPath: ".yarnrc.yml", Supported: true,
 			Description: "~/.yarnrc.yml: disable install scripts (enableScripts: false). Yarn has no release-age gate.",
-			render: func(days int, now time.Time) []string {
-				return []string{"enableScripts: false"}
+			render: func(days int, now time.Time) []rcEntry {
+				return []rcEntry{
+					{key: "enableScripts", comment: "# 不執行 install 腳本", line: "enableScripts: false"},
+				}
 			},
 		},
 		{
 			ID: "uv", Name: "uv (Python)", Manager: "uv", RCPath: ".config/uv/uv.toml", Supported: true,
-			Description: "~/.config/uv/uv.toml: exclude packages uploaded after the cutoff (exclude-newer). Also applies to `uv pip`.",
-			render: func(days int, now time.Time) []string {
-				return []string{fmt.Sprintf("exclude-newer = %q", cutoffRFC3339(days, now))}
+			Description: "~/.config/uv/uv.toml: exclude packages uploaded in the last N days (exclude-newer, relative ISO-8601 duration). Also applies to `uv pip`.",
+			render: func(days int, now time.Time) []rcEntry {
+				return []rcEntry{
+					{key: "exclude-newer", comment: fmt.Sprintf("# 排除 %d 天內上傳的套件", days), line: fmt.Sprintf("exclude-newer = \"P%dD\"", days)},
+				}
 			},
 		},
 		{
@@ -141,9 +160,10 @@ func SettingKeySupplyChainMinAgeDays() string { return settingMinAgeDays }
 
 // ResolveSupplyChainRC returns the rc lines to write, grouped by rc file path
 // (relative to $HOME). Managers that share a file (npm + pnpm → .npmrc) are
-// merged into one block with duplicate lines (e.g. ignore-scripts=true)
-// collapsed. Only supported, enabled mitigations contribute. This is what the
-// client fetches and writes into each agent rc file.
+// merged into one block, deduped by setting key (so ignore-scripts appears
+// once) and separated by blank lines for readability. Only supported, enabled
+// mitigations contribute. This is what the client fetches and writes into each
+// agent rc file.
 func ResolveSupplyChainRC(get func(string) string, now time.Time) map[string][]string {
 	days := SupplyChainMinAgeDays(get)
 	byFile := map[string][]string{}
@@ -152,15 +172,21 @@ func ResolveSupplyChainRC(get func(string) string, now time.Time) map[string][]s
 		if !m.Supported || m.RCPath == "" || !SupplyChainEnabled(get, m.ID) {
 			continue
 		}
-		for _, line := range m.RCLines(days, now) {
-			if seen[m.RCPath] == nil {
-				seen[m.RCPath] = map[string]bool{}
-			}
-			if seen[m.RCPath][line] {
+		if seen[m.RCPath] == nil {
+			seen[m.RCPath] = map[string]bool{}
+		}
+		for _, e := range m.render(days, now) {
+			if seen[m.RCPath][e.key] {
 				continue
 			}
-			seen[m.RCPath][line] = true
-			byFile[m.RCPath] = append(byFile[m.RCPath], line)
+			seen[m.RCPath][e.key] = true
+			if len(byFile[m.RCPath]) > 0 {
+				byFile[m.RCPath] = append(byFile[m.RCPath], "") // blank separator between settings
+			}
+			if e.comment != "" {
+				byFile[m.RCPath] = append(byFile[m.RCPath], e.comment)
+			}
+			byFile[m.RCPath] = append(byFile[m.RCPath], e.line)
 		}
 	}
 	return byFile

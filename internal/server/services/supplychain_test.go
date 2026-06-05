@@ -1,6 +1,7 @@
 package services
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -9,31 +10,37 @@ func mapGet(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
-func TestRCLines(t *testing.T) {
-	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
-	by := map[string]SupplyChainMitigation{}
+func mitByID(id string) SupplyChainMitigation {
 	for _, m := range SupplyChainMitigations() {
-		by[m.ID] = m
+		if m.ID == id {
+			return m
+		}
+	}
+	return SupplyChainMitigation{}
+}
+
+func TestRCLines_RelativeAndCommented(t *testing.T) {
+	now := time.Now() // not used by any renderer — all values are relative
+
+	npm := strings.Join(mitByID("npm").RCLines(3, now), "\n")
+	for _, want := range []string{"ignore-scripts=true", "min-release-age=3", "allow-git=none", "allow-remote=none"} {
+		if !strings.Contains(npm, want) {
+			t.Errorf("npm missing %q in:\n%s", want, npm)
+		}
+	}
+	// No absolute timestamp anywhere.
+	if strings.Contains(npm, "T") && strings.Contains(npm, "Z") {
+		t.Errorf("npm should carry no absolute timestamp:\n%s", npm)
 	}
 
-	// npm: ignore-scripts + before=<cutoff>
-	npm := by["npm"].RCLines(3, now)
-	if len(npm) != 2 || npm[0] != "ignore-scripts=true" || npm[1] != "before=2026-06-02T12:00:00Z" {
-		t.Errorf("npm rc lines = %v", npm)
+	pnpm := strings.Join(mitByID("pnpm").RCLines(3, now), "\n")
+	if !strings.Contains(pnpm, "minimum-release-age=4320") { // 3 days → minutes
+		t.Errorf("pnpm minutes wrong:\n%s", pnpm)
 	}
-	// pnpm: minutes = days*1440
-	pnpm := by["pnpm"].RCLines(3, now)
-	if pnpm[1] != "minimum-release-age=4320" {
-		t.Errorf("pnpm rc lines = %v", pnpm)
-	}
-	// uv: TOML exclude-newer
-	uv := by["uv"].RCLines(1, now)
-	if uv[0] != `exclude-newer = "2026-06-04T12:00:00Z"` {
-		t.Errorf("uv rc lines = %v", uv)
-	}
-	// unsupported managers contribute nothing
-	if l := by["pip"].RCLines(1, now); l != nil {
-		t.Errorf("pip should render no lines, got %v", l)
+
+	uv := strings.Join(mitByID("uv").RCLines(3, now), "\n")
+	if !strings.Contains(uv, `exclude-newer = "P3D"`) { // relative ISO-8601 duration
+		t.Errorf("uv should use relative duration P3D:\n%s", uv)
 	}
 }
 
@@ -65,61 +72,41 @@ func TestSupplyChainToggleAndMinAge(t *testing.T) {
 	}
 }
 
-func TestResolveSupplyChainRC(t *testing.T) {
-	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+func TestResolveSupplyChainRC_MergeDedupeByKey(t *testing.T) {
+	now := time.Now()
+
+	npmrc := strings.Join(ResolveSupplyChainRC(mapGet(map[string]string{}), now)[".npmrc"], "\n")
+
+	// ignore-scripts shared by npm+pnpm appears exactly once (dedupe by key).
+	if c := strings.Count(npmrc, "ignore-scripts=true"); c != 1 {
+		t.Errorf("ignore-scripts should appear once, got %d:\n%s", c, npmrc)
+	}
+	for _, want := range []string{
+		"min-release-age=1", "allow-git=none", "allow-remote=none", "minimum-release-age=1440",
+	} {
+		if !strings.Contains(npmrc, want) {
+			t.Errorf(".npmrc missing %q:\n%s", want, npmrc)
+		}
+	}
 
 	rc := ResolveSupplyChainRC(mapGet(map[string]string{}), now)
-
-	// npm + pnpm share .npmrc; ignore-scripts=true is deduped to one line.
-	npmrc := rc[".npmrc"]
-	count := 0
-	for _, l := range npmrc {
-		if l == "ignore-scripts=true" {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Errorf(".npmrc should contain ignore-scripts=true exactly once, got %v", npmrc)
-	}
-	wantInNpmrc := map[string]bool{
-		"ignore-scripts=true":         false,
-		"before=2026-06-04T12:00:00Z": false,
-		"minimum-release-age=1440":    false,
-	}
-	for _, l := range npmrc {
-		if _, ok := wantInNpmrc[l]; ok {
-			wantInNpmrc[l] = true
-		}
-	}
-	for l, found := range wantInNpmrc {
-		if !found {
-			t.Errorf(".npmrc missing %q (got %v)", l, npmrc)
-		}
-	}
-
-	if rc[".yarnrc.yml"][0] != "enableScripts: false" {
+	if strings.Join(rc[".yarnrc.yml"], "\n") != "# 不執行 install 腳本\nenableScripts: false" {
 		t.Errorf(".yarnrc.yml = %v", rc[".yarnrc.yml"])
 	}
-	if rc[".config/uv/uv.toml"][0] != `exclude-newer = "2026-06-04T12:00:00Z"` {
+	if !strings.Contains(strings.Join(rc[".config/uv/uv.toml"], "\n"), `exclude-newer = "P1D"`) {
 		t.Errorf("uv.toml = %v", rc[".config/uv/uv.toml"])
 	}
 
-	// Disabling npm drops before= but pnpm keeps ignore-scripts + minimum-release-age.
-	rc = ResolveSupplyChainRC(mapGet(map[string]string{
+	// Disable npm: its keys drop, pnpm still supplies ignore-scripts + min age.
+	npmrc = strings.Join(ResolveSupplyChainRC(mapGet(map[string]string{
 		SettingKeySupplyChainEnabled("npm"): "0",
-	}), now)
-	for _, l := range rc[".npmrc"] {
-		if l == "before=2026-06-04T12:00:00Z" {
-			t.Error("before= should be gone when npm disabled")
+	}), now)[".npmrc"], "\n")
+	for _, gone := range []string{"min-release-age=1", "allow-git=none", "allow-remote=none"} {
+		if strings.Contains(npmrc, gone) {
+			t.Errorf("%q should be gone when npm disabled:\n%s", gone, npmrc)
 		}
 	}
-	hasMinAge := false
-	for _, l := range rc[".npmrc"] {
-		if l == "minimum-release-age=1440" {
-			hasMinAge = true
-		}
-	}
-	if !hasMinAge {
-		t.Errorf("pnpm minimum-release-age should remain, got %v", rc[".npmrc"])
+	if !strings.Contains(npmrc, "ignore-scripts=true") || !strings.Contains(npmrc, "minimum-release-age=1440") {
+		t.Errorf("pnpm settings should remain when npm disabled:\n%s", npmrc)
 	}
 }
