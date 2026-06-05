@@ -292,7 +292,7 @@ func (h *OAuthHandler) ClientGetCredentials(w http.ResponseWriter, r *http.Reque
 				"displayName":              displayName,
 			},
 			"hasCompletedOnboarding":  true,
-			"lastOnboardingVersion":   "2.1.119",
+			"lastOnboardingVersion":   "2.1.165",
 		},
 	})
 }

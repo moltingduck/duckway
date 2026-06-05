@@ -248,9 +248,20 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TLS handshake with the client (pretending to be the target host)
+	// TLS handshake with the client (pretending to be the target host).
+	//
+	// Pin ALPN to HTTP/1.1. This MITM path is HTTP/1.x-only — it parses
+	// requests with http.ReadRequest and serializes responses with
+	// resp.Write, neither of which speaks HTTP/2. Modern clients (Claude
+	// Code / Bun, curl, browsers) offer "h2" in their ALPN list; if we leave
+	// NextProtos empty the server selects no protocol and the client is free
+	// to proceed with HTTP/2 framing, which we then mis-handle as HTTP/1.1 —
+	// surfacing on the agent as intermittent "InvalidHTTPResponse fetching
+	// https://api.anthropic.com/v1/messages?beta=true". Advertising only
+	// "http/1.1" forces every client to downgrade to the protocol we speak.
 	tlsConn := tls.Server(clientConn, &tls.Config{
 		Certificates: []tls.Certificate{*tlsCert},
+		NextProtos:   []string{"http/1.1"},
 	})
 	if err := tlsConn.Handshake(); err != nil {
 		log.Printf("TLS handshake error for %s: %v", host, err)

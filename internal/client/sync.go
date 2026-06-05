@@ -5,9 +5,42 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
+
+// fallbackOnboardingVersion is the lastOnboardingVersion written to
+// ~/.claude.json when the locally installed Claude Code version can't be
+// detected. Claude Code re-runs onboarding (and "What's New" prompts) when
+// this value is OLDER than the running binary, so it must track a recent
+// release. Detection via detectClaudeVersion() supersedes it whenever the
+// `claude` binary is on PATH — keeping the agent's config in lockstep with
+// whatever Claude Code is actually installed.
+const fallbackOnboardingVersion = "2.1.165"
+
+// detectClaudeVersion runs `claude --version` and returns the bare semver
+// (e.g. "2.1.165" from "2.1.165 (Claude Code)"). Returns "" if the binary is
+// not on PATH or the output doesn't start with a version-looking token.
+func detectClaudeVersion() string {
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		return ""
+	}
+	out, err := exec.Command(bin, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	tok := strings.TrimSpace(string(out))
+	if i := strings.IndexByte(tok, ' '); i >= 0 {
+		tok = tok[:i]
+	}
+	// Sanity check: must look like a dotted numeric version (e.g. 2.1.165).
+	if tok == "" || strings.TrimLeft(tok, "0123456789.") != "" || !strings.Contains(tok, ".") {
+		return ""
+	}
+	return tok
+}
 
 // SyncKeys fetches placeholder keys from the server and writes them to keys.env.
 func SyncKeys(configDir string, cfg *Config) (int, error) {
@@ -242,6 +275,15 @@ func SyncClaudeCredentials(cfg *Config) {
 	// projects, user prefs added by Claude itself, etc.) MUST be preserved.
 	// Earlier versions blindly overwrote the whole file, which wiped the
 	// duckway-cc MCP entry on every sync.
+	// Pin lastOnboardingVersion to whatever Claude Code is actually installed
+	// so the agent's config follows the latest binary. A stale value (older
+	// than the running version) makes Claude Code re-trigger onboarding /
+	// "What's New" flows, which intermittently breaks headless agents.
+	onboardingVersion := detectClaudeVersion()
+	if onboardingVersion == "" {
+		onboardingVersion = fallbackOnboardingVersion
+	}
+
 	onboardingPath := filepath.Join(home, ".claude.json")
 	if claudeConfig, ok := creds["claudeConfig"].(map[string]interface{}); ok {
 		root := map[string]interface{}{}
@@ -257,6 +299,9 @@ func SyncClaudeCredentials(cfg *Config) {
 		for k, v := range claudeConfig {
 			root[k] = v
 		}
+		// The locally installed version is authoritative over the server's
+		// (potentially stale) lastOnboardingVersion — follow the real binary.
+		root["lastOnboardingVersion"] = onboardingVersion
 		configData, err := json.MarshalIndent(root, "", "  ")
 		if err == nil {
 			if werr := os.WriteFile(onboardingPath, configData, 0600); werr != nil {
@@ -267,7 +312,7 @@ func SyncClaudeCredentials(cfg *Config) {
 		}
 	} else if _, err := os.Stat(onboardingPath); os.IsNotExist(err) {
 		// Fallback if server doesn't send claudeConfig
-		fallback := []byte("{\n  \"hasCompletedOnboarding\": true,\n  \"lastOnboardingVersion\": \"2.1.119\"\n}\n")
+		fallback := []byte(fmt.Sprintf("{\n  \"hasCompletedOnboarding\": true,\n  \"lastOnboardingVersion\": %q\n}\n", onboardingVersion))
 		if werr := os.WriteFile(onboardingPath, fallback, 0600); werr != nil {
 			log.Printf("Warning: cannot write Claude onboarding config: %v", werr)
 		} else {
