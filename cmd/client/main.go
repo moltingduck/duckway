@@ -245,6 +245,14 @@ func cmdInit(configDir string) {
 		fmt.Printf("Synced %d placeholder keys\n", count)
 	}
 
+	// Apply supply-chain hardening to package-manager rc files.
+	if lines := client.FormatSupplyChainChanges(client.SyncSupplyChainRC(cfg)); len(lines) > 0 {
+		fmt.Println("Supply-chain hardening applied:")
+		for _, l := range lines {
+			fmt.Println(l)
+		}
+	}
+
 	fmt.Printf("\nConfig saved to %s/config.yaml\n", configDir)
 	fmt.Println("\nNext steps:")
 	fmt.Printf("  %s           — start HTTPS proxy (background daemon)\n", cyan("duckway proxy -d"))
@@ -265,6 +273,18 @@ func cmdSync(configDir string) {
 	}
 
 	fmt.Printf("Synced %d placeholder keys to %s\n", count, client.KeysEnvPath(configDir))
+
+	// Apply supply-chain hardening to package-manager rc files and tell the
+	// user exactly which files changed and what was written.
+	changes := client.SyncSupplyChainRC(cfg)
+	if lines := client.FormatSupplyChainChanges(changes); len(lines) > 0 {
+		fmt.Println("Supply-chain hardening applied:")
+		for _, l := range lines {
+			fmt.Println(l)
+		}
+	} else if changes != nil {
+		fmt.Println("Supply-chain hardening: rc files already up to date")
+	}
 }
 
 // cmdCC dispatches `duckway cc <subcommand>`.

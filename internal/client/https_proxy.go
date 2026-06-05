@@ -83,6 +83,9 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 	} else {
 		log.Printf("Synced %d placeholder keys", count)
 	}
+	if ch := SyncSupplyChainRC(cfg); len(ch) > 0 {
+		log.Printf("Supply-chain hardening: %s", SummarizeSupplyChainChanges(ch))
+	}
 
 	// Load CA cert + key for MITM
 	caDir := filepath.Dir(KeysEnvPath(configDir))
@@ -113,6 +116,11 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 			for range ticker.C {
 				n, _ := SyncKeys(configDir, cfg)
 				log.Printf("Synced %d keys", n)
+				// Re-apply supply-chain rc settings (picks up admin toggle /
+				// cooldown changes); only log when something actually changed.
+				if ch := SyncSupplyChainRC(cfg); SummarizeSupplyChainChanges(ch) != "up to date" {
+					log.Printf("Supply-chain hardening: %s", SummarizeSupplyChainChanges(ch))
+				}
 				// Refresh host map
 				if newMap := fetchServiceHosts(cfg.ServerURL, cfg.Token); len(newMap) > 0 {
 					hostMap = newMap
