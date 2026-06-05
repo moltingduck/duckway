@@ -918,12 +918,34 @@ func tmuxPastePrompt(sess, prompt string) error {
 // tmuxSendKeys is a thin error-formatting wrapper around `tmux
 // send-keys -t <sess> <args...>` so callers don't repeat the argv
 // boilerplate.
+//
+// In literal mode (`-l`), tmux still treats a payload that starts with a dash
+// as option flags — sending a prompt line like "---" fails with
+// "send-keys: invalid flag --". Insert a "--" end-of-options marker right
+// after `-l` so the literal text is always taken verbatim, no matter what it
+// begins with. Non-literal calls (named keys like Enter/Down/Escape) are
+// untouched.
 func tmuxSendKeys(sess string, args ...string) error {
+	args = normalizeLiteralArgs(args)
 	full := append([]string{"send-keys", "-t", sess}, args...)
 	if out, err := exec.Command("tmux", full...).CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux send-keys %v: %w (%s)", args, err, string(out))
 	}
 	return nil
+}
+
+// normalizeLiteralArgs inserts a "--" end-of-options marker after a leading
+// `-l` flag so a literal payload beginning with a dash (e.g. "---") is sent
+// verbatim instead of being parsed by tmux as flags. It is a no-op for
+// non-literal sends and when "--" is already present.
+func normalizeLiteralArgs(args []string) []string {
+	if len(args) >= 2 && args[0] == "-l" && args[1] != "--" {
+		merged := make([]string, 0, len(args)+1)
+		merged = append(merged, "-l", "--")
+		merged = append(merged, args[1:]...)
+		return merged
+	}
+	return args
 }
 
 // markCwdTrustedInClaude writes hasTrustDialogAccepted=true under
