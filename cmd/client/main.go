@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -35,6 +36,19 @@ func cyan(s string) string {
 		return s
 	}
 	return "\033[36m" + s + "\033[0m"
+}
+
+// shellQuote returns s quoted so it can be pasted into a POSIX shell verbatim.
+// Plain tokens (paths, URLs) pass through unquoted; anything with shell-special
+// characters is single-quoted with embedded single quotes escaped.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	if !strings.ContainsAny(s, " \t\n\"'\\$`&|;<>(){}[]*?!#~=") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func main() {
@@ -588,6 +602,17 @@ func cmdMCP(configDir string) {
 	}
 }
 
+// sudoUpdateCommand builds the copy-pasteable command that re-runs the update
+// as root. It uses the running binary's absolute path (so it works under
+// sudo's restricted PATH) and pins --server explicitly (root's environment
+// won't see the user's $DUCKWAY_SERVER_URL or ~/.duckway config).
+func sudoUpdateCommand(exe, serverURL string) string {
+	if exe == "" {
+		exe = "duckway"
+	}
+	return fmt.Sprintf("sudo %s update --server %s", shellQuote(exe), shellQuote(serverURL))
+}
+
 func cmdUpdate(configDir string) {
 	// `duckway update` only needs a server URL — not auth, not keys.
 	// Don't require `duckway init` to have run; pick the URL from (in
@@ -628,6 +653,16 @@ func cmdUpdate(configDir string) {
 
 	fmt.Println("New version available — downloading...")
 	if err := client.DownloadAndReplaceClient(serverURL); err != nil {
+		// A permission-denied failure means the install dir is owned by root
+		// (e.g. /usr/local/bin). Hand the user the exact command to copy-paste:
+		// the running binary's full path + `update --server <url>`, so it works
+		// even under sudo (root's HOME/env won't see the user's config or
+		// $DUCKWAY_SERVER_URL).
+		if errors.Is(err, os.ErrPermission) {
+			exe, _ := os.Executable()
+			sudoCmd := sudoUpdateCommand(exe, serverURL)
+			log.Fatalf("Update failed: %v\n\nThe install location isn't writable by your user. Re-run with sudo:\n\n    %s\n", err, cyan(sudoCmd))
+		}
 		log.Fatalf("Update failed: %v", err)
 	}
 

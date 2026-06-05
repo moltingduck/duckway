@@ -78,7 +78,7 @@ func DownloadAndReplaceClient(serverURL string) error {
 	dir := filepath.Dir(exe)
 	tmp, err := os.CreateTemp(dir, ".duckway-update-*")
 	if err != nil {
-		return fmt.Errorf("create temp file in %s: %w (try with sudo)", dir, err)
+		return fmt.Errorf("create temp file in %s: %w", dir, err)
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath) // best-effort cleanup if we don't reach Rename
@@ -107,7 +107,7 @@ func DownloadAndReplaceClient(serverURL string) error {
 	// Atomic replace. On Linux/macOS, rename works even when the binary is
 	// currently executing — the running process holds the old inode open.
 	if err := os.Rename(tmpPath, exe); err != nil {
-		return fmt.Errorf("replace %s: %w (try with sudo)", exe, err)
+		return fmt.Errorf("replace %s: %w", exe, err)
 	}
 	return nil
 }

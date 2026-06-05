@@ -1,0 +1,38 @@
+package main
+
+import "testing"
+
+func TestShellQuote(t *testing.T) {
+	cases := map[string]string{
+		"":                          "''",
+		"duckway":                   "duckway",
+		"/usr/local/bin/duckway":    "/usr/local/bin/duckway",
+		"https://srv:8080":          "https://srv:8080",
+		"/opt/my apps/duckway":      "'/opt/my apps/duckway'",
+		"https://srv/?a=b&c=d":      "'https://srv/?a=b&c=d'",
+		"a'b":                       `'a'\''b'`,
+	}
+	for in, want := range cases {
+		if got := shellQuote(in); got != want {
+			t.Errorf("shellQuote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestSudoUpdateCommand(t *testing.T) {
+	got := sudoUpdateCommand("/usr/local/bin/duckway", "https://srv:8080")
+	want := "sudo /usr/local/bin/duckway update --server https://srv:8080"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+
+	// Empty exe (os.Executable failed) falls back to a bare "duckway".
+	if got := sudoUpdateCommand("", "https://srv:8080"); got != "sudo duckway update --server https://srv:8080" {
+		t.Fatalf("empty-exe fallback wrong: %q", got)
+	}
+
+	// Spaces in the path are quoted so the command stays one pasteable token.
+	if got := sudoUpdateCommand("/opt/my apps/duckway", "https://srv:8080"); got != "sudo '/opt/my apps/duckway' update --server https://srv:8080" {
+		t.Fatalf("spaced path not quoted: %q", got)
+	}
+}
