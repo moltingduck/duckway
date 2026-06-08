@@ -394,7 +394,7 @@ func (s *MCPServer) callServer(ctx context.Context, method, path string, body in
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := directClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("server unreachable: %w", err)
 	}

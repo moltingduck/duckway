@@ -119,15 +119,14 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // the values mergeProxySettings writes into ~/.claude/settings.json.
 func PrintProxyEnv(port int) {
 	proxyURL := fmt.Sprintf("http://localhost:%d", port)
-	const noProxy = "localhost,127.0.0.1"
 	fmt.Printf("# Duckway proxy env — route agent traffic through the local proxy on port %d\n", port)
 	fmt.Println("# Apply with:  eval \"$(duckway env --proxy)\"   or append to your shell startup file.")
 	fmt.Printf("export HTTP_PROXY=%s\n", proxyURL)
 	fmt.Printf("export HTTPS_PROXY=%s\n", proxyURL)
 	fmt.Printf("export http_proxy=%s\n", proxyURL)
 	fmt.Printf("export https_proxy=%s\n", proxyURL)
-	fmt.Printf("export NO_PROXY=%s\n", noProxy)
-	fmt.Printf("export no_proxy=%s\n", noProxy)
+	fmt.Printf("export NO_PROXY=%s\n", noProxyBaseline)
+	fmt.Printf("export no_proxy=%s\n", noProxyBaseline)
 }
 
 // WriteProxyEnvScript writes a shell script that sets proxy env vars.

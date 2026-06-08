@@ -151,7 +151,7 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 			},
 		},
 		loanCache:   make(map[string]*loanedToken),
-		auditClient: &http.Client{Timeout: 10 * time.Second},
+		auditClient: &http.Client{Timeout: 10 * time.Second, Transport: directTransport},
 		debug:       debug,
 	}
 
@@ -452,7 +452,7 @@ func parseClientCA(certPEM, keyPEM []byte) (*services.CAManager, error) {
 }
 
 func fetchServiceHosts(serverURL, token string) map[string]hostEntry {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: directTransport}
 	req, _ := http.NewRequest("GET", serverURL+"/client/services", nil)
 	req.Header.Set("X-Duckway-Token", token)
 

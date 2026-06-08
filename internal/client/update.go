@@ -14,7 +14,7 @@ import (
 // CheckServerVersion fetches the gateway's reported build version from
 // GET /version. No auth required.
 func CheckServerVersion(serverURL string) (string, error) {
-	cli := &http.Client{Timeout: 10 * time.Second}
+	cli := &http.Client{Timeout: 10 * time.Second, Transport: directTransport}
 	resp, err := cli.Get(serverURL + "/version")
 	if err != nil {
 		return "", fmt.Errorf("contact server: %w", err)
@@ -62,7 +62,7 @@ func DownloadAndReplaceClient(serverURL string) error {
 	}
 
 	url := fmt.Sprintf("%s/download/duckway-client-%s-%s", serverURL, osName, arch)
-	cli := &http.Client{Timeout: 5 * time.Minute}
+	cli := &http.Client{Timeout: 5 * time.Minute, Transport: directTransport}
 	resp, err := cli.Get(url)
 	if err != nil {
 		return fmt.Errorf("download %s: %w", url, err)

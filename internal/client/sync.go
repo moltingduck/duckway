@@ -392,7 +392,12 @@ func SyncCanaries(configDir string, cfg *Config) (int, error) {
 	return deployed, nil
 }
 
-// PrintEnv outputs keys in shell-eval format.
+// PrintEnv outputs keys in shell-eval format, followed by the local proxy
+// exports (HTTP_PROXY/HTTPS_PROXY/NO_PROXY). Emitting both means a single
+// `eval "$(duckway env)"` configures the agent's keys AND routes its traffic
+// through the local duckway proxy — without a separate `duckway env --proxy`
+// step. `duckway env --proxy` remains available to print the proxy exports
+// alone.
 func PrintEnv(configDir string) error {
 	data, err := os.ReadFile(KeysEnvPath(configDir))
 	if err != nil {
@@ -406,6 +411,15 @@ func PrintEnv(configDir string) error {
 		}
 		fmt.Printf("export %s\n", line)
 	}
+
+	// Append the proxy exports. Fall back to the default port if the config
+	// can't be read — the proxy exports are still useful and the default
+	// matches LoadConfig's own ProxyPort default.
+	port := 18080
+	if cfg, err := LoadConfig(configDir); err == nil {
+		port = cfg.ProxyPort
+	}
+	PrintProxyEnv(port)
 	return nil
 }
 
@@ -436,12 +450,15 @@ func mergeProxySettings(path string, proxyPort int) error {
 	proxyURL := fmt.Sprintf("http://localhost:%d", proxyPort)
 	env["HTTPS_PROXY"] = proxyURL
 	env["HTTP_PROXY"] = proxyURL
-	// Always include localhost loopback. Preserve any user-added NO_PROXY
-	// entries, just guarantee the loopback set is present.
+	// Always include loopback + Claude infrastructure. Preserve any user-added
+	// NO_PROXY entries; only guarantee the required set is present.
+	// downloads.claude.ai is excluded so `claude --update` works even when
+	// the duckway proxy is not running (the update binary comes from Anthropic,
+	// not an AI API that duckway needs to intercept).
 	if existing, ok := env["NO_PROXY"].(string); ok && existing != "" {
-		env["NO_PROXY"] = ensureLoopbackInNoProxy(existing)
+		env["NO_PROXY"] = ensureBypassInNoProxy(existing)
 	} else {
-		env["NO_PROXY"] = "localhost,127.0.0.1"
+		env["NO_PROXY"] = noProxyBaseline
 	}
 	settings["env"] = env
 
@@ -452,15 +469,29 @@ func mergeProxySettings(path string, proxyPort int) error {
 	return os.WriteFile(path, out, 0600)
 }
 
-// ensureLoopbackInNoProxy returns the NO_PROXY string with localhost and
-// 127.0.0.1 guaranteed present (added if missing, comma-separated).
-func ensureLoopbackInNoProxy(existing string) string {
+// noProxyBaseline is the set of hosts that must always bypass the duckway
+// proxy, written into ~/.claude/settings.json env.NO_PROXY on every sync.
+//
+// Loopback keeps duckway-internal calls direct.
+// downloads.claude.ai is Claude Code's update endpoint — `claude --update`
+// must reach it even when the duckway proxy is not running.
+const noProxyBaseline = "localhost,127.0.0.1,downloads.claude.ai"
+
+// noProxyRequired lists the individual entries that ensureBypassInNoProxy
+// guarantees are present. Derived from noProxyBaseline for a single source
+// of truth.
+var noProxyRequired = strings.Split(noProxyBaseline, ",")
+
+// ensureBypassInNoProxy returns the NO_PROXY string with every entry from
+// noProxyRequired guaranteed present (added if missing, comma-separated).
+// User-added entries are preserved.
+func ensureBypassInNoProxy(existing string) string {
 	hosts := strings.Split(existing, ",")
 	have := map[string]bool{}
 	for _, h := range hosts {
 		have[strings.TrimSpace(h)] = true
 	}
-	for _, must := range []string{"localhost", "127.0.0.1"} {
+	for _, must := range noProxyRequired {
 		if !have[must] {
 			hosts = append(hosts, must)
 		}

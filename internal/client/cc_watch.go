@@ -110,7 +110,7 @@ func (w *CCWatch) connectAndStream(ctx context.Context) error {
 	req.Header.Set("X-Duckway-Token", w.cfg.Token)
 	req.Header.Set("Accept", "text/event-stream")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := directClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}

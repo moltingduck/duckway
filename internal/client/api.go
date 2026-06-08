@@ -6,9 +6,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"time"
 )
+
+// directTransport is an HTTP transport that never reads HTTPS_PROXY / HTTP_PROXY
+// from the environment. All duckway-to-server requests use it so the proxy can
+// start and sync without trying to route traffic through itself.
+var directTransport = &http.Transport{
+	// Proxy: nil → proxyForRequest returns (nil, nil) → no proxy used.
+	// Explicit nil beats the DefaultTransport default of ProxyFromEnvironment.
+	Proxy: nil,
+	DialContext: (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	TLSHandshakeTimeout: 10 * time.Second,
+	IdleConnTimeout:     90 * time.Second,
+}
+
+// directClient is the shared HTTP client for all duckway-internal requests.
+var directClient = &http.Client{Transport: directTransport}
 
 // APIClient talks to the Duckway server.
 type APIClient struct {
@@ -21,7 +41,7 @@ func NewAPIClient(baseURL, token string) *APIClient {
 	return &APIClient{
 		baseURL:    baseURL,
 		token:      token,
-		httpClient: &http.Client{},
+		httpClient: directClient,
 	}
 }
 
