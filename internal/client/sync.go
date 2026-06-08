@@ -450,15 +450,12 @@ func mergeProxySettings(path string, proxyPort int) error {
 	proxyURL := fmt.Sprintf("http://localhost:%d", proxyPort)
 	env["HTTPS_PROXY"] = proxyURL
 	env["HTTP_PROXY"] = proxyURL
-	// Always include loopback + Claude infrastructure. Preserve any user-added
-	// NO_PROXY entries; only guarantee the required set is present.
-	// downloads.claude.ai is excluded so `claude --update` works even when
-	// the duckway proxy is not running (the update binary comes from Anthropic,
-	// not an AI API that duckway needs to intercept).
+	// Always include localhost loopback. Preserve any user-added NO_PROXY
+	// entries, just guarantee the loopback set is present.
 	if existing, ok := env["NO_PROXY"].(string); ok && existing != "" {
-		env["NO_PROXY"] = ensureBypassInNoProxy(existing)
+		env["NO_PROXY"] = ensureLoopbackInNoProxy(existing)
 	} else {
-		env["NO_PROXY"] = noProxyBaseline
+		env["NO_PROXY"] = "localhost,127.0.0.1"
 	}
 	settings["env"] = env
 
@@ -469,29 +466,15 @@ func mergeProxySettings(path string, proxyPort int) error {
 	return os.WriteFile(path, out, 0600)
 }
 
-// noProxyBaseline is the set of hosts that must always bypass the duckway
-// proxy, written into ~/.claude/settings.json env.NO_PROXY on every sync.
-//
-// Loopback keeps duckway-internal calls direct.
-// downloads.claude.ai is Claude Code's update endpoint — `claude --update`
-// must reach it even when the duckway proxy is not running.
-const noProxyBaseline = "localhost,127.0.0.1,downloads.claude.ai"
-
-// noProxyRequired lists the individual entries that ensureBypassInNoProxy
-// guarantees are present. Derived from noProxyBaseline for a single source
-// of truth.
-var noProxyRequired = strings.Split(noProxyBaseline, ",")
-
-// ensureBypassInNoProxy returns the NO_PROXY string with every entry from
-// noProxyRequired guaranteed present (added if missing, comma-separated).
-// User-added entries are preserved.
-func ensureBypassInNoProxy(existing string) string {
+// ensureLoopbackInNoProxy returns the NO_PROXY string with localhost and
+// 127.0.0.1 guaranteed present (added if missing, comma-separated).
+func ensureLoopbackInNoProxy(existing string) string {
 	hosts := strings.Split(existing, ",")
 	have := map[string]bool{}
 	for _, h := range hosts {
 		have[strings.TrimSpace(h)] = true
 	}
-	for _, must := range noProxyRequired {
+	for _, must := range []string{"localhost", "127.0.0.1"} {
 		if !have[must] {
 			hosts = append(hosts, must)
 		}

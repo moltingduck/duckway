@@ -33,8 +33,8 @@ func TestPrintProxyEnv(t *testing.T) {
 		"export HTTPS_PROXY=http://localhost:18080",
 		"export http_proxy=http://localhost:18080",
 		"export https_proxy=http://localhost:18080",
-		"export NO_PROXY=" + noProxyBaseline,
-		"export no_proxy=" + noProxyBaseline,
+		"export NO_PROXY=localhost,127.0.0.1",
+		"export no_proxy=localhost,127.0.0.1",
 	}
 	for _, line := range want {
 		if !strings.Contains(out, line) {
@@ -85,7 +85,7 @@ func TestPrintEnv_IncludesProxyVars(t *testing.T) {
 		"export HTTPS_PROXY=http://localhost:9999",
 		"export http_proxy=http://localhost:9999",
 		"export https_proxy=http://localhost:9999",
-		"export NO_PROXY=" + noProxyBaseline,
+		"export NO_PROXY=localhost,127.0.0.1",
 	}
 	for _, line := range want {
 		if !strings.Contains(out, line) {
@@ -101,33 +101,6 @@ func TestPrintEnv_IncludesProxyVars(t *testing.T) {
 		if !strings.HasPrefix(line, "export ") {
 			t.Errorf("non-comment line is not an export statement: %q", line)
 		}
-	}
-}
-
-// downloads.claude.ai must be in NO_PROXY so `claude --update` works even when
-// the duckway proxy is not running. Regression guard.
-func TestNoProxyBaselineContainsUpdateDomain(t *testing.T) {
-	for _, domain := range []string{"localhost", "127.0.0.1", "downloads.claude.ai"} {
-		found := false
-		for _, entry := range strings.Split(noProxyBaseline, ",") {
-			if strings.TrimSpace(entry) == domain {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("noProxyBaseline missing %q (needed so claude --update bypasses the duckway proxy)", domain)
-		}
-	}
-
-	// ensureBypassInNoProxy must add downloads.claude.ai when it is absent.
-	result := ensureBypassInNoProxy("myhost.internal")
-	if !strings.Contains(result, "downloads.claude.ai") {
-		t.Errorf("ensureBypassInNoProxy did not add downloads.claude.ai: %q", result)
-	}
-	// Must preserve the user's existing entry.
-	if !strings.Contains(result, "myhost.internal") {
-		t.Errorf("ensureBypassInNoProxy dropped user entry: %q", result)
 	}
 }
 

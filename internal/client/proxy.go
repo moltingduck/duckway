@@ -125,8 +125,9 @@ func PrintProxyEnv(port int) {
 	fmt.Printf("export HTTPS_PROXY=%s\n", proxyURL)
 	fmt.Printf("export http_proxy=%s\n", proxyURL)
 	fmt.Printf("export https_proxy=%s\n", proxyURL)
-	fmt.Printf("export NO_PROXY=%s\n", noProxyBaseline)
-	fmt.Printf("export no_proxy=%s\n", noProxyBaseline)
+	const noProxy = "localhost,127.0.0.1"
+	fmt.Printf("export NO_PROXY=%s\n", noProxy)
+	fmt.Printf("export no_proxy=%s\n", noProxy)
 }
 
 // WriteProxyEnvScript writes a shell script that sets proxy env vars.
