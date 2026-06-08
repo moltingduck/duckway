@@ -13,15 +13,19 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/server/services"
 )
 
-type serviceInfo struct {
+// ServiceInfo describes one service the proxy intercepts, as returned by the
+// server. Used by FetchServices and displayed by `duckway hosts`.
+type ServiceInfo struct {
 	Name         string `json:"name"`
 	HostPattern  string `json:"host_pattern"` // comma-separated list of hosts
 	UpstreamURL  string `json:"upstream_url"`
@@ -55,6 +59,7 @@ type httpsProxy struct {
 	token      string
 	ca         *services.CAManager
 	certCache  sync.Map // hostname -> *tls.Certificate
+	hostMu     sync.RWMutex
 	hostMap    map[string]hostEntry
 	httpClient *http.Client
 	debug      bool // when true, log every request/response
@@ -108,27 +113,6 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 		}
 	}
 
-	// Background sync
-	if syncInterval > 0 {
-		go func() {
-			ticker := time.NewTicker(syncInterval)
-			defer ticker.Stop()
-			for range ticker.C {
-				n, _ := SyncKeys(configDir, cfg)
-				log.Printf("Synced %d keys", n)
-				// Re-apply supply-chain rc settings (picks up admin toggle /
-				// cooldown changes); only log when something actually changed.
-				if ch := SyncSupplyChainRC(cfg); SummarizeSupplyChainChanges(ch) != "up to date" {
-					log.Printf("Supply-chain hardening: %s", SummarizeSupplyChainChanges(ch))
-				}
-				// Refresh host map
-				if newMap := fetchServiceHosts(cfg.ServerURL, cfg.Token); len(newMap) > 0 {
-					hostMap = newMap
-				}
-			}
-		}()
-	}
-
 	if debug {
 		log.Printf("Debug mode ON — logging every request/response")
 	}
@@ -157,6 +141,34 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 
 	// Periodic audit-log flush + cache eviction
 	go proxy.auditFlushLoop()
+
+	// Background sync — keys, supply-chain rc, and host map.
+	// Runs after proxy is constructed so reloadHostMap can update proxy.hostMap
+	// directly (previous code updated a local variable that proxy never read).
+	if syncInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(syncInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				n, _ := SyncKeys(configDir, cfg)
+				log.Printf("Synced %d keys", n)
+				if ch := SyncSupplyChainRC(cfg); SummarizeSupplyChainChanges(ch) != "up to date" {
+					log.Printf("Supply-chain hardening: %s", SummarizeSupplyChainChanges(ch))
+				}
+				proxy.reloadHostMap(cfg.ServerURL, cfg.Token)
+			}
+		}()
+	}
+
+	// SIGUSR1 → immediate host-map reload (used by `duckway hosts reload`).
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGUSR1)
+		for range sig {
+			log.Printf("SIGUSR1: reloading host map")
+			proxy.reloadHostMap(cfg.ServerURL, cfg.Token)
+		}
+	}()
 
 	addr := fmt.Sprintf(":%d", cfg.ProxyPort)
 	log.Printf("Duckway proxy listening on %s (HTTP + HTTPS CONNECT)", addr)
@@ -226,7 +238,9 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		host = h
 	}
 
+	p.hostMu.RLock()
 	entry, isMITM := p.hostMap[host]
+	p.hostMu.RUnlock()
 	if !isMITM || p.ca == nil {
 		// Unknown host or no CA: transparent tunnel
 		p.tunnelConnect(w, r)
@@ -451,24 +465,31 @@ func parseClientCA(certPEM, keyPEM []byte) (*services.CAManager, error) {
 	return &services.CAManager{CertPEM: certPEM, KeyPEM: keyPEM, Cert: cert, Key: ecKey}, nil
 }
 
-func fetchServiceHosts(serverURL, token string) map[string]hostEntry {
-	client := &http.Client{Timeout: 10 * time.Second, Transport: directTransport}
-	req, _ := http.NewRequest("GET", serverURL+"/client/services", nil)
-	req.Header.Set("X-Duckway-Token", token)
-
-	resp, err := client.Do(req)
+// FetchServices queries the server for the current interception list.
+// Used by `duckway hosts` to display what the proxy intercepts.
+func FetchServices(serverURL, token string) ([]ServiceInfo, error) {
+	cli := &http.Client{Timeout: 10 * time.Second, Transport: directTransport}
+	req, err := http.NewRequest("GET", serverURL+"/client/services", nil)
 	if err != nil {
-		log.Printf("Warning: failed to fetch service hosts: %v", err)
-		return nil
+		return nil, err
+	}
+	req.Header.Set("X-Duckway-Token", token)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return nil, err
 	}
 	defer resp.Body.Close()
+	var svcs []ServiceInfo
+	if err := json.NewDecoder(resp.Body).Decode(&svcs); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	return svcs, nil
+}
 
-	var svcs []serviceInfo
-	json.NewDecoder(resp.Body).Decode(&svcs)
-
-	// HostPattern can be a comma-separated list ("api.github.com,github.com")
-	// — split and map each host individually so the sidecar matches on raw Host
-	// header without any pattern-matching at lookup time.
+// buildHostMap expands a ServiceInfo slice into the per-host lookup table.
+// HostPattern can be comma-separated ("api.github.com,github.com") — each
+// host is mapped individually so handleConnect can look up by raw Host header.
+func buildHostMap(svcs []ServiceInfo) map[string]hostEntry {
 	hostMap := make(map[string]hostEntry)
 	for _, s := range svcs {
 		mode := s.DeliveryMode
@@ -488,6 +509,29 @@ func fetchServiceHosts(serverURL, token string) map[string]hostEntry {
 		}
 	}
 	return hostMap
+}
+
+func fetchServiceHosts(serverURL, token string) map[string]hostEntry {
+	svcs, err := FetchServices(serverURL, token)
+	if err != nil {
+		log.Printf("Warning: failed to fetch service hosts: %v", err)
+		return nil
+	}
+	return buildHostMap(svcs)
+}
+
+// reloadHostMap fetches the current service list from the server and atomically
+// replaces proxy.hostMap. Safe to call from any goroutine concurrently with
+// handleConnect.
+func (p *httpsProxy) reloadHostMap(serverURL, token string) {
+	newMap := fetchServiceHosts(serverURL, token)
+	if len(newMap) == 0 {
+		return
+	}
+	p.hostMu.Lock()
+	p.hostMap = newMap
+	p.hostMu.Unlock()
+	log.Printf("Host map refreshed: %d hosts", len(newMap))
 }
 
 // =====================================================================

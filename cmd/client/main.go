@@ -111,15 +111,17 @@ Usage:
   duckway start          Start both daemons (proxy + cc watch) — daemon mode
   duckway stop           Stop both daemons
   duckway restart        Restart both daemons
-  duckway env            Print keys as shell export statements
-  duckway env --proxy    Print HTTP(S)_PROXY exports for the local proxy
-                         (eval "$(duckway env --proxy)" or append to ~/.bashrc)
+  duckway env            Print keys + HTTP(S)_PROXY exports as shell statements
+                         (eval "$(duckway env)" or append to ~/.bashrc)
+  duckway env --proxy    Print only the HTTP(S)_PROXY exports for the local proxy
   duckway proxy          Start local proxy (foreground)
   duckway proxy -d       Start local proxy as background daemon
   duckway proxy stop     Stop the running daemon
   duckway proxy restart  Stop the running daemon and start a fresh one
   duckway proxy status   Show daemon status
-  duckway status         Show connection status, CA cert expiry
+  duckway proxy hosts        List services the proxy intercepts (queries server)
+  duckway proxy hosts reload Signal the running proxy daemon to refresh its host list now
+  duckway status             Show connection status, CA cert expiry
   duckway install-ca     Re-install the Duckway CA into the system trust store
   duckway update         Compare local version with server, download + replace if drifted
                          (uses saved config; override with --server <url>
@@ -745,6 +747,9 @@ func cmdProxy(configDir string) {
 			status = true
 		case "restart":
 			restart = true
+		case "hosts":
+			cmdHosts(configDir)
+			return
 		case "--debug", "-D":
 			debug = true
 		case "--port":
@@ -1126,5 +1131,47 @@ func cmdStatus(configDir string) {
 	default:
 		days := int(expiresIn / (24 * time.Hour))
 		fmt.Printf("CA cert:     expires %s (%d days)\n", exp, days)
+	}
+}
+
+func cmdHosts(configDir string) {
+	if len(os.Args) >= 4 && os.Args[3] == "reload" {
+		pidFile := filepath.Join(configDir, "proxy.pid")
+		pid, alive := readPID(pidFile)
+		if pid == 0 || !alive {
+			log.Fatalf("duckway proxy is not running (no live PID at %s)", pidFile)
+		}
+		if err := syscall.Kill(pid, syscall.SIGUSR1); err != nil {
+			log.Fatalf("signal proxy (PID %d): %v", pid, err)
+		}
+		fmt.Printf("Sent reload signal to proxy daemon (PID %d)\n", pid)
+		return
+	}
+
+	cfg, err := client.LoadConfig(configDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	svcs, err := client.FetchServices(cfg.ServerURL, cfg.Token)
+	if err != nil {
+		log.Fatalf("fetch services: %v", err)
+	}
+	if len(svcs) == 0 {
+		fmt.Println("No proxy services configured on server.")
+		return
+	}
+
+	fmt.Printf("%-20s  %-38s  %s\n", "SERVICE", "HOSTS", "MODE")
+	fmt.Printf("%-20s  %-38s  %s\n",
+		strings.Repeat("─", 20), strings.Repeat("─", 38), strings.Repeat("─", 25))
+	for _, s := range svcs {
+		mode := s.DeliveryMode
+		if mode == "" {
+			mode = "proxy"
+		}
+		if mode == "loan_proxy" && s.UpstreamURL != "" {
+			mode = "loan_proxy → " + s.UpstreamURL
+		}
+		fmt.Printf("%-20s  %-38s  %s\n", s.Name, s.HostPattern, mode)
 	}
 }

@@ -102,12 +102,11 @@ duckway init
 # Follow prompts: server URL, client name, paste the client token
 
 duckway sync     # pull phantom tokens from server
-duckway env      # show shell exports
 duckway proxy -d # start HTTPS MITM proxy in background
 
-# Configure the agent's HTTPS_PROXY
-export HTTPS_PROXY=http://localhost:18080
-export HTTP_PROXY=http://localhost:18080
+# `duckway env` prints both the keys AND the HTTP(S)_PROXY exports, so a single
+# eval configures the agent's keys and routes its traffic through the proxy:
+eval "$(duckway env)"
 ```
 
 The agent now talks to `api.openai.com` / `api.anthropic.com` etc. as normal — Duckway intercepts, swaps phantom → real, and forwards.
