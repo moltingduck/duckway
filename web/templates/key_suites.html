@@ -1,0 +1,298 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Key Suites</h1>
+  <button class="btn btn-primary" onclick="document.getElementById('add-suite-modal').style.display='flex'">New Suite</button>
+</div>
+
+<p class="text-muted" style="margin-bottom:1.25rem">
+  A <strong>Key Suite</strong> is a named bundle of keys from different services. Assign one suite to a client and it receives a placeholder for each service in the bundle. Editing a suite entry propagates to all assigned clients automatically.
+</p>
+
+<div class="card">
+  {{if .KeySuites}}
+  {{range .KeySuites}}
+  <div class="group-block" style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin-bottom:1rem">
+    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem">
+      <strong>{{.Name}}</strong>
+      {{if .Description}}<span class="text-muted text-sm">{{.Description}}</span>{{end}}
+      <div style="margin-left:auto;display:flex;gap:.5rem">
+        <button class="btn btn-sm" onclick="openSuiteEntries('{{.ID}}','{{.Name}}')">Manage Entries</button>
+        <button class="btn btn-sm btn-primary" onclick="openAssign('{{.ID}}','{{.Name}}')">Assign to Client</button>
+        <button class="btn btn-sm" onclick="openEditSuite('{{.ID}}','{{.Name}}','{{.Description}}')">Edit</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteSuite('{{.ID}}')">Delete</button>
+      </div>
+    </div>
+    <div class="text-muted text-sm">ID: <span class="mono">{{.ID}}</span> &middot; Created {{.CreatedAt}}</div>
+    <div id="suite-entries-preview-{{.ID}}" style="margin-top:.5rem"
+         hx-get="/api/key-suites/{{.ID}}" hx-trigger="load" hx-swap="innerHTML" hx-select="#suite-entries-inner"
+         data-suite-id="{{.ID}}">
+      <em class="text-muted text-sm">Loading entries...</em>
+    </div>
+  </div>
+  {{end}}
+  {{else}}
+  <p class="text-muted" style="padding:1rem">No key suites yet. Create one to bundle multiple service keys for easy client assignment.</p>
+  {{end}}
+</div>
+
+<!-- New Suite Modal -->
+<div id="add-suite-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>New Key Suite</h2>
+    <form onsubmit="createSuite(event)">
+      <div class="form-group"><label>Name</label><input type="text" id="suite-name" placeholder="My Dev Stack" required></div>
+      <div class="form-group"><label>Description</label><input type="text" id="suite-desc" placeholder="Optional description"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('add-suite-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Suite Modal -->
+<div id="edit-suite-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Edit Suite</h2>
+    <form onsubmit="saveSuite(event)">
+      <input type="hidden" id="edit-suite-id">
+      <div class="form-group"><label>Name</label><input type="text" id="edit-suite-name" required></div>
+      <div class="form-group"><label>Description</label><input type="text" id="edit-suite-desc"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('edit-suite-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Manage Entries Modal -->
+<div id="entries-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:680px;width:95%">
+    <h2>Suite Entries: <span id="entries-suite-name"></span></h2>
+    <div id="entries-list" style="margin-bottom:1rem;min-height:3rem">
+      <p class="text-muted">Loading...</p>
+    </div>
+    <hr style="margin:.75rem 0">
+    <h3 style="margin-bottom:.5rem">Add Entry</h3>
+    <form onsubmit="addEntry(event)" style="display:flex;flex-direction:column;gap:.5rem">
+      <input type="hidden" id="entry-suite-id">
+      <div class="form-group" style="margin:0">
+        <label>Service</label>
+        <select id="entry-service">
+          {{range .Services}}
+          <option value="{{.ID}}">{{.DisplayName}} ({{.Name}})</option>
+          {{end}}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0">
+        <label>Key Source</label>
+        <select id="entry-key-type" onchange="updateKeySource()">
+          <option value="key">Single API Key</option>
+          <option value="group">Key Group (round-robin)</option>
+        </select>
+      </div>
+      <div id="entry-key-row" class="form-group" style="margin:0">
+        <label>API Key</label>
+        <select id="entry-key-id">
+          {{range .Keys}}
+          <option value="{{.ID}}">{{.Name}} ({{.ServiceName}})</option>
+          {{end}}
+        </select>
+      </div>
+      <div id="entry-group-row" class="form-group" style="margin:0;display:none">
+        <label>Key Group</label>
+        <select id="entry-group-id">
+        </select>
+      </div>
+      <div class="form-group" style="margin:0">
+        <label>Env Name <span class="text-muted text-sm">(override, leave blank for default)</span></label>
+        <input type="text" id="entry-env-name" placeholder="AUTO">
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:.25rem">
+        <button type="button" class="btn" onclick="document.getElementById('entries-modal').style.display='none'">Close</button>
+        <button type="submit" class="btn btn-primary">Add Entry</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Assign Modal -->
+<div id="assign-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <h2>Assign Suite: <span id="assign-suite-name"></span></h2>
+    <div id="assign-conflict-warning" style="display:none;background:var(--warning-bg,#fff3cd);border:1px solid #ffc107;border-radius:4px;padding:.75rem;margin-bottom:1rem">
+      <strong>Conflicts detected</strong>
+      <p class="text-sm" id="assign-conflict-detail" style="margin:.25rem 0 0"></p>
+      <p class="text-sm" style="margin:.25rem 0 0">Individual assignments take priority. Conflicting services will be skipped. Proceed anyway?</p>
+    </div>
+    <form onsubmit="assignSuite(event)">
+      <input type="hidden" id="assign-suite-id">
+      <input type="hidden" id="assign-force" value="false">
+      <div class="form-group">
+        <label>Client</label>
+        <select id="assign-client-id">
+          {{range .Clients}}
+          <option value="{{.ID}}">{{.Name}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div id="assign-result" style="display:none;margin-top:.5rem"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('assign-modal').style.display='none'">Cancel</button>
+        <button type="submit" id="assign-btn" class="btn btn-primary">Assign</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+// ── Suite CRUD ────────────────────────────────────────────────────────────
+async function createSuite(e) {
+  e.preventDefault();
+  const res = await fetch('/api/key-suites', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name: document.getElementById('suite-name').value,
+                          description: document.getElementById('suite-desc').value})
+  });
+  if (res.ok) location.reload();
+  else { const j = await res.json(); alert('Error: ' + j.error); }
+}
+
+function openEditSuite(id, name, desc) {
+  document.getElementById('edit-suite-id').value = id;
+  document.getElementById('edit-suite-name').value = name;
+  document.getElementById('edit-suite-desc').value = desc;
+  document.getElementById('edit-suite-modal').style.display = 'flex';
+}
+
+async function saveSuite(e) {
+  e.preventDefault();
+  const id = document.getElementById('edit-suite-id').value;
+  const res = await fetch('/api/key-suites/'+id, {
+    method:'PATCH', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name: document.getElementById('edit-suite-name').value,
+                          description: document.getElementById('edit-suite-desc').value})
+  });
+  if (res.ok) location.reload();
+  else { const j = await res.json(); alert('Error: ' + j.error); }
+}
+
+async function deleteSuite(id) {
+  if (!confirm('Delete this suite? Client placeholders from it will remain but lose suite tracking.')) return;
+  const res = await fetch('/api/key-suites/'+id, {method:'DELETE'});
+  if (res.ok) location.reload();
+  else alert('Delete failed');
+}
+
+// ── Entry Management ─────────────────────────────────────────────────────
+async function openSuiteEntries(suiteID, suiteName) {
+  document.getElementById('entries-suite-name').textContent = suiteName;
+  document.getElementById('entry-suite-id').value = suiteID;
+  await refreshEntries(suiteID);
+  document.getElementById('entries-modal').style.display = 'flex';
+}
+
+async function refreshEntries(suiteID) {
+  const res = await fetch('/api/key-suites/'+suiteID);
+  const data = await res.json();
+  const list = document.getElementById('entries-list');
+  if (!data.entries || data.entries.length === 0) {
+    list.innerHTML = '<p class="text-muted">No entries yet.</p>';
+    return;
+  }
+  list.innerHTML = data.entries.map(e => `
+    <div style="display:flex;align-items:center;gap:.5rem;padding:.4rem 0;border-bottom:1px solid var(--border)">
+      <span class="badge badge-blue">${e.service_name}</span>
+      <span class="text-sm">${e.api_key_name || e.group_name || '—'}</span>
+      <span class="text-muted text-sm mono">${e.env_name}</span>
+      <div style="margin-left:auto;display:flex;gap:.5rem">
+        <button class="btn btn-sm btn-danger" onclick="removeEntry('${suiteID}','${e.id}')">Remove</button>
+      </div>
+    </div>`).join('');
+}
+
+function updateKeySource() {
+  const t = document.getElementById('entry-key-type').value;
+  document.getElementById('entry-key-row').style.display = t === 'key' ? '' : 'none';
+  document.getElementById('entry-group-row').style.display = t === 'group' ? '' : 'none';
+}
+
+async function addEntry(e) {
+  e.preventDefault();
+  const suiteID = document.getElementById('entry-suite-id').value;
+  const keyType = document.getElementById('entry-key-type').value;
+  const body = {
+    service_id: document.getElementById('entry-service').value,
+    env_name:   document.getElementById('entry-env-name').value,
+  };
+  if (keyType === 'key') body.api_key_id = document.getElementById('entry-key-id').value;
+  else                   body.group_id   = document.getElementById('entry-group-id').value;
+
+  const res = await fetch('/api/key-suites/'+suiteID+'/entries', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+  });
+  if (res.ok) {
+    await refreshEntries(suiteID);
+    document.getElementById('entry-env-name').value = '';
+  } else {
+    const j = await res.json();
+    alert('Error: ' + j.error);
+  }
+}
+
+async function removeEntry(suiteID, entryID) {
+  if (!confirm('Remove this entry?')) return;
+  const res = await fetch('/api/key-suites/'+suiteID+'/entries/'+entryID, {method:'DELETE'});
+  if (res.ok) await refreshEntries(suiteID);
+  else alert('Remove failed');
+}
+
+// ── Assign Suite to Client ───────────────────────────────────────────────
+function openAssign(suiteID, suiteName) {
+  document.getElementById('assign-suite-id').value = suiteID;
+  document.getElementById('assign-suite-name').textContent = suiteName;
+  document.getElementById('assign-force').value = 'false';
+  document.getElementById('assign-conflict-warning').style.display = 'none';
+  document.getElementById('assign-result').style.display = 'none';
+  document.getElementById('assign-modal').style.display = 'flex';
+}
+
+async function assignSuite(e) {
+  e.preventDefault();
+  const suiteID = document.getElementById('assign-suite-id').value;
+  const clientID = document.getElementById('assign-client-id').value;
+  const force = document.getElementById('assign-force').value === 'true';
+
+  const res = await fetch('/api/key-suites/'+suiteID+'/assign', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({client_id: clientID, force})
+  });
+
+  if (res.status === 409 && !force) {
+    const j = await res.json();
+    const names = (j.conflicts || []).map(c => c.service_name).join(', ');
+    document.getElementById('assign-conflict-detail').textContent = 'Conflicting services: ' + names;
+    document.getElementById('assign-conflict-warning').style.display = '';
+    document.getElementById('assign-force').value = 'true';
+    document.getElementById('assign-btn').textContent = 'Proceed Anyway';
+    return;
+  }
+
+  if (res.ok) {
+    const j = await res.json();
+    const resultEl = document.getElementById('assign-result');
+    resultEl.style.display = '';
+    resultEl.innerHTML = `<p class="text-sm" style="color:green">Assigned: ${j.assigned.join(', ') || 'none'}</p>`
+      + (j.skipped.length ? `<p class="text-sm text-muted">Skipped (conflicts): ${j.skipped.join(', ')}</p>` : '');
+    document.getElementById('assign-btn').textContent = 'Done';
+    document.getElementById('assign-btn').onclick = () => {
+      document.getElementById('assign-modal').style.display = 'none';
+    };
+  } else {
+    const j = await res.json().catch(() => ({}));
+    alert('Assign failed: ' + (j.error || res.status));
+  }
+}
+</script>
+{{end}}

@@ -17,6 +17,7 @@ func NewPlaceholderQueries(db *sql.DB) *PlaceholderQueries {
 const phSelect = `SELECT p.id, p.env_name, p.placeholder, p.service_id, p.api_key_id, p.group_id,
 	p.client_id, p.permission_config, p.requires_approval, p.approval_ttl_minutes,
 	p.key_path, p.is_active, p.usage_count, p.last_used_at, p.created_at,
+	p.suite_id,
 	s.name, c.name, k.name
 	FROM placeholder_keys p
 	JOIN services s ON p.service_id = s.id
@@ -27,6 +28,7 @@ func scanPH(row interface{ Scan(...interface{}) error }, p *models.PlaceholderKe
 	return row.Scan(&p.ID, &p.EnvName, &p.Placeholder, &p.ServiceID, &p.APIKeyID, &p.GroupID,
 		&p.ClientID, &p.PermissionConfig, &p.RequiresApproval, &p.ApprovalTTLMinutes,
 		&p.KeyPath, &p.IsActive, &p.UsageCount, &p.LastUsedAt, &p.CreatedAt,
+		&p.SuiteID,
 		&p.ServiceName, &p.ClientName, &p.APIKeyName)
 }
 
@@ -90,9 +92,9 @@ func (q *PlaceholderQueries) GetByClientAndService(clientID, serviceID string) (
 
 func (q *PlaceholderQueries) Create(p *models.PlaceholderKey) error {
 	_, err := q.db.Exec(
-		`INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, group_id, client_id, permission_config, requires_approval, approval_ttl_minutes, key_path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.EnvName, p.Placeholder, p.ServiceID, p.APIKeyID, p.GroupID, p.ClientID, p.PermissionConfig, p.RequiresApproval, p.ApprovalTTLMinutes, p.KeyPath,
+		`INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, group_id, client_id, permission_config, requires_approval, approval_ttl_minutes, key_path, suite_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.EnvName, p.Placeholder, p.ServiceID, p.APIKeyID, p.GroupID, p.ClientID, p.PermissionConfig, p.RequiresApproval, p.ApprovalTTLMinutes, p.KeyPath, p.SuiteID,
 	)
 	return err
 }
@@ -119,4 +121,9 @@ func (q *PlaceholderQueries) IncrementUsage(id string) error {
 
 func (q *PlaceholderQueries) ListByClient(clientID string) ([]models.PlaceholderKey, error) {
 	return q.List(clientID, "")
+}
+
+func (q *PlaceholderQueries) UpdatePlaceholder(id, newPlaceholder string) error {
+	_, err := q.db.Exec("UPDATE placeholder_keys SET placeholder=? WHERE id=?", newPlaceholder, id)
+	return err
 }

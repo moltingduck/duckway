@@ -13,10 +13,21 @@ type PlaceholderHandler struct {
 	placeholders *queries.PlaceholderQueries
 	services     *queries.ServiceQueries
 	clients      *queries.ClientQueries
+	apiKeys      *queries.APIKeyQueries
+	crypto       *svc.Crypto
 }
 
 func NewPlaceholderHandler(placeholders *queries.PlaceholderQueries, services *queries.ServiceQueries, clients *queries.ClientQueries) *PlaceholderHandler {
 	return &PlaceholderHandler{placeholders: placeholders, services: services, clients: clients}
+}
+
+// WithKeyLookup enables format-sniffing: when a placeholder is created with an
+// explicit api_key_id, the handler decrypts and inspects the real key to pick
+// the right phantom prefix/length (e.g. ghp_* vs github_pat_*).
+func (h *PlaceholderHandler) WithKeyLookup(apiKeys *queries.APIKeyQueries, crypto *svc.Crypto) *PlaceholderHandler {
+	h.apiKeys = apiKeys
+	h.crypto = crypto
+	return h
 }
 
 func (h *PlaceholderHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -76,8 +87,19 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate placeholder key matching service format
-	placeholder, err := svc.GeneratePlaceholder(service.KeyPrefix, service.KeyLength)
+	// Pick prefix/length: when a specific API key is assigned and we have
+	// the crypto to decrypt it, sniff the real key's format so the phantom
+	// matches (e.g. ghp_* vs github_pat_* for GitHub).
+	prefix, keyLen := service.KeyPrefix, service.KeyLength
+	if req.APIKeyID != nil && h.apiKeys != nil && h.crypto != nil {
+		if apiKey, err := h.apiKeys.GetByID(*req.APIKeyID); err == nil {
+			if realKey, err := h.crypto.Decrypt(apiKey.KeyEncrypted); err == nil {
+				prefix, keyLen = svc.DetectKeyFormat(realKey, prefix, keyLen)
+			}
+		}
+	}
+
+	placeholder, err := svc.GeneratePlaceholder(prefix, keyLen)
 	if err != nil {
 		jsonError(w, "failed to generate placeholder", http.StatusInternalServerError)
 		return

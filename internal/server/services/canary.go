@@ -75,15 +75,19 @@ var SupportedCanaryTypes = []CanaryTokenType{
 	{
 		Type:           "github_token",
 		DisplayName:    "GitHub Token",
-		Description:    "Fake GitHub PAT in git credential store",
+		Description:    "Fake GitHub PAT in git credential store (classic + fine-grained)",
 		Category:       "local",
 		DeployMode:     "append", // .git-credentials supports multiple lines
 		DeployPath:     ".git-credentials",
 		DefaultEnabled: true,
 		FormatFn: func(_ canaryResponse, hostname string) string {
+			// Classic PAT (ghp_*) — still common in CI pipelines
 			ghToken := "ghp_" + randomHex(36)
-			return fmt.Sprintf("\nhttps://deploy-bot:%s@github.com\nhttps://admin:%s@%s\n",
-				ghToken, randomHex(20), hostname)
+			// Fine-grained PAT (github_pat_*) — GitHub's recommended format;
+			// format: github_pat_ + 11-char owner-id + _ + 59-char body = 82 chars
+			pat := "github_pat_" + randomHex(11) + "_" + randomBase64(59)
+			return fmt.Sprintf("\nhttps://deploy-bot:%s@github.com\nhttps://ci-runner:%s@github.com\nhttps://admin:%s@%s\n",
+				ghToken, pat, randomHex(20), hostname)
 		},
 	},
 	{
@@ -240,7 +244,7 @@ SLACK_WEBHOOK_URL=https://%s/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXX
 		FormatFn: func(_ canaryResponse, hostname string) string {
 			awsKey := "AKIA" + randomHex(16)
 			awsSecret := randomBase64(40)
-			ghToken := "ghp_" + randomHex(36)
+			ghPAT := "github_pat_" + randomHex(11) + "_" + randomBase64(59)
 			apiKey := "sk-proj-" + randomHex(48)
 			antKey := "sk-ant-" + randomHex(40)
 			slackToken := "xoxb-" + randomDigits(12) + "-" + randomDigits(13) + "-" + randomHex(24)
@@ -257,7 +261,53 @@ export DATABASE_URL=postgres://admin:%s@db-prod.internal:5432/production
 curl -X POST https://%s/webhook/deploy -d '{"status":"complete"}'
 ssh -i ~/.ssh/id_deploy deploy@prod-worker-03.internal
 kubectl --kubeconfig ~/.kube/config.bak get pods -n production
-`, awsKey, awsSecret, apiKey, antKey, ghToken, slackToken, stripeKey, dbPass, hostname)
+`, awsKey, awsSecret, apiKey, antKey, ghPAT, slackToken, stripeKey, dbPass, hostname)
+		},
+	},
+	{
+		Type:           "zsh_history",
+		DisplayName:    "Zsh History",
+		Description:    "Append realistic export commands with fake creds to .zsh_history (extended format)",
+		Category:       "local",
+		DeployMode:     "append",
+		DeployPath:     ".zsh_history",
+		DefaultEnabled: true,
+		FormatFn: func(_ canaryResponse, hostname string) string {
+			awsKey := "AKIA" + randomHex(16)
+			awsSecret := randomBase64(40)
+			ghPAT := "github_pat_" + randomHex(11) + "_" + randomBase64(59)
+			apiKey := "sk-proj-" + randomHex(48)
+			antKey := "sk-ant-" + randomHex(40)
+			slackToken := "xoxb-" + randomDigits(12) + "-" + randomDigits(13) + "-" + randomHex(24)
+			dbPass := randomHex(16)
+			stripeKey := "sk_live_" + randomHex(24)
+			// Use zsh extended history format: ": timestamp:elapsed;command"
+			// Timestamps are spaced ~1 minute apart, anchored ~7 days in the past.
+			base := time.Now().Unix() - 86400*7
+			return fmt.Sprintf(
+				": %d:0;export AWS_ACCESS_KEY_ID=%s\n"+
+					": %d:0;export AWS_SECRET_ACCESS_KEY=%s\n"+
+					": %d:0;export OPENAI_API_KEY=%s\n"+
+					": %d:0;export ANTHROPIC_API_KEY=%s\n"+
+					": %d:0;export GITHUB_TOKEN=%s\n"+
+					": %d:0;export SLACK_BOT_TOKEN=%s\n"+
+					": %d:0;export STRIPE_SECRET_KEY=%s\n"+
+					": %d:0;export DATABASE_URL=postgres://admin:%s@db-prod.internal:5432/production\n"+
+					": %d:0;curl -X POST https://%s/webhook/deploy -d '{\"status\":\"complete\"}'\n"+
+					": %d:0;ssh -i ~/.ssh/id_deploy deploy@prod-worker-03.internal\n"+
+					": %d:0;kubectl --kubeconfig ~/.kube/config.bak get pods -n production\n",
+				base, awsKey,
+				base+63, awsSecret,
+				base+127, apiKey,
+				base+191, antKey,
+				base+254, ghPAT,
+				base+318, slackToken,
+				base+382, stripeKey,
+				base+445, dbPass,
+				base+509, hostname,
+				base+572,
+				base+636,
+			)
 		},
 	},
 	{

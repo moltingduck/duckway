@@ -96,10 +96,38 @@ type PlaceholderKey struct {
 	UsageCount         int64   `json:"usage_count"`
 	LastUsedAt         *string `json:"last_used_at"`
 	CreatedAt          string  `json:"created_at"`
+	SuiteID *string `json:"suite_id,omitempty"` // non-nil when assigned via a Key Suite
 	// Joined
 	ServiceName string  `json:"service_name,omitempty"`
 	ClientName  string  `json:"client_name,omitempty"`
 	APIKeyName  *string `json:"api_key_name,omitempty"`
+}
+
+// KeySuite is a named bundle of different-service key assignments.
+// Assigning a suite to a client creates one placeholder per entry.
+// Editing a suite entry propagates to all clients that received it.
+type KeySuite struct {
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	CreatedAt   string          `json:"created_at"`
+	Entries     []KeySuiteEntry `json:"entries,omitempty"`
+}
+
+// KeySuiteEntry is one service→key mapping within a Key Suite.
+// Exactly one of APIKeyID or GroupID must be set.
+type KeySuiteEntry struct {
+	ID           string  `json:"id"`
+	SuiteID      string  `json:"suite_id"`
+	ServiceID    string  `json:"service_id"`
+	APIKeyID     *string `json:"api_key_id"`
+	GroupID      *string `json:"group_id"`
+	EnvName      string  `json:"env_name"`
+	CreatedAt    string  `json:"created_at"`
+	// Joined fields
+	ServiceName  string  `json:"service_name,omitempty"`
+	APIKeyName   *string `json:"api_key_name,omitempty"`
+	GroupName    *string `json:"group_name,omitempty"`
 }
 
 type Approval struct {

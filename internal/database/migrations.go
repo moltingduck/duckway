@@ -281,6 +281,28 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_conv_usage_key ON conversation_usage(api_key_id, created_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_conv_usage_conv ON conversation_usage(api_key_id, conversation_id)`,
+
+	// Key Suites: named bundles of different-service keys for bulk client assignment.
+	// Editing a suite propagates changes to all clients that received keys from it.
+	`CREATE TABLE IF NOT EXISTS key_suites (
+		id          TEXT PRIMARY KEY,
+		name        TEXT NOT NULL UNIQUE,
+		description TEXT NOT NULL DEFAULT '',
+		created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+
+	// One entry per service per suite. Each entry holds either a direct api_key_id
+	// or an api_key_group_id (old round-robin groups) — exactly one must be set.
+	`CREATE TABLE IF NOT EXISTS key_suite_entries (
+		id          TEXT PRIMARY KEY,
+		suite_id    TEXT NOT NULL REFERENCES key_suites(id) ON DELETE CASCADE,
+		service_id  TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+		api_key_id  TEXT REFERENCES api_keys(id) ON DELETE SET NULL,
+		group_id    TEXT REFERENCES api_key_groups(id) ON DELETE SET NULL,
+		env_name    TEXT NOT NULL DEFAULT '',
+		created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+		UNIQUE(suite_id, service_id)
+	)`,
 }
 
 func runMigrations(db *sql.DB) error {
@@ -321,6 +343,8 @@ func runMigrations(db *sql.DB) error {
 		// Key Group v3: pluggable rotation strategies + round-robin last_used tracking
 		"ALTER TABLE key_groups ADD COLUMN rotation_strategy TEXT NOT NULL DEFAULT 'score'",
 		"ALTER TABLE key_group_members ADD COLUMN last_used_at TEXT",
+		// Key Suites: track which suite each placeholder came from
+		"ALTER TABLE placeholder_keys ADD COLUMN suite_id TEXT REFERENCES key_suites(id) ON DELETE SET NULL",
 	}
 	for _, alt := range safeAlters {
 		db.Exec(alt) // ignore "duplicate column" errors

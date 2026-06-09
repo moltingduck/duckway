@@ -31,6 +31,7 @@ type SharedServices struct {
 	CanaryQ      *queries.CanaryQueries
 	SettingsQ    *queries.SettingsQueries
 	ConvUsageQ   *queries.ConversationUsageQueries
+	KeySuiteQ    *queries.KeySuiteQueries
 
 	Crypto      *services.Crypto
 	Resolver    *services.KeyResolver
@@ -64,6 +65,7 @@ func (s *Server) initShared() *SharedServices {
 	canaryQ := queries.NewCanaryQueries(s.db)
 	settingsQ := queries.NewSettingsQueries(s.db)
 	convUsageQ := queries.NewConversationUsageQueries(s.db)
+	keySuiteQ := queries.NewKeySuiteQueries(s.db)
 
 	crypto := services.NewCrypto(s.config.EncryptionKey)
 	resolver := services.NewKeyResolver(crypto, apiKeyQ, placeholderQ, groupQ, approvalQ)
@@ -79,6 +81,7 @@ func (s *Server) initShared() *SharedServices {
 		PlaceholderQ: placeholderQ, ClientQ: clientQ, GroupQ: groupQ,
 		ApprovalQ: approvalQ, RequestLogQ: requestLogQ,
 		NotifQ: notifQ, CanaryQ: canaryQ, SettingsQ: settingsQ, ConvUsageQ: convUsageQ,
+		KeySuiteQ: keySuiteQ,
 		Crypto: crypto, Resolver: resolver, Notifier: notifier, CanarySvc: canarySvc,
 		CCHub:       services.NewCCEventHub(),
 		CCApprovals: services.NewCCApprovalRegistry(),
@@ -92,7 +95,8 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	authH := handlers.NewAuthHandler(ss.UserQ, ss.AdminAuth)
 	serviceH := handlers.NewServiceHandler(ss.ServiceQ)
 	apiKeyH := handlers.NewAPIKeyHandler(ss.APIKeyQ, ss.ServiceQ, ss.Crypto)
-	placeholderH := handlers.NewPlaceholderHandler(ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ)
+	placeholderH := handlers.NewPlaceholderHandler(ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ).
+		WithKeyLookup(ss.APIKeyQ, ss.Crypto)
 	clientH := handlers.NewClientHandler(ss.ClientQ, ss.PlaceholderQ, ss.ServiceQ, ss.APIKeyQ, ss.CanarySvc)
 	groupH := handlers.NewGroupHandler(ss.GroupQ, ss.ServiceQ)
 	approvalH := handlers.NewApprovalHandler(ss.ApprovalQ, ss.PlaceholderQ)
@@ -102,7 +106,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	ccH := handlers.NewControlChannelHandler(ccQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ, ss.SettingsQ, ss.Crypto, services.NewDiscordBot())
 	ccH.SetHub(ss.CCHub)
 	ccH.SetApprovals(ss.CCApprovals)
-	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth).WithDB(s.db)
+	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth).WithDB(s.db).WithKeySuites(ss.KeySuiteQ)
 
 	// Static files
 	staticFS, err := fs.Sub(contentFS, "static")
@@ -125,6 +129,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/groups", adminPageH.GroupsPage)
 	adminPageMux.HandleFunc("GET /admin/key-groups", adminPageH.KeyGroupsPage)
 	adminPageMux.HandleFunc("GET /admin/key-groups/{id}", adminPageH.KeyGroupDetailPage)
+	adminPageMux.HandleFunc("GET /admin/key-suites", adminPageH.KeySuitesPage)
 	adminPageMux.HandleFunc("GET /admin/approvals", adminPageH.ApprovalsPage)
 	adminPageMux.HandleFunc("GET /admin/logs", adminPageH.LogsPage)
 	adminPageMux.HandleFunc("GET /admin/notifications", adminPageH.NotificationsPage)
@@ -189,6 +194,18 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("DELETE /api/groups/{id}", groupH.Delete)
 	adminAPIMux.HandleFunc("POST /api/groups/{id}/members", groupH.AddMember)
 	adminAPIMux.HandleFunc("DELETE /api/groups/{id}/members/{keyId}", groupH.RemoveMember)
+
+	// Key Suites: named bundles of different-service keys for bulk client assignment
+	keySuiteH := handlers.NewKeySuiteHandler(ss.KeySuiteQ, ss.ServiceQ, ss.PlaceholderQ, ss.APIKeyQ, ss.Crypto)
+	adminAPIMux.HandleFunc("GET /api/key-suites", keySuiteH.List)
+	adminAPIMux.HandleFunc("POST /api/key-suites", keySuiteH.Create)
+	adminAPIMux.HandleFunc("GET /api/key-suites/{id}", keySuiteH.Get)
+	adminAPIMux.HandleFunc("PATCH /api/key-suites/{id}", keySuiteH.Update)
+	adminAPIMux.HandleFunc("DELETE /api/key-suites/{id}", keySuiteH.Delete)
+	adminAPIMux.HandleFunc("POST /api/key-suites/{id}/entries", keySuiteH.AddEntry)
+	adminAPIMux.HandleFunc("PATCH /api/key-suites/{id}/entries/{entryId}", keySuiteH.UpdateEntry)
+	adminAPIMux.HandleFunc("DELETE /api/key-suites/{id}/entries/{entryId}", keySuiteH.RemoveEntry)
+	adminAPIMux.HandleFunc("POST /api/key-suites/{id}/assign", keySuiteH.AssignToClient)
 
 	// Key Groups v2: pluggable rotation strategies with 429 auto-rotation
 	keyGroupH := handlers.NewKeyGroupHandler(s.db)

@@ -329,7 +329,8 @@ duckway-gateway --port 8080 --data /path/to/data
 ```bash
 duckway init                # Register + download CA + sync
 duckway sync                # Refresh keys + canary tokens + Claude config + CC state
-duckway env                 # Print keys as shell exports
+duckway env                 # Print keys + proxy (HTTP_PROXY) exports as shell exports
+duckway env --proxy         # Print only the proxy (HTTP_PROXY) exports
 duckway proxy [--port N]    # Start HTTPS MITM proxy (foreground)
 duckway proxy -d            # Start as background daemon
 duckway proxy stop          # Stop the running daemon

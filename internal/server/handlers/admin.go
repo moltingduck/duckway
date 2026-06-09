@@ -30,6 +30,7 @@ type AdminHandler struct {
 	requestLog    *queries.RequestLogQueries
 	notifications *queries.NotificationQueries
 	canary        *queries.CanaryQueries
+	keySuites     *queries.KeySuiteQueries
 	auth          *middleware.AdminAuth
 	db            *sql.DB
 }
@@ -83,7 +84,7 @@ func NewAdminHandler(
 	// Parse each page template paired with the layout
 	pageNames := []string{
 		"dashboard", "services", "api_keys", "usage", "oauth", "placeholders",
-		"clients", "groups", "key_groups", "key_group_detail", "approvals", "logs", "notifications", "canary", "supplychain", "settings", "docs", "cc",
+		"clients", "groups", "key_groups", "key_group_detail", "key_suites", "approvals", "logs", "notifications", "canary", "supplychain", "settings", "docs", "cc",
 	}
 
 	pages := make(map[string]*template.Template)
@@ -134,6 +135,13 @@ func NewAdminHandler(
 	}
 }
 
+// WithKeySuites wires in the key-suite query object after construction.
+// Called from routes.go after building the handler.
+func (h *AdminHandler) WithKeySuites(ks *queries.KeySuiteQueries) *AdminHandler {
+	h.keySuites = ks
+	return h
+}
+
 func (h *AdminHandler) WithDB(db *sql.DB) *AdminHandler {
 	h.db = db
 	return h
@@ -157,6 +165,7 @@ type pageData struct {
 	Groups       interface{}
 	KeyGroups    interface{}
 	KeyGroup     interface{} // single group detail
+	KeySuites    interface{}
 	Approvals    interface{}
 	Logs         interface{}
 	Channels      interface{}
@@ -292,7 +301,7 @@ func (h *AdminHandler) KeyGroupsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	keys, _ := h.apiKeys.List("")
 	h.render(w, "key_groups", pageData{
-		Title:     "Key Groups (Auto-Rotate)",
+		Title:     "Key Groups",
 		Active:    "key_groups",
 		KeyGroups: keyGroups,
 		Keys:      keys,
@@ -317,6 +326,27 @@ func (h *AdminHandler) KeyGroupDetailPage(w http.ResponseWriter, r *http.Request
 		Active:   "key_groups",
 		KeyGroup: group,
 		Keys:     keys,
+	})
+}
+
+func (h *AdminHandler) KeySuitesPage(w http.ResponseWriter, r *http.Request) {
+	var suites interface{}
+	if h.keySuites != nil {
+		s, err := h.keySuites.List()
+		if err == nil {
+			suites = s
+		}
+	}
+	svcs, _ := h.services.List()
+	keys, _ := h.apiKeys.List("")
+	clients, _ := h.clients.List()
+	h.render(w, "key_suites", pageData{
+		Title:     "Key Suites",
+		Active:    "key_suites",
+		KeySuites: suites,
+		Services:  svcs,
+		Keys:      keys,
+		Clients:   clients,
 	})
 }
 

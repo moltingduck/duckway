@@ -44,6 +44,21 @@ func IsPlaceholder(key string) bool {
 	return strings.Contains(key, placeholderMarker)
 }
 
+// DetectKeyFormat returns the prefix and total length to use when generating a
+// phantom for a known real key. For services that support multiple token formats
+// (e.g. GitHub classic ghp_* vs fine-grained github_pat_*) this sniffs the
+// actual key so the phantom matches the real one. Falls back to the service's
+// static KeyPrefix/KeyLength when no specific variant is detected.
+func DetectKeyFormat(realKey, servicePrefix string, serviceLength int) (prefix string, length int) {
+	switch {
+	case strings.HasPrefix(realKey, "github_pat_"):
+		return "github_pat_", 93
+	case strings.HasPrefix(realKey, "ghp_"):
+		return "ghp_", 40
+	}
+	return servicePrefix, serviceLength
+}
+
 // GenerateShortID generates a 6-char alphanumeric ID (lowercase + digits).
 func GenerateShortID() string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
