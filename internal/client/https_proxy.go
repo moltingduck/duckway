@@ -382,12 +382,20 @@ func (p *httpsProxy) tunnelConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	// Hijack before writing the 200 so we bypass Go's ResponseWriter, which
+	// appends Transfer-Encoding: chunked — a header RFC 9110 §9.3.6 forbids in
+	// CONNECT 200 responses. Some HTTP/2 clients (Bun/undici used by Claude Code)
+	// treat the subsequent raw TLS bytes as HTTP chunk data when they see that
+	// header, breaking the tunnel without any proxy-side error.
 	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
 		return
 	}
 	defer clientConn.Close()
+
+	if _, err := io.WriteString(clientConn, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
+		return
+	}
 
 	go io.Copy(targetConn, clientConn)
 	io.Copy(clientConn, targetConn)

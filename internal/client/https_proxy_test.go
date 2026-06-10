@@ -137,6 +137,16 @@ func TestTunnelPassesThroughNonMITMHost(t *testing.T) {
 	if connResp.StatusCode != http.StatusOK {
 		t.Fatalf("CONNECT status = %d, want 200", connResp.StatusCode)
 	}
+	// RFC 9110 §9.3.6 forbids Transfer-Encoding and Content-Length in a
+	// successful CONNECT response. Bun/undici (used by Claude Code) treats any
+	// such header as applying to the tunnel data, causing it to parse raw TLS
+	// bytes as HTTP chunks — which makes `claude update` fail with "canceled".
+	if te := connResp.Header.Get("Transfer-Encoding"); te != "" {
+		t.Errorf("CONNECT 200 must not include Transfer-Encoding (got %q); violates RFC 9110 §9.3.6", te)
+	}
+	if cl := connResp.Header.Get("Content-Length"); cl != "" {
+		t.Errorf("CONNECT 200 must not include Content-Length (got %q); violates RFC 9110 §9.3.6", cl)
+	}
 
 	// Real end-to-end TLS with the origin's own cert proves there's no MITM in
 	// the middle: the duckway CA is irrelevant here, only the origin cert is.
