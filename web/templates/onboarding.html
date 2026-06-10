@@ -1,0 +1,319 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Onboard Client</h1>
+</div>
+
+<p class="text-muted" style="margin-bottom:1.5rem">
+  Provision a new client in one flow: create the client record, optionally assign a Key Suite, and optionally set up a Control Channel.
+</p>
+
+<!-- Step indicators -->
+<div id="step-bar" style="display:flex;gap:0;margin-bottom:1.5rem;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
+  <div class="step-tab active" id="tab-1" style="flex:1;padding:.6rem 1rem;text-align:center;font-size:.875rem;background:var(--primary);color:#fff;font-weight:600">1 · Client</div>
+  <div class="step-tab" id="tab-2" style="flex:1;padding:.6rem 1rem;text-align:center;font-size:.875rem;color:var(--text-muted);border-left:1px solid var(--border)">2 · Key Suite</div>
+  <div class="step-tab" id="tab-3" style="flex:1;padding:.6rem 1rem;text-align:center;font-size:.875rem;color:var(--text-muted);border-left:1px solid var(--border)">3 · Control Channel</div>
+  <div class="step-tab" id="tab-4" style="flex:1;padding:.6rem 1rem;text-align:center;font-size:.875rem;color:var(--text-muted);border-left:1px solid var(--border)">4 · Done</div>
+</div>
+
+<!-- Step 1: Create client -->
+<div id="step-1">
+  <div class="card">
+    <h2 style="margin-bottom:1rem;font-size:1.1rem">Create Client</h2>
+    <div class="form-group">
+      <label>Client name <span style="color:var(--danger)">*</span></label>
+      <input type="text" id="client-name" placeholder="e.g. dev-laptop" autofocus>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1rem">
+      <button class="btn btn-primary" onclick="createClient()">Create &amp; Continue →</button>
+    </div>
+  </div>
+</div>
+
+<!-- Step 2: Assign Key Suite -->
+<div id="step-2" style="display:none">
+  <div class="card">
+    <h2 style="margin-bottom:.25rem;font-size:1.1rem">Assign Key Suite</h2>
+    <p class="text-muted text-sm" style="margin-bottom:1rem">
+      A Key Suite provisions a placeholder for each service in the bundle. Skip if you want to assign keys manually later.
+    </p>
+    <div class="form-group">
+      <label>Key Suite</label>
+      <select id="suite-select">
+        <option value="">— no suite —</option>
+      </select>
+    </div>
+    <div id="suite-entries-preview" style="display:none;margin-top:.5rem;padding:.75rem;background:var(--bg-input);border-radius:var(--radius);font-size:.85rem"></div>
+    <div style="display:flex;justify-content:space-between;margin-top:1rem">
+      <button class="btn" onclick="goStep(1)">← Back</button>
+      <div style="display:flex;gap:.5rem">
+        <button class="btn" onclick="goStep(3)">Skip</button>
+        <button class="btn btn-primary" onclick="assignSuite()">Assign &amp; Continue →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Step 3: Control Channel -->
+<div id="step-3" style="display:none">
+  <div class="card">
+    <h2 style="margin-bottom:.25rem;font-size:1.1rem">Control Channel</h2>
+    <p class="text-muted text-sm" style="margin-bottom:1rem">
+      A Control Channel binds the client to a Discord category so you can message and manage the agent from Discord. Skip if not needed.
+    </p>
+    <div class="form-group">
+      <label>CC name</label>
+      <input type="text" id="cc-name" placeholder="e.g. dev-laptop CC">
+    </div>
+    <div class="form-group">
+      <label>Agent type</label>
+      <select id="cc-agent">
+        <option value="claude_code">claude_code</option>
+        <option value="openclaw">openclaw</option>
+        <option value="harmes">harmes</option>
+        <option value="cursor">cursor</option>
+        <option value="copilot_cli">copilot_cli</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Service <span class="text-muted text-sm">(Discord)</span></label>
+      <select id="cc-service" onchange="loadCCKeys();renderCCConfig()"></select>
+    </div>
+    <div class="form-group">
+      <label>Bot token (API Key)</label>
+      <select id="cc-key"></select>
+    </div>
+    <div id="cc-config-fields"></div>
+    <div style="display:flex;justify-content:space-between;margin-top:1rem">
+      <button class="btn" onclick="goStep(2)">← Back</button>
+      <div style="display:flex;gap:.5rem">
+        <button class="btn" onclick="goStep(4)">Skip</button>
+        <button class="btn btn-primary" onclick="createCC()">Create CC &amp; Finish →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Step 4: Done -->
+<div id="step-4" style="display:none">
+  <div class="card" style="text-align:center;padding:2rem">
+    <div style="font-size:2.5rem;margin-bottom:1rem">✅</div>
+    <h2 style="margin-bottom:1.5rem">Client onboarded</h2>
+    <div id="summary" style="text-align:left;display:inline-block;min-width:320px;max-width:480px;margin-bottom:1.5rem"></div>
+    <div style="display:flex;gap:.75rem;justify-content:center">
+      <a href="/admin/clients" class="btn btn-primary">View Clients</a>
+      <button class="btn" onclick="resetWizard()">Onboard Another</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var state = { clientID: null, clientName: null, suiteID: null, suiteName: null, ccID: null };
+var allSuites = [];
+var allServices = [];
+var allKeys = [];
+
+document.addEventListener('DOMContentLoaded', function() {
+  fetch('/api/key-suites', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    allSuites = d || [];
+    var sel = document.getElementById('suite-select');
+    allSuites.forEach(function(s) {
+      var o = document.createElement('option');
+      o.value = s.id; o.textContent = s.name + (s.description ? ' — ' + s.description : '');
+      sel.appendChild(o);
+    });
+    sel.addEventListener('change', previewSuite);
+  });
+
+  fetch('/api/services', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    allServices = (d || []).filter(function(s){ return s.is_active; });
+    var sel = document.getElementById('cc-service');
+    allServices.forEach(function(s) {
+      var o = document.createElement('option');
+      o.value = s.id; o.textContent = s.display_name || s.name;
+      sel.appendChild(o);
+    });
+    if (allServices.length) loadCCKeys();
+    renderCCConfig();
+  });
+
+  fetch('/api/keys', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    allKeys = d || [];
+    loadCCKeys();
+  });
+});
+
+function goStep(n) {
+  [1,2,3,4].forEach(function(i) {
+    document.getElementById('step-'+i).style.display = i === n ? '' : 'none';
+    var tab = document.getElementById('tab-'+i);
+    if (i < n) {
+      tab.style.background = 'var(--bg-input)';
+      tab.style.color = 'var(--text-muted)';
+    } else if (i === n) {
+      tab.style.background = 'var(--primary)';
+      tab.style.color = '#fff';
+      tab.style.fontWeight = '600';
+    } else {
+      tab.style.background = '';
+      tab.style.color = 'var(--text-muted)';
+      tab.style.fontWeight = '';
+    }
+  });
+}
+
+function createClient() {
+  var name = document.getElementById('client-name').value.trim();
+  if (!name) { showToast('Client name is required', 'error'); return; }
+  fetch('/api/clients', {
+    method: 'POST', credentials: 'same-origin',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({name: name})
+  }).then(function(r) {
+    if (!r.ok) return r.json().then(function(e){ throw new Error(e.error || 'create failed'); });
+    return r.json();
+  }).then(function(c) {
+    state.clientID = c.id;
+    state.clientName = c.name;
+    document.getElementById('cc-name').value = name + ' CC';
+    goStep(2);
+  }).catch(function(e){ showToast(e.message, 'error'); });
+}
+
+function previewSuite() {
+  var id = document.getElementById('suite-select').value;
+  var preview = document.getElementById('suite-entries-preview');
+  if (!id) { preview.style.display = 'none'; return; }
+  fetch('/api/key-suites/'+id, {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s){
+    if (!s.entries || !s.entries.length) {
+      preview.textContent = 'No entries in this suite.';
+    } else {
+      preview.innerHTML = '<strong style="display:block;margin-bottom:.35rem">Entries:</strong>' +
+        s.entries.map(function(e){
+          return '<div>· <strong>' + (e.service_name || e.service_id) + '</strong> → <code>' + e.env_name + '</code>' +
+            (e.api_key_name ? ' (' + e.api_key_name + ')' : '') +
+            (e.group_name ? ' [group: ' + e.group_name + ']' : '') + '</div>';
+        }).join('');
+    }
+    preview.style.display = '';
+  });
+}
+
+function assignSuite() {
+  var id = document.getElementById('suite-select').value;
+  if (!id) { goStep(3); return; }
+  fetch('/api/key-suites/'+id+'/assign', {
+    method: 'POST', credentials: 'same-origin',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({client_id: state.clientID})
+  }).then(function(r) {
+    if (!r.ok) return r.json().then(function(e){ throw new Error(e.error || 'assign failed'); });
+    return r.json();
+  }).then(function(res) {
+    var suite = allSuites.find(function(s){ return s.id === id; });
+    state.suiteID = id;
+    state.suiteName = suite ? suite.name : id;
+    if (res.skipped && res.skipped.length) {
+      showToast('Assigned with ' + res.skipped.length + ' conflict(s) skipped', '');
+    }
+    goStep(3);
+  }).catch(function(e){ showToast(e.message, 'error'); });
+}
+
+function loadCCKeys() {
+  var serviceID = document.getElementById('cc-service').value;
+  var sel = document.getElementById('cc-key');
+  sel.innerHTML = '<option value="">— select —</option>';
+  var matching = allKeys.filter(function(k){ return k.service_id === serviceID && k.is_active; });
+  matching.forEach(function(k){
+    var o = document.createElement('option');
+    o.value = k.id; o.textContent = k.name;
+    sel.appendChild(o);
+  });
+}
+
+function renderCCConfig() {
+  var svc = allServices.find(function(s){ return s.id === document.getElementById('cc-service').value; });
+  var fields = document.getElementById('cc-config-fields');
+  fields.innerHTML = '';
+  if (!svc) return;
+  if (svc.name === 'discord' || (svc.display_name || '').toLowerCase().includes('discord')) {
+    fields.innerHTML =
+      '<div class="form-group"><label>Discord Guild ID <span style="color:var(--danger)">*</span></label>' +
+      '<input type="text" id="cfg-guild" placeholder="1234567890"></div>' +
+      '<div class="form-group"><label>Category ID <span style="color:var(--danger)">*</span></label>' +
+      '<input type="text" id="cfg-category" placeholder="9876543210"></div>';
+  }
+}
+
+function createCC() {
+  var name = document.getElementById('cc-name').value.trim();
+  var serviceID = document.getElementById('cc-service').value;
+  var keyID = document.getElementById('cc-key').value;
+  var agentType = document.getElementById('cc-agent').value;
+  if (!name || !serviceID || !keyID) { showToast('Name, service, and bot token are required', 'error'); return; }
+
+  var cfg = {};
+  var guildEl = document.getElementById('cfg-guild');
+  var catEl = document.getElementById('cfg-category');
+  if (guildEl) cfg.guild_id = guildEl.value.trim();
+  if (catEl) cfg.category_id = catEl.value.trim();
+
+  fetch('/api/cc', {
+    method: 'POST', credentials: 'same-origin',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      name: name, client_id: state.clientID,
+      service_id: serviceID, api_key_id: keyID,
+      agent_type: agentType, config: cfg
+    })
+  }).then(function(r) {
+    if (!r.ok) return r.json().then(function(e){ throw new Error(e.error || 'CC create failed'); });
+    return r.json();
+  }).then(function(cc) {
+    state.ccID = cc.id;
+    state.ccName = cc.name;
+    goStep(4);
+    renderSummary();
+  }).catch(function(e){ showToast(e.message, 'error'); });
+}
+
+function renderSummary() {
+  var html = '<table class="detail-table" style="width:100%">';
+  html += '<tr><td class="text-muted">Client</td><td><strong>' + esc(state.clientName) + '</strong> <code class="text-sm">' + esc(state.clientID) + '</code></td></tr>';
+  if (state.suiteID) {
+    html += '<tr><td class="text-muted">Key Suite</td><td>' + esc(state.suiteName) + ' assigned</td></tr>';
+  } else {
+    html += '<tr><td class="text-muted">Key Suite</td><td class="text-muted">Skipped</td></tr>';
+  }
+  if (state.ccID) {
+    html += '<tr><td class="text-muted">Control Channel</td><td>' + esc(state.ccName) + ' created</td></tr>';
+  } else {
+    html += '<tr><td class="text-muted">Control Channel</td><td class="text-muted">Skipped</td></tr>';
+  }
+  html += '</table>';
+  document.getElementById('summary').innerHTML = html;
+}
+
+function resetWizard() {
+  state = { clientID: null, clientName: null, suiteID: null, suiteName: null, ccID: null };
+  document.getElementById('client-name').value = '';
+  document.getElementById('suite-select').value = '';
+  document.getElementById('suite-entries-preview').style.display = 'none';
+  document.getElementById('cc-name').value = '';
+  goStep(1);
+}
+
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function showToast(msg, type) {
+  var t = document.getElementById('toast');
+  var el = document.createElement('div');
+  el.className = 'toast-msg ' + (type || '');
+  el.textContent = msg;
+  t.appendChild(el);
+  setTimeout(function(){ el.remove(); }, 4000);
+}
+</script>
+{{end}}

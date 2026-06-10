@@ -389,6 +389,13 @@ func (h *AdminHandler) CCPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *AdminHandler) OnboardingPage(w http.ResponseWriter, r *http.Request) {
+	h.render(w, "onboarding", pageData{
+		Title:  "Onboard Client",
+		Active: "onboarding",
+	})
+}
+
 func (h *AdminHandler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "settings", pageData{
 		Title:  "Settings",

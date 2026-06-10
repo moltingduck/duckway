@@ -136,6 +136,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/canary", adminPageH.CanaryPage)
 	adminPageMux.HandleFunc("GET /admin/oauth", adminPageH.OAuthPage)
 	adminPageMux.HandleFunc("GET /admin/cc", adminPageH.CCPage)
+	adminPageMux.HandleFunc("GET /admin/onboarding", adminPageH.OnboardingPage)
 	adminPageMux.HandleFunc("GET /admin/settings", adminPageH.SettingsPage)
 	adminPageMux.HandleFunc("GET /admin/supply-chain", adminPageH.SupplyChainPage)
 	adminPageMux.HandleFunc("GET /admin/docs", adminPageH.DocsPage)
