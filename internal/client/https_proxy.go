@@ -361,7 +361,15 @@ func (p *httpsProxy) forwardMITM(tlsConn *tls.Conn, req *http.Request, svcName, 
 
 // tunnelConnect creates a transparent TCP tunnel for unknown hosts.
 func (p *httpsProxy) tunnelConnect(w http.ResponseWriter, r *http.Request) {
-	targetConn, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
+	// KeepAlive: 30s — the OS sends keepalive probes after 30 s of inactivity
+	// and considers the connection dead after a few unanswered probes (~90 s
+	// total). Without this, io.Copy blocks forever when the CDN stops sending
+	// mid-download without a FIN/RST (NAT table expiry is the common trigger).
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	targetConn, err := dialer.Dial("tcp", r.Host)
 	if err != nil {
 		http.Error(w, "connect failed", http.StatusBadGateway)
 		return
