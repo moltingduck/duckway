@@ -80,7 +80,7 @@ func SupplyChainMitigations() []SupplyChainMitigation {
 	return []SupplyChainMitigation{
 		{
 			ID: "npm", Name: "npm", Manager: "npm", RCPath: ".npmrc", Supported: true,
-			Description: "~/.npmrc: disable install scripts, refuse packages published in the last N days, and block git/URL dependencies.",
+			Description: "~/.npmrc: blocks all pre/post-install scripts (ignore-scripts), refuses packages published within the cooldown window (min-release-age), and forbids git:// and direct-URL installs.",
 			render: func(days int, now time.Time) []rcEntry {
 				return []rcEntry{
 					{key: "ignore-scripts", comment: "# 不執行 postinstall 等腳本", line: "ignore-scripts=true"},
@@ -92,7 +92,7 @@ func SupplyChainMitigations() []SupplyChainMitigation {
 		},
 		{
 			ID: "pnpm", Name: "pnpm", Manager: "pnpm", RCPath: ".npmrc", Supported: true,
-			Description: "~/.npmrc: disable install scripts and refuse versions published in the last N days (minimum-release-age, minutes).",
+			Description: "~/.npmrc: blocks all pre/post-install scripts (ignore-scripts) and refuses packages published within the cooldown window (minimum-release-age, stored in minutes). Shares the .npmrc file with npm; deduped keys appear once.",
 			render: func(days int, now time.Time) []rcEntry {
 				return []rcEntry{
 					{key: "ignore-scripts", comment: "# 不執行 postinstall 等腳本", line: "ignore-scripts=true"},
@@ -102,7 +102,7 @@ func SupplyChainMitigations() []SupplyChainMitigation {
 		},
 		{
 			ID: "yarn", Name: "Yarn (Berry)", Manager: "yarn", RCPath: ".yarnrc.yml", Supported: true,
-			Description: "~/.yarnrc.yml: disable install scripts (enableScripts: false). Yarn has no release-age gate.",
+			Description: "~/.yarnrc.yml: blocks all pre/post-install lifecycle scripts (enableScripts: false). Yarn (Berry) has no built-in release-age gate.",
 			render: func(days int, now time.Time) []rcEntry {
 				return []rcEntry{
 					{key: "enableScripts", comment: "# 不執行 install 腳本", line: "enableScripts: false"},
@@ -111,7 +111,7 @@ func SupplyChainMitigations() []SupplyChainMitigation {
 		},
 		{
 			ID: "uv", Name: "uv (Python)", Manager: "uv", RCPath: ".config/uv/uv.toml", Supported: true,
-			Description: "~/.config/uv/uv.toml: exclude packages uploaded in the last N days (exclude-newer, relative ISO-8601 duration). Also applies to `uv pip`.",
+			Description: "~/.config/uv/uv.toml: refuses packages uploaded within the cooldown window (exclude-newer, relative ISO-8601 duration — refreshed each sync). Python packages do not run lifecycle scripts; also applies to `uv pip`.",
 			render: func(days int, now time.Time) []rcEntry {
 				return []rcEntry{
 					{key: "exclude-newer", comment: fmt.Sprintf("# 排除 %d 天內上傳的套件", days), line: fmt.Sprintf("exclude-newer = \"P%dD\"", days)},
@@ -120,11 +120,11 @@ func SupplyChainMitigations() []SupplyChainMitigation {
 		},
 		{
 			ID: "pip", Name: "pip (Python)", Manager: "pip", RCPath: "", Supported: false,
-			Description: "pip has no rc-file age or script gate. Use `uv pip` (exclude-newer) for a cooldown instead.",
+			Description: "pip has no rc-file age or script gate. Switch to `uv pip` to get the exclude-newer cooldown from the uv mitigation above.",
 		},
 		{
 			ID: "bun", Name: "Bun", Manager: "bun", RCPath: "", Supported: false,
-			Description: "Bun has no documented release-age rc setting (it already skips lifecycle scripts for untrusted deps). Needs a registry proxy for a cooldown.",
+			Description: "Bun already skips pre/post-install scripts for packages not listed in trustedDependencies — script blocking is on by default. No rc-file release-age gate exists; needs a registry proxy for a cooldown.",
 		},
 		{
 			ID: "gomod", Name: "Go Modules", Manager: "go", RCPath: ".config/go/env", Supported: true,
@@ -138,7 +138,7 @@ func SupplyChainMitigations() []SupplyChainMitigation {
 		},
 		{
 			ID: "cargo", Name: "Cargo (Rust)", Manager: "cargo", RCPath: "", Supported: false,
-			Description: "Cargo build scripts (build.rs) execute arbitrary code during compilation and cannot be disabled via ~/.cargo/config.toml. Use cargo-audit or cargo-deny for supply chain auditing.",
+			Description: "Cargo runs build.rs scripts during `cargo build` and there is no config option to disable them globally. Use cargo-deny to audit and allowlist dependencies, and cargo-audit to check for known vulnerabilities.",
 		},
 		{
 			ID: "maven", Name: "Maven (Java)", Manager: "mvn", RCPath: "", Supported: false,
@@ -150,7 +150,7 @@ func SupplyChainMitigations() []SupplyChainMitigation {
 		},
 		{
 			ID: "composer", Name: "Composer (PHP)", Manager: "composer", RCPath: "", Supported: false,
-			Description: "Composer scripts in composer.json execute on install; the global config is JSON and is incompatible with the managed-block approach. Use --no-scripts in CI pipelines and audit with composer audit.",
+			Description: "Composer runs pre/post-install scripts defined in composer.json. The global config is JSON (incompatible with the rc managed-block approach). Pass --no-scripts in CI and run `composer audit` to check for known vulnerabilities.",
 		},
 		{
 			ID: "bundler", Name: "Bundler (Ruby)", Manager: "bundle", RCPath: "", Supported: false,

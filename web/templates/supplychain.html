@@ -6,16 +6,19 @@
 <div class="card">
   <h3>Package Manager Hardening</h3>
   <p class="text-sm text-muted mb-1">
-    On every <code>duckway sync</code>, the client appends a managed block to
-    each agent's package-manager rc file (<code>~/.npmrc</code>,
-    <code>~/.yarnrc.yml</code>, <code>~/.config/uv/uv.toml</code>, …) that
-    <strong>disables install scripts</strong> and <strong>refuses packages
-    newer than the cooldown</strong>. This blocks the two highest-leverage
-    supply-chain vectors: malicious <code>postinstall</code> scripts and
-    freshly-published compromised versions that auto-install before the
-    registry yanks them. User content outside the managed block is preserved;
-    rolling-date cutoffs refresh each sync. Mitigations default to
-    <strong>all-on</strong>.
+    On every <code>duckway sync</code>, the client writes a managed block into
+    each agent's package-manager rc file
+    (<code>~/.npmrc</code>, <code>~/.yarnrc.yml</code>,
+    <code>~/.config/uv/uv.toml</code>, <code>~/.config/go/env</code>, …) that
+    <strong>disables pre/post-install scripts</strong> and <strong>refuses
+    packages published within the cooldown window</strong>. This blocks the
+    two highest-leverage supply-chain vectors: malicious lifecycle scripts
+    (npm <code>preinstall</code>/<code>postinstall</code>, Yarn
+    <code>scripts</code>, etc.) and freshly-published compromised versions
+    that auto-install before the registry yanks them. User content outside
+    the managed block is preserved; rolling-date cutoffs refresh on every
+    sync. Mitigations default to <strong>all-on</strong>. Managers with no
+    rc-file gate are listed for transparency — see their Notes for alternatives.
   </p>
 
   <form id="minage-form" class="mb-2">
@@ -67,8 +70,14 @@ function scRenderRows(mits) {
       : '<span class="text-muted text-sm">needs registry proxy</span>';
     var writes = '—';
     if (m.supported && m.example_lines && m.example_lines.length) {
-      writes = '<code style="white-space:pre-wrap">' +
-        m.example_lines.map(scEsc).join('\n') + '</code>';
+      var cfgLines = m.example_lines.filter(function(l) {
+        return l.trim() !== '' && l.trim().charAt(0) !== '#';
+      });
+      writes = cfgLines.length
+        ? cfgLines.map(function(l) {
+            return '<code class="sc-cfg-line">' + scEsc(l) + '</code>';
+          }).join('<br>')
+        : '—';
     }
     tr.innerHTML =
       '<td>' + toggle + '</td>' +

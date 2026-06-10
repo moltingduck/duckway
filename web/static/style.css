@@ -178,6 +178,12 @@ code, .mono {
   border-radius: 4px;
 }
 
+.sc-cfg-line {
+  display: inline-block;
+  margin-bottom: 2px;
+  white-space: nowrap;
+}
+
 /* Modal */
 .modal-backdrop {
   position: fixed;
