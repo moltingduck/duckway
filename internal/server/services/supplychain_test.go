@@ -42,6 +42,17 @@ func TestRCLines_RelativeAndCommented(t *testing.T) {
 	if !strings.Contains(uv, `exclude-newer = "P3D"`) { // relative ISO-8601 duration
 		t.Errorf("uv should use relative duration P3D:\n%s", uv)
 	}
+
+	gomod := strings.Join(mitByID("gomod").RCLines(3, now), "\n")
+	for _, want := range []string{"GONOSUMDB=", "GOPRIVATE="} {
+		if !strings.Contains(gomod, want) {
+			t.Errorf("gomod missing %q in:\n%s", want, gomod)
+		}
+	}
+	// Go env lines must not contain absolute timestamps or release-age settings.
+	if strings.Contains(gomod, "T") && strings.Contains(gomod, "Z") {
+		t.Errorf("gomod should carry no absolute timestamp:\n%s", gomod)
+	}
 }
 
 func TestSupplyChainDefaultsAllOn(t *testing.T) {
@@ -95,6 +106,12 @@ func TestResolveSupplyChainRC_MergeDedupeByKey(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(rc[".config/uv/uv.toml"], "\n"), `exclude-newer = "P3D"`) {
 		t.Errorf("uv.toml = %v", rc[".config/uv/uv.toml"])
+	}
+	goenv := strings.Join(rc[".config/go/env"], "\n")
+	for _, want := range []string{"GONOSUMDB=", "GOPRIVATE="} {
+		if !strings.Contains(goenv, want) {
+			t.Errorf(".config/go/env missing %q: %v", want, rc[".config/go/env"])
+		}
 	}
 
 	// Disable npm: its keys drop, pnpm still supplies ignore-scripts + min age.

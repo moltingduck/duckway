@@ -121,7 +121,7 @@ func SummarizeSupplyChainChanges(changes []SupplyChainRCChange) string {
 // strip a stale managed block when a mitigation is disabled. Kept in sync with
 // the server registry (services.SupplyChainMitigations) by hand — a short,
 // stable list.
-var knownManagedRCPaths = []string{".npmrc", ".yarnrc.yml", ".config/uv/uv.toml"}
+var knownManagedRCPaths = []string{".npmrc", ".yarnrc.yml", ".config/uv/uv.toml", ".config/go/env"}
 
 // allManagedRCPaths returns the union of the server-provided paths and the
 // known registry paths, so files whose mitigation was disabled get cleaned up.

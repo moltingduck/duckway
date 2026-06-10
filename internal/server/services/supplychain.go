@@ -126,6 +126,40 @@ func SupplyChainMitigations() []SupplyChainMitigation {
 			ID: "bun", Name: "Bun", Manager: "bun", RCPath: "", Supported: false,
 			Description: "Bun has no documented release-age rc setting (it already skips lifecycle scripts for untrusted deps). Needs a registry proxy for a cooldown.",
 		},
+		{
+			ID: "gomod", Name: "Go Modules", Manager: "go", RCPath: ".config/go/env", Supported: true,
+			Description: "~/.config/go/env: explicitly clear GONOSUMDB and GOPRIVATE so all module downloads are verified via the Go checksum database with no exceptions. Go modules do not run install scripts; no release-age gate is available (the checksum DB provides immutability guarantees instead).",
+			render: func(days int, now time.Time) []rcEntry {
+				return []rcEntry{
+					{key: "GONOSUMDB", comment: "# 所有模組必須經由 checksum DB 驗證（不允許例外）", line: "GONOSUMDB="},
+					{key: "GOPRIVATE", comment: "# 不允許私有模組繞過 proxy 與 checksum DB", line: "GOPRIVATE="},
+				}
+			},
+		},
+		{
+			ID: "cargo", Name: "Cargo (Rust)", Manager: "cargo", RCPath: "", Supported: false,
+			Description: "Cargo build scripts (build.rs) execute arbitrary code during compilation and cannot be disabled via ~/.cargo/config.toml. Use cargo-audit or cargo-deny for supply chain auditing.",
+		},
+		{
+			ID: "maven", Name: "Maven (Java)", Manager: "mvn", RCPath: "", Supported: false,
+			Description: "Maven plugin lifecycle phases execute arbitrary code and cannot be disabled via ~/.m2/settings.xml. Use the Maven Wrapper (mvnw) with verified checksums to pin the build tool itself.",
+		},
+		{
+			ID: "gradle", Name: "Gradle (Java/Kotlin)", Manager: "gradle", RCPath: "", Supported: false,
+			Description: "Gradle build scripts are arbitrary Groovy/Kotlin and cannot be gated via ~/.gradle/gradle.properties. Use the Gradle Wrapper (gradlew) with a verified checksum and dependency verification metadata.",
+		},
+		{
+			ID: "composer", Name: "Composer (PHP)", Manager: "composer", RCPath: "", Supported: false,
+			Description: "Composer scripts in composer.json execute on install; the global config is JSON and is incompatible with the managed-block approach. Use --no-scripts in CI pipelines and audit with composer audit.",
+		},
+		{
+			ID: "bundler", Name: "Bundler (Ruby)", Manager: "bundle", RCPath: "", Supported: false,
+			Description: "RubyGems has no rc-file script gate or release-age cooldown. Gem trust-policy requires signed gems, but very few are signed. Use bundler-audit for dependency vulnerability scanning.",
+		},
+		{
+			ID: "nuget", Name: "NuGet (.NET)", Manager: "dotnet", RCPath: "", Supported: false,
+			Description: "NuGet packages do not run install scripts in the modern .NET SDK. MSBuild targets may execute code; use package lock files and central package management (Directory.Packages.props) to pin versions.",
+		},
 	}
 }
 
