@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"strconv"
 	"sync"
 	"time"
@@ -12,6 +13,35 @@ import (
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"golang.org/x/net/websocket"
 )
+
+// Reconnect backoff bounds for a bot gateway connection. Discord rate-limits
+// IDENTIFY (a fresh IDENTIFY is sent on every reconnect), so a flapping
+// connection must NOT re-identify on a fixed short interval — doing so trips
+// the limit and Discord answers op 9 (invalid session), which on a fixed loop
+// becomes a self-sustaining storm. We back off exponentially with jitter and
+// reset once a connection has proven stable.
+const (
+	ccReconnectMin    = 1 * time.Second
+	ccReconnectMax    = 60 * time.Second
+	ccStableThreshold = 60 * time.Second // a connection up this long is "healthy"
+)
+
+// ccReconnectDelay decides how long to wait before the next connect attempt and
+// what the backoff base becomes afterwards. A connection that stayed up at
+// least stableAfter is treated as healthy (e.g. a routine op-7 reconnect
+// request) and resets the wait to min; otherwise the wait grows exponentially,
+// capped at max. Jitter is added by the caller.
+func ccReconnectDelay(prevBase, uptime, min, max, stableAfter time.Duration) (wait, nextBase time.Duration) {
+	wait = prevBase
+	if uptime >= stableAfter {
+		wait = min
+	}
+	nextBase = wait * 2
+	if nextBase > max {
+		nextBase = max
+	}
+	return wait, nextBase
+}
 
 // CCGatewayManager owns one WSS connection per unique Discord bot token used
 // by any active Control Channel. It listens for MESSAGE_CREATE events,
@@ -155,6 +185,7 @@ func (c *ccBotConn) stop() {
 }
 
 func (c *ccBotConn) connectLoop() {
+	base := ccReconnectMin
 	for {
 		select {
 		case <-c.stopCh:
@@ -162,14 +193,21 @@ func (c *ccBotConn) connectLoop() {
 		default:
 		}
 
+		start := time.Now()
 		if err := c.connect(); err != nil {
 			log.Printf("[cc-gw] %s connection error: %v", c.apiKeyID, err)
 		}
 
+		var wait time.Duration
+		wait, base = ccReconnectDelay(base, time.Since(start), ccReconnectMin, ccReconnectMax, ccStableThreshold)
+		// Add up to 1s of jitter so a flapping connection doesn't re-identify
+		// in lockstep and re-trip Discord's IDENTIFY rate limit.
+		wait += time.Duration(rand.Int63n(int64(time.Second)))
+
 		select {
 		case <-c.stopCh:
 			return
-		case <-time.After(5 * time.Second):
+		case <-time.After(wait):
 		}
 	}
 }
@@ -184,10 +222,16 @@ func (c *ccBotConn) connect() error {
 	if err != nil {
 		return fmt.Errorf("dial WSS: %w", err)
 	}
+	// hbDone stops this connection's heartbeat goroutine when connect()
+	// returns. Without it every reconnect leaks a heartbeat goroutine that
+	// lives until the whole bot stops, accumulating over a day of reconnects
+	// and beating on stale sockets.
+	hbDone := make(chan struct{})
 	c.mu.Lock()
 	c.ws = ws
 	c.mu.Unlock()
 	defer func() {
+		close(hbDone)
 		c.mu.Lock()
 		c.ws = nil
 		c.mu.Unlock()
@@ -204,7 +248,11 @@ func (c *ccBotConn) connect() error {
 	var hd helloData
 	json.Unmarshal(hello.D, &hd)
 	c.hbMs = hd.HeartbeatInterval
-	go c.heartbeat(ws)
+	// Each reconnect sends a fresh IDENTIFY, which starts a brand-new session
+	// whose sequence restarts. Carrying the previous session's seq into the
+	// first heartbeats is wrong — reset it before the heartbeat goroutine runs.
+	c.seq = nil
+	go c.heartbeat(ws, hbDone)
 
 	// Intents: GUILDS(0) | GUILD_MESSAGES(9) | GUILD_MESSAGE_REACTIONS(10) | MESSAGE_CONTENT(15).
 	// MESSAGE_CONTENT is privileged — bot owner must enable it in the
@@ -429,12 +477,14 @@ func sseTypeFromGateway(s string) string {
 	return s
 }
 
-func (c *ccBotConn) heartbeat(ws *websocket.Conn) {
+func (c *ccBotConn) heartbeat(ws *websocket.Conn, done <-chan struct{}) {
 	ticker := time.NewTicker(time.Duration(c.hbMs) * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-c.stopCh:
+			return
+		case <-done:
 			return
 		case <-ticker.C:
 			c.sendHeartbeat(ws)
