@@ -1,9 +1,64 @@
 package services
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
+
+// TestParseHello_Valid accepts a well-formed Hello and returns the interval.
+func TestParseHello_Valid(t *testing.T) {
+	got, err := parseHello(gatewayPayload{Op: 10, D: json.RawMessage(`{"heartbeat_interval":41250}`)})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 41250 {
+		t.Fatalf("interval = %d, want 41250", got)
+	}
+}
+
+// TestParseHello_Rejects guards every path that would otherwise leave hbMs at 0
+// and panic time.NewTicker(0) in the heartbeat goroutine — the suspected cause
+// of the :80 listener outage.
+func TestParseHello_Rejects(t *testing.T) {
+	cases := map[string]gatewayPayload{
+		"wrong op":       {Op: 11, D: json.RawMessage(`{"heartbeat_interval":41250}`)},
+		"zero interval":  {Op: 10, D: json.RawMessage(`{"heartbeat_interval":0}`)},
+		"missing field":  {Op: 10, D: json.RawMessage(`{}`)},
+		"null data":      {Op: 10, D: json.RawMessage(`null`)},
+		"malformed json": {Op: 10, D: json.RawMessage(`{`)},
+		"empty data":     {Op: 10, D: nil},
+		"negative":       {Op: 10, D: json.RawMessage(`{"heartbeat_interval":-5}`)},
+	}
+	for name, p := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseHello(p); err == nil {
+				t.Fatalf("expected error for %q, got nil", name)
+			}
+		})
+	}
+}
+
+// TestRecoverCC confirms a cc-gw goroutine panic is swallowed, not propagated —
+// so a malformed Discord frame can never crash the process.
+func TestRecoverCC(t *testing.T) {
+	didReturn := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("panic escaped recoverCC: %v", r)
+			}
+		}()
+		func() {
+			defer recoverCC("test-key", "unit")
+			panic("boom")
+		}()
+		didReturn = true
+	}()
+	if !didReturn {
+		t.Fatal("expected normal return after recoverCC swallowed the panic")
+	}
+}
 
 // TestCCReconnectDelay_GrowsOnUnstable verifies that repeated short-lived
 // connections back off exponentially (capped), instead of re-identifying every

@@ -43,6 +43,34 @@ func ccReconnectDelay(prevBase, uptime, min, max, stableAfter time.Duration) (wa
 	return wait, nextBase
 }
 
+// parseHello validates Discord's Hello (op 10) frame and returns the heartbeat
+// interval. It rejects a non-positive interval explicitly: feeding 0 into
+// time.NewTicker panics, and an unrecovered panic in the heartbeat goroutine
+// would crash the whole gateway process — taking the :80 listener down with it.
+func parseHello(p gatewayPayload) (int, error) {
+	if p.Op != 10 {
+		return 0, fmt.Errorf("expected Hello, got op %d", p.Op)
+	}
+	var hd helloData
+	if err := json.Unmarshal(p.D, &hd); err != nil {
+		return 0, fmt.Errorf("parse hello: %w", err)
+	}
+	if hd.HeartbeatInterval <= 0 {
+		return 0, fmt.Errorf("invalid heartbeat_interval %d", hd.HeartbeatInterval)
+	}
+	return hd.HeartbeatInterval, nil
+}
+
+// recoverCC swallows and logs a panic in a cc-gw goroutine. These goroutines
+// parse untrusted Discord frames; without recovery a single malformed event
+// would crash the entire gateway process and stop the :80 listener. Defer it
+// at the top of every cc-gw goroutine.
+func recoverCC(apiKeyID, where string) {
+	if r := recover(); r != nil {
+		log.Printf("[cc-gw] %s panic in %s recovered: %v", apiKeyID, where, r)
+	}
+}
+
 // CCGatewayManager owns one WSS connection per unique Discord bot token used
 // by any active Control Channel. It listens for MESSAGE_CREATE events,
 // resolves the channel back to a CC via the cc_channels cache, and writes
@@ -194,9 +222,15 @@ func (c *ccBotConn) connectLoop() {
 		}
 
 		start := time.Now()
-		if err := c.connect(); err != nil {
-			log.Printf("[cc-gw] %s connection error: %v", c.apiKeyID, err)
-		}
+		// Recover here so a panic anywhere in the connect/read/dispatch path
+		// (e.g. a malformed Discord frame) becomes one logged reconnect, not a
+		// process crash that drops the :80 listener.
+		func() {
+			defer recoverCC(c.apiKeyID, "connect")
+			if err := c.connect(); err != nil {
+				log.Printf("[cc-gw] %s connection error: %v", c.apiKeyID, err)
+			}
+		}()
 
 		var wait time.Duration
 		wait, base = ccReconnectDelay(base, time.Since(start), ccReconnectMin, ccReconnectMax, ccStableThreshold)
@@ -242,12 +276,11 @@ func (c *ccBotConn) connect() error {
 	if err := websocket.JSON.Receive(ws, &hello); err != nil {
 		return fmt.Errorf("read hello: %w", err)
 	}
-	if hello.Op != 10 {
-		return fmt.Errorf("expected Hello, got op %d", hello.Op)
+	hbMs, err := parseHello(hello)
+	if err != nil {
+		return err
 	}
-	var hd helloData
-	json.Unmarshal(hello.D, &hd)
-	c.hbMs = hd.HeartbeatInterval
+	c.hbMs = hbMs
 	// Each reconnect sends a fresh IDENTIFY, which starts a brand-new session
 	// whose sequence restarts. Carrying the previous session's seq into the
 	// first heartbeats is wrong — reset it before the heartbeat goroutine runs.
@@ -390,7 +423,11 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 			}
 			_ = json.Unmarshal(payload, &msg)
 			if LooksLikeCommand(msg.Content) {
-				go c.commands.Handle(context.Background(), cc.ID, ch, msg.Content)
+				ccID, chCopy, content := cc.ID, ch, msg.Content
+				go func() {
+					defer recoverCC(c.apiKeyID, "command")
+					c.commands.Handle(context.Background(), ccID, chCopy, content)
+				}()
 				return
 			}
 		}
@@ -478,6 +515,7 @@ func sseTypeFromGateway(s string) string {
 }
 
 func (c *ccBotConn) heartbeat(ws *websocket.Conn, done <-chan struct{}) {
+	defer recoverCC(c.apiKeyID, "heartbeat")
 	ticker := time.NewTicker(time.Duration(c.hbMs) * time.Millisecond)
 	defer ticker.Stop()
 	for {
