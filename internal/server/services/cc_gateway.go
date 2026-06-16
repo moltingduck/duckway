@@ -3,9 +3,11 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
+	"net/http"
 	"strconv"
 	"sync"
 	"time"
@@ -544,25 +546,64 @@ func (c *ccBotConn) sendHeartbeat(ws *websocket.Conn) {
 	}
 }
 
-// getGatewayURL is a lightweight helper that calls /gateway/bot once to learn
-// the WSS URL for the connect call. Used by ccBotConn so it doesn't depend
-// on DiscordGateway.
+// gatewayLookupAttempts bounds how many times getGatewayURL retries a transient
+// failure before giving up and letting connectLoop's backoff take over. A short
+// in-place retry keeps a momentary blip — e.g. the Docker embedded DNS at
+// 127.0.0.11 briefly refusing a UDP query ("lookup discord.com ... connection
+// refused") — from bubbling up as a connection error and escalating the
+// reconnect backoff to a full minute long after the network has recovered.
+const gatewayLookupAttempts = 4
+
+// isTransientGatewayErr reports whether a /gateway/bot failure is worth retrying
+// in place. A failure with no HTTP response — DNS resolution, dial, timeout, a
+// reset connection — is transient; those are exactly the failures a DNS blip
+// produces. A Discord 429 or 5xx is also transient. An authentication or other
+// 4xx response is permanent: retrying a bad token just burns attempts.
+func isTransientGatewayErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var derr *DiscordError
+	if errors.As(err, &derr) {
+		return derr.Status == http.StatusTooManyRequests || derr.Status >= 500
+	}
+	return true
+}
+
+// getGatewayURL is a lightweight helper that calls /gateway/bot to learn the
+// WSS URL for the connect call. Used by ccBotConn so it doesn't depend on
+// DiscordGateway. It retries transient transport/5xx errors with a short
+// growing backoff (see gatewayLookupAttempts) so a brief DNS hiccup doesn't
+// trip the reconnect backoff.
 func getGatewayURL(botToken string) (string, error) {
 	bot := NewDiscordBot()
-	raw, err := bot.do(context.Background(), botToken, "GET", "/gateway/bot", nil)
-	if err != nil {
-		return "", err
+	var lastErr error
+	for attempt := 0; attempt < gatewayLookupAttempts; attempt++ {
+		if attempt > 0 {
+			// 200ms, 400ms, 800ms — total < 1.5s, so a transient blip recovers
+			// fast without holding the connection loop hostage.
+			time.Sleep(time.Duration(100<<attempt) * time.Millisecond)
+		}
+		raw, err := bot.do(context.Background(), botToken, "GET", "/gateway/bot", nil)
+		if err != nil {
+			lastErr = err
+			if isTransientGatewayErr(err) {
+				continue
+			}
+			return "", err
+		}
+		var out struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return "", fmt.Errorf("parse gateway/bot: %w", err)
+		}
+		if out.URL == "" {
+			return "", fmt.Errorf("empty gateway URL")
+		}
+		return out.URL, nil
 	}
-	var out struct {
-		URL string `json:"url"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", fmt.Errorf("parse gateway/bot: %w", err)
-	}
-	if out.URL == "" {
-		return "", fmt.Errorf("empty gateway URL")
-	}
-	return out.URL, nil
+	return "", lastErr
 }
 
 // StartInboxCleanup launches a goroutine that periodically prunes

@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -109,6 +110,39 @@ func TestCCReconnectDelay_ResetsOnStable(t *testing.T) {
 	}
 	if next != 2*time.Second {
 		t.Fatalf("stable connection: nextBase = %v, want %v", next, 2*time.Second)
+	}
+}
+
+// TestIsTransientGatewayErr classifies which /gateway/bot failures getGatewayURL
+// should retry in place. The reported outage was a Docker DNS blip — a transport
+// error with no HTTP response — which must be treated as transient so it doesn't
+// escalate the reconnect backoff. A bad token (4xx) must NOT be retried.
+func TestIsTransientGatewayErr(t *testing.T) {
+	dnsErr := fmt.Errorf("discord request: %w",
+		fmt.Errorf(`Get "https://discord.com/api/v10/gateway/bot": dial tcp: lookup discord.com on 127.0.0.11:53: read udp: connection refused`))
+
+	cases := map[string]struct {
+		err  error
+		want bool
+	}{
+		"nil":             {nil, false},
+		"dns refused":     {dnsErr, true},
+		"plain transport": {fmt.Errorf("discord request: EOF"), true},
+		"429 rate limit":  {&DiscordError{Status: 429}, true},
+		"500 server":      {&DiscordError{Status: 500}, true},
+		"503 unavailable": {&DiscordError{Status: 503}, true},
+		"401 bad token":   {&DiscordError{Status: 401}, false},
+		"403 forbidden":   {&DiscordError{Status: 403}, false},
+		"404 not found":   {&DiscordError{Status: 404}, false},
+		"wrapped 500":     {fmt.Errorf("lookup: %w", &DiscordError{Status: 500}), true},
+		"wrapped 401":     {fmt.Errorf("lookup: %w", &DiscordError{Status: 401}), false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := isTransientGatewayErr(tc.err); got != tc.want {
+				t.Fatalf("isTransientGatewayErr(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 
