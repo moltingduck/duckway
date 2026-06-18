@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -16,16 +17,39 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+type stopper interface{ Stop() }
+
 type Server struct {
 	config   *Config
 	db       *sql.DB
 	mux      *http.ServeMux
 	notifier *services.Notifier
+
+	stopOnce sync.Once
+	stopCh   chan struct{}  // closed to stop anonymous sweeper goroutines
+	stoppers []stopper      // services with their own Stop()
+}
+
+// Shutdown stops all background goroutines and services. Call after
+// http.Server.Shutdown() so the DB is not closed while goroutines are
+// still issuing queries against it.
+func (s *Server) Shutdown() {
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		for _, svc := range s.stoppers {
+			svc.Stop()
+		}
+	})
+}
+
+func (s *Server) register(svc stopper) stopper {
+	s.stoppers = append(s.stoppers, svc)
+	return svc
 }
 
 // New creates a combined server (admin + gateway on one port).
 func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
-	s := &Server{config: config, db: db, mux: http.NewServeMux()}
+	s := &Server{config: config, db: db, mux: http.NewServeMux(), stopCh: make(chan struct{})}
 
 	if err := s.ensureAdminUser(); err != nil {
 		return nil, fmt.Errorf("ensure admin user: %w", err)
@@ -58,7 +82,7 @@ func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 // /client/cc/events. Running the WSS gateway in admin would publish
 // events to a hub the SSE subscriber can't see.
 func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
-	s := &Server{config: config, db: db, mux: http.NewServeMux()}
+	s := &Server{config: config, db: db, mux: http.NewServeMux(), stopCh: make(chan struct{})}
 
 	if err := s.ensureAdminUser(); err != nil {
 		return nil, fmt.Errorf("ensure admin user: %w", err)
@@ -83,7 +107,7 @@ func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 // here so the in-process CCEventHub can fan out to the SSE subscriber
 // (the daemon) that connects on /client/cc/events.
 func NewGateway(config *Config, db *sql.DB) (*Server, error) {
-	s := &Server{config: config, db: db, mux: http.NewServeMux()}
+	s := &Server{config: config, db: db, mux: http.NewServeMux(), stopCh: make(chan struct{})}
 
 	// Seed the default statusline here too: in split deployments the
 	// gateway sometimes boots before the admin process, and the
@@ -228,11 +252,13 @@ func (s *Server) startOAuthRefresher(ss *SharedServices) {
 	refresher := services.NewTokenRefresher(ss.APIKeyQ, ss.Crypto)
 	refresher.Start()
 	ss.Refresher = refresher
+	s.register(refresher)
 }
 
 func (s *Server) startApprovalSweeper(ss *SharedServices) {
 	sweeper := services.NewApprovalSweeper(ss.ApprovalQ, ss.SettingsQ)
 	sweeper.Start()
+	s.register(sweeper)
 }
 
 // startCCBackground spins up the multi-bot Discord gateway connections used
@@ -247,9 +273,9 @@ func (s *Server) startCCBackground(ss *SharedServices) {
 	if os.Getenv("DUCKWAY_CC_DISABLE_GATEWAY") != "1" {
 		mgr := services.NewCCGatewayManager(ccQ, ss.APIKeyQ, ss.Crypto, ss.CCHub, ss.CCApprovals)
 		mgr.Start()
+		s.register(mgr)
 	}
-	stop := make(chan struct{})
-	services.StartInboxCleanup(ccQ, ss.SettingsQ, stop)
+	services.StartInboxCleanup(ccQ, ss.SettingsQ, s.stopCh)
 }
 
 // startKeyGroupSweeper runs ClearExpiredExhausted every 60 seconds.
@@ -257,9 +283,14 @@ func (s *Server) startKeyGroupSweeper() {
 	go func() {
 		t := time.NewTicker(60 * time.Second)
 		defer t.Stop()
-		for range t.C {
-			if err := queries.ClearExpiredExhausted(s.db); err != nil {
-				log.Printf("key group sweeper: %v", err)
+		for {
+			select {
+			case <-s.stopCh:
+				return
+			case <-t.C:
+				if err := queries.ClearExpiredExhausted(s.db); err != nil {
+					log.Printf("key group sweeper: %v", err)
+				}
 			}
 		}
 	}()
@@ -286,8 +317,13 @@ func (s *Server) startUsageRetentionSweeper() {
 		prune() // once at startup
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
-		for range t.C {
-			prune()
+		for {
+			select {
+			case <-s.stopCh:
+				return
+			case <-t.C:
+				prune()
+			}
 		}
 	}()
 }
@@ -330,6 +366,7 @@ func (s *Server) startApprovalListeners() {
 			}
 			gw := services.NewDiscordGateway(cfg.BotToken, cfg.ChannelID, approveFunc, rejectFunc)
 			gw.Start()
+			s.register(gw)
 			if notifier != nil {
 				notifier.Gateways.Store(cfg.ChannelID, gw)
 			}
@@ -345,6 +382,7 @@ func (s *Server) startApprovalListeners() {
 			}
 			poller := services.NewTelegramPoller(cfg.BotToken, cfg.ChatID, approveFunc, rejectFunc)
 			poller.Start()
+			s.register(poller)
 			log.Printf("Started Telegram poller for chat %s (%s)", cfg.ChatID, ch.Name)
 		}
 	}

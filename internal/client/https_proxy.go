@@ -397,8 +397,16 @@ func (p *httpsProxy) tunnelConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go io.Copy(targetConn, clientConn)
+	// Two-direction tunnel. Each goroutine closes the *write* side of the
+	// opposite connection when it finishes, so the other direction sees EOF
+	// and exits cleanly instead of blocking until a TCP timeout.
+	go func() {
+		io.Copy(targetConn, clientConn)
+		targetConn.Close()
+	}()
 	io.Copy(clientConn, targetConn)
+	// clientConn is closed by defer above; targetConn may already be closed
+	// by the goroutine, which is fine — double-close on net.Conn is a no-op.
 }
 
 func (p *httpsProxy) getCert(hostname string) *tls.Certificate {

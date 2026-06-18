@@ -75,6 +75,7 @@ func main() {
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Error: %v", err)
 	}
+	srv.Shutdown()
 	log.Printf("[gateway] Stopped.")
 }
 

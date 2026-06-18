@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ type TelegramPoller struct {
 	client    *http.Client
 	offset    int
 	stopCh    chan struct{}
+	cancel    context.CancelFunc // cancels the in-flight long-poll HTTP request
 }
 
 func NewTelegramPoller(botToken, chatID string, onApprove, onReject func(string) error) *TelegramPoller {
@@ -38,8 +40,12 @@ func (p *TelegramPoller) Start() {
 	log.Printf("[telegram-poll] Started polling for chat %s", p.chatID)
 }
 
+// Stop cancels the in-flight long-poll request immediately and exits the loop.
 func (p *TelegramPoller) Stop() {
 	close(p.stopCh)
+	if p.cancel != nil {
+		p.cancel()
+	}
 }
 
 func (p *TelegramPoller) pollLoop() {
@@ -115,7 +121,10 @@ func (p *TelegramPoller) getUpdates() ([]tgUpdate, error) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30&allowed_updates=[\"callback_query\"]",
 		p.botToken, p.offset)
 
-	resp, err := p.client.Get(url)
+	ctx, cancel := context.WithCancel(context.Background())
+	p.cancel = cancel
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return nil, err
 	}

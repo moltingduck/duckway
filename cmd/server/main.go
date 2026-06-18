@@ -104,5 +104,7 @@ func main() {
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
+	// Stop background goroutines before defer db.Close() runs.
+	srv.Shutdown()
 	log.Printf("[server] Stopped.")
 }
