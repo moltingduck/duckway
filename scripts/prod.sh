@@ -83,6 +83,8 @@ case "${1:-up}" in
     ;;
 
   restart)
+    echo "Stopping containers (draining connections)..."
+    $COMPOSE stop --timeout 35
     echo "Rebuilding ($MODE mode)..."
     $COMPOSE up --build -d
     ;;

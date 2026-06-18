@@ -37,6 +37,7 @@ services:
     volumes:
       - duckway-data:/data
     restart: unless-stopped
+    stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_LISTEN=:8080
@@ -55,6 +56,7 @@ services:
     volumes:
       - duckway-data:/data
     restart: unless-stopped
+    stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_LISTEN=:8080
@@ -73,6 +75,7 @@ services:
     volumes:
       - duckway-data:/data
     restart: unless-stopped
+    stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_ADMIN_LISTEN=:9091
@@ -89,6 +92,7 @@ services:
     volumes:
       - duckway-data:/data
     restart: unless-stopped
+    stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_GATEWAY_LISTEN=:8080
@@ -108,6 +112,7 @@ services:
     volumes:
       - duckway-data:/data
     restart: unless-stopped
+    stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_LISTEN=:80
@@ -146,6 +151,7 @@ services:
     volumes:
       - duckway-data:/data
     restart: unless-stopped
+    stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_ADMIN_LISTEN=:9091
@@ -164,6 +170,7 @@ services:
     volumes:
       - duckway-data:/data
     restart: unless-stopped
+    stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_GATEWAY_LISTEN=:8080
@@ -183,6 +190,7 @@ services:
     volumes:
       - duckway-data:/data
     restart: unless-stopped
+    stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_ADMIN_LISTEN=:80
@@ -202,6 +210,7 @@ services:
     volumes:
       - duckway-data:/data
     restart: unless-stopped
+    stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
       - DUCKWAY_GATEWAY_LISTEN=:80

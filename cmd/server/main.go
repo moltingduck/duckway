@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database"
 	"github.com/hackerduck/duckway/internal/server"
@@ -83,7 +87,22 @@ func main() {
 	log.Printf("Data directory: %s", config.DataDir)
 	log.Printf("Admin panel: http://localhost%s/admin/", config.ListenAddr)
 
-	if err := http.ListenAndServe(config.ListenAddr, srv); err != nil {
+	httpSrv := &http.Server{Addr: config.ListenAddr, Handler: srv}
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-quit
+		log.Printf("[server] SIGTERM received — draining connections (30s max)...")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := httpSrv.Shutdown(ctx); err != nil {
+			log.Printf("[server] Shutdown error: %v", err)
+		}
+	}()
+
+	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
+	log.Printf("[server] Stopped.")
 }
