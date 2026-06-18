@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -336,6 +338,14 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.httpClient.Do(upstreamReq)
 	if err != nil {
+		if r.Context().Err() != nil || errors.Is(err, context.Canceled) {
+			// Client disconnected before upstream responded — not a gateway fault.
+			// Still log the row so the audit panel shows the attempt.
+			if h.requestLog != nil {
+				h.requestLog.Log(client.ID, result.PlaceholderID, serviceName, r.Method, upstreamPath, 0)
+			}
+			return
+		}
 		log.Printf("upstream error for %s: %v", serviceName, err)
 		jsonError(w, "upstream request failed", http.StatusBadGateway)
 		return
@@ -437,11 +447,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Re-check the toggle before persisting. If the admin flipped it to OFF
-		// during the upstream call, we drop the captured-in-memory data on
-		// the floor instead of writing it to disk. Closes the race where the
-		// admin's atomic disable+drop happened before our INSERT.
-		if h.captureDetailEnabledFor(client.ID) {
+		if captureDetail {
 			_ = h.requestLog.StoreDetail(&queries.RequestLogDetail{
 				LogID:           logID,
 				RequestHeaders:  formatHeaders(r.Header),

@@ -185,11 +185,13 @@ func (g *DiscordGateway) connect() error {
 		return fmt.Errorf("dial WSS: %w", err)
 	}
 
+	hbDone := make(chan struct{})
 	g.mu.Lock()
 	g.ws = ws
 	g.mu.Unlock()
 
 	defer func() {
+		close(hbDone)
 		g.mu.Lock()
 		g.ws = nil
 		g.mu.Unlock()
@@ -209,7 +211,7 @@ func (g *DiscordGateway) connect() error {
 	json.Unmarshal(hello.D, &hd)
 	g.heartbeatMs = hd.HeartbeatInterval
 
-	go g.heartbeat(ws)
+	go g.heartbeat(ws, hbDone)
 
 	// Intents: GUILDS(0) | GUILD_MESSAGES(9) | GUILD_MESSAGE_REACTIONS(10) | MESSAGE_CONTENT(15)
 	identify := map[string]interface{}{
@@ -348,12 +350,14 @@ func (g *DiscordGateway) handleCommand(msg messageCreateData) {
 	}
 }
 
-func (g *DiscordGateway) heartbeat(ws *websocket.Conn) {
+func (g *DiscordGateway) heartbeat(ws *websocket.Conn, done <-chan struct{}) {
 	ticker := time.NewTicker(time.Duration(g.heartbeatMs) * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-g.stopCh:
+			return
+		case <-done:
 			return
 		case <-ticker.C:
 			g.sendHeartbeat(ws)

@@ -62,6 +62,25 @@ func (q *ControlChannelQueries) GetByID(id string) (*models.ControlChannel, erro
 
 // GetByClientID looks up the (only) CC bound to a client. The client API
 // uses this to resolve "the current CC" without making the agent pass an id.
+// ListByAPIKeyID returns all active CCs that use the given API key. Used by
+// the gateway to route events without scanning the full control_channels table.
+func (q *ControlChannelQueries) ListByAPIKeyID(apiKeyID string) ([]models.ControlChannel, error) {
+	rows, err := q.db.Query(ccSelect+` WHERE cc.api_key_id = ? ORDER BY cc.created_at DESC`, apiKeyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.ControlChannel
+	for rows.Next() {
+		var c models.ControlChannel
+		if err := scanCC(rows, &c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func (q *ControlChannelQueries) GetByClientID(clientID string) (*models.ControlChannel, error) {
 	var c models.ControlChannel
 	err := scanCC(q.db.QueryRow(ccSelect+` WHERE cc.client_id = ?`, clientID), &c)

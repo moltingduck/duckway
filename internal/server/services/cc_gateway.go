@@ -251,24 +251,20 @@ func (c *ccBotConn) connectLoop() {
 }
 
 func (c *ccBotConn) connect() error {
-	// Snapshot session state. If we have a valid session, attempt RESUME so
-	// Discord replays any events missed during the brief disconnect window.
-	// The seq read is best-effort (no separate copy needed — we only pass
-	// the value to the wire, not store a pointer to it).
+	// Snapshot session state. canResume requires both sessionID and resumeURL —
+	// resumeURL is always present in Discord API v10 READY, and Discord requires
+	// RESUME to use that URL specifically. seq may be null (READY has S=null);
+	// Discord accepts a null seq in RESUME and replays from the session start.
 	c.mu.Lock()
 	sessionID := c.sessionID
 	resumeURL := c.resumeURL
-	var seqVal int
-	hasSeq := c.seq != nil
-	if hasSeq {
-		seqVal = *c.seq
-	}
+	seqSnap := c.seq // nil is valid; we send "null" in the RESUME payload
 	c.mu.Unlock()
 
-	canResume := sessionID != "" && hasSeq
+	canResume := sessionID != "" && resumeURL != ""
 
 	var gwURL string
-	if canResume && resumeURL != "" {
+	if canResume {
 		gwURL = resumeURL
 	} else {
 		var err error
@@ -310,22 +306,29 @@ func (c *ccBotConn) connect() error {
 	go c.heartbeat(ws, hbDone)
 
 	if canResume {
-		// RESUME: re-attach to the existing session. Discord will replay any
-		// dispatches with S > seqVal so we don't miss messages during the gap.
+		// RESUME: re-attach to the existing session. Discord replays any
+		// dispatches with S > seq. A null seq is valid — Discord replays from
+		// the session start. seq is NOT reset here.
+		var seqJSON json.RawMessage
+		if seqSnap != nil {
+			seqJSON = json.RawMessage(strconv.Itoa(*seqSnap))
+		} else {
+			seqJSON = json.RawMessage("null")
+		}
 		resume := map[string]interface{}{
 			"op": 6,
 			"d": map[string]interface{}{
 				"token":      c.botToken,
 				"session_id": sessionID,
-				"seq":        seqVal,
+				"seq":        seqJSON,
 			},
 		}
 		if err := websocket.JSON.Send(ws, resume); err != nil {
 			return fmt.Errorf("send resume: %w", err)
 		}
-		// seq is NOT reset here; Discord will catch us up from seqVal.
 	} else {
-		// Fresh IDENTIFY — start a new session.
+		// Fresh IDENTIFY — start a new session. Reset seq so the next reconnect
+		// doesn't try to resume a session that never fully started.
 		// Intents: GUILDS(0) | GUILD_MESSAGES(9) | GUILD_MESSAGE_REACTIONS(10) | MESSAGE_CONTENT(15).
 		// MESSAGE_CONTENT is privileged — bot owner must enable it in the
 		// developer portal. GUILD_MESSAGE_REACTIONS is needed for the
@@ -399,8 +402,8 @@ func (c *ccBotConn) handleDispatch(eventType string, data json.RawMessage) {
 				c.resumeURL = rd.ResumeURL
 			}
 			c.mu.Unlock()
+			log.Printf("[cc-gw] %s connected", c.apiKeyID)
 		}
-		log.Printf("[cc-gw] %s connected", c.apiKeyID)
 	case "RESUMED":
 		log.Printf("[cc-gw] %s resumed", c.apiKeyID)
 	case "MESSAGE_CREATE":
@@ -467,14 +470,11 @@ func (c *ccBotConn) handleDispatch(eventType string, data json.RawMessage) {
 // inline, then either skips forwarding (commands aren't messages for the
 // daemon) or appends to discord_inbox and publishes a live event.
 func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload json.RawMessage) {
-	all, err := c.cc.List()
+	all, err := c.cc.ListByAPIKeyID(c.apiKeyID)
 	if err != nil {
 		return
 	}
 	for _, cc := range all {
-		if cc.APIKeyID != c.apiKeyID {
-			continue
-		}
 		ch, err := c.cc.GetChannelByRealID(cc.ID, realChannelID)
 		if err != nil || ch == nil {
 			continue
@@ -513,14 +513,11 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 }
 
 func (c *ccBotConn) handleChannelDelete(realChannelID string, payload json.RawMessage) {
-	all, err := c.cc.List()
+	all, err := c.cc.ListByAPIKeyID(c.apiKeyID)
 	if err != nil {
 		return
 	}
 	for _, cc := range all {
-		if cc.APIKeyID != c.apiKeyID {
-			continue
-		}
 		ch, err := c.cc.GetChannelByRealID(cc.ID, realChannelID)
 		if err != nil || ch == nil {
 			continue
@@ -541,14 +538,11 @@ func (c *ccBotConn) handleChannelDelete(realChannelID string, payload json.RawMe
 }
 
 func (c *ccBotConn) handleChannelUpdate(realChannelID, name, topic string, payload json.RawMessage) {
-	all, err := c.cc.List()
+	all, err := c.cc.ListByAPIKeyID(c.apiKeyID)
 	if err != nil {
 		return
 	}
 	for _, cc := range all {
-		if cc.APIKeyID != c.apiKeyID {
-			continue
-		}
 		ch, err := c.cc.GetChannelByRealID(cc.ID, realChannelID)
 		if err != nil || ch == nil {
 			continue
