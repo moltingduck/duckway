@@ -192,12 +192,14 @@ type ccBotConn struct {
 	commands  *CCCommandHandler
 	approvals *CCApprovalRegistry
 
-	mu      sync.Mutex
-	ws      *websocket.Conn
-	hbMs    int
-	seq     *int
-	stopCh  chan struct{}
-	stopped bool
+	mu        sync.Mutex
+	ws        *websocket.Conn
+	hbMs      int
+	seq       *int
+	sessionID string // Discord session_id from last READY; empty = must IDENTIFY
+	resumeURL string // resume_gateway_url from READY; falls back to /gateway/bot
+	stopCh    chan struct{}
+	stopped   bool
 }
 
 func (c *ccBotConn) stop() {
@@ -249,9 +251,31 @@ func (c *ccBotConn) connectLoop() {
 }
 
 func (c *ccBotConn) connect() error {
-	gwURL, err := getGatewayURL(c.botToken)
-	if err != nil {
-		return fmt.Errorf("gateway lookup: %w", err)
+	// Snapshot session state. If we have a valid session, attempt RESUME so
+	// Discord replays any events missed during the brief disconnect window.
+	// The seq read is best-effort (no separate copy needed — we only pass
+	// the value to the wire, not store a pointer to it).
+	c.mu.Lock()
+	sessionID := c.sessionID
+	resumeURL := c.resumeURL
+	var seqVal int
+	hasSeq := c.seq != nil
+	if hasSeq {
+		seqVal = *c.seq
+	}
+	c.mu.Unlock()
+
+	canResume := sessionID != "" && hasSeq
+
+	var gwURL string
+	if canResume && resumeURL != "" {
+		gwURL = resumeURL
+	} else {
+		var err error
+		gwURL, err = getGatewayURL(c.botToken)
+		if err != nil {
+			return fmt.Errorf("gateway lookup: %w", err)
+		}
 	}
 
 	ws, err := websocket.Dial(gwURL+"/?v=10&encoding=json", "", "https://discord.com")
@@ -283,31 +307,46 @@ func (c *ccBotConn) connect() error {
 		return err
 	}
 	c.hbMs = hbMs
-	// Each reconnect sends a fresh IDENTIFY, which starts a brand-new session
-	// whose sequence restarts. Carrying the previous session's seq into the
-	// first heartbeats is wrong — reset it before the heartbeat goroutine runs.
-	c.seq = nil
 	go c.heartbeat(ws, hbDone)
 
-	// Intents: GUILDS(0) | GUILD_MESSAGES(9) | GUILD_MESSAGE_REACTIONS(10) | MESSAGE_CONTENT(15).
-	// MESSAGE_CONTENT is privileged — bot owner must enable it in the
-	// developer portal. GUILD_MESSAGE_REACTIONS is needed for the
-	// discord_request_approval reaction-vote flow.
-	identify := map[string]interface{}{
-		"op": 2,
-		"d": map[string]interface{}{
-			"token":   c.botToken,
-			"intents": (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15),
-			"properties": map[string]string{
-				"os": "linux", "browser": "duckway-cc", "device": "duckway-cc",
+	if canResume {
+		// RESUME: re-attach to the existing session. Discord will replay any
+		// dispatches with S > seqVal so we don't miss messages during the gap.
+		resume := map[string]interface{}{
+			"op": 6,
+			"d": map[string]interface{}{
+				"token":      c.botToken,
+				"session_id": sessionID,
+				"seq":        seqVal,
 			},
-		},
+		}
+		if err := websocket.JSON.Send(ws, resume); err != nil {
+			return fmt.Errorf("send resume: %w", err)
+		}
+		// seq is NOT reset here; Discord will catch us up from seqVal.
+	} else {
+		// Fresh IDENTIFY — start a new session.
+		// Intents: GUILDS(0) | GUILD_MESSAGES(9) | GUILD_MESSAGE_REACTIONS(10) | MESSAGE_CONTENT(15).
+		// MESSAGE_CONTENT is privileged — bot owner must enable it in the
+		// developer portal. GUILD_MESSAGE_REACTIONS is needed for the
+		// discord_request_approval reaction-vote flow.
+		c.mu.Lock()
+		c.seq = nil
+		c.mu.Unlock()
+		identify := map[string]interface{}{
+			"op": 2,
+			"d": map[string]interface{}{
+				"token":   c.botToken,
+				"intents": (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15),
+				"properties": map[string]string{
+					"os": "linux", "browser": "duckway-cc", "device": "duckway-cc",
+				},
+			},
+		}
+		if err := websocket.JSON.Send(ws, identify); err != nil {
+			return fmt.Errorf("send identify: %w", err)
+		}
 	}
-	if err := websocket.JSON.Send(ws, identify); err != nil {
-		return fmt.Errorf("send identify: %w", err)
-	}
-
-	log.Printf("[cc-gw] %s connected", c.apiKeyID)
 
 	for {
 		select {
@@ -320,9 +359,11 @@ func (c *ccBotConn) connect() error {
 		if err := websocket.JSON.Receive(ws, &payload); err != nil {
 			return fmt.Errorf("read event: %w", err)
 		}
+		c.mu.Lock()
 		if payload.S != nil {
 			c.seq = payload.S
 		}
+		c.mu.Unlock()
 
 		switch payload.Op {
 		case 0:
@@ -332,6 +373,13 @@ func (c *ccBotConn) connect() error {
 		case 7:
 			return fmt.Errorf("reconnect requested")
 		case 9:
+			// Invalid session. Clear session state so the next connect()
+			// sends a fresh IDENTIFY rather than looping on failed RESUMEs.
+			c.mu.Lock()
+			c.sessionID = ""
+			c.resumeURL = ""
+			c.seq = nil
+			c.mu.Unlock()
 			return fmt.Errorf("invalid session")
 		}
 	}
@@ -339,6 +387,22 @@ func (c *ccBotConn) connect() error {
 
 func (c *ccBotConn) handleDispatch(eventType string, data json.RawMessage) {
 	switch eventType {
+	case "READY":
+		var rd struct {
+			SessionID string `json:"session_id"`
+			ResumeURL string `json:"resume_gateway_url"`
+		}
+		if err := json.Unmarshal(data, &rd); err == nil && rd.SessionID != "" {
+			c.mu.Lock()
+			c.sessionID = rd.SessionID
+			if rd.ResumeURL != "" {
+				c.resumeURL = rd.ResumeURL
+			}
+			c.mu.Unlock()
+		}
+		log.Printf("[cc-gw] %s connected", c.apiKeyID)
+	case "RESUMED":
+		log.Printf("[cc-gw] %s resumed", c.apiKeyID)
 	case "MESSAGE_CREATE":
 		var msg messageCreateData
 		if err := json.Unmarshal(data, &msg); err != nil {
@@ -533,14 +597,14 @@ func (c *ccBotConn) heartbeat(ws *websocket.Conn, done <-chan struct{}) {
 }
 
 func (c *ccBotConn) sendHeartbeat(ws *websocket.Conn) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	hb := gatewayPayload{Op: 1}
 	if c.seq != nil {
 		hb.D = json.RawMessage(strconv.Itoa(*c.seq))
 	} else {
 		hb.D = json.RawMessage("null")
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.ws != nil {
 		websocket.JSON.Send(ws, hb)
 	}

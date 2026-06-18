@@ -154,3 +154,66 @@ func TestCCReconnectDelay_CapAtMax(t *testing.T) {
 		t.Fatalf("nextBase = %v, want cap %v", next, max)
 	}
 }
+
+// TestHandleDispatch_ReadyCapturesSession verifies that a READY event populates
+// sessionID and resumeURL on the connection so that the next reconnect can send
+// a RESUME (op 6) instead of a fresh IDENTIFY (op 2).
+func TestHandleDispatch_ReadyCapturesSession(t *testing.T) {
+	c := &ccBotConn{stopCh: make(chan struct{})}
+	payload := json.RawMessage(`{
+		"session_id":          "abc123",
+		"resume_gateway_url":  "wss://gateway.discord.gg"
+	}`)
+	c.handleDispatch("READY", payload)
+
+	c.mu.Lock()
+	sid, rurl := c.sessionID, c.resumeURL
+	c.mu.Unlock()
+
+	if sid != "abc123" {
+		t.Fatalf("sessionID = %q, want %q", sid, "abc123")
+	}
+	if rurl != "wss://gateway.discord.gg" {
+		t.Fatalf("resumeURL = %q, want %q", rurl, "wss://gateway.discord.gg")
+	}
+}
+
+// TestHandleDispatch_ReadyIgnoresEmptySessionID verifies that a malformed READY
+// (empty session_id) does not overwrite a previously captured valid session,
+// guarding against a botched reconnect clearing usable state.
+func TestHandleDispatch_ReadyIgnoresEmptySessionID(t *testing.T) {
+	c := &ccBotConn{stopCh: make(chan struct{})}
+	c.sessionID = "existing"
+	c.resumeURL = "wss://existing"
+
+	c.handleDispatch("READY", json.RawMessage(`{"session_id":"","resume_gateway_url":""}`))
+
+	c.mu.Lock()
+	sid := c.sessionID
+	c.mu.Unlock()
+
+	if sid != "existing" {
+		t.Fatalf("sessionID = %q, want existing to be preserved", sid)
+	}
+}
+
+// TestHandleDispatch_ResumedDoesNotPanic confirms the RESUMED event is handled
+// without panicking — no state is mutated, only a log line is emitted.
+func TestHandleDispatch_ResumedDoesNotPanic(t *testing.T) {
+	c := &ccBotConn{stopCh: make(chan struct{})}
+	c.sessionID = "abc123"
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("RESUMED dispatch panicked: %v", r)
+		}
+	}()
+	c.handleDispatch("RESUMED", json.RawMessage(`{}`))
+
+	c.mu.Lock()
+	sid := c.sessionID
+	c.mu.Unlock()
+	if sid != "abc123" {
+		t.Fatalf("RESUMED must not clear sessionID")
+	}
+}
