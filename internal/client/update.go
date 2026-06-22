@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -83,7 +84,12 @@ func DownloadAndReplaceClient(serverURL string) error {
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath) // best-effort cleanup if we don't reach Rename
 
-	written, err := io.Copy(tmp, resp.Body)
+	written, err := io.Copy(tmp, &progressReader{
+		r:     resp.Body,
+		total: resp.ContentLength, // -1 if unknown
+		start: time.Now(),
+	})
+	fmt.Print("\r\033[K") // clear the progress line
 	if err != nil {
 		tmp.Close()
 		return fmt.Errorf("write binary: %w", err)
@@ -110,4 +116,53 @@ func DownloadAndReplaceClient(serverURL string) error {
 		return fmt.Errorf("replace %s: %w", exe, err)
 	}
 	return nil
+}
+
+// progressReader wraps an io.Reader and prints a progress bar to stdout.
+type progressReader struct {
+	r       io.Reader
+	total   int64 // -1 if Content-Length unknown
+	read    int64
+	start   time.Time
+	lastPct int
+}
+
+func (p *progressReader) Read(buf []byte) (int, error) {
+	n, err := p.r.Read(buf)
+	p.read += int64(n)
+	p.print()
+	return n, err
+}
+
+const barWidth = 25
+
+func (p *progressReader) print() {
+	elapsed := time.Since(p.start).Seconds()
+	speed := float64(p.read) / elapsed // bytes/s
+
+	if p.total > 0 {
+		pct := int(float64(p.read) / float64(p.total) * 100)
+		if pct == p.lastPct {
+			return
+		}
+		p.lastPct = pct
+		filled := barWidth * pct / 100
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+		fmt.Printf("\rDownloading  [%s]  %3d%%  %s / %s  %s/s",
+			bar, pct, fmtBytes(p.read), fmtBytes(p.total), fmtBytes(int64(speed)))
+	} else {
+		// Unknown total — just show bytes received and speed.
+		fmt.Printf("\rDownloading  %s  %s/s", fmtBytes(p.read), fmtBytes(int64(speed)))
+	}
+}
+
+func fmtBytes(b int64) string {
+	switch {
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(b)/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(b)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
