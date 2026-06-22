@@ -3,6 +3,7 @@ package services
 import (
 	"log"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -15,6 +16,7 @@ type ApprovalSweeper struct {
 	approvals *queries.ApprovalQueries
 	settings  *queries.SettingsQueries
 	stopCh    chan struct{}
+	stopOnce  sync.Once
 }
 
 func NewApprovalSweeper(a *queries.ApprovalQueries, s *queries.SettingsQueries) *ApprovalSweeper {
@@ -26,7 +28,7 @@ func (s *ApprovalSweeper) Start() {
 	log.Printf("Approval sweeper started (checking every minute)")
 }
 
-func (s *ApprovalSweeper) Stop() { close(s.stopCh) }
+func (s *ApprovalSweeper) Stop() { s.stopOnce.Do(func() { close(s.stopCh) }) }
 
 func (s *ApprovalSweeper) loop() {
 	s.sweep() // run once at startup

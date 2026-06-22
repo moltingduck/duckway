@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,7 +22,10 @@ type TelegramPoller struct {
 	client    *http.Client
 	offset    int
 	stopCh    chan struct{}
-	cancel    context.CancelFunc // cancels the in-flight long-poll HTTP request
+	stopOnce  sync.Once
+
+	cancelMu sync.Mutex
+	cancel   context.CancelFunc // cancels the in-flight long-poll HTTP request; guarded by cancelMu
 }
 
 func NewTelegramPoller(botToken, chatID string, onApprove, onReject func(string) error) *TelegramPoller {
@@ -42,10 +46,15 @@ func (p *TelegramPoller) Start() {
 
 // Stop cancels the in-flight long-poll request immediately and exits the loop.
 func (p *TelegramPoller) Stop() {
-	close(p.stopCh)
-	if p.cancel != nil {
-		p.cancel()
-	}
+	p.stopOnce.Do(func() {
+		close(p.stopCh)
+		p.cancelMu.Lock()
+		cancel := p.cancel
+		p.cancelMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	})
 }
 
 func (p *TelegramPoller) pollLoop() {
@@ -122,8 +131,15 @@ func (p *TelegramPoller) getUpdates() ([]tgUpdate, error) {
 		p.botToken, p.offset)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // always release the context goroutine
+	p.cancelMu.Lock()
 	p.cancel = cancel
-	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	p.cancelMu.Unlock()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -145,7 +161,10 @@ func (p *TelegramPoller) answerCallback(callbackID, text string) {
 		"callback_query_id": callbackID,
 		"text":              text,
 	})
-	http.Post(url, "application/json", strings.NewReader(string(body)))
+	if resp, err := p.client.Post(url, "application/json", strings.NewReader(string(body))); err == nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
 }
 
 func (p *TelegramPoller) editMessage(chatID int64, messageID int, text string) {
@@ -156,5 +175,8 @@ func (p *TelegramPoller) editMessage(chatID int64, messageID int, text string) {
 		"text":       text,
 		"parse_mode": "Markdown",
 	})
-	http.Post(url, "application/json", strings.NewReader(string(body)))
+	if resp, err := p.client.Post(url, "application/json", strings.NewReader(string(body))); err == nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
 }

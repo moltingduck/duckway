@@ -460,12 +460,9 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 		})
 	})
 
-	s.mux.Handle("/client/", ss.ClientAuth.Middleware(clientMux))
-
-	// Service host map (for HTTPS proxy client). Includes delivery_mode so the
-	// sidecar knows whether to MITM via gateway (proxy) or fetch a real-token
-	// loan once and forward direct to upstream (loan_proxy).
-	s.mux.HandleFunc("GET /client/services", func(w http.ResponseWriter, r *http.Request) {
+	// Service host map (for HTTPS proxy client). Requires client auth.
+	// Registered in clientMux so it is protected by the /client/ middleware.
+	clientMux.HandleFunc("GET /client/services", func(w http.ResponseWriter, r *http.Request) {
 		svcs, _ := ss.ServiceQ.List()
 		type svcInfo struct {
 			Name         string `json:"name"`
@@ -485,6 +482,8 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 	})
+
+	s.mux.Handle("/client/", ss.ClientAuth.Middleware(clientMux))
 
 	// Proxy routes (require client auth)
 	proxyMux := http.NewServeMux()

@@ -3,6 +3,7 @@ package queries
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"strconv"
 	"time"
 
@@ -223,10 +224,12 @@ func SelectKeyForGroup(db *sql.DB, groupID, excludeKeyID, strategy string) (stri
 
 	// Round-robin: stamp last_used_at so the next call picks a different key.
 	if strategy == "round_robin" {
-		db.Exec(
+		if _, err := db.Exec(
 			`UPDATE key_group_members SET last_used_at = datetime('now') WHERE group_id = ? AND api_key_id = ?`,
 			groupID, apiKeyID,
-		)
+		); err != nil {
+			log.Printf("[key-groups] round-robin stamp failed: %v", err)
+		}
 	}
 
 	return apiKeyID, nil

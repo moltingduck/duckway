@@ -65,7 +65,11 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, _ := svc.GenerateToken(16)
+	id, err := svc.GenerateToken(16)
+	if err != nil {
+		jsonError(w, "failed to generate key ID", http.StatusInternalServerError)
+		return
+	}
 	key := &models.APIKey{
 		ID:           id,
 		ServiceID:    req.ServiceID,
@@ -229,6 +233,10 @@ func (h *APIKeyHandler) ApplyACLTemplate(w http.ResponseWriter, r *http.Request)
 // POST /api/keys/{id}/acl  body: {"acl":"{...}"}
 func (h *APIKeyHandler) SetACL(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if _, err := h.apiKeys.GetByID(id); err != nil {
+		jsonError(w, "key not found", http.StatusNotFound)
+		return
+	}
 	var req struct {
 		ACL string `json:"acl"`
 	}

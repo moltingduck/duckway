@@ -136,7 +136,8 @@ func runViaPTY(ctx context.Context, bin, cwd, prompt string, sid string, extraEn
 		}
 	}
 	// Fallback: signal ready after 5 seconds regardless.
-	time.AfterFunc(5*time.Second, signalReady)
+	fallbackTimer := time.AfterFunc(5*time.Second, signalReady)
+	defer fallbackTimer.Stop()
 
 	// promptSentFlag lets the ptyReader know when to start tracking response
 	// output so it can fire the exit signal after the response quiets down.

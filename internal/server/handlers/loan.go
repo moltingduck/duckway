@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -112,7 +113,12 @@ func (h *LoanHandler) Issue(w http.ResponseWriter, r *http.Request) {
 	// valid one, block. The user accepted coarse-grained ACL/approval for
 	// loan_proxy, so we only check at the loan level — not per request.
 	if result.NeedApproval {
-		approvalID, _ := CreatePendingApproval(h.approvals, result.PlaceholderID, "LOAN", "/proxy/"+serviceName)
+		approvalID, err := CreatePendingApproval(h.approvals, result.PlaceholderID, "LOAN", "/proxy/"+serviceName)
+		if err != nil {
+			log.Printf("failed to create loan approval: %v", err)
+			jsonError(w, "failed to create approval request", http.StatusInternalServerError)
+			return
+		}
 		if h.notifier != nil {
 			h.notifier.NotifyApprovalNeeded(services.ApprovalNotification{
 				ApprovalID:    approvalID,
@@ -197,11 +203,15 @@ func (h *LoanHandler) issueGroupLoan(w http.ResponseWriter, r *http.Request, cli
 		return
 	}
 
-	// Determine auth scheme from service config.
+	// Determine auth scheme from service config and enforce delivery mode.
 	authType := "header"
 	authHeader := "x-api-key"
 	authPrefix := ""
 	if svc, svcErr := h.services.GetByName(serviceName); svcErr == nil {
+		if svc.DeliveryMode != "loan_proxy" {
+			jsonError(w, "service is not configured for loan_proxy delivery", http.StatusForbidden)
+			return
+		}
 		authType = svc.AuthType
 		authHeader = svc.AuthHeader
 		authPrefix = svc.AuthPrefix
@@ -275,7 +285,8 @@ func (h *LoanHandler) Audit(w http.ResponseWriter, r *http.Request) {
 		Path          string `json:"path"`
 		Status        int    `json:"status"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&entries); err != nil {
+	const maxAuditBytes = 1 << 20 // 1 MiB — sane upper bound for a batch of metadata
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAuditBytes)).Decode(&entries); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}

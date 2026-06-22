@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -160,7 +161,10 @@ func (h *CCClientHandler) CreateChannel(w http.ResponseWriter, r *http.Request) 
 		GuildID    string `json:"guild_id"`
 		CategoryID string `json:"category_id"`
 	}
-	_ = json.Unmarshal([]byte(cc.Config), &cfg)
+	if err := json.Unmarshal([]byte(cc.Config), &cfg); err != nil {
+		jsonError(w, "cc config is not valid JSON: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if cfg.GuildID == "" || cfg.CategoryID == "" {
 		jsonError(w, "cc config missing guild_id/category_id", http.StatusInternalServerError)
 		return
@@ -177,8 +181,13 @@ func (h *CCClientHandler) CreateChannel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	handle, _ := svc.GenerateToken(12)
-	handle = "dwch_" + handle
+	handleSuffix, err := svc.GenerateToken(12)
+	if err != nil {
+		_ = h.bot.ArchiveChannel(r.Context(), botTok, created.ID, created.Name)
+		jsonError(w, "generate channel handle: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	handle := "dwch_" + handleSuffix
 	clientID := client.ID
 	row := &models.CCChannel{
 		Handle: handle, CCID: cc.ID,
@@ -219,7 +228,9 @@ func (h *CCClientHandler) ArchiveChannel(w http.ResponseWriter, r *http.Request)
 		jsonError(w, "discord archive: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	_ = h.cc.MarkChannelArchived(handle)
+	if err := h.cc.MarkChannelArchived(handle); err != nil {
+		log.Printf("[cc-client] MarkChannelArchived %s: %v", handle, err)
+	}
 	jsonResponse(w, map[string]string{"status": "archived"})
 }
 

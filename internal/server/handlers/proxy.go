@@ -39,7 +39,14 @@ func NewProxyHandler(svcQueries *queries.ServiceQueries, apiKeys *queries.APIKey
 		settings:    settings,
 		permissions: services.NewPermissionChecker(),
 		notifier:    notifier,
-		httpClient:  &http.Client{},
+		// No full Timeout: LLM streaming responses can run for many minutes.
+		// ResponseHeaderTimeout caps the time to first byte from upstream;
+		// once headers arrive the body streams until the client disconnects.
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 2 * time.Minute,
+			},
+		},
 	}
 }
 
@@ -196,6 +203,8 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		approvalID, err := CreatePendingApproval(h.approvals, result.PlaceholderID, r.Method, upstreamPath)
 		if err != nil {
 			log.Printf("failed to create approval: %v", err)
+			jsonError(w, "failed to create approval request", http.StatusInternalServerError)
+			return
 		}
 
 		// Send notification
@@ -375,6 +384,9 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for key, values := range resp.Header {
+		if shouldStripResponseHeader(key) {
+			continue
+		}
 		for _, v := range values {
 			w.Header().Add(key, v)
 		}
@@ -487,6 +499,17 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+}
+
+// shouldStripResponseHeader returns true if a response header from the upstream
+// must not be forwarded to the client (hop-by-hop, RFC 7230 §6.1).
+func shouldStripResponseHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+		"te", "trailer", "transfer-encoding", "upgrade":
+		return true
+	}
+	return false
 }
 
 // shouldStripHeader returns true if a request header from the client must NOT

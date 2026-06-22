@@ -7,9 +7,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
+
+const sessionMaxAgeSecs = 86400 * 7 // 7 days, matches MaxAge below
 
 type contextKey string
 
@@ -65,6 +68,7 @@ func (a *AdminAuth) CreateSession(username string) *http.Cookie {
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400 * 7, // 7 days
 	}
@@ -88,6 +92,13 @@ func (a *AdminAuth) validateSession(value string) (string, bool) {
 
 	expected := a.sign(data)
 	if !hmac.Equal([]byte(sig), []byte(expected)) {
+		return "", false
+	}
+
+	// Server-side expiry: reject tokens older than sessionMaxAgeSecs even if
+	// the HMAC is valid (e.g. a stolen cookie that outlived the browser MaxAge).
+	ts, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || time.Now().Unix()-ts > sessionMaxAgeSecs {
 		return "", false
 	}
 

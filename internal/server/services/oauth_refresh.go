@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -22,10 +23,11 @@ const claudeOAuthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 // TokenRefresher automatically refreshes API keys that have a refresh_token set.
 // Works for any OAuth-based key (Claude, GitHub Apps, etc.)
 type TokenRefresher struct {
-	apiKeyQ *queries.APIKeyQueries
-	crypto  *Crypto
-	client  *http.Client
-	stopCh  chan struct{}
+	apiKeyQ  *queries.APIKeyQueries
+	crypto   *Crypto
+	client   *http.Client
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 func NewTokenRefresher(apiKeyQ *queries.APIKeyQueries, crypto *Crypto) *TokenRefresher {
@@ -43,7 +45,7 @@ func (r *TokenRefresher) Start() {
 }
 
 func (r *TokenRefresher) Stop() {
-	close(r.stopCh)
+	r.stopOnce.Do(func() { close(r.stopCh) })
 }
 
 func (r *TokenRefresher) refreshLoop() {
@@ -133,7 +135,10 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 			"refresh_token": refreshToken,
 			"client_id":     clientID,
 		})
-		req, _ := http.NewRequest("POST", key.TokenEndpoint, bytes.NewReader(body))
+		req, err := http.NewRequest("POST", key.TokenEndpoint, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("build token request: %w", err)
+		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
 		resp, err = r.client.Do(req)
@@ -173,15 +178,23 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 		return fmt.Errorf("encrypt: %w", err)
 	}
 
-	expiresAt := time.Now().UnixMilli() + tokenResp.ExpiresIn*1000
+	expiresIn := tokenResp.ExpiresIn
+	if expiresIn <= 0 {
+		// Server didn't return expires_in; use 1-hour fallback so the key
+		// isn't immediately re-queued for refresh on the next tick.
+		expiresIn = 3600
+	}
+	expiresAt := time.Now().UnixMilli() + expiresIn*1000
 	if err := r.apiKeyQ.UpdateTokens(key.ID, encAccess, expiresAt); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
 
 	if tokenResp.RefreshToken != "" && tokenResp.RefreshToken != refreshToken {
 		encRefresh, err := r.crypto.Encrypt(tokenResp.RefreshToken)
-		if err == nil {
-			r.apiKeyQ.UpdateRefreshToken(key.ID, encRefresh)
+		if err != nil {
+			log.Printf("[token-refresh] Warning: failed to encrypt new refresh token for %s: %v", key.ID, err)
+		} else if err := r.apiKeyQ.UpdateRefreshToken(key.ID, encRefresh); err != nil {
+			log.Printf("[token-refresh] Warning: failed to store rotated refresh token for %s: %v", key.ID, err)
 		}
 	}
 

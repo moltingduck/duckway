@@ -223,7 +223,10 @@ func (c *APIClient) DownloadCA(configDir string) error {
 	certPEM, _ := io.ReadAll(resp.Body)
 
 	// Download key (requires client auth)
-	req, _ := http.NewRequest("GET", c.baseURL+"/client/ca-key", nil)
+	req, err := http.NewRequest("GET", c.baseURL+"/client/ca-key", nil)
+	if err != nil {
+		return fmt.Errorf("build CA key request: %w", err)
+	}
 	req.Header.Set("X-Duckway-Token", c.token)
 	resp2, err := c.httpClient.Do(req)
 	if err != nil {
@@ -235,8 +238,12 @@ func (c *APIClient) DownloadCA(configDir string) error {
 	}
 	keyPEM, _ := io.ReadAll(resp2.Body)
 
-	os.WriteFile(configDir+"/ca.pem", certPEM, 0644)
-	os.WriteFile(configDir+"/ca-key.pem", keyPEM, 0600)
+	if err := os.WriteFile(configDir+"/ca.pem", certPEM, 0644); err != nil {
+		return fmt.Errorf("write CA cert: %w", err)
+	}
+	if err := os.WriteFile(configDir+"/ca-key.pem", keyPEM, 0600); err != nil {
+		return fmt.Errorf("write CA key: %w", err)
+	}
 	return nil
 }
 
@@ -251,7 +258,9 @@ func (c *APIClient) FetchConfig() (map[string]string, error) {
 		return nil, fmt.Errorf("config endpoint returned %d", resp.StatusCode)
 	}
 	var cfg map[string]string
-	json.NewDecoder(resp.Body).Decode(&cfg)
+	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("decode config: %w", err)
+	}
 	return cfg, nil
 }
 
@@ -320,7 +329,10 @@ type CCChannelInfo struct {
 
 // FetchCCChannels returns the channels under this client's CC.
 func (c *APIClient) FetchCCChannels() ([]CCChannelInfo, error) {
-	req, _ := http.NewRequest("GET", c.baseURL+"/client/cc/channels", nil)
+	req, err := http.NewRequest("GET", c.baseURL+"/client/cc/channels", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build channels request: %w", err)
+	}
 	req.Header.Set("X-Duckway-Token", c.token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

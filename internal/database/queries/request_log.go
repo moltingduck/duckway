@@ -126,8 +126,8 @@ func (q *RequestLogQueries) SetCaptureDisabledAndDrop(clientsJSON string) error 
 	return tx.Commit()
 }
 
-// SetCaptureEnabled flips the toggle to "1" and updates the client filter,
-// in a single transaction. No drop — enabling shouldn't lose existing data.
+// SetCaptureEnabled flips the toggle to "1". If clientsJSON is non-empty it
+// also updates the client filter; otherwise the existing filter is preserved.
 func (q *RequestLogQueries) SetCaptureEnabled(clientsJSON string) error {
 	tx, err := q.db.Begin()
 	if err != nil {
@@ -140,8 +140,10 @@ func (q *RequestLogQueries) SetCaptureEnabled(clientsJSON string) error {
 	if _, err := tx.Exec(upsert, "request_log_capture_enabled", "1"); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(upsert, "request_log_capture_clients", clientsJSON); err != nil {
-		return err
+	if clientsJSON != "" {
+		if _, err := tx.Exec(upsert, "request_log_capture_clients", clientsJSON); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

@@ -146,9 +146,11 @@ func (r *KeyResolver) resolveFromGroup(groupID string) (*models.APIKey, error) {
 
 	switch group.Strategy {
 	case "round-robin":
-		idx := group.LastIndex % len(members)
+		idx, err := r.groups.IncrementLastIndex(groupID, len(members))
+		if err != nil {
+			return nil, fmt.Errorf("round-robin increment: %w", err)
+		}
 		selected = &members[idx]
-		r.groups.UpdateLastIndex(groupID, group.LastIndex+1)
 
 	case "least-used":
 		selected = &members[0]

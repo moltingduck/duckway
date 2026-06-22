@@ -117,3 +117,18 @@ func (q *GroupQueries) UpdateLastIndex(groupID string, index int) error {
 	_, err := q.db.Exec("UPDATE api_key_groups SET last_index = ? WHERE id = ?", index, groupID)
 	return err
 }
+
+// IncrementLastIndex atomically increments last_index and returns the old
+// value, giving the caller a collision-free slot in the round-robin sequence.
+func (q *GroupQueries) IncrementLastIndex(groupID string, memberCount int) (int, error) {
+	var old int
+	err := q.db.QueryRow(`
+		UPDATE api_key_groups
+		SET last_index = last_index + 1
+		WHERE id = ?
+		RETURNING last_index - 1`, groupID).Scan(&old)
+	if err != nil {
+		return 0, err
+	}
+	return old % memberCount, nil
+}

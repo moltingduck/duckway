@@ -80,6 +80,14 @@ func (h *OAuthHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "access_token required", http.StatusBadRequest)
 		return
 	}
+	if req.ServiceID == "" {
+		jsonError(w, "service_id required", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.serviceQ.GetByID(req.ServiceID); err != nil {
+		jsonError(w, "service not found", http.StatusBadRequest)
+		return
+	}
 	if req.Name == "" {
 		req.Name = "OAuth Token"
 	}
@@ -101,7 +109,11 @@ func (h *OAuthHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	id, _ := svc.GenerateToken(16)
+	id, err := svc.GenerateToken(16)
+	if err != nil {
+		jsonError(w, "generate key ID: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	key := &models.APIKey{
 		ID:               id,
 		ServiceID:        req.ServiceID,

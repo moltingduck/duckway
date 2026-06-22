@@ -3,6 +3,7 @@ package client
 import (
 	"bufio"
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -294,11 +296,15 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Read decrypted HTTP requests from the client
 	reader := bufio.NewReader(tlsConn)
 	for {
+		// Deadline covers only the time to receive the request headers from the
+		// client. Clear it before dispatch so upstream streaming responses
+		// (LLM SSE, git pack transfers) are not cut short.
 		tlsConn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		req, err := http.ReadRequest(reader)
 		if err != nil {
 			break
 		}
+		tlsConn.SetReadDeadline(time.Time{}) // clear before forwarding
 
 		// Dispatch by delivery mode
 		if entry.DeliveryMode == "loan_proxy" {
@@ -480,10 +486,17 @@ func parseClientCA(certPEM, keyPEM []byte) (*services.CAManager, error) {
 		return nil, fmt.Errorf("failed to decode CA key")
 	}
 
-	// Try EC key first, then PKCS8
-	ecKey, err := x509.ParseECPrivateKey(keyBlock.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse CA key: %w", err)
+	// Try raw EC first (SEC1 format), then PKCS8-wrapped EC.
+	var ecKey *ecdsa.PrivateKey
+	if raw, ecErr := x509.ParseECPrivateKey(keyBlock.Bytes); ecErr == nil {
+		ecKey = raw
+	} else if p8, p8Err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes); p8Err == nil {
+		var ok bool
+		if ecKey, ok = p8.(*ecdsa.PrivateKey); !ok {
+			return nil, fmt.Errorf("parse CA key: PKCS8 key is not EC (type %T)", p8)
+		}
+	} else {
+		return nil, fmt.Errorf("parse CA key: not SEC1 (%v), not PKCS8 (%v)", ecErr, p8Err)
 	}
 
 	return &services.CAManager{CertPEM: certPEM, KeyPEM: keyPEM, Cert: cert, Key: ecKey}, nil
@@ -582,7 +595,7 @@ func (p *httpsProxy) getLoanedToken(svc string) (*loanedToken, error) {
 	}
 
 	// Cache miss / expired — request a fresh loan
-	req, err := http.NewRequest("GET", p.serverURL+"/client/loan?service="+svc, nil)
+	req, err := http.NewRequest("GET", p.serverURL+"/client/loan?service="+url.QueryEscape(svc), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -613,6 +626,10 @@ func (p *httpsProxy) getLoanedToken(svc string) (*loanedToken, error) {
 	if r.TTLSeconds <= 0 {
 		r.TTLSeconds = 60
 	}
+	ttl := r.TTLSeconds
+	if ttl > 2 {
+		ttl -= 2
+	}
 	tok = &loanedToken{
 		realToken:     r.RealToken,
 		authType:      r.AuthType,
@@ -621,11 +638,14 @@ func (p *httpsProxy) getLoanedToken(svc string) (*loanedToken, error) {
 		placeholderID: r.PlaceholderID,
 		apiKeyID:      r.APIKeyID,
 		groupID:       r.GroupID,
-		// Refresh slightly before the server-side TTL so we never hit an expired token
-		expiresAt: time.Now().Add(time.Duration(r.TTLSeconds-2) * time.Second),
+		expiresAt:     time.Now().Add(time.Duration(ttl) * time.Second),
 	}
 	p.loanMu.Lock()
-	p.loanCache[svc] = tok
+	// Another goroutine may have populated the cache while we were fetching;
+	// only overwrite if still stale to avoid discarding a fresher token.
+	if existing := p.loanCache[svc]; existing == nil || time.Now().After(existing.expiresAt) {
+		p.loanCache[svc] = tok
+	}
 	p.loanMu.Unlock()
 	return tok, nil
 }
@@ -658,8 +678,22 @@ func (p *httpsProxy) forwardLoan(tlsConn *tls.Conn, req *http.Request, entry hos
 		target += "?" + req.URL.RawQuery
 	}
 
-	// Stream the body — no ReadAll, so git pushes don't buffer in RAM
-	upstreamReq, err := http.NewRequest(req.Method, target, req.Body)
+	// Buffer small request bodies so we can replay them on a 429 retry.
+	// Large bodies (git pushes, uploads) are streamed and cannot be replayed.
+	const maxBodyBuffer = 1 << 20 // 1 MiB
+	var bodyBytes []byte
+	if req.Body != nil && req.ContentLength >= 0 && req.ContentLength <= maxBodyBuffer {
+		bodyBytes, _ = io.ReadAll(io.LimitReader(req.Body, maxBodyBuffer+1))
+		req.Body.Close()
+	}
+	var bodyReader io.Reader
+	if bodyBytes != nil {
+		bodyReader = bytes.NewReader(bodyBytes)
+	} else {
+		bodyReader = req.Body // streaming — retry will be skipped
+	}
+
+	upstreamReq, err := http.NewRequest(req.Method, target, bodyReader)
 	if err != nil {
 		writeHTTPError(tlsConn, 502, "upstream request failed")
 		return
@@ -729,10 +763,10 @@ func (p *httpsProxy) forwardLoan(tlsConn *tls.Conn, req *http.Request, entry hos
 		p.loanMu.Unlock()
 		// Retry with the exhausted key excluded.
 		newTok, retryErr := p.getLoanedTokenExcluding(entry.Service, tok.groupID, tok.apiKeyID)
-		if retryErr == nil {
+		if retryErr == nil && bodyBytes != nil {
 			tok = newTok
 			// Re-build and send upstream request with new token.
-			retryResp := p.retryWithToken(req, target, tok, entry)
+			retryResp := p.retryWithToken(req, bytes.NewReader(bodyBytes), target, tok, entry)
 			if retryResp != nil {
 				defer retryResp.Body.Close()
 				retryResp.Header.Set("Connection", "close")
@@ -801,8 +835,8 @@ func (p *httpsProxy) markExhausted(groupID, apiKeyID, resetAt string) {
 
 // getLoanedTokenExcluding fetches a fresh group loan excluding a specific key.
 func (p *httpsProxy) getLoanedTokenExcluding(svc, groupID, excludeKeyID string) (*loanedToken, error) {
-	url := p.serverURL + "/client/loan?service=" + svc + "&group=" + groupID + "&exclude_key=" + excludeKeyID
-	req, err := http.NewRequest("GET", url, nil)
+	loanURL := p.serverURL + "/client/loan?service=" + url.QueryEscape(svc) + "&group=" + url.QueryEscape(groupID) + "&exclude_key=" + url.QueryEscape(excludeKeyID)
+	req, err := http.NewRequest("GET", loanURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -831,6 +865,10 @@ func (p *httpsProxy) getLoanedTokenExcluding(svc, groupID, excludeKeyID string) 
 	if r.TTLSeconds <= 0 {
 		r.TTLSeconds = 60
 	}
+	ttl2 := r.TTLSeconds
+	if ttl2 > 2 {
+		ttl2 -= 2
+	}
 	tok := &loanedToken{
 		realToken:  r.RealToken,
 		authType:   r.AuthType,
@@ -838,7 +876,7 @@ func (p *httpsProxy) getLoanedTokenExcluding(svc, groupID, excludeKeyID string) 
 		authPrefix: r.AuthPrefix,
 		apiKeyID:   r.APIKeyID,
 		groupID:    r.GroupID,
-		expiresAt:  time.Now().Add(time.Duration(r.TTLSeconds-2) * time.Second),
+		expiresAt:  time.Now().Add(time.Duration(ttl2) * time.Second),
 	}
 	p.loanMu.Lock()
 	p.loanCache[svc] = tok
@@ -847,12 +885,12 @@ func (p *httpsProxy) getLoanedTokenExcluding(svc, groupID, excludeKeyID string) 
 }
 
 // retryWithToken re-sends a request with a new loaned token. Returns the response or nil on error.
-func (p *httpsProxy) retryWithToken(req *http.Request, target string, tok *loanedToken, entry hostEntry) *http.Response {
-	retryReq, err := http.NewRequest(req.Method, target, req.Body)
+func (p *httpsProxy) retryWithToken(orig *http.Request, body io.Reader, target string, tok *loanedToken, entry hostEntry) *http.Response {
+	retryReq, err := http.NewRequest(orig.Method, target, body)
 	if err != nil {
 		return nil
 	}
-	for key, values := range req.Header {
+	for key, values := range orig.Header {
 		lower := strings.ToLower(key)
 		if lower == "host" || lower == "connection" || lower == "proxy-connection" ||
 			lower == "authorization" || lower == "x-api-key" {

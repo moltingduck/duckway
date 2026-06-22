@@ -59,7 +59,11 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, _ := svc.GenerateToken(16)
+	id, err := svc.GenerateToken(16)
+	if err != nil {
+		jsonError(w, "generate channel ID: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	ch := &queries.NotificationChannel{
 		ID:          id,
 		ChannelType: req.ChannelType,

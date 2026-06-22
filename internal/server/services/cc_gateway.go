@@ -303,7 +303,6 @@ func (c *ccBotConn) connect() error {
 		return err
 	}
 	c.hbMs = hbMs
-	go c.heartbeat(ws, hbDone)
 
 	if canResume {
 		// RESUME: re-attach to the existing session. Discord replays any
@@ -350,6 +349,10 @@ func (c *ccBotConn) connect() error {
 			return fmt.Errorf("send identify: %w", err)
 		}
 	}
+
+	// Launch heartbeat after the handshake frame (RESUME or IDENTIFY) so
+	// the goroutine cannot interleave with the handshake write above.
+	go c.heartbeat(ws, hbDone)
 
 	for {
 		select {

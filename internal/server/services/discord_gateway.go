@@ -33,6 +33,7 @@ type DiscordGateway struct {
 	seq         *int
 	mu          sync.Mutex
 	stopCh      chan struct{}
+	stopOnce    sync.Once
 }
 
 type gatewayPayload struct {
@@ -145,12 +146,14 @@ func (g *DiscordGateway) Start() {
 }
 
 func (g *DiscordGateway) Stop() {
-	close(g.stopCh)
-	g.mu.Lock()
-	if g.ws != nil {
-		g.ws.Close()
-	}
-	g.mu.Unlock()
+	g.stopOnce.Do(func() {
+		close(g.stopCh)
+		g.mu.Lock()
+		if g.ws != nil {
+			g.ws.Close()
+		}
+		g.mu.Unlock()
+	})
 }
 
 func (g *DiscordGateway) connectLoop() {
@@ -175,6 +178,12 @@ func (g *DiscordGateway) connectLoop() {
 }
 
 func (g *DiscordGateway) connect() error {
+	// Snapshot session state under lock before dialing.
+	g.mu.Lock()
+	sessionID := g.sessionID
+	seq := g.seq
+	g.mu.Unlock()
+
 	gwURL, err := g.getGatewayURL()
 	if err != nil {
 		return fmt.Errorf("get gateway URL: %w", err)
@@ -208,27 +217,48 @@ func (g *DiscordGateway) connect() error {
 	}
 
 	var hd helloData
-	json.Unmarshal(hello.D, &hd)
+	if err := json.Unmarshal(hello.D, &hd); err != nil || hd.HeartbeatInterval <= 0 {
+		return fmt.Errorf("invalid Hello heartbeat_interval: %d", hd.HeartbeatInterval)
+	}
+
+	g.mu.Lock()
 	g.heartbeatMs = hd.HeartbeatInterval
+	g.mu.Unlock()
+
+	// Send RESUME if we have a prior session; otherwise IDENTIFY.
+	// Heartbeat goroutine is launched after the handshake frame so it
+	// cannot race the websocket.JSON.Send below.
+	if sessionID != "" && seq != nil {
+		resume := map[string]interface{}{
+			"op": 6,
+			"d": map[string]interface{}{
+				"token":      g.botToken,
+				"session_id": sessionID,
+				"seq":        seq,
+			},
+		}
+		if err := websocket.JSON.Send(ws, resume); err != nil {
+			return fmt.Errorf("send resume: %w", err)
+		}
+		log.Printf("[discord-gw] Resuming session %s", sessionID)
+	} else {
+		identify := map[string]interface{}{
+			"op": 2,
+			"d": map[string]interface{}{
+				"token":   g.botToken,
+				"intents": (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15),
+				"properties": map[string]string{
+					"os": "linux", "browser": "duckway", "device": "duckway",
+				},
+			},
+		}
+		if err := websocket.JSON.Send(ws, identify); err != nil {
+			return fmt.Errorf("send identify: %w", err)
+		}
+		log.Printf("[discord-gw] Identifying for channel %s", g.channelID)
+	}
 
 	go g.heartbeat(ws, hbDone)
-
-	// Intents: GUILDS(0) | GUILD_MESSAGES(9) | GUILD_MESSAGE_REACTIONS(10) | MESSAGE_CONTENT(15)
-	identify := map[string]interface{}{
-		"op": 2,
-		"d": map[string]interface{}{
-			"token":   g.botToken,
-			"intents": (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15),
-			"properties": map[string]string{
-				"os": "linux", "browser": "duckway", "device": "duckway",
-			},
-		},
-	}
-	if err := websocket.JSON.Send(ws, identify); err != nil {
-		return fmt.Errorf("send identify: %w", err)
-	}
-
-	log.Printf("[discord-gw] Connected, listening in channel %s (commands + reactions)", g.channelID)
 
 	for {
 		select {
@@ -243,7 +273,9 @@ func (g *DiscordGateway) connect() error {
 		}
 
 		if payload.S != nil {
+			g.mu.Lock()
 			g.seq = payload.S
+			g.mu.Unlock()
 		}
 
 		switch payload.Op {
@@ -254,6 +286,11 @@ func (g *DiscordGateway) connect() error {
 		case 7:
 			return fmt.Errorf("server requested reconnect")
 		case 9:
+			// Invalid session: clear state so next connect() does IDENTIFY.
+			g.mu.Lock()
+			g.sessionID = ""
+			g.seq = nil
+			g.mu.Unlock()
 			return fmt.Errorf("invalid session")
 		case 11:
 			// Heartbeat ACK
@@ -266,16 +303,25 @@ func (g *DiscordGateway) handleDispatch(eventType string, data json.RawMessage, 
 	case "READY":
 		var rd readyData
 		json.Unmarshal(data, &rd)
+		g.mu.Lock()
 		g.sessionID = rd.SessionID
 		g.botUserID = rd.User.ID
+		g.mu.Unlock()
 		log.Printf("[discord-gw] Ready, session: %s, bot user: %s", rd.SessionID, rd.User.ID)
+
+	case "RESUMED":
+		log.Printf("[discord-gw] Resumed session")
 
 	case "MESSAGE_CREATE":
 		var msg messageCreateData
 		json.Unmarshal(data, &msg)
+		g.mu.Lock()
+		botID := g.botUserID
+		g.mu.Unlock()
 		if msg.Author.Bot || msg.ChannelID != g.channelID {
 			return
 		}
+		_ = botID
 		g.handleCommand(msg)
 
 	case "MESSAGE_REACTION_ADD":
@@ -284,8 +330,11 @@ func (g *DiscordGateway) handleDispatch(eventType string, data json.RawMessage, 
 		if reaction.ChannelID != g.channelID {
 			return
 		}
+		g.mu.Lock()
+		botID := g.botUserID
+		g.mu.Unlock()
 		// Ignore bot's own reactions
-		if reaction.UserID == g.botUserID {
+		if reaction.UserID == botID {
 			return
 		}
 		g.handleReaction(reaction)
@@ -351,7 +400,10 @@ func (g *DiscordGateway) handleCommand(msg messageCreateData) {
 }
 
 func (g *DiscordGateway) heartbeat(ws *websocket.Conn, done <-chan struct{}) {
-	ticker := time.NewTicker(time.Duration(g.heartbeatMs) * time.Millisecond)
+	g.mu.Lock()
+	hbMs := g.heartbeatMs
+	g.mu.Unlock()
+	ticker := time.NewTicker(time.Duration(hbMs) * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
@@ -366,24 +418,42 @@ func (g *DiscordGateway) heartbeat(ws *websocket.Conn, done <-chan struct{}) {
 }
 
 func (g *DiscordGateway) sendHeartbeat(ws *websocket.Conn) {
-	hb := map[string]interface{}{"op": 1, "d": g.seq}
+	g.mu.Lock()
+	seq := g.seq
+	g.mu.Unlock()
+	hb := map[string]interface{}{"op": 1, "d": seq}
 	websocket.JSON.Send(ws, hb)
+}
+
+// discordDo is a fire-and-forget Discord REST call. It properly closes
+// the response body so the connection is returned to the pool.
+func (g *DiscordGateway) discordDo(method, url string, body io.Reader, contentType string) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		log.Printf("[discord-gw] build request %s %s: %v", method, url, err)
+		return
+	}
+	req.Header.Set("Authorization", "Bot "+g.botToken)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
 }
 
 func (g *DiscordGateway) react(channelID, messageID, emoji string) {
 	url := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages/%s/reactions/%s/@me", channelID, messageID, emoji)
-	req, _ := http.NewRequest("PUT", url, nil)
-	req.Header.Set("Authorization", "Bot "+g.botToken)
-	http.DefaultClient.Do(req)
+	g.discordDo("PUT", url, nil, "")
 }
 
 func (g *DiscordGateway) sendMessage(channelID, content string) {
 	url := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", channelID)
 	body, _ := json.Marshal(map[string]string{"content": content})
-	req, _ := http.NewRequest("POST", url, strings.NewReader(string(body)))
-	req.Header.Set("Authorization", "Bot "+g.botToken)
-	req.Header.Set("Content-Type", "application/json")
-	http.DefaultClient.Do(req)
+	g.discordDo("POST", url, strings.NewReader(string(body)), "application/json")
 }
 
 func (g *DiscordGateway) editMessage(channelID, messageID, content string) {
@@ -392,14 +462,14 @@ func (g *DiscordGateway) editMessage(channelID, messageID, content string) {
 		"content": content,
 		"embeds":  []interface{}{}, // Clear embeds after approval
 	})
-	req, _ := http.NewRequest("PATCH", url, strings.NewReader(string(body)))
-	req.Header.Set("Authorization", "Bot "+g.botToken)
-	req.Header.Set("Content-Type", "application/json")
-	http.DefaultClient.Do(req)
+	g.discordDo("PATCH", url, strings.NewReader(string(body)), "application/json")
 }
 
 func (g *DiscordGateway) getGatewayURL() (string, error) {
-	req, _ := http.NewRequest("GET", "https://discord.com/api/v10/gateway/bot", nil)
+	req, err := http.NewRequest("GET", "https://discord.com/api/v10/gateway/bot", nil)
+	if err != nil {
+		return "", fmt.Errorf("build gateway request: %w", err)
+	}
 	req.Header.Set("Authorization", "Bot "+g.botToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

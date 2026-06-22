@@ -290,10 +290,13 @@ func (n *Notifier) testTelegram(configJSON, testCode string) TestResult {
 				answerBody, _ := json.Marshal(map[string]string{
 					"callback_query_id": u.CallbackQuery.ID, "text": "Test confirmed!",
 				})
-				n.client.Post(
+				if r, err := n.client.Post(
 					fmt.Sprintf("https://api.telegram.org/bot%s/answerCallbackQuery", cfg.BotToken),
 					"application/json", bytes.NewReader(answerBody),
-				)
+				); err == nil {
+					io.Copy(io.Discard, r.Body)
+					r.Body.Close()
+				}
 				return TestResult{SendOK: true, ReceiveOK: true, Message: "Send + receive confirmed"}
 			}
 		}
@@ -364,7 +367,10 @@ func (n *Notifier) testDiscordBot(configJSON, testCode string) TestResult {
 				reactURL := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages/%s/reactions/✅/@me", cfg.ChannelID, m.ID)
 				reactReq, _ := http.NewRequest("PUT", reactURL, nil)
 				reactReq.Header.Set("Authorization", "Bot "+cfg.BotToken)
-				n.client.Do(reactReq)
+				if r, err := n.client.Do(reactReq); err == nil {
+					io.Copy(io.Discard, r.Body)
+					r.Body.Close()
+				}
 				return TestResult{SendOK: true, ReceiveOK: true, Message: "Send + receive confirmed"}
 			}
 		}

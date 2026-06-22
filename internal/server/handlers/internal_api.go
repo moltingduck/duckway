@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"crypto/subtle"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 
@@ -16,15 +18,18 @@ type InternalHandler struct {
 func NewInternalHandler(resolver *services.KeyResolver) *InternalHandler {
 	secret := os.Getenv("DUCKWAY_INTERNAL_SECRET")
 	if secret == "" {
-		secret = "duckway-internal-default"
+		// Refuse to run with no secret: the internal API returns decrypted keys
+		// and must not be reachable with a well-known default credential.
+		log.Fatal("[internal-api] DUCKWAY_INTERNAL_SECRET is not set. " +
+			"Set it to a long random value before starting the server.")
 	}
 	return &InternalHandler{resolver: resolver, secret: secret}
 }
 
 // Resolve handles POST /internal/resolve from the mitmproxy addon.
 func (h *InternalHandler) Resolve(w http.ResponseWriter, r *http.Request) {
-	// Verify internal secret
-	if r.Header.Get("X-Internal-Secret") != h.secret {
+	// Constant-time comparison to prevent timing side-channel.
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Internal-Secret")), []byte(h.secret)) != 1 {
 		jsonError(w, "invalid internal secret", http.StatusUnauthorized)
 		return
 	}

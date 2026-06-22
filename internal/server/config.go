@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Config struct {
@@ -55,7 +56,7 @@ func (c *Config) Init() error {
 func loadOrGenerateKey(path string, size int) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {
-		return hex.DecodeString(string(data))
+		return hex.DecodeString(strings.TrimSpace(string(data)))
 	}
 
 	key := make([]byte, size)

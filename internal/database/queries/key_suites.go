@@ -178,6 +178,9 @@ func (q *KeySuiteQueries) PropagateEntryUpdate(suiteID, serviceID string, apiKey
 		}
 		ids = append(ids, id)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	if len(ids) == 0 {
 		return nil, nil
 	}

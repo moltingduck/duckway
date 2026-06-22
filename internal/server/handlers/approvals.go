@@ -95,6 +95,17 @@ func (h *ApprovalHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+
+	existing, err := h.approvals.GetByID(id)
+	if err != nil {
+		jsonError(w, "approval not found", http.StatusNotFound)
+		return
+	}
+	if existing.Status != "pending" {
+		jsonError(w, "approval is already "+existing.Status, http.StatusConflict)
+		return
+	}
+
 	var req struct {
 		DurationMinutes int `json:"duration_minutes"`
 	}
@@ -116,6 +127,17 @@ func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
 
 func (h *ApprovalHandler) Reject(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+
+	existing, err := h.approvals.GetByID(id)
+	if err != nil {
+		jsonError(w, "approval not found", http.StatusNotFound)
+		return
+	}
+	if existing.Status != "pending" {
+		jsonError(w, "approval is already "+existing.Status, http.StatusConflict)
+		return
+	}
+
 	if err := h.approvals.Reject(id); err != nil {
 		jsonError(w, "failed to reject", http.StatusInternalServerError)
 		return
@@ -126,7 +148,10 @@ func (h *ApprovalHandler) Reject(w http.ResponseWriter, r *http.Request) {
 // CreatePendingApproval creates an approval request for a placeholder key.
 // Called by the proxy handler when approval is needed.
 func CreatePendingApproval(approvals *queries.ApprovalQueries, placeholderID, method, path string) (string, error) {
-	id, _ := svc.GenerateToken(16)
+	id, err := svc.GenerateToken(16)
+	if err != nil {
+		return "", fmt.Errorf("generate approval ID: %w", err)
+	}
 	requestInfo, _ := json.Marshal(map[string]string{
 		"method": method,
 		"path":   path,
