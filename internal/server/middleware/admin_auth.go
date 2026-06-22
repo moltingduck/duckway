@@ -57,18 +57,23 @@ func (a *AdminAuth) unauthorized(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"error":"authentication required"}`))
 }
 
-func (a *AdminAuth) CreateSession(username string) *http.Cookie {
+func (a *AdminAuth) CreateSession(username string, r *http.Request) *http.Cookie {
 	ts := time.Now().Unix()
 	data := fmt.Sprintf("%s|%d", username, ts)
 	sig := a.sign(data)
 	value := data + "|" + sig
+
+	// Only set Secure on HTTPS connections — HTTP deployments (Tailscale,
+	// localhost, reverse proxy without TLS) must still be able to send the
+	// cookie or the user will be stuck in a redirect loop after login.
+	secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 
 	return &http.Cookie{
 		Name:     "duckway_session",
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400 * 7, // 7 days
 	}

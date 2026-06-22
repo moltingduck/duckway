@@ -150,6 +150,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 
 	// Admin API
 	adminAPIMux := http.NewServeMux()
+	adminAPIMux.HandleFunc("POST /api/auth/change-password", authH.ChangePassword)
 	adminAPIMux.HandleFunc("GET /api/services", serviceH.List)
 	adminAPIMux.HandleFunc("POST /api/services", serviceH.Create)
 	adminAPIMux.HandleFunc("GET /api/services/{id}", serviceH.Get)

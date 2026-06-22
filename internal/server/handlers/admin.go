@@ -192,7 +192,7 @@ func (h *AdminHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cookie := h.auth.CreateSession(user.Username)
+	cookie := h.auth.CreateSession(user.Username, r)
 	http.SetCookie(w, cookie)
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
 }

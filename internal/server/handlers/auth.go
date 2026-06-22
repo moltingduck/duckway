@@ -43,7 +43,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cookie := h.auth.CreateSession(user.Username)
+	cookie := h.auth.CreateSession(user.Username, r)
 	http.SetCookie(w, cookie)
 	jsonResponse(w, map[string]string{"status": "ok", "username": user.Username})
 }
@@ -55,6 +55,54 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		Path:   "/",
 		MaxAge: -1,
 	})
+	jsonResponse(w, map[string]string{"status": "ok"})
+}
+
+// ChangePassword lets the currently logged-in admin change their own password.
+// POST /api/auth/change-password  {"current_password":"...","new_password":"..."}
+func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	username, _ := r.Context().Value(middleware.AdminUserKey).(string)
+	if username == "" {
+		jsonError(w, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.CurrentPassword == "" || req.NewPassword == "" {
+		jsonError(w, "current_password and new_password are required", http.StatusBadRequest)
+		return
+	}
+	if len(req.NewPassword) < 8 {
+		jsonError(w, "new password must be at least 8 characters", http.StatusBadRequest)
+		return
+	}
+
+	user, err := h.users.GetByUsername(username)
+	if err != nil {
+		jsonError(w, "user not found", http.StatusInternalServerError)
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.CurrentPassword)); err != nil {
+		jsonError(w, "current password is incorrect", http.StatusUnauthorized)
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		jsonError(w, "failed to hash password", http.StatusInternalServerError)
+		return
+	}
+	if err := h.users.UpdatePassword(username, string(hash)); err != nil {
+		jsonError(w, "failed to update password", http.StatusInternalServerError)
+		return
+	}
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
 

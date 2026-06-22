@@ -28,6 +28,26 @@
 </div>
 
 <div class="card mt-2">
+  <h3>Change Password</h3>
+  <p class="text-sm text-muted mb-1">Change the password for your admin account.</p>
+  <form id="change-password-form" autocomplete="off">
+    <div class="form-group">
+      <label>Current Password</label>
+      <input type="password" id="cp-current" autocomplete="current-password" required>
+    </div>
+    <div class="form-group">
+      <label>New Password</label>
+      <input type="password" id="cp-new" autocomplete="new-password" minlength="8" required>
+    </div>
+    <div class="form-group">
+      <label>Confirm New Password</label>
+      <input type="password" id="cp-new2" autocomplete="new-password" minlength="8" required>
+    </div>
+    <button type="submit" class="btn btn-primary">Change Password</button>
+  </form>
+</div>
+
+<div class="card mt-2">
   <h3>Agent Statusline</h3>
   <p class="text-sm text-muted mb-1">
     A shell script body that every agent's <code>duckway sync</code> downloads
@@ -140,6 +160,25 @@ document.getElementById('statusline-form').addEventListener('submit', function(e
   .then(function(data) {
     if (data.error) { showToast(data.error, 'error'); return; }
     showToast('Statusline saved — agents pick it up on next `duckway sync`', 'success');
+  });
+});
+
+document.getElementById('change-password-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var cur = document.getElementById('cp-current').value;
+  var nw  = document.getElementById('cp-new').value;
+  var nw2 = document.getElementById('cp-new2').value;
+  if (nw !== nw2) { showToast('New passwords do not match', 'error'); return; }
+  fetch('/api/auth/change-password', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({current_password: cur, new_password: nw})
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Password changed successfully', 'success');
+    document.getElementById('change-password-form').reset();
   });
 });
 </script>
