@@ -375,7 +375,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	canaryH := handlers.NewCanaryHandler(ss.CanaryQ, ss.CanarySvc)
 	proxyH := handlers.NewProxyHandler(ss.ServiceQ, ss.APIKeyQ, ss.Resolver, ss.RequestLogQ, ss.ApprovalQ, ss.SettingsQ, ss.Notifier).
 		WithConversationUsage(ss.ConvUsageQ)
-	internalH := handlers.NewInternalHandler(ss.Resolver)
+	internalH := handlers.NewInternalHandler(ss.Resolver, s.config.DataDir)
 
 	// Client routes (require client auth)
 	clientMux := http.NewServeMux()

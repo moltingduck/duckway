@@ -1,11 +1,15 @@
 package handlers
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/hackerduck/duckway/internal/server/services"
 )
@@ -15,15 +19,38 @@ type InternalHandler struct {
 	secret   string
 }
 
-func NewInternalHandler(resolver *services.KeyResolver) *InternalHandler {
+// NewInternalHandler creates the handler for the mitmproxy internal API.
+// Secret resolution order:
+//  1. DUCKWAY_INTERNAL_SECRET env var
+//  2. <dataDir>/internal-secret file (auto-created on first run)
+func NewInternalHandler(resolver *services.KeyResolver, dataDir string) *InternalHandler {
 	secret := os.Getenv("DUCKWAY_INTERNAL_SECRET")
 	if secret == "" {
-		// Refuse to run with no secret: the internal API returns decrypted keys
-		// and must not be reachable with a well-known default credential.
-		log.Fatal("[internal-api] DUCKWAY_INTERNAL_SECRET is not set. " +
-			"Set it to a long random value before starting the server.")
+		secret = loadOrCreateInternalSecret(dataDir)
 	}
 	return &InternalHandler{resolver: resolver, secret: secret}
+}
+
+func loadOrCreateInternalSecret(dataDir string) string {
+	path := filepath.Join(dataDir, "internal-secret")
+	if data, err := os.ReadFile(path); err == nil {
+		s := strings.TrimSpace(string(data))
+		if s != "" {
+			return s
+		}
+	}
+	// Generate a new 32-byte random secret and persist it.
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		log.Fatalf("[internal-api] failed to generate secret: %v", err)
+	}
+	secret := hex.EncodeToString(raw)
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0600); err != nil {
+		log.Printf("[internal-api] warning: could not persist secret to %s: %v", path, err)
+	} else {
+		log.Printf("[internal-api] generated internal secret, saved to %s", path)
+	}
+	return secret
 }
 
 // Resolve handles POST /internal/resolve from the mitmproxy addon.
