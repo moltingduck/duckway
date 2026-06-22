@@ -48,8 +48,10 @@ export DUCKWAY_VERSION="$(git -C "$PROJECT_DIR" describe --tags --always --dirty
 
 case "${1:-up}" in
   up|start)
+    echo "Building images..."
+    $COMPOSE build
     echo "Starting Duckway production ($MODE mode + Tailscale)..."
-    $COMPOSE up --build -d
+    $COMPOSE up -d
     sleep 5
 
     echo ""
@@ -83,10 +85,12 @@ case "${1:-up}" in
     ;;
 
   restart)
+    echo "Building new image ($MODE mode)..."
+    $COMPOSE build
     echo "Stopping containers (draining connections)..."
     $COMPOSE stop --timeout 35
-    echo "Rebuilding ($MODE mode)..."
-    $COMPOSE up --build -d
+    echo "Starting with new image..."
+    $COMPOSE up -d
     ;;
 
   nuke)
