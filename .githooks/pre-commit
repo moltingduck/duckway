@@ -1,0 +1,10 @@
+#!/bin/sh
+# Run the full test suite before every commit.
+# Install once with: git config core.hooksPath .githooks
+# Or copy to .git/hooks/pre-commit and chmod +x.
+
+set -e
+
+echo "[pre-commit] running go test ./..."
+go test ./... 2>&1
+echo "[pre-commit] all tests passed"
