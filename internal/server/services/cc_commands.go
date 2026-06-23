@@ -372,9 +372,8 @@ func (h *CCCommandHandler) handleEnd(ctx context.Context, botToken string, cc *m
 	// Post farewell, then archive Discord channel + delete cache row.
 	_, _ = h.bot.PostMessage(ctx, botToken, ch.ChannelID,
 		"🔚 Session ended by `!end`. Archiving this channel.")
-	if err := h.bot.ArchiveChannel(ctx, botToken, ch.ChannelID, ch.Name); err != nil {
-		// Still drop the row — local state is the source of truth for the daemon.
-	}
+	// Best-effort — local state (DeleteChannel below) is the source of truth.
+	_ = h.bot.ArchiveChannel(ctx, botToken, ch.ChannelID, ch.Name)
 	_ = h.cc.DeleteChannel(ch.Handle)
 	if h.hub != nil && cc.ClientID != "" {
 		h.hub.Publish(cc.ClientID, CCEvent{

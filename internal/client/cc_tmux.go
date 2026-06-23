@@ -274,7 +274,7 @@ func runTUICommand(ctx context.Context, sess, eventsDir string, turnTS int64, pr
 	defer tick.Stop()
 
 	var lastSnap string
-	var lastChange time.Time = time.Now()
+	lastChange := time.Now()
 
 	for {
 		select {

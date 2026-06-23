@@ -576,10 +576,8 @@ func (h *CCClientHandler) RequestApproval(w http.ResponseWriter, r *http.Request
 		return
 	}
 	for _, e := range emojis {
-		if err := h.bot.AddReaction(r.Context(), botTok, ch.ChannelID, msgID, e); err != nil {
-			// Best-effort — partial reactions still let humans choose
-			// the ones the bot did manage to add.
-		}
+		// Best-effort — partial reactions still let humans choose the ones the bot managed to add.
+		_ = h.bot.AddReaction(r.Context(), botTok, ch.ChannelID, msgID, e)
 	}
 
 	resultCh := h.approvals.Register(msgID, emojiToOpt, req.RequiredReactors)

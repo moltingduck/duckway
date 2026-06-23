@@ -135,9 +135,9 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 			"refresh_token": refreshToken,
 			"client_id":     clientID,
 		})
-		req, err := http.NewRequest("POST", key.TokenEndpoint, bytes.NewReader(body))
-		if err != nil {
-			return fmt.Errorf("build token request: %w", err)
+		req, buildErr := http.NewRequest("POST", key.TokenEndpoint, bytes.NewReader(body))
+		if buildErr != nil {
+			return fmt.Errorf("build token request: %w", buildErr)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")

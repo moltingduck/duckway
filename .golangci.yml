@@ -1,0 +1,104 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+
+  exclusions:
+    # Use the built-in preset that already handles common false positives
+    # (defer Close/Rollback, test helpers, etc.)
+    presets:
+      - std-error-handling
+      - common-false-positives
+
+    rules:
+      # HTTP response writers — errors not observable after headers are sent
+      - linters: [errcheck]
+        text: "\\.Write` is not checked"
+
+      # JSON encoder on response writer — same rationale
+      - linters: [errcheck]
+        text: "\\.Encode` is not checked"
+
+      # fmt helpers used in HTTP handlers / streaming — fire-and-forget
+      - linters: [errcheck]
+        text: "`fmt\\.(Fprintf|Fprint|Fprintln|Sscanf)` is not checked"
+
+      # io.WriteString / io.Copy in streaming / tunnel paths
+      - linters: [errcheck]
+        text: "`io\\.(Copy|WriteString)` is not checked"
+
+      # Best-effort: pid cleanup, process release, usage counters, canary,
+      # notifications, best-effort DB writes
+      - linters: [errcheck]
+        text: "\\.(Remove|RemoveAll|Release|Send|UpdateLastSeen|IncrementUsage|DeleteClientTokens|WriteProxyEnvScript|Log|GenerateForClient|SetReadDeadline|Flock)` is not checked"
+
+      # Best-effort JSON unmarshalling in fallback / optional paths
+      - linters: [errcheck]
+        text: "`json\\.Unmarshal` is not checked"
+
+      # Settings.Set and similar fire-and-forget persistence
+      - linters: [errcheck]
+        text: "\\.Set` is not checked"
+
+      # r.ParseForm — failure silently gives empty form values, acceptable
+      - linters: [errcheck]
+        text: "`r\\.ParseForm` is not checked"
+
+      # Template execution — errors already handled by render()/logged inline
+      - linters: [errcheck]
+        text: "\\.ExecuteTemplate` is not checked"
+
+      # Placeholder / approval DB writes in best-effort / admin-action paths
+      - linters: [errcheck]
+        text: "\\.(UpdatePlaceholder|Delete|Approve|Reject)` is not checked"
+
+      # DB Exec in migrations (comments explain why errors are ignored)
+      - path: "internal/database/migrations\\.go"
+        linters: [errcheck]
+        text: "`db\\.Exec` is not checked"
+
+      # Test helpers: DB Exec inserts that would panic immediately on failure
+      - path: "_test\\.go"
+        linters: [errcheck]
+        text: "\\.(Exec|AppendInbox)` is not checked"
+
+      # resp.Write(conn) in proxy tunnel — error means tunnel is dead, handled
+      - linters: [errcheck]
+        text: "`resp\\.Write` is not checked"
+
+      # tx.Rollback in defer — standard Go pattern; error means tx already done
+      - linters: [errcheck]
+        text: "`tx\\.Rollback` is not checked"
+
+      # Scan on single-row query in settings — zero value on error is acceptable
+      - linters: [errcheck]
+        text: "\\.Scan` is not checked"
+
+      # srv.Serve launched in goroutine in tests — intentional fire-and-forget
+      - path: "_test\\.go"
+        linters: [errcheck]
+        text: "`srv\\.Serve` is not checked"
+
+      # sync.go best-effort file writes (deploy content, manifest)
+      - path: "internal/client/sync\\.go"
+        linters: [errcheck]
+        text: "\\.(WriteString|WriteFile)` is not checked"
+
+      # heartbeat api_key bootstrap — startup, failure visible in logs immediately
+      - path: "internal/server/server\\.go"
+        linters: [errcheck]
+        text: "`apiKeyQ\\.Create` is not checked"
+
+      # govet: reflect.Ptr → reflect.Pointer cosmetic rename
+      - linters: [govet]
+        text: "Constant reflect\\.Ptr should be inlined"
+
+      # staticcheck S1016: struct literal → type conversion — cosmetic
+      - linters: [staticcheck]
+        text: "S1016:"

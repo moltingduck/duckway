@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"log"
 	"net/http"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -360,7 +361,7 @@ func (h *KeySuiteHandler) AssignToClient(w http.ResponseWriter, r *http.Request)
 				h.placeholders.Delete(existing.ID)
 			}
 		} else if err != sql.ErrNoRows {
-			// Only skip on unexpected errors; ErrNoRows means no existing placeholder
+			log.Printf("[key-suites] unexpected error looking up placeholder for client %s service %s: %v", req.ClientID, entry.ServiceID, err)
 		}
 
 		pid, _ := svc.GenerateToken(16)

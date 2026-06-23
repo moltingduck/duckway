@@ -29,7 +29,6 @@ type MCPServer struct {
 	cfg       *Config
 
 	mu       sync.Mutex
-	stateAt  string // file mtime cached as ISO; "" means unloaded
 	state    *CCStateFile
 
 	// sessions is the channel_handle ↔ claude session_id store shared with
