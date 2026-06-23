@@ -89,6 +89,11 @@ func (q *APIKeyQueries) Delete(id string) error {
 	return err
 }
 
+func (q *APIKeyQueries) Deactivate(id string) error {
+	_, err := q.db.Exec("UPDATE api_keys SET is_active = 0 WHERE id = ?", id)
+	return err
+}
+
 func (q *APIKeyQueries) UpdateTokens(id, keyEncrypted string, expiresAt int64) error {
 	_, err := q.db.Exec(
 		"UPDATE api_keys SET key_encrypted = ?, expires_at = ?, last_used_at = datetime('now') WHERE id = ?",

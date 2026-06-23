@@ -157,6 +157,12 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
+		// Detect permanent failures that will never recover. Stop retrying
+		// immediately and deactivate the key to avoid ban from repeated attempts.
+		if isPermanentOAuthError(resp.StatusCode, body) {
+			_ = r.apiKeyQ.Deactivate(key.ID)
+			return fmt.Errorf("permanent OAuth error — key %s deactivated: %s", key.ID, string(body))
+		}
 		return fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -199,4 +205,32 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 	}
 
 	return nil
+}
+
+// isPermanentOAuthError returns true for errors that will never succeed on
+// retry: invalid/revoked/expired refresh tokens, bad client credentials, etc.
+// Transient errors (500, 503, network timeout) return false so the next
+// scheduled tick still tries.
+func isPermanentOAuthError(statusCode int, body []byte) bool {
+	// 401 without a Retry-After is always permanent for OAuth.
+	if statusCode == 401 {
+		return true
+	}
+	if statusCode != 400 {
+		return false
+	}
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &errResp) != nil {
+		return false
+	}
+	switch errResp.Error {
+	case "invalid_grant",       // revoked / used / expired refresh token
+		"invalid_client",       // wrong client_id/secret
+		"unauthorized_client",  // client not allowed this grant type
+		"unsupported_grant_type":
+		return true
+	}
+	return false
 }
