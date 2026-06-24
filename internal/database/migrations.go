@@ -369,5 +369,17 @@ func runMigrations(db *sql.DB) error {
 		    upstream_url = 'https://discord.com/api/v10'
 		WHERE name = 'discord' AND host_pattern = 'discord.com'`)
 
+	// Seed the OpenAI service so Codex CLI (and any OpenAI-compatible tool)
+	// works without manual admin UI setup. INSERT OR IGNORE keeps it safe on
+	// existing databases that already have a user-created openai service.
+	db.Exec(`INSERT OR IGNORE INTO services
+		(id, name, display_name, upstream_url, host_pattern,
+		 auth_type, auth_header, auth_prefix,
+		 key_prefix, key_length, key_directory, delivery_mode, is_active)
+		VALUES
+		('svc-openai-default', 'openai', 'OpenAI', 'https://api.openai.com', 'api.openai.com',
+		 'bearer', 'Authorization', 'Bearer ',
+		 'sk-', 64, '.config/openai/credentials', 'proxy', 1)`)
+
 	return nil
 }

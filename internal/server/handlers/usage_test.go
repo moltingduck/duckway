@@ -92,11 +92,11 @@ func TestUsageList_ParsesSnapshot(t *testing.T) {
 
 func TestUsageList_IncludesLLMKeyWithoutData(t *testing.T) {
 	d := newUsageTestDeps(t)
-	h, apiKeyQ, svcQ := d.h, d.apiKeyQ, d.svcQ
+	h, apiKeyQ := d.h, d.apiKeyQ
 	// openai is an LLM service — its keys should appear even with no
-	// snapshot, marked HasData=false.
-	_ = svcQ.Create(&models.Service{ID: "svc-oai", Name: "openai", UpstreamURL: "https://api.openai.com", HostPattern: "api.openai.com", IsActive: true})
-	_ = apiKeyQ.Create(&models.APIKey{ID: "k2", ServiceID: "svc-oai", Name: "codex-key", KeyEncrypted: "x"})
+	// snapshot, marked HasData=false. The openai service is seeded by
+	// migrations as "svc-openai-default", so we just add a key to it.
+	_ = apiKeyQ.Create(&models.APIKey{ID: "k2", ServiceID: "svc-openai-default", Name: "codex-key", KeyEncrypted: "x"})
 
 	req := httptest.NewRequest("GET", "/api/usage", nil)
 	rec := httptest.NewRecorder()

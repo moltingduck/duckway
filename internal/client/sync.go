@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // fallbackOnboardingVersion is the lastOnboardingVersion written to
@@ -105,6 +107,12 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 	// Sync admin-configured Claude Code statusline script.
 	if err := SyncStatusline(configDir, cfg); err != nil {
 		log.Printf("Warning: statusline sync failed: %v", err)
+	}
+
+	// Write apiBaseUrl to ~/.codex/config.yaml so Codex CLI routes through
+	// the local duckway proxy without requiring HTTPS_PROXY to be set.
+	if err := SyncCodexConfig(cfg.ProxyPort); err != nil {
+		log.Printf("Warning: codex config sync failed: %v", err)
 	}
 
 	return len(keys), nil
@@ -464,6 +472,52 @@ func mergeProxySettings(path string, proxyPort int) error {
 		return err
 	}
 	return os.WriteFile(path, out, 0600)
+}
+
+// SyncCodexConfig writes the duckway proxy URL into ~/.codex/config.yaml as
+// apiBaseUrl so the OpenAI Codex CLI routes through the local duckway proxy
+// without the user having to set HTTPS_PROXY manually. All other settings
+// already in the file are preserved — only the apiBaseUrl key is touched.
+//
+// The resulting URL format is:
+//
+//	http://localhost:{port}/proxy/openai/v1
+//
+// The OpenAI SDK (used by Codex CLI) appends its own method paths
+// (e.g. /chat/completions) to this base, so the final request looks like:
+//
+//	http://localhost:{port}/proxy/openai/v1/chat/completions
+//
+// which the duckway local proxy forwards to the server as-is.
+func SyncCodexConfig(proxyPort int) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", codexDir, err)
+	}
+	configPath := filepath.Join(codexDir, "config.yaml")
+
+	// Load existing config so we don't clobber user settings.
+	settings := map[string]interface{}{}
+	if data, err := os.ReadFile(configPath); err == nil && len(data) > 0 {
+		_ = yaml.Unmarshal(data, &settings) // best-effort; ignore malformed YAML
+	}
+
+	apiBase := fmt.Sprintf("http://localhost:%d/proxy/openai/v1", proxyPort)
+	settings["apiBaseUrl"] = apiBase
+
+	out, err := yaml.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(configPath, out, 0600); err != nil {
+		return err
+	}
+	log.Printf("Codex config synced to %s (apiBaseUrl=%s)", configPath, apiBase)
+	return nil
 }
 
 // ensureLoopbackInNoProxy returns the NO_PROXY string with localhost and

@@ -166,7 +166,7 @@ func TestKeyResolver_Resolve_ActivePlaceholderReturnsRealKey(t *testing.T) {
 		realKey   = "sk-real-api-key-value"
 	)
 
-	f.insertService(t, svcID, "openai", "proxy")
+	f.insertService(t, svcID, "test-openai", "proxy")
 	f.insertClient(t, clientID, "test-client")
 	f.insertAPIKey(t, keyID, svcID, realKey)
 	f.insertPlaceholderDirect(t, phID, phToken, svcID, keyID, clientID, false)
@@ -194,7 +194,7 @@ func TestKeyResolver_Resolve_WrongClientID(t *testing.T) {
 
 	const svcID, keyID, clientID, phToken = "svc-1", "key-1", "client-1", "dk_tok1"
 
-	f.insertService(t, svcID, "openai", "proxy")
+	f.insertService(t, svcID, "test-openai", "proxy")
 	f.insertClient(t, clientID, "test-client")
 	f.insertAPIKey(t, keyID, svcID, "sk-real")
 	f.insertPlaceholderDirect(t, "ph-1", phToken, svcID, keyID, clientID, false)
