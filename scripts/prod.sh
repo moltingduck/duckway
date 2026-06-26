@@ -62,6 +62,22 @@ ui_service() {
   fi
 }
 
+app_services() {
+  if [ "$MODE" = "split" ]; then
+    if [ "$USE_TAILSCALE" = "true" ]; then
+      echo "admin-tailscale gateway-tailscale"
+    else
+      echo "admin-prod gateway-prod"
+    fi
+  else
+    if [ "$USE_TAILSCALE" = "true" ]; then
+      echo "server-tailscale"
+    else
+      echo "server-prod"
+    fi
+  fi
+}
+
 case "${1:-up}" in
   up|start)
     echo "Building images..."
@@ -101,10 +117,18 @@ case "${1:-up}" in
     ;;
 
   restart)
-    echo "Building new images before touching running containers ($MODE mode)..."
-    $COMPOSE build
-    echo "Recreating containers with new images..."
-    $COMPOSE up -d --remove-orphans
+    if [ "${2:-}" = "--minimal" ]; then
+      services="$(app_services)"
+      echo "Building app services before touching running containers ($MODE mode): $services"
+      $COMPOSE build $services
+      echo "Recreating app services only (dependencies/sidecars are left running)..."
+      $COMPOSE up -d --no-deps $services
+    else
+      echo "Building new images before touching running containers ($MODE mode)..."
+      $COMPOSE build
+      echo "Recreating containers with new images..."
+      $COMPOSE up -d --remove-orphans
+    fi
     ;;
 
   ui|restart-ui)
@@ -155,12 +179,13 @@ case "${1:-up}" in
   *)
     echo "Duckway Production Manager"
     echo ""
-    echo "Usage: $0 {up|down|restart|ui|restart-ui|nuke|logs|status|password}"
+    echo "Usage: $0 {up|down|restart [--minimal]|ui|restart-ui|nuke|logs|status|password}"
     echo ""
     echo "Commands:"
     echo "  up        Build and start with Tailscale"
     echo "  down      Stop (keep data)"
     echo "  restart   Build first, then recreate containers with minimal downtime"
+    echo "            --minimal recreates app services only; dependencies/sidecars must already be healthy"
     echo "  ui        Rebuild/recreate only the UI-bearing service"
     echo "  nuke      Stop and delete all data (asks confirmation)"
     echo "  logs      Follow logs (optional: service name)"
