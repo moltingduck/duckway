@@ -7,8 +7,8 @@ import (
 	"sync"
 )
 
-// CCSessionStore persists the channel_handle ↔ claude session_id map to
-// ~/.duckway/cc-sessions.json so the daemon can `claude -p --resume` after
+// CCSessionStore persists the channel_handle ↔ agent session_id map to
+// ~/.duckway/cc-sessions.json so the daemon can resume the agent after
 // a restart.
 //
 // The format is a flat JSON object:

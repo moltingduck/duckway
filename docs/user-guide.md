@@ -293,7 +293,7 @@ Key points:
 
 ## Control Channels (Discord-as-comms)
 
-A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to a claude session — every message a human types triggers `claude -p --resume <session_id>` on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!destroy` / `!reset` / `!list` / `!status` / `!help` text commands.
+A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to an agent session — every message a human types triggers Claude Code or Codex on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!destroy` / `!reset` / `!list` / `!status` / `!help` text commands.
 
 ### Discord bot setup (first time, ~10 min)
 
@@ -355,7 +355,7 @@ Stash both. You'll paste them into the CC create form next.
 2. **Control Channels** → **New CC** →
    - **Name** — anything you'll recognise (e.g. "Project Alpha CC").
    - **Client** — the duckway client this CC belongs to.
-   - **Agent type** — `claude_code` (others reserved).
+   - **Agent type** — `claude_code` or `codex` (`codex` uses headless `codex exec`; tmux attach is Claude-only in v1).
    - **Service** — `discord`.
    - **Bot Token** — the API key you uploaded in (1).
    - **Guild ID** + **Category ID** — what you copied from Discord.
@@ -380,17 +380,17 @@ systemctl --user enable --now duckway-cc-watch
 journalctl --user -u duckway-cc-watch -f
 ```
 
-The daemon needs the `claude` binary in `$PATH`. Per-channel `cwd` defaults to `~/.duckway/cc-workspace/<handle>/` (auto-created); override with `!new --cwd /path` from the management channel.
+The daemon needs the selected agent binary (`claude` or `codex`) in `$PATH`. Per-channel `cwd` defaults to `~/.duckway/cc-workspace/<handle>/` (auto-created); override with `!new --cwd /path` from the management channel.
 
-### Inside a claude session, the model sees these MCP tools
+### Inside an agent session, the model sees these MCP tools
 
 `discord_get_my_cc`, `discord_list_channels`, `discord_create_task_channel`, `discord_archive_channel`, `discord_post`, `discord_edit_message`, `discord_delete_message`, `discord_read_recent`, `discord_wait_for_message`, `discord_request_approval` (reaction-vote — blocks until ✅/❌), `duckway_list_local_sessions`, `duckway_bind_session`.
 
-### Attaching to a pre-existing claude session
+### Attaching to a pre-existing Claude session
 
-If you've already been chatting with claude locally on the agent box (a session stored in `~/.claude/projects/`) and want a Discord channel to **continue** that conversation, do this from the management channel:
+If you've already been chatting with Claude locally on the agent box (a session stored in `~/.claude/projects/`) and want a Discord channel to **continue** that conversation, do this from the management channel:
 
-1. Send any message in `<client>-control` so the daemon spawns a claude — this first turn is a throwaway picker.
+1. Send any message in `<client>-control` so the daemon spawns Claude — this first turn is a throwaway picker.
 2. Ask the agent: *"list my local sessions"* → it calls `duckway_list_local_sessions` and posts the unbound sessions (newest first, with cwd + first-message preview).
 3. Pick one: *"bind to the duckway one"* → the agent calls `duckway_bind_session(session_id)` (channel handle is auto-picked from the current channel env).
 4. Send your next message → the daemon does `claude --resume <sid>` and the full prior history is restored.
@@ -403,7 +403,7 @@ In `<client>-control`:
 - `!new <slug> [--cwd <path>] [--topic "…"]` → create a task channel + register a session for it
 - `!list` → table of task channels + which have running sessions
 - `!status` → daemon up? agent type? counts?
-- `!sessions [<cwd-filter>]` → list local claude sessions on the agent that aren't yet bound to any CC channel
+- `!sessions [<cwd-filter>]` → list local Claude sessions on the agent that aren't yet bound to any CC channel
 - `!bind <session_id> [<session_id> …]` → for each id, create a task channel (named after `basename(cwd)`) and attach the session — next message in the new channel resumes the existing conversation
 - `!help`
 
@@ -414,8 +414,8 @@ In `<client>-control`:
 `duckway cc bind` on the agent box does the same thing without going through Discord. With no args it prints a numbered table and reads selections from stdin — accept `1,3,5`, `1-3`, or `all`, and an empty line cancels. Each selection becomes its own task channel. For scripts: `duckway cc bind --session <id> [--session <id> …] [--cwd <substr>]`.
 
 In any task channel:
-- `!end` → end the current claude session and **archive** the Discord channel (history kept, channel renamed and removed from the category)
-- `!destroy` → end the current claude session and **hard-delete** the Discord channel (history gone — useful for one-shot experiments)
+- `!end` → end the current agent session and **archive** the Discord channel (history kept, channel renamed and removed from the category)
+- `!destroy` → end the current agent session and **hard-delete** the Discord channel (history gone — useful for one-shot experiments)
 
 The management channel itself also accepts plain text — the message is forwarded to the agent with a system note nudging it to spawn a dedicated task channel via `discord_create_task_channel` for any sustained work, instead of holding a long conversation inline.
 
@@ -424,7 +424,7 @@ The management channel itself also accepts plain text — the message is forward
 - The **bot token** is the only real boundary. Two CCs sharing a bot can reach each other's channels — use **different bots** to isolate teams.
 - The agent never sees `channel_id`, `guild_id`, or `category_id` — only opaque `dwch_…` handles.
 - A client can only operate within its own CC (HTTP 403 otherwise) AND any handle in a path is checked to belong to that CC.
-- The daemon spawns claude with `--dangerously-skip-permissions` — anyone in the Discord category can make the agent act. Trust the channel.
+- For `claude_code`, the daemon spawns claude with `--dangerously-skip-permissions`. For `codex`, v1 uses headless `codex exec --json --sandbox workspace-write`; tmux/live attach is planned for a later version. Anyone in the Discord category can make the agent act. Trust the channel.
 
 ### Inbox tuning (Settings page)
 

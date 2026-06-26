@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -246,5 +247,87 @@ func TestWriteClaudeCodeMCP_LegacyKeptIfHasOtherEntries(t *testing.T) {
 
 	if _, err := os.Stat(legacyPath); err != nil {
 		t.Errorf("expected legacy file kept (had user-mcp entry), got: %v", err)
+	}
+}
+
+func TestWriteCodexMCP_PreservesConfigTOML(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("CODEX_HOME", tmp)
+
+	existing := `model = "gpt-5.5"
+
+[projects."/repo"]
+trust_level = "trusted"
+
+[mcp_servers.duckway-cc]
+command = "old"
+args = ["old"]
+
+[mcp_servers.other]
+command = "node"
+args = ["server.js"]
+`
+	if err := os.WriteFile(filepath.Join(tmp, "config.toml"), []byte(existing), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	configDir := filepath.Join(tmp, "duckway-config")
+	if err := writeCodexMCP(configDir, []CCStateAssignment{
+		{CCID: "cc1", CCName: "alpha", AgentType: "codex"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tmp, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	for _, want := range []string{
+		`model = "gpt-5.5"`,
+		`[projects."/repo"]`,
+		`[mcp_servers.other]`,
+		`[mcp_servers.duckway-cc]`,
+		`command = "duckway"`,
+		`args = ["mcp", "serve", "--config-dir", ` + tomlQuote(configDir) + `]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("config.toml missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `command = "old"`) {
+		t.Fatalf("old duckway section was not replaced:\n%s", got)
+	}
+}
+
+func TestSyncCC_WritesCodexMCP(t *testing.T) {
+	srv := mockServer(t, map[string]interface{}{
+		"assigned":          true,
+		"cc_id":             "cc1",
+		"cc_name":           "alpha",
+		"agent_type":        "codex",
+		"management_handle": "dwch_a",
+	}, 200)
+	defer srv.Close()
+
+	configDir := t.TempDir()
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	t.Setenv("HOME", t.TempDir())
+
+	n, err := SyncCC(configDir, &Config{ServerURL: srv.URL, Token: "tok", ClientName: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("n = %d", n)
+	}
+	raw, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	if !strings.Contains(got, "[mcp_servers.duckway-cc]") || !strings.Contains(got, `command = "duckway"`) {
+		t.Fatalf("codex MCP not written:\n%s", got)
 	}
 }

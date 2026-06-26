@@ -28,10 +28,10 @@ type MCPServer struct {
 	configDir string
 	cfg       *Config
 
-	mu       sync.Mutex
-	state    *CCStateFile
+	mu    sync.Mutex
+	state *CCStateFile
 
-	// sessions is the channel_handle ↔ claude session_id store shared with
+	// sessions is the channel_handle ↔ agent session_id store shared with
 	// the cc-watch daemon (~/.duckway/cc-sessions.json). Writes via the
 	// duckway_bind_session tool take effect on the daemon's next run since
 	// both processes read the same file.

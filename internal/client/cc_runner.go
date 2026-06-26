@@ -15,6 +15,14 @@ import (
 // stub without spawning a real PTY.
 type ccRunFn func(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []string) (sessionID, result string, isError bool, err error)
 
+type ccAgentSpec struct {
+	Type        string
+	DisplayName string
+	Bin         string
+	RunFn       ccRunFn
+	UseTmux     bool
+}
+
 // ccRunner owns the per-channel FIFO queue + claude exec for one task
 // channel. One runner per channel handle; the daemon spawns them lazily
 // on first message and tears them down on channel_delete.
@@ -24,9 +32,10 @@ type ccRunFn func(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []
 // channels run in parallel.
 type ccRunner struct {
 	handle      string
-	cwd         string  // resolved at construction
-	bin         string  // resolved path to `claude` binary
-	runFn       ccRunFn // defaults to runViaPTY; injectable for tests
+	cwd         string // resolved at construction
+	agentName   string
+	bin         string
+	runFn       ccRunFn
 	queue       chan ccTask
 	stop        chan struct{}
 	wg          sync.WaitGroup
@@ -44,22 +53,25 @@ type ccTask struct {
 }
 
 const (
-	ccQueueDepth   = 10 // user spec: cap 10
-	ccDefaultDir   = "cc-workspace"
+	ccQueueDepth = 10 // user spec: cap 10
+	ccDefaultDir = "cc-workspace"
 )
 
 // chooseCCRunFn picks the runner to use. tmux gives the user a live,
 // attachable per-channel session (`tmux attach -t duckway-<handle>`) so
 // they can watch claude work. When tmux isn't installed — or the user
 // explicitly disabled it — we fall back to the headless --print runner.
-func chooseCCRunFn(noTmux bool) ccRunFn {
-	if !noTmux && tmuxAvailable() {
+func chooseCCRunFn(spec ccAgentSpec, noTmux bool) ccRunFn {
+	if spec.RunFn != nil {
+		return spec.RunFn
+	}
+	if spec.UseTmux && !noTmux && tmuxAvailable() {
 		return runViaTmux
 	}
 	return runViaPrint
 }
 
-func newCCRunner(handle, configDir, channelCwd, binPath string, sessions *CCSessionStore, postMessage func(ctx context.Context, handle, content string) error, noTmux bool) (*ccRunner, error) {
+func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, sessions *CCSessionStore, postMessage func(ctx context.Context, handle, content string) error, noTmux bool) (*ccRunner, error) {
 	cwd := channelCwd
 	if cwd == "" {
 		home, err := os.UserHomeDir()
@@ -74,8 +86,9 @@ func newCCRunner(handle, configDir, channelCwd, binPath string, sessions *CCSess
 	r := &ccRunner{
 		handle:      handle,
 		cwd:         cwd,
-		bin:         binPath,
-		runFn:       chooseCCRunFn(noTmux),
+		agentName:   spec.DisplayName,
+		bin:         spec.Bin,
+		runFn:       chooseCCRunFn(spec, noTmux),
 		queue:       make(chan ccTask, ccQueueDepth),
 		stop:        make(chan struct{}),
 		sessions:    sessions,
@@ -117,23 +130,23 @@ func (r *ccRunner) loop() {
 	}
 }
 
-// run executes one prompt against claude via PTY and posts the response back.
+// run executes one prompt against the configured agent and posts the response back.
 func (r *ccRunner) run(t ccTask) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	prompt := t.Content
-	// Discord/the daemon eat the `/` and `!` trigger characters claude
+	// Discord/the daemon eat the `/` and `!` trigger characters agents
 	// uses for its slash and bash modes, so users escape them with a
 	// leading `!`:
-	//   "!/..."  → claude slash command (`/usage`, `/compact`, …)
-	//   "!!..."  → claude bash shell    (`! ls`, `! cargo test`, …)
-	// Strip the leading `!` so claude receives the real `/usage` /
+	//   "!/..."  → slash command (`/usage`, `/compact`, …)
+	//   "!!..."  → shell escape (`! ls`, `! cargo test`, …)
+	// Strip the leading `!` so the agent receives the real `/usage` /
 	// `! ls`.
 	if trimmed := strings.TrimSpace(prompt); strings.HasPrefix(trimmed, "!/") || strings.HasPrefix(trimmed, "!!") {
 		prompt = trimmed[1:]
 	}
-	// `/clear` wipes claude's running conversation. If we keep the
+	// `/clear` wipes the agent's running conversation. If we keep the
 	// cached session_id mapped, a daemon restart would `--resume` into
 	// the old (un-cleared) state. Drop the mapping after a successful
 	// turn so the next launch starts fresh.
@@ -153,10 +166,10 @@ func (r *ccRunner) run(t ccTask) {
 		"DUCKWAY_CC_MESSAGE_ID=" + t.MessageID,
 	}
 
-	r.logger("[cc-watch] %s: running claude (cwd=%s)", r.handle, r.cwd)
+	r.logger("[cc-watch] %s: running %s (cwd=%s)", r.handle, r.agentName, r.cwd)
 	newSID, result, isError, err := r.runFn(ctx, r.bin, r.cwd, prompt, sid, extraEnv)
 	if err != nil {
-		_ = r.postMessage(context.Background(), r.handle, fmt.Sprintf("claude error: %v", err))
+		_ = r.postMessage(context.Background(), r.handle, fmt.Sprintf("%s error: %v", r.agentName, err))
 		return
 	}
 
@@ -170,10 +183,10 @@ func (r *ccRunner) run(t ccTask) {
 
 	body := result
 	if body == "" {
-		body = "_(claude finished with no response)_"
+		body = fmt.Sprintf("_(%s finished with no response)_", r.agentName)
 	}
 	if isError {
-		body = "⚠️ claude reported an error:\n" + body
+		body = fmt.Sprintf("⚠️ %s reported an error:\n%s", r.agentName, body)
 	}
 	if err := r.postMessage(context.Background(), r.handle, body); err != nil {
 		r.logger("[cc-watch] %s: discord post failed: %v", r.handle, err)

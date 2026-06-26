@@ -325,9 +325,9 @@ func TestLooksLikePickerInput(t *testing.T) {
 		{"-1", false},
 		{"hello", false},
 		{"what is the weather?", false},
-		{"/usage", false},  // fresh slash command
-		{"! ls", false},    // fresh bash command
-		{"!/help", false},  // unstripped escape
+		{"/usage", false}, // fresh slash command
+		{"! ls", false},   // fresh bash command
+		{"!/help", false}, // unstripped escape
 		{"yes", false},
 		{"12a", false}, // not a pure integer
 	}
@@ -489,16 +489,17 @@ func TestChooseCCRunFnPrefersTmux(t *testing.T) {
 	// Reset memo so this test reflects current PATH.
 	tmuxAvailableMemo = nil
 	defer func() { tmuxAvailableMemo = nil }()
+	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: true}
 
 	// Default (noTmux=false): want tmux when it's on PATH.
-	got := isRunViaTmux(chooseCCRunFn(false))
+	got := isRunViaTmux(chooseCCRunFn(spec, false))
 	want := tmuxAvailable()
 	if got != want {
 		t.Errorf("chooseCCRunFn(false) tmux=%v, want %v (tmux on PATH = %v)", got, want, want)
 	}
 
 	// noTmux=true: never use tmux, even if it's on PATH.
-	if isRunViaTmux(chooseCCRunFn(true)) {
+	if isRunViaTmux(chooseCCRunFn(spec, true)) {
 		t.Errorf("chooseCCRunFn(true) returned tmux runner; should fall back to print")
 	}
 }

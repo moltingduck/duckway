@@ -23,7 +23,7 @@ type ControlChannelHandler struct {
 	settings     *queries.SettingsQueries
 	crypto       *svc.Crypto
 	bot          *svc.DiscordBot
-	hub          *svc.CCEventHub          // optional, set via SetHub
+	hub          *svc.CCEventHub         // optional, set via SetHub
 	approvals    *svc.CCApprovalRegistry // optional, set via SetApprovals
 }
 
@@ -88,7 +88,7 @@ func (h *ControlChannelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		req.AgentType = "claude_code"
 	}
 	switch req.AgentType {
-	case "claude_code", "openclaw", "harmes", "cursor", "copilot_cli":
+	case "claude_code", "codex", "openclaw", "harmes", "cursor", "copilot_cli":
 	default:
 		jsonError(w, "unknown agent_type: "+req.AgentType, http.StatusBadRequest)
 		return
@@ -429,9 +429,9 @@ func (h *ControlChannelHandler) SetHub(hub *svc.CCEventHub) { h.hub = hub }
 func (h *ControlChannelHandler) SetApprovals(r *svc.CCApprovalRegistry) { h.approvals = r }
 
 // POST /api/cc/{id}/inject_event — DEBUG ONLY. Either:
-//  • publishes a synthetic CCEvent to the hub (default), or
-//  • triggers an approval reaction (when type="reaction_add", body
-//    carries message_id + emoji + reactor_user_id).
+//   - publishes a synthetic CCEvent to the hub (default), or
+//   - triggers an approval reaction (when type="reaction_add", body
+//     carries message_id + emoji + reactor_user_id).
 //
 // Used by the e2e suite to drive the daemon + approval flows without a
 // real Discord WSS gateway. Gated on DUCKWAY_CC_DEBUG_INJECT=1.

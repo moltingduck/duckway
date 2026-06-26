@@ -75,12 +75,12 @@ func stubWatch(t *testing.T, projectsRoot string, fake *fakeServer) *CCWatch {
 	t.Helper()
 	configDir := t.TempDir()
 	return &CCWatch{
-		cfg:       &Config{ServerURL: fake.srv.URL, Token: "tok"},
-		configDir: configDir,
-		bin:       "/usr/bin/true",
-		sessions:  NewCCSessionStore(configDir),
-		runners:   map[string]*ccRunner{},
-		api:       NewAPIClient(fake.srv.URL, "tok"),
+		cfg:        &Config{ServerURL: fake.srv.URL, Token: "tok"},
+		configDir:  configDir,
+		agentTypes: map[string]string{},
+		sessions:   NewCCSessionStore(configDir),
+		runners:    map[string]*ccRunner{},
+		api:        NewAPIClient(fake.srv.URL, "tok"),
 	}
 }
 
@@ -220,8 +220,8 @@ func TestHandleClientCommand_DispatchesByName(t *testing.T) {
 	w := stubWatch(t, home+"/.claude/projects", fake)
 
 	env := sseEnvelope{
-		Type:   "client_command",
-		Handle: "dwch_mgmt",
+		Type:    "client_command",
+		Handle:  "dwch_mgmt",
 		Payload: json.RawMessage(`{"command":"!sessions","args":[]}`),
 	}
 	data, _ := json.Marshal(env)

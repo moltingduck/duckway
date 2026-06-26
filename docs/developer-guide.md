@@ -362,9 +362,9 @@ The phantom tokens look exactly like real Anthropic OAuth tokens (`sk-ant-dw_...
 CC v2: a Control Channel binds **one client to one Discord category** via a bot. Channels under the category are either:
 
 - a single **management channel** (auto-created on CC create, named `<client>-control`, parses `!`-prefix commands server-side), or
-- **task channels** (one per claude session — created via `!new` or the `discord_create_task_channel` MCP tool).
+- **task channels** (one per agent session — created via `!new` or the `discord_create_task_channel` MCP tool).
 
-When a human posts in a task channel, the gateway forwards the event over SSE to the on-machine `duckway cc watch` daemon, which runs `claude -p [--resume <session_id>] --dangerously-skip-permissions` and posts the JSON output back to the channel.
+When a human posts in a task channel, the gateway forwards the event over SSE to the on-machine `duckway cc watch` daemon. For `claude_code`, the daemon runs `claude -p [--resume <session_id>] --dangerously-skip-permissions`; for `codex`, it runs `codex exec --json` and resumes with `codex exec resume <thread_id>`. The daemon posts the final agent message back to the channel.
 
 ### Tables (v2 — `client_cc` is gone)
 
@@ -395,7 +395,8 @@ internal/client/sync_cc.go                   Writes ~/.duckway/cc.json + merges 
 internal/client/mcp.go + mcp_tools.go        Stdio MCP server (JSON-RPC 2.0) — 10 discord_* tools +
                                              duckway_list_local_sessions / duckway_bind_session
 internal/client/cc_watch.go                  SSE consumer + reconnect loop
-internal/client/cc_runner.go                 Per-channel FIFO queue + `claude -p` exec wrapper
+internal/client/cc_runner.go                 Per-channel FIFO queue + agent exec wrapper
+internal/client/cc_codex.go                  `codex exec --json` wrapper
 internal/client/cc_session_store.go          ~/.duckway/cc-sessions.json persistence
 internal/client/local_sessions.go            Scans ~/.claude/projects/*.jsonl for the session picker
 internal/client/cc_client_commands.go        Daemon-side handlers for `!sessions` / `!bind`. Bind
@@ -427,7 +428,7 @@ POST /api/cc          ──→ decrypt bot token
 human types in task ────→ MESSAGE_CREATE (Discord WSS)
                           cc_gateway looks up cc_channels      ──→ SSE message_create event
                           publishes to hub + writes inbox           ▼
-                                                                  cc_runner enqueue → claude -p --resume sess-X "msg"
+                                                                  cc_runner enqueue → selected agent resume "msg"
                                                                   (in cwd from cc_channels.cwd or default)
                                                                   parse JSON output → SessionStore.Set(handle, sess-X')
                           ◀── POST /client/cc/.../messages ────  post result back
@@ -446,7 +447,7 @@ For `discord_request_approval`, the server posts the question + reactions, regis
 
 - Bot token = the only real boundary. Different teams → different bots.
 - `cc_client.go` enforces two ACL layers: client must be bound to the CC (1:1), and every `{handle}` in a URL must belong to that CC.
-- Daemon spawns claude with `--dangerously-skip-permissions` — the Discord channel is the trust boundary, anyone in the category can drive the agent.
+- Daemon trust boundary is the Discord category: anyone in the category can drive the selected agent. `claude_code` currently runs with `--dangerously-skip-permissions`; `codex` v1 runs headless with `--sandbox workspace-write` and no tmux attach.
 
 ### Test hooks
 

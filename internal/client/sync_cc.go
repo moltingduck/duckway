@@ -14,10 +14,10 @@ import (
 // to read. It's the authoritative source for what CCs this client is
 // assigned to and how the agent should reach them.
 type CCStateFile struct {
-	ServerURL string                  `json:"server_url"`
-	Token     string                  `json:"-"` // never persisted to disk
-	Generated string                  `json:"generated_at"`
-	CCs       []CCStateAssignment     `json:"ccs"`
+	ServerURL string              `json:"server_url"`
+	Token     string              `json:"-"` // never persisted to disk
+	Generated string              `json:"generated_at"`
+	CCs       []CCStateAssignment `json:"ccs"`
 }
 
 // CCStateAssignment is the (single) CC the client is bound to.
@@ -45,8 +45,9 @@ func LoadCCState(configDir string) (*CCStateFile, error) {
 // agent_type seen. Returns (count_assigned, error).
 //
 // Per-agent writers:
-//   * claude_code → ~/.claude/mcp.json entry pointing at `duckway mcp serve`
-//   * openclaw / harmes / cursor / copilot_cli — TODO stubs (logged, no file)
+//   - claude_code → ~/.claude/mcp.json entry pointing at `duckway mcp serve`
+//   - codex       → ~/.codex/config.toml mcp_servers.duckway-cc entry
+//   - openclaw / harmes / cursor / copilot_cli — TODO stubs (logged, no file)
 //
 // Idempotent: re-running overwrites the state file and merges the MCP
 // entry without disturbing any user-added entries.
@@ -97,6 +98,10 @@ func SyncCC(configDir string, cfg *Config) (int, error) {
 		case "claude_code":
 			if err := writeClaudeCodeMCP(configDir, list); err != nil {
 				log.Printf("Warning: claude_code mcp write failed: %v", err)
+			}
+		case "codex":
+			if err := writeCodexMCP(configDir, list); err != nil {
+				log.Printf("Warning: codex mcp write failed: %v", err)
 			}
 		case "openclaw", "harmes", "cursor", "copilot_cli":
 			log.Printf("agent_type %q: writer not implemented yet (%d CCs skipped)", agent, len(list))
@@ -224,6 +229,95 @@ func writeClaudeCodeMCP(configDir string, ccs []CCStateAssignment) error {
 	}
 	log.Printf("Claude Code MCP entry written to %s (CCs: %s)", mcpPath, strings.Join(names, ", "))
 	return nil
+}
+
+func codexConfigTOMLPath() (string, error) {
+	if d := os.Getenv("CODEX_HOME"); d != "" {
+		return filepath.Join(d, "config.toml"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".codex", "config.toml"), nil
+}
+
+func writeCodexMCP(configDir string, ccs []CCStateAssignment) error {
+	configPath, err := codexConfigTOMLPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		return err
+	}
+
+	existing, _ := os.ReadFile(configPath)
+	next := replaceTOMLSection(string(existing), "mcp_servers.duckway-cc", codexMCPSection(configDir))
+	if err := os.WriteFile(configPath, []byte(next), 0600); err != nil {
+		return err
+	}
+
+	names := make([]string, 0, len(ccs))
+	for _, c := range ccs {
+		names = append(names, c.CCName)
+	}
+	log.Printf("Codex MCP entry written to %s (CCs: %s)", configPath, strings.Join(names, ", "))
+	return nil
+}
+
+func codexMCPSection(configDir string) string {
+	args := []string{"mcp", "serve"}
+	if configDir != DefaultConfigDir() {
+		args = append(args, "--config-dir", configDir)
+	}
+	quoted := make([]string, 0, len(args))
+	for _, a := range args {
+		quoted = append(quoted, tomlQuote(a))
+	}
+	return "[mcp_servers.duckway-cc]\n" +
+		"command = \"duckway\"\n" +
+		"args = [" + strings.Join(quoted, ", ") + "]\n"
+}
+
+func replaceTOMLSection(input, section, replacement string) string {
+	lines := strings.Split(input, "\n")
+	header := "[" + section + "]"
+	out := make([]string, 0, len(lines)+4)
+	replaced := false
+	skipping := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if trimmed == header {
+				if !replaced {
+					if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
+						out = append(out, "")
+					}
+					out = append(out, strings.TrimRight(replacement, "\n"))
+					replaced = true
+				}
+				skipping = true
+				continue
+			}
+			skipping = false
+		}
+		if !skipping {
+			out = append(out, line)
+		}
+	}
+	result := strings.TrimRight(strings.Join(out, "\n"), "\n")
+	if !replaced {
+		if result != "" {
+			result += "\n\n"
+		}
+		result += strings.TrimRight(replacement, "\n")
+	}
+	return result + "\n"
+}
+
+func tomlQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 // nowISO returns the current UTC timestamp in RFC3339.

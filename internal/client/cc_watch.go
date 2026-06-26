@@ -22,10 +22,10 @@ import (
 // Reconnects forever with exponential backoff (5s → 10s → 30s → 60s cap)
 // so a brief duckway-server outage doesn't kill the daemon.
 type CCWatch struct {
-	cfg       *Config
-	configDir string
-	bin       string // resolved `claude` binary path
-	sessions  *CCSessionStore
+	cfg        *Config
+	configDir  string
+	agentTypes map[string]string // cc_id -> agent_type, loaded from cc.json
+	sessions   *CCSessionStore
 	// noTmux forces the headless --print runner even when tmux is installed.
 	// Set via `duckway cc watch --no-tmux` or DUCKWAY_CC_NO_TMUX=1.
 	noTmux bool
@@ -49,24 +49,28 @@ func NewCCWatch(configDir string, cfg *Config) (*CCWatch, error) {
 }
 
 func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (*CCWatch, error) {
-	bin, err := exec.LookPath("claude")
-	if err != nil {
-		return nil, fmt.Errorf("claude binary not found in PATH (install Claude Code first): %w", err)
+	agentTypes := map[string]string{}
+	if state, err := LoadCCState(configDir); err == nil {
+		for _, cc := range state.CCs {
+			if cc.CCID != "" && cc.AgentType != "" {
+				agentTypes[cc.CCID] = cc.AgentType
+			}
+		}
 	}
 	return &CCWatch{
-		cfg:       cfg,
-		configDir: configDir,
-		bin:       bin,
-		sessions:  NewCCSessionStore(configDir),
-		noTmux:    opts.NoTmux,
-		runners:   map[string]*ccRunner{},
-		api:       NewAPIClient(cfg.ServerURL, cfg.Token),
+		cfg:        cfg,
+		configDir:  configDir,
+		agentTypes: agentTypes,
+		sessions:   NewCCSessionStore(configDir),
+		noTmux:     opts.NoTmux,
+		runners:    map[string]*ccRunner{},
+		api:        NewAPIClient(cfg.ServerURL, cfg.Token),
 	}, nil
 }
 
 // Run is the main loop. Blocks until ctx is cancelled.
 func (w *CCWatch) Run(ctx context.Context) error {
-	log.Printf("[cc-watch] starting; claude=%s server=%s", w.bin, w.cfg.ServerURL)
+	log.Printf("[cc-watch] starting; server=%s", w.cfg.ServerURL)
 
 	// Recover any turns whose Stop event arrived while the previous
 	// daemon instance was dead. Best-effort: errors are logged and we
@@ -231,7 +235,7 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		return
 	}
 
-	runner, err := w.runnerFor(env.Handle)
+	runner, err := w.runnerFor(env.Handle, env.CCID)
 	if err != nil {
 		log.Printf("[cc-watch] cannot start runner for %s: %v", env.Handle, err)
 		_ = w.api.PostCC(context.Background(), env.Handle, "❌ daemon could not start a session: "+err.Error())
@@ -240,13 +244,13 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	if !runner.Enqueue(ccTask{Content: msg.Content, AuthorID: msg.Author.ID, MessageID: msg.ID, ChannelKind: env.Kind}) {
 		log.Printf("[cc-watch] %s: queue full, dropping message %s", env.Handle, msg.ID)
 		_ = w.api.PostCC(context.Background(), env.Handle,
-			"⚠️ session queue full (10 messages backed up) — your message was dropped, please retry once claude catches up.")
+			"⚠️ session queue full (10 messages backed up) — your message was dropped, please retry once the agent catches up.")
 	}
 }
 
 // handleSessionReset clears the daemon's cached session_id for a handle
 // (server-side `!reset` command). The runner stays alive — only the
-// session map entry is dropped, so the next message starts claude
+// session map entry is dropped, so the next message starts the agent
 // without --resume.
 func (w *CCWatch) handleSessionReset(data []byte) {
 	var env sseEnvelope
@@ -285,7 +289,7 @@ func (w *CCWatch) handleChannelDelete(data []byte) {
 // runnerFor returns the runner for a handle, lazily creating one. Looks
 // up the channel's cwd from /client/cc/channels (the daemon doesn't
 // cache channel metadata; the cost is one HTTP call per first-message).
-func (w *CCWatch) runnerFor(handle string) (*ccRunner, error) {
+func (w *CCWatch) runnerFor(handle, ccID string) (*ccRunner, error) {
 	w.mu.Lock()
 	if r, ok := w.runners[handle]; ok {
 		w.mu.Unlock()
@@ -297,7 +301,11 @@ func (w *CCWatch) runnerFor(handle string) (*ccRunner, error) {
 	if err != nil {
 		return nil, err
 	}
-	r, err := newCCRunner(handle, w.configDir, cwd, w.bin, w.sessions, w.api.PostCC, w.noTmux)
+	spec, err := w.agentSpec(ccID)
+	if err != nil {
+		return nil, err
+	}
+	r, err := newCCRunner(handle, w.configDir, cwd, spec, w.sessions, w.api.PostCC, w.noTmux)
 	if err != nil {
 		return nil, err
 	}
@@ -311,6 +319,40 @@ func (w *CCWatch) runnerFor(handle string) (*ccRunner, error) {
 	w.runners[handle] = r
 	w.mu.Unlock()
 	return r, nil
+}
+
+func (w *CCWatch) agentSpec(ccID string) (ccAgentSpec, error) {
+	agentType := w.agentTypes[ccID]
+	if agentType == "" {
+		agentType = "claude_code"
+	}
+	switch agentType {
+	case "claude_code":
+		bin, err := exec.LookPath("claude")
+		if err != nil {
+			return ccAgentSpec{}, fmt.Errorf("claude binary not found in PATH (install Claude Code first): %w", err)
+		}
+		return ccAgentSpec{
+			Type:        agentType,
+			DisplayName: "claude",
+			Bin:         bin,
+			UseTmux:     true,
+		}, nil
+	case "codex":
+		bin, err := exec.LookPath("codex")
+		if err != nil {
+			return ccAgentSpec{}, fmt.Errorf("codex binary not found in PATH (install Codex CLI first): %w", err)
+		}
+		return ccAgentSpec{
+			Type:        agentType,
+			DisplayName: "codex",
+			Bin:         bin,
+			RunFn:       runViaCodexExec,
+			UseTmux:     false,
+		}, nil
+	default:
+		return ccAgentSpec{}, fmt.Errorf("agent_type %q is not implemented by cc watch", agentType)
+	}
 }
 
 func (w *CCWatch) fetchChannelCwd(handle string) (string, error) {
