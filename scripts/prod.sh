@@ -85,12 +85,10 @@ case "${1:-up}" in
     ;;
 
   restart)
-    echo "Building new image ($MODE mode)..."
+    echo "Building new images before touching running containers ($MODE mode)..."
     $COMPOSE build
-    echo "Stopping containers (draining connections)..."
-    $COMPOSE stop --timeout 35
-    echo "Starting with new image..."
-    $COMPOSE up -d
+    echo "Recreating containers with new images..."
+    $COMPOSE up -d --remove-orphans
     ;;
 
   nuke)
@@ -133,7 +131,7 @@ case "${1:-up}" in
     echo "Commands:"
     echo "  up        Build and start with Tailscale"
     echo "  down      Stop (keep data)"
-    echo "  restart   Rebuild and restart"
+    echo "  restart   Build first, then recreate containers with minimal downtime"
     echo "  nuke      Stop and delete all data (asks confirmation)"
     echo "  logs      Follow logs (optional: service name)"
     echo "  status    Show container + Tailscale status"

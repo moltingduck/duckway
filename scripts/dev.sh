@@ -24,8 +24,10 @@ export DUCKWAY_VERSION="$(git -C "$PROJECT_DIR" describe --tags --always --dirty
 
 case "${1:-up}" in
   up|start)
-    echo "Building and starting Duckway ($MODE mode) in Docker..."
-    $COMPOSE up --build -d
+    echo "Building Duckway ($MODE mode) in Docker..."
+    $COMPOSE build
+    echo "Starting Duckway ($MODE mode)..."
+    $COMPOSE up -d
     sleep 4
 
     # Auto-seed dev data
@@ -51,8 +53,10 @@ case "${1:-up}" in
     ;;
 
   restart)
-    echo "Rebuilding ($MODE mode)..."
-    $COMPOSE up --build -d
+    echo "Building new images before touching running containers ($MODE mode)..."
+    $COMPOSE build
+    echo "Recreating containers with new images..."
+    $COMPOSE up -d --remove-orphans
     sleep 3
     echo "Done."
     ;;
