@@ -107,7 +107,7 @@ func (q *APIKeyQueries) UpdateRefreshToken(id, refreshToken string) error {
 	return err
 }
 
-func (q *APIKeyQueries) UpdateRefreshable(id, name, keyEncrypted, refreshToken, tokenEndpoint, subscriptionInfo string) error {
+func (q *APIKeyQueries) UpdateRefreshable(id, name, keyEncrypted, refreshToken, tokenEndpoint, subscriptionInfo string, expiresAt int64) error {
 	query := "UPDATE api_keys SET name = ?, token_endpoint = ?, subscription_info = ?"
 	args := []interface{}{name, tokenEndpoint, subscriptionInfo}
 	if keyEncrypted != "" {
@@ -117,6 +117,10 @@ func (q *APIKeyQueries) UpdateRefreshable(id, name, keyEncrypted, refreshToken, 
 	if refreshToken != "" {
 		query += ", refresh_token = ?"
 		args = append(args, refreshToken)
+	}
+	if expiresAt > 0 {
+		query += ", expires_at = ?"
+		args = append(args, expiresAt)
 	}
 	query += " WHERE id = ?"
 	args = append(args, id)

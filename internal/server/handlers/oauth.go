@@ -181,6 +181,7 @@ func (h *OAuthHandler) Update(w http.ResponseWriter, r *http.Request) {
 		Name             string `json:"name"`
 		AccessToken      string `json:"access_token"`
 		RefreshToken     string `json:"refresh_token"`
+		ExpiresAt        int64  `json:"expires_at"`
 		TokenEndpoint    string `json:"token_endpoint"`
 		SubscriptionInfo string `json:"subscription_info"`
 	}
@@ -215,7 +216,7 @@ func (h *OAuthHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.apiKeyQ.UpdateRefreshable(id, req.Name, encAccess, encRefresh, req.TokenEndpoint, req.SubscriptionInfo); err != nil {
+	if err := h.apiKeyQ.UpdateRefreshable(id, req.Name, encAccess, encRefresh, req.TokenEndpoint, req.SubscriptionInfo, req.ExpiresAt); err != nil {
 		jsonError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -291,20 +292,20 @@ func (h *OAuthHandler) ClientGetCredentials(w http.ResponseWriter, r *http.Reque
 		"claudeConfig": map[string]interface{}{
 			"userID": "duckway",
 			"oauthAccount": map[string]interface{}{
-				"accountUuid":               "00000000-0000-0000-0000-000000000000",
-				"emailAddress":              "agent@duckway.local",
-				"organizationUuid":          "00000000-0000-0000-0000-000000000000",
-				"hasExtraUsageEnabled":      false,
-				"billingType":               "stripe_subscription",
-				"accountCreatedAt":          "2025-01-01T00:00:00.000000Z",
-				"subscriptionCreatedAt":     "2025-01-01T00:00:00.000000Z",
-				"ccOnboardingFlags":         map[string]interface{}{},
-				"claudeCodeTrialEndsAt":     nil,
+				"accountUuid":                 "00000000-0000-0000-0000-000000000000",
+				"emailAddress":                "agent@duckway.local",
+				"organizationUuid":            "00000000-0000-0000-0000-000000000000",
+				"hasExtraUsageEnabled":        false,
+				"billingType":                 "stripe_subscription",
+				"accountCreatedAt":            "2025-01-01T00:00:00.000000Z",
+				"subscriptionCreatedAt":       "2025-01-01T00:00:00.000000Z",
+				"ccOnboardingFlags":           map[string]interface{}{},
+				"claudeCodeTrialEndsAt":       nil,
 				"claudeCodeTrialDurationDays": nil,
-				"displayName":              displayName,
+				"displayName":                 displayName,
 			},
-			"hasCompletedOnboarding":  true,
-			"lastOnboardingVersion":   "2.1.165",
+			"hasCompletedOnboarding": true,
+			"lastOnboardingVersion":  "2.1.165",
 		},
 	})
 }

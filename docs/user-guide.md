@@ -195,7 +195,9 @@ If you don't set it, the clients page warns:
 
 Some services use OAuth access tokens that expire and need refreshing. Duckway handles this automatically.
 
-### Upload a Claude OAuth token
+Refreshable token formats are provider-specific. Duckway stores the real access and refresh tokens encrypted, then issues provider-shaped phantom tokens to clients.
+
+### Upload a Claude Code OAuth token
 
 1. On a machine where you've already done `claude login`, copy `~/.claude/.credentials.json`
 2. In the admin panel: **Refreshable Tokens** → **Upload Token**
@@ -203,7 +205,52 @@ Some services use OAuth access tokens that expire and need refreshing. Duckway h
 4. Set **Agent Display Name** (this is what agents see in their fake `~/.claude.json`, e.g. `"CI Agent Bot"`)
 5. **Upload**
 
-Duckway stores both access and refresh tokens encrypted, refreshes the access token automatically before expiry (background job runs every 5 minutes), and never shows the real tokens again.
+Expected Claude format:
+
+```json
+{
+  "claudeAiOauth": {
+    "accessToken": "sk-ant-oat01-...",
+    "refreshToken": "sk-ant-ort01-...",
+    "expiresAt": 1760000000000,
+    "subscriptionType": "max",
+    "rateLimitTier": "...",
+    "scopes": ["user:inference"]
+  }
+}
+```
+
+To extract only the token values from the local file:
+
+```bash
+jq -r '.claudeAiOauth | [.accessToken, .refreshToken, (.expiresAt // 0)] | @tsv' ~/.claude/.credentials.json
+```
+
+Duckway refreshes the access token automatically before expiry (background job runs every 5 minutes), and never shows the real tokens again.
+
+### Upload a generic OAuth token
+
+For non-Claude services, paste the token endpoint response or enter the fields manually. Common OAuth responses use snake_case, not Claude's camelCase:
+
+```json
+{
+  "access_token": "ya29....",
+  "refresh_token": "1//...",
+  "expires_in": 3600,
+  "scope": "read write",
+  "token_type": "Bearer"
+}
+```
+
+Set **Token Endpoint** to the provider's refresh endpoint. Duckway sends the stored refresh token there with `grant_type=refresh_token`. If the provider returns `expires_at` as Unix seconds, the upload page converts it to Duckway's Unix milliseconds format; `expires_in` is converted relative to the current browser time.
+
+To extract values from a saved JSON response:
+
+```bash
+jq -r '[.access_token, .refresh_token, (.expires_in // 0)] | @tsv' token-response.json
+```
+
+If the provider only exposes tokens through a CLI, ask the CLI for JSON output when available, then paste that response. Otherwise copy the access token, refresh token, refresh endpoint, and expiry into the fields manually.
 
 ### File-based delivery (NOT environment variable)
 

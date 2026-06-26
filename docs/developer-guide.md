@@ -304,6 +304,28 @@ A row is "refreshable" when `refresh_token != ""`. Detected at scan time:
 k.IsRefreshable = k.RefreshToken != ""
 ```
 
+### Upload payload formats
+
+Admin upload accepts provider-specific token shapes in the UI, then normalizes them before calling `POST /api/oauth/upload`:
+
+- Claude Code: paste `~/.claude/.credentials.json`; the UI reads `claudeAiOauth.accessToken`, `refreshToken`, `expiresAt`, `subscriptionType`, `rateLimitTier`, and `scopes`.
+- Generic OAuth: paste a token response with `access_token`, `refresh_token`, and either `expires_in` or `expires_at`.
+- Manual entry: provide `access_token`, `refresh_token`, `token_endpoint`, optional `expires_at` in Unix milliseconds, and optional `subscription_info` JSON.
+
+The API body remains normalized:
+
+```json
+{
+  "name": "Claude OAuth",
+  "service_id": "...",
+  "access_token": "...",
+  "refresh_token": "...",
+  "expires_at": 1760000000000,
+  "token_endpoint": "https://console.anthropic.com/v1/oauth/token",
+  "subscription_info": "{\"subscriptionType\":\"max\"}"
+}
+```
+
 ### Background refresh
 
 `internal/server/services/oauth_refresh.go` (`TokenRefresher`) runs a goroutine that wakes every 5 minutes:

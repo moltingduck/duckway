@@ -190,6 +190,22 @@ duckway init</code></pre>
     <tr><td><strong>Requires Approval</strong></td><td>ON/OFF</td></tr>
     <tr><td><strong>TTL</strong></td><td>How long an approval lasts: 60m, 1440m (1d), 10080m (1w), 0 (no approval)</td></tr>
   </table>
+
+  <h4 class="mt-1">Refreshable Token Upload Formats</h4>
+  <p>Refreshable tokens are stored as API keys with encrypted access + refresh tokens. Upload formats vary by provider:</p>
+  <table>
+    <thead><tr><th>Provider</th><th>What to paste</th><th>How to get it</th></tr></thead>
+    <tbody>
+      <tr><td>Claude Code</td><td><code>{"claudeAiOauth":{"accessToken":"...","refreshToken":"...","expiresAt":...}}</code></td><td>Run <code>claude login</code>, then copy <code>~/.claude/.credentials.json</code></td></tr>
+      <tr><td>Generic OAuth</td><td><code>{"access_token":"...","refresh_token":"...","expires_in":3600}</code></td><td>Copy the provider token endpoint response or extract with <code>jq</code></td></tr>
+      <tr><td>Manual</td><td>Access token, refresh token, token endpoint, optional Unix-ms expiry</td><td>Copy values from the provider CLI, dashboard, or saved token JSON</td></tr>
+    </tbody>
+  </table>
+  <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Claude local credentials
+jq -r '.claudeAiOauth | [.accessToken, .refreshToken, (.expiresAt // 0)] | @tsv' ~/.claude/.credentials.json
+
+# Generic OAuth token response
+jq -r '[.access_token, .refresh_token, (.expires_in // 0)] | @tsv' token-response.json</code></pre>
 </div>
 
 <!-- 8 -->

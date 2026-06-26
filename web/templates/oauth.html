@@ -7,7 +7,7 @@
 <div class="card">
   <p class="text-sm text-muted mb-1">
     API keys with refresh tokens are auto-refreshed by the server before expiry.
-    Works for any OAuth-based service (Claude, GitHub Apps, etc.). Stored in the
+    Works for OAuth-based services that return an access token plus refresh token. Stored in the
     same API Keys table — clients assign them like normal keys.
   </p>
   <p class="text-sm text-muted mb-1">
@@ -17,6 +17,14 @@
     variable. Claude Code reads the credentials file directly. Other refreshable
     services follow the same file-based pattern when supported.
   </p>
+  <div class="text-sm text-muted mb-1">
+    <strong>Upload formats differ by service:</strong>
+    <ul class="mt-1">
+      <li><strong>Claude Code:</strong> paste <code>~/.claude/.credentials.json</code>; Duckway reads <code>claudeAiOauth.accessToken</code>, <code>refreshToken</code>, <code>expiresAt</code>, <code>subscriptionType</code>, <code>rateLimitTier</code>, and <code>scopes</code>.</li>
+      <li><strong>Generic OAuth:</strong> paste a token response like <code>{"access_token":"...","refresh_token":"...","expires_in":3600}</code>, then set the token endpoint.</li>
+      <li><strong>Manual entry:</strong> paste the access token and refresh token into their fields directly when the provider does not expose a JSON file.</li>
+    </ul>
+  </div>
   <table>
     <thead><tr><th>Name</th><th>Service</th><th>Info</th><th>Expires</th><th>Status</th><th></th></tr></thead>
     <tbody id="refreshable-list"></tbody>
@@ -29,8 +37,13 @@
     <h2>Upload Refreshable Token</h2>
 
     <div class="form-group">
-      <label>Paste Claude <code>.credentials.json</code> <span class="text-muted">(auto-fills fields)</span></label>
-      <textarea id="oauth-paste" style="min-height:60px;font-family:monospace;font-size:0.75rem" placeholder='{"claudeAiOauth":{...}}' oninput="parseOAuthPaste()"></textarea>
+      <label>Paste provider token JSON <span class="text-muted">(auto-fills fields when recognized)</span></label>
+      <textarea id="oauth-paste" style="min-height:72px;font-family:monospace;font-size:0.75rem" placeholder='Claude: {"claudeAiOauth":{"accessToken":"...","refreshToken":"..."}}
+Generic OAuth: {"access_token":"...","refresh_token":"...","expires_in":3600}' oninput="parseOAuthPaste()"></textarea>
+      <p class="text-sm text-muted mt-1">
+        Claude: run <code>claude login</code>, then copy <code>~/.claude/.credentials.json</code>.
+        Generic OAuth: copy the token endpoint response or extract the values with <code>jq</code>.
+      </p>
     </div>
 
     <form id="oauth-form">
@@ -41,6 +54,7 @@
       <div class="form-group"><label>Access Token</label><input type="text" id="oauth-access" placeholder="sk-ant-o..." required></div>
       <div class="form-group"><label>Refresh Token</label><input type="text" id="oauth-refresh" placeholder="sk-ant-o..."></div>
       <div class="form-group"><label>Token Endpoint</label><input type="url" id="oauth-endpoint" value="https://console.anthropic.com/v1/oauth/token"></div>
+      <div class="form-group"><label>Expires At <span class="text-muted">(Unix ms, optional)</span></label><input type="number" id="oauth-expires" placeholder="Auto-filled from expiresAt/expires_in when pasted"></div>
       <div class="form-group"><label>Agent Display Name <span class="text-muted">(shown in agent's .claude.json)</span></label>
         <input type="text" id="oauth-display" placeholder="Duckway Agent" value="Duckway Agent">
       </div>
@@ -83,6 +97,9 @@
         <input type="hidden" id="edit-id">
         <div class="form-group"><label>Name</label><input type="text" id="edit-name" required></div>
         <div class="form-group"><label>Token Endpoint</label><input type="url" id="edit-endpoint"></div>
+        <div class="form-group"><label>Expires At <span class="text-muted">(Unix ms, optional; unchanged unless new tokens are uploaded)</span></label>
+          <input type="number" id="edit-expires" placeholder="Current expiry is shown in details">
+        </div>
         <div class="form-group"><label>Agent Display Name <span class="text-muted">(shown in agent's .claude.json)</span></label>
           <input type="text" id="edit-display" placeholder="Duckway Agent">
         </div>
@@ -98,8 +115,8 @@
           <input type="text" id="edit-refresh" placeholder="sk-ant-o...">
         </div>
         <div class="form-group">
-          <label>Paste <code>.credentials.json</code> to update tokens <span class="text-muted">(optional)</span></label>
-          <textarea id="edit-paste" style="min-height:40px;font-family:monospace;font-size:0.75rem" placeholder='{"claudeAiOauth":{...}}' oninput="parseEditPaste()"></textarea>
+          <label>Paste provider token JSON to update tokens <span class="text-muted">(optional)</span></label>
+          <textarea id="edit-paste" style="min-height:52px;font-family:monospace;font-size:0.75rem" placeholder='{"claudeAiOauth":{"accessToken":"...","refreshToken":"..."}} or {"access_token":"...","refresh_token":"..."}' oninput="parseEditPaste()"></textarea>
         </div>
         <div class="modal-actions">
           <button type="button" class="btn" onclick="switchToView()">Back</button>
@@ -111,31 +128,45 @@
 </div>
 
 <script>
+function readTokenPayload(raw) {
+  var d = JSON.parse(raw);
+  var oauth = d.claudeAiOauth || d;
+  var sub = {};
+  if (oauth.subscriptionType) sub.subscriptionType = oauth.subscriptionType;
+  if (oauth.rateLimitTier) sub.rateLimitTier = oauth.rateLimitTier;
+  if (oauth.scopes) sub.scopes = oauth.scopes;
+  if (oauth.scope && !sub.scopes) sub.scopes = String(oauth.scope).split(/\s+/).filter(Boolean);
+
+  var expiresAt = oauth.expiresAt || oauth.expires_at || d.expiresAt || d.expires_at || 0;
+  var expiresIn = oauth.expiresIn || oauth.expires_in || d.expiresIn || d.expires_in || 0;
+  if (!expiresAt && expiresIn) expiresAt = Date.now() + (Number(expiresIn) * 1000);
+  if (expiresAt && Number(expiresAt) < 1000000000000) expiresAt = Number(expiresAt) * 1000;
+
+  return {
+    accessToken: oauth.accessToken || oauth.access_token || d.accessToken || d.access_token || '',
+    refreshToken: oauth.refreshToken || oauth.refresh_token || d.refreshToken || d.refresh_token || '',
+    expiresAt: expiresAt ? Math.round(Number(expiresAt)) : '',
+    subscriptionInfo: sub
+  };
+}
+
 function parseOAuthPaste() {
   try {
-    var d = JSON.parse(document.getElementById('oauth-paste').value);
-    var oauth = d.claudeAiOauth || d;
-    if (oauth.accessToken) document.getElementById('oauth-access').value = oauth.accessToken;
-    if (oauth.refreshToken) document.getElementById('oauth-refresh').value = oauth.refreshToken;
-    var sub = {};
-    if (oauth.subscriptionType) sub.subscriptionType = oauth.subscriptionType;
-    if (oauth.rateLimitTier) sub.rateLimitTier = oauth.rateLimitTier;
-    if (oauth.scopes) sub.scopes = oauth.scopes;
-    if (Object.keys(sub).length) document.getElementById('oauth-sub').value = JSON.stringify(sub);
+    var parsed = readTokenPayload(document.getElementById('oauth-paste').value);
+    if (parsed.accessToken) document.getElementById('oauth-access').value = parsed.accessToken;
+    if (parsed.refreshToken) document.getElementById('oauth-refresh').value = parsed.refreshToken;
+    if (parsed.expiresAt) document.getElementById('oauth-expires').value = parsed.expiresAt;
+    if (Object.keys(parsed.subscriptionInfo).length) document.getElementById('oauth-sub').value = JSON.stringify(parsed.subscriptionInfo);
   } catch(e) {}
 }
 
 function parseEditPaste() {
   try {
-    var d = JSON.parse(document.getElementById('edit-paste').value);
-    var oauth = d.claudeAiOauth || d;
-    if (oauth.accessToken) document.getElementById('edit-access').value = oauth.accessToken;
-    if (oauth.refreshToken) document.getElementById('edit-refresh').value = oauth.refreshToken;
-    var sub = {};
-    if (oauth.subscriptionType) sub.subscriptionType = oauth.subscriptionType;
-    if (oauth.rateLimitTier) sub.rateLimitTier = oauth.rateLimitTier;
-    if (oauth.scopes) sub.scopes = oauth.scopes;
-    if (Object.keys(sub).length) document.getElementById('edit-sub').value = JSON.stringify(sub);
+    var parsed = readTokenPayload(document.getElementById('edit-paste').value);
+    if (parsed.accessToken) document.getElementById('edit-access').value = parsed.accessToken;
+    if (parsed.refreshToken) document.getElementById('edit-refresh').value = parsed.refreshToken;
+    if (parsed.expiresAt) document.getElementById('edit-expires').value = parsed.expiresAt;
+    if (Object.keys(parsed.subscriptionInfo).length) document.getElementById('edit-sub').value = JSON.stringify(parsed.subscriptionInfo);
   } catch(e) {}
 }
 
@@ -187,6 +218,7 @@ function switchToEdit() {
   document.getElementById('edit-id').value = currentDetail.id;
   document.getElementById('edit-name').value = currentDetail.name;
   document.getElementById('edit-endpoint').value = currentDetail.token_endpoint;
+  document.getElementById('edit-expires').value = '';
   document.getElementById('edit-sub').value = currentDetail.subscription_info || '';
   // Extract displayName from subscription_info
   var displayName = 'Duckway Agent';
@@ -295,6 +327,7 @@ document.getElementById('oauth-form').addEventListener('submit', function(e) {
     service_id: document.getElementById('oauth-service').value,
     access_token: document.getElementById('oauth-access').value,
     refresh_token: document.getElementById('oauth-refresh').value,
+    expires_at: Number(document.getElementById('oauth-expires').value || 0),
     token_endpoint: document.getElementById('oauth-endpoint').value,
     subscription_info: JSON.stringify(subObj)
   };
@@ -330,8 +363,10 @@ document.getElementById('edit-form').addEventListener('submit', function(e) {
 
   var accessToken = document.getElementById('edit-access').value.trim();
   var refreshToken = document.getElementById('edit-refresh').value.trim();
+  var expiresAt = Number(document.getElementById('edit-expires').value || 0);
   if (accessToken) body.access_token = accessToken;
   if (refreshToken) body.refresh_token = refreshToken;
+  if (expiresAt > 0) body.expires_at = expiresAt;
 
   fetch('/api/oauth/' + id, {
     method: 'PUT',
