@@ -38,11 +38,9 @@
 
     <div class="form-group">
       <label>Paste provider token JSON <span class="text-muted">(auto-fills fields when recognized)</span></label>
-      <textarea id="oauth-paste" style="min-height:72px;font-family:monospace;font-size:0.75rem" placeholder='Claude: {"claudeAiOauth":{"accessToken":"...","refreshToken":"..."}}
-Generic OAuth: {"access_token":"...","refresh_token":"...","expires_in":3600}' oninput="parseOAuthPaste()"></textarea>
-      <p class="text-sm text-muted mt-1">
+      <textarea id="oauth-paste" style="min-height:72px;font-family:monospace;font-size:0.75rem" oninput="parseOAuthPaste()"></textarea>
+      <p id="oauth-paste-help" class="text-sm text-muted mt-1">
         Claude: run <code>claude login</code>, then copy <code>~/.claude/.credentials.json</code>.
-        Generic OAuth: copy the token endpoint response or extract the values with <code>jq</code>.
       </p>
     </div>
 
@@ -128,6 +126,56 @@ Generic OAuth: {"access_token":"...","refresh_token":"...","expires_in":3600}' o
 </div>
 
 <script>
+var oauthHelpByService = {
+  claude: {
+    pastePlaceholder: '{\n  "claudeAiOauth": {\n    "accessToken": "sk-ant-oat01-...",\n    "refreshToken": "sk-ant-ort01-...",\n    "expiresAt": 1760000000000,\n    "subscriptionType": "max",\n    "rateLimitTier": "...",\n    "scopes": ["user:inference"]\n  }\n}',
+    pasteHelp: 'Run claude login on a machine that already has access, then copy ~/.claude/.credentials.json. Duckway reads claudeAiOauth.accessToken, refreshToken, expiresAt, subscriptionType, rateLimitTier, and scopes.',
+    accessPlaceholder: 'sk-ant-oat01-...',
+    refreshPlaceholder: 'sk-ant-ort01-...',
+    endpointPlaceholder: 'https://console.anthropic.com/v1/oauth/token',
+    endpointValue: 'https://console.anthropic.com/v1/oauth/token',
+    subPlaceholder: '{"subscriptionType":"max","rateLimitTier":"...","scopes":["user:inference"]}'
+  },
+  generic: {
+    pastePlaceholder: '{\n  "access_token": "ya29....",\n  "refresh_token": "1//...",\n  "expires_in": 3600,\n  "scope": "read write",\n  "token_type": "Bearer"\n}',
+    pasteHelp: 'Paste the provider token endpoint response, or extract access_token / refresh_token / expires_in with jq and enter the token endpoint manually.',
+    accessPlaceholder: 'access_token from provider',
+    refreshPlaceholder: 'refresh_token from provider',
+    endpointPlaceholder: 'https://provider.example.com/oauth/token',
+    endpointValue: '',
+    subPlaceholder: '{"scope":"read write","account":"optional metadata"}'
+  }
+};
+
+function selectedOAuthKind() {
+  var sel = document.getElementById('oauth-service');
+  if (!sel) return 'generic';
+  var opt = sel.options[sel.selectedIndex];
+  var text = opt ? (opt.textContent || '').toLowerCase() : '';
+  return text.indexOf('anthropic') >= 0 || text.indexOf('claude') >= 0 ? 'claude' : 'generic';
+}
+
+function applyOAuthHints() {
+  var help = oauthHelpByService[selectedOAuthKind()] || oauthHelpByService.generic;
+  var paste = document.getElementById('oauth-paste');
+  if (paste) paste.placeholder = help.pastePlaceholder;
+  var helpEl = document.getElementById('oauth-paste-help');
+  if (helpEl) helpEl.textContent = help.pasteHelp;
+  var access = document.getElementById('oauth-access');
+  if (access) access.placeholder = help.accessPlaceholder;
+  var refresh = document.getElementById('oauth-refresh');
+  if (refresh) refresh.placeholder = help.refreshPlaceholder;
+  var endpoint = document.getElementById('oauth-endpoint');
+  if (endpoint) {
+    endpoint.placeholder = help.endpointPlaceholder;
+    if (!endpoint.value || endpoint.value === oauthHelpByService.claude.endpointValue || endpoint.value === oauthHelpByService.generic.endpointValue) {
+      endpoint.value = help.endpointValue;
+    }
+  }
+  var sub = document.getElementById('oauth-sub');
+  if (sub) sub.placeholder = help.subPlaceholder;
+}
+
 function readTokenPayload(raw) {
   var d = JSON.parse(raw);
   var oauth = d.claudeAiOauth || d;
@@ -267,6 +315,8 @@ function refreshNow() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+  applyOAuthHints();
+
   // Load services
   fetch('/api/services', {credentials:'same-origin'})
     .then(function(r) { return r.json(); })
@@ -278,6 +328,8 @@ document.addEventListener('DOMContentLoaded', function() {
         if (s.name === 'anthropic') opt.selected = true;
         sel.appendChild(opt);
       });
+      sel.addEventListener('change', applyOAuthHints);
+      applyOAuthHints();
     });
 
   // Load refreshable keys
