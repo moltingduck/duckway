@@ -147,6 +147,7 @@ The admin panel uses the **same pattern across all pages**: click a row's name t
 | `prod-split` | `duckway-admin` + `duckway-gateway` | none | behind reverse proxy |
 | `tailscale-combined` | `duckway-server` + Tailscale sidecar | none, `:80` inside tailnet | prod |
 | `tailscale` | `duckway-admin` + `duckway-gateway` + 2 Tailscale sidecars | none, `:80` each inside tailnet | prod, recommended |
+| `client` | `duckway-client` test shell | none | opt-in sidecar/debug container; not part of prod runtime |
 
 ### .prod.env
 
@@ -172,11 +173,24 @@ DISCORD_CHANNEL_ID=
 ```bash
 ./scripts/prod.sh up            # build and start
 ./scripts/prod.sh down          # stop, keep data
-./scripts/prod.sh restart       # rebuild + restart
+./scripts/prod.sh restart       # build first, then recreate the active profile
+./scripts/prod.sh restart --minimal  # rebuild/recreate app containers only; leave sidecars/deps running
+./scripts/prod.sh ui            # rebuild/recreate only the UI-bearing service
 ./scripts/prod.sh logs          # follow logs
 ./scripts/prod.sh status        # container + Tailscale status
 ./scripts/prod.sh password      # show first-run admin password (if still in logs)
 ./scripts/prod.sh nuke          # asks confirmation, deletes all data
+```
+
+Use `restart --minimal` when only Duckway app images changed and dependency containers are already healthy. In split mode it recreates only admin + gateway; with Tailscale it leaves the Tailscale sidecars running. Use plain `restart` when you need Compose to reconcile the full dependency graph.
+
+Use `ui` for template/static-only changes. In split mode this only rebuilds/recreates admin, so gateway traffic keeps flowing. In combined mode UI is embedded in the server binary, so `ui` recreates the combined server container.
+
+The `duckway-client` Docker service is no longer part of prod startup. It is an opt-in test/debug shell:
+
+```bash
+docker compose --profile client up -d client
+docker exec -it duckway-client sh
 ```
 
 ### Split-mode setting

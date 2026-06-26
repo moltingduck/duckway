@@ -574,6 +574,20 @@ docker compose -f docker-compose.yml build server gateway admin client
 ./scripts/dev.sh restart
 ```
 
+For production, prefer the scripted restart modes:
+
+```bash
+./scripts/prod.sh restart             # build first, then recreate active profile
+./scripts/prod.sh restart --minimal   # app containers only; leaves sidecars/deps running
+./scripts/prod.sh ui                  # UI-bearing service only
+```
+
+`restart --minimal` avoids touching Tailscale sidecars and other dependency containers. Use the full `restart` when dependencies may be unhealthy or compose wiring changed. The `client` compose service is opt-in for tests/debugging and is not part of prod runtime:
+
+```bash
+docker compose --profile client up -d client
+```
+
 ### Embedded web assets
 
 Templates and static files in `web/` are embedded into the binary via `web/embed.go` (`//go:embed`). To live-reload during dev:

@@ -149,8 +149,11 @@ Agents **cannot** reach the admin panel. With Tailscale, enforce by ACL on the a
 | Script | Purpose |
 |--------|---------|
 | `./scripts/dev.sh up` | Build + start dev containers + seed test data |
+| `./scripts/dev.sh ui` | Rebuild/recreate only the UI-bearing dev container |
 | `./scripts/dev.sh nuke` | Wipe data + containers |
 | `./scripts/prod.sh up` | Production start (Tailscale or `prod` profile via `.prod.env`) |
+| `./scripts/prod.sh restart --minimal` | Rebuild/recreate Duckway app containers only; leave sidecars/deps running |
+| `./scripts/prod.sh ui` | Rebuild/recreate only the UI-bearing prod container |
 | `./scripts/prod.sh status` | Container + Tailscale node status |
 | `./scripts/prod.sh logs` | Follow logs |
 | `./scripts/prod.sh password` | Show admin password (if still in logs) |
@@ -178,10 +181,12 @@ A single `docker-compose.yml` with profiles for every deployment mode:
 | `prod-split` | `duckway-admin` + `duckway-gateway` | No | none — reverse proxy in front |
 | `tailscale-combined` | `duckway-server` + Tailscale sidecar | Yes | none, `:80` inside tailnet |
 | `tailscale` | `duckway-admin` + `duckway-gateway` + 2 Tailscale sidecars | Yes | none, `:80` each inside tailnet |
+| `client` | `duckway-client` test shell | No | none — opt-in debug/loan-proxy test helper |
 
 ```bash
 docker compose --profile tailscale up -d              # what prod.sh does by default
 docker compose --profile prod-split up -d             # split, no Tailscale, no exposed ports
+docker compose --profile client up -d client          # optional client test shell
 ```
 
 ## Proxy Modes
