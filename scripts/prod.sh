@@ -46,6 +46,22 @@ COMPOSE="docker compose -f docker-compose.yml $PROFILES"
 # Stamp builds with the current git revision so `duckway version` reports it.
 export DUCKWAY_VERSION="$(git -C "$PROJECT_DIR" describe --tags --always --dirty 2>/dev/null || echo docker)"
 
+ui_service() {
+  if [ "$MODE" = "split" ]; then
+    if [ "$USE_TAILSCALE" = "true" ]; then
+      echo "admin-tailscale"
+    else
+      echo "admin-prod"
+    fi
+  else
+    if [ "$USE_TAILSCALE" = "true" ]; then
+      echo "server-tailscale"
+    else
+      echo "server-prod"
+    fi
+  fi
+}
+
 case "${1:-up}" in
   up|start)
     echo "Building images..."
@@ -91,6 +107,19 @@ case "${1:-up}" in
     $COMPOSE up -d --remove-orphans
     ;;
 
+  ui|restart-ui)
+    svc="$(ui_service)"
+    if [ "$MODE" = "combined" ]; then
+      echo "Combined mode embeds UI in the server; recreating only $svc."
+    else
+      echo "Split mode embeds UI in admin only; gateway will not be restarted."
+    fi
+    echo "Building $svc before touching the running container..."
+    $COMPOSE build "$svc"
+    echo "Recreating $svc..."
+    $COMPOSE up -d --no-deps "$svc"
+    ;;
+
   nuke)
     echo "Removing everything including data and Tailscale state..."
     read -p "Are you sure? This deletes all data. [y/N] " confirm
@@ -126,12 +155,13 @@ case "${1:-up}" in
   *)
     echo "Duckway Production Manager"
     echo ""
-    echo "Usage: $0 {up|down|restart|nuke|logs|status|password}"
+    echo "Usage: $0 {up|down|restart|ui|restart-ui|nuke|logs|status|password}"
     echo ""
     echo "Commands:"
     echo "  up        Build and start with Tailscale"
     echo "  down      Stop (keep data)"
     echo "  restart   Build first, then recreate containers with minimal downtime"
+    echo "  ui        Rebuild/recreate only the UI-bearing service"
     echo "  nuke      Stop and delete all data (asks confirmation)"
     echo "  logs      Follow logs (optional: service name)"
     echo "  status    Show container + Tailscale status"

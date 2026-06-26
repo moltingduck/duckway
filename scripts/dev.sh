@@ -22,6 +22,14 @@ export DUCKWAY_VERSION="$(git -C "$PROJECT_DIR" describe --tags --always --dirty
 
 # Dev never uses tailscale profiles
 
+ui_service() {
+  if [ "$MODE" = "split" ]; then
+    echo "admin"
+  else
+    echo "server"
+  fi
+}
+
 case "${1:-up}" in
   up|start)
     echo "Building Duckway ($MODE mode) in Docker..."
@@ -61,6 +69,21 @@ case "${1:-up}" in
     echo "Done."
     ;;
 
+  ui|restart-ui)
+    svc="$(ui_service)"
+    if [ "$MODE" = "combined" ]; then
+      echo "Combined mode embeds UI in the server; recreating only $svc."
+    else
+      echo "Split mode embeds UI in admin only; gateway will not be restarted."
+    fi
+    echo "Building $svc before touching the running container..."
+    $COMPOSE build "$svc"
+    echo "Recreating $svc..."
+    $COMPOSE up -d --no-deps "$svc"
+    sleep 2
+    echo "Done."
+    ;;
+
   down|stop)
     $COMPOSE down
     ;;
@@ -93,7 +116,7 @@ case "${1:-up}" in
     ;;
 
   *)
-    echo "Usage: $0 {up|restart|down|nuke|logs|split|combined|bare}"
+    echo "Usage: $0 {up|restart|ui|restart-ui|down|nuke|logs|split|combined|bare}"
     echo ""
     echo "Modes:"
     echo "  combined  — admin + gateway on one port (default)"
