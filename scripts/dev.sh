@@ -57,7 +57,7 @@ case "${1:-up}" in
     echo ""
     echo "Mode: $MODE (set DUCKWAY_MODE=split for separate admin/gateway)"
     echo "Logs:   $COMPOSE logs -f"
-    echo "Client: docker exec -it duckway-client sh"
+    echo "Client test shell: docker compose --profile client up -d client && docker exec -it duckway-client sh"
     ;;
 
   restart)

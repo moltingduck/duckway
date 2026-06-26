@@ -232,6 +232,7 @@ run_loan_proxy_github_test() {
   if ! docker ps --format '{{.Names}}' | grep -qx 'duckway-client'; then
     SKIP=$((SKIP+1))
     printf "${YELLOW}SKIP${NC} %-10s duckway-client container not running\n" "github-loan"
+    printf "      %-10s start it with: docker compose --profile client up -d client\n" "github-loan"
     return
   fi
   if [ -z "$GITHUB_ID" ]; then

@@ -252,7 +252,7 @@ services:
     profiles: ["tailscale"]
 
   # ============================================================
-  # Client (always available)
+  # Client test shell (opt-in; not part of prod runtime)
   # ============================================================
   client:
     build:
@@ -264,6 +264,7 @@ services:
     restart: unless-stopped
     environment:
       - DUCKWAY_SERVER=http://gateway:8080
+    profiles: ["client"]
 
 volumes:
   duckway-data:

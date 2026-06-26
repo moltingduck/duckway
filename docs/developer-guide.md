@@ -511,7 +511,7 @@ run_test "mistral" "$MISTRAL_ID" "$MISTRAL_API_KEY" \
 A single bash script that:
 
 1. Builds all four binaries
-2. Builds the duckway-client Docker image
+2. Uses the opt-in docker-compose `client` profile or builds the duckway-client Docker image
 3. Starts an ephemeral server on `127.0.0.1:19090` with a fresh data dir
 4. Runs ~105 assertions across 15 categories: server health, auth, default services, key/client/placeholder CRUD, docker-client sync, proxy chain, key injection, approvals, ACL templates, ACL layering, canaries, admin pages, unit tests
 5. Tears down
