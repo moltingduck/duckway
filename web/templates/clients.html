@@ -462,7 +462,7 @@ document.addEventListener('DOMContentLoaded', function() {
         '<td>' + ph.usageCount + '</td>' +
         '<td class="text-right flex gap-sm" style="justify-content:flex-end">' +
           '<button class="btn btn-sm" onclick="editPh(\'' + ph.id + '\',\'' + ph.envName + '\',\'' + (ph.keyPath||'') + '\')">Edit</button>' +
-          '<button class="btn btn-sm btn-danger" onclick="deletePh(\'' + ph.id + '\')">Remove</button>' +
+          '<button class="btn btn-sm btn-danger" onclick="deletePh(\'' + ph.id + '\')">Unassign</button>' +
         '</td>';
       tbody.appendChild(tr);
     });
@@ -793,13 +793,25 @@ function submitAssign() {
 }
 
 function deletePh(id) {
-  if (!confirm('Remove this phantom token?')) return;
+  if (!confirm('Unassign this phantom token from the client? The API key / refreshable token will not be deleted.')) return;
   fetch('/api/placeholders/' + id, {method:'DELETE',credentials:'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.error) { showToast(data.error, 'error'); return; }
-      document.getElementById('ph-' + id).remove();
-      showToast('Phantom token removed', 'success');
+    .then(function(r) {
+      return r.text().then(function(text) {
+        var data = {};
+        if (text) {
+          try { data = JSON.parse(text); } catch(e) {}
+        }
+        if (!r.ok || data.error) {
+          throw new Error(data.error || 'failed to unassign phantom token');
+        }
+      });
+    })
+    .then(function() {
+      showToast('Phantom token unassigned', 'success');
+      location.reload();
+    })
+    .catch(function(err) {
+      showToast(err.message, 'error');
     });
 }
 

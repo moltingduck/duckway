@@ -125,7 +125,7 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Placeholder:        placeholder,
 		ServiceID:          req.ServiceID,
 		APIKeyID:           req.APIKeyID,
-		GroupID:             req.GroupID,
+		GroupID:            req.GroupID,
 		ClientID:           req.ClientID,
 		PermissionConfig:   req.PermissionConfig,
 		RequiresApproval:   requiresApproval,
@@ -149,7 +149,9 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListWithApprovals returns placeholders enriched with latest approval status.
-func (h *PlaceholderHandler) ListWithApprovals(w http.ResponseWriter, r *http.Request, approvalQ interface{ LatestByPlaceholder(string) (*models.Approval, error) }) {
+func (h *PlaceholderHandler) ListWithApprovals(w http.ResponseWriter, r *http.Request, approvalQ interface {
+	LatestByPlaceholder(string) (*models.Approval, error)
+}) {
 	clientID := r.URL.Query().Get("client_id")
 	serviceID := r.URL.Query().Get("service_id")
 	list, err := h.placeholders.List(clientID, serviceID)
@@ -227,7 +229,7 @@ func (h *PlaceholderHandler) Update(w http.ResponseWriter, r *http.Request) {
 func (h *PlaceholderHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := h.placeholders.Delete(id); err != nil {
-		jsonError(w, "failed to delete placeholder", http.StatusInternalServerError)
+		jsonError(w, "failed to unassign phantom token", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)

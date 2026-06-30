@@ -2,6 +2,7 @@ package queries
 
 import (
 	"database/sql"
+	"fmt"
 
 	"github.com/hackerduck/duckway/internal/models"
 )
@@ -108,8 +109,23 @@ func (q *PlaceholderQueries) Update(p *models.PlaceholderKey) error {
 }
 
 func (q *PlaceholderQueries) Delete(id string) error {
-	_, err := q.db.Exec("DELETE FROM placeholder_keys WHERE id = ?", id)
-	return err
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// request_log keeps historical rows after a phantom token is removed.
+	// Its FK is intentionally nullable, so detach logs before deleting the
+	// placeholder row. Approvals use ON DELETE CASCADE and are removed by the
+	// placeholder delete below.
+	if _, err := tx.Exec("UPDATE request_log SET placeholder_id = NULL WHERE placeholder_id = ?", id); err != nil {
+		return fmt.Errorf("detach request logs: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM placeholder_keys WHERE id = ?", id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (q *PlaceholderQueries) IncrementUsage(id string) error {
