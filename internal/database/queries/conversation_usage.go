@@ -49,6 +49,23 @@ type KeyTokenTotals struct {
 	LastSeen            string `json:"last_seen"`
 }
 
+// ClientKeyUsageRow is one client+API-key token rollup over a trailing window.
+type ClientKeyUsageRow struct {
+	ClientID            string `json:"client_id"`
+	ClientName          string `json:"client_name"`
+	APIKeyID            string `json:"api_key_id"`
+	KeyName             string `json:"key_name"`
+	ServiceName         string `json:"service_name"`
+	IsRefreshable       bool   `json:"is_refreshable"`
+	Requests            int64  `json:"requests"`
+	InputTokens         int64  `json:"input_tokens"`
+	OutputTokens        int64  `json:"output_tokens"`
+	CacheReadTokens     int64  `json:"cache_read_tokens"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens"`
+	Conversations       int64  `json:"conversations"`
+	LastSeen            string `json:"last_seen"`
+}
+
 // TotalsByKey returns token rollups keyed by api_key_id over the
 // trailing sinceHours hours (0 = all time). Map for O(1) lookup when
 // decorating the per-key usage rows.
@@ -87,6 +104,58 @@ func (q *ConversationUsageQueries) TotalsByKey(sinceHours int) (map[string]KeyTo
 			t.LastSeen = *last
 		}
 		out[t.APIKeyID] = t
+	}
+	return out, rows.Err()
+}
+
+func (q *ConversationUsageQueries) ClientKeyUsage(days int) ([]ClientKeyUsageRow, error) {
+	where := ""
+	var args []interface{}
+	if days > 0 {
+		where = "WHERE u.created_at >= datetime('now', ?)"
+		args = append(args, "-"+itoa(days*24)+" hours")
+	}
+	rows, err := q.db.Query(`
+		SELECT COALESCE(u.client_id, ''),
+		       COALESCE(c.name, ''),
+		       u.api_key_id,
+		       COALESCE(k.name, u.api_key_id),
+		       COALESCE(s.name, u.service_name),
+		       COALESCE(k.refresh_token, '') != '',
+		       COUNT(*),
+		       COALESCE(SUM(u.input_tokens),0),
+		       COALESCE(SUM(u.output_tokens),0),
+		       COALESCE(SUM(u.cache_read_tokens),0),
+		       COALESCE(SUM(u.cache_creation_tokens),0),
+		       COUNT(DISTINCT u.conversation_id),
+		       MAX(u.created_at)
+		FROM conversation_usage u
+		LEFT JOIN clients c ON c.id = u.client_id
+		LEFT JOIN api_keys k ON k.id = u.api_key_id
+		LEFT JOIN services s ON s.id = k.service_id
+		`+where+`
+		GROUP BY u.client_id, c.name, u.api_key_id, k.name, s.name, u.service_name, k.refresh_token
+		ORDER BY SUM(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_creation_tokens) DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ClientKeyUsageRow
+	for rows.Next() {
+		var r ClientKeyUsageRow
+		var refreshable int
+		var last *string
+		if err := rows.Scan(&r.ClientID, &r.ClientName, &r.APIKeyID, &r.KeyName, &r.ServiceName, &refreshable,
+			&r.Requests, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens,
+			&r.Conversations, &last); err != nil {
+			return nil, err
+		}
+		r.IsRefreshable = refreshable != 0
+		if last != nil {
+			r.LastSeen = *last
+		}
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

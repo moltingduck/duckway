@@ -1,63 +1,243 @@
 {{define "content"}}
+<style>
+.usage-tabs { display:flex; gap:.5rem; margin-bottom:1rem; }
+.usage-tab { border:1px solid var(--border); background:var(--bg-input); color:var(--text-muted); border-radius:var(--radius); padding:.45rem .75rem; cursor:pointer; font-size:.8125rem; }
+.usage-tab.active { color:var(--text); border-color:var(--accent); background:rgba(99,102,241,.12); }
+.usage-toolbar { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin-bottom:1rem; }
+.usage-toolbar select { width:auto; min-width:9rem; }
+.usage-toolbar input { max-width:18rem; }
+.usage-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:.75rem; margin-bottom:1rem; }
+.usage-summary .stat-card { padding:.85rem 1rem; }
+.usage-summary .value { font-size:1.25rem; }
+.usage-section { display:none; }
+.usage-section.active { display:block; }
+.usage-table-wrap { overflow-x:auto; }
+.usage-expand-row { background:rgba(255,255,255,.015); }
+.usage-progress { width:110px; height:7px; border-radius:4px; background:#252830; overflow:hidden; display:inline-block; vertical-align:middle; margin-right:.4rem; }
+.usage-progress > span { display:block; height:100%; border-radius:4px; }
+.usage-status { white-space:nowrap; }
+.usage-key-table { margin:.5rem 0 .75rem 2rem; width:calc(100% - 2rem); }
+.usage-caret { display:inline-block; width:1rem; color:var(--text-muted); }
+</style>
+
 <div class="page-header">
   <h1>Usage</h1>
-  <button class="btn" onclick="loadUsage();loadSessions()">Refresh</button>
+  <button class="btn" onclick="refreshActive()">Refresh</button>
 </div>
 
-<div class="card">
-  <h3>LLM API Key Usage</h3>
-  <p class="text-sm text-muted mb-1">
-    Rate-limit snapshots captured from the most recent upstream response per key
-    (Anthropic / OpenAI). Token &amp; request limits, how much is used, and when
-    each window resets. Keys with no traffic yet show <em>no data</em>.
-  </p>
+<div class="usage-tabs">
+  <button class="usage-tab active" id="tab-clients" onclick="showUsageTab('clients')">Clients</button>
+  <button class="usage-tab" id="tab-keys" onclick="showUsageTab('keys')">Keys</button>
+  <button class="usage-tab" id="tab-sessions" onclick="showUsageTab('sessions')">Sessions</button>
+</div>
+
+<div class="card usage-section active" id="usage-clients">
+  <div class="usage-toolbar">
+    <label class="text-sm text-muted">Window</label>
+    <select id="client-window" onchange="loadClients();loadUsage()">
+      <option value="3" selected>Last 3 days</option>
+      <option value="7">Last 7 days</option>
+      <option value="30">Last month</option>
+    </select>
+    <input type="text" id="client-search" placeholder="Search client" oninput="renderClients()">
+  </div>
+
+  <div class="usage-summary">
+    <div class="stat-card"><div class="label">Clients</div><div class="value" id="sum-clients">0</div></div>
+    <div class="stat-card"><div class="label">Tokens</div><div class="value" id="sum-tokens">0</div></div>
+    <div class="stat-card"><div class="label">Requests</div><div class="value" id="sum-requests">0</div></div>
+    <div class="stat-card"><div class="label">Shared Key Pressure</div><div class="value" id="sum-pressure">—</div></div>
+  </div>
+
+  <div class="usage-table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Client</th>
+          <th>Tokens</th>
+          <th>Requests</th>
+          <th>Keys</th>
+          <th>Services</th>
+          <th>Shared key pressure</th>
+          <th>Last seen</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="client-rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card usage-section" id="usage-keys">
+  <h3>LLM API Keys</h3>
   <div id="usage-cards"></div>
 </div>
 
-<div class="card mt-2">
-  <h3>Per-Session Usage <span class="text-muted text-sm">(request volume by agent)</span></h3>
-  <p class="text-sm text-muted mb-1">
-    Request counts per client (agent session) and service from the request log.
-    Token counts aren't recorded per request — this is a call-volume view.
-  </p>
-  <div class="mb-1">
-    <label class="text-sm">Window:
-      <select id="session-window" onchange="loadSessions()">
-        <option value="0">All time</option>
-        <option value="1">Last 1h</option>
-        <option value="24" selected>Last 24h</option>
-        <option value="168">Last 7d</option>
-      </select>
-    </label>
+<div class="card usage-section" id="usage-sessions">
+  <div class="usage-toolbar">
+    <label class="text-sm text-muted">Window</label>
+    <select id="session-window" onchange="loadSessions()">
+      <option value="72" selected>Last 3 days</option>
+      <option value="168">Last 7 days</option>
+      <option value="720">Last month</option>
+    </select>
   </div>
-  <table>
-    <thead><tr><th>Agent</th><th>Service</th><th>Requests</th><th>Errors</th><th>Last seen</th></tr></thead>
-    <tbody id="session-rows"></tbody>
-  </table>
+  <div class="usage-table-wrap">
+    <table>
+      <thead><tr><th>Agent</th><th>Service</th><th>Requests</th><th>Errors</th><th>Last seen</th></tr></thead>
+      <tbody id="session-rows"></tbody>
+    </table>
+  </div>
 </div>
 
 <script>
+var clientRows = [];
+
+function activeDays() {
+  return document.getElementById('client-window').value || '3';
+}
+
+function activeHours() {
+  return String(Number(activeDays()) * 24);
+}
+
 function fmtInt(n) {
   if (n === null || n === undefined) return '—';
   return Number(n).toLocaleString();
 }
+
 function fmtReset(s) {
-  if (!s) return '';
+  if (!s) return '—';
   var d = new Date(s);
   if (isNaN(d.getTime())) return s;
   return d.toLocaleString();
 }
-function bar(pct) {
-  if (pct === null || pct === undefined || pct < 0) return '';
+
+function pctLabel(pct) {
+  if (pct === null || pct === undefined || pct < 0) return '—';
+  return Math.max(0, Math.min(100, pct)).toFixed(0) + '%';
+}
+
+function pressureBar(pct) {
+  if (pct === null || pct === undefined || pct < 0) return '<span class="text-muted">—</span>';
   var p = Math.max(0, Math.min(100, pct));
-  var color = p < 70 ? '#22c55e' : (p < 90 ? '#eab308' : '#ef4444');
-  return '<div style="background:#2a2a2a;border-radius:3px;height:8px;width:160px;display:inline-block;vertical-align:middle">' +
-         '<div style="background:' + color + ';height:8px;border-radius:3px;width:' + p + '%"></div></div> ' +
-         '<span class="text-sm">' + p.toFixed(0) + '%</span>';
+  var color = p < 75 ? 'var(--success)' : (p < 90 ? 'var(--warning)' : 'var(--danger)');
+  return '<span class="usage-progress"><span style="width:' + p + '%;background:' + color + '"></span></span>' +
+    '<span class="text-sm">' + p.toFixed(0) + '%</span>';
+}
+
+function statusBadge(status) {
+  var cls = 'badge-gray';
+  if (status === 'near shared key limit') cls = 'badge-red';
+  else if (status === 'high shared key usage') cls = 'badge-yellow';
+  else if (status === 'normal') cls = 'badge-green';
+  return '<span class="badge ' + cls + ' usage-status">' + escapeHtml(status || 'normal') + '</span>';
+}
+
+function showUsageTab(name) {
+  ['clients','keys','sessions'].forEach(function(t){
+    document.getElementById('usage-' + t).classList.toggle('active', t === name);
+    document.getElementById('tab-' + t).classList.toggle('active', t === name);
+  });
+  if (name === 'keys') loadUsage();
+  if (name === 'sessions') loadSessions();
+}
+
+function refreshActive() {
+  if (document.getElementById('usage-clients').classList.contains('active')) {
+    loadClients();
+    return;
+  }
+  if (document.getElementById('usage-keys').classList.contains('active')) {
+    loadUsage();
+    return;
+  }
+  loadSessions();
+}
+
+function loadClients() {
+  fetch('/api/usage/clients?days=' + encodeURIComponent(activeDays()), {credentials:'same-origin'})
+    .then(function(r){ return r.json(); })
+    .then(function(rows){
+      clientRows = rows || [];
+      renderClients();
+    });
+}
+
+function renderClients() {
+  var q = (document.getElementById('client-search').value || '').toLowerCase();
+  var rows = clientRows.filter(function(c){
+    return !q || String(c.client_name || c.client_id || '').toLowerCase().indexOf(q) >= 0;
+  });
+  var tb = document.getElementById('client-rows');
+  if (!rows.length) {
+    tb.innerHTML = '<tr><td colspan="8" class="text-muted">No captured LLM token usage in this window.</td></tr>';
+    updateSummary(rows);
+    return;
+  }
+  tb.innerHTML = rows.map(function(c){
+    var id = escapeAttr(c.client_id || c.client_name || 'unknown');
+    var services = (c.services || []).map(function(s){ return '<span class="badge badge-blue">' + escapeHtml(s) + '</span>'; }).join(' ');
+    var main = '<tr onclick="toggleClient(\'' + id + '\')" style="cursor:pointer">' +
+      '<td><span class="usage-caret" id="caret-client-' + id + '">▸</span><strong>' + escapeHtml(c.client_name || c.client_id || '(unknown)') + '</strong></td>' +
+      '<td>' + fmtInt(c.total_tokens) + '</td>' +
+      '<td>' + fmtInt(c.requests) + '</td>' +
+      '<td>' + fmtInt(c.keys_used) + '</td>' +
+      '<td>' + services + '</td>' +
+      '<td>' + pressureBar(c.max_key_used_pct) + '</td>' +
+      '<td class="text-sm text-muted">' + fmtReset(c.last_seen) + '</td>' +
+      '<td>' + statusBadge(c.status) + '</td>' +
+      '</tr>';
+    var detail = '<tr class="usage-expand-row" id="client-detail-' + id + '" style="display:none"><td colspan="8">' +
+      renderClientKeys(c.keys || []) + '</td></tr>';
+    return main + detail;
+  }).join('');
+  updateSummary(rows);
+}
+
+function updateSummary(rows) {
+  var tokens = 0, requests = 0, pressure = -1;
+  rows.forEach(function(c){
+    tokens += Number(c.total_tokens || 0);
+    requests += Number(c.requests || 0);
+    if (Number(c.max_key_used_pct) > pressure) pressure = Number(c.max_key_used_pct);
+  });
+  document.getElementById('sum-clients').textContent = fmtInt(rows.length);
+  document.getElementById('sum-tokens').textContent = fmtInt(tokens);
+  document.getElementById('sum-requests').textContent = fmtInt(requests);
+  document.getElementById('sum-pressure').textContent = pctLabel(pressure);
+}
+
+function renderClientKeys(keys) {
+  if (!keys.length) return '<div class="text-muted text-sm">No key breakdown.</div>';
+  return '<table class="usage-key-table"><thead><tr>' +
+    '<th>Key</th><th>Service</th><th>Tokens</th><th>Requests</th><th>Conversations</th><th>Pressure</th><th>Reset</th>' +
+    '</tr></thead><tbody>' + keys.map(function(k){
+      return '<tr>' +
+        '<td><strong>' + escapeHtml(k.key_name || k.api_key_id) + '</strong> ' +
+          (k.is_refreshable ? '<span class="badge badge-green">OAuth</span>' : '') +
+          (k.provider ? ' <span class="badge badge-gray">' + escapeHtml(k.provider) + '</span>' : '') + '</td>' +
+        '<td><span class="badge badge-blue">' + escapeHtml(k.service || '') + '</span></td>' +
+        '<td>' + fmtInt(k.total_tokens) + '<div class="text-sm text-muted">in ' + fmtInt(k.tokens_input) + ' · out ' + fmtInt(k.tokens_output) + '</div></td>' +
+        '<td>' + fmtInt(k.requests) + '</td>' +
+        '<td>' + fmtInt(k.conversations) + '</td>' +
+        '<td>' + pressureBar(k.max_used_pct) + '</td>' +
+        '<td class="text-sm text-muted">' + fmtReset(k.reset_at) + '</td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>';
+}
+
+function toggleClient(id) {
+  var row = document.getElementById('client-detail-' + id);
+  var caret = document.getElementById('caret-client-' + id);
+  if (!row) return;
+  var open = row.style.display === 'none';
+  row.style.display = open ? 'table-row' : 'none';
+  if (caret) caret.textContent = open ? '▾' : '▸';
 }
 
 function loadUsage() {
-  fetch('/api/usage', {credentials:'same-origin'})
+  fetch('/api/usage?hours=' + encodeURIComponent(activeHours()), {credentials:'same-origin'})
     .then(function(r){ return r.json(); })
     .then(function(rows){
       var box = document.getElementById('usage-cards');
@@ -65,100 +245,24 @@ function loadUsage() {
         box.innerHTML = '<p class="text-muted">No LLM API keys found.</p>';
         return;
       }
-      box.innerHTML = rows.map(function(k){
-        var clickable = k.captured_requests > 0;
-        var head = '<div style="display:flex;align-items:baseline;gap:.5rem;margin-top:1rem' +
-          (clickable ? ';cursor:pointer' : '') + '"' +
-          (clickable ? ' onclick="toggleConv(\'' + escapeHtml(k.key_id) + '\')"' : '') + '>' +
-          (clickable ? '<span id="caret-' + escapeHtml(k.key_id) + '" class="text-muted">▸</span> ' : '') +
-          '<strong>' + escapeHtml(k.key_name) + '</strong>' +
-          '<span class="badge badge-blue">' + escapeHtml(k.service) + '</span>' +
-          (k.provider ? '<span class="badge badge-gray">' + escapeHtml(k.provider) + '</span>' : '') +
-          (k.is_refreshable ? '<span class="badge badge-green">OAuth</span>' : '') +
-          '</div>';
-
-        // Captured token totals (from response bodies).
-        var tok = '';
-        if (k.captured_requests > 0) {
-          tok = '<div class="text-sm" style="margin:.25rem 0 .25rem .5rem">' +
-            '<strong>Tokens</strong> (captured): ' +
-            'in ' + fmtInt(k.tokens_input) +
-            ' · out ' + fmtInt(k.tokens_output) +
-            ' · cache-read ' + fmtInt(k.tokens_cache_read) +
-            ' · cache-write ' + fmtInt(k.tokens_cache_creation) +
-            ' · ' + fmtInt(k.conversations) + ' conversation(s)' +
-            ' · ' + fmtInt(k.captured_requests) + ' calls' +
-            '</div>';
-        }
-
-        if (!k.has_data) {
-          return head + '<p class="text-muted text-sm">no usage data yet — ' +
-            fmtInt(k.usage_count) + ' proxied calls so far</p>';
-        }
-        var rowsHtml = (k.metrics || []).map(function(m){
-          return '<tr><td>' + escapeHtml(m.name) + '</td>' +
-            '<td>' + fmtInt(m.used) + ' / ' + fmtInt(m.limit) + '</td>' +
-            '<td>' + bar(m.used_pct) + '</td>' +
-            '<td class="text-sm text-muted">' + fmtInt(m.remaining) + ' left</td>' +
-            '<td class="text-sm text-muted">' + fmtReset(m.reset) + '</td></tr>';
-        }).join('');
-        var sub = '';
-        if (k.subscription && Object.keys(k.subscription).length) {
-          sub = '<div class="text-sm" style="margin:.25rem 0 .25rem .5rem">' +
-            Object.keys(k.subscription).sort().map(function(key){
-              return '<span class="badge badge-gray" style="margin:1px">' +
-                escapeHtml(key) + ': ' + escapeHtml(k.subscription[key]) + '</span>';
-            }).join(' ') + '</div>';
-        }
-        var table = rowsHtml ? ('<table style="margin-top:.25rem"><thead><tr>' +
-          '<th>Metric</th><th>Used / Limit</th><th></th><th>Remaining</th><th>Resets</th>' +
-          '</tr></thead><tbody>' + rowsHtml + '</tbody></table>') : '';
-        var updated = k.updated_at ? ('<div class="text-sm text-muted">snapshot: ' + fmtReset(k.updated_at) + '</div>') : '';
-        var convBox = '<div id="conv-' + escapeHtml(k.key_id) + '" style="display:none;margin:.25rem 0 .5rem 1rem"></div>';
-        return head + tok + sub + table + updated + convBox;
-      }).join('');
+      box.innerHTML = '<div class="usage-table-wrap"><table><thead><tr>' +
+        '<th>Key</th><th>Service</th><th>Tokens</th><th>Calls</th><th>Pressure</th><th>Snapshot</th>' +
+        '</tr></thead><tbody>' + rows.map(function(k){
+          var maxPct = -1;
+          (k.metrics || []).forEach(function(m){ if (Number(m.used_pct) > maxPct) maxPct = Number(m.used_pct); });
+          return '<tr>' +
+            '<td><strong>' + escapeHtml(k.key_name) + '</strong> ' +
+              (k.is_refreshable ? '<span class="badge badge-green">OAuth</span>' : '') +
+              (k.provider ? ' <span class="badge badge-gray">' + escapeHtml(k.provider) + '</span>' : '') + '</td>' +
+            '<td><span class="badge badge-blue">' + escapeHtml(k.service) + '</span></td>' +
+            '<td>' + fmtInt(Number(k.tokens_input || 0) + Number(k.tokens_output || 0) + Number(k.tokens_cache_read || 0) + Number(k.tokens_cache_creation || 0)) +
+              '<div class="text-sm text-muted">in ' + fmtInt(k.tokens_input) + ' · out ' + fmtInt(k.tokens_output) + '</div></td>' +
+            '<td>' + fmtInt(k.captured_requests || k.usage_count) + '</td>' +
+            '<td>' + pressureBar(maxPct) + '</td>' +
+            '<td class="text-sm text-muted">' + fmtReset(k.updated_at || k.last_used_at) + '</td>' +
+            '</tr>';
+        }).join('') + '</tbody></table></div>';
     });
-}
-
-// toggleConv expands/collapses the per-conversation breakdown for a key,
-// lazy-loading it from /api/usage/conversations on first open.
-function toggleConv(keyId) {
-  var box = document.getElementById('conv-' + keyId);
-  var caret = document.getElementById('caret-' + keyId);
-  if (!box) return;
-  if (box.style.display === 'none') {
-    box.style.display = 'block';
-    if (caret) caret.textContent = '▾';
-    if (!box.dataset.loaded) {
-      box.innerHTML = '<span class="text-muted text-sm">loading…</span>';
-      fetch('/api/usage/conversations?key_id=' + encodeURIComponent(keyId), {credentials:'same-origin'})
-        .then(function(r){ return r.json(); })
-        .then(function(convs){
-          box.dataset.loaded = '1';
-          if (!convs || convs.length === 0) {
-            box.innerHTML = '<span class="text-muted text-sm">no per-conversation data captured yet</span>';
-            return;
-          }
-          box.innerHTML = '<table><thead><tr>' +
-            '<th>Conversation</th><th>Model</th><th>In</th><th>Out</th><th>Cache R/W</th><th>Calls</th><th>Last</th>' +
-            '</tr></thead><tbody>' + convs.map(function(c){
-              var label = c.channel_name
-                ? ('#' + escapeHtml(c.channel_name))
-                : (c.conversation_id ? escapeHtml(c.conversation_id.slice(0,8)) : '(no session)');
-              return '<tr><td>' + label + '</td>' +
-                '<td class="text-sm">' + escapeHtml(c.model || '—') + '</td>' +
-                '<td>' + fmtInt(c.input_tokens) + '</td>' +
-                '<td>' + fmtInt(c.output_tokens) + '</td>' +
-                '<td class="text-sm text-muted">' + fmtInt(c.cache_read_tokens) + ' / ' + fmtInt(c.cache_creation_tokens) + '</td>' +
-                '<td>' + fmtInt(c.requests) + '</td>' +
-                '<td class="text-sm text-muted">' + fmtReset(c.last_seen) + '</td></tr>';
-            }).join('') + '</tbody></table>';
-        });
-    }
-  } else {
-    box.style.display = 'none';
-    if (caret) caret.textContent = '▸';
-  }
 }
 
 function loadSessions() {
@@ -189,6 +293,10 @@ function escapeHtml(s) {
   });
 }
 
-document.addEventListener('DOMContentLoaded', function(){ loadUsage(); loadSessions(); });
+function escapeAttr(s) {
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+document.addEventListener('DOMContentLoaded', function(){ loadClients(); loadUsage(); });
 </script>
 {{end}}

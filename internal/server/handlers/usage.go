@@ -40,12 +40,12 @@ func parseHours(r *http.Request) int {
 
 // usageMetricRow is one rate-limited dimension flattened for the UI.
 type usageMetricRow struct {
-	Name      string  `json:"name"`       // requests, tokens, input_tokens, output_tokens
+	Name      string  `json:"name"` // requests, tokens, input_tokens, output_tokens
 	Limit     int64   `json:"limit"`
 	Remaining int64   `json:"remaining"`
-	Used      int64   `json:"used"`       // limit - remaining (>=0)
-	UsedPct   float64 `json:"used_pct"`   // 0..100, -1 when limit unknown
-	Reset     string  `json:"reset"`      // RFC3339 or ""
+	Used      int64   `json:"used"`     // limit - remaining (>=0)
+	UsedPct   float64 `json:"used_pct"` // 0..100, -1 when limit unknown
+	Reset     string  `json:"reset"`    // RFC3339 or ""
 }
 
 // usageRow is one API key's usage view.
@@ -57,8 +57,8 @@ type usageRow struct {
 	IsRefreshable bool              `json:"is_refreshable"`
 	UsageCount    int64             `json:"usage_count"`
 	LastUsedAt    string            `json:"last_used_at"`
-	UpdatedAt     string            `json:"updated_at"`            // from snapshot, "" if none
-	HasData       bool              `json:"has_data"`             // a snapshot was recorded
+	UpdatedAt     string            `json:"updated_at"` // from snapshot, "" if none
+	HasData       bool              `json:"has_data"`   // a snapshot was recorded
 	Metrics       []usageMetricRow  `json:"metrics"`
 	Subscription  map[string]string `json:"subscription,omitempty"` // Claude Max 5h/7d windows
 
@@ -72,6 +72,42 @@ type usageRow struct {
 	TokensCacheCreation int64 `json:"tokens_cache_creation"`
 	CapturedRequests    int64 `json:"captured_requests"`
 	Conversations       int64 `json:"conversations"`
+}
+
+type clientKeyUsageView struct {
+	APIKeyID            string  `json:"api_key_id"`
+	KeyName             string  `json:"key_name"`
+	Service             string  `json:"service"`
+	Provider            string  `json:"provider"`
+	IsRefreshable       bool    `json:"is_refreshable"`
+	Requests            int64   `json:"requests"`
+	TokensInput         int64   `json:"tokens_input"`
+	TokensOutput        int64   `json:"tokens_output"`
+	TokensCacheRead     int64   `json:"tokens_cache_read"`
+	TokensCacheCreation int64   `json:"tokens_cache_creation"`
+	TotalTokens         int64   `json:"total_tokens"`
+	Conversations       int64   `json:"conversations"`
+	LastSeen            string  `json:"last_seen"`
+	MaxUsedPct          float64 `json:"max_used_pct"`
+	ResetAt             string  `json:"reset_at"`
+}
+
+type clientUsageView struct {
+	ClientID            string               `json:"client_id"`
+	ClientName          string               `json:"client_name"`
+	Requests            int64                `json:"requests"`
+	TokensInput         int64                `json:"tokens_input"`
+	TokensOutput        int64                `json:"tokens_output"`
+	TokensCacheRead     int64                `json:"tokens_cache_read"`
+	TokensCacheCreation int64                `json:"tokens_cache_creation"`
+	TotalTokens         int64                `json:"total_tokens"`
+	Conversations       int64                `json:"conversations"`
+	KeysUsed            int                  `json:"keys_used"`
+	Services            []string             `json:"services"`
+	LastSeen            string               `json:"last_seen"`
+	MaxKeyUsedPct       float64              `json:"max_key_used_pct"`
+	Status              string               `json:"status"`
+	Keys                []clientKeyUsageView `json:"keys"`
 }
 
 // List handles GET /api/usage. Returns one row per API key whose
@@ -173,6 +209,146 @@ func (h *UsageHandler) List(w http.ResponseWriter, r *http.Request) {
 	JsonResponsePublic(w, rows)
 }
 
+func (h *UsageHandler) Clients(w http.ResponseWriter, r *http.Request) {
+	if h.convUsage == nil {
+		JsonResponsePublic(w, []clientUsageView{})
+		return
+	}
+
+	days := parseDays(r)
+	rows, err := h.convUsage.ClientKeyUsage(days)
+	if err != nil {
+		JsonErrorPublic(w, "failed to aggregate client usage", http.StatusInternalServerError)
+		return
+	}
+
+	keyMeta := h.usageMetaByKey()
+	byClient := map[string]*clientUsageView{}
+	for _, row := range rows {
+		clientID := row.ClientID
+		if clientID == "" {
+			clientID = "(unknown)"
+		}
+		c := byClient[clientID]
+		if c == nil {
+			c = &clientUsageView{
+				ClientID:      clientID,
+				ClientName:    row.ClientName,
+				MaxKeyUsedPct: -1,
+				Status:        "normal",
+			}
+			if c.ClientName == "" {
+				c.ClientName = clientID
+			}
+			byClient[clientID] = c
+		}
+
+		total := row.InputTokens + row.OutputTokens + row.CacheReadTokens + row.CacheCreationTokens
+		meta := keyMeta[row.APIKeyID]
+		k := clientKeyUsageView{
+			APIKeyID:            row.APIKeyID,
+			KeyName:             row.KeyName,
+			Service:             row.ServiceName,
+			Provider:            meta.provider,
+			IsRefreshable:       row.IsRefreshable,
+			Requests:            row.Requests,
+			TokensInput:         row.InputTokens,
+			TokensOutput:        row.OutputTokens,
+			TokensCacheRead:     row.CacheReadTokens,
+			TokensCacheCreation: row.CacheCreationTokens,
+			TotalTokens:         total,
+			Conversations:       row.Conversations,
+			LastSeen:            row.LastSeen,
+			MaxUsedPct:          meta.maxUsedPct,
+			ResetAt:             meta.resetAt,
+		}
+		c.Keys = append(c.Keys, k)
+		c.Requests += row.Requests
+		c.TokensInput += row.InputTokens
+		c.TokensOutput += row.OutputTokens
+		c.TokensCacheRead += row.CacheReadTokens
+		c.TokensCacheCreation += row.CacheCreationTokens
+		c.TotalTokens += total
+		c.Conversations += row.Conversations
+		if row.LastSeen > c.LastSeen {
+			c.LastSeen = row.LastSeen
+		}
+		if k.MaxUsedPct > c.MaxKeyUsedPct {
+			c.MaxKeyUsedPct = k.MaxUsedPct
+		}
+	}
+
+	out := make([]clientUsageView, 0, len(byClient))
+	for _, c := range byClient {
+		serviceSeen := map[string]bool{}
+		for _, k := range c.Keys {
+			if k.Service != "" && !serviceSeen[k.Service] {
+				serviceSeen[k.Service] = true
+				c.Services = append(c.Services, k.Service)
+			}
+		}
+		sort.Strings(c.Services)
+		c.KeysUsed = len(c.Keys)
+		sort.SliceStable(c.Keys, func(i, j int) bool {
+			return c.Keys[i].TotalTokens > c.Keys[j].TotalTokens
+		})
+		switch {
+		case c.MaxKeyUsedPct >= 90:
+			c.Status = "near shared key limit"
+		case c.MaxKeyUsedPct >= 75:
+			c.Status = "high shared key usage"
+		case c.TotalTokens == 0:
+			c.Status = "no token data"
+		default:
+			c.Status = "normal"
+		}
+		out = append(out, *c)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].TotalTokens > out[j].TotalTokens
+	})
+	JsonResponsePublic(w, out)
+}
+
+type usageKeyMeta struct {
+	provider   string
+	maxUsedPct float64
+	resetAt    string
+}
+
+func (h *UsageHandler) usageMetaByKey() map[string]usageKeyMeta {
+	meta := map[string]usageKeyMeta{}
+	keys, err := h.apiKeys.List("")
+	if err != nil {
+		return meta
+	}
+	for _, k := range keys {
+		m := usageKeyMeta{maxUsedPct: -1}
+		if k.UsageSnapshot != "" {
+			var snap services.UsageSnapshot
+			if err := json.Unmarshal([]byte(k.UsageSnapshot), &snap); err == nil {
+				m.provider = snap.Provider
+				for _, metric := range snap.Metrics {
+					if metric.Limit <= 0 {
+						continue
+					}
+					used := metric.Limit - metric.Remaining
+					if used < 0 {
+						used = 0
+					}
+					pct := float64(used) / float64(metric.Limit) * 100
+					if pct > m.maxUsedPct {
+						m.maxUsedPct = pct
+						m.resetAt = metric.Reset
+					}
+				}
+			}
+		}
+		meta[k.ID] = m
+	}
+	return meta
+}
+
 // Sessions handles GET /api/usage/sessions[?hours=N]. Returns per-client,
 // per-service request-volume aggregates from the request log. request_log
 // has no token data, so this is a call-count view (total + errors + last
@@ -225,4 +401,17 @@ func isLLMService(name string) bool {
 		return true
 	}
 	return false
+}
+
+func parseDays(r *http.Request) int {
+	switch strings.TrimSpace(r.URL.Query().Get("days")) {
+	case "3":
+		return 3
+	case "7":
+		return 7
+	case "30":
+		return 30
+	default:
+		return 3
+	}
 }

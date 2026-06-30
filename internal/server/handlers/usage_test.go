@@ -167,6 +167,43 @@ func TestUsageList_SurfacesTokenTotals(t *testing.T) {
 	}
 }
 
+func TestUsageClients_AggregatesClientKeyUsage(t *testing.T) {
+	d := newUsageTestDeps(t)
+	h, apiKeyQ, svcQ, clientQ, convQ := d.h, d.apiKeyQ, d.svcQ, d.clientQ, d.convQ
+	_ = svcQ.Create(&models.Service{ID: "svc-anth", Name: "anthropic", UpstreamURL: "https://api.anthropic.com", HostPattern: "api.anthropic.com", IsActive: true})
+	_ = clientQ.Create(&models.Client{ID: "c1", ShortID: "lap123", Name: "laptop", TokenHash: "hash", CanaryEnabled: true})
+	_ = apiKeyQ.Create(&models.APIKey{ID: "k1", ServiceID: "svc-anth", Name: "shared", KeyEncrypted: "x"})
+	snap := `{"updated_at":"2026-05-19T10:00:00Z","provider":"anthropic","metrics":{"tokens":{"limit":1000,"remaining":100,"reset":"2026-05-19T11:00:00Z"}}}`
+	_ = apiKeyQ.UpdateUsageSnapshot("k1", snap)
+	_ = convQ.Insert(&queries.ConversationUsageRecord{ClientID: "c1", APIKeyID: "k1", ServiceName: "anthropic", ConversationID: "sess1", InputTokens: 100, OutputTokens: 20})
+	_ = convQ.Insert(&queries.ConversationUsageRecord{ClientID: "c1", APIKeyID: "k1", ServiceName: "anthropic", ConversationID: "sess2", InputTokens: 200, OutputTokens: 30, CacheReadTokens: 10})
+
+	req := httptest.NewRequest("GET", "/api/usage/clients?days=3", nil)
+	rec := httptest.NewRecorder()
+	h.Clients(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var rows []clientUsageView
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v\nbody: %s", err, rec.Body.String())
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+	}
+	got := rows[0]
+	if got.ClientName != "laptop" || got.TotalTokens != 360 || got.Requests != 2 || got.KeysUsed != 1 {
+		t.Fatalf("client totals wrong: %+v", got)
+	}
+	if got.Status != "near shared key limit" {
+		t.Fatalf("status = %q, want near shared key limit", got.Status)
+	}
+	if len(got.Keys) != 1 || got.Keys[0].KeyName != "shared" || got.Keys[0].MaxUsedPct < 89.9 {
+		t.Fatalf("key breakdown wrong: %+v", got.Keys)
+	}
+}
+
 func TestUsageConversations_DrillDown(t *testing.T) {
 	d := newUsageTestDeps(t)
 	h, convQ := d.h, d.convQ

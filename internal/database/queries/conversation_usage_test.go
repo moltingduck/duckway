@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/database"
+	"github.com/hackerduck/duckway/internal/models"
 )
 
 func newConvUsageQ(t *testing.T) *ConversationUsageQueries {
@@ -78,6 +79,42 @@ func TestConversationUsage_ByKey(t *testing.T) {
 	}
 	if rows[1].ConversationID != "small" {
 		t.Errorf("second row = %q, want small", rows[1].ConversationID)
+	}
+}
+
+func TestConversationUsage_ClientKeyUsage(t *testing.T) {
+	q := newConvUsageQ(t)
+	svcQ := NewServiceQueries(q.db)
+	clientQ := NewClientQueries(q.db)
+	apiKeyQ := NewAPIKeyQueries(q.db)
+
+	_ = svcQ.Create(&models.Service{ID: "svc-anth", Name: "anthropic", UpstreamURL: "https://api.anthropic.com", HostPattern: "api.anthropic.com"})
+	_ = clientQ.Create(&models.Client{ID: "c1", ShortID: "client", Name: "laptop", TokenHash: "hash", CanaryEnabled: true})
+	_ = apiKeyQ.Create(&models.APIKey{ID: "k1", ServiceID: "svc-anth", Name: "shared", KeyEncrypted: "x"})
+	_ = q.Insert(&ConversationUsageRecord{ClientID: "c1", APIKeyID: "k1", ServiceName: "anthropic", ConversationID: "s1", InputTokens: 100, OutputTokens: 20})
+	_ = q.Insert(&ConversationUsageRecord{ClientID: "c1", APIKeyID: "k1", ServiceName: "anthropic", ConversationID: "s2", InputTokens: 30, OutputTokens: 10, CacheReadTokens: 5})
+	if _, err := q.db.Exec(
+		`INSERT INTO conversation_usage (client_id, api_key_id, service_name, conversation_id, input_tokens, output_tokens, created_at)
+		 VALUES ('c1','k1','anthropic','old',999,1, datetime('now','-10 days'))`); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := q.ClientKeyUsage(7)
+	if err != nil {
+		t.Fatalf("ClientKeyUsage: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+	}
+	got := rows[0]
+	if got.ClientName != "laptop" || got.KeyName != "shared" || got.ServiceName != "anthropic" {
+		t.Fatalf("joined names wrong: %+v", got)
+	}
+	if got.Requests != 2 || got.InputTokens != 130 || got.OutputTokens != 30 || got.CacheReadTokens != 5 {
+		t.Fatalf("totals wrong: %+v", got)
+	}
+	if got.Conversations != 2 {
+		t.Fatalf("conversations = %d, want 2", got.Conversations)
 	}
 }
 

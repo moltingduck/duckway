@@ -82,7 +82,7 @@ func (s *Server) initShared() *SharedServices {
 		ApprovalQ: approvalQ, RequestLogQ: requestLogQ,
 		NotifQ: notifQ, CanaryQ: canaryQ, SettingsQ: settingsQ, ConvUsageQ: convUsageQ,
 		KeySuiteQ: keySuiteQ,
-		Crypto: crypto, Resolver: resolver, Notifier: notifier, CanarySvc: canarySvc,
+		Crypto:    crypto, Resolver: resolver, Notifier: notifier, CanarySvc: canarySvc,
 		CCHub:       services.NewCCEventHub(),
 		CCApprovals: services.NewCCApprovalRegistry(),
 		AdminAuth:   adminAuth, ClientAuth: clientAuth,
@@ -161,6 +161,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 
 	usageH := handlers.NewUsageHandler(ss.APIKeyQ, ss.RequestLogQ, ss.ConvUsageQ)
 	adminAPIMux.HandleFunc("GET /api/usage", usageH.List)
+	adminAPIMux.HandleFunc("GET /api/usage/clients", usageH.Clients)
 	adminAPIMux.HandleFunc("GET /api/usage/sessions", usageH.Sessions)
 	adminAPIMux.HandleFunc("GET /api/usage/conversations", usageH.Conversations)
 
