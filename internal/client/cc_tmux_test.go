@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -501,6 +502,43 @@ func TestChooseCCRunFnPrefersTmux(t *testing.T) {
 	// noTmux=true: never use tmux, even if it's on PATH.
 	if isRunViaTmux(chooseCCRunFn(spec, true)) {
 		t.Errorf("chooseCCRunFn(true) returned tmux runner; should fall back to print")
+	}
+}
+
+func TestChooseCCRunFnPrefersAgentSpecificTmuxRunFn(t *testing.T) {
+	yes := true
+	tmuxAvailableMemo = &yes
+	defer func() { tmuxAvailableMemo = nil }()
+
+	headless := func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+		return "", "headless", false, nil
+	}
+	tmuxRunner := func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+		return "", "tmux", false, nil
+	}
+	spec := ccAgentSpec{
+		Type:        "codex",
+		DisplayName: "codex",
+		Bin:         "/fake/codex",
+		RunFn:       headless,
+		TmuxRunFn:   tmuxRunner,
+		UseTmux:     true,
+	}
+
+	_, got, _, err := chooseCCRunFn(spec, false)(context.Background(), "", "", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "tmux" {
+		t.Fatalf("chooseCCRunFn(false) result = %q, want tmux", got)
+	}
+
+	_, got, _, err = chooseCCRunFn(spec, true)(context.Background(), "", "", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "headless" {
+		t.Fatalf("chooseCCRunFn(true) result = %q, want headless", got)
 	}
 }
 

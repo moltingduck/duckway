@@ -348,7 +348,8 @@ func (w *CCWatch) agentSpec(ccID string) (ccAgentSpec, error) {
 			DisplayName: "codex",
 			Bin:         bin,
 			RunFn:       runViaCodexExec,
-			UseTmux:     false,
+			TmuxRunFn:   runViaCodexTmux,
+			UseTmux:     true,
 		}, nil
 	default:
 		return ccAgentSpec{}, fmt.Errorf("agent_type %q is not implemented by cc watch", agentType)
@@ -379,10 +380,10 @@ func (w *CCWatch) shutdown() {
 }
 
 // recoverPendingTurns scans the tmux-runner state files left behind by a
-// previous (crashed) daemon. Any turn whose Stop event was written while
+// previous (crashed) daemon. Any turn whose completion event was written while
 // the daemon was down gets posted to Discord here, before we connect to
-// the SSE stream. Without this, the user's message would have been
-// answered by claude but the reply would never reach the channel.
+// the SSE stream. Without this, the user's message could have been
+// answered by the agent but the reply would never reach the channel.
 //
 // Best-effort: errors per channel are logged and we keep going.
 func (w *CCWatch) recoverPendingTurns(ctx context.Context) {
@@ -398,7 +399,7 @@ func (w *CCWatch) recoverPendingTurns(ctx context.Context) {
 		}
 		body := r.LastAssistantMessage
 		if body == "" {
-			body = "_(claude finished with no response)_"
+			body = "_(agent finished with no response)_"
 		}
 		body = "♻️ (recovered after daemon restart)\n\n" + body
 		if perr := w.api.PostCC(ctx, r.Handle, body); perr != nil {

@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
 )
 
 type codexJSONEvent struct {
@@ -44,6 +47,152 @@ func runViaCodexExec(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 		sessionID = sid
 	}
 	return sessionID, result, isError, nil
+}
+
+type codexTmuxEvent struct {
+	OutputPath        string `json:"output_path"`
+	ExitCode          int    `json:"exit_code"`
+	FallbackSessionID string `json:"fallback_session_id"`
+}
+
+func runViaCodexTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []string) (sessionID, result string, isError bool, err error) {
+	handle := envValue(extraEnv, "DUCKWAY_CC_CHANNEL_HANDLE")
+	if handle == "" {
+		return "", "", false, fmt.Errorf("codex tmux runner: missing DUCKWAY_CC_CHANNEL_HANDLE in extraEnv")
+	}
+	sess := tmuxSessionName(handle)
+	chDir, err := tmuxChannelDir(handle)
+	if err != nil {
+		return "", "", false, err
+	}
+	eventsDir := filepath.Join(chDir, "events")
+	if err := os.MkdirAll(eventsDir, 0700); err != nil {
+		return "", "", false, fmt.Errorf("mkdir events: %w", err)
+	}
+
+	turnTS := time.Now().UnixNano()
+	promptPath := filepath.Join(chDir, "codex-prompt.txt")
+	outputPath := filepath.Join(chDir, fmt.Sprintf("codex-%d.jsonl", turnTS))
+	launchPath := filepath.Join(chDir, "codex-launch.sh")
+	inFlightPath := filepath.Join(chDir, "in-flight.json")
+
+	if err := os.WriteFile(promptPath, []byte(prompt), 0600); err != nil {
+		return "", "", false, fmt.Errorf("write codex prompt: %w", err)
+	}
+	if err := writeInFlight(inFlightPath, handle, envValue(extraEnv, "DUCKWAY_CC_MESSAGE_ID"), turnTS); err != nil {
+		return "", "", false, err
+	}
+	if err := writeCodexTmuxLaunchScript(launchPath, bin, cwd, promptPath, outputPath, eventsDir, sid); err != nil {
+		return "", "", false, err
+	}
+
+	if !tmuxHasSession(sess) {
+		if err := tmuxNewSession(sess, cwd, launchPath, extraEnv); err != nil {
+			return "", "", false, err
+		}
+	} else if err := tmuxRespawnPane(sess, cwd, launchPath, extraEnv); err != nil {
+		return "", "", false, err
+	}
+
+	evt, err := pollForCodexTmuxEvent(ctx, eventsDir, turnTS, tmuxRunTimeout)
+	if err != nil {
+		return "", "", false, err
+	}
+	out, err := os.ReadFile(evt.OutputPath)
+	if err != nil {
+		return "", "", false, fmt.Errorf("read codex output: %w", err)
+	}
+	sessionID, result, isError = parseCodexJSONL(out, evt.FallbackSessionID)
+	if sessionID == "" {
+		sessionID = sid
+	}
+	_ = os.Remove(inFlightPath)
+	if evt.ExitCode != 0 {
+		return sessionID, result, isError, fmt.Errorf("codex exited with status %d (output: %.400s)", evt.ExitCode, out)
+	}
+	return sessionID, result, isError, nil
+}
+
+func writeCodexTmuxLaunchScript(path, bin, cwd, promptPath, outputPath, eventsDir, sid string) error {
+	outputJSON, _ := json.Marshal(outputPath)
+	sidJSON, _ := json.Marshal(sid)
+	args := []string{bin, "exec"}
+	if sid != "" {
+		args = append(args, "resume", "--json", sid, "-")
+	} else {
+		args = append(args, "--json", "--sandbox", "workspace-write", "-C", cwd, "-")
+	}
+
+	var sb strings.Builder
+	q := shellSingleQuote
+	sb.WriteString("#!/bin/sh\n")
+	sb.WriteString("set +e\n")
+	sb.WriteString("printf '%s\\n' '[duckway] starting Codex turn in tmux...'\n")
+	sb.WriteString("cd " + q(cwd) + " || exit 1\n")
+	sb.WriteString("out=" + q(outputPath) + "\n")
+	sb.WriteString("prompt=" + q(promptPath) + "\n")
+	sb.WriteString("events=" + q(eventsDir) + "\n")
+	sb.WriteString("mkdir -p \"$events\"\n")
+	sb.WriteString("rm -f \"$out\"\n")
+	sb.WriteString("set --")
+	for _, a := range args {
+		sb.WriteByte(' ')
+		sb.WriteString(q(a))
+	}
+	sb.WriteString("\n")
+	sb.WriteString("\"$@\" < \"$prompt\" > \"$out\" 2>&1\n")
+	sb.WriteString("rc=$?\n")
+	sb.WriteString("cat \"$out\"\n")
+	sb.WriteString("ts=$(date +%s%N)\n")
+	sb.WriteString("final=\"$events/${ts}.stop.json\"\n")
+	sb.WriteString("tmp=\"${final}.tmp\"\n")
+	sb.WriteString("printf '{\"output_path\":%s,\"fallback_session_id\":%s,\"exit_code\":%s}' " +
+		shellSingleQuote(string(outputJSON)) + " " + shellSingleQuote(string(sidJSON)) + " \"$rc\" > \"$tmp\"\n")
+	sb.WriteString("mv \"$tmp\" \"$final\"\n")
+	sb.WriteString("printf '%s\\n' '[duckway] Codex turn finished. Attach session remains open for inspection.'\n")
+	sb.WriteString("exec ${SHELL:-/bin/sh} -i\n")
+	return os.WriteFile(path, []byte(sb.String()), 0700)
+}
+
+func pollForCodexTmuxEvent(ctx context.Context, eventsDir string, afterTS int64, timeout time.Duration) (*codexTmuxEvent, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(eventPollInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
+			return nil, fmt.Errorf("codex tmux runner: timed out waiting for codex after %v", timeout)
+		case <-tick.C:
+			evt, found, err := findStopEvent(eventsDir, afterTS)
+			if err != nil {
+				return nil, fmt.Errorf("scan events: %w", err)
+			}
+			if !found {
+				continue
+			}
+			parsed, ok := parseCodexTmuxEventPayload(evt.payload)
+			if !ok {
+				_ = os.Remove(evt.path)
+				continue
+			}
+			_ = os.Remove(evt.path)
+			return parsed, nil
+		}
+	}
+}
+
+func parseCodexTmuxEventPayload(payload string) (*codexTmuxEvent, bool) {
+	var ev codexTmuxEvent
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return nil, false
+	}
+	if ev.OutputPath == "" {
+		return nil, false
+	}
+	return &ev, true
 }
 
 func parseCodexJSONL(out []byte, fallbackSessionID string) (sessionID, result string, isError bool) {

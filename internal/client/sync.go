@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 // fallbackOnboardingVersion is the lastOnboardingVersion written to
@@ -109,8 +107,8 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 		log.Printf("Warning: statusline sync failed: %v", err)
 	}
 
-	// Write apiBaseUrl to ~/.codex/config.yaml so Codex CLI routes through
-	// the local duckway proxy without requiring HTTPS_PROXY to be set.
+	// Write a Duckway provider to ~/.codex/config.toml so Codex CLI routes
+	// through the local duckway proxy and reads OPENAI_API_KEY from keys.env.
 	if err := SyncCodexConfig(cfg.ProxyPort); err != nil {
 		log.Printf("Warning: codex config sync failed: %v", err)
 	}
@@ -474,12 +472,13 @@ func mergeProxySettings(path string, proxyPort int) error {
 	return os.WriteFile(path, out, 0600)
 }
 
-// SyncCodexConfig writes the duckway proxy URL into ~/.codex/config.yaml as
-// apiBaseUrl so the OpenAI Codex CLI routes through the local duckway proxy
-// without the user having to set HTTPS_PROXY manually. All other settings
-// already in the file are preserved — only the apiBaseUrl key is touched.
+// SyncCodexConfig writes a Duckway OpenAI provider into ~/.codex/config.toml
+// so Codex CLI routes through the local duckway proxy and reads the phantom
+// OPENAI_API_KEY from the environment. All other settings already in the file
+// are preserved; Duckway only owns the model_provider top-level key and the
+// [model_providers.duckway-openai] section.
 //
-// The resulting URL format is:
+// The resulting provider base_url format is:
 //
 //	http://localhost:{port}/proxy/openai/v1
 //
@@ -490,34 +489,66 @@ func mergeProxySettings(path string, proxyPort int) error {
 //
 // which the duckway local proxy forwards to the server as-is.
 func SyncCodexConfig(proxyPort int) error {
-	home, err := os.UserHomeDir()
+	configPath, err := codexConfigTOMLPath()
 	if err != nil {
 		return err
 	}
-	codexDir := filepath.Join(home, ".codex")
-	if err := os.MkdirAll(codexDir, 0700); err != nil {
-		return fmt.Errorf("mkdir %s: %w", codexDir, err)
-	}
-	configPath := filepath.Join(codexDir, "config.yaml")
-
-	// Load existing config so we don't clobber user settings.
-	settings := map[string]interface{}{}
-	if data, err := os.ReadFile(configPath); err == nil && len(data) > 0 {
-		_ = yaml.Unmarshal(data, &settings) // best-effort; ignore malformed YAML
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(configPath), err)
 	}
 
-	apiBase := fmt.Sprintf("http://localhost:%d/proxy/openai/v1", proxyPort)
-	settings["apiBaseUrl"] = apiBase
-
-	out, err := yaml.Marshal(settings)
-	if err != nil {
+	existing, _ := os.ReadFile(configPath)
+	next := replaceTopLevelTOMLString(string(existing), "model_provider", "duckway-openai")
+	next = replaceTOMLSection(next, "model_providers.duckway-openai", codexDuckwayProviderSection(proxyPort))
+	if err := os.WriteFile(configPath, []byte(next), 0600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(configPath, out, 0600); err != nil {
-		return err
-	}
-	log.Printf("Codex config synced to %s (apiBaseUrl=%s)", configPath, apiBase)
+	log.Printf("Codex config synced to %s (provider=duckway-openai)", configPath)
 	return nil
+}
+
+func codexDuckwayProviderSection(proxyPort int) string {
+	return "[model_providers.duckway-openai]\n" +
+		"name = \"Duckway OpenAI\"\n" +
+		"base_url = " + tomlQuote(fmt.Sprintf("http://localhost:%d/proxy/openai/v1", proxyPort)) + "\n" +
+		"env_key = \"OPENAI_API_KEY\"\n" +
+		"wire_api = \"responses\"\n"
+}
+
+func replaceTopLevelTOMLString(input, key, value string) string {
+	lines := strings.Split(input, "\n")
+	replacement := key + " = " + tomlQuote(value)
+	out := make([]string, 0, len(lines)+1)
+	replaced := false
+	inserted := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inserted && !replaced && strings.HasPrefix(trimmed, "[") {
+			out = append(out, replacement)
+			inserted = true
+		}
+		if !inserted && !replaced && isTOMLKeyLine(trimmed, key) {
+			out = append(out, replacement)
+			replaced = true
+			continue
+		}
+		out = append(out, line)
+	}
+	if !inserted && !replaced {
+		out = append(out, replacement)
+	}
+	return strings.Join(out, "\n")
+}
+
+func isTOMLKeyLine(line, key string) bool {
+	if strings.HasPrefix(line, "#") {
+		return false
+	}
+	if !strings.HasPrefix(line, key) {
+		return false
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(line, key))
+	return strings.HasPrefix(rest, "=")
 }
 
 // ensureLoopbackInNoProxy returns the NO_PROXY string with localhost and

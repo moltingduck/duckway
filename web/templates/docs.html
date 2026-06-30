@@ -396,7 +396,7 @@ journalctl --user -u duckway-cc-watch -f</code></pre>
     <li><strong>Bot token = the only real boundary.</strong> Two CCs sharing a bot can technically reach each other's channels. Use <em>different bots</em> to isolate teams/projects.</li>
     <li><strong>Path-level ACL</strong> rejects cross-CC handles: any <code>{handle}</code> in a request must belong to the caller's CC (HTTP 403 otherwise).</li>
     <li><strong>Phantom token</strong> is bound to (client, bot, CC) — <code>placeholder_keys.env_name</code> is <code>DUCKWAY_CC_&lt;cc_id&gt;</code> so each (client, CC) gets its own row even when the bot is shared.</li>
-    <li><strong>Agent execution:</strong> <code>claude_code</code> passes <code>--dangerously-skip-permissions</code> to <code>claude</code>; <code>codex</code> v1 uses headless <code>codex exec --json --sandbox workspace-write</code>. Trust the channel — anyone in the Discord category can drive the agent.</li>
+    <li><strong>Agent execution:</strong> <code>claude_code</code> passes <code>--dangerously-skip-permissions</code> to <code>claude</code>; <code>codex</code> uses <code>codex exec --json --sandbox workspace-write</code>. When tmux is installed, supported agents run in attachable <code>duckway-&lt;handle&gt;</code> sessions. Trust the channel — anyone in the Discord category can drive the agent.</li>
   </ul>
 
   <h4 class="mt-1">Inbox runtime</h4>
@@ -420,7 +420,7 @@ journalctl --user -u duckway-cc-watch -f</code></pre>
   </ul>
 
   <h4 class="mt-1">Agent types</h4>
-  <p><code>claude_code</code> and <code>codex</code> are wired. Codex v1 is headless only; tmux/live attach remains Claude-only. The schema still reserves <code>openclaw</code>, <code>harmes</code>, <code>cursor</code>, <code>copilot_cli</code>; those store the assignment and log <em>writer not implemented yet</em>.</p>
+  <p><code>claude_code</code> and <code>codex</code> are wired. Both use tmux when available and fall back to headless mode with <code>--no-tmux</code> or when tmux is missing. The schema still reserves <code>openclaw</code>, <code>harmes</code>, <code>cursor</code>, <code>copilot_cli</code>; those store the assignment and log <em>writer not implemented yet</em>.</p>
 </div>
 
 <!-- 14 -->

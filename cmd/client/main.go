@@ -139,12 +139,12 @@ Usage:
   duckway mcp serve      Run the Control-Channel MCP server over stdio
                          (launched by Claude Code from ~/.claude/mcp.json)
   duckway cc watch       Connect to the server's SSE feed and run a
-                         claude session per Discord task channel
-                         (when tmux is installed claude runs inside
+                         local agent session per Discord task channel
+                         (when tmux is installed supported agents run inside
                          a session named duckway-<handle>; attach with
                          "tmux attach -t duckway-<handle>")
   duckway cc watch -d    Same, but run in background as a daemon
-  duckway cc watch --no-tmux  Force the headless --print runner
+  duckway cc watch --no-tmux  Force the headless runner
                          (also: DUCKWAY_CC_NO_TMUX=1)
   duckway cc watch stop  Stop the running daemon
   duckway cc watch restart  Stop and start a fresh daemon
@@ -859,9 +859,10 @@ func cmdProxy(configDir string) {
 // individually for users who need them.
 //
 // If a daemon is already running, that subsystem is skipped with a note
-// (idempotent — re-running `duckway start` is safe). cc-watch needs the
-// `claude` binary on PATH; we warn and skip if it's missing, rather
-// than failing the whole command — most users care about the proxy first.
+// (idempotent — re-running `duckway start` is safe). cc-watch needs at
+// least one supported agent binary on PATH; we warn and skip if none are
+// present, rather than failing the whole command — most users care about
+// the proxy first.
 func cmdStart(configDir string) {
 	proxyPidFile := filepath.Join(configDir, "proxy.pid")
 	proxyLogFile := filepath.Join(configDir, "proxy.log")
@@ -877,9 +878,9 @@ func cmdStart(configDir string) {
 		fmt.Printf("duckway proxy: started (logs %s)\n", proxyLogFile)
 	}
 
-	// cc watch — skip cleanly if claude isn't installed
-	if _, err := exec.LookPath("claude"); err != nil {
-		fmt.Printf("duckway cc watch: skipped — `claude` not on PATH (install Claude Code to enable Discord control channels)\n")
+	// cc watch — skip cleanly if no supported local agent is installed
+	if !hasSupportedCCAgent() {
+		fmt.Printf("duckway cc watch: skipped — neither `claude` nor `codex` is on PATH (install a supported agent to enable control channels)\n")
 		return
 	}
 	if pid, alive := readPID(ccPidFile); alive {
@@ -889,6 +890,15 @@ func cmdStart(configDir string) {
 	} else {
 		fmt.Printf("duckway cc watch: started (logs %s)\n", ccLogFile)
 	}
+}
+
+func hasSupportedCCAgent() bool {
+	for _, bin := range []string{"claude", "codex"} {
+		if _, err := exec.LookPath(bin); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // cmdStop terminates both daemons. Each side is independent — a missing

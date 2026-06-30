@@ -20,6 +20,7 @@ type ccAgentSpec struct {
 	DisplayName string
 	Bin         string
 	RunFn       ccRunFn
+	TmuxRunFn   ccRunFn
 	UseTmux     bool
 }
 
@@ -32,6 +33,7 @@ type ccAgentSpec struct {
 // channels run in parallel.
 type ccRunner struct {
 	handle      string
+	configDir   string
 	cwd         string // resolved at construction
 	agentName   string
 	bin         string
@@ -59,11 +61,17 @@ const (
 
 // chooseCCRunFn picks the runner to use. tmux gives the user a live,
 // attachable per-channel session (`tmux attach -t duckway-<handle>`) so
-// they can watch claude work. When tmux isn't installed — or the user
-// explicitly disabled it — we fall back to the headless --print runner.
+// they can watch the agent work. When tmux isn't installed — or the user
+// explicitly disabled it — we fall back to the headless runner.
 func chooseCCRunFn(spec ccAgentSpec, noTmux bool) ccRunFn {
+	canUseAgentTmux := spec.UseTmux && !noTmux && tmuxAvailable() && spec.TmuxRunFn != nil
 	if spec.RunFn != nil {
-		return spec.RunFn
+		if !canUseAgentTmux {
+			return spec.RunFn
+		}
+	}
+	if canUseAgentTmux {
+		return spec.TmuxRunFn
 	}
 	if spec.UseTmux && !noTmux && tmuxAvailable() {
 		return runViaTmux
@@ -85,6 +93,7 @@ func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, session
 	}
 	r := &ccRunner{
 		handle:      handle,
+		configDir:   configDir,
 		cwd:         cwd,
 		agentName:   spec.DisplayName,
 		bin:         spec.Bin,
@@ -165,6 +174,7 @@ func (r *ccRunner) run(t ccTask) {
 		// message.
 		"DUCKWAY_CC_MESSAGE_ID=" + t.MessageID,
 	}
+	extraEnv = append(extraEnv, loadKeysEnv(r.configDir)...)
 
 	r.logger("[cc-watch] %s: running %s (cwd=%s)", r.handle, r.agentName, r.cwd)
 	newSID, result, isError, err := r.runFn(ctx, r.bin, r.cwd, prompt, sid, extraEnv)
@@ -191,6 +201,39 @@ func (r *ccRunner) run(t ccTask) {
 	if err := r.postMessage(context.Background(), r.handle, body); err != nil {
 		r.logger("[cc-watch] %s: discord post failed: %v", r.handle, err)
 	}
+}
+
+func loadKeysEnv(configDir string) []string {
+	data, err := os.ReadFile(KeysEnvPath(configDir))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, _, ok := strings.Cut(line, "=")
+		if !ok || !isShellEnvName(k) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+func isShellEnvName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || i > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // managementPreamble is prepended to the FIRST message of a session that

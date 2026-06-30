@@ -3,9 +3,8 @@ package client
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 func TestSyncCodexConfig_FreshFile(t *testing.T) {
@@ -16,17 +15,22 @@ func TestSyncCodexConfig_FreshFile(t *testing.T) {
 		t.Fatalf("SyncCodexConfig: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(home, ".codex", "config.yaml"))
+	data, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	var got map[string]interface{}
-	if err := yaml.Unmarshal(data, &got); err != nil {
-		t.Fatalf("parse yaml: %v", err)
-	}
-	want := "http://localhost:18080/proxy/openai/v1"
-	if got["apiBaseUrl"] != want {
-		t.Errorf("apiBaseUrl = %q, want %q", got["apiBaseUrl"], want)
+	got := string(data)
+	for _, want := range []string{
+		`model_provider = "duckway-openai"`,
+		`[model_providers.duckway-openai]`,
+		`name = "Duckway OpenAI"`,
+		`base_url = "http://localhost:18080/proxy/openai/v1"`,
+		`env_key = "OPENAI_API_KEY"`,
+		`wire_api = "responses"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("config missing %q:\n%s", want, got)
+		}
 	}
 }
 
@@ -38,8 +42,13 @@ func TestSyncCodexConfig_PreservesExistingSettings(t *testing.T) {
 	if err := os.MkdirAll(codexDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	existing := []byte("model: o4-mini\napproval_policy: auto-edit\n")
-	if err := os.WriteFile(filepath.Join(codexDir, "config.yaml"), existing, 0600); err != nil {
+	existing := []byte(`model = "o4-mini"
+approval_policy = "auto-edit"
+
+[projects."/repo"]
+trust_level = "trusted"
+`)
+	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), existing, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -47,20 +56,18 @@ func TestSyncCodexConfig_PreservesExistingSettings(t *testing.T) {
 		t.Fatalf("SyncCodexConfig: %v", err)
 	}
 
-	data, _ := os.ReadFile(filepath.Join(codexDir, "config.yaml"))
-	var got map[string]interface{}
-	if err := yaml.Unmarshal(data, &got); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if got["model"] != "o4-mini" {
-		t.Errorf("model = %v, want o4-mini", got["model"])
-	}
-	if got["approval_policy"] != "auto-edit" {
-		t.Errorf("approval_policy = %v, want auto-edit", got["approval_policy"])
-	}
-	want := "http://localhost:18081/proxy/openai/v1"
-	if got["apiBaseUrl"] != want {
-		t.Errorf("apiBaseUrl = %q, want %q", got["apiBaseUrl"], want)
+	data, _ := os.ReadFile(filepath.Join(codexDir, "config.toml"))
+	got := string(data)
+	for _, want := range []string{
+		`model = "o4-mini"`,
+		`approval_policy = "auto-edit"`,
+		`model_provider = "duckway-openai"`,
+		`[projects."/repo"]`,
+		`base_url = "http://localhost:18081/proxy/openai/v1"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("config missing %q:\n%s", want, got)
+		}
 	}
 }
 
@@ -75,16 +82,15 @@ func TestSyncCodexConfig_UpdatesPortOnResync(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(home, ".codex", "config.yaml"))
+	data, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got map[string]interface{}
-	if err := yaml.Unmarshal(data, &got); err != nil {
-		t.Fatal(err)
+	got := string(data)
+	if strings.Contains(got, "http://localhost:18080/proxy/openai/v1") {
+		t.Errorf("old port still present:\n%s", got)
 	}
-	want := "http://localhost:19090/proxy/openai/v1"
-	if got["apiBaseUrl"] != want {
-		t.Errorf("apiBaseUrl = %q, want %q", got["apiBaseUrl"], want)
+	if !strings.Contains(got, `base_url = "http://localhost:19090/proxy/openai/v1"`) {
+		t.Errorf("new port missing:\n%s", got)
 	}
 }

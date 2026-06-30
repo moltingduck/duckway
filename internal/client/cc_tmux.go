@@ -17,21 +17,20 @@ import (
 	"time"
 )
 
-// Per-channel claude lives inside a long-lived tmux session named
-// "duckway-<handle>". Discord messages are pasted into the same pane so
-// context carries over inside the running TUI; the Stop hook signals
-// completion by writing a per-event file under the channel's events/
-// directory. The user attaches with
+// Per-channel agents live inside tmux sessions named "duckway-<handle>".
+// Claude uses a long-lived TUI pane; Codex runs each turn in the pane and
+// leaves the shell open for inspection. Completion is signaled by writing
+// a per-event file under the channel's events/ directory. The user attaches with
 //
 //	tmux attach -t duckway-<handle>
 //
-// to watch claude work live.
+// to watch the agent work live.
 //
 // Files under ~/.duckway/cc-watch/<handle>/ persist across daemon restarts
-// so the running claude (started before the restart) keeps writing to
-// the same events/ directory the new daemon reads. The in-flight.json
-// marker lets the daemon recover a turn whose Stop event arrived while
-// the daemon was down — see RecoverPendingTurns.
+// so the running agent (started before the restart) keeps writing to the
+// same events/ directory the new daemon reads. The in-flight.json marker
+// lets the daemon recover a turn whose completion event arrived while the
+// daemon was down — see RecoverPendingTurns.
 
 const (
 	tmuxSessionPrefix = "duckway-"
@@ -732,7 +731,7 @@ type RecoverPendingTurnsResult struct {
 	SessionID            string
 	LastAssistantMessage string
 	// HadResult is true when we found a Stop event for this turn. False
-	// means the in-flight marker exists but no Stop has fired yet (claude
+	// means the in-flight marker exists but no Stop has fired yet (the agent
 	// might still be generating); the marker is preserved for next time.
 	HadResult bool
 }
@@ -779,8 +778,26 @@ func RecoverPendingTurns() ([]RecoverPendingTurnsResult, error) {
 			})
 			continue
 		}
+		if cev, ok := parseCodexTmuxEventPayload(evt.payload); ok {
+			body, sessionID, cerr := recoverCodexTmuxResult(*cev)
+			if cerr != nil {
+				continue
+			}
+			_ = os.Remove(evt.path)
+			_ = os.Remove(inFlightPath)
+			out = append(out, RecoverPendingTurnsResult{
+				Handle:               f.Handle,
+				MessageID:            f.MessageID,
+				SessionID:            sessionID,
+				LastAssistantMessage: body,
+				HadResult:            true,
+			})
+			continue
+		}
+
 		var sp stopPayload
 		if jerr := json.Unmarshal([]byte(evt.payload), &sp); jerr != nil {
+			_ = os.Remove(evt.path)
 			continue
 		}
 		_ = os.Remove(evt.path)
@@ -794,6 +811,25 @@ func RecoverPendingTurns() ([]RecoverPendingTurnsResult, error) {
 		})
 	}
 	return out, nil
+}
+
+func recoverCodexTmuxResult(evt codexTmuxEvent) (body, sessionID string, err error) {
+	out, err := os.ReadFile(evt.OutputPath)
+	if err != nil {
+		return "", "", fmt.Errorf("read codex output: %w", err)
+	}
+	sessionID, body, isError := parseCodexJSONL(out, evt.FallbackSessionID)
+	if sessionID == "" {
+		sessionID = evt.FallbackSessionID
+	}
+	if evt.ExitCode != 0 {
+		if body == "" {
+			body = fmt.Sprintf("codex exited with status %d:\n%.1800s", evt.ExitCode, out)
+		} else if isError {
+			body = "codex reported an error:\n" + body
+		}
+	}
+	return body, sessionID, nil
 }
 
 // ensureClaudeInTmux makes sure a tmux session `sess` exists with claude
@@ -1078,7 +1114,7 @@ func writeLaunchScript(path, bin, sid, settingsPath string) error {
 }
 
 // shellSingleQuote wraps s in '...' for safe sh interpolation. Embedded
-// single quotes are escaped via the standard '\'' dance.
+// single quotes are escaped via the standard close-escape-open sequence.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
@@ -1167,10 +1203,10 @@ func formatPickerForDiscord(sess, prompt string) string {
 // runPickerSelection interprets `prompt` as a selection against an
 // already-open claude picker:
 //
-//   "1"…"99"  → navigate (Down × (N-1)) and confirm with Enter
-//   "cancel"  → send Escape (also matches "esc" case-insensitive)
-//   anything else → dismiss and return a "reply with N or cancel" hint
-//                    so the user can re-send their real prompt
+//	"1"…"99"  → navigate (Down × (N-1)) and confirm with Enter
+//	"cancel"  → send Escape (also matches "esc" case-insensitive)
+//	anything else → dismiss and return a "reply with N or cancel" hint
+//	                 so the user can re-send their real prompt
 //
 // After a numeric selection, wait for the resulting content to render
 // using the same race-stability-against-Stop loop as runTUICommand.
