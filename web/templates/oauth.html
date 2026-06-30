@@ -21,6 +21,7 @@
     <strong>Upload formats differ by service:</strong>
     <ul class="mt-1">
       <li><strong>Claude Code:</strong> paste <code>~/.claude/.credentials.json</code>; Duckway reads <code>claudeAiOauth.accessToken</code>, <code>refreshToken</code>, <code>expiresAt</code>, <code>subscriptionType</code>, <code>rateLimitTier</code>, and <code>scopes</code>.</li>
+      <li><strong>OpenAI/Codex:</strong> paste <code>~/.codex/auth.json</code>; Duckway reads <code>tokens.access_token</code>, <code>tokens.refresh_token</code>, and optional account metadata.</li>
       <li><strong>Generic OAuth:</strong> paste a token response like <code>{"access_token":"...","refresh_token":"...","expires_in":3600}</code>, then set the token endpoint.</li>
       <li><strong>Manual entry:</strong> paste the access token and refresh token into their fields directly when the provider does not expose a JSON file.</li>
     </ul>
@@ -42,6 +43,7 @@
       <p id="oauth-paste-help" class="text-sm text-muted mt-1">
         Claude: run <code>claude login</code>, then copy <code>~/.claude/.credentials.json</code>.
       </p>
+      <pre id="oauth-command-help" class="mt-1" style="white-space:pre-wrap;font-family:monospace;font-size:0.75rem;background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:0.75rem;overflow:auto"></pre>
     </div>
 
     <form id="oauth-form">
@@ -129,16 +131,28 @@
 var oauthHelpByService = {
   claude: {
     pastePlaceholder: '{\n  "claudeAiOauth": {\n    "accessToken": "sk-ant-oat01-...",\n    "refreshToken": "sk-ant-ort01-...",\n    "expiresAt": 1760000000000,\n    "subscriptionType": "max",\n    "rateLimitTier": "...",\n    "scopes": ["user:inference"]\n  }\n}',
-    pasteHelp: 'Run claude login on a machine that already has access, then copy ~/.claude/.credentials.json. Duckway reads claudeAiOauth.accessToken, refreshToken, expiresAt, subscriptionType, rateLimitTier, and scopes.',
+    pasteHelp: 'Claude Code OAuth lives in ~/.claude/.credentials.json after login. Paste the whole file, or use the command below to inspect the fields Duckway reads.',
+    commandHelp: 'claude login\njq \'.claudeAiOauth | {accessToken, refreshToken, expiresAt, subscriptionType, rateLimitTier, scopes}\' ~/.claude/.credentials.json\njq -r \'.claudeAiOauth | [.accessToken, .refreshToken, (.expiresAt // 0)] | @tsv\' ~/.claude/.credentials.json',
     accessPlaceholder: 'sk-ant-oat01-...',
     refreshPlaceholder: 'sk-ant-ort01-...',
     endpointPlaceholder: 'https://console.anthropic.com/v1/oauth/token',
     endpointValue: 'https://console.anthropic.com/v1/oauth/token',
     subPlaceholder: '{"subscriptionType":"max","rateLimitTier":"...","scopes":["user:inference"]}'
   },
+  openai: {
+    pastePlaceholder: '{\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "...",\n    "account_id": "acct_..."\n  },\n  "last_refresh": "2026-06-30T00:00:00Z"\n}',
+    pasteHelp: 'OpenAI/Codex ChatGPT login is stored in ~/.codex/auth.json after codex login. Duckway reads tokens.access_token and tokens.refresh_token from that file.',
+    commandHelp: 'codex login\njq \'.tokens | {access_token, refresh_token, account_id}\' ~/.codex/auth.json\njq -r \'.tokens | [.access_token, .refresh_token, (.account_id // "")] | @tsv\' ~/.codex/auth.json',
+    accessPlaceholder: 'tokens.access_token from ~/.codex/auth.json',
+    refreshPlaceholder: 'tokens.refresh_token from ~/.codex/auth.json',
+    endpointPlaceholder: 'OpenAI/Codex OAuth token endpoint',
+    endpointValue: '',
+    subPlaceholder: '{"account_id":"acct_...","source":"codex"}'
+  },
   generic: {
     pastePlaceholder: '{\n  "access_token": "ya29....",\n  "refresh_token": "1//...",\n  "expires_in": 3600,\n  "scope": "read write",\n  "token_type": "Bearer"\n}',
-    pasteHelp: 'Paste the provider token endpoint response, or extract access_token / refresh_token / expires_in with jq and enter the token endpoint manually.',
+    pasteHelp: 'Paste the provider token endpoint response, or use the command below to extract access_token / refresh_token / expires_in and enter the token endpoint manually.',
+    commandHelp: 'jq \'{access_token, refresh_token, expires_in, expires_at, scope, token_type}\' token-response.json\njq -r \'[.access_token, .refresh_token, (.expires_in // .expires_at // 0)] | @tsv\' token-response.json',
     accessPlaceholder: 'access_token from provider',
     refreshPlaceholder: 'refresh_token from provider',
     endpointPlaceholder: 'https://provider.example.com/oauth/token',
@@ -152,7 +166,10 @@ function selectedOAuthKind() {
   if (!sel) return 'generic';
   var opt = sel.options[sel.selectedIndex];
   var text = opt ? (opt.textContent || '').toLowerCase() : '';
-  return text.indexOf('anthropic') >= 0 || text.indexOf('claude') >= 0 ? 'claude' : 'generic';
+  var name = opt ? (opt.getAttribute('data-name') || '').toLowerCase() : '';
+  if (name.indexOf('anthropic') >= 0 || text.indexOf('anthropic') >= 0 || text.indexOf('claude') >= 0) return 'claude';
+  if (name.indexOf('openai') >= 0 || text.indexOf('openai') >= 0 || text.indexOf('codex') >= 0) return 'openai';
+  return 'generic';
 }
 
 function applyOAuthHints() {
@@ -161,6 +178,8 @@ function applyOAuthHints() {
   if (paste) paste.placeholder = help.pastePlaceholder;
   var helpEl = document.getElementById('oauth-paste-help');
   if (helpEl) helpEl.textContent = help.pasteHelp;
+  var commandEl = document.getElementById('oauth-command-help');
+  if (commandEl) commandEl.textContent = help.commandHelp || '';
   var access = document.getElementById('oauth-access');
   if (access) access.placeholder = help.accessPlaceholder;
   var refresh = document.getElementById('oauth-refresh');
@@ -178,12 +197,15 @@ function applyOAuthHints() {
 
 function readTokenPayload(raw) {
   var d = JSON.parse(raw);
-  var oauth = d.claudeAiOauth || d;
+  var oauth = d.claudeAiOauth || d.tokens || d;
   var sub = {};
   if (oauth.subscriptionType) sub.subscriptionType = oauth.subscriptionType;
   if (oauth.rateLimitTier) sub.rateLimitTier = oauth.rateLimitTier;
   if (oauth.scopes) sub.scopes = oauth.scopes;
   if (oauth.scope && !sub.scopes) sub.scopes = String(oauth.scope).split(/\s+/).filter(Boolean);
+  if (oauth.account_id) sub.account_id = oauth.account_id;
+  if (d.auth_mode) sub.auth_mode = d.auth_mode;
+  if (d.last_refresh) sub.last_refresh = d.last_refresh;
 
   var expiresAt = oauth.expiresAt || oauth.expires_at || d.expiresAt || d.expires_at || 0;
   var expiresIn = oauth.expiresIn || oauth.expires_in || d.expiresIn || d.expires_in || 0;
@@ -325,6 +347,7 @@ document.addEventListener('DOMContentLoaded', function() {
       svcs.forEach(function(s) {
         var opt = document.createElement('option');
         opt.value = s.id; opt.textContent = s.display_name;
+        opt.setAttribute('data-name', s.name || '');
         if (s.name === 'anthropic') opt.selected = true;
         sel.appendChild(opt);
       });

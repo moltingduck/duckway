@@ -11,7 +11,7 @@ For internals, code layout, or how the phantom-token swap works under the hood, 
 - [First-time setup](#first-time-setup)
 - [Daily operations](#daily-operations)
 - [Production deployment](#production-deployment)
-- [Refreshable tokens (Claude OAuth, etc.)](#refreshable-tokens-claude-oauth-etc)
+- [Refreshable tokens (Claude, OpenAI/Codex, generic OAuth)](#refreshable-tokens-claude-openaicodex-generic-oauth)
 - [Setting up agents](#setting-up-agents)
 - [Control Channels (Discord-as-comms)](#control-channels-discord-as-comms)
 - [Common tasks](#common-tasks)
@@ -205,7 +205,7 @@ If you don't set it, the clients page warns:
 
 ---
 
-## Refreshable tokens (Claude OAuth, etc.)
+## Refreshable tokens (Claude, OpenAI/Codex, generic OAuth)
 
 Some services use OAuth access tokens that expire and need refreshing. Duckway handles this automatically.
 
@@ -218,6 +218,14 @@ Refreshable token formats are provider-specific. Duckway stores the real access 
 3. Paste the JSON into the auto-fill box — fields populate automatically
 4. Set **Agent Display Name** (this is what agents see in their fake `~/.claude.json`, e.g. `"CI Agent Bot"`)
 5. **Upload**
+
+Commands:
+
+```bash
+claude login
+jq '.claudeAiOauth | {accessToken, refreshToken, expiresAt, subscriptionType, rateLimitTier, scopes}' ~/.claude/.credentials.json
+jq -r '.claudeAiOauth | [.accessToken, .refreshToken, (.expiresAt // 0)] | @tsv' ~/.claude/.credentials.json
+```
 
 Expected Claude format:
 
@@ -234,13 +242,35 @@ Expected Claude format:
 }
 ```
 
-To extract only the token values from the local file:
+Duckway refreshes the access token automatically before expiry (background job runs every 5 minutes), and never shows the real tokens again.
+
+### Upload an OpenAI / Codex refreshable token
+
+Codex stores ChatGPT-login credentials in `~/.codex/auth.json` after `codex login`. Select the OpenAI service in **Refreshable Tokens** → **Upload Token**, then paste the whole file into the auto-fill box.
+
+Commands:
 
 ```bash
-jq -r '.claudeAiOauth | [.accessToken, .refreshToken, (.expiresAt // 0)] | @tsv' ~/.claude/.credentials.json
+codex login
+jq '.tokens | {access_token, refresh_token, account_id}' ~/.codex/auth.json
+jq -r '.tokens | [.access_token, .refresh_token, (.account_id // "")] | @tsv' ~/.codex/auth.json
 ```
 
-Duckway refreshes the access token automatically before expiry (background job runs every 5 minutes), and never shows the real tokens again.
+Expected Codex format:
+
+```json
+{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "access_token": "...",
+    "refresh_token": "...",
+    "account_id": "acct_..."
+  },
+  "last_refresh": "2026-06-30T00:00:00Z"
+}
+```
+
+Set **Token Endpoint** to the OpenAI/Codex OAuth refresh endpoint used by your deployment. The upload page intentionally does not guess this value; the file location and extraction commands above are the stable part Duckway can detect locally.
 
 ### Upload a generic OAuth token
 
@@ -261,7 +291,8 @@ Set **Token Endpoint** to the provider's refresh endpoint. Duckway sends the sto
 To extract values from a saved JSON response:
 
 ```bash
-jq -r '[.access_token, .refresh_token, (.expires_in // 0)] | @tsv' token-response.json
+jq '{access_token, refresh_token, expires_in, expires_at, scope, token_type}' token-response.json
+jq -r '[.access_token, .refresh_token, (.expires_in // .expires_at // 0)] | @tsv' token-response.json
 ```
 
 If the provider only exposes tokens through a CLI, ask the CLI for JSON output when available, then paste that response. Otherwise copy the access token, refresh token, refresh endpoint, and expiry into the fields manually.
