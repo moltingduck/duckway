@@ -47,8 +47,8 @@ func (h *KeySuiteHandler) List(w http.ResponseWriter, r *http.Request) {
 	// Attach entry counts + bound-client counts
 	type suiteRow struct {
 		models.KeySuite
-		EntryCount   int `json:"entry_count"`
-		ClientCount  int `json:"client_count"`
+		EntryCount  int `json:"entry_count"`
+		ClientCount int `json:"client_count"`
 	}
 	result := make([]suiteRow, 0, len(suites))
 	for _, s := range suites {
@@ -89,6 +89,10 @@ func (h *KeySuiteHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bound, _ := h.suites.CountBoundClients(id)
+	clients, _ := h.suites.ListBoundClients(id)
+	if clients == nil {
+		clients = []models.KeySuiteClient{}
+	}
 	jsonResponse(w, map[string]interface{}{
 		"id":           s.ID,
 		"name":         s.Name,
@@ -96,6 +100,7 @@ func (h *KeySuiteHandler) Get(w http.ResponseWriter, r *http.Request) {
 		"created_at":   s.CreatedAt,
 		"entries":      s.Entries,
 		"client_count": bound,
+		"clients":      clients,
 	})
 }
 
@@ -175,8 +180,13 @@ func (h *KeySuiteHandler) AddEntry(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to add entry: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	propagated, skipped := h.assignEntryToBoundClients(entry)
 	w.WriteHeader(http.StatusCreated)
-	jsonResponse(w, entry)
+	jsonResponse(w, map[string]interface{}{
+		"entry":      entry,
+		"propagated": propagated,
+		"skipped":    skipped,
+	})
 }
 
 // PATCH /api/key-suites/{id}/entries/{entryId}
@@ -229,7 +239,11 @@ func (h *KeySuiteHandler) UpdateEntry(w http.ResponseWriter, r *http.Request) {
 
 	// Propagate to all placeholders from this suite entry.
 	// If the key format changed (e.g. ghp_ → github_pat_), regenerate the placeholder token.
-	updatedIDs, _ := h.suites.PropagateEntryUpdate(suiteID, entry.ServiceID, newAPIKey, newGroup)
+	updatedIDs, err := h.suites.PropagateEntryUpdate(suiteID, entry.ServiceID, newAPIKey, newGroup)
+	if err != nil {
+		jsonError(w, "failed to propagate entry update: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if len(updatedIDs) > 0 && newAPIKey != nil && h.apiKeys != nil && h.crypto != nil {
 		if apiKey, err := h.apiKeys.GetByID(*newAPIKey); err == nil {
 			if realKey, err := h.crypto.Decrypt(apiKey.KeyEncrypted); err == nil {
@@ -260,11 +274,96 @@ func (h *KeySuiteHandler) RemoveEntry(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "entry not found", http.StatusNotFound)
 		return
 	}
+	if err := h.suites.DeleteSuiteServicePlaceholders(suiteID, entry.ServiceID); err != nil {
+		jsonError(w, "failed to unassign suite entry: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := h.suites.RemoveEntry(entryID); err != nil {
 		jsonError(w, "failed to remove entry", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *KeySuiteHandler) assignEntryToBoundClients(entry *models.KeySuiteEntry) ([]string, []string) {
+	clients, err := h.suites.ListBoundClients(entry.SuiteID)
+	if err != nil || len(clients) == 0 {
+		return []string{}, []string{}
+	}
+
+	var assigned, skipped []string
+	for _, client := range clients {
+		ok, err := h.assignSuiteEntryToClient(entry, client.ID)
+		if err != nil {
+			log.Printf("[key-suites] failed to propagate entry %s to client %s: %v", entry.ID, client.ID, err)
+			skipped = append(skipped, client.Name)
+			continue
+		}
+		if ok {
+			assigned = append(assigned, client.Name)
+		} else {
+			skipped = append(skipped, client.Name)
+		}
+	}
+	if assigned == nil {
+		assigned = []string{}
+	}
+	if skipped == nil {
+		skipped = []string{}
+	}
+	return assigned, skipped
+}
+
+func (h *KeySuiteHandler) assignSuiteEntryToClient(entry *models.KeySuiteEntry, clientID string) (bool, error) {
+	service, err := h.services.GetByID(entry.ServiceID)
+	if err != nil {
+		return false, err
+	}
+
+	if existing, err := h.placeholders.GetByClientAndService(clientID, entry.ServiceID); err == nil {
+		if existing.SuiteID == nil {
+			return false, nil
+		}
+		if err := h.placeholders.Delete(existing.ID); err != nil {
+			return false, err
+		}
+	} else if err != sql.ErrNoRows {
+		return false, err
+	}
+
+	prefix, keyLen := service.KeyPrefix, service.KeyLength
+	if entry.APIKeyID != nil && h.apiKeys != nil && h.crypto != nil {
+		if apiKey, err := h.apiKeys.GetByID(*entry.APIKeyID); err == nil {
+			if realKey, err := h.crypto.Decrypt(apiKey.KeyEncrypted); err == nil {
+				prefix, keyLen = svc.DetectKeyFormat(realKey, prefix, keyLen)
+			}
+		}
+	}
+	placeholder, err := svc.GeneratePlaceholder(prefix, keyLen)
+	if err != nil {
+		return false, err
+	}
+	envName := entry.EnvName
+	if envName == "" {
+		envName = defaultEnvName(service.Name)
+	}
+	pid, _ := svc.GenerateToken(16)
+	suiteRef := entry.SuiteID
+	pk := &models.PlaceholderKey{
+		ID:          pid,
+		EnvName:     envName,
+		Placeholder: placeholder,
+		ServiceID:   entry.ServiceID,
+		APIKeyID:    entry.APIKeyID,
+		GroupID:     entry.GroupID,
+		ClientID:    clientID,
+		SuiteID:     &suiteRef,
+		IsActive:    true,
+	}
+	if err := h.placeholders.Create(pk); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // POST /api/key-suites/{id}/assign

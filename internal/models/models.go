@@ -69,14 +69,14 @@ type APIKeyGroupMember struct {
 }
 
 type Client struct {
-	ID             string  `json:"id"`
-	ShortID        string  `json:"short_id"` // 6 alphanumeric chars, used for canary email tagging
-	Name           string  `json:"name"`
-	TokenHash      string  `json:"-"`
-	IsActive       bool    `json:"is_active"`
-	CanaryEnabled  bool    `json:"canary_enabled"`
-	LastSeenAt     *string `json:"last_seen_at"`
-	CreatedAt      string  `json:"created_at"`
+	ID            string  `json:"id"`
+	ShortID       string  `json:"short_id"` // 6 alphanumeric chars, used for canary email tagging
+	Name          string  `json:"name"`
+	TokenHash     string  `json:"-"`
+	IsActive      bool    `json:"is_active"`
+	CanaryEnabled bool    `json:"canary_enabled"`
+	LastSeenAt    *string `json:"last_seen_at"`
+	CreatedAt     string  `json:"created_at"`
 }
 
 type PlaceholderKey struct {
@@ -96,7 +96,7 @@ type PlaceholderKey struct {
 	UsageCount         int64   `json:"usage_count"`
 	LastUsedAt         *string `json:"last_used_at"`
 	CreatedAt          string  `json:"created_at"`
-	SuiteID *string `json:"suite_id,omitempty"` // non-nil when assigned via a Key Suite
+	SuiteID            *string `json:"suite_id,omitempty"` // non-nil when assigned via a Key Suite
 	// Joined
 	ServiceName string  `json:"service_name,omitempty"`
 	ClientName  string  `json:"client_name,omitempty"`
@@ -114,20 +114,26 @@ type KeySuite struct {
 	Entries     []KeySuiteEntry `json:"entries,omitempty"`
 }
 
+type KeySuiteClient struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	ServiceCount int    `json:"service_count"`
+}
+
 // KeySuiteEntry is one service→key mapping within a Key Suite.
 // Exactly one of APIKeyID or GroupID must be set.
 type KeySuiteEntry struct {
-	ID           string  `json:"id"`
-	SuiteID      string  `json:"suite_id"`
-	ServiceID    string  `json:"service_id"`
-	APIKeyID     *string `json:"api_key_id"`
-	GroupID      *string `json:"group_id"`
-	EnvName      string  `json:"env_name"`
-	CreatedAt    string  `json:"created_at"`
+	ID        string  `json:"id"`
+	SuiteID   string  `json:"suite_id"`
+	ServiceID string  `json:"service_id"`
+	APIKeyID  *string `json:"api_key_id"`
+	GroupID   *string `json:"group_id"`
+	EnvName   string  `json:"env_name"`
+	CreatedAt string  `json:"created_at"`
 	// Joined fields
-	ServiceName  string  `json:"service_name,omitempty"`
-	APIKeyName   *string `json:"api_key_name,omitempty"`
-	GroupName    *string `json:"group_name,omitempty"`
+	ServiceName string  `json:"service_name,omitempty"`
+	APIKeyName  *string `json:"api_key_name,omitempty"`
+	GroupName   *string `json:"group_name,omitempty"`
 }
 
 type Approval struct {

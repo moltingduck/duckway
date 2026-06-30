@@ -2,6 +2,7 @@ package queries
 
 import (
 	"database/sql"
+	"fmt"
 
 	"github.com/hackerduck/duckway/internal/models"
 )
@@ -130,6 +131,27 @@ func (q *KeySuiteQueries) RemoveEntry(id string) error {
 	return err
 }
 
+func (q *KeySuiteQueries) DeleteSuiteServicePlaceholders(suiteID, serviceID string) error {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		UPDATE request_log
+		SET placeholder_id = NULL
+		WHERE placeholder_id IN (
+			SELECT id FROM placeholder_keys WHERE suite_id = ? AND service_id = ?
+		)`, suiteID, serviceID); err != nil {
+		return fmt.Errorf("detach request logs: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM placeholder_keys WHERE suite_id = ? AND service_id = ?`, suiteID, serviceID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // CheckConflicts returns service IDs in the suite that the given client already
 // has an individual (non-suite) placeholder for. These are the conflict cases.
 func (q *KeySuiteQueries) CheckConflicts(suiteID, clientID string) ([]string, error) {
@@ -201,4 +223,28 @@ func (q *KeySuiteQueries) CountBoundClients(suiteID string) (int, error) {
 		suiteID,
 	).Scan(&n)
 	return n, err
+}
+
+func (q *KeySuiteQueries) ListBoundClients(suiteID string) ([]models.KeySuiteClient, error) {
+	rows, err := q.db.Query(`
+		SELECT c.id, c.name, COUNT(DISTINCT p.service_id) AS service_count
+		FROM placeholder_keys p
+		JOIN clients c ON c.id = p.client_id
+		WHERE p.suite_id = ? AND p.is_active = 1
+		GROUP BY c.id, c.name
+		ORDER BY c.name`, suiteID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var clients []models.KeySuiteClient
+	for rows.Next() {
+		var c models.KeySuiteClient
+		if err := rows.Scan(&c.ID, &c.Name, &c.ServiceCount); err != nil {
+			return nil, err
+		}
+		clients = append(clients, c)
+	}
+	return clients, rows.Err()
 }

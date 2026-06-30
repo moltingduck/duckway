@@ -23,10 +23,8 @@
       </div>
     </div>
     <div class="text-muted text-sm">ID: <span class="mono">{{.ID}}</span> &middot; Created {{.CreatedAt}}</div>
-    <div id="suite-entries-preview-{{.ID}}" style="margin-top:.5rem"
-         hx-get="/api/key-suites/{{.ID}}" hx-trigger="load" hx-swap="innerHTML" hx-select="#suite-entries-inner"
-         data-suite-id="{{.ID}}">
-      <em class="text-muted text-sm">Loading entries...</em>
+    <div id="suite-preview-{{.ID}}" style="margin-top:.5rem" data-suite-id="{{.ID}}">
+      <em class="text-muted text-sm">Loading suite status...</em>
     </div>
   </div>
   {{end}}
@@ -147,6 +145,40 @@
 </div>
 
 <script>
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('[data-suite-id]').forEach(function(el) {
+    refreshSuitePreview(el.getAttribute('data-suite-id'));
+  });
+});
+
+async function refreshSuitePreview(suiteID) {
+  const el = document.getElementById('suite-preview-' + suiteID);
+  if (!el) return;
+  const res = await fetch('/api/key-suites/' + suiteID, {credentials:'same-origin'});
+  if (!res.ok) {
+    el.innerHTML = '<span class="text-sm text-muted">Failed to load suite status.</span>';
+    return;
+  }
+  const data = await res.json();
+  const entries = data.entries || [];
+  const clients = data.clients || [];
+  const entryHTML = entries.length
+    ? entries.map(e => '<span class="badge badge-blue">' + esc(e.service_name) + '</span> <span class="text-sm">' + esc(e.api_key_name || e.group_name || '—') + '</span>').join('<span class="text-muted"> · </span>')
+    : '<span class="text-muted text-sm">No entries</span>';
+  const clientHTML = clients.length
+    ? clients.map(c => '<span class="badge badge-gray">' + esc(c.name) + ' · ' + c.service_count + '</span>').join(' ')
+    : '<span class="text-muted text-sm">No assigned clients</span>';
+  el.innerHTML =
+    '<div class="text-sm"><strong>Entries:</strong> ' + entryHTML + '</div>' +
+    '<div class="text-sm" style="margin-top:.35rem"><strong>Assigned clients:</strong> ' + clientHTML + '</div>';
+}
+
 // ── Suite CRUD ────────────────────────────────────────────────────────────
 async function createSuite(e) {
   e.preventDefault();
@@ -203,9 +235,9 @@ async function refreshEntries(suiteID) {
   }
   list.innerHTML = data.entries.map(e => `
     <div style="display:flex;align-items:center;gap:.5rem;padding:.4rem 0;border-bottom:1px solid var(--border)">
-      <span class="badge badge-blue">${e.service_name}</span>
-      <span class="text-sm">${e.api_key_name || e.group_name || '—'}</span>
-      <span class="text-muted text-sm mono">${e.env_name}</span>
+      <span class="badge badge-blue">${esc(e.service_name)}</span>
+      <span class="text-sm">${esc(e.api_key_name || e.group_name || '—')}</span>
+      <span class="text-muted text-sm mono">${esc(e.env_name)}</span>
       <div style="margin-left:auto;display:flex;gap:.5rem">
         <button class="btn btn-sm btn-danger" onclick="removeEntry('${suiteID}','${e.id}')">Remove</button>
       </div>
@@ -233,8 +265,13 @@ async function addEntry(e) {
     method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
   });
   if (res.ok) {
+    const j = await res.json();
     await refreshEntries(suiteID);
+    await refreshSuitePreview(suiteID);
     document.getElementById('entry-env-name').value = '';
+    if ((j.propagated || []).length) {
+      alert('Entry added and propagated to: ' + j.propagated.join(', '));
+    }
   } else {
     const j = await res.json();
     alert('Error: ' + j.error);
@@ -242,9 +279,12 @@ async function addEntry(e) {
 }
 
 async function removeEntry(suiteID, entryID) {
-  if (!confirm('Remove this entry?')) return;
+  if (!confirm('Remove this entry? Assigned clients will lose this suite-managed service.')) return;
   const res = await fetch('/api/key-suites/'+suiteID+'/entries/'+entryID, {method:'DELETE'});
-  if (res.ok) await refreshEntries(suiteID);
+  if (res.ok) {
+    await refreshEntries(suiteID);
+    await refreshSuitePreview(suiteID);
+  }
   else alert('Remove failed');
 }
 
@@ -255,6 +295,8 @@ function openAssign(suiteID, suiteName) {
   document.getElementById('assign-force').value = 'false';
   document.getElementById('assign-conflict-warning').style.display = 'none';
   document.getElementById('assign-result').style.display = 'none';
+  document.getElementById('assign-btn').textContent = 'Assign';
+  document.getElementById('assign-btn').onclick = null;
   document.getElementById('assign-modal').style.display = 'flex';
 }
 
@@ -281,6 +323,7 @@ async function assignSuite(e) {
 
   if (res.ok) {
     const j = await res.json();
+    await refreshSuitePreview(suiteID);
     const resultEl = document.getElementById('assign-result');
     resultEl.style.display = '';
     resultEl.innerHTML = `<p class="text-sm" style="color:green">Assigned: ${j.assigned.join(', ') || 'none'}</p>`

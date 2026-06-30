@@ -119,6 +119,10 @@ func (h *ControlChannelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "service not found", http.StatusBadRequest)
 		return
 	}
+	if !isCCMessageService(svcRow.Name) {
+		jsonError(w, "service "+svcRow.Name+" is not a message-channel service", http.StatusBadRequest)
+		return
+	}
 	configStr := "{}"
 	if len(req.Config) > 0 {
 		configStr = string(req.Config)
@@ -262,6 +266,15 @@ func (h *ControlChannelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	full.Channels, _ = h.cc.ListChannels(ccID)
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, full)
+}
+
+func isCCMessageService(serviceName string) bool {
+	switch serviceName {
+	case "discord", "telegram":
+		return true
+	default:
+		return false
+	}
 }
 
 // PUT /api/cc/{id} — update name / config / is_active.

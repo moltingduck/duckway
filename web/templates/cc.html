@@ -45,7 +45,7 @@
       <div class="form-group">
         <label>Service</label>
         <select id="cc-service" required onchange="renderConfigFields()"></select>
-        <span class="text-muted text-sm">Currently only Discord is fully supported.</span>
+        <span class="text-muted text-sm">Only message-channel services are shown. Discord is fully provisioned; Telegram support is message-service scoped.</span>
       </div>
       <div class="form-group">
         <label>Bot Token (API Key)</label>
@@ -99,7 +99,7 @@ var currentCC = null;
 
 document.addEventListener('DOMContentLoaded', function() {
   fetch('/api/services', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s){
-    allServices = s || [];
+    allServices = (s || []).filter(isMessageChannelService);
     var sel = document.getElementById('cc-service');
     sel.innerHTML = '';
     allServices.forEach(function(svc) {
@@ -113,6 +113,7 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   fetch('/api/keys', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(k){
     allKeys = k || [];
+    renderConfigFields();
   });
   fetch('/api/clients', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(c){
     allClients = c || [];
@@ -137,6 +138,10 @@ function repopulateClientPicker() {
     }
     sel.appendChild(opt);
   });
+}
+
+function isMessageChannelService(svc) {
+  return svc && (svc.name === 'discord' || svc.name === 'telegram');
 }
 
 function loadCCs() {
@@ -214,6 +219,7 @@ function renderConfigFields() {
 
 function openCreate() {
   document.getElementById('cc-name').value = '';
+  document.getElementById('create-form').querySelector('button[type="submit"]').disabled = false;
   renderConfigFields();
   document.getElementById('create-modal').style.display = 'flex';
 }
