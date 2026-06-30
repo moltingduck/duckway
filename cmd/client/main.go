@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -29,6 +30,15 @@ var isTTY = func() bool {
 	fi, err := os.Stdout.Stat()
 	return err == nil && (fi.Mode()&os.ModeCharDevice) != 0
 }()
+
+func fileIsTTY(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && (fi.Mode()&os.ModeCharDevice) != 0
+}
+
+var canPrompt = func() bool {
+	return fileIsTTY(os.Stdin) && fileIsTTY(os.Stderr)
+}
 
 // cyan wraps s in cyan ANSI color when stdout is a terminal, for commands the user should run.
 func cyan(s string) string {
@@ -635,6 +645,31 @@ func sudoUpdateCommand(exe, serverURL string) string {
 	return fmt.Sprintf("sudo %s update --server %s", shellQuote(exe), shellQuote(serverURL))
 }
 
+func confirmSudoUpdate(r io.Reader, w io.Writer) bool {
+	fmt.Fprint(w, "Run sudo now to replace the Duckway binary? [y/N] ")
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && line == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func runSudoUpdate(exe, serverURL string) error {
+	if exe == "" {
+		exe = "duckway"
+	}
+	cmd := exec.Command("sudo", exe, "update", "--server", serverURL)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 func cmdUpdate(configDir string) {
 	// `duckway update` only needs a server URL — not auth, not keys.
 	// Don't require `duckway init` to have run; pick the URL from (in
@@ -675,15 +710,21 @@ func cmdUpdate(configDir string) {
 
 	fmt.Println("New version available — downloading...")
 	if err := client.DownloadAndReplaceClient(serverURL); err != nil {
-		// A permission-denied failure means the install dir is owned by root
-		// (e.g. /usr/local/bin). Hand the user the exact command to copy-paste:
-		// the running binary's full path + `update --server <url>`, so it works
-		// even under sudo (root's HOME/env won't see the user's config or
-		// $DUCKWAY_SERVER_URL).
+		// Permission-denied usually means the install dir is root-owned
+		// (e.g. /usr/local/bin). In an interactive terminal, offer to re-run
+		// through sudo and let sudo handle password input. In non-interactive
+		// contexts, print the exact command instead of blocking for a password.
 		if errors.Is(err, os.ErrPermission) {
 			exe, _ := os.Executable()
 			sudoCmd := sudoUpdateCommand(exe, serverURL)
-			log.Fatalf("Update failed: %v\n\nThe install location isn't writable by your user. Re-run with sudo:\n\n    %s\n", err, cyan(sudoCmd))
+			fmt.Fprintf(os.Stderr, "Update failed: %v\n\nThe install location isn't writable by your user.\n", err)
+			if canPrompt() && confirmSudoUpdate(os.Stdin, os.Stderr) {
+				if sudoErr := runSudoUpdate(exe, serverURL); sudoErr != nil {
+					log.Fatalf("sudo update failed: %v\n\nYou can re-run manually:\n\n    %s\n", sudoErr, cyan(sudoCmd))
+				}
+				return
+			}
+			log.Fatalf("Re-run with sudo:\n\n    %s\n", cyan(sudoCmd))
 		}
 		log.Fatalf("Update failed: %v", err)
 	}
