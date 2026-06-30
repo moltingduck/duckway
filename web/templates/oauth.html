@@ -43,6 +43,7 @@
       <p id="oauth-paste-help" class="text-sm text-muted mt-1">
         Claude: run <code>claude login</code>, then copy <code>~/.claude/.credentials.json</code>.
       </p>
+      <p id="oauth-paste-error" class="text-sm" style="display:none;color:var(--danger);margin-top:0.25rem"></p>
       <code id="oauth-command-help" class="mt-1" style="display:block;white-space:pre-wrap;padding:0.75rem;overflow:auto;background:var(--bg-input);border-radius:var(--radius);word-break:break-word"></code>
     </div>
 
@@ -140,14 +141,14 @@ var oauthHelpByService = {
     subPlaceholder: '{"subscriptionType":"max","rateLimitTier":"...","scopes":["user:inference"]}'
   },
   openai: {
-    pastePlaceholder: '{\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "...",\n    "account_id": "acct_..."\n  },\n  "last_refresh": "2026-06-30T00:00:00Z"\n}',
-    pasteHelp: 'OpenAI/Codex ChatGPT login is stored in ~/.codex/auth.json after codex login. Duckway reads tokens.access_token and tokens.refresh_token from that file.',
-    commandHelp: 'codex login\njq \'.tokens | {access_token, refresh_token, account_id}\' ~/.codex/auth.json\njq -r \'.tokens | [.access_token, .refresh_token, (.account_id // "")] | @tsv\' ~/.codex/auth.json',
+    pastePlaceholder: '{\n  "auth_mode": "chatgpt",\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "rt.1....",\n    "account_id": "14d5c9cf-..."\n  },\n  "last_refresh": "2026-06-30T00:00:00Z"\n}',
+    pasteHelp: 'OpenAI/Codex ChatGPT login is stored in ~/.codex/auth.json after codex login. Duckway reads tokens.access_token and tokens.refresh_token, and derives expiry from the access-token JWT.',
+    commandHelp: 'codex login\njq \'{auth_mode, tokens: {access_token: .tokens.access_token, refresh_token: .tokens.refresh_token, account_id: .tokens.account_id}, last_refresh}\' ~/.codex/auth.json\njq -r \'.tokens | [.access_token, .refresh_token, (.account_id // "")] | @tsv\' ~/.codex/auth.json',
     accessPlaceholder: 'tokens.access_token from ~/.codex/auth.json',
     refreshPlaceholder: 'tokens.refresh_token from ~/.codex/auth.json',
-    endpointPlaceholder: 'OpenAI/Codex OAuth token endpoint',
-    endpointValue: '',
-    subPlaceholder: '{"account_id":"acct_...","source":"codex"}'
+    endpointPlaceholder: 'https://auth.openai.com/oauth/token',
+    endpointValue: 'https://auth.openai.com/oauth/token',
+    subPlaceholder: '{"account_id":"14d5c9cf-...","auth_mode":"chatgpt","source":"codex"}'
   },
   generic: {
     pastePlaceholder: '{\n  "access_token": "ya29....",\n  "refresh_token": "1//...",\n  "expires_in": 3600,\n  "scope": "read write",\n  "token_type": "Bearer"\n}',
@@ -187,7 +188,7 @@ function applyOAuthHints() {
   var endpoint = document.getElementById('oauth-endpoint');
   if (endpoint) {
     endpoint.placeholder = help.endpointPlaceholder;
-    if (!endpoint.value || endpoint.value === oauthHelpByService.claude.endpointValue || endpoint.value === oauthHelpByService.generic.endpointValue) {
+    if (!endpoint.value || endpoint.value === oauthHelpByService.claude.endpointValue || endpoint.value === oauthHelpByService.openai.endpointValue || endpoint.value === oauthHelpByService.generic.endpointValue) {
       endpoint.value = help.endpointValue;
     }
   }
@@ -207,27 +208,70 @@ function readTokenPayload(raw) {
   if (d.auth_mode) sub.auth_mode = d.auth_mode;
   if (d.last_refresh) sub.last_refresh = d.last_refresh;
 
+  var accessToken = oauth.accessToken || oauth.access_token || d.accessToken || d.access_token || '';
+  var refreshToken = oauth.refreshToken || oauth.refresh_token || d.refreshToken || d.refresh_token || '';
+  var jwtClaims = jwtPayload(accessToken);
+  if (jwtClaims.client_id) sub.client_id = jwtClaims.client_id;
+  if (jwtClaims.scp && !sub.scopes) sub.scopes = jwtClaims.scp;
   var expiresAt = oauth.expiresAt || oauth.expires_at || d.expiresAt || d.expires_at || 0;
   var expiresIn = oauth.expiresIn || oauth.expires_in || d.expiresIn || d.expires_in || 0;
   if (!expiresAt && expiresIn) expiresAt = Date.now() + (Number(expiresIn) * 1000);
+  if (!expiresAt && jwtClaims.exp) expiresAt = Number(jwtClaims.exp) * 1000;
   if (expiresAt && Number(expiresAt) < 1000000000000) expiresAt = Number(expiresAt) * 1000;
 
   return {
-    accessToken: oauth.accessToken || oauth.access_token || d.accessToken || d.access_token || '',
-    refreshToken: oauth.refreshToken || oauth.refresh_token || d.refreshToken || d.refresh_token || '',
+    accessToken: accessToken,
+    refreshToken: refreshToken,
     expiresAt: expiresAt ? Math.round(Number(expiresAt)) : '',
     subscriptionInfo: sub
   };
 }
 
-function parseOAuthPaste() {
+function jwtPayload(token) {
+  var parts = String(token || '').split('.');
+  if (parts.length < 2) return {};
   try {
-    var parsed = readTokenPayload(document.getElementById('oauth-paste').value);
+    var payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (payload.length % 4) payload += '=';
+    return JSON.parse(atob(payload));
+  } catch(e) {
+    return {};
+  }
+}
+
+function setPasteError(message) {
+  var el = document.getElementById('oauth-paste-error');
+  if (!el) return;
+  if (!message) {
+    el.textContent = '';
+    el.style.display = 'none';
+    return;
+  }
+  el.textContent = message;
+  el.style.display = '';
+}
+
+function parseOAuthPaste() {
+  var raw = document.getElementById('oauth-paste').value;
+  if (!raw.trim()) {
+    setPasteError('');
+    return true;
+  }
+  try {
+    var parsed = readTokenPayload(raw);
+    if (!parsed.accessToken && !parsed.refreshToken) {
+      throw new Error('No access token or refresh token found. Paste a Claude credentials file, Codex auth.json, or OAuth token response.');
+    }
+    setPasteError('');
     if (parsed.accessToken) document.getElementById('oauth-access').value = parsed.accessToken;
     if (parsed.refreshToken) document.getElementById('oauth-refresh').value = parsed.refreshToken;
     if (parsed.expiresAt) document.getElementById('oauth-expires').value = parsed.expiresAt;
     if (Object.keys(parsed.subscriptionInfo).length) document.getElementById('oauth-sub').value = JSON.stringify(parsed.subscriptionInfo);
-  } catch(e) {}
+    return true;
+  } catch(e) {
+    setPasteError('Cannot parse token JSON: ' + e.message);
+    return false;
+  }
 }
 
 function parseEditPaste() {
@@ -391,6 +435,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
 document.getElementById('oauth-form').addEventListener('submit', function(e) {
   e.preventDefault();
+  if (!parseOAuthPaste()) {
+    showToast('Fix the pasted token JSON before uploading', 'error');
+    return;
+  }
   var subInfo = document.getElementById('oauth-sub').value.trim();
   var subObj = {};
   if (subInfo) { try { subObj = JSON.parse(subInfo); } catch(ex) { showToast('Invalid subscription JSON', 'error'); return; } }

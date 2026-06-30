@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -148,6 +149,9 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 			"grant_type":    {"refresh_token"},
 			"refresh_token": {refreshToken},
 		}
+		if clientID := oauthMetadataString(key.SubscriptionInfo, "client_id", "clientId"); clientID != "" {
+			form.Set("client_id", clientID)
+		}
 		resp, err = r.client.Post(key.TokenEndpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
 	}
 	if err != nil {
@@ -185,12 +189,19 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 	}
 
 	expiresIn := tokenResp.ExpiresIn
+	expiresAt := int64(0)
 	if expiresIn <= 0 {
-		// Server didn't return expires_in; use 1-hour fallback so the key
-		// isn't immediately re-queued for refresh on the next tick.
-		expiresIn = 3600
+		expiresAt = jwtExpiresAtMillis(tokenResp.AccessToken)
 	}
-	expiresAt := time.Now().UnixMilli() + expiresIn*1000
+	if expiresAt <= 0 {
+		if expiresIn <= 0 {
+			// Server didn't return expires_in and the access token is not a JWT
+			// with exp; use a 1-hour fallback so the key isn't immediately
+			// re-queued for refresh on the next tick.
+			expiresIn = 3600
+		}
+		expiresAt = time.Now().UnixMilli() + expiresIn*1000
+	}
 	if err := r.apiKeyQ.UpdateTokens(key.ID, encAccess, expiresAt); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
@@ -205,6 +216,40 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 	}
 
 	return nil
+}
+
+func oauthMetadataString(raw string, keys ...string) string {
+	if raw == "" {
+		return ""
+	}
+	var metadata map[string]interface{}
+	if json.Unmarshal([]byte(raw), &metadata) != nil {
+		return ""
+	}
+	for _, key := range keys {
+		if value, ok := metadata[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func jwtExpiresAtMillis(token string) int64 {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return 0
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if json.Unmarshal(payload, &claims) != nil || claims.Exp <= 0 {
+		return 0
+	}
+	return claims.Exp * 1000
 }
 
 // isPermanentOAuthError returns true for errors that will never succeed on
@@ -226,9 +271,9 @@ func isPermanentOAuthError(statusCode int, body []byte) bool {
 		return false
 	}
 	switch errResp.Error {
-	case "invalid_grant",       // revoked / used / expired refresh token
-		"invalid_client",       // wrong client_id/secret
-		"unauthorized_client",  // client not allowed this grant type
+	case "invalid_grant", // revoked / used / expired refresh token
+		"invalid_client",      // wrong client_id/secret
+		"unauthorized_client", // client not allowed this grant type
 		"unsupported_grant_type":
 		return true
 	}

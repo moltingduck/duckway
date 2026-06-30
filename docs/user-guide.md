@@ -252,7 +252,7 @@ Commands:
 
 ```bash
 codex login
-jq '.tokens | {access_token, refresh_token, account_id}' ~/.codex/auth.json
+jq '{auth_mode, tokens: {access_token: .tokens.access_token, refresh_token: .tokens.refresh_token, account_id: .tokens.account_id}, last_refresh}' ~/.codex/auth.json
 jq -r '.tokens | [.access_token, .refresh_token, (.account_id // "")] | @tsv' ~/.codex/auth.json
 ```
 
@@ -261,16 +261,18 @@ Expected Codex format:
 ```json
 {
   "auth_mode": "chatgpt",
+  "OPENAI_API_KEY": null,
   "tokens": {
+    "id_token": "...",
     "access_token": "...",
-    "refresh_token": "...",
-    "account_id": "acct_..."
+    "refresh_token": "rt.1....",
+    "account_id": "14d5c9cf-..."
   },
   "last_refresh": "2026-06-30T00:00:00Z"
 }
 ```
 
-Set **Token Endpoint** to the OpenAI/Codex OAuth refresh endpoint used by your deployment. The upload page intentionally does not guess this value; the file location and extraction commands above are the stable part Duckway can detect locally.
+The upload page derives **Expires At** from the `exp` claim inside `tokens.access_token`. Set **Token Endpoint** to `https://auth.openai.com/oauth/token` unless your Codex deployment uses a custom OAuth server.
 
 ### Upload a generic OAuth token
 

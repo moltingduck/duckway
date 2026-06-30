@@ -2,10 +2,12 @@ package services_test
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/database"
@@ -245,5 +247,90 @@ func TestRefreshKey_PermanentError_ErrorMessage(t *testing.T) {
 	errMsg := err.Error()
 	if len(errMsg) == 0 {
 		t.Error("empty error message")
+	}
+}
+
+func TestJWTExpiresAtMillis(t *testing.T) {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":1783222051}`))
+	token := "header." + payload + ".sig"
+	if got, want := services.JWTExpiresAtMillis(token), int64(1783222051000); got != want {
+		t.Fatalf("JWTExpiresAtMillis = %d, want %d", got, want)
+	}
+	if got := services.JWTExpiresAtMillis("not-a-jwt"); got != 0 {
+		t.Fatalf("invalid token expiry = %d, want 0", got)
+	}
+}
+
+func TestRefreshKey_GenericOAuthSendsClientIDAndUsesJWTExpiry(t *testing.T) {
+	var formSeen url.Values
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":1783222051}`))
+	nextAccess := "header." + payload + ".sig"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		formSeen = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":%q}`, nextAccess)
+	}))
+	defer ts.Close()
+
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	cryptoKey := make([]byte, 32)
+	if _, err := rand.Read(cryptoKey); err != nil {
+		t.Fatalf("rand key: %v", err)
+	}
+	crypto := services.NewCrypto(cryptoKey)
+
+	const svcID = "svc-openai-refresh"
+	if _, err := db.Exec(
+		`INSERT INTO services (id, name, display_name, upstream_url, host_pattern) VALUES (?, ?, ?, ?, ?)`,
+		svcID, "openai-refresh-test", "OpenAI Refresh Test", "https://api.openai.com", "api.openai.com",
+	); err != nil {
+		t.Fatalf("insert service: %v", err)
+	}
+
+	encRefresh, err := crypto.Encrypt("rt.fake-refresh")
+	if err != nil {
+		t.Fatalf("encrypt refresh: %v", err)
+	}
+	encAccess, err := crypto.Encrypt("old-access")
+	if err != nil {
+		t.Fatalf("encrypt access: %v", err)
+	}
+
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	const keyID = "key-openai-refresh"
+	if err := apiKeyQ.Create(&models.APIKey{
+		ID:               keyID,
+		ServiceID:        svcID,
+		Name:             "codex-auth",
+		KeyEncrypted:     encAccess,
+		RefreshToken:     encRefresh,
+		ExpiresAt:        1,
+		TokenEndpoint:    ts.URL,
+		SubscriptionInfo: `{"client_id":"app_codex_test"}`,
+	}); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	refresher := services.NewTokenRefresher(apiKeyQ, crypto)
+	expiresAt, err := refresher.RefreshNow(keyID)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if got, want := formSeen.Get("client_id"), "app_codex_test"; got != want {
+		t.Fatalf("client_id form value = %q, want %q", got, want)
+	}
+	if got, want := formSeen.Get("grant_type"), "refresh_token"; got != want {
+		t.Fatalf("grant_type = %q, want %q", got, want)
+	}
+	if got, want := expiresAt, int64(1783222051000); got != want {
+		t.Fatalf("expiresAt = %d, want %d", got, want)
 	}
 }
