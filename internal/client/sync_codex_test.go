@@ -75,9 +75,14 @@ func TestSyncCodexConfig_UpdatesPortOnResync(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, _ := os.ReadFile(filepath.Join(home, ".codex", "config.yaml"))
+	data, err := os.ReadFile(filepath.Join(home, ".codex", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var got map[string]interface{}
-	yaml.Unmarshal(data, &got)
+	if err := yaml.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
 	want := "http://localhost:19090/proxy/openai/v1"
 	if got["apiBaseUrl"] != want {
 		t.Errorf("apiBaseUrl = %q, want %q", got["apiBaseUrl"], want)
