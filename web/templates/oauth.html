@@ -56,7 +56,7 @@
       <div class="form-group"><label>Refresh Token</label><input type="text" id="oauth-refresh" placeholder="sk-ant-o..."></div>
       <div class="form-group"><label>Token Endpoint</label><input type="url" id="oauth-endpoint" value="https://console.anthropic.com/v1/oauth/token"></div>
       <div class="form-group"><label>Expires At <span class="text-muted">(Unix ms, optional)</span></label><input type="number" id="oauth-expires" placeholder="Auto-filled from expiresAt/expires_in when pasted"></div>
-      <div class="form-group"><label>Agent Display Name <span class="text-muted">(shown in agent's .claude.json)</span></label>
+      <div class="form-group" id="oauth-display-group"><label>Agent Display Name <span class="text-muted">(shown in agent's .claude.json)</span></label>
         <input type="text" id="oauth-display" placeholder="Duckway Agent" value="Duckway Agent">
       </div>
       <div class="form-group"><label>Subscription Info (JSON, optional)</label>
@@ -101,7 +101,7 @@
         <div class="form-group"><label>Expires At <span class="text-muted">(Unix ms, optional; unchanged unless new tokens are uploaded)</span></label>
           <input type="number" id="edit-expires" placeholder="Current expiry is shown in details">
         </div>
-        <div class="form-group"><label>Agent Display Name <span class="text-muted">(shown in agent's .claude.json)</span></label>
+        <div class="form-group" id="edit-display-group"><label>Agent Display Name <span class="text-muted">(shown in agent's .claude.json)</span></label>
           <input type="text" id="edit-display" placeholder="Duckway Agent">
         </div>
         <div class="form-group"><label>Subscription Info (JSON)</label>
@@ -168,13 +168,20 @@ function selectedOAuthKind() {
   var opt = sel.options[sel.selectedIndex];
   var text = opt ? (opt.textContent || '').toLowerCase() : '';
   var name = opt ? (opt.getAttribute('data-name') || '').toLowerCase() : '';
-  if (name.indexOf('anthropic') >= 0 || text.indexOf('anthropic') >= 0 || text.indexOf('claude') >= 0) return 'claude';
+  if (isClaudeService(name, text)) return 'claude';
   if (name.indexOf('openai') >= 0 || text.indexOf('openai') >= 0 || text.indexOf('codex') >= 0) return 'openai';
   return 'generic';
 }
 
+function isClaudeService(name, text) {
+  name = (name || '').toLowerCase();
+  text = (text || '').toLowerCase();
+  return name.indexOf('anthropic') >= 0 || text.indexOf('anthropic') >= 0 || text.indexOf('claude') >= 0;
+}
+
 function applyOAuthHints() {
-  var help = oauthHelpByService[selectedOAuthKind()] || oauthHelpByService.generic;
+  var kind = selectedOAuthKind();
+  var help = oauthHelpByService[kind] || oauthHelpByService.generic;
   var paste = document.getElementById('oauth-paste');
   if (paste) paste.placeholder = help.pastePlaceholder;
   var helpEl = document.getElementById('oauth-paste-help');
@@ -194,6 +201,8 @@ function applyOAuthHints() {
   }
   var sub = document.getElementById('oauth-sub');
   if (sub) sub.placeholder = help.subPlaceholder;
+  var displayGroup = document.getElementById('oauth-display-group');
+  if (displayGroup) displayGroup.style.display = kind === 'claude' ? '' : 'none';
 }
 
 function readTokenPayload(d) {
@@ -335,6 +344,7 @@ function openDetail(id) {
 
 function switchToEdit() {
   if (!currentDetail) return;
+  var isClaude = isClaudeService('', currentDetail.service_name || '');
   document.getElementById('edit-id').value = currentDetail.id;
   document.getElementById('edit-name').value = currentDetail.name;
   document.getElementById('edit-endpoint').value = currentDetail.token_endpoint;
@@ -344,6 +354,7 @@ function switchToEdit() {
   var displayName = 'Duckway Agent';
   try { var si = JSON.parse(currentDetail.subscription_info || '{}'); if (si.displayName) displayName = si.displayName; } catch(e) {}
   document.getElementById('edit-display').value = displayName;
+  document.getElementById('edit-display-group').style.display = isClaude ? '' : 'none';
   document.getElementById('edit-access').value = '';
   document.getElementById('edit-refresh').value = '';
   document.getElementById('edit-paste').value = '';
@@ -448,8 +459,12 @@ document.getElementById('oauth-form').addEventListener('submit', function(e) {
   var subInfo = document.getElementById('oauth-sub').value.trim();
   var subObj = {};
   if (subInfo) { try { subObj = JSON.parse(subInfo); } catch(ex) { showToast('Invalid subscription JSON', 'error'); return; } }
-  var displayName = document.getElementById('oauth-display').value.trim();
-  if (displayName) subObj.displayName = displayName;
+  if (selectedOAuthKind() === 'claude') {
+    var displayName = document.getElementById('oauth-display').value.trim();
+    if (displayName) subObj.displayName = displayName;
+  } else {
+    delete subObj.displayName;
+  }
 
   var body = {
     name: document.getElementById('oauth-name').value,
@@ -481,8 +496,12 @@ document.getElementById('edit-form').addEventListener('submit', function(e) {
   var subInfo = document.getElementById('edit-sub').value.trim();
   var subObj = {};
   if (subInfo) { try { subObj = JSON.parse(subInfo); } catch(ex) { showToast('Invalid subscription JSON', 'error'); return; } }
-  var displayName = document.getElementById('edit-display').value.trim();
-  if (displayName) subObj.displayName = displayName;
+  if (currentDetail && isClaudeService('', currentDetail.service_name || '')) {
+    var displayName = document.getElementById('edit-display').value.trim();
+    if (displayName) subObj.displayName = displayName;
+  } else {
+    delete subObj.displayName;
+  }
 
   var body = {
     name: document.getElementById('edit-name').value,
