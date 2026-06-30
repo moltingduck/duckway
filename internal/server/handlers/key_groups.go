@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
+	"github.com/hackerduck/duckway/internal/server/middleware"
 )
 
 type KeyGroupHandler struct {
@@ -164,6 +165,12 @@ func (h *KeyGroupHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 // POST /client/usage — sidecar reports rate-limit headers after each Anthropic response.
 // Body: {"api_key_id": "...", "headers": {"x-ratelimit-remaining-tokens": "45000", ...}}
 func (h *KeyGroupHandler) ReportUsage(w http.ResponseWriter, r *http.Request) {
+	client := middleware.GetClient(r)
+	if client == nil {
+		jsonError(w, "client auth required", http.StatusUnauthorized)
+		return
+	}
+
 	var req struct {
 		APIKeyID string            `json:"api_key_id"`
 		Headers  map[string]string `json:"headers"`
@@ -174,6 +181,16 @@ func (h *KeyGroupHandler) ReportUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.APIKeyID == "" || len(req.Headers) == 0 {
 		jsonResponse(w, map[string]string{"status": "noop"})
+		return
+	}
+
+	allowed, err := queries.ClientCanReportAPIKeyUsage(h.db, client.ID, req.APIKeyID)
+	if err != nil {
+		jsonError(w, "failed to check key binding", http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		jsonError(w, "api key is not bound to this client", http.StatusForbidden)
 		return
 	}
 

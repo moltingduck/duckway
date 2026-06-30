@@ -61,6 +61,44 @@ func GetKeyGroup(db *sql.DB, id string) (*models.KeyGroup, error) {
 	return &g, nil
 }
 
+func ClientCanUseKeyGroup(db *sql.DB, clientID, serviceName, groupID string) (bool, error) {
+	var n int
+	err := db.QueryRow(`
+		SELECT COUNT(1)
+		FROM placeholder_keys p
+		JOIN key_groups g ON g.id = p.key_group_id
+		JOIN services s ON s.id = p.service_id
+		WHERE p.client_id = ?
+		  AND p.is_active = 1
+		  AND p.key_group_id = ?
+		  AND g.service_name = ?
+		  AND s.name = ?`,
+		clientID, groupID, serviceName, serviceName,
+	).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func ClientCanReportAPIKeyUsage(db *sql.DB, clientID, apiKeyID string) (bool, error) {
+	var n int
+	err := db.QueryRow(`
+		SELECT COUNT(1)
+		FROM placeholder_keys p
+		LEFT JOIN key_group_members m
+		  ON m.group_id = p.key_group_id AND m.api_key_id = ?
+		WHERE p.client_id = ?
+		  AND p.is_active = 1
+		  AND (p.api_key_id = ? OR m.api_key_id IS NOT NULL)`,
+		apiKeyID, clientID, apiKeyID,
+	).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 func UpdateKeyGroup(db *sql.DB, id, name, description, rotationStrategy string) error {
 	_, err := db.Exec(
 		`UPDATE key_groups SET name = ?, description = ?, rotation_strategy = ? WHERE id = ?`,

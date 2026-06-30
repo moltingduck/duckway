@@ -175,12 +175,36 @@ func (h *LoanHandler) issueGroupLoan(w http.ResponseWriter, r *http.Request, cli
 	excludeKey := r.URL.Query().Get("exclude_key")
 
 	// Fetch the group's rotation strategy so SelectKeyForGroup uses the right algorithm.
-	strategy := "score"
-	if grp, grpErr := queries.GetKeyGroup(h.db, groupID); grpErr == nil {
-		strategy = grp.RotationStrategy
+	grp, err := queries.GetKeyGroup(h.db, groupID)
+	if err != nil {
+		jsonError(w, "key group not found", http.StatusNotFound)
+		return
+	}
+	if grp.ServiceName != serviceName {
+		jsonError(w, "key group is not bound to requested service", http.StatusForbidden)
+		return
+	}
+	allowed, err := queries.ClientCanUseKeyGroup(h.db, clientID, serviceName, groupID)
+	if err != nil {
+		jsonError(w, "failed to check key group binding", http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		jsonError(w, "key group is not bound to this client", http.StatusForbidden)
+		return
 	}
 
-	apiKeyID, err := queries.SelectKeyForGroup(h.db, groupID, excludeKey, strategy)
+	svc, err := h.services.GetByName(serviceName)
+	if err != nil {
+		jsonError(w, "unknown service: "+serviceName, http.StatusNotFound)
+		return
+	}
+	if svc.DeliveryMode != "loan_proxy" {
+		jsonError(w, "service is not configured for loan_proxy delivery", http.StatusForbidden)
+		return
+	}
+
+	apiKeyID, err := queries.SelectKeyForGroup(h.db, groupID, excludeKey, grp.RotationStrategy)
 	if err != nil {
 		jsonError(w, "no available key in group: "+err.Error(), http.StatusServiceUnavailable)
 		return
@@ -204,18 +228,9 @@ func (h *LoanHandler) issueGroupLoan(w http.ResponseWriter, r *http.Request, cli
 	}
 
 	// Determine auth scheme from service config and enforce delivery mode.
-	authType := "header"
-	authHeader := "x-api-key"
-	authPrefix := ""
-	if svc, svcErr := h.services.GetByName(serviceName); svcErr == nil {
-		if svc.DeliveryMode != "loan_proxy" {
-			jsonError(w, "service is not configured for loan_proxy delivery", http.StatusForbidden)
-			return
-		}
-		authType = svc.AuthType
-		authHeader = svc.AuthHeader
-		authPrefix = svc.AuthPrefix
-	}
+	authType := svc.AuthType
+	authHeader := svc.AuthHeader
+	authPrefix := svc.AuthPrefix
 
 	if h.logs != nil {
 		h.logs.Log(clientID, "", serviceName, "LOAN_GROUP", "/loan", 200)
@@ -256,6 +271,21 @@ func (h *LoanHandler) MarkExhausted(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.GroupID == "" || req.APIKeyID == "" || req.ResetAt == "" {
 		jsonError(w, "group_id, api_key_id, and reset_at are required", http.StatusBadRequest)
+		return
+	}
+
+	grp, err := queries.GetKeyGroup(h.db, req.GroupID)
+	if err != nil {
+		jsonError(w, "key group not found", http.StatusNotFound)
+		return
+	}
+	allowed, err := queries.ClientCanUseKeyGroup(h.db, client.ID, grp.ServiceName, req.GroupID)
+	if err != nil {
+		jsonError(w, "failed to check key group binding", http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		jsonError(w, "key group is not bound to this client", http.StatusForbidden)
 		return
 	}
 
