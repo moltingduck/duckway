@@ -152,6 +152,40 @@ func (q *KeySuiteQueries) DeleteSuiteServicePlaceholders(suiteID, serviceID stri
 	return tx.Commit()
 }
 
+func (q *KeySuiteQueries) PruneStaleSuitePlaceholders(suiteID string) error {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	staleWhere := `
+		FROM placeholder_keys p
+		WHERE p.suite_id = ?
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM key_suite_entries e
+			WHERE e.suite_id = p.suite_id
+			  AND e.service_id = p.service_id
+		  )`
+	if _, err := tx.Exec(`
+		UPDATE request_log
+		SET placeholder_id = NULL
+		WHERE placeholder_id IN (
+			SELECT p.id `+staleWhere+`
+		)`, suiteID); err != nil {
+		return fmt.Errorf("detach request logs: %w", err)
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM placeholder_keys
+		WHERE id IN (
+			SELECT p.id `+staleWhere+`
+		)`, suiteID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // CheckConflicts returns service IDs in the suite that the given client already
 // has an individual (non-suite) placeholder for. These are the conflict cases.
 func (q *KeySuiteQueries) CheckConflicts(suiteID, clientID string) ([]string, error) {
@@ -219,7 +253,10 @@ func (q *KeySuiteQueries) PropagateEntryUpdate(suiteID, serviceID string, apiKey
 func (q *KeySuiteQueries) CountBoundClients(suiteID string) (int, error) {
 	var n int
 	err := q.db.QueryRow(
-		`SELECT COUNT(DISTINCT client_id) FROM placeholder_keys WHERE suite_id = ? AND is_active = 1`,
+		`SELECT COUNT(DISTINCT p.client_id)
+		FROM placeholder_keys p
+		JOIN key_suite_entries e ON e.suite_id = p.suite_id AND e.service_id = p.service_id
+		WHERE p.suite_id = ? AND p.is_active = 1`,
 		suiteID,
 	).Scan(&n)
 	return n, err
@@ -229,6 +266,7 @@ func (q *KeySuiteQueries) ListBoundClients(suiteID string) ([]models.KeySuiteCli
 	rows, err := q.db.Query(`
 		SELECT c.id, c.name, COUNT(DISTINCT p.service_id) AS service_count
 		FROM placeholder_keys p
+		JOIN key_suite_entries e ON e.suite_id = p.suite_id AND e.service_id = p.service_id
 		JOIN clients c ON c.id = p.client_id
 		WHERE p.suite_id = ? AND p.is_active = 1
 		GROUP BY c.id, c.name

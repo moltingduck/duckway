@@ -79,3 +79,40 @@ func TestKeySuiteDeleteSuiteServicePlaceholdersDetachesLogs(t *testing.T) {
 		t.Fatalf("detached logs = %d, want 1", nullLogs)
 	}
 }
+
+func TestKeySuitePruneStaleSuitePlaceholders(t *testing.T) {
+	db, suites, placeholders, exec := seedSuiteClientAssignment(t)
+	exec(`INSERT INTO services (id, name, display_name, upstream_url, host_pattern)
+		VALUES ('svc-suite-stale', 'suite-stale', 'Suite Stale', 'https://stale.example', 'stale.example')`)
+	exec(`INSERT INTO api_keys (id, service_id, name, key_encrypted)
+		VALUES ('key-suite-stale', 'svc-suite-stale', 'suite key stale', 'encrypted')`)
+	exec(`INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, client_id, suite_id)
+		VALUES ('ph-suite-stale', 'SUITE_STALE_KEY', 'sk-suite-stale', 'svc-suite-stale', 'key-suite-stale', 'client-suite-a', 'suite-a')`)
+	exec(`INSERT INTO request_log (client_id, placeholder_id, service_name, method, path, status_code)
+		VALUES ('client-suite-a', 'ph-suite-stale', 'suite-stale', 'GET', '/v1/test', 200)`)
+
+	clients, err := suites.ListBoundClients("suite-a")
+	if err != nil {
+		t.Fatalf("ListBoundClients before prune: %v", err)
+	}
+	if len(clients) != 1 || clients[0].ServiceCount != 1 {
+		t.Fatalf("stale placeholder should not be counted: %+v", clients)
+	}
+
+	if err := suites.PruneStaleSuitePlaceholders("suite-a"); err != nil {
+		t.Fatalf("PruneStaleSuitePlaceholders: %v", err)
+	}
+	if _, err := placeholders.GetByID("ph-suite-stale"); err == nil {
+		t.Fatal("stale placeholder still exists after prune")
+	}
+	if _, err := placeholders.GetByID("ph-suite-a"); err != nil {
+		t.Fatalf("active suite placeholder was pruned unexpectedly: %v", err)
+	}
+	var detached int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM request_log WHERE placeholder_id IS NULL`).Scan(&detached); err != nil {
+		t.Fatalf("count detached logs: %v", err)
+	}
+	if detached != 1 {
+		t.Fatalf("detached logs = %d, want 1", detached)
+	}
+}

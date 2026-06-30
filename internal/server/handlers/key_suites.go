@@ -88,8 +88,20 @@ func (h *KeySuiteHandler) Get(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "suite not found", http.StatusNotFound)
 		return
 	}
-	bound, _ := h.suites.CountBoundClients(id)
-	clients, _ := h.suites.ListBoundClients(id)
+	if err := h.suites.PruneStaleSuitePlaceholders(id); err != nil {
+		jsonError(w, "failed to clean stale suite assignments: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	bound, err := h.suites.CountBoundClients(id)
+	if err != nil {
+		jsonError(w, "failed to count assigned clients", http.StatusInternalServerError)
+		return
+	}
+	clients, err := h.suites.ListBoundClients(id)
+	if err != nil {
+		jsonError(w, "failed to list assigned clients", http.StatusInternalServerError)
+		return
+	}
 	if clients == nil {
 		clients = []models.KeySuiteClient{}
 	}

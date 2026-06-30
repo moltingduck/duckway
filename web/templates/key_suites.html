@@ -172,7 +172,7 @@ async function refreshSuitePreview(suiteID) {
     ? entries.map(e => '<span class="badge badge-blue">' + esc(e.service_name) + '</span> <span class="text-sm">' + esc(e.api_key_name || e.group_name || '—') + '</span>').join('<span class="text-muted"> · </span>')
     : '<span class="text-muted text-sm">No entries</span>';
   const clientHTML = clients.length
-    ? clients.map(c => '<span class="badge badge-gray">' + esc(c.name) + ' · ' + c.service_count + '</span>').join(' ')
+    ? clients.map(c => '<span class="badge badge-gray">' + esc(c.name) + ' · ' + c.service_count + ' service' + (c.service_count === 1 ? '' : 's') + '</span>').join(' ')
     : '<span class="text-muted text-sm">No assigned clients</span>';
   el.innerHTML =
     '<div class="text-sm"><strong>Entries:</strong> ' + entryHTML + '</div>' +
