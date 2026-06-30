@@ -196,8 +196,7 @@ function applyOAuthHints() {
   if (sub) sub.placeholder = help.subPlaceholder;
 }
 
-function readTokenPayload(raw) {
-  var d = JSON.parse(raw);
+function readTokenPayload(d) {
   var oauth = d.claudeAiOauth || d.tokens || d;
   var sub = {};
   if (oauth.subscriptionType) sub.subscriptionType = oauth.subscriptionType;
@@ -252,13 +251,16 @@ function setPasteError(message) {
 }
 
 function parseOAuthPaste() {
-  var raw = document.getElementById('oauth-paste').value;
+  var paste = document.getElementById('oauth-paste');
+  var raw = paste.value;
   if (!raw.trim()) {
     setPasteError('');
     return true;
   }
   try {
-    var parsed = readTokenPayload(raw);
+    var data = JSON.parse(raw);
+    paste.value = JSON.stringify(data, null, 2);
+    var parsed = readTokenPayload(data);
     if (!parsed.accessToken && !parsed.refreshToken) {
       throw new Error('No access token or refresh token found. Paste a Claude credentials file, Codex auth.json, or OAuth token response.');
     }
@@ -276,7 +278,11 @@ function parseOAuthPaste() {
 
 function parseEditPaste() {
   try {
-    var parsed = readTokenPayload(document.getElementById('edit-paste').value);
+    var paste = document.getElementById('edit-paste');
+    if (!paste.value.trim()) return;
+    var data = JSON.parse(paste.value);
+    paste.value = JSON.stringify(data, null, 2);
+    var parsed = readTokenPayload(data);
     if (parsed.accessToken) document.getElementById('edit-access').value = parsed.accessToken;
     if (parsed.refreshToken) document.getElementById('edit-refresh').value = parsed.refreshToken;
     if (parsed.expiresAt) document.getElementById('edit-expires').value = parsed.expiresAt;
