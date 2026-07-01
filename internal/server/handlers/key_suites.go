@@ -116,6 +116,20 @@ func (h *KeySuiteHandler) Get(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GET /api/key-suites/clients/{clientId}
+func (h *KeySuiteHandler) ListClientAssignments(w http.ResponseWriter, r *http.Request) {
+	clientID := r.PathValue("clientId")
+	suites, err := h.suites.ListAssignedSuitesForClient(clientID)
+	if err != nil {
+		jsonError(w, "failed to list client suite assignments: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if suites == nil {
+		suites = []models.KeySuiteAssignment{}
+	}
+	jsonResponse(w, suites)
+}
+
 // PATCH /api/key-suites/{id}
 func (h *KeySuiteHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -295,6 +309,27 @@ func (h *KeySuiteHandler) RemoveEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// DELETE /api/key-suites/{id}/assignments/{clientId}
+func (h *KeySuiteHandler) UnassignClient(w http.ResponseWriter, r *http.Request) {
+	suiteID := r.PathValue("id")
+	clientID := r.PathValue("clientId")
+	if _, err := h.suites.GetByID(suiteID); err != nil {
+		jsonError(w, "suite not found", http.StatusNotFound)
+		return
+	}
+	removed, err := h.suites.UnassignClient(suiteID, clientID)
+	if err != nil {
+		jsonError(w, "failed to unassign suite: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{
+		"removed":              true,
+		"suite_id":             suiteID,
+		"client_id":            clientID,
+		"removed_placeholders": removed,
+	})
 }
 
 func (h *KeySuiteHandler) assignEntryToBoundClients(entry *models.KeySuiteEntry) ([]string, []string) {

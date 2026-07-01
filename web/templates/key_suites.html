@@ -210,11 +210,29 @@ async function refreshSuitePreview(suiteID) {
     ? entries.map(e => '<span class="badge badge-blue">' + esc(e.service_name) + '</span> <span class="text-sm">' + esc(e.api_key_name || e.group_name || '—') + '</span>').join('<span class="text-muted"> · </span>')
     : '<span class="text-muted text-sm">No entries</span>';
   const clientHTML = clients.length
-    ? clients.map(c => '<span class="badge badge-gray">' + esc(c.name) + ' · ' + c.service_count + ' service' + (c.service_count === 1 ? '' : 's') + '</span>').join(' ')
+    ? clients.map(c =>
+        '<span class="badge badge-gray" style="display:inline-flex;align-items:center;gap:.35rem">' +
+          esc(c.name) + ' · ' + c.service_count + ' service' + (c.service_count === 1 ? '' : 's') +
+          '<button class="btn btn-sm" style="padding:.1rem .35rem" onclick="event.stopPropagation(); unassignSuiteClient(\'' + esc(suiteID) + '\', \'' + esc(c.id) + '\', \'' + esc(c.name) + '\')">Remove</button>' +
+        '</span>').join(' ')
     : '<span class="text-muted text-sm">No assigned clients</span>';
   el.innerHTML =
     '<div class="text-sm"><strong>Entries:</strong> ' + entryHTML + '</div>' +
     '<div class="text-sm" style="margin-top:.35rem"><strong>Assigned clients:</strong> ' + clientHTML + '</div>';
+}
+
+async function unassignSuiteClient(suiteID, clientID, clientName) {
+  if (!confirm('Remove ' + clientName + ' from this suite? Suite-managed phantom tokens from this suite will be removed. Individual keys are kept.')) return;
+  const res = await fetch('/api/key-suites/' + suiteID + '/assignments/' + clientID, {
+    method: 'DELETE',
+    credentials: 'same-origin'
+  });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    alert('Remove failed: ' + (j.error || res.status));
+    return;
+  }
+  await refreshSuitePreview(suiteID);
 }
 
 // ── Suite CRUD ────────────────────────────────────────────────────────────

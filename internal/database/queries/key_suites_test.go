@@ -118,3 +118,45 @@ func TestKeySuitePruneStaleSuitePlaceholders(t *testing.T) {
 		t.Fatalf("detached logs = %d, want 1", detached)
 	}
 }
+
+func TestKeySuiteUnassignClientRemovesOnlySuitePlaceholders(t *testing.T) {
+	db, suites, _, exec := seedSuiteClientAssignment(t)
+	exec(`INSERT INTO services (id, name, display_name, upstream_url, host_pattern)
+		VALUES ('svc-manual-a', 'manual-a', 'Manual A', 'https://manual.example', 'manual.example')`)
+	exec(`INSERT INTO api_keys (id, service_id, name, key_encrypted)
+		VALUES ('key-manual-a', 'svc-manual-a', 'manual key a', 'encrypted')`)
+	exec(`INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, client_id)
+		VALUES ('ph-manual-a', 'MANUAL_A_KEY', 'sk-manual-a', 'svc-manual-a', 'key-manual-a', 'client-suite-a')`)
+	exec(`INSERT INTO request_log (client_id, placeholder_id, service_name, method, path, status_code)
+		VALUES ('client-suite-a', 'ph-suite-a', 'suite-a', 'GET', '/v1/test', 200)`)
+
+	removed, err := suites.UnassignClient("suite-a", "client-suite-a")
+	if err != nil {
+		t.Fatalf("UnassignClient: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed placeholders = %d, want 1", removed)
+	}
+
+	assigned, err := suites.ListAssignedSuitesForClient("client-suite-a")
+	if err != nil {
+		t.Fatalf("ListAssignedSuitesForClient: %v", err)
+	}
+	if len(assigned) != 0 {
+		t.Fatalf("assigned suites after unassign = %+v, want none", assigned)
+	}
+
+	var suitePH, manualPH, detachedLogs int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM placeholder_keys WHERE id = 'ph-suite-a'`).Scan(&suitePH); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM placeholder_keys WHERE id = 'ph-manual-a'`).Scan(&manualPH); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM request_log WHERE placeholder_id IS NULL`).Scan(&detachedLogs); err != nil {
+		t.Fatal(err)
+	}
+	if suitePH != 0 || manualPH != 1 || detachedLogs != 1 {
+		t.Fatalf("unexpected cleanup counts: suitePH=%d manualPH=%d detachedLogs=%d", suitePH, manualPH, detachedLogs)
+	}
+}

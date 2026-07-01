@@ -250,6 +250,11 @@
         <div id="cd-cc-summary" class="text-sm text-muted">Loading…</div>
       </div>
 
+      <div class="mt-1">
+        <strong class="text-sm">Key Suites</strong>
+        <div id="cd-suite-summary" class="text-sm text-muted">Loading…</div>
+      </div>
+
       <div class="modal-actions mt-1">
         <button type="button" class="btn" onclick="document.getElementById('client-detail-modal').style.display='none'">Close</button>
         <button type="button" class="btn btn-primary" onclick="switchToClientEdit()">Edit</button>
@@ -272,6 +277,12 @@
 <script>
 var currentClient = null;
 
+function escHTML(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
 function openClientDetail(id) {
   fetch('/api/clients/' + id, {credentials:'same-origin'})
     .then(function(r) { return r.json(); })
@@ -290,6 +301,7 @@ function openClientDetail(id) {
       document.getElementById('cd-edit').style.display = 'none';
       document.getElementById('client-detail-modal').style.display = 'flex';
       loadClientCCs(c.id);
+      loadClientSuites(c.id);
     });
 }
 
@@ -312,6 +324,36 @@ function loadClientCCs(clientID) {
       '  ' + status +
       '  <code>' + mine.agent_type + '</code>';
   });
+}
+
+function loadClientSuites(clientID) {
+  fetch('/api/key-suites/clients/' + clientID, {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(list) {
+    var suites = Array.isArray(list) ? list : [];
+    var el = document.getElementById('cd-suite-summary');
+    if (!suites.length) {
+      el.innerHTML = 'No key suite assigned.';
+      return;
+    }
+    el.innerHTML = suites.map(function(s) {
+      return '<span class="badge badge-gray" style="display:inline-flex;align-items:center;gap:.35rem;margin:.15rem .2rem .15rem 0">' +
+        escHTML(s.name) + ' · ' + s.service_count + ' service' + (s.service_count === 1 ? '' : 's') +
+        '<button class="btn btn-sm" style="padding:.1rem .35rem" onclick="unassignClientSuite(\'' + escHTML(s.id) + '\', \'' + escHTML(clientID) + '\', \'' + escHTML(s.name) + '\')">Remove</button>' +
+      '</span>';
+    }).join(' ');
+  });
+}
+
+function unassignClientSuite(suiteID, clientID, suiteName) {
+  if (!confirm('Remove this client from ' + suiteName + '? Suite-managed phantom tokens from this suite will be removed. Individual keys are kept.')) return;
+  fetch('/api/key-suites/' + suiteID + '/assignments/' + clientID, {
+    method: 'DELETE',
+    credentials: 'same-origin'
+  }).then(function(r) { return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
+    .then(function(res) {
+      if (!res.ok) { showToast('Remove failed: ' + (res.body.error || 'unknown error'), 'error'); return; }
+      showToast('Key suite removed from client', 'success');
+      location.reload();
+    });
 }
 
 function switchToClientEdit() {

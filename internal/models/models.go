@@ -120,6 +120,14 @@ type KeySuiteClient struct {
 	ServiceCount int    `json:"service_count"`
 }
 
+type KeySuiteAssignment struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	ServiceCount int    `json:"service_count"`
+	CreatedAt    string `json:"created_at"`
+}
+
 // KeySuiteEntry is one service→key mapping within a Key Suite.
 // Exactly one of APIKeyID or GroupID must be set.
 type KeySuiteEntry struct {

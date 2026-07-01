@@ -202,6 +202,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	keySuiteH := handlers.NewKeySuiteHandler(ss.KeySuiteQ, ss.ServiceQ, ss.PlaceholderQ, ss.APIKeyQ, ss.Crypto)
 	adminAPIMux.HandleFunc("GET /api/key-suites", keySuiteH.List)
 	adminAPIMux.HandleFunc("POST /api/key-suites", keySuiteH.Create)
+	adminAPIMux.HandleFunc("GET /api/key-suites/clients/{clientId}", keySuiteH.ListClientAssignments)
 	adminAPIMux.HandleFunc("GET /api/key-suites/{id}", keySuiteH.Get)
 	adminAPIMux.HandleFunc("PATCH /api/key-suites/{id}", keySuiteH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/key-suites/{id}", keySuiteH.Delete)
@@ -209,6 +210,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("PATCH /api/key-suites/{id}/entries/{entryId}", keySuiteH.UpdateEntry)
 	adminAPIMux.HandleFunc("DELETE /api/key-suites/{id}/entries/{entryId}", keySuiteH.RemoveEntry)
 	adminAPIMux.HandleFunc("POST /api/key-suites/{id}/assign", keySuiteH.AssignToClient)
+	adminAPIMux.HandleFunc("DELETE /api/key-suites/{id}/assignments/{clientId}", keySuiteH.UnassignClient)
 
 	// Key Groups v2: pluggable rotation strategies with 429 auto-rotation
 	keyGroupH := handlers.NewKeyGroupHandler(s.db)

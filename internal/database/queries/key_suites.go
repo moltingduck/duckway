@@ -91,6 +91,66 @@ func (q *KeySuiteQueries) AssignClient(suiteID, clientID string) error {
 	return err
 }
 
+func (q *KeySuiteQueries) UnassignClient(suiteID, clientID string) (int64, error) {
+	tx, err := q.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		UPDATE request_log
+		SET placeholder_id = NULL
+		WHERE placeholder_id IN (
+			SELECT id FROM placeholder_keys WHERE suite_id = ? AND client_id = ?
+		)`, suiteID, clientID); err != nil {
+		return 0, fmt.Errorf("detach request logs: %w", err)
+	}
+	res, err := tx.Exec(`DELETE FROM placeholder_keys WHERE suite_id = ? AND client_id = ?`, suiteID, clientID)
+	if err != nil {
+		return 0, fmt.Errorf("delete suite placeholders: %w", err)
+	}
+	removed, _ := res.RowsAffected()
+	if _, err := tx.Exec(`DELETE FROM key_suite_assignments WHERE suite_id = ? AND client_id = ?`, suiteID, clientID); err != nil {
+		return 0, fmt.Errorf("delete suite assignment: %w", err)
+	}
+	return removed, tx.Commit()
+}
+
+func (q *KeySuiteQueries) ListAssignedSuitesForClient(clientID string) ([]models.KeySuiteAssignment, error) {
+	rows, err := q.db.Query(`
+		SELECT s.id, s.name, s.description, COUNT(DISTINCT p.service_id) AS service_count, a.created_at
+		FROM key_suite_assignments a
+		JOIN key_suites s ON s.id = a.suite_id
+		LEFT JOIN placeholder_keys p
+		  ON p.suite_id = a.suite_id
+		 AND p.client_id = a.client_id
+		 AND p.is_active = 1
+		 AND EXISTS (
+			SELECT 1
+			FROM key_suite_entries e
+			WHERE e.suite_id = p.suite_id
+			  AND e.service_id = p.service_id
+		 )
+		WHERE a.client_id = ?
+		GROUP BY s.id, s.name, s.description, a.created_at
+		ORDER BY s.name`, clientID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var suites []models.KeySuiteAssignment
+	for rows.Next() {
+		var s models.KeySuiteAssignment
+		if err := rows.Scan(&s.ID, &s.Name, &s.Description, &s.ServiceCount, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		suites = append(suites, s)
+	}
+	return suites, rows.Err()
+}
+
 func (q *KeySuiteQueries) ListEntries(suiteID string) ([]models.KeySuiteEntry, error) {
 	rows, err := q.db.Query(suiteEntrySelect+` WHERE e.suite_id = ? ORDER BY s.name`, suiteID)
 	if err != nil {
