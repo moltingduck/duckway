@@ -261,10 +261,11 @@ function renderOnboardingDiscordSetup() {
   var cats = onboardingDiscordSetup.categories || [];
   var guildOptions = guilds.map(function(g){ return '<option value="'+esc(g.id)+'">'+esc(g.name)+' ('+esc(g.id)+')</option>'; }).join('');
   var catOptions = cats.map(function(c){ return '<option value="'+esc(c.id)+'">'+esc(c.name)+' ('+esc(c.id)+')</option>'; }).join('');
+  var categoryName = state.clientName || document.getElementById('client-name').value.trim() || 'duckway';
   var destination = loaded && guilds.length
     ? '<div class="form-group"><label>Server</label><select id="cfg-guild" onchange="loadOnboardingDiscordCategories()">'+guildOptions+'</select></div>' +
       '<div class="form-group"><label>Category</label><select id="cfg-category">'+(catOptions || '<option value="">No categories loaded</option>')+'</select></div>' +
-      '<div class="form-group"><label>Create category</label><div style="display:flex;gap:.5rem;align-items:center"><input type="text" id="cfg-new-category" placeholder="duckway"><button type="button" class="btn btn-sm" onclick="createOnboardingDiscordCategory()">Create</button></div></div>'
+      '<div class="form-group"><label>Create category</label><div style="display:flex;gap:.5rem;align-items:center"><input type="text" id="cfg-new-category" value="'+esc(categoryName)+'" placeholder="'+esc(categoryName)+'"><button type="button" class="btn btn-sm" onclick="createOnboardingDiscordCategory()">Create</button></div></div>'
     : '<div class="form-group"><label>Server ID</label><input type="text" id="cfg-guild" placeholder="Load setup, or paste server id as fallback" '+(!loaded?'disabled':'')+'></div>' +
       '<div class="form-group"><label>Category ID</label><input type="text" id="cfg-category" placeholder="Paste category id as fallback" '+(!loaded?'disabled':'')+'></div>';
   box.innerHTML =
@@ -310,7 +311,7 @@ function loadOnboardingDiscordCategories() {
 function createOnboardingDiscordCategory() {
   var keyID = document.getElementById('cc-key').value;
   var guildID = document.getElementById('cfg-guild').value;
-  var name = document.getElementById('cfg-new-category').value.trim() || 'duckway';
+  var name = document.getElementById('cfg-new-category').value.trim() || state.clientName || 'duckway';
   if (!keyID || !guildID) { showToast('Load setup and choose a server first', 'error'); return; }
   fetch('/api/cc/discord/categories', {
     method:'POST', credentials:'same-origin',

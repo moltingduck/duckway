@@ -126,6 +126,7 @@ document.addEventListener('DOMContentLoaded', function() {
 function repopulateClientPicker() {
   var sel = document.getElementById('cc-client');
   sel.innerHTML = '';
+  sel.onchange = function() { renderDiscordSetup(); };
   var assigned = {};
   allCCs.forEach(function(c){ assigned[c.client_id] = c.name; });
   allClients.forEach(function(cl) {
@@ -139,6 +140,13 @@ function repopulateClientPicker() {
     }
     sel.appendChild(opt);
   });
+}
+
+function selectedClientName() {
+  var sel = document.getElementById('cc-client');
+  if (!sel || !sel.value) return '';
+  var match = allClients.filter(function(c){ return c.id === sel.value; })[0];
+  return match ? match.name : '';
 }
 
 function isMessageChannelService(svc) {
@@ -233,6 +241,7 @@ function renderDiscordSetup() {
   }).join('');
   var loaded = discordSetup.apiKeyId === keyID;
   var hasGuilds = loaded && (discordSetup.guilds || []).length > 0;
+  var categoryName = selectedClientName() || 'duckway';
   var destinationFields = hasGuilds
     ? '<div class="form-group"><label>Server</label>' +
         '<select id="cc-cfg-guild" onchange="loadDiscordCategories()">' +
@@ -246,7 +255,7 @@ function renderDiscordSetup() {
       '<div class="form-group">' +
         '<label>Create category</label>' +
         '<div style="display:flex;gap:0.5rem;align-items:center">' +
-          '<input type="text" id="cc-new-category" placeholder="duckway">' +
+          '<input type="text" id="cc-new-category" value="'+escapeHTML(categoryName)+'" placeholder="'+escapeHTML(categoryName)+'">' +
           '<button type="button" class="btn btn-sm" onclick="createDiscordCategory()">Create</button>' +
         '</div>' +
       '</div>'
@@ -304,7 +313,7 @@ function loadDiscordCategories() {
 function createDiscordCategory() {
   var keyID = document.getElementById('cc-key').value;
   var guildID = document.getElementById('cc-cfg-guild').value;
-  var name = document.getElementById('cc-new-category').value.trim() || 'duckway';
+  var name = document.getElementById('cc-new-category').value.trim() || selectedClientName() || 'duckway';
   if (!keyID || !guildID) { showToast('Load Discord setup and choose a server first', 'error'); return; }
   fetch('/api/cc/discord/categories', {
     method:'POST', credentials:'same-origin',
