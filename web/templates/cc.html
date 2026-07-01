@@ -84,9 +84,37 @@
     <div id="d-test-result" class="mt-1"></div>
     <div class="modal-actions mt-1">
       <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
+      <button type="button" class="btn" onclick="openEditFromDetail()">Edit</button>
       <button type="button" class="btn" id="d-test-btn" onclick="testCC()">Test (create + delete channel)</button>
       <button type="button" class="btn btn-danger" id="d-delete-btn">Delete CC</button>
     </div>
+  </div>
+</div>
+
+<!-- Edit modal -->
+<div id="edit-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:560px">
+    <h2>Edit Control Channel</h2>
+    <form id="edit-form">
+      <input type="hidden" id="edit-cc-id">
+      <div class="form-group">
+        <label>Name</label>
+        <input type="text" id="edit-cc-name" required>
+      </div>
+      <div class="form-group">
+        <label>Binding</label>
+        <div id="edit-cc-binding" class="text-sm text-muted"></div>
+      </div>
+      <div class="form-group">
+        <label><input type="checkbox" id="edit-cc-active"> Active</label>
+      </div>
+      <div id="edit-config-fields"></div>
+      <div id="edit-test-result" class="mt-1"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('edit-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -176,7 +204,7 @@ function loadCCs() {
         '<td class="text-sm">'+escapeHTML(c.api_key_name)+'</td>' +
         '<td class="text-sm mono">'+escapeHTML(cfgPreview)+'</td>' +
         '<td>'+(c.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>')+'</td>' +
-        '<td class="text-right"><button class="btn btn-sm" onclick="openDetail(\''+c.id+'\')">Detail</button></td>';
+        '<td class="text-right"><button class="btn btn-sm" onclick="openEdit(\''+c.id+'\')">Edit</button> <button class="btn btn-sm" onclick="openDetail(\''+c.id+'\')">Detail</button></td>';
       tbody.appendChild(tr);
     });
   });
@@ -191,6 +219,9 @@ function escapeHTML(s) {
   return String(s==null?'':s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function parseCCConfig(c) {
+  try { return JSON.parse(c.config || '{}') || {}; } catch(e) { return {}; }
 }
 
 function renderConfigFields() {
@@ -482,6 +513,136 @@ function openDetail(id) {
         });
     };
     document.getElementById('detail-modal').style.display = 'flex';
+  });
+}
+
+function openEditFromDetail() {
+  if (!currentCC) return;
+  openEdit(currentCC.id);
+}
+
+function openEdit(id) {
+  fetch('/api/cc/'+id, {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(c) {
+    if (c.error) { showToast(c.error, 'error'); return; }
+    currentCC = c;
+    populateEdit(c);
+    document.getElementById('edit-modal').style.display = 'flex';
+  });
+}
+
+function populateEdit(c) {
+  document.getElementById('edit-cc-id').value = c.id;
+  document.getElementById('edit-cc-name').value = c.name || '';
+  document.getElementById('edit-cc-active').checked = !!c.is_active;
+  document.getElementById('edit-cc-binding').innerHTML =
+    escapeHTML(c.client_name || '?') + ' / ' + escapeHTML(c.agent_type || '?') +
+    ' / ' + escapeHTML(c.service_name || '?') + ' / ' + escapeHTML(c.api_key_name || '?') +
+    '<br><span class="text-muted">Client, agent, service, and bot token are immutable. Create a new CC to change the security boundary.</span>';
+  document.getElementById('edit-test-result').innerHTML = '';
+  var cfg = parseCCConfig(c);
+  var box = document.getElementById('edit-config-fields');
+  if (c.service_name === 'discord') {
+    box.innerHTML =
+      '<div class="form-group">' +
+        '<label>Server ID</label>' +
+        '<input type="text" id="edit-cfg-guild" value="'+escapeHTML(cfg.guild_id || '')+'" placeholder="Discord server id">' +
+      '</div>' +
+      '<div class="form-group">' +
+        '<label>Category ID</label>' +
+        '<input type="text" id="edit-cfg-category" value="'+escapeHTML(cfg.category_id || '')+'" placeholder="Discord category id">' +
+        '<span class="text-muted text-sm">Changing this affects future test/provision operations. Existing Discord channels are not moved automatically.</span>' +
+      '</div>' +
+      '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">' +
+        '<button type="button" class="btn btn-sm" onclick="preflightEditDiscordCategory()">Check permissions</button>' +
+        '<button type="button" class="btn btn-sm" onclick="grantEditDiscordCategoryAccess()">Grant bot access</button>' +
+      '</div>';
+    return;
+  }
+  box.innerHTML =
+    '<div class="form-group">' +
+      '<label>Config JSON</label>' +
+      '<textarea id="edit-cfg-json" style="min-height:90px;font-family:monospace;font-size:0.75rem">'+escapeHTML(JSON.stringify(cfg, null, 2))+'</textarea>' +
+    '</div>';
+}
+
+function readEditConfig() {
+  if (!currentCC) return {};
+  if (currentCC.service_name === 'discord') {
+    var guildID = document.getElementById('edit-cfg-guild').value.trim();
+    var categoryID = document.getElementById('edit-cfg-category').value.trim();
+    if (!guildID || !categoryID) throw new Error('Server ID and Category ID are required');
+    return {guild_id:guildID, category_id:categoryID};
+  }
+  var raw = document.getElementById('edit-cfg-json').value.trim();
+  if (!raw) return {};
+  return JSON.parse(raw);
+}
+
+document.getElementById('edit-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  if (!currentCC) return;
+  var config;
+  try {
+    config = readEditConfig();
+  } catch(err) {
+    showToast('Invalid config: ' + err.message, 'error');
+    return;
+  }
+  fetch('/api/cc/' + currentCC.id, {
+    method: 'PUT', credentials: 'same-origin',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      name: document.getElementById('edit-cc-name').value.trim(),
+      is_active: document.getElementById('edit-cc-active').checked,
+      config: config
+    })
+  }).then(function(r){return r.json();}).then(function(d) {
+    if (d.error) { showToast(d.error, 'error'); return; }
+    showToast('CC updated', 'success');
+    document.getElementById('edit-modal').style.display = 'none';
+    loadCCs();
+    if (document.getElementById('detail-modal').style.display !== 'none') {
+      openDetail(currentCC.id);
+    }
+  }).catch(function(err) {
+    showToast('Update failed: ' + err.message, 'error');
+  });
+});
+
+function grantEditDiscordCategoryAccess() {
+  if (!currentCC) return;
+  var catID = document.getElementById('edit-cfg-category').value.trim();
+  var panel = document.getElementById('edit-test-result');
+  if (!catID) { showToast('Enter a category id first', 'error'); return; }
+  panel.innerHTML = '<div class="text-muted text-sm">Granting bot access on the category...</div>';
+  fetch('/api/cc/discord/category-permissions', {
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({api_key_id:currentCC.api_key_id, category_id:catID})
+  }).then(function(r){return r.json();}).then(function(d) {
+    if (d.error) {
+      panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+escapeHTML(d.error)+'</div>';
+      return;
+    }
+    showToast('Bot access granted', 'success');
+    preflightEditDiscordCategory();
+  });
+}
+
+function preflightEditDiscordCategory() {
+  if (!currentCC) return;
+  var guildID = document.getElementById('edit-cfg-guild').value.trim();
+  var catID = document.getElementById('edit-cfg-category').value.trim();
+  var panel = document.getElementById('edit-test-result');
+  if (!guildID || !catID) { showToast('Enter server and category ids first', 'error'); return; }
+  panel.innerHTML = '<div class="text-muted text-sm">Checking Discord permissions...</div>';
+  fetch('/api/cc/discord/preflight', {
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({api_key_id:currentCC.api_key_id, guild_id:guildID, category_id:catID})
+  }).then(function(r){return r.json();}).then(function(d) {
+    if (d.error) { panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+escapeHTML(d.error)+'</div>'; return; }
+    panel.innerHTML = renderPreflightResult(d, escapeHTML);
   });
 }
 
