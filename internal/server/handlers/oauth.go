@@ -373,6 +373,9 @@ func validateCodexOAuth(req *oauthTokenRequest, subInfo map[string]interface{}) 
 	if !strings.HasPrefix(req.RefreshToken, "rt.") {
 		return fmt.Errorf("codex oauth refresh_token should start with rt prefix")
 	}
+	if idToken, _ := subInfo["id_token"].(string); !looksLikeJWT(idToken) {
+		return fmt.Errorf("codex oauth id_token required from ~/.codex/auth.json")
+	}
 	return nil
 }
 
@@ -537,6 +540,9 @@ func (h *OAuthHandler) ClientGetCodexCredentials(w http.ResponseWriter, r *http.
 		if v, ok := subInfo[key]; ok && v != "" {
 			tokens[key] = v
 		}
+	}
+	if idToken, _ := subInfo["id_token"].(string); idToken != "" {
+		tokens["id_token"] = idToken
 	}
 	resp := map[string]interface{}{
 		"auth_mode":      "chatgpt",

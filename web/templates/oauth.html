@@ -233,6 +233,7 @@ function readTokenPayload(d) {
   if (oauth.scopes) sub.scopes = oauth.scopes;
   if (oauth.scope && !sub.scopes) sub.scopes = String(oauth.scope).split(/\s+/).filter(Boolean);
   if (oauth.account_id) sub.account_id = oauth.account_id;
+  if (oauth.id_token) sub.id_token = oauth.id_token;
   if (d.auth_mode) sub.auth_mode = d.auth_mode;
   if (d.last_refresh) sub.last_refresh = d.last_refresh;
 

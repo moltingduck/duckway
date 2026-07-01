@@ -61,13 +61,17 @@ func TestControlChannelTestAgentPublishesHi(t *testing.T) {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var res struct {
-		InboxID int64 `json:"inbox_id"`
+		InboxID int64  `json:"inbox_id"`
+		TestID  string `json:"test_id"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if res.InboxID == 0 {
 		t.Fatal("inbox_id missing from response")
+	}
+	if res.TestID == "" {
+		t.Fatal("test_id missing from response")
 	}
 
 	select {
@@ -77,6 +81,7 @@ func TestControlChannelTestAgentPublishesHi(t *testing.T) {
 		}
 		var payload struct {
 			Content string `json:"content"`
+			TestID  string `json:"duckway_test_id"`
 			Author  struct {
 				Bot bool `json:"bot"`
 			} `json:"author"`
@@ -84,7 +89,7 @@ func TestControlChannelTestAgentPublishesHi(t *testing.T) {
 		if err := json.Unmarshal(ev.Payload, &payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.Content != "hi" || payload.Author.Bot {
+		if payload.Content != "hi" || payload.Author.Bot || payload.TestID != res.TestID {
 			t.Fatalf("unexpected payload: %+v", payload)
 		}
 	case <-time.After(time.Second):
@@ -103,6 +108,13 @@ func TestControlChannelTestAgentPublishesHi(t *testing.T) {
 	}
 	if inboxMsg.Content != "hi" {
 		t.Fatalf("inbox content = %q, want hi", inboxMsg.Content)
+	}
+	testStatus, err := queries.NewControlChannelQueries(db).GetAgentTest("cc-agent-test", res.TestID)
+	if err != nil {
+		t.Fatalf("lookup agent test: %v", err)
+	}
+	if testStatus.Status != "queued" || testStatus.InboxID != res.InboxID {
+		t.Fatalf("unexpected agent test status: %+v", testStatus)
 	}
 }
 

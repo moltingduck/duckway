@@ -251,6 +251,38 @@ func (q *ControlChannelQueries) LatestInboxID(ccID string) (int64, error) {
 	return id, err
 }
 
+func (q *ControlChannelQueries) CreateAgentTest(t *models.CCAgentTest) error {
+	_, err := q.db.Exec(
+		`INSERT INTO cc_agent_tests (id, cc_id, client_id, handle, agent_type, status, error, inbox_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.CCID, t.ClientID, t.Handle, t.AgentType, t.Status, t.Error, t.InboxID,
+	)
+	return err
+}
+
+func (q *ControlChannelQueries) GetAgentTest(ccID, id string) (*models.CCAgentTest, error) {
+	var t models.CCAgentTest
+	err := q.db.QueryRow(
+		`SELECT id, cc_id, client_id, handle, agent_type, status, error, inbox_id, created_at, updated_at
+		 FROM cc_agent_tests WHERE cc_id = ? AND id = ?`,
+		ccID, id,
+	).Scan(&t.ID, &t.CCID, &t.ClientID, &t.Handle, &t.AgentType, &t.Status, &t.Error, &t.InboxID, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (q *ControlChannelQueries) UpdateAgentTestStatusForClient(id, clientID, status, errText string) error {
+	_, err := q.db.Exec(
+		`UPDATE cc_agent_tests
+		 SET status = ?, error = ?, updated_at = datetime('now')
+		 WHERE id = ? AND client_id = ?`,
+		status, errText, id, clientID,
+	)
+	return err
+}
+
 func (q *ControlChannelQueries) PullInbox(ccID string, sinceID int64, channelHandles []string, limit int) ([]models.InboxEvent, error) {
 	args := []interface{}{ccID, sinceID}
 	q1 := `SELECT id, cc_id, channel_handle, event_type, payload, created_at

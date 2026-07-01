@@ -164,7 +164,6 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_canary_client ON canary_tokens(client_id)`,
 
-
 	`CREATE TABLE IF NOT EXISTS oauth_credentials (
 		id                TEXT PRIMARY KEY,
 		service_id        TEXT NOT NULL REFERENCES services(id),
@@ -240,6 +239,21 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_inbox_cc_id ON discord_inbox(cc_id, id)`,
 	`CREATE INDEX IF NOT EXISTS idx_inbox_created ON discord_inbox(created_at)`,
+
+	`CREATE TABLE IF NOT EXISTS cc_agent_tests (
+		id          TEXT PRIMARY KEY,
+		cc_id       TEXT NOT NULL REFERENCES control_channels(id) ON DELETE CASCADE,
+		client_id   TEXT NOT NULL,
+		handle      TEXT NOT NULL,
+		agent_type  TEXT NOT NULL,
+		status      TEXT NOT NULL DEFAULT 'queued',
+		error       TEXT NOT NULL DEFAULT '',
+		inbox_id    INTEGER NOT NULL DEFAULT 0,
+		created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_cc_agent_tests_cc ON cc_agent_tests(cc_id, created_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_cc_agent_tests_client ON cc_agent_tests(client_id, created_at)`,
 
 	// Migration version tracking
 	`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)`,

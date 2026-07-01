@@ -492,6 +492,27 @@ func (c *APIClient) PostCC(ctx context.Context, handle, content string) error {
 	return nil
 }
 
+func (c *APIClient) ReportCCAgentTest(ctx context.Context, testID, status, errText string) error {
+	body, _ := json.Marshal(map[string]string{"status": status, "error": errText})
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		c.baseURL+"/client/cc/agent-tests/"+testID, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("report agent test: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 func (c *APIClient) Ping() error {
 	req, err := http.NewRequest("GET", c.baseURL+"/client/keys", nil)
 	if err != nil {

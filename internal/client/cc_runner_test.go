@@ -59,7 +59,7 @@ func newTestRunner(t *testing.T, fn ccRunFn) (*ccRunner, *recordingPoster, *CCSe
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: true}
-	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, true)
+	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ bad-name=ignored
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: fn, UseTmux: false}
-	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, true)
+	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ ANTHROPIC_API_KEY=sk-ant-placeholder
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: fn, UseTmux: false}
-	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, true)
+	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestCCRunner_ManagementPreamble_FirstTurnOnly(t *testing.T) {
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: true}
-	r, err := newCCRunner("dwch_mgmt", t.TempDir(), t.TempDir(), spec, store, pp.post, true)
+	r, err := newCCRunner("dwch_mgmt", t.TempDir(), t.TempDir(), spec, store, pp.post, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestCCRunner_DefaultsCwd(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: true}
-	r, err := newCCRunner("dwch_x", t.TempDir(), "", spec, store, pp.post, true)
+	r, err := newCCRunner("dwch_x", t.TempDir(), "", spec, store, pp.post, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}

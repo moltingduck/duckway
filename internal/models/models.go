@@ -249,3 +249,16 @@ type InboxEvent struct {
 	Payload       string  `json:"payload"`
 	CreatedAt     string  `json:"created_at"`
 }
+
+type CCAgentTest struct {
+	ID        string `json:"id"`
+	CCID      string `json:"cc_id"`
+	ClientID  string `json:"client_id"`
+	Handle    string `json:"handle"`
+	AgentType string `json:"agent_type"`
+	Status    string `json:"status"`
+	Error     string `json:"error,omitempty"`
+	InboxID   int64  `json:"inbox_id"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}

@@ -216,6 +216,7 @@ type sseEnvelope struct {
 // payloadMessageCreate is the Discord MESSAGE_CREATE shape we care about.
 type payloadMessageCreate struct {
 	ID      string `json:"id"`
+	TestID  string `json:"duckway_test_id"`
 	Content string `json:"content"`
 	Author  struct {
 		ID       string `json:"id"`
@@ -236,6 +237,7 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	}
 	var msg payloadMessageCreate
 	_ = json.Unmarshal(env.Payload, &msg)
+	w.reportAgentTest(msg.TestID, "received", "")
 	if msg.Author.Bot {
 		// Skip — server filters these too, but be defensive.
 		return
@@ -247,11 +249,13 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	runner, err := w.runnerFor(env.Handle, env.CCID)
 	if err != nil {
 		log.Printf("[cc-watch] cannot start runner for %s: %v", env.Handle, err)
+		w.reportAgentTest(msg.TestID, "failed", err.Error())
 		_ = w.api.PostCC(context.Background(), env.Handle, "❌ daemon could not start a session: "+err.Error())
 		return
 	}
-	if !runner.Enqueue(ccTask{Content: msg.Content, AuthorID: msg.Author.ID, MessageID: msg.ID, ChannelKind: env.Kind}) {
+	if !runner.Enqueue(ccTask{Content: msg.Content, AuthorID: msg.Author.ID, MessageID: msg.ID, ChannelKind: env.Kind, TestID: msg.TestID}) {
 		log.Printf("[cc-watch] %s: queue full, dropping message %s", env.Handle, msg.ID)
+		w.reportAgentTest(msg.TestID, "failed", "session queue full")
 		_ = w.api.PostCC(context.Background(), env.Handle,
 			"⚠️ session queue full (10 messages backed up) — your message was dropped, please retry once the agent catches up.")
 	}
@@ -314,7 +318,7 @@ func (w *CCWatch) runnerFor(handle, ccID string) (*ccRunner, error) {
 	if err != nil {
 		return nil, err
 	}
-	r, err := newCCRunner(handle, w.configDir, cwd, spec, w.sessions, w.api.PostCC, w.noTmux)
+	r, err := newCCRunner(handle, w.configDir, cwd, spec, w.sessions, w.api.PostCC, w.api.ReportCCAgentTest, w.noTmux)
 	if err != nil {
 		return nil, err
 	}
@@ -328,6 +332,15 @@ func (w *CCWatch) runnerFor(handle, ccID string) (*ccRunner, error) {
 	w.runners[handle] = r
 	w.mu.Unlock()
 	return r, nil
+}
+
+func (w *CCWatch) reportAgentTest(testID, status, errText string) {
+	if testID == "" {
+		return
+	}
+	if err := w.api.ReportCCAgentTest(context.Background(), testID, status, errText); err != nil {
+		log.Printf("[cc-watch] report test %s %s failed: %v", testID, status, err)
+	}
 }
 
 func (w *CCWatch) agentSpec(ccID string) (ccAgentSpec, error) {

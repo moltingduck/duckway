@@ -747,10 +747,18 @@ func (h *ControlChannelHandler) TestAgent(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	testID, err := svc.GenerateToken(12)
+	if err != nil {
+		jsonError(w, "generate test id: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	testID = "cctest_" + testID
+
 	payload, _ := json.Marshal(map[string]interface{}{
-		"id":         fmt.Sprintf("duckway-admin-test-%d", time.Now().UnixNano()),
-		"channel_id": mgmt.ChannelID,
-		"content":    "hi",
+		"id":              fmt.Sprintf("duckway-admin-test-%d", time.Now().UnixNano()),
+		"duckway_test_id": testID,
+		"channel_id":      mgmt.ChannelID,
+		"content":         "hi",
 		"author": map[string]interface{}{
 			"id":       "duckway-admin",
 			"username": "Duckway Admin",
@@ -760,6 +768,18 @@ func (h *ControlChannelHandler) TestAgent(w http.ResponseWriter, r *http.Request
 	inboxID, err := h.cc.AppendInbox(cc.ID, &mgmt.Handle, "MESSAGE_CREATE", string(payload))
 	if err != nil {
 		jsonError(w, "append test message: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.cc.CreateAgentTest(&models.CCAgentTest{
+		ID:        testID,
+		CCID:      cc.ID,
+		ClientID:  cc.ClientID,
+		Handle:    mgmt.Handle,
+		AgentType: cc.AgentType,
+		Status:    "queued",
+		InboxID:   inboxID,
+	}); err != nil {
+		jsonError(w, "create test status: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	subscribers := h.hub.SubscriberCount(cc.ClientID)
@@ -778,7 +798,19 @@ func (h *ControlChannelHandler) TestAgent(w http.ResponseWriter, r *http.Request
 		"agent_type":  cc.AgentType,
 		"subscribers": subscribers,
 		"inbox_id":    inboxID,
+		"test_id":     testID,
 	})
+}
+
+func (h *ControlChannelHandler) GetAgentTest(w http.ResponseWriter, r *http.Request) {
+	ccID := r.PathValue("id")
+	testID := r.PathValue("test_id")
+	test, err := h.cc.GetAgentTest(ccID, testID)
+	if err != nil {
+		jsonError(w, "not found", http.StatusNotFound)
+		return
+	}
+	jsonResponse(w, test)
 }
 
 // SetHub wires an event hub into the handler so the debug InjectEvent

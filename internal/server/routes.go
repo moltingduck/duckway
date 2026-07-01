@@ -286,6 +286,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("DELETE /api/cc/{id}", ccH.Delete)
 	adminAPIMux.HandleFunc("POST /api/cc/{id}/test", ccH.Test)
 	adminAPIMux.HandleFunc("POST /api/cc/{id}/test-agent", ccH.TestAgent)
+	adminAPIMux.HandleFunc("GET /api/cc/{id}/test-agent/{test_id}", ccH.GetAgentTest)
 	if os.Getenv("DUCKWAY_CC_DEBUG_INJECT") == "1" {
 		// Debug-only: synthetic SSE events for e2e tests.
 		adminAPIMux.HandleFunc("POST /api/cc/{id}/inject_event", ccH.InjectEvent)
@@ -456,6 +457,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	clientMux.HandleFunc("DELETE /client/cc/channels/{handle}/messages/{message_id}", ccClientH.DeleteMessage)
 	clientMux.HandleFunc("POST /client/cc/channels/{handle}/approval", ccClientH.RequestApproval)
 	clientMux.HandleFunc("GET /client/cc/inbox", ccClientH.PullInbox)
+	clientMux.HandleFunc("POST /client/cc/agent-tests/{test_id}", ccClientH.ReportAgentTest)
 
 	// Client config (no auth — needed during duckway init before token is verified)
 	s.mux.HandleFunc("GET /client/config", func(w http.ResponseWriter, r *http.Request) {

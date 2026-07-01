@@ -41,7 +41,7 @@ func TestClientGetCodexCredentials(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-1','client',?)`, services.HashToken("tok")); err != nil {
 		t.Fatal(err)
 	}
-	subInfo := `{"credential_kind":"codex_oauth","auth_mode":"chatgpt","source":"codex","account_id":"acct-1","last_refresh":"2026-07-01T00:00:00Z"}`
+	subInfo := `{"credential_kind":"codex_oauth","auth_mode":"chatgpt","source":"codex","account_id":"acct-1","id_token":"` + testJWT() + `","last_refresh":"2026-07-01T00:00:00Z"}`
 	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted,refresh_token,token_endpoint,subscription_info)
 		VALUES ('key-codex',?,'codex oauth',?,?, 'https://auth.openai.com/oauth/token', ?)`,
 		openaiSvc.ID, encAccess, encRefresh, subInfo); err != nil {
@@ -72,7 +72,7 @@ func TestClientGetCodexCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	tokens, _ := got["tokens"].(map[string]interface{})
-	if got["auth_mode"] != "chatgpt" || tokens["access_token"] != "codex-access-token" || tokens["refresh_token"] != "codex-refresh-token" || tokens["account_id"] != "acct-1" {
+	if got["auth_mode"] != "chatgpt" || tokens["access_token"] != "codex-access-token" || tokens["refresh_token"] != "codex-refresh-token" || tokens["account_id"] != "acct-1" || tokens["id_token"] == "" {
 		t.Fatalf("unexpected response: %#v", got)
 	}
 }
@@ -100,7 +100,7 @@ func TestValidateCodexOAuth(t *testing.T) {
 		"access_token": "` + testJWT() + `",
 		"refresh_token": "rt.1.good",
 		"token_endpoint": "https://auth.openai.com/oauth/token",
-		"subscription_info": "{\"credential_kind\":\"codex_oauth\",\"auth_mode\":\"chatgpt\",\"source\":\"codex\"}"
+		"subscription_info": "{\"credential_kind\":\"codex_oauth\",\"auth_mode\":\"chatgpt\",\"source\":\"codex\",\"id_token\":\"` + testJWT() + `\"}"
 	}`
 	rec := httptest.NewRecorder()
 	h.Validate(rec, httptest.NewRequest(http.MethodPost, "/api/oauth/validate", strings.NewReader(body)))
@@ -140,6 +140,41 @@ func TestValidateCodexOAuthRejectsBadShape(t *testing.T) {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "must look like a JWT") {
+		t.Fatalf("unexpected error: %s", rec.Body.String())
+	}
+}
+
+func TestValidateCodexOAuthRequiresIDToken(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handlers.NewOAuthHandler(
+		queries.NewAPIKeyQueries(db),
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		services.NewCrypto([]byte("0123456789abcdef0123456789abcdef")),
+	)
+
+	body := `{
+		"service_id": "` + openaiSvc.ID + `",
+		"access_token": "` + testJWT() + `",
+		"refresh_token": "rt.1.good",
+		"token_endpoint": "https://auth.openai.com/oauth/token",
+		"subscription_info": "{\"credential_kind\":\"codex_oauth\",\"auth_mode\":\"chatgpt\",\"source\":\"codex\"}"
+	}`
+	rec := httptest.NewRecorder()
+	h.Validate(rec, httptest.NewRequest(http.MethodPost, "/api/oauth/validate", strings.NewReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "id_token required") {
 		t.Fatalf("unexpected error: %s", rec.Body.String())
 	}
 }

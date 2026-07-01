@@ -428,6 +428,33 @@ func (h *CCClientHandler) PullInbox(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *CCClientHandler) ReportAgentTest(w http.ResponseWriter, r *http.Request) {
+	client, _, _, ok := h.resolveCC(w, r)
+	if !ok {
+		return
+	}
+	testID := r.PathValue("test_id")
+	var req struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	switch req.Status {
+	case "received", "started", "replied", "failed":
+	default:
+		jsonError(w, "invalid status", http.StatusBadRequest)
+		return
+	}
+	if err := h.cc.UpdateAgentTestStatusForClient(testID, client.ID, req.Status, req.Error); err != nil {
+		jsonError(w, "update test status: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "ok"})
+}
+
 // GET /client/cc/events — Server-Sent Events stream of live gateway
 // dispatches for this client's CC. Used by `duckway cc watch` to wake up
 // the moment a Discord message arrives instead of polling the inbox.

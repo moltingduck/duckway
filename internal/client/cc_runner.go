@@ -43,6 +43,7 @@ type ccRunner struct {
 	wg          sync.WaitGroup
 	sessions    *CCSessionStore
 	postMessage func(ctx context.Context, handle, content string) error // bound to APIClient.PostCC
+	reportTest  func(ctx context.Context, testID, status, errText string) error
 	logger      func(format string, args ...interface{})
 }
 
@@ -52,6 +53,7 @@ type ccTask struct {
 	AuthorID    string
 	MessageID   string
 	ChannelKind string // "management" or "task" — drives prompt injection
+	TestID      string
 }
 
 const (
@@ -79,7 +81,7 @@ func chooseCCRunFn(spec ccAgentSpec, noTmux bool) ccRunFn {
 	return runViaPrint
 }
 
-func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, sessions *CCSessionStore, postMessage func(ctx context.Context, handle, content string) error, noTmux bool) (*ccRunner, error) {
+func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, sessions *CCSessionStore, postMessage func(ctx context.Context, handle, content string) error, reportTest func(ctx context.Context, testID, status, errText string) error, noTmux bool) (*ccRunner, error) {
 	cwd := channelCwd
 	if cwd == "" {
 		home, err := os.UserHomeDir()
@@ -102,6 +104,7 @@ func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, session
 		stop:        make(chan struct{}),
 		sessions:    sessions,
 		postMessage: postMessage,
+		reportTest:  reportTest,
 		logger:      log.Printf,
 	}
 	r.wg.Add(1)
@@ -181,8 +184,10 @@ func (r *ccRunner) run(t ccTask) {
 	extraEnv = append(extraEnv, keysEnv...)
 
 	r.logger("[cc-watch] %s: running %s (cwd=%s)", r.handle, r.agentName, r.cwd)
+	r.reportTaskTest(t, "started", "")
 	newSID, result, isError, err := r.runFn(ctx, r.bin, r.cwd, prompt, sid, extraEnv)
 	if err != nil {
+		r.reportTaskTest(t, "failed", err.Error())
 		_ = r.postMessage(context.Background(), r.handle, fmt.Sprintf("%s error: %v", r.agentName, err))
 		return
 	}
@@ -204,6 +209,18 @@ func (r *ccRunner) run(t ccTask) {
 	}
 	if err := r.postMessage(context.Background(), r.handle, body); err != nil {
 		r.logger("[cc-watch] %s: discord post failed: %v", r.handle, err)
+		r.reportTaskTest(t, "failed", "discord post failed: "+err.Error())
+		return
+	}
+	r.reportTaskTest(t, "replied", "")
+}
+
+func (r *ccRunner) reportTaskTest(t ccTask, status, errText string) {
+	if t.TestID == "" || r.reportTest == nil {
+		return
+	}
+	if err := r.reportTest(context.Background(), t.TestID, status, errText); err != nil {
+		r.logger("[cc-watch] report test %s %s failed: %v", t.TestID, status, err)
 	}
 }
 

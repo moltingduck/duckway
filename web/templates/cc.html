@@ -704,10 +704,18 @@ function testAgent() {
       btn.textContent = orig;
       btn.disabled = false;
       if (d.error) {
+        btn.textContent = orig;
+        btn.disabled = false;
         panel.innerHTML = '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid #ef4444;padding:0.75rem">' +
           '<strong style="color:#ef4444">Agent test failed</strong><br><span class="text-sm">' + escapeHTML(d.error) + '</span></div>';
         return;
       }
+      if (d.test_id) {
+        pollAgentTest(currentCC.id, d.test_id, d.handle || '', btn, orig, panel);
+        return;
+      }
+      btn.textContent = orig;
+      btn.disabled = false;
       var delivered = Number(d.subscribers || 0) > 0;
       var queued = Number(d.inbox_id || 0) > 0;
       var title = delivered ? 'Agent test delivered' : (queued ? 'Agent test queued' : 'Agent watcher offline');
@@ -729,6 +737,56 @@ function testAgent() {
       btn.disabled = false;
       panel.innerHTML = '<div class="text-muted text-sm" style="color:#ef4444">Agent test request failed: ' + escapeHTML(err.message) + '</div>';
     });
+}
+
+function renderAgentTestStatus(test, handle) {
+  var status = test.status || 'queued';
+  var labels = {
+    queued: 'Queued in inbox',
+    received: 'Watcher received',
+    started: 'Agent started',
+    replied: 'Agent replied',
+    failed: 'Agent test failed'
+  };
+  var final = status === 'replied' || status === 'failed';
+  var color = status === 'replied' ? '#22c55e' : (status === 'failed' ? '#ef4444' : '#f59e0b');
+  var text = labels[status] || status;
+  var extra = status === 'failed' && test.error ? '<br><span class="text-sm" style="color:#ef4444">' + escapeHTML(test.error) + '</span>' : '';
+  var note = final
+    ? (status === 'replied' ? 'The watcher ran the agent and posted a reply.' : 'The watcher reported an error.')
+    : 'Waiting for the assigned client watcher to finish.';
+  return '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ' + color + ';padding:0.75rem">' +
+    '<strong>' + escapeHTML(text) + '</strong><br><span class="text-sm">Test message <code>hi</code> on <code>' + escapeHTML(handle || test.handle || '') + '</code>. ' + escapeHTML(note) + '</span>' + extra + '</div>';
+}
+
+function pollAgentTest(ccID, testID, handle, btn, orig, panel) {
+  var started = Date.now();
+  function tick() {
+    fetch('/api/cc/' + ccID + '/test-agent/' + testID, {credentials:'same-origin'})
+      .then(function(r){ return r.json(); })
+      .then(function(test) {
+        if (test.error) throw new Error(test.error);
+        panel.innerHTML = renderAgentTestStatus(test, handle);
+        if (test.status === 'replied' || test.status === 'failed') {
+          btn.textContent = orig;
+          btn.disabled = false;
+          return;
+        }
+        if (Date.now() - started > 120000) {
+          btn.textContent = orig;
+          btn.disabled = false;
+          panel.innerHTML += '<div class="mt-1 text-sm text-muted">Still waiting after 120s. Check <code>duckway cc watch status</code> and <code>cc-watch.log</code> on the assigned client.</div>';
+          return;
+        }
+        setTimeout(tick, 1000);
+      })
+      .catch(function(err) {
+        btn.textContent = orig;
+        btn.disabled = false;
+        panel.innerHTML = '<div class="text-muted text-sm" style="color:#ef4444">Agent test status failed: ' + escapeHTML(err.message) + '</div>';
+      });
+  }
+  tick();
 }
 
 function testCC() {
