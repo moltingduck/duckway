@@ -251,6 +251,8 @@ function renderDiscordSetup() {
         '<select id="cc-cfg-category">' +
           (catOptions || '<option value="">No categories loaded</option>') +
         '</select>' +
+        '<div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.5rem"><button type="button" class="btn btn-sm" onclick="preflightDiscordCategory()">Check permissions</button><span class="text-muted text-sm">Creates and deletes a temporary channel.</span></div>' +
+        '<div id="cc-preflight-result" class="mt-1"></div>' +
         '<span class="text-muted text-sm">Existing categories must allow the bot to manage channels. New categories inherit the bot role permissions from the invite.</span></div>' +
       '<div class="form-group">' +
         '<label>Create category</label>' +
@@ -327,8 +329,39 @@ function createDiscordCategory() {
     var guild = document.getElementById('cc-cfg-guild');
     var cat = document.getElementById('cc-cfg-category');
     if (guild) guild.value = guildID;
-    if (cat) cat.value = d.id;
+    if (cat) {
+      cat.value = d.id;
+      preflightDiscordCategory();
+    }
   });
+}
+
+function preflightDiscordCategory() {
+  var keyID = document.getElementById('cc-key').value;
+  var guildID = document.getElementById('cc-cfg-guild').value;
+  var catID = document.getElementById('cc-cfg-category').value;
+  var panel = document.getElementById('cc-preflight-result');
+  if (!keyID || !guildID || !catID) { showToast('Choose a server and category first', 'error'); return; }
+  if (panel) panel.innerHTML = '<div class="text-muted text-sm">Checking Discord permissions...</div>';
+  fetch('/api/cc/discord/preflight', {
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({api_key_id:keyID, guild_id:guildID, category_id:catID})
+  }).then(function(r){return r.json();}).then(function(d) {
+    if (d.error) { if (panel) panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+escapeHTML(d.error)+'</div>'; return; }
+    if (panel) panel.innerHTML = renderPreflightResult(d, escapeHTML);
+  });
+}
+
+function renderPreflightResult(d, escFn) {
+  var ok = !!d.ok;
+  var rows = (d.steps || []).map(function(s) {
+    return '<tr><td style="width:1.5rem">'+(s.ok ? '<span style="color:#22c55e">✓</span>' : '<span style="color:#ef4444">✗</span>')+'</td>' +
+      '<td>'+escFn(s.name)+'</td><td class="text-muted text-sm">'+escFn(s.note || '')+'</td></tr>';
+  }).join('');
+  return '<div class="card" style="background:var(--bg-input);border-left:3px solid '+(ok?'#22c55e':'#ef4444')+';padding:0.75rem">' +
+    (ok ? '<strong style="color:#22c55e">Permissions OK</strong>' : '<strong style="color:#ef4444">Permission check failed</strong>') +
+    '<table class="mt-1" style="width:100%">'+rows+'</table></div>';
 }
 
 function openCreate() {

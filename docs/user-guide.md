@@ -405,7 +405,7 @@ Duckway can now discover servers and categories from the saved bot token, so you
    - **Agent type** — `claude_code` or `codex` (when tmux is installed, both use attachable `duckway-<handle>` sessions; `--no-tmux` forces headless mode).
    - **Service** — `discord`.
    - **Bot Token** — the API key you uploaded in (1).
-   - **Discord setup** — click **Load Discord setup**. If the bot is not in the server yet, click **Invite bot**, select the server in Discord, then refresh. Pick an existing category or create a new `duckway` category from the form.
+   - **Discord setup** — click **Load Discord setup**. If the bot is not in the server yet, click **Invite bot** to open Duckway's generated Discord OAuth URL, select the server in Discord, then refresh. Pick an existing category or create a new category from the form, then click **Check permissions** to verify create/send/react/read/delete access before saving.
 
    On save, duckway calls Discord to create `<client>-control` under the category and issues a phantom bot token bound to the client. If anything fails (bot lacks permission, wrong category id, etc.) the create rolls back and tells you which step failed.
 

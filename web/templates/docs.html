@@ -331,9 +331,9 @@ curl https://api.openai.com/v1/chat/completions ...
         <li>✅ <strong>Server Members Intent</strong> — optional, only if you'll use <code>required_reactors</code> on approvals</li>
       </ul>
     </li>
-    <li><strong>Invite the bot.</strong> Duckway can generate the invite URL from the saved bot token in the Control Channel create form. Use that URL to pick the guild and authorize the bot.</li>
+    <li><strong>Invite the bot.</strong> Duckway generates the Discord OAuth URL from the saved bot token in the Control Channel create form. Use that URL to pick the guild and authorize the bot.</li>
     <li><strong>Lock down to one category (recommended).</strong> The invite grants <code>Manage Channels</code> guild-wide. Narrow it: right-click the bot's role → uncheck <code>Manage Channels</code> globally. Then right-click the target category → <strong>Edit Category → Permissions</strong> → add the bot with the four perms above. Now a leaked token's blast radius is one category, not the guild.</li>
-    <li><strong>Select the destination in Duckway.</strong> Click <strong>Load Discord setup</strong>; Duckway lists servers the bot can see and categories in the selected server. Pick a category or create a new <code>duckway</code> category from the form. Manual IDs are only needed for fallback/debugging:
+    <li><strong>Select the destination in Duckway.</strong> Click <strong>Load Discord setup</strong>; Duckway lists servers the bot can see and categories in the selected server. Pick a category or create a new category from the form, then click <strong>Check permissions</strong> to verify create/send/react/read/delete access before saving. Manual IDs are only needed for fallback/debugging:
       <ul>
         <li><code>guild_id</code> = right-click your guild icon → <strong>Copy Server ID</strong></li>
         <li><code>category_id</code> = right-click the category header → <strong>Copy Channel ID</strong> (Discord internally treats categories as channels with <code>type=4</code>)</li>

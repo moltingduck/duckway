@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -132,6 +133,95 @@ func (h *ControlChannelHandler) DiscordCreateCategory(w http.ResponseWriter, r *
 		return
 	}
 	jsonResponse(w, category)
+}
+
+// POST /api/cc/discord/preflight
+func (h *ControlChannelHandler) DiscordPreflight(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		APIKeyID   string `json:"api_key_id"`
+		GuildID    string `json:"guild_id"`
+		CategoryID string `json:"category_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if req.APIKeyID == "" || req.GuildID == "" || req.CategoryID == "" {
+		jsonError(w, "api_key_id, guild_id, and category_id are required", http.StatusBadRequest)
+		return
+	}
+	botToken, err := h.discordBotToken(req.APIKeyID)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	type step struct {
+		Name string `json:"name"`
+		OK   bool   `json:"ok"`
+		Note string `json:"note,omitempty"`
+	}
+	steps := []step{}
+	testName := fmt.Sprintf("duckway-preflight-%d", time.Now().Unix())
+	created, err := h.bot.CreateChannel(r.Context(), botToken, svc.CreateChannelOpts{
+		GuildID:  req.GuildID,
+		ParentID: req.CategoryID,
+		Name:     testName,
+		Topic:    "Temporary channel created by Duckway to verify Discord permissions.",
+	})
+	if err != nil {
+		steps = append(steps, step{Name: "create test channel", OK: false, Note: err.Error()})
+		jsonResponse(w, map[string]interface{}{"ok": false, "steps": steps})
+		return
+	}
+	steps = append(steps, step{Name: "create test channel", OK: true, Note: created.Name})
+	cleanup := func() {
+		if derr := h.bot.DeleteChannel(contextWithoutCancel(r.Context()), botToken, created.ID); derr != nil {
+			steps = append(steps, step{Name: "delete test channel", OK: false, Note: derr.Error() + " — remove " + created.Name + " manually"})
+		} else {
+			steps = append(steps, step{Name: "delete test channel", OK: true})
+		}
+	}
+
+	msgID, err := h.bot.PostMessage(r.Context(), botToken, created.ID, "Duckway Discord permission preflight.")
+	if err != nil {
+		steps = append(steps, step{Name: "send message", OK: false, Note: err.Error()})
+		cleanup()
+		jsonResponse(w, map[string]interface{}{"ok": false, "steps": steps})
+		return
+	}
+	steps = append(steps, step{Name: "send message", OK: true})
+
+	if err := h.bot.AddReaction(r.Context(), botToken, created.ID, msgID, "✅"); err != nil {
+		steps = append(steps, step{Name: "add reaction", OK: false, Note: err.Error()})
+		cleanup()
+		jsonResponse(w, map[string]interface{}{"ok": false, "steps": steps})
+		return
+	}
+	steps = append(steps, step{Name: "add reaction", OK: true})
+
+	if _, err := h.bot.GetMessages(r.Context(), botToken, created.ID, 1); err != nil {
+		steps = append(steps, step{Name: "read message history", OK: false, Note: err.Error()})
+		cleanup()
+		jsonResponse(w, map[string]interface{}{"ok": false, "steps": steps})
+		return
+	}
+	steps = append(steps, step{Name: "read message history", OK: true})
+	cleanup()
+	ok := true
+	for _, s := range steps {
+		if !s.OK {
+			ok = false
+			break
+		}
+	}
+	jsonResponse(w, map[string]interface{}{"ok": ok, "steps": steps})
+}
+
+func contextWithoutCancel(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(ctx)
 }
 
 func NewControlChannelHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, placeholders *queries.PlaceholderQueries, services *queries.ServiceQueries, clients *queries.ClientQueries, settings *queries.SettingsQueries, crypto *svc.Crypto, bot *svc.DiscordBot) *ControlChannelHandler {

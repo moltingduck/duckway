@@ -356,7 +356,7 @@ func DiscordInviteURL(clientID string) string {
 	v := url.Values{}
 	v.Set("client_id", clientID)
 	v.Set("permissions", "68688")
-	v.Set("scope", "bot")
+	v.Set("scope", "bot applications.commands")
 	return "https://discord.com/oauth2/authorize?" + v.Encode()
 }
 

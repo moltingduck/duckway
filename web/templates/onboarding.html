@@ -264,7 +264,7 @@ function renderOnboardingDiscordSetup() {
   var categoryName = state.clientName || document.getElementById('client-name').value.trim() || 'duckway';
   var destination = loaded && guilds.length
     ? '<div class="form-group"><label>Server</label><select id="cfg-guild" onchange="loadOnboardingDiscordCategories()">'+guildOptions+'</select></div>' +
-      '<div class="form-group"><label>Category</label><select id="cfg-category">'+(catOptions || '<option value="">No categories loaded</option>')+'</select></div>' +
+      '<div class="form-group"><label>Category</label><select id="cfg-category">'+(catOptions || '<option value="">No categories loaded</option>')+'</select><div style="display:flex;gap:.5rem;align-items:center;margin-top:.5rem"><button type="button" class="btn btn-sm" onclick="preflightOnboardingDiscordCategory()">Check permissions</button><span class="text-muted text-sm">Creates and deletes a temporary channel.</span></div><div id="cfg-preflight-result" style="margin-top:.5rem"></div></div>' +
       '<div class="form-group"><label>Create category</label><div style="display:flex;gap:.5rem;align-items:center"><input type="text" id="cfg-new-category" value="'+esc(categoryName)+'" placeholder="'+esc(categoryName)+'"><button type="button" class="btn btn-sm" onclick="createOnboardingDiscordCategory()">Create</button></div></div>'
     : '<div class="form-group"><label>Server ID</label><input type="text" id="cfg-guild" placeholder="Load setup, or paste server id as fallback" '+(!loaded?'disabled':'')+'></div>' +
       '<div class="form-group"><label>Category ID</label><input type="text" id="cfg-category" placeholder="Paste category id as fallback" '+(!loaded?'disabled':'')+'></div>';
@@ -324,8 +324,37 @@ function createOnboardingDiscordCategory() {
     var g = document.getElementById('cfg-guild');
     var c = document.getElementById('cfg-category');
     if (g) g.value = guildID;
-    if (c) c.value = d.id;
+    if (c) {
+      c.value = d.id;
+      preflightOnboardingDiscordCategory();
+    }
   });
+}
+
+function preflightOnboardingDiscordCategory() {
+  var keyID = document.getElementById('cc-key').value;
+  var guildID = document.getElementById('cfg-guild').value;
+  var catID = document.getElementById('cfg-category').value;
+  var panel = document.getElementById('cfg-preflight-result');
+  if (!keyID || !guildID || !catID) { showToast('Choose a server and category first', 'error'); return; }
+  if (panel) panel.innerHTML = '<div class="text-muted text-sm">Checking Discord permissions...</div>';
+  fetch('/api/cc/discord/preflight', {
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({api_key_id:keyID, guild_id:guildID, category_id:catID})
+  }).then(function(r){return r.json();}).then(function(d){
+    if (d.error) { if (panel) panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+esc(d.error)+'</div>'; return; }
+    if (panel) panel.innerHTML = renderOnboardingPreflightResult(d);
+  });
+}
+
+function renderOnboardingPreflightResult(d) {
+  var rows = (d.steps || []).map(function(s) {
+    return '<tr><td style="width:1.5rem">'+(s.ok ? '<span style="color:#22c55e">✓</span>' : '<span style="color:#ef4444">✗</span>')+'</td><td>'+esc(s.name)+'</td><td class="text-muted text-sm">'+esc(s.note || '')+'</td></tr>';
+  }).join('');
+  return '<div style="background:var(--bg-input);border-left:3px solid '+(d.ok?'#22c55e':'#ef4444')+';padding:.75rem;border-radius:var(--radius)">' +
+    (d.ok ? '<strong style="color:#22c55e">Permissions OK</strong>' : '<strong style="color:#ef4444">Permission check failed</strong>') +
+    '<table style="width:100%;margin-top:.5rem">'+rows+'</table></div>';
 }
 
 function createCC() {

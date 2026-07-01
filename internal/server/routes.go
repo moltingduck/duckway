@@ -277,6 +277,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("GET /api/cc/discord/setup", ccH.DiscordSetup)
 	adminAPIMux.HandleFunc("GET /api/cc/discord/categories", ccH.DiscordCategories)
 	adminAPIMux.HandleFunc("POST /api/cc/discord/categories", ccH.DiscordCreateCategory)
+	adminAPIMux.HandleFunc("POST /api/cc/discord/preflight", ccH.DiscordPreflight)
 	adminAPIMux.HandleFunc("GET /api/cc/{id}", ccH.Get)
 	adminAPIMux.HandleFunc("PUT /api/cc/{id}", ccH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/cc/{id}", ccH.Delete)
