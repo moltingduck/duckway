@@ -101,10 +101,10 @@ func (q *ControlChannelQueries) Create(c *models.ControlChannel) error {
 	return err
 }
 
-func (q *ControlChannelQueries) Update(id, name, apiKeyID, config string, isActive bool) error {
+func (q *ControlChannelQueries) Update(id, name, apiKeyID, agentType, config string, isActive bool) error {
 	_, err := q.db.Exec(
-		"UPDATE control_channels SET name = ?, api_key_id = ?, config = ?, is_active = ? WHERE id = ?",
-		name, apiKeyID, config, boolToInt(isActive), id,
+		"UPDATE control_channels SET name = ?, api_key_id = ?, agent_type = ?, config = ?, is_active = ? WHERE id = ?",
+		name, apiKeyID, agentType, config, boolToInt(isActive), id,
 	)
 	return err
 }

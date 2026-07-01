@@ -36,11 +36,8 @@
         <select id="cc-agent">
           <option value="claude_code">claude_code</option>
           <option value="codex">codex</option>
-          <option value="openclaw">openclaw</option>
-          <option value="harmes">harmes</option>
-          <option value="cursor">cursor</option>
-          <option value="copilot_cli">copilot_cli</option>
         </select>
+        <span class="text-muted text-sm">Only agents implemented by <code>duckway cc watch</code> are shown.</span>
       </div>
       <div class="form-group">
         <label>Service</label>
@@ -68,6 +65,7 @@
     <table class="detail-table">
       <tr><td class="text-muted">ID</td><td id="d-id" class="mono text-sm"></td></tr>
       <tr><td class="text-muted">Name</td><td id="d-name"></td></tr>
+      <tr><td class="text-muted">Agent Type</td><td id="d-agent"></td></tr>
       <tr><td class="text-muted">Service</td><td id="d-service"></td></tr>
       <tr><td class="text-muted">Bot Token</td><td id="d-key"></td></tr>
       <tr><td class="text-muted">Config</td><td id="d-config" class="mono text-sm" style="white-space:pre-wrap"></td></tr>
@@ -85,6 +83,7 @@
     <div class="modal-actions mt-1">
       <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
       <button type="button" class="btn" onclick="openEditFromDetail()">Edit</button>
+      <button type="button" class="btn" id="d-agent-test-btn" onclick="testAgent()">Test agent (hi)</button>
       <button type="button" class="btn" id="d-test-btn" onclick="testCC()">Test (create + delete channel)</button>
       <button type="button" class="btn btn-danger" id="d-delete-btn">Delete CC</button>
     </div>
@@ -198,10 +197,10 @@ function loadCCs() {
         cfgPreview = Object.keys(cfg).map(function(k){return k+'='+escapeShort(cfg[k]);}).join(', ');
       } catch(e) { cfgPreview = '(invalid)'; }
       var tr = document.createElement('tr');
-      var needsKey = !c.is_active && String(c.api_key_name || '').indexOf('Deleted refreshable token:') === 0;
+      var needsKey = ccNeedsKey(c);
       tr.innerHTML =
         '<td><a href="#" onclick="openDetail(\''+c.id+'\');return false"><strong>'+escapeHTML(c.name)+'</strong></a></td>' +
-        '<td>'+escapeHTML(c.client_name||'?')+'  <span class="text-muted text-sm">(' + escapeHTML(c.agent_type) + ')</span></td>' +
+        '<td>'+escapeHTML(c.client_name||'?')+'  <span class="text-muted text-sm">(' + escapeHTML(agentLabel(c.agent_type)) + ')</span></td>' +
         '<td class="text-sm">'+(needsKey ? '<span class="badge badge-red">reassign key</span> ' : '')+escapeHTML(c.api_key_name)+'</td>' +
         '<td class="text-sm mono">'+escapeHTML(cfgPreview)+'</td>' +
         '<td>'+(c.is_active?'<span class="badge badge-green">Active</span>':(needsKey?'<span class="badge badge-red">Disabled: reassign key</span>':'<span class="badge badge-gray">Inactive</span>'))+'</td>' +
@@ -220,6 +219,16 @@ function escapeHTML(s) {
   return String(s==null?'':s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function ccNeedsKey(c) {
+  return !c.is_active && /^Deleted (refreshable token|API key):/.test(String(c.api_key_name || ''));
+}
+function agentLabel(agentType) {
+  switch (agentType) {
+  case 'claude_code': return 'Claude Code';
+  case 'codex': return 'Codex';
+  default: return agentType || '?';
+  }
 }
 function parseCCConfig(c) {
   try { return JSON.parse(c.config || '{}') || {}; } catch(e) { return {}; }
@@ -470,8 +479,9 @@ function openDetail(id) {
     document.getElementById('d-title').textContent = c.name;
     document.getElementById('d-id').textContent = c.id;
     document.getElementById('d-name').textContent = c.name;
+    document.getElementById('d-agent').innerHTML = '<span class="badge badge-gray">'+escapeHTML(agentLabel(c.agent_type))+'</span> <span class="text-muted text-sm">('+escapeHTML(c.agent_type)+')</span>';
     document.getElementById('d-service').innerHTML = '<span class="badge badge-blue">'+escapeHTML(c.service_name)+'</span>';
-    var needsKey = !c.is_active && String(c.api_key_name || '').indexOf('Deleted refreshable token:') === 0;
+    var needsKey = ccNeedsKey(c);
     document.getElementById('d-key').innerHTML = (needsKey ? '<span class="badge badge-red">reassign key</span> ' : '') + escapeHTML(c.api_key_name);
     var pretty = c.config;
     try { pretty = JSON.stringify(JSON.parse(c.config), null, 2); } catch(e) {}
@@ -537,12 +547,24 @@ function populateEdit(c) {
   document.getElementById('edit-cc-name').value = c.name || '';
   document.getElementById('edit-cc-active').checked = !!c.is_active;
   document.getElementById('edit-cc-binding').innerHTML =
-    escapeHTML(c.client_name || '?') + ' / ' + escapeHTML(c.agent_type || '?') +
+    escapeHTML(c.client_name || '?') +
     ' / ' + escapeHTML(c.service_name || '?') +
-    '<br><span class="text-muted">Client, agent, and service are immutable. Reassign the bot token here when the previous key was deleted.</span>';
+    '<br><span class="text-muted">Client and message service are immutable. Reassign the bot token here when the previous key was deleted.</span>';
   document.getElementById('edit-test-result').innerHTML = '';
   var cfg = parseCCConfig(c);
   var box = document.getElementById('edit-config-fields');
+  var agentOptions = ['claude_code', 'codex'].map(function(a) {
+    return '<option value="'+escapeHTML(a)+'" '+(a === c.agent_type ? 'selected' : '')+'>'+escapeHTML(agentLabel(a))+' ('+escapeHTML(a)+')</option>';
+  }).join('');
+  if (c.agent_type && ['claude_code', 'codex'].indexOf(c.agent_type) < 0) {
+    agentOptions = '<option value="'+escapeHTML(c.agent_type)+'" selected disabled>'+escapeHTML(c.agent_type)+' (unsupported by cc watch)</option>' + agentOptions;
+  }
+  var agentField =
+    '<div class="form-group">' +
+      '<label>Agent type</label>' +
+      '<select id="edit-cc-agent" required>'+agentOptions+'</select>' +
+      '<span class="text-muted text-sm">Pick the agent installed on the assigned client. Codex should be used with OpenAI/Codex credentials; Claude Code with Anthropic/Claude credentials.</span>' +
+    '</div>';
   var keyOptions = allKeys
     .filter(function(k){ return k.service_id === c.service_id && k.is_active; })
     .map(function(k) {
@@ -552,10 +574,11 @@ function populateEdit(c) {
     '<div class="form-group">' +
       '<label>Bot Token</label>' +
       '<select id="edit-cc-key" required>' + (keyOptions || '<option value="">No active keys for this service</option>') + '</select>' +
-      (String(c.api_key_name || '').indexOf('Deleted refreshable token:') === 0 ? '<span class="text-sm" style="color:var(--danger)">This CC was disabled because its refreshable token was deleted. Pick a replacement key and activate it.</span>' : '') +
+      (ccNeedsKey(c) ? '<span class="text-sm" style="color:var(--danger)">This CC was disabled because its key was deleted. Pick a replacement key and activate it.</span>' : '') +
     '</div>';
   if (c.service_name === 'discord') {
     box.innerHTML =
+      agentField +
       keyField +
       '<div class="form-group">' +
         '<label>Server ID</label>' +
@@ -573,6 +596,7 @@ function populateEdit(c) {
     return;
   }
   box.innerHTML =
+    agentField +
     keyField +
     '<div class="form-group">' +
       '<label>Config JSON</label>' +
@@ -609,6 +633,7 @@ document.getElementById('edit-form').addEventListener('submit', function(e) {
     body: JSON.stringify({
       name: document.getElementById('edit-cc-name').value.trim(),
       api_key_id: document.getElementById('edit-cc-key').value,
+      agent_type: document.getElementById('edit-cc-agent').value,
       is_active: document.getElementById('edit-cc-active').checked,
       config: config
     })
@@ -662,6 +687,39 @@ function preflightEditDiscordCategory() {
     if (d.error) { panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+escapeHTML(d.error)+'</div>'; return; }
     panel.innerHTML = renderPreflightResult(d, escapeHTML);
   });
+}
+
+function testAgent() {
+  if (!currentCC) return;
+  var btn = document.getElementById('d-agent-test-btn');
+  var panel = document.getElementById('d-test-result');
+  var orig = btn.textContent;
+  btn.textContent = 'Sending...';
+  btn.disabled = true;
+  panel.innerHTML = '<div class="text-muted text-sm">Publishing <code>hi</code> to the management channel for ' + escapeHTML(agentLabel(currentCC.agent_type)) + '.</div>';
+
+  fetch('/api/cc/' + currentCC.id + '/test-agent', {method:'POST', credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      btn.textContent = orig;
+      btn.disabled = false;
+      if (d.error) {
+        panel.innerHTML = '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid #ef4444;padding:0.75rem">' +
+          '<strong style="color:#ef4444">Agent test failed</strong><br><span class="text-sm">' + escapeHTML(d.error) + '</span></div>';
+        return;
+      }
+      var delivered = Number(d.subscribers || 0) > 0;
+      var note = delivered
+        ? 'Delivered to ' + d.subscribers + ' connected watcher(s).'
+        : 'No connected duckway cc watch daemon was listening; start or restart the client watcher and retry.';
+      panel.innerHTML = '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ' + (delivered ? '#22c55e' : '#f59e0b') + ';padding:0.75rem">' +
+        '<strong>Agent test published</strong><br><span class="text-sm">Sent <code>hi</code> to <code>' + escapeHTML(d.handle || '') + '</code>. ' + escapeHTML(note) + '</span></div>';
+    })
+    .catch(function(err) {
+      btn.textContent = orig;
+      btn.disabled = false;
+      panel.innerHTML = '<div class="text-muted text-sm" style="color:#ef4444">Agent test request failed: ' + escapeHTML(err.message) + '</div>';
+    });
 }
 
 function testCC() {

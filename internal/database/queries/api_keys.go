@@ -125,6 +125,42 @@ func (q *APIKeyQueries) Delete(id string) error {
 	return err
 }
 
+func (q *APIKeyQueries) DeleteWithControlChannelCleanup(id string) error {
+	key, err := q.GetByID(id)
+	if err != nil {
+		return err
+	}
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var ccCount int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM control_channels WHERE api_key_id = ?`, id).Scan(&ccCount); err != nil {
+		return err
+	}
+	if ccCount == 0 {
+		if _, err := tx.Exec("DELETE FROM api_keys WHERE id = ?", id); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
+	if _, err := tx.Exec(`UPDATE control_channels SET is_active = 0 WHERE api_key_id = ?`, id); err != nil {
+		return fmt.Errorf("disable control channels: %w", err)
+	}
+	if _, err := tx.Exec(`
+		UPDATE api_keys
+		SET name = ?, key_encrypted = '', refresh_token = '', expires_at = 0,
+		    token_endpoint = '', subscription_info = '', usage_snapshot = '',
+		    is_active = 0
+		WHERE id = ?`, "Deleted API key: "+key.Name, id); err != nil {
+		return fmt.Errorf("disable retained key reference: %w", err)
+	}
+	return tx.Commit()
+}
+
 func (q *APIKeyQueries) RefreshableDeleteImpact(id string) (*RefreshableDeleteImpact, error) {
 	key, err := q.GetByID(id)
 	if err != nil {

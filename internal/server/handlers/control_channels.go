@@ -332,9 +332,7 @@ func (h *ControlChannelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.AgentType == "" {
 		req.AgentType = "claude_code"
 	}
-	switch req.AgentType {
-	case "claude_code", "codex", "openclaw", "harmes", "cursor", "copilot_cli":
-	default:
+	if !validCCAgentType(req.AgentType) {
 		jsonError(w, "unknown agent_type: "+req.AgentType, http.StatusBadRequest)
 		return
 	}
@@ -531,10 +529,11 @@ func (h *ControlChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		APIKeyID string          `json:"api_key_id"`
-		Name     string          `json:"name"`
-		Config   json.RawMessage `json:"config"`
-		IsActive *bool           `json:"is_active"`
+		APIKeyID  string          `json:"api_key_id"`
+		AgentType string          `json:"agent_type"`
+		Name      string          `json:"name"`
+		Config    json.RawMessage `json:"config"`
+		IsActive  *bool           `json:"is_active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
@@ -543,6 +542,14 @@ func (h *ControlChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 	name := req.Name
 	if name == "" {
 		name = cur.Name
+	}
+	agentType := cur.AgentType
+	if req.AgentType != "" {
+		if !validCCAgentType(req.AgentType) {
+			jsonError(w, "unknown agent_type: "+req.AgentType, http.StatusBadRequest)
+			return
+		}
+		agentType = req.AgentType
 	}
 	apiKeyID := cur.APIKeyID
 	if req.APIKeyID != "" {
@@ -569,11 +576,20 @@ func (h *ControlChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.IsActive != nil {
 		active = *req.IsActive
 	}
-	if err := h.cc.Update(id, name, apiKeyID, configStr, active); err != nil {
+	if err := h.cc.Update(id, name, apiKeyID, agentType, configStr, active); err != nil {
 		jsonError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	jsonResponse(w, map[string]string{"status": "updated"})
+}
+
+func validCCAgentType(agentType string) bool {
+	switch agentType {
+	case "claude_code", "codex":
+		return true
+	default:
+		return false
+	}
 }
 
 // DELETE /api/cc/{id} — archive every channel under the CC, drop the
@@ -694,6 +710,68 @@ func (h *ControlChannelHandler) Test(w http.ResponseWriter, r *http.Request) {
 	steps = append(steps, step{Name: "delete test channel", OK: true})
 
 	jsonResponse(w, map[string]interface{}{"ok": true, "steps": steps})
+}
+
+// POST /api/cc/{id}/test-agent — publish a synthetic "hi" message to the
+// management channel so the connected duckway cc watch daemon starts the
+// configured agent. This does not touch Discord; it tests the agent path.
+func (h *ControlChannelHandler) TestAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	cc, err := h.cc.GetByID(id)
+	if err != nil {
+		jsonError(w, "not found", http.StatusNotFound)
+		return
+	}
+	if !cc.IsActive {
+		jsonError(w, "control channel is inactive; reassign a key and activate it first", http.StatusBadRequest)
+		return
+	}
+	if h.hub == nil {
+		jsonError(w, "hub not configured", http.StatusServiceUnavailable)
+		return
+	}
+	channels, err := h.cc.ListChannels(id)
+	if err != nil {
+		jsonError(w, "list channels failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var mgmt *models.CCChannel
+	for i := range channels {
+		if channels[i].Kind == "management" && !channels[i].Archived {
+			mgmt = &channels[i]
+			break
+		}
+	}
+	if mgmt == nil {
+		jsonError(w, "management channel not found", http.StatusBadRequest)
+		return
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"id":         fmt.Sprintf("duckway-admin-test-%d", time.Now().UnixNano()),
+		"channel_id": mgmt.ChannelID,
+		"content":    "hi",
+		"author": map[string]interface{}{
+			"id":       "duckway-admin",
+			"username": "Duckway Admin",
+			"bot":      false,
+		},
+	})
+	subscribers := h.hub.SubscriberCount(cc.ClientID)
+	h.hub.Publish(cc.ClientID, svc.CCEvent{
+		Type:    "message_create",
+		CCID:    cc.ID,
+		Handle:  mgmt.Handle,
+		Kind:    mgmt.Kind,
+		Payload: payload,
+	})
+	jsonResponse(w, map[string]interface{}{
+		"status":      "published",
+		"message":     "hi",
+		"handle":      mgmt.Handle,
+		"agent_type":  cc.AgentType,
+		"subscribers": subscribers,
+	})
 }
 
 // SetHub wires an event hub into the handler so the debug InjectEvent

@@ -285,6 +285,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("PUT /api/cc/{id}", ccH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/cc/{id}", ccH.Delete)
 	adminAPIMux.HandleFunc("POST /api/cc/{id}/test", ccH.Test)
+	adminAPIMux.HandleFunc("POST /api/cc/{id}/test-agent", ccH.TestAgent)
 	if os.Getenv("DUCKWAY_CC_DEBUG_INJECT") == "1" {
 		// Debug-only: synthetic SSE events for e2e tests.
 		adminAPIMux.HandleFunc("POST /api/cc/{id}/inject_event", ccH.InjectEvent)

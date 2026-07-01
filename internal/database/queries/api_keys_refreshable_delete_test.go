@@ -111,3 +111,34 @@ func TestDeleteRefreshableWithCleanupDisablesCCAndCleansReferences(t *testing.T)
 		t.Fatalf("retained key should be inactive and non-refreshable: %+v", key)
 	}
 }
+
+func TestDeleteWithControlChannelCleanupRetainsCC(t *testing.T) {
+	db, keys, _ := seedRefreshableDeleteImpact(t)
+	if _, err := db.Exec(`INSERT INTO api_keys (id, service_id, name, key_encrypted)
+		VALUES ('key-static-del', 'svc-refresh-del', 'static key', 'encrypted-static')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE control_channels SET api_key_id = 'key-static-del', is_active = 1 WHERE id = 'cc-refresh-del'`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := keys.DeleteWithControlChannelCleanup("key-static-del"); err != nil {
+		t.Fatalf("DeleteWithControlChannelCleanup: %v", err)
+	}
+
+	var ccActive int
+	var ccKey string
+	if err := db.QueryRow(`SELECT is_active, api_key_id FROM control_channels WHERE id = 'cc-refresh-del'`).Scan(&ccActive, &ccKey); err != nil {
+		t.Fatalf("cc lookup: %v", err)
+	}
+	if ccActive != 0 || ccKey != "key-static-del" {
+		t.Fatalf("cc state = active:%d key:%s, want inactive retained key-static-del", ccActive, ccKey)
+	}
+	key, err := keys.GetByID("key-static-del")
+	if err != nil {
+		t.Fatalf("retained key lookup: %v", err)
+	}
+	if key.IsActive || key.KeyEncrypted != "" || key.Name != "Deleted API key: static key" {
+		t.Fatalf("unexpected retained key: %+v", key)
+	}
+}

@@ -594,9 +594,10 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/api/cc</code></td><td>List CCs</td></tr>
       <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/cc</code></td><td>Create CC + provision management channel + issue phantom token</td></tr>
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/api/cc/{id}</code></td><td>Get CC + channel list</td></tr>
-      <tr><td><span class="badge badge-yellow">PUT</span></td><td><code>/api/cc/{id}</code></td><td>Update name / config / is_active</td></tr>
+      <tr><td><span class="badge badge-yellow">PUT</span></td><td><code>/api/cc/{id}</code></td><td>Update name / bot token / agent_type / config / is_active</td></tr>
       <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/cc/{id}</code></td><td>Archive all channels + delete CC + drop placeholder</td></tr>
       <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/cc/{id}/test</code></td><td>Round-trip Discord — create + immediately delete a temp channel</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/cc/{id}/test-agent</code></td><td>Publish <code>hi</code> to the management channel so the connected daemon starts the selected agent</td></tr>
       <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/cc/{id}/inject_event</code></td><td>DEBUG ONLY (gated on <code>DUCKWAY_CC_DEBUG_INJECT=1</code>) — publish synthetic events for e2e</td></tr>
     </tbody>
   </table>

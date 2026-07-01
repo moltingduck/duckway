@@ -107,19 +107,19 @@ func (h *APIKeyHandler) Get(w http.ResponseWriter, r *http.Request) {
 	key.KeyEncrypted = ""
 
 	resp := map[string]interface{}{
-		"id":              key.ID,
-		"service_id":      key.ServiceID,
-		"service_name":    key.ServiceName,
-		"name":            key.Name,
-		"acl":             key.ACL,
-		"is_refreshable":  key.IsRefreshable,
-		"is_active":       key.IsActive,
-		"usage_count":     key.UsageCount,
-		"last_used_at":    key.LastUsedAt,
-		"created_at":      key.CreatedAt,
-		"key_preview":     preview,
-		"expires_at":      key.ExpiresAt,
-		"token_endpoint":  key.TokenEndpoint,
+		"id":             key.ID,
+		"service_id":     key.ServiceID,
+		"service_name":   key.ServiceName,
+		"name":           key.Name,
+		"acl":            key.ACL,
+		"is_refreshable": key.IsRefreshable,
+		"is_active":      key.IsActive,
+		"usage_count":    key.UsageCount,
+		"last_used_at":   key.LastUsedAt,
+		"created_at":     key.CreatedAt,
+		"key_preview":    preview,
+		"expires_at":     key.ExpiresAt,
+		"token_endpoint": key.TokenEndpoint,
 	}
 	jsonResponse(w, resp)
 }
@@ -253,7 +253,7 @@ func (h *APIKeyHandler) SetACL(w http.ResponseWriter, r *http.Request) {
 
 func (h *APIKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := h.apiKeys.Delete(id); err != nil {
+	if err := h.apiKeys.DeleteWithControlChannelCleanup(id); err != nil {
 		jsonError(w, "failed to delete key", http.StatusInternalServerError)
 		return
 	}

@@ -427,7 +427,7 @@ Duckway can now discover servers and categories from the saved bot token, so you
 
    On save, duckway calls Discord to create `<client>-control` under the category and issues a phantom bot token bound to the client. If anything fails (bot lacks permission, wrong category id, etc.) the create rolls back and tells you which step failed.
 
-3. Click into the CC → **Test (create + delete channel)** to verify connectivity end-to-end before assigning real workloads. Each step is reported individually so you know whether the failure is the token, the guild, the category, or the bot's perms.
+3. Click into the CC → **Test (create + delete channel)** to verify Discord connectivity. Use **Test agent (hi)** to publish a synthetic `hi` message to the management channel; if `duckway cc watch` is connected on the client, it should start the selected agent and post the result back.
 
 ### Per-client wire-up (agent machine)
 
