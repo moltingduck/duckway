@@ -244,7 +244,12 @@ Expected Claude format:
 
 Duckway refreshes the access token automatically before expiry (background job runs every 5 minutes), and never shows the real tokens again.
 
-### Upload an OpenAI / Codex refreshable token
+### Upload a Codex OAuth token
+
+Codex has two different credential modes in Duckway:
+
+- **OpenAI Platform API key** — add this in **API Keys**. Duckway exposes it as `OPENAI_API_KEY` and routes Codex through the local Duckway proxy. This key must allow the Responses API, including `api.responses.write`.
+- **Codex OAuth token** — add this in **Refreshable Tokens**. Duckway syncs it back to `~/.codex/auth.json` so Codex CLI uses its native ChatGPT/Codex login flow. This is not used as `OPENAI_API_KEY`.
 
 Codex stores ChatGPT-login credentials in `~/.codex/auth.json` after `codex login`. Select the OpenAI service in **Refreshable Tokens** → **Upload Token**, then paste the whole file into the auto-fill box.
 
@@ -272,7 +277,7 @@ Expected Codex format:
 }
 ```
 
-The upload page derives **Expires At** from the `exp` claim inside `tokens.access_token`. Set **Token Endpoint** to `https://auth.openai.com/oauth/token` unless your Codex deployment uses a custom OAuth server.
+The upload page derives **Expires At** from the `exp` claim inside `tokens.access_token` and marks the credential as `codex_oauth`. Set **Token Endpoint** to `https://auth.openai.com/oauth/token` unless your Codex deployment uses a custom OAuth server.
 
 ### Upload a generic OAuth token
 
@@ -432,7 +437,7 @@ systemctl --user enable --now duckway-cc-watch
 journalctl --user -u duckway-cc-watch -f
 ```
 
-The daemon needs the selected agent binary (`claude` or `codex`) in `$PATH`. `duckway sync` also writes `~/.codex/config.toml` so Codex uses the `duckway-openai` provider (`OPENAI_API_KEY` from `~/.duckway/keys.env`, routed through the local proxy). Codex uses OpenAI's Responses API, so the real OpenAI project key behind that placeholder must allow `api.responses.write`; restricted keys without that scope fail with `401 Unauthorized`. Per-channel `cwd` defaults to `~/.duckway/cc-workspace/<handle>/` (auto-created); override with `!new --cwd /path` from the management channel.
+The daemon needs the selected agent binary (`claude` or `codex`) in `$PATH`. For Codex, `duckway sync` chooses the credential mode from the assigned OpenAI key: Codex OAuth refreshable keys are written to `~/.codex/auth.json` for native Codex auth; OpenAI Platform API keys write a `duckway-openai` provider in `~/.codex/config.toml` and use `OPENAI_API_KEY` from `~/.duckway/keys.env` through the local proxy. Platform keys must allow OpenAI's Responses API, including `api.responses.write`. Per-channel `cwd` defaults to `~/.duckway/cc-workspace/<handle>/` (auto-created); override with `!new --cwd /path` from the management channel.
 
 ### Inside an agent session, the model sees these MCP tools
 

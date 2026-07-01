@@ -21,7 +21,7 @@
     <strong>Upload formats differ by service:</strong>
     <ul class="mt-1">
       <li><strong>Claude Code:</strong> paste <code>~/.claude/.credentials.json</code>; Duckway reads <code>claudeAiOauth.accessToken</code>, <code>refreshToken</code>, <code>expiresAt</code>, <code>subscriptionType</code>, <code>rateLimitTier</code>, and <code>scopes</code>.</li>
-      <li><strong>OpenAI/Codex:</strong> paste <code>~/.codex/auth.json</code>; Duckway reads <code>tokens.access_token</code>, <code>tokens.refresh_token</code>, and optional account metadata.</li>
+      <li><strong>Codex OAuth:</strong> paste <code>~/.codex/auth.json</code>. Duckway treats this as Codex native login credentials, separate from OpenAI Platform API keys.</li>
       <li><strong>Generic OAuth:</strong> paste a token response like <code>{"access_token":"...","refresh_token":"...","expires_in":3600}</code>, then set the token endpoint.</li>
       <li><strong>Manual entry:</strong> paste the access token and refresh token into their fields directly when the provider does not expose a JSON file.</li>
     </ul>
@@ -142,10 +142,10 @@ var oauthHelpByService = {
   },
   openai: {
     pastePlaceholder: '{\n  "auth_mode": "chatgpt",\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "rt.1....",\n    "account_id": "14d5c9cf-..."\n  },\n  "last_refresh": "2026-06-30T00:00:00Z"\n}',
-    pasteHelp: 'OpenAI/Codex ChatGPT login is stored in ~/.codex/auth.json after codex login. Duckway reads tokens.access_token and tokens.refresh_token, and derives expiry from the access-token JWT.',
+    pasteHelp: 'Codex ChatGPT login is stored in ~/.codex/auth.json after codex login. Duckway stores it as Codex OAuth credentials and syncs it back to ~/.codex/auth.json for Codex control channels. This is separate from OpenAI Platform API keys.',
     commandHelp: 'codex login\njq \'{auth_mode, tokens: {access_token: .tokens.access_token, refresh_token: .tokens.refresh_token, account_id: .tokens.account_id}, last_refresh}\' ~/.codex/auth.json\njq -r \'.tokens | [.access_token, .refresh_token, (.account_id // "")] | @tsv\' ~/.codex/auth.json',
-    accessPlaceholder: 'tokens.access_token from ~/.codex/auth.json',
-    refreshPlaceholder: 'tokens.refresh_token from ~/.codex/auth.json',
+    accessPlaceholder: 'Codex OAuth access token',
+    refreshPlaceholder: 'OAuth refresh token',
     endpointPlaceholder: 'https://auth.openai.com/oauth/token',
     endpointValue: 'https://auth.openai.com/oauth/token',
     subPlaceholder: '{"account_id":"14d5c9cf-...","auth_mode":"chatgpt","source":"codex"}'
@@ -462,6 +462,9 @@ document.getElementById('oauth-form').addEventListener('submit', function(e) {
   if (selectedOAuthKind() === 'claude') {
     var displayName = document.getElementById('oauth-display').value.trim();
     if (displayName) subObj.displayName = displayName;
+  } else if (selectedOAuthKind() === 'openai') {
+    subObj.credential_kind = 'codex_oauth';
+    subObj.source = 'codex';
   } else {
     delete subObj.displayName;
   }

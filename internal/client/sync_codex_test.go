@@ -94,3 +94,46 @@ func TestSyncCodexConfig_UpdatesPortOnResync(t *testing.T) {
 		t.Errorf("new port missing:\n%s", got)
 	}
 }
+
+func TestDisableCodexDuckwayProviderPreservesOtherConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(codexDir, "config.toml")
+	existing := `model = "gpt-5"
+model_provider = "duckway-openai"
+
+[model_providers.duckway-openai]
+name = "Duckway OpenAI"
+base_url = "http://localhost:18080/proxy/openai/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+
+[mcp_servers.duckway-cc]
+command = "duckway"
+`
+	if err := os.WriteFile(configPath, []byte(existing), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := DisableCodexDuckwayProvider(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	for _, gone := range []string{`model_provider = "duckway-openai"`, `[model_providers.duckway-openai]`, `env_key = "OPENAI_API_KEY"`} {
+		if strings.Contains(got, gone) {
+			t.Fatalf("config still contains %q:\n%s", gone, got)
+		}
+	}
+	for _, want := range []string{`model = "gpt-5"`, `[mcp_servers.duckway-cc]`, `command = "duckway"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("config missing %q:\n%s", want, got)
+		}
+	}
+}

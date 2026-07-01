@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -308,4 +309,85 @@ func (h *OAuthHandler) ClientGetCredentials(w http.ResponseWriter, r *http.Reque
 			"lastOnboardingVersion":  "2.1.165",
 		},
 	})
+}
+
+// ClientGetCodexCredentials returns Codex ChatGPT-login OAuth credentials for
+// clients whose OpenAI placeholder is assigned to a Codex OAuth refreshable key.
+// Unlike Claude's proxy credentials, Codex needs the real OAuth tokens in
+// ~/.codex/auth.json because the Codex CLI owns that auth flow natively.
+func (h *OAuthHandler) ClientGetCodexCredentials(w http.ResponseWriter, r *http.Request) {
+	client := middleware.GetClient(r)
+	if client == nil {
+		jsonError(w, "client auth required", http.StatusUnauthorized)
+		return
+	}
+
+	openAISvc, err := h.serviceQ.GetByName("openai")
+	if err != nil {
+		jsonResponse(w, map[string]interface{}{})
+		return
+	}
+	ph, err := h.placeholderQ.GetByClientAndService(client.ID, openAISvc.ID)
+	if err != nil || ph.APIKeyID == nil {
+		jsonResponse(w, map[string]interface{}{})
+		return
+	}
+	apiKey, err := h.apiKeyQ.GetByID(*ph.APIKeyID)
+	if err != nil || apiKey.RefreshToken == "" {
+		jsonResponse(w, map[string]interface{}{})
+		return
+	}
+	var subInfo map[string]interface{}
+	if apiKey.SubscriptionInfo != "" {
+		_ = json.Unmarshal([]byte(apiKey.SubscriptionInfo), &subInfo)
+	}
+	if !isCodexOAuthInfo(subInfo, apiKey.TokenEndpoint) {
+		jsonResponse(w, map[string]interface{}{})
+		return
+	}
+	accessToken, err := h.crypto.Decrypt(apiKey.KeyEncrypted)
+	if err != nil {
+		jsonError(w, "decrypt codex access token: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	refreshToken, err := h.crypto.Decrypt(apiKey.RefreshToken)
+	if err != nil {
+		jsonError(w, "decrypt codex refresh token: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	tokens := map[string]interface{}{
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+	}
+	for _, key := range []string{"account_id"} {
+		if v, ok := subInfo[key]; ok && v != "" {
+			tokens[key] = v
+		}
+	}
+	resp := map[string]interface{}{
+		"auth_mode":      "chatgpt",
+		"OPENAI_API_KEY": nil,
+		"tokens":         tokens,
+	}
+	if v, ok := subInfo["last_refresh"]; ok && v != "" {
+		resp["last_refresh"] = v
+	}
+	jsonResponse(w, resp)
+}
+
+func isCodexOAuthInfo(subInfo map[string]interface{}, tokenEndpoint string) bool {
+	if subInfo == nil {
+		return false
+	}
+	if v, _ := subInfo["credential_kind"].(string); v == "codex_oauth" {
+		return true
+	}
+	if v, _ := subInfo["source"].(string); v == "codex" {
+		return true
+	}
+	if v, _ := subInfo["auth_mode"].(string); v == "chatgpt" && strings.Contains(tokenEndpoint, "auth.openai.com") {
+		return true
+	}
+	return false
 }

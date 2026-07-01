@@ -174,7 +174,11 @@ func (r *ccRunner) run(t ccTask) {
 		// message.
 		"DUCKWAY_CC_MESSAGE_ID=" + t.MessageID,
 	}
-	extraEnv = append(extraEnv, loadKeysEnv(r.configDir)...)
+	keysEnv := loadKeysEnv(r.configDir)
+	if r.agentName == "codex" && CodexOAuthModeActive(r.configDir) {
+		keysEnv = filterEnvByName(keysEnv, "OPENAI_API_KEY")
+	}
+	extraEnv = append(extraEnv, keysEnv...)
 
 	r.logger("[cc-watch] %s: running %s (cwd=%s)", r.handle, r.agentName, r.cwd)
 	newSID, result, isError, err := r.runFn(ctx, r.bin, r.cwd, prompt, sid, extraEnv)
@@ -219,6 +223,17 @@ func loadKeysEnv(configDir string) []string {
 			continue
 		}
 		out = append(out, line)
+	}
+	return out
+}
+
+func filterEnvByName(env []string, name string) []string {
+	prefix := name + "="
+	out := env[:0]
+	for _, e := range env {
+		if !strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
 	}
 	return out
 }

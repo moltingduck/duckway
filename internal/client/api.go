@@ -132,6 +132,35 @@ func (c *APIClient) FetchClaudeCredentials() (map[string]interface{}, error) {
 	return result, nil
 }
 
+// FetchCodexCredentials gets real Codex OAuth credentials for clients assigned
+// a Codex OAuth refreshable OpenAI key.
+func (c *APIClient) FetchCodexCredentials() (map[string]interface{}, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/client/codex-credentials", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, nil
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, nil
+	}
+	if _, ok := result["tokens"]; !ok {
+		return nil, nil
+	}
+	return result, nil
+}
+
 // FetchSupplyChainRC returns the package-manager rc-file hardening settings to
 // apply, keyed by rc file path relative to $HOME (e.g. ".npmrc"). Returns nil
 // (no-op) when the server is older and lacks the endpoint.

@@ -107,10 +107,18 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 		log.Printf("Warning: statusline sync failed: %v", err)
 	}
 
-	// Write a Duckway provider to ~/.codex/config.toml so Codex CLI routes
-	// through the local duckway proxy and reads OPENAI_API_KEY from keys.env.
-	if err := SyncCodexConfig(cfg.ProxyPort); err != nil {
-		log.Printf("Warning: codex config sync failed: %v", err)
+	// Codex supports two distinct credential modes:
+	//   - Codex OAuth: write ~/.codex/auth.json and let Codex use native auth.
+	//   - OpenAI Platform key: route Codex through Duckway's local OpenAI proxy.
+	if synced := SyncCodexOAuthCredentials(configDir, cfg); synced {
+		if err := DisableCodexDuckwayProvider(); err != nil {
+			log.Printf("Warning: codex provider cleanup failed: %v", err)
+		}
+	} else {
+		ClearCodexOAuthMode(configDir)
+		if err := SyncCodexConfig(cfg.ProxyPort); err != nil {
+			log.Printf("Warning: codex config sync failed: %v", err)
+		}
 	}
 
 	return len(keys), nil
@@ -507,12 +515,121 @@ func SyncCodexConfig(proxyPort int) error {
 	return nil
 }
 
+func SyncCodexOAuthCredentials(configDir string, cfg *Config) bool {
+	api := NewAPIClient(cfg.ServerURL, cfg.Token)
+	creds, err := api.FetchCodexCredentials()
+	if err != nil || creds == nil {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0700); err != nil {
+		log.Printf("Warning: cannot create ~/.codex: %v", err)
+		return false
+	}
+	authPath := filepath.Join(codexDir, "auth.json")
+	data, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		return false
+	}
+	if err := os.WriteFile(authPath, data, 0600); err != nil {
+		log.Printf("Warning: cannot write Codex OAuth credentials: %v", err)
+		return false
+	}
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		log.Printf("Warning: cannot create Duckway config dir for Codex OAuth mode marker: %v", err)
+	} else if err := os.WriteFile(CodexOAuthModePath(configDir), []byte("oauth\n"), 0600); err != nil {
+		log.Printf("Warning: cannot write Codex OAuth mode marker: %v", err)
+	}
+	log.Printf("Codex OAuth credentials synced to %s", authPath)
+	return true
+}
+
+func CodexOAuthModePath(configDir string) string {
+	return filepath.Join(configDir, "codex-auth-mode")
+}
+
+func ClearCodexOAuthMode(configDir string) {
+	_ = os.Remove(CodexOAuthModePath(configDir))
+}
+
+func CodexOAuthModeActive(configDir string) bool {
+	data, err := os.ReadFile(CodexOAuthModePath(configDir))
+	return err == nil && strings.TrimSpace(string(data)) == "oauth"
+}
+
+func DisableCodexDuckwayProvider() error {
+	configPath, err := codexConfigTOMLPath()
+	if err != nil {
+		return err
+	}
+	existing, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	next := removeTopLevelTOMLStringValue(string(existing), "model_provider", "duckway-openai")
+	next = removeTOMLSection(next, "model_providers.duckway-openai")
+	if next == string(existing) {
+		return nil
+	}
+	if err := os.WriteFile(configPath, []byte(next), 0600); err != nil {
+		return err
+	}
+	log.Printf("Codex Duckway OpenAI provider disabled in %s (using native Codex OAuth)", configPath)
+	return nil
+}
+
 func codexDuckwayProviderSection(proxyPort int) string {
 	return "[model_providers.duckway-openai]\n" +
 		"name = \"Duckway OpenAI\"\n" +
 		"base_url = " + tomlQuote(fmt.Sprintf("http://localhost:%d/proxy/openai/v1", proxyPort)) + "\n" +
 		"env_key = \"OPENAI_API_KEY\"\n" +
 		"wire_api = \"responses\"\n"
+}
+
+func removeTopLevelTOMLStringValue(input, key, value string) string {
+	lines := strings.Split(input, "\n")
+	prefix := key + " = "
+	target := prefix + tomlQuote(value)
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == target {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+func removeTOMLSection(input, section string) string {
+	lines := strings.Split(input, "\n")
+	header := "[" + section + "]"
+	out := make([]string, 0, len(lines))
+	skipping := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if trimmed == header {
+				skipping = true
+				continue
+			}
+			skipping = false
+		}
+		if !skipping {
+			out = append(out, line)
+		}
+	}
+	result := strings.TrimRight(strings.Join(out, "\n"), "\n")
+	if result == "" {
+		return ""
+	}
+	return result + "\n"
 }
 
 func replaceTopLevelTOMLString(input, key, value string) string {

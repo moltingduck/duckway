@@ -420,6 +420,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	// Claude/OAuth credentials endpoint (client auth required)
 	oauthClientH := handlers.NewOAuthHandler(ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.Crypto)
 	clientMux.HandleFunc("GET /client/claude-credentials", oauthClientH.ClientGetCredentials)
+	clientMux.HandleFunc("GET /client/codex-credentials", oauthClientH.ClientGetCodexCredentials)
 
 	// Token-loan endpoint for loan_proxy delivery mode (client auth required).
 	// Sidecar fetches the real token here once per TTL, caches it, and forwards

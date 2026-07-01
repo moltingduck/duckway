@@ -140,6 +140,44 @@ bad-name=ignored
 	}
 }
 
+func TestCCRunner_SuppressesOpenAIEnvForCodexOAuth(t *testing.T) {
+	var gotEnv []string
+	fn := func(_ context.Context, _, _, _, _ string, extraEnv []string) (string, string, bool, error) {
+		gotEnv = append([]string(nil), extraEnv...)
+		return "sess-abc", "ok", false, nil
+	}
+
+	configDir := t.TempDir()
+	if err := os.WriteFile(KeysEnvPath(configDir), []byte(`
+OPENAI_API_KEY=sk-dw-placeholder
+ANTHROPIC_API_KEY=sk-ant-placeholder
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(CodexOAuthModePath(configDir), []byte("oauth\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := NewCCSessionStore(t.TempDir())
+	pp := &recordingPoster{}
+	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: fn, UseTmux: false}
+	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+
+	r.Enqueue(ccTask{Content: "hello", ChannelKind: "task"})
+	waitForPosts(t, pp, 1)
+
+	envText := strings.Join(gotEnv, "\n")
+	if strings.Contains(envText, "OPENAI_API_KEY=") {
+		t.Fatalf("OPENAI_API_KEY leaked into Codex OAuth env:\n%s", envText)
+	}
+	if !strings.Contains(envText, "ANTHROPIC_API_KEY=sk-ant-placeholder") {
+		t.Fatalf("non-OpenAI env should remain:\n%s", envText)
+	}
+}
+
 func TestCCRunner_ClearDropsCachedSessionID(t *testing.T) {
 	// First turn: a normal message returns a session_id which gets
 	// cached in CCSessionStore.
