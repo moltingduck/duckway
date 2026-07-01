@@ -1,11 +1,13 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseCodexJSONL(t *testing.T) {
@@ -54,6 +56,32 @@ func TestParseCodexTmuxEventPayload(t *testing.T) {
 	}
 }
 
+func TestRunViaCodexExecSkipsGitRepoCheck(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+case "$*" in
+  *"exec --json --skip-git-repo-check --sandbox workspace-write -C"* ) ;;
+  *) printf 'unexpected argv: %s\n' "$*" >&2; exit 12;;
+esac
+printf '%s\n' '{"type":"thread.started","thread_id":"sid-codex-exec"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+`
+	if err := os.WriteFile(stub, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sid, result, isErr, err := runViaCodexExec(ctx, stub, dir, "hello", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid != "sid-codex-exec" || result != "ok" || isErr {
+		t.Fatalf("sid=%q result=%q isErr=%v", sid, result, isErr)
+	}
+}
+
 func TestWriteCodexTmuxLaunchScript(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "codex-launch.sh")
@@ -66,7 +94,7 @@ func TestWriteCodexTmuxLaunchScript(t *testing.T) {
 	}
 	text := string(body)
 	for _, want := range []string{
-		"set -- '/usr/local/bin/codex' 'exec' '--json' '--sandbox' 'workspace-write' '-C' '/repo' '-'",
+		"set -- '/usr/local/bin/codex' 'exec' '--json' '--skip-git-repo-check' '--sandbox' 'workspace-write' '-C' '/repo' '-'",
 		"\"$@\" < \"$prompt\" > \"$out\" 2>&1",
 		`"output_path":%s`,
 		"exec ${SHELL:-/bin/sh} -i",
@@ -88,7 +116,7 @@ func TestWriteCodexTmuxLaunchScriptResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	if !strings.Contains(text, "set -- 'codex' 'exec' 'resume' '--json' 'sid-123' '-'") {
+	if !strings.Contains(text, "set -- 'codex' 'exec' 'resume' '--json' '--skip-git-repo-check' 'sid-123' '-'") {
 		t.Fatalf("resume launch script has wrong argv:\n%s", text)
 	}
 }

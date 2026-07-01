@@ -248,7 +248,7 @@ func TestSmokeCodexTmuxEndToEnd(t *testing.T) {
 	stubBody := `#!/bin/sh
 prompt=$(cat)
 case "$*" in
-  *"exec --json --sandbox workspace-write -C"*"-") ;;
+  *"exec --json --skip-git-repo-check --sandbox workspace-write -C"*"-") ;;
   *) printf 'unexpected argv: %s\n' "$*" >&2; exit 12;;
 esac
 if [ "$prompt" != "hello codex" ]; then

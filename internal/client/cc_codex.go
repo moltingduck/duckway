@@ -29,9 +29,9 @@ type codexJSONEvent struct {
 func runViaCodexExec(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []string) (sessionID, result string, isError bool, err error) {
 	args := []string{"exec"}
 	if sid != "" {
-		args = append(args, "resume", "--json", sid, prompt)
+		args = append(args, "resume", "--json", "--skip-git-repo-check", sid, prompt)
 	} else {
-		args = append(args, "--json", "--sandbox", "workspace-write", "-C", cwd, prompt)
+		args = append(args, "--json", "--skip-git-repo-check", "--sandbox", "workspace-write", "-C", cwd, prompt)
 	}
 
 	cmd := exec.CommandContext(ctx, bin, args...)
@@ -118,9 +118,9 @@ func writeCodexTmuxLaunchScript(path, bin, cwd, promptPath, outputPath, eventsDi
 	sidJSON, _ := json.Marshal(sid)
 	args := []string{bin, "exec"}
 	if sid != "" {
-		args = append(args, "resume", "--json", sid, "-")
+		args = append(args, "resume", "--json", "--skip-git-repo-check", sid, "-")
 	} else {
-		args = append(args, "--json", "--sandbox", "workspace-write", "-C", cwd, "-")
+		args = append(args, "--json", "--skip-git-repo-check", "--sandbox", "workspace-write", "-C", cwd, "-")
 	}
 
 	var sb strings.Builder
