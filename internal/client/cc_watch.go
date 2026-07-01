@@ -263,13 +263,15 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	if err != nil {
 		log.Printf("[cc-watch] cannot start runner for %s: %v", env.Handle, err)
 		w.reportAgentTest(msg.TestID, "failed", err.Error())
+		_ = w.api.ReactCC(context.Background(), env.Handle, msg.ID, "⚠️")
 		_ = w.api.PostCC(context.Background(), env.Handle, "❌ daemon could not start a session: "+err.Error())
 		return
 	}
-	_ = w.api.PostCC(context.Background(), env.Handle, "📨 received by duckway client; checking the agent queue.")
+	_ = w.api.ReactCC(context.Background(), env.Handle, msg.ID, "🦆")
 	if !runner.Enqueue(ccTask{Content: msg.Content, AuthorID: msg.Author.ID, MessageID: msg.ID, ChannelKind: env.Kind, TestID: msg.TestID}) {
 		log.Printf("[cc-watch] %s: queue full, dropping message %s", env.Handle, msg.ID)
 		w.reportAgentTest(msg.TestID, "failed", "session queue full")
+		_ = w.api.ReactCC(context.Background(), env.Handle, msg.ID, "⚠️")
 		_ = w.api.PostCC(context.Background(), env.Handle,
 			"⚠️ session queue full (10 messages backed up) — your message was dropped, please retry once the agent catches up.")
 		return
@@ -346,7 +348,7 @@ func (w *CCWatch) runnerFor(handle, ccID string) (*ccRunner, error) {
 	if err != nil {
 		return nil, err
 	}
-	r, err := newCCRunner(handle, w.configDir, cwd, spec, w.sessions, w.api.PostCC, w.api.ReportCCAgentTest, w.noTmux)
+	r, err := newCCRunner(handle, w.configDir, cwd, spec, w.sessions, w.api.PostCC, w.api.PostCCReply, w.api.ReactCC, w.api.ReportCCAgentTest, w.noTmux)
 	if err != nil {
 		return nil, err
 	}

@@ -279,6 +279,29 @@ func TestPostMessage(t *testing.T) {
 	}
 }
 
+func TestPostMessageReplyUsesMessageReference(t *testing.T) {
+	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		ref, _ := body["message_reference"].(map[string]interface{})
+		if ref["message_id"] != "M-original" {
+			t.Fatalf("message_reference = %+v", ref)
+		}
+		if ref["fail_if_not_exists"] != false {
+			t.Fatalf("fail_if_not_exists = %+v", ref["fail_if_not_exists"])
+		}
+		w.Write([]byte(`{"id":"M-reply","channel_id":"CH"}`))
+	})
+	defer srv.Close()
+	b := &DiscordBot{BaseURL: srv.URL, HTTP: srv.Client()}
+	id, err := b.PostMessageReply(context.Background(), "tok", "CH", "hi", "M-original")
+	if err != nil || id != "M-reply" {
+		t.Fatalf("got %q, %v", id, err)
+	}
+}
+
 func TestPostMessageWithFile(t *testing.T) {
 	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/channels/CH/messages" || r.Method != "POST" {

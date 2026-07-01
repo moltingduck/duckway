@@ -504,6 +504,8 @@ In any task channel:
 
 The management channel itself also accepts plain text — the message is forwarded to the agent with a system note nudging it to spawn a dedicated task channel via `discord_create_task_channel` for any sustained work, instead of holding a long conversation inline.
 
+For ordinary task messages, the client keeps status quiet with reactions: `🦆` means the client received the message, `⏳` means the agent is still running, `✅` means the turn completed, and `⚠️` means the turn failed or was dropped. Agent replies are Discord replies to the triggering message so back-to-back prompts stay distinguishable.
+
 ### Security boundary
 
 - The **bot token** is the only real boundary. Two CCs sharing a bot can reach each other's channels — use **different bots** to isolate teams.

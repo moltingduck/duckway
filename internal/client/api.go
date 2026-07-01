@@ -473,7 +473,11 @@ func (c *APIClient) CreateCCChannel(ctx context.Context, name, topic, cwd string
 
 // PostCC posts a bot-author message to a CC channel by handle.
 func (c *APIClient) PostCC(ctx context.Context, handle, content string) error {
-	body, _ := json.Marshal(map[string]string{"content": content})
+	return c.PostCCReply(ctx, handle, content, "")
+}
+
+func (c *APIClient) PostCCReply(ctx context.Context, handle, content, replyToMessageID string) error {
+	body, _ := json.Marshal(map[string]string{"content": content, "reply_to_message_id": replyToMessageID})
 	req, err := http.NewRequestWithContext(ctx, "POST",
 		c.baseURL+"/client/cc/channels/"+handle+"/messages", bytes.NewReader(body))
 	if err != nil {
@@ -493,7 +497,32 @@ func (c *APIClient) PostCC(ctx context.Context, handle, content string) error {
 	return nil
 }
 
+func (c *APIClient) ReactCC(ctx context.Context, handle, messageID, emoji string) error {
+	body, _ := json.Marshal(map[string]string{"emoji": emoji})
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		c.baseURL+"/client/cc/channels/"+handle+"/messages/"+messageID+"/reactions", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("react: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 func (c *APIClient) PostCCFile(ctx context.Context, handle, content, filename, contentType string, data []byte) (map[string]interface{}, error) {
+	return c.PostCCFileReply(ctx, handle, content, filename, contentType, "", data)
+}
+
+func (c *APIClient) PostCCFileReply(ctx context.Context, handle, content, filename, contentType, replyToMessageID string, data []byte) (map[string]interface{}, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	if content != "" {
@@ -508,6 +537,11 @@ func (c *APIClient) PostCCFile(ctx context.Context, handle, content, filename, c
 	}
 	if contentType != "" {
 		if err := mw.WriteField("content_type", contentType); err != nil {
+			return nil, err
+		}
+	}
+	if replyToMessageID != "" {
+		if err := mw.WriteField("reply_to_message_id", replyToMessageID); err != nil {
 			return nil, err
 		}
 	}

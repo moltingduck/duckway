@@ -163,6 +163,7 @@ type DiscordFile struct {
 	Filename    string
 	ContentType string
 	Data        []byte
+	ReplyTo     string
 }
 
 func (b *DiscordBot) do(ctx context.Context, botToken, method, path string, body interface{}) ([]byte, error) {
@@ -307,9 +308,21 @@ func urlEscapeEmoji(emoji string) string {
 
 // PostMessage sends content to a channel and returns the new message id.
 func (b *DiscordBot) PostMessage(ctx context.Context, botToken, channelID, content string) (string, error) {
-	raw, err := b.do(ctx, botToken, "POST", "/channels/"+channelID+"/messages", map[string]interface{}{
+	return b.PostMessageReply(ctx, botToken, channelID, content, "")
+}
+
+func (b *DiscordBot) PostMessageReply(ctx context.Context, botToken, channelID, content, replyToMessageID string) (string, error) {
+	body := map[string]interface{}{
 		"content": content,
-	})
+	}
+	if replyToMessageID != "" {
+		body["message_reference"] = map[string]interface{}{
+			"message_id":         replyToMessageID,
+			"channel_id":         channelID,
+			"fail_if_not_exists": false,
+		}
+	}
+	raw, err := b.do(ctx, botToken, "POST", "/channels/"+channelID+"/messages", body)
 	if err != nil {
 		return "", err
 	}
@@ -333,6 +346,13 @@ func (b *DiscordBot) PostMessageWithFile(ctx context.Context, botToken, channelI
 		"attachments": []map[string]interface{}{
 			{"id": 0, "filename": file.Filename},
 		},
+	}
+	if file.ReplyTo != "" {
+		payload["message_reference"] = map[string]interface{}{
+			"message_id":         file.ReplyTo,
+			"channel_id":         channelID,
+			"fail_if_not_exists": false,
+		}
 	}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {

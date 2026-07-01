@@ -251,7 +251,8 @@ func (h *CCClientHandler) PostMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Content string `json:"content"`
+		Content          string `json:"content"`
+		ReplyToMessageID string `json:"reply_to_message_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
@@ -261,12 +262,43 @@ func (h *CCClientHandler) PostMessage(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "content required", http.StatusBadRequest)
 		return
 	}
-	id, err := h.bot.PostMessage(r.Context(), botTok, ch.ChannelID, req.Content)
+	id, err := h.bot.PostMessageReply(r.Context(), botTok, ch.ChannelID, req.Content, req.ReplyToMessageID)
 	if err != nil {
 		jsonError(w, "discord post: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	jsonResponse(w, map[string]string{"message_id": id})
+}
+
+// POST /client/cc/channels/{handle}/messages/{message_id}/reactions — react to a message.
+func (h *CCClientHandler) ReactMessage(w http.ResponseWriter, r *http.Request) {
+	handle := r.PathValue("handle")
+	msgID := r.PathValue("message_id")
+	_, cc, botTok, ok := h.resolveCC(w, r)
+	if !ok {
+		return
+	}
+	ch, ok := h.resolveHandle(w, cc.ID, handle)
+	if !ok {
+		return
+	}
+	var req struct {
+		Emoji string `json:"emoji"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	req.Emoji = strings.TrimSpace(req.Emoji)
+	if req.Emoji == "" {
+		jsonError(w, "emoji required", http.StatusBadRequest)
+		return
+	}
+	if err := h.bot.AddReaction(r.Context(), botTok, ch.ChannelID, msgID, req.Emoji); err != nil {
+		jsonError(w, "discord reaction: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "reacted"})
 }
 
 // POST /client/cc/channels/{handle}/attachments — post a message with one file.
@@ -286,6 +318,7 @@ func (h *CCClientHandler) PostAttachment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	content := r.FormValue("content")
+	replyTo := r.FormValue("reply_to_message_id")
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		jsonError(w, "file field required", http.StatusBadRequest)
@@ -321,6 +354,7 @@ func (h *CCClientHandler) PostAttachment(w http.ResponseWriter, r *http.Request)
 		Filename:    filename,
 		ContentType: contentType,
 		Data:        data,
+		ReplyTo:     replyTo,
 	})
 	if err != nil {
 		jsonError(w, "discord post attachment: "+err.Error(), http.StatusBadGateway)

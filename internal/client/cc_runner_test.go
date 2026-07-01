@@ -14,8 +14,10 @@ import (
 // recordingPoster collects calls to PostMessage so tests can assert
 // what the runner posted to Discord.
 type recordingPoster struct {
-	mu    sync.Mutex
-	posts []string
+	mu        sync.Mutex
+	posts     []string
+	replies   []string
+	reactions []string
 }
 
 func (r *recordingPoster) post(ctx context.Context, handle, content string) error {
@@ -25,11 +27,34 @@ func (r *recordingPoster) post(ctx context.Context, handle, content string) erro
 	return nil
 }
 
+func (r *recordingPoster) postReply(ctx context.Context, handle, content, replyToMessageID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.replies = append(r.replies, replyToMessageID)
+	r.posts = append(r.posts, content)
+	return nil
+}
+
+func (r *recordingPoster) react(ctx context.Context, handle, messageID, emoji string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reactions = append(r.reactions, messageID+":"+emoji)
+	return nil
+}
+
 func (r *recordingPoster) all() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]string, len(r.posts))
 	copy(out, r.posts)
+	return out
+}
+
+func (r *recordingPoster) allReactions() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.reactions))
+	copy(out, r.reactions)
 	return out
 }
 
@@ -59,12 +84,11 @@ func newTestRunner(t *testing.T, fn ccRunFn) (*ccRunner, *recordingPoster, *CCSe
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: true}
-	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, nil, true)
+	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.runFn = fn
-	r.statusPosts = false
 	return r, pp, store
 }
 
@@ -114,26 +138,27 @@ func TestCCRunner_PostsProgressForLongRunningTask(t *testing.T) {
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", RunFn: fn, UseTmux: false}
-	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, nil, true)
+	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Stop()
 
-	if !r.Enqueue(ccTask{Content: "slow work", ChannelKind: "task"}) {
+	if !r.Enqueue(ccTask{Content: "slow work", MessageID: "m-slow", ChannelKind: "task"}) {
 		t.Fatal("Enqueue returned false")
 	}
-	waitForPosts(t, pp, 3)
+	waitForPosts(t, pp, 1)
 
 	posts := strings.Join(pp.all(), "\n")
-	if !strings.Contains(posts, "started") {
-		t.Fatalf("missing started status:\n%s", posts)
-	}
-	if !strings.Contains(posts, "still running") {
-		t.Fatalf("missing still-running status:\n%s", posts)
-	}
 	if !strings.Contains(posts, "done") {
 		t.Fatalf("missing final result:\n%s", posts)
+	}
+	reactions := strings.Join(pp.allReactions(), "\n")
+	if !strings.Contains(reactions, "m-slow:⏳") {
+		t.Fatalf("missing still-running reaction:\n%s", reactions)
+	}
+	if !strings.Contains(reactions, "m-slow:✅") {
+		t.Fatalf("missing completion reaction:\n%s", reactions)
 	}
 }
 
@@ -156,11 +181,10 @@ bad-name=ignored
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: fn, UseTmux: false}
-	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, nil, true)
+	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.statusPosts = false
 	defer r.Stop()
 
 	r.Enqueue(ccTask{Content: "hello", ChannelKind: "task"})
@@ -201,11 +225,10 @@ ANTHROPIC_API_KEY=sk-ant-placeholder
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: fn, UseTmux: false}
-	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, nil, true)
+	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.statusPosts = false
 	defer r.Stop()
 
 	r.Enqueue(ccTask{Content: "hello", ChannelKind: "task"})
@@ -302,12 +325,11 @@ func TestCCRunner_ManagementPreamble_FirstTurnOnly(t *testing.T) {
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: true}
-	r, err := newCCRunner("dwch_mgmt", t.TempDir(), t.TempDir(), spec, store, pp.post, nil, true)
+	r, err := newCCRunner("dwch_mgmt", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.runFn = fn
-	r.statusPosts = false
 	defer r.Stop()
 
 	// First management message: preamble should be injected into the prompt.
@@ -351,12 +373,11 @@ func TestCCRunner_DefaultsCwd(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: true}
-	r, err := newCCRunner("dwch_x", t.TempDir(), "", spec, store, pp.post, nil, true)
+	r, err := newCCRunner("dwch_x", t.TempDir(), "", spec, store, pp.post, pp.postReply, pp.react, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.runFn = fn
-	r.statusPosts = false
 	defer r.Stop()
 
 	want := filepath.Join(tmpHome, ".duckway", "cc-workspace", "dwch_x")
