@@ -460,7 +460,7 @@ function renderDeleteImpact(impact) {
     '<p class="text-sm">Review every place using <strong>' + esc(impact.key_name || pendingDeleteID) + '</strong> before deleting.</p>' +
     '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid var(--danger);padding:0.75rem">' +
       '<strong style="color:var(--danger)">This action removes the refreshable token and cleans references.</strong>' +
-      '<p class="text-sm text-muted mt-1">Client phantom tokens below will be unassigned. Key Suite entries below will be left empty. Control Channels below will be disabled and must be assigned a new bot token before they can run.</p>' +
+      '<p class="text-sm text-muted mt-1">Client phantom tokens below will be unassigned. Key Suite entries below will be removed. Control Channels below will be disabled and must be assigned a new bot token before they can run.</p>' +
     '</div>';
   if (total === 0) {
     html += '<p class="text-sm text-muted mt-1">No key suites, clients, or control channels currently use this token.</p>';

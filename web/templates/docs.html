@@ -201,7 +201,7 @@ duckway init</code></pre>
       <tr><td>Manual</td><td>Access token, refresh token, token endpoint, optional Unix-ms expiry</td><td>Copy values from the provider CLI, dashboard, or saved token JSON</td></tr>
     </tbody>
   </table>
-  <p class="text-sm text-muted mt-1">Deleting a refreshable token first shows impacted Key Suites, clients, and Control Channels. Confirming clears suite entries, unassigns client phantom tokens, and disables affected Control Channels in red until a replacement bot token is assigned.</p>
+  <p class="text-sm text-muted mt-1">Deleting a refreshable token first shows impacted Key Suites, clients, and Control Channels. Confirming removes suite entries, unassigns client phantom tokens, and disables affected Control Channels in red until a replacement bot token is assigned.</p>
   <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Claude local credentials
 jq -r '.claudeAiOauth | [.accessToken, .refreshToken, (.expiresAt // 0)] | @tsv' ~/.claude/.credentials.json
 

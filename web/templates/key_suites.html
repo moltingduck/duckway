@@ -77,7 +77,7 @@
       <input type="hidden" id="entry-suite-id">
       <div class="form-group" style="margin:0">
         <label>Service</label>
-        <select id="entry-service">
+        <select id="entry-service" onchange="refreshEntryKeyOptions()">
           {{range .Services}}
           <option value="{{.ID}}">{{.DisplayName}} ({{.Name}})</option>
           {{end}}
@@ -94,7 +94,7 @@
         <label>API Key</label>
         <select id="entry-key-id">
           {{range .Keys}}
-          <option value="{{.ID}}">{{.Name}} ({{.ServiceName}})</option>
+          <option value="{{.ID}}" data-service-id="{{.ServiceID}}">{{.Name}} ({{.ServiceName}})</option>
           {{end}}
         </select>
       </div>
@@ -145,6 +145,8 @@
 </div>
 
 <script>
+var entryKeyOptions = [];
+
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
@@ -152,10 +154,46 @@ function esc(s) {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+  cacheEntryKeyOptions();
+  refreshEntryKeyOptions();
   document.querySelectorAll('[data-suite-id]').forEach(function(el) {
     refreshSuitePreview(el.getAttribute('data-suite-id'));
   });
 });
+
+function cacheEntryKeyOptions() {
+  const sel = document.getElementById('entry-key-id');
+  if (!sel) return;
+  entryKeyOptions = Array.from(sel.options).map(function(opt) {
+    return {
+      value: opt.value,
+      text: opt.textContent,
+      serviceID: opt.getAttribute('data-service-id') || ''
+    };
+  });
+}
+
+function refreshEntryKeyOptions() {
+  const svcID = document.getElementById('entry-service').value;
+  const sel = document.getElementById('entry-key-id');
+  if (!sel) return;
+  const matches = entryKeyOptions.filter(function(k) { return k.serviceID === svcID; });
+  sel.innerHTML = '';
+  if (matches.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No API keys for selected service';
+    sel.appendChild(opt);
+    return;
+  }
+  matches.forEach(function(k) {
+    const opt = document.createElement('option');
+    opt.value = k.value;
+    opt.textContent = k.text;
+    opt.setAttribute('data-service-id', k.serviceID);
+    sel.appendChild(opt);
+  });
+}
 
 async function refreshSuitePreview(suiteID) {
   const el = document.getElementById('suite-preview-' + suiteID);
@@ -221,6 +259,7 @@ async function deleteSuite(id) {
 async function openSuiteEntries(suiteID, suiteName) {
   document.getElementById('entries-suite-name').textContent = suiteName;
   document.getElementById('entry-suite-id').value = suiteID;
+  refreshEntryKeyOptions();
   await refreshEntries(suiteID);
   document.getElementById('entries-modal').style.display = 'flex';
 }
@@ -254,12 +293,17 @@ async function addEntry(e) {
   e.preventDefault();
   const suiteID = document.getElementById('entry-suite-id').value;
   const keyType = document.getElementById('entry-key-type').value;
+  const keyID = document.getElementById('entry-key-id').value;
   const body = {
     service_id: document.getElementById('entry-service').value,
     env_name:   document.getElementById('entry-env-name').value,
   };
-  if (keyType === 'key') body.api_key_id = document.getElementById('entry-key-id').value;
-  else                   body.group_id   = document.getElementById('entry-group-id').value;
+  if (keyType === 'key') {
+    if (!keyID) { alert('No API key is available for the selected service.'); return; }
+    body.api_key_id = keyID;
+  } else {
+    body.group_id = document.getElementById('entry-group-id').value;
+  }
 
   const res = await fetch('/api/key-suites/'+suiteID+'/entries', {
     method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)

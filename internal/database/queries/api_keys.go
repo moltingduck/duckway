@@ -228,8 +228,8 @@ func (q *APIKeyQueries) DeleteRefreshableWithCleanup(id string) (*RefreshableDel
 		return nil, fmt.Errorf("not a refreshable key")
 	}
 
-	if _, err := tx.Exec(`UPDATE key_suite_entries SET api_key_id = NULL WHERE api_key_id = ?`, id); err != nil {
-		return nil, fmt.Errorf("clear key suite entries: %w", err)
+	if _, err := tx.Exec(`DELETE FROM key_suite_entries WHERE api_key_id = ?`, id); err != nil {
+		return nil, fmt.Errorf("remove key suite entries: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM api_key_group_members WHERE api_key_id = ?`, id); err != nil {
 		return nil, fmt.Errorf("remove legacy key group members: %w", err)

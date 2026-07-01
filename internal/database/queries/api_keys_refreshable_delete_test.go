@@ -71,12 +71,12 @@ func TestDeleteRefreshableWithCleanupDisablesCCAndCleansReferences(t *testing.T)
 		t.Fatalf("control channel impact = %+v", impact.ControlChannels)
 	}
 
-	var entryKey sql.NullString
-	if err := db.QueryRow(`SELECT api_key_id FROM key_suite_entries WHERE id = 'entry-refresh-del'`).Scan(&entryKey); err != nil {
-		t.Fatalf("entry lookup: %v", err)
+	var entries int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM key_suite_entries WHERE id = 'entry-refresh-del'`).Scan(&entries); err != nil {
+		t.Fatalf("entry count: %v", err)
 	}
-	if entryKey.Valid {
-		t.Fatalf("key suite entry api_key_id still set to %q", entryKey.String)
+	if entries != 0 {
+		t.Fatalf("key suite entry count = %d, want 0", entries)
 	}
 
 	var placeholders int
