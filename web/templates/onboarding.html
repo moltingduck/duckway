@@ -73,8 +73,9 @@
       <span class="text-muted text-sm">Only agents implemented by <code>duckway cc watch</code> are shown.</span>
     </div>
     <div class="form-group">
-      <label>Service <span class="text-muted text-sm">(Discord)</span></label>
+      <label>Message channel</label>
       <select id="cc-service" onchange="loadCCKeys();renderCCConfig()"></select>
+      <span class="text-muted text-sm">Only services that can carry Control Channel messages are shown.</span>
     </div>
     <div class="form-group">
       <label>Bot token (API Key)</label>
@@ -84,7 +85,7 @@
     <div style="display:flex;justify-content:space-between;margin-top:1rem">
       <button class="btn" onclick="goStep(2)">← Back</button>
       <div style="display:flex;gap:.5rem">
-        <button class="btn" onclick="goStep(4)">Skip</button>
+        <button class="btn" onclick="finishOnboarding()">Skip</button>
         <button class="btn btn-primary" onclick="createCC()">Create CC &amp; Finish →</button>
       </div>
     </div>
@@ -97,6 +98,7 @@
     <div style="font-size:2.5rem;margin-bottom:1rem">✅</div>
     <h2 style="margin-bottom:1.5rem">Client onboarded</h2>
     <div id="summary" style="text-align:left;display:inline-block;min-width:320px;max-width:480px;margin-bottom:1.5rem"></div>
+    <div id="setup-commands" style="text-align:left;max-width:760px;margin:0 auto 1.5rem"></div>
     <div style="display:flex;gap:.75rem;justify-content:center">
       <a href="/admin/clients" class="btn btn-primary">View Clients</a>
       <button class="btn" onclick="resetWizard()">Onboard Another</button>
@@ -105,13 +107,17 @@
 </div>
 
 <script>
-var state = { clientID: null, clientName: null, suiteID: null, suiteName: null, ccID: null };
+var state = { clientID: null, clientName: null, clientToken: null, suiteID: null, suiteName: null, suiteEntries: [], ccID: null };
 var allSuites = [];
 var allServices = [];
 var allKeys = [];
 var onboardingDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
+var gatewayURL = window.location.origin;
+var gatewayURLValid = false;
 
 document.addEventListener('DOMContentLoaded', function() {
+  loadGatewayURL();
+
   fetch('/api/key-suites', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
     allSuites = d || [];
     var sel = document.getElementById('suite-select');
@@ -124,11 +130,11 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 
   fetch('/api/services', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
-    allServices = (d || []).filter(function(s){ return s.is_active; });
+    allServices = (d || []).filter(isProvisionableMessageChannelService);
     var sel = document.getElementById('cc-service');
     allServices.forEach(function(s) {
       var o = document.createElement('option');
-      o.value = s.id; o.textContent = s.display_name || s.name;
+      o.value = s.id; o.textContent = (s.display_name || s.name) + ' (' + s.name + ')';
       sel.appendChild(o);
     });
     if (allServices.length) loadCCKeys();
@@ -140,6 +146,31 @@ document.addEventListener('DOMContentLoaded', function() {
     loadCCKeys();
   });
 });
+
+function loadGatewayURL() {
+  fetch('/api/settings', {credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(s) {
+      if (s.gateway_url) {
+        gatewayURL = s.gateway_url;
+        gatewayURLValid = true;
+        refreshSetupCommandsIfDone();
+        return;
+      }
+      fetch('/install.sh', {method:'HEAD'})
+        .then(function(r){ gatewayURLValid = !!r.ok; refreshSetupCommandsIfDone(); })
+        .catch(function(){ gatewayURLValid = false; refreshSetupCommandsIfDone(); });
+    });
+}
+
+function refreshSetupCommandsIfDone() {
+  var done = document.getElementById('step-4');
+  if (done && done.style.display !== 'none') renderSetupCommands();
+}
+
+function isProvisionableMessageChannelService(s) {
+  return s && s.is_active && s.name === 'discord';
+}
 
 function goStep(n) {
   [1,2,3,4].forEach(function(i) {
@@ -158,6 +189,7 @@ function goStep(n) {
       tab.style.fontWeight = '';
     }
   });
+  if (n === 3) updateAgentTypeOptions();
 }
 
 function createClient() {
@@ -173,6 +205,7 @@ function createClient() {
   }).then(function(c) {
     state.clientID = c.id;
     state.clientName = c.name;
+    state.clientToken = c.token || '';
     document.getElementById('cc-name').value = name + ' CC';
     goStep(2);
   }).catch(function(e){ showToast(e.message, 'error'); });
@@ -199,7 +232,13 @@ function previewSuite() {
 
 function assignSuite() {
   var id = document.getElementById('suite-select').value;
-  if (!id) { goStep(3); return; }
+  if (!id) {
+    state.suiteID = null;
+    state.suiteName = null;
+    state.suiteEntries = [];
+    goStep(3);
+    return;
+  }
   fetch('/api/key-suites/'+id+'/assign', {
     method: 'POST', credentials: 'same-origin',
     headers: {'Content-Type':'application/json'},
@@ -211,11 +250,48 @@ function assignSuite() {
     var suite = allSuites.find(function(s){ return s.id === id; });
     state.suiteID = id;
     state.suiteName = suite ? suite.name : id;
+    fetch('/api/key-suites/'+id, {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s) {
+      state.suiteEntries = s.entries || [];
+      updateAgentTypeOptions();
+    });
     if (res.skipped && res.skipped.length) {
       showToast('Assigned with ' + res.skipped.length + ' conflict(s) skipped', '');
     }
     goStep(3);
   }).catch(function(e){ showToast(e.message, 'error'); });
+}
+
+function updateAgentTypeOptions() {
+  var sel = document.getElementById('cc-agent');
+  if (!sel) return;
+  var entries = state.suiteEntries || [];
+  var hasOpenAI = entries.some(function(e){ return String(e.service_name || '').toLowerCase().indexOf('openai') >= 0; });
+  var hasAnthropic = entries.some(function(e){
+    var n = String(e.service_name || '').toLowerCase();
+    return n.indexOf('anthropic') >= 0 || n.indexOf('claude') >= 0;
+  });
+  var options = [];
+  if (hasAnthropic) options.push({value:'claude_code', label:'Claude Code (claude_code)'});
+  if (hasOpenAI) options.push({value:'codex', label:'Codex (codex)'});
+  if (options.length === 0) {
+    options = [
+      {value:'claude_code', label:'Claude Code (claude_code)'},
+      {value:'codex', label:'Codex (codex)'}
+    ];
+  }
+  sel.innerHTML = '';
+  options.forEach(function(o) {
+    var opt = document.createElement('option');
+    opt.value = o.value;
+    opt.textContent = o.label;
+    sel.appendChild(opt);
+  });
+  var help = sel.parentElement.querySelector('.text-muted');
+  if (help) {
+    help.textContent = hasOpenAI || hasAnthropic
+      ? 'Shown from the assigned Key Suite credentials. Pick the agent installed on this client.'
+      : 'No Claude/OpenAI key was assigned by the suite, so both supported agents are shown.';
+  }
 }
 
 function loadCCKeys() {
@@ -409,9 +485,13 @@ function createCC() {
   }).then(function(cc) {
     state.ccID = cc.id;
     state.ccName = cc.name;
-    goStep(4);
-    renderSummary();
+    finishOnboarding();
   }).catch(function(e){ showToast(e.message, 'error'); });
+}
+
+function finishOnboarding() {
+  goStep(4);
+  renderSummary();
 }
 
 function renderSummary() {
@@ -429,15 +509,68 @@ function renderSummary() {
   }
   html += '</table>';
   document.getElementById('summary').innerHTML = html;
+  renderSetupCommands();
+}
+
+function shellEscape(s) {
+  return String(s || '').replace(/"/g, '\\"');
+}
+
+function renderSetupCommands() {
+  var el = document.getElementById('setup-commands');
+  if (!state.clientToken) {
+    el.innerHTML = '';
+    return;
+  }
+  if (!gatewayURLValid) {
+    el.innerHTML =
+      '<div style="background:var(--bg-input);border-left:3px solid var(--danger);padding:.75rem;border-radius:var(--radius)">' +
+      '<strong style="color:var(--danger)">Gateway URL is not configured.</strong><br>' +
+      '<span class="text-sm text-muted">Set Gateway URL in Settings first. In split mode the admin panel does not serve <code>/install.sh</code>.</span></div>';
+    return;
+  }
+  var initCmd = 'printf "' + shellEscape(gatewayURL) + '\\n' + shellEscape(state.clientName) + '\\n1\\n' + shellEscape(state.clientToken) + '\\n" | duckway init';
+  var lines = [
+    '# 1. Download and install Duckway client',
+    'curl -fsSL ' + gatewayURL + '/install.sh | sh',
+    '',
+    '# 2. Register this client with the generated token',
+    initCmd,
+    '',
+    '# 3. Pull phantom tokens, OAuth files, CA/proxy config, and Control Channel state',
+    'duckway sync',
+    '',
+    '# 4. Start the local HTTPS proxy for agent traffic',
+    'duckway proxy -d',
+    'eval "$(duckway env)"',
+    'duckway status'
+  ];
+  if (state.ccID) {
+    lines = lines.concat([
+      '',
+      '# 5. Start Control Channel watcher so Discord messages can drive the agent',
+      'duckway cc watch -d'
+    ]);
+  } else {
+    lines = lines.concat([
+      '',
+      '# 5. Control Channel was skipped. Run this later after creating one:',
+      '# duckway sync && duckway cc watch -d'
+    ]);
+  }
+  el.innerHTML =
+    '<label class="text-sm" style="font-weight:600;display:block;margin-bottom:.35rem">Client setup commands</label>' +
+    '<pre style="background:var(--bg-input);padding:.75rem;border-radius:var(--radius);overflow:auto;font-size:.82rem"><code>' + esc(lines.join('\n')) + '</code></pre>';
 }
 
 function resetWizard() {
-  state = { clientID: null, clientName: null, suiteID: null, suiteName: null, ccID: null };
+  state = { clientID: null, clientName: null, clientToken: null, suiteID: null, suiteName: null, suiteEntries: [], ccID: null };
   onboardingDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
   document.getElementById('client-name').value = '';
   document.getElementById('suite-select').value = '';
   document.getElementById('suite-entries-preview').style.display = 'none';
   document.getElementById('cc-name').value = '';
+  document.getElementById('setup-commands').innerHTML = '';
   goStep(1);
 }
 
