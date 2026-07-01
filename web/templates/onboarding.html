@@ -264,7 +264,13 @@ function renderOnboardingDiscordSetup() {
   var categoryName = state.clientName || document.getElementById('client-name').value.trim() || 'duckway';
   var destination = loaded && guilds.length
     ? '<div class="form-group"><label>Server</label><select id="cfg-guild" onchange="loadOnboardingDiscordCategories()">'+guildOptions+'</select></div>' +
-      '<div class="form-group"><label>Category</label><select id="cfg-category">'+(catOptions || '<option value="">No categories loaded</option>')+'</select><div style="display:flex;gap:.5rem;align-items:center;margin-top:.5rem"><button type="button" class="btn btn-sm" onclick="preflightOnboardingDiscordCategory()">Check permissions</button><span class="text-muted text-sm">Creates and deletes a temporary channel.</span></div><div id="cfg-preflight-result" style="margin-top:.5rem"></div></div>' +
+      '<div class="form-group"><label>Category</label><select id="cfg-category">'+(catOptions || '<option value="">No categories loaded</option>')+'</select>' +
+        '<div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.5rem">' +
+          '<button type="button" class="btn btn-sm" onclick="preflightOnboardingDiscordCategory()">Check permissions</button>' +
+          '<button type="button" class="btn btn-sm" onclick="grantOnboardingDiscordCategoryAccess()">Grant bot access</button>' +
+          '<span class="text-muted text-sm">Grant writes category permissions; check creates and deletes a temporary channel.</span>' +
+        '</div><div id="cfg-preflight-result" style="margin-top:.5rem"></div>' +
+        '<span class="text-muted text-sm">If Grant fails, invite the bot again with the updated permissions or add the bot in Discord category Permissions manually.</span></div>' +
       '<div class="form-group"><label>Create category</label><div style="display:flex;gap:.5rem;align-items:center"><input type="text" id="cfg-new-category" value="'+esc(categoryName)+'" placeholder="'+esc(categoryName)+'"><button type="button" class="btn btn-sm" onclick="createOnboardingDiscordCategory()">Create</button></div></div>'
     : '<div class="form-group"><label>Server ID</label><input type="text" id="cfg-guild" placeholder="Load setup, or paste server id as fallback" '+(!loaded?'disabled':'')+'></div>' +
       '<div class="form-group"><label>Category ID</label><input type="text" id="cfg-category" placeholder="Paste category id as fallback" '+(!loaded?'disabled':'')+'></div>';
@@ -319,6 +325,7 @@ function createOnboardingDiscordCategory() {
     body: JSON.stringify({api_key_id:keyID, guild_id:guildID, name:name})
   }).then(function(r){return r.json();}).then(function(d){
     if (d.error) { showToast(d.error, 'error'); return; }
+    showToast(d.permission_warning || 'Category created and bot access granted', d.permission_warning ? 'error' : 'success');
     onboardingDiscordSetup.categories = (onboardingDiscordSetup.categories || []).concat([d]);
     renderOnboardingDiscordSetup();
     var g = document.getElementById('cfg-guild');
@@ -328,6 +335,26 @@ function createOnboardingDiscordCategory() {
       c.value = d.id;
       preflightOnboardingDiscordCategory();
     }
+  });
+}
+
+function grantOnboardingDiscordCategoryAccess() {
+  var keyID = document.getElementById('cc-key').value;
+  var catID = document.getElementById('cfg-category').value;
+  var panel = document.getElementById('cfg-preflight-result');
+  if (!keyID || !catID) { showToast('Choose a category first', 'error'); return; }
+  if (panel) panel.innerHTML = '<div class="text-muted text-sm">Granting bot access on the category...</div>';
+  fetch('/api/cc/discord/category-permissions', {
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({api_key_id:keyID, category_id:catID})
+  }).then(function(r){return r.json();}).then(function(d){
+    if (d.error) {
+      if (panel) panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+esc(d.error)+'<br>In Discord: Category Settings → Permissions → add the bot → allow Manage Channels, View Channel, Send Messages, Add Reactions, Read Message History.</div>';
+      return;
+    }
+    showToast('Bot access granted', 'success');
+    preflightOnboardingDiscordCategory();
   });
 }
 

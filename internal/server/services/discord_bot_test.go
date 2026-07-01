@@ -101,6 +101,33 @@ func TestCreateCategory(t *testing.T) {
 	}
 }
 
+func TestGrantCategoryAccess(t *testing.T) {
+	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/channels/CAT1/permissions/BOT1" || r.Method != "PUT" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]interface{}
+		_ = json.Unmarshal(body, &b)
+		if b["type"] != float64(1) {
+			t.Errorf("type = %v, want member overwrite", b["type"])
+		}
+		if b["allow"] != "68688" {
+			t.Errorf("allow = %v, want Duckway category permissions", b["allow"])
+		}
+		if b["deny"] != "0" {
+			t.Errorf("deny = %v, want 0", b["deny"])
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	defer srv.Close()
+	b := &DiscordBot{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	if err := b.GrantCategoryAccess(context.Background(), "tok", "CAT1", "BOT1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCreateChannelForbidden(t *testing.T) {
 	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(403)
@@ -148,7 +175,7 @@ func TestCurrentUserAndListGuilds(t *testing.T) {
 
 func TestDiscordInviteURL(t *testing.T) {
 	u := DiscordInviteURL("BOT1")
-	if !strings.Contains(u, "client_id=BOT1") || !strings.Contains(u, "permissions=68688") || !strings.Contains(u, "scope=bot+applications.commands") {
+	if !strings.Contains(u, "client_id=BOT1") || !strings.Contains(u, "permissions=268504144") || !strings.Contains(u, "scope=bot+applications.commands") {
 		t.Fatalf("invite url = %s", u)
 	}
 }

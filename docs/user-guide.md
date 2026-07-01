@@ -368,6 +368,7 @@ Left sidebar **OAuth2** → **URL Generator**:
 - *Scopes*: tick **`bot`** and **`applications.commands`**.
 - *Bot Permissions*: tick:
   - **Manage Channels** (create / archive / move task channels)
+  - **Manage Roles** (write the bot's category permission override from Duckway)
   - **Send Messages**
   - **Add Reactions** (for `discord_request_approval` votes)
   - **Read Message History** (so the agent can read the channel above the latest message)
@@ -376,10 +377,12 @@ Copy the generated URL at the bottom, paste into a browser, pick the guild you w
 
 **4. Per-category permission lock-down (recommended)**
 
-The OAuth link above grants `Manage Channels` guild-wide. To narrow that to one category:
+The OAuth link above grants `Manage Channels` / `Manage Roles` guild-wide so Duckway can create the category and write a category-level permission override. In Duckway, use **Grant bot access** after selecting an existing category; newly created categories attempt this automatically.
 
-- In your guild: right-click the bot's role → **Edit Role** → uncheck **Manage Channels** in the global permissions.
-- Right-click the **target category** → **Edit Category** → **Permissions** tab → **+ Add member or role** → pick the bot → grant **Manage Channels** + **Send Messages** + **Add Reactions** + **Read Message History** ONLY here.
+To narrow the bot after setup:
+
+- In your guild: right-click the bot's role → **Edit Role** → uncheck **Manage Channels** and **Manage Roles** in the global permissions.
+- In Duckway, select the target category and click **Grant bot access**. If Discord rejects it, right-click the **target category** → **Edit Category** → **Permissions** tab → **+ Add member or role** → pick the bot → grant **Manage Channels** + **View Channel** + **Send Messages** + **Add Reactions** + **Read Message History** ONLY here.
 
 Now if a CC's bot token leaks, blast radius is one category, not the whole guild.
 
@@ -405,7 +408,7 @@ Duckway can now discover servers and categories from the saved bot token, so you
    - **Agent type** — `claude_code` or `codex` (when tmux is installed, both use attachable `duckway-<handle>` sessions; `--no-tmux` forces headless mode).
    - **Service** — `discord`.
    - **Bot Token** — the API key you uploaded in (1).
-   - **Discord setup** — click **Load Discord setup**. If the bot is not in the server yet, click **Invite bot** to open Duckway's generated Discord OAuth URL, select the server in Discord, then refresh. Pick an existing category or create a new category from the form, then click **Check permissions** to verify create/send/react/read/delete access before saving.
+   - **Discord setup** — click **Load Discord setup**. If the bot is not in the server yet, click **Invite bot** to open Duckway's generated Discord OAuth URL, select the server in Discord, then refresh. Pick an existing category and click **Grant bot access**, or create a new category from the form and Duckway will grant access automatically. Then click **Check permissions** to verify create/send/react/read/delete access before saving.
 
    On save, duckway calls Discord to create `<client>-control` under the category and issues a phantom bot token bound to the client. If anything fails (bot lacks permission, wrong category id, etc.) the create rolls back and tells you which step failed.
 

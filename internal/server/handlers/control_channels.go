@@ -132,7 +132,54 @@ func (h *ControlChannelHandler) DiscordCreateCategory(w http.ResponseWriter, r *
 		jsonError(w, "discord create category: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	jsonResponse(w, category)
+	resp := map[string]interface{}{
+		"id":       category.ID,
+		"name":     category.Name,
+		"type":     category.Type,
+		"guild_id": category.GuildID,
+	}
+	if category.ParentID != nil {
+		resp["parent_id"] = *category.ParentID
+	}
+	if user, err := h.bot.CurrentUser(r.Context(), botToken); err != nil {
+		resp["permission_warning"] = "category created, but bot identity lookup failed: " + err.Error()
+	} else if err := h.bot.GrantCategoryAccess(r.Context(), botToken, category.ID, user.ID); err != nil {
+		resp["permission_warning"] = "category created, but permission setup failed: " + err.Error()
+	} else {
+		resp["permissions_applied"] = true
+	}
+	jsonResponse(w, resp)
+}
+
+// POST /api/cc/discord/category-permissions
+func (h *ControlChannelHandler) DiscordGrantCategoryPermissions(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		APIKeyID   string `json:"api_key_id"`
+		CategoryID string `json:"category_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if req.APIKeyID == "" || req.CategoryID == "" {
+		jsonError(w, "api_key_id and category_id are required", http.StatusBadRequest)
+		return
+	}
+	botToken, err := h.discordBotToken(req.APIKeyID)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	user, err := h.bot.CurrentUser(r.Context(), botToken)
+	if err != nil {
+		jsonError(w, "discord current user: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if err := h.bot.GrantCategoryAccess(r.Context(), botToken, req.CategoryID, user.ID); err != nil {
+		jsonError(w, "discord grant category permissions: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{"ok": true})
 }
 
 // POST /api/cc/discord/preflight

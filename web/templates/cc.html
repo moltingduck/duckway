@@ -251,9 +251,13 @@ function renderDiscordSetup() {
         '<select id="cc-cfg-category">' +
           (catOptions || '<option value="">No categories loaded</option>') +
         '</select>' +
-        '<div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.5rem"><button type="button" class="btn btn-sm" onclick="preflightDiscordCategory()">Check permissions</button><span class="text-muted text-sm">Creates and deletes a temporary channel.</span></div>' +
+        '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-top:0.5rem">' +
+          '<button type="button" class="btn btn-sm" onclick="preflightDiscordCategory()">Check permissions</button>' +
+          '<button type="button" class="btn btn-sm" onclick="grantDiscordCategoryAccess()">Grant bot access</button>' +
+          '<span class="text-muted text-sm">Grant writes a category permission override; check creates and deletes a temporary channel.</span>' +
+        '</div>' +
         '<div id="cc-preflight-result" class="mt-1"></div>' +
-        '<span class="text-muted text-sm">Existing categories must allow the bot to manage channels. New categories inherit the bot role permissions from the invite.</span></div>' +
+        '<span class="text-muted text-sm">If Grant fails, the bot invite may need the updated Manage Roles permission or a Discord admin may need to add the bot in category Permissions manually.</span></div>' +
       '<div class="form-group">' +
         '<label>Create category</label>' +
         '<div style="display:flex;gap:0.5rem;align-items:center">' +
@@ -323,7 +327,7 @@ function createDiscordCategory() {
     body: JSON.stringify({api_key_id:keyID, guild_id:guildID, name:name})
   }).then(function(r){return r.json();}).then(function(d) {
     if (d.error) { showToast(d.error, 'error'); return; }
-    showToast('Category created', 'success');
+    showToast(d.permission_warning || 'Category created and bot access granted', d.permission_warning ? 'error' : 'success');
     discordSetup.categories = (discordSetup.categories || []).concat([d]);
     renderDiscordSetup();
     var guild = document.getElementById('cc-cfg-guild');
@@ -333,6 +337,26 @@ function createDiscordCategory() {
       cat.value = d.id;
       preflightDiscordCategory();
     }
+  });
+}
+
+function grantDiscordCategoryAccess() {
+  var keyID = document.getElementById('cc-key').value;
+  var catID = document.getElementById('cc-cfg-category').value;
+  var panel = document.getElementById('cc-preflight-result');
+  if (!keyID || !catID) { showToast('Choose a category first', 'error'); return; }
+  if (panel) panel.innerHTML = '<div class="text-muted text-sm">Granting bot access on the category...</div>';
+  fetch('/api/cc/discord/category-permissions', {
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({api_key_id:keyID, category_id:catID})
+  }).then(function(r){return r.json();}).then(function(d) {
+    if (d.error) {
+      if (panel) panel.innerHTML = '<div class="text-sm" style="color:#ef4444">'+escapeHTML(d.error)+'<br>In Discord: Category Settings → Permissions → add the bot → allow Manage Channels, View Channel, Send Messages, Add Reactions, Read Message History.</div>';
+      return;
+    }
+    showToast('Bot access granted', 'success');
+    preflightDiscordCategory();
   });
 }
 

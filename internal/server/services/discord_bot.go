@@ -29,6 +29,22 @@ type DiscordBot struct {
 	HTTP    *http.Client
 }
 
+const (
+	discordPermManageChannels     int64 = 1 << 4
+	discordPermAddReactions       int64 = 1 << 6
+	discordPermViewChannel        int64 = 1 << 10
+	discordPermSendMessages       int64 = 1 << 11
+	discordPermReadMessageHistory int64 = 1 << 16
+	discordPermManageRoles        int64 = 1 << 28
+
+	discordDuckwayCategoryPerms = discordPermManageChannels |
+		discordPermAddReactions |
+		discordPermViewChannel |
+		discordPermSendMessages |
+		discordPermReadMessageHistory
+	discordDuckwayInvitePerms = discordDuckwayCategoryPerms | discordPermManageRoles
+)
+
 func NewDiscordBot() *DiscordBot {
 	base := os.Getenv("DUCKWAY_DISCORD_BASE_URL")
 	if base == "" {
@@ -212,6 +228,21 @@ func (b *DiscordBot) CreateCategory(ctx context.Context, botToken, guildID, name
 	return &ch, nil
 }
 
+// GrantCategoryAccess gives the bot user the category-level permissions that
+// Duckway needs. New task channels under the category inherit this overwrite.
+func (b *DiscordBot) GrantCategoryAccess(ctx context.Context, botToken, categoryID, botUserID string) error {
+	if categoryID == "" || botUserID == "" {
+		return fmt.Errorf("category_id and bot_user_id are required")
+	}
+	body := map[string]interface{}{
+		"type":  1, // member overwrite
+		"allow": fmt.Sprintf("%d", discordDuckwayCategoryPerms),
+		"deny":  "0",
+	}
+	_, err := b.do(ctx, botToken, "PUT", fmt.Sprintf("/channels/%s/permissions/%s", categoryID, botUserID), body)
+	return err
+}
+
 // ArchiveChannel moves the channel out of its category and prefixes the name
 // with "archived-". This is non-destructive — the channel + its messages
 // stay readable to anyone with access. Idempotent: archiving a missing
@@ -355,7 +386,7 @@ func (b *DiscordBot) ListGuildChannels(ctx context.Context, botToken, guildID st
 func DiscordInviteURL(clientID string) string {
 	v := url.Values{}
 	v.Set("client_id", clientID)
-	v.Set("permissions", "68688")
+	v.Set("permissions", fmt.Sprintf("%d", discordDuckwayInvitePerms))
 	v.Set("scope", "bot applications.commands")
 	return "https://discord.com/oauth2/authorize?" + v.Encode()
 }

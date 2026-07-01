@@ -418,6 +418,12 @@ GET /api/cc/discord/setup
                           return invite_url + server picker data
 POST /api/cc/discord/categories
                       ──→ Discord POST /guilds/{g}/channels type=4
+                          Discord PUT /channels/{category}/permissions/{bot_user}
+                          return category + permission status
+
+POST /api/cc/discord/category-permissions
+                      ──→ Discord GET /users/@me
+                          Discord PUT /channels/{category}/permissions/{bot_user}
 
 POST /api/cc          ──→ decrypt bot token
                           Discord POST /guilds/{g}/channels      ┐
