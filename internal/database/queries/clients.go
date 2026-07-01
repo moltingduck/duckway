@@ -2,6 +2,7 @@ package queries
 
 import (
 	"database/sql"
+	"fmt"
 
 	"github.com/hackerduck/duckway/internal/models"
 )
@@ -89,6 +90,55 @@ func (q *ClientQueries) UpdateCanaryEnabled(id string, enabled bool) error {
 }
 
 func (q *ClientQueries) Delete(id string) error {
-	_, err := q.db.Exec("DELETE FROM clients WHERE id = ?", id)
-	return err
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// request_log keeps historical rows after a client is removed. Its
+	// client_id and placeholder_id FKs are nullable but do not cascade, so
+	// detach them before deleting the client and its placeholders.
+	if _, err := tx.Exec("UPDATE request_log SET client_id = NULL WHERE client_id = ?", id); err != nil {
+		return fmt.Errorf("detach client request logs: %w", err)
+	}
+	if _, err := tx.Exec(`
+		UPDATE request_log
+		SET placeholder_id = NULL
+		WHERE placeholder_id IN (
+			SELECT id FROM placeholder_keys WHERE client_id = ?
+		)`, id); err != nil {
+		return fmt.Errorf("detach placeholder request logs: %w", err)
+	}
+
+	// control_channels.client_id was added by migration and has no FK on
+	// existing databases. Remove its dependent rows explicitly to avoid
+	// orphaned channels/inbox events when deleting the bound client.
+	if _, err := tx.Exec(`
+		DELETE FROM discord_inbox
+		WHERE cc_id IN (
+			SELECT id FROM control_channels WHERE client_id = ?
+		)`, id); err != nil {
+		return fmt.Errorf("delete control channel inbox: %w", err)
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM cc_channels
+		WHERE cc_id IN (
+			SELECT id FROM control_channels WHERE client_id = ?
+		)`, id); err != nil {
+		return fmt.Errorf("delete control channel channels: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM control_channels WHERE client_id = ?", id); err != nil {
+		return fmt.Errorf("delete control channels: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM canary_tokens WHERE client_id = ?", id); err != nil {
+		return fmt.Errorf("delete canary tokens: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM placeholder_keys WHERE client_id = ?", id); err != nil {
+		return fmt.Errorf("delete placeholder keys: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM clients WHERE id = ?", id); err != nil {
+		return fmt.Errorf("delete client: %w", err)
+	}
+	return tx.Commit()
 }
