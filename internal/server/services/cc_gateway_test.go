@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/hackerduck/duckway/internal/models"
 )
 
 // TestParseHello_Valid accepts a well-formed Hello and returns the interval.
@@ -215,5 +217,80 @@ func TestHandleDispatch_ResumedDoesNotPanic(t *testing.T) {
 	c.mu.Unlock()
 	if sid != "abc123" {
 		t.Fatalf("RESUMED must not clear sessionID")
+	}
+}
+
+func TestRouteMessageEventPublishesTaskMessage(t *testing.T) {
+	h := newCommandHarness(t)
+	task := &models.CCChannel{
+		Handle: "dwch_task", CCID: "cc1", ClientID: ptr("client1"),
+		ChannelID: "TASK1", Name: "task", Kind: "task",
+	}
+	if err := h.cc.CreateChannel(task); err != nil {
+		t.Fatal(err)
+	}
+	ccs, err := h.cc.ListByAPIKeyID("key1")
+	if err != nil || len(ccs) != 1 || ccs[0].ClientID != "client1" {
+		t.Fatalf("ListByAPIKeyID precondition = %+v, %v", ccs, err)
+	}
+	ch, err := h.cc.GetChannelByRealID("cc1", "TASK1")
+	if err != nil || ch == nil || ch.Handle != "dwch_task" {
+		t.Fatalf("GetChannelByRealID precondition = %+v, %v", ch, err)
+	}
+
+	sub, unsub := h.hub.Subscribe("client1")
+	defer unsub()
+	conn := &ccBotConn{apiKeyID: "key1", cc: h.cc, hub: h.hub, commands: h.handler}
+	payload := json.RawMessage(`{"id":"M1","channel_id":"TASK1","content":"hello codex","author":{"id":"U1","bot":false}}`)
+	conn.routeMessageEvent("MESSAGE_CREATE", "TASK1", payload)
+
+	select {
+	case ev := <-sub:
+		if ev.Type != "message_create" || ev.CCID != "cc1" || ev.Handle != "dwch_task" || ev.Kind != "task" {
+			t.Fatalf("event = %+v", ev)
+		}
+		var msg struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(ev.Payload, &msg); err != nil {
+			t.Fatal(err)
+		}
+		if msg.Content != "hello codex" {
+			t.Fatalf("event payload content = %q", msg.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for published CC event")
+	}
+
+	rows, err := h.cc.PullInbox("cc1", 0, []string{"dwch_task"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].EventType != "MESSAGE_CREATE" || rows[0].ChannelHandle == nil || *rows[0].ChannelHandle != "dwch_task" {
+		t.Fatalf("inbox rows = %+v", rows)
+	}
+}
+
+func TestRouteMessageEventCommandsDoNotReachDaemon(t *testing.T) {
+	h := newCommandHarness(t)
+	sub, unsub := h.hub.Subscribe("client1")
+	defer unsub()
+	conn := &ccBotConn{apiKeyID: "key1", cc: h.cc, hub: h.hub, commands: h.handler}
+
+	payload := json.RawMessage(`{"id":"M2","channel_id":"MGMT1","content":"!status","author":{"id":"U1","bot":false}}`)
+	conn.routeMessageEvent("MESSAGE_CREATE", "MGMT1", payload)
+
+	select {
+	case ev := <-sub:
+		t.Fatalf("command should not be forwarded to daemon, got event %+v", ev)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	rows, err := h.cc.PullInbox("cc1", 0, []string{"dwch_mgmt"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("command should not be appended to inbox, got %+v", rows)
 	}
 }

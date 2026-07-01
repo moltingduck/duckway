@@ -74,12 +74,12 @@ func TestSuggestCommands(t *testing.T) {
 		typed string
 		want  []string
 	}{
-		{"!lits", []string{"!list"}},     // 1 edit
-		{"!hep", []string{"!help"}},      // 1 deletion
-		{"!hlep", []string{"!help"}},     // 1 transposition (= 2 edits)
-		{"!resset", []string{"!reset"}},  // 1 insertion
-		{"!frobnicate", nil},             // too far
-		{"!nw", []string{"!new"}},        // 1 deletion
+		{"!lits", []string{"!list"}},    // 1 edit
+		{"!hep", []string{"!help"}},     // 1 deletion
+		{"!hlep", []string{"!help"}},    // 1 transposition (= 2 edits)
+		{"!resset", []string{"!reset"}}, // 1 insertion
+		{"!frobnicate", nil},            // too far
+		{"!nw", []string{"!new"}},       // 1 deletion
 	}
 	for _, c := range cases {
 		got := suggestCommands(c.typed, 2)
@@ -98,7 +98,7 @@ func TestUnknownCommandReply(t *testing.T) {
 		want  string // substring that must appear
 	}{
 		{"!lits", "Did you mean `!list`"},
-		{"!frobnicate", "Type `!help`"},  // no close match → fall back to !help nudge
+		{"!frobnicate", "Type `!help`"}, // no close match → fall back to !help nudge
 	}
 	for _, c := range cases {
 		got := unknownCommandReply(c.typed)
@@ -130,14 +130,14 @@ func TestLevenshtein(t *testing.T) {
 func TestBuildWelcomeMessage(t *testing.T) {
 	got := BuildWelcomeMessage("my-laptop")
 	want := []string{
-		"my-laptop",  // client name appears
-		"!new",       // every command is mentioned
+		"my-laptop", // client name appears
+		"!new",      // every command is mentioned
 		"!end",
 		"!reset",
 		"!list",
 		"!status",
 		"!help",
-		"cc watch",   // operator nudge about the daemon
+		"cc watch", // operator nudge about the daemon
 	}
 	for _, w := range want {
 		if !strings.Contains(got, w) {
@@ -207,7 +207,7 @@ func newCommandHarness(t *testing.T) *commandHarness {
 
 	stmts := []string{
 		`CREATE TABLE control_channels (id TEXT PRIMARY KEY, name TEXT, service_id TEXT, api_key_id TEXT, client_id TEXT, agent_type TEXT, placeholder_id TEXT, config TEXT, is_active INT, created_at TEXT)`,
-		`CREATE TABLE cc_channels (handle TEXT PRIMARY KEY, cc_id TEXT, client_id TEXT, channel_id TEXT, name TEXT, topic TEXT, kind TEXT, session_id TEXT, cwd TEXT, archived INT, created_at TEXT, last_seen_at TEXT)`,
+		`CREATE TABLE cc_channels (handle TEXT PRIMARY KEY, cc_id TEXT, client_id TEXT, channel_id TEXT, name TEXT, topic TEXT, kind TEXT, session_id TEXT, cwd TEXT, archived INT, created_at TEXT NOT NULL DEFAULT (datetime('now')), last_seen_at TEXT)`,
 		`CREATE TABLE discord_inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, cc_id TEXT, channel_handle TEXT, event_type TEXT, payload TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
 		`CREATE TABLE api_keys (id TEXT PRIMARY KEY, service_id TEXT, name TEXT, key_encrypted TEXT, acl TEXT DEFAULT '', refresh_token TEXT DEFAULT '', expires_at INT DEFAULT 0, token_endpoint TEXT DEFAULT '', subscription_info TEXT DEFAULT '', usage_snapshot TEXT DEFAULT '', is_active INT DEFAULT 1, usage_count INT DEFAULT 0, last_used_at TEXT, created_at TEXT)`,
 		`CREATE TABLE services (id TEXT PRIMARY KEY, name TEXT)`,
