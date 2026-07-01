@@ -265,6 +265,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 
 	oauthH := handlers.NewOAuthHandler(ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.Crypto)
 	oauthH.SetRefresher(ss.Refresher)
+	adminAPIMux.HandleFunc("POST /api/oauth/validate", oauthH.Validate)
 	adminAPIMux.HandleFunc("POST /api/oauth/upload", oauthH.Upload)
 	adminAPIMux.HandleFunc("GET /api/oauth/{id}", oauthH.Get)
 	adminAPIMux.HandleFunc("PUT /api/oauth/{id}", oauthH.Update)

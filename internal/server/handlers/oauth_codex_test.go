@@ -2,9 +2,11 @@ package handlers_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/database"
@@ -73,4 +75,77 @@ func TestClientGetCodexCredentials(t *testing.T) {
 	if got["auth_mode"] != "chatgpt" || tokens["access_token"] != "codex-access-token" || tokens["refresh_token"] != "codex-refresh-token" || tokens["account_id"] != "acct-1" {
 		t.Fatalf("unexpected response: %#v", got)
 	}
+}
+
+func TestValidateCodexOAuth(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handlers.NewOAuthHandler(
+		queries.NewAPIKeyQueries(db),
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		services.NewCrypto([]byte("0123456789abcdef0123456789abcdef")),
+	)
+
+	body := `{
+		"service_id": "` + openaiSvc.ID + `",
+		"access_token": "` + testJWT() + `",
+		"refresh_token": "rt.1.good",
+		"token_endpoint": "https://auth.openai.com/oauth/token",
+		"subscription_info": "{\"credential_kind\":\"codex_oauth\",\"auth_mode\":\"chatgpt\",\"source\":\"codex\"}"
+	}`
+	rec := httptest.NewRecorder()
+	h.Validate(rec, httptest.NewRequest(http.MethodPost, "/api/oauth/validate", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestValidateCodexOAuthRejectsBadShape(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handlers.NewOAuthHandler(
+		queries.NewAPIKeyQueries(db),
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		services.NewCrypto([]byte("0123456789abcdef0123456789abcdef")),
+	)
+
+	body := `{
+		"service_id": "` + openaiSvc.ID + `",
+		"access_token": "not-a-jwt",
+		"refresh_token": "not-rt",
+		"token_endpoint": "https://auth.openai.com/oauth/token",
+		"subscription_info": "{\"credential_kind\":\"codex_oauth\",\"auth_mode\":\"chatgpt\",\"source\":\"codex\"}"
+	}`
+	rec := httptest.NewRecorder()
+	h.Validate(rec, httptest.NewRequest(http.MethodPost, "/api/oauth/validate", strings.NewReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "must look like a JWT") {
+		t.Fatalf("unexpected error: %s", rec.Body.String())
+	}
+}
+
+func testJWT() string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":1893456000}`))
+	return header + "." + payload + ".sig"
 }

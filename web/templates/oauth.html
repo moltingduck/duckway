@@ -64,6 +64,7 @@
       </div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
+        <button type="button" class="btn" id="test-oauth-btn" onclick="testOAuthUpload()">Test</button>
         <button type="submit" class="btn btn-primary">Upload</button>
       </div>
     </form>
@@ -285,6 +286,64 @@ function parseOAuthPaste() {
   }
 }
 
+function buildOAuthUploadBody() {
+  var subInfo = document.getElementById('oauth-sub').value.trim();
+  var subObj = {};
+  if (subInfo) { subObj = JSON.parse(subInfo); }
+  if (selectedOAuthKind() === 'claude') {
+    var displayName = document.getElementById('oauth-display').value.trim();
+    if (displayName) subObj.displayName = displayName;
+  } else if (selectedOAuthKind() === 'openai') {
+    subObj.credential_kind = 'codex_oauth';
+    subObj.source = 'codex';
+  } else {
+    delete subObj.displayName;
+  }
+  return {
+    name: document.getElementById('oauth-name').value,
+    service_id: document.getElementById('oauth-service').value,
+    access_token: document.getElementById('oauth-access').value.trim(),
+    refresh_token: document.getElementById('oauth-refresh').value.trim(),
+    expires_at: Number(document.getElementById('oauth-expires').value || 0),
+    token_endpoint: document.getElementById('oauth-endpoint').value.trim(),
+    subscription_info: JSON.stringify(subObj)
+  };
+}
+
+function testOAuthUpload() {
+  if (!parseOAuthPaste()) {
+    showToast('Fix the pasted token JSON before testing', 'error');
+    return;
+  }
+  var body;
+  try {
+    body = buildOAuthUploadBody();
+  } catch(e) {
+    showToast('Invalid subscription JSON: ' + e.message, 'error');
+    return;
+  }
+  var btn = document.getElementById('test-oauth-btn');
+  var orig = btn.textContent;
+  btn.textContent = 'Testing...';
+  btn.disabled = true;
+  fetch('/api/oauth/validate', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body),
+    credentials:'same-origin'
+  }).then(function(r){ return r.json(); }).then(function(data) {
+    btn.textContent = orig;
+    btn.disabled = false;
+    if (data.error) { showToast('Token format failed: ' + data.error, 'error'); return; }
+    var suffix = (data.warnings || []).length ? ' (' + data.warnings.join('; ') + ')' : '';
+    showToast('Token format OK for ' + data.service + suffix, 'success');
+  }).catch(function(err) {
+    btn.textContent = orig;
+    btn.disabled = false;
+    showToast('Token test error: ' + err.message, 'error');
+  });
+}
+
 function parseEditPaste() {
   try {
     var paste = document.getElementById('edit-paste');
@@ -397,6 +456,23 @@ function refreshNow() {
   });
 }
 
+function refreshTokenById(id, btn) {
+  var orig = btn ? btn.textContent : '';
+  if (btn) { btn.textContent = 'Refreshing...'; btn.disabled = true; }
+  fetch('/api/oauth/' + id + '/refresh', {
+    method: 'POST',
+    credentials: 'same-origin'
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (btn) { btn.textContent = orig; btn.disabled = false; }
+    if (data.error) { showToast('Refresh failed: ' + data.error, 'error'); return; }
+    showToast('Token refreshed', 'success');
+    location.reload();
+  }).catch(function(err) {
+    if (btn) { btn.textContent = orig; btn.disabled = false; }
+    showToast('Refresh error: ' + err.message, 'error');
+  });
+}
+
 document.addEventListener('DOMContentLoaded', function() {
   applyOAuthHints();
 
@@ -444,7 +520,7 @@ document.addEventListener('DOMContentLoaded', function() {
           '<td>' + (info ? '<span class="badge badge-gray">' + info + '</span>' : '—') + '</td>' +
           '<td>' + (expired ? '<span class="badge badge-red">Expired</span>' : expiresIn) + '</td>' +
           '<td>' + (k.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>') + '</td>' +
-          '<td class="text-right"><button class="btn btn-sm btn-danger" hx-delete="/api/keys/' + k.id + '" hx-target="#rk-' + k.id + '" hx-swap="outerHTML" hx-confirm="Delete?">Delete</button></td>';
+          '<td class="text-right"><button class="btn btn-sm" onclick="refreshTokenById(\'' + k.id + '\', this)">Refresh</button> <button class="btn btn-sm btn-danger" hx-delete="/api/keys/' + k.id + '" hx-target="#rk-' + k.id + '" hx-swap="outerHTML" hx-confirm="Delete?">Delete</button></td>';
         tbody.appendChild(tr);
       });
     });
@@ -456,28 +532,13 @@ document.getElementById('oauth-form').addEventListener('submit', function(e) {
     showToast('Fix the pasted token JSON before uploading', 'error');
     return;
   }
-  var subInfo = document.getElementById('oauth-sub').value.trim();
-  var subObj = {};
-  if (subInfo) { try { subObj = JSON.parse(subInfo); } catch(ex) { showToast('Invalid subscription JSON', 'error'); return; } }
-  if (selectedOAuthKind() === 'claude') {
-    var displayName = document.getElementById('oauth-display').value.trim();
-    if (displayName) subObj.displayName = displayName;
-  } else if (selectedOAuthKind() === 'openai') {
-    subObj.credential_kind = 'codex_oauth';
-    subObj.source = 'codex';
-  } else {
-    delete subObj.displayName;
+  var body;
+  try {
+    body = buildOAuthUploadBody();
+  } catch(ex) {
+    showToast('Invalid subscription JSON', 'error');
+    return;
   }
-
-  var body = {
-    name: document.getElementById('oauth-name').value,
-    service_id: document.getElementById('oauth-service').value,
-    access_token: document.getElementById('oauth-access').value,
-    refresh_token: document.getElementById('oauth-refresh').value,
-    expires_at: Number(document.getElementById('oauth-expires').value || 0),
-    token_endpoint: document.getElementById('oauth-endpoint').value,
-    subscription_info: JSON.stringify(subObj)
-  };
 
   fetch('/api/oauth/upload', {
     method: 'POST',

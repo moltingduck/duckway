@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -17,6 +19,16 @@ type OAuthHandler struct {
 	serviceQ     *queries.ServiceQueries
 	crypto       *svc.Crypto
 	refresher    *svc.TokenRefresher
+}
+
+type oauthTokenRequest struct {
+	Name             string `json:"name"`
+	ServiceID        string `json:"service_id"`
+	AccessToken      string `json:"access_token"`
+	RefreshToken     string `json:"refresh_token"`
+	ExpiresAt        int64  `json:"expires_at"`
+	TokenEndpoint    string `json:"token_endpoint"`
+	SubscriptionInfo string `json:"subscription_info"` // JSON string
 }
 
 func NewOAuthHandler(apiKeyQ *queries.APIKeyQueries, placeholderQ *queries.PlaceholderQueries, serviceQ *queries.ServiceQueries, crypto *svc.Crypto) *OAuthHandler {
@@ -61,32 +73,37 @@ func (h *OAuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Validate checks refreshable-token fields without storing or refreshing them.
+// The upload form uses this as an explicit "Test" step, and Upload/Update use
+// the same validation so bad JSON cannot bypass the UI.
+func (h *OAuthHandler) Validate(w http.ResponseWriter, r *http.Request) {
+	var req oauthTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	svcRow, warnings, err := h.validateOAuthTokenRequest(&req, true)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{
+		"ok":       true,
+		"service":  svcRow.Name,
+		"warnings": warnings,
+	})
+}
+
 // Admin: upload refreshable API key (OAuth token with refresh)
 func (h *OAuthHandler) Upload(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name             string `json:"name"`
-		ServiceID        string `json:"service_id"`
-		AccessToken      string `json:"access_token"`
-		RefreshToken     string `json:"refresh_token"`
-		ExpiresAt        int64  `json:"expires_at"`
-		TokenEndpoint    string `json:"token_endpoint"`
-		SubscriptionInfo string `json:"subscription_info"` // JSON string
-	}
+	var req oauthTokenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
 
-	if req.AccessToken == "" {
-		jsonError(w, "access_token required", http.StatusBadRequest)
-		return
-	}
-	if req.ServiceID == "" {
-		jsonError(w, "service_id required", http.StatusBadRequest)
-		return
-	}
-	if _, err := h.serviceQ.GetByID(req.ServiceID); err != nil {
-		jsonError(w, "service not found", http.StatusBadRequest)
+	if _, _, err := h.validateOAuthTokenRequest(&req, true); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if req.Name == "" {
@@ -200,6 +217,24 @@ func (h *OAuthHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.SubscriptionInfo == "" {
 		req.SubscriptionInfo = key.SubscriptionInfo
 	}
+	validateReq := oauthTokenRequest{
+		Name:             req.Name,
+		ServiceID:        key.ServiceID,
+		AccessToken:      req.AccessToken,
+		RefreshToken:     req.RefreshToken,
+		ExpiresAt:        req.ExpiresAt,
+		TokenEndpoint:    req.TokenEndpoint,
+		SubscriptionInfo: req.SubscriptionInfo,
+	}
+	if req.AccessToken != "" || req.RefreshToken != "" {
+		if _, _, err := h.validateOAuthTokenRequest(&validateReq, false); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else if err := validateSubscriptionInfo(req.SubscriptionInfo); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	var encAccess, encRefresh string
 	if req.AccessToken != "" {
@@ -223,6 +258,108 @@ func (h *OAuthHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, map[string]string{"status": "updated"})
+}
+
+func (h *OAuthHandler) validateOAuthTokenRequest(req *oauthTokenRequest, requireTokens bool) (*models.Service, []string, error) {
+	if req.ServiceID == "" {
+		return nil, nil, fmt.Errorf("service_id required")
+	}
+	svcRow, err := h.serviceQ.GetByID(req.ServiceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("service not found")
+	}
+	req.AccessToken = strings.TrimSpace(req.AccessToken)
+	req.RefreshToken = strings.TrimSpace(req.RefreshToken)
+	req.TokenEndpoint = strings.TrimSpace(req.TokenEndpoint)
+	if req.AccessToken == "" {
+		return nil, nil, fmt.Errorf("access_token required")
+	}
+	if requireTokens && req.RefreshToken == "" {
+		return nil, nil, fmt.Errorf("refresh_token required for refreshable tokens")
+	}
+	if req.TokenEndpoint == "" {
+		req.TokenEndpoint = defaultTokenEndpointForService(svcRow.Name)
+	}
+	subInfo, err := parseSubscriptionInfo(req.SubscriptionInfo)
+	if err != nil {
+		return nil, nil, err
+	}
+	warnings := []string{}
+	if isCodexOAuthInfo(subInfo, req.TokenEndpoint) || (svcRow.Name == "openai" && strings.Contains(req.TokenEndpoint, "auth.openai.com")) {
+		if err := validateCodexOAuth(req, subInfo); err != nil {
+			return nil, nil, err
+		}
+		if req.ExpiresAt == 0 && jwtExpMillis(req.AccessToken) == 0 {
+			warnings = append(warnings, "access token is not a JWT with exp; expiry will not be auto-filled")
+		}
+	}
+	return svcRow, warnings, nil
+}
+
+func defaultTokenEndpointForService(serviceName string) string {
+	switch serviceName {
+	case "openai":
+		return "https://auth.openai.com/oauth/token"
+	default:
+		return "https://console.anthropic.com/v1/oauth/token"
+	}
+}
+
+func validateSubscriptionInfo(raw string) error {
+	_, err := parseSubscriptionInfo(raw)
+	return err
+}
+
+func parseSubscriptionInfo(raw string) (map[string]interface{}, error) {
+	if strings.TrimSpace(raw) == "" {
+		return map[string]interface{}{}, nil
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, fmt.Errorf("subscription_info must be valid JSON: %w", err)
+	}
+	return out, nil
+}
+
+func validateCodexOAuth(req *oauthTokenRequest, subInfo map[string]interface{}) error {
+	if authMode, _ := subInfo["auth_mode"].(string); authMode != "" && authMode != "chatgpt" {
+		return fmt.Errorf("codex oauth auth_mode must be chatgpt")
+	}
+	if !strings.Contains(req.TokenEndpoint, "auth.openai.com") {
+		return fmt.Errorf("codex oauth token_endpoint must be https://auth.openai.com/oauth/token")
+	}
+	if !looksLikeJWT(req.AccessToken) {
+		return fmt.Errorf("codex oauth access_token must look like a JWT from ~/.codex/auth.json")
+	}
+	if req.RefreshToken == "" {
+		return fmt.Errorf("codex oauth refresh_token required")
+	}
+	if !strings.HasPrefix(req.RefreshToken, "rt.") {
+		return fmt.Errorf("codex oauth refresh_token should start with rt prefix")
+	}
+	return nil
+}
+
+func looksLikeJWT(token string) bool {
+	return len(strings.Split(token, ".")) == 3
+}
+
+func jwtExpMillis(token string) int64 {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return 0
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if json.Unmarshal(payload, &claims) != nil || claims.Exp <= 0 {
+		return 0
+	}
+	return claims.Exp * 1000
 }
 
 // Client: get credentials.json with phantom tokens for Claude/OAuth services.
