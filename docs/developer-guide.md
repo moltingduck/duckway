@@ -429,7 +429,7 @@ CC v2: a Control Channel binds **one client to one Discord category** via a bot.
 - a single **management channel** (auto-created on CC create, named `<client>-control`, parses `!`-prefix commands server-side), or
 - **task channels** (one per agent session — created via `!new` or the `discord_create_task_channel` MCP tool).
 
-When a human posts in a task channel, the gateway forwards the event over SSE to the on-machine `duckway cc watch` daemon. For `claude_code`, the daemon drives a long-lived Claude TUI in tmux when tmux is installed, falling back to the headless print runner. For `codex`, it runs `codex exec --json` inside a per-channel tmux session when tmux is installed, falling back to headless `codex exec --json`; follow-up turns use `codex exec resume <thread_id>`. `duckway start` / `duckway restart` warn when tmux is missing so operators know the daemon will run without attachable sessions. The daemon posts the final agent message back to the channel.
+When a human posts in a task channel, the gateway forwards the event over SSE to the on-machine `duckway cc watch` daemon. For `claude_code`, the daemon drives a long-lived Claude TUI in tmux when tmux is installed, falling back to the headless print runner. For `codex`, it runs `codex exec --json` inside a per-channel tmux session when tmux is installed, falling back to headless `codex exec --json`; follow-up turns use `codex exec resume <thread_id>`. For `openclaw`, it runs `openclaw agent --agent <id> --session-key duckway:<handle> --message-file <file> --json`; the agent id comes from `DUCKWAY_CC_OPENCLAW_AGENT` or defaults to `default`, and Duckway does not use OpenClaw's own channel bindings. `duckway start` / `duckway restart` warn when tmux is missing so operators know the daemon will run without attachable sessions. The daemon posts the final agent message back to the channel.
 
 ### Tables (v2 — `client_cc` is gone)
 
@@ -462,6 +462,7 @@ internal/client/mcp.go + mcp_tools.go        Stdio MCP server (JSON-RPC 2.0) —
 internal/client/cc_watch.go                  SSE consumer + reconnect loop
 internal/client/cc_runner.go                 Per-channel FIFO queue + agent exec wrapper
 internal/client/cc_codex.go                  `codex exec --json` wrappers for headless + tmux
+internal/client/cc_openclaw.go               `openclaw agent --message-file --json` adapter
 internal/client/cc_session_store.go          ~/.duckway/cc-sessions.json persistence
 internal/client/local_sessions.go            Scans ~/.claude/projects/*.jsonl for the session picker
 internal/client/cc_client_commands.go        Daemon-side handlers for `!sessions` / `!bind`. Bind
@@ -525,7 +526,7 @@ For `discord_request_approval`, the server posts the question + reactions, regis
 
 - Bot token = the only real boundary. Different teams → different bots.
 - `cc_client.go` enforces two ACL layers: client must be bound to the CC (1:1), and every `{handle}` in a URL must belong to that CC.
-- Daemon trust boundary is the Discord category: anyone in the category can drive the selected agent. `claude_code` currently runs with `--dangerously-skip-permissions`; `codex` runs with `--sandbox workspace-write`. When tmux is installed, both supported agents get per-channel attachable sessions named `duckway-<handle>`.
+- Daemon trust boundary is the Discord category: anyone in the category can drive the selected agent. `claude_code` currently runs with `--dangerously-skip-permissions`; `codex` runs with `--sandbox workspace-write`; `openclaw` uses the local OpenClaw configuration and selected agent id. When tmux is installed, Claude/Codex get per-channel attachable sessions named `duckway-<handle>`.
 
 ### Test hooks
 

@@ -585,7 +585,7 @@ func (h *ControlChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 func validCCAgentType(agentType string) bool {
 	switch agentType {
-	case "claude_code", "codex":
+	case "claude_code", "codex", "openclaw":
 		return true
 	default:
 		return false

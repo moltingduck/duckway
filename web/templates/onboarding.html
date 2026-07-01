@@ -66,10 +66,11 @@
     </div>
     <div class="form-group">
       <label>Agent type</label>
-      <select id="cc-agent">
-        <option value="claude_code">claude_code</option>
-        <option value="codex">codex</option>
-      </select>
+        <select id="cc-agent">
+          <option value="claude_code">claude_code</option>
+          <option value="codex">codex</option>
+          <option value="openclaw">openclaw</option>
+        </select>
       <span class="text-muted text-sm">Only agents implemented by <code>duckway cc watch</code> are shown.</span>
     </div>
     <div class="form-group">
@@ -273,10 +274,12 @@ function updateAgentTypeOptions() {
   var options = [];
   if (hasAnthropic) options.push({value:'claude_code', label:'Claude Code (claude_code)'});
   if (hasOpenAI) options.push({value:'codex', label:'Codex (codex)'});
+  options.push({value:'openclaw', label:'OpenClaw (openclaw)'});
   if (options.length === 0) {
     options = [
       {value:'claude_code', label:'Claude Code (claude_code)'},
-      {value:'codex', label:'Codex (codex)'}
+      {value:'codex', label:'Codex (codex)'},
+      {value:'openclaw', label:'OpenClaw (openclaw)'}
     ];
   }
   sel.innerHTML = '';
@@ -289,8 +292,8 @@ function updateAgentTypeOptions() {
   var help = sel.parentElement.querySelector('.text-muted');
   if (help) {
     help.textContent = hasOpenAI || hasAnthropic
-      ? 'Shown from the assigned Key Suite credentials. Pick the agent installed on this client.'
-      : 'No Claude/OpenAI key was assigned by the suite, so both supported agents are shown.';
+      ? 'Shown from the assigned Key Suite credentials plus OpenClaw. Pick the agent installed on this client.'
+      : 'No Claude/OpenAI key was assigned by the suite, so supported agents are shown.';
   }
 }
 

@@ -103,7 +103,9 @@ func SyncCC(configDir string, cfg *Config) (int, error) {
 			if err := writeCodexMCP(configDir, list); err != nil {
 				log.Printf("Warning: codex mcp write failed: %v", err)
 			}
-		case "openclaw", "harmes", "cursor", "copilot_cli":
+		case "openclaw":
+			log.Printf("agent_type %q: no MCP writer needed (%d CCs use OpenClaw CLI adapter)", agent, len(list))
+		case "harness", "cursor", "copilot_cli":
 			log.Printf("agent_type %q: writer not implemented yet (%d CCs skipped)", agent, len(list))
 		default:
 			log.Printf("agent_type %q: unknown — skipped", agent)

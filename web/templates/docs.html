@@ -345,7 +345,7 @@ curl https://api.openai.com/v1/chat/completions ...
   <h4 class="mt-1">Admin one-time setup (in duckway)</h4>
   <ol>
     <li><strong>API Keys</strong> → add the bot token from above. Service <code>discord</code>.</li>
-    <li><strong>Control Channels</strong> → <strong>New CC</strong> → fill name + pick client + agent type (<code>claude_code</code> or <code>codex</code>) + the bot, then use the Discord setup wizard to invite/load/select the server and category. On save, duckway provisions <code>&lt;client&gt;-control</code> under the category and issues a phantom bot token bound to that client. If a step fails, the create rolls back and tells you which one.</li>
+    <li><strong>Control Channels</strong> → <strong>New CC</strong> → fill name + pick client + agent type (<code>claude_code</code>, <code>codex</code>, or <code>openclaw</code>) + the bot, then use the Discord setup wizard to invite/load/select the server and category. On save, duckway provisions <code>&lt;client&gt;-control</code> under the category and issues a phantom bot token bound to that client. If a step fails, the create rolls back and tells you which one.</li>
     <li>Click into the CC → <strong>Test (create + delete channel)</strong> to verify the bot can do its job before pointing real workloads at it.</li>
     <li>Clients with a CC show a one-line summary on their detail page; the full state (channels, sessions) lives on the CC detail.</li>
   </ol>
@@ -361,7 +361,7 @@ cp examples/duckway-cc-watch.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now duckway-cc-watch
 journalctl --user -u duckway-cc-watch -f</code></pre>
-  <p class="text-sm text-muted">Daemon needs the selected agent binary (<code>claude</code> or <code>codex</code>) in <code>$PATH</code>. Codex supports two separate Duckway credential modes: Codex OAuth refreshable keys are synced to <code>~/.codex/auth.json</code> for native Codex auth; OpenAI Platform API keys use Duckway's local proxy and must allow <code>api.responses.write</code>. Per-channel <code>cwd</code> defaults to <code>~/.duckway/cc-workspace/&lt;handle&gt;/</code> (auto-created); override with <code>!new --cwd /path</code>.</p>
+  <p class="text-sm text-muted">Daemon needs the selected agent binary (<code>claude</code>, <code>codex</code>, or <code>openclaw</code>) in <code>$PATH</code>. Codex supports two separate Duckway credential modes: Codex OAuth refreshable keys are synced to <code>~/.codex/auth.json</code> for native Codex auth; OpenAI Platform API keys use Duckway's local proxy and must allow <code>api.responses.write</code>. OpenClaw uses <code>openclaw agent --message-file --json</code> with agent id from <code>DUCKWAY_CC_OPENCLAW_AGENT</code> or <code>default</code>. Per-channel <code>cwd</code> defaults to <code>~/.duckway/cc-workspace/&lt;handle&gt;/</code> (auto-created); override with <code>!new --cwd /path</code>.</p>
 
   <h4 class="mt-1">Management channel commands</h4>
   <table>
@@ -397,7 +397,7 @@ journalctl --user -u duckway-cc-watch -f</code></pre>
     <li><strong>Bot token = the only real boundary.</strong> Two CCs sharing a bot can technically reach each other's channels. Use <em>different bots</em> to isolate teams/projects.</li>
     <li><strong>Path-level ACL</strong> rejects cross-CC handles: any <code>{handle}</code> in a request must belong to the caller's CC (HTTP 403 otherwise).</li>
     <li><strong>Phantom token</strong> is bound to (client, bot, CC) — <code>placeholder_keys.env_name</code> is <code>DUCKWAY_CC_&lt;cc_id&gt;</code> so each (client, CC) gets its own row even when the bot is shared.</li>
-    <li><strong>Agent execution:</strong> <code>claude_code</code> passes <code>--dangerously-skip-permissions</code> to <code>claude</code>; <code>codex</code> uses <code>codex exec --json --sandbox workspace-write</code>. When tmux is installed, supported agents run in attachable <code>duckway-&lt;handle&gt;</code> sessions. Trust the channel — anyone in the Discord category can drive the agent.</li>
+    <li><strong>Agent execution:</strong> <code>claude_code</code> passes <code>--dangerously-skip-permissions</code> to <code>claude</code>; <code>codex</code> uses <code>codex exec --json --sandbox workspace-write</code>; <code>openclaw</code> uses <code>openclaw agent --session-key duckway:&lt;handle&gt; --message-file &lt;file&gt; --json</code>. When tmux is installed, Claude/Codex run in attachable <code>duckway-&lt;handle&gt;</code> sessions. Trust the channel — anyone in the Discord category can drive the agent.</li>
   </ul>
 
   <h4 class="mt-1">Inbox runtime</h4>
@@ -421,7 +421,7 @@ journalctl --user -u duckway-cc-watch -f</code></pre>
   </ul>
 
   <h4 class="mt-1">Agent types</h4>
-  <p><code>claude_code</code> and <code>codex</code> are wired. Both use tmux when available and fall back to headless mode with <code>--no-tmux</code> or when tmux is missing. The schema still reserves <code>openclaw</code>, <code>harmes</code>, <code>cursor</code>, <code>copilot_cli</code>; those store the assignment and log <em>writer not implemented yet</em>.</p>
+  <p><code>claude_code</code>, <code>codex</code>, and <code>openclaw</code> are wired. Claude/Codex use tmux when available and fall back to headless mode with <code>--no-tmux</code> or when tmux is missing. OpenClaw runs headless through the OpenClaw CLI. The schema still reserves <code>harness</code>, <code>cursor</code>, <code>copilot_cli</code>; those store the assignment and log <em>writer not implemented yet</em>.</p>
 </div>
 
 <!-- 14 -->

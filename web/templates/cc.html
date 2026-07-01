@@ -36,6 +36,7 @@
         <select id="cc-agent">
           <option value="claude_code">claude_code</option>
           <option value="codex">codex</option>
+          <option value="openclaw">openclaw</option>
         </select>
         <span class="text-muted text-sm">Only agents implemented by <code>duckway cc watch</code> are shown.</span>
       </div>
@@ -227,6 +228,7 @@ function agentLabel(agentType) {
   switch (agentType) {
   case 'claude_code': return 'Claude Code';
   case 'codex': return 'Codex';
+  case 'openclaw': return 'OpenClaw';
   default: return agentType || '?';
   }
 }
@@ -553,10 +555,10 @@ function populateEdit(c) {
   document.getElementById('edit-test-result').innerHTML = '';
   var cfg = parseCCConfig(c);
   var box = document.getElementById('edit-config-fields');
-  var agentOptions = ['claude_code', 'codex'].map(function(a) {
+  var agentOptions = ['claude_code', 'codex', 'openclaw'].map(function(a) {
     return '<option value="'+escapeHTML(a)+'" '+(a === c.agent_type ? 'selected' : '')+'>'+escapeHTML(agentLabel(a))+' ('+escapeHTML(a)+')</option>';
   }).join('');
-  if (c.agent_type && ['claude_code', 'codex'].indexOf(c.agent_type) < 0) {
+  if (c.agent_type && ['claude_code', 'codex', 'openclaw'].indexOf(c.agent_type) < 0) {
     agentOptions = '<option value="'+escapeHTML(c.agent_type)+'" selected disabled>'+escapeHTML(c.agent_type)+' (unsupported by cc watch)</option>' + agentOptions;
   }
   var agentField =

@@ -414,6 +414,18 @@ func (w *CCWatch) agentSpec(ccID string) (ccAgentSpec, error) {
 			TmuxRunFn:   runViaCodexTmux,
 			UseTmux:     true,
 		}, nil
+	case "openclaw":
+		bin, err := exec.LookPath("openclaw")
+		if err != nil {
+			return ccAgentSpec{}, fmt.Errorf("openclaw binary not found in PATH (install OpenClaw CLI first): %w", err)
+		}
+		return ccAgentSpec{
+			Type:        agentType,
+			DisplayName: "openclaw",
+			Bin:         bin,
+			RunFn:       runViaOpenClaw,
+			UseTmux:     false,
+		}, nil
 	default:
 		return ccAgentSpec{}, fmt.Errorf("agent_type %q is not implemented by cc watch", agentType)
 	}
