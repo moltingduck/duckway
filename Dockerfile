@@ -1,5 +1,7 @@
-# === Build stage ===
-FROM golang:1.25-alpine AS builder
+# syntax=docker/dockerfile:1.7
+
+# === Build base ===
+FROM golang:1.25-alpine AS build-base
 
 # Optional version string passed in via:
 #   docker build --build-arg DUCKWAY_VERSION=$(git describe --always --dirty) ...
@@ -8,31 +10,53 @@ ARG DUCKWAY_VERSION=docker
 
 WORKDIR /build
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY . .
 
 ENV LDFLAGS="-s -w -X github.com/hackerduck/duckway/internal/version.Embedded=${DUCKWAY_VERSION}"
 
-# Build all binaries (-buildvcs=false because bind-mounted .git fails the
-# dubious-ownership check inside the container; we inject version via ldflags)
-RUN CGO_ENABLED=0 go build -buildvcs=false -ldflags="$LDFLAGS" -o /duckway-server ./cmd/server/
-RUN CGO_ENABLED=0 go build -buildvcs=false -ldflags="$LDFLAGS" -o /duckway-admin ./cmd/admin/
-RUN CGO_ENABLED=0 go build -buildvcs=false -ldflags="$LDFLAGS" -o /duckway-gateway ./cmd/gateway/
+# Build binaries in target-specific stages so admin-only builds do not also
+# cross-compile client download artifacts.
+FROM build-base AS server-bin
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -buildvcs=false -ldflags="$LDFLAGS" \
+      -o /out/duckway-server ./cmd/server/
+
+FROM build-base AS admin-bin
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -buildvcs=false -ldflags="$LDFLAGS" \
+      -o /out/duckway-admin ./cmd/admin/
+
+FROM build-base AS gateway-bin
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -buildvcs=false -ldflags="$LDFLAGS" \
+      -o /out/duckway-gateway ./cmd/gateway/
+
+FROM build-base AS client-dist
 
 # Cross-compile client for downloads
-RUN CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/duckway-client-linux-amd64 ./cmd/client/
-RUN CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/duckway-client-linux-arm64 ./cmd/client/
-RUN CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/duckway-client-darwin-amd64 ./cmd/client/
-RUN CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/duckway-client-darwin-arm64 ./cmd/client/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/duckway-client-linux-amd64 ./cmd/client/ && \
+    CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/duckway-client-linux-arm64 ./cmd/client/ && \
+    CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/duckway-client-darwin-amd64 ./cmd/client/ && \
+    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/duckway-client-darwin-arm64 ./cmd/client/
 
 # === Combined server (backwards compat) ===
 FROM alpine:3.21 AS server
 
 RUN apk add --no-cache ca-certificates tzdata
 
-COPY --from=builder /duckway-server /usr/local/bin/duckway-server
-COPY --from=builder /dist/ /srv/downloads/
+COPY --from=server-bin /out/duckway-server /usr/local/bin/duckway-server
+COPY --from=client-dist /dist/ /srv/downloads/
 
 VOLUME /data
 EXPOSE 8080
@@ -48,7 +72,7 @@ FROM alpine:3.21 AS admin
 
 RUN apk add --no-cache ca-certificates tzdata
 
-COPY --from=builder /duckway-admin /usr/local/bin/duckway-admin
+COPY --from=admin-bin /out/duckway-admin /usr/local/bin/duckway-admin
 
 VOLUME /data
 EXPOSE 9090
@@ -64,8 +88,8 @@ FROM alpine:3.21 AS gateway
 
 RUN apk add --no-cache ca-certificates tzdata
 
-COPY --from=builder /duckway-gateway /usr/local/bin/duckway-gateway
-COPY --from=builder /dist/ /srv/downloads/
+COPY --from=gateway-bin /out/duckway-gateway /usr/local/bin/duckway-gateway
+COPY --from=client-dist /dist/ /srv/downloads/
 
 VOLUME /data
 EXPOSE 8080
@@ -81,7 +105,7 @@ FROM alpine:3.21 AS client
 
 RUN apk add --no-cache ca-certificates curl jq
 
-COPY --from=builder /dist/duckway-client-linux-amd64 /usr/local/bin/duckway
+COPY --from=client-dist /dist/duckway-client-linux-amd64 /usr/local/bin/duckway
 
 RUN mkdir -p /root/.duckway
 
