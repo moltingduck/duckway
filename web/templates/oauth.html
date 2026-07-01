@@ -155,9 +155,9 @@ var oauthHelpByService = {
     subPlaceholder: '{"subscriptionType":"max","rateLimitTier":"...","scopes":["user:inference"]}'
   },
   openai: {
-    pastePlaceholder: '{\n  "auth_mode": "chatgpt",\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "rt.1....",\n    "account_id": "14d5c9cf-..."\n  },\n  "last_refresh": "2026-06-30T00:00:00Z"\n}',
+    pastePlaceholder: '{\n  "auth_mode": "chatgpt",\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "rt.1....",\n    "id_token": "eyJ...",\n    "account_id": "14d5c9cf-..."\n  },\n  "last_refresh": "2026-06-30T00:00:00Z"\n}',
     pasteHelp: 'Codex ChatGPT login is stored in ~/.codex/auth.json after codex login. Duckway stores it as Codex OAuth credentials and syncs it back to ~/.codex/auth.json for Codex control channels. This is separate from OpenAI Platform API keys.',
-    commandHelp: 'codex login\njq \'{auth_mode, tokens: {access_token: .tokens.access_token, refresh_token: .tokens.refresh_token, account_id: .tokens.account_id}, last_refresh}\' ~/.codex/auth.json\njq -r \'.tokens | [.access_token, .refresh_token, (.account_id // "")] | @tsv\' ~/.codex/auth.json',
+    commandHelp: 'codex login\njq \'{auth_mode, tokens: {access_token: .tokens.access_token, refresh_token: .tokens.refresh_token, id_token: .tokens.id_token, account_id: .tokens.account_id}, last_refresh}\' ~/.codex/auth.json\njq -r \'.tokens | [.access_token, .refresh_token, .id_token, (.account_id // "")] | @tsv\' ~/.codex/auth.json',
     accessPlaceholder: 'Codex OAuth access token',
     refreshPlaceholder: 'OAuth refresh token',
     endpointPlaceholder: 'https://auth.openai.com/oauth/token',
@@ -175,6 +175,7 @@ var oauthHelpByService = {
     subPlaceholder: '{"scope":"read write","account":"optional metadata"}'
   }
 };
+var oauthSuggestedNames = ['Claude OAuth', 'Claude Code OAuth', 'Codex OAuth', 'Generic OAuth Token'];
 
 function esc(s) {
   return String(s == null ? '' : s)
@@ -190,6 +191,47 @@ function selectedOAuthKind() {
   var name = opt ? (opt.getAttribute('data-name') || '').toLowerCase() : '';
   if (isClaudeService(name, text)) return 'claude';
   if (name.indexOf('openai') >= 0 || text.indexOf('openai') >= 0 || text.indexOf('codex') >= 0) return 'openai';
+  return 'generic';
+}
+
+function selectOAuthServiceKind(kind) {
+  var sel = document.getElementById('oauth-service');
+  if (!sel) return;
+  for (var i = 0; i < sel.options.length; i++) {
+    var opt = sel.options[i];
+    var text = (opt.textContent || '').toLowerCase();
+    var name = (opt.getAttribute('data-name') || '').toLowerCase();
+    if ((kind === 'claude' && isClaudeService(name, text)) ||
+        (kind === 'openai' && (name.indexOf('openai') >= 0 || text.indexOf('openai') >= 0 || text.indexOf('codex') >= 0))) {
+      sel.selectedIndex = i;
+      applyOAuthHints();
+      return;
+    }
+  }
+}
+
+function setSuggestedOAuthName(name) {
+  var input = document.getElementById('oauth-name');
+  if (!input) return;
+  var current = input.value.trim();
+  if (!current || oauthSuggestedNames.indexOf(current) >= 0) {
+    input.value = name;
+  }
+}
+
+function detectTokenKind(d, oauth, sub) {
+  if (d.claudeAiOauth ||
+      String(oauth.access_token || '').indexOf('sk-ant-oat') === 0 ||
+      String(oauth.refresh_token || '').indexOf('sk-ant-ort') === 0 ||
+      String(oauth.accessToken || '').indexOf('sk-ant-oat') === 0 ||
+      String(oauth.refreshToken || '').indexOf('sk-ant-ort') === 0) {
+    return 'claude';
+  }
+  if (d.auth_mode === 'chatgpt' || d.tokens ||
+      sub.source === 'codex' || sub.credential_kind === 'codex_oauth' ||
+      oauth.id_token || oauth.account_id || String(oauth.refresh_token || '').indexOf('rt.') === 0) {
+    return 'openai';
+  }
   return 'generic';
 }
 
@@ -247,12 +289,16 @@ function readTokenPayload(d) {
   if (!expiresAt && expiresIn) expiresAt = Date.now() + (Number(expiresIn) * 1000);
   if (!expiresAt && jwtClaims.exp) expiresAt = Number(jwtClaims.exp) * 1000;
   if (expiresAt && Number(expiresAt) < 1000000000000) expiresAt = Number(expiresAt) * 1000;
+  var kind = detectTokenKind(d, oauth, sub);
+  var suggestedName = kind === 'claude' ? 'Claude Code OAuth' : (kind === 'openai' ? 'Codex OAuth' : 'Generic OAuth Token');
 
   return {
     accessToken: accessToken,
     refreshToken: refreshToken,
     expiresAt: expiresAt ? Math.round(Number(expiresAt)) : '',
-    subscriptionInfo: sub
+    subscriptionInfo: sub,
+    kind: kind,
+    suggestedName: suggestedName
   };
 }
 
@@ -295,6 +341,8 @@ function parseOAuthPaste() {
       throw new Error('No access token or refresh token found. Paste a Claude credentials file, Codex auth.json, or OAuth token response.');
     }
     setPasteError('');
+    selectOAuthServiceKind(parsed.kind);
+    setSuggestedOAuthName(parsed.suggestedName);
     if (parsed.accessToken) document.getElementById('oauth-access').value = parsed.accessToken;
     if (parsed.refreshToken) document.getElementById('oauth-refresh').value = parsed.refreshToken;
     if (parsed.expiresAt) document.getElementById('oauth-expires').value = parsed.expiresAt;
