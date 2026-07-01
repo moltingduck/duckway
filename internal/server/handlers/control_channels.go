@@ -531,6 +531,7 @@ func (h *ControlChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
+		APIKeyID string          `json:"api_key_id"`
 		Name     string          `json:"name"`
 		Config   json.RawMessage `json:"config"`
 		IsActive *bool           `json:"is_active"`
@@ -543,6 +544,23 @@ func (h *ControlChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = cur.Name
 	}
+	apiKeyID := cur.APIKeyID
+	if req.APIKeyID != "" {
+		key, err := h.apiKeys.GetByID(req.APIKeyID)
+		if err != nil {
+			jsonError(w, "api key not found", http.StatusBadRequest)
+			return
+		}
+		if key.ServiceID != cur.ServiceID {
+			jsonError(w, "api key must belong to the control channel service", http.StatusBadRequest)
+			return
+		}
+		if !key.IsActive {
+			jsonError(w, "api key is inactive", http.StatusBadRequest)
+			return
+		}
+		apiKeyID = req.APIKeyID
+	}
 	configStr := cur.Config
 	if len(req.Config) > 0 {
 		configStr = string(req.Config)
@@ -551,7 +569,7 @@ func (h *ControlChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.IsActive != nil {
 		active = *req.IsActive
 	}
-	if err := h.cc.Update(id, name, configStr, active); err != nil {
+	if err := h.cc.Update(id, name, apiKeyID, configStr, active); err != nil {
 		jsonError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -326,6 +326,8 @@ The API body remains normalized:
 }
 ```
 
+Deletion is two-phase through `DELETE /api/oauth/{id}`. Without `{"confirm":true}`, the handler returns an impact preview listing Key Suite entries, client placeholders, and Control Channels using the refreshable key. With confirmation, it clears suite entries, deletes direct/suite client placeholders, detaches historical request logs, removes key-group memberships, and disables affected Control Channels. If a Control Channel still references the key, the API key row is retained as inactive and non-refreshable so the CC can show "reassign key" instead of being cascaded away.
+
 ### Background refresh
 
 `internal/server/services/oauth_refresh.go` (`TokenRefresher`) runs a goroutine that wakes every 5 minutes:

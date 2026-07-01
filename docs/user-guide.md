@@ -244,6 +244,12 @@ Expected Claude format:
 
 Duckway refreshes the access token automatically before expiry (background job runs every 5 minutes), and never shows the real tokens again.
 
+### Delete a refreshable token
+
+Use **Refreshable Tokens** → **Delete**. Duckway shows every affected Key Suite, client phantom token, and Control Channel before it deletes anything.
+
+When you confirm, Duckway clears Key Suite entries that pointed at the token and unassigns the affected client phantom tokens. Control Channels are not deleted; they are disabled and marked in red until you edit the Control Channel and assign a replacement bot token.
+
 Before uploading, click **Test** in the upload modal to validate the pasted token format without storing it or calling the provider refresh endpoint. After upload, use the **Refresh** button in the token list or **Refresh Now** in token details to force an immediate refresh.
 
 ### Upload a Codex OAuth token

@@ -73,6 +73,42 @@ func (h *OAuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Delete previews the blast radius for a refreshable token, then removes it
+// after explicit confirmation. Client placeholders are deleted, key-suite
+// entries are cleared, and CCs using this key are disabled so they can be
+// reassigned without losing their channels.
+func (h *OAuthHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Confirm bool `json:"confirm"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	if !req.Confirm {
+		impact, err := h.apiKeyQ.RefreshableDeleteImpact(id)
+		if err != nil {
+			jsonError(w, "key not found or not refreshable: "+err.Error(), http.StatusNotFound)
+			return
+		}
+		jsonResponse(w, map[string]interface{}{
+			"requires_confirmation": true,
+			"impact":                impact,
+		})
+		return
+	}
+
+	impact, err := h.apiKeyQ.DeleteRefreshableWithCleanup(id)
+	if err != nil {
+		jsonError(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{
+		"status": "deleted",
+		"impact": impact,
+	})
+}
+
 // Validate checks refreshable-token fields without storing or refreshing them.
 // The upload form uses this as an explicit "Test" step, and Upload/Update use
 // the same validation so bad JSON cannot bypass the UI.

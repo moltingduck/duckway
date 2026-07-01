@@ -91,6 +91,7 @@
       <div class="modal-actions mt-1">
         <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
         <button type="button" class="btn" id="refresh-now-btn" onclick="refreshNow()">Refresh Now</button>
+        <button type="button" class="btn btn-danger" onclick="prepareDeleteCurrent()">Delete</button>
         <button type="button" class="btn btn-primary" onclick="switchToEdit()">Edit</button>
       </div>
     </div>
@@ -129,6 +130,18 @@
   </div>
 </div>
 
+<!-- Delete impact modal -->
+<div id="delete-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:680px">
+    <h2>Delete Refreshable Token</h2>
+    <div id="delete-impact-body"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn" onclick="document.getElementById('delete-modal').style.display='none'">Cancel</button>
+      <button type="button" class="btn btn-danger" id="confirm-delete-btn" onclick="confirmDeleteToken()">Delete and clean references</button>
+    </div>
+  </div>
+</div>
+
 <script>
 var oauthHelpByService = {
   claude: {
@@ -162,6 +175,12 @@ var oauthHelpByService = {
     subPlaceholder: '{"scope":"read write","account":"optional metadata"}'
   }
 };
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 
 function selectedOAuthKind() {
   var sel = document.getElementById('oauth-service');
@@ -359,6 +378,7 @@ function parseEditPaste() {
 }
 
 var currentDetail = null;
+var pendingDeleteID = '';
 
 function openDetail(id) {
   fetch('/api/oauth/' + id, {credentials:'same-origin'})
@@ -399,6 +419,91 @@ function openDetail(id) {
       document.getElementById('detail-edit').style.display = 'none';
       document.getElementById('detail-modal').style.display = 'flex';
     });
+}
+
+function prepareDeleteCurrent() {
+  if (!currentDetail) return;
+  prepareDeleteToken(currentDetail.id);
+}
+
+function prepareDeleteToken(id) {
+  fetch('/api/oauth/' + id, {
+    method: 'DELETE',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({confirm:false}),
+    credentials: 'same-origin'
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.error) { showToast(data.error, 'error'); return; }
+    pendingDeleteID = id;
+    renderDeleteImpact(data.impact || {});
+    document.getElementById('delete-modal').style.display = 'flex';
+  }).catch(function(err) {
+    showToast('Delete preview failed: ' + err.message, 'error');
+  });
+}
+
+function renderImpactList(items, emptyText, renderItem) {
+  if (!items || items.length === 0) {
+    return '<p class="text-sm text-muted">' + esc(emptyText) + '</p>';
+  }
+  return '<ul class="text-sm">' + items.map(function(item) {
+    return '<li>' + renderItem(item) + '</li>';
+  }).join('') + '</ul>';
+}
+
+function renderDeleteImpact(impact) {
+  var suites = impact.key_suites || [];
+  var clients = impact.clients || [];
+  var ccs = impact.control_channels || [];
+  var total = suites.length + clients.length + ccs.length;
+  var html =
+    '<p class="text-sm">Review every place using <strong>' + esc(impact.key_name || pendingDeleteID) + '</strong> before deleting.</p>' +
+    '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid var(--danger);padding:0.75rem">' +
+      '<strong style="color:var(--danger)">This action removes the refreshable token and cleans references.</strong>' +
+      '<p class="text-sm text-muted mt-1">Client phantom tokens below will be unassigned. Key Suite entries below will be left empty. Control Channels below will be disabled and must be assigned a new bot token before they can run.</p>' +
+    '</div>';
+  if (total === 0) {
+    html += '<p class="text-sm text-muted mt-1">No key suites, clients, or control channels currently use this token.</p>';
+  }
+  html += '<h3 class="text-sm mt-1">Key Suites <span class="badge badge-gray">' + suites.length + '</span></h3>';
+  html += renderImpactList(suites, 'No key suite entries use this token.', function(s) {
+    return '<strong>' + esc(s.suite_name) + '</strong> · ' + esc(s.service_name) + (s.env_name ? ' · <code>' + esc(s.env_name) + '</code>' : '');
+  });
+  html += '<h3 class="text-sm mt-1">Clients <span class="badge badge-gray">' + clients.length + '</span></h3>';
+  html += renderImpactList(clients, 'No clients use this token directly or through a suite assignment.', function(c) {
+    return '<strong>' + esc(c.client_name) + '</strong> · ' + esc(c.service_name) + ' · <code>' + esc(c.env_name) + '</code>' + (c.suite_id ? ' <span class="badge badge-gray">suite</span>' : '');
+  });
+  html += '<h3 class="text-sm mt-1">Control Channels <span class="badge badge-red">' + ccs.length + '</span></h3>';
+  html += renderImpactList(ccs, 'No control channels use this token.', function(cc) {
+    return '<strong>' + esc(cc.name) + '</strong> · ' + esc(cc.client_name) + ' · ' + esc(cc.agent_type) + ' <span class="badge badge-red">will be disabled; reassign key</span>';
+  });
+  document.getElementById('delete-impact-body').innerHTML = html;
+}
+
+function confirmDeleteToken() {
+  if (!pendingDeleteID) return;
+  var btn = document.getElementById('confirm-delete-btn');
+  var orig = btn.textContent;
+  btn.textContent = 'Deleting...';
+  btn.disabled = true;
+  fetch('/api/oauth/' + pendingDeleteID, {
+    method: 'DELETE',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({confirm:true}),
+    credentials: 'same-origin'
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    btn.textContent = orig;
+    btn.disabled = false;
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast('Refreshable token deleted and references cleaned', 'success');
+    document.getElementById('delete-modal').style.display = 'none';
+    document.getElementById('detail-modal').style.display = 'none';
+    location.reload();
+  }).catch(function(err) {
+    btn.textContent = orig;
+    btn.disabled = false;
+    showToast('Delete failed: ' + err.message, 'error');
+  });
 }
 
 function switchToEdit() {
@@ -515,12 +620,12 @@ document.addEventListener('DOMContentLoaded', function() {
         var tr = document.createElement('tr');
         tr.id = 'rk-' + k.id;
         tr.innerHTML =
-          '<td><a href="#" onclick="openDetail(\'' + k.id + '\');return false"><strong>' + k.name + '</strong></a></td>' +
-          '<td><span class="badge badge-blue">' + k.service_name + '</span></td>' +
-          '<td>' + (info ? '<span class="badge badge-gray">' + info + '</span>' : '—') + '</td>' +
+          '<td><a href="#" onclick="openDetail(\'' + esc(k.id) + '\');return false"><strong>' + esc(k.name) + '</strong></a></td>' +
+          '<td><span class="badge badge-blue">' + esc(k.service_name) + '</span></td>' +
+          '<td>' + (info ? '<span class="badge badge-gray">' + esc(info) + '</span>' : '—') + '</td>' +
           '<td>' + (expired ? '<span class="badge badge-red">Expired</span>' : expiresIn) + '</td>' +
           '<td>' + (k.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>') + '</td>' +
-          '<td class="text-right"><button class="btn btn-sm" onclick="refreshTokenById(\'' + k.id + '\', this)">Refresh</button> <button class="btn btn-sm btn-danger" hx-delete="/api/keys/' + k.id + '" hx-target="#rk-' + k.id + '" hx-swap="outerHTML" hx-confirm="Delete?">Delete</button></td>';
+          '<td class="text-right"><button class="btn btn-sm" onclick="refreshTokenById(\'' + esc(k.id) + '\', this)">Refresh</button> <button class="btn btn-sm btn-danger" onclick="prepareDeleteToken(\'' + esc(k.id) + '\')">Delete</button></td>';
         tbody.appendChild(tr);
       });
     });
