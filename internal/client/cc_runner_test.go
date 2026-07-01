@@ -64,6 +64,7 @@ func newTestRunner(t *testing.T, fn ccRunFn) (*ccRunner, *recordingPoster, *CCSe
 		t.Fatal(err)
 	}
 	r.runFn = fn
+	r.statusPosts = false
 	return r, pp, store
 }
 
@@ -97,6 +98,45 @@ func TestCCRunner_PostsResult(t *testing.T) {
 	}
 }
 
+func TestCCRunner_PostsProgressForLongRunningTask(t *testing.T) {
+	oldFirst, oldInterval := ccLongRunFirstNotice, ccLongRunInterval
+	ccLongRunFirstNotice = 20 * time.Millisecond
+	ccLongRunInterval = 50 * time.Millisecond
+	t.Cleanup(func() {
+		ccLongRunFirstNotice = oldFirst
+		ccLongRunInterval = oldInterval
+	})
+
+	fn := ccRunFn(func(_ context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
+		time.Sleep(80 * time.Millisecond)
+		return "sess-abc", "done", false, nil
+	})
+	store := NewCCSessionStore(t.TempDir())
+	pp := &recordingPoster{}
+	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", RunFn: fn, UseTmux: false}
+	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+
+	if !r.Enqueue(ccTask{Content: "slow work", ChannelKind: "task"}) {
+		t.Fatal("Enqueue returned false")
+	}
+	waitForPosts(t, pp, 3)
+
+	posts := strings.Join(pp.all(), "\n")
+	if !strings.Contains(posts, "started") {
+		t.Fatalf("missing started status:\n%s", posts)
+	}
+	if !strings.Contains(posts, "still running") {
+		t.Fatalf("missing still-running status:\n%s", posts)
+	}
+	if !strings.Contains(posts, "done") {
+		t.Fatalf("missing final result:\n%s", posts)
+	}
+}
+
 func TestCCRunner_LoadsKeysEnvForAgent(t *testing.T) {
 	var gotEnv []string
 	fn := func(_ context.Context, _, _, _, _ string, extraEnv []string) (string, string, bool, error) {
@@ -120,6 +160,7 @@ bad-name=ignored
 	if err != nil {
 		t.Fatal(err)
 	}
+	r.statusPosts = false
 	defer r.Stop()
 
 	r.Enqueue(ccTask{Content: "hello", ChannelKind: "task"})
@@ -164,6 +205,7 @@ ANTHROPIC_API_KEY=sk-ant-placeholder
 	if err != nil {
 		t.Fatal(err)
 	}
+	r.statusPosts = false
 	defer r.Stop()
 
 	r.Enqueue(ccTask{Content: "hello", ChannelKind: "task"})
@@ -265,6 +307,7 @@ func TestCCRunner_ManagementPreamble_FirstTurnOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.runFn = fn
+	r.statusPosts = false
 	defer r.Stop()
 
 	// First management message: preamble should be injected into the prompt.
@@ -313,6 +356,7 @@ func TestCCRunner_DefaultsCwd(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.runFn = fn
+	r.statusPosts = false
 	defer r.Stop()
 
 	want := filepath.Join(tmpHome, ".duckway", "cc-workspace", "dwch_x")

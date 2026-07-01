@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ccRunFn executes one prompt and returns the session ID, result text, whether
@@ -45,6 +46,7 @@ type ccRunner struct {
 	sessions    *CCSessionStore
 	postMessage func(ctx context.Context, handle, content string) error // bound to APIClient.PostCC
 	reportTest  func(ctx context.Context, testID, status, errText string) error
+	statusPosts bool
 	logger      func(format string, args ...interface{})
 }
 
@@ -60,6 +62,11 @@ type ccTask struct {
 const (
 	ccQueueDepth = 10 // user spec: cap 10
 	ccDefaultDir = "cc-workspace"
+)
+
+var (
+	ccLongRunFirstNotice = 45 * time.Second
+	ccLongRunInterval    = 2 * time.Minute
 )
 
 // chooseCCRunFn picks the runner to use. tmux gives the user a live,
@@ -106,6 +113,7 @@ func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, session
 		sessions:    sessions,
 		postMessage: postMessage,
 		reportTest:  reportTest,
+		statusPosts: true,
 		logger:      log.Printf,
 	}
 	r.wg.Add(1)
@@ -191,7 +199,10 @@ func (r *ccRunner) run(t ccTask) {
 
 	r.logger("[cc-watch] %s: running %s (cwd=%s)", r.handle, r.agentName, r.cwd)
 	r.reportTaskTest(t, "started", "")
+	r.postStatus("▶️ " + r.agentName + " started. cwd: `" + r.cwd + "`")
+	done := r.startLongRunReporter()
 	newSID, result, isError, err := r.runFn(ctx, r.bin, r.cwd, prompt, sid, extraEnv)
+	close(done)
 	if err != nil {
 		r.reportTaskTest(t, "failed", err.Error())
 		_ = r.postMessage(context.Background(), r.handle, fmt.Sprintf("%s error: %v", r.agentName, err))
@@ -219,6 +230,62 @@ func (r *ccRunner) run(t ccTask) {
 		return
 	}
 	r.reportTaskTest(t, "replied", "")
+}
+
+func (r *ccRunner) startLongRunReporter() chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		started := time.Now()
+		timer := time.NewTimer(ccLongRunFirstNotice)
+		defer timer.Stop()
+		select {
+		case <-done:
+			return
+		case <-timer.C:
+			r.postStillRunning(time.Since(started))
+		}
+		ticker := time.NewTicker(ccLongRunInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				r.postStillRunning(time.Since(started))
+			}
+		}
+	}()
+	return done
+}
+
+func (r *ccRunner) postStillRunning(elapsed time.Duration) {
+	msg := fmt.Sprintf("⏳ %s is still running after %s. cwd: `%s`", r.agentName, humanDuration(elapsed), r.cwd)
+	if tmuxAvailable() && tmuxHasSession(tmuxSessionName(r.handle)) {
+		msg += "\nAttach locally with: `tmux attach -t " + tmuxSessionName(r.handle) + "`"
+	}
+	r.postStatus(msg)
+}
+
+func (r *ccRunner) postStatus(content string) {
+	if !r.statusPosts || r.postMessage == nil {
+		return
+	}
+	if err := r.postMessage(context.Background(), r.handle, content); err != nil {
+		r.logger("[cc-watch] %s: status post failed: %v", r.handle, err)
+	}
+}
+
+func humanDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	min := int(d / time.Minute)
+	sec := int((d % time.Minute) / time.Second)
+	if sec == 0 {
+		return fmt.Sprintf("%dm", min)
+	}
+	return fmt.Sprintf("%dm%02ds", min, sec)
 }
 
 func (r *ccRunner) reportTaskTest(t ccTask, status, errText string) {
