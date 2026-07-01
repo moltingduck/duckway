@@ -3,8 +3,11 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +17,8 @@ import (
 	"github.com/hackerduck/duckway/internal/server/middleware"
 	svc "github.com/hackerduck/duckway/internal/server/services"
 )
+
+const ccAttachmentMaxBytes = 25 << 20
 
 // CCClientHandler exposes the CC operations agents need: list channels under
 // the client's CC, create / archive task channels, post / read / edit /
@@ -264,6 +269,66 @@ func (h *CCClientHandler) PostMessage(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"message_id": id})
 }
 
+// POST /client/cc/channels/{handle}/attachments — post a message with one file.
+func (h *CCClientHandler) PostAttachment(w http.ResponseWriter, r *http.Request) {
+	handle := r.PathValue("handle")
+	_, cc, botTok, ok := h.resolveCC(w, r)
+	if !ok {
+		return
+	}
+	ch, ok := h.resolveHandle(w, cc.ID, handle)
+	if !ok {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, ccAttachmentMaxBytes+1<<20)
+	if err := r.ParseMultipartForm(ccAttachmentMaxBytes + 1<<20); err != nil {
+		jsonError(w, "invalid multipart upload: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	content := r.FormValue("content")
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		jsonError(w, "file field required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+	if header.Size > ccAttachmentMaxBytes {
+		jsonError(w, "file too large; max 25 MiB", http.StatusRequestEntityTooLarge)
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(file, ccAttachmentMaxBytes+1))
+	if err != nil {
+		jsonError(w, "read file: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(data) == 0 {
+		jsonError(w, "file is empty", http.StatusBadRequest)
+		return
+	}
+	if len(data) > ccAttachmentMaxBytes {
+		jsonError(w, "file too large; max 25 MiB", http.StatusRequestEntityTooLarge)
+		return
+	}
+	filename := sanitizeAttachmentFilename(firstNonEmpty(r.FormValue("filename"), header.Filename))
+	contentType := r.FormValue("content_type")
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	if _, _, err := mime.ParseMediaType(contentType); err != nil {
+		contentType = "application/octet-stream"
+	}
+	id, err := h.bot.PostMessageWithFile(r.Context(), botTok, ch.ChannelID, content, svc.DiscordFile{
+		Filename:    filename,
+		ContentType: contentType,
+		Data:        data,
+	})
+	if err != nil {
+		jsonError(w, "discord post attachment: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	jsonResponse(w, map[string]string{"message_id": id, "filename": filename})
+}
+
 // PATCH /client/cc/channels/{handle}/messages/{message_id} — edit.
 func (h *CCClientHandler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	handle := r.PathValue("handle")
@@ -307,6 +372,54 @@ func (h *CCClientHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	jsonResponse(w, map[string]string{"status": "deleted"})
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func sanitizeAttachmentFilename(name string) string {
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = filepath.Base(strings.TrimSpace(name))
+	if name == "." || name == "/" || name == "\\" || name == "" {
+		name = "attachment"
+	}
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r < 32 || r == 127:
+			b.WriteByte('_')
+		case r == '/' || r == '\\':
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		out = "attachment"
+	}
+	if len(out) > 120 {
+		ext := filepath.Ext(out)
+		base := strings.TrimSuffix(out, ext)
+		if len(ext) > 20 {
+			ext = ""
+		}
+		limit := 120 - len(ext)
+		if limit < 1 {
+			limit = 120
+		}
+		if len(base) > limit {
+			base = base[:limit]
+		}
+		out = base + ext
+	}
+	return out
 }
 
 // GET /client/cc/channels/{handle}/messages?limit=N — read recent.

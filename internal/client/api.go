@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -490,6 +491,60 @@ func (c *APIClient) PostCC(ctx context.Context, handle, content string) error {
 		return fmt.Errorf("server %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+func (c *APIClient) PostCCFile(ctx context.Context, handle, content, filename, contentType string, data []byte) (map[string]interface{}, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if content != "" {
+		if err := mw.WriteField("content", content); err != nil {
+			return nil, err
+		}
+	}
+	if filename != "" {
+		if err := mw.WriteField("filename", filename); err != nil {
+			return nil, err
+		}
+	}
+	if contentType != "" {
+		if err := mw.WriteField("content_type", contentType); err != nil {
+			return nil, err
+		}
+	}
+	part, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := part.Write(data); err != nil {
+		return nil, err
+	}
+	if err := mw.Close(); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		c.baseURL+"/client/cc/channels/"+handle+"/attachments", &buf)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("post attachment: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("server %d: %s", resp.StatusCode, string(respBody))
+	}
+	var out map[string]interface{}
+	if len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, &out); err != nil {
+			return nil, fmt.Errorf("parse attachment response: %w", err)
+		}
+	}
+	return out, nil
 }
 
 func (c *APIClient) ReportCCAgentTest(ctx context.Context, testID, status, errText string) error {

@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -152,6 +154,88 @@ func TestMCP_ToolCall_PassThrough(t *testing.T) {
 	text, _ := first["text"].(string)
 	if !strings.Contains(text, "M-fake-1") {
 		t.Errorf("expected message_id in output, got: %s", text)
+	}
+}
+
+func TestMCP_PostFileUploadsMultipart(t *testing.T) {
+	tmp := t.TempDir()
+	filePath := filepath.Join(tmp, "result.png")
+	fileBytes := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 1, 2, 3}
+	if err := os.WriteFile(filePath, fileBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var sawUpload bool
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawUpload = true
+		if r.Method != "POST" || r.URL.Path != "/client/cc/channels/H/attachments" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-Duckway-Token"); got != "test-tok" {
+			t.Fatalf("missing token: %q", got)
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		if got := r.FormValue("content"); got != "see image" {
+			t.Fatalf("content = %q", got)
+		}
+		if got := r.FormValue("filename"); got != "safe.png" {
+			t.Fatalf("filename = %q", got)
+		}
+		f, hdr, err := r.FormFile("file")
+		if err != nil {
+			t.Fatalf("FormFile: %v", err)
+		}
+		defer f.Close()
+		body, _ := io.ReadAll(f)
+		if hdr.Filename != "safe.png" {
+			t.Fatalf("multipart filename = %q", hdr.Filename)
+		}
+		if !bytes.Equal(body, fileBytes) {
+			t.Fatalf("uploaded bytes = %v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"message_id":"M-file","filename":"safe.png"}`)
+	}))
+	defer mock.Close()
+
+	srv := newTestServer(t, CCStateFile{CCs: []CCStateAssignment{{CCID: "cc1"}}}, mock.URL)
+	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"discord_post_file","arguments":{"channel_handle":"H","path":%q,"content":"see image","filename":"../../safe.png"}}}`, filePath)
+	resp := runOne(t, srv, req)
+	r, _ := resp.Result.(map[string]interface{})
+	if isErr, _ := r["isError"].(bool); isErr {
+		t.Fatalf("unexpected error: %+v", r)
+	}
+	if !sawUpload {
+		t.Fatal("mock server did not receive upload")
+	}
+	content, _ := r["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "M-file") {
+		t.Fatalf("expected message id in response, got %s", text)
+	}
+}
+
+func TestMCP_PostFileRejectsPathTraversal(t *testing.T) {
+	hit := false
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+	}))
+	defer mock.Close()
+
+	srv := newTestServer(t, CCStateFile{CCs: []CCStateAssignment{{CCID: "cc1"}}}, mock.URL)
+	resp := runOne(t, srv, `{"jsonrpc":"2.0","id":71,"method":"tools/call","params":{"name":"discord_post_file","arguments":{"channel_handle":"H","path":"../secret.png"}}}`)
+	r, _ := resp.Result.(map[string]interface{})
+	if isErr, _ := r["isError"].(bool); !isErr {
+		t.Fatal("expected traversal path to be rejected")
+	}
+	if hit {
+		t.Fatal("server should not be called for rejected path")
+	}
+	content, _ := r["content"].([]interface{})
+	text := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "path traversal") {
+		t.Fatalf("expected traversal error, got %s", text)
 	}
 }
 

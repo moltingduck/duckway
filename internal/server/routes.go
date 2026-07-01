@@ -455,6 +455,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	clientMux.HandleFunc("POST /client/cc/channels/{handle}/archive", ccClientH.ArchiveChannel)
 	clientMux.HandleFunc("GET /client/cc/channels/{handle}/messages", ccClientH.GetMessages)
 	clientMux.HandleFunc("POST /client/cc/channels/{handle}/messages", ccClientH.PostMessage)
+	clientMux.HandleFunc("POST /client/cc/channels/{handle}/attachments", ccClientH.PostAttachment)
 	clientMux.HandleFunc("PATCH /client/cc/channels/{handle}/messages/{message_id}", ccClientH.EditMessage)
 	clientMux.HandleFunc("DELETE /client/cc/channels/{handle}/messages/{message_id}", ccClientH.DeleteMessage)
 	clientMux.HandleFunc("POST /client/cc/channels/{handle}/approval", ccClientH.RequestApproval)

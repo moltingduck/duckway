@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"strings"
@@ -155,6 +157,12 @@ type Message struct {
 		Bot      bool   `json:"bot"`
 	} `json:"author"`
 	Timestamp string `json:"timestamp"`
+}
+
+type DiscordFile struct {
+	Filename    string
+	ContentType string
+	Data        []byte
 }
 
 func (b *DiscordBot) do(ctx context.Context, botToken, method, path string, body interface{}) ([]byte, error) {
@@ -314,6 +322,70 @@ func (b *DiscordBot) PostMessage(ctx context.Context, botToken, channelID, conte
 	return msg.ID, nil
 }
 
+// PostMessageWithFile sends one Discord message containing content and a
+// single attachment. Discord requires multipart/form-data for attachments:
+// payload_json contains the message metadata and files[0] contains bytes.
+func (b *DiscordBot) PostMessageWithFile(ctx context.Context, botToken, channelID, content string, file DiscordFile) (string, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	payload := map[string]interface{}{
+		"content": content,
+		"attachments": []map[string]interface{}{
+			{"id": 0, "filename": file.Filename},
+		},
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal payload_json: %w", err)
+	}
+	if err := mw.WriteField("payload_json", string(payloadJSON)); err != nil {
+		return "", fmt.Errorf("write payload_json: %w", err)
+	}
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="files[0]"; filename="%s"`, escapeMultipartFilename(file.Filename)))
+	if file.ContentType != "" {
+		h.Set("Content-Type", file.ContentType)
+	}
+	part, err := mw.CreatePart(h)
+	if err != nil {
+		return "", fmt.Errorf("create file part: %w", err)
+	}
+	if _, err := part.Write(file.Data); err != nil {
+		return "", fmt.Errorf("write file part: %w", err)
+	}
+	if err := mw.Close(); err != nil {
+		return "", fmt.Errorf("close multipart: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", b.BaseURL+"/channels/"+channelID+"/messages", &buf)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bot "+botToken)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("User-Agent", "DuckwayCC/1.0")
+	resp, err := b.HTTP.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("discord request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		derr := &DiscordError{Status: resp.StatusCode, Raw: string(respBody)}
+		if len(respBody) > 0 && respBody[0] == '{' {
+			_ = json.Unmarshal(respBody, derr)
+		}
+		return "", derr
+	}
+	var msg struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(respBody, &msg); err != nil {
+		return "", fmt.Errorf("parse message response: %w", err)
+	}
+	return msg.ID, nil
+}
+
 // EditMessage replaces a message's content.
 func (b *DiscordBot) EditMessage(ctx context.Context, botToken, channelID, messageID, content string) error {
 	_, err := b.do(ctx, botToken, "PATCH", "/channels/"+channelID+"/messages/"+messageID, map[string]interface{}{
@@ -389,6 +461,14 @@ func DiscordInviteURL(clientID string) string {
 
 func DiscordSetupInviteURL(clientID string) string {
 	return discordInviteURL(clientID, discordDuckwaySetupInvitePerms)
+}
+
+func escapeMultipartFilename(name string) string {
+	name = strings.ReplaceAll(name, "\\", "\\\\")
+	name = strings.ReplaceAll(name, `"`, `\"`)
+	name = strings.ReplaceAll(name, "\r", "_")
+	name = strings.ReplaceAll(name, "\n", "_")
+	return name
 }
 
 func discordInviteURL(clientID string, perms int64) string {

@@ -9,8 +9,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 )
+
+const discordPostFileMaxBytes = 25 << 20
 
 // readFileImpl is the real implementation of readFile (split out so tests can
 // override the var without losing the original).
@@ -67,6 +70,20 @@ func (s *MCPServer) toolDefinitions() []map[string]interface{} {
 					"content":        map[string]interface{}{"type": "string", "description": "Message body. Discord supports markdown."},
 				},
 				"required": []string{"channel_handle", "content"},
+			},
+		},
+		{
+			"name":        "discord_post_file",
+			"description": "Post one message with text and a local file attachment. The path is read on the agent machine, not on the Duckway server. Rejects traversal paths and files larger than 25 MiB.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"channel_handle": map[string]interface{}{"type": "string"},
+					"path":           map[string]interface{}{"type": "string", "description": "Local file path on the agent machine. Relative paths resolve from the agent process cwd. Path traversal segments (..) are rejected."},
+					"content":        map[string]interface{}{"type": "string", "description": "Optional message body shown above the attachment."},
+					"filename":       map[string]interface{}{"type": "string", "description": "Optional display filename. Path separators are ignored."},
+				},
+				"required": []string{"channel_handle", "path"},
 			},
 		},
 		{
@@ -209,6 +226,8 @@ func (s *MCPServer) handleToolCall(ctx context.Context, req jsonrpcRequest) json
 		handle, _ := args["channel_handle"].(string)
 		out, err2 = s.callServer(ctx, "POST", fmt.Sprintf("/client/cc/channels/%s/messages", handle),
 			map[string]interface{}{"content": args["content"]})
+	case "discord_post_file":
+		out, err2 = s.callPostFile(ctx, args)
 	case "discord_edit_message":
 		handle, _ := args["channel_handle"].(string)
 		mid, _ := args["message_id"].(string)
@@ -334,10 +353,10 @@ func (s *MCPServer) callListLocalSessions(args map[string]interface{}) (interfac
 	}
 
 	return map[string]interface{}{
-		"sessions":     filtered,
-		"total_local":  len(sessions),
+		"sessions":       filtered,
+		"total_local":    len(sessions),
 		"total_filtered": len(filtered),
-		"only_unbound": onlyUnbound,
+		"only_unbound":   onlyUnbound,
 	}, nil
 }
 
@@ -372,6 +391,107 @@ func (s *MCPServer) callBindSession(args map[string]interface{}) (interface{}, e
 		"previous_session": previous, // empty if this was a fresh bind
 		"note":             "binding takes effect on the next inbound message; this current turn continues in the existing session",
 	}, nil
+}
+
+func (s *MCPServer) callPostFile(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	handle, _ := args["channel_handle"].(string)
+	if strings.TrimSpace(handle) == "" {
+		return nil, fmt.Errorf("channel_handle is required")
+	}
+	rawPath, _ := args["path"].(string)
+	path, err := safeLocalAttachmentPath(rawPath)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat file: %w", err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("path is a directory, not a file")
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("path is not a regular file")
+	}
+	if info.Size() <= 0 {
+		return nil, fmt.Errorf("file is empty")
+	}
+	if info.Size() > discordPostFileMaxBytes {
+		return nil, fmt.Errorf("file too large: %d bytes exceeds 25 MiB", info.Size())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+	filename, _ := args["filename"].(string)
+	filename = safeAttachmentDisplayName(firstNonEmptyString(filename, filepath.Base(path)))
+	content, _ := args["content"].(string)
+	contentType := http.DetectContentType(data)
+	api := NewAPIClient(s.cfg.ServerURL, s.cfg.Token)
+	return api.PostCCFile(ctx, handle, content, filename, contentType, data)
+}
+
+func safeLocalAttachmentPath(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if strings.ContainsRune(raw, 0) {
+		return "", fmt.Errorf("path contains NUL byte")
+	}
+	if hasParentTraversal(raw) {
+		return "", fmt.Errorf("path traversal is not allowed")
+	}
+	clean := filepath.Clean(raw)
+	abs, err := filepath.Abs(clean)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	return abs, nil
+}
+
+func hasParentTraversal(path string) bool {
+	for _, part := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func safeAttachmentDisplayName(name string) string {
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = filepath.Base(strings.TrimSpace(name))
+	if name == "." || name == "/" || name == "\\" || name == "" {
+		return "attachment"
+	}
+	name = strings.ReplaceAll(name, "\r", "_")
+	name = strings.ReplaceAll(name, "\n", "_")
+	if len(name) > 120 {
+		ext := filepath.Ext(name)
+		base := strings.TrimSuffix(name, ext)
+		if len(ext) > 20 {
+			ext = ""
+		}
+		limit := 120 - len(ext)
+		if limit < 1 {
+			limit = 120
+		}
+		if len(base) > limit {
+			base = base[:limit]
+		}
+		name = base + ext
+	}
+	return name
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // callServer is a minimal HTTP client for the MCP tools. Uses cfg.Token as

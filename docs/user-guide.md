@@ -449,7 +449,7 @@ The daemon needs the selected agent binary (`claude` or `codex`) in `$PATH`. For
 
 ### Inside an agent session, the model sees these MCP tools
 
-`discord_get_my_cc`, `discord_list_channels`, `discord_create_task_channel`, `discord_archive_channel`, `discord_post`, `discord_edit_message`, `discord_delete_message`, `discord_read_recent`, `discord_wait_for_message`, `discord_request_approval` (reaction-vote — blocks until ✅/❌), `duckway_list_local_sessions`, `duckway_bind_session`.
+`discord_get_my_cc`, `discord_list_channels`, `discord_create_task_channel`, `discord_archive_channel`, `discord_post`, `discord_post_file` (text + one local file/image attachment in one Discord message), `discord_edit_message`, `discord_delete_message`, `discord_read_recent`, `discord_wait_for_message`, `discord_request_approval` (reaction-vote — blocks until ✅/❌), `duckway_list_local_sessions`, `duckway_bind_session`.
 
 ### Attaching to a pre-existing Claude session
 

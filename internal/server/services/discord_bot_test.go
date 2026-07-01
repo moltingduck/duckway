@@ -279,6 +279,47 @@ func TestPostMessage(t *testing.T) {
 	}
 }
 
+func TestPostMessageWithFile(t *testing.T) {
+	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/channels/CH/messages" || r.Method != "POST" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bot tok" {
+			t.Errorf("authorization = %q", got)
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		payload := r.FormValue("payload_json")
+		if !strings.Contains(payload, `"content":"see attached"`) || !strings.Contains(payload, `"filename":"result.png"`) {
+			t.Fatalf("bad payload_json: %s", payload)
+		}
+		f, hdr, err := r.FormFile("files[0]")
+		if err != nil {
+			t.Fatalf("FormFile: %v", err)
+		}
+		defer f.Close()
+		data, _ := io.ReadAll(f)
+		if hdr.Filename != "result.png" {
+			t.Fatalf("filename = %q", hdr.Filename)
+		}
+		if string(data) != "png-bytes" {
+			t.Fatalf("file bytes = %q", data)
+		}
+		w.Write([]byte(`{"id":"M-file","channel_id":"CH"}`))
+	})
+	defer srv.Close()
+	b := &DiscordBot{BaseURL: srv.URL, HTTP: srv.Client()}
+	id, err := b.PostMessageWithFile(context.Background(), "tok", "CH", "see attached", DiscordFile{
+		Filename:    "result.png",
+		ContentType: "image/png",
+		Data:        []byte("png-bytes"),
+	})
+	if err != nil || id != "M-file" {
+		t.Fatalf("got %q, %v", id, err)
+	}
+}
+
 func TestGetMessages(t *testing.T) {
 	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("limit") != "10" {

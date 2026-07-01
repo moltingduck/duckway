@@ -457,7 +457,7 @@ internal/server/handlers/control_channels.go Admin CRUD; Create provisions the m
 internal/server/handlers/cc_client.go        /client/cc/* — implicit cc_id (1:1), real IDs never returned
 
 internal/client/sync_cc.go                   Writes ~/.duckway/cc.json + merges ~/.claude.json mcpServers entry
-internal/client/mcp.go + mcp_tools.go        Stdio MCP server (JSON-RPC 2.0) — 10 discord_* tools +
+internal/client/mcp.go + mcp_tools.go        Stdio MCP server (JSON-RPC 2.0) — 11 discord_* tools +
                                              duckway_list_local_sessions / duckway_bind_session
 internal/client/cc_watch.go                  SSE consumer + reconnect loop
 internal/client/cc_runner.go                 Per-channel FIFO queue + agent exec wrapper
