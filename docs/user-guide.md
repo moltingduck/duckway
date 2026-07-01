@@ -475,15 +475,15 @@ In `<client>-control`:
 Project folders are saved on the client machine, not browsed from the Duckway server. Add them with:
 
 ```bash
-duckway cc projects add ~/duckway
-duckway cc projects add ./api-server
-duckway cc projects add ~/projects/*        # glob expands now; matching files are skipped
-duckway cc projects add --name api ~/work/backend
-duckway cc projects list
-duckway cc projects remove api
+duckway projects add ~/duckway
+duckway projects add ./api-server
+duckway projects add ~/projects/*        # glob expands now; matching files are skipped
+duckway projects add --name api ~/work/backend
+duckway projects list
+duckway projects remove api
 ```
 
-Relative paths are resolved from the directory where you run `duckway cc projects add`; `~/...` is expanded to your home directory. Globs are expanded only when you add projects, then stored as concrete directories in `~/.duckway/cc-projects.json`. From Discord:
+Relative paths are resolved from the directory where you run `duckway projects add`; `~/...` is expanded to your home directory. Globs are expanded only when you add projects, then stored as concrete directories in `~/.duckway/cc-projects.json`. From Discord:
 
 ```text
 !projects duck

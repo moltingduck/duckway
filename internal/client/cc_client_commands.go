@@ -347,7 +347,7 @@ func formatProjectsReport(projects []CCProject, filter string) string {
 		if filter != "" {
 			return "_(no saved projects matching `" + filter + "`)_"
 		}
-		return "No saved projects yet.\n\nAdd projects on the agent machine:\n`duckway cc projects add ~/duckway`\n`duckway cc projects add ~/projects/*`"
+		return "No saved projects yet.\n\nAdd projects on the agent machine:\n`duckway projects add ~/duckway`\n`duckway projects add ~/projects/*`"
 	}
 	const maxRows = 30
 	rows := projects
