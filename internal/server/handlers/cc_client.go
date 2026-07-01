@@ -97,11 +97,11 @@ func (h *CCClientHandler) GetMyCC(w http.ResponseWriter, r *http.Request) {
 		mgmtHandle = mgmt.Handle
 	}
 	jsonResponse(w, map[string]interface{}{
-		"assigned":              true,
-		"cc_id":                 cc.ID,
-		"cc_name":               cc.Name,
-		"agent_type":            cc.AgentType,
-		"management_handle":     mgmtHandle,
+		"assigned":          true,
+		"cc_id":             cc.ID,
+		"cc_name":           cc.Name,
+		"agent_type":        cc.AgentType,
+		"management_handle": mgmtHandle,
 	})
 }
 
@@ -370,6 +370,15 @@ func (h *CCClientHandler) PullInbox(w http.ResponseWriter, r *http.Request) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
 			limit = n
 		}
+	}
+	if q.Get("latest") == "1" {
+		cursor, err := h.cc.LatestInboxID(cc.ID)
+		if err != nil {
+			jsonError(w, "inbox cursor: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"cursor": cursor, "events": []models.InboxEvent{}})
+		return
 	}
 	var handles []string
 	if v := q.Get("channels"); v != "" {

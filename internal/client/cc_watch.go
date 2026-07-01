@@ -30,8 +30,9 @@ type CCWatch struct {
 	// Set via `duckway cc watch --no-tmux` or DUCKWAY_CC_NO_TMUX=1.
 	noTmux bool
 
-	mu      sync.Mutex
-	runners map[string]*ccRunner // by channel handle
+	mu          sync.Mutex
+	runners     map[string]*ccRunner // by channel handle
+	inboxCursor int64
 
 	api *APIClient
 }
@@ -76,6 +77,7 @@ func (w *CCWatch) Run(ctx context.Context) error {
 	// daemon instance was dead. Best-effort: errors are logged and we
 	// continue starting up.
 	w.recoverPendingTurns(ctx)
+	go w.pollInbox(ctx)
 
 	backoff := 5 * time.Second
 	maxBackoff := 60 * time.Second
@@ -181,6 +183,12 @@ func (w *CCWatch) handleEvent(eventType string, data []byte) {
 	case "ready":
 		log.Printf("[cc-watch] server: ready")
 		return
+	}
+	var env sseEnvelope
+	if err := json.Unmarshal(data, &env); err == nil && env.InboxID > 0 {
+		w.advanceInboxCursor(env.InboxID)
+	}
+	switch eventType {
 	case "message_create":
 		w.handleMessageCreate(data)
 	case "channel_delete":
@@ -202,6 +210,7 @@ type sseEnvelope struct {
 	Handle  string          `json:"channel_handle"`
 	Kind    string          `json:"channel_kind"`
 	Payload json.RawMessage `json:"payload"`
+	InboxID int64           `json:"inbox_id,omitempty"`
 }
 
 // payloadMessageCreate is the Discord MESSAGE_CREATE shape we care about.
@@ -377,6 +386,101 @@ func (w *CCWatch) shutdown() {
 		delete(w.runners, h)
 	}
 	log.Printf("[cc-watch] shutdown complete")
+}
+
+func (w *CCWatch) pollInbox(ctx context.Context) {
+	for {
+		cursor, err := w.api.LatestCCInboxCursor(ctx)
+		if err == nil {
+			w.advanceInboxCursor(cursor)
+			log.Printf("[cc-watch] inbox polling ready (cursor=%d)", cursor)
+			break
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("[cc-watch] inbox cursor error: %v (retry in 10s)", err)
+		if !sleepContext(ctx, 10*time.Second) {
+			return
+		}
+	}
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		resp, err := w.api.PullCCInbox(ctx, w.currentInboxCursor(), 25, 200)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("[cc-watch] inbox poll error: %v (retry in 5s)", err)
+			if !sleepContext(ctx, 5*time.Second) {
+				return
+			}
+			continue
+		}
+		for _, ev := range resp.Events {
+			w.handleInboxEvent(ev)
+		}
+		w.advanceInboxCursor(resp.Cursor)
+	}
+}
+
+func (w *CCWatch) handleInboxEvent(ev CCInboxEvent) {
+	if ev.ID <= w.currentInboxCursor() {
+		return
+	}
+	if ev.ChannelHandle == nil || *ev.ChannelHandle == "" {
+		w.advanceInboxCursor(ev.ID)
+		return
+	}
+	eventType := strings.ToLower(ev.EventType)
+	switch ev.EventType {
+	case "MESSAGE_CREATE":
+		eventType = "message_create"
+	case "MESSAGE_UPDATE":
+		eventType = "message_update"
+	case "MESSAGE_DELETE":
+		eventType = "message_delete"
+	}
+	env := sseEnvelope{
+		Type:    eventType,
+		CCID:    ev.CCID,
+		Handle:  *ev.ChannelHandle,
+		Payload: json.RawMessage(ev.Payload),
+		InboxID: ev.ID,
+	}
+	data, _ := json.Marshal(env)
+	w.handleEvent(eventType, data)
+}
+
+func (w *CCWatch) currentInboxCursor() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.inboxCursor
+}
+
+func (w *CCWatch) advanceInboxCursor(id int64) {
+	if id <= 0 {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if id > w.inboxCursor {
+		w.inboxCursor = id
+	}
+}
+
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // recoverPendingTurns scans the tmux-runner state files left behind by a

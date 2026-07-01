@@ -757,6 +757,11 @@ func (h *ControlChannelHandler) TestAgent(w http.ResponseWriter, r *http.Request
 			"bot":      false,
 		},
 	})
+	inboxID, err := h.cc.AppendInbox(cc.ID, &mgmt.Handle, "MESSAGE_CREATE", string(payload))
+	if err != nil {
+		jsonError(w, "append test message: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	subscribers := h.hub.SubscriberCount(cc.ClientID)
 	h.hub.Publish(cc.ClientID, svc.CCEvent{
 		Type:    "message_create",
@@ -764,6 +769,7 @@ func (h *ControlChannelHandler) TestAgent(w http.ResponseWriter, r *http.Request
 		Handle:  mgmt.Handle,
 		Kind:    mgmt.Kind,
 		Payload: payload,
+		InboxID: inboxID,
 	})
 	jsonResponse(w, map[string]interface{}{
 		"status":      "published",
@@ -771,6 +777,7 @@ func (h *ControlChannelHandler) TestAgent(w http.ResponseWriter, r *http.Request
 		"handle":      mgmt.Handle,
 		"agent_type":  cc.AgentType,
 		"subscribers": subscribers,
+		"inbox_id":    inboxID,
 	})
 }
 

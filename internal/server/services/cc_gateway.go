@@ -501,7 +501,7 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 			}
 		}
 
-		_ = c.cc.AppendInbox(cc.ID, &ch.Handle, eventType, string(payload))
+		inboxID, _ := c.cc.AppendInbox(cc.ID, &ch.Handle, eventType, string(payload))
 		if c.hub != nil && cc.ClientID != "" {
 			c.hub.Publish(cc.ClientID, CCEvent{
 				Type:    sseTypeFromGateway(eventType),
@@ -509,6 +509,7 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 				Handle:  ch.Handle,
 				Kind:    ch.Kind,
 				Payload: payload,
+				InboxID: inboxID,
 			})
 		}
 		return

@@ -230,12 +230,25 @@ func (q *ControlChannelQueries) SetChannelSession(handle, sessionID, cwd string)
 
 // --- inbox ---------------------------------------------------------------
 
-func (q *ControlChannelQueries) AppendInbox(ccID string, channelHandle *string, eventType, payload string) error {
-	_, err := q.db.Exec(
+func (q *ControlChannelQueries) AppendInbox(ccID string, channelHandle *string, eventType, payload string) (int64, error) {
+	res, err := q.db.Exec(
 		`INSERT INTO discord_inbox (cc_id, channel_handle, event_type, payload) VALUES (?, ?, ?, ?)`,
 		ccID, channelHandle, eventType, payload,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+func (q *ControlChannelQueries) LatestInboxID(ccID string) (int64, error) {
+	var id int64
+	err := q.db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM discord_inbox WHERE cc_id = ?`, ccID).Scan(&id)
+	return id, err
 }
 
 func (q *ControlChannelQueries) PullInbox(ccID string, sinceID int64, channelHandles []string, limit int) ([]models.InboxEvent, error) {

@@ -45,10 +45,13 @@ func TestInboxAppendAndPull(t *testing.T) {
 	q := NewControlChannelQueries(db)
 
 	handle := "h1"
+	var lastID int64
 	for i := 0; i < 5; i++ {
-		if err := q.AppendInbox("cc1", &handle, "MESSAGE_CREATE", `{"i":1}`); err != nil {
+		id, err := q.AppendInbox("cc1", &handle, "MESSAGE_CREATE", `{"i":1}`)
+		if err != nil {
 			t.Fatal(err)
 		}
+		lastID = id
 	}
 
 	got, err := q.PullInbox("cc1", 0, nil, 100)
@@ -73,6 +76,14 @@ func TestInboxAppendAndPull(t *testing.T) {
 	if len(got2) != 2 {
 		t.Errorf("after cursor=%d, got %d (want 2)", got[2].ID, len(got2))
 	}
+
+	latest, err := q.LatestInboxID("cc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest != lastID {
+		t.Errorf("latest inbox id = %d, want %d", latest, lastID)
+	}
 }
 
 func TestInboxFilterByHandle(t *testing.T) {
@@ -82,11 +93,11 @@ func TestInboxFilterByHandle(t *testing.T) {
 		t.Fatal(err)
 	}
 	h1, h2 := "h1", "h2"
-	q.AppendInbox("cc1", &h1, "MESSAGE_CREATE", `{}`)
-	q.AppendInbox("cc1", &h2, "MESSAGE_CREATE", `{}`)
-	q.AppendInbox("cc1", &h1, "MESSAGE_CREATE", `{}`)
+	_, _ = q.AppendInbox("cc1", &h1, "MESSAGE_CREATE", `{}`)
+	_, _ = q.AppendInbox("cc1", &h2, "MESSAGE_CREATE", `{}`)
+	_, _ = q.AppendInbox("cc1", &h1, "MESSAGE_CREATE", `{}`)
 
-	only := func(events []interface{ }) {}
+	only := func(events []interface{}) {}
 	_ = only
 	got, err := q.PullInbox("cc1", 0, []string{"h1"}, 100)
 	if err != nil {
@@ -111,7 +122,7 @@ func TestInboxCleanupRetention(t *testing.T) {
 	  VALUES ('cc1', 'h1', 'old', '{}', datetime('now', '-48 hours'))`); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.AppendInbox("cc1", strPtr("h1"), "fresh", "{}"); err != nil {
+	if _, err := q.AppendInbox("cc1", strPtr("h1"), "fresh", "{}"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,7 +140,7 @@ func TestInboxCleanupPerChannelCap(t *testing.T) {
 	db := openTestDB(t)
 	q := NewControlChannelQueries(db)
 	for i := 0; i < 5; i++ {
-		q.AppendInbox("cc1", strPtr("h1"), "x", `{}`)
+		_, _ = q.AppendInbox("cc1", strPtr("h1"), "x", `{}`)
 		// Tiny sleep so created_at differs (sqlite second resolution); also
 		// the id ordering already guarantees newest-N selection.
 		time.Sleep(time.Millisecond)

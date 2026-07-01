@@ -709,11 +709,20 @@ function testAgent() {
         return;
       }
       var delivered = Number(d.subscribers || 0) > 0;
+      var queued = Number(d.inbox_id || 0) > 0;
+      var title = delivered ? 'Agent test delivered' : (queued ? 'Agent test queued' : 'Agent watcher offline');
       var note = delivered
         ? 'Delivered to ' + d.subscribers + ' connected watcher(s).'
-        : 'No connected duckway cc watch daemon was listening; start or restart the client watcher and retry.';
+        : (queued
+          ? 'Queued in the control channel inbox; the assigned client watcher will pick it up by polling.'
+          : 'No connected duckway cc watch daemon was listening for ' + (currentCC.client_name || 'this client') + '.');
+      var commands = (delivered || queued) ? '' :
+        '<div class="mt-1 text-sm text-muted">On the assigned client, run:</div>' +
+        '<pre class="mt-1" style="white-space:pre-wrap;margin-bottom:0"><code>duckway sync\n' +
+        'duckway cc watch status\n' +
+        'duckway cc watch restart</code></pre>';
       panel.innerHTML = '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid ' + (delivered ? '#22c55e' : '#f59e0b') + ';padding:0.75rem">' +
-        '<strong>Agent test published</strong><br><span class="text-sm">Sent <code>hi</code> to <code>' + escapeHTML(d.handle || '') + '</code>. ' + escapeHTML(note) + '</span></div>';
+        '<strong>' + title + '</strong><br><span class="text-sm">Sent <code>hi</code> to <code>' + escapeHTML(d.handle || '') + '</code>. ' + escapeHTML(note) + '</span>' + commands + '</div>';
     })
     .catch(function(err) {
       btn.textContent = orig;

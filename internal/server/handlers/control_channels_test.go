@@ -60,6 +60,15 @@ func TestControlChannelTestAgentPublishesHi(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
+	var res struct {
+		InboxID int64 `json:"inbox_id"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if res.InboxID == 0 {
+		t.Fatal("inbox_id missing from response")
+	}
 
 	select {
 	case ev := <-events:
@@ -80,6 +89,20 @@ func TestControlChannelTestAgentPublishesHi(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no event published")
+	}
+
+	var inboxPayload string
+	if err := db.QueryRow(`SELECT payload FROM discord_inbox WHERE id = ?`, res.InboxID).Scan(&inboxPayload); err != nil {
+		t.Fatalf("lookup inbox row: %v", err)
+	}
+	var inboxMsg struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(inboxPayload), &inboxMsg); err != nil {
+		t.Fatalf("decode inbox payload: %v", err)
+	}
+	if inboxMsg.Content != "hi" {
+		t.Fatalf("inbox content = %q, want hi", inboxMsg.Content)
 	}
 }
 

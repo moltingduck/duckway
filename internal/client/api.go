@@ -8,7 +8,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -75,6 +77,59 @@ func (c *APIClient) FetchKeys() ([]PlaceholderKeyInfo, error) {
 		return nil, fmt.Errorf("decode keys: %w", err)
 	}
 	return keys, nil
+}
+
+type CCInboxEvent struct {
+	ID            int64   `json:"id"`
+	CCID          string  `json:"cc_id"`
+	ChannelHandle *string `json:"channel_handle"`
+	EventType     string  `json:"event_type"`
+	Payload       string  `json:"payload"`
+	CreatedAt     string  `json:"created_at"`
+}
+
+type CCInboxResponse struct {
+	Cursor int64          `json:"cursor"`
+	Events []CCInboxEvent `json:"events"`
+}
+
+func (c *APIClient) LatestCCInboxCursor(ctx context.Context) (int64, error) {
+	resp, err := c.pullCCInbox(ctx, url.Values{"latest": []string{"1"}, "timeout": []string{"0"}})
+	if err != nil {
+		return 0, err
+	}
+	return resp.Cursor, nil
+}
+
+func (c *APIClient) PullCCInbox(ctx context.Context, since int64, timeoutSeconds, limit int) (*CCInboxResponse, error) {
+	q := url.Values{}
+	q.Set("since", strconv.FormatInt(since, 10))
+	q.Set("timeout", strconv.Itoa(timeoutSeconds))
+	q.Set("limit", strconv.Itoa(limit))
+	return c.pullCCInbox(ctx, q)
+}
+
+func (c *APIClient) pullCCInbox(ctx context.Context, q url.Values) (*CCInboxResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/client/cc/inbox?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("pull cc inbox: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+	}
+	var out CCInboxResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode cc inbox: %w", err)
+	}
+	return &out, nil
 }
 
 // FetchStatusline returns the admin-configured statusline script body
