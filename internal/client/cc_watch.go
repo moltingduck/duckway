@@ -238,6 +238,7 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	var msg payloadMessageCreate
 	_ = json.Unmarshal(env.Payload, &msg)
 	w.reportAgentTest(msg.TestID, "received", "")
+	w.syncCodexOAuthForCC(env.CCID)
 	if msg.Author.Bot {
 		// Skip — server filters these too, but be defensive.
 		return
@@ -340,6 +341,17 @@ func (w *CCWatch) reportAgentTest(testID, status, errText string) {
 	}
 	if err := w.api.ReportCCAgentTest(context.Background(), testID, status, errText); err != nil {
 		log.Printf("[cc-watch] report test %s %s failed: %v", testID, status, err)
+	}
+}
+
+func (w *CCWatch) syncCodexOAuthForCC(ccID string) {
+	if w.agentTypes[ccID] != "codex" {
+		return
+	}
+	if synced := SyncCodexOAuthCredentials(w.configDir, w.cfg); synced {
+		if err := DisableCodexDuckwayProvider(); err != nil {
+			log.Printf("[cc-watch] codex provider cleanup failed: %v", err)
+		}
 	}
 }
 

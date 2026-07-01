@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -180,6 +181,11 @@ func (r *ccRunner) run(t ccTask) {
 	keysEnv := loadKeysEnv(r.configDir)
 	if r.agentName == "codex" && CodexOAuthModeActive(r.configDir) {
 		keysEnv = filterEnvByName(keysEnv, "OPENAI_API_KEY")
+		if err := validateCodexOAuthAuthJSON(); err != nil {
+			r.reportTaskTest(t, "failed", err.Error())
+			_ = r.postMessage(context.Background(), r.handle, "❌ "+err.Error())
+			return
+		}
 	}
 	extraEnv = append(extraEnv, keysEnv...)
 
@@ -242,6 +248,29 @@ func loadKeysEnv(configDir string) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+func validateCodexOAuthAuthJSON() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json"))
+	if err != nil {
+		return fmt.Errorf("codex OAuth auth.json is missing; run duckway sync or restart duckway cc watch")
+	}
+	var auth struct {
+		Tokens struct {
+			IDToken string `json:"id_token"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(raw, &auth); err != nil {
+		return fmt.Errorf("codex OAuth auth.json is invalid: %w", err)
+	}
+	if strings.TrimSpace(auth.Tokens.IDToken) == "" {
+		return fmt.Errorf("codex OAuth auth.json is missing tokens.id_token; re-upload the full ~/.codex/auth.json in Refreshable Tokens, then run duckway sync or restart duckway cc watch")
+	}
+	return nil
 }
 
 func filterEnvByName(env []string, name string) []string {

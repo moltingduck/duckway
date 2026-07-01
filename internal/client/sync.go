@@ -521,6 +521,10 @@ func SyncCodexOAuthCredentials(configDir string, cfg *Config) bool {
 	if err != nil || creds == nil {
 		return false
 	}
+	if !codexCredentialsHaveIDToken(creds) {
+		log.Printf("Warning: Codex OAuth credentials from server are missing tokens.id_token; re-upload the full ~/.codex/auth.json in Refreshable Tokens")
+		return false
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false
@@ -546,6 +550,15 @@ func SyncCodexOAuthCredentials(configDir string, cfg *Config) bool {
 	}
 	log.Printf("Codex OAuth credentials synced to %s", authPath)
 	return true
+}
+
+func codexCredentialsHaveIDToken(creds map[string]interface{}) bool {
+	tokens, ok := creds["tokens"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	idToken, _ := tokens["id_token"].(string)
+	return strings.TrimSpace(idToken) != ""
 }
 
 func CodexOAuthModePath(configDir string) string {
