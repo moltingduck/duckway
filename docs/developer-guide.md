@@ -364,7 +364,7 @@ CC v2: a Control Channel binds **one client to one Discord category** via a bot.
 - a single **management channel** (auto-created on CC create, named `<client>-control`, parses `!`-prefix commands server-side), or
 - **task channels** (one per agent session — created via `!new` or the `discord_create_task_channel` MCP tool).
 
-When a human posts in a task channel, the gateway forwards the event over SSE to the on-machine `duckway cc watch` daemon. For `claude_code`, the daemon drives a long-lived Claude TUI in tmux when tmux is installed, falling back to the headless print runner. For `codex`, it runs `codex exec --json` inside a per-channel tmux session when tmux is installed, falling back to headless `codex exec --json`; follow-up turns use `codex exec resume <thread_id>`. The daemon posts the final agent message back to the channel.
+When a human posts in a task channel, the gateway forwards the event over SSE to the on-machine `duckway cc watch` daemon. For `claude_code`, the daemon drives a long-lived Claude TUI in tmux when tmux is installed, falling back to the headless print runner. For `codex`, it runs `codex exec --json` inside a per-channel tmux session when tmux is installed, falling back to headless `codex exec --json`; follow-up turns use `codex exec resume <thread_id>`. `duckway start` / `duckway restart` warn when tmux is missing so operators know the daemon will run without attachable sessions. The daemon posts the final agent message back to the channel.
 
 ### Tables (v2 — `client_cc` is gone)
 

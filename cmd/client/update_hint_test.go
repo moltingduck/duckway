@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -60,5 +61,20 @@ func TestConfirmSudoUpdate(t *testing.T) {
 		if !strings.Contains(out.String(), "[y/N]") {
 			t.Errorf("prompt missing default: %q", out.String())
 		}
+	}
+}
+
+func TestTmuxUnavailableWarning(t *testing.T) {
+	missing := func(string) (string, error) { return "", errors.New("not found") }
+	found := func(string) (string, error) { return "/usr/bin/tmux", nil }
+
+	if got := tmuxUnavailableWarning(false, missing); !strings.Contains(got, "tmux is not installed") {
+		t.Fatalf("missing tmux warning = %q", got)
+	}
+	if got := tmuxUnavailableWarning(true, missing); got != "" {
+		t.Fatalf("no-tmux should suppress warning, got %q", got)
+	}
+	if got := tmuxUnavailableWarning(false, found); got != "" {
+		t.Fatalf("installed tmux should not warn, got %q", got)
 	}
 }

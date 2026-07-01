@@ -407,7 +407,7 @@ Duckway can now discover servers and categories from the saved bot token, so you
 2. **Control Channels** → **New CC** →
    - **Name** — anything you'll recognise (e.g. "Project Alpha CC").
    - **Client** — the duckway client this CC belongs to.
-   - **Agent type** — `claude_code` or `codex` (when tmux is installed, both use attachable `duckway-<handle>` sessions; `--no-tmux` forces headless mode).
+   - **Agent type** — `claude_code` or `codex` (when tmux is installed, both use attachable `duckway-<handle>` sessions; `--no-tmux` forces headless mode). If tmux is missing, Duckway falls back to headless runners and `duckway start` / `duckway restart` prints a warning.
    - **Service** — `discord`.
    - **Bot Token** — the API key you uploaded in (1).
    - **Discord setup** — click **Load Discord setup**. If the bot is not in the server yet, click **Invite bot** to open Duckway's normal Discord OAuth URL, select the server in Discord, then refresh. Use **Setup invite** only if **Grant bot access** fails because the bot lacks permission to write the category override. Pick an existing category and click **Grant bot access**, or create a new category from the form and Duckway will grant access automatically. Then click **Check permissions** to verify create/send/react/read/delete access before saving.
@@ -476,7 +476,7 @@ The management channel itself also accepts plain text — the message is forward
 - The **bot token** is the only real boundary. Two CCs sharing a bot can reach each other's channels — use **different bots** to isolate teams.
 - The agent never sees `channel_id`, `guild_id`, or `category_id` — only opaque `dwch_…` handles.
 - A client can only operate within its own CC (HTTP 403 otherwise) AND any handle in a path is checked to belong to that CC.
-- For `claude_code`, the daemon spawns claude with `--dangerously-skip-permissions`. For `codex`, the daemon uses `codex exec --json --sandbox workspace-write`; when tmux is installed, the command runs inside `duckway-<handle>` and leaves the pane open for inspection. Anyone in the Discord category can make the agent act. Trust the channel.
+- For `claude_code`, the daemon spawns claude with `--dangerously-skip-permissions`. For `codex`, the daemon uses `codex exec --json --sandbox workspace-write`; when tmux is installed, the command runs inside `duckway-<handle>` and leaves the pane open for inspection. Without tmux, Duckway still runs the agent headlessly, but there is no attachable session to inspect. Anyone in the Discord category can make the agent act. Trust the channel.
 
 ### Inbox tuning (Settings page)
 

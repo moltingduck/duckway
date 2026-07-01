@@ -366,6 +366,7 @@ func cmdCCWatch(configDir string) {
 		// (up to 2s) and removes the PID file. After it returns the next
 		// startBackgroundDaemon won't see a live PID and will spawn cleanly.
 		stopBackgroundDaemon("duckway cc watch", pidFile)
+		warnIfTmuxUnavailable()
 		daemon = true
 	}
 
@@ -888,6 +889,7 @@ func cmdStart(configDir string) {
 	} else if err := spawnDaemonProcess([]string{"cc", "watch"}, ccPidFile, ccLogFile); err != nil {
 		log.Fatalf("Failed to start cc-watch: %v", err)
 	} else {
+		warnIfTmuxUnavailable()
 		fmt.Printf("duckway cc watch: started (logs %s)\n", ccLogFile)
 	}
 }
@@ -899,6 +901,22 @@ func hasSupportedCCAgent() bool {
 		}
 	}
 	return false
+}
+
+func tmuxUnavailableWarning(noTmux bool, lookPath func(string) (string, error)) string {
+	if noTmux {
+		return ""
+	}
+	if _, err := lookPath("tmux"); err == nil {
+		return ""
+	}
+	return "Warning: tmux is not installed or not on PATH; control channels will use headless agent runners. Install tmux to get attachable sessions like `tmux attach -t duckway-<handle>`."
+}
+
+func warnIfTmuxUnavailable() {
+	if msg := tmuxUnavailableWarning(os.Getenv("DUCKWAY_CC_NO_TMUX") == "1", exec.LookPath); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+	}
 }
 
 // cmdStop terminates both daemons. Each side is independent — a missing
