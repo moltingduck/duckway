@@ -270,7 +270,7 @@ function renderOnboardingDiscordSetup() {
           '<button type="button" class="btn btn-sm" onclick="grantOnboardingDiscordCategoryAccess()">Grant bot access</button>' +
           '<span class="text-muted text-sm">Grant writes category permissions; check creates and deletes a temporary channel.</span>' +
         '</div><div id="cfg-preflight-result" style="margin-top:.5rem"></div>' +
-        '<span class="text-muted text-sm">If Grant fails, invite the bot again with the updated permissions or add the bot in Discord category Permissions manually.</span></div>' +
+        '<span class="text-muted text-sm">If Grant fails, use Setup invite to add temporary Manage Roles permission, or add the bot in Discord category Permissions manually.</span></div>' +
       '<div class="form-group"><label>Create category</label><div style="display:flex;gap:.5rem;align-items:center"><input type="text" id="cfg-new-category" value="'+esc(categoryName)+'" placeholder="'+esc(categoryName)+'"><button type="button" class="btn btn-sm" onclick="createOnboardingDiscordCategory()">Create</button></div></div>'
     : '<div class="form-group"><label>Server ID</label><input type="text" id="cfg-guild" placeholder="Load setup, or paste server id as fallback" '+(!loaded?'disabled':'')+'></div>' +
       '<div class="form-group"><label>Category ID</label><input type="text" id="cfg-category" placeholder="Paste category id as fallback" '+(!loaded?'disabled':'')+'></div>';
@@ -278,7 +278,8 @@ function renderOnboardingDiscordSetup() {
     '<div class="form-group"><label>Discord setup</label><div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">' +
       '<button type="button" class="btn btn-sm" onclick="loadOnboardingDiscordSetup()">'+(loaded?'Refresh servers':'Load Discord setup')+'</button>' +
       (onboardingDiscordSetup.invite_url ? '<a class="btn btn-sm" target="_blank" rel="noopener" href="'+esc(onboardingDiscordSetup.invite_url)+'">Invite bot</a>' : '') +
-    '</div><span class="text-muted text-sm">Invite the bot, refresh, then choose a server/category. Creating a category here avoids repeated Discord permission setup.</span></div>' +
+      (onboardingDiscordSetup.setup_invite_url ? '<a class="btn btn-sm" target="_blank" rel="noopener" href="'+esc(onboardingDiscordSetup.setup_invite_url)+'">Setup invite</a>' : '') +
+    '</div><span class="text-muted text-sm">Invite bot uses Duckway runtime permissions. Setup invite additionally grants Manage Roles so Duckway can write category permission overrides.</span></div>' +
     (onboardingDiscordSetup.bot ? '<div class="text-muted text-sm" style="margin-bottom:.5rem">Bot: <strong>'+esc(onboardingDiscordSetup.bot.username || onboardingDiscordSetup.bot.id)+'</strong></div>' : '') +
     (onboardingDiscordSetup.guilds_error ? '<div class="text-muted text-sm" style="margin-bottom:.5rem">Could not list servers: '+esc(onboardingDiscordSetup.guilds_error)+'</div>' : '') +
     destination;
@@ -291,7 +292,7 @@ function loadOnboardingDiscordSetup() {
     .then(function(r){return r.json();})
     .then(function(d){
       if (d.error) { showToast(d.error, 'error'); return; }
-      onboardingDiscordSetup = {apiKeyId:keyID, bot:d.bot, invite_url:d.invite_url, guilds:d.guilds || [], guilds_error:d.guilds_error || '', categories:[]};
+      onboardingDiscordSetup = {apiKeyId:keyID, bot:d.bot, invite_url:d.invite_url, setup_invite_url:d.setup_invite_url, guilds:d.guilds || [], guilds_error:d.guilds_error || '', categories:[]};
       renderOnboardingDiscordSetup();
       if ((onboardingDiscordSetup.guilds || []).length) loadOnboardingDiscordCategories();
       else showToast('Bot loaded. Invite it to a server, then refresh.', 'success');

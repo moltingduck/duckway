@@ -366,22 +366,24 @@ Save. ⚠️ If your app is verified (in 100+ servers) you'd need to apply for t
 Left sidebar **OAuth2** → **URL Generator**:
 
 - *Scopes*: tick **`bot`** and **`applications.commands`**.
-- *Bot Permissions*: tick:
+- *Bot Permissions* for the normal **Invite bot** URL:
   - **Manage Channels** (create / archive / move task channels)
-  - **Manage Roles** (write the bot's category permission override from Duckway)
+  - **View Channel**
   - **Send Messages**
   - **Add Reactions** (for `discord_request_approval` votes)
   - **Read Message History** (so the agent can read the channel above the latest message)
 
-Copy the generated URL at the bottom, paste into a browser, pick the guild you want the bot in, and click **Authorize**.
+Duckway's **Setup invite** URL adds **Manage Roles**. Use it only when you want Duckway to write the bot's category permission override automatically.
+
+Copy the generated URL at the bottom, paste into a browser, pick the guild you want the bot in, and click **Authorize**. In normal use, Duckway generates both URLs for you from the saved bot token.
 
 **4. Per-category permission lock-down (recommended)**
 
-The OAuth link above grants `Manage Channels` / `Manage Roles` guild-wide so Duckway can create the category and write a category-level permission override. In Duckway, use **Grant bot access** after selecting an existing category; newly created categories attempt this automatically.
+The normal invite grants `Manage Channels` guild-wide so Duckway can create categories and task channels. The setup invite also grants `Manage Roles` so Duckway can write a category-level permission override. In Duckway, use **Grant bot access** after selecting an existing category; newly created categories attempt this automatically.
 
 To narrow the bot after setup:
 
-- In your guild: right-click the bot's role → **Edit Role** → uncheck **Manage Channels** and **Manage Roles** in the global permissions.
+- In your guild: right-click the bot's role → **Edit Role** → uncheck **Manage Channels** and, if you used setup invite, **Manage Roles** in the global permissions.
 - In Duckway, select the target category and click **Grant bot access**. If Discord rejects it, right-click the **target category** → **Edit Category** → **Permissions** tab → **+ Add member or role** → pick the bot → grant **Manage Channels** + **View Channel** + **Send Messages** + **Add Reactions** + **Read Message History** ONLY here.
 
 Now if a CC's bot token leaks, blast radius is one category, not the whole guild.
@@ -408,7 +410,7 @@ Duckway can now discover servers and categories from the saved bot token, so you
    - **Agent type** — `claude_code` or `codex` (when tmux is installed, both use attachable `duckway-<handle>` sessions; `--no-tmux` forces headless mode).
    - **Service** — `discord`.
    - **Bot Token** — the API key you uploaded in (1).
-   - **Discord setup** — click **Load Discord setup**. If the bot is not in the server yet, click **Invite bot** to open Duckway's generated Discord OAuth URL, select the server in Discord, then refresh. Pick an existing category and click **Grant bot access**, or create a new category from the form and Duckway will grant access automatically. Then click **Check permissions** to verify create/send/react/read/delete access before saving.
+   - **Discord setup** — click **Load Discord setup**. If the bot is not in the server yet, click **Invite bot** to open Duckway's normal Discord OAuth URL, select the server in Discord, then refresh. Use **Setup invite** only if **Grant bot access** fails because the bot lacks permission to write the category override. Pick an existing category and click **Grant bot access**, or create a new category from the form and Duckway will grant access automatically. Then click **Check permissions** to verify create/send/react/read/delete access before saving.
 
    On save, duckway calls Discord to create `<client>-control` under the category and issues a phantom bot token bound to the client. If anything fails (bot lacks permission, wrong category id, etc.) the create rolls back and tells you which step failed.
 

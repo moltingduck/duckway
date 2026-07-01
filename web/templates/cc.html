@@ -257,7 +257,7 @@ function renderDiscordSetup() {
           '<span class="text-muted text-sm">Grant writes a category permission override; check creates and deletes a temporary channel.</span>' +
         '</div>' +
         '<div id="cc-preflight-result" class="mt-1"></div>' +
-        '<span class="text-muted text-sm">If Grant fails, the bot invite may need the updated Manage Roles permission or a Discord admin may need to add the bot in category Permissions manually.</span></div>' +
+        '<span class="text-muted text-sm">If Grant fails, use Setup invite to add temporary Manage Roles permission, or add the bot in Discord category Permissions manually.</span></div>' +
       '<div class="form-group">' +
         '<label>Create category</label>' +
         '<div style="display:flex;gap:0.5rem;align-items:center">' +
@@ -279,8 +279,9 @@ function renderDiscordSetup() {
       '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">' +
         '<button type="button" class="btn btn-sm" onclick="loadDiscordSetup()">'+(loaded?'Refresh servers':'Load Discord setup')+'</button>' +
         (discordSetup.invite_url ? '<a class="btn btn-sm" target="_blank" rel="noopener" href="'+escapeHTML(discordSetup.invite_url)+'">Invite bot</a>' : '') +
+        (discordSetup.setup_invite_url ? '<a class="btn btn-sm" target="_blank" rel="noopener" href="'+escapeHTML(discordSetup.setup_invite_url)+'">Setup invite</a>' : '') +
       '</div>' +
-      '<span class="text-muted text-sm">Invite the bot with Duckway permissions, then refresh and choose a server/category. Creating a new category avoids repeated Discord permission setup.</span>' +
+      '<span class="text-muted text-sm">Invite bot uses Duckway runtime permissions. Setup invite additionally grants Manage Roles so Duckway can write category permission overrides.</span>' +
     '</div>' +
     (discordSetup.bot ? '<div class="text-sm text-muted mb-1">Bot: <strong>'+escapeHTML(discordSetup.bot.username||discordSetup.bot.id)+'</strong></div>' : '') +
     destinationFields;
@@ -293,7 +294,7 @@ function loadDiscordSetup() {
     .then(function(r){return r.json();})
     .then(function(d) {
       if (d.error) { showToast(d.error, 'error'); return; }
-      discordSetup = {apiKeyId:keyID, bot:d.bot, invite_url:d.invite_url, guilds:d.guilds || [], guilds_error:d.guilds_error || '', categories:[]};
+      discordSetup = {apiKeyId:keyID, bot:d.bot, invite_url:d.invite_url, setup_invite_url:d.setup_invite_url, guilds:d.guilds || [], guilds_error:d.guilds_error || '', categories:[]};
       renderDiscordSetup();
       if ((discordSetup.guilds || []).length > 0) loadDiscordCategories();
       else showToast('Bot loaded. Invite it to a server, then refresh.', 'success');

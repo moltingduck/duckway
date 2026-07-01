@@ -175,8 +175,15 @@ func TestCurrentUserAndListGuilds(t *testing.T) {
 
 func TestDiscordInviteURL(t *testing.T) {
 	u := DiscordInviteURL("BOT1")
-	if !strings.Contains(u, "client_id=BOT1") || !strings.Contains(u, "permissions=268504144") || !strings.Contains(u, "scope=bot+applications.commands") {
+	if !strings.Contains(u, "client_id=BOT1") || !strings.Contains(u, "permissions=68688") || !strings.Contains(u, "scope=bot+applications.commands") {
 		t.Fatalf("invite url = %s", u)
+	}
+}
+
+func TestDiscordSetupInviteURL(t *testing.T) {
+	u := DiscordSetupInviteURL("BOT1")
+	if !strings.Contains(u, "client_id=BOT1") || !strings.Contains(u, "permissions=268504144") || !strings.Contains(u, "scope=bot+applications.commands") {
+		t.Fatalf("setup invite url = %s", u)
 	}
 }
 

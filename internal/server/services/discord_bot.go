@@ -42,7 +42,7 @@ const (
 		discordPermViewChannel |
 		discordPermSendMessages |
 		discordPermReadMessageHistory
-	discordDuckwayInvitePerms = discordDuckwayCategoryPerms | discordPermManageRoles
+	discordDuckwaySetupInvitePerms = discordDuckwayCategoryPerms | discordPermManageRoles
 )
 
 func NewDiscordBot() *DiscordBot {
@@ -384,9 +384,17 @@ func (b *DiscordBot) ListGuildChannels(ctx context.Context, botToken, guildID st
 }
 
 func DiscordInviteURL(clientID string) string {
+	return discordInviteURL(clientID, discordDuckwayCategoryPerms)
+}
+
+func DiscordSetupInviteURL(clientID string) string {
+	return discordInviteURL(clientID, discordDuckwaySetupInvitePerms)
+}
+
+func discordInviteURL(clientID string, perms int64) string {
 	v := url.Values{}
 	v.Set("client_id", clientID)
-	v.Set("permissions", fmt.Sprintf("%d", discordDuckwayInvitePerms))
+	v.Set("permissions", fmt.Sprintf("%d", perms))
 	v.Set("scope", "bot applications.commands")
 	return "https://discord.com/oauth2/authorize?" + v.Encode()
 }

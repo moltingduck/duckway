@@ -415,7 +415,7 @@ Admin                     duckway-server                              agent mach
 GET /api/cc/discord/setup
                       ──→ decrypt bot token
                           Discord GET /users/@me + /users/@me/guilds
-                          return invite_url + server picker data
+                          return invite_url + setup_invite_url + server picker data
 POST /api/cc/discord/categories
                       ──→ Discord POST /guilds/{g}/channels type=4
                           Discord PUT /channels/{category}/permissions/{bot_user}

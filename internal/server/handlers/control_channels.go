@@ -72,10 +72,11 @@ func (h *ControlChannelHandler) DiscordSetup(w http.ResponseWriter, r *http.Requ
 		guilds = []svc.Guild{}
 	}
 	jsonResponse(w, map[string]interface{}{
-		"bot":          user,
-		"invite_url":   svc.DiscordInviteURL(user.ID),
-		"guilds":       guilds,
-		"guilds_error": guildsErr,
+		"bot":              user,
+		"invite_url":       svc.DiscordInviteURL(user.ID),
+		"setup_invite_url": svc.DiscordSetupInviteURL(user.ID),
+		"guilds":           guilds,
+		"guilds_error":     guildsErr,
 	})
 }
 
