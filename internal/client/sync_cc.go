@@ -242,6 +242,17 @@ func codexConfigTOMLPath() (string, error) {
 	return filepath.Join(home, ".codex", "config.toml"), nil
 }
 
+func codexAuthJSONPath() (string, error) {
+	if d := os.Getenv("CODEX_HOME"); d != "" {
+		return filepath.Join(d, "auth.json"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".codex", "auth.json"), nil
+}
+
 func writeCodexMCP(configDir string, ccs []CCStateAssignment) error {
 	configPath, err := codexConfigTOMLPath()
 	if err != nil {

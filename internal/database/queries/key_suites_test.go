@@ -30,6 +30,8 @@ func seedSuiteClientAssignment(t *testing.T) (*sql.DB, *queries.KeySuiteQueries,
 		VALUES ('key-suite-a', 'svc-suite-a', 'suite key a', 'encrypted')`)
 	exec(`INSERT INTO key_suites (id, name, description)
 		VALUES ('suite-a', 'Suite A', '')`)
+	exec(`INSERT INTO key_suite_assignments (suite_id, client_id)
+		VALUES ('suite-a', 'client-suite-a')`)
 	exec(`INSERT INTO key_suite_entries (id, suite_id, service_id, api_key_id, env_name)
 		VALUES ('entry-suite-a', 'suite-a', 'svc-suite-a', 'key-suite-a', 'SUITE_A_KEY')`)
 	exec(`INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, client_id, suite_id)
@@ -68,8 +70,8 @@ func TestKeySuiteDeleteSuiteServicePlaceholdersDetachesLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListBoundClients after delete: %v", err)
 	}
-	if len(clients) != 0 {
-		t.Fatalf("bound clients after delete = %+v, want none", clients)
+	if len(clients) != 1 || clients[0].ID != "client-suite-a" || clients[0].ServiceCount != 0 {
+		t.Fatalf("bound clients after delete = %+v, want assigned client retained with zero services", clients)
 	}
 	var nullLogs int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM request_log WHERE placeholder_id IS NULL`).Scan(&nullLogs); err != nil {

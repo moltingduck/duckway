@@ -525,16 +525,14 @@ func SyncCodexOAuthCredentials(configDir string, cfg *Config) bool {
 		log.Printf("Warning: Codex OAuth credentials from server are missing tokens.id_token; re-upload the full ~/.codex/auth.json in Refreshable Tokens")
 		return false
 	}
-	home, err := os.UserHomeDir()
+	authPath, err := codexAuthJSONPath()
 	if err != nil {
 		return false
 	}
-	codexDir := filepath.Join(home, ".codex")
-	if err := os.MkdirAll(codexDir, 0700); err != nil {
-		log.Printf("Warning: cannot create ~/.codex: %v", err)
+	if err := os.MkdirAll(filepath.Dir(authPath), 0700); err != nil {
+		log.Printf("Warning: cannot create Codex auth dir: %v", err)
 		return false
 	}
-	authPath := filepath.Join(codexDir, "auth.json")
 	data, err := json.MarshalIndent(creds, "", "  ")
 	if err != nil {
 		return false

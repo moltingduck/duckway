@@ -32,12 +32,12 @@ func newTestMITMProxy(t *testing.T, backendURL string) (*httpsProxy, *x509.CertP
 	}
 
 	p := &httpsProxy{
-		serverURL:  backendURL,
-		token:      "test-token",
-		ca:         ca,
-		hostMap:    map[string]hostEntry{"api.anthropic.com": {Service: "anthropic", DeliveryMode: "proxy"}},
-		httpClient: &http.Client{},
-		loanCache:  make(map[string]*loanedToken),
+		serverURL:   backendURL,
+		token:       "test-token",
+		ca:          ca,
+		hostMap:     map[string]hostEntry{"api.anthropic.com": {Service: "anthropic", DeliveryMode: "proxy"}},
+		httpClient:  &http.Client{},
+		loanCache:   make(map[string]*loanedToken),
 		auditClient: &http.Client{Timeout: time.Second},
 	}
 
@@ -185,7 +185,7 @@ func TestMITMRoundTripsBody(t *testing.T) {
 	defer backend.Close()
 
 	_, pool, proxyAddr := newTestMITMProxy(t, backend.URL)
-	conn := dialMITM(t, proxyAddr, []string{"h2", "http/1.1"}, pool)
+	conn := dialMITM(t, proxyAddr, []string{"http/1.1"}, pool)
 
 	fmt.Fprintf(conn, "GET /v1/messages?beta=true HTTP/1.1\r\nHost: api.anthropic.com\r\nConnection: close\r\n\r\n")
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)

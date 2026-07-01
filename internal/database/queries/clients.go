@@ -134,6 +134,9 @@ func (q *ClientQueries) Delete(id string) error {
 	if _, err := tx.Exec("DELETE FROM canary_tokens WHERE client_id = ?", id); err != nil {
 		return fmt.Errorf("delete canary tokens: %w", err)
 	}
+	if _, err := tx.Exec("DELETE FROM key_suite_assignments WHERE client_id = ?", id); err != nil {
+		return fmt.Errorf("delete key suite assignments: %w", err)
+	}
 	if _, err := tx.Exec("DELETE FROM placeholder_keys WHERE client_id = ?", id); err != nil {
 		return fmt.Errorf("delete placeholder keys: %w", err)
 	}

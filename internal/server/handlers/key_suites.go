@@ -435,6 +435,10 @@ func (h *KeySuiteHandler) AssignToClient(w http.ResponseWriter, r *http.Request)
 
 	// Create placeholders for non-conflicting entries
 	var assigned, skipped []string
+	if err := h.suites.AssignClient(suiteID, req.ClientID); err != nil {
+		jsonError(w, "failed to record suite assignment: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	for _, entry := range suite.Entries {
 		if conflictSet[entry.ServiceID] {
 			skipped = append(skipped, entry.ServiceName)

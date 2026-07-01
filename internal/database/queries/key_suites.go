@@ -83,6 +83,14 @@ func (q *KeySuiteQueries) Delete(id string) error {
 	return err
 }
 
+func (q *KeySuiteQueries) AssignClient(suiteID, clientID string) error {
+	_, err := q.db.Exec(
+		`INSERT OR IGNORE INTO key_suite_assignments (suite_id, client_id) VALUES (?, ?)`,
+		suiteID, clientID,
+	)
+	return err
+}
+
 func (q *KeySuiteQueries) ListEntries(suiteID string) ([]models.KeySuiteEntry, error) {
 	rows, err := q.db.Query(suiteEntrySelect+` WHERE e.suite_id = ? ORDER BY s.name`, suiteID)
 	if err != nil {
@@ -253,10 +261,10 @@ func (q *KeySuiteQueries) PropagateEntryUpdate(suiteID, serviceID string, apiKey
 func (q *KeySuiteQueries) CountBoundClients(suiteID string) (int, error) {
 	var n int
 	err := q.db.QueryRow(
-		`SELECT COUNT(DISTINCT p.client_id)
-		FROM placeholder_keys p
-		JOIN key_suite_entries e ON e.suite_id = p.suite_id AND e.service_id = p.service_id
-		WHERE p.suite_id = ? AND p.is_active = 1`,
+		`SELECT COUNT(*)
+		FROM key_suite_assignments a
+		JOIN clients c ON c.id = a.client_id
+		WHERE a.suite_id = ?`,
 		suiteID,
 	).Scan(&n)
 	return n, err
@@ -265,10 +273,19 @@ func (q *KeySuiteQueries) CountBoundClients(suiteID string) (int, error) {
 func (q *KeySuiteQueries) ListBoundClients(suiteID string) ([]models.KeySuiteClient, error) {
 	rows, err := q.db.Query(`
 		SELECT c.id, c.name, COUNT(DISTINCT p.service_id) AS service_count
-		FROM placeholder_keys p
-		JOIN key_suite_entries e ON e.suite_id = p.suite_id AND e.service_id = p.service_id
-		JOIN clients c ON c.id = p.client_id
-		WHERE p.suite_id = ? AND p.is_active = 1
+		FROM key_suite_assignments a
+		JOIN clients c ON c.id = a.client_id
+		LEFT JOIN placeholder_keys p
+		  ON p.suite_id = a.suite_id
+		 AND p.client_id = a.client_id
+		 AND p.is_active = 1
+		 AND EXISTS (
+			SELECT 1
+			FROM key_suite_entries e
+			WHERE e.suite_id = p.suite_id
+			  AND e.service_id = p.service_id
+		 )
+		WHERE a.suite_id = ?
 		GROUP BY c.id, c.name
 		ORDER BY c.name`, suiteID)
 	if err != nil {

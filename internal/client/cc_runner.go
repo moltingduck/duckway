@@ -251,11 +251,11 @@ func loadKeysEnv(configDir string) []string {
 }
 
 func validateCodexOAuthAuthJSON() error {
-	home, err := os.UserHomeDir()
+	authPath, err := codexAuthJSONPath()
 	if err != nil {
 		return err
 	}
-	raw, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json"))
+	raw, err := os.ReadFile(authPath)
 	if err != nil {
 		return fmt.Errorf("codex OAuth auth.json is missing; run duckway sync or restart duckway cc watch")
 	}

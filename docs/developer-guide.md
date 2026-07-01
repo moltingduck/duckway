@@ -11,6 +11,7 @@ For installation, configuration, and daily operations, see [user-guide.md](user-
 - [Phantom token swap — the proxy flow](#phantom-token-swap--the-proxy-flow)
 - [Header stripping](#header-stripping)
 - [Refreshable (OAuth) tokens](#refreshable-oauth-tokens)
+- [Data dependencies and delete behavior](#data-dependencies-and-delete-behavior)
 - [Control Channels (Discord)](#control-channels-discord)
 - [Adding a new service](#adding-a-new-service)
 - [Testing](#testing)
@@ -356,6 +357,67 @@ The client splits this into three files in `internal/client/sync.go > SyncClaude
 - `~/.claude/settings.json`      ← `{"theme":"dark"}` (only if missing — preserves user prefs)
 
 The phantom tokens look exactly like real Anthropic OAuth tokens (`sk-ant-dw_...` with the right length) so Claude Code accepts them locally without complaint and uses them as `Authorization: Bearer ...` in API calls.
+
+---
+
+## Data dependencies and delete behavior
+
+Duckway keeps operational history even when admins delete clients, phantom tokens, keys, or suite entries. The schema therefore mixes real database cascades with explicit cleanup code in the query layer. Do not infer delete behavior from foreign keys alone.
+
+### Core relationship graph
+
+```mermaid
+erDiagram
+  SERVICES ||--o{ API_KEYS : owns
+  SERVICES ||--o{ API_KEY_GROUPS : owns
+  API_KEY_GROUPS ||--o{ API_KEY_GROUP_MEMBERS : has
+  API_KEYS ||--o{ API_KEY_GROUP_MEMBERS : member
+
+  CLIENTS ||--o{ PLACEHOLDER_KEYS : receives
+  SERVICES ||--o{ PLACEHOLDER_KEYS : scopes
+  API_KEYS ||--o{ PLACEHOLDER_KEYS : direct_key
+  API_KEY_GROUPS ||--o{ PLACEHOLDER_KEYS : group_key
+
+  KEY_SUITES ||--o{ KEY_SUITE_ENTRIES : bundles
+  KEY_SUITES ||--o{ KEY_SUITE_ASSIGNMENTS : assigned_to
+  CLIENTS ||--o{ KEY_SUITE_ASSIGNMENTS : assigned_suite
+  KEY_SUITE_ENTRIES ||--o{ PLACEHOLDER_KEYS : materializes
+
+  PLACEHOLDER_KEYS ||--o{ APPROVALS : approval_state
+  PLACEHOLDER_KEYS ||--o{ REQUEST_LOG : nullable_reference
+  CLIENTS ||--o{ REQUEST_LOG : nullable_reference
+  REQUEST_LOG ||--o| REQUEST_LOG_DETAIL : capture_detail
+
+  CLIENTS ||--o{ CONTROL_CHANNELS : controls_agent
+  SERVICES ||--o{ CONTROL_CHANNELS : message_service
+  API_KEYS ||--o{ CONTROL_CHANNELS : bot_key
+  CONTROL_CHANNELS ||--o{ CC_CHANNELS : contains
+  CONTROL_CHANNELS ||--o{ DISCORD_INBOX : buffers
+  CONTROL_CHANNELS ||--o{ CC_AGENT_TESTS : tracks
+```
+
+`key_suite_assignments` is the durable source of truth for "this client is assigned to this suite". `placeholder_keys.suite_id` is only the materialized per-service token created from the current suite entries. This separation matters when a suite entry is removed: the service placeholder is deleted, but the client remains assigned to the suite so a later replacement entry can propagate back to that client.
+
+### Delete and propagation rules
+
+| Operation | What is deleted or changed | What is retained |
+|---|---|---|
+| Delete a client | Detaches `request_log.client_id` and affected `request_log.placeholder_id`; deletes the client's `control_channels`, `cc_channels`, `discord_inbox`, `canary_tokens`, `key_suite_assignments`, and `placeholder_keys`; then deletes `clients`. | `request_log` rows and `request_log_detail` history remain with nullable references cleared. |
+| Delete a phantom token (`placeholder_keys`) | `PlaceholderQueries.Delete` first sets `request_log.placeholder_id = NULL`, then deletes the placeholder. `approvals` cascade from the placeholder. | Request history remains. |
+| Delete a suite entry | `DeleteSuiteServicePlaceholders` detaches request logs for that suite/service and deletes matching suite-managed placeholders. | `key_suite_assignments` remain, so assigned clients stay bound to the suite even if service_count becomes 0. |
+| Add a suite entry | The handler lists `key_suite_assignments` and creates a suite-managed placeholder for each bound client unless that client has an individual non-suite placeholder conflict. | Existing individual placeholders win and are skipped. |
+| Update a suite entry | `PropagateEntryUpdate` updates every active placeholder with matching `suite_id + service_id` to the new `api_key_id` or `group_id`; direct-key changes may regenerate placeholder token format. | Assignment records and request history remain. |
+| Delete a suite | `key_suite_entries` and `key_suite_assignments` cascade from `key_suites`. Placeholder `suite_id` is `ON DELETE SET NULL`, so the client keeps usable placeholders but they stop being suite-managed. | Existing client placeholders remain as individual assignments. |
+| Delete a refreshable API key | `DeleteRefreshableWithCleanup` removes suite entries, key group memberships, and client placeholders for the key; request logs are detached. Control Channels referencing the key are disabled and the API key row is retained as inactive/non-refreshable so the UI can tell the admin to reassign it. | Control Channel rows remain visible but inactive. Request history remains. |
+| Delete a static API key | `DeleteWithControlChannelCleanup` disables referencing Control Channels before deleting the key when needed. | Control Channels remain visible but inactive. |
+| Delete a Control Channel | The admin handler best-effort archives/deletes Discord resources first, then deletes the CC. `cc_channels`, `discord_inbox`, and `cc_agent_tests` cascade from `control_channels`. | Client and API key rows remain. |
+
+### Rules of thumb
+
+- Historical tables (`request_log`, `request_log_detail`, `conversation_usage`) should not disappear just because an admin removes a key/client/suite. Detach nullable references instead.
+- UI-visible recovery states should prefer disabling rows over hard cascades. Control Channels are disabled when a bot key disappears so the admin can see and repair them.
+- Suite assignment and suite materialization are different concepts. Use `key_suite_assignments` to find assigned clients; use `placeholder_keys.suite_id` to find currently materialized service tokens.
+- When adding a new FK, decide whether the delete is part of business behavior or only referential safety. If history should survive, make the FK nullable and detach explicitly in a transaction.
 
 ---
 

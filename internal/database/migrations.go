@@ -305,6 +305,14 @@ var migrations = []string{
 		created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
 
+	`CREATE TABLE IF NOT EXISTS key_suite_assignments (
+		suite_id   TEXT NOT NULL REFERENCES key_suites(id) ON DELETE CASCADE,
+		client_id  TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (suite_id, client_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_key_suite_assignments_client ON key_suite_assignments(client_id)`,
+
 	// One entry per service per suite. Each entry holds either a direct api_key_id
 	// or an api_key_group_id (old round-robin groups) — exactly one must be set.
 	`CREATE TABLE IF NOT EXISTS key_suite_entries (
@@ -363,6 +371,13 @@ func runMigrations(db *sql.DB) error {
 	for _, alt := range safeAlters {
 		db.Exec(alt) // ignore "duplicate column" errors
 	}
+
+	db.Exec(`
+		INSERT OR IGNORE INTO key_suite_assignments (suite_id, client_id)
+		SELECT DISTINCT suite_id, client_id
+		FROM placeholder_keys
+		WHERE suite_id IS NOT NULL AND suite_id != '' AND client_id != ''
+	`)
 
 	// CC v2: drop the old assignment table (subsumed by control_channels.client_id)
 	// and clear out any stale rows that pre-date the redesign — the user agreed
