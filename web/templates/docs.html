@@ -360,7 +360,7 @@ cp examples/duckway-cc-watch.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now duckway-cc-watch
 journalctl --user -u duckway-cc-watch -f</code></pre>
-  <p class="text-sm text-muted">Daemon needs the selected agent binary (<code>claude</code> or <code>codex</code>) in <code>$PATH</code>. Per-channel <code>cwd</code> defaults to <code>~/.duckway/cc-workspace/&lt;handle&gt;/</code> (auto-created); override with <code>!new --cwd /path</code>.</p>
+  <p class="text-sm text-muted">Daemon needs the selected agent binary (<code>claude</code> or <code>codex</code>) in <code>$PATH</code>. Codex uses OpenAI's Responses API through Duckway, so the real OpenAI project key behind <code>OPENAI_API_KEY</code> must allow <code>api.responses.write</code>. Per-channel <code>cwd</code> defaults to <code>~/.duckway/cc-workspace/&lt;handle&gt;/</code> (auto-created); override with <code>!new --cwd /path</code>.</p>
 
   <h4 class="mt-1">Management channel commands</h4>
   <table>

@@ -41,6 +41,23 @@ func TestParseCodexJSONL_KeepsFallbackSessionID(t *testing.T) {
 	}
 }
 
+func TestParseCodexJSONL_ErrorMessage(t *testing.T) {
+	out := []byte(`{"type":"thread.started","thread_id":"sid-error"}
+{"type":"turn.started"}
+{"type":"error","message":"unexpected status 401 Unauthorized: Missing scopes: api.responses.write"}
+`)
+	sid, result, isError := parseCodexJSONL(out, "")
+	if sid != "sid-error" {
+		t.Fatalf("sid = %q", sid)
+	}
+	if result != "unexpected status 401 Unauthorized: Missing scopes: api.responses.write" {
+		t.Fatalf("result = %q", result)
+	}
+	if !isError {
+		t.Fatal("isError = false")
+	}
+}
+
 func TestParseCodexTmuxEventPayload(t *testing.T) {
 	payload := `{"output_path":"/tmp/codex.jsonl","fallback_session_id":"sid-old","exit_code":0}`
 	ev, ok := parseCodexTmuxEventPayload(payload)

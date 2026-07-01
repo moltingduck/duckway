@@ -20,7 +20,8 @@ type codexJSONEvent struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"item"`
-	Error string `json:"error"`
+	Error   string `json:"error"`
+	Message string `json:"message"`
 }
 
 // runViaCodexExec runs Codex in non-interactive JSONL mode. The first turn
@@ -39,12 +40,15 @@ func runViaCodexExec(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 	cmd.Env = append(os.Environ(), extraEnv...)
 
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", "", false, fmt.Errorf("codex: %w (output: %.400s)", err, out)
-	}
 	sessionID, result, isError = parseCodexJSONL(out, sid)
 	if sessionID == "" {
 		sessionID = sid
+	}
+	if err != nil {
+		if result != "" {
+			return sessionID, result, isError, fmt.Errorf("codex reported an error: %s", result)
+		}
+		return "", "", false, fmt.Errorf("codex: %w (output: %.400s)", err, out)
 	}
 	return sessionID, result, isError, nil
 }
@@ -108,6 +112,9 @@ func runViaCodexTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 	}
 	_ = os.Remove(inFlightPath)
 	if evt.ExitCode != 0 {
+		if result != "" {
+			return sessionID, result, isError, fmt.Errorf("codex reported an error: %s", result)
+		}
 		return sessionID, result, isError, fmt.Errorf("codex exited with status %d (output: %.400s)", evt.ExitCode, out)
 	}
 	return sessionID, result, isError, nil
@@ -218,7 +225,10 @@ func parseCodexJSONL(out []byte, fallbackSessionID string) (sessionID, result st
 			}
 		case "turn.failed", "error":
 			isError = true
-			if ev.Error != "" {
+			switch {
+			case ev.Message != "":
+				result = ev.Message
+			case ev.Error != "":
 				result = ev.Error
 			}
 		}

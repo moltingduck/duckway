@@ -432,7 +432,7 @@ systemctl --user enable --now duckway-cc-watch
 journalctl --user -u duckway-cc-watch -f
 ```
 
-The daemon needs the selected agent binary (`claude` or `codex`) in `$PATH`. `duckway sync` also writes `~/.codex/config.toml` so Codex uses the `duckway-openai` provider (`OPENAI_API_KEY` from `~/.duckway/keys.env`, routed through the local proxy). Per-channel `cwd` defaults to `~/.duckway/cc-workspace/<handle>/` (auto-created); override with `!new --cwd /path` from the management channel.
+The daemon needs the selected agent binary (`claude` or `codex`) in `$PATH`. `duckway sync` also writes `~/.codex/config.toml` so Codex uses the `duckway-openai` provider (`OPENAI_API_KEY` from `~/.duckway/keys.env`, routed through the local proxy). Codex uses OpenAI's Responses API, so the real OpenAI project key behind that placeholder must allow `api.responses.write`; restricted keys without that scope fail with `401 Unauthorized`. Per-channel `cwd` defaults to `~/.duckway/cc-workspace/<handle>/` (auto-created); override with `!new --cwd /path` from the management channel.
 
 ### Inside an agent session, the model sees these MCP tools
 
