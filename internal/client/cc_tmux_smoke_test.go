@@ -231,6 +231,98 @@ func TestSmokeRecoverPendingTurns(t *testing.T) {
 	}
 }
 
+func TestSmokeCodexTmuxEndToEnd(t *testing.T) {
+	requireTmux(t)
+	t.Setenv("HOME", t.TempDir())
+
+	handle := "smoke-codex-" + uniqueSuffix()
+	t.Cleanup(func() {
+		tmuxKillSession(handle)
+		if chDir, err := tmuxChannelDir(handle); err == nil {
+			_ = os.RemoveAll(chDir)
+		}
+	})
+
+	stubDir := t.TempDir()
+	stub := filepath.Join(stubDir, "codex")
+	stubBody := `#!/bin/sh
+prompt=$(cat)
+case "$*" in
+  *"exec --json --sandbox workspace-write -C"*"-") ;;
+  *) printf 'unexpected argv: %s\n' "$*" >&2; exit 12;;
+esac
+if [ "$prompt" != "hello codex" ]; then
+  printf 'unexpected prompt: %s\n' "$prompt" >&2
+  exit 13
+fi
+printf '%s\n' '{"type":"thread.started","thread_id":"sid-codex-smoke"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"hello from stub codex"}}'
+`
+	if err := os.WriteFile(stub, []byte(stubBody), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sid, result, isErr, err := runViaCodexTmux(ctx, stub, stubDir, "hello codex", "", []string{
+		"DUCKWAY_CC_CHANNEL_HANDLE=" + handle,
+		"DUCKWAY_CC_MESSAGE_ID=msg-codex-smoke-1",
+	})
+	if err != nil {
+		t.Fatalf("runViaCodexTmux: %v", err)
+	}
+	if isErr {
+		t.Fatal("isError=true, want false")
+	}
+	if sid != "sid-codex-smoke" {
+		t.Fatalf("sessionID = %q, want sid-codex-smoke", sid)
+	}
+	if result != "hello from stub codex" {
+		t.Fatalf("result = %q", result)
+	}
+
+	chDir, _ := tmuxChannelDir(handle)
+	if _, statErr := os.Stat(filepath.Join(chDir, "in-flight.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("in-flight.json was not cleared: %v", statErr)
+	}
+}
+
+func TestSmokeCodexTmuxHonorsContextTimeout(t *testing.T) {
+	requireTmux(t)
+	t.Setenv("HOME", t.TempDir())
+
+	handle := "smoke-codex-timeout-" + uniqueSuffix()
+	t.Cleanup(func() {
+		tmuxKillSession(handle)
+		if chDir, err := tmuxChannelDir(handle); err == nil {
+			_ = os.RemoveAll(chDir)
+		}
+	})
+
+	stubDir := t.TempDir()
+	stub := filepath.Join(stubDir, "codex")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nsleep 30\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, _, _, err := runViaCodexTmux(ctx, stub, stubDir, "will timeout", "", []string{
+		"DUCKWAY_CC_CHANNEL_HANDLE=" + handle,
+		"DUCKWAY_CC_MESSAGE_ID=msg-codex-timeout-1",
+	})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("runViaCodexTmux returned nil error, want context timeout")
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("runViaCodexTmux took %v after context timeout", elapsed)
+	}
+}
+
 // TestSmokeRealClaudeSlashCommand verifies the full slash-command flow
 // end-to-end against real claude: runViaTmux pastes `/usage` into the
 // TUI, waits for the panel to stabilize (Stop hook does NOT fire for
@@ -338,8 +430,8 @@ func TestSmokeRealClaudeSlashCommandVariants(t *testing.T) {
 	// the captured panel for that command. Chosen to be distinctive
 	// (not a word that's in the welcome banner).
 	cases := []struct {
-		cmd      string
-		markers  []string // at least one must appear (case-insensitive)
+		cmd     string
+		markers []string // at least one must appear (case-insensitive)
 	}{
 		{cmd: "/help", markers: []string{"command", "shortcut", "slash"}},
 		{cmd: "/context", markers: []string{"context", "tokens", "system prompt"}},
