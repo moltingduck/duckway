@@ -96,6 +96,7 @@ var allServices = [];
 var allClients = [];
 var allCCs = [];
 var currentCC = null;
+var discordSetup = {apiKeyId:'', guilds:[], categories:[]};
 
 document.addEventListener('DOMContentLoaded', function() {
   fetch('/api/services', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(s){
@@ -192,6 +193,10 @@ function renderConfigFields() {
   // Filter the API key dropdown to keys of this service
   var keySel = document.getElementById('cc-key');
   keySel.innerHTML = '';
+  keySel.onchange = function() {
+    discordSetup = {apiKeyId:'', guilds:[], categories:[]};
+    renderDiscordSetup();
+  };
   var matches = allKeys.filter(function(k){return k.service_id === svcId;});
   if (matches.length === 0) {
     var opt = document.createElement('option');
@@ -205,20 +210,121 @@ function renderConfigFields() {
     });
   }
   if (svc.name === 'discord') {
-    div.innerHTML =
-      '<div class="form-group"><label>Discord Guild ID</label>' +
-      '<input type="text" id="cc-cfg-guild" placeholder="123456789012345678" required>' +
-      '<span class="text-muted text-sm">Right-click your guild icon → <strong>Copy Server ID</strong>. Need Developer Mode on (Settings → Advanced).</span></div>' +
-      '<div class="form-group"><label>Discord Category ID</label>' +
-      '<input type="text" id="cc-cfg-category" placeholder="987654321098765432" required>' +
-      '<span class="text-muted text-sm">Right-click the category header → <strong>Copy Channel ID</strong>. Bot must have <code>Manage Channels</code> + <code>Send Messages</code> + <code>Add Reactions</code> + <code>Read Message History</code> on this category. Full walkthrough in <a href="/admin/docs#cc">Docs § Control Channels</a>.</span></div>';
+    div.innerHTML = '<div id="discord-setup"></div>';
+    renderDiscordSetup();
   } else {
     div.innerHTML = '<div class="text-muted text-sm">No service-specific config required.</div>';
   }
 }
 
+function renderDiscordSetup() {
+  var box = document.getElementById('discord-setup');
+  if (!box) return;
+  var keyID = document.getElementById('cc-key').value;
+  if (!keyID) {
+    box.innerHTML = '<div class="text-muted text-sm">Add and select a Discord bot token first.</div>';
+    return;
+  }
+  var guildOptions = (discordSetup.guilds || []).map(function(g) {
+    return '<option value="'+escapeHTML(g.id)+'">'+escapeHTML(g.name)+' ('+escapeHTML(g.id)+')</option>';
+  }).join('');
+  var catOptions = (discordSetup.categories || []).map(function(c) {
+    return '<option value="'+escapeHTML(c.id)+'">'+escapeHTML(c.name)+' ('+escapeHTML(c.id)+')</option>';
+  }).join('');
+  var loaded = discordSetup.apiKeyId === keyID;
+  var hasGuilds = loaded && (discordSetup.guilds || []).length > 0;
+  var destinationFields = hasGuilds
+    ? '<div class="form-group"><label>Server</label>' +
+        '<select id="cc-cfg-guild" onchange="loadDiscordCategories()">' +
+          guildOptions +
+        '</select></div>' +
+      '<div class="form-group"><label>Category</label>' +
+        '<select id="cc-cfg-category">' +
+          (catOptions || '<option value="">No categories loaded</option>') +
+        '</select>' +
+        '<span class="text-muted text-sm">Existing categories must allow the bot to manage channels. New categories inherit the bot role permissions from the invite.</span></div>' +
+      '<div class="form-group">' +
+        '<label>Create category</label>' +
+        '<div style="display:flex;gap:0.5rem;align-items:center">' +
+          '<input type="text" id="cc-new-category" placeholder="duckway">' +
+          '<button type="button" class="btn btn-sm" onclick="createDiscordCategory()">Create</button>' +
+        '</div>' +
+      '</div>'
+    : '<div class="form-group"><label>Server ID</label>' +
+        '<input type="text" id="cc-cfg-guild" placeholder="Load setup, or paste server id as fallback" '+(!loaded?'disabled':'')+'>' +
+        (discordSetup.guilds_error ? '<span class="text-muted text-sm">Could not list servers: '+escapeHTML(discordSetup.guilds_error)+'</span>' : '') +
+      '</div>' +
+      '<div class="form-group"><label>Category ID</label>' +
+        '<input type="text" id="cc-cfg-category" placeholder="Paste category id as fallback" '+(!loaded?'disabled':'')+'>' +
+        '<span class="text-muted text-sm">Fallback only. Prefer inviting the bot, refreshing setup, and creating/selecting a category here.</span>' +
+      '</div>';
+  box.innerHTML =
+    '<div class="form-group">' +
+      '<label>Discord setup</label>' +
+      '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">' +
+        '<button type="button" class="btn btn-sm" onclick="loadDiscordSetup()">'+(loaded?'Refresh servers':'Load Discord setup')+'</button>' +
+        (discordSetup.invite_url ? '<a class="btn btn-sm" target="_blank" rel="noopener" href="'+escapeHTML(discordSetup.invite_url)+'">Invite bot</a>' : '') +
+      '</div>' +
+      '<span class="text-muted text-sm">Invite the bot with Duckway permissions, then refresh and choose a server/category. Creating a new category avoids repeated Discord permission setup.</span>' +
+    '</div>' +
+    (discordSetup.bot ? '<div class="text-sm text-muted mb-1">Bot: <strong>'+escapeHTML(discordSetup.bot.username||discordSetup.bot.id)+'</strong></div>' : '') +
+    destinationFields;
+}
+
+function loadDiscordSetup() {
+  var keyID = document.getElementById('cc-key').value;
+  if (!keyID) { showToast('Select a Discord bot token first', 'error'); return; }
+  fetch('/api/cc/discord/setup?api_key_id=' + encodeURIComponent(keyID), {credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d) {
+      if (d.error) { showToast(d.error, 'error'); return; }
+      discordSetup = {apiKeyId:keyID, bot:d.bot, invite_url:d.invite_url, guilds:d.guilds || [], guilds_error:d.guilds_error || '', categories:[]};
+      renderDiscordSetup();
+      if ((discordSetup.guilds || []).length > 0) loadDiscordCategories();
+      else showToast('Bot loaded. Invite it to a server, then refresh.', 'success');
+    });
+}
+
+function loadDiscordCategories() {
+  var keyID = document.getElementById('cc-key').value;
+  var guildEl = document.getElementById('cc-cfg-guild');
+  var guildID = guildEl ? guildEl.value : '';
+  if (!keyID || !guildID) return;
+  fetch('/api/cc/discord/categories?api_key_id=' + encodeURIComponent(keyID) + '&guild_id=' + encodeURIComponent(guildID), {credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d) {
+      if (d.error) { showToast(d.error, 'error'); return; }
+      discordSetup.categories = d.categories || [];
+      renderDiscordSetup();
+      var guild = document.getElementById('cc-cfg-guild');
+      if (guild) guild.value = guildID;
+    });
+}
+
+function createDiscordCategory() {
+  var keyID = document.getElementById('cc-key').value;
+  var guildID = document.getElementById('cc-cfg-guild').value;
+  var name = document.getElementById('cc-new-category').value.trim() || 'duckway';
+  if (!keyID || !guildID) { showToast('Load Discord setup and choose a server first', 'error'); return; }
+  fetch('/api/cc/discord/categories', {
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({api_key_id:keyID, guild_id:guildID, name:name})
+  }).then(function(r){return r.json();}).then(function(d) {
+    if (d.error) { showToast(d.error, 'error'); return; }
+    showToast('Category created', 'success');
+    discordSetup.categories = (discordSetup.categories || []).concat([d]);
+    renderDiscordSetup();
+    var guild = document.getElementById('cc-cfg-guild');
+    var cat = document.getElementById('cc-cfg-category');
+    if (guild) guild.value = guildID;
+    if (cat) cat.value = d.id;
+  });
+}
+
 function openCreate() {
   document.getElementById('cc-name').value = '';
+  discordSetup = {apiKeyId:'', guilds:[], categories:[]};
   document.getElementById('create-form').querySelector('button[type="submit"]').disabled = false;
   renderConfigFields();
   document.getElementById('create-modal').style.display = 'flex';
@@ -233,7 +339,7 @@ document.getElementById('create-form').addEventListener('submit', function(e) {
     config.guild_id = document.getElementById('cc-cfg-guild').value.trim();
     config.category_id = document.getElementById('cc-cfg-category').value.trim();
     if (!config.guild_id || !config.category_id) {
-      showToast('Guild ID and Category ID are required for Discord', 'error');
+      showToast('Load Discord setup and choose or create a category first', 'error');
       return;
     }
   }

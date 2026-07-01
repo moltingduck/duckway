@@ -72,6 +72,35 @@ func TestCreateChannel(t *testing.T) {
 	}
 }
 
+func TestCreateCategory(t *testing.T) {
+	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/guilds/G123/channels" || r.Method != "POST" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]interface{}
+		_ = json.Unmarshal(body, &b)
+		if b["type"] != float64(4) {
+			t.Errorf("type = %v, want 4", b["type"])
+		}
+		if b["name"] != "duckway-control" {
+			t.Errorf("name = %v", b["name"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"CAT1","name":"duckway-control","type":4,"guild_id":"G123"}`))
+	})
+	defer srv.Close()
+	b := &DiscordBot{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	ch, err := b.CreateCategory(context.Background(), "tok", "G123", "Duckway Control")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.ID != "CAT1" || ch.Type != 4 {
+		t.Errorf("got %+v", ch)
+	}
+}
+
 func TestCreateChannelForbidden(t *testing.T) {
 	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(403)
@@ -89,6 +118,38 @@ func TestCreateChannelForbidden(t *testing.T) {
 	}
 	if !derr.IsForbidden() || derr.Code != 50013 {
 		t.Errorf("wrong error: %+v", derr)
+	}
+}
+
+func TestCurrentUserAndListGuilds(t *testing.T) {
+	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/users/@me":
+			w.Write([]byte(`{"id":"BOT1","username":"duckway"}`))
+		case "/users/@me/guilds":
+			w.Write([]byte(`[{"id":"G1","name":"Alpha"},{"id":"G2","name":"Beta"}]`))
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	})
+	defer srv.Close()
+	b := &DiscordBot{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	u, err := b.CurrentUser(context.Background(), "tok")
+	if err != nil || u.ID != "BOT1" {
+		t.Fatalf("CurrentUser = %+v, %v", u, err)
+	}
+	guilds, err := b.ListGuilds(context.Background(), "tok")
+	if err != nil || len(guilds) != 2 || guilds[0].Name != "Alpha" {
+		t.Fatalf("ListGuilds = %+v, %v", guilds, err)
+	}
+}
+
+func TestDiscordInviteURL(t *testing.T) {
+	u := DiscordInviteURL("BOT1")
+	if !strings.Contains(u, "client_id=BOT1") || !strings.Contains(u, "permissions=68688") || !strings.Contains(u, "scope=bot") {
+		t.Fatalf("invite url = %s", u)
 	}
 }
 

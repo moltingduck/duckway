@@ -394,7 +394,7 @@ Then:
 - *guild_id*: right-click your guild (the icon in the top-left server list) → **Copy Server ID**.
 - *category_id*: right-click the category header (collapsible group above channels) → **Copy Channel ID**. Yes, "Channel ID" — Discord categories ARE channels internally with `type=4`.
 
-Stash both. You'll paste them into the CC create form next.
+Duckway can now discover servers and categories from the saved bot token, so you normally do not need to copy Discord IDs by hand.
 
 ### Admin one-time setup (in duckway)
 
@@ -405,7 +405,7 @@ Stash both. You'll paste them into the CC create form next.
    - **Agent type** — `claude_code` or `codex` (when tmux is installed, both use attachable `duckway-<handle>` sessions; `--no-tmux` forces headless mode).
    - **Service** — `discord`.
    - **Bot Token** — the API key you uploaded in (1).
-   - **Guild ID** + **Category ID** — what you copied from Discord.
+   - **Discord setup** — click **Load Discord setup**. If the bot is not in the server yet, click **Invite bot**, select the server in Discord, then refresh. Pick an existing category or create a new `duckway` category from the form.
 
    On save, duckway calls Discord to create `<client>-control` under the category and issues a phantom bot token bound to the client. If anything fails (bot lacks permission, wrong category id, etc.) the create rolls back and tells you which step failed.
 

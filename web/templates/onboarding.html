@@ -112,6 +112,7 @@ var state = { clientID: null, clientName: null, suiteID: null, suiteName: null, 
 var allSuites = [];
 var allServices = [];
 var allKeys = [];
+var onboardingDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
 
 document.addEventListener('DOMContentLoaded', function() {
   fetch('/api/key-suites', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
@@ -224,6 +225,10 @@ function loadCCKeys() {
   var serviceID = document.getElementById('cc-service').value;
   var sel = document.getElementById('cc-key');
   sel.innerHTML = '<option value="">— select —</option>';
+  sel.onchange = function() {
+    onboardingDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
+    renderCCConfig();
+  };
   var matching = allKeys.filter(function(k){ return k.service_id === serviceID && k.is_active; });
   matching.forEach(function(k){
     var o = document.createElement('option');
@@ -238,12 +243,88 @@ function renderCCConfig() {
   fields.innerHTML = '';
   if (!svc) return;
   if (svc.name === 'discord' || (svc.display_name || '').toLowerCase().includes('discord')) {
-    fields.innerHTML =
-      '<div class="form-group"><label>Discord Guild ID <span style="color:var(--danger)">*</span></label>' +
-      '<input type="text" id="cfg-guild" placeholder="1234567890"></div>' +
-      '<div class="form-group"><label>Category ID <span style="color:var(--danger)">*</span></label>' +
-      '<input type="text" id="cfg-category" placeholder="9876543210"></div>';
+    fields.innerHTML = '<div id="onboarding-discord-setup"></div>';
+    renderOnboardingDiscordSetup();
   }
+}
+
+function renderOnboardingDiscordSetup() {
+  var box = document.getElementById('onboarding-discord-setup');
+  if (!box) return;
+  var keyID = document.getElementById('cc-key').value;
+  if (!keyID) {
+    box.innerHTML = '<div class="text-muted text-sm">Select a Discord bot token first.</div>';
+    return;
+  }
+  var loaded = onboardingDiscordSetup.apiKeyId === keyID;
+  var guilds = onboardingDiscordSetup.guilds || [];
+  var cats = onboardingDiscordSetup.categories || [];
+  var guildOptions = guilds.map(function(g){ return '<option value="'+esc(g.id)+'">'+esc(g.name)+' ('+esc(g.id)+')</option>'; }).join('');
+  var catOptions = cats.map(function(c){ return '<option value="'+esc(c.id)+'">'+esc(c.name)+' ('+esc(c.id)+')</option>'; }).join('');
+  var destination = loaded && guilds.length
+    ? '<div class="form-group"><label>Server</label><select id="cfg-guild" onchange="loadOnboardingDiscordCategories()">'+guildOptions+'</select></div>' +
+      '<div class="form-group"><label>Category</label><select id="cfg-category">'+(catOptions || '<option value="">No categories loaded</option>')+'</select></div>' +
+      '<div class="form-group"><label>Create category</label><div style="display:flex;gap:.5rem;align-items:center"><input type="text" id="cfg-new-category" placeholder="duckway"><button type="button" class="btn btn-sm" onclick="createOnboardingDiscordCategory()">Create</button></div></div>'
+    : '<div class="form-group"><label>Server ID</label><input type="text" id="cfg-guild" placeholder="Load setup, or paste server id as fallback" '+(!loaded?'disabled':'')+'></div>' +
+      '<div class="form-group"><label>Category ID</label><input type="text" id="cfg-category" placeholder="Paste category id as fallback" '+(!loaded?'disabled':'')+'></div>';
+  box.innerHTML =
+    '<div class="form-group"><label>Discord setup</label><div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">' +
+      '<button type="button" class="btn btn-sm" onclick="loadOnboardingDiscordSetup()">'+(loaded?'Refresh servers':'Load Discord setup')+'</button>' +
+      (onboardingDiscordSetup.invite_url ? '<a class="btn btn-sm" target="_blank" rel="noopener" href="'+esc(onboardingDiscordSetup.invite_url)+'">Invite bot</a>' : '') +
+    '</div><span class="text-muted text-sm">Invite the bot, refresh, then choose a server/category. Creating a category here avoids repeated Discord permission setup.</span></div>' +
+    (onboardingDiscordSetup.bot ? '<div class="text-muted text-sm" style="margin-bottom:.5rem">Bot: <strong>'+esc(onboardingDiscordSetup.bot.username || onboardingDiscordSetup.bot.id)+'</strong></div>' : '') +
+    (onboardingDiscordSetup.guilds_error ? '<div class="text-muted text-sm" style="margin-bottom:.5rem">Could not list servers: '+esc(onboardingDiscordSetup.guilds_error)+'</div>' : '') +
+    destination;
+}
+
+function loadOnboardingDiscordSetup() {
+  var keyID = document.getElementById('cc-key').value;
+  if (!keyID) { showToast('Select a Discord bot token first', 'error'); return; }
+  fetch('/api/cc/discord/setup?api_key_id=' + encodeURIComponent(keyID), {credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if (d.error) { showToast(d.error, 'error'); return; }
+      onboardingDiscordSetup = {apiKeyId:keyID, bot:d.bot, invite_url:d.invite_url, guilds:d.guilds || [], guilds_error:d.guilds_error || '', categories:[]};
+      renderOnboardingDiscordSetup();
+      if ((onboardingDiscordSetup.guilds || []).length) loadOnboardingDiscordCategories();
+      else showToast('Bot loaded. Invite it to a server, then refresh.', 'success');
+    });
+}
+
+function loadOnboardingDiscordCategories() {
+  var keyID = document.getElementById('cc-key').value;
+  var guild = document.getElementById('cfg-guild');
+  var guildID = guild ? guild.value : '';
+  if (!keyID || !guildID) return;
+  fetch('/api/cc/discord/categories?api_key_id=' + encodeURIComponent(keyID) + '&guild_id=' + encodeURIComponent(guildID), {credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if (d.error) { showToast(d.error, 'error'); return; }
+      onboardingDiscordSetup.categories = d.categories || [];
+      renderOnboardingDiscordSetup();
+      var g = document.getElementById('cfg-guild');
+      if (g) g.value = guildID;
+    });
+}
+
+function createOnboardingDiscordCategory() {
+  var keyID = document.getElementById('cc-key').value;
+  var guildID = document.getElementById('cfg-guild').value;
+  var name = document.getElementById('cfg-new-category').value.trim() || 'duckway';
+  if (!keyID || !guildID) { showToast('Load setup and choose a server first', 'error'); return; }
+  fetch('/api/cc/discord/categories', {
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({api_key_id:keyID, guild_id:guildID, name:name})
+  }).then(function(r){return r.json();}).then(function(d){
+    if (d.error) { showToast(d.error, 'error'); return; }
+    onboardingDiscordSetup.categories = (onboardingDiscordSetup.categories || []).concat([d]);
+    renderOnboardingDiscordSetup();
+    var g = document.getElementById('cfg-guild');
+    var c = document.getElementById('cfg-category');
+    if (g) g.value = guildID;
+    if (c) c.value = d.id;
+  });
 }
 
 function createCC() {
@@ -297,6 +378,7 @@ function renderSummary() {
 
 function resetWizard() {
   state = { clientID: null, clientName: null, suiteID: null, suiteName: null, ccID: null };
+  onboardingDiscordSetup = {apiKeyId:'', guilds:[], categories:[]};
   document.getElementById('client-name').value = '';
   document.getElementById('suite-select').value = '';
   document.getElementById('suite-entries-preview').style.display = 'none';

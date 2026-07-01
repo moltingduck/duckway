@@ -331,9 +331,9 @@ curl https://api.openai.com/v1/chat/completions ...
         <li>✅ <strong>Server Members Intent</strong> — optional, only if you'll use <code>required_reactors</code> on approvals</li>
       </ul>
     </li>
-    <li><strong>Build the invite link.</strong> <strong>OAuth2 → URL Generator</strong>: scopes <code>bot</code> + <code>applications.commands</code>; bot permissions <code>Manage Channels</code> + <code>Send Messages</code> + <code>Add Reactions</code> + <code>Read Message History</code>. Copy the URL → paste in a browser → pick the guild → Authorize.</li>
+    <li><strong>Invite the bot.</strong> Duckway can generate the invite URL from the saved bot token in the Control Channel create form. Use that URL to pick the guild and authorize the bot.</li>
     <li><strong>Lock down to one category (recommended).</strong> The invite grants <code>Manage Channels</code> guild-wide. Narrow it: right-click the bot's role → uncheck <code>Manage Channels</code> globally. Then right-click the target category → <strong>Edit Category → Permissions</strong> → add the bot with the four perms above. Now a leaked token's blast radius is one category, not the guild.</li>
-    <li><strong>Get the IDs.</strong> Discord client → <em>User Settings</em> (cog) → <em>Advanced</em> → toggle <strong>Developer Mode</strong> on. Then:
+    <li><strong>Select the destination in Duckway.</strong> Click <strong>Load Discord setup</strong>; Duckway lists servers the bot can see and categories in the selected server. Pick a category or create a new <code>duckway</code> category from the form. Manual IDs are only needed for fallback/debugging:
       <ul>
         <li><code>guild_id</code> = right-click your guild icon → <strong>Copy Server ID</strong></li>
         <li><code>category_id</code> = right-click the category header → <strong>Copy Channel ID</strong> (Discord internally treats categories as channels with <code>type=4</code>)</li>
@@ -344,7 +344,7 @@ curl https://api.openai.com/v1/chat/completions ...
   <h4 class="mt-1">Admin one-time setup (in duckway)</h4>
   <ol>
     <li><strong>API Keys</strong> → add the bot token from above. Service <code>discord</code>.</li>
-    <li><strong>Control Channels</strong> → <strong>New CC</strong> → fill name + pick client + agent type (<code>claude_code</code> or <code>codex</code>) + the bot + paste <code>guild_id</code> and <code>category_id</code>. On save, duckway provisions <code>&lt;client&gt;-control</code> under the category and issues a phantom bot token bound to that client. If a step fails, the create rolls back and tells you which one.</li>
+    <li><strong>Control Channels</strong> → <strong>New CC</strong> → fill name + pick client + agent type (<code>claude_code</code> or <code>codex</code>) + the bot, then use the Discord setup wizard to invite/load/select the server and category. On save, duckway provisions <code>&lt;client&gt;-control</code> under the category and issues a phantom bot token bound to that client. If a step fails, the create rolls back and tells you which one.</li>
     <li>Click into the CC → <strong>Test (create + delete channel)</strong> to verify the bot can do its job before pointing real workloads at it.</li>
     <li>Clients with a CC show a one-line summary on their detail page; the full state (channels, sessions) lives on the CC detail.</li>
   </ol>

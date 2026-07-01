@@ -274,6 +274,9 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	// CC v2: 1:1 client↔CC, all admin endpoints under /api/cc.
 	adminAPIMux.HandleFunc("GET /api/cc", ccH.List)
 	adminAPIMux.HandleFunc("POST /api/cc", ccH.Create)
+	adminAPIMux.HandleFunc("GET /api/cc/discord/setup", ccH.DiscordSetup)
+	adminAPIMux.HandleFunc("GET /api/cc/discord/categories", ccH.DiscordCategories)
+	adminAPIMux.HandleFunc("POST /api/cc/discord/categories", ccH.DiscordCreateCategory)
 	adminAPIMux.HandleFunc("GET /api/cc/{id}", ccH.Get)
 	adminAPIMux.HandleFunc("PUT /api/cc/{id}", ccH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/cc/{id}", ccH.Delete)

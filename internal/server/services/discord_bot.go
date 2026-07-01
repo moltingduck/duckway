@@ -116,6 +116,18 @@ type Channel struct {
 	GuildID  string  `json:"guild_id"`
 }
 
+// User is the bot identity returned by /users/@me.
+type User struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+}
+
+// Guild is the subset of Discord guild metadata needed by the CC setup wizard.
+type Guild struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // Message is the dispatched message shape we care about.
 type Message struct {
 	ID        string `json:"id"`
@@ -180,6 +192,22 @@ func (b *DiscordBot) CreateChannel(ctx context.Context, botToken string, opts Cr
 	var ch Channel
 	if err := json.Unmarshal(raw, &ch); err != nil {
 		return nil, fmt.Errorf("parse channel response: %w", err)
+	}
+	return &ch, nil
+}
+
+func (b *DiscordBot) CreateCategory(ctx context.Context, botToken, guildID, name string) (*Channel, error) {
+	body := map[string]interface{}{
+		"name": sanitizeChannelName(name),
+		"type": 4, // GUILD_CATEGORY
+	}
+	raw, err := b.do(ctx, botToken, "POST", "/guilds/"+guildID+"/channels", body)
+	if err != nil {
+		return nil, err
+	}
+	var ch Channel
+	if err := json.Unmarshal(raw, &ch); err != nil {
+		return nil, fmt.Errorf("parse category response: %w", err)
 	}
 	return &ch, nil
 }
@@ -286,6 +314,30 @@ func (b *DiscordBot) GetMessages(ctx context.Context, botToken, channelID string
 	return msgs, nil
 }
 
+func (b *DiscordBot) CurrentUser(ctx context.Context, botToken string) (*User, error) {
+	raw, err := b.do(ctx, botToken, "GET", "/users/@me", nil)
+	if err != nil {
+		return nil, err
+	}
+	var u User
+	if err := json.Unmarshal(raw, &u); err != nil {
+		return nil, fmt.Errorf("parse current user: %w", err)
+	}
+	return &u, nil
+}
+
+func (b *DiscordBot) ListGuilds(ctx context.Context, botToken string) ([]Guild, error) {
+	raw, err := b.do(ctx, botToken, "GET", "/users/@me/guilds", nil)
+	if err != nil {
+		return nil, err
+	}
+	var guilds []Guild
+	if err := json.Unmarshal(raw, &guilds); err != nil {
+		return nil, fmt.Errorf("parse guilds: %w", err)
+	}
+	return guilds, nil
+}
+
 // ListGuildChannels returns all channels in a guild. The caller can filter
 // by parent_id to scope to a single category.
 func (b *DiscordBot) ListGuildChannels(ctx context.Context, botToken, guildID string) ([]Channel, error) {
@@ -298,6 +350,14 @@ func (b *DiscordBot) ListGuildChannels(ctx context.Context, botToken, guildID st
 		return nil, fmt.Errorf("parse channels: %w", err)
 	}
 	return chans, nil
+}
+
+func DiscordInviteURL(clientID string) string {
+	v := url.Values{}
+	v.Set("client_id", clientID)
+	v.Set("permissions", "68688")
+	v.Set("scope", "bot")
+	return "https://discord.com/oauth2/authorize?" + v.Encode()
 }
 
 // sanitizeChannelName conforms a string to Discord's channel-name rules:

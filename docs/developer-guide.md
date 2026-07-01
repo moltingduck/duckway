@@ -412,6 +412,13 @@ examples/duckway-cc-watch.service            Sample systemd user unit
 ```
 Admin                     duckway-server                              agent machine
 ─────                     ──────────────                              ─────────────
+GET /api/cc/discord/setup
+                      ──→ decrypt bot token
+                          Discord GET /users/@me + /users/@me/guilds
+                          return invite_url + server picker data
+POST /api/cc/discord/categories
+                      ──→ Discord POST /guilds/{g}/channels type=4
+
 POST /api/cc          ──→ decrypt bot token
                           Discord POST /guilds/{g}/channels      ┐
                           issue phantom DUCKWAY_CC_<cc_id>       │   <-- CC create

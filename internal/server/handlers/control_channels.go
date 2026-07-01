@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -25,6 +26,112 @@ type ControlChannelHandler struct {
 	bot          *svc.DiscordBot
 	hub          *svc.CCEventHub         // optional, set via SetHub
 	approvals    *svc.CCApprovalRegistry // optional, set via SetApprovals
+}
+
+func (h *ControlChannelHandler) discordBotToken(apiKeyID string) (string, error) {
+	key, err := h.apiKeys.GetByID(apiKeyID)
+	if err != nil {
+		return "", fmt.Errorf("api_key not found")
+	}
+	svcRow, err := h.services.GetByID(key.ServiceID)
+	if err != nil {
+		return "", fmt.Errorf("service lookup failed")
+	}
+	if svcRow.Name != "discord" {
+		return "", fmt.Errorf("api_key is for %s, not discord", svcRow.Name)
+	}
+	botToken, err := h.crypto.Decrypt(key.KeyEncrypted)
+	if err != nil {
+		return "", fmt.Errorf("decrypt bot token: %w", err)
+	}
+	return botToken, nil
+}
+
+// GET /api/cc/discord/setup?api_key_id=...
+func (h *ControlChannelHandler) DiscordSetup(w http.ResponseWriter, r *http.Request) {
+	apiKeyID := r.URL.Query().Get("api_key_id")
+	if apiKeyID == "" {
+		jsonError(w, "api_key_id is required", http.StatusBadRequest)
+		return
+	}
+	botToken, err := h.discordBotToken(apiKeyID)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	user, err := h.bot.CurrentUser(r.Context(), botToken)
+	if err != nil {
+		jsonError(w, "discord current user: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	guilds, err := h.bot.ListGuilds(r.Context(), botToken)
+	guildsErr := ""
+	if err != nil {
+		guildsErr = err.Error()
+		guilds = []svc.Guild{}
+	}
+	jsonResponse(w, map[string]interface{}{
+		"bot":          user,
+		"invite_url":   svc.DiscordInviteURL(user.ID),
+		"guilds":       guilds,
+		"guilds_error": guildsErr,
+	})
+}
+
+// GET /api/cc/discord/categories?api_key_id=...&guild_id=...
+func (h *ControlChannelHandler) DiscordCategories(w http.ResponseWriter, r *http.Request) {
+	apiKeyID := r.URL.Query().Get("api_key_id")
+	guildID := r.URL.Query().Get("guild_id")
+	if apiKeyID == "" || guildID == "" {
+		jsonError(w, "api_key_id and guild_id are required", http.StatusBadRequest)
+		return
+	}
+	botToken, err := h.discordBotToken(apiKeyID)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	channels, err := h.bot.ListGuildChannels(r.Context(), botToken, guildID)
+	if err != nil {
+		jsonError(w, "discord channels: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	categories := make([]svc.Channel, 0)
+	for _, ch := range channels {
+		if ch.Type == 4 {
+			categories = append(categories, ch)
+		}
+	}
+	jsonResponse(w, map[string]interface{}{"categories": categories})
+}
+
+// POST /api/cc/discord/categories
+func (h *ControlChannelHandler) DiscordCreateCategory(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		APIKeyID string `json:"api_key_id"`
+		GuildID  string `json:"guild_id"`
+		Name     string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.APIKeyID == "" || req.GuildID == "" || req.Name == "" {
+		jsonError(w, "api_key_id, guild_id, and name are required", http.StatusBadRequest)
+		return
+	}
+	botToken, err := h.discordBotToken(req.APIKeyID)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	category, err := h.bot.CreateCategory(r.Context(), botToken, req.GuildID, req.Name)
+	if err != nil {
+		jsonError(w, "discord create category: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	jsonResponse(w, category)
 }
 
 func NewControlChannelHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, placeholders *queries.PlaceholderQueries, services *queries.ServiceQueries, clients *queries.ClientQueries, settings *queries.SettingsQueries, crypto *svc.Crypto, bot *svc.DiscordBot) *ControlChannelHandler {
