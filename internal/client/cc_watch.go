@@ -9,7 +9,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,13 +29,15 @@ type CCWatch struct {
 	configDir  string
 	agentTypes map[string]string // cc_id -> agent_type, loaded from cc.json
 	sessions   *CCSessionStore
+	processed  *CCProcessedStore
 	// noTmux forces the headless --print runner even when tmux is installed.
 	// Set via `duckway cc watch --no-tmux` or DUCKWAY_CC_NO_TMUX=1.
 	noTmux bool
 
-	mu          sync.Mutex
-	runners     map[string]*ccRunner // by channel handle
-	inboxCursor int64
+	mu           sync.Mutex
+	runners      map[string]*ccRunner // by channel handle
+	inboxCursor  int64
+	sseConnected bool
 
 	api *APIClient
 }
@@ -59,13 +64,15 @@ func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (
 		}
 	}
 	return &CCWatch{
-		cfg:        cfg,
-		configDir:  configDir,
-		agentTypes: agentTypes,
-		sessions:   NewCCSessionStore(configDir),
-		noTmux:     opts.NoTmux,
-		runners:    map[string]*ccRunner{},
-		api:        NewAPIClient(cfg.ServerURL, cfg.Token),
+		cfg:         cfg,
+		configDir:   configDir,
+		agentTypes:  agentTypes,
+		sessions:    NewCCSessionStore(configDir),
+		processed:   NewCCProcessedStore(configDir),
+		noTmux:      opts.NoTmux,
+		runners:     map[string]*ccRunner{},
+		inboxCursor: loadCCInboxCursor(configDir),
+		api:         NewAPIClient(cfg.ServerURL, cfg.Token),
 	}, nil
 }
 
@@ -76,7 +83,7 @@ func (w *CCWatch) Run(ctx context.Context) error {
 	// Recover any turns whose Stop event arrived while the previous
 	// daemon instance was dead. Best-effort: errors are logged and we
 	// continue starting up.
-	w.recoverPendingTurns(ctx)
+	w.reconcileCCState(ctx, "started")
 	go w.pollInbox(ctx)
 
 	backoff := 5 * time.Second
@@ -126,6 +133,7 @@ func (w *CCWatch) connectAndStream(ctx context.Context) error {
 		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
 	}
 	log.Printf("[cc-watch] SSE connected")
+	w.onSSEConnected(ctx)
 
 	return w.processSSE(ctx, resp.Body)
 }
@@ -246,6 +254,10 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	if strings.TrimSpace(msg.Content) == "" {
 		return
 	}
+	if w.processed.Seen(msg.ID) {
+		log.Printf("[cc-watch] %s: skipping already processed discord message %s", env.Handle, msg.ID)
+		return
+	}
 
 	runner, err := w.runnerFor(env.Handle, env.CCID)
 	if err != nil {
@@ -261,6 +273,19 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		_ = w.api.PostCC(context.Background(), env.Handle,
 			"⚠️ session queue full (10 messages backed up) — your message was dropped, please retry once the agent catches up.")
 		return
+	}
+	if err := w.processed.Mark(msg.ID, env.Handle); err != nil {
+		log.Printf("[cc-watch] mark processed message %s: %v", msg.ID, err)
+	}
+}
+
+func (w *CCWatch) onSSEConnected(ctx context.Context) {
+	w.mu.Lock()
+	wasConnected := w.sseConnected
+	w.sseConnected = true
+	w.mu.Unlock()
+	if wasConnected {
+		w.reconcileCCState(ctx, "reconnected")
 	}
 }
 
@@ -416,20 +441,24 @@ func (w *CCWatch) shutdown() {
 }
 
 func (w *CCWatch) pollInbox(ctx context.Context) {
-	for {
-		cursor, err := w.api.LatestCCInboxCursor(ctx)
-		if err == nil {
-			w.advanceInboxCursor(cursor)
-			log.Printf("[cc-watch] inbox polling ready (cursor=%d)", cursor)
-			break
+	if w.currentInboxCursor() == 0 {
+		for {
+			cursor, err := w.api.LatestCCInboxCursor(ctx)
+			if err == nil {
+				w.advanceInboxCursor(cursor)
+				log.Printf("[cc-watch] inbox polling ready (cursor=%d)", cursor)
+				break
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("[cc-watch] inbox cursor error: %v (retry in 10s)", err)
+			if !sleepContext(ctx, 10*time.Second) {
+				return
+			}
 		}
-		if ctx.Err() != nil {
-			return
-		}
-		log.Printf("[cc-watch] inbox cursor error: %v (retry in 10s)", err)
-		if !sleepContext(ctx, 10*time.Second) {
-			return
-		}
+	} else {
+		log.Printf("[cc-watch] inbox polling ready (stored cursor=%d)", w.currentInboxCursor())
 	}
 
 	for {
@@ -496,7 +525,33 @@ func (w *CCWatch) advanceInboxCursor(id int64) {
 	defer w.mu.Unlock()
 	if id > w.inboxCursor {
 		w.inboxCursor = id
+		if err := saveCCInboxCursor(w.configDir, id); err != nil {
+			log.Printf("[cc-watch] save inbox cursor: %v", err)
+		}
 	}
+}
+
+func ccInboxCursorPath(configDir string) string {
+	return filepath.Join(configDir, "cc-inbox-cursor")
+}
+
+func loadCCInboxCursor(configDir string) int64 {
+	raw, err := os.ReadFile(ccInboxCursorPath(configDir))
+	if err != nil {
+		return 0
+	}
+	cursor, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+	if err != nil || cursor < 0 {
+		return 0
+	}
+	return cursor
+}
+
+func saveCCInboxCursor(configDir string, cursor int64) error {
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(ccInboxCursorPath(configDir), []byte(strconv.FormatInt(cursor, 10)+"\n"), 0600)
 }
 
 func sleepContext(ctx context.Context, d time.Duration) bool {
@@ -510,6 +565,53 @@ func sleepContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+type ccReconcileSummary struct {
+	Mode           string
+	Management     string
+	ActiveChannels int
+	Recovered      int
+	StillRunning   int
+}
+
+func (w *CCWatch) reconcileCCState(ctx context.Context, mode string) {
+	summary := ccReconcileSummary{Mode: mode}
+	if assignments, err := w.api.FetchCC(); err == nil && len(assignments) > 0 {
+		summary.Management = assignments[0].ManagementHandle
+		w.mu.Lock()
+		w.agentTypes = map[string]string{}
+		for _, cc := range assignments {
+			if cc.CCID != "" && cc.AgentType != "" {
+				w.agentTypes[cc.CCID] = cc.AgentType
+			}
+		}
+		w.mu.Unlock()
+	} else if err != nil {
+		log.Printf("[cc-watch] reconcile fetch cc: %v", err)
+	}
+	if channels, err := w.api.FetchCCChannels(); err == nil {
+		for _, ch := range channels {
+			if ch.Kind == "task" && !ch.Archived {
+				summary.ActiveChannels++
+			}
+		}
+	} else {
+		log.Printf("[cc-watch] reconcile fetch channels: %v", err)
+	}
+	w.recoverPendingTurns(ctx, &summary)
+	if summary.Management != "" {
+		_ = w.api.PostCC(ctx, summary.Management, summary.format())
+	}
+}
+
+func (s ccReconcileSummary) format() string {
+	status := "🟢 duckway client started"
+	if s.Mode == "reconnected" {
+		status = "🟢 duckway client reconnected"
+	}
+	return fmt.Sprintf("%s\n\nActive task channels: %d\nRecovered replies: %d\nStill running: %d",
+		status, s.ActiveChannels, s.Recovered, s.StillRunning)
+}
+
 // recoverPendingTurns scans the tmux-runner state files left behind by a
 // previous (crashed) daemon. Any turn whose completion event was written while
 // the daemon was down gets posted to Discord here, before we connect to
@@ -517,7 +619,7 @@ func sleepContext(ctx context.Context, d time.Duration) bool {
 // answered by the agent but the reply would never reach the channel.
 //
 // Best-effort: errors per channel are logged and we keep going.
-func (w *CCWatch) recoverPendingTurns(ctx context.Context) {
+func (w *CCWatch) recoverPendingTurns(ctx context.Context, summary *ccReconcileSummary) {
 	results, err := RecoverPendingTurns()
 	if err != nil {
 		log.Printf("[cc-watch] recover pending turns: %v", err)
@@ -526,6 +628,16 @@ func (w *CCWatch) recoverPendingTurns(ctx context.Context) {
 	for _, r := range results {
 		if !r.HadResult {
 			log.Printf("[cc-watch] recover: %s has an in-flight turn but no Stop event yet (claude may still be generating)", r.Handle)
+			if summary != nil {
+				summary.StillRunning++
+			}
+			body := "⏳ duckway client reconnected; this agent turn still appears to be running."
+			if tmuxAvailable() && tmuxHasSession(tmuxSessionName(r.Handle)) {
+				body += "\nAttach locally with: `tmux attach -t " + tmuxSessionName(r.Handle) + "`"
+			}
+			if perr := w.api.PostCC(ctx, r.Handle, body); perr != nil {
+				log.Printf("[cc-watch] recover: still-running post to %s failed: %v", r.Handle, perr)
+			}
 			continue
 		}
 		body := r.LastAssistantMessage
@@ -539,6 +651,12 @@ func (w *CCWatch) recoverPendingTurns(ctx context.Context) {
 		}
 		if r.SessionID != "" {
 			_ = w.sessions.Set(r.Handle, r.SessionID)
+		}
+		if r.MessageID != "" {
+			_ = w.processed.Mark(r.MessageID, r.Handle)
+		}
+		if summary != nil {
+			summary.Recovered++
 		}
 		log.Printf("[cc-watch] recover: posted reply for in-flight turn on %s (message_id=%s)", r.Handle, r.MessageID)
 	}
