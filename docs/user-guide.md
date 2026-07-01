@@ -465,11 +465,31 @@ The binding only takes effect on the **next** inbound message; the picker turn i
 ### Management channel commands
 
 In `<client>-control`:
-- `!new <slug> [--cwd <path>] [--topic "…"]` → create a task channel + register a session for it
+- `!new <slug> [--cwd <path>|--project <name|number>] [--topic "…"]` → create a task channel + register a session for it
 - `!list` → table of task channels + which have running sessions
 - `!status` → daemon up? agent type? counts?
 - `!sessions [<cwd-filter>]` → list local Claude sessions on the agent that aren't yet bound to any CC channel
 - `!bind <session_id> [<session_id> …]` → for each id, create a task channel (named after `basename(cwd)`) and attach the session — next message in the new channel resumes the existing conversation
+- `!projects [<filter>]` → list saved project folders from the agent machine
+
+Project folders are saved on the client machine, not browsed from the Duckway server. Add them with:
+
+```bash
+duckway cc projects add ~/duckway
+duckway cc projects add ./api-server
+duckway cc projects add ~/projects/*        # glob expands now; matching files are skipped
+duckway cc projects add --name api ~/work/backend
+duckway cc projects list
+duckway cc projects remove api
+```
+
+Relative paths are resolved from the directory where you run `duckway cc projects add`; `~/...` is expanded to your home directory. Globs are expanded only when you add projects, then stored as concrete directories in `~/.duckway/cc-projects.json`. From Discord:
+
+```text
+!projects duck
+!new fix-login --project duckway
+!new fix-login --project 1
+```
 - `!help`
 
 `!sessions` / `!bind` run on the agent (the daemon owns the filesystem), so the cc-watch daemon must be up. The server posts an "offline" error if it isn't.

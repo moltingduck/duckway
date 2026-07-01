@@ -41,10 +41,61 @@ func (w *CCWatch) handleClientCommand(data []byte) {
 		w.cmdSessions(env.Handle, payload.Args)
 	case "!bind":
 		w.cmdBind(env.Handle, payload.Args)
+	case "!projects":
+		w.cmdProjects(env.Handle, payload.Args)
+	case "!new":
+		w.cmdNewProject(env.Handle, payload.Args)
 	default:
 		_ = w.api.PostCC(context.Background(), env.Handle,
 			"❌ daemon doesn't know how to handle `"+payload.Command+"` — update your `duckway` binary on the agent.")
 	}
+}
+
+func (w *CCWatch) cmdProjects(replyHandle string, args []string) {
+	filter := strings.TrimSpace(strings.Join(args, " "))
+	projects, err := NewCCProjectStore(w.configDir).List()
+	if err != nil {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ read projects failed: "+err.Error())
+		return
+	}
+	if filter != "" {
+		var filtered []CCProject
+		for _, p := range projects {
+			if strings.Contains(p.Name, filter) || strings.Contains(p.Path, filter) {
+				filtered = append(filtered, p)
+			}
+		}
+		projects = filtered
+	}
+	_ = w.api.PostCC(context.Background(), replyHandle, formatProjectsReport(projects, filter))
+}
+
+func (w *CCWatch) cmdNewProject(replyHandle string, args []string) {
+	slug, flags, err := splitClientSlugAndFlags(args)
+	if err != nil {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ "+err.Error()+"\nUsage: `!new <slug> --project <name|number> [--topic <text>]`")
+		return
+	}
+	projectRef := strings.TrimSpace(flags["project"])
+	if projectRef == "" {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ daemon only handles `!new` when `--project <name|number>` is set.")
+		return
+	}
+	project, err := NewCCProjectStore(w.configDir).Resolve(projectRef)
+	if err != nil {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ "+err.Error()+" — run `!projects` to see saved projects.")
+		return
+	}
+	created, err := w.api.CreateCCChannel(context.Background(), slug, flags["topic"], project.Path)
+	if err != nil {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ create channel: "+err.Error())
+		return
+	}
+	_ = w.api.PostCC(context.Background(), replyHandle,
+		"✅ Created **#"+created.Name+"** — `"+created.Handle+"`\n"+
+			"   project: `"+project.Name+"`\n"+
+			"   cwd: `"+project.Path+"`\n"+
+			"   Send a message in that channel to start the agent.")
 }
 
 // cmdSessions lists local claude sessions that aren't already bound to a
@@ -289,4 +340,61 @@ func formatBindReport(rs []BindResult) string {
 		}
 	}
 	return b.String()
+}
+
+func formatProjectsReport(projects []CCProject, filter string) string {
+	if len(projects) == 0 {
+		if filter != "" {
+			return "_(no saved projects matching `" + filter + "`)_"
+		}
+		return "No saved projects yet.\n\nAdd projects on the agent machine:\n`duckway cc projects add ~/duckway`\n`duckway cc projects add ~/projects/*`"
+	}
+	const maxRows = 30
+	rows := projects
+	if len(rows) > maxRows {
+		rows = rows[:maxRows]
+	}
+	var b strings.Builder
+	if filter != "" {
+		fmt.Fprintf(&b, "**Projects matching `%s`:**\n", filter)
+	} else {
+		b.WriteString("**Saved projects:**\n")
+	}
+	for i, p := range rows {
+		fmt.Fprintf(&b, "%d. `%s`  — `%s`\n", i+1, p.Name, p.Path)
+	}
+	if len(projects) > maxRows {
+		fmt.Fprintf(&b, "\n_(showing first %d of %d — use `!projects <filter>` to narrow)_\n", maxRows, len(projects))
+	}
+	b.WriteString("\nUse `!new <slug> --project <name|number>`.")
+	return b.String()
+}
+
+func splitClientSlugAndFlags(args []string) (string, map[string]string, error) {
+	if len(args) == 0 {
+		return "", nil, fmt.Errorf("missing <slug>")
+	}
+	slug := ""
+	flags := map[string]string{}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "--") {
+			key := strings.TrimPrefix(a, "--")
+			if i+1 >= len(args) {
+				return "", nil, fmt.Errorf("flag --%s needs a value", key)
+			}
+			flags[key] = args[i+1]
+			i++
+			continue
+		}
+		if slug == "" {
+			slug = a
+		} else {
+			return "", nil, fmt.Errorf("unexpected positional arg %q", a)
+		}
+	}
+	if slug == "" {
+		return "", nil, fmt.Errorf("missing <slug>")
+	}
+	return slug, flags, nil
 }

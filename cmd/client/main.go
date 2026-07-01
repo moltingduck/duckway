@@ -152,6 +152,7 @@ Usage:
   duckway cc bind        Interactive picker: pick existing local claude
                          sessions and create a CC channel + binding for
                          each. Use --session <id> for headless mode.
+  duckway cc projects    Manage project folders usable from Discord
   duckway version        Print the duckway version
 
 Proxy flags:
@@ -305,6 +306,9 @@ func cmdCC(configDir string) {
 		fmt.Fprintln(os.Stderr, "Usage:")
 		fmt.Fprintln(os.Stderr, "  duckway cc watch [-d|--daemon|stop|restart|status]")
 		fmt.Fprintln(os.Stderr, "  duckway cc bind [--session <id>...] [--cwd <substr>]")
+		fmt.Fprintln(os.Stderr, "  duckway cc projects add [--name <name>] <path-or-glob>...")
+		fmt.Fprintln(os.Stderr, "  duckway cc projects list")
+		fmt.Fprintln(os.Stderr, "  duckway cc projects remove <name|number|path>")
 		os.Exit(1)
 	}
 	switch os.Args[2] {
@@ -312,8 +316,79 @@ func cmdCC(configDir string) {
 		cmdCCWatch(configDir)
 	case "bind":
 		cmdCCBind(configDir)
+	case "projects":
+		cmdCCProjects(configDir)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown cc subcommand: %s\n", os.Args[2])
+		os.Exit(1)
+	}
+}
+
+func cmdCCProjects(configDir string) {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "Usage:")
+		fmt.Fprintln(os.Stderr, "  duckway cc projects add [--name <name>] <path-or-glob>...")
+		fmt.Fprintln(os.Stderr, "  duckway cc projects list")
+		fmt.Fprintln(os.Stderr, "  duckway cc projects remove <name|number|path>")
+		os.Exit(1)
+	}
+	store := client.NewCCProjectStore(configDir)
+	switch os.Args[3] {
+	case "add":
+		var name string
+		var paths []string
+		for i := 4; i < len(os.Args); i++ {
+			switch os.Args[i] {
+			case "--name", "-n":
+				if i+1 >= len(os.Args) {
+					log.Fatal("--name needs a value")
+				}
+				name = os.Args[i+1]
+				i++
+			case "--config-dir":
+				if i+1 >= len(os.Args) {
+					log.Fatal("--config-dir needs a value")
+				}
+				configDir = os.Args[i+1]
+				store = client.NewCCProjectStore(configDir)
+				i++
+			case "-h", "--help":
+				fmt.Println("Usage: duckway cc projects add [--name <name>] <path-or-glob>...")
+				return
+			default:
+				paths = append(paths, os.Args[i])
+			}
+		}
+		added, err := store.Add(paths, name)
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, p := range added {
+			fmt.Printf("Added %s -> %s\n", p.Name, p.Path)
+		}
+	case "list":
+		projects, err := store.List()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(projects) == 0 {
+			fmt.Println("No projects saved. Add one with: duckway cc projects add ~/duckway")
+			return
+		}
+		for i, p := range projects {
+			fmt.Printf("%2d. %-20s %s\n", i+1, p.Name, p.Path)
+		}
+	case "remove", "rm":
+		if len(os.Args) < 5 {
+			log.Fatal("missing project name, number, or path")
+		}
+		removed, err := store.Remove(os.Args[4])
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("Removed %s -> %s\n", removed.Name, removed.Path)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown cc projects subcommand: %s\n", os.Args[3])
 		os.Exit(1)
 	}
 }

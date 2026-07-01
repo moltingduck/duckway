@@ -16,7 +16,7 @@ import (
 //
 // Supported commands (v1):
 //
-//	!new <slug> [--cwd <path>] [--topic <text>]   in management channel
+//	!new <slug> [--cwd <path>|--project <ref>] [--topic <text>]   in management channel
 //	!end                                          in a task channel
 //	!list                                         management
 //	!status                                       management
@@ -42,8 +42,8 @@ func NewCCCommandHandler(cc *queries.ControlChannelQueries, apiKeys *queries.API
 // Exceptions, both escapes for claude TUI modes whose trigger character
 // would otherwise be eaten by Discord or by us:
 //
-//   "!/..."  → claude slash command (`/usage`, `/help`, `/compact`, ...)
-//   "!!..."  → claude bash shell    (`! ls`, `! cargo test`, ...)
+//	"!/..."  → claude slash command (`/usage`, `/help`, `/compact`, ...)
+//	"!!..."  → claude bash shell    (`! ls`, `! cargo test`, ...)
 //
 // The daemon strips one leading `!` before pasting into claude, so the
 // user types `!/usage` to send `/usage` and `!! ls` to send `! ls`.
@@ -121,9 +121,9 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 		}
 		h.handleStatus(ctx, botToken, cc, ch.ChannelID)
 
-	case "!sessions", "!bind":
+	case "!sessions", "!bind", "!projects":
 		// These are client-handled — the agent machine owns the filesystem
-		// state (~/.claude/projects/) and the cc-sessions.json binding, so
+		// state (~/.claude/projects/, saved project dirs) and local stores, so
 		// the daemon is the only place that can do useful work. We just
 		// forward the raw command via SSE and let the daemon reply.
 		if ch.Kind != "management" {
@@ -140,7 +140,7 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 // knownCommands is the canonical list used for `!help` discovery + the
 // fuzzy "did you mean" suggestion. Order is the user-facing display
 // order in !help.
-var knownCommands = []string{"!help", "!new", "!end", "!destroy", "!reset", "!list", "!status", "!sessions", "!bind"}
+var knownCommands = []string{"!help", "!new", "!end", "!destroy", "!reset", "!list", "!status", "!sessions", "!bind", "!projects"}
 
 // unknownCommandReply formats the friendly response for an unrecognised
 // !-prefix command. Suggests close matches (Levenshtein distance ≤ 2)
@@ -254,7 +254,11 @@ func joinTicked(xs []string) string {
 func (h *CCCommandHandler) handleNew(ctx context.Context, botToken string, cc *models.ControlChannel, mgmt *models.CCChannel, args []string) {
 	slug, flags, err := splitSlugAndFlags(args)
 	if err != nil {
-		h.reply(ctx, botToken, mgmt.ChannelID, "❌ "+err.Error()+"\nUsage: `!new <slug> [--cwd <path>] [--topic <text>]`")
+		h.reply(ctx, botToken, mgmt.ChannelID, "❌ "+err.Error()+"\nUsage: `!new <slug> [--cwd <path>|--project <name|number>] [--topic <text>]`")
+		return
+	}
+	if flags["project"] != "" {
+		h.forwardToDaemon(ctx, botToken, cc, mgmt, "!new", args)
 		return
 	}
 
@@ -494,7 +498,7 @@ func (h *CCCommandHandler) decryptBotToken(apiKeyID string) (string, error) {
 }
 
 const helpText = "**Duckway CC commands**\n" +
-	"`!new <slug> [--cwd <path>] [--topic <text>]` — create a task channel\n" +
+	"`!new <slug> [--cwd <path>|--project <name|number>] [--topic <text>]` — create a task channel\n" +
 	"`!end` — end the *current* task channel's session and **archive** it (history kept)\n" +
 	"`!destroy` — end and **hard-delete** the *current* task channel (history gone)\n" +
 	"`!reset` — wipe the *current* task channel's session_id; next message starts fresh\n" +
@@ -502,6 +506,7 @@ const helpText = "**Duckway CC commands**\n" +
 	"`!status` — daemon + session counts\n" +
 	"`!sessions [<cwd-filter>]` — list local claude sessions on the agent that aren't yet bound to a CC channel\n" +
 	"`!bind <session_id> [<session_id> …]` — create a task channel for each session_id and attach it (run `!sessions` first to find IDs)\n" +
+	"`!projects [<filter>]` — list saved project folders from the agent machine\n" +
 	"`!help` — this message\n" +
 	"\n" +
 	"**Sending claude slash & shell commands**\n" +
@@ -528,6 +533,7 @@ func BuildWelcomeMessage(clientName string) string {
 		"**Start a task**\n" +
 		"`!new fix-login`                          — opens `#fix-login` with default cwd\n" +
 		"`!new deploy --cwd /home/me/myapp`        — opens `#deploy` rooted at that project\n" +
+		"`!new deploy --project duckway`           — opens `#deploy` rooted at a saved project\n" +
 		"`!new analyze --topic \"Q2 metrics\"`        — channel topic appears in Discord's UI\n" +
 		"\n" +
 		"**Inside a task channel**\n" +
