@@ -100,6 +100,14 @@ func tmuxLegacySessionName(handle string) string {
 	return tmuxLegacySessionPrefix + safe
 }
 
+func ensureTmuxSessionNaming(handle string) {
+	migrateLegacyTmuxSession(handle)
+	sess := tmuxSessionName(handle)
+	if tmuxHasSession(sess) {
+		tmuxRenameWindow(sess, sess)
+	}
+}
+
 func migrateLegacyTmuxSession(handle string) {
 	newSess := tmuxSessionName(handle)
 	oldSess := tmuxLegacySessionName(handle)
@@ -118,7 +126,7 @@ func migrateLegacyTmuxSession(handle string) {
 }
 
 func tmuxHasChannelSession(handle string) bool {
-	migrateLegacyTmuxSession(handle)
+	ensureTmuxSessionNaming(handle)
 	return tmuxHasSession(tmuxSessionName(handle))
 }
 
@@ -159,7 +167,7 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 	if handle == "" {
 		return "", "", false, fmt.Errorf("tmux runner: missing DUCKWAY_CC_CHANNEL_HANDLE in extraEnv")
 	}
-	migrateLegacyTmuxSession(handle)
+	ensureTmuxSessionNaming(handle)
 	sess := tmuxSessionName(handle)
 
 	chDir, err := tmuxChannelDir(handle)
@@ -911,6 +919,12 @@ func tmuxPaneCommand(sess string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func tmuxRenameWindow(sess, name string) {
+	if out, err := exec.Command("tmux", "rename-window", "-t", sess, name).CombinedOutput(); err != nil {
+		log.Printf("[cc-watch] tmux rename-window %s -> %s failed: %v (%s)", sess, name, err, strings.TrimSpace(string(out)))
+	}
 }
 
 func tmuxNewSession(sess, cwd, launchPath string, extraEnv []string) error {

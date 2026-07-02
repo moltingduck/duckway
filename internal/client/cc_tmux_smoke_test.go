@@ -175,12 +175,41 @@ func TestSmokeMigrateLegacyTmuxSession(t *testing.T) {
 	if out, err := exec.Command("tmux", "new-session", "-d", "-s", oldSess, "sleep 30").CombinedOutput(); err != nil {
 		t.Fatalf("tmux new legacy session: %v (%s)", err, out)
 	}
-	migrateLegacyTmuxSession(handle)
+	ensureTmuxSessionNaming(handle)
 	if tmuxHasSession(oldSess) {
 		t.Fatalf("legacy session %s still exists after migration", oldSess)
 	}
 	if !tmuxHasSession(newSess) {
 		t.Fatalf("new session %s does not exist after migration", newSess)
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", newSess, "#{window_name}").Output()
+	if err != nil {
+		t.Fatalf("tmux window name: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != newSess {
+		t.Fatalf("window name = %q, want %q", got, newSess)
+	}
+}
+
+func TestSmokeEnsureTmuxSessionWindowName(t *testing.T) {
+	requireTmux(t)
+
+	handle := "window-" + uniqueSuffix()
+	sess := tmuxSessionName(handle)
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-session", "-t", sess).Run()
+	})
+
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", sess, "-n", "duckway-"+handle, "sleep 30").CombinedOutput(); err != nil {
+		t.Fatalf("tmux new current session: %v (%s)", err, out)
+	}
+	ensureTmuxSessionNaming(handle)
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", sess, "#{window_name}").Output()
+	if err != nil {
+		t.Fatalf("tmux window name: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != sess {
+		t.Fatalf("window name = %q, want %q", got, sess)
 	}
 }
 

@@ -117,7 +117,7 @@ func runViaCodexTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 	if handle == "" {
 		return "", "", false, fmt.Errorf("codex tmux runner: missing DUCKWAY_CC_CHANNEL_HANDLE in extraEnv")
 	}
-	migrateLegacyTmuxSession(handle)
+	ensureTmuxSessionNaming(handle)
 	sess := tmuxSessionName(handle)
 	chDir, err := tmuxChannelDir(handle)
 	if err != nil {
