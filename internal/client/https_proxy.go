@@ -71,9 +71,9 @@ type httpsProxy struct {
 	loanCache map[string]*loanedToken // keyed by service name
 
 	// audit log batching for loan_proxy traffic
-	auditMu      sync.Mutex
-	auditBuffer  []auditEntry
-	auditClient  *http.Client
+	auditMu     sync.Mutex
+	auditBuffer []auditEntry
+	auditClient *http.Client
 }
 
 // RunHTTPSProxy starts the proxy that handles both HTTP and HTTPS CONNECT.
@@ -120,10 +120,10 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 	}
 
 	proxy := &httpsProxy{
-		serverURL:   cfg.ServerURL,
-		token:       cfg.Token,
-		ca:          ca,
-		hostMap:     hostMap,
+		serverURL: cfg.ServerURL,
+		token:     cfg.Token,
+		ca:        ca,
+		hostMap:   hostMap,
 		httpClient: &http.Client{
 			// No Timeout here — streaming SSE responses (compaction, long generations)
 			// must not be cut off by a total-request deadline. Connection-level
@@ -544,6 +544,14 @@ func buildHostMap(svcs []ServiceInfo) map[string]hostEntry {
 				UpstreamURL:  s.UpstreamURL,
 			}
 		}
+	}
+	// Codex OAuth refreshes go to auth.openai.com. Treat it as a virtual
+	// service so the client can MITM that host and the gateway can replace the
+	// fake refresh token with the real server-side token.
+	hostMap["auth.openai.com"] = hostEntry{
+		Service:      "openai-auth",
+		DeliveryMode: "proxy",
+		UpstreamURL:  "https://auth.openai.com",
 	}
 	return hostMap
 }

@@ -28,8 +28,10 @@ func NewKeyResolver(crypto *Crypto, apiKeys *queries.APIKeyQueries, placeholders
 
 type ResolveResult struct {
 	RealKey          string
+	RealRefreshToken string
 	APIKeyID         string
 	PlaceholderID    string
+	Placeholder      string
 	PermissionConfig string // from placeholder_keys.permission_config
 	APIKeyACL        string // from api_keys.acl
 	IsRefreshable    bool   // true if the underlying api_key has a refresh token (OAuth)
@@ -95,6 +97,13 @@ func (r *KeyResolver) Resolve(placeholder string, clientID string) (*ResolveResu
 	if err != nil {
 		return nil, fmt.Errorf("decrypt key: %w", err)
 	}
+	realRefresh := ""
+	if apiKey.RefreshToken != "" {
+		realRefresh, err = r.crypto.Decrypt(apiKey.RefreshToken)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt refresh token: %w", err)
+		}
+	}
 
 	// Update usage counters
 	r.placeholders.IncrementUsage(ph.ID)
@@ -107,8 +116,10 @@ func (r *KeyResolver) Resolve(placeholder string, clientID string) (*ResolveResu
 
 	return &ResolveResult{
 		RealKey:          realKey,
+		RealRefreshToken: realRefresh,
 		APIKeyID:         apiKey.ID,
 		PlaceholderID:    ph.ID,
+		Placeholder:      ph.Placeholder,
 		PermissionConfig: permConfig,
 		APIKeyACL:        apiKey.ACL,
 		IsRefreshable:    apiKey.RefreshToken != "",

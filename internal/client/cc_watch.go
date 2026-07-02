@@ -385,10 +385,11 @@ func (w *CCWatch) syncCodexOAuthForCC(ccID string) {
 	if w.agentTypes[ccID] != "codex" {
 		return
 	}
-	if synced := SyncCodexOAuthCredentials(w.configDir, w.cfg); synced {
-		if err := DisableCodexDuckwayProvider(); err != nil {
-			log.Printf("[cc-watch] codex provider cleanup failed: %v", err)
-		}
+	if SyncCodexOAuthCredentials(w.configDir, w.cfg) {
+		ClearCodexOAuthMode(w.configDir)
+	}
+	if err := SyncCodexConfig(w.cfg.ProxyPort); err != nil {
+		log.Printf("[cc-watch] codex config sync failed: %v", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -487,10 +488,10 @@ func (h *OAuthHandler) ClientGetCredentials(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// ClientGetCodexCredentials returns Codex ChatGPT-login OAuth credentials for
+// ClientGetCodexCredentials returns a fake Codex ChatGPT-login auth.json for
 // clients whose OpenAI placeholder is assigned to a Codex OAuth refreshable key.
-// Unlike Claude's proxy credentials, Codex needs the real OAuth tokens in
-// ~/.codex/auth.json because the Codex CLI owns that auth flow natively.
+// The client never receives real OAuth tokens: refresh calls are intercepted by
+// the local proxy and exchanged at the gateway.
 func (h *OAuthHandler) ClientGetCodexCredentials(w http.ResponseWriter, r *http.Request) {
 	client := middleware.GetClient(r)
 	if client == nil {
@@ -521,28 +522,11 @@ func (h *OAuthHandler) ClientGetCodexCredentials(w http.ResponseWriter, r *http.
 		jsonResponse(w, map[string]interface{}{})
 		return
 	}
-	accessToken, err := h.crypto.Decrypt(apiKey.KeyEncrypted)
-	if err != nil {
-		jsonError(w, "decrypt codex access token: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	refreshToken, err := h.crypto.Decrypt(apiKey.RefreshToken)
-	if err != nil {
-		jsonError(w, "decrypt codex refresh token: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	tokens := map[string]interface{}{
-		"access_token":  accessToken,
-		"refresh_token": refreshToken,
-	}
+	tokens := codexPhantomTokens(ph.Placeholder, subInfo)
 	for _, key := range []string{"account_id"} {
 		if v, ok := subInfo[key]; ok && v != "" {
 			tokens[key] = v
 		}
-	}
-	if idToken, _ := subInfo["id_token"].(string); idToken != "" {
-		tokens["id_token"] = idToken
 	}
 	resp := map[string]interface{}{
 		"auth_mode":      "chatgpt",
@@ -553,6 +537,32 @@ func (h *OAuthHandler) ClientGetCodexCredentials(w http.ResponseWriter, r *http.
 		resp["last_refresh"] = v
 	}
 	jsonResponse(w, resp)
+}
+
+func codexPhantomTokens(placeholder string, subInfo map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"access_token":  codexPhantomJWT("access", placeholder, subInfo),
+		"refresh_token": "rt.duckway." + placeholder,
+		"id_token":      codexPhantomJWT("id", placeholder, subInfo),
+	}
+}
+
+func codexPhantomJWT(kind, placeholder string, subInfo map[string]interface{}) string {
+	accountID := "duckway"
+	if v, _ := subInfo["account_id"].(string); v != "" {
+		accountID = v
+	}
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payload := map[string]interface{}{
+		"iss":         "https://duckway.local",
+		"aud":         "codex",
+		"sub":         accountID,
+		"typ":         "duckway_codex_phantom_" + kind,
+		"placeholder": placeholder,
+		"exp":         time.Now().Add(24 * time.Hour).Unix(),
+	}
+	b, _ := json.Marshal(payload)
+	return header + "." + base64.RawURLEncoding.EncodeToString(b) + ".duckway"
 }
 
 func isCodexOAuthInfo(subInfo map[string]interface{}, tokenEndpoint string) bool {

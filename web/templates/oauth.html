@@ -21,7 +21,7 @@
     <strong>Upload formats differ by service:</strong>
     <ul class="mt-1">
       <li><strong>Claude Code:</strong> paste <code>~/.claude/.credentials.json</code>; Duckway reads <code>claudeAiOauth.accessToken</code>, <code>refreshToken</code>, <code>expiresAt</code>, <code>subscriptionType</code>, <code>rateLimitTier</code>, and <code>scopes</code>.</li>
-      <li><strong>Codex OAuth:</strong> paste <code>~/.codex/auth.json</code>. Duckway treats this as Codex native login credentials, separate from OpenAI Platform API keys.</li>
+      <li><strong>Codex OAuth:</strong> paste <code>~/.codex/auth.json</code>. Duckway stores the real tokens on the gateway, writes fake client auth.json tokens, and intercepts Codex refresh calls.</li>
       <li><strong>Generic OAuth:</strong> paste a token response like <code>{"access_token":"...","refresh_token":"...","expires_in":3600}</code>, then set the token endpoint.</li>
       <li><strong>Manual entry:</strong> paste the access token and refresh token into their fields directly when the provider does not expose a JSON file.</li>
     </ul>
@@ -156,7 +156,7 @@ var oauthHelpByService = {
   },
   openai: {
     pastePlaceholder: '{\n  "auth_mode": "chatgpt",\n  "tokens": {\n    "access_token": "...",\n    "refresh_token": "rt.1....",\n    "id_token": "eyJ...",\n    "account_id": "14d5c9cf-..."\n  },\n  "last_refresh": "2026-06-30T00:00:00Z"\n}',
-    pasteHelp: 'Codex ChatGPT login is stored in ~/.codex/auth.json after codex login. Duckway stores it as Codex OAuth credentials and syncs it back to ~/.codex/auth.json for Codex control channels. This is separate from OpenAI Platform API keys.',
+    pasteHelp: 'Codex ChatGPT login is stored in ~/.codex/auth.json after codex login. Duckway stores the real OAuth tokens on the gateway, writes fake tokens back to client ~/.codex/auth.json, and intercepts auth.openai.com refresh calls. Codex API calls still use the duckway-openai provider and OPENAI_API_KEY placeholder.',
     commandHelp: 'codex login\njq \'{auth_mode, tokens: {access_token: .tokens.access_token, refresh_token: .tokens.refresh_token, id_token: .tokens.id_token, account_id: .tokens.account_id}, last_refresh}\' ~/.codex/auth.json\njq -r \'.tokens | [.access_token, .refresh_token, .id_token, (.account_id // "")] | @tsv\' ~/.codex/auth.json',
     accessPlaceholder: 'Codex OAuth access token',
     refreshPlaceholder: 'OAuth refresh token',

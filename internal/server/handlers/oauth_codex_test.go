@@ -72,8 +72,29 @@ func TestClientGetCodexCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	tokens, _ := got["tokens"].(map[string]interface{})
-	if got["auth_mode"] != "chatgpt" || tokens["access_token"] != "codex-access-token" || tokens["refresh_token"] != "codex-refresh-token" || tokens["account_id"] != "acct-1" || tokens["id_token"] == "" {
+	if got["auth_mode"] != "chatgpt" || tokens["account_id"] != "acct-1" {
 		t.Fatalf("unexpected response: %#v", got)
+	}
+	accessToken, _ := tokens["access_token"].(string)
+	refreshToken, _ := tokens["refresh_token"].(string)
+	idToken, _ := tokens["id_token"].(string)
+	for label, tok := range map[string]string{
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"id_token":      idToken,
+	} {
+		if tok == "" {
+			t.Fatalf("%s missing in response: %#v", label, got)
+		}
+		if strings.Contains(tok, "codex-access-token") || strings.Contains(tok, "codex-refresh-token") || tok == testJWT() {
+			t.Fatalf("%s leaked real token: %q", label, tok)
+		}
+	}
+	if !looksLikeJWTForTest(accessToken) || !looksLikeJWTForTest(idToken) {
+		t.Fatalf("expected fake JWT-shaped tokens: %#v", tokens)
+	}
+	if !strings.HasPrefix(refreshToken, "rt.duckway.sk-proj-dw_fake") {
+		t.Fatalf("unexpected fake refresh token: %q", refreshToken)
 	}
 }
 
@@ -183,4 +204,8 @@ func testJWT() string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":1893456000}`))
 	return header + "." + payload + ".sig"
+}
+
+func looksLikeJWTForTest(token string) bool {
+	return len(strings.Split(token, ".")) == 3
 }

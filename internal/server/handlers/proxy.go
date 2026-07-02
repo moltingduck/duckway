@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -178,6 +179,10 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	upstreamPath := "/"
 	if len(parts) > 1 {
 		upstreamPath = "/" + parts[1]
+	}
+	if serviceName == "openai-auth" {
+		h.handleOpenAIAuthProxy(w, r, upstreamPath, startTime)
+		return
 	}
 
 	svc, err := h.services.GetByName(serviceName)
@@ -499,6 +504,132 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+}
+
+func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Request, upstreamPath string, startTime time.Time) {
+	client := middleware.GetClient(r)
+	if client == nil {
+		jsonError(w, "client authentication required", http.StatusUnauthorized)
+		return
+	}
+	if upstreamPath != "/oauth/token" {
+		jsonError(w, "unsupported openai auth path", http.StatusForbidden)
+		return
+	}
+	openAISvc, err := h.services.GetByName("openai")
+	if err != nil {
+		jsonError(w, "openai service unavailable", http.StatusNotFound)
+		return
+	}
+	result, err := h.resolver.ResolveForService(client.ID, openAISvc.ID)
+	if err != nil {
+		log.Printf("resolve error for openai-auth/%s: %v", client.Name, err)
+		jsonError(w, "key resolution failed", http.StatusInternalServerError)
+		return
+	}
+	if result.NeedApproval {
+		jsonError(w, "approval required", http.StatusForbidden)
+		return
+	}
+	if result.Error != "" {
+		jsonError(w, result.Error, http.StatusForbidden)
+		return
+	}
+	if result.RealRefreshToken == "" {
+		jsonError(w, "openai key is not a refreshable Codex OAuth token", http.StatusForbidden)
+		return
+	}
+
+	bodyBytes, _ := io.ReadAll(r.Body)
+	rewrittenBody, contentType := rewriteCodexRefreshRequest(bodyBytes, r.Header.Get("Content-Type"), result.RealRefreshToken)
+	upstreamURL := "https://auth.openai.com" + upstreamPath
+	if r.URL.RawQuery != "" {
+		upstreamURL += "?" + r.URL.RawQuery
+	}
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(rewrittenBody))
+	if err != nil {
+		jsonError(w, "failed to create upstream request", http.StatusInternalServerError)
+		return
+	}
+	for key, values := range r.Header {
+		if shouldStripHeader(key) || strings.EqualFold(key, "Content-Length") {
+			continue
+		}
+		for _, v := range values {
+			upstreamReq.Header.Add(key, v)
+		}
+	}
+	if contentType != "" {
+		upstreamReq.Header.Set("Content-Type", contentType)
+	}
+
+	resp, err := h.httpClient.Do(upstreamReq)
+	if err != nil {
+		log.Printf("openai auth upstream error: %v", err)
+		jsonError(w, "upstream request failed", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	respBody = rewriteCodexRefreshResponse(respBody, result.PlaceholderID, result.Placeholder)
+	for key, values := range resp.Header {
+		if strings.EqualFold(key, "Content-Length") {
+			continue
+		}
+		for _, v := range values {
+			w.Header().Add(key, v)
+		}
+	}
+	if len(respBody) > 0 {
+		w.Header().Del("Content-Length")
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(respBody)
+	if h.requestLog != nil {
+		h.requestLog.Log(client.ID, result.PlaceholderID, "openai-auth", r.Method, upstreamPath, resp.StatusCode)
+	}
+	_ = startTime
+}
+
+func rewriteCodexRefreshRequest(body []byte, contentType, realRefresh string) ([]byte, string) {
+	if strings.Contains(strings.ToLower(contentType), "application/x-www-form-urlencoded") {
+		vals, err := url.ParseQuery(string(body))
+		if err == nil {
+			vals.Set("refresh_token", realRefresh)
+			return []byte(vals.Encode()), "application/x-www-form-urlencoded"
+		}
+	}
+	var obj map[string]interface{}
+	if json.Unmarshal(body, &obj) == nil {
+		obj["refresh_token"] = realRefresh
+		out, _ := json.Marshal(obj)
+		return out, "application/json"
+	}
+	return body, contentType
+}
+
+func rewriteCodexRefreshResponse(body []byte, placeholderID, placeholder string) []byte {
+	var obj map[string]interface{}
+	if json.Unmarshal(body, &obj) != nil {
+		return body
+	}
+	subInfo := map[string]interface{}{"account_id": placeholderID}
+	tokens := codexPhantomTokens(placeholder, subInfo)
+	if _, ok := obj["access_token"]; ok {
+		obj["access_token"] = tokens["access_token"]
+	}
+	if _, ok := obj["refresh_token"]; ok {
+		obj["refresh_token"] = tokens["refresh_token"]
+	}
+	if _, ok := obj["id_token"]; ok {
+		obj["id_token"] = tokens["id_token"]
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // shouldStripResponseHeader returns true if a response header from the upstream

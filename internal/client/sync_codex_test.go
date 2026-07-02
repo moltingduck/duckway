@@ -137,3 +137,19 @@ command = "duckway"
 		}
 	}
 }
+
+func TestBuildHostMapAddsOpenAIAuthVirtualService(t *testing.T) {
+	hostMap := buildHostMap([]ServiceInfo{
+		{Name: "openai", HostPattern: "api.openai.com", UpstreamURL: "https://api.openai.com"},
+	})
+	entry, ok := hostMap["auth.openai.com"]
+	if !ok {
+		t.Fatalf("auth.openai.com missing from host map: %#v", hostMap)
+	}
+	if entry.Service != "openai-auth" || entry.DeliveryMode != "proxy" || entry.UpstreamURL != "https://auth.openai.com" {
+		t.Fatalf("unexpected auth host entry: %#v", entry)
+	}
+	if hostMap["api.openai.com"].Service != "openai" {
+		t.Fatalf("regular service host was not preserved: %#v", hostMap["api.openai.com"])
+	}
+}

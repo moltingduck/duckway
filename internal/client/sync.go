@@ -107,18 +107,15 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 		log.Printf("Warning: statusline sync failed: %v", err)
 	}
 
-	// Codex supports two distinct credential modes:
-	//   - Codex OAuth: write ~/.codex/auth.json and let Codex use native auth.
-	//   - OpenAI Platform key: route Codex through Duckway's local OpenAI proxy.
-	if synced := SyncCodexOAuthCredentials(configDir, cfg); synced {
-		if err := DisableCodexDuckwayProvider(); err != nil {
-			log.Printf("Warning: codex provider cleanup failed: %v", err)
-		}
-	} else {
+	// Codex OAuth uses a fake ~/.codex/auth.json plus Duckway's OpenAI
+	// provider. API calls carry the OpenAI placeholder; OAuth refresh calls are
+	// MITM'd at auth.openai.com and exchanged on the gateway. Real OAuth tokens
+	// are never written to the client.
+	if SyncCodexOAuthCredentials(configDir, cfg) {
 		ClearCodexOAuthMode(configDir)
-		if err := SyncCodexConfig(cfg.ProxyPort); err != nil {
-			log.Printf("Warning: codex config sync failed: %v", err)
-		}
+	}
+	if err := SyncCodexConfig(cfg.ProxyPort); err != nil {
+		log.Printf("Warning: codex config sync failed: %v", err)
 	}
 
 	return len(keys), nil
@@ -541,12 +538,8 @@ func SyncCodexOAuthCredentials(configDir string, cfg *Config) bool {
 		log.Printf("Warning: cannot write Codex OAuth credentials: %v", err)
 		return false
 	}
-	if err := os.MkdirAll(configDir, 0700); err != nil {
-		log.Printf("Warning: cannot create Duckway config dir for Codex OAuth mode marker: %v", err)
-	} else if err := os.WriteFile(CodexOAuthModePath(configDir), []byte("oauth\n"), 0600); err != nil {
-		log.Printf("Warning: cannot write Codex OAuth mode marker: %v", err)
-	}
-	log.Printf("Codex OAuth credentials synced to %s", authPath)
+	ClearCodexOAuthMode(configDir)
+	log.Printf("Codex phantom OAuth auth.json synced to %s", authPath)
 	return true
 }
 
