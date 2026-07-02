@@ -102,7 +102,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"o
 func TestWriteCodexTmuxLaunchScript(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "codex-launch.sh")
-	if err := writeCodexTmuxLaunchScript(path, "/usr/local/bin/codex", "/repo", "/tmp/prompt.txt", "/tmp/out.jsonl", "/tmp/events", ""); err != nil {
+	if err := writeCodexTmuxLaunchScript(path, "/usr/local/bin/codex", "/repo", "/tmp/prompt.txt", "/tmp/out.jsonl", "/tmp/events", "", nil); err != nil {
 		t.Fatalf("writeCodexTmuxLaunchScript: %v", err)
 	}
 	body, err := os.ReadFile(path)
@@ -125,7 +125,7 @@ func TestWriteCodexTmuxLaunchScript(t *testing.T) {
 func TestWriteCodexTmuxLaunchScriptResume(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "codex-launch.sh")
-	if err := writeCodexTmuxLaunchScript(path, "codex", "/repo", "/tmp/prompt.txt", "/tmp/out.jsonl", "/tmp/events", "sid-123"); err != nil {
+	if err := writeCodexTmuxLaunchScript(path, "codex", "/repo", "/tmp/prompt.txt", "/tmp/out.jsonl", "/tmp/events", "sid-123", []string{"DUCKWAY_CC_CODEX_SANDBOX=danger-full-access"}); err != nil {
 		t.Fatalf("writeCodexTmuxLaunchScript: %v", err)
 	}
 	body, err := os.ReadFile(path)
@@ -133,8 +133,68 @@ func TestWriteCodexTmuxLaunchScriptResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	if !strings.Contains(text, "set -- 'codex' 'exec' 'resume' '--json' '--skip-git-repo-check' 'sid-123' '-'") {
+	if !strings.Contains(text, "set -- 'codex' 'exec' 'resume' '--json' '--skip-git-repo-check' '--sandbox' 'danger-full-access' 'sid-123' '-'") {
 		t.Fatalf("resume launch script has wrong argv:\n%s", text)
+	}
+}
+
+func TestCodexSandboxArgs(t *testing.T) {
+	cases := []struct {
+		env  []string
+		want string
+	}{
+		{nil, "--sandbox workspace-write"},
+		{[]string{"DUCKWAY_CC_CODEX_SANDBOX=read-only"}, "--sandbox read-only"},
+		{[]string{"DUCKWAY_CC_CODEX_SANDBOX=danger-full-access"}, "--sandbox danger-full-access"},
+		{[]string{"DUCKWAY_CC_CODEX_SANDBOX=none"}, ""},
+		{[]string{"DUCKWAY_CC_CODEX_SANDBOX=$(rm -rf /)"}, "--sandbox workspace-write"},
+	}
+	for _, tc := range cases {
+		got := strings.Join(codexSandboxArgs(tc.env), " ")
+		if got != tc.want {
+			t.Errorf("codexSandboxArgs(%v) = %q, want %q", tc.env, got, tc.want)
+		}
+	}
+}
+
+func TestSanitizeAgentOptions(t *testing.T) {
+	cases := []struct {
+		name      string
+		agentType string
+		opts      map[string]string
+		want      map[string]string
+	}{
+		{
+			name:      "codex danger full access",
+			agentType: "codex",
+			opts:      map[string]string{"sandbox": "danger-full-access"},
+			want:      map[string]string{"sandbox": "danger-full-access"},
+		},
+		{
+			name:      "codex injected sandbox",
+			agentType: "codex",
+			opts:      map[string]string{"sandbox": "workspace-write --profile unsafe"},
+			want:      map[string]string{"sandbox": "workspace-write"},
+		},
+		{
+			name:      "claude strips options",
+			agentType: "claude_code",
+			opts:      map[string]string{"sandbox": "danger-full-access"},
+			want:      map[string]string{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeAgentOptions(tc.agentType, tc.opts)
+			if len(got) != len(tc.want) {
+				t.Fatalf("sanitizeAgentOptions = %+v, want %+v", got, tc.want)
+			}
+			for k, want := range tc.want {
+				if got[k] != want {
+					t.Fatalf("sanitizeAgentOptions[%s] = %q, want %q", k, got[k], want)
+				}
+			}
+		})
 	}
 }
 

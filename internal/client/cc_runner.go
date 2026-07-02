@@ -24,6 +24,7 @@ type ccAgentSpec struct {
 	RunFn       ccRunFn
 	TmuxRunFn   ccRunFn
 	UseTmux     bool
+	ExtraEnv    []string
 }
 
 // ccRunner owns the per-channel FIFO queue + claude exec for one task
@@ -38,6 +39,7 @@ type ccRunner struct {
 	configDir   string
 	cwd         string // resolved at construction
 	agentName   string
+	agentEnv    []string
 	bin         string
 	runFn       ccRunFn
 	queue       chan ccTask
@@ -107,6 +109,7 @@ func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, session
 		configDir:   configDir,
 		cwd:         cwd,
 		agentName:   spec.DisplayName,
+		agentEnv:    append([]string(nil), spec.ExtraEnv...),
 		bin:         spec.Bin,
 		runFn:       chooseCCRunFn(spec, noTmux),
 		queue:       make(chan ccTask, ccQueueDepth),
@@ -188,6 +191,7 @@ func (r *ccRunner) run(t ccTask) {
 		// message.
 		"DUCKWAY_CC_MESSAGE_ID=" + t.MessageID,
 	}
+	extraEnv = append(extraEnv, r.agentEnv...)
 	keysEnv := loadKeysEnv(r.configDir)
 	if r.agentName == "codex" && CodexOAuthModeActive(r.configDir) {
 		keysEnv = filterEnvByName(keysEnv, "OPENAI_API_KEY")

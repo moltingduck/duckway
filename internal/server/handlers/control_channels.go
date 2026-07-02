@@ -370,6 +370,11 @@ func (h *ControlChannelHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if len(req.Config) > 0 {
 		configStr = string(req.Config)
 	}
+	configStr, err = normalizeCCConfigForAgent(req.AgentType, configStr)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if svcRow.Name == "discord" {
 		var cfg struct {
 			GuildID    string `json:"guild_id"`
@@ -571,6 +576,11 @@ func (h *ControlChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 	configStr := cur.Config
 	if len(req.Config) > 0 {
 		configStr = string(req.Config)
+	}
+	configStr, err = normalizeCCConfigForAgent(agentType, configStr)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	active := cur.IsActive
 	if req.IsActive != nil {

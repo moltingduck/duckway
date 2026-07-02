@@ -22,10 +22,11 @@ type CCStateFile struct {
 
 // CCStateAssignment is the (single) CC the client is bound to.
 type CCStateAssignment struct {
-	CCID             string `json:"cc_id"`
-	CCName           string `json:"cc_name"`
-	AgentType        string `json:"agent_type"`
-	ManagementHandle string `json:"management_handle"`
+	CCID             string            `json:"cc_id"`
+	CCName           string            `json:"cc_name"`
+	AgentType        string            `json:"agent_type"`
+	ManagementHandle string            `json:"management_handle"`
+	AgentOptions     map[string]string `json:"agent_options,omitempty"`
 }
 
 func ccStateFilePath(configDir string) string {
@@ -71,6 +72,7 @@ func SyncCC(configDir string, cfg *Config) (int, error) {
 			CCName:           a.CCName,
 			AgentType:        a.AgentType,
 			ManagementHandle: a.ManagementHandle,
+			AgentOptions:     a.AgentOptions,
 		})
 	}
 

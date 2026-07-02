@@ -107,6 +107,7 @@ func (h *CCClientHandler) GetMyCC(w http.ResponseWriter, r *http.Request) {
 		"cc_name":           cc.Name,
 		"agent_type":        cc.AgentType,
 		"management_handle": mgmtHandle,
+		"agent_options":     agentOptionsForClient(cc.AgentType, cc.Config),
 	})
 }
 

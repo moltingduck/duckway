@@ -24,15 +24,38 @@ type codexJSONEvent struct {
 	Message string `json:"message"`
 }
 
+func codexSandboxArgs(extraEnv []string) []string {
+	sandbox := envValue(extraEnv, "DUCKWAY_CC_CODEX_SANDBOX")
+	if sandbox == "" {
+		sandbox = os.Getenv("DUCKWAY_CC_CODEX_SANDBOX")
+	}
+	if sandbox == "" {
+		sandbox = "workspace-write"
+	}
+	switch sandbox {
+	case "read-only", "workspace-write", "danger-full-access":
+		return []string{"--sandbox", sandbox}
+	case "none":
+		return nil
+	default:
+		return []string{"--sandbox", "workspace-write"}
+	}
+}
+
 // runViaCodexExec runs Codex in non-interactive JSONL mode. The first turn
 // starts a new Codex thread and captures thread.started.thread_id; follow-up
 // turns use `codex exec resume <thread_id>`.
 func runViaCodexExec(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []string) (sessionID, result string, isError bool, err error) {
 	args := []string{"exec"}
+	sandboxArgs := codexSandboxArgs(extraEnv)
 	if sid != "" {
-		args = append(args, "resume", "--json", "--skip-git-repo-check", sid, prompt)
+		args = append(args, "resume", "--json", "--skip-git-repo-check")
+		args = append(args, sandboxArgs...)
+		args = append(args, sid, prompt)
 	} else {
-		args = append(args, "--json", "--skip-git-repo-check", "--sandbox", "workspace-write", "-C", cwd, prompt)
+		args = append(args, "--json", "--skip-git-repo-check")
+		args = append(args, sandboxArgs...)
+		args = append(args, "-C", cwd, prompt)
 	}
 
 	cmd := exec.CommandContext(ctx, bin, args...)
@@ -86,7 +109,7 @@ func runViaCodexTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 	if err := writeInFlight(inFlightPath, handle, envValue(extraEnv, "DUCKWAY_CC_MESSAGE_ID"), turnTS); err != nil {
 		return "", "", false, err
 	}
-	if err := writeCodexTmuxLaunchScript(launchPath, bin, cwd, promptPath, outputPath, eventsDir, sid); err != nil {
+	if err := writeCodexTmuxLaunchScript(launchPath, bin, cwd, promptPath, outputPath, eventsDir, sid, extraEnv); err != nil {
 		return "", "", false, err
 	}
 
@@ -120,14 +143,19 @@ func runViaCodexTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 	return sessionID, result, isError, nil
 }
 
-func writeCodexTmuxLaunchScript(path, bin, cwd, promptPath, outputPath, eventsDir, sid string) error {
+func writeCodexTmuxLaunchScript(path, bin, cwd, promptPath, outputPath, eventsDir, sid string, extraEnv []string) error {
 	outputJSON, _ := json.Marshal(outputPath)
 	sidJSON, _ := json.Marshal(sid)
 	args := []string{bin, "exec"}
+	sandboxArgs := codexSandboxArgs(extraEnv)
 	if sid != "" {
-		args = append(args, "resume", "--json", "--skip-git-repo-check", sid, "-")
+		args = append(args, "resume", "--json", "--skip-git-repo-check")
+		args = append(args, sandboxArgs...)
+		args = append(args, sid, "-")
 	} else {
-		args = append(args, "--json", "--skip-git-repo-check", "--sandbox", "workspace-write", "-C", cwd, "-")
+		args = append(args, "--json", "--skip-git-repo-check")
+		args = append(args, sandboxArgs...)
+		args = append(args, "-C", cwd, "-")
 	}
 
 	var sb strings.Builder

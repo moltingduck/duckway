@@ -33,13 +33,14 @@
       </div>
       <div class="form-group">
         <label>Agent type</label>
-        <select id="cc-agent">
+        <select id="cc-agent" onchange="renderCreateAgentOptions()">
           <option value="claude_code">claude_code</option>
           <option value="codex">codex</option>
           <option value="openclaw">openclaw</option>
         </select>
         <span class="text-muted text-sm">Only agents implemented by <code>duckway cc watch</code> are shown.</span>
       </div>
+      <div id="cc-agent-options"></div>
       <div class="form-group">
         <label>Service</label>
         <select id="cc-service" required onchange="renderConfigFields()"></select>
@@ -436,8 +437,37 @@ function openCreate() {
   document.getElementById('cc-name').value = '';
   discordSetup = {apiKeyId:'', guilds:[], categories:[]};
   document.getElementById('create-form').querySelector('button[type="submit"]').disabled = false;
+  renderCreateAgentOptions();
   renderConfigFields();
   document.getElementById('create-modal').style.display = 'flex';
+}
+
+function codexSandboxField(id, value) {
+  value = value || 'workspace-write';
+  var opts = ['workspace-write','read-only','danger-full-access','none'].map(function(v) {
+    return '<option value="'+v+'" '+(v === value ? 'selected' : '')+'>'+v+'</option>';
+  }).join('');
+  return '<div class="form-group">' +
+    '<label>Codex sandbox</label>' +
+    '<select id="'+escapeHTML(id)+'">'+opts+'</select>' +
+    '<span class="text-muted text-sm">Only this enum is sent to the client. Use danger-full-access only for trusted Discord categories.</span>' +
+  '</div>';
+}
+
+function renderCreateAgentOptions() {
+  var box = document.getElementById('cc-agent-options');
+  if (!box) return;
+  box.innerHTML = document.getElementById('cc-agent').value === 'codex'
+    ? codexSandboxField('cc-codex-sandbox', 'workspace-write') : '';
+}
+
+function applyAgentOptions(config, agentType, selectID) {
+  if (agentType === 'codex') {
+    config.agent_options = {sandbox: document.getElementById(selectID).value};
+  } else if (config.agent_options) {
+    delete config.agent_options;
+  }
+  return config;
 }
 
 document.getElementById('create-form').addEventListener('submit', function(e) {
@@ -453,6 +483,7 @@ document.getElementById('create-form').addEventListener('submit', function(e) {
       return;
     }
   }
+  config = applyAgentOptions(config, document.getElementById('cc-agent').value, 'cc-codex-sandbox');
   fetch('/api/cc', {
     method: 'POST', credentials: 'same-origin',
     headers: {'Content-Type':'application/json'},
@@ -564,7 +595,7 @@ function populateEdit(c) {
   var agentField =
     '<div class="form-group">' +
       '<label>Agent type</label>' +
-      '<select id="edit-cc-agent" required>'+agentOptions+'</select>' +
+      '<select id="edit-cc-agent" required onchange="renderEditAgentOptions()">'+agentOptions+'</select>' +
       '<span class="text-muted text-sm">Pick the agent installed on the assigned client. Codex should be used with OpenAI/Codex credentials; Claude Code with Anthropic/Claude credentials.</span>' +
     '</div>';
   var keyOptions = allKeys
@@ -580,8 +611,9 @@ function populateEdit(c) {
     '</div>';
   if (c.service_name === 'discord') {
     box.innerHTML =
-      agentField +
-      keyField +
+        agentField +
+        '<div id="edit-agent-options"></div>' +
+        keyField +
       '<div class="form-group">' +
         '<label>Server ID</label>' +
         '<input type="text" id="edit-cfg-guild" value="'+escapeHTML(cfg.guild_id || '')+'" placeholder="Discord server id">' +
@@ -595,28 +627,42 @@ function populateEdit(c) {
         '<button type="button" class="btn btn-sm" onclick="preflightEditDiscordCategory()">Check permissions</button>' +
         '<button type="button" class="btn btn-sm" onclick="grantEditDiscordCategoryAccess()">Grant bot access</button>' +
       '</div>';
+    renderEditAgentOptions();
     return;
   }
   box.innerHTML =
     agentField +
+    '<div id="edit-agent-options"></div>' +
     keyField +
     '<div class="form-group">' +
       '<label>Config JSON</label>' +
       '<textarea id="edit-cfg-json" style="min-height:90px;font-family:monospace;font-size:0.75rem">'+escapeHTML(JSON.stringify(cfg, null, 2))+'</textarea>' +
     '</div>';
+  renderEditAgentOptions();
+}
+
+function renderEditAgentOptions() {
+  var box = document.getElementById('edit-agent-options');
+  if (!box) return;
+  var agent = document.getElementById('edit-cc-agent').value;
+  var cfg = parseCCConfig(currentCC || {});
+  var opts = cfg.agent_options || {};
+  box.innerHTML = agent === 'codex'
+    ? codexSandboxField('edit-codex-sandbox', opts.sandbox || 'workspace-write') : '';
 }
 
 function readEditConfig() {
   if (!currentCC) return {};
+  var agentType = document.getElementById('edit-cc-agent').value;
   if (currentCC.service_name === 'discord') {
     var guildID = document.getElementById('edit-cfg-guild').value.trim();
     var categoryID = document.getElementById('edit-cfg-category').value.trim();
     if (!guildID || !categoryID) throw new Error('Server ID and Category ID are required');
-    return {guild_id:guildID, category_id:categoryID};
+    return applyAgentOptions({guild_id:guildID, category_id:categoryID}, agentType, 'edit-codex-sandbox');
   }
   var raw = document.getElementById('edit-cfg-json').value.trim();
-  if (!raw) return {};
-  return JSON.parse(raw);
+  var config = raw ? JSON.parse(raw) : {};
+  return applyAgentOptions(config, agentType, 'edit-codex-sandbox');
 }
 
 document.getElementById('edit-form').addEventListener('submit', function(e) {

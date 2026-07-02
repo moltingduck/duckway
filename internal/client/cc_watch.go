@@ -25,11 +25,12 @@ import (
 // Reconnects forever with exponential backoff (5s → 10s → 30s → 60s cap)
 // so a brief duckway-server outage doesn't kill the daemon.
 type CCWatch struct {
-	cfg        *Config
-	configDir  string
-	agentTypes map[string]string // cc_id -> agent_type, loaded from cc.json
-	sessions   *CCSessionStore
-	processed  *CCProcessedStore
+	cfg          *Config
+	configDir    string
+	agentTypes   map[string]string            // cc_id -> agent_type, loaded from cc.json
+	agentOptions map[string]map[string]string // cc_id -> sanitized agent-specific options
+	sessions     *CCSessionStore
+	processed    *CCProcessedStore
 	// noTmux forces the headless --print runner even when tmux is installed.
 	// Set via `duckway cc watch --no-tmux` or DUCKWAY_CC_NO_TMUX=1.
 	noTmux bool
@@ -56,23 +57,26 @@ func NewCCWatch(configDir string, cfg *Config) (*CCWatch, error) {
 
 func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (*CCWatch, error) {
 	agentTypes := map[string]string{}
+	agentOptions := map[string]map[string]string{}
 	if state, err := LoadCCState(configDir); err == nil {
 		for _, cc := range state.CCs {
 			if cc.CCID != "" && cc.AgentType != "" {
 				agentTypes[cc.CCID] = cc.AgentType
+				agentOptions[cc.CCID] = sanitizeAgentOptions(cc.AgentType, cc.AgentOptions)
 			}
 		}
 	}
 	return &CCWatch{
-		cfg:         cfg,
-		configDir:   configDir,
-		agentTypes:  agentTypes,
-		sessions:    NewCCSessionStore(configDir),
-		processed:   NewCCProcessedStore(configDir),
-		noTmux:      opts.NoTmux,
-		runners:     map[string]*ccRunner{},
-		inboxCursor: loadCCInboxCursor(configDir),
-		api:         NewAPIClient(cfg.ServerURL, cfg.Token),
+		cfg:          cfg,
+		configDir:    configDir,
+		agentTypes:   agentTypes,
+		agentOptions: agentOptions,
+		sessions:     NewCCSessionStore(configDir),
+		processed:    NewCCProcessedStore(configDir),
+		noTmux:       opts.NoTmux,
+		runners:      map[string]*ccRunner{},
+		inboxCursor:  loadCCInboxCursor(configDir),
+		api:          NewAPIClient(cfg.ServerURL, cfg.Token),
 	}, nil
 }
 
@@ -389,6 +393,7 @@ func (w *CCWatch) agentSpec(ccID string) (ccAgentSpec, error) {
 	if agentType == "" {
 		agentType = "claude_code"
 	}
+	opts := sanitizeAgentOptions(agentType, w.agentOptions[ccID])
 	switch agentType {
 	case "claude_code":
 		bin, err := exec.LookPath("claude")
@@ -413,6 +418,7 @@ func (w *CCWatch) agentSpec(ccID string) (ccAgentSpec, error) {
 			RunFn:       runViaCodexExec,
 			TmuxRunFn:   runViaCodexTmux,
 			UseTmux:     true,
+			ExtraEnv:    agentOptionEnv(agentType, opts),
 		}, nil
 	case "openclaw":
 		bin, err := exec.LookPath("openclaw")
@@ -429,6 +435,34 @@ func (w *CCWatch) agentSpec(ccID string) (ccAgentSpec, error) {
 	default:
 		return ccAgentSpec{}, fmt.Errorf("agent_type %q is not implemented by cc watch", agentType)
 	}
+}
+
+func sanitizeAgentOptions(agentType string, opts map[string]string) map[string]string {
+	out := map[string]string{}
+	switch agentType {
+	case "codex":
+		sandbox := opts["sandbox"]
+		if sandbox == "" {
+			sandbox = "workspace-write"
+		}
+		switch sandbox {
+		case "read-only", "workspace-write", "danger-full-access", "none":
+			out["sandbox"] = sandbox
+		default:
+			out["sandbox"] = "workspace-write"
+		}
+	}
+	return out
+}
+
+func agentOptionEnv(agentType string, opts map[string]string) []string {
+	switch agentType {
+	case "codex":
+		if sandbox := opts["sandbox"]; sandbox != "" {
+			return []string{"DUCKWAY_CC_CODEX_SANDBOX=" + sandbox}
+		}
+	}
+	return nil
 }
 
 func (w *CCWatch) fetchChannelCwd(handle string) (string, error) {
@@ -593,9 +627,11 @@ func (w *CCWatch) reconcileCCState(ctx context.Context, mode string) {
 		summary.Management = assignments[0].ManagementHandle
 		w.mu.Lock()
 		w.agentTypes = map[string]string{}
+		w.agentOptions = map[string]map[string]string{}
 		for _, cc := range assignments {
 			if cc.CCID != "" && cc.AgentType != "" {
 				w.agentTypes[cc.CCID] = cc.AgentType
+				w.agentOptions[cc.CCID] = sanitizeAgentOptions(cc.AgentType, cc.AgentOptions)
 			}
 		}
 		w.mu.Unlock()

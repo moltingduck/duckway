@@ -421,6 +421,7 @@ Duckway can now discover servers and categories from the saved bot token, so you
    - **Name** — anything you'll recognise (e.g. "Project Alpha CC").
    - **Client** — the duckway client this CC belongs to.
    - **Agent type** — `claude_code`, `codex`, or `openclaw`. Claude/Codex use attachable `duckway-<handle>` tmux sessions when tmux is installed; `--no-tmux` forces headless mode. OpenClaw runs through `openclaw agent --message-file --json` and uses `DUCKWAY_CC_OPENCLAW_AGENT` for the OpenClaw agent id.
+   - **Codex sandbox** — shown only for `codex`. Allowed values are `workspace-write` (default), `read-only`, `danger-full-access`, and `none`. `danger-full-access` lets Codex use local files and commands without filesystem sandboxing, so only use it for trusted Discord categories and clients.
    - **Service** — `discord`.
    - **Bot Token** — the API key you uploaded in (1).
    - **Discord setup** — click **Load Discord setup**. If the bot is not in the server yet, click **Invite bot** to open Duckway's normal Discord OAuth URL, select the server in Discord, then refresh. Use **Setup invite** only if **Grant bot access** fails because the bot lacks permission to write the category override. Pick an existing category and click **Grant bot access**, or create a new category from the form and Duckway will grant access automatically. Then click **Check permissions** to verify create/send/react/read/delete access before saving.
@@ -511,7 +512,7 @@ For ordinary task messages, the client keeps status quiet with reactions: `🦆`
 - The **bot token** is the only real boundary. Two CCs sharing a bot can reach each other's channels — use **different bots** to isolate teams.
 - The agent never sees `channel_id`, `guild_id`, or `category_id` — only opaque `dwch_…` handles.
 - A client can only operate within its own CC (HTTP 403 otherwise) AND any handle in a path is checked to belong to that CC.
-- For `claude_code`, the daemon spawns claude with `--dangerously-skip-permissions`. For `codex`, the daemon uses `codex exec --json --sandbox workspace-write`; when tmux is installed, the command runs inside `duckway-<handle>` and leaves the pane open for inspection. For `openclaw`, the daemon runs `openclaw agent --agent <id> --session-key duckway:<handle> --message-file <file> --json`; it does not use OpenClaw's own Discord/channel integration. Anyone in the Discord category can make the selected agent act. Trust the channel.
+- For `claude_code`, the daemon spawns claude with `--dangerously-skip-permissions`. For `codex`, the daemon uses the CC's controlled sandbox enum with `codex exec --json --sandbox <value>` unless the admin chooses `none`; when tmux is installed, the command runs inside `duckway-<handle>` and leaves the pane open for inspection. For `openclaw`, the daemon runs `openclaw agent --agent <id> --session-key duckway:<handle> --message-file <file> --json`; it does not use OpenClaw's own Discord/channel integration. The server and client both validate agent options, and the client never accepts arbitrary CLI arguments from the server. Anyone in the Discord category can make the selected agent act. Trust the channel.
 
 ### Inbox tuning (Settings page)
 

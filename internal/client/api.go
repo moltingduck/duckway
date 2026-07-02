@@ -354,10 +354,11 @@ func (c *APIClient) FetchConfig() (map[string]string, error) {
 // the slice-returning Fetch helper so callers (sync, daemon) treat 0 vs 1
 // uniformly.
 type CCAssignment struct {
-	CCID             string `json:"cc_id"`
-	CCName           string `json:"cc_name"`
-	AgentType        string `json:"agent_type"`
-	ManagementHandle string `json:"management_handle"`
+	CCID             string            `json:"cc_id"`
+	CCName           string            `json:"cc_name"`
+	AgentType        string            `json:"agent_type"`
+	ManagementHandle string            `json:"management_handle"`
+	AgentOptions     map[string]string `json:"agent_options,omitempty"`
 }
 
 // FetchCC asks the server for the (single) CC bound to this client.
@@ -383,11 +384,12 @@ func (c *APIClient) FetchCC() ([]CCAssignment, error) {
 		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
 	}
 	var raw struct {
-		Assigned         bool   `json:"assigned"`
-		CCID             string `json:"cc_id"`
-		CCName           string `json:"cc_name"`
-		AgentType        string `json:"agent_type"`
-		ManagementHandle string `json:"management_handle"`
+		Assigned         bool              `json:"assigned"`
+		CCID             string            `json:"cc_id"`
+		CCName           string            `json:"cc_name"`
+		AgentType        string            `json:"agent_type"`
+		ManagementHandle string            `json:"management_handle"`
+		AgentOptions     map[string]string `json:"agent_options"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("parse cc: %w", err)
@@ -397,7 +399,7 @@ func (c *APIClient) FetchCC() ([]CCAssignment, error) {
 	}
 	return []CCAssignment{{
 		CCID: raw.CCID, CCName: raw.CCName, AgentType: raw.AgentType,
-		ManagementHandle: raw.ManagementHandle,
+		ManagementHandle: raw.ManagementHandle, AgentOptions: raw.AgentOptions,
 	}}, nil
 }
 

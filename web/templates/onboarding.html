@@ -66,13 +66,14 @@
     </div>
     <div class="form-group">
       <label>Agent type</label>
-        <select id="cc-agent">
+        <select id="cc-agent" onchange="renderOnboardingAgentOptions()">
           <option value="claude_code">claude_code</option>
           <option value="codex">codex</option>
           <option value="openclaw">openclaw</option>
         </select>
       <span class="text-muted text-sm">Only agents implemented by <code>duckway cc watch</code> are shown.</span>
     </div>
+    <div id="onboarding-agent-options"></div>
     <div class="form-group">
       <label>Message channel</label>
       <select id="cc-service" onchange="loadCCKeys();renderCCConfig()"></select>
@@ -229,6 +230,7 @@ function previewSuite() {
     }
     preview.style.display = '';
   });
+  renderOnboardingAgentOptions();
 }
 
 function assignSuite() {
@@ -295,6 +297,35 @@ function updateAgentTypeOptions() {
       ? 'Shown from the assigned Key Suite credentials plus OpenClaw. Pick the agent installed on this client.'
       : 'No Claude/OpenAI key was assigned by the suite, so supported agents are shown.';
   }
+  renderOnboardingAgentOptions();
+}
+
+function codexSandboxField(id, value) {
+  value = value || 'workspace-write';
+  var opts = ['workspace-write','read-only','danger-full-access','none'].map(function(v) {
+    return '<option value="'+esc(v)+'" '+(v === value ? 'selected' : '')+'>'+esc(v)+'</option>';
+  }).join('');
+  return '<div class="form-group">' +
+    '<label>Codex sandbox</label>' +
+    '<select id="'+esc(id)+'">'+opts+'</select>' +
+    '<span class="text-muted text-sm">Only this enum is sent to the client. Use danger-full-access only for trusted Discord categories.</span>' +
+  '</div>';
+}
+
+function renderOnboardingAgentOptions() {
+  var box = document.getElementById('onboarding-agent-options');
+  var sel = document.getElementById('cc-agent');
+  if (!box || !sel) return;
+  box.innerHTML = sel.value === 'codex' ? codexSandboxField('onboarding-codex-sandbox', 'workspace-write') : '';
+}
+
+function applyOnboardingAgentOptions(config, agentType) {
+  if (agentType === 'codex') {
+    config.agent_options = {sandbox: document.getElementById('onboarding-codex-sandbox').value};
+  } else if (config.agent_options) {
+    delete config.agent_options;
+  }
+  return config;
 }
 
 function loadCCKeys() {
@@ -473,6 +504,7 @@ function createCC() {
   var catEl = document.getElementById('cfg-category');
   if (guildEl) cfg.guild_id = guildEl.value.trim();
   if (catEl) cfg.category_id = catEl.value.trim();
+  cfg = applyOnboardingAgentOptions(cfg, agentType);
 
   fetch('/api/cc', {
     method: 'POST', credentials: 'same-origin',
