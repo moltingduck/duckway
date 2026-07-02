@@ -529,11 +529,7 @@ func (h *OAuthHandler) ClientGetCodexCredentials(w http.ResponseWriter, r *http.
 	}
 	idToken, _ := subInfo["id_token"].(string)
 	tokens := codexPhantomTokensFromSource(ph.Placeholder, subInfo, accessToken, idToken)
-	for _, key := range []string{"account_id"} {
-		if v, ok := subInfo[key]; ok && v != "" {
-			tokens[key] = v
-		}
-	}
+	tokens["account_id"] = "duckway-account"
 	resp := map[string]interface{}{
 		"auth_mode":      "chatgpt",
 		"OPENAI_API_KEY": nil,
@@ -558,30 +554,105 @@ func codexPhantomTokensFromSource(placeholder string, subInfo map[string]interfa
 }
 
 func codexPhantomJWTFromSource(kind, placeholder string, subInfo map[string]interface{}, source string) string {
-	parts := strings.Split(source, ".")
-	if len(parts) == 3 && parts[0] != "" && parts[1] != "" {
-		sig := base64.RawURLEncoding.EncodeToString([]byte("duckway:" + kind + ":" + placeholder))
-		return parts[0] + "." + parts[1] + "." + sig
+	now := time.Now().Unix()
+	exp := now + 24*60*60
+	claims := parseJWTClaims(source)
+	if srcExp, ok := claims["exp"].(float64); ok && srcExp > float64(now) {
+		exp = int64(srcExp)
 	}
-	return codexPhantomJWT(kind, placeholder, subInfo)
+	clientID := codexClientIDFromClaims(claims)
+	if v, _ := subInfo["client_id"].(string); v != "" {
+		clientID = v
+	}
+	return codexPhantomJWTWithClaims(kind, placeholder, subInfo, clientID, now, exp)
 }
 
 func codexPhantomJWT(kind, placeholder string, subInfo map[string]interface{}) string {
-	accountID := "duckway"
-	if v, _ := subInfo["account_id"].(string); v != "" {
-		accountID = v
+	now := time.Now().Unix()
+	return codexPhantomJWTWithClaims(kind, placeholder, subInfo, defaultCodexClientID, now, now+24*60*60)
+}
+
+const defaultCodexClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+
+func codexPhantomJWTWithClaims(kind, placeholder string, subInfo map[string]interface{}, clientID string, now, exp int64) string {
+	accountID := "duckway-account"
+	if clientID == "" {
+		clientID = defaultCodexClientID
 	}
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	header := map[string]interface{}{
+		"alg": "RS256",
+		"kid": "duckway-phantom",
+		"typ": "JWT",
+	}
+	authClaims := map[string]interface{}{
+		"chatgpt_account_id":        accountID,
+		"chatgpt_plan_type":         "duckway",
+		"chatgpt_user_id":           "duckway-user",
+		"user_id":                   "duckway-user",
+		"chatgpt_compute_residency": "no_constraint",
+		"localhost":                 true,
+	}
 	payload := map[string]interface{}{
-		"iss":         "https://duckway.local",
-		"aud":         "codex",
-		"sub":         accountID,
-		"typ":         "duckway_codex_phantom_" + kind,
-		"placeholder": placeholder,
-		"exp":         time.Now().Add(24 * time.Hour).Unix(),
+		"iss":                         "https://auth.openai.com",
+		"sub":                         "auth0|duckway-phantom",
+		"https://api.openai.com/auth": authClaims,
+		"iat":                         now,
+		"exp":                         exp,
+		"jti":                         "dw-phantom-" + kind,
 	}
-	b, _ := json.Marshal(payload)
-	return header + "." + base64.RawURLEncoding.EncodeToString(b) + ".duckway"
+	if kind == "access" {
+		payload["aud"] = []string{"https://api.openai.com/v1"}
+		payload["client_id"] = clientID
+		payload["nbf"] = now
+		payload["scp"] = []string{"openid", "profile", "email", "offline_access", "api.connectors.read", "api.connectors.invoke"}
+		payload["session_id"] = "authsess_duckway_phantom"
+		payload["sl"] = true
+		payload["https://api.openai.com/profile"] = map[string]interface{}{
+			"email":          "duckway-agent@duckway.local",
+			"email_verified": true,
+		}
+	} else {
+		payload["aud"] = []string{clientID}
+		payload["auth_provider"] = "duckway"
+		payload["auth_time"] = now
+		payload["email"] = "duckway-agent@duckway.local"
+		payload["email_verified"] = true
+		payload["name"] = "Duckway Agent"
+		payload["rat"] = now
+		payload["sid"] = "duckway-phantom"
+	}
+	headerBytes, _ := json.Marshal(header)
+	payloadBytes, _ := json.Marshal(payload)
+	sig := base64.RawURLEncoding.EncodeToString([]byte("duckway-phantom-" + kind))
+	return base64.RawURLEncoding.EncodeToString(headerBytes) + "." + base64.RawURLEncoding.EncodeToString(payloadBytes) + "." + sig
+}
+
+func parseJWTClaims(token string) map[string]interface{} {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[1] == "" {
+		return map[string]interface{}{}
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return map[string]interface{}{}
+	}
+	var claims map[string]interface{}
+	if json.Unmarshal(payload, &claims) != nil {
+		return map[string]interface{}{}
+	}
+	return claims
+}
+
+func codexClientIDFromClaims(claims map[string]interface{}) string {
+	if v, _ := claims["client_id"].(string); v != "" {
+		return v
+	}
+	if aud, _ := claims["aud"].([]interface{}); len(aud) > 0 {
+		if v, _ := aud[0].(string); strings.HasPrefix(v, "app_") {
+			return v
+		}
+	}
+	return defaultCodexClientID
 }
 
 func isCodexOAuthInfo(subInfo map[string]interface{}, tokenEndpoint string) bool {

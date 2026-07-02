@@ -72,7 +72,7 @@ func TestClientGetCodexCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	tokens, _ := got["tokens"].(map[string]interface{})
-	if got["auth_mode"] != "chatgpt" || tokens["account_id"] != "acct-1" {
+	if got["auth_mode"] != "chatgpt" || tokens["account_id"] != "duckway-account" {
 		t.Fatalf("unexpected response: %#v", got)
 	}
 	accessToken, _ := tokens["access_token"].(string)
@@ -95,6 +95,9 @@ func TestClientGetCodexCredentials(t *testing.T) {
 	}
 	if !strings.HasPrefix(refreshToken, "rt.duckway.sk-proj-dw_fake") {
 		t.Fatalf("unexpected fake refresh token: %q", refreshToken)
+	}
+	if strings.Contains(rec.Body.String(), "acct-1") {
+		t.Fatalf("response leaked real account id: %s", rec.Body.String())
 	}
 }
 

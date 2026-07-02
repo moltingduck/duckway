@@ -70,8 +70,8 @@ func TestRewriteCodexRefreshRequestJSON(t *testing.T) {
 }
 
 func TestRewriteCodexRefreshResponseReturnsOnlyFakeTokens(t *testing.T) {
-	realAccess := testCodexJWT(`{"exp":1893456000,"scope":"access"}`)
-	realID := testCodexJWT(`{"exp":1893456000,"kind":"id"}`)
+	realAccess := testCodexJWT(`{"exp":1893456000,"scope":"access","email":"real@example.com","sub":"auth0|real","https://api.openai.com/auth":{"chatgpt_account_id":"acct-real","chatgpt_user_id":"user-real","poid":"org-real"}}`)
+	realID := testCodexJWT(`{"exp":1893456000,"kind":"id","email":"real@example.com","name":"Real User","sub":"auth0|real"}`)
 	body := []byte(`{"access_token":"` + realAccess + `","refresh_token":"rt.real.secret","id_token":"` + realID + `","expires_in":3600}`)
 	got := rewriteCodexRefreshResponse(body, "ph-openai", "sk-proj-dw_fake")
 	var obj map[string]interface{}
@@ -87,17 +87,23 @@ func TestRewriteCodexRefreshResponseReturnsOnlyFakeTokens(t *testing.T) {
 			t.Fatalf("%s leaked real token: %q", key, tok)
 		}
 	}
-	if !sameJWTPayload(obj["access_token"].(string), realAccess) {
-		t.Fatalf("access token payload should be preserved")
-	}
-	if !sameJWTPayload(obj["id_token"].(string), realID) {
-		t.Fatalf("id token payload should be preserved")
-	}
 	if !strings.HasPrefix(obj["refresh_token"].(string), "rt.duckway.sk-proj-dw_fake") {
 		t.Fatalf("unexpected fake refresh token: %q", obj["refresh_token"])
 	}
 	if obj["expires_in"].(float64) != 3600 {
 		t.Fatalf("expires_in was not preserved: %#v", obj["expires_in"])
+	}
+	for label, tok := range map[string]string{"access": obj["access_token"].(string), "id": obj["id_token"].(string)} {
+		claims := decodeJWTClaimsForTest(t, tok)
+		encoded, _ := json.Marshal(claims)
+		for _, forbidden := range []string{"real@example.com", "Real User", "auth0|real", "acct-real", "user-real", "org-real"} {
+			if strings.Contains(string(encoded), forbidden) {
+				t.Fatalf("%s token leaked %q in claims: %s", label, forbidden, encoded)
+			}
+		}
+		if claims["iss"] != "https://auth.openai.com" {
+			t.Fatalf("%s token iss = %#v", label, claims["iss"])
+		}
 	}
 }
 
@@ -216,8 +222,19 @@ func testCodexJWT(payload string) string {
 	return header + "." + base64.RawURLEncoding.EncodeToString([]byte(payload)) + ".real-signature"
 }
 
-func sameJWTPayload(a, b string) bool {
-	ap := strings.Split(a, ".")
-	bp := strings.Split(b, ".")
-	return len(ap) == 3 && len(bp) == 3 && ap[0] == bp[0] && ap[1] == bp[1] && ap[2] != bp[2]
+func decodeJWTClaimsForTest(t *testing.T, token string) map[string]interface{} {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token is not JWT-shaped: %q", token)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatal(err)
+	}
+	return claims
 }
