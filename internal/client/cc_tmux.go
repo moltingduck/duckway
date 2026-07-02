@@ -33,8 +33,9 @@ import (
 // daemon was down — see RecoverPendingTurns.
 
 const (
-	tmuxSessionSuffix = "-duckway"
-	tmuxRunTimeout    = 5 * time.Minute
+	tmuxLegacySessionPrefix = "duckway-"
+	tmuxSessionSuffix       = "-duckway"
+	tmuxRunTimeout          = 5 * time.Minute
 	// claudeStartupDelay is how long we wait after launching claude in a
 	// fresh tmux pane before sending the first prompt. Claude's Ink TUI
 	// takes a couple of seconds to render and start consuming stdin;
@@ -94,6 +95,33 @@ func tmuxSessionName(handle string) string {
 	return safe + tmuxSessionSuffix
 }
 
+func tmuxLegacySessionName(handle string) string {
+	safe := strings.NewReplacer(":", "-", ".", "-", " ", "-").Replace(handle)
+	return tmuxLegacySessionPrefix + safe
+}
+
+func migrateLegacyTmuxSession(handle string) {
+	newSess := tmuxSessionName(handle)
+	oldSess := tmuxLegacySessionName(handle)
+	newExists := tmuxHasSession(newSess)
+	oldExists := tmuxHasSession(oldSess)
+	switch {
+	case oldExists && !newExists:
+		if out, err := exec.Command("tmux", "rename-session", "-t", oldSess, newSess).CombinedOutput(); err != nil {
+			log.Printf("[cc-watch] tmux migrate %s -> %s failed: %v (%s)", oldSess, newSess, err, strings.TrimSpace(string(out)))
+		} else {
+			log.Printf("[cc-watch] tmux migrated legacy session %s -> %s", oldSess, newSess)
+		}
+	case oldExists && newExists:
+		log.Printf("[cc-watch] tmux legacy session %s and current session %s both exist; keeping both to avoid merging active turns", oldSess, newSess)
+	}
+}
+
+func tmuxHasChannelSession(handle string) bool {
+	migrateLegacyTmuxSession(handle)
+	return tmuxHasSession(tmuxSessionName(handle))
+}
+
 // ccWatchRoot is the parent directory that holds per-channel state. Stable
 // across daemon restarts so we can find pending turns on relaunch.
 func ccWatchRoot() (string, error) {
@@ -131,6 +159,7 @@ func runViaTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []st
 	if handle == "" {
 		return "", "", false, fmt.Errorf("tmux runner: missing DUCKWAY_CC_CHANNEL_HANDLE in extraEnv")
 	}
+	migrateLegacyTmuxSession(handle)
 	sess := tmuxSessionName(handle)
 
 	chDir, err := tmuxChannelDir(handle)
@@ -1066,6 +1095,7 @@ func markCwdTrustedInClaude(cwd string) error {
 // Discord channel is deleted. Safe when the session doesn't exist.
 func tmuxKillSession(handle string) {
 	_ = exec.Command("tmux", "kill-session", "-t", tmuxSessionName(handle)).Run()
+	_ = exec.Command("tmux", "kill-session", "-t", tmuxLegacySessionName(handle)).Run()
 }
 
 // writeHookScript emits a sh script that claude invokes from the Stop

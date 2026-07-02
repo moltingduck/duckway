@@ -27,6 +27,12 @@ func TestTmuxSessionName(t *testing.T) {
 	}
 }
 
+func TestTmuxLegacySessionName(t *testing.T) {
+	if got := tmuxLegacySessionName("feat:auth"); got != "duckway-feat-auth" {
+		t.Fatalf("tmuxLegacySessionName = %q", got)
+	}
+}
+
 func TestEnvValue(t *testing.T) {
 	env := []string{
 		"PATH=/usr/bin",

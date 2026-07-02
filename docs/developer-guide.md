@@ -433,6 +433,8 @@ When a human posts in a task channel, the gateway forwards the event over SSE to
 
 Codex tmux turns intentionally do not use the shared five-minute `tmuxRunTimeout`; long-running prompts such as `/goal` keep the per-channel runner occupied until Codex writes its completion event. If the daemon dies mid-turn, `in-flight.json` plus the event file allow startup recovery to post the final reply.
 
+Tmux session names use `<handle>-duckway`. During upgrade, `migrateLegacyTmuxSession` renames the older `duckway-<handle>` convention to the current name when only the legacy session exists. If both names exist, it logs a warning and leaves both alone to avoid merging separate active turns.
+
 ### Tables (v2 — `client_cc` is gone)
 
 | Table | Purpose |

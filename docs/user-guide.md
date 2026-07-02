@@ -511,6 +511,8 @@ For ordinary task messages, the client keeps status quiet with reactions: `🦆`
 
 Codex tmux turns do not fail just because they run longer than five minutes. Long-running prompts such as `/goal` keep the task channel busy, leave the tmux session attachable, and complete when Codex writes its final event.
 
+On upgrade, existing legacy tmux sessions named `duckway-<handle>` are automatically renamed to the current `<handle>-duckway` convention the next time `cc watch` uses that channel, unless both old and new sessions already exist.
+
 ### Security boundary
 
 - The **bot token** is the only real boundary. Two CCs sharing a bot can reach each other's channels — use **different bots** to isolate teams.

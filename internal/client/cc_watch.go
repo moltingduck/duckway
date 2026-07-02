@@ -686,7 +686,7 @@ func (w *CCWatch) recoverPendingTurns(ctx context.Context, summary *ccReconcileS
 				summary.StillRunning++
 			}
 			body := "⏳ duckway client reconnected; this agent turn still appears to be running."
-			if tmuxAvailable() && tmuxHasSession(tmuxSessionName(r.Handle)) {
+			if tmuxAvailable() && tmuxHasChannelSession(r.Handle) {
 				body += "\nAttach locally with: `tmux attach -t " + tmuxSessionName(r.Handle) + "`"
 			}
 			if perr := w.api.PostCC(ctx, r.Handle, body); perr != nil {

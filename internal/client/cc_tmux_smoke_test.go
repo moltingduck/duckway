@@ -161,6 +161,29 @@ sleep 30
 	}
 }
 
+func TestSmokeMigrateLegacyTmuxSession(t *testing.T) {
+	requireTmux(t)
+
+	handle := "legacy-" + uniqueSuffix()
+	oldSess := tmuxLegacySessionName(handle)
+	newSess := tmuxSessionName(handle)
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-session", "-t", oldSess).Run()
+		_ = exec.Command("tmux", "kill-session", "-t", newSess).Run()
+	})
+
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", oldSess, "sleep 30").CombinedOutput(); err != nil {
+		t.Fatalf("tmux new legacy session: %v (%s)", err, out)
+	}
+	migrateLegacyTmuxSession(handle)
+	if tmuxHasSession(oldSess) {
+		t.Fatalf("legacy session %s still exists after migration", oldSess)
+	}
+	if !tmuxHasSession(newSess) {
+		t.Fatalf("new session %s does not exist after migration", newSess)
+	}
+}
+
 // TestSmokeRecoverPendingTurns simulates a daemon crash mid-turn: writes
 // an in-flight marker and an unconsumed Stop event under the channel's
 // events dir, then calls RecoverPendingTurns and checks it returns the
