@@ -99,6 +99,32 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"o
 	}
 }
 
+func TestRunViaCodexExecResumeUsesConfigSandbox(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+case "$*" in
+  *"--sandbox"* ) printf 'unexpected --sandbox on resume: %s\n' "$*" >&2; exit 2;;
+  *"exec resume --json --skip-git-repo-check -c sandbox_mode=\"danger-full-access\" sid-123 hello"* ) ;;
+  *) printf 'unexpected argv: %s\n' "$*" >&2; exit 12;;
+esac
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"resumed"}}'
+`
+	if err := os.WriteFile(stub, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sid, result, isErr, err := runViaCodexExec(ctx, stub, dir, "hello", "sid-123", []string{"DUCKWAY_CC_CODEX_SANDBOX=danger-full-access"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid != "sid-123" || result != "resumed" || isErr {
+		t.Fatalf("sid=%q result=%q isErr=%v", sid, result, isErr)
+	}
+}
+
 func TestWriteCodexTmuxLaunchScript(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "codex-launch.sh")
@@ -133,12 +159,15 @@ func TestWriteCodexTmuxLaunchScriptResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	if !strings.Contains(text, "set -- 'codex' 'exec' 'resume' '--json' '--skip-git-repo-check' '--sandbox' 'danger-full-access' 'sid-123' '-'") {
+	if strings.Contains(text, "'--sandbox'") {
+		t.Fatalf("resume launch script must not pass --sandbox:\n%s", text)
+	}
+	if !strings.Contains(text, "set -- 'codex' 'exec' 'resume' '--json' '--skip-git-repo-check' '-c' 'sandbox_mode=\"danger-full-access\"' 'sid-123' '-'") {
 		t.Fatalf("resume launch script has wrong argv:\n%s", text)
 	}
 }
 
-func TestCodexSandboxArgs(t *testing.T) {
+func TestCodexExecSandboxArgs(t *testing.T) {
 	cases := []struct {
 		env  []string
 		want string
@@ -150,9 +179,28 @@ func TestCodexSandboxArgs(t *testing.T) {
 		{[]string{"DUCKWAY_CC_CODEX_SANDBOX=$(rm -rf /)"}, "--sandbox workspace-write"},
 	}
 	for _, tc := range cases {
-		got := strings.Join(codexSandboxArgs(tc.env), " ")
+		got := strings.Join(codexExecSandboxArgs(tc.env), " ")
 		if got != tc.want {
-			t.Errorf("codexSandboxArgs(%v) = %q, want %q", tc.env, got, tc.want)
+			t.Errorf("codexExecSandboxArgs(%v) = %q, want %q", tc.env, got, tc.want)
+		}
+	}
+}
+
+func TestCodexResumeSandboxArgs(t *testing.T) {
+	cases := []struct {
+		env  []string
+		want string
+	}{
+		{nil, "-c sandbox_mode=\"workspace-write\""},
+		{[]string{"DUCKWAY_CC_CODEX_SANDBOX=read-only"}, "-c sandbox_mode=\"read-only\""},
+		{[]string{"DUCKWAY_CC_CODEX_SANDBOX=danger-full-access"}, "-c sandbox_mode=\"danger-full-access\""},
+		{[]string{"DUCKWAY_CC_CODEX_SANDBOX=none"}, ""},
+		{[]string{"DUCKWAY_CC_CODEX_SANDBOX=$(rm -rf /)"}, "-c sandbox_mode=\"workspace-write\""},
+	}
+	for _, tc := range cases {
+		got := strings.Join(codexResumeSandboxArgs(tc.env), " ")
+		if got != tc.want {
+			t.Errorf("codexResumeSandboxArgs(%v) = %q, want %q", tc.env, got, tc.want)
 		}
 	}
 }
