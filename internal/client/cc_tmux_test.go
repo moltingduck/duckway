@@ -13,11 +13,11 @@ func TestTmuxSessionName(t *testing.T) {
 	tests := []struct {
 		in, want string
 	}{
-		{"fix-login", "duckway-fix-login"},
-		{"feat:auth", "duckway-feat-auth"},
-		{"v1.2.3", "duckway-v1-2-3"},
-		{"my channel", "duckway-my-channel"},
-		{"complex:thing.v2 alpha", "duckway-complex-thing-v2-alpha"},
+		{"fix-login", "fix-login-duckway"},
+		{"feat:auth", "feat-auth-duckway"},
+		{"v1.2.3", "v1-2-3-duckway"},
+		{"my channel", "my-channel-duckway"},
+		{"complex:thing.v2 alpha", "complex-thing-v2-alpha-duckway"},
 	}
 	for _, tt := range tests {
 		got := tmuxSessionName(tt.in)

@@ -151,7 +151,7 @@ func runViaCodexTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 		return "", "", false, err
 	}
 
-	evt, err := pollForCodexTmuxEvent(ctx, eventsDir, turnTS, tmuxRunTimeout)
+	evt, err := pollForCodexTmuxEvent(ctx, eventsDir, turnTS, 0)
 	if err != nil {
 		return "", "", false, err
 	}
@@ -210,15 +210,19 @@ func writeCodexTmuxLaunchScript(path, bin, cwd, promptPath, outputPath, eventsDi
 }
 
 func pollForCodexTmuxEvent(ctx context.Context, eventsDir string, afterTS int64, timeout time.Duration) (*codexTmuxEvent, error) {
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
+	var deadline <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		deadline = timer.C
+	}
 	tick := time.NewTicker(eventPollInterval)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-deadline.C:
+		case <-deadline:
 			return nil, fmt.Errorf("codex tmux runner: timed out waiting for codex after %v", timeout)
 		case <-tick.C:
 			evt, found, err := findStopEvent(eventsDir, afterTS)

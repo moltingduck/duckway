@@ -431,6 +431,8 @@ CC v2: a Control Channel binds **one client to one Discord category** via a bot.
 
 When a human posts in a task channel, the gateway forwards the event over SSE to the on-machine `duckway cc watch` daemon. For `claude_code`, the daemon drives a long-lived Claude TUI in tmux when tmux is installed, falling back to the headless print runner. For `codex`, it runs `codex exec --json` inside a per-channel tmux session when tmux is installed, falling back to headless `codex exec --json`; follow-up turns use `codex exec resume <thread_id>`. For `openclaw`, it runs `openclaw agent --agent <id> --session-key duckway:<handle> --message-file <file> --json`; the agent id comes from `DUCKWAY_CC_OPENCLAW_AGENT` or defaults to `default`, and Duckway does not use OpenClaw's own channel bindings. `duckway start` / `duckway restart` warn when tmux is missing so operators know the daemon will run without attachable sessions. The daemon posts the final agent message back to the channel.
 
+Codex tmux turns intentionally do not use the shared five-minute `tmuxRunTimeout`; long-running prompts such as `/goal` keep the per-channel runner occupied until Codex writes its completion event. If the daemon dies mid-turn, `in-flight.json` plus the event file allow startup recovery to post the final reply.
+
 ### Tables (v2 — `client_cc` is gone)
 
 | Table | Purpose |
@@ -526,7 +528,7 @@ For `discord_request_approval`, the server posts the question + reactions, regis
 
 - Bot token = the only real boundary. Different teams → different bots.
 - `cc_client.go` enforces two ACL layers: client must be bound to the CC (1:1), and every `{handle}` in a URL must belong to that CC.
-- Daemon trust boundary is the Discord category: anyone in the category can drive the selected agent. `claude_code` currently runs with `--dangerously-skip-permissions`; `codex` runs with a per-CC sandbox enum (`workspace-write`, `read-only`, `danger-full-access`, or `none`) normalized by the server and sanitized again by the client; `openclaw` uses the local OpenClaw configuration and selected agent id. When tmux is installed, Claude/Codex get per-channel attachable sessions named `duckway-<handle>`.
+- Daemon trust boundary is the Discord category: anyone in the category can drive the selected agent. `claude_code` currently runs with `--dangerously-skip-permissions`; `codex` runs with a per-CC sandbox enum (`workspace-write`, `read-only`, `danger-full-access`, or `none`) normalized by the server and sanitized again by the client; `openclaw` uses the local OpenClaw configuration and selected agent id. When tmux is installed, Claude/Codex get per-channel attachable sessions named `<handle>-duckway`.
 - Agent options are not a generic argument channel. The server stores provider-specific `config.agent_options`, strips unsupported options for other agents, and rejects unknown Codex sandbox values. The client treats server state as untrusted, re-validates the same enum, and constructs `exec.Command` argv or a quoted tmux launch script from fixed argument positions. Do not add a free-form `args` or `flags` field to Control Channels; add a typed option and validate it on both sides.
 
 ### Test hooks

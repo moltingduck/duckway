@@ -76,7 +76,7 @@ var (
 )
 
 // chooseCCRunFn picks the runner to use. tmux gives the user a live,
-// attachable per-channel session (`tmux attach -t duckway-<handle>`) so
+// attachable per-channel session (`tmux attach -t <handle>`) so
 // they can watch the agent work. When tmux isn't installed — or the user
 // explicitly disabled it — we fall back to the headless runner.
 func chooseCCRunFn(spec ccAgentSpec, noTmux bool) ccRunFn {

@@ -143,8 +143,8 @@ Usage:
   duckway cc watch       Connect to the server's SSE feed and run a
                          local agent session per Discord task channel
                          (when tmux is installed supported agents run inside
-                         a session named duckway-<handle>; attach with
-                         "tmux attach -t duckway-<handle>")
+                         a session named <handle>-duckway; attach with
+                         "tmux attach -t <handle>")
   duckway cc watch -d    Same, but run in background as a daemon
   duckway cc watch --no-tmux  Force the headless runner
                          (also: DUCKWAY_CC_NO_TMUX=1)
@@ -988,7 +988,7 @@ func tmuxUnavailableWarning(noTmux bool, lookPath func(string) (string, error)) 
 	if _, err := lookPath("tmux"); err == nil {
 		return ""
 	}
-	return "Warning: tmux is not installed or not on PATH; control channels will use headless agent runners. Install tmux to get attachable sessions like `tmux attach -t duckway-<handle>`."
+	return "Warning: tmux is not installed or not on PATH; control channels will use headless agent runners. Install tmux to get attachable sessions like `tmux attach -t <handle>`."
 }
 
 func warnIfTmuxUnavailable() {

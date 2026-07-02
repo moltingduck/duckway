@@ -17,12 +17,12 @@ import (
 	"time"
 )
 
-// Per-channel agents live inside tmux sessions named "duckway-<handle>".
+// Per-channel agents live inside tmux sessions named "<handle>-duckway".
 // Claude uses a long-lived TUI pane; Codex runs each turn in the pane and
 // leaves the shell open for inspection. Completion is signaled by writing
 // a per-event file under the channel's events/ directory. The user attaches with
 //
-//	tmux attach -t duckway-<handle>
+//	tmux attach -t <handle>
 //
 // to watch the agent work live.
 //
@@ -33,7 +33,7 @@ import (
 // daemon was down — see RecoverPendingTurns.
 
 const (
-	tmuxSessionPrefix = "duckway-"
+	tmuxSessionSuffix = "-duckway"
 	tmuxRunTimeout    = 5 * time.Minute
 	// claudeStartupDelay is how long we wait after launching claude in a
 	// fresh tmux pane before sending the first prompt. Claude's Ink TUI
@@ -87,9 +87,11 @@ func tmuxAvailable() bool {
 // tmuxSessionName turns a channel handle into a tmux-safe session name.
 // tmux disallows `:` and `.` (used for window/pane targeting); spaces are
 // allowed but cumbersome on the CLI. Replace all three with `-`.
+// Keep the distinguishing handle first so users can attach with a short,
+// unambiguous prefix like `tmux attach -t dwch_979`.
 func tmuxSessionName(handle string) string {
 	safe := strings.NewReplacer(":", "-", ".", "-", " ", "-").Replace(handle)
-	return tmuxSessionPrefix + safe
+	return safe + tmuxSessionSuffix
 }
 
 // ccWatchRoot is the parent directory that holds per-channel state. Stable
@@ -883,7 +885,7 @@ func tmuxPaneCommand(sess string) string {
 }
 
 func tmuxNewSession(sess, cwd, launchPath string, extraEnv []string) error {
-	args := []string{"new-session", "-d", "-s", sess, "-c", cwd}
+	args := []string{"new-session", "-d", "-s", sess, "-n", sess, "-c", cwd}
 	for _, e := range extraEnv {
 		args = append(args, "-e", e)
 	}
