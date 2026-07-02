@@ -84,7 +84,7 @@ func newTestRunner(t *testing.T, fn ccRunFn) (*ccRunner, *recordingPoster, *CCSe
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: true}
-	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true)
+	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestCCRunner_PostsProgressForLongRunningTask(t *testing.T) {
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", RunFn: fn, UseTmux: false}
-	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true)
+	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ bad-name=ignored
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: fn, UseTmux: false}
-	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true)
+	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ ANTHROPIC_API_KEY=sk-ant-placeholder
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: fn, UseTmux: false}
-	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true)
+	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestCCRunner_ManagementPreamble_FirstTurnOnly(t *testing.T) {
 	store := NewCCSessionStore(t.TempDir())
 	pp := &recordingPoster{}
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: true}
-	r, err := newCCRunner("dwch_mgmt", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true)
+	r, err := newCCRunner("dwch_mgmt", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +373,7 @@ func TestCCRunner_DefaultsCwd(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: true}
-	r, err := newCCRunner("dwch_x", t.TempDir(), "", spec, store, pp.post, pp.postReply, pp.react, nil, true)
+	r, err := newCCRunner("dwch_x", t.TempDir(), "", spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,6 +386,119 @@ func TestCCRunner_DefaultsCwd(t *testing.T) {
 	}
 	if _, err := os.Stat(want); err != nil {
 		t.Errorf("expected cwd dir created: %v", err)
+	}
+}
+
+func TestCCRunnerLogsAgentSettingsAndDebugCLI(t *testing.T) {
+	fn := ccRunFn(func(_ context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
+		return "sid-new", "ok", false, nil
+	})
+	store := NewCCSessionStore(t.TempDir())
+	pp := &recordingPoster{}
+	spec := ccAgentSpec{
+		Type:        "codex",
+		DisplayName: "codex",
+		Bin:         "/fake/codex",
+		RunFn:       fn,
+		UseTmux:     false,
+		ExtraEnv:    []string{"DUCKWAY_CC_CODEX_SANDBOX=danger-full-access"},
+	}
+	r, err := newCCRunner("dwch_log", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+
+	var logs []string
+	var mu sync.Mutex
+	r.logger = func(format string, args ...interface{}) {
+		mu.Lock()
+		defer mu.Unlock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+
+	prompt := "abcdefghijklmnopqrstuvwxyz"
+	r.Enqueue(ccTask{Content: prompt, ChannelKind: "task"})
+	waitForPosts(t, pp, 1)
+
+	mu.Lock()
+	logText := strings.Join(logs, "\n")
+	mu.Unlock()
+	for _, want := range []string{
+		"agent_type=codex",
+		"runner_mode=headless",
+		"sandbox_mode=danger-full-access",
+		"sandbox_arg_style=--sandbox",
+		"debug cli='/fake/codex' 'exec'",
+		"'abcde...vwxyz'",
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("log missing %q:\n%s", want, logText)
+		}
+	}
+	if strings.Contains(logText, prompt) {
+		t.Fatalf("debug log leaked full prompt:\n%s", logText)
+	}
+}
+
+func TestCCRunnerLogsCodexResumeSandboxStyle(t *testing.T) {
+	fn := ccRunFn(func(_ context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
+		return "sid-old", "ok", false, nil
+	})
+	store := NewCCSessionStore(t.TempDir())
+	if err := store.Set("dwch_resume", "sid-old"); err != nil {
+		t.Fatal(err)
+	}
+	pp := &recordingPoster{}
+	spec := ccAgentSpec{
+		Type:        "codex",
+		DisplayName: "codex",
+		Bin:         "/fake/codex",
+		RunFn:       fn,
+		UseTmux:     false,
+		ExtraEnv:    []string{"DUCKWAY_CC_CODEX_SANDBOX=read-only"},
+	}
+	r, err := newCCRunner("dwch_resume", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+
+	var logs []string
+	var mu sync.Mutex
+	r.logger = func(format string, args ...interface{}) {
+		mu.Lock()
+		defer mu.Unlock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+
+	r.Enqueue(ccTask{Content: "hello resume", ChannelKind: "task"})
+	waitForPosts(t, pp, 1)
+
+	mu.Lock()
+	logText := strings.Join(logs, "\n")
+	mu.Unlock()
+	for _, want := range []string{
+		"sandbox_mode=read-only",
+		"sandbox_arg_style=-c sandbox_mode",
+		"'resume'",
+		"'sandbox_mode=\"read-only\"'",
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("log missing %q:\n%s", want, logText)
+		}
+	}
+	if strings.Contains(logText, "'--sandbox'") {
+		t.Fatalf("resume debug log must not include --sandbox:\n%s", logText)
+	}
+}
+
+func TestPromptLogSummary(t *testing.T) {
+	if got := promptLogSummary("1234567890"); got != "1234567890" {
+		t.Fatalf("short summary = %q", got)
+	}
+	if got := promptLogSummary("12345678901"); got != "12345...78901" {
+		t.Fatalf("long summary = %q", got)
 	}
 }
 

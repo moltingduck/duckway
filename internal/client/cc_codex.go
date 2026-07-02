@@ -59,20 +59,34 @@ func codexSandboxValue(extraEnv []string) string {
 	return sandbox
 }
 
-// runViaCodexExec runs Codex in non-interactive JSONL mode. The first turn
-// starts a new Codex thread and captures thread.started.thread_id; follow-up
-// turns use `codex exec resume <thread_id>`.
-func runViaCodexExec(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []string) (sessionID, result string, isError bool, err error) {
+func isAllowedCodexSandbox(sandbox string) bool {
+	switch sandbox {
+	case "read-only", "workspace-write", "danger-full-access", "none":
+		return true
+	default:
+		return false
+	}
+}
+
+func codexCommandArgs(cwd, prompt, sid string, extraEnv []string) []string {
 	args := []string{"exec"}
 	if sid != "" {
 		args = append(args, "resume", "--json", "--skip-git-repo-check")
 		args = append(args, codexResumeSandboxArgs(extraEnv)...)
 		args = append(args, sid, prompt)
-	} else {
-		args = append(args, "--json", "--skip-git-repo-check")
-		args = append(args, codexExecSandboxArgs(extraEnv)...)
-		args = append(args, "-C", cwd, prompt)
+		return args
 	}
+	args = append(args, "--json", "--skip-git-repo-check")
+	args = append(args, codexExecSandboxArgs(extraEnv)...)
+	args = append(args, "-C", cwd, prompt)
+	return args
+}
+
+// runViaCodexExec runs Codex in non-interactive JSONL mode. The first turn
+// starts a new Codex thread and captures thread.started.thread_id; follow-up
+// turns use `codex exec resume <thread_id>`.
+func runViaCodexExec(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []string) (sessionID, result string, isError bool, err error) {
+	args := codexCommandArgs(cwd, prompt, sid, extraEnv)
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = cwd
@@ -162,16 +176,7 @@ func runViaCodexTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 func writeCodexTmuxLaunchScript(path, bin, cwd, promptPath, outputPath, eventsDir, sid string, extraEnv []string) error {
 	outputJSON, _ := json.Marshal(outputPath)
 	sidJSON, _ := json.Marshal(sid)
-	args := []string{bin, "exec"}
-	if sid != "" {
-		args = append(args, "resume", "--json", "--skip-git-repo-check")
-		args = append(args, codexResumeSandboxArgs(extraEnv)...)
-		args = append(args, sid, "-")
-	} else {
-		args = append(args, "--json", "--skip-git-repo-check")
-		args = append(args, codexExecSandboxArgs(extraEnv)...)
-		args = append(args, "-C", cwd, "-")
-	}
+	args := append([]string{bin}, codexCommandArgs(cwd, "-", sid, extraEnv)...)
 
 	var sb strings.Builder
 	q := shellSingleQuote

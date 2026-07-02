@@ -18,16 +18,7 @@ type printResult struct {
 // reliable path for getting structured output with session_id. Supports
 // multi-turn sessions via the sid parameter (passed as --resume).
 func runViaPrint(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []string) (sessionID, result string, isError bool, err error) {
-	args := []string{
-		"--print",
-		"--output-format", "json",
-		"--dangerously-skip-permissions",
-	}
-	if sid != "" {
-		args = append(args, "--resume", sid)
-	}
-	args = append(args, prompt)
-
+	args := claudePrintCommandArgs(prompt, sid)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(), extraEnv...)
@@ -42,4 +33,17 @@ func runViaPrint(ctx context.Context, bin, cwd, prompt, sid string, extraEnv []s
 		return "", "", false, fmt.Errorf("parse output: %w (raw: %.200s)", jsonErr, out)
 	}
 	return pr.SessionID, pr.Result, pr.IsError, nil
+}
+
+func claudePrintCommandArgs(prompt, sid string) []string {
+	args := []string{
+		"--print",
+		"--output-format", "json",
+		"--dangerously-skip-permissions",
+	}
+	if sid != "" {
+		args = append(args, "--resume", sid)
+	}
+	args = append(args, prompt)
+	return args
 }

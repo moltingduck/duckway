@@ -148,6 +148,7 @@ Usage:
   duckway cc watch -d    Same, but run in background as a daemon
   duckway cc watch --no-tmux  Force the headless runner
                          (also: DUCKWAY_CC_NO_TMUX=1)
+  duckway cc watch --debug    Log agent runner settings and sanitized CLI argv
   duckway cc watch stop  Stop the running daemon
   duckway cc watch restart  Stop and start a fresh daemon
   duckway cc watch status  Show daemon status
@@ -404,6 +405,7 @@ func cmdCCWatch(configDir string) {
 	// installed. Also honored via DUCKWAY_CC_NO_TMUX=1 in the environment
 	// so it's settable from a systemd unit without rewriting argv.
 	noTmux := os.Getenv("DUCKWAY_CC_NO_TMUX") == "1"
+	debug := os.Getenv("DUCKWAY_CC_DEBUG") == "1"
 	for i := 3; i < len(os.Args); i++ {
 		arg := os.Args[i]
 		switch arg {
@@ -417,6 +419,8 @@ func cmdCCWatch(configDir string) {
 			restart = true
 		case "--no-tmux":
 			noTmux = true
+		case "--debug", "-D":
+			debug = true
 		case "--config-dir":
 			if i+1 < len(os.Args) {
 				configDir = os.Args[i+1]
@@ -470,7 +474,7 @@ func cmdCCWatch(configDir string) {
 		os.Exit(0)
 	}()
 
-	w, err := client.NewCCWatchWithOptions(configDir, cfg, client.CCWatchOptions{NoTmux: noTmux})
+	w, err := client.NewCCWatchWithOptions(configDir, cfg, client.CCWatchOptions{NoTmux: noTmux, Debug: debug})
 	if err != nil {
 		log.Fatalf("cc watch: %v", err)
 	}

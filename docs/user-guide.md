@@ -448,6 +448,8 @@ journalctl --user -u duckway-cc-watch -f
 
 The daemon needs the selected agent binary (`claude`, `codex`, or `openclaw`) in `$PATH`. For Codex, `duckway sync` chooses the credential mode from the assigned OpenAI key: Codex OAuth refreshable keys are written to `~/.codex/auth.json` for native Codex auth; OpenAI Platform API keys write a `duckway-openai` provider in `~/.codex/config.toml` and use `OPENAI_API_KEY` from `~/.duckway/keys.env` through the local proxy. Platform keys must allow OpenAI's Responses API, including `api.responses.write`. For OpenClaw, set `DUCKWAY_CC_OPENCLAW_AGENT=<agent-id>` on the client if you do not want the default `openclaw` agent id `default`; Duckway does not configure OpenClaw's own channel bindings. Per-channel `cwd` defaults to `~/.duckway/cc-workspace/<handle>/` (auto-created); override with `!new --cwd /path` from the management channel.
 
+For agent launch debugging, run `duckway cc watch --debug` or `DUCKWAY_CC_DEBUG=1 duckway cc watch -d`. The log includes `agent_type`, `runner_mode`, sandbox/permission fields, and sanitized CLI argv; prompt text is summarized as first 5 characters + last 5 characters only.
+
 ### Inside an agent session, the model sees these MCP tools
 
 `discord_get_my_cc`, `discord_list_channels`, `discord_create_task_channel`, `discord_archive_channel`, `discord_post`, `discord_post_file` (text + one local file/image attachment in one Discord message), `discord_edit_message`, `discord_delete_message`, `discord_read_recent`, `discord_wait_for_message`, `discord_request_approval` (reaction-vote — blocks until ✅/❌), `duckway_list_local_sessions`, `duckway_bind_session`.

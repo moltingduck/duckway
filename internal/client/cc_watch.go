@@ -34,6 +34,7 @@ type CCWatch struct {
 	// noTmux forces the headless --print runner even when tmux is installed.
 	// Set via `duckway cc watch --no-tmux` or DUCKWAY_CC_NO_TMUX=1.
 	noTmux bool
+	debug  bool
 
 	mu           sync.Mutex
 	runners      map[string]*ccRunner // by channel handle
@@ -49,6 +50,8 @@ type CCWatchOptions struct {
 	// NoTmux disables the tmux runner unconditionally. Falls back to
 	// runViaPrint regardless of whether tmux is on PATH.
 	NoTmux bool
+	// Debug logs command argv and prompt summaries for agent launches.
+	Debug bool
 }
 
 func NewCCWatch(configDir string, cfg *Config) (*CCWatch, error) {
@@ -74,6 +77,7 @@ func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (
 		sessions:     NewCCSessionStore(configDir),
 		processed:    NewCCProcessedStore(configDir),
 		noTmux:       opts.NoTmux,
+		debug:        opts.Debug,
 		runners:      map[string]*ccRunner{},
 		inboxCursor:  loadCCInboxCursor(configDir),
 		api:          NewAPIClient(cfg.ServerURL, cfg.Token),
@@ -82,7 +86,7 @@ func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (
 
 // Run is the main loop. Blocks until ctx is cancelled.
 func (w *CCWatch) Run(ctx context.Context) error {
-	log.Printf("[cc-watch] starting; server=%s", w.cfg.ServerURL)
+	log.Printf("[cc-watch] starting; server=%s debug=%v no_tmux=%v", w.cfg.ServerURL, w.debug, w.noTmux)
 
 	// Recover any turns whose Stop event arrived while the previous
 	// daemon instance was dead. Best-effort: errors are logged and we
@@ -352,7 +356,7 @@ func (w *CCWatch) runnerFor(handle, ccID string) (*ccRunner, error) {
 	if err != nil {
 		return nil, err
 	}
-	r, err := newCCRunner(handle, w.configDir, cwd, spec, w.sessions, w.api.PostCC, w.api.PostCCReply, w.api.ReactCC, w.api.ReportCCAgentTest, w.noTmux)
+	r, err := newCCRunner(handle, w.configDir, cwd, spec, w.sessions, w.api.PostCC, w.api.PostCCReply, w.api.ReactCC, w.api.ReportCCAgentTest, w.noTmux, w.debug)
 	if err != nil {
 		return nil, err
 	}

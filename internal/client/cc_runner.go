@@ -38,10 +38,13 @@ type ccRunner struct {
 	handle      string
 	configDir   string
 	cwd         string // resolved at construction
+	agentType   string
 	agentName   string
 	agentEnv    []string
 	bin         string
 	runFn       ccRunFn
+	runnerMode  string
+	debug       bool
 	queue       chan ccTask
 	stop        chan struct{}
 	wg          sync.WaitGroup
@@ -77,22 +80,27 @@ var (
 // they can watch the agent work. When tmux isn't installed — or the user
 // explicitly disabled it — we fall back to the headless runner.
 func chooseCCRunFn(spec ccAgentSpec, noTmux bool) ccRunFn {
+	fn, _ := chooseCCRunFnAndMode(spec, noTmux)
+	return fn
+}
+
+func chooseCCRunFnAndMode(spec ccAgentSpec, noTmux bool) (ccRunFn, string) {
 	canUseAgentTmux := spec.UseTmux && !noTmux && tmuxAvailable() && spec.TmuxRunFn != nil
 	if spec.RunFn != nil {
 		if !canUseAgentTmux {
-			return spec.RunFn
+			return spec.RunFn, "headless"
 		}
 	}
 	if canUseAgentTmux {
-		return spec.TmuxRunFn
+		return spec.TmuxRunFn, "tmux"
 	}
 	if spec.UseTmux && !noTmux && tmuxAvailable() {
-		return runViaTmux
+		return runViaTmux, "tmux"
 	}
-	return runViaPrint
+	return runViaPrint, "headless"
 }
 
-func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, sessions *CCSessionStore, postMessage func(ctx context.Context, handle, content string) error, postReply func(ctx context.Context, handle, content, replyToMessageID string) error, react func(ctx context.Context, handle, messageID, emoji string) error, reportTest func(ctx context.Context, testID, status, errText string) error, noTmux bool) (*ccRunner, error) {
+func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, sessions *CCSessionStore, postMessage func(ctx context.Context, handle, content string) error, postReply func(ctx context.Context, handle, content, replyToMessageID string) error, react func(ctx context.Context, handle, messageID, emoji string) error, reportTest func(ctx context.Context, testID, status, errText string) error, noTmux, debug bool) (*ccRunner, error) {
 	cwd := channelCwd
 	if cwd == "" {
 		home, err := os.UserHomeDir()
@@ -104,14 +112,18 @@ func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, session
 			return nil, fmt.Errorf("mkdir cwd %s: %w", cwd, err)
 		}
 	}
+	runFn, runnerMode := chooseCCRunFnAndMode(spec, noTmux)
 	r := &ccRunner{
 		handle:      handle,
 		configDir:   configDir,
 		cwd:         cwd,
+		agentType:   spec.Type,
 		agentName:   spec.DisplayName,
 		agentEnv:    append([]string(nil), spec.ExtraEnv...),
 		bin:         spec.Bin,
-		runFn:       chooseCCRunFn(spec, noTmux),
+		runFn:       runFn,
+		runnerMode:  runnerMode,
+		debug:       debug,
 		queue:       make(chan ccTask, ccQueueDepth),
 		stop:        make(chan struct{}),
 		sessions:    sessions,
@@ -204,7 +216,10 @@ func (r *ccRunner) run(t ccTask) {
 	}
 	extraEnv = append(extraEnv, keysEnv...)
 
-	r.logger("[cc-watch] %s: running %s (cwd=%s)", r.handle, r.agentName, r.cwd)
+	r.logger("[cc-watch] %s: starting agent_type=%s runner_mode=%s %s cwd=%s resume=%v", r.handle, r.agentType, r.runnerMode, r.agentSecurityLogFields(sid), r.cwd, sid != "")
+	if r.debug {
+		r.logger("[cc-watch] %s: debug cli=%s", r.handle, r.debugCLI(prompt, sid, extraEnv))
+	}
 	r.reportTaskTest(t, "started", "")
 	done := r.startLongRunReporter(t)
 	newSID, result, isError, err := r.runFn(ctx, r.bin, r.cwd, prompt, sid, extraEnv)
@@ -243,6 +258,79 @@ func (r *ccRunner) run(t ccTask) {
 		r.reactToTask(t, "✅")
 	}
 	r.reportTaskTest(t, "replied", "")
+}
+
+func (r *ccRunner) agentSecurityLogFields(sid string) string {
+	switch r.agentType {
+	case "codex":
+		sandbox := codexSandboxValue(r.agentEnv)
+		if !isAllowedCodexSandbox(sandbox) {
+			sandbox = "workspace-write"
+		}
+		style := "none"
+		if sandbox != "none" {
+			if sid == "" {
+				style = "--sandbox"
+			} else {
+				style = "-c sandbox_mode"
+			}
+		}
+		return fmt.Sprintf("sandbox_mode=%s sandbox_arg_style=%s", sandbox, style)
+	case "claude_code":
+		return "permission_mode=dangerously-skip-permissions"
+	case "openclaw":
+		return "permission_mode=openclaw-local-config"
+	default:
+		return "permission_mode=unknown"
+	}
+}
+
+func (r *ccRunner) debugCLI(prompt, sid string, extraEnv []string) string {
+	promptArg := promptLogSummary(prompt)
+	var args []string
+	switch r.agentType {
+	case "codex":
+		args = append([]string{r.bin}, codexCommandArgs(r.cwd, promptArg, sid, extraEnv)...)
+	case "claude_code":
+		if r.runnerMode == "tmux" {
+			args = []string{"tmux", "new-session/respawn-pane", r.bin, "--dangerously-skip-permissions", "[prompt:" + promptArg + "]"}
+		} else {
+			args = append([]string{r.bin}, claudePrintCommandArgs(promptArg, sid)...)
+		}
+	case "openclaw":
+		handle := envValue(extraEnv, "DUCKWAY_CC_CHANNEL_HANDLE")
+		if handle == "" {
+			handle = r.handle
+		}
+		sessionKey := sid
+		if sessionKey == "" || !strings.HasPrefix(sessionKey, "duckway:") {
+			sessionKey = "duckway:" + handle
+		}
+		agentID := strings.TrimSpace(os.Getenv("DUCKWAY_CC_OPENCLAW_AGENT"))
+		if agentID == "" {
+			agentID = "default"
+		}
+		args = []string{r.bin, "agent", "--agent", agentID, "--session-key", sessionKey, "--message-file", "<temp-prompt-file:" + promptArg + ">", "--json"}
+	default:
+		args = []string{r.bin, "[prompt:" + promptArg + "]"}
+	}
+	return shellJoinForLog(args)
+}
+
+func promptLogSummary(prompt string) string {
+	r := []rune(prompt)
+	if len(r) <= 10 {
+		return string(r)
+	}
+	return string(r[:5]) + "..." + string(r[len(r)-5:])
+}
+
+func shellJoinForLog(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, a := range args {
+		quoted = append(quoted, shellSingleQuote(a))
+	}
+	return strings.Join(quoted, " ")
 }
 
 func (r *ccRunner) startLongRunReporter(t ccTask) chan struct{} {
