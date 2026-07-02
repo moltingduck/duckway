@@ -522,7 +522,13 @@ func (h *OAuthHandler) ClientGetCodexCredentials(w http.ResponseWriter, r *http.
 		jsonResponse(w, map[string]interface{}{})
 		return
 	}
-	tokens := codexPhantomTokens(ph.Placeholder, subInfo)
+	accessToken, err := h.crypto.Decrypt(apiKey.KeyEncrypted)
+	if err != nil {
+		jsonError(w, "decrypt codex access token: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	idToken, _ := subInfo["id_token"].(string)
+	tokens := codexPhantomTokensFromSource(ph.Placeholder, subInfo, accessToken, idToken)
 	for _, key := range []string{"account_id"} {
 		if v, ok := subInfo[key]; ok && v != "" {
 			tokens[key] = v
@@ -540,11 +546,24 @@ func (h *OAuthHandler) ClientGetCodexCredentials(w http.ResponseWriter, r *http.
 }
 
 func codexPhantomTokens(placeholder string, subInfo map[string]interface{}) map[string]interface{} {
+	return codexPhantomTokensFromSource(placeholder, subInfo, "", "")
+}
+
+func codexPhantomTokensFromSource(placeholder string, subInfo map[string]interface{}, accessToken, idToken string) map[string]interface{} {
 	return map[string]interface{}{
-		"access_token":  codexPhantomJWT("access", placeholder, subInfo),
+		"access_token":  codexPhantomJWTFromSource("access", placeholder, subInfo, accessToken),
 		"refresh_token": "rt.duckway." + placeholder,
-		"id_token":      codexPhantomJWT("id", placeholder, subInfo),
+		"id_token":      codexPhantomJWTFromSource("id", placeholder, subInfo, idToken),
 	}
+}
+
+func codexPhantomJWTFromSource(kind, placeholder string, subInfo map[string]interface{}, source string) string {
+	parts := strings.Split(source, ".")
+	if len(parts) == 3 && parts[0] != "" && parts[1] != "" {
+		sig := base64.RawURLEncoding.EncodeToString([]byte("duckway:" + kind + ":" + placeholder))
+		return parts[0] + "." + parts[1] + "." + sig
+	}
+	return codexPhantomJWT(kind, placeholder, subInfo)
 }
 
 func codexPhantomJWT(kind, placeholder string, subInfo map[string]interface{}) string {

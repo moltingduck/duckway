@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -35,6 +36,21 @@ func TestRewriteCodexRefreshRequestForm(t *testing.T) {
 	}
 }
 
+func TestRewriteCodexRefreshRequestFormWithoutContentType(t *testing.T) {
+	body := []byte("grant_type=refresh_token&refresh_token=rt.duckway.fake&client_id=codex")
+	got, contentType := rewriteCodexRefreshRequest(body, "", "rt.real.secret")
+	if contentType != "application/x-www-form-urlencoded" {
+		t.Fatalf("contentType = %q", contentType)
+	}
+	vals, err := url.ParseQuery(string(got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vals.Get("refresh_token") != "rt.real.secret" {
+		t.Fatalf("refresh_token = %q", vals.Get("refresh_token"))
+	}
+}
+
 func TestRewriteCodexRefreshRequestJSON(t *testing.T) {
 	body := []byte(`{"grant_type":"refresh_token","refresh_token":"rt.duckway.fake","client_id":"codex"}`)
 	got, contentType := rewriteCodexRefreshRequest(body, "application/json", "rt.real.secret")
@@ -54,7 +70,9 @@ func TestRewriteCodexRefreshRequestJSON(t *testing.T) {
 }
 
 func TestRewriteCodexRefreshResponseReturnsOnlyFakeTokens(t *testing.T) {
-	body := []byte(`{"access_token":"real-access","refresh_token":"rt.real.secret","id_token":"real.id.token","expires_in":3600}`)
+	realAccess := testCodexJWT(`{"exp":1893456000,"scope":"access"}`)
+	realID := testCodexJWT(`{"exp":1893456000,"kind":"id"}`)
+	body := []byte(`{"access_token":"` + realAccess + `","refresh_token":"rt.real.secret","id_token":"` + realID + `","expires_in":3600}`)
 	got := rewriteCodexRefreshResponse(body, "ph-openai", "sk-proj-dw_fake")
 	var obj map[string]interface{}
 	if err := json.Unmarshal(got, &obj); err != nil {
@@ -65,9 +83,15 @@ func TestRewriteCodexRefreshResponseReturnsOnlyFakeTokens(t *testing.T) {
 		if tok == "" {
 			t.Fatalf("%s missing in rewritten response: %s", key, got)
 		}
-		if strings.Contains(tok, "real") {
+		if tok == realAccess || tok == realID || strings.Contains(tok, "rt.real") {
 			t.Fatalf("%s leaked real token: %q", key, tok)
 		}
+	}
+	if !sameJWTPayload(obj["access_token"].(string), realAccess) {
+		t.Fatalf("access token payload should be preserved")
+	}
+	if !sameJWTPayload(obj["id_token"].(string), realID) {
+		t.Fatalf("id token payload should be preserved")
 	}
 	if !strings.HasPrefix(obj["refresh_token"].(string), "rt.duckway.sk-proj-dw_fake") {
 		t.Fatalf("unexpected fake refresh token: %q", obj["refresh_token"])
@@ -113,6 +137,8 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 	}
 
 	var upstreamBody string
+	var upstreamAuth string
+	var upstreamDuckway string
 	h := NewProxyHandler(
 		svcQ,
 		queries.NewAPIKeyQueries(db),
@@ -128,16 +154,24 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 		}
 		body, _ := io.ReadAll(req.Body)
 		upstreamBody = string(body)
+		upstreamAuth = req.Header.Get("Authorization")
+		for key := range req.Header {
+			if strings.HasPrefix(strings.ToLower(key), "x-duckway-") {
+				upstreamDuckway = key
+			}
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"access_token":"real-access-new","refresh_token":"rt.real.new","id_token":"real.id.token","expires_in":3600}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"access_token":"` + testCodexJWT(`{"exp":1893456001,"scope":"access"}`) + `","refresh_token":"rt.real.new","id_token":"` + testCodexJWT(`{"exp":1893456001,"kind":"id"}`) + `","expires_in":3600}`)),
 			Request:    req,
 		}, nil
 	})}
 
 	req := httptest.NewRequest(http.MethodPost, "/proxy/openai-auth/oauth/token", strings.NewReader("grant_type=refresh_token&refresh_token=rt.duckway.fake"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Basic codex-client-auth")
+	req.Header.Set("X-Duckway-Internal", "secret")
 	client := &models.Client{ID: "client-openai-auth", Name: "client"}
 	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, client))
 	rec := httptest.NewRecorder()
@@ -153,7 +187,13 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 	if vals.Get("refresh_token") != "rt.real.refresh" {
 		t.Fatalf("upstream refresh_token = %q, body=%s", vals.Get("refresh_token"), upstreamBody)
 	}
-	if strings.Contains(rec.Body.String(), "real-access") || strings.Contains(rec.Body.String(), "rt.real") || strings.Contains(rec.Body.String(), "real.id") {
+	if upstreamAuth != "Basic codex-client-auth" {
+		t.Fatalf("Authorization header was not preserved: %q", upstreamAuth)
+	}
+	if upstreamDuckway != "" {
+		t.Fatalf("Duckway internal header leaked upstream: %s", upstreamDuckway)
+	}
+	if strings.Contains(rec.Body.String(), "rt.real") {
 		t.Fatalf("response leaked real token: %s", rec.Body.String())
 	}
 	var obj map[string]interface{}
@@ -169,4 +209,15 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func testCodexJWT(payload string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"test"}`))
+	return header + "." + base64.RawURLEncoding.EncodeToString([]byte(payload)) + ".real-signature"
+}
+
+func sameJWTPayload(a, b string) bool {
+	ap := strings.Split(a, ".")
+	bp := strings.Split(b, ".")
+	return len(ap) == 3 && len(bp) == 3 && ap[0] == bp[0] && ap[1] == bp[1] && ap[2] != bp[2]
 }

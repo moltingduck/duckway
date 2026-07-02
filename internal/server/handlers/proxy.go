@@ -552,7 +552,7 @@ func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	for key, values := range r.Header {
-		if shouldStripHeader(key) || strings.EqualFold(key, "Content-Length") {
+		if shouldStripOpenAIAuthHeader(key) || strings.EqualFold(key, "Content-Length") {
 			continue
 		}
 		for _, v := range values {
@@ -593,7 +593,10 @@ func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Requ
 }
 
 func rewriteCodexRefreshRequest(body []byte, contentType, realRefresh string) ([]byte, string) {
-	if strings.Contains(strings.ToLower(contentType), "application/x-www-form-urlencoded") {
+	lowerCT := strings.ToLower(contentType)
+	if strings.Contains(lowerCT, "application/x-www-form-urlencoded") ||
+		strings.Contains(string(body), "refresh_token=") ||
+		strings.Contains(string(body), "grant_type=") {
 		vals, err := url.ParseQuery(string(body))
 		if err == nil {
 			vals.Set("refresh_token", realRefresh)
@@ -615,7 +618,9 @@ func rewriteCodexRefreshResponse(body []byte, placeholderID, placeholder string)
 		return body
 	}
 	subInfo := map[string]interface{}{"account_id": placeholderID}
-	tokens := codexPhantomTokens(placeholder, subInfo)
+	realAccess, _ := obj["access_token"].(string)
+	realID, _ := obj["id_token"].(string)
+	tokens := codexPhantomTokensFromSource(placeholder, subInfo, realAccess, realID)
 	if _, ok := obj["access_token"]; ok {
 		obj["access_token"] = tokens["access_token"]
 	}
@@ -630,6 +635,21 @@ func rewriteCodexRefreshResponse(body []byte, placeholderID, placeholder string)
 		return body
 	}
 	return out
+}
+
+func shouldStripOpenAIAuthHeader(name string) bool {
+	lower := strings.ToLower(name)
+	if strings.HasPrefix(lower, "x-duckway-") {
+		return true
+	}
+	switch lower {
+	case "host":
+		return true
+	case "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+		"te", "trailer", "transfer-encoding", "upgrade":
+		return true
+	}
+	return false
 }
 
 // shouldStripResponseHeader returns true if a response header from the upstream
