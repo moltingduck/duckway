@@ -179,7 +179,7 @@ func TestE2E_ClientProxy_Through_ServerProxy(t *testing.T) {
 				DeliveryMode: "proxy",
 			},
 		},
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
+		httpClient:  &http.Client{Timeout: 10 * time.Second, Transport: directTransport},
 		loanCache:   make(map[string]*loanedToken),
 		auditClient: &http.Client{Timeout: time.Second},
 	}

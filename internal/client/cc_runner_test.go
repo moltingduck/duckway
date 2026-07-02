@@ -205,7 +205,7 @@ bad-name=ignored
 	}
 }
 
-func TestCCRunner_SuppressesOpenAIEnvForCodexOAuth(t *testing.T) {
+func TestCCRunner_KeepsOpenAIEnvForCodexWithLegacyOAuthMarker(t *testing.T) {
 	var gotEnv []string
 	fn := func(_ context.Context, _, _, _, _ string, extraEnv []string) (string, string, bool, error) {
 		gotEnv = append([]string(nil), extraEnv...)
@@ -235,11 +235,53 @@ ANTHROPIC_API_KEY=sk-ant-placeholder
 	waitForPosts(t, pp, 1)
 
 	envText := strings.Join(gotEnv, "\n")
-	if strings.Contains(envText, "OPENAI_API_KEY=") {
-		t.Fatalf("OPENAI_API_KEY leaked into Codex OAuth env:\n%s", envText)
+	if !strings.Contains(envText, "OPENAI_API_KEY=sk-dw-placeholder") {
+		t.Fatalf("OPENAI_API_KEY should remain for Codex phantom provider even with legacy OAuth marker:\n%s", envText)
 	}
 	if !strings.Contains(envText, "ANTHROPIC_API_KEY=sk-ant-placeholder") {
 		t.Fatalf("non-OpenAI env should remain:\n%s", envText)
+	}
+}
+
+func TestCCRunner_AddsProxyEnvForAgents(t *testing.T) {
+	var gotEnv []string
+	fn := func(_ context.Context, _, _, _, _ string, extraEnv []string) (string, string, bool, error) {
+		gotEnv = append([]string(nil), extraEnv...)
+		return "sess-abc", "ok", false, nil
+	}
+
+	configDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(`server_url: http://duckway.local
+token: tok
+client_name: client
+proxy_port: 19090
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := NewCCSessionStore(t.TempDir())
+	pp := &recordingPoster{}
+	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: fn, UseTmux: false}
+	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+
+	r.Enqueue(ccTask{Content: "hello", ChannelKind: "task"})
+	waitForPosts(t, pp, 1)
+
+	envText := strings.Join(gotEnv, "\n")
+	for _, want := range []string{
+		"HTTP_PROXY=http://localhost:19090",
+		"HTTPS_PROXY=http://localhost:19090",
+		"http_proxy=http://localhost:19090",
+		"https_proxy=http://localhost:19090",
+		"NO_PROXY=localhost,127.0.0.1",
+		"no_proxy=localhost,127.0.0.1",
+	} {
+		if !strings.Contains(envText, want) {
+			t.Fatalf("extraEnv missing %q:\n%s", want, envText)
+		}
 	}
 }
 

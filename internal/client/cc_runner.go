@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -204,16 +203,8 @@ func (r *ccRunner) run(t ccTask) {
 		"DUCKWAY_CC_MESSAGE_ID=" + t.MessageID,
 	}
 	extraEnv = append(extraEnv, r.agentEnv...)
+	extraEnv = append(extraEnv, agentProxyEnv(r.configDir)...)
 	keysEnv := loadKeysEnv(r.configDir)
-	if r.agentName == "codex" && CodexOAuthModeActive(r.configDir) {
-		keysEnv = filterEnvByName(keysEnv, "OPENAI_API_KEY")
-		if err := validateCodexOAuthAuthJSON(); err != nil {
-			r.reportTaskTest(t, "failed", err.Error())
-			r.reactToTask(t, "⚠️")
-			r.postTaskMessage(t, "❌ "+err.Error())
-			return
-		}
-	}
 	extraEnv = append(extraEnv, keysEnv...)
 
 	r.logger("[cc-watch] %s: starting agent_type=%s runner_mode=%s %s cwd=%s resume=%v", r.handle, r.agentType, r.runnerMode, r.agentSecurityLogFields(sid), r.cwd, sid != "")
@@ -403,38 +394,24 @@ func loadKeysEnv(configDir string) []string {
 	return out
 }
 
-func validateCodexOAuthAuthJSON() error {
-	authPath, err := codexAuthJSONPath()
-	if err != nil {
-		return err
+func agentProxyEnv(configDir string) []string {
+	port := 18080
+	if cfg, err := LoadConfig(configDir); err == nil && cfg.ProxyPort > 0 {
+		port = cfg.ProxyPort
 	}
-	raw, err := os.ReadFile(authPath)
-	if err != nil {
-		return fmt.Errorf("codex OAuth auth.json is missing; run duckway sync or restart duckway cc watch")
+	proxyURL := fmt.Sprintf("http://localhost:%d", port)
+	noProxy := "localhost,127.0.0.1"
+	if existing := strings.TrimSpace(os.Getenv("NO_PROXY")); existing != "" {
+		noProxy = ensureLoopbackInNoProxy(existing)
 	}
-	var auth struct {
-		Tokens struct {
-			IDToken string `json:"id_token"`
-		} `json:"tokens"`
+	return []string{
+		"HTTP_PROXY=" + proxyURL,
+		"HTTPS_PROXY=" + proxyURL,
+		"http_proxy=" + proxyURL,
+		"https_proxy=" + proxyURL,
+		"NO_PROXY=" + noProxy,
+		"no_proxy=" + noProxy,
 	}
-	if err := json.Unmarshal(raw, &auth); err != nil {
-		return fmt.Errorf("codex OAuth auth.json is invalid: %w", err)
-	}
-	if strings.TrimSpace(auth.Tokens.IDToken) == "" {
-		return fmt.Errorf("codex OAuth auth.json is missing tokens.id_token; re-upload the full ~/.codex/auth.json in Refreshable Tokens, then run duckway sync or restart duckway cc watch")
-	}
-	return nil
-}
-
-func filterEnvByName(env []string, name string) []string {
-	prefix := name + "="
-	out := env[:0]
-	for _, e := range env {
-		if !strings.HasPrefix(e, prefix) {
-			out = append(out, e)
-		}
-	}
-	return out
 }
 
 func isShellEnvName(s string) bool {

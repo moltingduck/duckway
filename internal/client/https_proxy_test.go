@@ -36,7 +36,7 @@ func newTestMITMProxy(t *testing.T, backendURL string) (*httpsProxy, *x509.CertP
 		token:       "test-token",
 		ca:          ca,
 		hostMap:     map[string]hostEntry{"api.anthropic.com": {Service: "anthropic", DeliveryMode: "proxy"}},
-		httpClient:  &http.Client{},
+		httpClient:  &http.Client{Transport: directTransport},
 		loanCache:   make(map[string]*loanedToken),
 		auditClient: &http.Client{Timeout: time.Second},
 	}
