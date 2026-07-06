@@ -276,13 +276,25 @@ func parseCodexJSONL(out []byte, fallbackSessionID string) (sessionID, result st
 			if ev.Item.Type == "agent_message" {
 				result = ev.Item.Text
 			}
-		case "turn.failed", "error":
+		case "error":
 			isError = true
 			switch {
 			case ev.Message != "":
 				result = ev.Message
 			case ev.Error != "":
 				result = ev.Error
+			}
+		case "turn.failed":
+			errText := ev.Message
+			if errText == "" {
+				errText = ev.Error
+			}
+			if errText != "" {
+				isError = true
+				result = errText
+			} else if result == "" {
+				isError = true
+				result = "codex turn failed"
 			}
 		}
 	}

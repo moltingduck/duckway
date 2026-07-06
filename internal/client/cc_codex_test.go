@@ -58,6 +58,23 @@ func TestParseCodexJSONL_ErrorMessage(t *testing.T) {
 	}
 }
 
+func TestParseCodexJSONL_DoesNotWrapSuccessfulMessageAsError(t *testing.T) {
+	out := []byte(`{"type":"thread.started","thread_id":"sid-ok"}
+{"type":"item.completed","item":{"type":"agent_message","text":"Hi. What would you like me to work on?"}}
+{"type":"turn.failed"}
+`)
+	sid, result, isError := parseCodexJSONL(out, "")
+	if sid != "sid-ok" {
+		t.Fatalf("sid = %q", sid)
+	}
+	if result != "Hi. What would you like me to work on?" {
+		t.Fatalf("result = %q", result)
+	}
+	if isError {
+		t.Fatal("isError = true")
+	}
+}
+
 func TestParseCodexTmuxEventPayload(t *testing.T) {
 	payload := `{"output_path":"/tmp/codex.jsonl","fallback_session_id":"sid-old","exit_code":0}`
 	ev, ok := parseCodexTmuxEventPayload(payload)
