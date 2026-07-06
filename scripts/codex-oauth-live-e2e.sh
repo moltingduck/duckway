@@ -145,11 +145,12 @@ else:
 required_scopes = {"api.model.read", "api.responses.write"}
 missing_scopes = sorted(required_scopes - scopes)
 if missing_scopes:
-    raise SystemExit(
+    print(
         "Codex OAuth token is missing required scopes for live E2E: "
         + ", ".join(missing_scopes)
         + ". Present scopes: "
-        + (", ".join(sorted(scopes)) if scopes else "(none)")
+        + (", ".join(sorted(scopes)) if scopes else "(none)"),
+        file=sys.stderr,
     )
 
 def jwt_exp_ms(token: str) -> int:
@@ -272,6 +273,68 @@ export HTTPS_PROXY="http://127.0.0.1:$PROXY_PORT"
 export NO_PROXY="localhost,127.0.0.1"
 export NODE_EXTRA_CA_CERTS="$DUCKWAY_CONFIG_DIR/ca.pem"
 export SSL_CERT_FILE="$DUCKWAY_CONFIG_DIR/ca.pem"
+
+echo "Refreshing Codex OAuth token once through Duckway proxy..."
+REFRESH_FORM="$(python3 - <<'PY'
+import json, os
+from urllib.parse import urlencode
+
+with open(os.path.expanduser("~/.codex/auth.json"), "r", encoding="utf-8") as f:
+    auth = json.load(f)
+tokens = auth.get("tokens") or {}
+refresh = tokens.get("refresh_token", "")
+client_id = tokens.get("client_id") or auth.get("client_id") or "app_EMoamEEZ73f0CkXaXp7hrann"
+print(urlencode({
+    "grant_type": "refresh_token",
+    "refresh_token": refresh,
+    "client_id": client_id,
+}))
+PY
+)"
+if ! printf '%s' "$REFRESH_FORM" | grep -q 'refresh_token='; then
+  echo "Synced Codex auth.json has no fake refresh token" >&2
+  exit 1
+fi
+REFRESH_STATUS="$(curl -sS --max-time 30 -o /tmp/codex-refresh-response.json -w '%{http_code}' \
+  --cacert "$DUCKWAY_CONFIG_DIR/ca.pem" \
+  -x "http://127.0.0.1:$PROXY_PORT" \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data "$REFRESH_FORM" \
+  'https://auth.openai.com/oauth/token')"
+if [ "$REFRESH_STATUS" != "200" ]; then
+  echo "Codex OAuth refresh through Duckway proxy failed with HTTP $REFRESH_STATUS" >&2
+  head -c 1000 /tmp/codex-refresh-response.json >&2 || true
+  echo >&2
+  tail -n 120 "$PROXY_LOG" >&2 || true
+  exit 1
+fi
+python3 - <<'PY'
+import json
+with open("/tmp/codex-refresh-response.json", "r", encoding="utf-8") as f:
+    refreshed = json.load(f)
+for key in ("access_token", "refresh_token"):
+    value = refreshed.get(key, "")
+    if not value:
+        raise SystemExit(f"refresh response missing {key}")
+    if "duckway" not in value and key == "refresh_token":
+        raise SystemExit("refresh response leaked a non-phantom refresh token")
+print("Refresh through Duckway proxy returned phantom tokens")
+PY
+
+echo "Checking OpenAI model scope through Duckway proxy..."
+MODEL_STATUS="$(curl -sS --max-time 30 -o /tmp/openai-models-response.json -w '%{http_code}' \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  "http://127.0.0.1:$PROXY_PORT/proxy/openai/v1/models?client_version=duckway-live-e2e")"
+if [ "$MODEL_STATUS" != "200" ]; then
+  echo "OpenAI /v1/models through Duckway proxy failed with HTTP $MODEL_STATUS" >&2
+  head -c 1000 /tmp/openai-models-response.json >&2 || true
+  echo >&2
+  if grep -q 'api.model.read' /tmp/openai-models-response.json 2>/dev/null; then
+    echo "Credential failure: this Codex OAuth token still lacks api.model.read after refresh." >&2
+  fi
+  tail -n 80 "$PROXY_LOG" >&2 || true
+  exit 1
+fi
 
 echo "Running Codex prompt through Duckway proxy..."
 mkdir -p /tmp/codex-work
