@@ -257,6 +257,7 @@ func parseCodexTmuxEventPayload(payload string) (*codexTmuxEvent, bool) {
 
 func parseCodexJSONL(out []byte, fallbackSessionID string) (sessionID, result string, isError bool) {
 	sessionID = fallbackSessionID
+	haveAgentMessage := false
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
@@ -275,24 +276,28 @@ func parseCodexJSONL(out []byte, fallbackSessionID string) (sessionID, result st
 		case "item.completed":
 			if ev.Item.Type == "agent_message" {
 				result = ev.Item.Text
+				haveAgentMessage = true
+				isError = false
 			}
 		case "error":
-			isError = true
-			switch {
-			case ev.Message != "":
-				result = ev.Message
-			case ev.Error != "":
-				result = ev.Error
+			if !haveAgentMessage {
+				isError = true
+				switch {
+				case ev.Message != "":
+					result = ev.Message
+				case ev.Error != "":
+					result = ev.Error
+				}
 			}
 		case "turn.failed":
 			errText := ev.Message
 			if errText == "" {
 				errText = ev.Error
 			}
-			if errText != "" {
+			if errText != "" && !haveAgentMessage {
 				isError = true
 				result = errText
-			} else if result == "" {
+			} else if !haveAgentMessage && result == "" {
 				isError = true
 				result = "codex turn failed"
 			}
