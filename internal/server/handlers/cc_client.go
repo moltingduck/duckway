@@ -319,6 +319,9 @@ func (h *CCClientHandler) PostAttachment(w http.ResponseWriter, r *http.Request)
 		jsonError(w, "invalid multipart upload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
 	content := r.FormValue("content")
 	replyTo := r.FormValue("reply_to_message_id")
 	file, header, err := r.FormFile("file")
