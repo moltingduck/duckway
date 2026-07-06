@@ -20,6 +20,7 @@ import (
 )
 
 const ccAttachmentMaxBytes = 25 << 20
+const discordContentChunkLimit = 1900
 
 // CCClientHandler exposes the CC operations agents need: list channels under
 // the client's CC, create / archive task channels, post / read / edit /
@@ -39,6 +40,38 @@ type CCClientHandler struct {
 
 func NewCCClientHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, crypto *svc.Crypto, bot *svc.DiscordBot, hub *svc.CCEventHub, approvals *svc.CCApprovalRegistry) *CCClientHandler {
 	return &CCClientHandler{cc: cc, apiKeys: apiKeys, crypto: crypto, bot: bot, hub: hub, approvals: approvals}
+}
+
+func splitDiscordContent(content string) []string {
+	if content == "" {
+		return []string{content}
+	}
+	runes := []rune(content)
+	if len(runes) <= discordContentChunkLimit {
+		return []string{content}
+	}
+	chunks := make([]string, 0, len(runes)/discordContentChunkLimit+1)
+	for len(runes) > 0 {
+		n := discordContentChunkLimit
+		if len(runes) < n {
+			n = len(runes)
+		}
+		if n < len(runes) {
+			for i := n - 1; i > 0 && i >= n-400; i-- {
+				if runes[i] == '\n' {
+					n = i + 1
+					break
+				}
+			}
+		}
+		chunks = append(chunks, string(runes[:n]))
+		runes = runes[n:]
+	}
+	total := len(chunks)
+	for i := range chunks {
+		chunks[i] = fmt.Sprintf("(part %d/%d)\n%s", i+1, total, chunks[i])
+	}
+	return chunks
 }
 
 // resolveCC fetches the client's CC + decrypted bot token, or writes the
@@ -264,10 +297,16 @@ func (h *CCClientHandler) PostMessage(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "content required", http.StatusBadRequest)
 		return
 	}
-	id, err := h.bot.PostMessageReply(r.Context(), botTok, ch.ChannelID, req.Content, req.ReplyToMessageID)
-	if err != nil {
-		jsonError(w, "discord post: "+err.Error(), http.StatusBadGateway)
-		return
+	var id string
+	for _, part := range splitDiscordContent(req.Content) {
+		msgID, err := h.bot.PostMessageReply(r.Context(), botTok, ch.ChannelID, part, req.ReplyToMessageID)
+		if err != nil {
+			jsonError(w, "discord post: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		if id == "" {
+			id = msgID
+		}
 	}
 	jsonResponse(w, map[string]string{"message_id": id})
 }

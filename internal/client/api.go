@@ -512,7 +512,7 @@ func (c *APIClient) postCCReplyOne(ctx context.Context, handle, content, replyTo
 	return nil
 }
 
-const discordMessageChunkLimit = 1900
+const discordMessageChunkLimit = 1800
 
 func splitDiscordMessage(content string) []string {
 	if content == "" {
