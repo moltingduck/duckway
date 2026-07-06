@@ -60,6 +60,34 @@ func TestRefreshableDeleteImpactListsReferences(t *testing.T) {
 	}
 }
 
+func TestUpdateRefreshableWithNewTokensReactivatesKey(t *testing.T) {
+	_, keys, exec := seedRefreshableDeleteImpact(t)
+	exec(`UPDATE api_keys SET is_active = 0 WHERE id = 'key-refresh-del'`)
+
+	if err := keys.UpdateRefreshable(
+		"key-refresh-del",
+		"refreshed key",
+		"encrypted-new-access",
+		"encrypted-new-refresh",
+		"https://auth.openai.com/oauth/token",
+		`{"credential_kind":"codex_oauth"}`,
+		12345,
+	); err != nil {
+		t.Fatalf("UpdateRefreshable: %v", err)
+	}
+
+	key, err := keys.GetByID("key-refresh-del")
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if !key.IsActive {
+		t.Fatalf("key should be active after token replacement: %+v", key)
+	}
+	if key.KeyEncrypted != "encrypted-new-access" || key.RefreshToken != "encrypted-new-refresh" {
+		t.Fatalf("tokens were not updated: %+v", key)
+	}
+}
+
 func TestDeleteRefreshableWithCleanupDisablesCCAndCleansReferences(t *testing.T) {
 	db, keys, _ := seedRefreshableDeleteImpact(t)
 

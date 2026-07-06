@@ -83,6 +83,7 @@
         <tr><td class="text-muted">Token Endpoint</td><td id="d-endpoint" class="mono text-sm" style="word-break:break-all"></td></tr>
         <tr><td class="text-muted">Subscription Info</td><td id="d-sub" class="mono text-sm"></td></tr>
         <tr><td class="text-muted">Expires</td><td id="d-expires"></td></tr>
+        <tr><td class="text-muted">Status</td><td id="d-status"></td></tr>
         <tr><td class="text-muted">Usage</td><td id="d-usage"></td></tr>
         <tr><td class="text-muted">Last Used</td><td id="d-last-used"></td></tr>
         <tr><td class="text-muted">Created</td><td id="d-created"></td></tr>
@@ -103,6 +104,7 @@
         <div class="form-group"><label>Expires At <span class="text-muted">(Unix ms, optional; unchanged unless new tokens are uploaded)</span></label>
           <input type="number" id="edit-expires" placeholder="Current expiry is shown in details">
         </div>
+        <label class="checkbox-row"><input type="checkbox" id="edit-active"> Active</label>
         <div class="form-group" id="edit-display-group"><label>Agent Display Name <span class="text-muted">(shown in agent's .claude.json)</span></label>
           <input type="text" id="edit-display" placeholder="Duckway Agent">
         </div>
@@ -421,6 +423,7 @@ function parseEditPaste() {
     var parsed = readTokenPayload(data);
     if (parsed.accessToken) document.getElementById('edit-access').value = parsed.accessToken;
     if (parsed.refreshToken) document.getElementById('edit-refresh').value = parsed.refreshToken;
+    if (parsed.accessToken && parsed.refreshToken) document.getElementById('edit-active').checked = true;
     if (parsed.expiresAt) document.getElementById('edit-expires').value = parsed.expiresAt;
     if (Object.keys(parsed.subscriptionInfo).length) document.getElementById('edit-sub').value = JSON.stringify(parsed.subscriptionInfo);
   } catch(e) {}
@@ -460,6 +463,7 @@ function openDetail(id) {
       }
 
       document.getElementById('d-usage').textContent = data.usage_count;
+      document.getElementById('d-status').innerHTML = data.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>';
       document.getElementById('d-last-used').textContent = data.last_used_at || 'Never';
       document.getElementById('d-created').textContent = data.created_at;
       document.getElementById('d-rate-limits').innerHTML = renderUsageSnapshot(data.usage_snapshot);
@@ -562,6 +566,7 @@ function switchToEdit() {
   document.getElementById('edit-name').value = currentDetail.name;
   document.getElementById('edit-endpoint').value = currentDetail.token_endpoint;
   document.getElementById('edit-expires').value = '';
+  document.getElementById('edit-active').checked = !!currentDetail.is_active;
   document.getElementById('edit-sub').value = currentDetail.subscription_info || '';
   // Extract displayName from subscription_info
   var displayName = 'Duckway Agent';
@@ -724,7 +729,8 @@ document.getElementById('edit-form').addEventListener('submit', function(e) {
   var body = {
     name: document.getElementById('edit-name').value,
     token_endpoint: document.getElementById('edit-endpoint').value,
-    subscription_info: JSON.stringify(subObj)
+    subscription_info: JSON.stringify(subObj),
+    is_active: document.getElementById('edit-active').checked
   };
 
   var accessToken = document.getElementById('edit-access').value.trim();
@@ -732,6 +738,7 @@ document.getElementById('edit-form').addEventListener('submit', function(e) {
   var expiresAt = Number(document.getElementById('edit-expires').value || 0);
   if (accessToken) body.access_token = accessToken;
   if (refreshToken) body.refresh_token = refreshToken;
+  if (accessToken && refreshToken) body.is_active = true;
   if (expiresAt > 0) body.expires_at = expiresAt;
 
   fetch('/api/oauth/' + id, {

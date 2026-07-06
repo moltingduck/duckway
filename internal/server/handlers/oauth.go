@@ -67,10 +67,16 @@ func (h *OAuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "refresh failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+	updated, err := h.apiKeyQ.GetByID(id)
+	if err != nil {
+		jsonError(w, "refresh completed but reload failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	jsonResponse(w, map[string]interface{}{
 		"status":     "refreshed",
 		"expires_at": expiresAt,
 		"id":         id,
+		"is_active":  updated.IsActive,
 	})
 }
 
@@ -239,6 +245,7 @@ func (h *OAuthHandler) Update(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt        int64  `json:"expires_at"`
 		TokenEndpoint    string `json:"token_endpoint"`
 		SubscriptionInfo string `json:"subscription_info"`
+		IsActive         *bool  `json:"is_active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
@@ -292,6 +299,16 @@ func (h *OAuthHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if err := h.apiKeyQ.UpdateRefreshable(id, req.Name, encAccess, encRefresh, req.TokenEndpoint, req.SubscriptionInfo, req.ExpiresAt); err != nil {
 		jsonError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if req.IsActive != nil {
+		active := *req.IsActive
+		if encAccess != "" && encRefresh != "" {
+			active = true
+		}
+		if err := h.apiKeyQ.SetActive(id, active); err != nil {
+			jsonError(w, "update active flag failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	jsonResponse(w, map[string]string{"status": "updated"})
@@ -541,10 +558,6 @@ func (h *OAuthHandler) ClientGetCodexCredentials(w http.ResponseWriter, r *http.
 	jsonResponse(w, resp)
 }
 
-func codexPhantomTokens(placeholder string, subInfo map[string]interface{}) map[string]interface{} {
-	return codexPhantomTokensFromSource(placeholder, subInfo, "", "")
-}
-
 func codexPhantomTokensFromSource(placeholder string, subInfo map[string]interface{}, accessToken, idToken string) map[string]interface{} {
 	return map[string]interface{}{
 		"access_token":  codexPhantomJWTFromSource("access", placeholder, subInfo, accessToken),
@@ -565,11 +578,6 @@ func codexPhantomJWTFromSource(kind, placeholder string, subInfo map[string]inte
 		clientID = v
 	}
 	return codexPhantomJWTWithClaims(kind, placeholder, subInfo, clientID, now, exp)
-}
-
-func codexPhantomJWT(kind, placeholder string, subInfo map[string]interface{}) string {
-	now := time.Now().Unix()
-	return codexPhantomJWTWithClaims(kind, placeholder, subInfo, defaultCodexClientID, now, now+24*60*60)
 }
 
 const defaultCodexClientID = "app_EMoamEEZ73f0CkXaXp7hrann"

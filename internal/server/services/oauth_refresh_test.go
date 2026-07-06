@@ -38,6 +38,18 @@ func TestIsPermanentOAuthError(t *testing.T) {
 			want:       true,
 		},
 		{
+			name:       "400 openai nested invalid_refresh_token",
+			statusCode: 400,
+			body:       []byte(`{"error":{"message":"Invalid refresh token.","type":"invalid_request_error","param":null,"code":"invalid_refresh_token"}}`),
+			want:       true,
+		},
+		{
+			name:       "400 openai nested invalid refresh token message",
+			statusCode: 400,
+			body:       []byte(`{"error":{"message":"Invalid refresh token.","type":"invalid_request_error"}}`),
+			want:       true,
+		},
+		{
 			name:       "400 unauthorized_client",
 			statusCode: 400,
 			body:       []byte(`{"error":"unauthorized_client"}`),
@@ -332,5 +344,74 @@ func TestRefreshKey_GenericOAuthSendsClientIDAndUsesJWTExpiry(t *testing.T) {
 	}
 	if got, want := expiresAt, int64(1783222051000); got != want {
 		t.Fatalf("expiresAt = %d, want %d", got, want)
+	}
+}
+
+func TestRefreshNowSuccessfulRefreshReactivatesInactiveKey(t *testing.T) {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":1783222051}`))
+	nextAccess := "header." + payload + ".sig"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":%q}`, nextAccess)
+	}))
+	defer ts.Close()
+
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	cryptoKey := make([]byte, 32)
+	if _, err := rand.Read(cryptoKey); err != nil {
+		t.Fatalf("rand key: %v", err)
+	}
+	crypto := services.NewCrypto(cryptoKey)
+
+	const svcID = "svc-reactivate-refresh"
+	if _, err := db.Exec(
+		`INSERT INTO services (id, name, display_name, upstream_url, host_pattern) VALUES (?, ?, ?, ?, ?)`,
+		svcID, "reactivate-refresh-test", "Reactivate Refresh Test", "https://api.openai.com", "api.openai.com",
+	); err != nil {
+		t.Fatalf("insert service: %v", err)
+	}
+
+	encRefresh, err := crypto.Encrypt("rt.fake-refresh")
+	if err != nil {
+		t.Fatalf("encrypt refresh: %v", err)
+	}
+	encAccess, err := crypto.Encrypt("old-access")
+	if err != nil {
+		t.Fatalf("encrypt access: %v", err)
+	}
+
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	const keyID = "key-reactivate-refresh"
+	if err := apiKeyQ.Create(&models.APIKey{
+		ID:            keyID,
+		ServiceID:     svcID,
+		Name:          "inactive oauth",
+		KeyEncrypted:  encAccess,
+		RefreshToken:  encRefresh,
+		ExpiresAt:     1,
+		TokenEndpoint: ts.URL,
+	}); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	if err := apiKeyQ.Deactivate(keyID); err != nil {
+		t.Fatalf("deactivate key: %v", err)
+	}
+
+	refresher := services.NewTokenRefresher(apiKeyQ, crypto)
+	if _, err := refresher.RefreshNow(keyID); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	key, err := apiKeyQ.GetByID(keyID)
+	if err != nil {
+		t.Fatalf("get key: %v", err)
+	}
+	if !key.IsActive {
+		t.Fatalf("key should be active after successful manual refresh: %+v", key)
 	}
 }

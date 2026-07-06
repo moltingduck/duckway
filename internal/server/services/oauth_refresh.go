@@ -94,6 +94,9 @@ func (r *TokenRefresher) RefreshNow(id string) (int64, error) {
 	if err := r.refreshKey(key); err != nil {
 		return 0, err
 	}
+	if err := r.apiKeyQ.SetActive(id, true); err != nil {
+		return 0, fmt.Errorf("reactivate refreshed key: %w", err)
+	}
 	// Re-read to get the persisted expires_at
 	updated, err := r.apiKeyQ.GetByID(id)
 	if err != nil {
@@ -265,17 +268,37 @@ func isPermanentOAuthError(statusCode int, body []byte) bool {
 		return false
 	}
 	var errResp struct {
-		Error string `json:"error"`
+		Error interface{} `json:"error"`
 	}
 	if json.Unmarshal(body, &errResp) != nil {
 		return false
 	}
-	switch errResp.Error {
+	code := oauthErrorCode(errResp.Error)
+	switch code {
 	case "invalid_grant", // revoked / used / expired refresh token
+		"invalid_refresh_token",
 		"invalid_client",      // wrong client_id/secret
 		"unauthorized_client", // client not allowed this grant type
 		"unsupported_grant_type":
 		return true
 	}
 	return false
+}
+
+func oauthErrorCode(raw interface{}) string {
+	switch v := raw.(type) {
+	case string:
+		return v
+	case map[string]interface{}:
+		if code, _ := v["code"].(string); code != "" {
+			return code
+		}
+		if msg, _ := v["message"].(string); strings.Contains(strings.ToLower(msg), "invalid refresh token") {
+			return "invalid_refresh_token"
+		}
+		if typ, _ := v["type"].(string); typ != "" {
+			return typ
+		}
+	}
+	return ""
 }

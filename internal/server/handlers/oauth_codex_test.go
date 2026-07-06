@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -130,6 +131,188 @@ func TestValidateCodexOAuth(t *testing.T) {
 	h.Validate(rec, httptest.NewRequest(http.MethodPost, "/api/oauth/validate", strings.NewReader(body)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateRefreshableCanReactivateKey(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encAccess, err := crypto.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encRefresh, err := crypto.Encrypt("refresh-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted,refresh_token,token_endpoint,subscription_info,is_active)
+		VALUES ('key-reactivate',?,'codex oauth',?,?, 'https://auth.openai.com/oauth/token', '{"credential_kind":"codex_oauth"}', 0)`,
+		openaiSvc.ID, encAccess, encRefresh); err != nil {
+		t.Fatal(err)
+	}
+
+	h := handlers.NewOAuthHandler(
+		queries.NewAPIKeyQueries(db),
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		crypto,
+	)
+	req := httptest.NewRequest(http.MethodPut, "/api/oauth/key-reactivate", strings.NewReader(`{
+		"name":"codex oauth",
+		"token_endpoint":"https://auth.openai.com/oauth/token",
+		"subscription_info":"{\"credential_kind\":\"codex_oauth\"}",
+		"is_active":true
+	}`))
+	req.SetPathValue("id", "key-reactivate")
+	rec := httptest.NewRecorder()
+
+	h.Update(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	key, err := queries.NewAPIKeyQueries(db).GetByID("key-reactivate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !key.IsActive {
+		t.Fatalf("key was not reactivated: %+v", key)
+	}
+}
+
+func TestRefreshReturnsActiveStatusAfterReactivatingKey(t *testing.T) {
+	tokenEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":%q}`, testJWT())
+	}))
+	t.Cleanup(tokenEndpoint.Close)
+
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encAccess, err := crypto.Encrypt("old-access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encRefresh, err := crypto.Encrypt("refresh-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted,refresh_token,token_endpoint,is_active)
+		VALUES ('key-refresh-active',?,'codex oauth',?,?,?,0)`,
+		openaiSvc.ID, encAccess, encRefresh, tokenEndpoint.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	h := handlers.NewOAuthHandler(
+		apiKeyQ,
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		crypto,
+	)
+	h.SetRefresher(services.NewTokenRefresher(apiKeyQ, crypto))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/oauth/key-refresh-active/refresh", nil)
+	req.SetPathValue("id", "key-refresh-active")
+	rec := httptest.NewRecorder()
+
+	h.Refresh(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Status   string `json:"status"`
+		IsActive bool   `json:"is_active"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "refreshed" || !got.IsActive {
+		t.Fatalf("refresh response did not expose active status: %+v body=%s", got, rec.Body.String())
+	}
+	key, err := apiKeyQ.GetByID("key-refresh-active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !key.IsActive {
+		t.Fatalf("key should be active after refresh: %+v", key)
+	}
+}
+
+func TestUpdateRefreshableWithReplacementTokensIgnoresStaleInactiveCheckbox(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encAccess, err := crypto.Encrypt("old-access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encRefresh, err := crypto.Encrypt("old-refresh-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted,refresh_token,token_endpoint,subscription_info,is_active)
+		VALUES ('key-replace-reactivate',?,'oauth token',?,?, 'https://provider.example/oauth/token', '{}', 0)`,
+		openaiSvc.ID, encAccess, encRefresh); err != nil {
+		t.Fatal(err)
+	}
+
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	h := handlers.NewOAuthHandler(
+		apiKeyQ,
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		crypto,
+	)
+	req := httptest.NewRequest(http.MethodPut, "/api/oauth/key-replace-reactivate", strings.NewReader(`{
+		"name":"oauth token",
+		"access_token":"new-access-token",
+		"refresh_token":"new-refresh-token",
+		"token_endpoint":"https://provider.example/oauth/token",
+		"subscription_info":"{}",
+		"is_active":false
+	}`))
+	req.SetPathValue("id", "key-replace-reactivate")
+	rec := httptest.NewRecorder()
+
+	h.Update(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	key, err := apiKeyQ.GetByID("key-replace-reactivate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !key.IsActive {
+		t.Fatalf("replacement tokens should repair inactive key despite stale checkbox: %+v", key)
 	}
 }
 

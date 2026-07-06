@@ -218,7 +218,9 @@ func (r *ccRunner) run(t ccTask) {
 	if err != nil {
 		r.reportTaskTest(t, "failed", err.Error())
 		r.reactToTask(t, "⚠️")
-		r.postTaskMessage(t, fmt.Sprintf("%s error: %v", r.agentName, err))
+		if postErr := r.postTaskMessage(t, fmt.Sprintf("%s error: %v", r.agentName, err)); postErr != nil {
+			r.logger("[cc-watch] %s: post error message failed: %v", r.handle, postErr)
+		}
 		return
 	}
 

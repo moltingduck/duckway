@@ -316,7 +316,7 @@ func (q *APIKeyQueries) Deactivate(id string) error {
 
 func (q *APIKeyQueries) UpdateTokens(id, keyEncrypted string, expiresAt int64) error {
 	_, err := q.db.Exec(
-		"UPDATE api_keys SET key_encrypted = ?, expires_at = ?, last_used_at = datetime('now') WHERE id = ?",
+		"UPDATE api_keys SET key_encrypted = ?, expires_at = ?, last_used_at = datetime('now'), is_active = 1 WHERE id = ?",
 		keyEncrypted, expiresAt, id,
 	)
 	return err
@@ -342,9 +342,17 @@ func (q *APIKeyQueries) UpdateRefreshable(id, name, keyEncrypted, refreshToken, 
 		query += ", expires_at = ?"
 		args = append(args, expiresAt)
 	}
+	if keyEncrypted != "" && refreshToken != "" {
+		query += ", is_active = 1"
+	}
 	query += " WHERE id = ?"
 	args = append(args, id)
 	_, err := q.db.Exec(query, args...)
+	return err
+}
+
+func (q *APIKeyQueries) SetActive(id string, active bool) error {
+	_, err := q.db.Exec("UPDATE api_keys SET is_active = ? WHERE id = ?", boolToInt(active), id)
 	return err
 }
 
