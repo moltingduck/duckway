@@ -3,6 +3,7 @@ package client
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
@@ -82,6 +83,9 @@ type httpsProxy struct {
 // since the daemon redirects stdout/stderr there).
 func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 	configDir := DefaultConfigDir()
+	updateCtx, cancelUpdateChecks := context.WithCancel(context.Background())
+	defer cancelUpdateChecks()
+	StartUpdateCheckLoop(updateCtx, cfg, "proxy")
 
 	// Initial sync
 	count, err := SyncKeys(configDir, cfg)

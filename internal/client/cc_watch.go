@@ -87,6 +87,7 @@ func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (
 // Run is the main loop. Blocks until ctx is cancelled.
 func (w *CCWatch) Run(ctx context.Context) error {
 	log.Printf("[cc-watch] starting; server=%s debug=%v no_tmux=%v", w.cfg.ServerURL, w.debug, w.noTmux)
+	StartUpdateCheckLoop(ctx, w.cfg, "cc-watch")
 
 	// Recover any turns whose Stop event arrived while the previous
 	// daemon instance was dead. Best-effort: errors are logged and we
