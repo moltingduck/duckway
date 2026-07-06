@@ -385,10 +385,7 @@ func (w *CCWatch) syncCodexOAuthForCC(ccID string) {
 	if w.agentTypes[ccID] != "codex" {
 		return
 	}
-	if SyncCodexOAuthCredentials(w.configDir, w.cfg) {
-		ClearCodexOAuthMode(w.configDir)
-	}
-	if err := SyncCodexConfig(w.cfg.ProxyPort); err != nil {
+	if err := SyncCodexAuthConfig(w.configDir, w.cfg); err != nil {
 		log.Printf("[cc-watch] codex config sync failed: %v", err)
 	}
 }

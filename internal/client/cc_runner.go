@@ -205,6 +205,9 @@ func (r *ccRunner) run(t ccTask) {
 	extraEnv = append(extraEnv, r.agentEnv...)
 	extraEnv = append(extraEnv, agentProxyEnv(r.configDir)...)
 	keysEnv := loadKeysEnv(r.configDir)
+	if r.agentType == "codex" && codexNativeOAuthConfigured(r.configDir) {
+		keysEnv = removeEnv(keysEnv, "OPENAI_API_KEY")
+	}
 	extraEnv = append(extraEnv, keysEnv...)
 
 	r.logger("[cc-watch] %s: starting agent_type=%s runner_mode=%s %s cwd=%s resume=%v", r.handle, r.agentType, r.runnerMode, r.agentSecurityLogFields(sid), r.cwd, sid != "")
@@ -417,6 +420,44 @@ func loadKeysEnv(configDir string) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+func removeEnv(env []string, key string) []string {
+	out := env[:0]
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func codexNativeOAuthConfigured(configDir string) bool {
+	if CodexOAuthModeActive(configDir) {
+		return false
+	}
+	authPath, err := codexAuthJSONPath()
+	if err != nil {
+		return false
+	}
+	auth, err := os.ReadFile(authPath)
+	if err != nil || !strings.Contains(string(auth), `"id_token"`) {
+		return false
+	}
+	configPath, err := codexConfigTOMLPath()
+	if err != nil {
+		return false
+	}
+	config, err := os.ReadFile(configPath)
+	if os.IsNotExist(err) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	return !strings.Contains(string(config), "duckway-openai")
 }
 
 func agentProxyEnv(configDir string) []string {

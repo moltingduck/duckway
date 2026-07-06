@@ -107,14 +107,7 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 		log.Printf("Warning: statusline sync failed: %v", err)
 	}
 
-	// Codex OAuth uses a fake ~/.codex/auth.json plus Duckway's OpenAI
-	// provider. API calls carry the OpenAI placeholder; OAuth refresh calls are
-	// MITM'd at auth.openai.com and exchanged on the gateway. Real OAuth tokens
-	// are never written to the client.
-	if SyncCodexOAuthCredentials(configDir, cfg) {
-		ClearCodexOAuthMode(configDir)
-	}
-	if err := SyncCodexConfig(cfg.ProxyPort); err != nil {
+	if err := SyncCodexAuthConfig(configDir, cfg); err != nil {
 		log.Printf("Warning: codex config sync failed: %v", err)
 	}
 
@@ -541,6 +534,14 @@ func SyncCodexOAuthCredentials(configDir string, cfg *Config) bool {
 	ClearCodexOAuthMode(configDir)
 	log.Printf("Codex phantom OAuth auth.json synced to %s", authPath)
 	return true
+}
+
+func SyncCodexAuthConfig(configDir string, cfg *Config) error {
+	if SyncCodexOAuthCredentials(configDir, cfg) {
+		ClearCodexOAuthMode(configDir)
+		return DisableCodexDuckwayProvider()
+	}
+	return SyncCodexConfig(cfg.ProxyPort)
 }
 
 func codexCredentialsHaveIDToken(creds map[string]interface{}) bool {

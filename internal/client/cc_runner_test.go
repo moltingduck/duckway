@@ -243,6 +243,54 @@ ANTHROPIC_API_KEY=sk-ant-placeholder
 	}
 }
 
+func TestCCRunner_OmitsOpenAIEnvForCodexNativeOAuth(t *testing.T) {
+	var gotEnv []string
+	fn := func(_ context.Context, _, _, _, _ string, extraEnv []string) (string, string, bool, error) {
+		gotEnv = append([]string(nil), extraEnv...)
+		return "sess-abc", "ok", false, nil
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := t.TempDir()
+	if err := os.WriteFile(KeysEnvPath(configDir), []byte(`
+OPENAI_API_KEY=sk-dw-placeholder
+ANTHROPIC_API_KEY=sk-ant-placeholder
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexDir, "auth.json"), []byte(`{"auth_mode":"chatgpt","tokens":{"id_token":"header.payload.sig"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte(`model = "gpt-5"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewCCSessionStore(t.TempDir())
+	pp := &recordingPoster{}
+	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: fn, UseTmux: false}
+	r, err := newCCRunner("dwch_t", configDir, t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+
+	r.Enqueue(ccTask{Content: "hello", ChannelKind: "task"})
+	waitForPosts(t, pp, 1)
+
+	envText := strings.Join(gotEnv, "\n")
+	if strings.Contains(envText, "OPENAI_API_KEY=sk-dw-placeholder") {
+		t.Fatalf("OPENAI_API_KEY should not be passed to Codex native OAuth:\n%s", envText)
+	}
+	if !strings.Contains(envText, "ANTHROPIC_API_KEY=sk-ant-placeholder") {
+		t.Fatalf("non-OpenAI env should remain:\n%s", envText)
+	}
+}
+
 func TestCCRunner_AddsProxyEnvForAgents(t *testing.T) {
 	var gotEnv []string
 	fn := func(_ context.Context, _, _, _, _ string, extraEnv []string) (string, string, bool, error) {

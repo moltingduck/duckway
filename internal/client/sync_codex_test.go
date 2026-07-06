@@ -1,6 +1,9 @@
 package client
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -138,6 +141,54 @@ command = "duckway"
 	}
 }
 
+func TestSyncCodexAuthConfigUsesNativeOAuthWhenCredentialsExist(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := t.TempDir()
+	writeCodexConfigWithDuckwayProvider(t, home)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/codex-credentials" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(testCodexCredentials())
+	}))
+	defer srv.Close()
+
+	cfg := &Config{ServerURL: srv.URL, Token: "tok", ProxyPort: 18080}
+	if err := SyncCodexAuthConfig(configDir, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	assertCodexNativeOAuthMode(t, home)
+}
+
+func TestCCWatchCodexOAuthSyncUsesNativeOAuth(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := t.TempDir()
+	writeCodexConfigWithDuckwayProvider(t, home)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/codex-credentials" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(testCodexCredentials())
+	}))
+	defer srv.Close()
+
+	w := &CCWatch{
+		cfg:        &Config{ServerURL: srv.URL, Token: "tok", ProxyPort: 18080},
+		configDir:  configDir,
+		agentTypes: map[string]string{"cc-codex": "codex"},
+	}
+	w.syncCodexOAuthForCC("cc-codex")
+
+	assertCodexNativeOAuthMode(t, home)
+}
+
 func TestBuildHostMapAddsOpenAIAuthVirtualService(t *testing.T) {
 	hostMap := buildHostMap([]ServiceInfo{
 		{Name: "openai", HostPattern: "api.openai.com", UpstreamURL: "https://api.openai.com"},
@@ -158,5 +209,69 @@ func TestBuildHostMapAddsOpenAIAuthVirtualService(t *testing.T) {
 	}
 	if chatgpt.Service != "openai-chatgpt" || chatgpt.DeliveryMode != "proxy" || chatgpt.UpstreamURL != "https://chatgpt.com" {
 		t.Fatalf("unexpected chatgpt host entry: %#v", chatgpt)
+	}
+}
+
+func writeCodexConfigWithDuckwayProvider(t *testing.T, home string) {
+	t.Helper()
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	existing := `model = "gpt-5"
+model_provider = "duckway-openai"
+
+[model_providers.duckway-openai]
+name = "Duckway OpenAI"
+base_url = "http://localhost:18080/proxy/openai/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+
+[mcp_servers.duckway-cc]
+command = "duckway"
+`
+	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte(existing), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testCodexCredentials() map[string]interface{} {
+	return map[string]interface{}{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]interface{}{
+			"id_token":      "header.payload.signature",
+			"access_token":  "header.payload.signature",
+			"refresh_token": "rt.duckway.fake",
+			"account_id":    "duckway-account",
+		},
+	}
+}
+
+func assertCodexNativeOAuthMode(t *testing.T, home string) {
+	t.Helper()
+	authData, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json"))
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	if !strings.Contains(string(authData), `"auth_mode": "chatgpt"`) {
+		t.Fatalf("auth.json missing native Codex OAuth shape:\n%s", string(authData))
+	}
+
+	configData, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	got := string(configData)
+	for _, gone := range []string{
+		`model_provider = "duckway-openai"`,
+		`[model_providers.duckway-openai]`,
+		`env_key = "OPENAI_API_KEY"`,
+	} {
+		if strings.Contains(got, gone) {
+			t.Fatalf("config still contains %q:\n%s", gone, got)
+		}
+	}
+	if !strings.Contains(got, `[mcp_servers.duckway-cc]`) {
+		t.Fatalf("codex mcp config was not preserved:\n%s", got)
 	}
 }

@@ -18,6 +18,7 @@
 # Usage:
 #   CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh --check-token
 #   CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh
+#   CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh --cc-watch
 
 set -euo pipefail
 
@@ -27,6 +28,20 @@ PODMAN="${PODMAN:-podman}"
 CODEX_AUTH="${CODEX_AUTH:-$REPO_ROOT/secrets/codex-auth-live.json}"
 IMAGE="${DUCKWAY_LIVE_IMAGE:-docker.io/library/golang:1.25-alpine}"
 PROMPT="${DUCKWAY_CODEX_PROMPT:-hello?}"
+CHECK_TOKEN=0
+CC_WATCH=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --check-token) CHECK_TOKEN=1 ;;
+    --cc-watch) CC_WATCH=1 ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
 
 if [ ! -r "$CODEX_AUTH" ]; then
   echo "Missing readable CODEX_AUTH file: $CODEX_AUTH" >&2
@@ -41,7 +56,7 @@ if [ "$mode" != "600" ]; then
   exit 1
 fi
 
-if [ "${1:-}" = "--check-token" ]; then
+if [ "$CHECK_TOKEN" = "1" ]; then
   "$PODMAN" run --rm -i \
     -v "$CODEX_AUTH":/run/secrets/codex-auth.json:ro \
     docker.io/library/alpine:3.21 \
@@ -88,6 +103,7 @@ cat <<'EOF'
   - podman isolated HOME
   - real token file mounted read-only
   - prompt: hello?
+  - cc watch: optional with --cc-watch
 ============================================
 EOF
 
@@ -96,26 +112,33 @@ EOF
   -v "$CODEX_AUTH":/run/secrets/codex-auth.json:ro \
   -w /workspace \
   "$IMAGE" \
-  sh -s -- "$PROMPT" <<'CONTAINER_SCRIPT'
+  sh -s -- "$PROMPT" "$CC_WATCH" <<'CONTAINER_SCRIPT'
 set -eu
 
 PROMPT="$1"
+CC_WATCH="$2"
 export HOME=/tmp/duckway-home
 export DUCKWAY_CONFIG_DIR="$HOME/.duckway"
 export DUCKWAY_DEV=1
 export DUCKWAY_DATA_DIR=/tmp/duckway-server-data
 export DUCKWAY_LISTEN=127.0.0.1:19090
+export DUCKWAY_CC_DISABLE_GATEWAY=1
 BASE=http://127.0.0.1:19090
 PROXY_PORT=18080
+DISCORD_MOCK_PORT=19091
 RUN_ID="codex-oauth-live-$(date +%s)"
 COOKIE=/tmp/duckway-cookies
 SERVER_LOG=/tmp/duckway-server.log
 PROXY_LOG=/tmp/duckway-proxy.log
+CC_WATCH_LOG=/tmp/duckway-cc-watch.log
+DISCORD_MOCK_LOG=/tmp/duckway-discord-mock.log
 CODEX_OUT=/tmp/codex-output.jsonl
 
 cleanup() {
+  if [ -n "${CC_WATCH_PID:-}" ]; then kill "$CC_WATCH_PID" >/dev/null 2>&1 || true; fi
   if [ -n "${PROXY_PID:-}" ]; then kill "$PROXY_PID" >/dev/null 2>&1 || true; fi
   if [ -n "${SERVER_PID:-}" ]; then kill "$SERVER_PID" >/dev/null 2>&1 || true; fi
+  if [ -n "${DISCORD_MOCK_PID:-}" ]; then kill "$DISCORD_MOCK_PID" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
 
@@ -126,6 +149,70 @@ npm install -g @openai/codex >/dev/null
 echo "Building Duckway binaries..."
 /usr/local/go/bin/go build -buildvcs=false -o /tmp/duckway-server ./cmd/server
 /usr/local/go/bin/go build -buildvcs=false -o /tmp/duckway ./cmd/client
+
+echo "Starting local Discord mock..."
+python3 - "$DISCORD_MOCK_PORT" >"$DISCORD_MOCK_LOG" 2>&1 <<'PY' &
+import http.server, json, sys, threading
+
+port = int(sys.argv[1])
+counter = [7000]
+lock = threading.Lock()
+
+class H(http.server.BaseHTTPRequestHandler):
+    def _send(self, code, body):
+        data = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        ln = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(ln) if ln else b"{}"
+        try:
+            body = json.loads(raw or b"{}")
+        except Exception:
+            body = {}
+        if "/guilds/" in self.path and self.path.endswith("/channels"):
+            with lock:
+                counter[0] += 1
+                cid = str(counter[0])
+            return self._send(200, {
+                "id": cid,
+                "name": body.get("name", "duckway-control"),
+                "type": 0,
+                "parent_id": body.get("parent_id"),
+                "guild_id": self.path.split("/")[3] if len(self.path.split("/")) > 3 else "",
+            })
+        if "/messages" in self.path:
+            with lock:
+                counter[0] += 1
+                mid = str(counter[0])
+            return self._send(200, {"id": mid, "channel_id": self.path.split("/")[-2]})
+        return self._send(404, {"message": "mock: unknown POST " + self.path})
+
+    def do_PATCH(self):
+        ln = int(self.headers.get("Content-Length", "0"))
+        if ln:
+            self.rfile.read(ln)
+        return self._send(200, {"id": self.path.split("/")[-1]})
+
+    def do_DELETE(self):
+        return self._send(200, {"id": self.path.split("/")[-1]})
+
+    def do_GET(self):
+        if self.path.endswith("/channels") or "/messages" in self.path:
+            return self._send(200, [])
+        return self._send(404, {"message": "mock: unknown GET " + self.path})
+
+    def log_message(self, *args):
+        pass
+
+http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
+PY
+DISCORD_MOCK_PID=$!
+export DUCKWAY_DISCORD_BASE_URL="http://127.0.0.1:$DISCORD_MOCK_PORT"
 
 echo "Starting fresh Duckway server..."
 mkdir -p "$HOME" "$DUCKWAY_CONFIG_DIR" "$DUCKWAY_DATA_DIR"
@@ -151,6 +238,11 @@ curl -fsS -c "$COOKIE" -X POST "$BASE/api/auth/login" \
 OPENAI_SERVICE_ID="$(curl -fsS -b "$COOKIE" "$BASE/api/services" | jq -r '.[] | select(.name=="openai") | .id')"
 if [ -z "$OPENAI_SERVICE_ID" ] || [ "$OPENAI_SERVICE_ID" = "null" ]; then
   echo "OpenAI service not found" >&2
+  exit 1
+fi
+DISCORD_SERVICE_ID="$(curl -fsS -b "$COOKIE" "$BASE/api/services" | jq -r '.[] | select(.name=="discord") | .id')"
+if [ "$CC_WATCH" = "1" ] && { [ -z "$DISCORD_SERVICE_ID" ] || [ "$DISCORD_SERVICE_ID" = "null" ]; }; then
+  echo "Discord service not found" >&2
   exit 1
 fi
 
@@ -266,6 +358,26 @@ proxy_port: $PROXY_PORT
 EOF
 chmod 600 "$DUCKWAY_CONFIG_DIR/config.yaml"
 
+if [ "$CC_WATCH" = "1" ]; then
+  echo "Creating Codex control channel for live cc watch..."
+  BOT_KEY_ID="$(curl -fsS -b "$COOKIE" -X POST "$BASE/api/keys" \
+    -H "Content-Type: application/json" \
+    -d "{\"service_id\":\"$DISCORD_SERVICE_ID\",\"name\":\"$RUN_ID discord bot\",\"key\":\"NzLive.codex.testbot\"}" | jq -r '.id')"
+  if [ -z "$BOT_KEY_ID" ] || [ "$BOT_KEY_ID" = "null" ]; then
+    echo "Discord bot key creation failed" >&2
+    exit 1
+  fi
+  CC_JSON="$(curl -fsS -b "$COOKIE" -X POST "$BASE/api/cc" \
+    -H "Content-Type: application/json" \
+    -d "{\"name\":\"$RUN_ID codex cc\",\"service_id\":\"$DISCORD_SERVICE_ID\",\"api_key_id\":\"$BOT_KEY_ID\",\"client_id\":\"$CLIENT_ID\",\"agent_type\":\"codex\",\"config\":{\"guild_id\":\"guild-live\",\"category_id\":\"cat-live\"},\"agent_options\":{\"sandbox\":\"read-only\"}}")"
+  CC_ID="$(printf '%s' "$CC_JSON" | jq -r '.id')"
+  CC_HANDLE="$(printf '%s' "$CC_JSON" | jq -r '.channels[0].handle')"
+  if [ -z "$CC_ID" ] || [ "$CC_ID" = "null" ] || [ -z "$CC_HANDLE" ] || [ "$CC_HANDLE" = "null" ]; then
+    echo "Codex CC creation failed: $CC_JSON" >&2
+    exit 1
+  fi
+fi
+
 echo "Downloading Duckway CA and syncing client state..."
 curl -fsS -o "$DUCKWAY_CONFIG_DIR/ca.pem" "$BASE/skill/ca.pem"
 curl -fsS -H "X-Duckway-Token: $CLIENT_TOKEN" -o "$DUCKWAY_CONFIG_DIR/ca-key.pem" "$BASE/client/ca-key"
@@ -294,6 +406,12 @@ if "OPENAI_API_KEY=" not in keys_env:
     raise SystemExit("OPENAI_API_KEY phantom missing from keys.env")
 if real_tokens.get("access_token") and real_tokens["access_token"] in keys_env:
     raise SystemExit("real access_token leaked into keys.env")
+config_path = os.path.expanduser("~/.codex/config.toml")
+if os.path.exists(config_path):
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = f.read()
+    if "duckway-openai" in config:
+        raise SystemExit("Codex config still contains duckway-openai after OAuth sync")
 PY
 
 echo "Starting Duckway local proxy..."
@@ -370,30 +488,7 @@ for key in ("access_token", "refresh_token"):
 print("Refresh through Duckway proxy returned phantom tokens")
 PY
 
-echo "Switching Codex CLI to native OAuth mode..."
-python3 - <<'PY'
-import os
-from pathlib import Path
-
-path = Path(os.path.expanduser("~/.codex/config.toml"))
-if not path.exists():
-    raise SystemExit(0)
-lines = path.read_text(encoding="utf-8").splitlines()
-out = []
-skip = False
-for line in lines:
-    stripped = line.strip()
-    if stripped == 'model_provider = "duckway-openai"':
-        continue
-    if stripped == "[model_providers.duckway-openai]":
-        skip = True
-        continue
-    if skip and stripped.startswith("[") and stripped.endswith("]"):
-        skip = False
-    if not skip:
-        out.append(line)
-path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
-PY
+echo "Using Codex CLI native OAuth mode from duckway sync..."
 unset OPENAI_API_KEY
 
 echo "Running Codex prompt through Duckway proxy..."
@@ -450,5 +545,63 @@ if grep -Fq "$PLACEHOLDER" "$SERVER_LOG" "$PROXY_LOG" 2>/dev/null; then
   echo "Warning: phantom token appeared in logs; inspect proxy/server logs" >&2
 fi
 
+if [ "$CC_WATCH" = "1" ]; then
+  echo "Starting duckway cc watch and running Codex agent test..."
+  /tmp/duckway cc watch --no-tmux --debug >"$CC_WATCH_LOG" 2>&1 &
+  CC_WATCH_PID=$!
+  for i in $(seq 1 60); do
+    if grep -q "SSE connected" "$CC_WATCH_LOG"; then break; fi
+    if ! kill -0 "$CC_WATCH_PID" >/dev/null 2>&1; then
+      echo "duckway cc watch exited early" >&2
+      tail -n 120 "$CC_WATCH_LOG" >&2 || true
+      tail -n 80 "$SERVER_LOG" >&2 || true
+      exit 1
+    fi
+    sleep 0.5
+  done
+  if ! grep -q "SSE connected" "$CC_WATCH_LOG"; then
+    echo "duckway cc watch did not connect to SSE" >&2
+    tail -n 120 "$CC_WATCH_LOG" >&2 || true
+    exit 1
+  fi
+
+  TEST_JSON="$(curl -fsS -b "$COOKIE" -X POST "$BASE/api/cc/$CC_ID/test-agent")"
+  TEST_ID="$(printf '%s' "$TEST_JSON" | jq -r '.test_id')"
+  if [ -z "$TEST_ID" ] || [ "$TEST_ID" = "null" ]; then
+    echo "test-agent did not return a test_id: $TEST_JSON" >&2
+    exit 1
+  fi
+
+  for i in $(seq 1 180); do
+    STATUS_JSON="$(curl -fsS -b "$COOKIE" "$BASE/api/cc/$CC_ID/test-agent/$TEST_ID")"
+    STATUS="$(printf '%s' "$STATUS_JSON" | jq -r '.status')"
+    ERR_TEXT="$(printf '%s' "$STATUS_JSON" | jq -r '.error // ""')"
+    case "$STATUS" in
+      replied)
+        echo "duckway cc watch Codex agent replied for $TEST_ID"
+        break
+        ;;
+      failed)
+        echo "duckway cc watch Codex agent test failed: $ERR_TEXT" >&2
+        tail -n 160 "$CC_WATCH_LOG" >&2 || true
+        tail -n 120 "$PROXY_LOG" >&2 || true
+        tail -n 100 "$SERVER_LOG" >&2 || true
+        exit 1
+        ;;
+    esac
+    sleep 1
+  done
+  if [ "$STATUS" != "replied" ]; then
+    echo "duckway cc watch Codex agent test timed out; last status=$STATUS" >&2
+    tail -n 160 "$CC_WATCH_LOG" >&2 || true
+    tail -n 120 "$PROXY_LOG" >&2 || true
+    tail -n 100 "$SERVER_LOG" >&2 || true
+    exit 1
+  fi
+fi
+
 echo "PASS: Codex OAuth phantom token ran prompt through Duckway proxy"
+if [ "$CC_WATCH" = "1" ]; then
+  echo "PASS: duckway cc watch ran Codex agent through Duckway proxy"
+fi
 CONTAINER_SCRIPT
