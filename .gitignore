@@ -23,6 +23,13 @@ Thumbs.db
 
 # Test artifacts
 /tmp/
+
+# Local live-test secrets (never commit)
+/secrets/
+/scripts/*live*.json
+/scripts/*secret*.json
+/scripts/*auth*.json
+
 # Env files with secrets (never commit)
 *.env
 !.env.example
