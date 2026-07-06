@@ -1,12 +1,15 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -547,6 +550,9 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"version": version.Get()})
 	})
+	s.mux.HandleFunc("GET /client/update-info", func(w http.ResponseWriter, r *http.Request) {
+		handleClientUpdateInfo(w, r, downloadDir)
+	})
 
 	// Install script
 	s.mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
@@ -562,6 +568,78 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintf(w, installScript, baseURL, baseURL, baseURL)
 	})
+}
+
+func handleClientUpdateInfo(w http.ResponseWriter, r *http.Request, downloadDir string) {
+	osName := r.URL.Query().Get("os")
+	arch := r.URL.Query().Get("arch")
+	current := r.URL.Query().Get("version")
+	if osName == "" {
+		osName = "linux"
+	}
+	if arch == "" {
+		arch = "amd64"
+	}
+	switch osName {
+	case "linux", "darwin":
+	default:
+		handlers.JsonErrorPublic(w, "unsupported os", http.StatusBadRequest)
+		return
+	}
+	switch arch {
+	case "amd64", "arm64":
+	default:
+		handlers.JsonErrorPublic(w, "unsupported arch", http.StatusBadRequest)
+		return
+	}
+
+	binary := fmt.Sprintf("duckway-client-%s-%s", osName, arch)
+	path := filepath.Join(downloadDir, binary)
+	sum, err := fileSHA256(path)
+	if err != nil {
+		handlers.JsonErrorPublic(w, "client binary not available", http.StatusNotFound)
+		return
+	}
+
+	recommended := os.Getenv("DUCKWAY_CLIENT_RECOMMENDED_VERSION")
+	if recommended == "" {
+		recommended = version.Get()
+	}
+	minVersion := os.Getenv("DUCKWAY_CLIENT_MIN_VERSION")
+	required := os.Getenv("DUCKWAY_CLIENT_UPDATE_REQUIRED") == "1" && current != "" && current != recommended
+	recommendedUpdate := current != "" && current != recommended
+	reason := os.Getenv("DUCKWAY_CLIENT_UPDATE_REASON")
+	if reason == "" && required {
+		reason = "client update required by server policy"
+	} else if reason == "" && recommendedUpdate {
+		reason = "new client version available"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"server_version":             version.Get(),
+		"client_current_version":     current,
+		"client_recommended_version": recommended,
+		"client_min_version":         minVersion,
+		"update_required":            required,
+		"update_recommended":         recommendedUpdate,
+		"restart_required":           false,
+		"reason":                     reason,
+		"os":                         osName,
+		"arch":                       arch,
+		"binary":                     binary,
+		"download_url":               "/download/" + binary,
+		"sha256":                     sum,
+	})
+}
+
+func fileSHA256(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 const installScript = `#!/bin/sh

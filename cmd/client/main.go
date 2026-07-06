@@ -782,19 +782,26 @@ func cmdUpdate(configDir string) {
 	current := version.Get()
 	fmt.Printf("Current: %s\n", current)
 
-	serverVer, err := client.CheckServerVersion(serverURL)
+	updateInfo, err := client.CheckUpdateInfo(serverURL, current)
 	if err != nil {
-		log.Fatalf("Could not reach server: %v", err)
+		log.Fatalf("Could not fetch update info: %v", err)
 	}
-	fmt.Printf("Server:  %s\n", serverVer)
+	fmt.Printf("Server:  %s\n", updateInfo.ServerVersion)
+	fmt.Printf("Target:  %s\n", updateInfo.ClientRecommendedVersion)
+	if updateInfo.Reason != "" {
+		fmt.Printf("Reason:  %s\n", updateInfo.Reason)
+	}
 
-	if serverVer == current {
+	if !updateInfo.UpdateRequired && !updateInfo.UpdateRecommended {
 		fmt.Println("Already up to date.")
 		return
 	}
+	if updateInfo.UpdateRequired {
+		fmt.Println("Update required by server policy.")
+	}
 
 	fmt.Println("New version available — downloading...")
-	if err := client.DownloadAndReplaceClient(serverURL); err != nil {
+	if err := client.DownloadAndReplaceClientWithInfo(serverURL, updateInfo); err != nil {
 		// Permission-denied usually means the install dir is root-owned
 		// (e.g. /usr/local/bin). In an interactive terminal, offer to re-run
 		// through sudo and let sudo handle password input. In non-interactive
@@ -1342,6 +1349,23 @@ func cmdStatus(configDir string) {
 		return
 	}
 	fmt.Println("Connection:  OK")
+
+	if updateInfo, err := client.CheckUpdateInfo(cfg.ServerURL, version.Get()); err == nil {
+		switch {
+		case updateInfo.UpdateRequired:
+			fmt.Printf("Update:      REQUIRED -> %s\n", updateInfo.ClientRecommendedVersion)
+			if updateInfo.Reason != "" {
+				fmt.Printf("  %s\n", updateInfo.Reason)
+			}
+		case updateInfo.UpdateRecommended:
+			fmt.Printf("Update:      available -> %s\n", updateInfo.ClientRecommendedVersion)
+			if updateInfo.Reason != "" {
+				fmt.Printf("  %s\n", updateInfo.Reason)
+			}
+		default:
+			fmt.Println("Update:      up to date")
+		}
+	}
 
 	keys, err := api.FetchKeys()
 	if err != nil {
