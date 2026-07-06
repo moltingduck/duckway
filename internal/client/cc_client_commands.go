@@ -2,12 +2,16 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // clientCommandPayload is what the server packs into a `client_command`
@@ -16,6 +20,13 @@ import (
 type clientCommandPayload struct {
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
+}
+
+type pendingNewProject struct {
+	Slug      string
+	Topic     string
+	Cwd       string
+	CreatedAt time.Time
 }
 
 // handleClientCommand is the cc-watch entry point for `!sessions` /
@@ -45,6 +56,8 @@ func (w *CCWatch) handleClientCommand(data []byte) {
 		w.cmdProjects(env.Handle, payload.Args)
 	case "!new":
 		w.cmdNewProject(env.Handle, payload.Args)
+	case "!new-confirm":
+		w.cmdNewProjectConfirm(env.Handle, payload.Args)
 	default:
 		_ = w.api.PostCC(context.Background(), env.Handle,
 			"❌ daemon doesn't know how to handle `"+payload.Command+"` — update your `duckway` binary on the agent.")
@@ -73,20 +86,31 @@ func (w *CCWatch) cmdProjects(replyHandle string, args []string) {
 func (w *CCWatch) cmdNewProject(replyHandle string, args []string) {
 	slug, flags, err := splitClientSlugAndFlags(args)
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ "+err.Error()+"\nUsage: `!new <slug> --project <name|number> [--topic <text>]`")
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ "+err.Error()+"\nUsage: `!new <slug> --project <name|number> [--topic <text>]` or `!new <slug> --cwd <path> [--topic <text>]`")
 		return
 	}
 	projectRef := strings.TrimSpace(flags["project"])
-	if projectRef == "" {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ daemon only handles `!new` when `--project <name|number>` is set.")
+	cwdRef := strings.TrimSpace(flags["cwd"])
+	if projectRef != "" && cwdRef != "" {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ choose either `--project` or `--cwd`, not both.")
 		return
 	}
+	if projectRef == "" && cwdRef == "" {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ daemon only handles `!new` when `--project <name|number>` or `--cwd <path>` is set.")
+		return
+	}
+
+	if cwdRef != "" {
+		w.cmdNewWithCwd(replyHandle, slug, flags["topic"], cwdRef)
+		return
+	}
+
 	project, err := NewCCProjectStore(w.configDir).Resolve(projectRef)
 	if err != nil {
 		_ = w.api.PostCC(context.Background(), replyHandle, "❌ "+err.Error()+" — run `!projects` to see saved projects.")
 		return
 	}
-	created, err := w.api.CreateCCChannel(context.Background(), slug, flags["topic"], project.Path)
+	created, err := w.createProjectChannel(slug, flags["topic"], project.Path)
 	if err != nil {
 		_ = w.api.PostCC(context.Background(), replyHandle, "❌ create channel: "+err.Error())
 		return
@@ -96,6 +120,112 @@ func (w *CCWatch) cmdNewProject(replyHandle string, args []string) {
 			"   project: `"+project.Name+"`\n"+
 			"   cwd: `"+project.Path+"`\n"+
 			"   Send a message in that channel to start the agent.")
+}
+
+func (w *CCWatch) cmdNewWithCwd(replyHandle, slug, topic, cwdRef string) {
+	cwd, err := normalizeProjectPattern(cwdRef)
+	if err != nil {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ invalid cwd: "+err.Error())
+		return
+	}
+	info, err := os.Stat(cwd)
+	if err == nil {
+		if !info.IsDir() {
+			_ = w.api.PostCC(context.Background(), replyHandle, "❌ cwd exists but is not a directory: `"+cwd+"`")
+			return
+		}
+		created, err := w.createProjectChannel(slug, topic, cwd)
+		if err != nil {
+			_ = w.api.PostCC(context.Background(), replyHandle, "❌ create channel: "+err.Error())
+			return
+		}
+		_ = w.api.PostCC(context.Background(), replyHandle,
+			"✅ Created **#"+created.Name+"** — `"+created.Handle+"`\n"+
+				"   cwd: `"+cwd+"`\n"+
+				"   Send a message in that channel to start the agent.")
+		return
+	}
+	if !os.IsNotExist(err) {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ inspect cwd failed: "+err.Error())
+		return
+	}
+
+	token := randomConfirmToken()
+	w.mu.Lock()
+	if w.pendingNew == nil {
+		w.pendingNew = map[string]pendingNewProject{}
+	}
+	w.prunePendingNewLocked(time.Now())
+	w.pendingNew[token] = pendingNewProject{Slug: slug, Topic: topic, Cwd: cwd, CreatedAt: time.Now()}
+	w.mu.Unlock()
+	_ = w.api.PostCC(context.Background(), replyHandle,
+		"⚠️ Project folder does not exist:\n`"+cwd+"`\n\n"+
+			"Create it, add it to saved projects, and open the task channel?\n"+
+			"Reply with `!new-confirm "+token+"` within 30 minutes.")
+}
+
+func (w *CCWatch) cmdNewProjectConfirm(replyHandle string, args []string) {
+	if len(args) != 1 {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ usage: `!new-confirm <token>`")
+		return
+	}
+	token := strings.TrimSpace(args[0])
+	w.mu.Lock()
+	if w.pendingNew == nil {
+		w.pendingNew = map[string]pendingNewProject{}
+	}
+	w.prunePendingNewLocked(time.Now())
+	pending, ok := w.pendingNew[token]
+	if ok {
+		delete(w.pendingNew, token)
+	}
+	w.mu.Unlock()
+	if !ok {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ no pending `!new` request for that token. Run `!new ... --cwd ...` again.")
+		return
+	}
+	if err := os.MkdirAll(pending.Cwd, 0700); err != nil {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ create folder failed: "+err.Error())
+		return
+	}
+	added, err := NewCCProjectStore(w.configDir).Add([]string{pending.Cwd}, "")
+	if err != nil {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ add project failed: "+err.Error())
+		return
+	}
+	projectName := filepath.Base(pending.Cwd)
+	if len(added) > 0 {
+		projectName = added[0].Name
+	}
+	created, err := w.createProjectChannel(pending.Slug, pending.Topic, pending.Cwd)
+	if err != nil {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ create channel: "+err.Error())
+		return
+	}
+	_ = w.api.PostCC(context.Background(), replyHandle,
+		"✅ Created folder, saved project **"+projectName+"**, and opened **#"+created.Name+"** — `"+created.Handle+"`\n"+
+			"   cwd: `"+pending.Cwd+"`\n"+
+			"   Send a message in that channel to start the agent.")
+}
+
+func (w *CCWatch) createProjectChannel(slug, topic, cwd string) (*CreateCCChannelResult, error) {
+	return w.api.CreateCCChannel(context.Background(), slug, topic, cwd)
+}
+
+func (w *CCWatch) prunePendingNewLocked(now time.Time) {
+	for token, p := range w.pendingNew {
+		if now.Sub(p.CreatedAt) > 30*time.Minute {
+			delete(w.pendingNew, token)
+		}
+	}
+}
+
+func randomConfirmToken() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // cmdSessions lists local claude sessions that aren't already bound to a

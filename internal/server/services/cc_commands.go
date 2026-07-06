@@ -86,6 +86,13 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 		}
 		h.handleNew(ctx, botToken, cc, ch, args[1:])
 
+	case "!new-confirm":
+		if ch.Kind != "management" {
+			h.reply(ctx, botToken, ch.ChannelID, "❌ `!new-confirm` only works in the management channel.")
+			return
+		}
+		h.forwardToDaemon(ctx, botToken, cc, ch, cmd, args[1:])
+
 	case "!end":
 		if ch.Kind == "management" {
 			h.reply(ctx, botToken, ch.ChannelID, "❌ `!end` ends the *current* channel's session — run it inside a task channel.")
@@ -140,7 +147,7 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 // knownCommands is the canonical list used for `!help` discovery + the
 // fuzzy "did you mean" suggestion. Order is the user-facing display
 // order in !help.
-var knownCommands = []string{"!help", "!new", "!end", "!destroy", "!reset", "!list", "!status", "!sessions", "!bind", "!projects"}
+var knownCommands = []string{"!help", "!new", "!new-confirm", "!end", "!destroy", "!reset", "!list", "!status", "!sessions", "!bind", "!projects"}
 
 // unknownCommandReply formats the friendly response for an unrecognised
 // !-prefix command. Suggests close matches (Levenshtein distance ≤ 2)
@@ -257,7 +264,7 @@ func (h *CCCommandHandler) handleNew(ctx context.Context, botToken string, cc *m
 		h.reply(ctx, botToken, mgmt.ChannelID, "❌ "+err.Error()+"\nUsage: `!new <slug> [--cwd <path>|--project <name|number>] [--topic <text>]`")
 		return
 	}
-	if flags["project"] != "" {
+	if flags["project"] != "" || flags["cwd"] != "" {
 		h.forwardToDaemon(ctx, botToken, cc, mgmt, "!new", args)
 		return
 	}
@@ -499,6 +506,7 @@ func (h *CCCommandHandler) decryptBotToken(apiKeyID string) (string, error) {
 
 const helpText = "**Duckway CC commands**\n" +
 	"`!new <slug> [--cwd <path>|--project <name|number>] [--topic <text>]` — create a task channel\n" +
+	"`!new-confirm <token>` — confirm creating a missing `--cwd` folder and saving it as a project\n" +
 	"`!end` — end the *current* task channel's session and **archive** it (history kept)\n" +
 	"`!destroy` — end and **hard-delete** the *current* task channel (history gone)\n" +
 	"`!reset` — wipe the *current* task channel's session_id; next message starts fresh\n" +
@@ -533,6 +541,7 @@ func BuildWelcomeMessage(clientName string) string {
 		"**Start a task**\n" +
 		"`!new fix-login`                          — opens `#fix-login` with default cwd\n" +
 		"`!new deploy --cwd /home/me/myapp`        — opens `#deploy` rooted at that project\n" +
+		"`!new deploy --cwd /home/me/newapp`       — asks before creating a missing folder\n" +
 		"`!new deploy --project duckway`           — opens `#deploy` rooted at a saved project\n" +
 		"`!new analyze --topic \"Q2 metrics\"`        — channel topic appears in Discord's UI\n" +
 		"\n" +

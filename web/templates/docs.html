@@ -367,7 +367,8 @@ journalctl --user -u duckway-cc-watch -f</code></pre>
   <table>
     <thead><tr><th>Command</th><th>Where</th><th>What it does</th></tr></thead>
     <tbody>
-      <tr><td><code>!new &lt;slug&gt; [--cwd &lt;path&gt;] [--topic "…"]</code></td><td>management</td><td>Create a task channel + register it for agent sessions</td></tr>
+      <tr><td><code>!new &lt;slug&gt; [--cwd &lt;path&gt;|--project &lt;name|number&gt;] [--topic "…"]</code></td><td>management</td><td>Create a task channel + register it for agent sessions. Missing <code>--cwd</code> folders require <code>!new-confirm</code>.</td></tr>
+      <tr><td><code>!new-confirm &lt;token&gt;</code></td><td>management</td><td>Create a missing <code>--cwd</code> folder on the agent machine, save it as a project, then open the task channel</td></tr>
       <tr><td><code>!end</code></td><td>task</td><td>End the current channel's agent session, archive the Discord channel</td></tr>
       <tr><td><code>!list</code></td><td>management</td><td>Active task channels + which have running sessions</td></tr>
       <tr><td><code>!status</code></td><td>management</td><td>Daemon up? agent type? task counts?</td></tr>

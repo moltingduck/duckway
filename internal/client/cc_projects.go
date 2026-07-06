@@ -111,6 +111,17 @@ func (s *CCProjectStore) Remove(ref string) (*CCProject, error) {
 	return &removed, nil
 }
 
+func (s *CCProjectStore) Clear() (int, error) {
+	projects, err := s.List()
+	if err != nil {
+		return 0, err
+	}
+	if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
+		return 0, err
+	}
+	return len(projects), nil
+}
+
 func (s *CCProjectStore) Resolve(ref string) (*CCProject, error) {
 	projects, err := s.List()
 	if err != nil {

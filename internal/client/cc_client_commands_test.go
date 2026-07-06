@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -80,6 +83,7 @@ func stubWatch(t *testing.T, projectsRoot string, fake *fakeServer) *CCWatch {
 		agentTypes: map[string]string{},
 		sessions:   NewCCSessionStore(configDir),
 		runners:    map[string]*ccRunner{},
+		pendingNew: map[string]pendingNewProject{},
 		api:        NewAPIClient(fake.srv.URL, "tok"),
 	}
 }
@@ -194,6 +198,66 @@ func TestCmdBind_UnknownSessionReportsError(t *testing.T) {
 	}
 	if !strings.Contains(msgs[0]["content"], "not found") {
 		t.Errorf("expected not-found error, got %q", msgs[0]["content"])
+	}
+}
+
+func TestCmdNewWithExistingCwdCreatesChannel(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(root, "app")
+	if err := os.MkdirAll(cwd, 0700); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeServer(t)
+	w := stubWatch(t, filepath.Join(root, ".claude", "projects"), fake)
+
+	w.cmdNewProject("dwch_mgmt", []string{"fix-login", "--cwd", cwd, "--topic", "bug"})
+
+	creates := fake.snapshotCreates()
+	if len(creates) != 1 {
+		t.Fatalf("creates len = %d, want 1", len(creates))
+	}
+	if creates[0]["name"] != "fix-login" || creates[0]["cwd"] != cwd || creates[0]["topic"] != "bug" {
+		t.Fatalf("unexpected create payload: %+v", creates[0])
+	}
+	msgs := fake.snapshotMessages()
+	if len(msgs) != 1 || !strings.Contains(msgs[0]["content"], "Created") {
+		t.Fatalf("unexpected messages: %+v", msgs)
+	}
+}
+
+func TestCmdNewWithMissingCwdRequiresConfirmationThenAddsProject(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(root, "new-app")
+	fake := newFakeServer(t)
+	w := stubWatch(t, filepath.Join(root, ".claude", "projects"), fake)
+
+	w.cmdNewProject("dwch_mgmt", []string{"new-app", "--cwd", cwd})
+	if len(fake.snapshotCreates()) != 0 {
+		t.Fatalf("should not create channel before confirmation: %+v", fake.snapshotCreates())
+	}
+	msgs := fake.snapshotMessages()
+	if len(msgs) != 1 || !strings.Contains(msgs[0]["content"], "Project folder does not exist") {
+		t.Fatalf("unexpected confirmation prompt: %+v", msgs)
+	}
+	token := regexp.MustCompile("!new-confirm ([a-f0-9]+)").FindStringSubmatch(msgs[0]["content"])
+	if len(token) != 2 {
+		t.Fatalf("confirmation token not found in %q", msgs[0]["content"])
+	}
+
+	w.cmdNewProjectConfirm("dwch_mgmt", []string{token[1]})
+	if st, err := os.Stat(cwd); err != nil || !st.IsDir() {
+		t.Fatalf("cwd not created: stat=%v err=%v", st, err)
+	}
+	projects, err := NewCCProjectStore(w.configDir).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 1 || projects[0].Path != cwd {
+		t.Fatalf("projects = %+v, want cwd %s", projects, cwd)
+	}
+	creates := fake.snapshotCreates()
+	if len(creates) != 1 || creates[0]["cwd"] != cwd {
+		t.Fatalf("creates = %+v, want cwd %s", creates, cwd)
 	}
 }
 

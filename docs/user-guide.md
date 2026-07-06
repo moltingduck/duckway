@@ -469,6 +469,7 @@ The binding only takes effect on the **next** inbound message; the picker turn i
 
 In `<client>-control`:
 - `!new <slug> [--cwd <path>|--project <name|number>] [--topic "…"]` → create a task channel + register a session for it
+- `!new-confirm <token>` → confirm creation of a missing `--cwd` folder; Duckway creates it on the agent machine, saves it as a project, then opens the task channel
 - `!list` → table of task channels + which have running sessions
 - `!status` → daemon up? agent type? counts?
 - `!sessions [<cwd-filter>]` → list local Claude sessions on the agent that aren't yet bound to any CC channel
@@ -484,6 +485,7 @@ duckway projects add ~/projects/*        # glob expands now; matching files are 
 duckway projects add --name api ~/work/backend
 duckway projects list
 duckway projects remove api
+duckway projects clear               # clears saved project registry only; folders are not deleted
 ```
 
 Relative paths are resolved from the directory where you run `duckway projects add`; `~/...` is expanded to your home directory. Globs are expanded only when you add projects, then stored as concrete directories in `~/.duckway/cc-projects.json`. From Discord:
@@ -492,6 +494,7 @@ Relative paths are resolved from the directory where you run `duckway projects a
 !projects duck
 !new fix-login --project duckway
 !new fix-login --project 1
+!new spike --cwd ~/work/new-spike     # asks for !new-confirm if the folder does not exist
 ```
 - `!help`
 

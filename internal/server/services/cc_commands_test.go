@@ -314,7 +314,7 @@ func TestHandle_Help(t *testing.T) {
 
 func TestHandle_New(t *testing.T) {
 	h := newCommandHarness(t)
-	h.handler.Handle(context.Background(), "cc1", h.mgmt, `!new task-1 --cwd /home/me/proj --topic "alpha task"`)
+	h.handler.Handle(context.Background(), "cc1", h.mgmt, `!new task-1 --topic "alpha task"`)
 
 	if h.hitsFor("POST", "/guilds/G1/channels") != 1 {
 		t.Errorf("expected 1 channel-create POST, got %v", h.hits)
@@ -336,13 +336,43 @@ func TestHandle_New(t *testing.T) {
 		t.Logf("  %s name=%q kind=%q cwd=%q topic=%q", handle, name, kind, cwd, topic)
 		if kind == "task" && name == "task-1" {
 			found = true
-			if cwd != "/home/me/proj" || topic != "alpha task" {
+			if cwd != "" || topic != "alpha task" {
 				t.Errorf("task row fields wrong: cwd=%q topic=%q", cwd, topic)
 			}
 		}
 	}
 	if !found {
 		t.Errorf("task-1 task row not persisted")
+	}
+}
+
+func TestHandle_NewWithCwdForwardsToDaemon(t *testing.T) {
+	h := newCommandHarness(t)
+	sub, unsub := h.hub.Subscribe("client1")
+	defer unsub()
+
+	h.handler.Handle(context.Background(), "cc1", h.mgmt, `!new task-1 --cwd /home/me/proj --topic "alpha task"`)
+
+	if h.hitsFor("POST", "/guilds/G1/channels") != 0 {
+		t.Errorf("server should not create --cwd channel directly, got %v", h.hits)
+	}
+	select {
+	case ev := <-sub:
+		if ev.Type != "client_command" || ev.Handle != "dwch_mgmt" {
+			t.Fatalf("unexpected event: %+v", ev)
+		}
+		var p struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		}
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Command != "!new" || !reflect.DeepEqual(p.Args, []string{"task-1", "--cwd", "/home/me/proj", "--topic", "alpha task"}) {
+			t.Fatalf("unexpected payload: %+v", p)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no client_command event received")
 	}
 }
 

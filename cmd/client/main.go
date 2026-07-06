@@ -336,6 +336,7 @@ func cmdProjects(configDir string, args []string) {
 		fmt.Fprintln(os.Stderr, "  duckway projects add [--name <name>] <path-or-glob>...")
 		fmt.Fprintln(os.Stderr, "  duckway projects list")
 		fmt.Fprintln(os.Stderr, "  duckway projects remove <name|number|path>")
+		fmt.Fprintln(os.Stderr, "  duckway projects clear")
 		os.Exit(1)
 	}
 	store := client.NewCCProjectStore(configDir)
@@ -393,6 +394,12 @@ func cmdProjects(configDir string, args []string) {
 			log.Fatal(err)
 		}
 		fmt.Printf("Removed %s -> %s\n", removed.Name, removed.Path)
+	case "clear":
+		n, err := store.Clear()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("Cleared %d saved project(s). Project folders were not deleted.\n", n)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown projects subcommand: %s\n", args[0])
 		os.Exit(1)

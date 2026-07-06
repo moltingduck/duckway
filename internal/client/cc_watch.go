@@ -40,6 +40,7 @@ type CCWatch struct {
 	runners      map[string]*ccRunner // by channel handle
 	inboxCursor  int64
 	sseConnected bool
+	pendingNew   map[string]pendingNewProject
 
 	api *APIClient
 }
@@ -79,6 +80,7 @@ func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (
 		noTmux:       opts.NoTmux,
 		debug:        opts.Debug,
 		runners:      map[string]*ccRunner{},
+		pendingNew:   map[string]pendingNewProject{},
 		inboxCursor:  loadCCInboxCursor(configDir),
 		api:          NewAPIClient(cfg.ServerURL, cfg.Token),
 	}, nil

@@ -88,3 +88,32 @@ func TestCCProjectStoreResolveByNumberNameAndPath(t *testing.T) {
 		}
 	}
 }
+
+func TestCCProjectStoreClearRemovesRegistryOnly(t *testing.T) {
+	root := t.TempDir()
+	app := filepath.Join(root, "app")
+	if err := os.MkdirAll(app, 0700); err != nil {
+		t.Fatal(err)
+	}
+	store := NewCCProjectStore(filepath.Join(root, ".duckway"))
+	if _, err := store.Add([]string{app}, "duckway"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	n, err := store.Clear()
+	if err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("cleared = %d, want 1", n)
+	}
+	if st, err := os.Stat(app); err != nil || !st.IsDir() {
+		t.Fatalf("project folder should remain: stat=%v err=%v", st, err)
+	}
+	projects, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("projects after clear = %+v, want empty", projects)
+	}
+}
