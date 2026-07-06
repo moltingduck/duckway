@@ -15,6 +15,7 @@
 #   CODEX_AUTH    path to the live Codex auth JSON
 #
 # Usage:
+#   CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh --check-token
 #   CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh
 
 set -euo pipefail
@@ -37,6 +38,49 @@ mode="$(stat -c '%a' "$CODEX_AUTH" 2>/dev/null || stat -f '%Lp' "$CODEX_AUTH" 2>
 if [ "$mode" != "600" ]; then
   echo "Refusing to use $CODEX_AUTH because permissions are $mode; run: chmod 600 '$CODEX_AUTH'" >&2
   exit 1
+fi
+
+if [ "${1:-}" = "--check-token" ]; then
+  "$PODMAN" run --rm -i \
+    -v "$CODEX_AUTH":/run/secrets/codex-auth.json:ro \
+    docker.io/library/alpine:3.21 \
+    sh -s <<'CHECK_TOKEN'
+set -eu
+apk add --no-cache python3 >/dev/null
+python3 - <<'PY'
+import base64, json, sys, time
+
+required = {"api.model.read", "api.responses.write"}
+with open("/run/secrets/codex-auth.json", "r", encoding="utf-8") as f:
+    auth = json.load(f)
+tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else auth
+for key in ("access_token", "refresh_token", "id_token"):
+    print(f"{key}: {'present' if tokens.get(key) or auth.get(key) else 'missing'}")
+access = tokens.get("access_token") or auth.get("access_token")
+if not access or len(access.split(".")) != 3:
+    raise SystemExit("access_token is missing or not JWT-shaped")
+payload = access.split(".")[1]
+payload += "=" * (-len(payload) % 4)
+claims = json.loads(base64.urlsafe_b64decode(payload.encode()))
+raw_scopes = claims.get("scp", claims.get("scope", []))
+if isinstance(raw_scopes, str):
+    scopes = set(raw_scopes.split())
+elif isinstance(raw_scopes, list):
+    scopes = {str(s) for s in raw_scopes}
+else:
+    scopes = set()
+missing = sorted(required - scopes)
+print("issuer:", claims.get("iss", ""))
+print("audience:", claims.get("aud", ""))
+print("scopes:", ", ".join(sorted(scopes)) if scopes else "(none)")
+print("missing:", ", ".join(missing) if missing else "(none)")
+if claims.get("exp"):
+    print("expired:", "true" if int(claims["exp"]) <= int(time.time()) else "false")
+if missing:
+    raise SystemExit(2)
+PY
+CHECK_TOKEN
+  exit $?
 fi
 
 cat <<'EOF'
