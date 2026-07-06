@@ -278,9 +278,8 @@ func (h *KeySuiteHandler) UpdateEntry(w http.ResponseWriter, r *http.Request) {
 				if service != nil {
 					prefix, keyLen = service.KeyPrefix, service.KeyLength
 				}
-				prefix, keyLen = svc.DetectKeyFormat(realKey, prefix, keyLen)
 				for _, pid := range updatedIDs {
-					if newPH, err := svc.GeneratePlaceholder(prefix, keyLen); err == nil {
+					if newPH, err := svc.GeneratePlaceholderForRealKey(realKey, prefix, keyLen); err == nil {
 						h.placeholders.UpdatePlaceholder(pid, newPH)
 					}
 				}
@@ -379,14 +378,20 @@ func (h *KeySuiteHandler) assignSuiteEntryToClient(entry *models.KeySuiteEntry, 
 	}
 
 	prefix, keyLen := service.KeyPrefix, service.KeyLength
+	realKeyForPlaceholder := ""
 	if entry.APIKeyID != nil && h.apiKeys != nil && h.crypto != nil {
 		if apiKey, err := h.apiKeys.GetByID(*entry.APIKeyID); err == nil {
 			if realKey, err := h.crypto.Decrypt(apiKey.KeyEncrypted); err == nil {
-				prefix, keyLen = svc.DetectKeyFormat(realKey, prefix, keyLen)
+				realKeyForPlaceholder = realKey
 			}
 		}
 	}
-	placeholder, err := svc.GeneratePlaceholder(prefix, keyLen)
+	var placeholder string
+	if realKeyForPlaceholder != "" {
+		placeholder, err = svc.GeneratePlaceholderForRealKey(realKeyForPlaceholder, prefix, keyLen)
+	} else {
+		placeholder, err = svc.GeneratePlaceholder(prefix, keyLen)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -487,14 +492,20 @@ func (h *KeySuiteHandler) AssignToClient(w http.ResponseWriter, r *http.Request)
 		}
 
 		prefix, keyLen := service.KeyPrefix, service.KeyLength
+		realKeyForPlaceholder := ""
 		if entry.APIKeyID != nil && h.apiKeys != nil && h.crypto != nil {
 			if apiKey, err := h.apiKeys.GetByID(*entry.APIKeyID); err == nil {
 				if realKey, err := h.crypto.Decrypt(apiKey.KeyEncrypted); err == nil {
-					prefix, keyLen = svc.DetectKeyFormat(realKey, prefix, keyLen)
+					realKeyForPlaceholder = realKey
 				}
 			}
 		}
-		placeholder, err := svc.GeneratePlaceholder(prefix, keyLen)
+		var placeholder string
+		if realKeyForPlaceholder != "" {
+			placeholder, err = svc.GeneratePlaceholderForRealKey(realKeyForPlaceholder, prefix, keyLen)
+		} else {
+			placeholder, err = svc.GeneratePlaceholder(prefix, keyLen)
+		}
 		if err != nil {
 			skipped = append(skipped, service.Name)
 			continue

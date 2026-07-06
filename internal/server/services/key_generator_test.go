@@ -49,6 +49,23 @@ func TestIsPlaceholder(t *testing.T) {
 	}
 }
 
+func TestGeneratePlaceholderForRealKey_JWT(t *testing.T) {
+	source := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImV4cCI6MTg5MzQ1NjAwMH0.sig"
+	got, err := GeneratePlaceholderForRealKey(source, "sk-", 64)
+	if err != nil {
+		t.Fatalf("GeneratePlaceholderForRealKey: %v", err)
+	}
+	if parts := strings.Split(got, "."); len(parts) != 3 {
+		t.Fatalf("JWT source should produce JWT-shaped phantom, got %q", got)
+	}
+	if !IsPlaceholder(got) {
+		t.Fatalf("JWT phantom not detected as placeholder: %q", got)
+	}
+	if strings.HasPrefix(got, "sk-") {
+		t.Fatalf("JWT source should not fall back to API key shape: %q", got)
+	}
+}
+
 func TestGeneratePassword(t *testing.T) {
 	pw, err := GeneratePassword(16)
 	if err != nil {

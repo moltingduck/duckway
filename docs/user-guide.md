@@ -257,7 +257,7 @@ Before uploading, click **Test** in the upload modal to validate the pasted toke
 Codex has two different credential modes in Duckway:
 
 - **OpenAI Platform API key** — add this in **API Keys**. Duckway exposes it as `OPENAI_API_KEY` and routes Codex through the local Duckway proxy. This key must allow the Responses API, including `api.responses.write`.
-- **Codex OAuth token** — add this in **Refreshable Tokens**. Duckway writes a fake `~/.codex/auth.json` on clients, intercepts Codex refresh calls to `auth.openai.com`, and swaps the fake refresh token for the real token only inside the gateway. Codex API calls still use the `duckway-openai` provider and `OPENAI_API_KEY` placeholder through the local proxy.
+- **Codex OAuth token** — add this in **Refreshable Tokens**. Duckway writes a fake `~/.codex/auth.json` on clients, intercepts Codex refresh calls to `auth.openai.com`, and swaps fake OAuth tokens for real OAuth tokens only inside the gateway. Codex API calls still use the `duckway-openai` provider and `OPENAI_API_KEY` placeholder through the local proxy; when the assigned OpenAI key is OAuth/JWT-shaped, Duckway issues a JWT-shaped phantom so Codex sees an OAuth-style token locally.
 
 Codex stores ChatGPT-login credentials in `~/.codex/auth.json` after `codex login`. Select the OpenAI service in **Refreshable Tokens** → **Upload Token**, then paste the whole file into the auto-fill box.
 
@@ -285,7 +285,7 @@ Expected Codex format:
 }
 ```
 
-The upload page derives **Expires At** from the `exp` claim inside `tokens.access_token` and marks the credential as `codex_oauth`. Set **Token Endpoint** to `https://auth.openai.com/oauth/token` unless your Codex deployment uses a custom OAuth server. Clients never receive the uploaded real `access_token`, `refresh_token`, or `id_token`; `duckway sync` generates fake JWT-shaped values for `~/.codex/auth.json`.
+The upload page derives **Expires At** from the `exp` claim inside `tokens.access_token` and marks the credential as `codex_oauth`. Set **Token Endpoint** to `https://auth.openai.com/oauth/token` unless your Codex deployment uses a custom OAuth server. Clients never receive the uploaded real `access_token`, `refresh_token`, or `id_token`; `duckway sync` generates fake JWT-shaped values for `~/.codex/auth.json` and, when assigned as `OPENAI_API_KEY`, a JWT-shaped phantom in `~/.duckway/keys.env`.
 
 ### Upload a generic OAuth token
 
@@ -446,7 +446,7 @@ systemctl --user enable --now duckway-cc-watch
 journalctl --user -u duckway-cc-watch -f
 ```
 
-The daemon needs the selected agent binary (`claude`, `codex`, or `openclaw`) in `$PATH`. For Codex, `duckway sync` always writes the `duckway-openai` provider in `~/.codex/config.toml` and uses `OPENAI_API_KEY` from `~/.duckway/keys.env` through the local proxy. If the assigned OpenAI key is a Codex OAuth refreshable key, Duckway also writes a fake `~/.codex/auth.json` and intercepts `auth.openai.com/oauth/token` refreshes so only the gateway sees the real refresh token. Platform keys must allow OpenAI's Responses API, including `api.responses.write`. For OpenClaw, set `DUCKWAY_CC_OPENCLAW_AGENT=<agent-id>` on the client if you do not want the default `openclaw` agent id `default`; Duckway does not configure OpenClaw's own channel bindings. Per-channel `cwd` defaults to `~/.duckway/cc-workspace/<handle>/` (auto-created); override with `!new --cwd /path` from the management channel.
+The daemon needs the selected agent binary (`claude`, `codex`, or `openclaw`) in `$PATH`. For Codex, `duckway sync` always writes the `duckway-openai` provider in `~/.codex/config.toml` and uses `OPENAI_API_KEY` from `~/.duckway/keys.env` through the local proxy. If the assigned OpenAI key is a Codex OAuth refreshable key, Duckway writes OAuth-shaped phantom tokens locally and intercepts `auth.openai.com/oauth/token` refreshes so only the gateway sees the real refresh token. If you use an OpenAI Platform API key instead, that key must allow OpenAI's Responses API, including `api.responses.write`. For OpenClaw, set `DUCKWAY_CC_OPENCLAW_AGENT=<agent-id>` on the client if you do not want the default `openclaw` agent id `default`; Duckway does not configure OpenClaw's own channel bindings. Per-channel `cwd` defaults to `~/.duckway/cc-workspace/<handle>/` (auto-created); override with `!new --cwd /path` from the management channel.
 
 For agent launch debugging, run `duckway cc watch --debug` or `DUCKWAY_CC_DEBUG=1 duckway cc watch -d`. The log includes `agent_type`, `runner_mode`, sandbox/permission fields, and sanitized CLI argv; prompt text is summarized as first 5 characters + last 5 characters only.
 

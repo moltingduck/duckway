@@ -2,9 +2,12 @@ package services
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const placeholderMarker = "dw_"
@@ -41,7 +44,16 @@ func GeneratePlaceholder(prefix string, totalLength int) (string, error) {
 
 // IsPlaceholder checks if a string looks like a Duckway placeholder key.
 func IsPlaceholder(key string) bool {
-	return strings.Contains(key, placeholderMarker)
+	if strings.Contains(key, placeholderMarker) {
+		return true
+	}
+	parts := strings.Split(key, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	payload := string(decodeJWTPart(parts[1]))
+	signature := string(decodeJWTPart(parts[2]))
+	return strings.Contains(payload, placeholderMarker) || strings.Contains(signature, placeholderMarker)
 }
 
 // DetectKeyFormat returns the prefix and total length to use when generating a
@@ -57,6 +69,102 @@ func DetectKeyFormat(realKey, servicePrefix string, serviceLength int) (prefix s
 		return "ghp_", 40
 	}
 	return servicePrefix, serviceLength
+}
+
+// GeneratePlaceholderForRealKey creates a phantom token that follows the real
+// credential's broad shape. OAuth/JWT access tokens stay JWT-shaped so tools
+// that inspect token format still accept the phantom, while static API keys use
+// the provider's prefix/length rules.
+func GeneratePlaceholderForRealKey(realKey, servicePrefix string, serviceLength int) (string, error) {
+	if looksLikeJWT(realKey) {
+		return generateJWTPlaceholder(realKey)
+	}
+	prefix, length := DetectKeyFormat(realKey, servicePrefix, serviceLength)
+	return GeneratePlaceholder(prefix, length)
+}
+
+func looksLikeJWT(token string) bool {
+	return len(strings.Split(token, ".")) == 3
+}
+
+func generateJWTPlaceholder(source string) (string, error) {
+	parts := strings.Split(source, ".")
+	header := map[string]interface{}{
+		"alg": "RS256",
+		"typ": "JWT",
+		"kid": "duckway-phantom",
+	}
+	if len(parts) >= 1 {
+		if decoded := decodeJWTPart(parts[0]); len(decoded) > 0 {
+			_ = json.Unmarshal(decoded, &header)
+		}
+	}
+
+	now := time.Now().Unix()
+	payload := map[string]interface{}{
+		"iss": "duckway",
+		"sub": "duckway-phantom",
+		"iat": now,
+		"exp": now + 24*60*60,
+	}
+	if len(parts) >= 2 {
+		if decoded := decodeJWTPart(parts[1]); len(decoded) > 0 {
+			_ = json.Unmarshal(decoded, &payload)
+		}
+	}
+	if exp, ok := jwtNumericClaim(payload["exp"]); !ok || exp <= now {
+		payload["exp"] = now + 24*60*60
+	}
+	payload["jti"] = placeholderMarker + placeholderRandomHex(16)
+	payload["sub"] = placeholderMarker + "phantom"
+
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(headerJSON) + "." +
+		base64.RawURLEncoding.EncodeToString(payloadJSON) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(placeholderMarker+placeholderRandomHex(16))), nil
+}
+
+func decodeJWTPart(part string) []byte {
+	out, err := base64.RawURLEncoding.DecodeString(part)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+func jwtNumericClaim(v interface{}) (int64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return int64(x), true
+	case int64:
+		return x, true
+	case int:
+		return int64(x), true
+	default:
+		return 0, false
+	}
+}
+
+func placeholderRandomHex(chars int) string {
+	if chars <= 0 {
+		return ""
+	}
+	b := make([]byte, (chars+1)/2)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	s := hex.EncodeToString(b)
+	if len(s) > chars {
+		return s[:chars]
+	}
+	return s
 }
 
 // GenerateShortID generates a 6-char alphanumeric ID (lowercase + digits).

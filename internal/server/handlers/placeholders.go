@@ -91,15 +91,21 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// the crypto to decrypt it, sniff the real key's format so the phantom
 	// matches (e.g. ghp_* vs github_pat_* for GitHub).
 	prefix, keyLen := service.KeyPrefix, service.KeyLength
+	realKeyForPlaceholder := ""
 	if req.APIKeyID != nil && h.apiKeys != nil && h.crypto != nil {
 		if apiKey, err := h.apiKeys.GetByID(*req.APIKeyID); err == nil {
 			if realKey, err := h.crypto.Decrypt(apiKey.KeyEncrypted); err == nil {
-				prefix, keyLen = svc.DetectKeyFormat(realKey, prefix, keyLen)
+				realKeyForPlaceholder = realKey
 			}
 		}
 	}
 
-	placeholder, err := svc.GeneratePlaceholder(prefix, keyLen)
+	var placeholder string
+	if realKeyForPlaceholder != "" {
+		placeholder, err = svc.GeneratePlaceholderForRealKey(realKeyForPlaceholder, prefix, keyLen)
+	} else {
+		placeholder, err = svc.GeneratePlaceholder(prefix, keyLen)
+	}
 	if err != nil {
 		jsonError(w, "failed to generate placeholder", http.StatusInternalServerError)
 		return
