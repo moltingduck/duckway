@@ -183,3 +183,76 @@ func TestCreatePlaceholderForGitHubPATUsesFineGrainedPhantom(t *testing.T) {
 		t.Fatalf("resolve = %+v", resolved)
 	}
 }
+
+func TestCreatePlaceholderForGitHubAppInstallationTokenUsesMatchingPhantom(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	realToken := "ghs_123456_" + strings.Repeat("z", 120)
+	encToken, err := crypto.Encrypt(realToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	ghSvc := &models.Service{
+		ID:           "svc-gh-app",
+		Name:         "github",
+		DisplayName:  "GitHub API + Git",
+		UpstreamURL:  "https://api.github.com",
+		HostPattern:  "api.github.com,github.com",
+		AuthType:     "bearer",
+		AuthHeader:   "Authorization",
+		AuthPrefix:   "Bearer ",
+		KeyPrefix:    "github_pat_",
+		KeyLength:    93,
+		DeliveryMode: "proxy",
+		IsActive:     true,
+	}
+	if err := svcQ.Create(ghSvc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-gh-app','github app client','hash-gh-app')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
+		VALUES ('key-gh-app',?,'github app token',?)`, ghSvc.ID, encToken); err != nil {
+		t.Fatal(err)
+	}
+
+	h := handlers.NewPlaceholderHandler(
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		queries.NewClientQueries(db),
+	).WithKeyLookup(queries.NewAPIKeyQueries(db), crypto)
+	req := httptest.NewRequest(http.MethodPost, "/api/placeholders", strings.NewReader(`{
+		"service_id":"`+ghSvc.ID+`",
+		"api_key_id":"key-gh-app",
+		"client_id":"client-gh-app",
+		"requires_approval":false
+	}`))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Placeholder string `json:"placeholder"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got.Placeholder, "ghs_") {
+		t.Fatalf("placeholder prefix wrong: %q", got.Placeholder)
+	}
+	if len(got.Placeholder) != len(realToken) {
+		t.Fatalf("placeholder len = %d, want %d: %q", len(got.Placeholder), len(realToken), got.Placeholder)
+	}
+	if !strings.Contains(got.Placeholder, "dw_") || !services.IsPlaceholder(got.Placeholder) {
+		t.Fatalf("placeholder marker missing: %q", got.Placeholder)
+	}
+}

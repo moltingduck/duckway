@@ -58,17 +58,24 @@ func IsPlaceholder(key string) bool {
 
 // DetectKeyFormat returns the prefix and total length to use when generating a
 // phantom for a known real key. For services that support multiple token formats
-// (e.g. GitHub classic ghp_* vs fine-grained github_pat_*) this sniffs the
-// actual key so the phantom matches the real one. Falls back to the service's
-// static KeyPrefix/KeyLength when no specific variant is detected.
+// (e.g. GitHub's ghp_*, github_pat_*, gho_*, ghu_*, ghs_*, ghr_* formats)
+// this sniffs the actual key so the phantom matches the real one. Falls back
+// to the service's static KeyPrefix/KeyLength when no specific variant is
+// detected.
 func DetectKeyFormat(realKey, servicePrefix string, serviceLength int) (prefix string, length int) {
-	switch {
-	case strings.HasPrefix(realKey, "github_pat_"):
-		return "github_pat_", 93
-	case strings.HasPrefix(realKey, "ghp_"):
-		return "ghp_", 40
+	if prefix, ok := detectGitHubTokenPrefix(realKey); ok {
+		return prefix, len(realKey)
 	}
 	return servicePrefix, serviceLength
+}
+
+func detectGitHubTokenPrefix(realKey string) (string, bool) {
+	for _, prefix := range []string{"github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_"} {
+		if strings.HasPrefix(realKey, prefix) {
+			return prefix, true
+		}
+	}
+	return "", false
 }
 
 // GeneratePlaceholderForRealKey creates a phantom token that follows the real

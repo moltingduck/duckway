@@ -21,7 +21,7 @@ For internals, code layout, or how the phantom-token swap works under the hood, 
 
 ## What is Duckway?
 
-Duckway is an API key proxy. Real API keys live encrypted on the Duckway server. Agents (Claude Code, scripts, CI runners) only ever see **phantom tokens** — strings that look identical to real keys (`sk-...`, `github_pat_...`) but are useless to the upstream API. The Duckway proxy swaps phantom → real on its way to the upstream and strips the real key from any response back to the agent.
+Duckway is an API key proxy. Real API keys live encrypted on the Duckway server. Agents (Claude Code, scripts, CI runners) only ever see **phantom tokens** — strings that look identical to real keys (`sk-...`, GitHub `github_pat_...` / `ghp_...` / `gho_...` / `ghu_...` / `ghs_...` / `ghr_...`) but are useless to the upstream API. The Duckway proxy swaps phantom → real on its way to the upstream and strips the real key from any response back to the agent.
 
 **Why use it?**
 

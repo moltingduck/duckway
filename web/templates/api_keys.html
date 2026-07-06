@@ -130,6 +130,7 @@
 
 <script>
 var currentKey = null;
+var githubTokenPrefixes = ['github_pat_', 'ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_'];
 
 function openDetail(id) {
   fetch('/api/keys/' + id, {credentials:'same-origin'})
@@ -296,8 +297,7 @@ function onServiceChange() {
     : svc.prefix + 'x'.repeat(Math.max(0, svc.length - svc.prefix.length));
   var parts = [];
   if (svc.name === 'github') {
-    parts.push('starts with <code>github_pat_</code>');
-    parts.push('classic <code>ghp_</code> tokens are also accepted');
+    parts.push('starts with <code>' + githubTokenPrefixes.join('</code>, <code>') + '</code>');
   } else {
     if (svc.prefix) parts.push('starts with <code>' + svc.prefix + '</code>');
     if (svc.length > 0) parts.push(svc.length + ' characters');
@@ -315,8 +315,8 @@ function validateKey() {
   if (!svc || !val) { error.style.display = 'none'; submit.disabled = false; return; }
   var errors = [];
   if (svc.name === 'github') {
-    if (!(val.startsWith('github_pat_') || val.startsWith('ghp_'))) {
-      errors.push('Must start with <code>github_pat_</code> or <code>ghp_</code>');
+    if (!githubTokenPrefixes.some(function(prefix) { return val.startsWith(prefix); })) {
+      errors.push('Must start with one of <code>' + githubTokenPrefixes.join('</code>, <code>') + '</code>');
     }
   } else if (svc.prefix && !val.startsWith(svc.prefix)) {
     errors.push('Must start with <code>' + svc.prefix + '</code>');
@@ -335,14 +335,14 @@ document.getElementById('add-key-form').addEventListener('htmx:confirm', functio
   var val = document.getElementById('ak-key').value.trim();
   var badPrefix = false;
   if (svc && svc.name === 'github') {
-    badPrefix = !(val.startsWith('github_pat_') || val.startsWith('ghp_'));
+    badPrefix = !githubTokenPrefixes.some(function(prefix) { return val.startsWith(prefix); });
   } else if (svc && svc.prefix) {
     badPrefix = !val.startsWith(svc.prefix);
   }
   if (badPrefix) {
     e.preventDefault();
     document.getElementById('ak-error').innerHTML = svc.name === 'github'
-      ? 'Must start with <code>github_pat_</code> or <code>ghp_</code>'
+      ? 'Must start with one of <code>' + githubTokenPrefixes.join('</code>, <code>') + '</code>'
       : 'Must start with <code>' + svc.prefix + '</code>';
     document.getElementById('ak-error').style.display = 'block';
   }

@@ -104,6 +104,40 @@ func TestGeneratePlaceholderForRealKey_GitHubClassicPAT(t *testing.T) {
 	}
 }
 
+func TestGeneratePlaceholderForRealKey_GitHubSupportedTokenFormats(t *testing.T) {
+	tests := []struct {
+		name string
+		real string
+		want string
+	}{
+		{"oauth access token", "gho_" + strings.Repeat("a", 36), "gho_"},
+		{"app user token", "ghu_" + strings.Repeat("b", 36), "ghu_"},
+		{"app installation token", "ghs_" + strings.Repeat("c", 36), "ghs_"},
+		{"app installation stateless token", "ghs_123456_" + strings.Repeat("d", 120), "ghs_"},
+		{"app refresh token", "ghr_" + strings.Repeat("e", 36), "ghr_"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := GeneratePlaceholderForRealKey(tt.real, "github_pat_", 93)
+			if err != nil {
+				t.Fatalf("GeneratePlaceholderForRealKey: %v", err)
+			}
+			if !strings.HasPrefix(got, tt.want) {
+				t.Fatalf("placeholder prefix = %q, want %q: %q", got[:min(len(got), len(tt.want))], tt.want, got)
+			}
+			if len(got) != len(tt.real) {
+				t.Fatalf("placeholder length = %d, want %d: %q", len(got), len(tt.real), got)
+			}
+			if !strings.Contains(got, "dw_") {
+				t.Fatalf("placeholder missing duckway marker: %q", got)
+			}
+			if !IsPlaceholder(got) {
+				t.Fatalf("IsPlaceholder(%q) = false", got)
+			}
+		})
+	}
+}
+
 func TestGeneratePassword(t *testing.T) {
 	pw, err := GeneratePassword(16)
 	if err != nil {
