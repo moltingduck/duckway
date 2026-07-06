@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -597,6 +598,10 @@ func (h *CCClientHandler) ReportAgentTest(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := h.cc.UpdateAgentTestStatusForClient(testID, client.ID, req.Status, req.Error); err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "agent test not found", http.StatusNotFound)
+			return
+		}
 		jsonError(w, "update test status: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -259,6 +259,7 @@ func parseCodexJSONL(out []byte, fallbackSessionID string) (sessionID, result st
 	sessionID = fallbackSessionID
 	haveAgentMessage := false
 	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 || line[0] != '{' {

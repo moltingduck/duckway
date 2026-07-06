@@ -77,6 +77,18 @@ type httpsProxy struct {
 	auditClient *http.Client
 }
 
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) {
+	if c.r != nil && c.r.Buffered() > 0 {
+		return c.r.Read(p)
+	}
+	return c.Conn.Read(p)
+}
+
 // RunHTTPSProxy starts the proxy that handles both HTTP and HTTPS CONNECT.
 // When debug is true, every request and response is logged via the standard
 // log package (stdout in foreground, ~/.duckway/proxy.log in daemon mode
@@ -260,14 +272,16 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Tell client the tunnel is established
-	w.WriteHeader(http.StatusOK)
-	clientConn, _, err := hijacker.Hijack()
+	clientConn, rw, err := hijacker.Hijack()
 	if err != nil {
 		log.Printf("Hijack error: %v", err)
 		return
 	}
 	defer clientConn.Close()
+	if _, err := io.WriteString(clientConn, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
+		return
+	}
+	tunnelConn := &bufferedConn{Conn: clientConn, r: rw.Reader}
 
 	// Get or create TLS cert for this host
 	tlsCert := p.getCert(host)
@@ -287,7 +301,7 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// surfacing on the agent as intermittent "InvalidHTTPResponse fetching
 	// https://api.anthropic.com/v1/messages?beta=true". Advertising only
 	// "http/1.1" forces every client to downgrade to the protocol we speak.
-	tlsConn := tls.Server(clientConn, &tls.Config{
+	tlsConn := tls.Server(tunnelConn, &tls.Config{
 		Certificates: []tls.Certificate{*tlsCert},
 		NextProtos:   []string{"http/1.1"},
 	})
@@ -397,7 +411,7 @@ func (p *httpsProxy) tunnelConnect(w http.ResponseWriter, r *http.Request) {
 	// CONNECT 200 responses. Some HTTP/2 clients (Bun/undici used by Claude Code)
 	// treat the subsequent raw TLS bytes as HTTP chunk data when they see that
 	// header, breaking the tunnel without any proxy-side error.
-	clientConn, _, err := hijacker.Hijack()
+	clientConn, rw, err := hijacker.Hijack()
 	if err != nil {
 		return
 	}
@@ -411,7 +425,7 @@ func (p *httpsProxy) tunnelConnect(w http.ResponseWriter, r *http.Request) {
 	// opposite connection when it finishes, so the other direction sees EOF
 	// and exits cleanly instead of blocking until a TCP timeout.
 	go func() {
-		io.Copy(targetConn, clientConn)
+		io.Copy(targetConn, &bufferedConn{Conn: clientConn, r: rw.Reader})
 		targetConn.Close()
 	}()
 	io.Copy(clientConn, targetConn)

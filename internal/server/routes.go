@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -540,7 +541,9 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 		downloadDir = "/srv/downloads"
 	}
 	if info, err := os.Stat(downloadDir); err == nil && info.IsDir() {
-		s.mux.Handle("GET /download/", http.StripPrefix("/download/", http.FileServer(http.Dir(downloadDir))))
+		s.mux.HandleFunc("GET /download/{binary}", func(w http.ResponseWriter, r *http.Request) {
+			serveClientDownload(w, r, downloadDir)
+		})
 	}
 
 	// Public version endpoint — used by `duckway update` to detect drift
@@ -633,13 +636,39 @@ func handleClientUpdateInfo(w http.ResponseWriter, r *http.Request, downloadDir 
 	})
 }
 
+func serveClientDownload(w http.ResponseWriter, r *http.Request, downloadDir string) {
+	binary := r.PathValue("binary")
+	if !isAllowedClientBinary(binary) {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, filepath.Join(downloadDir, binary))
+}
+
+func isAllowedClientBinary(binary string) bool {
+	switch binary {
+	case "duckway-client-linux-amd64",
+		"duckway-client-linux-arm64",
+		"duckway-client-darwin-amd64",
+		"duckway-client-darwin-arm64":
+		return true
+	default:
+		return false
+	}
+}
+
 func fileSHA256(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 const installScript = `#!/bin/sh

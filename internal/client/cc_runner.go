@@ -34,25 +34,29 @@ type ccAgentSpec struct {
 // can't run two prompts on one session at the same time. Different
 // channels run in parallel.
 type ccRunner struct {
-	handle      string
-	configDir   string
-	cwd         string // resolved at construction
-	agentType   string
-	agentName   string
-	agentEnv    []string
-	bin         string
-	runFn       ccRunFn
-	runnerMode  string
-	debug       bool
-	queue       chan ccTask
-	stop        chan struct{}
-	wg          sync.WaitGroup
-	sessions    *CCSessionStore
-	postMessage func(ctx context.Context, handle, content string) error // bound to APIClient.PostCC
-	postReply   func(ctx context.Context, handle, content, replyToMessageID string) error
-	react       func(ctx context.Context, handle, messageID, emoji string) error
-	reportTest  func(ctx context.Context, testID, status, errText string) error
-	logger      func(format string, args ...interface{})
+	handle       string
+	configDir    string
+	cwd          string // resolved at construction
+	agentType    string
+	agentName    string
+	agentEnv     []string
+	bin          string
+	runFn        ccRunFn
+	runnerMode   string
+	debug        bool
+	queue        chan ccTask
+	stop         chan struct{}
+	wg           sync.WaitGroup
+	sessions     *CCSessionStore
+	postMessage  func(ctx context.Context, handle, content string) error // bound to APIClient.PostCC
+	postReply    func(ctx context.Context, handle, content, replyToMessageID string) error
+	react        func(ctx context.Context, handle, messageID, emoji string) error
+	reportTest   func(ctx context.Context, testID, status, errText string) error
+	logger       func(format string, args ...interface{})
+	mu           sync.Mutex
+	activeCancel context.CancelFunc
+	activeSeq    int64
+	stopped      bool
 }
 
 // ccTask is one queued prompt.
@@ -141,6 +145,12 @@ func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, session
 // caller should warn the channel that the message was dropped (per spec
 // the user said cap 10, drop excess + notify).
 func (r *ccRunner) Enqueue(t ccTask) bool {
+	r.mu.Lock()
+	stopped := r.stopped
+	r.mu.Unlock()
+	if stopped {
+		return false
+	}
 	select {
 	case r.queue <- t:
 		return true
@@ -149,15 +159,31 @@ func (r *ccRunner) Enqueue(t ccTask) bool {
 	}
 }
 
-// Stop drains the in-flight task and exits. Used on channel_delete.
+// Stop cancels the in-flight task and exits. Used on channel_delete.
 func (r *ccRunner) Stop() {
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		r.wg.Wait()
+		return
+	}
+	r.stopped = true
 	close(r.stop)
+	if r.activeCancel != nil {
+		r.activeCancel()
+	}
+	r.mu.Unlock()
 	r.wg.Wait()
 }
 
 func (r *ccRunner) loop() {
 	defer r.wg.Done()
 	for {
+		select {
+		case <-r.stop:
+			return
+		default:
+		}
 		select {
 		case <-r.stop:
 			return
@@ -170,7 +196,24 @@ func (r *ccRunner) loop() {
 // run executes one prompt against the configured agent and posts the response back.
 func (r *ccRunner) run(t ccTask) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		cancel()
+		return
+	}
+	r.activeCancel = cancel
+	r.activeSeq++
+	activeSeq := r.activeSeq
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		if r.activeSeq == activeSeq {
+			r.activeCancel = nil
+		}
+		r.mu.Unlock()
+		cancel()
+	}()
 
 	prompt := t.Content
 	// Discord/the daemon eat the `/` and `!` trigger characters agents

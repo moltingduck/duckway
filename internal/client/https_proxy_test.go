@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -15,6 +16,26 @@ import (
 
 	"github.com/hackerduck/duckway/internal/server/services"
 )
+
+func readConnectResponse(t *testing.T, raw net.Conn) *http.Response {
+	t.Helper()
+	var buf []byte
+	tmp := make([]byte, 1)
+	for !bytes.HasSuffix(buf, []byte("\r\n\r\n")) {
+		if len(buf) > 8192 {
+			t.Fatalf("CONNECT response headers too large")
+		}
+		if _, err := raw.Read(tmp); err != nil {
+			t.Fatalf("read CONNECT response: %v", err)
+		}
+		buf = append(buf, tmp[0])
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(buf)), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatalf("parse CONNECT response: %v", err)
+	}
+	return resp
+}
 
 // newTestMITMProxy wires an httpsProxy that MITMs api.anthropic.com and
 // forwards to the given backend (standing in for the duckway server's
@@ -63,11 +84,7 @@ func dialMITM(t *testing.T, proxyAddr string, alpn []string, rootCAs *x509.CertP
 	}
 
 	fmt.Fprintf(raw, "CONNECT api.anthropic.com:443 HTTP/1.1\r\nHost: api.anthropic.com:443\r\n\r\n")
-	br := bufio.NewReader(raw)
-	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf("read CONNECT response: %v", err)
-	}
+	resp := readConnectResponse(t, raw)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("CONNECT status = %d, want 200", resp.StatusCode)
 	}
@@ -129,11 +146,7 @@ func TestTunnelPassesThroughNonMITMHost(t *testing.T) {
 	defer raw.Close()
 
 	fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", originHost, originHost)
-	br := bufio.NewReader(raw)
-	connResp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf("read CONNECT response: %v", err)
-	}
+	connResp := readConnectResponse(t, raw)
 	if connResp.StatusCode != http.StatusOK {
 		t.Fatalf("CONNECT status = %d, want 200", connResp.StatusCode)
 	}

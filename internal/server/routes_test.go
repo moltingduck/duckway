@@ -54,3 +54,29 @@ func TestHandleClientUpdateInfoRejectsUnsupportedPlatform(t *testing.T) {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestServeClientDownloadOnlyAllowsPinnedBinaries(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "duckway-client-linux-amd64"), []byte("ok"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/download/duckway-client-linux-amd64", nil)
+	req.SetPathValue("binary", "duckway-client-linux-amd64")
+	rec := httptest.NewRecorder()
+	serveClientDownload(rec, req, dir)
+	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+		t.Fatalf("allowed download status=%d body=%q", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/download/secret.txt", nil)
+	req.SetPathValue("binary", "secret.txt")
+	rec = httptest.NewRecorder()
+	serveClientDownload(rec, req, dir)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("secret download status=%d body=%q", rec.Code, rec.Body.String())
+	}
+}

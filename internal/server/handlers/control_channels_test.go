@@ -1,6 +1,7 @@
 package handlers_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +11,9 @@ import (
 
 	"github.com/hackerduck/duckway/internal/database"
 	"github.com/hackerduck/duckway/internal/database/queries"
+	"github.com/hackerduck/duckway/internal/models"
 	"github.com/hackerduck/duckway/internal/server/handlers"
+	"github.com/hackerduck/duckway/internal/server/middleware"
 	"github.com/hackerduck/duckway/internal/server/services"
 )
 
@@ -165,5 +168,49 @@ func TestControlChannelUpdateAgentType(t *testing.T) {
 	}
 	if cc.AgentType != "codex" {
 		t.Fatalf("agent_type = %q, want codex", cc.AgentType)
+	}
+}
+
+func TestCCClientReportAgentTestRejectsUnknownOrForeignTest(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	crypto := services.NewCrypto(make([]byte, 32))
+	encrypted, err := crypto.Encrypt("discord-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := func(query string, args ...interface{}) {
+		t.Helper()
+		if _, err := db.Exec(query, args...); err != nil {
+			t.Fatalf("exec %q: %v", query, err)
+		}
+	}
+	exec(`INSERT INTO services (id, name, display_name, upstream_url, host_pattern)
+		VALUES ('svc-report-test', 'discord', 'Discord', 'https://discord.test', 'discord.test')`)
+	exec(`INSERT INTO clients (id, name, token_hash)
+		VALUES ('client-a', 'client a', 'hash-a'), ('client-b', 'client b', 'hash-b')`)
+	exec(`INSERT INTO api_keys (id, service_id, name, key_encrypted)
+		VALUES ('key-report-test', 'svc-report-test', 'bot key', ?)`, encrypted)
+	exec(`INSERT INTO control_channels (id, name, service_id, api_key_id, client_id, agent_type, placeholder_id, config, is_active)
+		VALUES ('cc-a', 'CC A', 'svc-report-test', 'key-report-test', 'client-a', 'codex', '', '{}', 1),
+		       ('cc-b', 'CC B', 'svc-report-test', 'key-report-test', 'client-b', 'codex', '', '{}', 1)`)
+	exec(`INSERT INTO cc_agent_tests (id, cc_id, client_id, handle, agent_type, status, inbox_id)
+		VALUES ('test-b', 'cc-b', 'client-b', 'dwch_b', 'codex', 'queued', 1)`)
+
+	h := handlers.NewCCClientHandler(queries.NewControlChannelQueries(db), queries.NewAPIKeyQueries(db), crypto, nil, nil, nil)
+	clientA := &models.Client{ID: "client-a", Name: "client a", IsActive: true}
+
+	for _, testID := range []string{"test-b", "missing-test"} {
+		req := httptest.NewRequest(http.MethodPost, "/client/cc/agent-tests/"+testID, strings.NewReader(`{"status":"replied"}`))
+		req.SetPathValue("test_id", testID)
+		req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, clientA))
+		rec := httptest.NewRecorder()
+		h.ReportAgentTest(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s status=%d body=%s", testID, rec.Code, rec.Body.String())
+		}
 	}
 }

@@ -274,13 +274,23 @@ func (q *ControlChannelQueries) GetAgentTest(ccID, id string) (*models.CCAgentTe
 }
 
 func (q *ControlChannelQueries) UpdateAgentTestStatusForClient(id, clientID, status, errText string) error {
-	_, err := q.db.Exec(
+	res, err := q.db.Exec(
 		`UPDATE cc_agent_tests
 		 SET status = ?, error = ?, updated_at = datetime('now')
 		 WHERE id = ? AND client_id = ?`,
 		status, errText, id, clientID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (q *ControlChannelQueries) PullInbox(ccID string, sinceID int64, channelHandles []string, limit int) ([]models.InboxEvent, error) {

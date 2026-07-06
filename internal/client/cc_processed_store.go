@@ -69,6 +69,22 @@ func (s *CCProcessedStore) Mark(messageID, handle string) error {
 	return s.flushLocked()
 }
 
+// MarkIfNew atomically claims a Discord message for processing. It prevents
+// SSE and inbox polling paths from enqueueing the same message concurrently.
+func (s *CCProcessedStore) MarkIfNew(messageID, handle string) (bool, error) {
+	if messageID == "" {
+		return true, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.data[messageID]; ok {
+		return false, nil
+	}
+	s.data[messageID] = processedMessageRecord{MessageID: messageID, Handle: handle, SeenAt: time.Now().UTC()}
+	s.pruneLocked()
+	return true, s.flushLocked()
+}
+
 func (s *CCProcessedStore) pruneLocked() {
 	if len(s.data) <= ccProcessedMessageLimit {
 		return

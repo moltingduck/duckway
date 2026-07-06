@@ -833,8 +833,16 @@ func cmdUpdate(configDir string) {
 
 	if pid, alive := readPID(filepath.Join(configDir, "proxy.pid")); alive {
 		fmt.Printf("\nNote: a proxy daemon is running (PID %d) using the OLD binary.\n", pid)
-		fmt.Println("      Restart it to pick up the new code:")
-		fmt.Printf("        %s\n", cyan("duckway proxy stop && duckway proxy -d"))
+	}
+	if pid, alive := readPID(filepath.Join(configDir, "cc-watch.pid")); alive {
+		fmt.Printf("\nNote: a cc-watch daemon is running (PID %d) using the OLD binary.\n", pid)
+	}
+	if _, proxyAlive := readPID(filepath.Join(configDir, "proxy.pid")); proxyAlive {
+		fmt.Println("      Restart daemons to pick up the new code:")
+		fmt.Printf("        %s\n", cyan("duckway restart"))
+	} else if _, ccAlive := readPID(filepath.Join(configDir, "cc-watch.pid")); ccAlive {
+		fmt.Println("      Restart daemons to pick up the new code:")
+		fmt.Printf("        %s\n", cyan("duckway restart"))
 	}
 }
 

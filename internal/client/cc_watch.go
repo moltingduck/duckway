@@ -263,7 +263,11 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	if strings.TrimSpace(msg.Content) == "" {
 		return
 	}
-	if w.processed.Seen(msg.ID) {
+	isNew, markErr := w.processed.MarkIfNew(msg.ID, env.Handle)
+	if markErr != nil {
+		log.Printf("[cc-watch] mark processed message %s: %v", msg.ID, markErr)
+	}
+	if !isNew {
 		log.Printf("[cc-watch] %s: skipping already processed discord message %s", env.Handle, msg.ID)
 		return
 	}
@@ -284,9 +288,6 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		_ = w.api.PostCC(context.Background(), env.Handle,
 			"⚠️ session queue full (10 messages backed up) — your message was dropped, please retry once the agent catches up.")
 		return
-	}
-	if err := w.processed.Mark(msg.ID, env.Handle); err != nil {
-		log.Printf("[cc-watch] mark processed message %s: %v", msg.ID, err)
 	}
 }
 
@@ -324,12 +325,16 @@ func (w *CCWatch) handleChannelDelete(data []byte) {
 	if env.Handle == "" {
 		return
 	}
+	var r *ccRunner
 	w.mu.Lock()
-	if r, ok := w.runners[env.Handle]; ok {
-		r.Stop()
+	if existing, ok := w.runners[env.Handle]; ok {
+		r = existing
 		delete(w.runners, env.Handle)
 	}
 	w.mu.Unlock()
+	if r != nil {
+		r.Stop()
+	}
 	_ = w.sessions.Drop(env.Handle)
 	// If this channel had a live tmux pane (tmux runner), kill it now —
 	// otherwise dead sessions accumulate every time a Discord channel is
@@ -383,7 +388,7 @@ func (w *CCWatch) reportAgentTest(testID, status, errText string) {
 }
 
 func (w *CCWatch) syncCodexOAuthForCC(ccID string) {
-	if w.agentTypes[ccID] != "codex" {
+	if w.agentTypeFor(ccID) != "codex" {
 		return
 	}
 	if err := SyncCodexAuthConfig(w.configDir, w.cfg); err != nil {
@@ -392,11 +397,10 @@ func (w *CCWatch) syncCodexOAuthForCC(ccID string) {
 }
 
 func (w *CCWatch) agentSpec(ccID string) (ccAgentSpec, error) {
-	agentType := w.agentTypes[ccID]
+	agentType, opts := w.agentConfigFor(ccID)
 	if agentType == "" {
 		agentType = "claude_code"
 	}
-	opts := sanitizeAgentOptions(agentType, w.agentOptions[ccID])
 	switch agentType {
 	case "claude_code":
 		bin, err := exec.LookPath("claude")
@@ -482,13 +486,34 @@ func (w *CCWatch) fetchChannelCwd(handle string) (string, error) {
 }
 
 func (w *CCWatch) shutdown() {
+	var runners []*ccRunner
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	for h, r := range w.runners {
-		r.Stop()
+		runners = append(runners, r)
 		delete(w.runners, h)
 	}
+	w.mu.Unlock()
+	for _, r := range runners {
+		r.Stop()
+	}
 	log.Printf("[cc-watch] shutdown complete")
+}
+
+func (w *CCWatch) agentTypeFor(ccID string) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.agentTypes[ccID]
+}
+
+func (w *CCWatch) agentConfigFor(ccID string) (string, map[string]string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	agentType := w.agentTypes[ccID]
+	opts := map[string]string{}
+	for k, v := range w.agentOptions[ccID] {
+		opts[k] = v
+	}
+	return agentType, opts
 }
 
 func (w *CCWatch) pollInbox(ctx context.Context) {

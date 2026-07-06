@@ -445,6 +445,40 @@ func TestCCRunner_QueueOverflow(t *testing.T) {
 	}
 }
 
+func TestCCRunnerStopCancelsInFlightTask(t *testing.T) {
+	started := make(chan struct{})
+	fn := ccRunFn(func(ctx context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
+		close(started)
+		<-ctx.Done()
+		return "", "", false, ctx.Err()
+	})
+	store := NewCCSessionStore(t.TempDir())
+	pp := &recordingPoster{}
+	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: fn, UseTmux: false}
+	r, err := newCCRunner("dwch_cancel", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Enqueue(ccTask{Content: "block", ChannelKind: "task"}) {
+		t.Fatal("enqueue failed")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runFn did not start")
+	}
+	done := make(chan struct{})
+	go func() {
+		r.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel in-flight task")
+	}
+}
+
 func TestCCRunner_ManagementPreamble_FirstTurnOnly(t *testing.T) {
 	fn, captured := capturingRunFn("sess-mgmt-1", "response")
 	store := NewCCSessionStore(t.TempDir())

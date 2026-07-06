@@ -170,7 +170,20 @@ func formatHeaders(h http.Header) string {
 	if len(h) == 0 {
 		return "{}"
 	}
-	out, _ := json.Marshal(h)
+	safe := h.Clone()
+	for _, key := range []string{
+		"Authorization",
+		"Proxy-Authorization",
+		"X-Duckway-Token",
+		"X-Api-Key",
+		"Cookie",
+		"Set-Cookie",
+	} {
+		if _, ok := safe[key]; ok {
+			safe.Set(key, "[redacted]")
+		}
+	}
+	out, _ := json.Marshal(safe)
 	return string(out)
 }
 

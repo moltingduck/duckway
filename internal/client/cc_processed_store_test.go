@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -34,5 +35,36 @@ func TestCCProcessedStorePrunesOldMessages(t *testing.T) {
 	}
 	if !reloaded.Seen(fmt.Sprintf("m%04d", ccProcessedMessageLimit+4)) {
 		t.Fatal("newest message should remain")
+	}
+}
+
+func TestCCProcessedStoreMarkIfNewIsAtomic(t *testing.T) {
+	store := NewCCProcessedStore(t.TempDir())
+	const workers = 20
+	var wg sync.WaitGroup
+	results := make(chan bool, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := store.MarkIfNew("msg-1", "dwch_t")
+			if err != nil {
+				t.Errorf("MarkIfNew: %v", err)
+				return
+			}
+			results <- ok
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	claimed := 0
+	for ok := range results {
+		if ok {
+			claimed++
+		}
+	}
+	if claimed != 1 {
+		t.Fatalf("claimed = %d, want 1", claimed)
 	}
 }
