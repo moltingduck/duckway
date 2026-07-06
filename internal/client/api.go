@@ -365,7 +365,11 @@ type CCAssignment struct {
 // Returns nil when none is assigned. Returns nil on 404 too — that means
 // the server is older or the endpoint doesn't exist.
 func (c *APIClient) FetchCC() ([]CCAssignment, error) {
-	req, err := http.NewRequest("GET", c.baseURL+"/client/cc", nil)
+	return c.FetchCCContext(context.Background())
+}
+
+func (c *APIClient) FetchCCContext(ctx context.Context) ([]CCAssignment, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/client/cc", nil)
 	if err != nil {
 		return nil, err
 	}
