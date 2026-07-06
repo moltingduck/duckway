@@ -483,6 +483,15 @@ func (c *APIClient) PostCC(ctx context.Context, handle, content string) error {
 }
 
 func (c *APIClient) PostCCReply(ctx context.Context, handle, content, replyToMessageID string) error {
+	for _, part := range splitDiscordMessage(content) {
+		if err := c.postCCReplyOne(ctx, handle, part, replyToMessageID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *APIClient) postCCReplyOne(ctx context.Context, handle, content, replyToMessageID string) error {
 	body, _ := json.Marshal(map[string]string{"content": content, "reply_to_message_id": replyToMessageID})
 	req, err := http.NewRequestWithContext(ctx, "POST",
 		c.baseURL+"/client/cc/channels/"+handle+"/messages", bytes.NewReader(body))
@@ -501,6 +510,41 @@ func (c *APIClient) PostCCReply(ctx context.Context, handle, content, replyToMes
 		return fmt.Errorf("server %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+const discordMessageChunkLimit = 1900
+
+func splitDiscordMessage(content string) []string {
+	if content == "" {
+		return []string{content}
+	}
+	runes := []rune(content)
+	if len(runes) <= discordMessageChunkLimit {
+		return []string{content}
+	}
+	chunks := make([]string, 0, len(runes)/discordMessageChunkLimit+1)
+	for len(runes) > 0 {
+		n := discordMessageChunkLimit
+		if len(runes) < n {
+			n = len(runes)
+		}
+		if n < len(runes) {
+			for i := n - 1; i > 0 && i >= n-400; i-- {
+				if runes[i] == '\n' {
+					n = i + 1
+					break
+				}
+			}
+		}
+		chunks = append(chunks, string(runes[:n]))
+		runes = runes[n:]
+	}
+	total := len(chunks)
+	for i := range chunks {
+		prefix := fmt.Sprintf("(part %d/%d)\n", i+1, total)
+		chunks[i] = prefix + chunks[i]
+	}
+	return chunks
 }
 
 func (c *APIClient) ReactCC(ctx context.Context, handle, messageID, emoji string) error {
