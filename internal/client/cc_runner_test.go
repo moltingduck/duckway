@@ -310,6 +310,41 @@ func TestCCRunner_ClearDropsCachedSessionID(t *testing.T) {
 	}
 }
 
+func TestCCRunner_StaleCodexResumeDropsSessionAndRetriesFresh(t *testing.T) {
+	store := NewCCSessionStore(t.TempDir())
+	if err := store.Set("dwch_t", "sid-stale"); err != nil {
+		t.Fatal(err)
+	}
+	pp := &recordingPoster{}
+	var seenSIDs []string
+	fn := func(_ context.Context, _, _, _, sid string, _ []string) (string, string, bool, error) {
+		seenSIDs = append(seenSIDs, sid)
+		if sid == "sid-stale" {
+			return "", "", false, fmt.Errorf("codex exited with status 1: thread/resume failed: no rollout found for thread id sid-stale")
+		}
+		return "sid-new", "fresh reply", false, nil
+	}
+	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: fn, UseTmux: false}
+	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+
+	r.Enqueue(ccTask{Content: "continue", ChannelKind: "task"})
+	waitForPosts(t, pp, 1)
+
+	if strings.Join(seenSIDs, ",") != "sid-stale," {
+		t.Fatalf("resume retry sids = %#v, want stale then empty", seenSIDs)
+	}
+	if got := store.Get("dwch_t"); got != "sid-new" {
+		t.Fatalf("cached sid = %q, want sid-new", got)
+	}
+	if got := pp.all()[0]; got != "fresh reply" {
+		t.Fatalf("posted %q, want fresh retry reply", got)
+	}
+}
+
 func TestCCRunner_StripsClaudeEscapes(t *testing.T) {
 	// Users escape claude trigger chars with a leading "!" because
 	// Discord eats "/" prefixes and the daemon eats "!" prefixes.

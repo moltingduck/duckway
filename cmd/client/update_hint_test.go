@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -76,5 +78,55 @@ func TestTmuxUnavailableWarning(t *testing.T) {
 	}
 	if got := tmuxUnavailableWarning(false, found); got != "" {
 		t.Fatalf("installed tmux should not warn, got %q", got)
+	}
+}
+
+func TestLastLines(t *testing.T) {
+	got := lastLines("one\ntwo\nthree\nfour\n", 2)
+	if got != "three\nfour\n" {
+		t.Fatalf("lastLines returned %q", got)
+	}
+	if got := lastLines("one\ntwo\n", 10); got != "one\ntwo\n" {
+		t.Fatalf("lastLines should keep short input, got %q", got)
+	}
+}
+
+func TestLogTargets(t *testing.T) {
+	dir := t.TempDir()
+	if got := logTargets(dir, "proxy"); len(got) != 1 || got[0].Name != "proxy" || got[0].Path != filepath.Join(dir, "proxy.log") {
+		t.Fatalf("proxy target = %+v", got)
+	}
+	if got := logTargets(dir, "cc"); len(got) != 1 || got[0].Name != "cc-watch" || got[0].Path != filepath.Join(dir, "cc-watch.log") {
+		t.Fatalf("cc target = %+v", got)
+	}
+	if got := logTargets(dir, "all"); len(got) != 2 {
+		t.Fatalf("all targets = %+v", got)
+	}
+}
+
+func TestPrintLogSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "proxy.log"), []byte("proxy one\nproxy two\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cc-watch.log"), []byte("cc one\ncc two\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	printLogSnapshot(&out, logTargets(dir, "all"), 1)
+	got := out.String()
+	for _, want := range []string{
+		"==> proxy (",
+		"proxy two\n",
+		"==> cc-watch (",
+		"cc two\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("snapshot missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "proxy one") || strings.Contains(got, "cc one") {
+		t.Fatalf("snapshot did not respect line limit:\n%s", got)
 	}
 }

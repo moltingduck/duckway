@@ -215,6 +215,13 @@ func (r *ccRunner) run(t ccTask) {
 	done := r.startLongRunReporter(t)
 	newSID, result, isError, err := r.runFn(ctx, r.bin, r.cwd, prompt, sid, extraEnv)
 	close(done)
+	if err != nil && sid != "" && isStaleAgentSessionError(err) {
+		_ = r.sessions.Drop(r.handle)
+		r.logger("[cc-watch] %s: stale %s session %s dropped after resume failure: %v", r.handle, r.agentName, shortForLog(sid), err)
+		done = r.startLongRunReporter(t)
+		newSID, result, isError, err = r.runFn(ctx, r.bin, r.cwd, prompt, "", extraEnv)
+		close(done)
+	}
 	if err != nil {
 		r.reportTaskTest(t, "failed", err.Error())
 		r.reactToTask(t, "⚠️")
@@ -251,6 +258,22 @@ func (r *ccRunner) run(t ccTask) {
 		r.reactToTask(t, "✅")
 	}
 	r.reportTaskTest(t, "replied", "")
+}
+
+func isStaleAgentSessionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no rollout found for thread id") ||
+		strings.Contains(msg, "thread/resume failed")
+}
+
+func shortForLog(s string) string {
+	if len(s) <= 8 {
+		return s
+	}
+	return s[:8]
 }
 
 func (r *ccRunner) agentSecurityLogFields(sid string) string {

@@ -80,6 +80,8 @@ func main() {
 		cmdProxy(configDir)
 	case "status":
 		cmdStatus(configDir)
+	case "logs":
+		cmdLogs(configDir, os.Args[2:])
 	case "install-ca":
 		// Manually re-install the Duckway CA cert to the system trust store.
 		// Useful when the original `duckway init` ran on a system that was
@@ -123,6 +125,9 @@ Usage:
   duckway start          Start both daemons (proxy + cc watch) — daemon mode
   duckway stop           Stop both daemons
   duckway restart        Restart both daemons
+  duckway logs [-f]      Show daemon logs (proxy + cc watch)
+  duckway logs proxy     Show only proxy logs
+  duckway logs cc -f     Follow only cc-watch logs
   duckway env            Print keys + HTTP(S)_PROXY exports as shell statements
                          (eval "$(duckway env)" or append to ~/.bashrc)
   duckway env --proxy    Print only the HTTP(S)_PROXY exports for the local proxy
@@ -167,7 +172,8 @@ Proxy flags:
 Config directory: ~/.duckway/
 Daemon files:
   ~/.duckway/proxy.pid   PID of the running daemon
-  ~/.duckway/proxy.log   Daemon logs (stdout + stderr)`)
+  ~/.duckway/proxy.log   Proxy daemon logs (stdout + stderr)
+  ~/.duckway/cc-watch.log  Control-channel daemon logs (stdout + stderr)`)
 }
 
 func cmdInit(configDir string) {
@@ -1009,6 +1015,146 @@ func cmdStop(configDir string) {
 func cmdRestart(configDir string) {
 	cmdStop(configDir)
 	cmdStart(configDir)
+}
+
+type logTarget struct {
+	Name string
+	Path string
+}
+
+func cmdLogs(configDir string, args []string) {
+	follow := false
+	lines := 200
+	targetName := "all"
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-f", "--follow":
+			follow = true
+		case "-n", "--lines":
+			if i+1 >= len(args) {
+				log.Fatal("duckway logs: --lines requires a number")
+			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n < 0 {
+				log.Fatalf("duckway logs: invalid --lines value %q", args[i+1])
+			}
+			lines = n
+			i++
+		case "proxy", "cc", "cc-watch", "all":
+			targetName = args[i]
+		default:
+			log.Fatalf("duckway logs: unknown argument %q", args[i])
+		}
+	}
+
+	targets := logTargets(configDir, targetName)
+	printLogSnapshot(os.Stdout, targets, lines)
+	if follow {
+		followLogs(os.Stdout, targets)
+	}
+}
+
+func logTargets(configDir, targetName string) []logTarget {
+	proxy := logTarget{Name: "proxy", Path: filepath.Join(configDir, "proxy.log")}
+	cc := logTarget{Name: "cc-watch", Path: filepath.Join(configDir, "cc-watch.log")}
+	switch targetName {
+	case "proxy":
+		return []logTarget{proxy}
+	case "cc", "cc-watch":
+		return []logTarget{cc}
+	default:
+		return []logTarget{proxy, cc}
+	}
+}
+
+func printLogSnapshot(w io.Writer, targets []logTarget, lines int) {
+	for i, target := range targets {
+		if len(targets) > 1 {
+			if i > 0 {
+				fmt.Fprintln(w)
+			}
+			fmt.Fprintf(w, "==> %s (%s) <==\n", target.Name, target.Path)
+		}
+		if err := printTail(w, target.Path, lines); err != nil {
+			fmt.Fprintf(w, "No log file at %s\n", target.Path)
+		}
+	}
+}
+
+func printTail(w io.Writer, path string, lines int) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(w, lastLines(string(body), lines))
+	return nil
+}
+
+func lastLines(s string, lines int) string {
+	if lines <= 0 || s == "" {
+		return s
+	}
+	trimmed := strings.TrimRight(s, "\n")
+	if trimmed == "" {
+		return s
+	}
+	parts := strings.Split(trimmed, "\n")
+	if len(parts) <= lines {
+		return s
+	}
+	return strings.Join(parts[len(parts)-lines:], "\n") + "\n"
+}
+
+func followLogs(w io.Writer, targets []logTarget) {
+	offsets := make(map[string]int64, len(targets))
+	for _, target := range targets {
+		if st, err := os.Stat(target.Path); err == nil {
+			offsets[target.Path] = st.Size()
+		}
+	}
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		for _, target := range targets {
+			offset := offsets[target.Path]
+			nextOffset, err := printLogAppend(w, target, offset, len(targets) > 1)
+			if err == nil {
+				offsets[target.Path] = nextOffset
+			}
+		}
+	}
+}
+
+func printLogAppend(w io.Writer, target logTarget, offset int64, showHeader bool) (int64, error) {
+	f, err := os.Open(target.Path)
+	if err != nil {
+		return offset, err
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return offset, err
+	}
+	size := st.Size()
+	if size < offset {
+		offset = 0
+	}
+	if size == offset {
+		return offset, nil
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return offset, err
+	}
+	if showHeader {
+		fmt.Fprintf(w, "\n==> %s (%s) <==\n", target.Name, target.Path)
+	}
+	if _, err := io.Copy(w, f); err != nil {
+		return offset, err
+	}
+	return size, nil
 }
 
 // spawnDaemonProcess re-execs the current binary with an explicit argv
