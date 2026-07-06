@@ -48,6 +48,7 @@ type ccRunner struct {
 	stop         chan struct{}
 	wg           sync.WaitGroup
 	sessions     *CCSessionStore
+	processed    *CCProcessedStore
 	postMessage  func(ctx context.Context, handle, content string) error // bound to APIClient.PostCC
 	postReply    func(ctx context.Context, handle, content, replyToMessageID string) error
 	react        func(ctx context.Context, handle, messageID, emoji string) error
@@ -57,6 +58,7 @@ type ccRunner struct {
 	activeCancel context.CancelFunc
 	activeSeq    int64
 	stopped      bool
+	recoverStart bool
 }
 
 // ccTask is one queued prompt.
@@ -104,6 +106,10 @@ func chooseCCRunFnAndMode(spec ccAgentSpec, noTmux bool) (ccRunFn, string) {
 }
 
 func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, sessions *CCSessionStore, postMessage func(ctx context.Context, handle, content string) error, postReply func(ctx context.Context, handle, content, replyToMessageID string) error, react func(ctx context.Context, handle, messageID, emoji string) error, reportTest func(ctx context.Context, testID, status, errText string) error, noTmux, debug bool) (*ccRunner, error) {
+	return newCCRunnerWithProcessed(handle, configDir, channelCwd, spec, sessions, nil, postMessage, postReply, react, reportTest, noTmux, debug)
+}
+
+func newCCRunnerWithProcessed(handle, configDir, channelCwd string, spec ccAgentSpec, sessions *CCSessionStore, processed *CCProcessedStore, postMessage func(ctx context.Context, handle, content string) error, postReply func(ctx context.Context, handle, content, replyToMessageID string) error, react func(ctx context.Context, handle, messageID, emoji string) error, reportTest func(ctx context.Context, testID, status, errText string) error, noTmux, debug bool) (*ccRunner, error) {
 	cwd := channelCwd
 	if cwd == "" {
 		home, err := os.UserHomeDir()
@@ -116,25 +122,31 @@ func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, session
 		}
 	}
 	runFn, runnerMode := chooseCCRunFnAndMode(spec, noTmux)
+	recoverStart := false
+	if runnerMode == "tmux" {
+		_, _, _, recoverStart = pendingInFlightForHandle(handle)
+	}
 	r := &ccRunner{
-		handle:      handle,
-		configDir:   configDir,
-		cwd:         cwd,
-		agentType:   spec.Type,
-		agentName:   spec.DisplayName,
-		agentEnv:    append([]string(nil), spec.ExtraEnv...),
-		bin:         spec.Bin,
-		runFn:       runFn,
-		runnerMode:  runnerMode,
-		debug:       debug,
-		queue:       make(chan ccTask, ccQueueDepth),
-		stop:        make(chan struct{}),
-		sessions:    sessions,
-		postMessage: postMessage,
-		postReply:   postReply,
-		react:       react,
-		reportTest:  reportTest,
-		logger:      log.Printf,
+		handle:       handle,
+		configDir:    configDir,
+		cwd:          cwd,
+		agentType:    spec.Type,
+		agentName:    spec.DisplayName,
+		agentEnv:     append([]string(nil), spec.ExtraEnv...),
+		bin:          spec.Bin,
+		runFn:        runFn,
+		runnerMode:   runnerMode,
+		debug:        debug,
+		queue:        make(chan ccTask, ccQueueDepth),
+		stop:         make(chan struct{}),
+		sessions:     sessions,
+		processed:    processed,
+		postMessage:  postMessage,
+		postReply:    postReply,
+		react:        react,
+		reportTest:   reportTest,
+		logger:       log.Printf,
+		recoverStart: recoverStart,
 	}
 	r.wg.Add(1)
 	go r.loop()
@@ -178,6 +190,9 @@ func (r *ccRunner) Stop() {
 
 func (r *ccRunner) loop() {
 	defer r.wg.Done()
+	if r.recoverStart {
+		r.recoverPendingStart()
+	}
 	for {
 		select {
 		case <-r.stop:
@@ -191,6 +206,69 @@ func (r *ccRunner) loop() {
 			r.run(t)
 		}
 	}
+}
+
+func (r *ccRunner) recoverPendingStart() {
+	ctx, cancel := context.WithCancel(context.Background())
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		cancel()
+		return
+	}
+	r.activeCancel = cancel
+	r.activeSeq++
+	activeSeq := r.activeSeq
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		if r.activeSeq == activeSeq {
+			r.activeCancel = nil
+		}
+		r.mu.Unlock()
+		cancel()
+	}()
+
+	if !tmuxHasChannelSession(r.handle) {
+		f, _, eventsDir, ok := pendingInFlightForHandle(r.handle)
+		if !ok {
+			return
+		}
+		_, found, err := findStopEvent(eventsDir, f.TurnTS)
+		if err != nil || !found {
+			r.logger("[cc-watch] %s: stale in-flight marker has no tmux session; leaving marker for startup recovery", r.handle)
+			return
+		}
+	}
+	r.logger("[cc-watch] %s: adopting still-running tmux turn before processing queued messages", r.handle)
+	result, err := consumePendingTurnEvent(ctx, r.handle)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		r.logger("[cc-watch] %s: recover still-running turn failed: %v", r.handle, err)
+		return
+	}
+	if result == nil || !result.HadResult {
+		return
+	}
+	if result.SessionID != "" {
+		_ = r.sessions.Set(r.handle, result.SessionID)
+	}
+	if r.processed != nil && result.MessageID != "" {
+		_ = r.processed.Mark(result.MessageID, r.handle)
+	}
+	body := result.LastAssistantMessage
+	if body == "" {
+		body = "_(agent finished with no response)_"
+	}
+	body = "♻️ (recovered after daemon restart)\n\n" + body
+	t := ccTask{MessageID: result.MessageID, ChannelKind: "task"}
+	if err := r.postTaskMessage(t, body); err != nil {
+		r.logger("[cc-watch] %s: recover post failed: %v", r.handle, err)
+		return
+	}
+	r.reactToTask(t, "✅")
 }
 
 // run executes one prompt against the configured agent and posts the response back.
@@ -269,6 +347,9 @@ func (r *ccRunner) run(t ccTask) {
 		close(done)
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		r.reportTaskTest(t, "failed", err.Error())
 		r.reactToTask(t, "⚠️")
 		if postErr := r.postTaskMessage(t, fmt.Sprintf("%s error: %v", r.agentName, err)); postErr != nil {

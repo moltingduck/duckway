@@ -393,6 +393,65 @@ func TestCCRunner_StaleCodexResumeDropsSessionAndRetriesFresh(t *testing.T) {
 	}
 }
 
+func TestCCRunnerAdoptsPendingTurnBeforeQueuedMessage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	handle := "dwch_adopt_pending"
+	chDir, err := tmuxChannelDir(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsDir := filepath.Join(chDir, "events")
+	if err := os.MkdirAll(eventsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInFlight(filepath.Join(chDir, "in-flight.json"), handle, "msg-old", 100); err != nil {
+		t.Fatal(err)
+	}
+	stop := `{"session_id":"sid-recovered","last_assistant_message":"old turn done"}`
+	if err := os.WriteFile(filepath.Join(eventsDir, "200.stop.json"), []byte(stop), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewCCSessionStore(t.TempDir())
+	processed := NewCCProcessedStore(t.TempDir())
+	pp := &recordingPoster{}
+	var seenSID string
+	fn := ccRunFn(func(_ context.Context, _, _, _, sid string, _ []string) (string, string, bool, error) {
+		seenSID = sid
+		return "sid-next", "next turn done", false, nil
+	})
+	yes := true
+	tmuxAvailableMemo = &yes
+	t.Cleanup(func() { tmuxAvailableMemo = nil })
+	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", TmuxRunFn: fn, UseTmux: true}
+	r, err := newCCRunnerWithProcessed(handle, t.TempDir(), t.TempDir(), spec, store, processed, pp.post, pp.postReply, pp.react, nil, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+
+	waitForPosts(t, pp, 1)
+	if got := pp.all()[0]; !strings.Contains(got, "old turn done") {
+		t.Fatalf("first post = %q, want recovered old turn", got)
+	}
+	if got := store.Get(handle); got != "sid-recovered" {
+		t.Fatalf("recovered sid = %q", got)
+	}
+	if !processed.Seen("msg-old") {
+		t.Fatal("recovered message id was not marked processed")
+	}
+
+	r.Enqueue(ccTask{Content: "new message", MessageID: "msg-new", ChannelKind: "task"})
+	waitForPosts(t, pp, 2)
+	if seenSID != "sid-recovered" {
+		t.Fatalf("queued turn sid = %q, want recovered sid", seenSID)
+	}
+	if got := pp.all()[1]; got != "next turn done" {
+		t.Fatalf("second post = %q", got)
+	}
+}
+
 func TestCCRunner_StripsClaudeEscapes(t *testing.T) {
 	// Users escape claude trigger chars with a leading "!" because
 	// Discord eats "/" prefixes and the daemon eats "!" prefixes.

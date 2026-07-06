@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -88,6 +89,11 @@ func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (
 
 // Run is the main loop. Blocks until ctx is cancelled.
 func (w *CCWatch) Run(ctx context.Context) error {
+	lockFile, err := acquireCCWatchLock(w.configDir)
+	if err != nil {
+		return err
+	}
+	defer releaseCCWatchLock(lockFile)
 	log.Printf("[cc-watch] starting; server=%s debug=%v no_tmux=%v", w.cfg.ServerURL, w.debug, w.noTmux)
 	StartUpdateCheckLoop(ctx, w.cfg, "cc-watch")
 
@@ -121,6 +127,35 @@ func (w *CCWatch) Run(ctx context.Context) error {
 			backoff = maxBackoff
 		}
 	}
+}
+
+func acquireCCWatchLock(configDir string) (*os.File, error) {
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(configDir, "cc-watch.lock")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		if err == syscall.EWOULDBLOCK {
+			return nil, fmt.Errorf("another duckway cc watch is already running for %s", configDir)
+		}
+		return nil, fmt.Errorf("lock cc-watch: %w", err)
+	}
+	_ = f.Truncate(0)
+	_, _ = f.WriteString(strconv.Itoa(os.Getpid()) + "\n")
+	return f, nil
+}
+
+func releaseCCWatchLock(f *os.File) {
+	if f == nil {
+		return
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
 }
 
 // connectAndStream opens one SSE connection and processes events until
@@ -364,7 +399,7 @@ func (w *CCWatch) runnerFor(handle, ccID string) (*ccRunner, error) {
 	if err != nil {
 		return nil, err
 	}
-	r, err := newCCRunner(handle, w.configDir, cwd, spec, w.sessions, w.api.PostCC, w.api.PostCCReply, w.api.ReactCC, w.api.ReportCCAgentTest, w.noTmux, w.debug)
+	r, err := newCCRunnerWithProcessed(handle, w.configDir, cwd, spec, w.sessions, w.processed, w.api.PostCC, w.api.PostCCReply, w.api.ReactCC, w.api.ReportCCAgentTest, w.noTmux, w.debug)
 	if err != nil {
 		return nil, err
 	}
@@ -708,6 +743,9 @@ func (w *CCWatch) recoverPendingTurns(ctx context.Context, summary *ccReconcileS
 	for _, r := range results {
 		if !r.HadResult {
 			log.Printf("[cc-watch] recover: %s has an in-flight turn but no Stop event yet (claude may still be generating)", r.Handle)
+			if r.MessageID != "" {
+				_ = w.processed.Mark(r.MessageID, r.Handle)
+			}
 			if summary != nil {
 				summary.StillRunning++
 			}

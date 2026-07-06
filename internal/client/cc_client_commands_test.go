@@ -82,6 +82,7 @@ func stubWatch(t *testing.T, projectsRoot string, fake *fakeServer) *CCWatch {
 		configDir:  configDir,
 		agentTypes: map[string]string{},
 		sessions:   NewCCSessionStore(configDir),
+		processed:  NewCCProcessedStore(configDir),
 		runners:    map[string]*ccRunner{},
 		pendingNew: map[string]pendingNewProject{},
 		api:        NewAPIClient(fake.srv.URL, "tok"),
@@ -122,6 +123,60 @@ func TestCmdSessions_PostsListingOfUnbound(t *testing.T) {
 	if !strings.HasSuffix(msgs[0]["_path"], "/messages") {
 		t.Errorf("reply went to wrong path: %s", msgs[0]["_path"])
 	}
+}
+
+func TestRecoverPendingTurnsStillRunningMarksMessageProcessed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	handle := "dwch_still_running"
+	chDir, err := tmuxChannelDir(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(chDir, "events"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInFlight(filepath.Join(chDir, "in-flight.json"), handle, "msg-still", 100); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := newFakeServer(t)
+	w := stubWatch(t, filepath.Join(home, ".claude", "projects"), fake)
+	summary := &ccReconcileSummary{}
+	w.recoverPendingTurns(context.Background(), summary)
+
+	if summary.StillRunning != 1 {
+		t.Fatalf("StillRunning = %d, want 1", summary.StillRunning)
+	}
+	if !w.processed.Seen("msg-still") {
+		t.Fatal("still-running message id was not marked processed")
+	}
+	msgs := fake.snapshotMessages()
+	if len(msgs) != 1 || !strings.Contains(msgs[0]["content"], "still appears to be running") {
+		t.Fatalf("still-running notice not posted: %+v", msgs)
+	}
+}
+
+func TestAcquireCCWatchLockRejectsSecondInstance(t *testing.T) {
+	dir := t.TempDir()
+	first, err := acquireCCWatchLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := acquireCCWatchLock(dir)
+	if err == nil {
+		releaseCCWatchLock(second)
+		t.Fatal("second lock unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("second lock error = %v", err)
+	}
+	releaseCCWatchLock(first)
+	third, err := acquireCCWatchLock(dir)
+	if err != nil {
+		t.Fatalf("lock after release: %v", err)
+	}
+	releaseCCWatchLock(third)
 }
 
 func TestCmdBind_CreatesChannelAndWritesBinding(t *testing.T) {

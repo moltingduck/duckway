@@ -763,6 +763,22 @@ func readInFlight(path string) (*inFlight, error) {
 	return &f, nil
 }
 
+func pendingInFlightForHandle(handle string) (*inFlight, string, string, bool) {
+	chDir, err := tmuxChannelDir(handle)
+	if err != nil {
+		return nil, "", "", false
+	}
+	inFlightPath := filepath.Join(chDir, "in-flight.json")
+	f, err := readInFlight(inFlightPath)
+	if err != nil || f == nil {
+		return nil, "", "", false
+	}
+	if f.Handle != "" && f.Handle != handle {
+		return nil, "", "", false
+	}
+	return f, inFlightPath, filepath.Join(chDir, "events"), true
+}
+
 // RecoverPendingTurnsResult describes one pending turn we recovered.
 type RecoverPendingTurnsResult struct {
 	Handle               string
@@ -773,6 +789,60 @@ type RecoverPendingTurnsResult struct {
 	// means the in-flight marker exists but no Stop has fired yet (the agent
 	// might still be generating); the marker is preserved for next time.
 	HadResult bool
+}
+
+func consumePendingTurnEvent(ctx context.Context, handle string) (*RecoverPendingTurnsResult, error) {
+	f, inFlightPath, eventsDir, ok := pendingInFlightForHandle(handle)
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	tick := time.NewTicker(eventPollInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-tick.C:
+			evt, found, err := findStopEvent(eventsDir, f.TurnTS)
+			if err != nil {
+				return nil, fmt.Errorf("scan events: %w", err)
+			}
+			if !found {
+				continue
+			}
+			if cev, ok := parseCodexTmuxEventPayload(evt.payload); ok {
+				chDir := filepath.Dir(inFlightPath)
+				body, sessionID, cerr := recoverCodexTmuxResult(*cev, chDir)
+				if cerr != nil {
+					return nil, cerr
+				}
+				_ = os.Remove(evt.path)
+				_ = os.Remove(inFlightPath)
+				return &RecoverPendingTurnsResult{
+					Handle:               f.Handle,
+					MessageID:            f.MessageID,
+					SessionID:            sessionID,
+					LastAssistantMessage: body,
+					HadResult:            true,
+				}, nil
+			}
+
+			var sp stopPayload
+			if jerr := json.Unmarshal([]byte(evt.payload), &sp); jerr != nil {
+				_ = os.Remove(evt.path)
+				return nil, fmt.Errorf("parse stop payload: %w", jerr)
+			}
+			_ = os.Remove(evt.path)
+			_ = os.Remove(inFlightPath)
+			return &RecoverPendingTurnsResult{
+				Handle:               f.Handle,
+				MessageID:            f.MessageID,
+				SessionID:            sp.SessionID,
+				LastAssistantMessage: resolveAssistantMessage(sp),
+				HadResult:            true,
+			}, nil
+		}
+	}
 }
 
 // RecoverPendingTurns scans every per-channel workspace for an in-flight
@@ -802,6 +872,9 @@ func RecoverPendingTurns() ([]RecoverPendingTurnsResult, error) {
 		if rerr != nil {
 			continue // no in-flight for this channel
 		}
+		if f.Handle != "" && f.Handle != e.Name() {
+			continue
+		}
 		eventsDir := filepath.Join(chDir, "events")
 		evt, found, ferr := findStopEvent(eventsDir, f.TurnTS)
 		if ferr != nil {
@@ -818,7 +891,7 @@ func RecoverPendingTurns() ([]RecoverPendingTurnsResult, error) {
 			continue
 		}
 		if cev, ok := parseCodexTmuxEventPayload(evt.payload); ok {
-			body, sessionID, cerr := recoverCodexTmuxResult(*cev)
+			body, sessionID, cerr := recoverCodexTmuxResult(*cev, chDir)
 			if cerr != nil {
 				continue
 			}
@@ -852,7 +925,16 @@ func RecoverPendingTurns() ([]RecoverPendingTurnsResult, error) {
 	return out, nil
 }
 
-func recoverCodexTmuxResult(evt codexTmuxEvent) (body, sessionID string, err error) {
+func recoverCodexTmuxResult(evt codexTmuxEvent, expectedDir string) (body, sessionID string, err error) {
+	if expectedDir != "" {
+		ok, err := pathWithinDir(evt.OutputPath, expectedDir)
+		if err != nil {
+			return "", "", err
+		}
+		if !ok {
+			return "", "", fmt.Errorf("codex output path outside channel state dir")
+		}
+	}
 	out, err := os.ReadFile(evt.OutputPath)
 	if err != nil {
 		return "", "", fmt.Errorf("read codex output: %w", err)
@@ -869,6 +951,22 @@ func recoverCodexTmuxResult(evt codexTmuxEvent) (body, sessionID string, err err
 		}
 	}
 	return body, sessionID, nil
+}
+
+func pathWithinDir(path, dir string) (bool, error) {
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, fmt.Errorf("resolve path %s: %w", path, err)
+	}
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false, fmt.Errorf("resolve dir %s: %w", dir, err)
+	}
+	rel, err := filepath.Rel(resolvedDir, resolvedPath)
+	if err != nil {
+		return false, err
+	}
+	return rel == "." || (rel != "" && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != ".."), nil
 }
 
 // ensureClaudeInTmux makes sure a tmux session `sess` exists with claude

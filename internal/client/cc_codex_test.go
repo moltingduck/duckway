@@ -333,3 +333,72 @@ func TestRecoverPendingTurnsCodexTmuxEvent(t *testing.T) {
 		t.Fatalf("in-flight still exists: %v", err)
 	}
 }
+
+func TestRecoverPendingTurnsCodexRejectsOutputPathOutsideChannelDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	handle := "codex-recover-path"
+	chDir, err := tmuxChannelDir(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsDir := filepath.Join(chDir, "events")
+	if err := os.MkdirAll(eventsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInFlight(filepath.Join(chDir, "in-flight.json"), handle, "msg-codex-2", 100); err != nil {
+		t.Fatal(err)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.jsonl")
+	if err := os.WriteFile(outside, []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"do not post"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(codexTmuxEvent{OutputPath: outside, FallbackSessionID: "sid-old", ExitCode: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(eventsDir, "200.stop.json"), payload, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := RecoverPendingTurns()
+	if err != nil {
+		t.Fatalf("RecoverPendingTurns: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("results len = %d, want 0: %+v", len(results), results)
+	}
+	if _, err := os.Stat(filepath.Join(chDir, "in-flight.json")); err != nil {
+		t.Fatalf("in-flight should remain quarantined for inspection: %v", err)
+	}
+}
+
+func TestRecoverPendingTurnsSkipsMismatchedInFlightHandle(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	dirHandle := "codex-dir-handle"
+	chDir, err := tmuxChannelDir(dirHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsDir := filepath.Join(chDir, "events")
+	if err := os.MkdirAll(eventsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInFlight(filepath.Join(chDir, "in-flight.json"), "different-handle", "msg-mismatch", 100); err != nil {
+		t.Fatal(err)
+	}
+	stop := `{"session_id":"sid-mismatch","last_assistant_message":"should not post"}`
+	if err := os.WriteFile(filepath.Join(eventsDir, "200.stop.json"), []byte(stop), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := RecoverPendingTurns()
+	if err != nil {
+		t.Fatalf("RecoverPendingTurns: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("results len = %d, want 0: %+v", len(results), results)
+	}
+}
