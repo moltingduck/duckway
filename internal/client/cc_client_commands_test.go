@@ -78,14 +78,16 @@ func stubWatch(t *testing.T, projectsRoot string, fake *fakeServer) *CCWatch {
 	t.Helper()
 	configDir := t.TempDir()
 	return &CCWatch{
-		cfg:        &Config{ServerURL: fake.srv.URL, Token: "tok"},
-		configDir:  configDir,
-		agentTypes: map[string]string{},
-		sessions:   NewCCSessionStore(configDir),
-		processed:  NewCCProcessedStore(configDir),
-		runners:    map[string]*ccRunner{},
-		pendingNew: map[string]pendingNewProject{},
-		api:        NewAPIClient(fake.srv.URL, "tok"),
+		cfg:         &Config{ServerURL: fake.srv.URL, Token: "tok"},
+		configDir:   configDir,
+		agentTypes:  map[string]string{},
+		sessions:    NewCCSessionStore(configDir),
+		processed:   NewCCProcessedStore(configDir),
+		runners:     map[string]*ccRunner{},
+		pendingNew:  map[string]pendingNewProject{},
+		deleted:     map[string]struct{}{},
+		recoverSeen: map[string]struct{}{},
+		api:         NewAPIClient(fake.srv.URL, "tok"),
 	}
 }
 
@@ -143,7 +145,7 @@ func TestRecoverPendingTurnsStillRunningMarksMessageProcessed(t *testing.T) {
 	fake := newFakeServer(t)
 	w := stubWatch(t, filepath.Join(home, ".claude", "projects"), fake)
 	summary := &ccReconcileSummary{}
-	w.recoverPendingTurns(context.Background(), summary)
+	w.recoverPendingTurns(context.Background(), summary, map[string]bool{handle: true})
 
 	if summary.StillRunning != 1 {
 		t.Fatalf("StillRunning = %d, want 1", summary.StillRunning)
@@ -154,6 +156,39 @@ func TestRecoverPendingTurnsStillRunningMarksMessageProcessed(t *testing.T) {
 	msgs := fake.snapshotMessages()
 	if len(msgs) != 1 || !strings.Contains(msgs[0]["content"], "still appears to be running") {
 		t.Fatalf("still-running notice not posted: %+v", msgs)
+	}
+
+	w.recoverPendingTurns(context.Background(), summary, map[string]bool{handle: true})
+	if msgs := fake.snapshotMessages(); len(msgs) != 1 {
+		t.Fatalf("still-running notice posted more than once: %+v", msgs)
+	}
+}
+
+func TestRecoverPendingTurnsDiscardsInactiveChannel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	handle := "dwch_inactive"
+	chDir, err := tmuxChannelDir(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(chDir, "events"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	inFlightPath := filepath.Join(chDir, "in-flight.json")
+	if err := writeInFlight(inFlightPath, handle, "msg-inactive", 100); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := newFakeServer(t)
+	w := stubWatch(t, filepath.Join(home, ".claude", "projects"), fake)
+	w.recoverPendingTurns(context.Background(), &ccReconcileSummary{}, map[string]bool{})
+
+	if msgs := fake.snapshotMessages(); len(msgs) != 0 {
+		t.Fatalf("inactive channel should not receive recovery posts: %+v", msgs)
+	}
+	if _, err := os.Stat(inFlightPath); !os.IsNotExist(err) {
+		t.Fatalf("inactive channel in-flight marker was not removed: %v", err)
 	}
 }
 
@@ -177,6 +212,26 @@ func TestAcquireCCWatchLockRejectsSecondInstance(t *testing.T) {
 		t.Fatalf("lock after release: %v", err)
 	}
 	releaseCCWatchLock(third)
+}
+
+func TestIsDiscordSnowflake(t *testing.T) {
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		{"1783330000000000001", true},
+		{"12345678901234567", true},
+		{"12345678901234567890", true},
+		{"duckway-admin-test-1783330000000000001", false},
+		{"1234567890123456", false},
+		{"123456789012345678901", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := isDiscordSnowflake(tt.id); got != tt.want {
+			t.Fatalf("isDiscordSnowflake(%q) = %v, want %v", tt.id, got, tt.want)
+		}
+	}
 }
 
 func TestCmdBind_CreatesChannelAndWritesBinding(t *testing.T) {

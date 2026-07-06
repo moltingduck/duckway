@@ -504,6 +504,9 @@ func (r *ccRunner) startLongRunReporter(t ccTask) chan struct{} {
 }
 
 func (r *ccRunner) postTaskMessage(t ccTask, content string) error {
+	if t.TestID != "" && !isDiscordSnowflake(t.MessageID) {
+		return nil
+	}
 	if r.postReply != nil && t.MessageID != "" {
 		return r.postReply(context.Background(), r.handle, content, t.MessageID)
 	}
@@ -511,7 +514,7 @@ func (r *ccRunner) postTaskMessage(t ccTask, content string) error {
 }
 
 func (r *ccRunner) reactToTask(t ccTask, emoji string) {
-	if r.react == nil || t.MessageID == "" {
+	if r.react == nil || !isDiscordSnowflake(t.MessageID) {
 		return
 	}
 	if !r.claimReaction(t.MessageID, emoji) {

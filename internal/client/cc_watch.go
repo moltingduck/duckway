@@ -42,6 +42,8 @@ type CCWatch struct {
 	inboxCursor  int64
 	sseConnected bool
 	pendingNew   map[string]pendingNewProject
+	deleted      map[string]struct{}
+	recoverSeen  map[string]struct{}
 
 	api *APIClient
 }
@@ -82,6 +84,8 @@ func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (
 		debug:        opts.Debug,
 		runners:      map[string]*ccRunner{},
 		pendingNew:   map[string]pendingNewProject{},
+		deleted:      map[string]struct{}{},
+		recoverSeen:  map[string]struct{}{},
 		inboxCursor:  loadCCInboxCursor(configDir),
 		api:          NewAPIClient(cfg.ServerURL, cfg.Token),
 	}, nil
@@ -300,6 +304,10 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	if strings.TrimSpace(msg.Content) == "" {
 		return
 	}
+	messageID := msg.ID
+	if !isDiscordSnowflake(messageID) {
+		messageID = ""
+	}
 	isNew, markErr := w.processed.MarkIfNew(msg.ID, env.Handle)
 	if markErr != nil {
 		log.Printf("[cc-watch] mark processed message %s: %v", msg.ID, markErr)
@@ -313,17 +321,27 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	if err != nil {
 		log.Printf("[cc-watch] cannot start runner for %s: %v", env.Handle, err)
 		w.reportAgentTest(msg.TestID, "failed", err.Error())
-		_ = w.api.ReactCC(context.Background(), env.Handle, msg.ID, "⚠️")
-		_ = w.api.PostCC(context.Background(), env.Handle, "❌ daemon could not start a session: "+err.Error())
+		if messageID != "" {
+			_ = w.api.ReactCC(context.Background(), env.Handle, messageID, "⚠️")
+		}
+		if messageID != "" || msg.TestID == "" {
+			_ = w.api.PostCC(context.Background(), env.Handle, "❌ daemon could not start a session: "+err.Error())
+		}
 		return
 	}
-	_ = w.api.ReactCC(context.Background(), env.Handle, msg.ID, "🦆")
-	if !runner.Enqueue(ccTask{Content: msg.Content, AuthorID: msg.Author.ID, MessageID: msg.ID, ChannelKind: env.Kind, TestID: msg.TestID}) {
+	if messageID != "" {
+		_ = w.api.ReactCC(context.Background(), env.Handle, messageID, "🦆")
+	}
+	if !runner.Enqueue(ccTask{Content: msg.Content, AuthorID: msg.Author.ID, MessageID: messageID, ChannelKind: env.Kind, TestID: msg.TestID}) {
 		log.Printf("[cc-watch] %s: queue full, dropping message %s", env.Handle, msg.ID)
 		w.reportAgentTest(msg.TestID, "failed", "session queue full")
-		_ = w.api.ReactCC(context.Background(), env.Handle, msg.ID, "⚠️")
-		_ = w.api.PostCC(context.Background(), env.Handle,
-			"⚠️ session queue full (10 messages backed up) — your message was dropped, please retry once the agent catches up.")
+		if messageID != "" {
+			_ = w.api.ReactCC(context.Background(), env.Handle, messageID, "⚠️")
+		}
+		if messageID != "" || msg.TestID == "" {
+			_ = w.api.PostCC(context.Background(), env.Handle,
+				"⚠️ session queue full (10 messages backed up) — your message was dropped, please retry once the agent catches up.")
+		}
 		return
 	}
 }
@@ -364,6 +382,14 @@ func (w *CCWatch) handleChannelDelete(data []byte) {
 	}
 	var r *ccRunner
 	w.mu.Lock()
+	if _, ok := w.deleted[env.Handle]; ok {
+		w.mu.Unlock()
+		return
+	}
+	if w.deleted == nil {
+		w.deleted = map[string]struct{}{}
+	}
+	w.deleted[env.Handle] = struct{}{}
 	if existing, ok := w.runners[env.Handle]; ok {
 		r = existing
 		delete(w.runners, env.Handle)
@@ -704,15 +730,20 @@ func (w *CCWatch) reconcileCCState(ctx context.Context, mode string) {
 		log.Printf("[cc-watch] reconcile fetch cc: %v", err)
 	}
 	if channels, err := w.api.FetchCCChannels(); err == nil {
+		activeHandles := map[string]bool{}
 		for _, ch := range channels {
 			if ch.Kind == "task" && !ch.Archived {
 				summary.ActiveChannels++
 			}
+			if !ch.Archived {
+				activeHandles[ch.Handle] = true
+			}
 		}
+		w.recoverPendingTurns(ctx, &summary, activeHandles)
 	} else {
 		log.Printf("[cc-watch] reconcile fetch channels: %v", err)
+		w.recoverPendingTurns(ctx, &summary, nil)
 	}
-	w.recoverPendingTurns(ctx, &summary)
 	if summary.Management != "" {
 		_ = w.api.PostCC(ctx, summary.Management, summary.format())
 	}
@@ -734,21 +765,30 @@ func (s ccReconcileSummary) format() string {
 // answered by the agent but the reply would never reach the channel.
 //
 // Best-effort: errors per channel are logged and we keep going.
-func (w *CCWatch) recoverPendingTurns(ctx context.Context, summary *ccReconcileSummary) {
+func (w *CCWatch) recoverPendingTurns(ctx context.Context, summary *ccReconcileSummary, activeHandles map[string]bool) {
 	results, err := RecoverPendingTurns()
 	if err != nil {
 		log.Printf("[cc-watch] recover pending turns: %v", err)
 		return
 	}
 	for _, r := range results {
+		if activeHandles != nil && !activeHandles[r.Handle] {
+			log.Printf("[cc-watch] recover: discarding pending turn for inactive channel %s", r.Handle)
+			tmuxKillSession(r.Handle)
+			removePendingInFlight(r.Handle)
+			continue
+		}
 		if !r.HadResult {
-			log.Printf("[cc-watch] recover: %s has an in-flight turn but no Stop event yet (claude may still be generating)", r.Handle)
 			if r.MessageID != "" {
 				_ = w.processed.Mark(r.MessageID, r.Handle)
 			}
 			if summary != nil {
 				summary.StillRunning++
 			}
+			if !w.claimRecoverNotice(r) {
+				continue
+			}
+			log.Printf("[cc-watch] recover: %s has an in-flight turn but no Stop event yet (claude may still be generating)", r.Handle)
 			body := "⏳ duckway client reconnected; this agent turn still appears to be running."
 			if tmuxAvailable() && tmuxHasChannelSession(r.Handle) {
 				body += "\nAttach locally with: `tmux attach -t " + tmuxSessionName(r.Handle) + "`"
@@ -778,4 +818,30 @@ func (w *CCWatch) recoverPendingTurns(ctx context.Context, summary *ccReconcileS
 		}
 		log.Printf("[cc-watch] recover: posted reply for in-flight turn on %s (message_id=%s)", r.Handle, r.MessageID)
 	}
+}
+
+func (w *CCWatch) claimRecoverNotice(r RecoverPendingTurnsResult) bool {
+	key := r.Handle + "\x00" + r.MessageID + "\x00" + strconv.FormatInt(r.TurnTS, 10)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.recoverSeen == nil {
+		w.recoverSeen = map[string]struct{}{}
+	}
+	if _, ok := w.recoverSeen[key]; ok {
+		return false
+	}
+	w.recoverSeen[key] = struct{}{}
+	return true
+}
+
+func isDiscordSnowflake(id string) bool {
+	if len(id) < 17 || len(id) > 20 {
+		return false
+	}
+	for _, r := range id {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

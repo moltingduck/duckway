@@ -783,6 +783,7 @@ func pendingInFlightForHandle(handle string) (*inFlight, string, string, bool) {
 type RecoverPendingTurnsResult struct {
 	Handle               string
 	MessageID            string
+	TurnTS               int64
 	SessionID            string
 	LastAssistantMessage string
 	// HadResult is true when we found a Stop event for this turn. False
@@ -821,6 +822,7 @@ func consumePendingTurnEvent(ctx context.Context, handle string) (*RecoverPendin
 				return &RecoverPendingTurnsResult{
 					Handle:               f.Handle,
 					MessageID:            f.MessageID,
+					TurnTS:               f.TurnTS,
 					SessionID:            sessionID,
 					LastAssistantMessage: body,
 					HadResult:            true,
@@ -837,6 +839,7 @@ func consumePendingTurnEvent(ctx context.Context, handle string) (*RecoverPendin
 			return &RecoverPendingTurnsResult{
 				Handle:               f.Handle,
 				MessageID:            f.MessageID,
+				TurnTS:               f.TurnTS,
 				SessionID:            sp.SessionID,
 				LastAssistantMessage: resolveAssistantMessage(sp),
 				HadResult:            true,
@@ -886,6 +889,7 @@ func RecoverPendingTurns() ([]RecoverPendingTurnsResult, error) {
 			out = append(out, RecoverPendingTurnsResult{
 				Handle:    f.Handle,
 				MessageID: f.MessageID,
+				TurnTS:    f.TurnTS,
 				HadResult: false,
 			})
 			continue
@@ -900,6 +904,7 @@ func RecoverPendingTurns() ([]RecoverPendingTurnsResult, error) {
 			out = append(out, RecoverPendingTurnsResult{
 				Handle:               f.Handle,
 				MessageID:            f.MessageID,
+				TurnTS:               f.TurnTS,
 				SessionID:            sessionID,
 				LastAssistantMessage: body,
 				HadResult:            true,
@@ -917,12 +922,21 @@ func RecoverPendingTurns() ([]RecoverPendingTurnsResult, error) {
 		out = append(out, RecoverPendingTurnsResult{
 			Handle:               f.Handle,
 			MessageID:            f.MessageID,
+			TurnTS:               f.TurnTS,
 			SessionID:            sp.SessionID,
 			LastAssistantMessage: resolveAssistantMessage(sp),
 			HadResult:            true,
 		})
 	}
 	return out, nil
+}
+
+func removePendingInFlight(handle string) {
+	chDir, err := tmuxChannelDir(handle)
+	if err != nil {
+		return
+	}
+	_ = os.Remove(filepath.Join(chDir, "in-flight.json"))
 }
 
 func recoverCodexTmuxResult(evt codexTmuxEvent, expectedDir string) (body, sessionID string, err error) {

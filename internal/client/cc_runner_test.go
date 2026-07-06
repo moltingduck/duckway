@@ -144,7 +144,8 @@ func TestCCRunner_PostsProgressForLongRunningTask(t *testing.T) {
 	}
 	defer r.Stop()
 
-	if !r.Enqueue(ccTask{Content: "slow work", MessageID: "m-slow", ChannelKind: "task"}) {
+	messageID := "1783330000000000001"
+	if !r.Enqueue(ccTask{Content: "slow work", MessageID: messageID, ChannelKind: "task"}) {
 		t.Fatal("Enqueue returned false")
 	}
 	waitForPosts(t, pp, 1)
@@ -154,16 +155,16 @@ func TestCCRunner_PostsProgressForLongRunningTask(t *testing.T) {
 		t.Fatalf("missing final result:\n%s", posts)
 	}
 	reactions := strings.Join(pp.allReactions(), "\n")
-	if !strings.Contains(reactions, "m-slow:⏳") {
+	if !strings.Contains(reactions, messageID+":⏳") {
 		t.Fatalf("missing still-running reaction:\n%s", reactions)
 	}
-	if !strings.Contains(reactions, "m-slow:✅") {
+	if !strings.Contains(reactions, messageID+":✅") {
 		t.Fatalf("missing completion reaction:\n%s", reactions)
 	}
-	if got := countStrings(pp.allReactions(), "m-slow:⏳"); got != 1 {
+	if got := countStrings(pp.allReactions(), messageID+":⏳"); got != 1 {
 		t.Fatalf("still-running reaction sent %d times, want 1:\n%s", got, reactions)
 	}
-	if got := countStrings(pp.allReactions(), "m-slow:✅"); got != 1 {
+	if got := countStrings(pp.allReactions(), messageID+":✅"); got != 1 {
 		t.Fatalf("completion reaction sent %d times, want 1:\n%s", got, reactions)
 	}
 }
@@ -173,18 +174,38 @@ func TestCCRunner_DeduplicatesRepeatedTaskReactions(t *testing.T) {
 	r, pp, _ := newTestRunner(t, fn)
 	defer r.Stop()
 
-	task := ccTask{MessageID: "m-react", ChannelKind: "task"}
+	messageID := "1783330000000000002"
+	task := ccTask{MessageID: messageID, ChannelKind: "task"}
 	r.reactToTask(task, "⏳")
 	r.reactToTask(task, "⏳")
 	r.reactToTask(task, "✅")
 	r.reactToTask(task, "✅")
 
 	reactions := strings.Join(pp.allReactions(), "\n")
-	if got := countStrings(pp.allReactions(), "m-react:⏳"); got != 1 {
+	if got := countStrings(pp.allReactions(), messageID+":⏳"); got != 1 {
 		t.Fatalf("still-running reaction sent %d times, want 1:\n%s", got, reactions)
 	}
-	if got := countStrings(pp.allReactions(), "m-react:✅"); got != 1 {
+	if got := countStrings(pp.allReactions(), messageID+":✅"); got != 1 {
 		t.Fatalf("completion reaction sent %d times, want 1:\n%s", got, reactions)
+	}
+}
+
+func TestCCRunnerSkipsDiscordDeliveryForSyntheticAgentTestMessage(t *testing.T) {
+	fn, _ := capturingRunFn("sess-abc", "ok")
+	r, pp, _ := newTestRunner(t, fn)
+	defer r.Stop()
+
+	task := ccTask{MessageID: "duckway-admin-test-1783330000000000003", TestID: "cctest_abc", ChannelKind: "management"}
+	if err := r.postTaskMessage(task, "synthetic test reply"); err != nil {
+		t.Fatal(err)
+	}
+	r.reactToTask(task, "✅")
+
+	if posts := pp.all(); len(posts) != 0 {
+		t.Fatalf("synthetic test posted to Discord: %+v", posts)
+	}
+	if reactions := pp.allReactions(); len(reactions) != 0 {
+		t.Fatalf("synthetic test reacted in Discord: %+v", reactions)
 	}
 }
 
