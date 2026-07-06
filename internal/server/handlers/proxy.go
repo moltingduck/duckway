@@ -194,7 +194,14 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc, err := h.services.GetByName(serviceName)
+	upstreamServiceName := serviceName
+	upstreamBaseURL := ""
+	if serviceName == "openai-chatgpt" {
+		upstreamServiceName = "openai"
+		upstreamBaseURL = "https://chatgpt.com"
+	}
+
+	svc, err := h.services.GetByName(upstreamServiceName)
 	if err != nil {
 		jsonError(w, "unknown service: "+serviceName, http.StatusNotFound)
 		return
@@ -297,7 +304,10 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build upstream URL
-	upstreamURL := strings.TrimRight(svc.UpstreamURL, "/") + upstreamPath
+	if upstreamBaseURL == "" {
+		upstreamBaseURL = svc.UpstreamURL
+	}
+	upstreamURL := strings.TrimRight(upstreamBaseURL, "/") + upstreamPath
 	if r.URL.RawQuery != "" {
 		upstreamURL += "?" + r.URL.RawQuery
 	}

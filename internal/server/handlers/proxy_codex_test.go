@@ -235,6 +235,81 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 	}
 }
 
+func TestHandleOpenAIChatGPTProxyUsesOpenAIKeyForNativeCodex(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	realAccess := testCodexJWT(`{"exp":1893456001,"scope":"access"}`)
+	encAccess, err := crypto.Encrypt(realAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encRefresh, err := crypto.Encrypt("rt.real.refresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-chatgpt','client',?)`, services.HashToken("tok")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted,refresh_token,token_endpoint,subscription_info)
+		VALUES ('key-chatgpt',?,'codex oauth',?,?, 'https://auth.openai.com/oauth/token', '{"credential_kind":"codex_oauth","auth_mode":"chatgpt","source":"codex"}')`,
+		openaiSvc.ID, encAccess, encRefresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO placeholder_keys (id,env_name,placeholder,service_id,api_key_id,client_id,requires_approval)
+		VALUES ('ph-chatgpt','OPENAI_API_KEY','jwt.dw_fake.chatgpt',?,'key-chatgpt','client-chatgpt',0)`, openaiSvc.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var upstreamURL string
+	var upstreamAuth string
+	h := NewProxyHandler(
+		svcQ,
+		queries.NewAPIKeyQueries(db),
+		services.NewKeyResolver(crypto, queries.NewAPIKeyQueries(db), queries.NewPlaceholderQueries(db), queries.NewGroupQueries(db), queries.NewApprovalQueries(db)),
+		nil,
+		queries.NewApprovalQueries(db),
+		nil,
+		nil,
+	).WithCrypto(crypto)
+	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		upstreamURL = req.URL.String()
+		upstreamAuth = req.Header.Get("Authorization")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    req,
+		}, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/openai-chatgpt/backend-api/codex/models?client_version=test", nil)
+	req.Header.Set("Authorization", "Bearer jwt.dw_fake.chatgpt")
+	client := &models.Client{ID: "client-chatgpt", Name: "client"}
+	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, client))
+	rec := httptest.NewRecorder()
+
+	h.Handle(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if upstreamURL != "https://chatgpt.com/backend-api/codex/models?client_version=test" {
+		t.Fatalf("upstream URL = %q", upstreamURL)
+	}
+	if upstreamAuth != "Bearer "+realAccess {
+		t.Fatalf("upstream Authorization = %q", upstreamAuth)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

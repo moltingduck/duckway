@@ -8,7 +8,8 @@
 #   3. upload the real Codex OAuth access/refresh/id tokens as a refreshable key
 #   4. create a fresh client and an OPENAI_API_KEY JWT-shaped phantom
 #   5. run duckway sync + duckway proxy inside an isolated HOME
-#   6. run `codex exec` with the prompt `hello?` through Duckway's proxy
+#   6. run `codex exec` in native OAuth mode with the prompt `hello?`
+#      through Duckway's proxy
 #
 # Required:
 #   PODMAN        podman executable (default: podman)
@@ -50,7 +51,7 @@ apk add --no-cache python3 >/dev/null
 python3 - <<'PY'
 import base64, json, sys, time
 
-required = {"api.model.read", "api.responses.write"}
+required = set()
 with open("/run/secrets/codex-auth.json", "r", encoding="utf-8") as f:
     auth = json.load(f)
 tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else auth
@@ -76,8 +77,6 @@ print("scopes:", ", ".join(sorted(scopes)) if scopes else "(none)")
 print("missing:", ", ".join(missing) if missing else "(none)")
 if claims.get("exp"):
     print("expired:", "true" if int(claims["exp"]) <= int(time.time()) else "false")
-if missing:
-    raise SystemExit(2)
 PY
 CHECK_TOKEN
   exit $?
@@ -190,7 +189,7 @@ required_scopes = {"api.model.read", "api.responses.write"}
 missing_scopes = sorted(required_scopes - scopes)
 if missing_scopes:
     print(
-        "Codex OAuth token is missing required scopes for live E2E: "
+        "Codex OAuth token lacks OpenAI API-key provider scopes, which is OK for native OAuth mode: "
         + ", ".join(missing_scopes)
         + ". Present scopes: "
         + (", ".join(sorted(scopes)) if scopes else "(none)"),
@@ -271,6 +270,8 @@ echo "Downloading Duckway CA and syncing client state..."
 curl -fsS -o "$DUCKWAY_CONFIG_DIR/ca.pem" "$BASE/skill/ca.pem"
 curl -fsS -H "X-Duckway-Token: $CLIENT_TOKEN" -o "$DUCKWAY_CONFIG_DIR/ca-key.pem" "$BASE/client/ca-key"
 chmod 600 "$DUCKWAY_CONFIG_DIR/ca-key.pem"
+cp "$DUCKWAY_CONFIG_DIR/ca.pem" /usr/local/share/ca-certificates/duckway-ca.crt
+update-ca-certificates >/dev/null
 /tmp/duckway sync >/tmp/duckway-sync.log 2>&1
 
 python3 - <<'PY'
@@ -316,7 +317,6 @@ export HTTP_PROXY="http://127.0.0.1:$PROXY_PORT"
 export HTTPS_PROXY="http://127.0.0.1:$PROXY_PORT"
 export NO_PROXY="localhost,127.0.0.1"
 export NODE_EXTRA_CA_CERTS="$DUCKWAY_CONFIG_DIR/ca.pem"
-export SSL_CERT_FILE="$DUCKWAY_CONFIG_DIR/ca.pem"
 
 echo "Refreshing Codex OAuth token once through Duckway proxy..."
 REFRESH_FORM="$(python3 - <<'PY'
@@ -339,17 +339,22 @@ if ! printf '%s' "$REFRESH_FORM" | grep -q 'refresh_token='; then
   echo "Synced Codex auth.json has no fake refresh token" >&2
   exit 1
 fi
+set +e
 REFRESH_STATUS="$(curl -sS --max-time 30 -o /tmp/codex-refresh-response.json -w '%{http_code}' \
   --cacert "$DUCKWAY_CONFIG_DIR/ca.pem" \
+  --proxytunnel \
   -x "http://127.0.0.1:$PROXY_PORT" \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   --data "$REFRESH_FORM" \
   'https://auth.openai.com/oauth/token')"
-if [ "$REFRESH_STATUS" != "200" ]; then
-  echo "Codex OAuth refresh through Duckway proxy failed with HTTP $REFRESH_STATUS" >&2
+CURL_REFRESH_EXIT=$?
+set -e
+if [ "$CURL_REFRESH_EXIT" -ne 0 ] || [ "$REFRESH_STATUS" != "200" ]; then
+  echo "Codex OAuth refresh through Duckway proxy failed with HTTP $REFRESH_STATUS curl_exit=$CURL_REFRESH_EXIT" >&2
   head -c 1000 /tmp/codex-refresh-response.json >&2 || true
   echo >&2
   tail -n 120 "$PROXY_LOG" >&2 || true
+  tail -n 80 "$SERVER_LOG" >&2 || true
   exit 1
 fi
 python3 - <<'PY'
@@ -365,20 +370,31 @@ for key in ("access_token", "refresh_token"):
 print("Refresh through Duckway proxy returned phantom tokens")
 PY
 
-echo "Checking OpenAI model scope through Duckway proxy..."
-MODEL_STATUS="$(curl -sS --max-time 30 -o /tmp/openai-models-response.json -w '%{http_code}' \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  "http://127.0.0.1:$PROXY_PORT/proxy/openai/v1/models?client_version=duckway-live-e2e")"
-if [ "$MODEL_STATUS" != "200" ]; then
-  echo "OpenAI /v1/models through Duckway proxy failed with HTTP $MODEL_STATUS" >&2
-  head -c 1000 /tmp/openai-models-response.json >&2 || true
-  echo >&2
-  if grep -q 'api.model.read' /tmp/openai-models-response.json 2>/dev/null; then
-    echo "Credential failure: this Codex OAuth token still lacks api.model.read after refresh." >&2
-  fi
-  tail -n 80 "$PROXY_LOG" >&2 || true
-  exit 1
-fi
+echo "Switching Codex CLI to native OAuth mode..."
+python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.path.expanduser("~/.codex/config.toml"))
+if not path.exists():
+    raise SystemExit(0)
+lines = path.read_text(encoding="utf-8").splitlines()
+out = []
+skip = False
+for line in lines:
+    stripped = line.strip()
+    if stripped == 'model_provider = "duckway-openai"':
+        continue
+    if stripped == "[model_providers.duckway-openai]":
+        skip = True
+        continue
+    if skip and stripped.startswith("[") and stripped.endswith("]"):
+        skip = False
+    if not skip:
+        out.append(line)
+path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+PY
+unset OPENAI_API_KEY
 
 echo "Running Codex prompt through Duckway proxy..."
 mkdir -p /tmp/codex-work
@@ -419,8 +435,13 @@ print("Codex assistant output:")
 print(messages[-1][:1000])
 PY
 
-if ! grep -Eq '/proxy/openai/v1/(responses|chat/completions)' "$PROXY_LOG"; then
-  echo "Duckway proxy log did not show an OpenAI API request" >&2
+if ! grep -q 'openai-auth' "$PROXY_LOG"; then
+  echo "Duckway proxy log did not show a Codex OAuth refresh request" >&2
+  tail -n 120 "$PROXY_LOG" >&2 || true
+  exit 1
+fi
+if ! grep -q 'openai-chatgpt' "$PROXY_LOG"; then
+  echo "Duckway proxy log did not show native Codex ChatGPT backend traffic" >&2
   tail -n 120 "$PROXY_LOG" >&2 || true
   exit 1
 fi

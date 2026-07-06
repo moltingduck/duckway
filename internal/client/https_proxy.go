@@ -553,6 +553,14 @@ func buildHostMap(svcs []ServiceInfo) map[string]hostEntry {
 		DeliveryMode: "proxy",
 		UpstreamURL:  "https://auth.openai.com",
 	}
+	// Native Codex OAuth talks to ChatGPT's Codex backend instead of the
+	// OpenAI-compatible /v1 Responses API provider. Treat it as a virtual
+	// OpenAI service so fake Codex OAuth access tokens are swapped server-side.
+	hostMap["chatgpt.com"] = hostEntry{
+		Service:      "openai-chatgpt",
+		DeliveryMode: "proxy",
+		UpstreamURL:  "https://chatgpt.com",
+	}
 	return hostMap
 }
 

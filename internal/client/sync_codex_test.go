@@ -152,4 +152,11 @@ func TestBuildHostMapAddsOpenAIAuthVirtualService(t *testing.T) {
 	if hostMap["api.openai.com"].Service != "openai" {
 		t.Fatalf("regular service host was not preserved: %#v", hostMap["api.openai.com"])
 	}
+	chatgpt, ok := hostMap["chatgpt.com"]
+	if !ok {
+		t.Fatalf("chatgpt.com missing from host map: %#v", hostMap)
+	}
+	if chatgpt.Service != "openai-chatgpt" || chatgpt.DeliveryMode != "proxy" || chatgpt.UpstreamURL != "https://chatgpt.com" {
+		t.Fatalf("unexpected chatgpt host entry: %#v", chatgpt)
+	}
 }
