@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -27,6 +28,7 @@ type ProxyHandler struct {
 	convUsage   *queries.ConversationUsageQueries
 	permissions *services.PermissionChecker
 	notifier    *services.Notifier
+	crypto      *services.Crypto
 	httpClient  *http.Client
 }
 
@@ -55,6 +57,13 @@ func NewProxyHandler(svcQueries *queries.ServiceQueries, apiKeys *queries.APIKey
 // Optional: when nil, the proxy skips token capture entirely.
 func (h *ProxyHandler) WithConversationUsage(q *queries.ConversationUsageQueries) *ProxyHandler {
 	h.convUsage = q
+	return h
+}
+
+// WithCrypto lets the proxy persist OAuth refreshes that pass through virtual
+// auth services such as openai-auth.
+func (h *ProxyHandler) WithCrypto(c *services.Crypto) *ProxyHandler {
+	h.crypto = c
 	return h
 }
 
@@ -572,6 +581,9 @@ func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Requ
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		h.persistOpenAIAuthRefresh(result.APIKeyID, result.RealRefreshToken, respBody)
+	}
 	respBody = rewriteCodexRefreshResponse(respBody, result.PlaceholderID, result.Placeholder)
 	for key, values := range resp.Header {
 		if strings.EqualFold(key, "Content-Length") {
@@ -590,6 +602,64 @@ func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Requ
 		h.requestLog.Log(client.ID, result.PlaceholderID, "openai-auth", r.Method, upstreamPath, resp.StatusCode)
 	}
 	_ = startTime
+}
+
+func (h *ProxyHandler) persistOpenAIAuthRefresh(apiKeyID, currentRefreshToken string, body []byte) {
+	if h.crypto == nil || h.apiKeys == nil || apiKeyID == "" || len(body) == 0 {
+		return
+	}
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		log.Printf("openai auth refresh response parse failed for %s: %v", apiKeyID, err)
+		return
+	}
+	if tokenResp.AccessToken == "" {
+		return
+	}
+	encAccess, err := h.crypto.Encrypt(tokenResp.AccessToken)
+	if err != nil {
+		log.Printf("openai auth refresh access encrypt failed for %s: %v", apiKeyID, err)
+		return
+	}
+	if err := h.apiKeys.UpdateTokens(apiKeyID, encAccess, openAIAuthRefreshExpiresAt(tokenResp.AccessToken, tokenResp.ExpiresIn)); err != nil {
+		log.Printf("openai auth refresh access store failed for %s: %v", apiKeyID, err)
+	}
+	if tokenResp.RefreshToken == "" || tokenResp.RefreshToken == currentRefreshToken {
+		return
+	}
+	encRefresh, err := h.crypto.Encrypt(tokenResp.RefreshToken)
+	if err != nil {
+		log.Printf("openai auth refresh token encrypt failed for %s: %v", apiKeyID, err)
+		return
+	}
+	if err := h.apiKeys.UpdateRefreshToken(apiKeyID, encRefresh); err != nil {
+		log.Printf("openai auth refresh token store failed for %s: %v", apiKeyID, err)
+	}
+}
+
+func openAIAuthRefreshExpiresAt(accessToken string, expiresIn int64) int64 {
+	if expiresIn > 0 {
+		return time.Now().UnixMilli() + expiresIn*1000
+	}
+	parts := strings.Split(accessToken, ".")
+	if len(parts) != 3 {
+		return time.Now().UnixMilli() + 3600*1000
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Now().UnixMilli() + 3600*1000
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp <= 0 {
+		return time.Now().UnixMilli() + 3600*1000
+	}
+	return claims.Exp * 1000
 }
 
 func rewriteCodexRefreshRequest(body []byte, contentType, realRefresh string) ([]byte, string) {
@@ -644,6 +714,8 @@ func shouldStripOpenAIAuthHeader(name string) bool {
 	}
 	switch lower {
 	case "host":
+		return true
+	case "accept-encoding":
 		return true
 	case "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
 		"te", "trailer", "transfer-encoding", "upgrade":

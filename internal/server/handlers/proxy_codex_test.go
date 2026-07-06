@@ -145,6 +145,7 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 	var upstreamBody string
 	var upstreamAuth string
 	var upstreamDuckway string
+	var upstreamAcceptEncoding string
 	h := NewProxyHandler(
 		svcQ,
 		queries.NewAPIKeyQueries(db),
@@ -153,7 +154,7 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 		queries.NewApprovalQueries(db),
 		nil,
 		nil,
-	)
+	).WithCrypto(crypto)
 	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.String() != "https://auth.openai.com/oauth/token" {
 			t.Fatalf("unexpected upstream URL: %s", req.URL.String())
@@ -161,6 +162,7 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 		body, _ := io.ReadAll(req.Body)
 		upstreamBody = string(body)
 		upstreamAuth = req.Header.Get("Authorization")
+		upstreamAcceptEncoding = req.Header.Get("Accept-Encoding")
 		for key := range req.Header {
 			if strings.HasPrefix(strings.ToLower(key), "x-duckway-") {
 				upstreamDuckway = key
@@ -177,6 +179,7 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 	req := httptest.NewRequest(http.MethodPost, "/proxy/openai-auth/oauth/token", strings.NewReader("grant_type=refresh_token&refresh_token=rt.duckway.fake"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Basic codex-client-auth")
+	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("X-Duckway-Internal", "secret")
 	client := &models.Client{ID: "client-openai-auth", Name: "client"}
 	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, client))
@@ -196,11 +199,32 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 	if upstreamAuth != "Basic codex-client-auth" {
 		t.Fatalf("Authorization header was not preserved: %q", upstreamAuth)
 	}
+	if upstreamAcceptEncoding != "" {
+		t.Fatalf("Accept-Encoding header should not be forwarded: %q", upstreamAcceptEncoding)
+	}
 	if upstreamDuckway != "" {
 		t.Fatalf("Duckway internal header leaked upstream: %s", upstreamDuckway)
 	}
 	if strings.Contains(rec.Body.String(), "rt.real") {
 		t.Fatalf("response leaked real token: %s", rec.Body.String())
+	}
+	key, err := queries.NewAPIKeyQueries(db).GetByID("key-openai-auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedAccess, err := crypto.Decrypt(key.KeyEncrypted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedAccess != testCodexJWT(`{"exp":1893456001,"scope":"access"}`) {
+		t.Fatalf("stored access token was not updated: %q", storedAccess)
+	}
+	storedRefresh, err := crypto.Decrypt(key.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRefresh != "rt.real.new" {
+		t.Fatalf("stored refresh token was not rotated: %q", storedRefresh)
 	}
 	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.Body.Bytes(), &obj); err != nil {
