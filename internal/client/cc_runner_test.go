@@ -160,6 +160,42 @@ func TestCCRunner_PostsProgressForLongRunningTask(t *testing.T) {
 	if !strings.Contains(reactions, "m-slow:✅") {
 		t.Fatalf("missing completion reaction:\n%s", reactions)
 	}
+	if got := countStrings(pp.allReactions(), "m-slow:⏳"); got != 1 {
+		t.Fatalf("still-running reaction sent %d times, want 1:\n%s", got, reactions)
+	}
+	if got := countStrings(pp.allReactions(), "m-slow:✅"); got != 1 {
+		t.Fatalf("completion reaction sent %d times, want 1:\n%s", got, reactions)
+	}
+}
+
+func TestCCRunner_DeduplicatesRepeatedTaskReactions(t *testing.T) {
+	fn, _ := capturingRunFn("sess-abc", "ok")
+	r, pp, _ := newTestRunner(t, fn)
+	defer r.Stop()
+
+	task := ccTask{MessageID: "m-react", ChannelKind: "task"}
+	r.reactToTask(task, "⏳")
+	r.reactToTask(task, "⏳")
+	r.reactToTask(task, "✅")
+	r.reactToTask(task, "✅")
+
+	reactions := strings.Join(pp.allReactions(), "\n")
+	if got := countStrings(pp.allReactions(), "m-react:⏳"); got != 1 {
+		t.Fatalf("still-running reaction sent %d times, want 1:\n%s", got, reactions)
+	}
+	if got := countStrings(pp.allReactions(), "m-react:✅"); got != 1 {
+		t.Fatalf("completion reaction sent %d times, want 1:\n%s", got, reactions)
+	}
+}
+
+func countStrings(items []string, want string) int {
+	var count int
+	for _, item := range items {
+		if item == want {
+			count++
+		}
+	}
+	return count
 }
 
 func TestCCRunner_LoadsKeysEnvForAgent(t *testing.T) {

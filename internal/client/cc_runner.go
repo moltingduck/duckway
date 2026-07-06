@@ -59,6 +59,7 @@ type ccRunner struct {
 	activeSeq    int64
 	stopped      bool
 	recoverStart bool
+	reacted      map[string]struct{}
 }
 
 // ccTask is one queued prompt.
@@ -147,6 +148,7 @@ func newCCRunnerWithProcessed(handle, configDir, channelCwd string, spec ccAgent
 		reportTest:   reportTest,
 		logger:       log.Printf,
 		recoverStart: recoverStart,
+		reacted:      make(map[string]struct{}),
 	}
 	r.wg.Add(1)
 	go r.loop()
@@ -512,9 +514,23 @@ func (r *ccRunner) reactToTask(t ccTask, emoji string) {
 	if r.react == nil || t.MessageID == "" {
 		return
 	}
+	if !r.claimReaction(t.MessageID, emoji) {
+		return
+	}
 	if err := r.react(context.Background(), r.handle, t.MessageID, emoji); err != nil {
 		r.logger("[cc-watch] %s: react %s failed: %v", r.handle, emoji, err)
 	}
+}
+
+func (r *ccRunner) claimReaction(messageID, emoji string) bool {
+	key := messageID + "\x00" + emoji
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.reacted[key]; ok {
+		return false
+	}
+	r.reacted[key] = struct{}{}
+	return true
 }
 
 func (r *ccRunner) reportTaskTest(t ccTask, status, errText string) {
