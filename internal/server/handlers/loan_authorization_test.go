@@ -170,6 +170,24 @@ func TestLoanGroupRejectsServiceMismatch(t *testing.T) {
 	}
 }
 
+func TestLoanRejectsServiceConfiguredForPhantomProxyMode(t *testing.T) {
+	f := newLoanAuthFixture(t)
+	if _, err := f.db.Exec(`UPDATE services SET delivery_mode = 'proxy' WHERE name = ?`, f.service); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/client/loan?service="+f.service, nil)
+	rr := httptest.NewRecorder()
+	f.loan.Issue(rr, requestWithClient(req, f.bound))
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+	}
+	if bytes.Contains(rr.Body.Bytes(), []byte("sk-real-loan-token")) {
+		t.Fatal("proxy-mode service returned real token")
+	}
+}
+
 func TestMarkExhaustedRequiresGroupBinding(t *testing.T) {
 	f := newLoanAuthFixture(t)
 

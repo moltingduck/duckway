@@ -235,7 +235,7 @@ assert_not_empty "Create API key (form)" "$KEY2_ID"
 
 KEY3=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" \
   -H "Content-Type: application/json" \
-  -d "{\"service_id\":\"$GITHUB_ID\",\"name\":\"GitHub Token\",\"key\":\"ghp_fakeGitHubToken1234567890abcdef12\"}")
+  -d "{\"service_id\":\"$GITHUB_ID\",\"name\":\"GitHub Token\",\"key\":\"github_pat_fakeGitHubToken1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab\"}")
 KEY3_ID=$(echo "$KEY3" | jq -r '.id')
 assert_not_empty "Create GitHub key" "$KEY3_ID"
 
@@ -286,7 +286,7 @@ PH3=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders" \
   -H "Content-Type: application/json" \
   -d "{\"service_id\":\"$GITHUB_ID\",\"api_key_id\":\"$KEY3_ID\",\"client_id\":\"$CLIENT_ID\",\"requires_approval\":false}")
 PH3_KEY=$(echo "$PH3" | jq -r '.placeholder')
-assert_contains "GitHub placeholder has ghp_dw_" "ghp_dw_" "$PH3_KEY"
+assert_contains "GitHub placeholder has github_pat_dw_" "github_pat_dw_" "$PH3_KEY"
 
 
 # === Test 7: Client Key Sync ===
@@ -749,15 +749,19 @@ for page in "" services keys placeholders clients groups approvals logs notifica
 done
 
 
-# === Test 16: Loan Proxy ===
+# === Test 16: GitHub Phantom Defaults + Optional Loan Proxy ===
 echo ""
-echo -e "${YELLOW}[16] Loan Proxy (delivery_mode=loan_proxy)${NC}"
+echo -e "${YELLOW}[16] GitHub Phantom Defaults + Loan Proxy${NC}"
 
-# 16a: github service should default to loan_proxy + multi-host pattern
+# 16a: github service should default to simple phantom proxy + multi-host pattern
 GH_SVC_JSON=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services" | python3 -c "import sys,json;[print(json.dumps(s)) for s in json.load(sys.stdin) if s['name']=='github']")
 GH_DELIVERY=$(echo "$GH_SVC_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('delivery_mode',''))")
 GH_HOSTS=$(echo "$GH_SVC_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('host_pattern',''))")
-assert_eq "github seeded with delivery_mode=loan_proxy" "loan_proxy" "$GH_DELIVERY"
+GH_PREFIX=$(echo "$GH_SVC_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key_prefix',''))")
+GH_LENGTH=$(echo "$GH_SVC_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key_length',''))")
+assert_eq "github seeded with delivery_mode=proxy" "proxy" "$GH_DELIVERY"
+assert_eq "github seeded with key_prefix=github_pat_" "github_pat_" "$GH_PREFIX"
+assert_eq "github seeded with key_length=93" "93" "$GH_LENGTH"
 assert_not_empty "github host_pattern not empty" "$GH_HOSTS"
 assert_contains "github host_pattern includes api.github.com" "api.github.com" "$GH_HOSTS"
 assert_contains "github host_pattern includes github.com" "github.com" "$GH_HOSTS"
@@ -770,7 +774,7 @@ assert_contains "/client/services includes upstream_url" "upstream_url" "$CLIENT
 # 16c: Upload a fake github key, register a fresh client, assign phantom
 GH_SVC_ID=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services" | python3 -c "import sys,json;print([s['id'] for s in json.load(sys.stdin) if s['name']=='github'][0])")
 LOAN_KEY_ID=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
-  -d "{\"service_id\":\"$GH_SVC_ID\",\"name\":\"loan-test\",\"key\":\"ghp_realisticfaketokenforloantest1234\"}" \
+  -d "{\"service_id\":\"$GH_SVC_ID\",\"name\":\"loan-test\",\"key\":\"github_pat_realisticfaketokenforloantest1234567890abcdef1234567890abcdef1234567890abcd\"}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
 assert_not_empty "Fake github key uploaded" "$LOAN_KEY_ID"
 
@@ -781,35 +785,42 @@ LOAN_CLIENT_TOKEN=$(echo "$LOAN_CLIENT" | python3 -c "import sys,json;print(json
 curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders" -H "Content-Type: application/json" \
   -d "{\"service_id\":\"$GH_SVC_ID\",\"api_key_id\":\"$LOAN_KEY_ID\",\"client_id\":\"$LOAN_CLIENT_ID\",\"requires_approval\":false}" > /dev/null
 
-# 16d: GET /client/loan returns the real token + auth scheme
+# 16d: /client/loan refuses while github is in default proxy mode
+GITHUB_PROXY_REFUSE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Duckway-Token: $LOAN_CLIENT_TOKEN" "$BASE/client/loan?service=github")
+assert_eq "/client/loan?service=github refused in proxy mode" "403" "$GITHUB_PROXY_REFUSE"
+
+# Enable optional loan_proxy mode and verify the endpoint remains available.
+curl -s -b /tmp/dw-e2e-cookies -X PUT "$BASE/api/services/$GH_SVC_ID" -H "Content-Type: application/json" -d '{"delivery_mode":"loan_proxy"}' > /dev/null
+
+# 16e: GET /client/loan returns the real token + auth scheme
 LOAN_RESP=$(curl -s -H "X-Duckway-Token: $LOAN_CLIENT_TOKEN" "$BASE/client/loan?service=github")
 LOAN_REAL=$(echo "$LOAN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('real_token',''))")
 LOAN_TTL=$(echo "$LOAN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('ttl_seconds',''))")
 LOAN_AUTH=$(echo "$LOAN_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('auth_type',''))")
-assert_eq "/client/loan returns real_token" "ghp_realisticfaketokenforloantest1234" "$LOAN_REAL"
+assert_eq "/client/loan returns real_token" "github_pat_realisticfaketokenforloantest1234567890abcdef1234567890abcdef1234567890abcd" "$LOAN_REAL"
 assert_eq "/client/loan returns 60s TTL" "60" "$LOAN_TTL"
 assert_eq "/client/loan returns auth_type=bearer" "bearer" "$LOAN_AUTH"
 
-# 16e: /client/loan refuses for proxy-mode services (openai)
+# 16f: /client/loan refuses for proxy-mode services (openai)
 OPENAI_REFUSE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Duckway-Token: $LOAN_CLIENT_TOKEN" "$BASE/client/loan?service=openai")
 assert_eq "/client/loan?service=openai refused (proxy mode)" "403" "$OPENAI_REFUSE"
 
-# 16f: /client/loan returns 404 for unknown service
+# 16g: /client/loan returns 404 for unknown service
 UNKNOWN_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Duckway-Token: $LOAN_CLIENT_TOKEN" "$BASE/client/loan?service=does-not-exist")
 assert_eq "/client/loan unknown service → 404" "404" "$UNKNOWN_STATUS"
 
-# 16g: /client/loan rejects without client auth
+# 16h: /client/loan rejects without client auth
 NOAUTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/client/loan?service=github")
 assert_eq "/client/loan without token → 401" "401" "$NOAUTH_STATUS"
 
-# 16h: POST /client/audit accepts batched entries
+# 16i: POST /client/audit accepts batched entries
 AUDIT_RESP=$(curl -s -X POST -H "X-Duckway-Token: $LOAN_CLIENT_TOKEN" -H "Content-Type: application/json" \
   -d "[{\"placeholder_id\":\"abc\",\"service\":\"github\",\"method\":\"POST\",\"path\":\"/git-upload-pack\",\"status\":200},{\"placeholder_id\":\"abc\",\"service\":\"github\",\"method\":\"GET\",\"path\":\"/info/refs\",\"status\":200}]" \
   "$BASE/client/audit")
 AUDIT_LOGGED=$(echo "$AUDIT_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('logged',''))")
 assert_eq "/client/audit logged 2 entries" "2" "$AUDIT_LOGGED"
 
-# 16i: Audited entries reach the request log
+# 16j: Audited entries reach the request log
 sleep 0.3
 LOGS=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/logs")
 GIT_UPLOAD_PACK_LOGS=$(echo "$LOGS" | python3 -c "
@@ -827,14 +838,12 @@ else
   ERRORS="$ERRORS\n  - audit entries not found in logs"
 fi
 
-# 16j: Service Update endpoint accepts delivery_mode
+# 16k: Service Update endpoint accepts delivery_mode
 NEW_MODE_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X PUT "$BASE/api/services/$GH_SVC_ID" -H "Content-Type: application/json" -d '{"delivery_mode":"proxy"}')
 NEW_MODE=$(echo "$NEW_MODE_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('delivery_mode',''))")
 assert_eq "PUT delivery_mode=proxy persists" "proxy" "$NEW_MODE"
-# Restore for later tests
-curl -s -b /tmp/dw-e2e-cookies -X PUT "$BASE/api/services/$GH_SVC_ID" -H "Content-Type: application/json" -d '{"delivery_mode":"loan_proxy"}' > /dev/null
 
-# 16k: Update rejects invalid delivery_mode
+# 16l: Update rejects invalid delivery_mode
 BAD_MODE=$(curl -s -o /dev/null -w "%{http_code}" -b /tmp/dw-e2e-cookies -X PUT "$BASE/api/services/$GH_SVC_ID" -H "Content-Type: application/json" -d '{"delivery_mode":"bogus"}')
 assert_eq "PUT delivery_mode=bogus → 400" "400" "$BAD_MODE"
 

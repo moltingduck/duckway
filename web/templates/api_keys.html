@@ -291,10 +291,17 @@ function onServiceChange() {
   var hint = document.getElementById('ak-hint');
   document.getElementById('ak-error').style.display = 'none';
   if (!svc) { keyInput.placeholder = ''; hint.style.display = 'none'; return; }
-  keyInput.placeholder = svc.prefix + 'x'.repeat(Math.max(0, svc.length - svc.prefix.length));
+  keyInput.placeholder = svc.name === 'github'
+    ? 'github_pat_' + 'x'.repeat(82)
+    : svc.prefix + 'x'.repeat(Math.max(0, svc.length - svc.prefix.length));
   var parts = [];
-  if (svc.prefix) parts.push('starts with <code>' + svc.prefix + '</code>');
-  if (svc.length > 0) parts.push(svc.length + ' characters');
+  if (svc.name === 'github') {
+    parts.push('starts with <code>github_pat_</code>');
+    parts.push('classic <code>ghp_</code> tokens are also accepted');
+  } else {
+    if (svc.prefix) parts.push('starts with <code>' + svc.prefix + '</code>');
+    if (svc.length > 0) parts.push(svc.length + ' characters');
+  }
   hint.innerHTML = 'Expected format: ' + parts.join(', ');
   hint.style.display = 'block';
   if (keyInput.value) validateKey();
@@ -307,8 +314,14 @@ function validateKey() {
   var submit = document.getElementById('ak-submit');
   if (!svc || !val) { error.style.display = 'none'; submit.disabled = false; return; }
   var errors = [];
-  if (svc.prefix && !val.startsWith(svc.prefix)) errors.push('Must start with <code>' + svc.prefix + '</code>');
-  if (svc.length > 0) {
+  if (svc.name === 'github') {
+    if (!(val.startsWith('github_pat_') || val.startsWith('ghp_'))) {
+      errors.push('Must start with <code>github_pat_</code> or <code>ghp_</code>');
+    }
+  } else if (svc.prefix && !val.startsWith(svc.prefix)) {
+    errors.push('Must start with <code>' + svc.prefix + '</code>');
+  }
+  if (svc.length > 0 && svc.name !== 'github') {
     var tol = Math.max(10, Math.floor(svc.length * 0.2));
     if (val.length < svc.length - tol) errors.push('Too short (expected ~' + svc.length + ', got ' + val.length + ')');
     if (val.length > svc.length + tol) errors.push('Too long (expected ~' + svc.length + ', got ' + val.length + ')');
@@ -320,9 +333,17 @@ function validateKey() {
 document.getElementById('add-key-form').addEventListener('htmx:confirm', function(e) {
   var svc = getSelectedService();
   var val = document.getElementById('ak-key').value.trim();
-  if (svc && svc.prefix && !val.startsWith(svc.prefix)) {
+  var badPrefix = false;
+  if (svc && svc.name === 'github') {
+    badPrefix = !(val.startsWith('github_pat_') || val.startsWith('ghp_'));
+  } else if (svc && svc.prefix) {
+    badPrefix = !val.startsWith(svc.prefix);
+  }
+  if (badPrefix) {
     e.preventDefault();
-    document.getElementById('ak-error').innerHTML = 'Must start with <code>' + svc.prefix + '</code>';
+    document.getElementById('ak-error').innerHTML = svc.name === 'github'
+      ? 'Must start with <code>github_pat_</code> or <code>ghp_</code>'
+      : 'Must start with <code>' + svc.prefix + '</code>';
     document.getElementById('ak-error').style.display = 'block';
   }
 });

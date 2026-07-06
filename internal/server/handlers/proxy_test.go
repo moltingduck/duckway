@@ -248,6 +248,71 @@ func TestProxy_KeyInjected(t *testing.T) {
 	}
 }
 
+func TestProxyGitHubPhantomModeInjectsFineGrainedPAT(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f := newProxyFixture(t, upstream.URL)
+	realPAT := "github_pat_" + strings.Repeat("r", 82)
+	encPAT, err := f.crypto.Encrypt(realPAT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := f.svcQ.GetByID(f.serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Name = "github"
+	svc.DisplayName = "GitHub API + Git"
+	svc.HostPattern = "api.github.com,github.com"
+	svc.AuthType = "bearer"
+	svc.AuthHeader = "Authorization"
+	svc.AuthPrefix = "Bearer "
+	svc.KeyPrefix = "github_pat_"
+	svc.KeyLength = 93
+	svc.DeliveryMode = "proxy"
+	if err := f.svcQ.Update(svc); err != nil {
+		t.Fatal(err)
+	}
+	key, err := f.apiKeyQ.GetByID(f.apiKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key.KeyEncrypted = encPAT
+	if err := f.apiKeyQ.Update(key); err != nil {
+		t.Fatal(err)
+	}
+	ph, err := f.placeholderQ.GetByID(f.placeholderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ph.EnvName = "GITHUB_TOKEN"
+	ph.Placeholder = "github_pat_dw_fake"
+	if err := f.placeholderQ.Update(ph); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newProxyHandler(f)
+	r := httptest.NewRequest("GET", "/proxy/github/user", nil)
+	r.Header.Set("Authorization", "Bearer github_pat_dw_fake")
+	r = withClient(r, f.client)
+	code, body := doProxy(h, r)
+
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d; body: %s", code, body)
+	}
+	if gotAuth != "Bearer "+realPAT {
+		t.Fatalf("upstream Authorization = %q, want real PAT", gotAuth)
+	}
+	if strings.Contains(gotAuth, "dw_") || strings.Contains(gotAuth, "fake") {
+		t.Fatalf("upstream Authorization leaked phantom: %q", gotAuth)
+	}
+}
+
 // TestProxy_StripsDuckwayHeaders — client sends X-Duckway-Token and X-Custom;
 // upstream must NOT see X-Duckway-Token but MUST see X-Custom.
 func TestProxy_StripsDuckwayHeaders(t *testing.T) {

@@ -26,8 +26,8 @@ type Server struct {
 	notifier *services.Notifier
 
 	stopOnce sync.Once
-	stopCh   chan struct{}  // closed to stop anonymous sweeper goroutines
-	stoppers []stopper      // services with their own Stop()
+	stopCh   chan struct{} // closed to stop anonymous sweeper goroutines
+	stoppers []stopper     // services with their own Stop()
 }
 
 // Shutdown stops all background goroutines and services. Call after
@@ -219,9 +219,10 @@ func (s *Server) seedDefaultServices() error {
 		{Name: "heartbeat", DisplayName: "Duckway Heartbeat", UpstreamURL: "internal://heartbeat", HostPattern: "heartbeat", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "dw-hb-", KeyLength: 32, DeliveryMode: "proxy", IsActive: true},
 		{Name: "openai", DisplayName: "OpenAI API", UpstreamURL: "https://api.openai.com", HostPattern: "api.openai.com", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "sk-", KeyLength: 164, KeyDirectory: ".config/openai/credentials", DeliveryMode: "proxy", IsActive: true},
 		{Name: "anthropic", DisplayName: "Anthropic API", UpstreamURL: "https://api.anthropic.com", HostPattern: "api.anthropic.com", AuthType: "header", AuthHeader: "x-api-key", KeyPrefix: "sk-ant-", KeyLength: 108, KeyDirectory: ".config/anthropic/credentials", DeliveryMode: "proxy", IsActive: true},
-		// GitHub: default to loan_proxy + multi-host (api.github.com,github.com) so git
-		// clone/pull/push work without buffering large packfiles through the gateway.
-		{Name: "github", DisplayName: "GitHub API + Git", UpstreamURL: "https://api.github.com", HostPattern: "api.github.com,github.com", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "ghp_", KeyLength: 40, KeyDirectory: ".config/gh/credentials", DeliveryMode: "loan_proxy", IsActive: true},
+		// GitHub: default to simple phantom-token proxy mode. Fine-grained
+		// PATs use github_pat_*; loan_proxy can still be enabled later for
+		// high-bandwidth git traffic.
+		{Name: "github", DisplayName: "GitHub API + Git", UpstreamURL: "https://api.github.com", HostPattern: "api.github.com,github.com", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "github_pat_", KeyLength: 93, KeyDirectory: ".config/gh/credentials", DeliveryMode: "proxy", IsActive: true},
 		{Name: "discord", DisplayName: "Discord API", UpstreamURL: "https://discord.com/api/v10", HostPattern: "discord.com,api.discord.com,gateway.discord.gg,*.discordapp.net", AuthType: "header", AuthHeader: "Authorization", AuthPrefix: "Bot ", KeyLength: 72, KeyDirectory: ".config/discord/credentials", DeliveryMode: "proxy", IsActive: true},
 		{Name: "telegram", DisplayName: "Telegram Bot API", UpstreamURL: "https://api.telegram.org", HostPattern: "api.telegram.org", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyLength: 46, KeyDirectory: ".config/telegram/credentials", DeliveryMode: "proxy", IsActive: true},
 	}

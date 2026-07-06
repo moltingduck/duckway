@@ -9,6 +9,7 @@ import (
 
 	"github.com/hackerduck/duckway/internal/database"
 	"github.com/hackerduck/duckway/internal/database/queries"
+	"github.com/hackerduck/duckway/internal/models"
 	"github.com/hackerduck/duckway/internal/server/handlers"
 	"github.com/hackerduck/duckway/internal/server/services"
 )
@@ -87,6 +88,98 @@ func TestCreatePlaceholderForOAuthJWTUsesJWTPhantom(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !resolved.Permitted || resolved.RealKey != realAccess || !resolved.IsRefreshable {
+		t.Fatalf("resolve = %+v", resolved)
+	}
+}
+
+func TestCreatePlaceholderForGitHubPATUsesFineGrainedPhantom(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	realPAT := "github_pat_" + strings.Repeat("a", 82)
+	encPAT, err := crypto.Encrypt(realPAT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	ghSvc := &models.Service{
+		ID:           "svc-gh-pat",
+		Name:         "github",
+		DisplayName:  "GitHub API + Git",
+		UpstreamURL:  "https://api.github.com",
+		HostPattern:  "api.github.com,github.com",
+		AuthType:     "bearer",
+		AuthHeader:   "Authorization",
+		AuthPrefix:   "Bearer ",
+		KeyPrefix:    "github_pat_",
+		KeyLength:    93,
+		DeliveryMode: "proxy",
+		IsActive:     true,
+	}
+	if err := svcQ.Create(ghSvc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-gh-pat','github client','hash-gh')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
+		VALUES ('key-gh-pat',?,'github pat',?)`, ghSvc.ID, encPAT); err != nil {
+		t.Fatal(err)
+	}
+
+	h := handlers.NewPlaceholderHandler(
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		queries.NewClientQueries(db),
+	).WithKeyLookup(queries.NewAPIKeyQueries(db), crypto)
+	req := httptest.NewRequest(http.MethodPost, "/api/placeholders", strings.NewReader(`{
+		"service_id":"`+ghSvc.ID+`",
+		"api_key_id":"key-gh-pat",
+		"client_id":"client-gh-pat",
+		"requires_approval":false
+	}`))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		EnvName     string `json:"env_name"`
+		Placeholder string `json:"placeholder"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.EnvName != "GITHUB_TOKEN" {
+		t.Fatalf("env_name = %q, want GITHUB_TOKEN", got.EnvName)
+	}
+	if !strings.HasPrefix(got.Placeholder, "github_pat_") {
+		t.Fatalf("placeholder prefix wrong: %q", got.Placeholder)
+	}
+	if len(got.Placeholder) != 93 {
+		t.Fatalf("placeholder len = %d, want 93: %q", len(got.Placeholder), got.Placeholder)
+	}
+	if !strings.Contains(got.Placeholder, "dw_") || !services.IsPlaceholder(got.Placeholder) {
+		t.Fatalf("placeholder marker missing: %q", got.Placeholder)
+	}
+
+	resolver := services.NewKeyResolver(
+		crypto,
+		queries.NewAPIKeyQueries(db),
+		queries.NewPlaceholderQueries(db),
+		queries.NewGroupQueries(db),
+		queries.NewApprovalQueries(db),
+	)
+	resolved, err := resolver.Resolve(got.Placeholder, "client-gh-pat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolved.Permitted || resolved.RealKey != realPAT {
 		t.Fatalf("resolve = %+v", resolved)
 	}
 }

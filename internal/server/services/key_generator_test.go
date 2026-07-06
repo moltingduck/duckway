@@ -13,7 +13,8 @@ func TestGeneratePlaceholder(t *testing.T) {
 		wantPrefix string
 	}{
 		{"OpenAI", "sk-proj-", 56, "sk-proj-dw_"},
-		{"GitHub", "ghp_", 40, "ghp_dw_"},
+		{"GitHub fine-grained", "github_pat_", 93, "github_pat_dw_"},
+		{"GitHub classic", "ghp_", 40, "ghp_dw_"},
 		{"Anthropic", "sk-ant-", 108, "sk-ant-dw_"},
 		{"No prefix", "", 32, "dw_"},
 	}
@@ -63,6 +64,43 @@ func TestGeneratePlaceholderForRealKey_JWT(t *testing.T) {
 	}
 	if strings.HasPrefix(got, "sk-") {
 		t.Fatalf("JWT source should not fall back to API key shape: %q", got)
+	}
+}
+
+func TestGeneratePlaceholderForRealKey_GitHubFineGrainedPAT(t *testing.T) {
+	real := "github_pat_" + strings.Repeat("a", 82)
+	got, err := GeneratePlaceholderForRealKey(real, "ghp_", 40)
+	if err != nil {
+		t.Fatalf("GeneratePlaceholderForRealKey: %v", err)
+	}
+	if !strings.HasPrefix(got, "github_pat_") {
+		t.Fatalf("placeholder prefix = %q, want github_pat_: %q", got[:min(len(got), 20)], got)
+	}
+	if len(got) != 93 {
+		t.Fatalf("placeholder length = %d, want 93: %q", len(got), got)
+	}
+	if !strings.Contains(got, "dw_") {
+		t.Fatalf("placeholder missing duckway marker: %q", got)
+	}
+	if !IsPlaceholder(got) {
+		t.Fatalf("IsPlaceholder(%q) = false", got)
+	}
+}
+
+func TestGeneratePlaceholderForRealKey_GitHubClassicPAT(t *testing.T) {
+	real := "ghp_" + strings.Repeat("a", 36)
+	got, err := GeneratePlaceholderForRealKey(real, "github_pat_", 93)
+	if err != nil {
+		t.Fatalf("GeneratePlaceholderForRealKey: %v", err)
+	}
+	if !strings.HasPrefix(got, "ghp_") {
+		t.Fatalf("placeholder prefix = %q, want ghp_: %q", got[:min(len(got), 8)], got)
+	}
+	if len(got) != 40 {
+		t.Fatalf("placeholder length = %d, want 40: %q", len(got), got)
+	}
+	if !IsPlaceholder(got) {
+		t.Fatalf("IsPlaceholder(%q) = false", got)
 	}
 }
 

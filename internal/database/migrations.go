@@ -398,6 +398,18 @@ func runMigrations(db *sql.DB) error {
 		    upstream_url = 'https://discord.com/api/v10'
 		WHERE name = 'discord' AND host_pattern = 'discord.com'`)
 
+	// GitHub fine-grained PATs use github_pat_* and the simple default should
+	// stay in phantom-token proxy mode. Only touch rows that still match the
+	// former shipped default, leaving admin-customized GitHub services alone.
+	db.Exec(`UPDATE services
+		SET key_prefix = 'github_pat_',
+		    key_length = 93,
+		    delivery_mode = 'proxy'
+		WHERE name = 'github'
+		  AND key_prefix = 'ghp_'
+		  AND key_length = 40
+		  AND delivery_mode = 'loan_proxy'`)
+
 	// Seed the OpenAI service so Codex CLI (and any OpenAI-compatible tool)
 	// works without manual admin UI setup. INSERT OR IGNORE keeps it safe on
 	// existing databases that already have a user-created openai service.

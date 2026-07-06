@@ -13,7 +13,7 @@
 # Required env (set the ones you want to test, others are skipped):
 #   OPENAI_API_KEY     sk-...
 #   ANTHROPIC_API_KEY  sk-ant-api03-...
-#   GITHUB_TOKEN       ghp_...   (only read:user scope needed)
+#   GITHUB_TOKEN       github_pat_...   (only read:user scope needed)
 #   DISCORD_BOT_TOKEN  bot token
 #
 # Optional env:
@@ -29,7 +29,7 @@
 #   cat > scripts/phantom-test.env <<'EOF'
 #   export OPENAI_API_KEY=sk-...
 #   export ANTHROPIC_API_KEY=sk-ant-...
-#   export GITHUB_TOKEN=ghp_...
+#   export GITHUB_TOKEN=github_pat_...
 #   export DISCORD_BOT_TOKEN=...
 #   EOF
 #   chmod 600 scripts/phantom-test.env
@@ -243,8 +243,9 @@ run_loan_proxy_github_test() {
 
   printf "      %-10s setting up loan_proxy test...                     \r" "github-loan"
 
-  # Make sure the github service is in loan_proxy mode (it's the default,
-  # but reset just in case).
+  # Make sure the github service is in loan_proxy mode. GitHub defaults to
+  # simple phantom proxy mode; this test explicitly exercises the optional
+  # direct-upstream loan path.
   curl -s -b "$COOKIES" -X PUT "$BASE/api/services/$GITHUB_ID" \
     -H "Content-Type: application/json" \
     -d '{"delivery_mode":"loan_proxy","host_pattern":"api.github.com,github.com"}' > /dev/null

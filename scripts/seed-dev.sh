@@ -58,9 +58,9 @@ OA_KEY2=$(add_key "$OPENAI_ID" "OpenAI Staging" "sk-proj-fake-staging-openai-key
 OA_KEY3=$(add_key "$OPENAI_ID" "OpenAI Batch" "sk-proj-fake-batch-openai-key-9876543210fedcba9876543210")
 AN_KEY1=$(add_key "$ANTHROPIC_ID" "Anthropic Production" "sk-ant-fake-prod-anthropic-key-1234567890abcdef")
 AN_KEY2=$(add_key "$ANTHROPIC_ID" "Anthropic Dev" "sk-ant-fake-dev-anthropic-key-abcdef1234567890")
-GH_KEY1=$(add_key "$GITHUB_ID" "GitHub Deploy Bot" "ghp_fakeDeployBotToken1234567890abcd")
-GH_KEY2=$(add_key "$GITHUB_ID" "GitHub CI Runner" "ghp_fakeCIRunnerToken9876543210wxyz")
-GH_KEY3=$(add_key "$GITHUB_ID" "GitHub Read-Only" "ghp_fakeReadOnlyToken5555666677778888")
+GH_KEY1=$(add_key "$GITHUB_ID" "GitHub Deploy Bot" "github_pat_fakeDeployBotToken1234567890abcdef1234567890abcdef1234567890abcdef1234")
+GH_KEY2=$(add_key "$GITHUB_ID" "GitHub CI Runner" "github_pat_fakeCIRunnerToken9876543210abcdef1234567890abcdef1234567890abcdef1234")
+GH_KEY3=$(add_key "$GITHUB_ID" "GitHub Read-Only" "github_pat_fakeReadOnlyToken5555666677778888abcdef1234567890abcdef1234567890abcd")
 
 # Refreshable token (Claude OAuth)
 AN_OAUTH=$(curl -s -b /tmp/dw-seed-cookies -X POST "$BASE/api/oauth/upload" \
