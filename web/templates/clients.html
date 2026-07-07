@@ -98,6 +98,26 @@
         <tr><td class="text-muted">Usage Count</td><td id="phd-usage"></td></tr>
       </tbody>
     </table>
+    <div id="phd-git-setup" style="display:none;margin-top:1rem;border-top:1px solid var(--border);padding-top:0.75rem">
+      <strong>Git repo setup</strong>
+      <div class="grid-2 mt-1">
+        <div class="form-group"><label>Repository</label><input type="text" id="phd-git-repo" placeholder="ORG/REPO" oninput="renderGitSetup('phd')"></div>
+        <div class="form-group"><label>Mode</label>
+          <select id="phd-git-mode" onchange="renderGitSetup('phd')">
+            <option value="deploy">Pull only deploy</option>
+            <option value="dev">Pull and push development</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Client commands</label>
+        <pre id="phd-git-commands" class="mono text-sm" style="white-space:pre-wrap;background:var(--bg-input);padding:0.75rem;border-radius:var(--radius)"></pre>
+      </div>
+      <div class="form-group">
+        <label>ACL permission_config</label>
+        <pre id="phd-git-acl" class="mono text-sm" style="white-space:pre-wrap;background:var(--bg-input);padding:0.75rem;border-radius:var(--radius)"></pre>
+      </div>
+    </div>
     <div class="modal-actions">
       <button type="button" class="btn" onclick="document.getElementById('ph-detail-modal').style.display='none'">Close</button>
     </div>
@@ -599,7 +619,61 @@ function showPhDetail(phId) {
     document.getElementById('phd-apikey').textContent = '—';
   }
 
+  var gitSetup = document.getElementById('phd-git-setup');
+  if (ph.serviceName === 'github') {
+    gitSetup.style.display = 'block';
+    renderGitSetup('phd');
+  } else {
+    gitSetup.style.display = 'none';
+  }
+
   document.getElementById('ph-detail-modal').style.display = 'flex';
+}
+
+function renderGitSetup(prefix) {
+  var repoEl = document.getElementById(prefix + '-git-repo');
+  var modeEl = document.getElementById(prefix + '-git-mode');
+  var cmdEl = document.getElementById(prefix + '-git-commands');
+  var aclEl = document.getElementById(prefix + '-git-acl');
+  if (!repoEl || !modeEl || !cmdEl || !aclEl) return;
+  var repo = normalizeGitRepo(repoEl.value);
+  var mode = modeEl.value || 'deploy';
+  cmdEl.textContent = [
+    'duckway update',
+    'duckway restart',
+    'duckway sync',
+    '',
+    'git config --global credential.helper store',
+    '',
+    '# Run inside the target repository:',
+    'git config --local http.https://github.com/.proxy http://localhost:18080',
+    'git config --local http.https://github.com/.sslCAInfo ~/.duckway/ca.pem',
+    '',
+    mode === 'deploy' ? 'git pull --ff-only' : 'git pull --ff-only && git push'
+  ].join('\n');
+  aclEl.textContent = JSON.stringify(gitACL(repo, mode), null, 2);
+}
+
+function gitACL(repo, mode) {
+  var endpoints = [
+    {method:'GET', path:'/' + repo + '.git/info/refs', allow:true},
+    {method:'POST', path:'/' + repo + '.git/git-upload-pack', allow:true}
+  ];
+  if (mode === 'dev') {
+    endpoints.push({method:'POST', path:'/' + repo + '.git/git-receive-pack', allow:true});
+    endpoints.push({method:'GET', path:'/repos/' + repo, allow:true});
+    endpoints.push({method:'GET', path:'/repos/' + repo + '/*', allow:true});
+  }
+  return {version:'1', provider:'github', rules:[{name: mode === 'dev' ? 'dev-read-write' : 'deploy-read-only', endpoints:endpoints, deny_all_other:true}]};
+}
+
+function normalizeGitRepo(value) {
+  var repo = (value || '').trim()
+    .replace(/^https:\/\/github\.com\//, '')
+    .replace(/^git@github\.com:/, '')
+    .replace(/\.git$/, '')
+    .replace(/^\/+|\/+$/g, '');
+  return repo || 'ORG/REPO';
 }
 
 function genCanary(clientId, clientName, shortId) {

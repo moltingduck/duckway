@@ -105,6 +105,26 @@
         <tr><td class="text-muted">Usage</td><td id="d-usage"></td></tr>
         <tr><td class="text-muted">Created</td><td id="d-created"></td></tr>
       </table>
+      <div id="d-git-setup" style="display:none;margin-top:1rem;border-top:1px solid var(--border);padding-top:0.75rem">
+        <strong>Git repo setup</strong>
+        <div class="grid-2 mt-1">
+          <div class="form-group"><label>Repository</label><input type="text" id="d-git-repo" placeholder="ORG/REPO" oninput="renderGitSetup('d')"></div>
+          <div class="form-group"><label>Mode</label>
+            <select id="d-git-mode" onchange="renderGitSetup('d')">
+              <option value="deploy">Pull only deploy</option>
+              <option value="dev">Pull and push development</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Client commands</label>
+          <pre id="d-git-commands" class="mono text-sm" style="white-space:pre-wrap;background:var(--bg-input);padding:0.75rem;border-radius:var(--radius)"></pre>
+        </div>
+        <div class="form-group">
+          <label>ACL permission_config</label>
+          <pre id="d-git-acl" class="mono text-sm" style="white-space:pre-wrap;background:var(--bg-input);padding:0.75rem;border-radius:var(--radius)"></pre>
+        </div>
+      </div>
       <div class="modal-actions mt-1">
         <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
         <button type="button" class="btn btn-primary" onclick="switchToEdit()">Edit</button>
@@ -231,10 +251,63 @@ function openDetail(id) {
       document.getElementById('d-ttl').textContent = ttl >= 1440 ? (ttl/1440) + ' days' : (ttl + ' min');
       document.getElementById('d-usage').textContent = ph.usage_count;
       document.getElementById('d-created').textContent = ph.created_at;
+      var gitSetup = document.getElementById('d-git-setup');
+      if (ph.service_name === 'github') {
+        gitSetup.style.display = 'block';
+        renderGitSetup('d');
+      } else {
+        gitSetup.style.display = 'none';
+      }
       document.getElementById('detail-view').style.display = '';
       document.getElementById('detail-edit').style.display = 'none';
       document.getElementById('detail-modal').style.display = 'flex';
     });
+}
+
+function renderGitSetup(prefix) {
+  var repoEl = document.getElementById(prefix + '-git-repo');
+  var modeEl = document.getElementById(prefix + '-git-mode');
+  var cmdEl = document.getElementById(prefix + '-git-commands');
+  var aclEl = document.getElementById(prefix + '-git-acl');
+  if (!repoEl || !modeEl || !cmdEl || !aclEl) return;
+  var repo = normalizeGitRepo(repoEl.value);
+  var mode = modeEl.value || 'deploy';
+  cmdEl.textContent = [
+    'duckway update',
+    'duckway restart',
+    'duckway sync',
+    '',
+    'git config --global credential.helper store',
+    '',
+    '# Run inside the target repository:',
+    'git config --local http.https://github.com/.proxy http://localhost:18080',
+    'git config --local http.https://github.com/.sslCAInfo ~/.duckway/ca.pem',
+    '',
+    mode === 'deploy' ? 'git pull --ff-only' : 'git pull --ff-only && git push'
+  ].join('\n');
+  aclEl.textContent = JSON.stringify(gitACL(repo, mode), null, 2);
+}
+
+function gitACL(repo, mode) {
+  var endpoints = [
+    {method:'GET', path:'/' + repo + '.git/info/refs', allow:true},
+    {method:'POST', path:'/' + repo + '.git/git-upload-pack', allow:true}
+  ];
+  if (mode === 'dev') {
+    endpoints.push({method:'POST', path:'/' + repo + '.git/git-receive-pack', allow:true});
+    endpoints.push({method:'GET', path:'/repos/' + repo, allow:true});
+    endpoints.push({method:'GET', path:'/repos/' + repo + '/*', allow:true});
+  }
+  return {version:'1', provider:'github', rules:[{name: mode === 'dev' ? 'dev-read-write' : 'deploy-read-only', endpoints:endpoints, deny_all_other:true}]};
+}
+
+function normalizeGitRepo(value) {
+  var repo = (value || '').trim()
+    .replace(/^https:\/\/github\.com\//, '')
+    .replace(/^git@github\.com:/, '')
+    .replace(/\.git$/, '')
+    .replace(/^\/+|\/+$/g, '');
+  return repo || 'ORG/REPO';
 }
 
 function switchToEdit() {
