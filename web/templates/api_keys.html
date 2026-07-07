@@ -352,7 +352,8 @@ function validateKey() {
   var val = appMode ? buildGitHubAppCredentialJSON() : document.getElementById('ak-key').value.trim();
   var error = document.getElementById('ak-error');
   var submit = document.getElementById('ak-submit');
-  if (!svc || !val) { error.style.display = 'none'; submit.disabled = false; return; }
+  if (!svc) { error.style.display = 'none'; submit.disabled = false; return; }
+  if (!appMode && !val) { error.style.display = 'none'; submit.disabled = false; return; }
   var errors = [];
   if (appMode) {
     var appID = document.getElementById('ak-ghapp-app-id').value.trim();
@@ -382,7 +383,6 @@ function buildGitHubAppCredentialJSON() {
   var appID = document.getElementById('ak-ghapp-app-id').value.trim();
   var installationID = document.getElementById('ak-ghapp-installation-id').value.trim();
   var privateKey = document.getElementById('ak-ghapp-private-key').value.trim();
-  if (!appID && !installationID && !privateKey) return '';
   return JSON.stringify({
     type: 'github_app',
     app_id: Number(appID),

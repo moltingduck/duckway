@@ -101,7 +101,8 @@ func newLoanAuthFixture(t *testing.T) *loanAuthFixture {
 		t.Fatalf("seed group binding placeholder: %v", err)
 	}
 
-	loan := handlers.NewLoanHandler(nil, svcQ, nil, nil, nil).WithCrypto(crypto).WithDB(db)
+	resolver := services.NewKeyResolver(crypto, apiKeyQ, queries.NewPlaceholderQueries(db), queries.NewGroupQueries(db), queries.NewApprovalQueries(db))
+	loan := handlers.NewLoanHandler(resolver, svcQ, queries.NewApprovalQueries(db), queries.NewRequestLogQueries(db), nil).WithCrypto(crypto).WithDB(db)
 	return &loanAuthFixture{
 		db:        db,
 		crypto:    crypto,
@@ -155,6 +156,52 @@ func TestLoanGroupAllowsBoundClient(t *testing.T) {
 	}
 	if resp.RealToken != "sk-real-loan-token" || resp.GroupID != f.groupID || resp.APIKeyID != f.apiKeyID {
 		t.Fatalf("unexpected loan response: %+v", resp)
+	}
+}
+
+func TestLoanRejectsGitHubAppCredential(t *testing.T) {
+	f := newLoanAuthFixture(t)
+	cred := `{"type":"github_app","app_id":99,"installation_id":123,"private_key":` + strconvQuote(testRSAPrivateKeyPEM(t)) + `}`
+	encCred, err := f.crypto.Encrypt(cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE api_keys SET key_encrypted = ? WHERE id = ?`, encCred, f.apiKeyID); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/client/loan?service="+f.service, nil)
+	rr := httptest.NewRecorder()
+	f.loan.Issue(rr, requestWithClient(req, f.bound))
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+	}
+	if bytes.Contains(rr.Body.Bytes(), []byte("PRIVATE KEY")) || bytes.Contains(rr.Body.Bytes(), []byte("github_app")) {
+		t.Fatalf("loan response leaked github app credential: %s", rr.Body.String())
+	}
+}
+
+func TestLoanGroupRejectsGitHubAppCredential(t *testing.T) {
+	f := newLoanAuthFixture(t)
+	cred := `{"type":"github_app","app_id":99,"installation_id":123,"private_key":` + strconvQuote(testRSAPrivateKeyPEM(t)) + `}`
+	encCred, err := f.crypto.Encrypt(cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE api_keys SET key_encrypted = ? WHERE id = ?`, encCred, f.apiKeyID); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/client/loan?service="+f.service+"&group="+f.groupID, nil)
+	rr := httptest.NewRecorder()
+	f.loan.Issue(rr, requestWithClient(req, f.bound))
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+	}
+	if bytes.Contains(rr.Body.Bytes(), []byte("PRIVATE KEY")) || bytes.Contains(rr.Body.Bytes(), []byte("github_app")) {
+		t.Fatalf("group loan response leaked github app credential: %s", rr.Body.String())
 	}
 }
 
@@ -237,5 +284,41 @@ func TestReportUsageRequiresAPIKeyBinding(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(snapshot), []byte(`"tokens_remaining":123`)) {
 		t.Fatalf("usage snapshot was not updated from bound client: %s", snapshot)
+	}
+}
+
+func TestLoanAuditRejectsCrossClientPlaceholderID(t *testing.T) {
+	f := newLoanAuthFixture(t)
+
+	body := bytes.NewBufferString(`[{"placeholder_id":"ph-bound-group","service":"` + f.service + `","method":"GET","path":"/v1/test","status":200}]`)
+	req := httptest.NewRequest(http.MethodPost, "/client/audit", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	f.loan.Audit(rr, requestWithClient(req, f.unbound))
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+	}
+
+	var count int
+	if err := f.db.QueryRow(`SELECT COUNT(*) FROM request_log WHERE placeholder_id = 'ph-bound-group'`).Scan(&count); err != nil {
+		t.Fatalf("count request log: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("cross-client audit wrote %d log rows", count)
+	}
+}
+
+func TestLoanAuditRejectsPlaceholderServiceMismatch(t *testing.T) {
+	f := newLoanAuthFixture(t)
+
+	body := bytes.NewBufferString(`[{"placeholder_id":"ph-bound-group","service":"other-service","method":"GET","path":"/v1/test","status":200}]`)
+	req := httptest.NewRequest(http.MethodPost, "/client/audit", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	f.loan.Audit(rr, requestWithClient(req, f.bound))
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
 	}
 }

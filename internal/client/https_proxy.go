@@ -343,7 +343,7 @@ func (p *httpsProxy) forwardMITM(tlsConn *tls.Conn, req *http.Request, svcName, 
 	start := time.Now()
 	path := req.URL.Path
 	if req.URL.RawQuery != "" {
-		path += "?" + req.URL.RawQuery
+		path += "?" + redactDebugRawQuery(req.URL.RawQuery)
 	}
 
 	targetURL := strings.TrimRight(p.serverURL, "/") + "/proxy/" + svcName + path
@@ -1144,6 +1144,40 @@ func (p *httpsProxy) logDebug(mode, service string, req *http.Request, resp *htt
 	log.Printf("%s %s https://%s%s → %d (req=%s → resp=%s, %s) ct=%s",
 		tag, req.Method, host, path, resp.StatusCode,
 		reqSize, respSize, dur.Round(time.Millisecond), ct)
+}
+
+func redactDebugRawQuery(rawQuery string) string {
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return "[redacted]"
+	}
+	for key, vals := range values {
+		for i, val := range vals {
+			if isSensitiveQueryKey(key) || services.IsPlaceholder(val) || looksLikeSensitiveTokenValue(val) {
+				vals[i] = "[redacted]"
+			}
+		}
+		values[key] = vals
+	}
+	return values.Encode()
+}
+
+func isSensitiveQueryKey(key string) bool {
+	switch strings.ToLower(key) {
+	case "access_token", "token", "key", "api_key", "client_secret", "refresh_token", "id_token":
+		return true
+	default:
+		return false
+	}
+}
+
+func looksLikeSensitiveTokenValue(value string) bool {
+	for _, prefix := range []string{"github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "sk-", "sk-ant-", "xoxb-", "rt."} {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func humanSize(n int64) string {

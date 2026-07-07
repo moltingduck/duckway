@@ -37,6 +37,20 @@ func readConnectResponse(t *testing.T, raw net.Conn) *http.Response {
 	return resp
 }
 
+func TestRedactDebugRawQuery(t *testing.T) {
+	got := redactDebugRawQuery("access_token=ghs_real_secret&ok=value&token=github_pat_real_secret&x=sk-ant-real&phantom=github_pat_dw_fake")
+	for _, secret := range []string{"ghs_real_secret", "github_pat_real_secret", "sk-ant-real", "github_pat_dw_fake"} {
+		if bytes.Contains([]byte(got), []byte(secret)) {
+			t.Fatalf("query leaked %q in %q", secret, got)
+		}
+	}
+	for _, want := range []string{"access_token=%5Bredacted%5D", "token=%5Bredacted%5D", "x=%5Bredacted%5D", "phantom=%5Bredacted%5D", "ok=value"} {
+		if !bytes.Contains([]byte(got), []byte(want)) {
+			t.Fatalf("query %q missing %q", got, want)
+		}
+	}
+}
+
 // newTestMITMProxy wires an httpsProxy that MITMs api.anthropic.com and
 // forwards to the given backend (standing in for the duckway server's
 // /proxy/{svc}/ endpoint). Returns the proxy's listen address.

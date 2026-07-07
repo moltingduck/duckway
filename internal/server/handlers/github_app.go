@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -38,6 +39,11 @@ type githubInstallationTokenResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
+type githubAppTokenCache struct {
+	token     string
+	expiresAt time.Time
+}
+
 func parseGitHubAppCredential(realKey string) (*githubAppCredential, bool, error) {
 	trimmed := strings.TrimSpace(realKey)
 	if !strings.HasPrefix(trimmed, "{") {
@@ -60,25 +66,84 @@ func parseGitHubAppCredential(realKey string) (*githubAppCredential, bool, error
 }
 
 func validateGitHubCredentialForService(serviceName, raw string) error {
+	if serviceName != "github" {
+		if isGitHubAppCredentialJSON(raw) {
+			return fmt.Errorf("github_app credential can only be used with github service")
+		}
+		return nil
+	}
 	_, ok, err := parseGitHubAppCredential(raw)
 	if err != nil {
 		return err
 	}
-	if ok && serviceName != "github" {
-		return fmt.Errorf("github_app credential can only be used with github service")
+	if ok {
+		return validateGitHubAppBaseURL(raw)
 	}
 	return nil
 }
 
+func isGitHubAppCredentialJSON(raw string) bool {
+	var obj struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(raw)), &obj) != nil {
+		return false
+	}
+	return obj.Type == "github_app"
+}
+
+func validateGitHubAppBaseURL(raw string) error {
+	var cred githubAppCredential
+	if json.Unmarshal([]byte(strings.TrimSpace(raw)), &cred) != nil || cred.BaseURL == "" {
+		return nil
+	}
+	return validateGitHubAppBaseURLValue(cred.BaseURL)
+}
+
+func validateGitHubAppBaseURLValue(rawURL string) error {
+	if rawURL == "" {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("github_app base_url must be a valid URL")
+	}
+	host := strings.Split(u.Host, ":")[0]
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" && (host == "127.0.0.1" || host == "::1" || host == "localhost") {
+		return nil
+	}
+	return fmt.Errorf("github_app base_url must use https")
+}
+
 func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *githubAppCredential, method, upstreamPath string) (string, error) {
+	owner, repo := githubRepoFromPath(upstreamPath)
+	if owner == "" || repo == "" {
+		return "", fmt.Errorf("github app token mint requires a repository-scoped path")
+	}
+	permissions := githubTokenPermissions(method, upstreamPath)
+	cacheKey := githubAppCacheKey(cred, owner, repo, permissions)
+	now := time.Now()
+
+	h.githubAppMu.Lock()
+	defer h.githubAppMu.Unlock()
+	if h.githubAppTokens == nil {
+		h.githubAppTokens = make(map[string]githubAppTokenCache)
+	}
+	if cached, ok := h.githubAppTokens[cacheKey]; ok && now.Before(cached.expiresAt.Add(-5*time.Minute)) {
+		return cached.token, nil
+	}
+
 	jwt, err := githubAppJWT(cred.AppID, cred.PrivateKey, time.Now())
 	if err != nil {
 		return "", err
 	}
 
 	body := githubInstallationTokenRequest{
-		Repositories: githubTokenRepositories(upstreamPath),
-		Permissions:  githubTokenPermissions(method, upstreamPath),
+		Repositories: []string{repo},
+		Permissions:  permissions,
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
@@ -88,6 +153,9 @@ func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *gi
 	baseURL := strings.TrimRight(cred.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
+	}
+	if err := validateGitHubAppBaseURLValue(baseURL); err != nil {
+		return "", err
 	}
 	tokenURL := fmt.Sprintf("%s/app/installations/%d/access_tokens", baseURL, cred.InstallationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(bodyBytes))
@@ -116,7 +184,25 @@ func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *gi
 	if parsed.Token == "" {
 		return "", fmt.Errorf("github app token response missing token")
 	}
+	expiresAt, err := time.Parse(time.RFC3339, parsed.ExpiresAt)
+	if err != nil || expiresAt.IsZero() {
+		expiresAt = now.Add(50 * time.Minute)
+	}
+	h.githubAppTokens[cacheKey] = githubAppTokenCache{token: parsed.Token, expiresAt: expiresAt}
 	return parsed.Token, nil
+}
+
+func githubAppCacheKey(cred *githubAppCredential, owner, repo string, permissions map[string]string) string {
+	parts := []string{
+		strconv.FormatInt(cred.AppID, 10),
+		strconv.FormatInt(cred.InstallationID, 10),
+		strings.TrimRight(cred.BaseURL, "/"),
+		strings.ToLower(owner + "/" + repo),
+	}
+	for key, val := range permissions {
+		parts = append(parts, key+"="+val)
+	}
+	return strings.Join(parts, "|")
 }
 
 func githubAppJWT(appID int64, privateKeyPEM string, now time.Time) (string, error) {
@@ -160,19 +246,29 @@ func parseRSAPrivateKey(privateKeyPEM string) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
-func githubTokenRepositories(upstreamPath string) []string {
-	owner, repo := githubRepoFromPath(upstreamPath)
-	if owner == "" || repo == "" {
-		return nil
-	}
-	return []string{repo}
+func githubTokenPermissions(method, upstreamPath string) map[string]string {
+	scope, level := githubPermissionScope(method, upstreamPath)
+	return map[string]string{scope: level}
 }
 
-func githubTokenPermissions(method, upstreamPath string) map[string]string {
+func githubPermissionScope(method, upstreamPath string) (string, string) {
+	level := "read"
 	if githubRequestNeedsWrite(method, upstreamPath) {
-		return map[string]string{"contents": "write"}
+		level = "write"
 	}
-	return map[string]string{"contents": "read"}
+	clean := path.Clean("/" + strings.TrimPrefix(upstreamPath, "/"))
+	parts := strings.Split(strings.TrimPrefix(clean, "/"), "/")
+	if len(parts) >= 4 && parts[0] == "repos" {
+		switch parts[3] {
+		case "issues":
+			return "issues", level
+		case "pulls":
+			return "pull_requests", level
+		case "contents", "git":
+			return "contents", level
+		}
+	}
+	return "contents", level
 }
 
 func githubRequestNeedsWrite(method, upstreamPath string) bool {

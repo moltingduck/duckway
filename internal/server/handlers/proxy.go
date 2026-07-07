@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -30,6 +31,9 @@ type ProxyHandler struct {
 	notifier    *services.Notifier
 	crypto      *services.Crypto
 	httpClient  *http.Client
+
+	githubAppMu     sync.Mutex
+	githubAppTokens map[string]githubAppTokenCache
 }
 
 func NewProxyHandler(svcQueries *queries.ServiceQueries, apiKeys *queries.APIKeyQueries, resolver *services.KeyResolver, requestLog *queries.RequestLogQueries, approvals *queries.ApprovalQueries, settings *queries.SettingsQueries, notifier *services.Notifier) *ProxyHandler {
@@ -185,6 +189,65 @@ func formatHeaders(h http.Header) string {
 	}
 	out, _ := json.Marshal(safe)
 	return string(out)
+}
+
+func redactCapturedBody(body, contentType string) string {
+	if body == "" {
+		return body
+	}
+	ct := strings.ToLower(contentType)
+	if i := strings.Index(ct, ";"); i >= 0 {
+		ct = ct[:i]
+	}
+	ct = strings.TrimSpace(ct)
+	if ct == "application/json" || strings.HasSuffix(ct, "+json") || (ct == "" && strings.HasPrefix(strings.TrimSpace(body), "{")) {
+		var v interface{}
+		if json.Unmarshal([]byte(body), &v) == nil {
+			redactJSONValue(v)
+			if out, err := json.Marshal(v); err == nil {
+				return string(out)
+			}
+		}
+	}
+	if ct == "application/x-www-form-urlencoded" {
+		vals, err := url.ParseQuery(body)
+		if err == nil {
+			for key := range vals {
+				if isSensitiveBodyKey(key) {
+					vals[key] = []string{"[redacted]"}
+				}
+			}
+			return vals.Encode()
+		}
+	}
+	return body
+}
+
+func redactJSONValue(v interface{}) {
+	switch obj := v.(type) {
+	case map[string]interface{}:
+		for key, val := range obj {
+			if isSensitiveBodyKey(key) {
+				obj[key] = "[redacted]"
+				continue
+			}
+			redactJSONValue(val)
+		}
+	case []interface{}:
+		for _, val := range obj {
+			redactJSONValue(val)
+		}
+	}
+}
+
+func isSensitiveBodyKey(key string) bool {
+	k := strings.ToLower(strings.ReplaceAll(key, "-", "_"))
+	for _, marker := range []string{"token", "authorization", "password", "private_key", "client_secret", "refresh_secret", "api_key"} {
+		if k == marker || strings.Contains(k, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -513,10 +576,10 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				toStore = decoded
 			}
 			if int64(len(toStore)) > maxCapturedBytes {
-				reqBodyStored = string(toStore[:maxCapturedBytes])
+				reqBodyStored = redactCapturedBody(string(toStore[:maxCapturedBytes]), reqCT)
 				reqTrunc = true
 			} else {
-				reqBodyStored = string(toStore)
+				reqBodyStored = redactCapturedBody(string(toStore), reqCT)
 			}
 		}
 
@@ -527,7 +590,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				RequestBody:     reqBodyStored,
 				RequestSize:     reqSize,
 				ResponseHeaders: formatHeaders(resp.Header),
-				ResponseBody:    string(respBodyStored),
+				ResponseBody:    redactCapturedBody(string(respBodyStored), resp.Header.Get("Content-Type")),
 				ResponseSize:    respSize,
 				DurationMs:      time.Since(startTime).Milliseconds(),
 				Truncated:       reqTrunc || respTrunc,

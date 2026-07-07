@@ -150,6 +150,13 @@ func (h *LoanHandler) Issue(w http.ResponseWriter, r *http.Request) {
 		authHeader = "Authorization"
 		authPrefix = "Bearer "
 	}
+	if _, ok, err := parseGitHubAppCredential(result.RealKey); err != nil {
+		jsonError(w, "invalid github app credential", http.StatusBadGateway)
+		return
+	} else if ok {
+		jsonError(w, "credential cannot be loaned without a repository-scoped request", http.StatusForbidden)
+		return
+	}
 
 	if h.logs != nil {
 		h.logs.Log(client.ID, result.PlaceholderID, serviceName, "LOAN", "/loan", 200)
@@ -224,6 +231,13 @@ func (h *LoanHandler) issueGroupLoan(w http.ResponseWriter, r *http.Request, cli
 	realKey, err := h.crypto.Decrypt(apiKey.KeyEncrypted)
 	if err != nil {
 		jsonError(w, "decrypt failed", http.StatusInternalServerError)
+		return
+	}
+	if _, ok, err := parseGitHubAppCredential(realKey); err != nil {
+		jsonError(w, "invalid github app credential", http.StatusBadGateway)
+		return
+	} else if ok {
+		jsonError(w, "credential cannot be loaned without a repository-scoped request", http.StatusForbidden)
 		return
 	}
 
@@ -324,9 +338,40 @@ func (h *LoanHandler) Audit(w http.ResponseWriter, r *http.Request) {
 	logged := 0
 	if h.logs != nil {
 		for _, e := range entries {
+			if e.PlaceholderID != "" {
+				ok, err := h.auditPlaceholderAllowed(client.ID, e.PlaceholderID, e.Service)
+				if err != nil {
+					jsonError(w, "failed to verify audit placeholder", http.StatusInternalServerError)
+					return
+				}
+				if !ok {
+					jsonError(w, "placeholder_id is not bound to this client and service", http.StatusForbidden)
+					return
+				}
+			}
 			h.logs.Log(client.ID, e.PlaceholderID, e.Service, e.Method, e.Path, e.Status)
 			logged++
 		}
 	}
 	jsonResponse(w, map[string]int{"logged": logged})
+}
+
+func (h *LoanHandler) auditPlaceholderAllowed(clientID, placeholderID, serviceName string) (bool, error) {
+	if h.db == nil {
+		return false, nil
+	}
+	var gotClientID, gotServiceName string
+	err := h.db.QueryRow(`
+		SELECT p.client_id, s.name
+		FROM placeholder_keys p
+		JOIN services s ON p.service_id = s.id
+		WHERE p.id = ? AND p.is_active = 1
+	`, placeholderID).Scan(&gotClientID, &gotServiceName)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return gotClientID == clientID && gotServiceName == serviceName, nil
 }

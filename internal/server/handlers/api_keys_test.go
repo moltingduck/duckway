@@ -93,6 +93,96 @@ func TestAPIKeyCreateRejectsInvalidGitHubAppPrivateKey(t *testing.T) {
 	}
 }
 
+func TestAPIKeyCreateRejectsGitHubAppCredentialForNonGitHubService(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	svcQ := queries.NewServiceQueries(db)
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	openaiSvc := testOpenAIService("svc-openai-api-key")
+	if err := svcQ.Create(openaiSvc); err != nil {
+		t.Fatal(err)
+	}
+	h := handlers.NewAPIKeyHandler(apiKeyQ, svcQ, crypto)
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+	}
+	credJSON, _ := json.Marshal(cred)
+	body := `{"service_id":"` + openaiSvc.ID + `","name":"wrong service","key":` + strconvQuote(string(credJSON)) + `}`
+	req := httptest.NewRequest(http.MethodPost, "/api/keys", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAPIKeyCreateRejectsGitHubAppCredentialWithUnsafeBaseURL(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	svcQ := queries.NewServiceQueries(db)
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	ghSvc := testGitHubService("svc-gh-api-key-evil-base")
+	if err := svcQ.Create(ghSvc); err != nil {
+		t.Fatal(err)
+	}
+	h := handlers.NewAPIKeyHandler(apiKeyQ, svcQ, crypto)
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+		"base_url":        "http://evil.example",
+	}
+	credJSON, _ := json.Marshal(cred)
+	body := `{"service_id":"` + ghSvc.ID + `","name":"evil base","key":` + strconvQuote(string(credJSON)) + `}`
+	req := httptest.NewRequest(http.MethodPost, "/api/keys", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAPIKeyCreateAllowsMalformedJSONForNonGitHubService(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	svcQ := queries.NewServiceQueries(db)
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	openaiSvc := testOpenAIService("svc-openai-json-key")
+	if err := svcQ.Create(openaiSvc); err != nil {
+		t.Fatal(err)
+	}
+	h := handlers.NewAPIKeyHandler(apiKeyQ, svcQ, crypto)
+	body := `{"service_id":"` + openaiSvc.ID + `","name":"json shaped","key":"{not-json"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/keys", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func testGitHubService(id string) *models.Service {
 	return &models.Service{
 		ID:           id,
@@ -107,5 +197,20 @@ func testGitHubService(id string) *models.Service {
 		KeyLength:    93,
 		DeliveryMode: "proxy",
 		IsActive:     true,
+	}
+}
+
+func testOpenAIService(id string) *models.Service {
+	return &models.Service{
+		ID:          id,
+		Name:        id,
+		DisplayName: "OpenAI",
+		UpstreamURL: "https://api.openai.com",
+		AuthType:    "bearer",
+		AuthHeader:  "Authorization",
+		AuthPrefix:  "Bearer ",
+		KeyPrefix:   "sk-",
+		KeyLength:   51,
+		IsActive:    true,
 	}
 }
