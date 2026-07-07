@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,6 +70,11 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 	// Deploy keys to their configured paths (e.g., ~/.config/openai/credentials)
 	home, _ := os.UserHomeDir()
 	for _, k := range keys {
+		if k.ServiceName == "github" {
+			if err := deployGitHubCredential(home, k.Placeholder); err != nil {
+				log.Printf("Warning: cannot write GitHub git credential: %v", err)
+			}
+		}
 		if k.KeyPath == "" {
 			continue
 		}
@@ -112,6 +118,44 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 	}
 
 	return len(keys), nil
+}
+
+func deployGitHubCredential(home, placeholder string) error {
+	if home == "" || placeholder == "" {
+		return nil
+	}
+	path := filepath.Join(home, ".git-credentials")
+	var lines []string
+	if raw, err := os.ReadFile(path); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || isDuckwayGitHubCredentialLine(line) {
+				continue
+			}
+			lines = append(lines, line)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	u := &url.URL{
+		Scheme: "https",
+		Host:   "github.com",
+		User:   url.UserPassword("x-access-token", placeholder),
+	}
+	lines = append(lines, u.String())
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600)
+}
+
+func isDuckwayGitHubCredentialLine(line string) bool {
+	if !strings.Contains(line, "github.com") || !strings.Contains(line, "dw_") {
+		return false
+	}
+	u, err := url.Parse(line)
+	if err != nil || u.User == nil {
+		return false
+	}
+	pass, ok := u.User.Password()
+	return ok && strings.Contains(pass, "dw_")
 }
 
 // SyncStatusline pulls the admin-configured statusline script body from

@@ -373,7 +373,15 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	switch authType {
 	case "bearer":
-		upstreamReq.Header.Set(authHeader, authPrefix+result.RealKey)
+		if serviceName == "github" && strings.EqualFold(authHeader, "Authorization") {
+			if rewritten, ok := rewriteGitHubBasicAuth(r.Header.Get("Authorization"), result.Placeholder, result.RealKey); ok {
+				upstreamReq.Header.Set(authHeader, rewritten)
+			} else {
+				upstreamReq.Header.Set(authHeader, authPrefix+result.RealKey)
+			}
+		} else {
+			upstreamReq.Header.Set(authHeader, authPrefix+result.RealKey)
+		}
 	case "header":
 		upstreamReq.Header.Set(authHeader, result.RealKey)
 	case "query":
@@ -703,6 +711,21 @@ func rewriteCodexRefreshRequest(body []byte, contentType, realRefresh string) ([
 		return out, "application/json"
 	}
 	return body, contentType
+}
+
+func rewriteGitHubBasicAuth(authHeader, placeholder, realKey string) (string, bool) {
+	if placeholder == "" || authHeader == "" || !strings.HasPrefix(strings.ToLower(authHeader), "basic ") {
+		return "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(authHeader[len("Basic "):]))
+	if err != nil {
+		return "", false
+	}
+	user, pass, ok := strings.Cut(string(raw), ":")
+	if !ok || pass != placeholder {
+		return "", false
+	}
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+realKey)), true
 }
 
 func rewriteCodexRefreshResponse(body []byte, placeholderID, placeholder string) []byte {

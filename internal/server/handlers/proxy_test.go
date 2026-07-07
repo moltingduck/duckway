@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -291,8 +292,10 @@ func TestProxyGitHubPhantomModeInjectsFineGrainedPAT(t *testing.T) {
 		t.Fatal(err)
 	}
 	ph.EnvName = "GITHUB_TOKEN"
-	ph.Placeholder = "github_pat_dw_fake"
 	if err := f.placeholderQ.Update(ph); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.placeholderQ.UpdatePlaceholder(f.placeholderID, "github_pat_dw_fake"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -307,6 +310,74 @@ func TestProxyGitHubPhantomModeInjectsFineGrainedPAT(t *testing.T) {
 	}
 	if gotAuth != "Bearer "+realPAT {
 		t.Fatalf("upstream Authorization = %q, want real PAT", gotAuth)
+	}
+	if strings.Contains(gotAuth, "dw_") || strings.Contains(gotAuth, "fake") {
+		t.Fatalf("upstream Authorization leaked phantom: %q", gotAuth)
+	}
+}
+
+func TestProxyGitHubBasicAuthRewritesPhantomPATPassword(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f := newProxyFixture(t, upstream.URL)
+	realPAT := "github_pat_" + strings.Repeat("r", 82)
+	encPAT, err := f.crypto.Encrypt(realPAT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := f.svcQ.GetByID(f.serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Name = "github"
+	svc.DisplayName = "GitHub API + Git"
+	svc.HostPattern = "api.github.com,github.com"
+	svc.AuthType = "bearer"
+	svc.AuthHeader = "Authorization"
+	svc.AuthPrefix = "Bearer "
+	svc.KeyPrefix = "github_pat_"
+	svc.KeyLength = 93
+	svc.DeliveryMode = "proxy"
+	if err := f.svcQ.Update(svc); err != nil {
+		t.Fatal(err)
+	}
+	key, err := f.apiKeyQ.GetByID(f.apiKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key.KeyEncrypted = encPAT
+	if err := f.apiKeyQ.Update(key); err != nil {
+		t.Fatal(err)
+	}
+	ph, err := f.placeholderQ.GetByID(f.placeholderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ph.EnvName = "GITHUB_TOKEN"
+	if err := f.placeholderQ.Update(ph); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.placeholderQ.UpdatePlaceholder(f.placeholderID, "github_pat_dw_fake"); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newProxyHandler(f)
+	r := httptest.NewRequest("GET", "/proxy/github/OWNER/REPO.git/info/refs?service=git-upload-pack", nil)
+	r.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:github_pat_dw_fake")))
+	r = withClient(r, f.client)
+	code, body := doProxy(h, r)
+
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d; body: %s", code, body)
+	}
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+realPAT))
+	if gotAuth != want {
+		t.Fatalf("upstream Authorization = %q, want %q", gotAuth, want)
 	}
 	if strings.Contains(gotAuth, "dw_") || strings.Contains(gotAuth, "fake") {
 		t.Fatalf("upstream Authorization leaked phantom: %q", gotAuth)
