@@ -128,7 +128,7 @@ func TestE2E_ClientProxy_Through_ServerProxy(t *testing.T) {
 	placeholder := &models.PlaceholderKey{
 		ID:          "ph-e2e-test",
 		EnvName:     "ANTHROPIC_API_KEY",
-		Placeholder: "sk-ant-phantom-e2etest",
+		Placeholder: "sk-ant-dw_e2etest",
 		ServiceID:   svc.ID,
 		APIKeyID:    &apiKeyID,
 		ClientID:    seedClient.ID,
@@ -202,6 +202,7 @@ func TestE2E_ClientProxy_Through_ServerProxy(t *testing.T) {
 	fmt.Fprintf(tlsConn,
 		"POST /v1/messages HTTP/1.1\r\n"+
 			"Host: api.anthropic.com\r\n"+
+			"X-Api-Key: sk-ant-dw_e2etest\r\n"+
 			"Content-Type: application/json\r\n"+
 			"Content-Length: %d\r\n"+
 			"Connection: close\r\n"+

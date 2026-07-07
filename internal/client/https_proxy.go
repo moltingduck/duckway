@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -324,6 +325,11 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		tlsConn.SetReadDeadline(time.Time{}) // clear before forwarding
 
+		if entry.Service != "openai-auth" && !requestUsesDuckwayPhantom(req) {
+			p.forwardDirect(tlsConn, req, host, entry)
+			continue
+		}
+
 		// Dispatch by delivery mode
 		if entry.DeliveryMode == "loan_proxy" {
 			p.forwardLoan(tlsConn, req, entry, host)
@@ -381,6 +387,101 @@ func (p *httpsProxy) forwardMITM(tlsConn *tls.Conn, req *http.Request, svcName, 
 	}
 
 	resp.Write(tlsConn)
+}
+
+func (p *httpsProxy) forwardDirect(tlsConn *tls.Conn, req *http.Request, host string, entry hostEntry) {
+	start := time.Now()
+	path := req.URL.Path
+	if path == "" {
+		path = "/"
+	}
+	if req.URL.RawQuery != "" {
+		path += "?" + req.URL.RawQuery
+	}
+	upstreamBase := strings.TrimRight(entry.UpstreamURL, "/")
+	if upstreamBase == "" || !strings.Contains(upstreamBase, host) {
+		upstreamBase = "https://" + host
+	}
+	targetURL := upstreamBase + path
+	var body io.Reader
+	if req.Body != nil {
+		body = req.Body
+	}
+	upstreamReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, body)
+	if err != nil {
+		writeHTTPError(tlsConn, 502, "proxy error")
+		return
+	}
+	for key, values := range req.Header {
+		lower := strings.ToLower(key)
+		if lower == "host" || lower == "connection" || lower == "proxy-connection" {
+			continue
+		}
+		for _, v := range values {
+			upstreamReq.Header.Add(key, v)
+		}
+	}
+	resp, err := p.httpClient.Do(upstreamReq)
+	if err != nil {
+		if p.debug {
+			log.Printf("[direct %s] %s https://%s%s → ERR %v (%s)",
+				entry.Service, req.Method, host, path, err, time.Since(start).Round(time.Millisecond))
+		}
+		writeHTTPError(tlsConn, 502, "upstream error")
+		return
+	}
+	defer resp.Body.Close()
+	if p.debug {
+		p.logDebug("direct", entry.Service, req, resp, host, time.Since(start))
+	}
+	resp.Write(tlsConn)
+}
+
+func requestUsesDuckwayPhantom(req *http.Request) bool {
+	for _, header := range []string{"Authorization", "X-Api-Key"} {
+		for _, value := range req.Header.Values(header) {
+			if headerValueUsesDuckwayPhantom(value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func headerValueUsesDuckwayPhantom(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if strings.Contains(value, "dw_") || strings.Contains(value, "rt.duckway.") {
+		return true
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "basic ") {
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(value[len("Basic "):]))
+		return err == nil && strings.Contains(string(raw), "dw_")
+	}
+	if strings.HasPrefix(lower, "bearer ") {
+		return tokenUsesDuckwayPhantom(strings.TrimSpace(value[len("Bearer "):]))
+	}
+	return tokenUsesDuckwayPhantom(value)
+}
+
+func tokenUsesDuckwayPhantom(token string) bool {
+	if strings.Contains(token, "dw_") || strings.Contains(token, "rt.duckway.") {
+		return true
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts[1:] {
+		raw, err := base64.RawURLEncoding.DecodeString(part)
+		if err == nil && strings.Contains(string(raw), "dw_") {
+			return true
+		}
+	}
+	return false
 }
 
 // tunnelConnect creates a transparent TCP tunnel for unknown hosts.

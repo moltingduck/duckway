@@ -77,20 +77,24 @@ func newTestMITMProxy(t *testing.T, backendURL string) (*httpsProxy, *x509.CertP
 // offering the given ALPN protocols. Returns the established *tls.Conn.
 func dialMITM(t *testing.T, proxyAddr string, alpn []string, rootCAs *x509.CertPool) *tls.Conn {
 	t.Helper()
+	return dialMITMHost(t, proxyAddr, "api.anthropic.com:443", "api.anthropic.com", alpn, rootCAs)
+}
 
+func dialMITMHost(t *testing.T, proxyAddr, connectHost, serverName string, alpn []string, rootCAs *x509.CertPool) *tls.Conn {
+	t.Helper()
 	raw, err := net.Dial("tcp", proxyAddr)
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
 
-	fmt.Fprintf(raw, "CONNECT api.anthropic.com:443 HTTP/1.1\r\nHost: api.anthropic.com:443\r\n\r\n")
+	fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", connectHost, connectHost)
 	resp := readConnectResponse(t, raw)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("CONNECT status = %d, want 200", resp.StatusCode)
 	}
 
 	tlsConn := tls.Client(raw, &tls.Config{
-		ServerName: "api.anthropic.com",
+		ServerName: serverName,
 		RootCAs:    rootCAs,
 		NextProtos: alpn,
 	})
@@ -200,7 +204,7 @@ func TestMITMRoundTripsBody(t *testing.T) {
 	_, pool, proxyAddr := newTestMITMProxy(t, backend.URL)
 	conn := dialMITM(t, proxyAddr, []string{"http/1.1"}, pool)
 
-	fmt.Fprintf(conn, "GET /v1/messages?beta=true HTTP/1.1\r\nHost: api.anthropic.com\r\nConnection: close\r\n\r\n")
+	fmt.Fprintf(conn, "GET /v1/messages?beta=true HTTP/1.1\r\nHost: api.anthropic.com\r\nAuthorization: Bearer sk-ant-dw_fake\r\nConnection: close\r\n\r\n")
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
 		t.Fatalf("read response: %v", err)
@@ -215,5 +219,69 @@ func TestMITMRoundTripsBody(t *testing.T) {
 	defer mu.Unlock()
 	if gotPath != "/proxy/anthropic/v1/messages?beta=true" {
 		t.Fatalf("backend saw path %q, want \"/proxy/anthropic/v1/messages?beta=true\"", gotPath)
+	}
+}
+
+func TestMITMDirectForKnownHostWithoutPhantom(t *testing.T) {
+	var gatewayHits int
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gatewayHits++
+		http.Error(w, "gateway should not be used", http.StatusBadGateway)
+	}))
+	defer gateway.Close()
+
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer real-user-token" {
+			t.Fatalf("origin Authorization = %q", got)
+		}
+		w.Write([]byte("direct-origin"))
+	}))
+	defer origin.Close()
+	_, originPort, err := net.SplitHostPort(origin.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	originHost := "localhost:" + originPort
+
+	ca, err := services.LoadOrCreateCA(t.TempDir())
+	if err != nil {
+		t.Fatalf("create CA: %v", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca.CertPEM) {
+		t.Fatal("append CA cert to pool")
+	}
+	p := &httpsProxy{
+		serverURL: gateway.URL,
+		token:     "test-token",
+		ca:        ca,
+		hostMap:   map[string]hostEntry{"localhost": {Service: "github", DeliveryMode: "proxy", UpstreamURL: "https://" + originHost}},
+		// Test-only client for httptest's self-signed origin certificate.
+		httpClient: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}, //nolint:gosec
+		loanCache:  make(map[string]*loanedToken),
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: p}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	connectHost := originHost
+	serverName := "localhost"
+	conn := dialMITMHost(t, ln.Addr().String(), connectHost, serverName, []string{"http/1.1"}, pool)
+	fmt.Fprintf(conn, "GET /OWNER/REPO.git/info/refs HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer real-user-token\r\nConnection: close\r\n\r\n", connectHost)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "direct-origin" {
+		t.Fatalf("body = %q, want direct-origin", string(body))
+	}
+	if gatewayHits != 0 {
+		t.Fatalf("gateway hits = %d, want 0", gatewayHits)
 	}
 }
