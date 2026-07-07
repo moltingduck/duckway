@@ -363,6 +363,22 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// Inject real API key. Refreshable (OAuth) keys always go in
 	// Authorization: Bearer regardless of the service's default auth_type,
 	// since Anthropic and similar APIs require Bearer for OAuth access tokens.
+	realKey := result.RealKey
+	if serviceName == "github" {
+		ghAppCred, ok, err := parseGitHubAppCredential(result.RealKey)
+		if err != nil {
+			jsonError(w, "invalid github app credential", http.StatusBadGateway)
+			return
+		}
+		if ok {
+			realKey, err = h.mintGitHubInstallationToken(r.Context(), ghAppCred, r.Method, upstreamPath)
+			if err != nil {
+				log.Printf("github app token mint failed for placeholder %s: %v", result.PlaceholderID, err)
+				jsonError(w, "github app token mint failed", http.StatusBadGateway)
+				return
+			}
+		}
+	}
 	authType := svc.AuthType
 	authHeader := svc.AuthHeader
 	authPrefix := svc.AuthPrefix
@@ -374,19 +390,19 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	switch authType {
 	case "bearer":
 		if serviceName == "github" && strings.EqualFold(authHeader, "Authorization") {
-			if rewritten, ok := rewriteGitHubBasicAuth(r.Header.Get("Authorization"), result.Placeholder, result.RealKey); ok {
+			if rewritten, ok := rewriteGitHubBasicAuth(r.Header.Get("Authorization"), result.Placeholder, realKey); ok {
 				upstreamReq.Header.Set(authHeader, rewritten)
 			} else {
-				upstreamReq.Header.Set(authHeader, authPrefix+result.RealKey)
+				upstreamReq.Header.Set(authHeader, authPrefix+realKey)
 			}
 		} else {
-			upstreamReq.Header.Set(authHeader, authPrefix+result.RealKey)
+			upstreamReq.Header.Set(authHeader, authPrefix+realKey)
 		}
 	case "header":
-		upstreamReq.Header.Set(authHeader, result.RealKey)
+		upstreamReq.Header.Set(authHeader, realKey)
 	case "query":
 		q := upstreamReq.URL.Query()
-		q.Set(authHeader, result.RealKey)
+		q.Set(authHeader, realKey)
 		upstreamReq.URL.RawQuery = q.Encode()
 	}
 

@@ -16,16 +16,16 @@ type PermissionConfig struct {
 }
 
 type PermissionRule struct {
-	Name         string              `json:"name"`
-	Endpoints    []EndpointRule      `json:"endpoints"`
-	RateLimit    *RateLimitConfig    `json:"rate_limit,omitempty"`
-	DenyAllOther bool                `json:"deny_all_other"`
+	Name         string           `json:"name"`
+	Endpoints    []EndpointRule   `json:"endpoints"`
+	RateLimit    *RateLimitConfig `json:"rate_limit,omitempty"`
+	DenyAllOther bool             `json:"deny_all_other"`
 }
 
 type EndpointRule struct {
-	Method      string              `json:"method"`
-	Path        string              `json:"path"`
-	Allow       bool                `json:"allow"`
+	Method      string               `json:"method"`
+	Path        string               `json:"path"`
+	Allow       bool                 `json:"allow"`
 	Constraints *EndpointConstraints `json:"constraints,omitempty"`
 }
 
@@ -134,17 +134,40 @@ func matchPath(pattern, path string) bool {
 	if pattern == path {
 		return true
 	}
-	// Simple wildcard: /v1/files/* matches /v1/files/abc and /v1/files/abc/def
-	if strings.HasSuffix(pattern, "/*") {
-		prefix := strings.TrimSuffix(pattern, "/*")
-		return strings.HasPrefix(path, prefix+"/") || path == prefix
+	if !strings.Contains(pattern, "*") {
+		return false
 	}
-	// Exact prefix with trailing wildcard
-	if strings.Contains(pattern, "*") {
-		parts := strings.SplitN(pattern, "*", 2)
-		return strings.HasPrefix(path, parts[0])
+	patternParts := strings.Split(strings.Trim(pattern, "/"), "/")
+	pathParts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(patternParts) == 1 && patternParts[0] == "*" {
+		return true
 	}
-	return false
+	if len(patternParts) > 0 && patternParts[len(patternParts)-1] == "*" {
+		if len(pathParts) < len(patternParts)-1 {
+			return false
+		}
+		for i := 0; i < len(patternParts)-1; i++ {
+			if patternParts[i] == "*" {
+				continue
+			}
+			if patternParts[i] != pathParts[i] {
+				return false
+			}
+		}
+		return true
+	}
+	if len(patternParts) != len(pathParts) {
+		return false
+	}
+	for i := range patternParts {
+		if patternParts[i] == "*" {
+			continue
+		}
+		if patternParts[i] != pathParts[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func checkConstraints(constraints *EndpointConstraints, bodyBytes []byte) string {

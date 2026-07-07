@@ -2,8 +2,12 @@ package handlers_test
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -137,6 +141,46 @@ func newProxyFixture(t *testing.T, upstreamURL string) *proxyFixture {
 func newProxyHandler(f *proxyFixture) *handlers.ProxyHandler {
 	resolver := services.NewKeyResolver(f.crypto, f.apiKeyQ, f.placeholderQ, f.groupQ, f.approvalQ)
 	return handlers.NewProxyHandler(f.svcQ, f.apiKeyQ, resolver, f.logQ, f.approvalQ, nil, nil)
+}
+
+type githubMintRequest struct {
+	Repositories []string          `json:"repositories"`
+	Permissions  map[string]string `json:"permissions"`
+}
+
+func seedGitHubService(t *testing.T, f *proxyFixture) {
+	t.Helper()
+	svc, err := f.svcQ.GetByID(f.serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Name = "github"
+	svc.DisplayName = "GitHub API + Git"
+	svc.HostPattern = "api.github.com,github.com"
+	svc.AuthType = "bearer"
+	svc.AuthHeader = "Authorization"
+	svc.AuthPrefix = "Bearer "
+	svc.KeyPrefix = "github_pat_"
+	svc.KeyLength = 93
+	svc.DeliveryMode = "proxy"
+	if err := f.svcQ.Update(svc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testRSAPrivateKeyPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}
+	return string(pem.EncodeToMemory(block))
+}
+
+func strconvQuote(value string) string {
+	out, _ := json.Marshal(value)
+	return string(out)
 }
 
 // withClient injects a *models.Client into a request context, bypassing the
@@ -381,6 +425,133 @@ func TestProxyGitHubBasicAuthRewritesPhantomPATPassword(t *testing.T) {
 	}
 	if strings.Contains(gotAuth, "dw_") || strings.Contains(gotAuth, "fake") {
 		t.Fatalf("upstream Authorization leaked phantom: %q", gotAuth)
+	}
+}
+
+func TestProxyGitHubAppMintsInstallationTokenForBasicGitAuth(t *testing.T) {
+	var (
+		gotAuth       string
+		mintCount     int
+		mintRequest   githubMintRequest
+		mintJWT       string
+		mintedToken   = "ghs_" + strings.Repeat("m", 36)
+		privateKeyPEM = testRSAPrivateKeyPEM(t)
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app/installations/123/access_tokens" {
+			mintCount++
+			mintJWT = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if err := json.NewDecoder(r.Body).Decode(&mintRequest); err != nil {
+				t.Fatalf("decode mint request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"` + mintedToken + `","expires_at":"2026-07-07T12:00:00Z"}`))
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f := newProxyFixture(t, upstream.URL)
+	seedGitHubService(t, f)
+	credJSON := `{"type":"github_app","app_id":99,"installation_id":123,"private_key":` + strconvQuote(privateKeyPEM) + `,"base_url":"` + upstream.URL + `"}`
+	encCred, err := f.crypto.Encrypt(credJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := f.apiKeyQ.GetByID(f.apiKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key.KeyEncrypted = encCred
+	if err := f.apiKeyQ.Update(key); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.placeholderQ.UpdatePlaceholder(f.placeholderID, "ghs_dw_fake"); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newProxyHandler(f)
+	r := httptest.NewRequest("GET", "/proxy/github/OWNER/REPO.git/info/refs?service=git-upload-pack", nil)
+	r.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:ghs_dw_fake")))
+	r = withClient(r, f.client)
+	code, body := doProxy(h, r)
+
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d; body: %s", code, body)
+	}
+	if mintCount != 1 {
+		t.Fatalf("mint count = %d, want 1", mintCount)
+	}
+	if len(strings.Split(mintJWT, ".")) != 3 {
+		t.Fatalf("mint auth is not a JWT: %q", mintJWT)
+	}
+	if len(mintRequest.Repositories) != 1 || mintRequest.Repositories[0] != "REPO" {
+		t.Fatalf("repositories = %#v, want REPO", mintRequest.Repositories)
+	}
+	if mintRequest.Permissions["contents"] != "read" {
+		t.Fatalf("permissions = %#v, want contents read", mintRequest.Permissions)
+	}
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+mintedToken))
+	if gotAuth != want {
+		t.Fatalf("upstream Authorization = %q, want %q", gotAuth, want)
+	}
+	if strings.Contains(gotAuth, "dw_") || strings.Contains(gotAuth, "PRIVATE KEY") || strings.Contains(gotAuth, "99") || strings.Contains(gotAuth, "123") {
+		t.Fatalf("upstream Authorization leaked secret material: %q", gotAuth)
+	}
+}
+
+func TestProxyGitHubAppACLDenialDoesNotMint(t *testing.T) {
+	mintCount := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app/installations/123/access_tokens" {
+			mintCount++
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f := newProxyFixture(t, upstream.URL)
+	seedGitHubService(t, f)
+	privateKeyPEM := testRSAPrivateKeyPEM(t)
+	credJSON := `{"type":"github_app","app_id":99,"installation_id":123,"private_key":` + strconvQuote(privateKeyPEM) + `,"base_url":"` + upstream.URL + `"}`
+	encCred, err := f.crypto.Encrypt(credJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := f.apiKeyQ.GetByID(f.apiKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key.KeyEncrypted = encCred
+	if err := f.apiKeyQ.Update(key); err != nil {
+		t.Fatal(err)
+	}
+	denyACL := `{"version":"1","provider":"github","rules":[{"name":"repo-only","endpoints":[{"method":"GET","path":"/repos/OWNER/REPO","allow":true}],"deny_all_other":true}]}`
+	ph, err := f.placeholderQ.GetByID(f.placeholderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ph.PermissionConfig = &denyACL
+	if err := f.placeholderQ.Update(ph); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.placeholderQ.UpdatePlaceholder(f.placeholderID, "ghs_dw_fake"); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newProxyHandler(f)
+	r := httptest.NewRequest("GET", "/proxy/github/OWNER/OTHER.git/info/refs?service=git-upload-pack", nil)
+	r.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:ghs_dw_fake")))
+	r = withClient(r, f.client)
+	code, _ := doProxy(h, r)
+
+	if code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d", code)
+	}
+	if mintCount != 0 {
+		t.Fatalf("mint count = %d, want 0", mintCount)
 	}
 }
 

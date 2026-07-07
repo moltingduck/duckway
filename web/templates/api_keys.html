@@ -47,9 +47,23 @@
         </select>
       </div>
       <div class="form-group"><label>Label</label><input type="text" name="name" placeholder="Production Key 1" required></div>
+      <div class="form-group" id="ak-github-mode-wrap" style="display:none">
+        <label>GitHub Credential Type</label>
+        <select id="ak-github-mode" onchange="onGitHubModeChange()">
+          <option value="token">Static token / PAT</option>
+          <option value="app">GitHub App installation minter</option>
+        </select>
+      </div>
       <div class="form-group">
         <label>API Key</label>
         <input type="text" id="ak-key" name="key" required oninput="validateKey()">
+        <div id="ak-github-app-fields" style="display:none">
+          <div class="grid-2">
+            <input type="number" id="ak-ghapp-app-id" placeholder="App ID" oninput="validateKey()">
+            <input type="number" id="ak-ghapp-installation-id" placeholder="Installation ID" oninput="validateKey()">
+          </div>
+          <textarea id="ak-ghapp-private-key" oninput="validateKey()" style="min-height:170px;font-family:monospace;font-size:0.75rem" placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"></textarea>
+        </div>
         <div id="ak-hint" class="text-muted text-sm mt-1" style="display:none"></div>
         <div id="ak-error" class="text-sm mt-1" style="display:none;color:var(--danger)"></div>
       </div>
@@ -290,8 +304,33 @@ function onServiceChange() {
   var svc = getSelectedService();
   var keyInput = document.getElementById('ak-key');
   var hint = document.getElementById('ak-hint');
+  var ghWrap = document.getElementById('ak-github-mode-wrap');
   document.getElementById('ak-error').style.display = 'none';
-  if (!svc) { keyInput.placeholder = ''; hint.style.display = 'none'; return; }
+  if (!svc) { keyInput.placeholder = ''; hint.style.display = 'none'; ghWrap.style.display = 'none'; return; }
+  ghWrap.style.display = svc.name === 'github' ? '' : 'none';
+  if (svc.name !== 'github') {
+    document.getElementById('ak-github-mode').value = 'token';
+  }
+  onGitHubModeChange();
+}
+
+function onGitHubModeChange() {
+  var svc = getSelectedService();
+  var keyInput = document.getElementById('ak-key');
+  var appFields = document.getElementById('ak-github-app-fields');
+  var hint = document.getElementById('ak-hint');
+  if (!svc) return;
+  var appMode = svc.name === 'github' && document.getElementById('ak-github-mode').value === 'app';
+  keyInput.disabled = false;
+  keyInput.required = !appMode;
+  keyInput.style.display = appMode ? 'none' : '';
+  appFields.style.display = appMode ? '' : 'none';
+  if (appMode) {
+    hint.innerHTML = 'Create and install a GitHub App with repository <code>Contents</code> permission. Paste its App ID, installation ID, and unencrypted RSA private key PEM here. Duckway stores the App credential server-side and mints short-lived <code>ghs_</code> installation tokens per request.';
+    hint.style.display = 'block';
+    validateKey();
+    return;
+  }
   keyInput.placeholder = svc.name === 'github'
     ? 'github_pat_' + 'x'.repeat(82)
     : svc.prefix + 'x'.repeat(Math.max(0, svc.length - svc.prefix.length));
@@ -309,12 +348,21 @@ function onServiceChange() {
 
 function validateKey() {
   var svc = getSelectedService();
-  var val = document.getElementById('ak-key').value.trim();
+  var appMode = svc && svc.name === 'github' && document.getElementById('ak-github-mode').value === 'app';
+  var val = appMode ? buildGitHubAppCredentialJSON() : document.getElementById('ak-key').value.trim();
   var error = document.getElementById('ak-error');
   var submit = document.getElementById('ak-submit');
   if (!svc || !val) { error.style.display = 'none'; submit.disabled = false; return; }
   var errors = [];
-  if (svc.name === 'github') {
+  if (appMode) {
+    var appID = document.getElementById('ak-ghapp-app-id').value.trim();
+    var installationID = document.getElementById('ak-ghapp-installation-id').value.trim();
+    var privateKey = document.getElementById('ak-ghapp-private-key').value.trim();
+    if (!appID) errors.push('Missing App ID');
+    if (!installationID) errors.push('Missing installation ID');
+    if (!privateKey || privateKey.indexOf('BEGIN') === -1) errors.push('Missing RSA private key PEM');
+    document.getElementById('ak-key').value = val;
+  } else if (svc.name === 'github') {
     if (!githubTokenPrefixes.some(function(prefix) { return val.startsWith(prefix); })) {
       errors.push('Must start with one of <code>' + githubTokenPrefixes.join('</code>, <code>') + '</code>');
     }
@@ -330,10 +378,30 @@ function validateKey() {
   else { error.style.display = 'none'; submit.disabled = false; }
 }
 
+function buildGitHubAppCredentialJSON() {
+  var appID = document.getElementById('ak-ghapp-app-id').value.trim();
+  var installationID = document.getElementById('ak-ghapp-installation-id').value.trim();
+  var privateKey = document.getElementById('ak-ghapp-private-key').value.trim();
+  if (!appID && !installationID && !privateKey) return '';
+  return JSON.stringify({
+    type: 'github_app',
+    app_id: Number(appID),
+    installation_id: Number(installationID),
+    private_key: privateKey
+  });
+}
+
 document.getElementById('add-key-form').addEventListener('htmx:confirm', function(e) {
   var svc = getSelectedService();
-  var val = document.getElementById('ak-key').value.trim();
+  var appMode = svc && svc.name === 'github' && document.getElementById('ak-github-mode').value === 'app';
+  var val = appMode ? buildGitHubAppCredentialJSON() : document.getElementById('ak-key').value.trim();
   var badPrefix = false;
+  if (appMode) {
+    document.getElementById('ak-key').value = val;
+    validateKey();
+    if (document.getElementById('ak-error').style.display !== 'none') e.preventDefault();
+    return;
+  }
   if (svc && svc.name === 'github') {
     badPrefix = !githubTokenPrefixes.some(function(prefix) { return val.startsWith(prefix); });
   } else if (svc && svc.prefix) {

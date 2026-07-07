@@ -203,12 +203,12 @@ var ACLTemplatesByService = map[string][]ACLTemplate{
       {"method": "GET", "path": "/user", "allow": true},
       {"method": "GET", "path": "/repos/*", "allow": true},
       {"method": "GET", "path": "/search/*", "allow": true},
-      {"method": "POST", "path": "/repos/*/issues", "allow": true},
-      {"method": "PATCH", "path": "/repos/*/issues/*", "allow": true},
-      {"method": "POST", "path": "/repos/*/issues/*/comments", "allow": true},
-      {"method": "POST", "path": "/repos/*/pulls", "allow": true},
-      {"method": "PATCH", "path": "/repos/*/pulls/*", "allow": true},
-      {"method": "POST", "path": "/repos/*/pulls/*/reviews", "allow": true},
+      {"method": "POST", "path": "/repos/*/*/issues", "allow": true},
+      {"method": "PATCH", "path": "/repos/*/*/issues/*", "allow": true},
+      {"method": "POST", "path": "/repos/*/*/issues/*/comments", "allow": true},
+      {"method": "POST", "path": "/repos/*/*/pulls", "allow": true},
+      {"method": "PATCH", "path": "/repos/*/*/pulls/*", "allow": true},
+      {"method": "POST", "path": "/repos/*/*/pulls/*/reviews", "allow": true},
       {"method": "GET", "path": "/rate_limit", "allow": true}
     ],
     "deny_all_other": true
@@ -227,7 +227,7 @@ var ACLTemplatesByService = map[string][]ACLTemplate{
       {"method": "DELETE", "path": "/repos/*", "allow": false},
       {"method": "DELETE", "path": "/orgs/*", "allow": false},
       {"method": "DELETE", "path": "/user/*", "allow": false},
-      {"method": "DELETE", "path": "/repos/*/git/refs/*", "allow": false}
+      {"method": "DELETE", "path": "/repos/*/*/git/refs/*", "allow": false}
     ]
   }]
 }`,

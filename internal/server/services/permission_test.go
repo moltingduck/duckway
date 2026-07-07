@@ -111,6 +111,37 @@ func TestPermissionChecker_WildcardPath(t *testing.T) {
 	}
 }
 
+func TestPermissionChecker_SegmentWildcardDoesNotOvermatch(t *testing.T) {
+	config := PermissionConfig{
+		Version: "1",
+		Rules: []PermissionRule{{
+			Endpoints: []EndpointRule{
+				{Method: "POST", Path: "/repos/*/*/issues", Allow: true},
+			},
+			DenyAllOther: true,
+		}},
+	}
+
+	configJSON, _ := json.Marshal(config)
+	pc := NewPermissionChecker()
+
+	r := pc.Check(string(configJSON), "ph-gh", "POST", "/repos/owner/repo/issues", nil)
+	if !r.Allowed {
+		t.Fatalf("expected issue creation allowed: %s", r.Reason)
+	}
+
+	for _, path := range []string{
+		"/repos/owner/repo/git/refs",
+		"/repos/owner/repo/releases",
+		"/repos/owner/repo.git/git-receive-pack",
+	} {
+		r = pc.Check(string(configJSON), "ph-gh", "POST", path, nil)
+		if r.Allowed {
+			t.Fatalf("expected %s denied by segment wildcard", path)
+		}
+	}
+}
+
 func TestPermissionChecker_EmptyConfig(t *testing.T) {
 	pc := NewPermissionChecker()
 	r := pc.Check("", "ph4", "GET", "/anything", nil)

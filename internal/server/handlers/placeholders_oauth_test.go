@@ -256,3 +256,78 @@ func TestCreatePlaceholderForGitHubAppInstallationTokenUsesMatchingPhantom(t *te
 		t.Fatalf("placeholder marker missing: %q", got.Placeholder)
 	}
 }
+
+func TestCreatePlaceholderRejectsAPIKeyFromDifferentService(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encKey, err := crypto.Encrypt("sk-openai-real")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		openaiSvc = &models.Service{
+			ID:          "svc-openai-cross",
+			Name:        "openai",
+			DisplayName: "OpenAI",
+			UpstreamURL: "https://api.openai.com",
+			AuthType:    "bearer",
+			AuthHeader:  "Authorization",
+			AuthPrefix:  "Bearer ",
+			KeyPrefix:   "sk-",
+			KeyLength:   51,
+			IsActive:    true,
+		}
+		if err := svcQ.Create(openaiSvc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ghSvc := &models.Service{
+		ID:           "svc-github-cross",
+		Name:         "github",
+		DisplayName:  "GitHub API + Git",
+		UpstreamURL:  "https://api.github.com",
+		HostPattern:  "api.github.com,github.com",
+		AuthType:     "bearer",
+		AuthHeader:   "Authorization",
+		AuthPrefix:   "Bearer ",
+		KeyPrefix:    "github_pat_",
+		KeyLength:    93,
+		DeliveryMode: "proxy",
+		IsActive:     true,
+	}
+	if err := svcQ.Create(ghSvc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-cross','cross client','hash-cross')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
+		VALUES ('key-openai-cross',?,'openai key',?)`, openaiSvc.ID, encKey); err != nil {
+		t.Fatal(err)
+	}
+
+	h := handlers.NewPlaceholderHandler(
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		queries.NewClientQueries(db),
+	).WithKeyLookup(queries.NewAPIKeyQueries(db), crypto)
+	req := httptest.NewRequest(http.MethodPost, "/api/placeholders", strings.NewReader(`{
+		"service_id":"`+ghSvc.ID+`",
+		"api_key_id":"key-openai-cross",
+		"client_id":"client-cross",
+		"requires_approval":false
+	}`))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}

@@ -63,10 +63,23 @@ func IsPlaceholder(key string) bool {
 // to the service's static KeyPrefix/KeyLength when no specific variant is
 // detected.
 func DetectKeyFormat(realKey, servicePrefix string, serviceLength int) (prefix string, length int) {
+	if looksLikeGitHubAppCredential(realKey) {
+		return "ghs_", 40
+	}
 	if prefix, ok := detectGitHubTokenPrefix(realKey); ok {
 		return prefix, len(realKey)
 	}
 	return servicePrefix, serviceLength
+}
+
+func looksLikeGitHubAppCredential(realKey string) bool {
+	var obj struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(realKey)), &obj) != nil {
+		return false
+	}
+	return obj.Type == "github_app"
 }
 
 func detectGitHubTokenPrefix(realKey string) (string, bool) {

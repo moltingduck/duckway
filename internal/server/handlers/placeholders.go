@@ -94,6 +94,10 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 	realKeyForPlaceholder := ""
 	if req.APIKeyID != nil && h.apiKeys != nil && h.crypto != nil {
 		if apiKey, err := h.apiKeys.GetByID(*req.APIKeyID); err == nil {
+			if apiKey.ServiceID != req.ServiceID {
+				jsonError(w, "api_key_id does not belong to service_id", http.StatusBadRequest)
+				return
+			}
 			if realKey, err := h.crypto.Decrypt(apiKey.KeyEncrypted); err == nil {
 				realKeyForPlaceholder = realKey
 			}

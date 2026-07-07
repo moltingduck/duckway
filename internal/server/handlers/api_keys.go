@@ -53,9 +53,13 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify service exists
-	_, err := h.services.GetByID(req.ServiceID)
+	service, err := h.services.GetByID(req.ServiceID)
 	if err != nil {
 		jsonError(w, "service not found", http.StatusNotFound)
+		return
+	}
+	if err := validateGitHubCredentialForService(service.Name, req.Key); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -101,7 +105,7 @@ func (h *APIKeyHandler) Get(w http.ResponseWriter, r *http.Request) {
 	preview := ""
 	if key.KeyEncrypted != "" {
 		if plain, derr := h.crypto.Decrypt(key.KeyEncrypted); derr == nil && plain != "" {
-			preview = maskKey(plain)
+			preview = maskGitHubAppCredentialPreview(plain)
 		}
 	}
 	key.KeyEncrypted = ""
@@ -153,6 +157,10 @@ func (h *APIKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 		key.Name = req.Name
 	}
 	if req.Key != "" {
+		if err := validateGitHubCredentialForService(key.ServiceName, req.Key); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		encrypted, err := h.crypto.Encrypt(req.Key)
 		if err != nil {
 			jsonError(w, "failed to encrypt key", http.StatusInternalServerError)
