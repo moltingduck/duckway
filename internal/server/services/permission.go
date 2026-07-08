@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,100 @@ type RateLimitConfig struct {
 	RequestsPerDay    int `json:"requests_per_day,omitempty"`
 }
 
+var githubRepoPathPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+
+// ValidatePermissionConfig checks the structural shape of a non-empty
+// permission config before storing it. Empty config still means allow-all.
+func ValidatePermissionConfig(configJSON string) error {
+	if strings.TrimSpace(configJSON) == "" {
+		return nil
+	}
+	config, err := ParsePermissionConfig(configJSON)
+	if err != nil {
+		return err
+	}
+	if len(config.Rules) == 0 {
+		return fmt.Errorf("permission config must contain at least one rule")
+	}
+	for i, rule := range config.Rules {
+		if len(rule.Endpoints) == 0 {
+			return fmt.Errorf("rule %d must contain at least one endpoint", i)
+		}
+		for j, ep := range rule.Endpoints {
+			if strings.TrimSpace(ep.Method) == "" {
+				return fmt.Errorf("rule %d endpoint %d missing method", i, j)
+			}
+			if strings.TrimSpace(ep.Path) == "" {
+				return fmt.Errorf("rule %d endpoint %d missing path", i, j)
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateGitHubRepoScopePermissionConfig ensures a GitHub App minter
+// placeholder can only mint for an explicit repository allow-list.
+func ValidateGitHubRepoScopePermissionConfig(configJSON string) error {
+	if strings.TrimSpace(configJSON) == "" {
+		return fmt.Errorf("github app minter assignments require repository-scoped permission_config")
+	}
+	config, err := ParsePermissionConfig(configJSON)
+	if err != nil {
+		return err
+	}
+	if config.Provider != "github" {
+		return fmt.Errorf("github app minter permission_config provider must be github")
+	}
+	if len(config.Rules) == 0 {
+		return fmt.Errorf("github app minter permission_config must contain at least one rule")
+	}
+	for i, rule := range config.Rules {
+		if !rule.DenyAllOther {
+			return fmt.Errorf("github app minter rule %d must set deny_all_other", i)
+		}
+		if len(rule.Endpoints) == 0 {
+			return fmt.Errorf("github app minter rule %d must contain endpoints", i)
+		}
+		for j, ep := range rule.Endpoints {
+			repo, ok := githubRepoFromScopedEndpoint(ep)
+			if !ok || !githubRepoPathPattern.MatchString(repo) {
+				return fmt.Errorf("github app minter rule %d endpoint %d is not an allowed repository-scoped GitHub path", i, j)
+			}
+		}
+	}
+	return nil
+}
+
+func ParsePermissionConfig(configJSON string) (PermissionConfig, error) {
+	var config PermissionConfig
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		return config, fmt.Errorf("invalid permission config: %w", err)
+	}
+	return config, nil
+}
+
+func githubRepoFromScopedEndpoint(ep EndpointRule) (string, bool) {
+	method := strings.ToUpper(ep.Method)
+	path := strings.TrimSpace(ep.Path)
+	if strings.Contains(path, "..") {
+		return "", false
+	}
+	switch {
+	case method == "GET" && strings.HasSuffix(path, ".git/info/refs"):
+		return strings.TrimPrefix(strings.TrimSuffix(path, ".git/info/refs"), "/"), ep.Allow
+	case method == "POST" && strings.HasSuffix(path, ".git/git-upload-pack"):
+		return strings.TrimPrefix(strings.TrimSuffix(path, ".git/git-upload-pack"), "/"), ep.Allow
+	case method == "POST" && strings.HasSuffix(path, ".git/git-receive-pack"):
+		return strings.TrimPrefix(strings.TrimSuffix(path, ".git/git-receive-pack"), "/"), ep.Allow
+	case method == "GET" && strings.HasPrefix(path, "/repos/") && !strings.HasSuffix(path, "/*"):
+		return strings.TrimPrefix(path, "/repos/"), ep.Allow
+	case method == "GET" && strings.HasPrefix(path, "/repos/") && strings.HasSuffix(path, "/*"):
+		return strings.TrimSuffix(strings.TrimPrefix(path, "/repos/"), "/*"), ep.Allow
+	default:
+		return "", false
+	}
+}
+
 // PermissionChecker evaluates requests against permission configs.
 type PermissionChecker struct {
 	rateLimits sync.Map // key: placeholderID+window -> *rateLimitState
@@ -72,8 +167,8 @@ func (pc *PermissionChecker) Check(configJSON string, placeholderID, method, pat
 		return PermissionResult{Allowed: true}
 	}
 
-	var config PermissionConfig
-	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+	config, err := ParsePermissionConfig(configJSON)
+	if err != nil {
 		return PermissionResult{Allowed: false, Reason: "invalid permission config: " + err.Error()}
 	}
 

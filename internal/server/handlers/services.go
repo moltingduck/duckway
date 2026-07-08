@@ -56,6 +56,10 @@ func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "delivery_mode must be 'proxy' or 'loan_proxy'", http.StatusBadRequest)
 		return
 	}
+	if err := services.ValidatePermissionConfig(req.DefaultACL); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	id, _ := services.GenerateToken(16)
 	if req.DisplayName == "" {
@@ -126,13 +130,13 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name        *string `json:"name"`
-		DisplayName *string `json:"display_name"`
-		UpstreamURL *string `json:"upstream_url"`
-		HostPattern *string `json:"host_pattern"`
-		AuthType    *string `json:"auth_type"`
-		AuthHeader  *string `json:"auth_header"`
-		AuthPrefix  *string `json:"auth_prefix"`
+		Name         *string `json:"name"`
+		DisplayName  *string `json:"display_name"`
+		UpstreamURL  *string `json:"upstream_url"`
+		HostPattern  *string `json:"host_pattern"`
+		AuthType     *string `json:"auth_type"`
+		AuthHeader   *string `json:"auth_header"`
+		AuthPrefix   *string `json:"auth_prefix"`
 		KeyPrefix    *string `json:"key_prefix"`
 		KeyLength    *int    `json:"key_length"`
 		KeyDirectory *string `json:"key_directory"`
@@ -176,6 +180,10 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		svc.KeyDirectory = *req.KeyDirectory
 	}
 	if req.DefaultACL != nil {
+		if err := services.ValidatePermissionConfig(*req.DefaultACL); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		svc.DefaultACL = *req.DefaultACL
 	}
 	if req.DeliveryMode != nil {

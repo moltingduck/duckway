@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -49,6 +50,12 @@ func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	// Redact encrypted keys in response
 	for i := range list {
+		if h.crypto != nil && list[i].KeyEncrypted != "" {
+			plain, derr := h.crypto.Decrypt(list[i].KeyEncrypted)
+			if derr == nil {
+				list[i].IsMintable = isGitHubAppCredentialJSON(plain)
+			}
+		}
 		list[i].KeyEncrypted = ""
 	}
 	jsonResponse(w, list)
@@ -121,9 +128,11 @@ func (h *APIKeyHandler) Get(w http.ResponseWriter, r *http.Request) {
 	// Compute a masked preview: first 6 + last 4 chars of the decrypted key.
 	// Never return the full secret. For very short keys, just show stars.
 	preview := ""
-	if key.KeyEncrypted != "" {
+	isMintable := false
+	if h.crypto != nil && key.KeyEncrypted != "" {
 		if plain, derr := h.crypto.Decrypt(key.KeyEncrypted); derr == nil && plain != "" {
 			preview = maskGitHubAppCredentialPreview(plain)
+			isMintable = isGitHubAppCredentialJSON(plain)
 		}
 	}
 	key.KeyEncrypted = ""
@@ -135,6 +144,7 @@ func (h *APIKeyHandler) Get(w http.ResponseWriter, r *http.Request) {
 		"name":           key.Name,
 		"acl":            key.ACL,
 		"is_refreshable": key.IsRefreshable,
+		"is_mintable":    isMintable,
 		"is_active":      key.IsActive,
 		"usage_count":    key.UsageCount,
 		"last_used_at":   key.LastUsedAt,
@@ -144,6 +154,129 @@ func (h *APIKeyHandler) Get(w http.ResponseWriter, r *http.Request) {
 		"token_endpoint": key.TokenEndpoint,
 	}
 	jsonResponse(w, resp)
+}
+
+type githubInstallationRepositoriesResponse struct {
+	Repositories []struct {
+		FullName string `json:"full_name"`
+		Private  bool   `json:"private"`
+		HTMLURL  string `json:"html_url"`
+	} `json:"repositories"`
+	TotalCount int `json:"total_count"`
+}
+
+func (h *APIKeyHandler) ListGitHubAppRepositories(w http.ResponseWriter, r *http.Request) {
+	if !sameOriginRequest(r) {
+		jsonError(w, "cross-origin request denied", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	key, err := h.apiKeys.GetByID(id)
+	if err != nil {
+		jsonError(w, "key not found", http.StatusNotFound)
+		return
+	}
+	if key.ServiceName != "github" {
+		jsonError(w, "key is not a github key", http.StatusBadRequest)
+		return
+	}
+	if h.crypto == nil {
+		jsonError(w, "crypto service unavailable", http.StatusInternalServerError)
+		return
+	}
+	plain, err := h.crypto.Decrypt(key.KeyEncrypted)
+	if err != nil {
+		jsonError(w, "failed to decrypt key", http.StatusInternalServerError)
+		return
+	}
+	cred, ok, err := parseGitHubAppCredential(plain)
+	if err != nil {
+		jsonError(w, "invalid github app credential", http.StatusBadRequest)
+		return
+	}
+	if !ok {
+		jsonError(w, "key is not a GitHub App installation minter", http.StatusBadRequest)
+		return
+	}
+
+	jwt, err := githubAppJWT(cred.AppID, cred.PrivateKey, time.Now())
+	if err != nil {
+		jsonError(w, "failed to build github app jwt", http.StatusBadRequest)
+		return
+	}
+	baseURL := strings.TrimRight(cred.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "https://api.github.com"
+	}
+	if err := validateGitHubAppBaseURLValue(baseURL); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	minted, err := mintGitHubInstallationToken(ctx, h.client, cred, baseURL, jwt, []byte(`{}`), time.Now())
+	if err != nil {
+		jsonError(w, "github app token mint failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	repos, err := listGitHubInstallationRepositories(ctx, h.client, baseURL, minted.Token)
+	if err != nil {
+		jsonError(w, "github app repository list failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{
+		"key_id":       key.ID,
+		"total_count":  len(repos),
+		"repositories": repos,
+	})
+}
+
+func listGitHubInstallationRepositories(ctx context.Context, httpClient *http.Client, baseURL, token string) ([]map[string]interface{}, error) {
+	var out []map[string]interface{}
+	for page := 1; page <= 100; page++ {
+		u := fmt.Sprintf("%s/installation/repositories?per_page=100&page=%d", strings.TrimRight(baseURL, "/"), page)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+		closeErr := resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read repositories response: %w", readErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close repositories response: %w", closeErr)
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("github returned %d", resp.StatusCode)
+		}
+		var parsed githubInstallationRepositoriesResponse
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return nil, fmt.Errorf("decode repositories: %w", err)
+		}
+		for _, repo := range parsed.Repositories {
+			if repo.FullName == "" {
+				continue
+			}
+			out = append(out, map[string]interface{}{
+				"full_name": repo.FullName,
+				"private":   repo.Private,
+				"html_url":  repo.HTMLURL,
+			})
+		}
+		if len(parsed.Repositories) < 100 {
+			break
+		}
+	}
+	return out, nil
 }
 
 // maskKey returns "<first6>...<last4>" for keys long enough; otherwise stars.
@@ -268,6 +401,10 @@ func (h *APIKeyHandler) SetACL(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if err := svc.ValidatePermissionConfig(req.ACL); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err := h.apiKeys.UpdateACL(id, req.ACL); err != nil {

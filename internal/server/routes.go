@@ -110,7 +110,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	ccH := handlers.NewControlChannelHandler(ccQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ, ss.SettingsQ, ss.Crypto, services.NewDiscordBot())
 	ccH.SetHub(ss.CCHub)
 	ccH.SetApprovals(ss.CCApprovals)
-	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth).WithDB(s.db).WithKeySuites(ss.KeySuiteQ)
+	adminPageH := handlers.NewAdminHandler(contentFS, ss.UserQ, ss.ServiceQ, ss.APIKeyQ, ss.PlaceholderQ, ss.ClientQ, ss.GroupQ, ss.ApprovalQ, ss.RequestLogQ, ss.NotifQ, ss.CanaryQ, ss.AdminAuth).WithDB(s.db).WithKeySuites(ss.KeySuiteQ).WithCrypto(ss.Crypto)
 
 	// Static files
 	staticFS, err := fs.Sub(contentFS, "static")
@@ -175,6 +175,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("PUT /api/keys/{id}", apiKeyH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/keys/{id}", apiKeyH.Delete)
 	adminAPIMux.HandleFunc("POST /api/keys/github-app/test", apiKeyH.TestGitHubAppMinter)
+	adminAPIMux.HandleFunc("GET /api/keys/{id}/github-app/repositories", apiKeyH.ListGitHubAppRepositories)
 	adminAPIMux.HandleFunc("GET /api/keys/{id}/acl-templates", apiKeyH.ListACLTemplates)
 	adminAPIMux.HandleFunc("POST /api/keys/{id}/acl-templates", apiKeyH.ApplyACLTemplate)
 	adminAPIMux.HandleFunc("POST /api/keys/{id}/acl", apiKeyH.SetACL)

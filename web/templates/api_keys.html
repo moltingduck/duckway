@@ -16,7 +16,7 @@
     <tbody id="keys-list">
       {{range .Keys}}
       <tr id="key-{{.ID}}">
-        <td><a href="#" onclick="openDetail('{{.ID}}');return false"><strong>{{.Name}}</strong></a></td>
+        <td><a href="#" onclick="openDetail('{{.ID}}');return false"><strong>{{.Name}}</strong></a> {{if .IsMintable}}<span class="badge badge-purple">Mintable</span>{{end}}</td>
         <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
         <td>{{if .ACL}}<span class="badge badge-yellow">custom</span>{{else}}<span class="badge badge-gray">inherit</span>{{end}}</td>
         <td>{{.UsageCount}}</td>
@@ -101,6 +101,7 @@
         <tr><td class="text-muted">Key Preview</td><td id="d-key-preview" class="mono text-sm"></td></tr>
         <tr><td class="text-muted">ACL</td><td id="d-acl"></td></tr>
         <tr><td class="text-muted">Refreshable</td><td id="d-refresh"></td></tr>
+        <tr><td class="text-muted">Mintable</td><td id="d-mintable"></td></tr>
         <tr><td class="text-muted">Usage</td><td id="d-usage"></td></tr>
         <tr><td class="text-muted">Last Used</td><td id="d-last-used"></td></tr>
         <tr><td class="text-muted">Created</td><td id="d-created"></td></tr>
@@ -195,6 +196,7 @@ function openDetail(id) {
       document.getElementById('d-key-preview').textContent = k.key_preview || '—';
       document.getElementById('d-acl').innerHTML = k.acl ? '<span class="badge badge-yellow">custom</span>' : '<span class="badge badge-gray">inherit</span>';
       document.getElementById('d-refresh').innerHTML = k.is_refreshable ? '<span class="badge badge-blue">Yes</span>' : 'No';
+      document.getElementById('d-mintable').innerHTML = k.is_mintable ? '<span class="badge badge-purple">Yes</span>' : 'No';
       document.getElementById('d-usage').textContent = k.usage_count;
       document.getElementById('d-last-used').textContent = k.last_used_at || 'Never';
       document.getElementById('d-created').textContent = k.created_at;

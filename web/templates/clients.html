@@ -240,6 +240,25 @@
         <div><strong>Env Name:</strong> <span id="assign-env-name"></span></div>
       </div>
     </div>
+    <div id="assign-github-repo-scope" style="display:none;border:1px solid var(--border);border-radius:var(--radius);padding:0.75rem;margin-top:1rem">
+      <div class="flex-between">
+        <label style="margin:0">Allowed repositories</label>
+        <button type="button" class="btn btn-sm" onclick="loadAssignGitHubRepos()">Reload</button>
+      </div>
+      <div id="assign-github-repo-status" class="text-sm text-muted mt-1">Select a GitHub App installation minter key.</div>
+      <div id="assign-github-repo-list" style="max-height:180px;overflow:auto;margin-top:0.5rem"></div>
+      <div class="form-group mt-1">
+        <label>Manual repositories</label>
+        <textarea id="assign-github-repos-manual" placeholder="OWNER/REPO&#10;OWNER/ANOTHER_REPO" style="min-height:64px"></textarea>
+        <span class="text-muted text-sm">Use this when the repository list cannot be loaded, or to paste additional repos.</span>
+      </div>
+      <div class="form-group"><label>Git access mode</label>
+        <select id="assign-github-mode">
+          <option value="deploy">Pull only deploy</option>
+          <option value="dev">Pull and push development</option>
+        </select>
+      </div>
+    </div>
     <div class="form-group mt-1">
       <label><input type="checkbox" id="assign-approval" checked> Require admin approval on first use</label>
     </div>
@@ -413,8 +432,9 @@ document.getElementById('client-edit-form').addEventListener('submit', function(
 
 <script>
 var apiKeys = [
-  {{range .Keys}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}"},{{end}}
+  {{range .Keys}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}", isMintable:{{.IsMintable}}},{{end}}
 ];
+var assignGitHubRepoLoadSeq = 0;
 
 var keyGroups = [
   {{range .Groups}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}", strategy:"{{.Strategy}}", memberCount: {{len .Members}}},{{end}}
@@ -655,25 +675,42 @@ function renderGitSetup(prefix) {
 }
 
 function gitACL(repo, mode) {
-  var endpoints = [
-    {method:'GET', path:'/' + repo + '.git/info/refs', allow:true},
-    {method:'POST', path:'/' + repo + '.git/git-upload-pack', allow:true}
-  ];
-  if (mode === 'dev') {
-    endpoints.push({method:'POST', path:'/' + repo + '.git/git-receive-pack', allow:true});
-    endpoints.push({method:'GET', path:'/repos/' + repo, allow:true});
-    endpoints.push({method:'GET', path:'/repos/' + repo + '/*', allow:true});
-  }
+  return gitACLForRepos([repo], mode);
+}
+
+function gitACLForRepos(repos, mode) {
+  var endpoints = [];
+  repos.forEach(function(repo) {
+    endpoints.push({method:'GET', path:'/' + repo + '.git/info/refs', allow:true});
+    endpoints.push({method:'POST', path:'/' + repo + '.git/git-upload-pack', allow:true});
+    if (mode === 'dev') {
+      endpoints.push({method:'POST', path:'/' + repo + '.git/git-receive-pack', allow:true});
+      endpoints.push({method:'GET', path:'/repos/' + repo, allow:true});
+      endpoints.push({method:'GET', path:'/repos/' + repo + '/*', allow:true});
+    }
+  });
   return {version:'1', provider:'github', rules:[{name: mode === 'dev' ? 'dev-read-write' : 'deploy-read-only', endpoints:endpoints, deny_all_other:true}]};
 }
 
 function normalizeGitRepo(value) {
   var repo = (value || '').trim()
     .replace(/^https:\/\/github\.com\//, '')
+    .replace(/^\/+|\/+$/g, '');
+  repo = repo
     .replace(/^git@github\.com:/, '')
+    .replace(/^\/+|\/+$/g, '')
     .replace(/\.git$/, '')
     .replace(/^\/+|\/+$/g, '');
   return repo || 'ORG/REPO';
+}
+
+function parseGitRepoList(value) {
+  var seen = {};
+  return (value || '').split(/[\n,]+/).map(normalizeGitRepo).filter(function(repo) {
+    if (repo === 'ORG/REPO' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || seen[repo.toLowerCase()]) return false;
+    seen[repo.toLowerCase()] = true;
+    return true;
+  });
 }
 
 function genCanary(clientId, clientName, shortId) {
@@ -812,6 +849,7 @@ function onAssignBindTypeChange() {
   var keyRow = document.getElementById('assign-key-row');
   var grpRow = document.getElementById('assign-group-row');
   document.getElementById('assign-preview').style.display = 'none';
+  document.getElementById('assign-github-repo-scope').style.display = 'none';
   if (t === 'group') {
     keyRow.style.display = 'none';
     grpRow.style.display = '';
@@ -819,6 +857,81 @@ function onAssignBindTypeChange() {
     keyRow.style.display = '';
     grpRow.style.display = 'none';
   }
+}
+
+function selectedAssignKey() {
+  var sel = document.getElementById('assign-key-select');
+  if (!sel || sel.selectedIndex < 0) return null;
+  var opt = sel.options[sel.selectedIndex];
+  if (!opt || !opt.value) return null;
+  return {
+    id: opt.value,
+    serviceName: opt.dataset.serviceName || '',
+    isMintable: opt.dataset.isMintable === 'true'
+  };
+}
+
+function updateAssignGitHubRepoScope() {
+  var key = selectedAssignKey();
+  var wrap = document.getElementById('assign-github-repo-scope');
+  if (!key || key.serviceName !== 'github' || !key.isMintable) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = '';
+  loadAssignGitHubRepos();
+}
+
+function loadAssignGitHubRepos() {
+  var key = selectedAssignKey();
+  var status = document.getElementById('assign-github-repo-status');
+  var list = document.getElementById('assign-github-repo-list');
+  if (!key || key.serviceName !== 'github' || !key.isMintable) return;
+  var loadSeq = ++assignGitHubRepoLoadSeq;
+  var keyID = key.id;
+  status.textContent = 'Loading repositories...';
+  list.innerHTML = '';
+  fetch('/api/keys/' + encodeURIComponent(key.id) + '/github-app/repositories', {credentials:'same-origin'})
+    .then(function(r) { return r.json().then(function(j) { return {ok:r.ok, body:j}; }); })
+    .then(function(res) {
+      var currentKey = selectedAssignKey();
+      if (loadSeq !== assignGitHubRepoLoadSeq || !currentKey || currentKey.id !== keyID) return;
+      if (!res.ok || res.body.error) throw new Error(res.body.error || 'failed to list repositories');
+      var repos = res.body.repositories || [];
+      if (!repos.length) {
+        status.textContent = 'No repositories returned. Use manual repositories below.';
+        return;
+      }
+      status.textContent = repos.length + ' repositories available. Select one or more.';
+      list.innerHTML = repos.map(function(repo) {
+        var name = repo.full_name || '';
+        return '<label style="display:flex;gap:.5rem;align-items:center;padding:.2rem 0">' +
+          '<input type="checkbox" class="assign-github-repo-choice" value="' + escHTML(name) + '">' +
+          '<span class="mono text-sm">' + escHTML(name) + '</span>' +
+          (repo.private ? '<span class="badge badge-gray">private</span>' : '') +
+          '</label>';
+      }).join('');
+    })
+    .catch(function(err) {
+      var currentKey = selectedAssignKey();
+      if (loadSeq !== assignGitHubRepoLoadSeq || !currentKey || currentKey.id !== keyID) return;
+      status.textContent = 'Could not load repositories: ' + err.message + '. Use manual repositories below.';
+    });
+}
+
+function selectedAssignGitHubRepos() {
+  var repos = [];
+  document.querySelectorAll('.assign-github-repo-choice:checked').forEach(function(el) {
+    repos.push(el.value);
+  });
+  repos = repos.concat(parseGitRepoList(document.getElementById('assign-github-repos-manual').value));
+  var seen = {};
+  return repos.filter(function(repo) {
+    var key = repo.toLowerCase();
+    if (seen[key]) return false;
+    seen[key] = true;
+    return true;
+  });
 }
 
 function buildAssignPreview(svcName) {
@@ -831,6 +944,10 @@ function openAssignModal(clientId, clientName) {
   document.getElementById('assign-client-id').value = clientId;
   document.getElementById('assign-client-name').textContent = clientName;
   document.getElementById('assign-preview').style.display = 'none';
+  document.getElementById('assign-github-repo-scope').style.display = 'none';
+  document.getElementById('assign-github-repo-status').textContent = 'Select a GitHub App installation minter key.';
+  document.getElementById('assign-github-repo-list').innerHTML = '';
+  document.getElementById('assign-github-repos-manual').value = '';
 
   // Reset radio to "key"
   document.querySelectorAll('input[name="assign-bind-type"]').forEach(function(r) {
@@ -844,15 +961,21 @@ function openAssignModal(clientId, clientName) {
   apiKeys.forEach(function(k) {
     var opt = document.createElement('option');
     opt.value = k.id;
-    opt.textContent = k.name + ' (' + k.serviceName + ')';
+    opt.textContent = k.name + ' (' + k.serviceName + ')' + (k.isMintable ? ' - Mintable' : '');
     opt.dataset.serviceId = k.serviceId;
     opt.dataset.serviceName = k.serviceName;
+    opt.dataset.isMintable = k.isMintable ? 'true' : 'false';
     keySel.appendChild(opt);
   });
   keySel.onchange = function() {
     var opt = keySel.options[keySel.selectedIndex];
-    if (!opt.value) { document.getElementById('assign-preview').style.display = 'none'; return; }
+    if (!opt.value) {
+      document.getElementById('assign-preview').style.display = 'none';
+      document.getElementById('assign-github-repo-scope').style.display = 'none';
+      return;
+    }
     buildAssignPreview(opt.dataset.serviceName);
+    updateAssignGitHubRepoScope();
   };
 
   // Populate Key Group dropdown
@@ -868,6 +991,7 @@ function openAssignModal(clientId, clientName) {
   });
   grpSel.onchange = function() {
     var opt = grpSel.options[grpSel.selectedIndex];
+    document.getElementById('assign-github-repo-scope').style.display = 'none';
     if (!opt.value) { document.getElementById('assign-preview').style.display = 'none'; return; }
     buildAssignPreview(opt.dataset.serviceName);
   };
@@ -891,7 +1015,17 @@ function submitAssign() {
     requires_approval: document.getElementById('assign-approval').checked
   };
   if (bindType === 'group') body.group_id = opt.value;
-  else body.api_key_id = opt.value;
+  else {
+    body.api_key_id = opt.value;
+    if (opt.dataset.serviceName === 'github' && opt.dataset.isMintable === 'true') {
+      var repos = selectedAssignGitHubRepos();
+      if (!repos.length) {
+        showToast('Select or enter at least one allowed repository', 'error');
+        return;
+      }
+      body.permission_config = JSON.stringify(gitACLForRepos(repos, document.getElementById('assign-github-mode').value || 'deploy'));
+    }
+  }
 
   fetch('/api/placeholders', {
     method: 'POST',

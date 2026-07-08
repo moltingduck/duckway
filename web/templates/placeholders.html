@@ -340,7 +340,10 @@ function gitACLForRepos(repos, mode) {
 function normalizeGitRepo(value) {
   var repo = (value || '').trim()
     .replace(/^https:\/\/github\.com\//, '')
+    .replace(/^\/+|\/+$/g, '');
+  repo = repo
     .replace(/^git@github\.com:/, '')
+    .replace(/^\/+|\/+$/g, '')
     .replace(/\.git$/, '')
     .replace(/^\/+|\/+$/g, '');
   return repo || 'ORG/REPO';

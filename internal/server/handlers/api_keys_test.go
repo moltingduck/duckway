@@ -245,6 +245,200 @@ func TestAPIKeyTestGitHubAppMinterMintsReadOnlyRepoToken(t *testing.T) {
 	}
 }
 
+func TestAPIKeyListMarksGitHubAppCredentialAsMintable(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	svcQ := queries.NewServiceQueries(db)
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	ghSvc := testGitHubService("svc-gh-mintable-list")
+	if err := svcQ.Create(ghSvc); err != nil {
+		t.Fatal(err)
+	}
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+	}
+	credJSON, _ := json.Marshal(cred)
+	encrypted, err := crypto.Encrypt(string(credJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apiKeyQ.Create(&models.APIKey{
+		ID:           "key-gh-mintable-list",
+		ServiceID:    ghSvc.ID,
+		Name:         "github app",
+		KeyEncrypted: encrypted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/keys", nil)
+	rec := httptest.NewRecorder()
+	handlers.NewAPIKeyHandler(apiKeyQ, svcQ, crypto).List(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var keys []models.APIKey
+	if err := json.Unmarshal(rec.Body.Bytes(), &keys); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || !keys[0].IsMintable {
+		t.Fatalf("keys = %+v, want one mintable key", keys)
+	}
+	if keys[0].KeyEncrypted != "" {
+		t.Fatalf("list response leaked encrypted key: %+v", keys[0])
+	}
+}
+
+func TestAPIKeyListGitHubAppRepositories(t *testing.T) {
+	var mintCount, repoListCount int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app/installations/123/access_tokens":
+			mintCount++
+			if got := r.Header.Get("Authorization"); !strings.HasPrefix(got, "Bearer ") {
+				t.Fatalf("missing JWT auth header: %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"token":"ghs_repo_list_token","expires_at":"2099-07-08T12:30:00Z","permissions":{"contents":"read"}}`))
+		case "/installation/repositories":
+			repoListCount++
+			if got := r.Header.Get("Authorization"); got != "Bearer ghs_repo_list_token" {
+				t.Fatalf("repository list Authorization = %q", got)
+			}
+			if got := r.URL.Query().Get("per_page"); got != "100" {
+				t.Fatalf("per_page = %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"total_count":2,"repositories":[{"full_name":"OWNER/REPO","private":true,"html_url":"https://github.com/OWNER/REPO"},{"full_name":"OWNER/PUBLIC","private":false,"html_url":"https://github.com/OWNER/PUBLIC"}]}`))
+		default:
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	svcQ := queries.NewServiceQueries(db)
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	ghSvc := testGitHubService("svc-gh-repo-list")
+	if err := svcQ.Create(ghSvc); err != nil {
+		t.Fatal(err)
+	}
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+		"base_url":        upstream.URL,
+	}
+	credJSON, _ := json.Marshal(cred)
+	encrypted, err := crypto.Encrypt(string(credJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apiKeyQ.Create(&models.APIKey{
+		ID:           "key-gh-repo-list",
+		ServiceID:    ghSvc.ID,
+		Name:         "github app",
+		KeyEncrypted: encrypted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := handlers.NewAPIKeyHandler(apiKeyQ, svcQ, crypto).WithHTTPClient(upstream.Client())
+	req := httptest.NewRequest(http.MethodGet, "/api/keys/key-gh-repo-list/github-app/repositories", nil)
+	req.SetPathValue("id", "key-gh-repo-list")
+	rec := httptest.NewRecorder()
+
+	h.ListGitHubAppRepositories(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		KeyID        string `json:"key_id"`
+		TotalCount   int    `json:"total_count"`
+		Repositories []struct {
+			FullName string `json:"full_name"`
+			Private  bool   `json:"private"`
+			HTMLURL  string `json:"html_url"`
+		} `json:"repositories"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.KeyID != "key-gh-repo-list" || resp.TotalCount != 2 || len(resp.Repositories) != 2 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if resp.Repositories[0].FullName != "OWNER/REPO" || !resp.Repositories[0].Private || resp.Repositories[1].HTMLURL == "" {
+		t.Fatalf("unexpected repositories: %+v", resp.Repositories)
+	}
+	if mintCount != 1 || repoListCount != 1 {
+		t.Fatalf("mintCount=%d repoListCount=%d, want 1/1", mintCount, repoListCount)
+	}
+}
+
+func TestAPIKeyListGitHubAppRepositoriesRejectsCrossOrigin(t *testing.T) {
+	h := handlers.NewAPIKeyHandler(nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/keys/key/github-app/repositories", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+
+	h.ListGitHubAppRepositories(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAPIKeyListGitHubAppRepositoriesRejectsNonMinter(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	svcQ := queries.NewServiceQueries(db)
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	ghSvc := testGitHubService("svc-gh-repo-list-pat")
+	if err := svcQ.Create(ghSvc); err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := crypto.Encrypt("github_pat_" + strings.Repeat("a", 82))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apiKeyQ.Create(&models.APIKey{
+		ID:           "key-gh-repo-list-pat",
+		ServiceID:    ghSvc.ID,
+		Name:         "github pat",
+		KeyEncrypted: encrypted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/keys/key-gh-repo-list-pat/github-app/repositories", nil)
+	req.SetPathValue("id", "key-gh-repo-list-pat")
+	rec := httptest.NewRecorder()
+	handlers.NewAPIKeyHandler(apiKeyQ, svcQ, crypto).ListGitHubAppRepositories(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not a GitHub App installation minter") {
+		t.Fatalf("response should explain non-minter key: %s", rec.Body.String())
+	}
+}
+
 func TestAPIKeyTestGitHubAppMinterRejectsBadRepo(t *testing.T) {
 	h := handlers.NewAPIKeyHandler(nil, nil, nil)
 	for _, repo := range []string{"", "OWNER", "OWNER/REPO/EXTRA", "https://github.com/OWNER/REPO", "../REPO", "OWNER/REPO.git"} {

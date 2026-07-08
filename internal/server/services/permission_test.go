@@ -149,3 +149,53 @@ func TestPermissionChecker_EmptyConfig(t *testing.T) {
 		t.Error("empty config should allow everything")
 	}
 }
+
+func TestValidatePermissionConfigRejectsStructurallyEmptyConfig(t *testing.T) {
+	for _, config := range []string{
+		`{}`,
+		`{"version":"1","provider":"github","rules":[]}`,
+		`{"version":"1","provider":"github","rules":[{"name":"empty"}]}`,
+		`{"version":"1","provider":"github","rules":[{"endpoints":[{"method":"GET"}]}]}`,
+	} {
+		if err := ValidatePermissionConfig(config); err == nil {
+			t.Fatalf("ValidatePermissionConfig(%s) succeeded, want error", config)
+		}
+	}
+	if err := ValidatePermissionConfig(""); err != nil {
+		t.Fatalf("empty config should be valid allow-all: %v", err)
+	}
+}
+
+func TestValidateGitHubRepoScopePermissionConfig(t *testing.T) {
+	valid := `{
+		"version":"1",
+		"provider":"github",
+		"rules":[{
+			"name":"deploy-read-only",
+			"endpoints":[
+				{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},
+				{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true},
+				{"method":"GET","path":"/repos/OWNER/REPO","allow":true},
+				{"method":"GET","path":"/repos/OWNER/REPO/*","allow":true}
+			],
+			"deny_all_other":true
+		}]
+	}`
+	if err := ValidateGitHubRepoScopePermissionConfig(valid); err != nil {
+		t.Fatalf("valid GitHub repo scope rejected: %v", err)
+	}
+
+	for _, config := range []string{
+		``,
+		`{"version":"1","provider":"openai","rules":[{"endpoints":[{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true}],"deny_all_other":true}]}`,
+		`{"version":"1","provider":"github","rules":[]}`,
+		`{"version":"1","provider":"github","rules":[{"endpoints":[{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true}]}]}`,
+		`{"version":"1","provider":"github","rules":[{"endpoints":[{"method":"GET","path":"/*","allow":true}],"deny_all_other":true}]}`,
+		`{"version":"1","provider":"github","rules":[{"endpoints":[{"method":"GET","path":"/repos/*","allow":true}],"deny_all_other":true}]}`,
+		`{"version":"1","provider":"github","rules":[{"endpoints":[{"method":"POST","path":"/OWNER/REPO.git/git-receive-pack","allow":false}],"deny_all_other":true}]}`,
+	} {
+		if err := ValidateGitHubRepoScopePermissionConfig(config); err == nil {
+			t.Fatalf("ValidateGitHubRepoScopePermissionConfig(%s) succeeded, want error", config)
+		}
+	}
+}

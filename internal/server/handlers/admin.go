@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
+	"github.com/hackerduck/duckway/internal/models"
 	"github.com/hackerduck/duckway/internal/server/middleware"
+	svc "github.com/hackerduck/duckway/internal/server/services"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -31,6 +33,7 @@ type AdminHandler struct {
 	notifications *queries.NotificationQueries
 	canary        *queries.CanaryQueries
 	keySuites     *queries.KeySuiteQueries
+	crypto        *svc.Crypto
 	auth          *middleware.AdminAuth
 	db            *sql.DB
 }
@@ -89,7 +92,7 @@ func NewAdminHandler(
 
 	pages := make(map[string]*template.Template)
 	for _, name := range pageNames {
-		pageContent, err := fs.ReadFile(templateFS, "templates/" + name + ".html")
+		pageContent, err := fs.ReadFile(templateFS, "templates/"+name+".html")
 		if err != nil {
 			log.Fatalf("Failed to read template %s: %v", name, err)
 		}
@@ -147,6 +150,28 @@ func (h *AdminHandler) WithDB(db *sql.DB) *AdminHandler {
 	return h
 }
 
+func (h *AdminHandler) WithCrypto(crypto *svc.Crypto) *AdminHandler {
+	h.crypto = crypto
+	return h
+}
+
+func (h *AdminHandler) markMintableKeys(keys []models.APIKey) []models.APIKey {
+	if h.crypto == nil {
+		return keys
+	}
+	for i := range keys {
+		if keys[i].KeyEncrypted == "" {
+			continue
+		}
+		plain, err := h.crypto.Decrypt(keys[i].KeyEncrypted)
+		if err != nil {
+			continue
+		}
+		keys[i].IsMintable = isGitHubAppCredentialJSON(plain)
+	}
+	return keys
+}
+
 type pageData struct {
 	Title  string
 	Active string
@@ -168,8 +193,8 @@ type pageData struct {
 	KeySuites    interface{}
 	Approvals    interface{}
 	Logs         interface{}
-	Channels      interface{}
-	CanaryTokens  interface{}
+	Channels     interface{}
+	CanaryTokens interface{}
 }
 
 func (h *AdminHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
@@ -226,6 +251,7 @@ func (h *AdminHandler) ServicesPage(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminHandler) KeysPage(w http.ResponseWriter, r *http.Request) {
 	keys, _ := h.apiKeys.List("")
+	keys = h.markMintableKeys(keys)
 	svcs, _ := h.services.List()
 	h.render(w, "api_keys", pageData{
 		Title:    "API Keys",
@@ -240,6 +266,7 @@ func (h *AdminHandler) PlaceholdersPage(w http.ResponseWriter, r *http.Request) 
 	svcs, _ := h.services.List()
 	clients, _ := h.clients.List()
 	keys, _ := h.apiKeys.List("")
+	keys = h.markMintableKeys(keys)
 	groups, _ := h.groups.List("")
 	h.render(w, "placeholders", pageData{
 		Title:        "Placeholders",
@@ -255,6 +282,7 @@ func (h *AdminHandler) PlaceholdersPage(w http.ResponseWriter, r *http.Request) 
 func (h *AdminHandler) ClientsPage(w http.ResponseWriter, r *http.Request) {
 	clients, _ := h.clients.List()
 	keys, _ := h.apiKeys.List("")
+	keys = h.markMintableKeys(keys)
 	groups, _ := h.groups.List("")
 	placeholders, _ := h.placeholders.List("", "")
 

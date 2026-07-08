@@ -333,6 +333,148 @@ func TestCreatePlaceholderStoresGitHubRepoPermissionConfig(t *testing.T) {
 	}
 }
 
+func TestCreatePlaceholderRejectsGitHubAppMinterWithoutRepoPermissionConfig(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+	}
+	credJSON, _ := json.Marshal(cred)
+	encCred, err := crypto.Encrypt(string(credJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	ghSvc := &models.Service{
+		ID:           "svc-gh-app-minter-no-acl",
+		Name:         "github",
+		DisplayName:  "GitHub API + Git",
+		UpstreamURL:  "https://api.github.com",
+		HostPattern:  "api.github.com,github.com",
+		AuthType:     "bearer",
+		AuthHeader:   "Authorization",
+		AuthPrefix:   "Bearer ",
+		KeyPrefix:    "github_pat_",
+		KeyLength:    93,
+		DeliveryMode: "proxy",
+		IsActive:     true,
+	}
+	if err := svcQ.Create(ghSvc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-gh-app-minter-no-acl','github app client','hash-gh-app-no-acl')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
+		VALUES ('key-gh-app-minter-no-acl',?,'github app minter',?)`, ghSvc.ID, encCred); err != nil {
+		t.Fatal(err)
+	}
+
+	h := handlers.NewPlaceholderHandler(
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		queries.NewClientQueries(db),
+	).WithKeyLookup(queries.NewAPIKeyQueries(db), crypto)
+	req := httptest.NewRequest(http.MethodPost, "/api/placeholders", strings.NewReader(`{
+		"service_id":"`+ghSvc.ID+`",
+		"api_key_id":"key-gh-app-minter-no-acl",
+		"client_id":"client-gh-app-minter-no-acl",
+		"requires_approval":false
+	}`))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "repository-scoped permission_config") {
+		t.Fatalf("response should explain missing repo ACL: %s", rec.Body.String())
+	}
+}
+
+func TestCreatePlaceholderAcceptsGitHubAppMinterWithRepoPermissionConfig(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+	}
+	credJSON, _ := json.Marshal(cred)
+	encCred, err := crypto.Encrypt(string(credJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	ghSvc := &models.Service{
+		ID:           "svc-gh-app-minter-acl",
+		Name:         "github",
+		DisplayName:  "GitHub API + Git",
+		UpstreamURL:  "https://api.github.com",
+		HostPattern:  "api.github.com,github.com",
+		AuthType:     "bearer",
+		AuthHeader:   "Authorization",
+		AuthPrefix:   "Bearer ",
+		KeyPrefix:    "github_pat_",
+		KeyLength:    93,
+		DeliveryMode: "proxy",
+		IsActive:     true,
+	}
+	if err := svcQ.Create(ghSvc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-gh-app-minter-acl','github app client','hash-gh-app-acl')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
+		VALUES ('key-gh-app-minter-acl',?,'github app minter',?)`, ghSvc.ID, encCred); err != nil {
+		t.Fatal(err)
+	}
+
+	acl := `{"version":"1","provider":"github","rules":[{"name":"deploy-read-only","endpoints":[{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}],"deny_all_other":true}]}`
+	h := handlers.NewPlaceholderHandler(
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		queries.NewClientQueries(db),
+	).WithKeyLookup(queries.NewAPIKeyQueries(db), crypto)
+	req := httptest.NewRequest(http.MethodPost, "/api/placeholders", strings.NewReader(`{
+		"service_id":"`+ghSvc.ID+`",
+		"api_key_id":"key-gh-app-minter-acl",
+		"client_id":"client-gh-app-minter-acl",
+		"requires_approval":false,
+		"permission_config":`+strconvQuote(acl)+`
+	}`))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		PermissionConfig *string `json:"permission_config"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.PermissionConfig == nil || *got.PermissionConfig != acl {
+		t.Fatalf("permission_config = %v, want ACL", got.PermissionConfig)
+	}
+}
+
 func TestCreatePlaceholderRejectsAPIKeyFromDifferentService(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

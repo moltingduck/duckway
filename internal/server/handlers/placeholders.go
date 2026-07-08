@@ -87,6 +87,13 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.PermissionConfig != nil {
+		if err := svc.ValidatePermissionConfig(*req.PermissionConfig); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Pick prefix/length: when a specific API key is assigned and we have
 	// the crypto to decrypt it, sniff the real key's format so the phantom
 	// matches (e.g. ghp_* vs github_pat_* for GitHub).
@@ -101,6 +108,16 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 			if realKey, err := h.crypto.Decrypt(apiKey.KeyEncrypted); err == nil {
 				realKeyForPlaceholder = realKey
 			}
+		}
+	}
+	if service.Name == "github" && isGitHubAppCredentialJSON(realKeyForPlaceholder) {
+		if req.PermissionConfig == nil {
+			jsonError(w, "github app minter assignments require repository-scoped permission_config", http.StatusBadRequest)
+			return
+		}
+		if err := svc.ValidateGitHubRepoScopePermissionConfig(*req.PermissionConfig); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 	}
 
@@ -226,6 +243,16 @@ func (h *PlaceholderHandler) Update(w http.ResponseWriter, r *http.Request) {
 		ph.KeyPath = *req.KeyPath
 	}
 	if req.PermissionConfig != nil {
+		if err := svc.ValidatePermissionConfig(*req.PermissionConfig); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if h.isGitHubAppMinterPlaceholder(ph) {
+			if err := svc.ValidateGitHubRepoScopePermissionConfig(*req.PermissionConfig); err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
 		ph.PermissionConfig = req.PermissionConfig
 	}
 
@@ -243,6 +270,21 @@ func (h *PlaceholderHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *PlaceholderHandler) isGitHubAppMinterPlaceholder(ph *models.PlaceholderKey) bool {
+	if ph == nil || ph.APIKeyID == nil || h.apiKeys == nil || h.crypto == nil {
+		return false
+	}
+	if ph.ServiceName != "" && ph.ServiceName != "github" {
+		return false
+	}
+	apiKey, err := h.apiKeys.GetByID(*ph.APIKeyID)
+	if err != nil || apiKey.ServiceName != "github" {
+		return false
+	}
+	plain, err := h.crypto.Decrypt(apiKey.KeyEncrypted)
+	return err == nil && isGitHubAppCredentialJSON(plain)
 }
 
 func defaultEnvName(serviceName string) string {

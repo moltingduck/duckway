@@ -192,7 +192,7 @@ duckway init</code></pre>
   </table>
 
   <h4 class="mt-1">GitHub App Repo Scope</h4>
-  <p>GitHub App installation minter keys are uploaded once under API Keys. Repo access is assigned per client when generating the GitHub phantom token: choose the GitHub service, select the GitHub App key, enter allowed repositories as <code>OWNER/REPO</code>, then pick deploy pull-only or development pull/push mode.</p>
+  <p>GitHub App installation minter keys are uploaded once under API Keys and shown as <strong>Mintable</strong>. Repo access is assigned directly from <strong>Clients</strong> → <strong>Assign Key</strong>: choose the GitHub App minter key, select available repositories from the repo selector when Duckway can list them, or enter allowed repositories manually as <code>OWNER/REPO</code>, then pick deploy pull-only or development pull/push mode.</p>
   <p class="text-sm text-muted">Duckway stores this as the placeholder's <code>permission_config</code>. The proxy checks the ACL before minting and then asks GitHub for a short-lived installation token scoped only to the repository parsed from the Git/API path.</p>
 
   <h4 class="mt-1">Refreshable Token Upload Formats</h4>
@@ -497,6 +497,7 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/keys</code></td><td>Add key</td></tr>
       <tr><td><span class="badge badge-yellow">PUT</span></td><td><code>/api/keys/{id}</code></td><td>Update name / rotate key</td></tr>
       <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/keys/{id}</code></td><td>Delete key</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/api/keys/{id}/github-app/repositories</code></td><td>List repositories available to a GitHub App installation minter key</td></tr>
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/api/keys/{id}/acl-templates</code></td><td>List ACL templates for key</td></tr>
       <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/keys/{id}/acl-templates</code></td><td>Apply ACL template to key</td></tr>
       <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/keys/{id}/acl</code></td><td>Set custom ACL JSON</td></tr>

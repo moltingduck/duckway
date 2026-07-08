@@ -48,6 +48,7 @@ type APIKey struct {
 	ServiceName string `json:"service_name,omitempty"`
 	// Derived
 	IsRefreshable bool `json:"is_refreshable"` // true if refresh_token is set
+	IsMintable    bool `json:"is_mintable"`    // true if this credential can mint short-lived scoped tokens
 }
 
 type APIKeyGroup struct {
