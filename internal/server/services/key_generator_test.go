@@ -104,6 +104,26 @@ func TestGeneratePlaceholderForRealKey_GitHubClassicPAT(t *testing.T) {
 	}
 }
 
+func TestGeneratePlaceholderForRealKey_GitHubAppCredentialUsesStatelessInstallationLength(t *testing.T) {
+	real := `{"type":"github_app","app_id":99,"installation_id":123,"private_key":"-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"}`
+	got, err := GeneratePlaceholderForRealKey(real, "github_pat_", 93)
+	if err != nil {
+		t.Fatalf("GeneratePlaceholderForRealKey: %v", err)
+	}
+	if !strings.HasPrefix(got, "ghs_") {
+		t.Fatalf("placeholder prefix = %q, want ghs_: %q", got[:min(len(got), 8)], got)
+	}
+	if len(got) != 520 {
+		t.Fatalf("placeholder length = %d, want 520: %q", len(got), got)
+	}
+	if !strings.Contains(got, "dw_") {
+		t.Fatalf("placeholder missing duckway marker: %q", got)
+	}
+	if !IsPlaceholder(got) {
+		t.Fatalf("IsPlaceholder(%q) = false", got)
+	}
+}
+
 func TestGeneratePlaceholderForRealKey_GitHubSupportedTokenFormats(t *testing.T) {
 	tests := []struct {
 		name string

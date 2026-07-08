@@ -434,7 +434,7 @@ func TestProxyGitHubAppMintsInstallationTokenForBasicGitAuth(t *testing.T) {
 		mintCount     int
 		mintRequest   githubMintRequest
 		mintJWT       string
-		mintedToken   = "ghs_" + strings.Repeat("m", 36)
+		mintedToken   = "ghs_" + strings.Repeat("m", 516)
 		privateKeyPEM = testRSAPrivateKeyPEM(t)
 	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

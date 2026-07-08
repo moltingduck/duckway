@@ -11,6 +11,7 @@ import (
 )
 
 const placeholderMarker = "dw_"
+const githubAppInstallationPhantomLength = 520
 
 // GeneratePlaceholder creates a placeholder key that mimics the real key format.
 // It preserves the prefix (e.g., "sk-", "ghp_") and matches the total length,
@@ -64,7 +65,7 @@ func IsPlaceholder(key string) bool {
 // detected.
 func DetectKeyFormat(realKey, servicePrefix string, serviceLength int) (prefix string, length int) {
 	if looksLikeGitHubAppCredential(realKey) {
-		return "ghs_", 40
+		return "ghs_", githubAppInstallationPhantomLength
 	}
 	if prefix, ok := detectGitHubTokenPrefix(realKey); ok {
 		return prefix, len(realKey)
