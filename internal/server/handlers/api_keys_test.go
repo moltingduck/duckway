@@ -299,6 +299,66 @@ func TestAPIKeyTestGitHubAppMinterUpstreamFailureDoesNotLeakBody(t *testing.T) {
 	}
 }
 
+func TestAPIKeyTestGitHubAppMinterEmptySuccessBodyIsDiagnostic(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer upstream.Close()
+
+	h := handlers.NewAPIKeyHandler(nil, nil, nil).WithHTTPClient(upstream.Client())
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+		"base_url":        upstream.URL,
+	}
+	credJSON, _ := json.Marshal(cred)
+	body := `{"credential":` + strconvQuote(string(credJSON)) + `,"repository":"OWNER/REPO"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/keys/github-app/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.TestGitHubAppMinter(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "response was empty") {
+		t.Fatalf("response should explain empty body: %s", rec.Body.String())
+	}
+}
+
+func TestAPIKeyTestGitHubAppMinterMalformedSuccessBodyIsDiagnostic(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`<html></html>`))
+	}))
+	defer upstream.Close()
+
+	h := handlers.NewAPIKeyHandler(nil, nil, nil).WithHTTPClient(upstream.Client())
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+		"base_url":        upstream.URL,
+	}
+	credJSON, _ := json.Marshal(cred)
+	body := `{"credential":` + strconvQuote(string(credJSON)) + `,"repository":"OWNER/REPO"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/keys/github-app/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.TestGitHubAppMinter(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "response was not JSON") || strings.Contains(rec.Body.String(), "<html>") {
+		t.Fatalf("response should explain malformed body without leaking body: %s", rec.Body.String())
+	}
+}
+
 func TestAPIKeyTestGitHubAppMinterRejectsMissingContentsPermission(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

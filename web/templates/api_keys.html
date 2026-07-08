@@ -59,8 +59,21 @@
         <input type="text" id="ak-key" name="key" required oninput="validateKey()">
         <div id="ak-github-app-fields" style="display:none">
           <div class="grid-2">
-            <input type="number" id="ak-ghapp-app-id" placeholder="App ID" oninput="validateKey()">
-            <input type="number" id="ak-ghapp-installation-id" placeholder="Installation ID" oninput="validateKey()">
+            <input type="number" id="ak-ghapp-app-id" placeholder="App ID, e.g. 4244336" oninput="validateKey()">
+            <div style="display:flex;gap:0.35rem;align-items:center">
+              <input type="number" id="ak-ghapp-installation-id" placeholder="Installation ID, e.g. 12345678" oninput="validateKey()" style="flex:1;min-width:0">
+              <button type="button" class="btn btn-sm" title="How to find Installation ID" aria-label="How to find Installation ID" onclick="toggleGitHubInstallationHelp()">?</button>
+            </div>
+          </div>
+          <div id="ak-ghapp-installation-help" class="text-sm text-muted mt-1" style="display:none">
+            Install the GitHub App first, then open its Configure page under
+            <code>https://github.com/settings/installations</code> or
+            <code>https://github.com/organizations/&lt;ORG&gt;/settings/installations</code>.
+            The number at the end of the Configure URL is the Installation ID.
+            You can also find it with a GitHub App JWT via
+            <code>GET /repos/{owner}/{repo}/installation</code>,
+            <code>GET /orgs/{org}/installation</code>, or
+            <code>GET /app/installations</code>. Client ID can replace App ID for JWT issuer, but it does not replace Installation ID.
           </div>
           <textarea id="ak-ghapp-private-key" oninput="validateKey()" style="min-height:170px;font-family:monospace;font-size:0.75rem" placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"></textarea>
           <div class="grid-2">
@@ -394,6 +407,11 @@ function buildGitHubAppCredentialJSON() {
     installation_id: Number(installationID),
     private_key: privateKey
   });
+}
+
+function toggleGitHubInstallationHelp() {
+  var el = document.getElementById('ak-ghapp-installation-help');
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
 function testGitHubAppMinter() {

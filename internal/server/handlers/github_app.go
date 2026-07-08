@@ -199,10 +199,17 @@ func mintGitHubInstallationToken(ctx context.Context, httpClient *http.Client, c
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("github app token request returned %d", resp.StatusCode)
 	}
+	if len(bytes.TrimSpace(respBody)) == 0 {
+		return nil, fmt.Errorf("github app token response was empty (status %d)", resp.StatusCode)
+	}
 
 	var parsed githubInstallationTokenResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("decode github app token response: %w", err)
+		ct := resp.Header.Get("Content-Type")
+		if ct == "" {
+			ct = "unknown"
+		}
+		return nil, fmt.Errorf("github app token response was not JSON (status %d, content-type %s)", resp.StatusCode, ct)
 	}
 	if parsed.Token == "" {
 		return nil, fmt.Errorf("github app token response missing token")
