@@ -428,7 +428,7 @@ function testGitHubAppMinter() {
       showToast('GitHub App mint test failed', 'error');
       return;
     }
-    result.textContent = 'Mint succeeded for ' + data.repository + ' (' + data.permissions.contents + '), expires ' + data.expires_at;
+    result.textContent = 'Mint succeeded and permissions verified for ' + data.repository + ' (contents: ' + data.permissions.contents + '), expires ' + data.expires_at;
     result.style.color = 'var(--success)';
     showToast('GitHub App mint test passed', 'success');
   })

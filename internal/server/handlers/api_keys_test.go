@@ -196,7 +196,7 @@ func TestAPIKeyTestGitHubAppMinterMintsReadOnlyRepoToken(t *testing.T) {
 			t.Fatalf("decode upstream body: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"token":"ghs_real_secret_should_not_leak","expires_at":"2026-07-08T12:30:00Z"}`))
+		w.Write([]byte(`{"token":"ghs_real_secret_should_not_leak","expires_at":"2026-07-08T12:30:00Z","permissions":{"contents":"read"}}`))
 	}))
 	defer upstream.Close()
 
@@ -296,6 +296,40 @@ func TestAPIKeyTestGitHubAppMinterUpstreamFailureDoesNotLeakBody(t *testing.T) {
 	resp := rec.Body.String()
 	if strings.Contains(resp, "ghs_real_secret") || strings.Contains(resp, "PRIVATE KEY") {
 		t.Fatalf("response leaked upstream body: %s", resp)
+	}
+}
+
+func TestAPIKeyTestGitHubAppMinterRejectsMissingContentsPermission(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"token":"ghs_real_secret_should_not_leak","expires_at":"2026-07-08T12:30:00Z","permissions":{"issues":"read"}}`))
+	}))
+	defer upstream.Close()
+
+	h := handlers.NewAPIKeyHandler(nil, nil, nil).WithHTTPClient(upstream.Client())
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+		"base_url":        upstream.URL,
+	}
+	credJSON, _ := json.Marshal(cred)
+	body := `{"credential":` + strconvQuote(string(credJSON)) + `,"repository":"OWNER/REPO"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/keys/github-app/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.TestGitHubAppMinter(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := rec.Body.String()
+	if !strings.Contains(resp, "contents: read") {
+		t.Fatalf("response should explain missing permission: %s", resp)
+	}
+	if strings.Contains(resp, "ghs_real_secret") {
+		t.Fatalf("response leaked token: %s", resp)
 	}
 }
 

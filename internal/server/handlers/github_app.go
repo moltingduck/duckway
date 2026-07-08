@@ -36,13 +36,15 @@ type githubInstallationTokenRequest struct {
 }
 
 type githubInstallationTokenResponse struct {
-	Token     string `json:"token"`
-	ExpiresAt string `json:"expires_at"`
+	Token       string            `json:"token"`
+	ExpiresAt   string            `json:"expires_at"`
+	Permissions map[string]string `json:"permissions,omitempty"`
 }
 
 type githubMintedInstallationToken struct {
-	Token     string
-	ExpiresAt time.Time
+	Token       string
+	ExpiresAt   time.Time
+	Permissions map[string]string
 }
 
 type githubAppTokenCache struct {
@@ -209,7 +211,7 @@ func mintGitHubInstallationToken(ctx context.Context, httpClient *http.Client, c
 	if err != nil || expiresAt.IsZero() {
 		expiresAt = now.Add(50 * time.Minute)
 	}
-	return &githubMintedInstallationToken{Token: parsed.Token, ExpiresAt: expiresAt}, nil
+	return &githubMintedInstallationToken{Token: parsed.Token, ExpiresAt: expiresAt, Permissions: parsed.Permissions}, nil
 }
 
 func githubAppCacheKey(cred *githubAppCredential, owner, repo string, permissions map[string]string) string {

@@ -338,10 +338,14 @@ func (h *APIKeyHandler) TestGitHubAppMinter(w http.ResponseWriter, r *http.Reque
 		jsonError(w, "github app token mint failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+	if minted.Permissions["contents"] != "read" {
+		jsonError(w, "github app token mint did not grant contents: read permission", http.StatusBadGateway)
+		return
+	}
 	jsonResponse(w, map[string]interface{}{
 		"status":      "ok",
 		"repository":  owner + "/" + repo,
-		"permissions": body.Permissions,
+		"permissions": minted.Permissions,
 		"expires_at":  minted.ExpiresAt.Format(time.RFC3339),
 	})
 }
