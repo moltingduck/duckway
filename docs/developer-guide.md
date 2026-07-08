@@ -676,6 +676,37 @@ DUCKWAY_TEST_GITHUB_GIT_LIVE=1 go test ./internal/client -run TestGitHubAppPhant
 
 This starts an in-process Duckway server proxy, an in-process Duckway client MITM proxy, writes a phantom `GITHUB_TOKEN` to a temporary Git credential store, and runs `git ls-remote https://github.com/OWNER/REPO.git HEAD` through the local proxy. The real GitHub App installation token is minted and used only inside Duckway. This test is also skipped unless `DUCKWAY_TEST_GITHUB_GIT_LIVE=1` is set.
 
+### Live Codex OAuth E2E
+
+Codex OAuth phantom-token testing is script-based because it needs a real `~/.codex/auth.json`-style credential and runs Codex inside an isolated podman container.
+
+Store the credential in the ignored `secrets/` directory:
+
+```bash
+mkdir -p secrets
+install -m 600 ~/.codex/auth.json secrets/codex-auth-live.json
+```
+
+Check that the token file is readable and shaped correctly:
+
+```bash
+CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh --check-token
+```
+
+Run the full live E2E:
+
+```bash
+CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh
+```
+
+Run the optional control-channel watch path:
+
+```bash
+CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh --cc-watch
+```
+
+The script builds Duckway in a throwaway podman container, starts a fresh server, uploads the real Codex OAuth tokens as a refreshable key, creates a client phantom, runs `duckway sync` + `duckway proxy`, then runs `codex exec` with the default prompt `hello?` through Duckway. Set `DUCKWAY_CODEX_PROMPT='your prompt'` to override the prompt. The token file must be mode `600`; files under `secrets/` are ignored by git.
+
 ### Where to add new tests
 
 - Pure-Go unit tests next to the code: `*_test.go` in the relevant package
