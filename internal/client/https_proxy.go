@@ -203,12 +203,21 @@ func (p *httpsProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.handleConnect(w, r)
 		return
 	}
-	// Regular HTTP proxy (existing behavior)
 	p.handleHTTP(w, r)
 }
 
-// handleHTTP forwards regular HTTP requests to the Duckway server.
+// handleHTTP supports both historical direct Duckway paths
+// (http://localhost:18080/proxy/openai/...) and real HTTP forward-proxy
+// requests (GET http://example.com/path HTTP/1.1). `duckway proxy run` relies
+// on the latter when a child process uses HTTP_PROXY for plain HTTP traffic.
 func (p *httpsProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.IsAbs() {
+		p.handleHTTPForwardProxy(w, r)
+		return
+	}
+
+	// Historical local-proxy behavior: requests already addressed to the
+	// Duckway proxy namespace are forwarded to the Duckway server as-is.
 	start := time.Now()
 	targetURL := strings.TrimRight(p.serverURL, "/") + r.URL.Path
 	if r.URL.RawQuery != "" {
@@ -246,6 +255,90 @@ func (p *httpsProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+func (p *httpsProxy) handleHTTPForwardProxy(w http.ResponseWriter, r *http.Request) {
+	host := r.URL.Hostname()
+	p.hostMu.RLock()
+	entry, known := p.hostMap[host]
+	p.hostMu.RUnlock()
+
+	if known && entry.Service != "" && (entry.Service == "openai-auth" || entry.Service == "openai-chatgpt" || requestUsesDuckwayPhantom(r)) {
+		p.forwardHTTPToGateway(w, r, entry.Service, host)
+		return
+	}
+	p.forwardHTTPDirect(w, r, host, entry)
+}
+
+func (p *httpsProxy) forwardHTTPToGateway(w http.ResponseWriter, r *http.Request, svcName, host string) {
+	start := time.Now()
+	path := r.URL.Path
+	if path == "" {
+		path = "/"
+	}
+	if r.URL.RawQuery != "" {
+		path += "?" + redactDebugRawQuery(r.URL.RawQuery)
+	}
+	targetURL := strings.TrimRight(p.serverURL, "/") + "/proxy/" + svcName + path
+
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+	if err != nil {
+		http.Error(w, "proxy error", http.StatusInternalServerError)
+		return
+	}
+	copyForwardHeaders(proxyReq.Header, r.Header)
+	proxyReq.Header.Set("X-Duckway-Token", p.token)
+
+	resp, err := p.httpClient.Do(proxyReq)
+	if err != nil {
+		if p.debug {
+			log.Printf("[proxy %s] %s http://%s%s → ERR %v (%s)",
+				svcName, r.Method, host, path, err, time.Since(start).Round(time.Millisecond))
+		}
+		http.Error(w, "upstream error", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if p.debug {
+		p.logDebug("proxy", svcName, r, resp, host, time.Since(start))
+	}
+	copyResponse(w, resp)
+}
+
+func (p *httpsProxy) forwardHTTPDirect(w http.ResponseWriter, r *http.Request, host string, entry hostEntry) {
+	start := time.Now()
+	targetURL := r.URL.String()
+	if entry.UpstreamURL != "" && entry.Service != "" {
+		upstreamBase := strings.TrimRight(entry.UpstreamURL, "/")
+		if upstreamBase == "" || !strings.Contains(upstreamBase, host) {
+			upstreamBase = r.URL.Scheme + "://" + r.URL.Host
+		}
+		targetURL = upstreamBase + r.URL.RequestURI()
+	}
+
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+	if err != nil {
+		http.Error(w, "proxy error", http.StatusInternalServerError)
+		return
+	}
+	copyForwardHeaders(upstreamReq.Header, r.Header)
+
+	resp, err := p.httpClient.Do(upstreamReq)
+	if err != nil {
+		if p.debug {
+			log.Printf("[direct %s] %s %s → ERR %v (%s)",
+				entry.Service, r.Method, targetURL, err, time.Since(start).Round(time.Millisecond))
+		}
+		http.Error(w, "upstream error", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if p.debug {
+		p.logDebug("direct", entry.Service, r, resp, host, time.Since(start))
+	}
+	copyResponse(w, resp)
 }
 
 // handleConnect handles HTTPS CONNECT tunnels.
@@ -482,6 +575,40 @@ func tokenUsesDuckwayPhantom(token string) bool {
 		}
 	}
 	return false
+}
+
+func copyForwardHeaders(dst, src http.Header) {
+	for key, values := range src {
+		if shouldSkipForwardHeader(key) {
+			continue
+		}
+		for _, v := range values {
+			dst.Add(key, v)
+		}
+	}
+}
+
+func copyResponse(w http.ResponseWriter, resp *http.Response) {
+	for key, values := range resp.Header {
+		if shouldSkipForwardHeader(key) {
+			continue
+		}
+		for _, v := range values {
+			w.Header().Add(key, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func shouldSkipForwardHeader(key string) bool {
+	switch strings.ToLower(key) {
+	case "host", "connection", "proxy-connection", "keep-alive", "proxy-authenticate",
+		"proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade":
+		return true
+	default:
+		return false
+	}
 }
 
 // tunnelConnect creates a transparent TCP tunnel for unknown hosts.

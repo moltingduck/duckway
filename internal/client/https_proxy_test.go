@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -233,6 +234,100 @@ func TestMITMRoundTripsBody(t *testing.T) {
 	defer mu.Unlock()
 	if gotPath != "/proxy/anthropic/v1/messages?beta=true" {
 		t.Fatalf("backend saw path %q, want \"/proxy/anthropic/v1/messages?beta=true\"", gotPath)
+	}
+}
+
+func TestHTTPForwardProxyRoutesKnownPhantomThroughGateway(t *testing.T) {
+	var gotPath, gotAuth string
+	var mu sync.Mutex
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotPath = r.URL.Path + "?" + r.URL.RawQuery
+		gotAuth = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.Write([]byte("gateway-http"))
+	}))
+	defer gateway.Close()
+
+	p := &httpsProxy{
+		serverURL: gateway.URL,
+		token:     "test-token",
+		hostMap: map[string]hostEntry{
+			"api.anthropic.com": {Service: "anthropic", DeliveryMode: "proxy", UpstreamURL: "https://api.anthropic.com"},
+		},
+		httpClient: &http.Client{Transport: directTransport},
+		loanCache:  make(map[string]*loanedToken),
+	}
+	proxyServer := httptest.NewServer(p)
+	defer proxyServer.Close()
+	proxyURL, err := url.Parse(proxyServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+
+	req, err := http.NewRequest(http.MethodGet, "http://api.anthropic.com/v1/messages?beta=true", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer sk-ant-dw_fake")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("forward proxy request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "gateway-http" {
+		t.Fatalf("body = %q, want gateway-http", string(body))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotPath != "/proxy/anthropic/v1/messages?beta=true" {
+		t.Fatalf("gateway path = %q, want /proxy/anthropic/v1/messages?beta=true", gotPath)
+	}
+	if gotAuth != "Bearer sk-ant-dw_fake" {
+		t.Fatalf("gateway Authorization = %q", gotAuth)
+	}
+}
+
+func TestHTTPForwardProxyDirectsUnknownAbsoluteURL(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != "/plain-http" {
+			t.Fatalf("origin path = %q, want /plain-http", got)
+		}
+		w.Write([]byte("direct-http-origin"))
+	}))
+	defer origin.Close()
+
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gateway should not be used", http.StatusBadGateway)
+	}))
+	defer gateway.Close()
+
+	p := &httpsProxy{
+		serverURL:  gateway.URL,
+		token:      "test-token",
+		hostMap:    map[string]hostEntry{},
+		httpClient: &http.Client{Transport: directTransport},
+		loanCache:  make(map[string]*loanedToken),
+	}
+	proxyServer := httptest.NewServer(p)
+	defer proxyServer.Close()
+	proxyURL, err := url.Parse(proxyServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+
+	resp, err := client.Get(origin.URL + "/plain-http")
+	if err != nil {
+		t.Fatalf("forward proxy direct request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "direct-http-origin" {
+		t.Fatalf("body = %q, want direct-http-origin", string(body))
 	}
 }
 
