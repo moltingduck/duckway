@@ -522,7 +522,7 @@ const helpText = "**Duckway CC commands**\n" +
 	"`!sessions [<cwd-filter>]` — list local claude sessions on the agent that aren't yet bound to a CC channel\n" +
 	"`!bind <session_id> [<session_id> …]` — create a task channel for each session_id and attach it (run `!sessions` first to find IDs)\n" +
 	"`!projects [<filter>]` — list saved project folders from the agent machine\n" +
-	"`!log` — show the current task channel's latest 3 agent conversation entries\n" +
+	"`!log [N]` — show the current task channel's latest N agent conversation entries (default 3, max 20)\n" +
 	"`!help` — this message\n" +
 	"\n" +
 	"**Sending claude slash & shell commands**\n" +

@@ -464,6 +464,78 @@ func TestHandleClientCommand_LogReturnsRunnerHistory(t *testing.T) {
 	}
 }
 
+func TestParseLogCount(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		want    int
+		wantErr bool
+	}{
+		{name: "default", args: nil, want: 3},
+		{name: "number", args: []string{"10"}, want: 10},
+		{name: "legacy last", args: []string{"last", "3"}, want: 3},
+		{name: "zero", args: []string{"0"}, wantErr: true},
+		{name: "too large", args: []string{"21"}, wantErr: true},
+		{name: "junk", args: []string{"latest", "3"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseLogCount(tt.args)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parseLogCount(%v) succeeded, want error", tt.args)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseLogCount(%v): %v", tt.args, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseLogCount(%v) = %d, want %d", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleClientCommand_LogAcceptsCount(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	store := NewCCSessionStore(t.TempDir())
+	pp := &recordingPoster{}
+	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", RunFn: func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+		return "sid", "ok", false, nil
+	}, UseTmux: false}
+	r, err := newCCRunner("dwch_task", w.configDir, t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+	r.appendHistory("user", "first")
+	r.appendHistory("assistant", "second")
+	r.appendHistory("user", "third")
+	r.appendHistory("assistant", "fourth")
+	w.runners["dwch_task"] = r
+
+	env := sseEnvelope{
+		Type:    "client_command",
+		Handle:  "dwch_task",
+		Payload: json.RawMessage(`{"command":"!log","args":["4"]}`),
+	}
+	data, _ := json.Marshal(env)
+	w.handleClientCommand(data)
+
+	msgs := fake.snapshotMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected one reply, got %d", len(msgs))
+	}
+	body := msgs[0]["content"]
+	for _, want := range []string{"first", "second", "third", "fourth"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("!log 4 missing %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestHandleMessageCreateReactsDuckAfterEnqueue(t *testing.T) {
 	fake := newFakeServer(t)
 	w := stubWatch(t, t.TempDir(), fake)

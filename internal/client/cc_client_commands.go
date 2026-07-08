@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -67,17 +68,10 @@ func (w *CCWatch) handleClientCommand(data []byte) {
 }
 
 func (w *CCWatch) cmdLog(replyHandle string, args []string) {
-	n := 3
-	if len(args) > 0 {
-		joined := strings.TrimSpace(strings.Join(args, " "))
-		switch joined {
-		case "":
-		case "last 3":
-			n = 3
-		default:
-			_ = w.api.PostCC(context.Background(), replyHandle, "❌ usage: `!log`")
-			return
-		}
+	n, err := parseLogCount(args)
+	if err != nil {
+		_ = w.api.PostCC(context.Background(), replyHandle, "❌ usage: `!log [N]`")
+		return
 	}
 	w.mu.Lock()
 	runner := w.runners[replyHandle]
@@ -87,6 +81,32 @@ func (w *CCWatch) cmdLog(replyHandle string, args []string) {
 		return
 	}
 	_ = w.api.PostCC(context.Background(), replyHandle, runner.formatRecentHistory(n))
+}
+
+func parseLogCount(args []string) (int, error) {
+	const (
+		defaultLogCount = 3
+		maxLogCount     = 20
+	)
+	if len(args) == 0 {
+		return defaultLogCount, nil
+	}
+	joined := strings.TrimSpace(strings.Join(args, " "))
+	if joined == "" {
+		return defaultLogCount, nil
+	}
+	parts := strings.Fields(joined)
+	if len(parts) == 2 && strings.EqualFold(parts[0], "last") {
+		parts = parts[1:]
+	}
+	if len(parts) != 1 {
+		return 0, fmt.Errorf("invalid log count")
+	}
+	n, err := strconv.Atoi(parts[0])
+	if err != nil || n <= 0 || n > maxLogCount {
+		return 0, fmt.Errorf("invalid log count")
+	}
+	return n, nil
 }
 
 func (w *CCWatch) cmdProjects(replyHandle string, args []string) {
