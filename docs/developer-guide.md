@@ -668,6 +668,14 @@ By default, the test searches upward from the package test directory for `secret
 
 The test mints a short-lived installation token for `repository`, verifies GitHub grants `contents: read`, and asserts the handler response does not contain the `ghs_` token or private key. Do not commit files under `secrets/`; the directory is ignored by `.gitignore`.
 
+To test the full Duckway client Git path against the same repository:
+
+```bash
+DUCKWAY_TEST_GITHUB_GIT_LIVE=1 go test ./internal/client -run TestGitHubAppPhantomGitPullLive -count=1 -v
+```
+
+This starts an in-process Duckway server proxy, an in-process Duckway client MITM proxy, writes a phantom `GITHUB_TOKEN` to a temporary Git credential store, and runs `git ls-remote https://github.com/OWNER/REPO.git HEAD` through the local proxy. The real GitHub App installation token is minted and used only inside Duckway. This test is also skipped unless `DUCKWAY_TEST_GITHUB_GIT_LIVE=1` is set.
+
 ### Where to add new tests
 
 - Pure-Go unit tests next to the code: `*_test.go` in the relevant package
