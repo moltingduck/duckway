@@ -1,8 +1,13 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -13,10 +18,23 @@ type APIKeyHandler struct {
 	apiKeys  *queries.APIKeyQueries
 	services *queries.ServiceQueries
 	crypto   *svc.Crypto
+	client   *http.Client
 }
 
 func NewAPIKeyHandler(apiKeys *queries.APIKeyQueries, services *queries.ServiceQueries, crypto *svc.Crypto) *APIKeyHandler {
-	return &APIKeyHandler{apiKeys: apiKeys, services: services, crypto: crypto}
+	return &APIKeyHandler{
+		apiKeys:  apiKeys,
+		services: services,
+		crypto:   crypto,
+		client:   &http.Client{Timeout: 20 * time.Second},
+	}
+}
+
+func (h *APIKeyHandler) WithHTTPClient(client *http.Client) *APIKeyHandler {
+	if client != nil {
+		h.client = client
+	}
+	return h
 }
 
 func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -257,6 +275,113 @@ func (h *APIKeyHandler) SetACL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]string{"status": "ok"})
+}
+
+func (h *APIKeyHandler) TestGitHubAppMinter(w http.ResponseWriter, r *http.Request) {
+	if !sameOriginRequest(r) {
+		jsonError(w, "cross-origin request denied", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		Credential string `json:"credential"`
+		Repository string `json:"repository"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	owner, repo, err := parseGitHubOwnerRepo(req.Repository)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	cred, ok, err := parseGitHubAppCredential(req.Credential)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !ok {
+		jsonError(w, "credential must be a github_app credential", http.StatusBadRequest)
+		return
+	}
+	if err := validateGitHubAppBaseURL(req.Credential); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	jwt, err := githubAppJWT(cred.AppID, cred.PrivateKey, time.Now())
+	if err != nil {
+		jsonError(w, "failed to sign github app jwt", http.StatusBadRequest)
+		return
+	}
+	body := githubInstallationTokenRequest{
+		Repositories: []string{repo},
+		Permissions:  map[string]string{"contents": "read"},
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		jsonError(w, "failed to encode github app token request", http.StatusInternalServerError)
+		return
+	}
+	baseURL := strings.TrimRight(cred.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "https://api.github.com"
+	}
+	if err := validateGitHubAppBaseURLValue(baseURL); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	minted, err := mintGitHubInstallationToken(ctx, h.client, cred, baseURL, jwt, bodyBytes, time.Now())
+	if err != nil {
+		jsonError(w, "github app token mint failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{
+		"status":      "ok",
+		"repository":  owner + "/" + repo,
+		"permissions": body.Permissions,
+		"expires_at":  minted.ExpiresAt.Format(time.RFC3339),
+	})
+}
+
+func parseGitHubOwnerRepo(raw string) (string, string, error) {
+	repo := strings.TrimSpace(raw)
+	if repo == "" {
+		return "", "", fmt.Errorf("repository is required")
+	}
+	if strings.Contains(repo, "://") || strings.ContainsAny(repo, "?#\\") {
+		return "", "", fmt.Errorf("repository must be owner/repo")
+	}
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("repository must be owner/repo")
+	}
+	for _, part := range parts {
+		if part == "." || part == ".." || strings.HasSuffix(part, ".git") {
+			return "", "", fmt.Errorf("repository must be owner/repo")
+		}
+		for _, r := range part {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+				continue
+			}
+			return "", "", fmt.Errorf("repository must be owner/repo")
+		}
+	}
+	return parts[0], parts[1], nil
+}
+
+func sameOriginRequest(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }
 
 func (h *APIKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {

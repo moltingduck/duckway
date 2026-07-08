@@ -183,6 +183,122 @@ func TestAPIKeyCreateAllowsMalformedJSONForNonGitHubService(t *testing.T) {
 	}
 }
 
+func TestAPIKeyTestGitHubAppMinterMintsReadOnlyRepoToken(t *testing.T) {
+	var gotPath, gotAuth string
+	var gotBody struct {
+		Repositories []string          `json:"repositories"`
+		Permissions  map[string]string `json:"permissions"`
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"token":"ghs_real_secret_should_not_leak","expires_at":"2026-07-08T12:30:00Z"}`))
+	}))
+	defer upstream.Close()
+
+	h := handlers.NewAPIKeyHandler(nil, nil, nil).WithHTTPClient(upstream.Client())
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+		"base_url":        upstream.URL,
+	}
+	credJSON, _ := json.Marshal(cred)
+	body := `{"credential":` + strconvQuote(string(credJSON)) + `,"repository":"OWNER/REPO"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/keys/github-app/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://example.com")
+	rec := httptest.NewRecorder()
+
+	h.TestGitHubAppMinter(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/app/installations/123/access_tokens" {
+		t.Fatalf("upstream path = %q", gotPath)
+	}
+	if !strings.HasPrefix(gotAuth, "Bearer ") {
+		t.Fatalf("missing JWT auth header: %q", gotAuth)
+	}
+	if len(gotBody.Repositories) != 1 || gotBody.Repositories[0] != "REPO" {
+		t.Fatalf("repositories = %+v", gotBody.Repositories)
+	}
+	if gotBody.Permissions["contents"] != "read" || len(gotBody.Permissions) != 1 {
+		t.Fatalf("permissions = %+v", gotBody.Permissions)
+	}
+	resp := rec.Body.String()
+	for _, leaked := range []string{"ghs_real_secret", "PRIVATE KEY", "Authorization", "token"} {
+		if strings.Contains(strings.ToLower(resp), strings.ToLower(leaked)) {
+			t.Fatalf("response leaked %q: %s", leaked, resp)
+		}
+	}
+	if !strings.Contains(resp, `"repository":"OWNER/REPO"`) || !strings.Contains(resp, `"contents":"read"`) {
+		t.Fatalf("response missing safe metadata: %s", resp)
+	}
+}
+
+func TestAPIKeyTestGitHubAppMinterRejectsBadRepo(t *testing.T) {
+	h := handlers.NewAPIKeyHandler(nil, nil, nil)
+	for _, repo := range []string{"", "OWNER", "OWNER/REPO/EXTRA", "https://github.com/OWNER/REPO", "../REPO", "OWNER/REPO.git"} {
+		body := `{"credential":"{}","repository":` + strconvQuote(repo) + `}`
+		req := httptest.NewRequest(http.MethodPost, "/api/keys/github-app/test", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.TestGitHubAppMinter(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("repo %q status = %d body=%s", repo, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestAPIKeyTestGitHubAppMinterRejectsCrossOrigin(t *testing.T) {
+	h := handlers.NewAPIKeyHandler(nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/keys/github-app/test", strings.NewReader(`{}`))
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+
+	h.TestGitHubAppMinter(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAPIKeyTestGitHubAppMinterUpstreamFailureDoesNotLeakBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "ghs_real_secret_should_not_leak PRIVATE KEY", http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	h := handlers.NewAPIKeyHandler(nil, nil, nil).WithHTTPClient(upstream.Client())
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+		"base_url":        upstream.URL,
+	}
+	credJSON, _ := json.Marshal(cred)
+	body := `{"credential":` + strconvQuote(string(credJSON)) + `,"repository":"OWNER/REPO"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/keys/github-app/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.TestGitHubAppMinter(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := rec.Body.String()
+	if strings.Contains(resp, "ghs_real_secret") || strings.Contains(resp, "PRIVATE KEY") {
+		t.Fatalf("response leaked upstream body: %s", resp)
+	}
+}
+
 func testGitHubService(id string) *models.Service {
 	return &models.Service{
 		ID:           id,

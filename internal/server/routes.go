@@ -174,6 +174,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("GET /api/keys/{id}", apiKeyH.Get)
 	adminAPIMux.HandleFunc("PUT /api/keys/{id}", apiKeyH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/keys/{id}", apiKeyH.Delete)
+	adminAPIMux.HandleFunc("POST /api/keys/github-app/test", apiKeyH.TestGitHubAppMinter)
 	adminAPIMux.HandleFunc("GET /api/keys/{id}/acl-templates", apiKeyH.ListACLTemplates)
 	adminAPIMux.HandleFunc("POST /api/keys/{id}/acl-templates", apiKeyH.ApplyACLTemplate)
 	adminAPIMux.HandleFunc("POST /api/keys/{id}/acl", apiKeyH.SetACL)

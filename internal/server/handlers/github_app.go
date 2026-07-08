@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,11 @@ type githubInstallationTokenRequest struct {
 type githubInstallationTokenResponse struct {
 	Token     string `json:"token"`
 	ExpiresAt string `json:"expires_at"`
+}
+
+type githubMintedInstallationToken struct {
+	Token     string
+	ExpiresAt time.Time
 }
 
 type githubAppTokenCache struct {
@@ -128,13 +134,14 @@ func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *gi
 	now := time.Now()
 
 	h.githubAppMu.Lock()
-	defer h.githubAppMu.Unlock()
 	if h.githubAppTokens == nil {
 		h.githubAppTokens = make(map[string]githubAppTokenCache)
 	}
 	if cached, ok := h.githubAppTokens[cacheKey]; ok && now.Before(cached.expiresAt.Add(-5*time.Minute)) {
+		h.githubAppMu.Unlock()
 		return cached.token, nil
 	}
+	h.githubAppMu.Unlock()
 
 	jwt, err := githubAppJWT(cred.AppID, cred.PrivateKey, time.Now())
 	if err != nil {
@@ -157,39 +164,52 @@ func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *gi
 	if err := validateGitHubAppBaseURLValue(baseURL); err != nil {
 		return "", err
 	}
+	minted, err := mintGitHubInstallationToken(ctx, h.httpClient, cred, baseURL, jwt, bodyBytes, now)
+	if err != nil {
+		return "", err
+	}
+	h.githubAppMu.Lock()
+	defer h.githubAppMu.Unlock()
+	if h.githubAppTokens == nil {
+		h.githubAppTokens = make(map[string]githubAppTokenCache)
+	}
+	h.githubAppTokens[cacheKey] = githubAppTokenCache{token: minted.Token, expiresAt: minted.ExpiresAt}
+	return minted.Token, nil
+}
+
+func mintGitHubInstallationToken(ctx context.Context, httpClient *http.Client, cred *githubAppCredential, baseURL, jwt string, bodyBytes []byte, now time.Time) (*githubMintedInstallationToken, error) {
 	tokenURL := fmt.Sprintf("%s/app/installations/%d/access_tokens", baseURL, cred.InstallationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	resp, err := h.httpClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("github app token request failed: %w", err)
+		return nil, fmt.Errorf("github app token request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("github app token request returned %d", resp.StatusCode)
+		return nil, fmt.Errorf("github app token request returned %d", resp.StatusCode)
 	}
 
 	var parsed githubInstallationTokenResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", fmt.Errorf("decode github app token response: %w", err)
+		return nil, fmt.Errorf("decode github app token response: %w", err)
 	}
 	if parsed.Token == "" {
-		return "", fmt.Errorf("github app token response missing token")
+		return nil, fmt.Errorf("github app token response missing token")
 	}
 	expiresAt, err := time.Parse(time.RFC3339, parsed.ExpiresAt)
 	if err != nil || expiresAt.IsZero() {
 		expiresAt = now.Add(50 * time.Minute)
 	}
-	h.githubAppTokens[cacheKey] = githubAppTokenCache{token: parsed.Token, expiresAt: expiresAt}
-	return parsed.Token, nil
+	return &githubMintedInstallationToken{Token: parsed.Token, ExpiresAt: expiresAt}, nil
 }
 
 func githubAppCacheKey(cred *githubAppCredential, owner, repo string, permissions map[string]string) string {
@@ -199,7 +219,13 @@ func githubAppCacheKey(cred *githubAppCredential, owner, repo string, permission
 		strings.TrimRight(cred.BaseURL, "/"),
 		strings.ToLower(owner + "/" + repo),
 	}
-	for key, val := range permissions {
+	keys := make([]string, 0, len(permissions))
+	for key := range permissions {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		val := permissions[key]
 		parts = append(parts, key+"="+val)
 	}
 	return strings.Join(parts, "|")

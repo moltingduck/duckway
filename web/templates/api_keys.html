@@ -63,6 +63,11 @@
             <input type="number" id="ak-ghapp-installation-id" placeholder="Installation ID" oninput="validateKey()">
           </div>
           <textarea id="ak-ghapp-private-key" oninput="validateKey()" style="min-height:170px;font-family:monospace;font-size:0.75rem" placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"></textarea>
+          <div class="grid-2">
+            <input type="text" id="ak-ghapp-test-repo" placeholder="owner/repo">
+            <button type="button" class="btn" id="ak-ghapp-test-btn" onclick="testGitHubAppMinter()">Test mint</button>
+          </div>
+          <div id="ak-ghapp-test-result" class="text-sm mt-1" style="display:none"></div>
         </div>
         <div id="ak-hint" class="text-muted text-sm mt-1" style="display:none"></div>
         <div id="ak-error" class="text-sm mt-1" style="display:none;color:var(--danger)"></div>
@@ -388,6 +393,52 @@ function buildGitHubAppCredentialJSON() {
     app_id: Number(appID),
     installation_id: Number(installationID),
     private_key: privateKey
+  });
+}
+
+function testGitHubAppMinter() {
+  var svc = getSelectedService();
+  if (!svc || svc.name !== 'github' || document.getElementById('ak-github-mode').value !== 'app') return;
+  validateKey();
+  if (document.getElementById('ak-error').style.display !== 'none') return;
+  var repo = document.getElementById('ak-ghapp-test-repo').value.trim();
+  var result = document.getElementById('ak-ghapp-test-result');
+  var btn = document.getElementById('ak-ghapp-test-btn');
+  if (!repo) {
+    result.textContent = 'Enter a repository as owner/repo.';
+    result.style.color = 'var(--danger)';
+    result.style.display = 'block';
+    return;
+  }
+  result.textContent = 'Testing...';
+  result.style.color = '';
+  result.style.display = 'block';
+  btn.disabled = true;
+  fetch('/api/keys/github-app/test', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({credential: buildGitHubAppCredentialJSON(), repository: repo}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json().then(function(data) { data._status = r.status; return data; }); })
+  .then(function(data) {
+    if (data.error) {
+      result.textContent = data.error;
+      result.style.color = 'var(--danger)';
+      showToast('GitHub App mint test failed', 'error');
+      return;
+    }
+    result.textContent = 'Mint succeeded for ' + data.repository + ' (' + data.permissions.contents + '), expires ' + data.expires_at;
+    result.style.color = 'var(--success)';
+    showToast('GitHub App mint test passed', 'success');
+  })
+  .catch(function(err) {
+    result.textContent = 'Test failed: ' + err.message;
+    result.style.color = 'var(--danger)';
+    showToast('GitHub App mint test failed', 'error');
+  })
+  .finally(function() {
+    btn.disabled = false;
   });
 }
 
