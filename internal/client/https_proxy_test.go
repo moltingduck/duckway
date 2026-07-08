@@ -299,3 +299,64 @@ func TestMITMDirectForKnownHostWithoutPhantom(t *testing.T) {
 		t.Fatalf("gateway hits = %d, want 0", gatewayHits)
 	}
 }
+
+func TestMITMAlwaysProxiesNativeCodexChatGPTTraffic(t *testing.T) {
+	var gotPath, gotAuth string
+	var mu sync.Mutex
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.Write([]byte("gateway-chatgpt"))
+	}))
+	defer gateway.Close()
+
+	ca, err := services.LoadOrCreateCA(t.TempDir())
+	if err != nil {
+		t.Fatalf("create CA: %v", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca.CertPEM) {
+		t.Fatal("append CA cert to pool")
+	}
+	p := &httpsProxy{
+		serverURL: gateway.URL,
+		token:     "test-token",
+		ca:        ca,
+		hostMap: map[string]hostEntry{
+			"chatgpt.com": {Service: "openai-chatgpt", DeliveryMode: "proxy", UpstreamURL: "https://chatgpt.com"},
+		},
+		httpClient: &http.Client{Transport: directTransport},
+		loanCache:  make(map[string]*loanedToken),
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: p}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	conn := dialMITMHost(t, ln.Addr().String(), "chatgpt.com:443", "chatgpt.com", []string{"http/1.1"}, pool)
+	fakeAccessJWT := "header.payload.duckway-phantom-access"
+	fmt.Fprintf(conn, "GET /backend-api/codex/responses HTTP/1.1\r\nHost: chatgpt.com\r\nAuthorization: Bearer %s\r\nConnection: close\r\n\r\n", fakeAccessJWT)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "gateway-chatgpt" {
+		t.Fatalf("body = %q, want gateway-chatgpt", string(body))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotPath != "/proxy/openai-chatgpt/backend-api/codex/responses" {
+		t.Fatalf("gateway path = %q, want /proxy/openai-chatgpt/backend-api/codex/responses", gotPath)
+	}
+	if gotAuth != "Bearer "+fakeAccessJWT {
+		t.Fatalf("gateway Authorization = %q", gotAuth)
+	}
+}

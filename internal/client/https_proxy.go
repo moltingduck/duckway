@@ -325,7 +325,7 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		tlsConn.SetReadDeadline(time.Time{}) // clear before forwarding
 
-		if entry.Service != "openai-auth" && !requestUsesDuckwayPhantom(req) {
+		if entry.Service != "openai-auth" && entry.Service != "openai-chatgpt" && !requestUsesDuckwayPhantom(req) {
 			p.forwardDirect(tlsConn, req, host, entry)
 			continue
 		}
