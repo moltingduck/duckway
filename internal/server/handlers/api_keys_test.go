@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -359,6 +360,44 @@ func TestAPIKeyTestGitHubAppMinterMalformedSuccessBodyIsDiagnostic(t *testing.T)
 	}
 }
 
+func TestAPIKeyTestGitHubAppMinterAcceptsLargeGitHubResponse(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]interface{}{
+			"token":       "ghs_real_secret_should_not_leak",
+			"expires_at":  "2026-07-08T12:30:00Z",
+			"permissions": map[string]string{"contents": "read"},
+			"filler":      strings.Repeat("x", 8192),
+		}
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Fatalf("encode upstream response: %v", err)
+		}
+	}))
+	defer upstream.Close()
+
+	h := handlers.NewAPIKeyHandler(nil, nil, nil).WithHTTPClient(upstream.Client())
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+		"base_url":        upstream.URL,
+	}
+	credJSON, _ := json.Marshal(cred)
+	body := `{"credential":` + strconvQuote(string(credJSON)) + `,"repository":"OWNER/REPO"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/keys/github-app/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.TestGitHubAppMinter(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "ghs_real_secret") {
+		t.Fatalf("response leaked token: %s", rec.Body.String())
+	}
+}
+
 func TestAPIKeyTestGitHubAppMinterRejectsMissingContentsPermission(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -390,6 +429,68 @@ func TestAPIKeyTestGitHubAppMinterRejectsMissingContentsPermission(t *testing.T)
 	}
 	if strings.Contains(resp, "ghs_real_secret") {
 		t.Fatalf("response leaked token: %s", resp)
+	}
+}
+
+func TestGitHubAppMinterLive(t *testing.T) {
+	if os.Getenv("DUCKWAY_TEST_GITHUB_APP_LIVE") != "1" {
+		t.Skip("set DUCKWAY_TEST_GITHUB_APP_LIVE=1 to run")
+	}
+	configPath := os.Getenv("DUCKWAY_GITHUB_APP_LIVE_CONFIG")
+	if configPath == "" {
+		configPath = "secrets/github-app-live.json"
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read live config %s: %v", configPath, err)
+	}
+	var cfg struct {
+		AppID          int64  `json:"app_id"`
+		InstallationID int64  `json:"installation_id"`
+		PrivateKey     string `json:"private_key"`
+		Repository     string `json:"repository"`
+		BaseURL        string `json:"base_url,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("parse live config %s: %v", configPath, err)
+	}
+	if cfg.AppID <= 0 || cfg.InstallationID <= 0 || strings.TrimSpace(cfg.PrivateKey) == "" || strings.TrimSpace(cfg.Repository) == "" {
+		t.Fatalf("live config %s requires app_id, installation_id, private_key, and repository", configPath)
+	}
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          cfg.AppID,
+		"installation_id": cfg.InstallationID,
+		"private_key":     cfg.PrivateKey,
+	}
+	if cfg.BaseURL != "" {
+		cred["base_url"] = cfg.BaseURL
+	}
+	credJSON, _ := json.Marshal(cred)
+	body := `{"credential":` + strconvQuote(string(credJSON)) + `,"repository":` + strconvQuote(cfg.Repository) + `}`
+	req := httptest.NewRequest(http.MethodPost, "/api/keys/github-app/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handlers.NewAPIKeyHandler(nil, nil, nil).TestGitHubAppMinter(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("live GitHub App minter status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := rec.Body.String()
+	for _, secretMarker := range []struct {
+		name  string
+		value string
+	}{
+		{name: "installation token", value: "ghs_"},
+		{name: "private key label", value: "PRIVATE KEY"},
+		{name: "private key body", value: cfg.PrivateKey},
+	} {
+		if secretMarker.value != "" && strings.Contains(resp, secretMarker.value) {
+			t.Fatalf("live response leaked %s", secretMarker.name)
+		}
+	}
+	if !strings.Contains(resp, `"status":"ok"`) || !strings.Contains(resp, `"contents":"read"`) {
+		t.Fatalf("live response missing success metadata: %s", resp)
 	}
 }
 

@@ -29,6 +29,7 @@ Thumbs.db
 /scripts/*live*.json
 /scripts/*secret*.json
 /scripts/*auth*.json
+*.local.json
 
 # Env files with secrets (never commit)
 *.env

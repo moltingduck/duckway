@@ -52,6 +52,8 @@ type githubAppTokenCache struct {
 	expiresAt time.Time
 }
 
+const maxGitHubAppTokenResponseBytes = 1024 * 1024
+
 func parseGitHubAppCredential(realKey string) (*githubAppCredential, bool, error) {
 	trimmed := strings.TrimSpace(realKey)
 	if !strings.HasPrefix(trimmed, "{") {
@@ -195,7 +197,7 @@ func mintGitHubInstallationToken(ctx context.Context, httpClient *http.Client, c
 		return nil, fmt.Errorf("github app token request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxGitHubAppTokenResponseBytes))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("github app token request returned %d", resp.StatusCode)
 	}

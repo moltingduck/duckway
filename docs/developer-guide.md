@@ -626,6 +626,48 @@ A passing run proves the full chain: auth → resolve → decrypt → inject cor
 
 The script never sends the real API key in the test request itself — the key is only sent once during the upload step, and the test request only carries the Duckway client token. So if `/proxy/...` returns 200, the only path that could have produced that result is Duckway resolving and injecting the real key correctly.
 
+### Live GitHub App minter test
+
+GitHub App installation token minting has an opt-in live test. It is skipped by default so ordinary test runs and CI do not need real credentials.
+
+Store the credential in the ignored `secrets/` directory:
+
+```bash
+mkdir -p secrets
+chmod 700 secrets
+$EDITOR secrets/github-app-live.json
+chmod 600 secrets/github-app-live.json
+```
+
+`secrets/github-app-live.json`:
+
+```json
+{
+  "app_id": 4244336,
+  "installation_id": 12345678,
+  "private_key": "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
+  "repository": "OWNER/REPO"
+}
+```
+
+Optional for GitHub Enterprise or a local mock:
+
+```json
+{
+  "base_url": "https://github.example.com/api/v3"
+}
+```
+
+Run the live test explicitly:
+
+```bash
+DUCKWAY_TEST_GITHUB_APP_LIVE=1 \
+DUCKWAY_GITHUB_APP_LIVE_CONFIG=secrets/github-app-live.json \
+go test ./internal/server/handlers -run TestGitHubAppMinterLive -count=1 -v
+```
+
+The test mints a short-lived installation token for `repository`, verifies GitHub grants `contents: read`, and asserts the handler response does not contain the `ghs_` token or private key. Do not commit files under `secrets/`; the directory is ignored by `.gitignore`.
+
 ### Where to add new tests
 
 - Pure-Go unit tests next to the code: `*_test.go` in the relevant package
