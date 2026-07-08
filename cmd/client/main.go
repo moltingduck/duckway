@@ -136,6 +136,8 @@ Usage:
   duckway proxy stop     Stop the running daemon
   duckway proxy restart  Stop the running daemon and start a fresh one
   duckway proxy status   Show daemon status
+  duckway proxy run -- CMD [ARGS...]
+                         Run one command with HTTP(S)_PROXY set to the local proxy
   duckway proxy hosts        List services the proxy intercepts (queries server)
   duckway proxy hosts reload Signal the running proxy daemon to refresh its host list now
   duckway status             Show connection status, CA cert expiry
@@ -895,6 +897,9 @@ func cmdProxy(configDir string) {
 			status = true
 		case "restart":
 			restart = true
+		case "run":
+			cmdProxyRun(configDir, os.Args[i+1:])
+			return
 		case "hosts":
 			cmdHosts(configDir)
 			return
@@ -957,6 +962,65 @@ func cmdProxy(configDir string) {
 	if err := client.RunHTTPSProxy(cfg, syncInterval, debug); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func cmdProxyRun(configDir string, args []string) {
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: duckway proxy run -- CMD [ARGS...]")
+		os.Exit(2)
+	}
+
+	cfg, err := client.LoadConfig(configDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = proxyRunEnv(os.Environ(), cfg.ProxyPort)
+
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
+		log.Fatalf("duckway proxy run: %v", err)
+	}
+}
+
+func proxyRunEnv(base []string, port int) []string {
+	proxyURL := fmt.Sprintf("http://localhost:%d", port)
+	override := map[string]string{
+		"HTTP_PROXY":  proxyURL,
+		"HTTPS_PROXY": proxyURL,
+		"http_proxy":  proxyURL,
+		"https_proxy": proxyURL,
+		"ALL_PROXY":   proxyURL,
+		"all_proxy":   proxyURL,
+		"NO_PROXY":    "localhost,127.0.0.1,::1",
+		"no_proxy":    "localhost,127.0.0.1,::1",
+	}
+	out := make([]string, 0, len(base)+len(override))
+	for _, kv := range base {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			out = append(out, kv)
+			continue
+		}
+		if _, replace := override[key]; replace {
+			continue
+		}
+		out = append(out, kv)
+	}
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		out = append(out, key+"="+override[key])
+	}
+	return out
 }
 
 // cmdStart spawns both the proxy and the cc-watch daemons in the
