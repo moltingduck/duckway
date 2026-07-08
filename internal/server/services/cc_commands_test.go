@@ -502,6 +502,48 @@ func TestHandle_Sessions_NoDaemonReturnsErrorMessage(t *testing.T) {
 	}
 }
 
+func TestHandle_Log_ForwardsToDaemonFromTaskChannel(t *testing.T) {
+	h := newCommandHarness(t)
+	if _, err := h.db.Exec(`INSERT INTO cc_channels VALUES ('dwch_t','cc1','client1','T-real','t','','task','','/cwd',0,datetime('now'),null)`); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := h.cc.GetChannelByHandle("dwch_t")
+	sub, unsub := h.hub.Subscribe("client1")
+	defer unsub()
+
+	h.handler.Handle(context.Background(), "cc1", task, "!log")
+
+	select {
+	case ev := <-sub:
+		if ev.Type != "client_command" || ev.Handle != "dwch_t" {
+			t.Fatalf("unexpected event: %+v", ev)
+		}
+		var p struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		}
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			t.Fatalf("payload parse: %v", err)
+		}
+		if p.Command != "!log" || len(p.Args) != 0 {
+			t.Fatalf("unexpected payload: %+v", p)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no client_command event received")
+	}
+	if h.hitsFor("POST", "/messages") != 0 {
+		t.Errorf("server should not auto-reply, hits=%v", h.hits)
+	}
+}
+
+func TestHandle_Log_RejectsInManagement(t *testing.T) {
+	h := newCommandHarness(t)
+	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!log")
+	if !h.lastReplyContains("run it inside a task channel") {
+		t.Errorf("expected task-channel scope error, got %v", h.reqs)
+	}
+}
+
 func TestHandle_Bind_ForwardsToDaemonWithMultipleIDs(t *testing.T) {
 	h := newCommandHarness(t)
 	sub, unsub := h.hub.Subscribe("client1")

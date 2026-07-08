@@ -60,6 +60,7 @@ type ccRunner struct {
 	stopped      bool
 	recoverStart bool
 	reacted      map[string]struct{}
+	history      []ccHistoryEntry
 }
 
 // ccTask is one queued prompt.
@@ -71,14 +72,20 @@ type ccTask struct {
 	TestID      string
 }
 
+type ccHistoryEntry struct {
+	Role string
+	Text string
+	At   time.Time
+}
+
 const (
 	ccQueueDepth = 10 // user spec: cap 10
 	ccDefaultDir = "cc-workspace"
 )
 
 var (
-	ccLongRunFirstNotice = 45 * time.Second
-	ccLongRunInterval    = 2 * time.Minute
+	ccLongRunFirstNotice = 10 * time.Minute
+	ccLongRunInterval    = 10 * time.Minute
 )
 
 // chooseCCRunFn picks the runner to use. tmux gives the user a live,
@@ -337,6 +344,8 @@ func (r *ccRunner) run(t ccTask) {
 	if r.debug {
 		r.logger("[cc-watch] %s: debug cli=%s", r.handle, r.debugCLI(prompt, sid, extraEnv))
 	}
+	r.appendHistory("user", prompt)
+	r.reactToTask(t, "⏳")
 	r.reportTaskTest(t, "started", "")
 	done := r.startLongRunReporter(t)
 	newSID, result, isError, err := r.runFn(ctx, r.bin, r.cwd, prompt, sid, extraEnv)
@@ -353,6 +362,7 @@ func (r *ccRunner) run(t ccTask) {
 			return
 		}
 		r.reportTaskTest(t, "failed", err.Error())
+		r.appendHistory("error", err.Error())
 		r.reactToTask(t, "⚠️")
 		if postErr := r.postTaskMessage(t, fmt.Sprintf("%s error: %v", r.agentName, err)); postErr != nil {
 			r.logger("[cc-watch] %s: post error message failed: %v", r.handle, postErr)
@@ -374,6 +384,9 @@ func (r *ccRunner) run(t ccTask) {
 	}
 	if isError {
 		body = fmt.Sprintf("⚠️ %s reported an error:\n%s", r.agentName, body)
+		r.appendHistory("assistant_error", result)
+	} else {
+		r.appendHistory("assistant", result)
 	}
 	if err := r.postTaskMessage(t, body); err != nil {
 		r.logger("[cc-watch] %s: discord post failed: %v", r.handle, err)
@@ -487,20 +500,46 @@ func (r *ccRunner) startLongRunReporter(t ccTask) chan struct{} {
 		case <-done:
 			return
 		case <-timer.C:
-			r.reactToTask(t, "⏳")
+			r.postLongRunNotice(t, ccLongRunFirstNotice)
 		}
 		ticker := time.NewTicker(ccLongRunInterval)
 		defer ticker.Stop()
+		elapsed := ccLongRunFirstNotice
 		for {
 			select {
 			case <-done:
 				return
 			case <-ticker.C:
-				r.reactToTask(t, "⏳")
+				elapsed += ccLongRunInterval
+				r.postLongRunNotice(t, elapsed)
 			}
 		}
 	}()
 	return done
+}
+
+func (r *ccRunner) postLongRunNotice(t ccTask, elapsed time.Duration) {
+	if t.TestID != "" && !isDiscordSnowflake(t.MessageID) {
+		return
+	}
+	msg := fmt.Sprintf("⏳ Still running after %s. Use `!log` to show the latest agent conversation.", formatDurationForDiscord(elapsed))
+	if recent := r.formatRecentHistory(3); recent != "" {
+		msg += "\n\n" + recent
+	}
+	if err := r.postTaskMessage(t, msg); err != nil {
+		r.logger("[cc-watch] %s: long-run notice post failed: %v", r.handle, err)
+	}
+}
+
+func formatDurationForDiscord(d time.Duration) string {
+	if d < time.Minute {
+		return d.Round(time.Second).String()
+	}
+	mins := int(d.Round(time.Minute) / time.Minute)
+	if mins == 1 {
+		return "1 minute"
+	}
+	return fmt.Sprintf("%d minutes", mins)
 }
 
 func (r *ccRunner) postTaskMessage(t ccTask, content string) error {
@@ -534,6 +573,68 @@ func (r *ccRunner) claimReaction(messageID, emoji string) bool {
 	}
 	r.reacted[key] = struct{}{}
 	return true
+}
+
+func (r *ccRunner) appendHistory(role, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	const maxHistory = 50
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.history = append(r.history, ccHistoryEntry{Role: role, Text: text, At: time.Now()})
+	if len(r.history) > maxHistory {
+		r.history = append([]ccHistoryEntry(nil), r.history[len(r.history)-maxHistory:]...)
+	}
+}
+
+func (r *ccRunner) formatRecentHistory(n int) string {
+	if n <= 0 {
+		n = 3
+	}
+	r.mu.Lock()
+	hist := append([]ccHistoryEntry(nil), r.history...)
+	r.mu.Unlock()
+	if len(hist) == 0 {
+		return "_(no agent conversation recorded yet)_"
+	}
+	if len(hist) > n {
+		hist = hist[len(hist)-n:]
+	}
+	var b strings.Builder
+	b.WriteString("**Latest agent conversation:**\n")
+	for _, h := range hist {
+		fmt.Fprintf(&b, "• **%s** %s\n", historyRoleLabel(h.Role), truncateForDiscordLog(h.Text, 700))
+	}
+	return b.String()
+}
+
+func historyRoleLabel(role string) string {
+	switch role {
+	case "user":
+		return "user"
+	case "assistant":
+		return "agent"
+	case "assistant_error":
+		return "agent error"
+	case "error":
+		return "runner error"
+	default:
+		return role
+	}
+}
+
+func truncateForDiscordLog(s string, max int) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max < 1 {
+		return ""
+	}
+	return string(r[:max-1]) + "…"
 }
 
 func (r *ccRunner) reportTaskTest(t ccTask, status, errText string) {

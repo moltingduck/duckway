@@ -58,10 +58,35 @@ func (w *CCWatch) handleClientCommand(data []byte) {
 		w.cmdNewProject(env.Handle, payload.Args)
 	case "!new-confirm":
 		w.cmdNewProjectConfirm(env.Handle, payload.Args)
+	case "!log":
+		w.cmdLog(env.Handle, payload.Args)
 	default:
 		_ = w.api.PostCC(context.Background(), env.Handle,
 			"❌ daemon doesn't know how to handle `"+payload.Command+"` — update your `duckway` binary on the agent.")
 	}
+}
+
+func (w *CCWatch) cmdLog(replyHandle string, args []string) {
+	n := 3
+	if len(args) > 0 {
+		joined := strings.TrimSpace(strings.Join(args, " "))
+		switch joined {
+		case "":
+		case "last 3":
+			n = 3
+		default:
+			_ = w.api.PostCC(context.Background(), replyHandle, "❌ usage: `!log`")
+			return
+		}
+	}
+	w.mu.Lock()
+	runner := w.runners[replyHandle]
+	w.mu.Unlock()
+	if runner == nil {
+		_ = w.api.PostCC(context.Background(), replyHandle, "_(no agent runner has started for this channel yet)_")
+		return
+	}
+	_ = w.api.PostCC(context.Background(), replyHandle, runner.formatRecentHistory(n))
 }
 
 func (w *CCWatch) cmdProjects(replyHandle string, args []string) {

@@ -139,6 +139,13 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 		}
 		h.forwardToDaemon(ctx, botToken, cc, ch, cmd, args[1:])
 
+	case "!log":
+		if ch.Kind == "management" {
+			h.reply(ctx, botToken, ch.ChannelID, "❌ `!log` shows the current task channel's recent agent conversation — run it inside a task channel.")
+			return
+		}
+		h.forwardToDaemon(ctx, botToken, cc, ch, cmd, args[1:])
+
 	default:
 		h.reply(ctx, botToken, ch.ChannelID, unknownCommandReply(cmd))
 	}
@@ -147,7 +154,7 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 // knownCommands is the canonical list used for `!help` discovery + the
 // fuzzy "did you mean" suggestion. Order is the user-facing display
 // order in !help.
-var knownCommands = []string{"!help", "!new", "!new-confirm", "!end", "!destroy", "!reset", "!list", "!status", "!sessions", "!bind", "!projects"}
+var knownCommands = []string{"!help", "!new", "!new-confirm", "!end", "!destroy", "!reset", "!list", "!status", "!sessions", "!bind", "!projects", "!log"}
 
 // unknownCommandReply formats the friendly response for an unrecognised
 // !-prefix command. Suggests close matches (Levenshtein distance ≤ 2)
@@ -515,6 +522,7 @@ const helpText = "**Duckway CC commands**\n" +
 	"`!sessions [<cwd-filter>]` — list local claude sessions on the agent that aren't yet bound to a CC channel\n" +
 	"`!bind <session_id> [<session_id> …]` — create a task channel for each session_id and attach it (run `!sessions` first to find IDs)\n" +
 	"`!projects [<filter>]` — list saved project folders from the agent machine\n" +
+	"`!log` — show the current task channel's latest 3 agent conversation entries\n" +
 	"`!help` — this message\n" +
 	"\n" +
 	"**Sending claude slash & shell commands**\n" +

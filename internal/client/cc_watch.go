@@ -329,9 +329,6 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		}
 		return
 	}
-	if messageID != "" {
-		_ = w.api.ReactCC(context.Background(), env.Handle, messageID, "🦆")
-	}
 	if !runner.Enqueue(ccTask{Content: msg.Content, AuthorID: msg.Author.ID, MessageID: messageID, ChannelKind: env.Kind, TestID: msg.TestID}) {
 		log.Printf("[cc-watch] %s: queue full, dropping message %s", env.Handle, msg.ID)
 		w.reportAgentTest(msg.TestID, "failed", "session queue full")
@@ -343,6 +340,9 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 				"⚠️ session queue full (10 messages backed up) — your message was dropped, please retry once the agent catches up.")
 		}
 		return
+	}
+	if messageID != "" {
+		_ = w.api.ReactCC(context.Background(), env.Handle, messageID, "🦆")
 	}
 }
 

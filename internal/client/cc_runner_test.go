@@ -125,14 +125,14 @@ func TestCCRunner_PostsResult(t *testing.T) {
 func TestCCRunner_PostsProgressForLongRunningTask(t *testing.T) {
 	oldFirst, oldInterval := ccLongRunFirstNotice, ccLongRunInterval
 	ccLongRunFirstNotice = 20 * time.Millisecond
-	ccLongRunInterval = 50 * time.Millisecond
+	ccLongRunInterval = 30 * time.Millisecond
 	t.Cleanup(func() {
 		ccLongRunFirstNotice = oldFirst
 		ccLongRunInterval = oldInterval
 	})
 
 	fn := ccRunFn(func(_ context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
-		time.Sleep(80 * time.Millisecond)
+		time.Sleep(90 * time.Millisecond)
 		return "sess-abc", "done", false, nil
 	})
 	store := NewCCSessionStore(t.TempDir())
@@ -148,11 +148,17 @@ func TestCCRunner_PostsProgressForLongRunningTask(t *testing.T) {
 	if !r.Enqueue(ccTask{Content: "slow work", MessageID: messageID, ChannelKind: "task"}) {
 		t.Fatal("Enqueue returned false")
 	}
-	waitForPosts(t, pp, 1)
+	waitForPosts(t, pp, 4)
 
 	posts := strings.Join(pp.all(), "\n")
 	if !strings.Contains(posts, "done") {
 		t.Fatalf("missing final result:\n%s", posts)
+	}
+	if !strings.Contains(posts, "Still running") || !strings.Contains(posts, "Latest agent conversation") {
+		t.Fatalf("missing long-run progress notice:\n%s", posts)
+	}
+	if got := strings.Count(posts, "Still running after"); got < 2 {
+		t.Fatalf("long-running task should post repeated progress notices, got %d:\n%s", got, posts)
 	}
 	reactions := strings.Join(pp.allReactions(), "\n")
 	if !strings.Contains(reactions, messageID+":⏳") {

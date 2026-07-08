@@ -11,16 +11,18 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeServer is a small recording HTTP server that returns canned
 // responses for the create-channel and post-message endpoints used by
 // the bind flow.
 type fakeServer struct {
-	mu       sync.Mutex
-	creates  []map[string]string
-	messages []map[string]string
-	srv      *httptest.Server
+	mu        sync.Mutex
+	creates   []map[string]string
+	messages  []map[string]string
+	reactions []string
+	srv       *httptest.Server
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -48,6 +50,13 @@ func newFakeServer(t *testing.T) *fakeServer {
 			f.messages = append(f.messages, body)
 			f.mu.Unlock()
 			w.WriteHeader(204)
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "/reactions"):
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.mu.Lock()
+			f.reactions = append(f.reactions, r.URL.Path+":"+body["emoji"])
+			f.mu.Unlock()
+			w.WriteHeader(204)
 		default:
 			http.Error(w, "unhandled "+r.Method+" "+r.URL.Path, 404)
 		}
@@ -69,6 +78,14 @@ func (f *fakeServer) snapshotCreates() []map[string]string {
 	defer f.mu.Unlock()
 	out := make([]map[string]string, len(f.creates))
 	copy(out, f.creates)
+	return out
+}
+
+func (f *fakeServer) snapshotReactions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.reactions))
+	copy(out, f.reactions)
 	return out
 }
 
@@ -409,6 +426,85 @@ func TestHandleClientCommand_DispatchesByName(t *testing.T) {
 		t.Errorf("unexpected reply: %q", msgs[0]["content"])
 	}
 }
+
+func TestHandleClientCommand_LogReturnsRunnerHistory(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	store := NewCCSessionStore(t.TempDir())
+	pp := &recordingPoster{}
+	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", RunFn: func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+		return "sid", "ok", false, nil
+	}, UseTmux: false}
+	r, err := newCCRunner("dwch_task", w.configDir, t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+	r.appendHistory("user", "first")
+	r.appendHistory("assistant", "second")
+	r.appendHistory("user", "third")
+	r.appendHistory("assistant", "fourth")
+	w.runners["dwch_task"] = r
+
+	env := sseEnvelope{
+		Type:    "client_command",
+		Handle:  "dwch_task",
+		Payload: json.RawMessage(`{"command":"!log","args":[]}`),
+	}
+	data, _ := json.Marshal(env)
+	w.handleClientCommand(data)
+
+	msgs := fake.snapshotMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected one reply, got %d", len(msgs))
+	}
+	body := msgs[0]["content"]
+	if strings.Contains(body, "first") || !strings.Contains(body, "second") || !strings.Contains(body, "third") || !strings.Contains(body, "fourth") {
+		t.Fatalf("unexpected !log body:\n%s", body)
+	}
+}
+
+func TestHandleMessageCreateReactsDuckAfterEnqueue(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	started := make(chan struct{})
+	done := make(chan struct{})
+	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", RunFn: func(ctx context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
+		close(started)
+		<-done
+		return "sid", "ok", false, nil
+	}, UseTmux: false}
+	r, err := newCCRunner("dwch_task", w.configDir, t.TempDir(), spec, w.sessions, fakePostNoop, fakePostReplyNoop, fakeReactNoop, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		close(done)
+		r.Stop()
+	}()
+	w.runners["dwch_task"] = r
+
+	payload := json.RawMessage(`{"id":"1783330000000001234","content":"work","author":{"id":"U1","bot":false}}`)
+	env := sseEnvelope{Type: "message_create", CCID: "cc1", Handle: "dwch_task", Kind: "task", Payload: payload}
+	data, _ := json.Marshal(env)
+	w.handleMessageCreate(data)
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
+	reactions := strings.Join(fake.snapshotReactions(), "\n")
+	if !strings.Contains(reactions, "1783330000000001234/reactions:🦆") {
+		t.Fatalf("missing queued duck reaction:\n%s", reactions)
+	}
+}
+
+func fakePostNoop(context.Context, string, string) error { return nil }
+
+func fakePostReplyNoop(context.Context, string, string, string) error { return nil }
+
+func fakeReactNoop(context.Context, string, string, string) error { return nil }
 
 func TestBindLocalSessions_FullCLIEntry(t *testing.T) {
 	// Same as cmdBind but exercises the standalone func the CLI uses.
