@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -438,7 +439,7 @@ func TestGitHubAppMinterLive(t *testing.T) {
 	}
 	configPath := os.Getenv("DUCKWAY_GITHUB_APP_LIVE_CONFIG")
 	if configPath == "" {
-		configPath = "secrets/github-app-live.json"
+		configPath = findGitHubAppLiveConfig(t)
 	}
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
@@ -492,6 +493,24 @@ func TestGitHubAppMinterLive(t *testing.T) {
 	if !strings.Contains(resp, `"status":"ok"`) || !strings.Contains(resp, `"contents":"read"`) {
 		t.Fatalf("live response missing success metadata: %s", resp)
 	}
+}
+
+func findGitHubAppLiveConfig(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	for dir := wd; ; dir = filepath.Dir(dir) {
+		candidate := filepath.Join(dir, "secrets", "github-app-live.json")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			break
+		}
+	}
+	return filepath.Join("secrets", "github-app-live.json")
 }
 
 func testGitHubService(id string) *models.Service {

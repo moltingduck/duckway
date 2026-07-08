@@ -661,10 +661,10 @@ Optional for GitHub Enterprise or a local mock:
 Run the live test explicitly:
 
 ```bash
-DUCKWAY_TEST_GITHUB_APP_LIVE=1 \
-DUCKWAY_GITHUB_APP_LIVE_CONFIG=secrets/github-app-live.json \
-go test ./internal/server/handlers -run TestGitHubAppMinterLive -count=1 -v
+DUCKWAY_TEST_GITHUB_APP_LIVE=1 go test ./internal/server/handlers -run TestGitHubAppMinterLive -count=1 -v
 ```
+
+By default, the test searches upward from the package test directory for `secrets/github-app-live.json`. Set `DUCKWAY_GITHUB_APP_LIVE_CONFIG=/absolute/path/to/github-app-live.json` to use a different location.
 
 The test mints a short-lived installation token for `repository`, verifies GitHub grants `contents: read`, and asserts the handler response does not contain the `ghs_` token or private key. Do not commit files under `secrets/`; the directory is ignored by `.gitignore`.
 
