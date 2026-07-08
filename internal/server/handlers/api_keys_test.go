@@ -1,6 +1,7 @@
 package handlers_test
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -493,6 +494,115 @@ func TestGitHubAppMinterLive(t *testing.T) {
 	if !strings.Contains(resp, `"status":"ok"`) || !strings.Contains(resp, `"contents":"read"`) {
 		t.Fatalf("live response missing success metadata: %s", resp)
 	}
+}
+
+func TestAPIKeyDeleteRefreshablePreviewsImpact(t *testing.T) {
+	db, apiKeyQ := seedAPIKeyDeleteRefreshable(t)
+	h := handlers.NewAPIKeyHandler(apiKeyQ, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/keys/key-refresh-api", strings.NewReader(`{"confirm":false}`))
+	req.SetPathValue("id", "key-refresh-api")
+	rec := httptest.NewRecorder()
+
+	h.Delete(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		RequiresConfirmation bool `json:"requires_confirmation"`
+		Impact               struct {
+			KeyName         string        `json:"key_name"`
+			KeySuites       []interface{} `json:"key_suites"`
+			Clients         []interface{} `json:"clients"`
+			ControlChannels []interface{} `json:"control_channels"`
+		} `json:"impact"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.RequiresConfirmation || resp.Impact.KeyName != "refresh api key" {
+		t.Fatalf("unexpected preview response: %+v", resp)
+	}
+	if len(resp.Impact.KeySuites) != 1 || len(resp.Impact.Clients) != 1 || len(resp.Impact.ControlChannels) != 1 {
+		t.Fatalf("unexpected impact counts: %+v", resp.Impact)
+	}
+	var keyCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE id = 'key-refresh-api'`).Scan(&keyCount); err != nil {
+		t.Fatal(err)
+	}
+	if keyCount != 1 {
+		t.Fatalf("preview deleted key, count=%d", keyCount)
+	}
+}
+
+func TestAPIKeyDeleteRefreshableConfirmCleansReferences(t *testing.T) {
+	db, apiKeyQ := seedAPIKeyDeleteRefreshable(t)
+	h := handlers.NewAPIKeyHandler(apiKeyQ, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/keys/key-refresh-api", strings.NewReader(`{"confirm":true}`))
+	req.SetPathValue("id", "key-refresh-api")
+	rec := httptest.NewRecorder()
+
+	h.Delete(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	for label, query := range map[string]string{
+		"key suite entries": `SELECT COUNT(*) FROM key_suite_entries WHERE api_key_id = 'key-refresh-api'`,
+		"placeholders":      `SELECT COUNT(*) FROM placeholder_keys WHERE api_key_id = 'key-refresh-api'`,
+	} {
+		var count int
+		if err := db.QueryRow(query).Scan(&count); err != nil {
+			t.Fatalf("%s count: %v", label, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count = %d, want 0", label, count)
+		}
+	}
+	var ccActive int
+	if err := db.QueryRow(`SELECT is_active FROM control_channels WHERE id = 'cc-refresh-api'`).Scan(&ccActive); err != nil {
+		t.Fatal(err)
+	}
+	if ccActive != 0 {
+		t.Fatalf("control channel active = %d, want 0", ccActive)
+	}
+	key, err := apiKeyQ.GetByID("key-refresh-api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.IsRefreshable || key.IsActive || !strings.HasPrefix(key.Name, "Deleted refreshable token:") {
+		t.Fatalf("retained key not marked deleted: %+v", key)
+	}
+}
+
+func seedAPIKeyDeleteRefreshable(t *testing.T) (*sql.DB, *queries.APIKeyQueries) {
+	t.Helper()
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	exec := func(query string, args ...interface{}) {
+		t.Helper()
+		if _, err := db.Exec(query, args...); err != nil {
+			t.Fatalf("exec %q: %v", query, err)
+		}
+	}
+	exec(`INSERT INTO services (id, name, display_name, upstream_url, host_pattern)
+		VALUES ('svc-refresh-api', 'refresh-api', 'Refresh API', 'https://refresh.example', 'refresh.example')`)
+	exec(`INSERT INTO clients (id, name, token_hash)
+		VALUES ('client-refresh-api', 'refresh api client', 'hash-refresh-api')`)
+	exec(`INSERT INTO api_keys (id, service_id, name, key_encrypted, refresh_token)
+		VALUES ('key-refresh-api', 'svc-refresh-api', 'refresh api key', 'encrypted-access', 'encrypted-refresh')`)
+	exec(`INSERT INTO key_suites (id, name, description)
+		VALUES ('suite-refresh-api', 'Refresh API Suite', '')`)
+	exec(`INSERT INTO key_suite_entries (id, suite_id, service_id, api_key_id, env_name)
+		VALUES ('entry-refresh-api', 'suite-refresh-api', 'svc-refresh-api', 'key-refresh-api', 'REFRESH_API_KEY')`)
+	exec(`INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, client_id, suite_id)
+		VALUES ('ph-refresh-api', 'REFRESH_API_KEY', 'sk-refresh-api', 'svc-refresh-api', 'key-refresh-api', 'client-refresh-api', 'suite-refresh-api')`)
+	exec(`INSERT INTO control_channels (id, name, service_id, api_key_id, client_id, agent_type, placeholder_id, config, is_active)
+		VALUES ('cc-refresh-api', 'Refresh API CC', 'svc-refresh-api', 'key-refresh-api', 'client-refresh-api', 'codex', 'ph-refresh-api', '{}', 1)`)
+	return db, queries.NewAPIKeyQueries(db)
 }
 
 func findGitHubAppLiveConfig(t *testing.T) string {

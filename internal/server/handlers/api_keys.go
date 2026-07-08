@@ -390,6 +390,41 @@ func sameOriginRequest(r *http.Request) bool {
 
 func (h *APIKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	key, err := h.apiKeys.GetByID(id)
+	if err != nil {
+		jsonError(w, "key not found", http.StatusNotFound)
+		return
+	}
+	if key.IsRefreshable {
+		var req struct {
+			Confirm bool `json:"confirm"`
+		}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+		if !req.Confirm {
+			impact, err := h.apiKeys.RefreshableDeleteImpact(id)
+			if err != nil {
+				jsonError(w, "delete preview failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			jsonResponse(w, map[string]interface{}{
+				"requires_confirmation": true,
+				"impact":                impact,
+			})
+			return
+		}
+		impact, err := h.apiKeys.DeleteRefreshableWithCleanup(id)
+		if err != nil {
+			jsonError(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		jsonResponse(w, map[string]interface{}{
+			"status": "deleted",
+			"impact": impact,
+		})
+		return
+	}
 	if err := h.apiKeys.DeleteWithControlChannelCleanup(id); err != nil {
 		jsonError(w, "failed to delete key", http.StatusInternalServerError)
 		return
