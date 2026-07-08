@@ -797,6 +797,7 @@ func consumePendingTurnEvent(ctx context.Context, handle string) (*RecoverPendin
 	if !ok {
 		return nil, os.ErrNotExist
 	}
+	chDir := filepath.Dir(inFlightPath)
 	tick := time.NewTicker(eventPollInterval)
 	defer tick.Stop()
 	for {
@@ -809,10 +810,15 @@ func consumePendingTurnEvent(ctx context.Context, handle string) (*RecoverPendin
 				return nil, fmt.Errorf("scan events: %w", err)
 			}
 			if !found {
+				if result, ok, err := recoverCodexCompletedOutput(f, chDir); err != nil {
+					return nil, err
+				} else if ok {
+					_ = os.Remove(inFlightPath)
+					return result, nil
+				}
 				continue
 			}
 			if cev, ok := parseCodexTmuxEventPayload(evt.payload); ok {
-				chDir := filepath.Dir(inFlightPath)
 				body, sessionID, cerr := recoverCodexTmuxResult(*cev, chDir)
 				if cerr != nil {
 					return nil, cerr
@@ -886,6 +892,13 @@ func RecoverPendingTurns() ([]RecoverPendingTurnsResult, error) {
 			continue
 		}
 		if !found {
+			if result, ok, cerr := recoverCodexCompletedOutput(f, chDir); cerr != nil {
+				continue
+			} else if ok {
+				_ = os.Remove(inFlightPath)
+				out = append(out, *result)
+				continue
+			}
 			out = append(out, RecoverPendingTurnsResult{
 				Handle:    f.Handle,
 				MessageID: f.MessageID,
@@ -931,6 +944,22 @@ func RecoverPendingTurns() ([]RecoverPendingTurnsResult, error) {
 	return out, nil
 }
 
+func recoverCodexCompletedOutput(f *inFlight, chDir string) (*RecoverPendingTurnsResult, bool, error) {
+	outputPath := filepath.Join(chDir, fmt.Sprintf("codex-%d.jsonl", f.TurnTS))
+	body, sessionID, complete, err := recoverCodexCompletedOutputFile(outputPath, f, chDir)
+	if err != nil || !complete {
+		return nil, false, err
+	}
+	return &RecoverPendingTurnsResult{
+		Handle:               f.Handle,
+		MessageID:            f.MessageID,
+		TurnTS:               f.TurnTS,
+		SessionID:            sessionID,
+		LastAssistantMessage: body,
+		HadResult:            true,
+	}, true, nil
+}
+
 func removePendingInFlight(handle string) {
 	chDir, err := tmuxChannelDir(handle)
 	if err != nil {
@@ -965,6 +994,37 @@ func recoverCodexTmuxResult(evt codexTmuxEvent, expectedDir string) (body, sessi
 		}
 	}
 	return body, sessionID, nil
+}
+
+func recoverCodexCompletedOutputFile(outputPath string, f *inFlight, expectedDir string) (body, sessionID string, complete bool, err error) {
+	if _, statErr := os.Stat(outputPath); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return "", "", false, nil
+		}
+		return "", "", false, statErr
+	}
+	ok, err := pathWithinDir(outputPath, expectedDir)
+	if err != nil {
+		return "", "", false, err
+	}
+	if !ok {
+		return "", "", false, fmt.Errorf("codex output path outside channel state dir")
+	}
+	out, err := os.ReadFile(outputPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", "", false, nil
+		}
+		return "", "", false, fmt.Errorf("read codex output: %w", err)
+	}
+	parsed := parseCodexJSONLResult(out, "")
+	if !parsed.Complete || parsed.Result == "" {
+		return "", "", false, nil
+	}
+	if parsed.SessionID == "" {
+		parsed.SessionID = ""
+	}
+	return parsed.Result, parsed.SessionID, true, nil
 }
 
 func pathWithinDir(path, dir string) (bool, error) {

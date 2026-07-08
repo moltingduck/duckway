@@ -30,6 +30,41 @@ func TestParseCodexJSONL(t *testing.T) {
 	}
 }
 
+func TestParseCodexJSONLResultDetectsTerminalEvents(t *testing.T) {
+	out := []byte(`{"type":"thread.started","thread_id":"sid-terminal"}
+{"type":"item.completed","item":{"type":"agent_message","text":"finished before transport error"}}
+{"type":"task_complete"}
+failed to connect to websocket: Attack attempt detected
+`)
+	got := parseCodexJSONLResult(out, "")
+	if got.SessionID != "sid-terminal" {
+		t.Fatalf("SessionID = %q", got.SessionID)
+	}
+	if got.Result != "finished before transport error" {
+		t.Fatalf("Result = %q", got.Result)
+	}
+	if got.IsError {
+		t.Fatal("IsError = true")
+	}
+	if !got.Complete {
+		t.Fatal("Complete = false")
+	}
+}
+
+func TestParseCodexJSONLResultFinalEvent(t *testing.T) {
+	out := []byte(`{"type":"thread.started","thread_id":"sid-final"}
+{"type":"final","text":"final event answer","debug":{"token":"do-not-include"}}
+{"type":"task_complete"}
+`)
+	got := parseCodexJSONLResult(out, "")
+	if got.Result != "final event answer" || !got.Complete || got.IsError {
+		t.Fatalf("parsed = %+v", got)
+	}
+	if strings.Contains(got.Result, "do-not-include") {
+		t.Fatalf("parser leaked non-public final fields: %q", got.Result)
+	}
+}
+
 func TestParseCodexJSONL_KeepsFallbackSessionID(t *testing.T) {
 	out := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}`)
 	sid, result, _ := parseCodexJSONL(out, "existing-thread")
@@ -130,6 +165,59 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"o
 		t.Fatal(err)
 	}
 	if sid != "sid-codex-exec" || result != "ok" || isErr {
+		t.Fatalf("sid=%q result=%q isErr=%v", sid, result, isErr)
+	}
+}
+
+func TestRunViaCodexExecReturnsAfterTerminalOutputWhenProcessHangs(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"thread.started","thread_id":"sid-hang"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done before hang"}}'
+printf '%s\n' '{"type":"task_complete"}'
+sleep 30
+`
+	if err := os.WriteFile(stub, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+
+	sid, result, isErr, err := runViaCodexExec(ctx, stub, dir, "hello", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("runViaCodexExec waited for hung process; elapsed=%v", elapsed)
+	}
+	if sid != "sid-hang" || result != "done before hang" || isErr {
+		t.Fatalf("sid=%q result=%q isErr=%v", sid, result, isErr)
+	}
+}
+
+func TestRunViaCodexExecFinalAnswerWinsOverTransportExitError(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"thread.started","thread_id":"sid-exit-error"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done before websocket error"}}'
+printf '%s\n' '{"type":"turn.completed"}'
+printf '%s\n' 'failed to connect to websocket: Attack attempt detected' >&2
+exit 7
+`
+	if err := os.WriteFile(stub, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sid, result, isErr, err := runViaCodexExec(ctx, stub, dir, "hello", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid != "sid-exit-error" || result != "done before websocket error" || isErr {
 		t.Fatalf("sid=%q result=%q isErr=%v", sid, result, isErr)
 	}
 }
@@ -331,6 +419,91 @@ func TestRecoverPendingTurnsCodexTmuxEvent(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(chDir, "in-flight.json")); !os.IsNotExist(err) {
 		t.Fatalf("in-flight still exists: %v", err)
+	}
+}
+
+func TestRecoverPendingTurnsCodexCompletedOutputWithoutStopEvent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	handle := "codex-recover-complete"
+	chDir, err := tmuxChannelDir(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(chDir, "events"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	turnTS := int64(123456789)
+	if err := writeInFlight(filepath.Join(chDir, "in-flight.json"), handle, "msg-codex-complete", turnTS); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(chDir, "codex-123456789.jsonl")
+	out := []byte(`{"type":"thread.started","thread_id":"sid-recovered-complete"}
+{"type":"item.completed","item":{"type":"agent_message","text":"recovered without stop event"}}
+{"type":"task_complete"}
+failed to connect to websocket: Attack attempt detected
+`)
+	if err := os.WriteFile(outputPath, out, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := RecoverPendingTurns()
+	if err != nil {
+		t.Fatalf("RecoverPendingTurns: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1: %+v", len(results), results)
+	}
+	got := results[0]
+	if !got.HadResult || got.Handle != handle || got.MessageID != "msg-codex-complete" {
+		t.Fatalf("result metadata = %+v", got)
+	}
+	if got.SessionID != "sid-recovered-complete" {
+		t.Fatalf("SessionID = %q", got.SessionID)
+	}
+	if got.LastAssistantMessage != "recovered without stop event" {
+		t.Fatalf("LastAssistantMessage = %q", got.LastAssistantMessage)
+	}
+	if _, err := os.Stat(filepath.Join(chDir, "in-flight.json")); !os.IsNotExist(err) {
+		t.Fatalf("in-flight still exists: %v", err)
+	}
+}
+
+func TestRecoverPendingTurnsCodexIncompleteOutputStillRunning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	handle := "codex-recover-incomplete"
+	chDir, err := tmuxChannelDir(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(chDir, "events"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	turnTS := int64(987654321)
+	if err := writeInFlight(filepath.Join(chDir, "in-flight.json"), handle, "msg-codex-incomplete", turnTS); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(chDir, "codex-987654321.jsonl")
+	out := []byte(`{"type":"thread.started","thread_id":"sid-incomplete"}
+{"type":"item.completed","item":{"type":"agent_message","text":"partial answer"}}
+`)
+	if err := os.WriteFile(outputPath, out, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := RecoverPendingTurns()
+	if err != nil {
+		t.Fatalf("RecoverPendingTurns: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1: %+v", len(results), results)
+	}
+	if results[0].HadResult {
+		t.Fatalf("incomplete output should not be recovered as final: %+v", results[0])
+	}
+	if _, err := os.Stat(filepath.Join(chDir, "in-flight.json")); err != nil {
+		t.Fatalf("in-flight should remain: %v", err)
 	}
 }
 

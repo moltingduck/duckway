@@ -6,22 +6,33 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
 type codexJSONEvent struct {
 	Type     string `json:"type"`
 	ThreadID string `json:"thread_id"`
+	Text     string `json:"text"`
 	Item     struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"item"`
 	Error   string `json:"error"`
 	Message string `json:"message"`
+}
+
+type codexParseResult struct {
+	SessionID string
+	Result    string
+	IsError   bool
+	Complete  bool
 }
 
 func codexExecSandboxArgs(extraEnv []string) []string {
@@ -91,19 +102,111 @@ func runViaCodexExec(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(), extraEnv...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	out, err := cmd.CombinedOutput()
-	sessionID, result, isError = parseCodexJSONL(out, sid)
+	out, err := runCodexCommandUntilComplete(ctx, cmd)
+	parsed := parseCodexJSONLResult(out, sid)
+	sessionID, result, isError = parsed.SessionID, parsed.Result, parsed.IsError
 	if sessionID == "" {
 		sessionID = sid
 	}
 	if err != nil {
+		if parsed.Complete && result != "" && !isError {
+			return sessionID, result, false, nil
+		}
 		if result != "" {
 			return sessionID, result, isError, fmt.Errorf("codex reported an error: %s", result)
 		}
 		return "", "", false, fmt.Errorf("codex: %w (output: %.400s)", err, out)
 	}
 	return sessionID, result, isError, nil
+}
+
+func runCodexCommandUntilComplete(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	var outMu syncBuffer
+	complete := make(chan struct{}, 1)
+	read := func(r io.Reader) {
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for sc.Scan() {
+			line := append([]byte(nil), sc.Bytes()...)
+			outMu.writeLine(line)
+			parsed := parseCodexJSONLResult(outMu.bytes(), "")
+			if parsed.Complete && parsed.Result != "" {
+				select {
+				case complete <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	waitDone := make(chan error, 1)
+	var readers sync.WaitGroup
+	readAndDone := func(r io.Reader) {
+		defer readers.Done()
+		read(r)
+	}
+	readers.Add(2)
+	go readAndDone(stdout)
+	go readAndDone(stderr)
+	go func() {
+		readers.Wait()
+		waitDone <- cmd.Wait()
+	}()
+	select {
+	case err := <-waitDone:
+		return outMu.bytes(), err
+	case <-complete:
+		if cmd.Process != nil {
+			killProcessGroup(cmd.Process)
+		}
+		<-waitDone
+		return outMu.bytes(), nil
+	case <-ctx.Done():
+		if cmd.Process != nil {
+			killProcessGroup(cmd.Process)
+		}
+		<-waitDone
+		return outMu.bytes(), ctx.Err()
+	}
+}
+
+func killProcessGroup(p *os.Process) {
+	if p == nil {
+		return
+	}
+	if err := syscall.Kill(-p.Pid, syscall.SIGKILL); err != nil {
+		_ = p.Kill()
+	}
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) writeLine(line []byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.Write(line)
+	b.buf.WriteByte('\n')
+}
+
+func (b *syncBuffer) bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
 }
 
 type codexTmuxEvent struct {
@@ -152,7 +255,7 @@ func runViaCodexTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 		return "", "", false, err
 	}
 
-	evt, err := pollForCodexTmuxEvent(ctx, eventsDir, turnTS, 0)
+	evt, err := pollForCodexTmuxEvent(ctx, eventsDir, turnTS, outputPath, sid, 0)
 	if err != nil {
 		return "", "", false, err
 	}
@@ -210,7 +313,7 @@ func writeCodexTmuxLaunchScript(path, bin, cwd, promptPath, outputPath, eventsDi
 	return os.WriteFile(path, []byte(sb.String()), 0700)
 }
 
-func pollForCodexTmuxEvent(ctx context.Context, eventsDir string, afterTS int64, timeout time.Duration) (*codexTmuxEvent, error) {
+func pollForCodexTmuxEvent(ctx context.Context, eventsDir string, afterTS int64, outputPath, fallbackSessionID string, timeout time.Duration) (*codexTmuxEvent, error) {
 	var deadline <-chan time.Time
 	if timeout > 0 {
 		timer := time.NewTimer(timeout)
@@ -231,6 +334,15 @@ func pollForCodexTmuxEvent(ctx context.Context, eventsDir string, afterTS int64,
 				return nil, fmt.Errorf("scan events: %w", err)
 			}
 			if !found {
+				if outputPath != "" {
+					complete, err := codexOutputComplete(outputPath, fallbackSessionID)
+					if err != nil {
+						return nil, err
+					}
+					if complete {
+						return &codexTmuxEvent{OutputPath: outputPath, FallbackSessionID: fallbackSessionID, ExitCode: 0}, nil
+					}
+				}
 				continue
 			}
 			parsed, ok := parseCodexTmuxEventPayload(evt.payload)
@@ -256,7 +368,12 @@ func parseCodexTmuxEventPayload(payload string) (*codexTmuxEvent, bool) {
 }
 
 func parseCodexJSONL(out []byte, fallbackSessionID string) (sessionID, result string, isError bool) {
-	sessionID = fallbackSessionID
+	parsed := parseCodexJSONLResult(out, fallbackSessionID)
+	return parsed.SessionID, parsed.Result, parsed.IsError
+}
+
+func parseCodexJSONLResult(out []byte, fallbackSessionID string) codexParseResult {
+	parsed := codexParseResult{SessionID: fallbackSessionID}
 	haveAgentMessage := false
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -272,22 +389,34 @@ func parseCodexJSONL(out []byte, fallbackSessionID string) (sessionID, result st
 		switch ev.Type {
 		case "thread.started":
 			if ev.ThreadID != "" {
-				sessionID = ev.ThreadID
+				parsed.SessionID = ev.ThreadID
 			}
 		case "item.completed":
 			if ev.Item.Type == "agent_message" {
-				result = ev.Item.Text
+				parsed.Result = ev.Item.Text
 				haveAgentMessage = true
-				isError = false
+				parsed.IsError = false
 			}
+		case "final":
+			text := ev.Text
+			if text == "" {
+				text = ev.Message
+			}
+			if text != "" {
+				parsed.Result = text
+				haveAgentMessage = true
+				parsed.IsError = false
+			}
+		case "task_complete", "turn.completed":
+			parsed.Complete = true
 		case "error":
 			if !haveAgentMessage {
-				isError = true
+				parsed.IsError = true
 				switch {
 				case ev.Message != "":
-					result = ev.Message
+					parsed.Result = ev.Message
 				case ev.Error != "":
-					result = ev.Error
+					parsed.Result = ev.Error
 				}
 			}
 		case "turn.failed":
@@ -296,13 +425,25 @@ func parseCodexJSONL(out []byte, fallbackSessionID string) (sessionID, result st
 				errText = ev.Error
 			}
 			if errText != "" && !haveAgentMessage {
-				isError = true
-				result = errText
-			} else if !haveAgentMessage && result == "" {
-				isError = true
-				result = "codex turn failed"
+				parsed.IsError = true
+				parsed.Result = errText
+			} else if !haveAgentMessage && parsed.Result == "" {
+				parsed.IsError = true
+				parsed.Result = "codex turn failed"
 			}
 		}
 	}
-	return sessionID, result, isError
+	return parsed
+}
+
+func codexOutputComplete(outputPath, fallbackSessionID string) (bool, error) {
+	out, err := os.ReadFile(outputPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read codex output: %w", err)
+	}
+	parsed := parseCodexJSONLResult(out, fallbackSessionID)
+	return parsed.Complete && parsed.Result != "", nil
 }
