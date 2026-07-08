@@ -191,6 +191,10 @@ duckway init</code></pre>
     <tr><td><strong>TTL</strong></td><td>How long an approval lasts: 60m, 1440m (1d), 10080m (1w), 0 (no approval)</td></tr>
   </table>
 
+  <h4 class="mt-1">GitHub App Repo Scope</h4>
+  <p>GitHub App installation minter keys are uploaded once under API Keys. Repo access is assigned per client when generating the GitHub phantom token: choose the GitHub service, select the GitHub App key, enter allowed repositories as <code>OWNER/REPO</code>, then pick deploy pull-only or development pull/push mode.</p>
+  <p class="text-sm text-muted">Duckway stores this as the placeholder's <code>permission_config</code>. The proxy checks the ACL before minting and then asks GitHub for a short-lived installation token scoped only to the repository parsed from the Git/API path.</p>
+
   <h4 class="mt-1">Refreshable Token Upload Formats</h4>
   <p>Refreshable tokens are stored as API keys with encrypted access + refresh tokens. Upload formats vary by provider:</p>
   <table>

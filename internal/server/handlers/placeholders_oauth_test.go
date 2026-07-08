@@ -257,6 +257,82 @@ func TestCreatePlaceholderForGitHubAppInstallationTokenUsesMatchingPhantom(t *te
 	}
 }
 
+func TestCreatePlaceholderStoresGitHubRepoPermissionConfig(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encToken, err := crypto.Encrypt("ghs_" + strings.Repeat("r", 80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	ghSvc := &models.Service{
+		ID:           "svc-gh-repo-scope",
+		Name:         "github",
+		DisplayName:  "GitHub API + Git",
+		UpstreamURL:  "https://api.github.com",
+		HostPattern:  "api.github.com,github.com",
+		AuthType:     "bearer",
+		AuthHeader:   "Authorization",
+		AuthPrefix:   "Bearer ",
+		KeyPrefix:    "github_pat_",
+		KeyLength:    93,
+		DeliveryMode: "proxy",
+		IsActive:     true,
+	}
+	if err := svcQ.Create(ghSvc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-gh-repo-scope','github repo client','hash-gh-repo')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
+		VALUES ('key-gh-repo-scope',?,'github app token',?)`, ghSvc.ID, encToken); err != nil {
+		t.Fatal(err)
+	}
+
+	acl := `{"version":"1","provider":"github","rules":[{"name":"deploy-read-only","endpoints":[{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}],"deny_all_other":true}]}`
+	h := handlers.NewPlaceholderHandler(
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		queries.NewClientQueries(db),
+	).WithKeyLookup(queries.NewAPIKeyQueries(db), crypto)
+	req := httptest.NewRequest(http.MethodPost, "/api/placeholders", strings.NewReader(`{
+		"service_id":"`+ghSvc.ID+`",
+		"api_key_id":"key-gh-repo-scope",
+		"client_id":"client-gh-repo-scope",
+		"requires_approval":false,
+		"permission_config":`+strconvQuote(acl)+`
+	}`))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ID               string  `json:"id"`
+		PermissionConfig *string `json:"permission_config"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.PermissionConfig == nil || *got.PermissionConfig != acl {
+		t.Fatalf("response permission_config = %v, want ACL", got.PermissionConfig)
+	}
+	stored, err := queries.NewPlaceholderQueries(db).GetByID(got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PermissionConfig == nil || *stored.PermissionConfig != acl {
+		t.Fatalf("stored permission_config = %v, want ACL", stored.PermissionConfig)
+	}
+}
+
 func TestCreatePlaceholderRejectsAPIKeyFromDifferentService(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

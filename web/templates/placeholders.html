@@ -44,7 +44,7 @@
       <div class="form-group"><label>Service</label>
         <select id="add-svc" name="service_id" required>
           <option value="">Select...</option>
-          {{range .Services}}<option value="{{.ID}}">{{.DisplayName}}</option>{{end}}
+          {{range .Services}}<option value="{{.ID}}" data-name="{{.Name}}">{{.DisplayName}}</option>{{end}}
         </select>
       </div>
       <div class="form-group"><label>Client</label>
@@ -75,6 +75,19 @@
       </div>
       <div class="form-group"><label>Env Name (auto-generated if blank)</label>
         <input type="text" name="env_name" placeholder="OPENAI_API_KEY">
+      </div>
+      <div id="add-github-repo-scope" style="display:none;border:1px solid var(--border);border-radius:var(--radius);padding:0.75rem;margin-bottom:1rem">
+        <div class="form-group">
+          <label>Allowed repositories</label>
+          <textarea id="add-github-repos" placeholder="ORG/REPO&#10;ORG/ANOTHER_REPO" style="min-height:72px"></textarea>
+          <span class="text-muted text-sm">One repo per line, or comma separated. This becomes the client-specific phantom token ACL.</span>
+        </div>
+        <div class="form-group"><label>Git access mode</label>
+          <select id="add-github-mode">
+            <option value="deploy">Pull only deploy</option>
+            <option value="dev">Pull and push development</option>
+          </select>
+        </div>
       </div>
       <div class="form-group">
         <label><input type="checkbox" name="requires_approval" value="true"> Require admin approval on first use</label>
@@ -185,6 +198,7 @@ function onBindTypeChange() {
 // Hide options for keys/groups that don't match the selected service
 function filterDropdownsByService() {
   var svcId = document.getElementById('add-svc').value;
+  updateGitHubRepoScope();
   ['add-key', 'add-group'].forEach(function(id) {
     var sel = document.getElementById(id);
     Array.prototype.forEach.call(sel.options, function(opt) {
@@ -194,6 +208,18 @@ function filterDropdownsByService() {
     // Reset selection if it became hidden
     if (sel.selectedOptions[0] && sel.selectedOptions[0].hidden) sel.value = '';
   });
+}
+
+function selectedAddServiceName() {
+  var sel = document.getElementById('add-svc');
+  if (!sel || !sel.selectedOptions || !sel.selectedOptions[0]) return '';
+  return sel.selectedOptions[0].dataset.name || '';
+}
+
+function updateGitHubRepoScope() {
+  var scope = document.getElementById('add-github-repo-scope');
+  if (!scope) return;
+  scope.style.display = selectedAddServiceName() === 'github' ? '' : 'none';
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -216,6 +242,11 @@ document.addEventListener('DOMContentLoaded', function() {
     } else {
       body.api_key_id = document.getElementById('add-key').value;
       if (!body.api_key_id) { showToast('Pick an API key', 'error'); return; }
+    }
+    if (selectedAddServiceName() === 'github') {
+      var repos = parseGitRepoList(document.getElementById('add-github-repos').value);
+      if (repos.length === 0) { showToast('Add at least one allowed repository as ORG/REPO', 'error'); return; }
+      body.permission_config = JSON.stringify(gitACLForRepos(repos, document.getElementById('add-github-mode').value || 'deploy'));
     }
     fetch('/api/placeholders', {
       method: 'POST',
@@ -289,15 +320,20 @@ function renderGitSetup(prefix) {
 }
 
 function gitACL(repo, mode) {
-  var endpoints = [
-    {method:'GET', path:'/' + repo + '.git/info/refs', allow:true},
-    {method:'POST', path:'/' + repo + '.git/git-upload-pack', allow:true}
-  ];
-  if (mode === 'dev') {
-    endpoints.push({method:'POST', path:'/' + repo + '.git/git-receive-pack', allow:true});
-    endpoints.push({method:'GET', path:'/repos/' + repo, allow:true});
-    endpoints.push({method:'GET', path:'/repos/' + repo + '/*', allow:true});
-  }
+  return gitACLForRepos([repo], mode);
+}
+
+function gitACLForRepos(repos, mode) {
+  var endpoints = [];
+  repos.forEach(function(repo) {
+    endpoints.push({method:'GET', path:'/' + repo + '.git/info/refs', allow:true});
+    endpoints.push({method:'POST', path:'/' + repo + '.git/git-upload-pack', allow:true});
+    if (mode === 'dev') {
+      endpoints.push({method:'POST', path:'/' + repo + '.git/git-receive-pack', allow:true});
+      endpoints.push({method:'GET', path:'/repos/' + repo, allow:true});
+      endpoints.push({method:'GET', path:'/repos/' + repo + '/*', allow:true});
+    }
+  });
   return {version:'1', provider:'github', rules:[{name: mode === 'dev' ? 'dev-read-write' : 'deploy-read-only', endpoints:endpoints, deny_all_other:true}]};
 }
 
@@ -308,6 +344,15 @@ function normalizeGitRepo(value) {
     .replace(/\.git$/, '')
     .replace(/^\/+|\/+$/g, '');
   return repo || 'ORG/REPO';
+}
+
+function parseGitRepoList(value) {
+  var seen = {};
+  return (value || '').split(/[\n,]+/).map(normalizeGitRepo).filter(function(repo) {
+    if (repo === 'ORG/REPO' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || seen[repo.toLowerCase()]) return false;
+    seen[repo.toLowerCase()] = true;
+    return true;
+  });
 }
 
 function switchToEdit() {
