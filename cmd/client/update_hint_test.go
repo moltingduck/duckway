@@ -45,6 +45,34 @@ func TestSudoUpdateCommand(t *testing.T) {
 	}
 }
 
+func TestParseUpdateOptionsRestart(t *testing.T) {
+	opts := parseUpdateOptions([]string{"--restart", "--server", "https://srv:8080"}, "")
+	if !opts.restartAfter {
+		t.Fatal("--restart was not parsed")
+	}
+	if opts.serverURL != "https://srv:8080" {
+		t.Fatalf("serverURL = %q", opts.serverURL)
+	}
+
+	opts = parseUpdateOptions([]string{}, "https://env-server")
+	if opts.restartAfter {
+		t.Fatal("restartAfter should default false")
+	}
+	if opts.serverURL != "https://env-server" {
+		t.Fatalf("env serverURL = %q", opts.serverURL)
+	}
+}
+
+func TestStatusPrintsVersionContract(t *testing.T) {
+	body, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `fmt.Printf("Version:     %s\n", version.Get())`) {
+		t.Fatal("cmdStatus must print the duckway client version")
+	}
+}
+
 func TestConfirmSudoUpdate(t *testing.T) {
 	cases := map[string]bool{
 		"y\n":      true,

@@ -145,6 +145,8 @@ Usage:
   duckway update         Compare local version with server, download + replace if drifted
                          (uses saved config; override with --server <url>
                           or DUCKWAY_SERVER_URL — works without init)
+  duckway update --restart
+                         Update, then restart any duckway daemons that were running
   duckway mcp serve      Run the Control-Channel MCP server over stdio
                          (launched by Claude Code from ~/.claude/mcp.json)
   duckway cc watch       Connect to the server's SSE feed and run a
@@ -764,6 +766,27 @@ func runSudoUpdate(exe, serverURL string) error {
 	return cmd.Run()
 }
 
+type updateOptions struct {
+	serverURL    string
+	restartAfter bool
+}
+
+func parseUpdateOptions(args []string, envServerURL string) updateOptions {
+	opts := updateOptions{serverURL: envServerURL}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--server":
+			if i+1 < len(args) {
+				opts.serverURL = args[i+1]
+				i++
+			}
+		case "--restart":
+			opts.restartAfter = true
+		}
+	}
+	return opts
+}
+
 func cmdUpdate(configDir string) {
 	// `duckway update` only needs a server URL — not auth, not keys.
 	// Don't require `duckway init` to have run; pick the URL from (in
@@ -771,13 +794,8 @@ func cmdUpdate(configDir string) {
 	// one exists. This lets a user upgrade a freshly downloaded binary
 	// before they've configured it, or upgrade a binary on a host that
 	// never had a client config.
-	serverURL := os.Getenv("DUCKWAY_SERVER_URL")
-	for i := 2; i < len(os.Args); i++ {
-		if os.Args[i] == "--server" && i+1 < len(os.Args) {
-			serverURL = os.Args[i+1]
-			i++
-		}
-	}
+	opts := parseUpdateOptions(os.Args[2:], os.Getenv("DUCKWAY_SERVER_URL"))
+	serverURL := opts.serverURL
 	if serverURL == "" {
 		if cfg, err := client.LoadConfig(configDir); err == nil {
 			serverURL = cfg.ServerURL
@@ -803,6 +821,9 @@ func cmdUpdate(configDir string) {
 
 	if !updateInfo.UpdateRequired && !updateInfo.UpdateRecommended {
 		fmt.Println("Already up to date.")
+		if opts.restartAfter {
+			restartDaemonsRunningBeforeUpdate(configDir)
+		}
 		return
 	}
 	if updateInfo.UpdateRequired {
@@ -823,6 +844,9 @@ func cmdUpdate(configDir string) {
 				if sudoErr := runSudoUpdate(exe, serverURL); sudoErr != nil {
 					log.Fatalf("sudo update failed: %v\n\nYou can re-run manually:\n\n    %s\n", sudoErr, cyan(sudoCmd))
 				}
+				if opts.restartAfter {
+					restartDaemonsRunningBeforeUpdate(configDir)
+				}
 				return
 			}
 			log.Fatalf("Re-run with sudo:\n\n    %s\n", cyan(sudoCmd))
@@ -840,6 +864,11 @@ func cmdUpdate(configDir string) {
 		fmt.Printf("\nUpdated. Run %s to confirm.\n", cyan("duckway version"))
 	}
 
+	if opts.restartAfter {
+		restartDaemonsRunningBeforeUpdate(configDir)
+		return
+	}
+
 	if pid, alive := readPID(filepath.Join(configDir, "proxy.pid")); alive {
 		fmt.Printf("\nNote: a proxy daemon is running (PID %d) using the OLD binary.\n", pid)
 	}
@@ -852,6 +881,43 @@ func cmdUpdate(configDir string) {
 	} else if _, ccAlive := readPID(filepath.Join(configDir, "cc-watch.pid")); ccAlive {
 		fmt.Println("      Restart daemons to pick up the new code:")
 		fmt.Printf("        %s\n", cyan("duckway restart"))
+	}
+}
+
+func restartDaemonsRunningBeforeUpdate(configDir string) {
+	proxyPidFile := filepath.Join(configDir, "proxy.pid")
+	proxyLogFile := filepath.Join(configDir, "proxy.log")
+	ccPidFile := filepath.Join(configDir, "cc-watch.pid")
+	ccLogFile := filepath.Join(configDir, "cc-watch.log")
+
+	proxyPID, proxyAlive := readPID(proxyPidFile)
+	ccPID, ccAlive := readPID(ccPidFile)
+	if !proxyAlive && !ccAlive {
+		fmt.Println("\nNo running duckway daemons to restart.")
+		return
+	}
+
+	fmt.Println("\nRestarting running duckway daemons...")
+	if proxyAlive {
+		fmt.Printf("duckway proxy: restarting old PID %d\n", proxyPID)
+		stopBackgroundDaemon("duckway proxy", proxyPidFile)
+		if err := spawnDaemonProcess([]string{"proxy"}, proxyPidFile, proxyLogFile); err != nil {
+			log.Fatalf("Failed to restart proxy: %v", err)
+		}
+		fmt.Printf("duckway proxy: restarted (logs %s)\n", proxyLogFile)
+	}
+	if ccAlive {
+		fmt.Printf("duckway cc watch: restarting old PID %d\n", ccPID)
+		stopBackgroundDaemon("duckway cc watch", ccPidFile)
+		if !hasSupportedCCAgent() {
+			fmt.Println("duckway cc watch: skipped — neither `claude` nor `codex` is on PATH")
+			return
+		}
+		if err := spawnDaemonProcess([]string{"cc", "watch"}, ccPidFile, ccLogFile); err != nil {
+			log.Fatalf("Failed to restart cc-watch: %v", err)
+		}
+		warnIfTmuxUnavailable()
+		fmt.Printf("duckway cc watch: restarted (logs %s)\n", ccLogFile)
 	}
 }
 
@@ -1420,6 +1486,7 @@ func cmdStatus(configDir string) {
 
 	fmt.Printf("Server:      %s\n", cfg.ServerURL)
 	fmt.Printf("Client name: %s\n", cfg.ClientName)
+	fmt.Printf("Version:     %s\n", version.Get())
 	fmt.Printf("Proxy port:  %d\n", cfg.ProxyPort)
 
 	api := client.NewAPIClient(cfg.ServerURL, cfg.Token)
