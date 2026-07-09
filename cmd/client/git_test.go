@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/client"
@@ -42,5 +43,27 @@ func TestConfiguredGitReposFromPermissionConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("configuredGitRepos = %#v, want %#v", got, want)
+	}
+}
+
+func TestFormatGitCommand(t *testing.T) {
+	got := formatGitCommand(
+		"-c",
+		"http.https://github.com/.proxy=http://localhost:18080",
+		"-c",
+		"http.https://github.com/.sslCAInfo=/home/me/.duckway/ca.pem",
+		"clone",
+		"https://github.com/OWNER/REPO.git",
+		"my repo",
+	)
+	for _, want := range []string{
+		"git -c",
+		"'http.https://github.com/.proxy=http://localhost:18080'",
+		"'http.https://github.com/.sslCAInfo=/home/me/.duckway/ca.pem'",
+		"clone https://github.com/OWNER/REPO.git 'my repo'",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatGitCommand missing %q in %q", want, got)
+		}
 	}
 }

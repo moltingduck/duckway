@@ -373,6 +373,9 @@ func cmdGitSetup(configDir string) {
 	if _, err := client.SyncKeys(configDir, cfg); err != nil {
 		log.Fatalf("git setup sync failed: %v", err)
 	}
+	fmt.Println("Equivalent git commands:")
+	printGitCommand("", "config", "--global", "credential.helper", "store")
+	printGitCommand("", "config", "--global", "credential.useHttpPath", "false")
 	if err := configureGlobalGitCredential(); err != nil {
 		log.Fatalf("git setup failed: %v", err)
 	}
@@ -410,15 +413,25 @@ func cmdGitClone(configDir string, args []string) {
 	if len(args) == 2 {
 		dir = args[1]
 	}
+	fmt.Println("Equivalent git commands:")
+	printGitCommand("", "config", "--global", "credential.helper", "store")
+	printGitCommand("", "config", "--global", "credential.useHttpPath", "false")
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if !os.IsNotExist(err) {
 			log.Fatal(err)
 		}
 		repoURL := "https://github.com/" + repo + ".git"
-		if err := runGit("", "-c", fmt.Sprintf("http.https://github.com/.proxy=http://localhost:%d", cfg.ProxyPort), "-c", "http.https://github.com/.sslCAInfo="+filepath.Join(configDir, "ca.pem"), "clone", repoURL, dir); err != nil {
+		cloneArgs := []string{"-c", fmt.Sprintf("http.https://github.com/.proxy=http://localhost:%d", cfg.ProxyPort), "-c", "http.https://github.com/.sslCAInfo=" + filepath.Join(configDir, "ca.pem"), "clone", repoURL, dir}
+		printGitCommand("", cloneArgs...)
+		if err := runGit("", cloneArgs...); err != nil {
 			log.Fatalf("git clone failed: %v", err)
 		}
+	} else {
+		fmt.Printf("# %s already exists; skipping clone\n", filepath.Join(dir, ".git"))
 	}
+	printGitCommand(dir, "remote", "set-url", "origin", "https://github.com/"+repo+".git")
+	printGitCommand(dir, "config", "--local", "http.https://github.com/.proxy", fmt.Sprintf("http://localhost:%d", cfg.ProxyPort))
+	printGitCommand(dir, "config", "--local", "http.https://github.com/.sslCAInfo", filepath.Join(configDir, "ca.pem"))
 	if err := configureRepoGit(dir, configDir, cfg.ProxyPort, repo); err != nil {
 		log.Fatalf("configure repo failed: %v", err)
 	}
@@ -467,6 +480,22 @@ func runGit(dir string, args ...string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
+}
+
+func printGitCommand(dir string, args ...string) {
+	if dir != "" {
+		fmt.Printf("+ cd %s && %s\n", shellQuote(dir), formatGitCommand(args...))
+		return
+	}
+	fmt.Printf("+ %s\n", formatGitCommand(args...))
+}
+
+func formatGitCommand(args ...string) string {
+	parts := []string{"git"}
+	for _, arg := range args {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ")
 }
 
 var gitRepoArgPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
