@@ -1,4 +1,44 @@
 {{define "content"}}
+<style>
+.repo-grant-table {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.repo-grant-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.5rem 4.5rem;
+  gap: .75rem;
+  align-items: center;
+  padding: .4rem .55rem;
+  border-top: 1px solid var(--border);
+}
+.repo-grant-row:first-child {
+  border-top: 0;
+}
+.repo-grant-header {
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font-size: .75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.repo-grant-check {
+  display: flex;
+  justify-content: center;
+}
+.repo-grant-check input {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+.repo-grant-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+</style>
 <div class="page-header">
   <h1>Clients</h1>
   <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Register Client</button>
@@ -263,15 +303,6 @@
       </div>
       <div id="assign-github-repo-status" class="text-sm text-muted mt-1">Select a GitHub App installation minter key.</div>
       <div id="assign-github-repo-list" style="max-height:180px;overflow:auto;margin-top:0.5rem"></div>
-      <div class="form-group mt-1">
-        <label>Manual repositories</label>
-        <textarea id="assign-github-repos-manual" placeholder="OWNER/REPO&#10;OWNER/ANOTHER_REPO" style="min-height:64px"></textarea>
-        <span class="text-muted text-sm">Use this when the repository list cannot be loaded, or to paste additional repos.</span>
-      </div>
-      <div class="form-group"><label>Manual repository access</label>
-        <label style="display:inline-flex;gap:.35rem;align-items:center;margin-right:1rem"><input type="checkbox" id="assign-github-manual-pull" checked> Pull</label>
-        <label style="display:inline-flex;gap:.35rem;align-items:center"><input type="checkbox" id="assign-github-manual-push"> Push</label>
-      </div>
     </div>
     <div class="form-group mt-1">
       <label><input type="checkbox" id="assign-approval" checked> Require admin approval on first use</label>
@@ -1005,14 +1036,7 @@ function updateAssignGitHubRepoScope() {
   wrap.style.display = '';
   var existing = existingMintableAssignment(clientId, key.id);
   if (existing) {
-    var grants = gitGrantsFromACL(existing.permissionConfig);
-    document.getElementById('assign-github-repos-manual').value = grants.map(function(g) { return g.repo; }).join('\n');
-    document.getElementById('assign-github-manual-pull').checked = grants.some(function(g) { return g.pull; }) || !grants.length;
-    document.getElementById('assign-github-manual-push').checked = grants.some(function(g) { return g.push; });
-  } else {
-    document.getElementById('assign-github-repos-manual').value = '';
-    document.getElementById('assign-github-manual-pull').checked = true;
-    document.getElementById('assign-github-manual-push').checked = false;
+    document.getElementById('assign-github-repo-status').textContent = 'Current scope loaded below. Adjust Pull/Push and assign again to overwrite.';
   }
   loadAssignGitHubRepos();
 }
@@ -1034,7 +1058,7 @@ function loadAssignGitHubRepos() {
       if (!res.ok || res.body.error) throw new Error(res.body.error || 'failed to list repositories');
       var repos = res.body.repositories || [];
       if (!repos.length) {
-        status.textContent = 'No repositories returned. Use manual repositories below.';
+        status.textContent = 'No repositories returned. Check the GitHub App installation repository access.';
         return;
       }
       status.textContent = repos.length + ' repositories available. Select one or more.';
@@ -1043,44 +1067,43 @@ function loadAssignGitHubRepos() {
       gitGrantsFromACL(existing ? existing.permissionConfig : '').forEach(function(g) {
         existingRepos[g.repo.toLowerCase()] = g;
       });
-      list.innerHTML = repos.map(function(repo) {
+      list.innerHTML =
+        '<div class="repo-grant-table">' +
+        '<div class="repo-grant-row repo-grant-header"><div>Repository</div><div class="repo-grant-check">Pull</div><div class="repo-grant-check">Push</div></div>' +
+        repos.map(function(repo) {
         var name = repo.full_name || '';
         var grant = existingRepos[name.toLowerCase()];
-        var enabled = !!grant;
-        var pull = grant ? grant.pull : true;
+        var pull = grant ? grant.pull : false;
         var push = grant ? grant.push : false;
-        return '<div class="assign-github-repo-row" style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:.75rem;align-items:center;padding:.2rem 0">' +
-          '<label style="display:flex;gap:.5rem;align-items:center;min-width:0">' +
-          '<input type="checkbox" class="assign-github-repo-choice" value="' + escHTML(name) + '"' + (enabled ? ' checked' : '') + '>' +
-          '<span class="mono text-sm" style="overflow:hidden;text-overflow:ellipsis">' + escHTML(name) + '</span>' +
+        return '<div class="assign-github-repo-row repo-grant-row" data-repo="' + escHTML(name) + '">' +
+          '<div class="repo-grant-name">' +
+          '<span class="mono text-sm">' + escHTML(name) + '</span>' +
           (repo.private ? '<span class="badge badge-gray">private</span>' : '') +
-          '</label>' +
-          '<label class="text-sm" style="display:inline-flex;gap:.25rem;align-items:center"><input type="checkbox" class="assign-github-repo-pull"' + (pull ? ' checked' : '') + '> Pull</label>' +
-          '<label class="text-sm" style="display:inline-flex;gap:.25rem;align-items:center"><input type="checkbox" class="assign-github-repo-push"' + (push ? ' checked' : '') + '> Push</label>' +
+          '</div>' +
+          '<label class="repo-grant-check" title="Allow git pull/fetch"><input type="checkbox" class="assign-github-repo-pull"' + (pull ? ' checked' : '') + ' onchange="onAssignGitHubGrantToggle(this)"></label>' +
+          '<label class="repo-grant-check" title="Allow git push"><input type="checkbox" class="assign-github-repo-push"' + (push ? ' checked' : '') + ' onchange="onAssignGitHubGrantToggle(this)"></label>' +
           '</div>';
-      }).join('');
+      }).join('') +
+      '</div>';
     })
     .catch(function(err) {
       var currentKey = selectedAssignKey();
       if (loadSeq !== assignGitHubRepoLoadSeq || !currentKey || currentKey.id !== keyID) return;
-      status.textContent = 'Could not load repositories: ' + err.message + '. Use manual repositories below.';
+      status.textContent = 'Could not load repositories: ' + err.message + '. Reload or check the GitHub App installation.';
     });
 }
 
 function selectedAssignGitHubRepoGrants() {
   var grants = [];
-  document.querySelectorAll('.assign-github-repo-choice:checked').forEach(function(el) {
-    var row = el.closest('.assign-github-repo-row');
+  document.querySelectorAll('.assign-github-repo-row').forEach(function(row) {
+    var pull = row.querySelector('.assign-github-repo-pull').checked;
+    var push = row.querySelector('.assign-github-repo-push').checked;
+    if (!pull && !push) return;
     grants.push({
-      repo: el.value,
-      pull: row ? row.querySelector('.assign-github-repo-pull').checked : true,
-      push: row ? row.querySelector('.assign-github-repo-push').checked : false
+      repo: row.dataset.repo,
+      pull: pull,
+      push: push
     });
-  });
-  var manualPull = document.getElementById('assign-github-manual-pull').checked;
-  var manualPush = document.getElementById('assign-github-manual-push').checked;
-  parseGitRepoList(document.getElementById('assign-github-repos-manual').value).forEach(function(repo) {
-    grants.push({repo: repo, pull: manualPull, push: manualPush});
   });
   var byRepo = {};
   grants.forEach(function(grant) {
@@ -1090,6 +1113,15 @@ function selectedAssignGitHubRepoGrants() {
     byRepo[key].push = byRepo[key].push || grant.push;
   });
   return Object.keys(byRepo).sort(function(a,b) { return a.localeCompare(b); }).map(function(key) { return byRepo[key]; });
+}
+
+function onAssignGitHubGrantToggle(input) {
+  var row = input.closest('.assign-github-repo-row');
+  if (!row) return;
+  var pull = row.querySelector('.assign-github-repo-pull');
+  var push = row.querySelector('.assign-github-repo-push');
+  if (input === push && push.checked) pull.checked = true;
+  if (input === pull && !pull.checked) push.checked = false;
 }
 
 function buildAssignPreview(svcName) {
@@ -1117,7 +1149,6 @@ function openAssignModal(clientId, clientName) {
   document.getElementById('assign-github-repo-scope').style.display = 'none';
   document.getElementById('assign-github-repo-status').textContent = 'Select a GitHub App installation minter key.';
   document.getElementById('assign-github-repo-list').innerHTML = '';
-  document.getElementById('assign-github-repos-manual').value = '';
 
   // Reset radio to "key"
   document.querySelectorAll('input[name="assign-bind-type"]').forEach(function(r) {
