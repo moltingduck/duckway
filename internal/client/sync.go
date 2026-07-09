@@ -71,8 +71,8 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 	home, _ := os.UserHomeDir()
 	for _, k := range keys {
 		if k.ServiceName == "github" {
-			if err := DeployGitHubCredentialForGit(home, k.Placeholder); err != nil {
-				log.Printf("Warning: cannot write GitHub git credential: %v", err)
+			if err := DeployGitHubCredentialsForKey(home, k.Placeholder, k.PermissionConfig); err != nil {
+				log.Printf("Warning: cannot write GitHub git credentials: %v", err)
 			}
 		}
 		if k.KeyPath == "" {
@@ -123,6 +123,30 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 // DeployGitHubCredentialForGit writes the Duckway GitHub phantom token into
 // the git credential-store file while preserving non-Duckway entries.
 func DeployGitHubCredentialForGit(home, placeholder string) error {
+	return deployGitHubCredentialForGit(home, "", placeholder)
+}
+
+// DeployGitHubCredentialForGitRepo writes a path-scoped Duckway GitHub phantom
+// credential for a single repository. Path scoping lets one client use
+// different phantom tokens for different GitHub repo ACLs.
+func DeployGitHubCredentialForGitRepo(home, repo, placeholder string) error {
+	return deployGitHubCredentialForGit(home, repo, placeholder)
+}
+
+func DeployGitHubCredentialsForKey(home, placeholder, permissionConfig string) error {
+	repos := githubReposFromPermissionConfig(permissionConfig)
+	if len(repos) == 0 {
+		return DeployGitHubCredentialForGit(home, placeholder)
+	}
+	for _, repo := range repos {
+		if err := DeployGitHubCredentialForGitRepo(home, repo, placeholder); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deployGitHubCredentialForGit(home, repo, placeholder string) error {
 	if home == "" || placeholder == "" {
 		return nil
 	}
@@ -131,7 +155,7 @@ func DeployGitHubCredentialForGit(home, placeholder string) error {
 	if raw, err := os.ReadFile(path); err == nil {
 		for _, line := range strings.Split(string(raw), "\n") {
 			line = strings.TrimSpace(line)
-			if line == "" || isDuckwayGitHubCredentialLine(line) {
+			if line == "" || shouldReplaceDuckwayGitHubCredentialLine(line, repo) {
 				continue
 			}
 			lines = append(lines, line)
@@ -144,11 +168,14 @@ func DeployGitHubCredentialForGit(home, placeholder string) error {
 		Host:   "github.com",
 		User:   url.UserPassword("x-access-token", placeholder),
 	}
+	if repo != "" {
+		u.Path = "/" + strings.TrimSuffix(strings.Trim(repo, "/"), ".git") + ".git"
+	}
 	lines = append(lines, u.String())
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600)
 }
 
-func isDuckwayGitHubCredentialLine(line string) bool {
+func shouldReplaceDuckwayGitHubCredentialLine(line, repo string) bool {
 	if !strings.Contains(line, "github.com") || !strings.Contains(line, "dw_") {
 		return false
 	}
@@ -157,7 +184,68 @@ func isDuckwayGitHubCredentialLine(line string) bool {
 		return false
 	}
 	pass, ok := u.User.Password()
-	return ok && strings.Contains(pass, "dw_")
+	if !ok || !strings.Contains(pass, "dw_") {
+		return false
+	}
+	if repo == "" {
+		return true
+	}
+	credentialRepo := strings.TrimPrefix(strings.TrimSuffix(strings.Trim(u.Path, "/"), ".git"), "/")
+	if credentialRepo == "" {
+		return true
+	}
+	return strings.EqualFold(credentialRepo, strings.TrimSuffix(strings.Trim(repo, "/"), ".git"))
+}
+
+func githubReposFromPermissionConfig(configJSON string) []string {
+	var config struct {
+		Provider string `json:"provider"`
+		Rules    []struct {
+			Endpoints []struct {
+				Method string `json:"method"`
+				Path   string `json:"path"`
+				Allow  bool   `json:"allow"`
+			} `json:"endpoints"`
+		} `json:"rules"`
+	}
+	if json.Unmarshal([]byte(configJSON), &config) != nil || config.Provider != "github" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var repos []string
+	for _, rule := range config.Rules {
+		for _, ep := range rule.Endpoints {
+			repo, ok := githubRepoFromACLEndpoint(ep.Method, ep.Path, ep.Allow)
+			if !ok {
+				continue
+			}
+			key := strings.ToLower(repo)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			repos = append(repos, repo)
+		}
+	}
+	return repos
+}
+
+func githubRepoFromACLEndpoint(method, rawPath string, allow bool) (string, bool) {
+	if !allow {
+		return "", false
+	}
+	method = strings.ToUpper(strings.TrimSpace(method))
+	path := strings.TrimSpace(rawPath)
+	switch {
+	case method == "GET" && strings.HasSuffix(path, ".git/info/refs"):
+		return strings.TrimPrefix(strings.TrimSuffix(path, ".git/info/refs"), "/"), true
+	case method == "POST" && strings.HasSuffix(path, ".git/git-upload-pack"):
+		return strings.TrimPrefix(strings.TrimSuffix(path, ".git/git-upload-pack"), "/"), true
+	case method == "POST" && strings.HasSuffix(path, ".git/git-receive-pack"):
+		return strings.TrimPrefix(strings.TrimSuffix(path, ".git/git-receive-pack"), "/"), true
+	default:
+		return "", false
+	}
 }
 
 // SyncStatusline pulls the admin-configured statusline script body from

@@ -173,7 +173,7 @@ func (pc *PermissionChecker) Check(configJSON string, placeholderID, method, pat
 	}
 
 	for _, rule := range config.Rules {
-		result := pc.checkRule(rule, placeholderID, method, path, bodyBytes)
+		result := pc.checkRule(config.Provider, rule, placeholderID, method, path, bodyBytes)
 		if result.Allowed || result.Reason != "" {
 			return result
 		}
@@ -196,7 +196,7 @@ func RequestBodyRequiredForPermission(configJSON, method, path string) bool {
 	}
 	for _, rule := range config.Rules {
 		for _, ep := range rule.Endpoints {
-			if !matchEndpoint(ep, method, path) || ep.Constraints == nil {
+			if !matchEndpoint(config.Provider, ep, method, path) || ep.Constraints == nil {
 				continue
 			}
 			if len(ep.Constraints.Body) > 0 {
@@ -207,11 +207,11 @@ func RequestBodyRequiredForPermission(configJSON, method, path string) bool {
 	return false
 }
 
-func (pc *PermissionChecker) checkRule(rule PermissionRule, placeholderID, method, path string, bodyBytes []byte) PermissionResult {
+func (pc *PermissionChecker) checkRule(provider string, rule PermissionRule, placeholderID, method, path string, bodyBytes []byte) PermissionResult {
 	matched := false
 
 	for _, ep := range rule.Endpoints {
-		if matchEndpoint(ep, method, path) {
+		if matchEndpoint(provider, ep, method, path) {
 			matched = true
 			if !ep.Allow {
 				return PermissionResult{Allowed: false, Reason: fmt.Sprintf("endpoint %s %s denied by rule '%s'", method, path, rule.Name)}
@@ -243,11 +243,54 @@ func (pc *PermissionChecker) checkRule(rule PermissionRule, placeholderID, metho
 	return PermissionResult{} // Not matched, not denied
 }
 
-func matchEndpoint(ep EndpointRule, method, path string) bool {
+func matchEndpoint(provider string, ep EndpointRule, method, path string) bool {
 	if ep.Method != "*" && ep.Method != method {
 		return false
 	}
+	if provider == "github" && matchGitHubRepoPath(ep.Path, path) {
+		return true
+	}
 	return matchPath(ep.Path, path)
+}
+
+func matchGitHubRepoPath(pattern, path string) bool {
+	pRepo, pKind, pSuffix, ok := githubRepoPathParts(pattern)
+	if !ok {
+		return false
+	}
+	repo, kind, suffix, ok := githubRepoPathParts(path)
+	if !ok || pKind != kind || !strings.EqualFold(pRepo, repo) {
+		return false
+	}
+	if pKind == "rest" && pSuffix == "*" {
+		return true
+	}
+	return pSuffix == suffix
+}
+
+func githubRepoPathParts(raw string) (repo, kind, suffix string, ok bool) {
+	path := strings.TrimSpace(raw)
+	switch {
+	case strings.HasSuffix(path, ".git/info/refs"):
+		return strings.TrimPrefix(strings.TrimSuffix(path, ".git/info/refs"), "/"), "git", "info/refs", true
+	case strings.HasSuffix(path, ".git/git-upload-pack"):
+		return strings.TrimPrefix(strings.TrimSuffix(path, ".git/git-upload-pack"), "/"), "git", "git-upload-pack", true
+	case strings.HasSuffix(path, ".git/git-receive-pack"):
+		return strings.TrimPrefix(strings.TrimSuffix(path, ".git/git-receive-pack"), "/"), "git", "git-receive-pack", true
+	case strings.HasPrefix(path, "/repos/"):
+		rest := strings.TrimPrefix(path, "/repos/")
+		parts := strings.Split(rest, "/")
+		if len(parts) < 2 {
+			return "", "", "", false
+		}
+		repo := parts[0] + "/" + parts[1]
+		if len(parts) == 2 {
+			return repo, "rest", "", true
+		}
+		return repo, "rest", strings.Join(parts[2:], "/"), true
+	default:
+		return "", "", "", false
+	}
 }
 
 func matchPath(pattern, path string) bool {

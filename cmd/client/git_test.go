@@ -58,6 +58,19 @@ func TestConfiguredGitReposSkipsEmptyPlaceholder(t *testing.T) {
 	}
 }
 
+func TestConfiguredGitRepoForReturnsCanonicalRepoCasing(t *testing.T) {
+	repos := []configuredGitRepo{
+		{Repo: "ExampleOrg/MixedCaseRepo", Mode: "dev", Placeholder: "ghs_dw_repo"},
+	}
+	got, ok := configuredGitRepoFor(repos, "ExampleOrg/mixedcaserepo")
+	if !ok {
+		t.Fatal("expected case-insensitive configured repo match")
+	}
+	if got.Repo != "ExampleOrg/MixedCaseRepo" {
+		t.Fatalf("repo = %q, want canonical casing %q", got.Repo, "ExampleOrg/MixedCaseRepo")
+	}
+}
+
 func TestGitRepoAccessLabel(t *testing.T) {
 	cases := map[string]string{
 		"deploy": "read",

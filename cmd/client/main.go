@@ -382,7 +382,7 @@ func cmdGitSetup(configDir string) {
 	}
 	fmt.Println("Equivalent git commands:")
 	printGitCommand("", "config", "--global", "credential.helper", "store")
-	printGitCommand("", "config", "--global", "credential.useHttpPath", "false")
+	printGitCommand("", "config", "--global", "credential.useHttpPath", "true")
 	if err := configureGlobalGitCredential(); err != nil {
 		log.Fatalf("git setup failed: %v", err)
 	}
@@ -410,6 +410,7 @@ func cmdGitClone(configDir string, args []string) {
 		}
 		os.Exit(1)
 	}
+	repo = repoInfo.Repo
 	if err := ensureGitHubCredentialStored([]client.PlaceholderKeyInfo{{
 		ServiceName: "github",
 		Placeholder: repoInfo.Placeholder,
@@ -427,7 +428,7 @@ func cmdGitClone(configDir string, args []string) {
 			log.Fatal(err)
 		}
 		repoURL := "https://github.com/" + repo + ".git"
-		cloneArgs := []string{"-c", "credential.helper=store", "-c", "credential.useHttpPath=false", "-c", fmt.Sprintf("http.https://github.com/.proxy=http://localhost:%d", cfg.ProxyPort), "-c", "http.https://github.com/.sslCAInfo=" + filepath.Join(configDir, "ca.pem"), "clone", repoURL, dir}
+		cloneArgs := []string{"-c", "credential.helper=store", "-c", "credential.useHttpPath=true", "-c", fmt.Sprintf("http.https://github.com/.proxy=http://localhost:%d", cfg.ProxyPort), "-c", "http.https://github.com/.sslCAInfo=" + filepath.Join(configDir, "ca.pem"), "clone", repoURL, dir}
 		printGitCommand("", cloneArgs...)
 		if err := runGit("", cloneArgs...); err != nil {
 			log.Fatalf("git clone failed: %v", err)
@@ -442,7 +443,7 @@ func cmdGitClone(configDir string, args []string) {
 	printGitCommand(dir, "config", "--local", "http.https://github.com/.proxy", fmt.Sprintf("http://localhost:%d", cfg.ProxyPort))
 	printGitCommand(dir, "config", "--local", "http.https://github.com/.sslCAInfo", filepath.Join(configDir, "ca.pem"))
 	printGitCommand(dir, "config", "--local", "credential.helper", "store")
-	printGitCommand(dir, "config", "--local", "credential.useHttpPath", "false")
+	printGitCommand(dir, "config", "--local", "credential.useHttpPath", "true")
 	if err := configureRepoGit(dir, configDir, cfg.ProxyPort, repo); err != nil {
 		log.Fatalf("configure repo failed: %v", err)
 	}
@@ -485,7 +486,7 @@ func configureGlobalGitCredential() error {
 	if err := runGit("", "config", "--global", "credential.helper", "store"); err != nil {
 		return err
 	}
-	return runGit("", "config", "--global", "credential.useHttpPath", "false")
+	return runGit("", "config", "--global", "credential.useHttpPath", "true")
 }
 
 func hasUsableGitHubCredential(keys []client.PlaceholderKeyInfo) bool {
@@ -502,24 +503,37 @@ func ensureGitHubCredentialStored(keys []client.PlaceholderKeyInfo, repo string)
 	if home == "" {
 		return fmt.Errorf("cannot locate home directory for git credential store")
 	}
+	if repo != "" {
+		for _, key := range keys {
+			if key.ServiceName != "github" || strings.TrimSpace(key.Placeholder) == "" {
+				continue
+			}
+			if err := client.DeployGitHubCredentialForGitRepo(home, repo, key.Placeholder); err != nil {
+				return err
+			}
+			if gitHubCredentialStoreContains(home, key.Placeholder, repo) {
+				return nil
+			}
+		}
+		return fmt.Errorf("no GitHub phantom credential was written for %s; reassign the GitHub key for this client", repo)
+	}
+	wrote := false
 	for _, key := range keys {
 		if key.ServiceName != "github" || strings.TrimSpace(key.Placeholder) == "" {
 			continue
 		}
-		if err := client.DeployGitHubCredentialForGit(home, key.Placeholder); err != nil {
+		if err := client.DeployGitHubCredentialsForKey(home, key.Placeholder, key.PermissionConfig); err != nil {
 			return err
 		}
-		if gitHubCredentialStoreContains(home, key.Placeholder) {
-			return nil
-		}
+		wrote = true
 	}
-	if repo != "" {
-		return fmt.Errorf("no GitHub phantom credential was written for %s; reassign the GitHub key for this client", repo)
+	if wrote {
+		return nil
 	}
 	return fmt.Errorf("no GitHub phantom credential was written; reassign the GitHub key for this client")
 }
 
-func gitHubCredentialStoreContains(home, placeholder string) bool {
+func gitHubCredentialStoreContains(home, placeholder, repo string) bool {
 	if home == "" || placeholder == "" {
 		return false
 	}
@@ -527,7 +541,11 @@ func gitHubCredentialStoreContains(home, placeholder string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(raw), placeholder)
+	if repo == "" {
+		return strings.Contains(string(raw), placeholder)
+	}
+	credentialPath := "github.com/" + strings.TrimSuffix(strings.Trim(repo, "/"), ".git") + ".git"
+	return strings.Contains(string(raw), placeholder) && strings.Contains(strings.ToLower(string(raw)), strings.ToLower(credentialPath))
 }
 
 func configureRepoGit(dir, configDir string, port int, repo string) error {
@@ -543,7 +561,7 @@ func configureRepoGit(dir, configDir string, port int, repo string) error {
 	if err := runGit(dir, "config", "--local", "credential.helper", "store"); err != nil {
 		return err
 	}
-	return runGit(dir, "config", "--local", "credential.useHttpPath", "false")
+	return runGit(dir, "config", "--local", "credential.useHttpPath", "true")
 }
 
 func ensureExistingGitRepoMatchesRemote(dir, repo string) error {

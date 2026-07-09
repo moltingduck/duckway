@@ -676,6 +676,14 @@ DUCKWAY_TEST_GITHUB_GIT_LIVE=1 go test ./internal/client -run 'Test(GitHubAppPha
 
 This starts an in-process Duckway server proxy, an in-process Duckway client MITM proxy, writes a phantom `GITHUB_TOKEN` to a temporary Git credential store, runs `git ls-remote https://github.com/OWNER/REPO.git HEAD`, then runs `duckway git clone OWNER/REPO` and verifies native `git ls-remote origin HEAD` works through the repo-local proxy config. The real GitHub App installation token is minted and used only inside Duckway. This test is also skipped unless `DUCKWAY_TEST_GITHUB_GIT_LIVE=1` is set.
 
+To verify one GitHub App installation can mint and clone more than one assigned repository, run:
+
+```bash
+DUCKWAY_TEST_GITHUB_GIT_LIVE=1 go test ./internal/client -run TestDuckwayGitCloneMultipleReposLive -count=1 -v
+```
+
+The multi-repo test asks GitHub for the repositories visible to the configured App installation token and clones the first two returned repositories. If the installation lists fewer than two repositories, the test fails with a setup error; add at least two test repositories to the GitHub App installation before rerunning it.
+
 To seed the live repository with deterministic random benchmark data, the GitHub App installation must have **Contents: read/write** permission and the repository assignment must allow `git-receive-pack`. The seed test is separately gated because it pushes to the configured repository:
 
 ```bash

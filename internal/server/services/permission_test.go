@@ -268,6 +268,16 @@ func TestGitHubRepoScopeACLSeparatesPullPushAndRepo(t *testing.T) {
 			wantAllow: false,
 		},
 		{
+			name: "smart http repo casing is normalized",
+			configJSON: `{"version":"1","provider":"github","rules":[{"name":"pull","endpoints":[` +
+				`{"method":"GET","path":"/ExampleOrg/MixedCaseRepo.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/ExampleOrg/MixedCaseRepo.git/git-upload-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:    "POST",
+			path:      "/ExampleOrg/mixedcaserepo.git/git-upload-pack",
+			wantAllow: true,
+		},
+		{
 			name: "rest repo wildcard does not allow smart http",
 			configJSON: `{"version":"1","provider":"github","rules":[{"name":"rest","endpoints":[` +
 				`{"method":"GET","path":"/repos/OWNER/REPO/*","allow":true}` +
@@ -284,6 +294,25 @@ func TestGitHubRepoScopeACLSeparatesPullPushAndRepo(t *testing.T) {
 			method:    "GET",
 			path:      "/repos/OWNER/REPO/contents/README.md",
 			wantAllow: true,
+		},
+		{
+			name: "rest repo wildcard normalizes repo casing",
+			configJSON: `{"version":"1","provider":"github","rules":[{"name":"rest","endpoints":[` +
+				`{"method":"GET","path":"/repos/ExampleOrg/MixedCaseRepo/*","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:    "GET",
+			path:      "/repos/ExampleOrg/mixedcaserepo/contents/README.md",
+			wantAllow: true,
+		},
+		{
+			name: "case-insensitive repo match does not overmatch prefix",
+			configJSON: `{"version":"1","provider":"github","rules":[{"name":"pull","endpoints":[` +
+				`{"method":"GET","path":"/ExampleOrg/MixedCaseRepo.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/ExampleOrg/MixedCaseRepo.git/git-upload-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:    "POST",
+			path:      "/ExampleOrg/MixedCaseRepoFork.git/git-upload-pack",
+			wantAllow: false,
 		},
 	}
 

@@ -446,6 +446,99 @@ func TestProxyGitHubBasicAuthRewritesPhantomPATPassword(t *testing.T) {
 	}
 }
 
+func TestProxyGitHubBasicAuthSelectsExplicitPlaceholderForACL(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f := newProxyFixture(t, upstream.URL)
+	seedGitHubService(t, f)
+
+	firstPAT := "github_pat_" + strings.Repeat("1", 82)
+	firstEnc, err := f.crypto.Encrypt(firstPAT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := f.apiKeyQ.GetByID(f.apiKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key.KeyEncrypted = firstEnc
+	if err := f.apiKeyQ.Update(key); err != nil {
+		t.Fatal(err)
+	}
+	firstACL := `{"version":"1","provider":"github","rules":[{"name":"duckllo","endpoints":[` +
+		`{"method":"GET","path":"/ExampleOrg/RepoAlpha.git/info/refs","allow":true},` +
+		`{"method":"POST","path":"/ExampleOrg/RepoAlpha.git/git-upload-pack","allow":true}` +
+		`],"deny_all_other":true}]}`
+	ph, err := f.placeholderQ.GetByID(f.placeholderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ph.EnvName = "GITHUB_TOKEN"
+	ph.PermissionConfig = &firstACL
+	if err := f.placeholderQ.Update(ph); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.placeholderQ.UpdatePlaceholder(f.placeholderID, "github_pat_dw_alpha"); err != nil {
+		t.Fatal(err)
+	}
+
+	secondPAT := "github_pat_" + strings.Repeat("2", 82)
+	secondEnc, err := f.crypto.Encrypt(secondPAT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey := &models.APIKey{
+		ID:           "key-proxy-02",
+		ServiceID:    f.serviceID,
+		Name:         "duckme key",
+		KeyEncrypted: secondEnc,
+		IsActive:     true,
+	}
+	if err := f.apiKeyQ.Create(secondKey); err != nil {
+		t.Fatal(err)
+	}
+	secondACL := `{"version":"1","provider":"github","rules":[{"name":"duckme","endpoints":[` +
+		`{"method":"GET","path":"/ExampleOrg/RepoBeta.git/info/refs","allow":true},` +
+		`{"method":"POST","path":"/ExampleOrg/RepoBeta.git/git-upload-pack","allow":true}` +
+		`],"deny_all_other":true}]}`
+	secondKeyID := secondKey.ID
+	secondPH := &models.PlaceholderKey{
+		ID:               "ph-proxy-02",
+		EnvName:          "GITHUB_TOKEN_DUCKME",
+		Placeholder:      "github_pat_dw_beta",
+		ServiceID:        f.serviceID,
+		APIKeyID:         &secondKeyID,
+		ClientID:         f.clientID,
+		PermissionConfig: &secondACL,
+		IsActive:         true,
+	}
+	if err := f.placeholderQ.Create(secondPH); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newProxyHandler(f)
+	r := httptest.NewRequest("POST", "/proxy/github/ExampleOrg/RepoBeta.git/git-upload-pack", nil)
+	r.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:github_pat_dw_beta")))
+	r = withClient(r, f.client)
+	code, body := doProxy(h, r)
+
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d; body: %s", code, body)
+	}
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+secondPAT))
+	if gotAuth != want {
+		t.Fatalf("upstream Authorization = %q, want second placeholder real key", gotAuth)
+	}
+	if strings.Contains(gotAuth, "duckllo") || strings.Contains(gotAuth, "duckme") || strings.Contains(gotAuth, "dw_") {
+		t.Fatalf("upstream Authorization leaked phantom: %q", gotAuth)
+	}
+}
+
 func TestProxyGitHubSmartHTTPStreamsRequestBodyWithoutPrebuffering(t *testing.T) {
 	upstreamRead := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -927,6 +1020,19 @@ func TestProxyGitHubAppRepoACLBoundaries(t *testing.T) {
 			requestPath:   "/proxy/github/OWNER/OTHER.git/git-upload-pack",
 			wantStatus:    http.StatusForbidden,
 			wantMintCount: 0,
+		},
+		{
+			name: "repo casing mismatch still respects same repo ACL",
+			acl: `{"version":"1","provider":"github","rules":[{"name":"pull","endpoints":[` +
+				`{"method":"GET","path":"/OWNER/AnyDownload.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/OWNER/AnyDownload.git/git-upload-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:        "POST",
+			requestPath:   "/proxy/github/OWNER/anydownload.git/git-upload-pack",
+			wantStatus:    http.StatusOK,
+			wantMintCount: 1,
+			wantPerm:      "read",
+			wantRepo:      "anydownload",
 		},
 	}
 

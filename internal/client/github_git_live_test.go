@@ -2,7 +2,14 @@ package client
 
 import (
 	"context"
+	"crypto"
+	cryptorand "crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -30,6 +37,7 @@ var githubLiveRepoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+
 
 type githubGitLiveDuckwayEnv struct {
 	cfg         githubAppLiveConfig
+	repos       []string
 	phantom     string
 	serverURL   string
 	clientToken string
@@ -232,7 +240,7 @@ func TestDuckwayGitCloneLive(t *testing.T) {
 	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.proxy", fmt.Sprintf("http://localhost:%d", env.proxyPort))
 	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.sslCAInfo", filepath.Join(env.configDir, "ca.pem"))
 	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.helper", "store")
-	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.useHttpPath", "false")
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.useHttpPath", "true")
 
 	native := liveCommand(ctx, "git", "-C", filepath.Join(workDir, cloneDir), "ls-remote", "--exit-code", "origin", "HEAD")
 	native.Env = env.gitProxyEnv()
@@ -240,6 +248,40 @@ func TestDuckwayGitCloneLive(t *testing.T) {
 	if err != nil {
 		sanitized := env.sanitizeOutput(string(nativeOutput))
 		t.Fatalf("native git after duckway git clone failed: %v\n%s", err, sanitized)
+	}
+}
+
+func TestDuckwayGitCloneMultipleReposLive(t *testing.T) {
+	if os.Getenv("DUCKWAY_TEST_GITHUB_GIT_LIVE") != "1" {
+		t.Skip("set DUCKWAY_TEST_GITHUB_GIT_LIVE=1 to run")
+	}
+	cfg := loadGitHubAppLiveConfig(t)
+	repos := firstTwoGitHubLiveInstallationRepos(t, cfg)
+	env := newGitHubGitLiveDuckwayEnvForRepos(t, cfg, repos)
+	if len(repos) < 2 {
+		t.Fatalf("GitHub App installation lists %d repositories; configure at least two repositories for the live test installation", len(repos))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(len(repos))*90*time.Second)
+	defer cancel()
+	for i, repo := range repos {
+		t.Run(fmt.Sprintf("repo_index_%d", i), func(t *testing.T) {
+			workDir := t.TempDir()
+			cloneDir := fmt.Sprintf("repo-clone-%d", i)
+			cmd := liveCommand(ctx, env.binPath, "git", "clone", repo, cloneDir)
+			cmd.Dir = workDir
+			cmd.Env = env.duckwayCommandEnv()
+			start := time.Now()
+			output, err := cmd.CombinedOutput()
+			elapsed := time.Since(start)
+			if err != nil {
+				t.Fatalf("duckway git clone repo index %d failed: %v\n%s", i, err, env.sanitizeOutput(string(output)))
+			}
+			t.Logf("duckway git clone repo index %d elapsed=%s", i, elapsed.Round(time.Millisecond))
+			if _, err := os.Stat(filepath.Join(workDir, cloneDir, ".git")); err != nil {
+				t.Fatalf("clone did not create .git directory: %v\n%s", err, env.sanitizeOutput(string(output)))
+			}
+		})
 	}
 }
 
@@ -305,12 +347,17 @@ func BenchmarkDuckwayGitCloneLive(b *testing.B) {
 
 func newGitHubGitLiveDuckwayEnv(tb testing.TB) *githubGitLiveDuckwayEnv {
 	tb.Helper()
+	cfg := loadGitHubAppLiveConfig(tb)
+	return newGitHubGitLiveDuckwayEnvForRepos(tb, cfg, []string{cfg.Repository})
+}
+
+func newGitHubGitLiveDuckwayEnvForRepos(tb testing.TB, cfg githubAppLiveConfig, repos []string) *githubGitLiveDuckwayEnv {
+	tb.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		tb.Fatalf("git binary is required for live GitHub git test: %v", err)
 	}
-	cfg := loadGitHubAppLiveConfig(tb)
 	credentialJSON := buildGitHubAppCredentialJSON(tb, cfg)
-	phantom, serverURL, clientToken, ca, caPEM := startGitHubGitLiveDuckwayServer(tb, credentialJSON, cfg.Repository)
+	phantom, serverURL, clientToken, ca, caPEM := startGitHubGitLiveDuckwayServerForRepos(tb, credentialJSON, repos)
 
 	localProxy := &httpsProxy{
 		serverURL:   serverURL,
@@ -356,6 +403,7 @@ func newGitHubGitLiveDuckwayEnv(tb testing.TB) *githubGitLiveDuckwayEnv {
 
 	return &githubGitLiveDuckwayEnv{
 		cfg:         cfg,
+		repos:       repos,
 		phantom:     phantom,
 		serverURL:   serverURL,
 		clientToken: clientToken,
@@ -543,7 +591,9 @@ func (e *githubGitLiveDuckwayEnv) gitProxyEnv() []string {
 }
 
 func (e *githubGitLiveDuckwayEnv) sanitizeOutput(output string) string {
-	return sanitizeGitHubLiveOutput(output, e.phantom, e.clientToken, e.cfg.PrivateKey)
+	secrets := []string{e.phantom, e.clientToken, e.cfg.PrivateKey, e.cfg.Repository}
+	secrets = append(secrets, e.repos...)
+	return sanitizeGitHubLiveOutput(output, secrets...)
 }
 
 func liveCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -582,12 +632,25 @@ func sanitizeGitHubLiveOutput(output string, secrets ...string) string {
 	return githubInstallationTokenPattern.ReplaceAllString(sanitized, "ghs_[redacted]")
 }
 
-func startGitHubGitLiveDuckwayServer(t testing.TB, credentialJSON, repo string) (phantom, serverURL, clientToken string, ca *services.CAManager, caPEM []byte) {
+func startGitHubGitLiveDuckwayServerForRepos(t testing.TB, credentialJSON string, repos []string) (phantom, serverURL, clientToken string, ca *services.CAManager, caPEM []byte) {
 	t.Helper()
-	normalizedRepo := normalizeGitHubLiveRepo(t, repo)
-	parts := strings.Split(normalizedRepo, "/")
+	if len(repos) == 0 {
+		t.Fatal("at least one live repository is required")
+	}
+	normalizedRepos := make([]string, 0, len(repos))
+	seenRepos := map[string]bool{}
+	for _, repo := range repos {
+		normalizedRepo := normalizeGitHubLiveRepo(t, repo)
+		key := strings.ToLower(normalizedRepo)
+		if seenRepos[key] {
+			continue
+		}
+		seenRepos[key] = true
+		normalizedRepos = append(normalizedRepos, normalizedRepo)
+	}
+	parts := strings.Split(normalizedRepos[0], "/")
 	if len(parts) != 2 {
-		t.Fatalf("live repository must be OWNER/REPO, got %q", repo)
+		t.Fatalf("live repository must be OWNER/REPO, got %q", normalizedRepos[0])
 	}
 
 	db, err := database.Open(t.TempDir())
@@ -655,7 +718,7 @@ func startGitHubGitLiveDuckwayServer(t testing.TB, credentialJSON, repo string) 
 	if err != nil {
 		t.Fatalf("generate github app phantom: %v", err)
 	}
-	acl := githubGitLivePermissionConfig(normalizedRepo)
+	acl := githubGitLivePermissionConfig(normalizedRepos...)
 	apiKeyID := apiKey.ID
 	placeholder := &models.PlaceholderKey{
 		ID:               "ph-github-git-live",
@@ -707,7 +770,7 @@ func startGitHubGitLiveDuckwayServer(t testing.TB, credentialJSON, repo string) 
 	return phantom, duckwayServer.URL, clientToken, ca, ca.CertPEM
 }
 
-func githubGitLivePermissionConfig(repo string) string {
+func githubGitLivePermissionConfig(repos ...string) string {
 	type endpoint struct {
 		Method string `json:"method"`
 		Path   string `json:"path"`
@@ -725,18 +788,22 @@ func githubGitLivePermissionConfig(repo string) string {
 		Version:  "1",
 		Provider: "github",
 	}
+	var endpoints []endpoint
+	for _, repo := range repos {
+		endpoints = append(endpoints,
+			endpoint{Method: "GET", Path: "/" + repo + ".git/info/refs", Allow: true},
+			endpoint{Method: "POST", Path: "/" + repo + ".git/git-upload-pack", Allow: true},
+			endpoint{Method: "POST", Path: "/" + repo + ".git/git-receive-pack", Allow: true},
+			endpoint{Method: "GET", Path: "/repos/" + repo, Allow: true},
+		)
+	}
 	config.Rules = append(config.Rules, struct {
 		Name         string     `json:"name"`
 		Endpoints    []endpoint `json:"endpoints"`
 		DenyAllOther bool       `json:"deny_all_other"`
 	}{
-		Name: "live-read-write",
-		Endpoints: []endpoint{
-			{Method: "GET", Path: "/" + repo + ".git/info/refs", Allow: true},
-			{Method: "POST", Path: "/" + repo + ".git/git-upload-pack", Allow: true},
-			{Method: "POST", Path: "/" + repo + ".git/git-receive-pack", Allow: true},
-			{Method: "GET", Path: "/repos/" + repo, Allow: true},
-		},
+		Name:         "live-read-write",
+		Endpoints:    endpoints,
 		DenyAllOther: true,
 	})
 	raw, _ := json.Marshal(config)
@@ -800,6 +867,129 @@ func loadGitHubAppLiveConfig(t testing.TB) githubAppLiveConfig {
 	}
 	cfg.Repository = normalizeGitHubLiveRepo(t, cfg.Repository)
 	return cfg
+}
+
+func firstTwoGitHubLiveInstallationRepos(tb testing.TB, cfg githubAppLiveConfig) []string {
+	tb.Helper()
+	repos := listGitHubLiveInstallationRepos(tb, cfg)
+	if len(repos) < 2 {
+		tb.Fatalf("GitHub App installation %d lists %d repositories; configure at least two repositories for live multi-repo tests", cfg.InstallationID, len(repos))
+	}
+	return repos[:2]
+}
+
+func listGitHubLiveInstallationRepos(tb testing.TB, cfg githubAppLiveConfig) []string {
+	tb.Helper()
+	token := mintGitHubLiveInstallationToken(tb, cfg)
+	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "https://api.github.com"
+	}
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/installation/repositories?per_page=100", nil)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		tb.Fatalf("list GitHub App installation repositories: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		tb.Fatalf("list GitHub App installation repositories returned %d", resp.StatusCode)
+	}
+	var out struct {
+		Repositories []struct {
+			FullName string `json:"full_name"`
+		} `json:"repositories"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		tb.Fatalf("decode GitHub App installation repositories: %v", err)
+	}
+	seen := map[string]bool{}
+	var repos []string
+	for _, repo := range out.Repositories {
+		normalized := normalizeGitHubLiveRepo(tb, repo.FullName)
+		key := strings.ToLower(normalized)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		repos = append(repos, normalized)
+	}
+	return repos
+}
+
+func mintGitHubLiveInstallationToken(tb testing.TB, cfg githubAppLiveConfig) string {
+	tb.Helper()
+	jwt := githubLiveAppJWT(tb, cfg)
+	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "https://api.github.com"
+	}
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/app/installations/%d/access_tokens", baseURL, cfg.InstallationID), strings.NewReader(`{}`))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		tb.Fatalf("mint GitHub App installation token for repo listing: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		tb.Fatalf("mint GitHub App installation token for repo listing returned %d", resp.StatusCode)
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		tb.Fatalf("decode GitHub App installation token: %v", err)
+	}
+	if out.Token == "" {
+		tb.Fatal("GitHub App installation token response missing token")
+	}
+	return out.Token
+}
+
+func githubLiveAppJWT(tb testing.TB, cfg githubAppLiveConfig) string {
+	tb.Helper()
+	block, _ := pem.Decode([]byte(cfg.PrivateKey))
+	if block == nil {
+		tb.Fatal("decode GitHub App private key PEM")
+		return ""
+	}
+	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		parsed, parseErr := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if parseErr != nil {
+			tb.Fatalf("parse GitHub App private key: %v", err)
+		}
+		var ok bool
+		key, ok = parsed.(*rsa.PrivateKey)
+		if !ok {
+			tb.Fatal("GitHub App private key is not RSA")
+		}
+	}
+	headerJSON, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT"})
+	now := time.Now()
+	claimsJSON, _ := json.Marshal(map[string]int64{
+		"iat": now.Add(-1 * time.Minute).Unix(),
+		"exp": now.Add(9 * time.Minute).Unix(),
+		"iss": cfg.AppID,
+	})
+	signingInput := base64.RawURLEncoding.EncodeToString(headerJSON) + "." + base64.RawURLEncoding.EncodeToString(claimsJSON)
+	sum := sha256.Sum256([]byte(signingInput))
+	sig, err := rsa.SignPKCS1v15(cryptorand.Reader, key, crypto.SHA256, sum[:])
+	if err != nil {
+		tb.Fatalf("sign GitHub App JWT: %v", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
 func findGitHubAppLiveConfigFrom(t testing.TB, rel string) string {

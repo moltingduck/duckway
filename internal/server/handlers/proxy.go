@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
+	"github.com/hackerduck/duckway/internal/models"
 	"github.com/hackerduck/duckway/internal/server/middleware"
 	"github.com/hackerduck/duckway/internal/server/services"
 )
@@ -295,7 +296,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.resolver.ResolveForService(client.ID, svc.ID)
+	result, err := h.resolveProxyKey(r, client.ID, svc)
 	if err != nil {
 		log.Printf("resolve error for %s/%s: %v", serviceName, client.Name, err)
 		jsonError(w, "key resolution failed", http.StatusInternalServerError)
@@ -820,6 +821,53 @@ func rewriteGitHubBasicAuth(authHeader, placeholder, realKey string) (string, bo
 		return "", false
 	}
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+realKey)), true
+}
+
+func (h *ProxyHandler) resolveProxyKey(r *http.Request, clientID string, svc *models.Service) (*services.ResolveResult, error) {
+	if placeholder := explicitProxyPlaceholder(r, svc); placeholder != "" {
+		result, err := h.resolver.Resolve(placeholder, clientID)
+		if err != nil {
+			return nil, err
+		}
+		if result.Error == "" && result.ServiceID != "" && result.ServiceID != svc.ID {
+			return &services.ResolveResult{Error: "placeholder key is not for this service"}, nil
+		}
+		return result, nil
+	}
+	return h.resolver.ResolveForService(clientID, svc.ID)
+}
+
+func explicitProxyPlaceholder(r *http.Request, svc *models.Service) string {
+	authHeader := svc.AuthHeader
+	if authHeader == "" {
+		authHeader = "Authorization"
+	}
+	auth := strings.TrimSpace(r.Header.Get(authHeader))
+	if auth == "" && !strings.EqualFold(authHeader, "Authorization") {
+		auth = strings.TrimSpace(r.Header.Get("Authorization"))
+	}
+	if auth == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(auth), "basic ") {
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(auth[len("Basic "):]))
+		if err != nil {
+			return ""
+		}
+		_, pass, ok := strings.Cut(string(raw), ":")
+		if !ok {
+			return ""
+		}
+		return strings.TrimSpace(pass)
+	}
+	prefix := svc.AuthPrefix
+	if prefix != "" && strings.HasPrefix(strings.ToLower(auth), strings.ToLower(prefix)) {
+		return strings.TrimSpace(auth[len(prefix):])
+	}
+	if strings.Contains(auth, " ") {
+		return ""
+	}
+	return auth
 }
 
 func effectiveProxyUpstreamBaseURL(serviceName, configuredBaseURL, upstreamPath string) string {

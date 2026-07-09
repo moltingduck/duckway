@@ -30,6 +30,7 @@ type ResolveResult struct {
 	RealKey          string
 	RealRefreshToken string
 	APIKeyID         string
+	ServiceID        string
 	PlaceholderID    string
 	Placeholder      string
 	PermissionConfig string // from placeholder_keys.permission_config
@@ -118,6 +119,7 @@ func (r *KeyResolver) Resolve(placeholder string, clientID string) (*ResolveResu
 		RealKey:          realKey,
 		RealRefreshToken: realRefresh,
 		APIKeyID:         apiKey.ID,
+		ServiceID:        ph.ServiceID,
 		PlaceholderID:    ph.ID,
 		Placeholder:      ph.Placeholder,
 		PermissionConfig: permConfig,
