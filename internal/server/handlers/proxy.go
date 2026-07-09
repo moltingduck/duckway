@@ -383,6 +383,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if upstreamBaseURL == "" {
 		upstreamBaseURL = svc.UpstreamURL
 	}
+	upstreamBaseURL = effectiveProxyUpstreamBaseURL(serviceName, upstreamBaseURL, upstreamPath)
 	upstreamURL := strings.TrimRight(upstreamBaseURL, "/") + upstreamPath
 	if r.URL.RawQuery != "" {
 		upstreamURL += "?" + r.URL.RawQuery
@@ -805,6 +806,20 @@ func rewriteGitHubBasicAuth(authHeader, placeholder, realKey string) (string, bo
 		return "", false
 	}
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+realKey)), true
+}
+
+func effectiveProxyUpstreamBaseURL(serviceName, configuredBaseURL, upstreamPath string) string {
+	if serviceName == "github" && strings.Contains(configuredBaseURL, "api.github.com") && isGitHubSmartHTTPPath(upstreamPath) {
+		return "https://github.com"
+	}
+	return configuredBaseURL
+}
+
+func isGitHubSmartHTTPPath(path string) bool {
+	path = strings.TrimSpace(path)
+	return strings.HasSuffix(path, ".git/info/refs") ||
+		strings.HasSuffix(path, ".git/git-upload-pack") ||
+		strings.HasSuffix(path, ".git/git-receive-pack")
 }
 
 func rewriteCodexRefreshResponse(body []byte, placeholderID, placeholder string) []byte {
