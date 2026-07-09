@@ -987,6 +987,19 @@ func TestProxyGitHubAppRepoACLBoundaries(t *testing.T) {
 			wantRepo:      "REPO",
 		},
 		{
+			name: "pull only permits upload-pack discovery read",
+			acl: `{"version":"1","provider":"github","rules":[{"name":"pull","endpoints":[` +
+				`{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:        "GET",
+			requestPath:   "/proxy/github/OWNER/REPO.git/info/refs?service=git-upload-pack",
+			wantStatus:    http.StatusOK,
+			wantMintCount: 1,
+			wantPerm:      "read",
+			wantRepo:      "REPO",
+		},
+		{
 			name: "pull only denies receive-pack before mint",
 			acl: `{"version":"1","provider":"github","rules":[{"name":"pull","endpoints":[` +
 				`{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},` +
@@ -994,6 +1007,17 @@ func TestProxyGitHubAppRepoACLBoundaries(t *testing.T) {
 				`],"deny_all_other":true}]}`,
 			method:        "POST",
 			requestPath:   "/proxy/github/OWNER/REPO.git/git-receive-pack",
+			wantStatus:    http.StatusForbidden,
+			wantMintCount: 0,
+		},
+		{
+			name: "pull only denies receive-pack discovery before mint",
+			acl: `{"version":"1","provider":"github","rules":[{"name":"pull","endpoints":[` +
+				`{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:        "GET",
+			requestPath:   "/proxy/github/OWNER/REPO.git/info/refs?service=git-receive-pack",
 			wantStatus:    http.StatusForbidden,
 			wantMintCount: 0,
 		},

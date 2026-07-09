@@ -365,7 +365,8 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		{"api_key", result.APIKeyACL},
 		{"placeholder", result.PermissionConfig},
 	}
-	bodyRequired := requestBodyRequiredForProxyACL(aclLayers, r.Method, upstreamPath)
+	aclMethod, aclPath := proxyACLRequest(r.Method, upstreamPath, r.URL.RawQuery)
+	bodyRequired := requestBodyRequiredForProxyACL(aclLayers, aclMethod, aclPath)
 
 	var bodyBytes []byte
 	if bodyRequired && r.Body != nil {
@@ -382,7 +383,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		if layer.config == "" {
 			continue
 		}
-		permResult := h.permissions.Check(layer.config, result.PlaceholderID, r.Method, upstreamPath, bodyBytes)
+		permResult := h.permissions.Check(layer.config, result.PlaceholderID, aclMethod, aclPath, bodyBytes)
 		if !permResult.Allowed {
 			jsonError(w, "permission denied ("+layer.name+"): "+permResult.Reason, http.StatusForbidden)
 			return
@@ -882,6 +883,24 @@ func isGitHubSmartHTTPPath(path string) bool {
 	return strings.HasSuffix(path, ".git/info/refs") ||
 		strings.HasSuffix(path, ".git/git-upload-pack") ||
 		strings.HasSuffix(path, ".git/git-receive-pack")
+}
+
+func proxyACLRequest(method, upstreamPath, rawQuery string) (string, string) {
+	if !strings.EqualFold(method, http.MethodGet) || !strings.HasSuffix(upstreamPath, ".git/info/refs") {
+		return method, upstreamPath
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return method, upstreamPath
+	}
+	switch values.Get("service") {
+	case "git-upload-pack":
+		return http.MethodPost, strings.TrimSuffix(upstreamPath, ".git/info/refs") + ".git/git-upload-pack"
+	case "git-receive-pack":
+		return http.MethodPost, strings.TrimSuffix(upstreamPath, ".git/info/refs") + ".git/git-receive-pack"
+	default:
+		return method, upstreamPath
+	}
 }
 
 func requestBodyRequiredForProxyACL(layers []proxyACLLayer, method, path string) bool {

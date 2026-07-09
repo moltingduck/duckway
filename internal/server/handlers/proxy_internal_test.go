@@ -1,6 +1,9 @@
 package handlers
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
 func TestEffectiveProxyUpstreamBaseURLGitHubGitPathsUseGitHubHost(t *testing.T) {
 	cases := []struct {
@@ -23,5 +26,57 @@ func TestEffectiveProxyUpstreamBaseURLGitHubGitPathsUseGitHubHost(t *testing.T) 
 	}
 	if got := effectiveProxyUpstreamBaseURL("github", "https://github.example.test", "/OWNER/REPO.git/info/refs"); got != "https://github.example.test" {
 		t.Fatalf("custom github upstream = %q", got)
+	}
+}
+
+func TestProxyACLRequestMapsGitDiscoveryToPackPermission(t *testing.T) {
+	cases := []struct {
+		name       string
+		method     string
+		path       string
+		query      string
+		wantMethod string
+		wantPath   string
+	}{
+		{
+			name:       "upload-pack discovery",
+			method:     http.MethodGet,
+			path:       "/OWNER/REPO.git/info/refs",
+			query:      "service=git-upload-pack",
+			wantMethod: http.MethodPost,
+			wantPath:   "/OWNER/REPO.git/git-upload-pack",
+		},
+		{
+			name:       "receive-pack discovery",
+			method:     http.MethodGet,
+			path:       "/OWNER/REPO.git/info/refs",
+			query:      "service=git-receive-pack",
+			wantMethod: http.MethodPost,
+			wantPath:   "/OWNER/REPO.git/git-receive-pack",
+		},
+		{
+			name:       "plain info refs unchanged",
+			method:     http.MethodGet,
+			path:       "/OWNER/REPO.git/info/refs",
+			query:      "",
+			wantMethod: http.MethodGet,
+			wantPath:   "/OWNER/REPO.git/info/refs",
+		},
+		{
+			name:       "post unchanged",
+			method:     http.MethodPost,
+			path:       "/OWNER/REPO.git/git-receive-pack",
+			query:      "",
+			wantMethod: http.MethodPost,
+			wantPath:   "/OWNER/REPO.git/git-receive-pack",
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			gotMethod, gotPath := proxyACLRequest(tt.method, tt.path, tt.query)
+			if gotMethod != tt.wantMethod || gotPath != tt.wantPath {
+				t.Fatalf("proxyACLRequest = (%q, %q), want (%q, %q)", gotMethod, gotPath, tt.wantMethod, tt.wantPath)
+			}
+		})
 	}
 }
