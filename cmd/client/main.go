@@ -350,8 +350,9 @@ func printGitUsage() {
 }
 
 type configuredGitRepo struct {
-	Repo string
-	Mode string
+	Repo        string
+	Mode        string
+	Placeholder string
 }
 
 func cmdGitList(configDir string) {
@@ -369,9 +370,15 @@ func cmdGitList(configDir string) {
 }
 
 func cmdGitSetup(configDir string) {
-	cfg, _ := loadGitConfigAndKeys(configDir)
+	cfg, keys := loadGitConfigAndKeys(configDir)
+	if !hasUsableGitHubCredential(keys) {
+		log.Fatal("no usable GitHub phantom token is configured for this client; assign a GitHub key with at least one repository first")
+	}
 	if _, err := client.SyncKeys(configDir, cfg); err != nil {
 		log.Fatalf("git setup sync failed: %v", err)
+	}
+	if err := ensureGitHubCredentialStored(keys, ""); err != nil {
+		log.Fatalf("git setup failed: %v", err)
 	}
 	fmt.Println("Equivalent git commands:")
 	printGitCommand("", "config", "--global", "credential.helper", "store")
@@ -394,7 +401,8 @@ func cmdGitClone(configDir string, args []string) {
 	}
 	cfg, keys := loadGitConfigAndKeys(configDir)
 	repos := configuredGitRepos(keys)
-	if !repoConfigured(repos, repo) {
+	repoInfo, ok := configuredGitRepoFor(repos, repo)
+	if !ok {
 		fmt.Fprintf(os.Stderr, "Repository %s is not configured for this client.\n", repo)
 		fmt.Fprintln(os.Stderr, "Configured repos:")
 		for _, r := range repos {
@@ -404,6 +412,12 @@ func cmdGitClone(configDir string, args []string) {
 	}
 	if _, err := client.SyncKeys(configDir, cfg); err != nil {
 		log.Fatalf("git clone sync failed: %v", err)
+	}
+	if err := ensureGitHubCredentialStored([]client.PlaceholderKeyInfo{{
+		ServiceName: "github",
+		Placeholder: repoInfo.Placeholder,
+	}}, repo); err != nil {
+		log.Fatalf("git clone setup failed: %v", err)
 	}
 	if err := configureGlobalGitCredential(); err != nil {
 		log.Fatalf("git setup failed: %v", err)
@@ -459,6 +473,48 @@ func configureGlobalGitCredential() error {
 		return err
 	}
 	return runGit("", "config", "--global", "credential.useHttpPath", "false")
+}
+
+func hasUsableGitHubCredential(keys []client.PlaceholderKeyInfo) bool {
+	for _, key := range keys {
+		if key.ServiceName == "github" && strings.TrimSpace(key.Placeholder) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func ensureGitHubCredentialStored(keys []client.PlaceholderKeyInfo, repo string) error {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return fmt.Errorf("cannot locate home directory for git credential store")
+	}
+	for _, key := range keys {
+		if key.ServiceName != "github" || strings.TrimSpace(key.Placeholder) == "" {
+			continue
+		}
+		if err := client.DeployGitHubCredentialForGit(home, key.Placeholder); err != nil {
+			return err
+		}
+		if gitHubCredentialStoreContains(home, key.Placeholder) {
+			return nil
+		}
+	}
+	if repo != "" {
+		return fmt.Errorf("no GitHub phantom credential was written for %s; reassign the GitHub key for this client", repo)
+	}
+	return fmt.Errorf("no GitHub phantom credential was written; reassign the GitHub key for this client")
+}
+
+func gitHubCredentialStoreContains(home, placeholder string) bool {
+	if home == "" || placeholder == "" {
+		return false
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".git-credentials"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(raw), placeholder)
 }
 
 func configureRepoGit(dir, configDir string, port int, repo string) error {
@@ -518,30 +574,32 @@ func normalizeGitRepoArg(raw string) (string, error) {
 	return repo, nil
 }
 
-func repoConfigured(repos []configuredGitRepo, repo string) bool {
+func configuredGitRepoFor(repos []configuredGitRepo, repo string) (configuredGitRepo, bool) {
 	for _, r := range repos {
 		if strings.EqualFold(r.Repo, repo) {
-			return true
+			return r, true
 		}
 	}
-	return false
+	return configuredGitRepo{}, false
 }
 
 func configuredGitRepos(keys []client.PlaceholderKeyInfo) []configuredGitRepo {
-	modes := map[string]string{}
+	reposByName := map[string]configuredGitRepo{}
 	for _, key := range keys {
-		if key.ServiceName != "github" || strings.TrimSpace(key.PermissionConfig) == "" {
+		if key.ServiceName != "github" || strings.TrimSpace(key.PermissionConfig) == "" || strings.TrimSpace(key.Placeholder) == "" {
 			continue
 		}
 		for _, repo := range gitReposFromPermissionConfig(key.PermissionConfig) {
-			if modes[repo.Repo] != "dev" {
-				modes[repo.Repo] = repo.Mode
+			current := reposByName[repo.Repo]
+			if current.Mode != "dev" {
+				repo.Placeholder = key.Placeholder
+				reposByName[repo.Repo] = repo
 			}
 		}
 	}
-	repos := make([]configuredGitRepo, 0, len(modes))
-	for repo, mode := range modes {
-		repos = append(repos, configuredGitRepo{Repo: repo, Mode: mode})
+	repos := make([]configuredGitRepo, 0, len(reposByName))
+	for _, repo := range reposByName {
+		repos = append(repos, repo)
 	}
 	sort.Slice(repos, func(i, j int) bool { return strings.ToLower(repos[i].Repo) < strings.ToLower(repos[j].Repo) })
 	return repos

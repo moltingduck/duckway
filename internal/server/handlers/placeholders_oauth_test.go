@@ -184,6 +184,102 @@ func TestCreatePlaceholderForGitHubPATUsesFineGrainedPhantom(t *testing.T) {
 	}
 }
 
+func TestCreatePlaceholderUpdatesExistingPlaceholderToken(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	classicPAT := "ghp_" + strings.Repeat("a", 36)
+	fineGrainedPAT := "github_pat_" + strings.Repeat("b", 82)
+	encClassic, err := crypto.Encrypt(classicPAT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encFineGrained, err := crypto.Encrypt(fineGrainedPAT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	ghSvc := &models.Service{
+		ID:           "svc-gh-update-placeholder",
+		Name:         "github",
+		DisplayName:  "GitHub",
+		UpstreamURL:  "https://api.github.com",
+		HostPattern:  "github.com",
+		AuthType:     "bearer",
+		AuthHeader:   "Authorization",
+		AuthPrefix:   "Bearer ",
+		KeyPrefix:    "github_pat_",
+		KeyLength:    93,
+		DeliveryMode: "proxy",
+		IsActive:     true,
+	}
+	if err := svcQ.Create(ghSvc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-gh-update','github client','hash-gh-update')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted) VALUES ('key-gh-classic',?,'classic',?), ('key-gh-fine',?,'fine',?)`,
+		ghSvc.ID, encClassic, ghSvc.ID, encFineGrained); err != nil {
+		t.Fatal(err)
+	}
+
+	h := handlers.NewPlaceholderHandler(
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		queries.NewClientQueries(db),
+	).WithKeyLookup(queries.NewAPIKeyQueries(db), crypto)
+	createBody := func(keyID string) string {
+		return `{
+			"service_id":"` + ghSvc.ID + `",
+			"api_key_id":"` + keyID + `",
+			"client_id":"client-gh-update",
+			"requires_approval":false
+		}`
+	}
+	rec1 := httptest.NewRecorder()
+	h.Create(rec1, httptest.NewRequest(http.MethodPost, "/api/placeholders", strings.NewReader(createBody("key-gh-classic"))))
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("first status = %d body=%s", rec1.Code, rec1.Body.String())
+	}
+	var first struct {
+		ID          string `json:"id"`
+		Placeholder string `json:"placeholder"`
+	}
+	if err := json.Unmarshal(rec1.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(first.Placeholder, "ghp_") {
+		t.Fatalf("first placeholder = %q, want ghp_ prefix", first.Placeholder)
+	}
+
+	rec2 := httptest.NewRecorder()
+	h.Create(rec2, httptest.NewRequest(http.MethodPost, "/api/placeholders", strings.NewReader(createBody("key-gh-fine"))))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second status = %d body=%s", rec2.Code, rec2.Body.String())
+	}
+	var second struct {
+		ID          string `json:"id"`
+		Placeholder string `json:"placeholder"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("id = %q, want existing id %q", second.ID, first.ID)
+	}
+	if !strings.HasPrefix(second.Placeholder, "github_pat_") {
+		t.Fatalf("second placeholder = %q, want github_pat_ prefix", second.Placeholder)
+	}
+	if second.Placeholder == first.Placeholder {
+		t.Fatalf("placeholder was not updated: %q", second.Placeholder)
+	}
+}
+
 func TestCreatePlaceholderForGitHubAppInstallationTokenUsesMatchingPhantom(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

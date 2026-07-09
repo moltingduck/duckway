@@ -147,7 +147,7 @@ func TestGitHubAppPhantomGitPullLive(t *testing.T) {
 	t.Cleanup(proxyServer.Close)
 
 	home := t.TempDir()
-	if err := deployGitHubCredential(home, phantom); err != nil {
+	if err := DeployGitHubCredentialForGit(home, phantom); err != nil {
 		t.Fatalf("deploy github phantom credential: %v", err)
 	}
 

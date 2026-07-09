@@ -111,8 +111,8 @@ func (q *PlaceholderQueries) Create(p *models.PlaceholderKey) error {
 
 func (q *PlaceholderQueries) Update(p *models.PlaceholderKey) error {
 	_, err := q.db.Exec(
-		`UPDATE placeholder_keys SET env_name=?, api_key_id=?, group_id=?, permission_config=?, requires_approval=?, approval_ttl_minutes=?, key_path=?, is_active=? WHERE id=?`,
-		p.EnvName, p.APIKeyID, p.GroupID, p.PermissionConfig, p.RequiresApproval, p.ApprovalTTLMinutes, p.KeyPath, p.IsActive, p.ID,
+		`UPDATE placeholder_keys SET env_name=?, placeholder=?, api_key_id=?, group_id=?, permission_config=?, requires_approval=?, approval_ttl_minutes=?, key_path=?, is_active=? WHERE id=?`,
+		p.EnvName, p.Placeholder, p.APIKeyID, p.GroupID, p.PermissionConfig, p.RequiresApproval, p.ApprovalTTLMinutes, p.KeyPath, p.IsActive, p.ID,
 	)
 	return err
 }

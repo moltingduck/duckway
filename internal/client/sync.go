@@ -71,7 +71,7 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 	home, _ := os.UserHomeDir()
 	for _, k := range keys {
 		if k.ServiceName == "github" {
-			if err := deployGitHubCredential(home, k.Placeholder); err != nil {
+			if err := DeployGitHubCredentialForGit(home, k.Placeholder); err != nil {
 				log.Printf("Warning: cannot write GitHub git credential: %v", err)
 			}
 		}
@@ -120,7 +120,9 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 	return len(keys), nil
 }
 
-func deployGitHubCredential(home, placeholder string) error {
+// DeployGitHubCredentialForGit writes the Duckway GitHub phantom token into
+// the git credential-store file while preserving non-Duckway entries.
+func DeployGitHubCredentialForGit(home, placeholder string) error {
 	if home == "" || placeholder == "" {
 		return nil
 	}

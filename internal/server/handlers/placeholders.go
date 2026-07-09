@@ -140,6 +140,14 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "phantom token already exists for this client/service/env from a key suite; edit or remove the suite assignment first", http.StatusConflict)
 			return
 		}
+		if strings.TrimSpace(existing.Placeholder) == "" || !sameOptionalString(existing.APIKeyID, req.APIKeyID) || !sameOptionalString(existing.GroupID, req.GroupID) {
+			placeholder, err := generatePlaceholderForAssignment(realKeyForPlaceholder, prefix, keyLen)
+			if err != nil {
+				jsonError(w, "failed to generate placeholder", http.StatusInternalServerError)
+				return
+			}
+			existing.Placeholder = placeholder
+		}
 		existing.APIKeyID = req.APIKeyID
 		existing.GroupID = req.GroupID
 		existing.PermissionConfig = req.PermissionConfig
@@ -161,12 +169,7 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var placeholder string
-	if realKeyForPlaceholder != "" {
-		placeholder, err = svc.GeneratePlaceholderForRealKey(realKeyForPlaceholder, prefix, keyLen)
-	} else {
-		placeholder, err = svc.GeneratePlaceholder(prefix, keyLen)
-	}
+	placeholder, err := generatePlaceholderForAssignment(realKeyForPlaceholder, prefix, keyLen)
 	if err != nil {
 		jsonError(w, "failed to generate placeholder", http.StatusInternalServerError)
 		return
@@ -201,6 +204,20 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, pk)
+}
+
+func generatePlaceholderForAssignment(realKeyForPlaceholder, prefix string, keyLen int) (string, error) {
+	if realKeyForPlaceholder != "" {
+		return svc.GeneratePlaceholderForRealKey(realKeyForPlaceholder, prefix, keyLen)
+	}
+	return svc.GeneratePlaceholder(prefix, keyLen)
+}
+
+func sameOptionalString(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // ListWithApprovals returns placeholders enriched with latest approval status.

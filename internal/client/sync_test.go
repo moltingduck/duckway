@@ -20,7 +20,7 @@ func TestDeployGitHubCredentialMergesDuckwayEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := deployGitHubCredential(home, "github_pat_dw_new"); err != nil {
+	if err := DeployGitHubCredentialForGit(home, "github_pat_dw_new"); err != nil {
 		t.Fatal(err)
 	}
 
