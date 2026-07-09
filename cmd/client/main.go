@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -99,6 +102,8 @@ func main() {
 		cmdCC(configDir)
 	case "projects":
 		cmdProjects(configDir, os.Args[2:])
+	case "git":
+		cmdGit(configDir, os.Args[2:])
 	case "start":
 		cmdStart(configDir)
 	case "stop":
@@ -165,6 +170,10 @@ Usage:
                          sessions and create a CC channel + binding for
                          each. Use --session <id> for headless mode.
   duckway projects       Manage project folders usable from Discord
+  duckway git list       List GitHub repos configured for this client
+  duckway git setup      Sync GitHub phantom credential for native git
+  duckway git clone OWNER/REPO [DIR]
+                         Clone a configured repo and write local git proxy config
   duckway version        Print the duckway version
 
 Proxy flags:
@@ -311,6 +320,265 @@ func cmdSync(configDir string) {
 	} else if changes != nil {
 		fmt.Println("Supply-chain hardening: rc files already up to date")
 	}
+}
+
+// cmdGit manages native git setup for GitHub repos assigned to this client.
+func cmdGit(configDir string, args []string) {
+	if len(args) < 1 {
+		printGitUsage()
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "list", "ls":
+		cmdGitList(configDir)
+	case "setup":
+		cmdGitSetup(configDir)
+	case "clone":
+		cmdGitClone(configDir, args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown git subcommand: %s\n", args[0])
+		printGitUsage()
+		os.Exit(1)
+	}
+}
+
+func printGitUsage() {
+	fmt.Fprintln(os.Stderr, "Usage:")
+	fmt.Fprintln(os.Stderr, "  duckway git list")
+	fmt.Fprintln(os.Stderr, "  duckway git setup")
+	fmt.Fprintln(os.Stderr, "  duckway git clone OWNER/REPO [DIR]")
+}
+
+type configuredGitRepo struct {
+	Repo string
+	Mode string
+}
+
+func cmdGitList(configDir string) {
+	cfg, keys := loadGitConfigAndKeys(configDir)
+	_ = cfg
+	repos := configuredGitRepos(keys)
+	if len(repos) == 0 {
+		fmt.Println("No GitHub repositories are configured for this client.")
+		return
+	}
+	fmt.Println("Configured GitHub repositories:")
+	for _, repo := range repos {
+		fmt.Printf("  %-40s %s\n", repo.Repo, repo.Mode)
+	}
+}
+
+func cmdGitSetup(configDir string) {
+	cfg, _ := loadGitConfigAndKeys(configDir)
+	if _, err := client.SyncKeys(configDir, cfg); err != nil {
+		log.Fatalf("git setup sync failed: %v", err)
+	}
+	if err := configureGlobalGitCredential(); err != nil {
+		log.Fatalf("git setup failed: %v", err)
+	}
+	fmt.Println("GitHub phantom credential synced for native git.")
+	fmt.Printf("Local proxy expected at http://localhost:%d. Run `duckway start` if it is not already running.\n", cfg.ProxyPort)
+}
+
+func cmdGitClone(configDir string, args []string) {
+	if len(args) < 1 || len(args) > 2 {
+		printGitUsage()
+		os.Exit(1)
+	}
+	repo, err := normalizeGitRepoArg(args[0])
+	if err != nil {
+		log.Fatal(err)
+	}
+	cfg, keys := loadGitConfigAndKeys(configDir)
+	repos := configuredGitRepos(keys)
+	if !repoConfigured(repos, repo) {
+		fmt.Fprintf(os.Stderr, "Repository %s is not configured for this client.\n", repo)
+		fmt.Fprintln(os.Stderr, "Configured repos:")
+		for _, r := range repos {
+			fmt.Fprintf(os.Stderr, "  %s (%s)\n", r.Repo, r.Mode)
+		}
+		os.Exit(1)
+	}
+	if _, err := client.SyncKeys(configDir, cfg); err != nil {
+		log.Fatalf("git clone sync failed: %v", err)
+	}
+	if err := configureGlobalGitCredential(); err != nil {
+		log.Fatalf("git setup failed: %v", err)
+	}
+
+	dir := repo[strings.LastIndex(repo, "/")+1:]
+	if len(args) == 2 {
+		dir = args[1]
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		if !os.IsNotExist(err) {
+			log.Fatal(err)
+		}
+		repoURL := "https://github.com/" + repo + ".git"
+		if err := runGit("", "-c", fmt.Sprintf("http.https://github.com/.proxy=http://localhost:%d", cfg.ProxyPort), "-c", "http.https://github.com/.sslCAInfo="+filepath.Join(configDir, "ca.pem"), "clone", repoURL, dir); err != nil {
+			log.Fatalf("git clone failed: %v", err)
+		}
+	}
+	if err := configureRepoGit(dir, configDir, cfg.ProxyPort, repo); err != nil {
+		log.Fatalf("configure repo failed: %v", err)
+	}
+	fmt.Printf("Repository ready: %s\n", dir)
+	fmt.Println("Next native git commands:")
+	fmt.Printf("  cd %s\n", shellQuote(dir))
+	fmt.Println("  git pull --ff-only")
+	fmt.Println("  git push   # if this repo was assigned in dev mode")
+}
+
+func loadGitConfigAndKeys(configDir string) (*client.Config, []client.PlaceholderKeyInfo) {
+	cfg, err := client.LoadConfig(configDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	keys, err := client.NewAPIClient(cfg.ServerURL, cfg.Token).FetchKeys()
+	if err != nil {
+		log.Fatalf("fetch configured keys: %v", err)
+	}
+	return cfg, keys
+}
+
+func configureGlobalGitCredential() error {
+	if err := runGit("", "config", "--global", "credential.helper", "store"); err != nil {
+		return err
+	}
+	return runGit("", "config", "--global", "credential.useHttpPath", "false")
+}
+
+func configureRepoGit(dir, configDir string, port int, repo string) error {
+	if err := runGit(dir, "remote", "set-url", "origin", "https://github.com/"+repo+".git"); err != nil {
+		return err
+	}
+	if err := runGit(dir, "config", "--local", "http.https://github.com/.proxy", fmt.Sprintf("http://localhost:%d", port)); err != nil {
+		return err
+	}
+	return runGit(dir, "config", "--local", "http.https://github.com/.sslCAInfo", filepath.Join(configDir, "ca.pem"))
+}
+
+func runGit(dir string, args ...string) error {
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
+}
+
+var gitRepoArgPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+
+func normalizeGitRepoArg(raw string) (string, error) {
+	repo := strings.TrimSpace(raw)
+	repo = strings.TrimPrefix(repo, "https://github.com/")
+	repo = strings.TrimPrefix(repo, "git@github.com:")
+	repo = strings.Trim(repo, "/")
+	repo = strings.TrimSuffix(repo, ".git")
+	repo = strings.Trim(repo, "/")
+	if !gitRepoArgPattern.MatchString(repo) {
+		return "", fmt.Errorf("repository must be OWNER/REPO")
+	}
+	for _, part := range strings.Split(repo, "/") {
+		if part == "." || part == ".." || strings.HasSuffix(part, ".git") {
+			return "", fmt.Errorf("repository must be OWNER/REPO")
+		}
+	}
+	return repo, nil
+}
+
+func repoConfigured(repos []configuredGitRepo, repo string) bool {
+	for _, r := range repos {
+		if strings.EqualFold(r.Repo, repo) {
+			return true
+		}
+	}
+	return false
+}
+
+func configuredGitRepos(keys []client.PlaceholderKeyInfo) []configuredGitRepo {
+	modes := map[string]string{}
+	for _, key := range keys {
+		if key.ServiceName != "github" || strings.TrimSpace(key.PermissionConfig) == "" {
+			continue
+		}
+		for _, repo := range gitReposFromPermissionConfig(key.PermissionConfig) {
+			if modes[repo.Repo] != "dev" {
+				modes[repo.Repo] = repo.Mode
+			}
+		}
+	}
+	repos := make([]configuredGitRepo, 0, len(modes))
+	for repo, mode := range modes {
+		repos = append(repos, configuredGitRepo{Repo: repo, Mode: mode})
+	}
+	sort.Slice(repos, func(i, j int) bool { return strings.ToLower(repos[i].Repo) < strings.ToLower(repos[j].Repo) })
+	return repos
+}
+
+func gitReposFromPermissionConfig(configJSON string) []configuredGitRepo {
+	var config struct {
+		Provider string `json:"provider"`
+		Rules    []struct {
+			Endpoints []struct {
+				Method string `json:"method"`
+				Path   string `json:"path"`
+				Allow  bool   `json:"allow"`
+			} `json:"endpoints"`
+		} `json:"rules"`
+	}
+	if json.Unmarshal([]byte(configJSON), &config) != nil || config.Provider != "github" {
+		return nil
+	}
+	modes := map[string]string{}
+	for _, rule := range config.Rules {
+		for _, ep := range rule.Endpoints {
+			repo, ok := repoFromGitHubACLEndpoint(ep.Method, ep.Path, ep.Allow)
+			if !ok {
+				continue
+			}
+			if strings.EqualFold(ep.Method, "POST") && strings.HasSuffix(ep.Path, ".git/git-receive-pack") {
+				modes[repo] = "dev"
+			} else if modes[repo] == "" {
+				modes[repo] = "deploy"
+			}
+		}
+	}
+	repos := make([]configuredGitRepo, 0, len(modes))
+	for repo, mode := range modes {
+		repos = append(repos, configuredGitRepo{Repo: repo, Mode: mode})
+	}
+	sort.Slice(repos, func(i, j int) bool { return strings.ToLower(repos[i].Repo) < strings.ToLower(repos[j].Repo) })
+	return repos
+}
+
+func repoFromGitHubACLEndpoint(method, path string, allow bool) (string, bool) {
+	if !allow {
+		return "", false
+	}
+	method = strings.ToUpper(method)
+	path = strings.TrimSpace(path)
+	var repo string
+	switch {
+	case method == "GET" && strings.HasSuffix(path, ".git/info/refs"):
+		repo = strings.TrimPrefix(strings.TrimSuffix(path, ".git/info/refs"), "/")
+	case method == "POST" && strings.HasSuffix(path, ".git/git-upload-pack"):
+		repo = strings.TrimPrefix(strings.TrimSuffix(path, ".git/git-upload-pack"), "/")
+	case method == "POST" && strings.HasSuffix(path, ".git/git-receive-pack"):
+		repo = strings.TrimPrefix(strings.TrimSuffix(path, ".git/git-receive-pack"), "/")
+	case method == "GET" && strings.HasPrefix(path, "/repos/") && strings.HasSuffix(path, "/*"):
+		repo = strings.TrimSuffix(strings.TrimPrefix(path, "/repos/"), "/*")
+	case method == "GET" && strings.HasPrefix(path, "/repos/"):
+		repo = strings.TrimPrefix(path, "/repos/")
+	default:
+		return "", false
+	}
+	if !gitRepoArgPattern.MatchString(repo) {
+		return "", false
+	}
+	return repo, true
 }
 
 // cmdCC dispatches `duckway cc <subcommand>`.

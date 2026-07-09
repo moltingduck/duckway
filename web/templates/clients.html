@@ -658,27 +658,15 @@ function renderGitSetup(prefix) {
   if (!repoEl || !modeEl || !cmdEl || !aclEl) return;
   var repo = normalizeGitRepo(repoEl.value);
   var mode = modeEl.value || 'deploy';
+  var repoDir = repo.split('/').pop();
   cmdEl.textContent = [
-    'REPO="' + repo + '"',
-    'REPO_DIR="${REPO##*/}"',
-    '',
     'duckway update',
     'duckway restart',
-    'duckway sync',
+    'duckway git list',
+    'duckway git setup',
+    'duckway git clone ' + repo,
     '',
-    'git config --global credential.helper store',
-    'git config --global credential.useHttpPath false',
-    '',
-    'if [ ! -d "$REPO_DIR/.git" ]; then',
-    '  git -c http.https://github.com/.proxy=http://localhost:18080 \\',
-    '      -c http.https://github.com/.sslCAInfo="$HOME/.duckway/ca.pem" \\',
-    '      clone "https://github.com/$REPO.git" "$REPO_DIR"',
-    'fi',
-    'cd "$REPO_DIR"',
-    'git remote set-url origin "https://github.com/$REPO.git"',
-    'git config --local http.https://github.com/.proxy http://localhost:18080',
-    'git config --local http.https://github.com/.sslCAInfo ~/.duckway/ca.pem',
-    '',
+    'cd ' + repoDir,
     mode === 'deploy' ? 'git pull --ff-only' : 'git pull --ff-only && git push'
   ].join('\n');
   aclEl.textContent = JSON.stringify(gitACL(repo, mode), null, 2);

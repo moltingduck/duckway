@@ -49,10 +49,11 @@ func NewAPIClient(baseURL, token string) *APIClient {
 }
 
 type PlaceholderKeyInfo struct {
-	EnvName     string `json:"env_name"`
-	Placeholder string `json:"placeholder"`
-	ServiceName string `json:"service_name"`
-	KeyPath     string `json:"key_path,omitempty"`
+	EnvName          string `json:"env_name"`
+	Placeholder      string `json:"placeholder"`
+	ServiceName      string `json:"service_name"`
+	KeyPath          string `json:"key_path,omitempty"`
+	PermissionConfig string `json:"permission_config,omitempty"`
 }
 
 func (c *APIClient) FetchKeys() ([]PlaceholderKeyInfo, error) {

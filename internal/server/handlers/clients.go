@@ -241,10 +241,11 @@ func (h *ClientHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type envKey struct {
-		EnvName     string `json:"env_name"`
-		Placeholder string `json:"placeholder"`
-		ServiceName string `json:"service_name"`
-		KeyPath     string `json:"key_path,omitempty"`
+		EnvName          string `json:"env_name"`
+		Placeholder      string `json:"placeholder"`
+		ServiceName      string `json:"service_name"`
+		KeyPath          string `json:"key_path,omitempty"`
+		PermissionConfig string `json:"permission_config,omitempty"`
 	}
 
 	result := make([]envKey, 0, len(keys))
@@ -258,12 +259,16 @@ func (h *ClientHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
 					keyPath = svc.KeyDirectory
 				}
 			}
-			result = append(result, envKey{
+			out := envKey{
 				EnvName:     k.EnvName,
 				Placeholder: k.Placeholder,
 				ServiceName: k.ServiceName,
 				KeyPath:     keyPath,
-			})
+			}
+			if k.PermissionConfig != nil {
+				out.PermissionConfig = *k.PermissionConfig
+			}
+			result = append(result, out)
 		}
 	}
 
