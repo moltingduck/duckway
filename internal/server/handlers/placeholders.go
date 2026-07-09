@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -114,7 +113,8 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if service.Name == "github" && isGitHubAppCredentialJSON(realKeyForPlaceholder) {
+	isGitHubAppMinterAssignment := service.Name == "github" && isGitHubAppCredentialJSON(realKeyForPlaceholder)
+	if isGitHubAppMinterAssignment {
 		if req.PermissionConfig == nil {
 			jsonError(w, "github app minter assignments require repository-scoped permission_config", http.StatusBadRequest)
 			return
@@ -128,8 +128,8 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.EnvName == "" {
 		req.EnvName = defaultEnvName(service.Name)
 	}
-	if service.Name == "github" && req.PermissionConfig != nil && isGitHubAppCredentialJSON(realKeyForPlaceholder) {
-		req.EnvName = githubRepoScopedEnvName(req.EnvName, *req.PermissionConfig)
+	if isGitHubAppMinterAssignment && req.APIKeyID != nil {
+		req.EnvName = githubMintableAssignmentEnvName(req.EnvName, *req.APIKeyID)
 	}
 
 	requiresApproval := true
@@ -141,7 +141,11 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ttl = *req.ApprovalTTLMinutes
 	}
 
-	if existing, err := h.placeholders.GetByClientServiceEnv(req.ClientID, req.ServiceID, req.EnvName); err == nil {
+	existing, err := h.placeholders.GetByClientServiceEnv(req.ClientID, req.ServiceID, req.EnvName)
+	if err == sql.ErrNoRows && isGitHubAppMinterAssignment && req.APIKeyID != nil {
+		existing, err = h.placeholders.GetByClientAPIKey(req.ClientID, *req.APIKeyID)
+	}
+	if err == nil {
 		if existing.SuiteID != nil {
 			jsonError(w, "phantom token already exists for this client/service/env from a key suite; edit or remove the suite assignment first", http.StatusConflict)
 			return
@@ -219,60 +223,13 @@ func generatePlaceholderForAssignment(realKeyForPlaceholder, prefix string, keyL
 	return svc.GeneratePlaceholder(prefix, keyLen)
 }
 
-func githubRepoScopedEnvName(base, configJSON string) string {
-	repos := githubReposFromPermissionConfig(configJSON)
-	if len(repos) == 0 {
+func githubMintableAssignmentEnvName(base, apiKeyID string) string {
+	apiKeyID = strings.TrimSpace(apiKeyID)
+	if apiKeyID == "" {
 		return base
 	}
-	sum := sha256.Sum256([]byte(strings.Join(repos, "\n")))
+	sum := sha256.Sum256([]byte(apiKeyID))
 	return base + "_" + strings.ToUpper(hex.EncodeToString(sum[:4]))
-}
-
-func githubReposFromPermissionConfig(configJSON string) []string {
-	config, err := svc.ParsePermissionConfig(configJSON)
-	if err != nil || config.Provider != "github" {
-		return nil
-	}
-	seen := map[string]struct{}{}
-	for _, rule := range config.Rules {
-		for _, ep := range rule.Endpoints {
-			if !ep.Allow {
-				continue
-			}
-			repo := githubRepoFromPermissionPath(ep.Path)
-			if repo == "" {
-				continue
-			}
-			seen[strings.ToLower(repo)] = struct{}{}
-		}
-	}
-	repos := make([]string, 0, len(seen))
-	for repo := range seen {
-		repos = append(repos, repo)
-	}
-	sort.Strings(repos)
-	return repos
-}
-
-func githubRepoFromPermissionPath(path string) string {
-	path = strings.TrimSpace(path)
-	if strings.Contains(path, "..") {
-		return ""
-	}
-	switch {
-	case strings.HasSuffix(path, ".git/info/refs"):
-		return strings.TrimPrefix(strings.TrimSuffix(path, ".git/info/refs"), "/")
-	case strings.HasSuffix(path, ".git/git-upload-pack"):
-		return strings.TrimPrefix(strings.TrimSuffix(path, ".git/git-upload-pack"), "/")
-	case strings.HasSuffix(path, ".git/git-receive-pack"):
-		return strings.TrimPrefix(strings.TrimSuffix(path, ".git/git-receive-pack"), "/")
-	case strings.HasPrefix(path, "/repos/"):
-		parts := strings.Split(strings.TrimPrefix(path, "/repos/"), "/")
-		if len(parts) >= 2 {
-			return parts[0] + "/" + parts[1]
-		}
-	}
-	return ""
 }
 
 func sameOptionalString(a, b *string) bool {

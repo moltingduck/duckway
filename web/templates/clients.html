@@ -101,13 +101,17 @@
     <div id="phd-git-setup" style="display:none;margin-top:1rem;border-top:1px solid var(--border);padding-top:0.75rem">
       <strong>Git repo setup</strong>
       <div class="grid-2 mt-1">
-        <div class="form-group"><label>Repository for clone example</label><input type="text" id="phd-git-repo" placeholder="OWNER/REPO" oninput="renderGitSetup('phd')"></div>
+        <div class="form-group"><label>Repository for clone example</label><input type="text" id="phd-git-repo" placeholder="OWNER/REPO" list="phd-git-repo-options" oninput="renderGitSetup('phd')"><datalist id="phd-git-repo-options"></datalist></div>
         <div class="form-group"><label>Mode</label>
           <select id="phd-git-mode" onchange="renderGitSetup('phd')">
             <option value="deploy">Pull only deploy</option>
             <option value="dev">Pull and push development</option>
           </select>
         </div>
+      </div>
+      <div class="form-group">
+        <label>Granted repositories</label>
+        <div id="phd-git-grants" class="text-sm"></div>
       </div>
       <div class="form-group">
         <label>Client commands</label>
@@ -182,6 +186,18 @@
         <label><input type="checkbox" id="eph-approval"> Require approval</label>
       </div>
       <div class="form-group"><label>Approval TTL (minutes, 0 = no approval)</label><input type="number" id="eph-ttl" min="0"></div>
+      <div id="eph-github-repo-scope" style="display:none;border:1px solid var(--border);border-radius:var(--radius);padding:0.75rem;margin-bottom:1rem">
+        <label>GitHub repository authorization</label>
+        <textarea id="eph-github-repos" placeholder="OWNER/REPO&#10;OWNER/ANOTHER_REPO" style="min-height:64px"></textarea>
+        <div class="form-group mt-1">
+          <label>Access</label>
+          <select id="eph-github-mode">
+            <option value="deploy">Read only</option>
+            <option value="dev">Read/write</option>
+          </select>
+        </div>
+        <button type="button" class="btn btn-sm" onclick="applyEditGitHubRepoScope()">Update ACL from repositories</button>
+      </div>
       <div class="form-group">
         <label class="text-sm">ACL Pre-set Rules <span class="text-muted">(click to load)</span></label>
         <div id="eph-acl-templates" style="display:flex;flex-wrap:wrap;gap:0.25rem"></div>
@@ -441,7 +457,7 @@ var keyGroups = [
 ];
 
 var placeholders = [
-  {{range .Placeholders}}{id:"{{.ID}}", envName:"{{.EnvName}}", placeholder:"{{.Placeholder}}", serviceName:"{{.ServiceName}}", serviceId:"{{.ServiceID}}", apiKeyId:"{{if .APIKeyID}}{{deref .APIKeyID}}{{end}}", apiKeyName:"{{if .APIKeyName}}{{deref .APIKeyName}}{{end}}", groupId:"{{if .GroupID}}{{deref .GroupID}}{{end}}", clientId:"{{.ClientID}}", clientName:"{{.ClientName}}", keyPath:"{{.KeyPath}}", requiresApproval:{{.RequiresApproval}}, approvalTTL:{{.ApprovalTTLMinutes}}, usageCount:{{.UsageCount}}},{{end}}
+  {{range .Placeholders}}{id:"{{.ID}}", envName:"{{.EnvName}}", placeholder:"{{.Placeholder}}", serviceName:"{{.ServiceName}}", serviceId:"{{.ServiceID}}", apiKeyId:"{{if .APIKeyID}}{{deref .APIKeyID}}{{end}}", apiKeyName:"{{if .APIKeyName}}{{deref .APIKeyName}}{{end}}", groupId:"{{if .GroupID}}{{deref .GroupID}}{{end}}", clientId:"{{.ClientID}}", clientName:"{{.ClientName}}", keyPath:"{{.KeyPath}}", permissionConfig:"{{if .PermissionConfig}}{{deref .PermissionConfig}}{{end}}", requiresApproval:{{.RequiresApproval}}, approvalTTL:{{.ApprovalTTLMinutes}}, usageCount:{{.UsageCount}}},{{end}}
 ];
 
 // Will be enriched with approval data
@@ -506,6 +522,8 @@ document.addEventListener('DOMContentLoaded', function() {
     .then(function(data) {
       data.forEach(function(p) {
         approvalData[p.id] = {status: p.approval_status, approved_at: p.approved_at, expires_at: p.expires_at};
+        var local = placeholders.find(function(x) { return x.id === p.id; });
+        if (local) local.permissionConfig = p.permission_config || local.permissionConfig || '';
       });
       renderPlaceholders();
     })
@@ -620,6 +638,7 @@ function showPhDetail(phId) {
   if (!ph) return;
 
   document.getElementById('phd-env').textContent = ph.envName;
+  document.getElementById('phd-env').dataset.placeholderId = ph.id;
   document.getElementById('phd-service').innerHTML = '<span class="badge badge-blue">' + ph.serviceName + '</span>';
   document.getElementById('phd-placeholder').textContent = ph.placeholder;
   document.getElementById('phd-approval').innerHTML = ph.requiresApproval
@@ -642,6 +661,7 @@ function showPhDetail(phId) {
   var gitSetup = document.getElementById('phd-git-setup');
   if (ph.serviceName === 'github') {
     gitSetup.style.display = 'block';
+    renderGitGrants(ph, 'phd');
     renderGitSetup('phd');
   } else {
     gitSetup.style.display = 'none';
@@ -657,7 +677,10 @@ function renderGitSetup(prefix) {
   var aclEl = document.getElementById(prefix + '-git-acl');
   if (!repoEl || !modeEl || !cmdEl || !aclEl) return;
   var repo = normalizeGitRepo(repoEl.value);
-  var mode = modeEl.value || 'deploy';
+  var activePh = prefix === 'phd' ? placeholders.find(function(p) { return p.id === document.getElementById('phd-env').dataset.placeholderId; }) : null;
+  var grant = activePh ? gitGrantForRepo(activePh.permissionConfig, repo) : null;
+  var mode = grant ? grant.mode : (modeEl.value || 'deploy');
+  modeEl.value = mode;
   var repoDir = repo.split('/').pop();
   cmdEl.textContent = [
     'duckway update',
@@ -672,6 +695,65 @@ function renderGitSetup(prefix) {
     mode === 'deploy' ? 'git pull --ff-only' : 'git pull --ff-only && git push'
   ].join('\n');
   aclEl.textContent = JSON.stringify(gitACL(repo, mode), null, 2);
+}
+
+function renderGitGrants(ph, prefix) {
+  var grants = gitGrantsFromACL(ph.permissionConfig);
+  var list = document.getElementById(prefix + '-git-grants');
+  var options = document.getElementById(prefix + '-git-repo-options');
+  var repoEl = document.getElementById(prefix + '-git-repo');
+  if (!list || !options || !repoEl) return;
+  options.innerHTML = '';
+  if (!grants.length) {
+    list.innerHTML = '<span class="text-muted">No repository ACL found. Use the editor to set repository scope.</span>';
+    return;
+  }
+  grants.forEach(function(g) {
+    var opt = document.createElement('option');
+    opt.value = g.repo;
+    options.appendChild(opt);
+  });
+  var allowed = {};
+  grants.forEach(function(g) { allowed[g.repo.toLowerCase()] = true; });
+  if (!allowed[normalizeGitRepo(repoEl.value).toLowerCase()]) repoEl.value = grants[0].repo;
+  list.innerHTML = grants.map(function(g) {
+    return '<div><code>' + escHTML(g.repo) + '</code> <span class="badge ' + (g.mode === 'dev' ? 'badge-green' : 'badge-gray') + '">' + (g.mode === 'dev' ? 'read/write' : 'read') + '</span></div>';
+  }).join('');
+}
+
+function gitGrantForRepo(configJSON, repo) {
+  repo = normalizeGitRepo(repo).toLowerCase();
+  return gitGrantsFromACL(configJSON).find(function(g) { return g.repo.toLowerCase() === repo; }) || null;
+}
+
+function gitGrantsFromACL(configJSON) {
+  if (!configJSON) return [];
+  var cfg;
+  try { cfg = JSON.parse(configJSON); } catch(e) { return []; }
+  var byRepo = {};
+  (cfg.rules || []).forEach(function(rule) {
+    (rule.endpoints || []).forEach(function(ep) {
+      if (!ep.allow || !ep.path) return;
+      var repo = repoFromGitACLPath(ep.path);
+      if (!repo) return;
+      if (!byRepo[repo]) byRepo[repo] = {repo: repo, mode: 'deploy'};
+      if (ep.path.indexOf('.git/git-receive-pack') !== -1) byRepo[repo].mode = 'dev';
+    });
+  });
+  return Object.keys(byRepo).sort(function(a,b) { return a.localeCompare(b); }).map(function(repo) { return byRepo[repo]; });
+}
+
+function repoFromGitACLPath(path) {
+  path = (path || '').trim();
+  var suffixes = ['.git/info/refs', '.git/git-upload-pack', '.git/git-receive-pack'];
+  for (var i = 0; i < suffixes.length; i++) {
+    if (path.endsWith(suffixes[i])) return normalizeGitRepo(path.slice(0, -suffixes[i].length));
+  }
+  if (path.indexOf('/repos/') === 0) {
+    var parts = path.replace(/^\/repos\//, '').split('/');
+    if (parts.length >= 2) return normalizeGitRepo(parts[0] + '/' + parts[1]);
+  }
+  return '';
 }
 
 function gitACL(repo, mode) {
@@ -736,6 +818,9 @@ function editPh(phId, envName, keyPath) {
   document.getElementById('eph-ttl').value = ph ? ph.approvalTTL : 1440;
   document.getElementById('eph-acl').value = '';
   document.getElementById('eph-acl-templates').innerHTML = '';
+  document.getElementById('eph-github-repo-scope').style.display = ph && ph.serviceName === 'github' ? '' : 'none';
+  document.getElementById('eph-github-repos').value = '';
+  document.getElementById('eph-github-mode').value = 'deploy';
 
   // Load current permission_config + ACL templates
   fetch('/api/placeholders/with-approvals?', {credentials:'same-origin'})
@@ -744,6 +829,8 @@ function editPh(phId, envName, keyPath) {
       var p = phs.find(function(x) { return x.id === phId; });
       if (!p) return;
       document.getElementById('eph-acl').value = p.permission_config || '';
+      if (ph) ph.permissionConfig = p.permission_config || '';
+      seedEditGitHubRepoScope(p.permission_config || '');
       loadInheritedACL('eph-acl', 'eph-acl-preview', p.service_id, p.api_key_id || '');
       renderACLPreview('eph-acl', 'eph-acl-preview');
       if (p.service_id) {
@@ -771,6 +858,22 @@ function editPh(phId, envName, keyPath) {
     });
 
   document.getElementById('edit-ph-modal').style.display = 'flex';
+}
+
+function seedEditGitHubRepoScope(configJSON) {
+  var grants = gitGrantsFromACL(configJSON);
+  document.getElementById('eph-github-repos').value = grants.map(function(g) { return g.repo; }).join('\n');
+  document.getElementById('eph-github-mode').value = grants.some(function(g) { return g.mode === 'dev'; }) ? 'dev' : 'deploy';
+}
+
+function applyEditGitHubRepoScope() {
+  var repos = parseGitRepoList(document.getElementById('eph-github-repos').value);
+  if (!repos.length) {
+    showToast('Enter at least one repository as OWNER/REPO', 'error');
+    return;
+  }
+  document.getElementById('eph-acl').value = JSON.stringify(gitACLForRepos(repos, document.getElementById('eph-github-mode').value || 'deploy'), null, 2);
+  renderACLPreview('eph-acl', 'eph-acl-preview');
 }
 
 document.getElementById('edit-ph-form').addEventListener('submit', function(e) {
@@ -873,12 +976,22 @@ function selectedAssignKey() {
 
 function updateAssignGitHubRepoScope() {
   var key = selectedAssignKey();
+  var clientId = document.getElementById('assign-client-id').value;
   var wrap = document.getElementById('assign-github-repo-scope');
   if (!key || key.serviceName !== 'github' || !key.isMintable) {
     wrap.style.display = 'none';
     return;
   }
   wrap.style.display = '';
+  var existing = existingMintableAssignment(clientId, key.id);
+  if (existing) {
+    var grants = gitGrantsFromACL(existing.permissionConfig);
+    document.getElementById('assign-github-repos-manual').value = grants.map(function(g) { return g.repo; }).join('\n');
+    document.getElementById('assign-github-mode').value = grants.some(function(g) { return g.mode === 'dev'; }) ? 'dev' : 'deploy';
+  } else {
+    document.getElementById('assign-github-repos-manual').value = '';
+    document.getElementById('assign-github-mode').value = 'deploy';
+  }
   loadAssignGitHubRepos();
 }
 
@@ -903,10 +1016,15 @@ function loadAssignGitHubRepos() {
         return;
       }
       status.textContent = repos.length + ' repositories available. Select one or more.';
+      var existing = existingMintableAssignment(document.getElementById('assign-client-id').value, keyID);
+      var existingRepos = {};
+      gitGrantsFromACL(existing ? existing.permissionConfig : '').forEach(function(g) {
+        existingRepos[g.repo.toLowerCase()] = true;
+      });
       list.innerHTML = repos.map(function(repo) {
         var name = repo.full_name || '';
         return '<label style="display:flex;gap:.5rem;align-items:center;padding:.2rem 0">' +
-          '<input type="checkbox" class="assign-github-repo-choice" value="' + escHTML(name) + '">' +
+          '<input type="checkbox" class="assign-github-repo-choice" value="' + escHTML(name) + '"' + (existingRepos[name.toLowerCase()] ? ' checked' : '') + '>' +
           '<span class="mono text-sm">' + escHTML(name) + '</span>' +
           (repo.private ? '<span class="badge badge-gray">private</span>' : '') +
           '</label>';
@@ -938,6 +1056,18 @@ function buildAssignPreview(svcName) {
   document.getElementById('assign-svc-name').textContent = svcName;
   document.getElementById('assign-env-name').textContent = svcEnvMap[svcName] || svcName.toUpperCase() + '_API_KEY';
   document.getElementById('assign-preview').style.display = 'block';
+}
+
+function existingMintableAssignment(clientId, apiKeyId) {
+  return placeholders.find(function(ph) {
+    return ph.clientId === clientId && ph.apiKeyId === apiKeyId && ph.serviceName === 'github';
+  }) || null;
+}
+
+function summarizeGitGrants(configJSON) {
+  var grants = gitGrantsFromACL(configJSON);
+  if (!grants.length) return '(no repository scope)';
+  return grants.map(function(g) { return g.repo + ' [' + (g.mode === 'dev' ? 'read/write' : 'read') + ']'; }).join(', ');
 }
 
 function openAssignModal(clientId, clientName) {
@@ -1028,6 +1158,10 @@ function submitAssign() {
         return;
       }
       body.permission_config = JSON.stringify(gitACLForRepos(repos, document.getElementById('assign-github-mode').value || 'deploy'));
+      var existing = existingMintableAssignment(clientId, opt.value);
+      if (existing && !confirm('This GitHub mintable token is already assigned to this client. Reassigning will overwrite its repository authorization.\n\nCurrent: ' + summarizeGitGrants(existing.permissionConfig) + '\nNew: ' + summarizeGitGrants(body.permission_config) + '\n\nOverwrite existing assignment?')) {
+        return;
+      }
     }
   }
 

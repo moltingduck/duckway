@@ -612,7 +612,9 @@ func TestCreatePlaceholderUpdatesExistingClientServiceEnvAssignment(t *testing.T
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
-		VALUES ('key-gh-app-minter-update',?,'github app minter',?)`, ghSvc.ID, encCred); err != nil {
+		VALUES ('key-gh-app-minter-update',?,'github app minter',?),
+		       ('key-gh-app-minter-update-other',?,'github app minter other',?)`,
+		ghSvc.ID, encCred, ghSvc.ID, encCred); err != nil {
 		t.Fatal(err)
 	}
 
@@ -621,11 +623,11 @@ func TestCreatePlaceholderUpdatesExistingClientServiceEnvAssignment(t *testing.T
 		svcQ,
 		queries.NewClientQueries(db),
 	).WithKeyLookup(queries.NewAPIKeyQueries(db), crypto)
-	create := func(acl string) (string, string, string) {
+	create := func(keyID, acl string) (string, string, string) {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodPost, "/api/placeholders", strings.NewReader(`{
 			"service_id":"`+ghSvc.ID+`",
-			"api_key_id":"key-gh-app-minter-update",
+			"api_key_id":"`+keyID+`",
 			"client_id":"client-gh-app-minter-update",
 			"requires_approval":false,
 			"permission_config":`+strconvQuote(acl)+`
@@ -652,24 +654,37 @@ func TestCreatePlaceholderUpdatesExistingClientServiceEnvAssignment(t *testing.T
 
 	acl1 := `{"version":"1","provider":"github","rules":[{"name":"deploy-read-only","endpoints":[{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}],"deny_all_other":true}]}`
 	acl2 := `{"version":"1","provider":"github","rules":[{"name":"deploy-read-only","endpoints":[{"method":"GET","path":"/OWNER/OTHER.git/info/refs","allow":true},{"method":"POST","path":"/OWNER/OTHER.git/git-upload-pack","allow":true}],"deny_all_other":true}]}`
-	id1, env1, ph1 := create(acl1)
-	id1Again, env1Again, ph1Again := create(acl1)
-	if id1Again != id1 || env1Again != env1 || ph1Again != ph1 {
-		t.Fatalf("same repo assignment should update existing placeholder, got (%s,%s,%s) then (%s,%s,%s)", id1, env1, ph1, id1Again, env1Again, ph1Again)
+	id1, env1, ph1 := create("key-gh-app-minter-update", acl1)
+	id2, env2, ph2 := create("key-gh-app-minter-update", acl2)
+	if id2 != id1 || env2 != env1 || ph2 != ph1 {
+		t.Fatalf("same client/minter assignment should overwrite existing placeholder, got (%s,%s,%s) then (%s,%s,%s)", id1, env1, ph1, id2, env2, ph2)
 	}
-	id2, env2, ph2 := create(acl2)
-	if id2 == id1 || env2 == env1 || ph2 == ph1 {
-		t.Fatalf("different repo assignment should create a distinct placeholder, got (%s,%s,%s) then (%s,%s,%s)", id1, env1, ph1, id2, env2, ph2)
-	}
-	if !strings.HasPrefix(env1, "GITHUB_TOKEN_") || !strings.HasPrefix(env2, "GITHUB_TOKEN_") {
-		t.Fatalf("repo-scoped env names should be suffixed, got %q and %q", env1, env2)
+	if !strings.HasPrefix(env1, "GITHUB_TOKEN_") {
+		t.Fatalf("mintable env name should be suffixed, got %q", env1)
 	}
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM placeholder_keys WHERE client_id='client-gh-app-minter-update' AND service_id=?`, ghSvc.ID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
+	if count != 1 {
+		t.Fatalf("placeholder count = %d, want 1", count)
+	}
+	stored, err := queries.NewPlaceholderQueries(db).GetByID(id1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PermissionConfig == nil || *stored.PermissionConfig != acl2 {
+		t.Fatalf("stored permission_config = %v, want overwritten ACL", stored.PermissionConfig)
+	}
+	id3, env3, _ := create("key-gh-app-minter-update-other", acl1)
+	if id3 == id1 || env3 == env1 {
+		t.Fatalf("different minter key should create a separate assignment, got (%s,%s) and (%s,%s)", id1, env1, id3, env3)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM placeholder_keys WHERE client_id='client-gh-app-minter-update' AND service_id=?`, ghSvc.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 2 {
-		t.Fatalf("placeholder count = %d, want 2", count)
+		t.Fatalf("placeholder count after second minter = %d, want 2", count)
 	}
 }
 
