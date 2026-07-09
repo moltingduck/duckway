@@ -37,6 +37,7 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
 <div class="page-header">
@@ -227,16 +228,12 @@
       </div>
       <div class="form-group"><label>Approval TTL (minutes, 0 = no approval)</label><input type="number" id="eph-ttl" min="0"></div>
       <div id="eph-github-repo-scope" style="display:none;border:1px solid var(--border);border-radius:var(--radius);padding:0.75rem;margin-bottom:1rem">
-        <label>GitHub repository authorization</label>
-        <textarea id="eph-github-repos" placeholder="OWNER/REPO&#10;OWNER/ANOTHER_REPO" style="min-height:64px"></textarea>
-        <div class="form-group mt-1">
-          <label>Access</label>
-          <select id="eph-github-mode">
-            <option value="deploy">Read only</option>
-            <option value="dev">Read/write</option>
-          </select>
+        <div class="flex-between">
+          <label style="margin:0">GitHub repository authorization</label>
+          <button type="button" class="btn btn-sm" onclick="loadEditGitHubRepos()">Reload</button>
         </div>
-        <button type="button" class="btn btn-sm" onclick="applyEditGitHubRepoScope()">Update ACL from repositories</button>
+        <div id="eph-github-repo-status" class="text-sm text-muted mt-1">Repository list loads for GitHub App installation minters.</div>
+        <div id="eph-github-repo-list" style="max-height:180px;overflow:auto;margin-top:0.5rem"></div>
       </div>
       <div class="form-group">
         <label class="text-sm">ACL Pre-set Rules <span class="text-muted">(click to load)</span></label>
@@ -480,6 +477,7 @@ var apiKeys = [
   {{range .Keys}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}", isRefreshable:{{.IsRefreshable}}, isMintable:{{.IsMintable}}},{{end}}
 ];
 var assignGitHubRepoLoadSeq = 0;
+var editGitHubRepoLoadSeq = 0;
 
 var keyGroups = [
   {{range .Groups}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}", strategy:"{{.Strategy}}", memberCount: {{len .Members}}},{{end}}
@@ -870,8 +868,8 @@ function editPh(phId, envName, keyPath) {
   document.getElementById('eph-acl').value = '';
   document.getElementById('eph-acl-templates').innerHTML = '';
   document.getElementById('eph-github-repo-scope').style.display = ph && ph.serviceName === 'github' ? '' : 'none';
-  document.getElementById('eph-github-repos').value = '';
-  document.getElementById('eph-github-mode').value = 'deploy';
+  document.getElementById('eph-github-repo-status').textContent = 'Repository list loads for GitHub App installation minters.';
+  document.getElementById('eph-github-repo-list').innerHTML = '';
 
   // Load current permission_config + ACL templates
   fetch('/api/placeholders/with-approvals?', {credentials:'same-origin'})
@@ -881,7 +879,7 @@ function editPh(phId, envName, keyPath) {
       if (!p) return;
       document.getElementById('eph-acl').value = p.permission_config || '';
       if (ph) ph.permissionConfig = p.permission_config || '';
-      seedEditGitHubRepoScope(p.permission_config || '');
+      loadEditGitHubRepos();
       loadInheritedACL('eph-acl', 'eph-acl-preview', p.service_id, p.api_key_id || '');
       renderACLPreview('eph-acl', 'eph-acl-preview');
       if (p.service_id) {
@@ -911,25 +909,52 @@ function editPh(phId, envName, keyPath) {
   document.getElementById('edit-ph-modal').style.display = 'flex';
 }
 
-function seedEditGitHubRepoScope(configJSON) {
-  var grants = gitGrantsFromACL(configJSON);
-  document.getElementById('eph-github-repos').value = grants.map(function(g) { return g.repo; }).join('\n');
-  document.getElementById('eph-github-mode').value = grants.some(function(g) { return g.push; }) ? 'dev' : 'deploy';
-}
-
-function applyEditGitHubRepoScope() {
-  var repos = parseGitRepoList(document.getElementById('eph-github-repos').value);
-  if (!repos.length) {
-    showToast('Enter at least one repository as OWNER/REPO', 'error');
+function loadEditGitHubRepos() {
+  var phId = document.getElementById('eph-id').value;
+  var ph = placeholders.find(function(p) { return p.id === phId; });
+  var key = ph ? apiKeys.find(function(k) { return k.id === ph.apiKeyId; }) : null;
+  var status = document.getElementById('eph-github-repo-status');
+  var list = document.getElementById('eph-github-repo-list');
+  if (!ph || ph.serviceName !== 'github') return;
+  if (!key || !key.isMintable) {
+    status.textContent = 'This GitHub token is not a GitHub App installation minter. Edit ACL JSON directly if needed.';
+    list.innerHTML = '';
     return;
   }
-  document.getElementById('eph-acl').value = JSON.stringify(gitACLForRepos(repos, document.getElementById('eph-github-mode').value || 'deploy'), null, 2);
-  renderACLPreview('eph-acl', 'eph-acl-preview');
+  var loadSeq = ++editGitHubRepoLoadSeq;
+  status.textContent = 'Loading repositories...';
+  list.innerHTML = '';
+  fetch('/api/keys/' + encodeURIComponent(key.id) + '/github-app/repositories', {credentials:'same-origin'})
+    .then(function(r) { return r.json().then(function(j) { return {ok:r.ok, body:j}; }); })
+    .then(function(res) {
+      if (loadSeq !== editGitHubRepoLoadSeq) return;
+      if (!res.ok || res.body.error) throw new Error(res.body.error || 'failed to list repositories');
+      var repos = res.body.repositories || [];
+      if (!repos.length) {
+        status.textContent = 'No repositories returned. Check the GitHub App installation repository access.';
+        return;
+      }
+      status.textContent = repos.length + ' repositories available. Adjust Pull/Push and save.';
+      list.innerHTML = repoGrantTableHTML(repos, document.getElementById('eph-acl').value || '');
+    })
+    .catch(function(err) {
+      if (loadSeq !== editGitHubRepoLoadSeq) return;
+      status.textContent = 'Could not load repositories: ' + err.message + '. Reload or check the GitHub App installation.';
+    });
 }
 
 document.getElementById('edit-ph-form').addEventListener('submit', function(e) {
   e.preventDefault();
   var id = document.getElementById('eph-id').value;
+  var ph = placeholders.find(function(p) { return p.id === id; });
+  if (ph && ph.serviceName === 'github' && document.getElementById('eph-github-repo-list').innerHTML.trim()) {
+    var grants = selectedGitHubRepoGrants('#eph-github-repo-list');
+    if (!grants.length) {
+      showToast('Select Pull or Push for at least one repository', 'error');
+      return;
+    }
+    document.getElementById('eph-acl').value = JSON.stringify(gitACLForRepoGrants(grants));
+  }
   var acl = document.getElementById('eph-acl').value.trim();
   if (acl) { try { JSON.parse(acl); } catch(e) { showToast('Invalid ACL JSON: ' + e.message, 'error'); return; } }
   var body = {
@@ -1063,28 +1088,7 @@ function loadAssignGitHubRepos() {
       }
       status.textContent = repos.length + ' repositories available. Select one or more.';
       var existing = existingMintableAssignment(document.getElementById('assign-client-id').value, keyID);
-      var existingRepos = {};
-      gitGrantsFromACL(existing ? existing.permissionConfig : '').forEach(function(g) {
-        existingRepos[g.repo.toLowerCase()] = g;
-      });
-      list.innerHTML =
-        '<div class="repo-grant-table">' +
-        '<div class="repo-grant-row repo-grant-header"><div>Repository</div><div class="repo-grant-check">Pull</div><div class="repo-grant-check">Push</div></div>' +
-        repos.map(function(repo) {
-        var name = repo.full_name || '';
-        var grant = existingRepos[name.toLowerCase()];
-        var pull = grant ? grant.pull : false;
-        var push = grant ? grant.push : false;
-        return '<div class="assign-github-repo-row repo-grant-row" data-repo="' + escHTML(name) + '">' +
-          '<div class="repo-grant-name">' +
-          '<span class="mono text-sm">' + escHTML(name) + '</span>' +
-          (repo.private ? '<span class="badge badge-gray">private</span>' : '') +
-          '</div>' +
-          '<label class="repo-grant-check" title="Allow git pull/fetch"><input type="checkbox" class="assign-github-repo-pull"' + (pull ? ' checked' : '') + ' onchange="onAssignGitHubGrantToggle(this)"></label>' +
-          '<label class="repo-grant-check" title="Allow git push"><input type="checkbox" class="assign-github-repo-push"' + (push ? ' checked' : '') + ' onchange="onAssignGitHubGrantToggle(this)"></label>' +
-          '</div>';
-      }).join('') +
-      '</div>';
+      list.innerHTML = repoGrantTableHTML(repos, existing ? existing.permissionConfig : '');
     })
     .catch(function(err) {
       var currentKey = selectedAssignKey();
@@ -1094,8 +1098,12 @@ function loadAssignGitHubRepos() {
 }
 
 function selectedAssignGitHubRepoGrants() {
+  return selectedGitHubRepoGrants('#assign-github-repo-list');
+}
+
+function selectedGitHubRepoGrants(scopeSelector) {
   var grants = [];
-  document.querySelectorAll('.assign-github-repo-row').forEach(function(row) {
+  document.querySelectorAll(scopeSelector + ' .assign-github-repo-row').forEach(function(row) {
     var pull = row.querySelector('.assign-github-repo-pull').checked;
     var push = row.querySelector('.assign-github-repo-push').checked;
     if (!pull && !push) return;
@@ -1115,7 +1123,31 @@ function selectedAssignGitHubRepoGrants() {
   return Object.keys(byRepo).sort(function(a,b) { return a.localeCompare(b); }).map(function(key) { return byRepo[key]; });
 }
 
-function onAssignGitHubGrantToggle(input) {
+function repoGrantTableHTML(repos, configJSON) {
+  var existingRepos = {};
+  gitGrantsFromACL(configJSON || '').forEach(function(g) {
+    existingRepos[g.repo.toLowerCase()] = g;
+  });
+  return '<div class="repo-grant-table">' +
+    '<div class="repo-grant-row repo-grant-header"><div>Repository</div><div class="repo-grant-check">Pull</div><div class="repo-grant-check">Push</div></div>' +
+    repos.map(function(repo) {
+      var name = repo.full_name || '';
+      var grant = existingRepos[name.toLowerCase()];
+      var pull = grant ? grant.pull : false;
+      var push = grant ? grant.push : false;
+      return '<div class="assign-github-repo-row repo-grant-row" data-repo="' + escHTML(name) + '">' +
+        '<div class="repo-grant-name">' +
+        '<span class="mono text-sm" title="' + escHTML(name) + '">' + escHTML(name) + '</span>' +
+        (repo.private ? '<span class="badge badge-gray">private</span>' : '') +
+        '</div>' +
+        '<label class="repo-grant-check" title="Allow git pull/fetch"><input type="checkbox" class="assign-github-repo-pull"' + (pull ? ' checked' : '') + ' onchange="onGitHubGrantToggle(this)"></label>' +
+        '<label class="repo-grant-check" title="Allow git push"><input type="checkbox" class="assign-github-repo-push"' + (push ? ' checked' : '') + ' onchange="onGitHubGrantToggle(this)"></label>' +
+        '</div>';
+    }).join('') +
+    '</div>';
+}
+
+function onGitHubGrantToggle(input) {
   var row = input.closest('.assign-github-repo-row');
   if (!row) return;
   var pull = row.querySelector('.assign-github-repo-pull');
@@ -1225,11 +1257,7 @@ function submitAssign() {
     if (opt.dataset.serviceName === 'github' && opt.dataset.isMintable === 'true') {
       var grants = selectedAssignGitHubRepoGrants();
       if (!grants.length) {
-        showToast('Select or enter at least one allowed repository', 'error');
-        return;
-      }
-      if (grants.some(function(grant) { return !grant.pull && !grant.push; })) {
-        showToast('Each selected repository needs Pull, Push, or both', 'error');
+        showToast('Select Pull or Push for at least one repository', 'error');
         return;
       }
       body.permission_config = JSON.stringify(gitACLForRepoGrants(grants));
