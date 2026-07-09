@@ -58,6 +58,19 @@ func TestConfiguredGitReposSkipsEmptyPlaceholder(t *testing.T) {
 	}
 }
 
+func TestGitRepoAccessLabel(t *testing.T) {
+	cases := map[string]string{
+		"deploy": "read",
+		"dev":    "read-write",
+		"":       "read",
+	}
+	for mode, want := range cases {
+		if got := gitRepoAccessLabel(mode); got != want {
+			t.Fatalf("gitRepoAccessLabel(%q) = %q, want %q", mode, got, want)
+		}
+	}
+}
+
 func TestFormatGitCommand(t *testing.T) {
 	got := formatGitCommand(
 		"-c",

@@ -365,7 +365,7 @@ func cmdGitList(configDir string) {
 	}
 	fmt.Println("Configured GitHub repositories:")
 	for _, repo := range repos {
-		fmt.Printf("  %-40s %s\n", repo.Repo, repo.Mode)
+		fmt.Printf("  %-40s %s\n", repo.Repo, gitRepoAccessLabel(repo.Mode))
 	}
 }
 
@@ -447,6 +447,7 @@ func cmdGitClone(configDir string, args []string) {
 		log.Fatalf("configure repo failed: %v", err)
 	}
 	fmt.Printf("Repository ready: %s\n", dir)
+	fmt.Printf("Access: %s\n", gitRepoAccessLabel(repoInfo.Mode))
 	fmt.Println("Next native git commands:")
 	fmt.Printf("  cd %s\n", shellQuote(dir))
 	fmt.Println("  git pull --ff-only")
@@ -458,7 +459,14 @@ func printGitNextPushHint(mode string) {
 		fmt.Println("  git push")
 		return
 	}
-	fmt.Println("  # push is not available for deploy-mode assignments")
+	fmt.Println("  # push is not available for read-only assignments")
+}
+
+func gitRepoAccessLabel(mode string) string {
+	if mode == "dev" {
+		return "read-write"
+	}
+	return "read"
 }
 
 func loadGitConfigAndKeys(configDir string) (*client.Config, []client.PlaceholderKeyInfo) {
