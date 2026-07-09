@@ -718,6 +718,55 @@ func TestProxyGitHubAppWriteRequestMintsWritePermission(t *testing.T) {
 	}
 }
 
+func TestProxyGitHubAppReceivePackDiscoveryMintsWritePermission(t *testing.T) {
+	var mintRequest githubMintRequest
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app/installations/123/access_tokens" {
+			if err := json.NewDecoder(r.Body).Decode(&mintRequest); err != nil {
+				t.Fatalf("decode mint request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"ghs_` + strings.Repeat("d", 36) + `","expires_at":"2099-07-07T12:00:00Z"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f := newProxyFixture(t, upstream.URL)
+	seedGitHubService(t, f)
+	privateKeyPEM := testRSAPrivateKeyPEM(t)
+	credJSON := `{"type":"github_app","app_id":99,"installation_id":123,"private_key":` + strconvQuote(privateKeyPEM) + `,"base_url":"` + upstream.URL + `"}`
+	encCred, err := f.crypto.Encrypt(credJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := f.apiKeyQ.GetByID(f.apiKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key.KeyEncrypted = encCred
+	if err := f.apiKeyQ.Update(key); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.placeholderQ.UpdatePlaceholder(f.placeholderID, "ghs_dw_fake"); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newProxyHandler(f)
+	r := httptest.NewRequest("GET", "/proxy/github/OWNER/REPO.git/info/refs?service=git-receive-pack", nil)
+	r.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:ghs_dw_fake")))
+	r = withClient(r, f.client)
+	code, body := doProxy(h, r)
+
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d; body: %s", code, body)
+	}
+	if mintRequest.Permissions["contents"] != "write" {
+		t.Fatalf("permissions = %#v, want contents write", mintRequest.Permissions)
+	}
+}
+
 func TestProxyGitHubAppIssueRequestMintsIssuesPermission(t *testing.T) {
 	var mintRequest githubMintRequest
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

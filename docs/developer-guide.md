@@ -671,10 +671,33 @@ The test mints a short-lived installation token for `repository`, verifies GitHu
 To test the full Duckway client Git path against the same repository:
 
 ```bash
-DUCKWAY_TEST_GITHUB_GIT_LIVE=1 go test ./internal/client -run TestGitHubAppPhantomGitPullLive -count=1 -v
+DUCKWAY_TEST_GITHUB_GIT_LIVE=1 go test ./internal/client -run 'Test(GitHubAppPhantomGitPullLive|DuckwayGitCloneLive)$' -count=1 -v
 ```
 
-This starts an in-process Duckway server proxy, an in-process Duckway client MITM proxy, writes a phantom `GITHUB_TOKEN` to a temporary Git credential store, and runs `git ls-remote https://github.com/OWNER/REPO.git HEAD` through the local proxy. The real GitHub App installation token is minted and used only inside Duckway. This test is also skipped unless `DUCKWAY_TEST_GITHUB_GIT_LIVE=1` is set.
+This starts an in-process Duckway server proxy, an in-process Duckway client MITM proxy, writes a phantom `GITHUB_TOKEN` to a temporary Git credential store, runs `git ls-remote https://github.com/OWNER/REPO.git HEAD`, then runs `duckway git clone OWNER/REPO` and verifies native `git ls-remote origin HEAD` works through the repo-local proxy config. The real GitHub App installation token is minted and used only inside Duckway. This test is also skipped unless `DUCKWAY_TEST_GITHUB_GIT_LIVE=1` is set.
+
+To seed the live repository with deterministic random benchmark data, the GitHub App installation must have **Contents: read/write** permission and the repository assignment must allow `git-receive-pack`. The seed test is separately gated because it pushes to the configured repository:
+
+```bash
+DUCKWAY_TEST_GITHUB_GIT_SEED_LIVE=1 go test ./internal/client -run TestDuckwayGitCloneLiveSeedRepository -count=1 -v
+```
+
+By default this creates `.duckway-live-benchmark/seed-32mb-256files/` once. Override the fixture size with:
+
+```bash
+DUCKWAY_GITHUB_GIT_LIVE_SEED_MB=128 \
+DUCKWAY_GITHUB_GIT_LIVE_SEED_FILES=1024 \
+DUCKWAY_TEST_GITHUB_GIT_SEED_LIVE=1 \
+go test ./internal/client -run TestDuckwayGitCloneLiveSeedRepository -count=1 -v
+```
+
+To benchmark the actual `duckway git clone` path against the live repository:
+
+```bash
+DUCKWAY_TEST_GITHUB_GIT_BENCH_LIVE=1 go test ./internal/client -run '^$' -bench BenchmarkDuckwayGitCloneLive -benchtime=3x -count=1 -benchmem -v
+```
+
+Add `DUCKWAY_TEST_GITHUB_GIT_SEED_LIVE=1` to the benchmark command if you want it to ensure the seed fixture exists before measuring.
 
 ### Live Codex OAuth E2E
 

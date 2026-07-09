@@ -446,7 +446,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ok {
-			realKey, err = h.mintGitHubInstallationToken(r.Context(), ghAppCred, r.Method, upstreamPath)
+			realKey, err = h.mintGitHubInstallationToken(r.Context(), ghAppCred, r.Method, upstreamPath, r.URL.RawQuery)
 			if err != nil {
 				log.Printf("github app token mint failed for placeholder %s: %v", result.PlaceholderID, err)
 				jsonError(w, "github app token mint failed", http.StatusBadGateway)

@@ -433,6 +433,9 @@ func cmdGitClone(configDir string, args []string) {
 			log.Fatalf("git clone failed: %v", err)
 		}
 	} else {
+		if err := ensureExistingGitRepoMatchesRemote(dir, repo); err != nil {
+			log.Fatalf("configure existing repo failed: %v", err)
+		}
 		fmt.Printf("# %s already exists; skipping clone\n", filepath.Join(dir, ".git"))
 	}
 	printGitCommand(dir, "remote", "set-url", "origin", "https://github.com/"+repo+".git")
@@ -525,6 +528,20 @@ func configureRepoGit(dir, configDir string, port int, repo string) error {
 		return err
 	}
 	return runGit(dir, "config", "--local", "credential.useHttpPath", "false")
+}
+
+func ensureExistingGitRepoMatchesRemote(dir, repo string) error {
+	want := "https://github.com/" + repo + ".git"
+	cmd := exec.Command("git", "-C", dir, "remote", "get-url", "origin")
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("%s already contains a git repo but origin is missing; refusing to reconfigure it", dir)
+	}
+	got := strings.TrimSpace(string(out))
+	if strings.EqualFold(strings.TrimSuffix(got, ".git"), strings.TrimSuffix(want, ".git")) || strings.EqualFold(got, want) {
+		return nil
+	}
+	return fmt.Errorf("%s already contains a git repo with origin %q; refusing to replace it with %q", dir, got, want)
 }
 
 func runGit(dir string, args ...string) error {

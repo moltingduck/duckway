@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,6 +26,20 @@ import (
 )
 
 var githubInstallationTokenPattern = regexp.MustCompile(`ghs_[A-Za-z0-9_]{20,}`)
+var githubLiveRepoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+
+type githubGitLiveDuckwayEnv struct {
+	cfg         githubAppLiveConfig
+	phantom     string
+	serverURL   string
+	clientToken string
+	proxyURL    string
+	proxyPort   int
+	caPEM       []byte
+	binPath     string
+	home        string
+	configDir   string
+}
 
 func TestGitHubAppPhantomGitPullLive(t *testing.T) {
 	if os.Getenv("DUCKWAY_TEST_GITHUB_GIT_LIVE") != "1" {
@@ -102,15 +118,17 @@ func TestGitHubAppPhantomGitPullLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate github app phantom: %v", err)
 	}
+	acl := githubGitLivePermissionConfig(strings.TrimSuffix(strings.TrimPrefix(cfg.Repository, "https://github.com/"), ".git"))
 	apiKeyID := apiKey.ID
 	placeholder := &models.PlaceholderKey{
-		ID:          "ph-github-git-live",
-		EnvName:     "GITHUB_TOKEN",
-		Placeholder: phantom,
-		ServiceID:   ghSvc.ID,
-		APIKeyID:    &apiKeyID,
-		ClientID:    client.ID,
-		IsActive:    true,
+		ID:               "ph-github-git-live",
+		EnvName:          "GITHUB_TOKEN",
+		Placeholder:      phantom,
+		ServiceID:        ghSvc.ID,
+		APIKeyID:         &apiKeyID,
+		ClientID:         client.ID,
+		PermissionConfig: &acl,
+		IsActive:         true,
 	}
 	if err := placeholderQ.Create(placeholder); err != nil {
 		t.Fatalf("create placeholder: %v", err)
@@ -158,7 +176,9 @@ func TestGitHubAppPhantomGitPullLive(t *testing.T) {
 	}
 
 	repoURL := "https://github.com/" + strings.TrimSuffix(cfg.Repository, ".git") + ".git"
-	cmd := exec.Command(gitBin,
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, gitBin,
 		"-c", "credential.helper=store",
 		"-c", "credential.useHttpPath=false",
 		"ls-remote", "--exit-code", repoURL, "HEAD",
@@ -176,7 +196,7 @@ func TestGitHubAppPhantomGitPullLive(t *testing.T) {
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		sanitized := strings.ReplaceAll(string(output), phantom, "[phantom]")
+		sanitized := sanitizeGitHubLiveOutput(string(output), phantom, clientToken, cfg.PrivateKey)
 		t.Fatalf("git ls-remote through duckway phantom proxy failed: %v\n%s", err, sanitized)
 	}
 	if !strings.Contains(string(output), "HEAD") {
@@ -188,13 +208,109 @@ func TestDuckwayGitCloneLive(t *testing.T) {
 	if os.Getenv("DUCKWAY_TEST_GITHUB_GIT_LIVE") != "1" {
 		t.Skip("set DUCKWAY_TEST_GITHUB_GIT_LIVE=1 to run")
 	}
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Fatalf("git binary is required for live duckway git clone test: %v", err)
-	}
+	env := newGitHubGitLiveDuckwayEnv(t)
 
-	cfg := loadGitHubAppLiveConfig(t)
-	credentialJSON := buildGitHubAppCredentialJSON(t, cfg)
-	phantom, serverURL, clientToken, ca, caPEM := startGitHubGitLiveDuckwayServer(t, credentialJSON, cfg.Repository)
+	workDir := t.TempDir()
+	cloneDir := "repo-clone"
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := liveCommand(ctx, env.binPath, "git", "clone", env.cfg.Repository, cloneDir)
+	cmd.Dir = workDir
+	cmd.Env = env.duckwayCommandEnv()
+	start := time.Now()
+	output, err := cmd.CombinedOutput()
+	elapsed := time.Since(start)
+	if err != nil {
+		sanitized := env.sanitizeOutput(string(output))
+		t.Fatalf("duckway git clone failed: %v\n%s", err, sanitized)
+	}
+	t.Logf("duckway git clone live elapsed=%s", elapsed.Round(time.Millisecond))
+	if _, err := os.Stat(filepath.Join(workDir, cloneDir, ".git")); err != nil {
+		t.Fatalf("clone did not create .git directory: %v\n%s", err, output)
+	}
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "remote.origin.url", "https://github.com/"+strings.TrimSuffix(env.cfg.Repository, ".git")+".git")
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.proxy", fmt.Sprintf("http://localhost:%d", env.proxyPort))
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.sslCAInfo", filepath.Join(env.configDir, "ca.pem"))
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.helper", "store")
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.useHttpPath", "false")
+
+	native := liveCommand(ctx, "git", "-C", filepath.Join(workDir, cloneDir), "ls-remote", "--exit-code", "origin", "HEAD")
+	native.Env = env.gitProxyEnv()
+	nativeOutput, err := native.CombinedOutput()
+	if err != nil {
+		sanitized := env.sanitizeOutput(string(nativeOutput))
+		t.Fatalf("native git after duckway git clone failed: %v\n%s", err, sanitized)
+	}
+}
+
+func TestDuckwayGitCloneLiveSeedRepository(t *testing.T) {
+	if os.Getenv("DUCKWAY_TEST_GITHUB_GIT_SEED_LIVE") != "1" {
+		t.Skip("set DUCKWAY_TEST_GITHUB_GIT_SEED_LIVE=1 to seed the live GitHub repository")
+	}
+	env := newGitHubGitLiveDuckwayEnv(t)
+	seed := githubGitLiveSeedSpecFromEnv(t)
+	path, changed := seedGitHubLiveBenchmarkData(t, env, seed)
+	if changed {
+		t.Logf("seeded live GitHub repo %s with %s", env.cfg.Repository, path)
+	} else {
+		t.Logf("live GitHub repo %s already has benchmark seed %s", env.cfg.Repository, path)
+	}
+}
+
+func BenchmarkDuckwayGitCloneLive(b *testing.B) {
+	if os.Getenv("DUCKWAY_TEST_GITHUB_GIT_BENCH_LIVE") != "1" {
+		b.Skip("set DUCKWAY_TEST_GITHUB_GIT_BENCH_LIVE=1 to run")
+	}
+	env := newGitHubGitLiveDuckwayEnv(b)
+	seed := githubGitLiveSeedSpecFromEnv(b)
+	if os.Getenv("DUCKWAY_TEST_GITHUB_GIT_SEED_LIVE") == "1" {
+		seedGitHubLiveBenchmarkData(b, env, seed)
+	} else {
+		b.Log("benchmarking current live repository contents; set DUCKWAY_TEST_GITHUB_GIT_SEED_LIVE=1 to seed random benchmark data first")
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	var totalCloneBytes int64
+	var totalCloneDuration time.Duration
+	for i := 0; i < b.N; i++ {
+		workDir := b.TempDir()
+		cloneDir := fmt.Sprintf("repo-clone-%d", i)
+		clonePath := filepath.Join(workDir, cloneDir)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		cmd := liveCommand(ctx, env.binPath, "git", "clone", env.cfg.Repository, cloneDir)
+		cmd.Dir = workDir
+		cmd.Env = env.duckwayCommandEnv()
+		start := time.Now()
+		output, err := cmd.CombinedOutput()
+		elapsed := time.Since(start)
+		cancel()
+		if err != nil {
+			b.Fatalf("duckway git clone benchmark failed: %v\n%s", err, env.sanitizeOutput(string(output)))
+		}
+		cloneBytes, err := dirSize(clonePath)
+		if err != nil {
+			b.Fatalf("measure clone size: %v", err)
+		}
+		totalCloneBytes += cloneBytes
+		totalCloneDuration += elapsed
+	}
+	if b.N > 0 {
+		b.ReportMetric(float64(totalCloneDuration.Milliseconds())/float64(b.N), "clone_ms")
+		b.ReportMetric(float64(totalCloneBytes/int64(b.N))/(1024*1024), "clone_MiB")
+		if totalCloneDuration > 0 {
+			b.ReportMetric(float64(totalCloneBytes)/(1024*1024)/totalCloneDuration.Seconds(), "clone_MiBps")
+		}
+	}
+}
+
+func newGitHubGitLiveDuckwayEnv(tb testing.TB) *githubGitLiveDuckwayEnv {
+	tb.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		tb.Fatalf("git binary is required for live GitHub git test: %v", err)
+	}
+	cfg := loadGitHubAppLiveConfig(tb)
+	credentialJSON := buildGitHubAppCredentialJSON(tb, cfg)
+	phantom, serverURL, clientToken, ca, caPEM := startGitHubGitLiveDuckwayServer(tb, credentialJSON, cfg.Repository)
 
 	localProxy := &httpsProxy{
 		serverURL:   serverURL,
@@ -206,22 +322,22 @@ func TestDuckwayGitCloneLive(t *testing.T) {
 		auditClient: &http.Client{Timeout: time.Second},
 	}
 	proxyServer := httptest.NewServer(localProxy)
-	t.Cleanup(proxyServer.Close)
-	proxyPort := portFromTestServerURL(t, proxyServer.URL)
+	tb.Cleanup(proxyServer.Close)
+	proxyPort := portFromTestServerURL(tb, proxyServer.URL)
 
-	root := findRepoRoot(t)
-	binDir := t.TempDir()
+	root := findRepoRoot(tb)
+	binDir := tb.TempDir()
 	binPath := filepath.Join(binDir, "duckway")
 	build := exec.Command("go", "build", "-o", binPath, "./cmd/client")
 	build.Dir = root
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build duckway client: %v\n%s", err, out)
+		tb.Fatalf("build duckway client: %v\n%s", err, out)
 	}
 
-	home := t.TempDir()
+	home := tb.TempDir()
 	configDir := filepath.Join(home, ".duckway")
 	if err := os.MkdirAll(configDir, 0700); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	if err := SaveConfig(configDir, &Config{
 		ServerURL:  serverURL,
@@ -229,54 +345,218 @@ func TestDuckwayGitCloneLive(t *testing.T) {
 		Token:      clientToken,
 		ProxyPort:  proxyPort,
 	}); err != nil {
-		t.Fatalf("save config: %v", err)
+		tb.Fatalf("save config: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(configDir, "ca.pem"), caPEM, 0600); err != nil {
-		t.Fatalf("write config CA: %v", err)
+		tb.Fatalf("write config CA: %v", err)
+	}
+	if err := DeployGitHubCredentialForGit(home, phantom); err != nil {
+		tb.Fatalf("deploy github phantom credential: %v", err)
 	}
 
-	workDir := t.TempDir()
-	cloneDir := "repo-clone"
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	return &githubGitLiveDuckwayEnv{
+		cfg:         cfg,
+		phantom:     phantom,
+		serverURL:   serverURL,
+		clientToken: clientToken,
+		proxyURL:    proxyServer.URL,
+		proxyPort:   proxyPort,
+		caPEM:       caPEM,
+		binPath:     binPath,
+		home:        home,
+		configDir:   configDir,
+	}
+}
+
+type githubGitLiveSeedSpec struct {
+	megabytes int
+	files     int
+}
+
+func (s githubGitLiveSeedSpec) totalBytes() int {
+	return s.megabytes * 1024 * 1024
+}
+
+func (s githubGitLiveSeedSpec) path() string {
+	return fmt.Sprintf(".duckway-live-benchmark/seed-%dmb-%dfiles", s.megabytes, s.files)
+}
+
+func githubGitLiveSeedSpecFromEnv(tb testing.TB) githubGitLiveSeedSpec {
+	tb.Helper()
+	return githubGitLiveSeedSpec{
+		megabytes: positiveEnvInt(tb, "DUCKWAY_GITHUB_GIT_LIVE_SEED_MB", 32),
+		files:     positiveEnvInt(tb, "DUCKWAY_GITHUB_GIT_LIVE_SEED_FILES", 256),
+	}
+}
+
+func positiveEnvInt(tb testing.TB, name string, fallback int) int {
+	tb.Helper()
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		tb.Fatalf("%s must be a positive integer, got %q", name, raw)
+	}
+	return n
+}
+
+func seedGitHubLiveBenchmarkData(tb testing.TB, env *githubGitLiveDuckwayEnv, seed githubGitLiveSeedSpec) (string, bool) {
+	tb.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binPath, "git", "clone", cfg.Repository, cloneDir)
-	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(),
-		"HOME="+home,
-		"DUCKWAY_CONFIG_DIR="+configDir,
-		"GIT_TERMINAL_PROMPT=0",
-		"NO_PROXY=",
-		"no_proxy=",
-	)
-	start := time.Now()
-	output, err := cmd.CombinedOutput()
-	elapsed := time.Since(start)
-	if err != nil {
-		sanitized := sanitizeGitHubLiveOutput(string(output), phantom, clientToken, cfg.PrivateKey)
-		t.Fatalf("duckway git clone failed: %v\n%s", err, sanitized)
-	}
-	t.Logf("duckway git clone live elapsed=%s", elapsed.Round(time.Millisecond))
-	if _, err := os.Stat(filepath.Join(workDir, cloneDir, ".git")); err != nil {
-		t.Fatalf("clone did not create .git directory: %v\n%s", err, output)
-	}
-	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "remote.origin.url", "https://github.com/"+strings.TrimSuffix(cfg.Repository, ".git")+".git")
-	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.proxy", fmt.Sprintf("http://localhost:%d", proxyPort))
-	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.sslCAInfo", filepath.Join(configDir, "ca.pem"))
-	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.helper", "store")
-	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.useHttpPath", "false")
 
-	native := exec.CommandContext(ctx, "git", "-C", filepath.Join(workDir, cloneDir), "ls-remote", "--exit-code", "origin", "HEAD")
-	native.Env = append(os.Environ(),
-		"HOME="+home,
+	workDir := tb.TempDir()
+	repoDir := filepath.Join(workDir, "seed-repo")
+	repoURL := "https://github.com/" + strings.TrimSuffix(env.cfg.Repository, ".git") + ".git"
+	clone := liveCommand(ctx, "git",
+		"-c", "credential.helper=store",
+		"-c", "credential.useHttpPath=false",
+		"clone", repoURL, repoDir,
+	)
+	clone.Env = env.gitProxyEnv()
+	if output, err := clone.CombinedOutput(); err != nil {
+		tb.Fatalf("clone live repo for seeding failed: %v\n%s", err, env.sanitizeOutput(string(output)))
+	}
+
+	seedPath := seed.path()
+	manifest := filepath.Join(repoDir, seedPath, "manifest.json")
+	if _, err := os.Stat(manifest); err == nil {
+		return seedPath, false
+	} else if !os.IsNotExist(err) {
+		tb.Fatalf("stat seed manifest: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(repoDir, seedPath), 0755); err != nil {
+		tb.Fatalf("create seed dir: %v", err)
+	}
+	if err := writeDeterministicSeedFiles(filepath.Join(repoDir, seedPath), seed); err != nil {
+		tb.Fatalf("write seed files: %v", err)
+	}
+	manifestBody := fmt.Sprintf("{\n  \"generated_by\": \"duckway live git benchmark\",\n  \"megabytes\": %d,\n  \"files\": %d,\n  \"bytes\": %d\n}\n", seed.megabytes, seed.files, seed.totalBytes())
+	if err := os.WriteFile(manifest, []byte(manifestBody), 0644); err != nil {
+		tb.Fatalf("write seed manifest: %v", err)
+	}
+
+	for _, args := range [][]string{
+		{"-C", repoDir, "config", "user.name", "Duckway Live Benchmark"},
+		{"-C", repoDir, "config", "user.email", "duckway-live-benchmark@example.invalid"},
+		{"-C", repoDir, "config", "credential.helper", "store"},
+		{"-C", repoDir, "config", "credential.useHttpPath", "false"},
+		{"-C", repoDir, "add", seedPath},
+		{"-C", repoDir, "commit", "-m", fmt.Sprintf("Add Duckway live benchmark seed %dMiB", seed.megabytes)},
+		{"-C", repoDir, "push", "origin", "HEAD"},
+	} {
+		cmd := liveCommand(ctx, "git", args...)
+		cmd.Env = env.gitProxyEnv()
+		if output, err := cmd.CombinedOutput(); err != nil {
+			if strings.Contains(string(output), "Write access to repository not granted") {
+				tb.Fatalf("git push failed because the GitHub App installation does not grant Contents write access; enable Contents: read/write for %s, reinstall/update the app permissions, then rerun with DUCKWAY_TEST_GITHUB_GIT_SEED_LIVE=1\n%s", env.cfg.Repository, env.sanitizeOutput(string(output)))
+			}
+			tb.Fatalf("git %s failed while seeding live repo: %v\n%s", strings.Join(args, " "), err, env.sanitizeOutput(string(output)))
+		}
+	}
+	return seedPath, true
+}
+
+func dirSize(root string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
+}
+
+func writeDeterministicSeedFiles(dir string, seed githubGitLiveSeedSpec) error {
+	total := seed.totalBytes()
+	perFile := total / seed.files
+	remainder := total % seed.files
+	buf := make([]byte, 32*1024)
+	for i := 0; i < seed.files; i++ {
+		size := perFile
+		if i < remainder {
+			size++
+		}
+		path := filepath.Join(dir, fmt.Sprintf("blob-%04d.bin", i))
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err != nil {
+			return err
+		}
+		rng := rand.New(rand.NewSource(int64(seed.megabytes*100000 + seed.files*1000 + i)))
+		remaining := size
+		for remaining > 0 {
+			n := len(buf)
+			if remaining < n {
+				n = remaining
+			}
+			if _, err := rng.Read(buf[:n]); err != nil {
+				f.Close()
+				return err
+			}
+			if _, err := f.Write(buf[:n]); err != nil {
+				f.Close()
+				return err
+			}
+			remaining -= n
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *githubGitLiveDuckwayEnv) duckwayCommandEnv() []string {
+	return append(os.Environ(),
+		"HOME="+e.home,
+		"DUCKWAY_CONFIG_DIR="+e.configDir,
 		"GIT_TERMINAL_PROMPT=0",
 		"NO_PROXY=",
 		"no_proxy=",
 	)
-	nativeOutput, err := native.CombinedOutput()
-	if err != nil {
-		sanitized := sanitizeGitHubLiveOutput(string(nativeOutput), phantom, clientToken, cfg.PrivateKey)
-		t.Fatalf("native git after duckway git clone failed: %v\n%s", err, sanitized)
+}
+
+func (e *githubGitLiveDuckwayEnv) gitProxyEnv() []string {
+	return append(os.Environ(),
+		"HOME="+e.home,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_SSL_CAINFO="+filepath.Join(e.configDir, "ca.pem"),
+		"HTTPS_PROXY="+e.proxyURL,
+		"HTTP_PROXY="+e.proxyURL,
+		"https_proxy="+e.proxyURL,
+		"http_proxy="+e.proxyURL,
+		"NO_PROXY=",
+		"no_proxy=",
+	)
+}
+
+func (e *githubGitLiveDuckwayEnv) sanitizeOutput(output string) string {
+	return sanitizeGitHubLiveOutput(output, e.phantom, e.clientToken, e.cfg.PrivateKey)
+}
+
+func liveCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
+	cmd.WaitDelay = 5 * time.Second
+	return cmd
 }
 
 func assertGitConfigValue(t *testing.T, repoDir, key, want string) {
@@ -302,9 +582,9 @@ func sanitizeGitHubLiveOutput(output string, secrets ...string) string {
 	return githubInstallationTokenPattern.ReplaceAllString(sanitized, "ghs_[redacted]")
 }
 
-func startGitHubGitLiveDuckwayServer(t *testing.T, credentialJSON, repo string) (phantom, serverURL, clientToken string, ca *services.CAManager, caPEM []byte) {
+func startGitHubGitLiveDuckwayServer(t testing.TB, credentialJSON, repo string) (phantom, serverURL, clientToken string, ca *services.CAManager, caPEM []byte) {
 	t.Helper()
-	normalizedRepo := strings.TrimSuffix(strings.TrimPrefix(repo, "https://github.com/"), ".git")
+	normalizedRepo := normalizeGitHubLiveRepo(t, repo)
 	parts := strings.Split(normalizedRepo, "/")
 	if len(parts) != 2 {
 		t.Fatalf("live repository must be OWNER/REPO, got %q", repo)
@@ -428,14 +708,42 @@ func startGitHubGitLiveDuckwayServer(t *testing.T, credentialJSON, repo string) 
 }
 
 func githubGitLivePermissionConfig(repo string) string {
-	return `{"version":"1","provider":"github","rules":[{"name":"live-read","endpoints":[` +
-		`{"method":"GET","path":"/` + repo + `.git/info/refs","allow":true},` +
-		`{"method":"POST","path":"/` + repo + `.git/git-upload-pack","allow":true},` +
-		`{"method":"GET","path":"/repos/` + repo + `","allow":true}` +
-		`],"deny_all_other":true}]}`
+	type endpoint struct {
+		Method string `json:"method"`
+		Path   string `json:"path"`
+		Allow  bool   `json:"allow"`
+	}
+	config := struct {
+		Version  string `json:"version"`
+		Provider string `json:"provider"`
+		Rules    []struct {
+			Name         string     `json:"name"`
+			Endpoints    []endpoint `json:"endpoints"`
+			DenyAllOther bool       `json:"deny_all_other"`
+		} `json:"rules"`
+	}{
+		Version:  "1",
+		Provider: "github",
+	}
+	config.Rules = append(config.Rules, struct {
+		Name         string     `json:"name"`
+		Endpoints    []endpoint `json:"endpoints"`
+		DenyAllOther bool       `json:"deny_all_other"`
+	}{
+		Name: "live-read-write",
+		Endpoints: []endpoint{
+			{Method: "GET", Path: "/" + repo + ".git/info/refs", Allow: true},
+			{Method: "POST", Path: "/" + repo + ".git/git-upload-pack", Allow: true},
+			{Method: "POST", Path: "/" + repo + ".git/git-receive-pack", Allow: true},
+			{Method: "GET", Path: "/repos/" + repo, Allow: true},
+		},
+		DenyAllOther: true,
+	})
+	raw, _ := json.Marshal(config)
+	return string(raw)
 }
 
-func portFromTestServerURL(t *testing.T, rawURL string) int {
+func portFromTestServerURL(t testing.TB, rawURL string) int {
 	t.Helper()
 	idx := strings.LastIndex(rawURL, ":")
 	if idx < 0 {
@@ -448,7 +756,7 @@ func portFromTestServerURL(t *testing.T, rawURL string) int {
 	return port
 }
 
-func findRepoRoot(t *testing.T) string {
+func findRepoRoot(t testing.TB) string {
 	t.Helper()
 	wd, err := os.Getwd()
 	if err != nil {
@@ -473,7 +781,7 @@ type githubAppLiveConfig struct {
 	BaseURL        string `json:"base_url,omitempty"`
 }
 
-func loadGitHubAppLiveConfig(t *testing.T) githubAppLiveConfig {
+func loadGitHubAppLiveConfig(t testing.TB) githubAppLiveConfig {
 	t.Helper()
 	configPath := os.Getenv("DUCKWAY_GITHUB_APP_LIVE_CONFIG")
 	if configPath == "" {
@@ -490,10 +798,11 @@ func loadGitHubAppLiveConfig(t *testing.T) githubAppLiveConfig {
 	if cfg.AppID <= 0 || cfg.InstallationID <= 0 || strings.TrimSpace(cfg.PrivateKey) == "" || strings.TrimSpace(cfg.Repository) == "" {
 		t.Fatalf("live config %s requires app_id, installation_id, private_key, and repository", configPath)
 	}
+	cfg.Repository = normalizeGitHubLiveRepo(t, cfg.Repository)
 	return cfg
 }
 
-func findGitHubAppLiveConfigFrom(t *testing.T, rel string) string {
+func findGitHubAppLiveConfigFrom(t testing.TB, rel string) string {
 	t.Helper()
 	wd, err := os.Getwd()
 	if err != nil {
@@ -511,7 +820,7 @@ func findGitHubAppLiveConfigFrom(t *testing.T, rel string) string {
 	return rel
 }
 
-func buildGitHubAppCredentialJSON(t *testing.T, cfg githubAppLiveConfig) string {
+func buildGitHubAppCredentialJSON(t testing.TB, cfg githubAppLiveConfig) string {
 	t.Helper()
 	credential := map[string]interface{}{
 		"type":            "github_app",
@@ -527,4 +836,23 @@ func buildGitHubAppCredentialJSON(t *testing.T, cfg githubAppLiveConfig) string 
 		t.Fatalf("marshal github app credential: %v", err)
 	}
 	return string(raw)
+}
+
+func normalizeGitHubLiveRepo(t testing.TB, raw string) string {
+	t.Helper()
+	repo := strings.TrimSpace(raw)
+	repo = strings.TrimPrefix(repo, "https://github.com/")
+	repo = strings.TrimPrefix(repo, "git@github.com:")
+	repo = strings.Trim(repo, "/")
+	repo = strings.TrimSuffix(repo, ".git")
+	repo = strings.Trim(repo, "/")
+	if !githubLiveRepoPattern.MatchString(repo) {
+		t.Fatalf("live repository must be OWNER/REPO, got %q", raw)
+	}
+	for _, part := range strings.Split(repo, "/") {
+		if part == "." || part == ".." || strings.HasSuffix(part, ".git") {
+			t.Fatalf("live repository must be OWNER/REPO, got %q", raw)
+		}
+	}
+	return repo
 }

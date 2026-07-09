@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -76,5 +77,38 @@ func TestFormatGitCommand(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("formatGitCommand missing %q in %q", want, got)
 		}
+	}
+}
+
+func TestEnsureExistingGitRepoMatchesRemote(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git binary not available: %v", err)
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	run("init")
+	run("remote", "add", "origin", "https://github.com/OWNER/OTHER.git")
+
+	if err := ensureExistingGitRepoMatchesRemote(dir, "OWNER/REPO"); err == nil {
+		t.Fatal("expected mismatched existing origin to be rejected")
+	}
+	out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "https://github.com/OWNER/OTHER.git" {
+		t.Fatalf("origin changed to %q", got)
+	}
+
+	run("remote", "set-url", "origin", "https://github.com/OWNER/REPO.git")
+	if err := ensureExistingGitRepoMatchesRemote(dir, "OWNER/REPO"); err != nil {
+		t.Fatalf("matching origin rejected: %v", err)
 	}
 }

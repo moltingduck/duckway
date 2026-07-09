@@ -128,12 +128,12 @@ func validateGitHubAppBaseURLValue(rawURL string) error {
 	return fmt.Errorf("github_app base_url must use https")
 }
 
-func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *githubAppCredential, method, upstreamPath string) (string, error) {
+func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *githubAppCredential, method, upstreamPath, rawQuery string) (string, error) {
 	owner, repo := githubRepoFromPath(upstreamPath)
 	if owner == "" || repo == "" {
 		return "", fmt.Errorf("github app token mint requires a repository-scoped path")
 	}
-	permissions := githubTokenPermissions(method, upstreamPath)
+	permissions := githubTokenPermissions(method, upstreamPath, rawQuery)
 	cacheKey := githubAppCacheKey(cred, owner, repo, permissions)
 	now := time.Now()
 
@@ -283,14 +283,14 @@ func parseRSAPrivateKey(privateKeyPEM string) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
-func githubTokenPermissions(method, upstreamPath string) map[string]string {
-	scope, level := githubPermissionScope(method, upstreamPath)
+func githubTokenPermissions(method, upstreamPath, rawQuery string) map[string]string {
+	scope, level := githubPermissionScope(method, upstreamPath, rawQuery)
 	return map[string]string{scope: level}
 }
 
-func githubPermissionScope(method, upstreamPath string) (string, string) {
+func githubPermissionScope(method, upstreamPath, rawQuery string) (string, string) {
 	level := "read"
-	if githubRequestNeedsWrite(method, upstreamPath) {
+	if githubRequestNeedsWrite(method, upstreamPath, rawQuery) {
 		level = "write"
 	}
 	clean := path.Clean("/" + strings.TrimPrefix(upstreamPath, "/"))
@@ -308,7 +308,14 @@ func githubPermissionScope(method, upstreamPath string) (string, string) {
 	return "contents", level
 }
 
-func githubRequestNeedsWrite(method, upstreamPath string) bool {
+func githubRequestNeedsWrite(method, upstreamPath, rawQuery string) bool {
+	if strings.EqualFold(method, http.MethodGet) &&
+		strings.HasSuffix(path.Clean("/"+strings.TrimPrefix(upstreamPath, "/")), ".git/info/refs") {
+		values, err := url.ParseQuery(rawQuery)
+		if err == nil && values.Get("service") == "git-receive-pack" {
+			return true
+		}
+	}
 	if strings.EqualFold(method, http.MethodPost) && strings.Contains(upstreamPath, "/git-receive-pack") {
 		return true
 	}
