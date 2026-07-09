@@ -621,7 +621,7 @@ func TestCreatePlaceholderUpdatesExistingClientServiceEnvAssignment(t *testing.T
 		svcQ,
 		queries.NewClientQueries(db),
 	).WithKeyLookup(queries.NewAPIKeyQueries(db), crypto)
-	create := func(acl string) (string, string) {
+	create := func(acl string) (string, string, string) {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodPost, "/api/placeholders", strings.NewReader(`{
 			"service_id":"`+ghSvc.ID+`",
@@ -637,6 +637,7 @@ func TestCreatePlaceholderUpdatesExistingClientServiceEnvAssignment(t *testing.T
 		}
 		var got struct {
 			ID               string  `json:"id"`
+			EnvName          string  `json:"env_name"`
 			Placeholder      string  `json:"placeholder"`
 			PermissionConfig *string `json:"permission_config"`
 		}
@@ -646,22 +647,29 @@ func TestCreatePlaceholderUpdatesExistingClientServiceEnvAssignment(t *testing.T
 		if got.PermissionConfig == nil || *got.PermissionConfig != acl {
 			t.Fatalf("permission_config = %v, want %s", got.PermissionConfig, acl)
 		}
-		return got.ID, got.Placeholder
+		return got.ID, got.EnvName, got.Placeholder
 	}
 
 	acl1 := `{"version":"1","provider":"github","rules":[{"name":"deploy-read-only","endpoints":[{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}],"deny_all_other":true}]}`
 	acl2 := `{"version":"1","provider":"github","rules":[{"name":"deploy-read-only","endpoints":[{"method":"GET","path":"/OWNER/OTHER.git/info/refs","allow":true},{"method":"POST","path":"/OWNER/OTHER.git/git-upload-pack","allow":true}],"deny_all_other":true}]}`
-	id1, ph1 := create(acl1)
-	id2, ph2 := create(acl2)
-	if id2 != id1 || ph2 != ph1 {
-		t.Fatalf("duplicate assignment should update existing placeholder, got (%s,%s) then (%s,%s)", id1, ph1, id2, ph2)
+	id1, env1, ph1 := create(acl1)
+	id1Again, env1Again, ph1Again := create(acl1)
+	if id1Again != id1 || env1Again != env1 || ph1Again != ph1 {
+		t.Fatalf("same repo assignment should update existing placeholder, got (%s,%s,%s) then (%s,%s,%s)", id1, env1, ph1, id1Again, env1Again, ph1Again)
+	}
+	id2, env2, ph2 := create(acl2)
+	if id2 == id1 || env2 == env1 || ph2 == ph1 {
+		t.Fatalf("different repo assignment should create a distinct placeholder, got (%s,%s,%s) then (%s,%s,%s)", id1, env1, ph1, id2, env2, ph2)
+	}
+	if !strings.HasPrefix(env1, "GITHUB_TOKEN_") || !strings.HasPrefix(env2, "GITHUB_TOKEN_") {
+		t.Fatalf("repo-scoped env names should be suffixed, got %q and %q", env1, env2)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM placeholder_keys WHERE client_id='client-gh-app-minter-update' AND service_id=? AND env_name='GITHUB_TOKEN'`, ghSvc.ID).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM placeholder_keys WHERE client_id='client-gh-app-minter-update' AND service_id=?`, ghSvc.ID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("placeholder count = %d, want 1", count)
+	if count != 2 {
+		t.Fatalf("placeholder count = %d, want 2", count)
 	}
 }
 
