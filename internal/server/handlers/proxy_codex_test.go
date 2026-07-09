@@ -292,21 +292,28 @@ func TestHandleOpenAIChatGPTProxyUsesOpenAIKeyForNativeCodex(t *testing.T) {
 		}, nil
 	})}
 
-	req := httptest.NewRequest(http.MethodGet, "/proxy/openai-chatgpt/backend-api/codex/models?client_version=test", nil)
-	req.Header.Set("Authorization", "Bearer jwt.dw_fake.chatgpt")
-	client := &models.Client{ID: "client-chatgpt", Name: "client"}
-	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, client))
-	rec := httptest.NewRecorder()
+	for _, auth := range []string{
+		"Bearer jwt.dw_fake.chatgpt",
+		"Bearer real-chatgpt-access-token",
+	} {
+		upstreamURL = ""
+		upstreamAuth = ""
+		req := httptest.NewRequest(http.MethodGet, "/proxy/openai-chatgpt/backend-api/codex/models?client_version=test", nil)
+		req.Header.Set("Authorization", auth)
+		client := &models.Client{ID: "client-chatgpt", Name: "client"}
+		req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, client))
+		rec := httptest.NewRecorder()
 
-	h.Handle(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	if upstreamURL != "https://chatgpt.com/backend-api/codex/models?client_version=test" {
-		t.Fatalf("upstream URL = %q", upstreamURL)
-	}
-	if upstreamAuth != "Bearer "+realAccess {
-		t.Fatalf("upstream Authorization = %q", upstreamAuth)
+		h.Handle(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("auth %q status = %d body=%s", auth, rec.Code, rec.Body.String())
+		}
+		if upstreamURL != "https://chatgpt.com/backend-api/codex/models?client_version=test" {
+			t.Fatalf("auth %q upstream URL = %q", auth, upstreamURL)
+		}
+		if upstreamAuth != "Bearer "+realAccess {
+			t.Fatalf("auth %q upstream Authorization = %q", auth, upstreamAuth)
+		}
 	}
 }
 

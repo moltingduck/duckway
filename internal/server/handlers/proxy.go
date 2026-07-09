@@ -859,16 +859,23 @@ func explicitProxyPlaceholder(r *http.Request, svc *models.Service) string {
 		if !ok {
 			return ""
 		}
-		return strings.TrimSpace(pass)
+		return explicitPlaceholderToken(strings.TrimSpace(pass))
 	}
 	prefix := svc.AuthPrefix
 	if prefix != "" && strings.HasPrefix(strings.ToLower(auth), strings.ToLower(prefix)) {
-		return strings.TrimSpace(auth[len(prefix):])
+		return explicitPlaceholderToken(strings.TrimSpace(auth[len(prefix):]))
 	}
 	if strings.Contains(auth, " ") {
 		return ""
 	}
-	return auth
+	return explicitPlaceholderToken(auth)
+}
+
+func explicitPlaceholderToken(token string) string {
+	if services.IsPlaceholder(token) {
+		return token
+	}
+	return ""
 }
 
 func effectiveProxyUpstreamBaseURL(serviceName, configuredBaseURL, upstreamPath string) string {
