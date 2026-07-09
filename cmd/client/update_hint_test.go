@@ -133,8 +133,8 @@ func TestLogTargets(t *testing.T) {
 	}
 }
 
-func TestProxyRunEnvOverridesProxyVariables(t *testing.T) {
-	got := proxyRunEnv([]string{
+func TestProxyExecEnvOverridesProxyVariables(t *testing.T) {
+	got := proxyExecEnv([]string{
 		"PATH=/bin",
 		"HTTP_PROXY=http://old-proxy",
 		"https_proxy=http://old-lower",
@@ -168,7 +168,7 @@ func TestProxyRunEnvOverridesProxyVariables(t *testing.T) {
 	}
 }
 
-func TestProxyRunCommandInjectsEnv(t *testing.T) {
+func TestProxyExecCommandInjectsEnv(t *testing.T) {
 	configDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("server_url: http://duckway.test\ntoken: test-token\nproxy_port: 19090\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -177,23 +177,23 @@ func TestProxyRunCommandInjectsEnv(t *testing.T) {
 	const sep = "\x1f"
 	args := strings.Join([]string{
 		"proxy",
-		"run",
+		"exec",
 		"--",
 		"sh",
 		"-c",
 		`printf '%s\n%s\n%s\n' "$HTTPS_PROXY" "$NO_PROXY" "$ALL_PROXY"`,
 	}, sep)
-	cmd := exec.Command(os.Args[0], "-test.run=TestProxyRunCommandHelper")
+	cmd := exec.Command(os.Args[0], "-test.run=TestProxyExecCommandHelper")
 	cmd.Env = append(os.Environ(),
-		"DUCKWAY_PROXY_RUN_HELPER=1",
-		"DUCKWAY_PROXY_RUN_ARGS="+args,
+		"DUCKWAY_PROXY_EXEC_HELPER=1",
+		"DUCKWAY_PROXY_EXEC_ARGS="+args,
 		"DUCKWAY_CONFIG_DIR="+configDir,
 		"HTTPS_PROXY=http://old-proxy",
 		"NO_PROXY=chatgpt.com",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("proxy run helper failed: %v\n%s", err, out)
+		t.Fatalf("proxy exec helper failed: %v\n%s", err, out)
 	}
 	got := strings.TrimSpace(string(out))
 	want := strings.Join([]string{
@@ -202,15 +202,15 @@ func TestProxyRunCommandInjectsEnv(t *testing.T) {
 		"http://localhost:19090",
 	}, "\n")
 	if got != want {
-		t.Fatalf("proxy run output = %q, want %q", got, want)
+		t.Fatalf("proxy exec output = %q, want %q", got, want)
 	}
 }
 
-func TestProxyRunCommandHelper(t *testing.T) {
-	if os.Getenv("DUCKWAY_PROXY_RUN_HELPER") != "1" {
+func TestProxyExecCommandHelper(t *testing.T) {
+	if os.Getenv("DUCKWAY_PROXY_EXEC_HELPER") != "1" {
 		return
 	}
-	os.Args = append([]string{"duckway"}, strings.Split(os.Getenv("DUCKWAY_PROXY_RUN_ARGS"), "\x1f")...)
+	os.Args = append([]string{"duckway"}, strings.Split(os.Getenv("DUCKWAY_PROXY_EXEC_ARGS"), "\x1f")...)
 	main()
 	os.Exit(0)
 }

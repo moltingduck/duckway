@@ -218,7 +218,7 @@ func (p *httpsProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleHTTP supports both historical direct Duckway paths
 // (http://localhost:18080/proxy/openai/...) and real HTTP forward-proxy
-// requests (GET http://example.com/path HTTP/1.1). `duckway proxy run` relies
+// requests (GET http://example.com/path HTTP/1.1). `duckway proxy exec` relies
 // on the latter when a child process uses HTTP_PROXY for plain HTTP traffic.
 func (p *httpsProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.IsAbs() {

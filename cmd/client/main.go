@@ -141,7 +141,7 @@ Usage:
   duckway proxy stop     Stop the running daemon
   duckway proxy restart  Stop the running daemon and start a fresh one
   duckway proxy status   Show daemon status
-  duckway proxy run -- CMD [ARGS...]
+  duckway proxy exec -- CMD [ARGS...]
                          Run one command with HTTP(S)_PROXY set to the local proxy
   duckway proxy hosts        List services the proxy intercepts (queries server)
   duckway proxy hosts reload Signal the running proxy daemon to refresh its host list now
@@ -450,7 +450,15 @@ func cmdGitClone(configDir string, args []string) {
 	fmt.Println("Next native git commands:")
 	fmt.Printf("  cd %s\n", shellQuote(dir))
 	fmt.Println("  git pull --ff-only")
-	fmt.Println("  git push   # if this repo was assigned in dev mode")
+	printGitNextPushHint(repoInfo.Mode)
+}
+
+func printGitNextPushHint(mode string) {
+	if mode == "dev" {
+		fmt.Println("  git push")
+		return
+	}
+	fmt.Println("  # push is not available for deploy-mode assignments")
 }
 
 func loadGitConfigAndKeys(configDir string) (*client.Config, []client.PlaceholderKeyInfo) {
@@ -1335,8 +1343,8 @@ func cmdProxy(configDir string) {
 			status = true
 		case "restart":
 			restart = true
-		case "run":
-			cmdProxyRun(configDir, os.Args[i+1:])
+		case "exec":
+			cmdProxyExec(configDir, os.Args[i+1:])
 			return
 		case "hosts":
 			cmdHosts(configDir)
@@ -1402,12 +1410,12 @@ func cmdProxy(configDir string) {
 	}
 }
 
-func cmdProxyRun(configDir string, args []string) {
+func cmdProxyExec(configDir string, args []string) {
 	if len(args) > 0 && args[0] == "--" {
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: duckway proxy run -- CMD [ARGS...]")
+		fmt.Fprintln(os.Stderr, "usage: duckway proxy exec -- CMD [ARGS...]")
 		os.Exit(2)
 	}
 
@@ -1420,18 +1428,18 @@ func cmdProxyRun(configDir string, args []string) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = proxyRunEnv(os.Environ(), cfg.ProxyPort)
+	cmd.Env = proxyExecEnv(os.Environ(), cfg.ProxyPort)
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.ExitCode())
 		}
-		log.Fatalf("duckway proxy run: %v", err)
+		log.Fatalf("duckway proxy exec: %v", err)
 	}
 }
 
-func proxyRunEnv(base []string, port int) []string {
+func proxyExecEnv(base []string, port int) []string {
 	proxyURL := fmt.Sprintf("http://localhost:%d", port)
 	override := map[string]string{
 		"HTTP_PROXY":  proxyURL,
