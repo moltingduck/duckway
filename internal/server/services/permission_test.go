@@ -217,3 +217,82 @@ func TestValidateGitHubRepoScopePermissionConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestGitHubRepoScopeACLSeparatesPullPushAndRepo(t *testing.T) {
+	pc := NewPermissionChecker()
+	tests := []struct {
+		name       string
+		configJSON string
+		method     string
+		path       string
+		wantAllow  bool
+	}{
+		{
+			name: "pull allows upload-pack",
+			configJSON: `{"version":"1","provider":"github","rules":[{"name":"pull","endpoints":[` +
+				`{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:    "POST",
+			path:      "/OWNER/REPO.git/git-upload-pack",
+			wantAllow: true,
+		},
+		{
+			name: "pull does not allow receive-pack",
+			configJSON: `{"version":"1","provider":"github","rules":[{"name":"pull","endpoints":[` +
+				`{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:    "POST",
+			path:      "/OWNER/REPO.git/git-receive-pack",
+			wantAllow: false,
+		},
+		{
+			name: "push endpoint does not imply pull endpoint",
+			configJSON: `{"version":"1","provider":"github","rules":[{"name":"push","endpoints":[` +
+				`{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/OWNER/REPO.git/git-receive-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:    "POST",
+			path:      "/OWNER/REPO.git/git-upload-pack",
+			wantAllow: false,
+		},
+		{
+			name: "repo mismatch denied",
+			configJSON: `{"version":"1","provider":"github","rules":[{"name":"pull","endpoints":[` +
+				`{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:    "POST",
+			path:      "/OWNER/OTHER.git/git-upload-pack",
+			wantAllow: false,
+		},
+		{
+			name: "rest repo wildcard does not allow smart http",
+			configJSON: `{"version":"1","provider":"github","rules":[{"name":"rest","endpoints":[` +
+				`{"method":"GET","path":"/repos/OWNER/REPO/*","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:    "POST",
+			path:      "/OWNER/REPO.git/git-upload-pack",
+			wantAllow: false,
+		},
+		{
+			name: "rest repo wildcard allows rest subpath",
+			configJSON: `{"version":"1","provider":"github","rules":[{"name":"rest","endpoints":[` +
+				`{"method":"GET","path":"/repos/OWNER/REPO/*","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:    "GET",
+			path:      "/repos/OWNER/REPO/contents/README.md",
+			wantAllow: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pc.Check(tt.configJSON, "ph-gh-acl", tt.method, tt.path, nil)
+			if got.Allowed != tt.wantAllow {
+				t.Fatalf("allowed = %v, want %v; reason=%s", got.Allowed, tt.wantAllow, got.Reason)
+			}
+		})
+	}
+}

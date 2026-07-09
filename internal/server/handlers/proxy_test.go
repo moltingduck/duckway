@@ -869,6 +869,137 @@ func TestProxyGitHubAppACLDenialDoesNotMint(t *testing.T) {
 	}
 }
 
+func TestProxyGitHubAppRepoACLBoundaries(t *testing.T) {
+	tests := []struct {
+		name          string
+		acl           string
+		requestPath   string
+		method        string
+		wantStatus    int
+		wantMintCount int
+		wantPerm      string
+		wantRepo      string
+	}{
+		{
+			name: "pull only permits upload-pack read",
+			acl: `{"version":"1","provider":"github","rules":[{"name":"pull","endpoints":[` +
+				`{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:        "POST",
+			requestPath:   "/proxy/github/OWNER/REPO.git/git-upload-pack",
+			wantStatus:    http.StatusOK,
+			wantMintCount: 1,
+			wantPerm:      "read",
+			wantRepo:      "REPO",
+		},
+		{
+			name: "pull only denies receive-pack before mint",
+			acl: `{"version":"1","provider":"github","rules":[{"name":"pull","endpoints":[` +
+				`{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:        "POST",
+			requestPath:   "/proxy/github/OWNER/REPO.git/git-receive-pack",
+			wantStatus:    http.StatusForbidden,
+			wantMintCount: 0,
+		},
+		{
+			name: "push permits receive-pack write",
+			acl: `{"version":"1","provider":"github","rules":[{"name":"push","endpoints":[` +
+				`{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/OWNER/REPO.git/git-receive-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:        "POST",
+			requestPath:   "/proxy/github/OWNER/REPO.git/git-receive-pack",
+			wantStatus:    http.StatusOK,
+			wantMintCount: 1,
+			wantPerm:      "write",
+			wantRepo:      "REPO",
+		},
+		{
+			name: "repo mismatch denied before mint",
+			acl: `{"version":"1","provider":"github","rules":[{"name":"pull","endpoints":[` +
+				`{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},` +
+				`{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}` +
+				`],"deny_all_other":true}]}`,
+			method:        "POST",
+			requestPath:   "/proxy/github/OWNER/OTHER.git/git-upload-pack",
+			wantStatus:    http.StatusForbidden,
+			wantMintCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mintCount := 0
+			var mintRequest githubMintRequest
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/app/installations/123/access_tokens" {
+					mintCount++
+					if err := json.NewDecoder(r.Body).Decode(&mintRequest); err != nil {
+						t.Fatalf("decode mint request: %v", err)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"token":"ghs_` + strings.Repeat("b", 36) + `","expires_at":"2099-07-07T12:00:00Z"}`))
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
+
+			f := newProxyFixture(t, upstream.URL)
+			seedGitHubService(t, f)
+			privateKeyPEM := testRSAPrivateKeyPEM(t)
+			credJSON := `{"type":"github_app","app_id":99,"installation_id":123,"private_key":` + strconvQuote(privateKeyPEM) + `,"base_url":"` + upstream.URL + `"}`
+			encCred, err := f.crypto.Encrypt(credJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key, err := f.apiKeyQ.GetByID(f.apiKeyID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key.KeyEncrypted = encCred
+			if err := f.apiKeyQ.Update(key); err != nil {
+				t.Fatal(err)
+			}
+			ph, err := f.placeholderQ.GetByID(f.placeholderID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ph.PermissionConfig = &tt.acl
+			if err := f.placeholderQ.Update(ph); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.placeholderQ.UpdatePlaceholder(f.placeholderID, "ghs_dw_fake"); err != nil {
+				t.Fatal(err)
+			}
+
+			h := newProxyHandler(f)
+			r := httptest.NewRequest(tt.method, tt.requestPath, nil)
+			r.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:ghs_dw_fake")))
+			r = withClient(r, f.client)
+			code, body := doProxy(h, r)
+
+			if code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", code, tt.wantStatus, body)
+			}
+			if mintCount != tt.wantMintCount {
+				t.Fatalf("mint count = %d, want %d", mintCount, tt.wantMintCount)
+			}
+			if tt.wantMintCount > 0 {
+				if mintRequest.Permissions["contents"] != tt.wantPerm {
+					t.Fatalf("permissions = %#v, want contents %s", mintRequest.Permissions, tt.wantPerm)
+				}
+				if len(mintRequest.Repositories) != 1 || mintRequest.Repositories[0] != tt.wantRepo {
+					t.Fatalf("repositories = %#v, want [%s]", mintRequest.Repositories, tt.wantRepo)
+				}
+			}
+		})
+	}
+}
+
 // TestProxy_StripsDuckwayHeaders — client sends X-Duckway-Token and X-Custom;
 // upstream must NOT see X-Duckway-Token but MUST see X-Custom.
 func TestProxy_StripsDuckwayHeaders(t *testing.T) {
