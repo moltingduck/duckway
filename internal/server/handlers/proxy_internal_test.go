@@ -80,3 +80,24 @@ func TestProxyACLRequestMapsGitDiscoveryToPackPermission(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitPlaceholderTokenOnlyAcceptsDuckwayPhantoms(t *testing.T) {
+	cases := []struct {
+		name  string
+		token string
+		want  string
+	}{
+		{name: "github phantom", token: "github_pat_dw_fake", want: "github_pat_dw_fake"},
+		{name: "jwt phantom", token: "header.dw_fake.signature", want: "header.dw_fake.signature"},
+		{name: "real bearer", token: "real-chatgpt-access-token", want: ""},
+		{name: "github real token", token: "github_pat_real_token", want: ""},
+		{name: "empty", token: "", want: ""},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := explicitPlaceholderToken(tt.token); got != tt.want {
+				t.Fatalf("explicitPlaceholderToken(%q) = %q, want %q", tt.token, got, tt.want)
+			}
+		})
+	}
+}

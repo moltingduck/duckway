@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +75,15 @@ func (h *ProxyHandler) WithCrypto(c *services.Crypto) *ProxyHandler {
 
 const maxCapturedBytes = 64 * 1024 // 64 KB cap per body
 const maxInspectableRequestBodyBytes = 16 * 1024 * 1024
+
+var capturedBodySecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`),
+	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}\b`),
+	regexp.MustCompile(`\bgh[opsru]_[A-Za-z0-9_]{20,}\b`),
+	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`),
+	regexp.MustCompile(`\brt\.[A-Za-z0-9._-]{20,}\b`),
+	regexp.MustCompile(`\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`),
+}
 
 type proxyACLLayer struct {
 	name   string
@@ -212,7 +222,7 @@ func redactCapturedBody(body, contentType string) string {
 		if json.Unmarshal([]byte(body), &v) == nil {
 			redactJSONValue(v)
 			if out, err := json.Marshal(v); err == nil {
-				return string(out)
+				return redactTextSecrets(string(out))
 			}
 		}
 	}
@@ -224,8 +234,15 @@ func redactCapturedBody(body, contentType string) string {
 					vals[key] = []string{"[redacted]"}
 				}
 			}
-			return vals.Encode()
+			return redactTextSecrets(vals.Encode())
 		}
+	}
+	return redactTextSecrets(body)
+}
+
+func redactTextSecrets(body string) string {
+	for _, pattern := range capturedBodySecretPatterns {
+		body = pattern.ReplaceAllString(body, "[redacted]")
 	}
 	return body
 }

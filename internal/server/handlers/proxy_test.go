@@ -446,6 +446,102 @@ func TestProxyGitHubBasicAuthRewritesPhantomPATPassword(t *testing.T) {
 	}
 }
 
+func TestProxyExplicitPlaceholderRejectsWrongService(t *testing.T) {
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f := newProxyFixture(t, upstream.URL)
+	const githubServiceID = "svc-proxy-github"
+	if err := f.svcQ.Create(&models.Service{
+		ID:          githubServiceID,
+		Name:        "github",
+		DisplayName: "GitHub",
+		UpstreamURL: "https://api.github.com",
+		HostPattern: "api.github.com,github.com",
+		AuthType:    "bearer",
+		AuthHeader:  "Authorization",
+		AuthPrefix:  "Bearer ",
+		KeyPrefix:   "github_pat_",
+		KeyLength:   93,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := f.crypto.Encrypt("github_pat_" + strings.Repeat("r", 82))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const githubKeyID = "key-proxy-github"
+	if err := f.apiKeyQ.Create(&models.APIKey{
+		ID:           githubKeyID,
+		ServiceID:    githubServiceID,
+		Name:         "github key",
+		KeyEncrypted: encrypted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	githubKeyIDValue := githubKeyID
+	if err := f.placeholderQ.Create(&models.PlaceholderKey{
+		ID:          "ph-proxy-github",
+		EnvName:     "GITHUB_TOKEN",
+		Placeholder: "github_pat_dw_wrong_service",
+		ServiceID:   githubServiceID,
+		APIKeyID:    &githubKeyIDValue,
+		ClientID:    f.clientID,
+		IsActive:    true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newProxyHandler(f)
+	r := httptest.NewRequest("GET", "/proxy/anthropic/v1/messages", nil)
+	r.Header.Set("Authorization", "Bearer github_pat_dw_wrong_service")
+	r = withClient(r, f.client)
+	code, body := doProxy(h, r)
+
+	if code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d; body: %s", code, body)
+	}
+	if !strings.Contains(string(body), "placeholder key is not for this service") {
+		t.Fatalf("wrong error body: %s", body)
+	}
+	if upstreamCalled {
+		t.Fatal("upstream was called for wrong-service placeholder")
+	}
+}
+
+func TestProxyExplicitPlaceholderRejectsWrongClient(t *testing.T) {
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f := newProxyFixture(t, upstream.URL)
+	if err := f.placeholderQ.UpdatePlaceholder(f.placeholderID, "sk-dw_fake-placeholder"); err != nil {
+		t.Fatal(err)
+	}
+	h := newProxyHandler(f)
+	r := httptest.NewRequest("GET", "/proxy/anthropic/v1/messages", nil)
+	r.Header.Set("Authorization", "Bearer sk-dw_fake-placeholder")
+	r = withClient(r, &models.Client{ID: "other-client", Name: "other-client", IsActive: true})
+	code, body := doProxy(h, r)
+
+	if code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d; body: %s", code, body)
+	}
+	if !strings.Contains(string(body), "placeholder key not bound to this client") {
+		t.Fatalf("wrong error body: %s", body)
+	}
+	if upstreamCalled {
+		t.Fatal("upstream was called for wrong-client placeholder")
+	}
+}
+
 func TestProxyGitHubBasicAuthSelectsExplicitPlaceholderForACL(t *testing.T) {
 	var gotAuth string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

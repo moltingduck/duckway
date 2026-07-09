@@ -23,6 +23,14 @@ Thumbs.db
 
 # Test artifacts
 /tmp/
+coverage.out
+*.coverprofile
+*.prof
+*.test
+
+# Local agent worktrees/logs
+.claude/
+*.log
 
 # Local live-test secrets (never commit)
 /secrets/
