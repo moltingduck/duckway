@@ -326,7 +326,7 @@ function renderGitSetup(prefix) {
   if (!repoEl || !modeEl || !cmdEl || !aclEl) return;
   var repo = normalizeGitRepo(repoEl.value);
   var grant = currentPh ? gitGrantForRepo(currentPh.permission_config, repo) : null;
-  var mode = grant ? grant.mode : (modeEl.value || 'deploy');
+  var mode = grant ? grantMode(grant) : (modeEl.value || 'deploy');
   modeEl.value = mode;
   var repoDir = repo.split('/').pop();
   cmdEl.textContent = [
@@ -364,7 +364,7 @@ function renderGitGrants(ph, prefix) {
   grants.forEach(function(g) { allowed[g.repo.toLowerCase()] = true; });
   if (!allowed[normalizeGitRepo(repoEl.value).toLowerCase()]) repoEl.value = grants[0].repo;
   list.innerHTML = grants.map(function(g) {
-    return '<div><code>' + esc(g.repo) + '</code> <span class="badge ' + (g.mode === 'dev' ? 'badge-green' : 'badge-gray') + '">' + (g.mode === 'dev' ? 'read/write' : 'read') + '</span></div>';
+    return '<div><code>' + esc(g.repo) + '</code> <span class="badge badge-gray">' + grantLabel(g) + '</span></div>';
   }).join('');
 }
 
@@ -383,11 +383,23 @@ function gitGrantsFromACL(configJSON) {
       if (!ep.allow || !ep.path) return;
       var repo = repoFromGitACLPath(ep.path);
       if (!repo) return;
-      if (!byRepo[repo]) byRepo[repo] = {repo: repo, mode: 'deploy'};
-      if (ep.path.indexOf('.git/git-receive-pack') !== -1) byRepo[repo].mode = 'dev';
+      if (!byRepo[repo]) byRepo[repo] = {repo: repo, pull: false, push: false};
+      if (ep.path.indexOf('.git/git-upload-pack') !== -1) byRepo[repo].pull = true;
+      if (ep.path.indexOf('.git/git-receive-pack') !== -1) byRepo[repo].push = true;
     });
   });
   return Object.keys(byRepo).sort(function(a,b) { return a.localeCompare(b); }).map(function(repo) { return byRepo[repo]; });
+}
+
+function grantMode(grant) {
+  return grant && grant.push ? 'dev' : 'deploy';
+}
+
+function grantLabel(grant) {
+  var parts = [];
+  if (grant.pull) parts.push('pull');
+  if (grant.push) parts.push('push');
+  return parts.length ? parts.join(' + ') : 'none';
 }
 
 function repoFromGitACLPath(path) {
@@ -404,21 +416,31 @@ function repoFromGitACLPath(path) {
 }
 
 function gitACL(repo, mode) {
-  return gitACLForRepos([repo], mode);
+  return gitACLForRepoGrants([{repo: repo, pull: true, push: mode === 'dev'}]);
 }
 
 function gitACLForRepos(repos, mode) {
+  return gitACLForRepoGrants(repos.map(function(repo) {
+    return {repo: repo, pull: true, push: mode === 'dev'};
+  }));
+}
+
+function gitACLForRepoGrants(grants) {
   var endpoints = [];
-  repos.forEach(function(repo) {
+  grants.forEach(function(grant) {
+    var repo = grant.repo;
     endpoints.push({method:'GET', path:'/' + repo + '.git/info/refs', allow:true});
-    endpoints.push({method:'POST', path:'/' + repo + '.git/git-upload-pack', allow:true});
-    if (mode === 'dev') {
+    if (grant.pull) {
+      endpoints.push({method:'POST', path:'/' + repo + '.git/git-upload-pack', allow:true});
+    }
+    if (grant.push) {
       endpoints.push({method:'POST', path:'/' + repo + '.git/git-receive-pack', allow:true});
       endpoints.push({method:'GET', path:'/repos/' + repo, allow:true});
       endpoints.push({method:'GET', path:'/repos/' + repo + '/*', allow:true});
     }
   });
-  return {version:'1', provider:'github', rules:[{name: mode === 'dev' ? 'dev-read-write' : 'deploy-read-only', endpoints:endpoints, deny_all_other:true}]};
+  var hasPush = grants.some(function(grant) { return grant.push; });
+  return {version:'1', provider:'github', rules:[{name: hasPush ? 'repo-grants' : 'deploy-read-only', endpoints:endpoints, deny_all_other:true}]};
 }
 
 function normalizeGitRepo(value) {
@@ -490,7 +512,7 @@ function switchToEdit() {
 function seedEditGitHubRepoScope(configJSON) {
   var grants = gitGrantsFromACL(configJSON);
   document.getElementById('e-github-repos').value = grants.map(function(g) { return g.repo; }).join('\n');
-  document.getElementById('e-github-mode').value = grants.some(function(g) { return g.mode === 'dev'; }) ? 'dev' : 'deploy';
+  document.getElementById('e-github-mode').value = grants.some(function(g) { return g.push; }) ? 'dev' : 'deploy';
 }
 
 function applyEditGitHubRepoScope() {

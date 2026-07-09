@@ -268,11 +268,9 @@
         <textarea id="assign-github-repos-manual" placeholder="OWNER/REPO&#10;OWNER/ANOTHER_REPO" style="min-height:64px"></textarea>
         <span class="text-muted text-sm">Use this when the repository list cannot be loaded, or to paste additional repos.</span>
       </div>
-      <div class="form-group"><label>Git access mode</label>
-        <select id="assign-github-mode">
-          <option value="deploy">Pull only deploy</option>
-          <option value="dev">Pull and push development</option>
-        </select>
+      <div class="form-group"><label>Manual repository access</label>
+        <label style="display:inline-flex;gap:.35rem;align-items:center;margin-right:1rem"><input type="checkbox" id="assign-github-manual-pull" checked> Pull</label>
+        <label style="display:inline-flex;gap:.35rem;align-items:center"><input type="checkbox" id="assign-github-manual-push"> Push</label>
       </div>
     </div>
     <div class="form-group mt-1">
@@ -679,7 +677,7 @@ function renderGitSetup(prefix) {
   var repo = normalizeGitRepo(repoEl.value);
   var activePh = prefix === 'phd' ? placeholders.find(function(p) { return p.id === document.getElementById('phd-env').dataset.placeholderId; }) : null;
   var grant = activePh ? gitGrantForRepo(activePh.permissionConfig, repo) : null;
-  var mode = grant ? grant.mode : (modeEl.value || 'deploy');
+  var mode = grant ? grantMode(grant) : (modeEl.value || 'deploy');
   modeEl.value = mode;
   var repoDir = repo.split('/').pop();
   cmdEl.textContent = [
@@ -717,7 +715,7 @@ function renderGitGrants(ph, prefix) {
   grants.forEach(function(g) { allowed[g.repo.toLowerCase()] = true; });
   if (!allowed[normalizeGitRepo(repoEl.value).toLowerCase()]) repoEl.value = grants[0].repo;
   list.innerHTML = grants.map(function(g) {
-    return '<div><code>' + escHTML(g.repo) + '</code> <span class="badge ' + (g.mode === 'dev' ? 'badge-green' : 'badge-gray') + '">' + (g.mode === 'dev' ? 'read/write' : 'read') + '</span></div>';
+    return '<div><code>' + escHTML(g.repo) + '</code> <span class="badge badge-gray">' + grantLabel(g) + '</span></div>';
   }).join('');
 }
 
@@ -736,11 +734,23 @@ function gitGrantsFromACL(configJSON) {
       if (!ep.allow || !ep.path) return;
       var repo = repoFromGitACLPath(ep.path);
       if (!repo) return;
-      if (!byRepo[repo]) byRepo[repo] = {repo: repo, mode: 'deploy'};
-      if (ep.path.indexOf('.git/git-receive-pack') !== -1) byRepo[repo].mode = 'dev';
+      if (!byRepo[repo]) byRepo[repo] = {repo: repo, pull: false, push: false};
+      if (ep.path.indexOf('.git/git-upload-pack') !== -1) byRepo[repo].pull = true;
+      if (ep.path.indexOf('.git/git-receive-pack') !== -1) byRepo[repo].push = true;
     });
   });
   return Object.keys(byRepo).sort(function(a,b) { return a.localeCompare(b); }).map(function(repo) { return byRepo[repo]; });
+}
+
+function grantMode(grant) {
+  return grant && grant.push ? 'dev' : 'deploy';
+}
+
+function grantLabel(grant) {
+  var parts = [];
+  if (grant.pull) parts.push('pull');
+  if (grant.push) parts.push('push');
+  return parts.length ? parts.join(' + ') : 'none';
 }
 
 function repoFromGitACLPath(path) {
@@ -757,21 +767,31 @@ function repoFromGitACLPath(path) {
 }
 
 function gitACL(repo, mode) {
-  return gitACLForRepos([repo], mode);
+  return gitACLForRepoGrants([{repo: repo, pull: true, push: mode === 'dev'}]);
 }
 
 function gitACLForRepos(repos, mode) {
+  return gitACLForRepoGrants(repos.map(function(repo) {
+    return {repo: repo, pull: true, push: mode === 'dev'};
+  }));
+}
+
+function gitACLForRepoGrants(grants) {
   var endpoints = [];
-  repos.forEach(function(repo) {
+  grants.forEach(function(grant) {
+    var repo = grant.repo;
     endpoints.push({method:'GET', path:'/' + repo + '.git/info/refs', allow:true});
-    endpoints.push({method:'POST', path:'/' + repo + '.git/git-upload-pack', allow:true});
-    if (mode === 'dev') {
+    if (grant.pull) {
+      endpoints.push({method:'POST', path:'/' + repo + '.git/git-upload-pack', allow:true});
+    }
+    if (grant.push) {
       endpoints.push({method:'POST', path:'/' + repo + '.git/git-receive-pack', allow:true});
       endpoints.push({method:'GET', path:'/repos/' + repo, allow:true});
       endpoints.push({method:'GET', path:'/repos/' + repo + '/*', allow:true});
     }
   });
-  return {version:'1', provider:'github', rules:[{name: mode === 'dev' ? 'dev-read-write' : 'deploy-read-only', endpoints:endpoints, deny_all_other:true}]};
+  var hasPush = grants.some(function(grant) { return grant.push; });
+  return {version:'1', provider:'github', rules:[{name: hasPush ? 'repo-grants' : 'deploy-read-only', endpoints:endpoints, deny_all_other:true}]};
 }
 
 function normalizeGitRepo(value) {
@@ -863,7 +883,7 @@ function editPh(phId, envName, keyPath) {
 function seedEditGitHubRepoScope(configJSON) {
   var grants = gitGrantsFromACL(configJSON);
   document.getElementById('eph-github-repos').value = grants.map(function(g) { return g.repo; }).join('\n');
-  document.getElementById('eph-github-mode').value = grants.some(function(g) { return g.mode === 'dev'; }) ? 'dev' : 'deploy';
+  document.getElementById('eph-github-mode').value = grants.some(function(g) { return g.push; }) ? 'dev' : 'deploy';
 }
 
 function applyEditGitHubRepoScope() {
@@ -987,10 +1007,12 @@ function updateAssignGitHubRepoScope() {
   if (existing) {
     var grants = gitGrantsFromACL(existing.permissionConfig);
     document.getElementById('assign-github-repos-manual').value = grants.map(function(g) { return g.repo; }).join('\n');
-    document.getElementById('assign-github-mode').value = grants.some(function(g) { return g.mode === 'dev'; }) ? 'dev' : 'deploy';
+    document.getElementById('assign-github-manual-pull').checked = grants.some(function(g) { return g.pull; }) || !grants.length;
+    document.getElementById('assign-github-manual-push').checked = grants.some(function(g) { return g.push; });
   } else {
     document.getElementById('assign-github-repos-manual').value = '';
-    document.getElementById('assign-github-mode').value = 'deploy';
+    document.getElementById('assign-github-manual-pull').checked = true;
+    document.getElementById('assign-github-manual-push').checked = false;
   }
   loadAssignGitHubRepos();
 }
@@ -1019,15 +1041,23 @@ function loadAssignGitHubRepos() {
       var existing = existingMintableAssignment(document.getElementById('assign-client-id').value, keyID);
       var existingRepos = {};
       gitGrantsFromACL(existing ? existing.permissionConfig : '').forEach(function(g) {
-        existingRepos[g.repo.toLowerCase()] = true;
+        existingRepos[g.repo.toLowerCase()] = g;
       });
       list.innerHTML = repos.map(function(repo) {
         var name = repo.full_name || '';
-        return '<label style="display:flex;gap:.5rem;align-items:center;padding:.2rem 0">' +
-          '<input type="checkbox" class="assign-github-repo-choice" value="' + escHTML(name) + '"' + (existingRepos[name.toLowerCase()] ? ' checked' : '') + '>' +
-          '<span class="mono text-sm">' + escHTML(name) + '</span>' +
+        var grant = existingRepos[name.toLowerCase()];
+        var enabled = !!grant;
+        var pull = grant ? grant.pull : true;
+        var push = grant ? grant.push : false;
+        return '<div class="assign-github-repo-row" style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:.75rem;align-items:center;padding:.2rem 0">' +
+          '<label style="display:flex;gap:.5rem;align-items:center;min-width:0">' +
+          '<input type="checkbox" class="assign-github-repo-choice" value="' + escHTML(name) + '"' + (enabled ? ' checked' : '') + '>' +
+          '<span class="mono text-sm" style="overflow:hidden;text-overflow:ellipsis">' + escHTML(name) + '</span>' +
           (repo.private ? '<span class="badge badge-gray">private</span>' : '') +
-          '</label>';
+          '</label>' +
+          '<label class="text-sm" style="display:inline-flex;gap:.25rem;align-items:center"><input type="checkbox" class="assign-github-repo-pull"' + (pull ? ' checked' : '') + '> Pull</label>' +
+          '<label class="text-sm" style="display:inline-flex;gap:.25rem;align-items:center"><input type="checkbox" class="assign-github-repo-push"' + (push ? ' checked' : '') + '> Push</label>' +
+          '</div>';
       }).join('');
     })
     .catch(function(err) {
@@ -1037,19 +1067,29 @@ function loadAssignGitHubRepos() {
     });
 }
 
-function selectedAssignGitHubRepos() {
-  var repos = [];
+function selectedAssignGitHubRepoGrants() {
+  var grants = [];
   document.querySelectorAll('.assign-github-repo-choice:checked').forEach(function(el) {
-    repos.push(el.value);
+    var row = el.closest('.assign-github-repo-row');
+    grants.push({
+      repo: el.value,
+      pull: row ? row.querySelector('.assign-github-repo-pull').checked : true,
+      push: row ? row.querySelector('.assign-github-repo-push').checked : false
+    });
   });
-  repos = repos.concat(parseGitRepoList(document.getElementById('assign-github-repos-manual').value));
-  var seen = {};
-  return repos.filter(function(repo) {
-    var key = repo.toLowerCase();
-    if (seen[key]) return false;
-    seen[key] = true;
-    return true;
+  var manualPull = document.getElementById('assign-github-manual-pull').checked;
+  var manualPush = document.getElementById('assign-github-manual-push').checked;
+  parseGitRepoList(document.getElementById('assign-github-repos-manual').value).forEach(function(repo) {
+    grants.push({repo: repo, pull: manualPull, push: manualPush});
   });
+  var byRepo = {};
+  grants.forEach(function(grant) {
+    var key = grant.repo.toLowerCase();
+    if (!byRepo[key]) byRepo[key] = {repo: grant.repo, pull: false, push: false};
+    byRepo[key].pull = byRepo[key].pull || grant.pull;
+    byRepo[key].push = byRepo[key].push || grant.push;
+  });
+  return Object.keys(byRepo).sort(function(a,b) { return a.localeCompare(b); }).map(function(key) { return byRepo[key]; });
 }
 
 function buildAssignPreview(svcName) {
@@ -1067,7 +1107,7 @@ function existingMintableAssignment(clientId, apiKeyId) {
 function summarizeGitGrants(configJSON) {
   var grants = gitGrantsFromACL(configJSON);
   if (!grants.length) return '(no repository scope)';
-  return grants.map(function(g) { return g.repo + ' [' + (g.mode === 'dev' ? 'read/write' : 'read') + ']'; }).join(', ');
+  return grants.map(function(g) { return g.repo + ' [' + grantLabel(g) + ']'; }).join(', ');
 }
 
 function openAssignModal(clientId, clientName) {
@@ -1152,12 +1192,16 @@ function submitAssign() {
   else {
     body.api_key_id = opt.value;
     if (opt.dataset.serviceName === 'github' && opt.dataset.isMintable === 'true') {
-      var repos = selectedAssignGitHubRepos();
-      if (!repos.length) {
+      var grants = selectedAssignGitHubRepoGrants();
+      if (!grants.length) {
         showToast('Select or enter at least one allowed repository', 'error');
         return;
       }
-      body.permission_config = JSON.stringify(gitACLForRepos(repos, document.getElementById('assign-github-mode').value || 'deploy'));
+      if (grants.some(function(grant) { return !grant.pull && !grant.push; })) {
+        showToast('Each selected repository needs Pull, Push, or both', 'error');
+        return;
+      }
+      body.permission_config = JSON.stringify(gitACLForRepoGrants(grants));
       var existing = existingMintableAssignment(clientId, opt.value);
       if (existing && !confirm('This GitHub mintable token is already assigned to this client. Reassigning will overwrite its repository authorization.\n\nCurrent: ' + summarizeGitGrants(existing.permissionConfig) + '\nNew: ' + summarizeGitGrants(body.permission_config) + '\n\nOverwrite existing assignment?')) {
         return;
