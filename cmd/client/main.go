@@ -387,7 +387,7 @@ func cmdGitSetup(configDir string) {
 		log.Fatalf("git setup failed: %v", err)
 	}
 	fmt.Println("GitHub phantom credential synced for native git.")
-	fmt.Printf("Local proxy expected at http://localhost:%d. Run `duckway start` if it is not already running.\n", cfg.ProxyPort)
+	fmt.Printf("Local proxy expected at http://localhost:%d. Run `duckway proxy -d` if it is not already running.\n", cfg.ProxyPort)
 }
 
 func cmdGitClone(configDir string, args []string) {

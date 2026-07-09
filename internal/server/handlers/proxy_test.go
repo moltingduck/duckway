@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database"
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -182,6 +183,23 @@ func strconvQuote(value string) string {
 	out, _ := json.Marshal(value)
 	return string(out)
 }
+
+type blockingReadCloser struct {
+	data    []byte
+	sent    bool
+	release chan struct{}
+}
+
+func (b *blockingReadCloser) Read(p []byte) (int, error) {
+	if !b.sent {
+		b.sent = true
+		return copy(p, b.data), nil
+	}
+	<-b.release
+	return 0, io.EOF
+}
+
+func (b *blockingReadCloser) Close() error { return nil }
 
 // withClient injects a *models.Client into a request context, bypassing the
 // auth middleware. This mirrors what middleware.ClientAuth.Middleware does.
@@ -425,6 +443,58 @@ func TestProxyGitHubBasicAuthRewritesPhantomPATPassword(t *testing.T) {
 	}
 	if strings.Contains(gotAuth, "dw_") || strings.Contains(gotAuth, "fake") {
 		t.Fatalf("upstream Authorization leaked phantom: %q", gotAuth)
+	}
+}
+
+func TestProxyGitHubSmartHTTPStreamsRequestBodyWithoutPrebuffering(t *testing.T) {
+	upstreamRead := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 1)
+		if n, _ := r.Body.Read(buf); n > 0 {
+			close(upstreamRead)
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f := newProxyFixture(t, upstream.URL)
+	seedGitHubService(t, f)
+	if err := f.placeholderQ.UpdatePlaceholder(f.placeholderID, "github_pat_dw_fake"); err != nil {
+		t.Fatal(err)
+	}
+	acl := `{"version":"1","provider":"github","rules":[{"name":"dev","endpoints":[{"method":"POST","path":"/OWNER/REPO.git/git-receive-pack","allow":true}],"deny_all_other":true}]}`
+	ph, err := f.placeholderQ.GetByID(f.placeholderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ph.PermissionConfig = &acl
+	if err := f.placeholderQ.Update(ph); err != nil {
+		t.Fatal(err)
+	}
+
+	body := &blockingReadCloser{data: []byte("x"), release: make(chan struct{})}
+	h := newProxyHandler(f)
+	r := httptest.NewRequest("POST", "/proxy/github/OWNER/REPO.git/git-receive-pack", body)
+	r.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:github_pat_dw_fake")))
+	r = withClient(r, f.client)
+	done := make(chan struct{})
+	go func() {
+		rr := httptest.NewRecorder()
+		h.Handle(rr, r)
+		close(done)
+	}()
+
+	select {
+	case <-upstreamRead:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("upstream did not receive request body before EOF; proxy likely prebuffered it")
+	}
+	close(body.release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not finish after releasing request body")
 	}
 }
 

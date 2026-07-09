@@ -182,6 +182,31 @@ func (pc *PermissionChecker) Check(configJSON string, placeholderID, method, pat
 	return PermissionResult{Allowed: true} // No rules matched = allow by default
 }
 
+// RequestBodyRequiredForPermission reports whether evaluating configJSON for
+// this request may require reading the request body. Callers can use this to
+// keep large binary requests streaming when permission checks only depend on
+// method/path/rate limits.
+func RequestBodyRequiredForPermission(configJSON, method, path string) bool {
+	if strings.TrimSpace(configJSON) == "" {
+		return false
+	}
+	config, err := ParsePermissionConfig(configJSON)
+	if err != nil {
+		return true
+	}
+	for _, rule := range config.Rules {
+		for _, ep := range rule.Endpoints {
+			if !matchEndpoint(ep, method, path) || ep.Constraints == nil {
+				continue
+			}
+			if len(ep.Constraints.Body) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (pc *PermissionChecker) checkRule(rule PermissionRule, placeholderID, method, path string, bodyBytes []byte) PermissionResult {
 	matched := false
 

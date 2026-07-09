@@ -277,8 +277,9 @@ func (p *httpsProxy) forwardHTTPToGateway(w http.ResponseWriter, r *http.Request
 		path = "/"
 	}
 	if r.URL.RawQuery != "" {
-		path += "?" + redactDebugRawQuery(r.URL.RawQuery)
+		path += "?" + r.URL.RawQuery
 	}
+	logPath := redactedDebugPath(r.URL.Path, r.URL.RawQuery)
 	targetURL := strings.TrimRight(p.serverURL, "/") + "/proxy/" + svcName + path
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
@@ -293,7 +294,7 @@ func (p *httpsProxy) forwardHTTPToGateway(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		if p.debug {
 			log.Printf("[proxy %s] %s http://%s%s → ERR %v (%s)",
-				svcName, r.Method, host, path, err, time.Since(start).Round(time.Millisecond))
+				svcName, r.Method, host, logPath, err, time.Since(start).Round(time.Millisecond))
 		}
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
@@ -316,6 +317,7 @@ func (p *httpsProxy) forwardHTTPDirect(w http.ResponseWriter, r *http.Request, h
 		}
 		targetURL = upstreamBase + r.URL.RequestURI()
 	}
+	logURL := redactedDebugURL(targetURL)
 
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
@@ -328,7 +330,7 @@ func (p *httpsProxy) forwardHTTPDirect(w http.ResponseWriter, r *http.Request, h
 	if err != nil {
 		if p.debug {
 			log.Printf("[direct %s] %s %s → ERR %v (%s)",
-				entry.Service, r.Method, targetURL, err, time.Since(start).Round(time.Millisecond))
+				entry.Service, r.Method, logURL, err, time.Since(start).Round(time.Millisecond))
 		}
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
@@ -442,8 +444,9 @@ func (p *httpsProxy) forwardMITM(tlsConn *tls.Conn, req *http.Request, svcName, 
 	start := time.Now()
 	path := req.URL.Path
 	if req.URL.RawQuery != "" {
-		path += "?" + redactDebugRawQuery(req.URL.RawQuery)
+		path += "?" + req.URL.RawQuery
 	}
+	logPath := redactedDebugPath(req.URL.Path, req.URL.RawQuery)
 
 	targetURL := strings.TrimRight(p.serverURL, "/") + "/proxy/" + svcName + path
 
@@ -474,7 +477,7 @@ func (p *httpsProxy) forwardMITM(tlsConn *tls.Conn, req *http.Request, svcName, 
 	if err != nil {
 		if p.debug {
 			log.Printf("[proxy %s] %s %s://%s%s → ERR %v (%s)",
-				svcName, req.Method, "https", host, path, err, time.Since(start).Round(time.Millisecond))
+				svcName, req.Method, "https", host, logPath, err, time.Since(start).Round(time.Millisecond))
 		}
 		writeHTTPError(tlsConn, 502, "upstream error")
 		return
@@ -497,6 +500,7 @@ func (p *httpsProxy) forwardDirect(tlsConn *tls.Conn, req *http.Request, host st
 	if req.URL.RawQuery != "" {
 		path += "?" + req.URL.RawQuery
 	}
+	logPath := redactedDebugPath(req.URL.Path, req.URL.RawQuery)
 	upstreamBase := strings.TrimRight(entry.UpstreamURL, "/")
 	if upstreamBase == "" || !strings.Contains(upstreamBase, host) {
 		upstreamBase = "https://" + host
@@ -524,7 +528,7 @@ func (p *httpsProxy) forwardDirect(tlsConn *tls.Conn, req *http.Request, host st
 	if err != nil {
 		if p.debug {
 			log.Printf("[direct %s] %s https://%s%s → ERR %v (%s)",
-				entry.Service, req.Method, host, path, err, time.Since(start).Round(time.Millisecond))
+				entry.Service, req.Method, host, logPath, err, time.Since(start).Round(time.Millisecond))
 		}
 		writeHTTPError(tlsConn, 502, "upstream error")
 		return
@@ -1275,7 +1279,7 @@ func (p *httpsProxy) logDebug(mode, service string, req *http.Request, resp *htt
 
 	path := req.URL.Path
 	if req.URL.RawQuery != "" {
-		path += "?" + req.URL.RawQuery
+		path += "?" + redactDebugRawQuery(req.URL.RawQuery)
 	}
 
 	ct := resp.Header.Get("Content-Type")
@@ -1302,6 +1306,25 @@ func redactDebugRawQuery(rawQuery string) string {
 		values[key] = vals
 	}
 	return values.Encode()
+}
+
+func redactedDebugPath(path, rawQuery string) string {
+	if path == "" {
+		path = "/"
+	}
+	if rawQuery == "" {
+		return path
+	}
+	return path + "?" + redactDebugRawQuery(rawQuery)
+}
+
+func redactedDebugURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.RawQuery == "" {
+		return rawURL
+	}
+	u.RawQuery = redactDebugRawQuery(u.RawQuery)
+	return u.String()
 }
 
 func isSensitiveQueryKey(key string) bool {

@@ -50,6 +50,13 @@ func TestRedactDebugRawQuery(t *testing.T) {
 			t.Fatalf("query %q missing %q", got, want)
 		}
 	}
+	redactedURL := redactedDebugURL("https://github.com/OWNER/REPO?access_token=ghs_real_secret&ok=value")
+	if bytes.Contains([]byte(redactedURL), []byte("ghs_real_secret")) {
+		t.Fatalf("url leaked token: %s", redactedURL)
+	}
+	if !bytes.Contains([]byte(redactedURL), []byte("ok=value")) {
+		t.Fatalf("url should keep non-sensitive query values: %s", redactedURL)
+	}
 }
 
 func TestFallbackMITMEntryForGitHub(t *testing.T) {
@@ -279,7 +286,7 @@ func TestHTTPForwardProxyRoutesKnownPhantomThroughGateway(t *testing.T) {
 	}
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
 
-	req, err := http.NewRequest(http.MethodGet, "http://api.anthropic.com/v1/messages?beta=true", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://api.anthropic.com/v1/messages?access_token=ghs_secret&beta=true", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,8 +303,8 @@ func TestHTTPForwardProxyRoutesKnownPhantomThroughGateway(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if gotPath != "/proxy/anthropic/v1/messages?beta=true" {
-		t.Fatalf("gateway path = %q, want /proxy/anthropic/v1/messages?beta=true", gotPath)
+	if gotPath != "/proxy/anthropic/v1/messages?access_token=ghs_secret&beta=true" {
+		t.Fatalf("gateway path = %q, want sensitive query forwarded unmodified", gotPath)
 	}
 	if gotAuth != "Bearer sk-ant-dw_fake" {
 		t.Fatalf("gateway Authorization = %q", gotAuth)

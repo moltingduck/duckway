@@ -86,6 +86,24 @@ func TestPermissionChecker_ModelConstraint(t *testing.T) {
 	}
 }
 
+func TestRequestBodyRequiredForPermission(t *testing.T) {
+	noConstraint := `{"version":"1","provider":"github","rules":[{"endpoints":[{"method":"POST","path":"/OWNER/REPO.git/git-receive-pack","allow":true}],"deny_all_other":true}]}`
+	if RequestBodyRequiredForPermission(noConstraint, "POST", "/OWNER/REPO.git/git-receive-pack") {
+		t.Fatal("body should not be required when matched endpoint has no body constraints")
+	}
+
+	withConstraint := `{"version":"1","provider":"openai","rules":[{"endpoints":[{"method":"POST","path":"/v1/chat/completions","allow":true,"constraints":{"body":{"model":{"oneOf":["gpt-4o-mini"]}}}}],"deny_all_other":true}]}`
+	if !RequestBodyRequiredForPermission(withConstraint, "POST", "/v1/chat/completions") {
+		t.Fatal("body should be required when matched endpoint has body constraints")
+	}
+	if RequestBodyRequiredForPermission(withConstraint, "GET", "/v1/models") {
+		t.Fatal("body should not be required for non-matching endpoint")
+	}
+	if !RequestBodyRequiredForPermission(`{`, "POST", "/v1/chat/completions") {
+		t.Fatal("invalid config should require body/fallback handling")
+	}
+}
+
 func TestPermissionChecker_WildcardPath(t *testing.T) {
 	config := PermissionConfig{
 		Version: "1",

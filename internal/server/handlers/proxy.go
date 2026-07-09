@@ -72,6 +72,12 @@ func (h *ProxyHandler) WithCrypto(c *services.Crypto) *ProxyHandler {
 }
 
 const maxCapturedBytes = 64 * 1024 // 64 KB cap per body
+const maxInspectableRequestBodyBytes = 16 * 1024 * 1024
+
+type proxyACLLayer struct {
+	name   string
+	config string
+}
 
 // shouldCaptureContentType returns true for text-like content types where
 // capturing the body in the request log is useful (and safe to store as a
@@ -348,26 +354,29 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Buffer body for permission checking
-	var bodyBytes []byte
-	if r.Body != nil {
-		bodyBytes, _ = io.ReadAll(r.Body)
-		r.Body.Close()
-	}
-
 	// Three-level ACL: request must pass ALL non-empty layers.
 	// Each layer can only shrink (restrict further), never widen.
 	//   1. Service default_acl (widest)
 	//   2. API Key acl
 	//   3. Placeholder permission_config (narrowest)
-	aclLayers := []struct {
-		name   string
-		config string
-	}{
+	aclLayers := []proxyACLLayer{
 		{"service", svc.DefaultACL},
 		{"api_key", result.APIKeyACL},
 		{"placeholder", result.PermissionConfig},
 	}
+	bodyRequired := requestBodyRequiredForProxyACL(aclLayers, r.Method, upstreamPath)
+
+	var bodyBytes []byte
+	if bodyRequired && r.Body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(http.MaxBytesReader(w, r.Body, maxInspectableRequestBodyBytes))
+		r.Body.Close()
+		if err != nil {
+			jsonError(w, "request body too large or unreadable for permission check", http.StatusRequestEntityTooLarge)
+			return
+		}
+	}
+
 	for _, layer := range aclLayers {
 		if layer.config == "" {
 			continue
@@ -390,8 +399,10 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var bodyReader io.Reader
-	if len(bodyBytes) > 0 {
+	if bodyRequired {
 		bodyReader = bytes.NewReader(bodyBytes)
+	} else {
+		bodyReader = r.Body
 	}
 
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bodyReader)
@@ -570,8 +581,11 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		var reqBodyStored string
 		reqTrunc := false
 		reqSize := int64(len(bodyBytes))
+		if reqSize == 0 && r.ContentLength > 0 {
+			reqSize = r.ContentLength
+		}
 		reqCT := r.Header.Get("Content-Type")
-		if shouldCaptureContentType(reqCT) {
+		if len(bodyBytes) > 0 && shouldCaptureContentType(reqCT) {
 			toStore := bodyBytes
 			if decoded, ok := decodeBody(bodyBytes, r.Header.Get("Content-Encoding")); ok {
 				toStore = decoded
@@ -820,6 +834,15 @@ func isGitHubSmartHTTPPath(path string) bool {
 	return strings.HasSuffix(path, ".git/info/refs") ||
 		strings.HasSuffix(path, ".git/git-upload-pack") ||
 		strings.HasSuffix(path, ".git/git-receive-pack")
+}
+
+func requestBodyRequiredForProxyACL(layers []proxyACLLayer, method, path string) bool {
+	for _, layer := range layers {
+		if services.RequestBodyRequiredForPermission(layer.config, method, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func rewriteCodexRefreshResponse(body []byte, placeholderID, placeholder string) []byte {
