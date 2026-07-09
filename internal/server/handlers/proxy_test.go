@@ -46,7 +46,7 @@ type proxyFixture struct {
 // (pointing at the given upstream URL), one client, one api_key, and one
 // placeholder_key. It also returns the seeded *models.Client so tests can
 // inject it via context.
-func newProxyFixture(t *testing.T, upstreamURL string) *proxyFixture {
+func newProxyFixture(t testing.TB, upstreamURL string) *proxyFixture {
 	t.Helper()
 
 	db, err := database.Open(t.TempDir())
@@ -149,7 +149,7 @@ type githubMintRequest struct {
 	Permissions  map[string]string `json:"permissions"`
 }
 
-func seedGitHubService(t *testing.T, f *proxyFixture) {
+func seedGitHubService(t testing.TB, f *proxyFixture) {
 	t.Helper()
 	svc, err := f.svcQ.GetByID(f.serviceID)
 	if err != nil {
@@ -169,7 +169,7 @@ func seedGitHubService(t *testing.T, f *proxyFixture) {
 	}
 }
 
-func testRSAPrivateKeyPEM(t *testing.T) string {
+func testRSAPrivateKeyPEM(t testing.TB) string {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
