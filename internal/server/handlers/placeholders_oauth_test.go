@@ -475,6 +475,100 @@ func TestCreatePlaceholderAcceptsGitHubAppMinterWithRepoPermissionConfig(t *test
 	}
 }
 
+func TestCreatePlaceholderUpdatesExistingClientServiceEnvAssignment(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	cred := map[string]interface{}{
+		"type":            "github_app",
+		"app_id":          99,
+		"installation_id": 123,
+		"private_key":     testRSAPrivateKeyPEM(t),
+	}
+	credJSON, _ := json.Marshal(cred)
+	encCred, err := crypto.Encrypt(string(credJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	ghSvc := &models.Service{
+		ID:           "svc-gh-app-minter-update",
+		Name:         "github",
+		DisplayName:  "GitHub API + Git",
+		UpstreamURL:  "https://api.github.com",
+		HostPattern:  "api.github.com,github.com",
+		AuthType:     "bearer",
+		AuthHeader:   "Authorization",
+		AuthPrefix:   "Bearer ",
+		KeyPrefix:    "github_pat_",
+		KeyLength:    93,
+		DeliveryMode: "proxy",
+		IsActive:     true,
+	}
+	if err := svcQ.Create(ghSvc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-gh-app-minter-update','github app client','hash-gh-app-update')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
+		VALUES ('key-gh-app-minter-update',?,'github app minter',?)`, ghSvc.ID, encCred); err != nil {
+		t.Fatal(err)
+	}
+
+	h := handlers.NewPlaceholderHandler(
+		queries.NewPlaceholderQueries(db),
+		svcQ,
+		queries.NewClientQueries(db),
+	).WithKeyLookup(queries.NewAPIKeyQueries(db), crypto)
+	create := func(acl string) (string, string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/placeholders", strings.NewReader(`{
+			"service_id":"`+ghSvc.ID+`",
+			"api_key_id":"key-gh-app-minter-update",
+			"client_id":"client-gh-app-minter-update",
+			"requires_approval":false,
+			"permission_config":`+strconvQuote(acl)+`
+		}`))
+		rec := httptest.NewRecorder()
+		h.Create(rec, req)
+		if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+		}
+		var got struct {
+			ID               string  `json:"id"`
+			Placeholder      string  `json:"placeholder"`
+			PermissionConfig *string `json:"permission_config"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.PermissionConfig == nil || *got.PermissionConfig != acl {
+			t.Fatalf("permission_config = %v, want %s", got.PermissionConfig, acl)
+		}
+		return got.ID, got.Placeholder
+	}
+
+	acl1 := `{"version":"1","provider":"github","rules":[{"name":"deploy-read-only","endpoints":[{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}],"deny_all_other":true}]}`
+	acl2 := `{"version":"1","provider":"github","rules":[{"name":"deploy-read-only","endpoints":[{"method":"GET","path":"/OWNER/OTHER.git/info/refs","allow":true},{"method":"POST","path":"/OWNER/OTHER.git/git-upload-pack","allow":true}],"deny_all_other":true}]}`
+	id1, ph1 := create(acl1)
+	id2, ph2 := create(acl2)
+	if id2 != id1 || ph2 != ph1 {
+		t.Fatalf("duplicate assignment should update existing placeholder, got (%s,%s) then (%s,%s)", id1, ph1, id2, ph2)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM placeholder_keys WHERE client_id='client-gh-app-minter-update' AND service_id=? AND env_name='GITHUB_TOKEN'`, ghSvc.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("placeholder count = %d, want 1", count)
+	}
+}
+
 func TestCreatePlaceholderRejectsAPIKeyFromDifferentService(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

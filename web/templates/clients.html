@@ -1039,7 +1039,7 @@ function submitAssign() {
   .then(function(data) {
     if (data.error) { showToast(data.error, 'error'); return; }
     document.getElementById('assign-modal').style.display = 'none';
-    showToast('Phantom token generated: ' + data.env_name, 'success');
+    showToast('Phantom token saved: ' + data.env_name, 'success');
     location.reload();
   });
 }

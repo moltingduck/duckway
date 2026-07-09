@@ -91,6 +91,15 @@ func (q *PlaceholderQueries) GetByClientAndService(clientID, serviceID string) (
 	return &p, nil
 }
 
+func (q *PlaceholderQueries) GetByClientServiceEnv(clientID, serviceID, envName string) (*models.PlaceholderKey, error) {
+	var p models.PlaceholderKey
+	err := scanPH(q.db.QueryRow(phSelect+" WHERE p.client_id = ? AND p.service_id = ? AND p.env_name = ?", clientID, serviceID, envName), &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 func (q *PlaceholderQueries) Create(p *models.PlaceholderKey) error {
 	_, err := q.db.Exec(
 		`INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, group_id, client_id, permission_config, requires_approval, approval_ttl_minutes, key_path, suite_id)

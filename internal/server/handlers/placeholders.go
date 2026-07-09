@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"net/http"
 	"strings"
 
@@ -121,6 +122,45 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if req.EnvName == "" {
+		req.EnvName = defaultEnvName(service.Name)
+	}
+
+	requiresApproval := true
+	if req.RequiresApproval != nil {
+		requiresApproval = *req.RequiresApproval
+	}
+	ttl := 1440
+	if req.ApprovalTTLMinutes != nil {
+		ttl = *req.ApprovalTTLMinutes
+	}
+
+	if existing, err := h.placeholders.GetByClientServiceEnv(req.ClientID, req.ServiceID, req.EnvName); err == nil {
+		if existing.SuiteID != nil {
+			jsonError(w, "phantom token already exists for this client/service/env from a key suite; edit or remove the suite assignment first", http.StatusConflict)
+			return
+		}
+		existing.APIKeyID = req.APIKeyID
+		existing.GroupID = req.GroupID
+		existing.PermissionConfig = req.PermissionConfig
+		existing.RequiresApproval = requiresApproval
+		existing.ApprovalTTLMinutes = ttl
+		existing.IsActive = true
+		if err := h.placeholders.Update(existing); err != nil {
+			jsonError(w, "failed to update existing phantom token", http.StatusInternalServerError)
+			return
+		}
+		updated, _ := h.placeholders.GetByID(existing.ID)
+		if updated != nil {
+			existing = updated
+		}
+		jsonResponse(w, existing)
+		return
+	} else if err != sql.ErrNoRows {
+		jsonError(w, "failed to check existing phantom token", http.StatusInternalServerError)
+		return
+	}
+
 	var placeholder string
 	if realKeyForPlaceholder != "" {
 		placeholder, err = svc.GeneratePlaceholderForRealKey(realKeyForPlaceholder, prefix, keyLen)
@@ -132,19 +172,7 @@ func (h *PlaceholderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.EnvName == "" {
-		req.EnvName = defaultEnvName(service.Name)
-	}
-
 	id, _ := svc.GenerateToken(16)
-	requiresApproval := true
-	if req.RequiresApproval != nil {
-		requiresApproval = *req.RequiresApproval
-	}
-	ttl := 1440
-	if req.ApprovalTTLMinutes != nil {
-		ttl = *req.ApprovalTTLMinutes
-	}
 
 	pk := &models.PlaceholderKey{
 		ID:                 id,
