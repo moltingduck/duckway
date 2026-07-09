@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -56,6 +57,13 @@ func TestRedactDebugRawQuery(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(redactedURL), []byte("ok=value")) {
 		t.Fatalf("url should keep non-sensitive query values: %s", redactedURL)
+	}
+	redactedUserinfoURL := redactedDebugURL("https://x-access-token:github_pat_real_secret@github.com/OWNER/REPO.git?ok=1")
+	if bytes.Contains([]byte(redactedUserinfoURL), []byte("github_pat_real_secret")) || bytes.Contains([]byte(redactedUserinfoURL), []byte("x-access-token")) {
+		t.Fatalf("url leaked userinfo credential: %s", redactedUserinfoURL)
+	}
+	if !bytes.Contains([]byte(redactedUserinfoURL), []byte("ok=1")) {
+		t.Fatalf("url should keep non-sensitive query values: %s", redactedUserinfoURL)
 	}
 }
 
@@ -351,7 +359,7 @@ func TestHTTPForwardProxyDirectsUnknownAbsoluteURL(t *testing.T) {
 	}
 }
 
-func TestMITMDirectForKnownHostWithoutPhantom(t *testing.T) {
+func TestMITMRejectsManagedGitHubSmartHTTPWithRealCredential(t *testing.T) {
 	var gatewayHits int
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gatewayHits++
@@ -359,10 +367,9 @@ func TestMITMDirectForKnownHostWithoutPhantom(t *testing.T) {
 	}))
 	defer gateway.Close()
 
+	var originHits int
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer real-user-token" {
-			t.Fatalf("origin Authorization = %q", got)
-		}
+		originHits++
 		w.Write([]byte("direct-origin"))
 	}))
 	defer origin.Close()
@@ -407,11 +414,14 @@ func TestMITMDirectForKnownHostWithoutPhantom(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "direct-origin" {
-		t.Fatalf("body = %q, want direct-origin", string(body))
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d body=%q, want 403", resp.StatusCode, body)
 	}
 	if gatewayHits != 0 {
 		t.Fatalf("gateway hits = %d, want 0", gatewayHits)
+	}
+	if originHits != 0 {
+		t.Fatalf("origin hits = %d, want 0", originHits)
 	}
 }
 
@@ -473,5 +483,27 @@ func TestMITMAlwaysProxiesNativeCodexChatGPTTraffic(t *testing.T) {
 	}
 	if gotAuth != "Bearer "+fakeAccessJWT {
 		t.Fatalf("gateway Authorization = %q", gotAuth)
+	}
+}
+
+func TestWriteHTTPResponseStreamChunkedBody(t *testing.T) {
+	const want = "packfile-response"
+	var out bytes.Buffer
+	resp := benchmarkGitPackResponse(io.NopCloser(strings.NewReader(want)))
+
+	if err := writeHTTPResponseStream(&out, resp); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+	gotResp, err := http.ReadResponse(bufio.NewReader(&out), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer gotResp.Body.Close()
+	body, err := io.ReadAll(gotResp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != want {
+		t.Fatalf("body = %q, want %q", body, want)
 	}
 }

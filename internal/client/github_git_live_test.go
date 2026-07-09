@@ -3,11 +3,13 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,6 +22,8 @@ import (
 	"github.com/hackerduck/duckway/internal/server/middleware"
 	"github.com/hackerduck/duckway/internal/server/services"
 )
+
+var githubInstallationTokenPattern = regexp.MustCompile(`ghs_[A-Za-z0-9_]{20,}`)
 
 func TestGitHubAppPhantomGitPullLive(t *testing.T) {
 	if os.Getenv("DUCKWAY_TEST_GITHUB_GIT_LIVE") != "1" {
@@ -141,7 +145,7 @@ func TestGitHubAppPhantomGitPullLive(t *testing.T) {
 				DeliveryMode: "proxy",
 			},
 		},
-		httpClient:  &http.Client{Timeout: 30 * time.Second, Transport: directTransport},
+		httpClient:  &http.Client{Transport: directTransport},
 		loanCache:   make(map[string]*loanedToken),
 		auditClient: &http.Client{Timeout: time.Second},
 	}
@@ -197,7 +201,7 @@ func TestDuckwayGitCloneLive(t *testing.T) {
 		token:       clientToken,
 		ca:          ca,
 		hostMap:     map[string]hostEntry{},
-		httpClient:  &http.Client{Timeout: 30 * time.Second, Transport: directTransport},
+		httpClient:  &http.Client{Transport: directTransport},
 		loanCache:   make(map[string]*loanedToken),
 		auditClient: &http.Client{Timeout: time.Second},
 	}
@@ -244,14 +248,58 @@ func TestDuckwayGitCloneLive(t *testing.T) {
 		"NO_PROXY=",
 		"no_proxy=",
 	)
+	start := time.Now()
 	output, err := cmd.CombinedOutput()
+	elapsed := time.Since(start)
 	if err != nil {
-		sanitized := strings.ReplaceAll(string(output), phantom, "[phantom]")
+		sanitized := sanitizeGitHubLiveOutput(string(output), phantom, clientToken, cfg.PrivateKey)
 		t.Fatalf("duckway git clone failed: %v\n%s", err, sanitized)
 	}
+	t.Logf("duckway git clone live elapsed=%s", elapsed.Round(time.Millisecond))
 	if _, err := os.Stat(filepath.Join(workDir, cloneDir, ".git")); err != nil {
 		t.Fatalf("clone did not create .git directory: %v\n%s", err, output)
 	}
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "remote.origin.url", "https://github.com/"+strings.TrimSuffix(cfg.Repository, ".git")+".git")
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.proxy", fmt.Sprintf("http://localhost:%d", proxyPort))
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.sslCAInfo", filepath.Join(configDir, "ca.pem"))
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.helper", "store")
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.useHttpPath", "false")
+
+	native := exec.CommandContext(ctx, "git", "-C", filepath.Join(workDir, cloneDir), "ls-remote", "--exit-code", "origin", "HEAD")
+	native.Env = append(os.Environ(),
+		"HOME="+home,
+		"GIT_TERMINAL_PROMPT=0",
+		"NO_PROXY=",
+		"no_proxy=",
+	)
+	nativeOutput, err := native.CombinedOutput()
+	if err != nil {
+		sanitized := sanitizeGitHubLiveOutput(string(nativeOutput), phantom, clientToken, cfg.PrivateKey)
+		t.Fatalf("native git after duckway git clone failed: %v\n%s", err, sanitized)
+	}
+}
+
+func assertGitConfigValue(t *testing.T, repoDir, key, want string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repoDir, "config", "--local", "--get", key)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("read git config %s: %v", key, err)
+	}
+	if got := strings.TrimSpace(string(out)); got != want {
+		t.Fatalf("git config %s = %q, want %q", key, got, want)
+	}
+}
+
+func sanitizeGitHubLiveOutput(output string, secrets ...string) string {
+	sanitized := output
+	for _, secret := range secrets {
+		if strings.TrimSpace(secret) == "" {
+			continue
+		}
+		sanitized = strings.ReplaceAll(sanitized, secret, "[secret]")
+	}
+	return githubInstallationTokenPattern.ReplaceAllString(sanitized, "ghs_[redacted]")
 }
 
 func startGitHubGitLiveDuckwayServer(t *testing.T, credentialJSON, repo string) (phantom, serverURL, clientToken string, ca *services.CAManager, caPEM []byte) {

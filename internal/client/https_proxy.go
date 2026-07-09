@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/signal"
@@ -76,6 +77,15 @@ type httpsProxy struct {
 	auditMu     sync.Mutex
 	auditBuffer []auditEntry
 	auditClient *http.Client
+}
+
+const proxyStreamCopyBufferSize = 32 * 1024
+
+var proxyStreamCopyBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, proxyStreamCopyBufferSize)
+		return &buf
+	},
 }
 
 type bufferedConn struct {
@@ -263,7 +273,12 @@ func (p *httpsProxy) handleHTTPForwardProxy(w http.ResponseWriter, r *http.Reque
 	entry, known := p.hostMap[host]
 	p.hostMu.RUnlock()
 
-	if known && entry.Service != "" && (entry.Service == "openai-auth" || entry.Service == "openai-chatgpt" || requestUsesDuckwayPhantom(r)) {
+	usesPhantom := requestUsesDuckwayPhantom(r)
+	if known && isManagedGitHubSmartHTTPAuthBypass(entry, r, usesPhantom) {
+		http.Error(w, "github git traffic must use a Duckway phantom token", http.StatusForbidden)
+		return
+	}
+	if known && entry.Service != "" && (entry.Service == "openai-auth" || entry.Service == "openai-chatgpt" || usesPhantom) {
 		p.forwardHTTPToGateway(w, r, entry.Service, host)
 		return
 	}
@@ -426,7 +441,12 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		tlsConn.SetReadDeadline(time.Time{}) // clear before forwarding
 
-		if entry.Service != "openai-auth" && entry.Service != "openai-chatgpt" && !requestUsesDuckwayPhantom(req) {
+		usesPhantom := requestUsesDuckwayPhantom(req)
+		if isManagedGitHubSmartHTTPAuthBypass(entry, req, usesPhantom) {
+			writeHTTPError(tlsConn, http.StatusForbidden, "github git traffic must use a Duckway phantom token")
+			continue
+		}
+		if entry.Service != "openai-auth" && entry.Service != "openai-chatgpt" && !usesPhantom {
 			p.forwardDirect(tlsConn, req, host, entry)
 			continue
 		}
@@ -488,7 +508,10 @@ func (p *httpsProxy) forwardMITM(tlsConn *tls.Conn, req *http.Request, svcName, 
 		p.logDebug("proxy", svcName, req, resp, host, time.Since(start))
 	}
 
-	resp.Write(tlsConn)
+	if err := writeHTTPResponseStream(tlsConn, resp); err != nil && p.debug {
+		log.Printf("[proxy %s] %s https://%s%s → write response ERR %v",
+			svcName, req.Method, host, logPath, err)
+	}
 }
 
 func (p *httpsProxy) forwardDirect(tlsConn *tls.Conn, req *http.Request, host string, entry hostEntry) {
@@ -537,7 +560,10 @@ func (p *httpsProxy) forwardDirect(tlsConn *tls.Conn, req *http.Request, host st
 	if p.debug {
 		p.logDebug("direct", entry.Service, req, resp, host, time.Since(start))
 	}
-	resp.Write(tlsConn)
+	if err := writeHTTPResponseStream(tlsConn, resp); err != nil && p.debug {
+		log.Printf("[direct %s] %s https://%s%s → write response ERR %v",
+			entry.Service, req.Method, host, logPath, err)
+	}
 }
 
 func requestUsesDuckwayPhantom(req *http.Request) bool {
@@ -585,6 +611,31 @@ func tokenUsesDuckwayPhantom(token string) bool {
 		}
 	}
 	return false
+}
+
+func isManagedGitHubSmartHTTPAuthBypass(entry hostEntry, req *http.Request, usesPhantom bool) bool {
+	if usesPhantom || entry.Service != "github" || !isGitHubSmartHTTPPath(req.URL.Path) {
+		return false
+	}
+	return requestHasCredentialHeader(req)
+}
+
+func requestHasCredentialHeader(req *http.Request) bool {
+	for _, header := range []string{"Authorization", "X-Api-Key"} {
+		for _, value := range req.Header.Values(header) {
+			if strings.TrimSpace(value) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isGitHubSmartHTTPPath(path string) bool {
+	path = strings.TrimSpace(path)
+	return strings.HasSuffix(path, ".git/info/refs") ||
+		strings.HasSuffix(path, ".git/git-upload-pack") ||
+		strings.HasSuffix(path, ".git/git-receive-pack")
 }
 
 func copyForwardHeaders(dst, src http.Header) {
@@ -1052,7 +1103,7 @@ func (p *httpsProxy) forwardLoan(tlsConn *tls.Conn, req *http.Request, entry hos
 				defer retryResp.Body.Close()
 				retryResp.Header.Set("Connection", "close")
 				retryResp.Close = true
-				retryResp.Write(tlsConn)
+				_ = writeHTTPResponseStream(tlsConn, retryResp)
 				return
 			}
 		}
@@ -1074,7 +1125,72 @@ func (p *httpsProxy) forwardLoan(tlsConn *tls.Conn, req *http.Request, entry hos
 	// request, which makes curl --max-time appear to hang.
 	resp.Header.Set("Connection", "close")
 	resp.Close = true
-	resp.Write(tlsConn)
+	_ = writeHTTPResponseStream(tlsConn, resp)
+}
+
+func writeHTTPResponseStream(w io.Writer, resp *http.Response) error {
+	bw := bufio.NewWriterSize(w, proxyStreamCopyBufferSize)
+	proto := resp.Proto
+	if proto == "" {
+		proto = "HTTP/1.1"
+	}
+	if _, err := fmt.Fprintf(bw, "%s %03d %s\r\n", proto, resp.StatusCode, http.StatusText(resp.StatusCode)); err != nil {
+		return err
+	}
+	if resp.Close {
+		resp.Header.Set("Connection", "close")
+	}
+	chunked := responseShouldUseChunkedTransfer(resp)
+	if chunked {
+		resp.Header.Del("Content-Length")
+		resp.Header.Set("Transfer-Encoding", "chunked")
+	} else {
+		resp.Header.Del("Transfer-Encoding")
+		if resp.ContentLength >= 0 {
+			resp.Header.Set("Content-Length", fmt.Sprintf("%d", resp.ContentLength))
+		}
+	}
+	if err := resp.Header.Write(bw); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString("\r\n"); err != nil {
+		return err
+	}
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+	if resp.Body == nil {
+		return nil
+	}
+	bufp := proxyStreamCopyBufferPool.Get().(*[]byte)
+	defer proxyStreamCopyBufferPool.Put(bufp)
+	buf := *bufp
+	if chunked {
+		cw := httputil.NewChunkedWriter(w)
+		if _, err := io.CopyBuffer(cw, resp.Body, buf); err != nil {
+			_ = cw.Close()
+			return err
+		}
+		if err := cw.Close(); err != nil {
+			return err
+		}
+		_, err := io.WriteString(w, "\r\n")
+		return err
+	}
+	_, err := io.CopyBuffer(w, resp.Body, buf)
+	return err
+}
+
+func responseShouldUseChunkedTransfer(resp *http.Response) bool {
+	if resp.ContentLength >= 0 {
+		return false
+	}
+	for _, enc := range resp.TransferEncoding {
+		if strings.EqualFold(enc, "chunked") {
+			return true
+		}
+	}
+	return !resp.Close
 }
 
 // reportUsage sends captured rate-limit headers to /client/usage asynchronously.
@@ -1320,10 +1436,15 @@ func redactedDebugPath(path, rawQuery string) string {
 
 func redactedDebugURL(rawURL string) string {
 	u, err := url.Parse(rawURL)
-	if err != nil || u.RawQuery == "" {
+	if err != nil {
 		return rawURL
 	}
-	u.RawQuery = redactDebugRawQuery(u.RawQuery)
+	if u.User != nil {
+		u.User = url.User("[redacted]")
+	}
+	if u.RawQuery != "" {
+		u.RawQuery = redactDebugRawQuery(u.RawQuery)
+	}
 	return u.String()
 }
 
