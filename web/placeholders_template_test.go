@@ -21,6 +21,9 @@ func TestPlaceholdersTemplateSupportsGitHubRepoScopedAssignments(t *testing.T) {
 		`function gitACLForRepos(repos, mode)`,
 		`function parseGitRepoList(value)`,
 		`.replace(/\.git$/, '')`,
+		`REPO="`,
+		`REPO_DIR="${REPO##*/}"`,
+		`clone "https://github.com/$REPO.git" "$REPO_DIR"`,
 		`'.git/git-upload-pack'`,
 		`'.git/git-receive-pack'`,
 	}
@@ -50,6 +53,10 @@ func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
 		`badges.push('Refreshable')`,
 		`Mintable`,
 		`.replace(/\.git$/, '')`,
+		`REPO="`,
+		`REPO_DIR="${REPO##*/}"`,
+		`clone "https://github.com/$REPO.git" "$REPO_DIR"`,
+		`git remote set-url origin "https://github.com/$REPO.git"`,
 	}
 	for _, want := range required {
 		if !strings.Contains(html, want) {
