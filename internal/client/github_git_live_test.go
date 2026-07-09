@@ -193,15 +193,10 @@ func TestDuckwayGitCloneLive(t *testing.T) {
 	phantom, serverURL, clientToken, ca, caPEM := startGitHubGitLiveDuckwayServer(t, credentialJSON, cfg.Repository)
 
 	localProxy := &httpsProxy{
-		serverURL: serverURL,
-		token:     clientToken,
-		ca:        ca,
-		hostMap: map[string]hostEntry{
-			"github.com": {
-				Service:      "github",
-				DeliveryMode: "proxy",
-			},
-		},
+		serverURL:   serverURL,
+		token:       clientToken,
+		ca:          ca,
+		hostMap:     map[string]hostEntry{},
 		httpClient:  &http.Client{Timeout: 30 * time.Second, Transport: directTransport},
 		loanCache:   make(map[string]*loanedToken),
 		auditClient: &http.Client{Timeout: time.Second},

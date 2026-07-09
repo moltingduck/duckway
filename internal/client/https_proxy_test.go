@@ -52,6 +52,19 @@ func TestRedactDebugRawQuery(t *testing.T) {
 	}
 }
 
+func TestFallbackMITMEntryForGitHub(t *testing.T) {
+	entry, ok := fallbackMITMEntryForHost("github.com")
+	if !ok {
+		t.Fatal("github.com should have a built-in MITM fallback")
+	}
+	if entry.Service != "github" || entry.DeliveryMode != "proxy" {
+		t.Fatalf("fallback = %+v, want github proxy", entry)
+	}
+	if _, ok := fallbackMITMEntryForHost("example.com"); ok {
+		t.Fatal("example.com should not have a built-in MITM fallback")
+	}
+}
+
 // newTestMITMProxy wires an httpsProxy that MITMs api.anthropic.com and
 // forwards to the given backend (standing in for the duckway server's
 // /proxy/{svc}/ endpoint). Returns the proxy's listen address.

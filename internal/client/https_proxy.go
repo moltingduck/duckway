@@ -353,6 +353,12 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	p.hostMu.RLock()
 	entry, isMITM := p.hostMap[host]
 	p.hostMu.RUnlock()
+	if !isMITM {
+		if fallback, ok := fallbackMITMEntryForHost(host); ok {
+			entry = fallback
+			isMITM = true
+		}
+	}
 	if !isMITM || p.ca == nil {
 		// Unknown host or no CA: transparent tunnel
 		p.tunnelConnect(w, r)
@@ -659,6 +665,15 @@ func (p *httpsProxy) tunnelConnect(w http.ResponseWriter, r *http.Request) {
 	io.Copy(clientConn, targetConn)
 	// clientConn is closed by defer above; targetConn may already be closed
 	// by the goroutine, which is fine — double-close on net.Conn is a no-op.
+}
+
+func fallbackMITMEntryForHost(host string) (hostEntry, bool) {
+	switch strings.ToLower(strings.TrimSuffix(host, ".")) {
+	case "github.com":
+		return hostEntry{Service: "github", DeliveryMode: "proxy", UpstreamURL: "https://github.com"}, true
+	default:
+		return hostEntry{}, false
+	}
 }
 
 func (p *httpsProxy) getCert(hostname string) *tls.Certificate {
