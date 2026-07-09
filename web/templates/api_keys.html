@@ -16,7 +16,7 @@
     <tbody id="keys-list">
       {{range .Keys}}
       <tr id="key-{{.ID}}">
-        <td><a href="#" onclick="openDetail('{{.ID}}');return false"><strong>{{.Name}}</strong></a> {{if .IsMintable}}<span class="badge badge-purple">Mintable</span>{{end}}</td>
+        <td><a href="#" onclick="openDetail('{{.ID}}');return false"><strong>{{.Name}}</strong></a> {{if .IsRefreshable}}<span class="badge badge-green">Refreshable</span>{{end}} {{if .IsMintable}}<span class="badge badge-purple">Mintable</span>{{end}}</td>
         <td><span class="badge badge-blue">{{.ServiceName}}</span></td>
         <td>{{if .ACL}}<span class="badge badge-yellow">custom</span>{{else}}<span class="badge badge-gray">inherit</span>{{end}}</td>
         <td>{{.UsageCount}}</td>

@@ -38,6 +38,7 @@ func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
 	}
 	html := string(body)
 	required := []string{
+		`isRefreshable:{{.IsRefreshable}}`,
 		`isMintable:{{.IsMintable}}`,
 		`id="assign-github-repo-scope"`,
 		`function loadAssignGitHubRepos()`,
@@ -46,6 +47,7 @@ func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
 		`function selectedAssignGitHubRepos()`,
 		`body.permission_config = JSON.stringify(gitACLForRepos(repos, document.getElementById('assign-github-mode').value || 'deploy'));`,
 		`showToast('Select or enter at least one allowed repository', 'error');`,
+		`badges.push('Refreshable')`,
 		`Mintable`,
 		`.replace(/\.git$/, '')`,
 	}
@@ -63,6 +65,7 @@ func TestAPIKeysTemplateShowsMintableBadge(t *testing.T) {
 	}
 	html := string(body)
 	required := []string{
+		`{{if .IsRefreshable}}<span class="badge badge-green">Refreshable</span>{{end}}`,
 		`{{if .IsMintable}}<span class="badge badge-purple">Mintable</span>{{end}}`,
 		`id="d-mintable"`,
 		`k.is_mintable ? '<span class="badge badge-purple">Yes</span>' : 'No'`,

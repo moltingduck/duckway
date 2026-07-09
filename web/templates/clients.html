@@ -432,7 +432,7 @@ document.getElementById('client-edit-form').addEventListener('submit', function(
 
 <script>
 var apiKeys = [
-  {{range .Keys}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}", isMintable:{{.IsMintable}}},{{end}}
+  {{range .Keys}}{id:"{{.ID}}", name:"{{.Name}}", serviceId:"{{.ServiceID}}", serviceName:"{{.ServiceName}}", isRefreshable:{{.IsRefreshable}}, isMintable:{{.IsMintable}}},{{end}}
 ];
 var assignGitHubRepoLoadSeq = 0;
 
@@ -961,9 +961,13 @@ function openAssignModal(clientId, clientName) {
   apiKeys.forEach(function(k) {
     var opt = document.createElement('option');
     opt.value = k.id;
-    opt.textContent = k.name + ' (' + k.serviceName + ')' + (k.isMintable ? ' - Mintable' : '');
+    var badges = [];
+    if (k.isRefreshable) badges.push('Refreshable');
+    if (k.isMintable) badges.push('Mintable');
+    opt.textContent = k.name + ' (' + k.serviceName + ')' + (badges.length ? ' - ' + badges.join(', ') : '');
     opt.dataset.serviceId = k.serviceId;
     opt.dataset.serviceName = k.serviceName;
+    opt.dataset.isRefreshable = k.isRefreshable ? 'true' : 'false';
     opt.dataset.isMintable = k.isMintable ? 'true' : 'false';
     keySel.appendChild(opt);
   });
