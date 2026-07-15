@@ -56,6 +56,20 @@ The Duckway server hosts an installer at `/install.sh`. From the agent machine:
 curl -fsSL http://your-duckway-host/install.sh | sh
 ```
 
+By default this installs to `/usr/local/bin/duckway` and uses `sudo` when that
+directory is not writable. To install without sudo into your user bin:
+
+```bash
+curl -fsSL http://your-duckway-host/install.sh | DUCKWAY_INSTALL=user sh
+~/.local/bin/duckway init
+```
+
+You can also pin an explicit path:
+
+```bash
+curl -fsSL http://your-duckway-host/install.sh | DUCKWAY_INSTALL_PATH="$HOME/bin/duckway" sh
+```
+
 Or use the prebuilt binaries from the `/srv/downloads/` route on the server:
 - `duckway-client-linux-amd64`
 - `duckway-client-linux-arm64`

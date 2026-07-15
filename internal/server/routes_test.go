@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -78,5 +79,18 @@ func TestServeClientDownloadOnlyAllowsPinnedBinaries(t *testing.T) {
 	serveClientDownload(rec, req, dir)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("secret download status=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInstallScriptSupportsUserLocalInstall(t *testing.T) {
+	for _, want := range []string{
+		`INSTALL_MODE="${DUCKWAY_INSTALL:-system}"`,
+		`DEST="${DUCKWAY_INSTALL_PATH:-$HOME/.local/bin/duckway}"`,
+		`Unsupported DUCKWAY_INSTALL=$INSTALL_MODE`,
+		`sudo mkdir -p "$DEST_DIR"`,
+	} {
+		if !strings.Contains(installScript, want) {
+			t.Fatalf("installScript missing %q", want)
+		}
 	}
 }

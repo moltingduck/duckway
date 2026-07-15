@@ -682,14 +682,40 @@ OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; *) echo "Unsupported: $ARCH"; exit 1 ;; esac
 BINARY="duckway-client-${OS}-${ARCH}"
-DEST="/usr/local/bin/duckway"
+INSTALL_MODE="${DUCKWAY_INSTALL:-system}"
+case "$INSTALL_MODE" in
+  system)
+    DEST="${DUCKWAY_INSTALL_PATH:-/usr/local/bin/duckway}"
+    ;;
+  user|local|user-local)
+    DEST="${DUCKWAY_INSTALL_PATH:-$HOME/.local/bin/duckway}"
+    ;;
+  *)
+    echo "Unsupported DUCKWAY_INSTALL=$INSTALL_MODE (use system or user)"
+    exit 1
+    ;;
+esac
 echo "Downloading: $DUCKWAY_SERVER/download/$BINARY"
 if command -v curl >/dev/null 2>&1; then curl -fsSL "$DUCKWAY_SERVER/download/$BINARY" -o /tmp/duckway
 elif command -v wget >/dev/null 2>&1; then wget -q "$DUCKWAY_SERVER/download/$BINARY" -O /tmp/duckway
 else echo "Error: curl or wget required"; exit 1; fi
 chmod +x /tmp/duckway
-if [ -w /usr/local/bin ]; then mv /tmp/duckway "$DEST"; else sudo mv /tmp/duckway "$DEST"; fi
+DEST_DIR="$(dirname "$DEST")"
+if [ "$INSTALL_MODE" = "system" ] && [ ! -w "$DEST_DIR" ]; then
+  sudo mkdir -p "$DEST_DIR"
+  sudo mv /tmp/duckway "$DEST"
+else
+  mkdir -p "$DEST_DIR"
+  mv /tmp/duckway "$DEST"
+fi
 echo "Installed: $DEST"
+case ":$PATH:" in
+  *":$DEST_DIR:"*) ;;
+  *)
+    echo "Note: $DEST_DIR is not in PATH for this shell."
+    echo "      Run this binary as: $DEST"
+    ;;
+esac
 mkdir -p ~/.duckway
 if command -v curl >/dev/null 2>&1; then curl -fsSL "%s/skill/ca.pem" -o ~/.duckway/ca.pem
 else wget -q "%s/skill/ca.pem" -O ~/.duckway/ca.pem; fi

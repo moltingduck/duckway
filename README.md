@@ -108,6 +108,10 @@ page and the registration token modal point agents at the right host.
 curl -fsSL http://duckway-gw/install.sh | sh
 duckway init        # interactive: server URL, client name, paste token
 
+# Optional: install without sudo into ~/.local/bin
+curl -fsSL http://duckway-gw/install.sh | DUCKWAY_INSTALL=user sh
+~/.local/bin/duckway init
+
 # Or copy the full setup command from admin panel → Clients →
 # Register Client → "Full Setup" — installs and registers in one shot.
 ```
