@@ -493,6 +493,89 @@ func TestHandle_Sessions_ForwardsToDaemon(t *testing.T) {
 	}
 }
 
+func TestHandle_DuckwayOps_ForwardToDaemonFromManagement(t *testing.T) {
+	cases := []struct {
+		content string
+		command string
+		args    []string
+	}{
+		{"!duckway-version", "!duckway-version", nil},
+		{"!duckway-restart", "!duckway-restart", nil},
+		{"!duckway-update --restart", "!duckway-update", []string{"--restart"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.content, func(t *testing.T) {
+			h := newCommandHarness(t)
+			sub1, unsub1 := h.hub.Subscribe("client1")
+			defer unsub1()
+			sub2, unsub2 := h.hub.Subscribe("client2")
+			defer unsub2()
+
+			h.handler.Handle(context.Background(), "cc1", h.mgmt, tc.content)
+
+			select {
+			case ev := <-sub1:
+				if ev.Type != "client_command" || ev.Handle != "dwch_mgmt" || ev.Kind != "management" {
+					t.Fatalf("wrong event: %+v", ev)
+				}
+				var p struct {
+					Command string   `json:"command"`
+					Args    []string `json:"args"`
+				}
+				if err := json.Unmarshal(ev.Payload, &p); err != nil {
+					t.Fatalf("payload parse: %v", err)
+				}
+				if p.Command != tc.command || !reflect.DeepEqual(emptyNilStrings(p.Args), emptyNilStrings(tc.args)) {
+					t.Fatalf("payload = %+v, want command %q args %v", p, tc.command, tc.args)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("no client_command event received")
+			}
+
+			select {
+			case ev := <-sub2:
+				t.Fatalf("event leaked to other client: %+v", ev)
+			default:
+			}
+		})
+	}
+}
+
+func emptyNilStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	return in
+}
+
+func TestHandle_DuckwayOps_RejectTaskChannel(t *testing.T) {
+	h := newCommandHarness(t)
+	if _, err := h.db.Exec(`INSERT INTO cc_channels VALUES ('dwch_t','cc1','client1','T-real','t','','task','','/cwd',0,datetime('now'),null)`); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := h.cc.GetChannelByHandle("dwch_t")
+	sub, unsub := h.hub.Subscribe("client1")
+	defer unsub()
+
+	h.handler.Handle(context.Background(), "cc1", task, "!duckway-update --restart")
+	if !h.lastReplyContains("only works in the management channel") {
+		t.Fatalf("expected management-channel scope error, got %v", h.reqs)
+	}
+	select {
+	case ev := <-sub:
+		t.Fatalf("unexpected event: %+v", ev)
+	default:
+	}
+}
+
+func TestHandle_DuckwayOps_NoDaemonReturnsErrorMessage(t *testing.T) {
+	h := newCommandHarness(t)
+	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!duckway-version")
+	if !h.lastReplyContains("daemon offline") {
+		t.Errorf("expected daemon-offline reply, got reqs=%v", h.reqs)
+	}
+}
+
 func TestHandle_Sessions_NoDaemonReturnsErrorMessage(t *testing.T) {
 	h := newCommandHarness(t)
 	// No subscriber → SubscriberCount=0 → must reply with the offline error.

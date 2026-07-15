@@ -101,6 +101,7 @@ func TestCheckAndLogUpdatePostsToManagementChannelOnce(t *testing.T) {
 		t.Fatalf("posts with shared config dir = %d, want 1", got)
 	}
 	if !strings.Contains(postedBody, "Duckway client update REQUIRED") ||
+		!strings.Contains(postedBody, "!duckway-update --restart") ||
 		!strings.Contains(postedBody, "duckway update --server "+srv.URL+" && duckway restart") ||
 		!strings.Contains(postedBody, "sudo") {
 		t.Fatalf("unexpected notification body:\n%s", postedBody)

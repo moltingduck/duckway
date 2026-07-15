@@ -374,7 +374,7 @@ Key points:
 
 ## Control Channels (Discord-as-comms)
 
-A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to an agent session — every message a human types triggers Claude Code or Codex on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!destroy` / `!reset` / `!list` / `!status` / `!help` text commands.
+A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to an agent session — every message a human types triggers Claude Code or Codex on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!destroy` / `!reset` / `!list` / `!status` / `!duckway-version` / `!duckway-restart` / `!duckway-update` / `!help` text commands.
 
 ### Discord bot setup (first time, ~10 min)
 
@@ -496,6 +496,9 @@ In `<client>-control`:
 - `!sessions [<cwd-filter>]` → list local Claude sessions on the agent that aren't yet bound to any CC channel
 - `!bind <session_id> [<session_id> …]` → for each id, create a task channel (named after `basename(cwd)`) and attach the session — next message in the new channel resumes the existing conversation
 - `!projects [<filter>]` → list saved project folders from the agent machine
+- `!duckway-version` → show the local Duckway version on the client
+- `!duckway-restart` → restart local Duckway daemons on the client
+- `!duckway-update [--restart]` → update the local Duckway binary; optionally restart daemons after a successful update
 - `!! <command>` → run a shell command directly on the client in the current channel's working directory; stdout/stderr are posted back and the agent session is not touched
 
 Project folders are saved on the client machine, not browsed from the Duckway server. Add them with:

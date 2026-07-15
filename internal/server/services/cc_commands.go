@@ -20,6 +20,9 @@ import (
 //	!end                                          in a task channel
 //	!list                                         management
 //	!status                                       management
+//	!duckway-version                              management
+//	!duckway-restart                              management
+//	!duckway-update [--restart]                   management
 //	!help                                         either
 //
 // Replies are posted as bot messages in the same channel.
@@ -128,11 +131,12 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 		}
 		h.handleStatus(ctx, botToken, cc, ch.ChannelID)
 
-	case "!sessions", "!bind", "!projects":
+	case "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-restart", "!duckway-update":
 		// These are client-handled — the agent machine owns the filesystem
-		// state (~/.claude/projects/, saved project dirs) and local stores, so
-		// the daemon is the only place that can do useful work. We just
-		// forward the raw command via SSE and let the daemon reply.
+		// state (~/.claude/projects/, saved project dirs), local stores, and
+		// local daemon lifecycle, so the daemon is the only place that can do
+		// useful work. We just forward the raw command via SSE and let the
+		// daemon reply.
 		if ch.Kind != "management" {
 			h.reply(ctx, botToken, ch.ChannelID, "❌ `"+cmd+"` only works in the management channel.")
 			return
@@ -154,7 +158,7 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 // knownCommands is the canonical list used for `!help` discovery + the
 // fuzzy "did you mean" suggestion. Order is the user-facing display
 // order in !help.
-var knownCommands = []string{"!help", "!new", "!new-confirm", "!end", "!destroy", "!reset", "!list", "!status", "!sessions", "!bind", "!projects", "!log"}
+var knownCommands = []string{"!help", "!new", "!new-confirm", "!end", "!destroy", "!reset", "!list", "!status", "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-restart", "!duckway-update", "!log"}
 
 // unknownCommandReply formats the friendly response for an unrecognised
 // !-prefix command. Suggests close matches (Levenshtein distance ≤ 2)
@@ -522,6 +526,9 @@ const helpText = "**Duckway CC commands**\n" +
 	"`!sessions [<cwd-filter>]` — list local claude sessions on the agent that aren't yet bound to a CC channel\n" +
 	"`!bind <session_id> [<session_id> …]` — create a task channel for each session_id and attach it (run `!sessions` first to find IDs)\n" +
 	"`!projects [<filter>]` — list saved project folders from the agent machine\n" +
+	"`!duckway-version` — show the local duckway version on the client\n" +
+	"`!duckway-restart` — restart local duckway daemons on the client\n" +
+	"`!duckway-update [--restart]` — update the local duckway binary; optionally restart daemons after update\n" +
 	"`!log [N]` — show the current task channel's latest N agent conversation entries (default 3, max 20)\n" +
 	"`!help` — this message\n" +
 	"\n" +
@@ -563,6 +570,9 @@ func BuildWelcomeMessage(clientName string) string {
 		"`!status`   — daemon connection + session counts\n" +
 		"`!sessions` — list local claude sessions on the agent that aren't bound yet\n" +
 		"`!bind <session_id>` — create a task channel and resume that session (one channel per id, repeat for more)\n" +
+		"`!duckway-version` — show the local duckway version on the client\n" +
+		"`!duckway-restart` — restart local duckway daemons on the client\n" +
+		"`!duckway-update [--restart]` — update the local duckway binary; optionally restart daemons\n" +
 		"`!help`     — full command list\n" +
 		"\n" +
 		"_Make sure the daemon is running on the agent machine: `duckway cc watch -d`._"

@@ -376,10 +376,13 @@ journalctl --user -u duckway-cc-watch -f</code></pre>
       <tr><td><code>!end</code></td><td>task</td><td>End the current channel's agent session, archive the Discord channel</td></tr>
       <tr><td><code>!list</code></td><td>management</td><td>Active task channels + which have running sessions</td></tr>
       <tr><td><code>!status</code></td><td>management</td><td>Daemon up? agent type? task counts?</td></tr>
+      <tr><td><code>!duckway-version</code></td><td>management</td><td>Show the local Duckway version on the client</td></tr>
+      <tr><td><code>!duckway-restart</code></td><td>management</td><td>Restart local Duckway daemons on the client</td></tr>
+      <tr><td><code>!duckway-update [--restart]</code></td><td>management</td><td>Update the local Duckway binary; optionally restart daemons after a successful update</td></tr>
       <tr><td><code>!help</code></td><td>either</td><td>Print this list</td></tr>
     </tbody>
   </table>
-  <p class="text-sm text-muted">Commands run server-side (no daemon round-trip needed) and don't show up in the daemon's SSE stream.</p>
+  <p class="text-sm text-muted">Server-side commands are handled immediately. Client-owned commands such as <code>!sessions</code> and <code>!duckway-update</code> are forwarded to the assigned <code>duckway cc watch</code> daemon.</p>
 
   <h4 class="mt-1">MCP tools (inside an agent session)</h4>
   <table>

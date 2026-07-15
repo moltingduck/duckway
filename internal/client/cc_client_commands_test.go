@@ -432,6 +432,87 @@ func TestHandleClientCommand_DispatchesByName(t *testing.T) {
 	}
 }
 
+func TestHandleClientCommand_DuckwayVersion(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+
+	sendClientCommand(t, w, "dwch_mgmt", "!duckway-version", nil)
+
+	msgs := fake.snapshotMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected one reply, got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0]["content"], "duckway ") {
+		t.Fatalf("version reply = %q", msgs[0]["content"])
+	}
+}
+
+func TestHandleClientCommand_DuckwayRestartStartsDetachedHelper(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	calls := captureDetachedDuckwayCommands(t)
+
+	sendClientCommand(t, w, "dwch_mgmt", "!duckway-restart", nil)
+
+	msgs := fake.snapshotMessages()
+	if len(msgs) != 1 || !strings.Contains(msgs[0]["content"], "restart accepted") {
+		t.Fatalf("restart ack = %+v", msgs)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("detached calls = %+v", *calls)
+	}
+	if got := strings.Join((*calls)[0].args, " "); got != "restart" {
+		t.Fatalf("detached args = %q", got)
+	}
+	if (*calls)[0].configDir != w.configDir || !strings.HasSuffix((*calls)[0].logPath, "cc-ops.log") {
+		t.Fatalf("detached call = %+v", (*calls)[0])
+	}
+}
+
+func TestHandleClientCommand_DuckwayUpdateStartsDetachedHelper(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	calls := captureDetachedDuckwayCommands(t)
+
+	sendClientCommand(t, w, "dwch_mgmt", "!duckway-update", []string{"--restart"})
+
+	msgs := fake.snapshotMessages()
+	if len(msgs) != 1 || !strings.Contains(msgs[0]["content"], "update accepted") || !strings.Contains(msgs[0]["content"], "restart") {
+		t.Fatalf("update ack = %+v", msgs)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("detached calls = %+v", *calls)
+	}
+	want := []string{"update", "--server", fake.srv.URL, "--restart"}
+	if strings.Join((*calls)[0].args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("detached args = %v, want %v", (*calls)[0].args, want)
+	}
+}
+
+func TestHandleClientCommand_DuckwayOpsRejectBadArgs(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	calls := captureDetachedDuckwayCommands(t)
+
+	sendClientCommand(t, w, "dwch_mgmt", "!duckway-version", []string{"extra"})
+	sendClientCommand(t, w, "dwch_mgmt", "!duckway-restart", []string{"now"})
+	sendClientCommand(t, w, "dwch_mgmt", "!duckway-update", []string{"--bad"})
+	sendClientCommand(t, w, "dwch_mgmt", "!duckway-update", []string{"--restart", "junk"})
+
+	if len(*calls) != 0 {
+		t.Fatalf("bad args started detached helpers: %+v", *calls)
+	}
+	msgs := fake.snapshotMessages()
+	if len(msgs) != 4 {
+		t.Fatalf("expected four usage/error replies, got %d", len(msgs))
+	}
+	for _, msg := range msgs {
+		if !strings.Contains(msg["content"], "usage:") && !strings.Contains(msg["content"], "Usage:") {
+			t.Fatalf("expected usage/error reply, got %q", msg["content"])
+		}
+	}
+}
+
 func TestHandleClientCommand_LogReturnsRunnerHistory(t *testing.T) {
 	fake := newFakeServer(t)
 	w := stubWatch(t, t.TempDir(), fake)
@@ -467,6 +548,37 @@ func TestHandleClientCommand_LogReturnsRunnerHistory(t *testing.T) {
 	if strings.Contains(body, "first") || !strings.Contains(body, "second") || !strings.Contains(body, "third") || !strings.Contains(body, "fourth") {
 		t.Fatalf("unexpected !log body:\n%s", body)
 	}
+}
+
+func sendClientCommand(t *testing.T, w *CCWatch, handle, command string, args []string) {
+	t.Helper()
+	payload, _ := json.Marshal(clientCommandPayload{Command: command, Args: args})
+	env := sseEnvelope{
+		Type:    "client_command",
+		Handle:  handle,
+		Payload: payload,
+	}
+	data, _ := json.Marshal(env)
+	w.handleClientCommand(data)
+}
+
+type detachedDuckwayCall struct {
+	configDir string
+	logPath   string
+	args      []string
+}
+
+func captureDetachedDuckwayCommands(t *testing.T) *[]detachedDuckwayCall {
+	t.Helper()
+	var calls []detachedDuckwayCall
+	prev := startDetachedDuckwayCommand
+	startDetachedDuckwayCommand = func(configDir, logPath string, args []string) error {
+		copied := append([]string(nil), args...)
+		calls = append(calls, detachedDuckwayCall{configDir: configDir, logPath: logPath, args: copied})
+		return nil
+	}
+	t.Cleanup(func() { startDetachedDuckwayCommand = prev })
+	return &calls
 }
 
 func TestParseLogCount(t *testing.T) {

@@ -149,7 +149,7 @@ func formatCCUpdateNotification(cfg *Config, component string, info *UpdateInfo)
 	if info.UpdateRequired {
 		status = "Duckway client update REQUIRED"
 	}
-	msg := fmt.Sprintf("⚠️ %s\n\nCurrent: %s\nTarget: %s\nDetected by: %s\n\nRun:\n`duckway update --server %s && duckway restart`",
+	msg := fmt.Sprintf("⚠️ %s\n\nCurrent: %s\nTarget: %s\nDetected by: %s\n\nFrom this management channel, run:\n`!duckway-update --restart`\n\nFrom a shell, run:\n`duckway update --server %s && duckway restart`",
 		status, version.Get(), info.ClientRecommendedVersion, component, cfg.ServerURL)
 	if info.Reason != "" {
 		msg += "\n\nReason: " + info.Reason

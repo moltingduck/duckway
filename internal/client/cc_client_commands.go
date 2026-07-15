@@ -61,6 +61,12 @@ func (w *CCWatch) handleClientCommand(data []byte) {
 		w.cmdNewProjectConfirm(env.Handle, payload.Args)
 	case "!log":
 		w.cmdLog(env.Handle, payload.Args)
+	case "!duckway-version":
+		w.cmdDuckwayVersion(env.Handle, payload.Args)
+	case "!duckway-restart":
+		w.cmdDuckwayRestart(env.Handle, payload.Args)
+	case "!duckway-update":
+		w.cmdDuckwayUpdate(env.Handle, payload.Args)
 	default:
 		_ = w.api.PostCC(context.Background(), env.Handle,
 			"❌ daemon doesn't know how to handle `"+payload.Command+"` — update your `duckway` binary on the agent.")

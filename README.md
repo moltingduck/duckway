@@ -264,7 +264,7 @@ No public endpoints needed — all outbound connections.
 
 A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category:
 
-- a **management channel** (auto-created, named `<client>-control`) accepts text commands: `!new`, `!end`, `!list`, `!status`, `!help`
+- a **management channel** (auto-created, named `<client>-control`) accepts text commands: `!new`, `!end`, `!list`, `!status`, `!duckway-version`, `!duckway-restart`, `!duckway-update`, `!help`
 - **task channels** map 1:1 to claude sessions — every message a human types triggers `claude -p --resume <session_id>` on the agent's machine and the result is posted back
 
 ```
