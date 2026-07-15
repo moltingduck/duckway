@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hackerduck/duckway/internal/cccommand"
 )
 
 // clientCommandPayload is what the server packs into a `client_command`
@@ -45,6 +48,18 @@ func (w *CCWatch) handleClientCommand(data []byte) {
 		return
 	}
 	if env.Handle == "" {
+		return
+	}
+	if err := cccommand.Validate(payload.Command, payload.Args); errors.Is(err, cccommand.ErrUnknownCommand) {
+		_ = w.api.PostCC(context.Background(), env.Handle,
+			"❌ daemon doesn't know how to handle `"+payload.Command+"` — update your `duckway` binary on the agent.")
+		return
+	} else if err != nil {
+		msg := "❌ " + err.Error()
+		if usage := cccommand.Usage(payload.Command); usage != "" {
+			msg += "\nUsage: `" + usage + "`"
+		}
+		_ = w.api.PostCC(context.Background(), env.Handle, msg)
 		return
 	}
 
@@ -552,30 +567,11 @@ func formatProjectsReport(projects []CCProject, filter string) string {
 }
 
 func splitClientSlugAndFlags(args []string) (string, map[string]string, error) {
-	if len(args) == 0 {
-		return "", nil, fmt.Errorf("missing <slug>")
+	parsed, err := cccommand.ParseNewArgs(args)
+	if err != nil {
+		return "", nil, err
 	}
-	slug := ""
-	flags := map[string]string{}
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if strings.HasPrefix(a, "--") {
-			key := strings.TrimPrefix(a, "--")
-			if i+1 >= len(args) {
-				return "", nil, fmt.Errorf("flag --%s needs a value", key)
-			}
-			flags[key] = args[i+1]
-			i++
-			continue
-		}
-		if slug == "" {
-			slug = a
-		} else {
-			return "", nil, fmt.Errorf("unexpected positional arg %q", a)
-		}
-	}
-	if slug == "" {
-		return "", nil, fmt.Errorf("missing <slug>")
-	}
-	return slug, flags, nil
+	return parsed.Slug, map[string]string{
+		"cwd": parsed.Cwd, "project": parsed.Project, "topic": parsed.Topic,
+	}, nil
 }

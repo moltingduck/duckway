@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hackerduck/duckway/internal/cccommand"
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
 	_ "modernc.org/sqlite"
@@ -31,10 +32,19 @@ func TestParseArgs(t *testing.T) {
 		{"", nil},
 	}
 	for _, c := range cases {
-		got := parseArgs(c.in)
+		got, err := parseArgs(c.in)
+		if err != nil {
+			t.Fatalf("parseArgs(%q): %v", c.in, err)
+		}
 		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("parseArgs(%q) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+func TestParseArgsRejectsUnclosedQuote(t *testing.T) {
+	if _, err := parseArgs(`!new task --topic "unfinished`); err == nil {
+		t.Fatal("expected unclosed quote error")
 	}
 }
 
@@ -104,6 +114,14 @@ func TestUnknownCommandReply(t *testing.T) {
 		got := unknownCommandReply(c.typed)
 		if !strings.Contains(got, c.want) {
 			t.Errorf("unknownCommandReply(%q) = %q, want substring %q", c.typed, got, c.want)
+		}
+	}
+}
+
+func TestKnownCommandsHaveValidationSchemas(t *testing.T) {
+	for _, command := range knownCommands {
+		if usage := cccommand.Usage(command); usage == "" {
+			t.Errorf("known command %q has no shared validation schema", command)
 		}
 	}
 }
@@ -382,6 +400,60 @@ func TestHandle_New_RejectsInTaskChannel(t *testing.T) {
 	h.handler.Handle(context.Background(), "cc1", task, "!new x")
 	if !h.lastReplyContains("only works in the management channel") {
 		t.Errorf("expected scope error, got %v", h.reqs)
+	}
+}
+
+func TestHandle_RejectsInvalidArgumentsBeforeSideEffects(t *testing.T) {
+	h := newCommandHarness(t)
+	if _, err := h.db.Exec(`INSERT INTO cc_channels VALUES ('dwch_t','cc1','client1','T-invalid','t','','task','sess-keep','/cwd',0,datetime('now'),null)`); err != nil {
+		t.Fatal(err)
+	}
+	task, err := h.cc.GetChannelByHandle("dwch_t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, unsub := h.hub.Subscribe("client1")
+	defer unsub()
+
+	tests := []struct {
+		channel *models.CCChannel
+		content string
+	}{
+		{h.mgmt, "!help --verbose"},
+		{h.mgmt, "!new task --bogus value"},
+		{h.mgmt, "!new task --cwd /tmp --project duckway"},
+		{h.mgmt, "!new-confirm --force"},
+		{task, "!end --force"},
+		{task, "!destroy --force"},
+		{task, "!reset --force"},
+		{h.mgmt, "!list --all"},
+		{h.mgmt, "!status --json"},
+		{h.mgmt, "!sessions --all"},
+		{h.mgmt, "!bind --all"},
+		{h.mgmt, "!projects --all"},
+		{h.mgmt, "!duckway-version --short"},
+		{h.mgmt, "!duckway-restart --force"},
+		{h.mgmt, "!duckway-update --force"},
+		{task, "!log --all"},
+	}
+	for _, tt := range tests {
+		h.handler.Handle(context.Background(), "cc1", tt.channel, tt.content)
+	}
+
+	if got := h.hitsFor("POST", "/messages"); got != len(tests) {
+		t.Fatalf("validation replies = %d, want %d; hits=%v", got, len(tests), h.hits)
+	}
+	if h.hitsFor("POST", "/guilds/G1/channels") != 0 || h.hitsFor("PATCH", "/channels/T-invalid") != 0 || h.hitsFor("DELETE", "/channels/T-invalid") != 0 {
+		t.Fatalf("invalid command caused Discord mutation: %v", h.hits)
+	}
+	kept, err := h.cc.GetChannelByHandle("dwch_t")
+	if err != nil || kept.SessionID != "sess-keep" {
+		t.Fatalf("invalid command changed task state: channel=%+v err=%v", kept, err)
+	}
+	select {
+	case ev := <-sub:
+		t.Fatalf("invalid command was forwarded to daemon: %+v", ev)
+	default:
 	}
 }
 

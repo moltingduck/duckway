@@ -3,10 +3,12 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/hackerduck/duckway/internal/cccommand"
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
 )
@@ -72,11 +74,26 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 		return
 	}
 
-	args := parseArgs(content)
+	args, parseErr := parseArgs(content)
+	if parseErr != nil {
+		h.reply(ctx, botToken, ch.ChannelID, "❌ invalid command syntax: "+parseErr.Error())
+		return
+	}
 	if len(args) == 0 {
 		return
 	}
 	cmd := args[0]
+	if err := cccommand.Validate(cmd, args[1:]); errors.Is(err, cccommand.ErrUnknownCommand) {
+		h.reply(ctx, botToken, ch.ChannelID, unknownCommandReply(cmd))
+		return
+	} else if err != nil {
+		msg := "❌ " + err.Error()
+		if usage := cccommand.Usage(cmd); usage != "" {
+			msg += "\nUsage: `" + usage + "`"
+		}
+		h.reply(ctx, botToken, ch.ChannelID, msg)
+		return
+	}
 
 	switch cmd {
 	case "!help":
@@ -581,59 +598,47 @@ func BuildWelcomeMessage(clientName string) string {
 // parseArgs is a minimal shell-like splitter: whitespace separates tokens,
 // double-quotes group multi-word values. No backslash escapes — Discord
 // content is short and admin-typed.
-func parseArgs(s string) []string {
+func parseArgs(s string) ([]string, error) {
 	s = strings.TrimSpace(s)
 	var out []string
 	var cur strings.Builder
 	inQuote := false
+	tokenStarted := false
 	for _, r := range s {
 		switch {
 		case r == '"':
 			inQuote = !inQuote
+			tokenStarted = true
 		case (r == ' ' || r == '\t' || r == '\n') && !inQuote:
-			if cur.Len() > 0 {
+			if tokenStarted {
 				out = append(out, cur.String())
 				cur.Reset()
+				tokenStarted = false
 			}
 		default:
 			cur.WriteRune(r)
+			tokenStarted = true
 		}
 	}
-	if cur.Len() > 0 {
+	if inQuote {
+		return nil, fmt.Errorf("unclosed double quote")
+	}
+	if tokenStarted {
 		out = append(out, cur.String())
 	}
-	return out
+	return out, nil
 }
 
 // splitSlugAndFlags pulls the first positional and any --key value pairs
 // out of an args list. Returns (slug, flags, err).
 func splitSlugAndFlags(args []string) (string, map[string]string, error) {
-	if len(args) == 0 {
-		return "", nil, fmt.Errorf("missing <slug>")
+	parsed, err := cccommand.ParseNewArgs(args)
+	if err != nil {
+		return "", nil, err
 	}
-	slug := ""
-	flags := map[string]string{}
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if strings.HasPrefix(a, "--") {
-			key := strings.TrimPrefix(a, "--")
-			if i+1 >= len(args) {
-				return "", nil, fmt.Errorf("flag --%s needs a value", key)
-			}
-			flags[key] = args[i+1]
-			i++
-			continue
-		}
-		if slug == "" {
-			slug = a
-		} else {
-			return "", nil, fmt.Errorf("unexpected positional arg %q (already have slug %q)", a, slug)
-		}
-	}
-	if slug == "" {
-		return "", nil, fmt.Errorf("missing <slug>")
-	}
-	return slug, flags, nil
+	return parsed.Slug, map[string]string{
+		"cwd": parsed.Cwd, "project": parsed.Project, "topic": parsed.Topic,
+	}, nil
 }
 
 func short(s string, n int) string {

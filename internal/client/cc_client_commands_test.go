@@ -513,6 +513,44 @@ func TestHandleClientCommand_DuckwayOpsRejectBadArgs(t *testing.T) {
 	}
 }
 
+func TestHandleClientCommand_RejectsInvalidArgumentsBeforeDispatch(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	calls := captureDetachedDuckwayCommands(t)
+
+	tests := []struct {
+		command string
+		args    []string
+	}{
+		{"!sessions", []string{"--all"}},
+		{"!bind", []string{"--all"}},
+		{"!projects", []string{"--all"}},
+		{"!new", []string{"task", "--bogus", "value"}},
+		{"!new-confirm", []string{"--force"}},
+		{"!log", []string{"--all"}},
+		{"!duckway-version", []string{"--short"}},
+		{"!duckway-restart", []string{"--force"}},
+		{"!duckway-update", []string{"--force"}},
+	}
+	for _, tt := range tests {
+		sendClientCommand(t, w, "dwch_mgmt", tt.command, tt.args)
+	}
+
+	if len(*calls) != 0 {
+		t.Fatalf("invalid commands started detached helpers: %+v", *calls)
+	}
+	msgs := fake.snapshotMessages()
+	if len(msgs) != len(tests) {
+		t.Fatalf("validation replies = %d, want %d: %+v", len(msgs), len(tests), msgs)
+	}
+	for _, msg := range msgs {
+		content := msg["content"]
+		if !strings.Contains(content, "unsupported option") || !strings.Contains(content, "Usage:") {
+			t.Fatalf("unexpected validation reply: %q", content)
+		}
+	}
+}
+
 func TestHandleClientCommand_LogReturnsRunnerHistory(t *testing.T) {
 	fake := newFakeServer(t)
 	w := stubWatch(t, t.TempDir(), fake)
