@@ -222,6 +222,56 @@ exit 7
 	}
 }
 
+func TestRunViaCodexExecDetectsTransportFailureBeforeCompletion(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+printf '%s\n' 'failed to connect to websocket: Attack attempt detected' >&2
+printf '%s\n' 'Falling back from WebSockets to HTTPS transport. stream disconnected before completion: Attack attempt detected' >&2
+exit 7
+`
+	if err := os.WriteFile(stub, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, result, isErr, err := runViaCodexExec(ctx, stub, dir, "hello", "", nil)
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	if result != "" || isErr {
+		t.Fatalf("result=%q isErr=%v, want empty false", result, isErr)
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"transport failed before completion",
+		"failed to connect to websocket: Attack attempt detected",
+		"stream disconnected before completion: Attack attempt detected",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error missing %q:\n%s", want, msg)
+		}
+	}
+}
+
+func TestCodexTransportFailureSummaryIsGeneric(t *testing.T) {
+	cases := []string{
+		"proxyconnect tcp: connection refused",
+		"TLS handshake timeout",
+		"stream disconnected before completion",
+		"unexpected EOF",
+	}
+	for _, input := range cases {
+		if got, ok := codexTransportFailureSummary([]byte(input), nil); !ok || got == "" {
+			t.Fatalf("summary(%q) = %q, %v; want match", input, got, ok)
+		}
+	}
+	if got, ok := codexTransportFailureSummary([]byte("model returned a policy answer"), nil); ok {
+		t.Fatalf("non-transport text matched: %q", got)
+	}
+}
+
 func TestRunViaCodexExecResumeUsesConfigSandbox(t *testing.T) {
 	dir := t.TempDir()
 	stub := filepath.Join(dir, "codex")

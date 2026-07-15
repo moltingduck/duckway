@@ -117,7 +117,7 @@ func runViaCodexExec(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 		if result != "" {
 			return sessionID, result, isError, fmt.Errorf("codex reported an error: %s", result)
 		}
-		return "", "", false, fmt.Errorf("codex: %w (output: %.400s)", err, out)
+		return "", "", false, codexExecutionError("codex", err, out)
 	}
 	return sessionID, result, isError, nil
 }
@@ -272,9 +272,73 @@ func runViaCodexTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 		if result != "" {
 			return sessionID, result, isError, fmt.Errorf("codex reported an error: %s", result)
 		}
-		return sessionID, result, isError, fmt.Errorf("codex exited with status %d (output: %.400s)", evt.ExitCode, out)
+		return sessionID, result, isError, codexExecutionError(fmt.Sprintf("codex exited with status %d", evt.ExitCode), nil, out)
 	}
 	return sessionID, result, isError, nil
+}
+
+func codexExecutionError(prefix string, err error, out []byte) error {
+	if summary, ok := codexTransportFailureSummary(out, err); ok {
+		return fmt.Errorf("%s: transport failed before completion: %s", prefix, summary)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w (output: %.400s)", prefix, err, out)
+	}
+	return fmt.Errorf("%s (output: %.400s)", prefix, out)
+}
+
+func codexTransportFailureSummary(out []byte, err error) (string, bool) {
+	var lines []string
+	if err != nil {
+		lines = append(lines, err.Error())
+	}
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "{") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+
+	var matched []string
+	for _, line := range lines {
+		if looksLikeCodexTransportFailure(line) {
+			matched = append(matched, line)
+		}
+	}
+	if len(matched) == 0 {
+		return "", false
+	}
+	const maxLines = 3
+	if len(matched) > maxLines {
+		matched = matched[:maxLines]
+	}
+	return truncateForDiscordLog(strings.Join(matched, "; "), 700), true
+}
+
+func looksLikeCodexTransportFailure(s string) bool {
+	s = strings.ToLower(s)
+	patterns := []string{
+		"attack attempt detected",
+		"websocket",
+		"stream disconnected",
+		"transport",
+		"proxyconnect",
+		"connection reset",
+		"connection refused",
+		"connection timed out",
+		"tls handshake",
+		"deadline exceeded",
+		"unexpected eof",
+	}
+	for _, p := range patterns {
+		if strings.Contains(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeCodexTmuxLaunchScript(path, bin, cwd, promptPath, outputPath, eventsDir, sid string, extraEnv []string) error {
