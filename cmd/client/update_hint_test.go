@@ -74,6 +74,26 @@ func TestParseUpdateOptionsRestart(t *testing.T) {
 	}
 }
 
+func TestUpdateDoesNotRestartWhenAlreadyUpToDate(t *testing.T) {
+	body, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	start := strings.Index(source, "if !updateInfo.UpdateRequired && !updateInfo.UpdateRecommended {")
+	if start < 0 {
+		t.Fatal("up-to-date branch not found")
+	}
+	end := strings.Index(source[start:], "\n\tif updateInfo.UpdateRequired {")
+	if end < 0 {
+		t.Fatal("end of up-to-date branch not found")
+	}
+	branch := source[start : start+end]
+	if strings.Contains(branch, "restartDaemonsRunningBeforeUpdate") {
+		t.Fatalf("up-to-date branch must not restart daemons:\n%s", branch)
+	}
+}
+
 func TestStatusPrintsVersionContract(t *testing.T) {
 	body, err := os.ReadFile("main.go")
 	if err != nil {

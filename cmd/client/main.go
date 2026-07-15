@@ -151,7 +151,7 @@ Usage:
                          (uses saved config; override with --server <url>
                           or DUCKWAY_SERVER_URL — works without init)
   duckway update --restart
-                         Update, then restart any duckway daemons that were running
+                         After an update, restart any duckway daemons that were running
   duckway mcp serve      Run the Control-Channel MCP server over stdio
                          (launched by Claude Code from ~/.claude/mcp.json)
   duckway cc watch       Connect to the server's SSE feed and run a
@@ -1235,9 +1235,6 @@ func cmdUpdate(configDir string) {
 
 	if !updateInfo.UpdateRequired && !updateInfo.UpdateRecommended {
 		fmt.Println("Already up to date.")
-		if opts.restartAfter {
-			restartDaemonsRunningBeforeUpdate(configDir)
-		}
 		return
 	}
 	if updateInfo.UpdateRequired {
