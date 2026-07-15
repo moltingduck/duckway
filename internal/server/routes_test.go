@@ -84,9 +84,11 @@ func TestServeClientDownloadOnlyAllowsPinnedBinaries(t *testing.T) {
 
 func TestInstallScriptSupportsUserLocalInstall(t *testing.T) {
 	for _, want := range []string{
-		`INSTALL_MODE="${DUCKWAY_INSTALL:-system}"`,
+		`Install location:`,
+		`read choice < /dev/tty`,
 		`DEST="${DUCKWAY_INSTALL_PATH:-$HOME/.local/bin/duckway}"`,
-		`Unsupported DUCKWAY_INSTALL=$INSTALL_MODE`,
+		`DUCKWAY_INSTALL_PATH="$custom_path"`,
+		`INSTALL_MODE="custom"`,
 		`sudo mkdir -p "$DEST_DIR"`,
 	} {
 		if !strings.Contains(installScript, want) {

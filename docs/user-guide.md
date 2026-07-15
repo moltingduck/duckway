@@ -57,16 +57,23 @@ curl -fsSL http://your-duckway-host/install.sh | sh
 ```
 
 By default this installs to `/usr/local/bin/duckway` and uses `sudo` when that
-directory is not writable. To install without sudo into your user bin:
+directory is not writable. When run from an interactive terminal, the installer
+asks where to install:
+
+- `System-wide` → `/usr/local/bin/duckway`
+- `User-local` → `~/.local/bin/duckway`
+- `Custom path`
+
+To install without sudo, choose `User-local`, then run:
 
 ```bash
-curl -fsSL http://your-duckway-host/install.sh | DUCKWAY_INSTALL=user sh
 ~/.local/bin/duckway init
 ```
 
-You can also pin an explicit path:
+For non-interactive automation, you can still pin a mode or path:
 
 ```bash
+curl -fsSL http://your-duckway-host/install.sh | DUCKWAY_INSTALL=user sh
 curl -fsSL http://your-duckway-host/install.sh | DUCKWAY_INSTALL_PATH="$HOME/bin/duckway" sh
 ```
 

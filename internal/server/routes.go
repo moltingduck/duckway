@@ -682,7 +682,37 @@ OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; *) echo "Unsupported: $ARCH"; exit 1 ;; esac
 BINARY="duckway-client-${OS}-${ARCH}"
-INSTALL_MODE="${DUCKWAY_INSTALL:-system}"
+INSTALL_MODE="${DUCKWAY_INSTALL:-}"
+if [ -z "$INSTALL_MODE" ] && [ -z "${DUCKWAY_INSTALL_PATH:-}" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  echo ""
+  echo "Install location:" > /dev/tty
+  echo "  1) System-wide  /usr/local/bin/duckway  (uses sudo if needed)" > /dev/tty
+  echo "  2) User-local   $HOME/.local/bin/duckway  (no sudo)" > /dev/tty
+  echo "  3) Custom path" > /dev/tty
+  printf "Choose [1]: " > /dev/tty
+  read choice < /dev/tty
+  case "${choice:-1}" in
+    1) INSTALL_MODE="system" ;;
+    2) INSTALL_MODE="user" ;;
+    3)
+      printf "Install path: " > /dev/tty
+      read custom_path < /dev/tty
+      if [ -z "$custom_path" ]; then
+        echo "Error: custom path is required"
+        exit 1
+      fi
+      DUCKWAY_INSTALL_PATH="$custom_path"
+      INSTALL_MODE="custom"
+      ;;
+    *)
+      echo "Unsupported choice: $choice"
+      exit 1
+      ;;
+  esac
+fi
+if [ -z "$INSTALL_MODE" ]; then
+  INSTALL_MODE="system"
+fi
 case "$INSTALL_MODE" in
   system)
     DEST="${DUCKWAY_INSTALL_PATH:-/usr/local/bin/duckway}"
@@ -690,8 +720,15 @@ case "$INSTALL_MODE" in
   user|local|user-local)
     DEST="${DUCKWAY_INSTALL_PATH:-$HOME/.local/bin/duckway}"
     ;;
+  custom)
+    if [ -z "${DUCKWAY_INSTALL_PATH:-}" ]; then
+      echo "Error: DUCKWAY_INSTALL_PATH is required for custom install"
+      exit 1
+    fi
+    DEST="$DUCKWAY_INSTALL_PATH"
+    ;;
   *)
-    echo "Unsupported DUCKWAY_INSTALL=$INSTALL_MODE (use system or user)"
+    echo "Unsupported DUCKWAY_INSTALL=$INSTALL_MODE (use system, user, or custom)"
     exit 1
     ;;
 esac
