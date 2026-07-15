@@ -291,8 +291,8 @@ func cmdInit(configDir string) {
 	fmt.Printf("\nConfig saved to %s/config.yaml\n", configDir)
 	fmt.Println("\nNext steps:")
 	fmt.Printf("  %s           — start HTTPS proxy (background daemon)\n", cyan("duckway proxy -d"))
-	fmt.Printf("  %s\n", cyan(fmt.Sprintf("export HTTPS_PROXY=http://localhost:%d", cfg.ProxyPort)))
-	fmt.Printf("  %s\n", cyan(fmt.Sprintf("export HTTP_PROXY=http://localhost:%d", cfg.ProxyPort)))
+	fmt.Printf("  %s\n", cyan(fmt.Sprintf("export HTTPS_PROXY=%s", client.LocalProxyURL(cfg.ProxyPort))))
+	fmt.Printf("  %s\n", cyan(fmt.Sprintf("export HTTP_PROXY=%s", client.LocalProxyURL(cfg.ProxyPort))))
 	fmt.Printf("\nTo run in foreground for debugging: %s\n", cyan("duckway proxy --debug"))
 }
 
@@ -387,7 +387,7 @@ func cmdGitSetup(configDir string) {
 		log.Fatalf("git setup failed: %v", err)
 	}
 	fmt.Println("GitHub phantom credential synced for native git.")
-	fmt.Printf("Local proxy expected at http://localhost:%d. Run `duckway proxy -d` if it is not already running.\n", cfg.ProxyPort)
+	fmt.Printf("Local proxy expected at %s. Run `duckway proxy -d` if it is not already running.\n", client.LocalProxyURL(cfg.ProxyPort))
 }
 
 func cmdGitClone(configDir string, args []string) {
@@ -428,7 +428,7 @@ func cmdGitClone(configDir string, args []string) {
 			log.Fatal(err)
 		}
 		repoURL := "https://github.com/" + repo + ".git"
-		cloneArgs := []string{"-c", "credential.helper=store", "-c", "credential.useHttpPath=true", "-c", fmt.Sprintf("http.https://github.com/.proxy=http://localhost:%d", cfg.ProxyPort), "-c", "http.https://github.com/.sslCAInfo=" + filepath.Join(configDir, "ca.pem"), "clone", repoURL, dir}
+		cloneArgs := []string{"-c", "credential.helper=store", "-c", "credential.useHttpPath=true", "-c", fmt.Sprintf("http.https://github.com/.proxy=%s", client.LocalProxyURL(cfg.ProxyPort)), "-c", "http.https://github.com/.sslCAInfo=" + filepath.Join(configDir, "ca.pem"), "clone", repoURL, dir}
 		printGitCommand("", cloneArgs...)
 		if err := runGit("", cloneArgs...); err != nil {
 			log.Fatalf("git clone failed: %v", err)
@@ -440,7 +440,7 @@ func cmdGitClone(configDir string, args []string) {
 		fmt.Printf("# %s already exists; skipping clone\n", filepath.Join(dir, ".git"))
 	}
 	printGitCommand(dir, "remote", "set-url", "origin", "https://github.com/"+repo+".git")
-	printGitCommand(dir, "config", "--local", "http.https://github.com/.proxy", fmt.Sprintf("http://localhost:%d", cfg.ProxyPort))
+	printGitCommand(dir, "config", "--local", "http.https://github.com/.proxy", client.LocalProxyURL(cfg.ProxyPort))
 	printGitCommand(dir, "config", "--local", "http.https://github.com/.sslCAInfo", filepath.Join(configDir, "ca.pem"))
 	printGitCommand(dir, "config", "--local", "credential.helper", "store")
 	printGitCommand(dir, "config", "--local", "credential.useHttpPath", "true")
@@ -552,7 +552,7 @@ func configureRepoGit(dir, configDir string, port int, repo string) error {
 	if err := runGit(dir, "remote", "set-url", "origin", "https://github.com/"+repo+".git"); err != nil {
 		return err
 	}
-	if err := runGit(dir, "config", "--local", "http.https://github.com/.proxy", fmt.Sprintf("http://localhost:%d", port)); err != nil {
+	if err := runGit(dir, "config", "--local", "http.https://github.com/.proxy", client.LocalProxyURL(port)); err != nil {
 		return err
 	}
 	if err := runGit(dir, "config", "--local", "http.https://github.com/.sslCAInfo", filepath.Join(configDir, "ca.pem")); err != nil {
@@ -1466,7 +1466,7 @@ func cmdProxyExec(configDir string, args []string) {
 }
 
 func proxyExecEnv(base []string, port int) []string {
-	proxyURL := fmt.Sprintf("http://localhost:%d", port)
+	proxyURL := client.LocalProxyURL(port)
 	override := map[string]string{
 		"HTTP_PROXY":  proxyURL,
 		"HTTPS_PROXY": proxyURL,
@@ -1941,7 +1941,7 @@ func cmdStatus(configDir string) {
 	}
 
 	// Check if local proxy is running
-	proxyURL := fmt.Sprintf("http://localhost:%d", cfg.ProxyPort)
+	proxyURL := client.LocalProxyURL(cfg.ProxyPort)
 	proxyRunning := false
 	resp, err := http.Get(proxyURL + "/proxy/heartbeat/ping")
 	if err == nil {

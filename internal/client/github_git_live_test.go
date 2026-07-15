@@ -237,7 +237,7 @@ func TestDuckwayGitCloneLive(t *testing.T) {
 		t.Fatalf("clone did not create .git directory: %v\n%s", err, output)
 	}
 	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "remote.origin.url", "https://github.com/"+strings.TrimSuffix(env.cfg.Repository, ".git")+".git")
-	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.proxy", fmt.Sprintf("http://localhost:%d", env.proxyPort))
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.proxy", fmt.Sprintf("http://127.0.0.1:%d", env.proxyPort))
 	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.sslCAInfo", filepath.Join(env.configDir, "ca.pem"))
 	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.helper", "store")
 	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.useHttpPath", "true")

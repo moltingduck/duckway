@@ -49,7 +49,7 @@ func TestInstallStatuslineIntoClaudeSettings_MergesAndBacksUp(t *testing.T) {
 		"theme":                          "dark",
 		"skipDangerousModePermissionPrompt": true,
 		"env": map[string]interface{}{
-			"HTTPS_PROXY": "http://localhost:18080",
+			"HTTPS_PROXY": "http://127.0.0.1:18080",
 		},
 		// A pre-existing statusLine we should overwrite.
 		"statusLine": map[string]interface{}{
@@ -89,7 +89,7 @@ func TestInstallStatuslineIntoClaudeSettings_MergesAndBacksUp(t *testing.T) {
 		t.Errorf("skipDangerousModePermissionPrompt lost: %v", got["skipDangerousModePermissionPrompt"])
 	}
 	env, _ := got["env"].(map[string]interface{})
-	if env["HTTPS_PROXY"] != "http://localhost:18080" {
+	if env["HTTPS_PROXY"] != "http://127.0.0.1:18080" {
 		t.Errorf("env.HTTPS_PROXY lost: %v", env["HTTPS_PROXY"])
 	}
 	sl, _ := got["statusLine"].(map[string]interface{})

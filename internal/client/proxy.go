@@ -10,12 +10,23 @@ import (
 	"time"
 )
 
+const localProxyHost = "127.0.0.1"
+
+func LocalProxyURL(port int) string {
+	return fmt.Sprintf("http://%s:%d", localProxyHost, port)
+}
+
+func localProxyListenAddr(port int) string {
+	return fmt.Sprintf("%s:%d", localProxyHost, port)
+}
+
 // RunProxy starts a local HTTP proxy that forwards requests to the Duckway server.
 // Agents set HTTP_PROXY/HTTPS_PROXY to this local proxy.
 //
 // Request flow:
-//   Agent → http://localhost:18080/proxy/openai/v1/chat/completions
-//   → Duckway client proxy → http://duckway-server/proxy/openai/v1/chat/completions
+//
+//	Agent → http://127.0.0.1:18080/proxy/openai/v1/chat/completions
+//	→ Duckway client proxy → http://duckway-server/proxy/openai/v1/chat/completions
 //
 // The client proxy injects the X-Duckway-Token header automatically.
 func RunProxy(cfg *Config, syncInterval time.Duration) error {
@@ -51,9 +62,9 @@ func RunProxy(cfg *Config, syncInterval time.Duration) error {
 		client:    &http.Client{Timeout: 120 * time.Second},
 	}
 
-	addr := fmt.Sprintf(":%d", cfg.ProxyPort)
+	addr := localProxyListenAddr(cfg.ProxyPort)
 	log.Printf("Duckway proxy listening on %s", addr)
-	log.Printf("Set HTTP_PROXY=http://localhost:%d for your agents", cfg.ProxyPort)
+	log.Printf("Set HTTP_PROXY=%s for your agents", LocalProxyURL(cfg.ProxyPort))
 
 	return http.ListenAndServe(addr, handler)
 }
@@ -118,7 +129,7 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // duckway server / proxy itself don't loop back through the proxy — matching
 // the values mergeProxySettings writes into ~/.claude/settings.json.
 func PrintProxyEnv(port int) {
-	proxyURL := fmt.Sprintf("http://localhost:%d", port)
+	proxyURL := LocalProxyURL(port)
 	fmt.Printf("# Duckway proxy env — route agent traffic through the local proxy on port %d\n", port)
 	fmt.Println("# Apply with:  eval \"$(duckway env --proxy)\"   or append to your shell startup file.")
 	fmt.Printf("export HTTP_PROXY=%s\n", proxyURL)
@@ -134,12 +145,12 @@ func PrintProxyEnv(port int) {
 func WriteProxyEnvScript(configDir string, port int) error {
 	script := fmt.Sprintf(`#!/bin/sh
 # Source this file to route traffic through Duckway proxy
-export HTTP_PROXY=http://localhost:%d
-export HTTPS_PROXY=http://localhost:%d
-export http_proxy=http://localhost:%d
-export https_proxy=http://localhost:%d
+export HTTP_PROXY=%s
+export HTTPS_PROXY=%s
+export http_proxy=%s
+export https_proxy=%s
 echo "Duckway proxy configured on port %d"
-`, port, port, port, port, port)
+`, LocalProxyURL(port), LocalProxyURL(port), LocalProxyURL(port), LocalProxyURL(port), port)
 
 	path := configDir + "/proxy-env.sh"
 	if err := os.WriteFile(path, []byte(script), 0755); err != nil {

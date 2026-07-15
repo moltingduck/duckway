@@ -29,10 +29,10 @@ func TestPrintProxyEnv(t *testing.T) {
 	out := captureStdout(t, func() { PrintProxyEnv(18080) })
 
 	want := []string{
-		"export HTTP_PROXY=http://localhost:18080",
-		"export HTTPS_PROXY=http://localhost:18080",
-		"export http_proxy=http://localhost:18080",
-		"export https_proxy=http://localhost:18080",
+		"export HTTP_PROXY=http://127.0.0.1:18080",
+		"export HTTPS_PROXY=http://127.0.0.1:18080",
+		"export http_proxy=http://127.0.0.1:18080",
+		"export https_proxy=http://127.0.0.1:18080",
 		"export NO_PROXY=localhost,127.0.0.1",
 		"export no_proxy=localhost,127.0.0.1",
 	}
@@ -56,7 +56,7 @@ func TestPrintProxyEnv(t *testing.T) {
 
 func TestPrintProxyEnv_CustomPort(t *testing.T) {
 	out := captureStdout(t, func() { PrintProxyEnv(9999) })
-	if !strings.Contains(out, "export HTTPS_PROXY=http://localhost:9999") {
+	if !strings.Contains(out, "export HTTPS_PROXY=http://127.0.0.1:9999") {
 		t.Errorf("custom port not honored:\n%s", out)
 	}
 }
@@ -81,10 +81,10 @@ func TestPrintEnv_IncludesProxyVars(t *testing.T) {
 
 	want := []string{
 		"export OPENAI_API_KEY=sk-test",
-		"export HTTP_PROXY=http://localhost:9999",
-		"export HTTPS_PROXY=http://localhost:9999",
-		"export http_proxy=http://localhost:9999",
-		"export https_proxy=http://localhost:9999",
+		"export HTTP_PROXY=http://127.0.0.1:9999",
+		"export HTTPS_PROXY=http://127.0.0.1:9999",
+		"export http_proxy=http://127.0.0.1:9999",
+		"export https_proxy=http://127.0.0.1:9999",
 		"export NO_PROXY=localhost,127.0.0.1",
 	}
 	for _, line := range want {
@@ -117,7 +117,7 @@ func TestPrintEnv_DefaultPortWhenNoConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrintEnv: %v", err)
 	}
-	if !strings.Contains(out, "export HTTPS_PROXY=http://localhost:18080") {
+	if !strings.Contains(out, "export HTTPS_PROXY=http://127.0.0.1:18080") {
 		t.Errorf("expected default proxy port 18080:\n%s", out)
 	}
 }

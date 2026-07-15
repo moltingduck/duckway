@@ -585,7 +585,7 @@ func mergeProxySettings(path string, proxyPort int) error {
 	if env == nil {
 		env = map[string]interface{}{}
 	}
-	proxyURL := fmt.Sprintf("http://localhost:%d", proxyPort)
+	proxyURL := LocalProxyURL(proxyPort)
 	env["HTTPS_PROXY"] = proxyURL
 	env["HTTP_PROXY"] = proxyURL
 	// Always include localhost loopback. Preserve any user-added NO_PROXY
@@ -612,12 +612,12 @@ func mergeProxySettings(path string, proxyPort int) error {
 //
 // The resulting provider base_url format is:
 //
-//	http://localhost:{port}/proxy/openai/v1
+//	http://127.0.0.1:{port}/proxy/openai/v1
 //
 // The OpenAI SDK (used by Codex CLI) appends its own method paths
 // (e.g. /chat/completions) to this base, so the final request looks like:
 //
-//	http://localhost:{port}/proxy/openai/v1/chat/completions
+//	http://127.0.0.1:{port}/proxy/openai/v1/chat/completions
 //
 // which the duckway local proxy forwards to the server as-is.
 func SyncCodexConfig(proxyPort int) error {
@@ -727,7 +727,7 @@ func DisableCodexDuckwayProvider() error {
 func codexDuckwayProviderSection(proxyPort int) string {
 	return "[model_providers.duckway-openai]\n" +
 		"name = \"Duckway OpenAI\"\n" +
-		"base_url = " + tomlQuote(fmt.Sprintf("http://localhost:%d/proxy/openai/v1", proxyPort)) + "\n" +
+		"base_url = " + tomlQuote(LocalProxyURL(proxyPort)+"/proxy/openai/v1") + "\n" +
 		"env_key = \"OPENAI_API_KEY\"\n" +
 		"wire_api = \"responses\"\n"
 }

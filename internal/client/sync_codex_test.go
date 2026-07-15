@@ -27,7 +27,7 @@ func TestSyncCodexConfig_FreshFile(t *testing.T) {
 		`model_provider = "duckway-openai"`,
 		`[model_providers.duckway-openai]`,
 		`name = "Duckway OpenAI"`,
-		`base_url = "http://localhost:18080/proxy/openai/v1"`,
+		`base_url = "http://127.0.0.1:18080/proxy/openai/v1"`,
 		`env_key = "OPENAI_API_KEY"`,
 		`wire_api = "responses"`,
 	} {
@@ -66,7 +66,7 @@ trust_level = "trusted"
 		`approval_policy = "auto-edit"`,
 		`model_provider = "duckway-openai"`,
 		`[projects."/repo"]`,
-		`base_url = "http://localhost:18081/proxy/openai/v1"`,
+		`base_url = "http://127.0.0.1:18081/proxy/openai/v1"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("config missing %q:\n%s", want, got)
@@ -90,10 +90,10 @@ func TestSyncCodexConfig_UpdatesPortOnResync(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(data)
-	if strings.Contains(got, "http://localhost:18080/proxy/openai/v1") {
+	if strings.Contains(got, "http://127.0.0.1:18080/proxy/openai/v1") {
 		t.Errorf("old port still present:\n%s", got)
 	}
-	if !strings.Contains(got, `base_url = "http://localhost:19090/proxy/openai/v1"`) {
+	if !strings.Contains(got, `base_url = "http://127.0.0.1:19090/proxy/openai/v1"`) {
 		t.Errorf("new port missing:\n%s", got)
 	}
 }
@@ -111,7 +111,7 @@ model_provider = "duckway-openai"
 
 [model_providers.duckway-openai]
 name = "Duckway OpenAI"
-base_url = "http://localhost:18080/proxy/openai/v1"
+base_url = "http://127.0.0.1:18080/proxy/openai/v1"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"
 
@@ -223,7 +223,7 @@ model_provider = "duckway-openai"
 
 [model_providers.duckway-openai]
 name = "Duckway OpenAI"
-base_url = "http://localhost:18080/proxy/openai/v1"
+base_url = "http://127.0.0.1:18080/proxy/openai/v1"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"
 

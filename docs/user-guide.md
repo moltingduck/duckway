@@ -39,7 +39,7 @@ Duckway is an API key proxy. Real API keys live encrypted on the Duckway server.
 ```bash
 git clone git@github.com:moltingduck/duckway.git
 cd duckway
-./scripts/dev.sh up        # combined mode, http://localhost:9090/admin/
+./scripts/dev.sh up        # combined mode, http://127.0.0.1:9090/admin/
 ```
 
 Default credentials are printed on first run and also visible via:
@@ -332,8 +332,8 @@ Anthropic refreshable tokens are delivered to the agent as files, not env vars:
 
 ```bash
 # On the agent machine, after duckway init + sync
-export HTTPS_PROXY=http://localhost:18080
-export HTTP_PROXY=http://localhost:18080
+export HTTPS_PROXY=http://127.0.0.1:18080
+export HTTP_PROXY=http://127.0.0.1:18080
 duckway proxy -d              # background daemon
 
 # The agent uses phantom keys from keys.env
@@ -475,6 +475,7 @@ In `<client>-control`:
 - `!sessions [<cwd-filter>]` → list local Claude sessions on the agent that aren't yet bound to any CC channel
 - `!bind <session_id> [<session_id> …]` → for each id, create a task channel (named after `basename(cwd)`) and attach the session — next message in the new channel resumes the existing conversation
 - `!projects [<filter>]` → list saved project folders from the agent machine
+- `!! <command>` → run a shell command directly on the client in the current channel's working directory; stdout/stderr are posted back and the agent session is not touched
 
 Project folders are saved on the client machine, not browsed from the Duckway server. Add them with:
 

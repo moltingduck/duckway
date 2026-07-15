@@ -39,14 +39,14 @@ func NewCCCommandHandler(cc *queries.ControlChannelQueries, apiKeys *queries.API
 // Used by the gateway to decide whether to also publish the message to
 // the daemon's SSE stream.
 //
-// Exceptions, both escapes for claude TUI modes whose trigger character
-// would otherwise be eaten by Discord or by us:
+// Exceptions for messages that should reach the daemon instead of being
+// handled as Duckway management commands:
 //
 //	"!/..."  → claude slash command (`/usage`, `/help`, `/compact`, ...)
-//	"!!..."  → claude bash shell    (`! ls`, `! cargo test`, ...)
+//	"!!..."  → direct shell command on the client (`ls`, `cargo test`, ...)
 //
-// The daemon strips one leading `!` before pasting into claude, so the
-// user types `!/usage` to send `/usage` and `!! ls` to send `! ls`.
+// The daemon strips one leading `!` for slash commands. For `!!`, the daemon
+// strips both bangs and executes the rest in the channel cwd.
 func LooksLikeCommand(content string) bool {
 	t := strings.TrimSpace(content)
 	if strings.HasPrefix(t, "!/") || strings.HasPrefix(t, "!!") {
@@ -525,11 +525,11 @@ const helpText = "**Duckway CC commands**\n" +
 	"`!log [N]` — show the current task channel's latest N agent conversation entries (default 3, max 20)\n" +
 	"`!help` — this message\n" +
 	"\n" +
-	"**Sending claude slash & shell commands**\n" +
-	"Discord/the daemon eat the `/` and `!` trigger chars, so prefix them with an extra `!`:\n" +
+	"**Slash commands and direct shell**\n" +
+	"Discord/the daemon reserve `/` and `!` prefixes, so use these escapes:\n" +
 	"  • `!/usage`, `!/compact`, `!/help` → claude slash command\n" +
-	"  • `!! ls`, `!! cargo test` → claude bash shell (the `!` mode)\n" +
-	"The daemon strips one `!` before pasting into claude and snapshots the panel/output back to the channel.\n" +
+	"  • `!! ls`, `!! cargo test` → run a shell command directly on the client in this channel's cwd\n" +
+	"The daemon posts stdout/stderr back to the channel and does not touch the agent session for `!!` commands.\n" +
 	"\n" +
 	"**Picker commands** (`!/release-notes`, `!/effort`, `!/model`, `!/agents`, …)\n" +
 	"When the slash command opens a numbered picker, the daemon posts the options here and leaves the picker open. Reply with the **option number** (e.g. `2`) to pick it, or `cancel` to dismiss the picker without choosing."

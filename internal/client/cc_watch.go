@@ -317,7 +317,13 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		return
 	}
 
-	runner, err := w.runnerFor(env.Handle, env.CCID)
+	var runner *ccRunner
+	var err error
+	if _, ok := directShellCommand(msg.Content); ok {
+		runner, err = w.runnerForDirectShell(env.Handle)
+	} else {
+		runner, err = w.runnerFor(env.Handle, env.CCID)
+	}
 	if err != nil {
 		log.Printf("[cc-watch] cannot start runner for %s: %v", env.Handle, err)
 		w.reportAgentTest(msg.TestID, "failed", err.Error())
@@ -412,10 +418,17 @@ func (w *CCWatch) handleChannelDelete(data []byte) {
 func (w *CCWatch) runnerFor(handle, ccID string) (*ccRunner, error) {
 	w.mu.Lock()
 	if r, ok := w.runners[handle]; ok {
+		if r.agentType == "shell_command" {
+			delete(w.runners, handle)
+			w.mu.Unlock()
+			r.Stop()
+		} else {
+			w.mu.Unlock()
+			return r, nil
+		}
+	} else {
 		w.mu.Unlock()
-		return r, nil
 	}
-	w.mu.Unlock()
 
 	cwd, err := w.fetchChannelCwd(handle)
 	if err != nil {
@@ -431,6 +444,44 @@ func (w *CCWatch) runnerFor(handle, ccID string) (*ccRunner, error) {
 	}
 	w.mu.Lock()
 	// Re-check under lock in case we raced.
+	if existing, ok := w.runners[handle]; ok {
+		w.mu.Unlock()
+		r.Stop()
+		return existing, nil
+	}
+	w.runners[handle] = r
+	w.mu.Unlock()
+	return r, nil
+}
+
+// runnerForDirectShell returns a runner capable of handling `!!` commands
+// without requiring the configured agent binary to be installed. If a normal
+// agent runner already exists for the channel, reuse it so queue ordering is
+// preserved across prompts and direct shell commands.
+func (w *CCWatch) runnerForDirectShell(handle string) (*ccRunner, error) {
+	w.mu.Lock()
+	if r, ok := w.runners[handle]; ok {
+		w.mu.Unlock()
+		return r, nil
+	}
+	w.mu.Unlock()
+
+	cwd, err := w.fetchChannelCwd(handle)
+	if err != nil {
+		return nil, err
+	}
+	spec := ccAgentSpec{
+		Type:        "shell_command",
+		DisplayName: "shell",
+		RunFn: func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+			return "", "", false, fmt.Errorf("agent runner is not available for this shell-only channel runner")
+		},
+	}
+	r, err := newCCRunnerWithProcessed(handle, w.configDir, cwd, spec, w.sessions, w.processed, w.api.PostCC, w.api.PostCCReply, w.api.ReactCC, w.api.ReportCCAgentTest, w.noTmux, w.debug)
+	if err != nil {
+		return nil, err
+	}
+	w.mu.Lock()
 	if existing, ok := w.runners[handle]; ok {
 		w.mu.Unlock()
 		r.Stop()

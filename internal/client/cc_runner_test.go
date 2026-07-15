@@ -226,6 +226,7 @@ func countStrings(items []string, want string) int {
 }
 
 func TestCCRunner_LoadsKeysEnvForAgent(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
 	var gotEnv []string
 	fn := func(_ context.Context, _, _, _, _ string, extraEnv []string) (string, string, bool, error) {
 		gotEnv = append([]string(nil), extraEnv...)
@@ -269,6 +270,7 @@ bad-name=ignored
 }
 
 func TestCCRunner_KeepsOpenAIEnvForCodexWithLegacyOAuthMarker(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
 	var gotEnv []string
 	fn := func(_ context.Context, _, _, _, _ string, extraEnv []string) (string, string, bool, error) {
 		gotEnv = append([]string(nil), extraEnv...)
@@ -315,6 +317,7 @@ func TestCCRunner_OmitsOpenAIEnvForCodexNativeOAuth(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	configDir := t.TempDir()
 	if err := os.WriteFile(KeysEnvPath(configDir), []byte(`
 OPENAI_API_KEY=sk-dw-placeholder
@@ -383,10 +386,10 @@ proxy_port: 19090
 
 	envText := strings.Join(gotEnv, "\n")
 	for _, want := range []string{
-		"HTTP_PROXY=http://localhost:19090",
-		"HTTPS_PROXY=http://localhost:19090",
-		"http_proxy=http://localhost:19090",
-		"https_proxy=http://localhost:19090",
+		"HTTP_PROXY=http://127.0.0.1:19090",
+		"HTTPS_PROXY=http://127.0.0.1:19090",
+		"http_proxy=http://127.0.0.1:19090",
+		"https_proxy=http://127.0.0.1:19090",
 		"NO_PROXY=localhost,127.0.0.1",
 		"no_proxy=localhost,127.0.0.1",
 	} {
@@ -517,9 +520,8 @@ func TestCCRunnerAdoptsPendingTurnBeforeQueuedMessage(t *testing.T) {
 
 func TestCCRunner_StripsClaudeEscapes(t *testing.T) {
 	// Users escape claude trigger chars with a leading "!" because
-	// Discord eats "/" prefixes and the daemon eats "!" prefixes.
-	// "!/X" → "/X", "!!X" → "!X". The runner strips ONE leading "!"
-	// before handing the prompt to claude.
+	// Discord eats "/" prefixes. "!/X" -> "/X". The runner strips ONE
+	// leading "!" before handing slash commands to claude.
 	cases := []struct {
 		in, want string
 	}{
@@ -527,10 +529,6 @@ func TestCCRunner_StripsClaudeEscapes(t *testing.T) {
 		{"!/usage", "/usage"},
 		{"!/compact", "/compact"},
 		{"  !/help foo bar  ", "/help foo bar"},
-		// Bash-shell escape
-		{"!! ls", "! ls"},
-		{"!!cargo test", "!cargo test"},
-		{"  !! cat README  ", "! cat README"},
 		// Not an escape — must pass through unchanged.
 		{"hello world", "hello world"},
 		{"!reset", "!reset"}, // server cmd shouldn't reach here, defensive
@@ -544,6 +542,50 @@ func TestCCRunner_StripsClaudeEscapes(t *testing.T) {
 			t.Errorf("Content=%q → prompt to claude = %q, want %q", tt.in, got, tt.want)
 		}
 		r.Stop()
+	}
+}
+
+func TestCCRunner_DoubleBangRunsShellDirectly(t *testing.T) {
+	calledAgent := false
+	fn := func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+		calledAgent = true
+		return "sess-agent", "agent should not run", false, nil
+	}
+	r, pp, store := newTestRunner(t, fn)
+	defer r.Stop()
+
+	r.Enqueue(ccTask{Content: "!! printf duckway-shell", ChannelKind: "task"})
+	waitForPosts(t, pp, 1)
+
+	if calledAgent {
+		t.Fatal("agent run function was called for !! shell command")
+	}
+	if got := store.Get("dwch_t"); got != "" {
+		t.Fatalf("shell command changed agent session id: %q", got)
+	}
+	posts := pp.all()
+	if !strings.Contains(posts[0], "**Shell** `printf duckway-shell`") || !strings.Contains(posts[0], "duckway-shell") {
+		t.Fatalf("shell output post = %q", posts[0])
+	}
+}
+
+func TestCCRunner_DoubleBangEmptyCommandDoesNotRunAgent(t *testing.T) {
+	calledAgent := false
+	fn := func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+		calledAgent = true
+		return "sess-agent", "agent should not run", false, nil
+	}
+	r, pp, _ := newTestRunner(t, fn)
+	defer r.Stop()
+
+	r.Enqueue(ccTask{Content: "!!", ChannelKind: "task"})
+	waitForPosts(t, pp, 1)
+
+	if calledAgent {
+		t.Fatal("agent run function was called for empty !! shell command")
+	}
+	if posts := pp.all(); !strings.Contains(posts[0], "usage: `!! <shell command>`") {
+		t.Fatalf("empty shell command post = %q", posts[0])
 	}
 }
 

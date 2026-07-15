@@ -199,11 +199,11 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 		}
 	}()
 
-	addr := fmt.Sprintf(":%d", cfg.ProxyPort)
+	addr := localProxyListenAddr(cfg.ProxyPort)
 	log.Printf("Duckway proxy listening on %s (HTTP + HTTPS CONNECT)", addr)
 	log.Printf("Configure agents with:")
-	log.Printf("  export HTTPS_PROXY=http://localhost:%d", cfg.ProxyPort)
-	log.Printf("  export HTTP_PROXY=http://localhost:%d", cfg.ProxyPort)
+	log.Printf("  export HTTPS_PROXY=%s", LocalProxyURL(cfg.ProxyPort))
+	log.Printf("  export HTTP_PROXY=%s", LocalProxyURL(cfg.ProxyPort))
 
 	return http.ListenAndServe(addr, proxy)
 }
@@ -217,7 +217,7 @@ func (p *httpsProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleHTTP supports both historical direct Duckway paths
-// (http://localhost:18080/proxy/openai/...) and real HTTP forward-proxy
+// (http://127.0.0.1:18080/proxy/openai/...) and real HTTP forward-proxy
 // requests (GET http://example.com/path HTTP/1.1). `duckway proxy exec` relies
 // on the latter when a child process uses HTTP_PROXY for plain HTTP traffic.
 func (p *httpsProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {

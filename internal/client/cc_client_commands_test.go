@@ -42,6 +42,11 @@ func newFakeServer(t *testing.T) *fakeServer {
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"handle": handle, "name": body["name"], "topic": "", "cwd": body["cwd"], "kind": "task",
 			})
+		case r.Method == "GET" && r.URL.Path == "/client/cc/channels":
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"handle": "dwch_task", "name": "task", "kind": "task", "cwd": os.TempDir()},
+				{"handle": "dwch_mgmt", "name": "control", "kind": "management", "cwd": os.TempDir()},
+			})
 		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/messages"):
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -570,6 +575,36 @@ func TestHandleMessageCreateReactsDuckAfterEnqueue(t *testing.T) {
 	if !strings.Contains(reactions, "1783330000000001234/reactions:🦆") {
 		t.Fatalf("missing queued duck reaction:\n%s", reactions)
 	}
+}
+
+func TestHandleMessageCreateDoubleBangDoesNotRequireAgentBinary(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	w.agentTypes["cc1"] = "definitely_missing_agent"
+
+	payload := json.RawMessage(`{"id":"1783330000000001235","content":"!! printf direct-shell","author":{"id":"U1","bot":false}}`)
+	env := sseEnvelope{Type: "message_create", CCID: "cc1", Handle: "dwch_task", Kind: "task", Payload: payload}
+	data, _ := json.Marshal(env)
+	w.handleMessageCreate(data)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		msgs := fake.snapshotMessages()
+		if len(msgs) > 0 {
+			body := msgs[0]["content"]
+			if !strings.Contains(body, "direct-shell") {
+				t.Fatalf("shell reply missing output: %s", body)
+			}
+			reactions := strings.Join(fake.snapshotReactions(), "\n")
+			if !strings.Contains(reactions, "1783330000000001235/reactions:🦆") ||
+				!strings.Contains(reactions, "1783330000000001235/reactions:✅") {
+				t.Fatalf("missing shell reactions:\n%s", reactions)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for direct shell reply")
 }
 
 func fakePostNoop(context.Context, string, string) error { return nil }

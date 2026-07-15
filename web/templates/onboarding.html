@@ -1,4 +1,52 @@
 {{define "content"}}
+<style>
+.setup-details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  overflow: hidden;
+}
+.setup-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: .65rem .75rem;
+  cursor: pointer;
+  font-size: .82rem;
+  font-weight: 600;
+  list-style: none;
+}
+.setup-details summary::-webkit-details-marker {
+  display: none;
+}
+.setup-details summary::after {
+  content: "Show";
+  color: var(--text-muted);
+  font-size: .72rem;
+  font-weight: 500;
+}
+.setup-details[open] summary::after {
+  content: "Hide";
+}
+.setup-details-body {
+  border-top: 1px solid var(--border);
+  padding: .75rem;
+}
+.setup-details-body pre {
+  margin-top: .5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .75rem;
+  overflow: auto;
+  font-size: .76rem;
+}
+.setup-details-body pre code {
+  background: transparent;
+  padding: 0;
+}
+</style>
 <div class="page-header">
   <h1>Onboard Client</h1>
 </div>
@@ -595,7 +643,67 @@ function renderSetupCommands() {
   }
   el.innerHTML =
     '<label class="text-sm" style="font-weight:600;display:block;margin-bottom:.35rem">Client setup commands</label>' +
-    '<pre style="background:var(--bg-input);padding:.75rem;border-radius:var(--radius);overflow:auto;font-size:.82rem"><code>' + esc(lines.join('\n')) + '</code></pre>';
+    '<pre style="background:var(--bg-input);padding:.75rem;border-radius:var(--radius);overflow:auto;font-size:.82rem"><code>' + esc(lines.join('\n')) + '</code></pre>' +
+    renderAutoStartDetails();
+}
+
+function renderAutoStartDetails() {
+  var lines = [
+    '# Finish client state first',
+    'duckway sync',
+    '',
+    'mkdir -p ~/.config/systemd/user',
+    '',
+    "cat > ~/.config/systemd/user/duckway-proxy.service <<'EOF'",
+    '[Unit]',
+    'Description=Duckway local API proxy',
+    'After=network-online.target',
+    'Wants=network-online.target',
+    '',
+    '[Service]',
+    'Type=simple',
+    'ExecStart=/usr/local/bin/duckway proxy',
+    'Restart=on-failure',
+    'RestartSec=5',
+    'Environment=HOME=%h',
+    '',
+    '[Install]',
+    'WantedBy=default.target',
+    'EOF',
+    '',
+    "cat > ~/.config/systemd/user/duckway-cc-watch.service <<'EOF'",
+    '[Unit]',
+    'Description=Duckway Control Channel watcher',
+    'After=network-online.target',
+    'Wants=network-online.target',
+    '',
+    '[Service]',
+    'Type=simple',
+    'ExecStart=/usr/local/bin/duckway cc watch',
+    'Restart=on-failure',
+    'RestartSec=5',
+    'Environment=HOME=%h',
+    '',
+    '[Install]',
+    'WantedBy=default.target',
+    'EOF',
+    '',
+    'systemctl --user daemon-reload',
+    'systemctl --user enable --now duckway-proxy',
+    '',
+    '# Optional: only needed for Discord/Control Channel agents.',
+    'systemctl --user enable --now duckway-cc-watch',
+    '',
+    '# Optional: keep user services running after boot before login.',
+    'sudo loginctl enable-linger "$USER"'
+  ];
+  return '<details class="setup-details" style="margin-top:.75rem">' +
+    '<summary>Auto-start Duckway on Linux with systemd</summary>' +
+    '<div class="setup-details-body">' +
+    '<p class="text-sm text-muted">Run this on the client after the setup commands above. It starts the local proxy at login; enable linger if it should run after boot before you log in.</p>' +
+    '<pre><code>' + esc(lines.join('\n')) + '</code></pre>' +
+    '<p class="text-sm text-muted mt-1">If Duckway was installed somewhere other than <code>/usr/local/bin/duckway</code>, replace that path in both service files. Logs: <code>journalctl --user -u duckway-proxy -f</code> and <code>journalctl --user -u duckway-cc-watch -f</code>.</p>' +
+    '</div></details>';
 }
 
 function resetWizard() {

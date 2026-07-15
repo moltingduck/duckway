@@ -151,7 +151,7 @@ func TestProxyExecEnvOverridesProxyVariables(t *testing.T) {
 	}
 
 	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"} {
-		if env[key] != "http://localhost:19090" {
+		if env[key] != "http://127.0.0.1:19090" {
 			t.Fatalf("%s = %q, want local proxy", key, env[key])
 		}
 	}
@@ -197,9 +197,9 @@ func TestProxyExecCommandInjectsEnv(t *testing.T) {
 	}
 	got := strings.TrimSpace(string(out))
 	want := strings.Join([]string{
-		"http://localhost:19090",
+		"http://127.0.0.1:19090",
 		"localhost,127.0.0.1,::1",
-		"http://localhost:19090",
+		"http://127.0.0.1:19090",
 	}, "\n")
 	if got != want {
 		t.Fatalf("proxy exec output = %q, want %q", got, want)

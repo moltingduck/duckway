@@ -1,10 +1,12 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -303,14 +305,16 @@ func (r *ccRunner) run(t ccTask) {
 	}()
 
 	prompt := t.Content
-	// Discord/the daemon eat the `/` and `!` trigger characters agents
-	// uses for its slash and bash modes, so users escape them with a
-	// leading `!`:
+	if cmd, ok := directShellCommand(prompt); ok {
+		r.runDirectShellCommand(ctx, t, cmd)
+		return
+	}
+	// Discord/the daemon reserve the `/` trigger character agents use for
+	// slash commands, so users escape it with a leading `!`:
 	//   "!/..."  → slash command (`/usage`, `/compact`, …)
-	//   "!!..."  → shell escape (`! ls`, `! cargo test`, …)
-	// Strip the leading `!` so the agent receives the real `/usage` /
-	// `! ls`.
-	if trimmed := strings.TrimSpace(prompt); strings.HasPrefix(trimmed, "!/") || strings.HasPrefix(trimmed, "!!") {
+	// Strip the leading `!` so the agent receives the real `/usage`.
+	// `!!...` is handled above as a direct daemon-side shell command.
+	if trimmed := strings.TrimSpace(prompt); strings.HasPrefix(trimmed, "!/") {
 		prompt = trimmed[1:]
 	}
 	// `/clear` wipes the agent's running conversation. If we keep the
@@ -400,6 +404,93 @@ func (r *ccRunner) run(t ccTask) {
 		r.reactToTask(t, "✅")
 	}
 	r.reportTaskTest(t, "replied", "")
+}
+
+func directShellCommand(content string) (string, bool) {
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "!!") {
+		return "", false
+	}
+	return strings.TrimSpace(trimmed[2:]), true
+}
+
+func (r *ccRunner) runDirectShellCommand(ctx context.Context, t ccTask, command string) {
+	r.appendHistory("shell", "!! "+command)
+	r.reactToTask(t, "⏳")
+	r.reportTaskTest(t, "started", "")
+
+	if command == "" {
+		r.appendHistory("shell_error", "empty shell command")
+		_ = r.postTaskMessage(t, "❌ usage: `!! <shell command>`")
+		r.reactToTask(t, "⚠️")
+		r.reportTaskTest(t, "failed", "empty shell command")
+		return
+	}
+
+	output, exitCode, err := r.executeShellCommand(ctx, command)
+	body := formatShellCommandResult(command, output, exitCode, err)
+	if err != nil {
+		r.appendHistory("shell_error", body)
+	} else {
+		r.appendHistory("shell", body)
+	}
+	if postErr := r.postTaskMessage(t, body); postErr != nil {
+		r.logger("[cc-watch] %s: shell command discord post failed: %v", r.handle, postErr)
+		r.reportTaskTest(t, "failed", "discord post failed: "+postErr.Error())
+		r.reactToTask(t, "⚠️")
+		return
+	}
+	if err != nil {
+		r.reactToTask(t, "⚠️")
+		r.reportTaskTest(t, "failed", err.Error())
+		return
+	}
+	r.reactToTask(t, "✅")
+	r.reportTaskTest(t, "replied", "")
+}
+
+func (r *ccRunner) executeShellCommand(ctx context.Context, command string) (string, int, error) {
+	shell := strings.TrimSpace(os.Getenv("SHELL"))
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	cmd := exec.CommandContext(ctx, shell, "-lc", command)
+	cmd.Dir = r.cwd
+	cmd.Env = append(os.Environ(),
+		"DUCKWAY_CC_CHANNEL_HANDLE="+r.handle,
+	)
+	cmd.Env = append(cmd.Env, agentProxyEnv(r.configDir)...)
+	cmd.Env = append(cmd.Env, loadKeysEnv(r.configDir)...)
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	if err == nil {
+		return out.String(), 0, nil
+	}
+	exitCode := -1
+	if ee, ok := err.(*exec.ExitError); ok {
+		exitCode = ee.ExitCode()
+	}
+	return out.String(), exitCode, err
+}
+
+func formatShellCommandResult(command, output string, exitCode int, err error) string {
+	status := "exit 0"
+	if err != nil {
+		if exitCode >= 0 {
+			status = fmt.Sprintf("exit %d", exitCode)
+		} else {
+			status = err.Error()
+		}
+	}
+	output = strings.TrimSpace(output)
+	if output == "" {
+		output = "(no output)"
+	}
+	output = strings.ReplaceAll(output, "```", "` ` `")
+	return fmt.Sprintf("**Shell** `%s`\n**Status** `%s`\n\n```text\n%s\n```", truncateForDiscordLog(command, 180), status, output)
 }
 
 func isStaleAgentSessionError(err error) bool {
@@ -618,6 +709,10 @@ func historyRoleLabel(role string) string {
 		return "agent"
 	case "assistant_error":
 		return "agent error"
+	case "shell":
+		return "shell"
+	case "shell_error":
+		return "shell error"
 	case "error":
 		return "runner error"
 	default:
@@ -709,7 +804,7 @@ func agentProxyEnv(configDir string) []string {
 	if cfg, err := LoadConfig(configDir); err == nil && cfg.ProxyPort > 0 {
 		port = cfg.ProxyPort
 	}
-	proxyURL := fmt.Sprintf("http://localhost:%d", port)
+	proxyURL := LocalProxyURL(port)
 	noProxy := "localhost,127.0.0.1"
 	if existing := strings.TrimSpace(os.Getenv("NO_PROXY")); existing != "" {
 		noProxy = ensureLoopbackInNoProxy(existing)

@@ -863,8 +863,9 @@ func TestSmokeRealClaudeMultiLinePrompt(t *testing.T) {
 	}
 }
 
-// TestSmokeRealClaudeShellCommand drives runViaTmux with "! ls" (the
-// post-strip form of Discord's "!! ls" escape) against real claude.
+// TestSmokeRealClaudeShellCommand drives runViaTmux with "! ls" against
+// real claude. The cc-watch runner now executes Discord "!! ..." commands
+// directly, but runViaTmux still supports Claude TUI shell mode internally.
 // Verifies that claude's bash-mode output (an `ls` listing of the cwd)
 // makes it back as the Discord reply, the welcome banner is stripped
 // by the anchor extraction, and runViaTmux returns promptly without

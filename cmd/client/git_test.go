@@ -87,7 +87,7 @@ func TestGitRepoAccessLabel(t *testing.T) {
 func TestFormatGitCommand(t *testing.T) {
 	got := formatGitCommand(
 		"-c",
-		"http.https://github.com/.proxy=http://localhost:18080",
+		"http.https://github.com/.proxy=http://127.0.0.1:18080",
 		"-c",
 		"http.https://github.com/.sslCAInfo=/home/me/.duckway/ca.pem",
 		"clone",
@@ -96,7 +96,7 @@ func TestFormatGitCommand(t *testing.T) {
 	)
 	for _, want := range []string{
 		"git -c",
-		"'http.https://github.com/.proxy=http://localhost:18080'",
+		"'http.https://github.com/.proxy=http://127.0.0.1:18080'",
 		"'http.https://github.com/.sslCAInfo=/home/me/.duckway/ca.pem'",
 		"clone https://github.com/OWNER/REPO.git 'my repo'",
 	} {

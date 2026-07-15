@@ -36,7 +36,7 @@ cp .env.example .dev.env
 # Start (combined mode, admin + gateway on one port)
 ./scripts/dev.sh up
 
-# Admin panel: http://localhost:9090/admin/
+# Admin panel: http://127.0.0.1:9090/admin/
 # Username: duckway  Password: duckway
 ```
 
@@ -194,7 +194,7 @@ docker compose --profile client up -d client          # optional client test she
 ### HTTPS Proxy (transparent)
 
 ```bash
-export HTTPS_PROXY=http://localhost:18080
+export HTTPS_PROXY=http://127.0.0.1:18080
 curl https://api.openai.com/v1/chat/completions ...
 # → duckway client MITM → gateway → key injection → upstream
 ```

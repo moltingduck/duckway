@@ -156,7 +156,7 @@ func TestLooksLikeCommand(t *testing.T) {
 		"hello", " hi", "/help", "",
 		// "!/..." is the claude slash-command escape — agent input.
 		"!/usage", "!/compact", "  !/help with args  ",
-		// "!!..." is the claude bash-shell escape — agent input.
+		// "!!..." is a direct client-shell escape — daemon input.
 		"!! ls", "!!cargo test", "  !! cat README  ",
 	} {
 		if LooksLikeCommand(in) {
