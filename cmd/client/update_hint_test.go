@@ -28,20 +28,31 @@ func TestShellQuote(t *testing.T) {
 }
 
 func TestSudoUpdateCommand(t *testing.T) {
-	got := sudoUpdateCommand("/usr/local/bin/duckway", "https://srv:8080")
+	got := sudoUpdateCommand("/usr/local/bin/duckway", "https://srv:8080", false)
 	want := "sudo /usr/local/bin/duckway update --server https://srv:8080"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 
 	// Empty exe (os.Executable failed) falls back to a bare "duckway".
-	if got := sudoUpdateCommand("", "https://srv:8080"); got != "sudo duckway update --server https://srv:8080" {
+	if got := sudoUpdateCommand("", "https://srv:8080", false); got != "sudo duckway update --server https://srv:8080" {
 		t.Fatalf("empty-exe fallback wrong: %q", got)
 	}
 
 	// Spaces in the path are quoted so the command stays one pasteable token.
-	if got := sudoUpdateCommand("/opt/my apps/duckway", "https://srv:8080"); got != "sudo '/opt/my apps/duckway' update --server https://srv:8080" {
+	if got := sudoUpdateCommand("/opt/my apps/duckway", "https://srv:8080", false); got != "sudo '/opt/my apps/duckway' update --server https://srv:8080" {
 		t.Fatalf("spaced path not quoted: %q", got)
+	}
+}
+
+func TestSudoUpdateCommandWithRestartKeepsRestartUserLevel(t *testing.T) {
+	got := sudoUpdateCommand("/usr/local/bin/duckway", "https://srv:8080", true)
+	want := "sudo /usr/local/bin/duckway update --server https://srv:8080 && /usr/local/bin/duckway restart"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if strings.Contains(got, "update --restart") {
+		t.Fatalf("restart must not run under sudo/root: %q", got)
 	}
 }
 

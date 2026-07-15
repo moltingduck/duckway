@@ -1136,15 +1136,23 @@ func cmdMCP(configDir string) {
 	}
 }
 
-// sudoUpdateCommand builds the copy-pasteable command that re-runs the update
-// as root. It uses the running binary's absolute path (so it works under
-// sudo's restricted PATH) and pins --server explicitly (root's environment
-// won't see the user's $DUCKWAY_SERVER_URL or ~/.duckway config).
-func sudoUpdateCommand(exe, serverURL string) string {
+// sudoUpdateCommand builds the copy-pasteable command that re-runs only the
+// binary replacement as root. It uses the running binary's absolute path (so it
+// works under sudo's restricted PATH) and pins --server explicitly (root's
+// environment won't see the user's $DUCKWAY_SERVER_URL or ~/.duckway config).
+//
+// When --restart was requested, append a user-level restart after sudo returns.
+// Do not pass --restart into the sudo command: that would restart daemons as
+// root and read root's ~/.duckway instead of the user's daemon PID files.
+func sudoUpdateCommand(exe, serverURL string, restartAfter bool) string {
 	if exe == "" {
 		exe = "duckway"
 	}
-	return fmt.Sprintf("sudo %s update --server %s", shellQuote(exe), shellQuote(serverURL))
+	cmd := fmt.Sprintf("sudo %s update --server %s", shellQuote(exe), shellQuote(serverURL))
+	if restartAfter {
+		cmd += fmt.Sprintf(" && %s restart", shellQuote(exe))
+	}
+	return cmd
 }
 
 func confirmSudoUpdate(r io.Reader, w io.Writer) bool {
@@ -1244,13 +1252,14 @@ func cmdUpdate(configDir string) {
 		// contexts, print the exact command instead of blocking for a password.
 		if errors.Is(err, os.ErrPermission) {
 			exe, _ := os.Executable()
-			sudoCmd := sudoUpdateCommand(exe, serverURL)
+			sudoCmd := sudoUpdateCommand(exe, serverURL, opts.restartAfter)
 			fmt.Fprintf(os.Stderr, "Update failed: %v\n\nThe install location isn't writable by your user.\n", err)
 			if canPrompt() && confirmSudoUpdate(os.Stdin, os.Stderr) {
 				if sudoErr := runSudoUpdate(exe, serverURL); sudoErr != nil {
 					log.Fatalf("sudo update failed: %v\n\nYou can re-run manually:\n\n    %s\n", sudoErr, cyan(sudoCmd))
 				}
 				if opts.restartAfter {
+					fmt.Println("\nUpdated with sudo. Restarting user daemons with the new binary...")
 					restartDaemonsRunningBeforeUpdate(configDir)
 				}
 				return
