@@ -141,6 +141,25 @@ textarea { min-height: 80px; resize: vertical; font-family: inherit; }
 .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn-danger:hover { opacity: 0.9; }
 .btn-sm { padding: 0.25rem 0.625rem; font-size: 0.75rem; }
+.btn-icon {
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+}
+.btn-icon.btn-sm {
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+}
+.copy-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  display: inline-block;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M16 1H4a3 3 0 0 0-3 3v12h2V4a1 1 0 0 1 1-1h12V1zm4 4H8a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3V8a3 3 0 0 0-3-3zm1 15a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v12z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M16 1H4a3 3 0 0 0-3 3v12h2V4a1 1 0 0 1 1-1h12V1zm4 4H8a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3V8a3 3 0 0 0-3-3zm1 15a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v12z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
 
 /* Badges */
 .badge {
