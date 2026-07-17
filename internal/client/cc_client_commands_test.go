@@ -18,11 +18,13 @@ import (
 // responses for the create-channel and post-message endpoints used by
 // the bind flow.
 type fakeServer struct {
-	mu        sync.Mutex
-	creates   []map[string]string
-	messages  []map[string]string
-	reactions []string
-	srv       *httptest.Server
+	mu              sync.Mutex
+	creates         []map[string]string
+	messages        []map[string]string
+	reactions       []string
+	reactionEntered chan string
+	reactionRelease <-chan struct{}
+	srv             *httptest.Server
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -61,6 +63,12 @@ func newFakeServer(t *testing.T) *fakeServer {
 			f.mu.Lock()
 			f.reactions = append(f.reactions, r.URL.Path+":"+body["emoji"])
 			f.mu.Unlock()
+			if f.reactionEntered != nil {
+				f.reactionEntered <- body["emoji"]
+			}
+			if f.reactionRelease != nil {
+				<-f.reactionRelease
+			}
 			w.WriteHeader(204)
 		default:
 			http.Error(w, "unhandled "+r.Method+" "+r.URL.Path, 404)
@@ -724,6 +732,77 @@ func TestHandleMessageCreateReactsDuckAfterEnqueue(t *testing.T) {
 	reactions := strings.Join(fake.snapshotReactions(), "\n")
 	if !strings.Contains(reactions, "1783330000000001234/reactions:🦆") {
 		t.Fatalf("missing queued duck reaction:\n%s", reactions)
+	}
+}
+
+func TestHandleMessageCreateWaitsForDuckBeforeStartingRunner(t *testing.T) {
+	fake := newFakeServer(t)
+	reactionEntered := make(chan string, 4)
+	reactionRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseReaction := func() { releaseOnce.Do(func() { close(reactionRelease) }) }
+	t.Cleanup(releaseReaction)
+	fake.reactionEntered = reactionEntered
+	fake.reactionRelease = reactionRelease
+	w := stubWatch(t, t.TempDir(), fake)
+	started := make(chan struct{})
+	done := make(chan struct{})
+	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", RunFn: func(ctx context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
+		close(started)
+		<-done
+		return "sid", "ok", false, nil
+	}, UseTmux: false}
+	r, err := newCCRunner("dwch_task", w.configDir, t.TempDir(), spec, w.sessions, fakePostNoop, fakePostReplyNoop, w.api.ReactCC, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		close(done)
+		r.Stop()
+	}()
+	w.runners["dwch_task"] = r
+
+	payload := json.RawMessage(`{"id":"1783330000000001236","content":"work","author":{"id":"U1","bot":false}}`)
+	env := sseEnvelope{Type: "message_create", CCID: "cc1", Handle: "dwch_task", Kind: "task", Payload: payload}
+	data, _ := json.Marshal(env)
+	handled := make(chan struct{})
+	go func() {
+		w.handleMessageCreate(data)
+		close(handled)
+	}()
+
+	select {
+	case emoji := <-reactionEntered:
+		if emoji != "🦆" {
+			t.Fatalf("first reaction = %q, want duck", emoji)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("duck reaction did not start")
+	}
+	select {
+	case <-started:
+		t.Fatal("runner started before duck reaction completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseReaction()
+	select {
+	case <-handled:
+	case <-time.After(time.Second):
+		t.Fatal("message handler did not finish after duck reaction")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start after duck reaction")
+	}
+	select {
+	case emoji := <-reactionEntered:
+		if emoji != "⏳" {
+			t.Fatalf("second reaction = %q, want hourglass", emoji)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hourglass reaction did not follow duck")
 	}
 }
 

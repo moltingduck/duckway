@@ -72,6 +72,9 @@ type ccTask struct {
 	MessageID   string
 	ChannelKind string // "management" or "task" — drives prompt injection
 	TestID      string
+	// The runner waits for the queued acknowledgement to reach Discord so its
+	// running-state reaction cannot overtake the duck reaction.
+	queuedReactionDone <-chan struct{}
 }
 
 type ccHistoryEntry struct {
@@ -214,6 +217,13 @@ func (r *ccRunner) loop() {
 		case <-r.stop:
 			return
 		case t := <-r.queue:
+			if t.queuedReactionDone != nil {
+				select {
+				case <-t.queuedReactionDone:
+				case <-r.stop:
+					return
+				}
+			}
 			r.run(t)
 		}
 	}

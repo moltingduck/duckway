@@ -335,7 +335,16 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		}
 		return
 	}
-	if !runner.Enqueue(ccTask{Content: msg.Content, AuthorID: msg.Author.ID, MessageID: messageID, ChannelKind: env.Kind, TestID: msg.TestID}) {
+	task := ccTask{Content: msg.Content, AuthorID: msg.Author.ID, MessageID: messageID, ChannelKind: env.Kind, TestID: msg.TestID}
+	var queuedReactionDone chan struct{}
+	if messageID != "" {
+		queuedReactionDone = make(chan struct{})
+		task.queuedReactionDone = queuedReactionDone
+	}
+	if !runner.Enqueue(task) {
+		if queuedReactionDone != nil {
+			close(queuedReactionDone)
+		}
 		log.Printf("[cc-watch] %s: queue full, dropping message %s", env.Handle, msg.ID)
 		w.reportAgentTest(msg.TestID, "failed", "session queue full")
 		if messageID != "" {
@@ -348,7 +357,10 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		return
 	}
 	if messageID != "" {
-		_ = w.api.ReactCC(context.Background(), env.Handle, messageID, "🦆")
+		if err := w.api.ReactCC(context.Background(), env.Handle, messageID, "🦆"); err != nil {
+			log.Printf("[cc-watch] %s: queued reaction failed for message %s: %v", env.Handle, msg.ID, err)
+		}
+		close(queuedReactionDone)
 	}
 }
 
