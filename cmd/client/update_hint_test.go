@@ -74,6 +74,13 @@ func TestParseUpdateOptionsRestart(t *testing.T) {
 	}
 }
 
+func TestParseManagedUpdateArtifactOptions(t *testing.T) {
+	opts := parseUpdateOptions([]string{"--server", "https://srv", "--restart", "--expected-version", "v2", "--expected-binary", "duckway-client-linux-amd64", "--expected-sha256", strings.Repeat("a", 64), "--expected-size", "2097152"}, "")
+	if opts.serverURL != "https://srv" || !opts.restartAfter || opts.expectedVersion != "v2" || opts.expectedBinary != "duckway-client-linux-amd64" || opts.expectedSHA256 != strings.Repeat("a", 64) || opts.expectedSize != 2097152 {
+		t.Fatalf("options=%+v", opts)
+	}
+}
+
 func TestUpdateDoesNotRestartWhenAlreadyUpToDate(t *testing.T) {
 	body, err := os.ReadFile("main.go")
 	if err != nil {

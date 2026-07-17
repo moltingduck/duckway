@@ -1181,8 +1181,12 @@ func runSudoUpdate(exe, serverURL string) error {
 }
 
 type updateOptions struct {
-	serverURL    string
-	restartAfter bool
+	serverURL       string
+	restartAfter    bool
+	expectedVersion string
+	expectedBinary  string
+	expectedSHA256  string
+	expectedSize    int64
 }
 
 func parseUpdateOptions(args []string, envServerURL string) updateOptions {
@@ -1196,6 +1200,21 @@ func parseUpdateOptions(args []string, envServerURL string) updateOptions {
 			}
 		case "--restart":
 			opts.restartAfter = true
+		case "--expected-version", "--expected-binary", "--expected-sha256", "--expected-size":
+			if i+1 < len(args) {
+				value := args[i+1]
+				i++
+				switch args[i-1] {
+				case "--expected-version":
+					opts.expectedVersion = value
+				case "--expected-binary":
+					opts.expectedBinary = value
+				case "--expected-sha256":
+					opts.expectedSHA256 = value
+				case "--expected-size":
+					opts.expectedSize, _ = strconv.ParseInt(value, 10, 64)
+				}
+			}
 		}
 	}
 	return opts
@@ -1215,6 +1234,15 @@ func cmdUpdate(configDir string) {
 			serverURL = cfg.ServerURL
 		}
 	}
+	updateLock, err := acquireUpdateLock(configDir)
+	if err != nil {
+		log.Fatalf("cannot start update: %v", err)
+	}
+	defer releaseUpdateLock(updateLock)
+	if os.Getenv("DUCKWAY_MANAGED_UPDATE") == "1" &&
+		(opts.expectedVersion == "" || opts.expectedBinary == "" || opts.expectedSHA256 == "" || opts.expectedSize <= 0) {
+		log.Fatal("managed update is missing its pinned artifact manifest")
+	}
 	if serverURL == "" {
 		log.Fatalf("no server URL available — pass %s or set DUCKWAY_SERVER_URL, or run %s first",
 			cyan("--server <url>"), cyan("duckway init"))
@@ -1226,6 +1254,14 @@ func cmdUpdate(configDir string) {
 	updateInfo, err := client.CheckUpdateInfo(serverURL, current)
 	if err != nil {
 		log.Fatalf("Could not fetch update info: %v", err)
+	}
+	if opts.expectedVersion != "" {
+		if updateInfo.ClientRecommendedVersion != opts.expectedVersion || updateInfo.Binary != opts.expectedBinary ||
+			!strings.EqualFold(updateInfo.SHA256, opts.expectedSHA256) || updateInfo.Size != opts.expectedSize {
+			log.Fatalf("rollout artifact changed: got version=%s binary=%s sha256=%s size=%d; expected version=%s binary=%s sha256=%s size=%d",
+				updateInfo.ClientRecommendedVersion, updateInfo.Binary, updateInfo.SHA256, updateInfo.Size,
+				opts.expectedVersion, opts.expectedBinary, opts.expectedSHA256, opts.expectedSize)
+		}
 	}
 	fmt.Printf("Server:  %s\n", updateInfo.ServerVersion)
 	fmt.Printf("Target:  %s\n", updateInfo.ClientRecommendedVersion)
@@ -1294,6 +1330,29 @@ func cmdUpdate(configDir string) {
 		fmt.Println("      Restart daemons to pick up the new code:")
 		fmt.Printf("        %s\n", cyan("duckway restart"))
 	}
+}
+
+func acquireUpdateLock(configDir string) (*os.File, error) {
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(configDir, "update.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("another duckway update is already running")
+	}
+	return f, nil
+}
+
+func releaseUpdateLock(f *os.File) {
+	if f == nil {
+		return
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
 }
 
 func restartDaemonsRunningBeforeUpdate(configDir string) {

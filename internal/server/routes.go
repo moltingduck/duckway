@@ -102,6 +102,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	placeholderH := handlers.NewPlaceholderHandler(ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ).
 		WithKeyLookup(ss.APIKeyQ, ss.Crypto)
 	clientH := handlers.NewClientHandler(ss.ClientQ, ss.PlaceholderQ, ss.ServiceQ, ss.APIKeyQ, ss.CanarySvc)
+	clientUpdateH := handlers.NewClientUpdateHandler(queries.NewClientUpdateQueries(s.db), ss.ClientQ, configuredDownloadDir())
 	groupH := handlers.NewGroupHandler(ss.GroupQ, ss.ServiceQ)
 	approvalH := handlers.NewApprovalHandler(ss.ApprovalQ, ss.PlaceholderQ)
 	notifH := handlers.NewNotificationHandler(ss.NotifQ, ss.Notifier)
@@ -130,6 +131,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/usage", adminPageH.UsagePage)
 	adminPageMux.HandleFunc("GET /admin/placeholders", adminPageH.PlaceholdersPage)
 	adminPageMux.HandleFunc("GET /admin/clients", adminPageH.ClientsPage)
+	adminPageMux.HandleFunc("GET /admin/client-updates", adminPageH.ClientUpdatesPage)
 	adminPageMux.HandleFunc("GET /admin/groups", adminPageH.GroupsPage)
 	adminPageMux.HandleFunc("GET /admin/key-groups", adminPageH.KeyGroupsPage)
 	adminPageMux.HandleFunc("GET /admin/key-groups/{id}", adminPageH.KeyGroupDetailPage)
@@ -195,6 +197,10 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("PUT /api/clients/{id}", clientH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/clients/{id}", clientH.Delete)
 	adminAPIMux.HandleFunc("POST /api/clients/{id}/canary", clientH.ToggleCanary)
+	adminAPIMux.HandleFunc("GET /api/client-updates", clientUpdateH.List)
+	adminAPIMux.HandleFunc("POST /api/client-updates", clientUpdateH.Create)
+	adminAPIMux.HandleFunc("GET /api/client-updates/{id}", clientUpdateH.Get)
+	adminAPIMux.HandleFunc("POST /api/client-updates/{id}/{action}", clientUpdateH.Action)
 
 	adminAPIMux.HandleFunc("GET /api/groups", groupH.List)
 	adminAPIMux.HandleFunc("POST /api/groups", groupH.Create)
@@ -391,6 +397,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	settingsQ := queries.NewSettingsQueries(s.db)
 	clientH := handlers.NewClientHandler(ss.ClientQ, ss.PlaceholderQ, ss.ServiceQ, ss.APIKeyQ, ss.CanarySvc)
+	clientUpdateH := handlers.NewClientUpdateHandler(queries.NewClientUpdateQueries(s.db), ss.ClientQ, configuredDownloadDir())
 	canaryH := handlers.NewCanaryHandler(ss.CanaryQ, ss.CanarySvc)
 	proxyH := handlers.NewProxyHandler(ss.ServiceQ, ss.APIKeyQ, ss.Resolver, ss.RequestLogQ, ss.ApprovalQ, ss.SettingsQ, ss.Notifier).
 		WithCrypto(ss.Crypto).
@@ -401,6 +408,8 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	clientMux := http.NewServeMux()
 	clientMux.HandleFunc("GET /client/keys", clientH.GetKeys)
 	clientMux.HandleFunc("GET /client/canaries", canaryH.ClientGetCanaries)
+	clientMux.HandleFunc("POST /client/control/heartbeat", clientUpdateH.Heartbeat)
+	clientMux.HandleFunc("POST /client/control/jobs/{id}/status", clientUpdateH.ReportStatus)
 
 	// Agent statusline script — global content set in /admin/settings,
 	// downloaded by `duckway sync` and dropped at ~/.duckway/statusline.sh.
@@ -538,10 +547,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	}
 
 	// Client binary downloads
-	downloadDir := os.Getenv("DUCKWAY_DOWNLOAD_DIR")
-	if downloadDir == "" {
-		downloadDir = "/srv/downloads"
-	}
+	downloadDir := configuredDownloadDir()
 	if info, err := os.Stat(downloadDir); err == nil && info.IsDir() {
 		s.mux.HandleFunc("GET /download/{binary}", func(w http.ResponseWriter, r *http.Request) {
 			serveClientDownload(w, r, downloadDir)
@@ -573,6 +579,13 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintf(w, installScript, baseURL, baseURL, baseURL)
 	})
+}
+
+func configuredDownloadDir() string {
+	if dir := os.Getenv("DUCKWAY_DOWNLOAD_DIR"); dir != "" {
+		return dir
+	}
+	return "/srv/downloads"
 }
 
 func handleClientUpdateInfo(w http.ResponseWriter, r *http.Request, downloadDir string) {
@@ -635,6 +648,13 @@ func handleClientUpdateInfo(w http.ResponseWriter, r *http.Request, downloadDir 
 		"binary":                     binary,
 		"download_url":               "/download/" + binary,
 		"sha256":                     sum,
+		"size": func() int64 {
+			info, _ := os.Stat(path)
+			if info != nil {
+				return info.Size()
+			}
+			return 0
+		}(),
 	})
 }
 

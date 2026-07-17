@@ -30,6 +30,7 @@ type UpdateInfo struct {
 	Binary                   string `json:"binary"`
 	DownloadURL              string `json:"download_url"`
 	SHA256                   string `json:"sha256"`
+	Size                     int64  `json:"size,omitempty"`
 }
 
 // CheckServerVersion fetches the gateway's reported build version from
@@ -159,6 +160,9 @@ func DownloadAndReplaceClientWithInfo(serverURL string, info *UpdateInfo) error 
 	}
 	if written < 1024*1024 {
 		return fmt.Errorf("downloaded binary suspiciously small (%d bytes) — refusing to replace", written)
+	}
+	if info.Size > 0 && written != info.Size {
+		return fmt.Errorf("downloaded binary size mismatch: got %d want %d", written, info.Size)
 	}
 	gotSHA := hex.EncodeToString(hasher.Sum(nil))
 	if !strings.EqualFold(gotSHA, info.SHA256) {

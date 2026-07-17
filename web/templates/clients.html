@@ -121,6 +121,7 @@
       <a href="#" onclick="openClientDetail('{{.ID}}');return false" style="text-decoration:none"><strong style="font-size:1.1rem">{{.Name}}</strong></a>
       <code class="text-muted" style="font-size:0.75rem">{{.ShortID}}</code>
       {{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}
+      {{if eq .UpdatePolicy "manual"}}<span class="badge badge-yellow">Manual updates</span>{{else}}<span class="badge badge-blue">Managed updates</span>{{end}}
       <span class="text-muted text-sm" id="key-count-{{.ID}}"></span>
       <div class="text-muted text-sm">Last seen: {{if .LastSeenAt}}{{deref .LastSeenAt}}{{else}}Never{{end}}</div>
     </div>
@@ -424,6 +425,7 @@ sudo loginctl enable-linger "$USER"</code></pre>
         <tr><td class="text-muted">Name</td><td id="cd-name"></td></tr>
         <tr><td class="text-muted">Status</td><td id="cd-status"></td></tr>
         <tr><td class="text-muted">Canary</td><td id="cd-canary"></td></tr>
+        <tr><td class="text-muted">Updates</td><td id="cd-updates"></td></tr>
         <tr><td class="text-muted">Last Seen</td><td id="cd-seen"></td></tr>
         <tr><td class="text-muted">Created</td><td id="cd-created"></td></tr>
       </table>
@@ -448,6 +450,10 @@ sudo loginctl enable-linger "$USER"</code></pre>
         <input type="hidden" id="ce-id">
         <div class="form-group"><label>Name</label><input type="text" id="ce-name" required></div>
         <div class="form-group"><label><input type="checkbox" id="ce-active"> Active</label></div>
+        <div class="form-group">
+          <label><input type="checkbox" id="ce-managed-updates"> Managed updates</label>
+          <span class="text-muted text-sm">Turn off to exclude this client from fleet rollouts and update it manually.</span>
+        </div>
         <div class="modal-actions">
           <button type="button" class="btn" onclick="switchToClientView()">Back</button>
           <button type="submit" class="btn btn-primary">Save</button>
@@ -478,6 +484,7 @@ function openClientDetail(id) {
       document.getElementById('cd-name').textContent = c.name;
       document.getElementById('cd-status').innerHTML = c.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>';
       document.getElementById('cd-canary').innerHTML = c.canary_enabled ? '<span class="badge badge-green">Enabled</span>' : '<span class="badge badge-gray">Disabled</span>';
+      document.getElementById('cd-updates').innerHTML = c.update_policy === 'manual' ? '<span class="badge badge-yellow">Manual only</span>' : '<span class="badge badge-blue">Managed</span>';
       document.getElementById('cd-seen').textContent = c.last_seen_at || 'Never';
       document.getElementById('cd-created').textContent = c.created_at;
       document.getElementById('cd-view').style.display = '';
@@ -544,6 +551,7 @@ function switchToClientEdit() {
   document.getElementById('ce-id').value = currentClient.id;
   document.getElementById('ce-name').value = currentClient.name;
   document.getElementById('ce-active').checked = currentClient.is_active;
+  document.getElementById('ce-managed-updates').checked = currentClient.update_policy !== 'manual';
   document.getElementById('cd-view').style.display = 'none';
   document.getElementById('cd-edit').style.display = '';
 }
@@ -561,7 +569,8 @@ document.getElementById('client-edit-form').addEventListener('submit', function(
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
       name: document.getElementById('ce-name').value,
-      is_active: document.getElementById('ce-active').checked
+      is_active: document.getElementById('ce-active').checked,
+      update_policy: document.getElementById('ce-managed-updates').checked ? 'managed' : 'manual'
     }),
     credentials: 'same-origin'
   })

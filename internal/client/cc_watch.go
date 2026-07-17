@@ -100,6 +100,7 @@ func (w *CCWatch) Run(ctx context.Context) error {
 	defer releaseCCWatchLock(lockFile)
 	log.Printf("[cc-watch] starting; server=%s debug=%v no_tmux=%v", w.cfg.ServerURL, w.debug, w.noTmux)
 	StartUpdateCheckLoop(ctx, w.cfg, "cc-watch")
+	StartControlPlaneLoop(ctx, w.configDir, w.cfg, "cc_watch")
 
 	// Recover any turns whose Stop event arrived while the previous
 	// daemon instance was dead. Best-effort: errors are logged and we

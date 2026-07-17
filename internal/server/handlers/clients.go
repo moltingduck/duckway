@@ -121,8 +121,9 @@ func (h *ClientHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name     *string `json:"name"`
-		IsActive *bool   `json:"is_active"`
+		Name         *string `json:"name"`
+		IsActive     *bool   `json:"is_active"`
+		UpdatePolicy *string `json:"update_policy"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
@@ -134,6 +135,13 @@ func (h *ClientHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.IsActive != nil {
 		client.IsActive = *req.IsActive
+	}
+	if req.UpdatePolicy != nil {
+		if *req.UpdatePolicy != "managed" && *req.UpdatePolicy != "manual" {
+			jsonError(w, "update_policy must be managed or manual", http.StatusBadRequest)
+			return
+		}
+		client.UpdatePolicy = *req.UpdatePolicy
 	}
 
 	if err := h.clients.Update(client); err != nil {

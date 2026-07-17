@@ -65,6 +65,7 @@ var migrations = []string{
 		token_hash      TEXT NOT NULL UNIQUE,
 		is_active       INTEGER NOT NULL DEFAULT 1,
 		canary_enabled  INTEGER NOT NULL DEFAULT 1,
+		update_policy   TEXT NOT NULL DEFAULT 'managed',
 		last_seen_at    TEXT,
 		created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
@@ -163,6 +164,52 @@ var migrations = []string{
 		created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_canary_client ON canary_tokens(client_id)`,
+
+	`CREATE TABLE IF NOT EXISTS client_runtime_status (
+		client_id          TEXT PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
+		version            TEXT NOT NULL DEFAULT '',
+		os                 TEXT NOT NULL DEFAULT '',
+		arch               TEXT NOT NULL DEFAULT '',
+		boot_id            TEXT NOT NULL DEFAULT '',
+		install_path       TEXT NOT NULL DEFAULT '',
+		install_writable   INTEGER NOT NULL DEFAULT 0,
+		capabilities       TEXT NOT NULL DEFAULT '[]',
+		components         TEXT NOT NULL DEFAULT '{}',
+		current_job_id     TEXT NOT NULL DEFAULT '',
+		last_heartbeat_at  TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+
+	`CREATE TABLE IF NOT EXISTS client_update_rollouts (
+		id                       TEXT PRIMARY KEY,
+		target_version           TEXT NOT NULL,
+		artifacts                TEXT NOT NULL DEFAULT '[]',
+		status                   TEXT NOT NULL DEFAULT 'active',
+		max_concurrency          INTEGER NOT NULL,
+		start_interval_seconds   INTEGER NOT NULL,
+		failure_threshold_percent INTEGER NOT NULL DEFAULT 20,
+		next_dispatch_at         TEXT NOT NULL DEFAULT (datetime('now')),
+		created_at               TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at               TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+
+	`CREATE TABLE IF NOT EXISTS client_update_jobs (
+		id                TEXT PRIMARY KEY,
+		rollout_id        TEXT NOT NULL REFERENCES client_update_rollouts(id) ON DELETE CASCADE,
+		client_id         TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+		type              TEXT NOT NULL DEFAULT 'update_restart',
+		status            TEXT NOT NULL DEFAULT 'queued',
+		lease_token       TEXT NOT NULL DEFAULT '',
+		lease_expires_at  TEXT,
+		attempts          INTEGER NOT NULL DEFAULT 0,
+		error             TEXT NOT NULL DEFAULT '',
+		started_at        TEXT,
+		finished_at       TEXT,
+		created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+		UNIQUE(rollout_id, client_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_client_update_jobs_dispatch ON client_update_jobs(status, rollout_id, client_id)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_client_update_one_active ON client_update_rollouts((1)) WHERE status IN ('active','paused')`,
 
 	`CREATE TABLE IF NOT EXISTS oauth_credentials (
 		id                TEXT PRIMARY KEY,
@@ -338,6 +385,10 @@ func runMigrations(db *sql.DB) error {
 	safeAlters := []string{
 		"ALTER TABLE clients ADD COLUMN canary_enabled INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE clients ADD COLUMN short_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE clients ADD COLUMN update_policy TEXT NOT NULL DEFAULT 'managed'",
+		"ALTER TABLE client_update_rollouts ADD COLUMN artifacts TEXT NOT NULL DEFAULT '[]'",
+		"ALTER TABLE client_update_rollouts ADD COLUMN failure_threshold_percent INTEGER NOT NULL DEFAULT 20",
+		"ALTER TABLE client_update_jobs ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE canary_settings ADD COLUMN exclude_clients TEXT NOT NULL DEFAULT '[]'",
 		"ALTER TABLE services ADD COLUMN key_directory TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE services ADD COLUMN default_acl TEXT NOT NULL DEFAULT ''",

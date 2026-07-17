@@ -12,7 +12,10 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/hackerduck/duckway/internal/controlplane"
 )
 
 // directTransport is an HTTP transport that never reads HTTPS_PROXY / HTTP_PROXY
@@ -46,6 +49,61 @@ func NewAPIClient(baseURL, token string) *APIClient {
 		token:      token,
 		httpClient: directClient,
 	}
+}
+
+func (c *APIClient) ControlHeartbeat(ctx context.Context, heartbeat *controlplane.HeartbeatRequest) (*controlplane.HeartbeatResponse, error) {
+	body, err := json.Marshal(heartbeat)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/client/control/heartbeat", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Duckway-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("control heartbeat: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("control heartbeat returned %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	var result controlplane.HeartbeatResponse
+	dec := json.NewDecoder(resp.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode control heartbeat: %w", err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("decode control heartbeat: response must contain one JSON value")
+	}
+	return &result, nil
+}
+
+func (c *APIClient) ReportControlJob(ctx context.Context, jobID string, status *controlplane.JobStatusRequest) error {
+	body, err := json.Marshal(status)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/client/control/jobs/"+url.PathEscape(jobID)+"/status", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Duckway-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("report control job: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("report control job returned %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	return nil
 }
 
 type PlaceholderKeyInfo struct {

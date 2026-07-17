@@ -76,8 +76,71 @@ type Client struct {
 	TokenHash     string  `json:"-"`
 	IsActive      bool    `json:"is_active"`
 	CanaryEnabled bool    `json:"canary_enabled"`
+	UpdatePolicy  string  `json:"update_policy"`
 	LastSeenAt    *string `json:"last_seen_at"`
 	CreatedAt     string  `json:"created_at"`
+}
+
+type ClientRuntimeStatus struct {
+	ClientID        string `json:"client_id"`
+	Version         string `json:"version"`
+	OS              string `json:"os"`
+	Arch            string `json:"arch"`
+	BootID          string `json:"boot_id"`
+	InstallPath     string `json:"install_path"`
+	InstallWritable bool   `json:"install_writable"`
+	Capabilities    string `json:"capabilities"`
+	Components      string `json:"components"`
+	CurrentJobID    string `json:"current_job_id"`
+	LastHeartbeatAt string `json:"last_heartbeat_at"`
+}
+
+type ClientRuntimeView struct {
+	ClientRuntimeStatus
+	CapabilitiesList []string          `json:"capabilities_list"`
+	ComponentsMap    map[string]string `json:"components_map"`
+}
+
+type ClientUpdateRollout struct {
+	ID                   string `json:"id"`
+	TargetVersion        string `json:"target_version"`
+	Artifacts            string `json:"artifacts,omitempty"`
+	Status               string `json:"status"`
+	MaxConcurrency       int    `json:"max_concurrency"`
+	StartIntervalSeconds int    `json:"start_interval_seconds"`
+	FailureThreshold     int    `json:"failure_threshold_percent"`
+	NextDispatchAt       string `json:"next_dispatch_at"`
+	CreatedAt            string `json:"created_at"`
+	UpdatedAt            string `json:"updated_at"`
+}
+
+type ClientUpdateJob struct {
+	ID             string `json:"id"`
+	RolloutID      string `json:"rollout_id"`
+	ClientID       string `json:"client_id"`
+	ClientName     string `json:"client_name,omitempty"`
+	TargetVersion  string `json:"target_version,omitempty"`
+	Artifacts      string `json:"-"`
+	Type           string `json:"type"`
+	Status         string `json:"status"`
+	LeaseToken     string `json:"-"`
+	LeaseExpiresAt string `json:"lease_expires_at,omitempty"`
+	Attempts       int    `json:"attempts"`
+	Error          string `json:"error,omitempty"`
+	StartedAt      string `json:"started_at,omitempty"`
+	FinishedAt     string `json:"finished_at,omitempty"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
+type ClientUpdateRolloutSummary struct {
+	ClientUpdateRollout
+	Total   int `json:"total"`
+	Queued  int `json:"queued"`
+	Running int `json:"running"`
+	Healthy int `json:"healthy"`
+	Failed  int `json:"failed"`
+	Skipped int `json:"skipped"`
 }
 
 type PlaceholderKey struct {

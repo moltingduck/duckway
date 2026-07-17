@@ -15,10 +15,10 @@ func NewClientQueries(db *sql.DB) *ClientQueries {
 	return &ClientQueries{db: db}
 }
 
-const clientCols = "id, short_id, name, token_hash, is_active, canary_enabled, last_seen_at, created_at"
+const clientCols = "id, short_id, name, token_hash, is_active, canary_enabled, update_policy, last_seen_at, created_at"
 
 func scanClient(row interface{ Scan(...interface{}) error }, c *models.Client) error {
-	return row.Scan(&c.ID, &c.ShortID, &c.Name, &c.TokenHash, &c.IsActive, &c.CanaryEnabled, &c.LastSeenAt, &c.CreatedAt)
+	return row.Scan(&c.ID, &c.ShortID, &c.Name, &c.TokenHash, &c.IsActive, &c.CanaryEnabled, &c.UpdatePolicy, &c.LastSeenAt, &c.CreatedAt)
 }
 
 func (q *ClientQueries) List() ([]models.Client, error) {
@@ -59,8 +59,8 @@ func (q *ClientQueries) GetByTokenHash(hash string) (*models.Client, error) {
 
 func (q *ClientQueries) Create(c *models.Client) error {
 	_, err := q.db.Exec(
-		"INSERT INTO clients (id, short_id, name, token_hash, canary_enabled) VALUES (?, ?, ?, ?, ?)",
-		c.ID, c.ShortID, c.Name, c.TokenHash, c.CanaryEnabled,
+		"INSERT INTO clients (id, short_id, name, token_hash, canary_enabled, update_policy) VALUES (?, ?, ?, ?, ?, ?)",
+		c.ID, c.ShortID, c.Name, c.TokenHash, c.CanaryEnabled, defaultUpdatePolicy(c.UpdatePolicy),
 	)
 	return err
 }
@@ -80,8 +80,36 @@ func (q *ClientQueries) UpdateLastSeen(id string) error {
 }
 
 func (q *ClientQueries) Update(c *models.Client) error {
-	_, err := q.db.Exec("UPDATE clients SET name = ?, is_active = ? WHERE id = ?", c.Name, c.IsActive, c.ID)
-	return err
+	tx, err := q.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	policy := defaultUpdatePolicy(c.UpdatePolicy)
+	if _, err := tx.Exec("UPDATE clients SET name = ?, is_active = ?, update_policy = ? WHERE id = ?", c.Name, c.IsActive, policy, c.ID); err != nil {
+		return err
+	}
+	if policy == "manual" {
+		if _, err := tx.Exec(`UPDATE client_update_jobs SET status='skipped_manual', finished_at=datetime('now')
+			WHERE client_id=? AND status='queued'`, c.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE client_update_rollouts SET status=CASE WHEN EXISTS
+			(SELECT 1 FROM client_update_jobs WHERE rollout_id=client_update_rollouts.id AND status='failed')
+			THEN 'completed_with_failures' ELSE 'completed' END,updated_at=datetime('now') WHERE status='active'
+			AND NOT EXISTS (SELECT 1 FROM client_update_jobs WHERE rollout_id=client_update_rollouts.id
+				AND status NOT IN ('healthy','failed','skipped_manual','skipped_inactive','ineligible','manual_required','up_to_date','cancelled'))`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func defaultUpdatePolicy(policy string) string {
+	if policy == "manual" {
+		return policy
+	}
+	return "managed"
 }
 
 func (q *ClientQueries) UpdateCanaryEnabled(id string, enabled bool) error {

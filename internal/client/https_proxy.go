@@ -109,6 +109,7 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 	updateCtx, cancelUpdateChecks := context.WithCancel(context.Background())
 	defer cancelUpdateChecks()
 	StartUpdateCheckLoop(updateCtx, cfg, "proxy")
+	StartControlPlaneLoop(updateCtx, configDir, cfg, "proxy")
 
 	// Initial sync
 	count, err := SyncKeys(configDir, cfg)

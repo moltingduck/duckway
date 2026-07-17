@@ -1,0 +1,159 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Client Updates</h1>
+  <button class="btn btn-primary" id="new-rollout-btn" onclick="openRollout()">New rollout</button>
+</div>
+
+<div class="grid-4 mb-1" id="fleet-summary">
+  <div><span class="text-muted text-sm">Eligible</span><div id="sum-eligible" style="font-size:1.35rem;font-weight:700">-</div></div>
+  <div><span class="text-muted text-sm">Manual</span><div id="sum-manual" style="font-size:1.35rem;font-weight:700">-</div></div>
+  <div><span class="text-muted text-sm">Offline / legacy</span><div id="sum-legacy" style="font-size:1.35rem;font-weight:700">-</div></div>
+  <div><span class="text-muted text-sm">Not writable</span><div id="sum-unwritable" style="font-size:1.35rem;font-weight:700">-</div></div>
+</div>
+
+<section class="mb-1">
+  <div class="flex-between mb-1">
+    <h2 style="margin:0;font-size:1rem">Current rollout</h2>
+    <span id="rollout-refresh" class="text-sm text-muted"></span>
+  </div>
+  <div id="active-rollout" class="text-muted">Loading...</div>
+</section>
+
+<section>
+  <h2 style="font-size:1rem">Rollout history</h2>
+  <div style="overflow:auto">
+    <table>
+      <thead><tr><th>Created</th><th>Target</th><th>Status</th><th>Progress</th><th>Concurrency</th><th>Interval</th><th></th></tr></thead>
+      <tbody id="rollout-history"><tr><td colspan="7" class="text-muted">Loading...</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<div id="rollout-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-width:520px">
+    <h2>New client rollout</h2>
+    <form id="rollout-form">
+      <div class="form-group"><label>Target version</label><input id="rollout-target" readonly></div>
+      <div class="grid-2">
+        <div class="form-group"><label>Max concurrency</label><input type="number" id="rollout-concurrency" min="1" max="100" value="3" required></div>
+        <div class="form-group"><label>Dispatch interval (seconds)</label><input type="number" id="rollout-interval" min="0" max="3600" value="30" required></div>
+      </div>
+	  <div class="form-group"><label>Auto-pause failure threshold (%)</label><input type="number" id="rollout-failure-threshold" min="1" max="100" value="20" required></div>
+      <div id="rollout-preview" class="text-sm text-muted"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="document.getElementById('rollout-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="start-rollout-btn">Start rollout</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+var updateData = null;
+var refreshTimer = null;
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+function statusBadge(status) {
+  var cls = status === 'healthy' || status === 'completed' || status === 'up_to_date' ? 'badge-green' :
+    (status === 'failed' || status === 'cancelled' ? 'badge-red' :
+    (status === 'active' || status === 'running' || status === 'leased' ? 'badge-blue' :
+    (status === 'paused' || status === 'manual_required' || status === 'skipped_manual' ? 'badge-yellow' : 'badge-gray')));
+  return '<span class="badge '+cls+'">'+esc(status)+'</span>';
+}
+function runtimeFor(id) { return updateData && updateData.runtimes ? updateData.runtimes[id] : null; }
+function supportsManaged(r) {
+  if (!r) return false;
+  try { return JSON.parse(r.capabilities || '[]').indexOf('managed_update_v1') >= 0; } catch(e) { return false; }
+}
+function runtimeFresh(r) {
+  if (!r || !r.last_heartbeat_at) return false;
+  var timestamp = String(r.last_heartbeat_at).replace(' ', 'T') + 'Z';
+  var age = Date.now() - Date.parse(timestamp);
+  return Number.isFinite(age) && age >= 0 && age < 10 * 60 * 1000;
+}
+function fleetCounts() {
+  var counts = {eligible:0, manual:0, legacy:0, unwritable:0};
+  (updateData.clients || []).forEach(function(c) {
+    var r = runtimeFor(c.id);
+    if (c.update_policy === 'manual') counts.manual++;
+    else if (!supportsManaged(r) || !runtimeFresh(r)) counts.legacy++;
+    else if (!r.install_writable) counts.unwritable++;
+    else if (c.is_active) counts.eligible++;
+  });
+  return counts;
+}
+function renderSummary() {
+  var c = fleetCounts();
+  document.getElementById('sum-eligible').textContent = c.eligible;
+  document.getElementById('sum-manual').textContent = c.manual;
+  document.getElementById('sum-legacy').textContent = c.legacy;
+  document.getElementById('sum-unwritable').textContent = c.unwritable;
+  document.getElementById('rollout-preview').textContent = c.eligible+' eligible · '+c.manual+' manual excluded · '+c.legacy+' offline/legacy · '+c.unwritable+' require manual install';
+}
+function progress(rollout) {
+  var done = rollout.jobs.filter(function(j){return ['healthy','failed','cancelled','skipped_manual','skipped_inactive','manual_required','ineligible','up_to_date'].indexOf(j.status)>=0;}).length;
+  return done+' / '+rollout.jobs.length;
+}
+function renderJobs(rollout) {
+  var rows = rollout.jobs.map(function(j) {
+    return '<tr><td>'+esc(j.client_name)+'</td><td class="mono text-sm">'+esc(j.target_version)+'</td><td>'+statusBadge(j.status)+'</td><td>'+j.attempts+'</td><td class="text-sm">'+esc(j.error || '')+'</td></tr>';
+  }).join('');
+  return '<div style="overflow:auto"><table><thead><tr><th>Client</th><th>Target</th><th>Status</th><th>Attempts</th><th>Result</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+function actionButton(id, action, label, danger) {
+  return '<button class="btn btn-sm '+(danger?'btn-danger':'')+'" onclick="rolloutAction(\''+esc(id)+'\',\''+action+'\')">'+label+'</button>';
+}
+function renderActive() {
+  var rollout = (updateData.rollouts || []).filter(function(r){return r.status === 'active' || r.status === 'paused';})[0];
+  var box = document.getElementById('active-rollout');
+  if (!rollout) { box.innerHTML = '<span class="text-muted">No active rollout.</span>'; return; }
+  var actions = rollout.status === 'active' ? actionButton(rollout.id,'pause','Pause',false) : actionButton(rollout.id,'resume','Resume',false);
+  actions += ' '+actionButton(rollout.id,'cancel','Cancel',true);
+  if (rollout.jobs.some(function(j){return j.status === 'failed';})) actions += ' '+actionButton(rollout.id,'retry-failed','Retry failed',false);
+  box.innerHTML = '<div class="flex-between"><div><strong>'+esc(rollout.target_version)+'</strong> '+statusBadge(rollout.status)+' <span class="text-muted text-sm">'+progress(rollout)+'</span></div><div>'+actions+'</div></div>'+renderJobs(rollout);
+}
+function renderHistory() {
+  var body = document.getElementById('rollout-history');
+  var list = updateData.rollouts || [];
+  if (!list.length) { body.innerHTML = '<tr><td colspan="7" class="text-muted">No rollouts yet.</td></tr>'; return; }
+  body.innerHTML = list.map(function(r) {
+    return '<tr><td class="text-sm">'+esc(r.created_at)+'</td><td class="mono text-sm">'+esc(r.target_version)+'</td><td>'+statusBadge(r.status)+'</td><td>'+progress(r)+'</td><td>'+r.max_concurrency+'</td><td>'+r.start_interval_seconds+'s</td><td><button class="btn btn-sm" onclick="showRollout(\''+esc(r.id)+'\')">Detail</button></td></tr>';
+  }).join('');
+}
+function loadUpdates() {
+  fetch('/api/client-updates', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d) {
+    if (d.error) { showToast(d.error,'error'); return; }
+    updateData = d; renderSummary(); renderActive(); renderHistory();
+    document.getElementById('rollout-refresh').textContent = 'Updated '+new Date().toLocaleTimeString();
+    document.getElementById('new-rollout-btn').disabled = (d.rollouts || []).some(function(r){return r.status==='active'||r.status==='paused';});
+  });
+}
+function openRollout() {
+  if (!updateData) return;
+  document.getElementById('rollout-target').value = updateData.recommended_version || '';
+  renderSummary(); document.getElementById('rollout-modal').style.display='flex';
+}
+document.getElementById('rollout-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var btn=document.getElementById('start-rollout-btn'); btn.disabled=true;
+  fetch('/api/client-updates',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({target_version:document.getElementById('rollout-target').value,max_concurrency:Number(document.getElementById('rollout-concurrency').value),start_interval_seconds:Number(document.getElementById('rollout-interval').value),failure_threshold_percent:Number(document.getElementById('rollout-failure-threshold').value)})})
+    .then(function(r){return r.json();}).then(function(d){btn.disabled=false;if(d.error){showToast(d.error,'error');return;}document.getElementById('rollout-modal').style.display='none';showToast('Rollout started','success');loadUpdates();})
+    .catch(function(err){btn.disabled=false;showToast(err.message,'error');});
+});
+function rolloutAction(id, action) {
+  if (action==='cancel' && !confirm('Cancel queued updates? Clients already updating will continue.')) return;
+  fetch('/api/client-updates/'+encodeURIComponent(id)+'/'+action,{method:'POST',credentials:'same-origin'})
+    .then(function(r){return r.json();}).then(function(d){if(d.error){showToast(d.error,'error');return;}showToast('Rollout '+d.status,'success');loadUpdates();});
+}
+function showRollout(id) {
+  var r=(updateData.rollouts||[]).filter(function(x){return x.id===id;})[0];
+  if (!r) return;
+  document.getElementById('active-rollout').innerHTML='<div class="flex-between"><strong>'+esc(r.target_version)+' history</strong><button class="btn btn-sm" onclick="renderActive()">Close</button></div>'+renderJobs(r);
+}
+document.addEventListener('DOMContentLoaded', function(){loadUpdates();refreshTimer=setInterval(loadUpdates,10000);});
+</script>
+{{end}}
