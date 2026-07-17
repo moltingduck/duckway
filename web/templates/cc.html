@@ -196,13 +196,14 @@ function loadCCs() {
       var cfgPreview = '';
       try {
         var cfg = JSON.parse(c.config || '{}');
-        cfgPreview = Object.keys(cfg).map(function(k){return k+'='+escapeShort(cfg[k]);}).join(', ');
+        cfgPreview = Object.keys(cfg).filter(function(k){return k !== 'agent_options';})
+          .map(function(k){return k+'='+escapeShort(cfg[k]);}).join(', ');
       } catch(e) { cfgPreview = '(invalid)'; }
       var tr = document.createElement('tr');
       var needsKey = ccNeedsKey(c);
       tr.innerHTML =
         '<td><a href="#" onclick="openDetail(\''+c.id+'\');return false"><strong>'+escapeHTML(c.name)+'</strong></a></td>' +
-        '<td>'+escapeHTML(c.client_name||'?')+'  <span class="text-muted text-sm">(' + escapeHTML(agentLabel(c.agent_type)) + ')</span></td>' +
+        '<td>'+escapeHTML(c.client_name||'?')+'  <span class="text-muted text-sm">(' + escapeHTML(agentLabel(c.agent_type)) + ')</span>' + codexSandboxBadge(c) + '</td>' +
         '<td class="text-sm">'+(needsKey ? '<span class="badge badge-red">reassign key</span> ' : '')+escapeHTML(c.api_key_name)+'</td>' +
         '<td class="text-sm mono">'+escapeHTML(cfgPreview)+'</td>' +
         '<td>'+(c.is_active?'<span class="badge badge-green">Active</span>':(needsKey?'<span class="badge badge-red">Disabled: reassign key</span>':'<span class="badge badge-gray">Inactive</span>'))+'</td>' +
@@ -235,6 +236,20 @@ function agentLabel(agentType) {
 }
 function parseCCConfig(c) {
   try { return JSON.parse(c.config || '{}') || {}; } catch(e) { return {}; }
+}
+function codexSandbox(c) {
+  if (!c || c.agent_type !== 'codex') return '';
+  var sandbox = (parseCCConfig(c).agent_options || {}).sandbox || 'workspace-write';
+  return ['workspace-write','read-only','danger-full-access','none'].indexOf(sandbox) >= 0
+    ? sandbox : 'workspace-write';
+}
+function codexSandboxBadge(c) {
+  var sandbox = codexSandbox(c);
+  if (!sandbox) return '';
+  var badgeClass = sandbox === 'danger-full-access' ? 'badge-red'
+    : (sandbox === 'none' ? 'badge-yellow' : (sandbox === 'read-only' ? 'badge-green' : 'badge-blue'));
+  var label = sandbox === 'none' ? 'none (local config)' : sandbox;
+  return '<br><span class="badge '+badgeClass+'">configured sandbox: '+escapeHTML(label)+'</span>';
 }
 
 function renderConfigFields() {
@@ -445,12 +460,13 @@ function openCreate() {
 function codexSandboxField(id, value) {
   value = value || 'workspace-write';
   var opts = ['workspace-write','read-only','danger-full-access','none'].map(function(v) {
-    return '<option value="'+v+'" '+(v === value ? 'selected' : '')+'>'+v+'</option>';
+    var label = v === 'none' ? 'none (use client Codex config)' : v;
+    return '<option value="'+v+'" '+(v === value ? 'selected' : '')+'>'+label+'</option>';
   }).join('');
   return '<div class="form-group">' +
     '<label>Codex sandbox</label>' +
     '<select id="'+escapeHTML(id)+'">'+opts+'</select>' +
-    '<span class="text-muted text-sm">Only this enum is sent to the client. Use danger-full-access only for trusted Discord categories.</span>' +
+    '<span class="text-muted text-sm">Use danger-full-access only for trusted Discord categories. Changes affect existing channels after <code>duckway cc watch restart</code>; sessions are preserved.</span>' +
   '</div>';
 }
 
@@ -512,7 +528,7 @@ function openDetail(id) {
     document.getElementById('d-title').textContent = c.name;
     document.getElementById('d-id').textContent = c.id;
     document.getElementById('d-name').textContent = c.name;
-    document.getElementById('d-agent').innerHTML = '<span class="badge badge-gray">'+escapeHTML(agentLabel(c.agent_type))+'</span> <span class="text-muted text-sm">('+escapeHTML(c.agent_type)+')</span>';
+    document.getElementById('d-agent').innerHTML = '<span class="badge badge-gray">'+escapeHTML(agentLabel(c.agent_type))+'</span> <span class="text-muted text-sm">('+escapeHTML(c.agent_type)+')</span>' + codexSandboxBadge(c);
     document.getElementById('d-service').innerHTML = '<span class="badge badge-blue">'+escapeHTML(c.service_name)+'</span>';
     var needsKey = ccNeedsKey(c);
     document.getElementById('d-key').innerHTML = (needsKey ? '<span class="badge badge-red">reassign key</span> ' : '') + escapeHTML(c.api_key_name);
