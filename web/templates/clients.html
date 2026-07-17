@@ -91,6 +91,11 @@
   <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Register Client</button>
 </div>
 
+<nav class="client-tabs" aria-label="Client views">
+  <a class="client-tab active" href="/admin/clients" aria-current="page">Details</a>
+  <a class="client-tab" href="/admin/client-updates">Updates</a>
+</nav>
+
 <div class="search-bar">
   <input type="text" id="search-clients" placeholder="Search or filter (e.g. name:laptop service:openai canary:on)">
   <span class="count" id="count-clients"></span>

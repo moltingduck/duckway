@@ -305,7 +305,7 @@ func (h *AdminHandler) ClientsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminHandler) ClientUpdatesPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "client_updates", pageData{Title: "Client Updates", Active: "client_updates"})
+	h.render(w, "client_updates", pageData{Title: "Client Updates", Active: "clients"})
 }
 
 func (h *AdminHandler) GroupsPage(w http.ResponseWriter, r *http.Request) {

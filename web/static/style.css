@@ -76,6 +76,27 @@ a:hover { color: var(--accent-hover); }
 }
 .page-header h1 { font-size: 1.5rem; font-weight: 600; }
 
+.client-tabs {
+  display: flex;
+  gap: 1.25rem;
+  margin: -0.25rem 0 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.client-tab {
+  margin-bottom: -1px;
+  padding: 0.65rem 0.1rem;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+.client-tab:hover { color: var(--text); }
+.client-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
 /* Cards / Tables */
 .card {
   background: var(--bg-card);

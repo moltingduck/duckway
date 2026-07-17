@@ -1,8 +1,13 @@
 {{define "content"}}
 <div class="page-header">
-  <h1>Client Updates</h1>
+  <h1>Clients</h1>
   <button class="btn btn-primary" id="new-rollout-btn" onclick="openRollout()">New rollout</button>
 </div>
+
+<nav class="client-tabs" aria-label="Client views">
+  <a class="client-tab" href="/admin/clients">Details</a>
+  <a class="client-tab active" href="/admin/client-updates" aria-current="page">Updates</a>
+</nav>
 
 <div class="grid-4 mb-1" id="fleet-summary">
   <div><span class="text-muted text-sm">Eligible</span><div id="sum-eligible" style="font-size:1.35rem;font-weight:700">-</div></div>
