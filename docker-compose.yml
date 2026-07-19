@@ -5,8 +5,8 @@
 #   split                 — admin + gateway on separate ports (localhost, dev)
 #   prod                  — combined, no exposed ports (use behind reverse proxy)
 #   prod-split            — split, no exposed ports (use behind reverse proxy)
-#   tailscale             — split + Tailscale sidecars (HTTPS, no exposed ports)
-#   tailscale-combined    — combined + Tailscale sidecar (HTTPS, no exposed ports)
+#   tailscale             — split + Tailscale Serve sidecars (HTTP, no host ports)
+#   tailscale-combined    — combined + Tailscale Serve sidecar (HTTP, no host ports)
 #
 # Usage:
 #   docker compose --profile combined up -d                        # dev: combined
@@ -115,9 +115,11 @@ services:
     stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
-      - DUCKWAY_LISTEN=:80
+      - DUCKWAY_LISTEN=127.0.0.1:8080
     depends_on:
-      - tailscale-server
+      tailscale-server:
+        condition: service_healthy
+        restart: true
     profiles: ["tailscale-combined"]
 
   tailscale-server:
@@ -125,15 +127,24 @@ services:
     container_name: duckway-tailscale-server
     hostname: ${TS_HOSTNAME:-duckway}
     environment:
-      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TS_AUTHKEY=${TS_AUTHKEY_SERVER:-${TS_AUTHKEY:-}}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/ts-combined.json
       - TS_USERSPACE=true
+      - TS_ENABLE_HEALTH_CHECK=true
       - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
     volumes:
       - tailscale-server-state:/var/lib/tailscale
       - ./tailscale:/config:ro
+    networks:
+      - tailscale-server-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:9002/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     profiles: ["tailscale-combined"]
 
   # ============================================================
@@ -193,10 +204,12 @@ services:
     stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
-      - DUCKWAY_ADMIN_LISTEN=:80
-    command: ["--data", "/data", "--port", "80"]
+      - DUCKWAY_ADMIN_LISTEN=127.0.0.1:9091
+    command: ["--data", "/data"]
     depends_on:
-      - tailscale-admin
+      tailscale-admin:
+        condition: service_healthy
+        restart: true
     profiles: ["tailscale"]
 
   gateway-tailscale:
@@ -213,10 +226,12 @@ services:
     stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
-      - DUCKWAY_GATEWAY_LISTEN=:80
-    command: ["--data", "/data", "--port", "80"]
+      - DUCKWAY_GATEWAY_LISTEN=127.0.0.1:8080
+    command: ["--data", "/data"]
     depends_on:
-      - tailscale-gateway
+      tailscale-gateway:
+        condition: service_healthy
+        restart: true
     profiles: ["tailscale"]
 
   tailscale-admin:
@@ -224,15 +239,24 @@ services:
     container_name: duckway-tailscale-admin
     hostname: ${TS_HOSTNAME:-duckway}-admin
     environment:
-      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TS_AUTHKEY=${TS_AUTHKEY_ADMIN:-${TS_AUTHKEY:-}}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/ts-admin.json
       - TS_USERSPACE=true
+      - TS_ENABLE_HEALTH_CHECK=true
       - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
     volumes:
       - tailscale-admin-state:/var/lib/tailscale
       - ./tailscale:/config:ro
+    networks:
+      - tailscale-admin-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:9002/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     profiles: ["tailscale"]
 
   tailscale-gateway:
@@ -240,15 +264,24 @@ services:
     container_name: duckway-tailscale-gateway
     hostname: ${TS_HOSTNAME:-duckway}-gw
     environment:
-      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TS_AUTHKEY=${TS_AUTHKEY_GATEWAY:-${TS_AUTHKEY:-}}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/ts-gateway.json
       - TS_USERSPACE=true
+      - TS_ENABLE_HEALTH_CHECK=true
       - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
     volumes:
       - tailscale-gateway-state:/var/lib/tailscale
       - ./tailscale:/config:ro
+    networks:
+      - tailscale-gateway-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:9002/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     profiles: ["tailscale"]
 
   # ============================================================
@@ -265,6 +298,11 @@ services:
     environment:
       - DUCKWAY_SERVER=http://gateway:8080
     profiles: ["client"]
+
+networks:
+  tailscale-server-net:
+  tailscale-admin-net:
+  tailscale-gateway-net:
 
 volumes:
   duckway-data:

@@ -19,18 +19,25 @@ set +a
 
 MODE="${DUCKWAY_PROD_MODE:-split}"
 USE_TAILSCALE="${DUCKWAY_TAILSCALE:-true}"
-TS_HOSTNAME="$TS_HOSTNAME"
+TS_HOSTNAME="${TS_HOSTNAME:-duckway}"
+export TS_HOSTNAME
 
 if [ "$USE_TAILSCALE" = "true" ]; then
-  if [ -z "$TS_AUTHKEY" ]; then
-    echo "Error: TS_AUTHKEY not set in .prod.env"
-    echo "  Get one from https://login.tailscale.com/admin/settings/keys"
-    echo "  Or set DUCKWAY_TAILSCALE=false to run without Tailscale"
-    exit 1
-  fi
   case "$MODE" in
-    split)    PROFILES="--profile tailscale" ;;
-    combined) PROFILES="--profile tailscale-combined" ;;
+    split)
+      if { [ -z "${TS_AUTHKEY_ADMIN:-}" ] || [ -z "${TS_AUTHKEY_GATEWAY:-}" ]; } && [ -z "${TS_AUTHKEY:-}" ]; then
+        echo "Error: set both TS_AUTHKEY_ADMIN and TS_AUTHKEY_GATEWAY, or set fallback TS_AUTHKEY, in .prod.env"
+        exit 1
+      fi
+      PROFILES="--profile tailscale"
+      ;;
+    combined)
+      if [ -z "${TS_AUTHKEY_SERVER:-}" ] && [ -z "${TS_AUTHKEY:-}" ]; then
+        echo "Error: set TS_AUTHKEY_SERVER or fallback TS_AUTHKEY in .prod.env"
+        exit 1
+      fi
+      PROFILES="--profile tailscale-combined"
+      ;;
     *) echo "Error: DUCKWAY_PROD_MODE must be 'split' or 'combined'"; exit 1 ;;
   esac
 else
@@ -84,8 +91,6 @@ case "${1:-up}" in
     $COMPOSE build
     echo "Starting Duckway production ($MODE mode + Tailscale)..."
     $COMPOSE up -d
-    sleep 5
-
     echo ""
     if [ "$USE_TAILSCALE" = "true" ]; then
       if [ "$MODE" = "split" ]; then

@@ -624,12 +624,49 @@ This installs the binary and runs `init` non-interactively in one shot.
 In `.prod.env`:
 
 ```bash
-TS_AUTHKEY=hskey-auth-...                          # from `headscale preauthkeys create`
+TS_AUTHKEY_ADMIN=hskey-auth-...                    # short-lived key tagged for admin
+TS_AUTHKEY_GATEWAY=hskey-auth-...                  # short-lived key tagged for gateway
 TS_EXTRA_ARGS=--login-server=https://hs.example.com
 TS_HOSTNAME=duckway
 ```
 
-Then `./scripts/prod.sh up`. Note: headscale doesn't issue HTTPS certs by default, so the Tailscale `tailscale serve` HTTPS feature won't work. Duckway handles this by binding the admin and gateway services directly to port 80 inside their tailnet network namespace. Access them as `http://duckway-admin/` and `http://duckway-gw/` (no port suffix).
+Then `./scripts/prod.sh up`. Headscale doesn't issue Tailscale HTTPS certificates by default, so Duckway uses unprivileged userspace Tailscale Serve on HTTP port 80. Each app listens only on loopback in its sidecar network namespace; the profile publishes no host ports and needs no TUN device or added Linux capability. Use separately tagged admin and gateway pre-auth keys plus a deny-by-default Headscale policy to control who can reach each node; hostnames are not security identities. Access them as `http://${TS_HOSTNAME}-admin/` and `http://${TS_HOSTNAME}-gw/` (no port suffix).
+
+### Embedded DERP reconnects every minute
+
+Repeated `derp.Recv: EOF` messages at almost exactly 60-second intervals typically mean that the reverse proxy in front of Headscale is closing the upgraded DERP connection at its idle/read timeout. For Nginx, preserve the upgrade headers, disable buffering, and set long read/send timeouts on the Headscale location:
+
+```nginx
+# Place this map in the http context, outside server/location blocks.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+location / {
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header Host $host;
+    proxy_buffering off;
+    proxy_read_timeout 24h;
+    proxy_send_timeout 24h;
+    proxy_pass http://headscale;
+}
+```
+
+The embedded DERP server also requires public `tcp/443` and STUN on `udp/3478`; do not send UDP through an HTTP reverse proxy. Cloudflare Proxy and Cloudflare Tunnel are not compatible with Headscale's custom POST-based protocol.
+
+After changing the Headscale edge, verify from each Duckway Tailscale sidecar:
+
+```bash
+docker exec duckway-tailscale-admin tailscale netcheck
+docker exec duckway-tailscale-admin tailscale debug derp headscale
+docker exec duckway-tailscale-gateway tailscale netcheck
+docker exec duckway-tailscale-gateway tailscale debug derp headscale
+```
+
+The DERP debug commands should remain connected without a new EOF every minute. Use `tailscale ping <peer>` to confirm whether normal traffic is direct or relayed.
 
 ---
 

@@ -74,7 +74,8 @@
 
   <h4>Docker (recommended)</h4>
   <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Production
-docker compose up -d
+cp -n .env.example .prod.env &amp;&amp; chmod 600 .prod.env
+./scripts/prod.sh up
 
 # Development (auto-seeds test data)
 ./scripts/dev.sh up</code></pre>
@@ -630,15 +631,18 @@ duckway update            # Compare with server, replace binary if drifted</code
 
   <h4>Production (Tailscale — no exposed ports)</h4>
   <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># 1. Configure
-cp .env.example .prod.env
-# Edit .prod.env: TS_AUTHKEY, TS_HOSTNAME
+cp -n .env.example .prod.env &amp;&amp; chmod 600 .prod.env
+# Edit .prod.env: TS_AUTHKEY_ADMIN, TS_AUTHKEY_GATEWAY, TS_HOSTNAME
 
 # 2. Start
 ./scripts/prod.sh up
 
-# Access via Tailscale HTTPS:
-#   Admin:   https://duckway-admin.tailnet
-#   Gateway: https://duckway-gw.tailnet</code></pre>
+# Access via tailnet HTTP (replace duckway with TS_HOSTNAME):
+#   Admin:   http://${TS_HOSTNAME}-admin/
+#   Gateway: http://${TS_HOSTNAME}-gw/
+
+# 3. In the admin UI, set Settings -> Gateway URL to:
+#    http://${TS_HOSTNAME}-gw</code></pre>
 
   <h4 class="mt-1">Development (localhost ports)</h4>
   <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># 1. Configure (optional — Discord bot)
@@ -653,9 +657,9 @@ cp .env.example .dev.env
   <table>
     <thead><tr><th>File</th><th>Mode</th><th>Tailscale</th><th>Ports</th></tr></thead>
     <tbody>
-      <tr><td class="mono text-sm">docker-compose.prod.yml</td><td>Split</td><td>2 sidecars</td><td>None</td></tr>
-      <tr><td class="mono text-sm">docker-compose.combined.yml</td><td>Combined</td><td>1 sidecar</td><td>None</td></tr>
-      <tr><td class="mono text-sm">docker-compose.yml + .dev.yml</td><td>Dev</td><td>No</td><td>127.0.0.1</td></tr>
+      <tr><td class="mono text-sm">docker-compose.yml (tailscale profile)</td><td>Split</td><td>2 sidecars</td><td>None</td></tr>
+      <tr><td class="mono text-sm">docker-compose.yml (tailscale-combined profile)</td><td>Combined</td><td>1 sidecar</td><td>None</td></tr>
+      <tr><td class="mono text-sm">docker-compose.yml + docker-compose.dev.yml</td><td>Dev</td><td>No</td><td>127.0.0.1</td></tr>
     </tbody>
   </table>
 
@@ -681,8 +685,8 @@ cp .env.example .dev.env
   </table>
 
   <h4 class="mt-1">Tailscale Integration</h4>
-  <p>Production compose uses Tailscale sidecar containers. Each service shares its network stack with the Tailscale container via <code>network_mode: "service:ts-*"</code>. Tailscale terminates HTTPS and forwards plain HTTP to the service.</p>
-  <p class="text-sm text-muted">Zero ports exposed to host or LAN. Only accessible via Tailscale.</p>
+  <p>Production compose uses unprivileged userspace Tailscale sidecars. Each app shares its sidecar network namespace, listens only on loopback, and is exposed on tailnet HTTP port 80 by Tailscale Serve.</p>
+  <p class="text-sm text-muted">No host ports, <code>/dev/net/tun</code>, or added Linux capabilities are required. In split mode, use separate tagged admin and gateway auth keys with a deny-by-default Headscale policy; hostnames are not security identities.</p>
 </div>
 
 <div style="height:2rem"></div>

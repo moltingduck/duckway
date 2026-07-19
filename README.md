@@ -54,9 +54,11 @@ cp .env.example .dev.env
 #### With Tailscale (recommended)
 
 ```bash
-cp .env.example .prod.env
+cp -n .env.example .prod.env && chmod 600 .prod.env
 # Edit .prod.env:
-#   TS_AUTHKEY=tskey-auth-xxxxx        (Tailscale admin)
+#   TS_AUTHKEY_ADMIN=...               (split mode; tagged admin key)
+#   TS_AUTHKEY_GATEWAY=...             (split mode; tagged gateway key)
+#   TS_AUTHKEY=tskey-auth-xxxxx         (fallback for existing deployments)
 #   TS_HOSTNAME=duckway
 #   DUCKWAY_PROD_MODE=split            (default)
 # Optional for headscale:
@@ -76,10 +78,12 @@ The first-run admin password prints once; recover later with:
 ./scripts/reset-password.sh          # generates a fresh random password
 ```
 
-> **Tailscale ports note**: services bind directly to `:80` inside the
-> Tailscale node's network namespace. `tailscale serve` HTTPS is not used
-> because headscale doesn't issue HTTPS certs, and the tailnet is already
-> private — no need to MITM-terminate again.
+> **Tailscale ports note**: apps bind only to loopback in their sidecar's
+> network namespace. Unprivileged userspace Tailscale Serve exposes HTTP port
+> 80 on the tailnet address, with no host port, TUN device, or added Linux
+> capability. In split mode, use separately tagged admin and gateway auth keys
+> and a deny-by-default Headscale policy; hostnames and Docker networks are not
+> security identities.
 
 #### Without Tailscale (behind a reverse proxy)
 
@@ -143,10 +147,10 @@ For more, see the [User Guide](docs/user-guide.md).
 
 | Container | Port (internal) | Reachable from | Purpose |
 |---|---|---|---|
-| `duckway-admin` | `:80` (or `:9091` non-Tailscale) | admins only | Web panel, management API |
+| `duckway-admin` | `:80` (or `:9091` non-Tailscale) | admin peers (policy required) | Web panel, management API |
 | `duckway-gateway` | `:80` (or `:8080` non-Tailscale) | agents | Proxy, client API, downloads, `/install.sh` |
 
-Agents **cannot** reach the admin panel. With Tailscale, enforce by ACL on the admin tailnet hostname. Without Tailscale, put a reverse proxy in front and route only `duckway-gw` to public agents.
+Agents must not be allowed to reach the admin panel. With Tailscale or Headscale, enforce this with tagged admin/gateway nodes and a deny-by-default policy; a hostname alone provides no isolation. Without Tailscale, put a reverse proxy in front and route only `duckway-gw` to public agents.
 
 ## Scripts
 
