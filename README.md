@@ -67,7 +67,7 @@ cp -n .env.example .prod.env && chmod 600 .prod.env
 ./scripts/prod.sh up
 
 # Access from any node on your tailnet:
-#   Admin:   http://duckway-admin/
+#   Admin:   http://duckway-admin/admin/
 #   Gateway: http://duckway-gw/
 ```
 
@@ -79,8 +79,8 @@ The first-run admin password prints once; recover later with:
 ```
 
 > **Tailscale ports note**: apps bind only to loopback in their sidecar's
-> network namespace. Unprivileged userspace Tailscale Serve exposes HTTP port
-> 80 on the tailnet address, with no host port, TUN device, or added Linux
+> network namespace. Unprivileged userspace Tailscale forwards tailnet TCP port
+> 80 to that loopback listener, with no host port, TUN device, or added Linux
 > capability. In split mode, use separately tagged admin and gateway auth keys
 > and a deny-by-default Headscale policy; hostnames and Docker networks are not
 > security identities.

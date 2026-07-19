@@ -94,7 +94,7 @@ case "${1:-up}" in
     echo ""
     if [ "$USE_TAILSCALE" = "true" ]; then
       if [ "$MODE" = "split" ]; then
-        echo "Admin:   http://$TS_HOSTNAME-admin/  (port 80, tailnet only)"
+        echo "Admin:   http://$TS_HOSTNAME-admin/admin/  (port 80, tailnet only)"
         echo "Gateway: http://$TS_HOSTNAME-gw/     (port 80, tailnet only)"
       else
         echo "Server:  http://$TS_HOSTNAME/        (port 80, tailnet only)"

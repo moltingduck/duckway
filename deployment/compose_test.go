@@ -103,11 +103,11 @@ func TestProductionTailscaleProfilesUseUserspaceServe(t *testing.T) {
 	}
 }
 
-func TestTailscaleServeConfigsExposeHTTPToLoopbackOnly(t *testing.T) {
+func TestTailscaleServeConfigsForwardTailnetTCPToLoopback(t *testing.T) {
 	configs := map[string]string{
-		"../tailscale/ts-combined.json": "http://127.0.0.1:8080",
-		"../tailscale/ts-admin.json":    "http://127.0.0.1:9091",
-		"../tailscale/ts-gateway.json":  "http://127.0.0.1:8080",
+		"../tailscale/ts-combined.json": "127.0.0.1:8080",
+		"../tailscale/ts-admin.json":    "127.0.0.1:9091",
+		"../tailscale/ts-gateway.json":  "127.0.0.1:8080",
 	}
 	for path, target := range configs {
 		body, err := os.ReadFile(path)
@@ -115,13 +115,15 @@ func TestTailscaleServeConfigsExposeHTTPToLoopbackOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 		config := string(body)
-		for _, want := range []string{`"80"`, `"HTTP": true`, target} {
+		for _, want := range []string{`"80"`, `"TCPForward"`, target} {
 			if !strings.Contains(config, want) {
 				t.Errorf("%s missing %q", path, want)
 			}
 		}
-		if strings.Contains(config, `"HTTPS": true`) {
-			t.Errorf("%s must not require a Tailscale HTTPS certificate", path)
+		for _, forbidden := range []string{`"HTTP"`, `"HTTPS"`, `"Web"`, "TS_CERT_DOMAIN"} {
+			if strings.Contains(config, forbidden) {
+				t.Errorf("%s must not depend on HTTP host or certificate matching (%s)", path, forbidden)
+			}
 		}
 	}
 }

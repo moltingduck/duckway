@@ -638,7 +638,7 @@ cp -n .env.example .prod.env &amp;&amp; chmod 600 .prod.env
 ./scripts/prod.sh up
 
 # Access via tailnet HTTP (replace duckway with TS_HOSTNAME):
-#   Admin:   http://${TS_HOSTNAME}-admin/
+#   Admin:   http://${TS_HOSTNAME}-admin/admin/
 #   Gateway: http://${TS_HOSTNAME}-gw/
 
 # 3. In the admin UI, set Settings -> Gateway URL to:
@@ -685,7 +685,7 @@ cp .env.example .dev.env
   </table>
 
   <h4 class="mt-1">Tailscale Integration</h4>
-  <p>Production compose uses unprivileged userspace Tailscale sidecars. Each app shares its sidecar network namespace, listens only on loopback, and is exposed on tailnet HTTP port 80 by Tailscale Serve.</p>
+  <p>Production compose uses unprivileged userspace Tailscale sidecars. Each app shares its sidecar network namespace and listens only on loopback; Tailscale forwards tailnet TCP port 80 to that listener without certificate-domain or HTTP Host matching.</p>
   <p class="text-sm text-muted">No host ports, <code>/dev/net/tun</code>, or added Linux capabilities are required. In split mode, use separate tagged admin and gateway auth keys with a deny-by-default Headscale policy; hostnames are not security identities.</p>
 </div>
 

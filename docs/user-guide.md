@@ -630,7 +630,7 @@ TS_EXTRA_ARGS=--login-server=https://hs.example.com
 TS_HOSTNAME=duckway
 ```
 
-Then `./scripts/prod.sh up`. Headscale doesn't issue Tailscale HTTPS certificates by default, so Duckway uses unprivileged userspace Tailscale Serve on HTTP port 80. Each app listens only on loopback in its sidecar network namespace; the profile publishes no host ports and needs no TUN device or added Linux capability. Use separately tagged admin and gateway pre-auth keys plus a deny-by-default Headscale policy to control who can reach each node; hostnames are not security identities. Access them as `http://${TS_HOSTNAME}-admin/` and `http://${TS_HOSTNAME}-gw/` (no port suffix).
+Then `./scripts/prod.sh up`. Headscale doesn't issue Tailscale HTTPS certificates by default, so Duckway uses unprivileged userspace Tailscale to forward tailnet TCP port 80 directly to each app's loopback listener. This deliberately avoids certificate-domain and HTTP Host matching. The profile publishes no host ports and needs no TUN device or added Linux capability. Use separately tagged admin and gateway pre-auth keys plus a deny-by-default Headscale policy to control who can reach each node; hostnames are not security identities. Access them as `http://${TS_HOSTNAME}-admin/admin/` and `http://${TS_HOSTNAME}-gw/`.
 
 ### Embedded DERP reconnects every minute
 

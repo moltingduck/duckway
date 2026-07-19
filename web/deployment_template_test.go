@@ -11,7 +11,7 @@ func TestDeploymentDocsMatchUserspaceTailscaleProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := string(body)
-	for _, want := range []string{"http://${TS_HOSTNAME}-admin/", "http://${TS_HOSTNAME}-gw/", "userspace Tailscale", "listens only on loopback", "Settings -> Gateway URL"} {
+	for _, want := range []string{"http://${TS_HOSTNAME}-admin/admin/", "http://${TS_HOSTNAME}-gw/", "userspace Tailscale", "listens only on loopback", "Settings -> Gateway URL", "without certificate-domain or HTTP Host matching"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("deployment docs missing %q", want)
 		}
