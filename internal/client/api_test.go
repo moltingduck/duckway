@@ -3,12 +3,20 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestPostCCReplySplitsLongDiscordMessages(t *testing.T) {
 	var (
@@ -66,5 +74,42 @@ func TestSplitDiscordMessageKeepsShortMessageSinglePart(t *testing.T) {
 	parts := splitDiscordMessage("short reply")
 	if len(parts) != 1 || parts[0] != "short reply" {
 		t.Fatalf("parts = %#v", parts)
+	}
+}
+
+func TestPostCCReplyRetriesDialFailure(t *testing.T) {
+	var attempts int
+	api := NewAPIClient("http://gateway.invalid", "tok")
+	api.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+		}
+		return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+
+	err := api.postCCReplyOneWithBackoff(context.Background(), "dwch_t", "result", "message-id", []time.Duration{0, 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts=%d, want 3", attempts)
+	}
+}
+
+func TestPostCCReplyDoesNotRetryAmbiguousFailure(t *testing.T) {
+	var attempts int
+	api := NewAPIClient("http://gateway.invalid", "tok")
+	api.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		return nil, io.ErrUnexpectedEOF
+	})}
+
+	err := api.postCCReplyOneWithBackoff(context.Background(), "dwch_t", "result", "message-id", []time.Duration{0, 0, 0})
+	if err == nil {
+		t.Fatal("expected post failure")
+	}
+	if attempts != 1 {
+		t.Fatalf("ambiguous failure attempts=%d, want 1", attempts)
 	}
 }

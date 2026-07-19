@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -551,6 +552,27 @@ func (c *APIClient) PostCCReply(ctx context.Context, handle, content, replyToMes
 }
 
 func (c *APIClient) postCCReplyOne(ctx context.Context, handle, content, replyToMessageID string) error {
+	return c.postCCReplyOneWithBackoff(ctx, handle, content, replyToMessageID, []time.Duration{
+		5 * time.Second,
+		10 * time.Second,
+		20 * time.Second,
+	})
+}
+
+func (c *APIClient) postCCReplyOneWithBackoff(ctx context.Context, handle, content, replyToMessageID string, backoff []time.Duration) error {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		lastErr = c.postCCReplyOneAttempt(ctx, handle, content, replyToMessageID)
+		if lastErr == nil || !isDialFailure(lastErr) || attempt >= len(backoff) {
+			return lastErr
+		}
+		if !sleepContext(ctx, backoff[attempt]) {
+			return ctx.Err()
+		}
+	}
+}
+
+func (c *APIClient) postCCReplyOneAttempt(ctx context.Context, handle, content, replyToMessageID string) error {
 	body, _ := json.Marshal(map[string]string{"content": content, "reply_to_message_id": replyToMessageID})
 	req, err := http.NewRequestWithContext(ctx, "POST",
 		c.baseURL+"/client/cc/channels/"+handle+"/messages", bytes.NewReader(body))
@@ -569,6 +591,11 @@ func (c *APIClient) postCCReplyOne(ctx context.Context, handle, content, replyTo
 		return fmt.Errorf("server %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+func isDialFailure(err error) bool {
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
 }
 
 const discordMessageChunkLimit = 1800
