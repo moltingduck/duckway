@@ -222,6 +222,61 @@ exit 7
 	}
 }
 
+func TestRunViaCodexExecAssistantMessageWinsOverNonzeroExit(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "codex")
+	want := "我會把現有 writeup 改成可逐行執行的 terminal walkthrough"
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"thread.started","thread_id":"sid-assistant-exit"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"` + want + `"}}'
+printf '%s\n' '{"type":"turn.failed"}'
+exit 7
+`
+	if err := os.WriteFile(stub, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sid, result, isErr, err := runViaCodexExec(ctx, stub, dir, "hello", "", nil)
+	if err != nil {
+		t.Fatalf("assistant message was reported as an execution error: %v", err)
+	}
+	if sid != "sid-assistant-exit" || result != want || isErr {
+		t.Fatalf("sid=%q result=%q isErr=%v", sid, result, isErr)
+	}
+}
+
+func TestCodexResultWinsOverExitOnlyForAssistantSuccess(t *testing.T) {
+	if !codexResultWinsOverExit(codexParseResult{Result: "assistant reply"}) {
+		t.Fatal("assistant reply should win over a nonzero process exit")
+	}
+	if codexResultWinsOverExit(codexParseResult{Result: "request failed", IsError: true}) {
+		t.Fatal("explicit Codex error should not win over a nonzero process exit")
+	}
+	if codexResultWinsOverExit(codexParseResult{}) {
+		t.Fatal("empty output should not win over a nonzero process exit")
+	}
+}
+
+func TestResolveCodexTmuxExitUsesParsedAssistantStatus(t *testing.T) {
+	want := "我會把現有 writeup 改成可逐行執行的 terminal walkthrough"
+	success := []byte(`{"type":"thread.started","thread_id":"sid-tmux-exit"}
+{"type":"item.completed","item":{"type":"agent_message","text":"` + want + `"}}
+{"type":"turn.failed"}
+`)
+	sid, result, isErr, err := resolveCodexTmuxExit(success, "", "", 7)
+	if err != nil || isErr || sid != "sid-tmux-exit" || result != want {
+		t.Fatalf("successful tmux result: sid=%q result=%q isErr=%v err=%v", sid, result, isErr, err)
+	}
+
+	failure := []byte(`{"type":"error","message":"authentication failed"}`)
+	_, result, isErr, err = resolveCodexTmuxExit(failure, "sid-old", "", 7)
+	if err == nil || !isErr || result != "authentication failed" {
+		t.Fatalf("failed tmux result: result=%q isErr=%v err=%v", result, isErr, err)
+	}
+}
+
 func TestRunViaCodexExecDetectsTransportFailureBeforeCompletion(t *testing.T) {
 	dir := t.TempDir()
 	stub := filepath.Join(dir, "codex")

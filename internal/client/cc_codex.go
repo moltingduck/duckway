@@ -111,7 +111,7 @@ func runViaCodexExec(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 		sessionID = sid
 	}
 	if err != nil {
-		if parsed.Complete && result != "" && !isError {
+		if codexResultWinsOverExit(parsed) {
 			return sessionID, result, false, nil
 		}
 		if result != "" {
@@ -263,18 +263,30 @@ func runViaCodexTmux(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 	if err != nil {
 		return "", "", false, fmt.Errorf("read codex output: %w", err)
 	}
-	sessionID, result, isError = parseCodexJSONL(out, evt.FallbackSessionID)
+	_ = os.Remove(inFlightPath)
+	return resolveCodexTmuxExit(out, evt.FallbackSessionID, sid, evt.ExitCode)
+}
+
+func codexResultWinsOverExit(parsed codexParseResult) bool {
+	return parsed.Result != "" && !parsed.IsError
+}
+
+func resolveCodexTmuxExit(out []byte, fallbackSessionID, sid string, exitCode int) (sessionID, result string, isError bool, err error) {
+	parsed := parseCodexJSONLResult(out, fallbackSessionID)
+	sessionID, result, isError = parsed.SessionID, parsed.Result, parsed.IsError
 	if sessionID == "" {
 		sessionID = sid
 	}
-	_ = os.Remove(inFlightPath)
-	if evt.ExitCode != 0 {
-		if result != "" {
-			return sessionID, result, isError, fmt.Errorf("codex reported an error: %s", result)
-		}
-		return sessionID, result, isError, codexExecutionError(fmt.Sprintf("codex exited with status %d", evt.ExitCode), nil, out)
+	if exitCode == 0 {
+		return sessionID, result, isError, nil
 	}
-	return sessionID, result, isError, nil
+	if codexResultWinsOverExit(parsed) {
+		return sessionID, result, false, nil
+	}
+	if result != "" {
+		return sessionID, result, isError, fmt.Errorf("codex reported an error: %s", result)
+	}
+	return sessionID, result, isError, codexExecutionError(fmt.Sprintf("codex exited with status %d", exitCode), nil, out)
 }
 
 func codexExecutionError(prefix string, err error, out []byte) error {
