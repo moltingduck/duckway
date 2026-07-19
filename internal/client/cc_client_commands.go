@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -11,8 +12,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/cccommand"
@@ -33,10 +36,153 @@ type pendingNewProject struct {
 	CreatedAt time.Time
 }
 
+// ccCommandRunner serializes daemon-side `!` commands for one channel. It is
+// deliberately separate from both agent prompts and `!!` shell commands.
+type ccCommandRunner struct {
+	queue            chan []byte
+	stop             chan struct{}
+	wg               sync.WaitGroup
+	handle           func(context.Context, []byte)
+	mu               sync.Mutex
+	stopped          bool
+	activeCancel     context.CancelFunc
+	overflowNotified bool
+}
+
+func newCCCommandRunner(handle func(context.Context, []byte)) *ccCommandRunner {
+	r := &ccCommandRunner{
+		queue:  make(chan []byte, ccQueueDepth),
+		stop:   make(chan struct{}),
+		handle: handle,
+	}
+	r.wg.Add(1)
+	go r.loop()
+	return r
+}
+
+func (r *ccCommandRunner) Enqueue(data []byte) bool {
+	data = bytes.Clone(data)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return false
+	}
+	select {
+	case r.queue <- data:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *ccCommandRunner) Stop() {
+	r.mu.Lock()
+	if !r.stopped {
+		r.stopped = true
+		close(r.stop)
+		if r.activeCancel != nil {
+			r.activeCancel()
+		}
+	}
+	r.mu.Unlock()
+	r.wg.Wait()
+}
+
+func (r *ccCommandRunner) markOverflowNotice() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped || r.overflowNotified {
+		return false
+	}
+	r.overflowNotified = true
+	return true
+}
+
+func (r *ccCommandRunner) loop() {
+	defer r.wg.Done()
+	for {
+		select {
+		case <-r.stop:
+			return
+		default:
+		}
+		select {
+		case <-r.stop:
+			return
+		case data := <-r.queue:
+			ctx, cancel := context.WithCancel(context.Background())
+			r.mu.Lock()
+			if r.stopped {
+				r.mu.Unlock()
+				cancel()
+				return
+			}
+			r.activeCancel = cancel
+			r.overflowNotified = false
+			r.mu.Unlock()
+			r.handle(ctx, data)
+			r.mu.Lock()
+			r.activeCancel = nil
+			r.mu.Unlock()
+			cancel()
+		}
+	}
+}
+
+func (w *CCWatch) enqueueClientCommand(data []byte) {
+	var env sseEnvelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		log.Printf("[cc-watch] bad client_command envelope: %v", err)
+		return
+	}
+	if env.Handle == "" {
+		return
+	}
+
+	w.mu.Lock()
+	if w.stopping {
+		w.mu.Unlock()
+		return
+	}
+	if _, deleted := w.deleted[env.Handle]; deleted {
+		w.mu.Unlock()
+		return
+	}
+	if w.commandRunners == nil {
+		w.commandRunners = make(map[string]*ccCommandRunner)
+	}
+	runner := w.commandRunners[env.Handle]
+	if runner == nil {
+		handler := w.clientCommandHandler
+		if handler == nil {
+			handler = w.handleClientCommandContext
+		}
+		runner = newCCCommandRunner(handler)
+		w.commandRunners[env.Handle] = runner
+	}
+	w.mu.Unlock()
+
+	if !runner.Enqueue(data) {
+		log.Printf("[cc-watch] %s: command queue full, dropping client command", env.Handle)
+		if runner.markOverflowNotice() {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_ = w.api.PostCC(ctx, env.Handle,
+					"⚠️ command queue full (10 commands backed up) — your command was dropped; retry after the current command finishes.")
+			}()
+		}
+	}
+}
+
 // handleClientCommand is the cc-watch entry point for `!sessions` /
 // `!bind` (and any future filesystem-only commands). The reply is always
 // posted back into the same channel via PostCC.
 func (w *CCWatch) handleClientCommand(data []byte) {
+	w.handleClientCommandContext(context.Background(), data)
+}
+
+func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 	var env sseEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		log.Printf("[cc-watch] bad client_command envelope: %v", err)
@@ -51,7 +197,7 @@ func (w *CCWatch) handleClientCommand(data []byte) {
 		return
 	}
 	if err := cccommand.Validate(payload.Command, payload.Args); errors.Is(err, cccommand.ErrUnknownCommand) {
-		_ = w.api.PostCC(context.Background(), env.Handle,
+		_ = w.api.PostCC(ctx, env.Handle,
 			"❌ daemon doesn't know how to handle `"+payload.Command+"` — update your `duckway` binary on the agent.")
 		return
 	} else if err != nil {
@@ -59,49 +205,58 @@ func (w *CCWatch) handleClientCommand(data []byte) {
 		if usage := cccommand.Usage(payload.Command); usage != "" {
 			msg += "\nUsage: `" + usage + "`"
 		}
-		_ = w.api.PostCC(context.Background(), env.Handle, msg)
+		_ = w.api.PostCC(ctx, env.Handle, msg)
 		return
 	}
 
 	switch payload.Command {
 	case "!sessions":
-		w.cmdSessions(env.Handle, payload.Args)
+		w.cmdSessions(ctx, env.Handle, payload.Args)
 	case "!bind":
-		w.cmdBind(env.Handle, payload.Args)
+		w.cmdBind(ctx, env.Handle, payload.Args)
 	case "!projects":
-		w.cmdProjects(env.Handle, payload.Args)
+		w.cmdProjects(ctx, env.Handle, payload.Args)
 	case "!new":
-		w.cmdNewProject(env.Handle, payload.Args)
+		w.cmdNewProject(ctx, env.Handle, payload.Args)
 	case "!new-confirm":
-		w.cmdNewProjectConfirm(env.Handle, payload.Args)
+		w.cmdNewProjectConfirm(ctx, env.Handle, payload.Args)
 	case "!log":
-		w.cmdLog(env.Handle, payload.Args)
+		w.cmdLog(ctx, env.Handle, payload.Args)
 	case "!duckway-version":
-		w.cmdDuckwayVersion(env.Handle, payload.Args)
+		w.cmdDuckwayVersion(ctx, env.Handle, payload.Args)
 	case "!duckway-restart":
-		w.cmdDuckwayRestart(env.Handle, payload.Args)
+		w.cmdDuckwayRestart(ctx, env.Handle, payload.Args)
 	case "!duckway-update":
-		w.cmdDuckwayUpdate(env.Handle, payload.Args)
+		w.cmdDuckwayUpdate(ctx, env.Handle, payload.Args)
 	default:
-		_ = w.api.PostCC(context.Background(), env.Handle,
+		_ = w.api.PostCC(ctx, env.Handle,
 			"❌ daemon doesn't know how to handle `"+payload.Command+"` — update your `duckway` binary on the agent.")
 	}
 }
 
-func (w *CCWatch) cmdLog(replyHandle string, args []string) {
+func (w *CCWatch) cmdLog(ctx context.Context, replyHandle string, args []string) {
 	n, err := parseLogCount(args)
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ usage: `!log [N]`")
+		_ = w.api.PostCC(ctx, replyHandle, "❌ usage: `!log [N]`")
 		return
 	}
 	w.mu.Lock()
-	runner := w.runners[replyHandle]
+	agentRunner := w.runners[replyHandle]
+	shellRunner := w.shellRunners[replyHandle]
 	w.mu.Unlock()
-	if runner == nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "_(no agent runner has started for this channel yet)_")
+	if agentRunner == nil && shellRunner == nil {
+		_ = w.api.PostCC(ctx, replyHandle, "_(no agent runner has started for this channel yet)_")
 		return
 	}
-	_ = w.api.PostCC(context.Background(), replyHandle, runner.formatRecentHistory(n))
+	var history []ccHistoryEntry
+	if agentRunner != nil {
+		history = append(history, agentRunner.historySnapshot()...)
+	}
+	if shellRunner != nil {
+		history = append(history, shellRunner.historySnapshot()...)
+	}
+	sort.SliceStable(history, func(i, j int) bool { return history[i].At.Before(history[j].At) })
+	_ = w.api.PostCC(ctx, replyHandle, formatRecentHistory(history, n))
 }
 
 func parseLogCount(args []string) (int, error) {
@@ -130,11 +285,11 @@ func parseLogCount(args []string) (int, error) {
 	return n, nil
 }
 
-func (w *CCWatch) cmdProjects(replyHandle string, args []string) {
+func (w *CCWatch) cmdProjects(ctx context.Context, replyHandle string, args []string) {
 	filter := strings.TrimSpace(strings.Join(args, " "))
 	projects, err := NewCCProjectStore(w.configDir).List()
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ read projects failed: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ read projects failed: "+err.Error())
 		return
 	}
 	if filter != "" {
@@ -146,73 +301,73 @@ func (w *CCWatch) cmdProjects(replyHandle string, args []string) {
 		}
 		projects = filtered
 	}
-	_ = w.api.PostCC(context.Background(), replyHandle, formatProjectsReport(projects, filter))
+	_ = w.api.PostCC(ctx, replyHandle, formatProjectsReport(projects, filter))
 }
 
-func (w *CCWatch) cmdNewProject(replyHandle string, args []string) {
+func (w *CCWatch) cmdNewProject(ctx context.Context, replyHandle string, args []string) {
 	slug, flags, err := splitClientSlugAndFlags(args)
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ "+err.Error()+"\nUsage: `!new <slug> --project <name|number> [--topic <text>]` or `!new <slug> --cwd <path> [--topic <text>]`")
+		_ = w.api.PostCC(ctx, replyHandle, "❌ "+err.Error()+"\nUsage: `!new <slug> --project <name|number> [--topic <text>]` or `!new <slug> --cwd <path> [--topic <text>]`")
 		return
 	}
 	projectRef := strings.TrimSpace(flags["project"])
 	cwdRef := strings.TrimSpace(flags["cwd"])
 	if projectRef != "" && cwdRef != "" {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ choose either `--project` or `--cwd`, not both.")
+		_ = w.api.PostCC(ctx, replyHandle, "❌ choose either `--project` or `--cwd`, not both.")
 		return
 	}
 	if projectRef == "" && cwdRef == "" {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ daemon only handles `!new` when `--project <name|number>` or `--cwd <path>` is set.")
+		_ = w.api.PostCC(ctx, replyHandle, "❌ daemon only handles `!new` when `--project <name|number>` or `--cwd <path>` is set.")
 		return
 	}
 
 	if cwdRef != "" {
-		w.cmdNewWithCwd(replyHandle, slug, flags["topic"], cwdRef)
+		w.cmdNewWithCwd(ctx, replyHandle, slug, flags["topic"], cwdRef)
 		return
 	}
 
 	project, err := NewCCProjectStore(w.configDir).Resolve(projectRef)
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ "+err.Error()+" — run `!projects` to see saved projects.")
+		_ = w.api.PostCC(ctx, replyHandle, "❌ "+err.Error()+" — run `!projects` to see saved projects.")
 		return
 	}
-	created, err := w.createProjectChannel(slug, flags["topic"], project.Path)
+	created, err := w.createProjectChannel(ctx, slug, flags["topic"], project.Path)
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ create channel: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ create channel: "+err.Error())
 		return
 	}
-	_ = w.api.PostCC(context.Background(), replyHandle,
+	_ = w.api.PostCC(ctx, replyHandle,
 		"✅ Created **#"+created.Name+"** — `"+created.Handle+"`\n"+
 			"   project: `"+project.Name+"`\n"+
 			"   cwd: `"+project.Path+"`\n"+
 			"   Send a message in that channel to start the agent.")
 }
 
-func (w *CCWatch) cmdNewWithCwd(replyHandle, slug, topic, cwdRef string) {
+func (w *CCWatch) cmdNewWithCwd(ctx context.Context, replyHandle, slug, topic, cwdRef string) {
 	cwd, err := normalizeProjectPattern(cwdRef)
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ invalid cwd: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ invalid cwd: "+err.Error())
 		return
 	}
 	info, err := os.Stat(cwd)
 	if err == nil {
 		if !info.IsDir() {
-			_ = w.api.PostCC(context.Background(), replyHandle, "❌ cwd exists but is not a directory: `"+cwd+"`")
+			_ = w.api.PostCC(ctx, replyHandle, "❌ cwd exists but is not a directory: `"+cwd+"`")
 			return
 		}
-		created, err := w.createProjectChannel(slug, topic, cwd)
+		created, err := w.createProjectChannel(ctx, slug, topic, cwd)
 		if err != nil {
-			_ = w.api.PostCC(context.Background(), replyHandle, "❌ create channel: "+err.Error())
+			_ = w.api.PostCC(ctx, replyHandle, "❌ create channel: "+err.Error())
 			return
 		}
-		_ = w.api.PostCC(context.Background(), replyHandle,
+		_ = w.api.PostCC(ctx, replyHandle,
 			"✅ Created **#"+created.Name+"** — `"+created.Handle+"`\n"+
 				"   cwd: `"+cwd+"`\n"+
 				"   Send a message in that channel to start the agent.")
 		return
 	}
 	if !os.IsNotExist(err) {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ inspect cwd failed: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ inspect cwd failed: "+err.Error())
 		return
 	}
 
@@ -224,15 +379,15 @@ func (w *CCWatch) cmdNewWithCwd(replyHandle, slug, topic, cwdRef string) {
 	w.prunePendingNewLocked(time.Now())
 	w.pendingNew[token] = pendingNewProject{Slug: slug, Topic: topic, Cwd: cwd, CreatedAt: time.Now()}
 	w.mu.Unlock()
-	_ = w.api.PostCC(context.Background(), replyHandle,
+	_ = w.api.PostCC(ctx, replyHandle,
 		"⚠️ Project folder does not exist:\n`"+cwd+"`\n\n"+
 			"Create it, add it to saved projects, and open the task channel?\n"+
 			"Reply with `!new-confirm "+token+"` within 30 minutes.")
 }
 
-func (w *CCWatch) cmdNewProjectConfirm(replyHandle string, args []string) {
+func (w *CCWatch) cmdNewProjectConfirm(ctx context.Context, replyHandle string, args []string) {
 	if len(args) != 1 {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ usage: `!new-confirm <token>`")
+		_ = w.api.PostCC(ctx, replyHandle, "❌ usage: `!new-confirm <token>`")
 		return
 	}
 	token := strings.TrimSpace(args[0])
@@ -247,35 +402,35 @@ func (w *CCWatch) cmdNewProjectConfirm(replyHandle string, args []string) {
 	}
 	w.mu.Unlock()
 	if !ok {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ no pending `!new` request for that token. Run `!new ... --cwd ...` again.")
+		_ = w.api.PostCC(ctx, replyHandle, "❌ no pending `!new` request for that token. Run `!new ... --cwd ...` again.")
 		return
 	}
 	if err := os.MkdirAll(pending.Cwd, 0700); err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ create folder failed: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ create folder failed: "+err.Error())
 		return
 	}
 	added, err := NewCCProjectStore(w.configDir).Add([]string{pending.Cwd}, "")
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ add project failed: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ add project failed: "+err.Error())
 		return
 	}
 	projectName := filepath.Base(pending.Cwd)
 	if len(added) > 0 {
 		projectName = added[0].Name
 	}
-	created, err := w.createProjectChannel(pending.Slug, pending.Topic, pending.Cwd)
+	created, err := w.createProjectChannel(ctx, pending.Slug, pending.Topic, pending.Cwd)
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ create channel: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ create channel: "+err.Error())
 		return
 	}
-	_ = w.api.PostCC(context.Background(), replyHandle,
+	_ = w.api.PostCC(ctx, replyHandle,
 		"✅ Created folder, saved project **"+projectName+"**, and opened **#"+created.Name+"** — `"+created.Handle+"`\n"+
 			"   cwd: `"+pending.Cwd+"`\n"+
 			"   Send a message in that channel to start the agent.")
 }
 
-func (w *CCWatch) createProjectChannel(slug, topic, cwd string) (*CreateCCChannelResult, error) {
-	return w.api.CreateCCChannel(context.Background(), slug, topic, cwd)
+func (w *CCWatch) createProjectChannel(ctx context.Context, slug, topic, cwd string) (*CreateCCChannelResult, error) {
+	return w.api.CreateCCChannel(ctx, slug, topic, cwd)
 }
 
 func (w *CCWatch) prunePendingNewLocked(now time.Time) {
@@ -296,16 +451,16 @@ func randomConfirmToken() string {
 
 // cmdSessions lists local claude sessions that aren't already bound to a
 // CC channel. Optional positional arg = cwd substring filter.
-func (w *CCWatch) cmdSessions(replyHandle string, args []string) {
+func (w *CCWatch) cmdSessions(ctx context.Context, replyHandle string, args []string) {
 	root, err := claudeProjectsRoot()
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ couldn't locate ~/.claude/projects: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ couldn't locate ~/.claude/projects: "+err.Error())
 		return
 	}
 	bound := w.sessions.Snapshot()
 	all, err := ListLocalSessions(root, bound)
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ scan failed: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ scan failed: "+err.Error())
 		return
 	}
 
@@ -327,7 +482,7 @@ func (w *CCWatch) cmdSessions(replyHandle string, args []string) {
 			msg += " matching `" + cwdFilter + "`"
 		}
 		msg += ")_"
-		_ = w.api.PostCC(context.Background(), replyHandle, msg)
+		_ = w.api.PostCC(ctx, replyHandle, msg)
 		return
 	}
 
@@ -356,7 +511,7 @@ func (w *CCWatch) cmdSessions(replyHandle string, args []string) {
 		fmt.Fprintf(&b, "\n_(showing first %d of %d — use `!sessions <cwd-filter>` to narrow)_\n", maxRows, len(unbound))
 	}
 	b.WriteString("\nPick one or more with `!bind <session_id> [<session_id> …]` — each binding creates a new task channel.")
-	_ = w.api.PostCC(context.Background(), replyHandle, b.String())
+	_ = w.api.PostCC(ctx, replyHandle, b.String())
 }
 
 // cmdBind creates a task channel for each session_id and writes the
@@ -365,21 +520,21 @@ func (w *CCWatch) cmdSessions(replyHandle string, args []string) {
 //
 // Naming: channel name is derived from the cwd's basename (Discord-sanitized).
 // On collision the server returns 400 and we just report it back.
-func (w *CCWatch) cmdBind(replyHandle string, args []string) {
+func (w *CCWatch) cmdBind(ctx context.Context, replyHandle string, args []string) {
 	if len(args) == 0 {
-		_ = w.api.PostCC(context.Background(), replyHandle,
+		_ = w.api.PostCC(ctx, replyHandle,
 			"❌ usage: `!bind <session_id> [<session_id> …]`  — run `!sessions` first to find ids.")
 		return
 	}
 
 	root, err := claudeProjectsRoot()
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ couldn't locate ~/.claude/projects: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ couldn't locate ~/.claude/projects: "+err.Error())
 		return
 	}
 	all, err := ListLocalSessions(root, w.sessions.Snapshot())
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ scan failed: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ scan failed: "+err.Error())
 		return
 	}
 	byID := map[string]LocalSession{}
@@ -387,8 +542,8 @@ func (w *CCWatch) cmdBind(replyHandle string, args []string) {
 		byID[s.SessionID] = s
 	}
 
-	results := BindLocalSessionsFromMap(context.Background(), w.api, w.sessions, args, byID)
-	_ = w.api.PostCC(context.Background(), replyHandle, formatBindReport(results))
+	results := BindLocalSessionsFromMap(ctx, w.api, w.sessions, args, byID)
+	_ = w.api.PostCC(ctx, replyHandle, formatBindReport(results))
 }
 
 // BindResult is one line of the !bind / `duckway cc bind` summary.

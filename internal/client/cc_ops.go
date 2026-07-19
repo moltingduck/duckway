@@ -13,36 +13,36 @@ import (
 
 var startDetachedDuckwayCommand = startDetachedDuckwayCommandDefault
 
-func (w *CCWatch) cmdDuckwayVersion(replyHandle string, args []string) {
+func (w *CCWatch) cmdDuckwayVersion(ctx context.Context, replyHandle string, args []string) {
 	if len(args) != 0 {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ usage: `!duckway-version`")
+		_ = w.api.PostCC(ctx, replyHandle, "❌ usage: `!duckway-version`")
 		return
 	}
-	_ = w.api.PostCC(context.Background(), replyHandle, "duckway "+version.Get())
+	_ = w.api.PostCC(ctx, replyHandle, "duckway "+version.Get())
 }
 
-func (w *CCWatch) cmdDuckwayRestart(replyHandle string, args []string) {
+func (w *CCWatch) cmdDuckwayRestart(ctx context.Context, replyHandle string, args []string) {
 	if len(args) != 0 {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ usage: `!duckway-restart`")
+		_ = w.api.PostCC(ctx, replyHandle, "❌ usage: `!duckway-restart`")
 		return
 	}
 	logPath := filepath.Join(w.configDir, "cc-ops.log")
-	if err := w.postCCOpsAccepted(replyHandle, "Duckway restart accepted. Local daemons will restart in the background.", logPath); err != nil {
+	if err := w.postCCOpsAccepted(ctx, replyHandle, "Duckway restart accepted. Local daemons will restart in the background.", logPath); err != nil {
 		return
 	}
 	if err := startDetachedDuckwayCommand(w.configDir, logPath, []string{"restart"}); err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ start restart helper failed: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ start restart helper failed: "+err.Error())
 	}
 }
 
-func (w *CCWatch) cmdDuckwayUpdate(replyHandle string, args []string) {
+func (w *CCWatch) cmdDuckwayUpdate(ctx context.Context, replyHandle string, args []string) {
 	restart, err := parseDuckwayUpdateArgs(args)
 	if err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ "+err.Error()+"\nUsage: `!duckway-update [--restart]`")
+		_ = w.api.PostCC(ctx, replyHandle, "❌ "+err.Error()+"\nUsage: `!duckway-update [--restart]`")
 		return
 	}
 	if w.cfg == nil || w.cfg.ServerURL == "" {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ no server URL in client config; run `duckway init` on the client first.")
+		_ = w.api.PostCC(ctx, replyHandle, "❌ no server URL in client config; run `duckway init` on the client first.")
 		return
 	}
 	logPath := filepath.Join(w.configDir, "cc-ops.log")
@@ -52,16 +52,16 @@ func (w *CCWatch) cmdDuckwayUpdate(replyHandle string, args []string) {
 		msg = "Duckway update accepted. Local daemons will restart in the background if the update succeeds."
 		cmdArgs = append(cmdArgs, "--restart")
 	}
-	if err := w.postCCOpsAccepted(replyHandle, msg, logPath); err != nil {
+	if err := w.postCCOpsAccepted(ctx, replyHandle, msg, logPath); err != nil {
 		return
 	}
 	if err := startDetachedDuckwayCommand(w.configDir, logPath, cmdArgs); err != nil {
-		_ = w.api.PostCC(context.Background(), replyHandle, "❌ start update helper failed: "+err.Error())
+		_ = w.api.PostCC(ctx, replyHandle, "❌ start update helper failed: "+err.Error())
 	}
 }
 
-func (w *CCWatch) postCCOpsAccepted(replyHandle, msg, logPath string) error {
-	return w.api.PostCC(context.Background(), replyHandle, msg+"\nLogs: `"+logPath+"`")
+func (w *CCWatch) postCCOpsAccepted(ctx context.Context, replyHandle, msg, logPath string) error {
+	return w.api.PostCC(ctx, replyHandle, msg+"\nLogs: `"+logPath+"`")
 }
 
 func parseDuckwayUpdateArgs(args []string) (bool, error) {

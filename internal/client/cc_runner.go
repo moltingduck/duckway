@@ -36,33 +36,34 @@ type ccAgentSpec struct {
 // can't run two prompts on one session at the same time. Different
 // channels run in parallel.
 type ccRunner struct {
-	handle       string
-	configDir    string
-	cwd          string // resolved at construction
-	agentType    string
-	agentName    string
-	agentEnv     []string
-	bin          string
-	runFn        ccRunFn
-	runnerMode   string
-	debug        bool
-	queue        chan ccTask
-	stop         chan struct{}
-	wg           sync.WaitGroup
-	sessions     *CCSessionStore
-	processed    *CCProcessedStore
-	postMessage  func(ctx context.Context, handle, content string) error // bound to APIClient.PostCC
-	postReply    func(ctx context.Context, handle, content, replyToMessageID string) error
-	react        func(ctx context.Context, handle, messageID, emoji string) error
-	reportTest   func(ctx context.Context, testID, status, errText string) error
-	logger       func(format string, args ...interface{})
-	mu           sync.Mutex
-	activeCancel context.CancelFunc
-	activeSeq    int64
-	stopped      bool
-	recoverStart bool
-	reacted      map[string]struct{}
-	history      []ccHistoryEntry
+	handle            string
+	configDir         string
+	cwd               string // resolved at construction
+	agentType         string
+	agentName         string
+	agentEnv          []string
+	bin               string
+	runFn             ccRunFn
+	runnerMode        string
+	debug             bool
+	queue             chan ccTask
+	stop              chan struct{}
+	wg                sync.WaitGroup
+	sessions          *CCSessionStore
+	processed         *CCProcessedStore
+	postMessage       func(ctx context.Context, handle, content string) error // bound to APIClient.PostCC
+	postReply         func(ctx context.Context, handle, content, replyToMessageID string) error
+	react             func(ctx context.Context, handle, messageID, emoji string) error
+	reportTest        func(ctx context.Context, testID, status, errText string) error
+	logger            func(format string, args ...interface{})
+	mu                sync.Mutex
+	activeCancel      context.CancelFunc
+	activeSeq         int64
+	sessionGeneration uint64
+	stopped           bool
+	recoverStart      bool
+	reacted           map[string]struct{}
+	history           []ccHistoryEntry
 }
 
 // ccTask is one queued prompt.
@@ -332,7 +333,10 @@ func (r *ccRunner) run(t ccTask) {
 	// the old (un-cleared) state. Drop the mapping after a successful
 	// turn so the next launch starts fresh.
 	clearedSession := strings.HasPrefix(strings.TrimSpace(prompt), "/clear")
+	r.mu.Lock()
+	sessionGeneration := r.sessionGeneration
 	sid := r.sessions.Get(r.handle)
+	r.mu.Unlock()
 	// Management-channel preamble: only on the FIRST message of a session.
 	if t.ChannelKind == "management" && sid == "" {
 		prompt = managementPreamble() + "\n\n---\n\n" + prompt
@@ -385,7 +389,11 @@ func (r *ccRunner) run(t ccTask) {
 	}
 
 	if newSID != "" {
-		_ = r.sessions.Set(r.handle, newSID)
+		r.mu.Lock()
+		if r.sessionGeneration == sessionGeneration {
+			_ = r.sessions.Set(r.handle, newSID)
+		}
+		r.mu.Unlock()
 	}
 	if clearedSession {
 		_ = r.sessions.Drop(r.handle)
@@ -414,6 +422,13 @@ func (r *ccRunner) run(t ccTask) {
 		r.reactToTask(t, "✅")
 	}
 	r.reportTaskTest(t, "replied", "")
+}
+
+func (r *ccRunner) resetSession() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sessionGeneration++
+	_ = r.sessions.Drop(r.handle)
 }
 
 func directShellCommand(content string) (string, bool) {
@@ -594,24 +609,26 @@ func shellJoinForLog(args []string) string {
 
 func (r *ccRunner) startLongRunReporter(t ccTask) chan struct{} {
 	done := make(chan struct{})
+	firstNotice := ccLongRunFirstNotice
+	interval := ccLongRunInterval
 	go func() {
-		timer := time.NewTimer(ccLongRunFirstNotice)
+		timer := time.NewTimer(firstNotice)
 		defer timer.Stop()
 		select {
 		case <-done:
 			return
 		case <-timer.C:
-			r.postLongRunNotice(t, ccLongRunFirstNotice)
+			r.postLongRunNotice(t, firstNotice)
 		}
-		ticker := time.NewTicker(ccLongRunInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		elapsed := ccLongRunFirstNotice
+		elapsed := firstNotice
 		for {
 			select {
 			case <-done:
 				return
 			case <-ticker.C:
-				elapsed += ccLongRunInterval
+				elapsed += interval
 				r.postLongRunNotice(t, elapsed)
 			}
 		}
@@ -691,12 +708,19 @@ func (r *ccRunner) appendHistory(role, text string) {
 }
 
 func (r *ccRunner) formatRecentHistory(n int) string {
+	return formatRecentHistory(r.historySnapshot(), n)
+}
+
+func (r *ccRunner) historySnapshot() []ccHistoryEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]ccHistoryEntry(nil), r.history...)
+}
+
+func formatRecentHistory(hist []ccHistoryEntry, n int) string {
 	if n <= 0 {
 		n = 3
 	}
-	r.mu.Lock()
-	hist := append([]ccHistoryEntry(nil), r.history...)
-	r.mu.Unlock()
 	if len(hist) == 0 {
 		return "_(no agent conversation recorded yet)_"
 	}

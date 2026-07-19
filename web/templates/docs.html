@@ -383,7 +383,7 @@ journalctl --user -u duckway-cc-watch -f</code></pre>
       <tr><td><code>!help</code></td><td>either</td><td>Print this list</td></tr>
     </tbody>
   </table>
-  <p class="text-sm text-muted">Server-side commands are handled immediately. Client-owned commands such as <code>!sessions</code> and <code>!duckway-update</code> are forwarded to the assigned <code>duckway cc watch</code> daemon.</p>
+  <p class="text-sm text-muted">Server-side commands are handled immediately. Client-owned commands such as <code>!sessions</code> and <code>!duckway-update</code> are forwarded to the assigned <code>duckway cc watch</code> daemon. Agent prompts, direct <code>!!</code> shell commands, and daemon-side <code>!</code> commands use independent bounded queues: each remains FIFO, while different queues can run concurrently.</p>
 
   <h4 class="mt-1">MCP tools (inside an agent session)</h4>
   <table>

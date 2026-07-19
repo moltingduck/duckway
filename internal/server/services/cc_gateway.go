@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
+	"github.com/hackerduck/duckway/internal/models"
 	"golang.org/x/net/websocket"
 )
 
@@ -192,14 +193,78 @@ type ccBotConn struct {
 	commands  *CCCommandHandler
 	approvals *CCApprovalRegistry
 
-	mu        sync.Mutex
-	ws        *websocket.Conn
-	hbMs      int
-	seq       *int
-	sessionID string // Discord session_id from last READY; empty = must IDENTIFY
-	resumeURL string // resume_gateway_url from READY; falls back to /gateway/bot
-	stopCh    chan struct{}
-	stopped   bool
+	mu             sync.Mutex
+	ws             *websocket.Conn
+	hbMs           int
+	seq            *int
+	sessionID      string // Discord session_id from last READY; empty = must IDENTIFY
+	resumeURL      string // resume_gateway_url from READY; falls back to /gateway/bot
+	stopCh         chan struct{}
+	stopped        bool
+	commandOnce    sync.Once
+	commandCh      chan ccGatewayCommand
+	commandHandler func(context.Context, ccGatewayCommand)
+}
+
+type ccGatewayCommand struct {
+	ccID    string
+	channel models.CCChannel
+	content string
+}
+
+func (c *ccBotConn) enqueueCommand(cmd ccGatewayCommand) bool {
+	c.commandOnce.Do(func() {
+		if c.stopCh == nil {
+			c.stopCh = make(chan struct{})
+		}
+		c.commandCh = make(chan ccGatewayCommand, 32)
+		go c.commandLoop()
+	})
+	select {
+	case <-c.stopCh:
+		return false
+	default:
+	}
+	select {
+	case c.commandCh <- cmd:
+		return true
+	case <-c.stopCh:
+		return false
+	default:
+		return false
+	}
+}
+
+func (c *ccBotConn) commandLoop() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-c.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		default:
+		}
+		select {
+		case <-c.stopCh:
+			return
+		case cmd := <-c.commandCh:
+			func() {
+				defer recoverCC(c.apiKeyID, "command")
+				if c.commandHandler != nil {
+					c.commandHandler(ctx, cmd)
+					return
+				}
+				c.commands.Handle(ctx, cmd.ccID, &cmd.channel, cmd.content)
+			}()
+		}
+	}
 }
 
 func (c *ccBotConn) stop() {
@@ -209,7 +274,9 @@ func (c *ccBotConn) stop() {
 		return
 	}
 	c.stopped = true
-	close(c.stopCh)
+	if c.stopCh != nil {
+		close(c.stopCh)
+	}
 	if c.ws != nil {
 		c.ws.Close()
 	}
@@ -492,11 +559,16 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 			}
 			_ = json.Unmarshal(payload, &msg)
 			if LooksLikeCommand(msg.Content) {
-				ccID, chCopy, content := cc.ID, ch, msg.Content
-				go func() {
-					defer recoverCC(c.apiKeyID, "command")
-					c.commands.Handle(context.Background(), ccID, chCopy, content)
-				}()
+				cmd := ccGatewayCommand{ccID: cc.ID, channel: *ch, content: msg.Content}
+				if !c.enqueueCommand(cmd) {
+					log.Printf("[cc-gw] %s: command queue full, dropping %q", c.apiKeyID, msg.Content)
+					go func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer cancel()
+						c.commands.reply(ctx, c.botToken, cmd.channel.ChannelID,
+							"⚠️ command queue full — this command was dropped; retry after the current command finishes.")
+					}()
+				}
 				return
 			}
 		}

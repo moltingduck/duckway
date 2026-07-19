@@ -139,7 +139,7 @@ func TestCmdSessions_PostsListingOfUnbound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.cmdSessions("dwch_mgmt", nil)
+	w.cmdSessions(context.Background(), "dwch_mgmt", nil)
 
 	msgs := fake.snapshotMessages()
 	if len(msgs) != 1 {
@@ -275,7 +275,7 @@ func TestCmdBind_CreatesChannelAndWritesBinding(t *testing.T) {
 	fake := newFakeServer(t)
 	w := stubWatch(t, projects, fake)
 
-	w.cmdBind("dwch_mgmt", []string{"33333333-3333-3333-3333-333333333333"})
+	w.cmdBind(context.Background(), "dwch_mgmt", []string{"33333333-3333-3333-3333-333333333333"})
 
 	creates := fake.snapshotCreates()
 	if len(creates) != 1 {
@@ -312,7 +312,7 @@ func TestCmdBind_AlreadyBoundSkipsCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.cmdBind("dwch_mgmt", []string{"44444444-4444-4444-4444-444444444444"})
+	w.cmdBind(context.Background(), "dwch_mgmt", []string{"44444444-4444-4444-4444-444444444444"})
 
 	if len(fake.snapshotCreates()) != 0 {
 		t.Errorf("should not have created a channel for already-bound session: %+v", fake.snapshotCreates())
@@ -330,7 +330,7 @@ func TestCmdBind_UnknownSessionReportsError(t *testing.T) {
 	fake := newFakeServer(t)
 	w := stubWatch(t, home, fake)
 
-	w.cmdBind("dwch_mgmt", []string{"55555555-5555-5555-5555-555555555555"})
+	w.cmdBind(context.Background(), "dwch_mgmt", []string{"55555555-5555-5555-5555-555555555555"})
 
 	msgs := fake.snapshotMessages()
 	if len(msgs) != 1 {
@@ -350,7 +350,7 @@ func TestCmdNewWithExistingCwdCreatesChannel(t *testing.T) {
 	fake := newFakeServer(t)
 	w := stubWatch(t, filepath.Join(root, ".claude", "projects"), fake)
 
-	w.cmdNewProject("dwch_mgmt", []string{"fix-login", "--cwd", cwd, "--topic", "bug"})
+	w.cmdNewProject(context.Background(), "dwch_mgmt", []string{"fix-login", "--cwd", cwd, "--topic", "bug"})
 
 	creates := fake.snapshotCreates()
 	if len(creates) != 1 {
@@ -371,7 +371,7 @@ func TestCmdNewWithMissingCwdRequiresConfirmationThenAddsProject(t *testing.T) {
 	fake := newFakeServer(t)
 	w := stubWatch(t, filepath.Join(root, ".claude", "projects"), fake)
 
-	w.cmdNewProject("dwch_mgmt", []string{"new-app", "--cwd", cwd})
+	w.cmdNewProject(context.Background(), "dwch_mgmt", []string{"new-app", "--cwd", cwd})
 	if len(fake.snapshotCreates()) != 0 {
 		t.Fatalf("should not create channel before confirmation: %+v", fake.snapshotCreates())
 	}
@@ -384,7 +384,7 @@ func TestCmdNewWithMissingCwdRequiresConfirmationThenAddsProject(t *testing.T) {
 		t.Fatalf("confirmation token not found in %q", msgs[0]["content"])
 	}
 
-	w.cmdNewProjectConfirm("dwch_mgmt", []string{token[1]})
+	w.cmdNewProjectConfirm(context.Background(), "dwch_mgmt", []string{token[1]})
 	if st, err := os.Stat(cwd); err != nil || !st.IsDir() {
 		t.Fatalf("cwd not created: stat=%v err=%v", st, err)
 	}
@@ -834,6 +834,211 @@ func TestHandleMessageCreateDoubleBangDoesNotRequireAgentBinary(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for direct shell reply")
+}
+
+func TestHandleMessageCreateDoubleBangDoesNotWaitForAgentPrompt(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	agentStarted := make(chan struct{})
+	releaseAgent := make(chan struct{})
+	spec := ccAgentSpec{
+		Type: "codex", DisplayName: "codex", Bin: "/fake/codex", UseTmux: false,
+		RunFn: func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+			close(agentStarted)
+			<-releaseAgent
+			return "sid", "agent done", false, nil
+		},
+	}
+	agentRunner, err := newCCRunner("dwch_task", w.configDir, t.TempDir(), spec, w.sessions, fakePostNoop, fakePostReplyNoop, fakeReactNoop, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.runners["dwch_task"] = agentRunner
+	defer func() {
+		close(releaseAgent)
+		w.shutdown()
+	}()
+
+	if !agentRunner.Enqueue(ccTask{Content: "long agent prompt", ChannelKind: "task"}) {
+		t.Fatal("agent enqueue failed")
+	}
+	select {
+	case <-agentStarted:
+	case <-time.After(time.Second):
+		t.Fatal("agent prompt did not start")
+	}
+
+	payload := json.RawMessage(`{"id":"1783330000000001237","content":"!! printf shell-did-not-wait","author":{"id":"U1","bot":false}}`)
+	env := sseEnvelope{Type: "message_create", CCID: "cc1", Handle: "dwch_task", Kind: "task", Payload: payload}
+	data, _ := json.Marshal(env)
+	w.handleMessageCreate(data)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, msg := range fake.snapshotMessages() {
+			if strings.Contains(msg["content"], "shell-did-not-wait") {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("direct shell command waited for the blocked agent prompt")
+}
+
+func TestClientCommandQueueDoesNotDelayAgentPrompt(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	commandStarted := make(chan struct{})
+	releaseCommand := make(chan struct{})
+	w.clientCommandHandler = func(context.Context, []byte) {
+		close(commandStarted)
+		<-releaseCommand
+	}
+
+	agentStarted := make(chan struct{})
+	releaseAgent := make(chan struct{})
+	spec := ccAgentSpec{
+		Type: "codex", DisplayName: "codex", Bin: "/fake/codex", UseTmux: false,
+		RunFn: func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+			close(agentStarted)
+			<-releaseAgent
+			return "sid", "agent done", false, nil
+		},
+	}
+	agentRunner, err := newCCRunner("dwch_task", w.configDir, t.TempDir(), spec, w.sessions, fakePostNoop, fakePostReplyNoop, fakeReactNoop, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.runners["dwch_task"] = agentRunner
+	defer func() {
+		close(releaseCommand)
+		close(releaseAgent)
+		w.shutdown()
+	}()
+
+	commandPayload, _ := json.Marshal(clientCommandPayload{Command: "!projects"})
+	commandData, _ := json.Marshal(sseEnvelope{Type: "client_command", Handle: "dwch_task", Payload: commandPayload})
+	w.handleEvent("client_command", commandData)
+	select {
+	case <-commandStarted:
+	case <-time.After(time.Second):
+		t.Fatal("client command did not start")
+	}
+
+	messagePayload := json.RawMessage(`{"id":"1783330000000001238","content":"agent prompt","author":{"id":"U1","bot":false}}`)
+	messageData, _ := json.Marshal(sseEnvelope{Type: "message_create", CCID: "cc1", Handle: "dwch_task", Kind: "task", Payload: messagePayload})
+	w.handleEvent("message_create", messageData)
+	select {
+	case <-agentStarted:
+	case <-time.After(time.Second):
+		t.Fatal("agent prompt waited for the blocked client command")
+	}
+}
+
+func TestBlockedClientCommandDoesNotDelayDirectShell(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	commandStarted := make(chan struct{})
+	releaseCommand := make(chan struct{})
+	w.clientCommandHandler = func(context.Context, []byte) {
+		close(commandStarted)
+		<-releaseCommand
+	}
+	defer func() {
+		close(releaseCommand)
+		w.shutdown()
+	}()
+
+	commandPayload, _ := json.Marshal(clientCommandPayload{Command: "!projects"})
+	commandData, _ := json.Marshal(sseEnvelope{Type: "client_command", Handle: "dwch_task", Payload: commandPayload})
+	w.handleEvent("client_command", commandData)
+	select {
+	case <-commandStarted:
+	case <-time.After(time.Second):
+		t.Fatal("client command did not start")
+	}
+
+	shellPayload := json.RawMessage(`{"id":"1783330000000001239","content":"!! printf shell-independent","author":{"id":"U1","bot":false}}`)
+	shellData, _ := json.Marshal(sseEnvelope{Type: "message_create", CCID: "cc1", Handle: "dwch_task", Kind: "task", Payload: shellPayload})
+	w.handleEvent("message_create", shellData)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, msg := range fake.snapshotMessages() {
+			if strings.Contains(msg["content"], "shell-independent") {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("direct shell command waited for the blocked client command")
+}
+
+func TestCCCommandRunnerStopCancelsActiveAndDropsQueued(t *testing.T) {
+	started := make(chan struct{})
+	var mu sync.Mutex
+	calls := 0
+	runner := newCCCommandRunner(func(ctx context.Context, _ []byte) {
+		mu.Lock()
+		calls++
+		current := calls
+		mu.Unlock()
+		if current == 1 {
+			close(started)
+			<-ctx.Done()
+		}
+	})
+	if !runner.Enqueue([]byte("first")) {
+		t.Fatal("first command enqueue failed")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first command did not start")
+	}
+	if !runner.Enqueue([]byte("second")) {
+		t.Fatal("second command enqueue failed")
+	}
+	done := make(chan struct{})
+	go func() {
+		runner.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel the active command")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("commands executed after Stop: calls=%d", calls)
+	}
+}
+
+func TestDeletedChannelCannotRecreateShellOrCommandRunner(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	w.deleted["dwch_deleted"] = struct{}{}
+	called := make(chan struct{}, 1)
+	w.clientCommandHandler = func(context.Context, []byte) { called <- struct{}{} }
+
+	payload, _ := json.Marshal(clientCommandPayload{Command: "!projects"})
+	data, _ := json.Marshal(sseEnvelope{Type: "client_command", Handle: "dwch_deleted", Payload: payload})
+	w.enqueueClientCommand(data)
+	if _, ok := w.commandRunners["dwch_deleted"]; ok {
+		t.Fatal("deleted channel recreated a command runner")
+	}
+	select {
+	case <-called:
+		t.Fatal("deleted channel executed a command")
+	default:
+	}
+	if _, err := w.runnerForDirectShell("dwch_deleted"); err == nil {
+		t.Fatal("deleted channel recreated a shell runner")
+	}
+	if _, ok := w.shellRunners["dwch_deleted"]; ok {
+		t.Fatal("deleted channel installed a shell runner")
+	}
 }
 
 func fakePostNoop(context.Context, string, string) error { return nil }

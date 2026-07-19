@@ -37,13 +37,18 @@ type CCWatch struct {
 	noTmux bool
 	debug  bool
 
-	mu           sync.Mutex
-	runners      map[string]*ccRunner // by channel handle
-	inboxCursor  int64
-	sseConnected bool
-	pendingNew   map[string]pendingNewProject
-	deleted      map[string]struct{}
-	recoverSeen  map[string]struct{}
+	mu             sync.Mutex
+	runners        map[string]*ccRunner        // agent prompts, by channel handle
+	shellRunners   map[string]*ccRunner        // !! commands, by channel handle
+	commandRunners map[string]*ccCommandRunner // ! commands, by channel handle
+	// clientCommandHandler is a test seam; production uses handleClientCommand.
+	clientCommandHandler func(context.Context, []byte)
+	inboxCursor          int64
+	sseConnected         bool
+	pendingNew           map[string]pendingNewProject
+	deleted              map[string]struct{}
+	recoverSeen          map[string]struct{}
+	stopping             bool
 
 	api *APIClient
 }
@@ -74,20 +79,22 @@ func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (
 		}
 	}
 	return &CCWatch{
-		cfg:          cfg,
-		configDir:    configDir,
-		agentTypes:   agentTypes,
-		agentOptions: agentOptions,
-		sessions:     NewCCSessionStore(configDir),
-		processed:    NewCCProcessedStore(configDir),
-		noTmux:       opts.NoTmux,
-		debug:        opts.Debug,
-		runners:      map[string]*ccRunner{},
-		pendingNew:   map[string]pendingNewProject{},
-		deleted:      map[string]struct{}{},
-		recoverSeen:  map[string]struct{}{},
-		inboxCursor:  loadCCInboxCursor(configDir),
-		api:          NewAPIClient(cfg.ServerURL, cfg.Token),
+		cfg:            cfg,
+		configDir:      configDir,
+		agentTypes:     agentTypes,
+		agentOptions:   agentOptions,
+		sessions:       NewCCSessionStore(configDir),
+		processed:      NewCCProcessedStore(configDir),
+		noTmux:         opts.NoTmux,
+		debug:          opts.Debug,
+		runners:        map[string]*ccRunner{},
+		shellRunners:   map[string]*ccRunner{},
+		commandRunners: map[string]*ccCommandRunner{},
+		pendingNew:     map[string]pendingNewProject{},
+		deleted:        map[string]struct{}{},
+		recoverSeen:    map[string]struct{}{},
+		inboxCursor:    loadCCInboxCursor(configDir),
+		api:            NewAPIClient(cfg.ServerURL, cfg.Token),
 	}, nil
 }
 
@@ -255,7 +262,7 @@ func (w *CCWatch) handleEvent(eventType string, data []byte) {
 	case "session_reset":
 		w.handleSessionReset(data)
 	case "client_command":
-		w.handleClientCommand(data)
+		w.enqueueClientCommand(data)
 	default:
 		// message_update, channel_update, etc — currently ignored. The
 		// session model assumes prompts come from message_create only.
@@ -297,7 +304,6 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	var msg payloadMessageCreate
 	_ = json.Unmarshal(env.Payload, &msg)
 	w.reportAgentTest(msg.TestID, "received", "")
-	w.syncCodexOAuthForCC(env.CCID)
 	if msg.Author.Bot {
 		// Skip — server filters these too, but be defensive.
 		return
@@ -320,9 +326,11 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 
 	var runner *ccRunner
 	var err error
-	if _, ok := directShellCommand(msg.Content); ok {
+	_, isDirectShell := directShellCommand(msg.Content)
+	if isDirectShell {
 		runner, err = w.runnerForDirectShell(env.Handle)
 	} else {
+		w.syncCodexOAuthForCC(env.CCID)
 		runner, err = w.runnerFor(env.Handle, env.CCID)
 	}
 	if err != nil {
@@ -346,14 +354,18 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		if queuedReactionDone != nil {
 			close(queuedReactionDone)
 		}
-		log.Printf("[cc-watch] %s: queue full, dropping message %s", env.Handle, msg.ID)
-		w.reportAgentTest(msg.TestID, "failed", "session queue full")
+		queueName := "agent"
+		if isDirectShell {
+			queueName = "shell"
+		}
+		log.Printf("[cc-watch] %s: %s queue full, dropping message %s", env.Handle, queueName, msg.ID)
+		w.reportAgentTest(msg.TestID, "failed", queueName+" queue full")
 		if messageID != "" {
 			_ = w.api.ReactCC(context.Background(), env.Handle, messageID, "⚠️")
 		}
 		if messageID != "" || msg.TestID == "" {
-			_ = w.api.PostCC(context.Background(), env.Handle,
-				"⚠️ session queue full (10 messages backed up) — your message was dropped, please retry once the agent catches up.")
+			_ = runner.postTaskMessage(task,
+				fmt.Sprintf("⚠️ %s queue full (10 messages backed up) — your message was dropped; retry after the current %s work finishes.", queueName, queueName))
 		}
 		return
 	}
@@ -387,7 +399,14 @@ func (w *CCWatch) handleSessionReset(data []byte) {
 	if env.Handle == "" {
 		return
 	}
-	_ = w.sessions.Drop(env.Handle)
+	w.mu.Lock()
+	runner := w.runners[env.Handle]
+	w.mu.Unlock()
+	if runner != nil {
+		runner.resetSession()
+	} else {
+		_ = w.sessions.Drop(env.Handle)
+	}
 	log.Printf("[cc-watch] %s: session reset", env.Handle)
 }
 
@@ -399,7 +418,8 @@ func (w *CCWatch) handleChannelDelete(data []byte) {
 	if env.Handle == "" {
 		return
 	}
-	var r *ccRunner
+	var agentRunner, shellRunner *ccRunner
+	var commandRunner *ccCommandRunner
 	w.mu.Lock()
 	if _, ok := w.deleted[env.Handle]; ok {
 		w.mu.Unlock()
@@ -410,12 +430,26 @@ func (w *CCWatch) handleChannelDelete(data []byte) {
 	}
 	w.deleted[env.Handle] = struct{}{}
 	if existing, ok := w.runners[env.Handle]; ok {
-		r = existing
+		agentRunner = existing
 		delete(w.runners, env.Handle)
 	}
+	if existing, ok := w.shellRunners[env.Handle]; ok {
+		shellRunner = existing
+		delete(w.shellRunners, env.Handle)
+	}
+	if existing, ok := w.commandRunners[env.Handle]; ok {
+		commandRunner = existing
+		delete(w.commandRunners, env.Handle)
+	}
 	w.mu.Unlock()
-	if r != nil {
-		r.Stop()
+	if agentRunner != nil {
+		agentRunner.Stop()
+	}
+	if shellRunner != nil {
+		shellRunner.Stop()
+	}
+	if commandRunner != nil {
+		commandRunner.Stop()
 	}
 	_ = w.sessions.Drop(env.Handle)
 	// If this channel had a live tmux pane (tmux runner), kill it now —
@@ -430,15 +464,17 @@ func (w *CCWatch) handleChannelDelete(data []byte) {
 // cache channel metadata; the cost is one HTTP call per first-message).
 func (w *CCWatch) runnerFor(handle, ccID string) (*ccRunner, error) {
 	w.mu.Lock()
+	if w.stopping {
+		w.mu.Unlock()
+		return nil, fmt.Errorf("cc-watch is shutting down")
+	}
+	if _, deleted := w.deleted[handle]; deleted {
+		w.mu.Unlock()
+		return nil, fmt.Errorf("channel %s was deleted", handle)
+	}
 	if r, ok := w.runners[handle]; ok {
-		if r.agentType == "shell_command" {
-			delete(w.runners, handle)
-			w.mu.Unlock()
-			r.Stop()
-		} else {
-			w.mu.Unlock()
-			return r, nil
-		}
+		w.mu.Unlock()
+		return r, nil
 	} else {
 		w.mu.Unlock()
 	}
@@ -457,6 +493,16 @@ func (w *CCWatch) runnerFor(handle, ccID string) (*ccRunner, error) {
 	}
 	w.mu.Lock()
 	// Re-check under lock in case we raced.
+	if w.stopping {
+		w.mu.Unlock()
+		r.Stop()
+		return nil, fmt.Errorf("cc-watch is shutting down")
+	}
+	if _, deleted := w.deleted[handle]; deleted {
+		w.mu.Unlock()
+		r.Stop()
+		return nil, fmt.Errorf("channel %s was deleted", handle)
+	}
 	if existing, ok := w.runners[handle]; ok {
 		w.mu.Unlock()
 		r.Stop()
@@ -467,13 +513,22 @@ func (w *CCWatch) runnerFor(handle, ccID string) (*ccRunner, error) {
 	return r, nil
 }
 
-// runnerForDirectShell returns a runner capable of handling `!!` commands
-// without requiring the configured agent binary to be installed. If a normal
-// agent runner already exists for the channel, reuse it so queue ordering is
-// preserved across prompts and direct shell commands.
+// runnerForDirectShell returns the channel's independent `!!` worker. Shell
+// commands remain FIFO with each other but never wait for an agent prompt.
 func (w *CCWatch) runnerForDirectShell(handle string) (*ccRunner, error) {
 	w.mu.Lock()
-	if r, ok := w.runners[handle]; ok {
+	if w.stopping {
+		w.mu.Unlock()
+		return nil, fmt.Errorf("cc-watch is shutting down")
+	}
+	if _, deleted := w.deleted[handle]; deleted {
+		w.mu.Unlock()
+		return nil, fmt.Errorf("channel %s was deleted", handle)
+	}
+	if w.shellRunners == nil {
+		w.shellRunners = make(map[string]*ccRunner)
+	}
+	if r, ok := w.shellRunners[handle]; ok {
 		w.mu.Unlock()
 		return r, nil
 	}
@@ -495,12 +550,22 @@ func (w *CCWatch) runnerForDirectShell(handle string) (*ccRunner, error) {
 		return nil, err
 	}
 	w.mu.Lock()
-	if existing, ok := w.runners[handle]; ok {
+	if w.stopping {
+		w.mu.Unlock()
+		r.Stop()
+		return nil, fmt.Errorf("cc-watch is shutting down")
+	}
+	if _, deleted := w.deleted[handle]; deleted {
+		w.mu.Unlock()
+		r.Stop()
+		return nil, fmt.Errorf("channel %s was deleted", handle)
+	}
+	if existing, ok := w.shellRunners[handle]; ok {
 		w.mu.Unlock()
 		r.Stop()
 		return existing, nil
 	}
-	w.runners[handle] = r
+	w.shellRunners[handle] = r
 	w.mu.Unlock()
 	return r, nil
 }
@@ -614,13 +679,26 @@ func (w *CCWatch) fetchChannelCwd(handle string) (string, error) {
 
 func (w *CCWatch) shutdown() {
 	var runners []*ccRunner
+	var commandRunners []*ccCommandRunner
 	w.mu.Lock()
+	w.stopping = true
 	for h, r := range w.runners {
 		runners = append(runners, r)
 		delete(w.runners, h)
 	}
+	for h, r := range w.shellRunners {
+		runners = append(runners, r)
+		delete(w.shellRunners, h)
+	}
+	for h, r := range w.commandRunners {
+		commandRunners = append(commandRunners, r)
+		delete(w.commandRunners, h)
+	}
 	w.mu.Unlock()
 	for _, r := range runners {
+		r.Stop()
+	}
+	for _, r := range commandRunners {
 		r.Stop()
 	}
 	log.Printf("[cc-watch] shutdown complete")

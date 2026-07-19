@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -17,6 +18,83 @@ func TestParseHello_Valid(t *testing.T) {
 	}
 	if got != 41250 {
 		t.Fatalf("interval = %d, want 41250", got)
+	}
+}
+
+func TestCCBotCommandQueuePreservesFIFO(t *testing.T) {
+	seen := make(chan string, 3)
+	conn := &ccBotConn{
+		apiKeyID: "key1",
+		stopCh:   make(chan struct{}),
+		commandHandler: func(_ context.Context, cmd ccGatewayCommand) {
+			seen <- cmd.content
+		},
+	}
+	defer conn.stop()
+	for _, content := range []string{"!duckway-update", "!duckway-restart", "!duckway-version"} {
+		if !conn.enqueueCommand(ccGatewayCommand{content: content}) {
+			t.Fatalf("enqueue %q failed", content)
+		}
+	}
+	for _, want := range []string{"!duckway-update", "!duckway-restart", "!duckway-version"} {
+		select {
+		case got := <-seen:
+			if got != want {
+				t.Fatalf("command order: got %q, want %q", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %q", want)
+		}
+	}
+}
+
+func TestBlockedServerCommandDoesNotDelayAgentMessage(t *testing.T) {
+	h := newCommandHarness(t)
+	clientID := "client1"
+	if err := h.cc.CreateChannel(&models.CCChannel{
+		Handle: "dwch_task", CCID: "cc1", ClientID: &clientID,
+		ChannelID: "TASK1", Name: "task", Kind: "task",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sub, unsub := h.hub.Subscribe("client1")
+	defer unsub()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	conn := &ccBotConn{
+		apiKeyID: "key1",
+		botToken: "bot-token",
+		cc:       h.cc,
+		hub:      h.hub,
+		commands: h.handler,
+		stopCh:   make(chan struct{}),
+		commandHandler: func(ctx context.Context, _ ccGatewayCommand) {
+			close(started)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		},
+	}
+	defer func() {
+		close(release)
+		conn.stop()
+	}()
+
+	conn.routeMessageEvent("MESSAGE_CREATE", "MGMT1", json.RawMessage(`{"id":"M-CMD","content":"!status"}`))
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("server command did not start")
+	}
+	conn.routeMessageEvent("MESSAGE_CREATE", "TASK1", json.RawMessage(`{"id":"M-AGENT","content":"agent prompt","author":{"id":"U1"}}`))
+	select {
+	case event := <-sub:
+		if event.Type != "message_create" || event.Handle != "dwch_task" {
+			t.Fatalf("unexpected agent event: %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("agent message waited for blocked server command")
 	}
 }
 
@@ -276,6 +354,7 @@ func TestRouteMessageEventCommandsDoNotReachDaemon(t *testing.T) {
 	sub, unsub := h.hub.Subscribe("client1")
 	defer unsub()
 	conn := &ccBotConn{apiKeyID: "key1", cc: h.cc, hub: h.hub, commands: h.handler}
+	defer conn.stop()
 
 	payload := json.RawMessage(`{"id":"M2","channel_id":"MGMT1","content":"!status","author":{"id":"U1","bot":false}}`)
 	conn.routeMessageEvent("MESSAGE_CREATE", "MGMT1", payload)

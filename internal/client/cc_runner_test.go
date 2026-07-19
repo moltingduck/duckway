@@ -643,6 +643,44 @@ func TestCCRunnerStopCancelsInFlightTask(t *testing.T) {
 	}
 }
 
+func TestCCRunnerResetPreventsInFlightTurnRestoringSession(t *testing.T) {
+	started := make(chan string, 1)
+	release := make(chan struct{})
+	fn := ccRunFn(func(_ context.Context, _, _, _ string, sid string, _ []string) (string, string, bool, error) {
+		started <- sid
+		<-release
+		return "sid-after-reset", "done", false, nil
+	})
+	store := NewCCSessionStore(t.TempDir())
+	if err := store.Set("dwch_reset", "sid-before-reset"); err != nil {
+		t.Fatal(err)
+	}
+	pp := &recordingPoster{}
+	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: fn, UseTmux: false}
+	r, err := newCCRunner("dwch_reset", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+	if !r.Enqueue(ccTask{Content: "in flight", ChannelKind: "task"}) {
+		t.Fatal("enqueue failed")
+	}
+	select {
+	case sid := <-started:
+		if sid != "sid-before-reset" {
+			t.Fatalf("started with session %q", sid)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("turn did not start")
+	}
+	r.resetSession()
+	close(release)
+	waitForPosts(t, pp, 1)
+	if got := store.Get("dwch_reset"); got != "" {
+		t.Fatalf("in-flight turn restored reset session: %q", got)
+	}
+}
+
 func TestCCRunner_ManagementPreamble_FirstTurnOnly(t *testing.T) {
 	fn, captured := capturingRunFn("sess-mgmt-1", "response")
 	store := NewCCSessionStore(t.TempDir())

@@ -501,6 +501,8 @@ In `<client>-control`:
 - `!duckway-update [--restart]` → update the local Duckway binary; optionally restart daemons after a successful update
 - `!! <command>` → run a shell command directly on the client in the current channel's working directory; stdout/stderr are posted back and the agent session is not touched
 
+Agent prompts, direct `!!` shell commands, and daemon-side `!` commands use three independent bounded queues. Each queue remains FIFO for a channel, but work in different queues can run concurrently, so a long agent turn does not delay operational commands and replies may interleave.
+
 Project folders are saved on the client machine, not browsed from the Duckway server. Add them with:
 
 ```bash
