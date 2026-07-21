@@ -33,6 +33,7 @@ func TestRedactCapturedBodyForm(t *testing.T) {
 func TestRedactCapturedBodyPlainText(t *testing.T) {
 	body := strings.Join([]string{
 		"error included sk-1234567890abcdef",
+		"xai-1234567890abcdef",
 		"github_pat_1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJK",
 		"ghs_1234567890abcdefghijklmnopqrstuvwxyz",
 		"rt.1234567890abcdefghijklmnopqrstuvwxyz",
@@ -41,7 +42,7 @@ func TestRedactCapturedBodyPlainText(t *testing.T) {
 		"normal message",
 	}, "\n")
 	got := redactCapturedBody(body, "text/plain")
-	for _, secret := range []string{"sk-1234567890abcdef", "github_pat_", "ghs_", "rt.", "eyJhbGci", "BEGIN PRIVATE KEY", "secret"} {
+	for _, secret := range []string{"sk-1234567890abcdef", "xai-1234567890abcdef", "github_pat_", "ghs_", "rt.", "eyJhbGci", "BEGIN PRIVATE KEY", "secret"} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("redacted text leaked %q in %s", secret, got)
 		}

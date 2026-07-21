@@ -87,7 +87,7 @@ duckway init</code></pre>
   <h4 class="mt-1">Admin setup</h4>
   <ol>
     <li>Login — credentials shown in server log on first run (dev mode: <code>duckway/duckway</code>)</li>
-    <li>Default services pre-configured: OpenAI, Anthropic, GitHub, Discord, Telegram</li>
+    <li>Default services pre-configured: OpenAI, Anthropic, xAI/Grok, GitHub, Discord, Telegram</li>
     <li><strong>API Keys</strong> → add your real keys (encrypted at rest)</li>
     <li><strong>Clients</strong> → register a machine → copy the full setup command</li>
     <li>Assign keys to the client → phantom tokens auto-generated</li>
@@ -108,6 +108,7 @@ duckway init</code></pre>
     <tr><td><strong>Default ACL</strong></td><td>Service-level access control — applies to all keys unless overridden</td></tr>
   </table>
   <p class="mt-1"><strong>API Keys</strong> are your real credentials, stored AES-256-GCM encrypted. Each key can have its own ACL. Edit name, rotate the key value, or change ACL from the API Keys page.</p>
+  <p class="mt-1">For Grok Build, add the real xAI API key under service <code>xai</code> and assign it to clients as <code>XAI_API_KEY</code>. <code>duckway sync</code> writes the phantom token into <code>~/.grok/config.toml</code> for <code>grok-4.5</code>; Grok traffic to <code>cli-chat-proxy.grok.com</code> then routes through Duckway and the real key stays server-side.</p>
 </div>
 
 <!-- 5 -->

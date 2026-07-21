@@ -192,6 +192,7 @@ func TestCCWatchCodexOAuthSyncUsesNativeOAuth(t *testing.T) {
 func TestBuildHostMapAddsOpenAIAuthVirtualService(t *testing.T) {
 	hostMap := buildHostMap([]ServiceInfo{
 		{Name: "openai", HostPattern: "api.openai.com", UpstreamURL: "https://api.openai.com"},
+		{Name: "xai", HostPattern: "api.x.ai,cli-chat-proxy.grok.com", UpstreamURL: "https://api.x.ai"},
 	})
 	entry, ok := hostMap["auth.openai.com"]
 	if !ok {
@@ -209,6 +210,28 @@ func TestBuildHostMapAddsOpenAIAuthVirtualService(t *testing.T) {
 	}
 	if chatgpt.Service != "openai-chatgpt" || chatgpt.DeliveryMode != "proxy" || chatgpt.UpstreamURL != "https://chatgpt.com" {
 		t.Fatalf("unexpected chatgpt host entry: %#v", chatgpt)
+	}
+	grok, ok := hostMap["cli-chat-proxy.grok.com"]
+	if !ok {
+		t.Fatalf("cli-chat-proxy.grok.com missing from host map: %#v", hostMap)
+	}
+	if grok.Service != "xai-grok" || grok.DeliveryMode != "proxy" || grok.UpstreamURL != "https://cli-chat-proxy.grok.com" {
+		t.Fatalf("unexpected Grok host entry: %#v", grok)
+	}
+	if hostMap["api.x.ai"].Service != "xai" || hostMap["api.x.ai"].UpstreamURL != "https://api.x.ai" {
+		t.Fatalf("regular xAI API host was not preserved: %#v", hostMap["api.x.ai"])
+	}
+}
+
+func TestBuildHostMapSkipsGrokVirtualServiceWithoutXAIHostPattern(t *testing.T) {
+	for _, svcs := range [][]ServiceInfo{
+		{{Name: "openai", HostPattern: "api.openai.com", UpstreamURL: "https://api.openai.com"}},
+		{{Name: "xai", HostPattern: "api.x.ai", UpstreamURL: "https://api.x.ai"}},
+	} {
+		hostMap := buildHostMap(svcs)
+		if _, ok := hostMap["cli-chat-proxy.grok.com"]; ok {
+			t.Fatalf("Grok virtual host should not be present for services %#v: %#v", svcs, hostMap)
+		}
 	}
 }
 

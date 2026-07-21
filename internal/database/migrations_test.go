@@ -37,3 +37,27 @@ func TestRunMigrationsUpdatesOldGitHubDefaults(t *testing.T) {
 		t.Fatalf("delivery_mode = %q, want proxy", mode)
 	}
 }
+
+func TestRunMigrationsSeedsXAIService(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	var upstream, hostPattern, authHeader, authPrefix, keyPrefix, keyDirectory, deliveryMode string
+	var keyLength int
+	if err := db.QueryRow(`SELECT upstream_url, host_pattern, auth_header, auth_prefix, key_prefix, key_length, key_directory, delivery_mode
+		FROM services WHERE name = 'xai'`).Scan(&upstream, &hostPattern, &authHeader, &authPrefix, &keyPrefix, &keyLength, &keyDirectory, &deliveryMode); err != nil {
+		t.Fatal(err)
+	}
+	if upstream != "https://api.x.ai" || hostPattern != "api.x.ai,cli-chat-proxy.grok.com" {
+		t.Fatalf("xai upstream/hosts = %q %q", upstream, hostPattern)
+	}
+	if authHeader != "Authorization" || authPrefix != "Bearer " {
+		t.Fatalf("xai auth = %q %q", authHeader, authPrefix)
+	}
+	if keyPrefix != "xai-" || keyLength != 80 || keyDirectory != ".config/xai/credentials" || deliveryMode != "proxy" {
+		t.Fatalf("xai key/deploy config = prefix:%q len:%d dir:%q mode:%q", keyPrefix, keyLength, keyDirectory, deliveryMode)
+	}
+}

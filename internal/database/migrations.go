@@ -473,5 +473,16 @@ func runMigrations(db *sql.DB) error {
 		 'bearer', 'Authorization', 'Bearer ',
 		 'sk-', 64, '.config/openai/credentials', 'proxy', 1)`)
 
+	// Seed xAI so Grok Build can use Duckway phantom tokens without manual
+	// service setup on existing installations.
+	db.Exec(`INSERT OR IGNORE INTO services
+		(id, name, display_name, upstream_url, host_pattern,
+		 auth_type, auth_header, auth_prefix,
+		 key_prefix, key_length, key_directory, delivery_mode, is_active)
+		VALUES
+		('svc-xai-default', 'xai', 'xAI / Grok', 'https://api.x.ai', 'api.x.ai,cli-chat-proxy.grok.com',
+		 'bearer', 'Authorization', 'Bearer ',
+		 'xai-', 80, '.config/xai/credentials', 'proxy', 1)`)
+
 	return nil
 }

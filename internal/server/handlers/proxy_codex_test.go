@@ -317,6 +317,228 @@ func TestHandleOpenAIChatGPTProxyUsesOpenAIKeyForNativeCodex(t *testing.T) {
 	}
 }
 
+func TestHandleXAIGrokProxyUsesXAIKey(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	realKey := "xai-real-secret"
+	encAccess, err := crypto.Encrypt(realKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	xaiSvc, err := svcQ.GetByName("xai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-xai-grok','client',?)`, services.HashToken("tok")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
+		VALUES ('key-xai-grok',?,'xai key',?)`, xaiSvc.ID, encAccess); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO placeholder_keys (id,env_name,placeholder,service_id,api_key_id,client_id,requires_approval)
+		VALUES ('ph-xai-grok','XAI_API_KEY','xai-dw_fake_grok',?,'key-xai-grok','client-xai-grok',0)`, xaiSvc.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var upstreamURL string
+	var upstreamAuth string
+	h := NewProxyHandler(
+		svcQ,
+		queries.NewAPIKeyQueries(db),
+		services.NewKeyResolver(crypto, queries.NewAPIKeyQueries(db), queries.NewPlaceholderQueries(db), queries.NewGroupQueries(db), queries.NewApprovalQueries(db)),
+		nil,
+		queries.NewApprovalQueries(db),
+		nil,
+		nil,
+	).WithCrypto(crypto)
+	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		upstreamURL = req.URL.String()
+		upstreamAuth = req.Header.Get("Authorization")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    req,
+		}, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/proxy/xai-grok/v1/chat/completions?stream=true", strings.NewReader(`{"model":"grok-4.5"}`))
+	req.Header.Set("Authorization", "Bearer xai-dw_fake_grok")
+	req.Header.Set("Content-Type", "application/json")
+	client := &models.Client{ID: "client-xai-grok", Name: "client"}
+	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, client))
+	rec := httptest.NewRecorder()
+
+	h.Handle(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if upstreamURL != "https://cli-chat-proxy.grok.com/v1/chat/completions?stream=true" {
+		t.Fatalf("upstream URL = %q", upstreamURL)
+	}
+	if upstreamAuth != "Bearer "+realKey {
+		t.Fatalf("upstream Authorization = %q", upstreamAuth)
+	}
+}
+
+func TestHandleXAIGrokProxyRequiresConfiguredHostPattern(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`UPDATE services SET host_pattern = 'api.x.ai' WHERE name = 'xai'`); err != nil {
+		t.Fatal(err)
+	}
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encAccess, err := crypto.Encrypt("xai-real-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	xaiSvc, err := svcQ.GetByName("xai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-xai-deny','client',?)`, services.HashToken("tok")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
+		VALUES ('key-xai-deny',?,'xai key',?)`, xaiSvc.ID, encAccess); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO placeholder_keys (id,env_name,placeholder,service_id,api_key_id,client_id,requires_approval)
+		VALUES ('ph-xai-deny','XAI_API_KEY','xai-dw_fake_deny',?,'key-xai-deny','client-xai-deny',0)`, xaiSvc.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	h := NewProxyHandler(
+		svcQ,
+		queries.NewAPIKeyQueries(db),
+		services.NewKeyResolver(crypto, queries.NewAPIKeyQueries(db), queries.NewPlaceholderQueries(db), queries.NewGroupQueries(db), queries.NewApprovalQueries(db)),
+		nil,
+		queries.NewApprovalQueries(db),
+		nil,
+		nil,
+	).WithCrypto(crypto)
+	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		called = true
+		return nil, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/proxy/xai-grok/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer xai-dw_fake_deny")
+	client := &models.Client{ID: "client-xai-deny", Name: "client"}
+	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, client))
+	rec := httptest.NewRecorder()
+
+	h.Handle(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Fatal("upstream should not be called when Grok host is not configured")
+	}
+}
+
+func TestHandleXAIGrokProxyRejectsWrongClientOrServicePlaceholder(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encXAI, err := crypto.Encrypt("xai-real-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encOpenAI, err := crypto.Encrypt("sk-real-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	xaiSvc, err := svcQ.GetByName("xai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"client-xai-a", "client-xai-b"} {
+		if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES (?,?,?)`, id, id, services.HashToken("tok-"+id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
+		VALUES ('key-xai-a',?,'xai key',?), ('key-openai-a',?,'openai key',?)`, xaiSvc.ID, encXAI, openaiSvc.ID, encOpenAI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO placeholder_keys (id,env_name,placeholder,service_id,api_key_id,client_id,requires_approval)
+		VALUES
+		('ph-xai-a','XAI_API_KEY','xai-dw_fake_a',?,'key-xai-a','client-xai-a',0),
+		('ph-openai-a','OPENAI_API_KEY','sk-dw_fake_openai',?,'key-openai-a','client-xai-a',0)`,
+		xaiSvc.ID, openaiSvc.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	h := NewProxyHandler(
+		svcQ,
+		queries.NewAPIKeyQueries(db),
+		services.NewKeyResolver(crypto, queries.NewAPIKeyQueries(db), queries.NewPlaceholderQueries(db), queries.NewGroupQueries(db), queries.NewApprovalQueries(db)),
+		nil,
+		queries.NewApprovalQueries(db),
+		nil,
+		nil,
+	).WithCrypto(crypto)
+	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		called = true
+		return nil, nil
+	})}
+
+	tests := []struct {
+		name     string
+		clientID string
+		auth     string
+	}{
+		{name: "wrong client", clientID: "client-xai-b", auth: "Bearer xai-dw_fake_a"},
+		{name: "wrong service", clientID: "client-xai-a", auth: "Bearer sk-dw_fake_openai"},
+		{name: "no client", clientID: "", auth: "Bearer xai-dw_fake_a"},
+	}
+	for _, tt := range tests {
+		called = false
+		req := httptest.NewRequest(http.MethodPost, "/proxy/xai-grok/v1/chat/completions", nil)
+		req.Header.Set("Authorization", tt.auth)
+		if tt.clientID != "" {
+			req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, &models.Client{ID: tt.clientID, Name: tt.clientID}))
+		}
+		rec := httptest.NewRecorder()
+
+		h.Handle(rec, req)
+		if tt.clientID == "" {
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("%s status = %d body=%s", tt.name, rec.Code, rec.Body.String())
+			}
+		} else if rec.Code != http.StatusForbidden {
+			t.Fatalf("%s status = %d body=%s", tt.name, rec.Code, rec.Body.String())
+		}
+		if called {
+			t.Fatalf("%s called upstream", tt.name)
+		}
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

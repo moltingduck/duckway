@@ -117,6 +117,10 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 		log.Printf("Warning: codex config sync failed: %v", err)
 	}
 
+	if err := SyncGrokConfig(keys); err != nil {
+		log.Printf("Warning: grok config sync failed: %v", err)
+	}
+
 	return len(keys), nil
 }
 
@@ -732,6 +736,52 @@ func codexDuckwayProviderSection(proxyPort int) string {
 		"wire_api = \"responses\"\n"
 }
 
+// SyncGrokConfig writes the client's xAI phantom token into Grok's quoted
+// default model section. Grok Build currently treats per-model api_key as a
+// valid API-key auth source, and sends it as Authorization: Bearer to
+// cli-chat-proxy.grok.com. The local Duckway HTTPS proxy then replaces the
+// phantom token with the real server-side xAI key.
+func SyncGrokConfig(keys []PlaceholderKeyInfo) error {
+	placeholder := grokPlaceholderFromKeys(keys)
+	if placeholder == "" {
+		return nil
+	}
+	configPath, err := grokConfigTOMLPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(configPath), err)
+	}
+	existing, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", configPath, err)
+	}
+	next := replaceTOMLSectionStringKey(string(existing), `model."grok-4.5"`, "api_key", placeholder)
+	if err := writeFileAtomic(configPath, []byte(next), 0600); err != nil {
+		return err
+	}
+	log.Printf("Grok config synced to %s (model=grok-4.5, api_key=duckway phantom)", configPath)
+	return nil
+}
+
+func grokPlaceholderFromKeys(keys []PlaceholderKeyInfo) string {
+	for _, k := range keys {
+		if k.ServiceName == "xai" && strings.EqualFold(k.EnvName, "XAI_API_KEY") && strings.TrimSpace(k.Placeholder) != "" {
+			return strings.TrimSpace(k.Placeholder)
+		}
+	}
+	return ""
+}
+
+func grokConfigTOMLPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".grok", "config.toml"), nil
+}
+
 func removeTopLevelTOMLStringValue(input, key, value string) string {
 	lines := strings.Split(input, "\n")
 	prefix := key + " = "
@@ -796,6 +846,57 @@ func replaceTopLevelTOMLString(input, key, value string) string {
 	return strings.Join(out, "\n")
 }
 
+func replaceTOMLSectionStringKey(input, section, key, value string) string {
+	lines := strings.Split(input, "\n")
+	header := "[" + section + "]"
+	replacement := key + " = " + tomlQuote(value)
+	out := make([]string, 0, len(lines)+2)
+	inSection := false
+	seenSection := false
+	replaced := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if inSection && !replaced {
+				out = append(out, replacement)
+				replaced = true
+			}
+			inSection = normalizeTOMLSectionHeader(trimmed) == section
+			if inSection {
+				seenSection = true
+			}
+		}
+		if inSection && isTOMLKeyLine(trimmed, key) {
+			out = append(out, replacement)
+			replaced = true
+			continue
+		}
+		out = append(out, line)
+	}
+	if seenSection && inSection && !replaced {
+		out = append(out, replacement)
+	}
+	result := strings.TrimRight(strings.Join(out, "\n"), "\n")
+	if !seenSection {
+		if result != "" {
+			result += "\n\n"
+		}
+		result += header + "\n" + replacement
+	}
+	if result == "" {
+		return ""
+	}
+	return result + "\n"
+}
+
+func normalizeTOMLSectionHeader(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "[") || !strings.HasSuffix(trimmed, "]") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"))
+}
+
 func isTOMLKeyLine(line, key string) bool {
 	if strings.HasPrefix(line, "#") {
 		return false
@@ -805,6 +906,45 @@ func isTOMLKeyLine(line, key string) bool {
 	}
 	rest := strings.TrimSpace(strings.TrimPrefix(line, key))
 	return strings.HasPrefix(rest, "=")
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp %s: %w", tmpName, err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp %s: %w", tmpName, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename temp %s to %s: %w", tmpName, path, err)
+	}
+	cleanup = false
+	if dirFile, err := os.Open(dir); err == nil {
+		_ = dirFile.Sync()
+		_ = dirFile.Close()
+	}
+	return nil
 }
 
 // ensureLoopbackInNoProxy returns the NO_PROXY string with localhost and

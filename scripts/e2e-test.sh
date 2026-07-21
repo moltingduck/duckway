@@ -11,6 +11,7 @@ cd "$PROJECT_DIR"
 PORT="${1:-19090}"
 BASE="http://127.0.0.1:$PORT"
 DATA_DIR="/tmp/duckway-e2e-$$"
+CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 PASS=0
 FAIL=0
 ERRORS=""
@@ -24,7 +25,7 @@ NC='\033[0m'
 cleanup() {
   fuser -k "$PORT/tcp" 2>/dev/null || true
   fuser -k "$((PORT + 100))/tcp" 2>/dev/null || true
-  docker rm -f duckway-e2e-client 2>/dev/null || true
+  "$CONTAINER_RUNTIME" rm -f duckway-e2e-client 2>/dev/null || true
   rm -rf "$DATA_DIR" /tmp/dw-e2e-cookies /tmp/dw-e2e-server.log /tmp/dw-e2e-discord.log
 }
 
@@ -74,8 +75,8 @@ echo ""
 echo -e "${YELLOW}[Setup]${NC} Building binaries..."
 go build -o /tmp/duckway-e2e-server ./cmd/server/ 2>&1
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o client ./cmd/client/ 2>&1
-echo -e "${YELLOW}[Setup]${NC} Building Docker client..."
-docker build --target client -t duckway-client . -q 2>&1 >/dev/null
+echo -e "${YELLOW}[Setup]${NC} Building client container with $CONTAINER_RUNTIME..."
+"$CONTAINER_RUNTIME" build --target client -t duckway-client . -q 2>&1 >/dev/null
 
 # Cleanup old runs
 cleanup 2>/dev/null || true
@@ -307,11 +308,11 @@ assert_contains "Has GITHUB_TOKEN" "GITHUB_TOKEN" "$SYNCED_ENVS"
 echo ""
 echo -e "${YELLOW}[8] Docker Client Sync${NC}"
 
-docker rm -f duckway-e2e-client 2>/dev/null || true
-docker run -d --name duckway-e2e-client --network host duckway-client >/dev/null
+"$CONTAINER_RUNTIME" rm -f duckway-e2e-client 2>/dev/null || true
+"$CONTAINER_RUNTIME" run -d --name duckway-e2e-client --network host duckway-client >/dev/null
 
 # Write config into the container
-docker exec duckway-e2e-client sh -c "cat > /root/.duckway/config.yaml << DEOF
+"$CONTAINER_RUNTIME" exec duckway-e2e-client sh -c "cat > /root/.duckway/config.yaml << DEOF
 server_url: $BASE
 client_name: e2e-test-client
 token: $CLIENT_TOKEN
@@ -319,22 +320,22 @@ proxy_port: 18080
 DEOF"
 
 # Run sync
-SYNC_OUT=$(docker exec duckway-e2e-client duckway sync 2>&1)
+SYNC_OUT=$("$CONTAINER_RUNTIME" exec duckway-e2e-client duckway sync 2>&1)
 assert_contains "Docker sync succeeds" "Synced 4" "$SYNC_OUT"
 
 # Check keys.env
-KEYS_ENV=$(docker exec duckway-e2e-client cat /root/.duckway/keys.env)
+KEYS_ENV=$("$CONTAINER_RUNTIME" exec duckway-e2e-client cat /root/.duckway/keys.env)
 assert_contains "keys.env has OPENAI_API_KEY" "OPENAI_API_KEY" "$KEYS_ENV"
 assert_contains "keys.env has ANTHROPIC_API_KEY" "ANTHROPIC_API_KEY" "$KEYS_ENV"
 assert_contains "keys.env has GITHUB_TOKEN" "GITHUB_TOKEN" "$KEYS_ENV"
 assert_contains "keys.env has dw_ marker" "dw_" "$KEYS_ENV"
 
 # Run env
-ENV_OUT=$(docker exec duckway-e2e-client duckway env 2>&1)
+ENV_OUT=$("$CONTAINER_RUNTIME" exec duckway-e2e-client duckway env 2>&1)
 assert_contains "duckway env exports OPENAI_API_KEY" "export OPENAI_API_KEY=" "$ENV_OUT"
 
 # Run status
-STATUS_OUT=$(docker exec duckway-e2e-client duckway status 2>&1)
+STATUS_OUT=$("$CONTAINER_RUNTIME" exec duckway-e2e-client duckway status 2>&1)
 assert_contains "duckway status shows OK" "Connection:  OK" "$STATUS_OUT"
 assert_contains "duckway status shows 4 keys" "4 placeholder" "$STATUS_OUT"
 assert_contains "duckway status heartbeat OK" "Heartbeat:   OK" "$STATUS_OUT"
@@ -345,19 +346,19 @@ assert_contains "duckway status shows CA cert" "CA cert:" "$STATUS_OUT"
 echo ""
 echo -e "${YELLOW}[9] Docker Client Proxy Chain${NC}"
 
-# Start duckway proxy inside docker container (background)
-docker exec -d duckway-e2e-client duckway proxy --port 18099
+# Start duckway proxy inside the client container (background)
+"$CONTAINER_RUNTIME" exec -d duckway-e2e-client duckway proxy --port 18099
 sleep 2
 
 # Test 1: Heartbeat through client proxy → server → internal response
-HB_VIA_PROXY=$(docker exec duckway-e2e-client curl -s \
+HB_VIA_PROXY=$("$CONTAINER_RUNTIME" exec duckway-e2e-client curl -s \
   --proxy http://127.0.0.1:18099 \
   http://doesnt-matter/proxy/heartbeat/ping 2>&1)
 assert_contains "Heartbeat via client proxy" "duckway-heartbeat" "$HB_VIA_PROXY"
 assert_contains "Heartbeat shows client name" "e2e-test-client" "$HB_VIA_PROXY"
 
 # Test 2: OpenAI via client proxy → server → upstream (proves key injection)
-OPENAI_VIA_PROXY=$(docker exec duckway-e2e-client curl -s \
+OPENAI_VIA_PROXY=$("$CONTAINER_RUNTIME" exec duckway-e2e-client curl -s \
   --proxy http://127.0.0.1:18099 \
   -X POST http://doesnt-matter/proxy/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -369,13 +370,13 @@ LOG_COUNT=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services" | jq 'length')
 assert_not_empty "Server API still responsive after proxy test" "$LOG_COUNT"
 
 # Test 4: GitHub via client proxy
-GH_VIA_PROXY=$(docker exec duckway-e2e-client curl -s \
+GH_VIA_PROXY=$("$CONTAINER_RUNTIME" exec duckway-e2e-client curl -s \
   --proxy http://127.0.0.1:18099 \
   http://doesnt-matter/proxy/github/user 2>&1)
 assert_contains "GitHub via client proxy reaches upstream" "Bad credentials" "$GH_VIA_PROXY"
 
 # Test 5: Direct heartbeat without proxy (client → server API)
-HB_DIRECT=$(docker exec duckway-e2e-client curl -s \
+HB_DIRECT=$("$CONTAINER_RUNTIME" exec duckway-e2e-client curl -s \
   -H "X-Duckway-Token: $CLIENT_TOKEN" \
   "$BASE/proxy/heartbeat/ping" 2>&1)
 assert_contains "Direct heartbeat (no proxy)" "duckway-heartbeat" "$HB_DIRECT"
@@ -1053,7 +1054,7 @@ curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$CC_BOT_KEY" > /dev/nul
 echo ""
 echo -e "${YELLOW}[18] CC Sync (Phase D)${NC}"
 
-# Create a bot key + CC bound to the docker test client (CLIENT_ID is from
+# Create a bot key + CC bound to the container test client (CLIENT_ID is from
 # section [5/8]). With v2's 1:1 invariant, the create call is the assign.
 PD_BOT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
   -d "{\"service_id\":\"$DISCORD_SVC_ID\",\"name\":\"phaseD-bot\",\"key\":\"NzPhase.D.testbot\"}" \
@@ -1063,12 +1064,12 @@ PD_CC=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-Type: 
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
 assert_not_empty "Phase D CC created" "$PD_CC"
 
-# Run sync inside the docker client container.
-SYNC_PD=$(docker exec duckway-e2e-client duckway sync 2>&1)
+# Run sync inside the client container.
+SYNC_PD=$("$CONTAINER_RUNTIME" exec duckway-e2e-client duckway sync 2>&1)
 assert_contains "Sync logs CC count" "Synced 1 Control Channel" "$SYNC_PD"
 
 # State file: ~/.duckway/cc.json (container's HOME=/root)
-CC_JSON=$(docker exec duckway-e2e-client cat /root/.duckway/cc.json 2>/dev/null)
+CC_JSON=$("$CONTAINER_RUNTIME" exec duckway-e2e-client cat /root/.duckway/cc.json 2>/dev/null)
 assert_contains "cc.json contains the CC name" "phaseD-cc" "$CC_JSON"
 assert_contains "cc.json contains the agent type" "claude_code" "$CC_JSON"
 NO_TOKEN_LEAK=$(echo "$CC_JSON" | grep -c "$CLIENT_TOKEN" || true)
@@ -1076,13 +1077,13 @@ assert_eq "cc.json does NOT leak the client token" "0" "$NO_TOKEN_LEAK"
 
 # duckway status should now hint at `cc watch -d` since a CC is assigned and
 # no daemon is running. (Detection is via $configDir/cc-watch.pid + cc.json.)
-STATUS_WITH_CC=$(docker exec duckway-e2e-client duckway status 2>&1)
+STATUS_WITH_CC=$("$CONTAINER_RUNTIME" exec duckway-e2e-client duckway status 2>&1)
 assert_contains "duckway status hints at cc watch -d when CC assigned but daemon down" "duckway cc watch -d" "$STATUS_WITH_CC"
 assert_contains "duckway status proxy hint includes -d" "duckway proxy -d" "$STATUS_WITH_CC"
 
 # Claude Code MCP entry: ~/.claude.json (top-level mcpServers — Claude Code's
 # user scope; never ~/.claude/mcp.json which Claude Code does not read)
-MCP_JSON=$(docker exec duckway-e2e-client cat /root/.claude.json 2>/dev/null)
+MCP_JSON=$("$CONTAINER_RUNTIME" exec duckway-e2e-client cat /root/.claude.json 2>/dev/null)
 assert_contains "Claude .claude.json has duckway-cc server" "duckway-cc" "$MCP_JSON"
 assert_contains "Claude .claude.json command is duckway" "\"command\": \"duckway\"" "$MCP_JSON"
 assert_contains "Claude .claude.json args includes mcp serve" "\"mcp\"" "$MCP_JSON"
@@ -1090,8 +1091,8 @@ assert_contains "Claude .claude.json declares stdio transport" "\"type\": \"stdi
 
 # Delete CC and re-sync — state file should clear.
 curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/cc/$PD_CC" > /dev/null
-docker exec duckway-e2e-client duckway sync >/dev/null 2>&1
-CC_JSON_EMPTY=$(docker exec duckway-e2e-client cat /root/.duckway/cc.json 2>/dev/null)
+"$CONTAINER_RUNTIME" exec duckway-e2e-client duckway sync >/dev/null 2>&1
+CC_JSON_EMPTY=$("$CONTAINER_RUNTIME" exec duckway-e2e-client cat /root/.duckway/cc.json 2>/dev/null)
 EMPTY_COUNT=$(echo "$CC_JSON_EMPTY" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('ccs',[])))")
 assert_eq "Re-sync after CC delete clears cc.json" "0" "$EMPTY_COUNT"
 
@@ -1103,7 +1104,7 @@ curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$PD_BOT" > /dev/null
 echo ""
 echo -e "${YELLOW}[19] MCP server (v2)${NC}"
 
-# Create CC bound to the docker client.
+# Create CC bound to the client container.
 PE_BOT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
   -d "{\"service_id\":\"$DISCORD_SVC_ID\",\"name\":\"phaseE-bot\",\"key\":\"NzPhase.E.testbot\"}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
@@ -1111,10 +1112,10 @@ PE_CC_RESP=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/cc" -H "Content-T
   -d "{\"name\":\"phaseE-cc\",\"service_id\":\"$DISCORD_SVC_ID\",\"api_key_id\":\"$PE_BOT\",\"client_id\":\"$CLIENT_ID\",\"agent_type\":\"claude_code\",\"config\":{\"guild_id\":\"77\",\"category_id\":\"88\"}}")
 PE_CC=$(echo "$PE_CC_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
 PE_MGMT_HANDLE=$(echo "$PE_CC_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['channels'][0]['handle'])")
-docker exec duckway-e2e-client duckway sync >/dev/null 2>&1
+"$CONTAINER_RUNTIME" exec duckway-e2e-client duckway sync >/dev/null 2>&1
 
 # 19a: tools/list
-TOOLS_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
+TOOLS_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | "$CONTAINER_RUNTIME" exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
 TOOL_COUNT=$(echo "$TOOLS_OUT" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['result']['tools']))")
 assert_eq "MCP tools/list returns 12 tools" "12" "$TOOL_COUNT"
 assert_contains "tools/list includes discord_post"            "discord_post"                "$TOOLS_OUT"
@@ -1124,7 +1125,7 @@ assert_contains "tools/list includes list_local_sessions"     "duckway_list_loca
 assert_contains "tools/list includes bind_session"            "duckway_bind_session"        "$TOOLS_OUT"
 
 # 19b: initialize
-INIT_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
+INIT_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | "$CONTAINER_RUNTIME" exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
 PROTO_VER=$(echo "$INIT_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['protocolVersion'])")
 SERVER_NAME=$(echo "$INIT_OUT" | python3 -c "import sys,json;print(json.load(sys.stdin)['result']['serverInfo']['name'])")
 assert_eq "MCP initialize protocolVersion" "2024-11-05" "$PROTO_VER"
@@ -1132,19 +1133,19 @@ assert_eq "MCP initialize serverInfo.name" "duckway-cc" "$SERVER_NAME"
 
 # 19c: discord_get_my_cc reports the v2 CC
 GET_CC_OUT=$(echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"discord_get_my_cc","arguments":{}}}' \
-  | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
+  | "$CONTAINER_RUNTIME" exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
 assert_contains "discord_get_my_cc includes phaseE-cc" "phaseE-cc" "$GET_CC_OUT"
 
 # 19d: discord_list_channels — cc_id is implicit (1:1), should return management handle
 LIST_CH_OUT=$(echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"discord_list_channels","arguments":{}}}' \
-  | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
+  | "$CONTAINER_RUNTIME" exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
 assert_contains "discord_list_channels returns management handle" "$PE_MGMT_HANDLE" "$LIST_CH_OUT"
 NO_RAW_ID=$(echo "$LIST_CH_OUT" | grep -c "channel_id" || true)
 assert_eq "discord_list_channels does NOT leak channel_id" "0" "$NO_RAW_ID"
 
 # 19e: discord_post — full tool→server→mock chain
 POST_OUT=$(echo "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"discord_post\",\"arguments\":{\"channel_handle\":\"$PE_MGMT_HANDLE\",\"content\":\"hello via mcp\"}}}" \
-  | docker exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
+  | "$CONTAINER_RUNTIME" exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
 assert_contains "discord_post returns message_id" "message_id" "$POST_OUT"
 
 # Cleanup
@@ -1156,7 +1157,7 @@ curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$PE_BOT" > /dev/null
 echo ""
 echo -e "${YELLOW}[20] CC watch daemon${NC}"
 
-# Set up: bot key + CC bound to docker client + a task channel via API.
+# Set up: bot key + CC bound to the client container + a task channel via API.
 F4_BOT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/keys" -H "Content-Type: application/json" \
   -d "{\"service_id\":\"$DISCORD_SVC_ID\",\"name\":\"f4-bot\",\"key\":\"NzF4.bot\"}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
@@ -1168,9 +1169,9 @@ F4_TASK=$(curl -s -X POST -H "X-Duckway-Token: $CLIENT_TOKEN" -H "Content-Type: 
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('handle',''))")
 assert_not_empty "Task channel created for daemon test" "$F4_TASK"
 
-# Install a fake `claude` binary in the docker container that prints
+# Install a fake `claude` binary in the client container that prints
 # JSON the runner can parse.
-docker exec duckway-e2e-client sh -c 'cat > /usr/local/bin/claude <<"CLAUDE_EOF"
+"$CONTAINER_RUNTIME" exec duckway-e2e-client sh -c 'cat > /usr/local/bin/claude <<"CLAUDE_EOF"
 #!/bin/sh
 # Fake claude binary used by the e2e — prints the prompt back as result.
 PROMPT="$@"
@@ -1179,11 +1180,11 @@ CLAUDE_EOF
 chmod +x /usr/local/bin/claude'
 
 # Start the daemon in background, capture log
-docker exec -d duckway-e2e-client sh -c "duckway cc watch >/tmp/cc-watch.log 2>&1"
+"$CONTAINER_RUNTIME" exec -d duckway-e2e-client sh -c "duckway cc watch >/tmp/cc-watch.log 2>&1"
 sleep 1
 
 # Verify it connected
-WATCH_LOG=$(docker exec duckway-e2e-client cat /tmp/cc-watch.log 2>/dev/null)
+WATCH_LOG=$("$CONTAINER_RUNTIME" exec duckway-e2e-client cat /tmp/cc-watch.log 2>/dev/null)
 assert_contains "Daemon connected to SSE" "SSE connected" "$WATCH_LOG"
 assert_contains "Daemon got server ready frame" "server: ready" "$WATCH_LOG"
 
@@ -1196,11 +1197,11 @@ assert_eq "Inject event accepted" "published" "$INJECT_STATUS"
 
 # Daemon should: see SSE → enqueue → run fake claude → POST back to mock
 sleep 2
-WATCH_LOG=$(docker exec duckway-e2e-client cat /tmp/cc-watch.log 2>/dev/null)
+WATCH_LOG=$("$CONTAINER_RUNTIME" exec duckway-e2e-client cat /tmp/cc-watch.log 2>/dev/null)
 assert_contains "Daemon ran claude" "running claude" "$WATCH_LOG"
 
 # Session id should be persisted
-SESSIONS_JSON=$(docker exec duckway-e2e-client cat /root/.duckway/cc-sessions.json 2>/dev/null)
+SESSIONS_JSON=$("$CONTAINER_RUNTIME" exec duckway-e2e-client cat /root/.duckway/cc-sessions.json 2>/dev/null)
 assert_contains "Session id persisted to cc-sessions.json" "sess-fake-1" "$SESSIONS_JSON"
 assert_contains "Session id keyed by handle" "$F4_TASK" "$SESSIONS_JSON"
 
@@ -1216,13 +1217,13 @@ INJECT2_STATUS=$(echo "$INJECT2" | python3 -c "import sys,json;print(json.load(s
 assert_eq "Inject channel_delete accepted" "published" "$INJECT2_STATUS"
 sleep 1
 
-SESSIONS_AFTER=$(docker exec duckway-e2e-client cat /root/.duckway/cc-sessions.json 2>/dev/null)
+SESSIONS_AFTER=$("$CONTAINER_RUNTIME" exec duckway-e2e-client cat /root/.duckway/cc-sessions.json 2>/dev/null)
 SESSION_GONE=$(echo "$SESSIONS_AFTER" | grep -c "$F4_TASK" || true)
 assert_eq "Session dropped on channel_delete" "0" "$SESSION_GONE"
 
 # Stop the daemon (force SIGTERM, ignore errors — cleanup() at the end
-# does docker rm -f anyway)
-docker exec duckway-e2e-client sh -c "pkill -TERM -f 'cc watch' >/dev/null 2>&1; true" || true
+# does container cleanup anyway)
+"$CONTAINER_RUNTIME" exec duckway-e2e-client sh -c "pkill -TERM -f 'cc watch' >/dev/null 2>&1; true" || true
 
 
 # === Test 21: discord_request_approval (F5) ===

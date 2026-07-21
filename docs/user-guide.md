@@ -132,6 +132,8 @@ eval "$(duckway env)"
 
 The agent now talks to `api.openai.com` / `api.anthropic.com` etc. as normal — Duckway intercepts, swaps phantom → real, and forwards.
 
+For Grok Build, bind an xAI key to the client with service `xai` and env name `XAI_API_KEY`. `duckway sync` writes that phantom token into `~/.grok/config.toml` under `[model."grok-4.5"]`, preserving the rest of the Grok config. Start `duckway proxy -d` before running `grok` so calls to `cli-chat-proxy.grok.com` are swapped server-side.
+
 ---
 
 ## Daily operations

@@ -878,7 +878,40 @@ func buildHostMap(svcs []ServiceInfo) map[string]hostEntry {
 		DeliveryMode: "proxy",
 		UpstreamURL:  "https://chatgpt.com",
 	}
+	// Grok Build's default model backend is a separate host from the direct
+	// xAI API. Only add this virtual alias when the server-advertised xai
+	// service explicitly includes it in host_pattern.
+	if xai, ok := serviceInfoByName(svcs, "xai"); ok && hostPatternAllows(xai.HostPattern, "cli-chat-proxy.grok.com") {
+		hostMap["cli-chat-proxy.grok.com"] = hostEntry{
+			Service:      "xai-grok",
+			DeliveryMode: "proxy",
+			UpstreamURL:  "https://cli-chat-proxy.grok.com",
+		}
+	}
 	return hostMap
+}
+
+func serviceInfoByName(svcs []ServiceInfo, name string) (ServiceInfo, bool) {
+	for _, s := range svcs {
+		if strings.EqualFold(strings.TrimSpace(s.Name), name) {
+			return s, true
+		}
+	}
+	return ServiceInfo{}, false
+}
+
+func hostPatternAllows(patterns, host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, raw := range strings.Split(patterns, ",") {
+		pattern := strings.ToLower(strings.TrimSpace(raw))
+		switch {
+		case pattern == host:
+			return true
+		case strings.HasPrefix(pattern, "*.") && strings.HasSuffix(host, strings.TrimPrefix(pattern, "*")):
+			return true
+		}
+	}
+	return false
 }
 
 func fetchServiceHosts(serverURL, token string) map[string]hostEntry {

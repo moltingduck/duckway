@@ -19,6 +19,7 @@
 # Optional env:
 #   DUCKWAY_URL        Duckway server URL (default: http://127.0.0.1:9090)
 #   DUCKWAY_ADMIN_PW   Admin password (default: duckway)
+#   CONTAINER_RUNTIME  Container runtime for client checks (default: podman)
 #
 # Usage:
 #   export OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-...
@@ -36,13 +37,14 @@
 
 set -e
 
+CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
+
 # Auto-load credentials from scripts/phantom-test.env if present.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/phantom-test.env"
 if [ -f "$ENV_FILE" ]; then
   echo "Loading credentials from $ENV_FILE"
   set -a
-  . "$ENV_FILE"
   set +a
 fi
 
@@ -229,10 +231,10 @@ run_loan_proxy_github_test() {
     printf "${YELLOW}SKIP${NC} %-10s no GITHUB_TOKEN for loan_proxy MITM test\n" "github-loan"
     return
   fi
-  if ! docker ps --format '{{.Names}}' | grep -qx 'duckway-client'; then
+  if ! "$CONTAINER_RUNTIME" ps --format '{{.Names}}' | grep -qx 'duckway-client'; then
     SKIP=$((SKIP+1))
     printf "${YELLOW}SKIP${NC} %-10s duckway-client container not running\n" "github-loan"
-    printf "      %-10s start it with: docker compose --profile client up -d client\n" "github-loan"
+    printf "      %-10s start it with: %s compose --profile client up -d client\n" "github-loan" "$CONTAINER_RUNTIME"
     return
   fi
   if [ -z "$GITHUB_ID" ]; then
@@ -275,12 +277,12 @@ run_loan_proxy_github_test() {
 
   # 4. Configure duckway-client and start the proxy daemon inside it
   printf "      %-10s starting duckway proxy in container...           \r" "github-loan"
-  docker exec duckway-client sh -c '
+  "$CONTAINER_RUNTIME" exec duckway-client sh -c '
     rm -f /root/.duckway/config.yaml /root/.duckway/proxy.pid
     mkdir -p /root/.duckway
   ' > /dev/null
 
-  docker exec duckway-client sh -c "
+  "$CONTAINER_RUNTIME" exec duckway-client sh -c "
     echo 'server_url: http://duckway-server:8080' > /root/.duckway/config.yaml
     echo 'token: $CLIENT_TOKEN' >> /root/.duckway/config.yaml
     echo 'client_name: ${RUN_ID}-loan' >> /root/.duckway/config.yaml
@@ -289,12 +291,12 @@ run_loan_proxy_github_test() {
 
   # CA cert is required for the MITM. duckway sync doesn't fetch it; pull
   # it from the server's public /skill/ca.pem and the auth'd /client/ca-key.
-  docker exec duckway-client pkill -9 -f 'duckway proxy' >/dev/null 2>&1 || true
-  docker exec duckway-client rm -f /root/.duckway/proxy.pid /root/.duckway/proxy.log >/dev/null 2>&1
-  docker exec duckway-client sh -c "curl -sf -o /root/.duckway/ca.pem http://duckway-server:8080/skill/ca.pem" >/dev/null 2>&1
-  docker exec duckway-client sh -c "curl -sf -H 'X-Duckway-Token: $CLIENT_TOKEN' -o /root/.duckway/ca-key.pem http://duckway-server:8080/client/ca-key" >/dev/null 2>&1
-  docker exec duckway-client duckway sync >/dev/null 2>&1
-  docker exec duckway-client duckway proxy -d >/dev/null 2>&1
+  "$CONTAINER_RUNTIME" exec duckway-client pkill -9 -f 'duckway proxy' >/dev/null 2>&1 || true
+  "$CONTAINER_RUNTIME" exec duckway-client rm -f /root/.duckway/proxy.pid /root/.duckway/proxy.log >/dev/null 2>&1
+  "$CONTAINER_RUNTIME" exec duckway-client sh -c "curl -sf -o /root/.duckway/ca.pem http://duckway-server:8080/skill/ca.pem" >/dev/null 2>&1
+  "$CONTAINER_RUNTIME" exec duckway-client sh -c "curl -sf -H 'X-Duckway-Token: $CLIENT_TOKEN' -o /root/.duckway/ca-key.pem http://duckway-server:8080/client/ca-key" >/dev/null 2>&1
+  "$CONTAINER_RUNTIME" exec duckway-client duckway sync >/dev/null 2>&1
+  "$CONTAINER_RUNTIME" exec duckway-client duckway proxy -d >/dev/null 2>&1
   sleep 2
 
   # 5. Make a request through HTTPS_PROXY to api.github.com (loan_proxy MITM)
@@ -302,12 +304,12 @@ run_loan_proxy_github_test() {
   #    swap it for the real one via /client/loan.
   printf "      %-10s curl https://api.github.com/user via MITM...     \r" "github-loan"
 
-  PHANTOM=$(docker exec duckway-client sh -c '. /root/.duckway/keys.env 2>/dev/null && echo "$GITHUB_TOKEN"' | tr -d "\r\n")
+  PHANTOM=$("$CONTAINER_RUNTIME" exec duckway-client sh -c '. /root/.duckway/keys.env 2>/dev/null && echo "$GITHUB_TOKEN"' | tr -d "\r\n")
 
   # Run curl in the container, status into one file, body into another.
   # `set +e` locally so curl timeouts don't trip the surrounding `set -e`.
   set +e
-  docker exec duckway-client sh -c "
+  "$CONTAINER_RUNTIME" exec duckway-client sh -c "
     curl -s --max-time 20 -o /tmp/loan-resp -w '%{http_code}' \
       --cacert /root/.duckway/ca.pem \
       -x http://127.0.0.1:18080 \
@@ -317,12 +319,12 @@ run_loan_proxy_github_test() {
   " >/dev/null 2>&1
   set -e
 
-  STATUS=$(docker exec duckway-client cat /tmp/loan-status 2>/dev/null | tr -d '\r\n ')
-  CURL_EXIT=$(docker exec duckway-client cat /tmp/loan-exit 2>/dev/null | sed 's/.*=//')
+  STATUS=$("$CONTAINER_RUNTIME" exec duckway-client cat /tmp/loan-status 2>/dev/null | tr -d '\r\n ')
+  CURL_EXIT=$("$CONTAINER_RUNTIME" exec duckway-client cat /tmp/loan-exit 2>/dev/null | sed 's/.*=//')
 
   if [ "$STATUS" = "200" ]; then
     PASS=$((PASS+1))
-    LOGIN=$(docker exec duckway-client cat /tmp/loan-resp 2>/dev/null | python3 -c "
+    LOGIN=$("$CONTAINER_RUNTIME" exec duckway-client cat /tmp/loan-resp 2>/dev/null | python3 -c "
 import sys,json
 try: print(json.load(sys.stdin).get('login','?'))
 except: print('?')
@@ -330,13 +332,13 @@ except: print('?')
     printf "${GREEN}PASS${NC} %-12s loan_proxy MITM works  (login=%s)                    \n" "github-loan" "$LOGIN"
   else
     FAIL=$((FAIL+1))
-    BODY=$(docker exec duckway-client cat /tmp/loan-resp 2>/dev/null | head -c 200 | tr '\n' ' ')
+    BODY=$("$CONTAINER_RUNTIME" exec duckway-client cat /tmp/loan-resp 2>/dev/null | head -c 200 | tr '\n' ' ')
     ERRORS="$ERRORS\n  - github-loan: status=$STATUS curl_exit=$CURL_EXIT body=$BODY"
     printf "${RED}FAIL${NC} %-12s loan_proxy status=%s curl_exit=%s                  \n" "github-loan" "$STATUS" "$CURL_EXIT"
   fi
 
   # 6. Cleanup
-  docker exec duckway-client duckway proxy stop 2>/dev/null > /dev/null || true
+  "$CONTAINER_RUNTIME" exec duckway-client duckway proxy stop 2>/dev/null > /dev/null || true
   curl -s -b "$COOKIES" -X DELETE "$BASE/api/clients/$CLIENT_ID" > /dev/null
   curl -s -b "$COOKIES" -X DELETE "$BASE/api/keys/$KEY_ID" > /dev/null
 }

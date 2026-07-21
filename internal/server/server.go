@@ -219,6 +219,7 @@ func (s *Server) seedDefaultServices() error {
 		{Name: "heartbeat", DisplayName: "Duckway Heartbeat", UpstreamURL: "internal://heartbeat", HostPattern: "heartbeat", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "dw-hb-", KeyLength: 32, DeliveryMode: "proxy", IsActive: true},
 		{Name: "openai", DisplayName: "OpenAI API", UpstreamURL: "https://api.openai.com", HostPattern: "api.openai.com", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "sk-", KeyLength: 164, KeyDirectory: ".config/openai/credentials", DeliveryMode: "proxy", IsActive: true},
 		{Name: "anthropic", DisplayName: "Anthropic API", UpstreamURL: "https://api.anthropic.com", HostPattern: "api.anthropic.com", AuthType: "header", AuthHeader: "x-api-key", KeyPrefix: "sk-ant-", KeyLength: 108, KeyDirectory: ".config/anthropic/credentials", DeliveryMode: "proxy", IsActive: true},
+		{Name: "xai", DisplayName: "xAI / Grok", UpstreamURL: "https://api.x.ai", HostPattern: "api.x.ai,cli-chat-proxy.grok.com", AuthType: "bearer", AuthHeader: "Authorization", AuthPrefix: "Bearer ", KeyPrefix: "xai-", KeyLength: 80, KeyDirectory: ".config/xai/credentials", DeliveryMode: "proxy", IsActive: true},
 		// GitHub: default to simple phantom-token proxy mode. Fine-grained
 		// PATs use github_pat_*; loan_proxy can still be enabled later for
 		// high-bandwidth git traffic.

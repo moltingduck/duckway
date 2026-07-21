@@ -81,6 +81,7 @@ var capturedBodySecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}\b`),
 	regexp.MustCompile(`\bgh[opsru]_[A-Za-z0-9_]{20,}\b`),
 	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`),
+	regexp.MustCompile(`\bxai-[A-Za-z0-9_-]{12,}\b`),
 	regexp.MustCompile(`\brt\.[A-Za-z0-9._-]{20,}\b`),
 	regexp.MustCompile(`\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`),
 }
@@ -296,14 +297,25 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	upstreamServiceName := serviceName
 	upstreamBaseURL := ""
-	if serviceName == "openai-chatgpt" {
+	switch serviceName {
+	case "openai-chatgpt":
 		upstreamServiceName = "openai"
 		upstreamBaseURL = "https://chatgpt.com"
+	case "xai-grok":
+		upstreamServiceName = "xai"
+		upstreamBaseURL = "https://cli-chat-proxy.grok.com"
+	case "xai-api":
+		upstreamServiceName = "xai"
+		upstreamBaseURL = "https://api.x.ai"
 	}
 
 	svc, err := h.services.GetByName(upstreamServiceName)
 	if err != nil {
 		jsonError(w, "unknown service: "+serviceName, http.StatusNotFound)
+		return
+	}
+	if serviceName == "xai-grok" && !proxyHostPatternAllows(svc.HostPattern, "cli-chat-proxy.grok.com") {
+		jsonError(w, "xai service does not allow Grok CLI host", http.StatusForbidden)
 		return
 	}
 
@@ -900,6 +912,20 @@ func effectiveProxyUpstreamBaseURL(serviceName, configuredBaseURL, upstreamPath 
 		return "https://github.com"
 	}
 	return configuredBaseURL
+}
+
+func proxyHostPatternAllows(patterns, host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, raw := range strings.Split(patterns, ",") {
+		pattern := strings.ToLower(strings.TrimSpace(raw))
+		switch {
+		case pattern == host:
+			return true
+		case strings.HasPrefix(pattern, "*.") && strings.HasSuffix(host, strings.TrimPrefix(pattern, "*")):
+			return true
+		}
+	}
+	return false
 }
 
 func isGitHubSmartHTTPPath(path string) bool {
