@@ -40,13 +40,13 @@ func readConnectResponse(t *testing.T, raw net.Conn) *http.Response {
 }
 
 func TestRedactDebugRawQuery(t *testing.T) {
-	got := redactDebugRawQuery("access_token=ghs_real_secret&ok=value&token=github_pat_real_secret&x=sk-ant-real&phantom=github_pat_dw_fake")
-	for _, secret := range []string{"ghs_real_secret", "github_pat_real_secret", "sk-ant-real", "github_pat_dw_fake"} {
+	got := redactDebugRawQuery("access_token=ghs_real_secret&ok=value&token=github_pat_real_secret&x=sk-ant-real&y=xai-real-secret&phantom=github_pat_dw_fake")
+	for _, secret := range []string{"ghs_real_secret", "github_pat_real_secret", "sk-ant-real", "xai-real-secret", "github_pat_dw_fake"} {
 		if bytes.Contains([]byte(got), []byte(secret)) {
 			t.Fatalf("query leaked %q in %q", secret, got)
 		}
 	}
-	for _, want := range []string{"access_token=%5Bredacted%5D", "token=%5Bredacted%5D", "x=%5Bredacted%5D", "phantom=%5Bredacted%5D", "ok=value"} {
+	for _, want := range []string{"access_token=%5Bredacted%5D", "token=%5Bredacted%5D", "x=%5Bredacted%5D", "y=%5Bredacted%5D", "phantom=%5Bredacted%5D", "ok=value"} {
 		if !bytes.Contains([]byte(got), []byte(want)) {
 			t.Fatalf("query %q missing %q", got, want)
 		}
@@ -64,6 +64,36 @@ func TestRedactDebugRawQuery(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(redactedUserinfoURL), []byte("ok=1")) {
 		t.Fatalf("url should keep non-sensitive query values: %s", redactedUserinfoURL)
+	}
+}
+
+func TestFetchServicesReportsHTTPStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"bad token"}`, http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := FetchServices(srv.URL, "bad")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "server returned 401") || !strings.Contains(err.Error(), "bad token") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestManagedCredentialBypassRequiresPhantom(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "https://cli-chat-proxy.grok.com/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer xai-real-secret")
+	if !isManagedCredentialBypass(hostEntry{Service: "xai-grok"}, req, false) {
+		t.Fatal("real credential on managed Grok route should be rejected")
+	}
+	if isManagedCredentialBypass(hostEntry{Service: "xai-grok"}, req, true) {
+		t.Fatal("Duckway phantom credential should not be treated as a bypass")
+	}
+	publicReq := httptest.NewRequest(http.MethodGet, "https://cli-chat-proxy.grok.com/status", nil)
+	if isManagedCredentialBypass(hostEntry{Service: "xai-grok"}, publicReq, false) {
+		t.Fatal("public no-auth request should remain eligible for direct forwarding")
 	}
 }
 

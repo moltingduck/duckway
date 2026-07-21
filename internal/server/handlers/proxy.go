@@ -318,6 +318,10 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "xai service does not allow Grok CLI host", http.StatusForbidden)
 		return
 	}
+	if serviceName == "xai-api" && !proxyHostPatternAllows(svc.HostPattern, "api.x.ai") {
+		jsonError(w, "xai service does not allow xAI API host", http.StatusForbidden)
+		return
+	}
 
 	client := middleware.GetClient(r)
 	if client == nil {
@@ -325,7 +329,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.resolveProxyKey(r, client.ID, svc)
+	result, err := h.resolveProxyKey(r, client.ID, svc, serviceName == "xai-grok" || serviceName == "xai-api")
 	if err != nil {
 		log.Printf("resolve error for %s/%s: %v", serviceName, client.Name, err)
 		jsonError(w, "key resolution failed", http.StatusInternalServerError)
@@ -853,7 +857,7 @@ func rewriteGitHubBasicAuth(authHeader, placeholder, realKey string) (string, bo
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+realKey)), true
 }
 
-func (h *ProxyHandler) resolveProxyKey(r *http.Request, clientID string, svc *models.Service) (*services.ResolveResult, error) {
+func (h *ProxyHandler) resolveProxyKey(r *http.Request, clientID string, svc *models.Service, requireExplicit bool) (*services.ResolveResult, error) {
 	if placeholder := explicitProxyPlaceholder(r, svc); placeholder != "" {
 		result, err := h.resolver.Resolve(placeholder, clientID)
 		if err != nil {
@@ -863,6 +867,9 @@ func (h *ProxyHandler) resolveProxyKey(r *http.Request, clientID string, svc *mo
 			return &services.ResolveResult{Error: "placeholder key is not for this service"}, nil
 		}
 		return result, nil
+	}
+	if requireExplicit {
+		return &services.ResolveResult{Error: "duckway phantom token required"}, nil
 	}
 	return h.resolver.ResolveForService(clientID, svc.ID)
 }

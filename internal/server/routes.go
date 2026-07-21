@@ -496,7 +496,11 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	// Service host map (for HTTPS proxy client). Requires client auth.
 	// Registered in clientMux so it is protected by the /client/ middleware.
 	clientMux.HandleFunc("GET /client/services", func(w http.ResponseWriter, r *http.Request) {
-		svcs, _ := ss.ServiceQ.List()
+		svcs, err := ss.ServiceQ.List()
+		if err != nil {
+			http.Error(w, `{"error":"list services failed"}`, http.StatusInternalServerError)
+			return
+		}
 		type svcInfo struct {
 			Name         string `json:"name"`
 			HostPattern  string `json:"host_pattern"`

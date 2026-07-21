@@ -447,6 +447,10 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			writeHTTPError(tlsConn, http.StatusForbidden, "github git traffic must use a Duckway phantom token")
 			continue
 		}
+		if isManagedCredentialBypass(entry, req, usesPhantom) {
+			writeHTTPError(tlsConn, http.StatusForbidden, "managed service credentials must use a Duckway phantom token")
+			continue
+		}
 		if entry.Service != "openai-auth" && entry.Service != "openai-chatgpt" && !usesPhantom {
 			p.forwardDirect(tlsConn, req, host, entry)
 			continue
@@ -619,6 +623,18 @@ func isManagedGitHubSmartHTTPAuthBypass(entry hostEntry, req *http.Request, uses
 		return false
 	}
 	return requestHasCredentialHeader(req)
+}
+
+func isManagedCredentialBypass(entry hostEntry, req *http.Request, usesPhantom bool) bool {
+	if usesPhantom || !requestHasCredentialHeader(req) {
+		return false
+	}
+	switch entry.Service {
+	case "anthropic", "github", "openai", "xai", "xai-grok":
+		return true
+	default:
+		return false
+	}
 }
 
 func requestHasCredentialHeader(req *http.Request) bool {
@@ -833,6 +849,14 @@ func FetchServices(serverURL, token string) ([]ServiceInfo, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return nil, fmt.Errorf("fetch services: server returned %d: %s", resp.StatusCode, msg)
+	}
 	var svcs []ServiceInfo
 	if err := json.NewDecoder(resp.Body).Decode(&svcs); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
@@ -1492,7 +1516,7 @@ func isSensitiveQueryKey(key string) bool {
 }
 
 func looksLikeSensitiveTokenValue(value string) bool {
-	for _, prefix := range []string{"github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "sk-", "sk-ant-", "xoxb-", "rt."} {
+	for _, prefix := range []string{"github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "sk-", "sk-ant-", "xai-", "xoxb-", "rt."} {
 		if strings.HasPrefix(value, prefix) {
 			return true
 		}

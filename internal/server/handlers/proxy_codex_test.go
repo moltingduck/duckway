@@ -450,6 +450,124 @@ func TestHandleXAIGrokProxyRequiresConfiguredHostPattern(t *testing.T) {
 	}
 }
 
+func TestHandleXAIGrokProxyRequiresExplicitPhantom(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encAccess, err := crypto.Encrypt("xai-real-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	xaiSvc, err := svcQ.GetByName("xai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-xai-noauth','client',?)`, services.HashToken("tok")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
+		VALUES ('key-xai-noauth',?,'xai key',?)`, xaiSvc.ID, encAccess); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO placeholder_keys (id,env_name,placeholder,service_id,api_key_id,client_id,requires_approval)
+		VALUES ('ph-xai-noauth','XAI_API_KEY','xai-dw_fake_noauth',?,'key-xai-noauth','client-xai-noauth',0)`, xaiSvc.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	h := NewProxyHandler(
+		svcQ,
+		queries.NewAPIKeyQueries(db),
+		services.NewKeyResolver(crypto, queries.NewAPIKeyQueries(db), queries.NewPlaceholderQueries(db), queries.NewGroupQueries(db), queries.NewApprovalQueries(db)),
+		nil,
+		queries.NewApprovalQueries(db),
+		nil,
+		nil,
+	).WithCrypto(crypto)
+	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		called = true
+		return nil, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/proxy/xai-grok/v1/chat/completions", nil)
+	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, &models.Client{ID: "client-xai-noauth", Name: "client"}))
+	rec := httptest.NewRecorder()
+
+	h.Handle(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Fatal("upstream should not be called without an explicit Duckway phantom")
+	}
+}
+
+func TestHandleXAIApiProxyRequiresConfiguredHostPattern(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`UPDATE services SET host_pattern = 'cli-chat-proxy.grok.com' WHERE name = 'xai'`); err != nil {
+		t.Fatal(err)
+	}
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encAccess, err := crypto.Encrypt("xai-real-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	xaiSvc, err := svcQ.GetByName("xai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-xai-api','client',?)`, services.HashToken("tok")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted)
+		VALUES ('key-xai-api',?,'xai key',?)`, xaiSvc.ID, encAccess); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO placeholder_keys (id,env_name,placeholder,service_id,api_key_id,client_id,requires_approval)
+		VALUES ('ph-xai-api','XAI_API_KEY','xai-dw_fake_api',?,'key-xai-api','client-xai-api',0)`, xaiSvc.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	h := NewProxyHandler(
+		svcQ,
+		queries.NewAPIKeyQueries(db),
+		services.NewKeyResolver(crypto, queries.NewAPIKeyQueries(db), queries.NewPlaceholderQueries(db), queries.NewGroupQueries(db), queries.NewApprovalQueries(db)),
+		nil,
+		queries.NewApprovalQueries(db),
+		nil,
+		nil,
+	).WithCrypto(crypto)
+	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		called = true
+		return nil, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/proxy/xai-api/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer xai-dw_fake_api")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, &models.Client{ID: "client-xai-api", Name: "client"}))
+	rec := httptest.NewRecorder()
+
+	h.Handle(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Fatal("upstream should not be called when xAI API host is not configured")
+	}
+}
+
 func TestHandleXAIGrokProxyRejectsWrongClientOrServicePlaceholder(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {
