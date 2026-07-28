@@ -81,6 +81,13 @@ func TestMCP_ToolsList(t *testing.T) {
 				t.Errorf("discord_post should require channel_handle + content, got %v", req)
 			}
 		}
+		if m["name"] == "discord_post_file" {
+			schema, _ := m["inputSchema"].(map[string]interface{})
+			req, _ := schema["required"].([]interface{})
+			if len(req) != 1 || req[0] != "path" {
+				t.Errorf("discord_post_file should default channel_handle and require only path, got %v", req)
+			}
+		}
 	}
 	if !found {
 		t.Error("discord_post tool not exposed")
@@ -213,6 +220,60 @@ func TestMCP_PostFileUploadsMultipart(t *testing.T) {
 	text := content[0].(map[string]interface{})["text"].(string)
 	if !strings.Contains(text, "M-file") {
 		t.Fatalf("expected message id in response, got %s", text)
+	}
+}
+
+func TestMCP_PostFileDefaultsToCurrentChannel(t *testing.T) {
+	tmp := t.TempDir()
+	filePath := filepath.Join(tmp, "result.png")
+	if err := os.WriteFile(filePath, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DUCKWAY_CC_CHANNEL_HANDLE", "dwch_task")
+
+	var path string
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"message_id":"M-file"}`))
+	}))
+	defer mock.Close()
+
+	srv := newTestServer(t, CCStateFile{CCs: []CCStateAssignment{{CCID: "cc1", ManagementHandle: "dwch_mgmt"}}}, mock.URL)
+	resp := runOne(t, srv, fmt.Sprintf(`{"jsonrpc":"2.0","id":72,"method":"tools/call","params":{"name":"discord_post_file","arguments":{"path":%q}}}`, filePath))
+	r, _ := resp.Result.(map[string]interface{})
+	if isErr, _ := r["isError"].(bool); isErr {
+		t.Fatalf("unexpected error: %+v", r)
+	}
+	if path != "/client/cc/channels/dwch_task/attachments" {
+		t.Fatalf("attachment posted to %q, want current task channel", path)
+	}
+}
+
+func TestMCP_PostFileRedirectsManagementHandleToCurrentTaskChannel(t *testing.T) {
+	tmp := t.TempDir()
+	filePath := filepath.Join(tmp, "result.png")
+	if err := os.WriteFile(filePath, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DUCKWAY_CC_CHANNEL_HANDLE", "dwch_task")
+
+	var path string
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"message_id":"M-file"}`))
+	}))
+	defer mock.Close()
+
+	srv := newTestServer(t, CCStateFile{CCs: []CCStateAssignment{{CCID: "cc1", ManagementHandle: "dwch_mgmt"}}}, mock.URL)
+	resp := runOne(t, srv, fmt.Sprintf(`{"jsonrpc":"2.0","id":73,"method":"tools/call","params":{"name":"discord_post_file","arguments":{"channel_handle":"dwch_mgmt","path":%q}}}`, filePath))
+	r, _ := resp.Result.(map[string]interface{})
+	if isErr, _ := r["isError"].(bool); isErr {
+		t.Fatalf("unexpected error: %+v", r)
+	}
+	if path != "/client/cc/channels/dwch_task/attachments" {
+		t.Fatalf("attachment posted to %q, want current task channel", path)
 	}
 }
 

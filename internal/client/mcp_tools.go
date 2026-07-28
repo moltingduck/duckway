@@ -74,16 +74,16 @@ func (s *MCPServer) toolDefinitions() []map[string]interface{} {
 		},
 		{
 			"name":        "discord_post_file",
-			"description": "Post one message with text and a local file attachment. The path is read on the agent machine, not on the Duckway server. Rejects traversal paths and files larger than 25 MiB.",
+			"description": "Post one message with text and a local file attachment. Defaults to the current CC channel; omit channel_handle unless the human explicitly asked for another channel. The path is read on the agent machine, not on the Duckway server. Rejects traversal paths and files larger than 25 MiB.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"channel_handle": map[string]interface{}{"type": "string"},
+					"channel_handle": map[string]interface{}{"type": "string", "description": "Optional. Defaults to DUCKWAY_CC_CHANNEL_HANDLE, the channel this agent turn is running in."},
 					"path":           map[string]interface{}{"type": "string", "description": "Local file path on the agent machine. Relative paths resolve from the agent process cwd. Path traversal segments (..) are rejected."},
 					"content":        map[string]interface{}{"type": "string", "description": "Optional message body shown above the attachment."},
 					"filename":       map[string]interface{}{"type": "string", "description": "Optional display filename. Path separators are ignored."},
 				},
-				"required": []string{"channel_handle", "path"},
+				"required": []string{"path"},
 			},
 		},
 		{
@@ -396,7 +396,11 @@ func (s *MCPServer) callBindSession(args map[string]interface{}) (interface{}, e
 func (s *MCPServer) callPostFile(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 	handle, _ := args["channel_handle"].(string)
 	if strings.TrimSpace(handle) == "" {
-		return nil, fmt.Errorf("channel_handle is required")
+		handle = os.Getenv("DUCKWAY_CC_CHANNEL_HANDLE")
+	}
+	handle = s.normalizePostFileHandle(handle)
+	if strings.TrimSpace(handle) == "" {
+		return nil, fmt.Errorf("channel_handle not provided and DUCKWAY_CC_CHANNEL_HANDLE is unset — pass channel_handle explicitly")
 	}
 	rawPath, _ := args["path"].(string)
 	path, err := safeLocalAttachmentPath(rawPath)
@@ -429,6 +433,28 @@ func (s *MCPServer) callPostFile(ctx context.Context, args map[string]interface{
 	contentType := http.DetectContentType(data)
 	api := NewAPIClient(s.cfg.ServerURL, s.cfg.Token)
 	return api.PostCCFile(ctx, handle, content, filename, contentType, data)
+}
+
+func (s *MCPServer) normalizePostFileHandle(handle string) string {
+	handle = strings.TrimSpace(handle)
+	current := strings.TrimSpace(os.Getenv("DUCKWAY_CC_CHANNEL_HANDLE"))
+	if current == "" || handle == "" || handle == current {
+		return firstNonEmptyString(handle, current)
+	}
+	state, err := s.loadState()
+	if err != nil {
+		return handle
+	}
+	for _, cc := range state.CCs {
+		if strings.TrimSpace(cc.ManagementHandle) == handle {
+			// File/image attachments produced during a task turn should land in
+			// that task channel. Models sometimes use management_handle from
+			// discord_get_my_cc; redirect that specific footgun to the current
+			// channel instead of leaking task artifacts into control main.
+			return current
+		}
+	}
+	return handle
 }
 
 func safeLocalAttachmentPath(raw string) (string, error) {
