@@ -843,7 +843,7 @@ func agentProxyEnv(configDir string) []string {
 	if existing := strings.TrimSpace(os.Getenv("NO_PROXY")); existing != "" {
 		noProxy = ensureLoopbackInNoProxy(existing)
 	}
-	return []string{
+	env := []string{
 		"HTTP_PROXY=" + proxyURL,
 		"HTTPS_PROXY=" + proxyURL,
 		"http_proxy=" + proxyURL,
@@ -851,6 +851,70 @@ func agentProxyEnv(configDir string) []string {
 		"NO_PROXY=" + noProxy,
 		"no_proxy=" + noProxy,
 	}
+	env = append(env, agentCAEnv(configDir)...)
+	return env
+}
+
+func agentCAEnv(configDir string) []string {
+	caPath := filepath.Join(configDir, "ca.pem")
+	caPEM, err := os.ReadFile(caPath)
+	if err != nil || len(bytes.TrimSpace(caPEM)) == 0 {
+		return nil
+	}
+	bundlePath := filepath.Join(configDir, "agent-ca-bundle.pem")
+	bundle := buildAgentCABundle(caPEM, bundlePath)
+	if err := writeAgentCABundle(bundlePath, bundle); err != nil {
+		return nil
+	}
+	return []string{
+		"SSL_CERT_FILE=" + bundlePath,
+		"REQUESTS_CA_BUNDLE=" + bundlePath,
+		"CURL_CA_BUNDLE=" + bundlePath,
+		"NODE_EXTRA_CA_CERTS=" + bundlePath,
+	}
+}
+
+func buildAgentCABundle(duckwayCA []byte, bundlePath string) []byte {
+	var buf bytes.Buffer
+	for _, path := range agentCABundleSourcePaths() {
+		if path == "" || path == bundlePath {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || len(bytes.TrimSpace(data)) == 0 {
+			continue
+		}
+		buf.Write(bytes.TrimRight(data, "\n"))
+		buf.WriteByte('\n')
+	}
+	if buf.Len() > 0 {
+		buf.WriteByte('\n')
+	}
+	buf.Write(bytes.TrimSpace(duckwayCA))
+	buf.WriteByte('\n')
+	return buf.Bytes()
+}
+
+func agentCABundleSourcePaths() []string {
+	var out []string
+	for _, key := range []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			out = append(out, value)
+		}
+	}
+	return append(out,
+		"/etc/ssl/certs/ca-certificates.crt",
+		"/etc/pki/tls/certs/ca-bundle.crt",
+		"/etc/ssl/cert.pem",
+		"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+	)
+}
+
+func writeAgentCABundle(path string, data []byte) error {
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+		return nil
+	}
+	return os.WriteFile(path, data, 0600)
 }
 
 func isShellEnvName(s string) bool {

@@ -676,15 +676,18 @@ The DERP debug commands should remain connected without a new EOF every minute. 
 
 ## Troubleshooting
 
-### "SSL certificate verification failed" from Claude Code
+### "SSL certificate verification failed" from Claude Code or Python/httpx tools
 
-Claude (Node.js) doesn't trust the Duckway MITM CA. Set:
+Duckway's local proxy signs intercepted HTTPS with the client CA at `~/.duckway/ca.pem`. `duckway cc watch` automatically prepares `~/.duckway/agent-ca-bundle.pem` and passes these trust settings to launched agents. If you run a tool manually, set the CA environment yourself:
 
 ```bash
-export NODE_EXTRA_CA_CERTS=/path/to/duckway/ca.pem
+export NODE_EXTRA_CA_CERTS="$HOME/.duckway/agent-ca-bundle.pem"
+export SSL_CERT_FILE="$HOME/.duckway/agent-ca-bundle.pem"
+export REQUESTS_CA_BUNDLE="$HOME/.duckway/agent-ca-bundle.pem"
+export CURL_CA_BUNDLE="$HOME/.duckway/agent-ca-bundle.pem"
 ```
 
-The CA cert is at `~/.duckway/ca.pem` after `duckway init`. The Docker examples (`examples/docker-compose.claude.yml`) wire this up automatically via a shared volume.
+Restart `duckway cc watch` after `duckway init` so the bundle exists. The Docker examples (`examples/docker-compose.claude.yml`) wire the CA up automatically via a shared volume.
 
 ### "could not install CA to system trust store: could not find system CA directory"
 

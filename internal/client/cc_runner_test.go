@@ -225,6 +225,50 @@ func countStrings(items []string, want string) int {
 	return count
 }
 
+func TestAgentProxyEnvAddsPythonAndNodeCABundle(t *testing.T) {
+	configDir := t.TempDir()
+	sourceBundle := filepath.Join(configDir, "system-ca.pem")
+	if err := os.WriteFile(sourceBundle, []byte("-----BEGIN CERTIFICATE-----\nsystem\n-----END CERTIFICATE-----\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "ca.pem"), []byte("-----BEGIN CERTIFICATE-----\nduckway\n-----END CERTIFICATE-----\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSL_CERT_FILE", sourceBundle)
+
+	env := agentProxyEnv(configDir)
+	envText := strings.Join(env, "\n")
+	bundlePath := filepath.Join(configDir, "agent-ca-bundle.pem")
+	for _, want := range []string{
+		"SSL_CERT_FILE=" + bundlePath,
+		"REQUESTS_CA_BUNDLE=" + bundlePath,
+		"CURL_CA_BUNDLE=" + bundlePath,
+		"NODE_EXTRA_CA_CERTS=" + bundlePath,
+	} {
+		if !strings.Contains(envText, want) {
+			t.Fatalf("agent proxy env missing %q:\n%s", want, envText)
+		}
+	}
+	bundle, err := os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"system", "duckway"} {
+		if !strings.Contains(string(bundle), want) {
+			t.Fatalf("bundle missing %q:\n%s", want, string(bundle))
+		}
+	}
+}
+
+func TestAgentProxyEnvSkipsCABundleWhenMissingCA(t *testing.T) {
+	envText := strings.Join(agentProxyEnv(t.TempDir()), "\n")
+	for _, key := range []string{"SSL_CERT_FILE=", "REQUESTS_CA_BUNDLE=", "CURL_CA_BUNDLE=", "NODE_EXTRA_CA_CERTS="} {
+		if strings.Contains(envText, key) {
+			t.Fatalf("unexpected CA env %q in:\n%s", key, envText)
+		}
+	}
+}
+
 func TestCCRunner_LoadsKeysEnvForAgent(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	var gotEnv []string
