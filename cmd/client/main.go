@@ -34,6 +34,14 @@ var isTTY = func() bool {
 	return err == nil && (fi.Mode()&os.ModeCharDevice) != 0
 }()
 
+var sessionAttachExec = func(args []string) error {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		return fmt.Errorf("tmux is not installed or not on PATH")
+	}
+	return syscall.Exec(tmuxPath, append([]string{"tmux"}, args...), os.Environ())
+}
+
 func fileIsTTY(f *os.File) bool {
 	fi, err := f.Stat()
 	return err == nil && (fi.Mode()&os.ModeCharDevice) != 0
@@ -100,6 +108,8 @@ func main() {
 		cmdMCP(configDir)
 	case "cc":
 		cmdCC(configDir)
+	case "session":
+		cmdSession(configDir, os.Args[2:])
 	case "projects":
 		cmdProjects(configDir, os.Args[2:])
 	case "git":
@@ -169,6 +179,17 @@ Usage:
   duckway cc bind        Interactive picker: pick existing local claude
                          sessions and create a CC channel + binding for
                          each. Use --session <id> for headless mode.
+  duckway session list   List local terminal agent sessions
+  duckway session start --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
+                         Start a local tmux-backed terminal agent session
+  duckway session attach <name>
+                         Attach to a local terminal agent tmux session
+  duckway session send <name> <text>
+                         Send text + Enter to a local terminal agent session
+  duckway session read <name> [--lines N]
+                         Capture recent output from a local terminal agent session
+  duckway session stop <name>
+                         Stop a local terminal agent session
   duckway projects       Manage project folders usable from Discord
   duckway git list       List GitHub repos configured for this client
   duckway git setup      Sync GitHub phantom credential for native git
@@ -738,6 +759,161 @@ func cmdCC(configDir string) {
 		fmt.Fprintf(os.Stderr, "Unknown cc subcommand: %s\n", os.Args[2])
 		os.Exit(1)
 	}
+}
+
+type sessionManagerAPI interface {
+	List() ([]client.SessionRecord, error)
+	Start(client.SessionStartOptions) (*client.SessionRecord, error)
+	Send(name, text string) error
+	Read(name string, lines int) (string, error)
+	Stop(name string) error
+	AttachArgs(name string) ([]string, error)
+}
+
+func cmdSession(configDir string, args []string) {
+	manager := client.NewSessionManager(configDir, nil)
+	if err := runSessionCommand(manager, args, os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func runSessionCommand(manager sessionManagerAPI, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: duckway session <list|start|attach|send|read|stop>")
+	}
+	switch args[0] {
+	case "list":
+		sessions, err := manager.List()
+		if err != nil {
+			return err
+		}
+		if len(sessions) == 0 {
+			fmt.Fprintln(out, "No local terminal sessions.")
+			return nil
+		}
+		fmt.Fprintf(out, "%-18s %-10s %-12s %-24s %s\n", "NAME", "STATUS", "AGENT", "TMUX", "CWD")
+		for _, s := range sessions {
+			fmt.Fprintf(out, "%-18s %-10s %-12s %-24s %s\n", s.Name, s.Status, s.AgentType, s.TmuxSession, s.Cwd)
+		}
+		return nil
+	case "start":
+		opts, err := parseSessionStartOptions(args[1:])
+		if err != nil {
+			return err
+		}
+		rec, err := manager.Start(opts)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Started %s (%s)\nAttach: tmux attach -t %s\n", rec.Name, rec.AgentType, rec.TmuxSession)
+		return nil
+	case "attach":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: duckway session attach <name>")
+		}
+		attachArgs, err := manager.AttachArgs(args[1])
+		if err != nil {
+			return err
+		}
+		return sessionAttachExec(attachArgs)
+	case "send":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: duckway session send <name> <text>")
+		}
+		return manager.Send(args[1], strings.Join(args[2:], " "))
+	case "read":
+		name, lines, err := parseSessionReadArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		text, err := manager.Read(name, lines)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(out, text)
+		return nil
+	case "stop":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: duckway session stop <name>")
+		}
+		if err := manager.Stop(args[1]); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Stopped %s\n", args[1])
+		return nil
+	default:
+		return fmt.Errorf("unknown session subcommand: %s", args[0])
+	}
+}
+
+func parseSessionStartOptions(args []string) (client.SessionStartOptions, error) {
+	opts := client.SessionStartOptions{Kind: "terminal", AgentType: "shell"}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--":
+			opts.Command = append([]string(nil), args[i+1:]...)
+			i = len(args)
+		case "--name", "-n":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--name requires a value")
+			}
+			opts.Name = args[i+1]
+			i++
+		case "--kind":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--kind requires a value")
+			}
+			opts.Kind = args[i+1]
+			i++
+		case "--agent", "--agent-type":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("%s requires a value", args[i])
+			}
+			opts.AgentType = args[i+1]
+			i++
+		case "--cwd", "-C":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--cwd requires a value")
+			}
+			opts.Cwd = args[i+1]
+			i++
+		default:
+			return opts, fmt.Errorf("unknown session start option: %s", args[i])
+		}
+	}
+	if opts.Name == "" {
+		return opts, fmt.Errorf("--name is required")
+	}
+	if len(opts.Command) == 0 {
+		return opts, fmt.Errorf("command is required after --")
+	}
+	return opts, nil
+}
+
+func parseSessionReadArgs(args []string) (name string, lines int, err error) {
+	lines = 120
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--lines", "-n":
+			if i+1 >= len(args) {
+				return "", 0, fmt.Errorf("--lines requires a value")
+			}
+			lines, err = strconv.Atoi(args[i+1])
+			if err != nil || lines <= 0 {
+				return "", 0, fmt.Errorf("invalid --lines value")
+			}
+			i++
+		default:
+			if name != "" {
+				return "", 0, fmt.Errorf("usage: duckway session read <name> [--lines N]")
+			}
+			name = args[i]
+		}
+	}
+	if name == "" {
+		return "", 0, fmt.Errorf("usage: duckway session read <name> [--lines N]")
+	}
+	return name, lines, nil
 }
 
 func cmdProjects(configDir string, args []string) {

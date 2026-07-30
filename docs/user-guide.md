@@ -545,6 +545,21 @@ Codex tmux turns do not fail just because they run longer than five minutes. Lon
 
 On upgrade, existing legacy tmux sessions named `duckway-<handle>` are automatically renamed to the current `<handle>-duckway` convention the next time `cc watch` uses that channel, unless both old and new sessions already exist.
 
+### Local terminal agent sessions
+
+Duckway can also manage local, tmux-backed terminal agent sessions that are independent from Discord CC sessions:
+
+```bash
+duckway session start --name review --agent codex --cwd /repo -- codex exec
+duckway session list
+duckway session send review "review the current diff"
+duckway session read review --lines 120
+duckway session attach review
+duckway session stop review
+```
+
+These sessions are local-only in the first version. They are not exposed through the server, MCP tools, or Discord commands. Metadata is stored in `~/.duckway/agent-sessions.json`; old clients that do not have this file load an empty session list, and existing CC files such as `cc-sessions.json` and `cc-watch/` are left untouched.
+
 ### Security boundary
 
 - The **bot token** is the only real boundary. Two CCs sharing a bot can reach each other's channels — use **different bots** to isolate teams.
