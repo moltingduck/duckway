@@ -24,6 +24,17 @@ type remoteRunner interface {
 	Start(context.Context, ducklord.Client, []string) error
 	Stop(context.Context, ducklord.Client, string) error
 	Attach(ducklord.Client, string) error
+	AttachStream(context.Context, ducklord.Client, string) (*ducklord.AttachSession, error)
+}
+
+type attachOutputEvent struct {
+	id   int
+	text string
+}
+
+type attachDoneEvent struct {
+	id  int
+	err error
 }
 
 func main() {
@@ -263,6 +274,7 @@ type tuiState struct {
 	outputText   string
 	outputErr    string
 	outputForKey string
+	focused      bool
 }
 
 func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) error {
@@ -283,16 +295,66 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 	ticker := time.NewTicker(refresh)
 	defer ticker.Stop()
 	input := make(chan []byte, 8)
+	attachOut := make(chan attachOutputEvent, 32)
+	attachDone := make(chan attachDoneEvent, 1)
+	var attach *ducklord.AttachSession
+	var attachCancel context.CancelFunc
+	attachID := 0
 	go readInput(ctx, input)
 	for {
 		select {
 		case <-ctx.Done():
+			if attachCancel != nil {
+				attachCancel()
+			}
 			return nil
 		case <-ticker.C:
-			state.refreshSessions(ctx)
-			state.refreshSelectedOutput(ctx)
+			if !state.focused {
+				state.refreshSessions(ctx)
+				state.refreshSelectedOutput(ctx)
+			}
+			state.render(os.Stdout)
+		case chunk := <-attachOut:
+			if chunk.id != attachID {
+				continue
+			}
+			state.outputText = appendOutputText(state.outputText, chunk.text, 120)
+			state.render(os.Stdout)
+		case result := <-attachDone:
+			if result.id != attachID {
+				continue
+			}
+			if result.err != nil && state.focused {
+				state.outputErr = result.err.Error()
+			}
+			state.focused = false
+			attach = nil
+			if attachCancel != nil {
+				attachCancel()
+				attachCancel = nil
+			}
 			state.render(os.Stdout)
 		case b := <-input:
+			if state.focused {
+				if isDetachInput(b) {
+					if attach != nil {
+						_ = attach.Stdin.Close()
+					}
+					if attachCancel != nil {
+						attachCancel()
+						attachCancel = nil
+					}
+					attachID++
+					state.focused = false
+					attach = nil
+					state.render(os.Stdout)
+					continue
+				}
+				if attach != nil {
+					_, _ = attach.Stdin.Write(b)
+				}
+				continue
+			}
 			action := state.handleInput(b)
 			switch action {
 			case "quit":
@@ -310,13 +372,23 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 				if !canAttach(s) {
 					continue
 				}
-				restore(oldState)
-				fmt.Print("\033[?1006l\033[?1000l\033[?25h\033[?1049l")
 				c, err := mustClient(cfg, s.Client)
 				if err != nil {
 					return err
 				}
-				return runner.Attach(c, s.Name)
+				attachCtx, cancel := context.WithCancel(ctx)
+				session, err := runner.AttachStream(attachCtx, c, s.Name)
+				if err != nil {
+					cancel()
+					state.outputErr = err.Error()
+					break
+				}
+				attach = session
+				attachCancel = cancel
+				attachID++
+				id := attachID
+				state.focused = true
+				go superviseAttach(attachCtx, id, session, attachOut, attachDone)
 			}
 			state.render(os.Stdout)
 		}
@@ -429,7 +501,11 @@ func (s *tuiState) render(out io.Writer) {
 	contentWidth := renderWidth - contentX + 1
 	fmt.Fprint(out, "\033[H\033[2J")
 	fmt.Fprintln(out, "ducklord remote agents")
-	fmt.Fprintln(out, "j/k or arrows move  enter attach  r refresh  q quit")
+	if s.focused {
+		fmt.Fprintln(out, "session focus  keys go to session  ctrl-] menu")
+	} else {
+		fmt.Fprintln(out, "j/k or arrows move  enter/right-click focus session  r refresh  q quit")
+	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
 		fmt.Fprintln(out, "No sessions.")
@@ -442,7 +518,7 @@ func (s *tuiState) render(out io.Writer) {
 		if row > height {
 			break
 		}
-		group := sess.Group
+		group := displayField(sess.Group)
 		if group == "" {
 			group = "default"
 		}
@@ -462,9 +538,9 @@ func (s *tuiState) render(out io.Writer) {
 		if sess.Updated {
 			mark = "*"
 		}
-		line := fmt.Sprintf("%s%s %-12s %-18s %-9s %-10s %s", prefix, mark, sess.Client, sess.Name, sess.Status, sess.AgentType, sess.LastLine)
+		line := fmt.Sprintf("%s%s %-12s %-18s %-9s %-10s %s", prefix, mark, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sess.AgentType), sess.LastLine)
 		if sess.Error != "" {
-			line = fmt.Sprintf("%s! %-12s %-18s %-9s %s", prefix, sess.Client, sess.Name, sess.Status, sess.Error)
+			line = fmt.Sprintf("%s! %-12s %-18s %-9s %s", prefix, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), sess.Error)
 		}
 		fmt.Fprintf(out, "\033[%d;1H%-*s |\033[K", row, menuWidth, truncate(line, menuWidth))
 		row++
@@ -477,7 +553,10 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 		return
 	}
 	sess := s.sessions[s.selected]
-	header := fmt.Sprintf("%s / %s  %s  %s", sess.Client, sess.Name, sess.Status, sess.AgentType)
+	header := fmt.Sprintf("%s / %s  %s  %s", displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sess.AgentType))
+	if s.focused {
+		header += "  [focus]"
+	}
 	fmt.Fprintf(out, "\033[5;%dH%s\033[K", x, truncate(header, width))
 	startRow := 6
 	if s.outputErr != "" {
@@ -517,6 +596,12 @@ func (s *tuiState) handleInput(b []byte) string {
 			s.selectedKey = s.currentKey()
 			return "select"
 		}
+	case strings.HasPrefix(text, "\x1b[<2;"):
+		if idx, ok := s.sessionIndexForMouse(text); ok {
+			s.selected = idx
+			s.selectedKey = s.currentKey()
+		}
+		return "attach"
 	}
 	return ""
 }
@@ -534,7 +619,9 @@ func canRead(sess ducklord.RemoteSession) bool {
 }
 
 func (s *tuiState) sessionIndexForMouse(seq string) (int, bool) {
-	seq = strings.TrimPrefix(seq, "\x1b[<0;")
+	if strings.HasPrefix(seq, "\x1b[<0;") || strings.HasPrefix(seq, "\x1b[<2;") {
+		seq = seq[len("\x1b[<0;"):]
+	}
 	parts := strings.FieldsFunc(seq, func(r rune) bool { return r == ';' || r == 'M' || r == 'm' })
 	if len(parts) < 2 {
 		return 0, false
@@ -605,17 +692,131 @@ func restore(state *unix.Termios) {
 
 func readInput(ctx context.Context, ch chan<- []byte) {
 	buf := make([]byte, 64)
+	var pending []byte
 	for {
 		n, err := os.Stdin.Read(buf)
 		if err != nil {
 			return
 		}
+		pending = append(pending, buf[:n]...)
+		for {
+			event, rest, ok := nextInputEvent(pending)
+			if !ok {
+				pending = rest
+				break
+			}
+			pending = rest
+			select {
+			case ch <- event:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+func nextInputEvent(pending []byte) (event, rest []byte, ok bool) {
+	if len(pending) == 0 {
+		return nil, nil, false
+	}
+	if pending[0] != 0x1b {
+		return append([]byte(nil), pending[:1]...), pending[1:], true
+	}
+	if len(pending) >= 3 && pending[1] == '[' && (pending[2] == 'A' || pending[2] == 'B') {
+		return append([]byte(nil), pending[:3]...), pending[3:], true
+	}
+	if len(pending) >= 4 && pending[1] == '[' && pending[2] == '<' {
+		for i := 3; i < len(pending); i++ {
+			if pending[i] == 'M' || pending[i] == 'm' {
+				return append([]byte(nil), pending[:i+1]...), pending[i+1:], true
+			}
+		}
+		return nil, pending, false
+	}
+	return append([]byte(nil), pending[:1]...), pending[1:], true
+}
+
+func superviseAttach(ctx context.Context, id int, session *ducklord.AttachSession, out chan<- attachOutputEvent, done chan<- attachDoneEvent) {
+	stdoutDone := make(chan error, 1)
+	go readAttachOutput(ctx, id, session.Stdout, out, stdoutDone)
+	var stdoutErr error
+	var commandErr error
+	stdoutOpen := true
+	commandOpen := session.Done != nil
+	for stdoutOpen || commandOpen {
 		select {
-		case ch <- append([]byte(nil), buf[:n]...):
+		case err := <-stdoutDone:
+			stdoutErr = err
+			stdoutOpen = false
+		case err := <-session.Done:
+			commandErr = err
+			commandOpen = false
 		case <-ctx.Done():
 			return
 		}
 	}
+	if commandErr != nil {
+		select {
+		case done <- attachDoneEvent{id: id, err: commandErr}:
+		case <-ctx.Done():
+		}
+		return
+	}
+	select {
+	case done <- attachDoneEvent{id: id, err: stdoutErr}:
+	case <-ctx.Done():
+	}
+}
+
+func readAttachOutput(ctx context.Context, id int, r io.Reader, out chan<- attachOutputEvent, done chan<- error) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			select {
+			case out <- attachOutputEvent{id: id, text: sanitizeTerminalText(string(buf[:n]))}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				err = nil
+			}
+			select {
+			case done <- err:
+			case <-ctx.Done():
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+}
+
+func isDetachInput(b []byte) bool {
+	return len(b) == 1 && b[0] == 0x1d
+}
+
+func appendOutputText(current, chunk string, maxLines int) string {
+	if chunk == "" {
+		return current
+	}
+	text := current + chunk
+	endsWithNewline := strings.HasSuffix(text, "\n")
+	text = strings.TrimSuffix(text, "\n")
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	text = strings.Join(tailLines(lines, maxLines), "\n")
+	if endsWithNewline {
+		text += "\n"
+	}
+	return text
 }
 
 func terminalSize() (int, int) {
@@ -642,6 +843,10 @@ func sanitizeTerminalText(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func displayField(s string) string {
+	return sanitizeTerminalText(s)
 }
 
 func tailLines(lines []string, max int) []string {

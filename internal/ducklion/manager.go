@@ -112,6 +112,10 @@ func (m *Manager) Start(opts StartOptions) (*Record, error) {
 	if opts.AgentType == "" {
 		opts.AgentType = "shell"
 	}
+	agentType, err := ValidateAgentType(opts.AgentType)
+	if err != nil {
+		return nil, err
+	}
 	cwd, err := validateCwd(opts.Cwd)
 	if err != nil {
 		return nil, err
@@ -152,7 +156,7 @@ func (m *Manager) Start(opts StartOptions) (*Record, error) {
 	}
 	rec := Record{
 		Name:      name,
-		AgentType: opts.AgentType,
+		AgentType: agentType,
 		Cwd:       cwd,
 		Socket:    filepath.Join(sessionDir, "control.sock"),
 		Log:       filepath.Join(sessionDir, "output.log"),
@@ -172,7 +176,7 @@ func (m *Manager) Start(opts StartOptions) (*Record, error) {
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = errFile
-	cmd.Env = append(os.Environ(), "DUCKLION_SUPERVISE=1")
+	cmd.Env = append(scrubSessionEnv(os.Environ()), "DUCKLION_SUPERVISE=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start ducklion supervisor: %w", err)
@@ -364,6 +368,34 @@ func ValidateName(name string) (string, error) {
 	return name, nil
 }
 
+func ValidateAgentType(agentType string) (string, error) {
+	agentType = strings.TrimSpace(agentType)
+	if agentType == "" {
+		return "shell", nil
+	}
+	if len(agentType) > 64 {
+		return "", fmt.Errorf("invalid agent type %q", agentType)
+	}
+	for _, r := range agentType {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			continue
+		}
+		return "", fmt.Errorf("invalid agent type %q", agentType)
+	}
+	return agentType, nil
+}
+
+func scrubSessionEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, item := range env {
+		if strings.HasPrefix(item, "SSH_AUTH_SOCK=") {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 func validateCwd(cwd string) (string, error) {
 	if strings.TrimSpace(cwd) == "" {
 		var err error
@@ -459,6 +491,9 @@ func RunSupervisor(opts SupervisorOptions) error {
 	if _, err := ValidateName(opts.Name); err != nil {
 		return err
 	}
+	if _, err := ValidateAgentType(opts.AgentType); err != nil {
+		return err
+	}
 	cwd, err := validateCwd(opts.Cwd)
 	if err != nil {
 		return err
@@ -523,15 +558,30 @@ func (s *supervisor) capture() {
 			chunk := append([]byte(nil), buf[:n]...)
 			s.mu.Lock()
 			_, _ = s.log.Write(chunk)
+			listeners := make([]net.Conn, 0, len(s.listeners))
 			for conn := range s.listeners {
-				_, _ = conn.Write(chunk)
+				listeners = append(listeners, conn)
 			}
 			s.mu.Unlock()
+			for _, conn := range listeners {
+				_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+				if _, err := conn.Write(chunk); err != nil {
+					s.removeListener(conn)
+					_ = conn.Close()
+				}
+				_ = conn.SetWriteDeadline(time.Time{})
+			}
 		}
 		if err != nil {
 			return
 		}
 	}
+}
+
+func (s *supervisor) removeListener(conn net.Conn) {
+	s.mu.Lock()
+	delete(s.listeners, conn)
+	s.mu.Unlock()
 }
 
 func (s *supervisor) accept(listener net.Listener) {

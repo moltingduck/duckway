@@ -45,7 +45,7 @@ func TestLoadConfigRejectsHostOptionInjection(t *testing.T) {
 func TestSSHArgsDoNotUseLocalShell(t *testing.T) {
 	c := Client{Name: "vulns", Host: "vulns.ts", User: "duck", Ducklion: "ducklion", SSH: "ssh"}
 	got := SSHArgs(c, false, "ducklion", "send", "alpha", "hello; rm -rf /")
-	want := []string{"-o", "BatchMode=yes", "duck@vulns.ts", "ducklion send alpha 'hello; rm -rf /'"}
+	want := []string{"-o", "BatchMode=yes", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes", "duck@vulns.ts", "ducklion send alpha 'hello; rm -rf /'"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("SSHArgs = %#v, want %#v", got, want)
 	}
@@ -54,7 +54,7 @@ func TestSSHArgsDoNotUseLocalShell(t *testing.T) {
 func TestSSHArgsPutTTYBeforeTarget(t *testing.T) {
 	c := Client{Name: "vulns", Host: "vulns.ts", User: "duck", Ducklion: "ducklion", SSH: "ssh"}
 	got := SSHArgs(c, true, "ducklion", "attach", "alpha")
-	want := []string{"-o", "BatchMode=yes", "-t", "duck@vulns.ts", "ducklion attach alpha"}
+	want := []string{"-o", "BatchMode=yes", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes", "-t", "duck@vulns.ts", "ducklion attach alpha"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("SSHArgs = %#v, want %#v", got, want)
 	}

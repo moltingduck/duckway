@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -28,6 +28,13 @@ type RemoteSession struct {
 }
 
 type Runner struct{}
+
+type AttachSession struct {
+	Stdin  io.WriteCloser
+	Stdout io.ReadCloser
+	Done   <-chan error
+	cmd    *exec.Cmd
+}
 
 func (Runner) Sessions(ctx context.Context, c Client, tailLines int) ([]RemoteSession, error) {
 	if tailLines <= 0 {
@@ -84,12 +91,45 @@ func (Runner) Attach(c Client, name string) error {
 	if !SafeIdentifier(name) {
 		return fmt.Errorf("invalid session name %q", name)
 	}
-	sshPath, err := exec.LookPath(c.SSH)
-	if err != nil {
-		return fmt.Errorf("ssh command %q not found: %w", c.SSH, err)
-	}
 	args := SSHArgs(c, true, c.Ducklion, "attach", name)
-	return syscall.Exec(sshPath, append([]string{c.SSH}, args...), os.Environ())
+	cmd := exec.Command(c.SSH, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ssh attach to %s: %w", c.Name, err)
+	}
+	return nil
+}
+
+func (Runner) AttachStream(ctx context.Context, c Client, name string) (*AttachSession, error) {
+	if !SafeIdentifier(name) {
+		return nil, fmt.Errorf("invalid session name %q", name)
+	}
+	args := SSHArgs(c, false, c.Ducklion, "attach", name)
+	cmd := exec.CommandContext(ctx, c.SSH, args...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start ssh attach to %s: %w", c.Name, err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		if err != nil && stderr.Len() > 0 {
+			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+		}
+		done <- err
+	}()
+	return &AttachSession{Stdin: stdin, Stdout: stdout, Done: done, cmd: cmd}, nil
 }
 
 func sshOutput(ctx context.Context, c Client, ducklionArgs ...string) ([]byte, error) {
@@ -114,7 +154,11 @@ func sshOutput(ctx context.Context, c Client, ducklionArgs ...string) ([]byte, e
 }
 
 func SSHArgs(c Client, tty bool, remoteArgs ...string) []string {
-	args := []string{"-o", "BatchMode=yes"}
+	args := []string{
+		"-o", "BatchMode=yes",
+		"-o", "ForwardAgent=no",
+		"-o", "ClearAllForwardings=yes",
+	}
 	if tty {
 		args = append(args, "-t")
 	}

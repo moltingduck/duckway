@@ -64,6 +64,7 @@ EOF'
 
 echo "[ducklord-demo] creating sample remote sessions"
 "$RUNTIME" exec -u duck ducklion-client-a ducklion start --name alpha --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-a alpha tick $i; if [ $((i % 3)) -eq 0 ]; then echo "[ducklion:done] alpha step $i"; fi; sleep 4; done' >/dev/null
+"$RUNTIME" exec -u duck ducklion-client-a ducklion start --name bash --agent shell --cwd /home/duck -- bash >/dev/null
 "$RUNTIME" exec -u duck ducklion-client-a ducklion start --name build --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-a build output $i; sleep 6; done' >/dev/null
 "$RUNTIME" exec -u duck ducklion-client-b ducklion start --name beta --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-b beta tick $i; if [ $((i % 2)) -eq 0 ]; then echo "[ducklion:done] beta step $i"; fi; sleep 5; done' >/dev/null
 
@@ -81,9 +82,9 @@ Useful checks:
 Inside the TUI:
   j/k or arrow keys: move
   mouse click: select a session row
+  Enter or right-click: focus the selected session in the right pane
   right pane: selected session output preview
-  Enter: attach to the remote PTY session
-  Ctrl-]: detach from the PTY stream back to the shell
+  Ctrl-]: return keyboard focus to the left menu
   q: quit
 
 Clean up:

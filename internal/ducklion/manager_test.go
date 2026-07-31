@@ -30,6 +30,30 @@ func TestValidateNameRejectsUnsafeNames(t *testing.T) {
 	}
 }
 
+func TestValidateAgentTypeRejectsUnsafeValues(t *testing.T) {
+	for _, agentType := range []string{"codex", "shell", "claude_code", "openclaw-1"} {
+		if _, err := ValidateAgentType(agentType); err != nil {
+			t.Fatalf("agent type %q rejected: %v", agentType, err)
+		}
+	}
+	for _, agentType := range []string{"bad value", "bad/type", "\x1b[2J"} {
+		if _, err := ValidateAgentType(agentType); err == nil {
+			t.Fatalf("agent type %q accepted", agentType)
+		}
+	}
+}
+
+func TestScrubSessionEnvDropsSSHAuthSock(t *testing.T) {
+	got := scrubSessionEnv([]string{"PATH=/bin", "SSH_AUTH_SOCK=/tmp/agent.sock", "HOME=/home/duck"})
+	joined := strings.Join(got, "\n")
+	if strings.Contains(joined, "SSH_AUTH_SOCK=") {
+		t.Fatalf("SSH_AUTH_SOCK survived: %#v", got)
+	}
+	if !strings.Contains(joined, "PATH=/bin") || !strings.Contains(joined, "HOME=/home/duck") {
+		t.Fatalf("env was over-scrubbed: %#v", got)
+	}
+}
+
 func TestManagerStartReadSendStopWithPTY(t *testing.T) {
 	root := t.TempDir()
 	m := NewManager(root, "")
