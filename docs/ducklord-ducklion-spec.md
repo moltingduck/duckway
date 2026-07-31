@@ -115,6 +115,7 @@ ducklord version
 The first TUI supports:
 
 - left-side grouped session list
+- right-side selected session output preview
 - keyboard navigation with arrow keys or `j` / `k`
 - `Enter` to attach the selected session through SSH
 - `r` to refresh immediately

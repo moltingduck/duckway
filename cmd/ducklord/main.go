@@ -253,12 +253,16 @@ func parseReadArgs(args []string) (clientName, sessionName string, lines int, er
 }
 
 type tuiState struct {
-	cfg      *ducklord.Config
-	runner   remoteRunner
-	refresh  time.Duration
-	sessions []ducklord.RemoteSession
-	selected int
-	hashes   map[string]string
+	cfg          *ducklord.Config
+	runner       remoteRunner
+	refresh      time.Duration
+	sessions     []ducklord.RemoteSession
+	selected     int
+	hashes       map[string]string
+	selectedKey  string
+	outputText   string
+	outputErr    string
+	outputForKey string
 }
 
 func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) error {
@@ -274,7 +278,8 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 	defer stop()
 	state := &tuiState{cfg: cfg, runner: runner, refresh: refresh, hashes: map[string]string{}}
 	state.refreshSessions(ctx)
-	state.render()
+	state.refreshSelectedOutput(ctx)
+	state.render(os.Stdout)
 	ticker := time.NewTicker(refresh)
 	defer ticker.Stop()
 	input := make(chan []byte, 8)
@@ -285,34 +290,41 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 			return nil
 		case <-ticker.C:
 			state.refreshSessions(ctx)
-			state.render()
+			state.refreshSelectedOutput(ctx)
+			state.render(os.Stdout)
 		case b := <-input:
 			action := state.handleInput(b)
-			state.render()
 			switch action {
 			case "quit":
 				return nil
 			case "refresh":
 				state.refreshSessions(ctx)
-				state.render()
+				state.refreshSelectedOutput(ctx)
+			case "select":
+				state.refreshSelectedOutput(ctx)
 			case "attach":
 				if len(state.sessions) == 0 {
 					continue
 				}
+				s := state.sessions[state.selected]
+				if !canAttach(s) {
+					continue
+				}
 				restore(oldState)
 				fmt.Print("\033[?1006l\033[?1000l\033[?25h\033[?1049l")
-				s := state.sessions[state.selected]
 				c, err := mustClient(cfg, s.Client)
 				if err != nil {
 					return err
 				}
 				return runner.Attach(c, s.Name)
 			}
+			state.render(os.Stdout)
 		}
 	}
 }
 
 func (s *tuiState) refreshSessions(ctx context.Context) {
+	oldKey := s.currentKey()
 	var all []ducklord.RemoteSession
 	for _, c := range s.cfg.Clients {
 		sessions, err := s.runner.Sessions(ctx, c, 8)
@@ -340,36 +352,107 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 		if all[i].TailHash != "" {
 			s.hashes[key] = all[i].TailHash
 		}
+		all[i].LastLine = sanitizeTerminalText(all[i].LastLine)
+		all[i].Error = sanitizeTerminalText(all[i].Error)
 	}
 	s.sessions = all
+	if oldKey != "" {
+		for i, sess := range s.sessions {
+			if sessionKey(sess) == oldKey {
+				s.selected = i
+				break
+			}
+		}
+	}
 	if s.selected >= len(s.sessions) {
 		s.selected = len(s.sessions) - 1
 	}
 	if s.selected < 0 {
 		s.selected = 0
 	}
+	s.selectedKey = s.currentKey()
 }
 
-func (s *tuiState) render() {
-	fmt.Print("\033[H\033[2J")
-	fmt.Println("ducklord remote agents")
-	fmt.Println("j/k or arrows move  enter attach  r refresh  q quit")
-	fmt.Println(strings.Repeat("-", 96))
-	if len(s.sessions) == 0 {
-		fmt.Println("No sessions.")
+func (s *tuiState) currentKey() string {
+	if len(s.sessions) == 0 || s.selected < 0 || s.selected >= len(s.sessions) {
+		return ""
+	}
+	return sessionKey(s.sessions[s.selected])
+}
+
+func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
+	if len(s.sessions) == 0 || s.selected < 0 || s.selected >= len(s.sessions) {
+		s.outputText = ""
+		s.outputErr = ""
+		s.outputForKey = ""
 		return
 	}
+	sess := s.sessions[s.selected]
+	key := sessionKey(sess)
+	s.selectedKey = key
+	s.outputForKey = key
+	if !canRead(sess) {
+		s.outputText = ""
+		s.outputErr = sess.Error
+		if s.outputErr == "" {
+			s.outputErr = sess.Status
+		}
+		return
+	}
+	c, err := mustClient(s.cfg, sess.Client)
+	if err != nil {
+		s.outputText = ""
+		s.outputErr = err.Error()
+		return
+	}
+	text, err := s.runner.Read(ctx, c, sess.Name, 80)
+	if err != nil {
+		s.outputText = ""
+		s.outputErr = err.Error()
+		return
+	}
+	s.outputText = sanitizeTerminalText(text)
+	s.outputErr = ""
+}
+
+func (s *tuiState) render(out io.Writer) {
+	width, height := terminalSize()
+	renderWidth := width
+	if renderWidth < 80 {
+		renderWidth = 80
+	}
+	if height < 12 {
+		height = 12
+	}
+	menuWidth := menuWidthFor(renderWidth)
+	contentX := menuWidth + 4
+	contentWidth := renderWidth - contentX + 1
+	fmt.Fprint(out, "\033[H\033[2J")
+	fmt.Fprintln(out, "ducklord remote agents")
+	fmt.Fprintln(out, "j/k or arrows move  enter attach  r refresh  q quit")
+	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
+	if len(s.sessions) == 0 {
+		fmt.Fprintln(out, "No sessions.")
+		return
+	}
+	fmt.Fprintf(out, "\033[4;1H%-*s | %s\033[K", menuWidth, "sessions", "content")
 	currentGroup := "\000"
-	row := 4
+	row := 5
 	for i, sess := range s.sessions {
+		if row > height {
+			break
+		}
 		group := sess.Group
 		if group == "" {
 			group = "default"
 		}
 		if group != currentGroup {
-			fmt.Printf("\033[%d;1H[%s]\n", row, group)
+			fmt.Fprintf(out, "\033[%d;1H%-*s |\033[K", row, menuWidth, "["+group+"]")
 			row++
 			currentGroup = group
+			if row > height {
+				break
+			}
 		}
 		prefix := " "
 		if i == s.selected {
@@ -383,8 +466,27 @@ func (s *tuiState) render() {
 		if sess.Error != "" {
 			line = fmt.Sprintf("%s! %-12s %-18s %-9s %s", prefix, sess.Client, sess.Name, sess.Status, sess.Error)
 		}
-		fmt.Printf("\033[%d;1H%s\033[K\n", row, truncate(line, 120))
+		fmt.Fprintf(out, "\033[%d;1H%-*s |\033[K", row, menuWidth, truncate(line, menuWidth))
 		row++
+	}
+	s.renderContent(out, contentX, contentWidth, height)
+}
+
+func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
+	if len(s.sessions) == 0 || s.selected < 0 || s.selected >= len(s.sessions) {
+		return
+	}
+	sess := s.sessions[s.selected]
+	header := fmt.Sprintf("%s / %s  %s  %s", sess.Client, sess.Name, sess.Status, sess.AgentType)
+	fmt.Fprintf(out, "\033[5;%dH%s\033[K", x, truncate(header, width))
+	startRow := 6
+	if s.outputErr != "" {
+		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", startRow, x, truncate("error: "+sanitizeTerminalText(s.outputErr), width))
+		return
+	}
+	lines := tailLines(strings.Split(strings.TrimRight(s.outputText, "\n"), "\n"), height-startRow+1)
+	for i, line := range lines {
+		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", startRow+i, x, truncate(line, width))
 	}
 }
 
@@ -400,17 +502,35 @@ func (s *tuiState) handleInput(b []byte) string {
 	case text == "j" || text == "\x1b[B":
 		if s.selected < len(s.sessions)-1 {
 			s.selected++
+			s.selectedKey = s.currentKey()
+			return "select"
 		}
 	case text == "k" || text == "\x1b[A":
 		if s.selected > 0 {
 			s.selected--
+			s.selectedKey = s.currentKey()
+			return "select"
 		}
 	case strings.HasPrefix(text, "\x1b[<0;"):
 		if idx, ok := s.sessionIndexForMouse(text); ok {
 			s.selected = idx
+			s.selectedKey = s.currentKey()
+			return "select"
 		}
 	}
 	return ""
+}
+
+func sessionKey(sess ducklord.RemoteSession) string {
+	return sess.Group + "/" + sess.Client + "/" + sess.Name
+}
+
+func canAttach(sess ducklord.RemoteSession) bool {
+	return canRead(sess) && sess.Status == "running"
+}
+
+func canRead(sess ducklord.RemoteSession) bool {
+	return sess.Error == "" && sess.Status != "error" && sess.Name != "(offline)"
 }
 
 func (s *tuiState) sessionIndexForMouse(seq string) (int, bool) {
@@ -419,11 +539,19 @@ func (s *tuiState) sessionIndexForMouse(seq string) (int, bool) {
 	if len(parts) < 2 {
 		return 0, false
 	}
+	x, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, false
+	}
+	width, _ := terminalSize()
+	if x > menuWidthFor(width)+2 {
+		return 0, false
+	}
 	y, err := strconv.Atoi(parts[1])
 	if err != nil {
 		return 0, false
 	}
-	row := 4
+	row := 5
 	currentGroup := "\000"
 	for i, sess := range s.sessions {
 		group := sess.Group
@@ -440,6 +568,16 @@ func (s *tuiState) sessionIndexForMouse(seq string) (int, bool) {
 		row++
 	}
 	return 0, false
+}
+
+func menuWidthFor(width int) int {
+	if width < 80 {
+		width = 80
+	}
+	if width >= 120 {
+		return 44
+	}
+	return 36
 }
 
 func makeRaw() (*unix.Termios, error) {
@@ -478,6 +616,42 @@ func readInput(ctx context.Context, ch chan<- []byte) {
 			return
 		}
 	}
+}
+
+func terminalSize() (int, int) {
+	ws, err := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ)
+	if err != nil || ws.Col == 0 || ws.Row == 0 {
+		return 120, 32
+	}
+	return int(ws.Col), int(ws.Row)
+}
+
+func sanitizeTerminalText(s string) string {
+	s = strings.ToValidUTF8(s, " ")
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\t':
+			b.WriteRune(r)
+		case r == '\r':
+			b.WriteRune('\n')
+		case r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f:
+			b.WriteRune(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func tailLines(lines []string, max int) []string {
+	if max <= 0 {
+		return nil
+	}
+	if len(lines) <= max {
+		return lines
+	}
+	return lines[len(lines)-max:]
 }
 
 func truncate(s string, n int) string {

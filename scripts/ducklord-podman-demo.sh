@@ -74,13 +74,14 @@ Open the dev laptop TUI:
   $RUNTIME exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.json
 
 Useful checks:
-  $RUNTIME exec -it ducklord-dev ducklord clients --config /root/.ducklord/config.json
-  $RUNTIME exec -it ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
-  $RUNTIME exec -it ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
+  $RUNTIME exec ducklord-dev ducklord clients --config /root/.ducklord/config.json
+  $RUNTIME exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
+  $RUNTIME exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
 
 Inside the TUI:
   j/k or arrow keys: move
   mouse click: select a session row
+  right pane: selected session output preview
   Enter: attach to the remote PTY session
   Ctrl-]: detach from the PTY stream back to the shell
   q: quit
