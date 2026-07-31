@@ -774,7 +774,7 @@ func readAttachOutput(ctx context.Context, id int, r io.Reader, out chan<- attac
 		n, err := r.Read(buf)
 		if n > 0 {
 			select {
-			case out <- attachOutputEvent{id: id, text: sanitizeTerminalText(string(buf[:n]))}:
+			case out <- attachOutputEvent{id: id, text: string(buf[:n])}:
 			case <-ctx.Done():
 				return
 			}
@@ -805,7 +805,7 @@ func appendOutputText(current, chunk string, maxLines int) string {
 	if chunk == "" {
 		return current
 	}
-	text := current + chunk
+	text := applyInteractiveText(current, chunk)
 	endsWithNewline := strings.HasSuffix(text, "\n")
 	text = strings.TrimSuffix(text, "\n")
 	if text == "" {
@@ -817,6 +817,31 @@ func appendOutputText(current, chunk string, maxLines int) string {
 		text += "\n"
 	}
 	return text
+}
+
+func applyInteractiveText(current, chunk string) string {
+	current = strings.ToValidUTF8(current, " ")
+	chunk = strings.ToValidUTF8(chunk, " ")
+	out := []rune(current)
+	for _, r := range chunk {
+		switch {
+		case r == '\b' || r == 0x7f:
+			if len(out) > 0 && out[len(out)-1] != '\n' {
+				out = out[:len(out)-1]
+			}
+		case r == '\n' || r == '\t':
+			out = append(out, r)
+		case r == '\r':
+			if len(out) == 0 || out[len(out)-1] != '\n' {
+				out = append(out, '\n')
+			}
+		case r < 0x20 || r >= 0x80 && r <= 0x9f:
+			out = append(out, ' ')
+		default:
+			out = append(out, r)
+		}
+	}
+	return string(out)
 }
 
 func terminalSize() (int, int) {

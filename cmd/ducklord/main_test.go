@@ -224,6 +224,17 @@ func TestAppendOutputTextPreservesChunkNewlines(t *testing.T) {
 	}
 }
 
+func TestAppendOutputTextAppliesBackspaceEcho(t *testing.T) {
+	got := appendOutputText("client-a:~$ abc", "\b \bd\n", 10)
+	if got != "client-a:~$ abd\n" {
+		t.Fatalf("backspace echo output = %q", got)
+	}
+	got = appendOutputText("client-a:~$ abc", string([]byte{0x7f})+"d\n", 10)
+	if got != "client-a:~$ abd\n" {
+		t.Fatalf("del output = %q", got)
+	}
+}
+
 func TestNextInputEventSplitsCoalescedKeys(t *testing.T) {
 	input := []byte("j\recho ok\n")
 	want := []string{"j", "\r", "e", "c", "h", "o", " ", "o", "k", "\n"}
