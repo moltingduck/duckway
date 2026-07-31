@@ -83,6 +83,7 @@ Inside the TUI:
   j/k or arrow keys: move
   mouse click: select a session row
   Enter or right-click: focus the selected session in the right pane
+  n: create a new remote session on the selected client (example: scratch -- bash)
   right pane: selected session output preview
   Ctrl-]: return keyboard focus to the left menu
   q: quit

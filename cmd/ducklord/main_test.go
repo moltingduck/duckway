@@ -36,6 +36,27 @@ func TestDucklordSessionsUsesRunner(t *testing.T) {
 	}
 }
 
+func TestDucklordSessionsSanitizesRemoteLastLine(t *testing.T) {
+	config := writeConfig(t)
+	var out bytes.Buffer
+	runner := fakeRunner{sessions: []ducklord.RemoteSession{{
+		Client: "client-a", Name: "alpha", Status: "running", AgentType: "shell",
+		LastLine: "ok\x1b]52;c;pw\a\x1b[2J",
+	}}}
+	if err := run([]string{"sessions", "client-a", "--config", config}, &out, runner); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, b := range []byte{0x1b, 0x07} {
+		if strings.ContainsRune(got, rune(b)) {
+			t.Fatalf("control byte 0x%x survived: %q", b, got)
+		}
+	}
+	if !strings.Contains(got, "ok ]52;c;pw") || !strings.Contains(got, "[2J") {
+		t.Fatalf("sanitized sessions output = %q", got)
+	}
+}
+
 func TestDucklordReadParsesLines(t *testing.T) {
 	config := writeConfig(t)
 	var out bytes.Buffer
@@ -48,9 +69,87 @@ func TestDucklordReadParsesLines(t *testing.T) {
 	}
 }
 
+func TestDucklordStartRejectsInvalidArgsBeforeRunner(t *testing.T) {
+	config := writeConfig(t)
+	runner := &recordingRunner{}
+	for _, args := range [][]string{
+		{"start", "client-a", "--name", "bad/name", "--", "bash", "--config", config},
+		{"start", "client-a", "--bad", "--", "bash", "--config", config},
+		{"start", "client-a", "--name", "alpha", "--config", config},
+	} {
+		if err := run(args, io.Discard, runner); err == nil {
+			t.Fatalf("args %#v accepted", args)
+		}
+	}
+	if runner.startClient != "" {
+		t.Fatalf("runner start called for invalid args: %s %#v", runner.startClient, runner.startArgs)
+	}
+}
+
+func TestDucklordStartValidatesAndUsesRunner(t *testing.T) {
+	config := writeConfig(t)
+	runner := &recordingRunner{}
+	err := run([]string{"start", "client-a", "--name", "alpha", "--agent", "shell", "--cwd", "/tmp", "--", "bash", "--config", config}, io.Discard, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--name", "alpha", "--agent", "shell", "--cwd", "/tmp", "--", "bash"}
+	if runner.startClient != "client-a" || strings.Join(runner.startArgs, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("start client=%q args=%#v", runner.startClient, runner.startArgs)
+	}
+}
+
 func TestDucklordRejectsUnknownTUIFlag(t *testing.T) {
 	if _, _, err := parseTUIFlags([]string{"--bad"}); err == nil {
 		t.Fatal("unknown tui flag accepted")
+	}
+}
+
+func TestParseCreateLineDefaultsToBash(t *testing.T) {
+	name, args, err := parseCreateLine("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "bash" || strings.Join(args, " ") != "--name bash -- bash" {
+		t.Fatalf("name=%q args=%q", name, strings.Join(args, " "))
+	}
+}
+
+func TestParseCreateLineAllowsOptionsAndQuotedCommand(t *testing.T) {
+	name, args, err := parseCreateLine(`build --agent shell --cwd /repo -- sh -lc "make test"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "build" {
+		t.Fatalf("name = %q", name)
+	}
+	want := []string{"--name", "build", "--agent", "shell", "--cwd", "/repo", "--", "sh", "-lc", "make test"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args=%#v want=%#v", args, want)
+	}
+}
+
+func TestParseCreateLineRejectsUnknownOptionBeforeStart(t *testing.T) {
+	for _, line := range []string{"bad/name", "alpha --bad", "alpha --agent bad/value", `alpha -- sh -lc "unterminated`} {
+		if _, _, err := parseCreateLine(line); err == nil {
+			t.Fatalf("line %q accepted", line)
+		}
+	}
+}
+
+func TestSplitCommandLineQuotesAndEscapes(t *testing.T) {
+	got, err := splitCommandLine(`alpha --cwd "/path with spaces" -- sh -lc 'echo ok' escaped\ arg`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"alpha", "--cwd", "/path with spaces", "--", "sh", "-lc", "echo ok", "escaped arg"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("fields=%#v want=%#v", got, want)
+	}
+	for _, line := range []string{`alpha "unterminated`, `alpha \`} {
+		if _, err := splitCommandLine(line); err == nil {
+			t.Fatalf("line %q accepted", line)
+		}
 	}
 }
 
@@ -119,6 +218,70 @@ func TestTUIRefreshSelectedOutputUsesSelectedClient(t *testing.T) {
 	state.refreshSelectedOutput(context.Background())
 	if runner.readClient != "client-b" || runner.readSession != "alpha" {
 		t.Fatalf("read target = %s/%s", runner.readClient, runner.readSession)
+	}
+}
+
+func TestTUICreatePromptUsesSelectedClient(t *testing.T) {
+	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a", Host: "client-a"}, {Name: "client-b", Host: "client-b"}}}
+	state := &tuiState{
+		cfg: cfg,
+		sessions: []ducklord.RemoteSession{
+			{Client: "client-a", Name: "alpha", Status: "running", AgentType: "shell"},
+			{Client: "client-b", Name: "beta", Status: "running", AgentType: "shell"},
+		},
+		selected: 1,
+	}
+	state.beginCreate()
+	if !state.newSessionMode || state.newSessionClient != "client-b" {
+		t.Fatalf("create state = newSessionMode %v client %q", state.newSessionMode, state.newSessionClient)
+	}
+	for _, b := range []byte("new") {
+		state.handleCreateInput([]byte{b})
+	}
+	if state.newSessionLine != "new" {
+		t.Fatalf("create input = %q", state.newSessionLine)
+	}
+	state.handleCreateInput([]byte{0x7f})
+	if state.newSessionLine != "ne" {
+		t.Fatalf("create input after backspace = %q", state.newSessionLine)
+	}
+	if action := state.handleCreateInput([]byte("\x1b")); action != "cancel" {
+		t.Fatalf("cancel action = %q", action)
+	}
+}
+
+func TestTUICompleteNewSessionStartRefreshesSelectsAndReads(t *testing.T) {
+	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a", Host: "client-a"}}}
+	runner := &recordingRunner{
+		readText: "created\n",
+		sessionsByClient: map[string][]ducklord.RemoteSession{
+			"client-a": {{Client: "client-a", Name: "fresh", Status: "running", AgentType: "shell"}},
+		},
+	}
+	state := &tuiState{
+		cfg:                cfg,
+		runner:             runner,
+		hashes:             map[string]string{},
+		newSessionMode:     true,
+		newSessionClient:   "client-a",
+		newSessionLine:     "fresh",
+		newSessionErr:      "starting...",
+		newSessionStarting: true,
+	}
+	state.completeNewSessionStart(context.Background(), "client-a", "fresh", nil)
+	if state.newSessionMode || state.newSessionStarting || state.newSessionErr != "" {
+		t.Fatalf("new session state not cleared: mode=%v starting=%v err=%q", state.newSessionMode, state.newSessionStarting, state.newSessionErr)
+	}
+	if state.currentKey() != "/client-a/fresh" || state.outputText != "created\n" {
+		t.Fatalf("key=%q output=%q", state.currentKey(), state.outputText)
+	}
+}
+
+func TestTUICompleteNewSessionStartKeepsPromptOnError(t *testing.T) {
+	state := &tuiState{newSessionMode: true, newSessionLine: "fresh", newSessionStarting: true}
+	state.completeNewSessionStart(context.Background(), "client-a", "fresh", fmt.Errorf("already running"))
+	if !state.newSessionMode || state.newSessionLine != "fresh" || state.newSessionStarting || !strings.Contains(state.newSessionErr, "already running") {
+		t.Fatalf("state after error = %+v", state)
 	}
 }
 
@@ -306,12 +469,18 @@ func (f fakeRunner) AttachStream(context.Context, ducklord.Client, string) (*duc
 }
 
 type recordingRunner struct {
-	readText    string
-	readClient  string
-	readSession string
+	readText         string
+	readClient       string
+	readSession      string
+	startClient      string
+	startArgs        []string
+	sessionsByClient map[string][]ducklord.RemoteSession
 }
 
-func (r *recordingRunner) Sessions(context.Context, ducklord.Client, int) ([]ducklord.RemoteSession, error) {
+func (r *recordingRunner) Sessions(_ context.Context, client ducklord.Client, _ int) ([]ducklord.RemoteSession, error) {
+	if r.sessionsByClient != nil {
+		return r.sessionsByClient[client.Name], nil
+	}
 	return nil, nil
 }
 func (r *recordingRunner) Read(_ context.Context, client ducklord.Client, session string, _ int) (string, error) {
@@ -322,9 +491,13 @@ func (r *recordingRunner) Read(_ context.Context, client ducklord.Client, sessio
 func (r *recordingRunner) Send(context.Context, ducklord.Client, string, string) error {
 	return nil
 }
-func (r *recordingRunner) Start(context.Context, ducklord.Client, []string) error { return nil }
-func (r *recordingRunner) Stop(context.Context, ducklord.Client, string) error    { return nil }
-func (r *recordingRunner) Attach(ducklord.Client, string) error                   { return nil }
+func (r *recordingRunner) Start(_ context.Context, client ducklord.Client, args []string) error {
+	r.startClient = client.Name
+	r.startArgs = append([]string(nil), args...)
+	return nil
+}
+func (r *recordingRunner) Stop(context.Context, ducklord.Client, string) error { return nil }
+func (r *recordingRunner) Attach(ducklord.Client, string) error                { return nil }
 func (r *recordingRunner) AttachStream(context.Context, ducklord.Client, string) (*ducklord.AttachSession, error) {
 	return fakeRunner{}.AttachStream(context.Background(), ducklord.Client{}, "")
 }

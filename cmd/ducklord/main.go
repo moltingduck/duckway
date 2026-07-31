@@ -37,6 +37,13 @@ type attachDoneEvent struct {
 	err error
 }
 
+type startDoneEvent struct {
+	id      int
+	client  string
+	session string
+	err     error
+}
+
 func main() {
 	if err := run(os.Args[1:], os.Stdout, ducklord.Runner{}); err != nil {
 		log.Fatal(err)
@@ -116,7 +123,11 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		if err != nil {
 			return err
 		}
-		return runner.Start(context.Background(), c, rest[1:])
+		startArgs, err := parseDucklordStartArgs(rest[1:])
+		if err != nil {
+			return err
+		}
+		return runner.Start(context.Background(), c, startArgs)
 	case "stop":
 		cfg, rest, err := loadWithFlags(args[1:])
 		if err != nil {
@@ -234,7 +245,7 @@ func printSessions(out io.Writer, sessions []ducklord.RemoteSession) error {
 	}
 	fmt.Fprintf(out, "%-12s %-18s %-10s %-12s %s\n", "CLIENT", "SESSION", "STATUS", "AGENT", "LAST")
 	for _, s := range sessions {
-		fmt.Fprintf(out, "%-12s %-18s %-10s %-12s %s\n", s.Client, s.Name, s.Status, s.AgentType, truncate(s.LastLine, 80))
+		fmt.Fprintf(out, "%-12s %-18s %-10s %-12s %s\n", displayField(s.Client), displayField(s.Name), displayField(s.Status), displayField(s.AgentType), truncate(sanitizeTerminalText(s.LastLine), 80))
 	}
 	return nil
 }
@@ -263,18 +274,186 @@ func parseReadArgs(args []string) (clientName, sessionName string, lines int, er
 	return pos[0], pos[1], lines, nil
 }
 
+func parseCreateLine(line string) (sessionName string, args []string, err error) {
+	fields, err := splitCommandLine(line)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(fields) == 0 {
+		return "", nil, fmt.Errorf("session name is required")
+	}
+	sessionName = fields[0]
+	agent := ""
+	cwd := ""
+	rest := fields[1:]
+	commandAt := len(rest)
+	for i, field := range rest {
+		if field == "--" {
+			commandAt = i
+			break
+		}
+	}
+	options := rest[:commandAt]
+	for i := 0; i < len(options); i++ {
+		switch options[i] {
+		case "--agent":
+			if i+1 >= len(options) {
+				return "", nil, fmt.Errorf("--agent requires a value")
+			}
+			agent = options[i+1]
+			i++
+		case "--cwd", "-C":
+			if i+1 >= len(options) {
+				return "", nil, fmt.Errorf("%s requires a value", options[i])
+			}
+			cwd = options[i+1]
+			i++
+		default:
+			return "", nil, fmt.Errorf("unknown new session option: %s", options[i])
+		}
+	}
+	command := []string{"bash"}
+	if commandAt < len(rest) {
+		command = rest[commandAt+1:]
+		if len(command) == 0 {
+			return "", nil, fmt.Errorf("command is required after --")
+		}
+	}
+	args, err = buildStartArgs(sessionName, agent, cwd, command)
+	if err != nil {
+		return "", nil, err
+	}
+	return sessionName, args, nil
+}
+
+func parseDucklordStartArgs(args []string) ([]string, error) {
+	name := ""
+	agent := ""
+	cwd := ""
+	command := []string{}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--":
+			command = append([]string(nil), args[i+1:]...)
+			i = len(args)
+		case "--name", "-n":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("%s requires a value", args[i])
+			}
+			name = args[i+1]
+			i++
+		case "--agent":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("--agent requires a value")
+			}
+			agent = args[i+1]
+			i++
+		case "--cwd", "-C":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("%s requires a value", args[i])
+			}
+			cwd = args[i+1]
+			i++
+		default:
+			return nil, fmt.Errorf("unknown start option: %s", args[i])
+		}
+	}
+	return buildStartArgs(name, agent, cwd, command)
+}
+
+func buildStartArgs(name, agent, cwd string, command []string) ([]string, error) {
+	if !ducklord.SafeIdentifier(name) {
+		return nil, fmt.Errorf("invalid session name %q", name)
+	}
+	out := []string{"--name", name}
+	if agent != "" {
+		if !ducklord.SafeIdentifier(agent) {
+			return nil, fmt.Errorf("invalid --agent value %q", agent)
+		}
+		out = append(out, "--agent", agent)
+	}
+	if cwd != "" {
+		out = append(out, "--cwd", cwd)
+	}
+	if len(command) == 0 {
+		return nil, fmt.Errorf("command is required after --")
+	}
+	out = append(out, "--")
+	out = append(out, command...)
+	return out, nil
+}
+
+func splitCommandLine(line string) ([]string, error) {
+	var fields []string
+	var b strings.Builder
+	var quote rune
+	escaped := false
+	have := false
+	for _, r := range line {
+		if escaped {
+			b.WriteRune(r)
+			have = true
+			escaped = false
+			continue
+		}
+		if quote != '\'' && r == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+				have = true
+				continue
+			}
+			b.WriteRune(r)
+			have = true
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+			have = true
+		case ' ', '\t', '\n', '\r':
+			if have {
+				fields = append(fields, b.String())
+				b.Reset()
+				have = false
+			}
+		default:
+			b.WriteRune(r)
+			have = true
+		}
+	}
+	if escaped {
+		return nil, fmt.Errorf("unfinished escape")
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	if have {
+		fields = append(fields, b.String())
+	}
+	return fields, nil
+}
+
 type tuiState struct {
-	cfg          *ducklord.Config
-	runner       remoteRunner
-	refresh      time.Duration
-	sessions     []ducklord.RemoteSession
-	selected     int
-	hashes       map[string]string
-	selectedKey  string
-	outputText   string
-	outputErr    string
-	outputForKey string
-	focused      bool
+	cfg                *ducklord.Config
+	runner             remoteRunner
+	refresh            time.Duration
+	sessions           []ducklord.RemoteSession
+	selected           int
+	hashes             map[string]string
+	selectedKey        string
+	outputText         string
+	outputErr          string
+	outputForKey       string
+	focused            bool
+	newSessionMode     bool
+	newSessionClient   string
+	newSessionLine     string
+	newSessionErr      string
+	newSessionStarting bool
 }
 
 func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) error {
@@ -297,9 +476,12 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 	input := make(chan []byte, 8)
 	attachOut := make(chan attachOutputEvent, 32)
 	attachDone := make(chan attachDoneEvent, 1)
+	startDone := make(chan startDoneEvent, 1)
 	var attach *ducklord.AttachSession
 	var attachCancel context.CancelFunc
 	attachID := 0
+	var startCancel context.CancelFunc
+	startID := 0
 	go readInput(ctx, input)
 	for {
 		select {
@@ -307,12 +489,22 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 			if attachCancel != nil {
 				attachCancel()
 			}
+			if startCancel != nil {
+				startCancel()
+			}
 			return nil
 		case <-ticker.C:
-			if !state.focused {
+			if !state.focused && !state.newSessionMode {
 				state.refreshSessions(ctx)
 				state.refreshSelectedOutput(ctx)
 			}
+			state.render(os.Stdout)
+		case result := <-startDone:
+			if result.id != startID {
+				continue
+			}
+			startCancel = nil
+			state.completeNewSessionStart(ctx, result.client, result.session, result.err)
 			state.render(os.Stdout)
 		case chunk := <-attachOut:
 			if chunk.id != attachID {
@@ -355,6 +547,51 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 				}
 				continue
 			}
+			if state.newSessionMode {
+				if state.newSessionStarting {
+					if string(b) == "\x03" || string(b) == "\x1b" || string(b) == "q" {
+						if startCancel != nil {
+							startCancel()
+						}
+						state.newSessionErr = "canceling start..."
+						state.render(os.Stdout)
+					}
+					continue
+				}
+				action := state.handleCreateInput(b)
+				switch action {
+				case "cancel":
+					state.newSessionMode = false
+					state.newSessionLine = ""
+					state.newSessionErr = ""
+				case "submit":
+					sessionName, args, err := parseCreateLine(state.newSessionLine)
+					if err != nil {
+						state.newSessionErr = err.Error()
+						break
+					}
+					c, err := mustClient(cfg, state.newSessionClient)
+					if err != nil {
+						return err
+					}
+					startCtx, cancel := context.WithCancel(ctx)
+					startCancel = cancel
+					startID++
+					id := startID
+					clientName := state.newSessionClient
+					state.newSessionStarting = true
+					state.newSessionErr = "starting..."
+					go func() {
+						err := runner.Start(startCtx, c, args)
+						select {
+						case startDone <- startDoneEvent{id: id, client: clientName, session: sessionName, err: err}:
+						case <-ctx.Done():
+						}
+					}()
+				}
+				state.render(os.Stdout)
+				continue
+			}
 			action := state.handleInput(b)
 			switch action {
 			case "quit":
@@ -364,6 +601,8 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 				state.refreshSelectedOutput(ctx)
 			case "select":
 				state.refreshSelectedOutput(ctx)
+			case "new":
+				state.beginCreate()
 			case "attach":
 				if len(state.sessions) == 0 {
 					continue
@@ -452,6 +691,41 @@ func (s *tuiState) currentKey() string {
 	return sessionKey(s.sessions[s.selected])
 }
 
+func (s *tuiState) selectedClientName() string {
+	if len(s.sessions) > 0 && s.selected >= 0 && s.selected < len(s.sessions) && s.sessions[s.selected].Client != "" {
+		return s.sessions[s.selected].Client
+	}
+	if s.cfg != nil && len(s.cfg.Clients) > 0 {
+		return s.cfg.Clients[0].Name
+	}
+	return ""
+}
+
+func (s *tuiState) selectSession(clientName, sessionName string) {
+	for i, sess := range s.sessions {
+		if sess.Client == clientName && sess.Name == sessionName {
+			s.selected = i
+			s.selectedKey = s.currentKey()
+			return
+		}
+	}
+}
+
+func (s *tuiState) completeNewSessionStart(ctx context.Context, clientName, sessionName string, err error) {
+	s.newSessionStarting = false
+	if err != nil {
+		s.newSessionErr = err.Error()
+		return
+	}
+	s.newSessionMode = false
+	s.newSessionLine = ""
+	s.newSessionErr = ""
+	s.outputErr = ""
+	s.refreshSessions(ctx)
+	s.selectSession(clientName, sessionName)
+	s.refreshSelectedOutput(ctx)
+}
+
 func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 	if len(s.sessions) == 0 || s.selected < 0 || s.selected >= len(s.sessions) {
 		s.outputText = ""
@@ -503,12 +777,15 @@ func (s *tuiState) render(out io.Writer) {
 	fmt.Fprintln(out, "ducklord remote agents")
 	if s.focused {
 		fmt.Fprintln(out, "session focus  keys go to session  ctrl-] menu")
+	} else if s.newSessionMode {
+		fmt.Fprintf(out, "new session on %s  <name> [--agent shell] [--cwd DIR] [-- CMD...]  enter create  esc cancel\n", displayField(s.newSessionClient))
 	} else {
-		fmt.Fprintln(out, "j/k or arrows move  enter/right-click focus session  r refresh  q quit")
+		fmt.Fprintln(out, "j/k or arrows move  enter/right-click focus session  n new  r refresh  q quit")
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
 		fmt.Fprintln(out, "No sessions.")
+		s.renderCreatePrompt(out, 4, 1, renderWidth)
 		return
 	}
 	fmt.Fprintf(out, "\033[4;1H%-*s | %s\033[K", menuWidth, "sessions", "content")
@@ -546,6 +823,18 @@ func (s *tuiState) render(out io.Writer) {
 		row++
 	}
 	s.renderContent(out, contentX, contentWidth, height)
+	s.renderCreatePrompt(out, height, 1, renderWidth)
+}
+
+func (s *tuiState) renderCreatePrompt(out io.Writer, row, x, width int) {
+	if !s.newSessionMode {
+		return
+	}
+	prompt := fmt.Sprintf("new> %s", s.newSessionLine)
+	fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row, x, truncate(prompt, width))
+	if s.newSessionErr != "" && row > 1 {
+		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row-1, x, truncate("status: "+sanitizeTerminalText(s.newSessionErr), width))
+	}
 }
 
 func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
@@ -576,6 +865,8 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "quit"
 	case text == "r":
 		return "refresh"
+	case text == "n":
+		return "new"
 	case text == "\r" || text == "\n":
 		return "attach"
 	case text == "j" || text == "\x1b[B":
@@ -602,6 +893,43 @@ func (s *tuiState) handleInput(b []byte) string {
 			s.selectedKey = s.currentKey()
 		}
 		return "attach"
+	}
+	return ""
+}
+
+func (s *tuiState) beginCreate() {
+	clientName := s.selectedClientName()
+	if clientName == "" {
+		s.outputErr = "no ducklord client configured"
+		return
+	}
+	s.newSessionMode = true
+	s.newSessionClient = clientName
+	s.newSessionLine = ""
+	s.newSessionErr = ""
+	s.newSessionStarting = false
+	s.outputErr = ""
+}
+
+func (s *tuiState) handleCreateInput(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	switch string(b) {
+	case "\r", "\n":
+		return "submit"
+	case "\x03", "\x1b":
+		return "cancel"
+	}
+	if len(b) == 1 && (b[0] == '\b' || b[0] == 0x7f) {
+		if s.newSessionLine != "" {
+			runes := []rune(s.newSessionLine)
+			s.newSessionLine = string(runes[:len(runes)-1])
+		}
+		return ""
+	}
+	if len(b) == 1 && b[0] >= 0x20 && b[0] != 0x7f {
+		s.newSessionLine += string(b)
 	}
 	return ""
 }
