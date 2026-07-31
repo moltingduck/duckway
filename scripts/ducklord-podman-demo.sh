@@ -23,7 +23,7 @@ ssh-keygen -q -t ed25519 -N '' -f "$WORK/id_ed25519"
 
 cat >"$WORK/Containerfile" <<'EOF'
 FROM alpine:3.21
-RUN apk add --no-cache openssh openssh-client tmux bash ca-certificates ncurses
+RUN apk add --no-cache openssh openssh-client bash ca-certificates ncurses
 RUN adduser -D duck && echo "duck:duck-demo-password" | chpasswd && ssh-keygen -A
 RUN mkdir -p /home/duck/.ssh /root/.ssh /root/.ducklord && chown -R duck:duck /home/duck/.ssh
 COPY ducklord /usr/local/bin/ducklord
@@ -81,8 +81,8 @@ Useful checks:
 Inside the TUI:
   j/k or arrow keys: move
   mouse click: select a session row
-  Enter: attach to the remote tmux session
-  Ctrl-b d: detach from tmux back to the shell
+  Enter: attach to the remote PTY session
+  Ctrl-]: detach from the PTY stream back to the shell
   q: quit
 
 Clean up:

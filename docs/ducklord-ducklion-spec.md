@@ -32,7 +32,7 @@ developer laptop
 remote agent host
   ducklion
     |
-    | local tmux/session manager
+    | local PTY supervisor
     v
   agent process / shell / codex / claude
 ```
@@ -40,8 +40,8 @@ remote agent host
 `ducklord` is the operator UI and SSH orchestrator. It does not store SSH
 private keys and does not run remote commands through a shell locally.
 
-`ducklion` is the remote command surface. It wraps the existing local
-tmux-backed session manager and returns typed JSON for list/read operations.
+`ducklion` is the remote command surface. It owns a self-managed PTY backend and
+returns typed JSON for list/read operations.
 
 ## Configuration
 
@@ -123,8 +123,8 @@ The first TUI supports:
 - a changed marker when recent remote output changes since the previous refresh
 
 The MVP TUI does not embed a full terminal pane. Attach uses SSH to hand the
-terminal to the remote `ducklion attach <session>` command. Detaching from tmux
-returns to the TUI.
+terminal to the remote `ducklion attach <session>` command. `Ctrl-]` detaches
+from the PTY attach stream.
 
 ## Notifications
 
@@ -150,9 +150,11 @@ Future notification upgrades:
 - `ducklord` must validate client names, session names, users, and hosts before
   constructing SSH argv.
 - `ducklord` must use `exec.Command` argv, not a local shell.
-- `ducklion` validates session names and delegates tmux target construction to
-  the session manager.
-- Remote session state must not contain secrets, prompts, or full scrollback.
+- `ducklion` validates session names and delegates PTY socket/process
+  construction to the PTY manager.
+- Remote session state must not contain secrets or prompts. The MVP stores PTY
+  output in per-session `0600` logs for `read`/notification polling; future
+  releases should add size caps, rotation, and retention controls.
 - Duckway server visibility, when added, is a discovery/policy boundary, not the
   SSH login boundary unless a future relay mode is introduced.
 
@@ -161,7 +163,9 @@ Future notification upgrades:
 Old Duckway clients do not have `ducklion`. They remain compatible because:
 
 - Existing `duckway` behavior and state files are unchanged.
-- Existing `~/.duckway/agent-sessions.json` records are reused by `ducklion`.
+- Existing `~/.duckway/agent-sessions.json` records remain owned by
+  `duckway session` and are not reused by `ducklion`.
+- New `ducklion` PTY state is stored under `~/.ducklion/`.
 - Existing `~/.duckway/cc-sessions.json` records are not imported or renamed.
 - `ducklord` shows a clear remote error when `ducklion` is missing.
 
@@ -180,7 +184,7 @@ The repository includes a demo script that creates:
 - two remote client containers, each running sshd and `ducklion`
 - a private podman network
 - SSH keys/config for the dev container
-- sample tmux sessions on both clients
+- sample PTY sessions on both clients
 
 Run:
 
@@ -193,6 +197,6 @@ Inside the TUI:
 
 - `j` / `k` or arrow keys move selection
 - mouse click selects a row
-- `Enter` attaches to the remote tmux session
-- `Ctrl-b d` detaches from tmux and returns to Ducklord
+- `Enter` attaches to the remote PTY session
+- `Ctrl-]` detaches from the PTY attach stream
 - `q` exits

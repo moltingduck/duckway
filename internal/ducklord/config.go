@@ -144,6 +144,9 @@ func safeSSHToken(s string) bool {
 	if s == "" || len(s) > 255 {
 		return false
 	}
+	if strings.HasPrefix(s, "-") {
+		return false
+	}
 	for _, r := range s {
 		if unicode.IsSpace(r) || unicode.IsControl(r) {
 			return false

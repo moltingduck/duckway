@@ -8,44 +8,47 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 
-	"github.com/hackerduck/duckway/internal/client"
+	"github.com/hackerduck/duckway/internal/ducklion"
 	"github.com/hackerduck/duckway/internal/version"
+	"golang.org/x/sys/unix"
 )
 
-var attachExec = func(args []string) error {
-	tmuxPath, err := exec.LookPath("tmux")
-	if err != nil {
-		return fmt.Errorf("tmux is not installed or not on PATH")
-	}
-	return syscall.Exec(tmuxPath, append([]string{"tmux"}, args...), os.Environ())
-}
-
 type sessionManager interface {
-	List() ([]client.SessionRecord, error)
-	Start(client.SessionStartOptions) (*client.SessionRecord, error)
+	List() ([]ducklion.Record, error)
+	Start(ducklion.StartOptions) (*ducklion.Record, error)
 	Send(name, text string) error
 	Read(name string, lines int) (string, error)
+	Attach(name string, in io.Reader, out io.Writer) error
 	Stop(name string) error
-	AttachArgs(name string) ([]string, error)
 }
 
 type sessionOutput struct {
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	AgentType   string `json:"agent_type"`
-	Cwd         string `json:"cwd"`
-	TmuxSession string `json:"tmux_session"`
-	LastLine    string `json:"last_line,omitempty"`
-	TailHash    string `json:"tail_hash,omitempty"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	AgentType string `json:"agent_type"`
+	Cwd       string `json:"cwd"`
+	Backend   string `json:"backend"`
+	PID       int    `json:"pid,omitempty"`
+	LastLine  string `json:"last_line,omitempty"`
+	TailHash  string `json:"tail_hash,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 func main() {
-	manager := client.NewSessionManager(client.DefaultConfigDir(), nil)
+	if len(os.Args) > 1 && os.Args[1] == "__supervise" {
+		opts, err := ducklion.ParseSupervisorArgs(os.Args[2:])
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := ducklion.RunSupervisor(opts); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	manager := ducklion.NewManager(ducklion.DefaultRoot(), "")
 	if err := run(manager, os.Args[1:], os.Stdout); err != nil {
 		log.Fatal(err)
 	}
@@ -68,7 +71,7 @@ func run(manager sessionManager, args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "Started %s (%s)\n", rec.Name, rec.AgentType)
+		fmt.Fprintf(out, "Started %s (%s, pid %d)\n", rec.Name, rec.AgentType, rec.PID)
 		return nil
 	case "read":
 		name, lines, jsonOut, err := parseRead(args[1:])
@@ -93,11 +96,12 @@ func run(manager sessionManager, args []string, out io.Writer) error {
 		if len(args) != 2 {
 			return fmt.Errorf("usage: ducklion attach <name>")
 		}
-		attachArgs, err := manager.AttachArgs(args[1])
+		restore, err := makeRawIfTTY(os.Stdin)
 		if err != nil {
 			return err
 		}
-		return attachExec(attachArgs)
+		defer restore()
+		return manager.Attach(args[1], os.Stdin, out)
 	case "stop":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: ducklion stop <name>")
@@ -145,9 +149,12 @@ func runList(manager sessionManager, args []string, out io.Writer) error {
 	}
 	result := make([]sessionOutput, 0, len(records))
 	for _, rec := range records {
-		item := sessionOutput{Name: rec.Name, Status: rec.Status, AgentType: rec.AgentType, Cwd: rec.Cwd, TmuxSession: rec.TmuxSession}
-		if tailLines > 0 && rec.Status == client.SessionStatusRunning {
-			if text, err := manager.Read(rec.Name, tailLines); err == nil {
+		item := sessionOutput{Name: rec.Name, Status: rec.Status, AgentType: rec.AgentType, Cwd: rec.Cwd, Backend: "pty", PID: rec.PID}
+		if tailLines > 0 && rec.Status == ducklion.StatusRunning {
+			text, err := manager.Read(rec.Name, tailLines)
+			if err != nil {
+				item.Error = err.Error()
+			} else {
 				item.LastLine = lastNonEmptyLine(text)
 				sum := sha256.Sum256([]byte(text))
 				item.TailHash = hex.EncodeToString(sum[:])
@@ -162,15 +169,15 @@ func runList(manager sessionManager, args []string, out io.Writer) error {
 		fmt.Fprintln(out, "No ducklion sessions.")
 		return nil
 	}
-	fmt.Fprintf(out, "%-18s %-10s %-12s %s\n", "NAME", "STATUS", "AGENT", "CWD")
+	fmt.Fprintf(out, "%-18s %-10s %-8s %-12s %s\n", "NAME", "STATUS", "BACKEND", "AGENT", "CWD")
 	for _, item := range result {
-		fmt.Fprintf(out, "%-18s %-10s %-12s %s\n", item.Name, item.Status, item.AgentType, item.Cwd)
+		fmt.Fprintf(out, "%-18s %-10s %-8s %-12s %s\n", item.Name, item.Status, item.Backend, item.AgentType, item.Cwd)
 	}
 	return nil
 }
 
-func parseStart(args []string) (client.SessionStartOptions, error) {
-	opts := client.SessionStartOptions{Kind: "terminal", AgentType: "shell"}
+func parseStart(args []string) (ducklion.StartOptions, error) {
+	opts := ducklion.StartOptions{AgentType: "shell"}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--":
@@ -246,15 +253,32 @@ func lastNonEmptyLine(text string) string {
 	return ""
 }
 
+func makeRawIfTTY(f *os.File) (func(), error) {
+	fd := int(f.Fd())
+	oldState, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return func() {}, nil
+	}
+	newState := *oldState
+	newState.Lflag &^= unix.ECHO | unix.ICANON
+	newState.Iflag &^= unix.ICRNL | unix.IXON
+	newState.Cc[unix.VMIN] = 1
+	newState.Cc[unix.VTIME] = 0
+	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &newState); err != nil {
+		return nil, err
+	}
+	return func() { _ = unix.IoctlSetTermios(fd, unix.TCSETS, oldState) }, nil
+}
+
 func printUsage(out io.Writer) {
-	fmt.Fprintln(out, `ducklion - remote agent session endpoint
+	fmt.Fprintln(out, `ducklion - remote PTY session endpoint
 
 Usage:
   ducklion list [--json] [--tail-lines N]
   ducklion start --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
   ducklion read <name> [--lines N] [--json]
   ducklion send <name> <text>
-  ducklion attach <name>
+  ducklion attach <name>     # Ctrl-] detaches
   ducklion stop <name>
   ducklion version`)
 }

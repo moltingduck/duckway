@@ -32,6 +32,16 @@ func TestLoadConfigRejectsUnsafeHost(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsHostOptionInjection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"clients":[{"name":"bad","host":"-oProxyCommand=/tmp/pwn"}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("ssh option host accepted")
+	}
+}
+
 func TestSSHArgsDoNotUseLocalShell(t *testing.T) {
 	c := Client{Name: "vulns", Host: "vulns.ts", User: "duck", Ducklion: "ducklion", SSH: "ssh"}
 	got := SSHArgs(c, false, "ducklion", "send", "alpha", "hello; rm -rf /")
