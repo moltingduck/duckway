@@ -13,6 +13,7 @@ For internals, code layout, or how the phantom-token swap works under the hood, 
 - [Production deployment](#production-deployment)
 - [Refreshable tokens (Claude, OpenAI/Codex, generic OAuth)](#refreshable-tokens-claude-openaicodex-generic-oauth)
 - [Setting up agents](#setting-up-agents)
+- [Managing remote agent sessions with Ducklord](#managing-remote-agent-sessions-with-ducklord)
 - [Control Channels (Discord-as-comms)](#control-channels-discord-as-comms)
 - [Common tasks](#common-tasks)
 - [Troubleshooting](#troubleshooting)
@@ -153,6 +154,21 @@ The admin panel uses the **same pattern across all pages**: click a row's name t
 | **Canary Tokens** | Honeypot settings | Email, types enabled |
 | **Logs** | Recent proxy requests | Client, service, method, path, status |
 | **Settings** | Gateway URL + proxy port | (Required for split mode — see below) |
+
+---
+
+## Managing remote agent sessions with Ducklord
+
+Ducklord/Ducklion is the SSH-based remote session controller for developers who
+want a local TUI that can manage shells or agent processes on remote hosts. It
+is independent from the normal Duckway client daemon.
+
+See [Ducklord / Ducklion Remote Agent Control](ducklord-ducklion-spec.md) for:
+
+- a terminal-only Podman walkthrough
+- TUI controls, including `Enter`, right-click, `Ctrl-]`, and `n` new session
+- remote session creation examples
+- the SSH, PTY, attach stream, and session creation technical details
 
 ---
 

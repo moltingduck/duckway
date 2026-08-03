@@ -19,6 +19,7 @@ API proxy that manages real API keys centrally. AI agents use **phantom tokens**
 
 - **[User Guide](docs/user-guide.md)** — installation, configuration, daily operations, production deployment, troubleshooting
 - **[Developer Guide](docs/developer-guide.md)** — architecture, code layout, proxy flow, header stripping, adding services, testing
+- **[Ducklord / Ducklion Remote Agent Control](docs/ducklord-ducklion-spec.md)** — terminal walkthrough, TUI controls, and SSH/PTY technical details
 
 ## Quick Start
 
