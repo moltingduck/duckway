@@ -85,6 +85,39 @@ func TestRunViaCodexPTYTreatsTaskCompleteWithoutResultAsError(t *testing.T) {
 	}
 }
 
+func TestRunViaClaudePTYFindsDucklionBesideExecutableWhenPathMissesIt(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exeDir := filepath.Dir(exe)
+	ducklionPath := filepath.Join(exeDir, "ducklion")
+	if _, err := os.Lstat(ducklionPath); err == nil {
+		t.Skipf("%s already exists", ducklionPath)
+	}
+	if err := os.Symlink(exe, ducklionPath); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(ducklionPath) })
+
+	binDir := t.TempDir()
+	claude := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(claude, []byte("#!/bin/sh\nprintf '%s\\n' '{\"session_id\":\"sid-sibling\",\"result\":\"sibling ducklion\",\"is_error\":false}'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/bin"+string(os.PathListSeparator)+"/usr/bin")
+	sid, result, isErr, err := runViaClaudePTY(context.Background(), claude, t.TempDir(), "hi", "", []string{
+		"DUCKWAY_CONFIG_DIR=" + shortTempDir(t),
+		"DUCKWAY_CC_CHANNEL_HANDLE=dwch_test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid != "sid-sibling" || result != "sibling ducklion" || isErr {
+		t.Fatalf("sid=%q result=%q isErr=%v", sid, result, isErr)
+	}
+}
+
 func installDucklionTestHelper(t *testing.T) string {
 	t.Helper()
 	binDir := t.TempDir()

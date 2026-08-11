@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -72,9 +71,9 @@ func runCommandInDucklionPTY(ctx context.Context, agentType, bin, cwd string, ar
 	if configDir == "" {
 		configDir = DefaultConfigDir()
 	}
-	exe, err := exec.LookPath("ducklion")
+	exe, err := findDucklionExecutable()
 	if err != nil {
-		return nil, fmt.Errorf("ducklion not found in PATH; install standalone ducklion or run cc watch with --tmux/DUCKWAY_CC_USE_TMUX=1")
+		return nil, err
 	}
 	handle := envValue(extraEnv, "DUCKWAY_CC_CHANNEL_HANDLE")
 	if handle == "" {

@@ -471,9 +471,9 @@ func (b ptySessionBackend) TargetName(name string) string {
 	return terminalSessionName(name)
 }
 func (b ptySessionBackend) manager() (*ducklion.Manager, error) {
-	exe, err := exec.LookPath("ducklion")
+	exe, err := findDucklionExecutable()
 	if err != nil {
-		return nil, fmt.Errorf("ducklion not found in PATH; install standalone ducklion or use --tmux")
+		return nil, err
 	}
 	return ducklion.NewManager(b.root, exe), nil
 }
