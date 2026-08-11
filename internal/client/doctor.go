@@ -111,6 +111,7 @@ func (r *DoctorReport) addDaemonChecks(configDir string, cfg *Config) {
 
 func (r *DoctorReport) addLocalOnlyChecks(configDir string, cfg *Config) {
 	r.addDucklionCheck()
+	r.addCCRunnerModeCheck()
 	agents := availableAgents()
 	if len(agents) == 0 {
 		r.add("agent binaries", "MISSING", "claude/codex not found in PATH", "install Claude Code or Codex CLI")
@@ -133,6 +134,24 @@ func (r *DoctorReport) addLocalOnlyChecks(configDir string, cfg *Config) {
 	} else {
 		r.add("proxy config", "OK", fmt.Sprintf("port=%d", cfg.ProxyPort), "")
 	}
+}
+
+func (r *DoctorReport) addCCRunnerModeCheck() {
+	useTmux := os.Getenv("DUCKWAY_CC_USE_TMUX") == "1"
+	noTmux := os.Getenv("DUCKWAY_CC_NO_TMUX") == "1"
+	if useTmux && !noTmux {
+		if path, err := exec.LookPath("tmux"); err == nil {
+			r.add("cc runner mode", "OK", "tmux opt-in ("+path+")", "")
+			return
+		}
+		r.add("cc runner mode", "WARN", "tmux requested but tmux not found; agents fall back to headless", "install tmux or unset DUCKWAY_CC_USE_TMUX")
+		return
+	}
+	if _, err := findDucklionExecutable(); err == nil {
+		r.add("cc runner mode", "OK", "duckway native pty", "")
+		return
+	}
+	r.add("cc runner mode", "WARN", "headless fallback because ducklion is missing", "install/update ducklion for native PTY")
 }
 
 func (r *DoctorReport) addDucklionCheck() {

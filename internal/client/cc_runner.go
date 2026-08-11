@@ -96,6 +96,7 @@ var (
 	ccLongRunFirstNotice     = 10 * time.Minute
 	ccLongRunInterval        = 10 * time.Minute
 	codexTransportRetryDelay = defaultCodexTransportRetryDelay
+	ducklionAvailable        = defaultDucklionAvailable
 )
 
 // chooseCCRunFn picks the runner to use. PTY is the default attachable runner.
@@ -108,7 +109,7 @@ func chooseCCRunFn(spec ccAgentSpec, noTmux bool) ccRunFn {
 func chooseCCRunFnAndMode(spec ccAgentSpec, noTmux bool) (ccRunFn, string) {
 	useTmux := os.Getenv("DUCKWAY_CC_USE_TMUX") == "1"
 	canUseAgentTmux := spec.UseTmux && useTmux && !noTmux && tmuxAvailable() && spec.TmuxRunFn != nil
-	if spec.PtyRunFn != nil && (!useTmux || noTmux) {
+	if spec.PtyRunFn != nil && (!useTmux || noTmux) && ducklionAvailable() {
 		return spec.PtyRunFn, "pty"
 	}
 	if spec.RunFn != nil {
@@ -123,6 +124,11 @@ func chooseCCRunFnAndMode(spec ccAgentSpec, noTmux bool) (ccRunFn, string) {
 		return runViaTmux, "tmux"
 	}
 	return runViaPrint, "headless"
+}
+
+func defaultDucklionAvailable() bool {
+	_, err := findDucklionExecutable()
+	return err == nil
 }
 
 func newCCRunner(handle, configDir, channelCwd string, spec ccAgentSpec, sessions *CCSessionStore, postMessage func(ctx context.Context, handle, content string) error, postReply func(ctx context.Context, handle, content, replyToMessageID string) error, react func(ctx context.Context, handle, messageID, emoji string) error, reportTest func(ctx context.Context, testID, status, errText string) error, noTmux, debug bool) (*ccRunner, error) {
@@ -432,8 +438,12 @@ func (r *ccRunner) run(t ccTask) {
 }
 
 func (r *ccRunner) runAgentWithRetries(ctx context.Context, prompt, sid string, extraEnv []string) (sessionID, result string, isError bool, err error) {
-	const maxRetries = 2
+	const (
+		maxRetries      = 8
+		maxRetryElapsed = 30 * time.Second
+	)
 	retrySID := sid
+	started := time.Now()
 	for attempt := 0; ; attempt++ {
 		sessionID, result, isError, err = r.runFn(ctx, r.bin, r.cwd, prompt, retrySID, extraEnv)
 		if err == nil || !r.shouldRetryAgentRun(result, isError, err, attempt, maxRetries) {
@@ -443,6 +453,9 @@ func (r *ccRunner) runAgentWithRetries(ctx context.Context, prompt, sid string, 
 			retrySID = sessionID
 		}
 		delay := codexTransportRetryDelay(err.Error(), attempt)
+		if time.Since(started)+delay > maxRetryElapsed {
+			return sessionID, result, isError, err
+		}
 		r.logger("[cc-watch] %s: transient %s transport failure; retrying attempt %d/%d after %s: %v", r.handle, r.agentName, attempt+1, maxRetries, delay, err)
 		timer := time.NewTimer(delay)
 		select {
@@ -467,6 +480,9 @@ func (r *ccRunner) shouldRetryAgentRun(result string, isError bool, err error, a
 
 func defaultCodexTransportRetryDelay(msg string, attempt int) time.Duration {
 	if d, ok := parseCodexRetryAfter(msg); ok {
+		if d < 250*time.Millisecond {
+			return 250 * time.Millisecond
+		}
 		return d
 	}
 	switch attempt {

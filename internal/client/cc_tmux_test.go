@@ -496,6 +496,9 @@ func TestChooseCCRunFnDefaultsToPTYAndCanUseTmux(t *testing.T) {
 	// Reset memo so this test reflects current PATH.
 	tmuxAvailableMemo = nil
 	defer func() { tmuxAvailableMemo = nil }()
+	oldDucklionAvailable := ducklionAvailable
+	ducklionAvailable = func() bool { return true }
+	defer func() { ducklionAvailable = oldDucklionAvailable }()
 	ptyRunner := func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
 		return "", "pty", false, nil
 	}
@@ -523,6 +526,29 @@ func TestChooseCCRunFnDefaultsToPTYAndCanUseTmux(t *testing.T) {
 	}
 	if got != "pty" {
 		t.Fatalf("noTmux runner = %q, want pty", got)
+	}
+}
+
+func TestChooseCCRunFnFallsBackWhenDucklionMissing(t *testing.T) {
+	oldDucklionAvailable := ducklionAvailable
+	ducklionAvailable = func() bool { return false }
+	defer func() { ducklionAvailable = oldDucklionAvailable }()
+
+	headless := func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+		return "", "headless", false, nil
+	}
+	ptyRunner := func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+		return "", "pty", false, nil
+	}
+	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", RunFn: headless, PtyRunFn: ptyRunner, UseTmux: true}
+
+	t.Setenv("DUCKWAY_CC_USE_TMUX", "")
+	_, got, _, err := chooseCCRunFn(spec, false)(context.Background(), "", "", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "headless" {
+		t.Fatalf("ducklion-missing runner = %q, want headless", got)
 	}
 }
 

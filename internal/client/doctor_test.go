@@ -15,6 +15,7 @@ func TestRunDoctorReportsMissingConfigForCurrentClient(t *testing.T) {
 		"[MISSING] config",
 		"run `duckway init`",
 		"ducklion",
+		"cc runner mode",
 		"agent binaries",
 	} {
 		if !strings.Contains(got, want) {

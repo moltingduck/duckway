@@ -151,6 +151,32 @@ func TestCCRunnerRetriesCodexTransportFailure(t *testing.T) {
 	}
 }
 
+func TestCCRunnerRetriesCodexShortRateLimitUntilSuccess(t *testing.T) {
+	oldDelay := codexTransportRetryDelay
+	codexTransportRetryDelay = func(string, int) time.Duration { return 0 }
+	t.Cleanup(func() { codexTransportRetryDelay = oldDelay })
+	var calls int
+	fn := func(_ context.Context, _, _, _, sid string, _ []string) (string, string, bool, error) {
+		calls++
+		if calls <= 4 {
+			return "sid-rate", "", true, fmt.Errorf("codex pty ended before completion: transport failed before completion: stream disconnected before completion: Rate limit reached for gpt-daybreak-blue-latest on tokens per min (TPM). Please try again in 19ms")
+		}
+		return sid, "eventually ok", false, nil
+	}
+	r, pp, _ := newTestRunnerForAgent(t, "codex", fn)
+	defer r.Stop()
+	if !r.Enqueue(ccTask{Content: "do a thing", ChannelKind: "task"}) {
+		t.Fatal("Enqueue returned false")
+	}
+	waitForPosts(t, pp, 1)
+	if calls != 5 {
+		t.Fatalf("calls=%d, want five attempts", calls)
+	}
+	if posts := pp.all(); !strings.Contains(posts[0], "eventually ok") {
+		t.Fatalf("post = %q", posts[0])
+	}
+}
+
 func TestCCRunnerDoesNotRetryNonCodexTransportFailure(t *testing.T) {
 	oldDelay := codexTransportRetryDelay
 	codexTransportRetryDelay = func(string, int) time.Duration { return 0 }
