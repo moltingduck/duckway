@@ -39,6 +39,37 @@ func TestDucklordSSHHostsReadsConfig(t *testing.T) {
 	}
 }
 
+func TestDucklordImportSSHHostsCreatesConfigWithoutDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "ducklord.json")
+	sshConfig := filepath.Join(dir, "ssh_config")
+	if err := os.WriteFile(sshConfig, []byte("Host client-a *.skip\nHost client-b\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := run([]string{"import-ssh-hosts", "--config", config, "--ssh-config", sshConfig}, &out, fakeRunner{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Imported 2 SSH host") {
+		t.Fatalf("import output = %q", out.String())
+	}
+	if err := run([]string{"import-ssh-hosts", "--config", config, "--ssh-config", sshConfig}, io.Discard, fakeRunner{}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ducklord.LoadConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Clients) != 2 {
+		t.Fatalf("clients = %+v", cfg.Clients)
+	}
+	for _, c := range cfg.Clients {
+		if c.Group != "ssh" || c.Ducklion != "ducklion" || c.SSH != "ssh" {
+			t.Fatalf("imported client = %+v", c)
+		}
+	}
+}
+
 func TestDucklordSessionsUsesRunner(t *testing.T) {
 	config := writeConfig(t)
 	var out bytes.Buffer
@@ -93,6 +124,38 @@ func TestDucklordProbeUsesRunner(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "duckway ducklion") {
 		t.Fatalf("probe output = %q", out.String())
+	}
+}
+
+func TestDucklordInstallDucklionUpdatesConfig(t *testing.T) {
+	config := writeConfig(t)
+	runner := &recordingRunner{installPath: "/home/duck/.local/bin/ducklion"}
+	var out bytes.Buffer
+	err := run([]string{
+		"install-ducklion", "client-a",
+		"--source", "/tmp/ducklion",
+		"--dest", "~/.local/bin/ducklion",
+		"--config", config,
+	}, &out, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.installClient != "client-a" || runner.installSource != "/tmp/ducklion" || runner.installDest != "~/.local/bin/ducklion" {
+		t.Fatalf("install runner client=%q source=%q dest=%q", runner.installClient, runner.installSource, runner.installDest)
+	}
+	cfg, err := ducklord.LoadConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, ok := cfg.Client("client-a")
+	if !ok {
+		t.Fatal("client-a missing")
+	}
+	if client.Ducklion != "/home/duck/.local/bin/ducklion" {
+		t.Fatalf("ducklion path = %q", client.Ducklion)
+	}
+	if !strings.Contains(out.String(), "Installed ducklion on client-a") {
+		t.Fatalf("install output = %q", out.String())
 	}
 }
 
@@ -612,6 +675,7 @@ type fakeRunner struct {
 	readText         string
 	projects         []ducklord.RemoteProject
 	probe            ducklord.DucklionProbe
+	installPath      string
 }
 
 func (f fakeRunner) Sessions(_ context.Context, client ducklord.Client, _ int) ([]ducklord.RemoteSession, error) {
@@ -632,6 +696,12 @@ func (f fakeRunner) Projects(context.Context, ducklord.Client) ([]ducklord.Remot
 func (f fakeRunner) ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error) {
 	return f.probe, nil
 }
+func (f fakeRunner) InstallDucklion(context.Context, ducklord.Client, string, string) (string, error) {
+	if f.installPath != "" {
+		return f.installPath, nil
+	}
+	return "/home/duck/.local/bin/ducklion", nil
+}
 func (f fakeRunner) Attach(ducklord.Client, string) error { return nil }
 func (f fakeRunner) AttachStream(context.Context, ducklord.Client, string) (*ducklord.AttachSession, error) {
 	stdinR, stdinW := io.Pipe()
@@ -649,6 +719,10 @@ type recordingRunner struct {
 	readSession      string
 	startClient      string
 	startArgs        []string
+	installClient    string
+	installSource    string
+	installDest      string
+	installPath      string
 	sessionsByClient map[string][]ducklord.RemoteSession
 }
 
@@ -677,6 +751,15 @@ func (r *recordingRunner) Projects(context.Context, ducklord.Client) ([]ducklord
 }
 func (r *recordingRunner) ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error) {
 	return ducklord.DucklionProbe{}, nil
+}
+func (r *recordingRunner) InstallDucklion(_ context.Context, client ducklord.Client, source, dest string) (string, error) {
+	r.installClient = client.Name
+	r.installSource = source
+	r.installDest = dest
+	if r.installPath != "" {
+		return r.installPath, nil
+	}
+	return "/home/duck/.local/bin/ducklion", nil
 }
 func (r *recordingRunner) Attach(ducklord.Client, string) error { return nil }
 func (r *recordingRunner) AttachStream(context.Context, ducklord.Client, string) (*ducklord.AttachSession, error) {

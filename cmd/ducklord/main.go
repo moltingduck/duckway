@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -25,6 +26,7 @@ type remoteRunner interface {
 	Stop(context.Context, ducklord.Client, string) error
 	Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error)
 	ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error)
+	InstallDucklion(context.Context, ducklord.Client, string, string) (string, error)
 	Attach(ducklord.Client, string) error
 	AttachStream(context.Context, ducklord.Client, string) (*ducklord.AttachSession, error)
 }
@@ -84,6 +86,25 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 			return err
 		}
 		return printClients(out, cfg)
+	case "import-ssh-hosts":
+		cfgPath, sshConfig, err := parseImportSSHHostsArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		cfg, err := loadOrEmptyConfig(cfgPath)
+		if err != nil {
+			return err
+		}
+		hosts, err := ducklord.LoadSSHConfigHosts(sshConfig)
+		if err != nil {
+			return err
+		}
+		n := importSSHHosts(cfg, hosts)
+		if err := ducklord.SaveConfig(cfgPath, cfg); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Imported %d SSH host(s) into %s\n", n, resolvedConfigPath(cfgPath))
+		return nil
 	case "sessions":
 		cfg, rest, err := loadWithFlags(args[1:])
 		if err != nil {
@@ -135,6 +156,29 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 			return err
 		}
 		return printProbe(out, probe)
+	case "install-ducklion":
+		cfg, cfgPath, rest, source, dest, err := parseInstallDucklionArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		if len(rest) != 1 {
+			return fmt.Errorf("usage: ducklord install-ducklion <client> [--source <path>] [--dest <remote-path>] [--config <path>]")
+		}
+		c, err := mustClient(cfg, rest[0])
+		if err != nil {
+			return err
+		}
+		installed, err := runner.InstallDucklion(context.Background(), c, source, dest)
+		if err != nil {
+			return err
+		}
+		c.Ducklion = installed
+		replaceClient(cfg, c)
+		if err := ducklord.SaveConfig(cfgPath, cfg); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Installed ducklion on %s: %s\n", c.Name, installed)
+		return nil
 	case "read":
 		cfg, rest, err := loadWithFlags(args[1:])
 		if err != nil {
@@ -273,6 +317,112 @@ func loadWithFlags(args []string) (*ducklord.Config, []string, error) {
 	}
 	cfg, err := ducklord.LoadConfig(path)
 	return cfg, rest, err
+}
+
+func loadOrEmptyConfig(path string) (*ducklord.Config, error) {
+	cfg, err := ducklord.LoadConfig(path)
+	if err == nil {
+		return cfg, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return &ducklord.Config{}, nil
+	}
+	return nil, err
+}
+
+func resolvedConfigPath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ducklord.DefaultConfigPath()
+	}
+	return path
+}
+
+func parseImportSSHHostsArgs(args []string) (cfgPath, sshConfig string, err error) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--config", "-c":
+			if i+1 >= len(args) {
+				return "", "", fmt.Errorf("--config requires a value")
+			}
+			cfgPath = args[i+1]
+			i++
+		case "--ssh-config":
+			if i+1 >= len(args) {
+				return "", "", fmt.Errorf("--ssh-config requires a value")
+			}
+			sshConfig = args[i+1]
+			i++
+		default:
+			return "", "", fmt.Errorf("unknown import-ssh-hosts option: %s", args[i])
+		}
+	}
+	return cfgPath, sshConfig, nil
+}
+
+func parseInstallDucklionArgs(args []string) (*ducklord.Config, string, []string, string, string, error) {
+	cfgPath := ""
+	source := ""
+	dest := ""
+	rest := []string{}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--config", "-c":
+			if i+1 >= len(args) {
+				return nil, "", nil, "", "", fmt.Errorf("--config requires a value")
+			}
+			cfgPath = args[i+1]
+			i++
+		case "--source":
+			if i+1 >= len(args) {
+				return nil, "", nil, "", "", fmt.Errorf("--source requires a value")
+			}
+			source = args[i+1]
+			i++
+		case "--dest":
+			if i+1 >= len(args) {
+				return nil, "", nil, "", "", fmt.Errorf("--dest requires a value")
+			}
+			dest = args[i+1]
+			i++
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+	cfg, err := ducklord.LoadConfig(cfgPath)
+	return cfg, cfgPath, rest, source, dest, err
+}
+
+func importSSHHosts(cfg *ducklord.Config, hosts []ducklord.SSHHost) int {
+	added := 0
+	for _, h := range hosts {
+		if hasClientTarget(cfg, h.Name) {
+			continue
+		}
+		client := ducklord.Client{Name: uniqueClientName(cfg, safeSlug(h.Name)), Host: h.Name, Group: "ssh", Ducklion: "ducklion", SSH: "ssh"}
+		if err := cfg.AddClient(client); err == nil {
+			added++
+		}
+	}
+	return added
+}
+
+func hasClientTarget(cfg *ducklord.Config, target string) bool {
+	for _, c := range cfg.Clients {
+		if c.Target() == target || c.Host == target {
+			return true
+		}
+	}
+	return false
+}
+
+func replaceClient(cfg *ducklord.Config, client ducklord.Client) {
+	for i := range cfg.Clients {
+		if cfg.Clients[i].Name == client.Name {
+			cfg.Clients[i] = client
+			return
+		}
+	}
+	cfg.Clients = append(cfg.Clients, client)
 }
 
 func parseTUIFlags(args []string) (string, time.Duration, error) {
@@ -1722,9 +1872,11 @@ func printUsage(out io.Writer) {
 Usage:
   ducklord clients [--config <path>]
   ducklord ssh-hosts [--config-file <ssh_config>]
+  ducklord import-ssh-hosts [--ssh-config <ssh_config>] [--config <path>]
   ducklord sessions <client> [--config <path>]
   ducklord projects <client> [--config <path>]
   ducklord probe <client> [--config <path>]
+  ducklord install-ducklion <client> [--source <path>] [--dest <remote-path>] [--config <path>]
   ducklord tui [--config <path>] [--refresh 2s]
   ducklord attach-host <client> [--config <path>]
   ducklord attach <client> <session> [--config <path>]

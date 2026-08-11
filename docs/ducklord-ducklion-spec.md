@@ -78,14 +78,16 @@ Override:
 ducklord tui --config ./ducklord.json
 ```
 
-Future server-backed discovery can replace this file with:
+Ducklord discovery is intentionally local and SSH-based:
 
-```text
-ducklord -> Duckway server -> registered client metadata
+```bash
+ducklord ssh-hosts
+ducklord import-ssh-hosts --config ~/.ducklord/config.json
 ```
 
-The SSH data path should remain direct unless a future server-relay mode is
-explicitly enabled.
+Ducklord does not use Duckway server for discovery, authorization, or command
+relay. The only security boundary is whether the operator can SSH to the
+configured host.
 
 ## Installing Ducklion
 
@@ -126,6 +128,20 @@ The standalone `ducklion` binary should be preferred because CC PTY runners and
 Ducklord both look for a real `ducklion` executable first. When `duckway` and
 `ducklion` are installed side by side, Duckway client PTY runners can still find
 the companion binary even if the service `PATH` does not include that directory.
+
+Ducklord can also install Ducklion over SSH when the developer laptop already
+has a local `ducklion` binary:
+
+```bash
+ducklord import-ssh-hosts --config ~/.ducklord/config.json
+ducklord install-ducklion vulns --source ./ducklion-linux-amd64 --config ~/.ducklord/config.json
+ducklord probe vulns --config ~/.ducklord/config.json
+```
+
+By default the remote binary is written to `~/.local/bin/ducklion`. Use
+`--dest /usr/local/bin/ducklion` only when the SSH user can write that path.
+Ducklord stores the resolved remote path in its local config after the remote
+`ducklion version` check succeeds.
 
 ## Operator Tutorial
 
@@ -224,6 +240,15 @@ is available, Ducklord records the working command in
 `/root/.ducklord/config.json`. If Ducklion is missing, Ducklord still adds the
 host but shows a clear status message so the operator can enable the remote
 entry point.
+
+For a host that is reachable over SSH but missing Ducklion, install the local
+binary over SSH:
+
+```bash
+podman exec ducklord-dev ducklord install-ducklion client-c \
+  --source /usr/local/bin/ducklion \
+  --config /root/.ducklord/config.json
+```
 
 Verify the config was updated:
 
@@ -553,8 +578,8 @@ Future notification upgrades:
 - Remote session state must not contain secrets or prompts. The MVP stores PTY
   output in per-session `0600` logs for `read`/notification polling; future
   releases should add size caps, rotation, and retention controls.
-- Duckway server visibility, when added, is a discovery/policy boundary, not the
-  SSH login boundary unless a future relay mode is introduced.
+- Ducklord does not trust Duckway server metadata and does not require Duckway
+  server registration. SSH host access is the authorization boundary.
 
 ## Migration
 
@@ -567,11 +592,12 @@ Old Duckway clients do not have `ducklion`. They remain compatible because:
 - Existing `~/.duckway/cc-sessions.json` records are not imported or renamed.
 - `ducklord` shows a clear remote error when `ducklion` is missing.
 
-Future migration from file config to server discovery should support both:
+Operators can migrate old hosts one at a time by installing Ducklion over SSH:
 
 ```bash
 ducklord tui --config ~/.ducklord/config.json
-ducklord tui --server https://duckway.example
+ducklord import-ssh-hosts --config ~/.ducklord/config.json
+ducklord install-ducklion <client> --source ./ducklion-linux-amd64 --config ~/.ducklord/config.json
 ```
 
 ## Podman Demo

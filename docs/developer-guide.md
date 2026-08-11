@@ -637,6 +637,7 @@ standalone `ducklion` installation.
 scripts/ducklord-podman-demo.sh
 podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.json
 podman exec ducklord-dev ducklord ssh-hosts
+podman exec ducklord-dev ducklord import-ssh-hosts --config /root/.ducklord/config.json
 podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.json
 podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.json
 podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
@@ -658,6 +659,15 @@ For install-path behavior, the gateway `/install.sh` installs both `duckway`
 and the companion `ducklion` binary into the same directory. Manual remote
 hosts must expose either `ducklion` in `PATH` or `duckway ducklion` as a
 compatibility wrapper before Ducklord can manage PTY sessions.
+
+Ducklord itself is independent of Duckway server. Remote discovery and installs
+use only the operator's local SSH config and SSH permissions:
+
+```bash
+ducklord import-ssh-hosts --config ~/.ducklord/config.json
+ducklord install-ducklion <client> --source ./ducklion-linux-amd64 --config ~/.ducklord/config.json
+ducklord attach-host <client> --config ~/.ducklord/config.json
+```
 
 Clean up:
 
