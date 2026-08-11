@@ -392,7 +392,7 @@ Key points:
 
 ## Control Channels (Discord-as-comms)
 
-A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to an agent session — every message a human types triggers Claude Code or Codex on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!destroy` / `!reset` / `!list` / `!status` / `!duckway-version` / `!duckway-restart` / `!duckway-update` / `!help` text commands.
+A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to an agent session — every message a human types triggers Claude Code or Codex on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!destroy` / `!reset` / `!list` / `!status` / `!duckway-version` / `!duckway-doctor` / `!duckway-restart` / `!duckway-update` / `!help` text commands.
 
 ### Discord bot setup (first time, ~10 min)
 
@@ -708,6 +708,26 @@ The DERP debug commands should remain connected without a new EOF every minute. 
 ---
 
 ## Troubleshooting
+
+### Quick client diagnosis
+
+Run doctor on the agent machine to see what the current client supports and
+what is missing:
+
+```bash
+duckway doctor
+```
+
+The report checks the current client's config, server token, update status,
+proxy daemon, local proxy port, CC assignment/sync state, `cc watch`, companion
+`ducklion`, supported agent binaries, saved projects, CA certificate, and proxy
+port.
+
+From a CC management channel, run the same current-client diagnosis remotely:
+
+```text
+!duckway-doctor
+```
 
 ### "SSL certificate verification failed" from Claude Code or Python/httpx tools
 

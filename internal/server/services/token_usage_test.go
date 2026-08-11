@@ -33,6 +33,7 @@ func TestUsageScanner_AnthropicSSE(t *testing.T) {
 	u := s.Result()
 	if u == nil {
 		t.Fatal("no usage parsed")
+		return
 	}
 	if u.Provider != "anthropic" {
 		t.Errorf("provider = %q", u.Provider)
@@ -77,6 +78,7 @@ func TestUsageScanner_AnthropicJSON(t *testing.T) {
 	u := s.Result()
 	if u == nil {
 		t.Fatal("no usage")
+		return
 	}
 	if u.Provider != "anthropic" || u.InputTokens != 42 || u.OutputTokens != 7 || u.CacheReadTokens != 12 {
 		t.Errorf("got %+v", u)
@@ -93,6 +95,7 @@ func TestUsageScanner_OpenAIJSON(t *testing.T) {
 	u := s.Result()
 	if u == nil {
 		t.Fatal("no usage")
+		return
 	}
 	if u.Provider != "openai" || u.InputTokens != 15 || u.OutputTokens != 3 {
 		t.Errorf("got %+v", u)

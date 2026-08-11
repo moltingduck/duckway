@@ -35,6 +35,8 @@ func TestValidateCommandArguments(t *testing.T) {
 		{name: "update", command: "!duckway-update"},
 		{name: "update restart", command: "!duckway-update", args: []string{"--restart"}},
 		{name: "update unknown flag", command: "!duckway-update", args: []string{"--force"}, wantErr: true},
+		{name: "doctor", command: "!duckway-doctor"},
+		{name: "doctor extra", command: "!duckway-doctor", args: []string{"--verbose"}, wantErr: true},
 		{name: "log count", command: "!log", args: []string{"20"}},
 		{name: "log legacy last", command: "!log", args: []string{"last", "3"}},
 		{name: "log flag", command: "!log", args: []string{"--last", "3"}, wantErr: true},

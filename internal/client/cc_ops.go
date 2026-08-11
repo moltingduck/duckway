@@ -21,6 +21,14 @@ func (w *CCWatch) cmdDuckwayVersion(ctx context.Context, replyHandle string, arg
 	_ = w.api.PostCC(ctx, replyHandle, "duckway "+version.Get())
 }
 
+func (w *CCWatch) cmdDuckwayDoctor(ctx context.Context, replyHandle string, args []string) {
+	if len(args) != 0 {
+		_ = w.api.PostCC(ctx, replyHandle, "❌ usage: `!duckway-doctor`")
+		return
+	}
+	_ = w.api.PostCC(ctx, replyHandle, "```text\n"+RunDoctorWithConfig(w.configDir, w.cfg).FormatText()+"\n```")
+}
+
 func (w *CCWatch) cmdDuckwayRestart(ctx context.Context, replyHandle string, args []string) {
 	if len(args) != 0 {
 		_ = w.api.PostCC(ctx, replyHandle, "❌ usage: `!duckway-restart`")

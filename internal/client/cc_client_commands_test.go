@@ -455,6 +455,24 @@ func TestHandleClientCommand_DuckwayVersion(t *testing.T) {
 	}
 }
 
+func TestHandleClientCommand_DuckwayDoctor(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+
+	sendClientCommand(t, w, "dwch_mgmt", "!duckway-doctor", nil)
+
+	msgs := fake.snapshotMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected one reply, got %d", len(msgs))
+	}
+	got := msgs[0]["content"]
+	for _, want := range []string{"Duckway doctor", "Config:", "server auth", "ducklion"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("doctor reply missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestHandleClientCommand_DuckwayRestartStartsDetachedHelper(t *testing.T) {
 	fake := newFakeServer(t)
 	w := stubWatch(t, t.TempDir(), fake)
@@ -506,13 +524,14 @@ func TestHandleClientCommand_DuckwayOpsRejectBadArgs(t *testing.T) {
 	sendClientCommand(t, w, "dwch_mgmt", "!duckway-restart", []string{"now"})
 	sendClientCommand(t, w, "dwch_mgmt", "!duckway-update", []string{"--bad"})
 	sendClientCommand(t, w, "dwch_mgmt", "!duckway-update", []string{"--restart", "junk"})
+	sendClientCommand(t, w, "dwch_mgmt", "!duckway-doctor", []string{"--verbose"})
 
 	if len(*calls) != 0 {
 		t.Fatalf("bad args started detached helpers: %+v", *calls)
 	}
 	msgs := fake.snapshotMessages()
-	if len(msgs) != 4 {
-		t.Fatalf("expected four usage/error replies, got %d", len(msgs))
+	if len(msgs) != 5 {
+		t.Fatalf("expected five usage/error replies, got %d", len(msgs))
 	}
 	for _, msg := range msgs {
 		if !strings.Contains(msg["content"], "usage:") && !strings.Contains(msg["content"], "Usage:") {
@@ -537,6 +556,7 @@ func TestHandleClientCommand_RejectsInvalidArgumentsBeforeDispatch(t *testing.T)
 		{"!new-confirm", []string{"--force"}},
 		{"!log", []string{"--all"}},
 		{"!duckway-version", []string{"--short"}},
+		{"!duckway-doctor", []string{"--verbose"}},
 		{"!duckway-restart", []string{"--force"}},
 		{"!duckway-update", []string{"--force"}},
 	}

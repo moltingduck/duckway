@@ -33,6 +33,7 @@ func TestCreateAndValidateSession_RoundTrip(t *testing.T) {
 	cookie := a.CreateSession("alice", req)
 	if cookie == nil {
 		t.Fatal("CreateSession returned nil")
+		return
 	}
 
 	username, ok := a.validateSession(cookie.Value)

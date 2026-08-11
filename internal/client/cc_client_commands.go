@@ -224,6 +224,8 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 		w.cmdLog(ctx, env.Handle, payload.Args)
 	case "!duckway-version":
 		w.cmdDuckwayVersion(ctx, env.Handle, payload.Args)
+	case "!duckway-doctor":
+		w.cmdDuckwayDoctor(ctx, env.Handle, payload.Args)
 	case "!duckway-restart":
 		w.cmdDuckwayRestart(ctx, env.Handle, payload.Args)
 	case "!duckway-update":

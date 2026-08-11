@@ -110,6 +110,8 @@ func main() {
 		cmdProxy(configDir)
 	case "status":
 		cmdStatus(configDir)
+	case "doctor":
+		cmdDoctor(configDir)
 	case "logs":
 		cmdLogs(configDir, os.Args[2:])
 	case "install-ca":
@@ -179,6 +181,7 @@ Usage:
   duckway proxy hosts        List services the proxy intercepts (queries server)
   duckway proxy hosts reload Signal the running proxy daemon to refresh its host list now
   duckway status             Show connection status, CA cert expiry
+  duckway doctor             Detect supported features and missing local setup
   duckway install-ca     Re-install the Duckway CA into the system trust store
   duckway update         Compare local version with server, download + replace if drifted
                          (uses saved config; override with --server <url>
@@ -2333,6 +2336,10 @@ func cmdStatus(configDir string) {
 		days := int(expiresIn / (24 * time.Hour))
 		fmt.Printf("CA cert:     expires %s (%d days)\n", exp, days)
 	}
+}
+
+func cmdDoctor(configDir string) {
+	fmt.Println(client.RunDoctor(configDir).FormatText())
 }
 
 func cmdHosts(configDir string) {

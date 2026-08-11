@@ -89,6 +89,7 @@ func TestLogin_CorrectCredentials_Returns200WithCookie(t *testing.T) {
 	}
 	if sessionCookie == nil {
 		t.Fatal("expected Set-Cookie: duckway_session but none found")
+		return
 	}
 	if sessionCookie.Value == "" {
 		t.Error("duckway_session cookie value is empty")
@@ -150,6 +151,7 @@ func TestLogout_ClearsCookie(t *testing.T) {
 	}
 	if sessionCookie == nil {
 		t.Fatal("expected Set-Cookie: duckway_session in Logout response but none found")
+		return
 	}
 	if sessionCookie.MaxAge != -1 {
 		t.Errorf("duckway_session MaxAge = %d, want -1 (delete cookie)", sessionCookie.MaxAge)

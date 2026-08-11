@@ -18,6 +18,7 @@ func TestParseRateLimits_Anthropic(t *testing.T) {
 	snap := ParseRateLimits(h)
 	if snap == nil {
 		t.Fatal("expected snapshot, got nil")
+		return
 	}
 	if snap.Provider != "anthropic" {
 		t.Errorf("provider = %q, want anthropic", snap.Provider)
@@ -43,6 +44,7 @@ func TestParseRateLimits_AnthropicSubscription(t *testing.T) {
 	snap := ParseRateLimits(h)
 	if snap == nil {
 		t.Fatal("expected snapshot, got nil")
+		return
 	}
 	if snap.Provider != "anthropic" {
 		t.Errorf("provider = %q", snap.Provider)
@@ -66,6 +68,7 @@ func TestParseRateLimits_OpenAI(t *testing.T) {
 	snap := ParseRateLimits(h)
 	if snap == nil {
 		t.Fatal("expected snapshot, got nil")
+		return
 	}
 	if snap.Provider != "openai" {
 		t.Errorf("provider = %q", snap.Provider)

@@ -24,6 +24,7 @@ var usages = map[string]string{
 	"!bind":            "!bind <session_id> [<session_id> ...]",
 	"!projects":        "!projects [<filter>]",
 	"!duckway-version": "!duckway-version",
+	"!duckway-doctor":  "!duckway-doctor",
 	"!duckway-restart": "!duckway-restart",
 	"!duckway-update":  "!duckway-update [--restart]",
 	"!log":             "!log [N]",
@@ -40,7 +41,7 @@ func Usage(command string) string {
 // own suggestion/error response.
 func Validate(command string, args []string) error {
 	switch command {
-	case "!help", "!end", "!destroy", "!reset", "!list", "!status", "!duckway-version", "!duckway-restart":
+	case "!help", "!end", "!destroy", "!reset", "!list", "!status", "!duckway-version", "!duckway-doctor", "!duckway-restart":
 		return validateNoArgs(args)
 	case "!new":
 		_, err := ParseNewArgs(args)
