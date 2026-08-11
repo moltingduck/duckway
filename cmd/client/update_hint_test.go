@@ -10,6 +10,8 @@ import (
 	"testing"
 )
 
+const testDuckwayCAPEM = "-----BEGIN CERTIFICATE-----\nduckway\n-----END CERTIFICATE-----\n"
+
 func TestShellQuote(t *testing.T) {
 	cases := map[string]string{
 		"":                       "''",
@@ -75,8 +77,18 @@ func TestParseUpdateOptionsRestart(t *testing.T) {
 }
 
 func TestParseManagedUpdateArtifactOptions(t *testing.T) {
-	opts := parseUpdateOptions([]string{"--server", "https://srv", "--restart", "--expected-version", "v2", "--expected-binary", "duckway-client-linux-amd64", "--expected-sha256", strings.Repeat("a", 64), "--expected-size", "2097152"}, "")
-	if opts.serverURL != "https://srv" || !opts.restartAfter || opts.expectedVersion != "v2" || opts.expectedBinary != "duckway-client-linux-amd64" || opts.expectedSHA256 != strings.Repeat("a", 64) || opts.expectedSize != 2097152 {
+	opts := parseUpdateOptions([]string{
+		"--server", "https://srv", "--restart",
+		"--expected-version", "v2",
+		"--expected-binary", "duckway-client-linux-amd64",
+		"--expected-sha256", strings.Repeat("a", 64),
+		"--expected-size", "2097152",
+		"--expected-ducklion-binary", "ducklion-linux-amd64",
+		"--expected-ducklion-sha256", strings.Repeat("b", 64),
+		"--expected-ducklion-size", "3145728",
+	}, "")
+	if opts.serverURL != "https://srv" || !opts.restartAfter || opts.expectedVersion != "v2" || opts.expectedBinary != "duckway-client-linux-amd64" || opts.expectedSHA256 != strings.Repeat("a", 64) || opts.expectedSize != 2097152 ||
+		opts.expectedDucklionBinary != "ducklion-linux-amd64" || opts.expectedDucklionSHA256 != strings.Repeat("b", 64) || opts.expectedDucklionSize != 3145728 {
 		t.Fatalf("options=%+v", opts)
 	}
 }
@@ -98,6 +110,14 @@ func TestUpdateDoesNotRestartWhenAlreadyUpToDate(t *testing.T) {
 	branch := source[start : start+end]
 	if strings.Contains(branch, "restartDaemonsRunningBeforeUpdate") {
 		t.Fatalf("up-to-date branch must not restart daemons:\n%s", branch)
+	}
+}
+
+func TestProcessEnvValueReadsProcEnv(t *testing.T) {
+	t.Setenv("DUCKWAY_TEST_PROCESS_ENV", "present")
+	got := processEnvValue(os.Getpid(), "DUCKWAY_TEST_PROCESS_ENV")
+	if got != "" && got != "present" {
+		t.Fatalf("process env value = %q", got)
 	}
 }
 
@@ -137,7 +157,12 @@ func TestTmuxUnavailableWarning(t *testing.T) {
 	missing := func(string) (string, error) { return "", errors.New("not found") }
 	found := func(string) (string, error) { return "/usr/bin/tmux", nil }
 
-	if got := tmuxUnavailableWarning(false, missing); !strings.Contains(got, "tmux is not installed") {
+	t.Setenv("DUCKWAY_CC_USE_TMUX", "")
+	if got := tmuxUnavailableWarning(false, missing); got != "" {
+		t.Fatalf("tmux not requested warning = %q", got)
+	}
+	t.Setenv("DUCKWAY_CC_USE_TMUX", "1")
+	if got := tmuxUnavailableWarning(false, missing); !strings.Contains(got, "tmux was requested") {
 		t.Fatalf("missing tmux warning = %q", got)
 	}
 	if got := tmuxUnavailableWarning(true, missing); got != "" {
@@ -172,13 +197,14 @@ func TestLogTargets(t *testing.T) {
 }
 
 func TestProxyExecEnvOverridesProxyVariables(t *testing.T) {
+	configDir := t.TempDir()
 	got := proxyExecEnv([]string{
 		"PATH=/bin",
 		"HTTP_PROXY=http://old-proxy",
 		"https_proxy=http://old-lower",
 		"NO_PROXY=chatgpt.com,github.com",
 		"no_proxy=api.openai.com",
-	}, 19090)
+	}, 19090, configDir)
 	env := map[string]string{}
 	for _, kv := range got {
 		key, value, ok := strings.Cut(kv, "=")
@@ -203,6 +229,35 @@ func TestProxyExecEnvOverridesProxyVariables(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(got, "\n"), "old-proxy") || strings.Contains(strings.Join(got, "\n"), "chatgpt.com") {
 		t.Fatalf("old proxy bypass values leaked into env: %#v", got)
+	}
+}
+
+func TestProxyExecEnvInjectsCAForNodeClients(t *testing.T) {
+	configDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configDir, "ca.pem"), []byte(testDuckwayCAPEM), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := proxyExecEnv([]string{
+		"NODE_EXTRA_CA_CERTS=/old/node-ca.pem",
+		"SSL_CERT_FILE=/old/ssl-ca.pem",
+	}, 19090, configDir)
+	env := map[string]string{}
+	for _, kv := range got {
+		key, value, ok := strings.Cut(kv, "=")
+		if ok {
+			env[key] = value
+		}
+	}
+
+	wantBundle := filepath.Join(configDir, "agent-ca-bundle.pem")
+	for _, key := range []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"} {
+		if env[key] != wantBundle {
+			t.Fatalf("%s = %q, want %q", key, env[key], wantBundle)
+		}
+	}
+	if _, err := os.Stat(wantBundle); err != nil {
+		t.Fatalf("CA bundle was not written: %v", err)
 	}
 }
 
@@ -249,6 +304,44 @@ func TestProxyExecCommandHelper(t *testing.T) {
 		return
 	}
 	os.Args = append([]string{"duckway"}, strings.Split(os.Getenv("DUCKWAY_PROXY_EXEC_ARGS"), "\x1f")...)
+	main()
+	os.Exit(0)
+}
+
+func TestDuckwayDucklionSubcommand(t *testing.T) {
+	dir := t.TempDir()
+	ducklion := filepath.Join(dir, "ducklion")
+	if err := os.WriteFile(ducklion, []byte("#!/bin/sh\necho standalone-ducklion \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestDuckwayDucklionSubcommandHelper")
+	cmd.Env = append(os.Environ(), "DUCKWAY_DUCKLION_HELPER=1", "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ducklion helper failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "standalone-ducklion version") {
+		t.Fatalf("output = %q, want standalone ducklion wrapper", out)
+	}
+}
+
+func TestDuckwayDucklionSubcommandDetectsOldRecursiveShim(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestDuckwayDucklionSubcommandHelper")
+	cmd.Env = append(os.Environ(), "DUCKWAY_DUCKLION_HELPER=1", "DUCKWAY_DUCKLION_WRAPPER=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("recursive wrapper succeeded unexpectedly: %s", out)
+	}
+	if !strings.Contains(string(out), "standalone ducklion") {
+		t.Fatalf("output = %q, want standalone ducklion hint", out)
+	}
+}
+
+func TestDuckwayDucklionSubcommandHelper(t *testing.T) {
+	if os.Getenv("DUCKWAY_DUCKLION_HELPER") != "1" {
+		return
+	}
+	os.Args = []string{"duckway", "ducklion", "version"}
 	main()
 	os.Exit(0)
 }

@@ -344,6 +344,7 @@ func looksLikeCodexTransportFailure(s string) bool {
 		"tls handshake",
 		"deadline exceeded",
 		"unexpected eof",
+		"network connection interrupted",
 	}
 	for _, p := range patterns {
 		if strings.Contains(s, p) {

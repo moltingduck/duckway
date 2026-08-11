@@ -7,6 +7,8 @@ Duckway repository but is delivered as independent binaries:
 
 - `ducklord`: runs on a developer laptop and presents the management UI.
 - `ducklion`: runs on a remote agent host and owns local session operations.
+- `duckway ducklion`: compatibility wrapper that finds and executes the
+  standalone `ducklion` binary.
 
 The first MVP assumes the developer can reach remote hosts over ordinary SSH.
 It does not require Tailscale SSH, but it works well inside a Tailscale network
@@ -16,8 +18,8 @@ because MagicDNS names and private addresses can be used as SSH targets.
 
 - Do not relay terminal bytes through the Duckway server.
 - Do not add Duckway server discovery APIs yet.
-- Do not add `ducklord` or `ducklion` to the `duckway-client-*` update artifact
-  pipeline yet.
+- Do not add `ducklord` to the `duckway-client-*` update artifact pipeline yet.
+  `ducklion` is delivered as the companion PTY binary for client installs.
 - Do not merge Discord CC sessions with Ducklord sessions.
 - Do not require the remote host to run the normal `duckway` proxy/client daemon.
 
@@ -40,8 +42,11 @@ remote agent host
 `ducklord` is the operator UI and SSH orchestrator. It does not store SSH
 private keys and does not run remote commands through a shell locally.
 
-`ducklion` is the remote command surface. It owns a self-managed PTY backend and
-returns typed JSON for list/read operations.
+`ducklion` is the remote command surface. The canonical entry point is the
+standalone `ducklion` binary installed beside `duckway`. `duckway ducklion`
+remains as a legacy compatibility wrapper, but it must not own supervisor
+processes. Ducklion owns a self-managed PTY backend and returns typed JSON for
+list/read/project operations.
 
 ## Configuration
 
@@ -85,7 +90,7 @@ explicitly enabled.
 ## Operator Tutorial
 
 This walkthrough creates a reproducible local demo with one developer laptop
-container and two remote agent containers.
+container and three remote agent containers.
 
 ### 1. Build And Start The Demo
 
@@ -93,15 +98,23 @@ container and two remote agent containers.
 scripts/ducklord-podman-demo.sh
 ```
 
-The script builds local `ducklord` and `ducklion` binaries, creates a private
-podman network, starts `ducklord-dev`, `ducklion-client-a`, and
-`ducklion-client-b`, writes `/root/.ducklord/config.json` in `ducklord-dev`,
-and creates sample PTY sessions.
+The script builds local `ducklord`, `duckway`, and `ducklion` binaries, creates
+a private podman network, starts `ducklord-dev`, `ducklion-client-a`,
+`ducklion-client-b`, and `ducklion-client-c`, writes
+`/root/.ducklord/config.json` in `ducklord-dev`, and creates sample PTY
+sessions.
+
+`client-a` and `client-b` are pre-registered in Ducklord config. `client-c`
+only exists in `/root/.ssh/config`, so it can be used to test the TUI add-host
+flow.
 
 ### 2. Inspect Remote Clients And Sessions
 
 ```bash
 podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord ssh-hosts
+podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.json
 podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
 podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
 ```
@@ -115,6 +128,11 @@ client-a     bash               running    shell        client-a:~$
 client-a     build              running    shell        ...
 ```
 
+`ducklord ssh-hosts` should include `client-a`, `client-b`, and `client-c`.
+`ducklord probe client-a` should report `ducklion: available`. `ducklord
+projects client-a` should show the remote Duckway project registry, including
+`alpha-project`.
+
 ### 3. Open The TUI
 
 ```bash
@@ -127,7 +145,9 @@ Useful keys:
 - Mouse click selects a row.
 - `Enter` or right-click focuses the selected session in the right pane.
 - `Ctrl-]` returns keyboard focus to the left menu.
-- `n` creates a new remote session on the selected client.
+- `a` adds a Ducklion host from `~/.ssh/config`; use `client-c` in the demo.
+- `n` creates a new remote session with the wizard:
+  `agent -> host -> project`.
 - `r` refreshes immediately.
 - `q` quits.
 
@@ -150,34 +170,54 @@ Verify the command reached the remote PTY:
 podman exec ducklord-dev ducklord read client-a bash --lines 20 --config /root/.ducklord/config.json
 ```
 
-### 5. Create A Remote Session From The TUI
+### 5. Add A Ducklion Host From The TUI
 
-Inside the TUI, select any row belonging to `client-a`, press `n`, then enter:
+Inside the TUI:
 
-```text
-review-tui -- sh -lc "echo tui-created; sleep 20"
+1. Press `a`.
+2. Choose `client-c` by number or type `client-c`.
+3. Press `Enter`.
+
+Ducklord probes the remote host over SSH. If `ducklion` or `duckway ducklion`
+is available, Ducklord records the working command in
+`/root/.ducklord/config.json`. If Ducklion is missing, Ducklord still adds the
+host but shows a clear status message so the operator can enable the remote
+entry point.
+
+Verify the config was updated:
+
+```bash
+podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord probe client-c --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord projects client-c --config /root/.ducklord/config.json
 ```
 
-The TUI shows `status: starting...`, then refreshes, selects the new
-`client-a / review-tui` row, and displays `tui-created` in the right pane.
+### 6. Create A Remote Session From The TUI
+
+Inside the TUI, press `n`, then follow the wizard:
+
+```text
+agent -> host -> project
+```
+
+For example:
+
+1. Enter `shell` or `1`.
+2. Choose `client-a` by number or name.
+3. Choose `alpha-project` by number or name.
+
+Ducklord fetches projects with `ducklion projects --json`, builds a safe
+session name such as `shell-alpha`, starts the session asynchronously, refreshes
+the session list, selects the new row, and shows its output preview.
 
 Verify from the terminal:
 
 ```bash
 podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord read client-a review-tui --lines 20 --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord read client-a shell-alpha --lines 20 --config /root/.ducklord/config.json
 ```
 
-Create syntax in the TUI:
-
-```text
-<name>
-<name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
-```
-
-If only `<name>` is provided, `ducklord` starts `bash` by default.
-
-The same operation is available from the CLI:
+The same start operation is available from the CLI:
 
 ```bash
 podman exec ducklord-dev ducklord start client-a \
@@ -188,10 +228,10 @@ podman exec ducklord-dev ducklord start client-a \
   --config /root/.ducklord/config.json
 ```
 
-### 6. Clean Up
+### 7. Clean Up
 
 ```bash
-podman rm -f ducklord-dev ducklion-client-a ducklion-client-b
+podman rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c
 podman network rm ducklord-demo
 ```
 
@@ -201,6 +241,7 @@ Remote host:
 
 ```bash
 ducklion list --json [--tail-lines N]
+ducklion projects --json
 ducklion start --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
 ducklion read <name> [--lines N] [--json]
 ducklion send <name> <text>
@@ -213,7 +254,10 @@ Developer laptop:
 
 ```bash
 ducklord clients [--config <path>]
+ducklord ssh-hosts
+ducklord probe <client> [--config <path>]
 ducklord sessions <client> [--config <path>]
+ducklord projects <client> [--config <path>]
 ducklord tui [--config <path>] [--refresh 2s]
 ducklord attach <client> <session> [--config <path>]
 ducklord read <client> <session> [--lines N] [--config <path>]
@@ -233,7 +277,7 @@ The current TUI supports:
 - `Enter` or right-click to focus the selected session in the right pane
 - keyboard input routing to the focused remote PTY session
 - `Ctrl-]` to return focus to the left menu
-- `n` to create a new remote session on the selected client
+- `n` to create a new remote session with `agent -> host -> project`
 - `r` to refresh immediately
 - `q` to quit
 - basic xterm mouse click selection when the terminal supports SGR mouse mode
@@ -244,6 +288,43 @@ sanitized output view and handles common interactive echoes such as backspace.
 Remote terminal-global escape sequences are not allowed to control the local
 TUI. Future work should replace the simplified renderer with a bounded VT
 screen model.
+
+## Target TUI Flow
+
+The next TUI flow is two-stage:
+
+1. Add or enable a Ducklion host.
+2. Start a shell or agent session on one enabled host and one project.
+
+Stage 1 uses local SSH metadata:
+
+```text
+ducklord -> ~/.ssh/config -> concrete Host choices
+ducklord -> ssh <host> 'sh -lc <ducklion probe script>'
+```
+
+The probe distinguishes:
+
+- `ducklion`: use the standalone binary
+- `duckway ducklion`: legacy wrapper found on older hosts
+- missing: ask the operator whether to install or enable Ducklion
+
+Stage 2 asks for:
+
+```text
+shell/agent -> host -> project
+```
+
+Projects come from:
+
+```text
+ducklord -> ssh -> ducklion projects --json
+```
+
+`ducklion projects --json` reads the Duckway client project registry under
+`~/.duckway/cc-projects.json` and returns each entry with
+`source: "duckway-client"`. The TUI should still offer a custom path for hosts
+without a saved project registry.
 
 ## Technical Details
 
@@ -319,21 +400,26 @@ State transitions:
 ```text
 normal mode
   -> n
-  -> newSessionMode=true, newSessionClient=<selected client>
-  -> prompt accumulates newSessionLine
-  -> Enter submits
+  -> agent step: shell / codex / claude
+  -> host step: configured Ducklord client number or name
+  -> project step: remote Duckway project number/name/path, or custom cwd
+  -> Enter starts the remote PTY session
 ```
 
-The prompt parser is local and does not execute through a local shell:
+The wizard is local and does not execute through a local shell:
 
-1. `splitCommandLine()` applies shell-style quoting and escaping.
-2. `parseCreateLine()` recognizes:
-   - session name
-   - optional `--agent`
-   - optional `--cwd` / `-C`
-   - optional `-- CMD [ARGS...]`
-3. `buildStartArgs()` validates session and agent names as safe identifiers.
-4. If no command is provided, command defaults to `bash`.
+1. `parseCreateAgentChoice()` maps `shell`, `codex`, and `claude` to an agent
+   type and default command.
+2. The host step resolves a configured Ducklord client by number or name.
+3. The project step uses `ducklion projects --json`; if no registry is present,
+   the operator can enter a custom cwd path.
+4. `createSessionName()` derives a safe session name from agent and project
+   path, for example `shell-alpha`.
+5. `buildStartArgs()` validates session and agent names as safe identifiers.
+
+The older non-TUI `ducklord start` CLI still accepts explicit
+`--name`/`--agent`/`--cwd`/`-- CMD` arguments and uses the same start-argument
+builder before connecting over SSH.
 
 `ducklord` then starts the remote session asynchronously:
 
@@ -373,8 +459,8 @@ ducklion __supervise --name <name> --agent <agent> --cwd <dir> \
   --socket <socket> --log <log> -- CMD [ARGS...]
 ```
 
-Inside `RunSupervisor`, `pty.Start(cmd)` creates the child PTY. The supervisor
-listens on a `0600` Unix socket for:
+Inside `RunSupervisor`, `pty.StartWithSize(cmd, 40x120)` creates the child PTY
+after the supervisor opens its `0600` Unix socket. The supervisor listens for:
 
 - `send`: writes one command line to the PTY
 - `attach`: streams bidirectional bytes between the socket and PTY
@@ -443,15 +529,21 @@ ducklord tui --server https://duckway.example
 The repository includes a demo script that creates:
 
 - one `ducklord-dev` container
-- two remote client containers, each running sshd and `ducklion`
+- three remote client containers, each running sshd and standalone `ducklion`
 - a private podman network
 - SSH keys/config for the dev container
-- sample PTY sessions on both clients
+- sample PTY sessions on pre-registered clients
 
 Run:
 
 ```bash
 scripts/ducklord-podman-demo.sh
+podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord ssh-hosts
+podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
 podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.json
 ```
 
@@ -461,5 +553,6 @@ Inside the TUI:
 - mouse click selects a row
 - `Enter` or right-click focuses the selected session in the right pane
 - `Ctrl-]` returns keyboard focus to the left menu
-- `n` creates a new remote session on the selected client
+- `a` adds a Ducklion host from `~/.ssh/config`; use `client-c`
+- `n` creates a new remote session with `agent -> host -> project`
 - `q` exits

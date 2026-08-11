@@ -150,6 +150,19 @@ func (h *ClientUpdateHandler) Heartbeat(w http.ResponseWriter, r *http.Request) 
 			break
 		}
 	}
+	if response.Command != nil {
+		ducklionBinary := "ducklion-" + req.OS + "-" + req.Arch
+		if file, err := os.Open(filepath.Join(h.downloadDir, ducklionBinary)); err == nil {
+			hash := sha256.New()
+			size, copyErr := io.Copy(hash, file)
+			closeErr := file.Close()
+			if copyErr == nil && closeErr == nil {
+				response.Command.DucklionBinary = ducklionBinary
+				response.Command.DucklionSHA256 = hex.EncodeToString(hash.Sum(nil))
+				response.Command.DucklionSize = size
+			}
+		}
+	}
 	if response.Command == nil {
 		_ = h.updates.UpdateJobStatus(client.ID, job.ID, job.LeaseToken, "failed", "", "artifact_missing: no binary for client platform")
 	} else {

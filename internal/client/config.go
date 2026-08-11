@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/hackerduck/duckway/internal/duckwayconfig"
 	"gopkg.in/yaml.v3"
 )
 
@@ -16,11 +17,7 @@ type Config struct {
 }
 
 func DefaultConfigDir() string {
-	if d := os.Getenv("DUCKWAY_CONFIG_DIR"); d != "" {
-		return d
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".duckway")
+	return duckwayconfig.DefaultConfigDir()
 }
 
 func LoadConfig(configDir string) (*Config, error) {

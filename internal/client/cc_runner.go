@@ -23,6 +23,7 @@ type ccAgentSpec struct {
 	DisplayName string
 	Bin         string
 	RunFn       ccRunFn
+	PtyRunFn    ccRunFn
 	TmuxRunFn   ccRunFn
 	UseTmux     bool
 	ExtraEnv    []string
@@ -94,17 +95,19 @@ var (
 	ccLongRunInterval    = 10 * time.Minute
 )
 
-// chooseCCRunFn picks the runner to use. tmux gives the user a live,
-// attachable per-channel session (`tmux attach -t <handle>`) so
-// they can watch the agent work. When tmux isn't installed — or the user
-// explicitly disabled it — we fall back to the headless runner.
+// chooseCCRunFn picks the runner to use. PTY is the default attachable runner.
+// tmux is now opt-in via DUCKWAY_CC_USE_TMUX=1 / `duckway cc watch --tmux`.
 func chooseCCRunFn(spec ccAgentSpec, noTmux bool) ccRunFn {
 	fn, _ := chooseCCRunFnAndMode(spec, noTmux)
 	return fn
 }
 
 func chooseCCRunFnAndMode(spec ccAgentSpec, noTmux bool) (ccRunFn, string) {
-	canUseAgentTmux := spec.UseTmux && !noTmux && tmuxAvailable() && spec.TmuxRunFn != nil
+	useTmux := os.Getenv("DUCKWAY_CC_USE_TMUX") == "1"
+	canUseAgentTmux := spec.UseTmux && useTmux && !noTmux && tmuxAvailable() && spec.TmuxRunFn != nil
+	if spec.PtyRunFn != nil && (!useTmux || noTmux) {
+		return spec.PtyRunFn, "pty"
+	}
 	if spec.RunFn != nil {
 		if !canUseAgentTmux {
 			return spec.RunFn, "headless"
@@ -113,7 +116,7 @@ func chooseCCRunFnAndMode(spec ccAgentSpec, noTmux bool) (ccRunFn, string) {
 	if canUseAgentTmux {
 		return spec.TmuxRunFn, "tmux"
 	}
-	if spec.UseTmux && !noTmux && tmuxAvailable() {
+	if spec.UseTmux && useTmux && !noTmux && tmuxAvailable() {
 		return runViaTmux, "tmux"
 	}
 	return runViaPrint, "headless"
@@ -343,6 +346,7 @@ func (r *ccRunner) run(t ccTask) {
 	}
 
 	extraEnv := []string{
+		"DUCKWAY_CONFIG_DIR=" + r.configDir,
 		"DUCKWAY_CC_CHANNEL_HANDLE=" + r.handle,
 		// Propagate the Discord message id so the tmux runner can record
 		// it in the in-flight marker. Recovery after a daemon crash uses
@@ -872,6 +876,10 @@ func agentCAEnv(configDir string) []string {
 		"CURL_CA_BUNDLE=" + bundlePath,
 		"NODE_EXTRA_CA_CERTS=" + bundlePath,
 	}
+}
+
+func ProxyCAEnv(configDir string) []string {
+	return agentCAEnv(configDir)
 }
 
 func buildAgentCABundle(duckwayCA []byte, bundlePath string) []byte {

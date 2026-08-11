@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -58,6 +59,26 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+func SaveConfig(path string, cfg *Config) error {
+	if strings.TrimSpace(path) == "" {
+		path = DefaultConfigPath()
+	}
+	for i := range cfg.Clients {
+		if err := cfg.Clients[i].Normalize(); err != nil {
+			return fmt.Errorf("client %d: %w", i+1, err)
+		}
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
 func (c *Config) Client(name string) (Client, bool) {
 	for _, client := range c.Clients {
 		if client.Name == name {
@@ -65,6 +86,23 @@ func (c *Config) Client(name string) (Client, bool) {
 		}
 	}
 	return Client{}, false
+}
+
+func (c *Config) AddClient(client Client) error {
+	if err := client.Normalize(); err != nil {
+		return err
+	}
+	if _, ok := c.Client(client.Name); ok {
+		return fmt.Errorf("duplicate client name %q", client.Name)
+	}
+	c.Clients = append(c.Clients, client)
+	sort.SliceStable(c.Clients, func(i, j int) bool {
+		if c.Clients[i].Group != c.Clients[j].Group {
+			return c.Clients[i].Group < c.Clients[j].Group
+		}
+		return c.Clients[i].Name < c.Clients[j].Name
+	})
+	return nil
 }
 
 func (c *Client) Normalize() error {
@@ -95,7 +133,7 @@ func (c *Client) Normalize() error {
 	if c.Ducklion == "" {
 		c.Ducklion = "ducklion"
 	}
-	if !safeRemoteCommand(c.Ducklion) {
+	if !safeRemoteCommandLine(c.Ducklion) {
 		return fmt.Errorf("invalid ducklion command %q", c.Ducklion)
 	}
 	if c.SSH == "" {
@@ -112,6 +150,14 @@ func (c Client) Target() string {
 		return c.Host
 	}
 	return c.User + "@" + c.Host
+}
+
+func (c Client) DucklionArgs(args ...string) []string {
+	parts := strings.Fields(c.Ducklion)
+	out := make([]string, 0, len(parts)+len(args))
+	out = append(out, parts...)
+	out = append(out, args...)
+	return out
 }
 
 func SafeIdentifier(s string) bool {
@@ -165,4 +211,17 @@ func safeRemoteCommand(s string) bool {
 		}
 	}
 	return !strings.ContainsAny(s, "\"'`;$&|()<>")
+}
+
+func safeRemoteCommandLine(s string) bool {
+	parts := strings.Fields(s)
+	if len(parts) == 0 {
+		return false
+	}
+	for _, part := range parts {
+		if !safeRemoteCommand(part) {
+			return false
+		}
+	}
+	return true
 }

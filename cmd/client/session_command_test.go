@@ -9,11 +9,11 @@ import (
 )
 
 func TestParseSessionStartOptions(t *testing.T) {
-	opts, err := parseSessionStartOptions([]string{"--name", "review", "--agent", "codex", "--cwd", "/repo", "--", "codex", "exec"})
+	opts, err := parseSessionStartOptions([]string{"--name", "review", "--agent", "codex", "--cwd", "/repo", "--tmux", "--", "codex", "exec"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.Name != "review" || opts.AgentType != "codex" || opts.Cwd != "/repo" || strings.Join(opts.Command, " ") != "codex exec" {
+	if opts.Name != "review" || opts.AgentType != "codex" || opts.Cwd != "/repo" || opts.Backend != client.SessionBackendTmux || strings.Join(opts.Command, " ") != "codex exec" {
 		t.Fatalf("opts = %+v", opts)
 	}
 }
@@ -72,7 +72,7 @@ func TestRunSessionAttachUsesManagerTarget(t *testing.T) {
 	if err := runSessionCommand(manager, []string{"attach", "review"}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(got, " ") != "attach -t duckway-term-review" {
+	if strings.Join(got, " ") != "ducklion attach duckway-term-review" {
 		t.Fatalf("attach args = %q", strings.Join(got, " "))
 	}
 }
@@ -94,7 +94,7 @@ func (f *fakeSessionManager) List() ([]client.SessionRecord, error) {
 
 func (f *fakeSessionManager) Start(opts client.SessionStartOptions) (*client.SessionRecord, error) {
 	f.started = opts
-	return &client.SessionRecord{Name: opts.Name, AgentType: opts.AgentType, TmuxSession: "duckway-term-" + opts.Name}, nil
+	return &client.SessionRecord{Name: opts.Name, AgentType: opts.AgentType, Backend: client.SessionBackendPTY, PtySession: "duckway-term-" + opts.Name}, nil
 }
 
 func (f *fakeSessionManager) Send(name, text string) error {
@@ -115,5 +115,5 @@ func (f *fakeSessionManager) Stop(name string) error {
 }
 
 func (f *fakeSessionManager) AttachArgs(name string) ([]string, error) {
-	return []string{"attach", "-t", "duckway-term-" + name}, nil
+	return []string{"ducklion", "attach", "duckway-term-" + name}, nil
 }

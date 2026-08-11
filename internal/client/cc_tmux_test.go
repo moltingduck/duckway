@@ -492,22 +492,37 @@ func TestInFlightRoundTrip(t *testing.T) {
 	}
 }
 
-func TestChooseCCRunFnPrefersTmux(t *testing.T) {
+func TestChooseCCRunFnDefaultsToPTYAndCanUseTmux(t *testing.T) {
 	// Reset memo so this test reflects current PATH.
 	tmuxAvailableMemo = nil
 	defer func() { tmuxAvailableMemo = nil }()
-	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: true}
+	ptyRunner := func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+		return "", "pty", false, nil
+	}
+	spec := ccAgentSpec{Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", PtyRunFn: ptyRunner, UseTmux: true}
 
-	// Default (noTmux=false): want tmux when it's on PATH.
-	got := isRunViaTmux(chooseCCRunFn(spec, false))
-	want := tmuxAvailable()
-	if got != want {
-		t.Errorf("chooseCCRunFn(false) tmux=%v, want %v (tmux on PATH = %v)", got, want, want)
+	t.Setenv("DUCKWAY_CC_USE_TMUX", "")
+	_, got, _, err := chooseCCRunFn(spec, false)(context.Background(), "", "", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "pty" {
+		t.Fatalf("default runner = %q, want pty", got)
 	}
 
-	// noTmux=true: never use tmux, even if it's on PATH.
-	if isRunViaTmux(chooseCCRunFn(spec, true)) {
-		t.Errorf("chooseCCRunFn(true) returned tmux runner; should fall back to print")
+	t.Setenv("DUCKWAY_CC_USE_TMUX", "1")
+	gotTmux := isRunViaTmux(chooseCCRunFn(spec, false))
+	wantTmux := tmuxAvailable()
+	if gotTmux != wantTmux {
+		t.Errorf("tmux opt-in runner tmux=%v, want %v (tmux on PATH = %v)", gotTmux, wantTmux, wantTmux)
+	}
+
+	_, got, _, err = chooseCCRunFn(spec, true)(context.Background(), "", "", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "pty" {
+		t.Fatalf("noTmux runner = %q, want pty", got)
 	}
 }
 
@@ -531,6 +546,7 @@ func TestChooseCCRunFnPrefersAgentSpecificTmuxRunFn(t *testing.T) {
 		UseTmux:     true,
 	}
 
+	t.Setenv("DUCKWAY_CC_USE_TMUX", "1")
 	_, got, _, err := chooseCCRunFn(spec, false)(context.Background(), "", "", "", "", nil)
 	if err != nil {
 		t.Fatal(err)

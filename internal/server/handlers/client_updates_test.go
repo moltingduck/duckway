@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/controlplane"
@@ -65,6 +67,9 @@ func validHeartbeat() controlplane.HeartbeatRequest {
 
 func TestClientUpdateHeartbeatLeaseIsolationAndCompletion(t *testing.T) {
 	e := newControlTestEnv(t)
+	if err := os.WriteFile(filepath.Join(e.handler.downloadDir, "ducklion-linux-amd64"), bytes.Repeat([]byte("d"), 2<<20), 0600); err != nil {
+		t.Fatal(err)
+	}
 	for _, clientID := range []string{"client-a", "client-b", "client-c"} {
 		if code, _, body := e.heartbeat(clientID, validHeartbeat()); code != http.StatusOK {
 			t.Fatalf("initial heartbeat for %s: %d %s", clientID, code, body)
@@ -80,6 +85,9 @@ func TestClientUpdateHeartbeatLeaseIsolationAndCompletion(t *testing.T) {
 		t.Fatalf("first heartbeat code=%d response=%s", code, body)
 	}
 	first := a.Command
+	if first.DucklionBinary != "ducklion-linux-amd64" || len(first.DucklionSHA256) != 64 || first.DucklionSize != 2<<20 {
+		t.Fatalf("ducklion companion manifest = %+v", first)
+	}
 	code, a2, body := e.heartbeat("client-a", validHeartbeat())
 	if code != 200 || a2.Command == nil || a2.Command.ID != first.ID || a2.Command.LeaseToken != first.LeaseToken {
 		t.Fatalf("replayed lease code=%d response=%s", code, body)

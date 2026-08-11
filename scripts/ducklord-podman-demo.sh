@@ -8,7 +8,7 @@ IMAGE="${IMAGE:-duckway-ducklord-demo:local}"
 NET="${NET:-ducklord-demo}"
 
 cleanup_existing() {
-  "$RUNTIME" rm -f ducklord-dev ducklion-client-a ducklion-client-b >/dev/null 2>&1 || true
+  "$RUNTIME" rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c >/dev/null 2>&1 || true
   "$RUNTIME" network rm "$NET" >/dev/null 2>&1 || true
 }
 
@@ -17,6 +17,7 @@ rm -rf "$WORK"/*
 
 echo "[ducklord-demo] building local binaries"
 go build -o "$WORK/ducklord" "$ROOT/cmd/ducklord"
+go build -o "$WORK/duckway" "$ROOT/cmd/client"
 go build -o "$WORK/ducklion" "$ROOT/cmd/ducklion"
 
 ssh-keygen -q -t ed25519 -N '' -f "$WORK/id_ed25519"
@@ -27,6 +28,7 @@ RUN apk add --no-cache openssh openssh-client bash ca-certificates ncurses
 RUN adduser -D duck && echo "duck:duck-demo-password" | chpasswd && ssh-keygen -A
 RUN mkdir -p /home/duck/.ssh /root/.ssh /root/.ducklord && chown -R duck:duck /home/duck/.ssh
 COPY ducklord /usr/local/bin/ducklord
+COPY duckway /usr/local/bin/duckway
 COPY ducklion /usr/local/bin/ducklion
 COPY id_ed25519.pub /home/duck/.ssh/authorized_keys
 RUN chown duck:duck /home/duck/.ssh/authorized_keys && chmod 700 /home/duck/.ssh && chmod 600 /home/duck/.ssh/authorized_keys
@@ -43,11 +45,15 @@ cleanup_existing
 echo "[ducklord-demo] starting remote clients"
 "$RUNTIME" run -d --name ducklion-client-a --hostname client-a --network "$NET" "$IMAGE" >/dev/null
 "$RUNTIME" run -d --name ducklion-client-b --hostname client-b --network "$NET" "$IMAGE" >/dev/null
+"$RUNTIME" run -d --name ducklion-client-c --hostname client-c --network "$NET" "$IMAGE" >/dev/null
 
 echo "[ducklord-demo] starting dev laptop"
 "$RUNTIME" run -d --name ducklord-dev --hostname dev-laptop --network "$NET" "$IMAGE" sleep infinity >/dev/null
 "$RUNTIME" cp "$WORK/id_ed25519" ducklord-dev:/root/.ssh/id_ed25519
 "$RUNTIME" exec ducklord-dev sh -lc 'chmod 600 /root/.ssh/id_ed25519 && cat >/root/.ssh/config <<EOF
+Host client-a client-b client-c
+  User duck
+
 Host *
   StrictHostKeyChecking no
   UserKnownHostsFile /dev/null
@@ -63,6 +69,9 @@ EOF'
 EOF'
 
 echo "[ducklord-demo] creating sample remote sessions"
+"$RUNTIME" exec -u duck ducklion-client-a sh -lc 'mkdir -p /home/duck/projects/alpha && duckway projects add --name alpha-project /home/duck/projects/alpha' >/dev/null
+"$RUNTIME" exec -u duck ducklion-client-b sh -lc 'mkdir -p /home/duck/projects/beta && duckway projects add --name beta-project /home/duck/projects/beta' >/dev/null
+"$RUNTIME" exec -u duck ducklion-client-c sh -lc 'mkdir -p /home/duck/projects/gamma && duckway projects add --name gamma-project /home/duck/projects/gamma' >/dev/null
 "$RUNTIME" exec -u duck ducklion-client-a ducklion start --name alpha --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-a alpha tick $i; if [ $((i % 3)) -eq 0 ]; then echo "[ducklion:done] alpha step $i"; fi; sleep 4; done' >/dev/null
 "$RUNTIME" exec -u duck ducklion-client-a ducklion start --name bash --agent shell --cwd /home/duck -- bash >/dev/null
 "$RUNTIME" exec -u duck ducklion-client-a ducklion start --name build --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-a build output $i; sleep 6; done' >/dev/null
@@ -76,19 +85,23 @@ Open the dev laptop TUI:
 
 Useful checks:
   $RUNTIME exec ducklord-dev ducklord clients --config /root/.ducklord/config.json
+  $RUNTIME exec ducklord-dev ducklord ssh-hosts
+  $RUNTIME exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.json
   $RUNTIME exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
+  $RUNTIME exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.json
   $RUNTIME exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
 
 Inside the TUI:
   j/k or arrow keys: move
   mouse click: select a session row
   Enter or right-click: focus the selected session in the right pane
-  n: create a new remote session on the selected client (example: scratch -- bash)
+  a: add a ducklion host from ~/.ssh/config (try client-c)
+  n: create a remote session: choose agent -> host -> project
   right pane: selected session output preview
   Ctrl-]: return keyboard focus to the left menu
   q: quit
 
 Clean up:
-  $RUNTIME rm -f ducklord-dev ducklion-client-a ducklion-client-b
+  $RUNTIME rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c
   $RUNTIME network rm $NET
 EOF

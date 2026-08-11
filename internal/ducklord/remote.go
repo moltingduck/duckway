@@ -27,6 +27,12 @@ type RemoteSession struct {
 	Error       string `json:"error,omitempty"`
 }
 
+type RemoteProject struct {
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Source string `json:"source"`
+}
+
 type Runner struct{}
 
 type AttachSession struct {
@@ -87,11 +93,23 @@ func (Runner) Stop(ctx context.Context, c Client, name string) error {
 	return err
 }
 
+func (Runner) Projects(ctx context.Context, c Client) ([]RemoteProject, error) {
+	out, err := sshOutput(ctx, c, "projects", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var projects []RemoteProject
+	if err := json.Unmarshal(out, &projects); err != nil {
+		return nil, fmt.Errorf("parse ducklion projects from %s: %w", c.Name, err)
+	}
+	return projects, nil
+}
+
 func (Runner) Attach(c Client, name string) error {
 	if !SafeIdentifier(name) {
 		return fmt.Errorf("invalid session name %q", name)
 	}
-	args := SSHArgs(c, true, c.Ducklion, "attach", name)
+	args := SSHArgs(c, true, c.DucklionArgs("attach", name)...)
 	cmd := exec.Command(c.SSH, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -106,7 +124,7 @@ func (Runner) AttachStream(ctx context.Context, c Client, name string) (*AttachS
 	if !SafeIdentifier(name) {
 		return nil, fmt.Errorf("invalid session name %q", name)
 	}
-	args := SSHArgs(c, false, c.Ducklion, "attach", name)
+	args := SSHArgs(c, false, c.DucklionArgs("attach", name)...)
 	cmd := exec.CommandContext(ctx, c.SSH, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -133,9 +151,13 @@ func (Runner) AttachStream(ctx context.Context, c Client, name string) (*AttachS
 }
 
 func sshOutput(ctx context.Context, c Client, ducklionArgs ...string) ([]byte, error) {
+	return sshOutputRaw(ctx, c, c.DucklionArgs(ducklionArgs...)...)
+}
+
+func sshOutputRaw(ctx context.Context, c Client, remoteArgs ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	args := SSHArgs(c, false, append([]string{c.Ducklion}, ducklionArgs...)...)
+	args := SSHArgs(c, false, remoteArgs...)
 	cmd := exec.CommandContext(ctx, c.SSH, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

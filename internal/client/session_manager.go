@@ -9,7 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
+
+	"github.com/hackerduck/duckway/internal/ducklion"
 )
 
 const (
@@ -19,6 +22,9 @@ const (
 	SessionStatusRunning = "running"
 	SessionStatusStopped = "stopped"
 	SessionStatusStale   = "stale"
+
+	SessionBackendPTY  = "pty"
+	SessionBackendTmux = "tmux"
 )
 
 type SessionState struct {
@@ -32,6 +38,8 @@ type SessionRecord struct {
 	Kind        string `json:"kind"`
 	AgentType   string `json:"agent_type"`
 	Cwd         string `json:"cwd"`
+	Backend     string `json:"backend,omitempty"`
+	PtySession  string `json:"pty_session,omitempty"`
 	TmuxSession string `json:"tmux_session"`
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
@@ -43,12 +51,31 @@ type SessionStartOptions struct {
 	Kind      string
 	AgentType string
 	Cwd       string
+	Backend   string
 	Command   []string
 }
 
 type SessionManager struct {
 	configDir string
-	tmux      sessionTmux
+	backend   sessionBackend
+}
+
+type sessionBackend interface {
+	Name() string
+	TargetName(name string) string
+	HasSession(name string) bool
+	Start(name, cwd, agentType string, command []string) error
+	Send(name, text string) error
+	Capture(name string, lines int) (string, error)
+	Kill(name string) error
+	AttachArgs(name string) []string
+}
+
+func NewSessionManager(configDir string, tmux sessionTmux) *SessionManager {
+	if tmux != nil {
+		return &SessionManager{configDir: configDir, backend: tmuxSessionBackend{tmux: tmux}}
+	}
+	return &SessionManager{configDir: configDir, backend: newPTYSessionBackend(configDir)}
 }
 
 type sessionTmux interface {
@@ -59,11 +86,11 @@ type sessionTmux interface {
 	Kill(name string) error
 }
 
-func NewSessionManager(configDir string, tmux sessionTmux) *SessionManager {
+func NewTmuxSessionManager(configDir string, tmux sessionTmux) *SessionManager {
 	if tmux == nil {
 		tmux = realSessionTmux{}
 	}
-	return &SessionManager{configDir: configDir, tmux: tmux}
+	return &SessionManager{configDir: configDir, backend: tmuxSessionBackend{tmux: tmux}}
 }
 
 func (m *SessionManager) Load() (*SessionState, error) {
@@ -98,7 +125,7 @@ func (m *SessionManager) List() ([]SessionRecord, error) {
 	out := make([]SessionRecord, len(state.Sessions))
 	copy(out, state.Sessions)
 	for i := range out {
-		if out[i].Status == SessionStatusRunning && !m.tmux.HasSession(out[i].TmuxSession) {
+		if out[i].Status == SessionStatusRunning && !m.backendForRecord(out[i]).HasSession(out[i].TargetSession()) {
 			out[i].Status = SessionStatusStale
 		}
 	}
@@ -116,6 +143,14 @@ func (m *SessionManager) Start(opts SessionStartOptions) (*SessionRecord, error)
 	if opts.AgentType == "" {
 		opts.AgentType = "shell"
 	}
+	backend := m.backend
+	if opts.Backend != "" {
+		var err error
+		backend, err = m.backendByName(opts.Backend)
+		if err != nil {
+			return nil, err
+		}
+	}
 	cwd, err := validateSessionCwd(opts.Cwd)
 	if err != nil {
 		return nil, err
@@ -123,38 +158,50 @@ func (m *SessionManager) Start(opts SessionStartOptions) (*SessionRecord, error)
 	if len(opts.Command) == 0 {
 		return nil, fmt.Errorf("command is required")
 	}
-	state, err := m.Load()
+
+	unlock, err := m.lock()
 	if err != nil {
 		return nil, err
 	}
-	tmuxName := terminalTmuxSessionName(name)
+	defer unlock()
+	state, err := m.loadLocked()
+	if err != nil {
+		return nil, err
+	}
+	targetName := backend.TargetName(name)
 	filtered := state.Sessions[:0]
 	for _, rec := range state.Sessions {
 		if rec.Name != name {
 			filtered = append(filtered, rec)
 			continue
 		}
-		if rec.Status == SessionStatusRunning && m.tmux.HasSession(rec.TmuxSession) {
+		if rec.Status == SessionStatusRunning && m.backendForRecord(rec).HasSession(rec.TargetSession()) {
 			return nil, fmt.Errorf("session %q is already running", name)
 		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	rec := SessionRecord{
-		ID:          newSessionID(),
-		Name:        name,
-		Kind:        opts.Kind,
-		AgentType:   opts.AgentType,
-		Cwd:         cwd,
-		TmuxSession: tmuxName,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		Status:      SessionStatusRunning,
+		ID:        newSessionID(),
+		Name:      name,
+		Kind:      opts.Kind,
+		AgentType: opts.AgentType,
+		Cwd:       cwd,
+		Backend:   backend.Name(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		Status:    SessionStatusRunning,
 	}
-	if err := m.tmux.NewSession(tmuxName, cwd, opts.Command); err != nil {
+	if backend.Name() == SessionBackendTmux {
+		rec.TmuxSession = targetName
+	} else {
+		rec.PtySession = targetName
+	}
+	if err := backend.Start(targetName, cwd, opts.AgentType, opts.Command); err != nil {
 		return nil, err
 	}
 	state.Sessions = append(filtered, rec)
-	if err := m.save(state); err != nil {
+	if err := m.saveLocked(state); err != nil {
+		_ = backend.Kill(targetName)
 		return nil, err
 	}
 	return &rec, nil
@@ -165,10 +212,11 @@ func (m *SessionManager) Send(name, text string) error {
 	if err != nil {
 		return err
 	}
-	if !m.tmux.HasSession(rec.TmuxSession) {
+	backend := m.backendForRecord(*rec)
+	if !backend.HasSession(rec.TargetSession()) {
 		return fmt.Errorf("session %q is not running", name)
 	}
-	return m.tmux.Send(rec.TmuxSession, text)
+	return backend.Send(rec.TargetSession(), text)
 }
 
 func (m *SessionManager) Read(name string, lines int) (string, error) {
@@ -179,7 +227,7 @@ func (m *SessionManager) Read(name string, lines int) (string, error) {
 	if lines <= 0 {
 		lines = 120
 	}
-	return m.tmux.Capture(rec.TmuxSession, lines)
+	return m.backendForRecord(*rec).Capture(rec.TargetSession(), lines)
 }
 
 func (m *SessionManager) Stop(name string) error {
@@ -189,8 +237,9 @@ func (m *SessionManager) Stop(name string) error {
 	}
 	for i := range state.Sessions {
 		if state.Sessions[i].Name == name || state.Sessions[i].ID == name {
-			if m.tmux.HasSession(state.Sessions[i].TmuxSession) {
-				if err := m.tmux.Kill(state.Sessions[i].TmuxSession); err != nil {
+			backend := m.backendForRecord(state.Sessions[i])
+			if backend.HasSession(state.Sessions[i].TargetSession()) {
+				if err := backend.Kill(state.Sessions[i].TargetSession()); err != nil {
 					return err
 				}
 			}
@@ -207,7 +256,61 @@ func (m *SessionManager) AttachArgs(name string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []string{"attach", "-t", rec.TmuxSession}, nil
+	return m.backendForRecord(*rec).AttachArgs(rec.TargetSession()), nil
+}
+
+func (r SessionRecord) TargetSession() string {
+	if r.Backend == SessionBackendPTY && r.PtySession != "" {
+		return r.PtySession
+	}
+	if r.TmuxSession != "" {
+		return r.TmuxSession
+	}
+	if r.PtySession != "" {
+		return r.PtySession
+	}
+	return terminalSessionName(r.Name)
+}
+
+func (r SessionRecord) DisplayBackend() string {
+	if r.Backend == "" {
+		return SessionBackendTmux
+	}
+	return r.Backend
+}
+
+func (m *SessionManager) backendForRecord(rec SessionRecord) sessionBackend {
+	switch rec.Backend {
+	case SessionBackendPTY:
+		if m.backend.Name() == SessionBackendPTY {
+			return m.backend
+		}
+		return newPTYSessionBackend(m.configDir)
+	case SessionBackendTmux, "":
+		if m.backend.Name() == SessionBackendTmux {
+			return m.backend
+		}
+		return tmuxSessionBackend{tmux: realSessionTmux{}}
+	default:
+		return m.backend
+	}
+}
+
+func (m *SessionManager) backendByName(name string) (sessionBackend, error) {
+	switch strings.TrimSpace(name) {
+	case "", SessionBackendPTY:
+		if m.backend.Name() == SessionBackendPTY {
+			return m.backend, nil
+		}
+		return newPTYSessionBackend(m.configDir), nil
+	case SessionBackendTmux:
+		if m.backend.Name() == SessionBackendTmux {
+			return m.backend, nil
+		}
+		return tmuxSessionBackend{tmux: realSessionTmux{}}, nil
+	default:
+		return nil, fmt.Errorf("unknown session backend %q", name)
+	}
 }
 
 func (m *SessionManager) lookup(name string) (*SessionRecord, error) {
@@ -225,6 +328,15 @@ func (m *SessionManager) lookup(name string) (*SessionRecord, error) {
 }
 
 func (m *SessionManager) save(state *SessionState) error {
+	unlock, err := m.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return m.saveLocked(state)
+}
+
+func (m *SessionManager) saveLocked(state *SessionState) error {
 	if state.Version == 0 {
 		state.Version = sessionStateVersion
 	}
@@ -236,6 +348,28 @@ func (m *SessionManager) save(state *SessionState) error {
 		return err
 	}
 	return writeFileAtomic(m.statePath(), data, 0600)
+}
+
+func (m *SessionManager) loadLocked() (*SessionState, error) {
+	return m.Load()
+}
+
+func (m *SessionManager) lock() (func(), error) {
+	if err := os.MkdirAll(m.configDir, 0700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(m.configDir, "agent-sessions.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 func (m *SessionManager) statePath() string {
@@ -289,6 +423,10 @@ func terminalTmuxSessionName(name string) string {
 	return "duckway-term-" + name
 }
 
+func terminalSessionName(name string) string {
+	return "duckway-term-" + name
+}
+
 func newSessionID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -298,6 +436,95 @@ func newSessionID() string {
 }
 
 type realSessionTmux struct{}
+
+type tmuxSessionBackend struct {
+	tmux sessionTmux
+}
+
+func (b tmuxSessionBackend) Name() string { return SessionBackendTmux }
+func (b tmuxSessionBackend) TargetName(name string) string {
+	return terminalTmuxSessionName(name)
+}
+func (b tmuxSessionBackend) HasSession(name string) bool { return b.tmux.HasSession(name) }
+func (b tmuxSessionBackend) Start(name, cwd, _ string, command []string) error {
+	return b.tmux.NewSession(name, cwd, command)
+}
+func (b tmuxSessionBackend) Send(name, text string) error { return b.tmux.Send(name, text) }
+func (b tmuxSessionBackend) Capture(name string, lines int) (string, error) {
+	return b.tmux.Capture(name, lines)
+}
+func (b tmuxSessionBackend) Kill(name string) error { return b.tmux.Kill(name) }
+func (b tmuxSessionBackend) AttachArgs(name string) []string {
+	return []string{"tmux", "attach", "-t", name}
+}
+
+type ptySessionBackend struct {
+	root string
+}
+
+func newPTYSessionBackend(configDir string) ptySessionBackend {
+	return ptySessionBackend{root: filepath.Join(configDir, "pty-sessions")}
+}
+
+func (b ptySessionBackend) Name() string { return SessionBackendPTY }
+func (b ptySessionBackend) TargetName(name string) string {
+	return terminalSessionName(name)
+}
+func (b ptySessionBackend) manager() (*ducklion.Manager, error) {
+	exe, err := exec.LookPath("ducklion")
+	if err != nil {
+		return nil, fmt.Errorf("ducklion not found in PATH; install standalone ducklion or use --tmux")
+	}
+	return ducklion.NewManager(b.root, exe), nil
+}
+func (b ptySessionBackend) HasSession(name string) bool {
+	m, err := b.manager()
+	if err != nil {
+		return false
+	}
+	records, err := m.List()
+	if err != nil {
+		return false
+	}
+	for _, rec := range records {
+		if rec.Name == name && rec.Status == ducklion.StatusRunning {
+			return true
+		}
+	}
+	return false
+}
+func (b ptySessionBackend) Start(name, cwd, agentType string, command []string) error {
+	m, err := b.manager()
+	if err != nil {
+		return err
+	}
+	_, err = m.Start(ducklion.StartOptions{Name: name, AgentType: agentType, Cwd: cwd, Command: command})
+	return err
+}
+func (b ptySessionBackend) Send(name, text string) error {
+	m, err := b.manager()
+	if err != nil {
+		return err
+	}
+	return m.Send(name, text)
+}
+func (b ptySessionBackend) Capture(name string, lines int) (string, error) {
+	m, err := b.manager()
+	if err != nil {
+		return "", err
+	}
+	return m.Read(name, lines)
+}
+func (b ptySessionBackend) Kill(name string) error {
+	m, err := b.manager()
+	if err != nil {
+		return err
+	}
+	return m.Stop(name)
+}
+func (b ptySessionBackend) AttachArgs(name string) []string {
+	return []string{"ducklion", "attach", name}
+}
 
 func (realSessionTmux) HasSession(name string) bool {
 	return tmuxHasSession(name)

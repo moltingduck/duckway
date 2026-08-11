@@ -459,7 +459,7 @@ Duckway can now discover servers and categories from the saved bot token, so you
 2. **Control Channels** → **New CC** →
    - **Name** — anything you'll recognise (e.g. "Project Alpha CC").
    - **Client** — the duckway client this CC belongs to.
-   - **Agent type** — `claude_code`, `codex`, or `openclaw`. Claude/Codex use attachable `<handle>-duckway` tmux sessions when tmux is installed; `--no-tmux` forces headless mode. OpenClaw runs through `openclaw agent --message-file --json` and uses `DUCKWAY_CC_OPENCLAW_AGENT` for the OpenClaw agent id.
+   - **Agent type** — `claude_code`, `codex`, or `openclaw`. Claude/Codex use Duckway's PTY runner by default. Start `duckway cc watch --tmux` only when you explicitly want the legacy tmux runner. OpenClaw runs through `openclaw agent --message-file --json` and uses `DUCKWAY_CC_OPENCLAW_AGENT` for the OpenClaw agent id.
    - **Codex sandbox** — shown only for `codex`. Allowed values are `workspace-write` (default), `read-only`, `danger-full-access`, and `none`. `danger-full-access` lets Codex use local files and commands without filesystem sandboxing, so only use it for trusted Discord categories and clients.
    - **Service** — `discord`.
    - **Bot Token** — the API key you uploaded in (1).
@@ -557,13 +557,13 @@ The management channel itself also accepts plain text — the message is forward
 
 For ordinary task messages, the client keeps status quiet with reactions: `🦆` means the client received the message, `⏳` means the agent is still running, `✅` means the turn completed, and `⚠️` means the turn failed or was dropped. Agent replies are Discord replies to the triggering message so back-to-back prompts stay distinguishable.
 
-Codex tmux turns do not fail just because they run longer than five minutes. Long-running prompts such as `/goal` keep the task channel busy, leave the tmux session attachable, and complete when Codex writes its final event.
+Codex PTY turns do not fail just because they run longer than five minutes. Long-running prompts such as `/goal` keep the task channel busy and complete when Codex writes its final event. The legacy tmux runner remains available with `duckway cc watch --tmux`.
 
-On upgrade, existing legacy tmux sessions named `duckway-<handle>` are automatically renamed to the current `<handle>-duckway` convention the next time `cc watch` uses that channel, unless both old and new sessions already exist.
+When `duckway cc watch --tmux` is used, existing legacy tmux sessions named `duckway-<handle>` are automatically renamed to the current `<handle>-duckway` convention the next time `cc watch` uses that channel, unless both old and new sessions already exist.
 
 ### Local terminal agent sessions
 
-Duckway can also manage local, tmux-backed terminal agent sessions that are independent from Discord CC sessions:
+Duckway can also manage local PTY-backed terminal agent sessions that are independent from Discord CC sessions:
 
 ```bash
 duckway session start --name review --agent codex --cwd /repo -- codex exec
@@ -573,6 +573,8 @@ duckway session read review --lines 120
 duckway session attach review
 duckway session stop review
 ```
+
+Use `duckway session start --tmux ...` only when you explicitly want the legacy tmux backend.
 
 These sessions are local-only in the first version. They are not exposed through the server, MCP tools, or Discord commands. Metadata is stored in `~/.duckway/agent-sessions.json`; old clients that do not have this file load an empty session list, and existing CC files such as `cc-sessions.json` and `cc-watch/` are left untouched.
 

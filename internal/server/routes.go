@@ -622,6 +622,9 @@ func handleClientUpdateInfo(w http.ResponseWriter, r *http.Request, downloadDir 
 		handlers.JsonErrorPublic(w, "client binary not available", http.StatusNotFound)
 		return
 	}
+	ducklionBinary := fmt.Sprintf("ducklion-%s-%s", osName, arch)
+	ducklionPath := filepath.Join(downloadDir, ducklionBinary)
+	ducklionSum, ducklionErr := fileSHA256(ducklionPath)
 
 	recommended := os.Getenv("DUCKWAY_CLIENT_RECOMMENDED_VERSION")
 	if recommended == "" {
@@ -637,8 +640,7 @@ func handleClientUpdateInfo(w http.ResponseWriter, r *http.Request, downloadDir 
 		reason = "new client version available"
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	payload := map[string]interface{}{
 		"server_version":             version.Get(),
 		"client_current_version":     current,
 		"client_recommended_version": recommended,
@@ -659,7 +661,21 @@ func handleClientUpdateInfo(w http.ResponseWriter, r *http.Request, downloadDir 
 			}
 			return 0
 		}(),
-	})
+	}
+	if ducklionErr == nil {
+		payload["ducklion_binary"] = ducklionBinary
+		payload["ducklion_download_url"] = "/download/" + ducklionBinary
+		payload["ducklion_sha256"] = ducklionSum
+		payload["ducklion_size"] = func() int64 {
+			info, _ := os.Stat(ducklionPath)
+			if info != nil {
+				return info.Size()
+			}
+			return 0
+		}()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(payload)
 }
 
 func serveClientDownload(w http.ResponseWriter, r *http.Request, downloadDir string) {
@@ -676,7 +692,11 @@ func isAllowedClientBinary(binary string) bool {
 	case "duckway-client-linux-amd64",
 		"duckway-client-linux-arm64",
 		"duckway-client-darwin-amd64",
-		"duckway-client-darwin-arm64":
+		"duckway-client-darwin-arm64",
+		"ducklion-linux-amd64",
+		"ducklion-linux-arm64",
+		"ducklion-darwin-amd64",
+		"ducklion-darwin-arm64":
 		return true
 	default:
 		return false
@@ -706,6 +726,7 @@ OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; *) echo "Unsupported: $ARCH"; exit 1 ;; esac
 BINARY="duckway-client-${OS}-${ARCH}"
+DUCKLION_BINARY="ducklion-${OS}-${ARCH}"
 INSTALL_MODE="${DUCKWAY_INSTALL:-}"
 if [ -z "$INSTALL_MODE" ] && [ -z "${DUCKWAY_INSTALL_PATH:-}" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
   echo ""
@@ -761,15 +782,24 @@ if command -v curl >/dev/null 2>&1; then curl -fsSL "$DUCKWAY_SERVER/download/$B
 elif command -v wget >/dev/null 2>&1; then wget -q "$DUCKWAY_SERVER/download/$BINARY" -O /tmp/duckway
 else echo "Error: curl or wget required"; exit 1; fi
 chmod +x /tmp/duckway
+echo "Downloading: $DUCKWAY_SERVER/download/$DUCKLION_BINARY"
+if command -v curl >/dev/null 2>&1; then curl -fsSL "$DUCKWAY_SERVER/download/$DUCKLION_BINARY" -o /tmp/ducklion
+elif command -v wget >/dev/null 2>&1; then wget -q "$DUCKWAY_SERVER/download/$DUCKLION_BINARY" -O /tmp/ducklion
+else echo "Error: curl or wget required"; exit 1; fi
+chmod +x /tmp/ducklion
 DEST_DIR="$(dirname "$DEST")"
+DUCKLION_DEST="$DEST_DIR/ducklion"
 if [ "$INSTALL_MODE" = "system" ] && [ ! -w "$DEST_DIR" ]; then
   sudo mkdir -p "$DEST_DIR"
   sudo mv /tmp/duckway "$DEST"
+  sudo mv /tmp/ducklion "$DUCKLION_DEST"
 else
   mkdir -p "$DEST_DIR"
   mv /tmp/duckway "$DEST"
+  mv /tmp/ducklion "$DUCKLION_DEST"
 fi
 echo "Installed: $DEST"
+echo "Installed: $DUCKLION_DEST"
 case ":$PATH:" in
   *":$DEST_DIR:"*) ;;
   *)

@@ -35,11 +35,14 @@ var isTTY = func() bool {
 }()
 
 var sessionAttachExec = func(args []string) error {
-	tmuxPath, err := exec.LookPath("tmux")
-	if err != nil {
-		return fmt.Errorf("tmux is not installed or not on PATH")
+	if len(args) == 0 {
+		return fmt.Errorf("missing attach command")
 	}
-	return syscall.Exec(tmuxPath, append([]string{"tmux"}, args...), os.Environ())
+	path, err := exec.LookPath(args[0])
+	if err != nil {
+		return fmt.Errorf("%s is not installed or not on PATH", args[0])
+	}
+	return syscall.Exec(path, args, os.Environ())
 }
 
 func fileIsTTY(f *os.File) bool {
@@ -70,6 +73,22 @@ func shellQuote(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func runDucklionCompat(args []string) error {
+	if os.Getenv("DUCKWAY_DUCKLION_WRAPPER") == "1" {
+		return fmt.Errorf("duckway ducklion reached itself again; install the standalone ducklion binary instead of the old ducklion shim")
+	}
+	path, err := exec.LookPath("ducklion")
+	if err != nil {
+		return fmt.Errorf("standalone ducklion not found in PATH; install or update Duckway so ducklion is installed beside duckway")
+	}
+	cmd := exec.Command(path, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), "DUCKWAY_DUCKLION_WRAPPER=1")
+	return cmd.Run()
 }
 
 func main() {
@@ -110,6 +129,10 @@ func main() {
 		cmdCC(configDir)
 	case "session":
 		cmdSession(configDir, os.Args[2:])
+	case "ducklion":
+		if err := runDucklionCompat(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
 	case "projects":
 		cmdProjects(configDir, os.Args[2:])
 	case "git":
@@ -166,11 +189,10 @@ Usage:
                          (launched by Claude Code from ~/.claude/mcp.json)
   duckway cc watch       Connect to the server's SSE feed and run a
                          local agent session per Discord task channel
-                         (when tmux is installed supported agents run inside
-                         a session named <handle>-duckway; attach with
-                         "tmux attach -t <handle>")
+                         (default runner uses Duckway's PTY supervisor)
   duckway cc watch -d    Same, but run in background as a daemon
-  duckway cc watch --no-tmux  Force the headless runner
+  duckway cc watch --tmux     Use legacy tmux runner instead of PTY
+  duckway cc watch --no-tmux  Ignore DUCKWAY_CC_USE_TMUX and never use tmux
                          (also: DUCKWAY_CC_NO_TMUX=1)
   duckway cc watch --debug    Log agent runner settings and sanitized CLI argv
   duckway cc watch stop  Stop the running daemon
@@ -180,16 +202,18 @@ Usage:
                          sessions and create a CC channel + binding for
                          each. Use --session <id> for headless mode.
   duckway session list   List local terminal agent sessions
-  duckway session start --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
-                         Start a local tmux-backed terminal agent session
+  duckway session start --name <name> [--agent <agent>] [--cwd <dir>] [--tmux] -- CMD [ARGS...]
+                         Start a local PTY-backed terminal agent session
   duckway session attach <name>
-                         Attach to a local terminal agent tmux session
+                         Attach to a local terminal agent session
   duckway session send <name> <text>
                          Send text + Enter to a local terminal agent session
   duckway session read <name> [--lines N]
                          Capture recent output from a local terminal agent session
   duckway session stop <name>
                          Stop a local terminal agent session
+  duckway ducklion ...   Compatibility wrapper for standalone ducklion
+                         (install ducklion beside duckway)
   duckway projects       Manage project folders usable from Discord
   duckway git list       List GitHub repos configured for this client
   duckway git setup      Sync GitHub phantom credential for native git
@@ -791,9 +815,9 @@ func runSessionCommand(manager sessionManagerAPI, args []string, out io.Writer) 
 			fmt.Fprintln(out, "No local terminal sessions.")
 			return nil
 		}
-		fmt.Fprintf(out, "%-18s %-10s %-12s %-24s %s\n", "NAME", "STATUS", "AGENT", "TMUX", "CWD")
+		fmt.Fprintf(out, "%-18s %-10s %-12s %-8s %-24s %s\n", "NAME", "STATUS", "AGENT", "BACKEND", "TARGET", "CWD")
 		for _, s := range sessions {
-			fmt.Fprintf(out, "%-18s %-10s %-12s %-24s %s\n", s.Name, s.Status, s.AgentType, s.TmuxSession, s.Cwd)
+			fmt.Fprintf(out, "%-18s %-10s %-12s %-8s %-24s %s\n", s.Name, s.Status, s.AgentType, s.DisplayBackend(), s.TargetSession(), s.Cwd)
 		}
 		return nil
 	case "start":
@@ -805,7 +829,7 @@ func runSessionCommand(manager sessionManagerAPI, args []string, out io.Writer) 
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "Started %s (%s)\nAttach: tmux attach -t %s\n", rec.Name, rec.AgentType, rec.TmuxSession)
+		fmt.Fprintf(out, "Started %s (%s, %s)\nAttach: duckway session attach %s\n", rec.Name, rec.AgentType, rec.DisplayBackend(), rec.Name)
 		return nil
 	case "attach":
 		if len(args) != 2 {
@@ -871,6 +895,10 @@ func parseSessionStartOptions(args []string) (client.SessionStartOptions, error)
 			}
 			opts.AgentType = args[i+1]
 			i++
+		case "--tmux":
+			opts.Backend = client.SessionBackendTmux
+		case "--pty":
+			opts.Backend = client.SessionBackendPTY
 		case "--cwd", "-C":
 			if i+1 >= len(args) {
 				return opts, fmt.Errorf("--cwd requires a value")
@@ -1000,10 +1028,10 @@ func cmdCCWatch(configDir string) {
 	stop := false
 	status := false
 	restart := false
-	// --no-tmux forces the headless --print runner even when tmux is
-	// installed. Also honored via DUCKWAY_CC_NO_TMUX=1 in the environment
-	// so it's settable from a systemd unit without rewriting argv.
+	// PTY is the default runner. --tmux opts into the legacy tmux runner.
+	// --no-tmux is kept as an override for DUCKWAY_CC_USE_TMUX=1.
 	noTmux := os.Getenv("DUCKWAY_CC_NO_TMUX") == "1"
+	useTmux := os.Getenv("DUCKWAY_CC_USE_TMUX") == "1"
 	debug := os.Getenv("DUCKWAY_CC_DEBUG") == "1"
 	for i := 3; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -1018,15 +1046,25 @@ func cmdCCWatch(configDir string) {
 			restart = true
 		case "--no-tmux":
 			noTmux = true
+			useTmux = false
+		case "--tmux":
+			useTmux = true
+			noTmux = false
 		case "--debug", "-D":
 			debug = true
+		case "--help", "-h":
+			printUsage()
+			return
 		case "--config-dir":
-			if i+1 < len(os.Args) {
-				configDir = os.Args[i+1]
-				pidFile = filepath.Join(configDir, "cc-watch.pid")
-				logFile = filepath.Join(configDir, "cc-watch.log")
-				i++
+			if i+1 >= len(os.Args) {
+				log.Fatal("--config-dir requires a value")
 			}
+			configDir = os.Args[i+1]
+			pidFile = filepath.Join(configDir, "cc-watch.pid")
+			logFile = filepath.Join(configDir, "cc-watch.log")
+			i++
+		default:
+			log.Fatalf("unknown cc watch argument %q", arg)
 		}
 	}
 
@@ -1043,13 +1081,21 @@ func cmdCCWatch(configDir string) {
 		// (up to 2s) and removes the PID file. After it returns the next
 		// startBackgroundDaemon won't see a live PID and will spawn cleanly.
 		stopBackgroundDaemon("duckway cc watch", pidFile)
-		warnIfTmuxUnavailable()
+		if useTmux {
+			warnIfTmuxRequestedButUnavailable()
+		}
 		daemon = true
 	}
 
 	cfg, err := client.LoadConfig(configDir)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	if useTmux {
+		os.Setenv("DUCKWAY_CC_USE_TMUX", "1")
+	} else {
+		os.Unsetenv("DUCKWAY_CC_USE_TMUX")
 	}
 
 	if daemon {
@@ -1357,12 +1403,15 @@ func runSudoUpdate(exe, serverURL string) error {
 }
 
 type updateOptions struct {
-	serverURL       string
-	restartAfter    bool
-	expectedVersion string
-	expectedBinary  string
-	expectedSHA256  string
-	expectedSize    int64
+	serverURL              string
+	restartAfter           bool
+	expectedVersion        string
+	expectedBinary         string
+	expectedSHA256         string
+	expectedSize           int64
+	expectedDucklionBinary string
+	expectedDucklionSHA256 string
+	expectedDucklionSize   int64
 }
 
 func parseUpdateOptions(args []string, envServerURL string) updateOptions {
@@ -1376,7 +1425,7 @@ func parseUpdateOptions(args []string, envServerURL string) updateOptions {
 			}
 		case "--restart":
 			opts.restartAfter = true
-		case "--expected-version", "--expected-binary", "--expected-sha256", "--expected-size":
+		case "--expected-version", "--expected-binary", "--expected-sha256", "--expected-size", "--expected-ducklion-binary", "--expected-ducklion-sha256", "--expected-ducklion-size":
 			if i+1 < len(args) {
 				value := args[i+1]
 				i++
@@ -1389,6 +1438,12 @@ func parseUpdateOptions(args []string, envServerURL string) updateOptions {
 					opts.expectedSHA256 = value
 				case "--expected-size":
 					opts.expectedSize, _ = strconv.ParseInt(value, 10, 64)
+				case "--expected-ducklion-binary":
+					opts.expectedDucklionBinary = value
+				case "--expected-ducklion-sha256":
+					opts.expectedDucklionSHA256 = value
+				case "--expected-ducklion-size":
+					opts.expectedDucklionSize, _ = strconv.ParseInt(value, 10, 64)
 				}
 			}
 		}
@@ -1437,6 +1492,14 @@ func cmdUpdate(configDir string) {
 			log.Fatalf("rollout artifact changed: got version=%s binary=%s sha256=%s size=%d; expected version=%s binary=%s sha256=%s size=%d",
 				updateInfo.ClientRecommendedVersion, updateInfo.Binary, updateInfo.SHA256, updateInfo.Size,
 				opts.expectedVersion, opts.expectedBinary, opts.expectedSHA256, opts.expectedSize)
+		}
+		if opts.expectedDucklionBinary != "" &&
+			(updateInfo.DucklionBinary != opts.expectedDucklionBinary ||
+				!strings.EqualFold(updateInfo.DucklionSHA256, opts.expectedDucklionSHA256) ||
+				updateInfo.DucklionSize != opts.expectedDucklionSize) {
+			log.Fatalf("rollout ducklion artifact changed: got binary=%s sha256=%s size=%d; expected binary=%s sha256=%s size=%d",
+				updateInfo.DucklionBinary, updateInfo.DucklionSHA256, updateInfo.DucklionSize,
+				opts.expectedDucklionBinary, opts.expectedDucklionSHA256, opts.expectedDucklionSize)
 		}
 	}
 	fmt.Printf("Server:  %s\n", updateInfo.ServerVersion)
@@ -1555,17 +1618,37 @@ func restartDaemonsRunningBeforeUpdate(configDir string) {
 	}
 	if ccAlive {
 		fmt.Printf("duckway cc watch: restarting old PID %d\n", ccPID)
+		oldUseTmux := processEnvValue(ccPID, "DUCKWAY_CC_USE_TMUX") == "1"
 		stopBackgroundDaemon("duckway cc watch", ccPidFile)
 		if !hasSupportedCCAgent() {
 			fmt.Println("duckway cc watch: skipped — neither `claude` nor `codex` is on PATH")
 			return
 		}
+		if oldUseTmux {
+			os.Setenv("DUCKWAY_CC_USE_TMUX", "1")
+		} else {
+			os.Unsetenv("DUCKWAY_CC_USE_TMUX")
+		}
 		if err := spawnDaemonProcess([]string{"cc", "watch"}, ccPidFile, ccLogFile); err != nil {
 			log.Fatalf("Failed to restart cc-watch: %v", err)
 		}
-		warnIfTmuxUnavailable()
+		warnIfTmuxRequestedButUnavailable()
 		fmt.Printf("duckway cc watch: restarted (logs %s)\n", ccLogFile)
 	}
+}
+
+func processEnvValue(pid int, key string) string {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "environ"))
+	if err != nil {
+		return ""
+	}
+	prefix := key + "="
+	for _, item := range strings.Split(string(data), "\x00") {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
 }
 
 func cmdEnv(configDir string) {
@@ -1695,7 +1778,7 @@ func cmdProxyExec(configDir string, args []string) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = proxyExecEnv(os.Environ(), cfg.ProxyPort)
+	cmd.Env = proxyExecEnv(os.Environ(), cfg.ProxyPort, configDir)
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
@@ -1706,7 +1789,7 @@ func cmdProxyExec(configDir string, args []string) {
 	}
 }
 
-func proxyExecEnv(base []string, port int) []string {
+func proxyExecEnv(base []string, port int, configDir string) []string {
 	proxyURL := client.LocalProxyURL(port)
 	override := map[string]string{
 		"HTTP_PROXY":  proxyURL,
@@ -1717,6 +1800,12 @@ func proxyExecEnv(base []string, port int) []string {
 		"all_proxy":   proxyURL,
 		"NO_PROXY":    "localhost,127.0.0.1,::1",
 		"no_proxy":    "localhost,127.0.0.1,::1",
+	}
+	for _, kv := range client.ProxyCAEnv(configDir) {
+		key, value, ok := strings.Cut(kv, "=")
+		if ok {
+			override[key] = value
+		}
 	}
 	out := make([]string, 0, len(base)+len(override))
 	for _, kv := range base {
@@ -1730,8 +1819,10 @@ func proxyExecEnv(base []string, port int) []string {
 		}
 		out = append(out, kv)
 	}
-	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
-		out = append(out, key+"="+override[key])
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"} {
+		if value, ok := override[key]; ok {
+			out = append(out, key+"="+value)
+		}
 	}
 	return out
 }
@@ -1772,7 +1863,7 @@ func cmdStart(configDir string) {
 	} else if err := spawnDaemonProcess([]string{"cc", "watch"}, ccPidFile, ccLogFile); err != nil {
 		log.Fatalf("Failed to start cc-watch: %v", err)
 	} else {
-		warnIfTmuxUnavailable()
+		warnIfTmuxRequestedButUnavailable()
 		fmt.Printf("duckway cc watch: started (logs %s)\n", ccLogFile)
 	}
 }
@@ -1787,16 +1878,16 @@ func hasSupportedCCAgent() bool {
 }
 
 func tmuxUnavailableWarning(noTmux bool, lookPath func(string) (string, error)) string {
-	if noTmux {
+	if noTmux || os.Getenv("DUCKWAY_CC_USE_TMUX") != "1" {
 		return ""
 	}
 	if _, err := lookPath("tmux"); err == nil {
 		return ""
 	}
-	return "Warning: tmux is not installed or not on PATH; control channels will use headless agent runners. Install tmux to get attachable sessions like `tmux attach -t <handle>`."
+	return "Warning: tmux was requested but is not installed or not on PATH; control channels will use PTY/headless runners."
 }
 
-func warnIfTmuxUnavailable() {
+func warnIfTmuxRequestedButUnavailable() {
 	if msg := tmuxUnavailableWarning(os.Getenv("DUCKWAY_CC_NO_TMUX") == "1", exec.LookPath); msg != "" {
 		fmt.Fprintln(os.Stderr, msg)
 	}

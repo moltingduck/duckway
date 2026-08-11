@@ -23,6 +23,8 @@ type remoteRunner interface {
 	Send(context.Context, ducklord.Client, string, string) error
 	Start(context.Context, ducklord.Client, []string) error
 	Stop(context.Context, ducklord.Client, string) error
+	Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error)
+	ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error)
 	Attach(ducklord.Client, string) error
 	AttachStream(context.Context, ducklord.Client, string) (*ducklord.AttachSession, error)
 }
@@ -56,6 +58,26 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		return fmt.Errorf("command is required")
 	}
 	switch args[0] {
+	case "ssh-hosts":
+		path := ""
+		rest := args[1:]
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case "--config-file":
+				if i+1 >= len(rest) {
+					return fmt.Errorf("--config-file requires a value")
+				}
+				path = rest[i+1]
+				i++
+			default:
+				return fmt.Errorf("unknown ssh-hosts option: %s", rest[i])
+			}
+		}
+		hosts, err := ducklord.LoadSSHConfigHosts(path)
+		if err != nil {
+			return err
+		}
+		return printSSHHosts(out, hosts)
 	case "clients":
 		cfg, _, err := loadWithFlags(args[1:])
 		if err != nil {
@@ -79,6 +101,40 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 			return err
 		}
 		return printSessions(out, sessions)
+	case "projects":
+		cfg, rest, err := loadWithFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		if len(rest) != 1 {
+			return fmt.Errorf("usage: ducklord projects <client> [--config <path>]")
+		}
+		c, err := mustClient(cfg, rest[0])
+		if err != nil {
+			return err
+		}
+		projects, err := runner.Projects(context.Background(), c)
+		if err != nil {
+			return err
+		}
+		return printProjects(out, projects)
+	case "probe":
+		cfg, rest, err := loadWithFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		if len(rest) != 1 {
+			return fmt.Errorf("usage: ducklord probe <client> [--config <path>]")
+		}
+		c, err := mustClient(cfg, rest[0])
+		if err != nil {
+			return err
+		}
+		probe, err := runner.ProbeDucklion(context.Background(), c)
+		if err != nil {
+			return err
+		}
+		return printProbe(out, probe)
 	case "read":
 		cfg, rest, err := loadWithFlags(args[1:])
 		if err != nil {
@@ -163,7 +219,7 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		if err != nil {
 			return err
 		}
-		return runTUI(cfg, runner, refresh)
+		return runTUI(cfg, runner, cfgPath, refresh)
 	case "version", "--version", "-v":
 		fmt.Fprintln(out, "ducklord", version.Get())
 		return nil
@@ -173,6 +229,18 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 	default:
 		return fmt.Errorf("unknown ducklord command: %s", args[0])
 	}
+}
+
+func printSSHHosts(out io.Writer, hosts []ducklord.SSHHost) error {
+	if len(hosts) == 0 {
+		fmt.Fprintln(out, "No concrete SSH hosts found.")
+		return nil
+	}
+	fmt.Fprintf(out, "%-32s %s\n", "HOST", "SOURCE")
+	for _, h := range hosts {
+		fmt.Fprintf(out, "%-32s %s\n", displayField(h.Name), displayField(h.File))
+	}
+	return nil
 }
 
 func loadWithFlags(args []string) (*ducklord.Config, []string, error) {
@@ -235,6 +303,27 @@ func printClients(out io.Writer, cfg *ducklord.Config) error {
 	for _, c := range cfg.Clients {
 		fmt.Fprintf(out, "%-18s %-12s %-24s %s\n", c.Name, c.Group, c.Target(), c.Ducklion)
 	}
+	return nil
+}
+
+func printProjects(out io.Writer, projects []ducklord.RemoteProject) error {
+	if len(projects) == 0 {
+		fmt.Fprintln(out, "No remote projects.")
+		return nil
+	}
+	fmt.Fprintf(out, "%-18s %-40s %s\n", "NAME", "PATH", "SOURCE")
+	for _, p := range projects {
+		fmt.Fprintf(out, "%-18s %-40s %s\n", displayField(p.Name), displayField(p.Path), displayField(p.Source))
+	}
+	return nil
+}
+
+func printProbe(out io.Writer, probe ducklord.DucklionProbe) error {
+	if !probe.Available {
+		fmt.Fprintln(out, "ducklion: missing")
+		return nil
+	}
+	fmt.Fprintf(out, "ducklion: available\ncommand: %s\nversion: %s\n", probe.Command, probe.Version)
 	return nil
 }
 
@@ -383,6 +472,59 @@ func buildStartArgs(name, agent, cwd string, command []string) ([]string, error)
 	return out, nil
 }
 
+func parseCreateAgentChoice(input string) (string, []string, error) {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "", "1", "shell", "bash", "sh":
+		return "shell", []string{"bash"}, nil
+	case "2", "codex":
+		return "codex", []string{"codex"}, nil
+	case "3", "claude", "claude_code", "claude-code":
+		return "claude_code", []string{"claude"}, nil
+	default:
+		return "", nil, fmt.Errorf("unknown agent %q; choose shell, codex, or claude", input)
+	}
+}
+
+func createSessionName(agent, cwd string) string {
+	base := strings.TrimSpace(cwd)
+	base = strings.TrimRight(base, "/")
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	if base == "" || base == "." || base == "~" {
+		base = "home"
+	}
+	return safeSlug(agent + "-" + base)
+}
+
+func safeSlug(s string) string {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(s) {
+		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_'
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		out = "session"
+	}
+	if len(out) > 64 {
+		out = strings.TrimRight(out[:64], "-")
+	}
+	if out == "" {
+		out = "session"
+	}
+	return out
+}
+
 func splitCommandLine(line string) ([]string, error) {
 	var fields []string
 	var b strings.Builder
@@ -439,6 +581,7 @@ func splitCommandLine(line string) ([]string, error) {
 
 type tuiState struct {
 	cfg                *ducklord.Config
+	cfgPath            string
 	runner             remoteRunner
 	refresh            time.Duration
 	sessions           []ducklord.RemoteSession
@@ -454,9 +597,17 @@ type tuiState struct {
 	newSessionLine     string
 	newSessionErr      string
 	newSessionStarting bool
+	newSessionStep     string
+	newSessionAgent    string
+	newSessionCommand  []string
+	newSessionProjects []ducklord.RemoteProject
+	addClientMode      bool
+	addClientLine      string
+	addClientErr       string
+	addClientHosts     []ducklord.SSHHost
 }
 
-func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) error {
+func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration) error {
 	oldState, err := makeRaw()
 	if err != nil {
 		return err
@@ -467,7 +618,7 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	state := &tuiState{cfg: cfg, runner: runner, refresh: refresh, hashes: map[string]string{}}
+	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}}
 	state.refreshSessions(ctx)
 	state.refreshSelectedOutput(ctx)
 	state.render(os.Stdout)
@@ -547,6 +698,19 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 				}
 				continue
 			}
+			if state.addClientMode {
+				action := state.handleLineInput(b, &state.addClientLine)
+				switch action {
+				case "cancel":
+					state.cancelAddClient()
+				case "submit":
+					if err := state.submitAddClient(ctx); err != nil {
+						state.addClientErr = err.Error()
+					}
+				}
+				state.render(os.Stdout)
+				continue
+			}
 			if state.newSessionMode {
 				if state.newSessionStarting {
 					if string(b) == "\x03" || string(b) == "\x1b" || string(b) == "q" {
@@ -561,13 +725,14 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 				action := state.handleCreateInput(b)
 				switch action {
 				case "cancel":
-					state.newSessionMode = false
-					state.newSessionLine = ""
-					state.newSessionErr = ""
+					state.cancelCreate()
 				case "submit":
-					sessionName, args, err := parseCreateLine(state.newSessionLine)
+					sessionName, clientName, args, ready, err := state.submitCreateStep(ctx)
 					if err != nil {
 						state.newSessionErr = err.Error()
+						break
+					}
+					if !ready {
 						break
 					}
 					c, err := mustClient(cfg, state.newSessionClient)
@@ -578,7 +743,6 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 					startCancel = cancel
 					startID++
 					id := startID
-					clientName := state.newSessionClient
 					state.newSessionStarting = true
 					state.newSessionErr = "starting..."
 					go func() {
@@ -603,6 +767,8 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) er
 				state.refreshSelectedOutput(ctx)
 			case "new":
 				state.beginCreate()
+			case "add-client":
+				state.beginAddClient()
 			case "attach":
 				if len(state.sessions) == 0 {
 					continue
@@ -777,14 +943,19 @@ func (s *tuiState) render(out io.Writer) {
 	fmt.Fprintln(out, "ducklord remote agents")
 	if s.focused {
 		fmt.Fprintln(out, "session focus  keys go to session  ctrl-] menu")
+	} else if s.addClientMode {
+		fmt.Fprintln(out, "add ducklion host: ssh config number/name or user@host  enter add  esc cancel")
 	} else if s.newSessionMode {
-		fmt.Fprintf(out, "new session on %s  <name> [--agent shell] [--cwd DIR] [-- CMD...]  enter create  esc cancel\n", displayField(s.newSessionClient))
+		fmt.Fprintf(out, "%s  enter next  esc cancel\n", truncate(s.createHeader(), renderWidth))
 	} else {
-		fmt.Fprintln(out, "j/k or arrows move  enter/right-click focus session  n new  r refresh  q quit")
+		fmt.Fprintln(out, "j/k or arrows move  enter/right-click focus session  a add host  n new  r refresh  q quit")
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
 		fmt.Fprintln(out, "No sessions.")
+		s.renderAddClientChoices(out, 5, 1, menuWidth, height)
+		s.renderCreateChoices(out, 5, 1, menuWidth, height)
+		s.renderAddClientPrompt(out, 4, 1, renderWidth)
 		s.renderCreatePrompt(out, 4, 1, renderWidth)
 		return
 	}
@@ -822,15 +993,69 @@ func (s *tuiState) render(out io.Writer) {
 		fmt.Fprintf(out, "\033[%d;1H%-*s |\033[K", row, menuWidth, truncate(line, menuWidth))
 		row++
 	}
+	s.renderAddClientChoices(out, row, 1, menuWidth, height)
+	s.renderCreateChoices(out, row, 1, menuWidth, height)
 	s.renderContent(out, contentX, contentWidth, height)
+	s.renderAddClientPrompt(out, height, 1, renderWidth)
 	s.renderCreatePrompt(out, height, 1, renderWidth)
+}
+
+func (s *tuiState) renderAddClientChoices(out io.Writer, row, x, width, height int) {
+	if !s.addClientMode || row > height-2 {
+		return
+	}
+	for i, host := range s.addClientHosts {
+		if row > height-2 {
+			return
+		}
+		line := fmt.Sprintf("%d %s", i+1, displayField(host.Name))
+		fmt.Fprintf(out, "\033[%d;%dH%-*s |\033[K", row, x, width, truncate(line, width))
+		row++
+	}
+}
+
+func (s *tuiState) renderAddClientPrompt(out io.Writer, row, x, width int) {
+	if !s.addClientMode {
+		return
+	}
+	prompt := fmt.Sprintf("host> %s", s.addClientLine)
+	fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row, x, truncate(prompt, width))
+	if s.addClientErr != "" && row > 1 {
+		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row-1, x, truncate("status: "+sanitizeTerminalText(s.addClientErr), width))
+	}
+}
+
+func (s *tuiState) renderCreateChoices(out io.Writer, row, x, width, height int) {
+	if !s.newSessionMode || row > height-2 {
+		return
+	}
+	switch s.newSessionStep {
+	case "host":
+		for i, client := range s.cfg.Clients {
+			if row > height-2 {
+				return
+			}
+			line := fmt.Sprintf("%d %s %s", i+1, displayField(client.Name), displayField(client.Target()))
+			fmt.Fprintf(out, "\033[%d;%dH%-*s |\033[K", row, x, width, truncate(line, width))
+			row++
+		}
+	case "project":
+		for i, project := range s.newSessionProjects {
+			if row > height-2 {
+				return
+			}
+			line := fmt.Sprintf("%d %s %s", i+1, displayField(project.Name), displayField(project.Path))
+			fmt.Fprintf(out, "\033[%d;%dH%-*s |\033[K", row, x, width, truncate(line, width))
+			row++
+		}
+	}
 }
 
 func (s *tuiState) renderCreatePrompt(out io.Writer, row, x, width int) {
 	if !s.newSessionMode {
 		return
 	}
-	prompt := fmt.Sprintf("new> %s", s.newSessionLine)
+	prompt := fmt.Sprintf("%s> %s", s.createPromptLabel(), s.newSessionLine)
 	fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row, x, truncate(prompt, width))
 	if s.newSessionErr != "" && row > 1 {
 		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row-1, x, truncate("status: "+sanitizeTerminalText(s.newSessionErr), width))
@@ -867,6 +1092,8 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "refresh"
 	case text == "n":
 		return "new"
+	case text == "a":
+		return "add-client"
 	case text == "\r" || text == "\n":
 		return "attach"
 	case text == "j" || text == "\x1b[B":
@@ -897,6 +1124,102 @@ func (s *tuiState) handleInput(b []byte) string {
 	return ""
 }
 
+func (s *tuiState) beginAddClient() {
+	hosts, err := ducklord.LoadSSHConfigHosts("")
+	if err != nil {
+		s.outputErr = err.Error()
+		return
+	}
+	s.addClientMode = true
+	s.addClientLine = ""
+	s.addClientErr = ""
+	s.addClientHosts = hosts
+	s.newSessionMode = false
+	s.outputErr = ""
+}
+
+func (s *tuiState) cancelAddClient() {
+	s.addClientMode = false
+	s.addClientLine = ""
+	s.addClientErr = ""
+	s.addClientHosts = nil
+}
+
+func (s *tuiState) submitAddClient(ctx context.Context) error {
+	client, err := s.clientFromAddLine(strings.TrimSpace(s.addClientLine))
+	if err != nil {
+		return err
+	}
+	probe, err := s.runner.ProbeDucklion(ctx, client)
+	if err != nil {
+		return err
+	}
+	if probe.Available && probe.Command != "" {
+		client.Ducklion = probe.Command
+	}
+	if err := s.cfg.AddClient(client); err != nil {
+		return err
+	}
+	if err := ducklord.SaveConfig(s.cfgPath, s.cfg); err != nil {
+		return err
+	}
+	s.cancelAddClient()
+	if probe.Available {
+		s.outputErr = fmt.Sprintf("added %s (%s)", client.Name, probe.Command)
+	} else {
+		s.outputErr = fmt.Sprintf("added %s; ducklion missing on remote", client.Name)
+	}
+	return nil
+}
+
+func (s *tuiState) clientFromAddLine(input string) (ducklord.Client, error) {
+	if input == "" {
+		return ducklord.Client{}, fmt.Errorf("ssh host is required")
+	}
+	target := input
+	sshCommand := "ssh"
+	if n, err := strconv.Atoi(input); err == nil {
+		if n < 1 || n > len(s.addClientHosts) {
+			return ducklord.Client{}, fmt.Errorf("ssh host number out of range")
+		}
+		target = s.addClientHosts[n-1].Name
+	} else if fields, err := splitCommandLine(input); err == nil && len(fields) >= 2 && fields[0] == "ssh" {
+		target = fields[len(fields)-1]
+		sshCommand = fields[0]
+		if strings.HasPrefix(target, "-") {
+			return ducklord.Client{}, fmt.Errorf("full ssh command must end with a host target")
+		}
+	} else if err != nil {
+		return ducklord.Client{}, err
+	}
+	user := ""
+	host := target
+	if strings.Contains(target, "@") {
+		user, host, _ = strings.Cut(target, "@")
+	}
+	name := uniqueClientName(s.cfg, safeSlug(host))
+	client := ducklord.Client{Name: name, Host: host, User: user, Group: "remote", Ducklion: "ducklion", SSH: sshCommand}
+	if err := client.Normalize(); err != nil {
+		return ducklord.Client{}, err
+	}
+	return client, nil
+}
+
+func uniqueClientName(cfg *ducklord.Config, base string) string {
+	if base == "" {
+		base = "remote"
+	}
+	if _, ok := cfg.Client(base); !ok {
+		return base
+	}
+	for i := 2; ; i++ {
+		name := fmt.Sprintf("%s-%d", base, i)
+		if _, ok := cfg.Client(name); !ok {
+			return name
+		}
+	}
+}
+
 func (s *tuiState) beginCreate() {
 	clientName := s.selectedClientName()
 	if clientName == "" {
@@ -908,10 +1231,146 @@ func (s *tuiState) beginCreate() {
 	s.newSessionLine = ""
 	s.newSessionErr = ""
 	s.newSessionStarting = false
+	s.newSessionStep = "agent"
+	s.newSessionAgent = ""
+	s.newSessionCommand = nil
+	s.newSessionProjects = nil
 	s.outputErr = ""
 }
 
+func (s *tuiState) cancelCreate() {
+	s.newSessionMode = false
+	s.newSessionLine = ""
+	s.newSessionErr = ""
+	s.newSessionStarting = false
+	s.newSessionStep = ""
+	s.newSessionAgent = ""
+	s.newSessionCommand = nil
+	s.newSessionProjects = nil
+}
+
+func (s *tuiState) submitCreateStep(ctx context.Context) (sessionName, clientName string, args []string, ready bool, err error) {
+	line := strings.TrimSpace(s.newSessionLine)
+	switch s.newSessionStep {
+	case "", "agent":
+		agent, command, err := parseCreateAgentChoice(line)
+		if err != nil {
+			return "", "", nil, false, err
+		}
+		s.newSessionAgent = agent
+		s.newSessionCommand = command
+		s.newSessionStep = "host"
+		s.newSessionLine = ""
+		s.newSessionErr = fmt.Sprintf("agent: %s", agent)
+		return "", "", nil, false, nil
+	case "host":
+		clientName, err := s.resolveCreateClient(line)
+		if err != nil {
+			return "", "", nil, false, err
+		}
+		client, err := mustClient(s.cfg, clientName)
+		if err != nil {
+			return "", "", nil, false, err
+		}
+		projects, projectErr := s.runner.Projects(ctx, client)
+		s.newSessionClient = clientName
+		s.newSessionProjects = projects
+		s.newSessionStep = "project"
+		s.newSessionLine = ""
+		if projectErr != nil {
+			s.newSessionErr = "project list failed; enter a cwd path manually: " + projectErr.Error()
+		} else if len(projects) == 0 {
+			s.newSessionErr = "no duckway projects found; enter a cwd path manually"
+		} else {
+			s.newSessionErr = fmt.Sprintf("host: %s; choose project number/name/path", clientName)
+		}
+		return "", "", nil, false, nil
+	case "project":
+		cwd, err := s.resolveCreateProject(line)
+		if err != nil {
+			return "", "", nil, false, err
+		}
+		name := createSessionName(s.newSessionAgent, cwd)
+		args, err := buildStartArgs(name, s.newSessionAgent, cwd, s.newSessionCommand)
+		if err != nil {
+			return "", "", nil, false, err
+		}
+		return name, s.newSessionClient, args, true, nil
+	default:
+		return "", "", nil, false, fmt.Errorf("unknown create step %q", s.newSessionStep)
+	}
+}
+
+func (s *tuiState) resolveCreateClient(input string) (string, error) {
+	if len(s.cfg.Clients) == 0 {
+		return "", fmt.Errorf("no ducklord client configured")
+	}
+	if input == "" {
+		return s.newSessionClient, nil
+	}
+	if n, err := strconv.Atoi(input); err == nil {
+		if n < 1 || n > len(s.cfg.Clients) {
+			return "", fmt.Errorf("host number out of range")
+		}
+		return s.cfg.Clients[n-1].Name, nil
+	}
+	if _, ok := s.cfg.Client(input); !ok {
+		return "", fmt.Errorf("unknown host %q", input)
+	}
+	return input, nil
+}
+
+func (s *tuiState) resolveCreateProject(input string) (string, error) {
+	if input == "" {
+		if len(s.newSessionProjects) == 1 {
+			return s.newSessionProjects[0].Path, nil
+		}
+		return "", fmt.Errorf("project path, name, or number is required")
+	}
+	if n, err := strconv.Atoi(input); err == nil {
+		if n < 1 || n > len(s.newSessionProjects) {
+			return "", fmt.Errorf("project number out of range")
+		}
+		return s.newSessionProjects[n-1].Path, nil
+	}
+	for _, project := range s.newSessionProjects {
+		if input == project.Name || input == project.Path {
+			return project.Path, nil
+		}
+	}
+	if strings.HasPrefix(input, "/") || strings.HasPrefix(input, "~") || strings.HasPrefix(input, ".") {
+		return input, nil
+	}
+	return "", fmt.Errorf("unknown project %q; enter a project number or full cwd path", input)
+}
+
+func (s *tuiState) createHeader() string {
+	switch s.newSessionStep {
+	case "host":
+		return fmt.Sprintf("new session: agent=%s  host number/name", displayField(s.newSessionAgent))
+	case "project":
+		return fmt.Sprintf("new session: agent=%s host=%s  project number/name/path", displayField(s.newSessionAgent), displayField(s.newSessionClient))
+	default:
+		return "new session: agent  1 shell  2 codex  3 claude"
+	}
+}
+
+func (s *tuiState) createPromptLabel() string {
+	switch s.newSessionStep {
+	case "host":
+		return "host"
+	case "project":
+		return "project"
+	default:
+		return "agent"
+	}
+}
+
 func (s *tuiState) handleCreateInput(b []byte) string {
+	return s.handleLineInput(b, &s.newSessionLine)
+}
+
+func (s *tuiState) handleLineInput(b []byte, line *string) string {
 	if len(b) == 0 {
 		return ""
 	}
@@ -922,14 +1381,14 @@ func (s *tuiState) handleCreateInput(b []byte) string {
 		return "cancel"
 	}
 	if len(b) == 1 && (b[0] == '\b' || b[0] == 0x7f) {
-		if s.newSessionLine != "" {
-			runes := []rune(s.newSessionLine)
-			s.newSessionLine = string(runes[:len(runes)-1])
+		if *line != "" {
+			runes := []rune(*line)
+			*line = string(runes[:len(runes)-1])
 		}
 		return ""
 	}
 	if len(b) == 1 && b[0] >= 0x20 && b[0] != 0x7f {
-		s.newSessionLine += string(b)
+		*line += string(b)
 	}
 	return ""
 }
@@ -1228,7 +1687,10 @@ func printUsage(out io.Writer) {
 
 Usage:
   ducklord clients [--config <path>]
+  ducklord ssh-hosts [--config-file <ssh_config>]
   ducklord sessions <client> [--config <path>]
+  ducklord projects <client> [--config <path>]
+  ducklord probe <client> [--config <path>]
   ducklord tui [--config <path>] [--refresh 2s]
   ducklord attach <client> <session> [--config <path>]
   ducklord read <client> <session> [--lines N] [--config <path>]

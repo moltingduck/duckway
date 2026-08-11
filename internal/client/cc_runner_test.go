@@ -533,6 +533,7 @@ func TestCCRunnerAdoptsPendingTurnBeforeQueuedMessage(t *testing.T) {
 	})
 	yes := true
 	tmuxAvailableMemo = &yes
+	t.Setenv("DUCKWAY_CC_USE_TMUX", "1")
 	t.Cleanup(func() { tmuxAvailableMemo = nil })
 	spec := ccAgentSpec{Type: "codex", DisplayName: "codex", Bin: "/fake/codex", TmuxRunFn: fn, UseTmux: true}
 	r, err := newCCRunnerWithProcessed(handle, t.TempDir(), t.TempDir(), spec, store, processed, pp.post, pp.postReply, pp.react, nil, false, false)

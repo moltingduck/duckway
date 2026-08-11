@@ -429,9 +429,9 @@ CC v2: a Control Channel binds **one client to one Discord category** via a bot.
 - a single **management channel** (auto-created on CC create, named `<client>-control`, parses `!`-prefix commands server-side), or
 - **task channels** (one per agent session — created via `!new` or the `discord_create_task_channel` MCP tool).
 
-When a human posts in a task channel, the gateway forwards the event over SSE to the on-machine `duckway cc watch` daemon. For `claude_code`, the daemon drives a long-lived Claude TUI in tmux when tmux is installed, falling back to the headless print runner. For `codex`, it runs `codex exec --json` inside a per-channel tmux session when tmux is installed, falling back to headless `codex exec --json`; follow-up turns use `codex exec resume <thread_id>`. For `openclaw`, it runs `openclaw agent --agent <id> --session-key duckway:<handle> --message-file <file> --json`; the agent id comes from `DUCKWAY_CC_OPENCLAW_AGENT` or defaults to `default`, and Duckway does not use OpenClaw's own channel bindings. `duckway start` / `duckway restart` warn when tmux is missing so operators know the daemon will run without attachable sessions. The daemon posts the final agent message back to the channel.
+When a human posts in a task channel, the gateway forwards the event over SSE to the on-machine `duckway cc watch` daemon. For `claude_code`, the daemon runs `claude --print --output-format json` inside Duckway's PTY supervisor by default. For `codex`, it runs `codex exec --json` inside Duckway's PTY supervisor by default; follow-up turns use `codex exec resume <thread_id>`. The legacy tmux runner is still available with `duckway cc watch --tmux` or `DUCKWAY_CC_USE_TMUX=1`. For `openclaw`, it runs `openclaw agent --agent <id> --session-key duckway:<handle> --message-file <file> --json`; the agent id comes from `DUCKWAY_CC_OPENCLAW_AGENT` or defaults to `default`, and Duckway does not use OpenClaw's own channel bindings. The daemon posts the final agent message back to the channel.
 
-Codex tmux turns intentionally do not use the shared five-minute `tmuxRunTimeout`; long-running prompts such as `/goal` keep the per-channel runner occupied until Codex writes its completion event. If the daemon dies mid-turn, `in-flight.json` plus the event file allow startup recovery to post the final reply.
+Codex PTY turns intentionally do not use the legacy five-minute tmux timeout; long-running prompts such as `/goal` keep the per-channel runner occupied until Codex writes its completion event. The tmux runner still uses `in-flight.json` plus event files for startup recovery when explicitly enabled.
 
 Tmux session names use `<handle>-duckway`. During upgrade, `migrateLegacyTmuxSession` renames the older `duckway-<handle>` convention to the current name when only the legacy session exists. If both names exist, it logs a warning and leaves both alone to avoid merging separate active turns.
 
@@ -530,7 +530,7 @@ For `discord_request_approval`, the server posts the question + reactions, regis
 
 - Bot token = the only real boundary. Different teams → different bots.
 - `cc_client.go` enforces two ACL layers: client must be bound to the CC (1:1), and every `{handle}` in a URL must belong to that CC.
-- Daemon trust boundary is the Discord category: anyone in the category can drive the selected agent. `claude_code` currently runs with `--dangerously-skip-permissions`; `codex` runs with a per-CC sandbox enum (`workspace-write`, `read-only`, `danger-full-access`, or `none`) normalized by the server and sanitized again by the client; `openclaw` uses the local OpenClaw configuration and selected agent id. When tmux is installed, Claude/Codex get per-channel attachable sessions named `<handle>-duckway`.
+- Daemon trust boundary is the Discord category: anyone in the category can drive the selected agent. `claude_code` currently runs with `--dangerously-skip-permissions`; `codex` runs with a per-CC sandbox enum (`workspace-write`, `read-only`, `danger-full-access`, or `none`) normalized by the server and sanitized again by the client; `openclaw` uses the local OpenClaw configuration and selected agent id. Claude/Codex use Duckway PTY sessions by default; legacy per-channel tmux sessions named `<handle>-duckway` are used only when `duckway cc watch --tmux` or `DUCKWAY_CC_USE_TMUX=1` is enabled.
 - Agent options are not a generic argument channel. The server stores provider-specific `config.agent_options`, strips unsupported options for other agents, and rejects unknown Codex sandbox values. The client treats server state as untrusted, re-validates the same enum, and constructs `exec.Command` argv or a quoted tmux launch script from fixed argument positions. Do not add a free-form `args` or `flags` field to Control Channels; add a typed option and validate it on both sides.
 
 ### Test hooks
@@ -625,6 +625,41 @@ The flow per service (e.g. OpenAI):
 A passing run proves the full chain: auth → resolve → decrypt → inject correct header → real upstream returns success. A failure on any step bubbles up as the upstream's error body, helping diagnose where the chain broke.
 
 The script never sends the real API key in the test request itself — the key is only sent once during the upload step, and the test request only carries the Duckway client token. So if `/proxy/...` returns 200, the only path that could have produced that result is Duckway resolving and injecting the real key correctly.
+
+### Ducklord / Ducklion smoke test
+
+Ducklord has a Podman demo that creates one developer laptop container and
+multiple SSH-reachable remote clients. Use it when changing Ducklord, Ducklion,
+remote PTY handling, SSH config parsing, project registry integration, or
+standalone `ducklion` installation.
+
+```bash
+scripts/ducklord-podman-demo.sh
+podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord ssh-hosts
+podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
+podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.json
+```
+
+Inside the TUI:
+
+- `a` adds a Ducklion host from `/root/.ssh/config`; try `client-c`.
+- `n` creates a remote session with `agent -> host -> project`.
+- `Enter` or right-click focuses the selected PTY session.
+- `Ctrl-]` returns focus to the left menu.
+
+Clean up:
+
+```bash
+podman rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c
+podman network rm ducklord-demo
+```
+
+See [Ducklord / Ducklion Remote Agent Control](ducklord-ducklion-spec.md) for
+the complete terminal walkthrough and architecture notes.
 
 ### Live GitHub App minter test
 

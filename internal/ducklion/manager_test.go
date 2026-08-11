@@ -99,6 +99,27 @@ func TestManagerRejectsDuplicateLiveSession(t *testing.T) {
 	}
 }
 
+func TestListMarksExitedSupervisorStale(t *testing.T) {
+	root := t.TempDir()
+	m := NewManager(root, "")
+	if _, err := m.Start(StartOptions{Name: "alpha", Cwd: root, Command: []string{"sh", "-lc", "sleep 0.2; printf done"}}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		records, err := m.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) == 1 && records[0].Status == StatusStale {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	records, _ := m.List()
+	t.Fatalf("session did not become stale after command exit: %+v", records)
+}
+
 func TestParseSupervisorArgs(t *testing.T) {
 	opts, err := ParseSupervisorArgs([]string{"--name", "alpha", "--agent", "shell", "--cwd", "/tmp", "--socket", "/tmp/a.sock", "--log", "/tmp/a.log", "--", "sh", "-lc", "echo ok"})
 	if err != nil {
@@ -106,6 +127,30 @@ func TestParseSupervisorArgs(t *testing.T) {
 	}
 	if opts.Name != "alpha" || strings.Join(opts.Command, " ") != "sh -lc echo ok" {
 		t.Fatalf("opts = %+v", opts)
+	}
+}
+
+func TestRespondToTerminalQueries(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "da1", in: "\x1b[c", want: "\x1b[?6c"},
+		{name: "da2", in: "\x1b[>c", want: "\x1b[>0;0;0c"},
+		{name: "dsr-status", in: "\x1b[5n", want: "\x1b[0n"},
+		{name: "cursor-position", in: "\x1b[6n", want: "\x1b[1;1R"},
+		{name: "window-size", in: "\x1b[18t", want: "\x1b[8;40;120t"},
+		{name: "xtversion", in: "\x1b[>q", want: "\x1bP>|duckway 0\x1b\\"},
+		{name: "unknown", in: "\x1b[?25h", want: ""},
+		{name: "partial", in: "\x1b[>", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := string(respondToTerminalQueries([]byte(tc.in))); got != tc.want {
+				t.Fatalf("response = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

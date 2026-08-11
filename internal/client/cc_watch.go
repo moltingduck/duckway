@@ -603,6 +603,7 @@ func (w *CCWatch) agentSpec(ccID string) (ccAgentSpec, error) {
 			Type:        agentType,
 			DisplayName: "claude",
 			Bin:         bin,
+			PtyRunFn:    runViaClaudePTY,
 			UseTmux:     true,
 		}, nil
 	case "codex":
@@ -615,6 +616,7 @@ func (w *CCWatch) agentSpec(ccID string) (ccAgentSpec, error) {
 			DisplayName: "codex",
 			Bin:         bin,
 			RunFn:       runViaCodexExec,
+			PtyRunFn:    runViaCodexPTY,
 			TmuxRunFn:   runViaCodexTmux,
 			UseTmux:     true,
 			ExtraEnv:    agentOptionEnv(agentType, opts),

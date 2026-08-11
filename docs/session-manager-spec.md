@@ -4,14 +4,14 @@ Status: draft for TDD implementation.
 
 ## Goals
 
-Duckway will add a local, Herdr-like tmux session manager for operator-driven terminal agents while keeping Discord Control Channel (CC) agent sessions independent by default.
+Duckway will add a local PTY session manager for operator-driven terminal agents while keeping Discord Control Channel (CC) agent sessions independent by default.
 
 The first implementation is client-local only:
 
 - No new server API.
 - No web UI dependency.
 - No shared live PTY between terminal and CC.
-- Terminal sessions and CC sessions may use the same workspace, but they have separate tmux processes and queues.
+- Terminal sessions and CC sessions may use the same workspace, but they have separate PTY processes and queues.
 
 ## Non-Goals
 
@@ -36,7 +36,7 @@ duckway session stop review
 CC sessions keep the existing model:
 
 ```text
-Discord task channel -> independent CC runner -> <handle>-duckway tmux session
+Discord task channel -> independent CC runner -> ducklion PTY session
 ```
 
 Both session types can inspect the same filesystem and coordinate through files, git status, logs, and docs.
@@ -61,7 +61,9 @@ Shape:
       "kind": "terminal",
       "agent_type": "codex",
       "cwd": "/repo",
-      "tmux_session": "duckway-term-review",
+      "backend": "pty",
+      "pty_session": "duckway-term-review",
+      "tmux_session": "",
       "created_at": "2026-07-30T00:00:00Z",
       "updated_at": "2026-07-30T00:00:00Z",
       "status": "running"
@@ -75,9 +77,9 @@ Rules:
 - State file is versioned from day one.
 - Writes are atomic.
 - State does not include prompts, stdout, API keys, environment dumps, or Discord message content.
-- `status` is best-effort metadata; `duckway session list` should reconcile it with tmux process existence.
+- `status` is best-effort metadata; `duckway session list` should reconcile it with backend process/socket existence.
 
-## Tmux Naming
+## Session Naming
 
 Terminal sessions use:
 
@@ -85,7 +87,7 @@ Terminal sessions use:
 duckway-term-<safe-name>
 ```
 
-CC sessions continue to use:
+Legacy tmux CC sessions use:
 
 ```text
 <channel_handle>-duckway
@@ -93,7 +95,7 @@ CC sessions continue to use:
 
 This makes terminal and CC sessions intentionally non-colliding.
 
-Session names must be shell/tmux safe:
+Session names must be shell/backend safe:
 
 - allowed: ASCII letters, digits, `_`, `-`
 - disallowed: empty names, `.`, `/`, `\`, `:`, whitespace, NUL, control characters, and overlong names
@@ -121,7 +123,7 @@ Forward compatibility:
 
 ```bash
 duckway session list
-duckway session start --name <name> [--agent <codex|claude_code|openclaw|shell>] [--cwd <dir>] -- <command> ...
+duckway session start --name <name> [--agent <codex|claude_code|openclaw|shell>] [--cwd <dir>] [--tmux] -- <command> ...
 duckway session attach <name>
 duckway session send <name> <text>
 duckway session read <name> [--lines N]
@@ -130,14 +132,15 @@ duckway session stop <name>
 
 Behavior:
 
-- `start` fails if tmux is unavailable.
-- `start` fails if the name already exists and the tmux session is still alive.
-- `start` may replace a stale record whose tmux session no longer exists.
+- `start` uses Duckway's PTY supervisor by default.
+- `start --tmux` uses the legacy tmux backend.
+- `start` fails if the name already exists and the backend session is still alive.
+- `start` may replace a stale record whose backend session no longer exists.
 - `start --cwd` resolves symlinks and stores the evaluated absolute directory.
 - `send` appends Enter after the provided text.
 - `read` captures recent pane output without mutating the session.
-- `attach` execs `tmux attach -t <tmux_session>`.
-- `stop` kills tmux session if present and marks state as stopped.
+- `attach` execs the backend attach command, usually `ducklion attach <pty_session>`.
+- `stop` kills the backend session if present and marks state as stopped.
 
 ## TDD Acceptance Tests
 
@@ -145,16 +148,17 @@ Unit tests first:
 
 - missing state loads as version-1 empty state.
 - unknown future state version is rejected.
-- start writes one terminal session record with `duckway-term-` tmux name.
-- terminal tmux names do not collide with CC `<handle>-duckway` names.
+- start writes one terminal session record with `backend=pty` and `duckway-term-` PTY name.
+- terminal backend names do not collide with legacy CC `<handle>-duckway` tmux names.
 - duplicate live start is rejected.
 - stale record can be replaced.
-- send/read/stop target the tmux session from state.
+- send/read/stop target the backend session from state.
 - invalid session names and cwd paths are rejected.
 
 Integration tests later:
 
-- tmux smoke test for start/send/read/stop when tmux is installed.
+- PTY smoke test for start/send/read/stop with standalone `ducklion`.
+- legacy tmux smoke test for `--tmux` when tmux is installed.
 - CLI smoke for `duckway session list` with missing state.
 - migration smoke with existing `cc-sessions.json` and CC tmux sessions proving they are left untouched.
 
@@ -165,4 +169,4 @@ Integration tests later:
 - Commands are passed as argv after `--`; do not parse them through a shell unless the user explicitly starts `shell`.
 - Generic terminal sessions do not automatically inject Duckway key/proxy environment. They inherit the local operator environment only.
 - State files use `0600`; directories use `0700`.
-- Logs should include session names and tmux session names, not command contents or environment.
+- Logs should include session names and backend session names, not command contents or environment.

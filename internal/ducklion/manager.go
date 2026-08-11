@@ -20,6 +20,8 @@ import (
 
 const (
 	stateVersion = 1
+	ptyRows      = 40
+	ptyCols      = 120
 
 	StatusRunning = "running"
 	StatusStopped = "stopped"
@@ -47,6 +49,7 @@ type StartOptions struct {
 	Name      string
 	AgentType string
 	Cwd       string
+	Env       []string
 	Command   []string
 }
 
@@ -84,7 +87,7 @@ func (m *Manager) List() ([]Record, error) {
 	copy(out, state.Sessions)
 	changed := false
 	for i := range out {
-		if out[i].Status == StatusRunning && !processAlive(out[i].PID) {
+		if out[i].Status == StatusRunning && !sessionAlive(out[i]) {
 			out[i].Status = StatusStale
 			for j := range state.Sessions {
 				if state.Sessions[j].Name == out[i].Name {
@@ -146,7 +149,7 @@ func (m *Manager) Start(opts StartOptions) (*Record, error) {
 			filtered = append(filtered, rec)
 			continue
 		}
-		if rec.Status == StatusRunning && processAlive(rec.PID) {
+		if rec.Status == StatusRunning && sessionAlive(rec) {
 			return nil, fmt.Errorf("session %q is already running", name)
 		}
 	}
@@ -176,7 +179,8 @@ func (m *Manager) Start(opts StartOptions) (*Record, error) {
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = errFile
-	cmd.Env = append(scrubSessionEnv(os.Environ()), "DUCKLION_SUPERVISE=1")
+	cmd.Env = append(scrubSessionEnv(os.Environ()), opts.Env...)
+	cmd.Env = append(cmd.Env, "DUCKLION_SUPERVISE=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start ducklion supervisor: %w", err)
@@ -199,7 +203,7 @@ func (m *Manager) Start(opts StartOptions) (*Record, error) {
 }
 
 func (m *Manager) Read(name string, lines int) (string, error) {
-	rec, err := m.lookup(name)
+	rec, err := m.lookupAny(name)
 	if err != nil {
 		return "", err
 	}
@@ -271,6 +275,17 @@ func (m *Manager) Stop(name string) error {
 }
 
 func (m *Manager) lookup(name string) (Record, error) {
+	rec, err := m.lookupAny(name)
+	if err != nil {
+		return Record{}, err
+	}
+	if rec.Status != StatusRunning {
+		return Record{}, fmt.Errorf("session %q is %s", name, rec.Status)
+	}
+	return rec, nil
+}
+
+func (m *Manager) lookupAny(name string) (Record, error) {
 	name, err := ValidateName(name)
 	if err != nil {
 		return Record{}, err
@@ -281,9 +296,6 @@ func (m *Manager) lookup(name string) (Record, error) {
 	}
 	for _, rec := range records {
 		if rec.Name == name {
-			if rec.Status != StatusRunning {
-				return Record{}, fmt.Errorf("session %q is %s", name, rec.Status)
-			}
 			return rec, nil
 		}
 	}
@@ -430,6 +442,18 @@ func processAlive(pid int) bool {
 	return err == nil || err == syscall.EPERM
 }
 
+func sessionAlive(rec Record) bool {
+	return processAlive(rec.PID) && socketExists(rec.Socket)
+}
+
+func socketExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && (info.Mode()&os.ModeSocket) != 0
+}
+
 func killProcessGroup(pid int) {
 	if pid <= 0 {
 		return
@@ -507,21 +531,13 @@ func RunSupervisor(opts SupervisorOptions) error {
 	if err := os.MkdirAll(filepath.Dir(opts.Log), 0700); err != nil {
 		return err
 	}
-	_ = os.Remove(opts.Socket)
-	cmd := exec.Command(opts.Command[0], opts.Command[1:]...)
-	cmd.Dir = cwd
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		return fmt.Errorf("start pty command: %w", err)
-	}
-	defer func() { _ = ptmx.Close() }()
-
-	logFile, err := os.OpenFile(opts.Log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	logFile, err := os.OpenFile(opts.Log, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
 	defer logFile.Close()
 
+	_ = os.Remove(opts.Socket)
 	listener, err := net.Listen("unix", opts.Socket)
 	if err != nil {
 		return err
@@ -533,6 +549,14 @@ func RunSupervisor(opts SupervisorOptions) error {
 	if err := os.Chmod(opts.Socket, 0600); err != nil {
 		return err
 	}
+
+	cmd := exec.Command(opts.Command[0], opts.Command[1:]...)
+	cmd.Dir = cwd
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: ptyRows, Cols: ptyCols})
+	if err != nil {
+		return fmt.Errorf("start pty command: %w", err)
+	}
+	defer func() { _ = ptmx.Close() }()
 
 	done := make(chan error, 1)
 	supervisor := &supervisor{pty: ptmx, proc: cmd.Process, log: logFile, listeners: map[net.Conn]bool{}}
@@ -556,6 +580,9 @@ func (s *supervisor) capture() {
 		n, err := s.pty.Read(buf)
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
+			if resp := respondToTerminalQueries(chunk); len(resp) > 0 {
+				_, _ = s.pty.Write(resp)
+			}
 			s.mu.Lock()
 			_, _ = s.log.Write(chunk)
 			listeners := make([]net.Conn, 0, len(s.listeners))
@@ -576,6 +603,44 @@ func (s *supervisor) capture() {
 			return
 		}
 	}
+}
+
+func respondToTerminalQueries(buf []byte) []byte {
+	var resp []byte
+	i := 0
+	for i < len(buf) {
+		if buf[i] != '\x1b' || i+1 >= len(buf) || buf[i+1] != '[' {
+			i++
+			continue
+		}
+		j := i + 2
+		start := j
+		for j < len(buf) && buf[j] >= 0x30 && buf[j] <= 0x3F {
+			j++
+		}
+		if j >= len(buf) {
+			break
+		}
+		final := buf[j]
+		params := string(buf[start:j])
+		j++
+		switch {
+		case final == 'c' && (params == "" || params == "0"):
+			resp = append(resp, "\x1b[?6c"...)
+		case final == 'c' && (params == ">" || params == ">0"):
+			resp = append(resp, "\x1b[>0;0;0c"...)
+		case final == 'n' && params == "5":
+			resp = append(resp, "\x1b[0n"...)
+		case final == 'n' && params == "6":
+			resp = append(resp, "\x1b[1;1R"...)
+		case final == 't' && params == "18":
+			resp = append(resp, fmt.Sprintf("\x1b[8;%d;%dt", ptyRows, ptyCols)...)
+		case final == 'q' && params == ">":
+			resp = append(resp, "\x1bP>|duckway 0\x1b\\"...)
+		}
+		i = j
+	}
+	return resp
 }
 
 func (s *supervisor) removeListener(conn net.Conn) {

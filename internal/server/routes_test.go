@@ -16,6 +16,9 @@ func TestHandleClientUpdateInfoReturnsPinnedBinaryManifest(t *testing.T) {
 	if err := os.WriteFile(binaryPath, []byte("test binary"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "ducklion-linux-amd64"), []byte("ducklion binary"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("DUCKWAY_CLIENT_RECOMMENDED_VERSION", "v-test")
 	t.Setenv("DUCKWAY_CLIENT_UPDATE_REQUIRED", "1")
 
@@ -45,6 +48,15 @@ func TestHandleClientUpdateInfoReturnsPinnedBinaryManifest(t *testing.T) {
 	if sha, _ := got["sha256"].(string); len(sha) != 64 {
 		t.Fatalf("sha256 = %q", sha)
 	}
+	if got["ducklion_binary"] != "ducklion-linux-amd64" {
+		t.Fatalf("ducklion_binary = %v", got["ducklion_binary"])
+	}
+	if got["ducklion_download_url"] != "/download/ducklion-linux-amd64" {
+		t.Fatalf("ducklion_download_url = %v", got["ducklion_download_url"])
+	}
+	if sha, _ := got["ducklion_sha256"].(string); len(sha) != 64 {
+		t.Fatalf("ducklion_sha256 = %q", sha)
+	}
 }
 
 func TestHandleClientUpdateInfoRejectsUnsupportedPlatform(t *testing.T) {
@@ -61,6 +73,9 @@ func TestServeClientDownloadOnlyAllowsPinnedBinaries(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "duckway-client-linux-amd64"), []byte("ok"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "ducklion-linux-amd64"), []byte("lion"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("secret"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +86,14 @@ func TestServeClientDownloadOnlyAllowsPinnedBinaries(t *testing.T) {
 	serveClientDownload(rec, req, dir)
 	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
 		t.Fatalf("allowed download status=%d body=%q", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/download/ducklion-linux-amd64", nil)
+	req.SetPathValue("binary", "ducklion-linux-amd64")
+	rec = httptest.NewRecorder()
+	serveClientDownload(rec, req, dir)
+	if rec.Code != http.StatusOK || rec.Body.String() != "lion" {
+		t.Fatalf("ducklion download status=%d body=%q", rec.Code, rec.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/download/secret.txt", nil)
@@ -90,6 +113,9 @@ func TestInstallScriptSupportsUserLocalInstall(t *testing.T) {
 		`DUCKWAY_INSTALL_PATH="$custom_path"`,
 		`INSTALL_MODE="custom"`,
 		`sudo mkdir -p "$DEST_DIR"`,
+		`DUCKLION_BINARY="ducklion-${OS}-${ARCH}"`,
+		`DUCKLION_DEST="$DEST_DIR/ducklion"`,
+		`sudo mv /tmp/ducklion "$DUCKLION_DEST"`,
 	} {
 		if !strings.Contains(installScript, want) {
 			t.Fatalf("installScript missing %q", want)

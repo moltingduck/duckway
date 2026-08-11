@@ -22,12 +22,13 @@ func TestSmokeSessionManagerTmuxLifecycle(t *testing.T) {
 	name := "smoke" + strings.ReplaceAll(time.Now().Format("150405.000000000"), ".", "")
 	defer exec.Command("tmux", "kill-session", "-t", terminalTmuxSessionName(name)).Run()
 
-	m := NewSessionManager(configDir, nil)
+	m := NewTmuxSessionManager(configDir, nil)
 	rec, err := m.Start(SessionStartOptions{
 		Name:      name,
 		Kind:      "terminal",
 		AgentType: "shell",
 		Cwd:       workDir,
+		Backend:   SessionBackendTmux,
 		Command:   []string{"sh", "-c", "while IFS= read -r line; do printf '%s\\n' \"$line\" >> input.txt; done"},
 	})
 	if err != nil {

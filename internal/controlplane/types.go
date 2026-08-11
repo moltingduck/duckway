@@ -39,6 +39,9 @@ type Command struct {
 	Binary         string `json:"binary"`
 	SHA256         string `json:"sha256"`
 	Size           int64  `json:"size"`
+	DucklionBinary string `json:"ducklion_binary,omitempty"`
+	DucklionSHA256 string `json:"ducklion_sha256,omitempty"`
+	DucklionSize   int64  `json:"ducklion_size,omitempty"`
 	LeaseToken     string `json:"lease_token"`
 	LeaseExpiresAt string `json:"lease_expires_at"`
 	Attempt        int    `json:"attempt"`

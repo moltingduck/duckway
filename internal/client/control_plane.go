@@ -195,6 +195,15 @@ func validateControlCommand(command controlplane.Command) error {
 	if _, err := hex.DecodeString(command.SHA256); err != nil {
 		return fmt.Errorf("invalid managed update sha256")
 	}
+	if command.DucklionBinary != "" || command.DucklionSHA256 != "" || command.DucklionSize != 0 {
+		wantDucklion := fmt.Sprintf("ducklion-%s-%s", runtime.GOOS, runtime.GOARCH)
+		if command.DucklionBinary != wantDucklion || len(command.DucklionSHA256) != 64 || command.DucklionSize < 1024*1024 {
+			return fmt.Errorf("invalid managed update ducklion artifact")
+		}
+		if _, err := hex.DecodeString(command.DucklionSHA256); err != nil {
+			return fmt.Errorf("invalid managed update ducklion sha256")
+		}
+	}
 	return nil
 }
 
@@ -215,9 +224,17 @@ func startManagedUpdateProcessDefault(configDir, serverURL string, command contr
 		_ = logFile.Close()
 		return err
 	}
-	cmd := exec.Command(exe, "update", "--server", serverURL, "--restart",
+	args := []string{"update", "--server", serverURL, "--restart",
 		"--expected-version", command.TargetVersion, "--expected-binary", command.Binary,
-		"--expected-sha256", command.SHA256, "--expected-size", strconv.FormatInt(command.Size, 10))
+		"--expected-sha256", command.SHA256, "--expected-size", strconv.FormatInt(command.Size, 10)}
+	if command.DucklionBinary != "" {
+		args = append(args,
+			"--expected-ducklion-binary", command.DucklionBinary,
+			"--expected-ducklion-sha256", command.DucklionSHA256,
+			"--expected-ducklion-size", strconv.FormatInt(command.DucklionSize, 10),
+		)
+	}
+	cmd := exec.Command(exe, args...)
 	cmd.Stdin = nil
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	cmd.Env = append(os.Environ(), "DUCKWAY_CONFIG_DIR="+configDir, "DUCKWAY_MANAGED_UPDATE=1")

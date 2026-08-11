@@ -72,6 +72,21 @@ func TestControlCommandRejectsArbitraryBinary(t *testing.T) {
 	}
 }
 
+func TestControlCommandValidatesDucklionArtifact(t *testing.T) {
+	valid := controlplane.Command{ID: "j", Type: controlplane.CommandUpdateRestart,
+		TargetVersion: "v", Binary: "duckway-client-" + runtime.GOOS + "-" + runtime.GOARCH,
+		SHA256: strings.Repeat("a", 64), Size: 2 << 20, LeaseToken: "l", Attempt: 1,
+		DucklionBinary: "ducklion-" + runtime.GOOS + "-" + runtime.GOARCH,
+		DucklionSHA256: strings.Repeat("b", 64), DucklionSize: 2 << 20}
+	if err := validateControlCommand(valid); err != nil {
+		t.Fatalf("valid command rejected: %v", err)
+	}
+	valid.DucklionBinary = "ducklion-darwin-amd64"
+	if err := validateControlCommand(valid); err == nil {
+		t.Fatal("wrong ducklion artifact was accepted")
+	}
+}
+
 func TestControlHeartbeatRejectsTrailingJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"next_heartbeat_seconds":30}{}`))

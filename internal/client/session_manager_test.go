@@ -5,7 +5,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hackerduck/duckway/internal/ducklion"
 )
+
+func TestMain(m *testing.M) {
+	if os.Getenv("DUCKLION_SUPERVISE") == "1" && len(os.Args) > 1 && os.Args[1] == "__supervise" {
+		opts, err := ducklion.ParseSupervisorArgs(os.Args[2:])
+		if err != nil {
+			panic(err)
+		}
+		if err := ducklion.RunSupervisor(opts); err != nil {
+			panic(err)
+		}
+		return
+	}
+	os.Exit(m.Run())
+}
 
 func TestSessionManagerMissingStateLoadsEmptyVersionOne(t *testing.T) {
 	m := NewSessionManager(t.TempDir(), &fakeSessionTmux{})
@@ -18,6 +34,13 @@ func TestSessionManagerMissingStateLoadsEmptyVersionOne(t *testing.T) {
 	}
 	if len(state.Sessions) != 0 {
 		t.Fatalf("sessions = %+v, want empty", state.Sessions)
+	}
+}
+
+func TestSessionManagerDefaultsToPTYBackend(t *testing.T) {
+	m := NewSessionManager(t.TempDir(), nil)
+	if m.backend.Name() != SessionBackendPTY {
+		t.Fatalf("default backend = %q, want pty", m.backend.Name())
 	}
 }
 
@@ -42,6 +65,9 @@ func TestSessionManagerStartWritesTerminalRecord(t *testing.T) {
 	if rec.TmuxSession != "duckway-term-review" {
 		t.Fatalf("tmux session = %q", rec.TmuxSession)
 	}
+	if rec.Backend != SessionBackendTmux {
+		t.Fatalf("backend = %q, want tmux", rec.Backend)
+	}
 	if tmux.startedSession != rec.TmuxSession {
 		t.Fatalf("tmux started %q, want %q", tmux.startedSession, rec.TmuxSession)
 	}
@@ -54,6 +80,21 @@ func TestSessionManagerStartWritesTerminalRecord(t *testing.T) {
 	}
 	if tmuxSessionName("review") == rec.TmuxSession {
 		t.Fatalf("terminal session name collides with CC tmux naming: %q", rec.TmuxSession)
+	}
+}
+
+func TestSessionManagerStartOptionCanForceTmux(t *testing.T) {
+	tmux := &fakeSessionTmux{}
+	m := NewSessionManager(t.TempDir(), tmux)
+	rec, err := m.Start(SessionStartOptions{Name: "legacy", AgentType: "shell", Cwd: t.TempDir(), Backend: SessionBackendTmux, Command: []string{"sh"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Backend != SessionBackendTmux || rec.TmuxSession != "duckway-term-legacy" {
+		t.Fatalf("record = %+v", rec)
+	}
+	if tmux.startedSession != rec.TmuxSession {
+		t.Fatalf("tmux started %q, want %q", tmux.startedSession, rec.TmuxSession)
 	}
 }
 

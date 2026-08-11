@@ -31,6 +31,10 @@ type UpdateInfo struct {
 	DownloadURL              string `json:"download_url"`
 	SHA256                   string `json:"sha256"`
 	Size                     int64  `json:"size,omitempty"`
+	DucklionBinary           string `json:"ducklion_binary,omitempty"`
+	DucklionDownloadURL      string `json:"ducklion_download_url,omitempty"`
+	DucklionSHA256           string `json:"ducklion_sha256,omitempty"`
+	DucklionSize             int64  `json:"ducklion_size,omitempty"`
 }
 
 // CheckServerVersion fetches the gateway's reported build version from
@@ -120,29 +124,70 @@ func DownloadAndReplaceClientWithInfo(serverURL string, info *UpdateInfo) error 
 	if err != nil {
 		return fmt.Errorf("locate own binary: %w", err)
 	}
+	dir := filepath.Dir(exe)
 
-	url, err := safeDownloadURL(serverURL, info.DownloadURL)
+	clientTmp, err := downloadVerifiedUpdateBinary(serverURL, info.DownloadURL, info.Binary, info.SHA256, info.Size, dir)
 	if err != nil {
 		return err
+	}
+	defer os.Remove(clientTmp)
+
+	ducklionTmp := ""
+	if info.DucklionBinary != "" || info.DucklionDownloadURL != "" || info.DucklionSHA256 != "" {
+		if info.DucklionSHA256 == "" {
+			return fmt.Errorf("server returned ducklion manifest without sha256")
+		}
+		ducklionTmp, err = downloadVerifiedUpdateBinary(serverURL, info.DucklionDownloadURL, info.DucklionBinary, info.DucklionSHA256, info.DucklionSize, dir)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(ducklionTmp)
+	}
+
+	mode := os.FileMode(0755)
+	if stat, err := os.Stat(exe); err == nil {
+		mode = stat.Mode().Perm()
+	}
+	if err := os.Chmod(clientTmp, mode); err != nil {
+		return fmt.Errorf("chmod: %w", err)
+	}
+	if ducklionTmp != "" {
+		if err := os.Chmod(ducklionTmp, 0755); err != nil {
+			return fmt.Errorf("chmod ducklion: %w", err)
+		}
+	}
+	if err := os.Rename(clientTmp, exe); err != nil {
+		return fmt.Errorf("replace %s: %w", exe, err)
+	}
+	if ducklionTmp != "" {
+		ducklionDest := filepath.Join(dir, "ducklion")
+		if err := os.Rename(ducklionTmp, ducklionDest); err != nil {
+			return fmt.Errorf("replace %s: %w", ducklionDest, err)
+		}
+	}
+	return nil
+}
+
+func downloadVerifiedUpdateBinary(serverURL, downloadPath, binary, wantSHA string, wantSize int64, dir string) (string, error) {
+	url, err := safeDownloadURL(serverURL, downloadPath)
+	if err != nil {
+		return "", err
 	}
 	cli := &http.Client{Timeout: 5 * time.Minute, Transport: directTransport}
 	resp, err := cli.Get(url)
 	if err != nil {
-		return fmt.Errorf("download %s: %w", url, err)
+		return "", fmt.Errorf("download %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("download returned %d", resp.StatusCode)
+		return "", fmt.Errorf("download returned %d", resp.StatusCode)
 	}
 
-	dir := filepath.Dir(exe)
 	tmp, err := os.CreateTemp(dir, ".duckway-update-*")
 	if err != nil {
-		return fmt.Errorf("create temp file in %s: %w", dir, err)
+		return "", fmt.Errorf("create temp file in %s: %w", dir, err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
 	hasher := sha256.New()
 	w := io.MultiWriter(tmp, hasher)
 	written, err := io.Copy(w, &progressReader{
@@ -153,33 +198,27 @@ func DownloadAndReplaceClientWithInfo(serverURL string, info *UpdateInfo) error 
 	fmt.Print("\r\033[K")
 	if err != nil {
 		tmp.Close()
-		return fmt.Errorf("write binary: %w", err)
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("write binary: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp: %w", err)
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("close temp: %w", err)
 	}
 	if written < 1024*1024 {
-		return fmt.Errorf("downloaded binary suspiciously small (%d bytes) — refusing to replace", written)
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("downloaded binary %s suspiciously small (%d bytes) — refusing to replace", binary, written)
 	}
-	if info.Size > 0 && written != info.Size {
-		return fmt.Errorf("downloaded binary size mismatch: got %d want %d", written, info.Size)
+	if wantSize > 0 && written != wantSize {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("downloaded binary size mismatch for %s: got %d want %d", binary, written, wantSize)
 	}
 	gotSHA := hex.EncodeToString(hasher.Sum(nil))
-	if !strings.EqualFold(gotSHA, info.SHA256) {
-		return fmt.Errorf("sha256 mismatch for %s: got %s want %s", info.Binary, gotSHA, info.SHA256)
+	if !strings.EqualFold(gotSHA, wantSHA) {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("sha256 mismatch for %s: got %s want %s", binary, gotSHA, wantSHA)
 	}
-
-	mode := os.FileMode(0755)
-	if stat, err := os.Stat(exe); err == nil {
-		mode = stat.Mode().Perm()
-	}
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		return fmt.Errorf("chmod: %w", err)
-	}
-	if err := os.Rename(tmpPath, exe); err != nil {
-		return fmt.Errorf("replace %s: %w", exe, err)
-	}
-	return nil
+	return tmpPath, nil
 }
 
 func validateUpdateInfo(info *UpdateInfo, osName, arch string) error {
@@ -207,11 +246,26 @@ func validateUpdateInfo(info *UpdateInfo, osName, arch string) error {
 			return fmt.Errorf("server returned invalid sha256 for %s: %w", info.Binary, err)
 		}
 	}
+	if info.DucklionBinary != "" || info.DucklionDownloadURL != "" || info.DucklionSHA256 != "" {
+		wantDucklion := fmt.Sprintf("ducklion-%s-%s", osName, arch)
+		if info.DucklionBinary != wantDucklion {
+			return fmt.Errorf("server returned unexpected ducklion binary %q, want %q", info.DucklionBinary, wantDucklion)
+		}
+		if info.DucklionDownloadURL != "/download/"+wantDucklion {
+			return fmt.Errorf("server returned unsafe ducklion download URL %q", info.DucklionDownloadURL)
+		}
+		if len(info.DucklionSHA256) != 64 {
+			return fmt.Errorf("server returned invalid sha256 length for %s", info.DucklionBinary)
+		}
+		if _, err := hex.DecodeString(info.DucklionSHA256); err != nil {
+			return fmt.Errorf("server returned invalid sha256 for %s: %w", info.DucklionBinary, err)
+		}
+	}
 	return nil
 }
 
 func safeDownloadURL(serverURL, downloadPath string) (string, error) {
-	if !strings.HasPrefix(downloadPath, "/download/duckway-client-") || strings.Contains(downloadPath, "..") {
+	if !strings.HasPrefix(downloadPath, "/download/duckway-client-") && !strings.HasPrefix(downloadPath, "/download/ducklion-") || strings.Contains(downloadPath, "..") {
 		return "", fmt.Errorf("unsafe download URL %q", downloadPath)
 	}
 	base, err := url.Parse(strings.TrimRight(serverURL, "/"))

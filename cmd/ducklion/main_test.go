@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/ducklion"
+	"github.com/hackerduck/duckway/internal/ducklioncli"
+	"github.com/hackerduck/duckway/internal/duckwayconfig"
+	"github.com/hackerduck/duckway/internal/projectregistry"
 )
 
 func TestDucklionListJSONIncludesTailHash(t *testing.T) {
@@ -16,10 +21,10 @@ func TestDucklionListJSONIncludesTailHash(t *testing.T) {
 		readText: "hello\n[ducklion:done] ok\n",
 	}
 	var out bytes.Buffer
-	if err := run(manager, []string{"list", "--json", "--tail-lines", "5"}, &out); err != nil {
+	if err := ducklioncli.Run(manager, []string{"list", "--json", "--tail-lines", "5"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	var got []sessionOutput
+	var got []ducklioncli.SessionOutput
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -29,18 +34,42 @@ func TestDucklionListJSONIncludesTailHash(t *testing.T) {
 }
 
 func TestDucklionRejectsUnknownStartOption(t *testing.T) {
-	if _, err := parseStart([]string{"--bad"}); err == nil {
+	if _, err := ducklioncli.ParseStart([]string{"--bad"}); err == nil {
 		t.Fatal("unknown option accepted")
 	}
 }
 
 func TestDucklionAttachUsesManager(t *testing.T) {
 	manager := &fakeManager{}
-	if err := run(manager, []string{"attach", "alpha"}, &bytes.Buffer{}); err != nil {
+	if err := ducklioncli.Run(manager, []string{"attach", "alpha"}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if manager.attachedName != "alpha" {
 		t.Fatalf("attached = %q", manager.attachedName)
+	}
+}
+
+func TestDucklionProjectsReadsDuckwayProjectStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "work", "duckway")
+	if err := os.MkdirAll(project, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projectregistry.NewStore(duckwayconfig.DefaultConfigDir()).Add([]string{project}, "duckway"); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := ducklioncli.Run(&fakeManager{}, []string{"projects", "--json"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var got []ducklioncli.ProjectOutput
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "duckway" || got[0].Path != project || got[0].Source != "duckway-client" {
+		t.Fatalf("projects = %+v", got)
 	}
 }
 
@@ -76,7 +105,7 @@ func (f *fakeManager) Attach(name string, _ io.Reader, _ io.Writer) error {
 func (f *fakeManager) Stop(string) error { return nil }
 
 func TestParseStartUsesDucklionOptions(t *testing.T) {
-	opts, err := parseStart([]string{"--name", "alpha", "--agent", "shell", "--cwd", "/tmp", "--", "sh", "-lc", "echo ok"})
+	opts, err := ducklioncli.ParseStart([]string{"--name", "alpha", "--agent", "shell", "--cwd", "/tmp", "--", "sh", "-lc", "echo ok"})
 	if err != nil {
 		t.Fatal(err)
 	}
