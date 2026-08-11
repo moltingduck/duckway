@@ -13,6 +13,19 @@ import (
 
 const defaultDucklionInstallPath = "~/.local/bin/ducklion"
 
+const remoteDucklionInstallScript = `set -eu
+dest="$1"
+case "$dest" in "~/"*) dest="$HOME/${dest#\~/}" ;; esac
+dir=$(dirname "$dest")
+tmp="${dest}.tmp.$$"
+mkdir -p "$dir"
+cat > "$tmp"
+chmod 0755 "$tmp"
+mv "$tmp" "$dest"
+"$dest" version
+printf 'DUCKLION_INSTALLED\t%s\n' "$dest"
+`
+
 func FindLocalDucklion(source string) (string, error) {
 	source = strings.TrimSpace(source)
 	if source != "" {
@@ -57,21 +70,9 @@ func (Runner) InstallDucklion(ctx context.Context, c Client, source, dest string
 		return "", err
 	}
 	defer f.Close()
-	script := `set -eu
-dest="$1"
-case "$dest" in "~/"*) dest="$HOME/${dest#~/}" ;; esac
-dir=$(dirname "$dest")
-tmp="${dest}.tmp.$$"
-mkdir -p "$dir"
-cat > "$tmp"
-chmod 0755 "$tmp"
-mv "$tmp" "$dest"
-"$dest" version
-printf 'DUCKLION_INSTALLED\t%s\n' "$dest"
-`
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	args := SSHArgs(c, false, "sh", "-lc", script, "ducklord-install-ducklion", dest)
+	args := SSHArgs(c, false, "sh", "-lc", remoteDucklionInstallScript, "ducklord-install-ducklion", dest)
 	cmd := exec.CommandContext(ctx, c.SSH, args...)
 	cmd.Stdin = f
 	var stderr bytes.Buffer
