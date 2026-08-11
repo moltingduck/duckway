@@ -87,6 +87,46 @@ ducklord -> Duckway server -> registered client metadata
 The SSH data path should remain direct unless a future server-relay mode is
 explicitly enabled.
 
+## Installing Ducklion
+
+Normal Duckway client installs fetch both binaries:
+
+```bash
+curl -fsSL http://your-duckway-gateway/install.sh | sh
+```
+
+The installer downloads the platform-specific `duckway-client-*` binary and the
+matching `ducklion-*` binary, then installs them into the same directory:
+
+```text
+/usr/local/bin/duckway
+/usr/local/bin/ducklion
+```
+
+or, for user-local installs:
+
+```text
+~/.local/bin/duckway
+~/.local/bin/ducklion
+```
+
+For manual installs, `ducklord` expects the remote host to expose either:
+
+```bash
+ducklion version
+```
+
+or the compatibility wrapper:
+
+```bash
+duckway ducklion version
+```
+
+The standalone `ducklion` binary should be preferred because CC PTY runners and
+Ducklord both look for a real `ducklion` executable first. When `duckway` and
+`ducklion` are installed side by side, Duckway client PTY runners can still find
+the companion binary even if the service `PATH` does not include that directory.
+
 ## Operator Tutorial
 
 This walkthrough creates a reproducible local demo with one developer laptop
@@ -117,6 +157,7 @@ podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config
 podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.json
 podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
 podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
+podman exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.json
 ```
 
 Expected shape:
@@ -259,6 +300,7 @@ ducklord probe <client> [--config <path>]
 ducklord sessions <client> [--config <path>]
 ducklord projects <client> [--config <path>]
 ducklord tui [--config <path>] [--refresh 2s]
+ducklord attach-host <client> [--config <path>]
 ducklord attach <client> <session> [--config <path>]
 ducklord read <client> <session> [--lines N] [--config <path>]
 ducklord send <client> <session> <text> [--config <path>]
@@ -278,6 +320,8 @@ The current TUI supports:
 - keyboard input routing to the focused remote PTY session
 - `Ctrl-]` to return focus to the left menu
 - `n` to create a new remote session with `agent -> host -> project`
+- `ducklord attach-host <client>` to open the same split-pane view scoped to
+  one remote host and its advertised Ducklion sessions
 - `r` to refresh immediately
 - `q` to quit
 - basic xterm mouse click selection when the terminal supports SGR mouse mode
@@ -335,6 +379,12 @@ without a saved project registry.
 ```text
 ducklord -> ssh -> ducklion list --json --tail-lines N
 ```
+
+`ducklord attach-host <client>` uses the same polling and preview path, but it
+first narrows the loaded config to the selected client. The host-scoped TUI
+keeps the left menu visible, opens focused sessions with `Enter` or right-click,
+and disables add-host / new-session shortcuts so it acts as an attach surface
+for the remote daemon's advertised sessions.
 
 `ducklion list` returns records with status, agent type, last non-empty line,
 and a hash of recent output. `ducklord` overwrites the remote `client` and

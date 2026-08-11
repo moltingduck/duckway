@@ -642,6 +642,7 @@ podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/con
 podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
 podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
 podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.json
+podman exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.json
 ```
 
 Inside the TUI:
@@ -650,6 +651,13 @@ Inside the TUI:
 - `n` creates a remote session with `agent -> host -> project`.
 - `Enter` or right-click focuses the selected PTY session.
 - `Ctrl-]` returns focus to the left menu.
+- `ducklord attach-host client-a` opens the split-pane UI scoped to one remote
+  host and disables add/new shortcuts.
+
+For install-path behavior, the gateway `/install.sh` installs both `duckway`
+and the companion `ducklion` binary into the same directory. Manual remote
+hosts must expose either `ducklion` in `PATH` or `duckway ducklion` as a
+compatibility wrapper before Ducklord can manage PTY sessions.
 
 Clean up:
 

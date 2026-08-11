@@ -90,6 +90,7 @@ Useful checks:
   $RUNTIME exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
   $RUNTIME exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.json
   $RUNTIME exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
+  $RUNTIME exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.json
 
 Inside the TUI:
   j/k or arrow keys: move
@@ -97,6 +98,7 @@ Inside the TUI:
   Enter or right-click: focus the selected session in the right pane
   a: add a ducklion host from ~/.ssh/config (try client-c)
   n: create a remote session: choose agent -> host -> project
+  attach-host mode: same split-pane attach UI scoped to one host; add/new are disabled
   right pane: selected session output preview
   Ctrl-]: return keyboard focus to the left menu
   q: quit

@@ -96,6 +96,26 @@ func TestDucklordProbeUsesRunner(t *testing.T) {
 	}
 }
 
+func TestAttachHostConfigNarrowsToOneClient(t *testing.T) {
+	cfg := &ducklord.Config{Clients: []ducklord.Client{
+		{Name: "client-a", Host: "client-a", Group: "lab"},
+		{Name: "client-b", Host: "client-b", Group: "lab"},
+	}}
+	got, err := attachHostConfig(cfg, "client-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Clients) != 1 || got.Clients[0].Name != "client-b" {
+		t.Fatalf("host config clients = %+v", got.Clients)
+	}
+	if len(cfg.Clients) != 2 {
+		t.Fatalf("source config was mutated: %+v", cfg.Clients)
+	}
+	if _, err := attachHostConfig(cfg, "missing"); err == nil {
+		t.Fatal("missing client accepted")
+	}
+}
+
 func TestDucklordReadParsesLines(t *testing.T) {
 	config := writeConfig(t)
 	var out bytes.Buffer
@@ -208,6 +228,19 @@ func TestTUIRenderShowsMenuAndContentPane(t *testing.T) {
 	}
 	if strings.Contains(got, "\x1b[2Jline") {
 		t.Fatalf("remote escape sequence was rendered: %q", got)
+	}
+}
+
+func TestHostScopedTUIDisablesAddAndNewShortcuts(t *testing.T) {
+	state := &tuiState{hostScoped: true}
+	if got := state.handleInput([]byte("a")); got != "" {
+		t.Fatalf("host-scoped add shortcut action = %q", got)
+	}
+	if got := state.handleInput([]byte("n")); got != "" {
+		t.Fatalf("host-scoped new shortcut action = %q", got)
+	}
+	if got := state.handleInput([]byte("r")); got != "refresh" {
+		t.Fatalf("host-scoped refresh action = %q", got)
 	}
 }
 

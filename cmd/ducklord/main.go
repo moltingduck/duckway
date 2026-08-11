@@ -210,6 +210,19 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 			return err
 		}
 		return runner.Attach(c, rest[1])
+	case "attach-host":
+		cfg, rest, err := loadWithFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		if len(rest) != 1 {
+			return fmt.Errorf("usage: ducklord attach-host <client> [--config <path>]")
+		}
+		hostCfg, err := attachHostConfig(cfg, rest[0])
+		if err != nil {
+			return err
+		}
+		return runHostTUI(hostCfg, runner, 2*time.Second)
 	case "tui":
 		cfgPath, refresh, err := parseTUIFlags(args[1:])
 		if err != nil {
@@ -296,6 +309,16 @@ func mustClient(cfg *ducklord.Config, name string) (ducklord.Client, error) {
 		return ducklord.Client{}, fmt.Errorf("unknown client %q", name)
 	}
 	return c, nil
+}
+
+func attachHostConfig(cfg *ducklord.Config, clientName string) (*ducklord.Config, error) {
+	c, err := mustClient(cfg, clientName)
+	if err != nil {
+		return nil, err
+	}
+	out := *cfg
+	out.Clients = []ducklord.Client{c}
+	return &out, nil
 }
 
 func printClients(out io.Writer, cfg *ducklord.Config) error {
@@ -605,9 +628,18 @@ type tuiState struct {
 	addClientLine      string
 	addClientErr       string
 	addClientHosts     []ducklord.SSHHost
+	hostScoped         bool
 }
 
 func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration) error {
+	return runTUIWithOptions(cfg, runner, cfgPath, refresh, false)
+}
+
+func runHostTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) error {
+	return runTUIWithOptions(cfg, runner, "", refresh, true)
+}
+
+func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, hostScoped bool) error {
 	oldState, err := makeRaw()
 	if err != nil {
 		return err
@@ -618,7 +650,7 @@ func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh t
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}}
+	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped}
 	state.refreshSessions(ctx)
 	state.refreshSelectedOutput(ctx)
 	state.render(os.Stdout)
@@ -947,6 +979,8 @@ func (s *tuiState) render(out io.Writer) {
 		fmt.Fprintln(out, "add ducklion host: ssh config number/name or user@host  enter add  esc cancel")
 	} else if s.newSessionMode {
 		fmt.Fprintf(out, "%s  enter next  esc cancel\n", truncate(s.createHeader(), renderWidth))
+	} else if s.hostScoped {
+		fmt.Fprintln(out, "j/k or arrows move  enter/right-click focus session  r refresh  q quit")
 	} else {
 		fmt.Fprintln(out, "j/k or arrows move  enter/right-click focus session  a add host  n new  r refresh  q quit")
 	}
@@ -1090,9 +1124,9 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "quit"
 	case text == "r":
 		return "refresh"
-	case text == "n":
+	case text == "n" && !s.hostScoped:
 		return "new"
-	case text == "a":
+	case text == "a" && !s.hostScoped:
 		return "add-client"
 	case text == "\r" || text == "\n":
 		return "attach"
@@ -1692,6 +1726,7 @@ Usage:
   ducklord projects <client> [--config <path>]
   ducklord probe <client> [--config <path>]
   ducklord tui [--config <path>] [--refresh 2s]
+  ducklord attach-host <client> [--config <path>]
   ducklord attach <client> <session> [--config <path>]
   ducklord read <client> <session> [--lines N] [--config <path>]
   ducklord send <client> <session> <text> [--config <path>]
