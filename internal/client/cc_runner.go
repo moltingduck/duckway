@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -91,8 +93,9 @@ const (
 )
 
 var (
-	ccLongRunFirstNotice = 10 * time.Minute
-	ccLongRunInterval    = 10 * time.Minute
+	ccLongRunFirstNotice     = 10 * time.Minute
+	ccLongRunInterval        = 10 * time.Minute
+	codexTransportRetryDelay = defaultCodexTransportRetryDelay
 )
 
 // chooseCCRunFn picks the runner to use. PTY is the default attachable runner.
@@ -370,13 +373,13 @@ func (r *ccRunner) run(t ccTask) {
 	r.reactToTask(t, "⏳")
 	r.reportTaskTest(t, "started", "")
 	done := r.startLongRunReporter(t)
-	newSID, result, isError, err := r.runFn(ctx, r.bin, r.cwd, prompt, sid, extraEnv)
+	newSID, result, isError, err := r.runAgentWithRetries(ctx, prompt, sid, extraEnv)
 	close(done)
 	if err != nil && sid != "" && isStaleAgentSessionError(err) {
 		_ = r.sessions.Drop(r.handle)
 		r.logger("[cc-watch] %s: stale %s session %s dropped after resume failure: %v", r.handle, r.agentName, shortForLog(sid), err)
 		done = r.startLongRunReporter(t)
-		newSID, result, isError, err = r.runFn(ctx, r.bin, r.cwd, prompt, "", extraEnv)
+		newSID, result, isError, err = r.runAgentWithRetries(ctx, prompt, "", extraEnv)
 		close(done)
 	}
 	if err != nil {
@@ -426,6 +429,73 @@ func (r *ccRunner) run(t ccTask) {
 		r.reactToTask(t, "✅")
 	}
 	r.reportTaskTest(t, "replied", "")
+}
+
+func (r *ccRunner) runAgentWithRetries(ctx context.Context, prompt, sid string, extraEnv []string) (sessionID, result string, isError bool, err error) {
+	const maxRetries = 2
+	retrySID := sid
+	for attempt := 0; ; attempt++ {
+		sessionID, result, isError, err = r.runFn(ctx, r.bin, r.cwd, prompt, retrySID, extraEnv)
+		if err == nil || !r.shouldRetryAgentRun(result, isError, err, attempt, maxRetries) {
+			return sessionID, result, isError, err
+		}
+		if sessionID != "" {
+			retrySID = sessionID
+		}
+		delay := codexTransportRetryDelay(err.Error(), attempt)
+		r.logger("[cc-watch] %s: transient %s transport failure; retrying attempt %d/%d after %s: %v", r.handle, r.agentName, attempt+1, maxRetries, delay, err)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return sessionID, result, isError, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (r *ccRunner) shouldRetryAgentRun(result string, isError bool, err error, attempt, maxRetries int) bool {
+	if err == nil || attempt >= maxRetries || r.agentType != "codex" {
+		return false
+	}
+	if result != "" && !isError {
+		return false
+	}
+	_, ok := codexTransportFailureSummary([]byte(err.Error()), nil)
+	return ok
+}
+
+func defaultCodexTransportRetryDelay(msg string, attempt int) time.Duration {
+	if d, ok := parseCodexRetryAfter(msg); ok {
+		return d
+	}
+	switch attempt {
+	case 0:
+		return time.Second
+	default:
+		return 3 * time.Second
+	}
+}
+
+var codexRetryAfterRE = regexp.MustCompile(`(?i)try again in ([0-9]+(?:\.[0-9]+)?)(ms|s)`)
+
+func parseCodexRetryAfter(msg string) (time.Duration, bool) {
+	m := codexRetryAfterRE.FindStringSubmatch(msg)
+	if len(m) != 3 {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	switch strings.ToLower(m[2]) {
+	case "ms":
+		return time.Duration(value * float64(time.Millisecond)), true
+	case "s":
+		return time.Duration(value * float64(time.Second)), true
+	default:
+		return 0, false
+	}
 }
 
 func (r *ccRunner) resetSession() {

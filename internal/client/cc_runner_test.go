@@ -92,6 +92,19 @@ func newTestRunner(t *testing.T, fn ccRunFn) (*ccRunner, *recordingPoster, *CCSe
 	return r, pp, store
 }
 
+func newTestRunnerForAgent(t *testing.T, agentType string, fn ccRunFn) (*ccRunner, *recordingPoster, *CCSessionStore) {
+	t.Helper()
+	store := NewCCSessionStore(t.TempDir())
+	pp := &recordingPoster{}
+	spec := ccAgentSpec{Type: agentType, DisplayName: agentType, Bin: "/fake/" + agentType}
+	r, err := newCCRunner("dwch_t", t.TempDir(), t.TempDir(), spec, store, pp.post, pp.postReply, pp.react, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.runFn = fn
+	return r, pp, store
+}
+
 func waitForPosts(t *testing.T, pp *recordingPoster, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -102,6 +115,72 @@ func waitForPosts(t *testing.T, pp *recordingPoster, want int) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("only %d posts after 3s (wanted %d)", len(pp.all()), want)
+}
+
+func TestCCRunnerRetriesCodexTransportFailure(t *testing.T) {
+	oldDelay := codexTransportRetryDelay
+	codexTransportRetryDelay = func(string, int) time.Duration { return 0 }
+	t.Cleanup(func() { codexTransportRetryDelay = oldDelay })
+	var calls int
+	var seenSIDs []string
+	fn := func(_ context.Context, _, _, _, sid string, _ []string) (string, string, bool, error) {
+		calls++
+		seenSIDs = append(seenSIDs, sid)
+		if calls == 1 {
+			return "sid-old", "", false, fmt.Errorf("codex: transport failed before completion: Rate limit reached for gpt-daybreak-blue-latest on tokens per min (TPM). Please try again in 145ms")
+		}
+		return "sid-new", "retried ok", false, nil
+	}
+	r, pp, store := newTestRunnerForAgent(t, "codex", fn)
+	defer r.Stop()
+	if !r.Enqueue(ccTask{Content: "do a thing", ChannelKind: "task"}) {
+		t.Fatal("Enqueue returned false")
+	}
+	waitForPosts(t, pp, 1)
+	if calls != 2 {
+		t.Fatalf("calls=%d, want retry once", calls)
+	}
+	if len(seenSIDs) != 2 || seenSIDs[0] != "" || seenSIDs[1] != "sid-old" {
+		t.Fatalf("retry sid sequence = %+v, want fresh then sid-old resume", seenSIDs)
+	}
+	if posts := pp.all(); !strings.Contains(posts[0], "retried ok") {
+		t.Fatalf("post = %q", posts[0])
+	}
+	if got := store.Get("dwch_t"); got != "sid-new" {
+		t.Fatalf("session_id = %q, want sid-new", got)
+	}
+}
+
+func TestCCRunnerDoesNotRetryNonCodexTransportFailure(t *testing.T) {
+	oldDelay := codexTransportRetryDelay
+	codexTransportRetryDelay = func(string, int) time.Duration { return 0 }
+	t.Cleanup(func() { codexTransportRetryDelay = oldDelay })
+	var calls int
+	fn := func(context.Context, string, string, string, string, []string) (string, string, bool, error) {
+		calls++
+		return "", "", false, fmt.Errorf("claude: transport failed before completion: stream disconnected before completion")
+	}
+	r, pp, _ := newTestRunnerForAgent(t, "claude_code", fn)
+	defer r.Stop()
+	if !r.Enqueue(ccTask{Content: "do a thing", ChannelKind: "task"}) {
+		t.Fatal("Enqueue returned false")
+	}
+	waitForPosts(t, pp, 1)
+	if calls != 1 {
+		t.Fatalf("calls=%d, want no retry", calls)
+	}
+}
+
+func TestParseCodexRetryAfter(t *testing.T) {
+	if got, ok := parseCodexRetryAfter("Please try again in 145ms."); !ok || got != 145*time.Millisecond {
+		t.Fatalf("145ms parsed as %s ok=%v", got, ok)
+	}
+	if got, ok := parseCodexRetryAfter("please TRY again in 1.5s"); !ok || got != 1500*time.Millisecond {
+		t.Fatalf("1.5s parsed as %s ok=%v", got, ok)
+	}
+	if _, ok := parseCodexRetryAfter("try later"); ok {
+		t.Fatal("unexpected retry-after parse")
+	}
 }
 
 func TestCCRunner_PostsResult(t *testing.T) {
