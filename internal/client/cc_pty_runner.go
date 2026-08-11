@@ -45,12 +45,18 @@ func runViaCodexPTY(ctx context.Context, bin, cwd, prompt, sid string, extraEnv 
 			return sessionID, result, false, nil
 		}
 		if result != "" {
+			if summary, ok := codexTransportFailureSummary([]byte(result), nil); ok {
+				return sessionID, result, isError, fmt.Errorf("codex pty: transport failed before completion: %s", summary)
+			}
 			return sessionID, result, isError, fmt.Errorf("codex reported an error: %s", result)
 		}
 		return "", "", false, codexExecutionError("codex pty", err, out)
 	}
 	if !parsed.Complete {
 		if result != "" && isError {
+			if summary, ok := codexTransportFailureSummary([]byte(result), nil); ok {
+				return sessionID, result, isError, fmt.Errorf("codex pty ended before completion: transport failed before completion: %s", summary)
+			}
 			return sessionID, result, isError, fmt.Errorf("codex reported an error: %s", result)
 		}
 		return sessionID, result, isError, codexExecutionError("codex pty ended before completion", nil, out)

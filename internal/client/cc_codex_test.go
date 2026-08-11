@@ -316,6 +316,7 @@ func TestCodexTransportFailureSummaryIsGeneric(t *testing.T) {
 		"TLS handshake timeout",
 		"stream disconnected before completion",
 		"unexpected EOF",
+		"Rate limit reached for gpt-daybreak-blue-latest (for limit gpt-5.6-sol) in organization org-test on tokens per min (TPM): Limit 40000000, Used 40000000, Requested 96982. Please try again in 145ms.",
 	}
 	for _, input := range cases {
 		if got, ok := codexTransportFailureSummary([]byte(input), nil); !ok || got == "" {
@@ -324,6 +325,30 @@ func TestCodexTransportFailureSummaryIsGeneric(t *testing.T) {
 	}
 	if got, ok := codexTransportFailureSummary([]byte("model returned a policy answer"), nil); ok {
 		t.Fatalf("non-transport text matched: %q", got)
+	}
+}
+
+func TestRunViaCodexExecClassifiesRateLimitJSONErrorAsTransport(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "codex")
+	msg := "stream disconnected before completion: Rate limit reached for gpt-daybreak-blue-latest (for limit gpt-5.6-sol) in organization org-test on tokens per min (TPM): Limit 40000000, Used 40000000, Requested 96982. Please try again in 145ms."
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"thread.started","thread_id":"sid-rate-limit"}'
+printf '%s\n' '{"type":"error","message":"` + msg + `"}'
+exit 1
+`
+	if err := os.WriteFile(stub, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err := runViaCodexExec(context.Background(), stub, dir, "hello", "", nil)
+	if err == nil {
+		t.Fatal("expected rate-limit transport error")
+	}
+	if strings.Contains(err.Error(), "codex reported an error") {
+		t.Fatalf("rate limit should not be wrapped as agent error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "transport failed before completion") || !strings.Contains(err.Error(), "Rate limit reached") {
+		t.Fatalf("error = %v, want transport rate limit summary", err)
 	}
 }
 

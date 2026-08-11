@@ -115,6 +115,9 @@ func runViaCodexExec(ctx context.Context, bin, cwd, prompt, sid string, extraEnv
 			return sessionID, result, false, nil
 		}
 		if result != "" {
+			if summary, ok := codexTransportFailureSummary([]byte(result), nil); ok {
+				return sessionID, result, isError, fmt.Errorf("codex: transport failed before completion: %s", summary)
+			}
 			return sessionID, result, isError, fmt.Errorf("codex reported an error: %s", result)
 		}
 		return "", "", false, codexExecutionError("codex", err, out)
@@ -284,6 +287,9 @@ func resolveCodexTmuxExit(out []byte, fallbackSessionID, sid string, exitCode in
 		return sessionID, result, false, nil
 	}
 	if result != "" {
+		if summary, ok := codexTransportFailureSummary([]byte(result), nil); ok {
+			return sessionID, result, isError, fmt.Errorf("codex exited with status %d: transport failed before completion: %s", exitCode, summary)
+		}
 		return sessionID, result, isError, fmt.Errorf("codex reported an error: %s", result)
 	}
 	return sessionID, result, isError, codexExecutionError(fmt.Sprintf("codex exited with status %d", exitCode), nil, out)
@@ -345,6 +351,8 @@ func looksLikeCodexTransportFailure(s string) bool {
 		"deadline exceeded",
 		"unexpected eof",
 		"network connection interrupted",
+		"rate limit reached",
+		"tokens per min",
 	}
 	for _, p := range patterns {
 		if strings.Contains(s, p) {
