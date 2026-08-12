@@ -22,6 +22,20 @@ func TestLoadConfigNormalizesClients(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAllowsEmptyClients(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"clients":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Clients) != 0 {
+		t.Fatalf("clients = %+v", cfg.Clients)
+	}
+}
+
 func TestLoadConfigRejectsUnsafeHost(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"clients":[{"name":"bad","host":"host;touch /tmp/pwn"}]}`), 0600); err != nil {
@@ -71,6 +85,19 @@ func TestLoadConfigAcceptsSSHCommandLine(t *testing.T) {
 	want := []string{"ssh", "-p", "2222", "-i", "/tmp/id_ed25519"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("SSHCommandParts = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfigRemoveClient(t *testing.T) {
+	cfg := &Config{Clients: []Client{{Name: "a", Host: "a"}, {Name: "b", Host: "b"}}}
+	if !cfg.RemoveClient("a") {
+		t.Fatal("client a was not removed")
+	}
+	if len(cfg.Clients) != 1 || cfg.Clients[0].Name != "b" {
+		t.Fatalf("clients = %+v", cfg.Clients)
+	}
+	if cfg.RemoveClient("missing") {
+		t.Fatal("missing client removed")
 	}
 }
 

@@ -37,6 +37,18 @@ remote agent host
   agent process / shell / codex / claude
 ```
 
+## Terminology
+
+- Host entry: a Ducklord config item under `~/.ducklord/config.json` that
+  describes one SSH-reachable remote host, its display name, group, SSH command,
+  and Ducklion command path.
+- Ducklion session: a remote PTY session owned by Ducklion on a host entry.
+  These are listed with `ducklion list` and can be attached, read, started, or
+  stopped.
+
+Use `host entry` for Ducklord inventory records. Use `Ducklion session` for the
+actual remote PTY process.
+
 `ducklord` is the operator UI and SSH orchestrator. It does not store SSH
 private keys and does not run remote commands through a shell locally.
 
@@ -261,7 +273,7 @@ Verify the command reached the remote PTY:
 podman exec ducklord-dev ducklord read client-a bash --lines 20 --config /root/.ducklord/config.json
 ```
 
-### 5. Add A Ducklion Host From The TUI
+### 5. Add A Host Entry From The TUI
 
 Inside the TUI:
 
@@ -272,12 +284,16 @@ Inside the TUI:
 
 Ducklord probes the remote host over SSH. It checks `ducklion version`, runs
 `ducklion list --json` to verify the session manager entry point, and records
-the working command in `/root/.ducklord/config.json`. If Ducklion is missing,
+the host entry in `/root/.ducklord/config.json`. If Ducklion is missing,
 Ducklord attempts to install the local `ducklion` binary to
 `~/.local/bin/ducklion` over SSH, probes again, then records the resolved remote
 path. If installation is not possible because the local binary is missing or SSH
 cannot write the target path, Ducklord still adds the host and shows a clear
 status message so the operator can enable the remote entry point manually.
+
+Press `d` on a selected row to remove that host entry from the current
+`config.json`. Removing a host entry does not stop remote Ducklion sessions; it
+only removes the host from Ducklord's local inventory.
 
 For a host that is reachable over SSH but still missing Ducklion, install the
 local binary explicitly:
@@ -669,6 +685,7 @@ Inside the TUI:
 - mouse click selects a row
 - `Enter` or right-click focuses the selected session in the right pane
 - `Ctrl-]` returns keyboard focus to the left menu
-- `a` adds a Ducklion host from `~/.ssh/config`; use `client-c`
+- `a` adds a host entry from `~/.ssh/config`; use `client-c`
+- `d` removes the selected host entry from the current `config.json`
 - `n` creates a new remote session with `agent -> host -> project`
 - `q` exits

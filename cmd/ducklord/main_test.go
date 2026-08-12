@@ -312,6 +312,9 @@ func TestHostScopedTUIDisablesAddAndNewShortcuts(t *testing.T) {
 	if got := state.handleInput([]byte("n")); got != "" {
 		t.Fatalf("host-scoped new shortcut action = %q", got)
 	}
+	if got := state.handleInput([]byte("d")); got != "" {
+		t.Fatalf("host-scoped remove shortcut action = %q", got)
+	}
 	if got := state.handleInput([]byte("r")); got != "refresh" {
 		t.Fatalf("host-scoped refresh action = %q", got)
 	}
@@ -525,6 +528,43 @@ func TestTUIAddClientInstallsMissingDucklionAndReprobes(t *testing.T) {
 		t.Fatalf("ducklion = %q", client.Ducklion)
 	}
 	if !strings.Contains(state.outputErr, "installed ducklion") || !strings.Contains(state.outputErr, "ducklion v2") {
+		t.Fatalf("outputErr = %q", state.outputErr)
+	}
+}
+
+func TestTUIRemoveSelectedHostEntryUpdatesCurrentConfig(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "config.json")
+	cfg := &ducklord.Config{Clients: []ducklord.Client{
+		{Name: "client-a", Host: "client-a", Group: "lab"},
+		{Name: "client-b", Host: "client-b", Group: "lab"},
+	}}
+	if err := ducklord.SaveConfig(config, cfg); err != nil {
+		t.Fatal(err)
+	}
+	state := &tuiState{
+		cfg:     cfg,
+		cfgPath: config,
+		runner:  fakeRunner{},
+		sessions: []ducklord.RemoteSession{
+			{Client: "client-a", Name: "alpha", Status: "running"},
+			{Client: "client-b", Name: "beta", Status: "running"},
+		},
+		selected: 1,
+	}
+	if err := state.removeSelectedClient(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := ducklord.LoadConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loaded.Client("client-b"); ok {
+		t.Fatalf("client-b still present: %+v", loaded.Clients)
+	}
+	if _, ok := loaded.Client("client-a"); !ok {
+		t.Fatalf("client-a missing: %+v", loaded.Clients)
+	}
+	if !strings.Contains(state.outputErr, "removed host entry client-b") {
 		t.Fatalf("outputErr = %q", state.outputErr)
 	}
 }

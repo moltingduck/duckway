@@ -955,6 +955,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.beginCreate()
 			case "add-client":
 				state.beginAddClient()
+			case "remove-client":
+				if err := state.removeSelectedClient(ctx); err != nil {
+					state.outputErr = err.Error()
+				}
 			case "attach":
 				if len(state.sessions) == 0 {
 					continue
@@ -1136,7 +1140,7 @@ func (s *tuiState) render(out io.Writer) {
 	} else if s.hostScoped {
 		fmt.Fprintln(out, "j/k or arrows move  enter/right-click focus session  r refresh  q quit")
 	} else {
-		fmt.Fprintln(out, "j/k or arrows move  enter/right-click focus session  a add host  n new  r refresh  q quit")
+		fmt.Fprintln(out, "j/k or arrows move  enter/right-click focus session  a add host  d remove host  n new  r refresh  q quit")
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
@@ -1282,6 +1286,8 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "new"
 	case text == "a" && !s.hostScoped:
 		return "add-client"
+	case text == "d" && !s.hostScoped:
+		return "remove-client"
 	case text == "\r" || text == "\n":
 		return "attach"
 	case text == "j" || text == "\x1b[B":
@@ -1379,6 +1385,25 @@ func (s *tuiState) submitAddClient(ctx context.Context) error {
 	default:
 		s.outputErr = fmt.Sprintf("added %s; ducklion missing on remote", client.Name)
 	}
+	return nil
+}
+
+func (s *tuiState) removeSelectedClient(ctx context.Context) error {
+	clientName := s.selectedClientName()
+	if clientName == "" {
+		return fmt.Errorf("no client selected")
+	}
+	if !s.cfg.RemoveClient(clientName) {
+		return fmt.Errorf("unknown client %q", clientName)
+	}
+	if err := ducklord.SaveConfig(s.cfgPath, s.cfg); err != nil {
+		return err
+	}
+	s.outputText = ""
+	s.outputForKey = ""
+	s.refreshSessions(ctx)
+	s.refreshSelectedOutput(ctx)
+	s.outputErr = fmt.Sprintf("removed host entry %s from config", clientName)
 	return nil
 }
 

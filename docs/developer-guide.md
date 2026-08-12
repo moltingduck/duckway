@@ -648,9 +648,11 @@ podman exec -it ducklord-dev ducklord attach-host client-a --config /root/.duckl
 
 Inside the TUI:
 
-- `a` adds a Ducklion host from `/root/.ssh/config`; try `client-c`. The prompt
+- `a` adds a host entry from `/root/.ssh/config`; try `client-c`. The prompt
   also accepts a full SSH command such as
   `ssh -p 2222 -i ~/.ssh/id_ed25519 duck@client-c`.
+- `d` removes the selected host entry from the current `config.json`; it does
+  not stop remote Ducklion sessions.
 - `n` creates a remote session with `agent -> host -> project`.
 - `Enter` or right-click focuses the selected PTY session.
 - `Ctrl-]` returns focus to the left menu.

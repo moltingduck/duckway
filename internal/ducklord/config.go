@@ -43,9 +43,6 @@ func LoadConfig(path string) (*Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse ducklord config: %w", err)
 	}
-	if len(cfg.Clients) == 0 {
-		return nil, fmt.Errorf("ducklord config has no clients")
-	}
 	seen := map[string]bool{}
 	for i := range cfg.Clients {
 		if err := cfg.Clients[i].Normalize(); err != nil {
@@ -103,6 +100,16 @@ func (c *Config) AddClient(client Client) error {
 		return c.Clients[i].Name < c.Clients[j].Name
 	})
 	return nil
+}
+
+func (c *Config) RemoveClient(name string) bool {
+	for i := range c.Clients {
+		if c.Clients[i].Name == name {
+			c.Clients = append(c.Clients[:i], c.Clients[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) Normalize() error {
