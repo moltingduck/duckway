@@ -496,6 +496,11 @@ func printProbe(out io.Writer, probe ducklord.DucklionProbe) error {
 		return nil
 	}
 	fmt.Fprintf(out, "ducklion: available\ncommand: %s\nversion: %s\n", probe.Command, probe.Version)
+	if probe.ListOK {
+		fmt.Fprintf(out, "sessions: %d\n", probe.Sessions)
+	} else if probe.ListError != "" {
+		fmt.Fprintf(out, "sessions: error: %s\n", probe.ListError)
+	}
 	return nil
 }
 
@@ -1337,6 +1342,21 @@ func (s *tuiState) submitAddClient(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var installErr error
+	installed := false
+	if !probe.Available {
+		installedPath, err := s.runner.InstallDucklion(ctx, client, "", "")
+		if err != nil {
+			installErr = err
+		} else {
+			installed = true
+			client.Ducklion = installedPath
+			probe, err = s.runner.ProbeDucklion(ctx, client)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	if probe.Available && probe.Command != "" {
 		client.Ducklion = probe.Command
 	}
@@ -1347,9 +1367,16 @@ func (s *tuiState) submitAddClient(ctx context.Context) error {
 		return err
 	}
 	s.cancelAddClient()
-	if probe.Available {
-		s.outputErr = fmt.Sprintf("added %s (%s)", client.Name, probe.Command)
-	} else {
+	switch {
+	case installed && probe.Available:
+		s.outputErr = fmt.Sprintf("added %s; installed ducklion %s (%s, %d session(s))", client.Name, client.Ducklion, probe.Version, probe.Sessions)
+	case probe.Available && probe.ListOK:
+		s.outputErr = fmt.Sprintf("added %s (%s, %s, %d session(s))", client.Name, probe.Command, probe.Version, probe.Sessions)
+	case probe.Available:
+		s.outputErr = fmt.Sprintf("added %s (%s, %s; list check failed: %s)", client.Name, probe.Command, probe.Version, probe.ListError)
+	case installErr != nil:
+		s.outputErr = fmt.Sprintf("added %s; ducklion missing and install failed: %v", client.Name, installErr)
+	default:
 		s.outputErr = fmt.Sprintf("added %s; ducklion missing on remote", client.Name)
 	}
 	return nil
@@ -1368,10 +1395,10 @@ func (s *tuiState) clientFromAddLine(input string) (ducklord.Client, error) {
 		target = s.addClientHosts[n-1].Name
 	} else if fields, err := splitCommandLine(input); err == nil && len(fields) >= 2 && fields[0] == "ssh" {
 		target = fields[len(fields)-1]
-		sshCommand = fields[0]
 		if strings.HasPrefix(target, "-") {
 			return ducklord.Client{}, fmt.Errorf("full ssh command must end with a host target")
 		}
+		sshCommand = strings.Join(fields[:len(fields)-1], " ")
 	} else if err != nil {
 		return ducklord.Client{}, err
 	}

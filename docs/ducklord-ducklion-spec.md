@@ -260,17 +260,21 @@ podman exec ducklord-dev ducklord read client-a bash --lines 20 --config /root/.
 Inside the TUI:
 
 1. Press `a`.
-2. Choose `client-c` by number or type `client-c`.
+2. Choose `client-c` by number, type `client-c`, or paste a full SSH command
+   such as `ssh -p 2222 -i ~/.ssh/id_ed25519 duck@client-c`.
 3. Press `Enter`.
 
-Ducklord probes the remote host over SSH. If `ducklion` or `duckway ducklion`
-is available, Ducklord records the working command in
-`/root/.ducklord/config.json`. If Ducklion is missing, Ducklord still adds the
-host but shows a clear status message so the operator can enable the remote
-entry point.
+Ducklord probes the remote host over SSH. It checks `ducklion version`, runs
+`ducklion list --json` to verify the session manager entry point, and records
+the working command in `/root/.ducklord/config.json`. If Ducklion is missing,
+Ducklord attempts to install the local `ducklion` binary to
+`~/.local/bin/ducklion` over SSH, probes again, then records the resolved remote
+path. If installation is not possible because the local binary is missing or SSH
+cannot write the target path, Ducklord still adds the host and shows a clear
+status message so the operator can enable the remote entry point manually.
 
-For a host that is reachable over SSH but missing Ducklion, install the local
-binary over SSH:
+For a host that is reachable over SSH but still missing Ducklion, install the
+local binary explicitly:
 
 ```bash
 podman exec ducklord-dev ducklord install-ducklion client-c \
@@ -597,6 +601,8 @@ Future notification upgrades:
 - `ducklord` must validate client names, session names, users, and hosts before
   constructing SSH argv.
 - `ducklord` must use `exec.Command` argv, not a local shell.
+- Full SSH commands are split into argv and stored as the SSH executable plus
+  options; the target host remains a separate validated field.
 - `ducklord` disables SSH agent forwarding by default with SSH options such as
   `ForwardAgent=no` and `ClearAllForwardings=yes`.
 - `ducklion` validates session names and delegates PTY socket/process

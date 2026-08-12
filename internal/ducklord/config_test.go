@@ -58,6 +58,22 @@ func TestLoadConfigAcceptsDuckwayDucklionSubcommand(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAcceptsSSHCommandLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"clients":[{"name":"vulns","host":"vulns.ts","ssh":"ssh -p 2222 -i /tmp/id_ed25519"}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.Clients[0].SSHCommandParts()
+	want := []string{"ssh", "-p", "2222", "-i", "/tmp/id_ed25519"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SSHCommandParts = %#v, want %#v", got, want)
+	}
+}
+
 func TestSSHArgsDoNotUseLocalShell(t *testing.T) {
 	c := Client{Name: "vulns", Host: "vulns.ts", User: "duck", Ducklion: "ducklion", SSH: "ssh"}
 	got := SSHArgs(c, false, "ducklion", "send", "alpha", "hello; rm -rf /")

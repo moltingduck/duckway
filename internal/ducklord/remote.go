@@ -110,7 +110,8 @@ func (Runner) Attach(c Client, name string) error {
 		return fmt.Errorf("invalid session name %q", name)
 	}
 	args := SSHArgs(c, true, c.DucklionArgs("attach", name)...)
-	cmd := exec.Command(c.SSH, args...)
+	sshParts := c.SSHCommandParts()
+	cmd := exec.Command(sshParts[0], append(sshParts[1:], args...)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -125,7 +126,8 @@ func (Runner) AttachStream(ctx context.Context, c Client, name string) (*AttachS
 		return nil, fmt.Errorf("invalid session name %q", name)
 	}
 	args := SSHArgs(c, false, c.DucklionArgs("attach", name)...)
-	cmd := exec.CommandContext(ctx, c.SSH, args...)
+	sshParts := c.SSHCommandParts()
+	cmd := exec.CommandContext(ctx, sshParts[0], append(sshParts[1:], args...)...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -158,7 +160,8 @@ func sshOutputRaw(ctx context.Context, c Client, remoteArgs ...string) ([]byte, 
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	args := SSHArgs(c, false, remoteArgs...)
-	cmd := exec.CommandContext(ctx, c.SSH, args...)
+	sshParts := c.SSHCommandParts()
+	cmd := exec.CommandContext(ctx, sshParts[0], append(sshParts[1:], args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

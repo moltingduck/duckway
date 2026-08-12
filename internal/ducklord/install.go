@@ -73,7 +73,8 @@ func (Runner) InstallDucklion(ctx context.Context, c Client, source, dest string
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	args := SSHArgs(c, false, "sh", "-lc", remoteDucklionInstallScript, "ducklord-install-ducklion", dest)
-	cmd := exec.CommandContext(ctx, c.SSH, args...)
+	sshParts := c.SSHCommandParts()
+	cmd := exec.CommandContext(ctx, sshParts[0], append(sshParts[1:], args...)...)
 	cmd.Stdin = f
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

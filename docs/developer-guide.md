@@ -648,7 +648,9 @@ podman exec -it ducklord-dev ducklord attach-host client-a --config /root/.duckl
 
 Inside the TUI:
 
-- `a` adds a Ducklion host from `/root/.ssh/config`; try `client-c`.
+- `a` adds a Ducklion host from `/root/.ssh/config`; try `client-c`. The prompt
+  also accepts a full SSH command such as
+  `ssh -p 2222 -i ~/.ssh/id_ed25519 duck@client-c`.
 - `n` creates a remote session with `agent -> host -> project`.
 - `Enter` or right-click focuses the selected PTY session.
 - `Ctrl-]` returns focus to the left menu.
@@ -685,6 +687,11 @@ ducklord import-ssh-hosts --config ~/.ducklord/config.json
 ducklord install-ducklion <client> --source ./ducklion-linux-amd64 --config ~/.ducklord/config.json
 ducklord attach-host <client> --config ~/.ducklord/config.json
 ```
+
+When a host is added from the TUI, Ducklord probes `ducklion version` and
+`ducklion list --json`. If Ducklion is missing, it attempts to install the local
+Ducklion binary over SSH to `~/.local/bin/ducklion`, then probes again before
+saving the resolved command path.
 
 Clean up:
 

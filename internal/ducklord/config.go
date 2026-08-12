@@ -139,7 +139,7 @@ func (c *Client) Normalize() error {
 	if c.SSH == "" {
 		c.SSH = "ssh"
 	}
-	if !safeRemoteCommand(c.SSH) {
+	if !safeRemoteCommandLine(c.SSH) {
 		return fmt.Errorf("invalid ssh command %q", c.SSH)
 	}
 	return nil
@@ -158,6 +158,14 @@ func (c Client) DucklionArgs(args ...string) []string {
 	out = append(out, parts...)
 	out = append(out, args...)
 	return out
+}
+
+func (c Client) SSHCommandParts() []string {
+	parts := strings.Fields(c.SSH)
+	if len(parts) == 0 {
+		return []string{"ssh"}
+	}
+	return parts
 }
 
 func SafeIdentifier(s string) bool {

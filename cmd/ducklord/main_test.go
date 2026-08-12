@@ -471,12 +471,51 @@ func TestTUIAddClientFromSSHHostProbesAndSaves(t *testing.T) {
 func TestTUIAddClientAcceptsSSHCommandTarget(t *testing.T) {
 	cfg := &ducklord.Config{}
 	state := &tuiState{cfg: cfg}
-	client, err := state.clientFromAddLine("ssh duck@client-a")
+	client, err := state.clientFromAddLine("ssh -p 2222 -i /tmp/id_ed25519 duck@client-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if client.Name != "client-a" || client.User != "duck" || client.Host != "client-a" || client.SSH != "ssh" {
+	if client.Name != "client-a" || client.User != "duck" || client.Host != "client-a" || client.SSH != "ssh -p 2222 -i /tmp/id_ed25519" {
 		t.Fatalf("client = %+v", client)
+	}
+}
+
+func TestTUIAddClientInstallsMissingDucklionAndReprobes(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "config.json")
+	cfg := &ducklord.Config{}
+	runner := &recordingRunner{
+		installPath: "/home/duck/.local/bin/ducklion",
+		probes: []ducklord.DucklionProbe{
+			{Available: false},
+			{Available: true, Command: "/home/duck/.local/bin/ducklion", Version: "ducklion v2", ListOK: true, Sessions: 1},
+		},
+	}
+	state := &tuiState{
+		cfg:           cfg,
+		cfgPath:       config,
+		runner:        runner,
+		addClientMode: true,
+		addClientLine: "ssh duck@client-a",
+	}
+	if err := state.submitAddClient(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if runner.installClient != "client-a" || runner.probeCalls != 2 {
+		t.Fatalf("installClient=%q probeCalls=%d", runner.installClient, runner.probeCalls)
+	}
+	loaded, err := ducklord.LoadConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, ok := loaded.Client("client-a")
+	if !ok {
+		t.Fatalf("saved clients = %+v", loaded.Clients)
+	}
+	if client.Ducklion != "/home/duck/.local/bin/ducklion" {
+		t.Fatalf("ducklion = %q", client.Ducklion)
+	}
+	if !strings.Contains(state.outputErr, "installed ducklion") || !strings.Contains(state.outputErr, "ducklion v2") {
+		t.Fatalf("outputErr = %q", state.outputErr)
 	}
 }
 
@@ -723,6 +762,8 @@ type recordingRunner struct {
 	installSource    string
 	installDest      string
 	installPath      string
+	probes           []ducklord.DucklionProbe
+	probeCalls       int
 	sessionsByClient map[string][]ducklord.RemoteSession
 }
 
@@ -750,6 +791,10 @@ func (r *recordingRunner) Projects(context.Context, ducklord.Client) ([]ducklord
 	return nil, nil
 }
 func (r *recordingRunner) ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error) {
+	r.probeCalls++
+	if len(r.probes) >= r.probeCalls {
+		return r.probes[r.probeCalls-1], nil
+	}
 	return ducklord.DucklionProbe{}, nil
 }
 func (r *recordingRunner) InstallDucklion(_ context.Context, client ducklord.Client, source, dest string) (string, error) {
