@@ -738,6 +738,7 @@ if [ -z "$INSTALL_COMPONENT" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
   component_cursor=1
   component_client=1
   component_ducklord=0
+  component_rendered=0
   component_tty_state="$(stty -g < /dev/tty 2>/dev/null || true)"
   if [ -n "$component_tty_state" ]; then
     stty -echo -icanon min 1 time 0 < /dev/tty 2>/dev/null || true
@@ -749,31 +750,35 @@ if [ -z "$INSTALL_COMPONENT" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
   }
   trap 'restore_component_tty; exit 130' INT TERM
   while :; do
-    echo "" > /dev/tty
-    echo "Install components:" > /dev/tty
-    echo "Use j/k to move, Space to toggle, Enter to continue." > /dev/tty
+    if [ "$component_rendered" = "1" ]; then
+      printf '\033[5A\033[J' > /dev/tty
+    fi
+    printf '\nInstall components:\n' > /dev/tty
+    printf 'Use j/k to move, Space to toggle, Enter to continue.\n' > /dev/tty
     if [ "$component_cursor" = "1" ]; then prefix=">"; else prefix=" "; fi
     if [ "$component_client" = "1" ]; then mark="x"; else mark=" "; fi
-    echo "  $prefix [$mark] Duckway client + Ducklion  (remote host / CC / agent PTY)" > /dev/tty
+    printf '  %%s [%%s] Duckway client + Ducklion  (remote host / CC / agent PTY)\n' "$prefix" "$mark" > /dev/tty
     if [ "$component_cursor" = "2" ]; then prefix=">"; else prefix=" "; fi
     if [ "$component_ducklord" = "1" ]; then mark="x"; else mark=" "; fi
-    echo "  $prefix [$mark] Ducklord                  (developer laptop SSH TUI)" > /dev/tty
-    component_key="$(dd bs=1 count=1 2>/dev/null < /dev/tty || true)"
-    case "$component_key" in
-      j) component_cursor=2 ;;
-      k) component_cursor=1 ;;
-      1) component_cursor=1 ;;
-      2) component_cursor=2 ;;
-      " ")
+    printf '  %%s [%%s] Ducklord                  (developer laptop SSH TUI)\n' "$prefix" "$mark" > /dev/tty
+    component_rendered=1
+    component_key_code="$(dd bs=1 count=1 2>/dev/null < /dev/tty | od -An -tu1 | tr -d ' ' || true)"
+    case "$component_key_code" in
+      106) component_cursor=2 ;;
+      107) component_cursor=1 ;;
+      49) component_cursor=1 ;;
+      50) component_cursor=2 ;;
+      32)
         if [ "$component_cursor" = "1" ]; then
           if [ "$component_client" = "1" ]; then component_client=0; else component_client=1; fi
         else
           if [ "$component_ducklord" = "1" ]; then component_ducklord=0; else component_ducklord=1; fi
         fi
         ;;
-      "")
+      10|13)
         if [ "$component_client" = "0" ] && [ "$component_ducklord" = "0" ]; then
-          echo "Select at least one component." > /dev/tty
+          printf 'Select at least one component.\n' > /dev/tty
+          component_rendered=0
         else
           break
         fi

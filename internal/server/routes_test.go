@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -129,7 +130,8 @@ func TestInstallScriptSupportsUserLocalInstall(t *testing.T) {
 		`Ducklord`,
 		`component_client=1`,
 		`component_ducklord=0`,
-		`component_key="$(dd bs=1 count=1`,
+		`component_key_code="$(dd bs=1 count=1`,
+		`printf '\033[5A\033[J'`,
 		`INSTALL_COMPONENT="all"`,
 		`INSTALL_COMPONENT="ducklord"`,
 		`DUCKLORD_BINARY="ducklord-${OS}-${ARCH}"`,
@@ -300,6 +302,58 @@ func TestInstallScriptInteractiveCheckboxInstallsDucklordOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".duckway", "ca.pem")); err == nil {
 		t.Fatal("unexpected ca.pem after ducklord-only interactive install")
+	}
+}
+
+func TestInstallScriptInteractiveCheckboxRedrawsInPlace(t *testing.T) {
+	out, err := runInstallScriptInteractive(t, " j \n")
+	if err != nil {
+		t.Fatalf("interactive install failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "\x1b[5A\x1b[J") {
+		t.Fatalf("menu output did not contain redraw escape, output:\n%s", out)
+	}
+}
+
+func runInstallScriptInteractive(t *testing.T, keys string) (string, error) {
+	t.Helper()
+	dir := t.TempDir()
+	home, bin, tmp, downloads := installScriptTestDirs(t, dir)
+	writeInstallScriptTestDownloads(t, downloads)
+	writeInstallScriptTestCurl(t, filepath.Join(bin, "curl"))
+	script := filepath.Join(dir, "install.sh")
+	if err := os.WriteFile(script, []byte(fmt.Sprintf(installScript, "http://duckway.test", "http://duckway.test", "http://duckway.test")), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", script)
+	cmd.Env = append(os.Environ(),
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"HOME="+home,
+		"TMPDIR="+tmp,
+		"DUCKWAY_INSTALL=user",
+		"DUCKWAY_TEST_DOWNLOADS="+downloads,
+	)
+	tty, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tty.Close()
+	if _, err := tty.Write([]byte(keys)); err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	done := make(chan error, 1)
+	go func() {
+		_, _ = io.Copy(&output, tty)
+		done <- cmd.Wait()
+	}()
+	select {
+	case err := <-done:
+		return output.String(), err
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("interactive install timed out")
+		return output.String(), nil
 	}
 }
 
