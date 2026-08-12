@@ -89,15 +89,16 @@ configured host.
 
 ## Installing Ducklord And Ducklion
 
-The gateway `/install.sh` is interactive when run from a terminal. It offers:
+The gateway `/install.sh` is interactive when run from a terminal. It shows a
+checkbox menu:
 
 ```text
-1) Duckway client + Ducklion
-2) Ducklord only
-3) All tools
+[x] Duckway client + Ducklion
+[ ] Ducklord
 ```
 
-On a remote agent host, choose `Duckway client + Ducklion`:
+Use `j/k` to move, `Space` to toggle, and `Enter` to continue. On a remote
+agent host, keep `Duckway client + Ducklion` selected:
 
 ```bash
 curl -fsSL http://your-duckway-gateway/install.sh | sh
@@ -118,7 +119,7 @@ or, for user-local installs:
 ~/.local/bin/ducklion
 ```
 
-On a developer laptop that only needs the SSH TUI, choose `Ducklord only`. That
+On a developer laptop that only needs the SSH TUI, select only `Ducklord`. That
 installs the platform-specific `ducklord-*` binary as:
 
 ```text

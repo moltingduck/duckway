@@ -656,16 +656,16 @@ Inside the TUI:
   host and disables add/new shortcuts.
 
 For install-path behavior, the gateway `/install.sh` has an interactive
-component menu:
+checkbox component menu:
 
 ```text
-1) Duckway client + Ducklion
-2) Ducklord only
-3) All tools
+[x] Duckway client + Ducklion
+[ ] Ducklord
 ```
 
-Remote agent hosts should install `Duckway client + Ducklion`. Developer
-laptops can install `Ducklord only`. Manual remote hosts must expose either
+Use `j/k` to move, `Space` to toggle, and `Enter` to continue. Remote agent
+hosts should install `Duckway client + Ducklion`. Developer laptops can install
+only `Ducklord`. Manual remote hosts must expose either
 `ducklion` in `PATH` or `duckway ducklion` as a compatibility wrapper before
 Ducklord can manage PTY sessions.
 

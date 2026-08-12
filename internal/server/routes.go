@@ -735,22 +735,60 @@ DUCKLORD_BINARY="ducklord-${OS}-${ARCH}"
 INSTALL_COMPONENT="${DUCKWAY_INSTALL_COMPONENT:-}"
 INSTALL_MODE="${DUCKWAY_INSTALL:-}"
 if [ -z "$INSTALL_COMPONENT" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
-  echo ""
-  echo "Install components:" > /dev/tty
-  echo "  1) Duckway client + Ducklion  (remote host / CC / agent PTY)" > /dev/tty
-  echo "  2) Ducklord only              (developer laptop SSH TUI)" > /dev/tty
-  echo "  3) All tools                  (Duckway client + Ducklion + Ducklord)" > /dev/tty
-  printf "Choose [1]: " > /dev/tty
-  read component_choice < /dev/tty
-  case "${component_choice:-1}" in
-    1) INSTALL_COMPONENT="client" ;;
-    2) INSTALL_COMPONENT="ducklord" ;;
-    3) INSTALL_COMPONENT="all" ;;
-    *)
-      echo "Unsupported choice: $component_choice"
-      exit 1
-      ;;
-  esac
+  component_cursor=1
+  component_client=1
+  component_ducklord=0
+  component_tty_state="$(stty -g < /dev/tty 2>/dev/null || true)"
+  if [ -n "$component_tty_state" ]; then
+    stty -echo -icanon min 1 time 0 < /dev/tty 2>/dev/null || true
+  fi
+  restore_component_tty() {
+    if [ -n "$component_tty_state" ]; then
+      stty "$component_tty_state" < /dev/tty 2>/dev/null || true
+    fi
+  }
+  trap 'restore_component_tty; exit 130' INT TERM
+  while :; do
+    echo "" > /dev/tty
+    echo "Install components:" > /dev/tty
+    echo "Use j/k to move, Space to toggle, Enter to continue." > /dev/tty
+    if [ "$component_cursor" = "1" ]; then prefix=">"; else prefix=" "; fi
+    if [ "$component_client" = "1" ]; then mark="x"; else mark=" "; fi
+    echo "  $prefix [$mark] Duckway client + Ducklion  (remote host / CC / agent PTY)" > /dev/tty
+    if [ "$component_cursor" = "2" ]; then prefix=">"; else prefix=" "; fi
+    if [ "$component_ducklord" = "1" ]; then mark="x"; else mark=" "; fi
+    echo "  $prefix [$mark] Ducklord                  (developer laptop SSH TUI)" > /dev/tty
+    component_key="$(dd bs=1 count=1 2>/dev/null < /dev/tty || true)"
+    case "$component_key" in
+      j) component_cursor=2 ;;
+      k) component_cursor=1 ;;
+      1) component_cursor=1 ;;
+      2) component_cursor=2 ;;
+      " ")
+        if [ "$component_cursor" = "1" ]; then
+          if [ "$component_client" = "1" ]; then component_client=0; else component_client=1; fi
+        else
+          if [ "$component_ducklord" = "1" ]; then component_ducklord=0; else component_ducklord=1; fi
+        fi
+        ;;
+      "")
+        if [ "$component_client" = "0" ] && [ "$component_ducklord" = "0" ]; then
+          echo "Select at least one component." > /dev/tty
+        else
+          break
+        fi
+        ;;
+    esac
+  done
+  restore_component_tty
+  trap - INT TERM
+  if [ "$component_client" = "1" ] && [ "$component_ducklord" = "1" ]; then
+    INSTALL_COMPONENT="all"
+  elif [ "$component_ducklord" = "1" ]; then
+    INSTALL_COMPONENT="ducklord"
+  else
+    INSTALL_COMPONENT="client"
+  fi
 fi
 if [ -z "$INSTALL_COMPONENT" ]; then
   INSTALL_COMPONENT="client"
