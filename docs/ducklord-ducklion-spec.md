@@ -70,6 +70,12 @@ Default path:
 ~/.ducklord/config.json
 ```
 
+`ducklord tui` does not require the file to exist. If it is missing, Ducklord
+starts with an empty menu and lets the operator press `a` to add a host from
+`~/.ssh/config` or a full SSH command. The config file is created when the first
+host is saved. Non-TUI commands such as `ducklord sessions <client>` still need
+a config entry because they must resolve `<client>`.
+
 Override:
 
 ```bash

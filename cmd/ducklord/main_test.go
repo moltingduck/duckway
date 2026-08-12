@@ -70,6 +70,16 @@ func TestDucklordImportSSHHostsCreatesConfigWithoutDuplicates(t *testing.T) {
 	}
 }
 
+func TestLoadOrEmptyConfigAllowsMissingConfig(t *testing.T) {
+	cfg, err := loadOrEmptyConfig(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg == nil || len(cfg.Clients) != 0 {
+		t.Fatalf("config = %+v", cfg)
+	}
+}
+
 func TestDucklordSessionsUsesRunner(t *testing.T) {
 	config := writeConfig(t)
 	var out bytes.Buffer
