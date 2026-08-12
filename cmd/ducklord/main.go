@@ -15,7 +15,6 @@ import (
 
 	"github.com/hackerduck/duckway/internal/ducklord"
 	"github.com/hackerduck/duckway/internal/version"
-	"golang.org/x/sys/unix"
 )
 
 type remoteRunner interface {
@@ -1638,29 +1637,6 @@ func menuWidthFor(width int) int {
 	return 36
 }
 
-func makeRaw() (*unix.Termios, error) {
-	fd := int(os.Stdin.Fd())
-	oldState, err := unix.IoctlGetTermios(fd, unix.TCGETS)
-	if err != nil {
-		return nil, err
-	}
-	newState := *oldState
-	newState.Lflag &^= unix.ECHO | unix.ICANON | unix.ISIG
-	newState.Iflag &^= unix.ICRNL | unix.IXON
-	newState.Cc[unix.VMIN] = 1
-	newState.Cc[unix.VTIME] = 0
-	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &newState); err != nil {
-		return nil, err
-	}
-	return oldState, nil
-}
-
-func restore(state *unix.Termios) {
-	if state != nil {
-		_ = unix.IoctlSetTermios(int(os.Stdin.Fd()), unix.TCSETS, state)
-	}
-}
-
 func readInput(ctx context.Context, ch chan<- []byte) {
 	buf := make([]byte, 64)
 	var pending []byte
@@ -1813,14 +1789,6 @@ func applyInteractiveText(current, chunk string) string {
 		}
 	}
 	return string(out)
-}
-
-func terminalSize() (int, int) {
-	ws, err := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ)
-	if err != nil || ws.Col == 0 || ws.Row == 0 {
-		return 120, 32
-	}
-	return int(ws.Col), int(ws.Row)
 }
 
 func sanitizeTerminalText(s string) string {

@@ -18,8 +18,6 @@ because MagicDNS names and private addresses can be used as SSH targets.
 
 - Do not relay terminal bytes through the Duckway server.
 - Do not add Duckway server discovery APIs yet.
-- Do not add `ducklord` to the `duckway-client-*` update artifact pipeline yet.
-  `ducklion` is delivered as the companion PTY binary for client installs.
 - Do not merge Discord CC sessions with Ducklord sessions.
 - Do not require the remote host to run the normal `duckway` proxy/client daemon.
 
@@ -89,9 +87,17 @@ Ducklord does not use Duckway server for discovery, authorization, or command
 relay. The only security boundary is whether the operator can SSH to the
 configured host.
 
-## Installing Ducklion
+## Installing Ducklord And Ducklion
 
-Normal Duckway client installs fetch both binaries:
+The gateway `/install.sh` is interactive when run from a terminal. It offers:
+
+```text
+1) Duckway client + Ducklion
+2) Ducklord only
+3) All tools
+```
+
+On a remote agent host, choose `Duckway client + Ducklion`:
 
 ```bash
 curl -fsSL http://your-duckway-gateway/install.sh | sh
@@ -110,6 +116,27 @@ or, for user-local installs:
 ```text
 ~/.local/bin/duckway
 ~/.local/bin/ducklion
+```
+
+On a developer laptop that only needs the SSH TUI, choose `Ducklord only`. That
+installs the platform-specific `ducklord-*` binary as:
+
+```text
+/usr/local/bin/ducklord
+```
+
+or, for user-local installs:
+
+```text
+~/.local/bin/ducklord
+```
+
+Non-interactive `curl ... | sh` installs `Duckway client + Ducklion` by
+default. To script other modes:
+
+```bash
+DUCKWAY_INSTALL_COMPONENT=ducklord DUCKWAY_INSTALL=user \
+  sh -c "$(curl -fsSL http://your-duckway-gateway/install.sh)"
 ```
 
 For manual installs, `ducklord` expects the remote host to expose either:

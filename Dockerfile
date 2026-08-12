@@ -52,7 +52,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/ducklion-linux-amd64 ./cmd/ducklion/ && \
     CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/ducklion-linux-arm64 ./cmd/ducklion/ && \
     CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/ducklion-darwin-amd64 ./cmd/ducklion/ && \
-    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/ducklion-darwin-arm64 ./cmd/ducklion/
+    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/ducklion-darwin-arm64 ./cmd/ducklion/ && \
+    CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/ducklord-linux-amd64 ./cmd/ducklord/ && \
+    CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/ducklord-linux-arm64 ./cmd/ducklord/ && \
+    CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/ducklord-darwin-amd64 ./cmd/ducklord/ && \
+    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -buildvcs=false -ldflags="$LDFLAGS" -o /dist/ducklord-darwin-arm64 ./cmd/ducklord/
 
 # === Combined server (backwards compat) ===
 FROM alpine:3.21 AS server

@@ -696,7 +696,11 @@ func isAllowedClientBinary(binary string) bool {
 		"ducklion-linux-amd64",
 		"ducklion-linux-arm64",
 		"ducklion-darwin-amd64",
-		"ducklion-darwin-arm64":
+		"ducklion-darwin-arm64",
+		"ducklord-linux-amd64",
+		"ducklord-linux-arm64",
+		"ducklord-darwin-amd64",
+		"ducklord-darwin-arm64":
 		return true
 	default:
 		return false
@@ -727,12 +731,44 @@ ARCH=$(uname -m)
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; *) echo "Unsupported: $ARCH"; exit 1 ;; esac
 BINARY="duckway-client-${OS}-${ARCH}"
 DUCKLION_BINARY="ducklion-${OS}-${ARCH}"
+DUCKLORD_BINARY="ducklord-${OS}-${ARCH}"
+INSTALL_COMPONENT="${DUCKWAY_INSTALL_COMPONENT:-}"
 INSTALL_MODE="${DUCKWAY_INSTALL:-}"
+if [ -z "$INSTALL_COMPONENT" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  echo ""
+  echo "Install components:" > /dev/tty
+  echo "  1) Duckway client + Ducklion  (remote host / CC / agent PTY)" > /dev/tty
+  echo "  2) Ducklord only              (developer laptop SSH TUI)" > /dev/tty
+  echo "  3) All tools                  (Duckway client + Ducklion + Ducklord)" > /dev/tty
+  printf "Choose [1]: " > /dev/tty
+  read component_choice < /dev/tty
+  case "${component_choice:-1}" in
+    1) INSTALL_COMPONENT="client" ;;
+    2) INSTALL_COMPONENT="ducklord" ;;
+    3) INSTALL_COMPONENT="all" ;;
+    *)
+      echo "Unsupported choice: $component_choice"
+      exit 1
+      ;;
+  esac
+fi
+if [ -z "$INSTALL_COMPONENT" ]; then
+  INSTALL_COMPONENT="client"
+fi
+case "$INSTALL_COMPONENT" in
+  client|duckway|duckway-client) INSTALL_COMPONENT="client"; PRIMARY_NAME="duckway" ;;
+  ducklord) PRIMARY_NAME="ducklord" ;;
+  all) PRIMARY_NAME="duckway" ;;
+  *)
+    echo "Unsupported DUCKWAY_INSTALL_COMPONENT=$INSTALL_COMPONENT (use client, ducklord, or all)"
+    exit 1
+    ;;
+esac
 if [ -z "$INSTALL_MODE" ] && [ -z "${DUCKWAY_INSTALL_PATH:-}" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
   echo ""
   echo "Install location:" > /dev/tty
-  echo "  1) System-wide  /usr/local/bin/duckway  (uses sudo if needed)" > /dev/tty
-  echo "  2) User-local   $HOME/.local/bin/duckway  (no sudo)" > /dev/tty
+  echo "  1) System-wide  /usr/local/bin/$PRIMARY_NAME  (uses sudo if needed)" > /dev/tty
+  echo "  2) User-local   $HOME/.local/bin/$PRIMARY_NAME  (no sudo)" > /dev/tty
   echo "  3) Custom path" > /dev/tty
   printf "Choose [1]: " > /dev/tty
   read choice < /dev/tty
@@ -760,10 +796,10 @@ if [ -z "$INSTALL_MODE" ]; then
 fi
 case "$INSTALL_MODE" in
   system)
-    DEST="${DUCKWAY_INSTALL_PATH:-/usr/local/bin/duckway}"
+    DEST="${DUCKWAY_INSTALL_PATH:-/usr/local/bin/$PRIMARY_NAME}"
     ;;
   user|local|user-local)
-    DEST="${DUCKWAY_INSTALL_PATH:-$HOME/.local/bin/duckway}"
+    DEST="${DUCKWAY_INSTALL_PATH:-$HOME/.local/bin/$PRIMARY_NAME}"
     ;;
   custom)
     if [ -z "${DUCKWAY_INSTALL_PATH:-}" ]; then
@@ -777,29 +813,49 @@ case "$INSTALL_MODE" in
     exit 1
     ;;
 esac
-echo "Downloading: $DUCKWAY_SERVER/download/$BINARY"
-if command -v curl >/dev/null 2>&1; then curl -fsSL "$DUCKWAY_SERVER/download/$BINARY" -o /tmp/duckway
-elif command -v wget >/dev/null 2>&1; then wget -q "$DUCKWAY_SERVER/download/$BINARY" -O /tmp/duckway
-else echo "Error: curl or wget required"; exit 1; fi
-chmod +x /tmp/duckway
-echo "Downloading: $DUCKWAY_SERVER/download/$DUCKLION_BINARY"
-if command -v curl >/dev/null 2>&1; then curl -fsSL "$DUCKWAY_SERVER/download/$DUCKLION_BINARY" -o /tmp/ducklion
-elif command -v wget >/dev/null 2>&1; then wget -q "$DUCKWAY_SERVER/download/$DUCKLION_BINARY" -O /tmp/ducklion
-else echo "Error: curl or wget required"; exit 1; fi
-chmod +x /tmp/ducklion
 DEST_DIR="$(dirname "$DEST")"
+TMP_DIR="${TMPDIR:-/tmp}/duckway-install.$$"
+mkdir -p "$TMP_DIR"
+trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
+download_tool() {
+  binary="$1"
+  out="$2"
+  echo "Downloading: $DUCKWAY_SERVER/download/$binary"
+  if command -v curl >/dev/null 2>&1; then curl -fsSL "$DUCKWAY_SERVER/download/$binary" -o "$out"
+  elif command -v wget >/dev/null 2>&1; then wget -q "$DUCKWAY_SERVER/download/$binary" -O "$out"
+  else echo "Error: curl or wget required"; exit 1; fi
+  chmod +x "$out"
+}
+if [ "$INSTALL_COMPONENT" = "client" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
+  download_tool "$BINARY" "$TMP_DIR/duckway"
+  download_tool "$DUCKLION_BINARY" "$TMP_DIR/ducklion"
+fi
+if [ "$INSTALL_COMPONENT" = "ducklord" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
+  download_tool "$DUCKLORD_BINARY" "$TMP_DIR/ducklord"
+fi
 DUCKLION_DEST="$DEST_DIR/ducklion"
+DUCKLORD_DEST="$DEST_DIR/ducklord"
+if [ "$INSTALL_COMPONENT" = "ducklord" ]; then
+  DUCKLORD_DEST="$DEST"
+fi
 if [ "$INSTALL_MODE" = "system" ] && [ ! -w "$DEST_DIR" ]; then
   sudo mkdir -p "$DEST_DIR"
-  sudo mv /tmp/duckway "$DEST"
-  sudo mv /tmp/ducklion "$DUCKLION_DEST"
+  if [ -f "$TMP_DIR/duckway" ]; then sudo mv "$TMP_DIR/duckway" "$DEST"; fi
+  if [ -f "$TMP_DIR/ducklion" ]; then sudo mv "$TMP_DIR/ducklion" "$DUCKLION_DEST"; fi
+  if [ -f "$TMP_DIR/ducklord" ]; then sudo mv "$TMP_DIR/ducklord" "$DUCKLORD_DEST"; fi
 else
   mkdir -p "$DEST_DIR"
-  mv /tmp/duckway "$DEST"
-  mv /tmp/ducklion "$DUCKLION_DEST"
+  if [ -f "$TMP_DIR/duckway" ]; then mv "$TMP_DIR/duckway" "$DEST"; fi
+  if [ -f "$TMP_DIR/ducklion" ]; then mv "$TMP_DIR/ducklion" "$DUCKLION_DEST"; fi
+  if [ -f "$TMP_DIR/ducklord" ]; then mv "$TMP_DIR/ducklord" "$DUCKLORD_DEST"; fi
 fi
-echo "Installed: $DEST"
-echo "Installed: $DUCKLION_DEST"
+if [ "$INSTALL_COMPONENT" = "client" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
+  echo "Installed: $DEST"
+  echo "Installed: $DUCKLION_DEST"
+fi
+if [ "$INSTALL_COMPONENT" = "ducklord" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
+  echo "Installed: $DUCKLORD_DEST"
+fi
 case ":$PATH:" in
   *":$DEST_DIR:"*) ;;
   *)
@@ -807,12 +863,19 @@ case ":$PATH:" in
     echo "      Run this binary as: $DEST"
     ;;
 esac
-mkdir -p ~/.duckway
-if command -v curl >/dev/null 2>&1; then curl -fsSL "%s/skill/ca.pem" -o ~/.duckway/ca.pem
-else wget -q "%s/skill/ca.pem" -O ~/.duckway/ca.pem; fi
+if [ "$INSTALL_COMPONENT" = "client" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
+  mkdir -p ~/.duckway
+  if command -v curl >/dev/null 2>&1; then curl -fsSL "%s/skill/ca.pem" -o ~/.duckway/ca.pem
+  else wget -q "%s/skill/ca.pem" -O ~/.duckway/ca.pem; fi
+fi
 echo "======================================"
-echo "  Duckway client installed!"
-echo "  Next: duckway init"
+echo "  Duckway tools installed!"
+if [ "$INSTALL_COMPONENT" = "client" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
+  echo "  Next: duckway init"
+fi
+if [ "$INSTALL_COMPONENT" = "ducklord" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
+  echo "  Ducklord: ducklord tui"
+fi
 echo "  Server URL: $DUCKWAY_SERVER"
 echo "======================================"
 `

@@ -655,10 +655,27 @@ Inside the TUI:
 - `ducklord attach-host client-a` opens the split-pane UI scoped to one remote
   host and disables add/new shortcuts.
 
-For install-path behavior, the gateway `/install.sh` installs both `duckway`
-and the companion `ducklion` binary into the same directory. Manual remote
-hosts must expose either `ducklion` in `PATH` or `duckway ducklion` as a
-compatibility wrapper before Ducklord can manage PTY sessions.
+For install-path behavior, the gateway `/install.sh` has an interactive
+component menu:
+
+```text
+1) Duckway client + Ducklion
+2) Ducklord only
+3) All tools
+```
+
+Remote agent hosts should install `Duckway client + Ducklion`. Developer
+laptops can install `Ducklord only`. Manual remote hosts must expose either
+`ducklion` in `PATH` or `duckway ducklion` as a compatibility wrapper before
+Ducklord can manage PTY sessions.
+
+Non-interactive install defaults to `Duckway client + Ducklion`. To install
+only Ducklord in user-local mode:
+
+```bash
+DUCKWAY_INSTALL_COMPONENT=ducklord DUCKWAY_INSTALL=user \
+  sh -c "$(curl -fsSL http://your-duckway-gateway/install.sh)"
+```
 
 Ducklord itself is independent of Duckway server. Remote discovery and installs
 use only the operator's local SSH config and SSH permissions:

@@ -2,9 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,6 +78,9 @@ func TestServeClientDownloadOnlyAllowsPinnedBinaries(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "ducklion-linux-amd64"), []byte("lion"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "ducklord-linux-amd64"), []byte("lord"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("secret"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +101,14 @@ func TestServeClientDownloadOnlyAllowsPinnedBinaries(t *testing.T) {
 		t.Fatalf("ducklion download status=%d body=%q", rec.Code, rec.Body.String())
 	}
 
+	req = httptest.NewRequest(http.MethodGet, "/download/ducklord-linux-amd64", nil)
+	req.SetPathValue("binary", "ducklord-linux-amd64")
+	rec = httptest.NewRecorder()
+	serveClientDownload(rec, req, dir)
+	if rec.Code != http.StatusOK || rec.Body.String() != "lord" {
+		t.Fatalf("ducklord download status=%d body=%q", rec.Code, rec.Body.String())
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/download/secret.txt", nil)
 	req.SetPathValue("binary", "secret.txt")
 	rec = httptest.NewRecorder()
@@ -107,18 +120,129 @@ func TestServeClientDownloadOnlyAllowsPinnedBinaries(t *testing.T) {
 
 func TestInstallScriptSupportsUserLocalInstall(t *testing.T) {
 	for _, want := range []string{
+		`Install components:`,
+		`Duckway client + Ducklion`,
+		`Ducklord only`,
+		`All tools`,
+		`INSTALL_COMPONENT="ducklord"`,
+		`DUCKLORD_BINARY="ducklord-${OS}-${ARCH}"`,
+		`download_tool "$DUCKLORD_BINARY" "$TMP_DIR/ducklord"`,
+		`DUCKLORD_DEST="$DEST_DIR/ducklord"`,
+		`DUCKLORD_DEST="$DEST"`,
 		`Install location:`,
 		`read choice < /dev/tty`,
-		`DEST="${DUCKWAY_INSTALL_PATH:-$HOME/.local/bin/duckway}"`,
+		`DEST="${DUCKWAY_INSTALL_PATH:-$HOME/.local/bin/$PRIMARY_NAME}"`,
 		`DUCKWAY_INSTALL_PATH="$custom_path"`,
 		`INSTALL_MODE="custom"`,
 		`sudo mkdir -p "$DEST_DIR"`,
 		`DUCKLION_BINARY="ducklion-${OS}-${ARCH}"`,
 		`DUCKLION_DEST="$DEST_DIR/ducklion"`,
-		`sudo mv /tmp/ducklion "$DUCKLION_DEST"`,
+		`sudo mv "$TMP_DIR/ducklion" "$DUCKLION_DEST"`,
 	} {
 		if !strings.Contains(installScript, want) {
 			t.Fatalf("installScript missing %q", want)
 		}
+	}
+}
+
+func TestInstallScriptShellSyntax(t *testing.T) {
+	script := fmt.Sprintf(installScript, "http://duckway.test", "http://duckway.test", "http://duckway.test")
+	cmd := exec.Command("sh", "-n")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install script syntax failed: %v\n%s", err, out)
+	}
+}
+
+func TestInstallScriptInstallsSelectedComponents(t *testing.T) {
+	for _, tc := range []struct {
+		component string
+		want      []string
+		notWant   []string
+	}{
+		{component: "client", want: []string{"duckway", "ducklion", ".duckway/ca.pem"}, notWant: []string{"ducklord"}},
+		{component: "ducklord", want: []string{"ducklord"}, notWant: []string{"duckway", "ducklion", ".duckway/ca.pem"}},
+		{component: "all", want: []string{"duckway", "ducklion", "ducklord", ".duckway/ca.pem"}},
+	} {
+		t.Run(tc.component, func(t *testing.T) {
+			dir := t.TempDir()
+			home := filepath.Join(dir, "home")
+			bin := filepath.Join(dir, "bin")
+			tmp := filepath.Join(dir, "tmp")
+			downloads := filepath.Join(dir, "downloads")
+			for _, path := range []string{home, bin, tmp, downloads} {
+				if err := os.MkdirAll(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, name := range []string{
+				"duckway-client-linux-amd64",
+				"duckway-client-linux-arm64",
+				"ducklion-linux-amd64",
+				"ducklion-linux-arm64",
+				"ducklord-linux-amd64",
+				"ducklord-linux-arm64",
+				"ca.pem",
+			} {
+				if err := os.WriteFile(filepath.Join(downloads, name), []byte(name+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			curl := filepath.Join(bin, "curl")
+			if err := os.WriteFile(curl, []byte(`#!/bin/sh
+set -e
+out=""
+url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+name="${url##*/}"
+cp "$DUCKWAY_TEST_DOWNLOADS/$name" "$out"
+`), 0700); err != nil {
+				t.Fatal(err)
+			}
+			script := filepath.Join(dir, "install.sh")
+			if err := os.WriteFile(script, []byte(fmt.Sprintf(installScript, "http://duckway.test", "http://duckway.test", "http://duckway.test")), 0700); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("sh", script)
+			cmd.Env = append(os.Environ(),
+				"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"HOME="+home,
+				"TMPDIR="+tmp,
+				"DUCKWAY_INSTALL=user",
+				"DUCKWAY_INSTALL_COMPONENT="+tc.component,
+				"DUCKWAY_TEST_DOWNLOADS="+downloads,
+			)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("install failed: %v\n%s", err, out)
+			}
+			for _, want := range tc.want {
+				if _, err := os.Stat(filepath.Join(home, ".local", "bin", want)); err != nil {
+					if want == ".duckway/ca.pem" {
+						if _, caErr := os.Stat(filepath.Join(home, want)); caErr == nil {
+							continue
+						}
+					}
+					t.Fatalf("missing %s after %s install\n%s", want, tc.component, out)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if _, err := os.Stat(filepath.Join(home, ".local", "bin", notWant)); err == nil {
+					t.Fatalf("unexpected %s after %s install\n%s", notWant, tc.component, out)
+				}
+				if notWant == ".duckway/ca.pem" {
+					if _, err := os.Stat(filepath.Join(home, notWant)); err == nil {
+						t.Fatalf("unexpected %s after %s install\n%s", notWant, tc.component, out)
+					}
+				}
+			}
+		})
 	}
 }
