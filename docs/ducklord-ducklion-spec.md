@@ -679,6 +679,30 @@ podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/
 podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.json
 ```
 
+To run only Ducklord in Podman against real SSH host entries, without starting
+the demo remote client containers:
+
+```bash
+scripts/ducklord-podman.sh
+```
+
+This builds a local Ducklord image and starts:
+
+```bash
+ducklord tui --config /home/ducklord/.ducklord/config.json
+```
+
+The runner mounts the developer's `~/.ssh` and `~/.ducklord` into the container.
+Its entrypoint creates a matching container user for the current host UID/GID
+and runs Ducklord as that user, so files written through the mounts keep the
+developer's ownership instead of becoming root-owned. Useful overrides:
+
+```bash
+SSH_DIR=~/.ssh-lab DUCKLORD_DIR=~/.ducklord-lab scripts/ducklord-podman.sh
+DUCKLORD_PODMAN_SSH_MOUNT=ro scripts/ducklord-podman.sh
+scripts/ducklord-podman.sh version
+```
+
 Inside the TUI:
 
 - `j` / `k` or arrow keys move selection

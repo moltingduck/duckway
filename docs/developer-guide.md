@@ -705,6 +705,46 @@ podman network rm ducklord-demo
 See [Ducklord / Ducklion Remote Agent Control](ducklord-ducklion-spec.md) for
 the complete terminal walkthrough and architecture notes.
 
+### Ducklord-only Podman runner
+
+Use this when you want to run only the developer laptop TUI in a container,
+against your own SSH hosts, without starting the demo Ducklion client
+containers:
+
+```bash
+scripts/ducklord-podman.sh
+```
+
+The script builds the local `ducklord` binary, creates a small Alpine image,
+mounts `~/.ssh` to `/home/ducklord/.ssh`, mounts `~/.ducklord` to
+`/home/ducklord/.ducklord`, and starts:
+
+```bash
+ducklord tui --config /home/ducklord/.ducklord/config.json
+```
+
+The entrypoint creates a matching container user for the current host UID/GID
+and runs Ducklord as that user. This keeps files written to `~/.ducklord` or
+`~/.ssh` owned by the developer instead of root, while still giving OpenSSH a
+valid home directory. Use `DUCKLORD_PODMAN_UID` and `DUCKLORD_PODMAN_GID` only
+when you intentionally want different ownership. Use
+`DUCKLORD_PODMAN_SSH_MOUNT=ro` if the container should not write `known_hosts`
+or other SSH files.
+
+Useful overrides:
+
+```bash
+SSH_DIR=~/.ssh-lab DUCKLORD_DIR=~/.ducklord-lab scripts/ducklord-podman.sh
+DUCKLORD_PODMAN_NETWORK_ARGS="--network bridge" scripts/ducklord-podman.sh
+DUCKLORD_PODMAN_SSH_MOUNT=ro scripts/ducklord-podman.sh
+scripts/ducklord-podman.sh version
+scripts/ducklord-podman.sh clients --config /home/ducklord/.ducklord/config.json
+```
+
+If `SSH_AUTH_SOCK` is set, the script mounts the agent socket into the
+container. Ducklord still disables remote SSH agent forwarding when connecting
+to host entries.
+
 ### Live GitHub App minter test
 
 GitHub App installation token minting has an opt-in live test. It is skipped by default so ordinary test runs and CI do not need real credentials.
