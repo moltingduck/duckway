@@ -703,6 +703,15 @@ DUCKLORD_PODMAN_SSH_MOUNT=ro scripts/ducklord-podman.sh
 scripts/ducklord-podman.sh version
 ```
 
+Pass extra Podman `run` options before the Ducklord command and use `--` to
+separate them from Ducklord arguments:
+
+```bash
+scripts/ducklord-podman.sh \
+  --podman-volume "$PWD:/workspace:rw" \
+  -- tui --config /home/ducklord/.ducklord/config.json
+```
+
 Inside the TUI:
 
 - `j` / `k` or arrow keys move selection

@@ -741,6 +741,21 @@ scripts/ducklord-podman.sh version
 scripts/ducklord-podman.sh clients --config /home/ducklord/.ducklord/config.json
 ```
 
+Pass extra Podman `run` options before the Ducklord command. Use `--` to
+separate runner options from the Ducklord arguments:
+
+```bash
+scripts/ducklord-podman.sh \
+  --podman-volume "$PWD:/workspace:rw" \
+  --podman-env "DUCKLORD_EXPERIMENT=1" \
+  -- tui --config /home/ducklord/.ducklord/config.json
+
+scripts/ducklord-podman.sh \
+  --podman-arg --add-host \
+  --podman-arg "lab.local:10.0.0.5" \
+  -- version
+```
+
 If `SSH_AUTH_SOCK` is set, the script mounts the agent socket into the
 container. Ducklord still disables remote SSH agent forwarding when connecting
 to host entries.

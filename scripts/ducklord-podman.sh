@@ -13,8 +13,48 @@ SSH_MOUNT_MODE="${DUCKLORD_PODMAN_SSH_MOUNT:-rw}"
 RUN_UID="${DUCKLORD_PODMAN_UID:-$(id -u)}"
 RUN_GID="${DUCKLORD_PODMAN_GID:-$(id -g)}"
 
-if [ "$#" -eq 0 ]; then
-  set -- tui --config /home/ducklord/.ducklord/config.json
+extra_run_args=()
+ducklord_args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --podman-arg | --podman-opt | --podman-run-arg)
+      if [ "$#" -lt 2 ]; then
+        echo "[ducklord-podman] missing value for $1" >&2
+        exit 2
+      fi
+      extra_run_args+=("$2")
+      shift 2
+      ;;
+    --podman-volume)
+      if [ "$#" -lt 2 ]; then
+        echo "[ducklord-podman] missing value for $1" >&2
+        exit 2
+      fi
+      extra_run_args+=(-v "$2")
+      shift 2
+      ;;
+    --podman-env)
+      if [ "$#" -lt 2 ]; then
+        echo "[ducklord-podman] missing value for $1" >&2
+        exit 2
+      fi
+      extra_run_args+=(-e "$2")
+      shift 2
+      ;;
+    --)
+      shift
+      ducklord_args=("$@")
+      break
+      ;;
+    *)
+      ducklord_args=("$@")
+      break
+      ;;
+  esac
+done
+
+if [ "${#ducklord_args[@]}" -eq 0 ]; then
+  ducklord_args=(tui --config /home/ducklord/.ducklord/config.json)
 fi
 
 mkdir -p "$WORK" "$DUCKLORD_DIR"
@@ -84,6 +124,7 @@ if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ]; then
   sock_dir="$(dirname "$SSH_AUTH_SOCK")"
   run_args+=(-v "$sock_dir:$sock_dir:rw" -e "SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
 fi
+run_args+=("${extra_run_args[@]}")
 
 echo "[ducklord-podman] starting ducklord"
-exec "$RUNTIME" run "${run_args[@]}" "$IMAGE" "$@"
+exec "$RUNTIME" run "${run_args[@]}" "$IMAGE" "${ducklord_args[@]}"
