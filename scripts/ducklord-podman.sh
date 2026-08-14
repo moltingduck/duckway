@@ -12,6 +12,10 @@ NETWORK_ARGS="${DUCKLORD_PODMAN_NETWORK_ARGS:---network host}"
 SSH_MOUNT_MODE="${DUCKLORD_PODMAN_SSH_MOUNT:-rw}"
 RUN_UID="${DUCKLORD_PODMAN_UID:-$(id -u)}"
 RUN_GID="${DUCKLORD_PODMAN_GID:-$(id -g)}"
+DUCKWAY_VERSION="${DUCKWAY_VERSION:-}"
+if [ -z "$DUCKWAY_VERSION" ]; then
+  DUCKWAY_VERSION="$(git -C "$ROOT" describe --always --dirty 2>/dev/null || printf podman)"
+fi
 
 extra_run_args=()
 ducklord_args=()
@@ -59,43 +63,47 @@ fi
 
 mkdir -p "$WORK" "$DUCKLORD_DIR"
 
-echo "[ducklord-podman] building local ducklord"
-go build -o "$WORK/ducklord" "$ROOT/cmd/ducklord"
-
-cat >"$WORK/ducklord-entrypoint" <<'EOF'
-#!/bin/sh
-set -eu
-
-uid="${DUCKLORD_UID:-1000}"
-gid="${DUCKLORD_GID:-1000}"
-group="ducklord"
-user="ducklord"
-
-if ! getent group "$gid" >/dev/null 2>&1; then
-  addgroup -g "$gid" -S "$group" >/dev/null
-fi
-if ! getent passwd "$uid" >/dev/null 2>&1; then
-  adduser -S -D -H -u "$uid" -G "$(getent group "$gid" | cut -d: -f1)" -h /home/ducklord "$user" >/dev/null
-fi
-
-mkdir -p /home/ducklord
-chown "$uid:$gid" /home/ducklord
-export HOME=/home/ducklord
-exec su-exec "$uid:$gid" /usr/local/bin/ducklord "$@"
-EOF
-chmod +x "$WORK/ducklord-entrypoint"
-
 cat >"$WORK/Containerfile" <<'EOF'
-FROM alpine:3.21
+FROM docker.io/library/golang:1.25-alpine AS build
+ARG DUCKWAY_VERSION=podman
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -buildvcs=false \
+  -ldflags="-s -w -X github.com/hackerduck/duckway/internal/version.Embedded=${DUCKWAY_VERSION}" \
+  -o /out/ducklord ./cmd/ducklord
+
+FROM docker.io/library/alpine:3.21
 RUN apk add --no-cache openssh-client bash ca-certificates ncurses su-exec shadow
 RUN mkdir -p /home/ducklord/.ssh /home/ducklord/.ducklord
-COPY ducklord /usr/local/bin/ducklord
-COPY ducklord-entrypoint /usr/local/bin/ducklord-entrypoint
+RUN printf '%s\n' \
+  '#!/bin/sh' \
+  'set -eu' \
+  '' \
+  'uid="${DUCKLORD_UID:-1000}"' \
+  'gid="${DUCKLORD_GID:-1000}"' \
+  'group="ducklord"' \
+  'user="ducklord"' \
+  '' \
+  'if ! getent group "$gid" >/dev/null 2>&1; then' \
+  '  addgroup -g "$gid" -S "$group" >/dev/null' \
+  'fi' \
+  'if ! getent passwd "$uid" >/dev/null 2>&1; then' \
+  '  adduser -S -D -H -u "$uid" -G "$(getent group "$gid" | cut -d: -f1)" -h /home/ducklord "$user" >/dev/null' \
+  'fi' \
+  '' \
+  'mkdir -p /home/ducklord' \
+  'chown "$uid:$gid" /home/ducklord' \
+  'export HOME=/home/ducklord' \
+  'exec su-exec "$uid:$gid" /usr/local/bin/ducklord "$@"' \
+  > /usr/local/bin/ducklord-entrypoint && chmod +x /usr/local/bin/ducklord-entrypoint
+COPY --from=build /out/ducklord /usr/local/bin/ducklord
 ENTRYPOINT ["ducklord-entrypoint"]
 EOF
 
 echo "[ducklord-podman] building image with $RUNTIME"
-"$RUNTIME" build -t "$IMAGE" -f "$WORK/Containerfile" "$WORK" >/dev/null
+"$RUNTIME" build --build-arg "DUCKWAY_VERSION=$DUCKWAY_VERSION" -t "$IMAGE" -f "$WORK/Containerfile" "$ROOT" >/dev/null
 
 run_args=(
   --rm

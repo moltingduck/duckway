@@ -715,9 +715,10 @@ containers:
 scripts/ducklord-podman.sh
 ```
 
-The script builds the local `ducklord` binary, creates a small Alpine image,
-mounts `~/.ssh` to `/home/ducklord/.ssh`, mounts `~/.ducklord` to
-`/home/ducklord/.ducklord`, and starts:
+The script runs a multi-stage Podman build, so the host only needs Podman. The
+build stage compiles `ducklord` inside a Go container, then the runtime stage
+creates a small Alpine image. It mounts `~/.ssh` to `/home/ducklord/.ssh`,
+mounts `~/.ducklord` to `/home/ducklord/.ducklord`, and starts:
 
 ```bash
 ducklord tui --config /home/ducklord/.ducklord/config.json

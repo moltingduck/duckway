@@ -686,7 +686,9 @@ the demo remote client containers:
 scripts/ducklord-podman.sh
 ```
 
-This builds a local Ducklord image and starts:
+This runs a multi-stage Podman build, so the host only needs Podman. The build
+stage compiles Ducklord inside a Go container, creates a local Ducklord runtime
+image, and starts:
 
 ```bash
 ducklord tui --config /home/ducklord/.ducklord/config.json
