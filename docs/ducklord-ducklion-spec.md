@@ -714,6 +714,13 @@ scripts/ducklord-podman.sh \
   -- tui --config /home/ducklord/.ducklord/config.json
 ```
 
+Remote Ducklion sessions read the remote host's Duckway client config. For
+non-shell agent sessions, Ducklion injects `HTTP_PROXY`, `HTTPS_PROXY`,
+`NO_PROXY`, and Duckway CA bundle environment variables when
+`~/.duckway/config.yaml` exists and `~/.duckway/proxy.pid` points at a live
+Duckway proxy process. Shell sessions are left unchanged. Explicit env values
+passed by higher-level callers override these defaults.
+
 Inside the TUI:
 
 - `j` / `k` or arrow keys move selection

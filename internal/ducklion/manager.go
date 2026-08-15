@@ -179,7 +179,7 @@ func (m *Manager) Start(opts StartOptions) (*Record, error) {
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = errFile
-	cmd.Env = append(scrubSessionEnv(os.Environ()), opts.Env...)
+	cmd.Env = mergeEnv(scrubSessionEnv(os.Environ()), duckwayAgentProxyEnv(agentType), opts.Env)
 	cmd.Env = append(cmd.Env, "DUCKLION_SUPERVISE=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {

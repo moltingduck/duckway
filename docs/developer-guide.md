@@ -761,6 +761,13 @@ If `SSH_AUTH_SOCK` is set, the script mounts the agent socket into the
 container. Ducklord still disables remote SSH agent forwarding when connecting
 to host entries.
 
+When Ducklord starts a non-shell agent through a remote Ducklion, Ducklion reads
+the remote host's Duckway client config. If `~/.duckway/config.yaml` exists and
+`~/.duckway/proxy.pid` points at a live proxy process, Ducklion injects the
+Duckway proxy and CA environment into the agent session. Shell sessions are not
+modified, and explicit env values from higher-level callers override the
+defaults.
+
 ### Live GitHub App minter test
 
 GitHub App installation token minting has an opt-in live test. It is skipped by default so ordinary test runs and CI do not need real credentials.

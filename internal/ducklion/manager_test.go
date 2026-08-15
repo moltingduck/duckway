@@ -3,6 +3,7 @@ package ducklion
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +53,79 @@ func TestScrubSessionEnvDropsSSHAuthSock(t *testing.T) {
 	if !strings.Contains(joined, "PATH=/bin") || !strings.Contains(joined, "HOME=/home/duck") {
 		t.Fatalf("env was over-scrubbed: %#v", got)
 	}
+}
+
+func TestDuckwayAgentProxyEnvReadsClientConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DUCKWAY_CONFIG_DIR", dir)
+	t.Setenv("NO_PROXY", "example.internal")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("proxy_port: 19090\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if env := duckwayAgentProxyEnv("claude_code"); len(env) != 0 {
+		t.Fatalf("proxy env without live proxy = %#v, want empty", env)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "proxy.pid"), []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ca.pem"), []byte("test ca\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := strings.Join(duckwayAgentProxyEnv("claude_code"), "\n")
+	for _, want := range []string{
+		"HTTPS_PROXY=http://127.0.0.1:19090",
+		"HTTP_PROXY=http://127.0.0.1:19090",
+		"NO_PROXY=example.internal,localhost,127.0.0.1",
+		"SSL_CERT_FILE=" + filepath.Join(dir, "ca.pem"),
+		"NODE_EXTRA_CA_CERTS=" + filepath.Join(dir, "ca.pem"),
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("proxy env missing %q in:\n%s", want, got)
+		}
+	}
+	if env := duckwayAgentProxyEnv("shell"); len(env) != 0 {
+		t.Fatalf("shell proxy env = %#v, want empty", env)
+	}
+}
+
+func TestMergeEnvLetsExplicitEnvOverrideProxyDefaults(t *testing.T) {
+	got := mergeEnv(
+		[]string{"PATH=/bin", "HTTPS_PROXY=http://old"},
+		[]string{"HTTPS_PROXY=http://default", "NO_PROXY=localhost"},
+		[]string{"HTTPS_PROXY=http://explicit"},
+	)
+	joined := strings.Join(got, "\n")
+	if strings.Contains(joined, "HTTPS_PROXY=http://old") || strings.Contains(joined, "HTTPS_PROXY=http://default") {
+		t.Fatalf("old proxy env survived:\n%s", joined)
+	}
+	if !strings.Contains(joined, "HTTPS_PROXY=http://explicit") || !strings.Contains(joined, "NO_PROXY=localhost") {
+		t.Fatalf("merged env missing expected values:\n%s", joined)
+	}
+}
+
+func TestManagerStartInjectsDuckwayProxyEnvForAgent(t *testing.T) {
+	root := t.TempDir()
+	configDir := t.TempDir()
+	t.Setenv("DUCKWAY_CONFIG_DIR", configDir)
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("proxy_port: 19191\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "proxy.pid"), []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(root, "")
+	rec, err := m.Start(StartOptions{
+		Name:      "proxyenv",
+		AgentType: "claude_code",
+		Cwd:       root,
+		Command:   []string{"sh", "-lc", "printf \"proxy:%s\" \"$HTTPS_PROXY\"; sleep 30"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Stop(rec.Name) })
+	waitForText(t, m, "proxyenv", "proxy:http://127.0.0.1:19191")
 }
 
 func TestManagerStartReadSendStopWithPTY(t *testing.T) {
