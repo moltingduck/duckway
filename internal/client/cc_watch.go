@@ -281,15 +281,25 @@ type sseEnvelope struct {
 
 // payloadMessageCreate is the Discord MESSAGE_CREATE shape we care about.
 type payloadMessageCreate struct {
-	ID      string `json:"id"`
-	TestID  string `json:"duckway_test_id"`
-	Content string `json:"content"`
-	Author  struct {
+	ID          string                 `json:"id"`
+	TestID      string                 `json:"duckway_test_id"`
+	Content     string                 `json:"content"`
+	Attachments []discordAttachmentRef `json:"attachments"`
+	Author      struct {
 		ID       string `json:"id"`
 		Username string `json:"username"`
 		Bot      bool   `json:"bot"`
 	} `json:"author"`
 	ChannelID string `json:"channel_id"`
+}
+
+type discordAttachmentRef struct {
+	ID          string `json:"id"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size"`
+	URL         string `json:"url"`
+	ProxyURL    string `json:"proxy_url"`
 }
 
 func (w *CCWatch) handleMessageCreate(data []byte) {
@@ -308,7 +318,7 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		// Skip — server filters these too, but be defensive.
 		return
 	}
-	if strings.TrimSpace(msg.Content) == "" {
+	if strings.TrimSpace(msg.Content) == "" && len(msg.Attachments) == 0 {
 		return
 	}
 	messageID := msg.ID
@@ -326,7 +336,23 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 
 	var runner *ccRunner
 	var err error
-	_, isDirectShell := directShellCommand(msg.Content)
+	content := msg.Content
+	if len(msg.Attachments) > 0 {
+		augmented, err := w.augmentPromptWithAttachments(context.Background(), env.Handle, msg)
+		if err != nil {
+			log.Printf("[cc-watch] %s: attachment download failed for message %s: %v", env.Handle, msg.ID, err)
+			w.reportAgentTest(msg.TestID, "failed", "attachment download failed: "+err.Error())
+			if messageID != "" {
+				_ = w.api.ReactCC(context.Background(), env.Handle, messageID, "⚠️")
+			}
+			if messageID != "" || msg.TestID == "" {
+				_ = w.api.PostCC(context.Background(), env.Handle, "⚠️ attachment download failed: "+err.Error())
+			}
+			return
+		}
+		content = augmented
+	}
+	_, isDirectShell := directShellCommand(content)
 	if isDirectShell {
 		runner, err = w.runnerForDirectShell(env.Handle)
 	} else {
@@ -344,7 +370,7 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		}
 		return
 	}
-	task := ccTask{Content: msg.Content, AuthorID: msg.Author.ID, MessageID: messageID, ChannelKind: env.Kind, TestID: msg.TestID}
+	task := ccTask{Content: content, AuthorID: msg.Author.ID, MessageID: messageID, ChannelKind: env.Kind, TestID: msg.TestID}
 	var queuedReactionDone chan struct{}
 	if messageID != "" {
 		queuedReactionDone = make(chan struct{})

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -119,6 +120,21 @@ func stubWatch(t *testing.T, projectsRoot string, fake *fakeServer) *CCWatch {
 		recoverSeen: map[string]struct{}{},
 		api:         NewAPIClient(fake.srv.URL, "tok"),
 	}
+}
+
+func firstAttachmentPathFromPrompt(prompt string) string {
+	for _, line := range strings.Split(prompt, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "- ") {
+			continue
+		}
+		path := strings.TrimPrefix(line, "- ")
+		if i := strings.Index(path, " ("); i >= 0 {
+			path = path[:i]
+		}
+		return path
+	}
+	return ""
 }
 
 func TestCmdSessions_PostsListingOfUnbound(t *testing.T) {
@@ -752,6 +768,90 @@ func TestHandleMessageCreateReactsDuckAfterEnqueue(t *testing.T) {
 	reactions := strings.Join(fake.snapshotReactions(), "\n")
 	if !strings.Contains(reactions, "1783330000000001234/reactions:🦆") {
 		t.Fatalf("missing queued duck reaction:\n%s", reactions)
+	}
+}
+
+func TestHandleMessageCreateDownloadsAttachmentOnlyMessage(t *testing.T) {
+	t.Setenv("DUCKWAY_CC_ALLOW_INSECURE_ATTACHMENT_URLS", "1")
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/files/note.txt" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("duckway attachment body"))
+	}))
+	defer cdn.Close()
+
+	fake := newFakeServer(t)
+	watch := stubWatch(t, t.TempDir(), fake)
+	promptCh := make(chan string, 1)
+	spec := ccAgentSpec{
+		Type: "claude_code", DisplayName: "claude", Bin: "/fake/claude", UseTmux: false,
+		RunFn: func(ctx context.Context, _, _, prompt, _ string, _ []string) (string, string, bool, error) {
+			promptCh <- prompt
+			return "sid", "ok", false, nil
+		},
+	}
+	r, err := newCCRunner("dwch_task", watch.configDir, t.TempDir(), spec, watch.sessions, fakePostNoop, fakePostReplyNoop, fakeReactNoop, nil, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+	watch.runners["dwch_task"] = r
+
+	payload := json.RawMessage(`{
+		"id":"1783330000000002234",
+		"content":"",
+		"author":{"id":"U1","bot":false},
+		"attachments":[{
+			"id":"A1",
+			"filename":"../note.txt",
+			"content_type":"text/plain",
+			"size":23,
+			"url":` + strconv.Quote(cdn.URL+"/files/note.txt") + `
+		}]
+	}`)
+	env := sseEnvelope{Type: "message_create", CCID: "cc1", Handle: "dwch_task", Kind: "task", Payload: payload}
+	data, _ := json.Marshal(env)
+	watch.handleMessageCreate(data)
+
+	var prompt string
+	select {
+	case prompt = <-promptCh:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not receive attachment prompt")
+	}
+	for _, want := range []string{"User uploaded file", "note.txt", "content_type: text/plain", "cc-attachments"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	path := firstAttachmentPathFromPrompt(prompt)
+	if path == "" {
+		t.Fatalf("could not find attachment path in prompt:\n%s", prompt)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read downloaded attachment: %v", err)
+	}
+	if string(body) != "duckway attachment body" {
+		t.Fatalf("attachment body = %q", body)
+	}
+	if strings.Contains(path, "..") {
+		t.Fatalf("unsafe attachment path: %s", path)
+	}
+}
+
+func TestValidateDiscordAttachmentURLRejectsNonDiscordHosts(t *testing.T) {
+	if err := validateDiscordAttachmentURL("https://cdn.discordapp.com/attachments/a/b/file.txt"); err != nil {
+		t.Fatalf("discord cdn url rejected: %v", err)
+	}
+	if err := validateDiscordAttachmentURL("http://cdn.discordapp.com/attachments/a/b/file.txt"); err == nil {
+		t.Fatal("http discord url accepted without insecure opt-in")
+	}
+	if err := validateDiscordAttachmentURL("https://127.0.0.1/secret"); err == nil {
+		t.Fatal("non-discord attachment url accepted")
 	}
 }
 
