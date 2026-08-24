@@ -186,6 +186,58 @@ func TestAPIKeyCreateAllowsMalformedJSONForNonGitHubService(t *testing.T) {
 	}
 }
 
+func TestAPIKeyUpdateRejectsRefreshableSecretReplacement(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	svcQ := queries.NewServiceQueries(db)
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	openaiSvc := testOpenAIService("svc-openai-refreshable-api-key")
+	if err := svcQ.Create(openaiSvc); err != nil {
+		t.Fatal(err)
+	}
+	encAccess, err := crypto.Encrypt("old-access")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encRefresh, err := crypto.Encrypt("old-refresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id, service_id, name, key_encrypted, refresh_token)
+		VALUES ('key-refreshable-api-edit', ?, 'refreshable', ?, ?)`, openaiSvc.ID, encAccess, encRefresh); err != nil {
+		t.Fatal(err)
+	}
+
+	h := handlers.NewAPIKeyHandler(apiKeyQ, svcQ, crypto)
+	req := httptest.NewRequest(http.MethodPut, "/api/keys/key-refreshable-api-edit", strings.NewReader(`{"name":"refreshable","key":"new-access-only"}`))
+	req.SetPathValue("id", "key-refreshable-api-edit")
+	rec := httptest.NewRecorder()
+
+	h.Update(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Refreshable Tokens") {
+		t.Fatalf("unexpected error: %s", rec.Body.String())
+	}
+	key, err := apiKeyQ.GetByID("key-refreshable-api-edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessToken, err := crypto.Decrypt(key.KeyEncrypted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accessToken != "old-access" {
+		t.Fatalf("refreshable access token was modified through API Keys update: %q", accessToken)
+	}
+}
+
 func TestAPIKeyCreateStoresAndRedactsUpstreamProxyURL(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

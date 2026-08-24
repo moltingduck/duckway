@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -135,11 +137,52 @@ func (h *OAuthHandler) Validate(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	upstreamProxyTested := strings.TrimSpace(req.UpstreamProxyURL) != ""
+	if upstreamProxyTested {
+		if err := testOAuthUpstreamProxy(req.UpstreamProxyURL, req.TokenEndpoint); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		warnings = append(warnings, "upstream proxy reached token endpoint")
+	}
 	jsonResponse(w, map[string]interface{}{
-		"ok":       true,
-		"service":  svcRow.Name,
-		"warnings": warnings,
+		"ok":                    true,
+		"service":               svcRow.Name,
+		"warnings":              warnings,
+		"upstream_proxy_tested": upstreamProxyTested,
 	})
+}
+
+func testOAuthUpstreamProxy(upstreamProxyURL, tokenEndpoint string) error {
+	upstreamProxyURL = strings.TrimSpace(upstreamProxyURL)
+	if upstreamProxyURL == "" {
+		return nil
+	}
+	tokenEndpoint = strings.TrimSpace(tokenEndpoint)
+	if tokenEndpoint == "" {
+		return fmt.Errorf("token_endpoint required for upstream proxy test")
+	}
+	client, err := svc.NewUpstreamProxyClientCache().Client(upstreamProxyURL)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, tokenEndpoint, nil)
+	if err != nil {
+		return fmt.Errorf("invalid token_endpoint for upstream proxy test")
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("upstream proxy test failed: %s", svc.RedactProxyError(upstreamProxyURL, err))
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	if resp.StatusCode == http.StatusProxyAuthRequired {
+		return fmt.Errorf("upstream proxy test failed: proxy authentication required")
+	}
+	return nil
 }
 
 // Admin: upload refreshable API key (OAuth token with refresh)
@@ -153,6 +196,12 @@ func (h *OAuthHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	if _, _, err := h.validateOAuthTokenRequest(&req, true); err != nil {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if strings.TrimSpace(req.UpstreamProxyURL) != "" {
+		if err := testOAuthUpstreamProxy(req.UpstreamProxyURL, req.TokenEndpoint); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	upstreamProxyStored, err := svc.EncryptUpstreamProxyURL(h.crypto, req.UpstreamProxyURL)
 	if err != nil {
@@ -284,6 +333,22 @@ func (h *OAuthHandler) Update(w http.ResponseWriter, r *http.Request) {
 		SubscriptionInfo: req.SubscriptionInfo,
 	}
 	if req.AccessToken != "" || req.RefreshToken != "" {
+		if validateReq.AccessToken == "" {
+			existingAccess, err := h.crypto.Decrypt(key.KeyEncrypted)
+			if err != nil {
+				jsonError(w, "decrypt existing access token failed", http.StatusInternalServerError)
+				return
+			}
+			validateReq.AccessToken = existingAccess
+		}
+		if validateReq.RefreshToken == "" {
+			existingRefresh, err := h.crypto.Decrypt(key.RefreshToken)
+			if err != nil {
+				jsonError(w, "decrypt existing refresh token failed", http.StatusInternalServerError)
+				return
+			}
+			validateReq.RefreshToken = existingRefresh
+		}
 		if _, _, err := h.validateOAuthTokenRequest(&validateReq, false); err != nil {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
@@ -327,11 +392,15 @@ func (h *OAuthHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.IsActive != nil {
-		active := *req.IsActive
-		if encAccess != "" && encRefresh != "" {
-			active = true
+	tokensChanged := req.AccessToken != "" || req.RefreshToken != ""
+	hasCompleteTokenPair := (req.AccessToken != "" || key.KeyEncrypted != "") && (req.RefreshToken != "" || key.RefreshToken != "")
+	if tokensChanged && hasCompleteTokenPair {
+		if err := h.apiKeyQ.SetActive(id, true); err != nil {
+			jsonError(w, "update active flag failed: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
+	} else if req.IsActive != nil {
+		active := *req.IsActive
 		if err := h.apiKeyQ.SetActive(id, active); err != nil {
 			jsonError(w, "update active flag failed: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -366,7 +435,7 @@ func (h *OAuthHandler) validateOAuthTokenRequest(req *oauthTokenRequest, require
 		return nil, nil, err
 	}
 	warnings := []string{}
-	if isCodexOAuthInfo(subInfo, req.TokenEndpoint) || (svcRow.Name == "openai" && strings.Contains(req.TokenEndpoint, "auth.openai.com")) {
+	if isCodexOAuthInfo(subInfo, req.TokenEndpoint) || (svcRow.Name == "openai" && svc.IsCodexOpenAIRefreshEndpoint(req.TokenEndpoint)) {
 		if err := validateCodexOAuth(req, subInfo); err != nil {
 			return nil, nil, err
 		}
@@ -406,22 +475,52 @@ func validateCodexOAuth(req *oauthTokenRequest, subInfo map[string]interface{}) 
 	if authMode, _ := subInfo["auth_mode"].(string); authMode != "" && authMode != "chatgpt" {
 		return fmt.Errorf("codex oauth auth_mode must be chatgpt")
 	}
-	if !strings.Contains(req.TokenEndpoint, "auth.openai.com") {
+	if !svc.IsCodexOpenAIRefreshEndpoint(req.TokenEndpoint) {
 		return fmt.Errorf("codex oauth token_endpoint must be https://auth.openai.com/oauth/token")
 	}
 	if !looksLikeJWT(req.AccessToken) {
 		return fmt.Errorf("codex oauth access_token must look like a JWT from ~/.codex/auth.json")
 	}
+	if isDuckwayCodexPhantomJWT(req.AccessToken) {
+		return fmt.Errorf("codex oauth access_token is a Duckway phantom token; upload a fresh real ~/.codex/auth.json from codex login before duckway sync")
+	}
 	if req.RefreshToken == "" {
 		return fmt.Errorf("codex oauth refresh_token required")
+	}
+	if strings.HasPrefix(req.RefreshToken, "rt.duckway.") {
+		return fmt.Errorf("codex oauth refresh_token is a Duckway phantom token; upload a fresh real ~/.codex/auth.json from codex login before duckway sync")
 	}
 	if !strings.HasPrefix(req.RefreshToken, "rt.") {
 		return fmt.Errorf("codex oauth refresh_token should start with rt prefix")
 	}
 	if idToken, _ := subInfo["id_token"].(string); !looksLikeJWT(idToken) {
 		return fmt.Errorf("codex oauth id_token required from ~/.codex/auth.json")
+	} else if isDuckwayCodexPhantomJWT(idToken) {
+		return fmt.Errorf("codex oauth id_token is a Duckway phantom token; upload a fresh real ~/.codex/auth.json from codex login before duckway sync")
 	}
 	return nil
+}
+
+func isDuckwayCodexPhantomJWT(token string) bool {
+	claims := parseJWTClaims(token)
+	if len(claims) == 0 {
+		return false
+	}
+	if v, _ := claims["sub"].(string); v == "auth0|duckway-phantom" {
+		return true
+	}
+	if v, _ := claims["jti"].(string); strings.HasPrefix(v, "dw-phantom-") {
+		return true
+	}
+	if claims["localhost"] == true {
+		return true
+	}
+	if auth, _ := claims["https://api.openai.com/auth"].(map[string]interface{}); auth != nil {
+		if v, _ := auth["chatgpt_account_id"].(string); v == "duckway-account" {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeJWT(token string) bool {
@@ -694,13 +793,16 @@ func isCodexOAuthInfo(subInfo map[string]interface{}, tokenEndpoint string) bool
 	if subInfo == nil {
 		return false
 	}
+	if idToken, _ := subInfo["id_token"].(string); idToken != "" && svc.IsCodexOpenAIRefreshEndpoint(tokenEndpoint) {
+		return true
+	}
 	if v, _ := subInfo["credential_kind"].(string); v == "codex_oauth" {
 		return true
 	}
 	if v, _ := subInfo["source"].(string); v == "codex" {
 		return true
 	}
-	if v, _ := subInfo["auth_mode"].(string); v == "chatgpt" && strings.Contains(tokenEndpoint, "auth.openai.com") {
+	if v, _ := subInfo["auth_mode"].(string); v == "chatgpt" && svc.IsCodexOpenAIRefreshEndpoint(tokenEndpoint) {
 		return true
 	}
 	return false

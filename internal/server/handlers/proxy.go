@@ -726,46 +726,116 @@ func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	rewrittenBody, contentType := rewriteCodexRefreshRequest(bodyBytes, r.Header.Get("Content-Type"), result.RealRefreshToken)
 	upstreamURL := "https://auth.openai.com" + upstreamPath
 	if r.URL.RawQuery != "" {
 		upstreamURL += "?" + r.URL.RawQuery
 	}
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(rewrittenBody))
-	if err != nil {
-		jsonError(w, "failed to create upstream request", http.StatusInternalServerError)
-		return
-	}
-	for key, values := range r.Header {
-		if shouldStripOpenAIAuthHeader(key) || strings.EqualFold(key, "Content-Length") {
-			continue
-		}
-		for _, v := range values {
-			upstreamReq.Header.Add(key, v)
-		}
-	}
-	if contentType != "" {
-		upstreamReq.Header.Set("Content-Type", contentType)
-	}
 
-	upstreamClient, err := h.httpClientForUpstream(result.UpstreamProxyURL)
-	if err != nil {
-		jsonError(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	resp, err := upstreamClient.Do(upstreamReq)
-	if err != nil {
-		log.Printf("openai auth upstream error via %s: %s", services.RedactProxyURL(result.UpstreamProxyURL), services.RedactProxyError(result.UpstreamProxyURL, err))
-		jsonError(w, "upstream request failed", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
+	var resp *http.Response
+	var respBody []byte
+	errStatus := http.StatusInternalServerError
+	errMessage := "openai auth refresh failed"
+	if err := services.WithOAuthRefreshLock(result.APIKeyID, func() error {
+		lockedResult, resolveErr := h.resolver.Resolve(placeholder, client.ID)
+		if resolveErr != nil {
+			log.Printf("resolve error for openai-auth/%s: %v", client.Name, resolveErr)
+			errStatus = http.StatusInternalServerError
+			errMessage = "key resolution failed"
+			return errors.New("openai auth proxy response already selected")
+		}
+		if lockedResult.Error == "" && lockedResult.ServiceID != "" && lockedResult.ServiceID != openAISvc.ID {
+			errStatus = http.StatusForbidden
+			errMessage = "placeholder key is not for openai"
+			return errors.New("openai auth proxy response already selected")
+		}
+		if lockedResult.NeedApproval {
+			errStatus = http.StatusForbidden
+			errMessage = "approval required"
+			return errors.New("openai auth proxy response already selected")
+		}
+		if lockedResult.Error != "" {
+			errStatus = http.StatusForbidden
+			errMessage = lockedResult.Error
+			return errors.New("openai auth proxy response already selected")
+		}
+		if lockedResult.RealRefreshToken == "" {
+			errStatus = http.StatusForbidden
+			errMessage = "openai key is not a refreshable Codex OAuth token"
+			return errors.New("openai auth proxy response already selected")
+		}
+		result = lockedResult
 
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		h.persistOpenAIAuthRefresh(result.APIKeyID, result.RealRefreshToken, respBody)
+		clientID := h.openAIAuthClientID(result.APIKeyID)
+		rewrittenBody, contentType := rewriteCodexRefreshRequest(bodyBytes, r.Header.Get("Content-Type"), result.RealRefreshToken, clientID)
+		upstreamReq, buildErr := buildOpenAIAuthUpstreamRequest(r.Context(), r.Method, upstreamURL, r.Header, rewrittenBody, contentType)
+		if buildErr != nil {
+			errStatus = http.StatusInternalServerError
+			errMessage = "failed to create upstream request"
+			return errors.New("openai auth proxy response already selected")
+		}
+
+		upstreamClient, clientErr := h.httpClientForUpstream(result.UpstreamProxyURL)
+		if clientErr != nil {
+			errStatus = http.StatusBadGateway
+			errMessage = clientErr.Error()
+			return errors.New("openai auth proxy response already selected")
+		}
+		var doErr error
+		resp, doErr = upstreamClient.Do(upstreamReq)
+		if doErr != nil {
+			log.Printf("openai auth upstream error via %s: %s", services.RedactProxyURL(result.UpstreamProxyURL), services.RedactProxyError(result.UpstreamProxyURL, doErr))
+			errStatus = http.StatusBadGateway
+			errMessage = "upstream request failed"
+			return errors.New("openai auth proxy response already selected")
+		}
+
+		respBody, _ = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if (resp.StatusCode < 200 || resp.StatusCode >= 300) &&
+			services.IsPermanentOAuthError(resp.StatusCode, respBody) &&
+			h.openAIAuthRefreshTokenChanged(result.APIKeyID, result.RealRefreshToken) {
+			updatedResult, resolveErr := h.resolver.Resolve(placeholder, client.ID)
+			if resolveErr == nil &&
+				updatedResult != nil &&
+				updatedResult.Error == "" &&
+				!updatedResult.NeedApproval &&
+				updatedResult.APIKeyID == result.APIKeyID &&
+				updatedResult.ServiceID == openAISvc.ID &&
+				updatedResult.PlaceholderID == result.PlaceholderID &&
+				updatedResult.RealRefreshToken != "" {
+				updatedClientID := h.openAIAuthClientID(updatedResult.APIKeyID)
+				updatedBody, updatedContentType := rewriteCodexRefreshRequest(bodyBytes, r.Header.Get("Content-Type"), updatedResult.RealRefreshToken, updatedClientID)
+				retryReq, buildErr := buildOpenAIAuthUpstreamRequest(r.Context(), r.Method, upstreamURL, r.Header, updatedBody, updatedContentType)
+				if buildErr == nil {
+					retryClient, clientErr := h.httpClientForUpstream(updatedResult.UpstreamProxyURL)
+					if clientErr == nil {
+						retryResp, retryErr := retryClient.Do(retryReq)
+						if retryErr == nil {
+							resp = retryResp
+							respBody, _ = io.ReadAll(resp.Body)
+							_ = resp.Body.Close()
+							result = updatedResult
+						}
+					}
+				}
+			} else if resolveErr != nil {
+				log.Printf("openai auth retry resolve failed for %s: %v", result.APIKeyID, resolveErr)
+			} else {
+				log.Printf("openai auth retry skipped for %s because credential binding changed", result.APIKeyID)
+			}
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			h.persistOpenAIAuthRefresh(result.APIKeyID, result.RealRefreshToken, respBody)
+		}
+		return nil
+	}); err != nil {
+		jsonError(w, errMessage, errStatus)
+		return
 	}
 	respBody = rewriteCodexRefreshResponse(respBody, result.PlaceholderID, result.Placeholder)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody = redactOpenAIAuthProxyResponse(respBody, result.RealRefreshToken)
+	}
 	for key, values := range resp.Header {
 		if strings.EqualFold(key, "Content-Length") {
 			continue
@@ -785,6 +855,25 @@ func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Requ
 	_ = startTime
 }
 
+func buildOpenAIAuthUpstreamRequest(ctx context.Context, method, upstreamURL string, headers http.Header, body []byte, contentType string) (*http.Request, error) {
+	upstreamReq, err := http.NewRequestWithContext(ctx, method, upstreamURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	for key, values := range headers {
+		if shouldStripOpenAIAuthHeader(key) || strings.EqualFold(key, "Content-Length") {
+			continue
+		}
+		for _, v := range values {
+			upstreamReq.Header.Add(key, v)
+		}
+	}
+	if contentType != "" {
+		upstreamReq.Header.Set("Content-Type", contentType)
+	}
+	return upstreamReq, nil
+}
+
 func (h *ProxyHandler) httpClientForUpstream(proxyURL string) (*http.Client, error) {
 	if strings.TrimSpace(proxyURL) == "" {
 		return h.httpClient, nil
@@ -802,6 +891,7 @@ func (h *ProxyHandler) persistOpenAIAuthRefresh(apiKeyID, currentRefreshToken st
 	var tokenResp struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
 		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
@@ -819,6 +909,7 @@ func (h *ProxyHandler) persistOpenAIAuthRefresh(apiKeyID, currentRefreshToken st
 	if err := h.apiKeys.UpdateTokens(apiKeyID, encAccess, openAIAuthRefreshExpiresAt(tokenResp.AccessToken, tokenResp.ExpiresIn)); err != nil {
 		log.Printf("openai auth refresh access store failed for %s: %v", apiKeyID, err)
 	}
+	h.persistOpenAIAuthRefreshMetadata(apiKeyID, tokenResp.IDToken)
 	if tokenResp.RefreshToken == "" || tokenResp.RefreshToken == currentRefreshToken {
 		return
 	}
@@ -829,6 +920,30 @@ func (h *ProxyHandler) persistOpenAIAuthRefresh(apiKeyID, currentRefreshToken st
 	}
 	if err := h.apiKeys.UpdateRefreshToken(apiKeyID, encRefresh); err != nil {
 		log.Printf("openai auth refresh token store failed for %s: %v", apiKeyID, err)
+	}
+}
+
+func (h *ProxyHandler) persistOpenAIAuthRefreshMetadata(apiKeyID, idToken string) {
+	key, err := h.apiKeys.GetByID(apiKeyID)
+	if err != nil {
+		log.Printf("openai auth refresh metadata reload failed for %s: %v", apiKeyID, err)
+		return
+	}
+	subInfo, err := parseSubscriptionInfo(key.SubscriptionInfo)
+	if err != nil {
+		subInfo = map[string]interface{}{}
+	}
+	if idToken != "" {
+		subInfo["id_token"] = idToken
+	}
+	subInfo["last_refresh"] = time.Now().UTC().Format(time.RFC3339)
+	out, err := json.Marshal(subInfo)
+	if err != nil {
+		log.Printf("openai auth refresh metadata marshal failed for %s: %v", apiKeyID, err)
+		return
+	}
+	if err := h.apiKeys.UpdateSubscriptionInfo(apiKeyID, string(out)); err != nil {
+		log.Printf("openai auth refresh metadata store failed for %s: %v", apiKeyID, err)
 	}
 }
 
@@ -853,7 +968,59 @@ func openAIAuthRefreshExpiresAt(accessToken string, expiresIn int64) int64 {
 	return claims.Exp * 1000
 }
 
-func rewriteCodexRefreshRequest(body []byte, contentType, realRefresh string) ([]byte, string) {
+func (h *ProxyHandler) openAIAuthClientID(apiKeyID string) string {
+	clientID := defaultCodexClientID
+	if h.apiKeys == nil || apiKeyID == "" {
+		return clientID
+	}
+	key, err := h.apiKeys.GetByID(apiKeyID)
+	if err != nil {
+		return clientID
+	}
+	if subInfo, err := parseSubscriptionInfo(key.SubscriptionInfo); err == nil {
+		if v, _ := subInfo["client_id"].(string); v != "" {
+			return v
+		}
+		if v, _ := subInfo["clientId"].(string); v != "" {
+			return v
+		}
+	}
+	if claims := parseJWTClaims(resultSafeAccessToken(h.crypto, key.KeyEncrypted)); len(claims) > 0 {
+		return codexClientIDFromClaims(claims)
+	}
+	return clientID
+}
+
+func (h *ProxyHandler) openAIAuthRefreshTokenChanged(apiKeyID, usedRefreshToken string) bool {
+	if h.crypto == nil || h.apiKeys == nil || apiKeyID == "" {
+		return false
+	}
+	key, err := h.apiKeys.GetByID(apiKeyID)
+	if err != nil || key.RefreshToken == "" {
+		return false
+	}
+	currentRefreshToken, err := h.crypto.Decrypt(key.RefreshToken)
+	if err != nil {
+		return false
+	}
+	return currentRefreshToken != "" && currentRefreshToken != usedRefreshToken
+}
+
+func resultSafeAccessToken(crypto *services.Crypto, encrypted string) string {
+	if crypto == nil || encrypted == "" {
+		return ""
+	}
+	plain, err := crypto.Decrypt(encrypted)
+	if err != nil {
+		return ""
+	}
+	return plain
+}
+
+func rewriteCodexRefreshRequest(body []byte, contentType, realRefresh, clientID string) ([]byte, string) {
+	if strings.TrimSpace(clientID) == "" {
+		clientID = defaultCodexClientID
+	}
 	lowerCT := strings.ToLower(contentType)
 	if strings.Contains(lowerCT, "application/x-www-form-urlencoded") ||
 		strings.Contains(string(body), "refresh_token=") ||
@@ -861,12 +1028,14 @@ func rewriteCodexRefreshRequest(body []byte, contentType, realRefresh string) ([
 		vals, err := url.ParseQuery(string(body))
 		if err == nil {
 			vals.Set("refresh_token", realRefresh)
+			vals.Set("client_id", clientID)
 			return []byte(vals.Encode()), "application/x-www-form-urlencoded"
 		}
 	}
 	var obj map[string]interface{}
 	if json.Unmarshal(body, &obj) == nil {
 		obj["refresh_token"] = realRefresh
+		obj["client_id"] = clientID
 		out, _ := json.Marshal(obj)
 		return out, "application/json"
 	}
@@ -1046,6 +1215,17 @@ func rewriteCodexRefreshResponse(body []byte, placeholderID, placeholder string)
 		return body
 	}
 	return out
+}
+
+func redactOpenAIAuthProxyResponse(body []byte, realRefreshToken string) []byte {
+	text := string(body)
+	if realRefreshToken != "" {
+		text = strings.ReplaceAll(text, realRefreshToken, "[REDACTED_REFRESH_TOKEN]")
+	}
+	for _, pattern := range capturedBodySecretPatterns {
+		text = pattern.ReplaceAllString(text, "[REDACTED_SECRET]")
+	}
+	return []byte(text)
 }
 
 func shouldStripOpenAIAuthHeader(name string) bool {

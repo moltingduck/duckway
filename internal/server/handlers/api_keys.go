@@ -324,6 +324,10 @@ func (h *APIKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 		key.Name = req.Name
 	}
 	if req.Key != "" {
+		if key.IsRefreshable {
+			jsonError(w, "refreshable token secrets must be updated from Refreshable Tokens", http.StatusBadRequest)
+			return
+		}
 		if err := validateGitHubCredentialForService(key.ServiceName, req.Key); err != nil {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return

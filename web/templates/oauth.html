@@ -181,6 +181,7 @@ var oauthHelpByService = {
   }
 };
 var oauthSuggestedNames = ['Claude OAuth', 'Claude Code OAuth', 'Codex OAuth', 'Generic OAuth Token'];
+var lastParsedOAuthKind = '';
 
 function esc(s) {
   return String(s == null ? '' : s)
@@ -281,6 +282,7 @@ function readTokenPayload(d) {
   if (oauth.scope && !sub.scopes) sub.scopes = String(oauth.scope).split(/\s+/).filter(Boolean);
   if (oauth.account_id) sub.account_id = oauth.account_id;
   if (oauth.id_token) sub.id_token = oauth.id_token;
+  if (oauth.client_id) sub.client_id = oauth.client_id;
   if (d.auth_mode) sub.auth_mode = d.auth_mode;
   if (d.last_refresh) sub.last_refresh = d.last_refresh;
 
@@ -288,6 +290,17 @@ function readTokenPayload(d) {
   var refreshToken = oauth.refreshToken || oauth.refresh_token || d.refreshToken || d.refresh_token || '';
   var jwtClaims = jwtPayload(accessToken);
   if (jwtClaims.client_id) sub.client_id = jwtClaims.client_id;
+  if (!sub.client_id && Array.isArray(jwtClaims.aud)) {
+    for (var i = 0; i < jwtClaims.aud.length; i++) {
+      if (String(jwtClaims.aud[i]).indexOf('app_') === 0) {
+        sub.client_id = jwtClaims.aud[i];
+        break;
+      }
+    }
+  }
+  if (!sub.client_id && detectTokenKind(d, oauth, sub) === 'openai') {
+    sub.client_id = 'app_EMoamEEZ73f0CkXaXp7hrann';
+  }
   if (jwtClaims.scp && !sub.scopes) sub.scopes = jwtClaims.scp;
   var expiresAt = oauth.expiresAt || oauth.expires_at || d.expiresAt || d.expires_at || 0;
   var expiresIn = oauth.expiresIn || oauth.expires_in || d.expiresIn || d.expires_in || 0;
@@ -336,6 +349,7 @@ function parseOAuthPaste() {
   var raw = paste.value;
   if (!raw.trim()) {
     setPasteError('');
+    lastParsedOAuthKind = '';
     return true;
   }
   try {
@@ -346,6 +360,7 @@ function parseOAuthPaste() {
       throw new Error('No access token or refresh token found. Paste a Claude credentials file, Codex auth.json, or OAuth token response.');
     }
     setPasteError('');
+    lastParsedOAuthKind = parsed.kind;
     selectOAuthServiceKind(parsed.kind);
     setSuggestedOAuthName(parsed.suggestedName);
     if (parsed.accessToken) document.getElementById('oauth-access').value = parsed.accessToken;
@@ -360,15 +375,17 @@ function parseOAuthPaste() {
 }
 
 function buildOAuthUploadBody() {
+  var kind = selectedOAuthKind();
   var subInfo = document.getElementById('oauth-sub').value.trim();
   var subObj = {};
   if (subInfo) { subObj = JSON.parse(subInfo); }
-  if (selectedOAuthKind() === 'claude') {
+  if (kind === 'claude') {
     var displayName = document.getElementById('oauth-display').value.trim();
     if (displayName) subObj.displayName = displayName;
-  } else if (selectedOAuthKind() === 'openai') {
+  } else if (kind === 'openai') {
     subObj.credential_kind = 'codex_oauth';
     subObj.source = 'codex';
+    if (!subObj.auth_mode) subObj.auth_mode = 'chatgpt';
   } else {
     delete subObj.displayName;
   }
@@ -425,11 +442,18 @@ function parseEditPaste() {
     var data = JSON.parse(paste.value);
     paste.value = JSON.stringify(data, null, 2);
     var parsed = readTokenPayload(data);
+    var subInfo = parsed.subscriptionInfo || {};
+    if (parsed.kind === 'openai') {
+      subInfo.credential_kind = 'codex_oauth';
+      subInfo.source = 'codex';
+      if (!subInfo.auth_mode) subInfo.auth_mode = 'chatgpt';
+      document.getElementById('edit-endpoint').value = oauthHelpByService.openai.endpointValue;
+    }
     if (parsed.accessToken) document.getElementById('edit-access').value = parsed.accessToken;
     if (parsed.refreshToken) document.getElementById('edit-refresh').value = parsed.refreshToken;
     if (parsed.accessToken && parsed.refreshToken) document.getElementById('edit-active').checked = true;
     if (parsed.expiresAt) document.getElementById('edit-expires').value = parsed.expiresAt;
-    if (Object.keys(parsed.subscriptionInfo).length) document.getElementById('edit-sub').value = JSON.stringify(parsed.subscriptionInfo);
+    if (Object.keys(subInfo).length) document.getElementById('edit-sub').value = JSON.stringify(subInfo);
   } catch(e) {}
 }
 
@@ -651,10 +675,14 @@ document.addEventListener('DOMContentLoaded', function() {
         opt.value = s.id; opt.textContent = s.display_name;
         opt.setAttribute('data-name', s.name || '');
         if (s.name === 'anthropic') opt.selected = true;
-        sel.appendChild(opt);
-      });
-      sel.addEventListener('change', applyOAuthHints);
-      applyOAuthHints();
+      sel.appendChild(opt);
+    });
+    sel.addEventListener('change', applyOAuthHints);
+      if (lastParsedOAuthKind) {
+        selectOAuthServiceKind(lastParsedOAuthKind);
+      } else {
+        applyOAuthHints();
+      }
     });
 
   // Load refreshable keys

@@ -1,7 +1,9 @@
 package services
 
-// IsPermanentOAuthError exposes the unexported isPermanentOAuthError for
-// black-box tests in the services_test package.
-var IsPermanentOAuthError = isPermanentOAuthError
+import "net/http"
 
 var JWTExpiresAtMillis = jwtExpiresAtMillis
+
+func SetTokenRefresherHTTPClientForTest(r *TokenRefresher, client *http.Client) {
+	r.client = client
+}

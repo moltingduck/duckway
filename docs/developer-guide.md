@@ -849,36 +849,85 @@ DUCKWAY_TEST_GITHUB_GIT_BENCH_LIVE=1 go test ./internal/client -run '^$' -bench 
 
 Add `DUCKWAY_TEST_GITHUB_GIT_SEED_LIVE=1` to the benchmark command if you want it to ensure the seed fixture exists before measuring.
 
+### Live OAuth credentials
+
+Real OAuth refresh credentials live under `live-credentials/` during local testing. The repository commits only `live-credentials/.gitkeep`; `.gitignore` ignores every other file in that directory, plus root-level `auth.json` and `test_auth*.json`.
+
+Use these standard file names:
+
+```bash
+mkdir -p live-credentials
+chmod 700 live-credentials
+install -m 600 ~/.claude/.credentials.json live-credentials/claude-credentials.json
+install -m 600 ~/.codex/auth.json live-credentials/codex-auth.json
+```
+
+Do not copy these files into tracked testdata. `go test` includes `TestLiveCredentialsAreNotTracked`, which fails if a credential-looking file is force-added to git.
+
+### Live Claude/Codex OAuth refresh tests
+
+Claude Code and Codex refresh tokens rotate. These tests are skipped by default, even if the credential files exist, so normal `go test ./...` does not contact real providers or consume refresh tokens.
+
+Run Claude Code OAuth refresh explicitly:
+
+```bash
+DUCKWAY_TEST_CLAUDE_OAUTH_LIVE=1 \
+go test ./internal/server/services -run TestClaudeCodeOAuthLiveRefreshIfCredentialsExist -count=1 -v
+```
+
+Run Codex OAuth refresh explicitly:
+
+```bash
+DUCKWAY_TEST_CODEX_OAUTH_LIVE=1 \
+go test ./internal/server/services -run TestCodexOAuthLiveRefreshIfCredentialsExist -count=1 -v
+```
+
+Run both:
+
+```bash
+DUCKWAY_TEST_OAUTH_LIVE=1 \
+go test ./internal/server/services -run 'Test(ClaudeCode|Codex)OAuthLiveRefreshIfCredentialsExist' -count=1 -v
+```
+
+Default paths:
+
+| Provider | Default file | Override |
+|---|---|---|
+| Claude Code | `live-credentials/claude-credentials.json` | `DUCKWAY_CLAUDE_LIVE_CREDENTIALS=/absolute/path` |
+| Codex | `live-credentials/codex-auth.json` | `DUCKWAY_CODEX_LIVE_AUTH=/absolute/path` |
+
+The files must be mode `600`. Each test creates a sibling `.lock` file before sending a real refresh request, then writes the rotated tokens back to the same ignored credential file on success. If the provider reports a permanent stale-token error such as `refresh_token_invalidated`, the test skips by default and tells you to sign in again. Set `DUCKWAY_LIVE_CREDENTIALS_STRICT=1` when you want stale live credentials to fail CI-style instead of skipping.
+
 ### Live Codex OAuth E2E
 
 Codex OAuth phantom-token testing is script-based because it needs a real `~/.codex/auth.json`-style credential and runs Codex inside an isolated podman container.
 
-Store the credential in the ignored `secrets/` directory:
+Store the credential in the ignored `live-credentials/` directory:
 
 ```bash
-mkdir -p secrets
-install -m 600 ~/.codex/auth.json secrets/codex-auth-live.json
+mkdir -p live-credentials
+install -m 600 ~/.codex/auth.json live-credentials/codex-auth.json
 ```
 
 Check that the token file is readable and shaped correctly:
 
 ```bash
-CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh --check-token
+CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --check-token
 ```
 
 Run the full live E2E:
 
 ```bash
-CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh
+CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh
 ```
 
 Run the optional control-channel watch path:
 
 ```bash
-CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh --cc-watch
+CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --cc-watch
 ```
 
-The script builds Duckway in a throwaway podman container, starts a fresh server, uploads the real Codex OAuth tokens as a refreshable key, creates a client phantom, runs `duckway sync` + `duckway proxy`, then runs `codex exec` with the default prompt `hello?` through Duckway. Set `DUCKWAY_CODEX_PROMPT='your prompt'` to override the prompt. The token file must be mode `600`; files under `secrets/` are ignored by git.
+The script builds Duckway in a throwaway podman container, starts a fresh server, uploads the real Codex OAuth tokens as a refreshable key, creates a client phantom, runs `duckway sync` + `duckway proxy`, then runs `codex exec` with the default prompt `hello?` through Duckway. Set `DUCKWAY_CODEX_PROMPT='your prompt'` to override the prompt. The token file must be mode `600`.
 
 ### Where to add new tests
 

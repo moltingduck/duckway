@@ -16,16 +16,16 @@
 #   CODEX_AUTH    path to the live Codex auth JSON
 #
 # Usage:
-#   CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh --check-token
-#   CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh
-#   CODEX_AUTH=secrets/codex-auth-live.json ./scripts/codex-oauth-live-e2e.sh --cc-watch
+#   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --check-token
+#   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh
+#   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --cc-watch
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PODMAN="${PODMAN:-podman}"
-CODEX_AUTH="${CODEX_AUTH:-$REPO_ROOT/secrets/codex-auth-live.json}"
+CODEX_AUTH="${CODEX_AUTH:-$REPO_ROOT/live-credentials/codex-auth.json}"
 IMAGE="${DUCKWAY_LIVE_IMAGE:-docker.io/library/golang:1.25-alpine}"
 PROMPT="${DUCKWAY_CODEX_PROMPT:-hello?}"
 CHECK_TOKEN=0
@@ -45,7 +45,7 @@ done
 
 if [ ! -r "$CODEX_AUTH" ]; then
   echo "Missing readable CODEX_AUTH file: $CODEX_AUTH" >&2
-  echo "Create one with: install -m 600 ~/.codex/auth.json secrets/codex-auth-live.json" >&2
+  echo "Create one with: install -m 600 ~/.codex/auth.json live-credentials/codex-auth.json" >&2
   exit 1
 fi
 CODEX_AUTH="$(cd "$(dirname "$CODEX_AUTH")" && pwd)/$(basename "$CODEX_AUTH")"

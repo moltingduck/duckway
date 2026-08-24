@@ -34,6 +34,11 @@ coverage.out
 
 # Local live-test secrets (never commit)
 /secrets/
+/live-credentials/*
+!/live-credentials/.gitkeep
+/test_auth*.json
+/auth.json
+/.codex/
 /scripts/*live*.json
 /scripts/*secret*.json
 /scripts/*auth*.json

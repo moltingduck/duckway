@@ -19,8 +19,8 @@ import (
 )
 
 func TestRewriteCodexRefreshRequestForm(t *testing.T) {
-	body := []byte("grant_type=refresh_token&refresh_token=rt.duckway.fake&client_id=codex")
-	got, contentType := rewriteCodexRefreshRequest(body, "application/x-www-form-urlencoded", "rt.real.secret")
+	body := []byte("grant_type=refresh_token&refresh_token=rt.duckway.fake&client_id=wrong")
+	got, contentType := rewriteCodexRefreshRequest(body, "application/x-www-form-urlencoded", "rt.real.secret", "app_codex_test")
 	if contentType != "application/x-www-form-urlencoded" {
 		t.Fatalf("contentType = %q", contentType)
 	}
@@ -31,14 +31,14 @@ func TestRewriteCodexRefreshRequestForm(t *testing.T) {
 	if vals.Get("refresh_token") != "rt.real.secret" {
 		t.Fatalf("refresh_token = %q", vals.Get("refresh_token"))
 	}
-	if vals.Get("client_id") != "codex" {
-		t.Fatalf("client_id was not preserved: %q", vals.Get("client_id"))
+	if vals.Get("client_id") != "app_codex_test" {
+		t.Fatalf("client_id = %q", vals.Get("client_id"))
 	}
 }
 
 func TestRewriteCodexRefreshRequestFormWithoutContentType(t *testing.T) {
 	body := []byte("grant_type=refresh_token&refresh_token=rt.duckway.fake&client_id=codex")
-	got, contentType := rewriteCodexRefreshRequest(body, "", "rt.real.secret")
+	got, contentType := rewriteCodexRefreshRequest(body, "", "rt.real.secret", "codex")
 	if contentType != "application/x-www-form-urlencoded" {
 		t.Fatalf("contentType = %q", contentType)
 	}
@@ -52,8 +52,8 @@ func TestRewriteCodexRefreshRequestFormWithoutContentType(t *testing.T) {
 }
 
 func TestRewriteCodexRefreshRequestJSON(t *testing.T) {
-	body := []byte(`{"grant_type":"refresh_token","refresh_token":"rt.duckway.fake","client_id":"codex"}`)
-	got, contentType := rewriteCodexRefreshRequest(body, "application/json", "rt.real.secret")
+	body := []byte(`{"grant_type":"refresh_token","refresh_token":"rt.duckway.fake","client_id":"wrong"}`)
+	got, contentType := rewriteCodexRefreshRequest(body, "application/json", "rt.real.secret", "app_codex_test")
 	if contentType != "application/json" {
 		t.Fatalf("contentType = %q", contentType)
 	}
@@ -64,8 +64,26 @@ func TestRewriteCodexRefreshRequestJSON(t *testing.T) {
 	if obj["refresh_token"] != "rt.real.secret" {
 		t.Fatalf("refresh_token = %#v", obj["refresh_token"])
 	}
-	if obj["client_id"] != "codex" {
-		t.Fatalf("client_id was not preserved: %#v", obj["client_id"])
+	if obj["client_id"] != "app_codex_test" {
+		t.Fatalf("client_id = %#v", obj["client_id"])
+	}
+}
+
+func TestRewriteCodexRefreshRequestJSONAddsClientID(t *testing.T) {
+	body := []byte(`{"grant_type":"refresh_token","refresh_token":"rt.duckway.fake"}`)
+	got, contentType := rewriteCodexRefreshRequest(body, "application/json", "rt.real.secret", "app_codex_test")
+	if contentType != "application/json" {
+		t.Fatalf("contentType = %q", contentType)
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(got, &obj); err != nil {
+		t.Fatal(err)
+	}
+	if obj["refresh_token"] != "rt.real.secret" {
+		t.Fatalf("refresh_token = %#v", obj["refresh_token"])
+	}
+	if obj["client_id"] != "app_codex_test" {
+		t.Fatalf("client_id = %#v", obj["client_id"])
 	}
 }
 
@@ -196,6 +214,9 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 	if vals.Get("refresh_token") != "rt.real.refresh" {
 		t.Fatalf("upstream refresh_token = %q, body=%s", vals.Get("refresh_token"), upstreamBody)
 	}
+	if vals.Get("client_id") != "app_EMoamEEZ73f0CkXaXp7hrann" {
+		t.Fatalf("upstream client_id = %q, body=%s", vals.Get("client_id"), upstreamBody)
+	}
 	if upstreamAuth != "Basic codex-client-auth" {
 		t.Fatalf("Authorization header was not preserved: %q", upstreamAuth)
 	}
@@ -226,12 +247,204 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 	if storedRefresh != "rt.real.new" {
 		t.Fatalf("stored refresh token was not rotated: %q", storedRefresh)
 	}
+	var subInfo map[string]interface{}
+	if err := json.Unmarshal([]byte(key.SubscriptionInfo), &subInfo); err != nil {
+		t.Fatal(err)
+	}
+	if subInfo["id_token"] != testCodexJWT(`{"exp":1893456001,"kind":"id"}`) {
+		t.Fatalf("stored id_token was not updated: %#v", subInfo)
+	}
+	if subInfo["last_refresh"] == "" {
+		t.Fatalf("last_refresh was not stored: %#v", subInfo)
+	}
 	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.Body.Bytes(), &obj); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(obj["refresh_token"].(string), "rt.duckway.sk-proj-dw_fake_auth") {
 		t.Fatalf("unexpected fake refresh token: %#v", obj)
+	}
+}
+
+func TestHandleOpenAIAuthProxyRedactsSecretsFromUpstreamError(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encAccess, err := crypto.Encrypt("real-access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encRefresh, err := crypto.Encrypt("rt.real.refresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-openai-auth-error','client',?)`, services.HashToken("tok")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted,refresh_token,token_endpoint,subscription_info)
+		VALUES ('key-openai-auth-error',?,'codex oauth',?,?, 'https://auth.openai.com/oauth/token', '{"credential_kind":"codex_oauth","auth_mode":"chatgpt","source":"codex"}')`,
+		openaiSvc.ID, encAccess, encRefresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO placeholder_keys (id,env_name,placeholder,service_id,api_key_id,client_id,requires_approval)
+		VALUES ('ph-openai-auth-error','OPENAI_API_KEY','sk-proj-dw_fake_auth_error',?,'key-openai-auth-error','client-openai-auth-error',0)`, openaiSvc.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewProxyHandler(
+		svcQ,
+		queries.NewAPIKeyQueries(db),
+		services.NewKeyResolver(crypto, queries.NewAPIKeyQueries(db), queries.NewPlaceholderQueries(db), queries.NewGroupQueries(db), queries.NewApprovalQueries(db)),
+		nil,
+		queries.NewApprovalQueries(db),
+		nil,
+		nil,
+	).WithCrypto(crypto)
+	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"bad rt.real.refresh ` + testCodexJWT(`{"exp":1893456001,"kind":"id"}`) + `"}}`)),
+			Request:    req,
+		}, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/proxy/openai-auth/oauth/token", strings.NewReader("grant_type=refresh_token&refresh_token=rt.duckway.sk-proj-dw_fake_auth_error"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, &models.Client{ID: "client-openai-auth-error", Name: "client"}))
+	rec := httptest.NewRecorder()
+
+	h.Handle(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "rt.real.refresh") || strings.Contains(rec.Body.String(), "eyJ") {
+		t.Fatalf("response leaked upstream secret: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "[REDACTED") {
+		t.Fatalf("response did not include redaction marker: %s", rec.Body.String())
+	}
+}
+
+func TestHandleOpenAIAuthProxyRetriesAfterConcurrentRefreshRotation(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encAccess, err := crypto.Encrypt("real-access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encRefresh, err := crypto.Encrypt("rt.real.old")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-openai-auth-race','client',?)`, services.HashToken("tok")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted,refresh_token,token_endpoint,subscription_info)
+		VALUES ('key-openai-auth-race',?,'codex oauth',?,?, 'https://auth.openai.com/oauth/token', '{"credential_kind":"codex_oauth","auth_mode":"chatgpt","source":"codex"}')`,
+		openaiSvc.ID, encAccess, encRefresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO placeholder_keys (id,env_name,placeholder,service_id,api_key_id,client_id,requires_approval)
+		VALUES ('ph-openai-auth-race','OPENAI_API_KEY','sk-proj-dw_fake_auth_race',?,'key-openai-auth-race','client-openai-auth-race',0)`, openaiSvc.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	var calls int
+	h := NewProxyHandler(
+		svcQ,
+		apiKeyQ,
+		services.NewKeyResolver(crypto, apiKeyQ, queries.NewPlaceholderQueries(db), queries.NewGroupQueries(db), queries.NewApprovalQueries(db)),
+		nil,
+		queries.NewApprovalQueries(db),
+		nil,
+		nil,
+	).WithCrypto(crypto)
+	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		body, _ := io.ReadAll(req.Body)
+		vals, err := url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch calls {
+		case 1:
+			if vals.Get("refresh_token") != "rt.real.old" {
+				t.Fatalf("first refresh_token = %q", vals.Get("refresh_token"))
+			}
+			rotatedRefresh, err := crypto.Encrypt("rt.real.new")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := apiKeyQ.UpdateRefreshToken("key-openai-auth-race", rotatedRefresh); err != nil {
+				t.Fatal(err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"refresh_token_invalidated","message":"invalidated"}}`)),
+				Request:    req,
+			}, nil
+		case 2:
+			if vals.Get("refresh_token") != "rt.real.new" {
+				t.Fatalf("second refresh_token = %q", vals.Get("refresh_token"))
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"access_token":"` + testCodexJWT(`{"exp":1893456001,"scope":"access"}`) + `","refresh_token":"rt.real.newer","id_token":"` + testCodexJWT(`{"exp":1893456001,"kind":"id"}`) + `","expires_in":3600}`)),
+				Request:    req,
+			}, nil
+		default:
+			t.Fatalf("unexpected upstream call %d", calls)
+		}
+		return nil, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/proxy/openai-auth/oauth/token", strings.NewReader("grant_type=refresh_token&refresh_token=rt.duckway.sk-proj-dw_fake_auth_race"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, &models.Client{ID: "client-openai-auth-race", Name: "client"}))
+	rec := httptest.NewRecorder()
+
+	h.Handle(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+	key, err := apiKeyQ.GetByID("key-openai-auth-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedRefresh, err := crypto.Decrypt(key.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRefresh != "rt.real.newer" {
+		t.Fatalf("stored refresh = %q", storedRefresh)
 	}
 }
 

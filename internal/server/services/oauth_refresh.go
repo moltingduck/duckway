@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,21 @@ type TokenRefresher struct {
 	proxyClients *UpstreamProxyClientCache
 	stopCh       chan struct{}
 	stopOnce     sync.Once
+}
+
+var oauthRefreshLocks sync.Map // map api key id -> *sync.Mutex
+
+// WithOAuthRefreshLock serializes refresh-token rotation for one stored API
+// key across the scheduler, manual refreshes, and proxy-mediated Codex refreshes.
+func WithOAuthRefreshLock(keyID string, fn func() error) error {
+	if keyID == "" {
+		return fn()
+	}
+	lockAny, _ := oauthRefreshLocks.LoadOrStore(keyID, &sync.Mutex{})
+	lock := lockAny.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	return fn()
 }
 
 func NewTokenRefresher(apiKeyQ *queries.APIKeyQueries, crypto *Crypto) *TokenRefresher {
@@ -75,7 +91,23 @@ func (r *TokenRefresher) refreshExpiring() {
 	}
 
 	for i := range expiring {
-		if err := r.refreshKey(&expiring[i]); err != nil {
+		keyID := expiring[i].ID
+		if err := WithOAuthRefreshLock(keyID, func() error {
+			key, err := r.apiKeyQ.GetByID(keyID)
+			if err != nil {
+				return fmt.Errorf("reload key: %w", err)
+			}
+			if key.RefreshToken == "" {
+				return fmt.Errorf("key has no refresh_token (not refreshable)")
+			}
+			// Another path may have refreshed while this key was waiting for
+			// the rotation lock. Skip it if it no longer falls in the same
+			// expiry window that ListExpiring(10) used above.
+			if key.ExpiresAt > time.Now().Add(10*time.Minute).UnixMilli() {
+				return nil
+			}
+			return r.refreshKey(key)
+		}); err != nil {
 			log.Printf("[token-refresh] Failed to refresh %s (%s): %v", expiring[i].Name, expiring[i].ID, err)
 		} else {
 			log.Printf("[token-refresh] Refreshed %s (%s)", expiring[i].Name, expiring[i].ID)
@@ -86,18 +118,23 @@ func (r *TokenRefresher) refreshExpiring() {
 // RefreshNow performs an immediate refresh for the given key id, bypassing
 // the schedule. Returns the new expires_at on success.
 func (r *TokenRefresher) RefreshNow(id string) (int64, error) {
-	key, err := r.apiKeyQ.GetByID(id)
-	if err != nil {
-		return 0, fmt.Errorf("key not found: %w", err)
-	}
-	if key.RefreshToken == "" {
-		return 0, fmt.Errorf("key has no refresh_token (not refreshable)")
-	}
-	if err := r.refreshKey(key); err != nil {
+	if err := WithOAuthRefreshLock(id, func() error {
+		key, err := r.apiKeyQ.GetByID(id)
+		if err != nil {
+			return fmt.Errorf("key not found: %w", err)
+		}
+		if key.RefreshToken == "" {
+			return fmt.Errorf("key has no refresh_token (not refreshable)")
+		}
+		if err := r.refreshKey(key); err != nil {
+			return err
+		}
+		if err := r.apiKeyQ.SetActive(id, true); err != nil {
+			return fmt.Errorf("reactivate refreshed key: %w", err)
+		}
+		return nil
+	}); err != nil {
 		return 0, err
-	}
-	if err := r.apiKeyQ.SetActive(id, true); err != nil {
-		return 0, fmt.Errorf("reactivate refreshed key: %w", err)
 	}
 	// Re-read to get the persisted expires_at
 	updated, err := r.apiKeyQ.GetByID(id)
@@ -129,6 +166,10 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 	if err != nil {
 		return err
 	}
+	useCodexOpenAI := isCodexOpenAIRefresh(key)
+	if useCodexOpenAI && !IsCodexOpenAIRefreshEndpoint(key.TokenEndpoint) {
+		return fmt.Errorf("codex oauth token_endpoint must be https://auth.openai.com/oauth/token")
+	}
 	if useAnthropic {
 		clientID := claudeOAuthClientID
 		// Allow override via subscription_info JSON {"clientId": "..."}
@@ -144,6 +185,23 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 			"grant_type":    "refresh_token",
 			"refresh_token": refreshToken,
 			"client_id":     clientID,
+		})
+		req, buildErr := http.NewRequest("POST", key.TokenEndpoint, bytes.NewReader(body))
+		if buildErr != nil {
+			return fmt.Errorf("build token request: %w", buildErr)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		resp, err = httpClient.Do(req)
+	} else if useCodexOpenAI {
+		clientID := oauthMetadataString(key.SubscriptionInfo, "client_id", "clientId")
+		if clientID == "" {
+			clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+		}
+		body, _ := json.Marshal(map[string]string{
+			"client_id":     clientID,
+			"grant_type":    "refresh_token",
+			"refresh_token": refreshToken,
 		})
 		req, buildErr := http.NewRequest("POST", key.TokenEndpoint, bytes.NewReader(body))
 		if buildErr != nil {
@@ -176,17 +234,57 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		// Detect permanent failures that will never recover. Stop retrying
-		// immediately and deactivate the key to avoid ban from repeated attempts.
+		// immediately. Only deactivate when the current access token also
+		// fails a live auth check; a revoked refresh token does not necessarily
+		// mean the still-stored access token is unusable.
 		if isPermanentOAuthError(resp.StatusCode, body) {
-			_ = r.apiKeyQ.Deactivate(key.ID)
-			return fmt.Errorf("permanent OAuth error — key %s deactivated: %s", key.ID, string(body))
+			if r.refreshTokenChanged(key.ID, refreshToken) {
+				log.Printf("[token-refresh] Ignoring permanent OAuth error for %s because refresh token was already rotated", key.ID)
+				return nil
+			}
+			latest, latestErr := r.apiKeyQ.GetByID(key.ID)
+			if latestErr != nil {
+				return fmt.Errorf("permanent OAuth error — key %s left in current active state because reload before access token test failed: %w", key.ID, latestErr)
+			}
+			if latest.RefreshToken != key.RefreshToken {
+				log.Printf("[token-refresh] Ignoring permanent OAuth error for %s because refresh token was already rotated", key.ID)
+				return nil
+			}
+			switch result, testErr := r.testStoredAccessToken(latest); result {
+			case accessTokenTestPassed:
+				return fmt.Errorf("permanent OAuth error — key %s left in current active state because access token test still succeeds: %s", key.ID, redactOAuthErrorBody(body, refreshToken))
+			case accessTokenTestFailed:
+				deactivated, deactivateErr := r.apiKeyQ.DeactivateIfCredentialSnapshot(
+					latest.ID,
+					latest.KeyEncrypted,
+					latest.RefreshToken,
+					latest.TokenEndpoint,
+					latest.UpstreamProxyURL,
+				)
+				if deactivateErr != nil {
+					return fmt.Errorf("permanent OAuth error — key %s access token test failed but deactivate failed: %w", key.ID, deactivateErr)
+				}
+				if !deactivated {
+					return fmt.Errorf("permanent OAuth error — key %s left in current active state because credentials changed before deactivate", key.ID)
+				}
+				if testErr != nil {
+					return fmt.Errorf("permanent OAuth error — key %s deactivated after access token test failed (%v): %s", key.ID, testErr, redactOAuthErrorBody(body, refreshToken))
+				}
+				return fmt.Errorf("permanent OAuth error — key %s deactivated after access token test failed: %s", key.ID, redactOAuthErrorBody(body, refreshToken))
+			default:
+				if testErr != nil {
+					return fmt.Errorf("permanent OAuth error — key %s left in current active state because access token test was inconclusive (%v): %s", key.ID, testErr, redactOAuthErrorBody(body, refreshToken))
+				}
+				return fmt.Errorf("permanent OAuth error — key %s left in current active state because no access token test is available: %s", key.ID, redactOAuthErrorBody(body, refreshToken))
+			}
 		}
-		return fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, redactOAuthErrorBody(body, refreshToken))
 	}
 
 	var tokenResp struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
 		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
@@ -228,8 +326,155 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 			log.Printf("[token-refresh] Warning: failed to store rotated refresh token for %s: %v", key.ID, err)
 		}
 	}
+	if isCodexOpenAIRefresh(key) {
+		r.updateCodexRefreshMetadata(key.ID, key.SubscriptionInfo, tokenResp.IDToken)
+	}
 
 	return nil
+}
+
+type accessTokenTestResult int
+
+const (
+	accessTokenTestInconclusive accessTokenTestResult = iota
+	accessTokenTestPassed
+	accessTokenTestFailed
+)
+
+func (r *TokenRefresher) testStoredAccessToken(key *models.APIKey) (accessTokenTestResult, error) {
+	if key.KeyEncrypted == "" {
+		return accessTokenTestInconclusive, fmt.Errorf("missing access token")
+	}
+	accessToken, err := r.crypto.Decrypt(key.KeyEncrypted)
+	if err != nil {
+		return accessTokenTestInconclusive, fmt.Errorf("decrypt access token: %w", err)
+	}
+	accessToken = strings.TrimSpace(accessToken)
+	if accessToken == "" {
+		return accessTokenTestInconclusive, fmt.Errorf("empty access token")
+	}
+
+	req, err := buildAccessTokenTestRequest(key, accessToken)
+	if err != nil {
+		return accessTokenTestInconclusive, err
+	}
+	httpClient, upstreamProxyURL, err := r.clientForKey(key)
+	if err != nil {
+		return accessTokenTestInconclusive, err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return accessTokenTestInconclusive, fmt.Errorf("token test request: %s", RedactProxyError(upstreamProxyURL, err))
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		return accessTokenTestPassed, nil
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return accessTokenTestFailed, fmt.Errorf("token test returned %d", resp.StatusCode)
+	}
+	return accessTokenTestInconclusive, fmt.Errorf("token test returned %d", resp.StatusCode)
+}
+
+func buildAccessTokenTestRequest(key *models.APIKey, accessToken string) (*http.Request, error) {
+	var endpoint string
+	switch {
+	case isCodexOpenAIRefresh(key) || key.ServiceName == "openai" || strings.Contains(key.TokenEndpoint, "auth.openai.com"):
+		endpoint = "https://api.openai.com/v1/models"
+	case key.ServiceName == "anthropic" || strings.Contains(key.TokenEndpoint, "anthropic"):
+		endpoint = "https://api.anthropic.com/v1/models"
+	default:
+		return nil, fmt.Errorf("no access token test available for service %q", key.ServiceName)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build access token test request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if strings.Contains(endpoint, "api.anthropic.com") {
+		req.Header.Set("x-api-key", accessToken)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
+	return req, nil
+}
+
+func (r *TokenRefresher) updateCodexRefreshMetadata(keyID, subscriptionInfo, idToken string) {
+	updated := mergeCodexRefreshMetadata(subscriptionInfo, idToken, time.Now().UTC())
+	if updated == "" {
+		return
+	}
+	if err := r.apiKeyQ.UpdateSubscriptionInfo(keyID, updated); err != nil {
+		log.Printf("[token-refresh] Warning: failed to store Codex refresh metadata for %s: %v", keyID, err)
+	}
+}
+
+func mergeCodexRefreshMetadata(raw, idToken string, now time.Time) string {
+	metadata := map[string]interface{}{}
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &metadata)
+		if metadata == nil {
+			metadata = map[string]interface{}{}
+		}
+	}
+	if idToken != "" {
+		metadata["id_token"] = idToken
+	}
+	metadata["last_refresh"] = now.Format(time.RFC3339)
+	out, err := json.Marshal(metadata)
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+func (r *TokenRefresher) refreshTokenChanged(keyID, usedRefreshToken string) bool {
+	key, err := r.apiKeyQ.GetByID(keyID)
+	if err != nil || key.RefreshToken == "" {
+		return false
+	}
+	currentRefreshToken, err := r.crypto.Decrypt(key.RefreshToken)
+	if err != nil {
+		return false
+	}
+	return currentRefreshToken != "" && currentRefreshToken != usedRefreshToken
+}
+
+func isCodexOpenAIRefresh(key *models.APIKey) bool {
+	if IsCodexOpenAIRefreshEndpoint(key.TokenEndpoint) {
+		return true
+	}
+	var metadata map[string]interface{}
+	if json.Unmarshal([]byte(key.SubscriptionInfo), &metadata) != nil {
+		return false
+	}
+	if v, _ := metadata["credential_kind"].(string); v == "codex_oauth" {
+		return true
+	}
+	if v, _ := metadata["source"].(string); v == "codex" {
+		return true
+	}
+	if v, _ := metadata["auth_mode"].(string); v == "chatgpt" {
+		return true
+	}
+	return false
+}
+
+func IsCodexOpenAIRefreshEndpoint(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "https" &&
+		u.User == nil &&
+		u.Host == "auth.openai.com" &&
+		u.Path == "/oauth/token" &&
+		u.RawQuery == "" &&
+		u.Fragment == ""
 }
 
 func (r *TokenRefresher) clientForKey(key *models.APIKey) (*http.Client, string, error) {
@@ -285,6 +530,10 @@ func jwtExpiresAtMillis(token string) int64 {
 // retry: invalid/revoked/expired refresh tokens, bad client credentials, etc.
 // Transient errors (500, 503, network timeout) return false so the next
 // scheduled tick still tries.
+func IsPermanentOAuthError(statusCode int, body []byte) bool {
+	return isPermanentOAuthError(statusCode, body)
+}
+
 func isPermanentOAuthError(statusCode int, body []byte) bool {
 	// 401 without a Retry-After is always permanent for OAuth.
 	if statusCode == 401 {
@@ -303,6 +552,9 @@ func isPermanentOAuthError(statusCode int, body []byte) bool {
 	switch code {
 	case "invalid_grant", // revoked / used / expired refresh token
 		"invalid_refresh_token",
+		"refresh_token_expired",
+		"refresh_token_reused",
+		"refresh_token_invalidated",
 		"invalid_client",      // wrong client_id/secret
 		"unauthorized_client", // client not allowed this grant type
 		"unsupported_grant_type":
@@ -327,4 +579,23 @@ func oauthErrorCode(raw interface{}) string {
 		}
 	}
 	return ""
+}
+
+var (
+	oauthJWTRE          = regexp.MustCompile(`[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`)
+	oauthRefreshTokenRE = regexp.MustCompile(`rt\.[A-Za-z0-9._-]+`)
+)
+
+func redactOAuthErrorBody(body []byte, usedRefreshToken string) string {
+	const maxBody = 2000
+	text := string(body)
+	if usedRefreshToken != "" {
+		text = strings.ReplaceAll(text, usedRefreshToken, "[REDACTED_REFRESH_TOKEN]")
+	}
+	text = oauthRefreshTokenRE.ReplaceAllString(text, "[REDACTED_REFRESH_TOKEN]")
+	text = oauthJWTRE.ReplaceAllString(text, "[REDACTED_JWT]")
+	if len(text) > maxBody {
+		return text[:maxBody] + "...[truncated]"
+	}
+	return text
 }

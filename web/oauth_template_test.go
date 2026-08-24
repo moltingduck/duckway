@@ -16,6 +16,8 @@ func TestOAuthTemplateShowsAndRepairsActiveStatus(t *testing.T) {
 		`document.getElementById('d-status').innerHTML = data.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>';`,
 		`if (parsed.accessToken && parsed.refreshToken) document.getElementById('edit-active').checked = true;`,
 		`if (accessToken && refreshToken) body.is_active = true;`,
+		`subInfo.credential_kind = 'codex_oauth';`,
+		`subInfo.source = 'codex';`,
 	}
 	for _, want := range required {
 		if !strings.Contains(html, want) {
