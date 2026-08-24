@@ -868,6 +868,11 @@ Do not copy these files into tracked testdata. `go test` includes `TestLiveCrede
 
 Claude Code and Codex refresh tokens rotate. These tests are skipped by default, even if the credential files exist, so normal `go test ./...` does not contact real providers or consume refresh tokens.
 
+There are two levels:
+
+- Direct provider probes call only the provider token endpoint and prove the credential file can refresh.
+- Duckway E2E tests import the live credential into a temp Duckway DB, run `POST /api/oauth/validate`, `POST /api/oauth/upload`, client phantom credential delivery, and `POST /api/oauth/{id}/refresh`, then write the rotated credential from Duckway storage back to the ignored live credential file.
+
 Run Claude Code OAuth refresh explicitly:
 
 ```bash
@@ -882,11 +887,25 @@ DUCKWAY_TEST_CODEX_OAUTH_LIVE=1 \
 go test ./internal/server/services -run TestCodexOAuthLiveRefreshIfCredentialsExist -count=1 -v
 ```
 
-Run both:
+Run Duckway upload/refresh E2E for Claude:
+
+```bash
+DUCKWAY_TEST_CLAUDE_OAUTH_LIVE=1 DUCKWAY_LIVE_CREDENTIALS_STRICT=1 \
+go test ./internal/server/services -run TestClaudeCodeOAuthLiveDuckwayUploadRefreshE2EIfCredentialsExist -count=1 -v
+```
+
+Run Duckway upload/refresh E2E for Codex:
+
+```bash
+DUCKWAY_TEST_CODEX_OAUTH_LIVE=1 DUCKWAY_LIVE_CREDENTIALS_STRICT=1 \
+go test ./internal/server/services -run TestCodexOAuthLiveDuckwayUploadRefreshE2EIfCredentialsExist -count=1 -v
+```
+
+Run all live OAuth tests only when you intentionally want to consume and rotate each provider credential more than once:
 
 ```bash
 DUCKWAY_TEST_OAUTH_LIVE=1 \
-go test ./internal/server/services -run 'Test(ClaudeCode|Codex)OAuthLiveRefreshIfCredentialsExist' -count=1 -v
+go test ./internal/server/services -run 'Test(ClaudeCode|Codex)OAuthLive.*IfCredentialsExist' -count=1 -v
 ```
 
 Default paths:

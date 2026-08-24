@@ -3,16 +3,30 @@ package services_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hackerduck/duckway/internal/database"
+	"github.com/hackerduck/duckway/internal/database/queries"
+	"github.com/hackerduck/duckway/internal/models"
+	"github.com/hackerduck/duckway/internal/server/handlers"
+	"github.com/hackerduck/duckway/internal/server/middleware"
+	"github.com/hackerduck/duckway/internal/server/services"
+)
+
+const (
+	liveClaudeTokenEndpoint = "https://console.anthropic.com/v1/oauth/token"
+	liveCodexTokenEndpoint  = "https://auth.openai.com/oauth/token"
 )
 
 const (
@@ -52,7 +66,7 @@ func TestClaudeCodeOAuthLiveRefreshIfCredentialsExist(t *testing.T) {
 		t.Fatalf("live Claude credentials %s missing claudeAiOauth.refreshToken", path)
 	}
 
-	resp := liveOAuthRefresh(t, "https://console.anthropic.com/v1/oauth/token", map[string]string{
+	resp := liveOAuthRefresh(t, liveClaudeTokenEndpoint, map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
 		"client_id":     "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
@@ -103,7 +117,7 @@ func TestCodexOAuthLiveRefreshIfCredentialsExist(t *testing.T) {
 		clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 	}
 
-	resp := liveOAuthRefresh(t, officialCodexRefreshEndpoint, map[string]string{
+	resp := liveOAuthRefresh(t, liveCodexTokenEndpoint, map[string]string{
 		"client_id":     clientID,
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
@@ -126,6 +140,349 @@ func TestCodexOAuthLiveRefreshIfCredentialsExist(t *testing.T) {
 	doc["auth_mode"] = firstNonEmpty(liveString(doc, "auth_mode"), "chatgpt")
 	doc["last_refresh"] = time.Now().UTC().Format(time.RFC3339)
 	writeLiveCredentialJSON(t, path, doc)
+}
+
+func TestClaudeCodeOAuthLiveDuckwayUploadRefreshE2EIfCredentialsExist(t *testing.T) {
+	requireLiveOAuthOptIn(t, liveClaudeOptInEnv)
+	path, ok := liveCredentialPath(t, liveClaudeCredentialsPathEnv, liveClaudeCredentialsName)
+	if !ok {
+		t.Skipf("missing %s/%s; copy ~/.claude/.credentials.json there to run this live E2E test", liveCredentialDirName, liveClaudeCredentialsName)
+	}
+	enforcePrivateLiveCredentialFile(t, path)
+	unlock := acquireLiveCredentialLock(t, path)
+	defer unlock()
+
+	doc := readLiveCredentialJSON(t, path)
+	oauth := liveObject(doc, "claudeAiOauth")
+	if oauth == nil {
+		t.Fatalf("live Claude credentials %s must contain claudeAiOauth", path)
+	}
+	accessToken := liveString(oauth, "accessToken", "access_token")
+	refreshToken := liveString(oauth, "refreshToken", "refresh_token")
+	if accessToken == "" || refreshToken == "" {
+		t.Fatalf("live Claude credentials %s must contain claudeAiOauth accessToken and refreshToken", path)
+	}
+
+	result := runLiveDuckwayOAuthE2E(t, liveDuckwayOAuthInput{
+		provider:          "Claude Code",
+		serviceName:       "anthropic",
+		accessToken:       accessToken,
+		refreshToken:      refreshToken,
+		expiresAt:         liveInt(oauth, "expiresAt", "expires_at"),
+		tokenEndpoint:     liveClaudeTokenEndpoint,
+		subscriptionInfo:  liveClaudeSubscriptionInfo(t, oauth),
+		clientEnvName:     "ANTHROPIC_AUTH_TOKEN",
+		clientPlaceholder: "sk-ant-dw_live_claude_e2e_placeholder",
+	})
+
+	oauth["accessToken"] = result.accessToken
+	oauth["refreshToken"] = result.refreshToken
+	if result.expiresAt > 0 {
+		oauth["expiresAt"] = result.expiresAt
+	}
+	doc["claudeAiOauth"] = oauth
+	writeLiveCredentialJSON(t, path, doc)
+}
+
+func TestCodexOAuthLiveDuckwayUploadRefreshE2EIfCredentialsExist(t *testing.T) {
+	requireLiveOAuthOptIn(t, liveCodexOptInEnv)
+	path, ok := liveCredentialPath(t, liveCodexAuthPathEnv, liveCodexAuthName)
+	if !ok {
+		t.Skipf("missing %s/%s; copy ~/.codex/auth.json there to run this live E2E test", liveCredentialDirName, liveCodexAuthName)
+	}
+	enforcePrivateLiveCredentialFile(t, path)
+	unlock := acquireLiveCredentialLock(t, path)
+	defer unlock()
+
+	doc := readLiveCredentialJSON(t, path)
+	tokens := liveObject(doc, "tokens")
+	if tokens == nil {
+		tokens = doc
+	}
+	accessToken := liveString(tokens, "access_token", "accessToken")
+	refreshToken := liveString(tokens, "refresh_token", "refreshToken")
+	idToken := liveString(tokens, "id_token", "idToken")
+	if accessToken == "" || refreshToken == "" || idToken == "" {
+		t.Fatalf("live Codex auth %s must contain tokens.access_token, tokens.refresh_token, and tokens.id_token", path)
+	}
+	clientID := firstNonEmpty(liveString(tokens, "client_id", "clientId"), liveString(doc, "client_id", "clientId"), "app_EMoamEEZ73f0CkXaXp7hrann")
+
+	result := runLiveDuckwayOAuthE2E(t, liveDuckwayOAuthInput{
+		provider:          "Codex",
+		serviceName:       "openai",
+		accessToken:       accessToken,
+		refreshToken:      refreshToken,
+		expiresAt:         firstPositive(decodeJWTExpirationMillis(accessToken), liveInt(tokens, "expires_at", "expiresAt")),
+		tokenEndpoint:     liveCodexTokenEndpoint,
+		subscriptionInfo:  liveCodexSubscriptionInfo(t, doc, tokens, clientID, idToken),
+		clientEnvName:     "OPENAI_API_KEY",
+		clientPlaceholder: "sk-proj-dw_live_codex_e2e_placeholder",
+	})
+
+	tokens["access_token"] = result.accessToken
+	tokens["refresh_token"] = result.refreshToken
+	if nextIDToken := liveString(result.subscriptionInfo, "id_token"); nextIDToken != "" {
+		tokens["id_token"] = nextIDToken
+	}
+	tokens["client_id"] = clientID
+	doc["tokens"] = tokens
+	doc["auth_mode"] = firstNonEmpty(liveString(doc, "auth_mode"), "chatgpt")
+	doc["last_refresh"] = time.Now().UTC().Format(time.RFC3339)
+	writeLiveCredentialJSON(t, path, doc)
+}
+
+type liveDuckwayOAuthInput struct {
+	provider          string
+	serviceName       string
+	accessToken       string
+	refreshToken      string
+	expiresAt         int64
+	tokenEndpoint     string
+	subscriptionInfo  string
+	clientEnvName     string
+	clientPlaceholder string
+}
+
+type liveDuckwayOAuthResult struct {
+	accessToken      string
+	refreshToken     string
+	expiresAt        int64
+	subscriptionInfo map[string]interface{}
+}
+
+func runLiveDuckwayOAuthE2E(t *testing.T, in liveDuckwayOAuthInput) liveDuckwayOAuthResult {
+	t.Helper()
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open live E2E database: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	placeholderQ := queries.NewPlaceholderQueries(db)
+	serviceQ := queries.NewServiceQueries(db)
+	serviceRow := ensureLiveOAuthService(t, serviceQ, in.serviceName)
+	h := handlers.NewOAuthHandler(apiKeyQ, placeholderQ, serviceQ, crypto)
+	h.SetRefresher(services.NewTokenRefresher(apiKeyQ, crypto))
+
+	payload := map[string]interface{}{
+		"name":              in.provider + " live OAuth E2E",
+		"service_id":        serviceRow.ID,
+		"access_token":      in.accessToken,
+		"refresh_token":     in.refreshToken,
+		"expires_at":        in.expiresAt,
+		"token_endpoint":    in.tokenEndpoint,
+		"subscription_info": in.subscriptionInfo,
+	}
+	body := liveJSONBody(t, payload)
+	validateRec := httptest.NewRecorder()
+	h.Validate(validateRec, httptest.NewRequest(http.MethodPost, "/api/oauth/validate", bytes.NewReader(body)))
+	if validateRec.Code != http.StatusOK {
+		t.Fatalf("%s live Duckway validate failed: status=%d body=%s", in.provider, validateRec.Code, redactLiveMessage(validateRec.Body.String()))
+	}
+
+	uploadRec := httptest.NewRecorder()
+	h.Upload(uploadRec, httptest.NewRequest(http.MethodPost, "/api/oauth/upload", bytes.NewReader(body)))
+	if uploadRec.Code != http.StatusCreated {
+		t.Fatalf("%s live Duckway upload failed: status=%d body=%s", in.provider, uploadRec.Code, redactLiveMessage(uploadRec.Body.String()))
+	}
+	var uploadResp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(uploadRec.Body.Bytes(), &uploadResp); err != nil || uploadResp.ID == "" {
+		t.Fatalf("%s live Duckway upload returned invalid response", in.provider)
+	}
+
+	clientID := "client-live-oauth-e2e"
+	if _, err := db.Exec(`INSERT INTO clients (id, short_id, name, token_hash) VALUES (?, ?, ?, ?)`, clientID, "livoau", "live oauth e2e client", services.HashToken("unused")); err != nil {
+		t.Fatalf("create live E2E client: %v", err)
+	}
+	if err := placeholderQ.Create(&models.PlaceholderKey{
+		ID:          "ph-live-oauth-e2e",
+		EnvName:     in.clientEnvName,
+		Placeholder: in.clientPlaceholder,
+		ServiceID:   serviceRow.ID,
+		APIKeyID:    &uploadResp.ID,
+		ClientID:    clientID,
+	}); err != nil {
+		t.Fatalf("create live E2E placeholder: %v", err)
+	}
+	assertLiveClientCredentialsArePhantom(t, h, in, clientID)
+
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/oauth/"+uploadResp.ID+"/refresh", nil)
+	refreshReq.SetPathValue("id", uploadResp.ID)
+	refreshRec := httptest.NewRecorder()
+	h.Refresh(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusOK {
+		handleLiveDuckwayRefreshFailure(t, in.provider, refreshRec)
+	}
+
+	key, err := apiKeyQ.GetByID(uploadResp.ID)
+	if err != nil {
+		t.Fatalf("reload %s live E2E key: %v", in.provider, err)
+	}
+	accessToken, err := crypto.Decrypt(key.KeyEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt %s live E2E access token: %v", in.provider, err)
+	}
+	refreshToken, err := crypto.Decrypt(key.RefreshToken)
+	if err != nil {
+		t.Fatalf("decrypt %s live E2E refresh token: %v", in.provider, err)
+	}
+	if accessToken == "" || refreshToken == "" {
+		t.Fatalf("%s live E2E refresh stored empty tokens", in.provider)
+	}
+	if accessToken == in.accessToken && refreshToken == in.refreshToken {
+		t.Fatalf("%s live E2E refresh did not rotate or update tokens", in.provider)
+	}
+	subInfo := map[string]interface{}{}
+	if key.SubscriptionInfo != "" {
+		_ = json.Unmarshal([]byte(key.SubscriptionInfo), &subInfo)
+	}
+	return liveDuckwayOAuthResult{
+		accessToken:      accessToken,
+		refreshToken:     refreshToken,
+		expiresAt:        key.ExpiresAt,
+		subscriptionInfo: subInfo,
+	}
+}
+
+func ensureLiveOAuthService(t *testing.T, serviceQ *queries.ServiceQueries, serviceName string) *models.Service {
+	t.Helper()
+	serviceRow, err := serviceQ.GetByName(serviceName)
+	if err == nil {
+		return serviceRow
+	}
+	if err != sql.ErrNoRows {
+		t.Fatalf("get %s service for live E2E: %v", serviceName, err)
+	}
+
+	serviceRow = &models.Service{ID: "svc-live-oauth-e2e-" + serviceName, Name: serviceName, DeliveryMode: "proxy", IsActive: true}
+	switch serviceName {
+	case "anthropic":
+		serviceRow.DisplayName = "Anthropic API"
+		serviceRow.UpstreamURL = "https://api.anthropic.com"
+		serviceRow.HostPattern = "api.anthropic.com"
+		serviceRow.AuthType = "header"
+		serviceRow.AuthHeader = "x-api-key"
+		serviceRow.AuthPrefix = ""
+		serviceRow.KeyPrefix = "sk-ant-"
+		serviceRow.KeyLength = 108
+		serviceRow.KeyDirectory = ".config/anthropic/credentials"
+	case "openai":
+		serviceRow.DisplayName = "OpenAI API"
+		serviceRow.UpstreamURL = "https://api.openai.com"
+		serviceRow.HostPattern = "api.openai.com"
+		serviceRow.AuthType = "bearer"
+		serviceRow.AuthHeader = "Authorization"
+		serviceRow.AuthPrefix = "Bearer "
+		serviceRow.KeyPrefix = "sk-"
+		serviceRow.KeyLength = 164
+		serviceRow.KeyDirectory = ".config/openai/credentials"
+	default:
+		t.Fatalf("unsupported live OAuth service %q", serviceName)
+	}
+	if err := serviceQ.Create(serviceRow); err != nil {
+		t.Fatalf("seed %s service for live E2E: %v", serviceName, err)
+	}
+	serviceRow, err = serviceQ.GetByName(serviceName)
+	if err != nil {
+		t.Fatalf("reload seeded %s service for live E2E: %v", serviceName, err)
+	}
+	return serviceRow
+}
+
+func assertLiveClientCredentialsArePhantom(t *testing.T, h *handlers.OAuthHandler, in liveDuckwayOAuthInput, clientID string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/client/oauth-credentials", nil)
+	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, &models.Client{ID: clientID, Name: "live oauth e2e client"}))
+	rec := httptest.NewRecorder()
+	switch in.serviceName {
+	case "anthropic":
+		h.ClientGetCredentials(rec, req)
+	case "openai":
+		h.ClientGetCodexCredentials(rec, req)
+	default:
+		return
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s live client credential endpoint failed: status=%d body=%s", in.provider, rec.Code, redactLiveMessage(rec.Body.String()))
+	}
+	body := rec.Body.String()
+	for _, secret := range []string{in.accessToken, in.refreshToken} {
+		if secret != "" && strings.Contains(body, secret) {
+			t.Fatalf("%s live client credential response leaked real token", in.provider)
+		}
+	}
+	if in.serviceName == "anthropic" && !strings.Contains(body, in.clientPlaceholder) {
+		t.Fatalf("%s live client credential response did not include expected phantom placeholder", in.provider)
+	}
+	if in.serviceName == "openai" && !strings.Contains(body, "rt.duckway.") {
+		t.Fatalf("%s live client credential response did not include Codex phantom refresh token", in.provider)
+	}
+}
+
+func handleLiveDuckwayRefreshFailure(t *testing.T, provider string, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	body := rec.Body.String()
+	redacted := redactLiveMessage(body)
+	lower := strings.ToLower(body)
+	if rec.Code == http.StatusBadGateway &&
+		os.Getenv(liveCredentialStrictEnv) != "1" &&
+		(strings.Contains(lower, "invalid_grant") ||
+			strings.Contains(lower, "invalid_refresh_token") ||
+			strings.Contains(lower, "refresh_token_expired") ||
+			strings.Contains(lower, "refresh_token_reused") ||
+			strings.Contains(lower, "refresh_token_invalidated")) {
+		t.Skipf("%s live Duckway E2E credential is present but cannot refresh (%s); sign in again and replace the ignored credential file, or set %s=1 to fail strictly", provider, redacted, liveCredentialStrictEnv)
+	}
+	t.Fatalf("%s live Duckway refresh failed: status=%d body=%s", provider, rec.Code, redacted)
+}
+
+func liveClaudeSubscriptionInfo(t *testing.T, oauth map[string]interface{}) string {
+	t.Helper()
+	out := map[string]interface{}{}
+	for _, key := range []string{"subscriptionType", "rateLimitTier", "scopes"} {
+		if value, ok := oauth[key]; ok {
+			out[key] = value
+		}
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal Claude subscription_info: %v", err)
+	}
+	return string(data)
+}
+
+func liveCodexSubscriptionInfo(t *testing.T, doc, tokens map[string]interface{}, clientID, idToken string) string {
+	t.Helper()
+	out := map[string]interface{}{
+		"credential_kind": "codex_oauth",
+		"auth_mode":       firstNonEmpty(liveString(doc, "auth_mode"), "chatgpt"),
+		"source":          "codex",
+		"client_id":       clientID,
+		"id_token":        idToken,
+	}
+	for _, key := range []string{"account_id", "last_refresh"} {
+		if value := firstNonEmpty(liveString(tokens, key), liveString(doc, key)); value != "" {
+			out[key] = value
+		}
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal Codex subscription_info: %v", err)
+	}
+	return string(data)
+}
+
+func liveJSONBody(t *testing.T, value interface{}) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal JSON body: %v", err)
+	}
+	return data
 }
 
 func requireLiveOAuthOptIn(t *testing.T, providerEnv string) {
@@ -317,6 +674,32 @@ func liveString(obj map[string]interface{}, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func liveInt(obj map[string]interface{}, keys ...string) int64 {
+	for _, key := range keys {
+		switch value := obj[key].(type) {
+		case float64:
+			return int64(value)
+		case int64:
+			return value
+		case int:
+			return int64(value)
+		case json.Number:
+			n, _ := value.Int64()
+			return n
+		}
+	}
+	return 0
+}
+
+func firstPositive(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func (r liveRefreshResponse) stringValue(keys ...string) string {
