@@ -40,6 +40,7 @@ type APIKey struct {
 	TokenEndpoint    string  `json:"token_endpoint"`    // OAuth refresh URL
 	SubscriptionInfo string  `json:"subscription_info"` // JSON: type, tier, scopes, etc.
 	UsageSnapshot    string  `json:"usage_snapshot"`    // JSON: latest upstream rate-limit headers
+	UpstreamProxyURL string  `json:"upstream_proxy_url,omitempty"`
 	IsActive         bool    `json:"is_active"`
 	UsageCount       int64   `json:"usage_count"`
 	LastUsedAt       *string `json:"last_used_at"`

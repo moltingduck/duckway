@@ -55,6 +55,7 @@
       <div class="form-group"><label>Access Token</label><input type="text" id="oauth-access" placeholder="sk-ant-o..." required></div>
       <div class="form-group"><label>Refresh Token</label><input type="text" id="oauth-refresh" placeholder="sk-ant-o..."></div>
       <div class="form-group"><label>Token Endpoint</label><input type="url" id="oauth-endpoint" value="https://console.anthropic.com/v1/oauth/token"></div>
+      <div class="form-group"><label>Upstream Proxy <span class="text-muted">(optional)</span></label><input type="url" id="oauth-upstream-proxy" placeholder="http://proxy.local:8080 or socks5://proxy.local:1080"></div>
       <div class="form-group"><label>Expires At <span class="text-muted">(Unix ms, optional)</span></label><input type="number" id="oauth-expires" placeholder="Auto-filled from expiresAt/expires_in when pasted"></div>
       <div class="form-group" id="oauth-display-group"><label>Agent Display Name <span class="text-muted">(shown in agent's .claude.json)</span></label>
         <input type="text" id="oauth-display" placeholder="Duckway Agent" value="Duckway Agent">
@@ -81,6 +82,7 @@
         <tr><td class="text-muted">Name</td><td id="d-name"></td></tr>
         <tr><td class="text-muted">Service</td><td id="d-service"></td></tr>
         <tr><td class="text-muted">Token Endpoint</td><td id="d-endpoint" class="mono text-sm" style="word-break:break-all"></td></tr>
+        <tr><td class="text-muted">Upstream Proxy</td><td id="d-upstream-proxy" class="mono text-sm" style="word-break:break-all"></td></tr>
         <tr><td class="text-muted">Subscription Info</td><td id="d-sub" class="mono text-sm"></td></tr>
         <tr><td class="text-muted">Expires</td><td id="d-expires"></td></tr>
         <tr><td class="text-muted">Status</td><td id="d-status"></td></tr>
@@ -101,6 +103,7 @@
         <input type="hidden" id="edit-id">
         <div class="form-group"><label>Name</label><input type="text" id="edit-name" required></div>
         <div class="form-group"><label>Token Endpoint</label><input type="url" id="edit-endpoint"></div>
+        <div class="form-group"><label>Upstream Proxy <span class="text-muted">(optional)</span></label><input type="url" id="edit-upstream-proxy" placeholder="http://proxy.local:8080 or socks5://proxy.local:1080"></div>
         <div class="form-group"><label>Expires At <span class="text-muted">(Unix ms, optional; unchanged unless new tokens are uploaded)</span></label>
           <input type="number" id="edit-expires" placeholder="Current expiry is shown in details">
         </div>
@@ -376,7 +379,8 @@ function buildOAuthUploadBody() {
     refresh_token: document.getElementById('oauth-refresh').value.trim(),
     expires_at: Number(document.getElementById('oauth-expires').value || 0),
     token_endpoint: document.getElementById('oauth-endpoint').value.trim(),
-    subscription_info: JSON.stringify(subObj)
+    subscription_info: JSON.stringify(subObj),
+    upstream_proxy_url: document.getElementById('oauth-upstream-proxy').value.trim()
   };
 }
 
@@ -443,6 +447,7 @@ function openDetail(id) {
       document.getElementById('d-name').textContent = data.name;
       document.getElementById('d-service').textContent = data.service_name;
       document.getElementById('d-endpoint').textContent = data.token_endpoint;
+      document.getElementById('d-upstream-proxy').textContent = data.upstream_proxy_url || '—';
 
       var subText = '—';
       try {
@@ -565,6 +570,7 @@ function switchToEdit() {
   document.getElementById('edit-id').value = currentDetail.id;
   document.getElementById('edit-name').value = currentDetail.name;
   document.getElementById('edit-endpoint').value = currentDetail.token_endpoint;
+  document.getElementById('edit-upstream-proxy').value = currentDetail.upstream_proxy_url || '';
   document.getElementById('edit-expires').value = '';
   document.getElementById('edit-active').checked = !!currentDetail.is_active;
   document.getElementById('edit-sub').value = currentDetail.subscription_info || '';
@@ -730,6 +736,7 @@ document.getElementById('edit-form').addEventListener('submit', function(e) {
     name: document.getElementById('edit-name').value,
     token_endpoint: document.getElementById('edit-endpoint').value,
     subscription_info: JSON.stringify(subObj),
+    upstream_proxy_url: document.getElementById('edit-upstream-proxy').value.trim(),
     is_active: document.getElementById('edit-active').checked
   };
 

@@ -22,17 +22,18 @@ import (
 )
 
 type ProxyHandler struct {
-	services    *queries.ServiceQueries
-	apiKeys     *queries.APIKeyQueries
-	resolver    *services.KeyResolver
-	requestLog  *queries.RequestLogQueries
-	approvals   *queries.ApprovalQueries
-	settings    *queries.SettingsQueries
-	convUsage   *queries.ConversationUsageQueries
-	permissions *services.PermissionChecker
-	notifier    *services.Notifier
-	crypto      *services.Crypto
-	httpClient  *http.Client
+	services     *queries.ServiceQueries
+	apiKeys      *queries.APIKeyQueries
+	resolver     *services.KeyResolver
+	requestLog   *queries.RequestLogQueries
+	approvals    *queries.ApprovalQueries
+	settings     *queries.SettingsQueries
+	convUsage    *queries.ConversationUsageQueries
+	permissions  *services.PermissionChecker
+	notifier     *services.Notifier
+	crypto       *services.Crypto
+	httpClient   *http.Client
+	proxyClients *services.UpstreamProxyClientCache
 
 	githubAppMu     sync.Mutex
 	githubAppTokens map[string]githubAppTokenCache
@@ -56,6 +57,7 @@ func NewProxyHandler(svcQueries *queries.ServiceQueries, apiKeys *queries.APIKey
 				ResponseHeaderTimeout: 2 * time.Minute,
 			},
 		},
+		proxyClients: services.NewUpstreamProxyClientCache(),
 	}
 }
 
@@ -516,7 +518,12 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		upstreamReq.URL.RawQuery = q.Encode()
 	}
 
-	resp, err := h.httpClient.Do(upstreamReq)
+	upstreamClient, err := h.httpClientForUpstream(result.UpstreamProxyURL)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	resp, err := upstreamClient.Do(upstreamReq)
 	if err != nil {
 		if r.Context().Err() != nil || errors.Is(err, context.Canceled) {
 			// Client disconnected before upstream responded — not a gateway fault.
@@ -526,7 +533,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		log.Printf("upstream error for %s: %v", serviceName, err)
+		log.Printf("upstream error for %s via %s: %s", serviceName, services.RedactProxyURL(result.UpstreamProxyURL), services.RedactProxyError(result.UpstreamProxyURL, err))
 		jsonError(w, "upstream request failed", http.StatusBadGateway)
 		return
 	}
@@ -685,15 +692,25 @@ func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Requ
 		jsonError(w, "unsupported openai auth path", http.StatusForbidden)
 		return
 	}
+	bodyBytes, _ := io.ReadAll(r.Body)
 	openAISvc, err := h.services.GetByName("openai")
 	if err != nil {
 		jsonError(w, "openai service unavailable", http.StatusNotFound)
 		return
 	}
-	result, err := h.resolver.ResolveForService(client.ID, openAISvc.ID)
+	placeholder := openAIAuthRefreshPlaceholder(bodyBytes, r.Header.Get("Content-Type"))
+	if placeholder == "" {
+		jsonError(w, "duckway phantom refresh token required", http.StatusForbidden)
+		return
+	}
+	result, err := h.resolver.Resolve(placeholder, client.ID)
 	if err != nil {
 		log.Printf("resolve error for openai-auth/%s: %v", client.Name, err)
 		jsonError(w, "key resolution failed", http.StatusInternalServerError)
+		return
+	}
+	if result.Error == "" && result.ServiceID != "" && result.ServiceID != openAISvc.ID {
+		jsonError(w, "placeholder key is not for openai", http.StatusForbidden)
 		return
 	}
 	if result.NeedApproval {
@@ -709,7 +726,6 @@ func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	bodyBytes, _ := io.ReadAll(r.Body)
 	rewrittenBody, contentType := rewriteCodexRefreshRequest(bodyBytes, r.Header.Get("Content-Type"), result.RealRefreshToken)
 	upstreamURL := "https://auth.openai.com" + upstreamPath
 	if r.URL.RawQuery != "" {
@@ -732,9 +748,14 @@ func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Requ
 		upstreamReq.Header.Set("Content-Type", contentType)
 	}
 
-	resp, err := h.httpClient.Do(upstreamReq)
+	upstreamClient, err := h.httpClientForUpstream(result.UpstreamProxyURL)
 	if err != nil {
-		log.Printf("openai auth upstream error: %v", err)
+		jsonError(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	resp, err := upstreamClient.Do(upstreamReq)
+	if err != nil {
+		log.Printf("openai auth upstream error via %s: %s", services.RedactProxyURL(result.UpstreamProxyURL), services.RedactProxyError(result.UpstreamProxyURL, err))
 		jsonError(w, "upstream request failed", http.StatusBadGateway)
 		return
 	}
@@ -762,6 +783,16 @@ func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Requ
 		h.requestLog.Log(client.ID, result.PlaceholderID, "openai-auth", r.Method, upstreamPath, resp.StatusCode)
 	}
 	_ = startTime
+}
+
+func (h *ProxyHandler) httpClientForUpstream(proxyURL string) (*http.Client, error) {
+	if strings.TrimSpace(proxyURL) == "" {
+		return h.httpClient, nil
+	}
+	if h.proxyClients == nil {
+		h.proxyClients = services.NewUpstreamProxyClientCache()
+	}
+	return h.proxyClients.Client(proxyURL)
 }
 
 func (h *ProxyHandler) persistOpenAIAuthRefresh(apiKeyID, currentRefreshToken string, body []byte) {
@@ -840,6 +871,29 @@ func rewriteCodexRefreshRequest(body []byte, contentType, realRefresh string) ([
 		return out, "application/json"
 	}
 	return body, contentType
+}
+
+func openAIAuthRefreshPlaceholder(body []byte, contentType string) string {
+	refresh := ""
+	lowerCT := strings.ToLower(contentType)
+	if strings.Contains(lowerCT, "application/x-www-form-urlencoded") ||
+		strings.Contains(string(body), "refresh_token=") ||
+		strings.Contains(string(body), "grant_type=") {
+		if vals, err := url.ParseQuery(string(body)); err == nil {
+			refresh = vals.Get("refresh_token")
+		}
+	}
+	if refresh == "" {
+		var obj map[string]interface{}
+		if json.Unmarshal(body, &obj) == nil {
+			refresh, _ = obj["refresh_token"].(string)
+		}
+	}
+	const prefix = "rt.duckway."
+	if !strings.HasPrefix(refresh, prefix) {
+		return ""
+	}
+	return strings.TrimPrefix(refresh, prefix)
 }
 
 func rewriteGitHubBasicAuth(authHeader, placeholder, realKey string) (string, bool) {

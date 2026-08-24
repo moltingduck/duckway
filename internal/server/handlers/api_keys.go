@@ -56,6 +56,12 @@ func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
 				list[i].IsMintable = isGitHubAppCredentialJSON(plain)
 			}
 		}
+		proxyURL, derr := svc.DecryptUpstreamProxyURL(h.crypto, list[i].UpstreamProxyURL)
+		if derr == nil {
+			list[i].UpstreamProxyURL = svc.RedactProxyURL(proxyURL)
+		} else {
+			list[i].UpstreamProxyURL = ""
+		}
 		list[i].KeyEncrypted = ""
 	}
 	jsonResponse(w, list)
@@ -63,9 +69,10 @@ func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ServiceID string `json:"service_id"`
-		Name      string `json:"name"`
-		Key       string `json:"key"`
+		ServiceID        string `json:"service_id"`
+		Name             string `json:"name"`
+		Key              string `json:"key"`
+		UpstreamProxyURL string `json:"upstream_proxy_url"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -74,6 +81,11 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	if req.ServiceID == "" || req.Name == "" || req.Key == "" {
 		jsonError(w, "service_id, name, and key are required", http.StatusBadRequest)
+		return
+	}
+	upstreamProxyStored, err := svc.EncryptUpstreamProxyURL(h.crypto, req.UpstreamProxyURL)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -100,11 +112,12 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := &models.APIKey{
-		ID:           id,
-		ServiceID:    req.ServiceID,
-		Name:         req.Name,
-		KeyEncrypted: encrypted,
-		IsActive:     true,
+		ID:               id,
+		ServiceID:        req.ServiceID,
+		Name:             req.Name,
+		KeyEncrypted:     encrypted,
+		UpstreamProxyURL: upstreamProxyStored,
+		IsActive:         true,
 	}
 
 	if err := h.apiKeys.Create(key); err != nil {
@@ -113,6 +126,7 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key.KeyEncrypted = "" // Don't return encrypted value
+	key.UpstreamProxyURL = svc.RedactProxyURL(req.UpstreamProxyURL)
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, key)
 }
@@ -138,20 +152,21 @@ func (h *APIKeyHandler) Get(w http.ResponseWriter, r *http.Request) {
 	key.KeyEncrypted = ""
 
 	resp := map[string]interface{}{
-		"id":             key.ID,
-		"service_id":     key.ServiceID,
-		"service_name":   key.ServiceName,
-		"name":           key.Name,
-		"acl":            key.ACL,
-		"is_refreshable": key.IsRefreshable,
-		"is_mintable":    isMintable,
-		"is_active":      key.IsActive,
-		"usage_count":    key.UsageCount,
-		"last_used_at":   key.LastUsedAt,
-		"created_at":     key.CreatedAt,
-		"key_preview":    preview,
-		"expires_at":     key.ExpiresAt,
-		"token_endpoint": key.TokenEndpoint,
+		"id":                 key.ID,
+		"service_id":         key.ServiceID,
+		"service_name":       key.ServiceName,
+		"name":               key.Name,
+		"acl":                key.ACL,
+		"is_refreshable":     key.IsRefreshable,
+		"is_mintable":        isMintable,
+		"is_active":          key.IsActive,
+		"usage_count":        key.UsageCount,
+		"last_used_at":       key.LastUsedAt,
+		"created_at":         key.CreatedAt,
+		"key_preview":        preview,
+		"expires_at":         key.ExpiresAt,
+		"token_endpoint":     key.TokenEndpoint,
+		"upstream_proxy_url": redactedAPIKeyUpstreamProxyURL(h.crypto, key.UpstreamProxyURL),
 	}
 	jsonResponse(w, resp)
 }
@@ -296,8 +311,9 @@ func (h *APIKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name string `json:"name"`
-		Key  string `json:"key"` // optional — only update if non-empty
+		Name             string  `json:"name"`
+		Key              string  `json:"key"` // optional — only update if non-empty
+		UpstreamProxyURL *string `json:"upstream_proxy_url"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
@@ -319,6 +335,14 @@ func (h *APIKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		key.KeyEncrypted = encrypted
 	}
+	if req.UpstreamProxyURL != nil {
+		proxyURL, err := svc.EncryptUpstreamProxyURL(h.crypto, *req.UpstreamProxyURL)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		key.UpstreamProxyURL = proxyURL
+	}
 
 	if err := h.apiKeys.Update(key); err != nil {
 		jsonError(w, "failed to update", http.StatusInternalServerError)
@@ -326,7 +350,16 @@ func (h *APIKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key.KeyEncrypted = ""
+	key.UpstreamProxyURL = redactedAPIKeyUpstreamProxyURL(h.crypto, key.UpstreamProxyURL)
 	jsonResponse(w, key)
+}
+
+func redactedAPIKeyUpstreamProxyURL(crypto *svc.Crypto, stored string) string {
+	proxyURL, err := svc.DecryptUpstreamProxyURL(crypto, stored)
+	if err != nil {
+		return ""
+	}
+	return svc.RedactProxyURL(proxyURL)
 }
 
 // ListACLTemplates returns available templates for this API key (based on its service).

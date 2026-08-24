@@ -24,19 +24,21 @@ const claudeOAuthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 // TokenRefresher automatically refreshes API keys that have a refresh_token set.
 // Works for any OAuth-based key (Claude, GitHub Apps, etc.)
 type TokenRefresher struct {
-	apiKeyQ  *queries.APIKeyQueries
-	crypto   *Crypto
-	client   *http.Client
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	apiKeyQ      *queries.APIKeyQueries
+	crypto       *Crypto
+	client       *http.Client
+	proxyClients *UpstreamProxyClientCache
+	stopCh       chan struct{}
+	stopOnce     sync.Once
 }
 
 func NewTokenRefresher(apiKeyQ *queries.APIKeyQueries, crypto *Crypto) *TokenRefresher {
 	return &TokenRefresher{
-		apiKeyQ: apiKeyQ,
-		crypto:  crypto,
-		client:  &http.Client{Timeout: 30 * time.Second},
-		stopCh:  make(chan struct{}),
+		apiKeyQ:      apiKeyQ,
+		crypto:       crypto,
+		client:       &http.Client{Timeout: 30 * time.Second},
+		proxyClients: NewUpstreamProxyClientCache(),
+		stopCh:       make(chan struct{}),
 	}
 }
 
@@ -123,6 +125,10 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 		strings.HasPrefix(refreshToken, "sk-ant-oart01")
 
 	var resp *http.Response
+	httpClient, upstreamProxyURL, err := r.clientForKey(key)
+	if err != nil {
+		return err
+	}
 	if useAnthropic {
 		clientID := claudeOAuthClientID
 		// Allow override via subscription_info JSON {"clientId": "..."}
@@ -145,7 +151,7 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
-		resp, err = r.client.Do(req)
+		resp, err = httpClient.Do(req)
 	} else {
 		// Generic OAuth 2.0 — form-urlencoded body
 		form := url.Values{
@@ -155,10 +161,15 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 		if clientID := oauthMetadataString(key.SubscriptionInfo, "client_id", "clientId"); clientID != "" {
 			form.Set("client_id", clientID)
 		}
-		resp, err = r.client.Post(key.TokenEndpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+		req, buildErr := http.NewRequest("POST", key.TokenEndpoint, strings.NewReader(form.Encode()))
+		if buildErr != nil {
+			return fmt.Errorf("build token request: %w", buildErr)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err = httpClient.Do(req)
 	}
 	if err != nil {
-		return fmt.Errorf("token request: %w", err)
+		return fmt.Errorf("token request: %s", RedactProxyError(upstreamProxyURL, err))
 	}
 	defer resp.Body.Close()
 
@@ -219,6 +230,21 @@ func (r *TokenRefresher) refreshKey(key *models.APIKey) error {
 	}
 
 	return nil
+}
+
+func (r *TokenRefresher) clientForKey(key *models.APIKey) (*http.Client, string, error) {
+	upstreamProxyURL, err := DecryptUpstreamProxyURL(r.crypto, key.UpstreamProxyURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("decrypt upstream proxy: %w", err)
+	}
+	if strings.TrimSpace(upstreamProxyURL) == "" {
+		return r.client, "", nil
+	}
+	if r.proxyClients == nil {
+		r.proxyClients = NewUpstreamProxyClientCache()
+	}
+	client, err := r.proxyClients.Client(upstreamProxyURL)
+	return client, upstreamProxyURL, err
 }
 
 func oauthMetadataString(raw string, keys ...string) string {

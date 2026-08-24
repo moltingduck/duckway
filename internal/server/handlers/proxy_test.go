@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -213,6 +214,49 @@ func doProxy(h *handlers.ProxyHandler, r *http.Request) (int, []byte) {
 	w := httptest.NewRecorder()
 	http.HandlerFunc(h.Handle).ServeHTTP(w, r)
 	return w.Code, w.Body.Bytes()
+}
+
+func TestProxyUsesResolvedAPIKeyUpstreamHTTPProxy(t *testing.T) {
+	var upstreamCalls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamCalls, 1)
+		http.Error(w, "direct upstream should not be used", http.StatusTeapot)
+	}))
+	t.Cleanup(upstream.Close)
+
+	f := newProxyFixture(t, upstream.URL)
+	var proxyAuth string
+	var proxyTarget string
+	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyAuth = r.Header.Get("Authorization")
+		proxyTarget = r.URL.String()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(proxySrv.Close)
+
+	if err := f.apiKeyQ.UpdateUpstreamProxy(f.apiKeyID, proxySrv.URL); err != nil {
+		t.Fatal(err)
+	}
+	h := newProxyHandler(f)
+	req := httptest.NewRequest(http.MethodPost, "/proxy/anthropic/v1/messages", strings.NewReader(`{"model":"claude"}`))
+	req.Header.Set("Authorization", "Bearer sk-dw-fake-placeholder")
+	req.Header.Set("Content-Type", "application/json")
+	req = withClient(req, f.client)
+
+	status, body := doProxy(h, req)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	if proxyAuth != "Bearer sk-real-key" {
+		t.Fatalf("proxy saw Authorization = %q", proxyAuth)
+	}
+	if proxyTarget != upstream.URL+"/v1/messages" {
+		t.Fatalf("proxy target = %q, want %q", proxyTarget, upstream.URL+"/v1/messages")
+	}
+	if got := atomic.LoadInt32(&upstreamCalls); got != 0 {
+		t.Fatalf("direct upstream calls = %d, want 0", got)
+	}
 }
 
 // ---- Tests ----

@@ -50,10 +50,10 @@ func NewAPIKeyQueries(db *sql.DB) *APIKeyQueries {
 	return &APIKeyQueries{db: db}
 }
 
-const apiKeyCols = "k.id, k.service_id, k.name, k.key_encrypted, k.acl, k.refresh_token, k.expires_at, k.token_endpoint, k.subscription_info, k.usage_snapshot, k.is_active, k.usage_count, k.last_used_at, k.created_at, s.name"
+const apiKeyCols = "k.id, k.service_id, k.name, k.key_encrypted, k.acl, k.refresh_token, k.expires_at, k.token_endpoint, k.subscription_info, k.usage_snapshot, k.upstream_proxy_url, k.is_active, k.usage_count, k.last_used_at, k.created_at, s.name"
 
 func scanAPIKey(row interface{ Scan(...interface{}) error }, k *models.APIKey) error {
-	err := row.Scan(&k.ID, &k.ServiceID, &k.Name, &k.KeyEncrypted, &k.ACL, &k.RefreshToken, &k.ExpiresAt, &k.TokenEndpoint, &k.SubscriptionInfo, &k.UsageSnapshot, &k.IsActive, &k.UsageCount, &k.LastUsedAt, &k.CreatedAt, &k.ServiceName)
+	err := row.Scan(&k.ID, &k.ServiceID, &k.Name, &k.KeyEncrypted, &k.ACL, &k.RefreshToken, &k.ExpiresAt, &k.TokenEndpoint, &k.SubscriptionInfo, &k.UsageSnapshot, &k.UpstreamProxyURL, &k.IsActive, &k.UsageCount, &k.LastUsedAt, &k.CreatedAt, &k.ServiceName)
 	if err == nil {
 		k.IsRefreshable = k.RefreshToken != ""
 	}
@@ -100,17 +100,17 @@ func (q *APIKeyQueries) GetByID(id string) (*models.APIKey, error) {
 
 func (q *APIKeyQueries) Create(k *models.APIKey) error {
 	_, err := q.db.Exec(
-		`INSERT INTO api_keys (id, service_id, name, key_encrypted, acl, refresh_token, expires_at, token_endpoint, subscription_info)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		k.ID, k.ServiceID, k.Name, k.KeyEncrypted, k.ACL, k.RefreshToken, k.ExpiresAt, k.TokenEndpoint, k.SubscriptionInfo,
+		`INSERT INTO api_keys (id, service_id, name, key_encrypted, acl, refresh_token, expires_at, token_endpoint, subscription_info, upstream_proxy_url)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		k.ID, k.ServiceID, k.Name, k.KeyEncrypted, k.ACL, k.RefreshToken, k.ExpiresAt, k.TokenEndpoint, k.SubscriptionInfo, k.UpstreamProxyURL,
 	)
 	return err
 }
 
 func (q *APIKeyQueries) Update(k *models.APIKey) error {
 	_, err := q.db.Exec(
-		"UPDATE api_keys SET name=?, key_encrypted=?, acl=?, is_active=? WHERE id=?",
-		k.Name, k.KeyEncrypted, k.ACL, k.IsActive, k.ID,
+		"UPDATE api_keys SET name=?, key_encrypted=?, acl=?, upstream_proxy_url=?, is_active=? WHERE id=?",
+		k.Name, k.KeyEncrypted, k.ACL, k.UpstreamProxyURL, k.IsActive, k.ID,
 	)
 	return err
 }
@@ -348,6 +348,11 @@ func (q *APIKeyQueries) UpdateRefreshable(id, name, keyEncrypted, refreshToken, 
 	query += " WHERE id = ?"
 	args = append(args, id)
 	_, err := q.db.Exec(query, args...)
+	return err
+}
+
+func (q *APIKeyQueries) UpdateUpstreamProxy(id, upstreamProxyURL string) error {
+	_, err := q.db.Exec("UPDATE api_keys SET upstream_proxy_url = ? WHERE id = ?", upstreamProxyURL, id)
 	return err
 }
 

@@ -35,6 +35,7 @@ type ResolveResult struct {
 	Placeholder      string
 	PermissionConfig string // from placeholder_keys.permission_config
 	APIKeyACL        string // from api_keys.acl
+	UpstreamProxyURL string // optional per-api-key outbound proxy URL
 	IsRefreshable    bool   // true if the underlying api_key has a refresh token (OAuth)
 	Permitted        bool
 	NeedApproval     bool
@@ -98,6 +99,10 @@ func (r *KeyResolver) Resolve(placeholder string, clientID string) (*ResolveResu
 	if err != nil {
 		return nil, fmt.Errorf("decrypt key: %w", err)
 	}
+	upstreamProxyURL, err := DecryptUpstreamProxyURL(r.crypto, apiKey.UpstreamProxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt upstream proxy: %w", err)
+	}
 	realRefresh := ""
 	if apiKey.RefreshToken != "" {
 		realRefresh, err = r.crypto.Decrypt(apiKey.RefreshToken)
@@ -124,6 +129,7 @@ func (r *KeyResolver) Resolve(placeholder string, clientID string) (*ResolveResu
 		Placeholder:      ph.Placeholder,
 		PermissionConfig: permConfig,
 		APIKeyACL:        apiKey.ACL,
+		UpstreamProxyURL: upstreamProxyURL,
 		IsRefreshable:    apiKey.RefreshToken != "",
 		Permitted:        true,
 	}, nil

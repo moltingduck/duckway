@@ -176,7 +176,7 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 		}, nil
 	})}
 
-	req := httptest.NewRequest(http.MethodPost, "/proxy/openai-auth/oauth/token", strings.NewReader("grant_type=refresh_token&refresh_token=rt.duckway.fake"))
+	req := httptest.NewRequest(http.MethodPost, "/proxy/openai-auth/oauth/token", strings.NewReader("grant_type=refresh_token&refresh_token=rt.duckway.sk-proj-dw_fake_auth"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Basic codex-client-auth")
 	req.Header.Set("Accept-Encoding", "gzip")
@@ -232,6 +232,115 @@ func TestHandleOpenAIAuthProxyExchangesRealRefreshTokenServerSide(t *testing.T) 
 	}
 	if !strings.HasPrefix(obj["refresh_token"].(string), "rt.duckway.sk-proj-dw_fake_auth") {
 		t.Fatalf("unexpected fake refresh token: %#v", obj)
+	}
+}
+
+func TestHandleOpenAIAuthProxyResolvesSubmittedPhantomRefreshToken(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encA, err := crypto.Encrypt("real-access-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshA, err := crypto.Encrypt("rt.real.a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encB, err := crypto.Encrypt("real-access-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshB, err := crypto.Encrypt("rt.real.b")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id,name,token_hash) VALUES ('client-openai-auth-multi','client',?)`, services.HashToken("tok")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted,refresh_token,token_endpoint,subscription_info)
+		VALUES
+		('key-openai-auth-a',?,'codex oauth a',?,?, 'https://auth.openai.com/oauth/token', '{"credential_kind":"codex_oauth","auth_mode":"chatgpt","source":"codex"}'),
+		('key-openai-auth-b',?,'codex oauth b',?,?, 'https://auth.openai.com/oauth/token', '{"credential_kind":"codex_oauth","auth_mode":"chatgpt","source":"codex"}')`,
+		openaiSvc.ID, encA, refreshA, openaiSvc.ID, encB, refreshB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO placeholder_keys (id,env_name,placeholder,service_id,api_key_id,client_id,requires_approval)
+		VALUES
+		('ph-openai-auth-a','OPENAI_API_KEY_A','sk-proj-dw_fake_auth_a',?,'key-openai-auth-a','client-openai-auth-multi',0),
+		('ph-openai-auth-b','OPENAI_API_KEY_B','sk-proj-dw_fake_auth_b',?,'key-openai-auth-b','client-openai-auth-multi',0)`,
+		openaiSvc.ID, openaiSvc.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var upstreamBody string
+	h := NewProxyHandler(
+		svcQ,
+		queries.NewAPIKeyQueries(db),
+		services.NewKeyResolver(crypto, queries.NewAPIKeyQueries(db), queries.NewPlaceholderQueries(db), queries.NewGroupQueries(db), queries.NewApprovalQueries(db)),
+		nil,
+		queries.NewApprovalQueries(db),
+		nil,
+		nil,
+	).WithCrypto(crypto)
+	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(req.Body)
+		upstreamBody = string(body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"access_token":"` + testCodexJWT(`{"exp":1893456001,"scope":"access-b"}`) + `","refresh_token":"rt.real.b.new","id_token":"` + testCodexJWT(`{"exp":1893456001,"kind":"id"}`) + `","expires_in":3600}`)),
+			Request:    req,
+		}, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/proxy/openai-auth/oauth/token", strings.NewReader("grant_type=refresh_token&refresh_token=rt.duckway.sk-proj-dw_fake_auth_b"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, &models.Client{ID: "client-openai-auth-multi", Name: "client"}))
+	rec := httptest.NewRecorder()
+
+	h.Handle(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	vals, err := url.ParseQuery(upstreamBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vals.Get("refresh_token") != "rt.real.b" {
+		t.Fatalf("upstream refresh_token = %q, body=%s", vals.Get("refresh_token"), upstreamBody)
+	}
+	keyA, err := queries.NewAPIKeyQueries(db).GetByID("key-openai-auth-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedRefreshA, err := crypto.Decrypt(keyA.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRefreshA != "rt.real.a" {
+		t.Fatalf("key A refresh token changed: %q", storedRefreshA)
+	}
+	keyB, err := queries.NewAPIKeyQueries(db).GetByID("key-openai-auth-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedRefreshB, err := crypto.Decrypt(keyB.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRefreshB != "rt.real.b.new" {
+		t.Fatalf("key B refresh token = %q", storedRefreshB)
 	}
 }
 

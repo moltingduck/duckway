@@ -36,6 +36,12 @@ var migrations = []string{
 		name          TEXT NOT NULL,
 		key_encrypted TEXT NOT NULL,
 		acl           TEXT NOT NULL DEFAULT '',
+		refresh_token TEXT NOT NULL DEFAULT '',
+		expires_at    INTEGER NOT NULL DEFAULT 0,
+		token_endpoint TEXT NOT NULL DEFAULT '',
+		subscription_info TEXT NOT NULL DEFAULT '',
+		usage_snapshot TEXT NOT NULL DEFAULT '',
+		upstream_proxy_url TEXT NOT NULL DEFAULT '',
 		is_active     INTEGER NOT NULL DEFAULT 1,
 		usage_count   INTEGER NOT NULL DEFAULT 0,
 		last_used_at  TEXT,
@@ -399,6 +405,7 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE api_keys ADD COLUMN token_endpoint TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE api_keys ADD COLUMN subscription_info TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE api_keys ADD COLUMN usage_snapshot TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE api_keys ADD COLUMN upstream_proxy_url TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE placeholder_keys ADD COLUMN key_path TEXT NOT NULL DEFAULT ''",
 		// CC v2 — collapse the multi-client-per-CC concept into a 1:1
 		// client↔CC binding. client_id moves onto control_channels;

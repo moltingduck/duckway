@@ -186,6 +186,93 @@ func TestAPIKeyCreateAllowsMalformedJSONForNonGitHubService(t *testing.T) {
 	}
 }
 
+func TestAPIKeyCreateStoresAndRedactsUpstreamProxyURL(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	svcQ := queries.NewServiceQueries(db)
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	openaiSvc := testOpenAIService("svc-openai-proxy-url")
+	if err := svcQ.Create(openaiSvc); err != nil {
+		t.Fatal(err)
+	}
+	h := handlers.NewAPIKeyHandler(apiKeyQ, svcQ, crypto)
+	body := `{"service_id":"` + openaiSvc.ID + `","name":"proxied","key":"sk-real","upstream_proxy_url":"http://user:secret@proxy.example:8080"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/keys", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "secret") {
+		t.Fatalf("create response leaked proxy password: %s", rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := apiKeyQ.GetByID(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored.UpstreamProxyURL, "secret") {
+		t.Fatalf("stored upstream proxy leaked secret: %q", stored.UpstreamProxyURL)
+	}
+	plainProxy, err := services.DecryptUpstreamProxyURL(crypto, stored.UpstreamProxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plainProxy != "http://user:secret@proxy.example:8080" {
+		t.Fatalf("decrypted upstream proxy = %q", plainProxy)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/keys/"+created.ID, nil)
+	req.SetPathValue("id", created.ID)
+	rec = httptest.NewRecorder()
+	h.Get(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "secret") {
+		t.Fatalf("response leaked proxy password: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "http://user@proxy.example:8080") {
+		t.Fatalf("response missing redacted proxy URL: %s", rec.Body.String())
+	}
+}
+
+func TestAPIKeyCreateRejectsInvalidUpstreamProxyURL(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	svcQ := queries.NewServiceQueries(db)
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	openaiSvc := testOpenAIService("svc-openai-bad-proxy-url")
+	if err := svcQ.Create(openaiSvc); err != nil {
+		t.Fatal(err)
+	}
+	h := handlers.NewAPIKeyHandler(apiKeyQ, svcQ, crypto)
+	body := `{"service_id":"` + openaiSvc.ID + `","name":"bad","key":"sk-real","upstream_proxy_url":"file:///tmp/proxy"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/keys", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAPIKeyTestGitHubAppMinterMintsReadOnlyRepoToken(t *testing.T) {
 	var gotPath, gotAuth string
 	var gotBody struct {
