@@ -35,6 +35,17 @@ type oauthTokenRequest struct {
 	UpstreamProxyURL string `json:"upstream_proxy_url"`
 }
 
+type oauthUpdateRequest struct {
+	Name             string  `json:"name"`
+	AccessToken      string  `json:"access_token"`
+	RefreshToken     string  `json:"refresh_token"`
+	ExpiresAt        int64   `json:"expires_at"`
+	TokenEndpoint    string  `json:"token_endpoint"`
+	SubscriptionInfo string  `json:"subscription_info"`
+	UpstreamProxyURL *string `json:"upstream_proxy_url"`
+	IsActive         *bool   `json:"is_active"`
+}
+
 func NewOAuthHandler(apiKeyQ *queries.APIKeyQueries, placeholderQ *queries.PlaceholderQueries, serviceQ *queries.ServiceQueries, crypto *svc.Crypto) *OAuthHandler {
 	return &OAuthHandler{apiKeyQ: apiKeyQ, placeholderQ: placeholderQ, serviceQ: serviceQ, crypto: crypto}
 }
@@ -140,6 +151,52 @@ func (h *OAuthHandler) Validate(w http.ResponseWriter, r *http.Request) {
 	upstreamProxyTested := strings.TrimSpace(req.UpstreamProxyURL) != ""
 	if upstreamProxyTested {
 		if err := testOAuthUpstreamProxy(req.UpstreamProxyURL, req.TokenEndpoint); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		warnings = append(warnings, "upstream proxy reached token endpoint")
+	}
+	jsonResponse(w, map[string]interface{}{
+		"ok":                    true,
+		"service":               svcRow.Name,
+		"warnings":              warnings,
+		"upstream_proxy_tested": upstreamProxyTested,
+	})
+}
+
+// ValidateUpdate checks an existing refreshable token with proposed edits.
+// Missing token fields are filled from storage so the edit screen can test the
+// current token/proxy configuration without exposing secrets to the browser.
+func (h *OAuthHandler) ValidateUpdate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	key, err := h.apiKeyQ.GetByID(id)
+	if err != nil {
+		jsonError(w, "key not found", http.StatusNotFound)
+		return
+	}
+	if !key.IsRefreshable {
+		jsonError(w, "not a refreshable key", http.StatusBadRequest)
+		return
+	}
+
+	var req oauthUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	validateReq, upstreamProxyURL, err := h.prepareOAuthUpdateValidation(key, &req)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	svcRow, warnings, err := h.validateOAuthTokenRequest(&validateReq, true)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	upstreamProxyTested := strings.TrimSpace(upstreamProxyURL) != ""
+	if upstreamProxyTested {
+		if err := testOAuthUpstreamProxy(upstreamProxyURL, validateReq.TokenEndpoint); err != nil {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -299,71 +356,32 @@ func (h *OAuthHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Name             string  `json:"name"`
-		AccessToken      string  `json:"access_token"`
-		RefreshToken     string  `json:"refresh_token"`
-		ExpiresAt        int64   `json:"expires_at"`
-		TokenEndpoint    string  `json:"token_endpoint"`
-		SubscriptionInfo string  `json:"subscription_info"`
-		UpstreamProxyURL *string `json:"upstream_proxy_url"`
-		IsActive         *bool   `json:"is_active"`
-	}
+	var req oauthUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
 		return
 	}
 
-	if req.Name == "" {
-		req.Name = key.Name
-	}
-	if req.TokenEndpoint == "" {
-		req.TokenEndpoint = key.TokenEndpoint
-	}
-	if req.SubscriptionInfo == "" {
-		req.SubscriptionInfo = key.SubscriptionInfo
-	}
-	validateReq := oauthTokenRequest{
-		Name:             req.Name,
-		ServiceID:        key.ServiceID,
-		AccessToken:      req.AccessToken,
-		RefreshToken:     req.RefreshToken,
-		ExpiresAt:        req.ExpiresAt,
-		TokenEndpoint:    req.TokenEndpoint,
-		SubscriptionInfo: req.SubscriptionInfo,
-	}
-	if req.AccessToken != "" || req.RefreshToken != "" {
-		if validateReq.AccessToken == "" {
-			existingAccess, err := h.crypto.Decrypt(key.KeyEncrypted)
-			if err != nil {
-				jsonError(w, "decrypt existing access token failed", http.StatusInternalServerError)
-				return
-			}
-			validateReq.AccessToken = existingAccess
-		}
-		if validateReq.RefreshToken == "" {
-			existingRefresh, err := h.crypto.Decrypt(key.RefreshToken)
-			if err != nil {
-				jsonError(w, "decrypt existing refresh token failed", http.StatusInternalServerError)
-				return
-			}
-			validateReq.RefreshToken = existingRefresh
-		}
-		if _, _, err := h.validateOAuthTokenRequest(&validateReq, false); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	} else if err := validateSubscriptionInfo(req.SubscriptionInfo); err != nil {
+	validateReq, upstreamProxyURL, err := h.prepareOAuthUpdateValidation(key, &req)
+	if err != nil {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.UpstreamProxyURL != nil {
-		proxyURL, err := svc.EncryptUpstreamProxyURL(h.crypto, *req.UpstreamProxyURL)
-		if err != nil {
+	tokensChanged := req.AccessToken != "" || req.RefreshToken != ""
+	if _, _, err := h.validateOAuthTokenRequest(&validateReq, true); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	upstreamProxyChanged := req.UpstreamProxyURL != nil && strings.TrimSpace(*req.UpstreamProxyURL) != redactedAPIKeyUpstreamProxyURL(h.crypto, key.UpstreamProxyURL)
+	tokenEndpointChanged := req.TokenEndpoint != "" && req.TokenEndpoint != key.TokenEndpoint
+	if strings.TrimSpace(upstreamProxyURL) != "" && (tokensChanged || upstreamProxyChanged || tokenEndpointChanged) {
+		if err := testOAuthUpstreamProxy(upstreamProxyURL, validateReq.TokenEndpoint); err != nil {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		key.UpstreamProxyURL = proxyURL
+	}
+	if req.UpstreamProxyURL != nil {
+		key.UpstreamProxyURL = upstreamProxyURL
 	}
 
 	var encAccess, encRefresh string
@@ -387,12 +405,16 @@ func (h *OAuthHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.UpstreamProxyURL != nil {
-		if err := h.apiKeyQ.UpdateUpstreamProxy(id, key.UpstreamProxyURL); err != nil {
+		upstreamProxyStored, err := svc.EncryptUpstreamProxyURL(h.crypto, key.UpstreamProxyURL)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := h.apiKeyQ.UpdateUpstreamProxy(id, upstreamProxyStored); err != nil {
 			jsonError(w, "update upstream proxy failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
-	tokensChanged := req.AccessToken != "" || req.RefreshToken != ""
 	hasCompleteTokenPair := (req.AccessToken != "" || key.KeyEncrypted != "") && (req.RefreshToken != "" || key.RefreshToken != "")
 	if tokensChanged && hasCompleteTokenPair {
 		if err := h.apiKeyQ.SetActive(id, true); err != nil {
@@ -408,6 +430,58 @@ func (h *OAuthHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, map[string]string{"status": "updated"})
+}
+
+func (h *OAuthHandler) prepareOAuthUpdateValidation(key *models.APIKey, req *oauthUpdateRequest) (oauthTokenRequest, string, error) {
+	if req.Name == "" {
+		req.Name = key.Name
+	}
+	if req.TokenEndpoint == "" {
+		req.TokenEndpoint = key.TokenEndpoint
+	}
+	if req.SubscriptionInfo == "" {
+		req.SubscriptionInfo = key.SubscriptionInfo
+	}
+
+	validateReq := oauthTokenRequest{
+		Name:             req.Name,
+		ServiceID:        key.ServiceID,
+		AccessToken:      req.AccessToken,
+		RefreshToken:     req.RefreshToken,
+		ExpiresAt:        req.ExpiresAt,
+		TokenEndpoint:    req.TokenEndpoint,
+		SubscriptionInfo: req.SubscriptionInfo,
+	}
+	if validateReq.AccessToken == "" {
+		existingAccess, err := h.crypto.Decrypt(key.KeyEncrypted)
+		if err != nil {
+			return validateReq, "", fmt.Errorf("decrypt existing access token failed")
+		}
+		validateReq.AccessToken = existingAccess
+	}
+	if validateReq.RefreshToken == "" {
+		existingRefresh, err := h.crypto.Decrypt(key.RefreshToken)
+		if err != nil {
+			return validateReq, "", fmt.Errorf("decrypt existing refresh token failed")
+		}
+		validateReq.RefreshToken = existingRefresh
+	}
+
+	upstreamProxyURL, err := svc.DecryptUpstreamProxyURL(h.crypto, key.UpstreamProxyURL)
+	if err != nil {
+		return validateReq, "", fmt.Errorf("decrypt upstream proxy failed")
+	}
+	if req.UpstreamProxyURL != nil {
+		proposedProxy := strings.TrimSpace(*req.UpstreamProxyURL)
+		if proposedProxy == redactedAPIKeyUpstreamProxyURL(h.crypto, key.UpstreamProxyURL) {
+			proposedProxy = upstreamProxyURL
+		}
+		if _, err := svc.EncryptUpstreamProxyURL(h.crypto, proposedProxy); err != nil {
+			return validateReq, "", err
+		}
+		upstreamProxyURL = proposedProxy
+	}
+	return validateReq, upstreamProxyURL, nil
 }
 
 func (h *OAuthHandler) validateOAuthTokenRequest(req *oauthTokenRequest, requireTokens bool) (*models.Service, []string, error) {
@@ -453,11 +527,6 @@ func defaultTokenEndpointForService(serviceName string) string {
 	default:
 		return "https://console.anthropic.com/v1/oauth/token"
 	}
-}
-
-func validateSubscriptionInfo(raw string) error {
-	_, err := parseSubscriptionInfo(raw)
-	return err
 }
 
 func parseSubscriptionInfo(raw string) (map[string]interface{}, error) {

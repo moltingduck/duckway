@@ -280,19 +280,30 @@ func TestUploadOAuthTestsConfiguredUpstreamProxy(t *testing.T) {
 	}
 }
 
-func TestUpdateRefreshableCanReactivateKey(t *testing.T) {
+func TestValidateUpdateOAuthUsesExistingTokensAndUpstreamProxy(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 
+	var proxyTarget string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyTarget = r.URL.String()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(proxy.Close)
+
 	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
-	encAccess, err := crypto.Encrypt("access-token")
+	encAccess, err := crypto.Encrypt(testJWT())
 	if err != nil {
 		t.Fatal(err)
 	}
-	encRefresh, err := crypto.Encrypt("refresh-token")
+	encRefresh, err := crypto.Encrypt("rt.1.good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encProxy, err := services.EncryptUpstreamProxyURL(crypto, proxy.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,9 +312,129 @@ func TestUpdateRefreshableCanReactivateKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted,refresh_token,token_endpoint,subscription_info,upstream_proxy_url)
+		VALUES ('key-edit-validate',?,'oauth token',?,?, 'http://provider.example/oauth/token', '{}', ?)`,
+		openaiSvc.ID, encAccess, encRefresh, encProxy); err != nil {
+		t.Fatal(err)
+	}
+
+	h := handlers.NewOAuthHandler(queries.NewAPIKeyQueries(db), queries.NewPlaceholderQueries(db), svcQ, crypto)
+	req := httptest.NewRequest(http.MethodPost, "/api/oauth/key-edit-validate/validate", strings.NewReader(`{
+		"name":"oauth token",
+		"token_endpoint":"http://provider.example/oauth/token",
+		"subscription_info":"{}"
+	}`))
+	req.SetPathValue("id", "key-edit-validate")
+	rec := httptest.NewRecorder()
+
+	h.ValidateUpdate(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if proxyTarget != "http://provider.example/oauth/token" {
+		t.Fatalf("proxy target = %q", proxyTarget)
+	}
+	var got struct {
+		UpstreamProxyTested bool     `json:"upstream_proxy_tested"`
+		Warnings            []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.UpstreamProxyTested {
+		t.Fatalf("upstream proxy was not tested: %s", rec.Body.String())
+	}
+	if len(got.Warnings) == 0 || !strings.Contains(got.Warnings[len(got.Warnings)-1], "upstream proxy") {
+		t.Fatalf("proxy success warning missing: %+v", got.Warnings)
+	}
+}
+
+func TestUpdateRefreshablePreservesRedactedUpstreamProxy(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encAccess, err := crypto.Encrypt(testJWT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encRefresh, err := crypto.Encrypt("rt.1.good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	realProxy := "http://proxy-user:proxy-pass@proxy.example:8080"
+	encProxy, err := services.EncryptUpstreamProxyURL(crypto, realProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted,refresh_token,token_endpoint,subscription_info,upstream_proxy_url)
+		VALUES ('key-redacted-proxy',?,'oauth token',?,?, 'https://provider.example/oauth/token', '{}', ?)`,
+		openaiSvc.ID, encAccess, encRefresh, encProxy); err != nil {
+		t.Fatal(err)
+	}
+
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	h := handlers.NewOAuthHandler(apiKeyQ, queries.NewPlaceholderQueries(db), svcQ, crypto)
+	redactedProxy := services.RedactProxyURL(realProxy)
+	req := httptest.NewRequest(http.MethodPut, "/api/oauth/key-redacted-proxy", strings.NewReader(`{
+		"name":"renamed oauth token",
+		"token_endpoint":"https://provider.example/oauth/token",
+		"upstream_proxy_url":`+strconvQuote(redactedProxy)+`,
+		"subscription_info":"{}"
+	}`))
+	req.SetPathValue("id", "key-redacted-proxy")
+	rec := httptest.NewRecorder()
+
+	h.Update(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	key, err := apiKeyQ.GetByID("key-redacted-proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedProxy, err := services.DecryptUpstreamProxyURL(crypto, key.UpstreamProxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedProxy != realProxy {
+		t.Fatalf("stored proxy = %q, want original proxy", storedProxy)
+	}
+}
+
+func TestUpdateRefreshableCanReactivateKey(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	encAccess, err := crypto.Encrypt(testJWT())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encRefresh, err := crypto.Encrypt("rt.1.good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcQ := queries.NewServiceQueries(db)
+	openaiSvc, err := svcQ.GetByName("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subInfo := `{"credential_kind":"codex_oauth","auth_mode":"chatgpt","source":"codex","id_token":"` + testJWT() + `"}`
 	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted,refresh_token,token_endpoint,subscription_info,is_active)
-		VALUES ('key-reactivate',?,'codex oauth',?,?, 'https://auth.openai.com/oauth/token', '{"credential_kind":"codex_oauth"}', 0)`,
-		openaiSvc.ID, encAccess, encRefresh); err != nil {
+		VALUES ('key-reactivate',?,'codex oauth',?,?, 'https://auth.openai.com/oauth/token', ?, 0)`,
+		openaiSvc.ID, encAccess, encRefresh, subInfo); err != nil {
 		t.Fatal(err)
 	}
 
@@ -316,7 +447,7 @@ func TestUpdateRefreshableCanReactivateKey(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/oauth/key-reactivate", strings.NewReader(`{
 		"name":"codex oauth",
 		"token_endpoint":"https://auth.openai.com/oauth/token",
-		"subscription_info":"{\"credential_kind\":\"codex_oauth\"}",
+		"subscription_info":`+strconvQuote(subInfo)+`,
 		"is_active":true
 	}`))
 	req.SetPathValue("id", "key-reactivate")

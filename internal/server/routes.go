@@ -282,6 +282,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/oauth/validate", oauthH.Validate)
 	adminAPIMux.HandleFunc("POST /api/oauth/upload", oauthH.Upload)
 	adminAPIMux.HandleFunc("GET /api/oauth/{id}", oauthH.Get)
+	adminAPIMux.HandleFunc("POST /api/oauth/{id}/validate", oauthH.ValidateUpdate)
 	adminAPIMux.HandleFunc("PUT /api/oauth/{id}", oauthH.Update)
 	adminAPIMux.HandleFunc("DELETE /api/oauth/{id}", oauthH.Delete)
 	adminAPIMux.HandleFunc("POST /api/oauth/{id}/refresh", oauthH.Refresh)

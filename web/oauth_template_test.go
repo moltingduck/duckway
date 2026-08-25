@@ -18,6 +18,9 @@ func TestOAuthTemplateShowsAndRepairsActiveStatus(t *testing.T) {
 		`if (accessToken && refreshToken) body.is_active = true;`,
 		`subInfo.credential_kind = 'codex_oauth';`,
 		`subInfo.source = 'codex';`,
+		`id="test-edit-oauth-btn" onclick="testOAuthEdit()"`,
+		`fetch('/api/oauth/' + currentDetail.id + '/validate',`,
+		`function buildOAuthEditBody()`,
 	}
 	for _, want := range required {
 		if !strings.Contains(html, want) {

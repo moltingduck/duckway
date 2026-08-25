@@ -128,6 +128,7 @@
         </div>
         <div class="modal-actions">
           <button type="button" class="btn" onclick="switchToView()">Back</button>
+          <button type="button" class="btn" id="test-edit-oauth-btn" onclick="testOAuthEdit()">Test</button>
           <button type="submit" class="btn btn-primary">Save</button>
         </div>
       </form>
@@ -662,6 +663,67 @@ function refreshTokenById(id, btn) {
   });
 }
 
+function buildOAuthEditBody() {
+  var subInfo = document.getElementById('edit-sub').value.trim();
+  var subObj = {};
+  if (subInfo) { subObj = JSON.parse(subInfo); }
+  if (currentDetail && isClaudeService('', currentDetail.service_name || '')) {
+    var displayName = document.getElementById('edit-display').value.trim();
+    if (displayName) subObj.displayName = displayName;
+  } else {
+    delete subObj.displayName;
+  }
+
+  var body = {
+    name: document.getElementById('edit-name').value,
+    token_endpoint: document.getElementById('edit-endpoint').value,
+    subscription_info: JSON.stringify(subObj),
+    upstream_proxy_url: document.getElementById('edit-upstream-proxy').value.trim(),
+    is_active: document.getElementById('edit-active').checked
+  };
+
+  var accessToken = document.getElementById('edit-access').value.trim();
+  var refreshToken = document.getElementById('edit-refresh').value.trim();
+  var expiresAt = Number(document.getElementById('edit-expires').value || 0);
+  if (accessToken) body.access_token = accessToken;
+  if (refreshToken) body.refresh_token = refreshToken;
+  if (accessToken && refreshToken) body.is_active = true;
+  if (expiresAt > 0) body.expires_at = expiresAt;
+  return body;
+}
+
+function testOAuthEdit() {
+  if (!currentDetail) return;
+  parseEditPaste();
+  var body;
+  try {
+    body = buildOAuthEditBody();
+  } catch(e) {
+    showToast('Invalid subscription JSON: ' + e.message, 'error');
+    return;
+  }
+  var btn = document.getElementById('test-edit-oauth-btn');
+  var orig = btn.textContent;
+  btn.textContent = 'Testing...';
+  btn.disabled = true;
+  fetch('/api/oauth/' + currentDetail.id + '/validate', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body),
+    credentials: 'same-origin'
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    btn.textContent = orig;
+    btn.disabled = false;
+    if (data.error) { showToast('Token format failed: ' + data.error, 'error'); return; }
+    var suffix = (data.warnings || []).length ? ' (' + data.warnings.join('; ') + ')' : '';
+    showToast('Token format OK for ' + data.service + suffix, 'success');
+  }).catch(function(err) {
+    btn.textContent = orig;
+    btn.disabled = false;
+    showToast('Token test error: ' + err.message, 'error');
+  });
+}
+
 document.addEventListener('DOMContentLoaded', function() {
   applyOAuthHints();
 
@@ -750,31 +812,13 @@ document.getElementById('oauth-form').addEventListener('submit', function(e) {
 document.getElementById('edit-form').addEventListener('submit', function(e) {
   e.preventDefault();
   var id = document.getElementById('edit-id').value;
-  var subInfo = document.getElementById('edit-sub').value.trim();
-  var subObj = {};
-  if (subInfo) { try { subObj = JSON.parse(subInfo); } catch(ex) { showToast('Invalid subscription JSON', 'error'); return; } }
-  if (currentDetail && isClaudeService('', currentDetail.service_name || '')) {
-    var displayName = document.getElementById('edit-display').value.trim();
-    if (displayName) subObj.displayName = displayName;
-  } else {
-    delete subObj.displayName;
+  var body;
+  try {
+    body = buildOAuthEditBody();
+  } catch(ex) {
+    showToast('Invalid subscription JSON', 'error');
+    return;
   }
-
-  var body = {
-    name: document.getElementById('edit-name').value,
-    token_endpoint: document.getElementById('edit-endpoint').value,
-    subscription_info: JSON.stringify(subObj),
-    upstream_proxy_url: document.getElementById('edit-upstream-proxy').value.trim(),
-    is_active: document.getElementById('edit-active').checked
-  };
-
-  var accessToken = document.getElementById('edit-access').value.trim();
-  var refreshToken = document.getElementById('edit-refresh').value.trim();
-  var expiresAt = Number(document.getElementById('edit-expires').value || 0);
-  if (accessToken) body.access_token = accessToken;
-  if (refreshToken) body.refresh_token = refreshToken;
-  if (accessToken && refreshToken) body.is_active = true;
-  if (expiresAt > 0) body.expires_at = expiresAt;
 
   fetch('/api/oauth/' + id, {
     method: 'PUT',
