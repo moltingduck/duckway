@@ -44,6 +44,13 @@ type hostEntry struct {
 	Service      string
 	DeliveryMode string
 	UpstreamURL  string // e.g. https://api.github.com — used for direct forwarding in loan_proxy
+	TunnelOnly   bool   // preserve end-to-end TLS/WSS; never inspect or replace credentials
+	TunnelPort   string // required destination port when TunnelOnly is set
+}
+
+type replayReadCloser struct {
+	io.Reader
+	io.Closer
 }
 
 // loanedToken is a cached real token for a service, plus the auth scheme to
@@ -269,17 +276,17 @@ func (p *httpsProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *httpsProxy) handleHTTPForwardProxy(w http.ResponseWriter, r *http.Request) {
-	host := r.URL.Hostname()
+	host := canonicalProxyHostname(r.URL.Hostname())
 	p.hostMu.RLock()
 	entry, known := p.hostMap[host]
 	p.hostMu.RUnlock()
 
-	usesPhantom := requestUsesDuckwayPhantom(r)
+	usesPhantom := requestUsesDuckwayPhantom(entry, r)
 	if known && isManagedGitHubSmartHTTPAuthBypass(entry, r, usesPhantom) {
 		http.Error(w, "github git traffic must use a Duckway phantom token", http.StatusForbidden)
 		return
 	}
-	if known && entry.Service != "" && (entry.Service == "openai-auth" || entry.Service == "openai-chatgpt" || usesPhantom) {
+	if known && entry.Service != "" && usesPhantom {
 		p.forwardHTTPToGateway(w, r, entry.Service, host)
 		return
 	}
@@ -363,14 +370,24 @@ func (p *httpsProxy) forwardHTTPDirect(w http.ResponseWriter, r *http.Request, h
 // For known service hosts: MITM, decrypt, forward via /proxy/{svc}/.
 // For unknown hosts: transparent TCP tunnel.
 func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
-	host := r.Host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
+	host, port, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		http.Error(w, "invalid CONNECT authority", http.StatusBadRequest)
+		return
 	}
+	host = canonicalProxyHostname(host)
 
 	p.hostMu.RLock()
 	entry, isMITM := p.hostMap[host]
 	p.hostMu.RUnlock()
+	if isMITM && entry.TunnelOnly {
+		if entry.TunnelPort != "" && port != entry.TunnelPort {
+			http.Error(w, "CONNECT port not allowed", http.StatusForbidden)
+			return
+		}
+		p.tunnelConnect(w, r)
+		return
+	}
 	if !isMITM {
 		if fallback, ok := fallbackMITMEntryForHost(host); ok {
 			entry = fallback
@@ -442,7 +459,7 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		tlsConn.SetReadDeadline(time.Time{}) // clear before forwarding
 
-		usesPhantom := requestUsesDuckwayPhantom(req)
+		usesPhantom := requestUsesDuckwayPhantom(entry, req)
 		if isManagedGitHubSmartHTTPAuthBypass(entry, req, usesPhantom) {
 			writeHTTPError(tlsConn, http.StatusForbidden, "github git traffic must use a Duckway phantom token")
 			continue
@@ -451,7 +468,7 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			writeHTTPError(tlsConn, http.StatusForbidden, "managed service credentials must use a Duckway phantom token")
 			continue
 		}
-		if entry.Service != "openai-auth" && entry.Service != "openai-chatgpt" && !usesPhantom {
+		if !usesPhantom {
 			p.forwardDirect(tlsConn, req, host, entry)
 			continue
 		}
@@ -571,7 +588,7 @@ func (p *httpsProxy) forwardDirect(tlsConn *tls.Conn, req *http.Request, host st
 	}
 }
 
-func requestUsesDuckwayPhantom(req *http.Request) bool {
+func requestUsesDuckwayPhantom(entry hostEntry, req *http.Request) bool {
 	for _, header := range []string{"Authorization", "X-Api-Key"} {
 		for _, value := range req.Header.Values(header) {
 			if headerValueUsesDuckwayPhantom(value) {
@@ -579,7 +596,44 @@ func requestUsesDuckwayPhantom(req *http.Request) bool {
 			}
 		}
 	}
+	if entry.Service == "openai-auth" && req.URL.Path == "/oauth/token" {
+		return requestBodyUsesDuckwayRefreshToken(req)
+	}
 	return false
+}
+
+func requestBodyUsesDuckwayRefreshToken(req *http.Request) bool {
+	if req.Body == nil {
+		return false
+	}
+	const maxOAuthBody = 1 << 20
+	originalBody := req.Body
+	prefix, err := io.ReadAll(io.LimitReader(originalBody, maxOAuthBody+1))
+	if err != nil {
+		req.Body = &replayReadCloser{Reader: io.MultiReader(bytes.NewReader(prefix), originalBody), Closer: originalBody}
+		return false
+	}
+	if len(prefix) > maxOAuthBody {
+		req.Body = &replayReadCloser{Reader: io.MultiReader(bytes.NewReader(prefix), originalBody), Closer: originalBody}
+		return false
+	}
+	_ = originalBody.Close()
+	req.Body = io.NopCloser(bytes.NewReader(prefix))
+
+	refreshToken := ""
+	var payload struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if json.Unmarshal(prefix, &payload) == nil {
+		refreshToken = payload.RefreshToken
+	} else if values, parseErr := url.ParseQuery(string(prefix)); parseErr == nil {
+		refreshToken = values.Get("refresh_token")
+	}
+	return strings.HasPrefix(strings.TrimSpace(refreshToken), "rt.duckway.")
+}
+
+func canonicalProxyHostname(host string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 }
 
 func headerValueUsesDuckwayPhantom(value string) bool {
@@ -732,11 +786,20 @@ func (p *httpsProxy) tunnelConnect(w http.ResponseWriter, r *http.Request) {
 	// and exits cleanly instead of blocking until a TCP timeout.
 	go func() {
 		io.Copy(targetConn, &bufferedConn{Conn: clientConn, r: rw.Reader})
-		targetConn.Close()
+		closeWrite(targetConn)
 	}()
 	io.Copy(clientConn, targetConn)
-	// clientConn is closed by defer above; targetConn may already be closed
-	// by the goroutine, which is fine — double-close on net.Conn is a no-op.
+	closeWrite(clientConn)
+	// Full connection cleanup is handled by the defers after both directions
+	// have had an opportunity to drain.
+}
+
+func closeWrite(conn net.Conn) {
+	if halfCloser, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = halfCloser.CloseWrite()
+		return
+	}
+	_ = conn.Close()
 }
 
 func fallbackMITMEntryForHost(host string) (hostEntry, bool) {
@@ -875,14 +938,21 @@ func buildHostMap(svcs []ServiceInfo) map[string]hostEntry {
 			mode = "proxy"
 		}
 		for _, raw := range strings.Split(s.HostPattern, ",") {
-			h := strings.TrimSpace(raw)
+			h := canonicalProxyHostname(raw)
 			if h == "" {
 				continue
 			}
+			tunnelOnly := h == "gateway.discord.gg"
 			hostMap[h] = hostEntry{
 				Service:      s.Name,
 				DeliveryMode: mode,
 				UpstreamURL:  s.UpstreamURL,
+				TunnelOnly:   tunnelOnly,
+			}
+			if tunnelOnly {
+				entry := hostMap[h]
+				entry.TunnelPort = "443"
+				hostMap[h] = entry
 			}
 		}
 	}

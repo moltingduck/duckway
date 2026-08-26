@@ -193,6 +193,7 @@ func TestBuildHostMapAddsOpenAIAuthVirtualService(t *testing.T) {
 	hostMap := buildHostMap([]ServiceInfo{
 		{Name: "openai", HostPattern: "api.openai.com", UpstreamURL: "https://api.openai.com"},
 		{Name: "xai", HostPattern: "api.x.ai,cli-chat-proxy.grok.com", UpstreamURL: "https://api.x.ai"},
+		{Name: "discord", HostPattern: "discord.com,GATEWAY.DISCORD.GG.", UpstreamURL: "https://discord.com/api/v10"},
 	})
 	entry, ok := hostMap["auth.openai.com"]
 	if !ok {
@@ -220,6 +221,10 @@ func TestBuildHostMapAddsOpenAIAuthVirtualService(t *testing.T) {
 	}
 	if hostMap["api.x.ai"].Service != "xai" || hostMap["api.x.ai"].UpstreamURL != "https://api.x.ai" {
 		t.Fatalf("regular xAI API host was not preserved: %#v", hostMap["api.x.ai"])
+	}
+	discordGateway, ok := hostMap["gateway.discord.gg"]
+	if !ok || !discordGateway.TunnelOnly || discordGateway.TunnelPort != "443" {
+		t.Fatalf("Discord Gateway must be a port-443 transparent tunnel: %#v", discordGateway)
 	}
 }
 

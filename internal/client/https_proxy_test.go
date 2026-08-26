@@ -260,6 +260,170 @@ func TestTunnelPassesThroughNonMITMHost(t *testing.T) {
 	}
 }
 
+func TestTunnelOnlyHostPreservesWebSocketUpgradeAndStream(t *testing.T) {
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			http.Error(w, "upgrade required", http.StatusUpgradeRequired)
+			return
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("origin does not support hijacking")
+			return
+		}
+		conn, rw, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("origin hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+		_ = rw.Flush()
+		payload := make([]byte, 4)
+		if _, err := io.ReadFull(rw, payload); err != nil {
+			t.Errorf("origin read stream: %v", err)
+			return
+		}
+		_, _ = rw.Write(payload)
+		_ = rw.Flush()
+	}))
+	defer origin.Close()
+	originHost := origin.Listener.Addr().String()
+	host, port, err := net.SplitHostPort(originHost)
+	if err != nil {
+		t.Fatalf("split origin host: %v", err)
+	}
+
+	p, _, proxyAddr := newTestMITMProxy(t, "http://unused.invalid")
+	p.hostMap[host] = hostEntry{Service: "discord", TunnelOnly: true, TunnelPort: port}
+
+	raw, err := net.Dial("tcp", proxyAddr)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer raw.Close()
+	_, _ = fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", originHost, originHost)
+	if resp := readConnectResponse(t, raw); resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 200", resp.StatusCode)
+	}
+
+	pool := x509.NewCertPool()
+	pool.AddCert(origin.Certificate())
+	tlsConn := tls.Client(raw, &tls.Config{ServerName: "example.com", RootCAs: pool})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("end-to-end TLS handshake: %v", err)
+	}
+	defer tlsConn.Close()
+
+	_, _ = fmt.Fprintf(tlsConn, "GET /?v=10 HTTP/1.1\r\nHost: gateway.discord.gg\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGVzdC1rZXk=\r\n\r\n")
+	reader := bufio.NewReader(tlsConn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read upgrade response: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade status = %d, want 101", resp.StatusCode)
+	}
+	if _, err := tlsConn.Write([]byte("ping")); err != nil {
+		t.Fatalf("write upgraded stream: %v", err)
+	}
+	echo := make([]byte, 4)
+	if _, err := io.ReadFull(reader, echo); err != nil {
+		t.Fatalf("read upgraded stream: %v", err)
+	}
+	if string(echo) != "ping" {
+		t.Fatalf("upgraded stream echo = %q, want ping", echo)
+	}
+}
+
+func TestTunnelOnlyHostRejectsUnexpectedPort(t *testing.T) {
+	p := &httpsProxy{hostMap: map[string]hostEntry{
+		"gateway.discord.gg": {Service: "discord", TunnelOnly: true, TunnelPort: "443"},
+	}}
+	req := httptest.NewRequest(http.MethodConnect, "http://gateway.discord.gg:80", nil)
+	req.Host = "GATEWAY.DISCORD.GG.:80"
+	rec := httptest.NewRecorder()
+	p.handleConnect(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("CONNECT status = %d, want 403", rec.Code)
+	}
+}
+
+func TestOpenAIVirtualHostOnlyUsesGatewayForPhantomCredential(t *testing.T) {
+	var gatewayHits int
+	var directHits int
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		status := http.StatusOK
+		if strings.HasPrefix(req.URL.Path, "/proxy/openai-auth/") {
+			gatewayHits++
+			status = http.StatusNoContent
+		} else {
+			directHits++
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	})
+
+	p := &httpsProxy{
+		serverURL:  "http://duckway.test",
+		token:      "client-token",
+		hostMap:    map[string]hostEntry{"auth.openai.com": {Service: "openai-auth", UpstreamURL: "https://auth.openai.com"}},
+		httpClient: &http.Client{Transport: transport},
+	}
+
+	directReq := httptest.NewRequest(http.MethodPost, "http://auth.openai.com/api/accounts/deviceauth/usercode", nil)
+	directRec := httptest.NewRecorder()
+	p.handleHTTPForwardProxy(directRec, directReq)
+	if directRec.Code != http.StatusOK || directHits != 1 || gatewayHits != 0 {
+		t.Fatalf("non-phantom route: status=%d direct=%d gateway=%d", directRec.Code, directHits, gatewayHits)
+	}
+
+	phantomReq := httptest.NewRequest(
+		http.MethodPost,
+		"http://auth.openai.com/oauth/token",
+		strings.NewReader(`{"grant_type":"refresh_token","refresh_token":"rt.duckway.placeholder"}`),
+	)
+	phantomReq.Header.Set("Content-Type", "application/json")
+	phantomRec := httptest.NewRecorder()
+	p.handleHTTPForwardProxy(phantomRec, phantomReq)
+	if phantomRec.Code != http.StatusNoContent || directHits != 1 || gatewayHits != 1 {
+		t.Fatalf("phantom route: status=%d direct=%d gateway=%d", phantomRec.Code, directHits, gatewayHits)
+	}
+}
+
+func TestOpenAIRefreshPhantomDetectionPreservesRequestBody(t *testing.T) {
+	entry := hostEntry{Service: "openai-auth"}
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		body        string
+		want        bool
+	}{
+		{name: "json phantom", contentType: "application/json", body: `{"grant_type":"refresh_token","refresh_token":"rt.duckway.dw_openai"}`, want: true},
+		{name: "form phantom", contentType: "application/x-www-form-urlencoded", body: "grant_type=refresh_token&refresh_token=rt.duckway.dw_openai", want: true},
+		{name: "real token", contentType: "application/json", body: `{"grant_type":"refresh_token","refresh_token":"rt.1.real"}`, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "https://auth.openai.com/oauth/token", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", tc.contentType)
+			if got := requestUsesDuckwayPhantom(entry, req); got != tc.want {
+				t.Fatalf("phantom detection = %v, want %v", got, tc.want)
+			}
+			gotBody, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read restored body: %v", err)
+			}
+			if string(gotBody) != tc.body {
+				t.Fatalf("restored body = %q, want %q", gotBody, tc.body)
+			}
+		})
+	}
+}
+
 // TestMITMRoundTripsBody verifies an HTTP/1.1 request over the MITM tunnel is
 // forwarded to the backend and the response body is returned intact.
 func TestMITMRoundTripsBody(t *testing.T) {
@@ -455,7 +619,7 @@ func TestMITMRejectsManagedGitHubSmartHTTPWithRealCredential(t *testing.T) {
 	}
 }
 
-func TestMITMAlwaysProxiesNativeCodexChatGPTTraffic(t *testing.T) {
+func TestMITMProxiesNativeCodexChatGPTPhantomTraffic(t *testing.T) {
 	var gotPath, gotAuth string
 	var mu sync.Mutex
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -494,7 +658,7 @@ func TestMITMAlwaysProxiesNativeCodexChatGPTTraffic(t *testing.T) {
 	t.Cleanup(func() { srv.Close() })
 
 	conn := dialMITMHost(t, ln.Addr().String(), "chatgpt.com:443", "chatgpt.com", []string{"http/1.1"}, pool)
-	fakeAccessJWT := "header.payload.duckway-phantom-access"
+	fakeAccessJWT := "dw_fake_codex_access"
 	fmt.Fprintf(conn, "GET /backend-api/codex/responses HTTP/1.1\r\nHost: chatgpt.com\r\nAuthorization: Bearer %s\r\nConnection: close\r\n\r\n", fakeAccessJWT)
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
