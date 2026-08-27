@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -588,7 +591,7 @@ func TestHandleOpenAIChatGPTProxyUsesOpenAIKeyForNativeCodex(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO placeholder_keys (id,env_name,placeholder,service_id,api_key_id,client_id,requires_approval)
-		VALUES ('ph-chatgpt','OPENAI_API_KEY','jwt.dw_fake.chatgpt',?,'key-chatgpt','client-chatgpt',0)`, openaiSvc.ID); err != nil {
+		VALUES ('ph-chatgpt','OPENAI_API_KEY','sk-proj-dw_fake_chatgpt',?,'key-chatgpt','client-chatgpt',0)`, openaiSvc.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -615,7 +618,7 @@ func TestHandleOpenAIChatGPTProxyUsesOpenAIKeyForNativeCodex(t *testing.T) {
 	})}
 
 	for _, auth := range []string{
-		"Bearer jwt.dw_fake.chatgpt",
+		"Bearer sk-proj-dw_fake_chatgpt",
 		"Bearer real-chatgpt-access-token",
 	} {
 		upstreamURL = ""
@@ -636,6 +639,95 @@ func TestHandleOpenAIChatGPTProxyUsesOpenAIKeyForNativeCodex(t *testing.T) {
 		if upstreamAuth != "Bearer "+realAccess {
 			t.Fatalf("auth %q upstream Authorization = %q", auth, upstreamAuth)
 		}
+	}
+
+	var wsAuth, wsConnection, wsUpgrade string
+	wsCalls := 0
+	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		wsCalls++
+		wsAuth = req.Header.Get("Authorization")
+		wsConnection = req.Header.Get("Connection")
+		wsUpgrade = req.Header.Get("Upgrade")
+		proxyEnd, upstreamEnd := net.Pipe()
+		go func() {
+			defer upstreamEnd.Close()
+			payload := make([]byte, 4)
+			if _, err := io.ReadFull(upstreamEnd, payload); err == nil && string(payload) == "ping" {
+				_, _ = upstreamEnd.Write([]byte("pong"))
+			}
+		}()
+		return &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			Status:     "101 Switching Protocols",
+			Proto:      "HTTP/1.1",
+			Header: http.Header{
+				"Connection":           []string{"Upgrade"},
+				"Upgrade":              []string{"websocket"},
+				"Sec-Websocket-Accept": []string{"mock"},
+			},
+			Body: proxyEnd, Request: req,
+		}, nil
+	})}
+	for _, tc := range []struct {
+		name, method, path, auth, key string
+		wantStatus                    int
+	}{
+		{"wrong method", http.MethodPost, "/proxy/openai-chatgpt/backend-api/codex/responses", "Bearer sk-proj-dw_fake_chatgpt", "dGVzdC1rZXktMTIzNDU2Nw==", http.StatusBadRequest},
+		{"wrong path", http.MethodGet, "/proxy/openai-chatgpt/backend-api/codex/other", "Bearer sk-proj-dw_fake_chatgpt", "dGVzdC1rZXktMTIzNDU2Nw==", http.StatusBadRequest},
+		{"bad key", http.MethodGet, "/proxy/openai-chatgpt/backend-api/codex/responses", "Bearer sk-proj-dw_fake_chatgpt", "bad", http.StatusBadRequest},
+		{"real token", http.MethodGet, "/proxy/openai-chatgpt/backend-api/codex/responses", "Bearer real-chatgpt-access-token", "dGVzdC1rZXktMTIzNDU2Nw==", http.StatusForbidden},
+	} {
+		t.Run("wss rejects "+tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Header.Set("Authorization", tc.auth)
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", "websocket")
+			req.Header.Set("Sec-WebSocket-Version", "13")
+			req.Header.Set("Sec-WebSocket-Key", tc.key)
+			client := &models.Client{ID: "client-chatgpt", Name: "client"}
+			req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, client))
+			rec := httptest.NewRecorder()
+			h.Handle(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status=%d, want %d; body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+		})
+	}
+	if wsCalls != 0 {
+		t.Fatalf("rejected websocket requests reached upstream %d times", wsCalls)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		client := &models.Client{ID: "client-chatgpt", Name: "client"}
+		h.Handle(w, r.WithContext(context.WithValue(r.Context(), middleware.ClientKey, client)))
+	}))
+	defer server.Close()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	wsHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"duckway-phantom"}`))
+	wsPayload := base64.RawURLEncoding.EncodeToString([]byte(`{"https://duckway.dev/placeholder":"sk-proj-dw_fake_chatgpt"}`))
+	wsPhantom := wsHeader + "." + wsPayload + ".signature"
+	_, _ = fmt.Fprintf(conn, "GET /proxy/openai-chatgpt/backend-api/codex/responses HTTP/1.1\r\nHost: duckway\r\nAuthorization: Bearer %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGVzdC1rZXktMTIzNDU2Nw==\r\n\r\nping", wsPhantom)
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("websocket status=%d, want 101; body=%s", resp.StatusCode, body)
+	}
+	pong := make([]byte, 4)
+	if _, err := io.ReadFull(reader, pong); err != nil {
+		t.Fatal(err)
+	}
+	if string(pong) != "pong" {
+		t.Fatalf("websocket payload=%q, want pong", pong)
+	}
+	if wsAuth != "Bearer "+realAccess || !strings.EqualFold(wsConnection, "Upgrade") || !strings.EqualFold(wsUpgrade, "websocket") {
+		t.Fatalf("upstream websocket headers auth=%q connection=%q upgrade=%q", wsAuth, wsConnection, wsUpgrade)
 	}
 }
 

@@ -195,6 +195,16 @@ the provider.
 
 Only the phantom branch enters the Duckway server data path described below.
 
+Native Codex WebSocket requests to
+`wss://chatgpt.com/backend-api/codex/responses` use the same decision matrix.
+For an assigned phantom, the sidecar forwards a validated HTTP/1.1 Upgrade to
+the Duckway server. The server resolves the placeholder embedded in the
+phantom JWT, applies the token's upstream proxy, injects the real OAuth access
+token into a fixed ChatGPT Upgrade request, and relays opaque WebSocket bytes
+after both hops return `101`. Frames are never parsed or logged. Non-phantom
+WSS remains direct, while rejected or failed phantom handshakes never fall back
+to direct traffic.
+
 Implemented in `internal/server/handlers/proxy.go`, the `Handle` method:
 
 ```
@@ -1013,7 +1023,13 @@ returns failure if either case failed. They can also be run separately:
 ```bash
 CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --refresh-only
 CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --llm-only
+CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --wss-only
 ```
+
+The WSS case requires a successful `101` bridge for
+`wss://chatgpt.com/backend-api/codex/responses`, a completed assistant response,
+and no Codex HTTPS fallback warning. This keeps WSS transport coverage separate
+from an LLM request that succeeds only through HTTP fallback.
 
 Run the optional control-channel watch path:
 

@@ -20,6 +20,7 @@
 #   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh
 #   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --refresh-only
 #   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --llm-only
+#   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --wss-only
 #   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --cc-watch
 
 set -euo pipefail
@@ -34,13 +35,15 @@ CHECK_TOKEN=0
 CC_WATCH=0
 RUN_REFRESH=1
 RUN_LLM=1
+RUN_WSS=1
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --check-token) CHECK_TOKEN=1 ;;
     --cc-watch) CC_WATCH=1 ;;
-    --refresh-only) RUN_REFRESH=1; RUN_LLM=0 ;;
-    --llm-only) RUN_REFRESH=0; RUN_LLM=1 ;;
+    --refresh-only) RUN_REFRESH=1; RUN_LLM=0; RUN_WSS=0 ;;
+    --llm-only) RUN_REFRESH=0; RUN_LLM=1; RUN_WSS=0 ;;
+    --wss-only) RUN_REFRESH=0; RUN_LLM=1; RUN_WSS=1 ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 1
@@ -118,13 +121,14 @@ EOF
   -v "$CODEX_AUTH":/run/secrets/codex-auth.json:ro \
   -w /workspace \
   "$IMAGE" \
-  sh -s -- "$PROMPT" "$CC_WATCH" "$RUN_REFRESH" "$RUN_LLM" <<'CONTAINER_SCRIPT'
+  sh -s -- "$PROMPT" "$CC_WATCH" "$RUN_REFRESH" "$RUN_LLM" "$RUN_WSS" <<'CONTAINER_SCRIPT'
 set -eu
 
 PROMPT="$1"
 CC_WATCH="$2"
 RUN_REFRESH="$3"
 RUN_LLM="$4"
+RUN_WSS="$5"
 export HOME=/tmp/duckway-home
 export DUCKWAY_CONFIG_DIR="$HOME/.duckway"
 export DUCKWAY_DEV=1
@@ -446,6 +450,7 @@ export NODE_EXTRA_CA_CERTS="$DUCKWAY_CONFIG_DIR/ca.pem"
 
 REFRESH_FAILED=0
 LLM_FAILED=0
+WSS_FAILED=0
 
 if [ "$RUN_REFRESH" = "1" ]; then
 echo "[refresh] Refreshing Codex OAuth token once through Duckway proxy..."
@@ -560,6 +565,20 @@ fi
 if [ "$LLM_FAILED" = "0" ]; then
   echo "[llm] PASS"
 fi
+if [ "$RUN_WSS" = "1" ]; then
+  if ! grep -q '\[proxy openai-chatgpt\] WSS .* → 101' "$PROXY_LOG"; then
+    echo "[wss] FAIL: proxy log has no successful Codex WebSocket bridge" >&2
+    WSS_FAILED=1
+  elif grep -q 'Falling back from WebSockets to HTTPS transport' /tmp/codex-stderr; then
+    echo "[wss] FAIL: Codex fell back to HTTPS after the WebSocket attempt" >&2
+    WSS_FAILED=1
+  elif [ "$LLM_FAILED" = "1" ]; then
+    echo "[wss] FAIL: Codex did not complete the request over WebSocket" >&2
+    WSS_FAILED=1
+  else
+    echo "[wss] PASS"
+  fi
+fi
 fi
 
 if grep -Fq "$PLACEHOLDER" "$SERVER_LOG" "$PROXY_LOG" 2>/dev/null; then
@@ -627,13 +646,16 @@ fi
 if [ "$RUN_LLM" = "1" ] && [ "$LLM_FAILED" = "1" ]; then
   echo "FAIL: Codex LLM request case" >&2
 fi
+if [ "$RUN_WSS" = "1" ] && [ "$WSS_FAILED" = "1" ]; then
+  echo "FAIL: Codex WebSocket case" >&2
+fi
 if [ "$RUN_LLM" = "1" ] && [ "$LLM_FAILED" = "0" ]; then
   echo "PASS: Codex OAuth phantom token ran prompt through Duckway proxy"
 fi
 if [ "$CC_WATCH" = "1" ] && [ "$LLM_FAILED" = "0" ]; then
   echo "PASS: duckway cc watch ran Codex agent through Duckway proxy"
 fi
-if [ "$REFRESH_FAILED" = "1" ] || [ "$LLM_FAILED" = "1" ]; then
+if [ "$REFRESH_FAILED" = "1" ] || [ "$LLM_FAILED" = "1" ] || [ "$WSS_FAILED" = "1" ]; then
   exit 1
 fi
 CONTAINER_SCRIPT

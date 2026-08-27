@@ -1,13 +1,16 @@
 package handlers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -330,8 +333,15 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "client authentication required", http.StatusUnauthorized)
 		return
 	}
+	websocketUpgrade := serviceName == "openai-chatgpt" && isProxyWebSocketUpgrade(r)
+	if websocketUpgrade {
+		if err := validateCodexWebSocketRequest(r, upstreamPath); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 
-	result, err := h.resolveProxyKey(r, client.ID, svc, serviceName == "xai-grok" || serviceName == "xai-api")
+	result, err := h.resolveProxyKey(r, client.ID, svc, websocketUpgrade || serviceName == "xai-grok" || serviceName == "xai-api")
 	if err != nil {
 		log.Printf("resolve error for %s/%s: %v", serviceName, client.Name, err)
 		jsonError(w, "key resolution failed", http.StatusInternalServerError)
@@ -372,6 +382,12 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if result.Error != "" {
 		jsonError(w, result.Error, http.StatusForbidden)
 		return
+	}
+	if websocketUpgrade {
+		if _, ok := w.(http.Hijacker); !ok {
+			jsonError(w, "websocket bridge unavailable", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Heartbeat service: respond directly, no upstream
@@ -454,12 +470,16 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	//   - Hop-by-hop headers per RFC 7230 §6.1
 	//   - Host (Go sets this from the URL)
 	for key, values := range r.Header {
-		if shouldStripHeader(key) {
+		if shouldStripHeader(key) || (websocketUpgrade && !shouldForwardCodexWebSocketHeader(key)) {
 			continue
 		}
 		for _, v := range values {
 			upstreamReq.Header.Add(key, v)
 		}
+	}
+	if websocketUpgrade {
+		upstreamReq.Header.Set("Connection", "Upgrade")
+		upstreamReq.Header.Set("Upgrade", "websocket")
 	}
 
 	// For LLM services we parse token usage out of the response body, so
@@ -538,6 +558,17 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if websocketUpgrade && resp.StatusCode == http.StatusSwitchingProtocols {
+		if !isProxyWebSocketUpgradeResponse(resp) {
+			jsonError(w, "invalid upstream websocket response", http.StatusBadGateway)
+			return
+		}
+		if h.requestLog != nil {
+			h.requestLog.Log(client.ID, result.PlaceholderID, serviceName, r.Method, upstreamPath, resp.StatusCode)
+		}
+		h.relayProxyWebSocket(w, resp)
+		return
+	}
 
 	captureDetail := h.captureDetailEnabledFor(client.ID)
 
@@ -680,6 +711,125 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+}
+
+func isProxyWebSocketUpgrade(req *http.Request) bool {
+	if !strings.EqualFold(strings.TrimSpace(req.Header.Get("Upgrade")), "websocket") {
+		return false
+	}
+	for _, value := range req.Header.Values("Connection") {
+		for _, part := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isProxyWebSocketUpgradeResponse(resp *http.Response) bool {
+	if !strings.EqualFold(strings.TrimSpace(resp.Header.Get("Upgrade")), "websocket") {
+		return false
+	}
+	for _, value := range resp.Header.Values("Connection") {
+		for _, part := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), "upgrade") {
+				_, ok := resp.Body.(io.ReadWriteCloser)
+				return ok
+			}
+		}
+	}
+	return false
+}
+
+func validateCodexWebSocketRequest(req *http.Request, path string) error {
+	if req.Method != http.MethodGet {
+		return fmt.Errorf("codex websocket requires GET")
+	}
+	if path != "/backend-api/codex/responses" {
+		return fmt.Errorf("unsupported codex websocket path")
+	}
+	if len(req.Header.Values("Authorization")) != 1 {
+		return fmt.Errorf("codex websocket requires one authorization header")
+	}
+	if req.Header.Get("Sec-WebSocket-Version") != "13" {
+		return fmt.Errorf("unsupported websocket version")
+	}
+	keys := req.Header.Values("Sec-WebSocket-Key")
+	if len(keys) != 1 {
+		return fmt.Errorf("codex websocket requires one key")
+	}
+	rawKey, err := base64.StdEncoding.DecodeString(strings.TrimSpace(keys[0]))
+	if err != nil || len(rawKey) != 16 {
+		return fmt.Errorf("invalid websocket key")
+	}
+	return nil
+}
+
+func shouldForwardCodexWebSocketHeader(name string) bool {
+	lower := strings.ToLower(name)
+	if strings.HasPrefix(lower, "sec-websocket-") || strings.HasPrefix(lower, "x-stainless-") {
+		return true
+	}
+	switch lower {
+	case "origin", "user-agent", "openai-beta", "chatgpt-account-id", "x-openai-client-user-agent":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *ProxyHandler) relayProxyWebSocket(w http.ResponseWriter, upstreamResp *http.Response) {
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		return
+	}
+	upstream, ok := upstreamResp.Body.(io.ReadWriteCloser)
+	if !ok {
+		return
+	}
+	clientConn, rw, err := hijacker.Hijack()
+	if err != nil {
+		return
+	}
+	if err := writeProxyUpgradeResponse(rw.Writer, upstreamResp); err != nil {
+		clientConn.Close()
+		return
+	}
+	relayProxyWebSocketStreams(clientConn, rw.Reader, upstream)
+}
+
+func writeProxyUpgradeResponse(writer *bufio.Writer, resp *http.Response) error {
+	proto := resp.Proto
+	if proto == "" {
+		proto = "HTTP/1.1"
+	}
+	if _, err := fmt.Fprintf(writer, "%s %d %s\r\n", proto, resp.StatusCode, http.StatusText(resp.StatusCode)); err != nil {
+		return err
+	}
+	if err := resp.Header.Write(writer); err != nil {
+		return err
+	}
+	if _, err := writer.WriteString("\r\n"); err != nil {
+		return err
+	}
+	return writer.Flush()
+}
+
+func relayProxyWebSocketStreams(clientConn net.Conn, clientReader io.Reader, upstream io.ReadWriteCloser) {
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(upstream, clientReader)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(clientConn, upstream)
+		done <- struct{}{}
+	}()
+	<-done
+	_ = upstream.Close()
+	_ = clientConn.Close()
+	<-done
 }
 
 func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Request, upstreamPath string, startTime time.Time) {
@@ -877,9 +1027,6 @@ func buildOpenAIAuthUpstreamRequest(ctx context.Context, method, upstreamURL str
 func (h *ProxyHandler) httpClientForUpstream(proxyURL string) (*http.Client, error) {
 	if strings.TrimSpace(proxyURL) == "" {
 		return h.httpClient, nil
-	}
-	if h.proxyClients == nil {
-		h.proxyClients = services.NewUpstreamProxyClientCache()
 	}
 	return h.proxyClients.Client(proxyURL)
 }
@@ -1131,6 +1278,19 @@ func explicitProxyPlaceholder(r *http.Request, svc *models.Service) string {
 }
 
 func explicitPlaceholderToken(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) == 3 {
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err == nil {
+			var claims map[string]interface{}
+			if json.Unmarshal(payload, &claims) == nil {
+				placeholder, _ := claims["https://duckway.dev/placeholder"].(string)
+				if services.IsPlaceholder(placeholder) {
+					return placeholder
+				}
+			}
+		}
+	}
 	if services.IsPlaceholder(token) {
 		return token
 	}

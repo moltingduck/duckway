@@ -704,6 +704,126 @@ func TestMITMProxiesNativeCodexChatGPTPhantomTraffic(t *testing.T) {
 	}
 }
 
+func TestMITMBridgesNativeCodexChatGPTWebSocket(t *testing.T) {
+	var gotAuth, gotClientToken string
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotClientToken = r.Header.Get("X-Duckway-Token")
+		if !isWebSocketUpgrade(r) {
+			http.Error(w, "upgrade required", http.StatusUpgradeRequired)
+			return
+		}
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: mock\r\n\r\n")
+		_ = rw.Flush()
+		payload := make([]byte, 4)
+		if _, err := io.ReadFull(rw, payload); err == nil && string(payload) == "ping" {
+			_, _ = conn.Write([]byte("pong"))
+		}
+	}))
+	defer gateway.Close()
+
+	ca, err := services.LoadOrCreateCA(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(ca.CertPEM)
+	proxy := &httpsProxy{
+		serverURL: gateway.URL, token: "client-token", ca: ca,
+		hostMap: map[string]hostEntry{"chatgpt.com": {
+			Service: "openai-chatgpt", DeliveryMode: "proxy",
+			AssignmentKnown: true, Assigned: true,
+		}},
+		httpClient: &http.Client{Transport: directTransport},
+		loanCache:  make(map[string]*loanedToken),
+	}
+	server := httptest.NewServer(proxy)
+	defer server.Close()
+
+	conn := dialMITMHost(t, strings.TrimPrefix(server.URL, "http://"), "chatgpt.com:443", "chatgpt.com", []string{"http/1.1"}, pool)
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"duckway-phantom"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"auth0|duckway-phantom","jti":"dw-phantom-access"}`))
+	phantom := header + "." + payload + ".signature"
+	_, _ = fmt.Fprintf(conn, "GET /backend-api/codex/responses HTTP/1.1\r\nHost: chatgpt.com\r\nAuthorization: Bearer %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: test\r\n\r\nping", phantom)
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status=%d, want 101", resp.StatusCode)
+	}
+	got := make([]byte, 4)
+	if _, err := io.ReadFull(reader, got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "pong" {
+		t.Fatalf("websocket payload=%q, want pong", got)
+	}
+	if gotAuth != "Bearer "+phantom || gotClientToken != "client-token" {
+		t.Fatalf("gateway auth/client token mismatch")
+	}
+}
+
+func TestMITMDirectsNativeCodexWebSocketWithRealCredential(t *testing.T) {
+	var gotURL, gotAuth string
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotURL = req.URL.String()
+		gotAuth = req.Header.Get("Authorization")
+		proxyEnd, upstreamEnd := net.Pipe()
+		go func() {
+			defer upstreamEnd.Close()
+			payload := make([]byte, 4)
+			if _, err := io.ReadFull(upstreamEnd, payload); err == nil && string(payload) == "ping" {
+				_, _ = upstreamEnd.Write([]byte("pong"))
+			}
+		}()
+		return &http.Response{
+			StatusCode: http.StatusSwitchingProtocols, Status: "101 Switching Protocols", Proto: "HTTP/1.1",
+			Header: http.Header{"Connection": []string{"Upgrade"}, "Upgrade": []string{"websocket"}},
+			Body:   proxyEnd, Request: req,
+		}, nil
+	})
+	ca, err := services.LoadOrCreateCA(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(ca.CertPEM)
+	proxy := &httpsProxy{
+		serverURL: "http://gateway.invalid", token: "client-token", ca: ca,
+		hostMap: map[string]hostEntry{"chatgpt.com": {
+			Service: "openai-chatgpt", DeliveryMode: "proxy", UpstreamURL: "https://chatgpt.com",
+			AssignmentKnown: true, Assigned: false,
+		}},
+		httpClient: &http.Client{Transport: transport}, loanCache: make(map[string]*loanedToken),
+	}
+	server := httptest.NewServer(proxy)
+	defer server.Close()
+	conn := dialMITMHost(t, strings.TrimPrefix(server.URL, "http://"), "chatgpt.com:443", "chatgpt.com", []string{"http/1.1"}, pool)
+	_, _ = fmt.Fprint(conn, "GET /backend-api/codex/responses HTTP/1.1\r\nHost: chatgpt.com\r\nAuthorization: Bearer real-token\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: test\r\n\r\nping")
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status=%d, want 101", resp.StatusCode)
+	}
+	pong := make([]byte, 4)
+	if _, err := io.ReadFull(reader, pong); err != nil {
+		t.Fatal(err)
+	}
+	if string(pong) != "pong" || gotURL != "https://chatgpt.com/backend-api/codex/responses" || gotAuth != "Bearer real-token" {
+		t.Fatalf("direct websocket mismatch payload=%q url=%q auth=%q", pong, gotURL, gotAuth)
+	}
+}
+
 func TestWriteHTTPResponseStreamChunkedBody(t *testing.T) {
 	const want = "packfile-response"
 	var out bytes.Buffer

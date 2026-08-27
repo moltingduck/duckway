@@ -485,12 +485,20 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		usesPhantom := requestUsesDuckwayPhantom(entry, req)
 		if !usesPhantom {
+			if entry.Service == "openai-chatgpt" && isWebSocketUpgrade(req) {
+				p.forwardWebSocketDirect(tlsConn, reader, req, entry, host)
+				return
+			}
 			p.forwardDirect(tlsConn, req, host, entry)
 			continue
 		}
 		if status, message := phantomAssignmentError(entry); status != 0 {
 			writeHTTPError(tlsConn, status, message)
 			continue
+		}
+		if entry.Service == "openai-chatgpt" && isWebSocketUpgrade(req) {
+			p.forwardWebSocketMITM(tlsConn, reader, req, entry.Service, host)
+			return
 		}
 
 		// Dispatch by delivery mode
@@ -500,6 +508,138 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			p.forwardMITM(tlsConn, req, entry.Service, host)
 		}
 	}
+}
+
+func isWebSocketUpgrade(req *http.Request) bool {
+	return strings.EqualFold(strings.TrimSpace(req.Header.Get("Upgrade")), "websocket") &&
+		headerHasToken(req.Header, "Connection", "upgrade")
+}
+
+func headerHasToken(header http.Header, name, token string) bool {
+	for _, value := range header.Values(name) {
+		for _, part := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (p *httpsProxy) forwardWebSocketMITM(tlsConn *tls.Conn, reader *bufio.Reader, req *http.Request, svcName, host string) {
+	targetURL := strings.TrimRight(p.serverURL, "/") + "/proxy/" + svcName + req.URL.RequestURI()
+	proxyReq, err := http.NewRequestWithContext(req.Context(), req.Method, targetURL, nil)
+	if err != nil {
+		writeHTTPError(tlsConn, http.StatusBadGateway, "websocket proxy error")
+		return
+	}
+	for key, values := range req.Header {
+		if shouldSkipWebSocketForwardHeader(key) {
+			continue
+		}
+		for _, value := range values {
+			proxyReq.Header.Add(key, value)
+		}
+	}
+	proxyReq.Header.Set("X-Duckway-Token", p.token)
+	resp, err := p.httpClient.Do(proxyReq)
+	if err != nil {
+		writeHTTPError(tlsConn, http.StatusBadGateway, "websocket upstream error")
+		return
+	}
+	p.bridgeWebSocketMITMResponse(tlsConn, reader, resp, svcName, host, req)
+}
+
+func (p *httpsProxy) forwardWebSocketDirect(tlsConn *tls.Conn, reader *bufio.Reader, req *http.Request, entry hostEntry, host string) {
+	upstreamBase := strings.TrimRight(entry.UpstreamURL, "/")
+	if upstreamBase == "" || !strings.Contains(upstreamBase, host) {
+		upstreamBase = "https://" + host
+	}
+	upstreamReq, err := http.NewRequestWithContext(req.Context(), req.Method, upstreamBase+req.URL.RequestURI(), nil)
+	if err != nil {
+		writeHTTPError(tlsConn, http.StatusBadGateway, "websocket proxy error")
+		return
+	}
+	for key, values := range req.Header {
+		if shouldSkipWebSocketForwardHeader(key) {
+			continue
+		}
+		for _, value := range values {
+			upstreamReq.Header.Add(key, value)
+		}
+	}
+	resp, err := p.httpClient.Do(upstreamReq)
+	if err != nil {
+		writeHTTPError(tlsConn, http.StatusBadGateway, "websocket upstream error")
+		return
+	}
+	p.bridgeWebSocketMITMResponse(tlsConn, reader, resp, "direct "+entry.Service, host, req)
+}
+
+func (p *httpsProxy) bridgeWebSocketMITMResponse(tlsConn *tls.Conn, reader *bufio.Reader, resp *http.Response, label, host string, req *http.Request) {
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		defer resp.Body.Close()
+		_ = writeHTTPResponseStream(tlsConn, resp)
+		return
+	}
+	if !strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") || !headerHasToken(resp.Header, "Connection", "upgrade") {
+		resp.Body.Close()
+		writeHTTPError(tlsConn, http.StatusBadGateway, "invalid websocket upgrade response")
+		return
+	}
+	upstream, ok := resp.Body.(io.ReadWriteCloser)
+	if !ok {
+		resp.Body.Close()
+		writeHTTPError(tlsConn, http.StatusBadGateway, "websocket upgrade unavailable")
+		return
+	}
+	if err := writeUpgradeResponse(tlsConn, resp); err != nil {
+		upstream.Close()
+		return
+	}
+	if p.debug {
+		log.Printf("[proxy %s] WSS https://%s%s → 101", label, host, redactedDebugPath(req.URL.Path, req.URL.RawQuery))
+	}
+	relayClientWebSocket(tlsConn, reader, upstream)
+}
+
+func shouldSkipWebSocketForwardHeader(name string) bool {
+	lower := strings.ToLower(name)
+	return lower == "host" || lower == "proxy-connection" || lower == "proxy-authorization" || strings.HasPrefix(lower, "x-duckway-")
+}
+
+func writeUpgradeResponse(w io.Writer, resp *http.Response) error {
+	bw := bufio.NewWriter(w)
+	proto := resp.Proto
+	if proto == "" {
+		proto = "HTTP/1.1"
+	}
+	if _, err := fmt.Fprintf(bw, "%s %d %s\r\n", proto, resp.StatusCode, http.StatusText(resp.StatusCode)); err != nil {
+		return err
+	}
+	if err := resp.Header.Write(bw); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString("\r\n"); err != nil {
+		return err
+	}
+	return bw.Flush()
+}
+
+func relayClientWebSocket(clientConn *tls.Conn, clientReader io.Reader, upstream io.ReadWriteCloser) {
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(upstream, clientReader)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(clientConn, upstream)
+		done <- struct{}{}
+	}()
+	<-done
+	_ = upstream.Close()
+	_ = clientConn.Close()
+	<-done
 }
 
 func (p *httpsProxy) forwardMITM(tlsConn *tls.Conn, req *http.Request, svcName, host string) {

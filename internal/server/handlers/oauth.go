@@ -796,12 +796,13 @@ func codexPhantomJWTWithClaims(kind, placeholder string, subInfo map[string]inte
 		"localhost":                 true,
 	}
 	payload := map[string]interface{}{
-		"iss":                         "https://auth.openai.com",
-		"sub":                         "auth0|duckway-phantom",
-		"https://api.openai.com/auth": authClaims,
-		"iat":                         now,
-		"exp":                         exp,
-		"jti":                         "dw-phantom-" + kind,
+		"iss":                             "https://auth.openai.com",
+		"sub":                             "auth0|duckway-phantom",
+		"https://duckway.dev/placeholder": placeholder,
+		"https://api.openai.com/auth":     authClaims,
+		"iat":                             now,
+		"exp":                             exp,
+		"jti":                             "dw-phantom-" + kind,
 	}
 	if kind == "access" {
 		payload["aud"] = []string{"https://api.openai.com/v1"}
