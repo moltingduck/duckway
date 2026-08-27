@@ -108,6 +108,8 @@
         <tr><td class="text-muted">Refreshable</td><td id="d-refresh"></td></tr>
         <tr><td class="text-muted">Mintable</td><td id="d-mintable"></td></tr>
         <tr><td class="text-muted">Usage</td><td id="d-usage"></td></tr>
+        <tr><td class="text-muted">LLM Tokens (90d)</td><td id="d-llm-tokens">Loading...</td></tr>
+        <tr><td class="text-muted">LLM Cost (90d)</td><td id="d-llm-cost">Loading...</td></tr>
         <tr><td class="text-muted">Last Used</td><td id="d-last-used"></td></tr>
         <tr><td class="text-muted">Created</td><td id="d-created"></td></tr>
         <tr><td class="text-muted">Status</td><td id="d-status"></td></tr>
@@ -115,6 +117,7 @@
       <div class="modal-actions mt-1">
         <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
         <button type="button" class="btn" onclick="openKeyACLFromDetail()">ACL</button>
+        <a class="btn" id="d-usage-detail-link" href="/admin/usage">View usage details</a>
         <button type="button" class="btn btn-primary" onclick="switchToEdit()">Edit</button>
       </div>
     </div>
@@ -208,12 +211,31 @@ function openDetail(id) {
       document.getElementById('d-refresh').innerHTML = k.is_refreshable ? '<span class="badge badge-blue">Yes</span>' : 'No';
       document.getElementById('d-mintable').innerHTML = k.is_mintable ? '<span class="badge badge-purple">Yes</span>' : 'No';
       document.getElementById('d-usage').textContent = k.usage_count;
+      loadKeyUsageSummary(k.id);
       document.getElementById('d-last-used').textContent = k.last_used_at || 'Never';
       document.getElementById('d-created').textContent = k.created_at;
       document.getElementById('d-status').innerHTML = k.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>';
       document.getElementById('detail-view').style.display = '';
       document.getElementById('detail-edit').style.display = 'none';
       document.getElementById('detail-modal').style.display = 'flex';
+    });
+}
+
+function loadKeyUsageSummary(id) {
+  document.getElementById('d-llm-tokens').textContent = 'Loading...';
+  document.getElementById('d-llm-cost').textContent = 'Loading...';
+  document.getElementById('d-usage-detail-link').href = '/admin/usage?key_id=' + encodeURIComponent(id);
+  fetch('/api/usage/detail?key_id=' + encodeURIComponent(id) + '&days=90', {credentials:'same-origin'})
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) {
+      var s = data.summary || {};
+      document.getElementById('d-llm-tokens').textContent = Number(s.total_tokens || 0).toLocaleString();
+      var cost = '$' + Number(s.cost_usd || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:4});
+      if (Number(s.unpriced_requests || 0)) cost += ' (partial; ' + s.unpriced_requests + ' unpriced)';
+      document.getElementById('d-llm-cost').textContent = cost;
+    }).catch(function() {
+      document.getElementById('d-llm-tokens').textContent = 'Unavailable';
+      document.getElementById('d-llm-cost').textContent = 'Unavailable';
     });
 }
 

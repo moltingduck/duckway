@@ -367,6 +367,15 @@ function loadUsageDetailTargets(keys) {
       select.innerHTML = '<option value="">Select a key or group...</option>' +
         (keyOptions ? '<optgroup label="Keys">' + keyOptions + '</optgroup>' : '') +
         (groupOptions ? '<optgroup label="Key groups">' + groupOptions + '</optgroup>' : '');
+      var query = new URLSearchParams(window.location.search);
+      var target = query.get('key_id') ? 'key:' + query.get('key_id') : (query.get('key_group_id') ? 'group:' + query.get('key_group_id') : '');
+      if (target) {
+        select.value = target;
+        if (select.value) {
+          showUsageTab('keys');
+          loadUsageDetail();
+        }
+      }
     });
 }
 
