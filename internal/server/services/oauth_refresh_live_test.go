@@ -184,6 +184,79 @@ func TestClaudeCodeOAuthLiveDuckwayUploadRefreshE2EIfCredentialsExist(t *testing
 	writeLiveCredentialJSON(t, path, doc)
 }
 
+func TestClaudeCodeOAuthLiveDuckwayLLME2EIfCredentialsExist(t *testing.T) {
+	requireLiveOAuthOptIn(t, liveClaudeOptInEnv)
+	path, ok := liveCredentialPath(t, liveClaudeCredentialsPathEnv, liveClaudeCredentialsName)
+	if !ok {
+		t.Skipf("missing %s/%s; copy ~/.claude/.credentials.json there to run this live E2E test", liveCredentialDirName, liveClaudeCredentialsName)
+	}
+	enforcePrivateLiveCredentialFile(t, path)
+	doc := readLiveCredentialJSON(t, path)
+	oauth := liveObject(doc, "claudeAiOauth")
+	if oauth == nil {
+		t.Fatalf("live Claude credentials %s must contain claudeAiOauth", path)
+	}
+	accessToken := liveString(oauth, "accessToken", "access_token")
+	refreshToken := liveString(oauth, "refreshToken", "refresh_token")
+	if accessToken == "" || refreshToken == "" {
+		t.Fatalf("live Claude credentials %s must contain claudeAiOauth accessToken and refreshToken", path)
+	}
+
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	serviceQ := queries.NewServiceQueries(db)
+	serviceRow := ensureLiveOAuthService(t, serviceQ, "anthropic")
+	encryptedAccess, err := crypto.Encrypt(accessToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedRefresh, err := crypto.Encrypt(refreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const clientID = "client-live-claude-llm"
+	const placeholder = "sk-ant-dw_live_claude_llm_placeholder"
+	if _, err := db.Exec(`INSERT INTO clients (id, short_id, name, token_hash) VALUES (?, ?, ?, ?)`, clientID, "livcld", "live Claude LLM client", services.HashToken("unused")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id, service_id, name, key_encrypted, refresh_token) VALUES ('key-live-claude-llm', ?, 'live Claude LLM', ?, ?)`, serviceRow.ID, encryptedAccess, encryptedRefresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, client_id, requires_approval) VALUES ('ph-live-claude-llm', 'ANTHROPIC_AUTH_TOKEN', ?, ?, 'key-live-claude-llm', ?, 0)`, placeholder, serviceRow.ID, clientID); err != nil {
+		t.Fatal(err)
+	}
+
+	apiKeyQ := queries.NewAPIKeyQueries(db)
+	placeholderQ := queries.NewPlaceholderQueries(db)
+	groupQ := queries.NewGroupQueries(db)
+	approvalQ := queries.NewApprovalQueries(db)
+	resolver := services.NewKeyResolver(crypto, apiKeyQ, placeholderQ, groupQ, approvalQ)
+	handler := handlers.NewProxyHandler(serviceQ, apiKeyQ, resolver, nil, approvalQ, nil, nil)
+	body := `{"model":"claude-haiku-4-5-20251001","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/anthropic/v1/messages", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+placeholder)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+	req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, &models.Client{ID: clientID, Name: "live Claude LLM client"}))
+	rec := httptest.NewRecorder()
+	handler.Handle(rec, req)
+	if rec.Code < 200 || rec.Code >= 300 {
+		t.Fatalf("Claude live LLM request failed: status=%d body=%s", rec.Code, redactLiveMessage(rec.Body.String()))
+	}
+	var response map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode Claude live LLM response: %v", err)
+	}
+	if response["id"] == nil || response["content"] == nil {
+		t.Fatalf("Claude live LLM response missing id or content")
+	}
+}
+
 func TestCodexOAuthLiveDuckwayUploadRefreshE2EIfCredentialsExist(t *testing.T) {
 	requireLiveOAuthOptIn(t, liveCodexOptInEnv)
 	path, ok := liveCredentialPath(t, liveCodexAuthPathEnv, liveCodexAuthName)

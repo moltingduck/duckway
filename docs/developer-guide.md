@@ -951,6 +951,15 @@ DUCKWAY_TEST_CLAUDE_OAUTH_LIVE=1 DUCKWAY_LIVE_CREDENTIALS_STRICT=1 \
 go test ./internal/server/services -run TestClaudeCodeOAuthLiveDuckwayUploadRefreshE2EIfCredentialsExist -count=1 -v
 ```
 
+The Claude live case runner keeps refresh and LLM requests independent. By
+default it runs both and continues to the LLM request when refresh fails:
+
+```bash
+CLAUDE_AUTH=live-credentials/claude-credentials.json ./scripts/claude-oauth-live-e2e.sh
+CLAUDE_AUTH=live-credentials/claude-credentials.json ./scripts/claude-oauth-live-e2e.sh --refresh-only
+CLAUDE_AUTH=live-credentials/claude-credentials.json ./scripts/claude-oauth-live-e2e.sh --llm-only
+```
+
 Run Duckway upload/refresh E2E for Codex:
 
 ```bash
