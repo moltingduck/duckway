@@ -158,12 +158,12 @@ func TestKeyResolver_Resolve_ActivePlaceholderReturnsRealKey(t *testing.T) {
 	f := newFixture(t)
 
 	const (
-		svcID     = "svc-1"
-		keyID     = "key-1"
-		clientID  = "client-1"
-		phID      = "ph-1"
-		phToken   = "dk_placeholder_abc123"
-		realKey   = "sk-real-api-key-value"
+		svcID    = "svc-1"
+		keyID    = "key-1"
+		clientID = "client-1"
+		phID     = "ph-1"
+		phToken  = "dk_placeholder_abc123"
+		realKey  = "sk-real-api-key-value"
 	)
 
 	f.insertService(t, svcID, "test-openai", "proxy")
@@ -183,6 +183,9 @@ func TestKeyResolver_Resolve_ActivePlaceholderReturnsRealKey(t *testing.T) {
 	}
 	if result.PlaceholderID != phID {
 		t.Errorf("PlaceholderID = %q, want %q", result.PlaceholderID, phID)
+	}
+	if result.GroupID != "" {
+		t.Errorf("direct assignment GroupID = %q, want empty", result.GroupID)
 	}
 	if result.APIKeyID != keyID {
 		t.Errorf("APIKeyID = %q, want %q", result.APIKeyID, keyID)
@@ -305,6 +308,9 @@ func TestKeyResolver_Resolve_RoundRobin(t *testing.T) {
 	}
 	if !r2.Permitted {
 		t.Fatalf("second Resolve not permitted: %s", r2.Error)
+	}
+	if r1.GroupID != groupID || r2.GroupID != groupID {
+		t.Errorf("resolved GroupIDs = %q, %q; want %q", r1.GroupID, r2.GroupID, groupID)
 	}
 
 	if r1.RealKey == r2.RealKey {

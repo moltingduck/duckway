@@ -30,6 +30,7 @@ type ResolveResult struct {
 	RealKey          string
 	RealRefreshToken string
 	APIKeyID         string
+	GroupID          string
 	ServiceID        string
 	PlaceholderID    string
 	Placeholder      string
@@ -124,6 +125,12 @@ func (r *KeyResolver) Resolve(placeholder string, clientID string) (*ResolveResu
 		RealKey:          realKey,
 		RealRefreshToken: realRefresh,
 		APIKeyID:         apiKey.ID,
+		GroupID: func() string {
+			if ph.GroupID != nil {
+				return *ph.GroupID
+			}
+			return ""
+		}(),
 		ServiceID:        ph.ServiceID,
 		PlaceholderID:    ph.ID,
 		Placeholder:      ph.Placeholder,

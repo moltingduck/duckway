@@ -487,7 +487,8 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// which would otherwise make Go's transport hand us compressed bytes
 	// the scanner can't read). Slightly more bytes on the gateway↔upstream
 	// hop; correctness for the usage panel.
-	scanUsage := h.convUsage != nil && isLLMService(serviceName)
+	scanUsage := h.convUsage != nil && (isLLMService(serviceName) ||
+		strings.EqualFold(strings.TrimSpace(svc.Category), "llm") || strings.TrimSpace(svc.UsageMetering) != "")
 	if scanUsage {
 		upstreamReq.Header.Set("Accept-Encoding", "identity")
 	}
@@ -701,13 +702,16 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			_ = h.convUsage.Insert(&queries.ConversationUsageRecord{
 				ClientID:            client.ID,
 				APIKeyID:            result.APIKeyID,
+				KeyGroupID:          result.GroupID,
 				ServiceName:         serviceName,
+				Provider:            u.Provider,
 				ConversationID:      r.Header.Get("X-Claude-Code-Session-Id"),
 				Model:               u.Model,
 				InputTokens:         u.InputTokens,
 				OutputTokens:        u.OutputTokens,
 				CacheReadTokens:     u.CacheReadTokens,
 				CacheCreationTokens: u.CacheCreationTokens,
+				ReasoningTokens:     u.ReasoningTokens,
 			})
 		}
 	}

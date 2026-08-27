@@ -18,6 +18,28 @@
 .usage-status { white-space:nowrap; }
 .usage-key-table { margin:.5rem 0 .75rem 2rem; width:calc(100% - 2rem); }
 .usage-caret { display:inline-block; width:1rem; color:var(--text-muted); }
+.usage-detail-toolbar { display:grid; grid-template-columns:minmax(220px,1fr) auto; gap:.75rem; align-items:end; margin-bottom:1rem; }
+.usage-detail-toolbar .form-group { margin:0; }
+.usage-range, .usage-heatmap-toggle { display:flex; flex-wrap:wrap; gap:.25rem; }
+.usage-range button, .usage-heatmap-toggle button { min-height:2.25rem; }
+.usage-range button.active, .usage-heatmap-toggle button.active { border-color:var(--accent); color:var(--text); background:rgba(99,102,241,.12); }
+.usage-detail-state { padding:1rem 0; color:var(--text-muted); }
+.usage-client-picker { display:flex; flex-wrap:wrap; gap:.5rem 1rem; margin:.25rem 0 1rem; }
+.usage-client-picker label { display:inline-flex; align-items:center; gap:.4rem; font-size:.8125rem; cursor:pointer; }
+.usage-client-picker input { width:auto; margin:0; }
+.usage-model-layout { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(280px,.8fr); gap:1rem; align-items:start; }
+.usage-detail h3 { font-size:1rem; margin:.25rem 0 .65rem; }
+.usage-heatmap-head { display:flex; justify-content:space-between; align-items:center; gap:.75rem; margin-bottom:.65rem; }
+.usage-heatmap { display:grid; grid-template-rows:repeat(7,12px); grid-auto-flow:column; grid-auto-columns:12px; gap:3px; max-width:100%; overflow-x:auto; padding:2px 0 .45rem; }
+.usage-heatmap-cell { width:12px; height:12px; border:0; border-radius:2px; background:var(--border); padding:0; }
+.usage-heatmap-cell:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.usage-heatmap-legend { display:flex; justify-content:flex-end; align-items:center; gap:4px; font-size:.75rem; color:var(--text-muted); }
+.usage-heatmap-legend span:not(:first-child) { width:12px; height:12px; border-radius:2px; }
+@media (max-width:800px) {
+  .usage-detail-toolbar, .usage-model-layout { grid-template-columns:1fr; }
+  .usage-detail-toolbar > div:last-child { justify-self:start; }
+  .usage-key-table { margin-left:0; width:100%; }
+}
 </style>
 
 <div class="page-header">
@@ -70,6 +92,60 @@
 
 <div class="card usage-section" id="usage-keys">
   <h3>LLM API Keys</h3>
+  <div class="usage-detail-toolbar">
+    <div class="form-group">
+      <label for="usage-detail-target">Key or key group</label>
+      <select id="usage-detail-target" onchange="loadUsageDetail()" aria-describedby="usage-detail-help">
+        <option value="">Select a key or group...</option>
+      </select>
+      <span id="usage-detail-help" class="text-sm text-muted">Inspect captured usage for one key or the combined members of a key group.</span>
+    </div>
+    <div class="usage-range" role="group" aria-label="Usage range">
+      <button type="button" class="btn btn-sm" data-days="1" onclick="setDetailRange(1,this)">1d</button>
+      <button type="button" class="btn btn-sm active" data-days="3" onclick="setDetailRange(3,this)" aria-pressed="true">3d</button>
+      <button type="button" class="btn btn-sm" data-days="7" onclick="setDetailRange(7,this)">1w</button>
+      <button type="button" class="btn btn-sm" data-days="30" onclick="setDetailRange(30,this)">1m</button>
+      <button type="button" class="btn btn-sm" data-days="90" onclick="setDetailRange(90,this)">90d</button>
+    </div>
+  </div>
+
+  <div id="usage-detail-state" class="usage-detail-state">Select a key or key group to view details.</div>
+  <div id="usage-detail" class="usage-detail" hidden>
+    <div class="usage-summary" aria-label="Selected usage summary">
+      <div class="stat-card"><div class="label">Total tokens</div><div class="value" id="detail-total-tokens">0</div></div>
+      <div class="stat-card"><div class="label">Cost</div><div class="value" id="detail-total-cost">$0.00</div></div>
+      <div class="stat-card"><div class="label">Requests</div><div class="value" id="detail-total-requests">0</div></div>
+      <div class="stat-card"><div class="label">Clients</div><div class="value" id="detail-total-clients">0</div></div>
+    </div>
+
+    <h3>Clients</h3>
+    <div id="usage-detail-clients" class="usage-client-picker" role="group" aria-label="Clients included in totals"></div>
+
+    <div class="usage-model-layout">
+      <section aria-labelledby="usage-model-title">
+        <h3 id="usage-model-title">Models</h3>
+        <div class="usage-table-wrap">
+          <table>
+            <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache</th><th>Total</th><th>Cost</th></tr></thead>
+            <tbody id="usage-detail-models"></tbody>
+          </table>
+        </div>
+      </section>
+      <section aria-labelledby="usage-heatmap-title">
+        <div class="usage-heatmap-head">
+          <h3 id="usage-heatmap-title">Daily activity</h3>
+          <div class="usage-heatmap-toggle" role="group" aria-label="Heatmap metric">
+            <button type="button" class="btn btn-sm active" id="heatmap-tokens-btn" onclick="setHeatmapMetric('tokens')" aria-pressed="true">Tokens</button>
+            <button type="button" class="btn btn-sm" id="heatmap-cost-btn" onclick="setHeatmapMetric('cost')" aria-pressed="false">Cost</button>
+          </div>
+        </div>
+        <div id="usage-heatmap" class="usage-heatmap" role="grid" aria-label="90-day token usage heatmap"></div>
+        <div id="usage-heatmap-legend" class="usage-heatmap-legend" aria-hidden="true"></div>
+      </section>
+    </div>
+  </div>
+  <hr style="border:0;border-top:1px solid var(--border);margin:1.25rem 0">
+  <h3>Key overview</h3>
   <div id="usage-cards"></div>
 </div>
 
@@ -92,6 +168,11 @@
 
 <script>
 var clientRows = [];
+var usageDetailDays = 3;
+var usageDetailData = null;
+var usageHeatmapData = null;
+var usageHeatmapMetric = 'tokens';
+var usageDetailTargetsLoaded = false;
 
 function activeDays() {
   return document.getElementById('client-window').value || '3';
@@ -240,6 +321,7 @@ function loadUsage() {
   fetch('/api/usage?hours=' + encodeURIComponent(activeHours()), {credentials:'same-origin'})
     .then(function(r){ return r.json(); })
     .then(function(rows){
+      loadUsageDetailTargets(rows || []);
       var box = document.getElementById('usage-cards');
       if (!rows || rows.length === 0) {
         box.innerHTML = '<p class="text-muted">No LLM API keys found.</p>';
@@ -255,14 +337,240 @@ function loadUsage() {
               (k.is_refreshable ? '<span class="badge badge-green">OAuth</span>' : '') +
               (k.provider ? ' <span class="badge badge-gray">' + escapeHtml(k.provider) + '</span>' : '') + '</td>' +
             '<td><span class="badge badge-blue">' + escapeHtml(k.service) + '</span></td>' +
-            '<td>' + fmtInt(Number(k.tokens_input || 0) + Number(k.tokens_output || 0) + Number(k.tokens_cache_read || 0) + Number(k.tokens_cache_creation || 0)) +
+            '<td>' + fmtInt(Number(k.tokens_input || 0) + Number(k.tokens_output || 0)) +
               '<div class="text-sm text-muted">in ' + fmtInt(k.tokens_input) + ' · out ' + fmtInt(k.tokens_output) + '</div></td>' +
             '<td>' + fmtInt(k.captured_requests || k.usage_count) + '</td>' +
             '<td>' + pressureBar(maxPct) + '</td>' +
             '<td class="text-sm text-muted">' + fmtReset(k.updated_at || k.last_used_at) + '</td>' +
             '</tr>';
         }).join('') + '</tbody></table></div>';
+    }).catch(function(){
+      document.getElementById('usage-cards').innerHTML = '<p class="text-muted">Unable to load key overview.</p>';
     });
+}
+
+function loadUsageDetailTargets(keys) {
+  if (usageDetailTargetsLoaded) return;
+  usageDetailTargetsLoaded = true;
+  fetch('/api/key-groups', {credentials:'same-origin'})
+    .then(function(r){ return r.ok ? r.json() : []; })
+    .catch(function(){ return []; })
+    .then(function(groups){
+      var select = document.getElementById('usage-detail-target');
+      var keyOptions = (keys || []).map(function(k){
+        return '<option value="key:' + escapeAttr(k.key_id) + '">' + escapeHtml(k.key_name) + ' · ' + escapeHtml(k.service || '') + '</option>';
+      }).join('');
+      var groupRows = Array.isArray(groups) ? groups : (groups.groups || []);
+      var groupOptions = groupRows.map(function(g){
+        return '<option value="group:' + escapeAttr(g.id) + '">' + escapeHtml(g.name) + ' · group</option>';
+      }).join('');
+      select.innerHTML = '<option value="">Select a key or group...</option>' +
+        (keyOptions ? '<optgroup label="Keys">' + keyOptions + '</optgroup>' : '') +
+        (groupOptions ? '<optgroup label="Key groups">' + groupOptions + '</optgroup>' : '');
+    });
+}
+
+function setDetailRange(days, button) {
+  usageDetailDays = days;
+  document.querySelectorAll('.usage-range button').forEach(function(b){
+    var active = b === button;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+  loadUsageDetail();
+}
+
+function loadUsageDetail() {
+  var value = document.getElementById('usage-detail-target').value;
+  var state = document.getElementById('usage-detail-state');
+  var detail = document.getElementById('usage-detail');
+  if (!value) {
+    usageDetailData = null;
+    detail.hidden = true;
+    state.style.display = '';
+    state.textContent = 'Select a key or key group to view details.';
+    return;
+  }
+  var parts = value.split(':');
+  var param = parts[0] === 'group' ? 'key_group_id' : 'key_id';
+  state.style.display = '';
+  state.textContent = 'Loading usage details...';
+  detail.hidden = true;
+  var base = '/api/usage/detail?' + param + '=' + encodeURIComponent(parts.slice(1).join(':'));
+  Promise.all([usageDetailDays, 90].map(function(days){
+    return fetch(base + '&days=' + days, {credentials:'same-origin'}).then(function(r){
+      if (!r.ok) throw new Error('Request returned ' + r.status);
+      return r.json();
+    });
+  })).then(function(results){
+      usageDetailData = normalizeDetailData(results[0] || {});
+      usageHeatmapData = normalizeDetailData(results[1] || {});
+      renderDetailClients();
+      renderSelectedUsageDetail();
+      state.style.display = 'none';
+      detail.hidden = false;
+    })
+    .catch(function(err){
+      usageDetailData = null;
+      state.style.display = '';
+      state.textContent = 'Unable to load usage details. ' + err.message;
+    });
+}
+
+function normalizeDetailData(data) {
+  data.summary = data.summary || {};
+  data.clients = Array.isArray(data.clients) ? data.clients : [];
+  data.models = Array.isArray(data.models) ? data.models : [];
+  data.daily = Array.isArray(data.daily) ? data.daily : [];
+  return data;
+}
+
+function renderDetailClients() {
+  var box = document.getElementById('usage-detail-clients');
+  var clients = usageDetailData.clients || [];
+  if (!clients.length) {
+    box.innerHTML = '<span class="text-muted text-sm">No client breakdown available.</span>';
+    return;
+  }
+  box.innerHTML = clients.map(function(c, index){
+    var id = 'usage-client-' + index;
+    return '<label for="' + id + '"><input id="' + id + '" type="checkbox" data-client-index="' + index + '" checked onchange="renderSelectedUsageDetail()">' +
+      '<span>' + escapeHtml(c.client_name || c.client_id || '(unknown)') + '</span></label>';
+  }).join('');
+}
+
+function selectedDetailClients() {
+  if (!usageDetailData) return [];
+  var boxes = document.querySelectorAll('#usage-detail-clients input[type="checkbox"]');
+  if (!boxes.length) return [];
+  var out = [];
+  boxes.forEach(function(box){
+    if (box.checked) out.push(usageDetailData.clients[Number(box.dataset.clientIndex)]);
+  });
+  return out;
+}
+
+function addSummary(target, source) {
+  source = source || {};
+  target.total_tokens += Number(source.total_tokens || source.tokens || 0);
+  target.cost_usd += Number(source.cost_usd || source.cost || 0);
+  target.requests += Number(source.requests || 0);
+}
+
+function aggregateSelectedDetail() {
+  var selected = selectedDetailClients();
+  if (!usageDetailData.clients.length) {
+    return {summary:usageDetailData.summary, models:usageDetailData.models, daily:usageDetailData.daily, clientCount:Number(usageDetailData.summary.clients || 0)};
+  }
+  var summary = {total_tokens:0, cost_usd:0, requests:0};
+  var models = {};
+  var daily = {};
+  selected.forEach(function(client){
+    addSummary(summary, client.summary || client);
+    (client.models || []).forEach(function(m){
+      var name = m.model || m.name || '(unknown)';
+      if (!models[name]) models[name] = {model:name,input_tokens:0,output_tokens:0,cache_tokens:0,total_tokens:0,cost_usd:0};
+      ['input_tokens','output_tokens','cache_tokens','total_tokens','cost_usd'].forEach(function(k){ models[name][k] += Number(m[k] || 0); });
+    });
+    (client.daily || []).forEach(function(d){
+      var date = String(d.date || '').slice(0,10);
+      if (!date) return;
+      if (!daily[date]) daily[date] = {date:date,total_tokens:0,cost_usd:0};
+      daily[date].total_tokens += Number(d.total_tokens || d.tokens || 0);
+      daily[date].cost_usd += Number(d.cost_usd || d.cost || 0);
+    });
+  });
+  return {summary:summary, models:Object.keys(models).map(function(k){ return models[k]; }), daily:Object.keys(daily).map(function(k){ return daily[k]; }), clientCount:selected.length};
+}
+
+function renderSelectedUsageDetail() {
+  if (!usageDetailData) return;
+  var aggregate = aggregateSelectedDetail();
+  var summary = aggregate.summary || {};
+  document.getElementById('detail-total-tokens').textContent = fmtInt(summary.total_tokens || summary.tokens || 0);
+  document.getElementById('detail-total-cost').textContent = fmtUSD(summary.cost_usd || summary.cost || 0);
+  document.getElementById('detail-total-requests').textContent = fmtInt(summary.requests || 0);
+  document.getElementById('detail-total-clients').textContent = fmtInt(aggregate.clientCount);
+  renderDetailModels(aggregate.models || []);
+  renderUsageHeatmap(selectedHeatmapDaily());
+}
+
+function selectedHeatmapDaily() {
+  if (!usageHeatmapData) return [];
+  if (!usageDetailData.clients.length) return usageHeatmapData.daily || [];
+  var selectedIDs = {};
+  selectedDetailClients().forEach(function(c){ selectedIDs[c.client_id] = true; });
+  var daily = {};
+  (usageHeatmapData.clients || []).forEach(function(client){
+    if (!selectedIDs[client.client_id]) return;
+    (client.daily || []).forEach(function(d){
+      var date = String(d.date || '').slice(0,10);
+      if (!daily[date]) daily[date] = {date:date,total_tokens:0,cost_usd:0};
+      daily[date].total_tokens += Number(d.total_tokens || 0);
+      daily[date].cost_usd += Number(d.cost_usd || 0);
+    });
+  });
+  return Object.keys(daily).map(function(date){ return daily[date]; });
+}
+
+function renderDetailModels(models) {
+  var tb = document.getElementById('usage-detail-models');
+  if (!models.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="text-muted">No model usage in this selection.</td></tr>';
+    return;
+  }
+  models.sort(function(a,b){ return Number(b.total_tokens || 0) - Number(a.total_tokens || 0); });
+  tb.innerHTML = models.map(function(m){
+    var cache = Number(m.cache_tokens || m.cache_read_tokens || 0) + Number(m.cache_creation_tokens || 0);
+    var total = Number(m.total_tokens || 0) || Number(m.input_tokens || 0) + Number(m.output_tokens || 0) + cache;
+    return '<tr><td><strong>' + escapeHtml(m.model || m.name || '(unknown)') + '</strong></td>' +
+      '<td>' + fmtInt(m.input_tokens || 0) + '</td><td>' + fmtInt(m.output_tokens || 0) + '</td>' +
+      '<td>' + fmtInt(cache) + '</td><td>' + fmtInt(total) + '</td><td>' + fmtUSD(m.cost_usd || m.cost || 0) +
+      (Number(m.unpriced_requests || 0) ? ' <span class="badge badge-yellow">partial</span>' : '') + '</td></tr>';
+  }).join('');
+}
+
+function setHeatmapMetric(metric) {
+  usageHeatmapMetric = metric;
+  ['tokens','cost'].forEach(function(name){
+    var active = name === metric;
+    var button = document.getElementById('heatmap-' + name + '-btn');
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+  renderSelectedUsageDetail();
+}
+
+function renderUsageHeatmap(rows) {
+  var byDate = {};
+  rows.forEach(function(d){ if (d.date) byDate[String(d.date).slice(0,10)] = d; });
+  var days = [], now = new Date();
+  now.setHours(12,0,0,0);
+  for (var i = 89; i >= 0; i--) {
+    var date = new Date(now);
+    date.setDate(now.getDate() - i);
+    var iso = date.getFullYear() + '-' + String(date.getMonth()+1).padStart(2,'0') + '-' + String(date.getDate()).padStart(2,'0');
+    var row = byDate[iso] || {date:iso,total_tokens:0,cost_usd:0};
+    var value = usageHeatmapMetric === 'cost' ? Number(row.cost_usd || row.cost || 0) : Number(row.total_tokens || row.tokens || 0);
+    days.push({date:iso,value:value});
+  }
+  var max = days.reduce(function(n,d){ return Math.max(n,d.value); }, 0);
+  var box = document.getElementById('usage-heatmap');
+  box.setAttribute('aria-label', '90-day ' + usageHeatmapMetric + ' usage heatmap');
+  box.innerHTML = days.map(function(d){
+    var level = max > 0 && d.value > 0 ? Math.max(1, Math.ceil(d.value / max * 4)) : 0;
+    var display = usageHeatmapMetric === 'cost' ? fmtUSD(d.value) : fmtInt(d.value) + ' tokens';
+    return '<button type="button" class="usage-heatmap-cell" style="background:' + heatmapColor(level) + '" title="' + escapeHtml(d.date + ': ' + display) + '" aria-label="' + escapeHtml(d.date + ', ' + display) + '"></button>';
+  }).join('');
+  document.getElementById('usage-heatmap-legend').innerHTML = '<span>Less</span>' + [0,1,2,3,4].map(function(level){ return '<span style="background:' + heatmapColor(level) + '"></span>'; }).join('') + '<span>More</span>';
+}
+
+function heatmapColor(level) {
+  return ['var(--border)','#bfdbfe','#60a5fa','#2563eb','#1d4ed8'][level] || 'var(--border)';
+}
+
+function fmtUSD(n) {
+  return '$' + Number(n || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:4});
 }
 
 function loadSessions() {

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 )
 
 type usageTestDeps struct {
+	db      *sql.DB
 	h       *UsageHandler
 	apiKeyQ *queries.APIKeyQueries
 	svcQ    *queries.ServiceQueries
@@ -28,6 +30,7 @@ func newUsageTestDeps(t *testing.T) usageTestDeps {
 	}
 	t.Cleanup(func() { db.Close() })
 	d := usageTestDeps{
+		db:      db,
 		apiKeyQ: queries.NewAPIKeyQueries(db),
 		svcQ:    queries.NewServiceQueries(db),
 		logQ:    queries.NewRequestLogQueries(db),
@@ -201,6 +204,60 @@ func TestUsageClients_AggregatesClientKeyUsage(t *testing.T) {
 	}
 	if len(got.Keys) != 1 || got.Keys[0].KeyName != "shared" || got.Keys[0].MaxUsedPct < 89.9 {
 		t.Fatalf("key breakdown wrong: %+v", got.Keys)
+	}
+}
+
+func TestUsageKeyAndGroupDetailAPIs(t *testing.T) {
+	d := newUsageTestDeps(t)
+	_ = d.svcQ.Create(&models.Service{ID: "svc-detail-api", Name: "detail-api", UpstreamURL: "https://example.test", HostPattern: "example.test", IsActive: true})
+	_ = d.clientQ.Create(&models.Client{ID: "client-detail-api", ShortID: "detapi", Name: "agent", TokenHash: "hash"})
+	_ = d.apiKeyQ.Create(&models.APIKey{ID: "key-detail-api", ServiceID: "svc-detail-api", Name: "key", KeyEncrypted: "x"})
+	group, err := queries.CreateKeyGroup(d.db, "detail group", "", "detail-api", "score")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queries.AddKeyToGroup(d.db, group.ID, "key-detail-api", 0); err != nil {
+		t.Fatal(err)
+	}
+	_ = d.convQ.Insert(&queries.ConversationUsageRecord{ClientID: "client-detail-api", APIKeyID: "key-detail-api", KeyGroupID: group.ID, Provider: "test", Model: "m", InputTokens: 8, OutputTokens: 2})
+
+	for _, tc := range []struct {
+		path string
+		id   string
+		call func(http.ResponseWriter, *http.Request)
+	}{
+		{"/api/usage/keys/key-detail-api/detail?days=90", "key-detail-api", d.h.KeyDetail},
+		{"/api/usage/key-groups/" + group.ID + "/detail?days=90", group.ID, d.h.KeyGroupDetail},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req.SetPathValue("id", tc.id)
+		rec := httptest.NewRecorder()
+		tc.call(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", tc.path, rec.Code, rec.Body.String())
+		}
+		var rows []queries.MeteredUsageDetailRow
+		if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 || rows[0].ClientName != "agent" || rows[0].BillableTokens != 10 {
+			t.Fatalf("%s rows=%+v", tc.path, rows)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/usage/detail?key_id=key-detail-api&days=90", nil)
+	rec := httptest.NewRecorder()
+	d.h.Detail(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var detail meteredUsageDetailResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.WindowDays != 90 || detail.Summary.Requests != 1 || detail.Summary.BillableTokens != 10 ||
+		len(detail.Clients) != 1 || len(detail.Models) != 1 || len(detail.Daily) != 1 {
+		t.Fatalf("unexpected detail response: %+v", detail)
 	}
 }
 

@@ -26,6 +26,8 @@ var migrations = []string{
 		key_length    INTEGER NOT NULL DEFAULT 64,
 		key_directory TEXT NOT NULL DEFAULT '',
 		default_acl   TEXT NOT NULL DEFAULT '',
+		category      TEXT NOT NULL DEFAULT '',
+		usage_metering TEXT NOT NULL DEFAULT '',
 		is_active     INTEGER NOT NULL DEFAULT 1,
 		created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
@@ -337,17 +339,45 @@ var migrations = []string{
 		id                INTEGER PRIMARY KEY AUTOINCREMENT,
 		client_id         TEXT NOT NULL DEFAULT '',
 		api_key_id        TEXT NOT NULL DEFAULT '',
+		key_group_id      TEXT NOT NULL DEFAULT '',
 		service_name      TEXT NOT NULL DEFAULT '',
+		provider          TEXT NOT NULL DEFAULT '',
 		conversation_id   TEXT NOT NULL DEFAULT '',
 		model             TEXT NOT NULL DEFAULT '',
 		input_tokens      INTEGER NOT NULL DEFAULT 0,
 		output_tokens     INTEGER NOT NULL DEFAULT 0,
 		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+		reasoning_tokens   INTEGER NOT NULL DEFAULT 0,
+		billable_tokens   INTEGER NOT NULL DEFAULT 0,
+		cost_usd_micros   INTEGER NOT NULL DEFAULT 0,
+		priced            INTEGER NOT NULL DEFAULT 0,
+		pricing_version   TEXT NOT NULL DEFAULT '',
 		created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_conv_usage_key ON conversation_usage(api_key_id, created_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_conv_usage_conv ON conversation_usage(api_key_id, conversation_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_conv_usage_key_day ON conversation_usage(api_key_id, created_at, client_id, model)`,
+	`CREATE INDEX IF NOT EXISTS idx_conv_usage_group_day ON conversation_usage(key_group_id, created_at, client_id, model)`,
+	`CREATE INDEX IF NOT EXISTS idx_conv_usage_created ON conversation_usage(created_at)`,
+
+	// Immutable model price versions. Rates are USD micros per one million
+	// tokens, keeping both storage and cost calculations integer-only.
+	`CREATE TABLE IF NOT EXISTS model_pricing (
+		id                         TEXT PRIMARY KEY,
+		service_id                 TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+		model                      TEXT NOT NULL,
+		version                    TEXT NOT NULL,
+		input_usd_micros_per_mtok  INTEGER NOT NULL DEFAULT 0,
+		output_usd_micros_per_mtok INTEGER NOT NULL DEFAULT 0,
+		cache_read_usd_micros_per_mtok INTEGER NOT NULL DEFAULT 0,
+		cache_creation_usd_micros_per_mtok INTEGER NOT NULL DEFAULT 0,
+		reasoning_usd_micros_per_mtok INTEGER NOT NULL DEFAULT 0,
+		effective_from             TEXT NOT NULL,
+		created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+		UNIQUE(service_id, model, version)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_pricing_effective ON model_pricing(service_id, model, effective_from DESC)`,
 
 	// Key Suites: named bundles of different-service keys for bulk client assignment.
 	// Editing a suite propagates changes to all clients that received keys from it.
@@ -399,6 +429,8 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE services ADD COLUMN key_directory TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE services ADD COLUMN default_acl TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE services ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'proxy'",
+		"ALTER TABLE services ADD COLUMN category TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE services ADD COLUMN usage_metering TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE api_keys ADD COLUMN acl TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE api_keys ADD COLUMN refresh_token TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE api_keys ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0",
@@ -425,10 +457,28 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE key_group_members ADD COLUMN last_used_at TEXT",
 		// Key Suites: track which suite each placeholder came from
 		"ALTER TABLE placeholder_keys ADD COLUMN suite_id TEXT REFERENCES key_suites(id) ON DELETE SET NULL",
+		"ALTER TABLE conversation_usage ADD COLUMN provider TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE conversation_usage ADD COLUMN key_group_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE conversation_usage ADD COLUMN billable_tokens INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE conversation_usage ADD COLUMN cost_usd_micros INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE conversation_usage ADD COLUMN priced INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE conversation_usage ADD COLUMN pricing_version TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE conversation_usage ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE model_pricing ADD COLUMN reasoning_usd_micros_per_mtok INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, alt := range safeAlters {
 		db.Exec(alt) // ignore "duplicate column" errors
 	}
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_conv_usage_key_day ON conversation_usage(api_key_id, created_at, client_id, model)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_conv_usage_group_day ON conversation_usage(key_group_id, created_at, client_id, model)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_conv_usage_created ON conversation_usage(created_at)`)
+	db.Exec(`UPDATE conversation_usage SET provider = service_name WHERE provider = '' AND service_name != ''`)
+	db.Exec(`UPDATE conversation_usage
+		SET billable_tokens = MAX(input_tokens, 0) + MAX(output_tokens, 0) +
+			CASE WHEN lower(provider) = 'openai' THEN 0 ELSE
+				MAX(cache_read_tokens, 0) + MAX(cache_creation_tokens, 0) + MAX(reasoning_tokens, 0) END
+		WHERE billable_tokens = 0 AND
+			(input_tokens != 0 OR output_tokens != 0 OR cache_read_tokens != 0 OR cache_creation_tokens != 0 OR reasoning_tokens != 0)`)
 
 	db.Exec(`
 		INSERT OR IGNORE INTO key_suite_assignments (suite_id, client_id)

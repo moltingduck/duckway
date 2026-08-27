@@ -299,9 +299,9 @@ func (s *Server) startKeyGroupSweeper() {
 }
 
 // conversationUsageRetentionDays bounds how long per-request token usage
-// rows are kept. 30 days covers monthly billing reconciliation while
-// keeping the table small.
-const conversationUsageRetentionDays = 30
+// rows are kept. The usage detail API exposes a 90-day heatmap window, so raw
+// events must remain available for at least that full period.
+const conversationUsageRetentionDays = 90
 
 // startUsageRetentionSweeper prunes conversation_usage rows older than
 // the retention window. Runs hourly (the table is append-only and grows

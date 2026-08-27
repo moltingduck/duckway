@@ -97,7 +97,7 @@ func (s *Server) initShared() *SharedServices {
 func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	settingsQ := queries.NewSettingsQueries(s.db)
 	authH := handlers.NewAuthHandler(ss.UserQ, ss.AdminAuth)
-	serviceH := handlers.NewServiceHandler(ss.ServiceQ)
+	serviceH := handlers.NewServiceHandler(ss.ServiceQ, queries.NewModelPricingQueries(s.db))
 	apiKeyH := handlers.NewAPIKeyHandler(ss.APIKeyQ, ss.ServiceQ, ss.Crypto)
 	placeholderH := handlers.NewPlaceholderHandler(ss.PlaceholderQ, ss.ServiceQ, ss.ClientQ).
 		WithKeyLookup(ss.APIKeyQ, ss.Crypto)
@@ -164,12 +164,17 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("DELETE /api/services/{id}", serviceH.Delete)
 	adminAPIMux.HandleFunc("GET /api/services/{id}/acl-templates", serviceH.ListACLTemplates)
 	adminAPIMux.HandleFunc("POST /api/services/{id}/acl-templates", serviceH.ApplyACLTemplate)
+	adminAPIMux.HandleFunc("GET /api/services/{id}/pricing", serviceH.ListPricing)
+	adminAPIMux.HandleFunc("POST /api/services/{id}/pricing", serviceH.CreatePricing)
 
 	usageH := handlers.NewUsageHandler(ss.APIKeyQ, ss.RequestLogQ, ss.ConvUsageQ)
 	adminAPIMux.HandleFunc("GET /api/usage", usageH.List)
 	adminAPIMux.HandleFunc("GET /api/usage/clients", usageH.Clients)
 	adminAPIMux.HandleFunc("GET /api/usage/sessions", usageH.Sessions)
 	adminAPIMux.HandleFunc("GET /api/usage/conversations", usageH.Conversations)
+	adminAPIMux.HandleFunc("GET /api/usage/detail", usageH.Detail)
+	adminAPIMux.HandleFunc("GET /api/usage/keys/{id}/detail", usageH.KeyDetail)
+	adminAPIMux.HandleFunc("GET /api/usage/key-groups/{id}/detail", usageH.KeyGroupDetail)
 
 	adminAPIMux.HandleFunc("GET /api/keys", apiKeyH.List)
 	adminAPIMux.HandleFunc("POST /api/keys", apiKeyH.Create)

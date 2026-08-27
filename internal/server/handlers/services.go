@@ -1,7 +1,10 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -10,10 +13,15 @@ import (
 
 type ServiceHandler struct {
 	services *queries.ServiceQueries
+	pricing  *queries.ModelPricingQueries
 }
 
-func NewServiceHandler(services *queries.ServiceQueries) *ServiceHandler {
-	return &ServiceHandler{services: services}
+func NewServiceHandler(services *queries.ServiceQueries, pricing ...*queries.ModelPricingQueries) *ServiceHandler {
+	h := &ServiceHandler{services: services}
+	if len(pricing) > 0 {
+		h.pricing = pricing[0]
+	}
+	return h
 }
 
 func (h *ServiceHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -30,18 +38,20 @@ func (h *ServiceHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name         string `json:"name"`
-		DisplayName  string `json:"display_name"`
-		UpstreamURL  string `json:"upstream_url"`
-		HostPattern  string `json:"host_pattern"`
-		AuthType     string `json:"auth_type"`
-		AuthHeader   string `json:"auth_header"`
-		AuthPrefix   string `json:"auth_prefix"`
-		KeyPrefix    string `json:"key_prefix"`
-		KeyLength    int    `json:"key_length"`
-		KeyDirectory string `json:"key_directory"`
-		DefaultACL   string `json:"default_acl"`
-		DeliveryMode string `json:"delivery_mode"`
+		Name          string `json:"name"`
+		DisplayName   string `json:"display_name"`
+		UpstreamURL   string `json:"upstream_url"`
+		HostPattern   string `json:"host_pattern"`
+		AuthType      string `json:"auth_type"`
+		AuthHeader    string `json:"auth_header"`
+		AuthPrefix    string `json:"auth_prefix"`
+		KeyPrefix     string `json:"key_prefix"`
+		KeyLength     int    `json:"key_length"`
+		KeyDirectory  string `json:"key_directory"`
+		DefaultACL    string `json:"default_acl"`
+		Category      string `json:"category"`
+		UsageMetering string `json:"usage_metering"`
+		DeliveryMode  string `json:"delivery_mode"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -57,6 +67,10 @@ func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := services.ValidatePermissionConfig(req.DefaultACL); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := validateUsageMetering(req.UsageMetering); err != nil {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -86,20 +100,22 @@ func (h *ServiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		deliveryMode = "proxy"
 	}
 	svc := &models.Service{
-		ID:           id,
-		Name:         req.Name,
-		DisplayName:  req.DisplayName,
-		UpstreamURL:  req.UpstreamURL,
-		HostPattern:  req.HostPattern,
-		AuthType:     req.AuthType,
-		AuthHeader:   req.AuthHeader,
-		AuthPrefix:   req.AuthPrefix,
-		KeyPrefix:    req.KeyPrefix,
-		KeyLength:    req.KeyLength,
-		KeyDirectory: req.KeyDirectory,
-		DefaultACL:   req.DefaultACL,
-		DeliveryMode: deliveryMode,
-		IsActive:     true,
+		ID:            id,
+		Name:          req.Name,
+		DisplayName:   req.DisplayName,
+		UpstreamURL:   req.UpstreamURL,
+		HostPattern:   req.HostPattern,
+		AuthType:      req.AuthType,
+		AuthHeader:    req.AuthHeader,
+		AuthPrefix:    req.AuthPrefix,
+		KeyPrefix:     req.KeyPrefix,
+		KeyLength:     req.KeyLength,
+		KeyDirectory:  req.KeyDirectory,
+		DefaultACL:    req.DefaultACL,
+		Category:      strings.TrimSpace(req.Category),
+		UsageMetering: strings.TrimSpace(req.UsageMetering),
+		DeliveryMode:  deliveryMode,
+		IsActive:      true,
 	}
 
 	if err := h.services.Create(svc); err != nil {
@@ -130,19 +146,21 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name         *string `json:"name"`
-		DisplayName  *string `json:"display_name"`
-		UpstreamURL  *string `json:"upstream_url"`
-		HostPattern  *string `json:"host_pattern"`
-		AuthType     *string `json:"auth_type"`
-		AuthHeader   *string `json:"auth_header"`
-		AuthPrefix   *string `json:"auth_prefix"`
-		KeyPrefix    *string `json:"key_prefix"`
-		KeyLength    *int    `json:"key_length"`
-		KeyDirectory *string `json:"key_directory"`
-		DefaultACL   *string `json:"default_acl"`
-		DeliveryMode *string `json:"delivery_mode"`
-		IsActive     *bool   `json:"is_active"`
+		Name          *string `json:"name"`
+		DisplayName   *string `json:"display_name"`
+		UpstreamURL   *string `json:"upstream_url"`
+		HostPattern   *string `json:"host_pattern"`
+		AuthType      *string `json:"auth_type"`
+		AuthHeader    *string `json:"auth_header"`
+		AuthPrefix    *string `json:"auth_prefix"`
+		KeyPrefix     *string `json:"key_prefix"`
+		KeyLength     *int    `json:"key_length"`
+		KeyDirectory  *string `json:"key_directory"`
+		DefaultACL    *string `json:"default_acl"`
+		Category      *string `json:"category"`
+		UsageMetering *string `json:"usage_metering"`
+		DeliveryMode  *string `json:"delivery_mode"`
+		IsActive      *bool   `json:"is_active"`
 	}
 	if err := parseRequest(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -186,6 +204,16 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		svc.DefaultACL = *req.DefaultACL
 	}
+	if req.Category != nil {
+		svc.Category = strings.TrimSpace(*req.Category)
+	}
+	if req.UsageMetering != nil {
+		if err := validateUsageMetering(*req.UsageMetering); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		svc.UsageMetering = strings.TrimSpace(*req.UsageMetering)
+	}
 	if req.DeliveryMode != nil {
 		if *req.DeliveryMode != "proxy" && *req.DeliveryMode != "loan_proxy" {
 			jsonError(w, "delivery_mode must be 'proxy' or 'loan_proxy'", http.StatusBadRequest)
@@ -202,6 +230,108 @@ func (h *ServiceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, svc)
+}
+
+func validateUsageMetering(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var value map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &value); err != nil || value == nil {
+		return &usageMetadataError{}
+	}
+	return nil
+}
+
+type usageMetadataError struct{}
+
+func (*usageMetadataError) Error() string { return "usage_metering must be a JSON object" }
+
+// ListPricing returns immutable price versions for one service.
+func (h *ServiceHandler) ListPricing(w http.ResponseWriter, r *http.Request) {
+	serviceID := r.PathValue("id")
+	if _, err := h.services.GetByID(serviceID); err != nil {
+		jsonError(w, "service not found", http.StatusNotFound)
+		return
+	}
+	if h.pricing == nil {
+		jsonResponse(w, []models.ModelPricing{})
+		return
+	}
+	rows, err := h.pricing.ListByService(serviceID)
+	if err != nil {
+		jsonError(w, "failed to list model pricing", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, rows)
+}
+
+// CreatePricing appends a price version; existing versions are never updated.
+func (h *ServiceHandler) CreatePricing(w http.ResponseWriter, r *http.Request) {
+	serviceID := r.PathValue("id")
+	if _, err := h.services.GetByID(serviceID); err != nil {
+		jsonError(w, "service not found", http.StatusNotFound)
+		return
+	}
+	if h.pricing == nil {
+		jsonError(w, "pricing unavailable", http.StatusInternalServerError)
+		return
+	}
+	var req struct {
+		Model                         string `json:"model"`
+		Version                       string `json:"version"`
+		InputUSDMicrosPerMTok         int64  `json:"input_usd_micros_per_mtok"`
+		OutputUSDMicrosPerMTok        int64  `json:"output_usd_micros_per_mtok"`
+		CacheReadUSDMicrosPerMTok     int64  `json:"cache_read_usd_micros_per_mtok"`
+		CacheCreationUSDMicrosPerMTok int64  `json:"cache_creation_usd_micros_per_mtok"`
+		ReasoningUSDMicrosPerMTok     int64  `json:"reasoning_usd_micros_per_mtok"`
+		EffectiveFrom                 string `json:"effective_from"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	req.Model, req.Version = strings.TrimSpace(req.Model), strings.TrimSpace(req.Version)
+	if req.Model == "" || req.Version == "" {
+		jsonError(w, "model and version are required", http.StatusBadRequest)
+		return
+	}
+	if req.InputUSDMicrosPerMTok < 0 || req.OutputUSDMicrosPerMTok < 0 ||
+		req.CacheReadUSDMicrosPerMTok < 0 || req.CacheCreationUSDMicrosPerMTok < 0 ||
+		req.ReasoningUSDMicrosPerMTok < 0 {
+		jsonError(w, "pricing rates must be non-negative", http.StatusBadRequest)
+		return
+	}
+	effectiveAt := time.Now().UTC()
+	if strings.TrimSpace(req.EffectiveFrom) != "" {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(req.EffectiveFrom))
+		if err != nil {
+			jsonError(w, "effective_from must be RFC3339", http.StatusBadRequest)
+			return
+		}
+		effectiveAt = parsed.UTC()
+	}
+	id, err := services.GenerateToken(16)
+	if err != nil {
+		jsonError(w, "failed to generate pricing id", http.StatusInternalServerError)
+		return
+	}
+	pricing := &models.ModelPricing{
+		ID: id, ServiceID: serviceID, Model: req.Model, Version: req.Version,
+		InputUSDMicrosPerMTok:         req.InputUSDMicrosPerMTok,
+		OutputUSDMicrosPerMTok:        req.OutputUSDMicrosPerMTok,
+		CacheReadUSDMicrosPerMTok:     req.CacheReadUSDMicrosPerMTok,
+		CacheCreationUSDMicrosPerMTok: req.CacheCreationUSDMicrosPerMTok,
+		ReasoningUSDMicrosPerMTok:     req.ReasoningUSDMicrosPerMTok,
+		EffectiveFrom:                 effectiveAt.Format(time.RFC3339),
+	}
+	if err := h.pricing.Create(pricing); err != nil {
+		jsonError(w, "failed to create model pricing", http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	jsonResponse(w, pricing)
 }
 
 // ListACLTemplates returns the available ACL templates for a service.

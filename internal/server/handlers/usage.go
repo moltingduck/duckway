@@ -110,6 +110,49 @@ type clientUsageView struct {
 	Keys                []clientKeyUsageView `json:"keys"`
 }
 
+type meteredUsageTotals struct {
+	Requests            int64   `json:"requests"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	BillableTokens      int64   `json:"billable_tokens"`
+	CostUSDMicros       int64   `json:"cost_usd_micros"`
+	PricedRequests      int64   `json:"priced_requests"`
+	UnpricedRequests    int64   `json:"unpriced_requests"`
+	TotalTokens         int64   `json:"total_tokens"`
+	CacheTokens         int64   `json:"cache_tokens"`
+	CostUSD             float64 `json:"cost_usd"`
+	Clients             int     `json:"clients,omitempty"`
+}
+
+type meteredClientUsage struct {
+	ClientID   string              `json:"client_id"`
+	ClientName string              `json:"client_name"`
+	Summary    meteredUsageTotals  `json:"summary"`
+	Models     []meteredModelUsage `json:"models"`
+	Daily      []meteredDailyUsage `json:"daily"`
+}
+
+type meteredModelUsage struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	meteredUsageTotals
+}
+
+type meteredDailyUsage struct {
+	Date string `json:"date"`
+	meteredUsageTotals
+}
+
+type meteredUsageDetailResponse struct {
+	WindowDays int                  `json:"window_days"`
+	Summary    meteredUsageTotals   `json:"summary"`
+	Clients    []meteredClientUsage `json:"clients"`
+	Models     []meteredModelUsage  `json:"models"`
+	Daily      []meteredDailyUsage  `json:"daily"`
+}
+
 // List handles GET /api/usage. Returns one row per API key whose
 // service is an LLM provider (anthropic/openai) OR that has a recorded
 // usage snapshot. Keys with no data yet are still listed (HasData=false)
@@ -392,6 +435,193 @@ func (h *UsageHandler) Conversations(w http.ResponseWriter, r *http.Request) {
 	JsonResponsePublic(w, rows)
 }
 
+// KeyDetail returns daily metered usage at the client+model grain for one key.
+func (h *UsageHandler) KeyDetail(w http.ResponseWriter, r *http.Request) {
+	if h.convUsage == nil {
+		JsonResponsePublic(w, []queries.MeteredUsageDetailRow{})
+		return
+	}
+	keyID := strings.TrimSpace(r.PathValue("id"))
+	if keyID == "" {
+		JsonErrorPublic(w, "key id required", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.apiKeys.GetByID(keyID); err != nil {
+		JsonErrorPublic(w, "key not found", http.StatusNotFound)
+		return
+	}
+	rows, err := h.convUsage.DetailByKey(keyID, parseUsageDetailDays(r))
+	if err != nil {
+		JsonErrorPublic(w, "failed to aggregate key usage", http.StatusInternalServerError)
+		return
+	}
+	JsonResponsePublic(w, rows)
+}
+
+// KeyGroupDetail returns usage for the key group's current member set.
+func (h *UsageHandler) KeyGroupDetail(w http.ResponseWriter, r *http.Request) {
+	if h.convUsage == nil {
+		JsonResponsePublic(w, []queries.MeteredUsageDetailRow{})
+		return
+	}
+	groupID := strings.TrimSpace(r.PathValue("id"))
+	if groupID == "" {
+		JsonErrorPublic(w, "key group id required", http.StatusBadRequest)
+		return
+	}
+	rows, err := h.convUsage.DetailByKeyGroup(groupID, parseUsageDetailDays(r))
+	if err != nil {
+		JsonErrorPublic(w, "failed to aggregate key group usage", http.StatusInternalServerError)
+		return
+	}
+	JsonResponsePublic(w, rows)
+}
+
+// Detail returns the usage/cost hierarchy consumed by the usage UI. Exactly
+// one of key_id or key_group_id selects the root of the hierarchy.
+func (h *UsageHandler) Detail(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	keyID := strings.TrimSpace(r.URL.Query().Get("key_id"))
+	groupID := strings.TrimSpace(r.URL.Query().Get("group_id"))
+	if groupID == "" {
+		groupID = strings.TrimSpace(r.URL.Query().Get("key_group_id"))
+	}
+	if (keyID == "") == (groupID == "") {
+		JsonErrorPublic(w, "exactly one of key_id or key_group_id is required", http.StatusBadRequest)
+		return
+	}
+	days := parseUsageDetailDays(r)
+	response := meteredUsageDetailResponse{
+		WindowDays: days,
+		Clients:    []meteredClientUsage{},
+		Models:     []meteredModelUsage{},
+		Daily:      []meteredDailyUsage{},
+	}
+	if h.convUsage == nil {
+		JsonResponsePublic(w, response)
+		return
+	}
+	var rows []queries.MeteredUsageDetailRow
+	var err error
+	if keyID != "" {
+		if _, getErr := h.apiKeys.GetByID(keyID); getErr != nil {
+			JsonErrorPublic(w, "key not found", http.StatusNotFound)
+			return
+		}
+		rows, err = h.convUsage.DetailByKey(keyID, days)
+	} else {
+		rows, err = h.convUsage.DetailByKeyGroup(groupID, days)
+	}
+	if err != nil {
+		JsonErrorPublic(w, "failed to aggregate usage detail", http.StatusInternalServerError)
+		return
+	}
+	response = buildMeteredUsageDetail(days, rows)
+	JsonResponsePublic(w, response)
+}
+
+func buildMeteredUsageDetail(days int, rows []queries.MeteredUsageDetailRow) meteredUsageDetailResponse {
+	response := meteredUsageDetailResponse{WindowDays: days, Clients: []meteredClientUsage{}, Models: []meteredModelUsage{}, Daily: []meteredDailyUsage{}}
+	type clientAccumulator struct {
+		view   *meteredClientUsage
+		models map[string]*meteredModelUsage
+		daily  map[string]*meteredDailyUsage
+	}
+	clients := map[string]*clientAccumulator{}
+	modelsByName := map[string]*meteredModelUsage{}
+	daily := map[string]*meteredDailyUsage{}
+	for _, row := range rows {
+		totals := meteredUsageTotals{
+			Requests: row.Requests, InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
+			CacheReadTokens: row.CacheReadTokens, CacheCreationTokens: row.CacheCreationTokens,
+			BillableTokens: row.BillableTokens, CostUSDMicros: row.CostUSDMicros,
+			PricedRequests: row.PricedRequests, UnpricedRequests: row.Requests - row.PricedRequests,
+		}
+		addMeteredTotals(&response.Summary, totals)
+		clientKey := row.ClientID
+		if clientKey == "" {
+			clientKey = "(unknown)"
+		}
+		if clients[clientKey] == nil {
+			name := row.ClientName
+			if name == "" {
+				name = clientKey
+			}
+			clients[clientKey] = &clientAccumulator{
+				view:   &meteredClientUsage{ClientID: clientKey, ClientName: name, Models: []meteredModelUsage{}, Daily: []meteredDailyUsage{}},
+				models: map[string]*meteredModelUsage{}, daily: map[string]*meteredDailyUsage{},
+			}
+		}
+		client := clients[clientKey]
+		addMeteredTotals(&client.view.Summary, totals)
+		modelKey := row.Provider + "\x00" + row.Model
+		if modelsByName[modelKey] == nil {
+			modelsByName[modelKey] = &meteredModelUsage{Provider: row.Provider, Model: row.Model}
+		}
+		addMeteredTotals(&modelsByName[modelKey].meteredUsageTotals, totals)
+		if client.models[modelKey] == nil {
+			client.models[modelKey] = &meteredModelUsage{Provider: row.Provider, Model: row.Model}
+		}
+		addMeteredTotals(&client.models[modelKey].meteredUsageTotals, totals)
+		if daily[row.Day] == nil {
+			daily[row.Day] = &meteredDailyUsage{Date: row.Day}
+		}
+		addMeteredTotals(&daily[row.Day].meteredUsageTotals, totals)
+		if client.daily[row.Day] == nil {
+			client.daily[row.Day] = &meteredDailyUsage{Date: row.Day}
+		}
+		addMeteredTotals(&client.daily[row.Day].meteredUsageTotals, totals)
+	}
+	response.Summary.Clients = len(clients)
+	for _, client := range clients {
+		finalizeMeteredTotals(&client.view.Summary)
+		for _, row := range client.models {
+			finalizeMeteredTotals(&row.meteredUsageTotals)
+			client.view.Models = append(client.view.Models, *row)
+		}
+		for _, row := range client.daily {
+			finalizeMeteredTotals(&row.meteredUsageTotals)
+			client.view.Daily = append(client.view.Daily, *row)
+		}
+		sort.Slice(client.view.Models, func(i, j int) bool { return client.view.Models[i].TotalTokens > client.view.Models[j].TotalTokens })
+		sort.Slice(client.view.Daily, func(i, j int) bool { return client.view.Daily[i].Date < client.view.Daily[j].Date })
+		response.Clients = append(response.Clients, *client.view)
+	}
+	for _, row := range modelsByName {
+		finalizeMeteredTotals(&row.meteredUsageTotals)
+		response.Models = append(response.Models, *row)
+	}
+	for _, row := range daily {
+		finalizeMeteredTotals(&row.meteredUsageTotals)
+		response.Daily = append(response.Daily, *row)
+	}
+	finalizeMeteredTotals(&response.Summary)
+	sort.Slice(response.Clients, func(i, j int) bool {
+		return response.Clients[i].Summary.CostUSDMicros > response.Clients[j].Summary.CostUSDMicros
+	})
+	sort.Slice(response.Models, func(i, j int) bool { return response.Models[i].CostUSDMicros > response.Models[j].CostUSDMicros })
+	sort.Slice(response.Daily, func(i, j int) bool { return response.Daily[i].Date < response.Daily[j].Date })
+	return response
+}
+
+func finalizeMeteredTotals(t *meteredUsageTotals) {
+	t.TotalTokens = t.BillableTokens
+	t.CacheTokens = t.CacheReadTokens + t.CacheCreationTokens
+	t.CostUSD = float64(t.CostUSDMicros) / 1_000_000
+}
+
+func addMeteredTotals(dst *meteredUsageTotals, src meteredUsageTotals) {
+	dst.Requests += src.Requests
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.CacheReadTokens += src.CacheReadTokens
+	dst.CacheCreationTokens += src.CacheCreationTokens
+	dst.BillableTokens += src.BillableTokens
+	dst.CostUSDMicros += src.CostUSDMicros
+	dst.PricedRequests += src.PricedRequests
+	dst.UnpricedRequests += src.UnpricedRequests
+}
+
 // isLLMService reports whether a service name is a known LLM provider
 // whose keys are worth showing on the usage panel even before any
 // snapshot has been captured.
@@ -405,13 +635,21 @@ func isLLMService(name string) bool {
 
 func parseDays(r *http.Request) int {
 	switch strings.TrimSpace(r.URL.Query().Get("days")) {
+	case "1":
+		return 1
 	case "3":
 		return 3
 	case "7":
 		return 7
 	case "30":
 		return 30
+	case "90":
+		return 90
 	default:
 		return 3
 	}
+}
+
+func parseUsageDetailDays(r *http.Request) int {
+	return parseDays(r)
 }

@@ -1,6 +1,13 @@
 package queries
 
-import "database/sql"
+import (
+	"database/sql"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/hackerduck/duckway/internal/models"
+)
 
 type ConversationUsageQueries struct {
 	db *sql.DB
@@ -14,27 +21,96 @@ func NewConversationUsageQueries(db *sql.DB) *ConversationUsageQueries {
 type ConversationUsageRecord struct {
 	ClientID            string
 	APIKeyID            string
+	KeyGroupID          string
 	ServiceName         string
+	Provider            string
 	ConversationID      string // claude X-Claude-Code-Session-Id; "" for non-claude
 	Model               string
 	InputTokens         int64
 	OutputTokens        int64
 	CacheReadTokens     int64
 	CacheCreationTokens int64
+	ReasoningTokens     int64
+	BillableTokens      int64
+	CostUSDMicros       int64
+	Priced              bool
+	PricingVersion      string
 }
 
 // Insert records one request's token usage. Best-effort: callers log
 // and continue on error rather than failing the proxied request.
 func (q *ConversationUsageQueries) Insert(r *ConversationUsageRecord) error {
+	return q.InsertAt(r, time.Now().UTC())
+}
+
+// InsertAt stores one metered request and snapshots the price effective at at.
+// It is exported primarily so importers and tests can preserve event time.
+func (q *ConversationUsageQueries) InsertAt(r *ConversationUsageRecord, at time.Time) error {
+	if r.BillableTokens == 0 {
+		r.BillableTokens = billableTokenTotal(r)
+	}
+	if !r.Priced && r.APIKeyID != "" && r.Model != "" {
+		var serviceID string
+		err := q.db.QueryRow(`SELECT service_id FROM api_keys WHERE id = ?`, r.APIKeyID).Scan(&serviceID)
+		if err == nil {
+			pricing, pricingErr := NewModelPricingQueries(q.db).Effective(serviceID, r.Model, at)
+			if pricingErr == nil {
+				r.CostUSDMicros = meteredCostUSDMicros(r, pricing)
+				r.Priced = true
+				r.PricingVersion = pricing.Version
+			} else if !errors.Is(pricingErr, sql.ErrNoRows) {
+				return pricingErr
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
 	_, err := q.db.Exec(
 		`INSERT INTO conversation_usage
-		 (client_id, api_key_id, service_name, conversation_id, model,
-		  input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ClientID, r.APIKeyID, r.ServiceName, r.ConversationID, r.Model,
-		r.InputTokens, r.OutputTokens, r.CacheReadTokens, r.CacheCreationTokens,
+			 (client_id, api_key_id, key_group_id, service_name, provider, conversation_id, model,
+			  input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+			  billable_tokens, cost_usd_micros, priced, pricing_version, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ClientID, r.APIKeyID, r.KeyGroupID, r.ServiceName, r.Provider, r.ConversationID, r.Model,
+		r.InputTokens, r.OutputTokens, r.CacheReadTokens, r.CacheCreationTokens, r.ReasoningTokens,
+		r.BillableTokens, r.CostUSDMicros, r.Priced, r.PricingVersion,
+		at.UTC().Format("2006-01-02 15:04:05"),
 	)
 	return err
+}
+
+func billableTokenTotal(r *ConversationUsageRecord) int64 {
+	total := nonNegative(r.InputTokens) + nonNegative(r.OutputTokens)
+	if !strings.EqualFold(r.Provider, "openai") {
+		total += nonNegative(r.CacheReadTokens) + nonNegative(r.CacheCreationTokens) + nonNegative(r.ReasoningTokens)
+	}
+	return total
+}
+
+func nonNegative(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+func meteredRateCost(tokens, rate int64) int64 {
+	tokens, rate = nonNegative(tokens), nonNegative(rate)
+	const perMillion = int64(1_000_000)
+	return (tokens/perMillion)*rate + ((tokens%perMillion)*rate+perMillion/2)/perMillion
+}
+
+func meteredCostUSDMicros(r *ConversationUsageRecord, p *models.ModelPricing) int64 {
+	input, output := r.InputTokens, r.OutputTokens
+	if strings.EqualFold(r.Provider, "openai") {
+		input -= r.CacheReadTokens
+		output -= r.ReasoningTokens
+	}
+	return meteredRateCost(input, p.InputUSDMicrosPerMTok) +
+		meteredRateCost(output, p.OutputUSDMicrosPerMTok) +
+		meteredRateCost(r.CacheReadTokens, p.CacheReadUSDMicrosPerMTok) +
+		meteredRateCost(r.CacheCreationTokens, p.CacheCreationUSDMicrosPerMTok) +
+		meteredRateCost(r.ReasoningTokens, p.ReasoningUSDMicrosPerMTok)
 }
 
 // KeyTokenTotals is the per-key token rollup shown on the usage panel.
@@ -64,6 +140,77 @@ type ClientKeyUsageRow struct {
 	CacheCreationTokens int64  `json:"cache_creation_tokens"`
 	Conversations       int64  `json:"conversations"`
 	LastSeen            string `json:"last_seen"`
+}
+
+// MeteredUsageDetailRow is the stable drill-down grain used by key and key
+// group detail APIs: key, client, provider, model, and UTC calendar day.
+type MeteredUsageDetailRow struct {
+	APIKeyID            string `json:"api_key_id"`
+	KeyName             string `json:"key_name"`
+	ClientID            string `json:"client_id"`
+	ClientName          string `json:"client_name"`
+	Provider            string `json:"provider"`
+	Model               string `json:"model"`
+	Day                 string `json:"day"`
+	Requests            int64  `json:"requests"`
+	InputTokens         int64  `json:"input_tokens"`
+	OutputTokens        int64  `json:"output_tokens"`
+	CacheReadTokens     int64  `json:"cache_read_tokens"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens"`
+	ReasoningTokens     int64  `json:"reasoning_tokens"`
+	BillableTokens      int64  `json:"billable_tokens"`
+	CostUSDMicros       int64  `json:"cost_usd_micros"`
+	PricedRequests      int64  `json:"priced_requests"`
+}
+
+func (q *ConversationUsageQueries) DetailByKey(apiKeyID string, days int) ([]MeteredUsageDetailRow, error) {
+	return q.meteredDetail(`u.api_key_id = ?`, []interface{}{apiKeyID}, days)
+}
+
+// DetailByKeyGroup aggregates usage for the group's current member set. Usage
+// rows snapshot the selected API key, so results remain accurate per key; group
+// membership itself is intentionally evaluated at query time.
+func (q *ConversationUsageQueries) DetailByKeyGroup(groupID string, days int) ([]MeteredUsageDetailRow, error) {
+	return q.meteredDetail(`u.key_group_id = ?`, []interface{}{groupID}, days)
+}
+
+func (q *ConversationUsageQueries) meteredDetail(filter string, args []interface{}, days int) ([]MeteredUsageDetailRow, error) {
+	if days > 0 {
+		filter += " AND u.created_at >= datetime('now', ?)"
+		args = append(args, "-"+itoa(days)+" days")
+	}
+	rows, err := q.db.Query(`
+		SELECT u.api_key_id, COALESCE(k.name, u.api_key_id),
+		       COALESCE(u.client_id, ''), COALESCE(c.name, ''),
+		       COALESCE(u.provider, ''), COALESCE(u.model, ''), date(u.created_at),
+		       COUNT(*), COALESCE(SUM(u.input_tokens),0),
+		       COALESCE(SUM(u.output_tokens),0), COALESCE(SUM(u.cache_read_tokens),0),
+		       COALESCE(SUM(u.cache_creation_tokens),0), COALESCE(SUM(u.reasoning_tokens),0),
+		       COALESCE(SUM(u.billable_tokens),0),
+		       COALESCE(SUM(u.cost_usd_micros),0), COALESCE(SUM(CASE WHEN u.priced = 1 THEN 1 ELSE 0 END),0)
+		FROM conversation_usage u
+		LEFT JOIN api_keys k ON k.id = u.api_key_id
+		LEFT JOIN clients c ON c.id = u.client_id
+		WHERE `+filter+`
+		GROUP BY u.api_key_id, k.name, u.client_id, c.name, u.provider, u.model, date(u.created_at)
+		ORDER BY date(u.created_at) DESC, SUM(u.cost_usd_micros) DESC,
+		         SUM(u.billable_tokens) DESC, u.client_id, u.model`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []MeteredUsageDetailRow{}
+	for rows.Next() {
+		var r MeteredUsageDetailRow
+		if err := rows.Scan(&r.APIKeyID, &r.KeyName, &r.ClientID, &r.ClientName,
+			&r.Provider, &r.Model, &r.Day, &r.Requests, &r.InputTokens,
+			&r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.ReasoningTokens,
+			&r.BillableTokens, &r.CostUSDMicros, &r.PricedRequests); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
 }
 
 // TotalsByKey returns token rollups keyed by api_key_id over the

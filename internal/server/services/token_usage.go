@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"encoding/json"
+	"math/big"
 	"strings"
 )
 
@@ -15,12 +16,84 @@ type TokenUsage struct {
 	OutputTokens        int64
 	CacheReadTokens     int64
 	CacheCreationTokens int64
+	ReasoningTokens     int64
 }
 
 // Empty reports whether no token counts were captured.
 func (u TokenUsage) Empty() bool {
 	return u.InputTokens == 0 && u.OutputTokens == 0 &&
-		u.CacheReadTokens == 0 && u.CacheCreationTokens == 0
+		u.CacheReadTokens == 0 && u.CacheCreationTokens == 0 &&
+		u.ReasoningTokens == 0
+}
+
+// CategoryRate is an explicit price in USD micros per million tokens. Priced
+// distinguishes a configured zero price from a missing price.
+type CategoryRate struct {
+	USDMicrosPerMillion int64
+	Priced              bool
+}
+
+// UsageRates contains prices for mutually exclusive token categories.
+type UsageRates struct {
+	Input         CategoryRate
+	Output        CategoryRate
+	CacheRead     CategoryRate
+	CacheCreation CategoryRate
+	Reasoning     CategoryRate
+}
+
+// UsageCost is an integer-micro-USD result. Priced is false when a required
+// category has no rate, usage is invalid, or the result exceeds int64.
+type UsageCost struct {
+	USDMicros int64
+	Priced    bool
+}
+
+// CalculateUsageCost prices provider-reported usage without charging nested
+// categories twice. OpenAI cached tokens are included in InputTokens and
+// reasoning tokens are included in OutputTokens; Anthropic cache tokens are
+// reported separately from InputTokens.
+func CalculateUsageCost(usage TokenUsage, rates UsageRates) UsageCost {
+	regularInput := usage.InputTokens
+	regularOutput := usage.OutputTokens
+	if strings.EqualFold(usage.Provider, "openai") {
+		regularInput -= usage.CacheReadTokens
+		regularOutput -= usage.ReasoningTokens
+	}
+	categories := []struct {
+		tokens int64
+		rate   CategoryRate
+	}{
+		{regularInput, rates.Input},
+		{regularOutput, rates.Output},
+		{usage.CacheReadTokens, rates.CacheRead},
+		{usage.CacheCreationTokens, rates.CacheCreation},
+		{usage.ReasoningTokens, rates.Reasoning},
+	}
+
+	total := new(big.Int)
+	for _, category := range categories {
+		if category.tokens < 0 || category.rate.USDMicrosPerMillion < 0 {
+			return UsageCost{}
+		}
+		if category.tokens == 0 {
+			continue
+		}
+		if !category.rate.Priced {
+			return UsageCost{}
+		}
+		product := new(big.Int).Mul(big.NewInt(category.tokens), big.NewInt(category.rate.USDMicrosPerMillion))
+		total.Add(total, product)
+	}
+
+	// Round the aggregate price to the nearest micro-dollar, half up. Rounding
+	// once after summing avoids losing fractions independently per category.
+	total.Add(total, big.NewInt(500_000))
+	total.Quo(total, big.NewInt(1_000_000))
+	if !total.IsInt64() {
+		return UsageCost{}
+	}
+	return UsageCost{USDMicros: total.Int64(), Priced: true}
 }
 
 // usageScannerMaxJSON caps how much of a non-streaming JSON body we
@@ -43,9 +116,9 @@ const usageScannerMaxJSON = 4 << 20
 // doesn't disturb the real response copy.
 type UsageScanner struct {
 	isSSE   bool
-	lineBuf []byte        // partial SSE line carry-over
-	jsonBuf bytes.Buffer  // non-SSE accumulation (capped)
-	jsonCap bool          // true once we stopped accumulating
+	lineBuf []byte       // partial SSE line carry-over
+	jsonBuf bytes.Buffer // non-SSE accumulation (capped)
+	jsonCap bool         // true once we stopped accumulating
 	usage   TokenUsage
 }
 
@@ -117,7 +190,7 @@ func (s *UsageScanner) feedSSE(p []byte) {
 type sseEvent struct {
 	Type    string `json:"type"`
 	Message *struct {
-		Model string         `json:"model"`
+		Model string          `json:"model"`
 		Usage *anthropicUsage `json:"usage"`
 	} `json:"message"`
 	Usage *anthropicUsage `json:"usage"` // message_delta carries top-level usage
@@ -130,7 +203,59 @@ type anthropicUsage struct {
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 }
 
+type openAIUsage struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	InputTokens      int64 `json:"input_tokens"`
+	OutputTokens     int64 `json:"output_tokens"`
+	PromptDetails    struct {
+		CachedTokens int64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionDetails struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+	InputDetails struct {
+		CachedTokens int64 `json:"cached_tokens"`
+	} `json:"input_tokens_details"`
+	OutputDetails struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
+}
+
+func openAIUsageDistinct(u *openAIUsage) bool {
+	return u.PromptTokens != 0 || u.CompletionTokens != 0 ||
+		u.PromptDetails.CachedTokens != 0 || u.InputDetails.CachedTokens != 0 ||
+		u.CompletionDetails.ReasoningTokens != 0 || u.OutputDetails.ReasoningTokens != 0
+}
+
 func (s *UsageScanner) parseSSEEvent(payload []byte) {
+	var openAI struct {
+		Type     string       `json:"type"`
+		Model    string       `json:"model"`
+		Usage    *openAIUsage `json:"usage"`
+		Response *struct {
+			Model string       `json:"model"`
+			Usage *openAIUsage `json:"usage"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(payload, &openAI) == nil {
+		usage := openAI.Usage
+		model := openAI.Model
+		if openAI.Response != nil {
+			if openAI.Response.Usage != nil {
+				usage = openAI.Response.Usage
+			}
+			if openAI.Response.Model != "" {
+				model = openAI.Response.Model
+			}
+		}
+		isResponseEvent := strings.HasPrefix(openAI.Type, "response.") || openAI.Response != nil
+		if usage != nil && openAIUsagePresent(usage) && (isResponseEvent || openAIUsageDistinct(usage)) {
+			s.applyOpenAIUsage(model, usage)
+			return
+		}
+	}
+
 	var ev sseEvent
 	if err := json.Unmarshal(payload, &ev); err != nil {
 		return
@@ -164,7 +289,42 @@ func (s *UsageScanner) parseSSEEvent(payload []byte) {
 			if ev.Usage.InputTokens > 0 {
 				s.usage.InputTokens = ev.Usage.InputTokens
 			}
+			if ev.Usage.CacheReadInputTokens > 0 {
+				s.usage.CacheReadTokens = ev.Usage.CacheReadInputTokens
+			}
+			if ev.Usage.CacheCreationInputTokens > 0 {
+				s.usage.CacheCreationTokens = ev.Usage.CacheCreationInputTokens
+			}
 		}
+	}
+}
+
+func openAIUsagePresent(u *openAIUsage) bool {
+	return u.PromptTokens != 0 || u.CompletionTokens != 0 || u.InputTokens != 0 || u.OutputTokens != 0 ||
+		u.PromptDetails.CachedTokens != 0 || u.InputDetails.CachedTokens != 0 ||
+		u.CompletionDetails.ReasoningTokens != 0 || u.OutputDetails.ReasoningTokens != 0
+}
+
+func (s *UsageScanner) applyOpenAIUsage(model string, u *openAIUsage) {
+	s.usage.Provider = "openai"
+	if model != "" {
+		s.usage.Model = model
+	}
+	s.usage.InputTokens = u.InputTokens
+	if s.usage.InputTokens == 0 {
+		s.usage.InputTokens = u.PromptTokens
+	}
+	s.usage.OutputTokens = u.OutputTokens
+	if s.usage.OutputTokens == 0 {
+		s.usage.OutputTokens = u.CompletionTokens
+	}
+	s.usage.CacheReadTokens = u.InputDetails.CachedTokens
+	if s.usage.CacheReadTokens == 0 {
+		s.usage.CacheReadTokens = u.PromptDetails.CachedTokens
+	}
+	s.usage.ReasoningTokens = u.OutputDetails.ReasoningTokens
+	if s.usage.ReasoningTokens == 0 {
+		s.usage.ReasoningTokens = u.CompletionDetails.ReasoningTokens
 	}
 }
 
@@ -174,7 +334,29 @@ func (s *UsageScanner) parseJSONBody(body []byte) {
 	if len(body) == 0 {
 		return
 	}
-	// Anthropic shape: {"model":"...","usage":{"input_tokens":...}}
+	var envelope struct {
+		ID     string `json:"id"`
+		Type   string `json:"type"`
+		Object string `json:"object"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return
+	}
+
+	// OpenAI chat completions and Responses use distinct envelope identifiers.
+	var oai struct {
+		Model string       `json:"model"`
+		Usage *openAIUsage `json:"usage"`
+	}
+	isOpenAI := strings.HasPrefix(envelope.ID, "chatcmpl-") || strings.HasPrefix(envelope.ID, "resp_") ||
+		strings.Contains(strings.ToLower(envelope.Object), "completion") || strings.EqualFold(envelope.Object, "response")
+	if err := json.Unmarshal(body, &oai); err == nil && oai.Usage != nil && openAIUsagePresent(oai.Usage) &&
+		(isOpenAI || openAIUsageDistinct(oai.Usage)) {
+		s.applyOpenAIUsage(oai.Model, oai.Usage)
+		return
+	}
+
+	// Anthropic shape: {"type":"message","usage":{"input_tokens":...}}
 	var anth struct {
 		Model string          `json:"model"`
 		Usage *anthropicUsage `json:"usage"`
@@ -190,19 +372,4 @@ func (s *UsageScanner) parseJSONBody(body []byte) {
 		return
 	}
 
-	// OpenAI shape: {"model":"...","usage":{"prompt_tokens":...,"completion_tokens":...}}
-	var oai struct {
-		Model string `json:"model"`
-		Usage *struct {
-			PromptTokens     int64 `json:"prompt_tokens"`
-			CompletionTokens int64 `json:"completion_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(body, &oai); err == nil && oai.Usage != nil &&
-		(oai.Usage.PromptTokens > 0 || oai.Usage.CompletionTokens > 0) {
-		s.usage.Provider = "openai"
-		s.usage.Model = oai.Model
-		s.usage.InputTokens = oai.Usage.PromptTokens
-		s.usage.OutputTokens = oai.Usage.CompletionTokens
-	}
 }

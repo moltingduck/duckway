@@ -8,18 +8,20 @@ type AdminUser struct {
 }
 
 type Service struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	DisplayName  string `json:"display_name"`
-	UpstreamURL  string `json:"upstream_url"`
-	HostPattern  string `json:"host_pattern"`
-	AuthType     string `json:"auth_type"`     // bearer, header, query, basic
-	AuthHeader   string `json:"auth_header"`   // e.g. "Authorization"
-	AuthPrefix   string `json:"auth_prefix"`   // e.g. "Bearer "
-	KeyPrefix    string `json:"key_prefix"`    // e.g. "sk-", "ghp_"
-	KeyLength    int    `json:"key_length"`    // real key total length
-	KeyDirectory string `json:"key_directory"` // default key file path, e.g. ".config/openai/credentials"
-	DefaultACL   string `json:"default_acl"`   // JSON ACL config, applied when placeholder has no permission_config
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	DisplayName   string `json:"display_name"`
+	UpstreamURL   string `json:"upstream_url"`
+	HostPattern   string `json:"host_pattern"`
+	AuthType      string `json:"auth_type"`      // bearer, header, query, basic
+	AuthHeader    string `json:"auth_header"`    // e.g. "Authorization"
+	AuthPrefix    string `json:"auth_prefix"`    // e.g. "Bearer "
+	KeyPrefix     string `json:"key_prefix"`     // e.g. "sk-", "ghp_"
+	KeyLength     int    `json:"key_length"`     // real key total length
+	KeyDirectory  string `json:"key_directory"`  // default key file path, e.g. ".config/openai/credentials"
+	DefaultACL    string `json:"default_acl"`    // JSON ACL config, applied when placeholder has no permission_config
+	Category      string `json:"category"`       // operator-defined service category, e.g. llm
+	UsageMetering string `json:"usage_metering"` // JSON metadata describing provider usage semantics
 	// DeliveryMode controls how the duckway-client sidecar handles requests for this service.
 	//   "proxy"      — full MITM via gateway. Gateway sees every request, enforces ACL per-request.
 	//   "loan_proxy" — sidecar caches the real token from gateway and forwards directly to upstream.
@@ -27,6 +29,22 @@ type Service struct {
 	DeliveryMode string `json:"delivery_mode"`
 	IsActive     bool   `json:"is_active"`
 	CreatedAt    string `json:"created_at"`
+}
+
+// ModelPricing is an immutable price version effective from a UTC timestamp.
+// Rate fields are USD micros per one million tokens.
+type ModelPricing struct {
+	ID                            string `json:"id"`
+	ServiceID                     string `json:"service_id"`
+	Model                         string `json:"model"`
+	Version                       string `json:"version"`
+	InputUSDMicrosPerMTok         int64  `json:"input_usd_micros_per_mtok"`
+	OutputUSDMicrosPerMTok        int64  `json:"output_usd_micros_per_mtok"`
+	CacheReadUSDMicrosPerMTok     int64  `json:"cache_read_usd_micros_per_mtok"`
+	CacheCreationUSDMicrosPerMTok int64  `json:"cache_creation_usd_micros_per_mtok"`
+	ReasoningUSDMicrosPerMTok     int64  `json:"reasoning_usd_micros_per_mtok"`
+	EffectiveFrom                 string `json:"effective_from"`
+	CreatedAt                     string `json:"created_at"`
 }
 
 type APIKey struct {
