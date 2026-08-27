@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -679,7 +680,9 @@ func TestMITMProxiesNativeCodexChatGPTPhantomTraffic(t *testing.T) {
 	t.Cleanup(func() { srv.Close() })
 
 	conn := dialMITMHost(t, ln.Addr().String(), "chatgpt.com:443", "chatgpt.com", []string{"http/1.1"}, pool)
-	fakeAccessJWT := "dw_fake_codex_access"
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"duckway-phantom","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"auth0|duckway-phantom","jti":"dw-phantom-access"}`))
+	fakeAccessJWT := header + "." + payload + ".signature"
 	fmt.Fprintf(conn, "GET /backend-api/codex/responses HTTP/1.1\r\nHost: chatgpt.com\r\nAuthorization: Bearer %s\r\nConnection: close\r\n\r\n", fakeAccessJWT)
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {

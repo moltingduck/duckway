@@ -693,13 +693,34 @@ func tokenUsesDuckwayPhantom(token string) bool {
 	if len(parts) != 3 {
 		return false
 	}
-	for _, part := range parts[1:] {
+	for index, part := range parts[:2] {
 		raw, err := base64.RawURLEncoding.DecodeString(part)
-		if err == nil && strings.Contains(string(raw), "dw_") {
+		if err != nil {
+			continue
+		}
+		var claims map[string]interface{}
+		if json.Unmarshal(raw, &claims) != nil {
+			continue
+		}
+		if index == 0 && claims["kid"] == "duckway-phantom" {
 			return true
+		}
+		if index == 1 {
+			if claims["sub"] == "auth0|duckway-phantom" || strings.HasPrefix(stringValue(claims["jti"]), "dw-phantom-") {
+				return true
+			}
+			encoded, _ := json.Marshal(claims)
+			if strings.Contains(string(encoded), "dw_") {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func stringValue(value interface{}) string {
+	valueString, _ := value.(string)
+	return valueString
 }
 
 func copyForwardHeaders(dst, src http.Header) {

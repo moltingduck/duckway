@@ -18,6 +18,8 @@
 # Usage:
 #   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --check-token
 #   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh
+#   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --refresh-only
+#   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --llm-only
 #   CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --cc-watch
 
 set -euo pipefail
@@ -30,11 +32,15 @@ IMAGE="${DUCKWAY_LIVE_IMAGE:-docker.io/library/golang:1.25-alpine}"
 PROMPT="${DUCKWAY_CODEX_PROMPT:-hello?}"
 CHECK_TOKEN=0
 CC_WATCH=0
+RUN_REFRESH=1
+RUN_LLM=1
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --check-token) CHECK_TOKEN=1 ;;
     --cc-watch) CC_WATCH=1 ;;
+    --refresh-only) RUN_REFRESH=1; RUN_LLM=0 ;;
+    --llm-only) RUN_REFRESH=0; RUN_LLM=1 ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 1
@@ -112,11 +118,13 @@ EOF
   -v "$CODEX_AUTH":/run/secrets/codex-auth.json:ro \
   -w /workspace \
   "$IMAGE" \
-  sh -s -- "$PROMPT" "$CC_WATCH" <<'CONTAINER_SCRIPT'
+  sh -s -- "$PROMPT" "$CC_WATCH" "$RUN_REFRESH" "$RUN_LLM" <<'CONTAINER_SCRIPT'
 set -eu
 
 PROMPT="$1"
 CC_WATCH="$2"
+RUN_REFRESH="$3"
+RUN_LLM="$4"
 export HOME=/tmp/duckway-home
 export DUCKWAY_CONFIG_DIR="$HOME/.duckway"
 export DUCKWAY_DEV=1
@@ -436,7 +444,11 @@ export HTTPS_PROXY="http://127.0.0.1:$PROXY_PORT"
 export NO_PROXY="localhost,127.0.0.1"
 export NODE_EXTRA_CA_CERTS="$DUCKWAY_CONFIG_DIR/ca.pem"
 
-echo "Refreshing Codex OAuth token once through Duckway proxy..."
+REFRESH_FAILED=0
+LLM_FAILED=0
+
+if [ "$RUN_REFRESH" = "1" ]; then
+echo "[refresh] Refreshing Codex OAuth token once through Duckway proxy..."
 REFRESH_FORM="$(python3 - <<'PY'
 import json, os
 from urllib.parse import urlencode
@@ -468,14 +480,11 @@ REFRESH_STATUS="$(curl -sS --max-time 30 -o /tmp/codex-refresh-response.json -w 
 CURL_REFRESH_EXIT=$?
 set -e
 if [ "$CURL_REFRESH_EXIT" -ne 0 ] || [ "$REFRESH_STATUS" != "200" ]; then
-  echo "Codex OAuth refresh through Duckway proxy failed with HTTP $REFRESH_STATUS curl_exit=$CURL_REFRESH_EXIT" >&2
+  echo "[refresh] FAIL: HTTP $REFRESH_STATUS curl_exit=$CURL_REFRESH_EXIT" >&2
   head -c 1000 /tmp/codex-refresh-response.json >&2 || true
   echo >&2
-  tail -n 120 "$PROXY_LOG" >&2 || true
-  tail -n 80 "$SERVER_LOG" >&2 || true
-  exit 1
-fi
-python3 - <<'PY'
+  REFRESH_FAILED=1
+elif ! python3 - <<'PY'
 import json
 with open("/tmp/codex-refresh-response.json", "r", encoding="utf-8") as f:
     refreshed = json.load(f)
@@ -487,25 +496,35 @@ for key in ("access_token", "refresh_token"):
         raise SystemExit("refresh response leaked a non-phantom refresh token")
 print("Refresh through Duckway proxy returned phantom tokens")
 PY
+then
+  echo "[refresh] FAIL: invalid refresh response" >&2
+  REFRESH_FAILED=1
+else
+  echo "[refresh] PASS"
+fi
+if ! grep -q 'openai-auth' "$PROXY_LOG"; then
+  echo "[refresh] FAIL: proxy log has no openai-auth request" >&2
+  REFRESH_FAILED=1
+fi
+fi
 
+if [ "$RUN_LLM" = "1" ]; then
 echo "Using Codex CLI native OAuth mode from duckway sync..."
 unset OPENAI_API_KEY
 
-echo "Running Codex prompt through Duckway proxy..."
+echo "[llm] Running Codex prompt through Duckway proxy..."
 mkdir -p /tmp/codex-work
 set +e
 printf '%s\n' "$PROMPT" | timeout 180 codex exec --json --skip-git-repo-check --sandbox read-only -C /tmp/codex-work - >"$CODEX_OUT" 2>/tmp/codex-stderr
 CODEX_STATUS=$?
 set -e
 if [ "$CODEX_STATUS" -ne 0 ]; then
-  echo "codex exec failed with status $CODEX_STATUS" >&2
+  echo "[llm] FAIL: codex exec exited with status $CODEX_STATUS" >&2
   tail -n 80 /tmp/codex-stderr >&2 || true
   tail -n 80 "$PROXY_LOG" >&2 || true
   tail -n 80 "$SERVER_LOG" >&2 || true
-  exit 1
-fi
-
-python3 - "$CODEX_OUT" <<'PY'
+  LLM_FAILED=1
+elif ! python3 - "$CODEX_OUT" <<'PY'
 import json, sys
 
 path = sys.argv[1]
@@ -529,23 +548,25 @@ if not messages:
 print("Codex assistant output:")
 print(messages[-1][:1000])
 PY
-
-if ! grep -q 'openai-auth' "$PROXY_LOG"; then
-  echo "Duckway proxy log did not show a Codex OAuth refresh request" >&2
-  tail -n 120 "$PROXY_LOG" >&2 || true
-  exit 1
+then
+  echo "[llm] FAIL: codex exec returned no assistant text" >&2
+  LLM_FAILED=1
 fi
 if ! grep -q 'openai-chatgpt' "$PROXY_LOG"; then
-  echo "Duckway proxy log did not show native Codex ChatGPT backend traffic" >&2
+  echo "[llm] FAIL: proxy log has no native Codex ChatGPT backend traffic" >&2
   tail -n 120 "$PROXY_LOG" >&2 || true
-  exit 1
+  LLM_FAILED=1
+fi
+if [ "$LLM_FAILED" = "0" ]; then
+  echo "[llm] PASS"
+fi
 fi
 
 if grep -Fq "$PLACEHOLDER" "$SERVER_LOG" "$PROXY_LOG" 2>/dev/null; then
   echo "Warning: phantom token appeared in logs; inspect proxy/server logs" >&2
 fi
 
-if [ "$CC_WATCH" = "1" ]; then
+if [ "$CC_WATCH" = "1" ] && [ "$RUN_LLM" = "1" ] && [ "$LLM_FAILED" = "0" ]; then
   echo "Starting duckway cc watch and running Codex agent test..."
   /tmp/duckway cc watch --no-tmux --debug >"$CC_WATCH_LOG" 2>&1 &
   CC_WATCH_PID=$!
@@ -600,8 +621,19 @@ if [ "$CC_WATCH" = "1" ]; then
   fi
 fi
 
-echo "PASS: Codex OAuth phantom token ran prompt through Duckway proxy"
-if [ "$CC_WATCH" = "1" ]; then
+if [ "$RUN_REFRESH" = "1" ] && [ "$REFRESH_FAILED" = "1" ]; then
+  echo "FAIL: Codex OAuth refresh case" >&2
+fi
+if [ "$RUN_LLM" = "1" ] && [ "$LLM_FAILED" = "1" ]; then
+  echo "FAIL: Codex LLM request case" >&2
+fi
+if [ "$RUN_LLM" = "1" ] && [ "$LLM_FAILED" = "0" ]; then
+  echo "PASS: Codex OAuth phantom token ran prompt through Duckway proxy"
+fi
+if [ "$CC_WATCH" = "1" ] && [ "$LLM_FAILED" = "0" ]; then
   echo "PASS: duckway cc watch ran Codex agent through Duckway proxy"
+fi
+if [ "$REFRESH_FAILED" = "1" ] || [ "$LLM_FAILED" = "1" ]; then
+  exit 1
 fi
 CONTAINER_SCRIPT

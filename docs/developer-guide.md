@@ -997,6 +997,15 @@ Run the full live E2E:
 CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh
 ```
 
+Refresh and LLM requests are independent cases. The default command runs both
+and continues to the LLM request if refresh fails, then reports each result and
+returns failure if either case failed. They can also be run separately:
+
+```bash
+CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --refresh-only
+CODEX_AUTH=live-credentials/codex-auth.json ./scripts/codex-oauth-live-e2e.sh --llm-only
+```
+
 Run the optional control-channel watch path:
 
 ```bash
