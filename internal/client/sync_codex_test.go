@@ -190,9 +190,11 @@ func TestCCWatchCodexOAuthSyncUsesNativeOAuth(t *testing.T) {
 }
 
 func TestBuildHostMapAddsOpenAIAuthVirtualService(t *testing.T) {
+	assigned := true
+	unassigned := false
 	hostMap := buildHostMap([]ServiceInfo{
-		{Name: "openai", HostPattern: "api.openai.com", UpstreamURL: "https://api.openai.com"},
-		{Name: "xai", HostPattern: "api.x.ai,cli-chat-proxy.grok.com", UpstreamURL: "https://api.x.ai"},
+		{Name: "openai", HostPattern: "api.openai.com", UpstreamURL: "https://api.openai.com", Assigned: &assigned},
+		{Name: "xai", HostPattern: "api.x.ai,cli-chat-proxy.grok.com", UpstreamURL: "https://api.x.ai", Assigned: &unassigned},
 		{Name: "discord", HostPattern: "discord.com,GATEWAY.DISCORD.GG.", UpstreamURL: "https://discord.com/api/v10"},
 	})
 	entry, ok := hostMap["auth.openai.com"]
@@ -201,6 +203,9 @@ func TestBuildHostMapAddsOpenAIAuthVirtualService(t *testing.T) {
 	}
 	if entry.Service != "openai-auth" || entry.DeliveryMode != "proxy" || entry.UpstreamURL != "https://auth.openai.com" {
 		t.Fatalf("unexpected auth host entry: %#v", entry)
+	}
+	if !entry.AssignmentKnown || !entry.Assigned {
+		t.Fatalf("OpenAI auth virtual host did not inherit assignment: %#v", entry)
 	}
 	if hostMap["api.openai.com"].Service != "openai" {
 		t.Fatalf("regular service host was not preserved: %#v", hostMap["api.openai.com"])
@@ -218,6 +223,9 @@ func TestBuildHostMapAddsOpenAIAuthVirtualService(t *testing.T) {
 	}
 	if grok.Service != "xai-grok" || grok.DeliveryMode != "proxy" || grok.UpstreamURL != "https://cli-chat-proxy.grok.com" {
 		t.Fatalf("unexpected Grok host entry: %#v", grok)
+	}
+	if !grok.AssignmentKnown || grok.Assigned {
+		t.Fatalf("Grok virtual host did not inherit unassigned state: %#v", grok)
 	}
 	if hostMap["api.x.ai"].Service != "xai" || hostMap["api.x.ai"].UpstreamURL != "https://api.x.ai" {
 		t.Fatalf("regular xAI API host was not preserved: %#v", hostMap["api.x.ai"])
@@ -237,6 +245,47 @@ func TestBuildHostMapSkipsGrokVirtualServiceWithoutXAIHostPattern(t *testing.T) 
 		if _, ok := hostMap["cli-chat-proxy.grok.com"]; ok {
 			t.Fatalf("Grok virtual host should not be present for services %#v: %#v", svcs, hostMap)
 		}
+	}
+}
+
+func TestServiceRoutingCachePreservesAssignmentState(t *testing.T) {
+	dir := t.TempDir()
+	assigned := true
+	services := []ServiceInfo{{
+		Name: "openai", HostPattern: "api.openai.com",
+		UpstreamURL: "https://api.openai.com", Assigned: &assigned,
+	}}
+	if err := saveServiceMetadata(dir, services); err != nil {
+		t.Fatal(err)
+	}
+	hosts, err := cachedServiceHostMap(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"api.openai.com", "auth.openai.com", "chatgpt.com"} {
+		entry := hosts[host]
+		if !entry.AssignmentKnown || !entry.Assigned {
+			t.Fatalf("%s did not preserve assignment: %#v", host, entry)
+		}
+	}
+	info, err := os.Stat(filepath.Join(dir, serviceMetadataCacheFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("cache mode=%o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestDefaultManagedServicesFailClosedForPhantom(t *testing.T) {
+	hosts := buildHostMap(defaultManagedServices())
+	entry := hosts["api.openai.com"]
+	if entry.AssignmentKnown {
+		t.Fatalf("default metadata unexpectedly has known assignment: %#v", entry)
+	}
+	status, _ := phantomAssignmentError(entry)
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want %d", status, http.StatusServiceUnavailable)
 	}
 }
 

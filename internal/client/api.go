@@ -115,6 +115,34 @@ type PlaceholderKeyInfo struct {
 	PermissionConfig string `json:"permission_config,omitempty"`
 }
 
+type ClientSyncSnapshot struct {
+	Revision string               `json:"revision"`
+	Keys     []PlaceholderKeyInfo `json:"keys"`
+	Services []ServiceInfo        `json:"services"`
+}
+
+func (c *APIClient) FetchSyncSnapshot() (*ClientSyncSnapshot, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/client/sync", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch sync snapshot: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+	}
+	var snapshot ClientSyncSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+		return nil, fmt.Errorf("decode sync snapshot: %w", err)
+	}
+	return &snapshot, nil
+}
+
 func (c *APIClient) FetchKeys() ([]PlaceholderKeyInfo, error) {
 	req, err := http.NewRequest("GET", c.baseURL+"/client/keys", nil)
 	if err != nil {

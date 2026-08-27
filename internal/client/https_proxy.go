@@ -35,17 +35,20 @@ type ServiceInfo struct {
 	HostPattern  string `json:"host_pattern"` // comma-separated list of hosts
 	UpstreamURL  string `json:"upstream_url"`
 	DeliveryMode string `json:"delivery_mode"` // "proxy" (default) or "loan_proxy"
+	Assigned     *bool  `json:"assigned,omitempty"`
 }
 
 // hostEntry is what the sidecar resolves a request host to: which service it
 // belongs to, what delivery mode applies, and the upstream URL for direct
 // forwarding (used in loan_proxy mode).
 type hostEntry struct {
-	Service      string
-	DeliveryMode string
-	UpstreamURL  string // e.g. https://api.github.com — used for direct forwarding in loan_proxy
-	TunnelOnly   bool   // preserve end-to-end TLS/WSS; never inspect or replace credentials
-	TunnelPort   string // required destination port when TunnelOnly is set
+	Service         string
+	DeliveryMode    string
+	UpstreamURL     string // e.g. https://api.github.com — used for direct forwarding in loan_proxy
+	TunnelOnly      bool   // preserve end-to-end TLS/WSS; never inspect or replace credentials
+	TunnelPort      string // required destination port when TunnelOnly is set
+	Assigned        bool
+	AssignmentKnown bool
 }
 
 type replayReadCloser struct {
@@ -73,6 +76,7 @@ type httpsProxy struct {
 	certCache  sync.Map // hostname -> *tls.Certificate
 	hostMu     sync.RWMutex
 	hostMap    map[string]hostEntry
+	syncMu     sync.Mutex
 	httpClient *http.Client
 	debug      bool // when true, log every request/response
 
@@ -138,7 +142,10 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 	}
 
 	// Fetch service host map (now per-host with delivery_mode + upstream_url)
-	hostMap := fetchServiceHosts(cfg.ServerURL, cfg.Token)
+	hostMap, cacheErr := cachedServiceHostMap(configDir)
+	if cacheErr != nil {
+		hostMap = fetchServiceHosts(configDir, cfg.ServerURL, cfg.Token)
+	}
 	if len(hostMap) > 0 {
 		log.Printf("HTTPS MITM enabled for %d hosts:", len(hostMap))
 		for host, e := range hostMap {
@@ -187,12 +194,15 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 			ticker := time.NewTicker(syncInterval)
 			defer ticker.Stop()
 			for range ticker.C {
-				n, _ := SyncKeys(configDir, cfg)
-				log.Printf("Synced %d keys", n)
+				n, syncErr := proxy.syncSnapshot(configDir, cfg)
+				if syncErr != nil {
+					log.Printf("Warning: key and routing sync failed: %v", syncErr)
+				} else {
+					log.Printf("Synced %d keys", n)
+				}
 				if ch := SyncSupplyChainRC(cfg); SummarizeSupplyChainChanges(ch) != "up to date" {
 					log.Printf("Supply-chain hardening: %s", SummarizeSupplyChainChanges(ch))
 				}
-				proxy.reloadHostMap(cfg.ServerURL, cfg.Token)
 			}
 		}()
 	}
@@ -203,7 +213,10 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 		signal.Notify(sig, syscall.SIGUSR1)
 		for range sig {
 			log.Printf("SIGUSR1: reloading host map")
-			proxy.reloadHostMap(cfg.ServerURL, cfg.Token)
+			if _, err := proxy.syncSnapshot(configDir, cfg); err != nil {
+				log.Printf("Warning: host map reload failed: %v", err)
+				continue
+			}
 		}
 	}()
 
@@ -282,11 +295,11 @@ func (p *httpsProxy) handleHTTPForwardProxy(w http.ResponseWriter, r *http.Reque
 	p.hostMu.RUnlock()
 
 	usesPhantom := requestUsesDuckwayPhantom(entry, r)
-	if known && isManagedGitHubSmartHTTPAuthBypass(entry, r, usesPhantom) {
-		http.Error(w, "github git traffic must use a Duckway phantom token", http.StatusForbidden)
-		return
-	}
 	if known && entry.Service != "" && usesPhantom {
+		if status, message := phantomAssignmentError(entry); status != 0 {
+			http.Error(w, message, status)
+			return
+		}
 		p.forwardHTTPToGateway(w, r, entry.Service, host)
 		return
 	}
@@ -459,17 +472,24 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		tlsConn.SetReadDeadline(time.Time{}) // clear before forwarding
 
+		p.hostMu.RLock()
+		currentEntry, stillManaged := p.hostMap[host]
+		p.hostMu.RUnlock()
+		if stillManaged {
+			entry = currentEntry
+		} else {
+			// This CONNECT was established while the host was managed. Do not
+			// downgrade a phantom request to direct traffic after a reload.
+			entry.AssignmentKnown = false
+			entry.Assigned = false
+		}
 		usesPhantom := requestUsesDuckwayPhantom(entry, req)
-		if isManagedGitHubSmartHTTPAuthBypass(entry, req, usesPhantom) {
-			writeHTTPError(tlsConn, http.StatusForbidden, "github git traffic must use a Duckway phantom token")
-			continue
-		}
-		if isManagedCredentialBypass(entry, req, usesPhantom) {
-			writeHTTPError(tlsConn, http.StatusForbidden, "managed service credentials must use a Duckway phantom token")
-			continue
-		}
 		if !usesPhantom {
 			p.forwardDirect(tlsConn, req, host, entry)
+			continue
+		}
+		if status, message := phantomAssignmentError(entry); status != 0 {
+			writeHTTPError(tlsConn, status, message)
 			continue
 		}
 
@@ -602,6 +622,16 @@ func requestUsesDuckwayPhantom(entry hostEntry, req *http.Request) bool {
 	return false
 }
 
+func phantomAssignmentError(entry hostEntry) (int, string) {
+	if !entry.AssignmentKnown {
+		return http.StatusServiceUnavailable, "service assignment unavailable"
+	}
+	if !entry.Assigned {
+		return http.StatusForbidden, "service is not assigned to this client"
+	}
+	return 0, ""
+}
+
 func requestBodyUsesDuckwayRefreshToken(req *http.Request) bool {
 	if req.Body == nil {
 		return false
@@ -670,43 +700,6 @@ func tokenUsesDuckwayPhantom(token string) bool {
 		}
 	}
 	return false
-}
-
-func isManagedGitHubSmartHTTPAuthBypass(entry hostEntry, req *http.Request, usesPhantom bool) bool {
-	if usesPhantom || entry.Service != "github" || !isGitHubSmartHTTPPath(req.URL.Path) {
-		return false
-	}
-	return requestHasCredentialHeader(req)
-}
-
-func isManagedCredentialBypass(entry hostEntry, req *http.Request, usesPhantom bool) bool {
-	if usesPhantom || !requestHasCredentialHeader(req) {
-		return false
-	}
-	switch entry.Service {
-	case "anthropic", "github", "openai", "xai", "xai-grok":
-		return true
-	default:
-		return false
-	}
-}
-
-func requestHasCredentialHeader(req *http.Request) bool {
-	for _, header := range []string{"Authorization", "X-Api-Key"} {
-		for _, value := range req.Header.Values(header) {
-			if strings.TrimSpace(value) != "" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isGitHubSmartHTTPPath(path string) bool {
-	path = strings.TrimSpace(path)
-	return strings.HasSuffix(path, ".git/info/refs") ||
-		strings.HasSuffix(path, ".git/git-upload-pack") ||
-		strings.HasSuffix(path, ".git/git-receive-pack")
 }
 
 func copyForwardHeaders(dst, src http.Header) {
@@ -944,10 +937,12 @@ func buildHostMap(svcs []ServiceInfo) map[string]hostEntry {
 			}
 			tunnelOnly := h == "gateway.discord.gg"
 			hostMap[h] = hostEntry{
-				Service:      s.Name,
-				DeliveryMode: mode,
-				UpstreamURL:  s.UpstreamURL,
-				TunnelOnly:   tunnelOnly,
+				Service:         s.Name,
+				DeliveryMode:    mode,
+				UpstreamURL:     s.UpstreamURL,
+				TunnelOnly:      tunnelOnly,
+				Assigned:        serviceInfoAssigned(s),
+				AssignmentKnown: s.Assigned != nil,
 			}
 			if tunnelOnly {
 				entry := hostMap[h]
@@ -959,30 +954,41 @@ func buildHostMap(svcs []ServiceInfo) map[string]hostEntry {
 	// Codex OAuth refreshes go to auth.openai.com. Treat it as a virtual
 	// service so the client can MITM that host and the gateway can replace the
 	// fake refresh token with the real server-side token.
+	openAI, _ := serviceInfoByName(svcs, "openai")
 	hostMap["auth.openai.com"] = hostEntry{
-		Service:      "openai-auth",
-		DeliveryMode: "proxy",
-		UpstreamURL:  "https://auth.openai.com",
+		Service:         "openai-auth",
+		DeliveryMode:    "proxy",
+		UpstreamURL:     "https://auth.openai.com",
+		Assigned:        serviceInfoAssigned(openAI),
+		AssignmentKnown: openAI.Assigned != nil,
 	}
 	// Native Codex OAuth talks to ChatGPT's Codex backend instead of the
 	// OpenAI-compatible /v1 Responses API provider. Treat it as a virtual
 	// OpenAI service so fake Codex OAuth access tokens are swapped server-side.
 	hostMap["chatgpt.com"] = hostEntry{
-		Service:      "openai-chatgpt",
-		DeliveryMode: "proxy",
-		UpstreamURL:  "https://chatgpt.com",
+		Service:         "openai-chatgpt",
+		DeliveryMode:    "proxy",
+		UpstreamURL:     "https://chatgpt.com",
+		Assigned:        serviceInfoAssigned(openAI),
+		AssignmentKnown: openAI.Assigned != nil,
 	}
 	// Grok Build's default model backend is a separate host from the direct
 	// xAI API. Only add this virtual alias when the server-advertised xai
 	// service explicitly includes it in host_pattern.
 	if xai, ok := serviceInfoByName(svcs, "xai"); ok && hostPatternAllows(xai.HostPattern, "cli-chat-proxy.grok.com") {
 		hostMap["cli-chat-proxy.grok.com"] = hostEntry{
-			Service:      "xai-grok",
-			DeliveryMode: "proxy",
-			UpstreamURL:  "https://cli-chat-proxy.grok.com",
+			Service:         "xai-grok",
+			DeliveryMode:    "proxy",
+			UpstreamURL:     "https://cli-chat-proxy.grok.com",
+			Assigned:        serviceInfoAssigned(xai),
+			AssignmentKnown: xai.Assigned != nil,
 		}
 	}
 	return hostMap
+}
+
+func serviceInfoAssigned(service ServiceInfo) bool {
+	return service.Assigned != nil && *service.Assigned
 }
 
 func serviceInfoByName(svcs []ServiceInfo, name string) (ServiceInfo, bool) {
@@ -1008,26 +1014,114 @@ func hostPatternAllows(patterns, host string) bool {
 	return false
 }
 
-func fetchServiceHosts(serverURL, token string) map[string]hostEntry {
+const serviceMetadataCacheFile = "service-routing.json"
+
+func fetchServiceHosts(configDir, serverURL, token string) map[string]hostEntry {
 	svcs, err := FetchServices(serverURL, token)
 	if err != nil {
 		log.Printf("Warning: failed to fetch service hosts: %v", err)
-		return nil
+		if cached, cacheErr := loadServiceMetadata(configDir); cacheErr == nil {
+			log.Printf("Using cached service routing metadata")
+			return buildHostMap(cached)
+		}
+		log.Printf("No cached service routing metadata; managed phantom traffic will fail closed")
+		return buildHostMap(defaultManagedServices())
+	}
+	if err := saveServiceMetadata(configDir, svcs); err != nil {
+		log.Printf("Warning: failed to cache service routing metadata: %v", err)
 	}
 	return buildHostMap(svcs)
 }
 
-// reloadHostMap fetches the current service list from the server and atomically
-// replaces proxy.hostMap. Safe to call from any goroutine concurrently with
-// handleConnect.
-func (p *httpsProxy) reloadHostMap(serverURL, token string) {
-	newMap := fetchServiceHosts(serverURL, token)
+func loadServiceMetadata(configDir string) ([]ServiceInfo, error) {
+	body, err := os.ReadFile(filepath.Join(configDir, serviceMetadataCacheFile))
+	if err != nil {
+		return nil, err
+	}
+	var services []ServiceInfo
+	if err := json.Unmarshal(body, &services); err != nil {
+		return nil, err
+	}
+	return services, nil
+}
+
+func cachedServiceHostMap(configDir string) (map[string]hostEntry, error) {
+	services, err := loadServiceMetadata(configDir)
+	if err != nil {
+		return nil, err
+	}
+	return buildHostMap(services), nil
+}
+
+func saveServiceMetadata(configDir string, services []ServiceInfo) error {
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return err
+	}
+	body, err := json.Marshal(services)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(configDir, serviceMetadataCacheFile+".*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, filepath.Join(configDir, serviceMetadataCacheFile))
+}
+
+func defaultManagedServices() []ServiceInfo {
+	return []ServiceInfo{
+		{Name: "anthropic", HostPattern: "api.anthropic.com", UpstreamURL: "https://api.anthropic.com"},
+		{Name: "openai", HostPattern: "api.openai.com", UpstreamURL: "https://api.openai.com"},
+		{Name: "xai", HostPattern: "api.x.ai,cli-chat-proxy.grok.com", UpstreamURL: "https://api.x.ai"},
+		{Name: "github", HostPattern: "api.github.com,github.com", UpstreamURL: "https://api.github.com"},
+		{Name: "discord", HostPattern: "discord.com,api.discord.com,gateway.discord.gg", UpstreamURL: "https://discord.com"},
+		{Name: "telegram", HostPattern: "api.telegram.org", UpstreamURL: "https://api.telegram.org"},
+	}
+}
+
+func (p *httpsProxy) reloadCachedHostMap(configDir string) {
+	newMap, err := cachedServiceHostMap(configDir)
+	if err != nil {
+		log.Printf("Warning: failed to load cached host map: %v", err)
+		return
+	}
+	p.replaceHostMap(newMap)
+}
+
+func (p *httpsProxy) syncSnapshot(configDir string, cfg *Config) (int, error) {
+	p.syncMu.Lock()
+	defer p.syncMu.Unlock()
+	count, err := SyncKeys(configDir, cfg)
+	if err != nil {
+		return 0, err
+	}
+	p.reloadCachedHostMap(configDir)
+	return count, nil
+}
+
+func (p *httpsProxy) replaceHostMap(newMap map[string]hostEntry) {
 	if len(newMap) == 0 {
 		return
 	}
 	p.hostMu.Lock()
 	p.hostMap = newMap
 	p.hostMu.Unlock()
+	p.loanMu.Lock()
+	clear(p.loanCache)
+	p.loanMu.Unlock()
 	log.Printf("Host map refreshed: %d hosts", len(newMap))
 }
 

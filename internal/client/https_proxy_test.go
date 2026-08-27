@@ -82,21 +82,6 @@ func TestFetchServicesReportsHTTPStatus(t *testing.T) {
 	}
 }
 
-func TestManagedCredentialBypassRequiresPhantom(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "https://cli-chat-proxy.grok.com/v1/chat/completions", nil)
-	req.Header.Set("Authorization", "Bearer xai-real-secret")
-	if !isManagedCredentialBypass(hostEntry{Service: "xai-grok"}, req, false) {
-		t.Fatal("real credential on managed Grok route should be rejected")
-	}
-	if isManagedCredentialBypass(hostEntry{Service: "xai-grok"}, req, true) {
-		t.Fatal("Duckway phantom credential should not be treated as a bypass")
-	}
-	publicReq := httptest.NewRequest(http.MethodGet, "https://cli-chat-proxy.grok.com/status", nil)
-	if isManagedCredentialBypass(hostEntry{Service: "xai-grok"}, publicReq, false) {
-		t.Fatal("public no-auth request should remain eligible for direct forwarding")
-	}
-}
-
 func TestFallbackMITMEntryForGitHub(t *testing.T) {
 	entry, ok := fallbackMITMEntryForHost("github.com")
 	if !ok {
@@ -126,10 +111,12 @@ func newTestMITMProxy(t *testing.T, backendURL string) (*httpsProxy, *x509.CertP
 	}
 
 	p := &httpsProxy{
-		serverURL:   backendURL,
-		token:       "test-token",
-		ca:          ca,
-		hostMap:     map[string]hostEntry{"api.anthropic.com": {Service: "anthropic", DeliveryMode: "proxy"}},
+		serverURL: backendURL,
+		token:     "test-token",
+		ca:        ca,
+		hostMap: map[string]hostEntry{"api.anthropic.com": {
+			Service: "anthropic", DeliveryMode: "proxy", AssignmentKnown: true, Assigned: true,
+		}},
 		httpClient:  &http.Client{Transport: directTransport},
 		loanCache:   make(map[string]*loanedToken),
 		auditClient: &http.Client{Timeout: time.Second},
@@ -369,9 +356,11 @@ func TestOpenAIVirtualHostOnlyUsesGatewayForPhantomCredential(t *testing.T) {
 	})
 
 	p := &httpsProxy{
-		serverURL:  "http://duckway.test",
-		token:      "client-token",
-		hostMap:    map[string]hostEntry{"auth.openai.com": {Service: "openai-auth", UpstreamURL: "https://auth.openai.com"}},
+		serverURL: "http://duckway.test",
+		token:     "client-token",
+		hostMap: map[string]hostEntry{"auth.openai.com": {
+			Service: "openai-auth", UpstreamURL: "https://auth.openai.com", AssignmentKnown: true, Assigned: true,
+		}},
 		httpClient: &http.Client{Transport: transport},
 	}
 
@@ -392,6 +381,32 @@ func TestOpenAIVirtualHostOnlyUsesGatewayForPhantomCredential(t *testing.T) {
 	p.handleHTTPForwardProxy(phantomRec, phantomReq)
 	if phantomRec.Code != http.StatusNoContent || directHits != 1 || gatewayHits != 1 {
 		t.Fatalf("phantom route: status=%d direct=%d gateway=%d", phantomRec.Code, directHits, gatewayHits)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		entry hostEntry
+		want  int
+	}{
+		{name: "unassigned", entry: hostEntry{Service: "openai-auth", AssignmentKnown: true}, want: http.StatusForbidden},
+		{name: "unknown", entry: hostEntry{Service: "openai-auth"}, want: http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p.hostMap["auth.openai.com"] = tc.entry
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"http://auth.openai.com/oauth/token",
+				strings.NewReader(`{"refresh_token":"rt.duckway.placeholder"}`),
+			)
+			rec := httptest.NewRecorder()
+			p.handleHTTPForwardProxy(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.want)
+			}
+			if directHits != 1 || gatewayHits != 1 {
+				t.Fatalf("rejected phantom escaped locally: direct=%d gateway=%d", directHits, gatewayHits)
+			}
+		})
 	}
 }
 
@@ -475,7 +490,10 @@ func TestHTTPForwardProxyRoutesKnownPhantomThroughGateway(t *testing.T) {
 		serverURL: gateway.URL,
 		token:     "test-token",
 		hostMap: map[string]hostEntry{
-			"api.anthropic.com": {Service: "anthropic", DeliveryMode: "proxy", UpstreamURL: "https://api.anthropic.com"},
+			"api.anthropic.com": {
+				Service: "anthropic", DeliveryMode: "proxy", UpstreamURL: "https://api.anthropic.com",
+				AssignmentKnown: true, Assigned: true,
+			},
 		},
 		httpClient: &http.Client{Transport: directTransport},
 		loanCache:  make(map[string]*loanedToken),
@@ -553,7 +571,7 @@ func TestHTTPForwardProxyDirectsUnknownAbsoluteURL(t *testing.T) {
 	}
 }
 
-func TestMITMRejectsManagedGitHubSmartHTTPWithRealCredential(t *testing.T) {
+func TestMITMDirectsManagedGitHubSmartHTTPWithRealCredential(t *testing.T) {
 	var gatewayHits int
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gatewayHits++
@@ -608,14 +626,14 @@ func TestMITMRejectsManagedGitHubSmartHTTPWithRealCredential(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d body=%q, want 403", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK || string(body) != "direct-origin" {
+		t.Fatalf("status = %d body=%q, want direct origin", resp.StatusCode, body)
 	}
 	if gatewayHits != 0 {
 		t.Fatalf("gateway hits = %d, want 0", gatewayHits)
 	}
-	if originHits != 0 {
-		t.Fatalf("origin hits = %d, want 0", originHits)
+	if originHits != 1 {
+		t.Fatalf("origin hits = %d, want 1", originHits)
 	}
 }
 
@@ -644,7 +662,10 @@ func TestMITMProxiesNativeCodexChatGPTPhantomTraffic(t *testing.T) {
 		token:     "test-token",
 		ca:        ca,
 		hostMap: map[string]hostEntry{
-			"chatgpt.com": {Service: "openai-chatgpt", DeliveryMode: "proxy", UpstreamURL: "https://chatgpt.com"},
+			"chatgpt.com": {
+				Service: "openai-chatgpt", DeliveryMode: "proxy", UpstreamURL: "https://chatgpt.com",
+				AssignmentKnown: true, Assigned: true,
+			},
 		},
 		httpClient: &http.Client{Transport: directTransport},
 		loanCache:  make(map[string]*loanedToken),

@@ -175,8 +175,10 @@ func TestE2E_ClientProxy_Through_ServerProxy(t *testing.T) {
 		ca:        ca,
 		hostMap: map[string]hostEntry{
 			"api.anthropic.com": {
-				Service:      "anthropic",
-				DeliveryMode: "proxy",
+				Service:         "anthropic",
+				DeliveryMode:    "proxy",
+				AssignmentKnown: true,
+				Assigned:        true,
 			},
 		},
 		httpClient:  &http.Client{Timeout: 10 * time.Second, Transport: directTransport},

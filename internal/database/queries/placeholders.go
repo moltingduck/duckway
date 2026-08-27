@@ -157,6 +157,27 @@ func (q *PlaceholderQueries) ListByClient(clientID string) ([]models.Placeholder
 	return q.List(clientID, "")
 }
 
+func (q *PlaceholderQueries) ActiveServiceIDsByClient(clientID string) (map[string]bool, error) {
+	rows, err := q.db.Query(
+		"SELECT DISTINCT service_id FROM placeholder_keys WHERE client_id = ? AND is_active = 1",
+		clientID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	serviceIDs := make(map[string]bool)
+	for rows.Next() {
+		var serviceID string
+		if err := rows.Scan(&serviceID); err != nil {
+			return nil, err
+		}
+		serviceIDs[serviceID] = true
+	}
+	return serviceIDs, rows.Err()
+}
+
 func (q *PlaceholderQueries) UpdatePlaceholder(id, newPlaceholder string) error {
 	_, err := q.db.Exec("UPDATE placeholder_keys SET placeholder=? WHERE id=?", newPlaceholder, id)
 	return err

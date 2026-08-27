@@ -1,6 +1,9 @@
 package handlers
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -9,6 +12,22 @@ import (
 	"github.com/hackerduck/duckway/internal/server/middleware"
 	svc "github.com/hackerduck/duckway/internal/server/services"
 )
+
+type clientEnvKey struct {
+	EnvName          string `json:"env_name"`
+	Placeholder      string `json:"placeholder"`
+	ServiceName      string `json:"service_name"`
+	KeyPath          string `json:"key_path,omitempty"`
+	PermissionConfig string `json:"permission_config,omitempty"`
+}
+
+type clientServiceRoute struct {
+	Name         string `json:"name"`
+	HostPattern  string `json:"host_pattern"`
+	UpstreamURL  string `json:"upstream_url"`
+	DeliveryMode string `json:"delivery_mode"`
+	Assigned     bool   `json:"assigned"`
+}
 
 type ClientHandler struct {
 	clients      *queries.ClientQueries
@@ -242,21 +261,68 @@ func (h *ClientHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keys, err := h.placeholders.ListByClient(client.ID)
+	result, err := h.clientKeys(client.ID)
 	if err != nil {
 		jsonError(w, "failed to list keys", http.StatusInternalServerError)
 		return
 	}
+	jsonResponse(w, result)
+}
 
-	type envKey struct {
-		EnvName          string `json:"env_name"`
-		Placeholder      string `json:"placeholder"`
-		ServiceName      string `json:"service_name"`
-		KeyPath          string `json:"key_path,omitempty"`
-		PermissionConfig string `json:"permission_config,omitempty"`
+// GetSync returns one client-scoped snapshot so placeholder credentials and
+// routing policy are installed atomically by the sidecar.
+func (h *ClientHandler) GetSync(w http.ResponseWriter, r *http.Request) {
+	client := middleware.GetClient(r)
+	if client == nil {
+		jsonError(w, "client not found in context", http.StatusUnauthorized)
+		return
+	}
+	keys, err := h.clientKeys(client.ID)
+	if err != nil {
+		jsonError(w, "failed to list keys", http.StatusInternalServerError)
+		return
+	}
+	services, err := h.services.List()
+	if err != nil {
+		jsonError(w, "failed to list services", http.StatusInternalServerError)
+		return
+	}
+	assigned, err := h.placeholders.ActiveServiceIDsByClient(client.ID)
+	if err != nil {
+		jsonError(w, "failed to resolve assignments", http.StatusInternalServerError)
+		return
+	}
+	routes := make([]clientServiceRoute, 0, len(services))
+	for _, service := range services {
+		if !service.IsActive || service.Name == "duckway-internal" {
+			continue
+		}
+		routes = append(routes, clientServiceRoute{
+			Name: service.Name, HostPattern: service.HostPattern,
+			UpstreamURL: service.UpstreamURL, DeliveryMode: service.DeliveryMode,
+			Assigned: assigned[service.ID],
+		})
+	}
+	payload := struct {
+		Keys     []clientEnvKey       `json:"keys"`
+		Services []clientServiceRoute `json:"services"`
+	}{Keys: keys, Services: routes}
+	body, _ := json.Marshal(payload)
+	revision := fmt.Sprintf("%x", sha256.Sum256(body))
+	jsonResponse(w, struct {
+		Revision string               `json:"revision"`
+		Keys     []clientEnvKey       `json:"keys"`
+		Services []clientServiceRoute `json:"services"`
+	}{Revision: revision, Keys: keys, Services: routes})
+}
+
+func (h *ClientHandler) clientKeys(clientID string) ([]clientEnvKey, error) {
+	keys, err := h.placeholders.ListByClient(clientID)
+	if err != nil {
+		return nil, err
 	}
 
-	result := make([]envKey, 0, len(keys))
+	result := make([]clientEnvKey, 0, len(keys))
 	for _, k := range keys {
 		if k.IsActive {
 			keyPath := k.KeyPath
@@ -267,7 +333,7 @@ func (h *ClientHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
 					keyPath = svc.KeyDirectory
 				}
 			}
-			out := envKey{
+			out := clientEnvKey{
 				EnvName:     k.EnvName,
 				Placeholder: k.Placeholder,
 				ServiceName: k.ServiceName,
@@ -279,6 +345,5 @@ func (h *ClientHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
 			result = append(result, out)
 		}
 	}
-
-	jsonResponse(w, result)
+	return result, nil
 }

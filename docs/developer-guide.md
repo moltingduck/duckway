@@ -138,6 +138,63 @@ docs/
 
 ## Phantom token swap — the proxy flow
 
+### Client-side routing policy
+
+The local HTTPS proxy routes in two stages because an HTTPS `CONNECT` exposes
+the destination authority but not credentials inside TLS:
+
+```text
+canonical host
+  -> unknown host: transparent tunnel
+  -> explicit tunnel-only host: transparent tunnel
+  -> managed host: terminate TLS, then inspect the HTTP request
+       -> non-phantom credential (or no credential): direct provider request
+       -> phantom credential + assigned service: Duckway server gateway
+       -> phantom credential + unassigned service: local 403
+       -> phantom credential + unknown assignment state: local 503
+```
+
+The corresponding decision matrix is:
+
+| Host policy | Assignment | Credential | Result |
+|---|---|---|---|
+| Unknown | Not checked | Any | Transparent tunnel |
+| Tunnel-only | Not checked | Any | Transparent tunnel |
+| Managed | Unassigned | None or real | Direct provider request |
+| Managed | Unassigned | Phantom | Local 403; never send the phantom upstream |
+| Managed | Assigned | None or real | Direct provider request; never replace the real credential |
+| Managed | Assigned | Phantom | Forward to the Duckway server gateway |
+| Managed | Unknown | Phantom | Local 503 (fail closed) |
+
+`/client/sync` is client-authenticated and returns one revisioned snapshot with
+both the client's phantom keys and the full active service routing catalog. Each
+service has assignment metadata for that client only, including unassigned
+services so stale local phantoms cannot be mistaken for ordinary credentials on
+an unknown host. The sidecar atomically writes this snapshot before replacing
+its in-memory host map. `/client/keys` and `/client/services` remain available
+for older clients.
+
+The server remains authoritative and revalidates the phantom's client/service
+binding on every gateway request. Stale metadata therefore fails safely: a
+removed assignment may reach the server and be rejected there, while a newly
+added assignment may receive a local error until the host map reloads.
+
+Assignment state never decides whether a managed HTTPS host is intercepted at
+`CONNECT` time: the sidecar must first decrypt TLS to distinguish a real
+credential from a Duckway phantom. Explicit tunnel-only entries must be exact,
+port-restricted destinations such as `gateway.discord.gg:443`. OAuth refresh
+phantoms in structured request bodies are classified the same way as phantom
+credentials in headers.
+
+Direct provider requests do not use Duckway key ACLs, audit logging, or the
+assigned token's upstream proxy. Those controls apply only after Duckway
+resolves a phantom credential. The sidecar caches the last successful service
+and assignment response; if neither the server nor that cache is available,
+known managed hosts reject phantom traffic with `503` instead of leaking it to
+the provider.
+
+Only the phantom branch enters the Duckway server data path described below.
+
 Implemented in `internal/server/handlers/proxy.go`, the `Handle` method:
 
 ```

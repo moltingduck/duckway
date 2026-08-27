@@ -408,6 +408,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	// Client routes (require client auth)
 	clientMux := http.NewServeMux()
 	clientMux.HandleFunc("GET /client/keys", clientH.GetKeys)
+	clientMux.HandleFunc("GET /client/sync", clientH.GetSync)
 	clientMux.HandleFunc("GET /client/canaries", canaryH.ClientGetCanaries)
 	clientMux.HandleFunc("POST /client/control/heartbeat", clientUpdateH.Heartbeat)
 	clientMux.HandleFunc("POST /client/control/jobs/{id}/status", clientUpdateH.ReportStatus)
@@ -497,9 +498,19 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	// Service host map (for HTTPS proxy client). Requires client auth.
 	// Registered in clientMux so it is protected by the /client/ middleware.
 	clientMux.HandleFunc("GET /client/services", func(w http.ResponseWriter, r *http.Request) {
+		client := middleware.GetClient(r)
+		if client == nil {
+			http.Error(w, `{"error":"client authentication required"}`, http.StatusUnauthorized)
+			return
+		}
 		svcs, err := ss.ServiceQ.List()
 		if err != nil {
 			http.Error(w, `{"error":"list services failed"}`, http.StatusInternalServerError)
+			return
+		}
+		assignedServiceIDs, err := ss.PlaceholderQ.ActiveServiceIDsByClient(client.ID)
+		if err != nil {
+			http.Error(w, `{"error":"list service assignments failed"}`, http.StatusInternalServerError)
 			return
 		}
 		type svcInfo struct {
@@ -507,6 +518,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 			HostPattern  string `json:"host_pattern"`
 			UpstreamURL  string `json:"upstream_url"`
 			DeliveryMode string `json:"delivery_mode"`
+			Assigned     bool   `json:"assigned"`
 		}
 		var result []svcInfo
 		for _, svc := range svcs {
@@ -514,6 +526,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 				result = append(result, svcInfo{
 					Name: svc.Name, HostPattern: svc.HostPattern,
 					UpstreamURL: svc.UpstreamURL, DeliveryMode: svc.DeliveryMode,
+					Assigned: assignedServiceIDs[svc.ID],
 				})
 			}
 		}

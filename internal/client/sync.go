@@ -46,9 +46,22 @@ func detectClaudeVersion() string {
 // SyncKeys fetches placeholder keys from the server and writes them to keys.env.
 func SyncKeys(configDir string, cfg *Config) (int, error) {
 	api := NewAPIClient(cfg.ServerURL, cfg.Token)
-	keys, err := api.FetchKeys()
+	snapshot, err := api.FetchSyncSnapshot()
 	if err != nil {
-		return 0, err
+		// Compatibility with servers that predate the atomic sync endpoint.
+		keys, keysErr := api.FetchKeys()
+		if keysErr != nil {
+			return 0, err
+		}
+		services, servicesErr := FetchServices(cfg.ServerURL, cfg.Token)
+		if servicesErr != nil {
+			return 0, servicesErr
+		}
+		snapshot = &ClientSyncSnapshot{Keys: keys, Services: services}
+	}
+	keys := snapshot.Keys
+	if err := saveServiceMetadata(configDir, snapshot.Services); err != nil {
+		return 0, fmt.Errorf("write service routing metadata: %w", err)
 	}
 
 	var lines []string

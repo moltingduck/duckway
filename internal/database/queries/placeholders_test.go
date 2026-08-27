@@ -54,3 +54,41 @@ func TestPlaceholderDeleteDetachesRequestLogs(t *testing.T) {
 		t.Fatalf("request_log not preserved/detached: rows=%d null_placeholder_rows=%d", logRows, nullPlaceholderRows)
 	}
 }
+
+func TestActiveServiceIDsByClientIsScopedAndIgnoresInactivePlaceholders(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	for _, statement := range []string{
+		`INSERT INTO services (id, name, display_name, upstream_url, host_pattern) VALUES
+			('svc-assigned', 'assigned-test', 'Assigned', 'https://assigned.test', 'assigned.test'),
+			('svc-inactive', 'inactive-test', 'Inactive', 'https://inactive.test', 'inactive.test'),
+			('svc-other', 'other-test', 'Other', 'https://other.test', 'other.test')`,
+		`INSERT INTO clients (id, name, token_hash) VALUES
+			('client-assigned', 'assigned client', 'hash-assigned'),
+			('client-other', 'other client', 'hash-other')`,
+		`INSERT INTO api_keys (id, service_id, name, key_encrypted) VALUES
+			('key-assigned', 'svc-assigned', 'assigned key', 'enc-assigned'),
+			('key-inactive', 'svc-inactive', 'inactive key', 'enc-inactive'),
+			('key-other', 'svc-other', 'other key', 'enc-other')`,
+		`INSERT INTO placeholder_keys (id, env_name, placeholder, service_id, api_key_id, client_id, is_active) VALUES
+			('ph-assigned', 'ASSIGNED_KEY', 'dw_assigned', 'svc-assigned', 'key-assigned', 'client-assigned', 1),
+			('ph-inactive', 'INACTIVE_KEY', 'dw_inactive', 'svc-inactive', 'key-inactive', 'client-assigned', 0),
+			('ph-other', 'OTHER_KEY', 'dw_other', 'svc-other', 'key-other', 'client-other', 1)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed assignment fixture: %v", err)
+		}
+	}
+
+	serviceIDs, err := queries.NewPlaceholderQueries(db).ActiveServiceIDsByClient("client-assigned")
+	if err != nil {
+		t.Fatalf("list active service IDs: %v", err)
+	}
+	if len(serviceIDs) != 1 || !serviceIDs["svc-assigned"] {
+		t.Fatalf("active service IDs = %#v, want only svc-assigned", serviceIDs)
+	}
+}
