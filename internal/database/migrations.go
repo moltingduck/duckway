@@ -358,7 +358,8 @@ var migrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_conv_usage_key ON conversation_usage(api_key_id, created_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_conv_usage_conv ON conversation_usage(api_key_id, conversation_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_conv_usage_key_day ON conversation_usage(api_key_id, created_at, client_id, model)`,
-	`CREATE INDEX IF NOT EXISTS idx_conv_usage_group_day ON conversation_usage(key_group_id, created_at, client_id, model)`,
+	// The key_group_id index is created by runMigrations after safeAlters.
+	// Existing databases already have conversation_usage without that column.
 	`CREATE INDEX IF NOT EXISTS idx_conv_usage_created ON conversation_usage(created_at)`,
 
 	// Immutable model price versions. Rates are USD micros per one million

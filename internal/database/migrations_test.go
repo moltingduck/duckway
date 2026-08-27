@@ -2,6 +2,40 @@ package database
 
 import "testing"
 
+func TestRunMigrationsAddsUsageGroupAttributionToExistingDatabase(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, err := db.Exec(`DROP TABLE conversation_usage`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE conversation_usage (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		client_id TEXT NOT NULL DEFAULT '', api_key_id TEXT NOT NULL DEFAULT '',
+		service_name TEXT NOT NULL DEFAULT '', conversation_id TEXT NOT NULL DEFAULT '',
+		model TEXT NOT NULL DEFAULT '', input_tokens INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runMigrations(db); err != nil {
+		t.Fatalf("upgrade old usage schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO conversation_usage (key_group_id, provider, reasoning_tokens) VALUES ('g1', 'openai', 3)`); err != nil {
+		t.Fatalf("new usage columns unavailable: %v", err)
+	}
+	var indexName string
+	if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_conv_usage_group_day'`).Scan(&indexName); err != nil {
+		t.Fatalf("group usage index unavailable: %v", err)
+	}
+}
+
 func TestRunMigrationsUpdatesOldGitHubDefaults(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
