@@ -129,6 +129,14 @@ func NewUsageScanner(contentType string) *UsageScanner {
 	return &UsageScanner{isSSE: strings.Contains(ct, "text/event-stream")}
 }
 
+// ParseUsageEvent parses one provider JSON event, including OpenAI Responses
+// response.completed events transported inside a WebSocket text frame.
+func ParseUsageEvent(payload []byte) *TokenUsage {
+	s := NewUsageScanner("text/event-stream")
+	s.parseSSEEvent(payload)
+	return s.Result()
+}
+
 func (s *UsageScanner) Write(p []byte) (int, error) {
 	if s.isSSE {
 		s.feedSSE(p)

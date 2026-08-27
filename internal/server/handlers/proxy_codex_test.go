@@ -731,6 +731,35 @@ func TestHandleOpenAIChatGPTProxyUsesOpenAIKeyForNativeCodex(t *testing.T) {
 	}
 }
 
+func TestWebSocketUsageWriterCapturesCodexCompletedUsage(t *testing.T) {
+	payload := []byte(`{"type":"response.completed","response":{"model":"gpt-5.2-codex","usage":{"input_tokens":120,"output_tokens":30,"input_tokens_details":{"cached_tokens":20},"output_tokens_details":{"reasoning_tokens":5}}}}`)
+	frame := append([]byte{0x81, 126, byte(len(payload) >> 8), byte(len(payload))}, payload...)
+	var got *services.TokenUsage
+	w := &webSocketUsageWriter{onUsage: func(usage *services.TokenUsage) { got = usage }}
+	for _, chunk := range [][]byte{frame[:3], frame[3:17], frame[17:]} {
+		if _, err := w.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got == nil {
+		t.Fatal("completed Codex frame did not emit usage")
+	}
+	if got.Provider != "openai" || got.Model != "gpt-5.2-codex" || got.InputTokens != 120 || got.OutputTokens != 30 || got.CacheReadTokens != 20 || got.ReasoningTokens != 5 {
+		t.Fatalf("unexpected usage: %+v", got)
+	}
+}
+
+func TestWebSocketUsageWriterIgnoresCodexDelta(t *testing.T) {
+	payload := []byte(`{"type":"response.output_text.delta","delta":"hello"}`)
+	frame := append([]byte{0x81, byte(len(payload))}, payload...)
+	called := false
+	w := &webSocketUsageWriter{onUsage: func(*services.TokenUsage) { called = true }}
+	_, _ = w.Write(frame)
+	if called {
+		t.Fatal("non-terminal frame emitted usage")
+	}
+}
+
 func TestHandleXAIGrokProxyUsesXAIKey(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

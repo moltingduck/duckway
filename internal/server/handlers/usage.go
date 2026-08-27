@@ -627,7 +627,7 @@ func addMeteredTotals(dst *meteredUsageTotals, src meteredUsageTotals) {
 // snapshot has been captured.
 func isLLMService(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "anthropic", "openai", "codex", "claude", "xai", "xai-grok":
+	case "anthropic", "openai", "openai-chatgpt", "codex", "claude", "xai", "xai-grok":
 		return true
 	}
 	return false

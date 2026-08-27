@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -567,7 +568,9 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		if h.requestLog != nil {
 			h.requestLog.Log(client.ID, result.PlaceholderID, serviceName, r.Method, upstreamPath, resp.StatusCode)
 		}
-		h.relayProxyWebSocket(w, resp)
+		h.relayProxyWebSocket(w, resp, func(u *services.TokenUsage) {
+			h.recordProviderUsage(client.ID, result, serviceName, u)
+		})
 		return
 	}
 
@@ -699,22 +702,22 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// non-claude clients, which bucket together). Best-effort.
 	if usageScanner != nil && h.convUsage != nil {
 		if u := usageScanner.Result(); u != nil {
-			_ = h.convUsage.Insert(&queries.ConversationUsageRecord{
-				ClientID:            client.ID,
-				APIKeyID:            result.APIKeyID,
-				KeyGroupID:          result.GroupID,
-				ServiceName:         serviceName,
-				Provider:            u.Provider,
-				ConversationID:      r.Header.Get("X-Claude-Code-Session-Id"),
-				Model:               u.Model,
-				InputTokens:         u.InputTokens,
-				OutputTokens:        u.OutputTokens,
-				CacheReadTokens:     u.CacheReadTokens,
-				CacheCreationTokens: u.CacheCreationTokens,
-				ReasoningTokens:     u.ReasoningTokens,
-			})
+			h.recordProviderUsage(client.ID, result, serviceName, u)
 		}
 	}
+}
+
+func (h *ProxyHandler) recordProviderUsage(clientID string, result *services.ResolveResult, serviceName string, u *services.TokenUsage) {
+	if h.convUsage == nil || result == nil || u == nil {
+		return
+	}
+	_ = h.convUsage.Insert(&queries.ConversationUsageRecord{
+		ClientID: clientID, APIKeyID: result.APIKeyID, KeyGroupID: result.GroupID,
+		ServiceName: serviceName, Provider: u.Provider, Model: u.Model,
+		InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
+		CacheReadTokens: u.CacheReadTokens, CacheCreationTokens: u.CacheCreationTokens,
+		ReasoningTokens: u.ReasoningTokens,
+	})
 }
 
 func isProxyWebSocketUpgrade(req *http.Request) bool {
@@ -772,6 +775,11 @@ func validateCodexWebSocketRequest(req *http.Request, path string) error {
 
 func shouldForwardCodexWebSocketHeader(name string) bool {
 	lower := strings.ToLower(name)
+	// Keep upstream frames inspectable for provider-reported usage. Codex does
+	// not require permessage-deflate and works with uncompressed text frames.
+	if lower == "sec-websocket-extensions" {
+		return false
+	}
 	if strings.HasPrefix(lower, "sec-websocket-") || strings.HasPrefix(lower, "x-stainless-") {
 		return true
 	}
@@ -783,7 +791,7 @@ func shouldForwardCodexWebSocketHeader(name string) bool {
 	}
 }
 
-func (h *ProxyHandler) relayProxyWebSocket(w http.ResponseWriter, upstreamResp *http.Response) {
+func (h *ProxyHandler) relayProxyWebSocket(w http.ResponseWriter, upstreamResp *http.Response, onUsage func(*services.TokenUsage)) {
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		return
@@ -800,7 +808,7 @@ func (h *ProxyHandler) relayProxyWebSocket(w http.ResponseWriter, upstreamResp *
 		clientConn.Close()
 		return
 	}
-	relayProxyWebSocketStreams(clientConn, rw.Reader, upstream)
+	relayProxyWebSocketStreams(clientConn, rw.Reader, upstream, onUsage)
 }
 
 func writeProxyUpgradeResponse(writer *bufio.Writer, resp *http.Response) error {
@@ -820,20 +828,105 @@ func writeProxyUpgradeResponse(writer *bufio.Writer, resp *http.Response) error 
 	return writer.Flush()
 }
 
-func relayProxyWebSocketStreams(clientConn net.Conn, clientReader io.Reader, upstream io.ReadWriteCloser) {
+func relayProxyWebSocketStreams(clientConn net.Conn, clientReader io.Reader, upstream io.ReadWriteCloser, onUsage func(*services.TokenUsage)) {
 	done := make(chan struct{}, 2)
 	go func() {
 		_, _ = io.Copy(upstream, clientReader)
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = io.Copy(clientConn, upstream)
+		writer := io.Writer(clientConn)
+		if onUsage != nil {
+			writer = io.MultiWriter(clientConn, &webSocketUsageWriter{onUsage: onUsage})
+		}
+		_, _ = io.Copy(writer, upstream)
 		done <- struct{}{}
 	}()
 	<-done
 	_ = upstream.Close()
 	_ = clientConn.Close()
 	<-done
+}
+
+type webSocketUsageWriter struct {
+	buf     []byte
+	message []byte
+	onUsage func(*services.TokenUsage)
+}
+
+func (w *webSocketUsageWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for w.consumeFrame() {
+	}
+	return len(p), nil
+}
+
+func (w *webSocketUsageWriter) consumeFrame() bool {
+	if len(w.buf) < 2 {
+		return false
+	}
+	fin, opcode, masked := w.buf[0]&0x80 != 0, w.buf[0]&0x0f, w.buf[1]&0x80 != 0
+	length, offset := uint64(w.buf[1]&0x7f), 2
+	switch length {
+	case 126:
+		if len(w.buf) < 4 {
+			return false
+		}
+		length, offset = uint64(binary.BigEndian.Uint16(w.buf[2:4])), 4
+	case 127:
+		if len(w.buf) < 10 {
+			return false
+		}
+		length, offset = binary.BigEndian.Uint64(w.buf[2:10]), 10
+	}
+	if length > usageScannerMaxWebSocketPayload {
+		w.buf = nil
+		w.message = nil
+		return false
+	}
+	maskOffset := offset
+	if masked {
+		offset += 4
+	}
+	if uint64(len(w.buf)-offset) < length {
+		return false
+	}
+	payload := append([]byte(nil), w.buf[offset:offset+int(length)]...)
+	if masked {
+		mask := w.buf[maskOffset : maskOffset+4]
+		for i := range payload {
+			payload[i] ^= mask[i%4]
+		}
+	}
+	w.buf = w.buf[offset+int(length):]
+	switch opcode {
+	case 1:
+		w.message = payload
+	case 0:
+		w.message = append(w.message, payload...)
+	default:
+		return true
+	}
+	if !fin {
+		return true
+	}
+	w.emit(w.message)
+	w.message = nil
+	return true
+}
+
+const usageScannerMaxWebSocketPayload = 4 << 20
+
+func (w *webSocketUsageWriter) emit(payload []byte) {
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(payload, &envelope) != nil || envelope.Type != "response.completed" {
+		return
+	}
+	if usage := services.ParseUsageEvent(payload); usage != nil {
+		w.onUsage(usage)
+	}
 }
 
 func (h *ProxyHandler) handleOpenAIAuthProxy(w http.ResponseWriter, r *http.Request, upstreamPath string, startTime time.Time) {
