@@ -171,7 +171,11 @@ case "${1:-up}" in
     ;;
 
   logs)
-    "${COMPOSE[@]}" logs -f "${2:-}"
+    if [ -n "${2:-}" ]; then
+      "${COMPOSE[@]}" logs -f "$2"
+    else
+      "${COMPOSE[@]}" logs -f
+    fi
     ;;
 
   status)
@@ -235,6 +239,8 @@ case "${1:-up}" in
     backup="duckway-sqlite-$stamp.tar.gz"
     echo "Building PostgreSQL and migration images..."
     "${PG_COMPOSE[@]}" build postgres-migrator
+    echo "Pulling PostgreSQL before stopping Duckway..."
+    "${PG_COMPOSE[@]}" pull postgres
     echo "Stopping every Duckway writer before the SQLite snapshot..."
     for container in duckway-server duckway-admin duckway-gateway; do
       docker stop "$container" >/dev/null 2>&1 || true
