@@ -20,6 +20,8 @@ MIGRATOR_IMAGE="$PREFIX-migrator"
 PASSWORD="migration-e2e-password"
 REQUEST_LOG_COUNT="${DUCKWAY_MIGRATION_E2E_REQUEST_LOGS:-175000}"
 ORPHAN_LOG_COUNT="${DUCKWAY_MIGRATION_E2E_ORPHAN_LOGS:-6000}"
+SKIP_REQUEST_LOGS="${DUCKWAY_MIGRATION_E2E_SKIP_REQUEST_LOGS:-false}"
+EXPECTED_REQUEST_LOG_COUNT="$((REQUEST_LOG_COUNT + 1))"
 COOKIE_FILE="$(mktemp)"
 PG_COOKIE_FILE="$(mktemp)"
 CREATED_NETWORK=false
@@ -151,14 +153,22 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 "$RUNTIME" exec "$POSTGRES_CONTAINER" pg_isready -U duckway -d duckway >/dev/null
+MIGRATOR_ARGS=(--sqlite-data /data)
+if [ "$SKIP_REQUEST_LOGS" = true ]; then
+  MIGRATOR_ARGS+=(--skip-request-logs)
+fi
 MIGRATION_OUTPUT="$($RUNTIME run --rm --network "$NETWORK" --user 65534:65534 \
   -v "$SQLITE_VOLUME:/data:ro" \
   -e "DUCKWAY_DATABASE_URL=postgres://duckway:$PASSWORD@$POSTGRES_CONTAINER:5432/duckway?sslmode=disable" \
-  "$MIGRATOR_IMAGE" --sqlite-data /data 2>&1)"
+  "$MIGRATOR_IMAGE" "${MIGRATOR_ARGS[@]}" 2>&1)"
 printf '%s\n' "$MIGRATION_OUTPUT"
 grep -q 'excluded 1 orphan row(s) from placeholder_keys' <<<"$MIGRATION_OUTPUT"
-grep -q "preserved $ORPHAN_LOG_COUNT orphan row(s) in request_log by clearing nullable foreign keys" <<<"$MIGRATION_OUTPUT"
-grep -q 'normalized 1 invalid UTF-8 TEXT value(s) in request_log_detail' <<<"$MIGRATION_OUTPUT"
+if [ "$SKIP_REQUEST_LOGS" = true ]; then
+  grep -q "skipped $EXPECTED_REQUEST_LOG_COUNT request_log and 1 request_log_detail row(s)" <<<"$MIGRATION_OUTPUT"
+else
+  grep -q "preserved $ORPHAN_LOG_COUNT orphan row(s) in request_log by clearing nullable foreign keys" <<<"$MIGRATION_OUTPUT"
+  grep -q 'normalized 1 invalid UTF-8 TEXT value(s) in request_log_detail' <<<"$MIGRATION_OUTPUT"
+fi
 grep -q 'SQLite to PostgreSQL migration completed and verified' <<<"$MIGRATION_OUTPUT"
 
 echo "[6/7] Starting split Admin and Gateway on the migrated PostgreSQL database"
@@ -193,14 +203,20 @@ test "$(jq length <<<"$PG_PLACEHOLDERS")" -eq "$SQLITE_PLACEHOLDER_COUNT"
 jq -e --arg id "$KEY_ONE_ID" '.[] | select(.id == $id and .expires_at == 1788598308000)' <<<"$PG_KEYS" >/dev/null
 jq -e --arg id "$CLIENT_ONE_ID" '.[] | select(.id == $id and .name == "migration-client-one")' <<<"$PG_CLIENTS" >/dev/null
 ! jq -e '.[] | select(.id == "legacy-orphan")' <<<"$PG_PLACEHOLDERS" >/dev/null
+if [ "$SKIP_REQUEST_LOGS" = true ]; then
+  test "$($RUNTIME exec "$POSTGRES_CONTAINER" psql -U duckway -d duckway -Atc 'SELECT COUNT(*) FROM request_log')" -eq 0
+  test "$($RUNTIME exec "$POSTGRES_CONTAINER" psql -U duckway -d duckway -Atc 'SELECT COUNT(*) FROM request_log_detail')" -eq 0
+fi
 curl -fsS -X POST -H "X-Duckway-Token: $CLIENT_ONE_TOKEN" "$GATEWAY_BASE/proxy/migrationmock/credential-check" | jq -e '.credential_injected == true' >/dev/null
 curl -fsS -H "X-Duckway-Token: $CLIENT_ONE_TOKEN" "$GATEWAY_BASE/client/keys" | jq -e 'length > 0' >/dev/null
 test "$(curl -s -o /dev/null -w '%{http_code}' "$GATEWAY_BASE/admin/")" = 404
 test "$(curl -s -o /dev/null -w '%{http_code}' "$ADMIN_BASE/proxy/heartbeat/ping")" = 404
 PG_EXPIRY="$($RUNTIME exec "$POSTGRES_CONTAINER" psql -U duckway -d duckway -Atc "SELECT expires_at FROM api_keys WHERE id='$KEY_ONE_ID'")"
 test "$PG_EXPIRY" = 1788598308000
-test "$($RUNTIME exec "$POSTGRES_CONTAINER" psql -U duckway -d duckway -Atc 'SELECT COUNT(*) FROM request_log WHERE client_id IS NULL')" -eq "$ORPHAN_LOG_COUNT"
-test "$($RUNTIME exec "$POSTGRES_CONTAINER" psql -U duckway -d duckway -Atc "SELECT encode(convert_to(response_body,'UTF8'),'hex') FROM request_log_detail LIMIT 1")" = 62efbfbd63
+if [ "$SKIP_REQUEST_LOGS" != true ]; then
+  test "$($RUNTIME exec "$POSTGRES_CONTAINER" psql -U duckway -d duckway -Atc 'SELECT COUNT(*) FROM request_log WHERE client_id IS NULL')" -eq "$ORPHAN_LOG_COUNT"
+  test "$($RUNTIME exec "$POSTGRES_CONTAINER" psql -U duckway -d duckway -Atc "SELECT encode(convert_to(response_body,'UTF8'),'hex') FROM request_log_detail LIMIT 1")" = 62efbfbd63
+fi
 
 NEW_CLIENT="$(curl -fsS -b "$PG_COOKIE_FILE" -X POST "$ADMIN_BASE/api/clients" -H 'Content-Type: application/json' -d '{"name":"postgres-write-check"}')"
 jq -e '.id != null and .token != null' <<<"$NEW_CLIENT" >/dev/null
@@ -210,7 +226,7 @@ set +e
 SECOND_OUTPUT="$($RUNTIME run --rm --network "$NETWORK" --user 65534:65534 \
   -v "$SQLITE_VOLUME:/data:ro" \
   -e "DUCKWAY_DATABASE_URL=postgres://duckway:$PASSWORD@$POSTGRES_CONTAINER:5432/duckway?sslmode=disable" \
-  "$MIGRATOR_IMAGE" --sqlite-data /data 2>&1)"
+  "$MIGRATOR_IMAGE" "${MIGRATOR_ARGS[@]}" 2>&1)"
 SECOND_STATUS=$?
 set -e
 test "$SECOND_STATUS" -ne 0

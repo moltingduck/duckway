@@ -275,7 +275,12 @@ case "${1:-up}" in
     echo "Starting PostgreSQL..."
     "${PG_COMPOSE[@]}" up -d postgres
     echo "Importing and validating SQLite data..."
-    "${PG_COMPOSE[@]}" run --rm postgres-migrator --sqlite-data /data
+    migrator_args=(--sqlite-data /data)
+    if [ "${DUCKWAY_MIGRATION_SKIP_REQUEST_LOGS:-false}" = "true" ]; then
+      echo "Request log history will be excluded from the PostgreSQL migration."
+      migrator_args+=(--skip-request-logs)
+    fi
+    "${PG_COMPOSE[@]}" run --rm postgres-migrator "${migrator_args[@]}"
     env_backup="$PROJECT_DIR/backups/prod-env-before-postgres-$stamp"
     install -m 600 "$PROJECT_DIR/.prod.env" "$env_backup"
     env_tmp="$PROJECT_DIR/.prod.env.tmp.$$"

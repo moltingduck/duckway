@@ -149,6 +149,45 @@ func TestRemoveOrphanRowsPreservesNullableRelationships(t *testing.T) {
 	}
 }
 
+func TestClearRequestLogsOnlyRemovesRequestHistory(t *testing.T) {
+	db, err := database.OpenSQLite(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`
+		INSERT INTO clients (id, short_id, name, token_hash) VALUES ('keep-client', 'keep', 'Keep Client', 'hash');
+		INSERT INTO request_log (id, client_id, service_name, method, path) VALUES (101, 'keep-client', 'openai', 'POST', '/responses');
+		INSERT INTO request_log_detail (log_id, request_body, response_body) VALUES (101, 'request', 'response');
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	logs, details, err := clearRequestLogs(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logs != 1 || details != 1 {
+		t.Fatalf("removed request logs=%d details=%d", logs, details)
+	}
+	for _, table := range []string{"request_log", "request_log_detail"} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("%s still has %d rows", table, count)
+		}
+	}
+	var clients int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM clients WHERE id = 'keep-client'`).Scan(&clients); err != nil {
+		t.Fatal(err)
+	}
+	if clients != 1 {
+		t.Fatalf("unrelated client row count = %d", clients)
+	}
+}
+
 func TestMigrationTableInventoryMatchesSQLiteSchema(t *testing.T) {
 	db, err := database.OpenSQLite(t.TempDir())
 	if err != nil {

@@ -32,6 +32,7 @@ var tableOrder = []string{
 
 func main() {
 	dataDir := flag.String("sqlite-data", "/data", "directory containing duckway.db")
+	skipRequestLogs := flag.Bool("skip-request-logs", false, "exclude request_log and request_log_detail from the migrated snapshot")
 	flag.Parse()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -46,6 +47,13 @@ func main() {
 		log.Fatalf("open SQLite source: %v", err)
 	}
 	defer source.Close()
+	if *skipRequestLogs {
+		requestLogs, requestDetails, err := clearRequestLogs(ctx, source)
+		if err != nil {
+			log.Fatalf("clear request logs from SQLite snapshot: %v", err)
+		}
+		log.Printf("WARNING: skipped %d request_log and %d request_log_detail row(s); original SQLite backup is unchanged", requestLogs, requestDetails)
+	}
 	repair, err := removeOrphanRows(ctx, source)
 	if err != nil {
 		log.Fatalf("clean SQLite snapshot foreign keys: %v", err)
@@ -66,6 +74,34 @@ func main() {
 		log.Fatalf("migration failed: %v", err)
 	}
 	fmt.Fprintln(os.Stdout, "SQLite to PostgreSQL migration completed and verified")
+}
+
+func clearRequestLogs(ctx context.Context, db *sql.DB) (int64, int64, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	detailResult, err := tx.ExecContext(ctx, `DELETE FROM request_log_detail`)
+	if err != nil {
+		return 0, 0, err
+	}
+	details, err := detailResult.RowsAffected()
+	if err != nil {
+		return 0, 0, err
+	}
+	logResult, err := tx.ExecContext(ctx, `DELETE FROM request_log`)
+	if err != nil {
+		return 0, 0, err
+	}
+	logs, err := logResult.RowsAffected()
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return logs, details, nil
 }
 
 type foreignKeyViolation struct {
@@ -446,14 +482,15 @@ func normalizeSQLiteText(values []any, columnTypes []*sql.ColumnType) int64 {
 		}
 		switch typed := value.(type) {
 		case []byte:
-			if !utf8.Valid(typed) {
+			text := string(typed)
+			if !utf8.Valid(typed) || strings.ContainsRune(text, '\x00') {
 				normalized++
 			}
-			values[i] = strings.ToValidUTF8(string(typed), "\uFFFD")
+			values[i] = strings.ReplaceAll(strings.ToValidUTF8(text, "\uFFFD"), "\x00", "\uFFFD")
 		case string:
-			if !utf8.ValidString(typed) {
+			if !utf8.ValidString(typed) || strings.ContainsRune(typed, '\x00') {
 				normalized++
-				values[i] = strings.ToValidUTF8(typed, "\uFFFD")
+				values[i] = strings.ReplaceAll(strings.ToValidUTF8(typed, "\uFFFD"), "\x00", "\uFFFD")
 			}
 		}
 	}

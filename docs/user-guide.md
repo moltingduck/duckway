@@ -809,6 +809,16 @@ Then run the complete offline cutover:
 ./scripts/prod.sh migrate-postgres
 ```
 
+To discard request history during the migration while preserving all other
+data, run:
+
+```bash
+DUCKWAY_MIGRATION_SKIP_REQUEST_LOGS=true ./scripts/prod.sh migrate-postgres
+```
+
+This excludes only `request_log` and `request_log_detail` from PostgreSQL. The
+offline SQLite backup still contains the original request history.
+
 The command builds the migrator, stops all known Duckway writers, archives the
 entire `/data` volume under `backups/`, starts a private PostgreSQL 17 container,
 verifies the archive and writes its SHA-256 checksum, imports every table in one
