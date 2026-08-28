@@ -772,7 +772,7 @@ func startGitHubGitLiveDuckwayServerForRepos(t testing.TB, credentialJSON string
 		}
 		assigned := true
 		json.NewEncoder(w).Encode([]ServiceInfo{{
-			Name: "github", HostPattern: "api.github.com,github.com",
+			Name: "github", HostPattern: "api.github.com",
 			UpstreamURL: "https://api.github.com", DeliveryMode: "proxy", Assigned: &assigned,
 		}})
 	})

@@ -1149,6 +1149,15 @@ func buildHostMap(svcs []ServiceInfo) map[string]hostEntry {
 			}
 		}
 	}
+	if github, ok := serviceInfoByName(svcs, "github"); ok &&
+		strings.EqualFold(strings.TrimRight(github.UpstreamURL, "/"), "https://api.github.com") {
+		if _, exists := hostMap["github.com"]; !exists {
+			hostMap["github.com"] = hostEntry{
+				Service: "github", DeliveryMode: "proxy", UpstreamURL: "https://github.com",
+				Assigned: serviceInfoAssigned(github), AssignmentKnown: github.Assigned != nil,
+			}
+		}
+	}
 	// Codex OAuth refreshes go to auth.openai.com. Treat it as a virtual
 	// service so the client can MITM that host and the gateway can replace the
 	// fake refresh token with the real server-side token.

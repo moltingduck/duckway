@@ -277,6 +277,18 @@ func TestServiceRoutingCachePreservesAssignmentState(t *testing.T) {
 	}
 }
 
+func TestBuildHostMapAddsGitHubSmartHTTPAliasForLegacyMetadata(t *testing.T) {
+	assigned := true
+	hosts := buildHostMap([]ServiceInfo{{
+		Name: "github", HostPattern: "api.github.com", UpstreamURL: "https://api.github.com",
+		DeliveryMode: "proxy", Assigned: &assigned,
+	}})
+	entry, ok := hosts["github.com"]
+	if !ok || entry.Service != "github" || !entry.AssignmentKnown || !entry.Assigned {
+		t.Fatalf("github.com legacy alias = %#v, ok=%v", entry, ok)
+	}
+}
+
 func TestDefaultManagedServicesFailClosedForPhantom(t *testing.T) {
 	hosts := buildHostMap(defaultManagedServices())
 	entry := hosts["api.openai.com"]

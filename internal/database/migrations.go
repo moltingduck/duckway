@@ -502,6 +502,8 @@ func runMigrations(db *sql.DB) error {
 		 WHERE name = 'discord' AND host_pattern = 'discord.com'`,
 		`UPDATE services SET key_prefix = 'github_pat_', key_length = 93, delivery_mode = 'proxy'
 		 WHERE name = 'github' AND key_prefix = 'ghp_' AND key_length = 40 AND delivery_mode = 'loan_proxy'`,
+		`UPDATE services SET host_pattern = 'api.github.com,github.com'
+		 WHERE name = 'github' AND upstream_url = 'https://api.github.com' AND host_pattern = 'api.github.com'`,
 	}
 	for i, statement := range required {
 		if _, err := db.Exec(statement); err != nil {
