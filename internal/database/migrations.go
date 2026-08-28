@@ -2,7 +2,11 @@ package database
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var migrations = []string{
@@ -468,79 +472,92 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE model_pricing ADD COLUMN reasoning_usd_micros_per_mtok INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, alt := range safeAlters {
-		db.Exec(alt) // ignore "duplicate column" errors
+		if _, err := db.Exec(alt); err != nil && !isDuplicateColumn(err) {
+			return fmt.Errorf("safe alter: %w", err)
+		}
 	}
-	db.Exec(`CREATE INDEX IF NOT EXISTS idx_conv_usage_key_day ON conversation_usage(api_key_id, created_at, client_id, model)`)
-	db.Exec(`CREATE INDEX IF NOT EXISTS idx_conv_usage_group_day ON conversation_usage(key_group_id, created_at, client_id, model)`)
-	db.Exec(`CREATE INDEX IF NOT EXISTS idx_conv_usage_created ON conversation_usage(created_at)`)
-	db.Exec(`UPDATE conversation_usage SET provider = service_name WHERE provider = '' AND service_name != ''`)
-	db.Exec(`UPDATE conversation_usage
+	required := []string{
+		`CREATE INDEX IF NOT EXISTS idx_conv_usage_key_day ON conversation_usage(api_key_id, created_at, client_id, model)`,
+		`CREATE INDEX IF NOT EXISTS idx_conv_usage_group_day ON conversation_usage(key_group_id, created_at, client_id, model)`,
+		`CREATE INDEX IF NOT EXISTS idx_conv_usage_created ON conversation_usage(created_at)`,
+		`UPDATE conversation_usage SET provider = service_name WHERE provider = '' AND service_name != ''`,
+		`UPDATE conversation_usage
 		SET billable_tokens = MAX(input_tokens, 0) + MAX(output_tokens, 0) +
 			CASE WHEN lower(provider) = 'openai' THEN 0 ELSE
 				MAX(cache_read_tokens, 0) + MAX(cache_creation_tokens, 0) + MAX(reasoning_tokens, 0) END
 		WHERE billable_tokens = 0 AND
-			(input_tokens != 0 OR output_tokens != 0 OR cache_read_tokens != 0 OR cache_creation_tokens != 0 OR reasoning_tokens != 0)`)
-
-	db.Exec(`
+			(input_tokens != 0 OR output_tokens != 0 OR cache_read_tokens != 0 OR cache_creation_tokens != 0 OR reasoning_tokens != 0)`,
+		`
 		INSERT OR IGNORE INTO key_suite_assignments (suite_id, client_id)
 		SELECT DISTINCT suite_id, client_id
 		FROM placeholder_keys
 		WHERE suite_id IS NOT NULL AND suite_id != '' AND client_id != ''
-	`)
+	`,
+		"DROP TABLE IF EXISTS client_cc",
+		"DELETE FROM cc_channels WHERE client_id IS NULL OR client_id = ''",
+		"DELETE FROM control_channels WHERE client_id = ''",
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_client ON control_channels(client_id) WHERE client_id != ''`,
+		`UPDATE services
+		 SET host_pattern = 'discord.com,api.discord.com,gateway.discord.gg,*.discordapp.net', upstream_url = 'https://discord.com/api/v10'
+		 WHERE name = 'discord' AND host_pattern = 'discord.com'`,
+		`UPDATE services SET key_prefix = 'github_pat_', key_length = 93, delivery_mode = 'proxy'
+		 WHERE name = 'github' AND key_prefix = 'ghp_' AND key_length = 40 AND delivery_mode = 'loan_proxy'`,
+	}
+	for i, statement := range required {
+		if _, err := db.Exec(statement); err != nil {
+			return fmt.Errorf("post migration statement %d: %w", i, err)
+		}
+	}
 
 	// CC v2: drop the old assignment table (subsumed by control_channels.client_id)
 	// and clear out any stale rows that pre-date the redesign — the user agreed
 	// to scrap old CC data when planning this change.
-	db.Exec("DROP TABLE IF EXISTS client_cc")
-	db.Exec("DELETE FROM cc_channels WHERE client_id IS NULL OR client_id = ''")
-	db.Exec("DELETE FROM control_channels WHERE client_id = ''")
 	// Enforce 1:1 client↔CC at the index level. Partial index so empty
 	// values during the alter window above don't trip the constraint.
-	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_client ON control_channels(client_id) WHERE client_id != ''`)
 
 	// Widen the existing `discord` service's host_pattern so the duckway-client
 	// MITM proxy can also intercept the WSS gateway + CDN hosts that the
 	// Control Channel feature needs. Only touches rows that still hold the
 	// old narrow pattern — leaves admin-customised values alone.
-	db.Exec(`UPDATE services
-		SET host_pattern = 'discord.com,api.discord.com,gateway.discord.gg,*.discordapp.net',
-		    upstream_url = 'https://discord.com/api/v10'
-		WHERE name = 'discord' AND host_pattern = 'discord.com'`)
 
 	// GitHub fine-grained PATs use github_pat_* and the simple default should
 	// stay in phantom-token proxy mode. Only touch rows that still match the
 	// former shipped default, leaving admin-customized GitHub services alone.
-	db.Exec(`UPDATE services
-		SET key_prefix = 'github_pat_',
-		    key_length = 93,
-		    delivery_mode = 'proxy'
-		WHERE name = 'github'
-		  AND key_prefix = 'ghp_'
-		  AND key_length = 40
-		  AND delivery_mode = 'loan_proxy'`)
 
 	// Seed the OpenAI service so Codex CLI (and any OpenAI-compatible tool)
 	// works without manual admin UI setup. INSERT OR IGNORE keeps it safe on
 	// existing databases that already have a user-created openai service.
-	db.Exec(`INSERT OR IGNORE INTO services
+	if _, err := db.Exec(`INSERT OR IGNORE INTO services
 		(id, name, display_name, upstream_url, host_pattern,
 		 auth_type, auth_header, auth_prefix,
 		 key_prefix, key_length, key_directory, delivery_mode, is_active)
 		VALUES
 		('svc-openai-default', 'openai', 'OpenAI', 'https://api.openai.com', 'api.openai.com',
 		 'bearer', 'Authorization', 'Bearer ',
-		 'sk-', 64, '.config/openai/credentials', 'proxy', 1)`)
+		 'sk-', 64, '.config/openai/credentials', 'proxy', 1)`); err != nil {
+		return fmt.Errorf("seed OpenAI service: %w", err)
+	}
 
 	// Seed xAI so Grok Build can use Duckway phantom tokens without manual
 	// service setup on existing installations.
-	db.Exec(`INSERT OR IGNORE INTO services
+	if _, err := db.Exec(`INSERT OR IGNORE INTO services
 		(id, name, display_name, upstream_url, host_pattern,
 		 auth_type, auth_header, auth_prefix,
 		 key_prefix, key_length, key_directory, delivery_mode, is_active)
 		VALUES
 		('svc-xai-default', 'xai', 'xAI / Grok', 'https://api.x.ai', 'api.x.ai,cli-chat-proxy.grok.com',
 		 'bearer', 'Authorization', 'Bearer ',
-		 'xai-', 80, '.config/xai/credentials', 'proxy', 1)`)
+		 'xai-', 80, '.config/xai/credentials', 'proxy', 1)`); err != nil {
+		return fmt.Errorf("seed xAI service: %w", err)
+	}
 
 	return nil
+}
+
+func isDuplicateColumn(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "42701"
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column")
 }

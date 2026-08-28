@@ -1099,4 +1099,23 @@ When `DUCKWAY_WEB_DIR` is set, the server uses `os.DirFS` for templates and stat
 
 In `internal/database/migrations.go`, append a new entry to the migrations slice. They run idempotently with `CREATE TABLE IF NOT EXISTS` and safe `ALTER TABLE ADD COLUMN` (catches "duplicate column" errors). Never edit a previous migration — only append.
 
+SQLite is the local/default backend. Production can set
+`DUCKWAY_DATABASE_DRIVER=postgres`; the Compose override supplies connection
+fields and a password secret. `internal/database/postgres_driver.go` rebinds
+placeholders and implements only syntax with identical semantics. New SQL must
+remain valid on both engines, or provide an explicit dialect-specific query for
+upsert, locking, time arithmetic, and JSON behavior.
+
+Run the optional destructive PostgreSQL migration contract test only against a
+dedicated empty test database:
+
+```bash
+DUCKWAY_TEST_POSTGRES_URL='postgres://user:password@127.0.0.1/duckway_test?sslmode=disable' \
+  go test -v ./cmd/migrate-postgres
+```
+
+The test skips when the variable is absent. It truncates the target database,
+migrates a representative SQLite fixture, checks encrypted values and integer
+booleans, then exercises PostgreSQL `RETURNING` and date modifiers.
+
 For a column that needs a backfill, add the `ALTER TABLE` followed by a separate `UPDATE ... WHERE column IS NULL` in the same migrations slice.

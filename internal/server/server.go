@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -50,6 +51,7 @@ func (s *Server) register(svc stopper) stopper {
 // New creates a combined server (admin + gateway on one port).
 func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s := &Server{config: config, db: db, mux: http.NewServeMux(), stopCh: make(chan struct{})}
+	s.setupHealthRoute()
 
 	if err := s.ensureAdminUser(); err != nil {
 		return nil, fmt.Errorf("ensure admin user: %w", err)
@@ -83,6 +85,7 @@ func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 // events to a hub the SSE subscriber can't see.
 func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	s := &Server{config: config, db: db, mux: http.NewServeMux(), stopCh: make(chan struct{})}
+	s.setupHealthRoute()
 
 	if err := s.ensureAdminUser(); err != nil {
 		return nil, fmt.Errorf("ensure admin user: %w", err)
@@ -108,6 +111,7 @@ func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 // (the daemon) that connects on /client/cc/events.
 func NewGateway(config *Config, db *sql.DB) (*Server, error) {
 	s := &Server{config: config, db: db, mux: http.NewServeMux(), stopCh: make(chan struct{})}
+	s.setupHealthRoute()
 
 	// Seed the default statusline here too: in split deployments the
 	// gateway sometimes boots before the admin process, and the
@@ -121,6 +125,20 @@ func NewGateway(config *Config, db *sql.DB) (*Server, error) {
 	s.startUsageRetentionSweeper()
 
 	return s, nil
+}
+
+func (s *Server) setupHealthRoute() {
+	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := s.db.PingContext(ctx); err != nil {
+			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

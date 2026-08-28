@@ -166,6 +166,7 @@ Agents must not be allowed to reach the admin panel. With Tailscale or Headscale
 | `./scripts/prod.sh status` | Container + Tailscale node status |
 | `./scripts/prod.sh logs` | Follow logs |
 | `./scripts/prod.sh password` | Show admin password (if still in logs) |
+| `./scripts/prod.sh migrate-postgres` | Back up SQLite, import and verify PostgreSQL, then cut over production |
 | `./scripts/reset-password.sh` | Generate a fresh random admin password (prod) |
 | `./scripts/e2e-test.sh` | Run the full E2E suite (196 tests) |
 | `./scripts/phantom-proxy-test.sh` | Real-API test against OpenAI/Anthropic/GitHub/Discord |

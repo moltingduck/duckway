@@ -318,9 +318,9 @@ func (q *ClientUpdateQueries) UpdateJobStatus(clientID, jobID, leaseToken, statu
 		return err
 	}
 	var total, healthy, failed, terminal, eligible int
-	err = tx.QueryRow(`SELECT COUNT(*),SUM(status='healthy'),SUM(status='failed'),
-		SUM(status IN ('healthy','failed','skipped_manual','skipped_inactive','ineligible','manual_required','up_to_date','cancelled')),
-		SUM(status NOT IN ('skipped_manual','skipped_inactive','ineligible','manual_required','up_to_date','cancelled'))
+	err = tx.QueryRow(`SELECT COUNT(*),SUM(CASE WHEN status='healthy' THEN 1 ELSE 0 END),SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN status IN ('healthy','failed','skipped_manual','skipped_inactive','ineligible','manual_required','up_to_date','cancelled') THEN 1 ELSE 0 END),
+		SUM(CASE WHEN status NOT IN ('skipped_manual','skipped_inactive','ineligible','manual_required','up_to_date','cancelled') THEN 1 ELSE 0 END)
 		FROM client_update_jobs WHERE rollout_id=?`, rolloutID).
 		Scan(&total, &healthy, &failed, &terminal, &eligible)
 	if err != nil {

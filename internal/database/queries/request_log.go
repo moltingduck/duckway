@@ -29,14 +29,15 @@ func (q *RequestLogQueries) LogWithReturn(clientID, placeholderID, serviceName, 
 	if placeholderID != "" {
 		phID = placeholderID
 	}
-	res, err := q.db.Exec(
-		"INSERT INTO request_log (client_id, placeholder_id, service_name, method, path, status_code) VALUES (?, ?, ?, ?, ?, ?)",
+	var id int64
+	err := q.db.QueryRow(
+		"INSERT INTO request_log (client_id, placeholder_id, service_name, method, path, status_code) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
 		clientID, phID, serviceName, method, path, statusCode,
-	)
+	).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return id, nil
 }
 
 // RequestLogDetail holds the per-request payload captured when the admin has
@@ -59,10 +60,15 @@ func (q *RequestLogQueries) StoreDetail(d *RequestLogDetail) error {
 		tr = 1
 	}
 	_, err := q.db.Exec(
-		`INSERT OR REPLACE INTO request_log_detail
+		`INSERT INTO request_log_detail
 		 (log_id, request_headers, request_body, request_size,
 		  response_headers, response_body, response_size, duration_ms, truncated)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(log_id) DO UPDATE SET
+		 request_headers=excluded.request_headers, request_body=excluded.request_body,
+		 request_size=excluded.request_size, response_headers=excluded.response_headers,
+		 response_body=excluded.response_body, response_size=excluded.response_size,
+		 duration_ms=excluded.duration_ms, truncated=excluded.truncated`,
 		d.LogID, d.RequestHeaders, d.RequestBody, d.RequestSize,
 		d.ResponseHeaders, d.ResponseBody, d.ResponseSize, d.DurationMs, tr,
 	)
@@ -209,8 +215,8 @@ type SessionUsageRow struct {
 	ClientName  string `json:"client_name"`
 	ServiceName string `json:"service_name"`
 	Requests    int64  `json:"requests"`
-	Errors      int64  `json:"errors"`     // status_code >= 400
-	LastSeen    string `json:"last_seen"`  // max(created_at)
+	Errors      int64  `json:"errors"`    // status_code >= 400
+	LastSeen    string `json:"last_seen"` // max(created_at)
 }
 
 // SessionUsage returns per-client, per-service request aggregates over

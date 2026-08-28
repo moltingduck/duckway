@@ -48,7 +48,17 @@ else
   esac
 fi
 
-COMPOSE="docker compose -f docker-compose.yml $PROFILES"
+BASE_COMPOSE=(docker compose -f docker-compose.yml)
+read -r -a PROFILE_ARGS <<< "$PROFILES"
+BASE_COMPOSE+=("${PROFILE_ARGS[@]}")
+COMPOSE=("${BASE_COMPOSE[@]}")
+DATABASE_BACKEND="${DUCKWAY_DATABASE:-sqlite}"
+if [ "$DATABASE_BACKEND" = "postgres" ]; then
+  COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.postgres.yml "${PROFILE_ARGS[@]}")
+elif [ "$DATABASE_BACKEND" != "sqlite" ]; then
+  echo "Error: DUCKWAY_DATABASE must be 'sqlite' or 'postgres'"
+  exit 1
+fi
 
 # Stamp builds with the current git revision so `duckway version` reports it.
 export DUCKWAY_VERSION="$(git -C "$PROJECT_DIR" describe --tags --always --dirty 2>/dev/null || echo docker)"
@@ -88,9 +98,9 @@ app_services() {
 case "${1:-up}" in
   up|start)
     echo "Building images..."
-    $COMPOSE build
+    "${COMPOSE[@]}" build
     echo "Starting Duckway production ($MODE mode + Tailscale)..."
-    $COMPOSE up -d
+    "${COMPOSE[@]}" up -d
     echo ""
     if [ "$USE_TAILSCALE" = "true" ]; then
       if [ "$MODE" = "split" ]; then
@@ -110,29 +120,29 @@ case "${1:-up}" in
     fi
     echo ""
     echo "Admin password (first run only):"
-    $COMPOSE logs 2>&1 | grep "Password:" | tail -1 || echo "  (check: $0 logs)"
+    "${COMPOSE[@]}" logs 2>&1 | grep "Password:" | tail -1 || echo "  (check: $0 logs)"
     echo ""
     echo "Tailscale nodes:"
-    $COMPOSE ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null | grep -E "NAME|ts-|tailscale" || true
+    "${COMPOSE[@]}" ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null | grep -E "NAME|ts-|tailscale|postgres" || true
     ;;
 
   down|stop)
     echo "Stopping..."
-    $COMPOSE down
+    "${COMPOSE[@]}" down
     ;;
 
   restart)
     if [ "${2:-}" = "--minimal" ]; then
       services="$(app_services)"
       echo "Building app services before touching running containers ($MODE mode): $services"
-      $COMPOSE build $services
+      "${COMPOSE[@]}" build $services
       echo "Recreating app services only (dependencies/sidecars are left running)..."
-      $COMPOSE up -d --no-deps $services
+      "${COMPOSE[@]}" up -d --no-deps $services
     else
       echo "Building new images before touching running containers ($MODE mode)..."
-      $COMPOSE build
+      "${COMPOSE[@]}" build
       echo "Recreating containers with new images..."
-      $COMPOSE up -d --remove-orphans
+      "${COMPOSE[@]}" up -d --remove-orphans
     fi
     ;;
 
@@ -144,16 +154,16 @@ case "${1:-up}" in
       echo "Split mode embeds UI in admin only; gateway will not be restarted."
     fi
     echo "Building $svc before touching the running container..."
-    $COMPOSE build "$svc"
+    "${COMPOSE[@]}" build "$svc"
     echo "Recreating $svc..."
-    $COMPOSE up -d --no-deps "$svc"
+    "${COMPOSE[@]}" up -d --no-deps "$svc"
     ;;
 
   nuke)
     echo "Removing everything including data and Tailscale state..."
     read -p "Are you sure? This deletes all data. [y/N] " confirm
     if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
-      $COMPOSE down -v
+      "${COMPOSE[@]}" down -v
       echo "Done."
     else
       echo "Cancelled."
@@ -161,12 +171,12 @@ case "${1:-up}" in
     ;;
 
   logs)
-    $COMPOSE logs -f "${2:-}"
+    "${COMPOSE[@]}" logs -f "${2:-}"
     ;;
 
   status)
     echo "=== Containers ==="
-    $COMPOSE ps
+    "${COMPOSE[@]}" ps
     echo ""
     echo "=== Tailscale Status ==="
     if [ "$MODE" = "split" ]; then
@@ -178,13 +188,136 @@ case "${1:-up}" in
     ;;
 
   password)
-    $COMPOSE logs 2>&1 | grep "Password:" | tail -1
+    "${COMPOSE[@]}" logs 2>&1 | grep "Password:" | tail -1
+    ;;
+
+  migrate-postgres)
+    if [ "$DATABASE_BACKEND" = "postgres" ]; then
+      echo "PostgreSQL is already the configured database."
+      exit 0
+    fi
+    configured_secret="${DUCKWAY_POSTGRES_PASSWORD_FILE:-}"
+    secret_file="${configured_secret:-./.secrets/postgres-password}"
+    case "$secret_file" in
+      /*) ;;
+      *) secret_file="$PROJECT_DIR/${secret_file#./}" ;;
+    esac
+    if [ -z "$configured_secret" ] || [ "$configured_secret" = "./.secrets/postgres-password" ]; then
+      mkdir -p "$(dirname "$secret_file")"
+      chmod 700 "$(dirname "$secret_file")"
+    elif [ ! -d "$(dirname "$secret_file")" ]; then
+      echo "Error: PostgreSQL password directory does not exist: $(dirname "$secret_file")" >&2
+      exit 1
+    fi
+    mkdir -p "$PROJECT_DIR/backups"
+    chmod 700 "$PROJECT_DIR/backups"
+    if [ -L "$secret_file" ] || { [ -e "$secret_file" ] && [ ! -f "$secret_file" ]; }; then
+      echo "Error: PostgreSQL password path must be a regular, non-symlink file" >&2
+      exit 1
+    fi
+    if [ ! -f "$secret_file" ]; then
+      umask 077
+      openssl rand -base64 36 > "$secret_file"
+    fi
+    chmod 600 "$secret_file"
+    if [ ! -s "$secret_file" ] || [ "$(wc -l < "$secret_file")" -ne 1 ]; then
+      echo "Error: PostgreSQL password file must contain exactly one non-empty line" >&2
+      exit 1
+    fi
+    export DUCKWAY_POSTGRES_PASSWORD_FILE="$secret_file"
+    PG_COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.postgres.yml "${PROFILE_ARGS[@]}" --profile postgres-tools)
+    postgres_preexisting=false
+    if docker inspect duckway-postgres >/dev/null 2>&1; then
+      postgres_preexisting=true
+    fi
+    services="$(app_services)"
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    backup="duckway-sqlite-$stamp.tar.gz"
+    echo "Building PostgreSQL and migration images..."
+    "${PG_COMPOSE[@]}" build postgres-migrator
+    echo "Stopping every Duckway writer before the SQLite snapshot..."
+    for container in duckway-server duckway-admin duckway-gateway; do
+      docker stop "$container" >/dev/null 2>&1 || true
+    done
+    migration_ok=false
+    env_backup=""
+    cleanup_migration() {
+      if [ "$migration_ok" != "true" ]; then
+        if [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
+          install -m 600 "$env_backup" "$PROJECT_DIR/.prod.env"
+        fi
+        echo "Migration failed; PostgreSQL was not enabled. Restarting SQLite services." >&2
+        if [ "$postgres_preexisting" != "true" ]; then
+          docker stop duckway-postgres >/dev/null 2>&1 || true
+        fi
+        "${BASE_COMPOSE[@]}" up -d $services || true
+      fi
+    }
+    trap cleanup_migration EXIT
+    echo "Creating offline SQLite and key backup: backups/$backup"
+    "${PG_COMPOSE[@]}" run --rm sqlite-backup -czf "/backup/$backup" -C /data .
+    chmod 600 "$PROJECT_DIR/backups/$backup"
+    tar -tzf "$PROJECT_DIR/backups/$backup" >/dev/null
+    for required_file in ./duckway.db ./encryption.key; do
+      if ! tar -tzf "$PROJECT_DIR/backups/$backup" | grep -qx "$required_file"; then
+        echo "Backup verification failed: missing $required_file" >&2
+        exit 1
+      fi
+    done
+    sha256sum "$PROJECT_DIR/backups/$backup" > "$PROJECT_DIR/backups/$backup.sha256"
+    chmod 600 "$PROJECT_DIR/backups/$backup.sha256"
+    echo "Starting PostgreSQL..."
+    "${PG_COMPOSE[@]}" up -d postgres
+    echo "Importing and validating SQLite data..."
+    "${PG_COMPOSE[@]}" run --rm postgres-migrator --sqlite-data /data
+    env_backup="$PROJECT_DIR/backups/prod-env-before-postgres-$stamp"
+    install -m 600 "$PROJECT_DIR/.prod.env" "$env_backup"
+    env_tmp="$PROJECT_DIR/.prod.env.tmp.$$"
+    awk '
+      BEGIN { replaced=0 }
+      /^DUCKWAY_DATABASE=/ { print "DUCKWAY_DATABASE=postgres"; replaced=1; next }
+      { print }
+      END { if (!replaced) print "DUCKWAY_DATABASE=postgres" }
+    ' "$PROJECT_DIR/.prod.env" > "$env_tmp"
+    chmod 600 "$env_tmp"
+    mv "$env_tmp" "$PROJECT_DIR/.prod.env"
+    echo "Starting Duckway on PostgreSQL..."
+    "$0" restart
+    running_services="$("${PG_COMPOSE[@]}" ps --status running --services)"
+    for service in $services; do
+      if ! printf '%s\n' "$running_services" | grep -qx "$service"; then
+        echo "PostgreSQL cutover health check failed: $service is not running" >&2
+        exit 1
+      fi
+    done
+    if [ "$MODE" = "split" ]; then
+      health_containers="duckway-admin duckway-gateway"
+    else
+      health_containers="duckway-server"
+    fi
+    for container in $health_containers; do
+      healthy=false
+      for _ in $(seq 1 24); do
+        if [ "$(docker inspect --format '{{.State.Health.Status}}' "$container" 2>/dev/null || true)" = "healthy" ]; then
+          healthy=true
+          break
+        fi
+        sleep 5
+      done
+      if [ "$healthy" != "true" ]; then
+        echo "PostgreSQL cutover health check failed: $container is not healthy" >&2
+        exit 1
+      fi
+    done
+    migration_ok=true
+    trap - EXIT
+    echo "Cutover complete. SQLite backup retained at backups/$backup"
     ;;
 
   *)
     echo "Duckway Production Manager"
     echo ""
-    echo "Usage: $0 {up|down|restart [--minimal]|ui|restart-ui|nuke|logs|status|password}"
+    echo "Usage: $0 {up|down|restart [--minimal]|ui|restart-ui|migrate-postgres|nuke|logs|status|password}"
     echo ""
     echo "Commands:"
     echo "  up        Build and start with Tailscale"
@@ -196,12 +329,14 @@ case "${1:-up}" in
     echo "  logs      Follow logs (optional: service name)"
     echo "  status    Show container + Tailscale status"
     echo "  password  Show admin password"
+    echo "  migrate-postgres  Offline backup, import, verify, and switch from SQLite"
     echo ""
     echo "Mode: $MODE (set DUCKWAY_PROD_MODE in .prod.env)"
     echo "  split    — admin + gateway on separate containers (default)"
     echo "  combined — everything on one container"
     echo ""
     echo "Tailscale: $USE_TAILSCALE (set DUCKWAY_TAILSCALE=false to disable)"
+    echo "Database: $DATABASE_BACKEND (set DUCKWAY_DATABASE in .prod.env)"
     exit 1
     ;;
 esac

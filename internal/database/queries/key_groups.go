@@ -114,7 +114,8 @@ func DeleteKeyGroup(db *sql.DB, id string) error {
 
 func AddKeyToGroup(db *sql.DB, groupID, apiKeyID string, position int) error {
 	_, err := db.Exec(
-		`INSERT OR REPLACE INTO key_group_members (group_id, api_key_id, position) VALUES (?, ?, ?)`,
+		`INSERT INTO key_group_members (group_id, api_key_id, position) VALUES (?, ?, ?)
+		 ON CONFLICT(group_id, api_key_id) DO UPDATE SET position=excluded.position`,
 		groupID, apiKeyID, position,
 	)
 	return err

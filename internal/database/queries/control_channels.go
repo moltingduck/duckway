@@ -231,14 +231,11 @@ func (q *ControlChannelQueries) SetChannelSession(handle, sessionID, cwd string)
 // --- inbox ---------------------------------------------------------------
 
 func (q *ControlChannelQueries) AppendInbox(ccID string, channelHandle *string, eventType, payload string) (int64, error) {
-	res, err := q.db.Exec(
-		`INSERT INTO discord_inbox (cc_id, channel_handle, event_type, payload) VALUES (?, ?, ?, ?)`,
+	var id int64
+	err := q.db.QueryRow(
+		`INSERT INTO discord_inbox (cc_id, channel_handle, event_type, payload) VALUES (?, ?, ?, ?) RETURNING id`,
 		ccID, channelHandle, eventType, payload,
-	)
-	if err != nil {
-		return 0, err
-	}
-	id, err := res.LastInsertId()
+	).Scan(&id)
 	if err != nil {
 		return 0, err
 	}

@@ -1,11 +1,33 @@
 package server
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/database"
 	"github.com/hackerduck/duckway/internal/database/queries"
 )
+
+func TestHealthzChecksDatabase(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{db: db, mux: http.NewServeMux()}
+	s.setupHealthRoute()
+	recorder := httptest.NewRecorder()
+	s.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "ok\n" {
+		t.Fatalf("healthy response = %d %q", recorder.Code, recorder.Body.String())
+	}
+	db.Close()
+	recorder = httptest.NewRecorder()
+	s.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("closed database response = %d, want 503", recorder.Code)
+	}
+}
 
 func TestSeedDefaultServicesGitHubUsesFineGrainedPhantomMode(t *testing.T) {
 	db, err := database.Open(t.TempDir())

@@ -1,0 +1,146 @@
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    container_name: duckway-postgres
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      POSTGRES_DB: ${DUCKWAY_POSTGRES_DB:-duckway}
+      POSTGRES_USER: ${DUCKWAY_POSTGRES_USER:-duckway}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - duckway-postgres-data:/var/lib/postgresql/data
+    networks:
+      - default
+      - tailscale-server-net
+      - tailscale-admin-net
+      - tailscale-gateway-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  postgres-migrator:
+    build:
+      context: .
+      target: postgres-migrator
+      args:
+        DUCKWAY_VERSION: ${DUCKWAY_VERSION:-docker}
+    profiles: ["postgres-tools"]
+    restart: "no"
+    volumes:
+      - duckway-data:/data:ro
+    secrets:
+      - postgres_password
+    environment: &postgres-app-environment
+      DUCKWAY_DATABASE_DRIVER: postgres
+      DUCKWAY_POSTGRES_HOST: postgres
+      DUCKWAY_POSTGRES_DB: ${DUCKWAY_POSTGRES_DB:-duckway}
+      DUCKWAY_POSTGRES_USER: ${DUCKWAY_POSTGRES_USER:-duckway}
+      DUCKWAY_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      DUCKWAY_POSTGRES_SSLMODE: disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  sqlite-backup:
+    image: alpine:3.21
+    profiles: ["postgres-tools"]
+    restart: "no"
+    volumes:
+      - duckway-data:/data:ro
+      - ./backups:/backup
+    entrypoint: ["tar"]
+
+  server:
+    environment: *postgres-app-environment
+    secrets: [postgres_password]
+    depends_on: &postgres-dependency
+      postgres:
+        condition: service_healthy
+        restart: true
+    healthcheck: &server-health
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+  server-prod:
+    environment: *postgres-app-environment
+    secrets: [postgres_password]
+    depends_on: *postgres-dependency
+    healthcheck: *server-health
+  admin:
+    environment: *postgres-app-environment
+    secrets: [postgres_password]
+    depends_on: *postgres-dependency
+    healthcheck: &admin-health
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:9091/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+  gateway:
+    environment: *postgres-app-environment
+    secrets: [postgres_password]
+    depends_on: *postgres-dependency
+    healthcheck: &gateway-health
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+  admin-prod:
+    environment: *postgres-app-environment
+    secrets: [postgres_password]
+    depends_on: *postgres-dependency
+    healthcheck: *admin-health
+  gateway-prod:
+    environment: *postgres-app-environment
+    secrets: [postgres_password]
+    depends_on: *postgres-dependency
+    healthcheck: *gateway-health
+  server-tailscale:
+    environment: *postgres-app-environment
+    secrets: [postgres_password]
+    depends_on:
+      tailscale-server:
+        condition: service_healthy
+        restart: true
+      postgres:
+        condition: service_healthy
+        restart: true
+    healthcheck: *server-health
+  admin-tailscale:
+    environment: *postgres-app-environment
+    secrets: [postgres_password]
+    depends_on:
+      tailscale-admin:
+        condition: service_healthy
+        restart: true
+      postgres:
+        condition: service_healthy
+        restart: true
+    healthcheck: *admin-health
+  gateway-tailscale:
+    environment: *postgres-app-environment
+    secrets: [postgres_password]
+    depends_on:
+      tailscale-gateway:
+        condition: service_healthy
+        restart: true
+      postgres:
+        condition: service_healthy
+        restart: true
+    healthcheck: *gateway-health
+
+secrets:
+  postgres_password:
+    file: ${DUCKWAY_POSTGRES_PASSWORD_FILE:-./.secrets/postgres-password}
+
+volumes:
+  duckway-postgres-data:

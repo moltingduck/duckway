@@ -128,6 +128,49 @@ func TestTailscaleServeConfigsForwardTailnetTCPToLoopback(t *testing.T) {
 	}
 }
 
+func TestPostgresComposeIsPrivateAndUsesSecrets(t *testing.T) {
+	body, err := os.ReadFile("../docker-compose.postgres.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compose struct {
+		Services map[string]struct {
+			Ports     []string                     `yaml:"ports"`
+			Secrets   []string                     `yaml:"secrets"`
+			Volumes   []string                     `yaml:"volumes"`
+			DependsOn map[string]composeDependency `yaml:"depends_on"`
+		} `yaml:"services"`
+		Secrets map[string]yaml.Node `yaml:"secrets"`
+		Volumes map[string]yaml.Node `yaml:"volumes"`
+	}
+	if err := yaml.Unmarshal(body, &compose); err != nil {
+		t.Fatal(err)
+	}
+	postgres, ok := compose.Services["postgres"]
+	if !ok {
+		t.Fatal("missing PostgreSQL service")
+	}
+	if len(postgres.Ports) != 0 {
+		t.Fatal("PostgreSQL must not publish a host port")
+	}
+	if !slices.Contains(postgres.Secrets, "postgres_password") || !slices.Contains(postgres.Volumes, "duckway-postgres-data:/var/lib/postgresql/data") {
+		t.Error("PostgreSQL must use the password secret and dedicated volume")
+	}
+	if _, ok := compose.Secrets["postgres_password"]; !ok {
+		t.Error("postgres_password secret is not declared")
+	}
+	if _, ok := compose.Volumes["duckway-postgres-data"]; !ok {
+		t.Error("duckway-postgres-data volume is not declared")
+	}
+	for _, name := range []string{"admin-prod", "gateway-prod", "admin-tailscale", "gateway-tailscale"} {
+		service, ok := compose.Services[name]
+		dependency, depends := service.DependsOn["postgres"]
+		if !ok || !slices.Contains(service.Secrets, "postgres_password") || !depends || dependency.Condition != "service_healthy" {
+			t.Errorf("%s is not wired to PostgreSQL secret and health dependency", name)
+		}
+	}
+}
+
 func requireService(t *testing.T, services map[string]composeService, name string) composeService {
 	t.Helper()
 	service, ok := services[name]

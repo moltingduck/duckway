@@ -40,6 +40,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 go build -buildvcs=false -ldflags="$LDFLAGS" \
       -o /out/duckway-gateway ./cmd/gateway/
 
+FROM build-base AS postgres-migrator-bin
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -buildvcs=false -ldflags="$LDFLAGS" \
+      -o /out/duckway-migrate-postgres ./cmd/migrate-postgres/
+
 FROM build-base AS client-dist
 
 # Cross-compile client for downloads
@@ -119,3 +126,12 @@ RUN mkdir -p /root/.duckway
 
 WORKDIR /root
 CMD ["sleep", "infinity"]
+
+# === Offline SQLite to PostgreSQL migrator ===
+FROM alpine:3.21 AS postgres-migrator
+
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY --from=postgres-migrator-bin /out/duckway-migrate-postgres /usr/local/bin/duckway-migrate-postgres
+
+ENTRYPOINT ["duckway-migrate-postgres"]

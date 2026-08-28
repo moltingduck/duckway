@@ -790,6 +790,43 @@ docker logs --since 5m duckway-gateway
 `DUCKWAY_SQLITE_JOURNAL_MODE=WAL` remains available for a validated local
 filesystem and driver, but is not recommended for ARM64 split deployments.
 
+### Migrate a production install to PostgreSQL
+
+Production Compose deployments can run PostgreSQL while retaining `/data` for
+encryption keys, CA material, and an offline SQLite rollback copy. Start from
+the normal SQLite setting in `.prod.env`:
+
+```env
+DUCKWAY_DATABASE=sqlite
+DUCKWAY_POSTGRES_DB=duckway
+DUCKWAY_POSTGRES_USER=duckway
+DUCKWAY_POSTGRES_PASSWORD_FILE=./.secrets/postgres-password
+```
+
+Then run the complete offline cutover:
+
+```bash
+./scripts/prod.sh migrate-postgres
+```
+
+The command builds the migrator, stops all known Duckway writers, archives the
+entire `/data` volume under `backups/`, starts a private PostgreSQL 17 container,
+verifies the archive and writes its SHA-256 checksum, imports every table in one
+transaction, verifies row counts and canonical content hashes, updates
+`DUCKWAY_DATABASE=postgres`, and restarts the active split or combined profile.
+PostgreSQL does not publish port 5432. Its password is generated with OpenSSL
+when missing and stored in the git-ignored `.secrets/` directory with mode 600.
+
+Keep the printed SQLite backup. A rollback to it discards writes made after the
+PostgreSQL cutover; Duckway does not perform reverse replication. Normal
+commands remain unchanged after migration:
+
+```bash
+./scripts/prod.sh restart
+./scripts/prod.sh status
+./scripts/prod.sh logs
+```
+
 ### `duckway proxy -d` says "already running" but no daemon is alive
 
 Stale PID file. Run:

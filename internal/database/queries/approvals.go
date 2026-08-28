@@ -2,6 +2,7 @@ package queries
 
 import (
 	"database/sql"
+	"strconv"
 
 	"github.com/hackerduck/duckway/internal/models"
 )
@@ -111,7 +112,7 @@ func (q *ApprovalQueries) MarkExpiredAsIgnored(ttlMinutes int) (int64, error) {
 		 SET status = 'ignored'
 		 WHERE status = 'pending'
 		   AND created_at < datetime('now', '-' || ? || ' minutes')`,
-		ttlMinutes,
+		strconv.Itoa(ttlMinutes),
 	)
 	if err != nil {
 		return 0, err

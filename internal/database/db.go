@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,21 @@ import (
 )
 
 func Open(dataDir string) (*sql.DB, error) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("DUCKWAY_DATABASE_DRIVER")), "postgres") {
+		return openPostgres()
+	}
+	return openSQLite(dataDir)
+}
+
+// OpenSQLite opens the on-disk database regardless of the configured runtime
+// backend. It is used by the offline PostgreSQL migration command.
+func OpenSQLite(dataDir string) (*sql.DB, error) { return openSQLite(dataDir) }
+
+// OpenPostgresFromEnv opens PostgreSQL regardless of the configured runtime
+// backend. It is used by the offline migration command.
+func OpenPostgresFromEnv() (*sql.DB, error) { return openPostgres() }
+
+func openSQLite(dataDir string) (*sql.DB, error) {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
@@ -79,4 +95,81 @@ func Open(dataDir string) (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+func openPostgres() (*sql.DB, error) {
+	dsn, err := postgresDSNFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if dsn == "" {
+		return nil, fmt.Errorf("PostgreSQL connection settings are required")
+	}
+	ensurePostgresDriver()
+	db, err := sql.Open(postgresDriverName, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open PostgreSQL database: %w", err)
+	}
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(5)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("connect to PostgreSQL database: %w", redactDatabaseError(err, dsn))
+	}
+	if err := runPostgresMigrations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("run PostgreSQL migrations: %w", err)
+	}
+	return db, nil
+}
+
+func postgresDSNFromEnv() (string, error) {
+	if dsn := strings.TrimSpace(os.Getenv("DUCKWAY_DATABASE_URL")); dsn != "" {
+		return dsn, nil
+	}
+	passwordFile := strings.TrimSpace(os.Getenv("DUCKWAY_POSTGRES_PASSWORD_FILE"))
+	if passwordFile == "" {
+		return "", nil
+	}
+	password, err := os.ReadFile(passwordFile)
+	if err != nil {
+		return "", fmt.Errorf("read PostgreSQL password file: %w", err)
+	}
+	passwordText := strings.TrimSpace(string(password))
+	if passwordText == "" || strings.ContainsAny(passwordText, "\r\n") {
+		return "", fmt.Errorf("PostgreSQL password file must contain one non-empty line")
+	}
+	u := &url.URL{
+		Scheme: "postgres",
+		Host:   strings.TrimSpace(os.Getenv("DUCKWAY_POSTGRES_HOST")),
+		Path:   "/" + envDefault("DUCKWAY_POSTGRES_DB", "duckway"),
+		User:   url.UserPassword(envDefault("DUCKWAY_POSTGRES_USER", "duckway"), passwordText),
+	}
+	if u.Host == "" {
+		u.Host = "postgres:5432"
+	} else if !strings.Contains(u.Host, ":") {
+		u.Host += ":5432"
+	}
+	q := u.Query()
+	q.Set("sslmode", envDefault("DUCKWAY_POSTGRES_SSLMODE", "disable"))
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+func envDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func redactDatabaseError(err error, secret string) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if secret != "" {
+		msg = strings.ReplaceAll(msg, secret, "<redacted>")
+	}
+	return fmt.Errorf("%s", msg)
 }

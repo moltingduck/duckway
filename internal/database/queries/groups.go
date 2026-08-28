@@ -94,7 +94,8 @@ func (q *GroupQueries) GetMembers(groupID string) ([]models.APIKey, error) {
 
 func (q *GroupQueries) AddMember(groupID, apiKeyID string, priority int) error {
 	_, err := q.db.Exec(
-		"INSERT OR REPLACE INTO api_key_group_members (group_id, api_key_id, priority) VALUES (?, ?, ?)",
+		`INSERT INTO api_key_group_members (group_id, api_key_id, priority) VALUES (?, ?, ?)
+		 ON CONFLICT(group_id, api_key_id) DO UPDATE SET priority=excluded.priority`,
 		groupID, apiKeyID, priority,
 	)
 	return err
