@@ -109,3 +109,17 @@ func TestDeployGitHubCredentialsForKeyWritesConfiguredRepos(t *testing.T) {
 		t.Fatalf("unexpected host-level credential:\n%s", got)
 	}
 }
+
+func TestGitHubReposFromV2PermissionConfig(t *testing.T) {
+	config := `{"version":"2","provider":"github","repositories":{"ExampleOrg/RepoBeta":{"capabilities":{"clone":true}},"ExampleOrg/RepoAlpha":{"capabilities":{"actions_read":true}}}}`
+	got := githubReposFromPermissionConfig(config)
+	want := []string{"ExampleOrg/RepoAlpha", "ExampleOrg/RepoBeta"}
+	if len(got) != len(want) {
+		t.Fatalf("repositories = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("repositories = %v, want %v", got, want)
+		}
+	}
+}

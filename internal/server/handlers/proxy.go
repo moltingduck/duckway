@@ -508,8 +508,13 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ok {
+			if err := services.ValidateGitHubRepoScopePermissionConfig(result.PermissionConfig); err != nil {
+				log.Printf("github app request denied for placeholder %s: invalid repository policy: %v", result.PlaceholderID, err)
+				jsonError(w, "github app assignment requires a valid repository policy", http.StatusForbidden)
+				return
+			}
 			githubAppCred = ghAppCred
-			realKey, err = h.mintGitHubInstallationToken(r.Context(), ghAppCred, r.Method, upstreamPath, r.URL.RawQuery)
+			realKey, err = h.mintGitHubInstallationToken(r.Context(), ghAppCred, r.Method, upstreamPath, r.URL.RawQuery, result.PermissionConfig)
 			if err != nil {
 				log.Printf("github app token mint failed for placeholder %s: %v", result.PlaceholderID, err)
 				jsonError(w, "github app token mint failed", http.StatusBadGateway)
@@ -564,10 +569,10 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if githubAppCred != nil && resp.StatusCode == http.StatusUnauthorized {
-		h.invalidateGitHubInstallationToken(githubAppCred, r.Method, upstreamPath, r.URL.RawQuery, realKey)
+		h.invalidateGitHubInstallationToken(githubAppCred, r.Method, upstreamPath, r.URL.RawQuery, result.PermissionConfig, realKey)
 		if githubAppRequestCanRetry(r.Method, upstreamPath) {
 			_ = resp.Body.Close()
-			refreshedKey, mintErr := h.mintGitHubInstallationToken(r.Context(), githubAppCred, r.Method, upstreamPath, r.URL.RawQuery)
+			refreshedKey, mintErr := h.mintGitHubInstallationToken(r.Context(), githubAppCred, r.Method, upstreamPath, r.URL.RawQuery, result.PermissionConfig)
 			if mintErr != nil {
 				log.Printf("github app token re-mint failed for placeholder %s: %v", result.PlaceholderID, mintErr)
 				jsonError(w, "github app token mint failed", http.StatusBadGateway)
@@ -586,7 +591,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if resp.StatusCode == http.StatusUnauthorized {
-				h.invalidateGitHubInstallationToken(githubAppCred, r.Method, upstreamPath, r.URL.RawQuery, refreshedKey)
+				h.invalidateGitHubInstallationToken(githubAppCred, r.Method, upstreamPath, r.URL.RawQuery, result.PermissionConfig, refreshedKey)
 			}
 		}
 	}

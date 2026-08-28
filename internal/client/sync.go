@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -216,8 +217,10 @@ func shouldReplaceDuckwayGitHubCredentialLine(line, repo string) bool {
 
 func githubReposFromPermissionConfig(configJSON string) []string {
 	var config struct {
-		Provider string `json:"provider"`
-		Rules    []struct {
+		Version      string                     `json:"version"`
+		Provider     string                     `json:"provider"`
+		Repositories map[string]json.RawMessage `json:"repositories"`
+		Rules        []struct {
 			Endpoints []struct {
 				Method string `json:"method"`
 				Path   string `json:"path"`
@@ -227,6 +230,14 @@ func githubReposFromPermissionConfig(configJSON string) []string {
 	}
 	if json.Unmarshal([]byte(configJSON), &config) != nil || config.Provider != "github" {
 		return nil
+	}
+	if config.Version == "2" {
+		repos := make([]string, 0, len(config.Repositories))
+		for repo := range config.Repositories {
+			repos = append(repos, repo)
+		}
+		sort.Slice(repos, func(i, j int) bool { return strings.ToLower(repos[i]) < strings.ToLower(repos[j]) })
+		return repos
 	}
 	seen := map[string]bool{}
 	var repos []string

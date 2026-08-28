@@ -85,9 +85,11 @@
         <div class="form-group"><label>Git access mode</label>
           <select id="add-github-mode">
             <option value="deploy">Pull only deploy</option>
-            <option value="dev">Pull and push development</option>
+			<option value="dev">Developer</option>
+			<option value="cicd">CI/CD operator</option>
           </select>
         </div>
+		<div class="form-group"><label>Workflow constraints</label><input id="add-github-workflows" placeholder="Workflows: ci.yml"><input id="add-github-refs" class="mt-1" placeholder="Refs: main, release/*"><input id="add-github-environments" class="mt-1" placeholder="Environments: staging"></div>
       </div>
       <div class="form-group">
         <label><input type="checkbox" name="requires_approval" value="true"> Require admin approval on first use</label>
@@ -128,6 +130,7 @@
               <option value="dev">Pull and push development</option>
             </select>
           </div>
+		  <div class="form-group"><label>Workflow constraints</label><input id="e-github-workflows" placeholder="Workflows: ci.yml"><input id="e-github-refs" class="mt-1" placeholder="Refs: main, release/*"><input id="e-github-environments" class="mt-1" placeholder="Environments: staging"></div>
         </div>
         <div class="form-group">
           <label>Granted repositories</label>
@@ -163,7 +166,8 @@
             <label>Access</label>
             <select id="e-github-mode">
               <option value="deploy">Read only</option>
-              <option value="dev">Read/write</option>
+			  <option value="dev">Developer</option>
+			  <option value="cicd">CI/CD operator</option>
             </select>
           </div>
           <button type="button" class="btn btn-sm" onclick="applyEditGitHubRepoScope()">Update ACL from repositories</button>
@@ -268,7 +272,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (selectedAddServiceName() === 'github') {
       var repos = parseGitRepoList(document.getElementById('add-github-repos').value);
       if (repos.length === 0) { showToast('Add at least one allowed repository as ORG/REPO', 'error'); return; }
-      body.permission_config = JSON.stringify(gitACLForRepos(repos, document.getElementById('add-github-mode').value || 'deploy'));
+	  body.permission_config = JSON.stringify(gitACLForRepos(repos, document.getElementById('add-github-mode').value || 'deploy', document.getElementById('add-github-workflows').value, document.getElementById('add-github-refs').value, document.getElementById('add-github-environments').value));
     }
     fetch('/api/placeholders', {
       method: 'POST',
@@ -377,6 +381,12 @@ function gitGrantsFromACL(configJSON) {
   if (!configJSON) return [];
   var cfg;
   try { cfg = JSON.parse(configJSON); } catch(e) { return []; }
+	if (cfg.version === '2' && cfg.provider === 'github') {
+		return Object.keys(cfg.repositories || {}).sort().map(function(repo) {
+			var p=cfg.repositories[repo] || {}, c=p.capabilities || {};
+			return {repo:repo, capabilities:c, pull:!!c.clone, push:!!c.push, workflow_allowlist:p.workflow_allowlist || [], ref_allowlist:p.ref_allowlist || [], environment_allowlist:p.environment_allowlist || []};
+		});
+	}
   var byRepo = {};
   (cfg.rules || []).forEach(function(rule) {
     (rule.endpoints || []).forEach(function(ep) {
@@ -396,6 +406,7 @@ function grantMode(grant) {
 }
 
 function grantLabel(grant) {
+	if (grant.capabilities && Object.keys(grant.capabilities).length) return Object.keys(grant.capabilities).filter(function(k) { return grant.capabilities[k]; }).join(', ') || 'none';
   var parts = [];
   if (grant.pull) parts.push('pull');
   if (grant.push) parts.push('push');
@@ -419,28 +430,26 @@ function gitACL(repo, mode) {
   return gitACLForRepoGrants([{repo: repo, pull: true, push: mode === 'dev'}]);
 }
 
-function gitACLForRepos(repos, mode) {
+function gitACLForRepos(repos, mode, workflows, refs, environments) {
   return gitACLForRepoGrants(repos.map(function(repo) {
-    return {repo: repo, pull: true, push: mode === 'dev'};
+	return {repo: repo, pull: true, push: mode === 'dev', mode: mode, workflow_allowlist:parseGitPolicyList(workflows), ref_allowlist:parseGitPolicyList(refs), environment_allowlist:parseGitPolicyList(environments)};
   }));
 }
 
+function parseGitPolicyList(value) { return (value || '').split(/[\n,]+/).map(function(v) { return v.trim(); }).filter(Boolean); }
+
 function gitACLForRepoGrants(grants) {
-  var endpoints = [];
+	var repositories = {};
   grants.forEach(function(grant) {
-    var repo = grant.repo;
-    endpoints.push({method:'GET', path:'/' + repo + '.git/info/refs', allow:true});
-    if (grant.pull) {
-      endpoints.push({method:'POST', path:'/' + repo + '.git/git-upload-pack', allow:true});
-    }
-    if (grant.push) {
-      endpoints.push({method:'POST', path:'/' + repo + '.git/git-receive-pack', allow:true});
-      endpoints.push({method:'GET', path:'/repos/' + repo, allow:true});
-      endpoints.push({method:'GET', path:'/repos/' + repo + '/*', allow:true});
-    }
+	var preset=grant.mode || (grant.push ? 'dev' : 'deploy');
+	var c={clone:true,push:false,issues_read:true,issues_write:false,pull_requests_read:true,pull_requests_write:false,releases_read:true,releases_write:false,actions_read:true,workflow_dispatch:false,workflow_rerun:false,workflow_cancel:false};
+	if (preset === 'dev') { c.push=true; c.issues_write=true; c.pull_requests_write=true; }
+	if (preset === 'cicd') { c.workflow_dispatch=true; c.workflow_rerun=true; c.workflow_cancel=true; }
+	repositories[grant.repo]={capabilities:c};
+	if (preset === 'cicd') { repositories[grant.repo].workflow_allowlist=grant.workflow_allowlist.length ? grant.workflow_allowlist : ['ci.yml']; repositories[grant.repo].ref_allowlist=grant.ref_allowlist.length ? grant.ref_allowlist : ['main']; }
+	if (grant.environment_allowlist && grant.environment_allowlist.length) repositories[grant.repo].environment_allowlist=grant.environment_allowlist;
   });
-  var hasPush = grants.some(function(grant) { return grant.push; });
-  return {version:'1', provider:'github', rules:[{name: hasPush ? 'repo-grants' : 'deploy-read-only', endpoints:endpoints, deny_all_other:true}]};
+	return {version:'2',provider:'github',repositories:repositories};
 }
 
 function normalizeGitRepo(value) {
@@ -512,7 +521,11 @@ function switchToEdit() {
 function seedEditGitHubRepoScope(configJSON) {
   var grants = gitGrantsFromACL(configJSON);
   document.getElementById('e-github-repos').value = grants.map(function(g) { return g.repo; }).join('\n');
-  document.getElementById('e-github-mode').value = grants.some(function(g) { return g.push; }) ? 'dev' : 'deploy';
+	document.getElementById('e-github-mode').value = grants.some(function(g) { return g.capabilities && g.capabilities.workflow_dispatch; }) ? 'cicd' : (grants.some(function(g) { return g.push; }) ? 'dev' : 'deploy');
+	var first=grants[0] || {};
+	document.getElementById('e-github-workflows').value=(first.workflow_allowlist || []).join(', ');
+	document.getElementById('e-github-refs').value=(first.ref_allowlist || []).join(', ');
+	document.getElementById('e-github-environments').value=(first.environment_allowlist || []).join(', ');
 }
 
 function applyEditGitHubRepoScope() {
@@ -521,7 +534,7 @@ function applyEditGitHubRepoScope() {
     showToast('Enter at least one repository as OWNER/REPO', 'error');
     return;
   }
-  document.getElementById('e-acl').value = JSON.stringify(gitACLForRepos(repos, document.getElementById('e-github-mode').value || 'deploy'), null, 2);
+	document.getElementById('e-acl').value = JSON.stringify(gitACLForRepos(repos, document.getElementById('e-github-mode').value || 'deploy', document.getElementById('e-github-workflows').value, document.getElementById('e-github-refs').value, document.getElementById('e-github-environments').value), null, 2);
   renderACLPreview('e-acl', 'e-acl-preview');
 }
 

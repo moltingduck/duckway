@@ -169,6 +169,15 @@ func seedGitHubService(t testing.TB, f *proxyFixture) {
 	if err := f.svcQ.Update(svc); err != nil {
 		t.Fatal(err)
 	}
+	policy := `{"version":"2","provider":"github","repositories":{"OWNER/REPO":{"capabilities":{"clone":true,"push":true,"issues_read":true,"issues_write":true,"pull_requests_read":true,"pull_requests_write":true,"releases_read":true,"releases_write":true,"actions_read":true,"workflow_dispatch":true,"workflow_rerun":true,"workflow_cancel":true},"workflow_allowlist":["ci.yml"],"ref_allowlist":["main"]}}}`
+	ph, err := f.placeholderQ.GetByID(f.placeholderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ph.PermissionConfig = &policy
+	if err := f.placeholderQ.Update(ph); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testRSAPrivateKeyPEM(t testing.TB) string {
@@ -990,8 +999,8 @@ func TestProxyGitHubAppRepoLessPathDoesNotMint(t *testing.T) {
 	r = withClient(r, f.client)
 	code, _ := doProxy(h, r)
 
-	if code != http.StatusBadGateway {
-		t.Fatalf("want 502 for repo-less GitHub App mint, got %d", code)
+	if code != http.StatusForbidden {
+		t.Fatalf("want 403 for repo-less GitHub App request, got %d", code)
 	}
 	if mintCount != 0 {
 		t.Fatalf("mint count = %d, want 0", mintCount)

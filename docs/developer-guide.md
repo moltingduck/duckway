@@ -11,6 +11,7 @@ For installation, configuration, and daily operations, see [user-guide.md](user-
 - [Phantom token swap — the proxy flow](#phantom-token-swap--the-proxy-flow)
 - [Header stripping](#header-stripping)
 - [Refreshable (OAuth) tokens](#refreshable-oauth-tokens)
+- [GitHub mintable token permissions](github-mintable-permissions.md)
 - [Data dependencies and delete behavior](#data-dependencies-and-delete-behavior)
 - [Control Channels (Discord)](#control-channels-discord)
 - [Adding a new service](#adding-a-new-service)

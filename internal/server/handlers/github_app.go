@@ -134,13 +134,13 @@ func validateGitHubAppBaseURLValue(rawURL string) error {
 	return fmt.Errorf("github_app base_url must use https")
 }
 
-func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *githubAppCredential, method, upstreamPath, rawQuery string) (token string, err error) {
+func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *githubAppCredential, method, upstreamPath, rawQuery, permissionConfig string) (token string, err error) {
 	owner, repo := githubRepoFromPath(upstreamPath)
 	if owner == "" || repo == "" {
 		return "", fmt.Errorf("github app token mint requires a repository-scoped path")
 	}
 	permissions := githubTokenPermissions(method, upstreamPath, rawQuery)
-	cacheKey := githubAppCacheKey(cred, owner, repo, permissions)
+	cacheKey := githubAppCacheKey(cred, owner, repo, permissions, permissionConfig)
 	now := time.Now()
 
 	h.githubAppMu.Lock()
@@ -208,12 +208,12 @@ func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *gi
 	return minted.Token, nil
 }
 
-func (h *ProxyHandler) invalidateGitHubInstallationToken(cred *githubAppCredential, method, upstreamPath, rawQuery, rejectedToken string) {
+func (h *ProxyHandler) invalidateGitHubInstallationToken(cred *githubAppCredential, method, upstreamPath, rawQuery, permissionConfig, rejectedToken string) {
 	owner, repo := githubRepoFromPath(upstreamPath)
 	if owner == "" || repo == "" {
 		return
 	}
-	cacheKey := githubAppCacheKey(cred, owner, repo, githubTokenPermissions(method, upstreamPath, rawQuery))
+	cacheKey := githubAppCacheKey(cred, owner, repo, githubTokenPermissions(method, upstreamPath, rawQuery), permissionConfig)
 	h.githubAppMu.Lock()
 	defer h.githubAppMu.Unlock()
 	if cached, ok := h.githubAppTokens[cacheKey]; ok && cached.token == rejectedToken {
@@ -263,13 +263,15 @@ func mintGitHubInstallationToken(ctx context.Context, httpClient *http.Client, c
 	return &githubMintedInstallationToken{Token: parsed.Token, ExpiresAt: expiresAt, Permissions: parsed.Permissions}, nil
 }
 
-func githubAppCacheKey(cred *githubAppCredential, owner, repo string, permissions map[string]string) string {
+func githubAppCacheKey(cred *githubAppCredential, owner, repo string, permissions map[string]string, permissionConfig string) string {
 	privateKeyFingerprint := sha256.Sum256([]byte(cred.PrivateKey))
+	policyFingerprint := sha256.Sum256([]byte(strings.TrimSpace(permissionConfig)))
 	parts := []string{
 		strconv.FormatInt(cred.AppID, 10),
 		strconv.FormatInt(cred.InstallationID, 10),
 		strings.TrimRight(cred.BaseURL, "/"),
 		fmt.Sprintf("%x", privateKeyFingerprint),
+		fmt.Sprintf("%x", policyFingerprint),
 		strings.ToLower(owner + "/" + repo),
 	}
 	keys := make([]string, 0, len(permissions))
@@ -345,6 +347,10 @@ func githubPermissionScope(method, upstreamPath, rawQuery string) (string, strin
 			return "pull_requests", level
 		case "contents", "git":
 			return "contents", level
+		case "releases":
+			return "contents", level
+		case "actions":
+			return "actions", level
 		}
 	}
 	return "contents", level

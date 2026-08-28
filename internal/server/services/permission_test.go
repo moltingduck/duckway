@@ -218,6 +218,50 @@ func TestValidateGitHubRepoScopePermissionConfig(t *testing.T) {
 	}
 }
 
+func TestGitHubCapabilityPermissionConfig(t *testing.T) {
+	config := `{"version":"2","provider":"github","repositories":{"Owner/Repo":{"capabilities":{"clone":true,"actions_read":true,"workflow_dispatch":true},"workflow_allowlist":["ci.yml"],"ref_allowlist":["main","release/*"],"environment_allowlist":["staging"]}}}`
+	if err := ValidateGitHubRepoScopePermissionConfig(config); err != nil {
+		t.Fatalf("valid v2 policy rejected: %v", err)
+	}
+	pc := NewPermissionChecker()
+	checks := []struct {
+		method, path, body string
+		allowed            bool
+	}{
+		{"POST", "/owner/repo.git/git-upload-pack", "", true},
+		{"POST", "/owner/repo.git/git-receive-pack", "", false},
+		{"GET", "/repos/OWNER/REPO/actions/runs/1", "", true},
+		{"POST", "/repos/owner/repo/actions/workflows/ci.yml/dispatches", `{"ref":"release/1","inputs":{"environment":"staging"}}`, true},
+		{"POST", "/repos/owner/repo/actions/workflows/other.yml/dispatches", `{"ref":"main"}`, false},
+		{"POST", "/repos/owner/repo/actions/workflows/ci.yml/dispatches", `{"ref":"dev"}`, false},
+		{"POST", "/repos/owner/repo/actions/workflows/ci.yml/dispatches", "", false},
+		{"POST", "/repos/owner/repo/actions/workflows/ci.yml/dispatches", `{"ref":"main","inputs":{"environment":"production"}}`, false},
+	}
+	for _, tc := range checks {
+		got := pc.Check(config, "ph", tc.method, tc.path, []byte(tc.body))
+		if got.Allowed != tc.allowed {
+			t.Errorf("%s %s allowed=%v, want %v (%s)", tc.method, tc.path, got.Allowed, tc.allowed, got.Reason)
+		}
+	}
+}
+
+func TestGitHubCapabilityPermissionConfigRejectsPrivilegeEscalation(t *testing.T) {
+	configs := []string{
+		`{"version":"2","provider":"github","repositories":{"o/r":{"capabilities":{"push":true}}}}`,
+		`{"version":"2","provider":"github","repositories":{"o/r":{"capabilities":{"issues_write":true}}}}`,
+		`{"version":"2","provider":"github","repositories":{"o/r":{"capabilities":{"workflow_dispatch":true,"actions_read":true}}}}`,
+		`{"version":"2","provider":"github","repositories":{"o/r":{"capabilities":{"clone":true,"unknown":true}}}}`,
+		`{"version":"3","provider":"github","repositories":{"o/r":{"capabilities":{"clone":true}}}}`,
+		`{"version":"3","provider":"github","rules":[{"endpoints":[{"method":"GET","path":"/o/r.git/info/refs","allow":true}],"deny_all_other":true}]}`,
+		`{"version":"2","provider":"github","repositories":{"Owner/Repo":{"capabilities":{"clone":true}},"owner/repo":{"capabilities":{"clone":true}}}}`,
+	}
+	for _, config := range configs {
+		if err := ValidateGitHubRepoScopePermissionConfig(config); err == nil {
+			t.Errorf("policy accepted unexpectedly: %s", config)
+		}
+	}
+}
+
 func TestGitHubRepoScopeACLSeparatesPullPushAndRepo(t *testing.T) {
 	pc := NewPermissionChecker()
 	tests := []struct {

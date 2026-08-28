@@ -1,8 +1,10 @@
 package services
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
@@ -37,9 +39,39 @@ type EndpointConstraints struct {
 
 type FieldConstraint struct {
 	OneOf     []string `json:"oneOf,omitempty"`
+	Matches   []string `json:"matches,omitempty"`
 	Max       *float64 `json:"max,omitempty"`
 	Min       *float64 `json:"min,omitempty"`
 	Forbidden bool     `json:"forbidden,omitempty"`
+	Required  bool     `json:"required,omitempty"`
+}
+
+type GitHubCapabilityPermissionConfig struct {
+	Version      string                            `json:"version"`
+	Provider     string                            `json:"provider"`
+	Repositories map[string]GitHubRepositoryPolicy `json:"repositories"`
+}
+
+type GitHubRepositoryPolicy struct {
+	Capabilities         GitHubCapabilities `json:"capabilities"`
+	WorkflowAllowlist    []string           `json:"workflow_allowlist,omitempty"`
+	RefAllowlist         []string           `json:"ref_allowlist,omitempty"`
+	EnvironmentAllowlist []string           `json:"environment_allowlist,omitempty"`
+}
+
+type GitHubCapabilities struct {
+	Clone             bool `json:"clone"`
+	Push              bool `json:"push"`
+	IssuesRead        bool `json:"issues_read"`
+	IssuesWrite       bool `json:"issues_write"`
+	PullRequestsRead  bool `json:"pull_requests_read"`
+	PullRequestsWrite bool `json:"pull_requests_write"`
+	ReleasesRead      bool `json:"releases_read"`
+	ReleasesWrite     bool `json:"releases_write"`
+	ActionsRead       bool `json:"actions_read"`
+	WorkflowDispatch  bool `json:"workflow_dispatch"`
+	WorkflowRerun     bool `json:"workflow_rerun"`
+	WorkflowCancel    bool `json:"workflow_cancel"`
 }
 
 type RateLimitConfig struct {
@@ -49,6 +81,7 @@ type RateLimitConfig struct {
 }
 
 var githubRepoPathPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+var githubWorkflowPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
 // ValidatePermissionConfig checks the structural shape of a non-empty
 // permission config before storing it. Empty config still means allow-all.
@@ -92,6 +125,9 @@ func ValidateGitHubRepoScopePermissionConfig(configJSON string) error {
 	if config.Provider != "github" {
 		return fmt.Errorf("github app minter permission_config provider must be github")
 	}
+	if config.Version == "2" {
+		return nil
+	}
 	if len(config.Rules) == 0 {
 		return fmt.Errorf("github app minter permission_config must contain at least one rule")
 	}
@@ -113,11 +149,124 @@ func ValidateGitHubRepoScopePermissionConfig(configJSON string) error {
 }
 
 func ParsePermissionConfig(configJSON string) (PermissionConfig, error) {
+	var header struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &header); err != nil {
+		return PermissionConfig{}, fmt.Errorf("invalid permission config: %w", err)
+	}
+	if header.Version == "2" {
+		return parseGitHubCapabilityPermissionConfig(configJSON)
+	}
+	if header.Version != "1" {
+		return PermissionConfig{}, fmt.Errorf("unsupported permission config version %q", header.Version)
+	}
 	var config PermissionConfig
 	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
 		return config, fmt.Errorf("invalid permission config: %w", err)
 	}
 	return config, nil
+}
+
+func parseGitHubCapabilityPermissionConfig(configJSON string) (PermissionConfig, error) {
+	var policy GitHubCapabilityPermissionConfig
+	dec := json.NewDecoder(bytes.NewBufferString(configJSON))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&policy); err != nil {
+		return PermissionConfig{}, fmt.Errorf("invalid github capability permission config: %w", err)
+	}
+	if policy.Version != "2" || policy.Provider != "github" {
+		return PermissionConfig{}, fmt.Errorf("github capability permission config requires version 2 and provider github")
+	}
+	if len(policy.Repositories) == 0 {
+		return PermissionConfig{}, fmt.Errorf("github capability permission config requires repositories")
+	}
+	endpoints := make([]EndpointRule, 0)
+	seenRepos := make(map[string]struct{}, len(policy.Repositories))
+	for repo, repoPolicy := range policy.Repositories {
+		if !githubRepoPathPattern.MatchString(repo) {
+			return PermissionConfig{}, fmt.Errorf("invalid github repository %q", repo)
+		}
+		canonicalRepo := strings.ToLower(repo)
+		if _, exists := seenRepos[canonicalRepo]; exists {
+			return PermissionConfig{}, fmt.Errorf("duplicate case-insensitive github repository %q", repo)
+		}
+		seenRepos[canonicalRepo] = struct{}{}
+		var err error
+		endpoints, err = appendGitHubCapabilityEndpoints(endpoints, canonicalRepo, repoPolicy)
+		if err != nil {
+			return PermissionConfig{}, fmt.Errorf("repository %s: %w", repo, err)
+		}
+	}
+	return PermissionConfig{Version: "2", Provider: "github", Rules: []PermissionRule{{
+		Name: "github capabilities", Endpoints: endpoints, DenyAllOther: true,
+	}}}, nil
+}
+
+func appendGitHubCapabilityEndpoints(dst []EndpointRule, repo string, p GitHubRepositoryPolicy) ([]EndpointRule, error) {
+	start := len(dst)
+	c := p.Capabilities
+	if c.Push && !c.Clone || c.IssuesWrite && !c.IssuesRead || c.PullRequestsWrite && !c.PullRequestsRead || c.ReleasesWrite && !c.ReleasesRead {
+		return nil, fmt.Errorf("write capabilities require their corresponding read capability")
+	}
+	if (c.WorkflowDispatch || c.WorkflowRerun || c.WorkflowCancel) && !c.ActionsRead {
+		return nil, fmt.Errorf("workflow mutation capabilities require actions_read")
+	}
+	if c.WorkflowDispatch && (len(p.WorkflowAllowlist) == 0 || len(p.RefAllowlist) == 0) {
+		return nil, fmt.Errorf("workflow_dispatch requires workflow_allowlist and ref_allowlist")
+	}
+	add := func(method, suffix string, constraints *EndpointConstraints) {
+		dst = append(dst, EndpointRule{Method: method, Path: suffix, Allow: true, Constraints: constraints})
+	}
+	if c.Clone {
+		add("GET", "/"+repo+".git/info/refs", nil)
+		add("POST", "/"+repo+".git/git-upload-pack", nil)
+		add("GET", "/repos/"+repo, nil)
+	}
+	if c.Push {
+		add("POST", "/"+repo+".git/git-receive-pack", nil)
+	}
+	addREST := func(read, write bool, resource string) {
+		if read {
+			add("GET", "/repos/"+repo+"/"+resource, nil)
+			add("GET", "/repos/"+repo+"/"+resource+"/*", nil)
+		}
+		if write {
+			add("POST", "/repos/"+repo+"/"+resource, nil)
+			add("POST", "/repos/"+repo+"/"+resource+"/*", nil)
+			add("PATCH", "/repos/"+repo+"/"+resource+"/*", nil)
+			add("DELETE", "/repos/"+repo+"/"+resource+"/*", nil)
+		}
+	}
+	addREST(c.IssuesRead, c.IssuesWrite, "issues")
+	addREST(c.PullRequestsRead, c.PullRequestsWrite, "pulls")
+	addREST(c.ReleasesRead, c.ReleasesWrite, "releases")
+	if c.ActionsRead {
+		add("GET", "/repos/"+repo+"/actions", nil)
+		add("GET", "/repos/"+repo+"/actions/*", nil)
+	}
+	if c.WorkflowDispatch {
+		for _, workflow := range p.WorkflowAllowlist {
+			if !githubWorkflowPattern.MatchString(workflow) {
+				return nil, fmt.Errorf("invalid workflow %q", workflow)
+			}
+			body := map[string]FieldConstraint{"ref": {Matches: p.RefAllowlist, Required: true}}
+			if len(p.EnvironmentAllowlist) > 0 {
+				body["inputs.environment"] = FieldConstraint{OneOf: p.EnvironmentAllowlist}
+			}
+			add("POST", "/repos/"+repo+"/actions/workflows/"+workflow+"/dispatches", &EndpointConstraints{Body: body})
+		}
+	}
+	if c.WorkflowRerun {
+		add("POST", "/repos/"+repo+"/actions/runs/*/rerun", nil)
+	}
+	if c.WorkflowCancel {
+		add("POST", "/repos/"+repo+"/actions/runs/*/cancel", nil)
+	}
+	if len(dst) == start {
+		return nil, fmt.Errorf("at least one capability must be enabled")
+	}
+	return dst, nil
 }
 
 func githubRepoFromScopedEndpoint(ep EndpointRule) (string, bool) {
@@ -218,7 +367,7 @@ func (pc *PermissionChecker) checkRule(provider string, rule PermissionRule, pla
 			}
 
 			// Check constraints
-			if ep.Constraints != nil && len(bodyBytes) > 0 {
+			if ep.Constraints != nil && len(ep.Constraints.Body) > 0 {
 				if reason := checkConstraints(ep.Constraints, bodyBytes); reason != "" {
 					return PermissionResult{Allowed: false, Reason: reason}
 				}
@@ -262,10 +411,7 @@ func matchGitHubRepoPath(pattern, path string) bool {
 	if !ok || pKind != kind || !strings.EqualFold(pRepo, repo) {
 		return false
 	}
-	if pKind == "rest" && pSuffix == "*" {
-		return true
-	}
-	return pSuffix == suffix
+	return pSuffix == suffix || (pKind == "rest" && matchPath(pSuffix, suffix))
 }
 
 func githubRepoPathParts(raw string) (repo, kind, suffix string, ok bool) {
@@ -340,11 +486,11 @@ func checkConstraints(constraints *EndpointConstraints, bodyBytes []byte) string
 
 	var body map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &body); err != nil {
-		return "" // Can't parse body, skip constraint checking
+		return "request body must be valid JSON"
 	}
 
 	for field, constraint := range constraints.Body {
-		val, exists := body[field]
+		val, exists := nestedField(body, field)
 
 		if constraint.Forbidden {
 			if exists {
@@ -353,6 +499,9 @@ func checkConstraints(constraints *EndpointConstraints, bodyBytes []byte) string
 			continue
 		}
 
+		if !exists && constraint.Required {
+			return fmt.Sprintf("field '%s' is required", field)
+		}
 		if !exists {
 			continue // Field not present, skip
 		}
@@ -373,6 +522,22 @@ func checkConstraints(constraints *EndpointConstraints, bodyBytes []byte) string
 				return fmt.Sprintf("field '%s' value '%s' not in allowed list %v", field, strVal, constraint.OneOf)
 			}
 		}
+		if len(constraint.Matches) > 0 {
+			strVal, ok := val.(string)
+			if !ok {
+				return fmt.Sprintf("field '%s' must be a string", field)
+			}
+			matched := false
+			for _, pattern := range constraint.Matches {
+				if ok, _ := path.Match(pattern, strVal); ok {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return fmt.Sprintf("field '%s' value '%s' does not match allowed patterns", field, strVal)
+			}
+		}
 
 		if constraint.Max != nil {
 			numVal, ok := toFloat64(val)
@@ -390,6 +555,21 @@ func checkConstraints(constraints *EndpointConstraints, bodyBytes []byte) string
 	}
 
 	return ""
+}
+
+func nestedField(body map[string]interface{}, field string) (interface{}, bool) {
+	var current interface{} = body
+	for _, part := range strings.Split(field, ".") {
+		obj, ok := current.(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		current, ok = obj[part]
+		if !ok {
+			return nil, false
+		}
+	}
+	return current, true
 }
 
 func toFloat64(v interface{}) (float64, bool) {
