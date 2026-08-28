@@ -45,6 +45,13 @@ func main() {
 		log.Fatalf("open SQLite source: %v", err)
 	}
 	defer source.Close()
+	removed, err := removeOrphanRows(ctx, source)
+	if err != nil {
+		log.Fatalf("clean SQLite snapshot foreign keys: %v", err)
+	}
+	for table, count := range removed {
+		log.Printf("WARNING: excluded %d orphan row(s) from %s; original SQLite backup is unchanged", count, table)
+	}
 	target, err := database.OpenPostgresFromEnv()
 	if err != nil {
 		log.Fatalf("open PostgreSQL target: %v", err)
@@ -55,6 +62,69 @@ func main() {
 		log.Fatalf("migration failed: %v", err)
 	}
 	fmt.Fprintln(os.Stdout, "SQLite to PostgreSQL migration completed and verified")
+}
+
+type foreignKeyViolation struct {
+	table string
+	rowID int64
+}
+
+func removeOrphanRows(ctx context.Context, db *sql.DB) (map[string]int, error) {
+	removed := make(map[string]int)
+	for {
+		rows, err := db.QueryContext(ctx, `PRAGMA foreign_key_check`)
+		if err != nil {
+			return nil, err
+		}
+		var violations []foreignKeyViolation
+		seen := make(map[string]bool)
+		for rows.Next() {
+			var table, parent string
+			var rowID sql.NullInt64
+			var foreignKeyID int
+			if err := rows.Scan(&table, &rowID, &parent, &foreignKeyID); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			if !rowID.Valid {
+				_ = rows.Close()
+				return nil, fmt.Errorf("cannot safely remove orphan from %s: rowid is unavailable", table)
+			}
+			key := fmt.Sprintf("%s\x00%d", table, rowID.Int64)
+			if !seen[key] {
+				seen[key] = true
+				violations = append(violations, foreignKeyViolation{table: table, rowID: rowID.Int64})
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if len(violations) == 0 {
+			return removed, nil
+		}
+
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		for _, violation := range violations {
+			table := `"` + strings.ReplaceAll(violation.table, `"`, `""`) + `"`
+			result, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE rowid = ?`, violation.rowID)
+			if err != nil {
+				_ = tx.Rollback()
+				return nil, fmt.Errorf("remove orphan %s rowid %d: %w", violation.table, violation.rowID, err)
+			}
+			count, err := result.RowsAffected()
+			if err != nil || count != 1 {
+				_ = tx.Rollback()
+				return nil, fmt.Errorf("remove orphan %s rowid %d: affected %d rows", violation.table, violation.rowID, count)
+			}
+			removed[violation.table]++
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+	}
 }
 
 func snapshotSQLite(dataDir string) (string, error) {

@@ -68,6 +68,57 @@ func TestTableHashUsesExplicitColumnOrder(t *testing.T) {
 	}
 }
 
+func TestRemoveOrphanRowsHandlesMultipleViolationsAndCascades(t *testing.T) {
+	db, err := database.OpenSQLite(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO placeholder_keys
+		(id, env_name, placeholder, service_id, group_id, client_id)
+		VALUES ('orphan-placeholder', 'TOKEN', 'phantom', 'svc-openai-default', 'missing-group', 'missing-client')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO approvals (id, placeholder_id) VALUES ('dependent-approval', 'orphan-placeholder')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := removeOrphanRows(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed["placeholder_keys"] != 1 {
+		t.Fatalf("removed = %#v", removed)
+	}
+	for _, table := range []string{"placeholder_keys", "approvals"} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("%s still has %d rows", table, count)
+		}
+	}
+	var violations int
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		violations++
+	}
+	if violations != 0 {
+		t.Fatalf("foreign key check still has %d violations", violations)
+	}
+}
+
 func TestMigrationTableInventoryMatchesSQLiteSchema(t *testing.T) {
 	db, err := database.OpenSQLite(t.TempDir())
 	if err != nil {
@@ -122,6 +173,21 @@ func TestLivePostgresMigrationAndQueries(t *testing.T) {
 	}
 	if err := logQ.StoreDetail(&queries.RequestLogDetail{LogID: logID, RequestBody: "request", ResponseBody: "response", Truncated: true}); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := source.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Exec(`INSERT INTO placeholder_keys
+		(id, env_name, placeholder, service_id, group_id, client_id)
+		VALUES ('pg-orphan', 'TOKEN', 'pg-phantom', 'svc-openai-default', 'missing-group', 'missing-client')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := removeOrphanRows(context.Background(), source)
+	if err != nil || removed["placeholder_keys"] != 1 {
+		t.Fatalf("remove migration orphans = %#v, err=%v", removed, err)
 	}
 
 	target, err := database.OpenPostgresFromEnv()
