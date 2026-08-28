@@ -241,9 +241,10 @@ func (h *APIKeyHandler) ListGitHubAppRepositories(w http.ResponseWriter, r *http
 		return
 	}
 	jsonResponse(w, map[string]interface{}{
-		"key_id":       key.ID,
-		"total_count":  len(repos),
-		"repositories": repos,
+		"key_id":                   key.ID,
+		"total_count":              len(repos),
+		"repositories":             repos,
+		"installation_permissions": minted.Permissions,
 	})
 }
 

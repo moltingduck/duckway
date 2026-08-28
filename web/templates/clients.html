@@ -1061,7 +1061,7 @@ function loadEditGitHubRepos() {
         return;
       }
 	  status.textContent = repos.length + ' repositories available. Configure capabilities and save.';
-      list.innerHTML = repoGrantTableHTML(repos, document.getElementById('eph-acl').value || '');
+	  list.innerHTML = repoGrantTableHTML(repos, document.getElementById('eph-acl').value || '', res.body.installation_permissions || {});
     })
     .catch(function(err) {
       if (loadSeq !== editGitHubRepoLoadSeq) return;
@@ -1214,7 +1214,7 @@ function loadAssignGitHubRepos() {
       }
       status.textContent = repos.length + ' repositories available. Select one or more.';
       var existing = existingMintableAssignment(document.getElementById('assign-client-id').value, keyID);
-      list.innerHTML = repoGrantTableHTML(repos, existing ? existing.permissionConfig : '');
+	  list.innerHTML = repoGrantTableHTML(repos, existing ? existing.permissionConfig : '', res.body.installation_permissions || {});
     })
     .catch(function(err) {
       var currentKey = selectedAssignKey();
@@ -1248,12 +1248,13 @@ function parsePolicyList(value) {
 	return (value || '').split(/[\n,]+/).map(function(v) { return v.trim(); }).filter(Boolean);
 }
 
-function repoGrantTableHTML(repos, configJSON) {
+function repoGrantTableHTML(repos, configJSON, installationPermissions) {
   var existingRepos = {};
   gitGrantsFromACL(configJSON || '').forEach(function(g) {
     existingRepos[g.repo.toLowerCase()] = g;
   });
 	var capabilityLabels = {clone:'Clone',push:'Push',issues_read:'Issues read',issues_write:'Issues write',pull_requests_read:'PR read',pull_requests_write:'PR write',releases_read:'Releases read',releases_write:'Releases write',actions_read:'Actions read',workflow_dispatch:'Dispatch',workflow_rerun:'Rerun',workflow_cancel:'Cancel'};
+	installationPermissions = installationPermissions || {};
   return '<div class="repo-grant-table">' +
     '<div class="repo-grant-row repo-grant-header"><div>Repository</div><div>Preset</div><div>Capabilities</div></div>' +
     repos.map(function(repo) {
@@ -1261,13 +1262,19 @@ function repoGrantTableHTML(repos, configJSON) {
       var grant = existingRepos[name.toLowerCase()];
 			var caps = grant ? (grant.capabilities && Object.keys(grant.capabilities).length ? grant.capabilities : githubPresetCapabilities(grant.push ? 'developer' : 'read')) : {};
 			var enabled = !!grant;
-			var checks = Object.keys(capabilityLabels).map(function(cap) { return '<label class="text-sm"><input type="checkbox" data-capability="' + cap + '"' + (caps[cap] ? ' checked' : '') + ' onchange="onGitHubGrantToggle(this)"> ' + capabilityLabels[cap] + '</label>'; }).join('');
+			var checks = Object.keys(capabilityLabels).map(function(cap) {
+				var requirement=githubCapabilityRequirement(cap), available=githubPermissionAllows(installationPermissions, requirement.scope, requirement.level);
+				var reason=available ? '' : 'GitHub App installation permission is insufficient: requires ' + requirement.scope + ':' + requirement.level + '.';
+				return '<label class="text-sm"' + (reason ? ' title="' + escHTML(reason) + '"' : '') + '><input type="checkbox" data-capability="' + cap + '"' + (caps[cap] ? ' checked' : '') + (available ? '' : ' disabled') + ' onchange="onGitHubGrantToggle(this)"> ' + capabilityLabels[cap] + '</label>';
+			}).join('');
+			var readAvailable=githubPresetAvailable('read', installationPermissions), developerAvailable=githubPresetAvailable('developer', installationPermissions), cicdAvailable=githubPresetAvailable('cicd', installationPermissions);
+			var presetTitle=(!readAvailable || !developerAvailable || !cicdAvailable) ? 'Some presets are unavailable because the GitHub App installation permissions are insufficient.' : '';
       return '<div class="assign-github-repo-row repo-grant-row" data-repo="' + escHTML(name) + '">' +
         '<div class="repo-grant-name">' +
         '<span class="mono text-sm" title="' + escHTML(name) + '">' + escHTML(name) + '</span>' +
         (repo.private ? '<span class="badge badge-gray">private</span>' : '') +
-			'<label class="text-sm"><input type="checkbox" class="assign-github-repo-enabled"' + (enabled ? ' checked' : '') + '> Enable</label></div>' +
-			'<select class="github-policy-preset" onchange="applyGitHubPreset(this)"><option value="custom">Custom</option><option value="read">Read only</option><option value="developer">Developer</option><option value="cicd">CI/CD operator</option></select>' +
+			'<label class="text-sm"><input type="checkbox" class="assign-github-repo-enabled"' + (enabled ? ' checked' : '') + (githubAnyCapabilityAvailable(installationPermissions) ? '' : ' disabled title="GitHub App installation does not grant any supported repository permission."') + '> Enable</label></div>' +
+			'<select class="github-policy-preset" title="' + escHTML(presetTitle) + '" onchange="applyGitHubPreset(this)"><option value="custom">Custom</option><option value="read"' + (readAvailable ? '' : ' disabled') + '>Read only' + (readAvailable ? '' : ' (unavailable)') + '</option><option value="developer"' + (developerAvailable ? '' : ' disabled') + '>Developer' + (developerAvailable ? '' : ' (unavailable)') + '</option><option value="cicd"' + (cicdAvailable ? '' : ' disabled') + '>CI/CD operator' + (cicdAvailable ? '' : ' (unavailable)') + '</option></select>' +
 			'<details><summary class="text-sm">Configure</summary><div style="display:grid;grid-template-columns:repeat(3,minmax(7rem,1fr));gap:.35rem">' + checks + '</div>' +
 			'<input class="github-workflows mt-1" placeholder="Allowed workflows: ci.yml" value="' + escHTML((grant && grant.workflow_allowlist || []).join(', ')) + '">' +
 			'<input class="github-refs mt-1" placeholder="Allowed refs: main, release/*" value="' + escHTML((grant && grant.ref_allowlist || []).join(', ')) + '">' +
@@ -1275,6 +1282,31 @@ function repoGrantTableHTML(repos, configJSON) {
         '</div>';
     }).join('') +
     '</div>';
+}
+
+function githubCapabilityRequirement(capability) {
+	if (capability.indexOf('issues_') === 0) return {scope:'issues',level:capability.endsWith('_write') ? 'write' : 'read'};
+	if (capability.indexOf('pull_requests_') === 0) return {scope:'pull_requests',level:capability.endsWith('_write') ? 'write' : 'read'};
+	if (capability.indexOf('actions_') === 0 || capability.indexOf('workflow_') === 0) return {scope:'actions',level:capability === 'actions_read' ? 'read' : 'write'};
+	return {scope:'contents',level:(capability === 'push' || capability === 'releases_write') ? 'write' : 'read'};
+}
+
+function githubPermissionAllows(permissions, scope, requiredLevel) {
+	var actual=(permissions[scope] || '').toLowerCase();
+	return actual === 'write' || (requiredLevel === 'read' && actual === 'read');
+}
+
+function githubPresetAvailable(preset, permissions) {
+	var caps=githubPresetCapabilities(preset);
+	return Object.keys(caps).every(function(cap) {
+		if (!caps[cap]) return true;
+		var requirement=githubCapabilityRequirement(cap);
+		return githubPermissionAllows(permissions, requirement.scope, requirement.level);
+	});
+}
+
+function githubAnyCapabilityAvailable(permissions) {
+	return ['contents','issues','pull_requests','actions'].some(function(scope) { return githubPermissionAllows(permissions, scope, 'read'); });
 }
 
 function onGitHubGrantToggle(input) {

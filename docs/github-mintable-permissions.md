@@ -82,6 +82,8 @@ The UI exposes presets as editing conveniences. Presets are expanded into an exp
 
 Changing a preset never changes the GitHub App installation itself.
 
+The assignment UI treats the installation token's returned `permissions` as a hard upper bound. Capabilities and presets that require a missing or weaker GitHub App permission are disabled. Hovering a disabled capability explains the required provider permission. Existing out-of-range capability values remain visible but locked during editing so unrelated changes do not silently rewrite the stored policy.
+
 ## Enforcement flow
 
 1. Resolve the client placeholder assignment.

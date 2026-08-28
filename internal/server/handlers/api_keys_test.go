@@ -513,6 +513,7 @@ func TestAPIKeyListGitHubAppRepositories(t *testing.T) {
 			Private  bool   `json:"private"`
 			HTMLURL  string `json:"html_url"`
 		} `json:"repositories"`
+		InstallationPermissions map[string]string `json:"installation_permissions"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
@@ -525,6 +526,9 @@ func TestAPIKeyListGitHubAppRepositories(t *testing.T) {
 	}
 	if mintCount != 1 || repoListCount != 1 {
 		t.Fatalf("mintCount=%d repoListCount=%d, want 1/1", mintCount, repoListCount)
+	}
+	if resp.InstallationPermissions["contents"] != "read" {
+		t.Fatalf("installation permissions = %+v", resp.InstallationPermissions)
 	}
 }
 
