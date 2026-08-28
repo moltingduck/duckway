@@ -37,6 +37,37 @@ func TestSnapshotSQLiteMakesReadOnlySourceWritable(t *testing.T) {
 	defer snapshot.Close()
 }
 
+func TestTableHashUsesExplicitColumnOrder(t *testing.T) {
+	left, err := database.OpenSQLite(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer left.Close()
+	right, err := database.OpenSQLite(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer right.Close()
+	if _, err := left.Exec(`CREATE TABLE reordered (first TEXT, second TEXT); INSERT INTO reordered VALUES ('a', 'b')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := right.Exec(`CREATE TABLE reordered (second TEXT, first TEXT); INSERT INTO reordered VALUES ('b', 'a')`); err != nil {
+		t.Fatal(err)
+	}
+	columns := []string{"first", "second"}
+	leftHash, err := tableHash(context.Background(), left, "reordered", columns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightHash, err := tableHash(context.Background(), right, "reordered", columns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftHash != rightHash {
+		t.Fatal("equivalent rows with different physical column order hashed differently")
+	}
+}
+
 func TestMigrationTableInventoryMatchesSQLiteSchema(t *testing.T) {
 	db, err := database.OpenSQLite(t.TempDir())
 	if err != nil {

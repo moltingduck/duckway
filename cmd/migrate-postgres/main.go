@@ -131,7 +131,11 @@ func migrate(ctx context.Context, source, target *sql.DB) error {
 		return fmt.Errorf("clear PostgreSQL target: %w", err)
 	}
 	for _, table := range tableOrder {
-		count, sourceHash, err := copyTable(ctx, source, tx, table)
+		columns, err := tableColumns(ctx, source, table)
+		if err != nil {
+			return fmt.Errorf("columns for %s: %w", table, err)
+		}
+		count, sourceHash, err := copyTable(ctx, source, tx, table, columns)
 		if err != nil {
 			return fmt.Errorf("copy %s: %w", table, err)
 		}
@@ -142,7 +146,7 @@ func migrate(ctx context.Context, source, target *sql.DB) error {
 		if count != targetCount {
 			return fmt.Errorf("verify %s: SQLite has %d rows, PostgreSQL has %d", table, count, targetCount)
 		}
-		targetHash, err := tableHash(ctx, tx, table)
+		targetHash, err := tableHash(ctx, tx, table, columns)
 		if err != nil {
 			return fmt.Errorf("hash target %s: %w", table, err)
 		}
@@ -209,12 +213,8 @@ type queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
-func copyTable(ctx context.Context, source *sql.DB, target *sql.Tx, table string) (int64, [32]byte, error) {
-	columns, err := tableColumns(ctx, source, table)
-	if err != nil {
-		return 0, [32]byte{}, err
-	}
-	rows, err := source.QueryContext(ctx, `SELECT * FROM `+table)
+func copyTable(ctx context.Context, source *sql.DB, target *sql.Tx, table string, columns []string) (int64, [32]byte, error) {
+	rows, err := source.QueryContext(ctx, `SELECT `+strings.Join(columns, ",")+` FROM `+table)
 	if err != nil {
 		return 0, [32]byte{}, err
 	}
@@ -244,12 +244,8 @@ func copyTable(ctx context.Context, source *sql.DB, target *sql.Tx, table string
 	return count, hashRows(canonicalRows), nil
 }
 
-func tableHash(ctx context.Context, db queryer, table string) ([32]byte, error) {
-	columns, err := tableColumns(ctx, db, table)
-	if err != nil {
-		return [32]byte{}, err
-	}
-	rows, err := db.QueryContext(ctx, `SELECT * FROM `+table)
+func tableHash(ctx context.Context, db queryer, table string, columns []string) ([32]byte, error) {
+	rows, err := db.QueryContext(ctx, `SELECT `+strings.Join(columns, ",")+` FROM `+table)
 	if err != nil {
 		return [32]byte{}, err
 	}
