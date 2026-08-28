@@ -1,6 +1,7 @@
 package handlers_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -813,6 +814,101 @@ func TestProxyGitHubAppMintsInstallationTokenForBasicGitAuth(t *testing.T) {
 	}
 	if mintCount != 1 {
 		t.Fatalf("mint count after cached request = %d, want 1", mintCount)
+	}
+}
+
+func TestProxyGitHubAppRemintsAndRetriesRejectedCachedToken(t *testing.T) {
+	var mintCount, gitCount int
+	var requestBodies [][]byte
+	rejectFirstToken := false
+	rejectAllTokens := false
+	firstToken := "ghs_" + strings.Repeat("a", 516)
+	secondToken := "ghs_" + strings.Repeat("b", 516)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app/installations/123/access_tokens" {
+			mintCount++
+			token := firstToken
+			if mintCount > 1 {
+				token = secondToken
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"` + token + `","expires_at":"2099-07-07T12:00:00Z"}`))
+			return
+		}
+		gitCount++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read git request body: %v", err)
+		}
+		requestBodies = append(requestBodies, body)
+		auth := r.Header.Get("Authorization")
+		firstAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+firstToken))
+		secondAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+secondToken))
+		if rejectFirstToken && auth == firstAuth {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if rejectAllTokens {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if auth != firstAuth && auth != secondAuth {
+			t.Fatalf("unexpected upstream Authorization header")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f := newProxyFixture(t, upstream.URL)
+	seedGitHubService(t, f)
+	credJSON := `{"type":"github_app","app_id":99,"installation_id":123,"private_key":` + strconvQuote(testRSAPrivateKeyPEM(t)) + `,"base_url":"` + upstream.URL + `"}`
+	encCred, err := f.crypto.Encrypt(credJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := f.apiKeyQ.GetByID(f.apiKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key.KeyEncrypted = encCred
+	if err := f.apiKeyQ.Update(key); err != nil {
+		t.Fatal(err)
+	}
+	const phantom = "ghs_dw_fake"
+	if err := f.placeholderQ.UpdatePlaceholder(f.placeholderID, phantom); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newProxyHandler(f)
+	doRequest := func(method, requestPath string, body []byte) (int, []byte) {
+		r := httptest.NewRequest(method, requestPath, bytes.NewReader(body))
+		r.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:"+phantom)))
+		return doProxy(h, withClient(r, f.client))
+	}
+	if code, body := doRequest(http.MethodGet, "/proxy/github/OWNER/REPO.git/info/refs?service=git-upload-pack", nil); code != http.StatusOK {
+		t.Fatalf("warm request status=%d body=%s", code, body)
+	}
+	rejectFirstToken = true
+	gitBody := []byte("0032want deadbeef multi_ack_detailed\n0000")
+	if code, body := doRequest(http.MethodPost, "/proxy/github/OWNER/REPO.git/git-upload-pack", gitBody); code != http.StatusOK {
+		t.Fatalf("retry request status=%d body=%s", code, body)
+	}
+	if mintCount != 2 {
+		t.Fatalf("mint count=%d, want 2", mintCount)
+	}
+	if gitCount != 3 {
+		t.Fatalf("git request count=%d, want 3", gitCount)
+	}
+	if !bytes.Equal(requestBodies[1], gitBody) || !bytes.Equal(requestBodies[2], gitBody) {
+		t.Fatalf("retried git-upload-pack bodies differ: %q and %q", requestBodies[1], requestBodies[2])
+	}
+
+	rejectAllTokens = true
+	if code, body := doRequest(http.MethodPost, "/proxy/github/OWNER/REPO.git/git-receive-pack", []byte("push")); code != http.StatusUnauthorized {
+		t.Fatalf("mutating request status=%d body=%s, want original 401", code, body)
+	}
+	if mintCount != 3 || gitCount != 4 {
+		t.Fatalf("mutating request was retried: mint count=%d git count=%d", mintCount, gitCount)
 	}
 }
 

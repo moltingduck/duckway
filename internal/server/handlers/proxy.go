@@ -41,6 +41,7 @@ type ProxyHandler struct {
 
 	githubAppMu     sync.Mutex
 	githubAppTokens map[string]githubAppTokenCache
+	githubAppMints  map[string]*githubAppMintCall
 }
 
 func NewProxyHandler(svcQueries *queries.ServiceQueries, apiKeys *queries.APIKeyQueries, resolver *services.KeyResolver, requestLog *queries.RequestLogQueries, approvals *queries.ApprovalQueries, settings *queries.SettingsQueries, notifier *services.Notifier) *ProxyHandler {
@@ -418,7 +419,8 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		{"placeholder", result.PermissionConfig},
 	}
 	aclMethod, aclPath := proxyACLRequest(r.Method, upstreamPath, r.URL.RawQuery)
-	bodyRequired := requestBodyRequiredForProxyACL(aclLayers, aclMethod, aclPath)
+	bodyRequired := requestBodyRequiredForProxyACL(aclLayers, aclMethod, aclPath) ||
+		githubAppCloneBodyMustBeReplayable(serviceName, result.RealKey, r.Method, upstreamPath)
 
 	var bodyBytes []byte
 	if bodyRequired && r.Body != nil {
@@ -498,6 +500,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// Authorization: Bearer regardless of the service's default auth_type,
 	// since Anthropic and similar APIs require Bearer for OAuth access tokens.
 	realKey := result.RealKey
+	var githubAppCred *githubAppCredential
 	if serviceName == "github" {
 		ghAppCred, ok, err := parseGitHubAppCredential(result.RealKey)
 		if err != nil {
@@ -505,6 +508,7 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ok {
+			githubAppCred = ghAppCred
 			realKey, err = h.mintGitHubInstallationToken(r.Context(), ghAppCred, r.Method, upstreamPath, r.URL.RawQuery)
 			if err != nil {
 				log.Printf("github app token mint failed for placeholder %s: %v", result.PlaceholderID, err)
@@ -558,6 +562,33 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		log.Printf("upstream error for %s via %s: %s", serviceName, services.RedactProxyURL(result.UpstreamProxyURL), services.RedactProxyError(result.UpstreamProxyURL, err))
 		jsonError(w, "upstream request failed", http.StatusBadGateway)
 		return
+	}
+	if githubAppCred != nil && resp.StatusCode == http.StatusUnauthorized {
+		h.invalidateGitHubInstallationToken(githubAppCred, r.Method, upstreamPath, r.URL.RawQuery, realKey)
+		if githubAppRequestCanRetry(r.Method, upstreamPath) {
+			_ = resp.Body.Close()
+			refreshedKey, mintErr := h.mintGitHubInstallationToken(r.Context(), githubAppCred, r.Method, upstreamPath, r.URL.RawQuery)
+			if mintErr != nil {
+				log.Printf("github app token re-mint failed for placeholder %s: %v", result.PlaceholderID, mintErr)
+				jsonError(w, "github app token mint failed", http.StatusBadGateway)
+				return
+			}
+			retryReq, retryErr := cloneProxyRequestWithBody(upstreamReq)
+			if retryErr != nil {
+				jsonError(w, "github app request cannot be retried", http.StatusBadGateway)
+				return
+			}
+			setGitHubProxyAuthorization(retryReq, r.Header.Get("Authorization"), result.Placeholder, authHeader, authPrefix, refreshedKey)
+			resp, err = upstreamClient.Do(retryReq)
+			if err != nil {
+				log.Printf("github app retry upstream error for %s: %v", serviceName, err)
+				jsonError(w, "upstream request failed", http.StatusBadGateway)
+				return
+			}
+			if resp.StatusCode == http.StatusUnauthorized {
+				h.invalidateGitHubInstallationToken(githubAppCred, r.Method, upstreamPath, r.URL.RawQuery, refreshedKey)
+			}
+		}
 	}
 	defer resp.Body.Close()
 	if websocketUpgrade && resp.StatusCode == http.StatusSwitchingProtocols {
@@ -1322,6 +1353,47 @@ func rewriteGitHubBasicAuth(authHeader, placeholder, realKey string) (string, bo
 		return "", false
 	}
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+realKey)), true
+}
+
+func setGitHubProxyAuthorization(req *http.Request, originalAuth, placeholder, authHeader, authPrefix, realKey string) {
+	if rewritten, ok := rewriteGitHubBasicAuth(originalAuth, placeholder, realKey); ok {
+		req.Header.Set(authHeader, rewritten)
+		return
+	}
+	req.Header.Set(authHeader, authPrefix+realKey)
+}
+
+func cloneProxyRequestWithBody(req *http.Request) (*http.Request, error) {
+	clone := req.Clone(req.Context())
+	if req.GetBody == nil {
+		if req.Body == nil || req.Body == http.NoBody {
+			clone.Body = http.NoBody
+			return clone, nil
+		}
+		return nil, fmt.Errorf("request body is not replayable")
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, err
+	}
+	clone.Body = body
+	return clone, nil
+}
+
+func githubAppCloneBodyMustBeReplayable(serviceName, realKey, method, upstreamPath string) bool {
+	return serviceName == "github" && isGitHubAppCredentialJSON(realKey) &&
+		strings.EqualFold(method, http.MethodPost) && strings.Contains(upstreamPath, "/git-upload-pack")
+}
+
+func githubAppRequestCanRetry(method, upstreamPath string) bool {
+	switch strings.ToUpper(method) {
+	case http.MethodGet, http.MethodHead:
+		return true
+	case http.MethodPost:
+		return strings.Contains(upstreamPath, "/git-upload-pack")
+	default:
+		return false
+	}
 }
 
 func (h *ProxyHandler) resolveProxyKey(r *http.Request, clientID string, svc *models.Service, requireExplicit bool) (*services.ResolveResult, error) {

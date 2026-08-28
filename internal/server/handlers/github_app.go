@@ -52,6 +52,12 @@ type githubAppTokenCache struct {
 	expiresAt time.Time
 }
 
+type githubAppMintCall struct {
+	done  chan struct{}
+	token string
+	err   error
+}
+
 const maxGitHubAppTokenResponseBytes = 1024 * 1024
 
 func parseGitHubAppCredential(realKey string) (*githubAppCredential, bool, error) {
@@ -128,7 +134,7 @@ func validateGitHubAppBaseURLValue(rawURL string) error {
 	return fmt.Errorf("github_app base_url must use https")
 }
 
-func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *githubAppCredential, method, upstreamPath, rawQuery string) (string, error) {
+func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *githubAppCredential, method, upstreamPath, rawQuery string) (token string, err error) {
 	owner, repo := githubRepoFromPath(upstreamPath)
 	if owner == "" || repo == "" {
 		return "", fmt.Errorf("github app token mint requires a repository-scoped path")
@@ -145,7 +151,33 @@ func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *gi
 		h.githubAppMu.Unlock()
 		return cached.token, nil
 	}
+	if h.githubAppMints == nil {
+		h.githubAppMints = make(map[string]*githubAppMintCall)
+	}
+	if pending := h.githubAppMints[cacheKey]; pending != nil {
+		h.githubAppMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-pending.done:
+			return pending.token, pending.err
+		}
+	}
+	call := &githubAppMintCall{done: make(chan struct{})}
+	h.githubAppMints[cacheKey] = call
 	h.githubAppMu.Unlock()
+	var expiresAt time.Time
+	defer func() {
+		h.githubAppMu.Lock()
+		if err == nil {
+			h.githubAppTokens[cacheKey] = githubAppTokenCache{token: token, expiresAt: expiresAt}
+		}
+		call.token = token
+		call.err = err
+		close(call.done)
+		delete(h.githubAppMints, cacheKey)
+		h.githubAppMu.Unlock()
+	}()
 
 	jwt, err := githubAppJWT(cred.AppID, cred.PrivateKey, time.Now())
 	if err != nil {
@@ -172,13 +204,21 @@ func (h *ProxyHandler) mintGitHubInstallationToken(ctx context.Context, cred *gi
 	if err != nil {
 		return "", err
 	}
+	expiresAt = minted.ExpiresAt
+	return minted.Token, nil
+}
+
+func (h *ProxyHandler) invalidateGitHubInstallationToken(cred *githubAppCredential, method, upstreamPath, rawQuery, rejectedToken string) {
+	owner, repo := githubRepoFromPath(upstreamPath)
+	if owner == "" || repo == "" {
+		return
+	}
+	cacheKey := githubAppCacheKey(cred, owner, repo, githubTokenPermissions(method, upstreamPath, rawQuery))
 	h.githubAppMu.Lock()
 	defer h.githubAppMu.Unlock()
-	if h.githubAppTokens == nil {
-		h.githubAppTokens = make(map[string]githubAppTokenCache)
+	if cached, ok := h.githubAppTokens[cacheKey]; ok && cached.token == rejectedToken {
+		delete(h.githubAppTokens, cacheKey)
 	}
-	h.githubAppTokens[cacheKey] = githubAppTokenCache{token: minted.Token, expiresAt: minted.ExpiresAt}
-	return minted.Token, nil
 }
 
 func mintGitHubInstallationToken(ctx context.Context, httpClient *http.Client, cred *githubAppCredential, baseURL, jwt string, bodyBytes []byte, now time.Time) (*githubMintedInstallationToken, error) {
@@ -224,10 +264,12 @@ func mintGitHubInstallationToken(ctx context.Context, httpClient *http.Client, c
 }
 
 func githubAppCacheKey(cred *githubAppCredential, owner, repo string, permissions map[string]string) string {
+	privateKeyFingerprint := sha256.Sum256([]byte(cred.PrivateKey))
 	parts := []string{
 		strconv.FormatInt(cred.AppID, 10),
 		strconv.FormatInt(cred.InstallationID, 10),
 		strings.TrimRight(cred.BaseURL, "/"),
+		fmt.Sprintf("%x", privateKeyFingerprint),
 		strings.ToLower(owner + "/" + repo),
 	}
 	keys := make([]string, 0, len(permissions))

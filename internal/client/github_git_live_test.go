@@ -167,8 +167,10 @@ func TestGitHubAppPhantomGitPullLive(t *testing.T) {
 		ca:        ca,
 		hostMap: map[string]hostEntry{
 			"github.com": {
-				Service:      "github",
-				DeliveryMode: "proxy",
+				Service:         "github",
+				DeliveryMode:    "proxy",
+				AssignmentKnown: true,
+				Assigned:        true,
 			},
 		},
 		httpClient:  &http.Client{Transport: directTransport},
@@ -235,6 +237,10 @@ func TestDuckwayGitCloneLive(t *testing.T) {
 	t.Logf("duckway git clone live elapsed=%s", elapsed.Round(time.Millisecond))
 	if _, err := os.Stat(filepath.Join(workDir, cloneDir, ".git")); err != nil {
 		t.Fatalf("clone did not create .git directory: %v\n%s", err, output)
+	}
+	verifyClone := liveCommand(ctx, "git", "-C", filepath.Join(workDir, cloneDir), "fsck", "--full")
+	if verifyOutput, err := verifyClone.CombinedOutput(); err != nil {
+		t.Fatalf("cloned repository failed git fsck: %v\n%s", err, verifyOutput)
 	}
 	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "remote.origin.url", "https://github.com/"+strings.TrimSuffix(env.cfg.Repository, ".git")+".git")
 	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.proxy", fmt.Sprintf("http://127.0.0.1:%d", env.proxyPort))
@@ -360,10 +366,18 @@ func newGitHubGitLiveDuckwayEnvForRepos(tb testing.TB, cfg githubAppLiveConfig, 
 	phantom, serverURL, clientToken, ca, caPEM := startGitHubGitLiveDuckwayServerForRepos(tb, credentialJSON, repos)
 
 	localProxy := &httpsProxy{
-		serverURL:   serverURL,
-		token:       clientToken,
-		ca:          ca,
-		hostMap:     map[string]hostEntry{},
+		serverURL: serverURL,
+		token:     clientToken,
+		ca:        ca,
+		hostMap: map[string]hostEntry{
+			"github.com": {
+				Service:         "github",
+				DeliveryMode:    "proxy",
+				UpstreamURL:     "https://github.com",
+				AssignmentKnown: true,
+				Assigned:        true,
+			},
+		},
 		httpClient:  &http.Client{Transport: directTransport},
 		loanCache:   make(map[string]*loanedToken),
 		auditClient: &http.Client{Timeout: time.Second},
