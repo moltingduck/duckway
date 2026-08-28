@@ -109,6 +109,10 @@ func postgresQuery(query string) string {
 	ignoreConflict := strings.Contains(strings.ToUpper(query), "INSERT OR IGNORE INTO")
 	query = strings.Replace(query, "INSERT OR IGNORE INTO", "INSERT INTO", 1)
 	query = strings.ReplaceAll(query, "INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+	upperQuery := strings.ToUpper(strings.TrimSpace(query))
+	if strings.HasPrefix(upperQuery, "CREATE TABLE") || strings.HasPrefix(upperQuery, "ALTER TABLE") {
+		query = strings.ReplaceAll(query, "INTEGER", "BIGINT")
+	}
 	var b strings.Builder
 	b.Grow(len(query) + 16)
 	arg := 1

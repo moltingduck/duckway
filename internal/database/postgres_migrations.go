@@ -63,5 +63,36 @@ func runPostgresMigrations(db *sql.DB) error {
 			return fmt.Errorf("compatibility function %d: %w", i, err)
 		}
 	}
-	return runMigrations(db)
+	if err := runMigrations(db); err != nil {
+		return err
+	}
+	return widenPostgresIntegerColumns(db)
+}
+
+var postgresBigintColumns = map[string][]string{
+	"api_keys":           {"expires_at", "usage_count"},
+	"placeholder_keys":   {"usage_count"},
+	"oauth_credentials":  {"expires_at"},
+	"request_log_detail": {"request_size", "response_size", "duration_ms"},
+	"conversation_usage": {
+		"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
+		"reasoning_tokens", "billable_tokens", "cost_usd_micros",
+	},
+	"model_pricing": {
+		"input_usd_micros_per_mtok", "output_usd_micros_per_mtok",
+		"cache_read_usd_micros_per_mtok", "cache_creation_usd_micros_per_mtok",
+		"reasoning_usd_micros_per_mtok",
+	},
+}
+
+func widenPostgresIntegerColumns(db *sql.DB) error {
+	for table, columns := range postgresBigintColumns {
+		for _, column := range columns {
+			query := fmt.Sprintf(`ALTER TABLE %q ALTER COLUMN %q TYPE BIGINT`, table, column)
+			if _, err := db.Exec(query); err != nil {
+				return fmt.Errorf("widen %s.%s to bigint: %w", table, column, err)
+			}
+		}
+	}
+	return nil
 }

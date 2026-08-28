@@ -112,7 +112,7 @@ func TestLivePostgresMigrationAndQueries(t *testing.T) {
 		t.Fatal(err)
 	}
 	keyQ := queries.NewAPIKeyQueries(source)
-	if err := keyQ.Create(&models.APIKey{ID: "pg-key", ServiceID: "svc-openai-default", Name: "Postgres Key", KeyEncrypted: "ciphertext", RefreshToken: "refresh-ciphertext"}); err != nil {
+	if err := keyQ.Create(&models.APIKey{ID: "pg-key", ServiceID: "svc-openai-default", Name: "Postgres Key", KeyEncrypted: "ciphertext", RefreshToken: "refresh-ciphertext", ExpiresAt: 1788598308000}); err != nil {
 		t.Fatal(err)
 	}
 	logQ := queries.NewRequestLogQueries(source)
@@ -141,7 +141,7 @@ func TestLivePostgresMigrationAndQueries(t *testing.T) {
 		t.Fatalf("migrated client = %#v, err=%v", gotClient, err)
 	}
 	gotKey, err := queries.NewAPIKeyQueries(target).GetByID("pg-key")
-	if err != nil || gotKey.KeyEncrypted != "ciphertext" || gotKey.RefreshToken != "refresh-ciphertext" {
+	if err != nil || gotKey.KeyEncrypted != "ciphertext" || gotKey.RefreshToken != "refresh-ciphertext" || gotKey.ExpiresAt != 1788598308000 {
 		t.Fatalf("migrated key = %#v, err=%v", gotKey, err)
 	}
 	if _, err := queries.NewRequestLogQueries(target).LogWithReturn("pg-client", "", "openai", "POST", "/responses", 201); err != nil {
