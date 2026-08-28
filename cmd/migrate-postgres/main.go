@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -33,7 +35,12 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	source, err := database.OpenSQLite(*dataDir)
+	snapshotDir, err := snapshotSQLite(*dataDir)
+	if err != nil {
+		log.Fatalf("snapshot SQLite source: %v", err)
+	}
+	defer os.RemoveAll(snapshotDir)
+	source, err := database.OpenSQLite(snapshotDir)
 	if err != nil {
 		log.Fatalf("open SQLite source: %v", err)
 	}
@@ -48,6 +55,57 @@ func main() {
 		log.Fatalf("migration failed: %v", err)
 	}
 	fmt.Fprintln(os.Stdout, "SQLite to PostgreSQL migration completed and verified")
+}
+
+func snapshotSQLite(dataDir string) (string, error) {
+	tmpDir, err := os.MkdirTemp("", "duckway-sqlite-migration-*")
+	if err != nil {
+		return "", err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.RemoveAll(tmpDir)
+		}
+	}()
+
+	for i, suffix := range []string{"", "-wal", "-shm"} {
+		srcPath := filepath.Join(dataDir, "duckway.db"+suffix)
+		src, openErr := os.Open(srcPath)
+		if openErr != nil {
+			if i > 0 && os.IsNotExist(openErr) {
+				continue
+			}
+			return "", openErr
+		}
+		info, statErr := src.Stat()
+		if statErr != nil || !info.Mode().IsRegular() {
+			_ = src.Close()
+			if statErr != nil {
+				return "", statErr
+			}
+			return "", fmt.Errorf("%s is not a regular file", srcPath)
+		}
+		dst, createErr := os.OpenFile(filepath.Join(tmpDir, filepath.Base(srcPath)), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if createErr != nil {
+			_ = src.Close()
+			return "", createErr
+		}
+		_, copyErr := io.Copy(dst, src)
+		closeDstErr := dst.Close()
+		closeSrcErr := src.Close()
+		if copyErr != nil {
+			return "", copyErr
+		}
+		if closeDstErr != nil {
+			return "", closeDstErr
+		}
+		if closeSrcErr != nil {
+			return "", closeSrcErr
+		}
+	}
+	ok = true
+	return tmpDir, nil
 }
 
 func migrate(ctx context.Context, source, target *sql.DB) error {

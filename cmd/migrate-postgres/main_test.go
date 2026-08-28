@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -10,6 +11,31 @@ import (
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
 )
+
+func TestSnapshotSQLiteMakesReadOnlySourceWritable(t *testing.T) {
+	sourceDir := t.TempDir()
+	db, err := database.OpenSQLite(sourceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(sourceDir, "duckway.db"), 0400); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshotDir, err := snapshotSQLite(sourceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(snapshotDir)
+	snapshot, err := database.OpenSQLite(snapshotDir)
+	if err != nil {
+		t.Fatalf("open writable snapshot: %v", err)
+	}
+	defer snapshot.Close()
+}
 
 func TestMigrationTableInventoryMatchesSQLiteSchema(t *testing.T) {
 	db, err := database.OpenSQLite(t.TempDir())
