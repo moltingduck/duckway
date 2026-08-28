@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -22,9 +23,10 @@ func Open(dataDir string) (*sql.DB, error) {
 	// all. Each `_pragma` is run as `PRAGMA <expr>` against the new
 	// connection.
 	//
-	//   journal_mode(WAL) — readers don't block writers and vice versa,
-	//     which is what lets a split admin + gateway deployment share
-	//     one duckway.db file safely.
+	//   journal_mode(DELETE) — avoids modernc SQLite WAL shared-memory
+	//     SIGBUS faults observed on Linux ARM64 when split admin + gateway
+	//     processes share a Docker volume. Rollback journals still support
+	//     multiple local processes; busy_timeout handles lock contention.
 	//   busy_timeout(5000) — when another process holds the write lock,
 	//     retry internally for up to 5 seconds before surfacing
 	//     SQLITE_BUSY. Covers normal cross-process contention without
@@ -35,9 +37,17 @@ func Open(dataDir string) (*sql.DB, error) {
 	// the write lock at BEGIN time instead of at the first write inside
 	// the transaction. Avoids the read-then-upgrade deadlock where two
 	// transactions both hold read locks and both try to promote.
+	journalMode := strings.ToUpper(strings.TrimSpace(os.Getenv("DUCKWAY_SQLITE_JOURNAL_MODE")))
+	if journalMode == "" {
+		journalMode = "DELETE"
+	}
+	if journalMode != "DELETE" && journalMode != "WAL" {
+		return nil, fmt.Errorf("invalid DUCKWAY_SQLITE_JOURNAL_MODE %q: must be DELETE or WAL", journalMode)
+	}
 	dsn := dbPath +
-		"?_pragma=journal_mode(WAL)" +
-		"&_pragma=busy_timeout(5000)" +
+		"?_pragma=busy_timeout(5000)" +
+		"&_pragma=journal_mode(" + journalMode + ")" +
+		"&_pragma=synchronous(FULL)" +
 		"&_pragma=foreign_keys(on)" +
 		"&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
@@ -49,6 +59,19 @@ func Open(dataDir string) (*sql.DB, error) {
 	// we never see SQLITE_BUSY from our own concurrent writes; the busy
 	// timeout above handles the cross-process case.
 	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize database: %w", err)
+	}
+	var actualJournalMode string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&actualJournalMode); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("verify journal mode: %w", err)
+	}
+	if !strings.EqualFold(actualJournalMode, journalMode) {
+		db.Close()
+		return nil, fmt.Errorf("journal mode is %q, want %q", actualJournalMode, strings.ToLower(journalMode))
+	}
 
 	if err := runMigrations(db); err != nil {
 		db.Close()

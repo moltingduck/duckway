@@ -40,6 +40,7 @@ services:
     stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_SQLITE_JOURNAL_MODE=${DUCKWAY_SQLITE_JOURNAL_MODE:-DELETE}
       - DUCKWAY_LISTEN=:8080
     profiles: ["combined"]
 
@@ -59,6 +60,7 @@ services:
     stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_SQLITE_JOURNAL_MODE=${DUCKWAY_SQLITE_JOURNAL_MODE:-DELETE}
       - DUCKWAY_LISTEN=:8080
     profiles: ["prod"]
 
@@ -78,6 +80,7 @@ services:
     stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_SQLITE_JOURNAL_MODE=${DUCKWAY_SQLITE_JOURNAL_MODE:-DELETE}
       - DUCKWAY_ADMIN_LISTEN=:9091
     command: ["--data", "/data", "--port", "9091"]
     profiles: ["prod-split"]
@@ -95,6 +98,7 @@ services:
     stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_SQLITE_JOURNAL_MODE=${DUCKWAY_SQLITE_JOURNAL_MODE:-DELETE}
       - DUCKWAY_GATEWAY_LISTEN=:8080
     profiles: ["prod-split"]
 
@@ -115,6 +119,7 @@ services:
     stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_SQLITE_JOURNAL_MODE=${DUCKWAY_SQLITE_JOURNAL_MODE:-DELETE}
       - DUCKWAY_LISTEN=127.0.0.1:8080
     depends_on:
       tailscale-server:
@@ -165,6 +170,7 @@ services:
     stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_SQLITE_JOURNAL_MODE=${DUCKWAY_SQLITE_JOURNAL_MODE:-DELETE}
       - DUCKWAY_ADMIN_LISTEN=:9091
     command: ["--data", "/data", "--port", "9091"]
     profiles: ["split"]
@@ -184,6 +190,7 @@ services:
     stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_SQLITE_JOURNAL_MODE=${DUCKWAY_SQLITE_JOURNAL_MODE:-DELETE}
       - DUCKWAY_GATEWAY_LISTEN=:8080
     profiles: ["split"]
 
@@ -204,6 +211,7 @@ services:
     stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_SQLITE_JOURNAL_MODE=${DUCKWAY_SQLITE_JOURNAL_MODE:-DELETE}
       - DUCKWAY_ADMIN_LISTEN=127.0.0.1:9091
     command: ["--data", "/data"]
     depends_on:
@@ -226,6 +234,7 @@ services:
     stop_grace_period: 35s
     environment:
       - DUCKWAY_DATA_DIR=/data
+      - DUCKWAY_SQLITE_JOURNAL_MODE=${DUCKWAY_SQLITE_JOURNAL_MODE:-DELETE}
       - DUCKWAY_GATEWAY_LISTEN=127.0.0.1:8080
     command: ["--data", "/data"]
     depends_on:

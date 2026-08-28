@@ -758,6 +758,38 @@ Auth key expired or one-time-use already redeemed. Generate a new **reusable** k
 
 Then update `TS_AUTHKEY` in `.prod.env` and run `./scripts/prod.sh restart`.
 
+### Gateway crashes in `_walIndexAppend` with SIGBUS
+
+Linux ARM64 deployments using modernc SQLite WAL mode can crash while updating
+the WAL shared-memory index. Duckway defaults to the safer rollback journal:
+
+```env
+DUCKWAY_SQLITE_JOURNAL_MODE=DELETE
+```
+
+When upgrading an existing split deployment, stop every Duckway process before
+the first restart so one process can checkpoint the old WAL and change modes:
+
+```bash
+docker compose down
+docker run --rm -v duckway_duckway-data:/data -v "$PWD":/backup alpine \
+  sh -c 'cp -a /data/duckway.db* /backup/'
+./scripts/prod.sh up
+```
+
+Adjust the Docker volume name if the Compose project name is not `duckway`.
+Do not delete `duckway.db-wal` before making this consistent backup; committed
+transactions may still be present there. After restart, verify:
+
+```bash
+docker exec duckway-admin sh -c 'ls -l /data/duckway.db*'
+docker logs --since 5m duckway-admin
+docker logs --since 5m duckway-gateway
+```
+
+`DUCKWAY_SQLITE_JOURNAL_MODE=WAL` remains available for a validated local
+filesystem and driver, but is not recommended for ARM64 split deployments.
+
 ### `duckway proxy -d` says "already running" but no daemon is alive
 
 Stale PID file. Run:

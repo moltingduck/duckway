@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// TestOpenAppliesPragmas verifies that the DSN actually enables WAL, sets
+// TestOpenAppliesPragmas verifies that the safe rollback journal default, sets
 // busy_timeout, and turns on foreign keys. Earlier versions of db.go
 // passed mattn-style query params (`_journal_mode=WAL`) that the
 // modernc.org/sqlite driver silently ignored, so WAL was never on.
@@ -22,8 +22,8 @@ func TestOpenAppliesPragmas(t *testing.T) {
 	if err := db.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
 		t.Fatalf("PRAGMA journal_mode: %v", err)
 	}
-	if journalMode != "wal" {
-		t.Errorf("journal_mode = %q, want wal", journalMode)
+	if journalMode != "delete" {
+		t.Errorf("journal_mode = %q, want delete", journalMode)
 	}
 
 	var busyTimeout int
@@ -40,6 +40,61 @@ func TestOpenAppliesPragmas(t *testing.T) {
 	}
 	if foreignKeys != 1 {
 		t.Errorf("foreign_keys = %d, want 1", foreignKeys)
+	}
+}
+
+func TestOpenAllowsExplicitWALOverride(t *testing.T) {
+	t.Setenv("DUCKWAY_SQLITE_JOURNAL_MODE", "WAL")
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var mode string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+		t.Fatalf("journal_mode = %q, err=%v; want wal", mode, err)
+	}
+}
+
+func TestOpenRejectsInvalidJournalMode(t *testing.T) {
+	t.Setenv("DUCKWAY_SQLITE_JOURNAL_MODE", "memory")
+	if _, err := Open(t.TempDir()); err == nil {
+		t.Fatal("expected invalid journal mode error")
+	}
+}
+
+func TestOpenTransitionsWALToDeleteWithoutLosingCommittedRows(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DUCKWAY_SQLITE_JOURNAL_MODE", "WAL")
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE transition_test (value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO transition_test VALUES ('kept')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("DUCKWAY_SQLITE_JOURNAL_MODE", "DELETE")
+	db, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var mode, value, integrity string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil || mode != "delete" {
+		t.Fatalf("journal mode=%q err=%v", mode, err)
+	}
+	if err := db.QueryRow(`SELECT value FROM transition_test`).Scan(&value); err != nil || value != "kept" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
+	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
+		t.Fatalf("integrity=%q err=%v", integrity, err)
 	}
 }
 
