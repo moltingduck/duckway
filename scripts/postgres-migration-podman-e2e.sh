@@ -18,6 +18,8 @@ ADMIN_IMAGE="$PREFIX-admin"
 GATEWAY_IMAGE="$PREFIX-gateway"
 MIGRATOR_IMAGE="$PREFIX-migrator"
 PASSWORD="migration-e2e-password"
+REQUEST_LOG_COUNT="${DUCKWAY_MIGRATION_E2E_REQUEST_LOGS:-175000}"
+ORPHAN_LOG_COUNT="${DUCKWAY_MIGRATION_E2E_ORPHAN_LOGS:-6000}"
 COOKIE_FILE="$(mktemp)"
 PG_COOKIE_FILE="$(mktemp)"
 CREATED_NETWORK=false
@@ -137,7 +139,7 @@ test "$SQLITE_PLACEHOLDER_COUNT" -ge 2
 echo "[4/7] Adding legacy bigint and foreign-key edge cases"
 "$RUNTIME" stop "$SQLITE_CONTAINER" >/dev/null
 "$RUNTIME" run --rm -v "$SQLITE_VOLUME:/data" docker.io/library/alpine:3.21 sh -c \
-  "apk add --no-cache sqlite >/dev/null && sqlite3 /data/duckway.db \"PRAGMA foreign_keys=OFF; UPDATE api_keys SET expires_at=1788598308000 WHERE id='$KEY_ONE_ID'; INSERT INTO placeholder_keys (id,env_name,placeholder,service_id,api_key_id,client_id,requires_approval) VALUES ('legacy-orphan','ORPHAN_TOKEN','dw_orphan_migration','$OPENAI_ID','$KEY_ONE_ID','deleted-legacy-client',0);\""
+  "apk add --no-cache sqlite >/dev/null && sqlite3 /data/duckway.db \"PRAGMA foreign_keys=OFF; UPDATE api_keys SET expires_at=1788598308000 WHERE id='$KEY_ONE_ID'; INSERT INTO placeholder_keys (id,env_name,placeholder,service_id,api_key_id,client_id,requires_approval) VALUES ('legacy-orphan','ORPHAN_TOKEN','dw_orphan_migration','$OPENAI_ID','$KEY_ONE_ID','deleted-legacy-client',0); WITH RECURSIVE seq(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM seq WHERE x<$REQUEST_LOG_COUNT) INSERT INTO request_log (client_id,service_name,method,path,status_code) SELECT '$CLIENT_ONE_ID','migrationmock','POST','/bulk/'||x,200 FROM seq; UPDATE request_log SET client_id='deleted-legacy-client' WHERE id IN (SELECT id FROM request_log ORDER BY id LIMIT $ORPHAN_LOG_COUNT); INSERT INTO request_log_detail (log_id,response_body) SELECT id,CAST(X'62B563' AS TEXT) FROM request_log ORDER BY id DESC LIMIT 1;\""
 
 echo "[5/7] Migrating the read-only SQLite volume to PostgreSQL 17"
 "$RUNTIME" run -d --name "$POSTGRES_CONTAINER" --network "$NETWORK" \
@@ -155,6 +157,8 @@ MIGRATION_OUTPUT="$($RUNTIME run --rm --network "$NETWORK" --user 65534:65534 \
   "$MIGRATOR_IMAGE" --sqlite-data /data 2>&1)"
 printf '%s\n' "$MIGRATION_OUTPUT"
 grep -q 'excluded 1 orphan row(s) from placeholder_keys' <<<"$MIGRATION_OUTPUT"
+grep -q "preserved $ORPHAN_LOG_COUNT orphan row(s) in request_log by clearing nullable foreign keys" <<<"$MIGRATION_OUTPUT"
+grep -q 'normalized 1 invalid UTF-8 TEXT value(s) in request_log_detail' <<<"$MIGRATION_OUTPUT"
 grep -q 'SQLite to PostgreSQL migration completed and verified' <<<"$MIGRATION_OUTPUT"
 
 echo "[6/7] Starting split Admin and Gateway on the migrated PostgreSQL database"
@@ -195,6 +199,8 @@ test "$(curl -s -o /dev/null -w '%{http_code}' "$GATEWAY_BASE/admin/")" = 404
 test "$(curl -s -o /dev/null -w '%{http_code}' "$ADMIN_BASE/proxy/heartbeat/ping")" = 404
 PG_EXPIRY="$($RUNTIME exec "$POSTGRES_CONTAINER" psql -U duckway -d duckway -Atc "SELECT expires_at FROM api_keys WHERE id='$KEY_ONE_ID'")"
 test "$PG_EXPIRY" = 1788598308000
+test "$($RUNTIME exec "$POSTGRES_CONTAINER" psql -U duckway -d duckway -Atc 'SELECT COUNT(*) FROM request_log WHERE client_id IS NULL')" -eq "$ORPHAN_LOG_COUNT"
+test "$($RUNTIME exec "$POSTGRES_CONTAINER" psql -U duckway -d duckway -Atc "SELECT encode(convert_to(response_body,'UTF8'),'hex') FROM request_log_detail LIMIT 1")" = 62efbfbd63
 
 NEW_CLIENT="$(curl -fsS -b "$PG_COOKIE_FILE" -X POST "$ADMIN_BASE/api/clients" -H 'Content-Type: application/json' -d '{"name":"postgres-write-check"}')"
 jq -e '.id != null and .token != null' <<<"$NEW_CLIENT" >/dev/null

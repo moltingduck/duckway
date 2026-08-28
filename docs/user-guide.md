@@ -814,6 +814,12 @@ entire `/data` volume under `backups/`, starts a private PostgreSQL 17 container
 verifies the archive and writes its SHA-256 checksum, imports every table in one
 transaction, verifies row counts and canonical content hashes, updates
 `DUCKWAY_DATABASE=postgres`, and restarts the active split or combined profile.
+Legacy rows whose nullable foreign key points to deleted data are preserved with
+that relationship cleared. Rows with an invalid required relationship are
+excluded from the migration snapshot with an explicit warning, while the
+offline SQLite backup remains unchanged. Invalid UTF-8 found in legacy SQLite
+TEXT values is replaced with the standard Unicode replacement character and
+reported before PostgreSQL verification.
 PostgreSQL does not publish port 5432. Its password is generated with OpenSSL
 when missing and stored in the git-ignored `.secrets/` directory with mode 600.
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"slices"
@@ -89,12 +90,12 @@ func TestRemoveOrphanRowsHandlesMultipleViolationsAndCascades(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	removed, err := removeOrphanRows(context.Background(), db)
+	report, err := removeOrphanRows(context.Background(), db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if removed["placeholder_keys"] != 1 {
-		t.Fatalf("removed = %#v", removed)
+	if report.Removed["placeholder_keys"] != 1 || report.Removed["approvals"] != 1 {
+		t.Fatalf("repair report = %#v", report)
 	}
 	for _, table := range []string{"placeholder_keys", "approvals"} {
 		var count int
@@ -116,6 +117,35 @@ func TestRemoveOrphanRowsHandlesMultipleViolationsAndCascades(t *testing.T) {
 	}
 	if violations != 0 {
 		t.Fatalf("foreign key check still has %d violations", violations)
+	}
+}
+
+func TestRemoveOrphanRowsPreservesNullableRelationships(t *testing.T) {
+	db, err := database.OpenSQLite(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF;
+		INSERT INTO request_log (client_id, service_name, method, path)
+		VALUES ('missing-client', 'openai', 'POST', '/responses');
+		PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+	report, err := removeOrphanRows(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Nullified["request_log"] != 1 || report.Removed["request_log"] != 0 {
+		t.Fatalf("repair report = %#v", report)
+	}
+	var count int
+	var clientID sql.NullString
+	if err := db.QueryRow(`SELECT COUNT(*), client_id FROM request_log`).Scan(&count, &clientID); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || clientID.Valid {
+		t.Fatalf("request log count=%d client_id=%#v", count, clientID)
 	}
 }
 
@@ -174,6 +204,9 @@ func TestLivePostgresMigrationAndQueries(t *testing.T) {
 	if err := logQ.StoreDetail(&queries.RequestLogDetail{LogID: logID, RequestBody: "request", ResponseBody: "response", Truncated: true}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := source.Exec(`UPDATE request_log_detail SET response_body = CAST(X'62B563' AS TEXT) WHERE log_id = ?`, logID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := source.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
 		t.Fatal(err)
 	}
@@ -185,9 +218,9 @@ func TestLivePostgresMigrationAndQueries(t *testing.T) {
 	if _, err := source.Exec(`PRAGMA foreign_keys = ON`); err != nil {
 		t.Fatal(err)
 	}
-	removed, err := removeOrphanRows(context.Background(), source)
-	if err != nil || removed["placeholder_keys"] != 1 {
-		t.Fatalf("remove migration orphans = %#v, err=%v", removed, err)
+	report, err := removeOrphanRows(context.Background(), source)
+	if err != nil || report.Removed["placeholder_keys"] != 1 {
+		t.Fatalf("remove migration orphans = %#v, err=%v", report, err)
 	}
 
 	target, err := database.OpenPostgresFromEnv()
@@ -215,5 +248,12 @@ func TestLivePostgresMigrationAndQueries(t *testing.T) {
 	}
 	if _, err := queries.NewApprovalQueries(target).MarkExpiredAsIgnored(60); err != nil {
 		t.Fatalf("PostgreSQL datetime modifier query: %v", err)
+	}
+	var responseBody string
+	if err := target.QueryRow(`SELECT response_body FROM request_log_detail WHERE log_id = ?`, logID).Scan(&responseBody); err != nil {
+		t.Fatal(err)
+	}
+	if responseBody != "b\uFFFDc" {
+		t.Fatalf("normalized response body = %q", responseBody)
 	}
 }
