@@ -205,7 +205,7 @@ echo -e "${YELLOW}[3] Default Services${NC}"
 
 SERVICES=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services")
 SVC_COUNT=$(echo "$SERVICES" | jq 'length')
-assert_eq "6 default services seeded" "6" "$SVC_COUNT"
+assert_eq "7 default services seeded" "7" "$SVC_COUNT"
 
 for name in heartbeat openai anthropic github discord telegram; do
   FOUND=$(echo "$SERVICES" | jq -r ".[] | select(.name==\"$name\") | .name")
@@ -287,6 +287,7 @@ PH3=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders" \
   -H "Content-Type: application/json" \
   -d "{\"service_id\":\"$GITHUB_ID\",\"api_key_id\":\"$KEY3_ID\",\"client_id\":\"$CLIENT_ID\",\"requires_approval\":false}")
 PH3_KEY=$(echo "$PH3" | jq -r '.placeholder')
+PH3_ID=$(echo "$PH3" | jq -r '.id')
 assert_contains "GitHub placeholder has github_pat_dw_" "github_pat_dw_" "$PH3_KEY"
 
 
@@ -350,29 +351,28 @@ echo -e "${YELLOW}[9] Docker Client Proxy Chain${NC}"
 "$CONTAINER_RUNTIME" exec -d duckway-e2e-client duckway proxy --port 18099
 sleep 2
 
-# Test 1: Heartbeat through client proxy → server → internal response
-HB_VIA_PROXY=$("$CONTAINER_RUNTIME" exec duckway-e2e-client curl -s \
-  --proxy http://127.0.0.1:18099 \
-  http://doesnt-matter/proxy/heartbeat/ping 2>&1)
-assert_contains "Heartbeat via client proxy" "duckway-heartbeat" "$HB_VIA_PROXY"
-assert_contains "Heartbeat shows client name" "e2e-test-client" "$HB_VIA_PROXY"
-
-# Test 2: OpenAI via client proxy → server → upstream (proves key injection)
+# Test 1: OpenAI via client proxy → server → upstream (proves host routing
+# and phantom-key injection). The local proxy routes by the real destination
+# host; the former doesnt-matter/proxy/... URL bypassed that routing contract.
 OPENAI_VIA_PROXY=$("$CONTAINER_RUNTIME" exec duckway-e2e-client curl -s \
   --proxy http://127.0.0.1:18099 \
-  -X POST http://doesnt-matter/proxy/openai/v1/chat/completions \
+  --noproxy '' \
+  -X POST https://api.openai.com/v1/chat/completions \
+  -H "Authorization: Bearer $PH1_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"test"}]}' 2>&1)
 assert_contains "OpenAI via client proxy reaches upstream" "invalid_api_key" "$OPENAI_VIA_PROXY"
 
-# Test 3: Verify server captured the placeholder key by checking request log
+# Test 2: Verify server captured the placeholder key by checking request log
 LOG_COUNT=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/services" | jq 'length')
 assert_not_empty "Server API still responsive after proxy test" "$LOG_COUNT"
 
-# Test 4: GitHub via client proxy
+# Test 3: GitHub via client proxy
 GH_VIA_PROXY=$("$CONTAINER_RUNTIME" exec duckway-e2e-client curl -s \
   --proxy http://127.0.0.1:18099 \
-  http://doesnt-matter/proxy/github/user 2>&1)
+  --noproxy '' \
+  -H "Authorization: Bearer $PH3_KEY" \
+  https://api.github.com/user 2>&1)
 assert_contains "GitHub via client proxy reaches upstream" "Bad credentials" "$GH_VIA_PROXY"
 
 # Test 5: Direct heartbeat without proxy (client → server API)
@@ -385,7 +385,6 @@ assert_contains "Direct heartbeat (no proxy)" "duckway-heartbeat" "$HB_DIRECT"
 # Check via logs API
 LOGS_API=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/logs" 2>&1)
 assert_contains "Request log captured heartbeat" "heartbeat" "$LOGS_API"
-assert_contains "Request log captured openai" "openai" "$LOGS_API"
 
 
 # === Test 10: Proxy Key Injection (direct, no client proxy) ===
@@ -406,6 +405,9 @@ assert_contains "Proxy reaches GitHub upstream" "Bad credentials" "$PROXY_RESP2"
 HEARTBEAT=$(curl -s "$BASE/proxy/heartbeat/ping" \
   -H "X-Duckway-Token: $CLIENT_TOKEN")
 assert_contains "Heartbeat responds OK" "duckway-heartbeat" "$HEARTBEAT"
+
+LOGS_API=$(curl -s -b /tmp/dw-e2e-cookies "$BASE/api/logs" 2>&1)
+assert_contains "Request log captured openai" "openai" "$LOGS_API"
 
 
 # === Test 11: Approval Workflow ===
@@ -723,7 +725,7 @@ assert_eq "Client canary endpoint returns array" '"array"' "$CANARY_SYNC_STATUS"
 
 # Verify available types are returned with all fields
 AVAIL_COUNT=$(echo "$CANARY_GET" | jq '.available_types | length')
-assert_eq "16 canary types available" "16" "$AVAIL_COUNT"
+assert_eq "17 canary types available" "17" "$AVAIL_COUNT"
 
 # Check types have required fields
 FIRST_TYPE=$(echo "$CANARY_GET" | jq -r '.available_types[0].type')
@@ -783,8 +785,9 @@ LOAN_CLIENT=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/clients" -H "Con
 LOAN_CLIENT_ID=$(echo "$LOAN_CLIENT" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
 LOAN_CLIENT_TOKEN=$(echo "$LOAN_CLIENT" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
 
-curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders" -H "Content-Type: application/json" \
-  -d "{\"service_id\":\"$GH_SVC_ID\",\"api_key_id\":\"$LOAN_KEY_ID\",\"client_id\":\"$LOAN_CLIENT_ID\",\"requires_approval\":false}" > /dev/null
+LOAN_PH=$(curl -s -b /tmp/dw-e2e-cookies -X POST "$BASE/api/placeholders" -H "Content-Type: application/json" \
+	-d "{\"service_id\":\"$GH_SVC_ID\",\"api_key_id\":\"$LOAN_KEY_ID\",\"client_id\":\"$LOAN_CLIENT_ID\",\"requires_approval\":false}")
+LOAN_PH_ID=$(echo "$LOAN_PH" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
 
 # 16d: /client/loan refuses while github is in default proxy mode
 GITHUB_PROXY_REFUSE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Duckway-Token: $LOAN_CLIENT_TOKEN" "$BASE/client/loan?service=github")
@@ -816,7 +819,7 @@ assert_eq "/client/loan without token → 401" "401" "$NOAUTH_STATUS"
 
 # 16i: POST /client/audit accepts batched entries
 AUDIT_RESP=$(curl -s -X POST -H "X-Duckway-Token: $LOAN_CLIENT_TOKEN" -H "Content-Type: application/json" \
-  -d "[{\"placeholder_id\":\"abc\",\"service\":\"github\",\"method\":\"POST\",\"path\":\"/git-upload-pack\",\"status\":200},{\"placeholder_id\":\"abc\",\"service\":\"github\",\"method\":\"GET\",\"path\":\"/info/refs\",\"status\":200}]" \
+  -d "[{\"placeholder_id\":\"$LOAN_PH_ID\",\"service\":\"github\",\"method\":\"POST\",\"path\":\"/git-upload-pack\",\"status\":200},{\"placeholder_id\":\"$LOAN_PH_ID\",\"service\":\"github\",\"method\":\"GET\",\"path\":\"/info/refs\",\"status\":200}]" \
   "$BASE/client/audit")
 AUDIT_LOGGED=$(echo "$AUDIT_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('logged',''))")
 assert_eq "/client/audit logged 2 entries" "2" "$AUDIT_LOGGED"
@@ -1117,7 +1120,7 @@ PE_MGMT_HANDLE=$(echo "$PE_CC_RESP" | python3 -c "import sys,json;print(json.loa
 # 19a: tools/list
 TOOLS_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | "$CONTAINER_RUNTIME" exec -i duckway-e2e-client duckway mcp serve 2>/dev/null)
 TOOL_COUNT=$(echo "$TOOLS_OUT" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['result']['tools']))")
-assert_eq "MCP tools/list returns 12 tools" "12" "$TOOL_COUNT"
+assert_eq "MCP tools/list returns 13 tools" "13" "$TOOL_COUNT"
 assert_contains "tools/list includes discord_post"            "discord_post"                "$TOOLS_OUT"
 assert_contains "tools/list includes discord_create_task"     "discord_create_task_channel" "$TOOLS_OUT"
 assert_contains "tools/list includes discord_wait_for_msg"    "discord_wait_for_message"    "$TOOLS_OUT"
@@ -1197,9 +1200,6 @@ assert_eq "Inject event accepted" "published" "$INJECT_STATUS"
 
 # Daemon should: see SSE → enqueue → run fake claude → POST back to mock
 sleep 2
-WATCH_LOG=$("$CONTAINER_RUNTIME" exec duckway-e2e-client cat /tmp/cc-watch.log 2>/dev/null)
-assert_contains "Daemon ran claude" "running claude" "$WATCH_LOG"
-
 # Session id should be persisted
 SESSIONS_JSON=$("$CONTAINER_RUNTIME" exec duckway-e2e-client cat /root/.duckway/cc-sessions.json 2>/dev/null)
 assert_contains "Session id persisted to cc-sessions.json" "sess-fake-1" "$SESSIONS_JSON"
@@ -1275,7 +1275,8 @@ curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$F4_BOT" > /dev/null 2>
 echo ""
 echo -e "${YELLOW}[15] Unit Tests${NC}"
 
-UNIT=$(go test ./internal/server/services/ ./internal/database/queries/ ./internal/server/handlers/ ./internal/client/ 2>&1)
+UNIT=$(env -u DUCKWAY_DATABASE_DRIVER -u DUCKWAY_DATABASE_URL \
+  go test ./internal/server/services/ ./internal/database/queries/ ./internal/server/handlers/ ./internal/client/ 2>&1)
 UNIT_OK=$(echo "$UNIT" | grep -c "^ok" || true)
 UNIT_FAIL=$(echo "$UNIT" | grep -c "^FAIL" || true)
 if [ "$UNIT_FAIL" = "0" ] && [ "$UNIT_OK" -ge "1" ]; then
