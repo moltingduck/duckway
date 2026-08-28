@@ -247,6 +247,7 @@ func TestDuckwayGitCloneLive(t *testing.T) {
 	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.https://github.com/.sslCAInfo", filepath.Join(env.configDir, "ca.pem"))
 	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.helper", "store")
 	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "credential.useHttpPath", "true")
+	assertGitConfigValue(t, filepath.Join(workDir, cloneDir), "http.emptyAuth", "true")
 
 	native := liveCommand(ctx, "git", "-C", filepath.Join(workDir, cloneDir), "ls-remote", "--exit-code", "origin", "HEAD")
 	native.Env = env.gitProxyEnv()
@@ -371,11 +372,9 @@ func newGitHubGitLiveDuckwayEnvForRepos(tb testing.TB, cfg githubAppLiveConfig, 
 		ca:        ca,
 		hostMap: map[string]hostEntry{
 			"github.com": {
-				Service:         "github",
-				DeliveryMode:    "proxy",
-				UpstreamURL:     "https://github.com",
-				AssignmentKnown: true,
-				Assigned:        true,
+				Service:      "github",
+				DeliveryMode: "proxy",
+				UpstreamURL:  "https://github.com",
 			},
 		},
 		httpClient:  &http.Client{Transport: directTransport},
@@ -764,6 +763,17 @@ func startGitHubGitLiveDuckwayServerForRepos(t testing.TB, credentialJSON string
 			Placeholder:      phantom,
 			ServiceName:      "github",
 			PermissionConfig: acl,
+		}})
+	})
+	serverMux.HandleFunc("/client/services", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Duckway-Token") != clientToken {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		assigned := true
+		json.NewEncoder(w).Encode([]ServiceInfo{{
+			Name: "github", HostPattern: "api.github.com,github.com",
+			UpstreamURL: "https://api.github.com", DeliveryMode: "proxy", Assigned: &assigned,
 		}})
 	})
 	serverMux.HandleFunc("/client/canaries", func(w http.ResponseWriter, r *http.Request) {

@@ -476,7 +476,7 @@ func cmdGitClone(configDir string, args []string) {
 			log.Fatal(err)
 		}
 		repoURL := "https://github.com/" + repo + ".git"
-		cloneArgs := []string{"-c", "credential.helper=store", "-c", "credential.useHttpPath=true", "-c", fmt.Sprintf("http.https://github.com/.proxy=%s", client.LocalProxyURL(cfg.ProxyPort)), "-c", "http.https://github.com/.sslCAInfo=" + filepath.Join(configDir, "ca.pem"), "clone", repoURL, dir}
+		cloneArgs := []string{"-c", "credential.helper=store", "-c", "credential.useHttpPath=true", "-c", "http.emptyAuth=true", "-c", fmt.Sprintf("http.https://github.com/.proxy=%s", client.LocalProxyURL(cfg.ProxyPort)), "-c", "http.https://github.com/.sslCAInfo=" + filepath.Join(configDir, "ca.pem"), "clone", repoURL, dir}
 		printGitCommand("", cloneArgs...)
 		if err := runGit("", cloneArgs...); err != nil {
 			log.Fatalf("git clone failed: %v", err)
@@ -492,6 +492,7 @@ func cmdGitClone(configDir string, args []string) {
 	printGitCommand(dir, "config", "--local", "http.https://github.com/.sslCAInfo", filepath.Join(configDir, "ca.pem"))
 	printGitCommand(dir, "config", "--local", "credential.helper", "store")
 	printGitCommand(dir, "config", "--local", "credential.useHttpPath", "true")
+	printGitCommand(dir, "config", "--local", "http.emptyAuth", "true")
 	if err := configureRepoGit(dir, configDir, cfg.ProxyPort, repo); err != nil {
 		log.Fatalf("configure repo failed: %v", err)
 	}
@@ -609,7 +610,10 @@ func configureRepoGit(dir, configDir string, port int, repo string) error {
 	if err := runGit(dir, "config", "--local", "credential.helper", "store"); err != nil {
 		return err
 	}
-	return runGit(dir, "config", "--local", "credential.useHttpPath", "true")
+	if err := runGit(dir, "config", "--local", "credential.useHttpPath", "true"); err != nil {
+		return err
+	}
+	return runGit(dir, "config", "--local", "http.emptyAuth", "true")
 }
 
 func ensureExistingGitRepoMatchesRemote(dir, repo string) error {

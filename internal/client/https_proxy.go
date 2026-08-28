@@ -485,12 +485,28 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		usesPhantom := requestUsesDuckwayPhantom(entry, req)
 		if !usesPhantom {
+			if entry.Service == "github" && githubNeedsCredentialChallenge(req) {
+				if !entry.AssignmentKnown {
+					if refreshed, ok := p.refreshHostAssignment(host); ok {
+						entry = refreshed
+					}
+				}
+				if entry.AssignmentKnown && entry.Assigned {
+					writeGitHubCredentialChallenge(tlsConn)
+					continue
+				}
+			}
 			if entry.Service == "openai-chatgpt" && isWebSocketUpgrade(req) {
 				p.forwardWebSocketDirect(tlsConn, reader, req, entry, host)
 				return
 			}
 			p.forwardDirect(tlsConn, req, host, entry)
 			continue
+		}
+		if !entry.AssignmentKnown {
+			if refreshed, ok := p.refreshHostAssignment(host); ok {
+				entry = refreshed
+			}
 		}
 		if status, message := phantomAssignmentError(entry); status != 0 {
 			writeHTTPError(tlsConn, status, message)
@@ -1002,6 +1018,27 @@ func writeHTTPError(w io.Writer, code int, msg string) {
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Length: %d\r\n\r\n%s", code, msg, len(msg), msg)
 }
 
+func writeGitHubCredentialChallenge(w io.Writer) {
+	const msg = "GitHub credentials required"
+	fmt.Fprintf(w, "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"GitHub\"\r\nContent-Length: %d\r\n\r\n%s", len(msg), msg)
+}
+
+func githubNeedsCredentialChallenge(req *http.Request) bool {
+	auth := strings.TrimSpace(req.Header.Get("Authorization"))
+	if auth == "" {
+		return true
+	}
+	if !strings.HasPrefix(strings.ToLower(auth), "basic ") {
+		return false
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(auth[len("Basic "):]))
+	if err != nil {
+		return false
+	}
+	_, password, ok := strings.Cut(string(raw), ":")
+	return ok && password == ""
+}
+
 func loadClientCA(configDir string) (*services.CAManager, error) {
 	certPath := filepath.Join(configDir, "ca.pem")
 	keyPath := filepath.Join(configDir, "ca-key.pem")
@@ -1284,6 +1321,23 @@ func (p *httpsProxy) replaceHostMap(newMap map[string]hostEntry) {
 	clear(p.loanCache)
 	p.loanMu.Unlock()
 	log.Printf("Host map refreshed: %d hosts", len(newMap))
+}
+
+func (p *httpsProxy) refreshHostAssignment(host string) (hostEntry, bool) {
+	services, err := FetchServices(p.serverURL, p.token)
+	if err != nil {
+		if p.debug {
+			log.Printf("assignment refresh for %s failed: %v", host, err)
+		}
+		return hostEntry{}, false
+	}
+	newMap := buildHostMap(services)
+	p.replaceHostMap(newMap)
+	host = canonicalProxyHostname(host)
+	p.hostMu.RLock()
+	entry, ok := p.hostMap[host]
+	p.hostMu.RUnlock()
+	return entry, ok && entry.AssignmentKnown
 }
 
 // =====================================================================

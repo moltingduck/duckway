@@ -83,6 +83,58 @@ func TestFetchServicesReportsHTTPStatus(t *testing.T) {
 	}
 }
 
+func TestRefreshHostAssignmentReplacesUnknownCachedEntry(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/services" || r.Header.Get("X-Duckway-Token") != "client-token" {
+			http.Error(w, "unexpected request", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[{"name":"github","host_pattern":"api.github.com,github.com","upstream_url":"https://api.github.com","delivery_mode":"proxy","assigned":true}]`)
+	}))
+	t.Cleanup(srv.Close)
+	p := &httpsProxy{
+		serverURL: srv.URL,
+		token:     "client-token",
+		hostMap: map[string]hostEntry{
+			"github.com": {Service: "github", DeliveryMode: "proxy"},
+		},
+		loanCache: make(map[string]*loanedToken),
+	}
+	entry, ok := p.refreshHostAssignment("github.com")
+	if !ok || !entry.AssignmentKnown || !entry.Assigned || entry.Service != "github" {
+		t.Fatalf("refreshed entry = %#v, ok=%v", entry, ok)
+	}
+}
+
+func TestWriteGitHubCredentialChallengeRequestsBasicAuth(t *testing.T) {
+	var response bytes.Buffer
+	writeGitHubCredentialChallenge(&response)
+	got := response.String()
+	if !strings.HasPrefix(got, "HTTP/1.1 401 Unauthorized\r\n") ||
+		!strings.Contains(got, "WWW-Authenticate: Basic") {
+		t.Fatalf("credential challenge = %q", got)
+	}
+}
+
+func TestGitHubCredentialChallengeOnlyForMissingOrEmptyAuth(t *testing.T) {
+	request := func(auth string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "https://github.com/OWNER/REPO.git/info/refs", nil)
+		if auth != "" {
+			r.Header.Set("Authorization", auth)
+		}
+		return r
+	}
+	emptyBasic := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"))
+	realBasic := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:real-token"))
+	if !githubNeedsCredentialChallenge(request("")) || !githubNeedsCredentialChallenge(request(emptyBasic)) {
+		t.Fatal("missing and empty Basic auth should receive a credential challenge")
+	}
+	if githubNeedsCredentialChallenge(request(realBasic)) || githubNeedsCredentialChallenge(request("Bearer real-token")) {
+		t.Fatal("real credentials must pass through without a Duckway challenge")
+	}
+}
+
 func TestFallbackMITMEntryForGitHub(t *testing.T) {
 	entry, ok := fallbackMITMEntryForHost("github.com")
 	if !ok {
