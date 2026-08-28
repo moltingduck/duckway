@@ -2,6 +2,16 @@
 .claude
 .codex
 .DS_Store
+.prod.env
+.env
+.env.*
+.secrets
+backups
+live-credentials
+secrets
+test_auth*.json
+auth.json
+*.local.json
 
 tmp
 data

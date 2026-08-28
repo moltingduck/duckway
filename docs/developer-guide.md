@@ -1114,6 +1114,15 @@ DUCKWAY_TEST_POSTGRES_URL='postgres://user:password@127.0.0.1/duckway_test?sslmo
   go test -v ./cmd/migrate-postgres
 ```
 
+Run the full container cutover test with Podman. This starts Duckway on a
+named SQLite volume, seeds data through the admin API, adds legacy bigint and
+foreign-key edge cases, migrates the read-only volume, starts Duckway against
+PostgreSQL 17, and verifies the migrated data through both APIs and SQL:
+
+```bash
+./scripts/postgres-migration-podman-e2e.sh
+```
+
 The test skips when the variable is absent. It truncates the target database,
 migrates a representative SQLite fixture, checks encrypted values and integer
 booleans, then exercises PostgreSQL `RETURNING` and date modifiers.

@@ -31,6 +31,19 @@ type composeService struct {
 	Healthcheck composeHealthcheck           `yaml:"healthcheck"`
 }
 
+func TestDockerBuildContextExcludesProductionSecrets(t *testing.T) {
+	body, err := os.ReadFile("../.dockerignore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(body), "\n")
+	for _, pattern := range []string{".prod.env", ".secrets", "backups", "live-credentials", "secrets", "test_auth*.json", "auth.json"} {
+		if !slices.Contains(lines, pattern) {
+			t.Errorf(".dockerignore does not exclude %q", pattern)
+		}
+	}
+}
+
 func TestProductionTailscaleProfilesUseUserspaceServe(t *testing.T) {
 	body, err := os.ReadFile("../docker-compose.yml")
 	if err != nil {
