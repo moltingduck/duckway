@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
@@ -168,6 +169,33 @@ func (h *ClientHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, client)
+}
+
+// RotateToken replaces a client's non-expiring credential and returns the new
+// plaintext token once. Existing client identity and assignments are retained.
+func (h *ClientHandler) RotateToken(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	client, err := h.clients.GetByID(id)
+	if err != nil {
+		jsonError(w, "client not found", http.StatusNotFound)
+		return
+	}
+	token, err := svc.GenerateToken(32)
+	if err != nil {
+		jsonError(w, "failed to generate token", http.StatusInternalServerError)
+		return
+	}
+	if err := h.clients.RotateTokenHash(id, svc.HashToken(token)); err != nil {
+		jsonError(w, "failed to rotate client token", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]string{
+		"id":         client.ID,
+		"short_id":   client.ShortID,
+		"name":       client.Name,
+		"token":      token,
+		"rotated_at": time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 // Admin: delete a client

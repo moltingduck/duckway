@@ -46,6 +46,10 @@ func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
 	}
 	html := string(body)
 	required := []string{
+		`onclick="rotateClientToken()"`,
+		`/rotate-token`,
+		`function showClientToken(data, rotated)`,
+		`Reconfigure the Duckway client`,
 		`isRefreshable:{{.IsRefreshable}}`,
 		`isMintable:{{.IsMintable}}`,
 		`permissionConfig:"{{if .PermissionConfig}}{{deref .PermissionConfig}}{{end}}"`,

@@ -117,6 +117,23 @@ func (q *ClientQueries) UpdateCanaryEnabled(id string, enabled bool) error {
 	return err
 }
 
+// RotateTokenHash replaces the only accepted client credential. Client
+// identity, assignments, and operational history are left unchanged.
+func (q *ClientQueries) RotateTokenHash(id, tokenHash string) error {
+	result, err := q.db.Exec("UPDATE clients SET token_hash = ? WHERE id = ?", tokenHash, id)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (q *ClientQueries) Delete(id string) error {
 	tx, err := q.db.Begin()
 	if err != nil {

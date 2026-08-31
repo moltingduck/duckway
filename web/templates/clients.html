@@ -238,8 +238,8 @@
 <!-- Token display modal -->
 <div id="token-modal" class="modal-backdrop" style="display:none">
   <div class="modal">
-    <h2>Client Registered</h2>
-    <p class="text-sm text-muted mb-1">Save this token — it will only be shown once.</p>
+	<h2 id="token-modal-title">Client Registered</h2>
+	<p id="token-modal-notice" class="text-sm text-muted mb-1">Save this token — it will only be shown once.</p>
     <div class="form-group">
       <label>Client Token</label>
       <div style="position:relative">
@@ -447,6 +447,7 @@ sudo loginctl enable-linger "$USER"</code></pre>
 
       <div class="modal-actions mt-1">
         <button type="button" class="btn" onclick="document.getElementById('client-detail-modal').style.display='none'">Close</button>
+		<button type="button" class="btn btn-danger" onclick="rotateClientToken()">Rotate Token</button>
         <button type="button" class="btn btn-primary" onclick="switchToClientEdit()">Edit</button>
       </div>
     </div>
@@ -564,6 +565,20 @@ function switchToClientEdit() {
 function switchToClientView() {
   document.getElementById('cd-view').style.display = '';
   document.getElementById('cd-edit').style.display = 'none';
+}
+
+function rotateClientToken() {
+	if (!currentClient) return;
+	if (!confirm('Rotate the client token for ' + currentClient.name + '? The previous token will stop authenticating new requests immediately. Existing assignments and client data will be kept.')) return;
+	fetch('/api/clients/' + encodeURIComponent(currentClient.id) + '/rotate-token', {
+		method: 'POST',
+		credentials: 'same-origin'
+	}).then(function(r) { return r.json().then(function(body) { return {ok:r.ok, body:body}; }); })
+		.then(function(result) {
+			if (!result.ok || result.body.error) { showToast(result.body.error || 'Token rotation failed', 'error'); return; }
+			document.getElementById('client-detail-modal').style.display = 'none';
+			showClientToken(result.body, true);
+		});
 }
 
 document.getElementById('client-edit-form').addEventListener('submit', function(e) {
@@ -1490,20 +1505,32 @@ document.getElementById('add-client-form').addEventListener('submit', function(e
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.error) { showToast(data.error, 'error'); return; }
-      document.getElementById('add-modal').style.display = 'none';
-      document.getElementById('token-value').value = data.token;
-      if (!gatewayURLValid) {
-        var warn = '# Set Gateway URL in Settings first — current admin URL does not serve /install.sh\n# https://github.com/anthropics/duckway#split-mode-setup';
-        document.getElementById('init-cmd').textContent = warn;
-        document.getElementById('full-setup-cmd').textContent = warn;
-      } else {
-        var initCmd = 'printf "' + gatewayURL + '\\n' + data.name + '\\n1\\n' + data.token + '\\n" | duckway init';
-        document.getElementById('init-cmd').textContent = initCmd;
-        document.getElementById('full-setup-cmd').textContent = 'curl -fsSL ' + gatewayURL + '/install.sh | sh && ' + initCmd;
-      }
-      document.getElementById('token-modal').style.display = 'flex';
+	  document.getElementById('add-modal').style.display = 'none';
+	  showClientToken(data, false);
     });
 });
+
+function shellQuote(value) {
+	return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
+function showClientToken(data, rotated) {
+	document.getElementById('token-modal-title').textContent = rotated ? 'Client Token Rotated' : 'Client Registered';
+	document.getElementById('token-modal-notice').textContent = rotated
+		? 'The previous token has been revoked. Reconfigure the Duckway client with this one-time token.'
+		: 'Save this token - it will only be shown once.';
+	document.getElementById('token-value').value = data.token;
+	if (!gatewayURLValid) {
+		var warn = '# Set Gateway URL in Settings first - current admin URL does not serve /install.sh\n# https://github.com/anthropics/duckway#split-mode-setup';
+		document.getElementById('init-cmd').textContent = warn;
+		document.getElementById('full-setup-cmd').textContent = warn;
+	} else {
+		var initCmd = "printf '%s\\n' " + [gatewayURL, data.name, '1', data.token].map(shellQuote).join(' ') + ' | duckway init';
+		document.getElementById('init-cmd').textContent = initCmd;
+		document.getElementById('full-setup-cmd').textContent = 'curl -fsSL ' + shellQuote(gatewayURL + '/install.sh') + ' | sh && ' + initCmd;
+	}
+	document.getElementById('token-modal').style.display = 'flex';
+}
 
 // Smart search init (after DOM + data loaded)
 setTimeout(function() {

@@ -53,6 +53,8 @@ Agent machine                  Duckway gateway                    Upstream
 
 The agent never sees the real key. The duckway-client never sees it either — only the gateway holds the encryption key for the at-rest storage.
 
+Client authentication tokens are non-expiring bearer credentials stored only as hashes. `POST /api/clients/{id}/rotate-token` atomically replaces the hash and returns the new plaintext token once. Rotation preserves the client row and every assignment; it is operationally equivalent to rerunning `duckway init` for the same client identity.
+
 ---
 
 ## Code layout

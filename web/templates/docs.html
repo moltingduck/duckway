@@ -515,6 +515,7 @@ duckway update            # Compare with server, replace binary if drifted</code
     <tbody>
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/api/clients</code></td><td>List clients</td></tr>
       <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/clients</code></td><td>Register (returns token once)</td></tr>
+	  <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/clients/{id}/rotate-token</code></td><td>Replace the client token hash and return the new token once</td></tr>
       <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/clients/{id}/canary</code></td><td>Toggle canary ON/OFF</td></tr>
       <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/clients/{id}</code></td><td>Delete client</td></tr>
     </tbody>

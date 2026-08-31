@@ -110,6 +110,8 @@ Click any service name to view full details and edit.
 2. Pick a name (`my-laptop`, `ci-runner-01`)
 3. Copy the one-time client token shown — you cannot retrieve it later
 
+Client tokens do not expire automatically. If a token is lost, open the client in the admin panel and select **Rotate Token**. Duckway replaces only the registered token hash: the client ID, assignments, phantom tokens, usage history, and settings remain unchanged. The old token stops authenticating new requests immediately. The replacement token is shown once together with the same setup commands used during registration; run one to reconfigure the existing Duckway client.
+
 ### 4. Bind a phantom token
 
 1. Admin panel → **Phantom Tokens** → **Generate Phantom Token**

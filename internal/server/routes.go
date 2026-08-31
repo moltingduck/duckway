@@ -200,6 +200,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminAPIMux.HandleFunc("POST /api/clients", clientH.Create)
 	adminAPIMux.HandleFunc("GET /api/clients/{id}", clientH.Get)
 	adminAPIMux.HandleFunc("PUT /api/clients/{id}", clientH.Update)
+	adminAPIMux.HandleFunc("POST /api/clients/{id}/rotate-token", clientH.RotateToken)
 	adminAPIMux.HandleFunc("DELETE /api/clients/{id}", clientH.Delete)
 	adminAPIMux.HandleFunc("POST /api/clients/{id}/canary", clientH.ToggleCanary)
 	adminAPIMux.HandleFunc("GET /api/client-updates", clientUpdateH.List)
