@@ -11,7 +11,10 @@
 #      ADD_REACTIONS, READ_MESSAGE_HISTORY, MESSAGE_CONTENT INTENT.
 #   3. The `claude` binary in PATH if you want to drive the daemon.
 #
-# USAGE:
+# USAGE (credential-free automated fixture mode, suitable for CI):
+#   ./scripts/cc-smoke.sh --fixture
+#
+# USAGE (live Discord provisioning/outbound smoke):
 #   export CC_SMOKE_BOT_TOKEN=...           (required)
 #   export CC_SMOKE_GUILD_ID=...            (required)
 #   export CC_SMOKE_CATEGORY_ID=...         (required)
@@ -26,21 +29,42 @@
 #   3. Create a fresh client + a fresh CC bound to that client
 #   4. POST /api/cc/{id}/test (round-trip channel create+delete)
 #   5. Print the management channel name + handle
-#   6. (optional, if --watch passed) start `duckway cc watch` against
-#      the new client, send a test message via the inject endpoint
-#   7. Cleanup: delete CC + client + bot key
+#   6. Cleanup: delete CC + client + bot key
 
 set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ "${1:-}" = "--fixture" ] || [ "${1:-}" = "--automated" ]; then
+  echo "[smoke] Running credential-free automated Discord Gateway + CC suite"
+  exec "$SCRIPT_DIR/discord-e2e.sh"
+fi
+
+if [ "${1:-}" = "--watch" ]; then
+  echo "--watch was removed because it persisted a plaintext client token." >&2
+  echo "Use --fixture for automated inbound coverage, or run 'duckway cc watch' separately." >&2
+  exit 2
+fi
 
 BASE="${CC_SMOKE_BASE:-http://localhost:9090}"
 USER="${CC_SMOKE_ADMIN_USER:-duckway}"
 PASS="${CC_SMOKE_ADMIN_PASS:-duckway}"
-COOKIES=/tmp/dw-cc-smoke-cookies
+SMOKE_TMP=$(mktemp -d -t dw-cc-smoke-XXXXXX)
+chmod 700 "$SMOKE_TMP"
+COOKIES="$SMOKE_TMP/cookies"
+CC_ID=""
+CLIENT_ID=""
+KEY_ID=""
 
 if [ -z "$CC_SMOKE_BOT_TOKEN" ] || [ -z "$CC_SMOKE_GUILD_ID" ] || [ -z "$CC_SMOKE_CATEGORY_ID" ]; then
   echo "Missing env vars. See header for required vars." >&2
   exit 1
 fi
+
+case "$BASE" in
+  http://127.0.0.1:*|http://localhost:*|https://*) ;;
+  *) echo "Refusing to send smoke credentials over non-loopback HTTP: $BASE" >&2; exit 1 ;;
+esac
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -63,13 +87,13 @@ cleanup() {
   if [ -n "$KEY_ID" ]; then
     curl -s -b "$COOKIES" -X DELETE "$BASE/api/keys/$KEY_ID" >/dev/null && ok "deleted bot key $KEY_ID" || true
   fi
-  rm -f "$COOKIES"
+  rm -rf "$SMOKE_TMP"
 }
 trap cleanup EXIT
 
 # ---- 1. login ----
 log "Login to $BASE as $USER..."
-LOGIN_CODE=$(curl -s -c "$COOKIES" -o /dev/null -w "%{http_code}" \
+LOGIN_CODE=$(curl --fail-with-body -s -c "$COOKIES" -o /dev/null -w "%{http_code}" \
   -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
   -d "{\"username\":\"$USER\",\"password\":\"$PASS\"}")
 [ "$LOGIN_CODE" = "200" ] || die "login returned $LOGIN_CODE"
@@ -134,32 +158,7 @@ MID=$(echo "$POST_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)
 ok "posted message $MID to management channel"
 echo "    👀 Check '#$MGMT_NAME' — you should see 'smoke test ✅'."
 
-# ---- 6. (optional) daemon round-trip ----
-if [ "$1" = "--watch" ]; then
-  echo
-  log "Daemon round-trip (--watch mode)"
-  log "Starting 'duckway cc watch' for client $CLIENT_ID..."
-  echo "  Set DUCKWAY_CONFIG_DIR to point at a temp dir, then run:"
-  TMPDIR=$(mktemp -d -t cc-smoke-XXXXXX)
-  cat > "$TMPDIR/config.yaml" <<EOF
-server_url: $BASE
-client_name: cc-smoke
-token: $CLIENT_TOKEN
-proxy_port: 18080
-EOF
-  echo "    DUCKWAY_CONFIG_DIR=$TMPDIR duckway cc watch &"
-  echo "  Then in Discord, post a message in '#$MGMT_NAME' (or in a task"
-  echo "  channel created via '!new test-1') and watch claude respond."
-  echo
-  echo "  When done: kill the daemon, then re-run this script without --watch"
-  echo "  to exercise just the cleanup."
-  echo
-  echo "  Skipping cleanup so the channel + state persist for your test."
-  trap - EXIT
-  exit 0
-fi
-
-# ---- 7. cleanup happens on exit (trap) ----
+# ---- 6. cleanup happens on exit (trap) ----
 echo
 log "All smoke checks passed."
 echo "    👀 The Discord channels will be archived (renamed to 'archived-…')"

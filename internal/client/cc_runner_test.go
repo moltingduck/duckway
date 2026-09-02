@@ -280,6 +280,55 @@ func TestCCRunner_PostsProgressForLongRunningTask(t *testing.T) {
 	}
 }
 
+func TestDiscordProgressPreviewE2E(t *testing.T) {
+	oldFirst, oldInterval := ccLongRunFirstNotice, ccLongRunInterval
+	ccLongRunFirstNotice, ccLongRunInterval = 15*time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { ccLongRunFirstNotice, ccLongRunInterval = oldFirst, oldInterval })
+	fn := ccRunFn(func(_ context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
+		time.Sleep(80 * time.Millisecond)
+		return "sess-preview", "final answer", false, nil
+	})
+	r, pp, _ := newTestRunner(t, fn)
+	defer r.Stop()
+	var mu sync.Mutex
+	posts := 0
+	var edits []string
+	r.postProgress = func(_ context.Context, handle, content string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		posts++
+		if handle != "dwch_t" || !strings.Contains(content, "Still running") {
+			t.Errorf("preview post handle=%s content=%q", handle, content)
+		}
+		return "preview-1", nil
+	}
+	r.editProgress = func(_ context.Context, handle, messageID, content string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if handle != "dwch_t" || messageID != "preview-1" {
+			t.Errorf("preview edit target=%s/%s", handle, messageID)
+		}
+		edits = append(edits, content)
+		return nil
+	}
+	if !r.Enqueue(ccTask{Content: "slow", MessageID: "1783330000000000002", ChannelKind: "task"}) {
+		t.Fatal("enqueue")
+	}
+	waitForPosts(t, pp, 1) // final answer
+	r.Stop()
+	mu.Lock()
+	defer mu.Unlock()
+	if posts != 1 {
+		t.Fatalf("preview POST count=%d, want 1", posts)
+	}
+	if len(edits) < 2 {
+		t.Fatalf("preview PATCH count=%d, want progress+final", len(edits))
+	}
+	if edits[len(edits)-1] != "✅ Completed." {
+		t.Fatalf("last preview edit=%q", edits[len(edits)-1])
+	}
+}
+
 func TestCCRunner_DeduplicatesRepeatedTaskReactions(t *testing.T) {
 	fn, _ := capturingRunFn("sess-abc", "ok")
 	r, pp, _ := newTestRunner(t, fn)

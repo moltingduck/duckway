@@ -1275,6 +1275,16 @@ curl -s -b /tmp/dw-e2e-cookies -X DELETE "$BASE/api/keys/$F4_BOT" > /dev/null 2>
 echo ""
 echo -e "${YELLOW}[15] Unit Tests${NC}"
 
+if DISCORD_E2E=$(./scripts/discord-e2e.sh 2>&1); then
+  echo -e "  ${GREEN}PASS${NC} automated Discord Gateway E2E"
+  PASS=$((PASS + 1))
+else
+  echo -e "  ${RED}FAIL${NC} automated Discord Gateway E2E"
+  echo "$DISCORD_E2E"
+  FAIL=$((FAIL + 1))
+  ERRORS="$ERRORS\n  - automated Discord Gateway E2E failed"
+fi
+
 UNIT=$(env -u DUCKWAY_DATABASE_DRIVER -u DUCKWAY_DATABASE_URL \
   go test ./internal/server/services/ ./internal/database/queries/ ./internal/server/handlers/ ./internal/client/ 2>&1)
 UNIT_OK=$(echo "$UNIT" | grep -c "^ok" || true)
