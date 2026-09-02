@@ -226,7 +226,11 @@ func newCommandHarness(t *testing.T) *commandHarness {
 	stmts := []string{
 		`CREATE TABLE control_channels (id TEXT PRIMARY KEY, name TEXT, service_id TEXT, api_key_id TEXT, client_id TEXT, agent_type TEXT, placeholder_id TEXT, config TEXT, is_active INT, created_at TEXT)`,
 		`CREATE TABLE cc_channels (handle TEXT PRIMARY KEY, cc_id TEXT, client_id TEXT, channel_id TEXT, name TEXT, topic TEXT, kind TEXT, session_id TEXT, cwd TEXT, archived INT, created_at TEXT NOT NULL DEFAULT (datetime('now')), last_seen_at TEXT)`,
-		`CREATE TABLE discord_inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, cc_id TEXT, channel_handle TEXT, event_type TEXT, payload TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+		`CREATE TABLE discord_inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, cc_id TEXT, channel_handle TEXT, event_type TEXT, payload TEXT,
+		 event_key TEXT NOT NULL DEFAULT '', lane_key TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'admitted', claim_token TEXT NOT NULL DEFAULT '',
+		 lease_expires_at TEXT, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', completed_at TEXT,
+		 created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+		`CREATE UNIQUE INDEX idx_inbox_event_key ON discord_inbox(cc_id,event_key) WHERE event_key != ''`,
 		`CREATE TABLE api_keys (id TEXT PRIMARY KEY, service_id TEXT, name TEXT, key_encrypted TEXT, acl TEXT DEFAULT '', refresh_token TEXT DEFAULT '', expires_at INT DEFAULT 0, token_endpoint TEXT DEFAULT '', subscription_info TEXT DEFAULT '', usage_snapshot TEXT DEFAULT '', upstream_proxy_url TEXT DEFAULT '', is_active INT DEFAULT 1, usage_count INT DEFAULT 0, last_used_at TEXT, created_at TEXT)`,
 		`CREATE TABLE services (id TEXT PRIMARY KEY, name TEXT)`,
 		`CREATE TABLE clients (id TEXT PRIMARY KEY, name TEXT)`,

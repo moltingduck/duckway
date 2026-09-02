@@ -313,7 +313,8 @@ func (b *DiscordBot) PostMessage(ctx context.Context, botToken, channelID, conte
 
 func (b *DiscordBot) PostMessageReply(ctx context.Context, botToken, channelID, content, replyToMessageID string) (string, error) {
 	body := map[string]interface{}{
-		"content": content,
+		"content":          content,
+		"allowed_mentions": map[string]interface{}{"parse": []string{}},
 	}
 	if replyToMessageID != "" {
 		body["message_reference"] = map[string]interface{}{
@@ -342,7 +343,8 @@ func (b *DiscordBot) PostMessageWithFile(ctx context.Context, botToken, channelI
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	payload := map[string]interface{}{
-		"content": content,
+		"content":          content,
+		"allowed_mentions": map[string]interface{}{"parse": []string{}},
 		"attachments": []map[string]interface{}{
 			{"id": 0, "filename": file.Filename},
 		},
@@ -409,7 +411,15 @@ func (b *DiscordBot) PostMessageWithFile(ctx context.Context, botToken, channelI
 // EditMessage replaces a message's content.
 func (b *DiscordBot) EditMessage(ctx context.Context, botToken, channelID, messageID, content string) error {
 	_, err := b.do(ctx, botToken, "PATCH", "/channels/"+channelID+"/messages/"+messageID, map[string]interface{}{
-		"content": content,
+		"content":          content,
+		"allowed_mentions": map[string]interface{}{"parse": []string{}},
+	})
+	return err
+}
+
+func (b *DiscordBot) CreateMessageThread(ctx context.Context, botToken, channelID, messageID, name string) error {
+	_, err := b.do(ctx, botToken, "POST", "/channels/"+channelID+"/messages/"+messageID+"/threads", map[string]interface{}{
+		"name": name, "auto_archive_duration": 1440,
 	})
 	return err
 }

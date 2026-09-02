@@ -511,7 +511,7 @@ Tmux session names use `<handle>-duckway`. During upgrade, `migrateLegacyTmuxSes
 |---|---|
 | `control_channels` | One row per CC. Carries `client_id` (UNIQUE), `agent_type`, `placeholder_id`, plus the bot reference. `config` JSON holds `{guild_id, category_id}`. |
 | `cc_channels` | Cache of every channel under a CC. `kind ∈ {management, task}`, plus `session_id` + `cwd` written by the daemon. |
-| `discord_inbox` | Buffered gateway events for cold-start replay — long-polled by `/client/cc/inbox`. |
+| `discord_inbox` | Durable Discord ingress jobs. Gateway replay is deduplicated by typed event key; clients atomically lease per-channel lane heads and finish them as completed, retryable, or dead-letter. |
 
 `placeholder_keys.env_name` for CC phantoms is `DUCKWAY_CC_<cc_id>` so the `UNIQUE(client_id, service_id, env_name)` triple doesn't collide.
 

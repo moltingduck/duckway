@@ -43,7 +43,6 @@ type CCWatch struct {
 	commandRunners map[string]*ccCommandRunner // ! commands, by channel handle
 	// clientCommandHandler is a test seam; production uses handleClientCommand.
 	clientCommandHandler func(context.Context, []byte)
-	inboxCursor          int64
 	sseConnected         bool
 	pendingNew           map[string]pendingNewProject
 	deleted              map[string]struct{}
@@ -93,7 +92,6 @@ func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (
 		pendingNew:     map[string]pendingNewProject{},
 		deleted:        map[string]struct{}{},
 		recoverSeen:    map[string]struct{}{},
-		inboxCursor:    loadCCInboxCursor(configDir),
 		api:            NewAPIClient(cfg.ServerURL, cfg.Token),
 	}, nil
 }
@@ -250,9 +248,14 @@ func (w *CCWatch) handleEvent(eventType string, data []byte) {
 		log.Printf("[cc-watch] server: ready")
 		return
 	}
-	var env sseEnvelope
-	if err := json.Unmarshal(data, &env); err == nil && env.InboxID > 0 {
-		w.advanceInboxCursor(env.InboxID)
+	// Durable MESSAGE_CREATE delivery is claimed from the inbox poller. SSE is
+	// deliberately only a wake-up hint so a live event can never skip an older
+	// persisted lane head or advance durability before agent completion.
+	if eventType == "message_create" {
+		var env sseEnvelope
+		if json.Unmarshal(data, &env) == nil && env.InboxID > 0 {
+			return
+		}
 	}
 	switch eventType {
 	case "message_create":
@@ -271,12 +274,14 @@ func (w *CCWatch) handleEvent(eventType string, data []byte) {
 
 // sseEnvelope mirrors services.CCEvent.
 type sseEnvelope struct {
-	Type    string          `json:"type"`
-	CCID    string          `json:"cc_id"`
-	Handle  string          `json:"channel_handle"`
-	Kind    string          `json:"channel_kind"`
-	Payload json.RawMessage `json:"payload"`
-	InboxID int64           `json:"inbox_id,omitempty"`
+	Type         string          `json:"type"`
+	CCID         string          `json:"cc_id"`
+	Handle       string          `json:"channel_handle"`
+	Kind         string          `json:"channel_kind"`
+	Payload      json.RawMessage `json:"payload"`
+	InboxID      int64           `json:"inbox_id,omitempty"`
+	ClaimToken   string          `json:"claim_token,omitempty"`
+	AttemptCount int             `json:"attempt_count,omitempty"`
 }
 
 // payloadMessageCreate is the Discord MESSAGE_CREATE shape we care about.
@@ -325,13 +330,29 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	if !isDiscordSnowflake(messageID) {
 		messageID = ""
 	}
-	isNew, markErr := w.processed.MarkIfNew(msg.ID, env.Handle)
-	if markErr != nil {
-		log.Printf("[cc-watch] mark processed message %s: %v", msg.ID, markErr)
+	finishClaim := func(success bool, errText string) {
+		status := "completed"
+		if !success {
+			status = "admitted"
+			if env.AttemptCount >= 5 {
+				status = "dead_letter"
+			}
+		}
+		if env.InboxID > 0 {
+			if err := w.api.FinishCCInbox(context.Background(), env.InboxID, env.ClaimToken, status, errText); err != nil {
+				log.Printf("[cc-watch] finish inbox %d: %v", env.InboxID, err)
+			}
+		}
+		if success && msg.ID != "" {
+			_ = w.processed.Mark(msg.ID, env.Handle)
+		}
 	}
-	if !isNew {
-		log.Printf("[cc-watch] %s: skipping already processed discord message %s", env.Handle, msg.ID)
-		return
+	renewClaim := func() {
+		if env.InboxID > 0 {
+			if err := w.api.RenewCCInbox(context.Background(), env.InboxID, env.ClaimToken); err != nil {
+				log.Printf("[cc-watch] renew inbox %d: %v", env.InboxID, err)
+			}
+		}
 	}
 
 	var runner *ccRunner
@@ -348,6 +369,7 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 			if messageID != "" || msg.TestID == "" {
 				_ = w.api.PostCC(context.Background(), env.Handle, "⚠️ attachment download failed: "+err.Error())
 			}
+			finishClaim(false, err.Error())
 			return
 		}
 		content = augmented
@@ -368,9 +390,11 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 		if messageID != "" || msg.TestID == "" {
 			_ = w.api.PostCC(context.Background(), env.Handle, "❌ daemon could not start a session: "+err.Error())
 		}
+		finishClaim(false, err.Error())
 		return
 	}
-	task := ccTask{Content: content, AuthorID: msg.Author.ID, MessageID: messageID, ChannelKind: env.Kind, TestID: msg.TestID}
+	task := ccTask{Content: content, AuthorID: msg.Author.ID, MessageID: messageID, ChannelKind: env.Kind, TestID: msg.TestID,
+		InboxID: env.InboxID, ClaimToken: env.ClaimToken, AttemptCount: env.AttemptCount, finishInbox: finishClaim, renewInbox: renewClaim}
 	var queuedReactionDone chan struct{}
 	if messageID != "" {
 		queuedReactionDone = make(chan struct{})
@@ -393,6 +417,7 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 			_ = runner.postTaskMessage(task,
 				fmt.Sprintf("⚠️ %s queue full (10 messages backed up) — your message was dropped; retry after the current %s work finishes.", queueName, queueName))
 		}
+		finishClaim(false, queueName+" queue full")
 		return
 	}
 	if messageID != "" {
@@ -517,6 +542,8 @@ func (w *CCWatch) runnerFor(handle, ccID string) (*ccRunner, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.postProgress = w.api.PostCCMessage
+	r.editProgress = w.api.EditCCMessage
 	w.mu.Lock()
 	// Re-check under lock in case we raced.
 	if w.stopping {
@@ -575,6 +602,8 @@ func (w *CCWatch) runnerForDirectShell(handle string) (*ccRunner, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.postProgress = w.api.PostCCMessage
+	r.editProgress = w.api.EditCCMessage
 	w.mu.Lock()
 	if w.stopping {
 		w.mu.Unlock()
@@ -750,54 +779,32 @@ func (w *CCWatch) agentConfigFor(ccID string) (string, map[string]string) {
 }
 
 func (w *CCWatch) pollInbox(ctx context.Context) {
-	if w.currentInboxCursor() == 0 {
-		for {
-			cursor, err := w.api.LatestCCInboxCursor(ctx)
-			if err == nil {
-				w.advanceInboxCursor(cursor)
-				log.Printf("[cc-watch] inbox polling ready (cursor=%d)", cursor)
-				break
-			}
-			if ctx.Err() != nil {
-				return
-			}
-			log.Printf("[cc-watch] inbox cursor error: %v (retry in 10s)", err)
-			if !sleepContext(ctx, 10*time.Second) {
-				return
-			}
-		}
-	} else {
-		log.Printf("[cc-watch] inbox polling ready (stored cursor=%d)", w.currentInboxCursor())
-	}
-
+	log.Printf("[cc-watch] durable inbox claim loop ready")
 	for {
-		if ctx.Err() != nil {
-			return
-		}
-		resp, err := w.api.PullCCInbox(ctx, w.currentInboxCursor(), 25, 200)
+		ev, err := w.api.ClaimCCInbox(ctx, 3600)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			log.Printf("[cc-watch] inbox poll error: %v (retry in 5s)", err)
+			log.Printf("[cc-watch] inbox claim error: %v (retry in 5s)", err)
 			if !sleepContext(ctx, 5*time.Second) {
 				return
 			}
 			continue
 		}
-		for _, ev := range resp.Events {
-			w.handleInboxEvent(ev)
+		if ev == nil {
+			if !sleepContext(ctx, 500*time.Millisecond) {
+				return
+			}
+			continue
 		}
-		w.advanceInboxCursor(resp.Cursor)
+		w.handleInboxEvent(*ev)
 	}
 }
 
 func (w *CCWatch) handleInboxEvent(ev CCInboxEvent) {
-	if ev.ID <= w.currentInboxCursor() {
-		return
-	}
 	if ev.ChannelHandle == nil || *ev.ChannelHandle == "" {
-		w.advanceInboxCursor(ev.ID)
+		_ = w.api.FinishCCInbox(context.Background(), ev.ID, ev.ClaimToken, "dead_letter", "missing channel handle")
 		return
 	}
 	eventType := strings.ToLower(ev.EventType)
@@ -810,34 +817,21 @@ func (w *CCWatch) handleInboxEvent(ev CCInboxEvent) {
 		eventType = "message_delete"
 	}
 	env := sseEnvelope{
-		Type:    eventType,
-		CCID:    ev.CCID,
-		Handle:  *ev.ChannelHandle,
-		Payload: json.RawMessage(ev.Payload),
-		InboxID: ev.ID,
+		Type:         eventType,
+		CCID:         ev.CCID,
+		Handle:       *ev.ChannelHandle,
+		Payload:      json.RawMessage(ev.Payload),
+		InboxID:      ev.ID,
+		ClaimToken:   ev.ClaimToken,
+		AttemptCount: ev.AttemptCount,
 	}
 	data, _ := json.Marshal(env)
-	w.handleEvent(eventType, data)
-}
-
-func (w *CCWatch) currentInboxCursor() int64 {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.inboxCursor
-}
-
-func (w *CCWatch) advanceInboxCursor(id int64) {
-	if id <= 0 {
+	if eventType == "message_create" {
+		w.handleMessageCreate(data)
 		return
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if id > w.inboxCursor {
-		w.inboxCursor = id
-		if err := saveCCInboxCursor(w.configDir, id); err != nil {
-			log.Printf("[cc-watch] save inbox cursor: %v", err)
-		}
-	}
+	w.handleEvent(eventType, data)
+	_ = w.api.FinishCCInbox(context.Background(), ev.ID, ev.ClaimToken, "completed", "")
 }
 
 func ccInboxCursorPath(configDir string) string {

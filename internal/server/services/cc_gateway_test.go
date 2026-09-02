@@ -81,13 +81,13 @@ func TestBlockedServerCommandDoesNotDelayAgentMessage(t *testing.T) {
 		conn.stop()
 	}()
 
-	conn.routeMessageEvent("MESSAGE_CREATE", "MGMT1", json.RawMessage(`{"id":"M-CMD","content":"!status"}`))
+	conn.routeMessageEvent("MESSAGE_CREATE", "MGMT1", json.RawMessage(`{"id":"M-CMD","guild_id":"G1","channel_id":"MGMT1","content":"!status","author":{"id":"U1"}}`))
 	select {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("server command did not start")
 	}
-	conn.routeMessageEvent("MESSAGE_CREATE", "TASK1", json.RawMessage(`{"id":"M-AGENT","content":"agent prompt","author":{"id":"U1"}}`))
+	conn.routeMessageEvent("MESSAGE_CREATE", "TASK1", json.RawMessage(`{"id":"M-AGENT","guild_id":"G1","channel_id":"TASK1","content":"agent prompt","author":{"id":"U1"}}`))
 	select {
 	case event := <-sub:
 		if event.Type != "message_create" || event.Handle != "dwch_task" {
@@ -319,7 +319,7 @@ func TestRouteMessageEventPublishesTaskMessage(t *testing.T) {
 	sub, unsub := h.hub.Subscribe("client1")
 	defer unsub()
 	conn := &ccBotConn{apiKeyID: "key1", cc: h.cc, hub: h.hub, commands: h.handler}
-	payload := json.RawMessage(`{"id":"M1","channel_id":"TASK1","content":"hello codex","author":{"id":"U1","bot":false}}`)
+	payload := json.RawMessage(`{"id":"M1","guild_id":"G1","channel_id":"TASK1","content":"hello codex","author":{"id":"U1","bot":false}}`)
 	conn.routeMessageEvent("MESSAGE_CREATE", "TASK1", payload)
 
 	select {
@@ -356,7 +356,7 @@ func TestRouteMessageEventCommandsDoNotReachDaemon(t *testing.T) {
 	conn := &ccBotConn{apiKeyID: "key1", cc: h.cc, hub: h.hub, commands: h.handler}
 	defer conn.stop()
 
-	payload := json.RawMessage(`{"id":"M2","channel_id":"MGMT1","content":"!status","author":{"id":"U1","bot":false}}`)
+	payload := json.RawMessage(`{"id":"M2","guild_id":"G1","channel_id":"MGMT1","content":"!status","author":{"id":"U1","bot":false}}`)
 	conn.routeMessageEvent("MESSAGE_CREATE", "MGMT1", payload)
 
 	select {

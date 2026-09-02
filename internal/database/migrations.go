@@ -294,6 +294,14 @@ var migrations = []string{
 		channel_handle TEXT REFERENCES cc_channels(handle) ON DELETE CASCADE,
 		event_type  TEXT NOT NULL,
 		payload     TEXT NOT NULL DEFAULT '{}',
+		event_key   TEXT NOT NULL DEFAULT '',
+		lane_key    TEXT NOT NULL DEFAULT '',
+		status      TEXT NOT NULL DEFAULT 'admitted',
+		claim_token TEXT NOT NULL DEFAULT '',
+		lease_expires_at TEXT,
+		attempt_count INTEGER NOT NULL DEFAULT 0,
+		last_error  TEXT NOT NULL DEFAULT '',
+		completed_at TEXT,
 		created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_inbox_cc_id ON discord_inbox(cc_id, id)`,
@@ -455,6 +463,14 @@ func runMigrations(db *sql.DB) error {
 		"ALTER TABLE cc_channels ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE cc_channels ADD COLUMN cwd TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE cc_channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'",
+		"ALTER TABLE discord_inbox ADD COLUMN event_key TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE discord_inbox ADD COLUMN lane_key TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE discord_inbox ADD COLUMN status TEXT NOT NULL DEFAULT 'admitted'",
+		"ALTER TABLE discord_inbox ADD COLUMN claim_token TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE discord_inbox ADD COLUMN lease_expires_at TEXT",
+		"ALTER TABLE discord_inbox ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE discord_inbox ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE discord_inbox ADD COLUMN completed_at TEXT",
 		// Key Group v2: score-based selection with 429 auto-rotation
 		"ALTER TABLE placeholder_keys ADD COLUMN key_group_id TEXT REFERENCES key_groups(id)",
 		// Key Group v3: pluggable rotation strategies + round-robin last_used tracking
@@ -497,6 +513,8 @@ func runMigrations(db *sql.DB) error {
 		"DELETE FROM cc_channels WHERE client_id IS NULL OR client_id = ''",
 		"DELETE FROM control_channels WHERE client_id = ''",
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_client ON control_channels(client_id) WHERE client_id != ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_event_key ON discord_inbox(cc_id, event_key) WHERE event_key != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_inbox_claim ON discord_inbox(cc_id, status, lane_key, id)`,
 		`UPDATE services
 		 SET host_pattern = 'discord.com,api.discord.com,gateway.discord.gg,*.discordapp.net', upstream_url = 'https://discord.com/api/v10'
 		 WHERE name = 'discord' AND host_pattern = 'discord.com'`,

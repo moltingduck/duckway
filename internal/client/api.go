@@ -175,6 +175,62 @@ type CCInboxEvent struct {
 	EventType     string  `json:"event_type"`
 	Payload       string  `json:"payload"`
 	CreatedAt     string  `json:"created_at"`
+	EventKey      string  `json:"event_key,omitempty"`
+	LaneKey       string  `json:"lane_key,omitempty"`
+	Status        string  `json:"status,omitempty"`
+	ClaimToken    string  `json:"claim_token,omitempty"`
+	AttemptCount  int     `json:"attempt_count,omitempty"`
+}
+
+func (c *APIClient) ClaimCCInbox(ctx context.Context, leaseSeconds int) (*CCInboxEvent, error) {
+	body, _ := json.Marshal(map[string]int{"lease_seconds": leaseSeconds})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/client/cc/inbox/claim", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("claim cc inbox: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("claim cc inbox returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var ev CCInboxEvent
+	if err := json.NewDecoder(resp.Body).Decode(&ev); err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}
+
+func (c *APIClient) FinishCCInbox(ctx context.Context, id int64, claimToken, status, errText string) error {
+	body, _ := json.Marshal(map[string]interface{}{"claim_token": claimToken, "status": status, "error": errText})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/client/cc/inbox/%d/finish", c.baseURL, id), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("finish cc inbox returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
+func (c *APIClient) RenewCCInbox(ctx context.Context, id int64, claimToken string) error {
+	return c.FinishCCInbox(ctx, id, claimToken, "claimed", "")
 }
 
 type CCInboxResponse struct {
@@ -568,6 +624,55 @@ func (c *APIClient) CreateCCChannel(ctx context.Context, name, topic, cwd string
 // PostCC posts a bot-author message to a CC channel by handle.
 func (c *APIClient) PostCC(ctx context.Context, handle, content string) error {
 	return c.PostCCReply(ctx, handle, content, "")
+}
+
+// PostCCMessage posts one message and returns its Discord ID. It is used for
+// the single editable progress preview; regular final replies retain the
+// existing chunking/retry path.
+func (c *APIClient) PostCCMessage(ctx context.Context, handle, content string) (string, error) {
+	body, _ := json.Marshal(map[string]string{"content": content})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/client/cc/channels/"+handle+"/messages", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("server %d: %s", resp.StatusCode, string(b))
+	}
+	var out struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	return out.MessageID, nil
+}
+
+func (c *APIClient) EditCCMessage(ctx context.Context, handle, messageID, content string) error {
+	body, _ := json.Marshal(map[string]string{"content": content})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.baseURL+"/client/cc/channels/"+handle+"/messages/"+messageID, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
 }
 
 func (c *APIClient) PostCCReply(ctx context.Context, handle, content, replyToMessageID string) error {

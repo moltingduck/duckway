@@ -24,7 +24,11 @@ func openTestDB(t *testing.T) *sql.DB {
 	stmts := []string{
 		`CREATE TABLE control_channels (id TEXT PRIMARY KEY, name TEXT, service_id TEXT, api_key_id TEXT, client_id TEXT, agent_type TEXT, placeholder_id TEXT, config TEXT, is_active INT, created_at TEXT)`,
 		`CREATE TABLE cc_channels (handle TEXT PRIMARY KEY, cc_id TEXT, client_id TEXT, channel_id TEXT, name TEXT, topic TEXT, kind TEXT, session_id TEXT, cwd TEXT, archived INT, created_at TEXT, last_seen_at TEXT)`,
-		`CREATE TABLE discord_inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, cc_id TEXT, channel_handle TEXT, event_type TEXT, payload TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+		`CREATE TABLE discord_inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, cc_id TEXT, channel_handle TEXT, event_type TEXT, payload TEXT,
+		 event_key TEXT NOT NULL DEFAULT '', lane_key TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'admitted',
+		 claim_token TEXT NOT NULL DEFAULT '', lease_expires_at TEXT, attempt_count INTEGER NOT NULL DEFAULT 0,
+		 last_error TEXT NOT NULL DEFAULT '', completed_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+		`CREATE UNIQUE INDEX idx_inbox_event_key ON discord_inbox(cc_id,event_key) WHERE event_key != ''`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -125,6 +129,7 @@ func TestInboxCleanupRetention(t *testing.T) {
 	if _, err := q.AppendInbox("cc1", strPtr("h1"), "fresh", "{}"); err != nil {
 		t.Fatal(err)
 	}
+	_, _ = db.Exec(`UPDATE discord_inbox SET status='completed'`)
 
 	// Retention 24h should drop the old one but keep fresh.
 	if err := q.CleanupInbox(24, 1000); err != nil {
@@ -145,6 +150,7 @@ func TestInboxCleanupPerChannelCap(t *testing.T) {
 		// the id ordering already guarantees newest-N selection.
 		time.Sleep(time.Millisecond)
 	}
+	_, _ = db.Exec(`UPDATE discord_inbox SET status='completed'`)
 
 	// Cap at 2: should keep newest 2.
 	if err := q.CleanupInbox(0, 2); err != nil {
@@ -153,6 +159,62 @@ func TestInboxCleanupPerChannelCap(t *testing.T) {
 	got, _ := q.PullInbox("cc1", 0, nil, 100)
 	if len(got) != 2 {
 		t.Errorf("cap failed: got %d, want 2", len(got))
+	}
+}
+
+func TestInboxAdmissionDeduplicatesEventKey(t *testing.T) {
+	db := openTestDB(t)
+	q := NewControlChannelQueries(db)
+	id1, inserted, err := q.AdmitInboxDetailed("cc1", strPtr("h1"), "MESSAGE_CREATE", "MESSAGE_CREATE:123", "h1", `{}`)
+	if err != nil || !inserted {
+		t.Fatalf("first admission id=%d inserted=%v err=%v", id1, inserted, err)
+	}
+	id2, inserted, err := q.AdmitInboxDetailed("cc1", strPtr("h1"), "MESSAGE_CREATE", "MESSAGE_CREATE:123", "h1", `{}`)
+	if err != nil || inserted || id2 != id1 {
+		t.Fatalf("duplicate id=%d inserted=%v err=%v", id2, inserted, err)
+	}
+}
+
+func TestInboxClaimEnforcesLaneFIFOAndToken(t *testing.T) {
+	db := openTestDB(t)
+	q := NewControlChannelQueries(db)
+	first, _ := q.AdmitInbox("cc1", strPtr("h1"), "MESSAGE_CREATE", "MESSAGE_CREATE:1", "h1", `{}`)
+	second, _ := q.AdmitInbox("cc1", strPtr("h1"), "MESSAGE_CREATE", "MESSAGE_CREATE:2", "h1", `{}`)
+	other, _ := q.AdmitInbox("cc1", strPtr("h2"), "MESSAGE_CREATE", "MESSAGE_CREATE:3", "h2", `{}`)
+
+	a, err := q.ClaimInbox("cc1", 120)
+	if err != nil || a.ID != first || a.ClaimToken == "" {
+		t.Fatalf("first claim=%+v err=%v", a, err)
+	}
+	b, err := q.ClaimInbox("cc1", 120)
+	if err != nil || b.ID != other {
+		t.Fatalf("parallel lane claim=%+v err=%v", b, err)
+	}
+	if err := q.FinishInbox("cc1", first, "wrong", "completed", ""); err != sql.ErrNoRows {
+		t.Fatalf("wrong token err=%v", err)
+	}
+	if err := q.FinishInbox("cc1", first, a.ClaimToken, "completed", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.FinishInbox("cc1", other, b.ClaimToken, "completed", ""); err != nil {
+		t.Fatal(err)
+	}
+	c, err := q.ClaimInbox("cc1", 120)
+	if err != nil || c.ID != second {
+		t.Fatalf("second lane head=%+v err=%v", c, err)
+	}
+}
+
+func TestInboxExpiredLeaseIsReclaimedBeforeLaterLaneItem(t *testing.T) {
+	db := openTestDB(t)
+	q := NewControlChannelQueries(db)
+	first, _ := q.AdmitInbox("cc1", strPtr("h1"), "MESSAGE_CREATE", "MESSAGE_CREATE:1", "h1", `{}`)
+	_, _ = q.AdmitInbox("cc1", strPtr("h1"), "MESSAGE_CREATE", "MESSAGE_CREATE:2", "h1", `{}`)
+	a, _ := q.ClaimInbox("cc1", 120)
+	_, _ = db.Exec(`UPDATE discord_inbox SET lease_expires_at=datetime('now','-1 second') WHERE id=?`, first)
+	b, err := q.ClaimInbox("cc1", 120)
+	if err != nil || b.ID != first || b.ClaimToken == a.ClaimToken || b.AttemptCount != 2 {
+		t.Fatalf("reclaim=%+v first=%+v err=%v", b, a, err)
 	}
 }
 

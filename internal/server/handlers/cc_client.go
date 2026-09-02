@@ -619,6 +619,69 @@ func (h *CCClientHandler) PullInbox(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ClaimInbox leases the oldest eligible per-channel lane head. SSE is only a
+// wake-up hint; this endpoint is the authoritative delivery path.
+func (h *CCClientHandler) ClaimInbox(w http.ResponseWriter, r *http.Request) {
+	_, cc, _, ok := h.resolveCC(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		LeaseSeconds int `json:"lease_seconds"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	ev, err := h.cc.ClaimInbox(cc.ID, req.LeaseSeconds)
+	if err == sql.ErrNoRows {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		jsonError(w, "claim inbox: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, ev)
+}
+
+func (h *CCClientHandler) FinishInbox(w http.ResponseWriter, r *http.Request) {
+	_, cc, _, ok := h.resolveCC(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("inbox_id"), 10, 64)
+	if err != nil || id <= 0 {
+		jsonError(w, "invalid inbox id", http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		ClaimToken string `json:"claim_token"`
+		Status     string `json:"status"`
+		Error      string `json:"error"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ClaimToken == "" {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if req.Status == "claimed" {
+		if err := h.cc.RenewInbox(cc.ID, id, req.ClaimToken, 3600); err != nil {
+			jsonError(w, "inbox claim not found", http.StatusConflict)
+			return
+		}
+		jsonResponse(w, map[string]string{"status": "claimed"})
+		return
+	}
+	if err := h.cc.FinishInbox(cc.ID, id, req.ClaimToken, req.Status, req.Error); err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "inbox claim not found", http.StatusConflict)
+			return
+		}
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	jsonResponse(w, map[string]string{"status": req.Status})
+}
+
 func (h *CCClientHandler) ReportAgentTest(w http.ResponseWriter, r *http.Request) {
 	client, _, _, ok := h.resolveCC(w, r)
 	if !ok {

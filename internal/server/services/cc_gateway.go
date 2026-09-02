@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -193,23 +195,133 @@ type ccBotConn struct {
 	commands  *CCCommandHandler
 	approvals *CCApprovalRegistry
 
-	mu             sync.Mutex
-	ws             *websocket.Conn
-	hbMs           int
-	seq            *int
-	sessionID      string // Discord session_id from last READY; empty = must IDENTIFY
-	resumeURL      string // resume_gateway_url from READY; falls back to /gateway/bot
-	stopCh         chan struct{}
-	stopped        bool
-	commandOnce    sync.Once
-	commandCh      chan ccGatewayCommand
-	commandHandler func(context.Context, ccGatewayCommand)
+	mu                   sync.Mutex
+	ws                   *websocket.Conn
+	hbMs                 int
+	seq                  *int
+	sessionID            string // Discord session_id from last READY; empty = must IDENTIFY
+	resumeURL            string // resume_gateway_url from READY; falls back to /gateway/bot
+	stopCh               chan struct{}
+	stopped              bool
+	commandOnce          sync.Once
+	commandCh            chan ccGatewayCommand
+	commandHandler       func(context.Context, ccGatewayCommand)
+	botUserID            string
+	awaitingHeartbeatAck bool
+	lastHeartbeatAck     time.Time
 }
 
 type ccGatewayCommand struct {
 	ccID    string
 	channel models.CCChannel
 	content string
+}
+
+type discordCCPolicy struct {
+	GuildID              string   `json:"guild_id"`
+	CategoryID           string   `json:"category_id"`
+	Enabled              *bool    `json:"enabled,omitempty"`
+	AllowedUserIDs       []string `json:"allowed_user_ids,omitempty"`
+	AllowedRoleIDs       []string `json:"allowed_role_ids,omitempty"`
+	RequireMention       bool     `json:"require_mention,omitempty"`
+	AutoThreadManagement *bool    `json:"auto_thread_management,omitempty"`
+}
+
+func prospectiveThreadHandle(ccID, messageID string) string {
+	sum := sha256.Sum256([]byte(ccID + ":" + messageID))
+	return fmt.Sprintf("dwch_thr_%x", sum[:10])
+}
+
+func prospectiveThreadName(content string) string {
+	name := strings.TrimSpace(strings.SplitN(content, "\n", 2)[0])
+	if name == "" {
+		name = "agent-task"
+	}
+	r := []rune(name)
+	if len(r) > 80 {
+		name = string(r[:80])
+	}
+	return name
+}
+
+type ccInboundMessage struct {
+	ID        string `json:"id"`
+	GuildID   string `json:"guild_id"`
+	ChannelID string `json:"channel_id"`
+	Content   string `json:"content"`
+	Author    struct {
+		ID  string `json:"id"`
+		Bot bool   `json:"bot"`
+	} `json:"author"`
+	Member struct {
+		Roles []string `json:"roles"`
+	} `json:"member"`
+	Mentions []struct {
+		ID string `json:"id"`
+	} `json:"mentions"`
+}
+
+func containsDiscordID(ids []string, target string) bool {
+	for _, id := range ids {
+		if id == target || id == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func authorizeCCInbound(cc models.ControlChannel, ch models.CCChannel, payload json.RawMessage, botUserID string) (ccInboundMessage, string) {
+	var msg ccInboundMessage
+	if err := json.Unmarshal(payload, &msg); err != nil || msg.ID == "" || msg.ChannelID == "" || msg.Author.ID == "" {
+		return msg, "malformed_transport"
+	}
+	if msg.Author.Bot || msg.Author.ID == botUserID {
+		return msg, "bot_author"
+	}
+	if !cc.IsActive {
+		return msg, "cc_disabled"
+	}
+	if ch.Archived {
+		return msg, "channel_archived"
+	}
+	var policy discordCCPolicy
+	if err := json.Unmarshal([]byte(cc.Config), &policy); err != nil || policy.GuildID == "" || policy.CategoryID == "" {
+		return msg, "invalid_policy"
+	}
+	if msg.GuildID == "" || msg.GuildID != policy.GuildID {
+		return msg, "wrong_guild"
+	}
+	if policy.Enabled != nil && !*policy.Enabled {
+		return msg, "policy_disabled"
+	}
+	if len(policy.AllowedUserIDs) > 0 && !containsDiscordID(policy.AllowedUserIDs, msg.Author.ID) {
+		return msg, "user_denied"
+	}
+	if len(policy.AllowedRoleIDs) > 0 {
+		ok := false
+		for _, role := range msg.Member.Roles {
+			if containsDiscordID(policy.AllowedRoleIDs, role) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return msg, "role_denied"
+		}
+	}
+	if policy.RequireMention {
+		mentioned := false
+		for _, mention := range msg.Mentions {
+			if mention.ID == botUserID {
+				mentioned = true
+				break
+			}
+		}
+		if !mentioned {
+			return msg, "mention_required"
+		}
+	}
+	return msg, ""
 }
 
 func (c *ccBotConn) enqueueCommand(cmd ccGatewayCommand) bool {
@@ -352,6 +464,7 @@ func (c *ccBotConn) connect() error {
 	hbDone := make(chan struct{})
 	c.mu.Lock()
 	c.ws = ws
+	c.awaitingHeartbeatAck = false
 	c.mu.Unlock()
 	defer func() {
 		close(hbDone)
@@ -442,7 +555,16 @@ func (c *ccBotConn) connect() error {
 		case 0:
 			c.handleDispatch(payload.T, payload.D)
 		case 1:
-			c.sendHeartbeat(ws)
+			if err := c.sendHeartbeat(ws); err != nil {
+				return err
+			}
+		case 11:
+			c.mu.Lock()
+			if c.ws == ws {
+				c.awaitingHeartbeatAck = false
+				c.lastHeartbeatAck = time.Now()
+			}
+			c.mu.Unlock()
 		case 7:
 			return fmt.Errorf("reconnect requested")
 		case 9:
@@ -464,6 +586,9 @@ func (c *ccBotConn) handleDispatch(eventType string, data json.RawMessage) {
 		var rd struct {
 			SessionID string `json:"session_id"`
 			ResumeURL string `json:"resume_gateway_url"`
+			User      struct {
+				ID string `json:"id"`
+			} `json:"user"`
 		}
 		if err := json.Unmarshal(data, &rd); err == nil && rd.SessionID != "" {
 			c.mu.Lock()
@@ -471,6 +596,7 @@ func (c *ccBotConn) handleDispatch(eventType string, data json.RawMessage) {
 			if rd.ResumeURL != "" {
 				c.resumeURL = rd.ResumeURL
 			}
+			c.botUserID = rd.User.ID
 			c.mu.Unlock()
 			log.Printf("[cc-gw] %s connected", c.apiKeyID)
 		}
@@ -544,24 +670,42 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 	if err != nil {
 		return
 	}
+	// One bot may serve several CCs, but one real Discord channel must never
+	// route to more than one client. Ambiguity fails closed instead of relying
+	// on database iteration order.
+	matches := 0
+	for _, candidate := range all {
+		if mapped, lookupErr := c.cc.GetChannelByRealID(candidate.ID, realChannelID); lookupErr == nil && mapped != nil {
+			matches++
+		}
+	}
+	if matches > 1 {
+		log.Printf("[cc-gw] inbound denied reason=ambiguous_channel_mapping channel=%s", realChannelID)
+		return
+	}
 	for _, cc := range all {
 		ch, err := c.cc.GetChannelByRealID(cc.ID, realChannelID)
 		if err != nil || ch == nil {
 			continue
+		}
+		var inbound ccInboundMessage
+		if eventType == "MESSAGE_CREATE" {
+			var deny string
+			inbound, deny = authorizeCCInbound(cc, *ch, payload, c.botUserID)
+			if deny != "" {
+				log.Printf("[cc-gw] inbound denied reason=%s cc=%s handle=%s", deny, cc.ID, ch.Handle)
+				return
+			}
 		}
 
 		// !-prefix messages on MESSAGE_CREATE are commands. Run them
 		// server-side and don't forward — daemons should never see
 		// human commands as agent input.
 		if eventType == "MESSAGE_CREATE" && c.commands != nil {
-			var msg struct {
-				Content string `json:"content"`
-			}
-			_ = json.Unmarshal(payload, &msg)
-			if LooksLikeCommand(msg.Content) {
-				cmd := ccGatewayCommand{ccID: cc.ID, channel: *ch, content: msg.Content}
+			if LooksLikeCommand(inbound.Content) {
+				cmd := ccGatewayCommand{ccID: cc.ID, channel: *ch, content: inbound.Content}
 				if !c.enqueueCommand(cmd) {
-					log.Printf("[cc-gw] %s: command queue full, dropping %q", c.apiKeyID, msg.Content)
+					log.Printf("[cc-gw] %s: command queue full, dropping %q", c.apiKeyID, inbound.Content)
 					go func() {
 						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 						defer cancel()
@@ -573,7 +717,50 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 			}
 		}
 
-		inboxID, _ := c.cc.AppendInbox(cc.ID, &ch.Handle, eventType, string(payload))
+		// A plain prompt in the management channel prospectively binds the
+		// starter snowflake as the future thread channel before forwarding the
+		// first turn. Discord makes thread_id == starter message_id, so follow-up
+		// events resolve to the exact same opaque handle/session after restart.
+		if eventType == "MESSAGE_CREATE" && ch.Kind == "management" {
+			var policy discordCCPolicy
+			_ = json.Unmarshal([]byte(cc.Config), &policy)
+			autoThread := policy.AutoThreadManagement == nil || *policy.AutoThreadManagement
+			if autoThread {
+				handle := prospectiveThreadHandle(cc.ID, inbound.ID)
+				thread := &models.CCChannel{Handle: handle, CCID: cc.ID, ClientID: &cc.ClientID,
+					ChannelID: inbound.ID, Name: prospectiveThreadName(inbound.Content), Topic: "Discord task thread", Kind: "task"}
+				if err := c.cc.CreateChannel(thread); err != nil {
+					existing, getErr := c.cc.GetChannelByRealID(cc.ID, inbound.ID)
+					if getErr != nil {
+						log.Printf("[cc-gw] reserve prospective thread failed cc=%s: %v", cc.ID, err)
+						return
+					}
+					thread = existing
+				} else if err := NewDiscordBot().CreateMessageThread(context.Background(), c.botToken, ch.ChannelID, inbound.ID, thread.Name); err != nil {
+					_ = c.cc.DeleteChannel(handle)
+					log.Printf("[cc-gw] create prospective thread failed cc=%s: %v", cc.ID, err)
+					return
+				}
+				ch = thread
+			}
+		}
+
+		var identity struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(payload, &identity); err != nil || identity.ID == "" {
+			log.Printf("[cc-gw] inbound denied reason=missing_event_id cc=%s handle=%s", cc.ID, ch.Handle)
+			return
+		}
+		inboxID, inserted, err := c.cc.AdmitInboxDetailed(cc.ID, &ch.Handle, eventType,
+			eventType+":"+identity.ID, ch.Handle, string(payload))
+		if err != nil {
+			log.Printf("[cc-gw] inbox admission failed cc=%s handle=%s: %v", cc.ID, ch.Handle, err)
+			return
+		}
+		if !inserted {
+			return
+		}
 		if c.hub != nil && cc.ClientID != "" {
 			c.hub.Publish(cc.ClientID, CCEvent{
 				Type:    sseTypeFromGateway(eventType),
@@ -661,23 +848,39 @@ func (c *ccBotConn) heartbeat(ws *websocket.Conn, done <-chan struct{}) {
 		case <-done:
 			return
 		case <-ticker.C:
-			c.sendHeartbeat(ws)
+			c.mu.Lock()
+			stale := c.ws == ws && c.awaitingHeartbeatAck
+			c.mu.Unlock()
+			if stale {
+				log.Printf("[cc-gw] %s heartbeat ACK timeout; reconnecting", c.apiKeyID)
+				_ = ws.Close()
+				return
+			}
+			if err := c.sendHeartbeat(ws); err != nil {
+				_ = ws.Close()
+				return
+			}
 		}
 	}
 }
 
-func (c *ccBotConn) sendHeartbeat(ws *websocket.Conn) {
+func (c *ccBotConn) sendHeartbeat(ws *websocket.Conn) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.ws != ws {
+		return fmt.Errorf("stale discord websocket")
+	}
 	hb := gatewayPayload{Op: 1}
 	if c.seq != nil {
 		hb.D = json.RawMessage(strconv.Itoa(*c.seq))
 	} else {
 		hb.D = json.RawMessage("null")
 	}
-	if c.ws != nil {
-		websocket.JSON.Send(ws, hb)
+	if err := websocket.JSON.Send(ws, hb); err != nil {
+		return err
 	}
+	c.awaitingHeartbeatAck = true
+	return nil
 }
 
 // gatewayLookupAttempts bounds how many times getGatewayURL retries a transient

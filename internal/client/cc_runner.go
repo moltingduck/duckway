@@ -58,6 +58,8 @@ type ccRunner struct {
 	postReply         func(ctx context.Context, handle, content, replyToMessageID string) error
 	react             func(ctx context.Context, handle, messageID, emoji string) error
 	reportTest        func(ctx context.Context, testID, status, errText string) error
+	postProgress      func(ctx context.Context, handle, content string) (string, error)
+	editProgress      func(ctx context.Context, handle, messageID, content string) error
 	logger            func(format string, args ...interface{})
 	mu                sync.Mutex
 	activeCancel      context.CancelFunc
@@ -71,11 +73,16 @@ type ccRunner struct {
 
 // ccTask is one queued prompt.
 type ccTask struct {
-	Content     string
-	AuthorID    string
-	MessageID   string
-	ChannelKind string // "management" or "task" — drives prompt injection
-	TestID      string
+	Content      string
+	AuthorID     string
+	MessageID    string
+	ChannelKind  string // "management" or "task" — drives prompt injection
+	TestID       string
+	InboxID      int64
+	ClaimToken   string
+	AttemptCount int
+	finishInbox  func(success bool, errText string)
+	renewInbox   func()
 	// The runner waits for the queued acknowledgement to reach Discord so its
 	// running-state reaction cannot overtake the duck reaction.
 	queuedReactionDone <-chan struct{}
@@ -185,9 +192,8 @@ func newCCRunnerWithProcessed(handle, configDir, channelCwd string, spec ccAgent
 // the user said cap 10, drop excess + notify).
 func (r *ccRunner) Enqueue(t ccTask) bool {
 	r.mu.Lock()
-	stopped := r.stopped
-	r.mu.Unlock()
-	if stopped {
+	defer r.mu.Unlock()
+	if r.stopped {
 		return false
 	}
 	select {
@@ -307,6 +313,21 @@ func (r *ccRunner) recoverPendingStart() {
 
 // run executes one prompt against the configured agent and posts the response back.
 func (r *ccRunner) run(t ccTask) {
+	finished := false
+	finish := func(success bool, errText string) {
+		if finished {
+			return
+		}
+		finished = true
+		if t.finishInbox != nil {
+			t.finishInbox(success, errText)
+		}
+	}
+	defer func() {
+		if !finished {
+			finish(false, "agent turn interrupted")
+		}
+	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	r.mu.Lock()
 	if r.stopped {
@@ -330,6 +351,7 @@ func (r *ccRunner) run(t ccTask) {
 	prompt := t.Content
 	if cmd, ok := directShellCommand(prompt); ok {
 		r.runDirectShellCommand(ctx, t, cmd)
+		finish(true, "")
 		return
 	}
 	// Discord/the daemon reserve the `/` trigger character agents use for
@@ -378,18 +400,19 @@ func (r *ccRunner) run(t ccTask) {
 	r.appendHistory("user", prompt)
 	r.reactToTask(t, "⏳")
 	r.reportTaskTest(t, "started", "")
-	done := r.startLongRunReporter(t)
+	reporter := r.startLongRunReporter(t)
 	newSID, result, isError, err := r.runAgentWithRetries(ctx, prompt, sid, extraEnv)
-	close(done)
+	reporter.stop("✅ Completed.")
 	if err != nil && sid != "" && isStaleAgentSessionError(err) {
 		_ = r.sessions.Drop(r.handle)
 		r.logger("[cc-watch] %s: stale %s session %s dropped after resume failure: %v", r.handle, r.agentName, shortForLog(sid), err)
-		done = r.startLongRunReporter(t)
+		reporter = r.startLongRunReporter(t)
 		newSID, result, isError, err = r.runAgentWithRetries(ctx, prompt, "", extraEnv)
-		close(done)
+		reporter.stop("✅ Completed.")
 	}
 	if err != nil {
 		if ctx.Err() != nil {
+			finish(false, ctx.Err().Error())
 			return
 		}
 		r.reportTaskTest(t, "failed", err.Error())
@@ -398,6 +421,7 @@ func (r *ccRunner) run(t ccTask) {
 		if postErr := r.postTaskMessage(t, fmt.Sprintf("%s error: %v", r.agentName, err)); postErr != nil {
 			r.logger("[cc-watch] %s: post error message failed: %v", r.handle, postErr)
 		}
+		finish(false, err.Error())
 		return
 	}
 
@@ -427,6 +451,7 @@ func (r *ccRunner) run(t ccTask) {
 		r.logger("[cc-watch] %s: discord post failed: %v", r.handle, err)
 		r.reportTaskTest(t, "failed", "discord post failed: "+err.Error())
 		r.reactToTask(t, "⚠️")
+		finish(false, err.Error())
 		return
 	}
 	if isError {
@@ -435,6 +460,7 @@ func (r *ccRunner) run(t ccTask) {
 		r.reactToTask(t, "✅")
 	}
 	r.reportTaskTest(t, "replied", "")
+	finish(true, "")
 }
 
 func (r *ccRunner) runAgentWithRetries(ctx context.Context, prompt, sid string, extraEnv []string) (sessionID, result string, isError bool, err error) {
@@ -697,42 +723,97 @@ func shellJoinForLog(args []string) string {
 	return strings.Join(quoted, " ")
 }
 
-func (r *ccRunner) startLongRunReporter(t ccTask) chan struct{} {
-	done := make(chan struct{})
+type ccProgressReporter struct {
+	done chan string
+	wg   sync.WaitGroup
+}
+
+func (p *ccProgressReporter) stop(final string) {
+	if p == nil {
+		return
+	}
+	p.done <- final
+	p.wg.Wait()
+}
+
+func (r *ccRunner) startLongRunReporter(t ccTask) *ccProgressReporter {
+	p := &ccProgressReporter{done: make(chan string, 1)}
 	firstNotice := ccLongRunFirstNotice
 	interval := ccLongRunInterval
+	p.wg.Add(1)
 	go func() {
+		defer p.wg.Done()
+		previewID := ""
+		postOrEdit := func(elapsed time.Duration) {
+			if t.renewInbox != nil {
+				t.renewInbox()
+			}
+			msg := r.longRunNotice(t, elapsed)
+			if msg == "" {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if previewID == "" && r.postProgress != nil {
+				id, err := r.postProgress(ctx, r.handle, msg)
+				if err == nil {
+					previewID = id
+					return
+				}
+				r.logger("[cc-watch] %s: progress preview post failed: %v", r.handle, err)
+			}
+			if previewID != "" && r.editProgress != nil {
+				if err := r.editProgress(ctx, r.handle, previewID, msg); err != nil {
+					r.logger("[cc-watch] %s: progress preview edit failed: %v", r.handle, err)
+				}
+				return
+			}
+			r.postLongRunNotice(t, elapsed)
+		}
 		timer := time.NewTimer(firstNotice)
 		defer timer.Stop()
 		select {
-		case <-done:
+		case <-p.done:
 			return
 		case <-timer.C:
-			r.postLongRunNotice(t, firstNotice)
+			postOrEdit(firstNotice)
 		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		elapsed := firstNotice
 		for {
 			select {
-			case <-done:
+			case final := <-p.done:
+				if previewID != "" && r.editProgress != nil {
+					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					_ = r.editProgress(ctx, r.handle, previewID, final)
+					cancel()
+				}
 				return
 			case <-ticker.C:
 				elapsed += interval
-				r.postLongRunNotice(t, elapsed)
+				postOrEdit(elapsed)
 			}
 		}
 	}()
-	return done
+	return p
 }
 
-func (r *ccRunner) postLongRunNotice(t ccTask, elapsed time.Duration) {
+func (r *ccRunner) longRunNotice(t ccTask, elapsed time.Duration) string {
 	if t.TestID != "" && !isDiscordSnowflake(t.MessageID) {
-		return
+		return ""
 	}
 	msg := fmt.Sprintf("⏳ Still running after %s. Use `!log` to show the latest agent conversation.", formatDurationForDiscord(elapsed))
 	if recent := r.formatRecentHistory(3); recent != "" {
 		msg += "\n\n" + recent
+	}
+	return msg
+}
+
+func (r *ccRunner) postLongRunNotice(t ccTask, elapsed time.Duration) {
+	msg := r.longRunNotice(t, elapsed)
+	if msg == "" {
+		return
 	}
 	if err := r.postTaskMessage(t, msg); err != nil {
 		r.logger("[cc-watch] %s: long-run notice post failed: %v", r.handle, err)

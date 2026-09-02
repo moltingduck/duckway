@@ -338,6 +338,12 @@ type InboxEvent struct {
 	ChannelHandle *string `json:"channel_handle"`
 	EventType     string  `json:"event_type"`
 	Payload       string  `json:"payload"`
+	EventKey      string  `json:"event_key,omitempty"`
+	LaneKey       string  `json:"lane_key,omitempty"`
+	Status        string  `json:"status,omitempty"`
+	ClaimToken    string  `json:"claim_token,omitempty"`
+	AttemptCount  int     `json:"attempt_count,omitempty"`
+	LastError     string  `json:"last_error,omitempty"`
 	CreatedAt     string  `json:"created_at"`
 }
 

@@ -485,6 +485,8 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	clientMux.HandleFunc("DELETE /client/cc/channels/{handle}/messages/{message_id}", ccClientH.DeleteMessage)
 	clientMux.HandleFunc("POST /client/cc/channels/{handle}/approval", ccClientH.RequestApproval)
 	clientMux.HandleFunc("GET /client/cc/inbox", ccClientH.PullInbox)
+	clientMux.HandleFunc("POST /client/cc/inbox/claim", ccClientH.ClaimInbox)
+	clientMux.HandleFunc("POST /client/cc/inbox/{inbox_id}/finish", ccClientH.FinishInbox)
 	clientMux.HandleFunc("POST /client/cc/agent-tests/{test_id}", ccClientH.ReportAgentTest)
 
 	// Client config (no auth — needed during duckway init before token is verified)
