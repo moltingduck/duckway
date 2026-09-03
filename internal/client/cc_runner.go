@@ -401,17 +401,40 @@ func (r *ccRunner) run(t ccTask) {
 	r.reactToTask(t, "⏳")
 	r.reportTaskTest(t, "started", "")
 	reporter := r.startLongRunReporter(t)
-	newSID, result, isError, err := r.runAgentWithRetries(ctx, prompt, sid, extraEnv)
-	reporter.stop("✅ Completed.")
+	boundSession := sid
+	progressCtx := withCCAgentProgress(ctx, dedupeCCAgentProgress(func(event ccAgentProgress) {
+		reporter.publish(event.Summary)
+		if event.SessionID == "" || !validCodexThreadID(event.SessionID) {
+			return
+		}
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.sessionGeneration != sessionGeneration || r.stopped {
+			return
+		}
+		if boundSession == "" {
+			boundSession = event.SessionID
+		} else if boundSession != event.SessionID {
+			return
+		}
+		if event.SessionID == r.sessions.Get(r.handle) {
+			return
+		}
+		if err := r.sessions.Set(r.handle, event.SessionID); err != nil {
+			r.logger("[cc-watch] %s: persist early session failed: %v", r.handle, err)
+		}
+	}))
+	newSID, result, isError, err := r.runAgentWithRetries(progressCtx, prompt, sid, extraEnv)
 	if err != nil && sid != "" && isStaleAgentSessionError(err) {
 		_ = r.sessions.Drop(r.handle)
+		boundSession = ""
 		r.logger("[cc-watch] %s: stale %s session %s dropped after resume failure: %v", r.handle, r.agentName, shortForLog(sid), err)
-		reporter = r.startLongRunReporter(t)
-		newSID, result, isError, err = r.runAgentWithRetries(ctx, prompt, "", extraEnv)
-		reporter.stop("✅ Completed.")
+		reporter.publish("Starting a fresh agent session")
+		newSID, result, isError, err = r.runAgentWithRetries(progressCtx, prompt, "", extraEnv)
 	}
 	if err != nil {
 		if ctx.Err() != nil {
+			reporter.stop("⏹️ Cancelled.")
 			finish(false, ctx.Err().Error())
 			return
 		}
@@ -420,6 +443,9 @@ func (r *ccRunner) run(t ccTask) {
 		r.reactToTask(t, "⚠️")
 		if postErr := r.postTaskMessage(t, fmt.Sprintf("%s error: %v", r.agentName, err)); postErr != nil {
 			r.logger("[cc-watch] %s: post error message failed: %v", r.handle, postErr)
+			reporter.stop("⚠️ Failed; Discord delivery also failed.")
+		} else {
+			reporter.stop("⚠️ Failed.")
 		}
 		finish(false, err.Error())
 		return
@@ -451,13 +477,16 @@ func (r *ccRunner) run(t ccTask) {
 		r.logger("[cc-watch] %s: discord post failed: %v", r.handle, err)
 		r.reportTaskTest(t, "failed", "discord post failed: "+err.Error())
 		r.reactToTask(t, "⚠️")
+		reporter.stop("⚠️ Response delivery failed.")
 		finish(false, err.Error())
 		return
 	}
 	if isError {
 		r.reactToTask(t, "⚠️")
+		reporter.stop("⚠️ Failed.")
 	} else {
 		r.reactToTask(t, "✅")
+		reporter.stop("✅ Completed.")
 	}
 	r.reportTaskTest(t, "replied", "")
 	finish(true, "")
@@ -724,8 +753,27 @@ func shellJoinForLog(args []string) string {
 }
 
 type ccProgressReporter struct {
-	done chan string
-	wg   sync.WaitGroup
+	done    chan string
+	updates chan string
+	wg      sync.WaitGroup
+}
+
+func (p *ccProgressReporter) publish(summary string) {
+	if p == nil || summary == "" {
+		return
+	}
+	select {
+	case p.updates <- summary:
+	default:
+		select {
+		case <-p.updates:
+		default:
+		}
+		select {
+		case p.updates <- summary:
+		default:
+		}
+	}
 }
 
 func (p *ccProgressReporter) stop(final string) {
@@ -737,18 +785,24 @@ func (p *ccProgressReporter) stop(final string) {
 }
 
 func (r *ccRunner) startLongRunReporter(t ccTask) *ccProgressReporter {
-	p := &ccProgressReporter{done: make(chan string, 1)}
+	p := &ccProgressReporter{done: make(chan string, 1), updates: make(chan string, 1)}
 	firstNotice := ccLongRunFirstNotice
 	interval := ccLongRunInterval
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
 		previewID := ""
-		postOrEdit := func(elapsed time.Duration) {
+		postOrEdit := func(elapsed time.Duration, summary string) {
 			if t.renewInbox != nil {
 				t.renewInbox()
 			}
+			if t.TestID != "" && !isDiscordSnowflake(t.MessageID) {
+				return
+			}
 			msg := r.longRunNotice(t, elapsed)
+			if summary != "" {
+				msg = "⏳ " + summary + " · " + formatDurationForDiscord(elapsed)
+			}
 			if msg == "" {
 				return
 			}
@@ -756,7 +810,7 @@ func (r *ccRunner) startLongRunReporter(t ccTask) *ccProgressReporter {
 			defer cancel()
 			if previewID == "" && r.postProgress != nil {
 				id, err := r.postProgress(ctx, r.handle, msg)
-				if err == nil {
+				if err == nil && id != "" {
 					previewID = id
 					return
 				}
@@ -768,31 +822,57 @@ func (r *ccRunner) startLongRunReporter(t ccTask) *ccProgressReporter {
 				}
 				return
 			}
+			if summary != "" {
+				return
+			}
 			r.postLongRunNotice(t, elapsed)
 		}
+		started := time.Now()
 		timer := time.NewTimer(firstNotice)
 		defer timer.Stop()
-		select {
-		case <-p.done:
-			return
-		case <-timer.C:
-			postOrEdit(firstNotice)
+	waitForFirst:
+		for {
+			select {
+			case <-p.done:
+				return
+			case summary := <-p.updates:
+				postOrEdit(time.Since(started), summary)
+				break waitForFirst
+			case <-timer.C:
+				postOrEdit(firstNotice, "")
+				break waitForFirst
+			}
 		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		elapsed := firstNotice
+		progressTicker := time.NewTicker(5 * time.Second)
+		defer progressTicker.Stop()
+		pending := ""
 		for {
 			select {
 			case final := <-p.done:
 				if previewID != "" && r.editProgress != nil {
 					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-					_ = r.editProgress(ctx, r.handle, previewID, final)
+					if err := r.editProgress(ctx, r.handle, previewID, final); err != nil {
+						r.logger("[cc-watch] %s: final progress preview edit failed: %v", r.handle, err)
+					}
 					cancel()
 				}
 				return
+			case summary := <-p.updates:
+				pending = summary
+				if previewID == "" {
+					postOrEdit(time.Since(started), pending)
+					pending = ""
+				}
+			case <-progressTicker.C:
+				if pending != "" {
+					postOrEdit(time.Since(started), pending)
+					pending = ""
+				}
 			case <-ticker.C:
-				elapsed += interval
-				postOrEdit(elapsed)
+				postOrEdit(time.Since(started), pending)
+				pending = ""
 			}
 		}
 	}()
@@ -804,9 +884,6 @@ func (r *ccRunner) longRunNotice(t ccTask, elapsed time.Duration) string {
 		return ""
 	}
 	msg := fmt.Sprintf("⏳ Still running after %s. Use `!log` to show the latest agent conversation.", formatDurationForDiscord(elapsed))
-	if recent := r.formatRecentHistory(3); recent != "" {
-		msg += "\n\n" + recent
-	}
 	return msg
 }
 
@@ -876,10 +953,6 @@ func (r *ccRunner) appendHistory(role, text string) {
 	if len(r.history) > maxHistory {
 		r.history = append([]ccHistoryEntry(nil), r.history[len(r.history)-maxHistory:]...)
 	}
-}
-
-func (r *ccRunner) formatRecentHistory(n int) string {
-	return formatRecentHistory(r.historySnapshot(), n)
 }
 
 func (r *ccRunner) historySnapshot() []ccHistoryEntry {

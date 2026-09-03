@@ -142,6 +142,7 @@ func runCodexCommandUntilComplete(ctx context.Context, cmd *exec.Cmd) ([]byte, e
 		for sc.Scan() {
 			line := append([]byte(nil), sc.Bytes()...)
 			outMu.writeLine(line)
+			emitCodexProgressLine(ctx, line)
 			parsed := parseCodexJSONLResult(outMu.bytes(), "")
 			if parsed.Complete && parsed.Result != "" {
 				select {
@@ -182,6 +183,52 @@ func runCodexCommandUntilComplete(ctx context.Context, cmd *exec.Cmd) ([]byte, e
 		}
 		<-waitDone
 		return outMu.bytes(), ctx.Err()
+	}
+}
+
+func emitCodexProgressLine(ctx context.Context, line []byte) {
+	var ev codexJSONEvent
+	if len(line) == 0 || line[0] != '{' || json.Unmarshal(line, &ev) != nil {
+		return
+	}
+	progress := ccAgentProgress{}
+	switch ev.Type {
+	case "thread.started":
+		progress.Summary, progress.SessionID = "Codex session started", ev.ThreadID
+	case "turn.started":
+		progress.Summary = "Codex is planning the next steps"
+	case "item.started":
+		progress.Summary = codexItemProgress(ev.Item.Type, false)
+	case "item.completed":
+		progress.Summary = codexItemProgress(ev.Item.Type, true)
+	case "turn.completed", "task_complete":
+		progress.Summary = "Codex is preparing the final response"
+	case "turn.failed", "error":
+		progress.Summary = "Codex reported an error"
+	}
+	if progress.Summary != "" || progress.SessionID != "" {
+		emitCCAgentProgress(ctx, progress)
+	}
+}
+
+func codexItemProgress(itemType string, completed bool) string {
+	verb := "Running"
+	if completed {
+		verb = "Completed"
+	}
+	switch itemType {
+	case "command_execution":
+		return verb + " a command"
+	case "mcp_tool_call":
+		return verb + " a tool operation"
+	case "web_search":
+		return verb + " a web search"
+	case "file_change":
+		return verb + " a file update"
+	case "reasoning":
+		return "Analyzing the task"
+	default:
+		return ""
 	}
 }
 

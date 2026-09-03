@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunViaClaudePTYParsesJSON(t *testing.T) {
@@ -25,6 +26,42 @@ func TestRunViaClaudePTYParsesJSON(t *testing.T) {
 	}
 	if sid != "sid-1" || result != "hello pty" || isErr {
 		t.Fatalf("sid=%q result=%q isErr=%v", sid, result, isErr)
+	}
+}
+
+func TestCCPTYTimeoutConfiguration(t *testing.T) {
+	t.Setenv("DUCKWAY_CC_PTY_IDLE_TIMEOUT", "45m")
+	if got := ccPTYIdleTimeout(nil); got != 45*time.Minute {
+		t.Fatalf("idle timeout=%v", got)
+	}
+	t.Setenv("DUCKWAY_CC_PTY_IDLE_TIMEOUT", "off")
+	if got := ccPTYIdleTimeout(nil); got != 0 {
+		t.Fatalf("disabled idle timeout=%v", got)
+	}
+	t.Setenv("DUCKWAY_CC_PTY_MAX_RUNTIME", "48h")
+	if got := ccPTYMaxRuntime(nil); got != 24*time.Hour {
+		t.Fatalf("clamped max runtime=%v", got)
+	}
+}
+
+func TestRunViaCodexPTYUsesIdleTimeoutAndStopsSession(t *testing.T) {
+	binDir := installDucklionTestHelper(t)
+	codex := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(codex, []byte("#!/bin/sh\nsleep 5\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	started := time.Now()
+	_, _, _, err := runViaCodexPTY(context.Background(), codex, t.TempDir(), "hi", "", []string{
+		"DUCKWAY_CONFIG_DIR=" + shortTempDir(t),
+		"DUCKWAY_CC_CHANNEL_HANDLE=dwch_idle",
+		"DUCKWAY_CC_PTY_IDLE_TIMEOUT=50ms",
+	})
+	if err == nil || !strings.Contains(err.Error(), "idle timed out") {
+		t.Fatalf("error=%v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("idle timeout cleanup took %v", elapsed)
 	}
 }
 

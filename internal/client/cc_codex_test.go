@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,21 @@ func TestParseCodexJSONL(t *testing.T) {
 	}
 	if isError {
 		t.Fatal("isError = true")
+	}
+}
+
+func TestEmitCodexProgressLineUsesSafeSemanticSummaries(t *testing.T) {
+	var events []ccAgentProgress
+	ctx := withCCAgentProgress(context.Background(), func(event ccAgentProgress) { events = append(events, event) })
+	emitCodexProgressLine(ctx, []byte(`{"type":"thread.started","thread_id":"019f02a8-0abe-71c1-bbf6-54b1c4a41dc7"}`))
+	emitCodexProgressLine(ctx, []byte(`{"type":"item.started","item":{"type":"command_execution","command":"echo SUPER_SECRET"}}`))
+	emitCodexProgressLine(ctx, []byte(`{"type":"item.completed","item":{"type":"mcp_tool_call","arguments":{"token":"SUPER_SECRET"}}}`))
+	if len(events) != 3 {
+		t.Fatalf("events=%+v", events)
+	}
+	joined := fmt.Sprint(events)
+	if strings.Contains(joined, "SUPER_SECRET") || !strings.Contains(joined, "Running a command") || !strings.Contains(joined, "Completed a tool operation") {
+		t.Fatalf("unsafe or missing semantic progress: %s", joined)
 	}
 }
 

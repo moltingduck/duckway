@@ -7,9 +7,9 @@ import (
 )
 
 const (
-	ptyRows           = 40
-	ptyCols           = 120
-	ptyDefaultTimeout = 5 * time.Minute
+	ptyRows               = 40
+	ptyCols               = 120
+	ptyDefaultIdleTimeout = 30 * time.Minute
 )
 
 type stopPayload struct {

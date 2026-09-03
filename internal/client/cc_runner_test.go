@@ -259,8 +259,11 @@ func TestCCRunner_PostsProgressForLongRunningTask(t *testing.T) {
 	if !strings.Contains(posts, "done") {
 		t.Fatalf("missing final result:\n%s", posts)
 	}
-	if !strings.Contains(posts, "Still running") || !strings.Contains(posts, "Latest agent conversation") {
+	if !strings.Contains(posts, "Still running") {
 		t.Fatalf("missing long-run progress notice:\n%s", posts)
+	}
+	if strings.Contains(posts, "slow work") {
+		t.Fatalf("progress notice leaked prompt history:\n%s", posts)
 	}
 	if got := strings.Count(posts, "Still running after"); got < 2 {
 		t.Fatalf("long-running task should post repeated progress notices, got %d:\n%s", got, posts)
@@ -284,7 +287,8 @@ func TestDiscordProgressPreviewE2E(t *testing.T) {
 	oldFirst, oldInterval := ccLongRunFirstNotice, ccLongRunInterval
 	ccLongRunFirstNotice, ccLongRunInterval = 15*time.Millisecond, 20*time.Millisecond
 	t.Cleanup(func() { ccLongRunFirstNotice, ccLongRunInterval = oldFirst, oldInterval })
-	fn := ccRunFn(func(_ context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
+	fn := ccRunFn(func(ctx context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
+		emitCCAgentProgress(ctx, ccAgentProgress{Summary: "Running a command"})
 		time.Sleep(80 * time.Millisecond)
 		return "sess-preview", "final answer", false, nil
 	})
@@ -297,7 +301,7 @@ func TestDiscordProgressPreviewE2E(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		posts++
-		if handle != "dwch_t" || !strings.Contains(content, "Still running") {
+		if handle != "dwch_t" || !strings.Contains(content, "Running a command") {
 			t.Errorf("preview post handle=%s content=%q", handle, content)
 		}
 		return "preview-1", nil
@@ -326,6 +330,70 @@ func TestDiscordProgressPreviewE2E(t *testing.T) {
 	}
 	if edits[len(edits)-1] != "✅ Completed." {
 		t.Fatalf("last preview edit=%q", edits[len(edits)-1])
+	}
+}
+
+func TestCodexProgressPersistsSessionBeforeTurnCompletes(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	sid := "019f02a8-0abe-71c1-bbf6-54b1c4a41dc7"
+	fn := ccRunFn(func(ctx context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
+		emitCCAgentProgress(ctx, ccAgentProgress{Summary: "Codex session started", SessionID: sid})
+		close(started)
+		<-release
+		return sid, "done", false, nil
+	})
+	r, _, store := newTestRunnerForAgent(t, "codex", fn)
+	defer r.Stop()
+	if !r.Enqueue(ccTask{Content: "work", MessageID: "1783330000000000003", ChannelKind: "task"}) {
+		t.Fatal("enqueue")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("agent did not start")
+	}
+	if got := store.Get("dwch_t"); got != sid {
+		t.Fatalf("early session=%q, want %q", got, sid)
+	}
+	close(release)
+}
+
+func TestCodexProgressMarksAgentErrorFailed(t *testing.T) {
+	previewPosted := make(chan struct{})
+	fn := ccRunFn(func(ctx context.Context, _, _, _, _ string, _ []string) (string, string, bool, error) {
+		emitCCAgentProgress(ctx, ccAgentProgress{Summary: "Codex is planning the next steps"})
+		select {
+		case <-previewPosted:
+		case <-ctx.Done():
+			return "", "", false, ctx.Err()
+		}
+		return "", "agent rejected the task", true, nil
+	})
+	r, pp, _ := newTestRunnerForAgent(t, "codex", fn)
+	defer r.Stop()
+	var once sync.Once
+	var mu sync.Mutex
+	var terminal string
+	r.postProgress = func(context.Context, string, string) (string, error) {
+		once.Do(func() { close(previewPosted) })
+		return "preview-error", nil
+	}
+	r.editProgress = func(_ context.Context, _, _, content string) error {
+		mu.Lock()
+		terminal = content
+		mu.Unlock()
+		return nil
+	}
+	if !r.Enqueue(ccTask{Content: "fail", MessageID: "1783330000000000004", ChannelKind: "task"}) {
+		t.Fatal("enqueue")
+	}
+	waitForPosts(t, pp, 1)
+	r.Stop()
+	mu.Lock()
+	defer mu.Unlock()
+	if terminal != "⚠️ Failed." {
+		t.Fatalf("terminal progress=%q", terminal)
 	}
 }
 

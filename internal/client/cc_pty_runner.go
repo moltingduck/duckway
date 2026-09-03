@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -88,7 +89,13 @@ func runCommandInDucklionPTY(ctx context.Context, agentType, bin, cwd string, ar
 		return nil, err
 	}
 	defer func() { _ = manager.Stop(name) }()
-	deadline := time.Now().Add(ptyDefaultTimeout)
+	idleTimeout := ccPTYIdleTimeout(extraEnv)
+	maxRuntime := ccPTYMaxRuntime(extraEnv)
+	startedAt := time.Now()
+	lastActivity := time.Now()
+	lastOutput := ""
+	seenLines := make(map[[32]byte]struct{})
+	seenOrder := make([][32]byte, 0, 4096)
 	for {
 		select {
 		case <-ctx.Done():
@@ -96,7 +103,27 @@ func runCommandInDucklionPTY(ctx context.Context, agentType, bin, cwd string, ar
 			return nil, ctx.Err()
 		default:
 		}
-		out := []byte(mustReadDucklion(manager, name))
+		output := mustReadDucklion(manager, name)
+		out := []byte(output)
+		if output != lastOutput {
+			lastOutput = output
+			lastActivity = time.Now()
+			if agentType == "codex" {
+				for _, line := range bytes.Split(normalizePTYCommandOutput(out), []byte("\n")) {
+					hash := sha256.Sum256(line)
+					if _, seen := seenLines[hash]; seen {
+						continue
+					}
+					seenLines[hash] = struct{}{}
+					seenOrder = append(seenOrder, hash)
+					if len(seenOrder) > 4096 {
+						delete(seenLines, seenOrder[0])
+						seenOrder = seenOrder[1:]
+					}
+					emitCodexProgressLine(ctx, line)
+				}
+			}
+		}
 		if complete != nil && complete(out) {
 			return out, nil
 		}
@@ -113,11 +140,51 @@ func runCommandInDucklionPTY(ctx context.Context, agentType, bin, cwd string, ar
 			out = []byte(mustReadDucklion(manager, name))
 			return out, nil
 		}
-		if time.Now().After(deadline) {
-			return out, fmt.Errorf("%s pty runner timed out after %v", agentType, ptyDefaultTimeout)
+		if idleTimeout > 0 && time.Since(lastActivity) >= idleTimeout {
+			return out, fmt.Errorf("%s pty runner idle timed out after %v", agentType, idleTimeout)
+		}
+		if time.Since(startedAt) >= maxRuntime {
+			return out, fmt.Errorf("%s pty runner exceeded maximum runtime %v", agentType, maxRuntime)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+func ccPTYMaxRuntime(extraEnv []string) time.Duration {
+	const defaultMax = 6 * time.Hour
+	raw := strings.TrimSpace(envValue(extraEnv, "DUCKWAY_CC_PTY_MAX_RUNTIME"))
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv("DUCKWAY_CC_PTY_MAX_RUNTIME"))
+	}
+	if raw == "" {
+		return defaultMax
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultMax
+	}
+	if d > 24*time.Hour {
+		return 24 * time.Hour
+	}
+	return d
+}
+
+func ccPTYIdleTimeout(extraEnv []string) time.Duration {
+	raw := strings.TrimSpace(envValue(extraEnv, "DUCKWAY_CC_PTY_IDLE_TIMEOUT"))
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv("DUCKWAY_CC_PTY_IDLE_TIMEOUT"))
+	}
+	if raw == "" {
+		return ptyDefaultIdleTimeout
+	}
+	if raw == "0" || strings.EqualFold(raw, "off") || strings.EqualFold(raw, "disabled") {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return ptyDefaultIdleTimeout
+	}
+	return d
 }
 
 func claudePTYOutputComplete(out []byte) bool {
