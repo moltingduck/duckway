@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -154,7 +156,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 		return
 	}
 	if remote.Role == protocol.RoleSupervisor {
-		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "supervisor recovery transport is not active", Retryable: true}})
+		s.handleSupervisor(conn, codec, remote)
 		return
 	}
 	if remote.Role != protocol.RoleDucklord {
@@ -190,6 +192,149 @@ func (s *Server) handle(conn *net.UnixConn) {
 	}
 }
 
+type registrationConnection struct {
+	mu             sync.Mutex
+	conn           *net.UnixConn
+	armed          bool
+	closeRequested bool
+}
+
+func (c *registrationConnection) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.armed {
+		c.closeRequested = true
+		return nil
+	}
+	return c.conn.Close()
+}
+
+func (c *registrationConnection) arm() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.armed = true
+	if c.closeRequested {
+		return c.conn.Close()
+	}
+	return nil
+}
+
+func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remote protocol.Handshake) {
+	sessionID, err := model.ParseSessionID(remote.Principal)
+	if err != nil || string(sessionID) != remote.Principal {
+		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "supervisor principal must be the canonical session ID"}})
+		return
+	}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"supervisor_recovery"}}
+	negotiated, protocolError := protocol.Negotiate(local, remote)
+	if protocolError != nil || !hasCapability(negotiated.Capabilities, "supervisor_recovery") {
+		if protocolError == nil {
+			protocolError = &protocol.Error{Code: protocol.ErrIncompatible, Message: "supervisor recovery capability is required"}
+		}
+		_ = codec.Write(protocol.HandshakeResponse{Error: protocolError})
+		return
+	}
+	if err := codec.Write(protocol.HandshakeResponse{Handshake: &negotiated}); err != nil {
+		return
+	}
+	var beginRequest protocol.Request
+	if err := codec.Read(&beginRequest); err != nil || beginRequest.Validate() != nil || beginRequest.Type != "supervisor.register_begin" || beginRequest.SessionID != string(sessionID) || (beginRequest.InstanceID != "" && beginRequest.InstanceID != string(s.instanceID)) {
+		writeSupervisorError(codec, beginRequest.ID, protocol.ErrInvalidArgument, "registration must begin with the bound session")
+		return
+	}
+	if len(beginRequest.Body) != 0 || beginRequest.RuntimeGeneration == nil || *beginRequest.RuntimeGeneration == 0 {
+		writeSupervisorError(codec, beginRequest.ID, protocol.ErrInvalidArgument, "invalid registration begin request")
+		return
+	}
+	generation := *beginRequest.RuntimeGeneration
+	challenge, err := s.registry.BeginRegistration(context.Background(), sessionID, generation)
+	if err != nil {
+		writeSupervisorError(codec, beginRequest.ID, protocol.ErrAdapterUnhealthy, "runtime is not recoverable")
+		return
+	}
+	challengeJSON, _ := json.Marshal(protocol.SupervisorChallenge{ChallengeID: challenge.ID, Nonce: challenge.Nonce, InstanceID: string(s.instanceID)})
+	if err := codec.Write(protocol.Response{ID: beginRequest.ID, Result: challengeJSON}); err != nil {
+		return
+	}
+	var completeRequest protocol.Request
+	if err := codec.Read(&completeRequest); err != nil || completeRequest.Validate() != nil || completeRequest.Type != "supervisor.register_complete" || completeRequest.SessionID != string(sessionID) || completeRequest.InstanceID != string(s.instanceID) || completeRequest.RuntimeGeneration == nil || *completeRequest.RuntimeGeneration != generation {
+		writeSupervisorError(codec, completeRequest.ID, protocol.ErrInvalidArgument, "registration proof must follow its challenge")
+		return
+	}
+	var complete protocol.SupervisorRegisterComplete
+	if err := decodeStrict(completeRequest.Body, &complete); err != nil || complete.ChallengeID != challenge.ID {
+		writeSupervisorError(codec, completeRequest.ID, protocol.ErrInvalidArgument, "invalid registration proof request")
+		return
+	}
+	runtimeConn := &registrationConnection{conn: conn}
+	identity, err := s.registry.CompleteRegistration(context.Background(), sessionID, generation, complete.ChallengeID, complete.Proof,
+		uint16(negotiated.Major), uint16(negotiated.Minor), runtimeConn)
+	if err != nil {
+		writeSupervisorError(codec, completeRequest.ID, protocol.ErrAdapterUnhealthy, "runtime registration failed")
+		return
+	}
+	if err := s.state.MarkRuntimeConnected(context.Background(), identity.SessionID, identity.Generation); err != nil {
+		s.registry.Disconnect(identity)
+		writeSupervisorError(codec, completeRequest.ID, protocol.ErrStaleGeneration, "runtime state changed during registration")
+		return
+	}
+	defer func() {
+		s.registry.Disconnect(identity)
+		_ = s.state.MarkRuntimeDisconnected(context.Background(), identity.SessionID, identity.Generation)
+	}()
+	if err := runtimeConn.arm(); err != nil {
+		return
+	}
+	_ = conn.SetDeadline(time.Time{})
+	registeredJSON, _ := json.Marshal(protocol.SupervisorRegistered{SessionID: string(identity.SessionID), RuntimeGeneration: identity.Generation, LeaseID: identity.LeaseID})
+	if err := codec.Write(protocol.Response{ID: completeRequest.ID, Result: registeredJSON}); err != nil {
+		return
+	}
+	for {
+		var request protocol.Request
+		if err := codec.Read(&request); err != nil {
+			return
+		}
+		if request.Validate() != nil || request.Type != "supervisor.ping" || request.InstanceID != string(s.instanceID) ||
+			request.SessionID != string(identity.SessionID) || request.RuntimeGeneration == nil || *request.RuntimeGeneration != identity.Generation || len(request.Body) != 0 {
+			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "operation is unavailable to supervisors")
+			continue
+		}
+		result, _ := json.Marshal(map[string]bool{"ok": true})
+		if err := codec.Write(protocol.Response{ID: request.ID, Result: result}); err != nil {
+			return
+		}
+	}
+}
+
+func hasCapability(capabilities []string, wanted string) bool {
+	for _, capability := range capabilities {
+		if capability == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func decodeStrict(data []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("request body must contain one JSON value")
+	}
+	return nil
+}
+
+func writeSupervisorError(codec *bridge.Codec, requestID string, code protocol.ErrorCode, message string) {
+	if requestID == "" {
+		return
+	}
+	_ = codec.Write(protocol.Response{ID: requestID, Error: &protocol.Error{Code: code, Message: message}})
+}
+
 func (s *Server) route(request protocol.Request) protocol.Response {
 	if request.InstanceID != "" && request.InstanceID != string(s.instanceID) {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "Ducklion instance does not match"}}
@@ -197,6 +342,19 @@ func (s *Server) route(request protocol.Request) protocol.Response {
 	switch request.Type {
 	case "status":
 		result, _ := json.Marshal(map[string]any{"instance_id": s.instanceID, "protocol_major": protocol.Major, "protocol_minor": protocol.Minor})
+		return protocol.Response{ID: request.ID, Result: result}
+	case "sessions.list":
+		sessions, err := s.state.ListSessions(context.Background())
+		if err != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not list sessions", Retryable: true}}
+		}
+		summaries := make([]protocol.SessionSummary, 0, len(sessions))
+		for _, session := range sessions {
+			summaries = append(summaries, protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind,
+				AgentType: session.AgentType, CWD: session.CWD, Status: session.Status, Writer: session.Writer, OwnershipEpoch: session.OwnershipEpoch,
+				RuntimeGeneration: session.RuntimeGeneration, TaskState: session.TaskState, AdapterState: session.AdapterState})
+		}
+		result, _ := json.Marshal(summaries)
 		return protocol.Response{ID: request.ID, Result: result}
 	default:
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "unsupported operation"}}

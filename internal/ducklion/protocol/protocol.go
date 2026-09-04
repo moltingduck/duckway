@@ -93,6 +93,9 @@ const (
 )
 
 func Negotiate(local, remote Handshake) (Handshake, *Error) {
+	if local.Major < 0 || local.Minor < 0 || remote.Major < 0 || remote.Minor < 0 {
+		return Handshake{}, &Error{Code: ErrInvalidArgument, Message: "protocol versions must not be negative"}
+	}
 	if local.Major != remote.Major {
 		return Handshake{}, &Error{Code: ErrIncompatible, Message: "protocol major version mismatch"}
 	}

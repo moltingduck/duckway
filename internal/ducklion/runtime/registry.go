@@ -17,6 +17,7 @@ var (
 	ErrRuntimeRegistered    = errors.New("runtime is already registered")
 	ErrChallengeInvalid     = errors.New("registration challenge is invalid")
 	ErrRecoveryProof        = errors.New("recovery proof is invalid")
+	ErrRegistryClosed       = errors.New("runtime registry is closed")
 )
 
 type SessionLookup interface {
@@ -57,6 +58,7 @@ type Registry struct {
 	now        func() time.Time
 	challenges map[string]pendingChallenge
 	live       map[model.SessionID]registeredRuntime
+	closed     bool
 }
 
 func NewRegistry(instanceID model.InstanceID, sessions SessionLookup) *Registry {
@@ -65,6 +67,12 @@ func NewRegistry(instanceID model.InstanceID, sessions SessionLookup) *Registry 
 }
 
 func (r *Registry) BeginRegistration(ctx context.Context, sessionID model.SessionID, generation uint64) (RegistrationChallenge, error) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return RegistrationChallenge{}, ErrRegistryClosed
+	}
+	r.mu.Unlock()
 	session, err := r.sessions.GetSession(ctx, sessionID)
 	if err != nil {
 		return RegistrationChallenge{}, err
@@ -82,6 +90,9 @@ func (r *Registry) BeginRegistration(ctx context.Context, sessionID model.Sessio
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return RegistrationChallenge{}, ErrRegistryClosed
+	}
 	if _, exists := r.live[sessionID]; exists {
 		return RegistrationChallenge{}, ErrRuntimeRegistered
 	}
@@ -136,6 +147,9 @@ func (r *Registry) CompleteRegistration(ctx context.Context, sessionID model.Ses
 	identity := RuntimeIdentity{SessionID: sessionID, Generation: generation, LeaseID: leaseID}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return RuntimeIdentity{}, ErrRegistryClosed
+	}
 	if _, exists := r.live[sessionID]; exists {
 		return RuntimeIdentity{}, ErrRuntimeRegistered
 	}
@@ -161,6 +175,7 @@ func (r *Registry) IsCurrent(identity RuntimeIdentity) bool {
 
 func (r *Registry) CloseAll() {
 	r.mu.Lock()
+	r.closed = true
 	live := r.live
 	r.live = make(map[model.SessionID]registeredRuntime)
 	r.challenges = make(map[string]pendingChallenge)

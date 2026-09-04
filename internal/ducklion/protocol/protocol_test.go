@@ -40,3 +40,12 @@ func TestHandshakeResponseRequiresExactlyOneOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNegotiateRejectsNegativeVersion(t *testing.T) {
+	local := Handshake{Major: Major, Minor: Minor, Role: RoleSupervisor, Principal: "ABC123", Capabilities: []string{"supervisor_recovery"}}
+	remote := local
+	remote.Minor = -1
+	if _, protocolError := Negotiate(local, remote); protocolError == nil || protocolError.Code != ErrInvalidArgument {
+		t.Fatalf("protocol error=%+v", protocolError)
+	}
+}

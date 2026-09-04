@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 )
@@ -19,6 +20,30 @@ type AuditEvent struct {
 	CreatedAtMS       int64
 }
 
+func (s *SQLite) MarkRuntimeConnected(ctx context.Context, id model.SessionID, generation uint64) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='running',adapter_state='healthy',updated_at_ms=?
+        WHERE session_id=? AND runtime_generation=? AND status='recovering' AND adapter_state='recovering'`, time.Now().UTC().UnixMilli(), id, generation)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return fmt.Errorf("runtime connection fencing conflict")
+	}
+	return nil
+}
+
+func (s *SQLite) MarkRuntimeDisconnected(ctx context.Context, id model.SessionID, generation uint64) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='recovering',adapter_state='recovering',updated_at_ms=?
+        WHERE session_id=? AND runtime_generation=? AND status='running' AND adapter_state='healthy'`, time.Now().UTC().UnixMilli(), id, generation)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows > 1 {
+		return fmt.Errorf("runtime disconnection updated multiple sessions")
+	}
+	return nil
+}
+
 func (s *SQLite) InsertAuditTx(ctx context.Context, tx *sql.Tx, event AuditEvent) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO audit_events(session_id,principal,event_type,ownership_epoch,runtime_generation,outcome_code,created_at_ms) VALUES(?,?,?,?,?,?,?)`,
 		event.SessionID, event.Principal, event.EventType, event.OwnershipEpoch, event.RuntimeGeneration, event.OutcomeCode, event.CreatedAtMS)
@@ -27,6 +52,23 @@ func (s *SQLite) InsertAuditTx(ctx context.Context, tx *sql.Tx, event AuditEvent
 
 func (s *SQLite) GetSession(ctx context.Context, id model.SessionID) (model.Session, error) {
 	return scanSession(s.db.QueryRowContext(ctx, sessionSelect+` WHERE session_id=?`, id))
+}
+
+func (s *SQLite) ListSessions(ctx context.Context) ([]model.Session, error) {
+	rows, err := s.db.QueryContext(ctx, sessionSelect+` ORDER BY created_at_ms,session_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sessions []model.Session
+	for rows.Next() {
+		session, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions, rows.Err()
 }
 
 func (s *SQLite) GetSessionTx(ctx context.Context, tx *sql.Tx, id model.SessionID) (model.Session, error) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 )
@@ -35,8 +36,7 @@ type inputRequest struct {
 }
 
 type InputPump struct {
-	mu     sync.Mutex
-	closed bool
+	closed atomic.Bool
 	gate   InputGate
 	writer io.Writer
 	queue  chan inputRequest
@@ -62,17 +62,17 @@ func (p *InputPump) Submit(ctx context.Context, frame InputFrame) error {
 		return err
 	}
 	request := inputRequest{ctx: ctx, frame: frame, result: make(chan error, 1)}
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
+	if p.closed.Load() {
 		p.gate.CompleteInput(ctx, frame, ErrInputPumpClosed)
 		return ErrInputPumpClosed
 	}
 	select {
 	case p.queue <- request:
-		p.mu.Unlock()
+		// The worker either writes this request or drains it with a closed error.
+	case <-p.done:
+		p.gate.CompleteInput(ctx, frame, ErrInputPumpClosed)
+		return ErrInputPumpClosed
 	case <-ctx.Done():
-		p.mu.Unlock()
 		p.gate.CompleteInput(ctx, frame, ctx.Err())
 		return ctx.Err()
 	}
@@ -84,10 +84,8 @@ func (p *InputPump) Submit(ctx context.Context, frame InputFrame) error {
 
 func (p *InputPump) Close() {
 	p.once.Do(func() {
-		p.mu.Lock()
-		p.closed = true
+		p.closed.Store(true)
 		close(p.done)
-		p.mu.Unlock()
 	})
 }
 

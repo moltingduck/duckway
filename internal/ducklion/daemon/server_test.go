@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
+	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 )
 
 func TestServerStatusAndSingleInstanceLock(t *testing.T) {
@@ -102,5 +105,88 @@ func TestServerRejectsWrongInstance(t *testing.T) {
 	response, err := client.Call(protocol.Request{ID: "status-1", Type: "status", InstanceID: "wrong"})
 	if err != nil || response.Error == nil || response.Error.Code != protocol.ErrNotFound {
 		t.Fatalf("response=%+v err=%v", response, err)
+	}
+}
+
+func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve() }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		<-serveErr
+	})
+	publicKey, privateKey, err := model.NewRecoveryKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+		Writer: &model.Owner{Kind: model.OwnerCC, ID: "channel"}, OwnershipEpoch: 1, RuntimeGeneration: 2, TaskState: model.TaskIdle,
+		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
+	if _, _, err := server.service.CreateSession(context.Background(), "cc:channel", "create", session); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := Dial(server.SocketPath(), "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := terminal.ListSessions()
+	_ = terminal.Close()
+	if err != nil || len(sessions) != 1 || sessions[0].SessionID != string(session.ID) || sessions[0].Handle != session.Handle {
+		t.Fatalf("sessions=%+v err=%v", sessions, err)
+	}
+	client, err := RegisterSupervisor(server.SocketPath(), session.ID, session.RuntimeGeneration, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := client.Identity()
+	runtimeIdentity := duckruntime.RuntimeIdentity{SessionID: session.ID, Generation: identity.RuntimeGeneration, LeaseID: identity.LeaseID}
+	if !server.registry.IsCurrent(runtimeIdentity) {
+		t.Fatal("registered supervisor is not current")
+	}
+	connected, err := server.state.GetSession(context.Background(), session.ID)
+	if err != nil || connected.Status != model.StatusRunning || connected.AdapterState != model.AdapterHealthy {
+		t.Fatalf("connected session=%+v err=%v", connected, err)
+	}
+	if _, err := RegisterSupervisor(server.SocketPath(), session.ID, session.RuntimeGeneration, privateKey); err == nil {
+		t.Fatal("second supervisor registration succeeded")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for server.registry.IsCurrent(runtimeIdentity) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if server.registry.IsCurrent(runtimeIdentity) {
+		t.Fatal("disconnected supervisor remains current")
+	}
+	disconnected, err := server.state.GetSession(context.Background(), session.ID)
+	if err != nil || disconnected.Status != model.StatusRecovering || disconnected.AdapterState != model.AdapterRecovering {
+		t.Fatalf("disconnected session=%+v err=%v", disconnected, err)
+	}
+}
+
+func TestSupervisorRecoveryRejectsWrongPrivateKey(t *testing.T) {
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveErr }()
+	publicKey, _, _ := model.NewRecoveryKey()
+	_, wrongPrivateKey, _ := model.NewRecoveryKey()
+	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+		Writer: &model.Owner{Kind: model.OwnerCC, ID: "channel"}, OwnershipEpoch: 1, RuntimeGeneration: 2, TaskState: model.TaskIdle,
+		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
+	if _, _, err := server.service.CreateSession(context.Background(), "cc:channel", "create", session); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RegisterSupervisor(server.SocketPath(), session.ID, session.RuntimeGeneration, wrongPrivateKey); err == nil {
+		t.Fatal("wrong recovery key registered")
 	}
 }

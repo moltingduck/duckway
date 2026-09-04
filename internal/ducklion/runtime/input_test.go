@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 )
@@ -40,6 +41,18 @@ type oneByteWriter struct {
 }
 
 type partialErrorWriter struct{ wrote bytes.Buffer }
+
+type blockingWriter struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingWriter) Write(data []byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	<-w.release
+	return len(data), nil
+}
 
 func (w *partialErrorWriter) Write(data []byte) (int, error) {
 	_ = w.wrote.WriteByte(data[0])
@@ -108,5 +121,33 @@ func TestInputPumpReportsCommittedPrefix(t *testing.T) {
 	var partial *PartialWriteError
 	if !errors.As(err, &partial) || partial.Written != 1 || writer.wrote.String() != "a" {
 		t.Fatalf("error=%v written=%q", err, writer.wrote.String())
+	}
+}
+
+func TestInputPumpCloseDoesNotBlockOnFullQueue(t *testing.T) {
+	gate := &fakeGate{}
+	writer := &blockingWriter{started: make(chan struct{}), release: make(chan struct{})}
+	pump := NewInputPump(gate, writer, 1)
+	results := make(chan error, 3)
+	for i := 0; i < 3; i++ {
+		go func() { results <- pump.Submit(context.Background(), InputFrame{Data: []byte("x")}) }()
+		if i == 0 {
+			<-writer.started
+		}
+	}
+	closed := make(chan struct{})
+	go func() { pump.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close blocked behind a full input queue")
+	}
+	close(writer.release)
+	for i := 0; i < 3; i++ {
+		select {
+		case <-results:
+		case <-time.After(time.Second):
+			t.Fatal("Submit remained blocked after Close")
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"sync"
@@ -72,3 +73,18 @@ func (c *Client) Call(request protocol.Request) (protocol.Response, error) {
 }
 
 func (c *Client) Close() error { return c.conn.Close() }
+
+func (c *Client) ListSessions() ([]protocol.SessionSummary, error) {
+	response, err := c.Call(protocol.Request{ID: "sessions-list", Type: "sessions.list"})
+	if err != nil {
+		return nil, err
+	}
+	if response.Error != nil {
+		return nil, fmt.Errorf("list sessions: %s", response.Error.Message)
+	}
+	var sessions []protocol.SessionSummary
+	if err := json.Unmarshal(response.Result, &sessions); err != nil {
+		return nil, err
+	}
+	return sessions, nil
+}
