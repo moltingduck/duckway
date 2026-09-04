@@ -170,9 +170,10 @@ func (s *Service) CompleteReply(ctx context.Context, principal, requestID string
 			return &protocol.Error{Code: protocol.ErrTaskNotActive, Message: "task has no active completion"}
 		}
 		session.TaskState = model.TaskIdle
-		if pending != nil && session.AdapterState == model.AdapterHealthy {
-			session.Writer = &pending.Requester
-			session.OwnershipEpoch++
+		if pending != nil {
+			if _, err := session.ApplyPendingYield(*pending); err != nil && !errors.Is(err, model.ErrStaleEpoch) {
+				return &protocol.Error{Code: mapError(err), Message: err.Error()}
+			}
 		}
 		return nil
 	})
@@ -217,7 +218,7 @@ func (s *Service) runTaskMutation(ctx context.Context, principal, requestID, ope
 		if err := s.state.UpdateSessionTx(ctx, tx, session, oldEpoch, oldGeneration); err != nil {
 			return nil, err
 		}
-		if pending != nil && session.TaskState == model.TaskIdle && session.OwnershipEpoch != oldEpoch {
+		if pending != nil && session.TaskState == model.TaskIdle && (session.OwnershipEpoch != oldEpoch || pending.SourceEpoch != session.OwnershipEpoch) {
 			if err := s.state.DeletePendingYieldTx(ctx, tx, sessionID); err != nil {
 				return nil, err
 			}

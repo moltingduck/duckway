@@ -3333,18 +3333,22 @@ Status: Decided
 
 Status: Decided
 
-- Ducklion generates a cryptographically random `recovery_token` whenever it
-  creates a PTY supervisor and persists only a domain-separated cryptographic
-  verifier with the session's supervisor recovery metadata.
-- The supervisor retains its token only in process memory and does not expose it
+- Ducklion generates an Ed25519 recovery key pair whenever it creates a PTY
+  supervisor and persists only the public key with the session's supervisor
+  recovery metadata.
+- The supervisor retains its private key only in process memory and does not expose it
   through command-line arguments, environment variables, status output, or
   bridge messages.
-- After Ducklion restarts, a surviving supervisor must register using its
-  `session_id`, `runtime_generation`, and `recovery_token`.
+- Ducklion delivers the initial private key through a private inherited pipe or
+  socketpair during supervisor spawn and closes its parent copy after bootstrap;
+  it is never written to a filesystem path.
+- After Ducklion restarts, it issues a fresh random nonce. The surviving
+  supervisor signs a domain-separated message containing the Ducklion instance
+  ID, session ID, runtime generation, negotiated protocol version, and nonce.
 - Ducklion accepts re-adoption only when the session and runtime generation
-  match and a constant-time authentication check proves possession of the
-  recovery token. A mismatch is rejected and the logical session remains in
-  its fail-closed recovery state.
+  match and the signature verifies with the persisted public key. A nonce is
+  single-use, so a captured proof cannot be replayed. A mismatch is rejected
+  and the logical session remains in its fail-closed recovery state.
 - Successful re-adoption still requires the existing protocol negotiation,
   adapter synchronization, and health validation before any writer input or
   ownership transfer is enabled.

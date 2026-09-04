@@ -1,6 +1,7 @@
 package model
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
 	"strings"
@@ -141,7 +142,7 @@ type Session struct {
 	RuntimeGeneration uint64
 	TaskState         TaskState
 	AdapterState      AdapterState
-	RecoveryVerifier  []byte
+	RecoveryPublicKey []byte
 	CreatedAtMS       int64
 	UpdatedAtMS       int64
 }
@@ -167,6 +168,9 @@ func (s Session) Validate() error {
 	}
 	if s.RuntimeGeneration == 0 {
 		return fmt.Errorf("runtime generation must be positive")
+	}
+	if len(s.RecoveryPublicKey) != 0 && len(s.RecoveryPublicKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("invalid recovery public key")
 	}
 	if s.Kind == KindAgent {
 		if strings.TrimSpace(s.AgentType) == "" || s.Writer == nil {

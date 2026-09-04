@@ -42,10 +42,10 @@ func (s *SQLite) InsertSessionTx(ctx context.Context, tx *sql.Tx, session model.
 		writerKind, writerID = session.Writer.Kind, session.Writer.ID
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO sessions
-        (session_id,handle,kind,agent_type,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_verifier,created_at_ms,updated_at_ms)
+        (session_id,handle,kind,agent_type,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_public_key,created_at_ms,updated_at_ms)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, session.ID, session.Handle, session.Kind, session.AgentType, session.CWD, session.Shell,
 		session.Status, writerKind, writerID, session.OwnershipEpoch, session.RuntimeGeneration, session.TaskState, session.AdapterState,
-		session.RecoveryVerifier, session.CreatedAtMS, session.UpdatedAtMS)
+		session.RecoveryPublicKey, session.CreatedAtMS, session.UpdatedAtMS)
 	return err
 }
 
@@ -57,9 +57,9 @@ func (s *SQLite) UpdateSessionTx(ctx context.Context, tx *sql.Tx, session model.
 	if session.Writer != nil {
 		writerKind, writerID = session.Writer.Kind, session.Writer.ID
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE sessions SET status=?,writer_kind=?,writer_id=?,ownership_epoch=?,runtime_generation=?,task_state=?,adapter_state=?,recovery_verifier=?,updated_at_ms=?
+	result, err := tx.ExecContext(ctx, `UPDATE sessions SET status=?,writer_kind=?,writer_id=?,ownership_epoch=?,runtime_generation=?,task_state=?,adapter_state=?,recovery_public_key=?,updated_at_ms=?
         WHERE session_id=? AND ownership_epoch=? AND runtime_generation=?`, session.Status, writerKind, writerID, session.OwnershipEpoch,
-		session.RuntimeGeneration, session.TaskState, session.AdapterState, session.RecoveryVerifier, session.UpdatedAtMS, session.ID, expectedEpoch, expectedGeneration)
+		session.RuntimeGeneration, session.TaskState, session.AdapterState, session.RecoveryPublicKey, session.UpdatedAtMS, session.ID, expectedEpoch, expectedGeneration)
 	if err != nil {
 		return err
 	}
@@ -96,7 +96,7 @@ func (s *SQLite) DeletePendingYieldTx(ctx context.Context, tx *sql.Tx, id model.
 	return err
 }
 
-const sessionSelect = `SELECT session_id,handle,kind,agent_type,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_verifier,created_at_ms,updated_at_ms FROM sessions`
+const sessionSelect = `SELECT session_id,handle,kind,agent_type,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_public_key,created_at_ms,updated_at_ms FROM sessions`
 
 type rowScanner interface{ Scan(...any) error }
 
@@ -105,7 +105,7 @@ func scanSession(row rowScanner) (model.Session, error) {
 	var writerKind, writerID sql.NullString
 	err := row.Scan(&session.ID, &session.Handle, &session.Kind, &session.AgentType, &session.CWD, &session.Shell, &session.Status,
 		&writerKind, &writerID, &session.OwnershipEpoch, &session.RuntimeGeneration, &session.TaskState, &session.AdapterState,
-		&session.RecoveryVerifier, &session.CreatedAtMS, &session.UpdatedAtMS)
+		&session.RecoveryPublicKey, &session.CreatedAtMS, &session.UpdatedAtMS)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Session{}, ErrNotFound
 	}

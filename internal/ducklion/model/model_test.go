@@ -81,19 +81,24 @@ func TestShellSessionRejectsYield(t *testing.T) {
 	}
 }
 
-func TestRecoveryVerifierIsSessionAndGenerationBound(t *testing.T) {
-	token, err := NewRecoveryToken()
+func TestRecoveryProofIsNonceSessionAndGenerationBound(t *testing.T) {
+	publicKey, privateKey, err := NewRecoveryKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	verifier := RecoveryVerifier("ABC123", 4, token)
-	if string(verifier) == string(token) {
-		t.Fatal("verifier exposes bearer token")
+	nonce, err := NewRecoveryNonce()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !VerifyRecoveryToken("ABC123", 4, token, verifier) {
-		t.Fatal("valid recovery token rejected")
+	instance := NewInstanceID()
+	proof := RecoveryProof(privateKey, instance, "ABC123", 4, nonce, 1, 0)
+	if !VerifyRecoveryProof(publicKey, instance, "ABC123", 4, nonce, proof, 1, 0) {
+		t.Fatal("valid recovery proof rejected")
 	}
-	if VerifyRecoveryToken("DEF456", 4, token, verifier) || VerifyRecoveryToken("ABC123", 5, token, verifier) {
-		t.Fatal("recovery token accepted for wrong runtime")
+	otherNonce, _ := NewRecoveryNonce()
+	if VerifyRecoveryProof(publicKey, instance, "DEF456", 4, nonce, proof, 1, 0) ||
+		VerifyRecoveryProof(publicKey, instance, "ABC123", 5, nonce, proof, 1, 0) ||
+		VerifyRecoveryProof(publicKey, instance, "ABC123", 4, otherNonce, proof, 1, 0) {
+		t.Fatal("recovery proof accepted for wrong challenge or runtime")
 	}
 }

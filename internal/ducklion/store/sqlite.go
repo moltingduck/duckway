@@ -190,7 +190,7 @@ func migrateV1(ctx context.Context, tx *sql.Tx) error {
             ownership_epoch INTEGER NOT NULL CHECK(ownership_epoch>=0), runtime_generation INTEGER NOT NULL CHECK(runtime_generation>=0),
             task_state TEXT NOT NULL CHECK(task_state IN ('idle','running','replying')),
             adapter_state TEXT NOT NULL CHECK(adapter_state IN ('unavailable','healthy','unhealthy','recovering')),
-            recovery_verifier BLOB, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+            recovery_public_key BLOB, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
             CHECK((kind='agent' AND agent_type<>'' AND writer_kind IS NOT NULL AND writer_id IS NOT NULL) OR
                   (kind='shell' AND agent_type='' AND writer_kind IS NULL AND writer_id IS NULL)))`,
 		`CREATE TABLE pending_yields (
