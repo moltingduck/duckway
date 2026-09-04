@@ -493,6 +493,38 @@ func (r *Runner) Stop(ctx context.Context, c Client, name string) error {
 	return err
 }
 
+func (r *Runner) Yield(ctx context.Context, c Client, ref string, wait bool) (protocol.SessionYieldResult, error) {
+	if r == nil || !r.hasOwner() {
+		return protocol.SessionYieldResult{}, fmt.Errorf("ducklord owner is not configured")
+	}
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return protocol.SessionYieldResult{}, err
+	}
+	selected, err := resolveSession(client, ref)
+	if err != nil {
+		return protocol.SessionYieldResult{}, err
+	}
+	operationID := uuid.NewString()
+	for attempt := 0; attempt < 2; attempt++ {
+		result, callErr := client.YieldSessionWithID(ctx, operationID, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, wait)
+		if callErr == nil {
+			return result, nil
+		}
+		err = callErr
+		var remoteErr *daemon.RemoteError
+		if errors.As(err, &remoteErr) {
+			return protocol.SessionYieldResult{}, err
+		}
+		r.discardBridge(bridgeKey(c), client)
+		client, err = r.bridgeClient(ctx, c)
+		if err != nil {
+			continue
+		}
+	}
+	return protocol.SessionYieldResult{}, fmt.Errorf("yield session has unknown outcome (operation %s): %w", operationID, err)
+}
+
 func resolveSession(client *daemon.Client, ref string) (protocol.SessionSummary, error) {
 	sessions, err := client.ListSessions()
 	if err != nil {

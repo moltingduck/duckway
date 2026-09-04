@@ -70,6 +70,26 @@ func TestRequestYieldWaitIsExclusiveAndDurable(t *testing.T) {
 	}
 }
 
+func TestRuntimeExitTransfersPendingYield(t *testing.T) {
+	ctx := context.Background()
+	service, state := openService(t)
+	session := newAgent("ABC123", "agent", model.TaskRunning)
+	if _, _, err := service.CreateSession(ctx, "cc:channel-1", "create", session); err != nil {
+		t.Fatal(err)
+	}
+	requester := model.Owner{Kind: model.OwnerTerminal, ID: "laptop"}
+	if outcome, _, err := service.RequestYield(ctx, "terminal:laptop", "yield", session.ID, requester, true, 1, 1); err != nil || outcome.Decision != model.YieldWaiting {
+		t.Fatalf("yield=%+v err=%v", outcome, err)
+	}
+	if err := state.MarkRuntimeExited(ctx, session.ID, 1, false, "restart"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := state.GetSession(ctx, session.ID)
+	if err != nil || got.Status != model.StatusStopped || got.TaskState != model.TaskIdle || got.OwnershipEpoch != 2 || got.Writer == nil || *got.Writer != requester {
+		t.Fatalf("session=%+v err=%v", got, err)
+	}
+}
+
 func TestImmediateYieldUpdatesEpochAndFencesStaleRetry(t *testing.T) {
 	ctx := context.Background()
 	service, state := openService(t)

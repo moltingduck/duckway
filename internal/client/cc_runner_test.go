@@ -117,6 +117,23 @@ func waitForPosts(t *testing.T, pp *recordingPoster, want int) {
 	t.Fatalf("only %d posts after 3s (wanted %d)", len(pp.all()), want)
 }
 
+func waitForPostContent(t *testing.T, pp *recordingPoster, values ...string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		posts := strings.Join(pp.all(), "\n")
+		matched := true
+		for _, value := range values {
+			matched = matched && strings.Contains(posts, value)
+		}
+		if matched {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("posts did not contain %q: %q", values, pp.all())
+}
+
 func TestCCRunnerRetriesCodexTransportFailure(t *testing.T) {
 	oldDelay := codexTransportRetryDelay
 	codexTransportRetryDelay = func(string, int) time.Duration { return 0 }
@@ -253,7 +270,9 @@ func TestCCRunner_PostsProgressForLongRunningTask(t *testing.T) {
 	if !r.Enqueue(ccTask{Content: "slow work", MessageID: messageID, ChannelKind: "task"}) {
 		t.Fatal("Enqueue returned false")
 	}
-	waitForPosts(t, pp, 4)
+	// The precise number of interval ticks is scheduler-dependent. Wait for the
+	// two user-visible guarantees instead: a progress notice and final result.
+	waitForPostContent(t, pp, "Still running", "done")
 
 	posts := strings.Join(pp.all(), "\n")
 	if !strings.Contains(posts, "done") {

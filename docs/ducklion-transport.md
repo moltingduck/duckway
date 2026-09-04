@@ -159,6 +159,40 @@ Resize is limited to 5–200 rows and 20–500 columns and is fenced at both dae
 and supervisor. Shell-session multi-writer behavior is intentional and follows
 the specification's tmux-like model.
 
+## Ownership handoff
+
+Ducklord translates `yield` (or the TUI `y` key) into `session.yield`; `-w`,
+`--wait`, and the TUI `Y` key set the request's `wait` field. The request is
+fenced by instance ID, session ID, ownership epoch, and runtime generation.
+Ducklion derives the terminal requester from the authenticated Ducklord owner
+name rather than accepting an owner in the request body.
+
+Both `ducklord` and `duckway_cc` identities use the host Unix-account trust
+boundary: the socket verifies the peer UID, while a stdio bridge is reached
+only after the user authenticates to that same account over SSH. Owner names
+and CC channel handles are trusted caller labels, not separate security
+principals. Consequently role assertion does not grant access beyond what the
+same Unix account can already request as a terminal owner.
+
+An idle agent session transfers immediately and increments its ownership epoch.
+A busy session rejects an ordinary yield. A wait-yield records one durable
+waiter and returns `waiting`; while it exists every competing yield is rejected
+with `pending_yield_exists`. There is no waiter timeout or cancel operation.
+Task completion or restart applies the waiter, increments the epoch, and makes
+that owner authoritative. Shell sessions and agent sessions without a healthy
+adapter reject yield. After an immediate transfer Ducklion synchronizes the new
+ownership fence to the independent PTY supervisor before accepting input.
+
+The CC adapter brackets admitted work with idempotent `session.task_begin` and
+`session.task_complete` calls. Completion applies a pending waiter in the same
+SQLite mutation and synchronizes the supervisor fence before acknowledging it;
+an identical lost-response retry replays the original writer and epoch. Runtime
+exit/restart also applies and removes the waiter transactionally. Input, resize,
+yield, and task transitions share a per-session operation gate. If a database
+failure follows a supervisor fence, Ducklion restores the previous fence; if
+that compensation also fails, it marks the session stopped/unavailable so no
+owner can continue writing until runtime recovery.
+
 ## Output and replay
 
 The supervisor owns a bounded in-memory output ring (managed sessions currently
@@ -187,9 +221,9 @@ covered by socket, real-PTY, daemon-restart, and Podman tests. Ducklord uses the
 authenticated bridge for inventory, creation, read, send, and streaming attach.
 Changing owner closes and renegotiates retained bridges.
 
-The remaining integration work includes yield/lifecycle RPCs, the complete
-terminal framebuffer and resize signal wiring, durable activity subscriptions,
-and Discord CC binding. Legacy CLI session state remains available only during
+The remaining integration work includes the complete terminal framebuffer and
+resize signal wiring, durable activity subscriptions, and Discord CC binding.
+Legacy CLI session state remains available only during
 this staged cutover and must not be mixed with daemon inventory.
 
 `scripts/ducklord-podman-demo.sh` is both a demo provisioner and a release

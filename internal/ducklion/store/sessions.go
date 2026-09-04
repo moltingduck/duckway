@@ -77,16 +77,54 @@ func (s *SQLite) MarkRuntimeExited(ctx context.Context, id model.SessionID, gene
 	if len(reason) > 1024 {
 		reason = reason[:1024]
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='stopped',task_state='idle',adapter_state=CASE kind WHEN 'agent' THEN 'unhealthy' ELSE 'unavailable' END,
-		exit_success=?,exit_reason=?,updated_at_ms=? WHERE session_id=? AND runtime_generation=? AND status IN ('running','recovering')`,
-		success, reason, time.Now().UTC().UnixMilli(), id, generation)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	session, err := s.GetSessionTx(ctx, tx, id)
+	if err != nil || session.RuntimeGeneration != generation || session.Status != model.StatusRunning && session.Status != model.StatusRecovering {
+		return fmt.Errorf("runtime stop fencing conflict")
+	}
+	pending, err := s.GetPendingYieldTx(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	oldEpoch := session.OwnershipEpoch
+	session.TaskState = model.TaskIdle
+	if pending != nil {
+		if _, err := session.ApplyPendingYield(*pending); err != nil && !errors.Is(err, model.ErrStaleEpoch) {
+			return err
+		}
+	}
+	session.Status = model.StatusStopped
+	if session.Kind == model.KindAgent {
+		session.AdapterState = model.AdapterUnhealthy
+	} else {
+		session.AdapterState = model.AdapterUnavailable
+	}
+	session.ExitSuccess = &success
+	session.ExitReason = reason
+	session.UpdatedAtMS = time.Now().UTC().UnixMilli()
+	var writerKind, writerID any
+	if session.Writer != nil {
+		writerKind, writerID = session.Writer.Kind, session.Writer.ID
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE sessions SET status=?,writer_kind=?,writer_id=?,ownership_epoch=?,task_state=?,adapter_state=?,exit_success=?,exit_reason=?,updated_at_ms=?
+		WHERE session_id=? AND ownership_epoch=? AND runtime_generation=? AND status IN ('running','recovering')`, session.Status, writerKind, writerID,
+		session.OwnershipEpoch, session.TaskState, session.AdapterState, success, reason, session.UpdatedAtMS, id, oldEpoch, generation)
 	if err != nil {
 		return err
 	}
 	if rows, _ := result.RowsAffected(); rows != 1 {
 		return fmt.Errorf("runtime stop fencing conflict")
 	}
-	return nil
+	if pending != nil {
+		if err := s.DeletePendingYieldTx(ctx, tx, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *SQLite) InsertAuditTx(ctx context.Context, tx *sql.Tx, event AuditEvent) error {

@@ -18,8 +18,10 @@ import (
 )
 
 type fakeRuntimeController struct {
-	inputs chan duckruntime.InputFrame
-	resize chan [4]uint64
+	inputs            chan duckruntime.InputFrame
+	resize            chan [4]uint64
+	ownership         chan [2]uint64
+	ownershipFailures chan error
 }
 
 func (c *fakeRuntimeController) SubmitInput(_ context.Context, frame duckruntime.InputFrame) error {
@@ -33,6 +35,19 @@ func (c *fakeRuntimeController) Resize(rows, cols uint16, epoch, generation uint
 }
 
 func (c *fakeRuntimeController) Terminate(bool) error { return nil }
+func (c *fakeRuntimeController) UpdateOwnership(epoch, generation uint64) error {
+	if c.ownership != nil {
+		c.ownership <- [2]uint64{epoch, generation}
+	}
+	if c.ownershipFailures != nil {
+		select {
+		case err := <-c.ownershipFailures:
+			return err
+		default:
+		}
+	}
+	return nil
+}
 
 func TestServerStatusAndSingleInstanceLock(t *testing.T) {
 	root := t.TempDir()
@@ -519,6 +534,136 @@ func TestDucklordInputAndResizeAreOwnerFenced(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("reconnected control did not stop")
 	}
+}
+
+func TestTerminalYieldTransfersCCSessionAndSynchronizesSupervisor(t *testing.T) {
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	publicKey, privateKey, _ := model.NewRecoveryKey()
+	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+		Writer: &model.Owner{Kind: model.OwnerCC, ID: "channel-1"}, OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle,
+		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
+	if _, _, err := server.service.CreateSession(context.Background(), "cc:channel-1", "create", session); err != nil {
+		t.Fatal(err)
+	}
+	runtimeClient, err := RegisterSupervisor(server.SocketPath(), session.ID, 1, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeClient.Close()
+	controller := &fakeRuntimeController{inputs: make(chan duckruntime.InputFrame, 1), resize: make(chan [4]uint64, 1), ownership: make(chan [2]uint64, 8), ownershipFailures: make(chan error, 1)}
+	controlCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	controlDone := make(chan error, 1)
+	go func() { controlDone <- runtimeClient.ServeControl(controlCtx, controller) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		current, _ := server.state.GetSession(context.Background(), session.ID)
+		if current.Status == model.StatusRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("runtime did not become ready")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	terminal, err := Dial(server.SocketPath(), "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	controller.ownershipFailures <- errors.New("input still pending")
+	if _, err := terminal.YieldSessionWithID(context.Background(), "failed-fence", string(session.ID), 1, 1, false); err == nil {
+		t.Fatal("yield succeeded when supervisor rejected the fence")
+	}
+	afterFailure, err := server.state.GetSession(context.Background(), session.ID)
+	if err != nil || afterFailure.OwnershipEpoch != 1 || afterFailure.Writer == nil || afterFailure.Writer.ID != "channel-1" {
+		t.Fatalf("failed fence changed durable owner: %+v err=%v", afterFailure, err)
+	}
+	result, err := terminal.YieldSessionWithID(context.Background(), "terminal-yield", string(session.ID), 1, 1, false)
+	if err != nil || result.Decision != model.YieldTransferred || result.OwnershipEpoch != 2 || result.Writer == nil || result.Writer.ID != "laptop" {
+		t.Fatalf("yield=%+v err=%v", result, err)
+	}
+	select {
+	case got := <-controller.ownership:
+		if got != [2]uint64{2, 1} {
+			t.Fatalf("ownership=%v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ownership was not synchronized")
+	}
+	if err := terminal.SendInput(string(session.ID), 2, 1, []byte("after-yield")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case frame := <-controller.inputs:
+		if string(frame.Data) != "after-yield" || frame.OwnershipEpoch != 2 {
+			t.Fatalf("frame=%+v", frame)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("yielded input not forwarded")
+	}
+	cc, err := DialCC(server.SocketPath(), "channel-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	returned, err := cc.YieldSession(context.Background(), string(session.ID), 2, 1, false)
+	if err != nil || returned.Decision != model.YieldTransferred || returned.OwnershipEpoch != 3 || returned.Writer == nil || returned.Writer.Kind != model.OwnerCC {
+		t.Fatalf("cc yield=%+v err=%v", returned, err)
+	}
+	replayed, err := terminal.YieldSessionWithID(context.Background(), "terminal-yield", string(session.ID), 1, 1, false)
+	if err != nil || replayed.OwnershipEpoch != 2 || replayed.Writer == nil || replayed.Writer.ID != "laptop" {
+		t.Fatalf("yield replay changed outcome: %+v err=%v", replayed, err)
+	}
+	task, err := cc.BeginTask(context.Background(), "busy-task", string(session.ID), 3, 1)
+	if err != nil || task.TaskState != model.TaskRunning || task.OwnershipEpoch != 3 {
+		t.Fatalf("begin task=%+v err=%v", task, err)
+	}
+	desktop, err := Dial(server.SocketPath(), "desktop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer desktop.Close()
+	waiting, err := desktop.YieldSession(context.Background(), string(session.ID), 3, 1, true)
+	if err != nil || waiting.Decision != model.YieldWaiting || waiting.OwnershipEpoch != 3 || waiting.Writer == nil || waiting.Writer.ID != "channel-1" {
+		t.Fatalf("waiting yield=%+v err=%v", waiting, err)
+	}
+	_, err = terminal.YieldSession(context.Background(), string(session.ID), 3, 1, false)
+	var remoteErr *RemoteError
+	if !errors.As(err, &remoteErr) || remoteErr.Detail.Code != protocol.ErrPendingYield {
+		t.Fatalf("competing yield err=%v", err)
+	}
+	completed, err := cc.CompleteTask(context.Background(), "complete-task", string(session.ID), 3, 1)
+	if err != nil || completed.TaskState != model.TaskIdle || completed.OwnershipEpoch != 4 || completed.Writer == nil || completed.Writer.ID != "desktop" {
+		t.Fatalf("complete task=%+v err=%v", completed, err)
+	}
+	completedReplay, err := cc.CompleteTask(context.Background(), "complete-task", string(session.ID), 3, 1)
+	if err != nil || completedReplay.OwnershipEpoch != 4 || completedReplay.Writer == nil || completedReplay.Writer.ID != "desktop" {
+		t.Fatalf("complete replay=%+v err=%v", completedReplay, err)
+	}
+	_, err = cc.CompleteTask(context.Background(), "complete-task", string(session.ID), 4, 1)
+	if !errors.As(err, &remoteErr) || remoteErr.Detail.Code != protocol.ErrIdempotencyConflict {
+		t.Fatalf("altered complete replay err=%v", err)
+	}
+	if err := desktop.SendInput(string(session.ID), 4, 1, []byte("after-wait-yield")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case frame := <-controller.inputs:
+		if string(frame.Data) != "after-wait-yield" || frame.OwnershipEpoch != 4 {
+			t.Fatalf("wait-yield frame=%+v", frame)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("wait-yield owner input not forwarded")
+	}
+	cancel()
+	<-controlDone
 }
 
 func TestRealPTYInputFlowsThroughDaemonControl(t *testing.T) {

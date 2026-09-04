@@ -60,6 +60,13 @@ func (s *Service) CreateSession(ctx context.Context, principal, requestID string
 }
 
 func (s *Service) RequestYield(ctx context.Context, principal, requestID string, sessionID model.SessionID, requester model.Owner, wait bool, expectedEpoch, expectedGeneration uint64) (Outcome, bool, error) {
+	return s.RequestYieldWithHook(ctx, principal, requestID, sessionID, requester, wait, expectedEpoch, expectedGeneration, nil)
+}
+
+// RequestYieldWithHook runs before an immediate ownership transfer is made
+// durable. Daemon callers use it as the supervisor fencing barrier; returning
+// an error rolls the SQLite mutation back.
+func (s *Service) RequestYieldWithHook(ctx context.Context, principal, requestID string, sessionID model.SessionID, requester model.Owner, wait bool, expectedEpoch, expectedGeneration uint64, beforeCommit func(model.Session) error) (Outcome, bool, error) {
 	if principal != principalFor(requester) {
 		return Outcome{}, false, fmt.Errorf("yield requester does not match authenticated principal")
 	}
@@ -109,6 +116,11 @@ func (s *Service) RequestYield(ctx context.Context, principal, requestID string,
 			}
 		} else if decision == model.YieldTransferred {
 			session.UpdatedAtMS = now
+			if beforeCommit != nil {
+				if err := beforeCommit(session); err != nil {
+					return nil, err
+				}
+			}
 			if err := s.state.UpdateSessionTx(ctx, tx, session, oldEpoch, oldGeneration); err != nil {
 				return nil, err
 			}
@@ -116,7 +128,7 @@ func (s *Service) RequestYield(ctx context.Context, principal, requestID string,
 		if err := s.audit(ctx, tx, principal, "request_yield", string(decision), session); err != nil {
 			return nil, err
 		}
-		return json.Marshal(Outcome{Decision: decision, SessionID: session.ID, OwnershipEpoch: session.OwnershipEpoch})
+		return json.Marshal(Outcome{Decision: decision, SessionID: session.ID, OwnershipEpoch: session.OwnershipEpoch, Writer: session.Writer})
 	})
 	if err != nil {
 		return Outcome{}, false, err
@@ -165,7 +177,11 @@ func (s *Service) BeginReply(ctx context.Context, principal, requestID string, s
 }
 
 func (s *Service) CompleteReply(ctx context.Context, principal, requestID string, sessionID model.SessionID, expectedGeneration uint64) (Outcome, bool, error) {
-	return s.runtimeTaskMutation(ctx, principal, requestID, "complete_reply", sessionID, expectedGeneration, func(session *model.Session, pending *model.PendingYield) *protocol.Error {
+	return s.CompleteReplyWithHook(ctx, principal, requestID, sessionID, expectedGeneration, nil)
+}
+
+func (s *Service) CompleteReplyWithHook(ctx context.Context, principal, requestID string, sessionID model.SessionID, expectedGeneration uint64, beforeCommit func(model.Session) error) (Outcome, bool, error) {
+	return s.runtimeTaskMutationWithHook(ctx, principal, requestID, "complete_reply", sessionID, expectedGeneration, func(session *model.Session, pending *model.PendingYield) *protocol.Error {
 		if session.TaskState != model.TaskReplying && session.TaskState != model.TaskRunning {
 			return &protocol.Error{Code: protocol.ErrTaskNotActive, Message: "task has no active completion"}
 		}
@@ -176,24 +192,61 @@ func (s *Service) CompleteReply(ctx context.Context, principal, requestID string
 			}
 		}
 		return nil
-	})
+	}, beforeCommit)
+}
+
+// CompleteOwnerReplyWithHook makes caller ownership part of the idempotent
+// mutation. Replays therefore return the original completion even when that
+// completion transferred ownership to a waiting requester.
+func (s *Service) CompleteOwnerReplyWithHook(ctx context.Context, principal, requestID string, sessionID model.SessionID, owner model.Owner, expectedEpoch, expectedGeneration uint64, beforeCommit func(model.Session) error) (Outcome, bool, error) {
+	if principal != principalFor(owner) {
+		return Outcome{}, false, fmt.Errorf("task owner does not match authenticated principal")
+	}
+	payload, _ := json.Marshal(struct {
+		Owner      model.Owner `json:"owner"`
+		Epoch      uint64      `json:"epoch"`
+		Generation uint64      `json:"generation"`
+	}{owner, expectedEpoch, expectedGeneration})
+	return s.runTaskMutationWithHook(ctx, principal, requestID, "complete_reply", sessionID, payload, func(session *model.Session, pending *model.PendingYield) *protocol.Error {
+		if err := session.AuthorizeAgentInput(owner, expectedEpoch, expectedGeneration); err != nil {
+			return &protocol.Error{Code: mapError(err), Message: err.Error()}
+		}
+		if session.TaskState != model.TaskReplying && session.TaskState != model.TaskRunning {
+			return &protocol.Error{Code: protocol.ErrTaskNotActive, Message: "task has no active completion"}
+		}
+		session.TaskState = model.TaskIdle
+		if pending != nil {
+			if _, err := session.ApplyPendingYield(*pending); err != nil && !errors.Is(err, model.ErrStaleEpoch) {
+				return &protocol.Error{Code: mapError(err), Message: err.Error()}
+			}
+		}
+		return nil
+	}, beforeCommit)
 }
 
 type taskTransition func(*model.Session, *model.PendingYield) *protocol.Error
 
 func (s *Service) runtimeTaskMutation(ctx context.Context, principal, requestID, operation string, sessionID model.SessionID, generation uint64, transition taskTransition) (Outcome, bool, error) {
+	return s.runtimeTaskMutationWithHook(ctx, principal, requestID, operation, sessionID, generation, transition, nil)
+}
+
+func (s *Service) runtimeTaskMutationWithHook(ctx context.Context, principal, requestID, operation string, sessionID model.SessionID, generation uint64, transition taskTransition, beforeCommit func(model.Session) error) (Outcome, bool, error) {
 	payload, _ := json.Marshal(struct {
 		Generation uint64 `json:"generation"`
 	}{generation})
-	return s.runTaskMutation(ctx, principal, requestID, operation, sessionID, payload, func(session *model.Session, pending *model.PendingYield) *protocol.Error {
+	return s.runTaskMutationWithHook(ctx, principal, requestID, operation, sessionID, payload, func(session *model.Session, pending *model.PendingYield) *protocol.Error {
 		if session.RuntimeGeneration != generation {
 			return &protocol.Error{Code: protocol.ErrStaleGeneration, Message: "runtime generation changed"}
 		}
 		return transition(session, pending)
-	})
+	}, beforeCommit)
 }
 
 func (s *Service) runTaskMutation(ctx context.Context, principal, requestID, operation string, sessionID model.SessionID, payload []byte, transition taskTransition) (Outcome, bool, error) {
+	return s.runTaskMutationWithHook(ctx, principal, requestID, operation, sessionID, payload, transition, nil)
+}
+
+func (s *Service) runTaskMutationWithHook(ctx context.Context, principal, requestID, operation string, sessionID model.SessionID, payload []byte, transition taskTransition, beforeCommit func(model.Session) error) (Outcome, bool, error) {
 	key := store.MutationKey{Principal: principal, RequestID: requestID, Operation: operation, SessionID: sessionID}
 	key.Fingerprint = store.Fingerprint(operation, sessionID, payload)
 	result, err := s.state.RunMutation(ctx, key, func(tx *sql.Tx) (json.RawMessage, error) {
@@ -215,6 +268,11 @@ func (s *Service) runTaskMutation(ctx context.Context, principal, requestID, ope
 			return json.Marshal(Outcome{SessionID: session.ID, OwnershipEpoch: epoch, TaskState: session.TaskState, Writer: session.Writer, Error: protocolError})
 		}
 		session.UpdatedAtMS = time.Now().UTC().UnixMilli()
+		if beforeCommit != nil && session.OwnershipEpoch != oldEpoch {
+			if err := beforeCommit(session); err != nil {
+				return nil, err
+			}
+		}
 		if err := s.state.UpdateSessionTx(ctx, tx, session, oldEpoch, oldGeneration); err != nil {
 			return nil, err
 		}

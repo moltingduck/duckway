@@ -56,20 +56,36 @@ func (e *RemoteError) Error() string { return string(e.Detail.Code) + ": " + e.D
 func (e *OutputStreamEnded) Error() string { return "output stream ended: " + e.Reason }
 
 func Dial(socketPath, principal string) (*Client, error) {
+	return DialRole(socketPath, principal, protocol.RoleDucklord)
+}
+
+func DialCC(socketPath, channelHandle string) (*Client, error) {
+	return DialRole(socketPath, channelHandle, protocol.RoleDuckwayCC)
+}
+
+func DialRole(socketPath, principal string, role protocol.PeerRole) (*Client, error) {
 	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
 	if err != nil {
 		return nil, err
 	}
-	return Connect(conn, principal)
+	return ConnectRole(conn, principal, role)
 }
 
 func Connect(conn io.ReadWriteCloser, principal string) (*Client, error) {
+	return ConnectRole(conn, principal, protocol.RoleDucklord)
+}
+
+func ConnectRole(conn io.ReadWriteCloser, principal string, role protocol.PeerRole) (*Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return ConnectContext(ctx, conn, principal)
+	return ConnectRoleContext(ctx, conn, principal, role)
 }
 
 func ConnectContext(ctx context.Context, conn io.ReadWriteCloser, principal string) (client *Client, returnErr error) {
+	return ConnectRoleContext(ctx, conn, principal, protocol.RoleDucklord)
+}
+
+func ConnectRoleContext(ctx context.Context, conn io.ReadWriteCloser, principal string, role protocol.PeerRole) (client *Client, returnErr error) {
 	cancelDone := make(chan struct{})
 	stopCancellation := context.AfterFunc(ctx, func() {
 		_ = conn.Close()
@@ -87,8 +103,11 @@ func ConnectContext(ctx context.Context, conn io.ReadWriteCloser, principal stri
 	}()
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	setDeadline(conn, time.Now().Add(10*time.Second))
-	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}
-	if err := codec.Write(protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleDucklord, Principal: principal, Capabilities: offeredCapabilities}); err != nil {
+	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}
+	if role == protocol.RoleDuckwayCC {
+		offeredCapabilities = []string{"status", "sessions_list", "session_yield", "session_task"}
+	}
+	if err := codec.Write(protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: role, Principal: principal, Capabilities: offeredCapabilities}); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -114,7 +133,7 @@ func ConnectContext(ctx context.Context, conn io.ReadWriteCloser, principal stri
 	for _, capability := range negotiated.Capabilities {
 		validCapabilities = validCapabilities && offered[capability]
 	}
-	if negotiated.Major != protocol.Major || negotiated.Minor < 0 || negotiated.Minor > protocol.Minor || negotiated.Role != protocol.RoleDucklord ||
+	if negotiated.Major != protocol.Major || negotiated.Minor < 0 || negotiated.Minor > protocol.Minor || negotiated.Role != role ||
 		negotiated.Principal != principal || !hasCapability(negotiated.Capabilities, "status") || !validCapabilities {
 		conn.Close()
 		return nil, fmt.Errorf("ducklion returned an invalid handshake")
@@ -563,6 +582,57 @@ func (c *Client) StopSessionWithID(ctx context.Context, requestID, sessionID str
 		return &RemoteError{Detail: *response.Error}
 	}
 	return nil
+}
+
+func (c *Client) YieldSession(ctx context.Context, sessionID string, epoch, generation uint64, wait bool) (protocol.SessionYieldResult, error) {
+	return c.YieldSessionWithID(ctx, uuid.NewString(), sessionID, epoch, generation, wait)
+}
+
+func (c *Client) YieldSessionWithID(ctx context.Context, requestID, sessionID string, epoch, generation uint64, wait bool) (protocol.SessionYieldResult, error) {
+	if err := c.requireCapability("session_yield"); err != nil {
+		return protocol.SessionYieldResult{}, err
+	}
+	body, _ := json.Marshal(protocol.SessionYield{Wait: wait})
+	response, err := c.CallContext(ctx, protocol.Request{ID: requestID, Type: "session.yield", InstanceID: c.instanceID, SessionID: sessionID,
+		OwnershipEpoch: &epoch, RuntimeGeneration: &generation, Body: body})
+	if err != nil {
+		return protocol.SessionYieldResult{}, err
+	}
+	if response.Error != nil {
+		return protocol.SessionYieldResult{}, &RemoteError{Detail: *response.Error}
+	}
+	var result protocol.SessionYieldResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (c *Client) BeginTask(ctx context.Context, requestID, sessionID string, epoch, generation uint64) (protocol.SessionTaskResult, error) {
+	return c.sessionTask(ctx, "session.task_begin", requestID, sessionID, epoch, generation)
+}
+
+func (c *Client) CompleteTask(ctx context.Context, requestID, sessionID string, epoch, generation uint64) (protocol.SessionTaskResult, error) {
+	return c.sessionTask(ctx, "session.task_complete", requestID, sessionID, epoch, generation)
+}
+
+func (c *Client) sessionTask(ctx context.Context, operation, requestID, sessionID string, epoch, generation uint64) (protocol.SessionTaskResult, error) {
+	if err := c.requireCapability("session_task"); err != nil {
+		return protocol.SessionTaskResult{}, err
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: requestID, Type: operation, InstanceID: c.instanceID, SessionID: sessionID,
+		OwnershipEpoch: &epoch, RuntimeGeneration: &generation})
+	if err != nil {
+		return protocol.SessionTaskResult{}, err
+	}
+	if response.Error != nil {
+		return protocol.SessionTaskResult{}, &RemoteError{Detail: *response.Error}
+	}
+	var result protocol.SessionTaskResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 func (c *Client) SendInput(sessionID string, epoch, generation uint64, data []byte) error {

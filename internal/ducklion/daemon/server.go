@@ -57,6 +57,8 @@ type Server struct {
 	controls        map[model.SessionID]*controlPeer
 	sequenceMu      sync.Mutex
 	sequences       map[model.SessionID]runtimeSequence
+	operationMu     sync.Mutex
+	operations      map[model.SessionID]*sync.Mutex
 	runtimeLauncher func(string) error
 }
 
@@ -237,31 +239,41 @@ func (s *Server) handle(conn *net.UnixConn) {
 		s.handleSupervisorControl(conn, codec, remote)
 		return
 	}
-	if remote.Role != protocol.RoleDucklord {
+	if remote.Role != protocol.RoleDucklord && remote.Role != protocol.RoleDuckwayCC {
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "peer role is not available on this endpoint"}})
 		return
 	}
-	terminalOwner := model.Owner{Kind: model.OwnerTerminal, ID: remote.Principal}
-	if err := terminalOwner.Validate(); err != nil || !protocol.ValidDucklordPrincipal(remote.Principal) {
-		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid Ducklord principal"}})
+	ownerKind := model.OwnerTerminal
+	if remote.Role == protocol.RoleDuckwayCC {
+		ownerKind = model.OwnerCC
+	}
+	peerOwner := model.Owner{Kind: ownerKind, ID: remote.Principal}
+	if err := peerOwner.Validate(); err != nil || len(remote.Principal) > 128 || remote.Role == protocol.RoleDucklord && !protocol.ValidDucklordPrincipal(remote.Principal) {
+		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid peer principal"}})
 		return
 	}
-	s.connMu.Lock()
-	if s.ducklords[remote.Principal] != nil {
-		s.connMu.Unlock()
-		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrBusy, Message: "Ducklord owner name is already connected"}})
-		return
-	}
-	s.ducklords[remote.Principal] = conn
-	s.connMu.Unlock()
-	defer func() {
+	if remote.Role == protocol.RoleDucklord {
 		s.connMu.Lock()
-		if s.ducklords[remote.Principal] == conn {
-			delete(s.ducklords, remote.Principal)
+		if s.ducklords[remote.Principal] != nil {
+			s.connMu.Unlock()
+			_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrBusy, Message: "Ducklord owner name is already connected"}})
+			return
 		}
+		s.ducklords[remote.Principal] = conn
 		s.connMu.Unlock()
-	}()
-	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"status", "sessions_list", "session_create", "session_stop", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}}
+		defer func() {
+			s.connMu.Lock()
+			if s.ducklords[remote.Principal] == conn {
+				delete(s.ducklords, remote.Principal)
+			}
+			s.connMu.Unlock()
+		}()
+	}
+	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}
+	if remote.Role == protocol.RoleDuckwayCC {
+		capabilities = []string{"status", "sessions_list", "session_yield", "session_task"}
+	}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: capabilities}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
 	if protocolError != nil {
 		_ = codec.Write(protocol.HandshakeResponse{Error: protocolError})
@@ -281,7 +293,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 	go func() {
 		defer routeHandler.Done()
 		for request := range routeRequests {
-			response := s.route(request, negotiated.Capabilities, negotiated.Principal)
+			response := s.route(request, negotiated.Capabilities, negotiated.Role, negotiated.Principal)
 			if err := wire.Write(response); err != nil {
 				return
 			}
@@ -829,7 +841,7 @@ func writeSupervisorError(codec *bridge.Codec, requestID string, code protocol.E
 	_ = codec.Write(protocol.Response{ID: requestID, Error: &protocol.Error{Code: code, Message: message}})
 }
 
-func (s *Server) route(request protocol.Request, capabilities []string, principal string) protocol.Response {
+func (s *Server) route(request protocol.Request, capabilities []string, role protocol.PeerRole, principal string) protocol.Response {
 	if request.InstanceID != "" && request.InstanceID != string(s.instanceID) {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "Ducklion instance does not match"}}
 	}
@@ -867,6 +879,16 @@ func (s *Server) route(request protocol.Request, capabilities []string, principa
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session stop capability was not negotiated"}}
 		}
 		return s.routeSessionStop(request, principal)
+	case "session.yield":
+		if !hasCapability(capabilities, "session_yield") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session yield capability was not negotiated"}}
+		}
+		return s.routeSessionYield(request, role, principal)
+	case "session.task_begin", "session.task_complete":
+		if role != protocol.RoleDuckwayCC || !hasCapability(capabilities, "session_task") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session task capability was not negotiated"}}
+		}
+		return s.routeSessionTask(request, principal)
 	case "session.input":
 		if !hasCapability(capabilities, "session_input") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session input capability was not negotiated"}}
@@ -880,6 +902,18 @@ func (s *Server) route(request protocol.Request, capabilities []string, principa
 	default:
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "unsupported operation"}}
 	}
+}
+
+func (s *Server) sessionOperation(id model.SessionID) *sync.Mutex {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if s.operations == nil {
+		s.operations = make(map[model.SessionID]*sync.Mutex)
+	}
+	if s.operations[id] == nil {
+		s.operations[id] = &sync.Mutex{}
+	}
+	return s.operations[id]
 }
 
 func (s *Server) authorizeTerminalControl(request protocol.Request, principal string) (model.Session, model.Owner, *protocol.Error) {
@@ -912,9 +946,22 @@ func (s *Server) routeSessionInput(request protocol.Request, principal string) p
 	if err := decodeStrict(request.Body, &input); err != nil || len(input.Data) == 0 || len(input.Data) > 64<<10 {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "input must contain 1 to 65536 bytes"}}
 	}
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}}
+	}
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
 	session, owner, protocolError := s.authorizeTerminalControl(request, principal)
 	if protocolError != nil {
 		return protocol.Response{ID: request.ID, Error: protocolError}
+	}
+	if session.Kind == model.KindAgent {
+		if response := s.syncRuntimeOwnership(session); response.Error != nil {
+			response.ID = request.ID
+			return response
+		}
 	}
 	s.controlMu.Lock()
 	peer := s.controls[session.ID]
@@ -931,14 +978,36 @@ func (s *Server) routeSessionInput(request protocol.Request, principal string) p
 	return s.callControl(ctx, session.ID, forwarded)
 }
 
+func (s *Server) syncRuntimeOwnership(session model.Session) protocol.Response {
+	epoch, generation := session.OwnershipEpoch, session.RuntimeGeneration
+	forwarded := protocol.Request{ID: uuid.NewString(), Type: "supervisor.ownership", InstanceID: string(s.instanceID), SessionID: string(session.ID),
+		OwnershipEpoch: &epoch, RuntimeGeneration: &generation}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return s.callControl(ctx, session.ID, forwarded)
+}
+
 func (s *Server) routeSessionResize(request protocol.Request, principal string) protocol.Response {
 	var resize protocol.SessionResize
 	if err := decodeStrict(request.Body, &resize); err != nil || resize.Rows < 5 || resize.Rows > 200 || resize.Cols < 20 || resize.Cols > 500 {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "resize is outside supported bounds"}}
 	}
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}}
+	}
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
 	session, _, protocolError := s.authorizeTerminalControl(request, principal)
 	if protocolError != nil {
 		return protocol.Response{ID: request.ID, Error: protocolError}
+	}
+	if session.Kind == model.KindAgent {
+		if response := s.syncRuntimeOwnership(session); response.Error != nil {
+			response.ID = request.ID
+			return response
+		}
 	}
 	body, _ := json.Marshal(protocol.SupervisorResize{Rows: resize.Rows, Cols: resize.Cols})
 	forwarded := request

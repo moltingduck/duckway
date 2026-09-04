@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/ducklord"
 	"github.com/hackerduck/duckway/internal/version"
 )
@@ -24,6 +25,7 @@ type remoteRunner interface {
 	Send(context.Context, ducklord.Client, string, string) error
 	Start(context.Context, ducklord.Client, []string) error
 	Stop(context.Context, ducklord.Client, string) error
+	Yield(context.Context, ducklord.Client, string, bool) (protocol.SessionYieldResult, error)
 	Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error)
 	ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error)
 	InstallDucklion(context.Context, ducklord.Client, string, string) (string, error)
@@ -296,6 +298,40 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 			return err
 		}
 		return runner.Stop(context.Background(), c, rest[1])
+	case "yield":
+		cfg, rest, err := loadWithFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		wait := false
+		filtered := make([]string, 0, len(rest))
+		for _, arg := range rest {
+			if arg == "-w" || arg == "--wait" {
+				wait = true
+			} else {
+				filtered = append(filtered, arg)
+			}
+		}
+		if len(filtered) != 2 {
+			return fmt.Errorf("usage: ducklord yield <client> <session> [-w|--wait]")
+		}
+		owner, err := ducklord.ResolveOwnerName(globalOwner, cfg.Name)
+		if err != nil {
+			return err
+		}
+		if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+			ownerRunner.SetOwner(owner)
+		}
+		c, err := mustClient(cfg, filtered[0])
+		if err != nil {
+			return err
+		}
+		result, err := runner.Yield(context.Background(), c, filtered[1], wait)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Yield %s: %s (epoch %d)\n", result.SessionID, result.Decision, result.OwnershipEpoch)
+		return nil
 	case "attach":
 		cfg, rest, err := loadWithFlags(args[1:])
 		if err != nil {
@@ -1101,6 +1137,27 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				if err := state.removeSelectedClient(ctx); err != nil {
 					state.outputErr = err.Error()
 				}
+			case "yield", "yield-wait":
+				if len(state.sessions) == 0 {
+					break
+				}
+				sess := state.sessions[state.selected]
+				client, err := mustClient(cfg, sess.Client)
+				if err != nil {
+					state.outputErr = err.Error()
+					break
+				}
+				ref := sess.SessionID
+				if ref == "" {
+					ref = sess.Name
+				}
+				result, err := runner.Yield(ctx, client, ref, action == "yield-wait")
+				if err != nil {
+					state.outputErr = err.Error()
+					break
+				}
+				state.refreshSessions(ctx)
+				state.outputErr = fmt.Sprintf("yield %s (epoch %d)", result.Decision, result.OwnershipEpoch)
 			case "attach":
 				if len(state.sessions) == 0 {
 					continue
@@ -1284,9 +1341,9 @@ func (s *tuiState) render(out io.Writer) {
 	} else if s.newSessionMode {
 		fmt.Fprintf(out, "%s  enter next  esc cancel\n", truncate(s.createHeader(), renderWidth))
 	} else if s.hostScoped {
-		fmt.Fprintln(out, "j/k or arrows move  enter/right-click focus session  r refresh  q quit")
+		fmt.Fprintln(out, "j/k move  enter focus  y yield  Y wait-yield  r refresh  q quit")
 	} else {
-		fmt.Fprintln(out, "j/k or arrows move  enter/right-click focus session  a add host  d remove host  n new  r refresh  q quit")
+		fmt.Fprintln(out, "j/k move  enter focus  y yield  Y wait-yield  a add  d remove  n new  r refresh  q quit")
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
@@ -1450,6 +1507,10 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "quit"
 	case text == "r":
 		return "refresh"
+	case text == "y":
+		return "yield"
+	case text == "Y":
+		return "yield-wait"
 	case text == "n" && !s.hostScoped:
 		return "new"
 	case text == "a" && !s.hostScoped:
@@ -2081,5 +2142,6 @@ Usage:
   ducklord send <client> <session> <text> [--config <path>]
   ducklord start <client> --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
   ducklord stop <client> <session> [--config <path>]
+  ducklord yield <client> <session> [-w|--wait] [--config <path>]
   ducklord version`)
 }

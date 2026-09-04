@@ -17,6 +17,7 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
+	"github.com/hackerduck/duckway/internal/ducklion/service"
 	"github.com/hackerduck/duckway/internal/ducklion/store"
 	"github.com/hackerduck/duckway/internal/ducklion/supervisor"
 	"golang.org/x/sys/unix"
@@ -233,6 +234,122 @@ func (s *Server) routeSessionStop(request protocol.Request, principal string) pr
 		time.Sleep(20 * time.Millisecond)
 	}
 	return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrBusy, Message: "session is still stopping", Retryable: true}}
+}
+
+func (s *Server) routeSessionYield(request protocol.Request, role protocol.PeerRole, principal string) protocol.Response {
+	var body protocol.SessionYield
+	if request.InstanceID != string(s.instanceID) || request.OwnershipEpoch == nil || request.RuntimeGeneration == nil || decodeStrict(request.Body, &body) != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session identity, fences, and yield body are required"}}
+	}
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}}
+	}
+	ownerKind := model.OwnerTerminal
+	if role == protocol.RoleDuckwayCC {
+		ownerKind = model.OwnerCC
+	}
+	requester := model.Owner{Kind: ownerKind, ID: principal}
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
+	previous, previousErr := s.state.GetSession(context.Background(), sessionID)
+	fencePrepared := false
+	outcome, _, err := s.service.RequestYieldWithHook(context.Background(), string(ownerKind)+":"+principal, request.ID, sessionID, requester, body.Wait,
+		*request.OwnershipEpoch, *request.RuntimeGeneration, func(next model.Session) error {
+			response := s.syncRuntimeOwnership(next)
+			if response.Error != nil {
+				return fmt.Errorf("runtime rejected ownership fence: %s", response.Error.Message)
+			}
+			fencePrepared = true
+			return nil
+		})
+	if err != nil {
+		if fencePrepared && previousErr == nil {
+			s.restoreOwnershipOrQuarantine(previous)
+		}
+		code := protocol.ErrInternal
+		retryable := true
+		if errors.Is(err, store.ErrIdempotencyConflict) {
+			code = protocol.ErrIdempotencyConflict
+			retryable = false
+		}
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: code, Message: "could not apply yield", Retryable: retryable}}
+	}
+	if outcome.Error != nil {
+		return protocol.Response{ID: request.ID, Error: outcome.Error}
+	}
+	result, _ := json.Marshal(protocol.SessionYieldResult{Decision: outcome.Decision, SessionID: string(sessionID), OwnershipEpoch: outcome.OwnershipEpoch, Writer: outcome.Writer})
+	return protocol.Response{ID: request.ID, Result: result}
+}
+
+func (s *Server) routeSessionTask(request protocol.Request, principal string) protocol.Response {
+	if len(request.Body) != 0 || request.InstanceID != string(s.instanceID) || request.OwnershipEpoch == nil || request.RuntimeGeneration == nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session identity and fences are required"}}
+	}
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}}
+	}
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
+	owner := model.Owner{Kind: model.OwnerCC, ID: principal}
+	var outcome service.Outcome
+	if request.Type == "session.task_begin" {
+		outcome, _, err = s.service.BeginTask(context.Background(), "cc:"+principal, request.ID, sessionID, owner, *request.OwnershipEpoch, *request.RuntimeGeneration)
+	} else {
+		previous, previousErr := s.state.GetSession(context.Background(), sessionID)
+		fencePrepared := false
+		outcome, _, err = s.service.CompleteOwnerReplyWithHook(context.Background(), "cc:"+principal, request.ID, sessionID, owner, *request.OwnershipEpoch, *request.RuntimeGeneration, func(next model.Session) error {
+			response := s.syncRuntimeOwnership(next)
+			if response.Error != nil {
+				return fmt.Errorf("runtime rejected ownership fence: %s", response.Error.Message)
+			}
+			fencePrepared = true
+			return nil
+		})
+		if err != nil && fencePrepared && previousErr == nil {
+			s.restoreOwnershipOrQuarantine(previous)
+		}
+	}
+	if err != nil {
+		code := protocol.ErrInternal
+		if errors.Is(err, store.ErrIdempotencyConflict) {
+			code = protocol.ErrIdempotencyConflict
+		}
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: code, Message: "could not update task lifecycle", Retryable: code == protocol.ErrInternal}}
+	}
+	if outcome.Error != nil {
+		return protocol.Response{ID: request.ID, Error: outcome.Error}
+	}
+	result, _ := json.Marshal(protocol.SessionTaskResult{SessionID: string(outcome.SessionID), OwnershipEpoch: outcome.OwnershipEpoch, TaskState: outcome.TaskState, Writer: outcome.Writer})
+	return protocol.Response{ID: request.ID, Result: result}
+}
+
+func (s *Server) restoreOwnershipOrQuarantine(previous model.Session) {
+	if response := s.syncRuntimeOwnership(previous); response.Error == nil {
+		return
+	}
+	// A failed compensation leaves the supervisor fence uncertain. Make the
+	// durable session unavailable so neither owner can send more input; runtime
+	// recovery/restart is then the only path back to a writable session.
+	if err := s.state.MarkRuntimeExited(context.Background(), previous.ID, previous.RuntimeGeneration, false, "ownership fence reconciliation failed"); err == nil {
+		return
+	}
+	// Persistent storage may be unavailable too. Revoke the live lease and
+	// close its control channel so the uncertain supervisor cannot receive any
+	// more input even if durable quarantine could not be recorded.
+	s.controlMu.Lock()
+	peer := s.controls[previous.ID]
+	if peer != nil {
+		delete(s.controls, previous.ID)
+	}
+	s.controlMu.Unlock()
+	if peer != nil {
+		s.registry.Disconnect(peer.identity)
+		peer.stop()
+	}
 }
 
 func summaryFor(session model.Session) protocol.SessionSummary {

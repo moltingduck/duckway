@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
@@ -230,6 +231,21 @@ func TestDucklordStartValidatesAndUsesRunner(t *testing.T) {
 	want := []string{"--name", "alpha", "--agent", "shell", "--cwd", "/tmp", "--", "bash"}
 	if runner.startClient != "client-a" || strings.Join(runner.startArgs, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("start client=%q args=%#v", runner.startClient, runner.startArgs)
+	}
+}
+
+func TestDucklordYieldUsesRunnerAndWaitFlag(t *testing.T) {
+	config := writeConfig(t)
+	runner := &recordingRunner{yieldResult: protocol.SessionYieldResult{Decision: "waiting", SessionID: "ABC123", OwnershipEpoch: 7}}
+	var out bytes.Buffer
+	if err := run([]string{"yield", "client-a", "alpha", "--wait", "--config", config}, &out, runner); err != nil {
+		t.Fatal(err)
+	}
+	if runner.yieldClient != "client-a" || runner.yieldSession != "alpha" || !runner.yieldWait {
+		t.Fatalf("yield client=%q session=%q wait=%v", runner.yieldClient, runner.yieldSession, runner.yieldWait)
+	}
+	if !strings.Contains(out.String(), "Yield ABC123: waiting (epoch 7)") {
+		t.Fatalf("yield output=%q", out.String())
 	}
 }
 
@@ -799,6 +815,9 @@ func (f fakeRunner) Read(context.Context, ducklord.Client, string, int) (string,
 func (f fakeRunner) Send(context.Context, ducklord.Client, string, string) error { return nil }
 func (f fakeRunner) Start(context.Context, ducklord.Client, []string) error      { return nil }
 func (f fakeRunner) Stop(context.Context, ducklord.Client, string) error         { return nil }
+func (f fakeRunner) Yield(context.Context, ducklord.Client, string, bool) (protocol.SessionYieldResult, error) {
+	return protocol.SessionYieldResult{}, nil
+}
 func (f fakeRunner) Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error) {
 	return f.projects, nil
 }
@@ -835,6 +854,10 @@ type recordingRunner struct {
 	probes           []ducklord.DucklionProbe
 	probeCalls       int
 	sessionsByClient map[string][]ducklord.RemoteSession
+	yieldClient      string
+	yieldSession     string
+	yieldWait        bool
+	yieldResult      protocol.SessionYieldResult
 }
 
 func (r *recordingRunner) Sessions(_ context.Context, client ducklord.Client, _ int) ([]ducklord.RemoteSession, error) {
@@ -857,6 +880,12 @@ func (r *recordingRunner) Start(_ context.Context, client ducklord.Client, args 
 	return nil
 }
 func (r *recordingRunner) Stop(context.Context, ducklord.Client, string) error { return nil }
+func (r *recordingRunner) Yield(_ context.Context, client ducklord.Client, session string, wait bool) (protocol.SessionYieldResult, error) {
+	r.yieldClient = client.Name
+	r.yieldSession = session
+	r.yieldWait = wait
+	return r.yieldResult, nil
+}
 func (r *recordingRunner) Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error) {
 	return nil, nil
 }

@@ -86,6 +86,24 @@ type SessionResize struct {
 	Cols uint16 `json:"cols"`
 }
 
+type SessionYield struct {
+	Wait bool `json:"wait,omitempty"`
+}
+
+type SessionYieldResult struct {
+	Decision       model.YieldDecision `json:"decision"`
+	SessionID      string              `json:"session_id"`
+	OwnershipEpoch uint64              `json:"ownership_epoch"`
+	Writer         *model.Owner        `json:"writer,omitempty"`
+}
+
+type SessionTaskResult struct {
+	SessionID      string          `json:"session_id"`
+	OwnershipEpoch uint64          `json:"ownership_epoch"`
+	TaskState      model.TaskState `json:"task_state"`
+	Writer         *model.Owner    `json:"writer,omitempty"`
+}
+
 type OutputSubscribe struct {
 	Offset    uint64 `json:"offset"`
 	TailBytes uint64 `json:"tail_bytes,omitempty"`

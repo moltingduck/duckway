@@ -117,6 +117,7 @@ type RuntimeController interface {
 	SubmitInput(context.Context, duckruntime.InputFrame) error
 	Resize(rows, cols uint16, epoch, generation uint64) error
 	Terminate(force bool) error
+	UpdateOwnership(epoch, generation uint64) error
 }
 
 func (c *SupervisorClient) ServeControl(ctx context.Context, controller RuntimeController) error {
@@ -227,6 +228,12 @@ func (c *SupervisorClient) executeControl(ctx context.Context, controller Runtim
 			err = fmt.Errorf("invalid supervisor terminate")
 		} else {
 			err = controller.Terminate(true)
+		}
+	case "supervisor.ownership":
+		if len(request.Body) != 0 {
+			err = fmt.Errorf("invalid supervisor ownership update")
+		} else {
+			err = controller.UpdateOwnership(*request.OwnershipEpoch, generation)
 		}
 	default:
 		err = fmt.Errorf("unsupported runtime control command")
