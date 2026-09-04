@@ -32,6 +32,8 @@ func (c *fakeRuntimeController) Resize(rows, cols uint16, epoch, generation uint
 	return nil
 }
 
+func (c *fakeRuntimeController) Terminate(bool) error { return nil }
+
 func TestServerStatusAndSingleInstanceLock(t *testing.T) {
 	root := t.TempDir()
 	server, err := Open(context.Background(), Options{Root: root})
@@ -109,6 +111,48 @@ func TestServerRejectsDuplicateLiveDucklordPrincipal(t *testing.T) {
 	_ = server.Close()
 	if err := <-serveDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRecoveredOutputPreservesOriginalGapOffset(t *testing.T) {
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	publicKey, privateKey, _ := model.NewRecoveryKey()
+	session := model.Session{ID: "ABC123", Handle: "gap", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+		Writer: &model.Owner{Kind: model.OwnerTerminal, ID: "desk"}, OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle,
+		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
+	if _, _, err := server.service.CreateSession(context.Background(), "terminal:desk", "create-gap", session); err != nil {
+		t.Fatal(err)
+	}
+	runtimeClient, err := RegisterSupervisor(server.SocketPath(), session.ID, 1, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeClient.Close()
+	if err := runtimeClient.PublishSnapshot(duckruntime.OutputFrame{Offset: 1234, Gap: true, Data: []byte("suffix")}); err != nil {
+		t.Fatal(err)
+	}
+	viewer, err := Dial(server.SocketPath(), "viewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer viewer.Close()
+	stream, err := viewer.SubscribeOutput(string(session.ID), 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if metadata := stream.Metadata(); !metadata.Gap || metadata.StartOffset != 1234 || metadata.EndOffset != 1240 {
+		t.Fatalf("metadata=%+v", metadata)
+	}
+	event, err := stream.Read()
+	if err != nil || !event.Frame.Gap || event.Frame.Offset != 1234 || string(event.Frame.Data) != "suffix" {
+		t.Fatalf("event=%+v err=%v", event, err)
 	}
 }
 
@@ -208,7 +252,7 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	if err := client.PublishOutput([]byte("abc")); err != nil {
 		t.Fatal(err)
 	}
-	viewer, err := Dial(server.SocketPath(), "laptop")
+	viewer, err := Dial(server.SocketPath(), "output-laptop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +354,7 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	_ = tail.Close()
 	_ = replayViewer.Close()
 	connected, err := server.state.GetSession(context.Background(), session.ID)
-	if err != nil || connected.Status != model.StatusRunning || connected.AdapterState != model.AdapterHealthy {
+	if err != nil || connected.Status != model.StatusRecovering || connected.AdapterState != model.AdapterRecovering {
 		t.Fatalf("connected session=%+v err=%v", connected, err)
 	}
 	if _, err := RegisterSupervisor(server.SocketPath(), session.ID, session.RuntimeGeneration, privateKey); err == nil {

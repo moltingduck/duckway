@@ -45,6 +45,14 @@ type SessionOutput struct {
 }
 
 func Main(args []string, stdout io.Writer) {
+	if specPath, ok := daemon.IsRuntimeSubcommand(args); ok {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := daemon.RunManagedSupervisor(ctx, specPath); err != nil && !errors.Is(err, context.Canceled) {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(args) > 0 && args[0] == "__supervise" {
 		opts, err := ducklion.ParseSupervisorArgs(args[1:])
 		if err != nil {

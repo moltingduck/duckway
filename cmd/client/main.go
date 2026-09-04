@@ -143,6 +143,15 @@ func main() {
 		if err := duckliondaemon.Run(ctx, duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion")}); err != nil {
 			log.Fatal(err)
 		}
+	case "__ducklion_runtime_v1":
+		if len(os.Args) != 3 {
+			log.Fatal("invalid Ducklion runtime invocation")
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		if err := duckliondaemon.RunManagedSupervisor(ctx, os.Args[2]); err != nil && !errors.Is(err, context.Canceled) {
+			log.Fatal(err)
+		}
 	case "projects":
 		cmdProjects(configDir, os.Args[2:])
 	case "git":

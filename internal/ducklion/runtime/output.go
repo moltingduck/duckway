@@ -60,6 +60,20 @@ func (h *OutputHub) Publish(data []byte) OutputFrame {
 	return frame
 }
 
+// PublishRecovered seeds an empty hub with a retained suffix whose original
+// byte offset is known after daemon recovery.
+func (h *OutputHub) PublishRecovered(offset uint64, data []byte, gap bool) (OutputFrame, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed || h.endOffset != 0 || len(h.data) != 0 || offset != 0 && !gap {
+		return OutputFrame{}, ErrOffsetAhead
+	}
+	h.startOffset = offset
+	h.endOffset = offset + uint64(len(data))
+	h.data = append(h.data, data...)
+	return OutputFrame{Offset: offset, Data: append([]byte(nil), data...), Gap: gap}, nil
+}
+
 // Subscribe atomically captures replay and registers for later live frames.
 func (h *OutputHub) Subscribe(offset uint64, queue int) (OutputFrame, <-chan OutputFrame, func(), error) {
 	if queue <= 0 {
@@ -103,6 +117,14 @@ func (h *OutputHub) Bounds() (start, end uint64) {
 	return h.startOffset, h.endOffset
 }
 
+// Snapshot remains available after Close so a supervisor can replay final PTY
+// bytes when the daemon was unavailable at process exit.
+func (h *OutputHub) Snapshot() OutputFrame {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return OutputFrame{Offset: h.startOffset, Gap: h.startOffset != 0, Data: append([]byte(nil), h.data...)}
+}
+
 func (h *OutputHub) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -114,8 +136,4 @@ func (h *OutputHub) Close() {
 		close(subscriber)
 		delete(h.subscribers, id)
 	}
-	for i := range h.data {
-		h.data[i] = 0
-	}
-	h.data = nil
 }

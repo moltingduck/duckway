@@ -145,6 +145,8 @@ type Session struct {
 	RecoveryPublicKey []byte
 	CreatedAtMS       int64
 	UpdatedAtMS       int64
+	ExitSuccess       *bool
+	ExitReason        string
 }
 
 func (s Session) Validate() error {

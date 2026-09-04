@@ -1,0 +1,506 @@
+package daemon
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/hackerduck/duckway/internal/ducklion/model"
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
+	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
+	"github.com/hackerduck/duckway/internal/ducklion/store"
+	"github.com/hackerduck/duckway/internal/ducklion/supervisor"
+	"golang.org/x/sys/unix"
+)
+
+const runtimeSubcommand = "__ducklion_runtime_v1"
+
+type runtimeSpec struct {
+	SocketPath        string          `json:"socket_path"`
+	SessionID         model.SessionID `json:"session_id"`
+	RuntimeGeneration uint64          `json:"runtime_generation"`
+	OwnershipEpoch    uint64          `json:"ownership_epoch"`
+	CWD               string          `json:"cwd"`
+	Command           []string        `json:"command"`
+	Rows              uint16          `json:"rows"`
+	Cols              uint16          `json:"cols"`
+}
+
+func (s *Server) routeSessionCreate(request protocol.Request, principal string) protocol.Response {
+	s.createMu.Lock()
+	defer s.createMu.Unlock()
+	if request.InstanceID != string(s.instanceID) || request.SessionID != "" || request.OwnershipEpoch != nil || request.RuntimeGeneration != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid session create envelope"}}
+	}
+	var create protocol.SessionCreate
+	if err := decodeStrict(request.Body, &create); err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid session create request"}}
+	}
+	handle, err := model.ValidateHandle(create.Handle)
+	if err != nil || (create.Kind != model.KindAgent && create.Kind != model.KindShell) || len(create.Command) == 0 || len(create.Command) > 64 {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "handle, kind, and command are required"}}
+	}
+	if !filepath.IsAbs(create.CWD) {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "working directory must be absolute"}}
+	}
+	info, err := os.Stat(create.CWD)
+	if err != nil || !info.IsDir() {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "working directory is not accessible"}}
+	}
+	for _, part := range create.Command {
+		if part == "" || strings.ContainsRune(part, 0) || len(part) > 32<<10 {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "command contains an invalid argument"}}
+		}
+	}
+	if create.Rows == 0 {
+		create.Rows = 40
+	}
+	if create.Cols == 0 {
+		create.Cols = 120
+	}
+	if create.Rows < 5 || create.Rows > 200 || create.Cols < 20 || create.Cols > 500 {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "PTY size is outside supported bounds"}}
+	}
+	if create.Kind == model.KindAgent && strings.TrimSpace(create.AgentType) == "" {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "agent type is required"}}
+	}
+	if create.Kind == model.KindShell && create.AgentType != "" {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "shell sessions cannot have an agent type"}}
+	}
+	fingerprint := store.Fingerprint("create_session", "", request.Body)
+	mutationKey := store.MutationKey{Principal: "terminal:" + principal, RequestID: request.ID, Operation: "create_session", Fingerprint: fingerprint}
+	if replay, found, replayErr := s.state.ReplayMutation(context.Background(), mutationKey); found {
+		if replayErr != nil {
+			code := protocol.ErrInternal
+			if errors.Is(replayErr, store.ErrIdempotencyConflict) {
+				code = protocol.ErrIdempotencyConflict
+			}
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: code, Message: replayErr.Error()}}
+		}
+		var stored struct {
+			SessionID model.SessionID `json:"session_id"`
+		}
+		if json.Unmarshal(replay.JSON, &stored) != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "invalid stored create outcome"}}
+		}
+		current, getErr := s.state.GetSession(context.Background(), stored.SessionID)
+		if getErr != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not replay created session"}}
+		}
+		if current.Status == model.StatusRunning || current.Status == model.StatusStopped {
+			result, _ := json.Marshal(summaryFor(current))
+			return protocol.Response{ID: request.ID, Result: result}
+		}
+		return s.waitForSessionOutcome(request.ID, stored.SessionID)
+	}
+	existing, err := s.state.ListSessions(context.Background())
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect session capacity", Retryable: true}}
+	}
+	active := 0
+	for _, item := range existing {
+		if item.Status == model.StatusRunning || item.Status == model.StatusRecovering || item.Status == model.StatusProvisioning {
+			active++
+		}
+	}
+	if active >= 64 {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrBusy, Message: "Ducklion session capacity reached"}}
+	}
+	id, publicKey, privateKey, err := newRuntimeIdentity(s.state, s.root)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not allocate session"}}
+	}
+	now := time.Now().UTC().UnixMilli()
+	session := model.Session{ID: id, Handle: handle, Kind: create.Kind, AgentType: strings.TrimSpace(create.AgentType), CWD: create.CWD,
+		Status: model.StatusRecovering, OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle,
+		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: now, UpdatedAtMS: now}
+	if create.Kind == model.KindAgent {
+		session.Writer = &model.Owner{Kind: model.OwnerTerminal, ID: principal}
+	} else {
+		session.AdapterState = model.AdapterUnavailable
+	}
+	createdID, replayed, err := s.state.CreateSessionIdempotent(context.Background(), "terminal:"+principal, request.ID, fingerprint, session)
+	if err != nil {
+		code := protocol.ErrInternal
+		if errors.Is(err, store.ErrIdempotencyConflict) {
+			code = protocol.ErrIdempotencyConflict
+		}
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: code, Message: err.Error()}}
+	}
+	if replayed {
+		current, getErr := s.state.GetSession(context.Background(), createdID)
+		if getErr != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not replay created session"}}
+		}
+		if current.Status == model.StatusStopped {
+			result, _ := json.Marshal(summaryFor(current))
+			return protocol.Response{ID: request.ID, Result: result}
+		}
+		if current.Status == model.StatusRunning {
+			result, _ := json.Marshal(summaryFor(current))
+			return protocol.Response{ID: request.ID, Result: result}
+		}
+		id = createdID
+	}
+	if !replayed {
+		keyPath, err := s.writeRuntimeFiles(session, privateKey, runtimeSpec{SocketPath: s.socketPath, SessionID: id, RuntimeGeneration: 1,
+			OwnershipEpoch: 1, CWD: create.CWD, Command: create.Command, Rows: create.Rows, Cols: create.Cols})
+		if err != nil {
+			_ = s.state.MarkRuntimeExited(context.Background(), id, 1, false, "could not prepare session supervisor")
+			_ = os.RemoveAll(filepath.Join(s.root, "sessions", string(id)))
+			current, _ := s.state.GetSession(context.Background(), id)
+			result, _ := json.Marshal(summaryFor(current))
+			return protocol.Response{ID: request.ID, Result: result}
+		}
+		if err := s.runtimeLauncher(keyPath); err != nil {
+			_ = s.state.MarkRuntimeExited(context.Background(), id, 1, false, "could not launch session supervisor")
+			_ = os.RemoveAll(filepath.Join(s.root, "sessions", string(id)))
+			current, _ := s.state.GetSession(context.Background(), id)
+			result, _ := json.Marshal(summaryFor(current))
+			return protocol.Response{ID: request.ID, Result: result}
+		}
+	}
+	return s.waitForSessionOutcome(request.ID, id)
+}
+
+func (s *Server) waitForSessionOutcome(requestID string, id model.SessionID) protocol.Response {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		s.controlMu.Lock()
+		control := s.controls[id]
+		s.controlMu.Unlock()
+		s.outputMu.Lock()
+		output, outputReady := s.outputs[id]
+		s.outputMu.Unlock()
+		if control != nil && outputReady && control.identity == output.identity && s.registry.IsCurrent(output.identity) {
+			current, getErr := s.state.GetSession(context.Background(), id)
+			if getErr == nil {
+				result, _ := json.Marshal(summaryFor(current))
+				return protocol.Response{ID: requestID, Result: result}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	current, err := s.state.GetSession(context.Background(), id)
+	if err != nil {
+		return protocol.Response{ID: requestID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not read provisioning session", Retryable: true}}
+	}
+	result, _ := json.Marshal(summaryFor(current))
+	return protocol.Response{ID: requestID, Result: result}
+}
+
+func (s *Server) routeSessionStop(request protocol.Request, principal string) protocol.Response {
+	if len(request.Body) != 0 {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session stop has no body"}}
+	}
+	sessionID, parseErr := model.ParseSessionID(request.SessionID)
+	if parseErr == nil && request.InstanceID == string(s.instanceID) && request.OwnershipEpoch != nil && request.RuntimeGeneration != nil {
+		current, getErr := s.state.GetSession(context.Background(), sessionID)
+		ownerMatches := current.Kind == model.KindShell || current.Writer != nil && current.Writer.Kind == model.OwnerTerminal && current.Writer.ID == principal
+		if getErr == nil && current.Status == model.StatusStopped && ownerMatches && current.OwnershipEpoch == *request.OwnershipEpoch && current.RuntimeGeneration == *request.RuntimeGeneration {
+			result, _ := json.Marshal(summaryFor(current))
+			return protocol.Response{ID: request.ID, Result: result}
+		}
+	}
+	session, _, protocolError := s.authorizeTerminalControl(request, principal)
+	if protocolError != nil {
+		return protocol.Response{ID: request.ID, Error: protocolError}
+	}
+	forwarded := request
+	forwarded.Type = "supervisor.terminate"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	response := s.callControl(ctx, session.ID, forwarded)
+	if response.Error != nil {
+		return response
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err := s.state.GetSession(context.Background(), session.ID)
+		if err == nil && current.Status == model.StatusStopped {
+			result, _ := json.Marshal(summaryFor(current))
+			return protocol.Response{ID: request.ID, Result: result}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrBusy, Message: "session is still stopping", Retryable: true}}
+}
+
+func summaryFor(session model.Session) protocol.SessionSummary {
+	return protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind, AgentType: session.AgentType, CWD: session.CWD,
+		Status: session.Status, Writer: session.Writer, OwnershipEpoch: session.OwnershipEpoch, RuntimeGeneration: session.RuntimeGeneration,
+		TaskState: session.TaskState, AdapterState: session.AdapterState, ExitSuccess: session.ExitSuccess, ExitReason: session.ExitReason}
+}
+
+func newRuntimeIdentity(state *store.SQLite, root string) (model.SessionID, ed25519.PublicKey, ed25519.PrivateKey, error) {
+	for range 32 {
+		id, err := model.NewSessionID()
+		if err != nil {
+			return "", nil, nil, err
+		}
+		if _, err = state.GetSession(context.Background(), id); err == nil {
+			continue
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return "", nil, nil, err
+		}
+		if _, err := os.Lstat(filepath.Join(root, "sessions", string(id))); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", nil, nil, err
+		}
+		publicKey, privateKey, err := model.NewRecoveryKey()
+		return id, publicKey, privateKey, err
+	}
+	return "", nil, nil, fmt.Errorf("could not allocate unique session id")
+}
+
+func (s *Server) writeRuntimeFiles(session model.Session, privateKey ed25519.PrivateKey, spec runtimeSpec) (string, error) {
+	dir := filepath.Join(s.root, "sessions", string(session.ID))
+	if err := os.MkdirAll(filepath.Dir(dir), 0700); err != nil {
+		return "", err
+	}
+	if err := os.Mkdir(dir, 0700); err != nil {
+		return "", err
+	}
+	keyPath, specPath := filepath.Join(dir, "recovery.key"), filepath.Join(dir, "runtime.json")
+	if err := writeExclusiveFile(keyPath, []byte(base64.RawStdEncoding.EncodeToString(privateKey))); err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(spec)
+	if err != nil {
+		return "", err
+	}
+	if err := writeExclusiveFile(specPath, data); err != nil {
+		return "", err
+	}
+	return specPath, nil
+}
+
+func writeExclusiveFile(path string, data []byte) error {
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0600)
+	if err != nil {
+		return err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func (s *Server) spawnRuntime(specPath string) error {
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(specPath+".log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(executable, runtimeSubcommand, specPath)
+	cmd.Stdin = nil
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
+		return err
+	}
+	_ = logFile.Close()
+	return cmd.Process.Release()
+}
+
+func RunManagedSupervisor(ctx context.Context, specPath string) error {
+	data, err := os.ReadFile(specPath)
+	if err != nil {
+		return err
+	}
+	var spec runtimeSpec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return err
+	}
+	keyData, err := os.ReadFile(filepath.Join(filepath.Dir(specPath), "recovery.key"))
+	if err != nil {
+		return err
+	}
+	decoded, err := base64.RawStdEncoding.DecodeString(strings.TrimSpace(string(keyData)))
+	if err != nil || len(decoded) != ed25519.PrivateKeySize {
+		return fmt.Errorf("invalid recovery key")
+	}
+	ptySession, err := supervisor.Start(supervisor.Options{SessionID: spec.SessionID, RuntimeGeneration: spec.RuntimeGeneration, OwnershipEpoch: spec.OwnershipEpoch,
+		CWD: spec.CWD, Command: spec.Command, Rows: spec.Rows, Cols: spec.Cols, OutputCapacity: 1 << 20})
+	if err != nil {
+		return err
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- ptySession.Wait() }()
+	for {
+		select {
+		case err := <-wait:
+			return reportExitedRuntime(ctx, specPath, spec, ed25519.PrivateKey(decoded), ptySession.Output(), err)
+		case <-ctx.Done():
+			_ = ptySession.Terminate(false)
+			select {
+			case <-wait:
+			case <-time.After(2 * time.Second):
+				_ = ptySession.Terminate(true)
+				select {
+				case <-wait:
+				case <-time.After(2 * time.Second):
+				}
+			}
+			return ctx.Err()
+		default:
+		}
+		client, err := RegisterSupervisor(spec.SocketPath, spec.SessionID, spec.RuntimeGeneration, ed25519.PrivateKey(decoded))
+		if err != nil {
+			time.Sleep(250 * time.Millisecond)
+			continue
+		}
+		connectionCtx, cancel := context.WithCancel(ctx)
+		forwardDone := make(chan error, 1)
+		controlDone := make(chan error, 1)
+		go func() { forwardDone <- client.ForwardOutput(connectionCtx, ptySession.Output()) }()
+		go func() { controlDone <- client.ServeControl(connectionCtx, ptySession) }()
+		select {
+		case err := <-wait:
+			// Wait closes OutputHub only after PTY capture has drained. Let the
+			// forwarding side publish those final bytes before disconnecting.
+			select {
+			case <-forwardDone:
+			case <-time.After(2 * time.Second):
+			}
+			reason := ""
+			if err != nil {
+				reason = err.Error()
+			}
+			reportErr := client.ReportExit(err == nil, reason)
+			cancel()
+			_ = client.Close()
+			select {
+			case <-controlDone:
+			case <-time.After(time.Second):
+			}
+			if reportErr != nil {
+				return reportExitedRuntime(ctx, specPath, spec, ed25519.PrivateKey(decoded), ptySession.Output(), err)
+			}
+			removeRuntimeCredentials(specPath)
+			return err
+		case <-ctx.Done():
+			_ = ptySession.Terminate(false)
+			cancel()
+			_ = client.Close()
+			select {
+			case <-forwardDone:
+			case <-time.After(time.Second):
+			}
+			select {
+			case <-controlDone:
+			case <-time.After(time.Second):
+			}
+			select {
+			case <-wait:
+			case <-time.After(2 * time.Second):
+				_ = ptySession.Terminate(true)
+				select {
+				case <-wait:
+				case <-time.After(2 * time.Second):
+				}
+			}
+			return ctx.Err()
+		case <-forwardDone:
+			select {
+			case waitErr := <-wait:
+				reason := ""
+				if waitErr != nil {
+					reason = waitErr.Error()
+				}
+				reportErr := client.ReportExit(waitErr == nil, reason)
+				cancel()
+				_ = client.Close()
+				select {
+				case <-controlDone:
+				case <-time.After(time.Second):
+				}
+				if reportErr != nil {
+					return reportExitedRuntime(ctx, specPath, spec, ed25519.PrivateKey(decoded), ptySession.Output(), waitErr)
+				}
+				removeRuntimeCredentials(specPath)
+				return waitErr
+			case <-time.After(50 * time.Millisecond):
+			}
+			cancel()
+			_ = client.Close()
+			select {
+			case <-controlDone:
+			case <-time.After(time.Second):
+			}
+		case <-controlDone:
+			cancel()
+			_ = client.Close()
+			select {
+			case <-forwardDone:
+			case <-time.After(time.Second):
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec, privateKey ed25519.PrivateKey, output *duckruntime.OutputHub, processErr error) error {
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		client, err := RegisterSupervisor(spec.SocketPath, spec.SessionID, spec.RuntimeGeneration, privateKey)
+		if err == nil {
+			replay := output.Snapshot()
+			forwardErr := client.PublishSnapshot(replay)
+			if forwardErr == nil {
+				reason := ""
+				if processErr != nil {
+					reason = processErr.Error()
+				}
+				err = client.ReportExit(processErr == nil, reason)
+			}
+			_ = client.Close()
+			if err == nil && forwardErr == nil {
+				removeRuntimeCredentials(specPath)
+				return processErr
+			}
+		}
+		timer := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func removeRuntimeCredentials(specPath string) {
+	_ = os.Remove(filepath.Join(filepath.Dir(specPath), "recovery.key"))
+	_ = os.Remove(specPath)
+}
+
+func IsRuntimeSubcommand(args []string) (string, bool) {
+	if len(args) == 2 && args[0] == runtimeSubcommand {
+		return args[1], true
+	}
+	return "", false
+}

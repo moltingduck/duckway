@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -42,6 +42,18 @@ type MutationKey struct {
 type MutationResult struct {
 	JSON     json.RawMessage
 	Replayed bool
+}
+
+func (s *SQLite) ReplayMutation(ctx context.Context, key MutationKey) (MutationResult, bool, error) {
+	var operation, sessionID, status string
+	var fingerprint, response []byte
+	err := s.db.QueryRowContext(ctx, `SELECT operation,session_id,fingerprint,status,response_json FROM mutation_requests WHERE principal=? AND request_id=?`, key.Principal, key.RequestID).
+		Scan(&operation, &sessionID, &fingerprint, &status, &response)
+	if errors.Is(err, sql.ErrNoRows) { return MutationResult{}, false, nil }
+	if err != nil { return MutationResult{}, false, err }
+	if operation != key.Operation || sessionID != string(key.SessionID) || !equalBytes(fingerprint, key.Fingerprint[:]) { return MutationResult{}, true, ErrIdempotencyConflict }
+	if status != "completed" { return MutationResult{}, true, ErrMutationInProgress }
+	return MutationResult{JSON: append(json.RawMessage(nil), response...), Replayed: true}, true, nil
 }
 
 func Fingerprint(operation string, sessionID model.SessionID, canonicalPayload []byte) [32]byte {
@@ -156,6 +168,11 @@ func (s *SQLite) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate ducklion schema to v1: %w", err)
 		}
 	}
+	if userVersion < 2 {
+		if err := migrateV2(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v2: %w", err)
+		}
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
 		return err
 	}
@@ -190,7 +207,7 @@ func migrateV1(ctx context.Context, tx *sql.Tx) error {
             ownership_epoch INTEGER NOT NULL CHECK(ownership_epoch>=0), runtime_generation INTEGER NOT NULL CHECK(runtime_generation>=0),
             task_state TEXT NOT NULL CHECK(task_state IN ('idle','running','replying')),
             adapter_state TEXT NOT NULL CHECK(adapter_state IN ('unavailable','healthy','unhealthy','recovering')),
-            recovery_public_key BLOB, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+			recovery_public_key BLOB, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
             CHECK((kind='agent' AND agent_type<>'' AND writer_kind IS NOT NULL AND writer_id IS NOT NULL) OR
                   (kind='shell' AND agent_type='' AND writer_kind IS NULL AND writer_id IS NULL)))`,
 		`CREATE TABLE pending_yields (
@@ -209,6 +226,18 @@ func migrateV1(ctx context.Context, tx *sql.Tx) error {
 		`CREATE INDEX mutation_requests_completed_idx ON mutation_requests(completed_at_ms)`,
 	}
 	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateV2(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`ALTER TABLE sessions ADD COLUMN exit_success INTEGER`,
+		`ALTER TABLE sessions ADD COLUMN exit_reason TEXT NOT NULL DEFAULT ''`,
+	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return err
 		}

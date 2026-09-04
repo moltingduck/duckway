@@ -95,6 +95,52 @@ The split prevents asynchronous control requests from being confused with
 output acknowledgements and guarantees one codec reader and writer at a time.
 Control reconnect does not reset the runtime-scoped input sequence.
 
+## Session creation and daemon restart
+
+Ducklord creates sessions with the negotiated `session_create` RPC. The request
+contains a Unicode display handle, session kind, agent type, absolute working
+directory, argv array, and initial PTY dimensions. Commands are never joined or
+reparsed through a shell by Ducklion. The authenticated Ducklord principal
+becomes the initial writer of an agent session; shell sessions remain
+shared-writer as specified.
+
+Ducklion allocates the six-character Crockford session ID and an Ed25519
+recovery key. Public state is committed to SQLite. The private key and immutable
+runtime launch description are stored below
+`~/.duckway/ducklion/sessions/<session-id>/` with mode `0600`; the directory is
+private to the Duckway Unix account. Ducklion then starts the same installed
+binary using its private `__ducklion_runtime_v1` entry point. That process is a
+new session leader and owns both the PTY child and its in-memory output ring.
+The create RPC normally waits for matching recovery/output and control leases,
+so the common successful response is immediately attachable. If startup takes
+longer than the bounded readiness window, it returns the stable session ID with
+`recovering` status rather than claiming failure or spawning a duplicate;
+inventory then exposes the eventual transition to `running` or `stopped`.
+
+Managed PTYs do not inherit arbitrary daemon-only credentials. Ducklion passes
+only the basic login/terminal environment (`HOME`, `PATH`, terminal and locale,
+user/shell, and temporary-directory fields). An interactive shell remains
+responsible for its own startup files; a later launch-config feature may add
+explicit per-session variables.
+
+The supervisor is not a child-lifetime resource of the daemon. If Ducklion is
+restarted, the Unix connections close, the supervisor keeps the PTY alive, and
+it retries authenticated registration against the recreated socket. SQLite
+temporarily reports `recovering`, then returns to `running` after the new daemon
+accepts the same recovery key and runtime generation. This path is exercised by
+an automated test that writes to the same PTY after a daemon close/open cycle.
+When the PTY exits, the supervisor first drains final output and sends an
+authenticated `supervisor.exited` record. Ducklion durably marks the session
+`stopped` instead of mistaking an intentional exit for a reconnectable network
+loss. `session.stop` is owner- and generation-fenced, terminates the supervised
+process group, and waits for that stopped record before replying.
+
+Ducklion schema v2 adds the bounded exit success/reason fields exposed in
+session summaries. Opening an existing v1 database creates a timestamped
+mode-`0600` SQLite backup before applying the transactional migration; a fresh
+install goes through the same ordered v1→v2 migration path. No manual migration
+command is required.
+
 ## Input and resize safety
 
 Ducklord cannot provide an authoritative owner in an input body. Ducklion
@@ -115,7 +161,8 @@ the specification's tmux-like model.
 
 ## Output and replay
 
-The supervisor owns a bounded 4 MiB in-memory output ring. Output is published
+The supervisor owns a bounded in-memory output ring (managed sessions currently
+use 1 MiB). Output is published
 in chunks no larger than 64 KiB, with contiguous byte offsets. Ducklion fans it
 out through bounded per-viewer queues; a slow viewer never blocks PTY capture.
 
@@ -134,14 +181,18 @@ the underlying host bridge remains available for other views and control.
 
 ## Current integration boundary
 
-The daemon, supervisor recovery, output subscription, owner-fenced input,
-resize, and stdio bridge are implemented and covered by socket and real-PTY
-tests. Ducklord now opens and retains the authenticated stdio bridge for
-session inventory, so its configured/CLI owner reaches the daemon handshake;
-changing owner closes and renegotiates those bridges. Response and live-output
-multiplexing, including per-stream unsubscribe, now runs on that same bridge.
-The remaining integration work is Ducklord terminal renderer/TUI wiring,
-yield/lifecycle RPCs, durable event subscriptions, and the final process-level
-release E2E. Until that cutover is complete, legacy CLI
-session commands remain present and must not be treated as evidence that the
-final architecture is complete.
+The daemon-backed create path, independent supervisor recovery, output
+subscription, owner-fenced input, resize, and stdio bridge are implemented and
+covered by socket, real-PTY, daemon-restart, and Podman tests. Ducklord uses the
+authenticated bridge for inventory, creation, read, send, and streaming attach.
+Changing owner closes and renegotiates retained bridges.
+
+The remaining integration work includes yield/lifecycle RPCs, the complete
+terminal framebuffer and resize signal wiring, durable activity subscriptions,
+and Discord CC binding. Legacy CLI session state remains available only during
+this staged cutover and must not be mixed with daemon inventory.
+
+`scripts/ducklord-podman-demo.sh` is both a demo provisioner and a release
+smoke: before printing the interactive TUI command it asserts daemon inventory,
+PTY input/output, and same-session recovery across a real daemon restart in
+separate containers.

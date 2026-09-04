@@ -47,7 +47,7 @@ echo "[ducklord-demo] starting remote clients"
 "$RUNTIME" run -d --name ducklion-client-b --hostname client-b --network "$NET" "$IMAGE" >/dev/null
 "$RUNTIME" run -d --name ducklion-client-c --hostname client-c --network "$NET" "$IMAGE" >/dev/null
 for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
-  "$RUNTIME" exec -d -u duck "$container" ducklion daemon >/dev/null
+  "$RUNTIME" exec -d -u duck "$container" sh -lc 'mkdir -p $HOME/.duckway; nohup ducklion daemon >$HOME/.duckway/ducklion-daemon.log 2>&1 </dev/null & echo $! >$HOME/.duckway/ducklion-daemon.pid' >/dev/null
 done
 for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
   ready=false
@@ -93,10 +93,43 @@ echo "[ducklord-demo] creating sample remote sessions"
 "$RUNTIME" exec -u duck ducklion-client-a sh -lc 'mkdir -p /home/duck/projects/alpha && duckway projects add --name alpha-project /home/duck/projects/alpha' >/dev/null
 "$RUNTIME" exec -u duck ducklion-client-b sh -lc 'mkdir -p /home/duck/projects/beta && duckway projects add --name beta-project /home/duck/projects/beta' >/dev/null
 "$RUNTIME" exec -u duck ducklion-client-c sh -lc 'mkdir -p /home/duck/projects/gamma && duckway projects add --name gamma-project /home/duck/projects/gamma' >/dev/null
-"$RUNTIME" exec -u duck ducklion-client-a ducklion start --name alpha --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-a alpha tick $i; if [ $((i % 3)) -eq 0 ]; then echo "[ducklion:done] alpha step $i"; fi; sleep 4; done' >/dev/null
-"$RUNTIME" exec -u duck ducklion-client-a ducklion start --name bash --agent shell --cwd /home/duck -- bash >/dev/null
-"$RUNTIME" exec -u duck ducklion-client-a ducklion start --name build --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-a build output $i; sleep 6; done' >/dev/null
-"$RUNTIME" exec -u duck ducklion-client-b ducklion start --name beta --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-b beta tick $i; if [ $((i % 2)) -eq 0 ]; then echo "[ducklion:done] beta step $i"; fi; sleep 5; done' >/dev/null
+"$RUNTIME" exec ducklord-dev ducklord start client-a --name alpha --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-a alpha tick $i; if [ $((i % 3)) -eq 0 ]; then echo "[ducklion:done] alpha step $i"; fi; sleep 4; done' >/dev/null
+"$RUNTIME" exec ducklord-dev ducklord start client-a --name bash --agent shell --cwd /home/duck -- bash >/dev/null
+"$RUNTIME" exec ducklord-dev ducklord start client-a --name build --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-a build output $i; sleep 6; done' >/dev/null
+"$RUNTIME" exec ducklord-dev ducklord start client-b --name beta --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-b beta tick $i; if [ $((i % 2)) -eq 0 ]; then echo "[ducklion:done] beta step $i"; fi; sleep 5; done' >/dev/null
+
+echo "[ducklord-demo] verifying daemon inventory, PTY input, and recovery"
+sessions="$($RUNTIME exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml)"
+grep -q 'alpha.*running' <<<"$sessions"
+grep -q 'bash.*running' <<<"$sessions"
+grep -q 'build.*running' <<<"$sessions"
+"$RUNTIME" exec ducklord-dev ducklord send client-a bash 'printf ducklord-e2e-ready' --config /root/.ducklord/config.yaml >/dev/null
+ready=false
+for _ in $(seq 1 50); do
+  if "$RUNTIME" exec ducklord-dev ducklord read client-a bash --lines 20 --config /root/.ducklord/config.yaml | grep -q ducklord-e2e-ready; then
+    ready=true
+    break
+  fi
+  sleep 0.05
+done
+if [ "$ready" != true ]; then
+  echo "[ducklord-demo] PTY input/output assertion failed" >&2
+  exit 1
+fi
+"$RUNTIME" exec -u duck ducklion-client-a sh -lc 'kill "$(cat $HOME/.duckway/ducklion-daemon.pid)"'
+"$RUNTIME" exec -d -u duck ducklion-client-a sh -lc 'mkdir -p $HOME/.duckway; nohup ducklion daemon >$HOME/.duckway/ducklion-daemon.log 2>&1 </dev/null & echo $! >$HOME/.duckway/ducklion-daemon.pid' >/dev/null
+recovered=false
+for _ in $(seq 1 100); do
+  if "$RUNTIME" exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml 2>/dev/null | grep -q 'bash.*running'; then
+    recovered=true
+    break
+  fi
+  sleep 0.05
+done
+if [ "$recovered" != true ]; then
+  echo "[ducklord-demo] daemon restart recovery assertion failed" >&2
+  exit 1
+fi
 
 cat <<EOF
 [ducklord-demo] ready

@@ -87,7 +87,7 @@ func ConnectContext(ctx context.Context, conn io.ReadWriteCloser, principal stri
 	}()
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	setDeadline(conn, time.Now().Add(10*time.Second))
-	offeredCapabilities := []string{"status", "sessions_list", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}
+	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}
 	if err := codec.Write(protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleDucklord, Principal: principal, Capabilities: offeredCapabilities}); err != nil {
 		conn.Close()
 		return nil, err
@@ -518,6 +518,51 @@ func (c *Client) ListSessions() ([]protocol.SessionSummary, error) {
 		return nil, err
 	}
 	return sessions, nil
+}
+
+func (c *Client) CreateSession(ctx context.Context, request protocol.SessionCreate) (protocol.SessionSummary, error) {
+	return c.CreateSessionWithID(ctx, uuid.NewString(), request)
+}
+
+func (c *Client) CreateSessionWithID(ctx context.Context, requestID string, request protocol.SessionCreate) (protocol.SessionSummary, error) {
+	if err := c.requireCapability("session_create"); err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: requestID, Type: "session.create", InstanceID: c.instanceID, Body: body})
+	if err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	if response.Error != nil {
+		return protocol.SessionSummary{}, &RemoteError{Detail: *response.Error}
+	}
+	var summary protocol.SessionSummary
+	if err := json.Unmarshal(response.Result, &summary); err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	return summary, nil
+}
+
+func (c *Client) StopSession(ctx context.Context, sessionID string, epoch, generation uint64) error {
+	return c.StopSessionWithID(ctx, uuid.NewString(), sessionID, epoch, generation)
+}
+
+func (c *Client) StopSessionWithID(ctx context.Context, requestID, sessionID string, epoch, generation uint64) error {
+	if err := c.requireCapability("session_stop"); err != nil {
+		return err
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: requestID, Type: "session.stop", InstanceID: c.instanceID, SessionID: sessionID,
+		OwnershipEpoch: &epoch, RuntimeGeneration: &generation})
+	if err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return &RemoteError{Detail: *response.Error}
+	}
+	return nil
 }
 
 func (c *Client) SendInput(sessionID string, epoch, generation uint64, data []byte) error {

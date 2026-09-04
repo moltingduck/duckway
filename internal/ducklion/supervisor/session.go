@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -67,6 +68,7 @@ func Start(options Options) (*Session, error) {
 	}
 	cmd := exec.Command(options.Command[0], options.Command[1:]...)
 	cmd.Dir = options.CWD
+	cmd.Env = supervisedEnvironment()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: options.Rows, Cols: options.Cols})
 	if err != nil {
@@ -77,6 +79,17 @@ func Start(options Options) (*Session, error) {
 	session.input = duckruntime.NewInputPump((*inputGate)(session), ptmx, 64)
 	go session.capture()
 	return session, nil
+}
+
+func supervisedEnvironment() []string {
+	allowed := []string{"HOME", "PATH", "TERM", "LANG", "LC_ALL", "USER", "LOGNAME", "SHELL", "TMPDIR", "COLORTERM"}
+	environment := make([]string, 0, len(allowed))
+	for _, name := range allowed {
+		if value, ok := os.LookupEnv(name); ok && !strings.ContainsRune(value, 0) {
+			environment = append(environment, name+"="+value)
+		}
+	}
+	return environment
 }
 
 func (s *Session) Output() *duckruntime.OutputHub { return s.output }
@@ -129,6 +142,33 @@ func (s *Session) Wait() error {
 	s.output.Close()
 	_ = s.pty.Close()
 	return err
+}
+
+// Terminate asks the entire supervised process group to exit. Wait must still
+// be called exactly once to reap the child and finish PTY/output cleanup.
+func (s *Session) Terminate(force bool) error {
+	s.mu.Lock()
+	if s.closed || s.cmd == nil || s.cmd.Process == nil {
+		s.mu.Unlock()
+		return nil
+	}
+	pid := s.cmd.Process.Pid
+	s.mu.Unlock()
+	signal := syscall.SIGTERM
+	if force {
+		signal = syscall.SIGKILL
+	}
+	if err := syscall.Kill(-pid, signal); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	if force {
+		s.mu.Lock()
+		if s.pty != nil {
+			_ = s.pty.Close()
+		}
+		s.mu.Unlock()
+	}
+	return nil
 }
 
 func (s *Session) capture() {

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklord"
@@ -214,6 +215,13 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		if err != nil {
 			return err
 		}
+		owner, err := ducklord.ResolveOwnerName(globalOwner, cfg.Name)
+		if err != nil {
+			return err
+		}
+		if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+			ownerRunner.SetOwner(owner)
+		}
 		c, err := mustClient(cfg, clientName)
 		if err != nil {
 			return err
@@ -232,6 +240,13 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		if len(rest) < 3 {
 			return fmt.Errorf("usage: ducklord send <client> <session> <text>")
 		}
+		owner, err := ducklord.ResolveOwnerName(globalOwner, cfg.Name)
+		if err != nil {
+			return err
+		}
+		if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+			ownerRunner.SetOwner(owner)
+		}
 		c, err := mustClient(cfg, rest[0])
 		if err != nil {
 			return err
@@ -244,6 +259,13 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		}
 		if len(rest) < 2 {
 			return fmt.Errorf("usage: ducklord start <client> --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]")
+		}
+		owner, err := ducklord.ResolveOwnerName(globalOwner, cfg.Name)
+		if err != nil {
+			return err
+		}
+		if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+			ownerRunner.SetOwner(owner)
 		}
 		c, err := mustClient(cfg, rest[0])
 		if err != nil {
@@ -262,6 +284,13 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		if len(rest) != 2 {
 			return fmt.Errorf("usage: ducklord stop <client> <session>")
 		}
+		owner, err := ducklord.ResolveOwnerName(globalOwner, cfg.Name)
+		if err != nil {
+			return err
+		}
+		if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+			ownerRunner.SetOwner(owner)
+		}
 		c, err := mustClient(cfg, rest[0])
 		if err != nil {
 			return err
@@ -275,11 +304,59 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		if len(rest) != 2 {
 			return fmt.Errorf("usage: ducklord attach <client> <session>")
 		}
+		owner, err := ducklord.ResolveOwnerName(globalOwner, cfg.Name)
+		if err != nil {
+			return err
+		}
+		if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+			ownerRunner.SetOwner(owner)
+		}
 		c, err := mustClient(cfg, rest[0])
 		if err != nil {
 			return err
 		}
-		return runner.Attach(c, rest[1])
+		attach, err := runner.AttachStream(context.Background(), c, rest[1])
+		if err != nil {
+			return err
+		}
+		defer attach.Stdin.Close()
+		defer attach.Stdout.Close()
+		if oldState, rawErr := makeRaw(); rawErr == nil {
+			defer restore(oldState)
+		}
+		resize := func() {
+			if attach.Resize == nil {
+				return
+			}
+			cols, rows := terminalSize()
+			_ = attach.Resize(uint16(rows), uint16(cols))
+		}
+		resize()
+		resizeSignals := make(chan os.Signal, 1)
+		resizeDone := make(chan struct{})
+		signal.Notify(resizeSignals, syscall.SIGWINCH)
+		defer func() { signal.Stop(resizeSignals); close(resizeDone) }()
+		go func() {
+			for {
+				select {
+				case <-resizeSignals:
+					resize()
+				case <-resizeDone:
+					return
+				}
+			}
+		}()
+		copyInputDone := make(chan struct{})
+		go func() { _, _ = io.Copy(attach.Stdin, os.Stdin); close(copyInputDone) }()
+		_, outputErr := io.Copy(out, attach.Stdout)
+		select {
+		case attachErr := <-attach.Done:
+			if attachErr != nil {
+				return attachErr
+			}
+		default:
+		}
+		return outputErr
 	case "attach-host":
 		cfg, rest, err := loadWithFlags(args[1:])
 		if err != nil {

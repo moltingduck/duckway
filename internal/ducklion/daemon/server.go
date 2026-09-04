@@ -28,33 +28,36 @@ import (
 var ErrAlreadyRunning = errors.New("ducklion daemon is already running")
 
 type Options struct {
-	Root       string
-	SocketPath string
+	Root            string
+	SocketPath      string
+	RuntimeLauncher func(string) error
 }
 
 type Server struct {
-	root        string
-	socketPath  string
-	lockFile    *os.File
-	listener    *net.UnixListener
-	state       *store.SQLite
-	service     *service.Service
-	registry    *duckruntime.Registry
-	instanceID  model.InstanceID
-	closeOnce   sync.Once
-	done        chan struct{}
-	connMu      sync.Mutex
-	connections map[*net.UnixConn]struct{}
-	ducklords   map[string]*net.UnixConn
-	handlers    sync.WaitGroup
-	lifecycleMu sync.Mutex
-	closing     bool
-	outputMu    sync.Mutex
-	outputs     map[model.SessionID]registeredOutput
-	controlMu   sync.Mutex
-	controls    map[model.SessionID]*controlPeer
-	sequenceMu  sync.Mutex
-	sequences   map[model.SessionID]runtimeSequence
+	root            string
+	socketPath      string
+	lockFile        *os.File
+	listener        *net.UnixListener
+	state           *store.SQLite
+	service         *service.Service
+	registry        *duckruntime.Registry
+	instanceID      model.InstanceID
+	closeOnce       sync.Once
+	done            chan struct{}
+	connMu          sync.Mutex
+	connections     map[*net.UnixConn]struct{}
+	ducklords       map[string]*net.UnixConn
+	handlers        sync.WaitGroup
+	lifecycleMu     sync.Mutex
+	createMu        sync.Mutex
+	closing         bool
+	outputMu        sync.Mutex
+	outputs         map[model.SessionID]registeredOutput
+	controlMu       sync.Mutex
+	controls        map[model.SessionID]*controlPeer
+	sequenceMu      sync.Mutex
+	sequences       map[model.SessionID]runtimeSequence
+	runtimeLauncher func(string) error
 }
 
 type runtimeSequence struct {
@@ -169,10 +172,14 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 		_ = state.Close()
 		return fail(err)
 	}
-	return &Server{root: root, socketPath: socketPath, lockFile: lockFile, listener: listener, state: state,
+	server := &Server{root: root, socketPath: socketPath, lockFile: lockFile, listener: listener, state: state,
 		service: service.New(state), registry: duckruntime.NewRegistry(instanceID, state), instanceID: instanceID, done: make(chan struct{}),
 		connections: make(map[*net.UnixConn]struct{}), ducklords: make(map[string]*net.UnixConn), outputs: make(map[model.SessionID]registeredOutput), controls: make(map[model.SessionID]*controlPeer),
-		sequences: make(map[model.SessionID]runtimeSequence)}, nil
+		sequences: make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher}
+	if server.runtimeLauncher == nil {
+		server.runtimeLauncher = server.spawnRuntime
+	}
+	return server, nil
 }
 
 func (s *Server) SocketPath() string           { return s.socketPath }
@@ -254,7 +261,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 		}
 		s.connMu.Unlock()
 	}()
-	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"status", "sessions_list", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"status", "sessions_list", "session_create", "session_stop", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
 	if protocolError != nil {
 		_ = codec.Write(protocol.HandshakeResponse{Error: protocolError})
@@ -448,11 +455,6 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 		writeSupervisorError(codec, completeRequest.ID, protocol.ErrAdapterUnhealthy, "runtime registration failed")
 		return
 	}
-	if err := s.state.MarkRuntimeConnected(context.Background(), identity.SessionID, identity.Generation); err != nil {
-		s.registry.Disconnect(identity)
-		writeSupervisorError(codec, completeRequest.ID, protocol.ErrStaleGeneration, "runtime state changed during registration")
-		return
-	}
 	output := s.activateOutput(identity)
 	defer func() {
 		s.deactivateOutput(identity)
@@ -494,13 +496,35 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid supervisor output")
 				continue
 			}
-			_, end := output.Bounds()
-			if published.Offset != end {
+			start, end := output.Bounds()
+			recoveredSeed := published.Gap && start == 0 && end == 0
+			if !recoveredSeed && published.Offset != end {
 				writeSupervisorError(codec, request.ID, protocol.ErrStaleGeneration, "output offset is not contiguous")
 				continue
 			}
-			frame := output.Publish(published.Data)
+			var frame duckruntime.OutputFrame
+			if published.Gap {
+				var publishErr error
+				frame, publishErr = output.PublishRecovered(published.Offset, published.Data, true)
+				if publishErr != nil {
+					writeSupervisorError(codec, request.ID, protocol.ErrStaleGeneration, "recovered output is invalid")
+					continue
+				}
+			} else {
+				frame = output.Publish(published.Data)
+			}
 			result, _ = json.Marshal(protocol.SupervisorOutputAck{Offset: frame.Offset, Length: uint64(len(frame.Data))})
+		case "supervisor.exited":
+			var exited protocol.SupervisorExit
+			if err := decodeStrict(request.Body, &exited); err != nil || len(exited.Reason) > 1024 {
+				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid supervisor exit report")
+				continue
+			}
+			if err := s.state.MarkRuntimeExited(context.Background(), identity.SessionID, identity.Generation, exited.Success, exited.Reason); err != nil {
+				writeSupervisorError(codec, request.ID, protocol.ErrStaleGeneration, "runtime state changed before exit")
+				continue
+			}
+			result, _ = json.Marshal(map[string]bool{"recorded": true})
 		default:
 			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "operation is unavailable to supervisors")
 			continue
@@ -536,7 +560,7 @@ func (s *Server) handleSupervisorControl(conn *net.UnixConn, codec *bridge.Codec
 	}
 	generation := *begin.RuntimeGeneration
 	session, err := s.state.GetSession(context.Background(), sessionID)
-	if err != nil || session.Status != model.StatusRunning || session.RuntimeGeneration != generation || len(session.RecoveryPublicKey) != ed25519.PublicKeySize {
+	if err != nil || (session.Status != model.StatusRecovering && session.Status != model.StatusRunning) || session.RuntimeGeneration != generation || len(session.RecoveryPublicKey) != ed25519.PublicKeySize {
 		writeSupervisorError(codec, begin.ID, protocol.ErrAdapterUnhealthy, "runtime control is unavailable")
 		return
 	}
@@ -571,11 +595,6 @@ func (s *Server) handleSupervisorControl(conn *net.UnixConn, codec *bridge.Codec
 		writeSupervisorError(codec, complete.ID, protocol.ErrStaleGeneration, "runtime changed during control authentication")
 		return
 	}
-	ready, _ := json.Marshal(protocol.SupervisorControlReady{SessionID: string(sessionID), RuntimeGeneration: generation})
-	if err := codec.Write(protocol.Response{ID: complete.ID, Result: ready}); err != nil {
-		return
-	}
-	_ = conn.SetDeadline(time.Time{})
 	peer := &controlPeer{identity: identity, conn: conn, calls: make(chan controlCall), done: make(chan struct{})}
 	s.controlMu.Lock()
 	old := s.controls[sessionID]
@@ -586,12 +605,26 @@ func (s *Server) handleSupervisorControl(conn *net.UnixConn, codec *bridge.Codec
 	}
 	defer func() {
 		peer.stop()
+		removed := false
 		s.controlMu.Lock()
 		if s.controls[sessionID] == peer {
 			delete(s.controls, sessionID)
+			removed = true
 		}
 		s.controlMu.Unlock()
+		if removed {
+			_ = s.state.MarkRuntimeDisconnected(context.Background(), identity.SessionID, identity.Generation)
+		}
 	}()
+	if err := s.state.MarkRuntimeConnected(context.Background(), identity.SessionID, identity.Generation); err != nil {
+		writeSupervisorError(codec, complete.ID, protocol.ErrStaleGeneration, "runtime state changed during control registration")
+		return
+	}
+	ready, _ := json.Marshal(protocol.SupervisorControlReady{SessionID: string(sessionID), RuntimeGeneration: generation})
+	if err := codec.Write(protocol.Response{ID: complete.ID, Result: ready}); err != nil {
+		return
+	}
+	_ = conn.SetDeadline(time.Time{})
 	for {
 		select {
 		case <-s.done:
@@ -819,10 +852,21 @@ func (s *Server) route(request protocol.Request, capabilities []string, principa
 		for _, session := range sessions {
 			summaries = append(summaries, protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind,
 				AgentType: session.AgentType, CWD: session.CWD, Status: session.Status, Writer: session.Writer, OwnershipEpoch: session.OwnershipEpoch,
-				RuntimeGeneration: session.RuntimeGeneration, TaskState: session.TaskState, AdapterState: session.AdapterState})
+				RuntimeGeneration: session.RuntimeGeneration, TaskState: session.TaskState, AdapterState: session.AdapterState,
+				ExitSuccess: session.ExitSuccess, ExitReason: session.ExitReason})
 		}
 		result, _ := json.Marshal(summaries)
 		return protocol.Response{ID: request.ID, Result: result}
+	case "session.create":
+		if !hasCapability(capabilities, "session_create") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session create capability was not negotiated"}}
+		}
+		return s.routeSessionCreate(request, principal)
+	case "session.stop":
+		if !hasCapability(capabilities, "session_stop") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session stop capability was not negotiated"}}
+		}
+		return s.routeSessionStop(request, principal)
 	case "session.input":
 		if !hasCapability(capabilities, "session_input") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session input capability was not negotiated"}}

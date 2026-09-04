@@ -92,6 +92,69 @@ func TestOpenRejectsNewerSchemaWithoutChangingIt(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesV1DatabaseAndCreatesBackup(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "ducklion.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := raw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateV1(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`PRAGMA user_version=1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var version int
+	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != SchemaVersion {
+		t.Fatalf("version=%d err=%v", version, err)
+	}
+	columns := map[string]bool{}
+	rows, err := s.db.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		columns[name] = true
+	}
+	if !columns["exit_success"] || !columns["exit_reason"] {
+		t.Fatalf("columns=%v", columns)
+	}
+	backups, err := filepath.Glob(path + ".bak-v1-*")
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("backups=%v err=%v", backups, err)
+	}
+	info, err := os.Stat(backups[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("backup mode=%v", info.Mode())
+	}
+}
+
 func TestMutationIsAtomicReplayableAndPayloadBound(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(ctx, filepath.Join(t.TempDir(), "ducklion.db"))

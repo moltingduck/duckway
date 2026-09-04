@@ -3,12 +3,35 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 )
+
+func (s *SQLite) CreateSessionIdempotent(ctx context.Context, principal, requestID string, fingerprint [32]byte, session model.Session) (model.SessionID, bool, error) {
+	key := MutationKey{Principal: principal, RequestID: requestID, Operation: "create_session", Fingerprint: fingerprint}
+	result, err := s.RunMutation(ctx, key, func(tx *sql.Tx) (json.RawMessage, error) {
+		if err := s.InsertSessionTx(ctx, tx, session); err != nil {
+			return nil, err
+		}
+		return json.Marshal(struct {
+			SessionID model.SessionID `json:"session_id"`
+		}{session.ID})
+	})
+	if err != nil {
+		return "", false, err
+	}
+	var value struct {
+		SessionID model.SessionID `json:"session_id"`
+	}
+	if err := json.Unmarshal(result.JSON, &value); err != nil {
+		return "", false, err
+	}
+	return value.SessionID, result.Replayed, nil
+}
 
 type AuditEvent struct {
 	SessionID         model.SessionID
@@ -22,8 +45,8 @@ type AuditEvent struct {
 
 func (s *SQLite) MarkRuntimeConnected(ctx context.Context, id model.SessionID, generation uint64) error {
 	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='running',adapter_state=CASE kind WHEN 'agent' THEN 'healthy' ELSE 'unavailable' END,updated_at_ms=?
-		WHERE session_id=? AND runtime_generation=? AND status='recovering' AND
-		((kind='agent' AND adapter_state='recovering') OR (kind='shell' AND adapter_state='unavailable'))`, time.Now().UTC().UnixMilli(), id, generation)
+		WHERE session_id=? AND runtime_generation=? AND status IN ('recovering','running') AND
+		((kind='agent' AND adapter_state IN ('recovering','healthy')) OR (kind='shell' AND adapter_state='unavailable'))`, time.Now().UTC().UnixMilli(), id, generation)
 	if err != nil {
 		return err
 	}
@@ -42,6 +65,26 @@ func (s *SQLite) MarkRuntimeDisconnected(ctx context.Context, id model.SessionID
 	}
 	if rows, _ := result.RowsAffected(); rows > 1 {
 		return fmt.Errorf("runtime disconnection updated multiple sessions")
+	}
+	return nil
+}
+
+func (s *SQLite) MarkRuntimeStopped(ctx context.Context, id model.SessionID, generation uint64) error {
+	return s.MarkRuntimeExited(ctx, id, generation, false, "runtime launch or stop failed")
+}
+
+func (s *SQLite) MarkRuntimeExited(ctx context.Context, id model.SessionID, generation uint64, success bool, reason string) error {
+	if len(reason) > 1024 {
+		reason = reason[:1024]
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='stopped',task_state='idle',adapter_state=CASE kind WHEN 'agent' THEN 'unhealthy' ELSE 'unavailable' END,
+		exit_success=?,exit_reason=?,updated_at_ms=? WHERE session_id=? AND runtime_generation=? AND status IN ('running','recovering')`,
+		success, reason, time.Now().UTC().UnixMilli(), id, generation)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return fmt.Errorf("runtime stop fencing conflict")
 	}
 	return nil
 }
@@ -86,10 +129,10 @@ func (s *SQLite) InsertSessionTx(ctx context.Context, tx *sql.Tx, session model.
 		writerKind, writerID = session.Writer.Kind, session.Writer.ID
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO sessions
-        (session_id,handle,kind,agent_type,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_public_key,created_at_ms,updated_at_ms)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, session.ID, session.Handle, session.Kind, session.AgentType, session.CWD, session.Shell,
+		(session_id,handle,kind,agent_type,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_public_key,created_at_ms,updated_at_ms,exit_success,exit_reason)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, session.ID, session.Handle, session.Kind, session.AgentType, session.CWD, session.Shell,
 		session.Status, writerKind, writerID, session.OwnershipEpoch, session.RuntimeGeneration, session.TaskState, session.AdapterState,
-		session.RecoveryPublicKey, session.CreatedAtMS, session.UpdatedAtMS)
+		session.RecoveryPublicKey, session.CreatedAtMS, session.UpdatedAtMS, session.ExitSuccess, session.ExitReason)
 	return err
 }
 
@@ -140,16 +183,17 @@ func (s *SQLite) DeletePendingYieldTx(ctx context.Context, tx *sql.Tx, id model.
 	return err
 }
 
-const sessionSelect = `SELECT session_id,handle,kind,agent_type,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_public_key,created_at_ms,updated_at_ms FROM sessions`
+const sessionSelect = `SELECT session_id,handle,kind,agent_type,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_public_key,created_at_ms,updated_at_ms,exit_success,exit_reason FROM sessions`
 
 type rowScanner interface{ Scan(...any) error }
 
 func scanSession(row rowScanner) (model.Session, error) {
 	var session model.Session
 	var writerKind, writerID sql.NullString
+	var exitSuccess sql.NullBool
 	err := row.Scan(&session.ID, &session.Handle, &session.Kind, &session.AgentType, &session.CWD, &session.Shell, &session.Status,
 		&writerKind, &writerID, &session.OwnershipEpoch, &session.RuntimeGeneration, &session.TaskState, &session.AdapterState,
-		&session.RecoveryPublicKey, &session.CreatedAtMS, &session.UpdatedAtMS)
+		&session.RecoveryPublicKey, &session.CreatedAtMS, &session.UpdatedAtMS, &exitSuccess, &session.ExitReason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Session{}, ErrNotFound
 	}
@@ -161,6 +205,10 @@ func scanSession(row rowScanner) (model.Session, error) {
 			return model.Session{}, fmt.Errorf("invalid partial writer in persisted session")
 		}
 		session.Writer = &model.Owner{Kind: model.OwnerKind(writerKind.String), ID: writerID.String}
+	}
+	if exitSuccess.Valid {
+		value := exitSuccess.Bool
+		session.ExitSuccess = &value
 	}
 	if err := session.Validate(); err != nil {
 		return model.Session{}, fmt.Errorf("invalid persisted session %s: %w", session.ID, err)

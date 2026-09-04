@@ -14,6 +14,18 @@ type SessionSummary struct {
 	RuntimeGeneration uint64              `json:"runtime_generation"`
 	TaskState         model.TaskState     `json:"task_state"`
 	AdapterState      model.AdapterState  `json:"adapter_state"`
+	ExitSuccess       *bool               `json:"exit_success,omitempty"`
+	ExitReason        string              `json:"exit_reason,omitempty"`
+}
+
+type SessionCreate struct {
+	Handle    string            `json:"handle"`
+	Kind      model.SessionKind `json:"kind"`
+	AgentType string            `json:"agent_type,omitempty"`
+	CWD       string            `json:"cwd"`
+	Command   []string          `json:"command"`
+	Rows      uint16            `json:"rows,omitempty"`
+	Cols      uint16            `json:"cols,omitempty"`
 }
 
 type SupervisorChallenge struct {
@@ -36,6 +48,7 @@ type SupervisorRegistered struct {
 type SupervisorOutput struct {
 	Offset uint64 `json:"offset"`
 	Data   []byte `json:"data"`
+	Gap    bool   `json:"gap,omitempty"`
 }
 
 type SupervisorOutputAck struct {
@@ -52,6 +65,11 @@ type SupervisorInput struct {
 type SupervisorResize struct {
 	Rows uint16 `json:"rows"`
 	Cols uint16 `json:"cols"`
+}
+
+type SupervisorExit struct {
+	Success bool   `json:"success"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 type SupervisorControlReady struct {

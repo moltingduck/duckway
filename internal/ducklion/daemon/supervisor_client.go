@@ -116,6 +116,7 @@ func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation
 type RuntimeController interface {
 	SubmitInput(context.Context, duckruntime.InputFrame) error
 	Resize(rows, cols uint16, epoch, generation uint64) error
+	Terminate(force bool) error
 }
 
 func (c *SupervisorClient) ServeControl(ctx context.Context, controller RuntimeController) error {
@@ -221,6 +222,12 @@ func (c *SupervisorClient) executeControl(ctx context.Context, controller Runtim
 		} else {
 			err = controller.Resize(resize.Rows, resize.Cols, *request.OwnershipEpoch, generation)
 		}
+	case "supervisor.terminate":
+		if len(request.Body) != 0 {
+			err = fmt.Errorf("invalid supervisor terminate")
+		} else {
+			err = controller.Terminate(true)
+		}
 	default:
 		err = fmt.Errorf("unsupported runtime control command")
 	}
@@ -231,10 +238,47 @@ func (c *SupervisorClient) executeControl(ctx context.Context, controller Runtim
 	return protocol.Response{ID: request.ID, Result: result}
 }
 
+func (c *SupervisorClient) ReportExit(success bool, reason string) error {
+	if len(reason) > 1024 {
+		reason = reason[:1024]
+	}
+	body, _ := json.Marshal(protocol.SupervisorExit{Success: success, Reason: reason})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nextID++
+	id := fmt.Sprintf("exit-%d", c.nextID)
+	generation := c.identity.RuntimeGeneration
+	if err := c.codec.Write(protocol.Request{ID: id, Type: "supervisor.exited", InstanceID: string(c.instanceID), SessionID: c.identity.SessionID, RuntimeGeneration: &generation, Body: body}); err != nil {
+		return err
+	}
+	var response protocol.Response
+	if err := c.codec.Read(&response); err != nil {
+		return err
+	}
+	if err := validateResponse(response, id); err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return fmt.Errorf("report supervisor exit: %s", response.Error.Message)
+	}
+	return nil
+}
+
 func (c *SupervisorClient) Identity() protocol.SupervisorRegistered { return c.identity }
 func (c *SupervisorClient) Close() error                            { return c.conn.Close() }
 
 func (c *SupervisorClient) PublishOutput(data []byte) error {
+	return c.publishOutput(data, false)
+}
+
+func (c *SupervisorClient) PublishSnapshot(frame duckruntime.OutputFrame) error {
+	c.mu.Lock()
+	c.nextOffset = frame.Offset
+	c.mu.Unlock()
+	return c.publishOutput(frame.Data, frame.Gap)
+}
+
+func (c *SupervisorClient) publishOutput(data []byte, initialGap bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
@@ -247,7 +291,8 @@ func (c *SupervisorClient) PublishOutput(data []byte) error {
 			length = 64 << 10
 		}
 		chunk := append([]byte(nil), data[:length]...)
-		body, _ := json.Marshal(protocol.SupervisorOutput{Offset: c.nextOffset, Data: chunk})
+		body, _ := json.Marshal(protocol.SupervisorOutput{Offset: c.nextOffset, Data: chunk, Gap: initialGap})
+		initialGap = false
 		c.nextID++
 		requestID := fmt.Sprintf("output-%d", c.nextID)
 		generation := c.identity.RuntimeGeneration

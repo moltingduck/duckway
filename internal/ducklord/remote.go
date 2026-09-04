@@ -14,7 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/daemon"
+	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 )
 
@@ -38,6 +40,8 @@ type RemoteSession struct {
 	RuntimeGeneration uint64 `json:"runtime_generation,omitempty"`
 	TaskState         string `json:"task_state,omitempty"`
 	AdapterState      string `json:"adapter_state,omitempty"`
+	ExitSuccess       *bool  `json:"exit_success,omitempty"`
+	ExitReason        string `json:"exit_reason,omitempty"`
 }
 
 type RemoteProject struct {
@@ -230,6 +234,7 @@ type AttachSession struct {
 	Stdin  io.WriteCloser
 	Stdout io.ReadCloser
 	Done   <-chan error
+	Resize func(rows, cols uint16) error
 	cmd    *exec.Cmd
 }
 
@@ -248,7 +253,7 @@ func (r *Runner) Sessions(ctx context.Context, c Client, tailLines int) ([]Remot
 		for _, summary := range summaries {
 			session := RemoteSession{Client: c.Name, SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status), AgentType: summary.AgentType,
 				Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
-				TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState)}
+				TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason}
 			if summary.Writer != nil {
 				session.WriterKind = string(summary.Writer.Kind)
 				session.WriterID = summary.Writer.ID
@@ -275,7 +280,59 @@ func (r *Runner) Sessions(ctx context.Context, c Client, tailLines int) ([]Remot
 	return sessions, nil
 }
 
-func (*Runner) Read(ctx context.Context, c Client, name string, lines int) (string, error) {
+func (r *Runner) Read(ctx context.Context, c Client, name string, lines int) (string, error) {
+	if r != nil && r.hasOwner() {
+		client, err := r.bridgeClient(ctx, c)
+		if err != nil {
+			return "", err
+		}
+		sessions, err := client.ListSessions()
+		if err != nil {
+			r.discardBridge(bridgeKey(c), client)
+			return "", err
+		}
+		var selected *protocol.SessionSummary
+		for i := range sessions {
+			if sessions[i].SessionID == name {
+				selected = &sessions[i]
+				break
+			}
+			if sessions[i].Handle == name {
+				if selected != nil {
+					return "", fmt.Errorf("session handle %q is ambiguous; use its session ID", name)
+				}
+				selected = &sessions[i]
+			}
+		}
+		if selected == nil {
+			return "", fmt.Errorf("session %q not found", name)
+		}
+		stream, err := client.SubscribeOutputTail(selected.SessionID, selected.RuntimeGeneration, 1<<20)
+		if err != nil {
+			return "", err
+		}
+		defer stream.Close()
+		metadata := stream.Metadata()
+		var snapshot bytes.Buffer
+		for uint64(snapshot.Len()) < metadata.EndOffset-metadata.StartOffset {
+			event, readErr := stream.Read()
+			if readErr != nil {
+				return "", readErr
+			}
+			if event.Frame.Gap {
+				return "", fmt.Errorf("session output snapshot has a gap")
+			}
+			snapshot.Write(event.Frame.Data)
+		}
+		text := snapshot.String()
+		if lines > 0 {
+			parts := strings.Split(text, "\n")
+			if len(parts) > lines+1 {
+				text = strings.Join(parts[len(parts)-lines-1:], "\n")
+			}
+		}
+		return text, nil
+	}
 	if !SafeIdentifier(name) {
 		return "", fmt.Errorf("invalid session name %q", name)
 	}
@@ -286,7 +343,35 @@ func (*Runner) Read(ctx context.Context, c Client, name string, lines int) (stri
 	return string(out), err
 }
 
-func (*Runner) Send(ctx context.Context, c Client, name, text string) error {
+func (r *Runner) Send(ctx context.Context, c Client, name, text string) error {
+	if r != nil && r.hasOwner() {
+		client, err := r.bridgeClient(ctx, c)
+		if err != nil {
+			return err
+		}
+		sessions, err := client.ListSessions()
+		if err != nil {
+			r.discardBridge(bridgeKey(c), client)
+			return err
+		}
+		var selected *protocol.SessionSummary
+		for i := range sessions {
+			if sessions[i].SessionID == name {
+				selected = &sessions[i]
+				break
+			}
+			if sessions[i].Handle == name {
+				if selected != nil {
+					return fmt.Errorf("session handle %q is ambiguous; use its session ID", name)
+				}
+				selected = &sessions[i]
+			}
+		}
+		if selected == nil {
+			return fmt.Errorf("session %q not found", name)
+		}
+		return client.SendInputContext(ctx, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, []byte(text+"\n"))
+	}
 	if !SafeIdentifier(name) {
 		return fmt.Errorf("invalid session name %q", name)
 	}
@@ -294,17 +379,142 @@ func (*Runner) Send(ctx context.Context, c Client, name, text string) error {
 	return err
 }
 
-func (*Runner) Start(ctx context.Context, c Client, args []string) error {
+func (r *Runner) Start(ctx context.Context, c Client, args []string) error {
+	if r != nil && r.hasOwner() {
+		create, err := parseDaemonCreate(args)
+		if err != nil {
+			return err
+		}
+		operationID := uuid.NewString()
+		var lastErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			client, err := r.bridgeClient(ctx, c)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			created, createErr := client.CreateSessionWithID(ctx, operationID, create)
+			err = createErr
+			if err == nil {
+				if created.Status == model.StatusStopped {
+					return fmt.Errorf("session %s stopped during launch: %s", created.SessionID, created.ExitReason)
+				}
+				return nil
+			}
+			lastErr = err
+			var remoteErr *daemon.RemoteError
+			if errors.As(err, &remoteErr) {
+				return fmt.Errorf("create session on %s: %w", c.Name, err)
+			}
+			r.discardBridge(bridgeKey(c), client)
+		}
+		return fmt.Errorf("create session on %s has unknown outcome (operation %s): %w", c.Name, operationID, lastErr)
+	}
 	_, err := sshOutput(ctx, c, append([]string{"start"}, args...)...)
 	return err
 }
 
-func (*Runner) Stop(ctx context.Context, c Client, name string) error {
+func parseDaemonCreate(args []string) (protocol.SessionCreate, error) {
+	create := protocol.SessionCreate{Kind: model.KindAgent, AgentType: "shell", Rows: 40, Cols: 120}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--":
+			create.Command = append([]string(nil), args[i+1:]...)
+			i = len(args)
+		case "--name", "-n":
+			if i+1 >= len(args) {
+				return create, fmt.Errorf("--name requires a value")
+			}
+			create.Handle = args[i+1]
+			i++
+		case "--agent":
+			if i+1 >= len(args) {
+				return create, fmt.Errorf("--agent requires a value")
+			}
+			create.AgentType = args[i+1]
+			i++
+		case "--kind":
+			if i+1 >= len(args) {
+				return create, fmt.Errorf("--kind requires a value")
+			}
+			create.Kind = model.SessionKind(args[i+1])
+			i++
+			if create.Kind == model.KindShell {
+				create.AgentType = ""
+			}
+		case "--cwd", "-C":
+			if i+1 >= len(args) {
+				return create, fmt.Errorf("--cwd requires a value")
+			}
+			create.CWD = args[i+1]
+			i++
+		default:
+			return create, fmt.Errorf("unknown start option: %s", args[i])
+		}
+	}
+	if create.Handle == "" || create.CWD == "" || len(create.Command) == 0 {
+		return create, fmt.Errorf("--name, --cwd, and a command after -- are required")
+	}
+	return create, nil
+}
+
+func (r *Runner) Stop(ctx context.Context, c Client, name string) error {
+	if r != nil && r.hasOwner() {
+		client, err := r.bridgeClient(ctx, c)
+		if err != nil {
+			return err
+		}
+		selected, err := resolveSession(client, name)
+		if err != nil {
+			return err
+		}
+		operationID := uuid.NewString()
+		for attempt := 0; attempt < 2; attempt++ {
+			err = client.StopSessionWithID(ctx, operationID, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration)
+			if err == nil {
+				return nil
+			}
+			var remoteErr *daemon.RemoteError
+			if errors.As(err, &remoteErr) {
+				return err
+			}
+			r.discardBridge(bridgeKey(c), client)
+			client, err = r.bridgeClient(ctx, c)
+			if err != nil {
+				continue
+			}
+		}
+		return fmt.Errorf("stop session has unknown outcome (operation %s): %w", operationID, err)
+	}
 	if !SafeIdentifier(name) {
 		return fmt.Errorf("invalid session name %q", name)
 	}
 	_, err := sshOutput(ctx, c, "stop", name)
 	return err
+}
+
+func resolveSession(client *daemon.Client, ref string) (protocol.SessionSummary, error) {
+	sessions, err := client.ListSessions()
+	if err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	var selected *protocol.SessionSummary
+	for i := range sessions {
+		if sessions[i].SessionID == ref {
+			return sessions[i], nil
+		}
+		if sessions[i].Handle == ref {
+			if selected != nil {
+				return protocol.SessionSummary{}, fmt.Errorf("session handle %q is ambiguous; use its session ID", ref)
+			}
+			copy := sessions[i]
+			selected = &copy
+		}
+	}
+	if selected == nil {
+		return protocol.SessionSummary{}, fmt.Errorf("session %q not found", ref)
+	}
+	return *selected, nil
 }
 
 func (*Runner) Projects(ctx context.Context, c Client) ([]RemoteProject, error) {
@@ -458,7 +668,10 @@ func (r *Runner) attachDaemonStream(ctx context.Context, c Client, sessionRef st
 		_ = outputWriter.Close()
 		done <- finalErr
 	}()
-	return &AttachSession{Stdin: inputWriter, Stdout: outputReader, Done: done}, nil
+	resize := func(rows, cols uint16) error {
+		return client.Resize(selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, rows, cols)
+	}
+	return &AttachSession{Stdin: inputWriter, Stdout: outputReader, Done: done, Resize: resize}, nil
 }
 
 func sshOutput(ctx context.Context, c Client, ducklionArgs ...string) ([]byte, error) {
