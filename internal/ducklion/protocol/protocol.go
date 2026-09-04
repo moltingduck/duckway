@@ -19,6 +19,18 @@ type Handshake struct {
 	Capabilities []string `json:"capabilities"`
 }
 
+type HandshakeResponse struct {
+	Handshake *Handshake `json:"handshake,omitempty"`
+	Error     *Error     `json:"error,omitempty"`
+}
+
+func (r HandshakeResponse) Validate() error {
+	if (r.Handshake == nil) == (r.Error == nil) {
+		return fmt.Errorf("handshake response must contain exactly one outcome")
+	}
+	return nil
+}
+
 type PeerRole string
 
 const (
@@ -35,6 +47,16 @@ type Request struct {
 	OwnershipEpoch    *uint64         `json:"ownership_epoch,omitempty"`
 	RuntimeGeneration *uint64         `json:"runtime_generation,omitempty"`
 	Body              json.RawMessage `json:"body,omitempty"`
+}
+
+func (r Request) Validate() error {
+	if strings.TrimSpace(r.ID) == "" || len(r.ID) > 128 {
+		return fmt.Errorf("request id is required and must not exceed 128 bytes")
+	}
+	if strings.TrimSpace(r.Type) == "" || len(r.Type) > 128 {
+		return fmt.Errorf("request type is required and must not exceed 128 bytes")
+	}
+	return nil
 }
 
 type Response struct {

@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/hackerduck/duckway/internal/client"
+	duckliondaemon "github.com/hackerduck/duckway/internal/ducklion/daemon"
+	ducklionprotocol "github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/version"
 )
 
@@ -135,6 +137,12 @@ func main() {
 		if err := runDucklionCompat(os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
+	case "__ducklion_daemon":
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		if err := duckliondaemon.Run(ctx, duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion")}); err != nil {
+			log.Fatal(err)
+		}
 	case "projects":
 		cmdProjects(configDir, os.Args[2:])
 	case "git":
@@ -162,10 +170,10 @@ func printUsage() {
 Usage:
   duckway init           Register this machine with a Duckway server
   duckway sync           Fetch placeholder keys + statusline from server
-  duckway start          Start both daemons (proxy + cc watch) — daemon mode
-  duckway stop           Stop both daemons
-  duckway restart        Restart both daemons
-  duckway logs [-f]      Show daemon logs (proxy + cc watch)
+  duckway start          Start Ducklion, proxy, and cc-watch daemons
+  duckway stop           Stop all three daemons
+  duckway restart        Restart all three daemons
+  duckway logs [-f]      Show daemon logs (Ducklion + proxy + cc-watch)
   duckway logs proxy     Show only proxy logs
   duckway logs cc -f     Follow only cc-watch logs
   duckway env            Print keys + HTTP(S)_PROXY exports as shell statements
@@ -1563,13 +1571,19 @@ func cmdUpdate(configDir string) {
 		return
 	}
 
+	if pid, alive := readPID(filepath.Join(configDir, "ducklion", "daemon.pid")); alive {
+		fmt.Printf("\nNote: a Ducklion daemon is running (PID %d) using the OLD binary.\n", pid)
+	}
 	if pid, alive := readPID(filepath.Join(configDir, "proxy.pid")); alive {
 		fmt.Printf("\nNote: a proxy daemon is running (PID %d) using the OLD binary.\n", pid)
 	}
 	if pid, alive := readPID(filepath.Join(configDir, "cc-watch.pid")); alive {
 		fmt.Printf("\nNote: a cc-watch daemon is running (PID %d) using the OLD binary.\n", pid)
 	}
-	if _, proxyAlive := readPID(filepath.Join(configDir, "proxy.pid")); proxyAlive {
+	if _, ducklionAlive := readPID(filepath.Join(configDir, "ducklion", "daemon.pid")); ducklionAlive {
+		fmt.Println("      Restart daemons to pick up the new code:")
+		fmt.Printf("        %s\n", cyan("duckway restart"))
+	} else if _, proxyAlive := readPID(filepath.Join(configDir, "proxy.pid")); proxyAlive {
 		fmt.Println("      Restart daemons to pick up the new code:")
 		fmt.Printf("        %s\n", cyan("duckway restart"))
 	} else if _, ccAlive := readPID(filepath.Join(configDir, "cc-watch.pid")); ccAlive {
@@ -1602,19 +1616,30 @@ func releaseUpdateLock(f *os.File) {
 }
 
 func restartDaemonsRunningBeforeUpdate(configDir string) {
+	ducklionPidFile := filepath.Join(configDir, "ducklion", "daemon.pid")
+	ducklionLogFile := filepath.Join(configDir, "ducklion", "daemon.log")
 	proxyPidFile := filepath.Join(configDir, "proxy.pid")
 	proxyLogFile := filepath.Join(configDir, "proxy.log")
 	ccPidFile := filepath.Join(configDir, "cc-watch.pid")
 	ccLogFile := filepath.Join(configDir, "cc-watch.log")
 
+	ducklionPID, ducklionAlive := readPID(ducklionPidFile)
 	proxyPID, proxyAlive := readPID(proxyPidFile)
 	ccPID, ccAlive := readPID(ccPidFile)
-	if !proxyAlive && !ccAlive {
+	if !ducklionAlive && !proxyAlive && !ccAlive {
 		fmt.Println("\nNo running duckway daemons to restart.")
 		return
 	}
 
 	fmt.Println("\nRestarting running duckway daemons...")
+	if ducklionAlive {
+		fmt.Printf("ducklion: restarting old PID %d\n", ducklionPID)
+		stopBackgroundDaemon("ducklion", ducklionPidFile)
+		if err := spawnDaemonProcess([]string{"__ducklion_daemon"}, ducklionPidFile, ducklionLogFile); err != nil {
+			log.Fatalf("Failed to restart Ducklion: %v", err)
+		}
+		fmt.Printf("ducklion: restarted (logs %s)\n", ducklionLogFile)
+	}
 	if proxyAlive {
 		fmt.Printf("duckway proxy: restarting old PID %d\n", proxyPID)
 		stopBackgroundDaemon("duckway proxy", proxyPidFile)
@@ -1834,7 +1859,7 @@ func proxyExecEnv(base []string, port int, configDir string) []string {
 	return out
 }
 
-// cmdStart spawns both the proxy and the cc-watch daemons in the
+// cmdStart spawns Ducklion, proxy, and cc-watch in the
 // background — the single command most users want after `duckway init`.
 // Defaults to daemon mode (no foreground option), since `duckway proxy`
 // and `duckway cc watch` already expose foreground/debug modes
@@ -1846,10 +1871,28 @@ func proxyExecEnv(base []string, port int, configDir string) []string {
 // present, rather than failing the whole command — most users care about
 // the proxy first.
 func cmdStart(configDir string) {
+	ducklionRoot := filepath.Join(configDir, "ducklion")
+	if err := os.MkdirAll(ducklionRoot, 0700); err != nil {
+		log.Fatalf("Create Ducklion directory: %v", err)
+	}
+	ducklionPidFile := filepath.Join(ducklionRoot, "daemon.pid")
+	ducklionLogFile := filepath.Join(ducklionRoot, "daemon.log")
 	proxyPidFile := filepath.Join(configDir, "proxy.pid")
 	proxyLogFile := filepath.Join(configDir, "proxy.log")
 	ccPidFile := filepath.Join(configDir, "cc-watch.pid")
 	ccLogFile := filepath.Join(configDir, "cc-watch.log")
+
+	// Ducklion must be available before cc-watch starts accepting work.
+	if pid, alive := readPID(ducklionPidFile); alive {
+		fmt.Printf("ducklion: already running (PID %d)\n", pid)
+	} else if err := spawnDaemonProcess([]string{"__ducklion_daemon"}, ducklionPidFile, ducklionLogFile); err != nil {
+		log.Fatalf("Failed to start Ducklion: %v", err)
+	} else {
+		fmt.Printf("ducklion: started (logs %s)\n", ducklionLogFile)
+	}
+	if err := waitForDucklion(filepath.Join(ducklionRoot, "ducklion.sock"), 5*time.Second); err != nil {
+		log.Fatalf("Ducklion did not become ready: %v (logs %s)", err, ducklionLogFile)
+	}
 
 	// Proxy
 	if pid, alive := readPID(proxyPidFile); alive {
@@ -1873,6 +1916,30 @@ func cmdStart(configDir string) {
 		warnIfTmuxRequestedButUnavailable()
 		fmt.Printf("duckway cc watch: started (logs %s)\n", ccLogFile)
 	}
+}
+
+func waitForDucklion(socketPath string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		connection, err := duckliondaemon.Dial(socketPath, "duckway-start")
+		if err == nil {
+			response, callErr := connection.Call(ducklionprotocol.Request{ID: "readiness", Type: "status"})
+			_ = connection.Close()
+			if callErr == nil && response.Error == nil {
+				return nil
+			}
+			if callErr != nil {
+				lastErr = callErr
+			} else {
+				lastErr = fmt.Errorf("status rejected: %s", response.Error.Message)
+			}
+		} else {
+			lastErr = err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return lastErr
 }
 
 func hasSupportedCCAgent() bool {
@@ -1903,8 +1970,9 @@ func warnIfTmuxRequestedButUnavailable() {
 // cmdStop terminates both daemons. Each side is independent — a missing
 // daemon prints a "not running" note but doesn't abort the other stop.
 func cmdStop(configDir string) {
-	stopBackgroundDaemon("duckway proxy", filepath.Join(configDir, "proxy.pid"))
 	stopBackgroundDaemon("duckway cc watch", filepath.Join(configDir, "cc-watch.pid"))
+	stopBackgroundDaemon("duckway proxy", filepath.Join(configDir, "proxy.pid"))
+	stopBackgroundDaemon("ducklion", filepath.Join(configDir, "ducklion", "daemon.pid"))
 }
 
 // cmdRestart is just stop + start. Sequential (proxy stop → cc stop →
@@ -1938,7 +2006,7 @@ func cmdLogs(configDir string, args []string) {
 			}
 			lines = n
 			i++
-		case "proxy", "cc", "cc-watch", "all":
+		case "ducklion", "proxy", "cc", "cc-watch", "all":
 			targetName = args[i]
 		default:
 			log.Fatalf("duckway logs: unknown argument %q", args[i])
@@ -1953,15 +2021,18 @@ func cmdLogs(configDir string, args []string) {
 }
 
 func logTargets(configDir, targetName string) []logTarget {
+	ducklion := logTarget{Name: "ducklion", Path: filepath.Join(configDir, "ducklion", "daemon.log")}
 	proxy := logTarget{Name: "proxy", Path: filepath.Join(configDir, "proxy.log")}
 	cc := logTarget{Name: "cc-watch", Path: filepath.Join(configDir, "cc-watch.log")}
 	switch targetName {
+	case "ducklion":
+		return []logTarget{ducklion}
 	case "proxy":
 		return []logTarget{proxy}
 	case "cc", "cc-watch":
 		return []logTarget{cc}
 	default:
-		return []logTarget{proxy, cc}
+		return []logTarget{ducklion, proxy, cc}
 	}
 }
 
@@ -2233,6 +2304,11 @@ func cmdStatus(configDir string) {
 	fmt.Printf("Client name: %s\n", cfg.ClientName)
 	fmt.Printf("Version:     %s\n", version.Get())
 	fmt.Printf("Proxy port:  %d\n", cfg.ProxyPort)
+	if pid, alive := readPID(filepath.Join(configDir, "ducklion", "daemon.pid")); alive {
+		fmt.Printf("Ducklion:    RUNNING (PID %d)\n", pid)
+	} else {
+		fmt.Println("Ducklion:    NOT RUNNING (start with: duckway start)")
+	}
 
 	api := client.NewAPIClient(cfg.ServerURL, cfg.Token)
 	if err := api.Ping(); err != nil {

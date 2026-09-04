@@ -28,3 +28,15 @@ func TestResponseRequiresExactlyOneOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHandshakeResponseRequiresExactlyOneOutcome(t *testing.T) {
+	if err := (HandshakeResponse{}).Validate(); err == nil {
+		t.Fatal("empty handshake response accepted")
+	}
+	if err := (HandshakeResponse{Handshake: &Handshake{}, Error: &Error{Code: ErrInternal}}).Validate(); err == nil {
+		t.Fatal("ambiguous handshake response accepted")
+	}
+	if err := (HandshakeResponse{Handshake: &Handshake{Major: 1}}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

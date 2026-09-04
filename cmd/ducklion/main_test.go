@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion"
+	"github.com/hackerduck/duckway/internal/ducklion/daemon"
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/ducklioncli"
 	"github.com/hackerduck/duckway/internal/duckwayconfig"
 	"github.com/hackerduck/duckway/internal/projectregistry"
@@ -111,5 +116,74 @@ func TestParseStartUsesDucklionOptions(t *testing.T) {
 	}
 	if opts.Name != "alpha" || strings.Join(opts.Command, " ") != "sh -lc echo ok" {
 		t.Fatalf("opts = %+v", opts)
+	}
+}
+
+func TestDucklionDaemonProcessLifecycleE2E(t *testing.T) {
+	if os.Getenv("DUCKLION_DAEMON_E2E_HELPER") == "1" {
+		ducklioncli.Main([]string{"daemon"}, io.Discard)
+		os.Exit(0)
+	}
+	configDir := t.TempDir()
+	socketPath := filepath.Join(configDir, "ducklion", "ducklion.sock")
+	start := func() *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestDucklionDaemonProcessLifecycleE2E$")
+		cmd.Env = append(os.Environ(), "DUCKLION_DAEMON_E2E_HELPER=1", "DUCKWAY_CONFIG_DIR="+configDir)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return cmd
+	}
+	waitReady := func() *daemon.Client {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			client, err := daemon.Dial(socketPath, "e2e-terminal")
+			if err == nil {
+				return client
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatal("Ducklion daemon socket did not become ready")
+		return nil
+	}
+	first := start()
+	client := waitReady()
+	response, err := client.Call(protocol.Request{ID: "status-1", Type: "status"})
+	if err != nil || response.Error != nil {
+		t.Fatalf("status response=%+v err=%v", response, err)
+	}
+	var firstStatus struct {
+		InstanceID string `json:"instance_id"`
+	}
+	if err := json.Unmarshal(response.Result, &firstStatus); err != nil || firstStatus.InstanceID == "" {
+		t.Fatalf("status=%+v err=%v", firstStatus, err)
+	}
+	client.Close()
+	if err := first.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("daemon socket remains after shutdown: %v", err)
+	}
+
+	second := start()
+	client = waitReady()
+	response, err = client.Call(protocol.Request{ID: "status-2", Type: "status"})
+	if err != nil || response.Error != nil {
+		t.Fatalf("second status response=%+v err=%v", response, err)
+	}
+	var secondStatus struct {
+		InstanceID string `json:"instance_id"`
+	}
+	if err := json.Unmarshal(response.Result, &secondStatus); err != nil || secondStatus.InstanceID != firstStatus.InstanceID {
+		t.Fatalf("instance changed: first=%q second=%q err=%v", firstStatus.InstanceID, secondStatus.InstanceID, err)
+	}
+	client.Close()
+	_ = second.Process.Signal(syscall.SIGTERM)
+	if err := second.Wait(); err != nil {
+		t.Fatal(err)
 	}
 }

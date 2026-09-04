@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 
@@ -36,6 +37,13 @@ func (g *fakeGate) CompleteInput(_ context.Context, _ InputFrame, _ error) {
 type oneByteWriter struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
+}
+
+type partialErrorWriter struct{ wrote bytes.Buffer }
+
+func (w *partialErrorWriter) Write(data []byte) (int, error) {
+	_ = w.wrote.WriteByte(data[0])
+	return 1, io.ErrUnexpectedEOF
 }
 
 func (w *oneByteWriter) Write(data []byte) (int, error) {
@@ -72,5 +80,33 @@ func TestInputPumpRevalidatesBeforeWriting(t *testing.T) {
 	err := pump.Submit(context.Background(), InputFrame{Data: []byte("forbidden")})
 	if !errors.Is(err, model.ErrStaleEpoch) || writer.buf.Len() != 0 {
 		t.Fatalf("err=%v output=%q", err, writer.buf.String())
+	}
+}
+
+func TestInputPumpRejectsAfterCloseWithoutLeakingReservation(t *testing.T) {
+	gate := &fakeGate{}
+	pump := NewInputPump(gate, &oneByteWriter{}, 1)
+	pump.Close()
+	for i := 0; i < 100; i++ {
+		if err := pump.Submit(context.Background(), InputFrame{Data: []byte("x")}); !errors.Is(err, ErrInputPumpClosed) {
+			t.Fatalf("submit %d error=%v", i, err)
+		}
+	}
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.pending != 0 || gate.completed != 100 {
+		t.Fatalf("pending=%d completed=%d", gate.pending, gate.completed)
+	}
+}
+
+func TestInputPumpReportsCommittedPrefix(t *testing.T) {
+	gate := &fakeGate{}
+	writer := &partialErrorWriter{}
+	pump := NewInputPump(gate, writer, 1)
+	defer pump.Close()
+	err := pump.Submit(context.Background(), InputFrame{Data: []byte("abc")})
+	var partial *PartialWriteError
+	if !errors.As(err, &partial) || partial.Written != 1 || writer.wrote.String() != "a" {
+		t.Fatalf("error=%v written=%q", err, writer.wrote.String())
 	}
 }

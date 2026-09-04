@@ -35,6 +35,8 @@ type inputRequest struct {
 }
 
 type InputPump struct {
+	mu     sync.Mutex
+	closed bool
 	gate   InputGate
 	writer io.Writer
 	queue  chan inputRequest
@@ -60,14 +62,19 @@ func (p *InputPump) Submit(ctx context.Context, frame InputFrame) error {
 		return err
 	}
 	request := inputRequest{ctx: ctx, frame: frame, result: make(chan error, 1)}
-	select {
-	case p.queue <- request:
-	case <-ctx.Done():
-		p.gate.CompleteInput(ctx, frame, ctx.Err())
-		return ctx.Err()
-	case <-p.done:
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
 		p.gate.CompleteInput(ctx, frame, ErrInputPumpClosed)
 		return ErrInputPumpClosed
+	}
+	select {
+	case p.queue <- request:
+		p.mu.Unlock()
+	case <-ctx.Done():
+		p.mu.Unlock()
+		p.gate.CompleteInput(ctx, frame, ctx.Err())
+		return ctx.Err()
 	}
 	// Once accepted into the queue, wait for the definitive write outcome even
 	// if the caller's context is cancelled. Returning an ambiguous timeout could
@@ -75,7 +82,14 @@ func (p *InputPump) Submit(ctx context.Context, frame InputFrame) error {
 	return <-request.result
 }
 
-func (p *InputPump) Close() { p.once.Do(func() { close(p.done) }) }
+func (p *InputPump) Close() {
+	p.once.Do(func() {
+		p.mu.Lock()
+		p.closed = true
+		close(p.done)
+		p.mu.Unlock()
+	})
+}
 
 func (p *InputPump) run() {
 	for {
@@ -102,12 +116,17 @@ func (p *InputPump) run() {
 }
 
 func writeFull(writer io.Writer, data []byte) error {
+	written := 0
 	for len(data) > 0 {
 		n, err := writer.Write(data)
 		if n > 0 {
 			data = data[n:]
+			written += n
 		}
 		if err != nil {
+			if written > 0 {
+				return &PartialWriteError{Written: written, Err: err}
+			}
 			return err
 		}
 		if n == 0 {
@@ -116,3 +135,11 @@ func writeFull(writer io.Writer, data []byte) error {
 	}
 	return nil
 }
+
+type PartialWriteError struct {
+	Written int
+	Err     error
+}
+
+func (e *PartialWriteError) Error() string { return "partial PTY input write: " + e.Err.Error() }
+func (e *PartialWriteError) Unwrap() error { return e.Err }

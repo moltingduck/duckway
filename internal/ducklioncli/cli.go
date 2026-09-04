@@ -1,6 +1,7 @@
 package ducklioncli
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,10 +9,13 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/hackerduck/duckway/internal/ducklion"
+	"github.com/hackerduck/duckway/internal/ducklion/daemon"
 	"github.com/hackerduck/duckway/internal/duckwayconfig"
 	"github.com/hackerduck/duckway/internal/projectregistry"
 	"github.com/hackerduck/duckway/internal/version"
@@ -45,6 +49,17 @@ func Main(args []string, stdout io.Writer) {
 			log.Fatal(err)
 		}
 		if err := ducklion.RunSupervisor(opts); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if len(args) > 0 && args[0] == "daemon" {
+		if len(args) != 1 {
+			log.Fatal("usage: ducklion daemon")
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := daemon.Run(ctx, daemon.Options{}); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -298,6 +313,7 @@ func PrintUsage(out io.Writer) {
 	fmt.Fprintln(out, `ducklion — remote PTY session supervisor
 
 Usage:
+  ducklion daemon
   ducklion list [--json] [--tail-lines N]
   ducklion projects [--json]
   ducklion start --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]

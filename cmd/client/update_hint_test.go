@@ -185,13 +185,16 @@ func TestLastLines(t *testing.T) {
 
 func TestLogTargets(t *testing.T) {
 	dir := t.TempDir()
+	if got := logTargets(dir, "ducklion"); len(got) != 1 || got[0].Name != "ducklion" || got[0].Path != filepath.Join(dir, "ducklion", "daemon.log") {
+		t.Fatalf("ducklion target = %+v", got)
+	}
 	if got := logTargets(dir, "proxy"); len(got) != 1 || got[0].Name != "proxy" || got[0].Path != filepath.Join(dir, "proxy.log") {
 		t.Fatalf("proxy target = %+v", got)
 	}
 	if got := logTargets(dir, "cc"); len(got) != 1 || got[0].Name != "cc-watch" || got[0].Path != filepath.Join(dir, "cc-watch.log") {
 		t.Fatalf("cc target = %+v", got)
 	}
-	if got := logTargets(dir, "all"); len(got) != 2 {
+	if got := logTargets(dir, "all"); len(got) != 3 {
 		t.Fatalf("all targets = %+v", got)
 	}
 }

@@ -98,6 +98,12 @@ func (r *Registry) CompleteRegistration(ctx context.Context, sessionID model.Ses
 	if conn == nil {
 		return RuntimeIdentity{}, ErrChallengeInvalid
 	}
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			_ = conn.Close()
+		}
+	}()
 	r.mu.Lock()
 	challenge, exists := r.challenges[challengeID]
 	if exists {
@@ -134,6 +140,7 @@ func (r *Registry) CompleteRegistration(ctx context.Context, sessionID model.Ses
 		return RuntimeIdentity{}, ErrRuntimeRegistered
 	}
 	r.live[sessionID] = registeredRuntime{identity: identity, conn: conn}
+	succeeded = true
 	return identity, nil
 }
 
@@ -150,6 +157,17 @@ func (r *Registry) IsCurrent(identity RuntimeIdentity) bool {
 	defer r.mu.Unlock()
 	current, ok := r.live[identity.SessionID]
 	return ok && current.identity == identity
+}
+
+func (r *Registry) CloseAll() {
+	r.mu.Lock()
+	live := r.live
+	r.live = make(map[model.SessionID]registeredRuntime)
+	r.challenges = make(map[string]pendingChallenge)
+	r.mu.Unlock()
+	for _, current := range live {
+		_ = current.conn.Close()
+	}
 }
 
 func randomID() (string, error) {

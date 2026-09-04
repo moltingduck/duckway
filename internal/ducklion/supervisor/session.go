@@ -15,9 +15,11 @@ import (
 )
 
 var (
-	ErrClosed         = errors.New("supervisor is closed")
-	ErrPendingInput   = errors.New("PTY input remains pending")
-	ErrInvalidPTYSize = errors.New("invalid PTY size")
+	ErrClosed             = errors.New("supervisor is closed")
+	ErrPendingInput       = errors.New("PTY input remains pending")
+	ErrInvalidPTYSize     = errors.New("invalid PTY size")
+	ErrInputSequence      = errors.New("invalid input sequence")
+	ErrInputIndeterminate = errors.New("PTY input state is indeterminate")
 )
 
 type Options struct {
@@ -32,17 +34,19 @@ type Options struct {
 }
 
 type Session struct {
-	mu          sync.Mutex
-	id          model.SessionID
-	generation  uint64
-	epoch       uint64
-	pending     int
-	closed      bool
-	pty         *os.File
-	cmd         *exec.Cmd
-	output      *duckruntime.OutputHub
-	input       *duckruntime.InputPump
-	captureDone chan struct{}
+	mu                 sync.Mutex
+	id                 model.SessionID
+	generation         uint64
+	epoch              uint64
+	pending            int
+	lastSequence       uint64
+	inputIndeterminate bool
+	closed             bool
+	pty                *os.File
+	cmd                *exec.Cmd
+	output             *duckruntime.OutputHub
+	input              *duckruntime.InputPump
+	captureDone        chan struct{}
 }
 
 func Start(options Options) (*Session, error) {
@@ -153,6 +157,13 @@ func (s *inputGate) ReserveInput(_ context.Context, frame duckruntime.InputFrame
 	if frame.OwnershipEpoch != session.epoch {
 		return model.ErrStaleEpoch
 	}
+	if session.inputIndeterminate {
+		return ErrInputIndeterminate
+	}
+	if frame.Sequence == 0 || frame.Sequence != session.lastSequence+1 {
+		return ErrInputSequence
+	}
+	session.lastSequence = frame.Sequence
 	session.pending++
 	return nil
 }
@@ -173,9 +184,13 @@ func (s *inputGate) ValidateInput(_ context.Context, frame duckruntime.InputFram
 	return nil
 }
 
-func (s *inputGate) CompleteInput(_ context.Context, _ duckruntime.InputFrame, _ error) {
+func (s *inputGate) CompleteInput(_ context.Context, _ duckruntime.InputFrame, result error) {
 	session := (*Session)(s)
 	session.mu.Lock()
+	var partial *duckruntime.PartialWriteError
+	if errors.As(result, &partial) {
+		session.inputIndeterminate = true
+	}
 	if session.pending > 0 {
 		session.pending--
 	}

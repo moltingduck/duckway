@@ -72,4 +72,11 @@ func TestOutputHubCloseZeroesAndCloses(t *testing.T) {
 	if start != 0 || end != 6 {
 		t.Fatalf("bounds changed unexpectedly: %d %d", start, end)
 	}
+	hub.Publish([]byte("resurrect"))
+	if _, _, _, err := hub.Subscribe(end, 1); !errors.Is(err, ErrOutputClosed) {
+		t.Fatalf("subscribe after close error=%v", err)
+	}
+	if _, after := hub.Bounds(); after != end {
+		t.Fatalf("publish after close changed end to %d", after)
+	}
 }

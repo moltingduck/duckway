@@ -6,6 +6,7 @@ import (
 )
 
 var ErrOffsetAhead = errors.New("output offset is ahead of runtime")
+var ErrOutputClosed = errors.New("output hub is closed")
 
 type OutputFrame struct {
 	Offset uint64 `json:"offset"`
@@ -22,6 +23,7 @@ type OutputHub struct {
 	startOffset uint64
 	endOffset   uint64
 	nextID      uint64
+	closed      bool
 	subscribers map[uint64]chan OutputFrame
 }
 
@@ -35,6 +37,9 @@ func NewOutputHub(capacity int) *OutputHub {
 func (h *OutputHub) Publish(data []byte) OutputFrame {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return OutputFrame{Offset: h.endOffset}
+	}
 	frame := OutputFrame{Offset: h.endOffset, Data: append([]byte(nil), data...)}
 	h.endOffset += uint64(len(data))
 	h.data = append(h.data, data...)
@@ -62,6 +67,9 @@ func (h *OutputHub) Subscribe(offset uint64, queue int) (OutputFrame, <-chan Out
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return OutputFrame{}, nil, nil, ErrOutputClosed
+	}
 	if offset > h.endOffset {
 		return OutputFrame{}, nil, nil, ErrOffsetAhead
 	}
@@ -98,6 +106,10 @@ func (h *OutputHub) Bounds() (start, end uint64) {
 func (h *OutputHub) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return
+	}
+	h.closed = true
 	for id, subscriber := range h.subscribers {
 		close(subscriber)
 		delete(h.subscribers, id)

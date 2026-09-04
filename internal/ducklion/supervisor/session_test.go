@@ -24,11 +24,11 @@ func TestSessionInputIsFencedAndOutputIsMemoryOnly(t *testing.T) {
 	if len(replay.Data) != 0 {
 		t.Fatalf("unexpected replay=%q", replay.Data)
 	}
-	stale := duckruntime.InputFrame{OwnershipEpoch: 2, RuntimeGeneration: 2, Data: []byte("forbidden\r")}
+	stale := duckruntime.InputFrame{Sequence: 1, OwnershipEpoch: 2, RuntimeGeneration: 2, Data: []byte("forbidden\r")}
 	if err := session.SubmitInput(context.Background(), stale); !errors.Is(err, model.ErrStaleEpoch) {
 		t.Fatalf("stale input error=%v", err)
 	}
-	valid := duckruntime.InputFrame{OwnershipEpoch: 3, RuntimeGeneration: 2, Data: []byte("allowed\r")}
+	valid := duckruntime.InputFrame{Sequence: 1, OwnershipEpoch: 3, RuntimeGeneration: 2, Data: []byte("allowed\r")}
 	if err := session.SubmitInput(context.Background(), valid); err != nil {
 		t.Fatal(err)
 	}
