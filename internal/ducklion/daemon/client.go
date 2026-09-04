@@ -1,9 +1,11 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -14,11 +16,12 @@ import (
 )
 
 type Client struct {
-	conn       net.Conn
-	codec      *bridge.Codec
-	mu         sync.Mutex
-	streaming  bool
-	instanceID string
+	conn         io.ReadWriteCloser
+	codec        *bridge.Codec
+	mu           sync.Mutex
+	streaming    bool
+	instanceID   string
+	capabilities map[string]bool
 }
 
 var ErrClientStreaming = errors.New("ducklion client connection is dedicated to output streaming")
@@ -39,8 +42,33 @@ func Dial(socketPath, principal string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	return Connect(conn, principal)
+}
+
+func Connect(conn io.ReadWriteCloser, principal string) (*Client, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return ConnectContext(ctx, conn, principal)
+}
+
+func ConnectContext(ctx context.Context, conn io.ReadWriteCloser, principal string) (client *Client, returnErr error) {
+	cancelDone := make(chan struct{})
+	stopCancellation := context.AfterFunc(ctx, func() {
+		_ = conn.Close()
+		close(cancelDone)
+	})
+	defer func() {
+		if !stopCancellation() {
+			<-cancelDone
+		}
+		if ctx.Err() != nil {
+			_ = conn.Close()
+			client = nil
+			returnErr = ctx.Err()
+		}
+	}()
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	setDeadline(conn, time.Now().Add(10*time.Second))
 	if err := codec.Write(protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleDucklord, Principal: principal, Capabilities: []string{"status", "sessions_list", "output_subscribe", "session_input", "session_resize"}}); err != nil {
 		conn.Close()
 		return nil, err
@@ -59,15 +87,22 @@ func Dial(socketPath, principal string) (*Client, error) {
 		return nil, fmt.Errorf("ducklion handshake rejected: %s", handshakeResponse.Error.Message)
 	}
 	negotiated := handshakeResponse.Handshake
-	if negotiated.Major != protocol.Major || negotiated.Role != protocol.RoleDucklord || negotiated.Principal != principal ||
-		!hasCapability(negotiated.Capabilities, "status") || !hasCapability(negotiated.Capabilities, "sessions_list") ||
-		!hasCapability(negotiated.Capabilities, "output_subscribe") || !hasCapability(negotiated.Capabilities, "session_input") ||
-		!hasCapability(negotiated.Capabilities, "session_resize") {
+	offered := map[string]bool{"status": true, "sessions_list": true, "output_subscribe": true, "session_input": true, "session_resize": true}
+	validCapabilities := true
+	for _, capability := range negotiated.Capabilities {
+		validCapabilities = validCapabilities && offered[capability]
+	}
+	if negotiated.Major != protocol.Major || negotiated.Minor < 0 || negotiated.Minor > protocol.Minor || negotiated.Role != protocol.RoleDucklord ||
+		negotiated.Principal != principal || !hasCapability(negotiated.Capabilities, "status") || !validCapabilities {
 		conn.Close()
 		return nil, fmt.Errorf("ducklion returned an invalid handshake")
 	}
-	_ = conn.SetDeadline(time.Time{})
-	client := &Client{conn: conn, codec: codec}
+	setDeadline(conn, time.Time{})
+	capabilities := make(map[string]bool, len(negotiated.Capabilities))
+	for _, capability := range negotiated.Capabilities {
+		capabilities[capability] = true
+	}
+	client = &Client{conn: conn, codec: codec, capabilities: capabilities}
 	response, err := client.Call(protocol.Request{ID: "dial-status", Type: "status"})
 	if err != nil || response.Error != nil {
 		_ = conn.Close()
@@ -82,6 +117,19 @@ func Dial(socketPath, principal string) (*Client, error) {
 	}
 	client.instanceID = status.InstanceID
 	return client, nil
+}
+
+func (c *Client) requireCapability(capability string) error {
+	if !c.capabilities[capability] {
+		return fmt.Errorf("ducklion capability %q was not negotiated", capability)
+	}
+	return nil
+}
+
+func setDeadline(conn io.ReadWriteCloser, deadline time.Time) {
+	if setter, ok := conn.(interface{ SetDeadline(time.Time) error }); ok {
+		_ = setter.SetDeadline(deadline)
+	}
 }
 
 func (c *Client) Call(request protocol.Request) (protocol.Response, error) {
@@ -113,6 +161,7 @@ type OutputSubscription struct {
 	client   *Client
 	metadata protocol.OutputSubscribeResult
 	next     uint64
+	readMu   sync.Mutex
 }
 
 func (c *Client) SubscribeOutput(sessionID string, generation, offset uint64) (*OutputSubscription, error) {
@@ -120,6 +169,9 @@ func (c *Client) SubscribeOutput(sessionID string, generation, offset uint64) (*
 	defer c.mu.Unlock()
 	if c.streaming {
 		return nil, ErrClientStreaming
+	}
+	if err := c.requireCapability("output_subscribe"); err != nil {
+		return nil, err
 	}
 	body, _ := json.Marshal(protocol.OutputSubscribe{Offset: offset})
 	request := protocol.Request{ID: "output-subscribe", Type: "session.output_subscribe", InstanceID: c.instanceID, SessionID: sessionID, RuntimeGeneration: &generation, Body: body}
@@ -151,6 +203,8 @@ func (c *Client) SubscribeOutput(sessionID string, generation, offset uint64) (*
 func (s *OutputSubscription) Metadata() protocol.OutputSubscribeResult { return s.metadata }
 
 func (s *OutputSubscription) Read() (protocol.OutputEvent, error) {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
 	var event protocol.OutputEvent
 	if err := s.client.codec.Read(&event); err != nil {
 		return protocol.OutputEvent{}, err
@@ -177,6 +231,9 @@ func (s *OutputSubscription) Close() error { return s.client.Close() }
 func (c *Client) Close() error { return c.conn.Close() }
 
 func (c *Client) ListSessions() ([]protocol.SessionSummary, error) {
+	if err := c.requireCapability("sessions_list"); err != nil {
+		return nil, err
+	}
 	response, err := c.Call(protocol.Request{ID: "sessions-list", Type: "sessions.list"})
 	if err != nil {
 		return nil, err
@@ -192,6 +249,9 @@ func (c *Client) ListSessions() ([]protocol.SessionSummary, error) {
 }
 
 func (c *Client) SendInput(sessionID string, epoch, generation uint64, data []byte) error {
+	if err := c.requireCapability("session_input"); err != nil {
+		return err
+	}
 	body, _ := json.Marshal(protocol.SessionInput{Data: data})
 	response, err := c.Call(protocol.Request{ID: uuid.NewString(), Type: "session.input", InstanceID: c.instanceID, SessionID: sessionID,
 		OwnershipEpoch: &epoch, RuntimeGeneration: &generation, Body: body})
@@ -205,6 +265,9 @@ func (c *Client) SendInput(sessionID string, epoch, generation uint64, data []by
 }
 
 func (c *Client) Resize(sessionID string, epoch, generation uint64, rows, cols uint16) error {
+	if err := c.requireCapability("session_resize"); err != nil {
+		return err
+	}
 	body, _ := json.Marshal(protocol.SessionResize{Rows: rows, Cols: cols})
 	response, err := c.Call(protocol.Request{ID: uuid.NewString(), Type: "session.resize", InstanceID: c.instanceID, SessionID: sessionID,
 		OwnershipEpoch: &epoch, RuntimeGeneration: &generation, Body: body})

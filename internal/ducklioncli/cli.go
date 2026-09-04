@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -60,6 +62,17 @@ func Main(args []string, stdout io.Writer) {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := daemon.Run(ctx, daemon.Options{}); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if len(args) > 0 && args[0] == "bridge" {
+		if len(args) != 2 || args[1] != "--stdio" {
+			log.Fatal("usage: ducklion bridge --stdio")
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := daemon.BridgeStdio(ctx, filepath.Join(daemon.DefaultRoot(), "ducklion.sock"), os.Stdin, stdout); err != nil && !errors.Is(err, context.Canceled) {
 			log.Fatal(err)
 		}
 		return
@@ -320,6 +333,7 @@ Usage:
   ducklion read <name> [--lines N] [--json]
   ducklion send <name> <text>
   ducklion attach <name>
+  ducklion bridge --stdio
   ducklion stop <name>
   ducklion version`)
 }
