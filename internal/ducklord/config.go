@@ -1,26 +1,29 @@
 package ducklord
 
 import (
-	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Clients []Client `json:"clients"`
+	Name    string   `json:"name,omitempty" yaml:"name,omitempty"`
+	Clients []Client `json:"hosts" yaml:"hosts"`
 }
 
 type Client struct {
-	Name     string `json:"name"`
-	Host     string `json:"host"`
-	User     string `json:"user,omitempty"`
-	Group    string `json:"group,omitempty"`
-	Ducklion string `json:"ducklion,omitempty"`
-	SSH      string `json:"ssh,omitempty"`
+	Name     string `json:"name" yaml:"name"`
+	Host     string `json:"host" yaml:"host"`
+	User     string `json:"user,omitempty" yaml:"user,omitempty"`
+	Group    string `json:"group,omitempty" yaml:"group,omitempty"`
+	Ducklion string `json:"ducklion,omitempty" yaml:"ducklion,omitempty"`
+	SSH      string `json:"ssh,omitempty" yaml:"ssh,omitempty"`
 }
 
 func DefaultConfigPath() string {
@@ -28,20 +31,43 @@ func DefaultConfigPath() string {
 		return p
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".ducklord", "config.json")
+	return filepath.Join(home, ".ducklord", "config.yaml")
 }
 
 func LoadConfig(path string) (*Config, error) {
 	if strings.TrimSpace(path) == "" {
 		path = DefaultConfigPath()
 	}
-	data, err := os.ReadFile(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, fmt.Errorf("read ducklord config: %w", err)
 	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("read ducklord config: %s is not a regular file", path)
+	}
+	if info.Size() > 1<<20 {
+		return nil, fmt.Errorf("read ducklord config: file exceeds 1 MiB")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read ducklord config: %w", err)
+	}
+	defer file.Close()
 	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	decoder := yaml.NewDecoder(io.LimitReader(file, (1<<20)+1))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parse ducklord config: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("parse ducklord config: multiple YAML documents are not allowed")
+		}
+		return nil, fmt.Errorf("parse ducklord config: %w", err)
+	}
+	if cfg.Name != "" && !ValidOwnerName(cfg.Name) {
+		return nil, fmt.Errorf("invalid owner name %q", cfg.Name)
 	}
 	seen := map[string]bool{}
 	for i := range cfg.Clients {
@@ -60,20 +86,88 @@ func SaveConfig(path string, cfg *Config) error {
 	if strings.TrimSpace(path) == "" {
 		path = DefaultConfigPath()
 	}
+	seen := make(map[string]bool, len(cfg.Clients))
 	for i := range cfg.Clients {
 		if err := cfg.Clients[i].Normalize(); err != nil {
 			return fmt.Errorf("client %d: %w", i+1, err)
 		}
+		if seen[cfg.Clients[i].Name] {
+			return fmt.Errorf("duplicate client name %q", cfg.Clients[i].Name)
+		}
+		seen[cfg.Clients[i].Name] = true
 	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	if cfg.Name != "" && !ValidOwnerName(cfg.Name) {
+		return fmt.Errorf("invalid owner name %q", cfg.Name)
+	}
+	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+// ResolveOwnerName applies --name > config.name > local hostname precedence.
+func ResolveOwnerName(explicit, configured string) (string, error) {
+	name := explicit
+	if name == "" {
+		name = configured
+	}
+	if name == "" {
+		var err error
+		name, err = os.Hostname()
+		if err != nil {
+			return "", fmt.Errorf("resolve local hostname: %w", err)
+		}
+	}
+	if !ValidOwnerName(name) {
+		return "", fmt.Errorf("invalid owner name %q", name)
+	}
+	return name, nil
+}
+
+func ValidOwnerName(name string) bool {
+	if len(name) == 0 || len(name) > 64 {
+		return false
+	}
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (c *Config) Client(name string) (Client, bool) {
@@ -83,6 +177,12 @@ func (c *Config) Client(name string) (Client, bool) {
 		}
 	}
 	return Client{}, false
+}
+
+func (c *Config) Clone() *Config {
+	clone := *c
+	clone.Clients = append([]Client(nil), c.Clients...)
+	return &clone
 }
 
 func (c *Config) AddClient(client Client) error {

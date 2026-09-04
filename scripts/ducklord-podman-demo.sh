@@ -16,9 +16,9 @@ mkdir -p "$WORK"
 rm -rf "$WORK"/*
 
 echo "[ducklord-demo] building local binaries"
-go build -o "$WORK/ducklord" "$ROOT/cmd/ducklord"
-go build -o "$WORK/duckway" "$ROOT/cmd/client"
-go build -o "$WORK/ducklion" "$ROOT/cmd/ducklion"
+CGO_ENABLED=0 go build -o "$WORK/ducklord" "$ROOT/cmd/ducklord"
+CGO_ENABLED=0 go build -o "$WORK/duckway" "$ROOT/cmd/client"
+CGO_ENABLED=0 go build -o "$WORK/ducklion" "$ROOT/cmd/ducklion"
 
 ssh-keygen -q -t ed25519 -N '' -f "$WORK/id_ed25519"
 
@@ -26,7 +26,7 @@ cat >"$WORK/Containerfile" <<'EOF'
 FROM alpine:3.21
 RUN apk add --no-cache openssh openssh-client bash ca-certificates ncurses
 RUN adduser -D duck && echo "duck:duck-demo-password" | chpasswd && ssh-keygen -A
-RUN mkdir -p /home/duck/.ssh /root/.ssh /root/.ducklord && chown -R duck:duck /home/duck/.ssh
+RUN install -d -m 700 /home/duck/.ssh /root/.ssh /root/.ducklord && chown -R duck:duck /home/duck/.ssh
 COPY ducklord /usr/local/bin/ducklord
 COPY duckway /usr/local/bin/duckway
 COPY ducklion /usr/local/bin/ducklion
@@ -59,13 +59,17 @@ Host *
   UserKnownHostsFile /dev/null
   LogLevel ERROR
 EOF'
-"$RUNTIME" exec ducklord-dev sh -lc 'cat >/root/.ducklord/config.json <<EOF
-{
-  "clients": [
-    {"name":"client-a","host":"client-a","user":"duck","group":"lab"},
-    {"name":"client-b","host":"client-b","user":"duck","group":"lab"}
-  ]
-}
+"$RUNTIME" exec ducklord-dev sh -lc 'umask 077; cat >/root/.ducklord/config.yaml <<EOF
+name: dev-laptop
+hosts:
+  - name: client-a
+    host: client-a
+    user: duck
+    group: lab
+  - name: client-b
+    host: client-b
+    user: duck
+    group: lab
 EOF'
 
 echo "[ducklord-demo] creating sample remote sessions"
@@ -81,16 +85,16 @@ cat <<EOF
 [ducklord-demo] ready
 
 Open the dev laptop TUI:
-  $RUNTIME exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.json
+  $RUNTIME exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
 
 Useful checks:
-  $RUNTIME exec ducklord-dev ducklord clients --config /root/.ducklord/config.json
+  $RUNTIME exec ducklord-dev ducklord clients --config /root/.ducklord/config.yaml
   $RUNTIME exec ducklord-dev ducklord ssh-hosts
-  $RUNTIME exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.json
-  $RUNTIME exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
-  $RUNTIME exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.json
-  $RUNTIME exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
-  $RUNTIME exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.json
+  $RUNTIME exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.yaml
+  $RUNTIME exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml
+  $RUNTIME exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.yaml
+  $RUNTIME exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.yaml
+  $RUNTIME exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.yaml
 
 Inside the TUI:
   j/k or arrow keys: move

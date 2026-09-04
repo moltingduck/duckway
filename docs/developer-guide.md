@@ -707,15 +707,15 @@ standalone `ducklion` installation.
 
 ```bash
 scripts/ducklord-podman-demo.sh
-podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.yaml
 podman exec ducklord-dev ducklord ssh-hosts
-podman exec ducklord-dev ducklord import-ssh-hosts --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
-podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.json
-podman exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord import-ssh-hosts --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.yaml
+podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
+podman exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.yaml
 ```
 
 Inside the TUI:
@@ -723,7 +723,7 @@ Inside the TUI:
 - `a` adds a host entry from `/root/.ssh/config`; try `client-c`. The prompt
   also accepts a full SSH command such as
   `ssh -p 2222 -i ~/.ssh/id_ed25519 duck@client-c`.
-- `d` removes the selected host entry from the current `config.json`; it does
+- `d` removes the selected host entry from the current `config.yaml`; it does
   not stop remote Ducklion sessions.
 - `n` creates a remote session with `agent -> host -> project`.
 - `Enter` or right-click focuses the selected PTY session.
@@ -757,9 +757,9 @@ Ducklord itself is independent of Duckway server. Remote discovery and installs
 use only the operator's local SSH config and SSH permissions:
 
 ```bash
-ducklord import-ssh-hosts --config ~/.ducklord/config.json
-ducklord install-ducklion <client> --source ./ducklion-linux-amd64 --config ~/.ducklord/config.json
-ducklord attach-host <client> --config ~/.ducklord/config.json
+ducklord import-ssh-hosts --config ~/.ducklord/config.yaml
+ducklord install-ducklion <client> --source ./ducklion-linux-amd64 --config ~/.ducklord/config.yaml
+ducklord attach-host <client> --config ~/.ducklord/config.yaml
 ```
 
 When a host is added from the TUI, Ducklord probes `ducklion version` and
@@ -793,7 +793,7 @@ creates a small Alpine image. It mounts `~/.ssh` to `/home/ducklord/.ssh`,
 mounts `~/.ducklord` to `/home/ducklord/.ducklord`, and starts:
 
 ```bash
-ducklord tui --config /home/ducklord/.ducklord/config.json
+ducklord tui --config /home/ducklord/.ducklord/config.yaml
 ```
 
 The entrypoint creates a matching container user for the current host UID/GID
@@ -811,7 +811,7 @@ SSH_DIR=~/.ssh-lab DUCKLORD_DIR=~/.ducklord-lab scripts/ducklord-podman.sh
 DUCKLORD_PODMAN_NETWORK_ARGS="--network bridge" scripts/ducklord-podman.sh
 DUCKLORD_PODMAN_SSH_MOUNT=ro scripts/ducklord-podman.sh
 scripts/ducklord-podman.sh version
-scripts/ducklord-podman.sh clients --config /home/ducklord/.ducklord/config.json
+scripts/ducklord-podman.sh clients --config /home/ducklord/.ducklord/config.yaml
 ```
 
 Pass extra Podman `run` options before the Ducklord command. Use `--` to
@@ -821,7 +821,7 @@ separate runner options from the Ducklord arguments:
 scripts/ducklord-podman.sh \
   --podman-volume "$PWD:/workspace:rw" \
   --podman-env "DUCKLORD_EXPERIMENT=1" \
-  -- tui --config /home/ducklord/.ducklord/config.json
+  -- tui --config /home/ducklord/.ducklord/config.yaml
 
 scripts/ducklord-podman.sh \
   --podman-arg --add-host \

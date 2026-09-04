@@ -58,7 +58,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "${#ducklord_args[@]}" -eq 0 ]; then
-  ducklord_args=(tui --config /home/ducklord/.ducklord/config.json)
+	ducklord_args=(tui --config /home/ducklord/.ducklord/config.yaml)
 fi
 
 mkdir -p "$WORK" "$DUCKLORD_DIR"

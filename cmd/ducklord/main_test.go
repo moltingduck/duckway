@@ -41,7 +41,8 @@ func TestDucklordSSHHostsReadsConfig(t *testing.T) {
 
 func TestDucklordImportSSHHostsCreatesConfigWithoutDuplicates(t *testing.T) {
 	dir := t.TempDir()
-	config := filepath.Join(dir, "ducklord.json")
+	t.Setenv("HOME", dir)
+	config := filepath.Join(dir, "ducklord.yaml")
 	sshConfig := filepath.Join(dir, "ssh_config")
 	if err := os.WriteFile(sshConfig, []byte("Host client-a *.skip\nHost client-b\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -138,6 +139,7 @@ func TestDucklordProbeUsesRunner(t *testing.T) {
 }
 
 func TestDucklordInstallDucklionUpdatesConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	config := writeConfig(t)
 	runner := &recordingRunner{installPath: "/home/duck/.local/bin/ducklion"}
 	var out bytes.Buffer
@@ -232,7 +234,7 @@ func TestDucklordStartValidatesAndUsesRunner(t *testing.T) {
 }
 
 func TestDucklordRejectsUnknownTUIFlag(t *testing.T) {
-	if _, _, err := parseTUIFlags([]string{"--bad"}); err == nil {
+	if _, _, _, err := parseTUIFlags([]string{"--bad"}); err == nil {
 		t.Fatal("unknown tui flag accepted")
 	}
 }
@@ -450,7 +452,7 @@ func TestTUICreateWizardAllowsCustomProjectPath(t *testing.T) {
 }
 
 func TestTUIAddClientFromSSHHostProbesAndSaves(t *testing.T) {
-	config := filepath.Join(t.TempDir(), "config.json")
+	config := filepath.Join(t.TempDir(), "config.yaml")
 	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a", Host: "client-a"}}}
 	state := &tuiState{
 		cfg:     cfg,
@@ -494,7 +496,7 @@ func TestTUIAddClientAcceptsSSHCommandTarget(t *testing.T) {
 }
 
 func TestTUIAddClientInstallsMissingDucklionAndReprobes(t *testing.T) {
-	config := filepath.Join(t.TempDir(), "config.json")
+	config := filepath.Join(t.TempDir(), "config.yaml")
 	cfg := &ducklord.Config{}
 	runner := &recordingRunner{
 		installPath: "/home/duck/.local/bin/ducklion",
@@ -533,7 +535,7 @@ func TestTUIAddClientInstallsMissingDucklionAndReprobes(t *testing.T) {
 }
 
 func TestTUIRemoveSelectedHostEntryUpdatesCurrentConfig(t *testing.T) {
-	config := filepath.Join(t.TempDir(), "config.json")
+	config := filepath.Join(t.TempDir(), "config.yaml")
 	cfg := &ducklord.Config{Clients: []ducklord.Client{
 		{Name: "client-a", Host: "client-a", Group: "lab"},
 		{Name: "client-b", Host: "client-b", Group: "lab"},
@@ -751,8 +753,8 @@ func TestNextInputEventKeepsMouseSequenceTogether(t *testing.T) {
 
 func writeConfig(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"clients":[{"name":"client-a","host":"client-a","user":"duck","group":"demo"}]}`), 0600); err != nil {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(`{"hosts":[{"name":"client-a","host":"client-a","user":"duck","group":"demo"}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	return path

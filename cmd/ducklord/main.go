@@ -54,6 +54,14 @@ func main() {
 }
 
 func run(args []string, out io.Writer, runner remoteRunner) error {
+	globalOwner := ""
+	if len(args) > 0 && args[0] == "--name" {
+		if len(args) < 3 {
+			return fmt.Errorf("--name requires a value and command")
+		}
+		globalOwner = args[1]
+		args = args[2:]
+	}
 	if len(args) == 0 {
 		printUsage(out)
 		return fmt.Errorf("command is required")
@@ -90,6 +98,11 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		if err != nil {
 			return err
 		}
+		lock, err := ducklord.AcquireInstanceLock()
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
 		cfg, err := loadOrEmptyConfig(cfgPath)
 		if err != nil {
 			return err
@@ -156,6 +169,11 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		}
 		return printProbe(out, probe)
 	case "install-ducklion":
+		lock, err := ducklord.AcquireInstanceLock()
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
 		cfg, cfgPath, rest, source, dest, err := parseInstallDucklionArgs(args[1:])
 		if err != nil {
 			return err
@@ -265,9 +283,9 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		if err != nil {
 			return err
 		}
-		return runHostTUI(hostCfg, runner, 2*time.Second)
+		return runHostTUI(hostCfg, runner, 2*time.Second, globalOwner)
 	case "tui":
-		cfgPath, refresh, err := parseTUIFlags(args[1:])
+		cfgPath, ownerFlag, refresh, err := parseTUIFlags(args[1:])
 		if err != nil {
 			return err
 		}
@@ -275,7 +293,22 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		if err != nil {
 			return err
 		}
-		return runTUI(cfg, runner, cfgPath, refresh)
+		if globalOwner != "" && ownerFlag != "" {
+			return fmt.Errorf("--name may only be specified once")
+		}
+		if ownerFlag == "" {
+			ownerFlag = globalOwner
+		}
+		owner, err := ducklord.ResolveOwnerName(ownerFlag, cfg.Name)
+		if err != nil {
+			return err
+		}
+		lock, err := ducklord.AcquireInstanceLock()
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
+		return runTUI(cfg, runner, cfgPath, refresh, owner)
 	case "version", "--version", "-v":
 		fmt.Fprintln(out, "ducklord", version.Get())
 		return nil
@@ -424,32 +457,39 @@ func replaceClient(cfg *ducklord.Config, client ducklord.Client) {
 	cfg.Clients = append(cfg.Clients, client)
 }
 
-func parseTUIFlags(args []string) (string, time.Duration, error) {
+func parseTUIFlags(args []string) (string, string, time.Duration, error) {
 	path := ""
+	owner := ""
 	refresh := 2 * time.Second
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--config", "-c":
 			if i+1 >= len(args) {
-				return "", 0, fmt.Errorf("--config requires a value")
+				return "", "", 0, fmt.Errorf("--config requires a value")
 			}
 			path = args[i+1]
 			i++
+		case "--name":
+			if i+1 >= len(args) {
+				return "", "", 0, fmt.Errorf("--name requires a value")
+			}
+			owner = args[i+1]
+			i++
 		case "--refresh":
 			if i+1 >= len(args) {
-				return "", 0, fmt.Errorf("--refresh requires a value")
+				return "", "", 0, fmt.Errorf("--refresh requires a value")
 			}
 			d, err := time.ParseDuration(args[i+1])
 			if err != nil || d < time.Second {
-				return "", 0, fmt.Errorf("invalid --refresh value")
+				return "", "", 0, fmt.Errorf("invalid --refresh value")
 			}
 			refresh = d
 			i++
 		default:
-			return "", 0, fmt.Errorf("unknown tui option: %s", args[i])
+			return "", "", 0, fmt.Errorf("unknown tui option: %s", args[i])
 		}
 	}
-	return path, refresh, nil
+	return path, owner, refresh, nil
 }
 
 func mustClient(cfg *ducklord.Config, name string) (ducklord.Client, error) {
@@ -783,17 +823,27 @@ type tuiState struct {
 	addClientErr       string
 	addClientHosts     []ducklord.SSHHost
 	hostScoped         bool
+	ownerName          string
 }
 
-func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration) error {
-	return runTUIWithOptions(cfg, runner, cfgPath, refresh, false)
+func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, owner string) error {
+	return runTUIWithOptions(cfg, runner, cfgPath, refresh, false, owner)
 }
 
-func runHostTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration) error {
-	return runTUIWithOptions(cfg, runner, "", refresh, true)
+func runHostTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration, ownerFlag string) error {
+	owner, err := ducklord.ResolveOwnerName(ownerFlag, cfg.Name)
+	if err != nil {
+		return err
+	}
+	lock, err := ducklord.AcquireInstanceLock()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	return runTUIWithOptions(cfg, runner, "", refresh, true, owner)
 }
 
-func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, hostScoped bool) error {
+func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, hostScoped bool, owner string) error {
 	oldState, err := makeRaw()
 	if err != nil {
 		return err
@@ -804,7 +854,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped}
+	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner}
 	state.refreshSessions(ctx)
 	state.refreshSelectedOutput(ctx)
 	state.render(os.Stdout)
@@ -1366,12 +1416,14 @@ func (s *tuiState) submitAddClient(ctx context.Context) error {
 	if probe.Available && probe.Command != "" {
 		client.Ducklion = probe.Command
 	}
-	if err := s.cfg.AddClient(client); err != nil {
+	next := s.cfg.Clone()
+	if err := next.AddClient(client); err != nil {
 		return err
 	}
-	if err := ducklord.SaveConfig(s.cfgPath, s.cfg); err != nil {
+	if err := ducklord.SaveConfig(s.cfgPath, next); err != nil {
 		return err
 	}
+	s.cfg = next
 	s.cancelAddClient()
 	switch {
 	case installed && probe.Available:
@@ -1393,12 +1445,14 @@ func (s *tuiState) removeSelectedClient(ctx context.Context) error {
 	if clientName == "" {
 		return fmt.Errorf("no client selected")
 	}
-	if !s.cfg.RemoveClient(clientName) {
+	next := s.cfg.Clone()
+	if !next.RemoveClient(clientName) {
 		return fmt.Errorf("unknown client %q", clientName)
 	}
-	if err := ducklord.SaveConfig(s.cfgPath, s.cfg); err != nil {
+	if err := ducklord.SaveConfig(s.cfgPath, next); err != nil {
 		return err
 	}
+	s.cfg = next
 	s.outputText = ""
 	s.outputForKey = ""
 	s.refreshSessions(ctx)
@@ -1890,6 +1944,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, `ducklord - remote agent session TUI
 
 Usage:
+  ducklord [--name <owner>] tui [--config <path>] [--refresh 2s]
   ducklord clients [--config <path>]
   ducklord ssh-hosts [--config-file <ssh_config>]
   ducklord import-ssh-hosts [--ssh-config <ssh_config>] [--config <path>]
@@ -1897,7 +1952,7 @@ Usage:
   ducklord projects <client> [--config <path>]
   ducklord probe <client> [--config <path>]
   ducklord install-ducklion <client> [--source <path>] [--dest <remote-path>] [--config <path>]
-  ducklord tui [--config <path>] [--refresh 2s]
+  ducklord tui [--config <path>] [--name <owner>] [--refresh 2s]
   ducklord attach-host <client> [--config <path>]
   ducklord attach <client> <session> [--config <path>]
   ducklord read <client> <session> [--lines N] [--config <path>]

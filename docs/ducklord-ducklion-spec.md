@@ -39,7 +39,7 @@ remote agent host
 
 ## Terminology
 
-- Host entry: a Ducklord config item under `~/.ducklord/config.json` that
+- Host entry: a Ducklord config item under `~/.ducklord/config.yaml` that
   describes one SSH-reachable remote host, its display name, group, SSH command,
   and Ducklion command path.
 - Ducklion session: a remote PTY session owned by Ducklion on a host entry.
@@ -62,24 +62,20 @@ list/read/project operations.
 
 MVP `ducklord` uses a local config file:
 
-```json
-{
-  "clients": [
-    {
-      "name": "vulns",
-      "host": "vulns.tailnet.example",
-      "user": "cjiso1117",
-      "group": "ctf",
-      "ducklion": "ducklion"
-    }
-  ]
-}
+```yaml
+name: dev-laptop
+hosts:
+  - name: vulns
+    host: vulns.tailnet.example
+    user: cjiso1117
+    group: ctf
+    ducklion: ducklion
 ```
 
 Default path:
 
 ```text
-~/.ducklord/config.json
+~/.ducklord/config.yaml
 ```
 
 `ducklord tui` does not require the file to exist. If it is missing, Ducklord
@@ -91,14 +87,14 @@ a config entry because they must resolve `<client>`.
 Override:
 
 ```bash
-ducklord tui --config ./ducklord.json
+ducklord tui --config ./ducklord.yaml
 ```
 
 Ducklord discovery is intentionally local and SSH-based:
 
 ```bash
 ducklord ssh-hosts
-ducklord import-ssh-hosts --config ~/.ducklord/config.json
+ducklord import-ssh-hosts --config ~/.ducklord/config.yaml
 ```
 
 Ducklord does not use Duckway server for discovery, authorization, or command
@@ -179,9 +175,9 @@ Ducklord can also install Ducklion over SSH when the developer laptop already
 has a local `ducklion` binary:
 
 ```bash
-ducklord import-ssh-hosts --config ~/.ducklord/config.json
-ducklord install-ducklion vulns --source ./ducklion-linux-amd64 --config ~/.ducklord/config.json
-ducklord probe vulns --config ~/.ducklord/config.json
+ducklord import-ssh-hosts --config ~/.ducklord/config.yaml
+ducklord install-ducklion vulns --source ./ducklion-linux-amd64 --config ~/.ducklord/config.yaml
+ducklord probe vulns --config ~/.ducklord/config.yaml
 ```
 
 By default the remote binary is written to `~/.local/bin/ducklion`. Use
@@ -203,7 +199,7 @@ scripts/ducklord-podman-demo.sh
 The script builds local `ducklord`, `duckway`, and `ducklion` binaries, creates
 a private podman network, starts `ducklord-dev`, `ducklion-client-a`,
 `ducklion-client-b`, and `ducklion-client-c`, writes
-`/root/.ducklord/config.json` in `ducklord-dev`, and creates sample PTY
+`/root/.ducklord/config.yaml` in `ducklord-dev`, and creates sample PTY
 sessions.
 
 `client-a` and `client-b` are pre-registered in Ducklord config. `client-c`
@@ -213,13 +209,13 @@ flow.
 ### 2. Inspect Remote Clients And Sessions
 
 ```bash
-podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.yaml
 podman exec ducklord-dev ducklord ssh-hosts
-podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
-podman exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.yaml
+podman exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.yaml
 ```
 
 Expected shape:
@@ -239,7 +235,7 @@ projects client-a` should show the remote Duckway project registry, including
 ### 3. Open The TUI
 
 ```bash
-podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.json
+podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
 ```
 
 Useful keys:
@@ -270,7 +266,7 @@ echo hello-from-ducklord
 Verify the command reached the remote PTY:
 
 ```bash
-podman exec ducklord-dev ducklord read client-a bash --lines 20 --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord read client-a bash --lines 20 --config /root/.ducklord/config.yaml
 ```
 
 ### 5. Add A Host Entry From The TUI
@@ -284,7 +280,7 @@ Inside the TUI:
 
 Ducklord probes the remote host over SSH. It checks `ducklion version`, runs
 `ducklion list --json` to verify the session manager entry point, and records
-the host entry in `/root/.ducklord/config.json`. If Ducklion is missing,
+the host entry in `/root/.ducklord/config.yaml`. If Ducklion is missing,
 Ducklord attempts to install the local `ducklion` binary to
 `~/.local/bin/ducklion` over SSH, probes again, then records the resolved remote
 path. If installation is not possible because the local binary is missing or SSH
@@ -292,7 +288,7 @@ cannot write the target path, Ducklord still adds the host and shows a clear
 status message so the operator can enable the remote entry point manually.
 
 Press `d` on a selected row to remove that host entry from the current
-`config.json`. Removing a host entry does not stop remote Ducklion sessions; it
+`config.yaml`. Removing a host entry does not stop remote Ducklion sessions; it
 only removes the host from Ducklord's local inventory.
 
 For a host that is reachable over SSH but still missing Ducklion, install the
@@ -301,15 +297,15 @@ local binary explicitly:
 ```bash
 podman exec ducklord-dev ducklord install-ducklion client-c \
   --source /usr/local/bin/ducklion \
-  --config /root/.ducklord/config.json
+  --config /root/.ducklord/config.yaml
 ```
 
 Verify the config was updated:
 
 ```bash
-podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord probe client-c --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord projects client-c --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord probe client-c --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord projects client-c --config /root/.ducklord/config.yaml
 ```
 
 ### 6. Create A Remote Session From The TUI
@@ -333,8 +329,8 @@ the session list, selects the new row, and shows its output preview.
 Verify from the terminal:
 
 ```bash
-podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord read client-a shell-alpha --lines 20 --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord read client-a shell-alpha --lines 20 --config /root/.ducklord/config.yaml
 ```
 
 The same start operation is available from the CLI:
@@ -345,7 +341,7 @@ podman exec ducklord-dev ducklord start client-a \
   --agent shell \
   --cwd /home/duck \
   -- bash \
-  --config /root/.ducklord/config.json
+  --config /root/.ducklord/config.yaml
 ```
 
 ### 7. Clean Up
@@ -651,9 +647,9 @@ Old Duckway clients do not have `ducklion`. They remain compatible because:
 Operators can migrate old hosts one at a time by installing Ducklion over SSH:
 
 ```bash
-ducklord tui --config ~/.ducklord/config.json
-ducklord import-ssh-hosts --config ~/.ducklord/config.json
-ducklord install-ducklion <client> --source ./ducklion-linux-amd64 --config ~/.ducklord/config.json
+ducklord tui --config ~/.ducklord/config.yaml
+ducklord import-ssh-hosts --config ~/.ducklord/config.yaml
+ducklord install-ducklion <client> --source ./ducklion-linux-amd64 --config ~/.ducklord/config.yaml
 ```
 
 ## Podman Demo
@@ -670,13 +666,13 @@ Run:
 
 ```bash
 scripts/ducklord-podman-demo.sh
-podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.yaml
 podman exec ducklord-dev ducklord ssh-hosts
-podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.json
-podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.json
-podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.json
+podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.yaml
+podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
 ```
 
 To run only Ducklord in Podman against real SSH host entries, without starting
@@ -691,7 +687,7 @@ stage compiles Ducklord inside a Go container, creates a local Ducklord runtime
 image, and starts:
 
 ```bash
-ducklord tui --config /home/ducklord/.ducklord/config.json
+ducklord tui --config /home/ducklord/.ducklord/config.yaml
 ```
 
 The runner mounts the developer's `~/.ssh` and `~/.ducklord` into the container.
@@ -711,7 +707,7 @@ separate them from Ducklord arguments:
 ```bash
 scripts/ducklord-podman.sh \
   --podman-volume "$PWD:/workspace:rw" \
-  -- tui --config /home/ducklord/.ducklord/config.json
+  -- tui --config /home/ducklord/.ducklord/config.yaml
 ```
 
 Remote Ducklion sessions read the remote host's Duckway client config. For
@@ -728,6 +724,6 @@ Inside the TUI:
 - `Enter` or right-click focuses the selected session in the right pane
 - `Ctrl-]` returns keyboard focus to the left menu
 - `a` adds a host entry from `~/.ssh/config`; use `client-c`
-- `d` removes the selected host entry from the current `config.json`
+- `d` removes the selected host entry from the current `config.yaml`
 - `n` creates a new remote session with `agent -> host -> project`
 - `q` exits
