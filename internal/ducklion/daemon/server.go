@@ -45,6 +45,7 @@ type Server struct {
 	done        chan struct{}
 	connMu      sync.Mutex
 	connections map[*net.UnixConn]struct{}
+	ducklords   map[string]*net.UnixConn
 	handlers    sync.WaitGroup
 	lifecycleMu sync.Mutex
 	closing     bool
@@ -143,7 +144,7 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 	}
 	return &Server{root: root, socketPath: socketPath, lockFile: lockFile, listener: listener, state: state,
 		service: service.New(state), registry: duckruntime.NewRegistry(instanceID, state), instanceID: instanceID, done: make(chan struct{}),
-		connections: make(map[*net.UnixConn]struct{}), outputs: make(map[model.SessionID]registeredOutput), controls: make(map[model.SessionID]*controlPeer),
+		connections: make(map[*net.UnixConn]struct{}), ducklords: make(map[string]*net.UnixConn), outputs: make(map[model.SessionID]registeredOutput), controls: make(map[model.SessionID]*controlPeer),
 		sequences: make(map[model.SessionID]runtimeSequence)}, nil
 }
 
@@ -207,10 +208,25 @@ func (s *Server) handle(conn *net.UnixConn) {
 		return
 	}
 	terminalOwner := model.Owner{Kind: model.OwnerTerminal, ID: remote.Principal}
-	if err := terminalOwner.Validate(); err != nil || len(remote.Principal) > 128 {
+	if err := terminalOwner.Validate(); err != nil || !protocol.ValidDucklordPrincipal(remote.Principal) {
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid Ducklord principal"}})
 		return
 	}
+	s.connMu.Lock()
+	if s.ducklords[remote.Principal] != nil {
+		s.connMu.Unlock()
+		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrBusy, Message: "Ducklord owner name is already connected"}})
+		return
+	}
+	s.ducklords[remote.Principal] = conn
+	s.connMu.Unlock()
+	defer func() {
+		s.connMu.Lock()
+		if s.ducklords[remote.Principal] == conn {
+			delete(s.ducklords, remote.Principal)
+		}
+		s.connMu.Unlock()
+	}()
 	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"status", "sessions_list", "output_subscribe", "session_input", "session_resize"}}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
 	if protocolError != nil {

@@ -8,7 +8,7 @@ specification remains authoritative for product behavior.
 
 ```text
 Ducklord TUI
-    │ one long-lived SSH stdio bridge (target architecture)
+    │ one long-lived SSH stdio bridge per configured host
     ▼
 ducklion bridge --stdio
     │ opaque bytes; no parsing or logging
@@ -34,6 +34,14 @@ pool.
 Ducklion validates the local bridge process with Unix peer credentials. The
 socket, database, and lock live below `~/.duckway/ducklion`, whose permissions
 are restricted to the Duckway user. No TCP listener is opened.
+
+The remote Unix account is the authorization boundary. The Ducklord owner name
+is a user-managed, case-sensitive collision label rather than a separate
+credential: it uses 1–64 ASCII letters, digits, `.`, `_`, or `-`. Ducklion
+allows only one live bridge for a given name and releases that registration
+when the connection closes. A user who can authenticate as the same remote
+Unix account can assert any valid owner name; deployments needing stronger
+device isolation must use distinct operating-system accounts or SSH policy.
 
 ## Framing and negotiation
 
@@ -99,8 +107,11 @@ directly into the outer TUI terminal.
 
 The daemon, supervisor recovery, output subscription, owner-fenced input,
 resize, and stdio bridge are implemented and covered by socket and real-PTY
-tests. The remaining integration work is the single-SSH multiplexing layer,
-Ducklord terminal renderer/TUI wiring, yield/lifecycle RPCs, durable event
-subscriptions, and the final process-level release E2E. Until that cutover is
-complete, legacy CLI session commands remain present and must not be treated as
-evidence that the final architecture is complete.
+tests. Ducklord now opens and retains the authenticated stdio bridge for
+session inventory, so its configured/CLI owner reaches the daemon handshake;
+changing owner closes and renegotiates those bridges. The remaining transport
+work is multiplexing live output on that same connection, Ducklord terminal
+renderer/TUI wiring, yield/lifecycle RPCs, durable event subscriptions, and the
+final process-level release E2E. Until that cutover is complete, legacy CLI
+session commands remain present and must not be treated as evidence that the
+final architecture is complete.

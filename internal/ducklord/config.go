@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"gopkg.in/yaml.v3"
 )
 
@@ -158,16 +159,7 @@ func ResolveOwnerName(explicit, configured string) (string, error) {
 }
 
 func ValidOwnerName(name string) bool {
-	if len(name) == 0 || len(name) > 64 {
-		return false
-	}
-	for _, r := range name {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' {
-			continue
-		}
-		return false
-	}
-	return true
+	return protocol.ValidDucklordPrincipal(name)
 }
 
 func (c *Config) Client(name string) (Client, bool) {

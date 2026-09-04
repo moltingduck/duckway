@@ -239,6 +239,13 @@ func TestDucklordRejectsUnknownTUIFlag(t *testing.T) {
 	}
 }
 
+func TestWrapDisplayTextPreservesActionableError(t *testing.T) {
+	got := wrapDisplayText("error: daemon socket is unavailable", 12)
+	if strings.Join(got, "") != "error: daemon socket is unavailable" || len(got) < 2 {
+		t.Fatalf("wrapped lines = %#v", got)
+	}
+}
+
 func TestParseCreateLineDefaultsToBash(t *testing.T) {
 	name, args, err := parseCreateLine("bash")
 	if err != nil {

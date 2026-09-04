@@ -47,7 +47,7 @@ else
 fi
 `
 
-func (Runner) ProbeDucklion(ctx context.Context, c Client) (DucklionProbe, error) {
+func (*Runner) ProbeDucklion(ctx context.Context, c Client) (DucklionProbe, error) {
 	out, err := sshOutputRaw(ctx, c, "sh", "-lc", ducklionProbeScript, "ducklord-probe-ducklion", c.Ducklion)
 	if err != nil {
 		return DucklionProbe{}, err

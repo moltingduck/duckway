@@ -54,7 +54,7 @@ func executableFile(path string) (string, error) {
 	return path, nil
 }
 
-func (Runner) InstallDucklion(ctx context.Context, c Client, source, dest string) (string, error) {
+func (*Runner) InstallDucklion(ctx context.Context, c Client, source, dest string) (string, error) {
 	src, err := FindLocalDucklion(source)
 	if err != nil {
 		return "", err

@@ -84,7 +84,7 @@ func ConnectContext(ctx context.Context, conn io.ReadWriteCloser, principal stri
 	}
 	if handshakeResponse.Error != nil {
 		conn.Close()
-		return nil, fmt.Errorf("ducklion handshake rejected: %s", handshakeResponse.Error.Message)
+		return nil, &RemoteError{Detail: *handshakeResponse.Error}
 	}
 	negotiated := handshakeResponse.Handshake
 	offered := map[string]bool{"status": true, "sessions_list": true, "output_subscribe": true, "session_input": true, "session_resize": true}

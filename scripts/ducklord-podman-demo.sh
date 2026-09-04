@@ -46,6 +46,23 @@ echo "[ducklord-demo] starting remote clients"
 "$RUNTIME" run -d --name ducklion-client-a --hostname client-a --network "$NET" "$IMAGE" >/dev/null
 "$RUNTIME" run -d --name ducklion-client-b --hostname client-b --network "$NET" "$IMAGE" >/dev/null
 "$RUNTIME" run -d --name ducklion-client-c --hostname client-c --network "$NET" "$IMAGE" >/dev/null
+for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
+  "$RUNTIME" exec -d -u duck "$container" ducklion daemon >/dev/null
+done
+for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
+  ready=false
+  for _ in $(seq 1 100); do
+    if "$RUNTIME" exec -u duck "$container" test -S /home/duck/.duckway/ducklion/ducklion.sock; then
+      ready=true
+      break
+    fi
+    sleep 0.05
+  done
+  if [ "$ready" != true ]; then
+    echo "[ducklord-demo] Ducklion daemon did not become ready in $container" >&2
+    exit 1
+  fi
+done
 
 echo "[ducklord-demo] starting dev laptop"
 "$RUNTIME" run -d --name ducklord-dev --hostname dev-laptop --network "$NET" "$IMAGE" sleep infinity >/dev/null

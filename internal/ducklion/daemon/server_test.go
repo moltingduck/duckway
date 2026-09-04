@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,46 @@ func TestServerStatusAndSingleInstanceLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := <-serveErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServerRejectsDuplicateLiveDucklordPrincipal(t *testing.T) {
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	first, err := Dial(server.SocketPath(), "desk-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Dial(server.SocketPath(), "desk-a"); err == nil {
+		t.Fatal("duplicate principal accepted")
+	} else {
+		var remoteError *RemoteError
+		if !errors.As(err, &remoteError) || remoteError.Detail.Code != protocol.ErrBusy || !strings.Contains(remoteError.Error(), "already connected") {
+			t.Fatalf("duplicate principal error = %v", err)
+		}
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		second, retryErr := Dial(server.SocketPath(), "desk-a")
+		if retryErr == nil {
+			_ = second.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("principal was not released: %v", retryErr)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	_ = server.Close()
+	if err := <-serveDone; err != nil {
 		t.Fatal(err)
 	}
 }

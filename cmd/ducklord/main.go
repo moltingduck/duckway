@@ -48,7 +48,9 @@ type startDoneEvent struct {
 }
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout, ducklord.Runner{}); err != nil {
+	runner := ducklord.NewRunner()
+	defer runner.Close()
+	if err := run(os.Args[1:], os.Stdout, runner); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -128,6 +130,13 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		c, err := mustClient(cfg, rest[0])
 		if err != nil {
 			return err
+		}
+		owner, err := ducklord.ResolveOwnerName(globalOwner, cfg.Name)
+		if err != nil {
+			return err
+		}
+		if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+			ownerRunner.SetOwner(owner)
 		}
 		sessions, err := runner.Sessions(context.Background(), c, 8)
 		if err != nil {
@@ -302,6 +311,9 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		owner, err := ducklord.ResolveOwnerName(ownerFlag, cfg.Name)
 		if err != nil {
 			return err
+		}
+		if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+			ownerRunner.SetOwner(owner)
 		}
 		lock, err := ducklord.AcquireInstanceLock()
 		if err != nil {
@@ -835,6 +847,9 @@ func runHostTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration
 	if err != nil {
 		return err
 	}
+	if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+		ownerRunner.SetOwner(owner)
+	}
 	lock, err := ducklord.AcquireInstanceLock()
 	if err != nil {
 		return err
@@ -1180,7 +1195,7 @@ func (s *tuiState) render(out io.Writer) {
 	contentX := menuWidth + 4
 	contentWidth := renderWidth - contentX + 1
 	fmt.Fprint(out, "\033[H\033[2J")
-	fmt.Fprintln(out, "ducklord remote agents")
+	fmt.Fprintf(out, "ducklord remote agents  owner:%s\n", displayField(s.ownerName))
 	if s.focused {
 		fmt.Fprintln(out, "session focus  keys go to session  ctrl-] menu")
 	} else if s.addClientMode {
@@ -1316,13 +1331,35 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 	fmt.Fprintf(out, "\033[5;%dH%s\033[K", x, truncate(header, width))
 	startRow := 6
 	if s.outputErr != "" {
-		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", startRow, x, truncate("error: "+sanitizeTerminalText(s.outputErr), width))
+		for i, line := range wrapDisplayText("error: "+sanitizeTerminalText(s.outputErr), width) {
+			if startRow+i > height {
+				break
+			}
+			fmt.Fprintf(out, "\033[%d;%dH%s\033[K", startRow+i, x, line)
+		}
 		return
 	}
 	lines := tailLines(strings.Split(strings.TrimRight(s.outputText, "\n"), "\n"), height-startRow+1)
 	for i, line := range lines {
 		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", startRow+i, x, truncate(line, width))
 	}
+}
+
+func wrapDisplayText(text string, width int) []string {
+	if width < 1 {
+		return nil
+	}
+	runes := []rune(text)
+	lines := make([]string, 0, (len(runes)+width-1)/width)
+	for len(runes) > 0 {
+		n := width
+		if n > len(runes) {
+			n = len(runes)
+		}
+		lines = append(lines, string(runes[:n]))
+		runes = runes[n:]
+	}
+	return lines
 }
 
 func (s *tuiState) handleInput(b []byte) string {
