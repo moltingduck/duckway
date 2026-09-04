@@ -55,6 +55,29 @@ Generic stdio/SSH streams do not provide socket deadlines. Client negotiation
 therefore also accepts a context; expiry closes the stream so a remote bridge
 that never answers cannot hang Ducklord startup indefinitely.
 
+After negotiation the connection is fully multiplexed. Requests carry unique
+IDs and may be in flight while zero or more PTY output subscriptions emit
+events. Ducklord has one reader loop that demultiplexes responses by request ID
+and output by subscription ID; writes are serialized independently. This keeps
+session inventory, input, resize, and multiple raw-output streams on the same
+SSH process. A bounded pre-registration event buffer covers the narrow race
+between the subscribe response and local subscription installation without
+allowing arbitrary event IDs to grow memory indefinitely.
+
+Closing an output view sends `session.output_unsubscribe`; it does not close
+the host bridge. Ducklion cancels only that OutputHub subscriber, sends a
+terminal event when appropriate, and keeps processing other requests and
+subscriptions. Slow subscribers remain isolated by bounded queues.
+
+RPC calls have bounded client contexts. A timeout interrupts both waiting for
+the connection writer and a blocked frame write by closing the affected host
+bridge. For mutations this deliberately reports an unknown outcome and never
+retries input implicitly. Ducklion preserves request arrival order in a
+bounded connection worker while its reader continues admitting independent
+subscribe and unsubscribe operations. Server writes have a five-second socket
+deadline, so a peer that stops reading loses its bridge rather than freezing
+all streams indefinitely.
+
 ## Supervisor channels
 
 The supervisor uses two independently authenticated Unix connections:
@@ -103,15 +126,22 @@ distinguishes runtime disconnect from subscriber lag. Raw terminal bytes must
 be applied to Ducklord's in-memory terminal model; they must not be printed
 directly into the outer TUI terminal.
 
+The transitional Ducklord attach path requests at most the newest 256 KiB from
+the raw ring and then follows live output. Its visible text cache is bounded by
+both 120 lines and 1 MiB, including newline-free output. Explicit detach wakes
+blocked readers locally before the bounded best-effort unsubscribe RPC, while
+the underlying host bridge remains available for other views and control.
+
 ## Current integration boundary
 
 The daemon, supervisor recovery, output subscription, owner-fenced input,
 resize, and stdio bridge are implemented and covered by socket and real-PTY
 tests. Ducklord now opens and retains the authenticated stdio bridge for
 session inventory, so its configured/CLI owner reaches the daemon handshake;
-changing owner closes and renegotiates those bridges. The remaining transport
-work is multiplexing live output on that same connection, Ducklord terminal
-renderer/TUI wiring, yield/lifecycle RPCs, durable event subscriptions, and the
-final process-level release E2E. Until that cutover is complete, legacy CLI
+changing owner closes and renegotiates those bridges. Response and live-output
+multiplexing, including per-stream unsubscribe, now runs on that same bridge.
+The remaining integration work is Ducklord terminal renderer/TUI wiring,
+yield/lifecycle RPCs, durable event subscriptions, and the final process-level
+release E2E. Until that cutover is complete, legacy CLI
 session commands remain present and must not be treated as evidence that the
 final architecture is complete.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion/daemon"
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 )
 
 type RemoteSession struct {
@@ -333,11 +335,14 @@ func (*Runner) Attach(c Client, name string) error {
 	return nil
 }
 
-func (*Runner) AttachStream(ctx context.Context, c Client, name string) (*AttachSession, error) {
-	if !SafeIdentifier(name) {
-		return nil, fmt.Errorf("invalid session name %q", name)
+func (r *Runner) AttachStream(ctx context.Context, c Client, sessionRef string) (*AttachSession, error) {
+	if r != nil && r.hasOwner() {
+		return r.attachDaemonStream(ctx, c, sessionRef)
 	}
-	args := SSHArgs(c, false, c.DucklionArgs("attach", name)...)
+	if !SafeIdentifier(sessionRef) {
+		return nil, fmt.Errorf("invalid session name %q", sessionRef)
+	}
+	args := SSHArgs(c, false, c.DucklionArgs("attach", sessionRef)...)
 	sshParts := c.SSHCommandParts()
 	cmd := exec.CommandContext(ctx, sshParts[0], append(sshParts[1:], args...)...)
 	stdin, err := cmd.StdinPipe()
@@ -362,6 +367,98 @@ func (*Runner) AttachStream(ctx context.Context, c Client, name string) (*Attach
 		done <- err
 	}()
 	return &AttachSession{Stdin: stdin, Stdout: stdout, Done: done, cmd: cmd}, nil
+}
+
+func (r *Runner) attachDaemonStream(ctx context.Context, c Client, sessionRef string) (*AttachSession, error) {
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := client.ListSessions()
+	if err != nil {
+		r.discardBridge(bridgeKey(c), client)
+		return nil, err
+	}
+	var selected *protocol.SessionSummary
+	for i := range sessions {
+		if sessions[i].SessionID == sessionRef {
+			selected = &sessions[i]
+			break
+		}
+		if sessions[i].Handle == sessionRef {
+			if selected != nil {
+				return nil, fmt.Errorf("session handle %q is ambiguous; use its session ID", sessionRef)
+			}
+			selected = &sessions[i]
+		}
+	}
+	if selected == nil {
+		return nil, fmt.Errorf("session %q was not found", sessionRef)
+	}
+	subscription, err := client.SubscribeOutputTail(selected.SessionID, selected.RuntimeGeneration, 256<<10)
+	if err != nil {
+		return nil, err
+	}
+	inputReader, inputWriter := io.Pipe()
+	outputReader, outputWriter := io.Pipe()
+	attachCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	errResults := make(chan error, 2)
+	go func() {
+		defer outputWriter.Close()
+		for {
+			event, readErr := subscription.Read()
+			if readErr != nil {
+				var ended *daemon.OutputStreamEnded
+				if errors.As(readErr, &ended) && ended.Reason == "runtime_disconnected" {
+					readErr = nil
+				}
+				errResults <- readErr
+				return
+			}
+			if _, writeErr := outputWriter.Write(event.Frame.Data); writeErr != nil {
+				errResults <- writeErr
+				return
+			}
+		}
+	}()
+	go func() {
+		buffer := make([]byte, 32<<10)
+		for {
+			n, readErr := inputReader.Read(buffer)
+			if n > 0 {
+				if sendErr := client.SendInputContext(attachCtx, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, buffer[:n]); sendErr != nil {
+					errResults <- sendErr
+					return
+				}
+			}
+			if readErr != nil {
+				errResults <- readErr
+				return
+			}
+		}
+	}()
+	go func() {
+		var finalErr error
+		select {
+		case finalErr = <-errResults:
+			if errors.Is(finalErr, io.EOF) || errors.Is(finalErr, io.ErrClosedPipe) {
+				finalErr = nil
+			}
+		case <-attachCtx.Done():
+			finalErr = attachCtx.Err()
+			if errors.Is(finalErr, context.Canceled) {
+				finalErr = nil
+			}
+		}
+		cancel()
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+		_ = subscription.Close()
+		_ = outputWriter.Close()
+		done <- finalErr
+	}()
+	return &AttachSession{Stdin: inputWriter, Stdout: outputReader, Done: done}, nil
 }
 
 func sshOutput(ctx context.Context, c Client, ducklionArgs ...string) ([]byte, error) {

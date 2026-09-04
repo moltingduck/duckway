@@ -69,7 +69,12 @@ type SessionResize struct {
 }
 
 type OutputSubscribe struct {
-	Offset uint64 `json:"offset"`
+	Offset    uint64 `json:"offset"`
+	TailBytes uint64 `json:"tail_bytes,omitempty"`
+}
+
+type OutputUnsubscribe struct {
+	SubscriptionID string `json:"subscription_id"`
 }
 
 type OutputSubscribeResult struct {

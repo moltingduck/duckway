@@ -227,9 +227,54 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	if err != nil || string(live.Frame.Data) != "def" || live.Frame.Offset != 3 {
 		t.Fatalf("live=%+v err=%v", live, err)
 	}
+	secondSubscription, err := viewer.SubscribeOutput(string(session.ID), session.RuntimeGeneration, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed, err := viewer.ListSessions(); err != nil || len(listed) != 1 {
+		t.Fatalf("multiplexed list sessions=%+v err=%v", listed, err)
+	}
+	if err := client.PublishOutput([]byte("ghi")); err != nil {
+		t.Fatal(err)
+	}
+	for label, stream := range map[string]*OutputSubscription{"first": subscription, "second": secondSubscription} {
+		event, err := stream.Read()
+		if err != nil || string(event.Frame.Data) != "ghi" || event.Frame.Offset != 6 {
+			t.Fatalf("%s multiplexed output=%+v err=%v", label, event, err)
+		}
+	}
+	unsubscribeBody, _ := json.Marshal(protocol.OutputUnsubscribe{SubscriptionID: secondSubscription.Metadata().SubscriptionID})
+	wrongUnsubscribe, err := viewer.Call(protocol.Request{ID: "wrong-unsubscribe", Type: "session.output_unsubscribe", InstanceID: "wrong", Body: unsubscribeBody})
+	if err != nil || wrongUnsubscribe.Error == nil || wrongUnsubscribe.Error.Code != protocol.ErrInvalidArgument {
+		t.Fatalf("wrong-instance unsubscribe=%+v err=%v", wrongUnsubscribe, err)
+	}
+	if err := secondSubscription.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := subscription.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if listed, err := viewer.ListSessions(); err != nil || len(listed) != 1 {
+		t.Fatalf("list after unsubscribe=%+v err=%v", listed, err)
+	}
+	quiet, err := viewer.SubscribeOutput(string(session.ID), session.RuntimeGeneration, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readDone := make(chan error, 1)
+	go func() { _, readErr := quiet.Read(); readDone <- readErr }()
+	if err := quiet.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case readErr := <-readDone:
+		if !errors.Is(readErr, ErrOutputSubscriptionClosed) {
+			t.Fatalf("closed subscription read error=%v", readErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("closed subscription did not wake reader")
+	}
+	_ = viewer.Close()
 	large := bytes.Repeat([]byte("x"), (1<<20)+12345)
 	if err := client.PublishOutput(large); err != nil {
 		t.Fatal(err)
@@ -238,7 +283,7 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	largeReplay, err := replayViewer.SubscribeOutput(string(session.ID), session.RuntimeGeneration, 6)
+	largeReplay, err := replayViewer.SubscribeOutput(string(session.ID), session.RuntimeGeneration, 9)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +299,16 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 		t.Fatalf("large replay length=%d want=%d", len(replayed), len(large))
 	}
 	_ = largeReplay.Close()
+	tail, err := replayViewer.SubscribeOutputTail(string(session.ID), session.RuntimeGeneration, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tailEvent, err := tail.Read()
+	if err != nil || len(tailEvent.Frame.Data) != 1024 || !bytes.Equal(tailEvent.Frame.Data, large[len(large)-1024:]) {
+		t.Fatalf("tail replay length=%d err=%v", len(tailEvent.Frame.Data), err)
+	}
+	_ = tail.Close()
+	_ = replayViewer.Close()
 	connected, err := server.state.GetSession(context.Background(), session.ID)
 	if err != nil || connected.Status != model.StatusRunning || connected.AdapterState != model.AdapterHealthy {
 		t.Fatalf("connected session=%+v err=%v", connected, err)
@@ -265,7 +320,7 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ending, err := endingViewer.SubscribeOutput(string(session.ID), session.RuntimeGeneration, uint64(6+len(large)))
+	ending, err := endingViewer.SubscribeOutput(string(session.ID), session.RuntimeGeneration, uint64(9+len(large)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,11 +525,7 @@ func TestRealPTYInputFlowsThroughDaemonControl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	viewer, err := Dial(server.SocketPath(), "viewer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	output, err := viewer.SubscribeOutput(string(sessionModel.ID), 1, 0)
+	output, err := terminal.SubscribeOutput(string(sessionModel.ID), 1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

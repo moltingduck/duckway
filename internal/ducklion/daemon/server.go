@@ -67,6 +67,33 @@ type registeredOutput struct {
 	hub      *duckruntime.OutputHub
 }
 
+type ducklordWire struct {
+	codec *bridge.Codec
+	conn  *net.UnixConn
+	mu    sync.Mutex
+}
+
+func (w *ducklordWire) Write(value any) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	err := w.codec.Write(value)
+	_ = w.conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		_ = w.conn.Close()
+	}
+	return err
+}
+
+type preparedOutputSubscription struct {
+	metadata protocol.OutputSubscribeResult
+	identity duckruntime.RuntimeIdentity
+	replay   duckruntime.OutputFrame
+	stream   <-chan duckruntime.OutputFrame
+	cancel   func()
+	hub      *duckruntime.OutputHub
+}
+
 type controlCall struct {
 	request protocol.Request
 	result  chan protocol.Response
@@ -227,7 +254,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 		}
 		s.connMu.Unlock()
 	}()
-	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"status", "sessions_list", "output_subscribe", "session_input", "session_resize"}}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"status", "sessions_list", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
 	if protocolError != nil {
 		_ = codec.Write(protocol.HandshakeResponse{Error: protocolError})
@@ -237,6 +264,33 @@ func (s *Server) handle(conn *net.UnixConn) {
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
+	wire := &ducklordWire{codec: codec, conn: conn}
+	var subscriptionsMu sync.Mutex
+	subscriptions := make(map[string]func())
+	var subscriptionHandlers sync.WaitGroup
+	routeRequests := make(chan protocol.Request, 32)
+	var routeHandler sync.WaitGroup
+	routeHandler.Add(1)
+	go func() {
+		defer routeHandler.Done()
+		for request := range routeRequests {
+			response := s.route(request, negotiated.Capabilities, negotiated.Principal)
+			if err := wire.Write(response); err != nil {
+				return
+			}
+		}
+	}()
+	defer func() {
+		subscriptionsMu.Lock()
+		for id, cancel := range subscriptions {
+			cancel()
+			delete(subscriptions, id)
+		}
+		subscriptionsMu.Unlock()
+		subscriptionHandlers.Wait()
+		close(routeRequests)
+		routeHandler.Wait()
+	}()
 	for {
 		var request protocol.Request
 		if err := codec.Read(&request); err != nil {
@@ -251,14 +305,63 @@ func (s *Server) handle(conn *net.UnixConn) {
 		}
 		if request.Type == "session.output_subscribe" {
 			if !hasCapability(negotiated.Capabilities, "output_subscribe") {
-				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "output subscription capability was not negotiated")
+				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "output subscription capability was not negotiated"}})
 				continue
 			}
-			s.handleOutputSubscription(codec, request)
-			return
+			prepared, protocolError := s.prepareOutputSubscription(request)
+			if protocolError != nil {
+				_ = wire.Write(protocol.Response{ID: request.ID, Error: protocolError})
+				continue
+			}
+			result, _ := json.Marshal(prepared.metadata)
+			if err := wire.Write(protocol.Response{ID: request.ID, Result: result}); err != nil {
+				prepared.cancel()
+				return
+			}
+			subscriptionsMu.Lock()
+			subscriptions[prepared.metadata.SubscriptionID] = prepared.cancel
+			subscriptionsMu.Unlock()
+			subscriptionHandlers.Add(1)
+			go func() {
+				defer subscriptionHandlers.Done()
+				s.streamOutputSubscription(wire, prepared)
+				subscriptionsMu.Lock()
+				delete(subscriptions, prepared.metadata.SubscriptionID)
+				subscriptionsMu.Unlock()
+			}()
+			continue
 		}
-		response := s.route(request, negotiated.Capabilities, negotiated.Principal)
-		if err := codec.Write(response); err != nil {
+		if request.Type == "session.output_unsubscribe" {
+			if !hasCapability(negotiated.Capabilities, "output_unsubscribe") {
+				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "output unsubscribe capability was not negotiated"}})
+				continue
+			}
+			var body protocol.OutputUnsubscribe
+			if request.InstanceID != string(s.instanceID) || len(request.SessionID) != 0 || request.RuntimeGeneration != nil || request.OwnershipEpoch != nil ||
+				decodeStrict(request.Body, &body) != nil || body.SubscriptionID == "" {
+				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid output unsubscribe"}})
+				continue
+			}
+			subscriptionsMu.Lock()
+			cancel := subscriptions[body.SubscriptionID]
+			if cancel != nil {
+				delete(subscriptions, body.SubscriptionID)
+			}
+			subscriptionsMu.Unlock()
+			if cancel == nil {
+				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "output subscription not found"}})
+				continue
+			}
+			cancel()
+			result, _ := json.Marshal(map[string]bool{"unsubscribed": true})
+			if err := wire.Write(protocol.Response{ID: request.ID, Result: result}); err != nil {
+				return
+			}
+			continue
+		}
+		select {
+		case routeRequests <- request:
+		case <-s.done:
 			return
 		}
 	}
@@ -587,62 +690,66 @@ func (s *Server) deactivateOutput(identity duckruntime.RuntimeIdentity) {
 	}
 }
 
-func (s *Server) handleOutputSubscription(codec *bridge.Codec, request protocol.Request) {
+func (s *Server) prepareOutputSubscription(request protocol.Request) (*preparedOutputSubscription, *protocol.Error) {
 	sessionID, err := model.ParseSessionID(request.SessionID)
 	if err != nil || request.InstanceID != string(s.instanceID) || request.RuntimeGeneration == nil || len(request.Body) == 0 {
-		writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid output subscription")
-		return
+		return nil, &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid output subscription"}
 	}
 	var subscription protocol.OutputSubscribe
-	if err := decodeStrict(request.Body, &subscription); err != nil {
-		writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid output subscription")
-		return
+	if err := decodeStrict(request.Body, &subscription); err != nil || subscription.TailBytes > 4<<20 || subscription.TailBytes > 0 && subscription.Offset != 0 {
+		return nil, &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid output subscription"}
 	}
 	s.outputMu.Lock()
 	current, ok := s.outputs[sessionID]
 	s.outputMu.Unlock()
 	if !ok {
-		writeSupervisorError(codec, request.ID, protocol.ErrAdapterUnhealthy, "session runtime is not connected")
-		return
+		return nil, &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "session runtime is not connected"}
 	}
 	if current.identity.Generation != *request.RuntimeGeneration {
-		writeSupervisorError(codec, request.ID, protocol.ErrStaleGeneration, "runtime generation changed")
-		return
+		return nil, &protocol.Error{Code: protocol.ErrStaleGeneration, Message: "runtime generation changed"}
 	}
-	replay, stream, cancel, err := current.hub.Subscribe(subscription.Offset, 32)
+	offset := subscription.Offset
+	if subscription.TailBytes > 0 {
+		start, end := current.hub.Bounds()
+		offset = start
+		if end > subscription.TailBytes && end-subscription.TailBytes > start {
+			offset = end - subscription.TailBytes
+		}
+	}
+	replay, stream, cancel, err := current.hub.Subscribe(offset, 32)
 	if err != nil {
-		writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, err.Error())
-		return
+		return nil, &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}
 	}
-	defer cancel()
 	_, end := current.hub.Bounds()
 	subscriptionID := uuid.NewString()
-	result, _ := json.Marshal(protocol.OutputSubscribeResult{SubscriptionID: subscriptionID, RuntimeID: current.identity.LeaseID, InstanceID: string(s.instanceID), SessionID: string(sessionID),
-		RuntimeGeneration: current.identity.Generation, StartOffset: replay.Offset, EndOffset: end, Gap: replay.Gap})
-	if err := codec.Write(protocol.Response{ID: request.ID, Result: result}); err != nil {
+	metadata := protocol.OutputSubscribeResult{SubscriptionID: subscriptionID, RuntimeID: current.identity.LeaseID, InstanceID: string(s.instanceID), SessionID: string(sessionID),
+		RuntimeGeneration: current.identity.Generation, StartOffset: replay.Offset, EndOffset: end, Gap: replay.Gap}
+	return &preparedOutputSubscription{metadata: metadata, identity: current.identity, replay: replay, stream: stream, cancel: cancel, hub: current.hub}, nil
+}
+
+func (s *Server) streamOutputSubscription(codec interface{ Write(any) error }, prepared *preparedOutputSubscription) {
+	defer prepared.cancel()
+	if err := writeOutputEvents(codec, prepared.metadata.SubscriptionID, s.instanceID, prepared.identity, prepared.replay); err != nil {
 		return
 	}
-	if err := writeOutputEvents(codec, subscriptionID, s.instanceID, current.identity, replay); err != nil {
-		return
-	}
-	nextOffset := replay.Offset + uint64(len(replay.Data))
-	for frame := range stream {
-		if err := writeOutputEvents(codec, subscriptionID, s.instanceID, current.identity, frame); err != nil {
+	nextOffset := prepared.replay.Offset + uint64(len(prepared.replay.Data))
+	for frame := range prepared.stream {
+		if err := writeOutputEvents(codec, prepared.metadata.SubscriptionID, s.instanceID, prepared.identity, frame); err != nil {
 			return
 		}
 		nextOffset = frame.Offset + uint64(len(frame.Data))
 	}
-	_, finalEnd := current.hub.Bounds()
+	_, finalEnd := prepared.hub.Bounds()
 	reason := "runtime_disconnected"
 	if nextOffset < finalEnd {
 		reason = "subscriber_lag"
 	}
-	_ = codec.Write(protocol.OutputEvent{Type: "output_end", SubscriptionID: subscriptionID, RuntimeID: current.identity.LeaseID,
-		InstanceID: string(s.instanceID), SessionID: string(current.identity.SessionID), RuntimeGeneration: current.identity.Generation,
+	_ = codec.Write(protocol.OutputEvent{Type: "output_end", SubscriptionID: prepared.metadata.SubscriptionID, RuntimeID: prepared.identity.LeaseID,
+		InstanceID: string(s.instanceID), SessionID: string(prepared.identity.SessionID), RuntimeGeneration: prepared.identity.Generation,
 		Frame: protocol.OutputFrame{Offset: nextOffset}, Reason: reason})
 }
 
-func writeOutputEvents(codec *bridge.Codec, subscriptionID string, instanceID model.InstanceID, identity duckruntime.RuntimeIdentity, frame duckruntime.OutputFrame) error {
+func writeOutputEvents(codec interface{ Write(any) error }, subscriptionID string, instanceID model.InstanceID, identity duckruntime.RuntimeIdentity, frame duckruntime.OutputFrame) error {
 	const maxChunk = 64 << 10
 	if len(frame.Data) == 0 {
 		return nil

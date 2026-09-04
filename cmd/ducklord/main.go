@@ -1037,7 +1037,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					return err
 				}
 				attachCtx, cancel := context.WithCancel(ctx)
-				session, err := runner.AttachStream(attachCtx, c, s.Name)
+				sessionRef := s.SessionID
+				if sessionRef == "" {
+					sessionRef = s.Name
+				}
+				session, err := runner.AttachStream(attachCtx, c, sessionRef)
 				if err != nil {
 					cancel()
 					state.outputErr = err.Error()
@@ -1892,10 +1896,14 @@ func isDetachInput(b []byte) bool {
 }
 
 func appendOutputText(current, chunk string, maxLines int) string {
+	const maxOutputBytes = 1 << 20
 	if chunk == "" {
 		return current
 	}
 	text := applyInteractiveText(current, chunk)
+	if len(text) > maxOutputBytes {
+		text = strings.ToValidUTF8(text[len(text)-maxOutputBytes:], " ")
+	}
 	endsWithNewline := strings.HasSuffix(text, "\n")
 	text = strings.TrimSuffix(text, "\n")
 	if text == "" {

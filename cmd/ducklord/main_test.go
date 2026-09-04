@@ -246,6 +246,17 @@ func TestWrapDisplayTextPreservesActionableError(t *testing.T) {
 	}
 }
 
+func TestAppendOutputTextBoundsNewlineFreeOutput(t *testing.T) {
+	text := appendOutputText("", strings.Repeat("x", 2<<20), 120)
+	if len(text) > 1<<20 {
+		t.Fatalf("output retained %d bytes", len(text))
+	}
+	text = appendOutputText(text, strings.Repeat("y", 64<<10), 120)
+	if len(text) > 1<<20 || !strings.HasSuffix(text, "y") {
+		t.Fatalf("bounded output length=%d suffix=%q", len(text), text[len(text)-1:])
+	}
+}
+
 func TestParseCreateLineDefaultsToBash(t *testing.T) {
 	name, args, err := parseCreateLine("bash")
 	if err != nil {
