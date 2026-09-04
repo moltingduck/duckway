@@ -694,6 +694,41 @@ func (c *APIClient) PostCCMessage(ctx context.Context, handle, content string) (
 	return out.MessageID, nil
 }
 
+// PostCCDelivered safely retries an ambiguous HTTP outcome using a stable
+// semantic delivery key. The server combines its durable receipt with a
+// deterministic Discord nonce, including for multi-part responses.
+func (c *APIClient) PostCCDelivered(ctx context.Context, handle, content, replyToMessageID, deliveryKey string) error {
+	_, err := c.PostCCDeliveredMessage(ctx, handle, content, replyToMessageID, deliveryKey)
+	return err
+}
+
+func (c *APIClient) PostCCDeliveredMessage(ctx context.Context, handle, content, replyToMessageID, deliveryKey string) (string, error) {
+	body, _ := json.Marshal(map[string]string{"content": content, "reply_to_message_id": replyToMessageID, "delivery_key": deliveryKey})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/client/cc/channels/"+handle+"/messages", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("post delivered message: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("server %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var result struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		// Older/fake servers may intentionally return an empty success body.
+		return "", nil
+	}
+	return result.MessageID, nil
+}
+
 func (c *APIClient) EditCCMessage(ctx context.Context, handle, messageID, content string) error {
 	body, _ := json.Marshal(map[string]string{"content": content})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.baseURL+"/client/cc/channels/"+handle+"/messages/"+messageID, bytes.NewReader(body))

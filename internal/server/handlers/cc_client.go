@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -333,6 +336,7 @@ func (h *CCClientHandler) PostMessage(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Content          string `json:"content"`
 		ReplyToMessageID string `json:"reply_to_message_id"`
+		DeliveryKey      string `json:"delivery_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
@@ -342,18 +346,91 @@ func (h *CCClientHandler) PostMessage(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "content required", http.StatusBadRequest)
 		return
 	}
+	if len(req.DeliveryKey) > 96 || strings.ContainsRune(req.DeliveryKey, 0) {
+		jsonError(w, "invalid delivery_key", http.StatusBadRequest)
+		return
+	}
+	if req.ReplyToMessageID != "" && !validDiscordSnowflake(req.ReplyToMessageID) {
+		jsonError(w, "invalid reply_to_message_id", http.StatusBadRequest)
+		return
+	}
 	var id string
-	for _, part := range splitDiscordContent(req.Content) {
-		msgID, err := h.bot.PostMessageReply(r.Context(), botTok, ch.ChannelID, part, req.ReplyToMessageID)
+	var ids []string
+	replayed := req.DeliveryKey != ""
+	for index, part := range splitDiscordContent(req.Content) {
+		chunkKey := ""
+		var digest [32]byte
+		if req.DeliveryKey != "" {
+			chunkKey = fmt.Sprintf("%s:%d", req.DeliveryKey, index)
+			canonical, _ := json.Marshal([]string{handle, req.ReplyToMessageID, part})
+			digest = sha256.Sum256(canonical)
+			existing, beginErr := h.cc.BeginMessageDelivery(cc.ID, handle, chunkKey, digest[:])
+			if errors.Is(beginErr, queries.ErrDeliveryConflict) {
+				jsonError(w, beginErr.Error(), http.StatusConflict)
+				return
+			}
+			if beginErr != nil {
+				jsonError(w, "prepare message delivery: "+beginErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			if existing != "" {
+				ids = append(ids, existing)
+				if id == "" {
+					id = existing
+				}
+				continue
+			}
+		}
+		nonce := ""
+		if chunkKey != "" {
+			hash := sha256.Sum256([]byte(cc.ID + "\x00" + chunkKey))
+			nonce = strconv.FormatUint(binary.BigEndian.Uint64(hash[:8]), 10)
+			if reconciled, reconcileErr := h.bot.FindMessageByNonce(r.Context(), botTok, ch.ChannelID, nonce); reconcileErr == nil && reconciled != "" {
+				if err := h.cc.CompleteMessageDelivery(cc.ID, chunkKey, reconciled); err != nil {
+					jsonError(w, "reconcile message delivery: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+				ids = append(ids, reconciled)
+				if id == "" {
+					id = reconciled
+				}
+				continue
+			} else if reconcileErr != nil {
+				jsonError(w, "reconcile Discord delivery: "+reconcileErr.Error(), http.StatusBadGateway)
+				return
+			}
+			safe, safeErr := h.cc.MessageDeliveryRetrySafe(cc.ID, chunkKey)
+			if safeErr != nil || !safe {
+				jsonError(w, "message delivery outcome is ambiguous; refusing duplicate retry", http.StatusConflict)
+				return
+			}
+		}
+		msgID, err := h.bot.PostMessageReplyIdempotent(r.Context(), botTok, ch.ChannelID, part, req.ReplyToMessageID, nonce)
+		replayed = false
 		if err != nil {
 			jsonError(w, "discord post: "+err.Error(), http.StatusBadGateway)
 			return
 		}
+		if chunkKey != "" {
+			if err := h.cc.CompleteMessageDelivery(cc.ID, chunkKey, msgID); err != nil {
+				jsonError(w, "complete message delivery: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		ids = append(ids, msgID)
 		if id == "" {
 			id = msgID
 		}
 	}
-	jsonResponse(w, map[string]string{"message_id": id})
+	jsonResponse(w, map[string]interface{}{"message_id": id, "message_ids": ids, "replayed": replayed})
+}
+
+func validDiscordSnowflake(value string) bool {
+	if len(value) < 17 || len(value) > 20 {
+		return false
+	}
+	_, err := strconv.ParseUint(value, 10, 64)
+	return err == nil
 }
 
 // POST /client/cc/channels/{handle}/messages/{message_id}/reactions — react to a message.

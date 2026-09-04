@@ -69,6 +69,15 @@ func (s *SQLite) MarkRuntimeDisconnected(ctx context.Context, id model.SessionID
 	return nil
 }
 
+// PrepareRuntimeRecovery clears connection-derived state after the daemon has
+// acquired its singleton lock. Independent supervisors keep running and prove
+// possession of their recovery keys before becoming healthy again.
+func (s *SQLite) PrepareRuntimeRecovery(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='recovering',adapter_state=CASE kind WHEN 'agent' THEN 'recovering' ELSE 'unavailable' END,updated_at_ms=?
+		WHERE status='running'`, time.Now().UTC().UnixMilli())
+	return err
+}
+
 func (s *SQLite) MarkRuntimeStopped(ctx context.Context, id model.SessionID, generation uint64) error {
 	return s.MarkRuntimeExited(ctx, id, generation, false, "runtime launch or stop failed")
 }

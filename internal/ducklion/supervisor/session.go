@@ -1,12 +1,15 @@
 package supervisor
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -30,6 +33,7 @@ type Options struct {
 	SessionID         model.SessionID
 	RuntimeGeneration uint64
 	OwnershipEpoch    uint64
+	AgentType         string
 	CWD               string
 	Command           []string
 	Rows              uint16
@@ -52,8 +56,17 @@ type Session struct {
 	output             *duckruntime.OutputHub
 	input              *duckruntime.InputPump
 	captureDone        chan struct{}
+	agentCaptureDone   chan struct{}
+	adapterRead        *os.File
 	preparedTasks      map[string]preparedAgentTask
 	committedTasks     map[string][32]byte
+	activeAgentTask    string
+	agentEvents        map[string][]protocol.SupervisorAgentEvent
+	agentEventAcks     map[string]uint64
+	agentEventBytes    int
+	agentEventCount    int
+	agentEventNotify   chan struct{}
+	agentAckOrder      []string
 }
 
 type preparedAgentTask struct {
@@ -61,6 +74,12 @@ type preparedAgentTask struct {
 	prompt []byte
 	owner  model.Owner
 }
+
+const (
+	maxRetainedAgentEvents = 128
+	maxRetainedAgentBytes  = 512 << 10
+	maxAgentAckTombstones  = 1024
+)
 
 func Start(options Options) (*Session, error) {
 	if _, err := model.ParseSessionID(string(options.SessionID)); err != nil {
@@ -78,20 +97,195 @@ func Start(options Options) (*Session, error) {
 	if options.Rows < 5 || options.Rows > 200 || options.Cols < 20 || options.Cols > 500 {
 		return nil, ErrInvalidPTYSize
 	}
-	cmd := exec.Command(options.Command[0], options.Command[1:]...)
+	command := append([]string(nil), options.Command...)
+	if options.AgentType != "" {
+		executable, executableErr := os.Executable()
+		if executableErr != nil {
+			return nil, fmt.Errorf("locate Ducklion adapter hook: %w", executableErr)
+		}
+		switch strings.ToLower(options.AgentType) {
+		case "codex":
+			if filepath.Base(command[0]) == "codex" {
+				notifyJSON, _ := json.Marshal([]string{executable, "__ducklion_agent_hook_v1"})
+				command = append([]string{command[0], "-c", "notify=" + string(notifyJSON)}, command[1:]...)
+			}
+		case "claude", "claude_code":
+			if filepath.Base(command[0]) == "claude" {
+				hookCommand := shellQuote(executable) + " __ducklion_agent_hook_v1"
+				hook := []any{map[string]any{"matcher": "*", "hooks": []any{map[string]any{"type": "command", "command": hookCommand}}}}
+				settings := map[string]any{"hooks": map[string]any{"Stop": hook, "StopFailure": hook}}
+				settingsJSON, _ := json.Marshal(settings)
+				command = append([]string{command[0], "--settings", string(settingsJSON)}, command[1:]...)
+			}
+		}
+	}
+	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Dir = options.CWD
 	cmd.Env = supervisedEnvironment()
+	var adapterRead, adapterWrite *os.File
+	if options.AgentType != "" {
+		var pipeErr error
+		adapterRead, adapterWrite, pipeErr = os.Pipe()
+		if pipeErr != nil {
+			return nil, fmt.Errorf("create agent adapter pipe: %w", pipeErr)
+		}
+		cmd.ExtraFiles = append(cmd.ExtraFiles, adapterWrite)
+		cmd.Env = append(cmd.Env, "DUCKLION_AGENT_EVENT_FD=3")
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: options.Rows, Cols: options.Cols})
 	if err != nil {
+		if adapterRead != nil {
+			_ = adapterRead.Close()
+			_ = adapterWrite.Close()
+		}
 		return nil, fmt.Errorf("start supervised PTY: %w", err)
+	}
+	if adapterWrite != nil {
+		_ = adapterWrite.Close()
 	}
 	session := &Session{id: options.SessionID, generation: options.RuntimeGeneration, epoch: options.OwnershipEpoch,
 		pty: ptmx, cmd: cmd, output: duckruntime.NewOutputHub(options.OutputCapacity), captureDone: make(chan struct{}),
-		preparedTasks: make(map[string]preparedAgentTask), committedTasks: make(map[string][32]byte)}
+		preparedTasks: make(map[string]preparedAgentTask), committedTasks: make(map[string][32]byte),
+		agentEvents: make(map[string][]protocol.SupervisorAgentEvent)}
+	session.agentEventAcks = make(map[string]uint64)
+	session.agentEventNotify = make(chan struct{}, 1)
 	session.input = duckruntime.NewInputPump((*inputGate)(session), ptmx, 64)
 	go session.capture()
+	if adapterRead != nil {
+		session.adapterRead = adapterRead
+		session.agentCaptureDone = make(chan struct{})
+		go func() {
+			defer close(session.agentCaptureDone)
+			session.captureAgentEvents(adapterRead)
+		}()
+	}
 	return session, nil
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+// QueueAgentEvent retains adapter output in the supervisor process until the
+// CC confirms that it was delivered. This intentionally does not write the
+// response to Ducklion's persistent state.
+func (s *Session) QueueAgentEvent(event protocol.SupervisorAgentEvent) error {
+	if !protocol.ValidTaskID(event.TaskID) || event.Sequence == 0 {
+		return fmt.Errorf("invalid agent event")
+	}
+	if (event.Kind == "completed" || event.Kind == "failed") && event.OutputEnd == 0 && s.output != nil {
+		_, event.OutputEnd = s.output.Bounds()
+	}
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
+	if s.agentEventAcks == nil {
+		s.agentEventAcks = make(map[string]uint64)
+	}
+	if event.Sequence <= s.agentEventAcks[event.TaskID] {
+		return nil
+	}
+	events := s.agentEvents[event.TaskID]
+	eventBytes := len(event.Summary) + len(event.Response)
+	if s.agentEventCount >= maxRetainedAgentEvents || s.agentEventBytes+eventBytes+len(event.TaskID)+64 > maxRetainedAgentBytes {
+		return fmt.Errorf("agent event retention capacity reached")
+	}
+	if len(events) != 0 {
+		last := events[len(events)-1]
+		if event.Sequence <= last.Sequence {
+			if event == last {
+				return nil
+			}
+			return fmt.Errorf("agent event sequence is not contiguous")
+		}
+		if event.Sequence != last.Sequence+1 {
+			return fmt.Errorf("agent event sequence is not contiguous")
+		}
+	} else if event.Sequence != 1 {
+		return fmt.Errorf("agent event sequence must start at one")
+	}
+	s.agentEvents[event.TaskID] = append(events, event)
+	s.agentEventBytes += eventBytes
+	s.agentEventCount++
+	if s.agentEventNotify != nil {
+		select {
+		case s.agentEventNotify <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+func (s *Session) PendingAgentEvents() []protocol.SupervisorAgentEvent {
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
+	if s.agentEventAcks == nil {
+		s.agentEventAcks = make(map[string]uint64)
+	}
+	var pending []protocol.SupervisorAgentEvent
+	for _, events := range s.agentEvents {
+		pending = append(pending, events...)
+	}
+	return pending
+}
+
+func (s *Session) AgentEventNotify() <-chan struct{} { return s.agentEventNotify }
+
+func (s *Session) FailActiveAgentTask(summary string) bool {
+	s.agentMu.Lock()
+	s.mu.Lock()
+	taskID := s.activeAgentTask
+	s.mu.Unlock()
+	events := s.agentEvents[taskID]
+	sequence := uint64(len(events)) + s.agentEventAcks[taskID] + 1
+	s.agentMu.Unlock()
+	if taskID == "" {
+		return false
+	}
+	if len(summary) > 500 {
+		summary = summary[:500]
+	}
+	return s.QueueAgentEvent(protocol.SupervisorAgentEvent{TaskID: taskID, Sequence: sequence, Kind: "failed", Summary: summary}) == nil
+}
+
+func (s *Session) AckAgentEvent(taskID string, sequence uint64) error {
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
+	events := s.agentEvents[taskID]
+	if sequence <= s.agentEventAcks[taskID] {
+		return nil
+	}
+	if len(events) == 0 || sequence > events[len(events)-1].Sequence {
+		return fmt.Errorf("agent event is unavailable")
+	}
+	cut := 0
+	for cut < len(events) && events[cut].Sequence <= sequence {
+		s.agentEventBytes -= len(events[cut].Summary) + len(events[cut].Response)
+		s.agentEventCount--
+		events[cut].Summary = ""
+		events[cut].Response = ""
+		cut++
+	}
+	if cut == len(events) {
+		delete(s.agentEvents, taskID)
+	} else {
+		s.agentEvents[taskID] = events[cut:]
+	}
+	if _, exists := s.agentEventAcks[taskID]; !exists {
+		s.agentAckOrder = append(s.agentAckOrder, taskID)
+	}
+	s.agentEventAcks[taskID] = sequence
+	for len(s.agentAckOrder) > maxAgentAckTombstones {
+		oldest := s.agentAckOrder[0]
+		s.agentAckOrder = s.agentAckOrder[1:]
+		delete(s.agentEventAcks, oldest)
+	}
+	if cut > 0 && (events[cut-1].Kind == "completed" || events[cut-1].Kind == "failed") {
+		s.mu.Lock()
+		delete(s.committedTasks, taskID)
+		s.mu.Unlock()
+	}
+	return nil
 }
 
 func (s *Session) PrepareAgentTask(taskID string, digest [32]byte, prompt []byte, owner model.Owner, epoch, generation uint64) error {
@@ -163,6 +357,7 @@ func (s *Session) CommitAgentTask(ctx context.Context, taskID string, digest [32
 		return fmt.Errorf("agent task was not prepared")
 	}
 	prompt := append([]byte(nil), prepared.prompt...)
+	s.activeAgentTask = taskID
 	s.mu.Unlock()
 	// Bracketed paste preserves multiline prompts in native agent TUIs; the
 	// trailing carriage return explicitly submits the prepared turn.
@@ -191,6 +386,11 @@ func (s *Session) CommitAgentTask(ctx context.Context, taskID string, digest [32
 		prompt[i] = 0
 	}
 	if err != nil {
+		s.mu.Lock()
+		if s.activeAgentTask == taskID {
+			s.activeAgentTask = ""
+		}
+		s.mu.Unlock()
 		return err
 	}
 	s.mu.Lock()
@@ -202,6 +402,52 @@ func (s *Session) CommitAgentTask(ctx context.Context, taskID string, digest [32
 	s.committedTasks[taskID] = digest
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *Session) captureAgentEvents(reader *os.File) {
+	defer reader.Close()
+	scanner := bufio.NewScanner(reader)
+	buffer := make([]byte, 4096)
+	scanner.Buffer(buffer, 300<<10)
+	for scanner.Scan() {
+		var event protocol.SupervisorAgentEvent
+		if json.Unmarshal(scanner.Bytes(), &event) != nil {
+			continue
+		}
+		s.agentMu.Lock()
+		if event.TaskID == "" {
+			s.mu.Lock()
+			event.TaskID = s.activeAgentTask
+			s.mu.Unlock()
+		}
+		events := s.agentEvents[event.TaskID]
+		if event.Sequence == 0 {
+			event.Sequence = uint64(len(events)) + s.agentEventAcks[event.TaskID] + 1
+		}
+		s.agentMu.Unlock()
+		if event.TaskID == "" {
+			continue
+		}
+		if s.QueueAgentEvent(event) == nil && (event.Kind == "completed" || event.Kind == "failed") {
+			s.mu.Lock()
+			if s.activeAgentTask == event.TaskID {
+				s.activeAgentTask = ""
+			}
+			s.mu.Unlock()
+		}
+	}
+	if scanner.Err() != nil {
+		s.agentMu.Lock()
+		s.mu.Lock()
+		taskID := s.activeAgentTask
+		s.mu.Unlock()
+		events := s.agentEvents[taskID]
+		sequence := uint64(len(events)) + s.agentEventAcks[taskID] + 1
+		s.agentMu.Unlock()
+		if taskID != "" {
+			_ = s.QueueAgentEvent(protocol.SupervisorAgentEvent{TaskID: taskID, Sequence: sequence, Kind: "failed", Summary: "Agent adapter event stream failed"})
+		}
+	}
 }
 
 func (s *Session) nextAgentSequence() uint64 {
@@ -275,6 +521,12 @@ func (s *Session) Resize(rows, cols uint16, epoch, generation uint64) error {
 func (s *Session) Wait() error {
 	err := s.cmd.Wait()
 	<-s.captureDone // capture drains the slave's final output before returning
+	if s.adapterRead != nil {
+		_ = s.adapterRead.Close()
+		if s.agentCaptureDone != nil {
+			<-s.agentCaptureDone
+		}
+	}
 	s.mu.Lock()
 	s.closed = true
 	s.mu.Unlock()

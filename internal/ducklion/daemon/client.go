@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/bridge"
+	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 )
 
@@ -675,6 +676,40 @@ func (c *Client) SubmitAgentTask(ctx context.Context, requestID, sessionID strin
 		return result, err
 	}
 	return result, nil
+}
+
+func (c *Client) AgentTaskEvents(ctx context.Context, sessionID, taskID string, afterSequence uint64) (protocol.AgentTaskEventsResult, error) {
+	if err := c.requireCapability("agent_task"); err != nil {
+		return protocol.AgentTaskEventsResult{}, err
+	}
+	body, _ := json.Marshal(protocol.AgentTaskEventsRequest{TaskID: taskID, AfterSequence: afterSequence})
+	response, err := c.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "session.agent_events", InstanceID: c.instanceID, SessionID: sessionID, Body: body})
+	if err != nil {
+		return protocol.AgentTaskEventsResult{}, err
+	}
+	if response.Error != nil {
+		return protocol.AgentTaskEventsResult{}, &RemoteError{Detail: *response.Error}
+	}
+	var result protocol.AgentTaskEventsResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (c *Client) AckAgentTaskEvent(ctx context.Context, sessionID, taskID string, sequence uint64) error {
+	if _, err := model.ParseSessionID(sessionID); err != nil || !protocol.ValidTaskID(taskID) || sequence == 0 {
+		return fmt.Errorf("invalid agent event acknowledgement")
+	}
+	body, _ := json.Marshal(protocol.AgentTaskEventAck{TaskID: taskID, Sequence: sequence})
+	response, err := c.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "session.agent_event_ack", InstanceID: c.instanceID, SessionID: sessionID, Body: body})
+	if err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return &RemoteError{Detail: *response.Error}
+	}
+	return nil
 }
 
 func (c *Client) CurrentDiscordBinding(ctx context.Context) (protocol.SessionBinding, error) {

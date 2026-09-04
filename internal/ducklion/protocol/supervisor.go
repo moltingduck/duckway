@@ -3,6 +3,7 @@ package protocol
 import "github.com/hackerduck/duckway/internal/ducklion/model"
 
 const MaxAgentPromptBytes = 1 << 20
+const MaxAgentResponseBytes = 256 << 10
 
 type SessionSummary struct {
 	SessionID         string              `json:"session_id"`
@@ -128,6 +129,39 @@ type AgentTaskState struct {
 	RuntimeGeneration uint64      `json:"runtime_generation"`
 	Writer            model.Owner `json:"writer"`
 	OutputStart       uint64      `json:"output_start"`
+}
+
+type SupervisorAgentEvent struct {
+	TaskID    string `json:"task_id"`
+	Sequence  uint64 `json:"sequence"`
+	Kind      string `json:"kind"` // progress | completed | failed
+	Summary   string `json:"summary,omitempty"`
+	Response  string `json:"response,omitempty"`
+	OutputEnd uint64 `json:"output_end,omitempty"`
+}
+
+type SupervisorAgentEventReceipt struct {
+	Recorded     bool `json:"recorded"`
+	Acknowledged bool `json:"acknowledged,omitempty"`
+}
+
+type AgentTaskEventsRequest struct {
+	TaskID        string `json:"task_id"`
+	AfterSequence uint64 `json:"after_sequence,omitempty"`
+}
+
+type AgentTaskEventsResult struct {
+	Events        []SupervisorAgentEvent `json:"events"`
+	Status        string                 `json:"status"`
+	FirstSequence uint64                 `json:"first_sequence,omitempty"`
+	LastSequence  uint64                 `json:"last_sequence,omitempty"`
+	AckedSequence uint64                 `json:"acked_sequence,omitempty"`
+	Gap           bool                   `json:"gap,omitempty"`
+}
+
+type AgentTaskEventAck struct {
+	TaskID   string `json:"task_id"`
+	Sequence uint64 `json:"sequence"`
 }
 
 type SessionResize struct {

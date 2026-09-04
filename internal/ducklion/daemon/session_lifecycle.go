@@ -139,6 +139,170 @@ func (s *Server) agentTaskRuntimeStatus(request protocol.Request, taskID string,
 	return result.Status, nil
 }
 
+func agentEventKey(sessionID model.SessionID, taskID string) string {
+	return string(sessionID) + "/" + taskID
+}
+
+const (
+	maxDaemonAgentEvents = 512
+	maxDaemonAgentBytes  = 8 << 20
+)
+
+func (s *Server) applySupervisorAgentEvent(identity duckruntime.RuntimeIdentity, event protocol.SupervisorAgentEvent) *protocol.Error {
+	if !protocol.ValidTaskID(event.TaskID) || event.Sequence == 0 || len(event.Summary) > 500 || len(event.Response) > protocol.MaxAgentResponseBytes ||
+		(event.Kind != "progress" && event.Kind != "replying" && event.Kind != "completed" && event.Kind != "failed") {
+		return &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid agent event"}
+	}
+	if (event.Kind == "progress" || event.Kind == "replying") && event.Response != "" {
+		return &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "non-terminal agent event cannot contain a response"}
+	}
+	s.outputMu.Lock()
+	output, ok := s.outputs[identity.SessionID]
+	s.outputMu.Unlock()
+	if !ok || output.identity != identity {
+		return &protocol.Error{Code: protocol.ErrStaleGeneration, Message: "runtime output generation changed"}
+	}
+	_, publishedEnd := output.hub.Bounds()
+	if event.Kind == "completed" || event.Kind == "failed" {
+		if event.OutputEnd > publishedEnd {
+			return &protocol.Error{Code: protocol.ErrBusy, Message: "agent completion precedes final output publication", Retryable: true}
+		}
+	}
+	operation := s.sessionOperation(identity.SessionID)
+	operation.Lock()
+	defer operation.Unlock()
+	key := agentEventKey(identity.SessionID, event.TaskID)
+	s.agentEventMu.Lock()
+	defer s.agentEventMu.Unlock()
+	alreadyCached := false
+	for _, existing := range s.agentEvents[key] {
+		if existing.Sequence == event.Sequence {
+			alreadyCached = true
+			break
+		}
+	}
+	eventBytes := len(event.TaskID) + len(event.Summary) + len(event.Response) + 64
+	durableTask, _ := s.service.GetManagedTask(context.Background(), identity.SessionID, event.TaskID)
+	ackedReplay := durableTask.AckedEventSeq >= event.Sequence
+	if !alreadyCached && !ackedReplay && (s.agentEventCount >= maxDaemonAgentEvents || s.agentEventBytes+eventBytes > maxDaemonAgentBytes) {
+		return &protocol.Error{Code: protocol.ErrBusy, Message: "agent event retention capacity reached", Retryable: true}
+	}
+	previous, _ := s.state.GetSession(context.Background(), identity.SessionID)
+	category := ""
+	if event.Kind == "failed" {
+		category = "agent_failed"
+	}
+	eventJSON, _ := json.Marshal(event)
+	ownershipFenceApplied := false
+	task, _, err := s.service.ApplyManagedTaskEvent(context.Background(), identity.SessionID, identity.Generation, store.ManagedTaskEvent{
+		TaskID: event.TaskID, Sequence: event.Sequence, Kind: event.Kind, OutputEnd: event.OutputEnd, ErrorCategory: category, Digest: sha256.Sum256(eventJSON),
+	}, func(updated model.Session) error {
+		response := s.syncRuntimeOwnership(updated)
+		if response.Error != nil {
+			return errors.New(response.Error.Message)
+		}
+		ownershipFenceApplied = true
+		return nil
+	})
+	if err != nil {
+		if ownershipFenceApplied && previous.ID != "" {
+			s.restoreOwnershipOrQuarantine(previous)
+		}
+		return &protocol.Error{Code: serviceMapError(err), Message: err.Error(), Retryable: true}
+	}
+	if event.Sequence <= task.AckedEventSeq {
+		return nil
+	}
+	events := s.agentEvents[key]
+	if alreadyCached {
+		return nil
+	}
+	events = append(events, event)
+	s.agentEvents[key] = events
+	s.agentEventCount++
+	s.agentEventBytes += eventBytes
+	return nil
+}
+
+func (s *Server) routeAgentTaskEvents(request protocol.Request, principal string) protocol.Response {
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil || request.InstanceID != string(s.instanceID) || request.OwnershipEpoch != nil || request.RuntimeGeneration != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid agent event query"}}
+	}
+	var query protocol.AgentTaskEventsRequest
+	if decodeStrict(request.Body, &query) != nil || !protocol.ValidTaskID(query.TaskID) {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid agent event query"}}
+	}
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
+	task, err := s.service.GetManagedTask(context.Background(), sessionID, query.TaskID)
+	if err != nil || task.Owner != (model.Owner{Kind: model.OwnerCC, ID: principal}) {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "managed task not found"}}
+	}
+	s.agentEventMu.Lock()
+	stored := s.agentEvents[agentEventKey(sessionID, query.TaskID)]
+	events := make([]protocol.SupervisorAgentEvent, 0, len(stored))
+	for _, event := range stored {
+		if event.Sequence > query.AfterSequence {
+			events = append(events, event)
+		}
+	}
+	s.agentEventMu.Unlock()
+	var first uint64
+	if len(events) != 0 {
+		first = events[0].Sequence
+	}
+	result, _ := json.Marshal(protocol.AgentTaskEventsResult{Events: events, Status: string(task.Status), FirstSequence: first, LastSequence: task.LastEventSeq, AckedSequence: task.AckedEventSeq,
+		Gap: first != 0 && query.AfterSequence+1 < first})
+	return protocol.Response{ID: request.ID, Result: result}
+}
+
+func (s *Server) routeAgentTaskEventAck(request protocol.Request, principal string) protocol.Response {
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	var ack protocol.AgentTaskEventAck
+	if err != nil || request.InstanceID != string(s.instanceID) || request.OwnershipEpoch != nil || request.RuntimeGeneration != nil ||
+		decodeStrict(request.Body, &ack) != nil || !protocol.ValidTaskID(ack.TaskID) || ack.Sequence == 0 {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid agent event acknowledgement"}}
+	}
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
+	owner := model.Owner{Kind: model.OwnerCC, ID: principal}
+	task, err := s.service.GetManagedTask(context.Background(), sessionID, ack.TaskID)
+	if err != nil || task.Owner != owner || ack.Sequence > task.LastEventSeq {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "managed task event not found"}}
+	}
+	if _, err = s.service.AckManagedTaskEvent(context.Background(), sessionID, ack.TaskID, ack.Sequence, owner); err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: serviceMapError(err), Message: err.Error(), Retryable: true}}
+	}
+	body, _ := json.Marshal(ack)
+	request.Type, request.Body = "supervisor.agent_event_ack", body
+	request.OwnershipEpoch = &task.OwnershipEpoch
+	request.RuntimeGeneration = &task.RuntimeGeneration
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = s.callControl(ctx, sessionID, request) // old/exited supervisors need not remain reachable
+	key := agentEventKey(sessionID, ack.TaskID)
+	s.agentEventMu.Lock()
+	stored := s.agentEvents[key]
+	cut := 0
+	for cut < len(stored) && stored[cut].Sequence <= ack.Sequence {
+		s.agentEventCount--
+		s.agentEventBytes -= len(stored[cut].TaskID) + len(stored[cut].Summary) + len(stored[cut].Response) + 64
+		stored[cut].Summary, stored[cut].Response = "", ""
+		cut++
+	}
+	if cut == len(stored) {
+		delete(s.agentEvents, key)
+	} else {
+		s.agentEvents[key] = stored[cut:]
+	}
+	s.agentEventMu.Unlock()
+	result, _ := json.Marshal(map[string]bool{"acknowledged": true})
+	return protocol.Response{ID: request.ID, Result: result}
+}
+
 func (s *Server) abortPreparedAgentTask(request protocol.Request, taskID string) {
 	body, _ := json.Marshal(protocol.SupervisorAgentAbort{TaskID: taskID})
 	request.Type, request.Body = "supervisor.agent_abort", body
@@ -154,6 +318,7 @@ type runtimeSpec struct {
 	SessionID         model.SessionID `json:"session_id"`
 	RuntimeGeneration uint64          `json:"runtime_generation"`
 	OwnershipEpoch    uint64          `json:"ownership_epoch"`
+	AgentType         string          `json:"agent_type,omitempty"`
 	CWD               string          `json:"cwd"`
 	Command           []string        `json:"command"`
 	Rows              uint16          `json:"rows"`
@@ -278,7 +443,7 @@ func (s *Server) routeSessionCreate(request protocol.Request, principal string) 
 	}
 	if !replayed {
 		keyPath, err := s.writeRuntimeFiles(session, privateKey, runtimeSpec{SocketPath: s.socketPath, SessionID: id, RuntimeGeneration: 1,
-			OwnershipEpoch: 1, CWD: create.CWD, Command: create.Command, Rows: create.Rows, Cols: create.Cols})
+			OwnershipEpoch: 1, AgentType: create.AgentType, CWD: create.CWD, Command: create.Command, Rows: create.Rows, Cols: create.Cols})
 		if err != nil {
 			_ = s.state.MarkRuntimeExited(context.Background(), id, 1, false, "could not prepare session supervisor")
 			_ = os.RemoveAll(filepath.Join(s.root, "sessions", string(id)))
@@ -637,7 +802,7 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 	if err != nil || len(decoded) != ed25519.PrivateKeySize {
 		return fmt.Errorf("invalid recovery key")
 	}
-	ptySession, err := supervisor.Start(supervisor.Options{SessionID: spec.SessionID, RuntimeGeneration: spec.RuntimeGeneration, OwnershipEpoch: spec.OwnershipEpoch,
+	ptySession, err := supervisor.Start(supervisor.Options{SessionID: spec.SessionID, RuntimeGeneration: spec.RuntimeGeneration, OwnershipEpoch: spec.OwnershipEpoch, AgentType: spec.AgentType,
 		CWD: spec.CWD, Command: spec.Command, Rows: spec.Rows, Cols: spec.Cols, OutputCapacity: 1 << 20})
 	if err != nil {
 		return err
@@ -670,8 +835,10 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 		connectionCtx, cancel := context.WithCancel(ctx)
 		forwardDone := make(chan error, 1)
 		controlDone := make(chan error, 1)
+		eventDone := make(chan error, 1)
 		go func() { forwardDone <- client.ForwardOutput(connectionCtx, ptySession.Output()) }()
 		go func() { controlDone <- client.ServeControl(connectionCtx, ptySession) }()
+		go func() { eventDone <- forwardPendingAgentEvents(connectionCtx, client, ptySession) }()
 		select {
 		case err := <-wait:
 			// Wait closes OutputHub only after PTY capture has drained. Let the
@@ -680,22 +847,29 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 			case <-forwardDone:
 			case <-time.After(2 * time.Second):
 			}
-			reason := ""
-			if err != nil {
-				reason = err.Error()
+			if err != nil && ptySession.FailActiveAgentTask("Agent process exited before completing the turn") {
+				for _, event := range ptySession.PendingAgentEvents() {
+					acknowledged, eventErr := client.ReportAgentEvent(event)
+					if eventErr != nil {
+						break
+					}
+					if acknowledged {
+						_ = ptySession.AckAgentEvent(event.TaskID, event.Sequence)
+					}
+				}
 			}
-			reportErr := client.ReportExit(err == nil, reason)
 			cancel()
 			_ = client.Close()
 			select {
 			case <-controlDone:
 			case <-time.After(time.Second):
 			}
-			if reportErr != nil {
-				return reportExitedRuntime(ctx, specPath, spec, ed25519.PrivateKey(decoded), ptySession.Output(), err)
+			if len(ptySession.PendingAgentEvents()) != 0 {
+				if deliveryErr := awaitExitedAgentDelivery(ctx, spec, ed25519.PrivateKey(decoded), ptySession); deliveryErr != nil {
+					return deliveryErr
+				}
 			}
-			removeRuntimeCredentials(specPath)
-			return err
+			return reportExitedRuntime(ctx, specPath, spec, ed25519.PrivateKey(decoded), ptySession.Output(), err)
 		case <-ctx.Done():
 			_ = ptySession.Terminate(false)
 			cancel()
@@ -752,8 +926,98 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 			case <-forwardDone:
 			case <-time.After(time.Second):
 			}
+		case <-eventDone:
+			cancel()
+			_ = client.Close()
+			select {
+			case <-forwardDone:
+			case <-time.After(time.Second):
+			}
+			select {
+			case <-controlDone:
+			case <-time.After(time.Second):
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func awaitExitedAgentDelivery(ctx context.Context, spec runtimeSpec, privateKey ed25519.PrivateKey, session *supervisor.Session) error {
+	for len(session.PendingAgentEvents()) != 0 {
+		client, err := RegisterSupervisor(spec.SocketPath, spec.SessionID, spec.RuntimeGeneration, privateKey)
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(250 * time.Millisecond):
+				continue
+			}
+		}
+		if err := client.PublishSnapshot(session.Output().Snapshot()); err != nil {
+			_ = client.Close()
+			continue
+		}
+		connectionCtx, cancel := context.WithCancel(ctx)
+		controlDone := make(chan error, 1)
+		go func() { controlDone <- client.ServeControl(connectionCtx, session) }()
+		for _, event := range session.PendingAgentEvents() {
+			acknowledged, reportErr := client.ReportAgentEvent(event)
+			if reportErr != nil {
+				// A healthy daemon can reject retention temporarily (for example,
+				// while the global event cache is full). Do not wait for an ACK
+				// for an event the daemon never admitted; reconnect and retry it.
+				goto reconnect
+			}
+			if acknowledged {
+				_ = session.AckAgentEvent(event.TaskID, event.Sequence)
+			}
+		}
+		for len(session.PendingAgentEvents()) != 0 {
+			select {
+			case <-ctx.Done():
+				cancel()
+				_ = client.Close()
+				return ctx.Err()
+			case <-controlDone:
+				goto reconnect
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	reconnect:
+		cancel()
+		_ = client.Close()
+	}
+	return nil
+}
+
+func forwardPendingAgentEvents(ctx context.Context, client *SupervisorClient, session *supervisor.Session) error {
+	lastSent := make(map[string]uint64)
+	for {
+		for _, event := range session.PendingAgentEvents() {
+			if event.Sequence <= lastSent[event.TaskID] {
+				continue
+			}
+			for (event.Kind == "completed" || event.Kind == "failed") && client.PublishedOffset() < event.OutputEnd {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+			acknowledged, err := client.ReportAgentEvent(event)
+			if err != nil {
+				return err
+			}
+			if acknowledged {
+				_ = session.AckAgentEvent(event.TaskID, event.Sequence)
+			}
+			lastSent[event.TaskID] = event.Sequence
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-session.AgentEventNotify():
+		}
 	}
 }
 

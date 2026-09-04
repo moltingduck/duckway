@@ -156,7 +156,22 @@ type Message struct {
 		Username string `json:"username"`
 		Bot      bool   `json:"bot"`
 	} `json:"author"`
-	Timestamp string `json:"timestamp"`
+	Timestamp string          `json:"timestamp"`
+	Nonce     json.RawMessage `json:"nonce"`
+}
+
+func (b *DiscordBot) FindMessageByNonce(ctx context.Context, botToken, channelID, nonce string) (string, error) {
+	messages, err := b.GetMessages(ctx, botToken, channelID, 100)
+	if err != nil {
+		return "", err
+	}
+	for _, message := range messages {
+		value := strings.Trim(string(message.Nonce), `"`)
+		if value == nonce {
+			return message.ID, nil
+		}
+	}
+	return "", nil
 }
 
 type DiscordFile struct {
@@ -312,9 +327,17 @@ func (b *DiscordBot) PostMessage(ctx context.Context, botToken, channelID, conte
 }
 
 func (b *DiscordBot) PostMessageReply(ctx context.Context, botToken, channelID, content, replyToMessageID string) (string, error) {
+	return b.PostMessageReplyIdempotent(ctx, botToken, channelID, content, replyToMessageID, "")
+}
+
+func (b *DiscordBot) PostMessageReplyIdempotent(ctx context.Context, botToken, channelID, content, replyToMessageID, nonce string) (string, error) {
 	body := map[string]interface{}{
 		"content":          content,
 		"allowed_mentions": map[string]interface{}{"parse": []string{}},
+	}
+	if nonce != "" {
+		body["nonce"] = nonce
+		body["enforce_nonce"] = true
 	}
 	if replyToMessageID != "" {
 		body["message_reference"] = map[string]interface{}{

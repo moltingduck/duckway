@@ -18,9 +18,11 @@ import (
 
 	"github.com/hackerduck/duckway/internal/ducklion"
 	"github.com/hackerduck/duckway/internal/ducklion/daemon"
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/duckwayconfig"
 	"github.com/hackerduck/duckway/internal/projectregistry"
 	"github.com/hackerduck/duckway/internal/version"
+	"golang.org/x/sys/unix"
 )
 
 type SessionManager interface {
@@ -45,6 +47,12 @@ type SessionOutput struct {
 }
 
 func Main(args []string, stdout io.Writer) {
+	if len(args) >= 1 && args[0] == "__ducklion_agent_hook_v1" {
+		if err := runAgentHook(os.Stdin, args[1:]); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if specPath, ok := daemon.IsRuntimeSubcommand(args); ok {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -89,6 +97,52 @@ func Main(args []string, stdout io.Writer) {
 	if err := Run(manager, args, stdout); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func runAgentHook(input io.Reader, args []string) error {
+	fd, err := strconv.Atoi(os.Getenv("DUCKLION_AGENT_EVENT_FD"))
+	if err != nil || fd < 3 || fd > 1<<20 {
+		return fmt.Errorf("invalid agent event fd")
+	}
+	var data []byte
+	if len(args) > 0 {
+		data = []byte(args[len(args)-1])
+	} else {
+		data, err = io.ReadAll(io.LimitReader(input, 2<<20))
+		if err != nil {
+			return err
+		}
+	}
+	var payload struct {
+		LastAssistantMessage string `json:"last_assistant_message"`
+		LastAgentMessage     string `json:"last-agent-message"`
+		HookEventName        string `json:"hook_event_name"`
+		Error                string `json:"error"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	response := payload.LastAssistantMessage
+	if response == "" {
+		response = payload.LastAgentMessage
+	}
+	eventBody := map[string]string{"kind": "completed", "response": response}
+	if response == "" {
+		summary := payload.Error
+		if summary == "" {
+			summary = "Agent turn failed before producing a final response"
+		}
+		if len(summary) > 500 {
+			summary = summary[:500]
+		}
+		eventBody = map[string]string{"kind": "failed", "summary": summary}
+	}
+	if len(response) > protocol.MaxAgentResponseBytes {
+		eventBody = map[string]string{"kind": "failed", "summary": "Agent response exceeded Ducklion's delivery limit"}
+	}
+	event, _ := json.Marshal(eventBody)
+	_, err = unix.Write(fd, append(event, '\n'))
+	return err
 }
 
 func Run(manager SessionManager, args []string, out io.Writer) error {

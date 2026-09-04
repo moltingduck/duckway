@@ -505,6 +505,16 @@ PTY execution uses an output-idle timeout rather than the old five-minute wall-c
 
 Codex PTY turns intentionally do not use the legacy five-minute tmux timeout; long-running prompts such as `/goal` keep the per-channel runner occupied until Codex writes its completion event. The tmux runner still uses `in-flight.json` plus event files for startup recovery when explicitly enabled.
 
+Ducklion-managed task channels reuse one native interactive PTY instead of the
+per-turn runner above. Codex completion is received through its `notify`
+callback and Claude Code completion through a `Stop` hook, both over an
+agent-only inherited file descriptor. Ducklion never screen-scrapes the TUI or
+uses terminal silence as proof of completion. Unacknowledged final payloads
+live only in the independent supervisor's bounded memory and are replayed
+after daemon restart. The server's `cc_message_deliveries` table stores only a
+delivery digest and Discord message ID; deterministic Discord nonces prevent a
+lost HTTP response from duplicating a final reply.
+
 Tmux session names use `<handle>-duckway`. During upgrade, `migrateLegacyTmuxSession` renames the older `duckway-<handle>` convention to the current name when only the legacy session exists. If both names exist, it logs a warning and leaves both alone to avoid merging separate active turns.
 
 ### Tables (v2 — `client_cc` is gone)

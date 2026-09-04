@@ -125,6 +125,7 @@ type agentRuntimeController interface {
 	CommitAgentTask(context.Context, string, [32]byte, model.Owner, uint64, uint64) error
 	AbortAgentTask(taskID string)
 	AgentTaskStatus(taskID string, digest [32]byte) (string, error)
+	AckAgentEvent(taskID string, sequence uint64) error
 }
 
 func (c *SupervisorClient) ServeControl(ctx context.Context, controller RuntimeController) error {
@@ -265,6 +266,14 @@ func (c *SupervisorClient) executeControl(ctx context.Context, controller Runtim
 			result, _ := json.Marshal(protocol.SupervisorAgentStatusResult{Status: state})
 			return protocol.Response{ID: request.ID, Result: result}
 		}
+	case "supervisor.agent_event_ack":
+		var ack protocol.AgentTaskEventAck
+		agentController, supported := controller.(agentRuntimeController)
+		if decodeErr := decodeStrict(request.Body, &ack); decodeErr != nil || !protocol.ValidTaskID(ack.TaskID) || ack.Sequence == 0 || !supported {
+			err = fmt.Errorf("invalid agent event acknowledgement")
+		} else {
+			err = agentController.AckAgentEvent(ack.TaskID, ack.Sequence)
+		}
 	case "supervisor.terminate":
 		if len(request.Body) != 0 {
 			err = fmt.Errorf("invalid supervisor terminate")
@@ -313,8 +322,43 @@ func (c *SupervisorClient) ReportExit(success bool, reason string) error {
 	return nil
 }
 
+func (c *SupervisorClient) ReportAgentEvent(event protocol.SupervisorAgentEvent) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	body, _ := json.Marshal(event)
+	c.nextID++
+	requestID := fmt.Sprintf("agent-event-%d", c.nextID)
+	generation := c.identity.RuntimeGeneration
+	request := protocol.Request{ID: requestID, Type: "supervisor.agent_event", InstanceID: string(c.instanceID), SessionID: c.identity.SessionID,
+		RuntimeGeneration: &generation, Body: body}
+	if err := c.codec.Write(request); err != nil {
+		return false, err
+	}
+	var response protocol.Response
+	if err := c.codec.Read(&response); err != nil {
+		return false, err
+	}
+	if err := validateResponse(response, requestID); err != nil {
+		return false, err
+	}
+	if response.Error != nil {
+		return false, fmt.Errorf("report agent event: %s", response.Error.Message)
+	}
+	var receipt protocol.SupervisorAgentEventReceipt
+	if err := json.Unmarshal(response.Result, &receipt); err != nil || !receipt.Recorded {
+		return false, fmt.Errorf("invalid agent event receipt")
+	}
+	return receipt.Acknowledged, nil
+}
+
 func (c *SupervisorClient) Identity() protocol.SupervisorRegistered { return c.identity }
 func (c *SupervisorClient) Close() error                            { return c.conn.Close() }
+
+func (c *SupervisorClient) PublishedOffset() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.nextOffset
+}
 
 func (c *SupervisorClient) PublishOutput(data []byte) error {
 	return c.publishOutput(data, false)

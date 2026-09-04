@@ -59,6 +59,10 @@ type Server struct {
 	sequences       map[model.SessionID]runtimeSequence
 	operationMu     sync.Mutex
 	operations      map[model.SessionID]*sync.Mutex
+	agentEventMu    sync.Mutex
+	agentEvents     map[string][]protocol.SupervisorAgentEvent
+	agentEventCount int
+	agentEventBytes int
 	runtimeLauncher func(string) error
 }
 
@@ -150,6 +154,10 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 	if err != nil {
 		return fail(err)
 	}
+	if err := state.PrepareRuntimeRecovery(ctx); err != nil {
+		_ = state.Close()
+		return fail(fmt.Errorf("prepare runtime recovery: %w", err))
+	}
 	instanceID, err := state.InstanceID(ctx)
 	if err != nil {
 		_ = state.Close()
@@ -178,6 +186,7 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 		service: service.New(state), registry: duckruntime.NewRegistry(instanceID, state), instanceID: instanceID, done: make(chan struct{}),
 		connections: make(map[*net.UnixConn]struct{}), ducklords: make(map[string]*net.UnixConn), outputs: make(map[model.SessionID]registeredOutput), controls: make(map[model.SessionID]*controlPeer),
 		sequences: make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher}
+	server.agentEvents = make(map[string][]protocol.SupervisorAgentEvent)
 	if server.runtimeLauncher == nil {
 		server.runtimeLauncher = server.spawnRuntime
 	}
@@ -526,6 +535,18 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 				frame = output.Publish(published.Data)
 			}
 			result, _ = json.Marshal(protocol.SupervisorOutputAck{Offset: frame.Offset, Length: uint64(len(frame.Data))})
+		case "supervisor.agent_event":
+			var event protocol.SupervisorAgentEvent
+			if err := decodeStrict(request.Body, &event); err != nil {
+				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid supervisor agent event")
+				continue
+			}
+			if protocolError := s.applySupervisorAgentEvent(identity, event); protocolError != nil {
+				_ = codec.Write(protocol.Response{ID: request.ID, Error: protocolError})
+				continue
+			}
+			task, _ := s.service.GetManagedTask(context.Background(), identity.SessionID, event.TaskID)
+			result, _ = json.Marshal(protocol.SupervisorAgentEventReceipt{Recorded: true, Acknowledged: task.AckedEventSeq >= event.Sequence})
 		case "supervisor.exited":
 			var exited protocol.SupervisorExit
 			if err := decodeStrict(request.Body, &exited); err != nil || len(exited.Reason) > 1024 {
@@ -899,6 +920,16 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "agent task capability was not negotiated"}}
 		}
 		return s.routeAgentTaskSubmit(request, principal)
+	case "session.agent_events":
+		if role != protocol.RoleDuckwayCC || !hasCapability(capabilities, "agent_task") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "agent task capability was not negotiated"}}
+		}
+		return s.routeAgentTaskEvents(request, principal)
+	case "session.agent_event_ack":
+		if role != protocol.RoleDuckwayCC || !hasCapability(capabilities, "agent_task") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotOwner, Message: "agent event acknowledgement requires a CC connection"}}
+		}
+		return s.routeAgentTaskEventAck(request, principal)
 	case "session.bind_discord":
 		if role != protocol.RoleDuckwayCC || !hasCapability(capabilities, "discord_binding") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "Discord binding capability was not negotiated"}}
@@ -1118,7 +1149,7 @@ func secureRoot(root string) error {
 }
 
 func openSecureLock(path string) (*os.File, error) {
-	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW, 0600)
+	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("open daemon lock: %w", err)
 	}

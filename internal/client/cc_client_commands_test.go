@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,9 @@ type fakeServer struct {
 	mu              sync.Mutex
 	creates         []map[string]string
 	messages        []map[string]string
+	deliveries      map[string]string
+	finishes        []map[string]string
+	edits           []string
 	reactions       []string
 	reactionEntered chan string
 	reactionRelease <-chan struct{}
@@ -30,7 +34,7 @@ type fakeServer struct {
 
 func newFakeServer(t *testing.T) *fakeServer {
 	t.Helper()
-	f := &fakeServer{}
+	f := &fakeServer{deliveries: make(map[string]string)}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == "POST" && r.URL.Path == "/client/cc/channels":
@@ -50,14 +54,38 @@ func newFakeServer(t *testing.T) *fakeServer {
 				{"handle": "dwch_task", "name": "task", "kind": "task", "cwd": os.TempDir()},
 				{"handle": "dwch_mgmt", "name": "control", "kind": "management", "cwd": os.TempDir()},
 			})
+		case r.Method == "PATCH" && strings.Contains(r.URL.Path, "/messages/"):
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.mu.Lock()
+			f.edits = append(f.edits, body["content"])
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "/client/cc/inbox/") && strings.HasSuffix(r.URL.Path, "/finish"):
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.mu.Lock()
+			f.finishes = append(f.finishes, body)
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": body["status"]})
 		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/messages"):
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			body["_path"] = r.URL.Path
 			f.mu.Lock()
-			f.messages = append(f.messages, body)
+			messageID := ""
+			if key := body["delivery_key"]; key != "" {
+				messageID = f.deliveries[key]
+			}
+			if messageID == "" {
+				f.messages = append(f.messages, body)
+				messageID = fmt.Sprintf("M%d", len(f.messages))
+				if key := body["delivery_key"]; key != "" {
+					f.deliveries[key] = messageID
+				}
+			}
 			f.mu.Unlock()
-			w.WriteHeader(204)
+			_ = json.NewEncoder(w).Encode(map[string]string{"message_id": messageID})
 		case r.Method == "POST" && strings.Contains(r.URL.Path, "/reactions"):
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -101,6 +129,20 @@ func (f *fakeServer) snapshotReactions() []string {
 	out := make([]string, len(f.reactions))
 	copy(out, f.reactions)
 	return out
+}
+
+func (f *fakeServer) snapshotFinishes() []map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]map[string]string, len(f.finishes))
+	copy(out, f.finishes)
+	return out
+}
+
+func (f *fakeServer) snapshotEdits() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.edits...)
 }
 
 // stubWatch wires a CCWatch with a fake server + temp config + temp

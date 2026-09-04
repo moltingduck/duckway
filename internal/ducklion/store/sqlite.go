@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 4
+const SchemaVersion = 6
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -191,6 +191,16 @@ func (s *SQLite) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate ducklion schema to v4: %w", err)
 		}
 	}
+	if userVersion < 5 {
+		if err := migrateV5(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v5: %w", err)
+		}
+	}
+	if userVersion < 6 {
+		if err := migrateV6(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v6: %w", err)
+		}
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
 		return err
 	}
@@ -287,6 +297,21 @@ func migrateV4(ctx context.Context, tx *sql.Tx) error {
 		error_category TEXT NOT NULL DEFAULT '',
 		created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
 		PRIMARY KEY(session_id,task_id))`)
+	return err
+}
+
+func migrateV5(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `CREATE TABLE managed_task_event_receipts (
+		session_id TEXT NOT NULL, task_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK(sequence>0),
+		event_digest BLOB NOT NULL CHECK(length(event_digest)=32), kind TEXT NOT NULL,
+		created_at_ms INTEGER NOT NULL,
+		PRIMARY KEY(session_id,task_id,sequence),
+		FOREIGN KEY(session_id,task_id) REFERENCES managed_tasks(session_id,task_id) ON DELETE CASCADE)`)
+	return err
+}
+
+func migrateV6(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `ALTER TABLE managed_tasks ADD COLUMN acked_event_seq INTEGER NOT NULL DEFAULT 0 CHECK(acked_event_seq>=0)`)
 	return err
 }
 

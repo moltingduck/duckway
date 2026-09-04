@@ -1,13 +1,63 @@
 package queries
 
 import (
+	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"github.com/hackerduck/duckway/internal/models"
 )
+
+var ErrDeliveryConflict = errors.New("message delivery key conflicts with different content")
+
+func (q *ControlChannelQueries) BeginMessageDelivery(ccID, handle, key string, digest []byte) (string, error) {
+	var existing []byte
+	var messageID string
+	err := q.db.QueryRow(`SELECT content_digest,message_id FROM cc_message_deliveries WHERE cc_id=? AND delivery_key=?`, ccID, key).Scan(&existing, &messageID)
+	if err == nil {
+		if !bytes.Equal(existing, digest) {
+			return "", ErrDeliveryConflict
+		}
+		return messageID, nil
+	}
+	if err != sql.ErrNoRows {
+		return "", err
+	}
+	if _, err = q.db.Exec(`INSERT OR IGNORE INTO cc_message_deliveries(cc_id,channel_handle,delivery_key,content_digest) VALUES(?,?,?,?)`, ccID, handle, key, digest); err != nil {
+		return "", err
+	}
+	var storedHandle string
+	if err = q.db.QueryRow(`SELECT channel_handle,content_digest,message_id FROM cc_message_deliveries WHERE cc_id=? AND delivery_key=?`, ccID, key).Scan(&storedHandle, &existing, &messageID); err != nil {
+		return "", err
+	}
+	if storedHandle != handle || !bytes.Equal(existing, digest) {
+		return "", ErrDeliveryConflict
+	}
+	return messageID, nil
+}
+
+func (q *ControlChannelQueries) CompleteMessageDelivery(ccID, key, messageID string) error {
+	result, err := q.db.Exec(`UPDATE cc_message_deliveries SET message_id=?,updated_at=datetime('now') WHERE cc_id=? AND delivery_key=? AND message_id=''`, messageID, ccID, key)
+	if err != nil {
+		return err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		var existing string
+		if err := q.db.QueryRow(`SELECT message_id FROM cc_message_deliveries WHERE cc_id=? AND delivery_key=?`, ccID, key).Scan(&existing); err != nil || existing != messageID {
+			return fmt.Errorf("message delivery completion conflict")
+		}
+	}
+	return nil
+}
+
+func (q *ControlChannelQueries) MessageDeliveryRetrySafe(ccID, key string) (bool, error) {
+	var safe int
+	err := q.db.QueryRow(`SELECT CASE WHEN created_at >= datetime('now','-10 minutes') THEN 1 ELSE 0 END FROM cc_message_deliveries WHERE cc_id=? AND delivery_key=?`, ccID, key).Scan(&safe)
+	return safe == 1, err
+}
 
 // ControlChannelQueries owns the CC + cc_channels + discord_inbox tables.
 // Schema v2 (post-redesign): control_channels.client_id is unique, no

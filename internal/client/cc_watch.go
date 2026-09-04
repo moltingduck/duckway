@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 )
 
 // CCWatch is the `duckway cc watch` daemon. It connects to the server's
@@ -352,6 +354,17 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 			_ = w.processed.Mark(msg.ID, env.Handle)
 		}
 	}
+	finishManagedClaim := func(success bool, errText string) {
+		if success {
+			finishClaim(true, errText)
+			return
+		}
+		if env.InboxID > 0 {
+			if err := w.api.FinishCCInbox(context.Background(), env.InboxID, env.ClaimToken, "admitted", errText); err != nil {
+				log.Printf("[cc-watch] return managed inbox %d for retry: %v", env.InboxID, err)
+			}
+		}
+	}
 	renewClaim := func() {
 		if env.InboxID > 0 {
 			if err := w.api.RenewCCInbox(context.Background(), env.InboxID, env.ClaimToken); err != nil {
@@ -359,10 +372,10 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 			}
 		}
 	}
-	if w.preflightBoundDucklionPrompt(env.Handle, env.SessionID, contentOrAttachmentSummary(msg), finishClaim) {
-		return
+	taskID := msg.ID
+	if taskID == "" && env.InboxID > 0 {
+		taskID = fmt.Sprintf("inbox-%d", env.InboxID)
 	}
-
 	var runner *ccRunner
 	var err error
 	content := msg.Content
@@ -381,6 +394,9 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 			return
 		}
 		content = augmented
+	}
+	if w.preflightBoundDucklionPrompt(env.Handle, env.SessionID, taskID, content, finishManagedClaim, renewClaim) {
+		return
 	}
 	_, isDirectShell := directShellCommand(content)
 	if isDirectShell {
@@ -436,18 +452,11 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	}
 }
 
-func contentOrAttachmentSummary(msg payloadMessageCreate) string {
-	if strings.TrimSpace(msg.Content) != "" {
-		return msg.Content
-	}
-	return "attachment prompt"
-}
-
 // preflightBoundDucklionPrompt prevents a durable Discord prompt from falling
 // through to the legacy one-process-per-turn runner once a channel is bound to
 // a managed PTY. Rejection due to ownership is a successful durable delivery:
 // Ducklion made an authoritative decision and the reason is posted in-channel.
-func (w *CCWatch) preflightBoundDucklionPrompt(handle, authoritativeSession, prompt string, finish func(bool, string)) bool {
+func (w *CCWatch) preflightBoundDucklionPrompt(handle, authoritativeSession, taskID, prompt string, finish func(bool, string), renew func()) bool {
 	knownSession := authoritativeSession
 	if knownSession == "" {
 		knownSession = w.sessions.Get(handle)
@@ -495,15 +504,126 @@ func (w *CCWatch) preflightBoundDucklionPrompt(handle, authoritativeSession, pro
 			}
 			return true
 		}
-		message := fmt.Sprintf("Managed prompt delivery for session `%s` is waiting for its native agent adapter; the prompt remains queued.", session.SessionID)
-		_ = w.api.PostCC(context.Background(), handle, "⏳ "+message)
-		finish(false, "native agent adapter unavailable: "+truncatePreview(prompt))
+		if !protocol.ValidTaskID(taskID) {
+			finish(false, "managed prompt has no stable task ID")
+			return true
+		}
+		promptBytes := []byte(prompt)
+		task := protocol.AgentTaskSubmit{TaskID: taskID, Prompt: promptBytes, PromptDigest: sha256.Sum256(promptBytes)}
+		if _, err := client.SubmitAgentTask(context.Background(), taskID, session.SessionID, session.OwnershipEpoch, session.RuntimeGeneration, task); err != nil {
+			finish(false, "submit managed prompt: "+err.Error())
+			return true
+		}
+		if isDiscordSnowflake(taskID) {
+			_ = w.api.ReactCC(context.Background(), handle, taskID, "🦆")
+		}
+		go w.deliverManagedTask(handle, session.SessionID, taskID, finish, renew)
 		return true
 	}
 	message := "The bound Ducklion session no longer exists"
 	_ = w.api.PostCC(context.Background(), handle, "❌ "+message)
 	finish(false, message)
 	return true
+}
+
+func (w *CCWatch) deliverManagedTask(handle, sessionID, taskID string, finish func(bool, string), renew func()) {
+	client, err := w.dialDucklionCC(handle)
+	if err != nil {
+		finish(false, err.Error())
+		return
+	}
+	defer client.Close()
+	var cursor uint64
+	progressID, err := w.api.PostCCDeliveredMessage(context.Background(), handle, "⏳ Working…", "", fmt.Sprintf("agent-progress-%s-%s", sessionID, taskID))
+	if err != nil {
+		finish(false, "post managed progress: "+err.Error())
+		return
+	}
+	poll := time.NewTicker(750 * time.Millisecond)
+	renewTicker := time.NewTicker(20 * time.Minute)
+	defer poll.Stop()
+	defer renewTicker.Stop()
+	for {
+		select {
+		case <-renewTicker.C:
+			if renew != nil {
+				renew()
+			}
+		case <-poll.C:
+			result, pollErr := client.AgentTaskEvents(context.Background(), sessionID, taskID, cursor)
+			if pollErr != nil {
+				finish(false, "poll managed task: "+pollErr.Error())
+				return
+			}
+			if cursor == 0 && result.AckedSequence > 0 {
+				cursor = result.AckedSequence
+			}
+			if result.Gap && result.FirstSequence > cursor+1 {
+				finish(false, "managed task event history has a gap")
+				return
+			}
+			if len(result.Events) == 0 && (result.Status == "completed" || result.Status == "failed") && result.LastSequence != 0 && result.AckedSequence >= result.LastSequence {
+				finish(true, "")
+				return
+			}
+			for _, event := range result.Events {
+				if event.Sequence <= cursor {
+					continue
+				}
+				switch event.Kind {
+				case "progress", "replying":
+					if event.Summary != "" {
+						body := "⏳ " + event.Summary
+						if progressID != "" {
+							pollErr = w.api.EditCCMessage(context.Background(), handle, progressID, body)
+						}
+						if pollErr != nil {
+							finish(false, "post managed progress: "+pollErr.Error())
+							return
+						}
+					}
+					if err := client.AckAgentTaskEvent(context.Background(), sessionID, taskID, event.Sequence); err != nil {
+						finish(false, "ack managed progress: "+err.Error())
+						return
+					}
+				case "completed", "failed":
+					body := event.Response
+					if body == "" {
+						body = event.Summary
+					}
+					if event.Kind == "failed" && body == "" {
+						body = "Agent task failed."
+					}
+					deliveryKey := fmt.Sprintf("agent-%s-%s-%d", sessionID, taskID, event.Sequence)
+					replyTo := ""
+					if isDiscordSnowflake(taskID) {
+						replyTo = taskID
+					}
+					if err := w.api.PostCCDelivered(context.Background(), handle, body, replyTo, deliveryKey); err != nil {
+						finish(false, "post managed task result: "+err.Error())
+						return
+					}
+					preview := "✅ Done"
+					if event.Kind == "failed" {
+						preview = "❌ Failed"
+					}
+					if progressID != "" {
+						if err := w.api.EditCCMessage(context.Background(), handle, progressID, preview); err != nil {
+							finish(false, "finish managed progress: "+err.Error())
+							return
+						}
+					}
+					if err := client.AckAgentTaskEvent(context.Background(), sessionID, taskID, event.Sequence); err != nil {
+						finish(false, "ack managed task result: "+err.Error())
+						return
+					}
+					finish(true, "")
+					return
+				}
+				cursor = event.Sequence
+			}
+		}
+	}
 }
 
 func (w *CCWatch) onSSEConnected(ctx context.Context) {

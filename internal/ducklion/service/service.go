@@ -60,6 +60,10 @@ func (s *Service) GetManagedTask(ctx context.Context, sessionID model.SessionID,
 	return s.state.GetManagedTask(ctx, sessionID, taskID)
 }
 
+func (s *Service) AckManagedTaskEvent(ctx context.Context, sessionID model.SessionID, taskID string, sequence uint64, owner model.Owner) (store.ManagedTask, error) {
+	return s.state.AckManagedTaskEvent(ctx, sessionID, taskID, sequence, owner)
+}
+
 func (s *Service) ValidateManagedTask(ctx context.Context, task store.ManagedTask) *protocol.Error {
 	if err := s.state.ValidateManagedTask(ctx, task); err != nil {
 		code := mapError(err)
@@ -73,6 +77,10 @@ func (s *Service) ValidateManagedTask(ctx context.Context, task store.ManagedTas
 
 func (s *Service) FailManagedTask(ctx context.Context, sessionID model.SessionID, taskID, category string, generation uint64) error {
 	return s.state.FailManagedTask(ctx, sessionID, taskID, category, generation)
+}
+
+func (s *Service) ApplyManagedTaskEvent(ctx context.Context, sessionID model.SessionID, generation uint64, event store.ManagedTaskEvent, beforeCommit func(model.Session) error) (store.ManagedTask, model.Session, error) {
+	return s.state.ApplyManagedTaskEvent(ctx, sessionID, generation, event, beforeCommit)
 }
 
 func (s *Service) BindDiscord(ctx context.Context, principal, requestID string, sessionID model.SessionID, channelHandle string) (BindOutcome, bool, error) {

@@ -230,6 +230,43 @@ Discord inbox remains the durable prompt owner, while a supervisor may retain
 prepared bytes only in bounded memory. Admission and the session transition to
 `running` occur in one SQLite transaction and reject a pending yield.
 
+Schema v5 adds digest-only structured-event receipts and schema v6 adds an
+`acked_event_seq` high-water mark. Neither migration stores prompts, progress
+text, or final responses. Full event payloads remain in the independent PTY
+supervisor's bounded memory until the CC confirms delivery. After a Ducklion
+daemon restart the supervisor authenticates again, republishes its output ring,
+and replays every unacknowledged event. Receipts make replay idempotent; the
+high-water mark makes ACK safe after an ambiguous connection failure or after
+the original runtime exits.
+
+Agent adapters emit newline-delimited structured events through an inherited,
+agent-only file descriptor; shell sessions never receive it. Ducklion injects
+a Codex `notify` command or Claude Code `Stop` hook for the matching native
+CLI. The hook normalizes `last-agent-message` or
+`last_assistant_message`, correlates it with the single committed task, and
+never infers completion from ANSI output, silence, BEL, or OSC.
+
+The CC uses the durable Discord identity as its stable task ID and polls by
+event sequence. Progress edits one preview message. A terminal reply uses a
+stable delivery key; the server stores only its digest and Discord message ID,
+and sends a deterministic Discord nonce with `enforce_nonce=true`. Only after
+delivery succeeds does the CC cumulatively ACK the event and complete the
+inbox item. A retry after ACK reads the durable high-water mark and completes
+without posting a duplicate.
+
+If the server stops after Discord accepts a message but before its local
+receipt is finalized, a retry first scans recent channel messages for the
+deterministic nonce and repairs the receipt. An unresolved pending receipt is
+retryable only for ten minutes; afterward the server returns an explicit
+ambiguous-delivery conflict instead of risking a duplicate post. Operators can
+then inspect Discord and resolve the exceptional delivery manually.
+
+Supervisor retention is capped at 128 events / 512 KiB per session. The daemon
+also enforces a global 512-event / 8 MiB cache bound and applies backpressure
+before committing a new event. If the agent process exits, the supervisor
+remains as a small delivery custodian—without the PTY child—until every pending
+terminal payload is ACKed; it can still reconnect across a daemon restart.
+
 The SQLite migration is automatic on Ducklion startup. Before changing
 `PRAGMA user_version`, Ducklion writes a mode-0600 `ducklion.db.bak-v2-*`
 backup. No separate migration command or client-side data conversion is

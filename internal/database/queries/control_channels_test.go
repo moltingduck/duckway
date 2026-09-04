@@ -1,7 +1,9 @@
 package queries
 
 import (
+	"bytes"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -29,6 +31,7 @@ func openTestDB(t *testing.T) *sql.DB {
 		 claim_token TEXT NOT NULL DEFAULT '', lease_expires_at TEXT, attempt_count INTEGER NOT NULL DEFAULT 0,
 		 last_error TEXT NOT NULL DEFAULT '', completed_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
 		`CREATE UNIQUE INDEX idx_inbox_event_key ON discord_inbox(cc_id,event_key) WHERE event_key != ''`,
+		`CREATE TABLE cc_message_deliveries (cc_id TEXT, channel_handle TEXT, delivery_key TEXT, content_digest BLOB, message_id TEXT NOT NULL DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(cc_id,delivery_key))`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -219,3 +222,31 @@ func TestInboxExpiredLeaseIsReclaimedBeforeLaterLaneItem(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestMessageDeliveryIsDurableAndRejectsKeyReuse(t *testing.T) {
+	db := openTestDB(t)
+	q := NewControlChannelQueries(db)
+	digest := bytes.Repeat([]byte{1}, 32)
+	if id, err := q.BeginMessageDelivery("cc1", "h1", "task:0", digest); err != nil || id != "" {
+		t.Fatalf("begin id=%q err=%v", id, err)
+	}
+	if err := q.CompleteMessageDelivery("cc1", "task:0", "M1"); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := q.BeginMessageDelivery("cc1", "h1", "task:0", digest); err != nil || id != "M1" {
+		t.Fatalf("replay id=%q err=%v", id, err)
+	}
+	if _, err := q.BeginMessageDelivery("cc1", "h1", "task:0", bytes.Repeat([]byte{2}, 32)); !errors.Is(err, ErrDeliveryConflict) {
+		t.Fatalf("conflicting replay err=%v", err)
+	}
+	if _, err := q.BeginMessageDelivery("cc1", "h1", "pending:0", digest); err != nil {
+		t.Fatal(err)
+	}
+	if safe, err := q.MessageDeliveryRetrySafe("cc1", "pending:0"); err != nil || !safe {
+		t.Fatalf("new pending safe=%v err=%v", safe, err)
+	}
+	_, _ = db.Exec(`UPDATE cc_message_deliveries SET created_at=datetime('now','-11 minutes') WHERE delivery_key='pending:0'`)
+	if safe, err := q.MessageDeliveryRetrySafe("cc1", "pending:0"); err != nil || safe {
+		t.Fatalf("old pending safe=%v err=%v", safe, err)
+	}
+}

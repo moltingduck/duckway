@@ -264,6 +264,21 @@ Status: Decided
 - The rejection decision records Ducklion's current ownership epoch and occurs
   before any PTY input.
 
+### Managed turn delivery
+
+When CC owns the session, Duckway derives a stable task ID from the durable
+Discord inbox event and calls Ducklion instead of writing directly to PTY
+stdin. Admission, prompt digest, owner, ownership epoch, runtime generation,
+and task state are committed before the supervisor writes bracketed-paste
+input. The same task ID and digest replay the existing task; a different
+digest is rejected.
+
+The native hook emits semantic progress or terminal events. Duckway keeps one
+editable progress preview and posts the final response with a stable delivery
+key. The independent supervisor retains unacknowledged payloads across daemon
+restart and replays them after recovery. Discord delivery, cumulative event
+ACK, and durable inbox completion are retry-safe operations.
+
 ## 10. Multiple attachments and input
 
 Status: Decided

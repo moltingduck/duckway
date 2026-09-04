@@ -26,7 +26,7 @@ var tableOrder = []string{
 	"notification_channels", "canary_settings", "canary_tokens",
 	"client_runtime_status", "client_update_rollouts", "client_update_jobs",
 	"oauth_credentials", "settings", "control_channels", "cc_channels",
-	"discord_inbox", "cc_agent_tests", "schema_version", "conversation_usage",
+	"discord_inbox", "cc_message_deliveries", "cc_agent_tests", "schema_version", "conversation_usage",
 	"model_pricing", "key_suite_assignments", "key_suite_entries",
 }
 

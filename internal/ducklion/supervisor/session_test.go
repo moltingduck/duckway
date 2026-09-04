@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 )
 
@@ -125,5 +126,83 @@ func TestSessionStartRejectsUnsafeBounds(t *testing.T) {
 			CWD: t.TempDir(), Command: []string{"sh"}}); !errors.Is(err, ErrInvalidPTYSize) {
 			t.Fatalf("size=%v err=%v", size, err)
 		}
+	}
+}
+
+func TestAgentEventsRemainUntilDeliveryAck(t *testing.T) {
+	session := &Session{agentEvents: make(map[string][]protocol.SupervisorAgentEvent)}
+	progress := protocol.SupervisorAgentEvent{TaskID: "task-1", Sequence: 1, Kind: "progress", Summary: "working"}
+	completed := protocol.SupervisorAgentEvent{TaskID: "task-1", Sequence: 2, Kind: "completed", Response: "done"}
+	if err := session.QueueAgentEvent(progress); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.QueueAgentEvent(completed); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.QueueAgentEvent(completed); err != nil {
+		t.Fatalf("identical replay: %v", err)
+	}
+	if got := session.PendingAgentEvents(); len(got) != 2 || got[1].Response != "done" {
+		t.Fatalf("pending=%+v", got)
+	}
+	if err := session.AckAgentEvent("task-1", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := session.PendingAgentEvents(); len(got) != 1 || got[0].Sequence != 2 {
+		t.Fatalf("pending after progress ack=%+v", got)
+	}
+	if err := session.AckAgentEvent("task-1", 2); err != nil {
+		t.Fatal(err)
+	}
+	if got := session.PendingAgentEvents(); len(got) != 0 {
+		t.Fatalf("pending after terminal ack=%+v", got)
+	}
+}
+
+func TestAgentAdapterPipeCorrelatesEventWithCommittedTask(t *testing.T) {
+	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, AgentType: "fixture", CWD: t.TempDir(),
+		Command: []string{"sh", "-c", `IFS= read -r value; printf '%s\n' '{"kind":"completed","response":"fixture done"}' >&3; sleep 1`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Terminate(true); _ = session.Wait() }()
+	prompt := []byte("run fixture")
+	digest := sha256.Sum256(prompt)
+	owner := model.Owner{Kind: model.OwnerCC, ID: "dwch_fixture"}
+	if err := session.PrepareAgentTask("inbox-42", digest, prompt, owner, 3, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.CommitAgentTask(context.Background(), "inbox-42", digest, owner, 3, 2); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		pending := session.PendingAgentEvents()
+		if len(pending) == 1 {
+			if pending[0].TaskID != "inbox-42" || pending[0].Sequence != 1 || pending[0].Response != "fixture done" {
+				t.Fatalf("event=%+v", pending[0])
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("adapter event was not captured")
+}
+
+func TestSessionWaitClosesAdapterReaderHeldByDetachedChild(t *testing.T) {
+	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, AgentType: "fixture", CWD: t.TempDir(),
+		Command: []string{"sh", "-c", `(sleep 2 </dev/null >/dev/null 2>&1)& exit 0`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- session.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Wait leaked the adapter reader while a descendant retained fd3")
 	}
 }

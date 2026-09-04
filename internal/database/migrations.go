@@ -306,6 +306,16 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_inbox_cc_id ON discord_inbox(cc_id, id)`,
 	`CREATE INDEX IF NOT EXISTS idx_inbox_created ON discord_inbox(created_at)`,
+	`CREATE TABLE IF NOT EXISTS cc_message_deliveries (
+		cc_id TEXT NOT NULL REFERENCES control_channels(id) ON DELETE CASCADE,
+		channel_handle TEXT NOT NULL REFERENCES cc_channels(handle) ON DELETE CASCADE,
+		delivery_key TEXT NOT NULL,
+		content_digest BLOB NOT NULL,
+		message_id TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY(cc_id, delivery_key)
+	)`,
 
 	`CREATE TABLE IF NOT EXISTS cc_agent_tests (
 		id          TEXT PRIMARY KEY,
@@ -493,6 +503,12 @@ func runMigrations(db *sql.DB) error {
 		}
 	}
 	required := []string{
+		`CREATE TABLE IF NOT EXISTS cc_message_deliveries (
+			cc_id TEXT NOT NULL REFERENCES control_channels(id) ON DELETE CASCADE,
+			channel_handle TEXT NOT NULL REFERENCES cc_channels(handle) ON DELETE CASCADE,
+			delivery_key TEXT NOT NULL, content_digest BLOB NOT NULL,
+			message_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY(cc_id, delivery_key))`,
 		`CREATE INDEX IF NOT EXISTS idx_conv_usage_key_day ON conversation_usage(api_key_id, created_at, client_id, model)`,
 		`CREATE INDEX IF NOT EXISTS idx_conv_usage_group_day ON conversation_usage(key_group_id, created_at, client_id, model)`,
 		`CREATE INDEX IF NOT EXISTS idx_conv_usage_created ON conversation_usage(created_at)`,

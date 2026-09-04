@@ -30,6 +30,7 @@ type ManagedTask struct {
 	RuntimeGeneration uint64
 	Status            ManagedTaskStatus
 	LastEventSeq      uint64
+	AckedEventSeq     uint64
 	OutputStart       uint64
 	OutputEnd         *uint64
 	ErrorCategory     string
@@ -165,6 +166,22 @@ func (s *SQLite) GetManagedTask(ctx context.Context, sessionID model.SessionID, 
 	return scanManagedTask(s.db.QueryRowContext(ctx, managedTaskSelect+` WHERE session_id=? AND task_id=?`, sessionID, taskID))
 }
 
+func (s *SQLite) AckManagedTaskEvent(ctx context.Context, sessionID model.SessionID, taskID string, sequence uint64, owner model.Owner) (ManagedTask, error) {
+	if sequence == 0 || owner.Kind != model.OwnerCC || owner.ID == "" {
+		return ManagedTask{}, fmt.Errorf("invalid managed task event acknowledgement")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE managed_tasks SET acked_event_seq=CASE WHEN acked_event_seq<? THEN ? ELSE acked_event_seq END,updated_at_ms=?
+		WHERE session_id=? AND task_id=? AND owner_kind=? AND owner_id=? AND last_event_seq>=?`, sequence, sequence, time.Now().UTC().UnixMilli(),
+		sessionID, taskID, owner.Kind, owner.ID, sequence)
+	if err != nil {
+		return ManagedTask{}, err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return ManagedTask{}, ErrNotFound
+	}
+	return s.GetManagedTask(ctx, sessionID, taskID)
+}
+
 func (s *SQLite) MarkManagedTaskRunning(ctx context.Context, sessionID model.SessionID, taskID string, generation uint64) (ManagedTask, error) {
 	now := time.Now().UTC().UnixMilli()
 	result, err := s.db.ExecContext(ctx, `UPDATE managed_tasks SET status='running',updated_at_ms=?
@@ -178,8 +195,116 @@ func (s *SQLite) MarkManagedTaskRunning(ctx context.Context, sessionID model.Ses
 	return s.GetManagedTask(ctx, sessionID, taskID)
 }
 
+type ManagedTaskEvent struct {
+	TaskID        string
+	Sequence      uint64
+	Kind          string
+	OutputEnd     uint64
+	ErrorCategory string
+	Digest        [32]byte
+}
+
+func (s *SQLite) ApplyManagedTaskEvent(ctx context.Context, sessionID model.SessionID, generation uint64, event ManagedTaskEvent, beforeCommit func(model.Session) error) (ManagedTask, model.Session, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ManagedTask{}, model.Session{}, err
+	}
+	defer tx.Rollback()
+	task, err := getManagedTaskTx(ctx, tx, sessionID, event.TaskID)
+	if err != nil {
+		return ManagedTask{}, model.Session{}, err
+	}
+	var existingDigest []byte
+	if receiptErr := tx.QueryRowContext(ctx, `SELECT event_digest FROM managed_task_event_receipts WHERE session_id=? AND task_id=? AND sequence=?`, sessionID, event.TaskID, event.Sequence).Scan(&existingDigest); receiptErr == nil {
+		if len(existingDigest) == len(event.Digest) && equalBytes(existingDigest, event.Digest[:]) {
+			session, sessionErr := s.GetSessionTx(ctx, tx, sessionID)
+			return task, session, sessionErr
+		}
+		return ManagedTask{}, model.Session{}, ErrIdempotencyConflict
+	} else if !errors.Is(receiptErr, sql.ErrNoRows) {
+		return ManagedTask{}, model.Session{}, receiptErr
+	}
+	if task.RuntimeGeneration != generation {
+		return ManagedTask{}, model.Session{}, model.ErrStaleGeneration
+	}
+	if event.Sequence != task.LastEventSeq+1 {
+		return ManagedTask{}, model.Session{}, fmt.Errorf("managed task event sequence is not contiguous")
+	}
+	if task.Status != ManagedTaskRunning && task.Status != ManagedTaskReplying {
+		return ManagedTask{}, model.Session{}, model.ErrTaskActive
+	}
+	session, err := s.GetSessionTx(ctx, tx, sessionID)
+	if err != nil {
+		return ManagedTask{}, model.Session{}, err
+	}
+	oldEpoch := session.OwnershipEpoch
+	task.LastEventSeq = event.Sequence
+	task.UpdatedAtMS = time.Now().UTC().UnixMilli()
+	session.UpdatedAtMS = task.UpdatedAtMS
+	terminal := false
+	switch event.Kind {
+	case "progress":
+		// Progress is ephemeral; only its sequence is persisted.
+	case "replying":
+		task.Status = ManagedTaskReplying
+		session.TaskState = model.TaskReplying
+	case "completed", "failed":
+		terminal = true
+		if event.OutputEnd < task.OutputStart {
+			return ManagedTask{}, model.Session{}, fmt.Errorf("managed task output boundary moved backwards")
+		}
+		task.Status = ManagedTaskStatus(event.Kind)
+		task.OutputEnd = &event.OutputEnd
+		task.ErrorCategory = event.ErrorCategory
+		session.TaskState = model.TaskIdle
+		pending, pendingErr := s.GetPendingYieldTx(ctx, tx, sessionID)
+		if pendingErr != nil {
+			return ManagedTask{}, model.Session{}, pendingErr
+		}
+		if pending != nil {
+			if _, applyErr := session.ApplyPendingYield(*pending); applyErr != nil && !errors.Is(applyErr, model.ErrStaleEpoch) {
+				return ManagedTask{}, model.Session{}, applyErr
+			}
+			if err := s.DeletePendingYieldTx(ctx, tx, sessionID); err != nil {
+				return ManagedTask{}, model.Session{}, err
+			}
+		}
+	default:
+		return ManagedTask{}, model.Session{}, fmt.Errorf("invalid managed task event kind")
+	}
+	if terminal && session.OwnershipEpoch != oldEpoch && beforeCommit != nil {
+		if err := beforeCommit(session); err != nil {
+			return ManagedTask{}, model.Session{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO managed_task_event_receipts(session_id,task_id,sequence,event_digest,kind,created_at_ms) VALUES(?,?,?,?,?,?)`,
+		sessionID, event.TaskID, event.Sequence, event.Digest[:], event.Kind, task.UpdatedAtMS); err != nil {
+		return ManagedTask{}, model.Session{}, err
+	}
+	outputEnd := any(nil)
+	if task.OutputEnd != nil {
+		outputEnd = *task.OutputEnd
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE managed_tasks SET status=?,last_event_seq=?,output_end=?,error_category=?,updated_at_ms=?
+		WHERE session_id=? AND task_id=? AND runtime_generation=? AND last_event_seq=?`, task.Status, task.LastEventSeq, outputEnd, task.ErrorCategory,
+		task.UpdatedAtMS, sessionID, task.TaskID, generation, event.Sequence-1)
+	if err != nil {
+		return ManagedTask{}, model.Session{}, err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return ManagedTask{}, model.Session{}, fmt.Errorf("managed task event fencing conflict")
+	}
+	if err := s.UpdateSessionTx(ctx, tx, session, oldEpoch, generation); err != nil {
+		return ManagedTask{}, model.Session{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ManagedTask{}, model.Session{}, err
+	}
+	return task, session, nil
+}
+
 const managedTaskSelect = `SELECT session_id,task_id,prompt_digest,owner_kind,owner_id,ownership_epoch,runtime_generation,status,
-	last_event_seq,output_start,output_end,error_category,created_at_ms,updated_at_ms FROM managed_tasks`
+	last_event_seq,acked_event_seq,output_start,output_end,error_category,created_at_ms,updated_at_ms FROM managed_tasks`
 
 func getManagedTaskTx(ctx context.Context, tx *sql.Tx, sessionID model.SessionID, taskID string) (ManagedTask, error) {
 	return scanManagedTask(tx.QueryRowContext(ctx, managedTaskSelect+` WHERE session_id=? AND task_id=?`, sessionID, taskID))
@@ -191,7 +316,7 @@ func scanManagedTask(row interface{ Scan(...any) error }) (ManagedTask, error) {
 	var ownerKind string
 	var outputEnd sql.NullInt64
 	if err := row.Scan(&task.SessionID, &task.TaskID, &digest, &ownerKind, &task.Owner.ID, &task.OwnershipEpoch, &task.RuntimeGeneration,
-		&task.Status, &task.LastEventSeq, &task.OutputStart, &outputEnd, &task.ErrorCategory, &task.CreatedAtMS, &task.UpdatedAtMS); err != nil {
+		&task.Status, &task.LastEventSeq, &task.AckedEventSeq, &task.OutputStart, &outputEnd, &task.ErrorCategory, &task.CreatedAtMS, &task.UpdatedAtMS); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ManagedTask{}, ErrNotFound
 		}

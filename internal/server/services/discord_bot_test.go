@@ -302,6 +302,35 @@ func TestPostMessageReplyUsesMessageReference(t *testing.T) {
 	}
 }
 
+func TestPostMessageIdempotentUsesEnforcedNonce(t *testing.T) {
+	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["nonce"] != "123456" || body["enforce_nonce"] != true {
+			t.Fatalf("idempotency fields=%+v", body)
+		}
+		w.Write([]byte(`{"id":"M-stable"}`))
+	})
+	defer srv.Close()
+	b := &DiscordBot{BaseURL: srv.URL, HTTP: srv.Client()}
+	if id, err := b.PostMessageReplyIdempotent(context.Background(), "tok", "CH", "done", "", "123456"); err != nil || id != "M-stable" {
+		t.Fatalf("id=%q err=%v", id, err)
+	}
+}
+
+func TestFindMessageByNonce(t *testing.T) {
+	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`[{"id":"M2","nonce":"222"},{"id":"M1","nonce":"111"}]`))
+	})
+	defer srv.Close()
+	b := &DiscordBot{BaseURL: srv.URL, HTTP: srv.Client()}
+	if id, err := b.FindMessageByNonce(context.Background(), "tok", "CH", "111"); err != nil || id != "M1" {
+		t.Fatalf("id=%q err=%v", id, err)
+	}
+}
+
 func TestPostMessageWithFile(t *testing.T) {
 	srv := mockDiscord(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/channels/CH/messages" || r.Method != "POST" {
