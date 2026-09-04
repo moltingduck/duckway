@@ -223,6 +223,13 @@ binding. If a bind response is lost, the client queries the session binding;
 it preserves an ambiguously bound channel and archives only after an
 authoritative rejection.
 
+Ducklion schema v4 adds `managed_tasks`. It stores only task correlation,
+SHA-256 prompt digest, immutable owner and ownership/runtime fences, state and
+output offsets. Prompt and response bytes are deliberately absent: the
+Discord inbox remains the durable prompt owner, while a supervisor may retain
+prepared bytes only in bounded memory. Admission and the session transition to
+`running` occur in one SQLite transaction and reject a pending yield.
+
 The SQLite migration is automatic on Ducklion startup. Before changing
 `PRAGMA user_version`, Ducklion writes a mode-0600 `ducklion.db.bak-v2-*`
 backup. No separate migration command or client-side data conversion is

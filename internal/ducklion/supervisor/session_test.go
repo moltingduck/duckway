@@ -3,12 +3,56 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 )
+
+func TestAgentPrepareCommitWritesExactlyOnceOnReplay(t *testing.T) {
+	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, CWD: t.TempDir(),
+		Command: []string{"sh", "-c", `IFS= read -r value; printf 'got:%s\n' "$value"; sleep 30`}, OutputCapacity: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Terminate(true); _ = session.Wait() }()
+	replay, stream, cancel, err := session.Output().Subscribe(0, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if len(replay.Data) != 0 {
+		t.Fatalf("replay=%q", replay.Data)
+	}
+	prompt := []byte("hello")
+	digest := sha256.Sum256(prompt)
+	owner := model.Owner{Kind: model.OwnerCC, ID: "dwch_task"}
+	if err := session.PrepareAgentTask("inbox/42", digest, prompt, owner, 3, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.CommitAgentTask(context.Background(), "inbox/42", digest, owner, 3, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.CommitAgentTask(context.Background(), "inbox/42", digest, owner, 3, 2); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	deadline := time.After(2 * time.Second)
+	for !bytes.Contains(output.Bytes(), []byte("got:")) {
+		select {
+		case frame := <-stream:
+			output.Write(frame.Data)
+		case <-deadline:
+			t.Fatalf("output timeout: %q", output.String())
+		}
+	}
+	if count := bytes.Count(output.Bytes(), []byte("got:")); count != 1 {
+		t.Fatalf("prompt executions=%d output=%q", count, output.String())
+	}
+}
 
 func TestSessionInputIsFencedAndOutputIsMemoryOnly(t *testing.T) {
 	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, CWD: t.TempDir(),

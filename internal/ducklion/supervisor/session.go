@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -9,9 +10,11 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 )
 
@@ -36,6 +39,7 @@ type Options struct {
 
 type Session struct {
 	mu                 sync.Mutex
+	agentMu            sync.Mutex
 	id                 model.SessionID
 	generation         uint64
 	epoch              uint64
@@ -48,6 +52,14 @@ type Session struct {
 	output             *duckruntime.OutputHub
 	input              *duckruntime.InputPump
 	captureDone        chan struct{}
+	preparedTasks      map[string]preparedAgentTask
+	committedTasks     map[string][32]byte
+}
+
+type preparedAgentTask struct {
+	digest [32]byte
+	prompt []byte
+	owner  model.Owner
 }
 
 func Start(options Options) (*Session, error) {
@@ -75,10 +87,138 @@ func Start(options Options) (*Session, error) {
 		return nil, fmt.Errorf("start supervised PTY: %w", err)
 	}
 	session := &Session{id: options.SessionID, generation: options.RuntimeGeneration, epoch: options.OwnershipEpoch,
-		pty: ptmx, cmd: cmd, output: duckruntime.NewOutputHub(options.OutputCapacity), captureDone: make(chan struct{})}
+		pty: ptmx, cmd: cmd, output: duckruntime.NewOutputHub(options.OutputCapacity), captureDone: make(chan struct{}),
+		preparedTasks: make(map[string]preparedAgentTask), committedTasks: make(map[string][32]byte)}
 	session.input = duckruntime.NewInputPump((*inputGate)(session), ptmx, 64)
 	go session.capture()
 	return session, nil
+}
+
+func (s *Session) PrepareAgentTask(taskID string, digest [32]byte, prompt []byte, owner model.Owner, epoch, generation uint64) error {
+	if !protocol.ValidTaskID(taskID) || len(prompt) == 0 || len(prompt) > protocol.MaxAgentPromptBytes || sha256.Sum256(prompt) != digest || owner.Validate() != nil || owner.Kind != model.OwnerCC {
+		return fmt.Errorf("invalid agent task")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrClosed
+	}
+	if generation != s.generation {
+		return model.ErrStaleGeneration
+	}
+	if epoch != s.epoch {
+		return model.ErrStaleEpoch
+	}
+	if committed, ok := s.committedTasks[taskID]; ok {
+		if committed != digest {
+			return model.ErrTaskActive
+		}
+		return nil
+	}
+	if prepared, ok := s.preparedTasks[taskID]; ok {
+		if prepared.digest != digest || prepared.owner != owner {
+			return model.ErrTaskActive
+		}
+		return nil
+	}
+	if len(s.preparedTasks) != 0 {
+		return model.ErrTaskActive
+	}
+	s.preparedTasks[taskID] = preparedAgentTask{digest: digest, prompt: append([]byte(nil), prompt...), owner: owner}
+	return nil
+}
+
+func (s *Session) AgentTaskStatus(taskID string, digest [32]byte) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if committed, ok := s.committedTasks[taskID]; ok {
+		if committed != digest {
+			return "", model.ErrTaskActive
+		}
+		return "committed", nil
+	}
+	if prepared, ok := s.preparedTasks[taskID]; ok {
+		if prepared.digest != digest {
+			return "", model.ErrTaskActive
+		}
+		return "prepared", nil
+	}
+	return "absent", nil
+}
+
+func (s *Session) CommitAgentTask(ctx context.Context, taskID string, digest [32]byte, owner model.Owner, epoch, generation uint64) error {
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
+	s.mu.Lock()
+	if committed, ok := s.committedTasks[taskID]; ok {
+		s.mu.Unlock()
+		if committed != digest {
+			return model.ErrTaskActive
+		}
+		return nil
+	}
+	prepared, ok := s.preparedTasks[taskID]
+	if !ok || prepared.digest != digest || prepared.owner != owner {
+		s.mu.Unlock()
+		return fmt.Errorf("agent task was not prepared")
+	}
+	prompt := append([]byte(nil), prepared.prompt...)
+	s.mu.Unlock()
+	// Bracketed paste preserves multiline prompts in native agent TUIs; the
+	// trailing carriage return explicitly submits the prepared turn.
+	data := make([]byte, 0, len(prompt)+16)
+	data = append(data, "\x1b[200~"...)
+	data = append(data, prompt...)
+	data = append(data, "\x1b[201~\r"...)
+	writeResult := make(chan error, 1)
+	go func() {
+		writeResult <- s.SubmitInput(ctx, duckruntime.InputFrame{Sequence: s.nextAgentSequence(), Owner: owner, OwnershipEpoch: epoch, RuntimeGeneration: generation, Data: data})
+	}()
+	var err error
+	select {
+	case err = <-writeResult:
+	case <-time.After(10 * time.Second):
+		s.mu.Lock()
+		s.inputIndeterminate = true
+		s.mu.Unlock()
+		_ = s.Terminate(true)
+		err = ErrInputIndeterminate
+	}
+	for i := range data {
+		data[i] = 0
+	}
+	for i := range prompt {
+		prompt[i] = 0
+	}
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	prepared = s.preparedTasks[taskID]
+	for i := range prepared.prompt {
+		prepared.prompt[i] = 0
+	}
+	delete(s.preparedTasks, taskID)
+	s.committedTasks[taskID] = digest
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Session) nextAgentSequence() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastSequence + 1
+}
+
+func (s *Session) AbortAgentTask(taskID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prepared, ok := s.preparedTasks[taskID]; ok {
+		for i := range prepared.prompt {
+			prepared.prompt[i] = 0
+		}
+		delete(s.preparedTasks, taskID)
+	}
 }
 
 func supervisedEnvironment() []string {

@@ -119,6 +119,10 @@ func (s *SQLite) MarkRuntimeExited(ctx context.Context, id model.SessionID, gene
 	if rows, _ := result.RowsAffected(); rows != 1 {
 		return fmt.Errorf("runtime stop fencing conflict")
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE managed_tasks SET status='failed',error_category='runtime_exit',updated_at_ms=?
+		WHERE session_id=? AND runtime_generation=? AND status IN ('prepared','running','replying')`, session.UpdatedAtMS, id, generation); err != nil {
+		return err
+	}
 	if pending != nil {
 		if err := s.DeletePendingYieldTx(ctx, tx, id); err != nil {
 			return err

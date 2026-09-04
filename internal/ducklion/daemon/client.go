@@ -105,7 +105,7 @@ func ConnectRoleContext(ctx context.Context, conn io.ReadWriteCloser, principal 
 	setDeadline(conn, time.Now().Add(10*time.Second))
 	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}
 	if role == protocol.RoleDuckwayCC {
-		offeredCapabilities = []string{"status", "sessions_list", "session_yield", "session_task", "discord_binding"}
+		offeredCapabilities = []string{"status", "sessions_list", "session_yield", "session_task", "discord_binding", "agent_task"}
 	}
 	if err := codec.Write(protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: role, Principal: principal, Capabilities: offeredCapabilities}); err != nil {
 		conn.Close()
@@ -648,6 +648,29 @@ func (c *Client) BindDiscordSession(ctx context.Context, requestID, sessionID, c
 		return protocol.SessionBinding{}, &RemoteError{Detail: *response.Error}
 	}
 	var result protocol.SessionBinding
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (c *Client) SubmitAgentTask(ctx context.Context, requestID, sessionID string, epoch, generation uint64, task protocol.AgentTaskSubmit) (protocol.AgentTaskState, error) {
+	if err := c.requireCapability("agent_task"); err != nil {
+		return protocol.AgentTaskState{}, err
+	}
+	body, err := json.Marshal(task)
+	if err != nil {
+		return protocol.AgentTaskState{}, err
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: requestID, Type: "session.agent_submit", InstanceID: c.instanceID, SessionID: sessionID,
+		OwnershipEpoch: &epoch, RuntimeGeneration: &generation, Body: body})
+	if err != nil {
+		return protocol.AgentTaskState{}, err
+	}
+	if response.Error != nil {
+		return protocol.AgentTaskState{}, &RemoteError{Detail: *response.Error}
+	}
+	var result protocol.AgentTaskState
 	if err := json.Unmarshal(response.Result, &result); err != nil {
 		return result, err
 	}

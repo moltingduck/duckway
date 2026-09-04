@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -186,6 +186,11 @@ func (s *SQLite) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate ducklion schema to v3: %w", err)
 		}
 	}
+	if userVersion < 4 {
+		if err := migrateV4(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v4: %w", err)
+		}
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
 		return err
 	}
@@ -264,6 +269,24 @@ func migrateV3(ctx context.Context, tx *sql.Tx) error {
 		channel_handle TEXT NOT NULL UNIQUE,
 		management_handle TEXT NOT NULL,
 		created_at_ms INTEGER NOT NULL)`)
+	return err
+}
+
+func migrateV4(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `CREATE TABLE managed_tasks (
+		session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+		task_id TEXT NOT NULL CHECK(length(task_id) BETWEEN 1 AND 128),
+		prompt_digest BLOB NOT NULL CHECK(length(prompt_digest)=32),
+		owner_kind TEXT NOT NULL CHECK(owner_kind='cc'), owner_id TEXT NOT NULL,
+		ownership_epoch INTEGER NOT NULL CHECK(ownership_epoch>0),
+		runtime_generation INTEGER NOT NULL CHECK(runtime_generation>0),
+		status TEXT NOT NULL CHECK(status IN ('prepared','running','replying','completed','failed')),
+		last_event_seq INTEGER NOT NULL DEFAULT 0 CHECK(last_event_seq>=0),
+		output_start INTEGER NOT NULL DEFAULT 0 CHECK(output_start>=0),
+		output_end INTEGER CHECK(output_end IS NULL OR output_end>=output_start),
+		error_category TEXT NOT NULL DEFAULT '',
+		created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+		PRIMARY KEY(session_id,task_id))`)
 	return err
 }
 

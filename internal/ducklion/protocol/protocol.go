@@ -148,3 +148,16 @@ func ValidDucklordPrincipal(name string) bool {
 	}
 	return true
 }
+
+func ValidTaskID(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' || r == ':' || r == '/' {
+			continue
+		}
+		return false
+	}
+	return true
+}

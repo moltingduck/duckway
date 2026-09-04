@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,129 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/supervisor"
 	"golang.org/x/sys/unix"
 )
+
+func (s *Server) routeAgentTaskSubmit(request protocol.Request, principal string) protocol.Response {
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil || request.InstanceID != string(s.instanceID) || request.OwnershipEpoch == nil || request.RuntimeGeneration == nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session identity and fences are required"}}
+	}
+	var submit protocol.AgentTaskSubmit
+	if decodeStrict(request.Body, &submit) != nil || request.ID != submit.TaskID || !protocol.ValidTaskID(submit.TaskID) || len(submit.Prompt) == 0 || len(submit.Prompt) > protocol.MaxAgentPromptBytes || sha256.Sum256(submit.Prompt) != submit.PromptDigest {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid agent task"}}
+	}
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
+	owner := model.Owner{Kind: model.OwnerCC, ID: principal}
+	epoch, generation := *request.OwnershipEpoch, *request.RuntimeGeneration
+	metadata := store.ManagedTask{SessionID: sessionID, TaskID: submit.TaskID, PromptDigest: submit.PromptDigest, Owner: owner,
+		OwnershipEpoch: epoch, RuntimeGeneration: generation}
+	if existing, getErr := s.service.GetManagedTask(context.Background(), sessionID, submit.TaskID); getErr == nil {
+		if existing.PromptDigest != submit.PromptDigest || existing.Owner != owner || existing.OwnershipEpoch != epoch || existing.RuntimeGeneration != generation {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrIdempotencyConflict, Message: "task id was already used with different metadata"}}
+		}
+		switch existing.Status {
+		case store.ManagedTaskFailed:
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "agent task previously failed: " + existing.ErrorCategory}}
+		case store.ManagedTaskRunning, store.ManagedTaskReplying, store.ManagedTaskCompleted:
+			result, _ := json.Marshal(protocol.AgentTaskState{SessionID: string(sessionID), TaskID: existing.TaskID, Status: string(existing.Status),
+				OwnershipEpoch: epoch, RuntimeGeneration: generation, Writer: owner, OutputStart: existing.OutputStart})
+			return protocol.Response{ID: request.ID, Result: result}
+		}
+	} else if !errors.Is(getErr, store.ErrNotFound) {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect managed task", Retryable: true}}
+	}
+	if protocolError := s.service.ValidateManagedTask(context.Background(), metadata); protocolError != nil {
+		return protocol.Response{ID: request.ID, Error: protocolError}
+	}
+	prepareBody, _ := json.Marshal(protocol.SupervisorAgentPrepare{TaskID: submit.TaskID, Prompt: submit.Prompt, PromptDigest: submit.PromptDigest, Owner: owner})
+	prepare := request
+	prepare.Type, prepare.Body = "supervisor.agent_prepare", prepareBody
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	prepareResponse := s.callControl(ctx, sessionID, prepare)
+	cancel()
+	if prepareResponse.Error != nil {
+		prepareResponse.ID = request.ID
+		return prepareResponse
+	}
+	s.outputMu.Lock()
+	registered, outputReady := s.outputs[sessionID]
+	s.outputMu.Unlock()
+	if !outputReady || registered.identity.Generation != generation {
+		s.abortPreparedAgentTask(request, submit.TaskID)
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "runtime output is unavailable", Retryable: true}}
+	}
+	_, outputStart := registered.hub.Bounds()
+	metadata.OutputStart = outputStart
+	task, _, protocolError, admitErr := s.service.AdmitManagedTask(context.Background(), "cc:"+principal, metadata)
+	if admitErr != nil || protocolError != nil {
+		s.abortPreparedAgentTask(request, submit.TaskID)
+		if protocolError == nil {
+			protocolError = &protocol.Error{Code: protocol.ErrInternal, Message: "could not admit managed task", Retryable: true}
+		}
+		return protocol.Response{ID: request.ID, Error: protocolError}
+	}
+	commitBody, _ := json.Marshal(protocol.SupervisorAgentCommit{TaskID: submit.TaskID, PromptDigest: submit.PromptDigest, Owner: owner})
+	commit := request
+	commit.Type, commit.Body = "supervisor.agent_commit", commitBody
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+	commitResponse := s.callControl(ctx, sessionID, commit)
+	cancel()
+	if commitResponse.Error != nil {
+		status, statusErr := s.agentTaskRuntimeStatus(request, submit.TaskID, submit.PromptDigest)
+		if statusErr == nil && status == "committed" {
+			commitResponse.Error = nil
+		} else if statusErr == nil && status == "absent" || statusErr == nil && status == "prepared" && !commitResponse.Error.Retryable {
+			s.abortPreparedAgentTask(request, submit.TaskID)
+			_ = s.service.FailManagedTask(context.Background(), sessionID, submit.TaskID, string(commitResponse.Error.Code), generation)
+			// The adapter cannot prove that zero bytes reached the native PTY.
+			// Stop this runtime rather than advertise it as healthy for another task.
+			terminate := request
+			terminate.Type, terminate.Body = "supervisor.terminate", nil
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = s.callControl(ctx, sessionID, terminate)
+			cancel()
+			commitResponse.ID = request.ID
+			return commitResponse
+		} else {
+			commitResponse.ID = request.ID
+			commitResponse.Error.Retryable = true
+			commitResponse.Error.Message = "agent task commit outcome is unknown; retry the same task id"
+			return commitResponse
+		}
+	}
+	task, err = s.service.MarkManagedTaskRunning(context.Background(), sessionID, submit.TaskID, generation)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "agent task was committed but its state could not be finalized", Retryable: true}}
+	}
+	result, _ := json.Marshal(protocol.AgentTaskState{SessionID: string(sessionID), TaskID: task.TaskID, Status: string(task.Status),
+		OwnershipEpoch: epoch, RuntimeGeneration: generation, Writer: owner, OutputStart: task.OutputStart})
+	return protocol.Response{ID: request.ID, Result: result}
+}
+
+func (s *Server) agentTaskRuntimeStatus(request protocol.Request, taskID string, digest [32]byte) (string, error) {
+	body, _ := json.Marshal(protocol.SupervisorAgentStatus{TaskID: taskID, PromptDigest: digest})
+	request.Type, request.Body = "supervisor.agent_status", body
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	response := s.callControl(ctx, model.SessionID(request.SessionID), request)
+	if response.Error != nil {
+		return "", errors.New(response.Error.Message)
+	}
+	var result protocol.SupervisorAgentStatusResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return "", err
+	}
+	return result.Status, nil
+}
+
+func (s *Server) abortPreparedAgentTask(request protocol.Request, taskID string) {
+	body, _ := json.Marshal(protocol.SupervisorAgentAbort{TaskID: taskID})
+	request.Type, request.Body = "supervisor.agent_abort", body
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = s.callControl(ctx, model.SessionID(request.SessionID), request)
+}
 
 const runtimeSubcommand = "__ducklion_runtime_v1"
 

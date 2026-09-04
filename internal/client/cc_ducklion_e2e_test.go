@@ -1,7 +1,9 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,7 +56,7 @@ func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 	}
 	defer terminal.Close()
 	session, err := terminal.CreateSession(context.Background(), protocol.SessionCreate{Handle: "discord-e2e", Kind: model.KindAgent,
-		AgentType: "codex", CWD: configDir, Command: []string{"sh", "-c", "sleep 30"}})
+		AgentType: "fixture", CWD: configDir, Command: []string{"sh", "-c", `while IFS= read -r value; do printf 'managed:%s\n' "$value"; done`}})
 	if err != nil || session.Status != model.StatusRunning {
 		t.Fatalf("create session=%+v err=%v", session, err)
 	}
@@ -87,8 +89,58 @@ func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 	if err != nil || len(sessions) != 1 || sessions[0].Writer == nil || sessions[0].Writer.Kind != model.OwnerCC || sessions[0].Writer.ID != "dwch_task" {
 		t.Fatalf("sessions=%+v err=%v", sessions, err)
 	}
-	// Return ownership and stop the real PTY so the test leaves no supervisor.
 	current := sessions[0]
+	output, err := terminal.SubscribeOutput(current.SessionID, current.RuntimeGeneration, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	taskCC, err := duckliondaemon.DialCC(socket, "dwch_task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := []byte("same persistent PTY")
+	task := protocol.AgentTaskSubmit{TaskID: "inbox/42", Prompt: prompt, PromptDigest: sha256.Sum256(prompt)}
+	for i := 0; i < 2; i++ {
+		state, submitErr := taskCC.SubmitAgentTask(context.Background(), task.TaskID, current.SessionID, current.OwnershipEpoch, current.RuntimeGeneration, task)
+		if submitErr != nil || state.Status != "running" {
+			t.Fatalf("submit %d state=%+v err=%v", i, state, submitErr)
+		}
+	}
+	frames := make(chan []byte, 8)
+	go func() {
+		for {
+			frame, readErr := output.Read()
+			if readErr != nil {
+				return
+			}
+			frames <- frame.Frame.Data
+		}
+	}()
+	var observed bytes.Buffer
+	deadline = time.Now().Add(2 * time.Second)
+	var firstOutputAt time.Time
+	for time.Now().Before(deadline) {
+		select {
+		case frame := <-frames:
+			observed.Write(frame)
+		case <-time.After(50 * time.Millisecond):
+			if bytes.Contains(observed.Bytes(), []byte("managed:")) && firstOutputAt.IsZero() {
+				firstOutputAt = time.Now()
+			}
+			if !firstOutputAt.IsZero() && time.Since(firstOutputAt) >= 250*time.Millisecond {
+				deadline = time.Now()
+			}
+		}
+	}
+	if count := bytes.Count(observed.Bytes(), []byte("managed:")); count != 1 {
+		t.Fatalf("managed prompt executions=%d output=%q", count, observed.String())
+	}
+	if _, err := taskCC.CompleteTask(context.Background(), "complete-e2e", current.SessionID, current.OwnershipEpoch, current.RuntimeGeneration); err != nil {
+		t.Fatal(err)
+	}
+	_ = taskCC.Close()
+	// Return ownership and stop the real PTY so the test leaves no supervisor.
 	if _, err := terminal.YieldSession(context.Background(), current.SessionID, current.OwnershipEpoch, current.RuntimeGeneration, false); err != nil {
 		t.Fatal(err)
 	}

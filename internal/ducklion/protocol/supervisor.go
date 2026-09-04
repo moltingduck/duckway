@@ -2,6 +2,8 @@ package protocol
 
 import "github.com/hackerduck/duckway/internal/ducklion/model"
 
+const MaxAgentPromptBytes = 1 << 20
+
 type SessionSummary struct {
 	SessionID         string              `json:"session_id"`
 	Handle            string              `json:"handle"`
@@ -81,6 +83,51 @@ type SupervisorControlReady struct {
 
 type SessionInput struct {
 	Data []byte `json:"data"`
+}
+
+// AgentTaskSubmit is the public CC request. TaskID is stable across durable
+// inbox retries; PromptDigest lets Ducklion persist idempotency metadata
+// without persisting the prompt itself.
+type AgentTaskSubmit struct {
+	TaskID       string   `json:"task_id"`
+	Prompt       []byte   `json:"prompt"`
+	PromptDigest [32]byte `json:"prompt_digest"`
+}
+
+type SupervisorAgentPrepare struct {
+	TaskID       string      `json:"task_id"`
+	Prompt       []byte      `json:"prompt"`
+	PromptDigest [32]byte    `json:"prompt_digest"`
+	Owner        model.Owner `json:"owner"`
+}
+
+type SupervisorAgentCommit struct {
+	TaskID       string      `json:"task_id"`
+	PromptDigest [32]byte    `json:"prompt_digest"`
+	Owner        model.Owner `json:"owner"`
+}
+
+type SupervisorAgentAbort struct {
+	TaskID string `json:"task_id"`
+}
+
+type SupervisorAgentStatus struct {
+	TaskID       string   `json:"task_id"`
+	PromptDigest [32]byte `json:"prompt_digest"`
+}
+
+type SupervisorAgentStatusResult struct {
+	Status string `json:"status"`
+}
+
+type AgentTaskState struct {
+	SessionID         string      `json:"session_id"`
+	TaskID            string      `json:"task_id"`
+	Status            string      `json:"status"`
+	OwnershipEpoch    uint64      `json:"ownership_epoch"`
+	RuntimeGeneration uint64      `json:"runtime_generation"`
+	Writer            model.Owner `json:"writer"`
+	OutputStart       uint64      `json:"output_start"`
 }
 
 type SessionResize struct {

@@ -271,7 +271,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 	}
 	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}
 	if remote.Role == protocol.RoleDuckwayCC {
-		capabilities = []string{"status", "sessions_list", "session_yield", "session_task", "discord_binding"}
+		capabilities = []string{"status", "sessions_list", "session_yield", "session_task", "discord_binding", "agent_task"}
 	}
 	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: capabilities}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
@@ -894,6 +894,11 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session task capability was not negotiated"}}
 		}
 		return s.routeSessionTask(request, principal)
+	case "session.agent_submit":
+		if role != protocol.RoleDuckwayCC || !hasCapability(capabilities, "agent_task") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "agent task capability was not negotiated"}}
+		}
+		return s.routeAgentTaskSubmit(request, principal)
 	case "session.bind_discord":
 		if role != protocol.RoleDuckwayCC || !hasCapability(capabilities, "discord_binding") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "Discord binding capability was not negotiated"}}

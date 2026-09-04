@@ -120,6 +120,13 @@ type RuntimeController interface {
 	UpdateOwnership(epoch, generation uint64) error
 }
 
+type agentRuntimeController interface {
+	PrepareAgentTask(taskID string, digest [32]byte, prompt []byte, owner model.Owner, epoch, generation uint64) error
+	CommitAgentTask(context.Context, string, [32]byte, model.Owner, uint64, uint64) error
+	AbortAgentTask(taskID string)
+	AgentTaskStatus(taskID string, digest [32]byte) (string, error)
+}
+
 func (c *SupervisorClient) ServeControl(ctx context.Context, controller RuntimeController) error {
 	connection, err := net.DialTimeout("unix", c.socketPath, 5*time.Second)
 	if err != nil {
@@ -222,6 +229,41 @@ func (c *SupervisorClient) executeControl(ctx context.Context, controller Runtim
 			err = decodeErr
 		} else {
 			err = controller.Resize(resize.Rows, resize.Cols, *request.OwnershipEpoch, generation)
+		}
+	case "supervisor.agent_prepare":
+		var prepare protocol.SupervisorAgentPrepare
+		agentController, supported := controller.(agentRuntimeController)
+		if decodeErr := decodeStrict(request.Body, &prepare); decodeErr != nil || prepare.Owner.Kind != model.OwnerCC || !supported {
+			err = fmt.Errorf("invalid agent prepare")
+		} else {
+			err = agentController.PrepareAgentTask(prepare.TaskID, prepare.PromptDigest, prepare.Prompt, prepare.Owner, *request.OwnershipEpoch, generation)
+		}
+	case "supervisor.agent_commit":
+		var commit protocol.SupervisorAgentCommit
+		agentController, supported := controller.(agentRuntimeController)
+		if decodeErr := decodeStrict(request.Body, &commit); decodeErr != nil || commit.Owner.Kind != model.OwnerCC || !supported {
+			err = fmt.Errorf("invalid agent commit")
+		} else {
+			err = agentController.CommitAgentTask(ctx, commit.TaskID, commit.PromptDigest, commit.Owner, *request.OwnershipEpoch, generation)
+		}
+	case "supervisor.agent_abort":
+		var abort protocol.SupervisorAgentAbort
+		agentController, supported := controller.(agentRuntimeController)
+		if decodeErr := decodeStrict(request.Body, &abort); decodeErr != nil || abort.TaskID == "" || !supported {
+			err = fmt.Errorf("invalid agent abort")
+		} else {
+			agentController.AbortAgentTask(abort.TaskID)
+		}
+	case "supervisor.agent_status":
+		var status protocol.SupervisorAgentStatus
+		agentController, supported := controller.(agentRuntimeController)
+		if decodeErr := decodeStrict(request.Body, &status); decodeErr != nil || !supported {
+			err = fmt.Errorf("invalid agent status query")
+		} else if state, statusErr := agentController.AgentTaskStatus(status.TaskID, status.PromptDigest); statusErr != nil {
+			err = statusErr
+		} else {
+			result, _ := json.Marshal(protocol.SupervisorAgentStatusResult{Status: state})
+			return protocol.Response{ID: request.ID, Result: result}
 		}
 	case "supervisor.terminate":
 		if len(request.Body) != 0 {

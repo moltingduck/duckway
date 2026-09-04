@@ -32,6 +32,49 @@ type BindOutcome struct {
 	Error   *protocol.Error      `json:"error,omitempty"`
 }
 
+func (s *Service) AdmitManagedTask(ctx context.Context, principal string, task store.ManagedTask) (store.ManagedTask, bool, *protocol.Error, error) {
+	if principal != principalFor(task.Owner) || task.Owner.Kind != model.OwnerCC {
+		return store.ManagedTask{}, false, &protocol.Error{Code: protocol.ErrNotOwner, Message: "task owner does not match authenticated CC"}, nil
+	}
+	stored, replayed, err := s.state.PrepareManagedTask(ctx, task)
+	if err == nil {
+		return stored, replayed, nil, nil
+	}
+	if errors.Is(err, store.ErrIdempotencyConflict) {
+		return store.ManagedTask{}, replayed, &protocol.Error{Code: protocol.ErrIdempotencyConflict, Message: err.Error()}, nil
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return store.ManagedTask{}, replayed, &protocol.Error{Code: protocol.ErrNotFound, Message: "Discord binding or session not found"}, nil
+	}
+	if code := mapError(err); code != protocol.ErrInvalidArgument {
+		return store.ManagedTask{}, replayed, &protocol.Error{Code: code, Message: err.Error()}, nil
+	}
+	return store.ManagedTask{}, replayed, nil, err
+}
+
+func (s *Service) MarkManagedTaskRunning(ctx context.Context, sessionID model.SessionID, taskID string, generation uint64) (store.ManagedTask, error) {
+	return s.state.MarkManagedTaskRunning(ctx, sessionID, taskID, generation)
+}
+
+func (s *Service) GetManagedTask(ctx context.Context, sessionID model.SessionID, taskID string) (store.ManagedTask, error) {
+	return s.state.GetManagedTask(ctx, sessionID, taskID)
+}
+
+func (s *Service) ValidateManagedTask(ctx context.Context, task store.ManagedTask) *protocol.Error {
+	if err := s.state.ValidateManagedTask(ctx, task); err != nil {
+		code := mapError(err)
+		if errors.Is(err, store.ErrNotFound) {
+			code = protocol.ErrNotFound
+		}
+		return &protocol.Error{Code: code, Message: err.Error()}
+	}
+	return nil
+}
+
+func (s *Service) FailManagedTask(ctx context.Context, sessionID model.SessionID, taskID, category string, generation uint64) error {
+	return s.state.FailManagedTask(ctx, sessionID, taskID, category, generation)
+}
+
 func (s *Service) BindDiscord(ctx context.Context, principal, requestID string, sessionID model.SessionID, channelHandle string) (BindOutcome, bool, error) {
 	if !strings.HasPrefix(principal, "cc:") || strings.TrimSpace(channelHandle) == "" || len(channelHandle) > 128 || strings.ContainsAny(channelHandle, "\x00\r\n") {
 		return BindOutcome{}, false, fmt.Errorf("valid CC principal and channel handle are required")
