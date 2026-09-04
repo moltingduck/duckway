@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -49,10 +49,18 @@ func (s *SQLite) ReplayMutation(ctx context.Context, key MutationKey) (MutationR
 	var fingerprint, response []byte
 	err := s.db.QueryRowContext(ctx, `SELECT operation,session_id,fingerprint,status,response_json FROM mutation_requests WHERE principal=? AND request_id=?`, key.Principal, key.RequestID).
 		Scan(&operation, &sessionID, &fingerprint, &status, &response)
-	if errors.Is(err, sql.ErrNoRows) { return MutationResult{}, false, nil }
-	if err != nil { return MutationResult{}, false, err }
-	if operation != key.Operation || sessionID != string(key.SessionID) || !equalBytes(fingerprint, key.Fingerprint[:]) { return MutationResult{}, true, ErrIdempotencyConflict }
-	if status != "completed" { return MutationResult{}, true, ErrMutationInProgress }
+	if errors.Is(err, sql.ErrNoRows) {
+		return MutationResult{}, false, nil
+	}
+	if err != nil {
+		return MutationResult{}, false, err
+	}
+	if operation != key.Operation || sessionID != string(key.SessionID) || !equalBytes(fingerprint, key.Fingerprint[:]) {
+		return MutationResult{}, true, ErrIdempotencyConflict
+	}
+	if status != "completed" {
+		return MutationResult{}, true, ErrMutationInProgress
+	}
 	return MutationResult{JSON: append(json.RawMessage(nil), response...), Replayed: true}, true, nil
 }
 
@@ -173,6 +181,11 @@ func (s *SQLite) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate ducklion schema to v2: %w", err)
 		}
 	}
+	if userVersion < 3 {
+		if err := migrateV3(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v3: %w", err)
+		}
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
 		return err
 	}
@@ -243,6 +256,15 @@ func migrateV2(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+func migrateV3(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `CREATE TABLE discord_bindings (
+		session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+		channel_handle TEXT NOT NULL UNIQUE,
+		management_handle TEXT NOT NULL,
+		created_at_ms INTEGER NOT NULL)`)
+	return err
 }
 
 func (s *SQLite) InstanceID(ctx context.Context) (model.InstanceID, error) {

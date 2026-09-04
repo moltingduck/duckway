@@ -26,3 +26,20 @@ func TestSplitDiscordContentSplitsLongMessages(t *testing.T) {
 		}
 	}
 }
+
+func TestCanonicalDucklionSessionID(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"ABC123", "ABC123"},
+		{"abc123", "ABC123"},
+	} {
+		got, err := canonicalDucklionSessionID(tc.input)
+		if err != nil || got != tc.want {
+			t.Fatalf("canonicalDucklionSessionID(%q) = %q, %v; want %q", tc.input, got, err, tc.want)
+		}
+	}
+	for _, invalid := range []string{"ABC12", "ABC12I", "ABC12O", "ABC12-"} {
+		if _, err := canonicalDucklionSessionID(invalid); err == nil {
+			t.Fatalf("canonicalDucklionSessionID(%q) unexpectedly succeeded", invalid)
+		}
+	}
+}

@@ -127,13 +127,6 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 		}
 		h.handleDestroy(ctx, botToken, cc, ch)
 
-	case "!reset":
-		if ch.Kind == "management" {
-			h.reply(ctx, botToken, ch.ChannelID, "❌ `!reset` clears the *current* channel's session — run it inside a task channel.")
-			return
-		}
-		h.handleReset(ctx, botToken, cc, ch)
-
 	case "!list":
 		if ch.Kind != "management" {
 			h.reply(ctx, botToken, ch.ChannelID, "❌ `!list` only works in the management channel.")
@@ -167,6 +160,13 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 		}
 		h.forwardToDaemon(ctx, botToken, cc, ch, cmd, args[1:])
 
+	case "!yield":
+		if ch.Kind == "management" {
+			h.reply(ctx, botToken, ch.ChannelID, "❌ `!yield` applies to one bound session — run it inside that task channel.")
+			return
+		}
+		h.forwardToDaemon(ctx, botToken, cc, ch, cmd, args[1:])
+
 	default:
 		h.reply(ctx, botToken, ch.ChannelID, unknownCommandReply(cmd))
 	}
@@ -175,7 +175,7 @@ func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.C
 // knownCommands is the canonical list used for `!help` discovery + the
 // fuzzy "did you mean" suggestion. Order is the user-facing display
 // order in !help.
-var knownCommands = []string{"!help", "!new", "!new-confirm", "!end", "!destroy", "!reset", "!list", "!status", "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-restart", "!duckway-update", "!log"}
+var knownCommands = []string{"!help", "!new", "!new-confirm", "!end", "!destroy", "!yield", "!list", "!status", "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-restart", "!duckway-update", "!log"}
 
 // unknownCommandReply formats the friendly response for an unrecognised
 // !-prefix command. Suggests close matches (Levenshtein distance ≤ 2)
@@ -346,35 +346,6 @@ func (h *CCCommandHandler) handleNew(ctx context.Context, botToken string, cc *m
 			"   Send a message in that channel to start a claude session.")
 }
 
-// handleReset wipes the channel's session_id without archiving the channel.
-// The next message starts a fresh claude session in the same cwd. Useful
-// when the agent wedges itself or you want a clean context but want to
-// keep the channel + history.
-func (h *CCCommandHandler) handleReset(ctx context.Context, botToken string, cc *models.ControlChannel, ch *models.CCChannel) {
-	prev := ch.SessionID
-	if err := h.cc.SetChannelSession(ch.Handle, "", ch.Cwd); err != nil {
-		h.reply(ctx, botToken, ch.ChannelID, "❌ reset failed: "+err.Error())
-		return
-	}
-	if h.hub != nil && cc.ClientID != "" {
-		// Daemons watching this channel should drop their cached
-		// session_id too. Reuse the channel_delete event shape — the
-		// daemon's runner will drop the session map entry. The Discord
-		// channel itself is NOT deleted; only the daemon's local
-		// session_id binding is.
-		h.hub.Publish(cc.ClientID, CCEvent{
-			Type:   "session_reset",
-			CCID:   cc.ID,
-			Handle: ch.Handle,
-		})
-	}
-	if prev == "" {
-		h.reply(ctx, botToken, ch.ChannelID, "♻️ No session was active. Next message starts a fresh one.")
-	} else {
-		h.reply(ctx, botToken, ch.ChannelID, "♻️ Session `"+short(prev, 8)+"` cleared. Next message starts fresh.")
-	}
-}
-
 // handleDestroy is the heavier sibling of !end. Both close the session,
 // but !end *archives* the Discord channel (rename + remove from category,
 // history preserved); !destroy hard-deletes via DELETE /channels/{id}
@@ -537,11 +508,11 @@ const helpText = "**Duckway CC commands**\n" +
 	"`!new-confirm <token>` — confirm creating a missing `--cwd` folder and saving it as a project\n" +
 	"`!end` — end the *current* task channel's session and **archive** it (history kept)\n" +
 	"`!destroy` — end and **hard-delete** the *current* task channel (history gone)\n" +
-	"`!reset` — wipe the *current* task channel's session_id; next message starts fresh\n" +
+	"`!yield [-w|--wait]` — request control of the current bound session; wait for active work when requested\n" +
 	"`!list` — list active task channels\n" +
 	"`!status` — daemon + session counts\n" +
-	"`!sessions [<cwd-filter>]` — list local claude sessions on the agent that aren't yet bound to a CC channel\n" +
-	"`!bind <session_id> [<session_id> …]` — create a task channel for each session_id and attach it (run `!sessions` first to find IDs)\n" +
+	"`!sessions` — list live Ducklion agent PTYs that aren't bound to Discord\n" +
+	"`!bind <session_id> [<session_id> …]` — create one task channel for each live Ducklion session\n" +
 	"`!projects [<filter>]` — list saved project folders from the agent machine\n" +
 	"`!duckway-version` — show the local duckway version on the client\n" +
 	"`!duckway-restart` — restart local duckway daemons on the client\n" +
@@ -578,15 +549,15 @@ func BuildWelcomeMessage(clientName string) string {
 		"`!new analyze --topic \"Q2 metrics\"`        — channel topic appears in Discord's UI\n" +
 		"\n" +
 		"**Inside a task channel**\n" +
-		"`!reset`   — clear the session id, next message starts a fresh claude\n" +
+		"`!yield`   — take control of a bound session when it is idle\n" +
 		"`!end`     — close session and **archive** the channel (history kept)\n" +
 		"`!destroy` — close session and **hard-delete** the channel (history gone)\n" +
 		"\n" +
 		"**Here in this channel**\n" +
 		"`!list`     — active task channels + which have running sessions\n" +
 		"`!status`   — daemon connection + session counts\n" +
-		"`!sessions` — list local claude sessions on the agent that aren't bound yet\n" +
-		"`!bind <session_id>` — create a task channel and resume that session (one channel per id, repeat for more)\n" +
+		"`!sessions` — list live Ducklion agent PTYs that aren't bound yet\n" +
+		"`!bind <session_id>` — create one task channel for a live Ducklion session\n" +
 		"`!duckway-version` — show the local duckway version on the client\n" +
 		"`!duckway-restart` — restart local duckway daemons on the client\n" +
 		"`!duckway-update [--restart]` — update the local duckway binary; optionally restart daemons\n" +

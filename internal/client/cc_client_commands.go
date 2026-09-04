@@ -18,7 +18,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/cccommand"
+	duckliondaemon "github.com/hackerduck/duckway/internal/ducklion/daemon"
+	"github.com/hackerduck/duckway/internal/ducklion/model"
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 )
 
 // clientCommandPayload is what the server packs into a `client_command`
@@ -211,9 +215,11 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 
 	switch payload.Command {
 	case "!sessions":
-		w.cmdSessions(ctx, env.Handle, payload.Args)
+		w.cmdDucklionSessions(ctx, env.Handle, payload.Args)
 	case "!bind":
-		w.cmdBind(ctx, env.Handle, payload.Args)
+		w.cmdDucklionBind(ctx, env.Handle, payload.Args)
+	case "!yield":
+		w.cmdYield(ctx, env.Handle, payload.Args)
 	case "!projects":
 		w.cmdProjects(ctx, env.Handle, payload.Args)
 	case "!new":
@@ -234,6 +240,236 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 		_ = w.api.PostCC(ctx, env.Handle,
 			"❌ daemon doesn't know how to handle `"+payload.Command+"` — update your `duckway` binary on the agent.")
 	}
+}
+
+func (w *CCWatch) dialDucklionCC(handle string) (*duckliondaemon.Client, error) {
+	socketPath := filepath.Join(w.configDir, "ducklion", "ducklion.sock")
+	return duckliondaemon.DialCC(socketPath, handle)
+}
+
+func (w *CCWatch) cmdYield(ctx context.Context, replyHandle string, args []string) {
+	wait := len(args) == 1 && (args[0] == "-w" || args[0] == "--wait")
+	client, err := w.dialDucklionCC(replyHandle)
+	if err != nil {
+		_ = w.api.PostCC(ctx, replyHandle, "❌ Ducklion is unavailable, so control was not transferred: "+err.Error())
+		return
+	}
+	defer client.Close()
+	binding, err := client.CurrentDiscordBinding(ctx)
+	if err != nil {
+		if isDucklionNotFound(err) {
+			_ = w.api.PostCC(ctx, replyHandle, "❌ This Discord channel is not bound to a Ducklion session.")
+		} else {
+			_ = w.api.PostCC(ctx, replyHandle, "❌ Could not resolve this channel's Ducklion binding: "+err.Error())
+		}
+		return
+	}
+	sessions, err := client.ListSessions()
+	if err != nil {
+		_ = w.api.PostCC(ctx, replyHandle, "❌ Could not read the current session state: "+err.Error())
+		return
+	}
+	var selected *protocol.SessionSummary
+	for i := range sessions {
+		if sessions[i].SessionID == binding.SessionID {
+			selected = &sessions[i]
+			break
+		}
+	}
+	if selected == nil {
+		_ = w.api.PostCC(ctx, replyHandle, "❌ The bound Ducklion session no longer exists.")
+		return
+	}
+	operationID := uuid.NewString()
+	result, err := client.YieldSessionWithID(ctx, operationID, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, wait)
+	if err != nil && !isAuthoritativeDucklionError(err) {
+		if retry, dialErr := w.dialDucklionCC(replyHandle); dialErr == nil {
+			result, err = retry.YieldSessionWithID(ctx, operationID, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, wait)
+			_ = retry.Close()
+		}
+	}
+	if err != nil {
+		_ = w.api.PostCC(ctx, replyHandle, formatCCYieldError(err, wait))
+		return
+	}
+	switch result.Decision {
+	case "waiting":
+		_ = w.api.PostCC(ctx, replyHandle, "⏳ Control transfer queued. Discord will become the writer as soon as the current task finishes.")
+	case "unchanged":
+		_ = w.api.PostCC(ctx, replyHandle, "ℹ️ Discord already controls this session.")
+	default:
+		_ = w.api.PostCC(ctx, replyHandle, fmt.Sprintf("✅ Discord now owns session `%s` (epoch %d).", result.SessionID, result.OwnershipEpoch))
+	}
+}
+
+func formatCCYieldError(err error, wait bool) string {
+	var remote *duckliondaemon.RemoteError
+	if errors.As(err, &remote) {
+		switch remote.Detail.Code {
+		case protocol.ErrTaskActive:
+			return "❌ A task is still running. Use `!yield -w` to take control immediately after it finishes."
+		case protocol.ErrPendingYield:
+			return "❌ Another controller is already waiting for this session."
+		case protocol.ErrAdapterUnhealthy:
+			return "❌ This session's agent adapter is unavailable; Ducklion cannot safely determine whether it is idle."
+		}
+	}
+	mode := "yield"
+	if wait {
+		mode = "wait-yield"
+	}
+	return "❌ Ducklion rejected the " + mode + " request: " + err.Error()
+}
+
+func (w *CCWatch) cmdDucklionSessions(ctx context.Context, replyHandle string, args []string) {
+	client, err := w.dialDucklionCC(replyHandle)
+	if err != nil {
+		_ = w.api.PostCC(ctx, replyHandle, "❌ Ducklion is unavailable: "+err.Error())
+		return
+	}
+	defer client.Close()
+	sessions, err := client.ListSessions()
+	if err != nil {
+		_ = w.api.PostCC(ctx, replyHandle, "❌ Could not list Ducklion sessions: "+err.Error())
+		return
+	}
+	filter := strings.TrimSpace(strings.Join(args, " "))
+	var rows []protocol.SessionSummary
+	for _, session := range sessions {
+		if session.Kind != "agent" || session.ChannelHandle != "" || filter != "" && !strings.Contains(session.CWD, filter) {
+			continue
+		}
+		rows = append(rows, session)
+	}
+	if len(rows) == 0 {
+		_ = w.api.PostCC(ctx, replyHandle, "_(no unbound Ducklion agent sessions found)_")
+		return
+	}
+	var b strings.Builder
+	b.WriteString("**Unbound Ducklion agent sessions:**\n")
+	for _, session := range rows {
+		fmt.Fprintf(&b, "• `%s` — **%s** · `%s` · %s/%s · owner `%s:%s`\n", session.SessionID, session.Handle, session.CWD,
+			session.Status, session.AdapterState, ownerKind(session.Writer), ownerID(session.Writer))
+	}
+	b.WriteString("\nUse `!bind <session-id>` to create a read-only Discord task channel. Use `!yield` there when you want Discord to take control.")
+	_ = w.api.PostCC(ctx, replyHandle, b.String())
+}
+
+func ownerKind(owner *model.Owner) string {
+	if owner == nil {
+		return "shared"
+	}
+	return string(owner.Kind)
+}
+
+func ownerID(owner *model.Owner) string {
+	if owner == nil {
+		return "-"
+	}
+	return owner.ID
+}
+
+func (w *CCWatch) cmdDucklionBind(ctx context.Context, replyHandle string, args []string) {
+	client, err := w.dialDucklionCC(replyHandle)
+	if err != nil {
+		_ = w.api.PostCC(ctx, replyHandle, "❌ Ducklion is unavailable: "+err.Error())
+		return
+	}
+	defer client.Close()
+	sessions, err := client.ListSessions()
+	if err != nil {
+		_ = w.api.PostCC(ctx, replyHandle, "❌ Could not list Ducklion sessions: "+err.Error())
+		return
+	}
+	byID := make(map[string]protocol.SessionSummary, len(sessions))
+	for _, session := range sessions {
+		byID[session.SessionID] = session
+	}
+	results := make([]BindResult, 0, len(args))
+	for _, id := range args {
+		session, ok := byID[id]
+		result := BindResult{SessionID: id}
+		if !ok || session.Kind != "agent" {
+			result.Error = "managed agent session not found"
+			results = append(results, result)
+			continue
+		}
+		result.Cwd = session.CWD
+		if session.ChannelHandle != "" {
+			result.AlreadyBound = session.ChannelHandle
+			results = append(results, result)
+			continue
+		}
+		created, createErr := w.api.CreateCCChannel(ctx, discordChannelNameFromCwd(session.Handle), "Ducklion session "+session.SessionID, session.CWD)
+		if createErr != nil {
+			result.Error = "create channel: " + createErr.Error()
+			results = append(results, result)
+			continue
+		}
+		// Reserve routing before activation. From this point, inbound prompts
+		// fail closed even if Ducklion or the local cache is temporarily lost.
+		if markerErr := w.api.SetCCChannelSession(ctx, created.Handle, session.SessionID, session.CWD); markerErr != nil {
+			_ = w.api.ArchiveCCChannel(ctx, created.Handle)
+			result.Error = "reserve channel binding: " + markerErr.Error()
+			results = append(results, result)
+			continue
+		}
+		// The server marker is authoritative; a local cache failure must not
+		// strand the reservation before Ducklion activation.
+		_ = w.sessions.Set(created.Handle, session.SessionID)
+		operationID := uuid.NewString()
+		binding, bindErr := client.BindDiscordSession(ctx, operationID, session.SessionID, created.Handle)
+		if bindErr != nil {
+			// A transport failure may mean the commit succeeded and only its
+			// response was lost. Reconnect and reconcile before any cleanup.
+			if check, dialErr := w.dialDucklionCC(replyHandle); dialErr == nil {
+				// Retry the same mutation ID first: Ducklion either replays a
+				// committed result or performs the request that was never received.
+				binding, bindErr = check.BindDiscordSession(ctx, operationID, session.SessionID, created.Handle)
+				committed, lookupErr := check.DiscordBindingForSession(ctx, session.SessionID)
+				_ = check.Close()
+				if bindErr == nil {
+					committed, lookupErr = binding, nil
+				}
+				if lookupErr == nil && committed.ChannelHandle == created.Handle {
+					binding, bindErr = committed, nil
+				} else if isAuthoritativeDucklionError(bindErr) && (isDucklionNotFound(lookupErr) || lookupErr == nil && committed.ChannelHandle != created.Handle) {
+					_ = w.api.SetCCChannelSession(ctx, created.Handle, "", session.CWD)
+					_ = w.api.ArchiveCCChannel(ctx, created.Handle)
+					if lookupErr == nil && committed.ChannelHandle != "" {
+						result.AlreadyBound = committed.ChannelHandle
+					}
+				}
+			}
+			if bindErr != nil {
+				if result.AlreadyBound != "" {
+					results = append(results, result)
+					continue
+				}
+				result.Error = "binding outcome unknown; channel was preserved and prompts will remain queued: " + bindErr.Error()
+				results = append(results, result)
+				continue
+			}
+		}
+		if cacheErr := w.sessions.Set(binding.ChannelHandle, binding.SessionID); cacheErr != nil {
+			result.Error = "binding activated, but local cache could not be written: " + cacheErr.Error()
+			results = append(results, result)
+			continue
+		}
+		result.Channel, result.Name = binding.ChannelHandle, created.Name
+		results = append(results, result)
+	}
+	_ = w.api.PostCC(ctx, replyHandle, formatBindReport(results))
+}
+
+func isDucklionNotFound(err error) bool {
+	var remote *duckliondaemon.RemoteError
+	return errors.As(err, &remote) && remote.Detail.Code == protocol.ErrNotFound
+}
+
+func isAuthoritativeDucklionError(err error) bool {
+	var remote *duckliondaemon.RemoteError
+	return errors.As(err, &remote) && !remote.Detail.Retryable
 }
 
 func (w *CCWatch) cmdLog(ctx context.Context, replyHandle string, args []string) {

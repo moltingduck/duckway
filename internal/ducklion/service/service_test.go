@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -45,6 +46,33 @@ func TestCreateSessionAllowsDuplicateHandlesAndReplays(t *testing.T) {
 	}
 	if got, err := state.GetSession(ctx, second.ID); err != nil || got.Handle != first.Handle {
 		t.Fatalf("second=%+v err=%v", got, err)
+	}
+}
+
+func TestBindDiscordIsOneToOneAndReplayable(t *testing.T) {
+	ctx := context.Background()
+	service, state := openService(t)
+	first := newAgent("ABC123", "first", model.TaskIdle)
+	second := newAgent("DEF456", "second", model.TaskIdle)
+	for i, session := range []model.Session{first, second} {
+		if _, _, err := service.CreateSession(ctx, "cc:channel-1", fmt.Sprintf("create-%d", i), session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	outcome, replayed, err := service.BindDiscord(ctx, "cc:management", "bind-1", first.ID, "task-one")
+	if err != nil || replayed || outcome.Error != nil || outcome.Binding.SessionID != first.ID {
+		t.Fatalf("bind=%+v replayed=%v err=%v", outcome, replayed, err)
+	}
+	if _, replayed, err := service.BindDiscord(ctx, "cc:management", "bind-1", first.ID, "task-one"); err != nil || !replayed {
+		t.Fatalf("bind replay=%v err=%v", replayed, err)
+	}
+	conflict, _, err := service.BindDiscord(ctx, "cc:management", "bind-2", second.ID, "task-one")
+	if err != nil || conflict.Error == nil || conflict.Error.Code != protocol.ErrBusy {
+		t.Fatalf("binding conflict=%+v err=%v", conflict, err)
+	}
+	got, err := state.GetBindingByChannel(ctx, "task-one")
+	if err != nil || got.SessionID != first.ID || got.ManagementHandle != "management" {
+		t.Fatalf("binding=%+v err=%v", got, err)
 	}
 }
 

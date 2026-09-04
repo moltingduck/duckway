@@ -19,12 +19,13 @@ type CCEventHub struct {
 
 // CCEvent is the shape pushed to subscribers and serialized as SSE data.
 type CCEvent struct {
-	Type    string          `json:"type"`              // message_create, message_update, message_delete, channel_delete, channel_update, session_reset
-	CCID    string          `json:"cc_id"`
-	Handle  string          `json:"channel_handle"`     // empty if channel not in our cache
-	Kind    string          `json:"channel_kind,omitempty"` // "management" | "task" — lets the daemon adjust the prompt without an extra HTTP call
-	Payload json.RawMessage `json:"payload,omitempty"`  // raw Discord dispatch
-	InboxID int64           `json:"inbox_id,omitempty"` // 0 when the event was not appended (e.g. channel_delete)
+	Type      string          `json:"type"` // message_create, message_update, message_delete, channel_delete, channel_update, session_reset
+	CCID      string          `json:"cc_id"`
+	Handle    string          `json:"channel_handle"`         // empty if channel not in our cache
+	Kind      string          `json:"channel_kind,omitempty"` // "management" | "task" — lets the daemon adjust the prompt without an extra HTTP call
+	SessionID string          `json:"session_id,omitempty"`   // authoritative managed Ducklion routing marker
+	Payload   json.RawMessage `json:"payload,omitempty"`      // raw Discord dispatch
+	InboxID   int64           `json:"inbox_id,omitempty"`     // 0 when the event was not appended (e.g. channel_delete)
 }
 
 func NewCCEventHub() *CCEventHub {

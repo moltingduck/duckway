@@ -27,6 +27,50 @@ type Outcome struct {
 	Error          *protocol.Error     `json:"error,omitempty"`
 }
 
+type BindOutcome struct {
+	Binding store.DiscordBinding `json:"binding"`
+	Error   *protocol.Error      `json:"error,omitempty"`
+}
+
+func (s *Service) BindDiscord(ctx context.Context, principal, requestID string, sessionID model.SessionID, channelHandle string) (BindOutcome, bool, error) {
+	if !strings.HasPrefix(principal, "cc:") || strings.TrimSpace(channelHandle) == "" || len(channelHandle) > 128 || strings.ContainsAny(channelHandle, "\x00\r\n") {
+		return BindOutcome{}, false, fmt.Errorf("valid CC principal and channel handle are required")
+	}
+	payload, _ := json.Marshal(struct {
+		Channel string `json:"channel_handle"`
+	}{channelHandle})
+	key := store.MutationKey{Principal: principal, RequestID: requestID, Operation: "bind_discord", SessionID: sessionID}
+	key.Fingerprint = store.Fingerprint(key.Operation, sessionID, payload)
+	result, err := s.state.RunMutation(ctx, key, func(tx *sql.Tx) (json.RawMessage, error) {
+		session, err := s.state.GetSessionTx(ctx, tx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if session.Kind != model.KindAgent || session.Status != model.StatusRunning || session.AdapterState != model.AdapterHealthy {
+			return json.Marshal(BindOutcome{Error: &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "only a running agent session with a healthy adapter can be bound"}})
+		}
+		binding := store.DiscordBinding{SessionID: sessionID, ChannelHandle: channelHandle, ManagementHandle: strings.TrimPrefix(principal, "cc:"), CreatedAtMS: time.Now().UTC().UnixMilli()}
+		if err := s.state.InsertBindingTx(ctx, tx, binding); err != nil {
+			if errors.Is(err, store.ErrBindingConflict) {
+				return json.Marshal(BindOutcome{Error: &protocol.Error{Code: protocol.ErrBusy, Message: "session or channel is already bound"}})
+			}
+			return nil, err
+		}
+		if err := s.audit(ctx, tx, principal, "bind_discord", "ok", session); err != nil {
+			return nil, err
+		}
+		return json.Marshal(BindOutcome{Binding: binding})
+	})
+	if err != nil {
+		return BindOutcome{}, false, err
+	}
+	var outcome BindOutcome
+	if err := json.Unmarshal(result.JSON, &outcome); err != nil {
+		return BindOutcome{}, false, err
+	}
+	return outcome, result.Replayed, nil
+}
+
 func (s *Service) CreateSession(ctx context.Context, principal, requestID string, session model.Session) (Outcome, bool, error) {
 	if err := session.Validate(); err != nil {
 		return Outcome{}, false, err

@@ -84,12 +84,12 @@ func TestSuggestCommands(t *testing.T) {
 		typed string
 		want  []string
 	}{
-		{"!lits", []string{"!list"}},    // 1 edit
-		{"!hep", []string{"!help"}},     // 1 deletion
-		{"!hlep", []string{"!help"}},    // 1 transposition (= 2 edits)
-		{"!resset", []string{"!reset"}}, // 1 insertion
-		{"!frobnicate", nil},            // too far
-		{"!nw", []string{"!new"}},       // 1 deletion
+		{"!lits", []string{"!list"}},   // 1 edit
+		{"!hep", []string{"!help"}},    // 1 deletion
+		{"!hlep", []string{"!help"}},   // 1 transposition (= 2 edits)
+		{"!yeild", []string{"!yield"}}, // transposition
+		{"!frobnicate", nil},           // too far
+		{"!nw", []string{"!new"}},      // 1 deletion
 	}
 	for _, c := range cases {
 		got := suggestCommands(c.typed, 2)
@@ -151,7 +151,7 @@ func TestBuildWelcomeMessage(t *testing.T) {
 		"my-laptop", // client name appears
 		"!new",      // every command is mentioned
 		"!end",
-		"!reset",
+		"!yield",
 		"!list",
 		"!status",
 		"!help",
@@ -429,7 +429,7 @@ func TestHandle_RejectsInvalidArgumentsBeforeSideEffects(t *testing.T) {
 		{h.mgmt, "!new-confirm --force"},
 		{task, "!end --force"},
 		{task, "!destroy --force"},
-		{task, "!reset --force"},
+		{task, "!yield --force"},
 		{h.mgmt, "!list --all"},
 		{h.mgmt, "!status --json"},
 		{h.mgmt, "!sessions --all"},
@@ -750,45 +750,30 @@ func TestHandle_Destroy_RejectsInManagement(t *testing.T) {
 	}
 }
 
-func TestHandle_Reset_FromTaskChannel(t *testing.T) {
+func TestHandle_Yield_ForwardsOnlyFromTaskChannel(t *testing.T) {
 	h := newCommandHarness(t)
-	if _, err := h.db.Exec(`INSERT INTO cc_channels VALUES ('dwch_t','cc1','client1','T1','t','','task','sess-aaa','/cwd',0,datetime('now'),null)`); err != nil {
+	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!yield")
+	if !h.lastReplyContains("inside that task channel") {
+		t.Fatalf("management yield reply=%v", h.reqs)
+	}
+	if _, err := h.db.Exec(`INSERT INTO cc_channels VALUES ('dwch_t','cc1','client1','T1','task','','task','','/cwd',0,datetime('now'),null)`); err != nil {
 		t.Fatal(err)
 	}
 	task, _ := h.cc.GetChannelByHandle("dwch_t")
 	sub, unsub := h.hub.Subscribe("client1")
 	defer unsub()
-
-	h.handler.Handle(context.Background(), "cc1", task, "!reset")
-
-	// Session_id cleared in DB
-	updated, _ := h.cc.GetChannelByHandle("dwch_t")
-	if updated.SessionID != "" {
-		t.Errorf("session_id should be cleared, got %q", updated.SessionID)
-	}
-	// Channel still exists (NOT archived)
-	if updated.Archived {
-		t.Error("!reset should not archive the channel")
-	}
-	// Hub fired session_reset
+	h.handler.Handle(context.Background(), "cc1", task, "!yield -w")
 	select {
-	case ev := <-sub:
-		if ev.Type != "session_reset" || ev.Handle != "dwch_t" {
-			t.Errorf("unexpected event: %+v", ev)
+	case event := <-sub:
+		var payload struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		}
+		if event.Type != "client_command" || event.Handle != "dwch_t" || event.Kind != "task" || json.Unmarshal(event.Payload, &payload) != nil || payload.Command != "!yield" || !reflect.DeepEqual(payload.Args, []string{"-w"}) {
+			t.Fatalf("yield event=%+v payload=%+v", event, payload)
 		}
 	case <-time.After(time.Second):
-		t.Error("expected session_reset event")
-	}
-	if !h.lastReplyContains("Session") {
-		t.Errorf("expected reset reply, got %v", h.reqs)
-	}
-}
-
-func TestHandle_Reset_RejectsInManagement(t *testing.T) {
-	h := newCommandHarness(t)
-	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!reset")
-	if !h.lastReplyContains("inside a task channel") {
-		t.Errorf("expected scope error, got %v", h.reqs)
+		t.Fatal("yield was not forwarded")
 	}
 }
 

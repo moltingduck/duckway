@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/hackerduck/duckway/internal/ducklion/model"
 )
 
 // CCWatch is the `duckway cc watch` daemon. It connects to the server's
@@ -280,6 +282,7 @@ type sseEnvelope struct {
 	Kind         string          `json:"channel_kind"`
 	Payload      json.RawMessage `json:"payload"`
 	InboxID      int64           `json:"inbox_id,omitempty"`
+	SessionID    string          `json:"session_id,omitempty"`
 	ClaimToken   string          `json:"claim_token,omitempty"`
 	AttemptCount int             `json:"attempt_count,omitempty"`
 }
@@ -338,12 +341,14 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 				status = "dead_letter"
 			}
 		}
+		finished := true
 		if env.InboxID > 0 {
 			if err := w.api.FinishCCInbox(context.Background(), env.InboxID, env.ClaimToken, status, errText); err != nil {
 				log.Printf("[cc-watch] finish inbox %d: %v", env.InboxID, err)
+				finished = false
 			}
 		}
-		if success && msg.ID != "" {
+		if success && finished && msg.ID != "" {
 			_ = w.processed.Mark(msg.ID, env.Handle)
 		}
 	}
@@ -353,6 +358,9 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 				log.Printf("[cc-watch] renew inbox %d: %v", env.InboxID, err)
 			}
 		}
+	}
+	if w.preflightBoundDucklionPrompt(env.Handle, env.SessionID, contentOrAttachmentSummary(msg), finishClaim) {
+		return
 	}
 
 	var runner *ccRunner
@@ -428,6 +436,76 @@ func (w *CCWatch) handleMessageCreate(data []byte) {
 	}
 }
 
+func contentOrAttachmentSummary(msg payloadMessageCreate) string {
+	if strings.TrimSpace(msg.Content) != "" {
+		return msg.Content
+	}
+	return "attachment prompt"
+}
+
+// preflightBoundDucklionPrompt prevents a durable Discord prompt from falling
+// through to the legacy one-process-per-turn runner once a channel is bound to
+// a managed PTY. Rejection due to ownership is a successful durable delivery:
+// Ducklion made an authoritative decision and the reason is posted in-channel.
+func (w *CCWatch) preflightBoundDucklionPrompt(handle, authoritativeSession, prompt string, finish func(bool, string)) bool {
+	knownSession := authoritativeSession
+	if knownSession == "" {
+		knownSession = w.sessions.Get(handle)
+	}
+	_, parseErr := model.ParseSessionID(knownSession)
+	knownManaged := parseErr == nil
+	client, err := w.dialDucklionCC(handle)
+	if err != nil {
+		if !knownManaged {
+			return false
+		}
+		message := "Ducklion is unavailable; the bound prompt remains queued for retry"
+		_ = w.api.PostCC(context.Background(), handle, "❌ "+message)
+		finish(false, message)
+		return true
+	}
+	defer client.Close()
+	binding, err := client.CurrentDiscordBinding(context.Background())
+	if err != nil {
+		if knownManaged {
+			message := "Ducklion no longer recognizes this channel binding"
+			_ = w.api.PostCC(context.Background(), handle, "❌ "+message)
+			finish(false, message)
+			return true
+		}
+		return false
+	}
+	_ = w.sessions.Set(handle, binding.SessionID)
+	sessions, err := client.ListSessions()
+	if err != nil {
+		finish(false, err.Error())
+		return true
+	}
+	for _, session := range sessions {
+		if session.SessionID != binding.SessionID {
+			continue
+		}
+		if session.Writer == nil || session.Writer.Kind != model.OwnerCC || session.Writer.ID != handle {
+			owner := ownerKind(session.Writer) + ":" + ownerID(session.Writer)
+			message := fmt.Sprintf("This prompt was not sent: session `%s` is controlled by `%s`. Run `!yield` or `!yield -w` in this channel to request control.", session.SessionID, owner)
+			if err := w.api.PostCC(context.Background(), handle, "❌ "+message); err != nil {
+				finish(false, "post ownership rejection: "+err.Error())
+			} else {
+				finish(true, "not owner")
+			}
+			return true
+		}
+		message := fmt.Sprintf("Managed prompt delivery for session `%s` is waiting for its native agent adapter; the prompt remains queued.", session.SessionID)
+		_ = w.api.PostCC(context.Background(), handle, "⏳ "+message)
+		finish(false, "native agent adapter unavailable: "+truncatePreview(prompt))
+		return true
+	}
+	message := "The bound Ducklion session no longer exists"
+	_ = w.api.PostCC(context.Background(), handle, "❌ "+message)
+	finish(false, message)
+	return true
+}
+
 func (w *CCWatch) onSSEConnected(ctx context.Context) {
 	w.mu.Lock()
 	wasConnected := w.sseConnected
@@ -439,7 +517,7 @@ func (w *CCWatch) onSSEConnected(ctx context.Context) {
 }
 
 // handleSessionReset clears the daemon's cached session_id for a handle
-// (server-side `!reset` command). The runner stays alive — only the
+// (legacy server-side session reset event). The runner stays alive — only the
 // session map entry is dropped, so the next message starts the agent
 // without --resume.
 func (w *CCWatch) handleSessionReset(data []byte) {
@@ -824,6 +902,7 @@ func (w *CCWatch) handleInboxEvent(ev CCInboxEvent) {
 		InboxID:      ev.ID,
 		ClaimToken:   ev.ClaimToken,
 		AttemptCount: ev.AttemptCount,
+		SessionID:    ev.SessionID,
 	}
 	data, _ := json.Marshal(env)
 	if eventType == "message_create" {

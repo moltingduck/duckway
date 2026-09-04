@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
+	ducklionmodel "github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/models"
 	"github.com/hackerduck/duckway/internal/server/middleware"
 	svc "github.com/hackerduck/duckway/internal/server/services"
@@ -272,6 +273,50 @@ func (h *CCClientHandler) ArchiveChannel(w http.ResponseWriter, r *http.Request)
 		log.Printf("[cc-client] MarkChannelArchived %s: %v", handle, err)
 	}
 	jsonResponse(w, map[string]string{"status": "archived"})
+}
+
+// SetChannelSession stores the authoritative Ducklion routing marker. An empty
+// session_id clears a reservation after an authoritative bind rejection.
+func (h *CCClientHandler) SetChannelSession(w http.ResponseWriter, r *http.Request) {
+	handle := r.PathValue("handle")
+	_, cc, _, ok := h.resolveCC(w, r)
+	if !ok {
+		return
+	}
+	ch, ok := h.resolveHandle(w, cc.ID, handle)
+	if !ok {
+		return
+	}
+	if ch.Kind != "task" {
+		jsonError(w, "only task channels can bind sessions", http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+		Cwd       string `json:"cwd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if req.SessionID != "" {
+		parsed, err := canonicalDucklionSessionID(req.SessionID)
+		if err != nil {
+			jsonError(w, "invalid Ducklion session_id", http.StatusBadRequest)
+			return
+		}
+		req.SessionID = parsed
+	}
+	if err := h.cc.SetChannelSession(handle, req.SessionID, req.Cwd); err != nil {
+		jsonError(w, "set channel session: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "ok", "session_id": req.SessionID})
+}
+
+func canonicalDucklionSessionID(value string) (string, error) {
+	parsed, err := ducklionmodel.ParseSessionID(value)
+	return string(parsed), err
 }
 
 // POST /client/cc/channels/{handle}/messages — post a message.
@@ -640,6 +685,11 @@ func (h *CCClientHandler) ClaimInbox(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		jsonError(w, "claim inbox: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if ev.ChannelHandle != nil {
+		if ch, lookupErr := h.cc.GetChannelByHandle(*ev.ChannelHandle); lookupErr == nil && ch.CCID == cc.ID {
+			ev.SessionID = ch.SessionID
+		}
 	}
 	jsonResponse(w, ev)
 }

@@ -180,6 +180,7 @@ type CCInboxEvent struct {
 	Status        string  `json:"status,omitempty"`
 	ClaimToken    string  `json:"claim_token,omitempty"`
 	AttemptCount  int     `json:"attempt_count,omitempty"`
+	SessionID     string  `json:"session_id,omitempty"`
 }
 
 func (c *APIClient) ClaimCCInbox(ctx context.Context, leaseSeconds int) (*CCInboxEvent, error) {
@@ -231,6 +232,26 @@ func (c *APIClient) FinishCCInbox(ctx context.Context, id int64, claimToken, sta
 
 func (c *APIClient) RenewCCInbox(ctx context.Context, id int64, claimToken string) error {
 	return c.FinishCCInbox(ctx, id, claimToken, "claimed", "")
+}
+
+func (c *APIClient) SetCCChannelSession(ctx context.Context, handle, sessionID, cwd string) error {
+	body, _ := json.Marshal(map[string]string{"session_id": sessionID, "cwd": cwd})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/client/cc/channels/"+url.PathEscape(handle)+"/session", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("set cc channel session: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("set cc channel session returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
 }
 
 type CCInboxResponse struct {
@@ -619,6 +640,24 @@ func (c *APIClient) CreateCCChannel(ctx context.Context, name, topic, cwd string
 		return nil, fmt.Errorf("parse: %w", err)
 	}
 	return &out, nil
+}
+
+func (c *APIClient) ArchiveCCChannel(ctx context.Context, handle string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/client/cc/channels/"+url.PathEscape(handle)+"/archive", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("archive channel: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("archive channel: server %d: %s", resp.StatusCode, string(raw))
+	}
+	return nil
 }
 
 // PostCC posts a bot-author message to a CC channel by handle.

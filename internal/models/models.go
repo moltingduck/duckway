@@ -343,6 +343,7 @@ type InboxEvent struct {
 	Status        string  `json:"status,omitempty"`
 	ClaimToken    string  `json:"claim_token,omitempty"`
 	AttemptCount  int     `json:"attempt_count,omitempty"`
+	SessionID     string  `json:"session_id,omitempty"`
 	LastError     string  `json:"last_error,omitempty"`
 	CreatedAt     string  `json:"created_at"`
 }

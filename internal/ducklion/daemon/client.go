@@ -105,7 +105,7 @@ func ConnectRoleContext(ctx context.Context, conn io.ReadWriteCloser, principal 
 	setDeadline(conn, time.Now().Add(10*time.Second))
 	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}
 	if role == protocol.RoleDuckwayCC {
-		offeredCapabilities = []string{"status", "sessions_list", "session_yield", "session_task"}
+		offeredCapabilities = []string{"status", "sessions_list", "session_yield", "session_task", "discord_binding"}
 	}
 	if err := codec.Write(protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: role, Principal: principal, Capabilities: offeredCapabilities}); err != nil {
 		conn.Close()
@@ -629,6 +629,61 @@ func (c *Client) sessionTask(ctx context.Context, operation, requestID, sessionI
 		return protocol.SessionTaskResult{}, &RemoteError{Detail: *response.Error}
 	}
 	var result protocol.SessionTaskResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (c *Client) BindDiscordSession(ctx context.Context, requestID, sessionID, channelHandle string) (protocol.SessionBinding, error) {
+	if err := c.requireCapability("discord_binding"); err != nil {
+		return protocol.SessionBinding{}, err
+	}
+	body, _ := json.Marshal(protocol.SessionBind{ChannelHandle: channelHandle})
+	response, err := c.CallContext(ctx, protocol.Request{ID: requestID, Type: "session.bind_discord", InstanceID: c.instanceID, SessionID: sessionID, Body: body})
+	if err != nil {
+		return protocol.SessionBinding{}, err
+	}
+	if response.Error != nil {
+		return protocol.SessionBinding{}, &RemoteError{Detail: *response.Error}
+	}
+	var result protocol.SessionBinding
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (c *Client) CurrentDiscordBinding(ctx context.Context) (protocol.SessionBinding, error) {
+	if err := c.requireCapability("discord_binding"); err != nil {
+		return protocol.SessionBinding{}, err
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "binding.current", InstanceID: c.instanceID})
+	if err != nil {
+		return protocol.SessionBinding{}, err
+	}
+	if response.Error != nil {
+		return protocol.SessionBinding{}, &RemoteError{Detail: *response.Error}
+	}
+	var result protocol.SessionBinding
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (c *Client) DiscordBindingForSession(ctx context.Context, sessionID string) (protocol.SessionBinding, error) {
+	if err := c.requireCapability("discord_binding"); err != nil {
+		return protocol.SessionBinding{}, err
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "binding.by_session", InstanceID: c.instanceID, SessionID: sessionID})
+	if err != nil {
+		return protocol.SessionBinding{}, err
+	}
+	if response.Error != nil {
+		return protocol.SessionBinding{}, &RemoteError{Detail: *response.Error}
+	}
+	var result protocol.SessionBinding
 	if err := json.Unmarshal(response.Result, &result); err != nil {
 		return result, err
 	}

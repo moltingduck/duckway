@@ -271,7 +271,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 	}
 	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}
 	if remote.Role == protocol.RoleDuckwayCC {
-		capabilities = []string{"status", "sessions_list", "session_yield", "session_task"}
+		capabilities = []string{"status", "sessions_list", "session_yield", "session_task", "discord_binding"}
 	}
 	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: capabilities}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
@@ -862,10 +862,15 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 		}
 		summaries := make([]protocol.SessionSummary, 0, len(sessions))
 		for _, session := range sessions {
-			summaries = append(summaries, protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind,
+			summary := protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind,
 				AgentType: session.AgentType, CWD: session.CWD, Status: session.Status, Writer: session.Writer, OwnershipEpoch: session.OwnershipEpoch,
 				RuntimeGeneration: session.RuntimeGeneration, TaskState: session.TaskState, AdapterState: session.AdapterState,
-				ExitSuccess: session.ExitSuccess, ExitReason: session.ExitReason})
+				ExitSuccess: session.ExitSuccess, ExitReason: session.ExitReason}
+			if binding, bindErr := s.state.GetBindingBySession(context.Background(), session.ID); bindErr == nil {
+				summary.ChannelHandle = binding.ChannelHandle
+				summary.ManagementHandle = binding.ManagementHandle
+			}
+			summaries = append(summaries, summary)
 		}
 		result, _ := json.Marshal(summaries)
 		return protocol.Response{ID: request.ID, Result: result}
@@ -889,6 +894,21 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session task capability was not negotiated"}}
 		}
 		return s.routeSessionTask(request, principal)
+	case "session.bind_discord":
+		if role != protocol.RoleDuckwayCC || !hasCapability(capabilities, "discord_binding") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "Discord binding capability was not negotiated"}}
+		}
+		return s.routeSessionBind(request, principal)
+	case "binding.current":
+		if role != protocol.RoleDuckwayCC || !hasCapability(capabilities, "discord_binding") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "Discord binding capability was not negotiated"}}
+		}
+		return s.routeCurrentBinding(request, principal)
+	case "binding.by_session":
+		if role != protocol.RoleDuckwayCC || !hasCapability(capabilities, "discord_binding") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "Discord binding capability was not negotiated"}}
+		}
+		return s.routeBindingBySession(request)
 	case "session.input":
 		if !hasCapability(capabilities, "session_input") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session input capability was not negotiated"}}

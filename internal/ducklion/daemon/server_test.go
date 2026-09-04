@@ -577,6 +577,24 @@ func TestTerminalYieldTransfersCCSessionAndSynchronizesSupervisor(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer terminal.Close()
+	management, err := DialCC(server.SocketPath(), "management")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer management.Close()
+	binding, err := management.BindDiscordSession(context.Background(), "bind-task", string(session.ID), "channel-1")
+	if err != nil || binding.SessionID != string(session.ID) || binding.ChannelHandle != "channel-1" || binding.ManagementHandle != "management" {
+		t.Fatalf("binding=%+v err=%v", binding, err)
+	}
+	taskChannel, err := DialCC(server.SocketPath(), "channel-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskChannel.Close()
+	resolved, err := taskChannel.CurrentDiscordBinding(context.Background())
+	if err != nil || resolved != binding {
+		t.Fatalf("resolved binding=%+v err=%v", resolved, err)
+	}
 	controller.ownershipFailures <- errors.New("input still pending")
 	if _, err := terminal.YieldSessionWithID(context.Background(), "failed-fence", string(session.ID), 1, 1, false); err == nil {
 		t.Fatal("yield succeeded when supervisor rejected the fence")
@@ -608,11 +626,7 @@ func TestTerminalYieldTransfersCCSessionAndSynchronizesSupervisor(t *testing.T) 
 	case <-time.After(time.Second):
 		t.Fatal("yielded input not forwarded")
 	}
-	cc, err := DialCC(server.SocketPath(), "channel-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cc.Close()
+	cc := taskChannel
 	returned, err := cc.YieldSession(context.Background(), string(session.ID), 2, 1, false)
 	if err != nil || returned.Decision != model.YieldTransferred || returned.OwnershipEpoch != 3 || returned.Writer == nil || returned.Writer.Kind != model.OwnerCC {
 		t.Fatalf("cc yield=%+v err=%v", returned, err)

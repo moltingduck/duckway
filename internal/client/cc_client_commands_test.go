@@ -451,7 +451,7 @@ func TestHandleClientCommand_DispatchesByName(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected one reply, got %d", len(msgs))
 	}
-	if !strings.Contains(msgs[0]["content"], "no unbound local claude sessions") {
+	if !strings.Contains(msgs[0]["content"], "Ducklion is unavailable") {
 		t.Errorf("unexpected reply: %q", msgs[0]["content"])
 	}
 }

@@ -193,6 +193,41 @@ failure follows a supervisor fence, Ducklion restores the previous fence; if
 that compensation also fails, it marks the session stopped/unavailable so no
 owner can continue writing until runtime recovery.
 
+## Discord binding and command routing
+
+Ducklion schema v3 adds `discord_bindings`, with `session_id` as the primary
+key and `channel_handle` as a second unique key. This enforces the agreed 1:1
+relationship independently of Discord names and Duckway's local cache. A
+binding also records the management-channel handle that created it. Binding is
+allowed only for a running agent session whose adapter is healthy; it never
+changes writer or ownership epoch.
+
+The management-channel `!sessions` command reads Ducklion inventory and shows
+only unbound agent sessions. `!bind <session-id>` creates the Discord task
+channel, calls the idempotent `session.bind_discord` RPC, then caches the six
+character session ID locally for offline preflight. If activation fails, the
+new Discord channel is archived. Repeating a bind returns the existing channel
+instead of creating another one.
+
+Inside the bound task channel, `!yield` and `!yield -w` resolve
+`binding.current`, fetch current fences, and invoke `session.yield` as the CC
+channel handle. A terminal-owned prompt is rejected by Ducklion preflight,
+reported in that same Discord channel, and acknowledged as successfully
+delivered in the durable inbox because the rejection is authoritative. When
+Ducklion is unavailable, a bound prompt remains admitted for retry. The server
+stores the six-character Ducklion session ID on the channel and includes it in
+both live and durable deliveries, so clearing the client's local cache cannot
+make a managed prompt fall through to the legacy runner. Channel creation first
+records this fail-closed reservation and only then activates the Ducklion
+binding. If a bind response is lost, the client queries the session binding;
+it preserves an ambiguously bound channel and archives only after an
+authoritative rejection.
+
+The SQLite migration is automatic on Ducklion startup. Before changing
+`PRAGMA user_version`, Ducklion writes a mode-0600 `ducklion.db.bak-v2-*`
+backup. No separate migration command or client-side data conversion is
+required.
+
 ## Output and replay
 
 The supervisor owns a bounded in-memory output ring (managed sessions currently

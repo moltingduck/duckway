@@ -763,12 +763,13 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 		}
 		if c.hub != nil && cc.ClientID != "" {
 			c.hub.Publish(cc.ClientID, CCEvent{
-				Type:    sseTypeFromGateway(eventType),
-				CCID:    cc.ID,
-				Handle:  ch.Handle,
-				Kind:    ch.Kind,
-				Payload: payload,
-				InboxID: inboxID,
+				Type:      sseTypeFromGateway(eventType),
+				CCID:      cc.ID,
+				Handle:    ch.Handle,
+				Kind:      ch.Kind,
+				SessionID: ch.SessionID,
+				Payload:   payload,
+				InboxID:   inboxID,
 			})
 		}
 		return

@@ -394,7 +394,7 @@ Key points:
 
 ## Control Channels (Discord-as-comms)
 
-A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to an agent session — every message a human types triggers Claude Code or Codex on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!destroy` / `!reset` / `!list` / `!status` / `!duckway-version` / `!duckway-doctor` / `!duckway-restart` / `!duckway-update` / `!help` text commands.
+A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category every text channel maps 1:1 to an agent session — every message a human types triggers Claude Code or Codex on the agent's machine and the result is posted back. A separate management channel accepts `!new` / `!end` / `!destroy` / `!yield` / `!list` / `!status` / `!duckway-version` / `!duckway-doctor` / `!duckway-restart` / `!duckway-update` / `!help` text commands.
 
 ### Discord bot setup (first time, ~10 min)
 
@@ -495,16 +495,12 @@ For agent launch debugging, run `duckway cc watch --debug` or `DUCKWAY_CC_DEBUG=
 
 `discord_get_my_cc`, `discord_list_channels`, `discord_create_task_channel`, `discord_archive_channel`, `discord_post`, `discord_post_file` (text + one local file/image attachment in one Discord message), `discord_edit_message`, `discord_delete_message`, `discord_read_recent`, `discord_wait_for_message`, `discord_request_approval` (reaction-vote — blocks until ✅/❌), `duckway_list_local_sessions`, `duckway_bind_session`.
 
-### Attaching to a pre-existing Claude session
+### Binding a managed Ducklion session
 
-If you've already been chatting with Claude locally on the agent box (a session stored in `~/.claude/projects/`) and want a Discord channel to **continue** that conversation, do this from the management channel:
-
-1. Send any message in `<client>-control` so the daemon spawns Claude — this first turn is a throwaway picker.
-2. Ask the agent: *"list my local sessions"* → it calls `duckway_list_local_sessions` and posts the unbound sessions (newest first, with cwd + first-message preview).
-3. Pick one: *"bind to the duckway one"* → the agent calls `duckway_bind_session(session_id)` (channel handle is auto-picked from the current channel env).
-4. Send your next message → the daemon does `claude --resume <sid>` and the full prior history is restored.
-
-The binding only takes effect on the **next** inbound message; the picker turn itself stays in the throwaway session. Run `!reset` afterwards if you want to forget the throwaway.
+`!sessions` in the management channel lists live, unbound Ducklion agent PTYs.
+Run `!bind <six-character-session-id>` to create a one-to-one Discord task
+channel without changing its current writer. Use `!yield` in that task channel
+to request Discord ownership when the adapter reports the session idle.
 
 ### Management channel commands
 
@@ -513,8 +509,9 @@ In `<client>-control`:
 - `!new-confirm <token>` → confirm creation of a missing `--cwd` folder; Duckway creates it on the agent machine, saves it as a project, then opens the task channel
 - `!list` → table of task channels + which have running sessions
 - `!status` → daemon up? agent type? counts?
-- `!sessions [<cwd-filter>]` → list local Claude sessions on the agent that aren't yet bound to any CC channel
-- `!bind <session_id> [<session_id> …]` → for each id, create a task channel (named after `basename(cwd)`) and attach the session — next message in the new channel resumes the existing conversation
+- `!sessions` → list live Ducklion agent PTYs that aren't bound to a Discord channel
+- `!bind <session_id> [<session_id> …]` → create one task channel for each live Ducklion session without changing ownership
+- `!yield [-w|--wait]` → in a bound task channel, request Discord ownership now or after the active task completes
 - `!projects [<filter>]` → list saved project folders from the agent machine
 - `!duckway-version` → show the local Duckway version on the client
 - `!duckway-restart` → restart local Duckway daemons on the client

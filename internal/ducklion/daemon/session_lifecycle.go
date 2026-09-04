@@ -327,6 +327,61 @@ func (s *Server) routeSessionTask(request protocol.Request, principal string) pr
 	return protocol.Response{ID: request.ID, Result: result}
 }
 
+func (s *Server) routeSessionBind(request protocol.Request, principal string) protocol.Response {
+	if request.InstanceID != string(s.instanceID) || request.OwnershipEpoch != nil || request.RuntimeGeneration != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "binding requires instance and session identity only"}}
+	}
+	var body protocol.SessionBind
+	if decodeStrict(request.Body, &body) != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "channel handle is required"}}
+	}
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}}
+	}
+	outcome, _, err := s.service.BindDiscord(context.Background(), "cc:"+principal, request.ID, sessionID, body.ChannelHandle)
+	if err != nil {
+		code := protocol.ErrInternal
+		if errors.Is(err, store.ErrIdempotencyConflict) {
+			code = protocol.ErrIdempotencyConflict
+		}
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: code, Message: "could not bind Discord channel", Retryable: code == protocol.ErrInternal}}
+	}
+	if outcome.Error != nil {
+		return protocol.Response{ID: request.ID, Error: outcome.Error}
+	}
+	result, _ := json.Marshal(protocol.SessionBinding{SessionID: string(outcome.Binding.SessionID), ChannelHandle: outcome.Binding.ChannelHandle, ManagementHandle: outcome.Binding.ManagementHandle})
+	return protocol.Response{ID: request.ID, Result: result}
+}
+
+func (s *Server) routeCurrentBinding(request protocol.Request, principal string) protocol.Response {
+	if request.InstanceID != string(s.instanceID) || request.SessionID != "" || request.OwnershipEpoch != nil || request.RuntimeGeneration != nil || len(request.Body) != 0 {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid binding lookup envelope"}}
+	}
+	binding, err := s.state.GetBindingByChannel(context.Background(), principal)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "Discord channel is not bound"}}
+	}
+	result, _ := json.Marshal(protocol.SessionBinding{SessionID: string(binding.SessionID), ChannelHandle: binding.ChannelHandle, ManagementHandle: binding.ManagementHandle})
+	return protocol.Response{ID: request.ID, Result: result}
+}
+
+func (s *Server) routeBindingBySession(request protocol.Request) protocol.Response {
+	if request.InstanceID != string(s.instanceID) || request.SessionID == "" || request.OwnershipEpoch != nil || request.RuntimeGeneration != nil || len(request.Body) != 0 {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid binding lookup envelope"}}
+	}
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}}
+	}
+	binding, err := s.state.GetBindingBySession(context.Background(), sessionID)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "Ducklion session is not bound"}}
+	}
+	result, _ := json.Marshal(protocol.SessionBinding{SessionID: string(binding.SessionID), ChannelHandle: binding.ChannelHandle, ManagementHandle: binding.ManagementHandle})
+	return protocol.Response{ID: request.ID, Result: result}
+}
+
 func (s *Server) restoreOwnershipOrQuarantine(previous model.Session) {
 	if response := s.syncRuntimeOwnership(previous); response.Error == nil {
 		return

@@ -16,6 +16,8 @@ type SessionSummary struct {
 	AdapterState      model.AdapterState  `json:"adapter_state"`
 	ExitSuccess       *bool               `json:"exit_success,omitempty"`
 	ExitReason        string              `json:"exit_reason,omitempty"`
+	ChannelHandle     string              `json:"channel_handle,omitempty"`
+	ManagementHandle  string              `json:"management_handle,omitempty"`
 }
 
 type SessionCreate struct {
@@ -102,6 +104,16 @@ type SessionTaskResult struct {
 	OwnershipEpoch uint64          `json:"ownership_epoch"`
 	TaskState      model.TaskState `json:"task_state"`
 	Writer         *model.Owner    `json:"writer,omitempty"`
+}
+
+type SessionBind struct {
+	ChannelHandle string `json:"channel_handle"`
+}
+
+type SessionBinding struct {
+	SessionID        string `json:"session_id"`
+	ChannelHandle    string `json:"channel_handle"`
+	ManagementHandle string `json:"management_handle"`
 }
 
 type OutputSubscribe struct {

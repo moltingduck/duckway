@@ -525,7 +525,7 @@ internal/server/services/discord_bot.go      Thin REST client (Create/Archive/De
 internal/server/services/cc_gateway.go       Per-bot WSS manager. Dispatches MESSAGE_CREATE/UPDATE/DELETE,
                                              CHANNEL_DELETE/UPDATE, MESSAGE_REACTION_ADD.
 internal/server/services/cc_event_hub.go     In-process pub/sub. Per-client buffered chans, non-blocking publish.
-internal/server/services/cc_commands.go      `!new` / `!end` / `!destroy` / `!reset` / `!list` / `!status` / `!help` parser
+internal/server/services/cc_commands.go      `!new` / `!end` / `!destroy` / `!yield` / `!list` / `!status` / `!help` parser
                                              plus `!sessions` / `!bind` which forward to the daemon
                                              via a `client_command` SSE event (agent owns the FS)
 internal/server/services/cc_approvals.go     Reaction-vote registry for discord_request_approval
