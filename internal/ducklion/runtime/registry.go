@@ -173,6 +173,16 @@ func (r *Registry) IsCurrent(identity RuntimeIdentity) bool {
 	return ok && current.identity == identity
 }
 
+func (r *Registry) Current(sessionID model.SessionID, generation uint64) (RuntimeIdentity, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current, ok := r.live[sessionID]
+	if !ok || current.identity.Generation != generation {
+		return RuntimeIdentity{}, false
+	}
+	return current.identity, true
+}
+
 func (r *Registry) CloseAll() {
 	r.mu.Lock()
 	r.closed = true

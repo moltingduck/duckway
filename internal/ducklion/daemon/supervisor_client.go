@@ -23,6 +23,8 @@ type SupervisorClient struct {
 	mu         sync.Mutex
 	nextOffset uint64
 	nextID     uint64
+	socketPath string
+	privateKey ed25519.PrivateKey
 }
 
 func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation uint64, privateKey ed25519.PrivateKey) (*SupervisorClient, error) {
@@ -107,7 +109,126 @@ func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation
 		return fail(fmt.Errorf("supervisor returned an invalid runtime identity"))
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return &SupervisorClient{conn: conn, codec: codec, identity: identity, instanceID: instanceID}, nil
+	return &SupervisorClient{conn: conn, codec: codec, identity: identity, instanceID: instanceID, socketPath: socketPath,
+		privateKey: append(ed25519.PrivateKey(nil), privateKey...)}, nil
+}
+
+type RuntimeController interface {
+	SubmitInput(context.Context, duckruntime.InputFrame) error
+	Resize(rows, cols uint16, epoch, generation uint64) error
+}
+
+func (c *SupervisorClient) ServeControl(ctx context.Context, controller RuntimeController) error {
+	connection, err := net.DialTimeout("unix", c.socketPath, 5*time.Second)
+	if err != nil {
+		return err
+	}
+	conn := connection.(*net.UnixConn)
+	defer conn.Close()
+	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	handshake := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleSupervisorControl,
+		Principal: c.identity.SessionID, Capabilities: []string{"runtime_control"}}
+	if err := codec.Write(handshake); err != nil {
+		return err
+	}
+	var handshakeResponse protocol.HandshakeResponse
+	if err := codec.Read(&handshakeResponse); err != nil {
+		return err
+	}
+	if err := handshakeResponse.Validate(); err != nil || handshakeResponse.Error != nil {
+		return fmt.Errorf("runtime control handshake rejected")
+	}
+	negotiated := handshakeResponse.Handshake
+	if negotiated.Major != protocol.Major || negotiated.Minor < 0 || negotiated.Minor > protocol.Minor || negotiated.Role != protocol.RoleSupervisorControl ||
+		negotiated.Principal != c.identity.SessionID || !hasCapability(negotiated.Capabilities, "runtime_control") {
+		return fmt.Errorf("runtime control returned an invalid handshake")
+	}
+	generation := c.identity.RuntimeGeneration
+	if err := codec.Write(protocol.Request{ID: "control-begin", Type: "supervisor.control_begin", SessionID: c.identity.SessionID, RuntimeGeneration: &generation}); err != nil {
+		return err
+	}
+	var beginResponse protocol.Response
+	if err := codec.Read(&beginResponse); err != nil {
+		return err
+	}
+	if err := validateResponse(beginResponse, "control-begin"); err != nil || beginResponse.Error != nil {
+		return fmt.Errorf("runtime control authentication rejected")
+	}
+	var challenge protocol.SupervisorChallenge
+	if err := json.Unmarshal(beginResponse.Result, &challenge); err != nil || challenge.InstanceID != string(c.instanceID) || len(challenge.Nonce) != model.RecoveryNonceBytes {
+		return fmt.Errorf("runtime control returned an invalid challenge")
+	}
+	proof := model.RecoveryProof(c.privateKey, c.instanceID, model.SessionID(c.identity.SessionID), generation, challenge.Nonce,
+		uint16(negotiated.Major), uint16(negotiated.Minor))
+	body, _ := json.Marshal(protocol.SupervisorRegisterComplete{ChallengeID: challenge.ChallengeID, Proof: proof})
+	if err := codec.Write(protocol.Request{ID: "control-complete", Type: "supervisor.control_complete", InstanceID: string(c.instanceID),
+		SessionID: c.identity.SessionID, RuntimeGeneration: &generation, Body: body}); err != nil {
+		return err
+	}
+	var completeResponse protocol.Response
+	if err := codec.Read(&completeResponse); err != nil {
+		return err
+	}
+	if err := validateResponse(completeResponse, "control-complete"); err != nil || completeResponse.Error != nil {
+		return fmt.Errorf("runtime control authentication failed")
+	}
+	_ = conn.SetDeadline(time.Time{})
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+	for {
+		var request protocol.Request
+		if err := codec.Read(&request); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		response := c.executeControl(ctx, controller, request)
+		if err := codec.Write(response); err != nil {
+			return err
+		}
+	}
+}
+
+func (c *SupervisorClient) executeControl(ctx context.Context, controller RuntimeController, request protocol.Request) protocol.Response {
+	generation := c.identity.RuntimeGeneration
+	if request.Validate() != nil || request.InstanceID != string(c.instanceID) || request.SessionID != c.identity.SessionID ||
+		request.RuntimeGeneration == nil || *request.RuntimeGeneration != generation || request.OwnershipEpoch == nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid runtime control command"}}
+	}
+	var err error
+	switch request.Type {
+	case "supervisor.input":
+		var input protocol.SupervisorInput
+		if decodeErr := decodeStrict(request.Body, &input); decodeErr != nil || input.Sequence == 0 || len(input.Data) == 0 || len(input.Data) > 64<<10 {
+			err = fmt.Errorf("invalid supervisor input")
+		} else {
+			err = controller.SubmitInput(ctx, duckruntime.InputFrame{Sequence: input.Sequence, Owner: input.Owner, OwnershipEpoch: *request.OwnershipEpoch,
+				RuntimeGeneration: generation, Data: input.Data})
+		}
+	case "supervisor.resize":
+		var resize protocol.SupervisorResize
+		if decodeErr := decodeStrict(request.Body, &resize); decodeErr != nil {
+			err = decodeErr
+		} else {
+			err = controller.Resize(resize.Rows, resize.Cols, *request.OwnershipEpoch, generation)
+		}
+	default:
+		err = fmt.Errorf("unsupported runtime control command")
+	}
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: serviceMapError(err), Message: err.Error()}}
+	}
+	result, _ := json.Marshal(map[string]bool{"ok": true})
+	return protocol.Response{ID: request.ID, Result: result}
 }
 
 func (c *SupervisorClient) Identity() protocol.SupervisorRegistered { return c.identity }

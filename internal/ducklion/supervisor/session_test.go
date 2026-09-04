@@ -61,3 +61,25 @@ func TestSessionResizeIsGenerationAndEpochFenced(t *testing.T) {
 	}
 	_ = session.Wait()
 }
+
+func TestSessionResizeRejectsUnsafeBounds(t *testing.T) {
+	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, CWD: t.TempDir(), Command: []string{"sh", "-c", "exit 0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range [][2]uint16{{4, 80}, {201, 80}, {20, 19}, {20, 501}} {
+		if err := session.Resize(size[0], size[1], 3, 2); !errors.Is(err, ErrInvalidPTYSize) {
+			t.Fatalf("size=%v err=%v", size, err)
+		}
+	}
+	_ = session.Wait()
+}
+
+func TestSessionStartRejectsUnsafeBounds(t *testing.T) {
+	for _, size := range [][2]uint16{{4, 80}, {201, 80}, {20, 19}, {20, 501}} {
+		if _, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, Rows: size[0], Cols: size[1],
+			CWD: t.TempDir(), Command: []string{"sh"}}); !errors.Is(err, ErrInvalidPTYSize) {
+			t.Fatalf("size=%v err=%v", size, err)
+		}
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/bridge"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 )
@@ -27,6 +28,10 @@ type OutputStreamEnded struct {
 	NextOffset uint64
 }
 
+type RemoteError struct{ Detail protocol.Error }
+
+func (e *RemoteError) Error() string { return string(e.Detail.Code) + ": " + e.Detail.Message }
+
 func (e *OutputStreamEnded) Error() string { return "output stream ended: " + e.Reason }
 
 func Dial(socketPath, principal string) (*Client, error) {
@@ -36,7 +41,7 @@ func Dial(socketPath, principal string) (*Client, error) {
 	}
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if err := codec.Write(protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleDucklord, Principal: principal, Capabilities: []string{"status", "sessions_list", "output_subscribe"}}); err != nil {
+	if err := codec.Write(protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleDucklord, Principal: principal, Capabilities: []string{"status", "sessions_list", "output_subscribe", "session_input", "session_resize"}}); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -54,7 +59,10 @@ func Dial(socketPath, principal string) (*Client, error) {
 		return nil, fmt.Errorf("ducklion handshake rejected: %s", handshakeResponse.Error.Message)
 	}
 	negotiated := handshakeResponse.Handshake
-	if negotiated.Major != protocol.Major || negotiated.Role != protocol.RoleDucklord || negotiated.Principal != principal {
+	if negotiated.Major != protocol.Major || negotiated.Role != protocol.RoleDucklord || negotiated.Principal != principal ||
+		!hasCapability(negotiated.Capabilities, "status") || !hasCapability(negotiated.Capabilities, "sessions_list") ||
+		!hasCapability(negotiated.Capabilities, "output_subscribe") || !hasCapability(negotiated.Capabilities, "session_input") ||
+		!hasCapability(negotiated.Capabilities, "session_resize") {
 		conn.Close()
 		return nil, fmt.Errorf("ducklion returned an invalid handshake")
 	}
@@ -181,4 +189,30 @@ func (c *Client) ListSessions() ([]protocol.SessionSummary, error) {
 		return nil, err
 	}
 	return sessions, nil
+}
+
+func (c *Client) SendInput(sessionID string, epoch, generation uint64, data []byte) error {
+	body, _ := json.Marshal(protocol.SessionInput{Data: data})
+	response, err := c.Call(protocol.Request{ID: uuid.NewString(), Type: "session.input", InstanceID: c.instanceID, SessionID: sessionID,
+		OwnershipEpoch: &epoch, RuntimeGeneration: &generation, Body: body})
+	if err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return &RemoteError{Detail: *response.Error}
+	}
+	return nil
+}
+
+func (c *Client) Resize(sessionID string, epoch, generation uint64, rows, cols uint16) error {
+	body, _ := json.Marshal(protocol.SessionResize{Rows: rows, Cols: cols})
+	response, err := c.Call(protocol.Request{ID: uuid.NewString(), Type: "session.resize", InstanceID: c.instanceID, SessionID: sessionID,
+		OwnershipEpoch: &epoch, RuntimeGeneration: &generation, Body: body})
+	if err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return &RemoteError{Detail: *response.Error}
+	}
+	return nil
 }

@@ -21,8 +21,9 @@ type AuditEvent struct {
 }
 
 func (s *SQLite) MarkRuntimeConnected(ctx context.Context, id model.SessionID, generation uint64) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='running',adapter_state='healthy',updated_at_ms=?
-        WHERE session_id=? AND runtime_generation=? AND status='recovering' AND adapter_state='recovering'`, time.Now().UTC().UnixMilli(), id, generation)
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='running',adapter_state=CASE kind WHEN 'agent' THEN 'healthy' ELSE 'unavailable' END,updated_at_ms=?
+		WHERE session_id=? AND runtime_generation=? AND status='recovering' AND
+		((kind='agent' AND adapter_state='recovering') OR (kind='shell' AND adapter_state='unavailable'))`, time.Now().UTC().UnixMilli(), id, generation)
 	if err != nil {
 		return err
 	}
@@ -33,8 +34,9 @@ func (s *SQLite) MarkRuntimeConnected(ctx context.Context, id model.SessionID, g
 }
 
 func (s *SQLite) MarkRuntimeDisconnected(ctx context.Context, id model.SessionID, generation uint64) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='recovering',adapter_state='recovering',updated_at_ms=?
-        WHERE session_id=? AND runtime_generation=? AND status='running' AND adapter_state='healthy'`, time.Now().UTC().UnixMilli(), id, generation)
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='recovering',adapter_state=CASE kind WHEN 'agent' THEN 'recovering' ELSE 'unavailable' END,updated_at_ms=?
+		WHERE session_id=? AND runtime_generation=? AND status='running' AND
+		((kind='agent' AND adapter_state='healthy') OR (kind='shell' AND adapter_state='unavailable'))`, time.Now().UTC().UnixMilli(), id, generation)
 	if err != nil {
 		return err
 	}

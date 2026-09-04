@@ -62,6 +62,9 @@ func Start(options Options) (*Session, error) {
 	if options.Cols == 0 {
 		options.Cols = 120
 	}
+	if options.Rows < 5 || options.Rows > 200 || options.Cols < 20 || options.Cols > 500 {
+		return nil, ErrInvalidPTYSize
+	}
 	cmd := exec.Command(options.Command[0], options.Command[1:]...)
 	cmd.Dir = options.CWD
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -99,7 +102,7 @@ func (s *Session) UpdateOwnership(epoch, generation uint64) error {
 }
 
 func (s *Session) Resize(rows, cols uint16, epoch, generation uint64) error {
-	if rows == 0 || cols == 0 {
+	if rows < 5 || rows > 200 || cols < 20 || cols > 500 {
 		return ErrInvalidPTYSize
 	}
 	s.mu.Lock()

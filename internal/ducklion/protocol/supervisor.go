@@ -43,6 +43,31 @@ type SupervisorOutputAck struct {
 	Length uint64 `json:"length"`
 }
 
+type SupervisorInput struct {
+	Sequence uint64      `json:"sequence"`
+	Owner    model.Owner `json:"owner"`
+	Data     []byte      `json:"data"`
+}
+
+type SupervisorResize struct {
+	Rows uint16 `json:"rows"`
+	Cols uint16 `json:"cols"`
+}
+
+type SupervisorControlReady struct {
+	SessionID         string `json:"session_id"`
+	RuntimeGeneration uint64 `json:"runtime_generation"`
+}
+
+type SessionInput struct {
+	Data []byte `json:"data"`
+}
+
+type SessionResize struct {
+	Rows uint16 `json:"rows"`
+	Cols uint16 `json:"cols"`
+}
+
 type OutputSubscribe struct {
 	Offset uint64 `json:"offset"`
 }

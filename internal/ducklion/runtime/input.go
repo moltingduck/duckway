@@ -93,7 +93,12 @@ func (p *InputPump) run() {
 	for {
 		select {
 		case request := <-p.queue:
-			err := p.gate.ValidateInput(request.ctx, request.frame)
+			var err error
+			if p.closed.Load() {
+				err = ErrInputPumpClosed
+			} else {
+				err = p.gate.ValidateInput(request.ctx, request.frame)
+			}
 			if err == nil {
 				err = writeFull(p.writer, request.frame.Data)
 			}

@@ -46,11 +46,13 @@ type blockingWriter struct {
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
+	calls   int
 }
 
 func (w *blockingWriter) Write(data []byte) (int, error) {
 	w.once.Do(func() { close(w.started) })
 	<-w.release
+	w.calls++
 	return len(data), nil
 }
 
@@ -149,5 +151,8 @@ func TestInputPumpCloseDoesNotBlockOnFullQueue(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("Submit remained blocked after Close")
 		}
+	}
+	if writer.calls != 1 {
+		t.Fatalf("writes after close=%d, want exactly the in-flight write", writer.calls)
 	}
 }
