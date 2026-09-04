@@ -32,3 +32,47 @@ type SupervisorRegistered struct {
 	RuntimeGeneration uint64 `json:"runtime_generation"`
 	LeaseID           string `json:"lease_id"`
 }
+
+type SupervisorOutput struct {
+	Offset uint64 `json:"offset"`
+	Data   []byte `json:"data"`
+}
+
+type SupervisorOutputAck struct {
+	Offset uint64 `json:"offset"`
+	Length uint64 `json:"length"`
+}
+
+type OutputSubscribe struct {
+	Offset uint64 `json:"offset"`
+}
+
+type OutputSubscribeResult struct {
+	SubscriptionID    string `json:"subscription_id"`
+	RuntimeID         string `json:"runtime_id"`
+	InstanceID        string `json:"instance_id"`
+	SessionID         string `json:"session_id"`
+	RuntimeGeneration uint64 `json:"runtime_generation"`
+	StartOffset       uint64 `json:"start_offset"`
+	EndOffset         uint64 `json:"end_offset"`
+	Gap               bool   `json:"gap,omitempty"`
+}
+
+// modelOutputFrame mirrors the runtime frame without importing runtime into
+// the wire package (runtime already depends on protocol-adjacent model types).
+type OutputFrame struct {
+	Offset uint64 `json:"offset"`
+	Data   []byte `json:"data,omitempty"`
+	Gap    bool   `json:"gap,omitempty"`
+}
+
+type OutputEvent struct {
+	Type              string      `json:"type"`
+	SubscriptionID    string      `json:"subscription_id"`
+	RuntimeID         string      `json:"runtime_id"`
+	InstanceID        string      `json:"instance_id"`
+	SessionID         string      `json:"session_id"`
+	RuntimeGeneration uint64      `json:"runtime_generation"`
+	Frame             OutputFrame `json:"frame"`
+	Reason            string      `json:"reason,omitempty"`
+}

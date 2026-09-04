@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -147,6 +148,55 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	if !server.registry.IsCurrent(runtimeIdentity) {
 		t.Fatal("registered supervisor is not current")
 	}
+	if err := client.PublishOutput([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	viewer, err := Dial(server.SocketPath(), "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription, err := viewer.SubscribeOutput(string(session.ID), session.RuntimeGeneration, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := subscription.Read()
+	if err != nil || string(replay.Frame.Data) != "abc" || replay.Frame.Offset != 0 {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	if err := client.PublishOutput([]byte("def")); err != nil {
+		t.Fatal(err)
+	}
+	live, err := subscription.Read()
+	if err != nil || string(live.Frame.Data) != "def" || live.Frame.Offset != 3 {
+		t.Fatalf("live=%+v err=%v", live, err)
+	}
+	if err := subscription.Close(); err != nil {
+		t.Fatal(err)
+	}
+	large := bytes.Repeat([]byte("x"), (1<<20)+12345)
+	if err := client.PublishOutput(large); err != nil {
+		t.Fatal(err)
+	}
+	replayViewer, err := Dial(server.SocketPath(), "replay-laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	largeReplay, err := replayViewer.SubscribeOutput(string(session.ID), session.RuntimeGeneration, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replayed []byte
+	for len(replayed) < len(large) {
+		event, err := largeReplay.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		replayed = append(replayed, event.Frame.Data...)
+	}
+	if !bytes.Equal(replayed, large) {
+		t.Fatalf("large replay length=%d want=%d", len(replayed), len(large))
+	}
+	_ = largeReplay.Close()
 	connected, err := server.state.GetSession(context.Background(), session.ID)
 	if err != nil || connected.Status != model.StatusRunning || connected.AdapterState != model.AdapterHealthy {
 		t.Fatalf("connected session=%+v err=%v", connected, err)
@@ -154,9 +204,23 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	if _, err := RegisterSupervisor(server.SocketPath(), session.ID, session.RuntimeGeneration, privateKey); err == nil {
 		t.Fatal("second supervisor registration succeeded")
 	}
+	endingViewer, err := Dial(server.SocketPath(), "ending-laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ending, err := endingViewer.SubscribeOutput(string(session.ID), session.RuntimeGeneration, uint64(6+len(large)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := client.Close(); err != nil {
 		t.Fatal(err)
 	}
+	_, err = ending.Read()
+	var ended *OutputStreamEnded
+	if !errors.As(err, &ended) || ended.Reason != "runtime_disconnected" {
+		t.Fatalf("stream end error=%v", err)
+	}
+	_ = ending.Close()
 	deadline := time.Now().Add(time.Second)
 	for server.registry.IsCurrent(runtimeIdentity) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)

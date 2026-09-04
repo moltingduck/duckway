@@ -1,15 +1,18 @@
 package daemon
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion/bridge"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
+	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 )
 
 type SupervisorClient struct {
@@ -17,6 +20,9 @@ type SupervisorClient struct {
 	codec      *bridge.Codec
 	identity   protocol.SupervisorRegistered
 	instanceID model.InstanceID
+	mu         sync.Mutex
+	nextOffset uint64
+	nextID     uint64
 }
 
 func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation uint64, privateKey ed25519.PrivateKey) (*SupervisorClient, error) {
@@ -35,7 +41,7 @@ func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	handshake := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleSupervisor,
-		Principal: string(sessionID), Capabilities: []string{"supervisor_recovery"}}
+		Principal: string(sessionID), Capabilities: []string{"supervisor_recovery", "output_publish"}}
 	if err := codec.Write(handshake); err != nil {
 		return fail(err)
 	}
@@ -51,7 +57,7 @@ func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation
 	}
 	negotiated := handshakeResponse.Handshake
 	if negotiated.Major != protocol.Major || negotiated.Minor < 0 || negotiated.Minor > protocol.Minor || negotiated.Role != protocol.RoleSupervisor ||
-		negotiated.Principal != string(sessionID) || !hasCapability(negotiated.Capabilities, "supervisor_recovery") {
+		negotiated.Principal != string(sessionID) || !hasCapability(negotiated.Capabilities, "supervisor_recovery") || !hasCapability(negotiated.Capabilities, "output_publish") {
 		return fail(fmt.Errorf("supervisor returned an invalid handshake"))
 	}
 	if err := codec.Write(protocol.Request{ID: "register-begin", Type: "supervisor.register_begin", SessionID: string(sessionID), RuntimeGeneration: &generation}); err != nil {
@@ -106,6 +112,78 @@ func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation
 
 func (c *SupervisorClient) Identity() protocol.SupervisorRegistered { return c.identity }
 func (c *SupervisorClient) Close() error                            { return c.conn.Close() }
+
+func (c *SupervisorClient) PublishOutput(data []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	defer func() { _ = c.conn.SetDeadline(time.Time{}) }()
+	for len(data) > 0 {
+		length := len(data)
+		if length > 64<<10 {
+			length = 64 << 10
+		}
+		chunk := append([]byte(nil), data[:length]...)
+		body, _ := json.Marshal(protocol.SupervisorOutput{Offset: c.nextOffset, Data: chunk})
+		c.nextID++
+		requestID := fmt.Sprintf("output-%d", c.nextID)
+		generation := c.identity.RuntimeGeneration
+		request := protocol.Request{ID: requestID, Type: "supervisor.output", InstanceID: string(c.instanceID), SessionID: c.identity.SessionID,
+			RuntimeGeneration: &generation, Body: body}
+		if err := c.codec.Write(request); err != nil {
+			return err
+		}
+		var response protocol.Response
+		if err := c.codec.Read(&response); err != nil {
+			return err
+		}
+		if err := validateResponse(response, requestID); err != nil {
+			return err
+		}
+		if response.Error != nil {
+			return fmt.Errorf("publish supervisor output: %s", response.Error.Message)
+		}
+		var ack protocol.SupervisorOutputAck
+		if err := json.Unmarshal(response.Result, &ack); err != nil || ack.Offset != c.nextOffset || ack.Length != uint64(length) {
+			return fmt.Errorf("invalid supervisor output acknowledgement")
+		}
+		c.nextOffset += uint64(length)
+		data = data[length:]
+	}
+	return nil
+}
+
+func (c *SupervisorClient) ForwardOutput(ctx context.Context, output *duckruntime.OutputHub) error {
+	replay, stream, cancel, err := output.Subscribe(0, 64)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	if replay.Gap {
+		return fmt.Errorf("supervisor output replay begins with a gap")
+	}
+	if err := c.PublishOutput(replay.Data); err != nil {
+		return err
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case frame, ok := <-stream:
+			if !ok {
+				return nil
+			}
+			if frame.Gap {
+				return fmt.Errorf("supervisor output forwarding lost data")
+			}
+			if err := c.PublishOutput(frame.Data); err != nil {
+				return err
+			}
+		}
+	}
+}
 
 func validateResponse(response protocol.Response, expectedID string) error {
 	if err := response.Validate(); err != nil {

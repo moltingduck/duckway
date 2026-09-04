@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/bridge"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
@@ -46,6 +47,13 @@ type Server struct {
 	handlers    sync.WaitGroup
 	lifecycleMu sync.Mutex
 	closing     bool
+	outputMu    sync.Mutex
+	outputs     map[model.SessionID]registeredOutput
+}
+
+type registeredOutput struct {
+	identity duckruntime.RuntimeIdentity
+	hub      *duckruntime.OutputHub
 }
 
 func DefaultRoot() string { return filepath.Dir(store.DefaultPath()) }
@@ -105,7 +113,7 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 	}
 	return &Server{root: root, socketPath: socketPath, lockFile: lockFile, listener: listener, state: state,
 		service: service.New(state), registry: duckruntime.NewRegistry(instanceID, state), instanceID: instanceID, done: make(chan struct{}),
-		connections: make(map[*net.UnixConn]struct{})}, nil
+		connections: make(map[*net.UnixConn]struct{}), outputs: make(map[model.SessionID]registeredOutput)}, nil
 }
 
 func (s *Server) SocketPath() string           { return s.socketPath }
@@ -163,7 +171,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "peer role is not available on this endpoint"}})
 		return
 	}
-	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"status"}}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"status", "sessions_list", "output_subscribe"}}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
 	if protocolError != nil {
 		_ = codec.Write(protocol.HandshakeResponse{Error: protocolError})
@@ -185,7 +193,15 @@ func (s *Server) handle(conn *net.UnixConn) {
 			_ = codec.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}})
 			continue
 		}
-		response := s.route(request)
+		if request.Type == "session.output_subscribe" {
+			if !hasCapability(negotiated.Capabilities, "output_subscribe") {
+				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "output subscription capability was not negotiated")
+				continue
+			}
+			s.handleOutputSubscription(codec, request)
+			return
+		}
+		response := s.route(request, negotiated.Capabilities)
 		if err := codec.Write(response); err != nil {
 			return
 		}
@@ -225,9 +241,9 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "supervisor principal must be the canonical session ID"}})
 		return
 	}
-	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"supervisor_recovery"}}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"supervisor_recovery", "output_publish"}}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
-	if protocolError != nil || !hasCapability(negotiated.Capabilities, "supervisor_recovery") {
+	if protocolError != nil || !hasCapability(negotiated.Capabilities, "supervisor_recovery") || !hasCapability(negotiated.Capabilities, "output_publish") {
 		if protocolError == nil {
 			protocolError = &protocol.Error{Code: protocol.ErrIncompatible, Message: "supervisor recovery capability is required"}
 		}
@@ -278,7 +294,9 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 		writeSupervisorError(codec, completeRequest.ID, protocol.ErrStaleGeneration, "runtime state changed during registration")
 		return
 	}
+	output := s.activateOutput(identity)
 	defer func() {
+		s.deactivateOutput(identity)
 		s.registry.Disconnect(identity)
 		_ = s.state.MarkRuntimeDisconnected(context.Background(), identity.SessionID, identity.Generation)
 	}()
@@ -295,16 +313,141 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 		if err := codec.Read(&request); err != nil {
 			return
 		}
-		if request.Validate() != nil || request.Type != "supervisor.ping" || request.InstanceID != string(s.instanceID) ||
-			request.SessionID != string(identity.SessionID) || request.RuntimeGeneration == nil || *request.RuntimeGeneration != identity.Generation || len(request.Body) != 0 {
+		if request.Validate() != nil || request.InstanceID != string(s.instanceID) || request.SessionID != string(identity.SessionID) || request.RuntimeGeneration == nil {
 			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "operation is unavailable to supervisors")
 			continue
 		}
-		result, _ := json.Marshal(map[string]bool{"ok": true})
+		if *request.RuntimeGeneration != identity.Generation || !s.registry.IsCurrent(identity) {
+			writeSupervisorError(codec, request.ID, protocol.ErrStaleGeneration, "runtime generation changed")
+			continue
+		}
+		var result []byte
+		switch request.Type {
+		case "supervisor.ping":
+			if len(request.Body) != 0 {
+				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid supervisor ping")
+				continue
+			}
+			result, _ = json.Marshal(map[string]bool{"ok": true})
+		case "supervisor.output":
+			var published protocol.SupervisorOutput
+			if err := decodeStrict(request.Body, &published); err != nil || len(published.Data) == 0 || len(published.Data) > 64<<10 || !s.registry.IsCurrent(identity) {
+				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid supervisor output")
+				continue
+			}
+			_, end := output.Bounds()
+			if published.Offset != end {
+				writeSupervisorError(codec, request.ID, protocol.ErrStaleGeneration, "output offset is not contiguous")
+				continue
+			}
+			frame := output.Publish(published.Data)
+			result, _ = json.Marshal(protocol.SupervisorOutputAck{Offset: frame.Offset, Length: uint64(len(frame.Data))})
+		default:
+			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "operation is unavailable to supervisors")
+			continue
+		}
 		if err := codec.Write(protocol.Response{ID: request.ID, Result: result}); err != nil {
 			return
 		}
 	}
+}
+
+func (s *Server) activateOutput(identity duckruntime.RuntimeIdentity) *duckruntime.OutputHub {
+	hub := duckruntime.NewOutputHub(4 << 20)
+	s.outputMu.Lock()
+	previous, replaced := s.outputs[identity.SessionID]
+	s.outputs[identity.SessionID] = registeredOutput{identity: identity, hub: hub}
+	s.outputMu.Unlock()
+	if replaced {
+		previous.hub.Close()
+	}
+	return hub
+}
+
+func (s *Server) deactivateOutput(identity duckruntime.RuntimeIdentity) {
+	s.outputMu.Lock()
+	current, ok := s.outputs[identity.SessionID]
+	if ok && current.identity == identity {
+		delete(s.outputs, identity.SessionID)
+	}
+	s.outputMu.Unlock()
+	if ok && current.identity == identity {
+		current.hub.Close()
+	}
+}
+
+func (s *Server) handleOutputSubscription(codec *bridge.Codec, request protocol.Request) {
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil || request.InstanceID != string(s.instanceID) || request.RuntimeGeneration == nil || len(request.Body) == 0 {
+		writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid output subscription")
+		return
+	}
+	var subscription protocol.OutputSubscribe
+	if err := decodeStrict(request.Body, &subscription); err != nil {
+		writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid output subscription")
+		return
+	}
+	s.outputMu.Lock()
+	current, ok := s.outputs[sessionID]
+	s.outputMu.Unlock()
+	if !ok {
+		writeSupervisorError(codec, request.ID, protocol.ErrAdapterUnhealthy, "session runtime is not connected")
+		return
+	}
+	if current.identity.Generation != *request.RuntimeGeneration {
+		writeSupervisorError(codec, request.ID, protocol.ErrStaleGeneration, "runtime generation changed")
+		return
+	}
+	replay, stream, cancel, err := current.hub.Subscribe(subscription.Offset, 32)
+	if err != nil {
+		writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, err.Error())
+		return
+	}
+	defer cancel()
+	_, end := current.hub.Bounds()
+	subscriptionID := uuid.NewString()
+	result, _ := json.Marshal(protocol.OutputSubscribeResult{SubscriptionID: subscriptionID, RuntimeID: current.identity.LeaseID, InstanceID: string(s.instanceID), SessionID: string(sessionID),
+		RuntimeGeneration: current.identity.Generation, StartOffset: replay.Offset, EndOffset: end, Gap: replay.Gap})
+	if err := codec.Write(protocol.Response{ID: request.ID, Result: result}); err != nil {
+		return
+	}
+	if err := writeOutputEvents(codec, subscriptionID, s.instanceID, current.identity, replay); err != nil {
+		return
+	}
+	nextOffset := replay.Offset + uint64(len(replay.Data))
+	for frame := range stream {
+		if err := writeOutputEvents(codec, subscriptionID, s.instanceID, current.identity, frame); err != nil {
+			return
+		}
+		nextOffset = frame.Offset + uint64(len(frame.Data))
+	}
+	_, finalEnd := current.hub.Bounds()
+	reason := "runtime_disconnected"
+	if nextOffset < finalEnd {
+		reason = "subscriber_lag"
+	}
+	_ = codec.Write(protocol.OutputEvent{Type: "output_end", SubscriptionID: subscriptionID, RuntimeID: current.identity.LeaseID,
+		InstanceID: string(s.instanceID), SessionID: string(current.identity.SessionID), RuntimeGeneration: current.identity.Generation,
+		Frame: protocol.OutputFrame{Offset: nextOffset}, Reason: reason})
+}
+
+func writeOutputEvents(codec *bridge.Codec, subscriptionID string, instanceID model.InstanceID, identity duckruntime.RuntimeIdentity, frame duckruntime.OutputFrame) error {
+	const maxChunk = 64 << 10
+	if len(frame.Data) == 0 {
+		return nil
+	}
+	for start := 0; start < len(frame.Data); start += maxChunk {
+		end := start + maxChunk
+		if end > len(frame.Data) {
+			end = len(frame.Data)
+		}
+		event := protocol.OutputEvent{Type: "output", SubscriptionID: subscriptionID, RuntimeID: identity.LeaseID, InstanceID: string(instanceID), SessionID: string(identity.SessionID),
+			RuntimeGeneration: identity.Generation, Frame: protocol.OutputFrame{Offset: frame.Offset + uint64(start), Data: frame.Data[start:end], Gap: frame.Gap && start == 0}}
+		if err := codec.Write(event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func hasCapability(capabilities []string, wanted string) bool {
@@ -335,15 +478,21 @@ func writeSupervisorError(codec *bridge.Codec, requestID string, code protocol.E
 	_ = codec.Write(protocol.Response{ID: requestID, Error: &protocol.Error{Code: code, Message: message}})
 }
 
-func (s *Server) route(request protocol.Request) protocol.Response {
+func (s *Server) route(request protocol.Request, capabilities []string) protocol.Response {
 	if request.InstanceID != "" && request.InstanceID != string(s.instanceID) {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "Ducklion instance does not match"}}
 	}
 	switch request.Type {
 	case "status":
+		if !hasCapability(capabilities, "status") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "status capability was not negotiated"}}
+		}
 		result, _ := json.Marshal(map[string]any{"instance_id": s.instanceID, "protocol_major": protocol.Major, "protocol_minor": protocol.Minor})
 		return protocol.Response{ID: request.ID, Result: result}
 	case "sessions.list":
+		if !hasCapability(capabilities, "sessions_list") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session list capability was not negotiated"}}
+		}
 		sessions, err := s.state.ListSessions(context.Background())
 		if err != nil {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not list sessions", Retryable: true}}
