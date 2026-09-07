@@ -280,6 +280,36 @@ socket are the host authorization boundary. A Ducklord intentionally has a
 host-wide read-only inventory and PTY view, while ownership still gates input
 and lifecycle mutations.
 
+## Session revision stream
+
+Ducklion schema v7 adds a durable, instance-wide session revision journal.
+SQLite triggers append an `invalidate` or `delete` record in the same
+transaction as every `sessions` or `discord_bindings` change, including runtime
+recovery and managed-task state updates. Idempotent request replay and rolled
+back mutations therefore do not invent revisions. Updates that change only
+internal timestamps do not create visible revisions. The journal retains the
+most recent 4096 records.
+
+A Ducklord negotiates the `session_events` capability and calls
+`sessions.events_subscribe`. Ducklion reads the complete session projection,
+Discord bindings, earliest retained revision, and high-water revision in one
+SQLite read transaction. The response is both the authoritative replacement
+snapshot and the cursor for subsequent `session_revision` events. A mutation
+committed after that snapshot remains in the journal and is delivered even if
+it occurred before the streaming goroutine began.
+
+Revisions are instance-wide and strictly increasing. A future cursor is
+rejected. An older-than-retention cursor receives `gap: true` together with a
+fresh authoritative snapshot, so the consumer never applies a partial model.
+The stream carries invalidations rather than raw PTY data or prompts; Ducklord
+refreshes the affected host projection and deduplicates by revision. On bridge
+failure it keeps the last rows visible as `RECONNECTING`, disables mutation via
+the disconnected bridge, and resubscribes using its last revision. The new
+snapshot is applied atomically before the host returns to `LIVE`.
+At most 32 session-event streams may exist per daemon, and each Ducklord bridge
+may hold only one. This bounds the durable-journal polling and stream goroutines
+even if one local account opens many differently named bridge principals.
+
 The SQLite migration is automatic on Ducklion startup. Before changing
 `PRAGMA user_version`, Ducklion writes a mode-0600 `ducklion.db.bak-v2-*`
 backup. No separate migration command or client-side data conversion is

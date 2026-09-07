@@ -457,6 +457,70 @@ func TestTUIKeepsSnapshotForOfflineSessionAndReplacesItOnFreshOutput(t *testing.
 	}
 }
 
+func TestTUIRevisionSnapshotPreservesSelectionAndRowsWhileReconnecting(t *testing.T) {
+	state := &tuiState{hostSync: make(map[string]ducklord.SessionUpdate), selected: 1, sessions: []ducklord.RemoteSession{
+		{Client: "host-a", InstanceID: "instance", SessionID: "ABC123", Name: "old-name"},
+		{Client: "host-b", InstanceID: "other", SessionID: "DEF456", Name: "other"},
+	}}
+	state.selected = 0
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: "instance", Revision: 10, State: "live",
+		Sessions: []ducklord.RemoteSession{{Client: "host-a", InstanceID: "instance", SessionID: "ABC123", Name: "renamed"}}})
+	if len(state.sessions) != 2 || state.currentSession().Name != "renamed" {
+		t.Fatalf("live sessions=%+v selected=%+v", state.sessions, state.currentSession())
+	}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", Revision: 11, State: "reconnecting", Err: errors.New("ssh down")})
+	if len(state.sessions) != 2 || state.currentSession().Name != "renamed" {
+		t.Fatalf("reconnecting discarded rows: %+v", state.sessions)
+	}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", Revision: 9, State: "live", Sessions: nil})
+	if len(state.sessions) != 2 {
+		t.Fatalf("old revision replaced rows: %+v", state.sessions)
+	}
+}
+
+func TestTUIRevisionMarksOnlyChangedBackgroundSession(t *testing.T) {
+	state := &tuiState{hostSync: make(map[string]ducklord.SessionUpdate), sessions: []ducklord.RemoteSession{
+		{Client: "host-a", InstanceID: "instance", SessionID: "ABC123", Name: "active"},
+		{Client: "host-a", InstanceID: "instance", SessionID: "DEF456", Name: "background"},
+	}}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: "instance", Revision: 2, State: "live", ChangedSessionID: "DEF456",
+		Sessions: []ducklord.RemoteSession{{Client: "host-a", InstanceID: "instance", SessionID: "ABC123", Name: "active"},
+			{Client: "host-a", InstanceID: "instance", SessionID: "DEF456", Name: "background"}}})
+	if state.sessions[0].Updated || !state.sessions[1].Updated {
+		t.Fatalf("updated markers=%+v", state.sessions)
+	}
+}
+
+func TestTUIAcceptsNewInstanceAndRejectsLateOldGeneration(t *testing.T) {
+	state := &tuiState{hostSync: map[string]ducklord.SessionUpdate{"host-a": {Client: "host-a", InstanceID: "old", Revision: 100, Generation: 1, State: "live"}},
+		sessions: []ducklord.RemoteSession{{Client: "host-a", InstanceID: "old", SessionID: "ABC123", Name: "old"}}}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: "new", Revision: 0, Generation: 2, State: "reconnecting",
+		Err: errors.New("subscription temporarily unavailable")})
+	if state.hostIsLive("host-a") || len(state.sessions) != 1 || state.sessions[0].Name != "old" {
+		t.Fatalf("new instance reconnect did not fence controls and retain rows: sessions=%+v sync=%+v", state.sessions, state.hostSync)
+	}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: "old", Revision: 101, Generation: 1, State: "live",
+		Sessions: []ducklord.RemoteSession{{Client: "host-a", InstanceID: "old", SessionID: "ABC123", Name: "late-old"}}})
+	if state.hostIsLive("host-a") || state.sessions[0].Name != "old" {
+		t.Fatalf("late old generation escaped reconnect fence: sessions=%+v sync=%+v", state.sessions, state.hostSync)
+	}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: "new", Revision: 1, Generation: 2, State: "live",
+		Sessions: []ducklord.RemoteSession{{Client: "host-a", InstanceID: "new", SessionID: "DEF456", Name: "new"}}})
+	if len(state.sessions) != 1 || state.sessions[0].Name != "new" || !state.hostIsLive("host-a") {
+		t.Fatalf("new instance not accepted: sessions=%+v sync=%+v", state.sessions, state.hostSync)
+	}
+}
+
+func TestTUIReconnectStateDisablesHostControls(t *testing.T) {
+	state := &tuiState{hostSync: map[string]ducklord.SessionUpdate{"host-a": {Client: "host-a", State: "reconnecting"}}}
+	if state.hostIsLive("host-a") {
+		t.Fatal("reconnecting host remained writable")
+	}
+	if !state.hostIsLive("legacy-host") {
+		t.Fatal("legacy polling host was unexpectedly disabled")
+	}
+}
+
 func TestTUICreatePromptUsesSelectedClient(t *testing.T) {
 	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a", Host: "client-a"}, {Name: "client-b", Host: "client-b"}}}
 	state := &tuiState{

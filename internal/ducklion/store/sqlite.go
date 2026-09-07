@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 6
+const SchemaVersion = 7
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -201,6 +201,11 @@ func (s *SQLite) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate ducklion schema to v6: %w", err)
 		}
 	}
+	if userVersion < 7 {
+		if err := migrateV7(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v7: %w", err)
+		}
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
 		return err
 	}
@@ -313,6 +318,53 @@ func migrateV5(ctx context.Context, tx *sql.Tx) error {
 func migrateV6(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `ALTER TABLE managed_tasks ADD COLUMN acked_event_seq INTEGER NOT NULL DEFAULT 0 CHECK(acked_event_seq>=0)`)
 	return err
+}
+
+func migrateV7(ctx context.Context, tx *sql.Tx) error {
+	statements := []string{
+		`CREATE TABLE session_revision_events (
+			revision INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			change_kind TEXT NOT NULL CHECK(change_kind IN ('invalidate','delete')),
+			created_at_ms INTEGER NOT NULL)`,
+		`CREATE INDEX session_revision_events_session_idx ON session_revision_events(session_id,revision)`,
+		`CREATE TRIGGER session_revision_insert AFTER INSERT ON sessions BEGIN
+			INSERT INTO session_revision_events(session_id,change_kind,created_at_ms) VALUES(NEW.session_id,'invalidate',unixepoch('subsec')*1000);
+			DELETE FROM session_revision_events WHERE revision <= (SELECT max(revision)-4096 FROM session_revision_events);
+		END`,
+		`CREATE TRIGGER session_revision_update AFTER UPDATE ON sessions WHEN
+			OLD.handle IS NOT NEW.handle OR OLD.kind IS NOT NEW.kind OR OLD.agent_type IS NOT NEW.agent_type OR
+			OLD.cwd IS NOT NEW.cwd OR OLD.status IS NOT NEW.status OR OLD.writer_kind IS NOT NEW.writer_kind OR
+			OLD.writer_id IS NOT NEW.writer_id OR OLD.ownership_epoch IS NOT NEW.ownership_epoch OR
+			OLD.runtime_generation IS NOT NEW.runtime_generation OR OLD.task_state IS NOT NEW.task_state OR
+			OLD.adapter_state IS NOT NEW.adapter_state OR OLD.exit_success IS NOT NEW.exit_success OR OLD.exit_reason IS NOT NEW.exit_reason
+		BEGIN
+			INSERT INTO session_revision_events(session_id,change_kind,created_at_ms) VALUES(NEW.session_id,'invalidate',unixepoch('subsec')*1000);
+			DELETE FROM session_revision_events WHERE revision <= (SELECT max(revision)-4096 FROM session_revision_events);
+		END`,
+		`CREATE TRIGGER session_revision_delete AFTER DELETE ON sessions BEGIN
+			INSERT INTO session_revision_events(session_id,change_kind,created_at_ms) VALUES(OLD.session_id,'delete',unixepoch('subsec')*1000);
+			DELETE FROM session_revision_events WHERE revision <= (SELECT max(revision)-4096 FROM session_revision_events);
+		END`,
+		`CREATE TRIGGER binding_revision_insert AFTER INSERT ON discord_bindings BEGIN
+			INSERT INTO session_revision_events(session_id,change_kind,created_at_ms) VALUES(NEW.session_id,'invalidate',unixepoch('subsec')*1000);
+			DELETE FROM session_revision_events WHERE revision <= (SELECT max(revision)-4096 FROM session_revision_events);
+		END`,
+		`CREATE TRIGGER binding_revision_update AFTER UPDATE ON discord_bindings BEGIN
+			INSERT INTO session_revision_events(session_id,change_kind,created_at_ms) VALUES(NEW.session_id,'invalidate',unixepoch('subsec')*1000);
+			DELETE FROM session_revision_events WHERE revision <= (SELECT max(revision)-4096 FROM session_revision_events);
+		END`,
+		`CREATE TRIGGER binding_revision_delete AFTER DELETE ON discord_bindings BEGIN
+			INSERT INTO session_revision_events(session_id,change_kind,created_at_ms) VALUES(OLD.session_id,'invalidate',unixepoch('subsec')*1000);
+			DELETE FROM session_revision_events WHERE revision <= (SELECT max(revision)-4096 FROM session_revision_events);
+		END`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SQLite) InstanceID(ctx context.Context) (model.InstanceID, error) {

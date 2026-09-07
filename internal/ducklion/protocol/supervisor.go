@@ -235,3 +235,30 @@ type OutputEvent struct {
 	Frame             OutputFrame `json:"frame"`
 	Reason            string      `json:"reason,omitempty"`
 }
+
+type SessionEventsSubscribe struct {
+	AfterRevision uint64 `json:"after_revision,omitempty"`
+}
+
+type SessionEventsUnsubscribe struct {
+	SubscriptionID string `json:"subscription_id"`
+}
+
+type SessionSnapshotSubscribeResult struct {
+	SubscriptionID   string           `json:"subscription_id"`
+	InstanceID       string           `json:"instance_id"`
+	SnapshotRevision uint64           `json:"snapshot_revision"`
+	EarliestRevision uint64           `json:"earliest_revision,omitempty"`
+	Gap              bool             `json:"gap,omitempty"`
+	Sessions         []SessionSummary `json:"sessions"`
+}
+
+type SessionRevisionEvent struct {
+	Type           string `json:"type"`
+	SubscriptionID string `json:"subscription_id"`
+	InstanceID     string `json:"instance_id"`
+	Revision       uint64 `json:"revision"`
+	SessionID      string `json:"session_id,omitempty"`
+	Change         string `json:"change,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+}

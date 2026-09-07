@@ -24,6 +24,8 @@ type Client struct {
 	pending              map[string]chan responseResult
 	subscriptions        map[string]*OutputSubscription
 	orphanEvents         map[string][]protocol.OutputEvent
+	sessionSubscriptions map[string]*SessionEventSubscription
+	orphanSessionEvents  map[string][]protocol.SessionRevisionEvent
 	ignoredSubscriptions map[string]bool
 	ignoredOrder         []string
 	done                 chan struct{}
@@ -104,7 +106,7 @@ func ConnectRoleContext(ctx context.Context, conn io.ReadWriteCloser, principal 
 	}()
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	setDeadline(conn, time.Now().Add(10*time.Second))
-	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}
+	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_events"}
 	if role == protocol.RoleDuckwayCC {
 		offeredCapabilities = []string{"status", "sessions_list", "session_yield", "session_task", "discord_binding", "agent_task"}
 	}
@@ -146,6 +148,7 @@ func ConnectRoleContext(ctx context.Context, conn io.ReadWriteCloser, principal 
 	}
 	client = &Client{conn: conn, codec: codec, capabilities: capabilities, pending: make(map[string]chan responseResult),
 		subscriptions: make(map[string]*OutputSubscription), orphanEvents: make(map[string][]protocol.OutputEvent), ignoredSubscriptions: make(map[string]bool),
+		sessionSubscriptions: make(map[string]*SessionEventSubscription), orphanSessionEvents: make(map[string][]protocol.SessionRevisionEvent),
 		writeGate: make(chan struct{}, 1), done: make(chan struct{})}
 	client.writeGate <- struct{}{}
 	go client.readLoop()
@@ -274,6 +277,122 @@ type OutputSubscription struct {
 	terminalDone chan struct{}
 	terminalOnce sync.Once
 	closeOnce    sync.Once
+}
+
+type SessionEventSubscription struct {
+	client       *Client
+	metadata     protocol.SessionSnapshotSubscribeResult
+	next         uint64
+	readMu       sync.Mutex
+	events       chan protocol.SessionRevisionEvent
+	terminalMu   sync.Mutex
+	terminalErr  error
+	terminalDone chan struct{}
+	terminalOnce sync.Once
+	closeOnce    sync.Once
+}
+
+type SessionEventStreamEnded struct {
+	Reason       string
+	LastRevision uint64
+}
+
+func (e *SessionEventStreamEnded) Error() string { return "session event stream ended: " + e.Reason }
+
+func (c *Client) SubscribeSessionEvents(afterRevision uint64) (*SessionEventSubscription, error) {
+	if err := c.requireCapability("session_events"); err != nil {
+		return nil, err
+	}
+	body, _ := json.Marshal(protocol.SessionEventsSubscribe{AfterRevision: afterRevision})
+	request := protocol.Request{ID: uuid.NewString(), Type: "sessions.events_subscribe", InstanceID: c.instanceID, Body: body}
+	response, err := c.Call(request)
+	if err != nil {
+		return nil, err
+	}
+	if response.Error != nil {
+		return nil, &RemoteError{Detail: *response.Error}
+	}
+	var metadata protocol.SessionSnapshotSubscribeResult
+	if err := json.Unmarshal(response.Result, &metadata); err != nil || metadata.SubscriptionID == "" || metadata.InstanceID != c.instanceID ||
+		metadata.SnapshotRevision < afterRevision || metadata.EarliestRevision > metadata.SnapshotRevision && metadata.SnapshotRevision != 0 {
+		return nil, fmt.Errorf("ducklion returned invalid session event subscription metadata")
+	}
+	subscription := &SessionEventSubscription{client: c, metadata: metadata, next: metadata.SnapshotRevision + 1,
+		events: make(chan protocol.SessionRevisionEvent, 256), terminalDone: make(chan struct{})}
+	c.stateMu.Lock()
+	for _, event := range c.orphanSessionEvents[metadata.SubscriptionID] {
+		subscription.events <- event
+	}
+	delete(c.orphanSessionEvents, metadata.SubscriptionID)
+	c.sessionSubscriptions[metadata.SubscriptionID] = subscription
+	c.stateMu.Unlock()
+	return subscription, nil
+}
+
+func (s *SessionEventSubscription) Metadata() protocol.SessionSnapshotSubscribeResult {
+	return s.metadata
+}
+
+func (s *SessionEventSubscription) Read() (protocol.SessionRevisionEvent, error) {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+	if err := s.sessionTerminalError(); err != nil {
+		return protocol.SessionRevisionEvent{}, err
+	}
+	select {
+	case <-s.terminalDone:
+		return protocol.SessionRevisionEvent{}, s.sessionTerminalError()
+	case event := <-s.events:
+		if event.Type == "session_events_end" {
+			ended := &SessionEventStreamEnded{Reason: event.Reason, LastRevision: event.Revision}
+			s.terminateSessionEvents(ended)
+			return event, ended
+		}
+		if event.Type != "session_revision" || event.SubscriptionID != s.metadata.SubscriptionID || event.InstanceID != s.metadata.InstanceID ||
+			event.Revision != s.next || event.SessionID == "" || event.Change != "invalidate" && event.Change != "delete" {
+			return protocol.SessionRevisionEvent{}, fmt.Errorf("invalid or non-contiguous session revision event")
+		}
+		s.next++
+		return event, nil
+	case <-s.client.done:
+		return protocol.SessionRevisionEvent{}, io.ErrClosedPipe
+	}
+}
+
+func (s *SessionEventSubscription) Close() error {
+	var closeErr error
+	s.closeOnce.Do(func() {
+		s.terminateSessionEvents(ErrOutputSubscriptionClosed)
+		s.client.stateMu.Lock()
+		delete(s.client.sessionSubscriptions, s.metadata.SubscriptionID)
+		s.client.markIgnoredLocked(s.metadata.SubscriptionID)
+		s.client.stateMu.Unlock()
+		body, _ := json.Marshal(protocol.SessionEventsUnsubscribe{SubscriptionID: s.metadata.SubscriptionID})
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		response, err := s.client.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "sessions.events_unsubscribe", InstanceID: s.client.instanceID, Body: body})
+		if err != nil {
+			closeErr = err
+		} else if response.Error != nil && response.Error.Code != protocol.ErrNotFound {
+			closeErr = &RemoteError{Detail: *response.Error}
+		}
+	})
+	return closeErr
+}
+
+func (s *SessionEventSubscription) terminateSessionEvents(err error) {
+	s.terminalOnce.Do(func() {
+		s.terminalMu.Lock()
+		s.terminalErr = err
+		s.terminalMu.Unlock()
+		close(s.terminalDone)
+	})
+}
+
+func (s *SessionEventSubscription) sessionTerminalError() error {
+	s.terminalMu.Lock()
+	defer s.terminalMu.Unlock()
+	return s.terminalErr
 }
 
 func (c *Client) SubscribeOutput(sessionID string, generation, offset uint64) (*OutputSubscription, error) {
@@ -433,7 +552,20 @@ func (c *Client) readLoop() {
 			waiter <- responseResult{response: response}
 			continue
 		}
-		if envelope.SubscriptionID == "" || (envelope.Type != "output" && envelope.Type != "output_end") {
+		if envelope.SubscriptionID == "" {
+			c.shutdown(fmt.Errorf("unexpected Ducklion event"))
+			return
+		}
+		if envelope.Type == "session_revision" || envelope.Type == "session_events_end" {
+			var event protocol.SessionRevisionEvent
+			if err := json.Unmarshal(raw, &event); err != nil {
+				c.shutdown(err)
+				return
+			}
+			c.dispatchSessionEvent(event)
+			continue
+		}
+		if envelope.Type != "output" && envelope.Type != "output_end" {
 			c.shutdown(fmt.Errorf("unexpected Ducklion event"))
 			return
 		}
@@ -443,6 +575,42 @@ func (c *Client) readLoop() {
 			return
 		}
 		c.dispatchOutput(event)
+	}
+}
+
+func (c *Client) dispatchSessionEvent(event protocol.SessionRevisionEvent) {
+	if len(event.SubscriptionID) > 128 || event.InstanceID != c.instanceID || event.Revision == 0 ||
+		event.Type == "session_events_end" && event.Reason == "" {
+		c.shutdown(fmt.Errorf("invalid Ducklion session event"))
+		return
+	}
+	c.stateMu.Lock()
+	if c.ignoredSubscriptions[event.SubscriptionID] {
+		c.stateMu.Unlock()
+		return
+	}
+	subscription := c.sessionSubscriptions[event.SubscriptionID]
+	if subscription == nil {
+		orphan := c.orphanSessionEvents[event.SubscriptionID]
+		if (len(orphan) > 0 || len(c.orphanSessionEvents) < 4) && len(orphan) < 80 {
+			c.orphanSessionEvents[event.SubscriptionID] = append(orphan, event)
+		}
+		c.stateMu.Unlock()
+		return
+	}
+	if event.Type == "session_events_end" {
+		delete(c.sessionSubscriptions, event.SubscriptionID)
+		c.markIgnoredLocked(event.SubscriptionID)
+	}
+	c.stateMu.Unlock()
+	select {
+	case subscription.events <- event:
+	default:
+		c.stateMu.Lock()
+		delete(c.sessionSubscriptions, event.SubscriptionID)
+		c.markIgnoredLocked(event.SubscriptionID)
+		c.stateMu.Unlock()
+		subscription.terminateSessionEvents(fmt.Errorf("session event subscriber lagged behind"))
 	}
 }
 

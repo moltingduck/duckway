@@ -164,6 +164,118 @@ func TestOutputSubscriptionQuotaIsBoundedAndReleased(t *testing.T) {
 	}
 }
 
+func TestSessionEventSubscriptionHasAtomicSnapshotAndDurableRevision(t *testing.T) {
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	publicKey, _, err := model.NewRecoveryKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	owner := model.Owner{Kind: model.OwnerTerminal, ID: "desk-events"}
+	session := model.Session{ID: "ABC123", Handle: "events", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+		Writer: &owner, OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle, AdapterState: model.AdapterRecovering,
+		RecoveryPublicKey: publicKey, CreatedAtMS: now, UpdatedAtMS: now}
+	if _, _, err := server.service.CreateSession(context.Background(), "terminal:desk-events", "create-events", session); err != nil {
+		t.Fatal(err)
+	}
+	viewer, err := Dial(server.SocketPath(), "desk-events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer viewer.Close()
+	subscription, err := viewer.SubscribeSessionEvents(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := subscription.Metadata()
+	if metadata.InstanceID != string(server.InstanceID()) || metadata.SnapshotRevision == 0 || len(metadata.Sessions) != 1 || metadata.Sessions[0].SessionID != "ABC123" {
+		t.Fatalf("metadata=%+v", metadata)
+	}
+	if err := server.state.MarkRuntimeConnected(context.Background(), session.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	event, err := subscription.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Revision != metadata.SnapshotRevision+1 || event.SessionID != "ABC123" || event.Change != "invalidate" {
+		t.Fatalf("event=%+v", event)
+	}
+	if err := subscription.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := viewer.SubscribeSessionEvents(event.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Metadata().SnapshotRevision != event.Revision || second.Metadata().Sessions[0].Status != model.StatusRunning {
+		t.Fatalf("second metadata=%+v", second.Metadata())
+	}
+	_ = second.Close()
+}
+
+func TestSessionEventSubscriptionRejectsFutureRevisionAndCCRole(t *testing.T) {
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	viewer, err := Dial(server.SocketPath(), "desk-events-negative")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := viewer.SubscribeSessionEvents(1); err == nil {
+		t.Fatal("future revision accepted")
+	}
+	badBody, _ := json.Marshal(map[string]any{"after_revision": 0, "unknown": true})
+	response, err := viewer.Call(protocol.Request{ID: "bad-event-body", Type: "sessions.events_subscribe", InstanceID: string(server.InstanceID()), Body: badBody})
+	if err != nil || response.Error == nil || response.Error.Code != protocol.ErrInvalidArgument {
+		t.Fatalf("unknown field response=%+v err=%v", response, err)
+	}
+	validBody, _ := json.Marshal(protocol.SessionEventsSubscribe{})
+	response, err = viewer.Call(protocol.Request{ID: "wrong-event-instance", Type: "sessions.events_subscribe", InstanceID: "wrong", Body: validBody})
+	if err != nil || response.Error == nil || response.Error.Code != protocol.ErrNotFound {
+		t.Fatalf("wrong instance response=%+v err=%v", response, err)
+	}
+	_ = viewer.Close()
+	cc, err := DialCC(server.SocketPath(), "cc-events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	if _, err := cc.SubscribeSessionEvents(0); err == nil || !strings.Contains(err.Error(), "not negotiated") {
+		t.Fatalf("CC session events error=%v", err)
+	}
+}
+
+func TestSessionEventSubscriptionQuotaIsBoundedAndReleased(t *testing.T) {
+	server := &Server{}
+	releases := make([]func(), 0, maxSessionEventSubscriptionsGlobal)
+	for i := 0; i < maxSessionEventSubscriptionsGlobal; i++ {
+		release, protocolError := server.reserveSessionEventSubscription()
+		if protocolError != nil {
+			t.Fatalf("reserve %d: %+v", i, protocolError)
+		}
+		releases = append(releases, release)
+	}
+	if _, protocolError := server.reserveSessionEventSubscription(); protocolError == nil || protocolError.Code != protocol.ErrBusy || !protocolError.Retryable {
+		t.Fatalf("quota error=%+v", protocolError)
+	}
+	releases[0]()
+	releases[0]()
+	if _, protocolError := server.reserveSessionEventSubscription(); protocolError != nil {
+		t.Fatalf("released quota not reusable: %+v", protocolError)
+	}
+}
+
 func TestRecoveredOutputPreservesOriginalGapOffset(t *testing.T) {
 	server, err := Open(context.Background(), Options{Root: t.TempDir()})
 	if err != nil {

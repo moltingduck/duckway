@@ -727,6 +727,12 @@ Detached views are atomically stored as mode-0600 files under
 sanitized render text, not replayable raw PTY bytes, and appear with a clear
 `STALE SNAPSHOT` label only until fresh remote output arrives.
 
+The TUI inventory is event-driven when using the versioned Ducklion bridge.
+Each host header shows `LIVE r<revision>` or `RECONNECTING r<revision>`.
+Ducklion backs this with its schema-v7 durable session revision journal, so a
+mutation between initial inventory capture and stream startup cannot disappear.
+The legacy direct-command fallback continues to use periodic refreshes.
+
 ```bash
 scripts/ducklord-podman-demo.sh
 podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.yaml

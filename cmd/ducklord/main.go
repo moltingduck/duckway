@@ -951,6 +951,8 @@ type tuiState struct {
 	addClientHosts     []ducklord.SSHHost
 	hostScoped         bool
 	ownerName          string
+	hostSync           map[string]ducklord.SessionUpdate
+	eventDriven        bool
 }
 
 func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, owner string) error {
@@ -990,8 +992,26 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner,
-		snapshotStore: ducklord.SnapshotStore{}}
+		snapshotStore: ducklord.SnapshotStore{}, hostSync: make(map[string]ducklord.SessionUpdate)}
 	defer state.saveCurrentSnapshot()
+	sessionUpdates := make(chan ducklord.SessionUpdate, 32)
+	if watcher, ok := runner.(interface {
+		WatchSessionUpdates(context.Context, ducklord.Client) <-chan ducklord.SessionUpdate
+	}); ok {
+		state.eventDriven = true
+		for _, client := range cfg.Clients {
+			updates := watcher.WatchSessionUpdates(ctx, client)
+			go func() {
+				for update := range updates {
+					select {
+					case sessionUpdates <- update:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}()
+		}
+	}
 	state.refreshSessions(ctx)
 	state.refreshSelectedOutput(ctx)
 	state.render(os.Stdout)
@@ -1018,8 +1038,14 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			return nil
 		case <-ticker.C:
-			if !state.focused && !state.newSessionMode {
+			if !state.eventDriven && !state.focused && !state.newSessionMode {
 				state.refreshSessions(ctx)
+				state.refreshSelectedOutput(ctx)
+			}
+			state.render(os.Stdout)
+		case update := <-sessionUpdates:
+			state.applySessionUpdate(update)
+			if !state.focused {
 				state.refreshSelectedOutput(ctx)
 			}
 			state.render(os.Stdout)
@@ -1109,6 +1135,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					if !ready {
 						break
 					}
+					if !state.hostIsLive(state.newSessionClient) {
+						state.newSessionErr = "host is reconnecting; session creation is disabled until synchronization completes"
+						break
+					}
 					c, err := mustClient(cfg, state.newSessionClient)
 					if err != nil {
 						return err
@@ -1154,6 +1184,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					break
 				}
 				sess := state.sessions[state.selected]
+				if !state.hostIsLive(sess.Client) {
+					state.outputErr = "host is reconnecting; yield is disabled until session state is synchronized"
+					break
+				}
 				client, err := mustClient(cfg, sess.Client)
 				if err != nil {
 					state.outputErr = err.Error()
@@ -1175,7 +1209,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					continue
 				}
 				s := state.sessions[state.selected]
-				if !canAttach(s) {
+				if !canAttach(s) || !state.hostIsLive(s.Client) {
+					if !state.hostIsLive(s.Client) {
+						state.outputErr = "host is reconnecting; PTY controls are disabled"
+					}
 					continue
 				}
 				c, err := mustClient(cfg, s.Client)
@@ -1255,6 +1292,72 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 	s.selectedKey = s.currentKey()
 }
 
+func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
+	if update.Client == "" {
+		return
+	}
+	previous := s.hostSync[update.Client]
+	if update.Generation < previous.Generation || update.Generation == previous.Generation && update.InstanceID == previous.InstanceID && update.Revision < previous.Revision {
+		return
+	}
+	s.hostSync[update.Client] = update
+	if update.State != "live" {
+		return // retain the last authoritative rows while reconnecting
+	}
+	oldKey := s.currentKey()
+	all := make([]ducklord.RemoteSession, 0, len(s.sessions)+len(update.Sessions))
+	for _, session := range s.sessions {
+		if session.Client != update.Client {
+			all = append(all, session)
+		}
+	}
+	for _, session := range update.Sessions {
+		if session.SessionID == update.ChangedSessionID && sessionKey(session) != oldKey {
+			session.Updated = true
+		}
+		all = append(all, session)
+	}
+	sortRemoteSessions(all)
+	s.sessions = all
+	s.restoreSelection(oldKey)
+}
+
+func (s *tuiState) hostIsLive(client string) bool {
+	update, known := s.hostSync[client]
+	return !known || update.State == "live"
+}
+
+func sortRemoteSessions(sessions []ducklord.RemoteSession) {
+	sort.SliceStable(sessions, func(i, j int) bool {
+		if sessions[i].Group != sessions[j].Group {
+			return sessions[i].Group < sessions[j].Group
+		}
+		if sessions[i].Client != sessions[j].Client {
+			return sessions[i].Client < sessions[j].Client
+		}
+		return sessions[i].Name < sessions[j].Name
+	})
+}
+
+func (s *tuiState) restoreSelection(key string) {
+	if key != "" {
+		for i, session := range s.sessions {
+			if sessionKey(session) == key {
+				s.selected = i
+				s.selectedKey = key
+				return
+			}
+		}
+	}
+	if s.selected >= len(s.sessions) {
+		s.selected = len(s.sessions) - 1
+	}
+	if s.selected < 0 {
+		s.selected = 0
+	}
+	s.selectedKey = s.currentKey()
+}
+
 func (s *tuiState) currentKey() string {
 	if len(s.sessions) == 0 || s.selected < 0 || s.selected >= len(s.sessions) {
 		return ""
@@ -1319,6 +1422,10 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 		}
 	}
 	s.outputForKey = key
+	if !s.hostIsLive(sess.Client) {
+		s.outputErr = "host reconnecting; showing last synchronized output"
+		return
+	}
 	if !canRead(sess) {
 		s.outputErr = sess.Error
 		if s.outputErr == "" {
@@ -1393,7 +1500,7 @@ func (s *tuiState) render(out io.Writer) {
 	contentX := menuWidth + 4
 	contentWidth := renderWidth - contentX + 1
 	fmt.Fprint(out, "\033[H\033[2J")
-	fmt.Fprintf(out, "ducklord remote agents  owner:%s\n", displayField(s.ownerName))
+	fmt.Fprintf(out, "ducklord remote agents  owner:%s%s\n", displayField(s.ownerName), s.hostSyncLabel())
 	if s.focused {
 		fmt.Fprintln(out, "session focus  keys go to session  ctrl-] menu")
 	} else if s.addClientMode {
@@ -1453,6 +1560,30 @@ func (s *tuiState) render(out io.Writer) {
 	s.renderContent(out, contentX, contentWidth, height)
 	s.renderAddClientPrompt(out, height, 1, renderWidth)
 	s.renderCreatePrompt(out, height, 1, renderWidth)
+}
+
+func (s *tuiState) hostSyncLabel() string {
+	if len(s.hostSync) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(s.hostSync))
+	for name := range s.hostSync {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		update := s.hostSync[name]
+		state := strings.ToUpper(update.State)
+		if state == "" {
+			state = "SYNCING"
+		}
+		if update.Gap {
+			state = "RESYNCED-GAP"
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s r%d", displayField(name), state, update.Revision))
+	}
+	return "  " + strings.Join(parts, "  ")
 }
 
 func (s *tuiState) renderAddClientChoices(out io.Writer, row, x, width, height int) {
@@ -1925,6 +2056,9 @@ func (s *tuiState) handleLineInput(b []byte, line *string) string {
 }
 
 func sessionKey(sess ducklord.RemoteSession) string {
+	if sess.InstanceID != "" && sess.SessionID != "" {
+		return sess.InstanceID + "/" + sess.SessionID
+	}
 	return sess.Group + "/" + sess.Client + "/" + sess.Name
 }
 

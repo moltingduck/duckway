@@ -51,6 +51,18 @@ type RemoteProject struct {
 	Source string `json:"source"`
 }
 
+type SessionUpdate struct {
+	Client           string
+	InstanceID       string
+	Revision         uint64
+	Sessions         []RemoteSession
+	State            string
+	Gap              bool
+	ChangedSessionID string
+	Generation       uint64
+	Err              error
+}
+
 type Runner struct {
 	mu          sync.Mutex
 	owner       string
@@ -311,6 +323,106 @@ func (r *Runner) Sessions(ctx context.Context, c Client, tailLines int) ([]Remot
 		sessions[i].Group = c.Group
 	}
 	return sessions, nil
+}
+
+// WatchSessionUpdates maintains one durable revision subscription for a host.
+// Every delivered update contains a complete replacement snapshot so UI state
+// never observes a partially applied sequence of invalidations.
+func (r *Runner) WatchSessionUpdates(ctx context.Context, c Client) <-chan SessionUpdate {
+	updates := make(chan SessionUpdate, 8)
+	go func() {
+		defer close(updates)
+		var revision uint64
+		var instanceID string
+		var generation uint64
+		for {
+			client, err := r.bridgeClient(ctx, c)
+			if err != nil {
+				if !sendSessionUpdate(ctx, updates, SessionUpdate{Client: c.Name, InstanceID: instanceID, Revision: revision, Generation: generation, State: "reconnecting", Err: err}) || !waitContext(ctx, 500*time.Millisecond) {
+					return
+				}
+				continue
+			}
+			if instanceID != "" && client.InstanceID() != instanceID {
+				revision = 0
+			}
+			instanceID = client.InstanceID()
+			generation++
+			subscription, err := client.SubscribeSessionEvents(revision)
+			if err != nil {
+				r.discardBridge(bridgeKey(c), client)
+				if !sendSessionUpdate(ctx, updates, SessionUpdate{Client: c.Name, InstanceID: instanceID, Revision: revision, Generation: generation, State: "reconnecting", Err: err}) || !waitContext(ctx, 500*time.Millisecond) {
+					return
+				}
+				continue
+			}
+			metadata := subscription.Metadata()
+			revision = metadata.SnapshotRevision
+			sessions := remoteSessionsFromSummaries(c, metadata.InstanceID, metadata.Sessions)
+			if !sendSessionUpdate(ctx, updates, SessionUpdate{Client: c.Name, InstanceID: metadata.InstanceID, Revision: revision, Generation: generation, Sessions: sessions, State: "live", Gap: metadata.Gap}) {
+				_ = subscription.Close()
+				return
+			}
+			for {
+				event, readErr := subscription.Read()
+				if readErr != nil {
+					_ = subscription.Close()
+					r.discardBridge(bridgeKey(c), client)
+					_ = sendSessionUpdate(ctx, updates, SessionUpdate{Client: c.Name, InstanceID: metadata.InstanceID, Revision: revision, Generation: generation, State: "reconnecting", Err: readErr})
+					break
+				}
+				summaries, listErr := client.ListSessions()
+				if listErr != nil {
+					_ = subscription.Close()
+					r.discardBridge(bridgeKey(c), client)
+					_ = sendSessionUpdate(ctx, updates, SessionUpdate{Client: c.Name, InstanceID: metadata.InstanceID, Revision: revision, Generation: generation, State: "reconnecting", Err: listErr})
+					break
+				}
+				revision = event.Revision
+				if !sendSessionUpdate(ctx, updates, SessionUpdate{Client: c.Name, InstanceID: metadata.InstanceID, Revision: revision,
+					Generation: generation, Sessions: remoteSessionsFromSummaries(c, metadata.InstanceID, summaries), State: "live", ChangedSessionID: event.SessionID}) {
+					_ = subscription.Close()
+					return
+				}
+			}
+		}
+	}()
+	return updates
+}
+
+func remoteSessionsFromSummaries(c Client, instanceID string, summaries []protocol.SessionSummary) []RemoteSession {
+	sessions := make([]RemoteSession, 0, len(summaries))
+	for _, summary := range summaries {
+		session := RemoteSession{Client: c.Name, InstanceID: instanceID, SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status),
+			AgentType: summary.AgentType, Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
+			TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason}
+		if summary.Writer != nil {
+			session.WriterKind = string(summary.Writer.Kind)
+			session.WriterID = summary.Writer.ID
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions
+}
+
+func sendSessionUpdate(ctx context.Context, updates chan<- SessionUpdate, update SessionUpdate) bool {
+	select {
+	case updates <- update:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func waitContext(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (r *Runner) Read(ctx context.Context, c Client, name string, lines int) (string, error) {

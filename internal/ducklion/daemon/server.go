@@ -31,6 +31,7 @@ const (
 	maxOutputSubscriptionsPerConnection = 101 // configured Ducklord maximum plus one atomic handoff slot
 	maxOutputSubscriptionsPerSession    = 32
 	maxOutputSubscriptionsGlobal        = 512
+	maxSessionEventSubscriptionsGlobal  = 32
 )
 
 type Options struct {
@@ -71,6 +72,8 @@ type Server struct {
 	agentEvents                  map[string][]protocol.SupervisorAgentEvent
 	agentEventCount              int
 	agentEventBytes              int
+	sessionEventMu               sync.Mutex
+	sessionEventSubscriptions    int
 	runtimeLauncher              func(string) error
 }
 
@@ -109,6 +112,13 @@ type preparedOutputSubscription struct {
 	stream   <-chan duckruntime.OutputFrame
 	cancel   func()
 	hub      *duckruntime.OutputHub
+}
+
+type preparedSessionSubscription struct {
+	metadata protocol.SessionSnapshotSubscribeResult
+	cursor   uint64
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 type controlCall struct {
@@ -287,7 +297,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 			s.connMu.Unlock()
 		}()
 	}
-	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize"}
+	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_events"}
 	if remote.Role == protocol.RoleDuckwayCC {
 		capabilities = []string{"status", "sessions_list", "session_yield", "session_task", "discord_binding", "agent_task"}
 	}
@@ -304,6 +314,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 	wire := &ducklordWire{codec: codec, conn: conn}
 	var subscriptionsMu sync.Mutex
 	subscriptions := make(map[string]func())
+	var sessionSubscriptionID string
 	var subscriptionHandlers sync.WaitGroup
 	routeRequests := make(chan protocol.Request, 32)
 	var routeHandler sync.WaitGroup
@@ -338,6 +349,66 @@ func (s *Server) handle(conn *net.UnixConn) {
 				return
 			}
 			_ = codec.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}})
+			continue
+		}
+		if request.Type == "sessions.events_subscribe" {
+			if negotiated.Role != protocol.RoleDucklord || !hasCapability(negotiated.Capabilities, "session_events") {
+				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session events capability was not negotiated"}})
+				continue
+			}
+			if sessionSubscriptionID != "" {
+				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrBusy, Message: "session event subscription already exists", Retryable: true}})
+				continue
+			}
+			prepared, protocolError := s.prepareSessionSubscription(request)
+			if protocolError != nil {
+				_ = wire.Write(protocol.Response{ID: request.ID, Error: protocolError})
+				continue
+			}
+			result, _ := json.Marshal(prepared.metadata)
+			if err := wire.Write(protocol.Response{ID: request.ID, Result: result}); err != nil {
+				prepared.cancel()
+				return
+			}
+			sessionSubscriptionID = prepared.metadata.SubscriptionID
+			subscriptionsMu.Lock()
+			subscriptions[sessionSubscriptionID] = prepared.cancel
+			subscriptionsMu.Unlock()
+			subscriptionHandlers.Add(1)
+			go func() {
+				defer subscriptionHandlers.Done()
+				s.streamSessionSubscription(wire, prepared)
+				subscriptionsMu.Lock()
+				delete(subscriptions, prepared.metadata.SubscriptionID)
+				subscriptionsMu.Unlock()
+			}()
+			continue
+		}
+		if request.Type == "sessions.events_unsubscribe" {
+			var body protocol.SessionEventsUnsubscribe
+			if negotiated.Role != protocol.RoleDucklord || !hasCapability(negotiated.Capabilities, "session_events") || request.InstanceID != string(s.instanceID) ||
+				len(request.SessionID) != 0 || request.RuntimeGeneration != nil || request.OwnershipEpoch != nil || decodeStrict(request.Body, &body) != nil || body.SubscriptionID == "" {
+				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid session event unsubscribe"}})
+				continue
+			}
+			subscriptionsMu.Lock()
+			cancel := subscriptions[body.SubscriptionID]
+			if cancel != nil && body.SubscriptionID == sessionSubscriptionID {
+				delete(subscriptions, body.SubscriptionID)
+				sessionSubscriptionID = ""
+			} else {
+				cancel = nil
+			}
+			subscriptionsMu.Unlock()
+			if cancel == nil {
+				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "session event subscription not found"}})
+				continue
+			}
+			cancel()
+			result, _ := json.Marshal(map[string]bool{"unsubscribed": true})
+			if err := wire.Write(protocol.Response{ID: request.ID, Result: result}); err != nil {
+				return
+			}
 			continue
 		}
 		if request.Type == "session.output_subscribe" {
@@ -844,6 +915,109 @@ func (s *Server) reserveOutputSubscription(sessionID model.SessionID) (func(), *
 	}, nil
 }
 
+func (s *Server) prepareSessionSubscription(request protocol.Request) (*preparedSessionSubscription, *protocol.Error) {
+	var body protocol.SessionEventsSubscribe
+	if request.InstanceID != string(s.instanceID) {
+		return nil, &protocol.Error{Code: protocol.ErrNotFound, Message: "Ducklion instance does not match"}
+	}
+	if len(request.SessionID) != 0 || request.RuntimeGeneration != nil || request.OwnershipEpoch != nil ||
+		decodeStrict(request.Body, &body) != nil {
+		return nil, &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid session event subscription"}
+	}
+	release, quotaError := s.reserveSessionEventSubscription()
+	if quotaError != nil {
+		return nil, quotaError
+	}
+	snapshot, err := s.state.SessionSnapshot(context.Background())
+	if err != nil {
+		release()
+		return nil, &protocol.Error{Code: protocol.ErrInternal, Message: "could not read session snapshot", Retryable: true}
+	}
+	if body.AfterRevision > snapshot.Revision {
+		release()
+		return nil, &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session event revision is ahead of Ducklion"}
+	}
+	ctx, cancelContext := context.WithCancel(context.Background())
+	var cancelOnce sync.Once
+	cancel := func() { cancelOnce.Do(func() { cancelContext(); release() }) }
+	metadata := protocol.SessionSnapshotSubscribeResult{SubscriptionID: uuid.NewString(), InstanceID: string(s.instanceID), SnapshotRevision: snapshot.Revision,
+		EarliestRevision: snapshot.EarliestRevision, Sessions: summariesFor(snapshot.Sessions)}
+	if body.AfterRevision > 0 && snapshot.EarliestRevision > 0 && body.AfterRevision+1 < snapshot.EarliestRevision {
+		metadata.Gap = true
+	}
+	return &preparedSessionSubscription{metadata: metadata, cursor: snapshot.Revision, ctx: ctx, cancel: cancel}, nil
+}
+
+func (s *Server) reserveSessionEventSubscription() (func(), *protocol.Error) {
+	s.sessionEventMu.Lock()
+	if s.sessionEventSubscriptions >= maxSessionEventSubscriptionsGlobal {
+		s.sessionEventMu.Unlock()
+		return nil, &protocol.Error{Code: protocol.ErrBusy, Message: "session event subscription capacity reached", Retryable: true}
+	}
+	s.sessionEventSubscriptions++
+	s.sessionEventMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.sessionEventMu.Lock()
+			s.sessionEventSubscriptions--
+			s.sessionEventMu.Unlock()
+		})
+	}, nil
+}
+
+func (s *Server) streamSessionSubscription(wire interface{ Write(any) error }, prepared *preparedSessionSubscription) {
+	defer prepared.cancel()
+	cursor := prepared.cursor
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		revisions, earliest, latest, err := s.state.SessionRevisionsAfter(prepared.ctx, cursor, 256)
+		if err != nil {
+			_ = wire.Write(protocol.SessionRevisionEvent{Type: "session_events_end", SubscriptionID: prepared.metadata.SubscriptionID,
+				InstanceID: string(s.instanceID), Revision: cursor, Reason: "journal_error"})
+			return
+		}
+		if earliest > 0 && cursor+1 < earliest && latest > cursor {
+			_ = wire.Write(protocol.SessionRevisionEvent{Type: "session_events_end", SubscriptionID: prepared.metadata.SubscriptionID,
+				InstanceID: string(s.instanceID), Revision: cursor, Reason: "journal_gap"})
+			return
+		}
+		for _, revision := range revisions {
+			if revision.Revision != cursor+1 {
+				_ = wire.Write(protocol.SessionRevisionEvent{Type: "session_events_end", SubscriptionID: prepared.metadata.SubscriptionID,
+					InstanceID: string(s.instanceID), Revision: cursor, Reason: "journal_gap"})
+				return
+			}
+			event := protocol.SessionRevisionEvent{Type: "session_revision", SubscriptionID: prepared.metadata.SubscriptionID, InstanceID: string(s.instanceID),
+				Revision: revision.Revision, SessionID: string(revision.SessionID), Change: revision.Change}
+			if err := wire.Write(event); err != nil {
+				return
+			}
+			cursor = revision.Revision
+		}
+		select {
+		case <-prepared.ctx.Done():
+			return
+		case <-s.done:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func summariesFor(projections []store.SessionProjection) []protocol.SessionSummary {
+	summaries := make([]protocol.SessionSummary, 0, len(projections))
+	for _, projection := range projections {
+		session := projection.Session
+		summaries = append(summaries, protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind, AgentType: session.AgentType,
+			CWD: session.CWD, Status: session.Status, Writer: session.Writer, OwnershipEpoch: session.OwnershipEpoch, RuntimeGeneration: session.RuntimeGeneration,
+			TaskState: session.TaskState, AdapterState: session.AdapterState, ExitSuccess: session.ExitSuccess, ExitReason: session.ExitReason,
+			ChannelHandle: projection.ChannelHandle, ManagementHandle: projection.ManagementHandle})
+	}
+	return summaries
+}
+
 func (s *Server) streamOutputSubscription(codec interface{ Write(any) error }, prepared *preparedOutputSubscription) {
 	defer prepared.cancel()
 	if err := writeOutputEvents(codec, prepared.metadata.SubscriptionID, s.instanceID, prepared.identity, prepared.replay); err != nil {
@@ -928,23 +1102,11 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 		if !hasCapability(capabilities, "sessions_list") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session list capability was not negotiated"}}
 		}
-		sessions, err := s.state.ListSessions(context.Background())
+		snapshot, err := s.state.SessionSnapshot(context.Background())
 		if err != nil {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not list sessions", Retryable: true}}
 		}
-		summaries := make([]protocol.SessionSummary, 0, len(sessions))
-		for _, session := range sessions {
-			summary := protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind,
-				AgentType: session.AgentType, CWD: session.CWD, Status: session.Status, Writer: session.Writer, OwnershipEpoch: session.OwnershipEpoch,
-				RuntimeGeneration: session.RuntimeGeneration, TaskState: session.TaskState, AdapterState: session.AdapterState,
-				ExitSuccess: session.ExitSuccess, ExitReason: session.ExitReason}
-			if binding, bindErr := s.state.GetBindingBySession(context.Background(), session.ID); bindErr == nil {
-				summary.ChannelHandle = binding.ChannelHandle
-				summary.ManagementHandle = binding.ManagementHandle
-			}
-			summaries = append(summaries, summary)
-		}
-		result, _ := json.Marshal(summaries)
+		result, _ := json.Marshal(summariesFor(snapshot.Sessions))
 		return protocol.Response{ID: request.ID, Result: result}
 	case "session.create":
 		if !hasCapability(capabilities, "session_create") {
