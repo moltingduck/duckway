@@ -417,7 +417,7 @@ func (h *CCCommandHandler) admitDaemonCommand(cc *models.ControlChannel, ch *mod
 		return false, nil
 	}
 	payload := clientCommandPayload(args[0], args[1:], ch.SessionID, requestID)
-	_, _, err = h.cc.AdmitInboxDetailed(cc.ID, &ch.Handle, "CLIENT_COMMAND", "CLIENT_COMMAND:"+requestID, ch.Handle, string(payload))
+	_, _, err = h.cc.AdmitInboxDetailed(cc.ID, &ch.Handle, "CLIENT_COMMAND", "CLIENT_COMMAND:"+requestID, daemonCommandLane(ch.Handle, args[0]), string(payload))
 	return err == nil, err
 }
 
@@ -439,7 +439,7 @@ func (h *CCCommandHandler) forwardToDaemon(ctx context.Context, botToken string,
 		// Client-side commands first enter the same durable per-channel FIFO as
 		// prompts. The subscriber preflight above preserves immediate "offline"
 		// UX, while a disconnect after admission is recovered by normal claims.
-		_, _, err := h.cc.AdmitInboxDetailed(cc.ID, &ch.Handle, "CLIENT_COMMAND", "CLIENT_COMMAND:"+requestID, ch.Handle, string(payload))
+		_, _, err := h.cc.AdmitInboxDetailed(cc.ID, &ch.Handle, "CLIENT_COMMAND", "CLIENT_COMMAND:"+requestID, daemonCommandLane(ch.Handle, cmd), string(payload))
 		if err != nil {
 			h.reply(ctx, botToken, ch.ChannelID, "❌ could not queue `"+cmd+"`: "+err.Error())
 			return
@@ -453,6 +453,18 @@ func (h *CCCommandHandler) forwardToDaemon(ctx context.Context, botToken string,
 		Kind:    ch.Kind,
 		Payload: payload,
 	})
+}
+
+// Lifecycle and ownership commands must be observable while an agent prompt
+// owns the channel's task lane. They retain FIFO with each other on a bounded
+// control lane; all other commands remain ordered behind ordinary channel work.
+func daemonCommandLane(handle, command string) string {
+	switch command {
+	case "!end", "!destroy", "!yield":
+		return "control:" + handle
+	default:
+		return handle
+	}
 }
 
 func (h *CCCommandHandler) reply(ctx context.Context, botToken, channelID, content string) {
@@ -470,8 +482,8 @@ func (h *CCCommandHandler) decryptBotToken(apiKeyID string) (string, error) {
 const helpText = "**Duckway CC commands**\n" +
 	"`!new <slug> [--cwd <path>|--project <name|number>] [--topic <text>]` — create a task channel\n" +
 	"`!new-confirm <token>` — confirm creating a missing `--cwd` folder and saving it as a project\n" +
-	"`!end` — end the *current* task channel's session and **archive** it (history kept)\n" +
-	"`!destroy` — end and **hard-delete** the *current* task channel (history gone)\n" +
+	"`!end [-w|--wait|-f|--force]` — end the *current* task channel's session and **archive** it (history kept)\n" +
+	"`!destroy [-w|--wait|-f|--force]` — end and **hard-delete** the *current* task channel (history gone)\n" +
 	"`!yield [-w|--wait]` — request control of the current bound session; wait for active work when requested\n" +
 	"`!list` — list active task channels\n" +
 	"`!status` — daemon + session counts\n" +

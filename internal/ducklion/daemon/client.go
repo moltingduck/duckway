@@ -106,9 +106,9 @@ func ConnectRoleContext(ctx context.Context, conn io.ReadWriteCloser, principal 
 	}()
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	setDeadline(conn, time.Now().Add(10*time.Second))
-	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_destroy", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
+	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if role == protocol.RoleDuckwayCC {
-		offeredCapabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_destroy", "session_yield", "session_task", "discord_binding", "discord_unbind", "agent_task"}
+		offeredCapabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "session_task", "discord_binding", "discord_unbind", "agent_task"}
 	}
 	if err := codec.Write(protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: role, Principal: principal, Capabilities: offeredCapabilities}); err != nil {
 		conn.Close()
@@ -746,6 +746,38 @@ func (c *Client) CreateSessionWithID(ctx context.Context, requestID string, requ
 
 func (c *Client) StopSession(ctx context.Context, sessionID string, epoch, generation uint64) error {
 	return c.StopSessionWithID(ctx, uuid.NewString(), sessionID, epoch, generation)
+}
+
+func (c *Client) LifecycleSessionWithID(ctx context.Context, requestID, sessionID string, epoch, generation uint64, lifecycle protocol.SessionLifecycleRequest) (protocol.SessionLifecycleResult, error) {
+	if err := c.requireCapability("session_lifecycle"); err != nil {
+		return protocol.SessionLifecycleResult{}, err
+	}
+	if err := lifecycle.Validate(); err != nil {
+		return protocol.SessionLifecycleResult{}, err
+	}
+	body, err := json.Marshal(lifecycle)
+	if err != nil {
+		return protocol.SessionLifecycleResult{}, err
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: requestID, Type: "session.lifecycle", InstanceID: c.instanceID, SessionID: sessionID,
+		OwnershipEpoch: &epoch, RuntimeGeneration: &generation, Body: body})
+	if err != nil {
+		return protocol.SessionLifecycleResult{}, err
+	}
+	if response.Error != nil {
+		return protocol.SessionLifecycleResult{}, &RemoteError{Detail: *response.Error}
+	}
+	var result protocol.SessionLifecycleResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return protocol.SessionLifecycleResult{}, err
+	}
+	if err := result.Validate(); err != nil {
+		return protocol.SessionLifecycleResult{}, err
+	}
+	if result.SessionID != sessionID || result.Operation != lifecycle.Operation || result.Mode != lifecycle.Mode {
+		return protocol.SessionLifecycleResult{}, fmt.Errorf("ducklion returned a mismatched session lifecycle result")
+	}
+	return result, nil
 }
 
 func (c *Client) StopSessionWithID(ctx context.Context, requestID, sessionID string, epoch, generation uint64) error {

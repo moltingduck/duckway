@@ -613,6 +613,24 @@ Future notification upgrades:
 - server-side out-of-band events for "done", "blocked", and "needs input"
 - desktop notifications from the local `ducklord` process
 
+## Durable Agent Lifecycle
+
+Discord task channels support `!end` and `!destroy` in three modes. With no
+flag, an active or replying turn is rejected immediately and no barrier is
+left behind. `-w`/`--wait` durably rejects new prompts, input, resize, and yield
+requests while allowing the current final response and ACK to drain. There is
+no wait timeout. `-f`/`--force` emits a failed cancellation event from the PTY
+supervisor, fences later adapter output for that task, and terminates only after
+the cancellation result is available for Discord delivery.
+
+The request is identified by requester, request ID, session ID, operation,
+mode, ownership epoch, and runtime generation. A different payload using the
+same requester/request ID is an idempotency conflict. Ducklion reconstructs
+workers from `pending_lifecycle_operations` after restart. Completed operations
+are immutable entries in `lifecycle_outcomes`, so releasing a barrier never
+loses replay safety. `end` archives Discord while retaining the stopped session
+and binding; `destroy` hard-deletes both after runtime cleanup succeeds.
+
 ## Security Boundaries
 
 - SSH controls real connection permission.

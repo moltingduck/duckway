@@ -135,6 +135,7 @@ type agentRuntimeController interface {
 	AbortAgentTask(taskID string)
 	AgentTaskStatus(taskID string, digest [32]byte) (string, error)
 	AckAgentEvent(taskID string, sequence uint64) error
+	CancelActiveAgentTask(summary string) (string, bool)
 }
 
 func (c *SupervisorClient) ServeControl(ctx context.Context, controller RuntimeController) error {
@@ -287,6 +288,19 @@ func (c *SupervisorClient) executeControl(ctx context.Context, controller Runtim
 			err = fmt.Errorf("invalid agent event acknowledgement")
 		} else {
 			err = agentController.AckAgentEvent(ack.TaskID, ack.Sequence)
+		}
+	case "supervisor.agent_cancel":
+		agentController, supported := controller.(agentRuntimeController)
+		if len(request.Body) != 0 || !supported {
+			err = fmt.Errorf("invalid agent cancellation")
+		} else {
+			taskID, cancelled := agentController.CancelActiveAgentTask("Task cancelled by forced session lifecycle operation")
+			if taskID != "" && !cancelled {
+				err = fmt.Errorf("agent cancellation event could not be retained")
+				break
+			}
+			result, _ := json.Marshal(map[string]any{"cancelled": cancelled, "task_id": taskID})
+			return protocol.Response{ID: request.ID, Result: result}
 		}
 	case "supervisor.terminate":
 		if len(request.Body) != 0 {

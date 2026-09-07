@@ -412,8 +412,8 @@ func TestHandle_RejectsInvalidArgumentsBeforeSideEffects(t *testing.T) {
 		{h.mgmt, "!new task --bogus value"},
 		{h.mgmt, "!new task --cwd /tmp --project duckway"},
 		{h.mgmt, "!new-confirm --force"},
-		{task, "!end --force"},
-		{task, "!destroy --force"},
+		{task, "!end --later"},
+		{task, "!destroy --later"},
 		{task, "!yield --force"},
 		{h.mgmt, "!list --all"},
 		{h.mgmt, "!status --json"},
@@ -464,17 +464,28 @@ func TestHandle_End_FromTaskChannel(t *testing.T) {
 	if _, err := h.cc.GetChannelByHandle("dwch_t"); err != nil {
 		t.Fatalf("task row removed before client lifecycle: %v", err)
 	}
-	var eventType, eventKey, payload string
-	if err := h.db.QueryRow(`SELECT event_type,event_key,payload FROM discord_inbox WHERE cc_id='cc1'`).Scan(&eventType, &eventKey, &payload); err != nil {
+	var eventType, eventKey, laneKey, payload string
+	if err := h.db.QueryRow(`SELECT event_type,event_key,lane_key,payload FROM discord_inbox WHERE cc_id='cc1'`).Scan(&eventType, &eventKey, &laneKey, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if eventType != "CLIENT_COMMAND" || eventKey != "CLIENT_COMMAND:snow-end" || !strings.Contains(payload, `"session_id":""`) {
-		t.Fatalf("durable end event type=%q key=%q payload=%s", eventType, eventKey, payload)
+	if eventType != "CLIENT_COMMAND" || eventKey != "CLIENT_COMMAND:snow-end" || laneKey != "control:dwch_t" || !strings.Contains(payload, `"session_id":""`) {
+		t.Fatalf("durable end event type=%q key=%q lane=%q payload=%s", eventType, eventKey, laneKey, payload)
 	}
 	select {
 	case ev := <-sub:
 		t.Fatalf("durable command was also published ephemerally: %+v", ev)
 	default:
+	}
+}
+
+func TestDaemonControlCommandsUseIndependentFIFO(t *testing.T) {
+	for _, command := range []string{"!end", "!destroy", "!yield"} {
+		if got := daemonCommandLane("dwch_task", command); got != "control:dwch_task" {
+			t.Fatalf("daemonCommandLane(%q) = %q", command, got)
+		}
+	}
+	if got := daemonCommandLane("dwch_task", "!log"); got != "dwch_task" {
+		t.Fatalf("ordinary command lane = %q", got)
 	}
 }
 

@@ -221,6 +221,21 @@ func TestInboxExpiredLeaseIsReclaimedBeforeLaterLaneItem(t *testing.T) {
 	}
 }
 
+func TestInboxControlLaneCanPassActivePrompt(t *testing.T) {
+	db := openTestDB(t)
+	q := NewControlChannelQueries(db)
+	prompt, _ := q.AdmitInbox("cc1", strPtr("h1"), "MESSAGE_CREATE", "MESSAGE_CREATE:1", "h1", `{}`)
+	control, _ := q.AdmitInbox("cc1", strPtr("h1"), "CLIENT_COMMAND", "CLIENT_COMMAND:2", "control:h1", `{}`)
+	first, err := q.ClaimInbox("cc1", 120)
+	if err != nil || first.ID != prompt {
+		t.Fatalf("prompt claim=%+v err=%v", first, err)
+	}
+	second, err := q.ClaimInbox("cc1", 120)
+	if err != nil || second.ID != control {
+		t.Fatalf("control claim behind active prompt=%+v err=%v", second, err)
+	}
+}
+
 func strPtr(s string) *string { return &s }
 
 func TestMessageDeliveryIsDurableAndRejectsKeyReuse(t *testing.T) {

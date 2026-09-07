@@ -525,9 +525,24 @@ Discord worker. The barrier is owner-, epoch-, generation-, operation-, and
 request-ID-bound. It rejects new task/input/yield mutations but deliberately
 allows the current task's terminal events and Discord delivery ACKs to finish;
 this is what prevents both task overtaking and stop-versus-ACK deadlocks.
-Plain agent-session stop is currently connected to an immediate barrier. The
-same table's wait/force values are foundational and are not user-visible until
-their lifecycle RPC and Discord command phases are wired.
+`!end` and `!destroy` use immediate mode by default, `-w`/`--wait` installs an
+unbounded durable drain, and `-f`/`--force` asks the independent supervisor to
+atomically replace the active turn with one failed cancellation event before
+terminating the process. The supervisor fences later hook output for that task,
+and does not report runtime exit until the cancellation event has been
+delivered and ACKed by Discord. Ducklion's startup coordinator scans unfinished
+rows and resumes them after daemon restart. Completion moves the exact result
+to `lifecycle_outcomes` before releasing the barrier; this permits later
+lifecycle operations on the same session while preserving idempotent replay of
+old request IDs. End keeps the stopped session, Discord binding, history, and
+resume data. Destroy removes the session and binding, retries runtime-directory
+cleanup through the same request, and only then exposes a completed result.
+Lifecycle commands and `!yield` are admitted into a per-channel control lane,
+separate from the prompt lane. This lets a force or wait request reach Ducklion
+while the preceding prompt remains leased, while preserving FIFO among control
+mutations themselves. The client renews its one-hour command claim every twenty
+minutes until the durable lifecycle reaches an outcome; a reconnect reclaims
+the same snowflake-bound request rather than creating another operation.
 
 Tmux session names use `<handle>-duckway`. During upgrade, `migrateLegacyTmuxSession` renames the older `duckway-<handle>` convention to the current name when only the legacy session exists. If both names exist, it logs a warning and leaves both alone to avoid merging separate active turns.
 

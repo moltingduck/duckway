@@ -25,6 +25,15 @@ type fakeRuntimeController struct {
 	ownershipFailures chan error
 }
 
+func TestServiceMapErrorKeepsUnknownFailuresRetryable(t *testing.T) {
+	if got := serviceMapError(errors.New("sqlite unavailable")); got != protocol.ErrInternal {
+		t.Fatalf("unknown error code = %q", got)
+	}
+	if got := serviceMapError(model.ErrAdapterNotHealthy); got != protocol.ErrAdapterUnhealthy {
+		t.Fatalf("adapter error code = %q", got)
+	}
+}
+
 func (c *fakeRuntimeController) SubmitInput(_ context.Context, frame duckruntime.InputFrame) error {
 	c.inputs <- frame
 	return nil

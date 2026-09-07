@@ -187,6 +187,66 @@ func TestAgentEventsRemainUntilDeliveryAck(t *testing.T) {
 	}
 }
 
+func TestCancelActiveAgentTaskFencesLateCompletion(t *testing.T) {
+	session := &Session{
+		activeAgentTask:    "task-1",
+		agentEvents:        make(map[string][]protocol.SupervisorAgentEvent),
+		agentEventAcks:     make(map[string]uint64),
+		terminalAgentTasks: make(map[string]uint64),
+		agentEventNotify:   make(chan struct{}, 1),
+		committedTasks:     make(map[string][32]byte),
+	}
+	taskID, cancelled := session.CancelActiveAgentTask("cancelled")
+	if !cancelled || taskID != "task-1" {
+		t.Fatalf("CancelActiveAgentTask() = %q, %v", taskID, cancelled)
+	}
+	if err := session.QueueAgentEvent(protocol.SupervisorAgentEvent{TaskID: "task-1", Sequence: 2, Kind: "completed", Response: "late"}); err != nil {
+		t.Fatalf("late QueueAgentEvent() error = %v", err)
+	}
+	events := session.PendingAgentEvents()
+	if len(events) != 1 || events[0].Kind != "failed" || events[0].Summary != "cancelled" {
+		t.Fatalf("PendingAgentEvents() = %#v", events)
+	}
+}
+
+func TestNaturalTerminalEventAtomicallyPreventsForceCancellation(t *testing.T) {
+	session := &Session{
+		activeAgentTask:    "task-1",
+		agentEvents:        make(map[string][]protocol.SupervisorAgentEvent),
+		agentEventAcks:     make(map[string]uint64),
+		terminalAgentTasks: make(map[string]uint64),
+		committedTasks:     make(map[string][32]byte),
+	}
+	if err := session.QueueAgentEvent(protocol.SupervisorAgentEvent{TaskID: "task-1", Sequence: 1, Kind: "completed", Response: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if taskID, cancelled := session.CancelActiveAgentTask("cancelled"); cancelled || taskID != "" {
+		t.Fatalf("cancel after terminal = %q, %v", taskID, cancelled)
+	}
+	if events := session.PendingAgentEvents(); len(events) != 1 || events[0].Kind != "completed" {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestCancelRetentionFailurePreservesActiveTask(t *testing.T) {
+	session := &Session{
+		activeAgentTask:    "task-1",
+		agentEvents:        make(map[string][]protocol.SupervisorAgentEvent),
+		agentEventAcks:     make(map[string]uint64),
+		terminalAgentTasks: make(map[string]uint64),
+		agentEventCount:    maxRetainedAgentEvents,
+	}
+	if taskID, cancelled := session.CancelActiveAgentTask("cancelled"); cancelled || taskID != "task-1" {
+		t.Fatalf("capacity cancel = %q, %v", taskID, cancelled)
+	}
+	session.mu.Lock()
+	active := session.activeAgentTask
+	session.mu.Unlock()
+	if active != "task-1" {
+		t.Fatalf("active task cleared after retention failure: %q", active)
+	}
+}
+
 func TestAgentAdapterPipeCorrelatesEventWithCommittedTask(t *testing.T) {
 	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, AgentType: "fixture", CWD: t.TempDir(),
 		Command: []string{"sh", "-c", `IFS= read -r value; printf '%s\n' '{"kind":"completed","response":"fixture done"}' >&3; sleep 1`}})

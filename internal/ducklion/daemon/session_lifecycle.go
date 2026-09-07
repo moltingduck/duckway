@@ -524,6 +524,261 @@ func (s *Server) waitForSessionOutcome(requestID string, id model.SessionID) pro
 	return protocol.Response{ID: requestID, Result: result}
 }
 
+func lifecycleOwner(role protocol.PeerRole, principal string) model.Owner {
+	kind := model.OwnerTerminal
+	if role == protocol.RoleDuckwayCC {
+		kind = model.OwnerCC
+	}
+	return model.Owner{Kind: kind, ID: principal}
+}
+
+func lifecycleStoreRequest(sessionID model.SessionID, requestID string, owner model.Owner, epoch, generation uint64, request protocol.SessionLifecycleRequest) store.PendingLifecycle {
+	operation := store.LifecycleEnd
+	if request.Operation == protocol.SessionLifecycleDestroy {
+		operation = store.LifecycleDestroy
+	}
+	mode := store.LifecycleImmediate
+	switch request.Mode {
+	case protocol.SessionLifecycleWait:
+		mode = store.LifecycleWait
+	case protocol.SessionLifecycleForce:
+		mode = store.LifecycleForce
+	}
+	return store.PendingLifecycle{SessionID: sessionID, Operation: operation, Mode: mode, Requester: owner,
+		SourceEpoch: epoch, SourceGeneration: generation, RequestID: requestID}
+}
+
+func lifecycleProtocolState(phase store.LifecyclePhase) protocol.SessionLifecycleState {
+	switch phase {
+	case store.LifecycleWaiting:
+		return protocol.SessionLifecycleWaiting
+	case store.LifecycleCompleted:
+		return protocol.SessionLifecycleCompleted
+	default:
+		return protocol.SessionLifecycleExecuting
+	}
+}
+
+func lifecycleResult(pending store.PendingLifecycle) protocol.SessionLifecycleResult {
+	operation := protocol.SessionLifecycleEnd
+	if pending.Operation == store.LifecycleDestroy {
+		operation = protocol.SessionLifecycleDestroy
+	}
+	mode := protocol.SessionLifecycleImmediate
+	switch pending.Mode {
+	case store.LifecycleWait:
+		mode = protocol.SessionLifecycleWait
+	case store.LifecycleForce:
+		mode = protocol.SessionLifecycleForce
+	}
+	return protocol.SessionLifecycleResult{SessionID: string(pending.SessionID), Operation: operation, Mode: mode,
+		State: lifecycleProtocolState(pending.Phase), OwnershipEpoch: pending.SourceEpoch, RuntimeGeneration: pending.SourceGeneration}
+}
+
+func (s *Server) routeSessionLifecycle(request protocol.Request, role protocol.PeerRole, principal string) protocol.Response {
+	var body protocol.SessionLifecycleRequest
+	sessionID, parseErr := model.ParseSessionID(request.SessionID)
+	if parseErr != nil || request.InstanceID != string(s.instanceID) || request.OwnershipEpoch == nil || request.RuntimeGeneration == nil ||
+		decodeStrict(request.Body, &body) != nil || body.Validate() != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "valid lifecycle request and session fences are required"}}
+	}
+	owner := lifecycleOwner(role, principal)
+	candidate := lifecycleStoreRequest(sessionID, request.ID, owner, *request.OwnershipEpoch, *request.RuntimeGeneration, body)
+	if outcome, err := s.state.GetLifecycleOutcome(context.Background(), owner, request.ID); err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: err.Error(), Retryable: true}}
+	} else if outcome != nil {
+		if !outcome.Matches(candidate) {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrIdempotencyConflict, Message: "request id belongs to a different lifecycle operation"}}
+		}
+		candidate.Phase = store.LifecycleCompleted
+		result, _ := json.Marshal(lifecycleResult(candidate))
+		return protocol.Response{ID: request.ID, Result: result}
+	}
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
+	if existing, err := s.state.GetPendingLifecycle(context.Background(), sessionID); err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: err.Error(), Retryable: true}}
+	} else if existing != nil {
+		if existing.RequestID != candidate.RequestID || existing.Operation != candidate.Operation || existing.Mode != candidate.Mode || existing.Requester != candidate.Requester ||
+			existing.SourceEpoch != candidate.SourceEpoch || existing.SourceGeneration != candidate.SourceGeneration {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrIdempotencyConflict, Message: "a different lifecycle request already owns this session"}}
+		}
+		result, _ := json.Marshal(lifecycleResult(*existing))
+		return protocol.Response{ID: request.ID, Result: result}
+	}
+	session, authorizedOwner, protocolError := s.authorizeLifecycleControl(request, role, principal, body.Operation)
+	if protocolError != nil {
+		if body.Operation == protocol.SessionLifecycleDestroy && protocolError.Code == protocol.ErrNotFound {
+			authenticated := string(owner.Kind) + ":" + owner.ID
+			if _, err := s.service.ReplayDestroyedSession(context.Background(), authenticated, request.ID, sessionID); err == nil {
+				if err := s.sessionCleaner(filepath.Join(s.root, "sessions", string(sessionID))); err != nil {
+					return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: err.Error(), Retryable: true}}
+				}
+				candidate.Phase = store.LifecycleCompleted
+				if err := s.state.CompleteLifecycle(context.Background(), candidate); err != nil {
+					return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: err.Error(), Retryable: true}}
+				}
+				result, _ := json.Marshal(protocol.SessionLifecycleResult{SessionID: string(sessionID), Operation: body.Operation, Mode: body.Mode,
+					State: protocol.SessionLifecycleCompleted, OwnershipEpoch: *request.OwnershipEpoch, RuntimeGeneration: *request.RuntimeGeneration})
+				return protocol.Response{ID: request.ID, Result: result}
+			}
+		}
+		return protocol.Response{ID: request.ID, Error: protocolError}
+	}
+	pending := lifecycleStoreRequest(session.ID, request.ID, authorizedOwner, session.OwnershipEpoch, session.RuntimeGeneration, body)
+	_, _, err := s.state.ReserveLifecycle(context.Background(), pending)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: serviceMapError(err), Message: err.Error(), Retryable: serviceMapError(err) == protocol.ErrInternal}}
+	}
+	pending.Phase = store.LifecycleWaiting
+	s.startLifecycleWorker(session.ID)
+	result, _ := json.Marshal(lifecycleResult(pending))
+	return protocol.Response{ID: request.ID, Result: result}
+}
+
+func (s *Server) authorizeLifecycleControl(request protocol.Request, role protocol.PeerRole, principal string, operation protocol.SessionLifecycleOperation) (model.Session, model.Owner, *protocol.Error) {
+	if operation != protocol.SessionLifecycleDestroy {
+		return s.authorizeOwnerControl(request, role, principal)
+	}
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil || request.InstanceID != string(s.instanceID) || request.OwnershipEpoch == nil || request.RuntimeGeneration == nil {
+		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session identity and fences are required"}
+	}
+	session, err := s.state.GetSession(context.Background(), sessionID)
+	if err != nil {
+		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrNotFound, Message: "session not found"}
+	}
+	owner := lifecycleOwner(role, principal)
+	if session.Kind != model.KindAgent || session.Writer == nil || *session.Writer != owner {
+		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrNotOwner, Message: "session is owned by another writer"}
+	}
+	if session.RuntimeGeneration != *request.RuntimeGeneration {
+		generation := session.RuntimeGeneration
+		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrStaleGeneration, Message: "runtime generation changed", RuntimeGeneration: &generation}
+	}
+	if session.OwnershipEpoch != *request.OwnershipEpoch {
+		epoch := session.OwnershipEpoch
+		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrStaleEpoch, Message: "ownership epoch changed", OwnershipEpoch: &epoch}
+	}
+	return session, owner, nil
+}
+
+func (s *Server) runLifecycleCoordinator() {
+	defer s.lifecycleCoordinatorWG.Done()
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		pending, err := s.state.ListPendingLifecycles(context.Background())
+		if err == nil {
+			for _, item := range pending {
+				s.startLifecycleWorker(item.SessionID)
+			}
+		}
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) startLifecycleWorker(sessionID model.SessionID) {
+	s.lifecycleWorkersMu.Lock()
+	if _, exists := s.lifecycleWorkers[sessionID]; exists {
+		s.lifecycleWorkersMu.Unlock()
+		return
+	}
+	s.lifecycleWorkers[sessionID] = struct{}{}
+	s.lifecycleWorkersWG.Add(1)
+	s.lifecycleWorkersMu.Unlock()
+	go func() {
+		defer s.lifecycleWorkersWG.Done()
+		defer func() {
+			s.lifecycleWorkersMu.Lock()
+			delete(s.lifecycleWorkers, sessionID)
+			s.lifecycleWorkersMu.Unlock()
+		}()
+		s.driveLifecycle(sessionID)
+	}()
+}
+
+func (s *Server) driveLifecycle(sessionID model.SessionID) {
+	pending, err := s.state.GetPendingLifecycle(context.Background(), sessionID)
+	if err != nil || pending == nil {
+		return
+	}
+	switch pending.Phase {
+	case store.LifecycleWaiting:
+		session, err := s.state.GetSession(context.Background(), sessionID)
+		if err != nil || !pending.Matches(session) || pending.Mode != store.LifecycleForce && session.TaskState != model.TaskIdle {
+			return
+		}
+		operation := s.sessionOperation(sessionID)
+		operation.Lock()
+		defer operation.Unlock()
+		session, err = s.state.GetSession(context.Background(), sessionID)
+		if err != nil || !pending.Matches(session) || pending.Mode != store.LifecycleForce && session.TaskState != model.TaskIdle {
+			return
+		}
+		_, _ = s.state.CompareAndSwapLifecyclePhase(context.Background(), sessionID, pending.RequestID, store.LifecycleWaiting, store.LifecycleStopping, "")
+	case store.LifecycleStopping:
+		session, err := s.state.GetSession(context.Background(), sessionID)
+		if err != nil {
+			return
+		}
+		if session.Status == model.StatusStopped {
+			_, _ = s.state.CompareAndSwapLifecyclePhase(context.Background(), sessionID, pending.RequestID, store.LifecycleStopping, store.LifecycleRuntimeStopped, "")
+			return
+		}
+		epoch, generation := pending.SourceEpoch, pending.SourceGeneration
+		if pending.Mode == store.LifecycleForce && session.TaskState != model.TaskIdle {
+			cancelRequest := protocol.Request{ID: pending.RequestID + "/cancel", Type: "supervisor.agent_cancel", InstanceID: string(s.instanceID), SessionID: string(sessionID), OwnershipEpoch: &epoch, RuntimeGeneration: &generation}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			cancelResponse := s.callControl(ctx, sessionID, cancelRequest)
+			cancel()
+			if cancelResponse.Error != nil {
+				_, _ = s.state.CompareAndSwapLifecyclePhase(context.Background(), sessionID, pending.RequestID, store.LifecycleStopping, store.LifecycleStopping, cancelResponse.Error.Message)
+				return
+			}
+			// Cancellation and process termination deliberately use separate
+			// coordinator passes. The failed task event must first be projected to
+			// replying and ACKed by Discord back to idle; only then may runtime exit
+			// advance this lifecycle operation.
+			return
+		}
+		request := protocol.Request{ID: pending.RequestID, Type: "supervisor.terminate", InstanceID: string(s.instanceID), SessionID: string(sessionID), OwnershipEpoch: &epoch, RuntimeGeneration: &generation}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		response := s.callControl(ctx, sessionID, request)
+		cancel()
+		if response.Error != nil {
+			_, _ = s.state.CompareAndSwapLifecyclePhase(context.Background(), sessionID, pending.RequestID, store.LifecycleStopping, store.LifecycleStopping, response.Error.Message)
+		}
+	case store.LifecycleRuntimeStopped:
+		if pending.Operation == store.LifecycleEnd {
+			_ = s.state.CompleteLifecycle(context.Background(), *pending)
+			return
+		}
+		_, _ = s.state.CompareAndSwapLifecyclePhase(context.Background(), sessionID, pending.RequestID, store.LifecycleRuntimeStopped, store.LifecycleCleaning, "")
+	case store.LifecycleCleaning:
+		principal := string(pending.Requester.Kind) + ":" + pending.Requester.ID
+		outcome, _, err := s.service.DestroyStoppedSession(context.Background(), principal, pending.RequestID, sessionID, pending.SourceEpoch, pending.SourceGeneration)
+		if err != nil {
+			if _, replayErr := s.service.ReplayDestroyedSession(context.Background(), principal, pending.RequestID, sessionID); replayErr != nil {
+				_, _ = s.state.CompareAndSwapLifecyclePhase(context.Background(), sessionID, pending.RequestID, store.LifecycleCleaning, store.LifecycleCleaning, err.Error())
+				return
+			}
+		} else if outcome.Error != nil {
+			_, _ = s.state.CompareAndSwapLifecyclePhase(context.Background(), sessionID, pending.RequestID, store.LifecycleCleaning, store.LifecycleCleaning, outcome.Error.Message)
+			return
+		}
+		if err := s.sessionCleaner(filepath.Join(s.root, "sessions", string(sessionID))); err != nil {
+			return
+		}
+		_ = s.state.CompleteLifecycle(context.Background(), *pending)
+	}
+}
+
 func (s *Server) routeSessionStop(request protocol.Request, role protocol.PeerRole, principal string) protocol.Response {
 	if len(request.Body) != 0 {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session stop has no body"}}

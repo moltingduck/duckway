@@ -137,8 +137,19 @@ func (s *SQLite) MarkRuntimeExited(ctx context.Context, id model.SessionID, gene
 			return err
 		}
 	}
-	if err := s.DeletePendingLifecycleTx(ctx, tx, id); err != nil {
+	lifecycle, err := s.GetPendingLifecycleTx(ctx, tx, id)
+	if err != nil {
 		return err
+	}
+	if lifecycle != nil {
+		result, err := tx.ExecContext(ctx, `UPDATE pending_lifecycle_operations SET phase='runtime_stopped',updated_at_ms=?,attempt=attempt+1,last_error=''
+			WHERE session_id=? AND request_id=? AND source_generation=? AND phase IN ('waiting','stopping')`, session.UpdatedAtMS, id, lifecycle.RequestID, generation)
+		if err != nil {
+			return err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 && lifecycle.Phase != LifecycleRuntimeStopped && lifecycle.Phase != LifecycleCleaning {
+			return fmt.Errorf("lifecycle runtime-exit fencing conflict")
+		}
 	}
 	return tx.Commit()
 }

@@ -64,6 +64,7 @@ type Session struct {
 	activeAgentTask    string
 	agentEvents        map[string][]protocol.SupervisorAgentEvent
 	agentEventAcks     map[string]uint64
+	terminalAgentTasks map[string]uint64
 	agentEventBytes    int
 	agentEventCount    int
 	agentEventNotify   chan struct{}
@@ -153,7 +154,7 @@ func Start(options Options) (*Session, error) {
 	session := &Session{id: options.SessionID, generation: options.RuntimeGeneration, epoch: options.OwnershipEpoch,
 		pty: ptmx, cmd: cmd, output: duckruntime.NewOutputHub(options.OutputCapacity), captureDone: make(chan struct{}),
 		preparedTasks: make(map[string]preparedAgentTask), committedTasks: make(map[string][32]byte),
-		agentEvents: make(map[string][]protocol.SupervisorAgentEvent)}
+		agentEvents: make(map[string][]protocol.SupervisorAgentEvent), terminalAgentTasks: make(map[string]uint64)}
 	session.agentEventAcks = make(map[string]uint64)
 	session.agentEventNotify = make(chan struct{}, 1)
 	session.attentionNotify = make(chan struct{}, 1)
@@ -189,6 +190,14 @@ func (s *Session) QueueAgentEvent(event protocol.SupervisorAgentEvent) error {
 	if s.agentEventAcks == nil {
 		s.agentEventAcks = make(map[string]uint64)
 	}
+	if s.terminalAgentTasks == nil {
+		s.terminalAgentTasks = make(map[string]uint64)
+	}
+	if s.terminalAgentTasks[event.TaskID] != 0 {
+		// A force cancellation installs this fence before the process is killed.
+		// Hooks already in flight are harmless replays after that terminal result.
+		return nil
+	}
 	if event.Sequence <= s.agentEventAcks[event.TaskID] {
 		return nil
 	}
@@ -214,6 +223,14 @@ func (s *Session) QueueAgentEvent(event protocol.SupervisorAgentEvent) error {
 	s.agentEvents[event.TaskID] = append(events, event)
 	s.agentEventBytes += eventBytes
 	s.agentEventCount++
+	if event.Kind == "completed" || event.Kind == "failed" {
+		s.terminalAgentTasks[event.TaskID] = event.Sequence
+		s.mu.Lock()
+		if s.activeAgentTask == event.TaskID {
+			s.activeAgentTask = ""
+		}
+		s.mu.Unlock()
+	}
 	if s.agentEventNotify != nil {
 		select {
 		case s.agentEventNotify <- struct{}{}:
@@ -269,6 +286,57 @@ func (s *Session) FailActiveAgentTask(summary string) bool {
 		summary = summary[:500]
 	}
 	return s.QueueAgentEvent(protocol.SupervisorAgentEvent{TaskID: taskID, Sequence: sequence, Kind: "failed", Summary: summary}) == nil
+}
+
+// CancelActiveAgentTask atomically emits one failed terminal event and fences
+// every later adapter event for the old task. The retained result survives a
+// Ducklion daemon restart because this state belongs to the supervisor.
+func (s *Session) CancelActiveAgentTask(summary string) (string, bool) {
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
+	s.mu.Lock()
+	taskID := s.activeAgentTask
+	s.mu.Unlock()
+	if taskID == "" {
+		return "", false
+	}
+	if len(summary) > 500 {
+		summary = summary[:500]
+	}
+	if s.agentEvents == nil {
+		s.agentEvents = make(map[string][]protocol.SupervisorAgentEvent)
+	}
+	if s.agentEventAcks == nil {
+		s.agentEventAcks = make(map[string]uint64)
+	}
+	if s.terminalAgentTasks == nil {
+		s.terminalAgentTasks = make(map[string]uint64)
+	}
+	events := s.agentEvents[taskID]
+	sequence := uint64(len(events)) + s.agentEventAcks[taskID] + 1
+	if s.agentEventCount >= maxRetainedAgentEvents || s.agentEventBytes+len(summary)+len(taskID)+64 > maxRetainedAgentBytes {
+		return taskID, false
+	}
+	s.mu.Lock()
+	if s.activeAgentTask != taskID {
+		s.mu.Unlock()
+		return "", false
+	}
+	s.activeAgentTask = ""
+	s.mu.Unlock()
+	s.agentEvents[taskID] = append(events, protocol.SupervisorAgentEvent{
+		TaskID: taskID, Sequence: sequence, Kind: "failed", Summary: summary,
+	})
+	s.agentEventBytes += len(summary)
+	s.agentEventCount++
+	s.terminalAgentTasks[taskID] = sequence
+	if s.agentEventNotify != nil {
+		select {
+		case s.agentEventNotify <- struct{}{}:
+		default:
+		}
+	}
+	return taskID, true
 }
 
 func (s *Session) AckAgentEvent(taskID string, sequence uint64) error {

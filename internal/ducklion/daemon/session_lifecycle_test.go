@@ -3,7 +3,9 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -228,6 +230,309 @@ func TestDuckwayCCCreatesAgentWithCCInitialOwner(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "sessions", created.SessionID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("destroyed runtime directory remains: %v", err)
+	}
+}
+
+func TestCanonicalLifecycleWaitDrainsBeforeEnd(t *testing.T) {
+	root := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	cc, err := DialCC(server.SocketPath(), "dwch_lifecycle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	created, err := cc.CreateSession(context.Background(), protocol.SessionCreate{Handle: "drain", Kind: model.KindAgent, AgentType: "fixture", CWD: root,
+		Command: []string{"sh", "-c", "while :; do sleep 1; done"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.BindDiscordSession(context.Background(), "bind-drain", created.SessionID, "dwch_lifecycle"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.BeginTask(context.Background(), "active-turn", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err != nil {
+		t.Fatal(err)
+	}
+	immediate := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleEnd, Mode: protocol.SessionLifecycleImmediate}
+	if _, err := cc.LifecycleSessionWithID(context.Background(), "end-now", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, immediate); err == nil {
+		t.Fatal("immediate lifecycle accepted an active task")
+	} else if remote, ok := err.(*RemoteError); !ok || remote.Detail.Code != protocol.ErrTaskActive {
+		t.Fatalf("immediate lifecycle error=%v", err)
+	}
+	if pending, err := server.state.GetPendingLifecycle(context.Background(), model.SessionID(created.SessionID)); err != nil || pending != nil {
+		t.Fatalf("immediate rejection left barrier=%+v err=%v", pending, err)
+	}
+	waitRequest := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleEnd, Mode: protocol.SessionLifecycleWait}
+	result, err := cc.LifecycleSessionWithID(context.Background(), "end-wait", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, waitRequest)
+	if err != nil || result.State != protocol.SessionLifecycleWaiting {
+		t.Fatalf("wait lifecycle=%+v err=%v", result, err)
+	}
+	if _, err := cc.BeginTask(context.Background(), "overtake", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err == nil {
+		t.Fatal("task crossed lifecycle drain")
+	} else if remote, ok := err.(*RemoteError); !ok || remote.Detail.Code != protocol.ErrDraining {
+		t.Fatalf("drain rejection=%v", err)
+	}
+	if _, err := cc.CompleteTask(context.Background(), "finish-active", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err = cc.LifecycleSessionWithID(context.Background(), "end-wait", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, waitRequest)
+		if err == nil && result.State == protocol.SessionLifecycleCompleted {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil || result.State != protocol.SessionLifecycleCompleted {
+		t.Fatalf("wait lifecycle did not complete: result=%+v err=%v", result, err)
+	}
+	sessions, err := cc.ListSessions()
+	if err != nil || len(sessions) != 1 || sessions[0].Status != model.StatusStopped {
+		t.Fatalf("ended session=%+v err=%v", sessions, err)
+	}
+	// Completion releases the lifecycle barrier while retaining an immutable
+	// receipt, so the same stopped session can subsequently be destroyed.
+	destroy := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleDestroy, Mode: protocol.SessionLifecycleImmediate}
+	destroyResult, err := cc.LifecycleSessionWithID(context.Background(), "destroy-after-end", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, destroy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(8 * time.Second)
+	for destroyResult.State != protocol.SessionLifecycleCompleted && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		destroyResult, err = cc.LifecycleSessionWithID(context.Background(), "destroy-after-end", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, destroy)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if destroyResult.State != protocol.SessionLifecycleCompleted {
+		t.Fatalf("destroy after end=%+v", destroyResult)
+	}
+	replayedEnd, err := cc.LifecycleSessionWithID(context.Background(), "end-wait", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, waitRequest)
+	if err != nil || replayedEnd.State != protocol.SessionLifecycleCompleted {
+		t.Fatalf("end receipt after destroy=%+v err=%v", replayedEnd, err)
+	}
+}
+
+func TestCanonicalLifecycleDestroyReplaysAfterSessionDeletion(t *testing.T) {
+	root := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	cc, err := DialCC(server.SocketPath(), "dwch_destroy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	created, err := cc.CreateSession(context.Background(), protocol.SessionCreate{Handle: "destroy", Kind: model.KindAgent, AgentType: "fixture", CWD: root,
+		Command: []string{"sh", "-c", "while :; do sleep 1; done"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleDestroy, Mode: protocol.SessionLifecycleImmediate}
+	result, err := cc.LifecycleSessionWithID(context.Background(), "destroy-canonical", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for result.State != protocol.SessionLifecycleCompleted && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		result, err = cc.LifecycleSessionWithID(context.Background(), "destroy-canonical", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if result.State != protocol.SessionLifecycleCompleted {
+		t.Fatalf("destroy result=%+v", result)
+	}
+	if sessions, err := cc.ListSessions(); err != nil || len(sessions) != 0 {
+		t.Fatalf("destroyed sessions=%+v err=%v", sessions, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "sessions", created.SessionID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destroyed runtime directory remains: %v", err)
+	}
+	replayed, err := cc.LifecycleSessionWithID(context.Background(), "destroy-canonical", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+	if err != nil || replayed.State != protocol.SessionLifecycleCompleted {
+		t.Fatalf("destroy replay=%+v err=%v", replayed, err)
+	}
+}
+
+func TestCanonicalLifecycleForceCancelsAndFencesAgentTask(t *testing.T) {
+	root := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	cc, err := DialCC(server.SocketPath(), "dwch_force")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	created, err := cc.CreateSession(context.Background(), protocol.SessionCreate{Handle: "force", Kind: model.KindAgent, AgentType: "fixture", CWD: root,
+		Command: []string{"sh", "-c", "while IFS= read -r line; do sleep 30; done"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.BindDiscordSession(context.Background(), "bind-force", created.SessionID, "dwch_force"); err != nil {
+		t.Fatal(err)
+	}
+	prompt := []byte("long task")
+	task := protocol.AgentTaskSubmit{TaskID: "force-task", Prompt: prompt, PromptDigest: sha256.Sum256(prompt)}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err = cc.SubmitAgentTask(context.Background(), task.TaskID, created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, task)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("submit active task: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	request := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleEnd, Mode: protocol.SessionLifecycleForce}
+	result, err := cc.LifecycleSessionWithID(context.Background(), "force-end", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cancelled protocol.SupervisorAgentEvent
+	deadline = time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		events, pollErr := cc.AgentTaskEvents(context.Background(), created.SessionID, task.TaskID, 0)
+		if pollErr == nil && len(events.Events) == 1 {
+			cancelled = events.Events[0]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if cancelled.Kind != "failed" || cancelled.Summary != "Task cancelled by forced session lifecycle operation" {
+		t.Fatalf("forced terminal event=%+v", cancelled)
+	}
+	// The runtime exit and lifecycle completion remain behind Discord's
+	// delivery acknowledgement, so a forced stop cannot silently lose notice.
+	if sessions, listErr := cc.ListSessions(); listErr != nil || len(sessions) != 1 || sessions[0].TaskState != model.TaskReplying {
+		t.Fatalf("pre-ack sessions=%+v err=%v", sessions, listErr)
+	}
+	if err := cc.AckAgentTaskEvent(context.Background(), created.SessionID, task.TaskID, cancelled.Sequence); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(8 * time.Second)
+	for result.State != protocol.SessionLifecycleCompleted && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		result, err = cc.LifecycleSessionWithID(context.Background(), "force-end", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if result.State != protocol.SessionLifecycleCompleted {
+		t.Fatalf("force lifecycle result=%+v", result)
+	}
+}
+
+func TestCanonicalLifecycleWaitResumesAfterDucklionRestart(t *testing.T) {
+	root := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	launcher := func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: launcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	cc, err := DialCC(server.SocketPath(), "dwch_restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := cc.CreateSession(context.Background(), protocol.SessionCreate{Handle: "restart", Kind: model.KindAgent, AgentType: "fixture", CWD: root,
+		Command: []string{"sh", "-c", "while :; do sleep 1; done"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.BindDiscordSession(context.Background(), "bind-restart", created.SessionID, "dwch_restart"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.BeginTask(context.Background(), "busy-before-restart", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err != nil {
+		t.Fatal(err)
+	}
+	request := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleEnd, Mode: protocol.SessionLifecycleWait}
+	if result, err := cc.LifecycleSessionWithID(context.Background(), "wait-across-restart", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request); err != nil || result.State != protocol.SessionLifecycleWaiting {
+		t.Fatalf("initial lifecycle=%+v err=%v", result, err)
+	}
+	_ = cc.Close()
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serveDone; err != nil && !errors.Is(err, net.ErrClosed) {
+		t.Fatal(err)
+	}
+
+	server, err = Open(context.Background(), Options{Root: root, RuntimeLauncher: launcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone = make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	cc, err = DialCC(server.SocketPath(), "dwch_restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	reconnectDeadline := time.Now().Add(5 * time.Second)
+	for {
+		sessions, listErr := cc.ListSessions()
+		if listErr == nil && len(sessions) == 1 && sessions[0].Status == model.StatusRunning {
+			break
+		}
+		if time.Now().After(reconnectDeadline) {
+			t.Fatalf("supervisor did not reconnect: sessions=%+v err=%v", sessions, listErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := cc.CompleteTask(context.Background(), "complete-after-restart", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	var result protocol.SessionLifecycleResult
+	for time.Now().Before(deadline) {
+		result, err = cc.LifecycleSessionWithID(context.Background(), "wait-across-restart", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+		if err == nil && result.State == protocol.SessionLifecycleCompleted {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil || result.State != protocol.SessionLifecycleCompleted {
+		t.Fatalf("recovered lifecycle=%+v err=%v", result, err)
 	}
 }
 

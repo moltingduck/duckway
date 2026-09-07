@@ -45,6 +45,22 @@ type PendingLifecycle struct {
 	LastError        string
 }
 
+type LifecycleOutcome struct {
+	SessionID        model.SessionID
+	Operation        LifecycleOperation
+	Mode             LifecycleMode
+	Requester        model.Owner
+	SourceEpoch      uint64
+	SourceGeneration uint64
+	RequestID        string
+	CompletedAtMS    int64
+}
+
+func (o LifecycleOutcome) Matches(p PendingLifecycle) bool {
+	return o.SessionID == p.SessionID && o.Operation == p.Operation && o.Mode == p.Mode && o.Requester == p.Requester &&
+		o.SourceEpoch == p.SourceEpoch && o.SourceGeneration == p.SourceGeneration && o.RequestID == p.RequestID
+}
+
 func (p PendingLifecycle) Matches(session model.Session) bool {
 	return session.Writer != nil && *session.Writer == p.Requester && session.OwnershipEpoch == p.SourceEpoch && session.RuntimeGeneration == p.SourceGeneration
 }
@@ -112,8 +128,17 @@ func (s *SQLite) ReserveLifecycle(ctx context.Context, pending PendingLifecycle)
 		}
 		return model.Session{}, false, model.ErrLifecyclePending
 	}
-	if err := session.AuthorizeAgentInput(pending.Requester, pending.SourceEpoch, pending.SourceGeneration); err != nil {
-		return model.Session{}, false, err
+	if session.Kind != model.KindAgent || (pending.Operation == LifecycleEnd && session.Status != model.StatusRunning) {
+		return model.Session{}, false, model.ErrSessionNotRunning
+	}
+	if session.RuntimeGeneration != pending.SourceGeneration {
+		return model.Session{}, false, model.ErrStaleGeneration
+	}
+	if session.OwnershipEpoch != pending.SourceEpoch {
+		return model.Session{}, false, model.ErrStaleEpoch
+	}
+	if session.Writer == nil || *session.Writer != pending.Requester {
+		return model.Session{}, false, model.ErrNotOwner
 	}
 	if existingYield, err := s.GetPendingYieldTx(ctx, tx, pending.SessionID); err != nil {
 		return model.Session{}, false, err
@@ -142,6 +167,57 @@ func (s *SQLite) ReserveLifecycle(ctx context.Context, pending PendingLifecycle)
 func (s *SQLite) GetPendingLifecycle(ctx context.Context, id model.SessionID) (*PendingLifecycle, error) {
 	return scanPendingLifecycle(s.db.QueryRowContext(ctx, `SELECT session_id,operation,mode,requester_kind,requester_id,source_epoch,source_generation,request_id,phase,created_at_ms,updated_at_ms,attempt,last_error
 		FROM pending_lifecycle_operations WHERE session_id=?`, id))
+}
+
+func (s *SQLite) GetLifecycleOutcome(ctx context.Context, requester model.Owner, requestID string) (*LifecycleOutcome, error) {
+	var outcome LifecycleOutcome
+	outcome.Requester, outcome.RequestID = requester, requestID
+	err := s.db.QueryRowContext(ctx, `SELECT session_id,operation,mode,source_epoch,source_generation,completed_at_ms
+		FROM lifecycle_outcomes WHERE requester_kind=? AND requester_id=? AND request_id=?`, requester.Kind, requester.ID, requestID).
+		Scan(&outcome.SessionID, &outcome.Operation, &outcome.Mode, &outcome.SourceEpoch, &outcome.SourceGeneration, &outcome.CompletedAtMS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &outcome, nil
+}
+
+// CompleteLifecycle records a replayable result before removing the barrier.
+func (s *SQLite) CompleteLifecycle(ctx context.Context, pending PendingLifecycle) error {
+	if err := pending.validate(); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().UnixMilli()
+	result, err := tx.ExecContext(ctx, `INSERT INTO lifecycle_outcomes
+		(requester_kind,requester_id,request_id,session_id,operation,mode,source_epoch,source_generation,completed_at_ms)
+		VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(requester_kind,requester_id,request_id) DO NOTHING`, pending.Requester.Kind, pending.Requester.ID,
+		pending.RequestID, pending.SessionID, pending.Operation, pending.Mode, pending.SourceEpoch, pending.SourceGeneration, now)
+	if err != nil {
+		return err
+	}
+	if inserted, _ := result.RowsAffected(); inserted == 0 {
+		var existing LifecycleOutcome
+		existing.Requester, existing.RequestID = pending.Requester, pending.RequestID
+		if err := tx.QueryRowContext(ctx, `SELECT session_id,operation,mode,source_epoch,source_generation,completed_at_ms
+			FROM lifecycle_outcomes WHERE requester_kind=? AND requester_id=? AND request_id=?`, pending.Requester.Kind, pending.Requester.ID, pending.RequestID).
+			Scan(&existing.SessionID, &existing.Operation, &existing.Mode, &existing.SourceEpoch, &existing.SourceGeneration, &existing.CompletedAtMS); err != nil {
+			return err
+		}
+		if !existing.Matches(pending) {
+			return ErrIdempotencyConflict
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM pending_lifecycle_operations WHERE session_id=? AND request_id=?`, pending.SessionID, pending.RequestID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLite) GetPendingLifecycleTx(ctx context.Context, tx *sql.Tx, id model.SessionID) (*PendingLifecycle, error) {
@@ -241,4 +317,16 @@ func (s *SQLite) DeletePendingLifecycleTx(ctx context.Context, tx *sql.Tx, id mo
 func (s *SQLite) DeletePendingLifecycle(ctx context.Context, id model.SessionID) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM pending_lifecycle_operations WHERE session_id=?`, id)
 	return err
+}
+
+func (s *SQLite) DeletePendingLifecycleRequest(ctx context.Context, id model.SessionID, requestID string, phase LifecyclePhase) (bool, error) {
+	if requestID == "" || !validLifecyclePhase(phase) {
+		return false, fmt.Errorf("invalid lifecycle deletion")
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM pending_lifecycle_operations WHERE session_id=? AND request_id=? AND phase=?`, id, requestID, phase)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	return changed == 1, err
 }

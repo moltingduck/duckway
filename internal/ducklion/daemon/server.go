@@ -58,6 +58,10 @@ type Server struct {
 	ducklords                    map[string]*net.UnixConn
 	handlers                     sync.WaitGroup
 	lifecycleMu                  sync.Mutex
+	lifecycleWorkersMu           sync.Mutex
+	lifecycleWorkers             map[model.SessionID]struct{}
+	lifecycleWorkersWG           sync.WaitGroup
+	lifecycleCoordinatorWG       sync.WaitGroup
 	createMu                     sync.Mutex
 	closing                      bool
 	outputMu                     sync.Mutex
@@ -219,12 +223,15 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 		activitySlots:                make(chan struct{}, maxSupervisorActivityConnections),
 		sequences:                    make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher, sessionCleaner: options.SessionCleaner}
 	server.agentEvents = make(map[string][]protocol.SupervisorAgentEvent)
+	server.lifecycleWorkers = make(map[model.SessionID]struct{})
 	if server.runtimeLauncher == nil {
 		server.runtimeLauncher = server.spawnRuntime
 	}
 	if server.sessionCleaner == nil {
 		server.sessionCleaner = os.RemoveAll
 	}
+	server.lifecycleCoordinatorWG.Add(1)
+	go server.runLifecycleCoordinator()
 	return server, nil
 }
 
@@ -317,9 +324,9 @@ func (s *Server) handle(conn *net.UnixConn) {
 			s.connMu.Unlock()
 		}()
 	}
-	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_destroy", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
+	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if remote.Role == protocol.RoleDuckwayCC {
-		capabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_destroy", "session_yield", "session_task", "discord_binding", "discord_unbind", "agent_task"}
+		capabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "session_task", "discord_binding", "discord_unbind", "agent_task"}
 	}
 	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: capabilities}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
@@ -1300,6 +1307,11 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session destroy capability was not negotiated"}}
 		}
 		return s.routeSessionDestroy(request, role, principal)
+	case "session.lifecycle":
+		if !hasCapability(capabilities, "session_lifecycle") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session lifecycle capability was not negotiated"}}
+		}
+		return s.routeSessionLifecycle(request, role, principal)
 	case "session.yield":
 		if !hasCapability(capabilities, "session_yield") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session yield capability was not negotiated"}}
@@ -1506,8 +1518,12 @@ func serviceMapError(err error) protocol.ErrorCode {
 		return protocol.ErrTaskActive
 	case errors.Is(err, model.ErrLifecyclePending):
 		return protocol.ErrDraining
-	default:
+	case errors.Is(err, model.ErrPendingYield):
+		return protocol.ErrPendingYield
+	case errors.Is(err, model.ErrAdapterNotHealthy), errors.Is(err, model.ErrSessionNotRunning), errors.Is(err, model.ErrYieldUnsupported):
 		return protocol.ErrAdapterUnhealthy
+	default:
+		return protocol.ErrInternal
 	}
 }
 
@@ -1526,6 +1542,8 @@ func (s *Server) Close() error {
 		}
 		s.connMu.Unlock()
 		s.handlers.Wait()
+		s.lifecycleCoordinatorWG.Wait()
+		s.lifecycleWorkersWG.Wait()
 		_ = os.Remove(s.socketPath)
 		_ = s.state.Close()
 		_ = unix.Flock(int(s.lockFile.Fd()), unix.LOCK_UN)

@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 10
+const SchemaVersion = 11
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -219,6 +219,11 @@ func (s *SQLite) migrate(ctx context.Context) error {
 	if userVersion < 10 {
 		if err := migrateV10(ctx, tx); err != nil {
 			return fmt.Errorf("migrate ducklion schema to v10: %w", err)
+		}
+	}
+	if userVersion < 11 {
+		if err := migrateV11(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v11: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
@@ -427,6 +432,18 @@ func migrateV10(ctx context.Context, tx *sql.Tx) error {
 	// Existing v9 rows predate updated_at_ms; their creation time is the best
 	// durable approximation and avoids making them look older than they are.
 	_, err := tx.ExecContext(ctx, `UPDATE pending_lifecycle_operations SET updated_at_ms=created_at_ms WHERE updated_at_ms=0`)
+	return err
+}
+
+func migrateV11(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `CREATE TABLE lifecycle_outcomes (
+		requester_kind TEXT NOT NULL CHECK(requester_kind IN ('cc','terminal')),
+		requester_id TEXT NOT NULL, request_id TEXT NOT NULL,
+		session_id TEXT NOT NULL, operation TEXT NOT NULL CHECK(operation IN ('end','destroy','restart')),
+		mode TEXT NOT NULL CHECK(mode IN ('immediate','wait','force')),
+		source_epoch INTEGER NOT NULL CHECK(source_epoch>0), source_generation INTEGER NOT NULL CHECK(source_generation>0),
+		completed_at_ms INTEGER NOT NULL,
+		PRIMARY KEY(requester_kind,requester_id,request_id))`)
 	return err
 }
 

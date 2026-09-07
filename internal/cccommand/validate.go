@@ -15,8 +15,8 @@ var usages = map[string]string{
 	"!help":            "!help",
 	"!new":             "!new <slug> [--cwd <path>|--project <name|number>] [--topic <text>]",
 	"!new-confirm":     "!new-confirm <token>",
-	"!end":             "!end",
-	"!destroy":         "!destroy",
+	"!end":             "!end [-w|--wait|-f|--force]",
+	"!destroy":         "!destroy [-w|--wait|-f|--force]",
 	"!yield":           "!yield [-w|--wait]",
 	"!list":            "!list",
 	"!status":          "!status",
@@ -41,8 +41,10 @@ func Usage(command string) string {
 // own suggestion/error response.
 func Validate(command string, args []string) error {
 	switch command {
-	case "!help", "!end", "!destroy", "!list", "!status", "!duckway-version", "!duckway-doctor", "!duckway-restart":
+	case "!help", "!list", "!status", "!duckway-version", "!duckway-doctor", "!duckway-restart":
 		return validateNoArgs(args)
+	case "!end", "!destroy":
+		return validateLifecycleMode(args)
 	case "!yield":
 		if len(args) == 0 || len(args) == 1 && (args[0] == "-w" || args[0] == "--wait") {
 			return nil
@@ -67,6 +69,13 @@ func Validate(command string, args []string) error {
 	default:
 		return fmt.Errorf("%w: %s", ErrUnknownCommand, command)
 	}
+}
+
+func validateLifecycleMode(args []string) error {
+	if len(args) == 0 || len(args) == 1 && (args[0] == "-w" || args[0] == "--wait" || args[0] == "-f" || args[0] == "--force") {
+		return nil
+	}
+	return unsupportedArgs(args)
 }
 
 func validateNoArgs(args []string) error {

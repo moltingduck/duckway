@@ -177,6 +177,45 @@ func TestLifecyclePhaseCASListAndCancel(t *testing.T) {
 	}
 }
 
+func TestCompleteLifecycleStoresOutcomeAndReleasesBarrier(t *testing.T) {
+	ctx := context.Background()
+	database, err := Open(ctx, filepath.Join(t.TempDir(), "ducklion.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	now := time.Now().UTC().UnixMilli()
+	owner := model.Owner{Kind: model.OwnerTerminal, ID: "desk"}
+	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "fixture", CWD: t.TempDir(), Status: model.StatusRunning,
+		Writer: &owner, OwnershipEpoch: 2, RuntimeGeneration: 3, TaskState: model.TaskIdle, AdapterState: model.AdapterHealthy, CreatedAtMS: now, UpdatedAtMS: now}
+	if _, _, err := database.CreateSessionIdempotent(ctx, "terminal:desk", "create", Fingerprint("create", session.ID, nil), session); err != nil {
+		t.Fatal(err)
+	}
+	request := PendingLifecycle{SessionID: session.ID, Operation: LifecycleEnd, Mode: LifecycleWait, Requester: owner,
+		SourceEpoch: 2, SourceGeneration: 3, RequestID: "end-one"}
+	if _, _, err := database.ReserveLifecycle(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteLifecycle(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := database.GetPendingLifecycle(ctx, session.ID); err != nil || pending != nil {
+		t.Fatalf("completed barrier=%+v err=%v", pending, err)
+	}
+	outcome, err := database.GetLifecycleOutcome(ctx, owner, request.RequestID)
+	if err != nil || outcome == nil || !outcome.Matches(request) {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	if err := database.CompleteLifecycle(ctx, request); err != nil {
+		t.Fatalf("outcome replay: %v", err)
+	}
+	conflict := request
+	conflict.Mode = LifecycleForce
+	if err := database.CompleteLifecycle(ctx, conflict); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("outcome conflict=%v", err)
+	}
+}
+
 func TestMigrateV9LifecycleRowsGainRecoveryMetadata(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "ducklion.db")
