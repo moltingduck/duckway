@@ -757,6 +757,28 @@ A passing run proves the full chain: auth → resolve → decrypt → inject cor
 
 The script never sends the real API key in the test request itself — the key is only sent once during the upload step, and the test request only carries the Duckway client token. So if `/proxy/...` returns 200, the only path that could have produced that result is Duckway resolving and injecting the real key correctly.
 
+### Discord Control Channel E2E
+
+Run the deterministic credential-free suite with either entry point:
+
+```bash
+scripts/discord-e2e.sh
+scripts/cc-smoke.sh --fixture
+```
+
+It exercises the real gateway policy and durable inbox code against a Discord
+fixture, then starts managed Ducklion PTYs. Lifecycle coverage includes an idle
+restart, a wait restart that remains on generation 1 until the active task's
+final Discord delivery is ACKed, and a force restart that publishes and ACKs a
+failed cancellation event before generation 2 is launched. Yield recovery,
+daemon reconnect, binding continuity, and the single-message progress preview
+run through the same suite. Set `DISCORD_E2E_RACE=1` to run it under Go's race
+detector.
+
+`scripts/cc-smoke.sh` without `--fixture` is the separate live Discord
+provisioning smoke and requires the bot/guild/category secrets documented in
+that script.
+
 ### Ducklord / Ducklion smoke test
 
 Ducklord has a Podman demo that creates one developer laptop container and

@@ -1023,6 +1023,326 @@ func TestDiscordRestartCommandPreservesChannelAndBindingE2E(t *testing.T) {
 	}
 }
 
+func TestDiscordRestartWaitsForFinalEventDeliveryE2E(t *testing.T) {
+	configDir := t.TempDir()
+	barrier := filepath.Join(configDir, "release-completion")
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	daemon, err := duckliondaemon.Open(context.Background(), duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion"), RuntimeLauncher: func(specPath string) error {
+		go func() { _ = duckliondaemon.RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- daemon.Serve() }()
+	defer func() { _ = daemon.Close(); <-serveDone }()
+	cc, err := duckliondaemon.DialCC(daemon.SocketPath(), "dwch_restart_wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	command := `while IFS= read -r line; do while [ ! -f "$1" ]; do sleep 0.02; done; printf '%s\n' '{"kind":"completed","response":"finished before restart"}' >&3; done`
+	created, err := cc.CreateSession(context.Background(), protocol.SessionCreate{Handle: "restart-wait", Kind: model.KindAgent, AgentType: "fixture", CWD: configDir,
+		Command: []string{"sh", "-c", command, "sh", barrier}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.BindDiscordSession(context.Background(), "bind-restart-wait", created.SessionID, "dwch_restart_wait"); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeServer(t)
+	watch := stubWatch(t, configDir, fake)
+	watch.configDir = configDir
+	deliveryEntered := make(chan struct{}, 1)
+	deliveryRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseDelivery := func() { releaseOnce.Do(func() { close(deliveryRelease) }) }
+	defer releaseDelivery()
+	fake.mu.Lock()
+	fake.deliveryEntered = deliveryEntered
+	fake.deliveryRelease = deliveryRelease
+	fake.deliveryBlockContent = "finished before restart"
+	fake.mu.Unlock()
+	type managedResult struct {
+		success bool
+		reason  string
+	}
+	managedDone := make(chan managedResult, 1)
+	taskID := "1783330000000000602"
+	if handled := watch.preflightBoundDucklionPrompt("dwch_restart_wait", created.SessionID, taskID, "run before restart", func(success bool, reason string) {
+		managedDone <- managedResult{success: success, reason: reason}
+	}, nil); !handled {
+		t.Fatal("managed prompt was not handled by Ducklion")
+	}
+	payload, _ := json.Marshal(clientCommandPayload{Command: "!restart", RequestID: "discord-restart-wait", SessionID: created.SessionID})
+	envelope, _ := json.Marshal(sseEnvelope{Type: "client_command", CCID: "cc1", Handle: "dwch_restart_wait", Payload: payload, InboxID: 602, ClaimToken: "claim-restart-wait"})
+	commandDone := make(chan struct{})
+	commandCtx, cancelCommand := context.WithCancel(context.Background())
+	defer cancelCommand()
+	go func() {
+		watch.handleClientCommandContext(commandCtx, envelope)
+		close(commandDone)
+	}()
+	waitUntil(t, 3*time.Second, func() bool {
+		return hasMessageContaining(fake.snapshotMessages(), "queued")
+	}, "wait restart admission message")
+	assertRuntimeGeneration(t, cc, created.SessionID, 1, model.TaskRunning)
+	if err := os.WriteFile(barrier, []byte("ready"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	waitChannel(t, deliveryEntered, 4*time.Second, "blocked final Discord delivery")
+	assertRuntimeGeneration(t, cc, created.SessionID, 1, model.TaskReplying)
+	assertChannelBlocked(t, commandDone, 600*time.Millisecond, "wait restart before Discord ACK")
+	assertRuntimeGeneration(t, cc, created.SessionID, 1, model.TaskReplying)
+	for _, message := range fake.snapshotMessages() {
+		if message["content"] == "finished before restart" {
+			t.Fatalf("blocked final response was stored early: %+v", message)
+		}
+	}
+	releaseDelivery()
+	select {
+	case result := <-managedDone:
+		if !result.success {
+			t.Fatalf("managed delivery failed: %s", result.reason)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for managed Discord delivery")
+	}
+	waitChannel(t, commandDone, 8*time.Second, "wait restart command")
+	assertRuntimeGeneration(t, cc, created.SessionID, 2, model.TaskIdle)
+	messages := fake.snapshotMessages()
+	if !hasDeliveredMessage(messages, "finished before restart") || !hasMessageContaining(messages, "runtime generation `2`") {
+		t.Fatalf("restart messages=%+v", messages)
+	}
+	assertInboxCompleted(t, fake, "claim-restart-wait")
+	messageCount := len(messages)
+	replayDone := make(chan managedResult, 1)
+	if handled := watch.preflightBoundDucklionPrompt("dwch_restart_wait", created.SessionID, taskID, "run before restart", func(success bool, reason string) {
+		replayDone <- managedResult{success: success, reason: reason}
+	}, nil); !handled {
+		t.Fatal("managed replay was not handled by Ducklion")
+	}
+	select {
+	case result := <-replayDone:
+		if !result.success {
+			t.Fatalf("managed replay failed: %s", result.reason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for managed replay")
+	}
+	if got := len(fake.snapshotMessages()); got != messageCount {
+		t.Fatalf("managed replay duplicated Discord messages: before=%d after=%d", messageCount, got)
+	}
+}
+
+func TestDiscordForceRestartDeliversCancellationBeforeReplacementE2E(t *testing.T) {
+	configDir := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	daemon, err := duckliondaemon.Open(context.Background(), duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion"), RuntimeLauncher: func(specPath string) error {
+		go func() { _ = duckliondaemon.RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- daemon.Serve() }()
+	defer func() { _ = daemon.Close(); <-serveDone }()
+	cc, err := duckliondaemon.DialCC(daemon.SocketPath(), "dwch_restart_force")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	created, err := cc.CreateSession(context.Background(), protocol.SessionCreate{Handle: "restart-force", Kind: model.KindAgent, AgentType: "fixture", CWD: configDir,
+		Command: []string{"sh", "-c", "while IFS= read -r line; do sleep 30; done"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.BindDiscordSession(context.Background(), "bind-restart-force", created.SessionID, "dwch_restart_force"); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeServer(t)
+	watch := stubWatch(t, configDir, fake)
+	watch.configDir = configDir
+	deliveryEntered := make(chan struct{}, 1)
+	deliveryRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseDelivery := func() { releaseOnce.Do(func() { close(deliveryRelease) }) }
+	defer releaseDelivery()
+	fake.mu.Lock()
+	fake.deliveryEntered = deliveryEntered
+	fake.deliveryRelease = deliveryRelease
+	fake.deliveryBlockContent = "Task cancelled by forced session lifecycle operation"
+	fake.mu.Unlock()
+	type managedResult struct {
+		success bool
+		reason  string
+	}
+	managedDone := make(chan managedResult, 1)
+	taskID := "1783330000000000603"
+	if handled := watch.preflightBoundDucklionPrompt("dwch_restart_force", created.SessionID, taskID, "cancel this turn", func(success bool, reason string) {
+		managedDone <- managedResult{success: success, reason: reason}
+	}, nil); !handled {
+		t.Fatal("managed prompt was not handled by Ducklion")
+	}
+	payload, _ := json.Marshal(clientCommandPayload{Command: "!restart", Args: []string{"--force"}, RequestID: "discord-restart-force", SessionID: created.SessionID})
+	envelope, _ := json.Marshal(sseEnvelope{Type: "client_command", CCID: "cc1", Handle: "dwch_restart_force", Payload: payload, InboxID: 603, ClaimToken: "claim-restart-force"})
+	commandDone := make(chan struct{})
+	commandCtx, cancelCommand := context.WithCancel(context.Background())
+	defer cancelCommand()
+	go func() {
+		watch.handleClientCommandContext(commandCtx, envelope)
+		close(commandDone)
+	}()
+	waitUntil(t, 3*time.Second, func() bool {
+		return hasMessageContaining(fake.snapshotMessages(), "being cancelled")
+	}, "force restart admission message")
+	waitChannel(t, deliveryEntered, 4*time.Second, "blocked cancellation Discord delivery")
+	events, err := cc.AgentTaskEvents(context.Background(), created.SessionID, taskID, 0)
+	if err != nil || len(events.Events) != 1 || events.Events[0].Kind != "failed" || events.Events[0].Summary != "Task cancelled by forced session lifecycle operation" || events.AckedSequence != 0 {
+		t.Fatalf("forced cancellation events=%+v err=%v", events, err)
+	}
+	assertRuntimeGeneration(t, cc, created.SessionID, 1, model.TaskReplying)
+	assertChannelBlocked(t, commandDone, 600*time.Millisecond, "force restart before cancellation delivery ACK")
+	assertRuntimeGeneration(t, cc, created.SessionID, 1, model.TaskReplying)
+	for _, message := range fake.snapshotMessages() {
+		if message["content"] == "Task cancelled by forced session lifecycle operation" {
+			t.Fatalf("blocked cancellation was stored early: %+v", message)
+		}
+	}
+	releaseDelivery()
+	select {
+	case result := <-managedDone:
+		if !result.success {
+			t.Fatalf("managed cancellation delivery failed: %s", result.reason)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for cancellation Discord delivery")
+	}
+	waitChannel(t, commandDone, 8*time.Second, "force restart command")
+	assertRuntimeGeneration(t, cc, created.SessionID, 2, model.TaskIdle)
+	messages := fake.snapshotMessages()
+	if !hasDeliveredMessage(messages, "Task cancelled by forced session lifecycle operation") || !hasMessageContaining(messages, "Active task cancelled") {
+		t.Fatalf("force restart messages=%+v", messages)
+	}
+	assertInboxCompleted(t, fake, "claim-restart-force")
+}
+
+func TestDiscordRestartRejectsDifferentChannelOwnerE2E(t *testing.T) {
+	configDir := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	daemon, err := duckliondaemon.Open(context.Background(), duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion"), RuntimeLauncher: func(specPath string) error {
+		go func() { _ = duckliondaemon.RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- daemon.Serve() }()
+	defer func() { _ = daemon.Close(); <-serveDone }()
+	owner, err := duckliondaemon.DialCC(daemon.SocketPath(), "dwch_owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	created, err := owner.CreateSession(context.Background(), protocol.SessionCreate{Handle: "owner-only", Kind: model.KindAgent, AgentType: "fixture", CWD: configDir,
+		Command: []string{"sh", "-c", "while :; do sleep 1; done"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.BindDiscordSession(context.Background(), "bind-owner", created.SessionID, "dwch_owner"); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeServer(t)
+	watch := stubWatch(t, configDir, fake)
+	watch.configDir = configDir
+	payload, _ := json.Marshal(clientCommandPayload{Command: "!restart", Args: []string{"--force"}, RequestID: "cross-channel-restart", SessionID: created.SessionID})
+	envelope, _ := json.Marshal(sseEnvelope{Type: "client_command", CCID: "cc1", Handle: "dwch_intruder", Payload: payload, InboxID: 604, ClaimToken: "claim-cross-channel"})
+	watch.handleClientCommandContext(context.Background(), envelope)
+	assertRuntimeGeneration(t, owner, created.SessionID, 1, model.TaskIdle)
+	if !hasMessageContaining(fake.snapshotMessages(), "not_owner") {
+		t.Fatalf("cross-channel restart response=%+v", fake.snapshotMessages())
+	}
+	assertInboxCompleted(t, fake, "claim-cross-channel")
+	events, err := owner.AgentTaskEvents(context.Background(), created.SessionID, "cross-channel-restart", 0)
+	if err == nil && len(events.Events) != 0 {
+		t.Fatalf("cross-channel restart leaked cancellation events: %+v", events)
+	}
+}
+
+func waitUntil(t *testing.T, timeout time.Duration, condition func() bool, label string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", label)
+}
+
+func waitChannel(t *testing.T, done <-chan struct{}, timeout time.Duration, label string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
+func assertChannelBlocked(t *testing.T, done <-chan struct{}, duration time.Duration, label string) {
+	t.Helper()
+	select {
+	case <-done:
+		t.Fatalf("%s completed too early", label)
+	case <-time.After(duration):
+	}
+}
+
+func hasDeliveredMessage(messages []map[string]string, content string) bool {
+	for _, message := range messages {
+		if message["content"] == content && message["delivery_key"] != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMessageContaining(messages []map[string]string, fragment string) bool {
+	for _, message := range messages {
+		if strings.Contains(message["content"], fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func assertInboxCompleted(t *testing.T, server *fakeServer, claimToken string) {
+	t.Helper()
+	finishes := server.snapshotFinishes()
+	if len(finishes) == 0 {
+		t.Fatal("durable inbox was not finished")
+	}
+	last := finishes[len(finishes)-1]
+	if last["claim_token"] != claimToken || last["status"] != "completed" {
+		t.Fatalf("durable inbox finish=%+v", last)
+	}
+}
+
+func assertRuntimeGeneration(t *testing.T, client *duckliondaemon.Client, sessionID string, generation uint64, taskState model.TaskState) {
+	t.Helper()
+	sessions, err := client.ListSessions()
+	if err != nil || len(sessions) != 1 || sessions[0].SessionID != sessionID || sessions[0].RuntimeGeneration != generation || sessions[0].TaskState != taskState {
+		t.Fatalf("session generation/state=%+v err=%v, want generation=%d task=%s", sessions, err, generation, taskState)
+	}
+}
+
 func TestDurableBareNewCommandProvisionsReadyDucklionSessionE2E(t *testing.T) {
 	configDir, binDir := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' '{\"kind\":\"completed\",\"response\":\"done\"}' >&3; done\n"), 0700); err != nil {

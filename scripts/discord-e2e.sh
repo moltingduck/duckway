@@ -20,7 +20,7 @@ echo "[discord-e2e] gateway, resume replay, policy, thread and heartbeat"
 echo "[discord-e2e] durable admission, lane FIFO, fencing and reclaim"
 "${GO_TEST[@]}" ./internal/database/queries -run 'TestInbox(Admission|Claim|Expired)' -v
 
-echo "[discord-e2e] single-message progress preview lifecycle"
-"${GO_TEST[@]}" ./internal/client -run 'TestDiscordProgressPreviewE2E' -v
+echo "[discord-e2e] managed PTY yield, restart drain/force, delivery ACK, and progress preview"
+"${GO_TEST[@]}" ./internal/client -run 'TestDiscord.*E2E' -v
 
 echo "[discord-e2e] PASS"

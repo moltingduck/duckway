@@ -500,18 +500,27 @@ func (w *CCWatch) preflightBoundDucklionPrompt(handle, authoritativeSession, tas
 		if session.SessionID != binding.SessionID {
 			continue
 		}
-		if session.Writer == nil || session.Writer.Kind != model.OwnerCC || session.Writer.ID != handle {
-			// A lost inbox-finish response may replay after final delivery has
-			// already ACKed the task and transferred ownership. Recognize that
-			// stable task ID before emitting a misleading non-owner rejection.
-			if protocol.ValidTaskID(taskID) {
-				events, replayErr := client.AgentTaskEvents(context.Background(), session.SessionID, taskID, 0)
-				terminal := events.Status == "completed" || events.Status == "failed"
-				if replayErr == nil && terminal && events.LastSequence != 0 && events.AckedSequence >= events.LastSequence {
-					finish(true, "already delivered")
+		// An inbox-finish response can be lost after the final Discord message
+		// was delivered and ACKed. Recognize the durable terminal receipt before
+		// revalidating ownership or resubmitting with a newer runtime generation;
+		// either may legitimately have changed since the original delivery.
+		if protocol.ValidTaskID(taskID) {
+			events, replayErr := client.AgentTaskEvents(context.Background(), session.SessionID, taskID, 0)
+			terminal := events.Status == "completed" || events.Status == "failed"
+			if replayErr == nil && terminal && events.LastSequence != 0 && events.AckedSequence >= events.LastSequence {
+				if session.TaskState == model.TaskReplying {
+					// The ACK receipt may have committed before its separate
+					// ownership/task finalization transaction. Replay the ACK via
+					// the normal delivery worker; stable delivery keys prevent a
+					// duplicate Discord message.
+					go w.deliverManagedTask(handle, session.SessionID, taskID, finish, renew)
 					return true
 				}
+				finish(true, "already delivered")
+				return true
 			}
+		}
+		if session.Writer == nil || session.Writer.Kind != model.OwnerCC || session.Writer.ID != handle {
 			owner := ownerKind(session.Writer) + ":" + ownerID(session.Writer)
 			message := fmt.Sprintf("This prompt was not sent: session `%s` is controlled by `%s`. Run `!yield` or `!yield -w` in this channel to request control.", session.SessionID, owner)
 			if err := w.api.PostCC(context.Background(), handle, "❌ "+message); err != nil {
