@@ -245,8 +245,8 @@ Useful keys:
 - `Enter` or right-click focuses the selected session in the right pane.
 - `Ctrl-]` returns keyboard focus to the left menu.
 - `a` adds a Ducklion host from `~/.ssh/config`; use `client-c` in the demo.
-- `c` creates a new remote session with the wizard:
-  `agent -> host -> project`.
+- `c` creates a new remote session with the wizard. Choose `agent` or `shell`,
+  then follow the type-specific flow.
 - `n` configures notification categories for the selected session.
 - `E`, `R`, and `X` open confirmation views for end, restart, and destroy.
 - `r` refreshes immediately.
@@ -315,18 +315,29 @@ podman exec ducklord-dev ducklord projects client-c --config /root/.ducklord/con
 Inside the TUI, press `c`, then follow the wizard:
 
 ```text
-agent -> host -> project
+agent -> host -> configured project -> available agent -> handle
+shell -> host -> configured project (or Ducklion default) -> handle
 ```
 
 For example:
 
-1. Enter `shell` or `1`.
+1. Choose `agent` or `shell`.
 2. Choose `client-a` by number or name.
-3. Choose `alpha-project` by number or name.
+3. Choose `alpha-project` by number or name. Shell sessions may also choose
+   `Ducklion default` (`~/.duckway/ducklion`). Arbitrary paths are deliberately
+   not accepted.
+4. For an agent session, choose Codex or Claude only when installed remotely.
+5. Enter a Unicode display handle, or press Enter to use the folder name.
 
-Ducklord fetches projects with `ducklion projects --json`, builds a safe
-session name such as `shell-alpha`, starts the session asynchronously, refreshes
-the session list, selects the new row, and shows its output preview.
+Ducklord fetches projects with `ducklion projects --json`, then revalidates the
+directory and discovers available commands with
+`ducklion agents --cwd <path> --json`. Discovery and final revalidation run in
+cancellable workers so SSH latency never freezes navigation. A host generation
+change discards stale results. Immediately before creation Ducklord re-reads the
+project registry and runtime capabilities; stale choices return to their
+relevant step without a partial session. It then starts asynchronously and
+selects the exact returned six-character session ID, including for duplicate
+handles.
 
 Verify from the terminal:
 
@@ -399,7 +410,7 @@ The current TUI supports:
 - `Enter` or right-click to focus the selected session in the right pane
 - keyboard input routing to the focused remote PTY session
 - `Ctrl-]` to return focus to the left menu
-- `c` to create a new remote session with `agent -> host -> project`
+- `c` to create an agent or shell session with separate type-specific flows
 - `n` to configure notification categories for the selected session
 - `ducklord attach-host <client>` to open the same split-pane view scoped to
   one remote host and its advertised Ducklion sessions
@@ -439,19 +450,21 @@ The probe distinguishes:
 Stage 2 asks for:
 
 ```text
-shell/agent -> host -> project
+agent -> host -> configured project -> available agent -> handle
+shell -> host -> configured project or Ducklion default -> handle
 ```
 
 Projects come from:
 
 ```text
 ducklord -> ssh -> ducklion projects --json
+ducklord -> ssh -> ducklion agents --cwd <project> --json
 ```
 
 `ducklion projects --json` reads the Duckway client project registry under
 `~/.duckway/cc-projects.json` and returns each entry with
-`source: "duckway-client"`. The TUI should still offer a custom path for hosts
-without a saved project registry.
+`source: "duckway-client"`. It also reports Ducklion's own directory as
+`source: "ducklion-default"`; only the shell wizard presents that entry.
 
 ## Technical Details
 
@@ -533,24 +546,31 @@ State transitions:
 ```text
 normal mode
   -> c
-  -> agent step: shell / codex / claude
+  -> type step: agent or shell
   -> host step: configured Ducklord client number or name
-  -> project step: remote Duckway project number/name/path, or custom cwd
+  -> project step: a stable entry returned by the remote registry
+  -> agent step: agent sessions only; only types reported by that host
+  -> handle step: Unicode display handle; empty uses the project folder name
   -> Enter starts the remote PTY session
 ```
 
 The wizard is local and does not execute through a local shell:
 
-1. `parseCreateAgentChoice()` maps `shell`, `codex`, and `claude` to a session
-   choice and default command. `shell` emits `--kind shell`; Codex and Claude
-   emit `--agent <type>`. Native shells and agent sessions therefore remain
-   visibly and behaviorally distinct.
-2. The host step resolves a configured Ducklord client by number or name.
-3. The project step uses `ducklion projects --json`; if no registry is present,
-   the operator can enter a custom cwd path.
-4. `createSessionName()` derives a safe session name from agent and project
-   path, for example `shell-alpha`.
-5. `buildStartArgs()` validates session and agent names as safe identifiers.
+1. The host step resolves a connected Ducklord client by number or name.
+2. The project step uses `ducklion projects --json` and rejects arbitrary paths.
+   Shell sessions additionally expose `Ducklion default`.
+3. Ducklion validates that cwd and resolves its own `PATH` and login shell.
+   `ducklion agents --cwd ... --json` always reports `shell` and reports Codex
+   or Claude only when its executable is available on the remote host.
+4. The agent flow excludes `shell` from the agent step. The separate shell flow
+   resolves the remote user's shell without presenting an agent choice.
+5. The handle is an independent 1–128-code-point Unicode display name and may
+   repeat. Empty input uses the final project directory name. The six-character
+   session ID, not the handle, remains the mutation/routing identity.
+6. Remote discovery is asynchronous and request-fenced by wizard request ID,
+   host generation, and Ducklion instance ID. Escape cancels immediately;
+   shutdown joins discovery workers. Final creation revalidates the exact
+   `(source, name, path)` project tuple and runtime, then selects by returned ID.
 
 The non-TUI `ducklord start` CLI accepts either `--kind shell` with exactly one
 shell executable or `--agent <type>` with an agent command. It uses the same
@@ -793,7 +813,7 @@ Inside the TUI:
 - `Ctrl-]` returns keyboard focus to the left menu
 - `a` adds a host entry from `~/.ssh/config`; use `client-c`
 - `d` removes the selected host entry from the current `config.yaml`
-- `c` creates a new remote session with `agent -> host -> project`
+- `c` creates an agent or shell session with the type-specific wizard
 - `n` configures notifications for the selected session
 - `E`, `R`, and `X` confirm end, restart, and destroy
 - `q` exits

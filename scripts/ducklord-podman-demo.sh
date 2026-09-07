@@ -102,6 +102,10 @@ echo "[ducklord-demo] creating sample remote sessions"
 "$RUNTIME" exec ducklord-dev ducklord send client-b beta 'i=0; while :; do i=$((i+1)); echo client-b beta tick $i; sleep 5; done' >/dev/null
 
 echo "[ducklord-demo] verifying daemon inventory, PTY input, and recovery"
+if ! "$RUNTIME" exec ducklord-dev ducklord agents client-a /home/duck --config /root/.ducklord/config.yaml | grep -q '^shell'; then
+  echo "[ducklord-demo] remote agent discovery did not report the interactive shell" >&2
+  exit 1
+fi
 sessions="$($RUNTIME exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml)"
 grep -q 'alpha.*running' <<<"$sessions"
 grep -q 'bash.*running' <<<"$sessions"
@@ -192,7 +196,7 @@ Inside the TUI:
   mouse click: select a session row
   Enter or right-click: focus the selected session in the right pane
   a: add a ducklion host from ~/.ssh/config (try client-c)
-  c: create a remote session: choose agent -> host -> project
+  c: create a session: agent -> host -> project -> agent -> handle, or shell -> host -> project -> handle
   n: configure notifications for the selected session
   E / R / X: end, restart, or destroy the selected session (with confirmation)
   attach-host mode: same split-pane attach UI scoped to one host; add/new are disabled

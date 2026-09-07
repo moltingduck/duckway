@@ -856,7 +856,11 @@ Inside the TUI:
   `ssh -p 2222 -i ~/.ssh/id_ed25519 duck@client-c`.
 - `d` removes the selected host entry from the current `config.yaml`; it does
   not stop remote Ducklion sessions.
-- `c` creates a remote session with `agent -> host -> project`.
+- `c` first chooses `agent` or `shell`. Agent creation follows
+  `host -> configured project -> available agent -> handle`; shell creation
+  follows `host -> configured project or Ducklion default -> handle`. Empty
+  handles use the folder name. Discovery is cancellable and final choices are
+  revalidated before creation.
 - `n` opens per-session notification settings; changes are staged until Enter.
 - `Enter` or right-click focuses the selected PTY session.
 - `Ctrl-]` returns focus to the left menu.

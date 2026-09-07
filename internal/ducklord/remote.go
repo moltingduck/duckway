@@ -55,6 +55,11 @@ type RemoteProject struct {
 	Source string `json:"source"`
 }
 
+type RemoteAgent struct {
+	Type    string   `json:"type"`
+	Command []string `json:"command"`
+}
+
 type SessionUpdate struct {
 	Client           string
 	InstanceID       string
@@ -599,11 +604,11 @@ func (r *Runner) Send(ctx context.Context, c Client, name, text string) error {
 	return err
 }
 
-func (r *Runner) Start(ctx context.Context, c Client, args []string) error {
+func (r *Runner) Start(ctx context.Context, c Client, args []string) (string, error) {
 	if r != nil && r.hasOwner() {
 		create, err := parseDaemonCreate(args)
 		if err != nil {
-			return err
+			return "", err
 		}
 		operationID := uuid.NewString()
 		var lastErr error
@@ -617,21 +622,21 @@ func (r *Runner) Start(ctx context.Context, c Client, args []string) error {
 			err = createErr
 			if err == nil {
 				if created.Status == model.StatusStopped {
-					return fmt.Errorf("session %s stopped during launch: %s", created.SessionID, created.ExitReason)
+					return "", fmt.Errorf("session %s stopped during launch: %s", created.SessionID, created.ExitReason)
 				}
-				return nil
+				return created.SessionID, nil
 			}
 			lastErr = err
 			var remoteErr *daemon.RemoteError
 			if errors.As(err, &remoteErr) {
-				return fmt.Errorf("create session on %s: %w", c.Name, err)
+				return "", fmt.Errorf("create session on %s: %w", c.Name, err)
 			}
 			r.discardBridge(bridgeKey(c), client)
 		}
-		return fmt.Errorf("create session on %s has unknown outcome (operation %s): %w", c.Name, operationID, lastErr)
+		return "", fmt.Errorf("create session on %s has unknown outcome (operation %s): %w", c.Name, operationID, lastErr)
 	}
 	_, err := sshOutput(ctx, c, append([]string{"start"}, args...)...)
-	return err
+	return "", err
 }
 
 func parseDaemonCreate(args []string) (protocol.SessionCreate, error) {
@@ -822,6 +827,21 @@ func (*Runner) Projects(ctx context.Context, c Client) ([]RemoteProject, error) 
 		return nil, fmt.Errorf("parse ducklion projects from %s: %w", c.Name, err)
 	}
 	return projects, nil
+}
+
+func (*Runner) Agents(ctx context.Context, c Client, cwd string) ([]RemoteAgent, error) {
+	out, err := sshOutput(ctx, c, "agents", "--cwd", cwd, "--json")
+	if err != nil {
+		return nil, err
+	}
+	var agents []RemoteAgent
+	if err := json.Unmarshal(out, &agents); err != nil {
+		return nil, fmt.Errorf("parse ducklion agents from %s: %w", c.Name, err)
+	}
+	if len(agents) == 0 {
+		return nil, fmt.Errorf("ducklion reported no available agent types for %s", cwd)
+	}
+	return agents, nil
 }
 
 func (*Runner) Attach(c Client, name string) error {

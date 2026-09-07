@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -159,6 +160,8 @@ func Run(manager SessionManager, args []string, out io.Writer) error {
 		return runList(manager, args[1:], out)
 	case "projects":
 		return runProjects(args[1:], out)
+	case "agents":
+		return runAgents(args[1:], out)
 	case "start":
 		opts, err := ParseStart(args[1:])
 		if err != nil {
@@ -225,6 +228,55 @@ type ProjectOutput struct {
 	Source string `json:"source"`
 }
 
+type AgentOutput struct {
+	Type    string   `json:"type"`
+	Command []string `json:"command"`
+}
+
+func runAgents(args []string, out io.Writer) error {
+	jsonOut := false
+	cwd := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOut = true
+		case "--cwd":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--cwd requires a value")
+			}
+			cwd = args[i+1]
+			i++
+		default:
+			return fmt.Errorf("unknown agents option: %s", args[i])
+		}
+	}
+	if strings.TrimSpace(cwd) == "" {
+		return fmt.Errorf("--cwd is required")
+	}
+	info, err := os.Stat(cwd)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("agent project directory is unavailable: %s", cwd)
+	}
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	result := []AgentOutput{{Type: "shell", Command: []string{shell}}}
+	for _, candidate := range []struct{ agentType, binary string }{{"codex", "codex"}, {"claude_code", "claude"}} {
+		if path, lookupErr := exec.LookPath(candidate.binary); lookupErr == nil {
+			result = append(result, AgentOutput{Type: candidate.agentType, Command: []string{path}})
+		}
+	}
+	if jsonOut {
+		return json.NewEncoder(out).Encode(result)
+	}
+	fmt.Fprintf(out, "%-14s %s\n", "TYPE", "COMMAND")
+	for _, agent := range result {
+		fmt.Fprintf(out, "%-14s %s\n", agent.Type, strings.Join(agent.Command, " "))
+	}
+	return nil
+}
+
 func runProjects(args []string, out io.Writer) error {
 	jsonOut := false
 	for _, arg := range args {
@@ -243,6 +295,9 @@ func runProjects(args []string, out io.Writer) error {
 	for _, p := range projects {
 		result = append(result, ProjectOutput{Name: p.Name, Path: p.Path, Source: "duckway-client"})
 	}
+	// Shell-session creation may explicitly use Ducklion's own working directory.
+	// Agent-session clients filter this capability by Source.
+	result = append(result, ProjectOutput{Name: "Ducklion default", Path: daemon.DefaultRoot(), Source: "ducklion-default"})
 	if jsonOut {
 		return json.NewEncoder(out).Encode(result)
 	}
@@ -395,6 +450,7 @@ Usage:
   ducklion daemon
   ducklion list [--json] [--tail-lines N]
   ducklion projects [--json]
+  ducklion agents --cwd <project-dir> [--json]
   ducklion start --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
   ducklion read <name> [--lines N] [--json]
   ducklion send <name> <text>

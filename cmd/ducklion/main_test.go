@@ -73,7 +73,8 @@ func TestDucklionProjectsReadsDuckwayProjectStore(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Name != "duckway" || got[0].Path != project || got[0].Source != "duckway-client" {
+	if len(got) != 2 || got[0].Name != "duckway" || got[0].Path != project || got[0].Source != "duckway-client" ||
+		got[1].Name != "Ducklion default" || got[1].Path != filepath.Join(home, ".duckway", "ducklion") || got[1].Source != "ducklion-default" {
 		t.Fatalf("projects = %+v", got)
 	}
 }

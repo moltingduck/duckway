@@ -174,6 +174,18 @@ func TestDucklordProjectsUsesRunner(t *testing.T) {
 	}
 }
 
+func TestDucklordAgentsUsesRemoteProjectDiscovery(t *testing.T) {
+	config := writeConfig(t)
+	var out bytes.Buffer
+	runner := fakeRunner{agents: []ducklord.RemoteAgent{{Type: "codex", Command: []string{"/usr/local/bin/codex"}}}}
+	if err := run([]string{"agents", "client-a", "/work/專案", "--config", config}, &out, runner); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "codex") || !strings.Contains(out.String(), "/usr/local/bin/codex") {
+		t.Fatalf("agents output=%q", out.String())
+	}
+}
+
 func TestDucklordProbeUsesRunner(t *testing.T) {
 	config := writeConfig(t)
 	var out bytes.Buffer
@@ -255,7 +267,7 @@ func TestDucklordStartRejectsInvalidArgsBeforeRunner(t *testing.T) {
 	config := writeConfig(t)
 	runner := &recordingRunner{}
 	for _, args := range [][]string{
-		{"start", "client-a", "--name", "bad/name", "--", "bash", "--config", config},
+		{"start", "client-a", "--name", "bad\nname", "--", "bash", "--config", config},
 		{"start", "client-a", "--bad", "--", "bash", "--config", config},
 		{"start", "client-a", "--name", "alpha", "--config", config},
 	} {
@@ -366,7 +378,7 @@ func TestParseCreateLineAllowsOptionsAndQuotedCommand(t *testing.T) {
 }
 
 func TestParseCreateLineRejectsUnknownOptionBeforeStart(t *testing.T) {
-	for _, line := range []string{"bad/name", "alpha --bad", "alpha --agent bad/value", `alpha -- sh -lc "unterminated`} {
+	for _, line := range []string{"bad\x00name", "alpha --bad", "alpha --agent bad/value", `alpha -- sh -lc "unterminated`} {
 		if _, _, err := parseCreateLine(line); err == nil {
 			t.Fatalf("line %q accepted", line)
 		}
@@ -940,7 +952,7 @@ func TestTUICreatePromptUsesSelectedClient(t *testing.T) {
 		selected: 1,
 	}
 	state.beginCreate()
-	if !state.newSessionMode || state.newSessionClient != "client-b" || state.newSessionStep != "agent" {
+	if !state.newSessionMode || state.newSessionClient != "client-b" || state.newSessionStep != "kind" {
 		t.Fatalf("create state = newSessionMode %v client %q step %q", state.newSessionMode, state.newSessionClient, state.newSessionStep)
 	}
 	for _, b := range []byte("new") {
@@ -964,49 +976,208 @@ func TestTUICreateWizardBuildsShellSessionFromProject(t *testing.T) {
 		cfg: cfg,
 		runner: fakeRunner{projects: []ducklord.RemoteProject{
 			{Name: "duckway", Path: "/home/duck/duckway", Source: "duckway-client"},
-		}},
+		}, agents: []ducklord.RemoteAgent{{Type: "shell", Command: []string{"/bin/bash"}}}},
 	}
 	state.beginCreate()
 	state.newSessionLine = "shell"
-	if _, _, _, ready, err := state.submitCreateStep(context.Background()); err != nil || ready || state.newSessionStep != "host" {
-		t.Fatalf("agent step ready=%v step=%q err=%v", ready, state.newSessionStep, err)
-	}
+	createSubmit(t, state)
 	state.newSessionLine = "2"
-	if _, _, _, ready, err := state.submitCreateStep(context.Background()); err != nil || ready || state.newSessionClient != "client-b" || state.newSessionStep != "project" {
-		t.Fatalf("host step ready=%v client=%q step=%q err=%v", ready, state.newSessionClient, state.newSessionStep, err)
+	createSubmit(t, state)
+	if state.newSessionClient != "client-b" || state.newSessionStep != "project" {
+		t.Fatalf("client=%q step=%q", state.newSessionClient, state.newSessionStep)
 	}
 	state.newSessionLine = "1"
-	name, clientName, args, ready, err := state.submitCreateStep(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	createSubmit(t, state)
+	if state.newSessionStep != "handle" {
+		t.Fatalf("step=%q err=%s", state.newSessionStep, state.newSessionErr)
 	}
-	want := []string{"--name", "shell-duckway", "--kind", "shell", "--cwd", "/home/duck/duckway", "--", "bash"}
-	if !ready || name != "shell-duckway" || clientName != "client-b" || strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+	state.newSessionLine = ""
+	clientName, name, args, ready := createSubmit(t, state)
+	want := []string{"--name", "duckway", "--kind", "shell", "--cwd", "/home/duck/duckway", "--", "/bin/bash"}
+	if !ready || name != "duckway" || clientName != "client-b" || strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("ready=%v name=%q client=%q args=%#v", ready, name, clientName, args)
 	}
 }
 
-func TestTUICreateWizardAllowsCustomProjectPath(t *testing.T) {
+func TestTUICreateWizardRejectsCustomProjectPath(t *testing.T) {
 	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a", Host: "client-a"}}}
-	state := &tuiState{cfg: cfg, runner: fakeRunner{}}
+	state := &tuiState{cfg: cfg, runner: fakeRunner{projects: []ducklord.RemoteProject{{Name: "app", Path: "/work/app", Source: "duckway-client"}}, agents: []ducklord.RemoteAgent{{Type: "codex", Command: []string{"/usr/bin/codex"}}}}}
 	state.beginCreate()
-	state.newSessionLine = "codex"
-	if _, _, _, ready, err := state.submitCreateStep(context.Background()); err != nil || ready {
-		t.Fatalf("agent step ready=%v err=%v", ready, err)
-	}
 	state.newSessionLine = ""
-	if _, _, _, ready, err := state.submitCreateStep(context.Background()); err != nil || ready {
-		t.Fatalf("host step ready=%v err=%v", ready, err)
+	createSubmit(t, state) // agent
+	state.newSessionLine = ""
+	createSubmit(t, state) // host
+	state.newSessionLine = "/other/path"
+	if _, _, _, _, err := state.submitCreateStep(context.Background(), make(chan createDiscoveryEvent, 1)); err == nil {
+		t.Fatal("arbitrary project path accepted")
 	}
-	state.newSessionLine = "/work/app"
-	name, clientName, args, ready, err := state.submitCreateStep(context.Background())
+}
+
+func TestTUICreateWizardRejectsAgentNotReportedByRemoteHost(t *testing.T) {
+	state := &tuiState{newSessionStep: "agent", newSessionAgents: []ducklord.RemoteAgent{{Type: "shell", Command: []string{"/bin/sh"}}}, newSessionLine: "codex"}
+	if _, _, _, ready, err := state.submitCreateStep(context.Background(), make(chan createDiscoveryEvent, 1)); err == nil || ready || state.newSessionStep != "agent" {
+		t.Fatalf("ready=%v step=%q err=%v", ready, state.newSessionStep, err)
+	}
+}
+
+func TestTUICreateWizardKeepsProjectStepWhenRemoteDiscoveryFails(t *testing.T) {
+	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}
+	state := &tuiState{cfg: cfg, runner: fakeRunner{agentsErr: errors.New("remote PATH unavailable")}, newSessionMode: true, newSessionStep: "project", newSessionClient: "host",
+		newSessionProjects: []ducklord.RemoteProject{{Name: "app", Path: "/work/app"}}, newSessionLine: "1"}
+	done := make(chan createDiscoveryEvent, 1)
+	if _, _, _, ready, err := state.submitCreateStep(context.Background(), done); err != nil || ready {
+		t.Fatalf("ready=%v err=%v", ready, err)
+	}
+	state.applyCreateDiscovery(<-done)
+	if state.newSessionStep != "project" || !strings.Contains(state.newSessionErr, "remote PATH") {
+		t.Fatalf("step=%q err=%q", state.newSessionStep, state.newSessionErr)
+	}
+}
+
+func TestTUICreateDiscoveryCancellationIsImmediateAndStaleResultIsIgnored(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	runner := &blockingCreateRunner{fakeRunner: fakeRunner{agents: []ducklord.RemoteAgent{{Type: "codex", Command: []string{"codex"}}}}, started: started, release: release}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, runner: runner,
+		newSessionMode: true, newSessionKind: model.KindAgent, newSessionStep: "project", newSessionClient: "host",
+		newSessionProjects: []ducklord.RemoteProject{{Name: "app", Path: "/work/app", Source: "duckway-client"}}, newSessionLine: "1"}
+	done := make(chan createDiscoveryEvent, 1)
+	if _, _, _, _, err := state.submitCreateStep(context.Background(), done); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	state.cancelCreate()
+	if state.newSessionMode || state.newSessionDiscovering {
+		t.Fatal("escape did not cancel wizard immediately")
+	}
+	close(release)
+	select {
+	case event := <-done:
+		state.applyCreateDiscovery(event)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if state.newSessionMode || state.newSessionStep != "" {
+		t.Fatalf("stale completion restored wizard: %+v", state)
+	}
+	state.createWorkers.Wait()
+}
+
+func TestTUICreateDiscoveryRejectsHostGenerationChange(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	runner := &blockingCreateRunner{fakeRunner: fakeRunner{projects: []ducklord.RemoteProject{{Name: "app", Path: "/work/app", Source: "duckway-client"}}}, started: started, release: release, blockProjects: true}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, runner: runner, hostSync: map[string]ducklord.SessionUpdate{"host": {Client: "host", State: "live", Generation: 1, InstanceID: "old"}},
+		newSessionMode: true, newSessionKind: model.KindAgent, newSessionStep: "host", newSessionClient: "host"}
+	done := make(chan createDiscoveryEvent, 1)
+	if _, _, _, _, err := state.submitCreateStep(context.Background(), done); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	state.hostSync["host"] = ducklord.SessionUpdate{Client: "host", State: "live", Generation: 2, InstanceID: "new"}
+	close(release)
+	state.applyCreateDiscovery(<-done)
+	if state.newSessionStep != "host" || !strings.Contains(state.newSessionErr, "host changed") {
+		t.Fatalf("step=%q err=%q", state.newSessionStep, state.newSessionErr)
+	}
+}
+
+func TestTUIStartIsFencedWhenHostGenerationChanges(t *testing.T) {
+	state := &tuiState{newSessionMode: true, newSessionStarting: true, newSessionClient: "host", newSessionStep: "handle", newSessionStartGeneration: 3, newSessionStartInstance: "old"}
+	if state.invalidateCreateStart(ducklord.SessionUpdate{Client: "other", State: "live", Generation: 4, InstanceID: "new"}) {
+		t.Fatal("unrelated host canceled start")
+	}
+	if !state.invalidateCreateStart(ducklord.SessionUpdate{Client: "host", State: "live", Generation: 4, InstanceID: "new"}) {
+		t.Fatal("changed host did not cancel start")
+	}
+	if state.newSessionStarting || state.newSessionStep != "host" || !strings.Contains(state.newSessionErr, "refresh") {
+		t.Fatalf("state=%+v", state)
+	}
+}
+
+func TestTUIStartCompletionSelectsDuplicateHandleBySessionID(t *testing.T) {
+	state := &tuiState{runner: fakeRunner{sessions: []ducklord.RemoteSession{
+		{Client: "host", Name: "中文工作階段", SessionID: "OLD111", InstanceID: "instance"},
+		{Client: "host", Name: "中文工作階段", SessionID: "NEW222", InstanceID: "instance"},
+	}}, cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, activityState: ducklord.NewActivityState()}
+	state.completeNewSessionStart(context.Background(), "host", "NEW222", nil)
+	if got := state.currentSession().SessionID; got != "NEW222" {
+		t.Fatalf("selected session = %q", got)
+	}
+}
+
+func TestTUICreateFinalRevalidationReturnsToStaleProject(t *testing.T) {
+	selected := ducklord.RemoteProject{Name: "app", Path: "/work/app", Source: "duckway-client"}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, runner: fakeRunner{projects: nil},
+		newSessionMode: true, newSessionKind: model.KindAgent, newSessionStep: "handle", newSessionClient: "host", newSessionProject: selected,
+		newSessionCWD: selected.Path, newSessionAgent: "codex", newSessionCommand: []string{"codex"}, newSessionLine: "work"}
+	createSubmit(t, state)
+	if state.newSessionStep != "project" || !strings.Contains(state.newSessionErr, "no longer available") {
+		t.Fatalf("step=%q err=%q", state.newSessionStep, state.newSessionErr)
+	}
+}
+
+func TestTUICreateFinalRevalidationReturnsToUnavailableAgent(t *testing.T) {
+	selected := ducklord.RemoteProject{Name: "app", Path: "/work/app", Source: "duckway-client"}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, runner: fakeRunner{projects: []ducklord.RemoteProject{selected}, agents: []ducklord.RemoteAgent{{Type: "claude_code", Command: []string{"claude"}}}},
+		newSessionMode: true, newSessionKind: model.KindAgent, newSessionStep: "handle", newSessionClient: "host", newSessionProject: selected,
+		newSessionCWD: selected.Path, newSessionAgent: "codex", newSessionCommand: []string{"codex"}, newSessionLine: "work"}
+	createSubmit(t, state)
+	if state.newSessionStep != "agent" || !strings.Contains(state.newSessionErr, "no longer available") {
+		t.Fatalf("step=%q err=%q", state.newSessionStep, state.newSessionErr)
+	}
+}
+
+func createSubmit(t *testing.T, state *tuiState) (client, name string, args []string, ready bool) {
+	t.Helper()
+	done := make(chan createDiscoveryEvent, 1)
+	_, _, _, immediate, err := state.submitCreateStep(context.Background(), done)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--name", "codex-app", "--agent", "codex", "--cwd", "/work/app", "--", "codex"}
-	if !ready || name != "codex-app" || clientName != "client-a" || strings.Join(args, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("ready=%v name=%q client=%q args=%#v", ready, name, clientName, args)
+	if immediate {
+		t.Fatal("wizard unexpectedly completed synchronously")
 	}
+	if !state.newSessionDiscovering {
+		return "", "", nil, false
+	}
+	event := <-done
+	client, name, args, ready = state.applyCreateDiscovery(event)
+	return
+}
+
+type blockingCreateRunner struct {
+	fakeRunner
+	started       chan struct{}
+	release       chan struct{}
+	blockProjects bool
+}
+
+func (r *blockingCreateRunner) wait(ctx context.Context) error {
+	select {
+	case r.started <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-r.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (r *blockingCreateRunner) Projects(ctx context.Context, c ducklord.Client) ([]ducklord.RemoteProject, error) {
+	if r.blockProjects {
+		if err := r.wait(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return r.fakeRunner.Projects(ctx, c)
+}
+func (r *blockingCreateRunner) Agents(ctx context.Context, c ducklord.Client, cwd string) ([]ducklord.RemoteAgent, error) {
+	if !r.blockProjects {
+		if err := r.wait(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return r.fakeRunner.Agents(ctx, c, cwd)
 }
 
 func TestTUIAddClientFromSSHHostProbesAndSaves(t *testing.T) {
@@ -1328,6 +1499,8 @@ type fakeRunner struct {
 	readText         string
 	readErr          error
 	projects         []ducklord.RemoteProject
+	agents           []ducklord.RemoteAgent
+	agentsErr        error
 	probe            ducklord.DucklionProbe
 	installPath      string
 }
@@ -1342,8 +1515,10 @@ func (f fakeRunner) Read(context.Context, ducklord.Client, string, int) (string,
 	return f.readText, f.readErr
 }
 func (f fakeRunner) Send(context.Context, ducklord.Client, string, string) error { return nil }
-func (f fakeRunner) Start(context.Context, ducklord.Client, []string) error      { return nil }
-func (f fakeRunner) Stop(context.Context, ducklord.Client, string) error         { return nil }
+func (f fakeRunner) Start(context.Context, ducklord.Client, []string) (string, error) {
+	return "ABC123", nil
+}
+func (f fakeRunner) Stop(context.Context, ducklord.Client, string) error { return nil }
 func (f fakeRunner) Lifecycle(context.Context, ducklord.Client, string, protocol.SessionLifecycleOperation, protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
 	return protocol.SessionLifecycleResult{SessionID: "ABC123", Operation: protocol.SessionLifecycleRestart, Mode: protocol.SessionLifecycleWait, State: protocol.SessionLifecycleCompleted, OwnershipEpoch: 1, RuntimeGeneration: 2}, nil
 }
@@ -1352,6 +1527,15 @@ func (f fakeRunner) Yield(context.Context, ducklord.Client, string, bool) (proto
 }
 func (f fakeRunner) Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error) {
 	return f.projects, nil
+}
+func (f fakeRunner) Agents(context.Context, ducklord.Client, string) ([]ducklord.RemoteAgent, error) {
+	if f.agentsErr != nil {
+		return nil, f.agentsErr
+	}
+	if len(f.agents) != 0 {
+		return f.agents, nil
+	}
+	return []ducklord.RemoteAgent{{Type: "shell", Command: []string{"bash"}}, {Type: "codex", Command: []string{"codex"}}, {Type: "claude_code", Command: []string{"claude"}}}, nil
 }
 func (f fakeRunner) ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error) {
 	return f.probe, nil
@@ -1410,10 +1594,10 @@ func (r *recordingRunner) Read(_ context.Context, client ducklord.Client, sessio
 func (r *recordingRunner) Send(context.Context, ducklord.Client, string, string) error {
 	return nil
 }
-func (r *recordingRunner) Start(_ context.Context, client ducklord.Client, args []string) error {
+func (r *recordingRunner) Start(_ context.Context, client ducklord.Client, args []string) (string, error) {
 	r.startClient = client.Name
 	r.startArgs = append([]string(nil), args...)
-	return nil
+	return "ABC123", nil
 }
 func (r *recordingRunner) Stop(context.Context, ducklord.Client, string) error { return nil }
 func (r *recordingRunner) Lifecycle(_ context.Context, client ducklord.Client, session string, operation protocol.SessionLifecycleOperation, mode protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
@@ -1428,6 +1612,9 @@ func (r *recordingRunner) Yield(_ context.Context, client ducklord.Client, sessi
 }
 func (r *recordingRunner) Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error) {
 	return nil, nil
+}
+func (r *recordingRunner) Agents(context.Context, ducklord.Client, string) ([]ducklord.RemoteAgent, error) {
+	return []ducklord.RemoteAgent{{Type: "shell", Command: []string{"bash"}}, {Type: "codex", Command: []string{"codex"}}}, nil
 }
 func (r *recordingRunner) ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error) {
 	r.probeCalls++

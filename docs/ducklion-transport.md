@@ -493,6 +493,17 @@ the underlying host bridge remains available for other views and control.
 
 ## Current integration boundary
 
+Ducklord's separate agent and shell creation flows discover capabilities from
+the remote host instead of guessing locally. `ducklion projects --json` returns
+stable project tuples and the explicit `ducklion-default` location. Agent flows
+use only configured projects and then query
+`ducklion agents --cwd <selected-path> --json`; shell flows may also use the
+default location and select the reported interactive shell automatically.
+Discovery runs outside the TUI event loop and is fenced by request, connection
+generation, and instance identity. Final creation re-queries both project and
+runtime, then routes the completion by returned six-character session ID, so
+duplicate Unicode handles remain safe.
+
 The daemon-backed create path, independent supervisor recovery, output
 subscription, owner-fenced input, resize, and stdio bridge are implemented and
 covered by socket, real-PTY, daemon-restart, and Podman tests. Ducklord uses the
@@ -542,7 +553,9 @@ then it stops draining the bounded attach channel so backpressure remains
 bounded instead of converting a slow resize into unbounded memory growth.
 
 The remaining integration work includes notification sources beyond terminal
-attention and task completed/failed, plus the remaining Discord CC binding UI.
+attention and task completed/failed. Existing sessions are bound from the
+Discord management channel with durable `!bind <session-id>`; binding is not a
+Ducklord-side authorization action.
 Legacy CLI session state remains available only during
 this staged cutover and must not be mixed with daemon inventory.
 
