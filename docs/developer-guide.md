@@ -741,6 +741,25 @@ detach snapshot, or reconnecting does not clear unread; only the first fresh
 attach output does. If the state file is malformed, Ducklord preserves it as
 `state.json.corrupt-<timestamp>`, starts with safe defaults, and shows a warning.
 
+When a writable PTY pane is attached, Ducklord sends its right-pane dimensions
+immediately and follows `SIGWINCH`. Resize is asynchronous and coalesced, so a
+slow remote host cannot freeze output; read-only agent views do not resize the
+shared PTY. A rejected resize appears in the persistent header status and is
+cleared by the next successful resize.
+
+The session list defaults to 36 columns and hides when the PTY gains focus.
+Both settings are restart-only configuration:
+
+```yaml
+session_list_width: 36       # 20..80
+auto_hide_session_list: true
+```
+
+If the terminal cannot fit the configured list, separator, and a 40-column PTY,
+the list becomes a focus-controlled overlay. At widths below 40, local drawing
+uses the real viewport width while the remote PTY retains its protocol minimum;
+this prevents the outer TUI from wrapping its own rows.
+
 ```bash
 scripts/ducklord-podman-demo.sh
 podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.yaml

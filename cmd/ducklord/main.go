@@ -51,6 +51,18 @@ type startDoneEvent struct {
 	err     error
 }
 
+type resizeRequest struct {
+	id     int
+	rows   uint16
+	cols   uint16
+	resize func(uint16, uint16) error
+}
+
+type resizeDoneEvent struct {
+	id  int
+	err error
+}
+
 func main() {
 	runner := ducklord.NewRunner()
 	defer runner.Close()
@@ -934,6 +946,7 @@ type tuiState struct {
 	outputText         string
 	outputErr          string
 	localWarning       string
+	resizeStatus       string
 	outputForKey       string
 	outputStale        bool
 	outputFresh        bool
@@ -959,6 +972,8 @@ type tuiState struct {
 	addClientHosts     []ducklord.SSHHost
 	hostScoped         bool
 	ownerName          string
+	listPaneWidth      int
+	autoHideList       bool
 	hostSync           map[string]ducklord.SessionUpdate
 	eventDriven        bool
 	notificationMode   bool
@@ -1012,7 +1027,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		return fmt.Errorf("load Ducklord activity state: %w", err)
 	}
 	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner,
-		snapshotStore: ducklord.SnapshotStore{}, activityStore: activityStore, activityState: activityState, hostSync: make(map[string]ducklord.SessionUpdate), localWarning: stateWarning}
+		snapshotStore: ducklord.SnapshotStore{}, activityStore: activityStore, activityState: activityState, hostSync: make(map[string]ducklord.SessionUpdate), localWarning: stateWarning,
+		listPaneWidth: cfg.SessionListPaneWidth(), autoHideList: cfg.SessionListAutoHide()}
 	defer state.saveCurrentSnapshot()
 	sessionUpdates := make(chan ducklord.SessionUpdate, 32)
 	if watcher, ok := runner.(interface {
@@ -1037,13 +1053,39 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	state.render(os.Stdout)
 	ticker := time.NewTicker(refresh)
 	defer ticker.Stop()
+	resizeSignals := make(chan os.Signal, 1)
+	signal.Notify(resizeSignals, syscall.SIGWINCH)
+	defer signal.Stop(resizeSignals)
 	input := make(chan []byte, 8)
 	attachOut := make(chan attachOutputEvent, 32)
 	attachDone := make(chan attachDoneEvent, 1)
+	resizeRequests := make(chan resizeRequest, 1)
+	resizeResults := make(chan resizeDoneEvent, 1)
 	startDone := make(chan startDoneEvent, 1)
 	var attach *ducklord.AttachSession
 	var attachCancel context.CancelFunc
 	attachID := 0
+	attachCanResize := false
+	go runResizeWorker(ctx, resizeRequests, resizeResults)
+	queueResize := func() {
+		if attach == nil || attach.Resize == nil || !attachCanResize {
+			return
+		}
+		rows, cols := state.activePTYSize()
+		request := resizeRequest{id: attachID, rows: rows, cols: cols, resize: attach.Resize}
+		select {
+		case resizeRequests <- request:
+		default:
+			select {
+			case <-resizeRequests:
+			default:
+			}
+			select {
+			case resizeRequests <- request:
+			default:
+			}
+		}
+	}
 	var startCancel context.CancelFunc
 	startID := 0
 	go readInput(ctx, input)
@@ -1060,12 +1102,36 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		case <-ticker.C:
 			if !state.eventDriven && !state.focused && !state.newSessionMode {
 				state.refreshSessions(ctx)
-				state.refreshSelectedOutput(ctx)
+				if state.activeAttachKey == "" {
+					state.refreshSelectedOutput(ctx)
+				}
 			}
 			state.render(os.Stdout)
+		case <-resizeSignals:
+			queueResize()
+			state.render(os.Stdout)
+		case result := <-resizeResults:
+			if result.id == attachID {
+				state.resizeStatus = ""
+				if result.err != nil {
+					state.resizeStatus = "resize failed: " + sanitizeTerminalText(result.err.Error())
+				}
+				state.render(os.Stdout)
+			}
 		case update := <-sessionUpdates:
+			previousActive := state.effectiveAttachKey()
 			state.applySessionUpdate(update)
-			if !state.focused {
+			if previousActive != "" && state.effectiveAttachKey() == "" && attach != nil {
+				if attachCancel != nil {
+					attachCancel()
+					attachCancel = nil
+				}
+				_ = attach.Stdin.Close()
+				attachID++
+				attach = nil
+				attachCanResize = false
+			}
+			if !state.focused && state.activeAttachKey == "" {
 				state.refreshSelectedOutput(ctx)
 			}
 			state.render(os.Stdout)
@@ -1092,6 +1158,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.focused = false
 			state.activeAttachFresh = false
 			state.pendingAttachKey = ""
+			attachCanResize = false
 			attach = nil
 			if attachCancel != nil {
 				attachCancel()
@@ -1113,6 +1180,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.focused = false
 					state.activeAttachFresh = false
 					state.pendingAttachKey = ""
+					attachCanResize = false
 					attach = nil
 					state.render(os.Stdout)
 					continue
@@ -1202,7 +1270,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				return nil
 			case "refresh":
 				state.refreshSessions(ctx)
-				state.refreshSelectedOutput(ctx)
+				if state.activeAttachKey == "" {
+					state.refreshSelectedOutput(ctx)
+				}
 			case "select":
 				// Moving the list cursor does not change the active PTY pane.
 			case "new":
@@ -1268,9 +1338,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 				attach = session
 				attachCancel = cancel
+				state.resizeStatus = ""
 				attachID++
 				id := attachID
 				state.pendingAttachKey = sessionKey(s)
+				attachCanResize = state.canResizeCurrentSession()
 				state.outputForKey = state.pendingAttachKey
 				state.outputText = ""
 				state.outputErr = ""
@@ -1278,6 +1350,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.outputFresh = false
 				state.focused = true
 				go superviseAttach(attachCtx, id, session, attachOut, attachDone)
+				queueResize()
 			}
 			state.render(os.Stdout)
 		}
@@ -1379,6 +1452,30 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 	sortRemoteSessions(all)
 	s.sessions = all
 	s.restoreSelection(oldKey)
+	if attachedKey := s.effectiveAttachKey(); attachedKey != "" {
+		activeExists := false
+		for _, session := range s.sessions {
+			if sessionKey(session) == attachedKey {
+				activeExists = true
+				break
+			}
+		}
+		if !activeExists {
+			s.activeAttachKey = ""
+			s.activeAttachFresh = false
+			s.pendingAttachKey = ""
+			s.focused = false
+			s.outputFresh = false
+			s.outputErr = "active session was removed remotely"
+		}
+	}
+}
+
+func (s *tuiState) effectiveAttachKey() string {
+	if s.activeAttachKey != "" {
+		return s.activeAttachKey
+	}
+	return s.pendingAttachKey
 }
 
 func (s *tuiState) hostIsLive(client string) bool {
@@ -1567,6 +1664,58 @@ func (s *tuiState) currentSession() ducklord.RemoteSession {
 	return s.sessions[s.selected]
 }
 
+func (s *tuiState) canResizeCurrentSession() bool {
+	session := s.currentSession()
+	if session.Kind == string(model.KindShell) {
+		return true
+	}
+	return session.WriterKind == string(model.OwnerTerminal) && session.WriterID == s.ownerName
+}
+
+func (s *tuiState) activePTYSize() (rows, cols uint16) {
+	width, height := terminalSize()
+	layout := calculateTUILayout(width, true, s.listPaneWidth, s.autoHideList)
+	contentWidth := layout.contentWidth
+	contentHeight := height - 4
+	if contentWidth < 40 {
+		contentWidth = 40
+	} else if contentWidth > 500 {
+		contentWidth = 500
+	}
+	if contentHeight < 5 {
+		contentHeight = 5
+	} else if contentHeight > 200 {
+		contentHeight = 200
+	}
+	return uint16(contentHeight), uint16(contentWidth)
+}
+
+type tuiLayout struct {
+	width, menuWidth, contentX, contentWidth int
+	overlay, showList                        bool
+}
+
+func calculateTUILayout(width int, ptyFocused bool, configuredListWidth int, autoHide bool) tuiLayout {
+	if width < 1 {
+		width = 1
+	}
+	menuWidth := configuredListWidth
+	if menuWidth < 20 || menuWidth > 80 {
+		menuWidth = ducklord.DefaultSessionListWidth
+	}
+	if ptyFocused && autoHide {
+		return tuiLayout{width: width, menuWidth: menuWidth, contentX: 1, contentWidth: width, showList: false}
+	}
+	if width < menuWidth+3+40 {
+		contentWidth := width
+		if menuWidth > width {
+			menuWidth = width
+		}
+		return tuiLayout{width: width, menuWidth: menuWidth, contentX: 1, contentWidth: contentWidth, overlay: true, showList: true}
+	}
+	return tuiLayout{width: width, menuWidth: menuWidth, contentX: menuWidth + 4, contentWidth: width - menuWidth - 3, showList: true}
+}
+
 func (s *tuiState) saveCurrentSnapshot() {
 	s.saveSnapshot(s.currentSession(), s.outputText)
 }
@@ -1586,44 +1735,66 @@ func (s *tuiState) saveSnapshot(session ducklord.RemoteSession, text string) {
 
 func (s *tuiState) render(out io.Writer) {
 	width, height := terminalSize()
-	renderWidth := width
-	if renderWidth < 80 {
-		renderWidth = 80
-	}
+	layout := calculateTUILayout(width, s.focused, s.listPaneWidth, s.autoHideList)
+	renderWidth := layout.width
 	if height < 12 {
 		height = 12
 	}
-	menuWidth := menuWidthFor(renderWidth)
-	contentX := menuWidth + 4
-	contentWidth := renderWidth - contentX + 1
+	menuWidth := layout.menuWidth
+	contentX := layout.contentX
+	contentWidth := layout.contentWidth
 	fmt.Fprint(out, "\033[H\033[2J")
-	fmt.Fprintf(out, "ducklord remote agents  owner:%s%s\n", displayField(s.ownerName), s.hostSyncLabel())
+	status := ""
+	if s.resizeStatus != "" {
+		status = "  " + s.resizeStatus
+	}
+	header := fmt.Sprintf("ducklord remote agents  owner:%s%s%s", displayField(s.ownerName), s.hostSyncLabel(), truncate(status, renderWidth/2))
+	fmt.Fprintln(out, truncate(header, renderWidth))
 	if s.localWarning != "" {
 		fmt.Fprintln(out, truncate("warning: "+sanitizeTerminalText(s.localWarning), renderWidth))
 	} else if s.focused {
-		fmt.Fprintln(out, "session focus  keys go to session  ctrl-] menu")
+		fmt.Fprintln(out, truncate("session focus  keys go to session  ctrl-] menu", renderWidth))
 	} else if s.addClientMode {
-		fmt.Fprintln(out, "add ducklion host: ssh config number/name or user@host  enter add  esc cancel")
+		fmt.Fprintln(out, truncate("add ducklion host: ssh config number/name or user@host  enter add  esc cancel", renderWidth))
 	} else if s.newSessionMode {
-		fmt.Fprintf(out, "%s  enter next  esc cancel\n", truncate(s.createHeader(), renderWidth))
+		fmt.Fprintln(out, truncate(s.createHeader()+"  enter next  esc cancel", renderWidth))
 	} else if s.hostScoped {
-		fmt.Fprintln(out, "j/k move  enter focus  y yield  Y wait-yield  n notifications  r refresh  q quit")
+		fmt.Fprintln(out, truncate("j/k move  enter focus  y yield  Y wait-yield  n notifications  r refresh  q quit", renderWidth))
 	} else {
-		fmt.Fprintln(out, "j/k move  enter focus  y yield  Y wait-yield  n notifications  c new  a add  d remove  r refresh  q quit")
+		fmt.Fprintln(out, truncate("j/k move  enter focus  y yield  Y wait-yield  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
-		fmt.Fprintln(out, "No sessions.")
+		fmt.Fprintln(out, truncate("No sessions.", renderWidth))
 		s.renderAddClientChoices(out, 5, 1, menuWidth, height)
 		s.renderCreateChoices(out, 5, 1, menuWidth, height)
 		s.renderAddClientPrompt(out, 4, 1, renderWidth)
 		s.renderCreatePrompt(out, 4, 1, renderWidth)
 		return
 	}
-	fmt.Fprintf(out, "\033[4;1H%-*s | %s\033[K", menuWidth, "sessions", "content")
+	if layout.overlay {
+		s.renderContent(out, contentX, contentWidth, height)
+	}
+	if layout.showList {
+		separator := " | content"
+		if layout.overlay {
+			separator = ""
+		}
+		clear := "\033[K"
+		if layout.overlay {
+			clear = ""
+		}
+		heading := truncate("sessions", menuWidth)
+		fmt.Fprintf(out, "\033[4;1H%-*s%s%s", menuWidth, heading, separator, clear)
+	} else {
+		fmt.Fprintf(out, "\033[4;1H%s\033[K", truncate("content", renderWidth))
+	}
 	currentGroup := "\000"
 	row := 5
 	for i, sess := range s.sessions {
+		if !layout.showList {
+			break
+		}
 		if row > height {
 			break
 		}
@@ -1636,7 +1807,15 @@ func (s *tuiState) render(out io.Writer) {
 			if s.groupHasUnread(sess.Group) {
 				groupLabel += " •"
 			}
-			fmt.Fprintf(out, "\033[%d;1H%-*s |\033[K", row, menuWidth, groupLabel)
+			separator := " |"
+			if layout.overlay {
+				separator = ""
+			}
+			clear := "\033[K"
+			if layout.overlay {
+				clear = ""
+			}
+			fmt.Fprintf(out, "\033[%d;1H%-*s%s%s", row, menuWidth, truncate(groupLabel, menuWidth), separator, clear)
 			row++
 			currentGroup = group
 			if row > height {
@@ -1659,12 +1838,22 @@ func (s *tuiState) render(out io.Writer) {
 		if sess.Error != "" {
 			line = fmt.Sprintf("%s! %-12s %-18s %-9s %s", prefix, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), sess.Error)
 		}
-		fmt.Fprintf(out, "\033[%d;1H%-*s |\033[K", row, menuWidth, truncate(line, menuWidth))
+		separator := " |"
+		if layout.overlay {
+			separator = ""
+		}
+		clear := "\033[K"
+		if layout.overlay {
+			clear = ""
+		}
+		fmt.Fprintf(out, "\033[%d;1H%-*s%s%s", row, menuWidth, truncate(line, menuWidth), separator, clear)
 		row++
 	}
 	s.renderAddClientChoices(out, row, 1, menuWidth, height)
 	s.renderCreateChoices(out, row, 1, menuWidth, height)
-	s.renderContent(out, contentX, contentWidth, height)
+	if !layout.overlay {
+		s.renderContent(out, contentX, contentWidth, height)
+	}
 	s.renderAddClientPrompt(out, height, 1, renderWidth)
 	s.renderCreatePrompt(out, height, 1, renderWidth)
 }
@@ -2319,7 +2508,8 @@ func (s *tuiState) sessionIndexForMouse(seq string) (int, bool) {
 		return 0, false
 	}
 	width, _ := terminalSize()
-	if x > menuWidthFor(width)+2 {
+	layout := calculateTUILayout(width, s.focused, s.listPaneWidth, s.autoHideList)
+	if !layout.showList || x > layout.menuWidth+2 {
 		return 0, false
 	}
 	y, err := strconv.Atoi(parts[1])
@@ -2343,16 +2533,6 @@ func (s *tuiState) sessionIndexForMouse(seq string) (int, bool) {
 		row++
 	}
 	return 0, false
-}
-
-func menuWidthFor(width int) int {
-	if width < 80 {
-		width = 80
-	}
-	if width >= 120 {
-		return 44
-	}
-	return 36
 }
 
 func readInput(ctx context.Context, ch chan<- []byte) {
@@ -2430,6 +2610,32 @@ func superviseAttach(ctx context.Context, id int, session *ducklord.AttachSessio
 	select {
 	case done <- attachDoneEvent{id: id, err: stdoutErr}:
 	case <-ctx.Done():
+	}
+}
+
+func runResizeWorker(ctx context.Context, requests <-chan resizeRequest, results chan<- resizeDoneEvent) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case request := <-requests:
+			// Collapse queued SIGWINCH bursts before starting the single RPC.
+			for {
+				select {
+				case newer := <-requests:
+					request = newer
+				default:
+					goto resize
+				}
+			}
+		resize:
+			err := request.resize(request.rows, request.cols)
+			select {
+			case results <- resizeDoneEvent{id: request.id, err: err}:
+			case <-ctx.Done():
+				return
+			}
+		}
 	}
 }
 

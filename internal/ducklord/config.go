@@ -16,10 +16,13 @@ import (
 type Config struct {
 	Name                   string   `json:"name,omitempty" yaml:"name,omitempty"`
 	RawOutputSubscriptions *int     `json:"raw_output_subscription_limit,omitempty" yaml:"raw_output_subscription_limit,omitempty"`
+	SessionListWidth       *int     `json:"session_list_width,omitempty" yaml:"session_list_width,omitempty"`
+	AutoHideSessionList    *bool    `json:"auto_hide_session_list,omitempty" yaml:"auto_hide_session_list,omitempty"`
 	Clients                []Client `json:"hosts" yaml:"hosts"`
 }
 
 const DefaultRawOutputSubscriptions = 10
+const DefaultSessionListWidth = 36
 
 type Client struct {
 	Name     string `json:"name" yaml:"name"`
@@ -155,6 +158,9 @@ func (c *Config) normalize() error {
 	if c.RawOutputSubscriptions != nil && (*c.RawOutputSubscriptions < 1 || *c.RawOutputSubscriptions > 100) {
 		return fmt.Errorf("raw_output_subscription_limit must be between 1 and 100")
 	}
+	if c.SessionListWidth != nil && (*c.SessionListWidth < 20 || *c.SessionListWidth > 80) {
+		return fmt.Errorf("session_list_width must be between 20 and 80")
+	}
 	return nil
 }
 
@@ -163,6 +169,17 @@ func (c *Config) RawOutputSubscriptionLimit() int {
 		return DefaultRawOutputSubscriptions
 	}
 	return *c.RawOutputSubscriptions
+}
+
+func (c *Config) SessionListPaneWidth() int {
+	if c == nil || c.SessionListWidth == nil {
+		return DefaultSessionListWidth
+	}
+	return *c.SessionListWidth
+}
+
+func (c *Config) SessionListAutoHide() bool {
+	return c == nil || c.AutoHideSessionList == nil || *c.AutoHideSessionList
 }
 
 // ResolveOwnerName applies --name > config.name > local hostname precedence.
@@ -203,6 +220,14 @@ func (c *Config) Clone() *Config {
 	if c.RawOutputSubscriptions != nil {
 		value := *c.RawOutputSubscriptions
 		clone.RawOutputSubscriptions = &value
+	}
+	if c.SessionListWidth != nil {
+		value := *c.SessionListWidth
+		clone.SessionListWidth = &value
+	}
+	if c.AutoHideSessionList != nil {
+		value := *c.AutoHideSessionList
+		clone.AutoHideSessionList = &value
 	}
 	return &clone
 }

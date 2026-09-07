@@ -28,6 +28,29 @@ func TestLoadConfigNormalizesClients(t *testing.T) {
 	if cfg.RawOutputSubscriptionLimit() != DefaultRawOutputSubscriptions {
 		t.Fatalf("raw subscription default=%d", cfg.RawOutputSubscriptionLimit())
 	}
+	if cfg.SessionListPaneWidth() != DefaultSessionListWidth || !cfg.SessionListAutoHide() {
+		t.Fatalf("pane defaults width=%d auto_hide=%v", cfg.SessionListPaneWidth(), cfg.SessionListAutoHide())
+	}
+}
+
+func TestLoadConfigValidatesSessionListLayout(t *testing.T) {
+	for _, value := range []int{19, 81} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("session_list_width: %d\nhosts: []\n", value)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "between 20 and 80") {
+			t.Fatalf("width %d error=%v", value, err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("session_list_width: 28\nauto_hide_session_list: false\nhosts: []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil || cfg.SessionListPaneWidth() != 28 || cfg.SessionListAutoHide() {
+		t.Fatalf("layout width=%d auto_hide=%v err=%v", cfg.SessionListPaneWidth(), cfg.SessionListAutoHide(), err)
+	}
 }
 
 func TestLoadConfigValidatesRawOutputSubscriptionLimit(t *testing.T) {

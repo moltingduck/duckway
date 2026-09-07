@@ -380,8 +380,18 @@ covered by socket, real-PTY, daemon-restart, and Podman tests. Ducklord uses the
 authenticated bridge for inventory, creation, read, send, and streaming attach.
 Changing owner closes and renegotiates retained bridges.
 
-The remaining integration work includes the complete terminal framebuffer and
-resize signal wiring, notification sources beyond terminal attention and task
+Ducklord sends the active writer's right-pane geometry on attach and SIGWINCH.
+Resize RPCs use a single asynchronous worker with latest-size coalescing, so a
+slow control response cannot block raw-output draining or the TUI. Read-only
+agent attachments never request resize; the daemon remains authoritative via
+owner, epoch and runtime-generation fences.
+The list width and focus-time automatic hiding are restart-only Ducklord
+settings. Narrow terminals use a list overlay; local rendering always crops to
+the physical viewport even when the remote PTY must retain its 40-column
+protocol minimum.
+
+The remaining integration work includes the complete terminal framebuffer,
+notification sources beyond terminal attention and task
 completed/failed, and Discord CC binding.
 Legacy CLI session state remains available only during
 this staged cutover and must not be mixed with daemon inventory.

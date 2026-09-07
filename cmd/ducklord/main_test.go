@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
@@ -552,6 +553,93 @@ func TestTUISelectionDoesNotMoveActiveSessionOrClearUnread(t *testing.T) {
 	}
 	if state.activeAttachKey != instance+"/ABC123" || !state.currentSession().Unread {
 		t.Fatalf("selection moved active or cleared unread: active=%q current=%+v", state.activeAttachKey, state.currentSession())
+	}
+}
+
+func TestTUIResizeOnlyForCurrentWriterOrSharedShell(t *testing.T) {
+	state := &tuiState{ownerName: "desk", sessions: []ducklord.RemoteSession{{Kind: string(model.KindAgent), WriterKind: string(model.OwnerTerminal), WriterID: "desk"}}}
+	if !state.canResizeCurrentSession() {
+		t.Fatal("current terminal writer could not resize")
+	}
+	state.sessions[0].WriterID = "other"
+	if state.canResizeCurrentSession() {
+		t.Fatal("read-only agent attachment could resize")
+	}
+	state.sessions[0].Kind = string(model.KindShell)
+	if !state.canResizeCurrentSession() {
+		t.Fatal("shared shell attachment could not resize")
+	}
+	rows, cols := state.activePTYSize()
+	if rows < 5 || rows > 200 || cols < 40 || cols > 500 {
+		t.Fatalf("PTY size outside protocol bounds: %dx%d", rows, cols)
+	}
+	for _, test := range []struct {
+		width       int
+		focused     bool
+		overlay     bool
+		showList    bool
+		contentCols int
+	}{{78, false, true, true, 78}, {78, true, false, false, 78}, {79, false, false, true, 40}, {20, true, false, false, 20}, {1, true, false, false, 1}} {
+		layout := calculateTUILayout(test.width, test.focused, 36, true)
+		if layout.width != test.width || layout.overlay != test.overlay || layout.showList != test.showList || layout.contentWidth != test.contentCols {
+			t.Fatalf("layout(%d,%v)=%+v", test.width, test.focused, layout)
+		}
+	}
+}
+
+func TestTUIPendingAttachIsFencedWhenSessionRemoved(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	state := &tuiState{focused: true, pendingAttachKey: instance + "/ABC123", hostSync: make(map[string]ducklord.SessionUpdate), activityState: ducklord.NewActivityState(), sessions: []ducklord.RemoteSession{
+		{Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "quiet"},
+	}}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Generation: 1, Revision: 2, State: "live"})
+	if state.focused || state.effectiveAttachKey() != "" || state.outputErr != "active session was removed remotely" {
+		t.Fatalf("pending attach survived removal: focused=%v key=%q err=%q", state.focused, state.effectiveAttachKey(), state.outputErr)
+	}
+}
+
+func TestResizeWorkerIsSingleFlightAndCoalescesLatest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	requests := make(chan resizeRequest, 2)
+	results := make(chan resizeDoneEvent, 2)
+	started := make(chan [2]uint16, 2)
+	release := make(chan struct{}, 2)
+	inFlight := 0
+	maxInFlight := 0
+	var mu sync.Mutex
+	resize := func(rows, cols uint16) error {
+		mu.Lock()
+		inFlight++
+		if inFlight > maxInFlight {
+			maxInFlight = inFlight
+		}
+		mu.Unlock()
+		started <- [2]uint16{rows, cols}
+		<-release
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		return nil
+	}
+	go runResizeWorker(ctx, requests, results)
+	requests <- resizeRequest{id: 1, rows: 20, cols: 80, resize: resize}
+	if got := <-started; got != [2]uint16{20, 80} {
+		t.Fatalf("first=%v", got)
+	}
+	requests <- resizeRequest{id: 1, rows: 21, cols: 81, resize: resize}
+	requests <- resizeRequest{id: 1, rows: 22, cols: 82, resize: resize}
+	release <- struct{}{}
+	<-results
+	if got := <-started; got != [2]uint16{22, 82} {
+		t.Fatalf("coalesced=%v", got)
+	}
+	release <- struct{}{}
+	<-results
+	mu.Lock()
+	defer mu.Unlock()
+	if maxInFlight != 1 {
+		t.Fatalf("max in flight=%d", maxInFlight)
 	}
 }
 
