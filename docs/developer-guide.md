@@ -898,6 +898,13 @@ podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
 podman exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.yaml
 ```
 
+For a clean setup followed immediately by the interactive TUI, run this single
+command from the repository root:
+
+```bash
+scripts/ducklord-podman-demo.sh && podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
+```
+
 Inside the TUI:
 
 - `a` adds a host entry from `/root/.ssh/config`; try `client-c`. The prompt

@@ -3522,3 +3522,28 @@ Status: Decided
   control-channel configuration, API keys, or other server-owned data.
 - No read/write compatibility shim is provided; an incompatible old client is
   rejected clearly and fail-closed.
+
+## 202. V1 completion evidence
+
+Status: Implemented
+
+- Phase 1 is exercised by the Ducklion model, protocol, store, daemon, and
+  bridge suites, including schema backup/upgrade refusal, owner fencing, and
+  mutation replay after a lost bridge response.
+- Phase 2 is exercised by supervisor recovery, invalid-key rejection, PTY
+  input/resize fencing, runtime-generation fencing, retained output, and
+  restart/end/destroy tests.
+- Phase 3 is exercised by the Discord fixture and vertical E2E suites. The
+  vertical path uses production Gateway routing, SQLite inbox claim/finish,
+  `CCWatch`, Ducklion ownership rejection, and one origin-referenced reply.
+- Phase 4 is exercised by the SSH stdio bridge tests and
+  `scripts/ducklord-podman-demo.sh`, which creates three remote hosts, drives
+  native PTYs, restarts Ducklion without losing them, and leaves an interactive
+  multi-host TUI ready for inspection.
+- Phase 5 is enforced by `scripts/discord-e2e.sh`,
+  `scripts/cc-smoke.sh --fixture`, and `scripts/ducklion-core-e2e.sh`; use
+  `DUCKLION_E2E_RACE=1` for the race-detector form. The real-Discord smoke is
+  deliberately opt-in because it requires dedicated external credentials.
+- Phase 6's required gate is executable and fails if any named scenario is
+  missing. The launch-config, split-pane, and live inbound actor work listed in
+  section 200 remains explicitly outside V1 rather than partially implemented.
