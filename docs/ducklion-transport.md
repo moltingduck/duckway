@@ -329,6 +329,43 @@ distinguishes runtime disconnect from subscriber lag. Raw terminal bytes must
 be applied to Ducklord's in-memory terminal model; they must not be printed
 directly into the outer TUI terminal.
 
+## Durable notification activity
+
+Schema v8 adds `session_activity`, keyed by session UUID and a fixed
+notification-category allowlist. Each row contains a monotonic sequence,
+source runtime generation, last accepted raw-output offset, and update time;
+terminal-provided notification text is never persisted or sent to Ducklord.
+The `(generation, offset)` fence accepts low offsets from a new runtime while
+rejecting delayed reports from an older generation. Advancing a cursor and
+appending its session-projection revision
+are committed in one SQLite transaction, so a reconnect snapshot cannot expose
+an activity cursor newer than its invalidation or lose a committed cursor.
+
+The managed supervisor parses PTY output incrementally across arbitrary output
+frame boundaries. Bare BEL and complete OSC 9, OSC 99, and OSC 777 sequences
+produce generic `terminal_attention`; OSC 9;4 progress, title OSCs, unsupported
+commands, incomplete sequences, and oversized payloads do not. Parsing is
+bounded to 4096 bytes and the original bytes remain unchanged in raw output.
+Ducklion coalesces terminal attention to one durable cursor advance per session
+per second. Attention uses a separate authenticated `supervisor_activity`
+connection, so a slow SQLite commit cannot block raw PTY publication. Every
+request is fenced by instance, session, generation, lease and published output
+offset. The supervisor retains the highest pending offset until the durable
+receipt arrives; process exit drains final output, agent events and attention
+before reporting the runtime stopped. During rolling upgrade, a daemon that did
+not negotiate the optional capability still receives raw bytes and cannot
+strand the supervisor in a retry loop.
+
+Session list and revision-subscription snapshots include the category cursor
+map. Ducklord compares these authoritative cursors with the `notifications`
+section of its versioned, extensible, mode-0600 local-state envelope at
+`~/.ducklord/state.json`; unknown future sections survive notification writes.
+Background activity produces per-session and
+group `•` markers; a fresh attach clears them, while list selection, stale
+snapshots and reconnects do not. Pressing `n` stages per-category filters and
+Enter atomically persists them. Invalid local JSON is preserved as
+`state.json.corrupt-<timestamp>` and the TUI continues with a visible warning.
+
 The transitional Ducklord attach path requests at most the newest 256 KiB from
 the raw ring and then follows live output. Its visible text cache is bounded by
 both 120 lines and 1 MiB, including newline-free output. Explicit detach wakes
@@ -344,7 +381,8 @@ authenticated bridge for inventory, creation, read, send, and streaming attach.
 Changing owner closes and renegotiates retained bridges.
 
 The remaining integration work includes the complete terminal framebuffer and
-resize signal wiring, durable activity subscriptions, and Discord CC binding.
+resize signal wiring, notification sources beyond terminal attention and task
+completed/failed, and Discord CC binding.
 Legacy CLI session state remains available only during
 this staged cutover and must not be mixed with daemon inventory.
 

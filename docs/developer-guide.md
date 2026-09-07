@@ -733,6 +733,14 @@ Ducklion backs this with its schema-v7 durable session revision journal, so a
 mutation between initial inventory capture and stream startup cannot disappear.
 The legacy direct-command fallback continues to use periodic refreshes.
 
+Notification activity is cursor-based and payload-free. Ducklord persists
+per-session seen cursors and filters in mode-0600 `~/.ducklord/state.json`.
+`•` means unread background activity, a group `•` aggregates its children, and
+`●` identifies the active PTY pane. Moving the list selection, loading a stale
+detach snapshot, or reconnecting does not clear unread; only the first fresh
+attach output does. If the state file is malformed, Ducklord preserves it as
+`state.json.corrupt-<timestamp>`, starts with safe defaults, and shows a warning.
+
 ```bash
 scripts/ducklord-podman-demo.sh
 podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.yaml
@@ -753,7 +761,8 @@ Inside the TUI:
   `ssh -p 2222 -i ~/.ssh/id_ed25519 duck@client-c`.
 - `d` removes the selected host entry from the current `config.yaml`; it does
   not stop remote Ducklion sessions.
-- `n` creates a remote session with `agent -> host -> project`.
+- `c` creates a remote session with `agent -> host -> project`.
+- `n` opens per-session notification settings; changes are staged until Enter.
 - `Enter` or right-click focuses the selected PTY session.
 - `Ctrl-]` returns focus to the left menu.
 - `ducklord attach-host client-a` opens the split-pane UI scoped to one remote

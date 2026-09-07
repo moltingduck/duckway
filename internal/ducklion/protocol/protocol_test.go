@@ -49,3 +49,12 @@ func TestNegotiateRejectsNegativeVersion(t *testing.T) {
 		t.Fatalf("protocol error=%+v", protocolError)
 	}
 }
+
+func TestNegotiateSupervisorActivityCapability(t *testing.T) {
+	local := Handshake{Major: Major, Minor: Minor, Capabilities: []string{"terminal_attention"}}
+	remote := Handshake{Major: Major, Minor: Minor, Role: RoleSupervisorActivity, Principal: "ABC123", Capabilities: []string{"terminal_attention", "unknown"}}
+	got, protocolError := Negotiate(local, remote)
+	if protocolError != nil || got.Role != RoleSupervisorActivity || got.Principal != "ABC123" || len(got.Capabilities) != 1 || got.Capabilities[0] != "terminal_attention" {
+		t.Fatalf("negotiated=%+v error=%+v", got, protocolError)
+	}
+}

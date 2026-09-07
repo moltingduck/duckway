@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 7
+const SchemaVersion = 8
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -206,6 +206,11 @@ func (s *SQLite) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate ducklion schema to v7: %w", err)
 		}
 	}
+	if userVersion < 8 {
+		if err := migrateV8(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v8: %w", err)
+		}
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
 		return err
 	}
@@ -360,6 +365,24 @@ func migrateV7(ctx context.Context, tx *sql.Tx) error {
 		END`,
 	}
 	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateV8(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`CREATE TABLE session_activity (
+			session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+			category TEXT NOT NULL CHECK(category IN ('terminal_attention','task_completed','task_failed','task_cancelled','task_timeout','approval_required','agent_needs_input','unexpected_process_exit')),
+			sequence INTEGER NOT NULL CHECK(sequence>0), source_runtime_generation INTEGER NOT NULL DEFAULT 0 CHECK(source_runtime_generation>=0),
+			last_source_offset INTEGER NOT NULL DEFAULT 0 CHECK(last_source_offset>=0), updated_at_ms INTEGER NOT NULL,
+			PRIMARY KEY(session_id,category))`,
+		`ALTER TABLE session_revision_events ADD COLUMN activity_category TEXT`,
+		`ALTER TABLE session_revision_events ADD COLUMN activity_sequence INTEGER`,
+	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return err
 		}

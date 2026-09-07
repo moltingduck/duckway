@@ -32,6 +32,7 @@ const (
 	maxOutputSubscriptionsPerSession    = 32
 	maxOutputSubscriptionsGlobal        = 512
 	maxSessionEventSubscriptionsGlobal  = 32
+	maxSupervisorActivityConnections    = 64
 )
 
 type Options struct {
@@ -74,7 +75,16 @@ type Server struct {
 	agentEventBytes              int
 	sessionEventMu               sync.Mutex
 	sessionEventSubscriptions    int
+	attentionMu                  sync.Mutex
+	attentionRates               map[string]attentionRate
+	activitySlots                chan struct{}
 	runtimeLauncher              func(string) error
+}
+
+type attentionRate struct {
+	offset   uint64
+	sequence uint64
+	at       time.Time
 }
 
 type runtimeSequence struct {
@@ -204,6 +214,7 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 		service: service.New(state), registry: duckruntime.NewRegistry(instanceID, state), instanceID: instanceID, done: make(chan struct{}),
 		connections: make(map[*net.UnixConn]struct{}), ducklords: make(map[string]*net.UnixConn), outputs: make(map[model.SessionID]registeredOutput), controls: make(map[model.SessionID]*controlPeer),
 		outputSubscriptionsBySession: make(map[model.SessionID]int),
+		activitySlots:                make(chan struct{}, maxSupervisorActivityConnections),
 		sequences:                    make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher}
 	server.agentEvents = make(map[string][]protocol.SupervisorAgentEvent)
 	if server.runtimeLauncher == nil {
@@ -265,6 +276,10 @@ func (s *Server) handle(conn *net.UnixConn) {
 	}
 	if remote.Role == protocol.RoleSupervisorControl {
 		s.handleSupervisorControl(conn, codec, remote)
+		return
+	}
+	if remote.Role == protocol.RoleSupervisorActivity {
+		s.handleSupervisorActivity(conn, codec, remote)
 		return
 	}
 	if remote.Role != protocol.RoleDucklord && remote.Role != protocol.RoleDuckwayCC {
@@ -515,7 +530,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "supervisor principal must be the canonical session ID"}})
 		return
 	}
-	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"supervisor_recovery", "output_publish"}}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention"}}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
 	if protocolError != nil || !hasCapability(negotiated.Capabilities, "supervisor_recovery") || !hasCapability(negotiated.Capabilities, "output_publish") {
 		if protocolError == nil {
@@ -567,6 +582,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 	defer func() {
 		s.deactivateOutput(identity)
 		s.registry.Disconnect(identity)
+		s.forgetAttention(identity)
 		_ = s.state.MarkRuntimeDisconnected(context.Background(), identity.SessionID, identity.Generation)
 	}()
 	if err := runtimeConn.arm(); err != nil {
@@ -777,6 +793,124 @@ func (s *Server) handleSupervisorControl(conn *net.UnixConn, codec *bridge.Codec
 			call.result <- response
 		}
 	}
+}
+
+func (s *Server) handleSupervisorActivity(conn *net.UnixConn, codec *bridge.Codec, remote protocol.Handshake) {
+	sessionID, err := model.ParseSessionID(remote.Principal)
+	if err != nil || string(sessionID) != remote.Principal {
+		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "activity principal must be the canonical session ID"}})
+		return
+	}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"terminal_attention"}}
+	negotiated, protocolError := protocol.Negotiate(local, remote)
+	if protocolError != nil || !hasCapability(negotiated.Capabilities, "terminal_attention") {
+		if protocolError == nil {
+			protocolError = &protocol.Error{Code: protocol.ErrIncompatible, Message: "terminal attention capability is required"}
+		}
+		_ = codec.Write(protocol.HandshakeResponse{Error: protocolError})
+		return
+	}
+	if err := codec.Write(protocol.HandshakeResponse{Handshake: &negotiated}); err != nil {
+		return
+	}
+	var begin protocol.Request
+	if err := codec.Read(&begin); err != nil || begin.Validate() != nil || begin.Type != "supervisor.activity_begin" || begin.SessionID != string(sessionID) || begin.RuntimeGeneration == nil || len(begin.Body) != 0 {
+		writeSupervisorError(codec, begin.ID, protocol.ErrInvalidArgument, "invalid activity authentication request")
+		return
+	}
+	generation := *begin.RuntimeGeneration
+	session, err := s.state.GetSession(context.Background(), sessionID)
+	if err != nil || (session.Status != model.StatusRecovering && session.Status != model.StatusRunning) || session.RuntimeGeneration != generation || len(session.RecoveryPublicKey) != ed25519.PublicKeySize {
+		writeSupervisorError(codec, begin.ID, protocol.ErrAdapterUnhealthy, "runtime activity is unavailable")
+		return
+	}
+	identity, ok := s.registry.Current(sessionID, generation)
+	if !ok {
+		writeSupervisorError(codec, begin.ID, protocol.ErrAdapterUnhealthy, "runtime activity is unavailable")
+		return
+	}
+	nonce, err := model.NewRecoveryNonce()
+	if err != nil {
+		writeSupervisorError(codec, begin.ID, protocol.ErrInternal, "could not create activity challenge")
+		return
+	}
+	challengeID := uuid.NewString()
+	challengeJSON, _ := json.Marshal(protocol.SupervisorChallenge{ChallengeID: challengeID, Nonce: nonce, InstanceID: string(s.instanceID)})
+	if err := codec.Write(protocol.Response{ID: begin.ID, Result: challengeJSON}); err != nil {
+		return
+	}
+	var complete protocol.Request
+	if err := codec.Read(&complete); err != nil || complete.Validate() != nil || complete.Type != "supervisor.activity_complete" || complete.SessionID != string(sessionID) ||
+		complete.InstanceID != string(s.instanceID) || complete.RuntimeGeneration == nil || *complete.RuntimeGeneration != generation {
+		writeSupervisorError(codec, complete.ID, protocol.ErrInvalidArgument, "invalid activity proof request")
+		return
+	}
+	var proof protocol.SupervisorRegisterComplete
+	if err := decodeStrict(complete.Body, &proof); err != nil || proof.ChallengeID != challengeID ||
+		!model.VerifyRecoveryProof(ed25519.PublicKey(session.RecoveryPublicKey), s.instanceID, sessionID, generation, nonce, proof.Proof, uint16(negotiated.Major), uint16(negotiated.Minor)) {
+		writeSupervisorError(codec, complete.ID, protocol.ErrAdapterUnhealthy, "runtime activity authentication failed")
+		return
+	}
+	if current, currentOK := s.registry.Current(sessionID, generation); !currentOK || current != identity {
+		writeSupervisorError(codec, complete.ID, protocol.ErrStaleGeneration, "runtime changed during activity authentication")
+		return
+	}
+	select {
+	case s.activitySlots <- struct{}{}:
+		defer func() { <-s.activitySlots }()
+	default:
+		_ = codec.Write(protocol.Response{ID: complete.ID, Error: &protocol.Error{Code: protocol.ErrBusy, Message: "runtime activity connection limit reached", Retryable: true}})
+		return
+	}
+	ready, _ := json.Marshal(protocol.SupervisorControlReady{SessionID: string(sessionID), RuntimeGeneration: generation})
+	if err := codec.Write(protocol.Response{ID: complete.ID, Result: ready}); err != nil {
+		return
+	}
+	_ = conn.SetDeadline(time.Time{})
+	for {
+		var request protocol.Request
+		if err := codec.Read(&request); err != nil {
+			return
+		}
+		if request.Validate() != nil || request.Type != "supervisor.terminal_attention" || request.RuntimeGeneration == nil {
+			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid terminal attention request")
+			continue
+		}
+		if request.InstanceID != string(s.instanceID) || request.SessionID != string(sessionID) || *request.RuntimeGeneration != generation || !s.registry.IsCurrent(identity) {
+			writeSupervisorError(codec, request.ID, protocol.ErrStaleGeneration, "runtime activity identity changed")
+			continue
+		}
+		var attention protocol.SupervisorTerminalAttention
+		outputEnd, available := s.runtimeOutputEnd(identity)
+		if err := decodeStrict(request.Body, &attention); err != nil || attention.OutputOffset == 0 || !available || attention.OutputOffset > outputEnd {
+			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "terminal attention requires a published output offset")
+			continue
+		}
+		sequence, advanced, cached := s.coalescedAttention(identity, attention.OutputOffset)
+		if !cached {
+			sequence, advanced, err = s.state.RecordActivityAtOffset(context.Background(), identity.SessionID, model.NotificationTerminalAttention, time.Second, identity.Generation, attention.OutputOffset)
+			if err != nil {
+				writeSupervisorError(codec, request.ID, protocol.ErrInternal, "could not record terminal attention")
+				continue
+			}
+			s.rememberAttention(identity, attention.OutputOffset, sequence)
+		}
+		result, _ := json.Marshal(protocol.SupervisorActivityReceipt{Category: model.NotificationTerminalAttention, Sequence: sequence, Advanced: advanced, OutputOffset: attention.OutputOffset})
+		if err := codec.Write(protocol.Response{ID: request.ID, Result: result}); err != nil {
+			return
+		}
+	}
+}
+
+func (s *Server) runtimeOutputEnd(identity duckruntime.RuntimeIdentity) (uint64, bool) {
+	s.outputMu.Lock()
+	registered, ok := s.outputs[identity.SessionID]
+	s.outputMu.Unlock()
+	if !ok || registered.identity != identity {
+		return 0, false
+	}
+	_, end := registered.hub.Bounds()
+	return end, true
 }
 
 func (s *Server) callControl(ctx context.Context, sessionID model.SessionID, request protocol.Request) protocol.Response {
@@ -990,7 +1124,8 @@ func (s *Server) streamSessionSubscription(wire interface{ Write(any) error }, p
 				return
 			}
 			event := protocol.SessionRevisionEvent{Type: "session_revision", SubscriptionID: prepared.metadata.SubscriptionID, InstanceID: string(s.instanceID),
-				Revision: revision.Revision, SessionID: string(revision.SessionID), Change: revision.Change}
+				Revision: revision.Revision, SessionID: string(revision.SessionID), Change: revision.Change,
+				ActivityCategory: revision.ActivityCategory, ActivitySequence: revision.ActivitySequence}
 			if err := wire.Write(event); err != nil {
 				return
 			}
@@ -1006,6 +1141,43 @@ func (s *Server) streamSessionSubscription(wire interface{ Write(any) error }, p
 	}
 }
 
+func attentionRateKey(identity duckruntime.RuntimeIdentity) string {
+	return string(identity.SessionID) + "\x00" + fmt.Sprint(identity.Generation)
+}
+
+func (s *Server) coalescedAttention(identity duckruntime.RuntimeIdentity, offset uint64) (uint64, bool, bool) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	rate, ok := s.attentionRates[attentionRateKey(identity)]
+	if !ok || rate.sequence == 0 {
+		return 0, false, false
+	}
+	if offset <= rate.offset {
+		return rate.sequence, false, true
+	}
+	if time.Since(rate.at) < time.Second {
+		rate.offset = offset
+		s.attentionRates[attentionRateKey(identity)] = rate
+		return rate.sequence, false, true
+	}
+	return 0, false, false
+}
+
+func (s *Server) rememberAttention(identity duckruntime.RuntimeIdentity, offset, sequence uint64) {
+	s.attentionMu.Lock()
+	if s.attentionRates == nil {
+		s.attentionRates = make(map[string]attentionRate)
+	}
+	s.attentionRates[attentionRateKey(identity)] = attentionRate{offset: offset, sequence: sequence, at: time.Now()}
+	s.attentionMu.Unlock()
+}
+
+func (s *Server) forgetAttention(identity duckruntime.RuntimeIdentity) {
+	s.attentionMu.Lock()
+	delete(s.attentionRates, attentionRateKey(identity))
+	s.attentionMu.Unlock()
+}
+
 func summariesFor(projections []store.SessionProjection) []protocol.SessionSummary {
 	summaries := make([]protocol.SessionSummary, 0, len(projections))
 	for _, projection := range projections {
@@ -1013,7 +1185,7 @@ func summariesFor(projections []store.SessionProjection) []protocol.SessionSumma
 		summaries = append(summaries, protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind, AgentType: session.AgentType,
 			CWD: session.CWD, Status: session.Status, Writer: session.Writer, OwnershipEpoch: session.OwnershipEpoch, RuntimeGeneration: session.RuntimeGeneration,
 			TaskState: session.TaskState, AdapterState: session.AdapterState, ExitSuccess: session.ExitSuccess, ExitReason: session.ExitReason,
-			ChannelHandle: projection.ChannelHandle, ManagementHandle: projection.ManagementHandle})
+			ChannelHandle: projection.ChannelHandle, ManagementHandle: projection.ManagementHandle, ActivitySequences: projection.ActivitySequences})
 	}
 	return summaries
 }

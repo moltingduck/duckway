@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/ducklord"
 	"github.com/hackerduck/duckway/internal/version"
@@ -932,9 +933,16 @@ type tuiState struct {
 	selectedKey        string
 	outputText         string
 	outputErr          string
+	localWarning       string
 	outputForKey       string
 	outputStale        bool
+	outputFresh        bool
+	activeAttachKey    string
+	activeAttachFresh  bool
+	pendingAttachKey   string
 	snapshotStore      ducklord.SnapshotStore
+	activityStore      ducklord.ActivityStateStore
+	activityState      *ducklord.ActivityState
 	focused            bool
 	newSessionMode     bool
 	newSessionClient   string
@@ -953,6 +961,9 @@ type tuiState struct {
 	ownerName          string
 	hostSync           map[string]ducklord.SessionUpdate
 	eventDriven        bool
+	notificationMode   bool
+	notificationIndex  int
+	notificationStaged map[model.NotificationCategory]bool
 }
 
 func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, owner string) error {
@@ -991,8 +1002,17 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	activityStore := ducklord.ActivityStateStore{}
+	activityState, err := activityStore.Load()
+	stateWarning := ""
+	var recovered *ducklord.CorruptStateRecoveredError
+	if errors.As(err, &recovered) && activityState != nil {
+		stateWarning = recovered.Error()
+	} else if err != nil {
+		return fmt.Errorf("load Ducklord activity state: %w", err)
+	}
 	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner,
-		snapshotStore: ducklord.SnapshotStore{}, hostSync: make(map[string]ducklord.SessionUpdate)}
+		snapshotStore: ducklord.SnapshotStore{}, activityStore: activityStore, activityState: activityState, hostSync: make(map[string]ducklord.SessionUpdate), localWarning: stateWarning}
 	defer state.saveCurrentSnapshot()
 	sessionUpdates := make(chan ducklord.SessionUpdate, 32)
 	if watcher, ok := runner.(interface {
@@ -1070,6 +1090,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.outputErr = result.err.Error()
 			}
 			state.focused = false
+			state.activeAttachFresh = false
+			state.pendingAttachKey = ""
 			attach = nil
 			if attachCancel != nil {
 				attachCancel()
@@ -1089,6 +1111,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					}
 					attachID++
 					state.focused = false
+					state.activeAttachFresh = false
+					state.pendingAttachKey = ""
 					attach = nil
 					state.render(os.Stdout)
 					continue
@@ -1160,7 +1184,18 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
-			previousSession, previousText := state.currentSession(), state.outputText
+			if state.notificationMode {
+				action := state.handleNotificationInput(b)
+				switch action {
+				case "save":
+					state.saveNotificationSettings()
+				case "cancel":
+					state.notificationMode = false
+					state.notificationStaged = nil
+				}
+				state.render(os.Stdout)
+				continue
+			}
 			action := state.handleInput(b)
 			switch action {
 			case "quit":
@@ -1169,10 +1204,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.refreshSessions(ctx)
 				state.refreshSelectedOutput(ctx)
 			case "select":
-				state.saveSnapshot(previousSession, previousText)
-				state.refreshSelectedOutput(ctx)
+				// Moving the list cursor does not change the active PTY pane.
 			case "new":
 				state.beginCreate()
+			case "notifications":
+				state.beginNotificationSettings()
 			case "add-client":
 				state.beginAddClient()
 			case "remove-client":
@@ -1234,6 +1270,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				attachCancel = cancel
 				attachID++
 				id := attachID
+				state.pendingAttachKey = sessionKey(s)
+				state.outputForKey = state.pendingAttachKey
+				state.outputText = ""
+				state.outputErr = ""
+				state.outputStale = false
+				state.outputFresh = false
 				state.focused = true
 				go superviseAttach(attachCtx, id, session, attachOut, attachDone)
 			}
@@ -1262,17 +1304,23 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 		}
 		return all[i].Name < all[j].Name
 	})
+	activityChanged := false
 	for i := range all {
 		key := all[i].Client + "/" + all[i].Name
 		if all[i].TailHash != "" && s.hashes[key] != "" && s.hashes[key] != all[i].TailHash {
 			all[i].Updated = true
-			fmt.Print("\a")
 		}
 		if all[i].TailHash != "" {
 			s.hashes[key] = all[i].TailHash
 		}
 		all[i].LastLine = sanitizeTerminalText(all[i].LastLine)
 		all[i].Error = sanitizeTerminalText(all[i].Error)
+		var changed bool
+		all[i].Unread, changed = s.activity().Reconcile(all[i], sessionKey(all[i]) == s.activeAttachKey && s.activeAttachFresh)
+		activityChanged = activityChanged || changed
+	}
+	if activityChanged {
+		s.saveActivityState()
 	}
 	s.sessions = all
 	if oldKey != "" {
@@ -1302,6 +1350,9 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 	}
 	s.hostSync[update.Client] = update
 	if update.State != "live" {
+		if s.currentSession().Client == update.Client {
+			s.outputFresh = false
+		}
 		return // retain the last authoritative rows while reconnecting
 	}
 	oldKey := s.currentKey()
@@ -1311,11 +1362,19 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 			all = append(all, session)
 		}
 	}
+	activityChanged := false
 	for _, session := range update.Sessions {
+		activeFresh := sessionKey(session) == s.activeAttachKey && s.activeAttachFresh
+		unread, changed := s.activity().Reconcile(session, activeFresh)
+		session.Unread = unread
+		activityChanged = activityChanged || changed
 		if session.SessionID == update.ChangedSessionID && sessionKey(session) != oldKey {
 			session.Updated = true
 		}
 		all = append(all, session)
+	}
+	if activityChanged {
+		s.saveActivityState()
 	}
 	sortRemoteSessions(all)
 	s.sessions = all
@@ -1414,6 +1473,7 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 		s.outputText = ""
 		s.outputErr = ""
 		s.outputStale = false
+		s.outputFresh = false
 		if snapshot, err := s.snapshotStore.Load(sess.InstanceID, sess.SessionID); err == nil {
 			if state, decodeErr := ducklord.DecodeTerminalRenderState(snapshot.Payload); decodeErr == nil {
 				s.outputText = state.Text
@@ -1423,10 +1483,12 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 	}
 	s.outputForKey = key
 	if !s.hostIsLive(sess.Client) {
+		s.outputFresh = false
 		s.outputErr = "host reconnecting; showing last synchronized output"
 		return
 	}
 	if !canRead(sess) {
+		s.outputFresh = false
 		s.outputErr = sess.Error
 		if s.outputErr == "" {
 			s.outputErr = sess.Status
@@ -1435,6 +1497,7 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 	}
 	c, err := mustClient(s.cfg, sess.Client)
 	if err != nil {
+		s.outputFresh = false
 		if !s.outputStale {
 			s.outputText = ""
 		}
@@ -1453,6 +1516,7 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 	s.outputText = sanitizeTerminalText(text)
 	s.outputErr = ""
 	s.outputStale = false
+	s.outputFresh = true
 }
 
 func (s *tuiState) applyAttachOutput(text string) {
@@ -1461,6 +1525,39 @@ func (s *tuiState) applyAttachOutput(text string) {
 		s.outputStale = false
 	}
 	s.outputText = appendOutputText(s.outputText, text, 120)
+	s.outputFresh = true
+	if s.pendingAttachKey != "" {
+		s.activeAttachKey = s.pendingAttachKey
+		s.pendingAttachKey = ""
+	}
+	s.activeAttachFresh = true
+	if sessionKey(s.currentSession()) == s.activeAttachKey {
+		s.markActivitySeen(s.currentSession())
+	}
+}
+
+func (s *tuiState) activity() *ducklord.ActivityState {
+	if s.activityState == nil {
+		s.activityState = ducklord.NewActivityState()
+	}
+	return s.activityState
+}
+
+func (s *tuiState) markActivitySeen(session ducklord.RemoteSession) {
+	if s.activity().MarkSeen(session) {
+		for i := range s.sessions {
+			if sessionKey(s.sessions[i]) == sessionKey(session) {
+				s.sessions[i].Unread = false
+			}
+		}
+		s.saveActivityState()
+	}
+}
+
+func (s *tuiState) saveActivityState() {
+	if err := s.activityStore.Save(s.activity()); err != nil && s.outputErr == "" {
+		s.outputErr = "notification state: " + err.Error()
+	}
 }
 
 func (s *tuiState) currentSession() ducklord.RemoteSession {
@@ -1501,16 +1598,18 @@ func (s *tuiState) render(out io.Writer) {
 	contentWidth := renderWidth - contentX + 1
 	fmt.Fprint(out, "\033[H\033[2J")
 	fmt.Fprintf(out, "ducklord remote agents  owner:%s%s\n", displayField(s.ownerName), s.hostSyncLabel())
-	if s.focused {
+	if s.localWarning != "" {
+		fmt.Fprintln(out, truncate("warning: "+sanitizeTerminalText(s.localWarning), renderWidth))
+	} else if s.focused {
 		fmt.Fprintln(out, "session focus  keys go to session  ctrl-] menu")
 	} else if s.addClientMode {
 		fmt.Fprintln(out, "add ducklion host: ssh config number/name or user@host  enter add  esc cancel")
 	} else if s.newSessionMode {
 		fmt.Fprintf(out, "%s  enter next  esc cancel\n", truncate(s.createHeader(), renderWidth))
 	} else if s.hostScoped {
-		fmt.Fprintln(out, "j/k move  enter focus  y yield  Y wait-yield  r refresh  q quit")
+		fmt.Fprintln(out, "j/k move  enter focus  y yield  Y wait-yield  n notifications  r refresh  q quit")
 	} else {
-		fmt.Fprintln(out, "j/k move  enter focus  y yield  Y wait-yield  a add  d remove  n new  r refresh  q quit")
+		fmt.Fprintln(out, "j/k move  enter focus  y yield  Y wait-yield  n notifications  c new  a add  d remove  r refresh  q quit")
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
@@ -1533,7 +1632,11 @@ func (s *tuiState) render(out io.Writer) {
 			group = "default"
 		}
 		if group != currentGroup {
-			fmt.Fprintf(out, "\033[%d;1H%-*s |\033[K", row, menuWidth, "["+group+"]")
+			groupLabel := "[" + group + "]"
+			if s.groupHasUnread(sess.Group) {
+				groupLabel += " •"
+			}
+			fmt.Fprintf(out, "\033[%d;1H%-*s |\033[K", row, menuWidth, groupLabel)
 			row++
 			currentGroup = group
 			if row > height {
@@ -1545,7 +1648,11 @@ func (s *tuiState) render(out io.Writer) {
 			prefix = ">"
 		}
 		mark := " "
-		if sess.Updated {
+		if sessionKey(sess) == s.activeAttachKey {
+			mark = "●"
+		} else if sess.Unread {
+			mark = "•"
+		} else if sess.Updated {
 			mark = "*"
 		}
 		line := fmt.Sprintf("%s%s %-12s %-18s %-9s %-10s %s", prefix, mark, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sess.AgentType), sess.LastLine)
@@ -1560,6 +1667,15 @@ func (s *tuiState) render(out io.Writer) {
 	s.renderContent(out, contentX, contentWidth, height)
 	s.renderAddClientPrompt(out, height, 1, renderWidth)
 	s.renderCreatePrompt(out, height, 1, renderWidth)
+}
+
+func (s *tuiState) groupHasUnread(group string) bool {
+	for _, session := range s.sessions {
+		if session.Group == group && session.Unread {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *tuiState) hostSyncLabel() string {
@@ -1653,6 +1769,10 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 		return
 	}
 	sess := s.sessions[s.selected]
+	if s.notificationMode {
+		s.renderNotificationSettings(out, x, width, height, sess)
+		return
+	}
 	header := fmt.Sprintf("%s / %s  %s  %s", displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sess.AgentType))
 	if s.focused {
 		header += "  [focus]"
@@ -1675,6 +1795,120 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 	for i, line := range lines {
 		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", startRow+i, x, truncate(line, width))
 	}
+}
+
+func notificationLabel(category model.NotificationCategory) string {
+	switch category {
+	case model.NotificationTerminalAttention:
+		return "Terminal attention (BEL / OSC)"
+	case model.NotificationTaskCompleted:
+		return "Task completed"
+	case model.NotificationTaskFailed:
+		return "Task failed"
+	case model.NotificationTaskCancelled:
+		return "Task cancelled"
+	case model.NotificationTaskTimeout:
+		return "Task timeout"
+	case model.NotificationApprovalRequired:
+		return "Approval required"
+	case model.NotificationAgentNeedsInput:
+		return "Agent needs input"
+	case model.NotificationUnexpectedProcessExit:
+		return "Unexpected process exit"
+	default:
+		return string(category)
+	}
+}
+
+func (s *tuiState) renderNotificationSettings(out io.Writer, x, width, height int, session ducklord.RemoteSession) {
+	header := fmt.Sprintf("Notifications · %s / %s", displayField(session.Client), displayField(session.Name))
+	fmt.Fprintf(out, "\033[5;%dH%s\033[K", x, truncate(header, width))
+	fmt.Fprintf(out, "\033[6;%dH%s\033[K", x, truncate("j/k move · Space toggle · a all · x none · r defaults · Enter save · Esc cancel", width))
+	for i, category := range model.NotificationCategories() {
+		row := 8 + i
+		if row > height {
+			break
+		}
+		cursor := " "
+		if i == s.notificationIndex {
+			cursor = ">"
+		}
+		check := " "
+		if s.notificationStaged[category] {
+			check = "x"
+		}
+		line := fmt.Sprintf("%s [%s] %s", cursor, check, notificationLabel(category))
+		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row, x, truncate(line, width))
+	}
+	if s.outputErr != "" {
+		row := 8 + len(model.NotificationCategories()) + 1
+		if row <= height {
+			fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row, x, truncate("Not saved: "+sanitizeTerminalText(s.outputErr), width))
+		}
+	}
+}
+
+func (s *tuiState) beginNotificationSettings() {
+	session := s.currentSession()
+	if session.InstanceID == "" || session.SessionID == "" {
+		s.outputErr = "notification settings require a synchronized Ducklion session"
+		return
+	}
+	s.notificationMode = true
+	s.notificationIndex = 0
+	s.notificationStaged = make(map[model.NotificationCategory]bool)
+	for _, category := range model.NotificationCategories() {
+		s.notificationStaged[category] = s.activity().Enabled(session.InstanceID, session.SessionID, category)
+	}
+}
+
+func (s *tuiState) handleNotificationInput(input []byte) string {
+	categories := model.NotificationCategories()
+	switch string(input) {
+	case "\x1b", "q":
+		return "cancel"
+	case "\r", "\n":
+		return "save"
+	case "j", "\x1b[B":
+		if s.notificationIndex < len(categories)-1 {
+			s.notificationIndex++
+		}
+	case "k", "\x1b[A":
+		if s.notificationIndex > 0 {
+			s.notificationIndex--
+		}
+	case " ":
+		category := categories[s.notificationIndex]
+		s.notificationStaged[category] = !s.notificationStaged[category]
+	case "a", "r":
+		for _, category := range categories {
+			s.notificationStaged[category] = true
+		}
+	case "x":
+		for _, category := range categories {
+			s.notificationStaged[category] = false
+		}
+	}
+	return ""
+}
+
+func (s *tuiState) saveNotificationSettings() {
+	session := s.currentSession()
+	next := s.activity().Clone()
+	for _, category := range model.NotificationCategories() {
+		if err := next.SetEnabled(session.InstanceID, session.SessionID, category, s.notificationStaged[category]); err != nil {
+			s.outputErr = err.Error()
+			return
+		}
+	}
+	if err := s.activityStore.Save(next); err != nil {
+		s.outputErr = "notification state: " + err.Error()
+		return
+	}
+	s.activityState = next
+	s.notificationMode = false
+	s.notificationStaged = nil
+	s.outputErr = "notification settings saved"
 }
 
 func wrapDisplayText(text string, width int) []string {
@@ -1705,8 +1939,10 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "yield"
 	case text == "Y":
 		return "yield-wait"
-	case text == "n" && !s.hostScoped:
+	case text == "c" && !s.hostScoped:
 		return "new"
+	case text == "n":
+		return "notifications"
 	case text == "a" && !s.hostScoped:
 		return "add-client"
 	case text == "d" && !s.hostScoped:

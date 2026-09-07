@@ -67,6 +67,11 @@ type Session struct {
 	agentEventCount    int
 	agentEventNotify   chan struct{}
 	agentAckOrder      []string
+	attentionMu        sync.Mutex
+	attentionDetector  duckruntime.AttentionDetector
+	attentionPending   uint64
+	attentionAcked     uint64
+	attentionNotify    chan struct{}
 }
 
 type preparedAgentTask struct {
@@ -150,6 +155,7 @@ func Start(options Options) (*Session, error) {
 		agentEvents: make(map[string][]protocol.SupervisorAgentEvent)}
 	session.agentEventAcks = make(map[string]uint64)
 	session.agentEventNotify = make(chan struct{}, 1)
+	session.attentionNotify = make(chan struct{}, 1)
 	session.input = duckruntime.NewInputPump((*inputGate)(session), ptmx, 64)
 	go session.capture()
 	if adapterRead != nil {
@@ -230,6 +236,22 @@ func (s *Session) PendingAgentEvents() []protocol.SupervisorAgentEvent {
 }
 
 func (s *Session) AgentEventNotify() <-chan struct{} { return s.agentEventNotify }
+
+func (s *Session) AttentionNotify() <-chan struct{} { return s.attentionNotify }
+
+func (s *Session) PendingAttention() (uint64, bool) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return s.attentionPending, s.attentionPending > s.attentionAcked
+}
+
+func (s *Session) AckAttention(offset uint64) {
+	s.attentionMu.Lock()
+	if offset > s.attentionAcked {
+		s.attentionAcked = offset
+	}
+	s.attentionMu.Unlock()
+}
 
 func (s *Session) FailActiveAgentTask(summary string) bool {
 	s.agentMu.Lock()
@@ -570,6 +592,15 @@ func (s *Session) capture() {
 		n, err := s.pty.Read(buffer)
 		if n > 0 {
 			s.output.Publish(buffer[:n])
+			if offsets := s.attentionDetector.FeedOffsets(buffer[:n]); len(offsets) != 0 {
+				s.attentionMu.Lock()
+				s.attentionPending = offsets[len(offsets)-1]
+				s.attentionMu.Unlock()
+				select {
+				case s.attentionNotify <- struct{}{}:
+				default:
+				}
+			}
 		}
 		if err != nil {
 			return

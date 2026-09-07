@@ -189,13 +189,19 @@ func (s *Server) applySupervisorAgentEvent(identity duckruntime.RuntimeIdentity,
 	}
 	previous, _ := s.state.GetSession(context.Background(), identity.SessionID)
 	category := ""
-	if event.Kind == "failed" {
+	notificationCategory := model.NotificationCategory("")
+	switch event.Kind {
+	case "failed":
 		category = "agent_failed"
+		notificationCategory = model.NotificationTaskFailed
+	case "completed":
+		notificationCategory = model.NotificationTaskCompleted
 	}
 	eventJSON, _ := json.Marshal(event)
 	ownershipFenceApplied := false
 	task, _, err := s.service.ApplyManagedTaskEvent(context.Background(), identity.SessionID, identity.Generation, store.ManagedTaskEvent{
 		TaskID: event.TaskID, Sequence: event.Sequence, Kind: event.Kind, OutputEnd: event.OutputEnd, ErrorCategory: category, Digest: sha256.Sum256(eventJSON),
+		NotificationCategory: notificationCategory,
 	}, func(updated model.Session) error {
 		response := s.syncRuntimeOwnership(updated)
 		if response.Error != nil {
@@ -812,7 +818,7 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 	for {
 		select {
 		case err := <-wait:
-			return reportExitedRuntime(ctx, specPath, spec, ed25519.PrivateKey(decoded), ptySession.Output(), err)
+			return reportExitedRuntime(ctx, specPath, spec, ed25519.PrivateKey(decoded), ptySession, err)
 		case <-ctx.Done():
 			_ = ptySession.Terminate(false)
 			select {
@@ -839,6 +845,7 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 		go func() { forwardDone <- client.ForwardOutput(connectionCtx, ptySession.Output()) }()
 		go func() { controlDone <- client.ServeControl(connectionCtx, ptySession) }()
 		go func() { eventDone <- forwardPendingAgentEvents(connectionCtx, client, ptySession) }()
+		go forwardPendingAttention(connectionCtx, client, ptySession)
 		select {
 		case err := <-wait:
 			// Wait closes OutputHub only after PTY capture has drained. Let the
@@ -869,7 +876,7 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 					return deliveryErr
 				}
 			}
-			return reportExitedRuntime(ctx, specPath, spec, ed25519.PrivateKey(decoded), ptySession.Output(), err)
+			return reportExitedRuntime(ctx, specPath, spec, ed25519.PrivateKey(decoded), ptySession, err)
 		case <-ctx.Done():
 			_ = ptySession.Terminate(false)
 			cancel()
@@ -895,22 +902,24 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 		case <-forwardDone:
 			select {
 			case waitErr := <-wait:
-				reason := ""
-				if waitErr != nil {
-					reason = waitErr.Error()
-				}
-				reportErr := client.ReportExit(waitErr == nil, reason)
 				cancel()
 				_ = client.Close()
 				select {
 				case <-controlDone:
 				case <-time.After(time.Second):
 				}
-				if reportErr != nil {
-					return reportExitedRuntime(ctx, specPath, spec, ed25519.PrivateKey(decoded), ptySession.Output(), waitErr)
+				// Every observed process exit follows the same durable finalizer.
+				// In particular, do not let ForwardOutput winning this select race
+				// bypass final attention and agent-event delivery.
+				if waitErr != nil {
+					ptySession.FailActiveAgentTask("Agent process exited before completing the turn")
 				}
-				removeRuntimeCredentials(specPath)
-				return waitErr
+				if len(ptySession.PendingAgentEvents()) != 0 {
+					if deliveryErr := awaitExitedAgentDelivery(ctx, spec, ed25519.PrivateKey(decoded), ptySession); deliveryErr != nil {
+						return deliveryErr
+					}
+				}
+				return reportExitedRuntime(ctx, specPath, spec, ed25519.PrivateKey(decoded), ptySession, waitErr)
 			case <-time.After(50 * time.Millisecond):
 			}
 			cancel()
@@ -1021,15 +1030,106 @@ func forwardPendingAgentEvents(ctx context.Context, client *SupervisorClient, se
 	}
 }
 
-func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec, privateKey ed25519.PrivateKey, output *duckruntime.OutputHub, processErr error) error {
+func forwardPendingAttention(ctx context.Context, client *SupervisorClient, session *supervisor.Session) {
+	if !client.SupportsAttention() {
+		// terminal_attention is optional for rolling upgrades. Bytes still
+		// reached the durable output ring; acknowledge the local hint so an old
+		// daemon cannot strand this supervisor in a retry loop.
+		if offset, pending := session.PendingAttention(); pending {
+			session.AckAttention(offset)
+		}
+		return
+	}
+	var lastReport time.Time
+	var activity *SupervisorActivityClient
+	defer func() {
+		if activity != nil {
+			_ = activity.Close()
+		}
+	}()
+	for {
+		offset, pending := session.PendingAttention()
+		if pending {
+			for client.PublishedOffset() < offset {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+			if delay := time.Second - time.Since(lastReport); !lastReport.IsZero() && delay > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(delay):
+				}
+			}
+			if activity == nil {
+				var err error
+				activity, err = client.OpenActivity()
+				if err != nil {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(250 * time.Millisecond):
+						continue
+					}
+				}
+			}
+			reportCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := activity.ReportTerminalAttention(reportCtx, offset)
+			cancel()
+			if err != nil {
+				_ = activity.Close()
+				activity = nil
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(250 * time.Millisecond):
+					continue
+				}
+			}
+			lastReport = time.Now()
+			session.AckAttention(offset)
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-session.AttentionNotify():
+		}
+	}
+}
+
+func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec, privateKey ed25519.PrivateKey, session *supervisor.Session, processErr error) error {
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		client, err := RegisterSupervisor(spec.SocketPath, spec.SessionID, spec.RuntimeGeneration, privateKey)
 		if err == nil {
-			replay := output.Snapshot()
+			replay := session.Output().Snapshot()
 			forwardErr := client.PublishSnapshot(replay)
+			if forwardErr == nil && client.SupportsAttention() {
+				if offset, pending := session.PendingAttention(); pending {
+					activity, activityErr := client.OpenActivity()
+					if activityErr == nil {
+						reportCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+						activityErr = activity.ReportTerminalAttention(reportCtx, offset)
+						cancel()
+						_ = activity.Close()
+					}
+					if activityErr != nil {
+						forwardErr = activityErr
+					} else {
+						session.AckAttention(offset)
+					}
+				}
+			} else if forwardErr == nil {
+				if offset, pending := session.PendingAttention(); pending {
+					session.AckAttention(offset)
+				}
+			}
 			if forwardErr == nil {
 				reason := ""
 				if processErr != nil {

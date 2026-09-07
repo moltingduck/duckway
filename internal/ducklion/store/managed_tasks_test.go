@@ -107,7 +107,8 @@ func TestManagedTaskCompletionAppliesWaitingYieldAtomically(t *testing.T) {
 	if _, err := database.db.Exec(`INSERT INTO pending_yields(session_id,requester_kind,requester_id,source_epoch,request_id,created_at_ms) VALUES(?,?,?,?,?,?)`, session.ID, "terminal", "desk", 4, "yield-1", now); err != nil {
 		t.Fatal(err)
 	}
-	event := ManagedTaskEvent{TaskID: task.TaskID, Sequence: 1, Kind: "completed", OutputEnd: 25, Digest: sha256.Sum256([]byte("event-1"))}
+	event := ManagedTaskEvent{TaskID: task.TaskID, Sequence: 1, Kind: "completed", OutputEnd: 25, Digest: sha256.Sum256([]byte("event-1")),
+		NotificationCategory: model.NotificationTaskCompleted}
 	hookCalls := 0
 	updatedTask, updatedSession, err := database.ApplyManagedTaskEvent(ctx, session.ID, 2, event, func(candidate model.Session) error {
 		hookCalls++
@@ -128,8 +129,16 @@ func TestManagedTaskCompletionAppliesWaitingYieldAtomically(t *testing.T) {
 	if _, replayedSession, err := database.ApplyManagedTaskEvent(ctx, session.ID, 2, event, func(model.Session) error { hookCalls++; return nil }); err != nil || replayedSession.OwnershipEpoch != 5 || hookCalls != 1 {
 		t.Fatalf("event replay session=%+v hookCalls=%d err=%v", replayedSession, hookCalls, err)
 	}
-	if pending, err := database.GetPendingYieldTx(ctx, mustBeginReadTx(t, database), session.ID); err != nil || pending != nil {
+	readTx := mustBeginReadTx(t, database)
+	if pending, err := database.GetPendingYieldTx(ctx, readTx, session.ID); err != nil || pending != nil {
 		t.Fatalf("pending=%+v err=%v", pending, err)
+	}
+	if err := readTx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := database.SessionSnapshot(ctx)
+	if err != nil || snapshot.Sessions[0].ActivitySequences[model.NotificationTaskCompleted] != 1 {
+		t.Fatalf("activity snapshot=%+v err=%v", snapshot, err)
 	}
 }
 

@@ -73,6 +73,23 @@ func TestCreateSessionStartsManagedPTYAndAcceptsInput(t *testing.T) {
 	if !bytes.Contains(output.Bytes(), []byte("managed-ready")) {
 		t.Fatalf("output=%q", output.String())
 	}
+	if err := client.SendInput(created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, []byte("printf '\\a'\n")); err != nil {
+		t.Fatal(err)
+	}
+	attentionDeadline := time.Now().Add(5 * time.Second)
+	for {
+		sessions, listErr := client.ListSessions()
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		if len(sessions) == 1 && sessions[0].ActivitySequences[model.NotificationTerminalAttention] == 1 {
+			break
+		}
+		if time.Now().After(attentionDeadline) {
+			t.Fatalf("terminal attention was not projected: %+v", sessions)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	keyPath := filepath.Join(root, "sessions", created.SessionID, "recovery.key")
 	keyInfo, err := os.Stat(keyPath)
 	if err != nil {
@@ -93,6 +110,52 @@ func TestCreateSessionStartsManagedPTYAndAcceptsInput(t *testing.T) {
 	}
 	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("recovery key remains: %v", err)
+	}
+}
+
+func TestManagedPTYDrainsFinalAttentionBeforeExit(t *testing.T) {
+	root := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	client, err := Dial(server.SocketPath(), "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	created, err := client.CreateSession(context.Background(), protocol.SessionCreate{Handle: "final-attention", Kind: model.KindAgent, AgentType: "shell", CWD: root,
+		Command: []string{"sh", "-c", `printf '\a'; sleep 0.2`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Status != model.StatusRunning && created.Status != model.StatusStopped {
+		t.Fatalf("created=%+v", created)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		sessions, listErr := client.ListSessions()
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		if len(sessions) == 1 && sessions[0].Status == model.StatusStopped {
+			if sessions[0].ActivitySequences[model.NotificationTerminalAttention] != 1 {
+				t.Fatalf("final attention missing before stopped snapshot: %+v", sessions)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session did not stop: %+v", sessions)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

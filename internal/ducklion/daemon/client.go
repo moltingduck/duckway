@@ -352,6 +352,9 @@ func (s *SessionEventSubscription) Read() (protocol.SessionRevisionEvent, error)
 			event.Revision != s.next || event.SessionID == "" || event.Change != "invalidate" && event.Change != "delete" {
 			return protocol.SessionRevisionEvent{}, fmt.Errorf("invalid or non-contiguous session revision event")
 		}
+		if event.ActivityCategory == "" && event.ActivitySequence != 0 || event.ActivityCategory != "" && (event.ActivitySequence == 0 || event.ActivityCategory.Validate() != nil) {
+			return protocol.SessionRevisionEvent{}, fmt.Errorf("invalid session activity revision")
+		}
 		s.next++
 		return event, nil
 	case <-s.client.done:

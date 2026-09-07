@@ -347,8 +347,11 @@ func TestHostScopedTUIDisablesAddAndNewShortcuts(t *testing.T) {
 	if got := state.handleInput([]byte("a")); got != "" {
 		t.Fatalf("host-scoped add shortcut action = %q", got)
 	}
-	if got := state.handleInput([]byte("n")); got != "" {
+	if got := state.handleInput([]byte("c")); got != "" {
 		t.Fatalf("host-scoped new shortcut action = %q", got)
+	}
+	if got := state.handleInput([]byte("n")); got != "notifications" {
+		t.Fatalf("host-scoped notification shortcut action = %q", got)
 	}
 	if got := state.handleInput([]byte("d")); got != "" {
 		t.Fatalf("host-scoped remove shortcut action = %q", got)
@@ -488,6 +491,119 @@ func TestTUIRevisionMarksOnlyChangedBackgroundSession(t *testing.T) {
 			{Client: "host-a", InstanceID: "instance", SessionID: "DEF456", Name: "background"}}})
 	if state.sessions[0].Updated || !state.sessions[1].Updated {
 		t.Fatalf("updated markers=%+v", state.sessions)
+	}
+}
+
+func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	stateDir := filepath.Join(t.TempDir(), "private")
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(stateDir, "state.json")
+	state := &tuiState{hostSync: make(map[string]ducklord.SessionUpdate), activityState: ducklord.NewActivityState(),
+		activityStore: ducklord.ActivityStateStore{Path: statePath}, outputForKey: instance + "/ABC123", outputFresh: true,
+		sessions: []ducklord.RemoteSession{
+			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "ABC123", Name: "active"},
+			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "DEF456", Name: "background"},
+		}}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Revision: 2, Generation: 1, State: "live", ChangedSessionID: "DEF456",
+		Sessions: []ducklord.RemoteSession{
+			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "ABC123", Name: "active"},
+			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "DEF456", Name: "background",
+				ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTerminalAttention: 1}},
+		}})
+	if state.sessions[0].Unread || !state.sessions[1].Unread || !state.groupHasUnread("work") {
+		t.Fatalf("unread projection=%+v", state.sessions)
+	}
+	state.selected = 1
+	state.outputForKey = instance + "/DEF456"
+	state.outputFresh = false // a stale detach snapshot is not proof of seeing it
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Revision: 3, Generation: 1, State: "live",
+		Sessions: append([]ducklord.RemoteSession(nil), state.sessions...)})
+	if !state.currentSession().Unread {
+		t.Fatal("selection or stale output cleared unread")
+	}
+	state.focused = true
+	state.pendingAttachKey = instance + "/DEF456"
+	state.applyAttachOutput("fresh\n")
+	if state.currentSession().Unread || state.groupHasUnread("work") {
+		t.Fatalf("fresh attach did not clear unread: %+v", state.sessions)
+	}
+	loaded, err := (ducklord.ActivityStateStore{Path: statePath}).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Sessions[instance+"/DEF456"].Seen[model.NotificationTerminalAttention] != 1 {
+		t.Fatalf("seen state=%+v", loaded.Sessions)
+	}
+}
+
+func TestTUISelectionDoesNotMoveActiveSessionOrClearUnread(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	state := &tuiState{activityState: ducklord.NewActivityState(), activeAttachKey: instance + "/ABC123", activeAttachFresh: true,
+		outputForKey: instance + "/ABC123", outputFresh: true, sessions: []ducklord.RemoteSession{
+			{Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "active"},
+			{Client: "host-a", InstanceID: instance, SessionID: "DEF456", Name: "background", Unread: true,
+				ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTerminalAttention: 1}},
+		}}
+	if action := state.handleInput([]byte("j")); action != "select" {
+		t.Fatalf("action=%q", action)
+	}
+	if state.activeAttachKey != instance+"/ABC123" || !state.currentSession().Unread {
+		t.Fatalf("selection moved active or cleared unread: active=%q current=%+v", state.activeAttachKey, state.currentSession())
+	}
+}
+
+func TestTUINotificationMenuStagesAndAtomicallySaves(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	stateDir := filepath.Join(t.TempDir(), "private")
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: filepath.Join(stateDir, "state.json")},
+		sessions: []ducklord.RemoteSession{{Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "agent"}}}
+	state.beginNotificationSettings()
+	if !state.notificationMode || len(state.notificationStaged) != len(model.NotificationCategories()) {
+		t.Fatalf("menu state=%+v", state.notificationStaged)
+	}
+	if action := state.handleNotificationInput([]byte(" ")); action != "" || state.notificationStaged[model.NotificationTerminalAttention] {
+		t.Fatalf("toggle action=%q staged=%+v", action, state.notificationStaged)
+	}
+	if state.activity().Enabled(instance, "ABC123", model.NotificationTerminalAttention) == false {
+		t.Fatal("staged toggle mutated durable state before save")
+	}
+	state.saveNotificationSettings()
+	if state.notificationMode || state.activity().Enabled(instance, "ABC123", model.NotificationTerminalAttention) {
+		t.Fatalf("saved mode=%v state=%+v", state.notificationMode, state.activityState)
+	}
+	loaded, err := state.activityStore.Load()
+	if err != nil || loaded.Enabled(instance, "ABC123", model.NotificationTerminalAttention) {
+		t.Fatalf("loaded state=%+v err=%v", loaded, err)
+	}
+}
+
+func TestTUINotificationSaveFailureLeavesLiveStateUntouched(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	badTarget := filepath.Join(t.TempDir(), "state-is-a-directory")
+	if err := os.MkdirAll(badTarget, 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: badTarget},
+		sessions: []ducklord.RemoteSession{{Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "agent"}}}
+	state.beginNotificationSettings()
+	state.notificationStaged[model.NotificationTerminalAttention] = false
+	state.saveNotificationSettings()
+	if !state.notificationMode || !state.activity().Enabled(instance, "ABC123", model.NotificationTerminalAttention) {
+		t.Fatalf("failed save mutated state or closed menu: mode=%v state=%+v", state.notificationMode, state.activityState)
+	}
+	if !strings.Contains(state.outputErr, "notification state") {
+		t.Fatalf("missing save feedback: %q", state.outputErr)
+	}
+	var rendered strings.Builder
+	state.renderNotificationSettings(&rendered, 1, 100, 30, state.currentSession())
+	if !strings.Contains(rendered.String(), "Not saved:") {
+		t.Fatalf("menu did not render error: %q", rendered.String())
 	}
 }
 

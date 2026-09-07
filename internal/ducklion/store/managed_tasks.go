@@ -196,12 +196,13 @@ func (s *SQLite) MarkManagedTaskRunning(ctx context.Context, sessionID model.Ses
 }
 
 type ManagedTaskEvent struct {
-	TaskID        string
-	Sequence      uint64
-	Kind          string
-	OutputEnd     uint64
-	ErrorCategory string
-	Digest        [32]byte
+	TaskID               string
+	Sequence             uint64
+	Kind                 string
+	OutputEnd            uint64
+	ErrorCategory        string
+	Digest               [32]byte
+	NotificationCategory model.NotificationCategory
 }
 
 func (s *SQLite) ApplyManagedTaskEvent(ctx context.Context, sessionID model.SessionID, generation uint64, event ManagedTaskEvent, beforeCommit func(model.Session) error) (ManagedTask, model.Session, error) {
@@ -296,6 +297,11 @@ func (s *SQLite) ApplyManagedTaskEvent(ctx context.Context, sessionID model.Sess
 	}
 	if err := s.UpdateSessionTx(ctx, tx, session, oldEpoch, generation); err != nil {
 		return ManagedTask{}, model.Session{}, err
+	}
+	if event.NotificationCategory != "" {
+		if _, err := recordActivityTx(ctx, tx, sessionID, event.NotificationCategory, task.UpdatedAtMS); err != nil {
+			return ManagedTask{}, model.Session{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return ManagedTask{}, model.Session{}, err

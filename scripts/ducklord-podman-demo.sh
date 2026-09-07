@@ -151,7 +151,8 @@ Inside the TUI:
   mouse click: select a session row
   Enter or right-click: focus the selected session in the right pane
   a: add a ducklion host from ~/.ssh/config (try client-c)
-  n: create a remote session: choose agent -> host -> project
+  c: create a remote session: choose agent -> host -> project
+  n: configure notifications for the selected session
   attach-host mode: same split-pane attach UI scoped to one host; add/new are disabled
   right pane: selected session output preview
   Ctrl-]: return keyboard focus to the left menu

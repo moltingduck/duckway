@@ -93,6 +93,34 @@ func TestSessionInputIsFencedAndOutputIsMemoryOnly(t *testing.T) {
 	}
 }
 
+func TestSessionAttentionIsCapturedOnceUntilAcknowledged(t *testing.T) {
+	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, CWD: t.TempDir(),
+		Command: []string{"sh", "-c", `printf '\a'; sleep 30`}, OutputCapacity: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Terminate(true); _ = session.Wait() }()
+	deadline := time.Now().Add(2 * time.Second)
+	var offset uint64
+	for time.Now().Before(deadline) {
+		if pendingOffset, pending := session.PendingAttention(); pending {
+			offset = pendingOffset
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if offset == 0 {
+		t.Fatal("attention was not captured")
+	}
+	if second, pending := session.PendingAttention(); !pending || second != offset {
+		t.Fatalf("pending offset=%d pending=%v", second, pending)
+	}
+	session.AckAttention(offset)
+	if second, pending := session.PendingAttention(); pending || second != offset {
+		t.Fatalf("acknowledged offset=%d pending=%v", second, pending)
+	}
+}
+
 func TestSessionResizeIsGenerationAndEpochFenced(t *testing.T) {
 	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, CWD: t.TempDir(), Command: []string{"sh", "-c", "exit 0"}})
 	if err != nil {

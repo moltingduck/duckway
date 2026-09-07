@@ -9,9 +9,10 @@ import (
 )
 
 type SessionProjection struct {
-	Session          model.Session
-	ChannelHandle    string
-	ManagementHandle string
+	Session           model.Session
+	ChannelHandle     string
+	ManagementHandle  string
+	ActivitySequences map[model.NotificationCategory]uint64
 }
 
 type SessionRevisionSnapshot struct {
@@ -21,9 +22,11 @@ type SessionRevisionSnapshot struct {
 }
 
 type SessionRevision struct {
-	Revision  uint64
-	SessionID model.SessionID
-	Change    string
+	Revision         uint64
+	SessionID        model.SessionID
+	Change           string
+	ActivityCategory model.NotificationCategory
+	ActivitySequence uint64
 }
 
 // SessionSnapshot reads the journal watermark and complete session projection
@@ -66,6 +69,13 @@ func (s *SQLite) SessionSnapshot(ctx context.Context) (SessionRevisionSnapshot, 
 			return SessionRevisionSnapshot{}, bindingErr
 		}
 	}
+	activity, err := activityForSessionsTx(ctx, tx)
+	if err != nil {
+		return SessionRevisionSnapshot{}, err
+	}
+	for i := range projections {
+		projections[i].ActivitySequences = activity[projections[i].Session.ID]
+	}
 	if err := tx.Commit(); err != nil {
 		return SessionRevisionSnapshot{}, err
 	}
@@ -83,11 +93,16 @@ func (s *SQLite) SessionRevisionsAfter(ctx context.Context, after uint64, limit 
 	if limit < 1 || limit > 512 {
 		limit = 256
 	}
-	var earliest, latest sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, `SELECT min(revision),max(revision) FROM session_revision_events`).Scan(&earliest, &latest); err != nil {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
 		return nil, 0, 0, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT revision,session_id,change_kind FROM session_revision_events WHERE revision>? ORDER BY revision LIMIT ?`, after, limit)
+	defer tx.Rollback()
+	var earliest, latest sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT min(revision),max(revision) FROM session_revision_events`).Scan(&earliest, &latest); err != nil {
+		return nil, 0, 0, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT revision,session_id,change_kind,coalesce(activity_category,''),coalesce(activity_sequence,0) FROM session_revision_events WHERE revision>? ORDER BY revision LIMIT ?`, after, limit)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -95,7 +110,7 @@ func (s *SQLite) SessionRevisionsAfter(ctx context.Context, after uint64, limit 
 	var revisions []SessionRevision
 	for rows.Next() {
 		var revision SessionRevision
-		if err := rows.Scan(&revision.Revision, &revision.SessionID, &revision.Change); err != nil {
+		if err := rows.Scan(&revision.Revision, &revision.SessionID, &revision.Change, &revision.ActivityCategory, &revision.ActivitySequence); err != nil {
 			return nil, 0, 0, err
 		}
 		revisions = append(revisions, revision)
@@ -107,5 +122,14 @@ func (s *SQLite) SessionRevisionsAfter(ctx context.Context, after uint64, limit 
 	if latest.Valid {
 		last = uint64(latest.Int64)
 	}
-	return revisions, first, last, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, 0, 0, err
+	}
+	return revisions, first, last, nil
 }

@@ -207,14 +207,23 @@ func TestSessionEventSubscriptionHasAtomicSnapshotAndDurableRevision(t *testing.
 	if event.Revision != metadata.SnapshotRevision+1 || event.SessionID != "ABC123" || event.Change != "invalidate" {
 		t.Fatalf("event=%+v", event)
 	}
+	sequence, advanced, err := server.state.RecordActivity(context.Background(), session.ID, model.NotificationTaskCompleted, 0)
+	if err != nil || !advanced || sequence != 1 {
+		t.Fatalf("activity sequence=%d advanced=%v err=%v", sequence, advanced, err)
+	}
+	activityEvent, err := subscription.Read()
+	if err != nil || activityEvent.Revision != event.Revision+1 || activityEvent.ActivityCategory != model.NotificationTaskCompleted || activityEvent.ActivitySequence != 1 {
+		t.Fatalf("activity event=%+v err=%v", activityEvent, err)
+	}
 	if err := subscription.Close(); err != nil {
 		t.Fatal(err)
 	}
-	second, err := viewer.SubscribeSessionEvents(event.Revision)
+	second, err := viewer.SubscribeSessionEvents(activityEvent.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Metadata().SnapshotRevision != event.Revision || second.Metadata().Sessions[0].Status != model.StatusRunning {
+	if second.Metadata().SnapshotRevision != activityEvent.Revision || second.Metadata().Sessions[0].Status != model.StatusRunning ||
+		second.Metadata().Sessions[0].ActivitySequences[model.NotificationTaskCompleted] != 1 {
 		t.Fatalf("second metadata=%+v", second.Metadata())
 	}
 	_ = second.Close()
@@ -372,6 +381,59 @@ func TestServerRejectsWrongInstance(t *testing.T) {
 	}
 }
 
+func TestStalledActivityConnectionDoesNotBlockRawOutput(t *testing.T) {
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveErr }()
+	publicKey, privateKey, err := model.NewRecoveryKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+		Writer: &model.Owner{Kind: model.OwnerTerminal, ID: "desk"}, OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle,
+		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: time.Now().UnixMilli(), UpdatedAtMS: time.Now().UnixMilli()}
+	if _, _, err := server.service.CreateSession(context.Background(), "terminal:desk", "create-stall", session); err != nil {
+		t.Fatal(err)
+	}
+	client, err := RegisterSupervisor(server.SocketPath(), session.ID, 1, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.PublishOutput([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	activity, err := client.OpenActivity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer activity.Close()
+	server.attentionMu.Lock()
+	attentionDone := make(chan error, 1)
+	go func() { attentionDone <- activity.ReportTerminalAttention(context.Background(), 3) }()
+	time.Sleep(20 * time.Millisecond)
+	publishDone := make(chan error, 1)
+	go func() { publishDone <- client.PublishOutput(bytes.Repeat([]byte("x"), 65*64<<10)) }()
+	select {
+	case err := <-publishDone:
+		if err != nil {
+			server.attentionMu.Unlock()
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		server.attentionMu.Unlock()
+		t.Fatal("stalled activity connection blocked raw output")
+	}
+	server.attentionMu.Unlock()
+	if err := <-attentionDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	server, err := Open(context.Background(), Options{Root: t.TempDir()})
 	if err != nil {
@@ -414,9 +476,24 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	if err := client.PublishOutput([]byte("abc")); err != nil {
 		t.Fatal(err)
 	}
+	activity, err := client.OpenActivity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer activity.Close()
+	if err := activity.ReportTerminalAttention(context.Background(), 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := activity.ReportTerminalAttention(context.Background(), 3); err != nil {
+		t.Fatal(err)
+	}
 	viewer, err := Dial(server.SocketPath(), "output-laptop")
 	if err != nil {
 		t.Fatal(err)
+	}
+	listed, err := viewer.ListSessions()
+	if err != nil || len(listed) != 1 || listed[0].ActivitySequences[model.NotificationTerminalAttention] != 1 {
+		t.Fatalf("attention snapshot=%+v err=%v", listed, err)
 	}
 	subscription, err := viewer.SubscribeOutput(string(session.ID), session.RuntimeGeneration, 0)
 	if err != nil {

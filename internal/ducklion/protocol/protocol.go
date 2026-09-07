@@ -34,10 +34,11 @@ func (r HandshakeResponse) Validate() error {
 type PeerRole string
 
 const (
-	RoleDucklord          PeerRole = "ducklord"
-	RoleDuckwayCC         PeerRole = "duckway_cc"
-	RoleSupervisor        PeerRole = "supervisor"
-	RoleSupervisorControl PeerRole = "supervisor_control"
+	RoleDucklord           PeerRole = "ducklord"
+	RoleDuckwayCC          PeerRole = "duckway_cc"
+	RoleSupervisor         PeerRole = "supervisor"
+	RoleSupervisorControl  PeerRole = "supervisor_control"
+	RoleSupervisorActivity PeerRole = "supervisor_activity"
 )
 
 type Request struct {
@@ -100,7 +101,7 @@ func Negotiate(local, remote Handshake) (Handshake, *Error) {
 	if local.Major != remote.Major {
 		return Handshake{}, &Error{Code: ErrIncompatible, Message: "protocol major version mismatch"}
 	}
-	if remote.Role != RoleDucklord && remote.Role != RoleDuckwayCC && remote.Role != RoleSupervisor && remote.Role != RoleSupervisorControl {
+	if remote.Role != RoleDucklord && remote.Role != RoleDuckwayCC && remote.Role != RoleSupervisor && remote.Role != RoleSupervisorControl && remote.Role != RoleSupervisorActivity {
 		return Handshake{}, &Error{Code: ErrInvalidArgument, Message: "invalid peer role"}
 	}
 	if strings.TrimSpace(remote.Principal) == "" {

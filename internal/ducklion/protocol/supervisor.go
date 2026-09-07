@@ -6,21 +6,22 @@ const MaxAgentPromptBytes = 1 << 20
 const MaxAgentResponseBytes = 256 << 10
 
 type SessionSummary struct {
-	SessionID         string              `json:"session_id"`
-	Handle            string              `json:"handle"`
-	Kind              model.SessionKind   `json:"kind"`
-	AgentType         string              `json:"agent_type,omitempty"`
-	CWD               string              `json:"cwd"`
-	Status            model.SessionStatus `json:"status"`
-	Writer            *model.Owner        `json:"writer,omitempty"`
-	OwnershipEpoch    uint64              `json:"ownership_epoch"`
-	RuntimeGeneration uint64              `json:"runtime_generation"`
-	TaskState         model.TaskState     `json:"task_state"`
-	AdapterState      model.AdapterState  `json:"adapter_state"`
-	ExitSuccess       *bool               `json:"exit_success,omitempty"`
-	ExitReason        string              `json:"exit_reason,omitempty"`
-	ChannelHandle     string              `json:"channel_handle,omitempty"`
-	ManagementHandle  string              `json:"management_handle,omitempty"`
+	SessionID         string                                `json:"session_id"`
+	Handle            string                                `json:"handle"`
+	Kind              model.SessionKind                     `json:"kind"`
+	AgentType         string                                `json:"agent_type,omitempty"`
+	CWD               string                                `json:"cwd"`
+	Status            model.SessionStatus                   `json:"status"`
+	Writer            *model.Owner                          `json:"writer,omitempty"`
+	OwnershipEpoch    uint64                                `json:"ownership_epoch"`
+	RuntimeGeneration uint64                                `json:"runtime_generation"`
+	TaskState         model.TaskState                       `json:"task_state"`
+	AdapterState      model.AdapterState                    `json:"adapter_state"`
+	ExitSuccess       *bool                                 `json:"exit_success,omitempty"`
+	ExitReason        string                                `json:"exit_reason,omitempty"`
+	ChannelHandle     string                                `json:"channel_handle,omitempty"`
+	ManagementHandle  string                                `json:"management_handle,omitempty"`
+	ActivitySequences map[model.NotificationCategory]uint64 `json:"activity_sequences,omitempty"`
 }
 
 type SessionCreate struct {
@@ -59,6 +60,17 @@ type SupervisorOutput struct {
 type SupervisorOutputAck struct {
 	Offset uint64 `json:"offset"`
 	Length uint64 `json:"length"`
+}
+
+type SupervisorActivityReceipt struct {
+	Category     model.NotificationCategory `json:"category"`
+	Sequence     uint64                     `json:"sequence"`
+	Advanced     bool                       `json:"advanced"`
+	OutputOffset uint64                     `json:"output_offset"`
+}
+
+type SupervisorTerminalAttention struct {
+	OutputOffset uint64 `json:"output_offset"`
 }
 
 type SupervisorInput struct {
@@ -254,11 +266,13 @@ type SessionSnapshotSubscribeResult struct {
 }
 
 type SessionRevisionEvent struct {
-	Type           string `json:"type"`
-	SubscriptionID string `json:"subscription_id"`
-	InstanceID     string `json:"instance_id"`
-	Revision       uint64 `json:"revision"`
-	SessionID      string `json:"session_id,omitempty"`
-	Change         string `json:"change,omitempty"`
-	Reason         string `json:"reason,omitempty"`
+	Type             string                     `json:"type"`
+	SubscriptionID   string                     `json:"subscription_id"`
+	InstanceID       string                     `json:"instance_id"`
+	Revision         uint64                     `json:"revision"`
+	SessionID        string                     `json:"session_id,omitempty"`
+	Change           string                     `json:"change,omitempty"`
+	Reason           string                     `json:"reason,omitempty"`
+	ActivityCategory model.NotificationCategory `json:"activity_category,omitempty"`
+	ActivitySequence uint64                     `json:"activity_sequence,omitempty"`
 }
