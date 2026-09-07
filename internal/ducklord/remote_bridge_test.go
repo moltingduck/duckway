@@ -12,10 +12,37 @@ import (
 
 	"github.com/hackerduck/duckway/internal/ducklion/daemon"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/ducklion/service"
 	"github.com/hackerduck/duckway/internal/ducklion/store"
 	"github.com/hackerduck/duckway/internal/ducklion/supervisor"
 )
+
+func TestNormalizeNativeShellLifecycleMode(t *testing.T) {
+	tests := []struct {
+		name      string
+		kind      model.SessionKind
+		operation protocol.SessionLifecycleOperation
+		mode      protocol.SessionLifecycleMode
+		want      protocol.SessionLifecycleMode
+		wantErr   bool
+	}{
+		{name: "shell restart default", kind: model.KindShell, operation: protocol.SessionLifecycleRestart, mode: protocol.SessionLifecycleWait, want: protocol.SessionLifecycleImmediate},
+		{name: "shell end immediate", kind: model.KindShell, operation: protocol.SessionLifecycleEnd, mode: protocol.SessionLifecycleImmediate, want: protocol.SessionLifecycleImmediate},
+		{name: "shell destroy wait rejected", kind: model.KindShell, operation: protocol.SessionLifecycleDestroy, mode: protocol.SessionLifecycleWait, wantErr: true},
+		{name: "shell restart force rejected", kind: model.KindShell, operation: protocol.SessionLifecycleRestart, mode: protocol.SessionLifecycleForce, wantErr: true},
+		{name: "agent restart wait preserved", kind: model.KindAgent, operation: protocol.SessionLifecycleRestart, mode: protocol.SessionLifecycleWait, want: protocol.SessionLifecycleWait},
+		{name: "agent restart force preserved", kind: model.KindAgent, operation: protocol.SessionLifecycleRestart, mode: protocol.SessionLifecycleForce, want: protocol.SessionLifecycleForce},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := normalizeLifecycleMode(test.kind, test.operation, test.mode)
+			if (err != nil) != test.wantErr || got != test.want {
+				t.Fatalf("mode=%q err=%v", got, err)
+			}
+		})
+	}
+}
 
 func TestMain(m *testing.M) {
 	if os.Getenv("DUCKLORD_TEST_BRIDGE_HELPER") == "1" {

@@ -1,6 +1,11 @@
 # Duckway Session Manager Spec
 
-Status: draft for TDD implementation.
+Status: superseded historical draft. The local-only, separate-PTY model below
+is retained for migration context but is not the current architecture. New
+work must follow [Ducklord / Ducklion Remote Agent Control](ducklord-ducklion-spec.md)
+and [Ducklion PTY transport implementation](ducklion-transport.md), where
+Ducklion owns durable sessions and Discord/Ducklord exchange writer control via
+the fenced yield protocol.
 
 ## Goals
 

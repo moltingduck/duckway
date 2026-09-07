@@ -145,6 +145,22 @@ func TestDucklordSessionsSanitizesRemoteLastLine(t *testing.T) {
 	}
 }
 
+func TestDucklordSessionsDistinguishesNativeShellFromAgent(t *testing.T) {
+	config := writeConfig(t)
+	runner := fakeRunner{sessions: []ducklord.RemoteSession{
+		{Client: "client-a", Name: "terminal", Kind: string(model.KindShell), Status: "running"},
+		{Client: "client-a", Name: "worker", Kind: string(model.KindAgent), AgentType: "codex", Status: "running"},
+	}}
+	var out bytes.Buffer
+	if err := run([]string{"sessions", "client-a", "--config", config}, &out, runner); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "TYPE") || !strings.Contains(text, "terminal") || !strings.Contains(text, "shell") || !strings.Contains(text, "agent:codex") {
+		t.Fatalf("sessions output=%q", text)
+	}
+}
+
 func TestDucklordProjectsUsesRunner(t *testing.T) {
 	config := writeConfig(t)
 	var out bytes.Buffer
@@ -261,6 +277,27 @@ func TestDucklordStartValidatesAndUsesRunner(t *testing.T) {
 	want := []string{"--name", "alpha", "--agent", "shell", "--cwd", "/tmp", "--", "bash"}
 	if runner.startClient != "client-a" || strings.Join(runner.startArgs, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("start client=%q args=%#v", runner.startClient, runner.startArgs)
+	}
+}
+
+func TestDucklordStartCreatesNativeShellSession(t *testing.T) {
+	config := writeConfig(t)
+	runner := &recordingRunner{}
+	if err := run([]string{"start", "client-a", "--name", "terminal", "--kind", "shell", "--cwd", "/tmp", "--", "bash", "--config", config}, io.Discard, runner); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--name", "terminal", "--kind", "shell", "--cwd", "/tmp", "--", "bash"}
+	if strings.Join(runner.startArgs, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("start args=%#v", runner.startArgs)
+	}
+	for _, args := range [][]string{
+		{"start", "client-a", "--name", "bad-shell", "--kind", "shell", "--agent", "codex", "--cwd", "/tmp", "--", "bash", "--config", config},
+		{"start", "client-a", "--name", "bad-shell", "--kind", "shell", "--cwd", "/tmp", "--", "bash", "-l", "--config", config},
+		{"start", "client-a", "--name", "bad-kind", "--kind", "other", "--cwd", "/tmp", "--", "bash", "--config", config},
+	} {
+		if err := run(args, io.Discard, runner); err == nil {
+			t.Fatalf("args %#v accepted", args)
+		}
 	}
 }
 
@@ -906,7 +943,7 @@ func TestTUICreateWizardBuildsShellSessionFromProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--name", "shell-duckway", "--agent", "shell", "--cwd", "/home/duck/duckway", "--", "bash"}
+	want := []string{"--name", "shell-duckway", "--kind", "shell", "--cwd", "/home/duck/duckway", "--", "bash"}
 	if !ready || name != "shell-duckway" || clientName != "client-b" || strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("ready=%v name=%q client=%q args=%#v", ready, name, clientName, args)
 	}

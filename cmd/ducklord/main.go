@@ -284,7 +284,7 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 			return err
 		}
 		if len(rest) < 2 {
-			return fmt.Errorf("usage: ducklord start <client> --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]")
+			return fmt.Errorf("usage: ducklord start <client> --name <name> [--kind shell | --agent <agent>] [--cwd <dir>] -- CMD [ARGS...]")
 		}
 		owner, err := ducklord.ResolveOwnerName(globalOwner, cfg.Name)
 		if err != nil {
@@ -726,9 +726,9 @@ func printSessions(out io.Writer, sessions []ducklord.RemoteSession) error {
 		fmt.Fprintln(out, "No remote sessions.")
 		return nil
 	}
-	fmt.Fprintf(out, "%-12s %-18s %-10s %-12s %s\n", "CLIENT", "SESSION", "STATUS", "AGENT", "LAST")
+	fmt.Fprintf(out, "%-12s %-18s %-10s %-16s %s\n", "CLIENT", "SESSION", "STATUS", "TYPE", "LAST")
 	for _, s := range sessions {
-		fmt.Fprintf(out, "%-12s %-18s %-10s %-12s %s\n", displayField(s.Client), displayField(s.Name), displayField(s.Status), displayField(s.AgentType), truncate(sanitizeTerminalText(s.LastLine), 80))
+		fmt.Fprintf(out, "%-12s %-18s %-10s %-16s %s\n", displayField(s.Client), displayField(s.Name), displayField(s.Status), displayField(sessionTypeLabel(s)), truncate(sanitizeTerminalText(s.LastLine), 80))
 	}
 	return nil
 }
@@ -850,6 +850,7 @@ func parseDucklordLifecycle(command string, args []string) (protocol.SessionLife
 func parseDucklordStartArgs(args []string) ([]string, error) {
 	name := ""
 	agent := ""
+	kind := model.KindAgent
 	cwd := ""
 	command := []string{}
 	for i := 0; i < len(args); i++ {
@@ -869,6 +870,12 @@ func parseDucklordStartArgs(args []string) ([]string, error) {
 			}
 			agent = args[i+1]
 			i++
+		case "--kind":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("--kind requires a value")
+			}
+			kind = model.SessionKind(args[i+1])
+			i++
 		case "--cwd", "-C":
 			if i+1 >= len(args) {
 				return nil, fmt.Errorf("%s requires a value", args[i])
@@ -879,14 +886,31 @@ func parseDucklordStartArgs(args []string) ([]string, error) {
 			return nil, fmt.Errorf("unknown start option: %s", args[i])
 		}
 	}
-	return buildStartArgs(name, agent, cwd, command)
+	return buildStartArgsKind(name, kind, agent, cwd, command)
 }
 
 func buildStartArgs(name, agent, cwd string, command []string) ([]string, error) {
+	return buildStartArgsKind(name, model.KindAgent, agent, cwd, command)
+}
+
+func buildStartArgsKind(name string, kind model.SessionKind, agent, cwd string, command []string) ([]string, error) {
 	if !ducklord.SafeIdentifier(name) {
 		return nil, fmt.Errorf("invalid session name %q", name)
 	}
 	out := []string{"--name", name}
+	switch kind {
+	case model.KindAgent:
+	case model.KindShell:
+		if agent != "" {
+			return nil, fmt.Errorf("shell sessions do not accept --agent")
+		}
+		if len(command) != 1 {
+			return nil, fmt.Errorf("shell sessions require exactly one shell executable after --")
+		}
+		out = append(out, "--kind", string(model.KindShell))
+	default:
+		return nil, fmt.Errorf("invalid --kind value %q", kind)
+	}
 	if agent != "" {
 		if !ducklord.SafeIdentifier(agent) {
 			return nil, fmt.Errorf("invalid --agent value %q", agent)
@@ -2173,7 +2197,7 @@ func (s *tuiState) render(out io.Writer) {
 		} else if sess.Updated {
 			mark = "*"
 		}
-		line := fmt.Sprintf("%s%s %-12s %-18s %-9s %-10s %s", prefix, mark, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sess.AgentType), sess.LastLine)
+		line := fmt.Sprintf("%s%s %-12s %-18s %-9s %-14s %s", prefix, mark, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sessionTypeLabel(sess)), sess.LastLine)
 		if sess.Error != "" {
 			line = fmt.Sprintf("%s! %-12s %-18s %-9s %s", prefix, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), sess.Error)
 		}
@@ -2333,7 +2357,7 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 		s.renderNotificationSettings(out, x, width, height, sess)
 		return
 	}
-	header := fmt.Sprintf("%s / %s  %s  %s", displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sess.AgentType))
+	header := fmt.Sprintf("%s / %s  %s  %s", displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sessionTypeLabel(sess)))
 	if s.focused {
 		header += "  [focus]"
 	}
@@ -2764,7 +2788,12 @@ func (s *tuiState) submitCreateStep(ctx context.Context) (sessionName, clientNam
 			return "", "", nil, false, err
 		}
 		name := createSessionName(s.newSessionAgent, cwd)
-		args, err := buildStartArgs(name, s.newSessionAgent, cwd, s.newSessionCommand)
+		var args []string
+		if s.newSessionAgent == "shell" {
+			args, err = buildStartArgsKind(name, model.KindShell, "", cwd, s.newSessionCommand)
+		} else {
+			args, err = buildStartArgs(name, s.newSessionAgent, cwd, s.newSessionCommand)
+		}
 		if err != nil {
 			return "", "", nil, false, err
 		}
@@ -3136,6 +3165,16 @@ func displayField(s string) string {
 	return sanitizeTerminalText(s)
 }
 
+func sessionTypeLabel(session ducklord.RemoteSession) string {
+	if session.Kind == string(model.KindShell) {
+		return "shell"
+	}
+	if session.AgentType == "" {
+		return "agent"
+	}
+	return "agent:" + session.AgentType
+}
+
 func tailLines(lines []string, max int) []string {
 	if max <= 0 {
 		return nil
@@ -3174,7 +3213,7 @@ Usage:
   ducklord attach <client> <session> [--config <path>]
   ducklord read <client> <session> [--lines N] [--config <path>]
   ducklord send <client> <session> <text> [--config <path>]
-  ducklord start <client> --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
+  ducklord start <client> --name <name> [--kind shell | --agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
   ducklord stop <client> <session> [--config <path>]
   ducklord end <client> <session> [-w|--wait|-f|--force] [--config <path>]
   ducklord restart <client> <session> [-f|--force] [--config <path>]

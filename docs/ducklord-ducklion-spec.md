@@ -245,8 +245,10 @@ Useful keys:
 - `Enter` or right-click focuses the selected session in the right pane.
 - `Ctrl-]` returns keyboard focus to the left menu.
 - `a` adds a Ducklion host from `~/.ssh/config`; use `client-c` in the demo.
-- `n` creates a new remote session with the wizard:
+- `c` creates a new remote session with the wizard:
   `agent -> host -> project`.
+- `n` configures notification categories for the selected session.
+- `E`, `R`, and `X` open confirmation views for end, restart, and destroy.
 - `r` refreshes immediately.
 - `q` quits.
 
@@ -310,7 +312,7 @@ podman exec ducklord-dev ducklord projects client-c --config /root/.ducklord/con
 
 ### 6. Create A Remote Session From The TUI
 
-Inside the TUI, press `n`, then follow the wizard:
+Inside the TUI, press `c`, then follow the wizard:
 
 ```text
 agent -> host -> project
@@ -338,7 +340,7 @@ The same start operation is available from the CLI:
 ```bash
 podman exec ducklord-dev ducklord start client-a \
   --name scratch \
-  --agent shell \
+  --kind shell \
   --cwd /home/duck \
   -- bash \
   --config /root/.ducklord/config.yaml
@@ -379,7 +381,7 @@ ducklord attach-host <client> [--config <path>]
 ducklord attach <client> <session> [--config <path>]
 ducklord read <client> <session> [--lines N] [--config <path>]
 ducklord send <client> <session> <text> [--config <path>]
-ducklord start <client> --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
+ducklord start <client> --name <name> [--kind shell | --agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
 ducklord stop <client> <session>
 ducklord end <client> <session> [-w|--wait|-f|--force]
 ducklord restart <client> <session> [-f|--force]
@@ -397,7 +399,8 @@ The current TUI supports:
 - `Enter` or right-click to focus the selected session in the right pane
 - keyboard input routing to the focused remote PTY session
 - `Ctrl-]` to return focus to the left menu
-- `n` to create a new remote session with `agent -> host -> project`
+- `c` to create a new remote session with `agent -> host -> project`
+- `n` to configure notification categories for the selected session
 - `ducklord attach-host <client>` to open the same split-pane view scoped to
   one remote host and its advertised Ducklion sessions
 - `r` to refresh immediately
@@ -523,13 +526,13 @@ shown instead of being mistaken for a clean EOF.
 
 ### Creating A Remote Session
 
-TUI creation starts when the operator presses `n`.
+TUI creation starts when the operator presses `c`.
 
 State transitions:
 
 ```text
 normal mode
-  -> n
+  -> c
   -> agent step: shell / codex / claude
   -> host step: configured Ducklord client number or name
   -> project step: remote Duckway project number/name/path, or custom cwd
@@ -538,8 +541,10 @@ normal mode
 
 The wizard is local and does not execute through a local shell:
 
-1. `parseCreateAgentChoice()` maps `shell`, `codex`, and `claude` to an agent
-   type and default command.
+1. `parseCreateAgentChoice()` maps `shell`, `codex`, and `claude` to a session
+   choice and default command. `shell` emits `--kind shell`; Codex and Claude
+   emit `--agent <type>`. Native shells and agent sessions therefore remain
+   visibly and behaviorally distinct.
 2. The host step resolves a configured Ducklord client by number or name.
 3. The project step uses `ducklion projects --json`; if no registry is present,
    the operator can enter a custom cwd path.
@@ -547,9 +552,9 @@ The wizard is local and does not execute through a local shell:
    path, for example `shell-alpha`.
 5. `buildStartArgs()` validates session and agent names as safe identifiers.
 
-The older non-TUI `ducklord start` CLI still accepts explicit
-`--name`/`--agent`/`--cwd`/`-- CMD` arguments and uses the same start-argument
-builder before connecting over SSH.
+The non-TUI `ducklord start` CLI accepts either `--kind shell` with exactly one
+shell executable or `--agent <type>` with an agent command. It uses the same
+validation as the wizard before connecting over SSH.
 
 `ducklord` then starts the remote session asynchronously:
 
@@ -557,7 +562,7 @@ builder before connecting over SSH.
 goroutine:
   runner.Start(startCtx, client, startArgs)
     -> ssh
-    -> ducklion start --name <name> [--agent <agent>] [--cwd <dir>] -- CMD
+    -> ducklion start --name <name> [--kind shell | --agent <agent>] [--cwd <dir>] -- CMD
 ```
 
 The TUI remains responsive while SSH start is in progress. `Esc`, `Ctrl-C`, or
@@ -716,6 +721,11 @@ The repository includes a demo script that creates:
 - SSH keys/config for the dev container
 - sample PTY sessions on pre-registered clients
 
+Before presenting the TUI, the script also runs a non-interactive release
+smoke through the real SSH stdio bridge: it restarts a native shell while
+preserving its session ID and advancing to generation 2, proves the replacement
+PTY accepts input, rejects shell `--force`, then ends and destroys the session.
+
 Run:
 
 ```bash
@@ -779,5 +789,7 @@ Inside the TUI:
 - `Ctrl-]` returns keyboard focus to the left menu
 - `a` adds a host entry from `~/.ssh/config`; use `client-c`
 - `d` removes the selected host entry from the current `config.yaml`
-- `n` creates a new remote session with `agent -> host -> project`
+- `c` creates a new remote session with `agent -> host -> project`
+- `n` configures notifications for the selected session
+- `E`, `R`, and `X` confirm end, restart, and destroy
 - `q` exits

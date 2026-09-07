@@ -93,10 +93,13 @@ echo "[ducklord-demo] creating sample remote sessions"
 "$RUNTIME" exec -u duck ducklion-client-a sh -lc 'mkdir -p /home/duck/projects/alpha && duckway projects add --name alpha-project /home/duck/projects/alpha' >/dev/null
 "$RUNTIME" exec -u duck ducklion-client-b sh -lc 'mkdir -p /home/duck/projects/beta && duckway projects add --name beta-project /home/duck/projects/beta' >/dev/null
 "$RUNTIME" exec -u duck ducklion-client-c sh -lc 'mkdir -p /home/duck/projects/gamma && duckway projects add --name gamma-project /home/duck/projects/gamma' >/dev/null
-"$RUNTIME" exec ducklord-dev ducklord start client-a --name alpha --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-a alpha tick $i; if [ $((i % 3)) -eq 0 ]; then echo "[ducklion:done] alpha step $i"; fi; sleep 4; done' >/dev/null
-"$RUNTIME" exec ducklord-dev ducklord start client-a --name bash --agent shell --cwd /home/duck -- bash >/dev/null
-"$RUNTIME" exec ducklord-dev ducklord start client-a --name build --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-a build output $i; sleep 6; done' >/dev/null
-"$RUNTIME" exec ducklord-dev ducklord start client-b --name beta --agent shell --cwd /home/duck -- sh -lc 'i=0; while :; do i=$((i+1)); echo client-b beta tick $i; if [ $((i % 2)) -eq 0 ]; then echo "[ducklion:done] beta step $i"; fi; sleep 5; done' >/dev/null
+"$RUNTIME" exec ducklord-dev ducklord start client-a --name alpha --kind shell --cwd /home/duck -- bash >/dev/null
+"$RUNTIME" exec ducklord-dev ducklord start client-a --name bash --kind shell --cwd /home/duck -- bash >/dev/null
+"$RUNTIME" exec ducklord-dev ducklord start client-a --name build --kind shell --cwd /home/duck -- bash >/dev/null
+"$RUNTIME" exec ducklord-dev ducklord start client-b --name beta --kind shell --cwd /home/duck -- bash >/dev/null
+"$RUNTIME" exec ducklord-dev ducklord send client-a alpha 'i=0; while :; do i=$((i+1)); echo client-a alpha tick $i; sleep 4; done' >/dev/null
+"$RUNTIME" exec ducklord-dev ducklord send client-a build 'i=0; while :; do i=$((i+1)); echo client-a build output $i; sleep 6; done' >/dev/null
+"$RUNTIME" exec ducklord-dev ducklord send client-b beta 'i=0; while :; do i=$((i+1)); echo client-b beta tick $i; sleep 5; done' >/dev/null
 
 echo "[ducklord-demo] verifying daemon inventory, PTY input, and recovery"
 sessions="$($RUNTIME exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml)"
@@ -131,6 +134,36 @@ if [ "$recovered" != true ]; then
   exit 1
 fi
 
+echo "[ducklord-demo] verifying native shell lifecycle through SSH bridge"
+"$RUNTIME" exec ducklord-dev ducklord start client-a --name lifecycle --kind shell --cwd /home/duck -- bash >/dev/null
+restart_output="$("$RUNTIME" exec ducklord-dev ducklord restart client-a lifecycle --config /root/.ducklord/config.yaml)"
+grep -q 'Restarted .* (generation 2)' <<<"$restart_output"
+if force_output="$("$RUNTIME" exec ducklord-dev ducklord restart client-a lifecycle --force --config /root/.ducklord/config.yaml 2>&1)"; then
+  echo "[ducklord-demo] shell restart unexpectedly accepted --force" >&2
+  exit 1
+fi
+grep -q 'immediate.*do not accept wait or force' <<<"$force_output"
+"$RUNTIME" exec ducklord-dev ducklord send client-a lifecycle 'printf "ducklord-lifecycle-generation-2\\n"' --config /root/.ducklord/config.yaml >/dev/null
+lifecycle_ready=false
+for _ in $(seq 1 50); do
+  if "$RUNTIME" exec ducklord-dev ducklord read client-a lifecycle --lines 20 --config /root/.ducklord/config.yaml | grep -q ducklord-lifecycle-generation-2; then
+    lifecycle_ready=true
+    break
+  fi
+  sleep 0.05
+done
+if [ "$lifecycle_ready" != true ]; then
+  echo "[ducklord-demo] restarted shell did not accept PTY input" >&2
+  exit 1
+fi
+"$RUNTIME" exec ducklord-dev ducklord end client-a lifecycle --config /root/.ducklord/config.yaml | grep -q 'Ended '
+"$RUNTIME" exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml | grep -q 'lifecycle.*stopped.*shell'
+"$RUNTIME" exec ducklord-dev ducklord destroy client-a lifecycle --config /root/.ducklord/config.yaml | grep -q 'Destroyed '
+if "$RUNTIME" exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml | grep -q 'lifecycle'; then
+  echo "[ducklord-demo] destroyed shell remains in inventory" >&2
+  exit 1
+fi
+
 cat <<EOF
 [ducklord-demo] ready
 
@@ -153,6 +186,7 @@ Inside the TUI:
   a: add a ducklion host from ~/.ssh/config (try client-c)
   c: create a remote session: choose agent -> host -> project
   n: configure notifications for the selected session
+  E / R / X: end, restart, or destroy the selected session (with confirmation)
   attach-host mode: same split-pane attach UI scoped to one host; add/new are disabled
   right pane: selected session output preview
   Ctrl-]: return keyboard focus to the left menu

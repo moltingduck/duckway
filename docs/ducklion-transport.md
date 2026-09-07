@@ -300,10 +300,11 @@ yield, writable PTY input, and resize fail with `draining`, while completion
 events and delivery acknowledgements remain able to advance the existing task.
 This separation avoids holding an in-memory mutex across an unbounded drain and
 lets a replayed request resume the same lifecycle intent after daemon restart.
-The current plain agent-session stop path uses an `immediate` row and removes
-it transactionally with runtime exit. The `wait` and `force` protocol/Discord
-mode wiring is the next lifecycle layer; the schema already reserves those
-mode values but they are not yet accepted by user commands.
+The Discord commands and Ducklord lifecycle client now accept the applicable
+`wait` and `force` modes. Native shell sessions are immediate-only; Ducklord
+normalizes restart's agent-oriented default wait to immediate after resolving
+the session kind, while both Ducklord and Ducklion reject explicit force/wait
+uses that cannot have shell task semantics.
 
 Schema v10 extends each lifecycle row with a recovery phase, last-update time,
 attempt counter, and bounded last-error diagnostic. Executors advance phases

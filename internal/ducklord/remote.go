@@ -701,14 +701,9 @@ func (r *Runner) Lifecycle(ctx context.Context, c Client, ref string, operation 
 	if err != nil {
 		return protocol.SessionLifecycleResult{}, err
 	}
-	if selected.Kind == model.KindShell {
-		if operation == protocol.SessionLifecycleRestart && mode == protocol.SessionLifecycleWait {
-			// Restart's CLI default is wait for agent sessions, but shell
-			// lifecycle is intentionally immediate-only.
-			mode = protocol.SessionLifecycleImmediate
-		} else if mode != protocol.SessionLifecycleImmediate {
-			return protocol.SessionLifecycleResult{}, fmt.Errorf("shell lifecycle operations are immediate and do not accept wait or force modes")
-		}
+	mode, err = normalizeLifecycleMode(selected.Kind, operation, mode)
+	if err != nil {
+		return protocol.SessionLifecycleResult{}, err
 	}
 	requestID := uuid.NewString()
 	request := protocol.SessionLifecycleRequest{Operation: operation, Mode: mode}
@@ -738,8 +733,24 @@ func (r *Runner) Lifecycle(ctx context.Context, c Client, ref string, operation 
 				return protocol.SessionLifecycleResult{}, fmt.Errorf("session lifecycle outcome unknown (request %s): %w", requestID, err)
 			case <-time.After(250 * time.Millisecond):
 			}
+			continue
 		}
 	}
+}
+
+func normalizeLifecycleMode(kind model.SessionKind, operation protocol.SessionLifecycleOperation, mode protocol.SessionLifecycleMode) (protocol.SessionLifecycleMode, error) {
+	if kind != model.KindShell {
+		return mode, nil
+	}
+	if operation == protocol.SessionLifecycleRestart && mode == protocol.SessionLifecycleWait {
+		// Restart defaults to wait for agent sessions. Native shell sessions
+		// have no task-idle signal, so the CLI default means immediate there.
+		return protocol.SessionLifecycleImmediate, nil
+	}
+	if mode != protocol.SessionLifecycleImmediate {
+		return "", fmt.Errorf("shell lifecycle operations are immediate and do not accept wait or force modes")
+	}
+	return mode, nil
 }
 
 func (r *Runner) Yield(ctx context.Context, c Client, ref string, wait bool) (protocol.SessionYieldResult, error) {
