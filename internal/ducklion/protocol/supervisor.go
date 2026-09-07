@@ -43,6 +43,9 @@ type SupervisorChallenge struct {
 type SupervisorRegisterComplete struct {
 	ChallengeID string `json:"challenge_id"`
 	Proof       []byte `json:"proof"`
+	// LaunchFailure is set only when the wrapper authenticated successfully but
+	// could not create the child PTY. It never registers a live runtime.
+	LaunchFailure string `json:"launch_failure,omitempty"`
 }
 
 type SupervisorRegistered struct {

@@ -381,6 +381,9 @@ ducklord read <client> <session> [--lines N] [--config <path>]
 ducklord send <client> <session> <text> [--config <path>]
 ducklord start <client> --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
 ducklord stop <client> <session>
+ducklord end <client> <session> [-w|--wait|-f|--force]
+ducklord restart <client> <session> [-f|--force]
+ducklord destroy <client> <session> [-w|--wait|-f|--force]
 ducklord version
 ```
 
@@ -398,6 +401,8 @@ The current TUI supports:
 - `ducklord attach-host <client>` to open the same split-pane view scoped to
   one remote host and its advertised Ducklion sessions
 - `r` to refresh immediately
+- `E`, `R`, and `X` open end, restart, and destroy confirmation panels;
+  lifecycle requests run asynchronously so SSH recovery never freezes the UI
 - `q` to quit
 - basic xterm mouse click selection when the terminal supports SGR mouse mode
 - a changed marker when recent remote output changes since the previous refresh
@@ -631,6 +636,35 @@ are immutable entries in `lifecycle_outcomes`, so releasing a barrier never
 loses replay safety. `end` archives Discord while retaining the stopped session
 and binding; `destroy` hard-deletes both after runtime cleanup succeeds.
 
+Agent `restart` waits for idle by default; `-f` first delivers a cancellation. It
+retains the session ID, handle, writer, binding, working directory, and launch
+command, then starts runtime generation `N+1`. Mode-0600 `runtime.json` remains
+after process exit while the generation-specific recovery key is removed.
+Restart creates a new key, atomically changes the session and lifecycle row to
+`recovering`/`launching`, then starts the replacement supervisor. Ducklion
+reconstructs `launching` work after daemon restart. A per-session
+`runtime.lock`, held with a non-blocking OS file lock, makes repeated launch
+attempts safe: at most one supervisor can own the PTY.
+
+Shell sessions use the same lifecycle RPC from Ducklord only. Since shell PTYs
+have no agent adapter or exclusive writer, restart/end/destroy are always
+immediate: they terminate the current shell process directly and reject wait or
+force modes. A retained shell launch spec contains one resolved executable and
+the CWD, never arbitrary arguments or environment overrides. A definitive
+replacement-launch failure returns the session to `stopped`, records an
+immutable failed receipt, and releases the barrier so the operator may retry or
+destroy it. Discord CC is never authorized to manage shell sessions.
+
+Ducklord does not cancel an accepted durable lifecycle operation when its CLI
+wait is interrupted or the TUI exits. The CLI reports that the request remains
+durable, while the TUI permits normal navigation as soon as admission succeeds;
+the eventual result is shown if that TUI remains open. A lifecycle cancellation
+protocol is intentionally outside this version.
+
+Schema v13 adds the immutable lifecycle failure text used by restart recovery.
+No manual migration is required; Ducklion applies it transactionally at startup
+and preserves the pre-migration database backup behavior.
+
 ## Security Boundaries
 
 - SSH controls real connection permission.
@@ -645,8 +679,10 @@ and binding; `destroy` hard-deletes both after runtime cleanup succeeds.
   construction to the PTY manager.
 - `ducklion` strips `SSH_AUTH_SOCK` from supervised session environments by
   default. Broader session environment allowlisting remains future work.
-- Remote session state must not contain secrets or prompts. The MVP stores PTY
-  output in per-session `0600` logs for `read`/notification polling; future
+- Remote session state must not contain secrets or prompts. Do not pass secrets
+  in launch argv: agent argv and the canonical shell executable/CWD live in a
+  mode-0600 retained runtime spec so restart can reproduce the process. The MVP
+  stores PTY output in per-session `0600` logs for `read`/notification polling; future
   releases should add size caps, rotation, and retention controls.
 - Ducklord does not trust Duckway server metadata and does not require Duckway
   server registration. SSH host access is the authorization boundary.

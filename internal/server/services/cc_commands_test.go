@@ -489,11 +489,43 @@ func TestDaemonControlCommandsUseIndependentFIFO(t *testing.T) {
 	}
 }
 
+func TestRestartIsDurablyAdmittedOnGatewayReadLoop(t *testing.T) {
+	if !isDaemonBoundCCCommand("!restart --force") {
+		t.Fatal("restart was not classified as daemon-bound")
+	}
+}
+
 func TestHandle_End_RejectsInManagement(t *testing.T) {
 	h := newCommandHarness(t)
 	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!end")
 	if !h.lastReplyContains("inside a task channel") {
 		t.Errorf("expected scope error, got %v", h.reqs)
+	}
+}
+
+func TestHandle_Restart_UsesDurableControlLane(t *testing.T) {
+	h := newCommandHarness(t)
+	if _, err := h.db.Exec(`INSERT INTO cc_channels VALUES ('dwch_r','cc1','client1','R-real','r','','task','ABC123','/cwd',0,datetime('now'),null)`); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := h.cc.GetChannelByHandle("dwch_r")
+	_, unsubscribe := h.hub.Subscribe("client1")
+	defer unsubscribe()
+	h.handler.HandleMessage(context.Background(), "cc1", task, "!restart --force", "snow-restart")
+	var eventKey, laneKey, payload string
+	if err := h.db.QueryRow(`SELECT event_key,lane_key,payload FROM discord_inbox WHERE cc_id='cc1'`).Scan(&eventKey, &laneKey, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if eventKey != "CLIENT_COMMAND:snow-restart" || laneKey != "control:dwch_r" || !strings.Contains(payload, `"command":"!restart"`) || !strings.Contains(payload, `"--force"`) {
+		t.Fatalf("restart event key=%q lane=%q payload=%s", eventKey, laneKey, payload)
+	}
+}
+
+func TestHandle_Restart_RejectsInManagement(t *testing.T) {
+	h := newCommandHarness(t)
+	h.handler.Handle(context.Background(), "cc1", h.mgmt, "!restart")
+	if !h.lastReplyContains("inside a task channel") {
+		t.Fatalf("restart management reply=%v", h.reqs)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -534,6 +536,296 @@ func TestCanonicalLifecycleWaitResumesAfterDucklionRestart(t *testing.T) {
 	if err != nil || result.State != protocol.SessionLifecycleCompleted {
 		t.Fatalf("recovered lifecycle=%+v err=%v", result, err)
 	}
+}
+
+func TestCanonicalLifecycleRestartPreservesBindingAndAdvancesGeneration(t *testing.T) {
+	root := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	cc, err := DialCC(server.SocketPath(), "dwch_restart_agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	created, err := cc.CreateSession(context.Background(), protocol.SessionCreate{Handle: "restart-agent", Kind: model.KindAgent, AgentType: "fixture", CWD: root,
+		Command: []string{"sh", "-c", `while IFS= read -r value; do printf '%s\n' '{"kind":"completed","response":"after restart"}' >&3; done`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.BindDiscordSession(context.Background(), "bind-restart-agent", created.SessionID, "dwch_restart_agent"); err != nil {
+		t.Fatal(err)
+	}
+	request := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleRestart, Mode: protocol.SessionLifecycleWait}
+	result, err := cc.LifecycleSessionWithID(context.Background(), "restart-agent-once", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for result.State != protocol.SessionLifecycleCompleted && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		result, err = cc.LifecycleSessionWithID(context.Background(), "restart-agent-once", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if result.State != protocol.SessionLifecycleCompleted || result.RuntimeGeneration != created.RuntimeGeneration+1 {
+		t.Fatalf("restart result=%+v", result)
+	}
+	sessions, err := cc.ListSessions()
+	if err != nil || len(sessions) != 1 || sessions[0].Status != model.StatusRunning || sessions[0].RuntimeGeneration != created.RuntimeGeneration+1 ||
+		sessions[0].Writer == nil || sessions[0].Writer.ID != "dwch_restart_agent" {
+		t.Fatalf("restarted sessions=%+v err=%v", sessions, err)
+	}
+	binding, err := cc.DiscordBindingForSession(context.Background(), created.SessionID)
+	if err != nil || binding.ChannelHandle != "dwch_restart_agent" {
+		t.Fatalf("restart binding=%+v err=%v", binding, err)
+	}
+	prompt := []byte("prove replacement runtime")
+	task := protocol.AgentTaskSubmit{TaskID: "after-restart", Prompt: prompt, PromptDigest: sha256.Sum256(prompt)}
+	if _, err := cc.SubmitAgentTask(context.Background(), task.TaskID, created.SessionID, created.OwnershipEpoch, result.RuntimeGeneration, task); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		events, pollErr := cc.AgentTaskEvents(context.Background(), created.SessionID, task.TaskID, 0)
+		if pollErr == nil && len(events.Events) == 1 && events.Events[0].Response == "after restart" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("replacement runtime did not execute an agent task")
+}
+
+func TestShellLifecycleRestartEndAndDestroy(t *testing.T) {
+	root := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	terminal, err := Dial(server.SocketPath(), "shell-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	if _, err := terminal.CreateSession(context.Background(), protocol.SessionCreate{Handle: "shell-with-args", Kind: model.KindShell, CWD: root, Command: []string{"sh", "-c", "echo must-not-persist"}}); err == nil || !strings.Contains(err.Error(), "exactly one shell executable") {
+		t.Fatalf("shell argv admission err=%v", err)
+	}
+	created, err := terminal.CreateSession(context.Background(), protocol.SessionCreate{Handle: "shell-lifecycle", Kind: model.KindShell, CWD: root, Command: []string{"sh"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := terminal.LifecycleSessionWithID(context.Background(), "shell-wait-rejected", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration,
+		protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleEnd, Mode: protocol.SessionLifecycleWait}); err == nil || !strings.Contains(err.Error(), "immediate") {
+		t.Fatalf("shell wait lifecycle err=%v", err)
+	}
+	restart := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleRestart, Mode: protocol.SessionLifecycleImmediate}
+	restarted := awaitLifecycleTestResult(t, terminal, "shell-restart", created, restart, 10*time.Second)
+	if restarted.RuntimeGeneration != created.RuntimeGeneration+1 {
+		t.Fatalf("shell restart=%+v", restarted)
+	}
+	current := created
+	current.RuntimeGeneration = restarted.RuntimeGeneration
+	end := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleEnd, Mode: protocol.SessionLifecycleImmediate}
+	ended := awaitLifecycleTestResult(t, terminal, "shell-end", current, end, 8*time.Second)
+	if ended.State != protocol.SessionLifecycleCompleted {
+		t.Fatalf("shell end=%+v", ended)
+	}
+	destroy := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleDestroy, Mode: protocol.SessionLifecycleImmediate}
+	destroyed := awaitLifecycleTestResult(t, terminal, "shell-destroy", current, destroy, 8*time.Second)
+	if destroyed.State != protocol.SessionLifecycleCompleted {
+		t.Fatalf("shell destroy=%+v", destroyed)
+	}
+	if sessions, err := terminal.ListSessions(); err != nil || len(sessions) != 0 {
+		t.Fatalf("shell sessions after destroy=%+v err=%v", sessions, err)
+	}
+}
+
+func TestShellLifecycleRestartLaunchFailureStopsAndReleasesBarrier(t *testing.T) {
+	root := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	var launches atomic.Int32
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+		attempt := launches.Add(1)
+		if attempt == 2 {
+			return errors.New("injected definitive restart launch failure")
+		}
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	terminal, err := Dial(server.SocketPath(), "restart-retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	created, err := terminal.CreateSession(context.Background(), protocol.SessionCreate{Handle: "restart-retry", Kind: model.KindShell, CWD: root, Command: []string{"sh"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleRestart, Mode: protocol.SessionLifecycleImmediate}
+	result, err := terminal.LifecycleSessionWithID(context.Background(), "restart-fails", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+	if err != nil || result.State != protocol.SessionLifecycleWaiting {
+		t.Fatalf("initial restart result=%+v err=%v", result, err)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		_, err = terminal.LifecycleSessionWithID(context.Background(), "restart-fails", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+		if err != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err == nil || !strings.Contains(err.Error(), "definitive restart launch failure") {
+		t.Fatalf("restart failure receipt err=%v", err)
+	}
+	time.Sleep(1200 * time.Millisecond)
+	if launches.Load() != 2 {
+		t.Fatalf("definitive failure retried: launches=%d", launches.Load())
+	}
+	sessions, err := terminal.ListSessions()
+	if err != nil || len(sessions) != 1 || sessions[0].Status != model.StatusStopped || sessions[0].RuntimeGeneration != 2 {
+		t.Fatalf("failed replacement session=%+v err=%v", sessions, err)
+	}
+	destroy := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleDestroy, Mode: protocol.SessionLifecycleImmediate}
+	destroyed := awaitLifecycleTestResult(t, terminal, "destroy-after-restart-failure", sessions[0], destroy, 8*time.Second)
+	if destroyed.State != protocol.SessionLifecycleCompleted {
+		t.Fatalf("destroy after failure=%+v", destroyed)
+	}
+}
+
+func TestRealSupervisorReportsMissingShellOnRestart(t *testing.T) {
+	root := t.TempDir()
+	shellPath := filepath.Join(root, "test-shell")
+	if err := os.WriteFile(shellPath, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	var launches atomic.Int32
+	runtimeErrors := make(chan error, 16)
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+		launches.Add(1)
+		go func() { runtimeErrors <- RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	terminal, err := Dial(server.SocketPath(), "missing-shell")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	created, err := terminal.CreateSession(context.Background(), protocol.SessionCreate{Handle: "missing-shell", Kind: model.KindShell, CWD: root, Command: []string{shellPath}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleEnd, Mode: protocol.SessionLifecycleImmediate}
+	ended := awaitLifecycleTestResult(t, terminal, "missing-shell-end", created, end, 8*time.Second)
+	// The stopped generation may finish its wrapper just after Ducklion commits
+	// the exit receipt. Wait for its process lock so this test isolates the
+	// replacement executable failure rather than the normal overlap retry.
+	lockPath := filepath.Join(root, "sessions", created.SessionID, "runtime.lock")
+	lockDeadline := time.Now().Add(8 * time.Second)
+	for {
+		lock, lockErr := acquireRuntimeLock(lockPath)
+		if lockErr == nil {
+			_ = lock.Close()
+			break
+		}
+		if time.Now().After(lockDeadline) {
+			t.Fatalf("stopped runtime retained process lock: %v", lockErr)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	for len(runtimeErrors) != 0 {
+		<-runtimeErrors
+	}
+	if err := os.Remove(shellPath); err != nil {
+		t.Fatal(err)
+	}
+	restartSession := created
+	restartSession.RuntimeGeneration = ended.RuntimeGeneration
+	restart := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleRestart, Mode: protocol.SessionLifecycleImmediate}
+	result, err := terminal.LifecycleSessionWithID(context.Background(), "missing-shell-restart", restartSession.SessionID, restartSession.OwnershipEpoch, restartSession.RuntimeGeneration, restart)
+	if err != nil || result.State != protocol.SessionLifecycleWaiting {
+		t.Fatalf("initial restart result=%+v err=%v", result, err)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		_, err = terminal.LifecycleSessionWithID(context.Background(), "missing-shell-restart", restartSession.SessionID, restartSession.OwnershipEpoch, restartSession.RuntimeGeneration, restart)
+		if err != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err == nil || !strings.Contains(err.Error(), "runtime launch failed") {
+		debugSessions, _ := terminal.ListSessions()
+		pending, _ := server.state.GetPendingLifecycle(context.Background(), model.SessionID(created.SessionID))
+		specDebug, _ := os.ReadFile(filepath.Join(root, "sessions", created.SessionID, "runtime.json"))
+		var runtimeErrs []string
+		for len(runtimeErrors) != 0 {
+			runtimeErrs = append(runtimeErrs, (<-runtimeErrors).Error())
+		}
+		t.Fatalf("missing shell failure receipt err=%v sessions=%+v pending=%+v launches=%d runtimeErrs=%v spec=%s", err, debugSessions, pending, launches.Load(), runtimeErrs, specDebug)
+	}
+	time.Sleep(1200 * time.Millisecond)
+	if launches.Load() != 2 {
+		t.Fatalf("missing shell caused restart storm: launches=%d", launches.Load())
+	}
+	sessions, err := terminal.ListSessions()
+	if err != nil || len(sessions) != 1 || sessions[0].Status != model.StatusStopped || sessions[0].RuntimeGeneration != 2 {
+		t.Fatalf("missing shell session=%+v err=%v", sessions, err)
+	}
+	destroy := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleDestroy, Mode: protocol.SessionLifecycleImmediate}
+	_ = awaitLifecycleTestResult(t, terminal, "missing-shell-destroy", sessions[0], destroy, 8*time.Second)
+}
+
+func awaitLifecycleTestResult(t *testing.T, client *Client, requestID string, session protocol.SessionSummary, request protocol.SessionLifecycleRequest, timeout time.Duration) protocol.SessionLifecycleResult {
+	t.Helper()
+	result, err := client.LifecycleSessionWithID(context.Background(), requestID, session.SessionID, session.OwnershipEpoch, session.RuntimeGeneration, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(timeout)
+	for result.State != protocol.SessionLifecycleCompleted && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		result, err = client.LifecycleSessionWithID(context.Background(), requestID, session.SessionID, session.OwnershipEpoch, session.RuntimeGeneration, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if result.State != protocol.SessionLifecycleCompleted {
+		t.Fatalf("lifecycle %s timed out: %+v", requestID, result)
+	}
+	return result
 }
 
 func TestManagedPTYDrainsFinalAttentionBeforeExit(t *testing.T) {

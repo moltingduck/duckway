@@ -17,6 +17,7 @@ var usages = map[string]string{
 	"!new-confirm":     "!new-confirm <token>",
 	"!end":             "!end [-w|--wait|-f|--force]",
 	"!destroy":         "!destroy [-w|--wait|-f|--force]",
+	"!restart":         "!restart [-f|--force]",
 	"!yield":           "!yield [-w|--wait]",
 	"!list":            "!list",
 	"!status":          "!status",
@@ -45,6 +46,11 @@ func Validate(command string, args []string) error {
 		return validateNoArgs(args)
 	case "!end", "!destroy":
 		return validateLifecycleMode(args)
+	case "!restart":
+		if len(args) == 0 || len(args) == 1 && (args[0] == "-f" || args[0] == "--force") {
+			return nil
+		}
+		return unsupportedArgs(args)
 	case "!yield":
 		if len(args) == 0 || len(args) == 1 && (args[0] == "-w" || args[0] == "--wait") {
 			return nil

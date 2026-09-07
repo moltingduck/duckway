@@ -537,6 +537,16 @@ lifecycle operations on the same session while preserving idempotent replay of
 old request IDs. End keeps the stopped session, Discord binding, history, and
 resume data. Destroy removes the session and binding, retries runtime-directory
 cleanup through the same request, and only then exposes a completed result.
+Agent `!restart` waits by default (or force-cancels with `-f`/`--force`), preserves
+the channel and one-to-one binding, and returns only after the replacement PTY
+registers on the incremented runtime generation. Its durable `launching` phase
+retries across daemon failure; every runtime also holds an OS-level singleton
+lock so a lost launch response cannot create two live supervisors. Retained
+runtime files and their containing directory are fsynced before the database
+generation transition. Shell lifecycle is immediate-only and retains only a
+resolved shell executable plus CWD. A definitive replacement exec failure is a
+durable negative receipt: the session returns to `stopped` and the lifecycle
+barrier is released for an explicit retry or destroy.
 Lifecycle commands and `!yield` are admitted into a per-channel control lane,
 separate from the prompt lane. This lets a force or wait request reach Ducklion
 while the preceding prompt remains leased, while preserving FIFO among control

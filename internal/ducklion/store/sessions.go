@@ -147,7 +147,7 @@ func (s *SQLite) MarkRuntimeExited(ctx context.Context, id model.SessionID, gene
 		if err != nil {
 			return err
 		}
-		if changed, _ := result.RowsAffected(); changed != 1 && lifecycle.Phase != LifecycleRuntimeStopped && lifecycle.Phase != LifecycleCleaning {
+		if changed, _ := result.RowsAffected(); changed != 1 && lifecycle.Phase != LifecycleRuntimeStopped && lifecycle.Phase != LifecycleLaunching && lifecycle.Phase != LifecycleCleaning {
 			return fmt.Errorf("lifecycle runtime-exit fencing conflict")
 		}
 	}

@@ -97,6 +97,33 @@ func TestDucklordSessionsUsesRunner(t *testing.T) {
 	}
 }
 
+func TestDucklordRestartDefaultsToWaitAndSupportsForce(t *testing.T) {
+	config := writeConfig(t)
+	runner := &recordingRunner{}
+	var out bytes.Buffer
+	if err := run([]string{"restart", "client-a", "ABC123", "--config", config}, &out, runner); err != nil {
+		t.Fatal(err)
+	}
+	if runner.lifecycleClient != "client-a" || runner.lifecycleSession != "ABC123" || runner.lifecycleOp != protocol.SessionLifecycleRestart || runner.lifecycleMode != protocol.SessionLifecycleWait {
+		t.Fatalf("restart call=%+v", runner)
+	}
+	if !strings.Contains(out.String(), "Restarted ABC123") {
+		t.Fatalf("restart output=%q", out.String())
+	}
+	if err := run([]string{"restart", "client-a", "ABC123", "--force", "--config", config}, io.Discard, runner); err != nil {
+		t.Fatal(err)
+	}
+	if runner.lifecycleMode != protocol.SessionLifecycleForce {
+		t.Fatalf("forced restart mode=%q", runner.lifecycleMode)
+	}
+	if err := run([]string{"restart", "client-a", "ABC123", "--wait", "--config", config}, io.Discard, runner); err == nil {
+		t.Fatal("restart accepted redundant wait flag")
+	}
+	if err := run([]string{"end", "client-a", "ABC123", "--force", "-f", "--config", config}, io.Discard, runner); err == nil {
+		t.Fatal("end accepted duplicate lifecycle mode flags")
+	}
+}
+
 func TestDucklordSessionsSanitizesRemoteLastLine(t *testing.T) {
 	config := writeConfig(t)
 	var out bytes.Buffer
@@ -359,6 +386,50 @@ func TestHostScopedTUIDisablesAddAndNewShortcuts(t *testing.T) {
 	}
 	if got := state.handleInput([]byte("r")); got != "refresh" {
 		t.Fatalf("host-scoped refresh action = %q", got)
+	}
+	for key, want := range map[string]string{"E": "end", "R": "restart", "X": "destroy"} {
+		if got := state.handleInput([]byte(key)); got != want {
+			t.Fatalf("lifecycle shortcut %q action = %q", key, got)
+		}
+	}
+}
+
+func TestTUIRenderExplainsDestructiveLifecycleConfirmation(t *testing.T) {
+	state := &tuiState{ownerName: "desk", lifecycleConfirm: protocol.SessionLifecycleDestroy,
+		sessions: []ducklord.RemoteSession{{Client: "host", Name: "agent", SessionID: "ABC123", Kind: string(model.KindAgent), Status: "running"}}}
+	var out bytes.Buffer
+	state.render(&out)
+	got := out.String()
+	for _, want := range []string{"destroy selected session?", "enter now", "w wait", "f force-cancel", "permanently removes", "ABC123"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("confirmation missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestTUIRenderExplainsImmediateShellLifecycle(t *testing.T) {
+	state := &tuiState{ownerName: "desk", lifecycleConfirm: protocol.SessionLifecycleRestart,
+		sessions: []ducklord.RemoteSession{{Client: "host", Name: "shell", SessionID: "ABC123", Kind: string(model.KindShell), Status: "running"}}}
+	var out bytes.Buffer
+	state.render(&out)
+	got := out.String()
+	for _, want := range []string{"enter terminate process immediately", "it never waits"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("shell confirmation missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "force-cancel") || strings.Contains(got, "w wait") {
+		t.Fatalf("shell confirmation exposed agent lifecycle modes: %q", got)
+	}
+}
+
+func TestTUILifecycleWaitDoesNotBlockNavigationOrQuit(t *testing.T) {
+	state := &tuiState{lifecycleBusy: true, sessions: []ducklord.RemoteSession{{Name: "one"}, {Name: "two"}}}
+	if got := state.handleInput([]byte("j")); got != "select" || state.selected != 1 {
+		t.Fatalf("busy lifecycle navigation action=%q selected=%d", got, state.selected)
+	}
+	if got := state.handleInput([]byte("q")); got != "quit" {
+		t.Fatalf("busy lifecycle quit action=%q", got)
 	}
 }
 
@@ -1199,6 +1270,9 @@ func (f fakeRunner) Read(context.Context, ducklord.Client, string, int) (string,
 func (f fakeRunner) Send(context.Context, ducklord.Client, string, string) error { return nil }
 func (f fakeRunner) Start(context.Context, ducklord.Client, []string) error      { return nil }
 func (f fakeRunner) Stop(context.Context, ducklord.Client, string) error         { return nil }
+func (f fakeRunner) Lifecycle(context.Context, ducklord.Client, string, protocol.SessionLifecycleOperation, protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
+	return protocol.SessionLifecycleResult{SessionID: "ABC123", Operation: protocol.SessionLifecycleRestart, Mode: protocol.SessionLifecycleWait, State: protocol.SessionLifecycleCompleted, OwnershipEpoch: 1, RuntimeGeneration: 2}, nil
+}
 func (f fakeRunner) Yield(context.Context, ducklord.Client, string, bool) (protocol.SessionYieldResult, error) {
 	return protocol.SessionYieldResult{}, nil
 }
@@ -1242,6 +1316,10 @@ type recordingRunner struct {
 	yieldSession     string
 	yieldWait        bool
 	yieldResult      protocol.SessionYieldResult
+	lifecycleClient  string
+	lifecycleSession string
+	lifecycleOp      protocol.SessionLifecycleOperation
+	lifecycleMode    protocol.SessionLifecycleMode
 }
 
 func (r *recordingRunner) Sessions(_ context.Context, client ducklord.Client, _ int) ([]ducklord.RemoteSession, error) {
@@ -1264,6 +1342,10 @@ func (r *recordingRunner) Start(_ context.Context, client ducklord.Client, args 
 	return nil
 }
 func (r *recordingRunner) Stop(context.Context, ducklord.Client, string) error { return nil }
+func (r *recordingRunner) Lifecycle(_ context.Context, client ducklord.Client, session string, operation protocol.SessionLifecycleOperation, mode protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
+	r.lifecycleClient, r.lifecycleSession, r.lifecycleOp, r.lifecycleMode = client.Name, session, operation, mode
+	return protocol.SessionLifecycleResult{SessionID: session, Operation: operation, Mode: mode, State: protocol.SessionLifecycleCompleted, OwnershipEpoch: 1, RuntimeGeneration: 2}, nil
+}
 func (r *recordingRunner) Yield(_ context.Context, client ducklord.Client, session string, wait bool) (protocol.SessionYieldResult, error) {
 	r.yieldClient = client.Name
 	r.yieldSession = session

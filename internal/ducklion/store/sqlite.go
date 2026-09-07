@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 11
+const SchemaVersion = 13
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -224,6 +224,16 @@ func (s *SQLite) migrate(ctx context.Context) error {
 	if userVersion < 11 {
 		if err := migrateV11(ctx, tx); err != nil {
 			return fmt.Errorf("migrate ducklion schema to v11: %w", err)
+		}
+	}
+	if userVersion < 12 {
+		if err := migrateV12(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v12: %w", err)
+		}
+	}
+	if userVersion < 13 {
+		if err := migrateV13(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v13: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
@@ -444,6 +454,35 @@ func migrateV11(ctx context.Context, tx *sql.Tx) error {
 		source_epoch INTEGER NOT NULL CHECK(source_epoch>0), source_generation INTEGER NOT NULL CHECK(source_generation>0),
 		completed_at_ms INTEGER NOT NULL,
 		PRIMARY KEY(requester_kind,requester_id,request_id))`)
+	return err
+}
+
+func migrateV12(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`CREATE TABLE pending_lifecycle_operations_v12 (
+			session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+			operation TEXT NOT NULL CHECK(operation IN ('end','destroy','restart')),
+			mode TEXT NOT NULL CHECK(mode IN ('immediate','wait','force')),
+			requester_kind TEXT NOT NULL CHECK(requester_kind IN ('cc','terminal')),
+			requester_id TEXT NOT NULL, source_epoch INTEGER NOT NULL CHECK(source_epoch>0),
+			source_generation INTEGER NOT NULL CHECK(source_generation>0), request_id TEXT NOT NULL,
+			created_at_ms INTEGER NOT NULL, phase TEXT NOT NULL DEFAULT 'waiting'
+			CHECK(phase IN ('waiting','stopping','runtime_stopped','launching','cleaning','completed')),
+			updated_at_ms INTEGER NOT NULL DEFAULT 0, attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt>=0),
+			last_error TEXT NOT NULL DEFAULT '')`,
+		`INSERT INTO pending_lifecycle_operations_v12 SELECT * FROM pending_lifecycle_operations`,
+		`DROP TABLE pending_lifecycle_operations`,
+		`ALTER TABLE pending_lifecycle_operations_v12 RENAME TO pending_lifecycle_operations`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateV13(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `ALTER TABLE lifecycle_outcomes ADD COLUMN failure TEXT NOT NULL DEFAULT ''`)
 	return err
 }
 

@@ -255,7 +255,7 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 			finishCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			status, detail := "completed", ""
-			requiresDurableReply := payload.Command == "!new" || payload.Command == "!new-confirm" || payload.Command == "!end" || payload.Command == "!destroy"
+			requiresDurableReply := payload.Command == "!new" || payload.Command == "!new-confirm" || payload.Command == "!end" || payload.Command == "!destroy" || payload.Command == "!restart"
 			if delivery.retryable != nil {
 				status = "admitted"
 				detail = delivery.retryable.Error()
@@ -302,6 +302,8 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 		w.cmdEndSession(ctx, env.Handle, payload.RequestID, payload.SessionID, payload.Args)
 	case "!destroy":
 		w.cmdDestroySession(ctx, env.Handle, payload.RequestID, payload.SessionID, payload.Args)
+	case "!restart":
+		w.cmdRestartSession(ctx, env.Handle, payload.RequestID, payload.SessionID, payload.Args)
 	case "!log":
 		w.cmdLog(ctx, env.Handle, payload.Args)
 	case "!duckway-version":
@@ -378,6 +380,13 @@ func lifecycleModeFromArgs(args []string) protocol.SessionLifecycleMode {
 		}
 	}
 	return protocol.SessionLifecycleImmediate
+}
+
+func restartLifecycleMode(args []string) protocol.SessionLifecycleMode {
+	if len(args) == 1 && (args[0] == "-f" || args[0] == "--force") {
+		return protocol.SessionLifecycleForce
+	}
+	return protocol.SessionLifecycleWait
 }
 
 func (w *CCWatch) awaitLifecycle(ctx context.Context, client *duckliondaemon.Client, replyHandle, requestID string, session protocol.SessionSummary, request protocol.SessionLifecycleRequest) (protocol.SessionLifecycleResult, error) {
@@ -509,6 +518,45 @@ func (w *CCWatch) cmdDestroySession(ctx context.Context, replyHandle, requestID,
 	}
 	_ = w.sessions.Drop(replyHandle)
 	markCommandCompleted(ctx)
+}
+
+func (w *CCWatch) cmdRestartSession(ctx context.Context, replyHandle, requestID, sessionID string, args []string) {
+	client, err := w.dialDucklionCC(replyHandle)
+	if err != nil {
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ Ducklion is unavailable; the agent was not restarted: "+err.Error())
+		return
+	}
+	defer client.Close()
+	if sessionID == "" {
+		binding, bindErr := client.CurrentDiscordBinding(ctx)
+		if bindErr != nil {
+			_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ This channel is not bound to a Ducklion session.")
+			return
+		}
+		sessionID = binding.SessionID
+	}
+	session, found, err := findDucklionSession(client, sessionID)
+	if err != nil || !found {
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ The bound Ducklion session no longer exists; nothing was restarted.")
+		return
+	}
+	lifecycle := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleRestart, Mode: restartLifecycleMode(args)}
+	result, err := w.awaitLifecycle(ctx, client, replyHandle, requestID, session, lifecycle)
+	if err != nil {
+		if isAmbiguousLifecycleRPC(err) {
+			markCommandRetryable(ctx, err)
+			return
+		}
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ Session restart rejected; the existing session was left unchanged: "+err.Error())
+		return
+	}
+	message := fmt.Sprintf("🔄 Agent session `%s` restarted on runtime generation `%d`. Discord remains the writer.", sessionID, result.RuntimeGeneration)
+	if lifecycle.Mode == protocol.SessionLifecycleForce {
+		message = fmt.Sprintf("🔄 Active task cancelled and agent session `%s` restarted on runtime generation `%d`. Discord remains the writer.", sessionID, result.RuntimeGeneration)
+	}
+	if err := w.postCommandReply(ctx, replyHandle, requestID, message); err != nil {
+		markCommandRetryable(ctx, err)
+	}
 }
 
 func (w *CCWatch) dialDucklionCC(handle string) (*duckliondaemon.Client, error) {

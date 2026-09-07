@@ -579,7 +579,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 		return
 	}
 	var complete protocol.SupervisorRegisterComplete
-	if err := decodeStrict(completeRequest.Body, &complete); err != nil || complete.ChallengeID != challenge.ID {
+	if err := decodeStrict(completeRequest.Body, &complete); err != nil || complete.ChallengeID != challenge.ID || len(complete.LaunchFailure) > 1024 {
 		writeSupervisorError(codec, completeRequest.ID, protocol.ErrInvalidArgument, "invalid registration proof request")
 		return
 	}
@@ -588,6 +588,21 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 		uint16(negotiated.Major), uint16(negotiated.Minor), runtimeConn)
 	if err != nil {
 		writeSupervisorError(codec, completeRequest.ID, protocol.ErrAdapterUnhealthy, "runtime registration failed")
+		return
+	}
+	if complete.LaunchFailure != "" {
+		if err := runtimeConn.arm(); err != nil {
+			s.registry.Disconnect(identity)
+			return
+		}
+		if err := s.state.MarkRuntimeExited(context.Background(), identity.SessionID, identity.Generation, false, complete.LaunchFailure); err != nil {
+			s.registry.Disconnect(identity)
+			writeSupervisorError(codec, completeRequest.ID, protocol.ErrStaleGeneration, "runtime state changed before launch failure")
+			return
+		}
+		s.registry.Disconnect(identity)
+		result, _ := json.Marshal(map[string]bool{"recorded": true})
+		_ = codec.Write(protocol.Response{ID: completeRequest.ID, Result: result})
 		return
 	}
 	output := s.activateOutput(identity)

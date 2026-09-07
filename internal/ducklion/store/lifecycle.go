@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/ed25519"
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
@@ -26,6 +28,7 @@ const (
 	LifecycleWaiting        LifecyclePhase = "waiting"
 	LifecycleStopping       LifecyclePhase = "stopping"
 	LifecycleRuntimeStopped LifecyclePhase = "runtime_stopped"
+	LifecycleLaunching      LifecyclePhase = "launching"
 	LifecycleCleaning       LifecyclePhase = "cleaning"
 	LifecycleCompleted      LifecyclePhase = "completed"
 )
@@ -54,6 +57,7 @@ type LifecycleOutcome struct {
 	SourceGeneration uint64
 	RequestID        string
 	CompletedAtMS    int64
+	Failure          string
 }
 
 func (o LifecycleOutcome) Matches(p PendingLifecycle) bool {
@@ -62,7 +66,8 @@ func (o LifecycleOutcome) Matches(p PendingLifecycle) bool {
 }
 
 func (p PendingLifecycle) Matches(session model.Session) bool {
-	return session.Writer != nil && *session.Writer == p.Requester && session.OwnershipEpoch == p.SourceEpoch && session.RuntimeGeneration == p.SourceGeneration
+	ownerMatches := (session.Kind == model.KindShell && p.Requester.Kind == model.OwnerTerminal) || (session.Writer != nil && *session.Writer == p.Requester)
+	return ownerMatches && session.OwnershipEpoch == p.SourceEpoch && session.RuntimeGeneration == p.SourceGeneration
 }
 
 func (p PendingLifecycle) validate() error {
@@ -80,7 +85,7 @@ func (p PendingLifecycle) validate() error {
 
 func validLifecyclePhase(phase LifecyclePhase) bool {
 	switch phase {
-	case LifecycleWaiting, LifecycleStopping, LifecycleRuntimeStopped, LifecycleCleaning, LifecycleCompleted:
+	case LifecycleWaiting, LifecycleStopping, LifecycleRuntimeStopped, LifecycleLaunching, LifecycleCleaning, LifecycleCompleted:
 		return true
 	default:
 		return false
@@ -128,7 +133,7 @@ func (s *SQLite) ReserveLifecycle(ctx context.Context, pending PendingLifecycle)
 		}
 		return model.Session{}, false, model.ErrLifecyclePending
 	}
-	if session.Kind != model.KindAgent || (pending.Operation == LifecycleEnd && session.Status != model.StatusRunning) {
+	if (session.Kind != model.KindAgent && session.Kind != model.KindShell) || (pending.Operation == LifecycleEnd && session.Status != model.StatusRunning) {
 		return model.Session{}, false, model.ErrSessionNotRunning
 	}
 	if session.RuntimeGeneration != pending.SourceGeneration {
@@ -137,7 +142,8 @@ func (s *SQLite) ReserveLifecycle(ctx context.Context, pending PendingLifecycle)
 	if session.OwnershipEpoch != pending.SourceEpoch {
 		return model.Session{}, false, model.ErrStaleEpoch
 	}
-	if session.Writer == nil || *session.Writer != pending.Requester {
+	ownerMatches := (session.Kind == model.KindShell && pending.Requester.Kind == model.OwnerTerminal) || (session.Writer != nil && *session.Writer == pending.Requester)
+	if !ownerMatches {
 		return model.Session{}, false, model.ErrNotOwner
 	}
 	if existingYield, err := s.GetPendingYieldTx(ctx, tx, pending.SessionID); err != nil {
@@ -172,9 +178,9 @@ func (s *SQLite) GetPendingLifecycle(ctx context.Context, id model.SessionID) (*
 func (s *SQLite) GetLifecycleOutcome(ctx context.Context, requester model.Owner, requestID string) (*LifecycleOutcome, error) {
 	var outcome LifecycleOutcome
 	outcome.Requester, outcome.RequestID = requester, requestID
-	err := s.db.QueryRowContext(ctx, `SELECT session_id,operation,mode,source_epoch,source_generation,completed_at_ms
+	err := s.db.QueryRowContext(ctx, `SELECT session_id,operation,mode,source_epoch,source_generation,completed_at_ms,failure
 		FROM lifecycle_outcomes WHERE requester_kind=? AND requester_id=? AND request_id=?`, requester.Kind, requester.ID, requestID).
-		Scan(&outcome.SessionID, &outcome.Operation, &outcome.Mode, &outcome.SourceEpoch, &outcome.SourceGeneration, &outcome.CompletedAtMS)
+		Scan(&outcome.SessionID, &outcome.Operation, &outcome.Mode, &outcome.SourceEpoch, &outcome.SourceGeneration, &outcome.CompletedAtMS, &outcome.Failure)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -196,18 +202,18 @@ func (s *SQLite) CompleteLifecycle(ctx context.Context, pending PendingLifecycle
 	defer tx.Rollback()
 	now := time.Now().UTC().UnixMilli()
 	result, err := tx.ExecContext(ctx, `INSERT INTO lifecycle_outcomes
-		(requester_kind,requester_id,request_id,session_id,operation,mode,source_epoch,source_generation,completed_at_ms)
-		VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(requester_kind,requester_id,request_id) DO NOTHING`, pending.Requester.Kind, pending.Requester.ID,
-		pending.RequestID, pending.SessionID, pending.Operation, pending.Mode, pending.SourceEpoch, pending.SourceGeneration, now)
+		(requester_kind,requester_id,request_id,session_id,operation,mode,source_epoch,source_generation,completed_at_ms,failure)
+		VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(requester_kind,requester_id,request_id) DO NOTHING`, pending.Requester.Kind, pending.Requester.ID,
+		pending.RequestID, pending.SessionID, pending.Operation, pending.Mode, pending.SourceEpoch, pending.SourceGeneration, now, "")
 	if err != nil {
 		return err
 	}
 	if inserted, _ := result.RowsAffected(); inserted == 0 {
 		var existing LifecycleOutcome
 		existing.Requester, existing.RequestID = pending.Requester, pending.RequestID
-		if err := tx.QueryRowContext(ctx, `SELECT session_id,operation,mode,source_epoch,source_generation,completed_at_ms
+		if err := tx.QueryRowContext(ctx, `SELECT session_id,operation,mode,source_epoch,source_generation,completed_at_ms,failure
 			FROM lifecycle_outcomes WHERE requester_kind=? AND requester_id=? AND request_id=?`, pending.Requester.Kind, pending.Requester.ID, pending.RequestID).
-			Scan(&existing.SessionID, &existing.Operation, &existing.Mode, &existing.SourceEpoch, &existing.SourceGeneration, &existing.CompletedAtMS); err != nil {
+			Scan(&existing.SessionID, &existing.Operation, &existing.Mode, &existing.SourceEpoch, &existing.SourceGeneration, &existing.CompletedAtMS, &existing.Failure); err != nil {
 			return err
 		}
 		if !existing.Matches(pending) {
@@ -218,6 +224,110 @@ func (s *SQLite) CompleteLifecycle(ctx context.Context, pending PendingLifecycle
 		return err
 	}
 	return tx.Commit()
+}
+
+// FailLifecycleRestart turns a definitive replacement-launch failure into a
+// durable negative receipt, restores a usable stopped session, and releases
+// the lifecycle barrier. Ambiguous supervisor outcomes never call this path.
+func (s *SQLite) FailLifecycleRestart(ctx context.Context, pending PendingLifecycle, failure string) error {
+	if pending.Operation != LifecycleRestart || strings.TrimSpace(failure) == "" {
+		return fmt.Errorf("invalid failed lifecycle restart")
+	}
+	if len(failure) > 1024 {
+		failure = failure[:1024]
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	current, err := s.GetPendingLifecycleTx(ctx, tx, pending.SessionID)
+	if err != nil || current == nil || current.RequestID != pending.RequestID || current.Phase != LifecycleLaunching {
+		return fmt.Errorf("restart failure fencing conflict")
+	}
+	now := time.Now().UTC().UnixMilli()
+	session, getErr := s.GetSessionTx(ctx, tx, pending.SessionID)
+	if getErr != nil || session.RuntimeGeneration != pending.SourceGeneration+1 || session.OwnershipEpoch != pending.SourceEpoch ||
+		(session.Status != model.StatusRecovering && session.Status != model.StatusStopped) {
+		return fmt.Errorf("restart failure session fencing conflict")
+	}
+	adapter := model.AdapterUnavailable
+	if session.Kind == model.KindAgent {
+		adapter = model.AdapterUnhealthy
+	}
+	if session.Status == model.StatusRecovering {
+		result, err := tx.ExecContext(ctx, `UPDATE sessions SET status='stopped',task_state='idle',adapter_state=?,exit_success=0,exit_reason=?,updated_at_ms=?
+			WHERE session_id=? AND status='recovering' AND ownership_epoch=? AND runtime_generation=?`, adapter, failure, now,
+			pending.SessionID, pending.SourceEpoch, pending.SourceGeneration+1)
+		if err != nil {
+			return err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return fmt.Errorf("restart failure session fencing conflict")
+		}
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO lifecycle_outcomes
+		(requester_kind,requester_id,request_id,session_id,operation,mode,source_epoch,source_generation,completed_at_ms,failure)
+		VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(requester_kind,requester_id,request_id) DO NOTHING`, pending.Requester.Kind, pending.Requester.ID,
+		pending.RequestID, pending.SessionID, pending.Operation, pending.Mode, pending.SourceEpoch, pending.SourceGeneration, now, failure)
+	if err != nil {
+		return err
+	}
+	if inserted, _ := result.RowsAffected(); inserted != 1 {
+		return fmt.Errorf("restart failure receipt conflict")
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM pending_lifecycle_operations WHERE session_id=? AND request_id=?`, pending.SessionID, pending.RequestID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// BeginLifecycleRestart atomically advances the durable operation and fences
+// the replacement runtime with a new generation and recovery identity.
+func (s *SQLite) BeginLifecycleRestart(ctx context.Context, pending PendingLifecycle, publicKey []byte) (model.Session, error) {
+	if pending.Operation != LifecycleRestart || len(publicKey) != ed25519.PublicKeySize {
+		return model.Session{}, fmt.Errorf("invalid lifecycle restart")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Session{}, err
+	}
+	defer tx.Rollback()
+	session, err := s.GetSessionTx(ctx, tx, pending.SessionID)
+	if err != nil {
+		return model.Session{}, err
+	}
+	current, err := s.GetPendingLifecycleTx(ctx, tx, pending.SessionID)
+	if err != nil || current == nil || current.RequestID != pending.RequestID || current.Phase != LifecycleRuntimeStopped ||
+		session.Status != model.StatusStopped || session.RuntimeGeneration != pending.SourceGeneration || session.OwnershipEpoch != pending.SourceEpoch {
+		return model.Session{}, fmt.Errorf("restart lifecycle fencing conflict")
+	}
+	now := time.Now().UTC().UnixMilli()
+	adapter := model.AdapterUnavailable
+	if session.Kind == model.KindAgent {
+		adapter = model.AdapterRecovering
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE sessions SET status='recovering',runtime_generation=runtime_generation+1,task_state='idle',adapter_state=?,
+		recovery_public_key=?,exit_success=NULL,exit_reason='',updated_at_ms=? WHERE session_id=? AND status='stopped' AND ownership_epoch=? AND runtime_generation=?`,
+		adapter, publicKey, now, session.ID, pending.SourceEpoch, pending.SourceGeneration)
+	if err != nil {
+		return model.Session{}, err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return model.Session{}, fmt.Errorf("restart session fencing conflict")
+	}
+	result, err = tx.ExecContext(ctx, `UPDATE pending_lifecycle_operations SET phase='launching',updated_at_ms=?,attempt=attempt+1,last_error=''
+		WHERE session_id=? AND request_id=? AND phase='runtime_stopped'`, now, pending.SessionID, pending.RequestID)
+	if err != nil {
+		return model.Session{}, err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return model.Session{}, fmt.Errorf("restart phase fencing conflict")
+	}
+	if err := tx.Commit(); err != nil {
+		return model.Session{}, err
+	}
+	return s.GetSession(ctx, pending.SessionID)
 }
 
 func (s *SQLite) GetPendingLifecycleTx(ctx context.Context, tx *sql.Tx, id model.SessionID) (*PendingLifecycle, error) {

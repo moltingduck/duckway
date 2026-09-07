@@ -3,7 +3,7 @@ package protocol
 import "testing"
 
 func TestSessionLifecycleDTOValidation(t *testing.T) {
-	for _, operation := range []SessionLifecycleOperation{SessionLifecycleEnd, SessionLifecycleDestroy} {
+	for _, operation := range []SessionLifecycleOperation{SessionLifecycleEnd, SessionLifecycleDestroy, SessionLifecycleRestart} {
 		for _, mode := range []SessionLifecycleMode{SessionLifecycleImmediate, SessionLifecycleWait, SessionLifecycleForce} {
 			request := SessionLifecycleRequest{Operation: operation, Mode: mode}
 			if err := request.Validate(); err != nil {
@@ -18,7 +18,7 @@ func TestSessionLifecycleDTOValidation(t *testing.T) {
 	}
 	invalidRequests := []SessionLifecycleRequest{
 		{},
-		{Operation: "restart", Mode: SessionLifecycleImmediate},
+		{Operation: "restore", Mode: SessionLifecycleImmediate},
 		{Operation: SessionLifecycleEnd, Mode: "later"},
 	}
 	for _, request := range invalidRequests {

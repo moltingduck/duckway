@@ -393,6 +393,23 @@ func (s *Server) routeSessionCreate(request protocol.Request, role protocol.Peer
 	if create.Kind == model.KindShell && create.AgentType != "" {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "shell sessions cannot have an agent type"}}
 	}
+	if create.Kind == model.KindShell {
+		if len(create.Command) != 1 {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "shell sessions require exactly one shell executable and no arguments"}}
+		}
+		resolved, resolveErr := exec.LookPath(create.Command[0])
+		if resolveErr != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "shell executable is not available"}}
+		}
+		resolved, resolveErr = filepath.Abs(resolved)
+		if resolveErr != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "shell executable could not be resolved"}}
+		}
+		// Shell restart retains only a canonical executable and CWD. In
+		// particular, argv and environment overrides can never become a hidden
+		// launch profile that is replayed by a later restart.
+		create.Command = []string{resolved}
+	}
 	if role == protocol.RoleDuckwayCC && create.Kind != model.KindAgent {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "Duckway CC may create only agent sessions"}}
 	}
@@ -534,8 +551,11 @@ func lifecycleOwner(role protocol.PeerRole, principal string) model.Owner {
 
 func lifecycleStoreRequest(sessionID model.SessionID, requestID string, owner model.Owner, epoch, generation uint64, request protocol.SessionLifecycleRequest) store.PendingLifecycle {
 	operation := store.LifecycleEnd
-	if request.Operation == protocol.SessionLifecycleDestroy {
+	switch request.Operation {
+	case protocol.SessionLifecycleDestroy:
 		operation = store.LifecycleDestroy
+	case protocol.SessionLifecycleRestart:
+		operation = store.LifecycleRestart
 	}
 	mode := store.LifecycleImmediate
 	switch request.Mode {
@@ -561,8 +581,11 @@ func lifecycleProtocolState(phase store.LifecyclePhase) protocol.SessionLifecycl
 
 func lifecycleResult(pending store.PendingLifecycle) protocol.SessionLifecycleResult {
 	operation := protocol.SessionLifecycleEnd
-	if pending.Operation == store.LifecycleDestroy {
+	switch pending.Operation {
+	case store.LifecycleDestroy:
 		operation = protocol.SessionLifecycleDestroy
+	case store.LifecycleRestart:
+		operation = protocol.SessionLifecycleRestart
 	}
 	mode := protocol.SessionLifecycleImmediate
 	switch pending.Mode {
@@ -571,8 +594,12 @@ func lifecycleResult(pending store.PendingLifecycle) protocol.SessionLifecycleRe
 	case store.LifecycleForce:
 		mode = protocol.SessionLifecycleForce
 	}
+	generation := pending.SourceGeneration
+	if pending.Operation == store.LifecycleRestart && pending.Phase == store.LifecycleCompleted {
+		generation++
+	}
 	return protocol.SessionLifecycleResult{SessionID: string(pending.SessionID), Operation: operation, Mode: mode,
-		State: lifecycleProtocolState(pending.Phase), OwnershipEpoch: pending.SourceEpoch, RuntimeGeneration: pending.SourceGeneration}
+		State: lifecycleProtocolState(pending.Phase), OwnershipEpoch: pending.SourceEpoch, RuntimeGeneration: generation}
 }
 
 func (s *Server) routeSessionLifecycle(request protocol.Request, role protocol.PeerRole, principal string) protocol.Response {
@@ -584,19 +611,22 @@ func (s *Server) routeSessionLifecycle(request protocol.Request, role protocol.P
 	}
 	owner := lifecycleOwner(role, principal)
 	candidate := lifecycleStoreRequest(sessionID, request.ID, owner, *request.OwnershipEpoch, *request.RuntimeGeneration, body)
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
 	if outcome, err := s.state.GetLifecycleOutcome(context.Background(), owner, request.ID); err != nil {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: err.Error(), Retryable: true}}
 	} else if outcome != nil {
 		if !outcome.Matches(candidate) {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrIdempotencyConflict, Message: "request id belongs to a different lifecycle operation"}}
 		}
+		if outcome.Failure != "" {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: outcome.Failure}}
+		}
 		candidate.Phase = store.LifecycleCompleted
 		result, _ := json.Marshal(lifecycleResult(candidate))
 		return protocol.Response{ID: request.ID, Result: result}
 	}
-	operation := s.sessionOperation(sessionID)
-	operation.Lock()
-	defer operation.Unlock()
 	if existing, err := s.state.GetPendingLifecycle(context.Background(), sessionID); err != nil {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: err.Error(), Retryable: true}}
 	} else if existing != nil {
@@ -626,6 +656,9 @@ func (s *Server) routeSessionLifecycle(request protocol.Request, role protocol.P
 		}
 		return protocol.Response{ID: request.ID, Error: protocolError}
 	}
+	if session.Kind == model.KindShell && body.Mode != protocol.SessionLifecycleImmediate {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "shell lifecycle operations are immediate and do not accept wait or force modes"}}
+	}
 	pending := lifecycleStoreRequest(session.ID, request.ID, authorizedOwner, session.OwnershipEpoch, session.RuntimeGeneration, body)
 	_, _, err := s.state.ReserveLifecycle(context.Background(), pending)
 	if err != nil {
@@ -638,9 +671,6 @@ func (s *Server) routeSessionLifecycle(request protocol.Request, role protocol.P
 }
 
 func (s *Server) authorizeLifecycleControl(request protocol.Request, role protocol.PeerRole, principal string, operation protocol.SessionLifecycleOperation) (model.Session, model.Owner, *protocol.Error) {
-	if operation != protocol.SessionLifecycleDestroy {
-		return s.authorizeOwnerControl(request, role, principal)
-	}
 	sessionID, err := model.ParseSessionID(request.SessionID)
 	if err != nil || request.InstanceID != string(s.instanceID) || request.OwnershipEpoch == nil || request.RuntimeGeneration == nil {
 		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session identity and fences are required"}
@@ -650,7 +680,11 @@ func (s *Server) authorizeLifecycleControl(request protocol.Request, role protoc
 		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrNotFound, Message: "session not found"}
 	}
 	owner := lifecycleOwner(role, principal)
-	if session.Kind != model.KindAgent || session.Writer == nil || *session.Writer != owner {
+	if session.Kind == model.KindShell {
+		if role != protocol.RoleDucklord {
+			return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrNotOwner, Message: "Discord CC cannot manage shell sessions"}
+		}
+	} else if session.Writer == nil || *session.Writer != owner {
 		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrNotOwner, Message: "session is owned by another writer"}
 	}
 	if session.RuntimeGeneration != *request.RuntimeGeneration {
@@ -660,6 +694,12 @@ func (s *Server) authorizeLifecycleControl(request protocol.Request, role protoc
 	if session.OwnershipEpoch != *request.OwnershipEpoch {
 		epoch := session.OwnershipEpoch
 		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrStaleEpoch, Message: "ownership epoch changed", OwnershipEpoch: &epoch}
+	}
+	if operation == protocol.SessionLifecycleRestart && session.Status != model.StatusRunning && session.Status != model.StatusStopped {
+		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrBusy, Message: "session cannot restart from its current state", Retryable: true}
+	}
+	if operation == protocol.SessionLifecycleEnd && session.Status != model.StatusRunning {
+		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrBusy, Message: "session is not running"}
 	}
 	return session, owner, nil
 }
@@ -756,11 +796,55 @@ func (s *Server) driveLifecycle(sessionID model.SessionID) {
 		}
 	case store.LifecycleRuntimeStopped:
 		if pending.Operation == store.LifecycleEnd {
-			_ = s.state.CompleteLifecycle(context.Background(), *pending)
+			s.completeLifecycle(*pending)
+			return
+		}
+		if pending.Operation == store.LifecycleRestart {
+			specPath, publicKey, prepareErr := s.prepareLifecycleRestart(*pending)
+			if prepareErr != nil {
+				_, _ = s.state.CompareAndSwapLifecyclePhase(context.Background(), sessionID, pending.RequestID, store.LifecycleRuntimeStopped, store.LifecycleRuntimeStopped, prepareErr.Error())
+				return
+			}
+			if _, err := s.state.BeginLifecycleRestart(context.Background(), *pending, publicKey); err != nil {
+				return
+			}
+			if err := s.runtimeLauncher(specPath); err != nil {
+				s.failLifecycleRestart(*pending, "could not launch replacement runtime: "+err.Error())
+			}
 			return
 		}
 		_, _ = s.state.CompareAndSwapLifecyclePhase(context.Background(), sessionID, pending.RequestID, store.LifecycleRuntimeStopped, store.LifecycleCleaning, "")
+	case store.LifecycleLaunching:
+		session, err := s.state.GetSession(context.Background(), sessionID)
+		if err != nil {
+			return
+		}
+		if session.Status == model.StatusRunning {
+			s.completeLifecycle(*pending)
+			return
+		}
+		if session.Status == model.StatusStopped && session.RuntimeGeneration == pending.SourceGeneration+1 {
+			failure := session.ExitReason
+			if failure == "" {
+				failure = "replacement runtime exited before registration"
+			}
+			s.failLifecycleRestart(*pending, failure)
+			return
+		}
+		if session.Status != model.StatusRecovering || time.Since(time.UnixMilli(pending.UpdatedAtMS)) < time.Second {
+			return
+		}
+		specPath := filepath.Join(s.root, "sessions", string(sessionID), "runtime.json")
+		launchErr := s.runtimeLauncher(specPath)
+		lastError := ""
+		if launchErr != nil {
+			lastError = launchErr.Error()
+		}
+		_, _ = s.state.CompareAndSwapLifecyclePhase(context.Background(), sessionID, pending.RequestID, store.LifecycleLaunching, store.LifecycleLaunching, lastError)
 	case store.LifecycleCleaning:
+		operation := s.sessionOperation(sessionID)
+		operation.Lock()
+		defer operation.Unlock()
 		principal := string(pending.Requester.Kind) + ":" + pending.Requester.ID
 		outcome, _, err := s.service.DestroyStoppedSession(context.Background(), principal, pending.RequestID, sessionID, pending.SourceEpoch, pending.SourceGeneration)
 		if err != nil {
@@ -777,6 +861,107 @@ func (s *Server) driveLifecycle(sessionID model.SessionID) {
 		}
 		_ = s.state.CompleteLifecycle(context.Background(), *pending)
 	}
+}
+
+func (s *Server) completeLifecycle(pending store.PendingLifecycle) {
+	operation := s.sessionOperation(pending.SessionID)
+	operation.Lock()
+	defer operation.Unlock()
+	_ = s.state.CompleteLifecycle(context.Background(), pending)
+}
+
+func (s *Server) failLifecycleRestart(pending store.PendingLifecycle, failure string) {
+	operation := s.sessionOperation(pending.SessionID)
+	operation.Lock()
+	defer operation.Unlock()
+	_ = s.state.FailLifecycleRestart(context.Background(), pending, failure)
+}
+
+func (s *Server) prepareLifecycleRestart(pending store.PendingLifecycle) (string, ed25519.PublicKey, error) {
+	dir := filepath.Join(s.root, "sessions", string(pending.SessionID))
+	specPath := filepath.Join(dir, "runtime.json")
+	data, err := os.ReadFile(specPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("read retained runtime spec: %w", err)
+	}
+	var spec runtimeSpec
+	if err := json.Unmarshal(data, &spec); err != nil || spec.SessionID != pending.SessionID ||
+		(spec.RuntimeGeneration != pending.SourceGeneration && spec.RuntimeGeneration != pending.SourceGeneration+1) {
+		return "", nil, fmt.Errorf("retained runtime spec is invalid")
+	}
+	spec.SocketPath = s.socketPath
+	spec.OwnershipEpoch = pending.SourceEpoch
+	spec.RuntimeGeneration = pending.SourceGeneration + 1
+	keyPath := filepath.Join(dir, "recovery.key")
+	var publicKey ed25519.PublicKey
+	if keyData, readErr := os.ReadFile(keyPath); readErr == nil {
+		decoded, decodeErr := base64.RawStdEncoding.DecodeString(strings.TrimSpace(string(keyData)))
+		if decodeErr != nil || len(decoded) != ed25519.PrivateKeySize {
+			return "", nil, fmt.Errorf("retained recovery key is invalid")
+		}
+		privateKey := ed25519.PrivateKey(decoded)
+		publicKey = append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...)
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return "", nil, readErr
+	} else {
+		generatedPublic, privateKey, keyErr := model.NewRecoveryKey()
+		if keyErr != nil {
+			return "", nil, keyErr
+		}
+		publicKey = generatedPublic
+		if err := writeExclusiveFile(keyPath, []byte(base64.RawStdEncoding.EncodeToString(privateKey))); err != nil {
+			return "", nil, err
+		}
+		if err := syncDirectory(dir); err != nil {
+			return "", nil, err
+		}
+	}
+	specData, err := json.Marshal(spec)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := replacePrivateFile(specPath, specData); err != nil {
+		return "", nil, err
+	}
+	return specPath, publicKey, nil
+}
+
+func replacePrivateFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".runtime-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	return syncDirectory(dir)
+}
+
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func (s *Server) routeSessionStop(request protocol.Request, role protocol.PeerRole, principal string) protocol.Response {
@@ -1212,6 +1397,11 @@ func (s *Server) spawnRuntime(specPath string) error {
 }
 
 func RunManagedSupervisor(ctx context.Context, specPath string) error {
+	runtimeLock, err := acquireRuntimeLock(filepath.Join(filepath.Dir(specPath), "runtime.lock"))
+	if err != nil {
+		return err
+	}
+	defer runtimeLock.Close()
 	data, err := os.ReadFile(specPath)
 	if err != nil {
 		return err
@@ -1231,7 +1421,7 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 	ptySession, err := supervisor.Start(supervisor.Options{SessionID: spec.SessionID, RuntimeGeneration: spec.RuntimeGeneration, OwnershipEpoch: spec.OwnershipEpoch, AgentType: spec.AgentType,
 		CWD: spec.CWD, Command: spec.Command, Rows: spec.Rows, Cols: spec.Cols, OutputCapacity: 1 << 20})
 	if err != nil {
-		return err
+		return reportRuntimeLaunchFailure(ctx, specPath, spec, ed25519.PrivateKey(decoded), err)
 	}
 	wait := make(chan error, 1)
 	go func() { wait <- ptySession.Wait() }()
@@ -1369,6 +1559,43 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func reportRuntimeLaunchFailure(ctx context.Context, specPath string, spec runtimeSpec, privateKey ed25519.PrivateKey, launchErr error) error {
+	removeRuntimeCredentials(specPath)
+	_ = syncDirectory(filepath.Dir(specPath))
+	reason := "runtime launch failed: " + launchErr.Error()
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := reportSupervisorLaunchFailure(spec.SocketPath, spec.SessionID, spec.RuntimeGeneration, privateKey, reason); err == nil {
+			return launchErr
+		}
+		timer := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func acquireRuntimeLock(path string) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW, 0600)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = file.Close()
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return nil, fmt.Errorf("runtime supervisor is already active")
+		}
+		return nil, err
+	}
+	return file, nil
 }
 
 func awaitExitedAgentDelivery(ctx context.Context, spec runtimeSpec, privateKey ed25519.PrivateKey, session *supervisor.Session) error {
@@ -1522,6 +1749,11 @@ func forwardPendingAttention(ctx context.Context, client *SupervisorClient, sess
 }
 
 func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec, privateKey ed25519.PrivateKey, session *supervisor.Session, processErr error) error {
+	// Remove generation N's shared credential exactly once, before any exit
+	// report can commit. If an ACK is lost, a retry can no longer delete a key
+	// that the coordinator has since created for generation N+1.
+	removeRuntimeCredentials(specPath)
+	_ = syncDirectory(filepath.Dir(specPath))
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -1559,7 +1791,6 @@ func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec,
 			}
 			_ = client.Close()
 			if err == nil && forwardErr == nil {
-				removeRuntimeCredentials(specPath)
 				return processErr
 			}
 		}
@@ -1575,7 +1806,6 @@ func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec,
 
 func removeRuntimeCredentials(specPath string) {
 	_ = os.Remove(filepath.Join(filepath.Dir(specPath), "recovery.key"))
-	_ = os.Remove(specPath)
 }
 
 func IsRuntimeSubcommand(args []string) (string, bool) {

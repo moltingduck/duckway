@@ -155,6 +155,43 @@ func TestOpenMigratesV1DatabaseAndCreatesBackup(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesV12LifecycleOutcomesWithFailureReceipt(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "ducklion.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := raw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations := []func(context.Context, *sql.Tx) error{migrateV1, migrateV2, migrateV3, migrateV4, migrateV5, migrateV6, migrateV7, migrateV8, migrateV9, migrateV10, migrateV11, migrateV12}
+	for index, migrate := range migrations {
+		if err := migrate(ctx, tx); err != nil {
+			t.Fatalf("migrate v%d: %v", index+1, err)
+		}
+	}
+	if _, err := tx.Exec(`PRAGMA user_version=12`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var failure string
+	if err := database.db.QueryRow(`SELECT failure FROM lifecycle_outcomes LIMIT 1`).Scan(&failure); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("failure receipt column query err=%v", err)
+	}
+}
+
 func TestMutationIsAtomicReplayableAndPayloadBound(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(ctx, filepath.Join(t.TempDir(), "ducklion.db"))

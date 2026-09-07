@@ -37,6 +37,15 @@ type SupervisorActivityClient struct {
 }
 
 func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation uint64, privateKey ed25519.PrivateKey) (*SupervisorClient, error) {
+	return registerSupervisor(socketPath, sessionID, generation, privateKey, "")
+}
+
+func reportSupervisorLaunchFailure(socketPath string, sessionID model.SessionID, generation uint64, privateKey ed25519.PrivateKey, reason string) error {
+	_, err := registerSupervisor(socketPath, sessionID, generation, privateKey, reason)
+	return err
+}
+
+func registerSupervisor(socketPath string, sessionID model.SessionID, generation uint64, privateKey ed25519.PrivateKey, launchFailure string) (*SupervisorClient, error) {
 	if _, err := model.ParseSessionID(string(sessionID)); err != nil {
 		return nil, err
 	}
@@ -96,7 +105,7 @@ func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation
 		return fail(err)
 	}
 	proof := model.RecoveryProof(privateKey, instanceID, sessionID, generation, challenge.Nonce, uint16(negotiated.Major), uint16(negotiated.Minor))
-	completeBody, _ := json.Marshal(protocol.SupervisorRegisterComplete{ChallengeID: challenge.ChallengeID, Proof: proof})
+	completeBody, _ := json.Marshal(protocol.SupervisorRegisterComplete{ChallengeID: challenge.ChallengeID, Proof: proof, LaunchFailure: launchFailure})
 	if err := codec.Write(protocol.Request{ID: "register-complete", Type: "supervisor.register_complete", InstanceID: string(instanceID), SessionID: string(sessionID), RuntimeGeneration: &generation, Body: completeBody}); err != nil {
 		return fail(err)
 	}
@@ -109,6 +118,14 @@ func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation
 	}
 	if completeResponse.Error != nil {
 		return fail(fmt.Errorf("supervisor registration rejected: %s", completeResponse.Error.Message))
+	}
+	if launchFailure != "" {
+		var recorded map[string]bool
+		if err := json.Unmarshal(completeResponse.Result, &recorded); err != nil || !recorded["recorded"] {
+			return fail(fmt.Errorf("supervisor returned an invalid launch failure receipt"))
+		}
+		_ = conn.Close()
+		return nil, nil
 	}
 	var identity protocol.SupervisorRegistered
 	if err := json.Unmarshal(completeResponse.Result, &identity); err != nil {

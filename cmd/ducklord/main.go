@@ -26,6 +26,7 @@ type remoteRunner interface {
 	Send(context.Context, ducklord.Client, string, string) error
 	Start(context.Context, ducklord.Client, []string) error
 	Stop(context.Context, ducklord.Client, string) error
+	Lifecycle(context.Context, ducklord.Client, string, protocol.SessionLifecycleOperation, protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error)
 	Yield(context.Context, ducklord.Client, string, bool) (protocol.SessionYieldResult, error)
 	Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error)
 	ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error)
@@ -49,6 +50,12 @@ type startDoneEvent struct {
 	client  string
 	session string
 	err     error
+}
+
+type lifecycleDoneEvent struct {
+	operation protocol.SessionLifecycleOperation
+	result    protocol.SessionLifecycleResult
+	err       error
 }
 
 type resizeRequest struct {
@@ -315,6 +322,34 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 			return err
 		}
 		return runner.Stop(context.Background(), c, rest[1])
+	case "end", "destroy", "restart":
+		cfg, rest, err := loadWithFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		operation, mode, clientName, sessionRef, err := parseDucklordLifecycle(args[0], rest)
+		if err != nil {
+			return err
+		}
+		owner, err := ducklord.ResolveOwnerName(globalOwner, cfg.Name)
+		if err != nil {
+			return err
+		}
+		if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+			ownerRunner.SetOwner(owner)
+		}
+		c, err := mustClient(cfg, clientName)
+		if err != nil {
+			return err
+		}
+		lifecycleCtx, stopLifecycleWait := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stopLifecycleWait()
+		result, err := runner.Lifecycle(lifecycleCtx, c, sessionRef, operation, mode)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "%s %s (generation %d)\n", map[string]string{"end": "Ended", "destroy": "Destroyed", "restart": "Restarted"}[args[0]], result.SessionID, result.RuntimeGeneration)
+		return nil
 	case "yield":
 		cfg, rest, err := loadWithFlags(args[1:])
 		if err != nil {
@@ -774,6 +809,44 @@ func parseCreateLine(line string) (sessionName string, args []string, err error)
 	return sessionName, args, nil
 }
 
+func parseDucklordLifecycle(command string, args []string) (protocol.SessionLifecycleOperation, protocol.SessionLifecycleMode, string, string, error) {
+	operation := protocol.SessionLifecycleOperation(command)
+	if operation != protocol.SessionLifecycleEnd && operation != protocol.SessionLifecycleDestroy && operation != protocol.SessionLifecycleRestart {
+		return "", "", "", "", fmt.Errorf("unknown lifecycle command %q", command)
+	}
+	mode := protocol.SessionLifecycleImmediate
+	if operation == protocol.SessionLifecycleRestart {
+		mode = protocol.SessionLifecycleWait
+	}
+	modeSeen := false
+	positionals := make([]string, 0, 2)
+	for _, arg := range args {
+		switch arg {
+		case "-w", "--wait":
+			if modeSeen || operation == protocol.SessionLifecycleRestart {
+				return "", "", "", "", fmt.Errorf("usage: ducklord %s <client> <session> [-w|--wait|-f|--force]", command)
+			}
+			mode = protocol.SessionLifecycleWait
+			modeSeen = true
+		case "-f", "--force":
+			if modeSeen {
+				return "", "", "", "", fmt.Errorf("usage: ducklord %s <client> <session> [-w|--wait|-f|--force]", command)
+			}
+			mode = protocol.SessionLifecycleForce
+			modeSeen = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return "", "", "", "", fmt.Errorf("unknown %s option: %s", command, arg)
+			}
+			positionals = append(positionals, arg)
+		}
+	}
+	if len(positionals) != 2 {
+		return "", "", "", "", fmt.Errorf("usage: ducklord %s <client> <session> [-w|--wait|-f|--force]", command)
+	}
+	return operation, mode, positionals[0], positionals[1], nil
+}
+
 func parseDucklordStartArgs(args []string) ([]string, error) {
 	name := ""
 	agent := ""
@@ -987,6 +1060,8 @@ type tuiState struct {
 	notificationMode    bool
 	notificationIndex   int
 	notificationStaged  map[model.NotificationCategory]bool
+	lifecycleConfirm    protocol.SessionLifecycleOperation
+	lifecycleBusy       bool
 }
 
 func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, owner string) error {
@@ -1070,6 +1145,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	resizeRequests := make(chan resizeRequest, 1)
 	resizeResults := make(chan resizeDoneEvent, 1)
 	startDone := make(chan startDoneEvent, 1)
+	lifecycleDone := make(chan lifecycleDoneEvent, 1)
 	var attach *ducklord.AttachSession
 	var attachCancel context.CancelFunc
 	attachID := 0
@@ -1214,6 +1290,19 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			startCancel = nil
 			state.completeNewSessionStart(ctx, result.client, result.session, result.err)
 			state.render(os.Stdout)
+		case result := <-lifecycleDone:
+			state.lifecycleBusy = false
+			state.lifecycleConfirm = ""
+			if result.err != nil {
+				state.outputErr = string(result.operation) + " failed: " + sanitizeTerminalText(result.err.Error())
+			} else {
+				state.outputErr = fmt.Sprintf("%s completed for %s (generation %d)", result.operation, result.result.SessionID, result.result.RuntimeGeneration)
+			}
+			state.refreshSessions(ctx)
+			if state.activeAttachKey == "" {
+				state.refreshSelectedOutput(ctx)
+			}
+			state.render(os.Stdout)
 		case chunk := <-attachOutputSource:
 			if chunk.id != attachID {
 				continue
@@ -1342,6 +1431,51 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			if state.lifecycleConfirm != "" {
+				text := string(b)
+				if text == "\x1b" || text == "q" {
+					state.lifecycleConfirm = ""
+					state.render(os.Stdout)
+					continue
+				}
+				mode := protocol.SessionLifecycleImmediate
+				sess := state.currentSession()
+				if sess.Kind != string(model.KindShell) && state.lifecycleConfirm == protocol.SessionLifecycleRestart {
+					mode = protocol.SessionLifecycleWait
+				}
+				if sess.Kind == string(model.KindShell) && text != "\r" && text != "\n" {
+					continue
+				}
+				if text == "w" && state.lifecycleConfirm != protocol.SessionLifecycleRestart {
+					mode = protocol.SessionLifecycleWait
+				} else if text == "f" {
+					mode = protocol.SessionLifecycleForce
+				} else if text != "\r" && text != "\n" {
+					continue
+				}
+				client, clientErr := mustClient(cfg, sess.Client)
+				if clientErr != nil {
+					state.outputErr = clientErr.Error()
+					state.lifecycleConfirm = ""
+					continue
+				}
+				ref, operation := sess.SessionID, state.lifecycleConfirm
+				if ref == "" {
+					ref = sess.Name
+				}
+				state.lifecycleBusy = true
+				state.lifecycleConfirm = ""
+				state.outputErr = string(operation) + " accepted; Ducklion will continue it across reconnects"
+				go func() {
+					result, err := runner.Lifecycle(ctx, client, ref, operation, mode)
+					select {
+					case lifecycleDone <- lifecycleDoneEvent{operation: operation, result: result, err: err}:
+					case <-ctx.Done():
+					}
+				}()
+				state.render(os.Stdout)
+				continue
+			}
 			action := state.handleInput(b)
 			switch action {
 			case "quit":
@@ -1357,6 +1491,22 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.beginCreate()
 			case "notifications":
 				state.beginNotificationSettings()
+			case "end", "restart", "destroy":
+				if state.lifecycleBusy {
+					state.outputErr = "another lifecycle operation is still pending; wait for its result"
+					break
+				}
+				sess := state.currentSession()
+				if sess.SessionID == "" || !state.hostIsLive(sess.Client) {
+					state.outputErr = "session lifecycle is unavailable while the host is reconnecting"
+					break
+				}
+				if sess.Kind == string(model.KindAgent) && (sess.WriterKind != string(model.OwnerTerminal) || sess.WriterID != state.ownerName) {
+					state.outputErr = "read-only session; yield control to this Ducklord before changing its lifecycle"
+					break
+				}
+				state.lifecycleConfirm = protocol.SessionLifecycleOperation(action)
+				state.outputErr = ""
 			case "add-client":
 				state.beginAddClient()
 			case "remove-client":
@@ -1938,10 +2088,19 @@ func (s *tuiState) render(out io.Writer) {
 		fmt.Fprintln(out, truncate("add ducklion host: ssh config number/name or user@host  enter add  esc cancel", renderWidth))
 	} else if s.newSessionMode {
 		fmt.Fprintln(out, truncate(s.createHeader()+"  enter next  esc cancel", renderWidth))
+	} else if s.lifecycleConfirm != "" {
+		verb := string(s.lifecycleConfirm)
+		if s.currentSession().Kind == string(model.KindShell) {
+			fmt.Fprintln(out, truncate(verb+" shell session now?  enter terminate process immediately  esc cancel", renderWidth))
+		} else if s.lifecycleConfirm == protocol.SessionLifecycleRestart {
+			fmt.Fprintln(out, truncate("restart selected session?  enter wait for idle  f force-cancel task  esc cancel", renderWidth))
+		} else {
+			fmt.Fprintln(out, truncate(verb+" selected session?  enter now  w wait for idle  f force-cancel task  esc cancel", renderWidth))
+		}
 	} else if s.hostScoped {
-		fmt.Fprintln(out, truncate("j/k move  enter focus  y yield  Y wait-yield  n notifications  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k move  enter focus  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
 	} else {
-		fmt.Fprintln(out, truncate("j/k move  enter focus  y yield  Y wait-yield  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k move  enter focus  y/Y yield  E end  R restart  X destroy  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
@@ -2143,6 +2302,33 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 		return
 	}
 	sess := s.sessions[s.selected]
+	if s.lifecycleConfirm != "" {
+		status := "waiting for confirmation"
+		if s.lifecycleBusy {
+			status = "request accepted; waiting for durable completion"
+		}
+		lines := []string{
+			strings.ToUpper(string(s.lifecycleConfirm)) + " SESSION",
+			"Session: " + displayField(sess.Name) + "  [" + displayField(sess.SessionID) + "]",
+			"Host: " + displayField(sess.Client),
+			"Status: " + status,
+		}
+		switch s.lifecycleConfirm {
+		case protocol.SessionLifecycleDestroy:
+			lines = append(lines, "Destroy permanently removes this PTY and its retained logs.")
+		case protocol.SessionLifecycleEnd:
+			lines = append(lines, "End keeps the session metadata and retained logs for recovery.")
+		default:
+			lines = append(lines, "Restart keeps the session identity and starts a new runtime generation.")
+		}
+		if sess.Kind == string(model.KindShell) {
+			lines = append(lines, "Shell lifecycle terminates the current process immediately; it never waits for idle.")
+		}
+		for i, line := range lines {
+			fmt.Fprintf(out, "\033[%d;%dH%s\033[K", 5+i, x, truncate(line, width))
+		}
+		return
+	}
 	if s.notificationMode {
 		s.renderNotificationSettings(out, x, width, height, sess)
 		return
@@ -2322,6 +2508,12 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "yield"
 	case text == "Y":
 		return "yield-wait"
+	case text == "E":
+		return "end"
+	case text == "R":
+		return "restart"
+	case text == "X":
+		return "destroy"
 	case text == "c" && !s.hostScoped:
 		return "new"
 	case text == "n":
@@ -2984,6 +3176,9 @@ Usage:
   ducklord send <client> <session> <text> [--config <path>]
   ducklord start <client> --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
   ducklord stop <client> <session> [--config <path>]
+  ducklord end <client> <session> [-w|--wait|-f|--force] [--config <path>]
+  ducklord restart <client> <session> [-f|--force] [--config <path>]
+  ducklord destroy <client> <session> [-w|--wait|-f|--force] [--config <path>]
   ducklord yield <client> <session> [-w|--wait] [--config <path>]
   ducklord version`)
 }

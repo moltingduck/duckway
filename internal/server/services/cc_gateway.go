@@ -278,7 +278,7 @@ func isDaemonBoundCCCommand(content string) bool {
 		return false
 	}
 	switch strings.ToLower(args[0]) {
-	case "!new", "!new-confirm", "!end", "!destroy", "!yield", "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-doctor", "!duckway-restart", "!duckway-update", "!log":
+	case "!new", "!new-confirm", "!end", "!destroy", "!restart", "!yield", "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-doctor", "!duckway-restart", "!duckway-update", "!log":
 		return true
 	default:
 		return false

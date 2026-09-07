@@ -974,6 +974,55 @@ func TestNewProvisionWorkflowReplaysOneChannelAndOneCCOwnedSession(t *testing.T)
 	}
 }
 
+func TestDiscordRestartCommandPreservesChannelAndBindingE2E(t *testing.T) {
+	configDir := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	daemon, err := duckliondaemon.Open(context.Background(), duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion"), RuntimeLauncher: func(specPath string) error {
+		go func() { _ = duckliondaemon.RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- daemon.Serve() }()
+	defer func() { _ = daemon.Close(); <-serveDone }()
+	cc, err := duckliondaemon.DialCC(daemon.SocketPath(), "dwch_restart_e2e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	created, err := cc.CreateSession(context.Background(), protocol.SessionCreate{Handle: "restart-e2e", Kind: model.KindAgent, AgentType: "fixture", CWD: configDir,
+		Command: []string{"sh", "-c", "while :; do sleep 1; done"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.BindDiscordSession(context.Background(), "bind-restart-e2e", created.SessionID, "dwch_restart_e2e"); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeServer(t)
+	watch := stubWatch(t, configDir, fake)
+	watch.configDir = configDir
+	payload, _ := json.Marshal(clientCommandPayload{Command: "!restart", RequestID: "discord-restart-1", SessionID: created.SessionID})
+	envelope, _ := json.Marshal(sseEnvelope{Type: "client_command", CCID: "cc1", Handle: "dwch_restart_e2e", Payload: payload, InboxID: 601, ClaimToken: "claim-restart"})
+	watch.handleClientCommandContext(context.Background(), envelope)
+	if finishes := fake.snapshotFinishes(); len(finishes) != 1 || finishes[0]["status"] != "completed" {
+		t.Fatalf("restart finishes=%+v", finishes)
+	}
+	if messages := fake.snapshotMessages(); len(messages) != 2 || !strings.Contains(messages[0]["content"], "queued") ||
+		!strings.Contains(messages[1]["content"], "runtime generation `2`") {
+		t.Fatalf("restart messages=%+v", messages)
+	}
+	sessions, err := cc.ListSessions()
+	if err != nil || len(sessions) != 1 || sessions[0].Status != model.StatusRunning || sessions[0].RuntimeGeneration != 2 {
+		t.Fatalf("restart sessions=%+v err=%v", sessions, err)
+	}
+	if binding, err := cc.DiscordBindingForSession(context.Background(), created.SessionID); err != nil || binding.ChannelHandle != "dwch_restart_e2e" {
+		t.Fatalf("restart binding=%+v err=%v", binding, err)
+	}
+}
+
 func TestDurableBareNewCommandProvisionsReadyDucklionSessionE2E(t *testing.T) {
 	configDir, binDir := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' '{\"kind\":\"completed\",\"response\":\"done\"}' >&3; done\n"), 0700); err != nil {

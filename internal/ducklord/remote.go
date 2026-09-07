@@ -677,37 +677,69 @@ func parseDaemonCreate(args []string) (protocol.SessionCreate, error) {
 
 func (r *Runner) Stop(ctx context.Context, c Client, name string) error {
 	if r != nil && r.hasOwner() {
-		client, err := r.bridgeClient(ctx, c)
-		if err != nil {
-			return err
-		}
-		selected, err := resolveSession(client, name)
-		if err != nil {
-			return err
-		}
-		operationID := uuid.NewString()
-		for attempt := 0; attempt < 2; attempt++ {
-			err = client.StopSessionWithID(ctx, operationID, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration)
-			if err == nil {
-				return nil
-			}
-			var remoteErr *daemon.RemoteError
-			if errors.As(err, &remoteErr) {
-				return err
-			}
-			r.discardBridge(bridgeKey(c), client)
-			client, err = r.bridgeClient(ctx, c)
-			if err != nil {
-				continue
-			}
-		}
-		return fmt.Errorf("stop session has unknown outcome (operation %s): %w", operationID, err)
+		_, err := r.Lifecycle(ctx, c, name, protocol.SessionLifecycleEnd, protocol.SessionLifecycleImmediate)
+		return err
 	}
 	if !SafeIdentifier(name) {
 		return fmt.Errorf("invalid session name %q", name)
 	}
 	_, err := sshOutput(ctx, c, "stop", name)
 	return err
+}
+
+// Lifecycle executes one durable session mutation and follows its immutable
+// receipt across SSH/bridge reconnects until Ducklion reports completion.
+func (r *Runner) Lifecycle(ctx context.Context, c Client, ref string, operation protocol.SessionLifecycleOperation, mode protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
+	if r == nil || !r.hasOwner() {
+		return protocol.SessionLifecycleResult{}, fmt.Errorf("ducklord owner is not configured")
+	}
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return protocol.SessionLifecycleResult{}, err
+	}
+	selected, err := resolveSession(client, ref)
+	if err != nil {
+		return protocol.SessionLifecycleResult{}, err
+	}
+	if selected.Kind == model.KindShell {
+		if operation == protocol.SessionLifecycleRestart && mode == protocol.SessionLifecycleWait {
+			// Restart's CLI default is wait for agent sessions, but shell
+			// lifecycle is intentionally immediate-only.
+			mode = protocol.SessionLifecycleImmediate
+		} else if mode != protocol.SessionLifecycleImmediate {
+			return protocol.SessionLifecycleResult{}, fmt.Errorf("shell lifecycle operations are immediate and do not accept wait or force modes")
+		}
+	}
+	requestID := uuid.NewString()
+	request := protocol.SessionLifecycleRequest{Operation: operation, Mode: mode}
+	for {
+		result, callErr := client.LifecycleSessionWithID(ctx, requestID, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, request)
+		if callErr == nil {
+			if result.State == protocol.SessionLifecycleCompleted {
+				return result, nil
+			}
+			select {
+			case <-ctx.Done():
+				return result, fmt.Errorf("stopped waiting; lifecycle request %s remains durable: %w", requestID, ctx.Err())
+			case <-time.After(250 * time.Millisecond):
+			}
+			continue
+		}
+		var remoteErr *daemon.RemoteError
+		if errors.As(callErr, &remoteErr) {
+			return protocol.SessionLifecycleResult{}, callErr
+		}
+		r.discardBridge(bridgeKey(c), client)
+		client, callErr = r.bridgeClient(ctx, c)
+		if callErr != nil {
+			err = callErr
+			select {
+			case <-ctx.Done():
+				return protocol.SessionLifecycleResult{}, fmt.Errorf("session lifecycle outcome unknown (request %s): %w", requestID, err)
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}
 }
 
 func (r *Runner) Yield(ctx context.Context, c Client, ref string, wait bool) (protocol.SessionYieldResult, error) {

@@ -10,6 +10,7 @@ type SessionLifecycleOperation string
 const (
 	SessionLifecycleEnd     SessionLifecycleOperation = "end"
 	SessionLifecycleDestroy SessionLifecycleOperation = "destroy"
+	SessionLifecycleRestart SessionLifecycleOperation = "restart"
 )
 
 type SessionLifecycleMode string
@@ -26,7 +27,7 @@ type SessionLifecycleRequest struct {
 }
 
 func (r SessionLifecycleRequest) Validate() error {
-	if r.Operation != SessionLifecycleEnd && r.Operation != SessionLifecycleDestroy {
+	if r.Operation != SessionLifecycleEnd && r.Operation != SessionLifecycleDestroy && r.Operation != SessionLifecycleRestart {
 		return fmt.Errorf("invalid session lifecycle operation")
 	}
 	if r.Mode != SessionLifecycleImmediate && r.Mode != SessionLifecycleWait && r.Mode != SessionLifecycleForce {

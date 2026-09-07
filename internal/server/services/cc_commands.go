@@ -143,6 +143,13 @@ func (h *CCCommandHandler) handle(ctx context.Context, ccID string, ch *models.C
 		}
 		h.forwardToDaemon(ctx, botToken, cc, ch, cmd, args[1:])
 
+	case "!restart":
+		if ch.Kind == "management" {
+			h.reply(ctx, botToken, ch.ChannelID, "❌ `!restart` restarts the current channel's agent — run it inside a task channel.")
+			return
+		}
+		h.forwardToDaemon(ctx, botToken, cc, ch, cmd, args[1:])
+
 	case "!list":
 		if ch.Kind != "management" {
 			h.reply(ctx, botToken, ch.ChannelID, "❌ `!list` only works in the management channel.")
@@ -191,7 +198,7 @@ func (h *CCCommandHandler) handle(ctx context.Context, ccID string, ch *models.C
 // knownCommands is the canonical list used for `!help` discovery + the
 // fuzzy "did you mean" suggestion. Order is the user-facing display
 // order in !help.
-var knownCommands = []string{"!help", "!new", "!new-confirm", "!end", "!destroy", "!yield", "!list", "!status", "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-restart", "!duckway-update", "!log"}
+var knownCommands = []string{"!help", "!new", "!new-confirm", "!end", "!destroy", "!restart", "!yield", "!list", "!status", "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-restart", "!duckway-update", "!log"}
 
 // unknownCommandReply formats the friendly response for an unrecognised
 // !-prefix command. Suggests close matches (Levenshtein distance ≤ 2)
@@ -391,7 +398,7 @@ func daemonCommandAllowedInChannel(command, kind string) bool {
 	switch command {
 	case "!new", "!new-confirm", "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-doctor", "!duckway-restart", "!duckway-update":
 		return kind == "management"
-	case "!end", "!destroy", "!yield", "!log":
+	case "!end", "!destroy", "!restart", "!yield", "!log":
 		return kind == "task"
 	default:
 		return false
@@ -460,7 +467,7 @@ func (h *CCCommandHandler) forwardToDaemon(ctx context.Context, botToken string,
 // control lane; all other commands remain ordered behind ordinary channel work.
 func daemonCommandLane(handle, command string) string {
 	switch command {
-	case "!end", "!destroy", "!yield":
+	case "!end", "!destroy", "!restart", "!yield":
 		return "control:" + handle
 	default:
 		return handle
@@ -484,6 +491,7 @@ const helpText = "**Duckway CC commands**\n" +
 	"`!new-confirm <token>` — confirm creating a missing `--cwd` folder and saving it as a project\n" +
 	"`!end [-w|--wait|-f|--force]` — end the *current* task channel's session and **archive** it (history kept)\n" +
 	"`!destroy [-w|--wait|-f|--force]` — end and **hard-delete** the *current* task channel (history gone)\n" +
+	"`!restart [-f|--force]` — wait for the current turn, then restart its agent PTY (or cancel it with force)\n" +
 	"`!yield [-w|--wait]` — request control of the current bound session; wait for active work when requested\n" +
 	"`!list` — list active task channels\n" +
 	"`!status` — daemon + session counts\n" +
