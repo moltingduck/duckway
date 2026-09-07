@@ -305,6 +305,12 @@ it transactionally with runtime exit. The `wait` and `force` protocol/Discord
 mode wiring is the next lifecycle layer; the schema already reserves those
 mode values but they are not yet accepted by user commands.
 
+Schema v10 extends each lifecycle row with a recovery phase, last-update time,
+attempt counter, and bounded last-error diagnostic. Executors advance phases
+with a request-ID-scoped compare-and-swap. Startup lists unfinished rows in a
+stable order, and cancellation may remove only the exact request while it is
+still in `waiting`; once `stopping` begins the operation is fail-closed.
+
 Schema v5 adds digest-only structured-event receipts and schema v6 adds an
 `acked_event_seq` high-water mark. Neither migration stores prompts, progress
 text, or final responses. Full event payloads remain in the independent PTY

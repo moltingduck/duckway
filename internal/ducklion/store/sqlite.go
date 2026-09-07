@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 9
+const SchemaVersion = 10
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -216,6 +216,11 @@ func (s *SQLite) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate ducklion schema to v9: %w", err)
 		}
 	}
+	if userVersion < 10 {
+		if err := migrateV10(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v10: %w", err)
+		}
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
 		return err
 	}
@@ -404,6 +409,24 @@ func migrateV9(ctx context.Context, tx *sql.Tx) error {
 		requester_id TEXT NOT NULL, source_epoch INTEGER NOT NULL CHECK(source_epoch>0),
 		source_generation INTEGER NOT NULL CHECK(source_generation>0), request_id TEXT NOT NULL,
 		created_at_ms INTEGER NOT NULL)`)
+	return err
+}
+
+func migrateV10(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`ALTER TABLE pending_lifecycle_operations ADD COLUMN phase TEXT NOT NULL DEFAULT 'waiting'
+			CHECK(phase IN ('waiting','stopping','runtime_stopped','cleaning','completed'))`,
+		`ALTER TABLE pending_lifecycle_operations ADD COLUMN updated_at_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE pending_lifecycle_operations ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt>=0)`,
+		`ALTER TABLE pending_lifecycle_operations ADD COLUMN last_error TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	// Existing v9 rows predate updated_at_ms; their creation time is the best
+	// durable approximation and avoids making them look older than they are.
+	_, err := tx.ExecContext(ctx, `UPDATE pending_lifecycle_operations SET updated_at_ms=created_at_ms WHERE updated_at_ms=0`)
 	return err
 }
 

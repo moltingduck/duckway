@@ -168,7 +168,8 @@ is independent from the normal Duckway client daemon.
 See [Ducklord / Ducklion Remote Agent Control](ducklord-ducklion-spec.md) for:
 
 - a terminal-only Podman walkthrough
-- TUI controls, including `Enter`, right-click, `Ctrl-]`, and `n` new session
+- TUI controls, including `Enter`, right-click, `Ctrl-]`, `c` create session,
+  and `n` notification settings
 - remote session creation examples
 - the SSH, PTY, attach stream, and session creation technical details
 
