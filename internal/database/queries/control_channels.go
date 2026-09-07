@@ -247,6 +247,20 @@ func (q *ControlChannelQueries) CreateChannel(c *models.CCChannel) error {
 	return err
 }
 
+// ActivateReservedChannel commits the real Discord identity to a Phase-A row.
+// Repeating the same activation is harmless; a different real ID is rejected.
+func (q *ControlChannelQueries) ActivateReservedChannel(handle, channelID, name string) error {
+	result, err := q.db.Exec(`UPDATE cc_channels SET channel_id=?,name=?,last_seen_at=datetime('now')
+		WHERE handle=? AND (channel_id='' OR channel_id=?)`, channelID, name, handle, channelID)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return fmt.Errorf("channel reservation activation conflict")
+	}
+	return nil
+}
+
 func (q *ControlChannelQueries) MarkChannelArchived(handle string) error {
 	_, err := q.db.Exec("UPDATE cc_channels SET archived = 1 WHERE handle = ?", handle)
 	return err

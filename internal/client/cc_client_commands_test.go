@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,22 +15,28 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	duckliondaemon "github.com/hackerduck/duckway/internal/ducklion/daemon"
+	"github.com/hackerduck/duckway/internal/ducklion/model"
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 )
 
 // fakeServer is a small recording HTTP server that returns canned
 // responses for the create-channel and post-message endpoints used by
 // the bind flow.
 type fakeServer struct {
-	mu              sync.Mutex
-	creates         []map[string]string
-	messages        []map[string]string
-	deliveries      map[string]string
-	finishes        []map[string]string
-	edits           []string
-	reactions       []string
-	reactionEntered chan string
-	reactionRelease <-chan struct{}
-	srv             *httptest.Server
+	mu               sync.Mutex
+	creates          []map[string]string
+	messages         []map[string]string
+	deliveries       map[string]string
+	finishes         []map[string]string
+	edits            []string
+	reactions        []string
+	reactionEntered  chan string
+	reactionRelease  <-chan struct{}
+	dropDeliveryOnce bool
+	failDeliveryOnce bool
+	srv              *httptest.Server
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -49,6 +56,10 @@ func newFakeServer(t *testing.T) *fakeServer {
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"handle": handle, "name": body["name"], "topic": "", "cwd": body["cwd"], "kind": "task",
 			})
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/session"):
+			_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/archive"):
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == "GET" && r.URL.Path == "/client/cc/channels":
 			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"handle": "dwch_task", "name": "task", "kind": "task", "cwd": os.TempDir()},
@@ -73,6 +84,13 @@ func newFakeServer(t *testing.T) *fakeServer {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			body["_path"] = r.URL.Path
 			f.mu.Lock()
+			fail := f.failDeliveryOnce && body["delivery_key"] != ""
+			f.failDeliveryOnce = false
+			if fail {
+				f.mu.Unlock()
+				http.Error(w, "delivery failed", http.StatusBadGateway)
+				return
+			}
 			messageID := ""
 			if key := body["delivery_key"]; key != "" {
 				messageID = f.deliveries[key]
@@ -84,7 +102,13 @@ func newFakeServer(t *testing.T) *fakeServer {
 					f.deliveries[key] = messageID
 				}
 			}
+			drop := f.dropDeliveryOnce && body["delivery_key"] != ""
+			f.dropDeliveryOnce = false
 			f.mu.Unlock()
+			if drop {
+				http.Error(w, "response lost", http.StatusBadGateway)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"message_id": messageID})
 		case r.Method == "POST" && strings.Contains(r.URL.Path, "/reactions"):
 			var body map[string]string
@@ -145,23 +169,41 @@ func (f *fakeServer) snapshotEdits() []string {
 	return append([]string(nil), f.edits...)
 }
 
+func (f *fakeServer) dropNextDeliveredResponse() {
+	f.mu.Lock()
+	f.dropDeliveryOnce = true
+	f.mu.Unlock()
+}
+
+func (f *fakeServer) failNextDeliveredMessage() {
+	f.mu.Lock()
+	f.failDeliveryOnce = true
+	f.mu.Unlock()
+}
+
 // stubWatch wires a CCWatch with a fake server + temp config + temp
 // claude-projects tree. Used to drive handleClientCommand end-to-end.
 func stubWatch(t *testing.T, projectsRoot string, fake *fakeServer) *CCWatch {
 	t.Helper()
 	configDir := t.TempDir()
-	return &CCWatch{
+	w := &CCWatch{
 		cfg:         &Config{ServerURL: fake.srv.URL, Token: "tok"},
 		configDir:   configDir,
 		agentTypes:  map[string]string{},
 		sessions:    NewCCSessionStore(configDir),
 		processed:   NewCCProcessedStore(configDir),
+		provisions:  newCCProvisionStore(configDir),
 		runners:     map[string]*ccRunner{},
 		pendingNew:  map[string]pendingNewProject{},
 		deleted:     map[string]struct{}{},
 		recoverSeen: map[string]struct{}{},
 		api:         NewAPIClient(fake.srv.URL, "tok"),
 	}
+	w.provisionProjectSession = func(ctx context.Context, managementHandle, ccID, requestID, slug, topic, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+		created, err := w.createProjectChannel(ctx, slug, topic, cwd)
+		return created, protocol.SessionSummary{SessionID: "ABC123", AgentType: "fixture", Status: model.StatusRunning}, err
+	}
+	return w
 }
 
 func firstAttachmentPathFromPrompt(prompt string) string {
@@ -408,7 +450,7 @@ func TestCmdNewWithExistingCwdCreatesChannel(t *testing.T) {
 	fake := newFakeServer(t)
 	w := stubWatch(t, filepath.Join(root, ".claude", "projects"), fake)
 
-	w.cmdNewProject(context.Background(), "dwch_mgmt", []string{"fix-login", "--cwd", cwd, "--topic", "bug"})
+	w.cmdNewProject(context.Background(), "dwch_mgmt", "cc1", "msg-1", []string{"fix-login", "--cwd", cwd, "--topic", "bug"})
 
 	creates := fake.snapshotCreates()
 	if len(creates) != 1 {
@@ -423,13 +465,131 @@ func TestCmdNewWithExistingCwdCreatesChannel(t *testing.T) {
 	}
 }
 
+func TestCmdNewBareSlugCreatesStableDefaultWorkspace(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	var gotCWD string
+	w.provisionProjectSession = func(_ context.Context, _, _, _, _, _ string, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+		gotCWD = cwd
+		return &CreateCCChannelResult{Handle: "dwch_task", Name: "review"}, protocol.SessionSummary{SessionID: "ABC123", AgentType: "fixture"}, nil
+	}
+	w.cmdNewProject(context.Background(), "dwch_mgmt", "cc1", "777777777777777777", []string{"review"})
+	if gotCWD == "" || !strings.HasPrefix(gotCWD, filepath.Join(w.configDir, "cc-workspace")) {
+		t.Fatalf("default cwd=%q", gotCWD)
+	}
+	if info, err := os.Stat(gotCWD); err != nil || !info.IsDir() {
+		t.Fatalf("default workspace stat=%v err=%v", info, err)
+	}
+	if messages := fake.snapshotMessages(); len(messages) != 1 || !strings.Contains(messages[0]["content"], "ready") {
+		t.Fatalf("messages=%+v", messages)
+	}
+}
+
+func TestDurableClientCommandCompletesAfterHandlerReturns(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	w.handleInboxEvent(CCInboxEvent{ID: 42, CCID: "cc1", ChannelHandle: ptrString("dwch_mgmt"), EventType: "CLIENT_COMMAND",
+		Payload: `{"command":"!new","args":[],"request_id":"discord-42"}`, ClaimToken: "claim-42"})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if finishes := fake.snapshotFinishes(); len(finishes) == 1 {
+			if finishes[0]["status"] != "completed" || finishes[0]["claim_token"] != "claim-42" {
+				t.Fatalf("finish=%+v", finishes[0])
+			}
+			w.shutdown()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	w.shutdown()
+	t.Fatal("durable client command was not completed")
+}
+
+func TestLegacyDurableClientCommandDoesNotReplayForever(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	handle := "dwch_mgmt"
+	w.handleInboxEvent(CCInboxEvent{ID: 44, CCID: "cc1", ChannelHandle: &handle, EventType: "CLIENT_COMMAND",
+		Payload: `{"command":"!projects","args":[],"request_id":"legacy-44"}`, ClaimToken: "claim-44"})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if finishes := fake.snapshotFinishes(); len(finishes) == 1 {
+			w.shutdown()
+			if finishes[0]["status"] != "completed" {
+				t.Fatalf("finish=%+v", finishes[0])
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	w.shutdown()
+	t.Fatal("legacy durable command was not completed")
+}
+
+func TestProvisionSuccessReplyResponseLossDoesNotDuplicate(t *testing.T) {
+	fake := newFakeServer(t)
+	fake.dropNextDeliveredResponse()
+	configDir := t.TempDir()
+	w := &CCWatch{configDir: configDir, provisions: newCCProvisionStore(configDir), sessions: NewCCSessionStore(configDir), api: NewAPIClient(fake.srv.URL, "tok")}
+	session := protocol.SessionSummary{SessionID: "ABC123", AgentType: "fixture", CWD: "/work"}
+	channel := &CreateCCChannelResult{Handle: "dwch_task", Name: "review", Cwd: "/work", Kind: "task"}
+	record, err := w.provisions.Reserve(ccProvisionRecord{RequestID: "discord-reply", ManagementHandle: "dwch_mgmt", CCID: "cc1", Slug: "review", CWD: "/work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Channel, record.Session, record.Phase = channel, &session, ccProvisionActive
+	if err := w.provisions.Save(record); err != nil {
+		t.Fatal(err)
+	}
+	message := "✅ Recovered **#review** — `dwch_task`\n   session: `ABC123` · fixture · ready\n   cwd: `/work`"
+	if err := w.postProvisionReply(context.Background(), "dwch_mgmt", "discord-reply", message); err == nil {
+		t.Fatal("fixture did not drop the first response")
+	}
+	w.recoverCCProvisions(context.Background())
+	if messages := fake.snapshotMessages(); len(messages) != 1 {
+		t.Fatalf("Discord messages=%d, want one idempotent delivery", len(messages))
+	}
+	if pending := w.provisions.Pending(); len(pending) != 0 {
+		t.Fatalf("workflow did not reach reply_delivered: %+v", pending)
+	}
+}
+
+func TestDurableNewErrorReplyLossReadmitsThenCompletesOnce(t *testing.T) {
+	fake := newFakeServer(t)
+	fake.dropNextDeliveredResponse()
+	w := stubWatch(t, t.TempDir(), fake)
+	handle := "dwch_mgmt"
+	event := CCInboxEvent{ID: 43, CCID: "cc1", ChannelHandle: &handle, EventType: "CLIENT_COMMAND", ClaimToken: "claim-a",
+		Payload: `{"command":"!new","args":[],"request_id":"discord-error"}`}
+	w.handleInboxEvent(event)
+	deadline := time.Now().Add(2 * time.Second)
+	for len(fake.snapshotFinishes()) < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	event.ClaimToken = "claim-b"
+	w.handleInboxEvent(event)
+	for len(fake.snapshotFinishes()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	w.shutdown()
+	finishes := fake.snapshotFinishes()
+	if len(finishes) != 2 || finishes[0]["status"] != "admitted" || finishes[1]["status"] != "completed" {
+		t.Fatalf("finishes=%+v", finishes)
+	}
+	if messages := fake.snapshotMessages(); len(messages) != 1 {
+		t.Fatalf("terminal error replies=%d, want 1", len(messages))
+	}
+}
+
+func ptrString(value string) *string { return &value }
+
 func TestCmdNewWithMissingCwdRequiresConfirmationThenAddsProject(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(root, "new-app")
 	fake := newFakeServer(t)
 	w := stubWatch(t, filepath.Join(root, ".claude", "projects"), fake)
 
-	w.cmdNewProject(context.Background(), "dwch_mgmt", []string{"new-app", "--cwd", cwd})
+	w.cmdNewProject(context.Background(), "dwch_mgmt", "cc1", "msg-2", []string{"new-app", "--cwd", cwd})
 	if len(fake.snapshotCreates()) != 0 {
 		t.Fatalf("should not create channel before confirmation: %+v", fake.snapshotCreates())
 	}
@@ -441,8 +601,11 @@ func TestCmdNewWithMissingCwdRequiresConfirmationThenAddsProject(t *testing.T) {
 	if len(token) != 2 {
 		t.Fatalf("confirmation token not found in %q", msgs[0]["content"])
 	}
+	// Confirmation survives a cc-watch restart while the command itself is in
+	// the durable inbox.
+	w.pendingNew = loadPendingNewProjects(w.configDir)
 
-	w.cmdNewProjectConfirm(context.Background(), "dwch_mgmt", []string{token[1]})
+	w.cmdNewProjectConfirm(context.Background(), "dwch_mgmt", "cc1", "msg-3", []string{token[1]})
 	if st, err := os.Stat(cwd); err != nil || !st.IsDir() {
 		t.Fatalf("cwd not created: stat=%v err=%v", st, err)
 	}
@@ -456,6 +619,199 @@ func TestCmdNewWithMissingCwdRequiresConfirmationThenAddsProject(t *testing.T) {
 	creates := fake.snapshotCreates()
 	if len(creates) != 1 || creates[0]["cwd"] != cwd {
 		t.Fatalf("creates = %+v, want cwd %s", creates, cwd)
+	}
+}
+
+func TestNewConfirmationIsNotConsumedBeforeProvisioningIsActive(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	cwd := filepath.Join(t.TempDir(), "confirmed")
+	token := "confirm-safe"
+	w.pendingNew[token] = pendingNewProject{Slug: "review", Cwd: cwd, CreatedAt: time.Now()}
+	w.mu.Lock()
+	if err := w.flushPendingNewLocked(); err != nil {
+		w.mu.Unlock()
+		t.Fatal(err)
+	}
+	w.mu.Unlock()
+	w.provisionProjectSession = func(context.Context, string, string, string, string, string, string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+		return nil, protocol.SessionSummary{}, errors.New("injected crash boundary")
+	}
+	w.cmdNewProjectConfirm(context.Background(), "dwch_mgmt", "cc1", "confirm-message", []string{token})
+	if _, ok := loadPendingNewProjects(w.configDir)[token]; !ok {
+		t.Fatal("confirmation token was consumed before provisioning became active")
+	}
+}
+
+func TestNewConfirmationRetriesSuccessReplyBeforeConsumingToken(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	cwd := filepath.Join(t.TempDir(), "confirmed")
+	token := "confirm-retry"
+	w.pendingNew[token] = pendingNewProject{Slug: "review", Cwd: cwd, CreatedAt: time.Now()}
+	w.mu.Lock()
+	if err := w.flushPendingNewLocked(); err != nil {
+		w.mu.Unlock()
+		t.Fatal(err)
+	}
+	w.mu.Unlock()
+	provisionCalls := 0
+	w.provisionProjectSession = func(context.Context, string, string, string, string, string, string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+		provisionCalls++
+		return &CreateCCChannelResult{Handle: "dwch_ready", Name: "review"}, protocol.SessionSummary{
+			SessionID: "ABC123", AgentType: "codex", Status: model.StatusRunning,
+		}, nil
+	}
+
+	fake.failNextDeliveredMessage()
+	w.cmdNewProjectConfirm(context.Background(), "dwch_mgmt", "cc1", "confirm-message", []string{token})
+	if _, ok := loadPendingNewProjects(w.configDir)[token]; !ok {
+		t.Fatal("confirmation token was consumed after a failed pre-storage delivery")
+	}
+	if messages := fake.snapshotMessages(); len(messages) != 0 {
+		t.Fatalf("messages after failed pre-storage delivery=%+v, want none", messages)
+	}
+
+	w.cmdNewProjectConfirm(context.Background(), "dwch_mgmt", "cc1", "confirm-message", []string{token})
+	if _, ok := loadPendingNewProjects(w.configDir)[token]; ok {
+		t.Fatal("confirmation token remains after successful stable delivery")
+	}
+	messages := fake.snapshotMessages()
+	if len(messages) != 1 || !strings.Contains(messages[0]["content"], "Created folder") || strings.Contains(messages[0]["content"], "no pending") {
+		t.Fatalf("messages=%+v, want exactly one success reply", messages)
+	}
+	if provisionCalls != 2 {
+		t.Fatalf("provision calls=%d, want idempotent replay attempt", provisionCalls)
+	}
+}
+
+func TestNewProvisionWorkflowReplaysOneChannelAndOneCCOwnedSession(t *testing.T) {
+	configDir := t.TempDir()
+	binDir := t.TempDir()
+	codexPath := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' '{\"kind\":\"completed\",\"response\":\"done\"}' >&3; done\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	ducklionRoot := filepath.Join(configDir, "ducklion")
+	daemon, err := duckliondaemon.Open(context.Background(), duckliondaemon.Options{Root: ducklionRoot, RuntimeLauncher: func(specPath string) error {
+		go func() { _ = duckliondaemon.RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- daemon.Serve() }()
+	defer func() { _ = daemon.Close(); <-serveDone }()
+
+	fake := newFakeServer(t)
+	w := &CCWatch{configDir: configDir, agentTypes: map[string]string{"cc1": "codex"}, agentOptions: map[string]map[string]string{},
+		sessions: NewCCSessionStore(configDir), processed: NewCCProcessedStore(configDir), provisions: newCCProvisionStore(configDir), api: NewAPIClient(fake.srv.URL, "tok")}
+	// Persist channel_created, then replace the store instance to model a
+	// cc-watch crash immediately after that phase.
+	precreated, err := w.api.CreateCCChannel(context.Background(), "review", "topic", configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := w.provisions.Reserve(ccProvisionRecord{RequestID: "discord-9001", ManagementHandle: "dwch_mgmt", CCID: "cc1", Slug: "review", Topic: "topic", CWD: configDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Channel, record.Phase = precreated, ccProvisionChannelCreated
+	if err := w.provisions.Save(record); err != nil {
+		t.Fatal(err)
+	}
+	w.provisions = newCCProvisionStore(configDir)
+	created, session, err := w.createProvisionedProjectSession(context.Background(), "dwch_mgmt", "cc1", "discord-9001", "review", "topic", configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Writer == nil || session.Writer.Kind != model.OwnerCC || session.Writer.ID != created.Handle || session.Status != model.StatusRunning {
+		t.Fatalf("session=%+v channel=%+v", session, created)
+	}
+	// Simulate a client restart and the same durable command being replayed.
+	w.provisions = newCCProvisionStore(configDir)
+	replayedChannel, replayedSession, err := w.createProvisionedProjectSession(context.Background(), "dwch_mgmt", "cc1", "discord-9001", "review", "topic", configDir)
+	if err != nil || replayedChannel.Handle != created.Handle || replayedSession.SessionID != session.SessionID {
+		t.Fatalf("replay channel=%+v session=%+v err=%v", replayedChannel, replayedSession, err)
+	}
+	if creates := fake.snapshotCreates(); len(creates) != 1 {
+		t.Fatalf("Discord channels created=%d, want 1", len(creates))
+	}
+	management, err := duckliondaemon.DialCC(daemon.SocketPath(), "dwch_mgmt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := management.DiscordBindingForSession(context.Background(), session.SessionID)
+	_ = management.Close()
+	if err != nil || binding.ChannelHandle != created.Handle {
+		t.Fatalf("binding=%+v err=%v", binding, err)
+	}
+	task, err := duckliondaemon.DialCC(daemon.SocketPath(), created.Handle)
+	if err == nil {
+		_ = task.StopSession(context.Background(), session.SessionID, session.OwnershipEpoch, session.RuntimeGeneration)
+		_ = task.Close()
+	}
+}
+
+func TestDurableBareNewCommandProvisionsReadyDucklionSessionE2E(t *testing.T) {
+	configDir, binDir := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "codex"), []byte("#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' '{\"kind\":\"completed\",\"response\":\"done\"}' >&3; done\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	daemon, err := duckliondaemon.Open(context.Background(), duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion"), RuntimeLauncher: func(specPath string) error {
+		go func() { _ = duckliondaemon.RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- daemon.Serve() }()
+	defer func() { _ = daemon.Close(); <-serveDone }()
+	fake := newFakeServer(t)
+	w := &CCWatch{configDir: configDir, agentTypes: map[string]string{"cc1": "codex"}, agentOptions: map[string]map[string]string{},
+		sessions: NewCCSessionStore(configDir), processed: NewCCProcessedStore(configDir), provisions: newCCProvisionStore(configDir),
+		commandRunners: map[string]*ccCommandRunner{}, runners: map[string]*ccRunner{}, shellRunners: map[string]*ccRunner{}, deleted: map[string]struct{}{}, api: NewAPIClient(fake.srv.URL, "tok")}
+	handle := "dwch_mgmt"
+	w.handleInboxEvent(CCInboxEvent{ID: 91, CCID: "cc1", ChannelHandle: &handle, EventType: "CLIENT_COMMAND", ClaimToken: "claim-91",
+		Payload: `{"command":"!new","args":["review"],"request_id":"888888888888888888"}`})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(fake.snapshotFinishes()) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	w.shutdown()
+	if finishes := fake.snapshotFinishes(); len(finishes) != 1 || finishes[0]["status"] != "completed" {
+		t.Fatalf("inbox finishes=%+v", finishes)
+	}
+	if creates := fake.snapshotCreates(); len(creates) != 1 {
+		t.Fatalf("channel creates=%d", len(creates))
+	}
+	observer, err := duckliondaemon.DialCC(daemon.SocketPath(), "dwch_mgmt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := observer.ListSessions()
+	_ = observer.Close()
+	if err != nil || len(sessions) != 1 || sessions[0].Status != model.StatusRunning || sessions[0].Writer == nil || sessions[0].Writer.Kind != model.OwnerCC || sessions[0].ChannelHandle == "" {
+		t.Fatalf("sessions=%+v err=%v", sessions, err)
+	}
+	if pending := w.provisions.Pending(); len(pending) != 0 {
+		t.Fatalf("workflow pending=%+v", pending)
+	}
+	task, err := duckliondaemon.DialCC(daemon.SocketPath(), sessions[0].Writer.ID)
+	if err == nil {
+		_ = task.StopSession(context.Background(), sessions[0].SessionID, sessions[0].OwnershipEpoch, sessions[0].RuntimeGeneration)
+		_ = task.Close()
 	}
 }
 

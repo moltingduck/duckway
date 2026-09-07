@@ -208,6 +208,39 @@ func TestDiscordPolicyFailClosedE2E(t *testing.T) {
 			}
 		})
 	}
+	before, _ := h.cc.LatestInboxID("cc1")
+	conn.routeMessageEvent("MESSAGE_CREATE", "9010", json.RawMessage(`{"id":"506","guild_id":"G1","channel_id":"9010","content":"!! env","author":{"id":"U1"},"member":{"roles":["R1"]},"mentions":[{"id":"BOT"}]}`))
+	after, _ := h.cc.LatestInboxID("cc1")
+	if after != before {
+		t.Fatal("task-channel direct shell command was admitted")
+	}
+}
+
+func TestDiscordClientCommandUsesDurableInboxE2E(t *testing.T) {
+	h := newCommandHarness(t)
+	_, unsubscribe := h.hub.Subscribe("client1")
+	defer unsubscribe()
+	conn := &ccBotConn{apiKeyID: "key1", botToken: "fake-token", cc: h.cc, hub: h.hub, commands: h.handler, botUserID: "BOT", stopCh: make(chan struct{})}
+	payload := json.RawMessage(`{"id":"777777777777777777","guild_id":"G1","channel_id":"MGMT1","content":"!new review","author":{"id":"U1","bot":false}}`)
+	conn.routeMessageEvent("MESSAGE_CREATE", "MGMT1", payload)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		rows, err := h.cc.PullInbox("cc1", 0, []string{"dwch_mgmt"}, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) == 1 {
+			if rows[0].EventType != "CLIENT_COMMAND" || rows[0].EventKey != "CLIENT_COMMAND:777777777777777777" || rows[0].Status != "admitted" ||
+				!strings.Contains(rows[0].Payload, `"request_id":"777777777777777777"`) || !strings.Contains(rows[0].Payload, `"command":"!new"`) {
+				t.Fatalf("durable command=%+v", rows[0])
+			}
+			conn.stop()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	conn.stop()
+	t.Fatal("client command was not durably admitted")
 }
 
 func TestDiscordHeartbeatMissingAckClosesSocketE2E(t *testing.T) {

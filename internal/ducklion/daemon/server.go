@@ -314,7 +314,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 	}
 	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if remote.Role == protocol.RoleDuckwayCC {
-		capabilities = []string{"status", "sessions_list", "session_yield", "session_task", "discord_binding", "agent_task"}
+		capabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_yield", "session_task", "discord_binding", "agent_task"}
 	}
 	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: capabilities}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
@@ -1281,15 +1281,15 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 		result, _ := json.Marshal(summariesFor(snapshot.Sessions))
 		return protocol.Response{ID: request.ID, Result: result}
 	case "session.create":
-		if !hasCapability(capabilities, "session_create") {
+		if role == protocol.RoleDuckwayCC && !hasCapability(capabilities, "session_create_agent") || role != protocol.RoleDuckwayCC && !hasCapability(capabilities, "session_create") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session create capability was not negotiated"}}
 		}
-		return s.routeSessionCreate(request, principal)
+		return s.routeSessionCreate(request, role, principal)
 	case "session.stop":
 		if !hasCapability(capabilities, "session_stop") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session stop capability was not negotiated"}}
 		}
-		return s.routeSessionStop(request, principal)
+		return s.routeSessionStop(request, role, principal)
 	case "session.yield":
 		if !hasCapability(capabilities, "session_yield") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session yield capability was not negotiated"}}
@@ -1358,6 +1358,10 @@ func (s *Server) sessionOperation(id model.SessionID) *sync.Mutex {
 }
 
 func (s *Server) authorizeTerminalControl(request protocol.Request, principal string) (model.Session, model.Owner, *protocol.Error) {
+	return s.authorizeOwnerControl(request, protocol.RoleDucklord, principal)
+}
+
+func (s *Server) authorizeOwnerControl(request protocol.Request, role protocol.PeerRole, principal string) (model.Session, model.Owner, *protocol.Error) {
 	sessionID, err := model.ParseSessionID(request.SessionID)
 	if err != nil || request.InstanceID != string(s.instanceID) || request.OwnershipEpoch == nil || request.RuntimeGeneration == nil {
 		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session identity and fences are required"}
@@ -1370,12 +1374,18 @@ func (s *Server) authorizeTerminalControl(request protocol.Request, principal st
 		generation := session.RuntimeGeneration
 		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrStaleGeneration, Message: "runtime generation changed", RuntimeGeneration: &generation}
 	}
-	owner := model.Owner{Kind: model.OwnerTerminal, ID: principal}
+	ownerKind := model.OwnerTerminal
+	if role == protocol.RoleDuckwayCC {
+		ownerKind = model.OwnerCC
+	}
+	owner := model.Owner{Kind: ownerKind, ID: principal}
 	if session.Kind == model.KindAgent {
 		if err := session.AuthorizeAgentInput(owner, *request.OwnershipEpoch, *request.RuntimeGeneration); err != nil {
 			epoch, generation := session.OwnershipEpoch, session.RuntimeGeneration
 			return model.Session{}, model.Owner{}, &protocol.Error{Code: serviceMapError(err), Message: err.Error(), OwnershipEpoch: &epoch, RuntimeGeneration: &generation}
 		}
+	} else if role == protocol.RoleDuckwayCC {
+		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrNotOwner, Message: "Discord CC cannot manage shell sessions"}
 	} else if session.Status != model.StatusRunning || session.AdapterState != model.AdapterUnavailable {
 		return model.Session{}, model.Owner{}, &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "shell runtime is unavailable"}
 	}

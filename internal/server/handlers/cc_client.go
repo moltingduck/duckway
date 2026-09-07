@@ -188,9 +188,10 @@ func (h *CCClientHandler) CreateChannel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		Name  string `json:"name"`
-		Topic string `json:"topic"`
-		Cwd   string `json:"cwd"`
+		RequestID string `json:"request_id"`
+		Name      string `json:"name"`
+		Topic     string `json:"topic"`
+		Cwd       string `json:"cwd"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request", http.StatusBadRequest)
@@ -198,6 +199,10 @@ func (h *CCClientHandler) CreateChannel(w http.ResponseWriter, r *http.Request) 
 	}
 	if strings.TrimSpace(req.Name) == "" {
 		jsonError(w, "name required", http.StatusBadRequest)
+		return
+	}
+	if len(req.RequestID) > 128 || strings.ContainsAny(req.RequestID, "\x00\r\n") {
+		jsonError(w, "invalid request_id", http.StatusBadRequest)
 		return
 	}
 
@@ -214,24 +219,80 @@ func (h *CCClientHandler) CreateChannel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	created, err := h.bot.CreateChannel(r.Context(), botTok, svc.CreateChannelOpts{
-		GuildID:  cfg.GuildID,
-		ParentID: cfg.CategoryID,
-		Name:     req.Name,
-		Topic:    req.Topic,
-	})
+	handle := ""
+	marker := ""
+	reserved := false
+	if req.RequestID != "" {
+		canonicalName := svc.SanitizeChannelName(req.Name)
+		digest := sha256.Sum256([]byte(cc.ID + ":" + req.RequestID))
+		handle = fmt.Sprintf("dwch_p%x", digest[:12])
+		marker = fmt.Sprintf("[duckway-provision:%x]", digest[:12])
+		if existing, getErr := h.cc.GetChannelByHandle(handle); getErr == nil {
+			if existing.CCID != cc.ID || existing.ClientID == nil || *existing.ClientID != client.ID || existing.Name != canonicalName || existing.Topic != req.Topic || existing.Cwd != req.Cwd || existing.Kind != "task" {
+				jsonError(w, "request_id conflicts with different channel arguments", http.StatusConflict)
+				return
+			}
+			if existing.ChannelID != "" {
+				_ = h.bot.SetChannelTopic(r.Context(), botTok, existing.ChannelID, req.Topic)
+				jsonResponse(w, map[string]interface{}{"handle": handle, "name": existing.Name, "topic": req.Topic, "cwd": req.Cwd, "kind": "task"})
+				return
+			}
+			reserved = true
+		} else if !errors.Is(getErr, sql.ErrNoRows) {
+			jsonError(w, "inspect channel reservation: "+getErr.Error(), http.StatusInternalServerError)
+			return
+		} else {
+			clientID := client.ID
+			if err := h.cc.CreateChannel(&models.CCChannel{Handle: handle, CCID: cc.ID, ClientID: &clientID, Name: canonicalName, Topic: req.Topic, Kind: "task", Cwd: req.Cwd}); err != nil {
+				jsonError(w, "reserve channel: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+	var created *svc.Channel
+	if reserved {
+		channels, listErr := h.bot.ListGuildChannels(r.Context(), botTok, cfg.GuildID)
+		if listErr != nil {
+			jsonError(w, "reconcile Discord channel: "+listErr.Error(), http.StatusBadGateway)
+			return
+		}
+		for i := range channels {
+			if channels[i].ParentID != nil && *channels[i].ParentID == cfg.CategoryID && strings.Contains(channels[i].Topic, marker) {
+				created = &channels[i]
+				break
+			}
+		}
+	}
+	createTopic := req.Topic
+	if marker != "" {
+		if createTopic != "" {
+			createTopic += "\n"
+		}
+		createTopic += marker
+	}
+	var err error
+	if created == nil {
+		created, err = h.bot.CreateChannel(r.Context(), botTok, svc.CreateChannelOpts{
+			GuildID:  cfg.GuildID,
+			ParentID: cfg.CategoryID,
+			Name:     req.Name,
+			Topic:    createTopic,
+		})
+	}
 	if err != nil {
 		jsonError(w, "discord create channel: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
-	handleSuffix, err := svc.GenerateToken(12)
-	if err != nil {
-		_ = h.bot.ArchiveChannel(r.Context(), botTok, created.ID, created.Name)
-		jsonError(w, "generate channel handle: "+err.Error(), http.StatusInternalServerError)
-		return
+	if handle == "" {
+		handleSuffix, generateErr := svc.GenerateToken(12)
+		if generateErr != nil {
+			_ = h.bot.ArchiveChannel(r.Context(), botTok, created.ID, created.Name)
+			jsonError(w, "generate channel handle: "+generateErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		handle = "dwch_" + handleSuffix
 	}
-	handle := "dwch_" + handleSuffix
 	clientID := client.ID
 	row := &models.CCChannel{
 		Handle: handle, CCID: cc.ID,
@@ -242,10 +303,18 @@ func (h *CCClientHandler) CreateChannel(w http.ResponseWriter, r *http.Request) 
 		Kind:      "task",
 		Cwd:       req.Cwd,
 	}
-	if err := h.cc.CreateChannel(row); err != nil {
+	if req.RequestID != "" {
+		err = h.cc.ActivateReservedChannel(handle, created.ID, created.Name)
+	} else {
+		err = h.cc.CreateChannel(row)
+	}
+	if err != nil {
 		_ = h.bot.ArchiveChannel(r.Context(), botTok, created.ID, created.Name)
 		jsonError(w, "persist channel: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if marker != "" {
+		_ = h.bot.SetChannelTopic(r.Context(), botTok, created.ID, req.Topic)
 	}
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, map[string]interface{}{

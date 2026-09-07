@@ -97,12 +97,16 @@ Control reconnect does not reset the runtime-scoped input sequence.
 
 ## Session creation and daemon restart
 
-Ducklord creates sessions with the negotiated `session_create` RPC. The request
+Ducklord creates sessions with the negotiated `session_create` RPC. Duckway CC
+negotiates the narrower `session_create_agent` capability: the wire request is
+still `session.create`, but Ducklion independently rejects shell sessions and
+sets the authenticated task-channel handle as the initial `cc` writer. The request
 contains a Unicode display handle, session kind, agent type, absolute working
 directory, argv array, and initial PTY dimensions. Commands are never joined or
 reparsed through a shell by Ducklion. The authenticated Ducklord principal
 becomes the initial writer of an agent session; shell sessions remain
-shared-writer as specified.
+shared-writer as specified. Role prefixes are included in idempotency keys, so
+equal request IDs from a Ducklord and a CC cannot alias one another.
 
 Ducklion allocates the six-character Crockford session ID and an Ed25519
 recovery key. Public state is committed to SQLite. The private key and immutable
@@ -116,6 +120,42 @@ so the common successful response is immediately attachable. If startup takes
 longer than the bounded readiness window, it returns the stable session ID with
 `recovering` status rather than claiming failure or spawning a duplicate;
 inventory then exposes the eventual transition to `running` or `stopped`.
+The Discord `!new` path accepts success only after the result is `running` with
+a healthy adapter and the task-channel writer, then persists the server marker
+and one-to-one Ducklion binding. It retries ambiguous create/bind responses with
+the same operation ID; known provisioning failures stop the new runtime and
+archive the incomplete channel.
+
+The Gateway admits client-side commands into the same durable, per-channel FIFO
+inbox used by prompts before the client can execute them. The source Discord
+snowflake is both the inbox dedupe key and the client command `request_id`;
+cc-watch completes the lease only after the synchronous command handler returns.
+The server still fails immediately when no cc-watch subscriber is present, but
+a disconnect after admission is recovered by the claim loop rather than losing
+the command. Client state in `~/.duckway/cc-provisioning.json` advances through
+`reserved`, `channel_created`, `session_created`, `marker_set`, `active`, and
+`reply_delivered`; atomic file replacement makes every completed phase the next
+restart boundary. The server independently derives a stable opaque channel
+handle from `(cc_id, request_id)` and inserts a Phase-A `cc_channels` row before
+calling Discord. During the only external-create ambiguity window it adds a
+temporary provisioning marker to the Discord topic. A retry lists only the
+configured guild/category, recovers that channel, activates the reserved row,
+and removes the marker. Reusing a request ID with different name/topic/cwd is a
+conflict. Thus replay converges on one channel, one PTY, and one binding even if
+either Duckway process exits between phases.
+
+Bare `!new <slug>` creates a stable private default workspace below
+`~/.duckway/cc-workspace/`; explicit `--project` and `--cwd` select another
+directory. The success post uses a durable Discord delivery key derived from
+the command snowflake, so a lost HTTP response cannot duplicate the visible
+confirmation before `reply_delivered` is persisted.
+
+Missing-directory confirmations are stored atomically in
+`~/.duckway/cc-new-confirmations.json`. A token is consumed only after the
+idempotent provisioning workflow reaches `active` and its stable success reply
+is accepted; a crash or pre-storage delivery failure before that point replays
+folder creation, project registration, channel creation, PTY creation, binding,
+and the same Discord delivery key without creating a second session or reply.
 
 Managed PTYs do not inherit arbitrary daemon-only credentials. Ducklion passes
 only the basic login/terminal environment (`HOME`, `PATH`, terminal and locale,

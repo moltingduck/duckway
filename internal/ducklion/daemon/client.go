@@ -108,7 +108,7 @@ func ConnectRoleContext(ctx context.Context, conn io.ReadWriteCloser, principal 
 	setDeadline(conn, time.Now().Add(10*time.Second))
 	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if role == protocol.RoleDuckwayCC {
-		offeredCapabilities = []string{"status", "sessions_list", "session_yield", "session_task", "discord_binding", "agent_task"}
+		offeredCapabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_yield", "session_task", "discord_binding", "agent_task"}
 	}
 	if err := codec.Write(protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: role, Principal: principal, Capabilities: offeredCapabilities}); err != nil {
 		conn.Close()
@@ -720,8 +720,11 @@ func (c *Client) CreateSession(ctx context.Context, request protocol.SessionCrea
 }
 
 func (c *Client) CreateSessionWithID(ctx context.Context, requestID string, request protocol.SessionCreate) (protocol.SessionSummary, error) {
-	if err := c.requireCapability("session_create"); err != nil {
-		return protocol.SessionSummary{}, err
+	if !c.capabilities["session_create"] && !c.capabilities["session_create_agent"] {
+		return protocol.SessionSummary{}, fmt.Errorf("ducklion capability session_create was not negotiated")
+	}
+	if c.capabilities["session_create_agent"] && request.Kind != model.KindAgent {
+		return protocol.SessionSummary{}, fmt.Errorf("duckway CC may create only agent sessions")
 	}
 	body, err := json.Marshal(request)
 	if err != nil {

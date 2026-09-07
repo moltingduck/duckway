@@ -212,9 +212,10 @@ type ccBotConn struct {
 }
 
 type ccGatewayCommand struct {
-	ccID    string
-	channel models.CCChannel
-	content string
+	ccID      string
+	channel   models.CCChannel
+	content   string
+	messageID string
 }
 
 type discordCCPolicy struct {
@@ -283,6 +284,12 @@ func authorizeCCInbound(cc models.ControlChannel, ch models.CCChannel, payload j
 	}
 	if ch.Archived {
 		return msg, "channel_archived"
+	}
+	// Direct host-shell commands are an administrative convenience and are
+	// intentionally scoped to the management channel. Task-channel writers may
+	// prompt their bound agent, but never gain an implicit host shell.
+	if strings.HasPrefix(strings.TrimSpace(msg.Content), "!!") && ch.Kind != "management" {
+		return msg, "management_command_required"
 	}
 	var policy discordCCPolicy
 	if err := json.Unmarshal([]byte(cc.Config), &policy); err != nil || policy.GuildID == "" || policy.CategoryID == "" {
@@ -373,7 +380,7 @@ func (c *ccBotConn) commandLoop() {
 					c.commandHandler(ctx, cmd)
 					return
 				}
-				c.commands.Handle(ctx, cmd.ccID, &cmd.channel, cmd.content)
+				c.commands.HandleMessage(ctx, cmd.ccID, &cmd.channel, cmd.content, cmd.messageID)
 			}()
 		}
 	}
@@ -703,7 +710,7 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 		// human commands as agent input.
 		if eventType == "MESSAGE_CREATE" && c.commands != nil {
 			if LooksLikeCommand(inbound.Content) {
-				cmd := ccGatewayCommand{ccID: cc.ID, channel: *ch, content: inbound.Content}
+				cmd := ccGatewayCommand{ccID: cc.ID, channel: *ch, content: inbound.Content, messageID: inbound.ID}
 				if !c.enqueueCommand(cmd) {
 					log.Printf("[cc-gw] %s: command queue full, dropping %q", c.apiKeyID, inbound.Content)
 					go func() {

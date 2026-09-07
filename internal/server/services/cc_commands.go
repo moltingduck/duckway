@@ -36,6 +36,8 @@ type CCCommandHandler struct {
 	hub     *CCEventHub
 }
 
+type ccCommandRequestIDKey struct{}
+
 func NewCCCommandHandler(cc *queries.ControlChannelQueries, apiKeys *queries.APIKeyQueries, crypto *Crypto, bot *DiscordBot, hub *CCEventHub) *CCCommandHandler {
 	return &CCCommandHandler{cc: cc, apiKeys: apiKeys, crypto: crypto, bot: bot, hub: hub}
 }
@@ -65,6 +67,20 @@ func LooksLikeCommand(content string) bool {
 // callers should not block on Handle (the bot REST calls inside take
 // seconds in worst-case rate-limited scenarios).
 func (h *CCCommandHandler) Handle(ctx context.Context, ccID string, ch *models.CCChannel, content string) {
+	h.handle(ctx, ccID, ch, content)
+}
+
+// HandleMessage carries the Discord snowflake into daemon-side workflows. It
+// is the stable idempotency key used to resume external provisioning after a
+// client restart; tests and non-Gateway callers may continue using Handle.
+func (h *CCCommandHandler) HandleMessage(ctx context.Context, ccID string, ch *models.CCChannel, content, messageID string) {
+	if messageID != "" {
+		ctx = context.WithValue(ctx, ccCommandRequestIDKey{}, messageID)
+	}
+	h.handle(ctx, ccID, ch, content)
+}
+
+func (h *CCCommandHandler) handle(ctx context.Context, ccID string, ch *models.CCChannel, content string) {
 	cc, err := h.cc.GetByID(ccID)
 	if err != nil {
 		return
@@ -287,63 +303,15 @@ func joinTicked(xs []string) string {
 }
 
 func (h *CCCommandHandler) handleNew(ctx context.Context, botToken string, cc *models.ControlChannel, mgmt *models.CCChannel, args []string) {
-	slug, flags, err := splitSlugAndFlags(args)
+	_, _, err := splitSlugAndFlags(args)
 	if err != nil {
 		h.reply(ctx, botToken, mgmt.ChannelID, "❌ "+err.Error()+"\nUsage: `!new <slug> [--cwd <path>|--project <name|number>] [--topic <text>]`")
 		return
 	}
-	if flags["project"] != "" || flags["cwd"] != "" {
-		h.forwardToDaemon(ctx, botToken, cc, mgmt, "!new", args)
-		return
-	}
-
-	var cfg struct {
-		GuildID    string `json:"guild_id"`
-		CategoryID string `json:"category_id"`
-	}
-	_ = json.Unmarshal([]byte(cc.Config), &cfg)
-	if cfg.GuildID == "" || cfg.CategoryID == "" {
-		h.reply(ctx, botToken, mgmt.ChannelID, "❌ CC config missing guild_id/category_id — fix in /admin/cc.")
-		return
-	}
-
-	created, err := h.bot.CreateChannel(ctx, botToken, CreateChannelOpts{
-		GuildID:  cfg.GuildID,
-		ParentID: cfg.CategoryID,
-		Name:     slug,
-		Topic:    flags["topic"],
-	})
-	if err != nil {
-		h.reply(ctx, botToken, mgmt.ChannelID, "❌ Discord refused to create channel: "+err.Error())
-		return
-	}
-
-	handle, _ := GenerateToken(12)
-	handle = "dwch_" + handle
-	clientID := cc.ClientID
-	row := &models.CCChannel{
-		Handle: handle, CCID: cc.ID,
-		ClientID:  &clientID,
-		ChannelID: created.ID,
-		Name:      created.Name,
-		Topic:     flags["topic"],
-		Kind:      "task",
-		Cwd:       flags["cwd"],
-	}
-	if err := h.cc.CreateChannel(row); err != nil {
-		_ = h.bot.ArchiveChannel(ctx, botToken, created.ID, created.Name)
-		h.reply(ctx, botToken, mgmt.ChannelID, "❌ persist channel row: "+err.Error())
-		return
-	}
-
-	cwdNote := flags["cwd"]
-	if cwdNote == "" {
-		cwdNote = "(default ~/.duckway/cc-workspace/" + handle + ")"
-	}
-	h.reply(ctx, botToken, mgmt.ChannelID,
-		"✅ Created **#"+created.Name+"** — `"+handle+"`\n"+
-			"   cwd: `"+cwdNote+"`\n"+
-			"   Send a message in that channel to start a claude session.")
+	// Provisioning requires the local Ducklion and agent binary. Always send
+	// this to the client; the server must never create a lazy task channel that
+	// has no canonical PTY session behind it.
+	h.forwardToDaemon(ctx, botToken, cc, mgmt, "!new", args)
 }
 
 // handleDestroy is the heavier sibling of !end. Both close the session,
@@ -481,7 +449,23 @@ func (h *CCCommandHandler) forwardToDaemon(ctx context.Context, botToken string,
 	payload, _ := json.Marshal(map[string]interface{}{
 		"command": cmd,
 		"args":    args,
+		"request_id": func() string {
+			value, _ := ctx.Value(ccCommandRequestIDKey{}).(string)
+			return value
+		}(),
 	})
+	requestID, _ := ctx.Value(ccCommandRequestIDKey{}).(string)
+	if requestID != "" && (cmd == "!new" || cmd == "!new-confirm") {
+		// Client-side commands first enter the same durable per-channel FIFO as
+		// prompts. The subscriber preflight above preserves immediate "offline"
+		// UX, while a disconnect after admission is recovered by normal claims.
+		_, _, err := h.cc.AdmitInboxDetailed(cc.ID, &ch.Handle, "CLIENT_COMMAND", "CLIENT_COMMAND:"+requestID, ch.Handle, string(payload))
+		if err != nil {
+			h.reply(ctx, botToken, ch.ChannelID, "❌ could not queue `"+cmd+"`: "+err.Error())
+			return
+		}
+		return
+	}
 	h.hub.Publish(cc.ClientID, CCEvent{
 		Type:    "client_command",
 		CCID:    cc.ID,

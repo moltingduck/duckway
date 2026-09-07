@@ -331,7 +331,7 @@ type runtimeSpec struct {
 	Cols              uint16          `json:"cols"`
 }
 
-func (s *Server) routeSessionCreate(request protocol.Request, principal string) protocol.Response {
+func (s *Server) routeSessionCreate(request protocol.Request, role protocol.PeerRole, principal string) protocol.Response {
 	s.createMu.Lock()
 	defer s.createMu.Unlock()
 	if request.InstanceID != string(s.instanceID) || request.SessionID != "" || request.OwnershipEpoch != nil || request.RuntimeGeneration != nil {
@@ -372,8 +372,17 @@ func (s *Server) routeSessionCreate(request protocol.Request, principal string) 
 	if create.Kind == model.KindShell && create.AgentType != "" {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "shell sessions cannot have an agent type"}}
 	}
+	if role == protocol.RoleDuckwayCC && create.Kind != model.KindAgent {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "Duckway CC may create only agent sessions"}}
+	}
+	principalKind := "terminal"
+	ownerKind := model.OwnerTerminal
+	if role == protocol.RoleDuckwayCC {
+		principalKind = "cc"
+		ownerKind = model.OwnerCC
+	}
 	fingerprint := store.Fingerprint("create_session", "", request.Body)
-	mutationKey := store.MutationKey{Principal: "terminal:" + principal, RequestID: request.ID, Operation: "create_session", Fingerprint: fingerprint}
+	mutationKey := store.MutationKey{Principal: principalKind + ":" + principal, RequestID: request.ID, Operation: "create_session", Fingerprint: fingerprint}
 	if replay, found, replayErr := s.state.ReplayMutation(context.Background(), mutationKey); found {
 		if replayErr != nil {
 			code := protocol.ErrInternal
@@ -420,11 +429,11 @@ func (s *Server) routeSessionCreate(request protocol.Request, principal string) 
 		Status: model.StatusRecovering, OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle,
 		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: now, UpdatedAtMS: now}
 	if create.Kind == model.KindAgent {
-		session.Writer = &model.Owner{Kind: model.OwnerTerminal, ID: principal}
+		session.Writer = &model.Owner{Kind: ownerKind, ID: principal}
 	} else {
 		session.AdapterState = model.AdapterUnavailable
 	}
-	createdID, replayed, err := s.state.CreateSessionIdempotent(context.Background(), "terminal:"+principal, request.ID, fingerprint, session)
+	createdID, replayed, err := s.state.CreateSessionIdempotent(context.Background(), principalKind+":"+principal, request.ID, fingerprint, session)
 	if err != nil {
 		code := protocol.ErrInternal
 		if errors.Is(err, store.ErrIdempotencyConflict) {
@@ -494,20 +503,24 @@ func (s *Server) waitForSessionOutcome(requestID string, id model.SessionID) pro
 	return protocol.Response{ID: requestID, Result: result}
 }
 
-func (s *Server) routeSessionStop(request protocol.Request, principal string) protocol.Response {
+func (s *Server) routeSessionStop(request protocol.Request, role protocol.PeerRole, principal string) protocol.Response {
 	if len(request.Body) != 0 {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session stop has no body"}}
 	}
 	sessionID, parseErr := model.ParseSessionID(request.SessionID)
 	if parseErr == nil && request.InstanceID == string(s.instanceID) && request.OwnershipEpoch != nil && request.RuntimeGeneration != nil {
 		current, getErr := s.state.GetSession(context.Background(), sessionID)
-		ownerMatches := current.Kind == model.KindShell || current.Writer != nil && current.Writer.Kind == model.OwnerTerminal && current.Writer.ID == principal
+		ownerKind := model.OwnerTerminal
+		if role == protocol.RoleDuckwayCC {
+			ownerKind = model.OwnerCC
+		}
+		ownerMatches := current.Kind == model.KindShell && role == protocol.RoleDucklord || current.Writer != nil && current.Writer.Kind == ownerKind && current.Writer.ID == principal
 		if getErr == nil && current.Status == model.StatusStopped && ownerMatches && current.OwnershipEpoch == *request.OwnershipEpoch && current.RuntimeGeneration == *request.RuntimeGeneration {
 			result, _ := json.Marshal(summaryFor(current))
 			return protocol.Response{ID: request.ID, Result: result}
 		}
 	}
-	session, _, protocolError := s.authorizeTerminalControl(request, principal)
+	session, _, protocolError := s.authorizeOwnerControl(request, role, principal)
 	if protocolError != nil {
 		return protocol.Response{ID: request.ID, Error: protocolError}
 	}

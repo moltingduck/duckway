@@ -113,6 +113,51 @@ func TestCreateSessionStartsManagedPTYAndAcceptsInput(t *testing.T) {
 	}
 }
 
+func TestDuckwayCCCreatesAgentWithCCInitialOwner(t *testing.T) {
+	root := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+
+	cc, err := DialCC(server.SocketPath(), "dwch_task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	request := protocol.SessionCreate{Handle: "專案", Kind: model.KindAgent, AgentType: "fixture", CWD: root,
+		Command: []string{"sh", "-c", "while IFS= read -r line; do :; done"}}
+	created, err := cc.CreateSessionWithID(context.Background(), "cc-create-1", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Status != model.StatusRunning || created.Writer == nil || created.Writer.Kind != model.OwnerCC || created.Writer.ID != "dwch_task" {
+		t.Fatalf("created=%+v", created)
+	}
+	if _, err := cc.CreateSession(context.Background(), protocol.SessionCreate{Handle: "forbidden", Kind: model.KindShell, CWD: root, Command: []string{"sh"}}); err == nil {
+		t.Fatal("Duckway CC created a shell session")
+	}
+	other, err := DialCC(server.SocketPath(), "dwch_other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.StopSession(context.Background(), created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err == nil {
+		t.Fatal("non-owner CC stopped agent session")
+	}
+	_ = other.Close()
+	if err := cc.StopSessionWithID(context.Background(), "cc-stop-1", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestManagedPTYDrainsFinalAttentionBeforeExit(t *testing.T) {
 	root := t.TempDir()
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())

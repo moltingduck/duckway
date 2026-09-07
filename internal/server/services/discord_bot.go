@@ -304,6 +304,11 @@ func (b *DiscordBot) DeleteChannel(ctx context.Context, botToken, channelID stri
 	return err
 }
 
+func (b *DiscordBot) SetChannelTopic(ctx context.Context, botToken, channelID, topic string) error {
+	_, err := b.do(ctx, botToken, "PATCH", "/channels/"+channelID, map[string]interface{}{"topic": topic})
+	return err
+}
+
 // AddReaction makes the bot react to a message with the given emoji.
 // emoji must be the unicode codepoint (e.g. "✅") — custom emoji use
 // "name:id" form. Discord requires the emoji URL-encoded in the path.
@@ -560,3 +565,7 @@ func sanitizeChannelName(s string) string {
 	}
 	return out
 }
+
+// SanitizeChannelName exposes the exact create-time normalization to the
+// durable channel reservation layer so retries compare canonical names.
+func SanitizeChannelName(s string) string { return sanitizeChannelName(s) }

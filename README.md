@@ -270,8 +270,8 @@ No public endpoints needed — all outbound connections.
 
 A **Control Channel (CC)** binds **one client to one Discord category** via a bot. Inside that category:
 
-- a **management channel** (auto-created, named `<client>-control`) accepts text commands: `!new`, `!end`, `!list`, `!status`, `!duckway-version`, `!duckway-restart`, `!duckway-update`, `!help`
-- **task channels** map 1:1 to claude sessions — every message a human types triggers `claude -p --resume <session_id>` on the agent's machine and the result is posted back
+- a **management channel** (auto-created, named `<client>-control`) accepts lifecycle and operational commands
+- **task channels** map 1:1 to persistent Ducklion agent PTYs; ownership decides whether Discord may write while every attachment can remain read-only
 
 ```
 Admin                                Server                         Agent machine
@@ -289,10 +289,10 @@ in #task-foo                                                          claude -p 
                                                                             ▼
                                 ◀── POST /client/cc/.../messages ──── posts result back
 
-Human types "!new fix-bug"  ───→ server-side parser
-in #<client>-control            → bot creates #fix-bug under category
-                                → cc_channels row {kind:"task"}
-                                ◀── "✅ Created **#fix-bug** — `dwch_…`"
+Human types "!new fix-bug --project 1"
+in #<client>-control ──────────→ client creates #fix-bug, eagerly starts Ducklion PTY
+                                → waits for healthy adapter + persists 1:1 binding
+                                ◀── "✅ ... session ABC123 · ready"
 ```
 
 **MCP tools** available to the model during a claude session: `discord_get_my_cc`, `discord_list_channels`, `discord_create_task_channel`, `discord_archive_channel`, `discord_post`, `discord_edit_message`, `discord_delete_message`, `discord_read_recent`, `discord_wait_for_message`, **`discord_request_approval`** (reaction vote — blocks the tool call until ✅/❌).

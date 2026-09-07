@@ -618,7 +618,11 @@ type CreateCCChannelResult struct {
 // CreateCCChannel provisions a new task channel under this client's CC.
 // Server picks the dwch_ handle and forwards to Discord.
 func (c *APIClient) CreateCCChannel(ctx context.Context, name, topic, cwd string) (*CreateCCChannelResult, error) {
-	body, _ := json.Marshal(map[string]string{"name": name, "topic": topic, "cwd": cwd})
+	return c.CreateCCChannelIdempotent(ctx, "", name, topic, cwd)
+}
+
+func (c *APIClient) CreateCCChannelIdempotent(ctx context.Context, requestID, name, topic, cwd string) (*CreateCCChannelResult, error) {
+	body, _ := json.Marshal(map[string]string{"request_id": requestID, "name": name, "topic": topic, "cwd": cwd})
 	req, err := http.NewRequestWithContext(ctx, "POST",
 		c.baseURL+"/client/cc/channels", bytes.NewReader(body))
 	if err != nil {

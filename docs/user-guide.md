@@ -505,8 +505,8 @@ to request Discord ownership when the adapter reports the session idle.
 ### Management channel commands
 
 In `<client>-control`:
-- `!new <slug> [--cwd <path>|--project <name|number>] [--topic "…"]` → create a task channel + register a session for it
-- `!new-confirm <token>` → confirm creation of a missing `--cwd` folder; Duckway creates it on the agent machine, saves it as a project, then opens the task channel
+- `!new <slug> [--cwd <path>|--project <name|number>] [--topic "…"]` → eagerly create a task channel, managed PTY, agent process, and stable one-to-one binding; without a path it creates a private default workspace, and success includes the six-character session ID and means the agent is ready
+- `!new-confirm <token>` → confirm creation of a missing `--cwd` folder; confirmations survive watcher restarts for 30 minutes, and Duckway consumes the token only after the folder, saved project, task channel, PTY, and binding are durable
 - `!list` → table of task channels + which have running sessions
 - `!status` → daemon up? agent type? counts?
 - `!sessions` → list live Ducklion agent PTYs that aren't bound to a Discord channel
@@ -516,7 +516,7 @@ In `<client>-control`:
 - `!duckway-version` → show the local Duckway version on the client
 - `!duckway-restart` → restart local Duckway daemons on the client
 - `!duckway-update [--restart]` → update the local Duckway binary; optionally restart daemons after a successful update
-- `!! <command>` → run a shell command directly on the client in the current channel's working directory; stdout/stderr are posted back and the agent session is not touched
+- `!! <command>` → management channel only: run a bounded shell command directly on the client; the subprocess receives no Duckway/agent credentials and does not touch a PTY session
 
 Agent prompts, direct `!!` shell commands, and daemon-side `!` commands use three independent bounded queues. Each queue remains FIFO for a channel, but work in different queues can run concurrently, so a long agent turn does not delay operational commands and replies may interleave.
 

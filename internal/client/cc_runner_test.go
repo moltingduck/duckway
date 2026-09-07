@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -872,6 +873,54 @@ func TestCCRunner_DoubleBangEmptyCommandDoesNotRunAgent(t *testing.T) {
 	}
 	if posts := pp.all(); !strings.Contains(posts[0], "usage: `!! <shell command>`") {
 		t.Fatalf("empty shell command post = %q", posts[0])
+	}
+}
+
+func TestDirectShellEnvironmentScrubsDuckwayAndAgentSecrets(t *testing.T) {
+	t.Setenv("HOME", "/tmp/duckway-home")
+	t.Setenv("PATH", "/usr/bin")
+	t.Setenv("OPENAI_API_KEY", "secret-openai")
+	t.Setenv("ANTHROPIC_API_KEY", "secret-anthropic")
+	t.Setenv("DUCKWAY_TOKEN", "secret-duckway")
+	t.Setenv("HTTPS_PROXY", "http://credential@proxy")
+	env := strings.Join(directShellEnvironment("dwch_mgmt", "/bin/sh"), "\n")
+	for _, secret := range []string{"secret-openai", "secret-anthropic", "secret-duckway", "credential@proxy"} {
+		if strings.Contains(env, secret) {
+			t.Fatalf("direct shell environment leaked %q: %s", secret, env)
+		}
+	}
+	for _, required := range []string{"HOME=/tmp/duckway-home", "PATH=/usr/bin", "SHELL=/bin/sh", "DUCKWAY_CC_CHANNEL_HANDLE=dwch_mgmt"} {
+		if !strings.Contains(env, required) {
+			t.Fatalf("direct shell environment missing %q: %s", required, env)
+		}
+	}
+}
+
+func TestDirectShellDoesNotLoadLoginProfileSecrets(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte("export DUCKWAY_PROFILE_SECRET=leaked\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/sh")
+	fn, _ := capturingRunFn("sid", "ok")
+	r, _, _ := newTestRunner(t, fn)
+	defer r.Stop()
+	output, exitCode, err := r.executeShellCommand(context.Background(), `printf '%s' "${DUCKWAY_PROFILE_SECRET-}"`)
+	if err != nil || exitCode != 0 {
+		t.Fatalf("execute shell: exit=%d err=%v output=%q", exitCode, err, output)
+	}
+	if strings.Contains(output, "leaked") {
+		t.Fatalf("login profile secret was loaded: %q", output)
+	}
+}
+
+func TestDirectShellOutputIsBounded(t *testing.T) {
+	var out boundedCommandOutput
+	chunk := bytes.Repeat([]byte("x"), maxDirectShellOutputBytes+1024)
+	n, err := out.Write(chunk)
+	if err != nil || n != len(chunk) || out.Len() != maxDirectShellOutputBytes || !strings.Contains(out.String(), "output truncated") {
+		t.Fatalf("bounded output n=%d len=%d err=%v", n, out.Len(), err)
 	}
 }
 

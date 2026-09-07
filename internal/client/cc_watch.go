@@ -36,6 +36,7 @@ type CCWatch struct {
 	agentOptions map[string]map[string]string // cc_id -> sanitized agent-specific options
 	sessions     *CCSessionStore
 	processed    *CCProcessedStore
+	provisions   *ccProvisionStore
 	// noTmux forces the headless --print runner even when tmux is installed.
 	// Set via `duckway cc watch --no-tmux` or DUCKWAY_CC_NO_TMUX=1.
 	noTmux bool
@@ -47,11 +48,14 @@ type CCWatch struct {
 	commandRunners map[string]*ccCommandRunner // ! commands, by channel handle
 	// clientCommandHandler is a test seam; production uses handleClientCommand.
 	clientCommandHandler func(context.Context, []byte)
-	sseConnected         bool
-	pendingNew           map[string]pendingNewProject
-	deleted              map[string]struct{}
-	recoverSeen          map[string]struct{}
-	stopping             bool
+	// provisionProjectSession is a test seam for the external Discord +
+	// Ducklion provisioning workflow.
+	provisionProjectSession func(context.Context, string, string, string, string, string, string) (*CreateCCChannelResult, protocol.SessionSummary, error)
+	sseConnected            bool
+	pendingNew              map[string]pendingNewProject
+	deleted                 map[string]struct{}
+	recoverSeen             map[string]struct{}
+	stopping                bool
 
 	api *APIClient
 }
@@ -88,12 +92,13 @@ func NewCCWatchWithOptions(configDir string, cfg *Config, opts CCWatchOptions) (
 		agentOptions:   agentOptions,
 		sessions:       NewCCSessionStore(configDir),
 		processed:      NewCCProcessedStore(configDir),
+		provisions:     newCCProvisionStore(configDir),
 		noTmux:         opts.NoTmux,
 		debug:          opts.Debug,
 		runners:        map[string]*ccRunner{},
 		shellRunners:   map[string]*ccRunner{},
 		commandRunners: map[string]*ccCommandRunner{},
-		pendingNew:     map[string]pendingNewProject{},
+		pendingNew:     loadPendingNewProjects(configDir),
 		deleted:        map[string]struct{}{},
 		recoverSeen:    map[string]struct{}{},
 		api:            NewAPIClient(cfg.ServerURL, cfg.Token),
@@ -115,6 +120,7 @@ func (w *CCWatch) Run(ctx context.Context) error {
 	// daemon instance was dead. Best-effort: errors are logged and we
 	// continue starting up.
 	w.reconcileCCState(ctx, "started")
+	w.recoverCCProvisions(ctx)
 	go w.pollInbox(ctx)
 
 	backoff := 5 * time.Second
@@ -1013,6 +1019,8 @@ func (w *CCWatch) handleInboxEvent(ev CCInboxEvent) {
 		eventType = "message_update"
 	case "MESSAGE_DELETE":
 		eventType = "message_delete"
+	case "CLIENT_COMMAND":
+		eventType = "client_command"
 	}
 	env := sseEnvelope{
 		Type:         eventType,
@@ -1027,6 +1035,10 @@ func (w *CCWatch) handleInboxEvent(ev CCInboxEvent) {
 	data, _ := json.Marshal(env)
 	if eventType == "message_create" {
 		w.handleMessageCreate(data)
+		return
+	}
+	if eventType == "client_command" {
+		w.enqueueClientCommand(data)
 		return
 	}
 	w.handleEvent(eventType, data)

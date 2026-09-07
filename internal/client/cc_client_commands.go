@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,8 +30,15 @@ import (
 // SSE event. The server itself doesn't dispatch these — it just forwards
 // them so we can act on the agent's filesystem.
 type clientCommandPayload struct {
-	Command string   `json:"command"`
-	Args    []string `json:"args"`
+	Command   string   `json:"command"`
+	Args      []string `json:"args"`
+	RequestID string   `json:"request_id,omitempty"`
+}
+
+type ccCommandDeliveryKey struct{}
+type ccCommandDelivery struct {
+	delivered bool
+	err       error
 }
 
 type pendingNewProject struct {
@@ -200,8 +208,29 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 	if env.Handle == "" {
 		return
 	}
+	delivery := &ccCommandDelivery{}
+	ctx = context.WithValue(ctx, ccCommandDeliveryKey{}, delivery)
+	if env.InboxID != 0 {
+		defer func() {
+			finishCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			status, detail := "completed", ""
+			requiresDurableReply := payload.Command == "!new" || payload.Command == "!new-confirm"
+			if requiresDurableReply && !delivery.delivered {
+				status = "admitted"
+				if delivery.err != nil {
+					detail = delivery.err.Error()
+				} else {
+					detail = "terminal reply was not delivered"
+				}
+			}
+			if err := w.api.FinishCCInbox(finishCtx, env.InboxID, env.ClaimToken, status, detail); err != nil {
+				log.Printf("[cc-watch] finish client command inbox %d: %v", env.InboxID, err)
+			}
+		}()
+	}
 	if err := cccommand.Validate(payload.Command, payload.Args); errors.Is(err, cccommand.ErrUnknownCommand) {
-		_ = w.api.PostCC(ctx, env.Handle,
+		_ = w.postCommandReply(ctx, env.Handle, payload.RequestID,
 			"❌ daemon doesn't know how to handle `"+payload.Command+"` — update your `duckway` binary on the agent.")
 		return
 	} else if err != nil {
@@ -209,7 +238,7 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 		if usage := cccommand.Usage(payload.Command); usage != "" {
 			msg += "\nUsage: `" + usage + "`"
 		}
-		_ = w.api.PostCC(ctx, env.Handle, msg)
+		_ = w.postCommandReply(ctx, env.Handle, payload.RequestID, msg)
 		return
 	}
 
@@ -223,9 +252,9 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 	case "!projects":
 		w.cmdProjects(ctx, env.Handle, payload.Args)
 	case "!new":
-		w.cmdNewProject(ctx, env.Handle, payload.Args)
+		w.cmdNewProject(ctx, env.Handle, env.CCID, payload.RequestID, payload.Args)
 	case "!new-confirm":
-		w.cmdNewProjectConfirm(ctx, env.Handle, payload.Args)
+		w.cmdNewProjectConfirm(ctx, env.Handle, env.CCID, payload.RequestID, payload.Args)
 	case "!log":
 		w.cmdLog(ctx, env.Handle, payload.Args)
 	case "!duckway-version":
@@ -240,6 +269,22 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 		_ = w.api.PostCC(ctx, env.Handle,
 			"❌ daemon doesn't know how to handle `"+payload.Command+"` — update your `duckway` binary on the agent.")
 	}
+}
+
+func (w *CCWatch) postCommandReply(ctx context.Context, handle, requestID, content string) error {
+	var err error
+	if requestID == "" {
+		err = w.api.PostCC(ctx, handle, content)
+	} else {
+		_, err = w.api.PostCCDeliveredMessage(ctx, handle, content, "", "cc-command-reply:"+requestID)
+	}
+	if delivery, ok := ctx.Value(ccCommandDeliveryKey{}).(*ccCommandDelivery); ok {
+		delivery.err = err
+		if err == nil {
+			delivery.delivered = true
+		}
+	}
+	return err
 }
 
 func (w *CCWatch) dialDucklionCC(handle string) (*duckliondaemon.Client, error) {
@@ -542,70 +587,90 @@ func (w *CCWatch) cmdProjects(ctx context.Context, replyHandle string, args []st
 	_ = w.api.PostCC(ctx, replyHandle, formatProjectsReport(projects, filter))
 }
 
-func (w *CCWatch) cmdNewProject(ctx context.Context, replyHandle string, args []string) {
+func (w *CCWatch) cmdNewProject(ctx context.Context, replyHandle, ccID, requestID string, args []string) {
 	slug, flags, err := splitClientSlugAndFlags(args)
 	if err != nil {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ "+err.Error()+"\nUsage: `!new <slug> --project <name|number> [--topic <text>]` or `!new <slug> --cwd <path> [--topic <text>]`")
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ "+err.Error()+"\nUsage: `!new <slug> --project <name|number> [--topic <text>]` or `!new <slug> --cwd <path> [--topic <text>]`")
 		return
 	}
 	projectRef := strings.TrimSpace(flags["project"])
 	cwdRef := strings.TrimSpace(flags["cwd"])
 	if projectRef != "" && cwdRef != "" {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ choose either `--project` or `--cwd`, not both.")
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ choose either `--project` or `--cwd`, not both.")
 		return
 	}
 	if projectRef == "" && cwdRef == "" {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ daemon only handles `!new` when `--project <name|number>` or `--cwd <path>` is set.")
+		name := discordChannelNameFromCwd(slug)
+		if requestID != "" {
+			digest := sha256.Sum256([]byte(requestID))
+			name += "-" + hex.EncodeToString(digest[:3])
+		}
+		cwdRef = filepath.Join(w.configDir, "cc-workspace", name)
+		if err := os.MkdirAll(cwdRef, 0700); err != nil {
+			_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ create default workspace: "+err.Error())
+			return
+		}
+		w.cmdNewWithCwd(ctx, replyHandle, ccID, requestID, slug, flags["topic"], cwdRef)
 		return
 	}
 
 	if cwdRef != "" {
-		w.cmdNewWithCwd(ctx, replyHandle, slug, flags["topic"], cwdRef)
+		w.cmdNewWithCwd(ctx, replyHandle, ccID, requestID, slug, flags["topic"], cwdRef)
 		return
 	}
 
 	project, err := NewCCProjectStore(w.configDir).Resolve(projectRef)
 	if err != nil {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ "+err.Error()+" — run `!projects` to see saved projects.")
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ "+err.Error()+" — run `!projects` to see saved projects.")
 		return
 	}
-	created, err := w.createProjectChannel(ctx, slug, flags["topic"], project.Path)
+	created, session, err := w.provisionProject(ctx, replyHandle, ccID, requestID, slug, flags["topic"], project.Path)
 	if err != nil {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ create channel: "+err.Error())
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ provision agent session: "+err.Error())
 		return
 	}
-	_ = w.api.PostCC(ctx, replyHandle,
+	if err := w.postProvisionReply(ctx, replyHandle, requestID,
 		"✅ Created **#"+created.Name+"** — `"+created.Handle+"`\n"+
+			"   session: `"+session.SessionID+"` · "+string(session.AgentType)+" · ready\n"+
 			"   project: `"+project.Name+"`\n"+
 			"   cwd: `"+project.Path+"`\n"+
-			"   Send a message in that channel to start the agent.")
+			"   The agent PTY is running; send the first prompt when ready."); err == nil {
+		if saveErr := w.markProvisionReplyDelivered(requestID); saveErr != nil {
+			log.Printf("[cc-watch] persist !new reply phase %s: %v", requestID, saveErr)
+		}
+	}
 }
 
-func (w *CCWatch) cmdNewWithCwd(ctx context.Context, replyHandle, slug, topic, cwdRef string) {
+func (w *CCWatch) cmdNewWithCwd(ctx context.Context, replyHandle, ccID, requestID, slug, topic, cwdRef string) {
 	cwd, err := normalizeProjectPattern(cwdRef)
 	if err != nil {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ invalid cwd: "+err.Error())
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ invalid cwd: "+err.Error())
 		return
 	}
 	info, err := os.Stat(cwd)
 	if err == nil {
 		if !info.IsDir() {
-			_ = w.api.PostCC(ctx, replyHandle, "❌ cwd exists but is not a directory: `"+cwd+"`")
+			_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ cwd exists but is not a directory: `"+cwd+"`")
 			return
 		}
-		created, err := w.createProjectChannel(ctx, slug, topic, cwd)
+		created, session, err := w.provisionProject(ctx, replyHandle, ccID, requestID, slug, topic, cwd)
 		if err != nil {
-			_ = w.api.PostCC(ctx, replyHandle, "❌ create channel: "+err.Error())
+			_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ provision agent session: "+err.Error())
 			return
 		}
-		_ = w.api.PostCC(ctx, replyHandle,
+		if err := w.postProvisionReply(ctx, replyHandle, requestID,
 			"✅ Created **#"+created.Name+"** — `"+created.Handle+"`\n"+
+				"   session: `"+session.SessionID+"` · "+string(session.AgentType)+" · ready\n"+
 				"   cwd: `"+cwd+"`\n"+
-				"   Send a message in that channel to start the agent.")
+				"   The agent PTY is running; send the first prompt when ready."); err == nil {
+			if saveErr := w.markProvisionReplyDelivered(requestID); saveErr != nil {
+				log.Printf("[cc-watch] persist !new reply phase %s: %v", requestID, saveErr)
+			}
+		}
 		return
 	}
 	if !os.IsNotExist(err) {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ inspect cwd failed: "+err.Error())
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ inspect cwd failed: "+err.Error())
 		return
 	}
 
@@ -616,16 +681,22 @@ func (w *CCWatch) cmdNewWithCwd(ctx context.Context, replyHandle, slug, topic, c
 	}
 	w.prunePendingNewLocked(time.Now())
 	w.pendingNew[token] = pendingNewProject{Slug: slug, Topic: topic, Cwd: cwd, CreatedAt: time.Now()}
+	if err := w.flushPendingNewLocked(); err != nil {
+		delete(w.pendingNew, token)
+		w.mu.Unlock()
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ save confirmation request: "+err.Error())
+		return
+	}
 	w.mu.Unlock()
-	_ = w.api.PostCC(ctx, replyHandle,
+	_ = w.postCommandReply(ctx, replyHandle, requestID,
 		"⚠️ Project folder does not exist:\n`"+cwd+"`\n\n"+
 			"Create it, add it to saved projects, and open the task channel?\n"+
 			"Reply with `!new-confirm "+token+"` within 30 minutes.")
 }
 
-func (w *CCWatch) cmdNewProjectConfirm(ctx context.Context, replyHandle string, args []string) {
+func (w *CCWatch) cmdNewProjectConfirm(ctx context.Context, replyHandle, ccID, requestID string, args []string) {
 	if len(args) != 1 {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ usage: `!new-confirm <token>`")
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ usage: `!new-confirm <token>`")
 		return
 	}
 	token := strings.TrimSpace(args[0])
@@ -635,36 +706,274 @@ func (w *CCWatch) cmdNewProjectConfirm(ctx context.Context, replyHandle string, 
 	}
 	w.prunePendingNewLocked(time.Now())
 	pending, ok := w.pendingNew[token]
-	if ok {
-		delete(w.pendingNew, token)
-	}
 	w.mu.Unlock()
 	if !ok {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ no pending `!new` request for that token. Run `!new ... --cwd ...` again.")
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ no pending `!new` request for that token. Run `!new ... --cwd ...` again.")
 		return
 	}
 	if err := os.MkdirAll(pending.Cwd, 0700); err != nil {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ create folder failed: "+err.Error())
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ create folder failed: "+err.Error())
 		return
 	}
 	added, err := NewCCProjectStore(w.configDir).Add([]string{pending.Cwd}, "")
 	if err != nil {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ add project failed: "+err.Error())
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ add project failed: "+err.Error())
 		return
 	}
 	projectName := filepath.Base(pending.Cwd)
 	if len(added) > 0 {
 		projectName = added[0].Name
 	}
-	created, err := w.createProjectChannel(ctx, pending.Slug, pending.Topic, pending.Cwd)
+	created, session, err := w.provisionProject(ctx, replyHandle, ccID, requestID, pending.Slug, pending.Topic, pending.Cwd)
 	if err != nil {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ create channel: "+err.Error())
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ provision agent session: "+err.Error())
 		return
 	}
-	_ = w.api.PostCC(ctx, replyHandle,
+	// Keep the token until the stable success reply is accepted. If delivery
+	// fails before Discord stores the message, durable replay repeats the
+	// idempotent provisioning workflow and tries the same delivery key again.
+	if err := w.postProvisionReply(ctx, replyHandle, requestID,
 		"✅ Created folder, saved project **"+projectName+"**, and opened **#"+created.Name+"** — `"+created.Handle+"`\n"+
+			"   session: `"+session.SessionID+"` · "+string(session.AgentType)+" · ready\n"+
 			"   cwd: `"+pending.Cwd+"`\n"+
-			"   Send a message in that channel to start the agent.")
+			"   The agent PTY is running; send the first prompt when ready."); err != nil {
+		return
+	}
+	if saveErr := w.markProvisionReplyDelivered(requestID); saveErr != nil {
+		log.Printf("[cc-watch] persist !new reply phase %s: %v", requestID, saveErr)
+	}
+	// Provisioning is active and its success reply is now idempotently
+	// delivered. Persist token consumption last, so every earlier crash point
+	// remains safely replayable.
+	w.mu.Lock()
+	if current, exists := w.pendingNew[token]; exists && current == pending {
+		delete(w.pendingNew, token)
+	}
+	if err := w.flushPendingNewLocked(); err != nil {
+		w.pendingNew[token] = pending
+		log.Printf("[cc-watch] consume !new confirmation %s: %v", token, err)
+	}
+	w.mu.Unlock()
+}
+
+func (w *CCWatch) postProvisionReply(ctx context.Context, handle, requestID, content string) error {
+	return w.postCommandReply(ctx, handle, requestID, content)
+}
+
+func (w *CCWatch) markProvisionReplyDelivered(requestID string) error {
+	if requestID == "" || w.provisions == nil {
+		return nil
+	}
+	for _, record := range w.provisions.Pending() {
+		if record.RequestID == requestID && record.Phase == ccProvisionActive {
+			record.Phase = ccProvisionReplyDelivered
+			record.LastError = ""
+			return w.provisions.Save(record)
+		}
+	}
+	return fmt.Errorf("active provision workflow %q not found", requestID)
+}
+
+// createProvisionedProjectSession establishes the task-channel identity before
+// launching the agent, so the first and every later prompt share the same CC
+// writer and Ducklion session. The channel is archived on any known failure;
+// ambiguous external outcomes are reported instead of claiming readiness.
+func (w *CCWatch) createProvisionedProjectSession(ctx context.Context, managementHandle, ccID, requestID, slug, topic, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+	workflowID := requestID
+	if workflowID == "" {
+		workflowID = uuid.NewString()
+	}
+	record := ccProvisionRecord{RequestID: workflowID, ManagementHandle: managementHandle, CCID: ccID, Slug: slug, Topic: topic, CWD: cwd}
+	if w.provisions != nil {
+		var err error
+		record, err = w.provisions.Reserve(record)
+		if err != nil {
+			return nil, protocol.SessionSummary{}, err
+		}
+		if record.Phase == ccProvisionFailed {
+			return record.Channel, summaryValue(record.Session), fmt.Errorf("previous provisioning attempt failed: %s", record.LastError)
+		}
+		if record.Phase == ccProvisionActive || record.Phase == ccProvisionReplyDelivered {
+			return record.Channel, summaryValue(record.Session), nil
+		}
+	}
+	created := record.Channel
+	if created == nil {
+		var err error
+		created, err = w.api.CreateCCChannelIdempotent(ctx, workflowID, slug, topic, cwd)
+		if err != nil {
+			record.LastError = err.Error()
+			if w.provisions != nil {
+				_ = w.provisions.Save(record)
+			}
+			return nil, protocol.SessionSummary{}, err
+		}
+		record.Channel = created
+		record.Phase = ccProvisionChannelCreated
+		if w.provisions != nil {
+			if err := w.provisions.Save(record); err != nil {
+				return created, protocol.SessionSummary{}, fmt.Errorf("persist created channel: %w", err)
+			}
+		}
+	}
+	failChannel := func(err error) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+		if archiveErr := w.api.ArchiveCCChannel(ctx, created.Handle); archiveErr != nil {
+			return created, protocol.SessionSummary{}, fmt.Errorf("%w; additionally could not archive incomplete channel: %v", err, archiveErr)
+		}
+		record.Phase, record.LastError = ccProvisionFailed, err.Error()
+		if w.provisions != nil {
+			_ = w.provisions.Save(record)
+		}
+		return created, protocol.SessionSummary{}, err
+	}
+	spec, err := w.agentSpec(ccID)
+	if err != nil {
+		return failChannel(err)
+	}
+	taskClient, err := w.dialDucklionCC(created.Handle)
+	if err != nil {
+		return failChannel(fmt.Errorf("ducklion unavailable: %w", err))
+	}
+	createID := "cc-new-create:" + workflowID
+	createRequest := protocol.SessionCreate{Handle: slug, Kind: model.KindAgent, AgentType: spec.Type, CWD: cwd, Command: []string{spec.Bin}}
+	session := summaryValue(record.Session)
+	if record.Session == nil {
+		session, err = taskClient.CreateSessionWithID(ctx, createID, createRequest)
+	}
+	_ = taskClient.Close()
+	if err != nil && !isAuthoritativeDucklionError(err) {
+		// The request may have committed before its response was lost. A
+		// reconnect with the same mutation ID safely replays that outcome.
+		if retry, dialErr := w.dialDucklionCC(created.Handle); dialErr == nil {
+			session, err = retry.CreateSessionWithID(ctx, createID, createRequest)
+			_ = retry.Close()
+		}
+	}
+	if err != nil {
+		if isAuthoritativeDucklionError(err) {
+			return failChannel(fmt.Errorf("start agent PTY: %w", err))
+		}
+		return created, protocol.SessionSummary{}, fmt.Errorf("agent create outcome is unknown; channel was preserved for recovery: %w", err)
+	}
+	if record.Session == nil {
+		record.Session = &session
+		record.Phase = ccProvisionSessionCreated
+		if w.provisions != nil {
+			if err := w.provisions.Save(record); err != nil {
+				return created, session, fmt.Errorf("persist created session: %w", err)
+			}
+		}
+	}
+	failSession := func(cause error) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		stop, dialErr := w.dialDucklionCC(created.Handle)
+		if dialErr == nil {
+			dialErr = stop.StopSessionWithID(cleanupCtx, "cc-new-stop:"+workflowID, session.SessionID, session.OwnershipEpoch, session.RuntimeGeneration)
+			_ = stop.Close()
+		}
+		if dialErr != nil {
+			return created, session, fmt.Errorf("%w; cleanup is pending because the created session could not be stopped: %v", cause, dialErr)
+		}
+		_ = w.api.SetCCChannelSession(cleanupCtx, created.Handle, "", cwd)
+		if archiveErr := w.api.ArchiveCCChannel(cleanupCtx, created.Handle); archiveErr != nil {
+			return created, session, fmt.Errorf("%w; session stopped but incomplete channel could not be archived: %v", cause, archiveErr)
+		}
+		record.Phase, record.LastError = ccProvisionFailed, cause.Error()
+		if w.provisions != nil {
+			_ = w.provisions.Save(record)
+		}
+		return created, session, cause
+	}
+	if session.Status != model.StatusRunning || session.AdapterState != model.AdapterHealthy || session.Writer == nil || session.Writer.Kind != model.OwnerCC || session.Writer.ID != created.Handle {
+		return failSession(fmt.Errorf("ducklion returned an agent that is not ready (session %s, status %s, adapter %s)", session.SessionID, session.Status, session.AdapterState))
+	}
+	if record.Phase == ccProvisionSessionCreated {
+		if err := w.api.SetCCChannelSession(ctx, created.Handle, session.SessionID, cwd); err != nil {
+			return failSession(fmt.Errorf("reserve channel binding: %w", err))
+		}
+		record.Phase = ccProvisionMarkerSet
+		if w.provisions != nil {
+			if err := w.provisions.Save(record); err != nil {
+				return created, session, fmt.Errorf("persist channel marker phase: %w", err)
+			}
+		}
+	}
+	management, err := w.dialDucklionCC(managementHandle)
+	if err != nil {
+		return failSession(fmt.Errorf("reconnect management channel to Ducklion: %w", err))
+	}
+	bindID := "cc-new-bind:" + workflowID
+	binding, err := management.BindDiscordSession(ctx, bindID, session.SessionID, created.Handle)
+	_ = management.Close()
+	if err != nil && !isAuthoritativeDucklionError(err) {
+		if retry, dialErr := w.dialDucklionCC(managementHandle); dialErr == nil {
+			binding, err = retry.BindDiscordSession(ctx, bindID, session.SessionID, created.Handle)
+			if committed, lookupErr := retry.DiscordBindingForSession(ctx, session.SessionID); lookupErr == nil && committed.ChannelHandle == created.Handle {
+				binding, err = committed, nil
+			}
+			_ = retry.Close()
+		}
+	}
+	if err != nil {
+		if isAuthoritativeDucklionError(err) {
+			return failSession(fmt.Errorf("activate Ducklion binding: %w", err))
+		}
+		return created, session, fmt.Errorf("binding outcome is unknown; channel and session were preserved for recovery: %w", err)
+	}
+	if err := w.sessions.Set(binding.ChannelHandle, binding.SessionID); err != nil {
+		return created, session, fmt.Errorf("binding is active but local cache could not be written: %w", err)
+	}
+	record.Phase, record.LastError = ccProvisionActive, ""
+	if w.provisions != nil {
+		if err := w.provisions.Save(record); err != nil {
+			return created, session, fmt.Errorf("binding is active but workflow state could not be written: %w", err)
+		}
+	}
+	return created, session, nil
+}
+
+func summaryValue(summary *protocol.SessionSummary) protocol.SessionSummary {
+	if summary == nil {
+		return protocol.SessionSummary{}
+	}
+	return *summary
+}
+
+func (w *CCWatch) recoverCCProvisions(ctx context.Context) {
+	if w.provisions == nil {
+		return
+	}
+	for _, record := range w.provisions.Pending() {
+		if ctx.Err() != nil {
+			return
+		}
+		recoveryCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		created, session, err := w.createProvisionedProjectSession(recoveryCtx, record.ManagementHandle, record.CCID, record.RequestID, record.Slug, record.Topic, record.CWD)
+		cancel()
+		if err != nil {
+			log.Printf("[cc-watch] recover !new %s phase=%s: %v", record.RequestID, record.Phase, err)
+			continue
+		}
+		message := fmt.Sprintf("✅ Recovered **#%s** — `%s`\n   session: `%s` · %s · ready\n   cwd: `%s`", created.Name, created.Handle, session.SessionID, session.AgentType, session.CWD)
+		postCtx, postCancel := context.WithTimeout(ctx, 10*time.Second)
+		postErr := w.postProvisionReply(postCtx, record.ManagementHandle, record.RequestID, message)
+		postCancel()
+		if postErr != nil {
+			log.Printf("[cc-watch] recover !new %s reply: %v", record.RequestID, postErr)
+			continue
+		}
+		if err := w.markProvisionReplyDelivered(record.RequestID); err != nil {
+			log.Printf("[cc-watch] recover !new %s persist reply: %v", record.RequestID, err)
+		}
+	}
+}
+
+func (w *CCWatch) provisionProject(ctx context.Context, managementHandle, ccID, requestID, slug, topic, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+	if w.provisionProjectSession != nil {
+		return w.provisionProjectSession(ctx, managementHandle, ccID, requestID, slug, topic, cwd)
+	}
+	return w.createProvisionedProjectSession(ctx, managementHandle, ccID, requestID, slug, topic, cwd)
 }
 
 func (w *CCWatch) createProjectChannel(ctx context.Context, slug, topic, cwd string) (*CreateCCChannelResult, error) {
@@ -672,11 +981,38 @@ func (w *CCWatch) createProjectChannel(ctx context.Context, slug, topic, cwd str
 }
 
 func (w *CCWatch) prunePendingNewLocked(now time.Time) {
+	changed := false
 	for token, p := range w.pendingNew {
 		if now.Sub(p.CreatedAt) > 30*time.Minute {
 			delete(w.pendingNew, token)
+			changed = true
 		}
 	}
+	if changed {
+		_ = w.flushPendingNewLocked()
+	}
+}
+
+func loadPendingNewProjects(configDir string) map[string]pendingNewProject {
+	projects := make(map[string]pendingNewProject)
+	raw, err := os.ReadFile(filepath.Join(configDir, "cc-new-confirmations.json"))
+	if err == nil {
+		_ = json.Unmarshal(raw, &projects)
+	}
+	return projects
+}
+
+// flushPendingNewLocked persists confirmation tokens so a durable
+// !new-confirm can still be applied after cc-watch restarts. Caller holds w.mu.
+func (w *CCWatch) flushPendingNewLocked() error {
+	body, err := json.MarshalIndent(w.pendingNew, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(w.configDir, 0700); err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(w.configDir, "cc-new-confirmations.json"), append(body, '\n'), 0600)
 }
 
 func randomConfirmToken() string {

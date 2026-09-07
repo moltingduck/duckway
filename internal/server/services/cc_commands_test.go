@@ -336,35 +336,20 @@ func TestHandle_Help(t *testing.T) {
 
 func TestHandle_New(t *testing.T) {
 	h := newCommandHarness(t)
+	sub, unsub := h.hub.Subscribe("client1")
+	defer unsub()
 	h.handler.Handle(context.Background(), "cc1", h.mgmt, `!new task-1 --topic "alpha task"`)
 
-	if h.hitsFor("POST", "/guilds/G1/channels") != 1 {
-		t.Errorf("expected 1 channel-create POST, got %v", h.hits)
-	}
-	if !h.lastReplyContains("Created **#task-1**") {
-		t.Errorf("expected success reply, got %v", h.reqs)
-	}
-
-	rows, err := h.db.Query(`SELECT handle, name, kind, cwd, topic FROM cc_channels`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	t.Log("cc_channels rows after !new:")
-	var found bool
-	for rows.Next() {
-		var handle, name, kind, cwd, topic string
-		_ = rows.Scan(&handle, &name, &kind, &cwd, &topic)
-		t.Logf("  %s name=%q kind=%q cwd=%q topic=%q", handle, name, kind, cwd, topic)
-		if kind == "task" && name == "task-1" {
-			found = true
-			if cwd != "" || topic != "alpha task" {
-				t.Errorf("task row fields wrong: cwd=%q topic=%q", cwd, topic)
-			}
+	select {
+	case ev := <-sub:
+		if ev.Type != "client_command" || !strings.Contains(string(ev.Payload), `"command":"!new"`) || !strings.Contains(string(ev.Payload), "alpha task") {
+			t.Fatalf("forwarded event=%+v", ev)
 		}
+	case <-time.After(time.Second):
+		t.Fatal("!new was not forwarded to Duckway")
 	}
-	if !found {
-		t.Errorf("task-1 task row not persisted")
+	if h.hitsFor("POST", "/guilds/G1/channels") != 0 {
+		t.Errorf("server created a lazy task channel: %v", h.hits)
 	}
 }
 

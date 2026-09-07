@@ -624,15 +624,11 @@ func (r *ccRunner) executeShellCommand(ctx context.Context, command string) (str
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	cmd := exec.CommandContext(ctx, shell, "-lc", command)
+	cmd := exec.CommandContext(ctx, shell, "-c", command)
 	cmd.Dir = r.cwd
-	cmd.Env = append(os.Environ(),
-		"DUCKWAY_CC_CHANNEL_HANDLE="+r.handle,
-	)
-	cmd.Env = append(cmd.Env, agentProxyEnv(r.configDir)...)
-	cmd.Env = append(cmd.Env, loadKeysEnv(r.configDir)...)
+	cmd.Env = directShellEnvironment(r.handle, shell)
 
-	var out bytes.Buffer
+	var out boundedCommandOutput
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	err := cmd.Run()
@@ -644,6 +640,52 @@ func (r *ccRunner) executeShellCommand(ctx context.Context, command string) (str
 		exitCode = ee.ExitCode()
 	}
 	return out.String(), exitCode, err
+}
+
+const maxDirectShellOutputBytes = 256 << 10
+
+type boundedCommandOutput struct {
+	bytes.Buffer
+	truncated bool
+}
+
+func (w *boundedCommandOutput) Write(p []byte) (int, error) {
+	original := len(p)
+	remaining := maxDirectShellOutputBytes - w.Len()
+	if remaining <= 0 {
+		w.truncated = true
+		return original, nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+		w.truncated = true
+	}
+	_, _ = w.Buffer.Write(p)
+	return original, nil
+}
+
+func (w *boundedCommandOutput) String() string {
+	value := w.Buffer.String()
+	if w.truncated {
+		value += "\n[duckway: shell output truncated at 256 KiB]"
+	}
+	return value
+}
+
+// directShellEnvironment deliberately does not inherit Duckway credentials,
+// proxy bearer tokens, agent API keys, or arbitrary daemon environment. The
+// command still uses the configured user shell, but does not load login
+// profiles; only the minimum process identity is supplied here.
+func directShellEnvironment(handle, shell string) []string {
+	keys := []string{"HOME", "USER", "LOGNAME", "PATH", "LANG", "LC_ALL", "TERM", "TMPDIR"}
+	env := make([]string, 0, len(keys)+2)
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok && !strings.ContainsRune(value, 0) {
+			env = append(env, key+"="+value)
+		}
+	}
+	env = append(env, "SHELL="+shell, "DUCKWAY_CC_CHANNEL_HANDLE="+handle)
+	return env
 }
 
 func formatShellCommandResult(command, output string, exitCode int, err error) string {
