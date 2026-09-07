@@ -272,6 +272,19 @@ func isExplicitCCControl(content string) bool {
 	return cccommand.Usage(strings.ToLower(fields[0])) != ""
 }
 
+func isDaemonBoundCCCommand(content string) bool {
+	args, err := parseArgs(content)
+	if err != nil || len(args) == 0 {
+		return false
+	}
+	switch strings.ToLower(args[0]) {
+	case "!new", "!new-confirm", "!end", "!destroy", "!yield", "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-doctor", "!duckway-restart", "!duckway-update", "!log":
+		return true
+	default:
+		return false
+	}
+}
+
 func authorizeCCInbound(cc models.ControlChannel, ch models.CCChannel, payload json.RawMessage, botUserID string) (ccInboundMessage, string) {
 	var msg ccInboundMessage
 	if err := json.Unmarshal(payload, &msg); err != nil || msg.ID == "" || msg.ChannelID == "" || msg.Author.ID == "" {
@@ -700,6 +713,17 @@ func (c *ccBotConn) routeMessageEvent(eventType, realChannelID string, payload j
 		if eventType == "MESSAGE_CREATE" && c.commands != nil {
 			if LooksLikeCommand(inbound.Content) {
 				cmd := ccGatewayCommand{ccID: cc.ID, channel: *ch, content: inbound.Content, messageID: inbound.ID}
+				// Commands executed by the host daemon must reach SQLite before
+				// this Gateway dispatch is considered consumed. Sending them
+				// through the volatile command queue first creates a crash window
+				// where Discord will not replay the event but no inbox row exists.
+				if isDaemonBoundCCCommand(inbound.Content) {
+					if admitted, admitErr := c.commands.admitDaemonCommand(&cc, &cmd.channel, cmd.content, cmd.messageID); admitted {
+						return
+					} else if admitErr != nil {
+						log.Printf("[cc-gw] durable command admission failed cc=%s handle=%s: %v", cc.ID, ch.Handle, admitErr)
+					}
+				}
 				if !c.enqueueCommand(cmd) {
 					log.Printf("[cc-gw] %s: command queue full, dropping %q", c.apiKeyID, inbound.Content)
 					go func() {

@@ -157,7 +157,7 @@ func (h *CCCommandHandler) handle(ctx context.Context, ccID string, ch *models.C
 		}
 		h.handleStatus(ctx, botToken, cc, ch.ChannelID)
 
-	case "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-restart", "!duckway-update":
+	case "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-doctor", "!duckway-restart", "!duckway-update":
 		// These are client-handled — the agent machine owns the filesystem
 		// state (~/.claude/projects/, saved project dirs), local stores, and
 		// local daemon lifecycle, so the daemon is the only place that can do
@@ -387,10 +387,43 @@ func (h *CCCommandHandler) handleStatus(ctx context.Context, botToken string, cc
 	h.reply(ctx, botToken, replyChannelID, msg)
 }
 
-// forwardToDaemon hands a !-prefix command off to the cc-watch daemon via
-// SSE. Used for commands that need filesystem access on the agent box
-// (!sessions, !bind). If no daemon is connected we fall back to a polite
-// error in the channel so the user knows to start one.
+func daemonCommandAllowedInChannel(command, kind string) bool {
+	switch command {
+	case "!new", "!new-confirm", "!sessions", "!bind", "!projects", "!duckway-version", "!duckway-doctor", "!duckway-restart", "!duckway-update":
+		return kind == "management"
+	case "!end", "!destroy", "!yield", "!log":
+		return kind == "task"
+	default:
+		return false
+	}
+}
+
+func clientCommandPayload(command string, args []string, sessionID, requestID string) []byte {
+	payload, _ := json.Marshal(map[string]interface{}{
+		"command": command, "args": args, "session_id": sessionID, "request_id": requestID,
+	})
+	return payload
+}
+
+// admitDaemonCommand performs only bounded parsing and one local SQLite
+// transaction. It is safe on the Gateway read loop: token decryption, Discord
+// REST replies, and all command side effects remain on the async worker.
+func (h *CCCommandHandler) admitDaemonCommand(cc *models.ControlChannel, ch *models.CCChannel, content, requestID string) (bool, error) {
+	if h.hub == nil || cc.ClientID == "" || requestID == "" || h.hub.SubscriberCount(cc.ClientID) == 0 {
+		return false, nil
+	}
+	args, err := parseArgs(content)
+	if err != nil || len(args) == 0 || cccommand.Validate(args[0], args[1:]) != nil || !daemonCommandAllowedInChannel(args[0], ch.Kind) {
+		return false, nil
+	}
+	payload := clientCommandPayload(args[0], args[1:], ch.SessionID, requestID)
+	_, _, err = h.cc.AdmitInboxDetailed(cc.ID, &ch.Handle, "CLIENT_COMMAND", "CLIENT_COMMAND:"+requestID, ch.Handle, string(payload))
+	return err == nil, err
+}
+
+// forwardToDaemon hands a !-prefix command to the cc-watch daemon. Gateway
+// commands carry a Discord snowflake and enter the durable per-channel FIFO;
+// ID-less test/internal callers retain the legacy live-event fallback.
 func (h *CCCommandHandler) forwardToDaemon(ctx context.Context, botToken string, cc *models.ControlChannel, ch *models.CCChannel, cmd string, args []string) {
 	if h.hub == nil || cc.ClientID == "" {
 		h.reply(ctx, botToken, ch.ChannelID, "❌ `"+cmd+"` needs the cc-watch daemon on the agent — start one with `duckway cc watch -d`.")
@@ -400,17 +433,9 @@ func (h *CCCommandHandler) forwardToDaemon(ctx context.Context, botToken string,
 		h.reply(ctx, botToken, ch.ChannelID, "❌ daemon offline — start `duckway cc watch -d` on the agent box, then retry.")
 		return
 	}
-	payload, _ := json.Marshal(map[string]interface{}{
-		"command":    cmd,
-		"args":       args,
-		"session_id": ch.SessionID,
-		"request_id": func() string {
-			value, _ := ctx.Value(ccCommandRequestIDKey{}).(string)
-			return value
-		}(),
-	})
 	requestID, _ := ctx.Value(ccCommandRequestIDKey{}).(string)
-	if requestID != "" && (cmd == "!new" || cmd == "!new-confirm" || cmd == "!end" || cmd == "!destroy") {
+	payload := clientCommandPayload(cmd, args, ch.SessionID, requestID)
+	if requestID != "" {
 		// Client-side commands first enter the same durable per-channel FIFO as
 		// prompts. The subscriber preflight above preserves immediate "offline"
 		// UX, while a disconnect after admission is recovered by normal claims.

@@ -263,10 +263,17 @@ binding. If a bind response is lost, the client queries the session binding;
 it preserves an ambiguously bound channel and archives only after an
 authoritative rejection.
 
-`!end` and `!destroy` are also admitted as snowflake-deduplicated
-`CLIENT_COMMAND` jobs; the Gateway never archives or deletes a task channel
-before the host confirms the Ducklion lifecycle transition. Both operations
-are writer- and generation-fenced. `!end` stops the process, posts one stable
+When cc-watch is connected, every daemon-bound Discord command (`!new`,
+binding/session inspection, `!yield`, lifecycle, log, update, and restart
+commands) is synchronously admitted as a snowflake-deduplicated
+`CLIENT_COMMAND` job before Gateway dispatch returns. If cc-watch is offline at
+dispatch, the command fails immediately and is not queued for later execution.
+The volatile command worker is used only for server-local replies and
+commands, so a server crash or SSE disconnect cannot lose an ownership or
+lifecycle mutation. In particular, the Gateway never archives or deletes a
+task channel before the host confirms the Ducklion lifecycle transition.
+`!end` and `!destroy` are writer- and generation-fenced. `!end` stops the
+process, posts one stable
 farewell, and archives the Discord channel while retaining the Ducklion
 binding, server routing marker, local routing metadata, stopped session, and
 PTY log for an exact-session restore. `!destroy` stops the process,

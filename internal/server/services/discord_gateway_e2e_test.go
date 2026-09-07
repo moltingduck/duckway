@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -257,24 +258,54 @@ func TestDiscordClientCommandUsesDurableInboxE2E(t *testing.T) {
 	conn := &ccBotConn{apiKeyID: "key1", botToken: "fake-token", cc: h.cc, hub: h.hub, commands: h.handler, botUserID: "BOT", stopCh: make(chan struct{})}
 	payload := json.RawMessage(`{"id":"777777777777777777","guild_id":"G1","channel_id":"MGMT1","content":"!new review","author":{"id":"U1","bot":false}}`)
 	conn.routeMessageEvent("MESSAGE_CREATE", "MGMT1", payload)
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		rows, err := h.cc.PullInbox("cc1", 0, []string{"dwch_mgmt"}, 10)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(rows) == 1 {
-			if rows[0].EventType != "CLIENT_COMMAND" || rows[0].EventKey != "CLIENT_COMMAND:777777777777777777" || rows[0].Status != "admitted" ||
-				!strings.Contains(rows[0].Payload, `"request_id":"777777777777777777"`) || !strings.Contains(rows[0].Payload, `"command":"!new"`) {
-				t.Fatalf("durable command=%+v", rows[0])
-			}
-			conn.stop()
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	// Admission is synchronous with Gateway dispatch; it must not depend on
+	// the volatile command worker getting scheduled.
+	rows, err := h.cc.PullInbox("cc1", 0, []string{"dwch_mgmt"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].EventType != "CLIENT_COMMAND" || rows[0].EventKey != "CLIENT_COMMAND:777777777777777777" || rows[0].Status != "admitted" ||
+		!strings.Contains(rows[0].Payload, `"request_id":"777777777777777777"`) || !strings.Contains(rows[0].Payload, `"command":"!new"`) {
+		t.Fatalf("durable command=%+v", rows)
 	}
 	conn.stop()
-	t.Fatal("client command was not durably admitted")
+}
+
+func TestDiscordCommandReplyCannotBlockGatewayAdmissionE2E(t *testing.T) {
+	h := newCommandHarness(t)
+	_, unsubscribe := h.hub.Subscribe("client1")
+	defer unsubscribe()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	conn := &ccBotConn{apiKeyID: "key1", botToken: "fake-token", cc: h.cc, hub: h.hub, commands: h.handler, botUserID: "BOT", stopCh: make(chan struct{}),
+		commandHandler: func(context.Context, ccGatewayCommand) { close(started); <-release }}
+	// Wrong-scope !yield requires a Discord error reply and therefore remains
+	// on the async worker. Block that worker to model a rate-limited REST call.
+	conn.routeMessageEvent("MESSAGE_CREATE", "MGMT1", json.RawMessage(`{"id":"7001","guild_id":"G1","channel_id":"MGMT1","content":"!yield","author":{"id":"U1"}}`))
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("async command worker did not start")
+	}
+	// A valid daemon command must still be inserted synchronously by the
+	// Gateway read path without waiting for that blocked REST work.
+	done := make(chan struct{})
+	go func() {
+		conn.routeMessageEvent("MESSAGE_CREATE", "MGMT1", json.RawMessage(`{"id":"7002","guild_id":"G1","channel_id":"MGMT1","content":"!new next","author":{"id":"U1"}}`))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		close(release)
+		t.Fatal("Gateway dispatch blocked behind command reply")
+	}
+	rows, err := h.cc.PullInbox("cc1", 0, []string{"dwch_mgmt"}, 10)
+	if err != nil || len(rows) != 1 || rows[0].EventKey != "CLIENT_COMMAND:7002" {
+		t.Fatalf("durable command rows=%+v err=%v", rows, err)
+	}
+	close(release)
+	conn.stop()
 }
 
 func TestDiscordHeartbeatMissingAckClosesSocketE2E(t *testing.T) {

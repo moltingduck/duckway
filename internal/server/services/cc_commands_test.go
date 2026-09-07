@@ -759,6 +759,14 @@ func TestHandle_Yield_ForwardsOnlyFromTaskChannel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("yield was not forwarded")
 	}
+
+	// Real Gateway dispatch includes the Discord snowflake, so mutations use
+	// the durable inbox instead of relying on the live SSE subscriber.
+	h.handler.HandleMessage(context.Background(), "cc1", task, "!yield -w", "snow-yield")
+	rows, err := h.cc.PullInbox("cc1", 0, []string{"dwch_t"}, 10)
+	if err != nil || len(rows) != 1 || rows[0].EventType != "CLIENT_COMMAND" || rows[0].EventKey != "CLIENT_COMMAND:snow-yield" {
+		t.Fatalf("durable yield rows=%+v err=%v", rows, err)
+	}
 }
 
 func TestHandle_List_Empty(t *testing.T) {

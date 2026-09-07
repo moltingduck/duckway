@@ -518,7 +518,10 @@ In `<client>-control`:
 - `!duckway-update [--restart]` → update the local Duckway binary; optionally restart daemons after a successful update
 - `!! <command>` → management channel only: run a bounded shell command directly on the client; the subprocess receives no Duckway/agent credentials and does not touch a PTY session
 
-Agent prompts, direct `!!` shell commands, and daemon-side `!` commands use three independent bounded queues. Each queue remains FIFO for a channel, but work in different queues can run concurrently, so a long agent turn does not delay operational commands and replies may interleave.
+Agent prompts and daemon-side `!` commands share the channel's durable FIFO, so
+a lifecycle operation cannot overtake an earlier prompt. Direct `!!` shell
+commands use their separate lightweight job queue and may complete while an
+agent turn is running.
 
 Project folders are saved on the client machine, not browsed from the Duckway server. Add them with:
 
@@ -542,7 +545,10 @@ Relative paths are resolved from the directory where you run `duckway projects a
 ```
 - `!help`
 
-`!sessions` / `!bind` run on the agent (the daemon owns the filesystem), so the cc-watch daemon must be up. The server posts an "offline" error if it isn't.
+All daemon-bound commands—including `!new`, `!sessions`, `!bind`, `!yield`,
+lifecycle, log, update, and restart—require cc-watch to be connected at dispatch
+time. If it is offline, the server immediately reports failure and does not
+queue the command for later; retry after the daemon reconnects.
 
 ### Attaching from the CLI
 
