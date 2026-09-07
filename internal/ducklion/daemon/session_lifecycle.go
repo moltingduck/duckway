@@ -268,15 +268,20 @@ func (s *Server) routeAgentTaskEventAck(request protocol.Request, principal stri
 		decodeStrict(request.Body, &ack) != nil || !protocol.ValidTaskID(ack.TaskID) || ack.Sequence == 0 {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid agent event acknowledgement"}}
 	}
-	// Delivery acknowledgement must remain available while a lifecycle
-	// operation waits for the supervisor to publish its durable exit. It does
-	// not admit work or mutate ownership, so it intentionally does not take the
-	// per-session admission lock.
+	// Delivery acknowledgement remains available while a lifecycle operation
+	// drains. A terminal ACK may also make the turn idle and transfer ownership,
+	// so serialize it with the other per-session ownership mutations.
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
 	owner := model.Owner{Kind: model.OwnerCC, ID: principal}
 	task, err := s.service.GetManagedTask(context.Background(), sessionID, ack.TaskID)
 	if err != nil || task.Owner != owner || ack.Sequence > task.LastEventSeq {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "managed task event not found"}}
 	}
+	// Persist delivery first, then release the supervisor's terminal event. An
+	// exiting runtime cannot report its durable exit while it still owns that
+	// event, and runtime exit is itself able to apply a waiting yield.
 	if _, err = s.service.AckManagedTaskEvent(context.Background(), sessionID, ack.TaskID, ack.Sequence, owner); err != nil {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: serviceMapError(err), Message: err.Error(), Retryable: true}}
 	}
@@ -285,8 +290,26 @@ func (s *Server) routeAgentTaskEventAck(request protocol.Request, principal stri
 	request.OwnershipEpoch = &task.OwnershipEpoch
 	request.RuntimeGeneration = &task.RuntimeGeneration
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = s.callControl(ctx, sessionID, request) // old/exited supervisors need not remain reachable
+	_ = s.callControl(ctx, sessionID, request) // an exited supervisor may reconnect only to report exit
+	cancel()
+
+	if (task.Status == store.ManagedTaskCompleted || task.Status == store.ManagedTaskFailed) && ack.Sequence == task.LastEventSeq {
+		previous, previousErr := s.state.GetSession(context.Background(), sessionID)
+		fencePrepared := false
+		if _, err = s.service.FinalizeManagedTaskDeliveryWithHook(context.Background(), sessionID, ack.TaskID, owner, func(next model.Session) error {
+			response := s.syncRuntimeOwnership(next)
+			if response.Error != nil {
+				return fmt.Errorf("runtime rejected ownership fence: %s", response.Error.Message)
+			}
+			fencePrepared = true
+			return nil
+		}); err != nil {
+			if fencePrepared && previousErr == nil {
+				s.restoreOwnershipOrQuarantine(previous)
+			}
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: serviceMapError(err), Message: err.Error(), Retryable: true}}
+		}
+	}
 	key := agentEventKey(sessionID, ack.TaskID)
 	s.agentEventMu.Lock()
 	stored := s.agentEvents[key]

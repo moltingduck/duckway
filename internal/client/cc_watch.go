@@ -501,6 +501,17 @@ func (w *CCWatch) preflightBoundDucklionPrompt(handle, authoritativeSession, tas
 			continue
 		}
 		if session.Writer == nil || session.Writer.Kind != model.OwnerCC || session.Writer.ID != handle {
+			// A lost inbox-finish response may replay after final delivery has
+			// already ACKed the task and transferred ownership. Recognize that
+			// stable task ID before emitting a misleading non-owner rejection.
+			if protocol.ValidTaskID(taskID) {
+				events, replayErr := client.AgentTaskEvents(context.Background(), session.SessionID, taskID, 0)
+				terminal := events.Status == "completed" || events.Status == "failed"
+				if replayErr == nil && terminal && events.LastSequence != 0 && events.AckedSequence >= events.LastSequence {
+					finish(true, "already delivered")
+					return true
+				}
+			}
 			owner := ownerKind(session.Writer) + ":" + ownerID(session.Writer)
 			message := fmt.Sprintf("This prompt was not sent: session `%s` is controlled by `%s`. Run `!yield` or `!yield -w` in this channel to request control.", session.SessionID, owner)
 			if err := w.api.PostCC(context.Background(), handle, "❌ "+message); err != nil {
@@ -569,6 +580,14 @@ func (w *CCWatch) deliverManagedTask(handle, sessionID, taskID string, finish fu
 				return
 			}
 			if len(result.Events) == 0 && (result.Status == "completed" || result.Status == "failed") && result.LastSequence != 0 && result.AckedSequence >= result.LastSequence {
+				// The ACK high-water can survive a lost response or daemon crash
+				// before its separate ownership finalization phase. Replay the ACK
+				// so Ducklion can idempotently finish that phase before this inbox
+				// job is declared complete.
+				if err := client.AckAgentTaskEvent(context.Background(), sessionID, taskID, result.LastSequence); err != nil {
+					finish(false, "finalize managed task delivery: "+err.Error())
+					return
+				}
 				finish(true, "")
 				return
 			}

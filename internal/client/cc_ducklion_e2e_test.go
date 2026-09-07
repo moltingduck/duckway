@@ -16,6 +16,7 @@ import (
 	duckliondaemon "github.com/hackerduck/duckway/internal/ducklion/daemon"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
+	ducklionstore "github.com/hackerduck/duckway/internal/ducklion/store"
 )
 
 func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
@@ -188,16 +189,72 @@ func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 		}
 		t.Fatalf("fixture adapter did not report completion: events=%+v err=%v sessions=%+v restart=%s supervisor=%s", lastEvents, lastPollErr, summary, restartLog.String(), supervisorLog)
 	}
+	terminal, err = duckliondaemon.Dial(socket, "e2e-terminal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	beforeAck, err := terminal.ListSessions()
+	if err != nil || len(beforeAck) != 1 || beforeAck[0].TaskState != model.TaskReplying || beforeAck[0].Writer == nil || beforeAck[0].Writer.Kind != model.OwnerCC {
+		t.Fatalf("terminal event became idle before delivery ACK: sessions=%+v err=%v", beforeAck, err)
+	}
+	waiting, err := terminal.YieldSession(context.Background(), current.SessionID, current.OwnershipEpoch, current.RuntimeGeneration, true)
+	if err != nil || waiting.Decision != model.YieldWaiting {
+		t.Fatalf("wait-yield before delivery ACK=%+v err=%v", waiting, err)
+	}
 	if err := taskCC.AckAgentTaskEvent(context.Background(), current.SessionID, task.TaskID, terminalSequence); err != nil {
 		t.Fatal(err)
 	}
+	afterAck, err := terminal.ListSessions()
+	if err != nil || len(afterAck) != 1 || afterAck[0].TaskState != model.TaskIdle || afterAck[0].Writer == nil || afterAck[0].Writer.Kind != model.OwnerTerminal || afterAck[0].OwnershipEpoch != current.OwnershipEpoch+1 {
+		t.Fatalf("delivery ACK did not apply waiting yield: sessions=%+v err=%v", afterAck, err)
+	}
+	returned, err := taskCC.YieldSession(context.Background(), current.SessionID, afterAck[0].OwnershipEpoch, current.RuntimeGeneration, false)
+	if err != nil || returned.Decision != model.YieldTransferred || returned.Writer == nil || returned.Writer.Kind != model.OwnerCC {
+		t.Fatalf("return control to CC=%+v err=%v", returned, err)
+	}
+	current.OwnershipEpoch = returned.OwnershipEpoch
 	_ = taskCC.Close()
 
 	messageSnowflake := "1783330000000000043"
 	payload, _ := json.Marshal(map[string]interface{}{"id": messageSnowflake, "content": "second managed turn", "author": map[string]interface{}{"id": "U1", "bot": false}})
 	envelope, _ := json.Marshal(sseEnvelope{Type: "message_create", CCID: "cc1", Handle: "dwch_task", Kind: "task", Payload: payload,
 		InboxID: 43, SessionID: current.SessionID, ClaimToken: "claim-43", AttemptCount: 1})
+	deliveryEntered := make(chan struct{}, 1)
+	deliveryRelease := make(chan struct{})
+	defer func() {
+		select {
+		case <-deliveryRelease:
+		default:
+			close(deliveryRelease)
+		}
+	}()
+	fake.mu.Lock()
+	fake.deliveryEntered = deliveryEntered
+	fake.deliveryRelease = deliveryRelease
+	fake.deliveryBlockContent = "fixture done"
+	fake.mu.Unlock()
 	watch.handleMessageCreate(envelope)
+	select {
+	case <-deliveryEntered:
+	case <-time.After(5 * time.Second):
+		summary, _ := terminal.ListSessions()
+		t.Fatalf("managed final Discord delivery was not attempted: sessions=%+v messages=%v edits=%v finishes=%v", summary, fake.snapshotMessages(), fake.snapshotEdits(), fake.snapshotFinishes())
+	}
+	waiting, err = terminal.YieldSession(context.Background(), current.SessionID, current.OwnershipEpoch, current.RuntimeGeneration, true)
+	if err != nil || waiting.Decision != model.YieldWaiting {
+		t.Fatalf("integrated wait-yield while Discord delivery blocked=%+v err=%v", waiting, err)
+	}
+	blocked, err := terminal.ListSessions()
+	blockedMessages := fake.snapshotMessages()
+	finalStored := false
+	for _, message := range blockedMessages {
+		finalStored = finalStored || message["content"] == "fixture done"
+	}
+	if err != nil || len(blocked) != 1 || blocked[0].TaskState != model.TaskReplying || blocked[0].Writer == nil || blocked[0].Writer.Kind != model.OwnerCC || finalStored {
+		t.Fatalf("blocked Discord delivery advanced state: sessions=%+v messages=%v err=%v", blocked, blockedMessages, err)
+	}
+	close(deliveryRelease)
 	deadline = time.Now().Add(4 * time.Second)
 	for time.Now().Before(deadline) {
 		finishes := fake.snapshotFinishes()
@@ -207,7 +264,12 @@ func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if finishes := fake.snapshotFinishes(); len(finishes) == 0 || finishes[len(finishes)-1]["status"] != "completed" {
-		t.Fatal("managed durable inbox was not completed")
+		summary, _ := terminal.ListSessions()
+		t.Fatalf("managed durable inbox was not completed: finishes=%v sessions=%+v messages=%v edits=%v", finishes, summary, fake.snapshotMessages(), fake.snapshotEdits())
+	}
+	afterDelivery, err := terminal.ListSessions()
+	if err != nil || len(afterDelivery) != 1 || afterDelivery[0].TaskState != model.TaskIdle || afterDelivery[0].Writer == nil || afterDelivery[0].Writer.Kind != model.OwnerTerminal || afterDelivery[0].OwnershipEpoch != current.OwnershipEpoch+1 {
+		t.Fatalf("Discord delivery ACK did not transfer waiting owner: sessions=%+v err=%v", afterDelivery, err)
 	}
 	if edits := fake.snapshotEdits(); len(edits) == 0 || edits[len(edits)-1] != "✅ Done" {
 		t.Fatalf("terminal preview was not finalized: %v", edits)
@@ -224,15 +286,73 @@ func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 	if got := len(fake.snapshotMessages()); got != messageCount {
 		t.Fatalf("acked inbox replay posted duplicate messages: before=%d after=%d", messageCount, got)
 	}
-	terminal, err = duckliondaemon.Dial(socket, "e2e-terminal")
+	// Simulate a crash after the delivery ACK transaction but before its
+	// ownership-finalization phase. Inbox replay must resend the idempotent ACK
+	// and finish the waiting yield rather than leaving the session replying.
+	taskCC, err = duckliondaemon.DialCC(socket, "dwch_task")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer terminal.Close()
-	// Return ownership and stop the real PTY so the test leaves no supervisor.
-	if _, err := terminal.YieldSession(context.Background(), current.SessionID, current.OwnershipEpoch, current.RuntimeGeneration, false); err != nil {
+	reclaimed, err := taskCC.YieldSession(context.Background(), current.SessionID, current.OwnershipEpoch+1, current.RuntimeGeneration, false)
+	if err != nil || reclaimed.Writer == nil || reclaimed.Writer.Kind != model.OwnerCC {
+		t.Fatalf("reclaim CC for ACK recovery=%+v err=%v", reclaimed, err)
+	}
+	current.OwnershipEpoch = reclaimed.OwnershipEpoch
+	recoverySnowflake := "1783330000000000044"
+	recoveryPrompt := []byte("recover ACK finalization")
+	recoveryTask := protocol.AgentTaskSubmit{TaskID: recoverySnowflake, Prompt: recoveryPrompt, PromptDigest: sha256.Sum256(recoveryPrompt)}
+	if _, err := taskCC.SubmitAgentTask(context.Background(), recoveryTask.TaskID, current.SessionID, current.OwnershipEpoch, current.RuntimeGeneration, recoveryTask); err != nil {
 		t.Fatal(err)
 	}
+	var recoverySequence uint64
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		events, pollErr := taskCC.AgentTaskEvents(context.Background(), current.SessionID, recoveryTask.TaskID, 0)
+		if pollErr == nil && len(events.Events) != 0 && events.Events[len(events.Events)-1].Kind == "completed" {
+			recoverySequence = events.Events[len(events.Events)-1].Sequence
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if recoverySequence == 0 {
+		t.Fatal("recovery task did not complete")
+	}
+	if waiting, err = terminal.YieldSession(context.Background(), current.SessionID, current.OwnershipEpoch, current.RuntimeGeneration, true); err != nil || waiting.Decision != model.YieldWaiting {
+		t.Fatalf("recovery waiting yield=%+v err=%v", waiting, err)
+	}
+	database, err := ducklionstore.Open(context.Background(), filepath.Join(configDir, "ducklion", "ducklion.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.AckManagedTaskEvent(context.Background(), model.SessionID(current.SessionID), recoveryTask.TaskID, recoverySequence, model.Owner{Kind: model.OwnerCC, ID: "dwch_task"}); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	_ = database.Close()
+	replying, _ := terminal.ListSessions()
+	if len(replying) != 1 || replying[0].TaskState != model.TaskReplying {
+		t.Fatalf("simulated ACK/finalize crash state=%+v", replying)
+	}
+	finishCount := len(fake.snapshotFinishes())
+	recoveryPayload, _ := json.Marshal(map[string]interface{}{"id": recoverySnowflake, "content": string(recoveryPrompt), "author": map[string]interface{}{"id": "U1", "bot": false}})
+	recoveryEnvelope, _ := json.Marshal(sseEnvelope{Type: "message_create", CCID: "cc1", Handle: "dwch_task", Kind: "task", Payload: recoveryPayload,
+		InboxID: 44, SessionID: current.SessionID, ClaimToken: "claim-44", AttemptCount: 2})
+	watch.handleMessageCreate(recoveryEnvelope)
+	deadline = time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		finishes := fake.snapshotFinishes()
+		if len(finishes) > finishCount && finishes[len(finishes)-1]["status"] == "completed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	recovered, err := terminal.ListSessions()
+	if err != nil || len(recovered) != 1 || recovered[0].TaskState != model.TaskIdle || recovered[0].Writer == nil || recovered[0].Writer.Kind != model.OwnerTerminal || recovered[0].OwnershipEpoch != current.OwnershipEpoch+1 {
+		t.Fatalf("ACK finalization replay did not recover: sessions=%+v finishes=%v err=%v", recovered, fake.snapshotFinishes(), err)
+	}
+	_ = taskCC.Close()
+	// The waiting yield already returned ownership to this terminal; stop the
+	// real PTY so the test leaves no supervisor.
 	if err := terminal.StopSession(context.Background(), current.SessionID, current.OwnershipEpoch+1, current.RuntimeGeneration); err != nil {
 		t.Fatal(err)
 	}

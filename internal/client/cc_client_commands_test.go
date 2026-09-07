@@ -25,22 +25,25 @@ import (
 // responses for the create-channel and post-message endpoints used by
 // the bind flow.
 type fakeServer struct {
-	mu               sync.Mutex
-	creates          []map[string]string
-	archives         []string
-	channelDeletes   []string
-	messages         []map[string]string
-	deliveries       map[string]string
-	finishes         []map[string]string
-	edits            []string
-	reactions        []string
-	reactionEntered  chan string
-	reactionRelease  <-chan struct{}
-	dropDeliveryOnce bool
-	failDeliveryOnce bool
-	failArchiveOnce  bool
-	failDeleteOnce   bool
-	srv              *httptest.Server
+	mu                   sync.Mutex
+	creates              []map[string]string
+	archives             []string
+	channelDeletes       []string
+	messages             []map[string]string
+	deliveries           map[string]string
+	finishes             []map[string]string
+	edits                []string
+	reactions            []string
+	reactionEntered      chan string
+	reactionRelease      <-chan struct{}
+	deliveryEntered      chan struct{}
+	deliveryRelease      <-chan struct{}
+	deliveryBlockContent string
+	dropDeliveryOnce     bool
+	failDeliveryOnce     bool
+	failArchiveOnce      bool
+	failDeleteOnce       bool
+	srv                  *httptest.Server
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -107,6 +110,17 @@ func newFakeServer(t *testing.T) *fakeServer {
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			body["_path"] = r.URL.Path
+			f.mu.Lock()
+			entered, release := f.deliveryEntered, f.deliveryRelease
+			blockDelivery := body["delivery_key"] != "" && entered != nil && (f.deliveryBlockContent == "" || body["content"] == f.deliveryBlockContent)
+			if blockDelivery {
+				f.deliveryEntered, f.deliveryRelease = nil, nil
+			}
+			f.mu.Unlock()
+			if blockDelivery {
+				entered <- struct{}{}
+				<-release
+			}
 			f.mu.Lock()
 			fail := f.failDeliveryOnce && body["delivery_key"] != ""
 			f.failDeliveryOnce = false

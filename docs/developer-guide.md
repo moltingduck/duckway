@@ -513,7 +513,11 @@ uses terminal silence as proof of completion. Unacknowledged final payloads
 live only in the independent supervisor's bounded memory and are replayed
 after daemon restart. The server's `cc_message_deliveries` table stores only a
 delivery digest and Discord message ID; deterministic Discord nonces prevent a
-lost HTTP response from duplicating a final reply.
+lost HTTP response from duplicating a final reply. A terminal supervisor event
+leaves the Ducklion session in `replying`; only the event ACK issued after the
+final Discord post succeeds changes it to `idle` and atomically grants any
+waiting yield. This keeps ownership with CC until its reply is actually
+delivered.
 
 Lifecycle drains are persisted in Ducklion's
 `pending_lifecycle_operations` table rather than represented by a sleeping

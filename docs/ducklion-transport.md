@@ -312,7 +312,18 @@ supervisor's bounded memory until the CC confirms delivery. After a Ducklion
 daemon restart the supervisor authenticates again, republishes its output ring,
 and replays every unacknowledged event. Receipts make replay idempotent; the
 high-water mark makes ACK safe after an ambiguous connection failure or after
-the original runtime exits.
+the original runtime exits. A terminal `completed` or `failed` event moves the
+session to `replying`, not `idle`. Only the ACK sent after the final Discord
+message is durably delivered moves it to `idle`; that same SQLite transaction
+applies and removes any waiting yield. Ducklion synchronizes the new ownership
+fence with the supervisor before committing, and restores or quarantines the
+old fence if the database commit fails. Consequently a lifecycle drain or
+waiting controller cannot overtake the user's final reply. The ACK high-water
+is committed first so an exiting supervisor can release its terminal event and
+report exit; ownership finalization is a replayable second transaction. If a
+crash separates those phases, cc-watch resends the idempotent ACK before it
+marks the durable inbox job complete. If the runtime has already exited,
+`MarkRuntimeExited` applies the same waiter while recording the stopped state.
 
 Agent adapters emit newline-delimited structured events through an inherited,
 agent-only file descriptor; shell sessions never receive it. Ducklion injects

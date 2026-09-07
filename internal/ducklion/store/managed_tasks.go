@@ -187,6 +187,59 @@ func (s *SQLite) AckManagedTaskEvent(ctx context.Context, sessionID model.Sessio
 	return s.GetManagedTask(ctx, sessionID, taskID)
 }
 
+// FinalizeManagedTaskDeliveryWithHook makes a terminal delivery ACK the
+// authoritative end of a managed turn. ACK persistence is deliberately a
+// separate transaction: an exiting supervisor must be able to observe the ACK
+// before its runtime is available for an ownership fence.
+func (s *SQLite) FinalizeManagedTaskDeliveryWithHook(ctx context.Context, sessionID model.SessionID, taskID string, owner model.Owner, beforeCommit func(model.Session) error) (ManagedTask, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ManagedTask{}, err
+	}
+	defer tx.Rollback()
+	task, err := getManagedTaskTx(ctx, tx, sessionID, taskID)
+	if err != nil || task.Owner != owner || (task.Status != ManagedTaskCompleted && task.Status != ManagedTaskFailed) || task.AckedEventSeq < task.LastEventSeq {
+		return ManagedTask{}, ErrNotFound
+	}
+	session, err := s.GetSessionTx(ctx, tx, sessionID)
+	if err != nil {
+		return ManagedTask{}, err
+	}
+	if session.TaskState == model.TaskIdle || session.Status == model.StatusStopped {
+		return task, nil
+	}
+	if session.TaskState != model.TaskReplying && session.TaskState != model.TaskRunning {
+		return ManagedTask{}, model.ErrTaskActive
+	}
+	oldEpoch, generation := session.OwnershipEpoch, session.RuntimeGeneration
+	session.TaskState = model.TaskIdle
+	pending, err := s.GetPendingYieldTx(ctx, tx, sessionID)
+	if err != nil {
+		return ManagedTask{}, err
+	}
+	if pending != nil {
+		if _, applyErr := session.ApplyPendingYield(*pending); applyErr != nil && !errors.Is(applyErr, model.ErrStaleEpoch) {
+			return ManagedTask{}, applyErr
+		}
+		if err := s.DeletePendingYieldTx(ctx, tx, sessionID); err != nil {
+			return ManagedTask{}, err
+		}
+	}
+	session.UpdatedAtMS = time.Now().UTC().UnixMilli()
+	if session.OwnershipEpoch != oldEpoch && beforeCommit != nil {
+		if err := beforeCommit(session); err != nil {
+			return ManagedTask{}, err
+		}
+	}
+	if err := s.UpdateSessionTx(ctx, tx, session, oldEpoch, generation); err != nil {
+		return ManagedTask{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ManagedTask{}, err
+	}
+	return task, nil
+}
+
 func (s *SQLite) MarkManagedTaskRunning(ctx context.Context, sessionID model.SessionID, taskID string, generation uint64) (ManagedTask, error) {
 	now := time.Now().UTC().UnixMilli()
 	result, err := s.db.ExecContext(ctx, `UPDATE managed_tasks SET status='running',updated_at_ms=?
@@ -262,19 +315,9 @@ func (s *SQLite) ApplyManagedTaskEvent(ctx context.Context, sessionID model.Sess
 		task.Status = ManagedTaskStatus(event.Kind)
 		task.OutputEnd = &event.OutputEnd
 		task.ErrorCategory = event.ErrorCategory
-		session.TaskState = model.TaskIdle
-		pending, pendingErr := s.GetPendingYieldTx(ctx, tx, sessionID)
-		if pendingErr != nil {
-			return ManagedTask{}, model.Session{}, pendingErr
-		}
-		if pending != nil {
-			if _, applyErr := session.ApplyPendingYield(*pending); applyErr != nil && !errors.Is(applyErr, model.ErrStaleEpoch) {
-				return ManagedTask{}, model.Session{}, applyErr
-			}
-			if err := s.DeletePendingYieldTx(ctx, tx, sessionID); err != nil {
-				return ManagedTask{}, model.Session{}, err
-			}
-		}
+		// The response is durable but not delivered yet. Delivery ACK is the
+		// only transition allowed to make the session idle and apply a waiter.
+		session.TaskState = model.TaskReplying
 	default:
 		return ManagedTask{}, model.Session{}, fmt.Errorf("invalid managed task event kind")
 	}

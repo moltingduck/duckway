@@ -169,6 +169,10 @@ func (s *Service) AckManagedTaskEvent(ctx context.Context, sessionID model.Sessi
 	return s.state.AckManagedTaskEvent(ctx, sessionID, taskID, sequence, owner)
 }
 
+func (s *Service) FinalizeManagedTaskDeliveryWithHook(ctx context.Context, sessionID model.SessionID, taskID string, owner model.Owner, beforeCommit func(model.Session) error) (store.ManagedTask, error) {
+	return s.state.FinalizeManagedTaskDeliveryWithHook(ctx, sessionID, taskID, owner, beforeCommit)
+}
+
 func (s *Service) ValidateManagedTask(ctx context.Context, task store.ManagedTask) *protocol.Error {
 	if err := s.state.ValidateManagedTask(ctx, task); err != nil {
 		code := mapError(err)
