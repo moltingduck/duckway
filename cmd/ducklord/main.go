@@ -1876,7 +1876,7 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 		}
 		return
 	}
-	if s.outputStale && s.terminal != nil && s.terminalCursorValid && s.terminalGeneration == sess.RuntimeGeneration {
+	if sess.Status == string(model.StatusRunning) && s.outputStale && s.terminal != nil && s.terminalCursorValid && s.terminalGeneration == sess.RuntimeGeneration {
 		s.outputFresh = false
 		s.outputErr = "saved terminal state; press enter to resume from its exact output position"
 		return
@@ -2358,6 +2358,9 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 		return
 	}
 	header := fmt.Sprintf("%s / %s  %s  %s", displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sessionTypeLabel(sess)))
+	if sess.Status == string(model.StatusStopped) && sess.RetainedOutputBytes > 0 {
+		header += fmt.Sprintf("  retained:%s until %s", formatByteCount(sess.RetainedOutputBytes), formatRetainedUntil(sess.RetainedOutputUntilMS))
+	}
 	if s.focused {
 		header += "  [focus]"
 	}
@@ -3173,6 +3176,20 @@ func sessionTypeLabel(session ducklord.RemoteSession) string {
 		return "agent"
 	}
 	return "agent:" + session.AgentType
+}
+
+func formatByteCount(bytes int64) string {
+	if bytes < 1024 {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	return fmt.Sprintf("%.1f KiB", float64(bytes)/1024)
+}
+
+func formatRetainedUntil(timestampMS int64) string {
+	if timestampMS <= 0 {
+		return "unknown"
+	}
+	return time.UnixMilli(timestampMS).Local().Format("Jan 02 15:04")
 }
 
 func tailLines(lines []string, max int) []string {

@@ -1419,7 +1419,7 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 		return fmt.Errorf("invalid recovery key")
 	}
 	ptySession, err := supervisor.Start(supervisor.Options{SessionID: spec.SessionID, RuntimeGeneration: spec.RuntimeGeneration, OwnershipEpoch: spec.OwnershipEpoch, AgentType: spec.AgentType,
-		CWD: spec.CWD, Command: spec.Command, Rows: spec.Rows, Cols: spec.Cols, OutputCapacity: 1 << 20})
+		CWD: spec.CWD, Command: spec.Command, Rows: spec.Rows, Cols: spec.Cols, OutputCapacity: 1 << 20, RetainedOutputDir: filepath.Dir(specPath)})
 	if err != nil {
 		return reportRuntimeLaunchFailure(ctx, specPath, spec, ed25519.PrivateKey(decoded), err)
 	}

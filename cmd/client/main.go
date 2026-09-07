@@ -25,6 +25,7 @@ import (
 	"github.com/hackerduck/duckway/internal/client"
 	duckliondaemon "github.com/hackerduck/duckway/internal/ducklion/daemon"
 	ducklionprotocol "github.com/hackerduck/duckway/internal/ducklion/protocol"
+	"github.com/hackerduck/duckway/internal/duckwayconfig"
 	"github.com/hackerduck/duckway/internal/version"
 )
 
@@ -114,6 +115,10 @@ func main() {
 		cmdStatus(configDir)
 	case "doctor":
 		cmdDoctor(configDir)
+	case "config":
+		if err := runConfigCommand(configDir, os.Args[2:], os.Stdout); err != nil {
+			log.Fatal(err)
+		}
 	case "logs":
 		cmdLogs(configDir, os.Args[2:])
 	case "install-ca":
@@ -140,7 +145,11 @@ func main() {
 	case "__ducklion_daemon":
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
-		if err := duckliondaemon.Run(ctx, duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion")}); err != nil {
+		settings, err := duckwayconfig.LoadRuntimeSettings(configDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := duckliondaemon.Run(ctx, duckliondaemon.Options{Root: filepath.Join(configDir, "ducklion"), RetainedOutputTTL: settings.PTYLogRetention()}); err != nil {
 			log.Fatal(err)
 		}
 	case "__ducklion_runtime_v1":
@@ -199,6 +208,9 @@ Usage:
   duckway proxy hosts reload Signal the running proxy daemon to refresh its host list now
   duckway status             Show connection status, CA cert expiry
   duckway doctor             Detect supported features and missing local setup
+  duckway config get pty_log_retention_days
+  duckway config set pty_log_retention_days <1..3650>
+                         Read or atomically update PTY log retention; restart is manual
   duckway install-ca     Re-install the Duckway CA into the system trust store
   duckway update         Compare local version with server, download + replace if drifted
                          (uses saved config; override with --server <url>
@@ -252,6 +264,45 @@ Daemon files:
   ~/.duckway/proxy.pid   PID of the running daemon
   ~/.duckway/proxy.log   Proxy daemon logs (stdout + stderr)
   ~/.duckway/cc-watch.log  Control-channel daemon logs (stdout + stderr)`)
+}
+
+func runConfigCommand(configDir string, args []string, out io.Writer) error {
+	if len(args) != 2 && len(args) != 3 {
+		return fmt.Errorf("usage: duckway config <get|set> pty_log_retention_days [days]")
+	}
+	if args[1] != "pty_log_retention_days" {
+		return fmt.Errorf("unknown config key %q", args[1])
+	}
+	cfg, err := client.LoadConfig(configDir)
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "get":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: duckway config get pty_log_retention_days")
+		}
+		fmt.Fprintln(out, cfg.PTYLogRetentionDays)
+		return nil
+	case "set":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: duckway config set pty_log_retention_days <days>")
+		}
+		days, parseErr := strconv.Atoi(args[2])
+		if parseErr != nil || days < 1 || days > duckwayconfig.MaxPTYLogRetentionDays {
+			return fmt.Errorf("pty_log_retention_days must be between 1 and %d", duckwayconfig.MaxPTYLogRetentionDays)
+		}
+		old := cfg.PTYLogRetentionDays
+		cfg.PTYLogRetentionDays = days
+		if err := client.SaveConfig(configDir, cfg); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
+		fmt.Fprintf(out, "pty_log_retention_days: %d -> %d\n", old, days)
+		fmt.Fprintln(out, "Restart Duckway/Ducklion manually to apply this change; no automatic restart was performed.")
+		return nil
+	default:
+		return fmt.Errorf("usage: duckway config <get|set> pty_log_retention_days [days]")
+	}
 }
 
 func cmdInit(configDir string) {

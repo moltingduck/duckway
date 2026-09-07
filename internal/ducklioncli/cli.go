@@ -77,7 +77,11 @@ func Main(args []string, stdout io.Writer) {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		if err := daemon.Run(ctx, daemon.Options{}); err != nil {
+		settings, err := duckwayconfig.LoadRuntimeSettings(duckwayconfig.DefaultConfigDir())
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := daemon.Run(ctx, daemon.Options{RetainedOutputTTL: settings.PTYLogRetention()}); err != nil {
 			log.Fatal(err)
 		}
 		return

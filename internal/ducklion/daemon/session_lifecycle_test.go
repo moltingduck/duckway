@@ -131,8 +131,35 @@ func TestCreateSessionStartsManagedPTYAndAcceptsInput(t *testing.T) {
 	if sessions[0].ExitSuccess == nil || *sessions[0].ExitSuccess || sessions[0].ExitReason == "" {
 		t.Fatalf("missing forced-stop outcome: %+v", sessions[0])
 	}
+	if sessions[0].RetainedOutputBytes == 0 || sessions[0].RetainedOutputUntilMS <= time.Now().UnixMilli() {
+		t.Fatalf("missing retained output summary: %+v", sessions[0])
+	}
+	retained, err := client.SubscribeOutputTail(created.SessionID, created.RuntimeGeneration, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retainedBytes bytes.Buffer
+	for {
+		event, readErr := retained.Read()
+		if readErr != nil {
+			break
+		}
+		retainedBytes.Write(event.Frame.Data)
+	}
+	_ = retained.Close()
+	if !bytes.Contains(retainedBytes.Bytes(), []byte("managed-ready")) {
+		t.Fatalf("stopped retained output=%q", retainedBytes.String())
+	}
 	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("recovery key remains: %v", err)
+	}
+	if err := server.cleanupExpiredRetainedOutput(context.Background(), time.Now().Add(8*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SubscribeOutputTail(created.SessionID, created.RuntimeGeneration, 1<<20); err == nil {
+		t.Fatal("expired retained output remained subscribable")
+	} else if !strings.Contains(err.Error(), string(protocol.ErrOutputUnavailable)) {
+		t.Fatalf("expired output error=%v", err)
 	}
 }
 
@@ -632,6 +659,10 @@ func TestShellLifecycleRestartEndAndDestroy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := terminal.SendInput(created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, []byte("printf 'generation-one-only\\n'\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
 	if _, err := terminal.LifecycleSessionWithID(context.Background(), "shell-wait-rejected", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration,
 		protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleEnd, Mode: protocol.SessionLifecycleWait}); err == nil || !strings.Contains(err.Error(), "immediate") {
 		t.Fatalf("shell wait lifecycle err=%v", err)
@@ -643,10 +674,34 @@ func TestShellLifecycleRestartEndAndDestroy(t *testing.T) {
 	}
 	current := created
 	current.RuntimeGeneration = restarted.RuntimeGeneration
+	if err := terminal.SendInput(current.SessionID, current.OwnershipEpoch, current.RuntimeGeneration, []byte("printf 'generation-two-only\\n'\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
 	end := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleEnd, Mode: protocol.SessionLifecycleImmediate}
 	ended := awaitLifecycleTestResult(t, terminal, "shell-end", current, end, 8*time.Second)
 	if ended.State != protocol.SessionLifecycleCompleted {
 		t.Fatalf("shell end=%+v", ended)
+	}
+	retained, err := terminal.SubscribeOutputTail(current.SessionID, current.RuntimeGeneration, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	for {
+		event, readErr := retained.Read()
+		if readErr != nil {
+			break
+		}
+		output.Write(event.Frame.Data)
+	}
+	_ = retained.Close()
+	if !bytes.Contains(output.Bytes(), []byte("generation-two-only")) || bytes.Contains(output.Bytes(), []byte("generation-one-only")) {
+		t.Fatalf("current-generation retained output=%q", output.String())
+	}
+	sessionDir := filepath.Join(root, "sessions", current.SessionID)
+	if _, err := os.Stat(filepath.Join(sessionDir, "output.1.log")); err != nil {
+		t.Fatalf("generation-one diagnostic output missing: %v", err)
 	}
 	destroy := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleDestroy, Mode: protocol.SessionLifecycleImmediate}
 	destroyed := awaitLifecycleTestResult(t, terminal, "shell-destroy", current, destroy, 8*time.Second)
@@ -655,6 +710,9 @@ func TestShellLifecycleRestartEndAndDestroy(t *testing.T) {
 	}
 	if sessions, err := terminal.ListSessions(); err != nil || len(sessions) != 0 {
 		t.Fatalf("shell sessions after destroy=%+v err=%v", sessions, err)
+	}
+	if _, err := os.Stat(sessionDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destroy retained session directory: %v", err)
 	}
 }
 
@@ -871,6 +929,85 @@ func TestManagedPTYDrainsFinalAttentionBeforeExit(t *testing.T) {
 			t.Fatalf("session did not stop: %+v", sessions)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestRetainedOutputPeriodicCleanupRemovesCrashOrphanWithoutBlockingDaemon(t *testing.T) {
+	root := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	server, err := Open(context.Background(), Options{Root: root, RetainedOutputTTL: time.Second, RuntimeLauncher: func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	client, err := Dial(server.SocketPath(), "retention-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	created, err := client.CreateSession(context.Background(), protocol.SessionCreate{Handle: "retention", Kind: model.KindShell, CWD: root, Command: []string{"sh"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendInput(created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, []byte("printf retained-crash-orphan; exit\n")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "sessions", created.SessionID, "output.1.log")
+	metaPath := path + ".json"
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		sessions, listErr := client.ListSessions()
+		if listErr == nil && len(sessions) == 1 && sessions[0].Status == model.StatusStopped {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("runtime did not stop: %+v err=%v", sessions, listErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Model the sidecar state left by a supervisor crash. Cleanup must fall
+	// back to the securely opened log's mtime instead of retaining it forever.
+	if err := os.WriteFile(path, []byte("crash-tail"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metaPath, []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".output-compact-crash", ".output-meta-crash"} {
+		tempPath := filepath.Join(filepath.Dir(path), name)
+		if err := os.WriteFile(tempPath, []byte("temporary-sensitive-output"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(tempPath, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server.requestRetainedOutputSweep()
+	for {
+		_, logErr := os.Stat(path)
+		_, metaErr := os.Stat(metaPath)
+		_, compactErr := os.Stat(filepath.Join(filepath.Dir(path), ".output-compact-crash"))
+		_, metaTempErr := os.Stat(filepath.Join(filepath.Dir(path), ".output-meta-crash"))
+		if errors.Is(logErr, os.ErrNotExist) && errors.Is(metaErr, os.ErrNotExist) && errors.Is(compactErr, os.ErrNotExist) && errors.Is(metaTempErr, os.ErrNotExist) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("periodic cleanup left orphan log=%v meta=%v compact=%v meta-temp=%v", logErr, metaErr, compactErr, metaTempErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := client.ListSessions(); err != nil {
+		t.Fatalf("cleanup made daemon unavailable: %v", err)
 	}
 }
 

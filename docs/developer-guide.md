@@ -965,6 +965,29 @@ If `SSH_AUTH_SOCK` is set, the script mounts the agent socket into the
 container. Ducklord still disables remote SSH agent forwarding when connecting
 to host entries.
 
+Ducklion keeps the newest 1 MiB of raw PTY output per runtime generation for
+seven days so a stopped session remains inspectable. Configure the startup-only
+retention in the remote host's shared Duckway config:
+
+```yaml
+pty_log_retention_days: 7 # valid: 1..3650
+```
+
+Prefer the validated setter when Duckway has already been initialized:
+
+```bash
+duckway config get pty_log_retention_days
+duckway config set pty_log_retention_days 14
+```
+
+The setter atomically saves the shared config and prints the old/new value plus
+the required manual-restart reminder.
+
+The change is intentionally not hot-reloaded and never triggers an automatic
+restart. Restart Duckway/Ducklion when convenient. The effective value is also
+reported by Ducklion's `status` protocol response. Each session is capped at 32
+generation files and each daemon at 512 MiB; `destroy` removes all of them.
+
 When Ducklord starts a non-shell agent through a remote Ducklion, Ducklion reads
 the remote host's Duckway client config. If `~/.duckway/config.yaml` exists and
 `~/.duckway/proxy.pid` points at a live proxy process, Ducklion injects the

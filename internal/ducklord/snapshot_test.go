@@ -155,7 +155,7 @@ func TestTerminalRenderStatePreservesOutputResumeBoundary(t *testing.T) {
 }
 
 func TestTerminalRenderStateRejectsObjectAmplificationBeforeDecode(t *testing.T) {
-	payload := []byte(`{"framebuffer":{"rows":1,"cols":1,"primary":{"lines":[{"cells":[` + strings.Repeat(`null,`, MaxTerminalRetainedCells) + `null]}],"cursor_row":0,"cursor_col":0},"alternate":{"lines":[{"cells":[{}]}],"cursor_row":0,"cursor_col":0}}}`)
+	payload := []byte(`{"framebuffer":{"rows":1,"cols":1,"primary":{"lines":[{"cells":[` + strings.Repeat(`{},`, MaxTerminalRetainedCells) + `{}` + `]}],"cursor_row":0,"cursor_col":0},"alternate":{"lines":[{"cells":[{}]}],"cursor_row":0,"cursor_col":0}}}`)
 	if len(payload) > MaxSnapshotPayload {
 		t.Fatalf("test payload unexpectedly exceeds outer limit: %d", len(payload))
 	}

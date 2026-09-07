@@ -422,6 +422,32 @@ distinguishes runtime disconnect from subscriber lag. Raw terminal bytes must
 be applied to Ducklord's in-memory terminal model; they must not be printed
 directly into the outer TUI terminal.
 
+The supervisor is the sole writer of a generation-specific
+`output.<generation>.log` and matching JSON metadata file in the session
+directory. Both are owned by the Ducklion OS user and mode `0600`; symlinks and
+foreign-owned files are rejected. The file holds only the newest 1 MiB with
+logical start/end offsets. It is diagnostic best-effort storage, not the
+canonical agent transcript or completion event store.
+
+Once a runtime is stopped, the ordinary output-subscription API serves that
+retained suffix as a finite stream. Requests must name the current persisted
+generation; a stale generation fails closed. The session projection exposes
+retained byte count and expiry time so Ducklord can explain why a stopped PTY
+is still readable.
+
+`pty_log_retention_days` is read from `~/.duckway/config.yaml` only when the
+daemon starts. Its default is 7 and valid range is 1–3650. Runtime exit queues
+an immediate coalesced cleanup; startup and hourly cleanup provide recovery and
+expiry sweeps. All cleanup skips the active current generation and removes expired stopped-generation
+artifacts, and leave the session record and recovery metadata intact. Missing
+or corrupt metadata falls back to a securely opened log's modification time;
+crash-left compaction files use the same TTL/quota path after a five-minute live-writer grace period, so
+crash debris cannot bypass retention. A session keeps at most 32 generation
+files and a daemon at most 512 MiB, evicting oldest stopped output first;
+destroy removes the complete session directory. Historical generations are
+filesystem-only diagnostics: the public read API serves only the session's
+current generation. No config edit triggers an automatic restart.
+
 ## Durable notification activity
 
 Schema v8 adds `session_activity`, keyed by session UUID and a fixed

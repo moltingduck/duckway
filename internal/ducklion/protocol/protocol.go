@@ -88,6 +88,7 @@ const (
 	ErrStaleEpoch          ErrorCode = "stale_epoch"
 	ErrStaleGeneration     ErrorCode = "stale_generation"
 	ErrAdapterUnhealthy    ErrorCode = "adapter_unhealthy"
+	ErrOutputUnavailable   ErrorCode = "output_unavailable"
 	ErrDraining            ErrorCode = "draining"
 	ErrIncompatible        ErrorCode = "incompatible_version"
 	ErrIdempotencyConflict ErrorCode = "idempotency_conflict"

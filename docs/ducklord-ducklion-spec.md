@@ -684,11 +684,14 @@ and preserves the pre-migration database backup behavior.
   construction to the PTY manager.
 - `ducklion` strips `SSH_AUTH_SOCK` from supervised session environments by
   default. Broader session environment allowlisting remains future work.
-- Remote session state must not contain secrets or prompts. Do not pass secrets
+- Remote session metadata must not contain secrets or prompts. Do not pass secrets
   in launch argv: agent argv and the canonical shell executable/CWD live in a
   mode-0600 retained runtime spec so restart can reproduce the process. The MVP
-  stores PTY output in per-session `0600` logs for `read`/notification polling; future
-  releases should add size caps, rotation, and retention controls.
+  stores only the newest 1 MiB of PTY output in generation-specific `0600`
+  diagnostic logs. Logs expire after seven days by default, are capped at 32
+  generations per session, and are removed with the session on destroy.
+  Configure 1–3650 days with `pty_log_retention_days` in
+  `~/.duckway/config.yaml`; restart Ducklion explicitly to apply it.
 - Ducklord does not trust Duckway server metadata and does not require Duckway
   server registration. SSH host access is the authorization boundary.
 
@@ -724,7 +727,8 @@ The repository includes a demo script that creates:
 Before presenting the TUI, the script also runs a non-interactive release
 smoke through the real SSH stdio bridge: it restarts a native shell while
 preserving its session ID and advancing to generation 2, proves the replacement
-PTY accepts input, rejects shell `--force`, then ends and destroys the session.
+PTY accepts input, rejects shell `--force`, reads retained generation-2 output
+after end, validates mode-0600 storage, then destroys the session.
 
 Run:
 

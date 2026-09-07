@@ -82,9 +82,10 @@ func TestServerStatusAndSingleInstanceLock(t *testing.T) {
 		t.Fatalf("response=%+v err=%v", response, err)
 	}
 	var result struct {
-		InstanceID string `json:"instance_id"`
+		InstanceID          string `json:"instance_id"`
+		PTYLogRetentionDays int    `json:"pty_log_retention_days"`
 	}
-	if err := json.Unmarshal(response.Result, &result); err != nil || result.InstanceID != string(server.InstanceID()) {
+	if err := json.Unmarshal(response.Result, &result); err != nil || result.InstanceID != string(server.InstanceID()) || result.PTYLogRetentionDays != 7 {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	info, err := os.Stat(server.SocketPath())

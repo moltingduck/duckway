@@ -21,30 +21,32 @@ import (
 )
 
 type RemoteSession struct {
-	Client            string                                `json:"client,omitempty"`
-	InstanceID        string                                `json:"instance_id,omitempty"`
-	SessionID         string                                `json:"session_id,omitempty"`
-	Name              string                                `json:"name"`
-	Kind              string                                `json:"kind,omitempty"`
-	Status            string                                `json:"status"`
-	AgentType         string                                `json:"agent_type"`
-	Cwd               string                                `json:"cwd"`
-	TmuxSession       string                                `json:"tmux_session"`
-	LastLine          string                                `json:"last_line,omitempty"`
-	TailHash          string                                `json:"tail_hash,omitempty"`
-	Group             string                                `json:"group,omitempty"`
-	Updated           bool                                  `json:"updated,omitempty"`
-	Unread            bool                                  `json:"unread,omitempty"`
-	Error             string                                `json:"error,omitempty"`
-	WriterKind        string                                `json:"writer_kind,omitempty"`
-	WriterID          string                                `json:"writer_id,omitempty"`
-	OwnershipEpoch    uint64                                `json:"ownership_epoch,omitempty"`
-	RuntimeGeneration uint64                                `json:"runtime_generation,omitempty"`
-	TaskState         string                                `json:"task_state,omitempty"`
-	AdapterState      string                                `json:"adapter_state,omitempty"`
-	ExitSuccess       *bool                                 `json:"exit_success,omitempty"`
-	ExitReason        string                                `json:"exit_reason,omitempty"`
-	ActivitySequences map[model.NotificationCategory]uint64 `json:"activity_sequences,omitempty"`
+	Client                string                                `json:"client,omitempty"`
+	InstanceID            string                                `json:"instance_id,omitempty"`
+	SessionID             string                                `json:"session_id,omitempty"`
+	Name                  string                                `json:"name"`
+	Kind                  string                                `json:"kind,omitempty"`
+	Status                string                                `json:"status"`
+	AgentType             string                                `json:"agent_type"`
+	Cwd                   string                                `json:"cwd"`
+	TmuxSession           string                                `json:"tmux_session"`
+	LastLine              string                                `json:"last_line,omitempty"`
+	TailHash              string                                `json:"tail_hash,omitempty"`
+	Group                 string                                `json:"group,omitempty"`
+	Updated               bool                                  `json:"updated,omitempty"`
+	Unread                bool                                  `json:"unread,omitempty"`
+	Error                 string                                `json:"error,omitempty"`
+	WriterKind            string                                `json:"writer_kind,omitempty"`
+	WriterID              string                                `json:"writer_id,omitempty"`
+	OwnershipEpoch        uint64                                `json:"ownership_epoch,omitempty"`
+	RuntimeGeneration     uint64                                `json:"runtime_generation,omitempty"`
+	TaskState             string                                `json:"task_state,omitempty"`
+	AdapterState          string                                `json:"adapter_state,omitempty"`
+	ExitSuccess           *bool                                 `json:"exit_success,omitempty"`
+	ExitReason            string                                `json:"exit_reason,omitempty"`
+	ActivitySequences     map[model.NotificationCategory]uint64 `json:"activity_sequences,omitempty"`
+	RetainedOutputBytes   int64                                 `json:"retained_output_bytes,omitempty"`
+	RetainedOutputUntilMS int64                                 `json:"retained_output_until_ms,omitempty"`
 }
 
 type RemoteProject struct {
@@ -364,7 +366,8 @@ func (r *Runner) Sessions(ctx context.Context, c Client, tailLines int) ([]Remot
 		for _, summary := range summaries {
 			session := RemoteSession{Client: c.Name, InstanceID: client.InstanceID(), SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status), AgentType: summary.AgentType,
 				Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
-				TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason}
+				TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason,
+				RetainedOutputBytes: summary.RetainedOutputBytes, RetainedOutputUntilMS: summary.RetainedOutputUntilMS}
 			if summary.Writer != nil {
 				session.WriterKind = string(summary.Writer.Kind)
 				session.WriterID = summary.Writer.ID
@@ -462,7 +465,7 @@ func remoteSessionsFromSummaries(c Client, instanceID string, summaries []protoc
 		session := RemoteSession{Client: c.Name, InstanceID: instanceID, SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status),
 			AgentType: summary.AgentType, Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
 			TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason,
-			ActivitySequences: summary.ActivitySequences}
+			ActivitySequences: summary.ActivitySequences, RetainedOutputBytes: summary.RetainedOutputBytes, RetainedOutputUntilMS: summary.RetainedOutputUntilMS}
 		if summary.Writer != nil {
 			session.WriterKind = string(summary.Writer.Kind)
 			session.WriterID = summary.Writer.ID

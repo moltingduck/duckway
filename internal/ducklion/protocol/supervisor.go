@@ -6,22 +6,24 @@ const MaxAgentPromptBytes = 1 << 20
 const MaxAgentResponseBytes = 256 << 10
 
 type SessionSummary struct {
-	SessionID         string                                `json:"session_id"`
-	Handle            string                                `json:"handle"`
-	Kind              model.SessionKind                     `json:"kind"`
-	AgentType         string                                `json:"agent_type,omitempty"`
-	CWD               string                                `json:"cwd"`
-	Status            model.SessionStatus                   `json:"status"`
-	Writer            *model.Owner                          `json:"writer,omitempty"`
-	OwnershipEpoch    uint64                                `json:"ownership_epoch"`
-	RuntimeGeneration uint64                                `json:"runtime_generation"`
-	TaskState         model.TaskState                       `json:"task_state"`
-	AdapterState      model.AdapterState                    `json:"adapter_state"`
-	ExitSuccess       *bool                                 `json:"exit_success,omitempty"`
-	ExitReason        string                                `json:"exit_reason,omitempty"`
-	ChannelHandle     string                                `json:"channel_handle,omitempty"`
-	ManagementHandle  string                                `json:"management_handle,omitempty"`
-	ActivitySequences map[model.NotificationCategory]uint64 `json:"activity_sequences,omitempty"`
+	SessionID             string                                `json:"session_id"`
+	Handle                string                                `json:"handle"`
+	Kind                  model.SessionKind                     `json:"kind"`
+	AgentType             string                                `json:"agent_type,omitempty"`
+	CWD                   string                                `json:"cwd"`
+	Status                model.SessionStatus                   `json:"status"`
+	Writer                *model.Owner                          `json:"writer,omitempty"`
+	OwnershipEpoch        uint64                                `json:"ownership_epoch"`
+	RuntimeGeneration     uint64                                `json:"runtime_generation"`
+	TaskState             model.TaskState                       `json:"task_state"`
+	AdapterState          model.AdapterState                    `json:"adapter_state"`
+	ExitSuccess           *bool                                 `json:"exit_success,omitempty"`
+	ExitReason            string                                `json:"exit_reason,omitempty"`
+	ChannelHandle         string                                `json:"channel_handle,omitempty"`
+	ManagementHandle      string                                `json:"management_handle,omitempty"`
+	ActivitySequences     map[model.NotificationCategory]uint64 `json:"activity_sequences,omitempty"`
+	RetainedOutputBytes   int64                                 `json:"retained_output_bytes,omitempty"`
+	RetainedOutputUntilMS int64                                 `json:"retained_output_until_ms,omitempty"`
 }
 
 type SessionCreate struct {

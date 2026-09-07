@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
@@ -460,6 +461,19 @@ func TestTUIRenderExplainsImmediateShellLifecycle(t *testing.T) {
 	}
 }
 
+func TestTUIRenderShowsStoppedRetainedOutputWindow(t *testing.T) {
+	until := time.Date(2030, time.January, 2, 15, 4, 0, 0, time.Local).UnixMilli()
+	state := &tuiState{ownerName: "desk", sessions: []ducklord.RemoteSession{{Client: "host", Name: "agent", SessionID: "ABC123",
+		Kind: string(model.KindAgent), Status: string(model.StatusStopped), RetainedOutputBytes: 1536, RetainedOutputUntilMS: until}}}
+	var out bytes.Buffer
+	state.render(&out)
+	for _, want := range []string{"stopped", "retained:1.5 KiB", "until Jan 02 15:04"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("retention header missing %q in %q", want, out.String())
+		}
+	}
+}
+
 func TestTUILifecycleWaitDoesNotBlockNavigationOrQuit(t *testing.T) {
 	state := &tuiState{lifecycleBusy: true, sessions: []ducklord.RemoteSession{{Name: "one"}, {Name: "two"}}}
 	if got := state.handleInput([]byte("j")); got != "select" || state.selected != 1 {
@@ -544,6 +558,29 @@ func TestTUIShowsSavedSnapshotWhileRemoteReadFails(t *testing.T) {
 	state.renderContent(&rendered, 1, 80, 20)
 	if !strings.Contains(rendered.String(), "STALE SNAPSHOT") || !strings.Contains(rendered.String(), "previous agent result") {
 		t.Fatalf("rendered stale snapshot=%q", rendered.String())
+	}
+}
+
+func TestTUIStoppedSessionReplacesSameGenerationSnapshotWithRetainedOutput(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	store := ducklord.SnapshotStore{Root: filepath.Join(t.TempDir(), "sessions")}
+	terminal := ducklord.NewTerminal(2, 40, 10)
+	terminal.Write([]byte("older snapshot\n"))
+	framebuffer := terminal.SnapshotState()
+	payload, err := ducklord.EncodeTerminalRenderState(ducklord.TerminalRenderState{Framebuffer: &framebuffer, RuntimeGeneration: 3, OutputOffset: 14, ResumeCursorValid: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(ducklord.TerminalSnapshot{InstanceID: instance, SessionID: "ABC123", Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{readText: "older snapshot\nfinal retained bytes\n"}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, runner: runner, snapshotStore: store,
+		sessions: []ducklord.RemoteSession{{Client: "host", InstanceID: instance, SessionID: "ABC123", Name: "agent", Status: string(model.StatusStopped),
+			RuntimeGeneration: 3, RetainedOutputBytes: 35, RetainedOutputUntilMS: time.Now().Add(7 * 24 * time.Hour).UnixMilli()}}}
+	state.refreshSelectedOutput(context.Background())
+	if runner.readSession != "ABC123" || !strings.Contains(state.outputText, "final retained bytes") || state.outputStale || strings.Contains(state.outputErr, "press enter") {
+		t.Fatalf("read=%q text=%q stale=%v err=%q", runner.readSession, state.outputText, state.outputStale, state.outputErr)
 	}
 }
 

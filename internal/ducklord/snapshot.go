@@ -18,9 +18,10 @@ import (
 )
 
 const (
-	snapshotMagic      = "DWLDSNP\x00"
-	snapshotVersion    = uint16(1)
-	MaxSnapshotPayload = 4 << 20
+	snapshotMagic           = "DWLDSNP\x00"
+	snapshotVersion         = uint16(1)
+	MaxSnapshotPayload      = 4 << 20 // v1 read compatibility
+	maxSnapshotWritePayload = 1 << 20
 )
 
 type TerminalSnapshot struct {
@@ -54,7 +55,7 @@ func EncodeTerminalRenderState(state TerminalRenderState) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(payload) <= MaxSnapshotPayload {
+		if len(payload) <= maxSnapshotWritePayload {
 			return payload, nil
 		}
 		if state.Framebuffer != nil && len(state.Framebuffer.Scrollback) > 0 {
@@ -68,7 +69,7 @@ func EncodeTerminalRenderState(state TerminalRenderState) ([]byte, error) {
 		}
 		newline := strings.IndexByte(state.Text, '\n')
 		if newline < 0 {
-			return nil, fmt.Errorf("terminal render state current line exceeds 4 MiB")
+			return nil, fmt.Errorf("terminal render state current line exceeds 1 MiB")
 		}
 		state.Text = state.Text[newline+1:]
 		state.Truncated = true
@@ -77,7 +78,7 @@ func EncodeTerminalRenderState(state TerminalRenderState) ([]byte, error) {
 
 func DecodeTerminalRenderState(payload []byte) (TerminalRenderState, error) {
 	if len(payload) > MaxSnapshotPayload {
-		return TerminalRenderState{}, fmt.Errorf("terminal render state exceeds 4 MiB")
+		return TerminalRenderState{}, fmt.Errorf("terminal render state exceeds 1 MiB")
 	}
 	if err := validateSnapshotStructuralBudget(payload); err != nil {
 		return TerminalRenderState{}, err
@@ -178,8 +179,8 @@ func (s SnapshotStore) path(instanceID, sessionID string) (string, error) {
 }
 
 func (s SnapshotStore) Save(snapshot TerminalSnapshot) error {
-	if len(snapshot.Payload) > MaxSnapshotPayload {
-		return fmt.Errorf("terminal snapshot exceeds 4 MiB")
+	if len(snapshot.Payload) > maxSnapshotWritePayload {
+		return fmt.Errorf("terminal snapshot exceeds 1 MiB")
 	}
 	path, err := s.path(snapshot.InstanceID, snapshot.SessionID)
 	if err != nil {

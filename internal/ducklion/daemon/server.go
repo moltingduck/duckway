@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -22,6 +25,7 @@ import (
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 	"github.com/hackerduck/duckway/internal/ducklion/service"
 	"github.com/hackerduck/duckway/internal/ducklion/store"
+	"github.com/hackerduck/duckway/internal/ducklion/supervisor"
 	"golang.org/x/sys/unix"
 )
 
@@ -33,13 +37,16 @@ const (
 	maxOutputSubscriptionsGlobal        = 512
 	maxSessionEventSubscriptionsGlobal  = 32
 	maxSupervisorActivityConnections    = 64
+	defaultRetainedOutputTTL            = 7 * 24 * time.Hour
+	maxRetainedOutputBytesGlobal        = 512 << 20
 )
 
 type Options struct {
-	Root            string
-	SocketPath      string
-	RuntimeLauncher func(string) error
-	SessionCleaner  func(string) error
+	Root              string
+	SocketPath        string
+	RuntimeLauncher   func(string) error
+	SessionCleaner    func(string) error
+	RetainedOutputTTL time.Duration
 }
 
 type Server struct {
@@ -62,6 +69,7 @@ type Server struct {
 	lifecycleWorkers             map[model.SessionID]struct{}
 	lifecycleWorkersWG           sync.WaitGroup
 	lifecycleCoordinatorWG       sync.WaitGroup
+	retainedOutputWG             sync.WaitGroup
 	createMu                     sync.Mutex
 	closing                      bool
 	outputMu                     sync.Mutex
@@ -85,6 +93,9 @@ type Server struct {
 	activitySlots                chan struct{}
 	runtimeLauncher              func(string) error
 	sessionCleaner               func(string) error
+	retainedOutputTTL            time.Duration
+	retainedOutputSweep          chan struct{}
+	retainedOutputCancel         context.CancelFunc
 }
 
 type attentionRate struct {
@@ -221,7 +232,9 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 		connections: make(map[*net.UnixConn]struct{}), ducklords: make(map[string]*net.UnixConn), outputs: make(map[model.SessionID]registeredOutput), controls: make(map[model.SessionID]*controlPeer),
 		outputSubscriptionsBySession: make(map[model.SessionID]int),
 		activitySlots:                make(chan struct{}, maxSupervisorActivityConnections),
-		sequences:                    make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher, sessionCleaner: options.SessionCleaner}
+		sequences:                    make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher, sessionCleaner: options.SessionCleaner,
+		retainedOutputTTL: options.RetainedOutputTTL}
+	server.retainedOutputSweep = make(chan struct{}, 1)
 	server.agentEvents = make(map[string][]protocol.SupervisorAgentEvent)
 	server.lifecycleWorkers = make(map[model.SessionID]struct{})
 	if server.runtimeLauncher == nil {
@@ -230,6 +243,16 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 	if server.sessionCleaner == nil {
 		server.sessionCleaner = os.RemoveAll
 	}
+	if server.retainedOutputTTL <= 0 {
+		server.retainedOutputTTL = defaultRetainedOutputTTL
+	}
+	if err := server.cleanupExpiredRetainedOutput(ctx, time.Now()); err != nil {
+		log.Printf("[ducklion] retained PTY cleanup: %v", err)
+	}
+	sweepCtx, cancelSweep := context.WithCancel(context.Background())
+	server.retainedOutputCancel = cancelSweep
+	server.retainedOutputWG.Add(1)
+	go server.runRetainedOutputSweeper(sweepCtx)
 	server.lifecycleCoordinatorWG.Add(1)
 	go server.runLifecycleCoordinator()
 	return server, nil
@@ -600,6 +623,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 			writeSupervisorError(codec, completeRequest.ID, protocol.ErrStaleGeneration, "runtime state changed before launch failure")
 			return
 		}
+		s.requestRetainedOutputSweep()
 		s.registry.Disconnect(identity)
 		result, _ := json.Marshal(map[string]bool{"recorded": true})
 		_ = codec.Write(protocol.Response{ID: completeRequest.ID, Result: result})
@@ -687,6 +711,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 				writeSupervisorError(codec, request.ID, protocol.ErrStaleGeneration, "runtime state changed before exit")
 				continue
 			}
+			s.requestRetainedOutputSweep()
 			result, _ = json.Marshal(map[string]bool{"recorded": true})
 		default:
 			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "operation is unavailable to supervisors")
@@ -1017,7 +1042,7 @@ func (s *Server) prepareOutputSubscription(request protocol.Request) (*preparedO
 	current, ok := s.outputs[sessionID]
 	s.outputMu.Unlock()
 	if !ok {
-		return nil, &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "session runtime is not connected"}
+		return s.prepareRetainedOutputSubscription(sessionID, *request.RuntimeGeneration, subscription)
 	}
 	if current.identity.Generation != *request.RuntimeGeneration {
 		return nil, &protocol.Error{Code: protocol.ErrStaleGeneration, Message: "runtime generation changed"}
@@ -1051,6 +1076,200 @@ func (s *Server) prepareOutputSubscription(request protocol.Request) (*preparedO
 	metadata := protocol.OutputSubscribeResult{SubscriptionID: subscriptionID, RuntimeID: current.identity.LeaseID, InstanceID: string(s.instanceID), SessionID: string(sessionID),
 		RuntimeGeneration: current.identity.Generation, StartOffset: replay.Offset, EndOffset: end, Gap: replay.Gap}
 	return &preparedOutputSubscription{metadata: metadata, identity: current.identity, replay: replay, stream: stream, cancel: cancelWithQuota, hub: current.hub}, nil
+}
+
+func (s *Server) prepareRetainedOutputSubscription(sessionID model.SessionID, generation uint64, subscription protocol.OutputSubscribe) (*preparedOutputSubscription, *protocol.Error) {
+	session, err := s.state.GetSession(context.Background(), sessionID)
+	if err != nil {
+		return nil, &protocol.Error{Code: protocol.ErrNotFound, Message: "session does not exist"}
+	}
+	if session.RuntimeGeneration != generation {
+		return nil, &protocol.Error{Code: protocol.ErrStaleGeneration, Message: "runtime generation changed"}
+	}
+	if session.Status != model.StatusStopped {
+		return nil, &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "session runtime is reconnecting", Retryable: true}
+	}
+	snapshot, err := supervisor.ReadRetainedOutput(filepath.Join(s.root, "sessions", string(sessionID)), sessionID, generation)
+	if err != nil {
+		return nil, &protocol.Error{Code: protocol.ErrOutputUnavailable, Message: "retained PTY output is unavailable or has expired"}
+	}
+	if !snapshot.UpdatedAt.IsZero() && time.Since(snapshot.UpdatedAt) > s.retainedOutputTTL {
+		_ = removeRetainedOutputPair(supervisor.RetainedOutputPath(filepath.Join(s.root, "sessions", string(sessionID)), generation))
+		return nil, &protocol.Error{Code: protocol.ErrOutputUnavailable, Message: "retained PTY output has expired"}
+	}
+	releaseQuota, quotaError := s.reserveOutputSubscription(sessionID)
+	if quotaError != nil {
+		return nil, quotaError
+	}
+	hub := duckruntime.NewOutputHub(supervisor.RetainedOutputCapacity)
+	if _, err := hub.PublishRecovered(snapshot.StartOffset, snapshot.Data, snapshot.StartOffset != 0); err != nil {
+		releaseQuota()
+		return nil, &protocol.Error{Code: protocol.ErrInternal, Message: "retained PTY output could not be restored"}
+	}
+	offset := subscription.Offset
+	if subscription.TailBytes > 0 {
+		offset = snapshot.StartOffset
+		if snapshot.EndOffset > subscription.TailBytes && snapshot.EndOffset-subscription.TailBytes > offset {
+			offset = snapshot.EndOffset - subscription.TailBytes
+		}
+	}
+	replay, stream, cancel, err := hub.Subscribe(offset, 1)
+	if err != nil {
+		releaseQuota()
+		return nil, &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}
+	}
+	hub.Close()
+	var once sync.Once
+	cancelWithQuota := func() { once.Do(func() { cancel(); releaseQuota() }) }
+	identity := duckruntime.RuntimeIdentity{SessionID: sessionID, Generation: generation, LeaseID: "retained-" + uuid.NewString()}
+	metadata := protocol.OutputSubscribeResult{SubscriptionID: uuid.NewString(), RuntimeID: identity.LeaseID, InstanceID: string(s.instanceID), SessionID: string(sessionID),
+		RuntimeGeneration: generation, StartOffset: replay.Offset, EndOffset: snapshot.EndOffset, Gap: replay.Gap}
+	return &preparedOutputSubscription{metadata: metadata, identity: identity, replay: replay, stream: stream, cancel: cancelWithQuota, hub: hub}, nil
+}
+
+func (s *Server) cleanupExpiredRetainedOutput(ctx context.Context, now time.Time) error {
+	sessions, err := s.state.ListSessions(ctx)
+	if err != nil {
+		return err
+	}
+	type candidate struct {
+		path      string
+		updatedAt time.Time
+		size      int64
+		removable bool
+	}
+	var candidates []candidate
+	var total int64
+	var cleanupErrors []error
+	for _, session := range sessions {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(cleanupErrors, err)...)
+		}
+		dir := filepath.Join(s.root, "sessions", string(session.ID))
+		entries, readErr := os.ReadDir(dir)
+		if errors.Is(readErr, os.ErrNotExist) {
+			continue
+		}
+		if readErr != nil {
+			cleanupErrors = append(cleanupErrors, readErr)
+			continue
+		}
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return errors.Join(append(cleanupErrors, err)...)
+			}
+			if strings.HasPrefix(entry.Name(), ".output-compact-") || strings.HasPrefix(entry.Name(), ".output-meta-") {
+				path := filepath.Join(dir, entry.Name())
+				info, statErr := supervisor.RetainedArtifactInfo(path)
+				if statErr != nil {
+					cleanupErrors = append(cleanupErrors, statErr)
+					continue
+				}
+				total += info.Size()
+				// A live writer may briefly own this path. Leave a grace window;
+				// crash leftovers enter normal TTL/quota eviction afterward.
+				if now.Sub(info.ModTime()) >= 5*time.Minute {
+					candidates = append(candidates, candidate{path: path, updatedAt: info.ModTime(), size: info.Size(), removable: true})
+					if now.Sub(info.ModTime()) > s.retainedOutputTTL {
+						if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+							cleanupErrors = append(cleanupErrors, err)
+						} else {
+							total -= info.Size()
+							candidates[len(candidates)-1].removable = false
+						}
+					}
+				}
+				continue
+			}
+			generation, ok := supervisor.ParseRetainedOutputGeneration(entry.Name())
+			if !ok || entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
+				continue
+			}
+			active := (session.Status == model.StatusRunning || session.Status == model.StatusRecovering) && generation == session.RuntimeGeneration
+			snapshot, snapshotErr := supervisor.RetainedOutputInfo(dir, session.ID, generation)
+			updatedAt := snapshot.UpdatedAt
+			size := int64(snapshot.EndOffset - snapshot.StartOffset)
+			if snapshotErr != nil {
+				info, statErr := supervisor.RetainedOutputArtifactInfo(dir, generation)
+				if statErr != nil {
+					cleanupErrors = append(cleanupErrors, statErr)
+					continue
+				}
+				updatedAt, size = info.ModTime(), info.Size()
+			}
+			total += size
+			path := supervisor.RetainedOutputPath(dir, generation)
+			if active {
+				continue
+			}
+			if updatedAt.IsZero() || now.Sub(updatedAt) <= s.retainedOutputTTL {
+				candidates = append(candidates, candidate{path: path, updatedAt: updatedAt, size: size, removable: true})
+				continue
+			}
+			if err := removeRetainedOutputPair(path); err != nil {
+				cleanupErrors = append(cleanupErrors, err)
+			} else {
+				total -= size
+			}
+		}
+	}
+	if total > maxRetainedOutputBytesGlobal {
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i].updatedAt.Before(candidates[j].updatedAt) })
+		for _, item := range candidates {
+			if total <= maxRetainedOutputBytesGlobal {
+				break
+			}
+			if item.removable {
+				if err := removeRetainedOutputPair(item.path); err != nil {
+					cleanupErrors = append(cleanupErrors, err)
+					continue
+				}
+				total -= item.size
+			}
+		}
+	}
+	return errors.Join(cleanupErrors...)
+}
+
+func removeRetainedOutputPair(path string) error {
+	var errs []error
+	for _, artifact := range []string{path, path + ".json"} {
+		if err := os.Remove(artifact); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (s *Server) requestRetainedOutputSweep() {
+	select {
+	case s.retainedOutputSweep <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Server) runRetainedOutputSweeper(ctx context.Context) {
+	defer s.retainedOutputWG.Done()
+	interval := time.Hour
+	if half := s.retainedOutputTTL / 2; half > 0 && half < interval {
+		interval = half
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			if err := s.cleanupExpiredRetainedOutput(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("[ducklion] retained PTY cleanup: %v", err)
+			}
+		case <-s.retainedOutputSweep:
+			if err := s.cleanupExpiredRetainedOutput(ctx, time.Now()); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("[ducklion] retained PTY cleanup: %v", err)
+			}
+		}
+	}
 }
 
 func (s *Server) reserveOutputSubscription(sessionID model.SessionID) (func(), *protocol.Error) {
@@ -1102,7 +1321,7 @@ func (s *Server) prepareSessionSubscription(request protocol.Request) (*prepared
 	var cancelOnce sync.Once
 	cancel := func() { cancelOnce.Do(func() { cancelContext(); release() }) }
 	metadata := protocol.SessionSnapshotSubscribeResult{SubscriptionID: uuid.NewString(), InstanceID: string(s.instanceID), SnapshotRevision: snapshot.Revision,
-		EarliestRevision: snapshot.EarliestRevision, Sessions: summariesFor(snapshot.Sessions)}
+		EarliestRevision: snapshot.EarliestRevision, Sessions: s.summariesFor(snapshot.Sessions)}
 	if body.AfterRevision > 0 && snapshot.EarliestRevision > 0 && body.AfterRevision+1 < snapshot.EarliestRevision {
 		metadata.Gap = true
 	}
@@ -1205,14 +1424,22 @@ func (s *Server) forgetAttention(identity duckruntime.RuntimeIdentity) {
 	s.attentionMu.Unlock()
 }
 
-func summariesFor(projections []store.SessionProjection) []protocol.SessionSummary {
+func (s *Server) summariesFor(projections []store.SessionProjection) []protocol.SessionSummary {
 	summaries := make([]protocol.SessionSummary, 0, len(projections))
 	for _, projection := range projections {
 		session := projection.Session
-		summaries = append(summaries, protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind, AgentType: session.AgentType,
+		summary := protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind, AgentType: session.AgentType,
 			CWD: session.CWD, Status: session.Status, Writer: session.Writer, OwnershipEpoch: session.OwnershipEpoch, RuntimeGeneration: session.RuntimeGeneration,
 			TaskState: session.TaskState, AdapterState: session.AdapterState, ExitSuccess: session.ExitSuccess, ExitReason: session.ExitReason,
-			ChannelHandle: projection.ChannelHandle, ManagementHandle: projection.ManagementHandle, ActivitySequences: projection.ActivitySequences})
+			ChannelHandle: projection.ChannelHandle, ManagementHandle: projection.ManagementHandle, ActivitySequences: projection.ActivitySequences}
+		if session.Status == model.StatusStopped {
+			if retained, err := supervisor.RetainedOutputInfo(filepath.Join(s.root, "sessions", string(session.ID)), session.ID, session.RuntimeGeneration); err == nil &&
+				time.Since(retained.UpdatedAt) <= s.retainedOutputTTL {
+				summary.RetainedOutputBytes = int64(retained.EndOffset - retained.StartOffset)
+				summary.RetainedOutputUntilMS = retained.UpdatedAt.Add(s.retainedOutputTTL).UnixMilli()
+			}
+		}
+		summaries = append(summaries, summary)
 	}
 	return summaries
 }
@@ -1295,7 +1522,8 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 		if !hasCapability(capabilities, "status") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "status capability was not negotiated"}}
 		}
-		result, _ := json.Marshal(map[string]any{"instance_id": s.instanceID, "protocol_major": protocol.Major, "protocol_minor": protocol.Minor})
+		result, _ := json.Marshal(map[string]any{"instance_id": s.instanceID, "protocol_major": protocol.Major, "protocol_minor": protocol.Minor,
+			"pty_log_retention_days": int(s.retainedOutputTTL / (24 * time.Hour))})
 		return protocol.Response{ID: request.ID, Result: result}
 	case "sessions.list":
 		if !hasCapability(capabilities, "sessions_list") {
@@ -1305,7 +1533,7 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 		if err != nil {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not list sessions", Retryable: true}}
 		}
-		result, _ := json.Marshal(summariesFor(snapshot.Sessions))
+		result, _ := json.Marshal(s.summariesFor(snapshot.Sessions))
 		return protocol.Response{ID: request.ID, Result: result}
 	case "session.create":
 		if role == protocol.RoleDuckwayCC && !hasCapability(capabilities, "session_create_agent") || role != protocol.RoleDuckwayCC && !hasCapability(capabilities, "session_create") {
@@ -1548,6 +1776,9 @@ func (s *Server) Close() error {
 		s.lifecycleMu.Lock()
 		s.closing = true
 		close(s.done)
+		if s.retainedOutputCancel != nil {
+			s.retainedOutputCancel()
+		}
 		s.registry.CloseAll()
 		closeErr = s.listener.Close()
 		s.lifecycleMu.Unlock()
@@ -1557,6 +1788,7 @@ func (s *Server) Close() error {
 		}
 		s.connMu.Unlock()
 		s.handlers.Wait()
+		s.retainedOutputWG.Wait()
 		s.lifecycleCoordinatorWG.Wait()
 		s.lifecycleWorkersWG.Wait()
 		_ = os.Remove(s.socketPath)

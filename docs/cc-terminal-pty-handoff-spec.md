@@ -881,7 +881,7 @@ Status: Decided
 Status: Decided
 
 - Each PTY supervisor keeps a bounded ring buffer containing the most recent
-  4 MiB of raw PTY output for its session.
+  1 MiB of raw PTY output for its session.
 - Output bytes have a monotonically increasing session-runtime offset.
 - Live output frames include the offset needed to detect gaps and resume.
 - Ducklord records the last contiguous offset received for each attachment and
@@ -902,13 +902,15 @@ Status: Decided
 
 - The running agent/application process is the source of truth for its own
   conversation and terminal content.
-- Ducklion's 4 MiB output ring and terminal framebuffer are transient transport
-  and reconnect caches only; they are not a durable transcript.
-- Raw PTY output is not written to Ducklion or Duckway persistent storage.
+- Ducklion's 1 MiB in-memory output ring is the live reconnect cache. The
+  supervisor also writes the same bounded suffix to a generation-specific
+  mode-0600 diagnostic file under the session directory.
+- The retained file is not a durable transcript or task/event authority. It is
+  a best-effort operator aid for reading the last output after a runtime stops.
 - Ducklion daemon restart preserves the transient cache only because the
   independent PTY supervisor remains alive.
-- Supervisor restart, replacement, or upgrade may discard the ring and
-  framebuffer; Ducklord then starts from the new runtime's screen snapshot.
+- A replacement runtime always starts a new output file and offset namespace;
+  old-generation bytes are never replayed as current-generation output.
 - Agent conversation continuity relies on the adapter's native resume
   capability, not on replaying captured PTY bytes.
 - Persistent audit records contain lifecycle, task-state, ownership, yield,
@@ -919,17 +921,19 @@ Status: Decided
 
 Status: Decided
 
-- Ducklion session audit events are retained for seven days by default.
-- Retention duration is configurable through Duckway configuration and is
-  propagated to the independently running Ducklion daemon.
-- Ducklion periodically removes audit events and completed mutation-idempotency
-  records older than the configured retention window.
+- Ducklion retained PTY output is kept for seven days by default.
+- `pty_log_retention_days` in `~/.duckway/config.yaml` accepts 1 through 3650.
+- Runtime exit queues a coalesced cleanup. Ducklion also removes expired,
+  stopped-generation output during daemon startup and in an hourly background
+  sweep. Active current-generation output is never selected for cleanup.
 - Retention cleanup must not delete or alter current session records, ownership
   state, pending or in-progress operations, adapter state, or supervisor
   recovery metadata.
-- Changing retention applies to subsequent cleanup runs and does not require
-  PTY supervisors or agent processes to restart.
-- Raw PTY content remains excluded regardless of the configured retention.
+- Changing retention requires an explicit Duckway/Ducklion restart. Config
+  writes never restart it automatically.
+- Each generation retains at most 1 MiB and each session retains at most 32
+  generations; a 512 MiB daemon-wide budget evicts the oldest stopped output
+  first. `DestroySession` removes the complete session directory.
 
 ## 42. Ducklion state database
 
@@ -948,8 +952,8 @@ Status: Decided
 - The database contains session registry, ownership and epochs, runtime
   generations, pending operations, supervisor recovery metadata, and bounded
   audit events.
-- Raw PTY output, prompts, responses, and environment values are not stored in
-  this database.
+- Raw PTY output is stored only in bounded files beside the database, never in
+  database rows. Prompts, responses, and environment values remain excluded.
 - Ducklion state is separate from the Duckway server database so local PTY
   management remains available across server and client-service restarts.
 
@@ -959,10 +963,8 @@ Status: Decided
 
 - Ducklion reads configuration from the same Duckway configuration source used
   by the local Duckway client services.
-- Ducklion-specific settings live under a `ducklion` namespace; no separate
-  user-managed Ducklion configuration file is introduced.
-- Initial settings include audit retention, Unix socket path override, per-
-  session output-ring size, and default CC PTY rows and columns.
+- The initial Ducklion setting is the top-level `pty_log_retention_days`; no
+  separate user-managed Ducklion configuration file is introduced.
 - Empty path values select secure platform defaults rather than disabling the
   corresponding feature.
 - `duckway config` validates Ducklion settings before writing them and reports
@@ -2428,12 +2430,15 @@ Status: Decided
 
 Status: Decided
 
-- Each detached PTY snapshot file has a maximum payload size of 4 MiB, matching
+- Newly written detached PTY snapshots have a maximum payload size of 1 MiB,
+  matching
   the configured first-version capacity of the per-session raw PTY output ring.
 - The equal limits do not imply equal content: the raw ring contains replayable
   PTY bytes, while the Ducklord snapshot contains parsed terminal screen and
   scrollback state.
-- If serialized snapshot state exceeds 4 MiB, Ducklord always preserves the
+- The decoder continues to accept legacy version-1 snapshots up to 4 MiB so an
+  upgrade does not discard the user's last local view.
+- If newly serialized snapshot state exceeds 1 MiB, Ducklord always preserves the
   current screen, then retains the newest scrollback that fits and evicts the
   oldest complete logical lines.
 - A truncated snapshot records and displays a `TRUNCATED` marker when used as a

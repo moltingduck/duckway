@@ -39,6 +39,7 @@ type Options struct {
 	Rows              uint16
 	Cols              uint16
 	OutputCapacity    int
+	RetainedOutputDir string
 }
 
 type Session struct {
@@ -55,6 +56,7 @@ type Session struct {
 	pty                *os.File
 	cmd                *exec.Cmd
 	output             *duckruntime.OutputHub
+	retainedOutput     *RetainedOutput
 	input              *duckruntime.InputPump
 	captureDone        chan struct{}
 	agentCaptureDone   chan struct{}
@@ -151,8 +153,21 @@ func Start(options Options) (*Session, error) {
 	if adapterWrite != nil {
 		_ = adapterWrite.Close()
 	}
+	var retainedOutput *RetainedOutput
+	if options.RetainedOutputDir != "" {
+		retainedOutput, err = OpenRetainedOutput(options.RetainedOutputDir, options.SessionID, options.RuntimeGeneration)
+		if err != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = ptmx.Close()
+			_ = cmd.Wait()
+			if adapterRead != nil {
+				_ = adapterRead.Close()
+			}
+			return nil, err
+		}
+	}
 	session := &Session{id: options.SessionID, generation: options.RuntimeGeneration, epoch: options.OwnershipEpoch,
-		pty: ptmx, cmd: cmd, output: duckruntime.NewOutputHub(options.OutputCapacity), captureDone: make(chan struct{}),
+		pty: ptmx, cmd: cmd, output: duckruntime.NewOutputHub(options.OutputCapacity), retainedOutput: retainedOutput, captureDone: make(chan struct{}),
 		preparedTasks: make(map[string]preparedAgentTask), committedTasks: make(map[string][32]byte),
 		agentEvents: make(map[string][]protocol.SupervisorAgentEvent), terminalAgentTasks: make(map[string]uint64)}
 	session.agentEventAcks = make(map[string]uint64)
@@ -628,6 +643,9 @@ func (s *Session) Wait() error {
 	s.closed = true
 	s.mu.Unlock()
 	s.input.Close()
+	if s.retainedOutput != nil {
+		_ = s.retainedOutput.Close()
+	}
 	s.output.Close()
 	_ = s.pty.Close()
 	return err
@@ -667,6 +685,12 @@ func (s *Session) capture() {
 		n, err := s.pty.Read(buffer)
 		if n > 0 {
 			s.captureMu.Lock()
+			if s.retainedOutput != nil {
+				if writeErr := s.retainedOutput.Write(buffer[:n]); writeErr != nil {
+					_ = s.retainedOutput.Close()
+					s.retainedOutput = nil
+				}
+			}
 			s.output.Publish(buffer[:n])
 			if offsets := s.attentionDetector.FeedOffsets(buffer[:n]); len(offsets) != 0 {
 				s.attentionMu.Lock()
