@@ -16,19 +16,26 @@ import (
 type ccProvisionPhase string
 
 const (
-	ccProvisionReserved       ccProvisionPhase = "reserved"
-	ccProvisionChannelCreated ccProvisionPhase = "channel_created"
-	ccProvisionSessionCreated ccProvisionPhase = "session_created"
-	ccProvisionMarkerSet      ccProvisionPhase = "marker_set"
-	ccProvisionActive         ccProvisionPhase = "active"
-	ccProvisionReplyDelivered ccProvisionPhase = "reply_delivered"
-	ccProvisionFailed         ccProvisionPhase = "failed"
+	ccProvisionReserved        ccProvisionPhase = "reserved"
+	ccProvisionChannelCreated  ccProvisionPhase = "channel_created"
+	ccProvisionSessionCreated  ccProvisionPhase = "session_created"
+	ccProvisionMarkerSet       ccProvisionPhase = "marker_set"
+	ccProvisionActive          ccProvisionPhase = "active"
+	ccProvisionCleanupPending  ccProvisionPhase = "cleanup_pending"
+	ccProvisionMarkerCleared   ccProvisionPhase = "marker_cleared"
+	ccProvisionCleanupComplete ccProvisionPhase = "cleanup_complete"
+	ccProvisionReplyDelivered  ccProvisionPhase = "reply_delivered"
+	ccProvisionFailed          ccProvisionPhase = "failed"
 )
 
 var errCCProvisionConflict = errors.New("discord command was replayed with different provisioning arguments")
 
 type ccProvisionRecord struct {
 	RequestID        string                   `json:"request_id"`
+	Kind             string                   `json:"kind,omitempty"`
+	SessionID        string                   `json:"session_id,omitempty"`
+	BindIndex        int                      `json:"bind_index,omitempty"`
+	BindItems        []ccBindManifestItem     `json:"bind_items,omitempty"`
 	ManagementHandle string                   `json:"management_handle"`
 	CCID             string                   `json:"cc_id"`
 	Slug             string                   `json:"slug"`
@@ -42,7 +49,20 @@ type ccProvisionRecord struct {
 }
 
 func (r ccProvisionRecord) sameRequest(other ccProvisionRecord) bool {
-	return r.ManagementHandle == other.ManagementHandle && r.CCID == other.CCID && r.Slug == other.Slug && r.Topic == other.Topic && r.CWD == other.CWD
+	if r.Kind != other.Kind || r.SessionID != other.SessionID || r.BindIndex != other.BindIndex || r.ManagementHandle != other.ManagementHandle || r.CCID != other.CCID || r.Slug != other.Slug || r.Topic != other.Topic || r.CWD != other.CWD || len(r.BindItems) != len(other.BindItems) {
+		return false
+	}
+	for i := range r.BindItems {
+		if r.BindItems[i].SessionID != other.BindItems[i].SessionID {
+			return false
+		}
+	}
+	return true
+}
+
+type ccBindManifestItem struct {
+	SessionID string      `json:"session_id"`
+	Result    *BindResult `json:"result,omitempty"`
 }
 
 type ccProvisionStore struct {

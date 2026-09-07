@@ -255,7 +255,7 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 			finishCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			status, detail := "completed", ""
-			requiresDurableReply := payload.Command == "!new" || payload.Command == "!new-confirm" || payload.Command == "!end" || payload.Command == "!destroy" || payload.Command == "!restart"
+			requiresDurableReply := payload.Command == "!new" || payload.Command == "!new-confirm" || payload.Command == "!bind" || payload.Command == "!end" || payload.Command == "!destroy" || payload.Command == "!restart"
 			if delivery.retryable != nil {
 				status = "admitted"
 				detail = delivery.retryable.Error()
@@ -289,7 +289,7 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 	case "!sessions":
 		w.cmdDucklionSessions(ctx, env.Handle, payload.Args)
 	case "!bind":
-		w.cmdDucklionBind(ctx, env.Handle, payload.Args)
+		w.cmdDucklionBind(ctx, env.Handle, payload.RequestID, payload.Args)
 	case "!yield":
 		w.cmdYield(ctx, env.Handle, payload.Args)
 	case "!projects":
@@ -686,97 +686,291 @@ func ownerID(owner *model.Owner) string {
 	return owner.ID
 }
 
-func (w *CCWatch) cmdDucklionBind(ctx context.Context, replyHandle string, args []string) {
+func (w *CCWatch) cmdDucklionBind(ctx context.Context, replyHandle, requestID string, args []string) {
 	client, err := w.dialDucklionCC(replyHandle)
 	if err != nil {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ Ducklion is unavailable: "+err.Error())
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ Ducklion is unavailable: "+err.Error())
 		return
 	}
 	defer client.Close()
 	sessions, err := client.ListSessions()
 	if err != nil {
-		_ = w.api.PostCC(ctx, replyHandle, "❌ Could not list Ducklion sessions: "+err.Error())
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ Could not list Ducklion sessions: "+err.Error())
 		return
 	}
 	byID := make(map[string]protocol.SessionSummary, len(sessions))
 	for _, session := range sessions {
-		byID[session.SessionID] = session
+		byID[strings.ToUpper(session.SessionID)] = session
 	}
-	results := make([]BindResult, 0, len(args))
-	for _, id := range args {
+	normalized := make([]string, 0, len(args))
+	for _, rawID := range args {
+		normalized = append(normalized, strings.ToUpper(strings.TrimSpace(rawID)))
+	}
+	manifest, manifestErr := w.reserveBindManifest(requestID, replyHandle, normalized)
+	if manifestErr != nil {
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ "+manifestErr.Error())
+		return
+	}
+	results := make([]BindResult, 0, len(normalized))
+	var pendingErr error
+	for bindIndex, id := range normalized {
+		if bindIndex < len(manifest.BindItems) && manifest.BindItems[bindIndex].Result != nil {
+			results = append(results, *manifest.BindItems[bindIndex].Result)
+			continue
+		}
 		session, ok := byID[id]
 		result := BindResult{SessionID: id}
 		if !ok || session.Kind != "agent" {
 			result.Error = "managed agent session not found"
 			results = append(results, result)
+			if err := w.saveBindManifestResult(&manifest, bindIndex, result); err != nil {
+				pendingErr = errors.Join(pendingErr, err)
+				break
+			}
 			continue
 		}
 		result.Cwd = session.CWD
 		if session.ChannelHandle != "" {
-			result.AlreadyBound = session.ChannelHandle
-			results = append(results, result)
-			continue
-		}
-		created, createErr := w.api.CreateCCChannel(ctx, discordChannelNameFromCwd(session.Handle), "Ducklion session "+session.SessionID, session.CWD)
-		if createErr != nil {
-			result.Error = "create channel: " + createErr.Error()
-			results = append(results, result)
-			continue
-		}
-		// Reserve routing before activation. From this point, inbound prompts
-		// fail closed even if Ducklion or the local cache is temporarily lost.
-		if markerErr := w.api.SetCCChannelSession(ctx, created.Handle, session.SessionID, session.CWD); markerErr != nil {
-			_ = w.api.ArchiveCCChannel(ctx, created.Handle)
-			result.Error = "reserve channel binding: " + markerErr.Error()
-			results = append(results, result)
-			continue
-		}
-		// The server marker is authoritative; a local cache failure must not
-		// strand the reservation before Ducklion activation.
-		_ = w.sessions.Set(created.Handle, session.SessionID)
-		operationID := uuid.NewString()
-		binding, bindErr := client.BindDiscordSession(ctx, operationID, session.SessionID, created.Handle)
-		if bindErr != nil {
-			// A transport failure may mean the commit succeeded and only its
-			// response was lost. Reconnect and reconcile before any cleanup.
-			if check, dialErr := w.dialDucklionCC(replyHandle); dialErr == nil {
-				// Retry the same mutation ID first: Ducklion either replays a
-				// committed result or performs the request that was never received.
-				binding, bindErr = check.BindDiscordSession(ctx, operationID, session.SessionID, created.Handle)
-				committed, lookupErr := check.DiscordBindingForSession(ctx, session.SessionID)
-				_ = check.Close()
-				if bindErr == nil {
-					committed, lookupErr = binding, nil
-				}
-				if lookupErr == nil && committed.ChannelHandle == created.Handle {
-					binding, bindErr = committed, nil
-				} else if isAuthoritativeDucklionError(bindErr) && (isDucklionNotFound(lookupErr) || lookupErr == nil && committed.ChannelHandle != created.Handle) {
-					_ = w.api.SetCCChannelSession(ctx, created.Handle, "", session.CWD)
-					_ = w.api.ArchiveCCChannel(ctx, created.Handle)
-					if lookupErr == nil && committed.ChannelHandle != "" {
-						result.AlreadyBound = committed.ChannelHandle
-					}
-				}
+			if session.ManagementHandle != replyHandle {
+				result.Error = "session is already bound through another management channel"
+			} else {
+				result.AlreadyBound = session.ChannelHandle
+				w.reconcileCommittedBind(requestID, session)
 			}
-			if bindErr != nil {
-				if result.AlreadyBound != "" {
-					results = append(results, result)
-					continue
-				}
-				result.Error = "binding outcome unknown; channel was preserved and prompts will remain queued: " + bindErr.Error()
-				results = append(results, result)
-				continue
-			}
-		}
-		if cacheErr := w.sessions.Set(binding.ChannelHandle, binding.SessionID); cacheErr != nil {
-			result.Error = "binding activated, but local cache could not be written: " + cacheErr.Error()
 			results = append(results, result)
+			if err := w.saveBindManifestResult(&manifest, bindIndex, result); err != nil {
+				pendingErr = errors.Join(pendingErr, err)
+				break
+			}
 			continue
 		}
-		result.Channel, result.Name = binding.ChannelHandle, created.Name
+		bound, retryErr := w.bindDucklionSession(ctx, client, replyHandle, requestID, bindIndex, session)
+		result = bound
+		if retryErr != nil {
+			pendingErr = errors.Join(pendingErr, retryErr)
+		}
 		results = append(results, result)
+		if retryErr == nil {
+			if err := w.saveBindManifestResult(&manifest, bindIndex, result); err != nil {
+				pendingErr = errors.Join(pendingErr, err)
+				break
+			}
+		}
 	}
-	_ = w.api.PostCC(ctx, replyHandle, formatBindReport(results))
+	if pendingErr != nil {
+		markCommandRetryable(ctx, pendingErr)
+		return
+	}
+	if err := w.postCommandReply(ctx, replyHandle, requestID, formatBindReport(results)); err == nil {
+		w.markBindRepliesDelivered(requestID, results)
+	}
+}
+
+func (w *CCWatch) reserveBindManifest(requestID, managementHandle string, ids []string) (ccProvisionRecord, error) {
+	if requestID == "" || w.provisions == nil {
+		return ccProvisionRecord{}, nil
+	}
+	items := make([]ccBindManifestItem, len(ids))
+	for i, id := range ids {
+		items[i].SessionID = id
+	}
+	return w.provisions.Reserve(ccProvisionRecord{RequestID: requestID, Kind: "bind_manifest", ManagementHandle: managementHandle, BindItems: items})
+}
+
+func (w *CCWatch) saveBindManifestResult(manifest *ccProvisionRecord, index int, result BindResult) error {
+	if manifest == nil || manifest.RequestID == "" || w.provisions == nil || index < 0 || index >= len(manifest.BindItems) {
+		return nil
+	}
+	copy := result
+	manifest.BindItems[index].Result = &copy
+	if err := w.provisions.Save(*manifest); err != nil {
+		return fmt.Errorf("persist bind result %d: %w", index, err)
+	}
+	return nil
+}
+
+func (w *CCWatch) reconcileCommittedBind(requestID string, session protocol.SessionSummary) {
+	if requestID == "" || w.provisions == nil {
+		return
+	}
+	wid := requestID + ":bind:" + session.SessionID
+	for _, record := range w.provisions.Pending() {
+		if record.RequestID != wid || record.Kind != "bind" || record.Channel == nil || record.Channel.Handle != session.ChannelHandle {
+			continue
+		}
+		record.Phase, record.LastError = ccProvisionActive, ""
+		_ = w.provisions.Save(record)
+		_ = w.sessions.Set(session.ChannelHandle, session.SessionID)
+		return
+	}
+}
+
+func (w *CCWatch) bindDucklionSession(ctx context.Context, client *duckliondaemon.Client, managementHandle, requestID string, bindIndex int, session protocol.SessionSummary) (BindResult, error) {
+	result := BindResult{SessionID: session.SessionID, Cwd: session.CWD}
+	workflowID := requestID + ":bind:" + session.SessionID
+	if requestID == "" {
+		workflowID = uuid.NewString()
+	}
+	record := ccProvisionRecord{RequestID: workflowID, Kind: "bind", SessionID: session.SessionID, BindIndex: bindIndex, ManagementHandle: managementHandle, Slug: session.Handle, CWD: session.CWD, Session: &session}
+	if w.provisions != nil {
+		var err error
+		record, err = w.provisions.Reserve(record)
+		if err != nil {
+			result.Error = err.Error()
+			return result, nil
+		}
+		if record.Phase == ccProvisionFailed {
+			result.Error = record.LastError
+			return result, nil
+		}
+		if (record.Phase == ccProvisionActive || record.Phase == ccProvisionReplyDelivered) && record.Channel != nil {
+			result.Channel, result.Name = record.Channel.Handle, record.Channel.Name
+			return result, nil
+		}
+	}
+	created := record.Channel
+	if created == nil {
+		var err error
+		created, err = w.api.CreateCCChannelIdempotent(ctx, workflowID, discordChannelNameFromCwd(session.Handle), "Ducklion session "+session.SessionID, session.CWD)
+		if err != nil {
+			record.LastError = err.Error()
+			if w.provisions != nil {
+				_ = w.provisions.Save(record)
+			}
+			result.Error = "create channel outcome pending: " + err.Error()
+			return result, err
+		}
+		record.Channel, record.Phase = created, ccProvisionChannelCreated
+		if w.provisions != nil {
+			if err := w.provisions.Save(record); err != nil {
+				result.Error = "persist created channel: " + err.Error()
+				return result, err
+			}
+		}
+	}
+	if record.Phase == ccProvisionChannelCreated {
+		if err := w.api.SetCCChannelSession(ctx, created.Handle, session.SessionID, session.CWD); err != nil {
+			record.LastError = err.Error()
+			if w.provisions != nil {
+				_ = w.provisions.Save(record)
+			}
+			result.Error = "routing reservation outcome pending: " + err.Error()
+			return result, err
+		}
+		record.Phase = ccProvisionMarkerSet
+		if w.provisions != nil {
+			if err := w.provisions.Save(record); err != nil {
+				result.Error = "persist routing reservation: " + err.Error()
+				return result, err
+			}
+		}
+	}
+	_ = w.sessions.Set(created.Handle, session.SessionID)
+	bindID := "cc-bind:" + workflowID
+	binding, bindErr := client.BindDiscordSession(ctx, bindID, session.SessionID, created.Handle)
+	if bindErr != nil && !isAuthoritativeDucklionError(bindErr) {
+		if check, dialErr := w.dialDucklionCC(managementHandle); dialErr == nil {
+			binding, bindErr = check.BindDiscordSession(ctx, bindID, session.SessionID, created.Handle)
+			committed, lookupErr := check.DiscordBindingForSession(ctx, session.SessionID)
+			_ = check.Close()
+			if bindErr == nil {
+				committed, lookupErr = binding, nil
+			}
+			if lookupErr == nil && committed.ChannelHandle == created.Handle {
+				binding, bindErr = committed, nil
+			}
+		}
+	}
+	if bindErr != nil {
+		record.LastError = bindErr.Error()
+		if isAuthoritativeDucklionError(bindErr) {
+			record.Phase = ccProvisionCleanupPending
+			if w.provisions != nil {
+				_ = w.provisions.Save(record)
+			}
+			if cleanupErr := w.cleanupBindProvision(ctx, &record); cleanupErr != nil {
+				result.Error = "bind rejected; cleanup pending: " + cleanupErr.Error()
+				return result, cleanupErr
+			}
+			result.Error = "bind rejected: " + bindErr.Error()
+			return result, nil
+		}
+		if w.provisions != nil {
+			_ = w.provisions.Save(record)
+		}
+		result.Error = "binding outcome unknown; channel was preserved for recovery: " + bindErr.Error()
+		return result, bindErr
+	}
+	if err := w.sessions.Set(binding.ChannelHandle, binding.SessionID); err != nil {
+		result.Error = "binding active; cache repair pending: " + err.Error()
+		return result, err
+	}
+	record.Phase, record.LastError = ccProvisionActive, ""
+	if w.provisions != nil {
+		if err := w.provisions.Save(record); err != nil {
+			result.Error = "binding active; workflow repair pending: " + err.Error()
+			return result, err
+		}
+	}
+	result.Channel, result.Name = binding.ChannelHandle, created.Name
+	return result, nil
+}
+
+func (w *CCWatch) cleanupBindProvision(ctx context.Context, record *ccProvisionRecord) error {
+	if record == nil || record.Channel == nil {
+		return fmt.Errorf("bind cleanup has no channel identity")
+	}
+	if record.Phase == ccProvisionCleanupPending {
+		if err := w.api.SetCCChannelSession(ctx, record.Channel.Handle, "", record.CWD); err != nil {
+			return fmt.Errorf("clear routing marker: %w", err)
+		}
+		record.Phase = ccProvisionMarkerCleared
+		if w.provisions != nil {
+			if err := w.provisions.Save(*record); err != nil {
+				return fmt.Errorf("persist cleared marker: %w", err)
+			}
+		}
+	}
+	if record.Phase == ccProvisionMarkerCleared {
+		if err := w.api.ArchiveCCChannel(ctx, record.Channel.Handle); err != nil {
+			return fmt.Errorf("archive incomplete channel: %w", err)
+		}
+		record.Phase = ccProvisionCleanupComplete
+		if w.provisions != nil {
+			if err := w.provisions.Save(*record); err != nil {
+				return fmt.Errorf("persist completed cleanup: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func (w *CCWatch) markBindRepliesDelivered(requestID string, results []BindResult) {
+	if requestID == "" || w.provisions == nil {
+		return
+	}
+	for _, result := range results {
+		workflowID := requestID + ":bind:" + result.SessionID
+		for _, record := range w.provisions.Pending() {
+			if record.RequestID == workflowID && (record.Phase == ccProvisionActive || record.Phase == ccProvisionCleanupComplete) {
+				if record.Phase == ccProvisionActive {
+					record.Phase = ccProvisionReplyDelivered
+				} else {
+					record.Phase = ccProvisionFailed
+				}
+				_ = w.provisions.Save(record)
+			}
+		}
+	}
+	// The parent is terminalized last. A crash can leave replay-safe children
+	// pending, but never leaves children without the manifest that owns them.
+	for _, record := range w.provisions.Pending() {
+		if record.RequestID == requestID && record.Kind == "bind_manifest" {
+			record.Phase = ccProvisionReplyDelivered
+			_ = w.provisions.Save(record)
+			break
+		}
+	}
 }
 
 func isDucklionNotFound(err error) bool {
@@ -1216,9 +1410,22 @@ func (w *CCWatch) recoverCCProvisions(ctx context.Context) {
 	if w.provisions == nil {
 		return
 	}
+	bindGroups := make(map[string][]ccProvisionRecord)
+	bindManifests := make(map[string]ccProvisionRecord)
 	for _, record := range w.provisions.Pending() {
 		if ctx.Err() != nil {
 			return
+		}
+		if record.Kind == "bind" {
+			requestID := strings.TrimSuffix(record.RequestID, ":bind:"+record.SessionID)
+			key := record.ManagementHandle + "\x00" + requestID
+			bindGroups[key] = append(bindGroups[key], record)
+			continue
+		}
+		if record.Kind == "bind_manifest" {
+			key := record.ManagementHandle + "\x00" + record.RequestID
+			bindManifests[key] = record
+			continue
 		}
 		recoveryCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		created, session, err := w.createProvisionedProjectSession(recoveryCtx, record.ManagementHandle, record.CCID, record.RequestID, record.Slug, record.Topic, record.CWD)
@@ -1239,6 +1446,136 @@ func (w *CCWatch) recoverCCProvisions(ctx context.Context) {
 			log.Printf("[cc-watch] recover !new %s persist reply: %v", record.RequestID, err)
 		}
 	}
+	for key, manifest := range bindManifests {
+		w.recoverBindProvisions(ctx, manifest, bindGroups[key])
+	}
+}
+
+func (w *CCWatch) recoverBindProvisions(ctx context.Context, manifest ccProvisionRecord, records []ccProvisionRecord) {
+	if len(manifest.BindItems) == 0 {
+		return
+	}
+	children := make(map[int]ccProvisionRecord, len(records))
+	for _, record := range records {
+		children[record.BindIndex] = record
+	}
+	results := make([]BindResult, 0, len(manifest.BindItems))
+	for index, item := range manifest.BindItems {
+		if item.Result != nil {
+			results = append(results, *item.Result)
+			continue
+		}
+		record, ok := children[index]
+		if !ok || record.SessionID != item.SessionID {
+			return
+		}
+		result, ready := w.recoverOneBindProvision(ctx, record)
+		if !ready {
+			return
+		}
+		results = append(results, result)
+		if err := w.saveBindManifestResult(&manifest, index, result); err != nil {
+			log.Printf("[cc-watch] recover !bind %s result checkpoint: %v", manifest.RequestID, err)
+			return
+		}
+	}
+	postCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	err := w.postCommandReply(postCtx, manifest.ManagementHandle, manifest.RequestID, formatBindReport(results))
+	cancel()
+	if err != nil {
+		log.Printf("[cc-watch] recover !bind %s reply: %v", manifest.RequestID, err)
+		return
+	}
+	w.markBindRepliesDelivered(manifest.RequestID, results)
+}
+
+func (w *CCWatch) recoverOneBindProvision(ctx context.Context, record ccProvisionRecord) (BindResult, bool) {
+	result := BindResult{SessionID: record.SessionID, Cwd: record.CWD}
+	if record.Phase == ccProvisionCleanupPending || record.Phase == ccProvisionMarkerCleared {
+		if err := w.cleanupBindProvision(ctx, &record); err != nil {
+			log.Printf("[cc-watch] recover !bind %s cleanup: %v", record.RequestID, err)
+			return result, false
+		}
+		result.Error = "bind rejected: " + record.LastError
+		return result, true
+	}
+	if record.Phase == ccProvisionCleanupComplete {
+		result.Error = "bind rejected: " + record.LastError
+		return result, true
+	}
+	client, err := w.dialDucklionCC(record.ManagementHandle)
+	if err != nil {
+		log.Printf("[cc-watch] recover !bind %s: %v", record.RequestID, err)
+		return result, false
+	}
+	defer client.Close()
+	sessions, err := client.ListSessions()
+	if err != nil {
+		log.Printf("[cc-watch] recover !bind %s inventory: %v", record.RequestID, err)
+		return result, false
+	}
+	var session protocol.SessionSummary
+	for _, candidate := range sessions {
+		if strings.EqualFold(candidate.SessionID, record.SessionID) {
+			session = candidate
+			break
+		}
+	}
+	if session.SessionID == "" {
+		record.LastError = "session no longer exists"
+		if record.Channel == nil {
+			record.Phase = ccProvisionCleanupComplete
+			_ = w.provisions.Save(record)
+			result.Error = "bind rejected: " + record.LastError
+			return result, true
+		}
+		record.Phase = ccProvisionCleanupPending
+		_ = w.provisions.Save(record)
+		if err := w.cleanupBindProvision(ctx, &record); err != nil {
+			log.Printf("[cc-watch] recover !bind %s cleanup: %v", record.RequestID, err)
+			return result, false
+		}
+		result.Error = "bind rejected: " + record.LastError
+		return result, true
+	}
+	requestID := strings.TrimSuffix(record.RequestID, ":bind:"+record.SessionID)
+	result.SessionID, result.Cwd = session.SessionID, session.CWD
+	if session.ChannelHandle != "" {
+		if session.ManagementHandle != record.ManagementHandle || record.Channel == nil || record.Channel.Handle != session.ChannelHandle {
+			record.LastError = "session is bound to a different channel or management principal"
+			if record.Channel == nil {
+				record.Phase = ccProvisionCleanupComplete
+				_ = w.provisions.Save(record)
+				result.Error = "bind rejected: " + record.LastError
+				return result, true
+			}
+			record.Phase = ccProvisionCleanupPending
+			_ = w.provisions.Save(record)
+			if err := w.cleanupBindProvision(ctx, &record); err != nil {
+				log.Printf("[cc-watch] recover !bind %s cleanup: %v", record.RequestID, err)
+				return result, false
+			}
+			result.Error = "bind rejected: " + record.LastError
+			return result, true
+		}
+		w.reconcileCommittedBind(requestID, session)
+		result.Channel, result.Name = record.Channel.Handle, record.Channel.Name
+	} else {
+		if record.Phase == ccProvisionActive {
+			record.Phase = ccProvisionMarkerSet
+			_ = w.provisions.Save(record)
+		}
+		var retryErr error
+		result, retryErr = w.bindDucklionSession(ctx, client, record.ManagementHandle, requestID, record.BindIndex, session)
+		if retryErr != nil {
+			log.Printf("[cc-watch] recover !bind %s: %v", record.RequestID, retryErr)
+			return result, false
+		}
+		if result.Error != "" {
+			return result, true
+		}
+	}
+	return result, true
 }
 
 func (w *CCWatch) provisionProject(ctx context.Context, managementHandle, ccID, requestID, slug, topic, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
@@ -1522,12 +1859,12 @@ func formatBindReport(rs []BindResult) string {
 		for _, r := range ok {
 			fmt.Fprintf(&b, "• `%s` → **#%s** (`%s`)  cwd: `%s`\n", r.SessionID, r.Name, r.Channel, r.Cwd)
 		}
-		b.WriteString("Send a message in the new channel — claude will resume with the existing history.\n")
+		b.WriteString("The new channel is read-only until it owns the session. Run `!yield` there for an immediate transfer, or `!yield -w` to wait for the current task to finish.\n")
 	}
 	if len(dup) > 0 {
 		b.WriteString("\nℹ️ **Already bound:**\n")
 		for _, r := range dup {
-			fmt.Fprintf(&b, "• `%s` → `%s` (use that channel directly)\n", r.SessionID, r.AlreadyBound)
+			fmt.Fprintf(&b, "• `%s` → `%s` (open it read-only, or use `!yield` / `!yield -w` there)\n", r.SessionID, r.AlreadyBound)
 		}
 	}
 	if len(fail) > 0 {

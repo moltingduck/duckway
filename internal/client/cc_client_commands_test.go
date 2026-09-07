@@ -43,6 +43,8 @@ type fakeServer struct {
 	failDeliveryOnce     bool
 	failArchiveOnce      bool
 	failDeleteOnce       bool
+	failMarkerClearOnce  bool
+	markerClears         int
 	srv                  *httptest.Server
 }
 
@@ -64,6 +66,21 @@ func newFakeServer(t *testing.T) *fakeServer {
 				"handle": handle, "name": body["name"], "topic": "", "cwd": body["cwd"], "kind": "task",
 			})
 		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/session"):
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.mu.Lock()
+			failClear := body["session_id"] == "" && f.failMarkerClearOnce
+			if body["session_id"] == "" {
+				f.markerClears++
+			}
+			if failClear {
+				f.failMarkerClearOnce = false
+			}
+			f.mu.Unlock()
+			if failClear {
+				http.Error(w, "marker clear unavailable", http.StatusBadGateway)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/archive"):
 			f.mu.Lock()
@@ -241,6 +258,18 @@ func (f *fakeServer) failNextChannelDelete() {
 	f.mu.Lock()
 	f.failDeleteOnce = true
 	f.mu.Unlock()
+}
+
+func (f *fakeServer) failNextMarkerClear() {
+	f.mu.Lock()
+	f.failMarkerClearOnce = true
+	f.mu.Unlock()
+}
+
+func (f *fakeServer) markerClearCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.markerClears
 }
 
 // stubWatch wires a CCWatch with a fake server + temp config + temp
@@ -423,6 +452,133 @@ func TestIsDiscordSnowflake(t *testing.T) {
 		if got := isDiscordSnowflake(tt.id); got != tt.want {
 			t.Fatalf("isDiscordSnowflake(%q) = %v, want %v", tt.id, got, tt.want)
 		}
+	}
+}
+
+func TestRecoverBindCleanupRetriesMarkerAndArchiveBeforeTerminalFailure(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	if _, err := w.provisions.Reserve(ccProvisionRecord{RequestID: "request-1", Kind: "bind_manifest", ManagementHandle: "dwch_mgmt", BindItems: []ccBindManifestItem{{SessionID: "ABC123"}}}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := w.provisions.Reserve(ccProvisionRecord{RequestID: "request-1:bind:ABC123", Kind: "bind", SessionID: "ABC123", ManagementHandle: "dwch_mgmt",
+		Slug: "work", CWD: "/work", Channel: &CreateCCChannelResult{Handle: "dwch_orphan", Name: "work"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Phase, record.LastError = ccProvisionCleanupPending, "authoritative binding conflict"
+	if err := w.provisions.Save(record); err != nil {
+		t.Fatal(err)
+	}
+	storeDir := filepath.Dir(w.provisions.path)
+
+	fake.failNextMarkerClear()
+	fake.failNextArchive()
+	w.recoverCCProvisions(context.Background())
+	if pending := w.provisions.Pending(); bindPhase(pending) != ccProvisionCleanupPending {
+		t.Fatalf("after marker failure=%+v", pending)
+	}
+
+	w.provisions = newCCProvisionStore(storeDir)
+	w.recoverCCProvisions(context.Background())
+	if pending := w.provisions.Pending(); bindPhase(pending) != ccProvisionMarkerCleared {
+		t.Fatalf("after archive failure=%+v", pending)
+	}
+
+	w.provisions = newCCProvisionStore(storeDir)
+	w.recoverCCProvisions(context.Background())
+	if pending := w.provisions.Pending(); len(pending) != 0 {
+		t.Fatalf("cleanup remained pending=%+v", pending)
+	}
+	if fake.markerClearCount() != 2 || len(fake.snapshotArchives()) != 2 {
+		t.Fatalf("marker clears=%d archives=%v", fake.markerClearCount(), fake.snapshotArchives())
+	}
+	messages := fake.snapshotMessages()
+	if len(messages) != 1 || !strings.Contains(messages[0]["content"], "authoritative binding conflict") {
+		t.Fatalf("terminal cleanup reply=%v", messages)
+	}
+}
+
+func bindPhase(records []ccProvisionRecord) ccProvisionPhase {
+	for _, record := range records {
+		if record.Kind == "bind" {
+			return record.Phase
+		}
+	}
+	return ""
+}
+
+func TestRecoverMultiBindPostsOneCompleteReplyBeforeTerminalizing(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	if _, err := w.provisions.Reserve(ccProvisionRecord{RequestID: "request-many", Kind: "bind_manifest", ManagementHandle: "dwch_mgmt",
+		BindItems: []ccBindManifestItem{{SessionID: "AAA111"}, {SessionID: "BBB222"}}}); err != nil {
+		t.Fatal(err)
+	}
+	items := []struct {
+		id    string
+		index int
+	}{{"AAA111", 0}, {"BBB222", 1}}
+	reserveTerminal := func(item struct {
+		id    string
+		index int
+	}) {
+		record, err := w.provisions.Reserve(ccProvisionRecord{RequestID: "request-many:bind:" + item.id, Kind: "bind", SessionID: item.id, BindIndex: item.index,
+			ManagementHandle: "dwch_mgmt", Slug: item.id, CWD: "/work", Channel: &CreateCCChannelResult{Handle: "dwch_" + item.id, Name: item.id}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		record.Phase, record.LastError = ccProvisionCleanupComplete, "rejected "+item.id
+		if err := w.provisions.Save(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reserveTerminal(items[0])
+	w.recoverCCProvisions(context.Background())
+	if messages := fake.snapshotMessages(); len(messages) != 0 {
+		t.Fatalf("incomplete manifest produced early reply: %v", messages)
+	}
+	reserveTerminal(items[1])
+	w.recoverCCProvisions(context.Background())
+	messages := fake.snapshotMessages()
+	if len(messages) != 1 {
+		t.Fatalf("recovery replies=%v", messages)
+	}
+	content := messages[0]["content"]
+	if !strings.Contains(content, "AAA111") || !strings.Contains(content, "BBB222") || strings.Index(content, "AAA111") > strings.Index(content, "BBB222") {
+		t.Fatalf("aggregate recovery reply=%q", content)
+	}
+	if pending := w.provisions.Pending(); len(pending) != 0 {
+		t.Fatalf("records terminalized before/without aggregate reply: %+v", pending)
+	}
+}
+
+func TestSaveBindManifestResultReportsCheckpointFailure(t *testing.T) {
+	fake := newFakeServer(t)
+	w := stubWatch(t, t.TempDir(), fake)
+	manifest, err := w.reserveBindManifest("request-checkpoint", "dwch_mgmt", []string{"BAD111", "OK222"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPath := w.provisions.path
+	blockedPath := filepath.Join(filepath.Dir(originalPath), "blocked-directory")
+	if err := os.Mkdir(blockedPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	w.provisions.path = blockedPath
+	if err := w.saveBindManifestResult(&manifest, 0, BindResult{SessionID: "BAD111", Error: "not found"}); err == nil {
+		t.Fatal("checkpoint failure was ignored")
+	}
+	w.provisions = newCCProvisionStore(filepath.Dir(originalPath))
+	reloaded, err := w.reserveBindManifest("request-checkpoint", "dwch_mgmt", []string{"BAD111", "OK222"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.BindItems[0].Result != nil {
+		t.Fatalf("failed checkpoint appeared durable: %+v", reloaded.BindItems)
+	}
+	if err := w.saveBindManifestResult(&reloaded, 0, BindResult{SessionID: "BAD111", Error: "not found"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

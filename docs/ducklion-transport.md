@@ -245,9 +245,41 @@ changes writer or ownership epoch.
 The management-channel `!sessions` command reads Ducklion inventory and shows
 only unbound agent sessions. `!bind <session-id>` creates the Discord task
 channel, calls the idempotent `session.bind_discord` RPC, then caches the six
-character session ID locally for offline preflight. If activation fails, the
-new Discord channel is archived. Repeating a bind returns the existing channel
-instead of creating another one.
+character session ID locally for offline preflight. IDs are normalized
+case-insensitively before lookup. A repeat from the creating management channel
+returns the existing channel; another management channel receives a conflict
+without changing the binding. If activation fails, the
+new Discord channel is archived only after an authoritative rejection.
+
+`!bind` uses the same on-disk provisioning journal as `!new`, with a command
+manifest plus a separate record per requested session. The manifest is written
+before any channel side effect and records every normalized ID in input order,
+including terminal not-found, already-bound, and conflict results:
+
+```text
+reserved -> channel_created -> marker_set -> active -> reply_delivered
+                                      \
+                                       -> cleanup_pending -> marker_cleared
+                                          -> cleanup_complete -> failed
+```
+
+The workflow key and Ducklion mutation ID derive from the durable Discord
+request ID plus the canonical session ID. Channel creation carries that same
+idempotency key. A crash or lost response therefore resumes the stored channel
+and mutation rather than creating another one. Ambiguous Discord/Ducklion
+outcomes preserve the fail-closed channel marker and return the inbox item to
+`admitted`; startup recovery reconciles the binding before sending one
+idempotent final reply. Authoritative rejection clears and archives only the
+incomplete channel. Marker clearing and archival are separately checkpointed;
+cleanup remains recoverable until both succeed. Multi-session recovery waits
+until every manifest item has either a durable terminal result or a recoverable
+child workflow, then emits one ordered command reply before any record becomes
+terminal. An incomplete subset never consumes the reply idempotency key.
+Every manifest-result checkpoint is fail-closed: a filesystem write error stops
+the command before further side effects and leaves the inbox admitted. Recovery
+also stops before replying if a result checkpoint cannot be persisted. Child
+records are terminalized before the parent manifest so a crash cannot orphan
+pending children without their recovery owner.
 
 Inside the bound task channel, `!yield` and `!yield -w` resolve
 `binding.current`, fetch current fences, and invoke `session.yield` as the CC

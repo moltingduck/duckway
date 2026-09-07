@@ -19,6 +19,150 @@ import (
 	ducklionstore "github.com/hackerduck/duckway/internal/ducklion/store"
 )
 
+func TestDiscordBindExistingDucklionSessionE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and starts the real ducklion daemon")
+	}
+	_, source, _, _ := runtime.Caller(0)
+	repo := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
+	configDir := t.TempDir()
+	binary := filepath.Join(t.TempDir(), "ducklion")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/ducklion")
+	build.Dir = repo
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build ducklion: %v\n%s", err, output)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	command := exec.CommandContext(ctx, binary, "daemon")
+	command.Env = append(os.Environ(), "DUCKWAY_CONFIG_DIR="+configDir)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cancel(); _ = command.Wait() }()
+	socket := filepath.Join(configDir, "ducklion", "ducklion.sock")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ducklion daemon socket did not appear")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	terminal, err := duckliondaemon.Dial(socket, "laptop-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	session, err := terminal.CreateSession(context.Background(), protocol.SessionCreate{Handle: "中文工作階段", Kind: model.KindAgent,
+		AgentType: "fixture", CWD: configDir, Command: []string{"sh", "-c", `while IFS= read -r value; do printf '%s\n' "$value"; done`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fake := newFakeServer(t)
+	watch := stubWatch(t, configDir, fake)
+	watch.configDir = configDir
+	watch.cmdDucklionBind(context.Background(), "dwch_mgmt", "discord-bind-1", []string{strings.ToLower(session.SessionID)})
+	creates := fake.snapshotCreates()
+	if len(creates) != 1 {
+		t.Fatalf("channel creates=%v", creates)
+	}
+	messages := fake.snapshotMessages()
+	if len(messages) != 1 || !strings.Contains(messages[0]["content"], "read-only") || !strings.Contains(messages[0]["content"], "`!yield`") {
+		t.Fatalf("bind success reply=%v", messages)
+	}
+
+	management, err := duckliondaemon.DialCC(socket, "dwch_mgmt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := management.DiscordBindingForSession(context.Background(), session.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.ChannelHandle != "dwch_test1" || binding.ManagementHandle != "dwch_mgmt" {
+		t.Fatalf("binding=%+v", binding)
+	}
+	listed, err := management.ListSessions()
+	if err != nil || len(listed) != 1 || listed[0].Writer == nil || listed[0].Writer.Kind != model.OwnerTerminal || listed[0].Writer.ID != "laptop-a" {
+		t.Fatalf("bind changed writer: sessions=%+v err=%v", listed, err)
+	}
+	_ = management.Close()
+
+	watch.cmdDucklionBind(context.Background(), "dwch_mgmt", "discord-bind-1", []string{session.SessionID})
+	if creates = fake.snapshotCreates(); len(creates) != 1 {
+		t.Fatalf("repeat bind duplicated channel: %v", creates)
+	}
+	messages = fake.snapshotMessages()
+	if len(messages) != 1 {
+		t.Fatalf("same request replay was not reply-idempotent: %v", messages)
+	}
+	watch.cmdDucklionBind(context.Background(), "dwch_other", "discord-bind-2", []string{session.SessionID})
+	if creates = fake.snapshotCreates(); len(creates) != 1 {
+		t.Fatalf("cross-management bind duplicated channel: %v", creates)
+	}
+	messages = fake.snapshotMessages()
+	if !strings.Contains(messages[len(messages)-1]["content"], "another management channel") {
+		t.Fatalf("cross-management reply=%v", messages)
+	}
+
+	// Model a crash after Discord channel creation + fail-closed marker, but
+	// before Ducklion binding. Reloading the workflow must reuse the channel.
+	second, err := terminal.CreateSession(context.Background(), protocol.SessionCreate{Handle: "replay", Kind: model.KindAgent,
+		AgentType: "fixture", CWD: configDir, Command: []string{"sh", "-c", `while IFS= read -r value; do printf '%s\n' "$value"; done`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	precreated, err := watch.api.CreateCCChannelIdempotent(context.Background(), "discord-bind-replay:bind:"+second.SessionID, "replay", "replay", configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watch.api.SetCCChannelSession(context.Background(), precreated.Handle, second.SessionID, second.CWD); err != nil {
+		t.Fatal(err)
+	}
+	record, err := watch.provisions.Reserve(ccProvisionRecord{RequestID: "discord-bind-replay:bind:" + second.SessionID, Kind: "bind", SessionID: second.SessionID,
+		ManagementHandle: "dwch_mgmt", Slug: second.Handle, CWD: second.CWD, Channel: precreated, Session: &second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Phase = ccProvisionMarkerSet
+	if err := watch.provisions.Save(record); err != nil {
+		t.Fatal(err)
+	}
+	watch.provisions = newCCProvisionStore(filepath.Dir(watch.provisions.path))
+	pendingReplay := watch.provisions.Pending()
+	if len(pendingReplay) != 1 || pendingReplay[0].Channel == nil || pendingReplay[0].Channel.Handle != precreated.Handle {
+		t.Fatalf("persisted bind workflow=%+v", pendingReplay)
+	}
+	beforeReplayCreates := len(fake.snapshotCreates())
+	watch.cmdDucklionBind(context.Background(), "dwch_mgmt", "discord-bind-replay", []string{second.SessionID})
+	if got := len(fake.snapshotCreates()); got != beforeReplayCreates {
+		t.Fatalf("marker crash replay created another channel: before=%d after=%d", beforeReplayCreates, got)
+	}
+	management, err = duckliondaemon.DialCC(socket, "dwch_mgmt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedBinding, err := management.DiscordBindingForSession(context.Background(), second.SessionID)
+	_ = management.Close()
+	if err != nil || replayedBinding.ChannelHandle != precreated.Handle {
+		t.Fatalf("replayed binding=%+v err=%v", replayedBinding, err)
+	}
+
+	var delivered bool
+	if handled := watch.preflightBoundDucklionPrompt("dwch_test1", session.SessionID, "inbox-bind", "must stay read-only", func(success bool, _ string) { delivered = success }, nil); !handled || !delivered {
+		t.Fatalf("read-only prompt handled=%v delivered=%v", handled, delivered)
+	}
+	messages = fake.snapshotMessages()
+	if !strings.Contains(messages[len(messages)-1]["content"], "controlled by `terminal:laptop-a`") {
+		t.Fatalf("read-only reply=%v", messages)
+	}
+}
+
 func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and starts the real ducklion daemon")
