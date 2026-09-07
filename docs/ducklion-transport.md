@@ -267,6 +267,19 @@ before committing a new event. If the agent process exits, the supervisor
 remains as a small delivery custodian—without the PTY child—until every pending
 terminal payload is ACKed; it can still reconnect across a daemon restart.
 
+Raw PTY replay uses a circular buffer, avoiding a full-buffer shift for every
+small write after capacity is reached. Live frames are at most 64 KiB.
+Ducklord bridges may hold at most 101 raw subscriptions (the configured maximum
+of 100 plus one handoff slot), one session at most 32, and one daemon at most
+512. Exhaustion returns retryable `busy`; subscription teardown returns the
+reservation exactly once.
+
+Ducklord owner names are UI and control-fencing identities within one trusted
+host account, not cryptographic tenants. SSH and Ducklion's mode-0600 Unix
+socket are the host authorization boundary. A Ducklord intentionally has a
+host-wide read-only inventory and PTY view, while ownership still gates input
+and lifecycle mutations.
+
 The SQLite migration is automatic on Ducklion startup. Before changing
 `PRAGMA user_version`, Ducklion writes a mode-0600 `ducklion.db.bak-v2-*`
 backup. No separate migration command or client-side data conversion is

@@ -27,6 +27,12 @@ import (
 
 var ErrAlreadyRunning = errors.New("ducklion daemon is already running")
 
+const (
+	maxOutputSubscriptionsPerConnection = 101 // configured Ducklord maximum plus one atomic handoff slot
+	maxOutputSubscriptionsPerSession    = 32
+	maxOutputSubscriptionsGlobal        = 512
+)
+
 type Options struct {
 	Root            string
 	SocketPath      string
@@ -34,36 +40,38 @@ type Options struct {
 }
 
 type Server struct {
-	root            string
-	socketPath      string
-	lockFile        *os.File
-	listener        *net.UnixListener
-	state           *store.SQLite
-	service         *service.Service
-	registry        *duckruntime.Registry
-	instanceID      model.InstanceID
-	closeOnce       sync.Once
-	done            chan struct{}
-	connMu          sync.Mutex
-	connections     map[*net.UnixConn]struct{}
-	ducklords       map[string]*net.UnixConn
-	handlers        sync.WaitGroup
-	lifecycleMu     sync.Mutex
-	createMu        sync.Mutex
-	closing         bool
-	outputMu        sync.Mutex
-	outputs         map[model.SessionID]registeredOutput
-	controlMu       sync.Mutex
-	controls        map[model.SessionID]*controlPeer
-	sequenceMu      sync.Mutex
-	sequences       map[model.SessionID]runtimeSequence
-	operationMu     sync.Mutex
-	operations      map[model.SessionID]*sync.Mutex
-	agentEventMu    sync.Mutex
-	agentEvents     map[string][]protocol.SupervisorAgentEvent
-	agentEventCount int
-	agentEventBytes int
-	runtimeLauncher func(string) error
+	root                         string
+	socketPath                   string
+	lockFile                     *os.File
+	listener                     *net.UnixListener
+	state                        *store.SQLite
+	service                      *service.Service
+	registry                     *duckruntime.Registry
+	instanceID                   model.InstanceID
+	closeOnce                    sync.Once
+	done                         chan struct{}
+	connMu                       sync.Mutex
+	connections                  map[*net.UnixConn]struct{}
+	ducklords                    map[string]*net.UnixConn
+	handlers                     sync.WaitGroup
+	lifecycleMu                  sync.Mutex
+	createMu                     sync.Mutex
+	closing                      bool
+	outputMu                     sync.Mutex
+	outputs                      map[model.SessionID]registeredOutput
+	outputSubscriptions          int
+	outputSubscriptionsBySession map[model.SessionID]int
+	controlMu                    sync.Mutex
+	controls                     map[model.SessionID]*controlPeer
+	sequenceMu                   sync.Mutex
+	sequences                    map[model.SessionID]runtimeSequence
+	operationMu                  sync.Mutex
+	operations                   map[model.SessionID]*sync.Mutex
+	agentEventMu                 sync.Mutex
+	agentEvents                  map[string][]protocol.SupervisorAgentEvent
+	agentEventCount              int
+	agentEventBytes              int
+	runtimeLauncher              func(string) error
 }
 
 type runtimeSequence struct {
@@ -185,7 +193,8 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 	server := &Server{root: root, socketPath: socketPath, lockFile: lockFile, listener: listener, state: state,
 		service: service.New(state), registry: duckruntime.NewRegistry(instanceID, state), instanceID: instanceID, done: make(chan struct{}),
 		connections: make(map[*net.UnixConn]struct{}), ducklords: make(map[string]*net.UnixConn), outputs: make(map[model.SessionID]registeredOutput), controls: make(map[model.SessionID]*controlPeer),
-		sequences: make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher}
+		outputSubscriptionsBySession: make(map[model.SessionID]int),
+		sequences:                    make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher}
 	server.agentEvents = make(map[string][]protocol.SupervisorAgentEvent)
 	if server.runtimeLauncher == nil {
 		server.runtimeLauncher = server.spawnRuntime
@@ -334,6 +343,13 @@ func (s *Server) handle(conn *net.UnixConn) {
 		if request.Type == "session.output_subscribe" {
 			if !hasCapability(negotiated.Capabilities, "output_subscribe") {
 				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "output subscription capability was not negotiated"}})
+				continue
+			}
+			subscriptionsMu.Lock()
+			connectionFull := len(subscriptions) >= maxOutputSubscriptionsPerConnection
+			subscriptionsMu.Unlock()
+			if connectionFull {
+				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrBusy, Message: "output subscription connection capacity reached", Retryable: true}})
 				continue
 			}
 			prepared, protocolError := s.prepareOutputSubscription(request)
@@ -774,6 +790,10 @@ func (s *Server) prepareOutputSubscription(request protocol.Request) (*preparedO
 	if current.identity.Generation != *request.RuntimeGeneration {
 		return nil, &protocol.Error{Code: protocol.ErrStaleGeneration, Message: "runtime generation changed"}
 	}
+	releaseQuota, quotaError := s.reserveOutputSubscription(sessionID)
+	if quotaError != nil {
+		return nil, quotaError
+	}
 	offset := subscription.Offset
 	if subscription.TailBytes > 0 {
 		start, end := current.hub.Bounds()
@@ -784,13 +804,44 @@ func (s *Server) prepareOutputSubscription(request protocol.Request) (*preparedO
 	}
 	replay, stream, cancel, err := current.hub.Subscribe(offset, 32)
 	if err != nil {
+		releaseQuota()
 		return nil, &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}
+	}
+	var cancelOnce sync.Once
+	cancelWithQuota := func() {
+		cancelOnce.Do(func() {
+			cancel()
+			releaseQuota()
+		})
 	}
 	_, end := current.hub.Bounds()
 	subscriptionID := uuid.NewString()
 	metadata := protocol.OutputSubscribeResult{SubscriptionID: subscriptionID, RuntimeID: current.identity.LeaseID, InstanceID: string(s.instanceID), SessionID: string(sessionID),
 		RuntimeGeneration: current.identity.Generation, StartOffset: replay.Offset, EndOffset: end, Gap: replay.Gap}
-	return &preparedOutputSubscription{metadata: metadata, identity: current.identity, replay: replay, stream: stream, cancel: cancel, hub: current.hub}, nil
+	return &preparedOutputSubscription{metadata: metadata, identity: current.identity, replay: replay, stream: stream, cancel: cancelWithQuota, hub: current.hub}, nil
+}
+
+func (s *Server) reserveOutputSubscription(sessionID model.SessionID) (func(), *protocol.Error) {
+	s.outputMu.Lock()
+	if s.outputSubscriptions >= maxOutputSubscriptionsGlobal || s.outputSubscriptionsBySession[sessionID] >= maxOutputSubscriptionsPerSession {
+		s.outputMu.Unlock()
+		return nil, &protocol.Error{Code: protocol.ErrBusy, Message: "output subscription capacity reached", Retryable: true}
+	}
+	s.outputSubscriptions++
+	s.outputSubscriptionsBySession[sessionID]++
+	s.outputMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.outputMu.Lock()
+			s.outputSubscriptions--
+			s.outputSubscriptionsBySession[sessionID]--
+			if s.outputSubscriptionsBySession[sessionID] == 0 {
+				delete(s.outputSubscriptionsBySession, sessionID)
+			}
+			s.outputMu.Unlock()
+		})
+	}, nil
 }
 
 func (s *Server) streamOutputSubscription(codec interface{ Write(any) error }, prepared *preparedOutputSubscription) {

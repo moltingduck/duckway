@@ -1,6 +1,7 @@
 package ducklord
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -23,6 +24,30 @@ func TestLoadConfigNormalizesClients(t *testing.T) {
 	}
 	if got.Ducklion != "ducklion" || got.SSH != "ssh" || got.Target() != "duck@vulns.ts" {
 		t.Fatalf("client = %+v", got)
+	}
+	if cfg.RawOutputSubscriptionLimit() != DefaultRawOutputSubscriptions {
+		t.Fatalf("raw subscription default=%d", cfg.RawOutputSubscriptionLimit())
+	}
+}
+
+func TestLoadConfigValidatesRawOutputSubscriptionLimit(t *testing.T) {
+	for _, value := range []int{-1, 0, 101} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		contents := fmt.Sprintf("raw_output_subscription_limit: %d\nhosts: []\n", value)
+		if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "between 1 and 100") {
+			t.Fatalf("value %d error=%v", value, err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("raw_output_subscription_limit: 100\nhosts: []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil || cfg.RawOutputSubscriptionLimit() != 100 {
+		t.Fatalf("limit=%d err=%v", cfg.RawOutputSubscriptionLimit(), err)
 	}
 }
 

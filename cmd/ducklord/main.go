@@ -933,6 +933,8 @@ type tuiState struct {
 	outputText         string
 	outputErr          string
 	outputForKey       string
+	outputStale        bool
+	snapshotStore      ducklord.SnapshotStore
 	focused            bool
 	newSessionMode     bool
 	newSessionClient   string
@@ -972,6 +974,11 @@ func runHostTUI(cfg *ducklord.Config, runner remoteRunner, refresh time.Duration
 }
 
 func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, hostScoped bool, owner string) error {
+	if limiter, ok := runner.(interface{ SetOutputSubscriptionLimit(int) error }); ok {
+		if err := limiter.SetOutputSubscriptionLimit(cfg.RawOutputSubscriptionLimit()); err != nil {
+			return err
+		}
+	}
 	oldState, err := makeRaw()
 	if err != nil {
 		return err
@@ -982,7 +989,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner}
+	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner,
+		snapshotStore: ducklord.SnapshotStore{}}
+	defer state.saveCurrentSnapshot()
 	state.refreshSessions(ctx)
 	state.refreshSelectedOutput(ctx)
 	state.render(os.Stdout)
@@ -1025,7 +1034,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			if chunk.id != attachID {
 				continue
 			}
-			state.outputText = appendOutputText(state.outputText, chunk.text, 120)
+			state.applyAttachOutput(chunk.text)
 			state.render(os.Stdout)
 		case result := <-attachDone:
 			if result.id != attachID {
@@ -1044,6 +1053,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		case b := <-input:
 			if state.focused {
 				if isDetachInput(b) {
+					state.saveCurrentSnapshot()
 					if attach != nil {
 						_ = attach.Stdin.Close()
 					}
@@ -1120,6 +1130,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			previousSession, previousText := state.currentSession(), state.outputText
 			action := state.handleInput(b)
 			switch action {
 			case "quit":
@@ -1128,6 +1139,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.refreshSessions(ctx)
 				state.refreshSelectedOutput(ctx)
 			case "select":
+				state.saveSnapshot(previousSession, previousText)
 				state.refreshSelectedOutput(ctx)
 			case "new":
 				state.beginCreate()
@@ -1295,9 +1307,19 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 	sess := s.sessions[s.selected]
 	key := sessionKey(sess)
 	s.selectedKey = key
+	if s.outputForKey != key {
+		s.outputText = ""
+		s.outputErr = ""
+		s.outputStale = false
+		if snapshot, err := s.snapshotStore.Load(sess.InstanceID, sess.SessionID); err == nil {
+			if state, decodeErr := ducklord.DecodeTerminalRenderState(snapshot.Payload); decodeErr == nil {
+				s.outputText = state.Text
+				s.outputStale = true
+			}
+		}
+	}
 	s.outputForKey = key
 	if !canRead(sess) {
-		s.outputText = ""
 		s.outputErr = sess.Error
 		if s.outputErr == "" {
 			s.outputErr = sess.Status
@@ -1306,18 +1328,56 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 	}
 	c, err := mustClient(s.cfg, sess.Client)
 	if err != nil {
-		s.outputText = ""
+		if !s.outputStale {
+			s.outputText = ""
+		}
 		s.outputErr = err.Error()
 		return
 	}
-	text, err := s.runner.Read(ctx, c, sess.Name, 80)
+	ref := sess.SessionID
+	if ref == "" {
+		ref = sess.Name
+	}
+	text, err := s.runner.Read(ctx, c, ref, 80)
 	if err != nil {
-		s.outputText = ""
 		s.outputErr = err.Error()
 		return
 	}
 	s.outputText = sanitizeTerminalText(text)
 	s.outputErr = ""
+	s.outputStale = false
+}
+
+func (s *tuiState) applyAttachOutput(text string) {
+	if s.outputStale {
+		s.outputText = ""
+		s.outputStale = false
+	}
+	s.outputText = appendOutputText(s.outputText, text, 120)
+}
+
+func (s *tuiState) currentSession() ducklord.RemoteSession {
+	if len(s.sessions) == 0 || s.selected < 0 || s.selected >= len(s.sessions) {
+		return ducklord.RemoteSession{}
+	}
+	return s.sessions[s.selected]
+}
+
+func (s *tuiState) saveCurrentSnapshot() {
+	s.saveSnapshot(s.currentSession(), s.outputText)
+}
+
+func (s *tuiState) saveSnapshot(session ducklord.RemoteSession, text string) {
+	if session.InstanceID == "" || session.SessionID == "" || text == "" {
+		return
+	}
+	payload, err := ducklord.EncodeTerminalRenderState(ducklord.TerminalRenderState{Text: sanitizeTerminalText(text)})
+	if err == nil {
+		err = s.snapshotStore.Save(ducklord.TerminalSnapshot{InstanceID: session.InstanceID, SessionID: session.SessionID, Payload: payload})
+	}
+	if err != nil {
+		s.outputErr = "snapshot: " + err.Error()
+	}
 }
 
 func (s *tuiState) render(out io.Writer) {
@@ -1466,9 +1526,12 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 	if s.focused {
 		header += "  [focus]"
 	}
+	if s.outputStale {
+		header += "  [STALE SNAPSHOT]"
+	}
 	fmt.Fprintf(out, "\033[5;%dH%s\033[K", x, truncate(header, width))
 	startRow := 6
-	if s.outputErr != "" {
+	if s.outputErr != "" && s.outputText == "" {
 		for i, line := range wrapDisplayText("error: "+sanitizeTerminalText(s.outputErr), width) {
 			if startRow+i > height {
 				break

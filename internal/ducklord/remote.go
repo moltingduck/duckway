@@ -22,6 +22,7 @@ import (
 
 type RemoteSession struct {
 	Client            string `json:"client,omitempty"`
+	InstanceID        string `json:"instance_id,omitempty"`
 	SessionID         string `json:"session_id,omitempty"`
 	Name              string `json:"name"`
 	Kind              string `json:"kind,omitempty"`
@@ -51,18 +52,50 @@ type RemoteProject struct {
 }
 
 type Runner struct {
-	mu         sync.Mutex
-	owner      string
-	generation uint64
-	bridges    map[string]*daemon.Client
-	connectMu  map[string]*sync.Mutex
-	ctx        context.Context
-	cancel     context.CancelFunc
+	mu          sync.Mutex
+	owner       string
+	generation  uint64
+	bridges     map[string]*daemon.Client
+	connectMu   map[string]*sync.Mutex
+	ctx         context.Context
+	cancel      context.CancelFunc
+	outputSlots chan struct{}
 }
 
 func NewRunner() *Runner {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Runner{bridges: make(map[string]*daemon.Client), connectMu: make(map[string]*sync.Mutex), ctx: ctx, cancel: cancel}
+	return &Runner{bridges: make(map[string]*daemon.Client), connectMu: make(map[string]*sync.Mutex), ctx: ctx, cancel: cancel,
+		outputSlots: make(chan struct{}, DefaultRawOutputSubscriptions)}
+}
+
+// SetOutputSubscriptionLimit configures the process-wide raw-output budget.
+// It must be called before any subscriptions are opened.
+func (r *Runner) SetOutputSubscriptionLimit(limit int) error {
+	if limit < 1 || limit > 100 {
+		return fmt.Errorf("raw output subscription limit must be between 1 and 100")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.outputSlots) != 0 {
+		return fmt.Errorf("raw output subscription limit cannot change while subscriptions are active")
+	}
+	r.outputSlots = make(chan struct{}, limit)
+	return nil
+}
+
+func (r *Runner) acquireOutputSlot(ctx context.Context) (func(), error) {
+	r.mu.Lock()
+	slots := r.outputSlots
+	r.mu.Unlock()
+	select {
+	case slots <- struct{}{}:
+		var once sync.Once
+		return func() { once.Do(func() { <-slots }) }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-r.ctx.Done():
+		return nil, io.ErrClosedPipe
+	}
 }
 
 // SetOwner selects the Ducklord principal sent in every daemon handshake.
@@ -251,7 +284,7 @@ func (r *Runner) Sessions(ctx context.Context, c Client, tailLines int) ([]Remot
 		}
 		sessions := make([]RemoteSession, 0, len(summaries))
 		for _, summary := range summaries {
-			session := RemoteSession{Client: c.Name, SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status), AgentType: summary.AgentType,
+			session := RemoteSession{Client: c.Name, InstanceID: client.InstanceID(), SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status), AgentType: summary.AgentType,
 				Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
 				TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason}
 			if summary.Writer != nil {
@@ -307,6 +340,11 @@ func (r *Runner) Read(ctx context.Context, c Client, name string, lines int) (st
 		if selected == nil {
 			return "", fmt.Errorf("session %q not found", name)
 		}
+		release, slotErr := r.acquireOutputSlot(ctx)
+		if slotErr != nil {
+			return "", slotErr
+		}
+		defer release()
 		stream, err := client.SubscribeOutputTail(selected.SessionID, selected.RuntimeGeneration, 1<<20)
 		if err != nil {
 			return "", err
@@ -637,8 +675,13 @@ func (r *Runner) attachDaemonStream(ctx context.Context, c Client, sessionRef st
 	if selected == nil {
 		return nil, fmt.Errorf("session %q was not found", sessionRef)
 	}
+	releaseSlot, err := r.acquireOutputSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
 	subscription, err := client.SubscribeOutputTail(selected.SessionID, selected.RuntimeGeneration, 256<<10)
 	if err != nil {
+		releaseSlot()
 		return nil, err
 	}
 	inputReader, inputWriter := io.Pipe()
@@ -647,6 +690,7 @@ func (r *Runner) attachDaemonStream(ctx context.Context, c Client, sessionRef st
 	done := make(chan error, 1)
 	errResults := make(chan error, 2)
 	go func() {
+		defer releaseSlot()
 		defer outputWriter.Close()
 		for {
 			event, readErr := subscription.Read()

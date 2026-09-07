@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,6 +127,40 @@ func TestServerRejectsDuplicateLiveDucklordPrincipal(t *testing.T) {
 	_ = server.Close()
 	if err := <-serveDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOutputSubscriptionQuotaIsBoundedAndReleased(t *testing.T) {
+	server := &Server{outputSubscriptionsBySession: make(map[model.SessionID]int)}
+	first := model.SessionID("ABC123")
+	releases := make([]func(), 0, maxOutputSubscriptionsGlobal)
+	for i := 0; i < maxOutputSubscriptionsPerSession; i++ {
+		release, protocolError := server.reserveOutputSubscription(first)
+		if protocolError != nil {
+			t.Fatalf("reserve first session %d: %+v", i, protocolError)
+		}
+		releases = append(releases, release)
+	}
+	if _, protocolError := server.reserveOutputSubscription(first); protocolError == nil || protocolError.Code != protocol.ErrBusy || !protocolError.Retryable {
+		t.Fatalf("per-session limit error=%+v", protocolError)
+	}
+	for i := len(releases); i < maxOutputSubscriptionsGlobal; i++ {
+		sessionID := model.SessionID(fmt.Sprintf("%06d", i))
+		release, protocolError := server.reserveOutputSubscription(sessionID)
+		if protocolError != nil {
+			t.Fatalf("reserve global slot %d: %+v", i, protocolError)
+		}
+		releases = append(releases, release)
+	}
+	if _, protocolError := server.reserveOutputSubscription("XYZ789"); protocolError == nil || protocolError.Code != protocol.ErrBusy {
+		t.Fatalf("global limit error=%+v", protocolError)
+	}
+	// Release is idempotent because unsubscribe, stream termination, and
+	// connection teardown may converge on the same subscription.
+	releases[0]()
+	releases[0]()
+	if _, protocolError := server.reserveOutputSubscription("XYZ789"); protocolError != nil {
+		t.Fatalf("capacity was not returned: %+v", protocolError)
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
@@ -402,6 +404,56 @@ func TestTUIRefreshSelectedOutputUsesSelectedClient(t *testing.T) {
 	state.refreshSelectedOutput(context.Background())
 	if runner.readClient != "client-b" || runner.readSession != "alpha" {
 		t.Fatalf("read target = %s/%s", runner.readClient, runner.readSession)
+	}
+}
+
+func TestTUIShowsSavedSnapshotWhileRemoteReadFails(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	store := ducklord.SnapshotStore{Root: filepath.Join(t.TempDir(), "sessions")}
+	payload, err := ducklord.EncodeTerminalRenderState(ducklord.TerminalRenderState{Text: "previous agent result\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(ducklord.TerminalSnapshot{InstanceID: instance, SessionID: "ABC123", Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	state := &tuiState{
+		cfg:           &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a", Host: "client-a"}}},
+		runner:        fakeRunner{readErr: errors.New("remote offline")},
+		snapshotStore: store,
+		sessions: []ducklord.RemoteSession{{Client: "client-a", InstanceID: instance, SessionID: "ABC123", Name: "agent", Status: "running",
+			AgentType: "codex"}},
+	}
+	state.refreshSelectedOutput(context.Background())
+	if !state.outputStale || state.outputText != "previous agent result\n" || !strings.Contains(state.outputErr, "remote offline") {
+		t.Fatalf("stale=%v text=%q err=%q", state.outputStale, state.outputText, state.outputErr)
+	}
+	var rendered bytes.Buffer
+	state.renderContent(&rendered, 1, 80, 20)
+	if !strings.Contains(rendered.String(), "STALE SNAPSHOT") || !strings.Contains(rendered.String(), "previous agent result") {
+		t.Fatalf("rendered stale snapshot=%q", rendered.String())
+	}
+}
+
+func TestTUIKeepsSnapshotForOfflineSessionAndReplacesItOnFreshOutput(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	store := ducklord.SnapshotStore{Root: filepath.Join(t.TempDir(), "sessions")}
+	payload, err := ducklord.EncodeTerminalRenderState(ducklord.TerminalRenderState{Text: "stale only\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(ducklord.TerminalSnapshot{InstanceID: instance, SessionID: "ABC123", Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	state := &tuiState{cfg: &ducklord.Config{}, runner: fakeRunner{}, snapshotStore: store,
+		sessions: []ducklord.RemoteSession{{Client: "client-a", InstanceID: instance, SessionID: "ABC123", Name: "agent", Status: "error", Error: "host offline"}}}
+	state.refreshSelectedOutput(context.Background())
+	if !state.outputStale || state.outputText != "stale only\n" || state.outputErr != "host offline" {
+		t.Fatalf("offline stale=%v text=%q err=%q", state.outputStale, state.outputText, state.outputErr)
+	}
+	state.applyAttachOutput("fresh only\n")
+	if state.outputStale || state.outputText != "fresh only\n" || strings.Contains(state.outputText, "stale only") {
+		t.Fatalf("fresh stale=%v text=%q", state.outputStale, state.outputText)
 	}
 }
 
@@ -798,6 +850,7 @@ type fakeRunner struct {
 	sessions         []ducklord.RemoteSession
 	sessionsByClient map[string][]ducklord.RemoteSession
 	readText         string
+	readErr          error
 	projects         []ducklord.RemoteProject
 	probe            ducklord.DucklionProbe
 	installPath      string
@@ -810,7 +863,7 @@ func (f fakeRunner) Sessions(_ context.Context, client ducklord.Client, _ int) (
 	return f.sessions, nil
 }
 func (f fakeRunner) Read(context.Context, ducklord.Client, string, int) (string, error) {
-	return f.readText, nil
+	return f.readText, f.readErr
 }
 func (f fakeRunner) Send(context.Context, ducklord.Client, string, string) error { return nil }
 func (f fakeRunner) Start(context.Context, ducklord.Client, []string) error      { return nil }

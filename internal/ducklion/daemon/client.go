@@ -172,6 +172,10 @@ func (c *Client) requireCapability(capability string) error {
 	return nil
 }
 
+// InstanceID identifies the Ducklion daemon backing this connection. It is
+// stable across daemon restarts while the same Ducklion database is retained.
+func (c *Client) InstanceID() string { return c.instanceID }
+
 func setDeadline(conn io.ReadWriteCloser, deadline time.Time) {
 	if setter, ok := conn.(interface{ SetDeadline(time.Time) error }); ok {
 		_ = setter.SetDeadline(deadline)

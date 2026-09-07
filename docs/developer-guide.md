@@ -715,6 +715,18 @@ multiple SSH-reachable remote clients. Use it when changing Ducklord, Ducklion,
 remote PTY handling, SSH config parsing, project registry integration, or
 standalone `ducklion` installation.
 
+Ducklord keeps one process-wide raw-output subscription budget across all
+hosts. Configure `raw_output_subscription_limit` in
+`~/.ducklord/config.yaml`; the default is 10, valid values are 1 through 100,
+and changes require restarting Ducklord. Ducklion also enforces defensive
+limits of 101 subscriptions per bridge connection, 32 per session, and 512
+globally.
+
+Detached views are atomically stored as mode-0600 files under
+`~/.ducklord/sessions/<ducklion-instance-id>/<session-id>.snapshot`. They hold
+sanitized render text, not replayable raw PTY bytes, and appear with a clear
+`STALE SNAPSHOT` label only until fresh remote output arrives.
+
 ```bash
 scripts/ducklord-podman-demo.sh
 podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.yaml

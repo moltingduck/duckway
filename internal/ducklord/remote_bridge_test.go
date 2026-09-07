@@ -3,6 +3,7 @@ package ducklord
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,6 +25,32 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+func TestRunnerOutputSubscriptionLimitIsProcessWide(t *testing.T) {
+	runner := NewRunner()
+	defer runner.Close()
+	if err := runner.SetOutputSubscriptionLimit(1); err != nil {
+		t.Fatal(err)
+	}
+	release, err := runner.acquireOutputSlot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.SetOutputSubscriptionLimit(2); err == nil {
+		t.Fatal("changed output limit while a slot was active")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := runner.acquireOutputSlot(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second slot error=%v", err)
+	}
+	release()
+	second, err := runner.acquireOutputSlot(context.Background())
+	if err != nil {
+		t.Fatalf("released slot was not reusable: %v", err)
+	}
+	second()
 }
 
 func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {

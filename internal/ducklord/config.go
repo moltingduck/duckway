@@ -14,9 +14,12 @@ import (
 )
 
 type Config struct {
-	Name    string   `json:"name,omitempty" yaml:"name,omitempty"`
-	Clients []Client `json:"hosts" yaml:"hosts"`
+	Name                   string   `json:"name,omitempty" yaml:"name,omitempty"`
+	RawOutputSubscriptions *int     `json:"raw_output_subscription_limit,omitempty" yaml:"raw_output_subscription_limit,omitempty"`
+	Clients                []Client `json:"hosts" yaml:"hosts"`
 }
+
+const DefaultRawOutputSubscriptions = 10
 
 type Client struct {
 	Name     string `json:"name" yaml:"name"`
@@ -70,6 +73,9 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Name != "" && !ValidOwnerName(cfg.Name) {
 		return nil, fmt.Errorf("invalid owner name %q", cfg.Name)
 	}
+	if err := cfg.normalize(); err != nil {
+		return nil, err
+	}
 	seen := map[string]bool{}
 	for i := range cfg.Clients {
 		if err := cfg.Clients[i].Normalize(); err != nil {
@@ -86,6 +92,12 @@ func LoadConfig(path string) (*Config, error) {
 func SaveConfig(path string, cfg *Config) error {
 	if strings.TrimSpace(path) == "" {
 		path = DefaultConfigPath()
+	}
+	if cfg == nil {
+		return fmt.Errorf("ducklord config is required")
+	}
+	if err := cfg.normalize(); err != nil {
+		return err
 	}
 	seen := make(map[string]bool, len(cfg.Clients))
 	for i := range cfg.Clients {
@@ -139,6 +151,20 @@ func SaveConfig(path string, cfg *Config) error {
 	return dir.Sync()
 }
 
+func (c *Config) normalize() error {
+	if c.RawOutputSubscriptions != nil && (*c.RawOutputSubscriptions < 1 || *c.RawOutputSubscriptions > 100) {
+		return fmt.Errorf("raw_output_subscription_limit must be between 1 and 100")
+	}
+	return nil
+}
+
+func (c *Config) RawOutputSubscriptionLimit() int {
+	if c == nil || c.RawOutputSubscriptions == nil {
+		return DefaultRawOutputSubscriptions
+	}
+	return *c.RawOutputSubscriptions
+}
+
 // ResolveOwnerName applies --name > config.name > local hostname precedence.
 func ResolveOwnerName(explicit, configured string) (string, error) {
 	name := explicit
@@ -174,6 +200,10 @@ func (c *Config) Client(name string) (Client, bool) {
 func (c *Config) Clone() *Config {
 	clone := *c
 	clone.Clients = append([]Client(nil), c.Clients...)
+	if c.RawOutputSubscriptions != nil {
+		value := *c.RawOutputSubscriptions
+		clone.RawOutputSubscriptions = &value
+	}
 	return &clone
 }
 
