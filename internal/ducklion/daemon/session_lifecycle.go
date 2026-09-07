@@ -239,9 +239,6 @@ func (s *Server) routeAgentTaskEvents(request protocol.Request, principal string
 	if decodeStrict(request.Body, &query) != nil || !protocol.ValidTaskID(query.TaskID) {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid agent event query"}}
 	}
-	operation := s.sessionOperation(sessionID)
-	operation.Lock()
-	defer operation.Unlock()
 	task, err := s.service.GetManagedTask(context.Background(), sessionID, query.TaskID)
 	if err != nil || task.Owner != (model.Owner{Kind: model.OwnerCC, ID: principal}) {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "managed task not found"}}
@@ -271,9 +268,10 @@ func (s *Server) routeAgentTaskEventAck(request protocol.Request, principal stri
 		decodeStrict(request.Body, &ack) != nil || !protocol.ValidTaskID(ack.TaskID) || ack.Sequence == 0 {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid agent event acknowledgement"}}
 	}
-	operation := s.sessionOperation(sessionID)
-	operation.Lock()
-	defer operation.Unlock()
+	// Delivery acknowledgement must remain available while a lifecycle
+	// operation waits for the supervisor to publish its durable exit. It does
+	// not admit work or mutate ownership, so it intentionally does not take the
+	// per-session admission lock.
 	owner := model.Owner{Kind: model.OwnerCC, ID: principal}
 	task, err := s.service.GetManagedTask(context.Background(), sessionID, ack.TaskID)
 	if err != nil || task.Owner != owner || ack.Sequence > task.LastEventSeq {
@@ -508,6 +506,11 @@ func (s *Server) routeSessionStop(request protocol.Request, role protocol.PeerRo
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session stop has no body"}}
 	}
 	sessionID, parseErr := model.ParseSessionID(request.SessionID)
+	if parseErr == nil {
+		operation := s.sessionOperation(sessionID)
+		operation.Lock()
+		defer operation.Unlock()
+	}
 	if parseErr == nil && request.InstanceID == string(s.instanceID) && request.OwnershipEpoch != nil && request.RuntimeGeneration != nil {
 		current, getErr := s.state.GetSession(context.Background(), sessionID)
 		ownerKind := model.OwnerTerminal
@@ -523,6 +526,15 @@ func (s *Server) routeSessionStop(request protocol.Request, role protocol.PeerRo
 	session, _, protocolError := s.authorizeOwnerControl(request, role, principal)
 	if protocolError != nil {
 		return protocol.Response{ID: request.ID, Error: protocolError}
+	}
+	// The unqualified lifecycle operation is deliberately fail-fast.  An
+	// active managed task must never be turned into an implicit force-stop;
+	// callers that want drain or cancellation use the explicit wait/force
+	// lifecycle modes.
+	if session.Kind == model.KindAgent && session.TaskState != model.TaskIdle {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{
+			Code: protocol.ErrTaskActive, Message: "an active task prevents ending the session",
+		}}
 	}
 	forwarded := request
 	forwarded.Type = "supervisor.terminate"
@@ -552,6 +564,9 @@ func (s *Server) routeSessionUnbind(request protocol.Request, principal string) 
 	if err != nil {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}}
 	}
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
 	outcome, _, err := s.service.UnbindDiscord(context.Background(), "cc:"+principal, request.ID, sessionID)
 	if err != nil {
 		code := protocol.ErrInternal
@@ -577,6 +592,9 @@ func (s *Server) routeSessionDestroy(request protocol.Request, role protocol.Pee
 	if err != nil {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}}
 	}
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
 	ownerKind := model.OwnerTerminal
 	if role == protocol.RoleDuckwayCC {
 		ownerKind = model.OwnerCC

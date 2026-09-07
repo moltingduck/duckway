@@ -919,8 +919,8 @@ func TestNewProvisionWorkflowReplaysOneChannelAndOneCCOwnedSession(t *testing.T)
 	if err != nil || len(sessions) != 1 || sessions[0].Status != model.StatusStopped {
 		t.Fatalf("sessions after end=%+v err=%v", sessions, err)
 	}
-	if _, err := management.DiscordBindingForSession(context.Background(), session.SessionID); err == nil {
-		t.Fatal("ended session remains Discord-bound")
+	if binding, err := management.DiscordBindingForSession(context.Background(), session.SessionID); err != nil || binding.ChannelHandle != created.Handle {
+		t.Fatalf("ended session did not retain Discord binding: binding=%+v err=%v", binding, err)
 	}
 	if got := fake.snapshotArchives(); len(got) != 2 || !strings.Contains(got[1], created.Handle) {
 		t.Fatalf("archives=%+v", got)

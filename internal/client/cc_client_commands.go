@@ -393,7 +393,7 @@ func (w *CCWatch) cmdEndSession(ctx context.Context, replyHandle, requestID, ses
 		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ Session end rejected; this Discord channel is not the current writer or the runtime could not stop: "+err.Error())
 		return
 	}
-	if err := w.postCommandReply(ctx, replyHandle, requestID, "🔚 Agent session `"+sessionID+"` stopped. Archiving this channel with its history preserved."); err != nil {
+	if err := w.postCommandReply(ctx, replyHandle, requestID, "🔚 Agent session `"+sessionID+"` stopped. Archiving this channel with its history and session binding preserved for recovery."); err != nil {
 		markCommandRetryable(ctx, err)
 		return
 	}
@@ -402,17 +402,9 @@ func (w *CCWatch) cmdEndSession(ctx context.Context, replyHandle, requestID, ses
 		markCommandRetryable(ctx, err)
 		return
 	}
-	if err := client.UnbindDiscordWithID(ctx, lifecycleOperationID(requestID, "unbind"), sessionID); err != nil {
-		log.Printf("[cc-watch] release ended session binding %s: %v", sessionID, err)
-		markCommandRetryable(ctx, err)
-		return
-	}
-	if err := w.api.SetCCChannelSession(ctx, replyHandle, "", session.CWD); err != nil {
-		log.Printf("[cc-watch] clear ended channel marker %s: %v", replyHandle, err)
-		markCommandRetryable(ctx, err)
-		return
-	}
-	_ = w.sessions.Drop(replyHandle)
+	// End is reversible lifecycle state, not deletion. Keep the one-to-one
+	// Discord binding, channel marker, and local routing metadata so recovery
+	// can identify and later restore this exact logical session.
 }
 
 func (w *CCWatch) cmdDestroySession(ctx context.Context, replyHandle, requestID, sessionID string) {

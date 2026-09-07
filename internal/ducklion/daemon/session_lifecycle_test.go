@@ -155,6 +155,20 @@ func TestDuckwayCCCreatesAgentWithCCInitialOwner(t *testing.T) {
 	if _, err := cc.CreateSession(context.Background(), protocol.SessionCreate{Handle: "forbidden", Kind: model.KindShell, CWD: root, Command: []string{"sh"}}); err == nil {
 		t.Fatal("Duckway CC created a shell session")
 	}
+	if _, err := cc.BeginTask(context.Background(), "cc-task-busy", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err != nil {
+		t.Fatal(err)
+	}
+	if err := cc.StopSessionWithID(context.Background(), "cc-stop-busy", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err == nil {
+		t.Fatal("plain stop interrupted an active task")
+	} else if remote, ok := err.(*RemoteError); !ok || remote.Detail.Code != protocol.ErrTaskActive {
+		t.Fatalf("busy stop error=%v, want task_active", err)
+	}
+	if sessions, err := cc.ListSessions(); err != nil || len(sessions) != 1 || sessions[0].Status != model.StatusRunning || sessions[0].TaskState != model.TaskRunning {
+		t.Fatalf("busy stop changed session: sessions=%+v err=%v", sessions, err)
+	}
+	if _, err := cc.CompleteTask(context.Background(), "cc-task-complete", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err != nil {
+		t.Fatal(err)
+	}
 	other, err := DialCC(server.SocketPath(), "dwch_other")
 	if err != nil {
 		t.Fatal(err)

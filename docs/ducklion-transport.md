@@ -267,9 +267,10 @@ authoritative rejection.
 `CLIENT_COMMAND` jobs; the Gateway never archives or deletes a task channel
 before the host confirms the Ducklion lifecycle transition. Both operations
 are writer- and generation-fenced. `!end` stops the process, posts one stable
-farewell, archives the Discord channel, removes the Ducklion binding, and
-clears the server routing marker while retaining the stopped session and its
-PTY log. `!destroy` stops the process, transactionally deletes the Ducklion
+farewell, and archives the Discord channel while retaining the Ducklion
+binding, server routing marker, local routing metadata, stopped session, and
+PTY log for an exact-session restore. `!destroy` stops the process,
+transactionally deletes the Ducklion
 session (cascading its binding/task rows), removes its recovery key and PTY
 files, and then hard-deletes the Discord channel. Temporary archive/delete
 failures return the inbox job to `admitted`; replay uses step-specific operation
