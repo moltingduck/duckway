@@ -299,7 +299,20 @@ func (s *Service) RequestYieldWithHook(ctx context.Context, principal, requestID
 		if err != nil {
 			return nil, err
 		}
+		lifecycle, err := s.state.GetPendingLifecycleTx(ctx, tx, sessionID)
+		if err != nil {
+			return nil, err
+		}
 		oldEpoch, oldGeneration := session.OwnershipEpoch, session.RuntimeGeneration
+		if lifecycle != nil {
+			protocolError := &protocol.Error{Code: protocol.ErrDraining, Message: "a lifecycle drain prevents new work"}
+			epoch, generation := session.OwnershipEpoch, session.RuntimeGeneration
+			protocolError.OwnershipEpoch, protocolError.RuntimeGeneration = &epoch, &generation
+			if err := s.audit(ctx, tx, principal, "request_yield", string(protocolError.Code), session); err != nil {
+				return nil, err
+			}
+			return json.Marshal(Outcome{SessionID: session.ID, OwnershipEpoch: epoch, TaskState: session.TaskState, Writer: session.Writer, Error: protocolError})
+		}
 		decision, newPending, transitionErr := session.RequestYield(requester, wait, pending)
 		if transitionErr != nil {
 			if err := s.audit(ctx, tx, principal, "request_yield", string(mapError(transitionErr)), session); err != nil {
@@ -458,7 +471,20 @@ func (s *Service) runTaskMutationWithHook(ctx context.Context, principal, reques
 		if err != nil {
 			return nil, err
 		}
+		lifecycle, err := s.state.GetPendingLifecycleTx(ctx, tx, sessionID)
+		if err != nil {
+			return nil, err
+		}
 		oldEpoch, oldGeneration := session.OwnershipEpoch, session.RuntimeGeneration
+		if lifecycle != nil && operation == "begin_task" {
+			protocolError := &protocol.Error{Code: protocol.ErrDraining, Message: "a lifecycle drain prevents new work"}
+			epoch, generation := session.OwnershipEpoch, session.RuntimeGeneration
+			protocolError.OwnershipEpoch, protocolError.RuntimeGeneration = &epoch, &generation
+			if err := s.audit(ctx, tx, principal, operation, string(protocolError.Code), session); err != nil {
+				return nil, err
+			}
+			return json.Marshal(Outcome{SessionID: session.ID, OwnershipEpoch: epoch, TaskState: session.TaskState, Writer: session.Writer, Error: protocolError})
+		}
 		if protocolError := transition(&session, pending); protocolError != nil {
 			epoch, generation := session.OwnershipEpoch, session.RuntimeGeneration
 			protocolError.OwnershipEpoch, protocolError.RuntimeGeneration = &epoch, &generation
@@ -518,6 +544,8 @@ func mapError(err error) protocol.ErrorCode {
 		return protocol.ErrTaskActive
 	case errors.Is(err, model.ErrPendingYield):
 		return protocol.ErrPendingYield
+	case errors.Is(err, model.ErrLifecyclePending):
+		return protocol.ErrDraining
 	case errors.Is(err, model.ErrAdapterNotHealthy):
 		return protocol.ErrAdapterUnhealthy
 	default:

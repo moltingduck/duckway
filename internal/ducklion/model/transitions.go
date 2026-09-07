@@ -10,6 +10,7 @@ var (
 	ErrAdapterNotHealthy = errors.New("adapter is not healthy")
 	ErrTaskActive        = errors.New("task is active")
 	ErrPendingYield      = errors.New("pending yield already exists")
+	ErrLifecyclePending  = errors.New("session lifecycle operation is pending")
 	ErrYieldUnsupported  = errors.New("yield is unsupported")
 )
 

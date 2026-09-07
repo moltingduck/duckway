@@ -506,12 +506,12 @@ func (s *Server) routeSessionStop(request protocol.Request, role protocol.PeerRo
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session stop has no body"}}
 	}
 	sessionID, parseErr := model.ParseSessionID(request.SessionID)
-	if parseErr == nil {
-		operation := s.sessionOperation(sessionID)
-		operation.Lock()
-		defer operation.Unlock()
+	if parseErr != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: parseErr.Error()}}
 	}
-	if parseErr == nil && request.InstanceID == string(s.instanceID) && request.OwnershipEpoch != nil && request.RuntimeGeneration != nil {
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	if request.InstanceID == string(s.instanceID) && request.OwnershipEpoch != nil && request.RuntimeGeneration != nil {
 		current, getErr := s.state.GetSession(context.Background(), sessionID)
 		ownerKind := model.OwnerTerminal
 		if role == protocol.RoleDuckwayCC {
@@ -519,22 +519,41 @@ func (s *Server) routeSessionStop(request protocol.Request, role protocol.PeerRo
 		}
 		ownerMatches := current.Kind == model.KindShell && role == protocol.RoleDucklord || current.Writer != nil && current.Writer.Kind == ownerKind && current.Writer.ID == principal
 		if getErr == nil && current.Status == model.StatusStopped && ownerMatches && current.OwnershipEpoch == *request.OwnershipEpoch && current.RuntimeGeneration == *request.RuntimeGeneration {
+			operation.Unlock()
 			result, _ := json.Marshal(summaryFor(current))
 			return protocol.Response{ID: request.ID, Result: result}
 		}
 	}
-	session, _, protocolError := s.authorizeOwnerControl(request, role, principal)
+	session, owner, protocolError := s.authorizeOwnerControl(request, role, principal)
 	if protocolError != nil {
+		operation.Unlock()
 		return protocol.Response{ID: request.ID, Error: protocolError}
 	}
-	// The unqualified lifecycle operation is deliberately fail-fast.  An
-	// active managed task must never be turned into an implicit force-stop;
-	// callers that want drain or cancellation use the explicit wait/force
-	// lifecycle modes.
-	if session.Kind == model.KindAgent && session.TaskState != model.TaskIdle {
-		return protocol.Response{ID: request.ID, Error: &protocol.Error{
-			Code: protocol.ErrTaskActive, Message: "an active task prevents ending the session",
-		}}
+	if session.Kind == model.KindAgent {
+		_, _, reserveErr := s.state.ReserveLifecycle(context.Background(), store.PendingLifecycle{SessionID: session.ID, Operation: store.LifecycleEnd,
+			Mode: store.LifecycleImmediate, Requester: owner, SourceEpoch: session.OwnershipEpoch, SourceGeneration: session.RuntimeGeneration, RequestID: request.ID})
+		if reserveErr != nil {
+			operation.Unlock()
+			code := protocol.ErrInternal
+			switch {
+			case errors.Is(reserveErr, model.ErrTaskActive):
+				code = protocol.ErrTaskActive
+			case errors.Is(reserveErr, model.ErrLifecyclePending):
+				code = protocol.ErrDraining
+			case errors.Is(reserveErr, model.ErrPendingYield):
+				code = protocol.ErrPendingYield
+			case errors.Is(reserveErr, model.ErrNotOwner):
+				code = protocol.ErrNotOwner
+			case errors.Is(reserveErr, model.ErrStaleEpoch):
+				code = protocol.ErrStaleEpoch
+			case errors.Is(reserveErr, model.ErrStaleGeneration):
+				code = protocol.ErrStaleGeneration
+			}
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: code, Message: reserveErr.Error(), Retryable: code == protocol.ErrInternal}}
+		}
+		// The durable barrier now rejects admission; release the in-memory lock
+		// so final event delivery and ACK processing can finish runtime exit.
+		operation.Unlock()
 	}
 	forwarded := request
 	forwarded.Type = "supervisor.terminate"
@@ -542,16 +561,31 @@ func (s *Server) routeSessionStop(request protocol.Request, role protocol.PeerRo
 	defer cancel()
 	response := s.callControl(ctx, session.ID, forwarded)
 	if response.Error != nil {
+		if session.Kind == model.KindShell {
+			operation.Unlock()
+		} else {
+			// Once the durable barrier is committed, only an observed stopped
+			// state is terminal. Keep the inbox request replayable with the same
+			// ID across transport loss, supervisor reconnect, or daemon restart.
+			response.Error.Retryable = true
+			response.Error.Message = "stop outcome is not durable yet; retry the same request: " + response.Error.Message
+		}
 		return response
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		current, err := s.state.GetSession(context.Background(), session.ID)
 		if err == nil && current.Status == model.StatusStopped {
+			if session.Kind == model.KindShell {
+				operation.Unlock()
+			}
 			result, _ := json.Marshal(summaryFor(current))
 			return protocol.Response{ID: request.ID, Result: result}
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	if session.Kind == model.KindShell {
+		operation.Unlock()
 	}
 	return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrBusy, Message: "session is still stopping", Retryable: true}}
 }

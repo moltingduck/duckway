@@ -128,6 +128,11 @@ func (s *SQLite) validateManagedTaskTx(ctx context.Context, tx *sql.Tx, task Man
 	if session.TaskState != model.TaskIdle {
 		return model.ErrTaskActive
 	}
+	if pending, err := s.GetPendingLifecycleTx(ctx, tx, task.SessionID); err != nil {
+		return err
+	} else if pending != nil {
+		return model.ErrLifecyclePending
+	}
 	pending, err := s.GetPendingYieldTx(ctx, tx, task.SessionID)
 	if err != nil {
 		return err

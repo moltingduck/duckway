@@ -515,6 +515,16 @@ after daemon restart. The server's `cc_message_deliveries` table stores only a
 delivery digest and Discord message ID; deterministic Discord nonces prevent a
 lost HTTP response from duplicating a final reply.
 
+Lifecycle drains are persisted in Ducklion's
+`pending_lifecycle_operations` table rather than represented by a sleeping
+Discord worker. The barrier is owner-, epoch-, generation-, operation-, and
+request-ID-bound. It rejects new task/input/yield mutations but deliberately
+allows the current task's terminal events and Discord delivery ACKs to finish;
+this is what prevents both task overtaking and stop-versus-ACK deadlocks.
+Plain agent-session stop is currently connected to an immediate barrier. The
+same table's wait/force values are foundational and are not user-visible until
+their lifecycle RPC and Discord command phases are wired.
+
 Tmux session names use `<handle>-duckway`. During upgrade, `migrateLegacyTmuxSession` renames the older `duckway-<handle>` convention to the current name when only the legacy session exists. If both names exist, it logs a warning and leaves both alone to avoid merging separate active turns.
 
 ### Tables (v2 — `client_cc` is gone)

@@ -98,6 +98,27 @@ func TestRequestYieldWaitIsExclusiveAndDurable(t *testing.T) {
 	}
 }
 
+func TestLifecycleDrainRejectsYieldAndTaskAdmission(t *testing.T) {
+	ctx := context.Background()
+	service, state := openService(t)
+	session := newAgent("ABC123", "agent", model.TaskIdle)
+	if _, _, err := service.CreateSession(ctx, "cc:channel-1", "create", session); err != nil {
+		t.Fatal(err)
+	}
+	owner := *session.Writer
+	if _, _, err := state.ReserveLifecycle(ctx, store.PendingLifecycle{SessionID: session.ID, Operation: store.LifecycleEnd, Mode: store.LifecycleWait,
+		Requester: owner, SourceEpoch: 1, SourceGeneration: 1, RequestID: "end-wait"}); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, _, err := service.BeginTask(ctx, "cc:channel-1", "task", session.ID, owner, 1, 1); err != nil || outcome.Error == nil || outcome.Error.Code != protocol.ErrDraining {
+		t.Fatalf("task outcome=%+v err=%v", outcome, err)
+	}
+	requester := model.Owner{Kind: model.OwnerTerminal, ID: "laptop"}
+	if outcome, _, err := service.RequestYield(ctx, "terminal:laptop", "yield", session.ID, requester, false, 1, 1); err != nil || outcome.Error == nil || outcome.Error.Code != protocol.ErrDraining {
+		t.Fatalf("yield outcome=%+v err=%v", outcome, err)
+	}
+}
+
 func TestRuntimeExitTransfersPendingYield(t *testing.T) {
 	ctx := context.Background()
 	service, state := openService(t)

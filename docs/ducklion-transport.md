@@ -290,6 +290,21 @@ Discord inbox remains the durable prompt owner, while a supervisor may retain
 prepared bytes only in bounded memory. Admission and the session transition to
 `running` occur in one SQLite transaction and reject a pending yield.
 
+Ducklion schema v9 adds `pending_lifecycle_operations`. A row is the durable
+per-session drain barrier for end, destroy, or restart and records the exact
+operation, mode, requester, ownership epoch, runtime generation, and stable
+request ID. Reservation revalidates all fences transactionally. Immediate mode
+refuses an active task without installing a row; wait mode may install while a
+task is active. While a row exists, new managed-task admission, ownership
+yield, writable PTY input, and resize fail with `draining`, while completion
+events and delivery acknowledgements remain able to advance the existing task.
+This separation avoids holding an in-memory mutex across an unbounded drain and
+lets a replayed request resume the same lifecycle intent after daemon restart.
+The current plain agent-session stop path uses an `immediate` row and removes
+it transactionally with runtime exit. The `wait` and `force` protocol/Discord
+mode wiring is the next lifecycle layer; the schema already reserves those
+mode values but they are not yet accepted by user commands.
+
 Schema v5 adds digest-only structured-event receipts and schema v6 adds an
 `acked_event_seq` high-water mark. Neither migration stores prompts, progress
 text, or final responses. Full event payloads remain in the independent PTY

@@ -11,6 +11,7 @@ import (
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
+	"github.com/hackerduck/duckway/internal/ducklion/store"
 )
 
 func TestCreateSessionStartsManagedPTYAndAcceptsInput(t *testing.T) {
@@ -97,6 +98,24 @@ func TestCreateSessionStartsManagedPTYAndAcceptsInput(t *testing.T) {
 	}
 	if keyInfo.Mode().Perm() != 0600 {
 		t.Fatalf("key mode=%v", keyInfo.Mode())
+	}
+	owner := model.Owner{Kind: model.OwnerTerminal, ID: "laptop"}
+	if _, _, err := server.state.ReserveLifecycle(context.Background(), store.PendingLifecycle{SessionID: model.SessionID(created.SessionID), Operation: store.LifecycleEnd,
+		Mode: store.LifecycleWait, Requester: owner, SourceEpoch: created.OwnershipEpoch, SourceGeneration: created.RuntimeGeneration, RequestID: "end-wait"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendInput(created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, []byte("must-not-arrive\n")); err == nil {
+		t.Fatal("PTY input crossed lifecycle barrier")
+	} else if remote, ok := err.(*RemoteError); !ok || remote.Detail.Code != protocol.ErrDraining {
+		t.Fatalf("input barrier error=%v", err)
+	}
+	if err := client.Resize(created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, 31, 91); err == nil {
+		t.Fatal("PTY resize crossed lifecycle barrier")
+	} else if remote, ok := err.(*RemoteError); !ok || remote.Detail.Code != protocol.ErrDraining {
+		t.Fatalf("resize barrier error=%v", err)
+	}
+	if err := server.state.DeletePendingLifecycle(context.Background(), model.SessionID(created.SessionID)); err != nil {
+		t.Fatal(err)
 	}
 	if err := client.StopSession(context.Background(), created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err != nil {
 		t.Fatal(err)

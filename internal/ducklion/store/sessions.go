@@ -137,6 +137,9 @@ func (s *SQLite) MarkRuntimeExited(ctx context.Context, id model.SessionID, gene
 			return err
 		}
 	}
+	if err := s.DeletePendingLifecycleTx(ctx, tx, id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

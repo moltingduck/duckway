@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 8
+const SchemaVersion = 9
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -211,6 +211,11 @@ func (s *SQLite) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate ducklion schema to v8: %w", err)
 		}
 	}
+	if userVersion < 9 {
+		if err := migrateV9(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v9: %w", err)
+		}
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
 		return err
 	}
@@ -388,6 +393,18 @@ func migrateV8(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+func migrateV9(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `CREATE TABLE pending_lifecycle_operations (
+		session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+		operation TEXT NOT NULL CHECK(operation IN ('end','destroy','restart')),
+		mode TEXT NOT NULL CHECK(mode IN ('immediate','wait','force')),
+		requester_kind TEXT NOT NULL CHECK(requester_kind IN ('cc','terminal')),
+		requester_id TEXT NOT NULL, source_epoch INTEGER NOT NULL CHECK(source_epoch>0),
+		source_generation INTEGER NOT NULL CHECK(source_generation>0), request_id TEXT NOT NULL,
+		created_at_ms INTEGER NOT NULL)`)
+	return err
 }
 
 func (s *SQLite) InstanceID(ctx context.Context) (model.InstanceID, error) {

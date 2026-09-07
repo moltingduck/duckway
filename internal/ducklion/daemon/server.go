@@ -1423,6 +1423,11 @@ func (s *Server) routeSessionInput(request protocol.Request, principal string) p
 	if protocolError != nil {
 		return protocol.Response{ID: request.ID, Error: protocolError}
 	}
+	if pending, err := s.state.GetPendingLifecycle(context.Background(), session.ID); err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect lifecycle drain", Retryable: true}}
+	} else if pending != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrDraining, Message: "a lifecycle drain prevents PTY input"}}
+	}
 	if session.Kind == model.KindAgent {
 		if response := s.syncRuntimeOwnership(session); response.Error != nil {
 			response.ID = request.ID
@@ -1469,6 +1474,11 @@ func (s *Server) routeSessionResize(request protocol.Request, principal string) 
 	if protocolError != nil {
 		return protocol.Response{ID: request.ID, Error: protocolError}
 	}
+	if pending, err := s.state.GetPendingLifecycle(context.Background(), session.ID); err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect lifecycle drain", Retryable: true}}
+	} else if pending != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrDraining, Message: "a lifecycle drain prevents PTY resize"}}
+	}
 	if session.Kind == model.KindAgent {
 		if response := s.syncRuntimeOwnership(session); response.Error != nil {
 			response.ID = request.ID
@@ -1492,6 +1502,10 @@ func serviceMapError(err error) protocol.ErrorCode {
 		return protocol.ErrStaleEpoch
 	case errors.Is(err, model.ErrStaleGeneration):
 		return protocol.ErrStaleGeneration
+	case errors.Is(err, model.ErrTaskActive):
+		return protocol.ErrTaskActive
+	case errors.Is(err, model.ErrLifecyclePending):
+		return protocol.ErrDraining
 	default:
 		return protocol.ErrAdapterUnhealthy
 	}
