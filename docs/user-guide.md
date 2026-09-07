@@ -585,6 +585,10 @@ These sessions are local-only in the first version. They are not exposed through
 
 - The **bot token** is the only real boundary. Two CCs sharing a bot can reach each other's channels — use **different bots** to isolate teams.
 - The agent never sees `channel_id`, `guild_id`, or `category_id` — only opaque `dwch_…` handles.
+- Human authorization comes from Discord channel permissions. Legacy
+  `allowed_user_ids` and `allowed_role_ids` values are ignored. When
+  `require_mention` is enabled it applies only to ordinary prompts; recognized
+  `!` controls and management-only `!!` commands do not need a mention.
 - A client can only operate within its own CC (HTTP 403 otherwise) AND any handle in a path is checked to belong to that CC.
 - For `claude_code`, the daemon spawns claude with `--dangerously-skip-permissions`. For `codex`, the daemon uses the CC's controlled sandbox enum: new sessions pass `--sandbox <value>`, and resumed sessions pass the equivalent `sandbox_mode` config override because `codex exec resume` does not accept `--sandbox`; choosing `none` passes neither. When tmux is installed, the command runs inside `<handle>-duckway` and leaves the pane open for inspection. For `openclaw`, the daemon runs `openclaw agent --agent <id> --session-key duckway:<handle> --message-file <file> --json`; it does not use OpenClaw's own Discord/channel integration. The server and client both validate agent options, and the client never accepts arbitrary CLI arguments from the server. Anyone in the Discord category can make the selected agent act. Trust the channel.
 

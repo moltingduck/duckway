@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hackerduck/duckway/internal/cccommand"
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
 	"golang.org/x/net/websocket"
@@ -219,13 +220,11 @@ type ccGatewayCommand struct {
 }
 
 type discordCCPolicy struct {
-	GuildID              string   `json:"guild_id"`
-	CategoryID           string   `json:"category_id"`
-	Enabled              *bool    `json:"enabled,omitempty"`
-	AllowedUserIDs       []string `json:"allowed_user_ids,omitempty"`
-	AllowedRoleIDs       []string `json:"allowed_role_ids,omitempty"`
-	RequireMention       bool     `json:"require_mention,omitempty"`
-	AutoThreadManagement *bool    `json:"auto_thread_management,omitempty"`
+	GuildID              string `json:"guild_id"`
+	CategoryID           string `json:"category_id"`
+	Enabled              *bool  `json:"enabled,omitempty"`
+	RequireMention       bool   `json:"require_mention,omitempty"`
+	AutoThreadManagement *bool  `json:"auto_thread_management,omitempty"`
 }
 
 func prospectiveThreadHandle(ccID, messageID string) string {
@@ -262,13 +261,15 @@ type ccInboundMessage struct {
 	} `json:"mentions"`
 }
 
-func containsDiscordID(ids []string, target string) bool {
-	for _, id := range ids {
-		if id == target || id == "*" {
-			return true
-		}
+func isExplicitCCControl(content string) bool {
+	fields := strings.Fields(strings.TrimSpace(content))
+	if len(fields) == 0 {
+		return false
 	}
-	return false
+	if strings.HasPrefix(fields[0], "!!") {
+		return true
+	}
+	return cccommand.Usage(strings.ToLower(fields[0])) != ""
 }
 
 func authorizeCCInbound(cc models.ControlChannel, ch models.CCChannel, payload json.RawMessage, botUserID string) (ccInboundMessage, string) {
@@ -301,22 +302,10 @@ func authorizeCCInbound(cc models.ControlChannel, ch models.CCChannel, payload j
 	if policy.Enabled != nil && !*policy.Enabled {
 		return msg, "policy_disabled"
 	}
-	if len(policy.AllowedUserIDs) > 0 && !containsDiscordID(policy.AllowedUserIDs, msg.Author.ID) {
-		return msg, "user_denied"
-	}
-	if len(policy.AllowedRoleIDs) > 0 {
-		ok := false
-		for _, role := range msg.Member.Roles {
-			if containsDiscordID(policy.AllowedRoleIDs, role) {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return msg, "role_denied"
-		}
-	}
-	if policy.RequireMention {
+	// A MESSAGE_CREATE proves Discord already authorized this human to send in
+	// the channel. Legacy allowed_user_ids/allowed_role_ids JSON is deliberately
+	// ignored so it cannot survive as a second, hidden authorization layer.
+	if policy.RequireMention && !isExplicitCCControl(msg.Content) {
 		mentioned := false
 		for _, mention := range msg.Mentions {
 			if mention.ID == botUserID {

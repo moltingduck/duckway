@@ -193,10 +193,12 @@ func TestDiscordPolicyFailClosedE2E(t *testing.T) {
 		allowed       bool
 	}{
 		{"wrong guild", `{"id":"501","guild_id":"G2","channel_id":"9010","content":"x","author":{"id":"U1"},"member":{"roles":["R1"]},"mentions":[{"id":"BOT"}]}`, false},
-		{"wrong user", `{"id":"502","guild_id":"G1","channel_id":"9010","content":"x","author":{"id":"U2"},"member":{"roles":["R1"]},"mentions":[{"id":"BOT"}]}`, false},
-		{"wrong role", `{"id":"503","guild_id":"G1","channel_id":"9010","content":"x","author":{"id":"U1"},"member":{"roles":["R2"]},"mentions":[{"id":"BOT"}]}`, false},
+		{"legacy user allowlist ignored", `{"id":"502","guild_id":"G1","channel_id":"9010","content":"x","author":{"id":"U2"},"member":{"roles":["R1"]},"mentions":[{"id":"BOT"}]}`, true},
+		{"legacy role allowlist ignored", `{"id":"503","guild_id":"G1","channel_id":"9010","content":"x","author":{"id":"U1"},"member":{"roles":["R2"]},"mentions":[{"id":"BOT"}]}`, true},
 		{"missing mention", `{"id":"504","guild_id":"G1","channel_id":"9010","content":"@BOT text spoof","author":{"id":"U1"},"member":{"roles":["R1"]}}`, false},
 		{"allowed", `{"id":"505","guild_id":"G1","channel_id":"9010","content":"x","author":{"id":"U1"},"member":{"roles":["R1"]},"mentions":[{"id":"BOT"}]}`, true},
+		{"control command needs no mention", `{"id":"507","guild_id":"G1","channel_id":"9010","content":"!yield -w","author":{"id":"U2"},"member":{"roles":["R2"]}}`, true},
+		{"unknown command still needs mention", `{"id":"508","guild_id":"G1","channel_id":"9010","content":"!future-command","author":{"id":"U2"}}`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -213,6 +215,38 @@ func TestDiscordPolicyFailClosedE2E(t *testing.T) {
 	after, _ := h.cc.LatestInboxID("cc1")
 	if after != before {
 		t.Fatal("task-channel direct shell command was admitted")
+	}
+}
+
+func TestDiscordMentionPolicyIsActivationOnly(t *testing.T) {
+	cc := models.ControlChannel{IsActive: true, Config: `{"guild_id":"G1","category_id":"CAT1","require_mention":true}`}
+	task := models.CCChannel{Kind: "task"}
+	management := models.CCChannel{Kind: "management"}
+	tests := []struct {
+		name, content string
+		channel       models.CCChannel
+		mentions      bool
+		wantDeny      string
+	}{
+		{name: "yield", content: "!yield -w", channel: task},
+		{name: "status", content: "!status", channel: management},
+		{name: "direct shell", content: "!!pwd", channel: management},
+		{name: "unknown command", content: "!future-command", channel: task, wantDeny: "mention_required"},
+		{name: "ordinary prompt", content: "please continue", channel: task, wantDeny: "mention_required"},
+		{name: "mentioned prompt", content: "please continue", channel: task, mentions: true},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mentions := ""
+			if tc.mentions {
+				mentions = `,"mentions":[{"id":"BOT"}]`
+			}
+			payload := json.RawMessage(fmt.Sprintf(`{"id":"%d","guild_id":"G1","channel_id":"C1","content":%q,"author":{"id":"U1"}%s}`, 900+i, tc.content, mentions))
+			_, deny := authorizeCCInbound(cc, tc.channel, payload, "BOT")
+			if deny != tc.wantDeny {
+				t.Fatalf("deny=%q want=%q", deny, tc.wantDeny)
+			}
+		})
 	}
 }
 

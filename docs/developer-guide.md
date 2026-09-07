@@ -612,7 +612,17 @@ For `discord_request_approval`, the server posts the question + reactions, regis
 
 - Bot token = the only real boundary. Different teams → different bots.
 - `cc_client.go` enforces two ACL layers: client must be bound to the CC (1:1), and every `{handle}` in a URL must belong to that CC.
-- Daemon trust boundary is the Discord category: anyone in the category can drive the selected agent. `claude_code` currently runs with `--dangerously-skip-permissions`; `codex` runs with a per-CC sandbox enum (`workspace-write`, `read-only`, `danger-full-access`, or `none`) normalized by the server and sanitized again by the client; `openclaw` uses the local OpenClaw configuration and selected agent id. Claude/Codex use Duckway PTY sessions by default; legacy per-channel tmux sessions named `<handle>-duckway` are used only when `duckway cc watch --tmux` or `DUCKWAY_CC_USE_TMUX=1` is enabled.
+- Daemon trust boundary is the Discord category: anyone Discord permits to
+  send in a mapped channel can drive the selected agent. Legacy
+  `allowed_user_ids`/`allowed_role_ids` JSON is ignored, and `require_mention`
+  activates only ordinary prompts; recognized controls bypass it.
+  `claude_code` currently runs with `--dangerously-skip-permissions`; `codex`
+  runs with a per-CC sandbox enum (`workspace-write`, `read-only`,
+  `danger-full-access`, or `none`) normalized by the server and sanitized again
+  by the client; `openclaw` uses the local OpenClaw configuration and selected
+  agent id. Claude/Codex use Duckway PTY sessions by default; legacy per-channel
+  tmux sessions named `<handle>-duckway` are used only when
+  `duckway cc watch --tmux` or `DUCKWAY_CC_USE_TMUX=1` is enabled.
 - Agent options are not a generic argument channel. The server stores provider-specific `config.agent_options`, strips unsupported options for other agents, and rejects unknown Codex sandbox values. The client treats server state as untrusted, re-validates the same enum, and constructs `exec.Command` argv or a quoted tmux launch script from fixed argument positions. Do not add a free-form `args` or `flags` field to Control Channels; add a typed option and validate it on both sides.
 
 ### Test hooks
