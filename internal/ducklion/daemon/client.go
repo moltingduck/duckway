@@ -106,9 +106,9 @@ func ConnectRoleContext(ctx context.Context, conn io.ReadWriteCloser, principal 
 	}()
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	setDeadline(conn, time.Now().Add(10*time.Second))
-	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
+	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_destroy", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if role == protocol.RoleDuckwayCC {
-		offeredCapabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_yield", "session_task", "discord_binding", "agent_task"}
+		offeredCapabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_destroy", "session_yield", "session_task", "discord_binding", "discord_unbind", "agent_task"}
 	}
 	if err := codec.Write(protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: role, Principal: principal, Capabilities: offeredCapabilities}); err != nil {
 		conn.Close()
@@ -754,6 +754,49 @@ func (c *Client) StopSessionWithID(ctx context.Context, requestID, sessionID str
 	}
 	response, err := c.CallContext(ctx, protocol.Request{ID: requestID, Type: "session.stop", InstanceID: c.instanceID, SessionID: sessionID,
 		OwnershipEpoch: &epoch, RuntimeGeneration: &generation})
+	if err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return &RemoteError{Detail: *response.Error}
+	}
+	return nil
+}
+
+func (c *Client) DestroySessionWithID(ctx context.Context, requestID, sessionID string, epoch, generation uint64) error {
+	if err := c.requireCapability("session_destroy"); err != nil {
+		return err
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: requestID, Type: "session.destroy", InstanceID: c.instanceID, SessionID: sessionID,
+		OwnershipEpoch: &epoch, RuntimeGeneration: &generation})
+	if err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return &RemoteError{Detail: *response.Error}
+	}
+	return nil
+}
+
+func (c *Client) ReplayDestroySessionWithID(ctx context.Context, requestID, sessionID string) error {
+	if err := c.requireCapability("session_destroy"); err != nil {
+		return err
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: requestID, Type: "session.destroy", InstanceID: c.instanceID, SessionID: sessionID})
+	if err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return &RemoteError{Detail: *response.Error}
+	}
+	return nil
+}
+
+func (c *Client) UnbindDiscordWithID(ctx context.Context, requestID, sessionID string) error {
+	if err := c.requireCapability("discord_unbind"); err != nil {
+		return err
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: requestID, Type: "session.unbind_discord", InstanceID: c.instanceID, SessionID: sessionID})
 	if err != nil {
 		return err
 	}

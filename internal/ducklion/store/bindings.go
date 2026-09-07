@@ -52,6 +52,17 @@ func (s *SQLite) GetBindingByChannel(ctx context.Context, handle string) (Discor
 	return scanBinding(s.db.QueryRowContext(ctx, `SELECT session_id,channel_handle,management_handle,created_at_ms FROM discord_bindings WHERE channel_handle=?`, handle))
 }
 
+func (s *SQLite) DeleteBindingTx(ctx context.Context, tx *sql.Tx, id model.SessionID) error {
+	result, err := tx.ExecContext(ctx, `DELETE FROM discord_bindings WHERE session_id=?`, id)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 type bindingScanner interface{ Scan(...any) error }
 
 func scanBinding(row bindingScanner) (DiscordBinding, error) {

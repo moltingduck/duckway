@@ -39,6 +39,7 @@ type Options struct {
 	Root            string
 	SocketPath      string
 	RuntimeLauncher func(string) error
+	SessionCleaner  func(string) error
 }
 
 type Server struct {
@@ -79,6 +80,7 @@ type Server struct {
 	attentionRates               map[string]attentionRate
 	activitySlots                chan struct{}
 	runtimeLauncher              func(string) error
+	sessionCleaner               func(string) error
 }
 
 type attentionRate struct {
@@ -215,10 +217,13 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 		connections: make(map[*net.UnixConn]struct{}), ducklords: make(map[string]*net.UnixConn), outputs: make(map[model.SessionID]registeredOutput), controls: make(map[model.SessionID]*controlPeer),
 		outputSubscriptionsBySession: make(map[model.SessionID]int),
 		activitySlots:                make(chan struct{}, maxSupervisorActivityConnections),
-		sequences:                    make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher}
+		sequences:                    make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher, sessionCleaner: options.SessionCleaner}
 	server.agentEvents = make(map[string][]protocol.SupervisorAgentEvent)
 	if server.runtimeLauncher == nil {
 		server.runtimeLauncher = server.spawnRuntime
+	}
+	if server.sessionCleaner == nil {
+		server.sessionCleaner = os.RemoveAll
 	}
 	return server, nil
 }
@@ -312,9 +317,9 @@ func (s *Server) handle(conn *net.UnixConn) {
 			s.connMu.Unlock()
 		}()
 	}
-	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
+	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_destroy", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if remote.Role == protocol.RoleDuckwayCC {
-		capabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_yield", "session_task", "discord_binding", "agent_task"}
+		capabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_destroy", "session_yield", "session_task", "discord_binding", "discord_unbind", "agent_task"}
 	}
 	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: capabilities}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
@@ -1290,6 +1295,11 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session stop capability was not negotiated"}}
 		}
 		return s.routeSessionStop(request, role, principal)
+	case "session.destroy":
+		if !hasCapability(capabilities, "session_destroy") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session destroy capability was not negotiated"}}
+		}
+		return s.routeSessionDestroy(request, role, principal)
 	case "session.yield":
 		if !hasCapability(capabilities, "session_yield") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session yield capability was not negotiated"}}
@@ -1320,6 +1330,11 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "Discord binding capability was not negotiated"}}
 		}
 		return s.routeSessionBind(request, principal)
+	case "session.unbind_discord":
+		if role != protocol.RoleDuckwayCC || !hasCapability(capabilities, "discord_unbind") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "Discord unbind capability was not negotiated"}}
+		}
+		return s.routeSessionUnbind(request, principal)
 	case "binding.current":
 		if role != protocol.RoleDuckwayCC || !hasCapability(capabilities, "discord_binding") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "Discord binding capability was not negotiated"}}

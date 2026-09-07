@@ -549,8 +549,12 @@ Relative paths are resolved from the directory where you run `duckway projects a
 `duckway cc bind` on the agent box does the same thing without going through Discord. With no args it prints a numbered table and reads selections from stdin — accept `1,3,5`, `1-3`, or `all`, and an empty line cancels. Each selection becomes its own task channel. For scripts: `duckway cc bind --session <id> [--session <id> …] [--cwd <substr>]`.
 
 In any task channel:
-- `!end` → end the current agent session and **archive** the Discord channel (history kept, channel renamed and removed from the category)
-- `!destroy` → end the current agent session and **hard-delete** the Discord channel (history gone — useful for one-shot experiments)
+- `!end` → stop the current Ducklion agent, release its Discord binding, and **archive** the channel; the stopped session, PTY log, and Discord history remain available for diagnosis
+- `!destroy` → stop and remove the Ducklion session plus its recovery/log files, then **hard-delete** the Discord channel and history
+
+Both commands are durable and require the task channel to be the current
+Ducklion writer. If terminal control owns the session, the command fails without
+changing either the PTY or Discord channel; use `!yield` to take control first.
 
 The management channel itself also accepts plain text — the message is forwarded to the agent with a system note nudging it to spawn a dedicated task channel via `discord_create_task_channel` for any sustained work, instead of holding a long conversation inline.
 

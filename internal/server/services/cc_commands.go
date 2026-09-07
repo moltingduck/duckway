@@ -134,14 +134,14 @@ func (h *CCCommandHandler) handle(ctx context.Context, ccID string, ch *models.C
 			h.reply(ctx, botToken, ch.ChannelID, "❌ `!end` ends the *current* channel's session — run it inside a task channel.")
 			return
 		}
-		h.handleEnd(ctx, botToken, cc, ch)
+		h.forwardToDaemon(ctx, botToken, cc, ch, cmd, args[1:])
 
 	case "!destroy":
 		if ch.Kind == "management" {
 			h.reply(ctx, botToken, ch.ChannelID, "❌ `!destroy` deletes the *current* task channel — run it inside one. (The management channel can't be destroyed; delete the CC from /admin/cc instead.)")
 			return
 		}
-		h.handleDestroy(ctx, botToken, cc, ch)
+		h.forwardToDaemon(ctx, botToken, cc, ch, cmd, args[1:])
 
 	case "!list":
 		if ch.Kind != "management" {
@@ -314,52 +314,6 @@ func (h *CCCommandHandler) handleNew(ctx context.Context, botToken string, cc *m
 	h.forwardToDaemon(ctx, botToken, cc, mgmt, "!new", args)
 }
 
-// handleDestroy is the heavier sibling of !end. Both close the session,
-// but !end *archives* the Discord channel (rename + remove from category,
-// history preserved); !destroy hard-deletes via DELETE /channels/{id}
-// (history gone, channel id reused-after-delete is fine because we drop
-// our cache row too). Use !end when you might want to look back; use
-// !destroy when the channel was a one-shot experiment.
-func (h *CCCommandHandler) handleDestroy(ctx context.Context, botToken string, cc *models.ControlChannel, ch *models.CCChannel) {
-	// No farewell post — the channel is about to vanish so a message
-	// would only appear for a millisecond. Discord will broadcast a
-	// CHANNEL_DELETE event when the delete succeeds, which the gateway
-	// also handles (drops the cc_channels row + fires channel_delete
-	// to the daemon). Belt-and-braces: do the local cleanup here too in
-	// case the Discord call fails or we don't hear the event back fast
-	// enough.
-	if err := h.bot.DeleteChannel(ctx, botToken, ch.ChannelID); err != nil {
-		// Channel might already be gone (someone deleted in Discord UI
-		// before us) — still clean local state and let the user know.
-		_ = h.cc.DeleteChannel(ch.Handle)
-		if h.hub != nil && cc.ClientID != "" {
-			h.hub.Publish(cc.ClientID, CCEvent{Type: "channel_delete", CCID: cc.ID, Handle: ch.Handle})
-		}
-		// Can't reply to a destroyed channel; if the destroy itself failed,
-		// the channel still exists so we CAN reply with the error. Try.
-		h.reply(ctx, botToken, ch.ChannelID, "⚠️ discord delete failed: "+err.Error()+" (local state cleared regardless)")
-		return
-	}
-	_ = h.cc.DeleteChannel(ch.Handle)
-	if h.hub != nil && cc.ClientID != "" {
-		h.hub.Publish(cc.ClientID, CCEvent{Type: "channel_delete", CCID: cc.ID, Handle: ch.Handle})
-	}
-}
-
-func (h *CCCommandHandler) handleEnd(ctx context.Context, botToken string, cc *models.ControlChannel, ch *models.CCChannel) {
-	// Post farewell, then archive Discord channel + delete cache row.
-	_, _ = h.bot.PostMessage(ctx, botToken, ch.ChannelID,
-		"🔚 Session ended by `!end`. Archiving this channel.")
-	// Best-effort — local state (DeleteChannel below) is the source of truth.
-	_ = h.bot.ArchiveChannel(ctx, botToken, ch.ChannelID, ch.Name)
-	_ = h.cc.DeleteChannel(ch.Handle)
-	if h.hub != nil && cc.ClientID != "" {
-		h.hub.Publish(cc.ClientID, CCEvent{
-			Type: "channel_delete", CCID: cc.ID, Handle: ch.Handle,
-		})
-	}
-}
-
 func (h *CCCommandHandler) handleList(ctx context.Context, botToken string, cc *models.ControlChannel, replyChannelID string) {
 	chans, err := h.cc.ListChannels(cc.ID)
 	if err != nil {
@@ -447,15 +401,16 @@ func (h *CCCommandHandler) forwardToDaemon(ctx context.Context, botToken string,
 		return
 	}
 	payload, _ := json.Marshal(map[string]interface{}{
-		"command": cmd,
-		"args":    args,
+		"command":    cmd,
+		"args":       args,
+		"session_id": ch.SessionID,
 		"request_id": func() string {
 			value, _ := ctx.Value(ccCommandRequestIDKey{}).(string)
 			return value
 		}(),
 	})
 	requestID, _ := ctx.Value(ccCommandRequestIDKey{}).(string)
-	if requestID != "" && (cmd == "!new" || cmd == "!new-confirm") {
+	if requestID != "" && (cmd == "!new" || cmd == "!new-confirm" || cmd == "!end" || cmd == "!destroy") {
 		// Client-side commands first enter the same durable per-channel FIFO as
 		// prompts. The subscriber preflight above preserves immediate "offline"
 		// UX, while a disconnect after admission is recovered by normal claims.

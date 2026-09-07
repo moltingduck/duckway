@@ -544,6 +544,83 @@ func (s *Server) routeSessionStop(request protocol.Request, role protocol.PeerRo
 	return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrBusy, Message: "session is still stopping", Retryable: true}}
 }
 
+func (s *Server) routeSessionUnbind(request protocol.Request, principal string) protocol.Response {
+	if request.InstanceID != string(s.instanceID) || request.OwnershipEpoch != nil || request.RuntimeGeneration != nil || len(request.Body) != 0 {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid Discord unbind envelope"}}
+	}
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}}
+	}
+	outcome, _, err := s.service.UnbindDiscord(context.Background(), "cc:"+principal, request.ID, sessionID)
+	if err != nil {
+		code := protocol.ErrInternal
+		if errors.Is(err, store.ErrIdempotencyConflict) {
+			code = protocol.ErrIdempotencyConflict
+		} else if errors.Is(err, store.ErrNotFound) {
+			code = protocol.ErrNotFound
+		}
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: code, Message: err.Error(), Retryable: code == protocol.ErrInternal}}
+	}
+	if outcome.Error != nil {
+		return protocol.Response{ID: request.ID, Error: outcome.Error}
+	}
+	result, _ := json.Marshal(outcome)
+	return protocol.Response{ID: request.ID, Result: result}
+}
+
+func (s *Server) routeSessionDestroy(request protocol.Request, role protocol.PeerRole, principal string) protocol.Response {
+	if request.InstanceID != string(s.instanceID) || len(request.Body) != 0 || (request.OwnershipEpoch == nil) != (request.RuntimeGeneration == nil) {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session identity and matching fences are required"}}
+	}
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}}
+	}
+	ownerKind := model.OwnerTerminal
+	if role == protocol.RoleDuckwayCC {
+		ownerKind = model.OwnerCC
+	}
+	authenticatedPrincipal := string(ownerKind) + ":" + principal
+	var outcome service.Outcome
+	if request.OwnershipEpoch == nil {
+		outcome, err = s.service.ReplayDestroyedSession(context.Background(), authenticatedPrincipal, request.ID, sessionID)
+	} else {
+		outcome, _, err = s.service.DestroyStoppedSession(context.Background(), authenticatedPrincipal, request.ID, sessionID, *request.OwnershipEpoch, *request.RuntimeGeneration)
+	}
+	if err != nil {
+		code := protocol.ErrInternal
+		if errors.Is(err, store.ErrIdempotencyConflict) {
+			code = protocol.ErrIdempotencyConflict
+		} else if errors.Is(err, store.ErrNotFound) {
+			code = protocol.ErrNotFound
+		}
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: code, Message: err.Error(), Retryable: code == protocol.ErrInternal}}
+	}
+	if outcome.Error != nil {
+		return protocol.Response{ID: request.ID, Error: outcome.Error}
+	}
+	// Database deletion cascades binding/task state. Runtime files contain the
+	// recovery key and PTY log, so destroy removes them after durable commit;
+	// replay repeats this idempotent filesystem cleanup.
+	if err := s.sessionCleaner(filepath.Join(s.root, "sessions", string(sessionID))); err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "session state cleanup failed", Retryable: true}}
+	}
+	s.agentEventMu.Lock()
+	for key, events := range s.agentEvents {
+		if strings.HasPrefix(key, string(sessionID)+"/") {
+			for _, event := range events {
+				s.agentEventCount--
+				s.agentEventBytes -= len(event.TaskID) + len(event.Summary) + len(event.Response) + 64
+			}
+			delete(s.agentEvents, key)
+		}
+	}
+	s.agentEventMu.Unlock()
+	result, _ := json.Marshal(outcome)
+	return protocol.Response{ID: request.ID, Result: result}
+}
+
 func (s *Server) routeSessionYield(request protocol.Request, role protocol.PeerRole, principal string) protocol.Response {
 	var body protocol.SessionYield
 	if request.InstanceID != string(s.instanceID) || request.OwnershipEpoch == nil || request.RuntimeGeneration == nil || decodeStrict(request.Body, &body) != nil {

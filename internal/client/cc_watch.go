@@ -694,7 +694,6 @@ func (w *CCWatch) handleChannelDelete(data []byte) {
 	}
 	if existing, ok := w.commandRunners[env.Handle]; ok {
 		commandRunner = existing
-		delete(w.commandRunners, env.Handle)
 	}
 	w.mu.Unlock()
 	if agentRunner != nil {
@@ -704,7 +703,14 @@ func (w *CCWatch) handleChannelDelete(data []byte) {
 		shellRunner.Stop()
 	}
 	if commandRunner != nil {
-		commandRunner.Stop()
+		go func(handle string, runner *ccCommandRunner) {
+			runner.Retire()
+			w.mu.Lock()
+			if w.commandRunners[handle] == runner {
+				delete(w.commandRunners, handle)
+			}
+			w.mu.Unlock()
+		}(env.Handle, commandRunner)
 	}
 	_ = w.sessions.Drop(env.Handle)
 	// If this channel had a live tmux pane (tmux runner), kill it now —

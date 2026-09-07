@@ -27,6 +27,8 @@ import (
 type fakeServer struct {
 	mu               sync.Mutex
 	creates          []map[string]string
+	archives         []string
+	channelDeletes   []string
 	messages         []map[string]string
 	deliveries       map[string]string
 	finishes         []map[string]string
@@ -36,6 +38,8 @@ type fakeServer struct {
 	reactionRelease  <-chan struct{}
 	dropDeliveryOnce bool
 	failDeliveryOnce bool
+	failArchiveOnce  bool
+	failDeleteOnce   bool
 	srv              *httptest.Server
 }
 
@@ -59,6 +63,26 @@ func newFakeServer(t *testing.T) *fakeServer {
 		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/session"):
 			_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/archive"):
+			f.mu.Lock()
+			fail := f.failArchiveOnce
+			f.failArchiveOnce = false
+			f.archives = append(f.archives, r.URL.Path)
+			f.mu.Unlock()
+			if fail {
+				http.Error(w, "archive unavailable", http.StatusBadGateway)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/client/cc/channels/") && !strings.Contains(r.URL.Path, "/messages/"):
+			f.mu.Lock()
+			fail := f.failDeleteOnce
+			f.failDeleteOnce = false
+			f.channelDeletes = append(f.channelDeletes, r.URL.Path)
+			f.mu.Unlock()
+			if fail {
+				http.Error(w, "delete unavailable", http.StatusBadGateway)
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == "GET" && r.URL.Path == "/client/cc/channels":
 			_ = json.NewEncoder(w).Encode([]map[string]string{
@@ -147,6 +171,18 @@ func (f *fakeServer) snapshotCreates() []map[string]string {
 	return out
 }
 
+func (f *fakeServer) snapshotArchives() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.archives...)
+}
+
+func (f *fakeServer) snapshotChannelDeletes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.channelDeletes...)
+}
+
 func (f *fakeServer) snapshotReactions() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -178,6 +214,18 @@ func (f *fakeServer) dropNextDeliveredResponse() {
 func (f *fakeServer) failNextDeliveredMessage() {
 	f.mu.Lock()
 	f.failDeliveryOnce = true
+	f.mu.Unlock()
+}
+
+func (f *fakeServer) failNextArchive() {
+	f.mu.Lock()
+	f.failArchiveOnce = true
+	f.mu.Unlock()
+}
+
+func (f *fakeServer) failNextChannelDelete() {
+	f.mu.Lock()
+	f.failDeleteOnce = true
 	f.mu.Unlock()
 }
 
@@ -583,6 +631,102 @@ func TestDurableNewErrorReplyLossReadmitsThenCompletesOnce(t *testing.T) {
 
 func ptrString(value string) *string { return &value }
 
+func TestCCCommandRunnerRetireLetsActiveDestroyFinish(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	runner := newCCCommandRunner(func(context.Context, []byte) {
+		close(entered)
+		<-release
+		close(finished)
+	})
+	if !runner.Enqueue([]byte("destroy")) {
+		t.Fatal("could not enqueue active command")
+	}
+	<-entered
+	retired := make(chan struct{})
+	go func() {
+		runner.Retire()
+		close(retired)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		runner.mu.Lock()
+		retiring := runner.retiring
+		runner.mu.Unlock()
+		if retiring {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("runner did not enter retiring state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if runner.Enqueue([]byte("late")) {
+		t.Fatal("retiring runner accepted another command")
+	}
+	select {
+	case <-retired:
+		t.Fatal("Retire returned before active command completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("active command was cancelled during retire")
+	}
+	select {
+	case <-retired:
+	case <-time.After(time.Second):
+		t.Fatal("retiring runner did not stop after active command")
+	}
+}
+
+func TestCCCommandRunnerStopEscalatesRetiringHandler(t *testing.T) {
+	entered := make(chan struct{})
+	cancelled := make(chan struct{})
+	runner := newCCCommandRunner(func(ctx context.Context, _ []byte) {
+		close(entered)
+		<-ctx.Done()
+		close(cancelled)
+	})
+	if !runner.Enqueue([]byte("destroy")) {
+		t.Fatal("could not enqueue active command")
+	}
+	<-entered
+	retired := make(chan struct{})
+	go func() {
+		runner.Retire()
+		close(retired)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		runner.mu.Lock()
+		retiring := runner.retiring
+		runner.mu.Unlock()
+		if retiring {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("runner did not enter retiring state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stopped := make(chan struct{})
+	go func() {
+		runner.Stop()
+		close(stopped)
+	}()
+	for name, done := range map[string]<-chan struct{}{"handler cancellation": cancelled, "Stop": stopped, "Retire": retired} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not complete", name)
+		}
+	}
+}
+
 func TestCmdNewWithMissingCwdRequiresConfirmationThenAddsProject(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(root, "new-app")
@@ -746,14 +890,73 @@ func TestNewProvisionWorkflowReplaysOneChannelAndOneCCOwnedSession(t *testing.T)
 		t.Fatal(err)
 	}
 	binding, err := management.DiscordBindingForSession(context.Background(), session.SessionID)
-	_ = management.Close()
 	if err != nil || binding.ChannelHandle != created.Handle {
 		t.Fatalf("binding=%+v err=%v", binding, err)
 	}
-	task, err := duckliondaemon.DialCC(daemon.SocketPath(), created.Handle)
-	if err == nil {
-		_ = task.StopSession(context.Background(), session.SessionID, session.OwnershipEpoch, session.RuntimeGeneration)
-		_ = task.Close()
+	endPayload, _ := json.Marshal(clientCommandPayload{Command: "!end", RequestID: "discord-end-1", SessionID: session.SessionID})
+	endEnvelope, _ := json.Marshal(sseEnvelope{Type: "client_command", CCID: "cc1", Handle: created.Handle, Payload: endPayload, InboxID: 501, ClaimToken: "claim-end"})
+	fake.failNextDeliveredMessage()
+	w.handleClientCommandContext(context.Background(), endEnvelope)
+	if finishes := fake.snapshotFinishes(); len(finishes) != 1 || finishes[0]["status"] != "admitted" {
+		t.Fatalf("end finishes after farewell failure=%+v", finishes)
+	}
+	if got := fake.snapshotArchives(); len(got) != 0 {
+		t.Fatalf("archive ran before farewell delivery: %+v", got)
+	}
+	if _, err := management.DiscordBindingForSession(context.Background(), session.SessionID); err != nil {
+		t.Fatalf("farewell failure released binding early: %v", err)
+	}
+	fake.failNextArchive()
+	w.handleClientCommandContext(context.Background(), endEnvelope)
+	if finishes := fake.snapshotFinishes(); len(finishes) != 2 || finishes[1]["status"] != "admitted" {
+		t.Fatalf("end finishes after archive failure=%+v", finishes)
+	}
+	if _, err := management.DiscordBindingForSession(context.Background(), session.SessionID); err != nil {
+		t.Fatalf("archive failure released binding early: %v", err)
+	}
+	w.handleClientCommandContext(context.Background(), endEnvelope)
+	sessions, err := management.ListSessions()
+	if err != nil || len(sessions) != 1 || sessions[0].Status != model.StatusStopped {
+		t.Fatalf("sessions after end=%+v err=%v", sessions, err)
+	}
+	if _, err := management.DiscordBindingForSession(context.Background(), session.SessionID); err == nil {
+		t.Fatal("ended session remains Discord-bound")
+	}
+	if got := fake.snapshotArchives(); len(got) != 2 || !strings.Contains(got[1], created.Handle) {
+		t.Fatalf("archives=%+v", got)
+	}
+	if finishes := fake.snapshotFinishes(); len(finishes) != 3 || finishes[2]["status"] != "completed" {
+		t.Fatalf("end replay finishes=%+v", finishes)
+	}
+	if messages := fake.snapshotMessages(); len(messages) != 1 || !strings.Contains(messages[0]["content"], "Archiving this channel") {
+		t.Fatalf("stable end replies=%+v", messages)
+	}
+
+	destroyedChannel, destroyedSession, err := w.createProvisionedProjectSession(context.Background(), "dwch_mgmt", "cc1", "discord-9002", "throwaway", "", configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destroyPayload, _ := json.Marshal(clientCommandPayload{Command: "!destroy", RequestID: "discord-destroy-1", SessionID: destroyedSession.SessionID})
+	destroyEnvelope, _ := json.Marshal(sseEnvelope{Type: "client_command", CCID: "cc1", Handle: destroyedChannel.Handle, Payload: destroyPayload, InboxID: 502, ClaimToken: "claim-destroy"})
+	fake.failNextChannelDelete()
+	w.handleClientCommandContext(context.Background(), destroyEnvelope)
+	if finishes := fake.snapshotFinishes(); len(finishes) != 4 || finishes[3]["status"] != "admitted" {
+		t.Fatalf("destroy finishes after Discord failure=%+v", finishes)
+	}
+	w.handleClientCommandContext(context.Background(), destroyEnvelope)
+	sessions, err = management.ListSessions()
+	_ = management.Close()
+	if err != nil || len(sessions) != 1 || sessions[0].SessionID != session.SessionID {
+		t.Fatalf("sessions after destroy=%+v err=%v", sessions, err)
+	}
+	if got := fake.snapshotChannelDeletes(); len(got) != 2 || !strings.Contains(got[1], destroyedChannel.Handle) {
+		t.Fatalf("channel deletes=%+v", got)
+	}
+	if finishes := fake.snapshotFinishes(); len(finishes) != 5 || finishes[4]["status"] != "completed" {
+		t.Fatalf("destroy replay finishes=%+v", finishes)
+	}
+	if _, err := os.Stat(filepath.Join(ducklionRoot, "sessions", destroyedSession.SessionID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destroyed session files remain: %v", err)
 	}
 }
 

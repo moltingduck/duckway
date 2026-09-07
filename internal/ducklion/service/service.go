@@ -32,6 +32,111 @@ type BindOutcome struct {
 	Error   *protocol.Error      `json:"error,omitempty"`
 }
 
+func (s *Service) UnbindDiscord(ctx context.Context, principal, requestID string, sessionID model.SessionID) (Outcome, bool, error) {
+	if !strings.HasPrefix(principal, "cc:") {
+		return Outcome{}, false, fmt.Errorf("valid CC principal is required")
+	}
+	payload, _ := json.Marshal(struct {
+		SessionID model.SessionID `json:"session_id"`
+	}{sessionID})
+	key := store.MutationKey{Principal: principal, RequestID: requestID, Operation: "unbind_discord", SessionID: sessionID,
+		Fingerprint: store.Fingerprint("unbind_discord", sessionID, payload)}
+	result, err := s.state.RunMutation(ctx, key, func(tx *sql.Tx) (json.RawMessage, error) {
+		binding, err := s.state.GetBindingBySessionTx(ctx, tx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if binding.ChannelHandle != strings.TrimPrefix(principal, "cc:") {
+			return json.Marshal(Outcome{Error: &protocol.Error{Code: protocol.ErrNotOwner, Message: "Discord channel does not own this binding"}})
+		}
+		session, err := s.state.GetSessionTx(ctx, tx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.state.DeleteBindingTx(ctx, tx, sessionID); err != nil {
+			return nil, err
+		}
+		if err := s.audit(ctx, tx, principal, "unbind_discord", "ok", session); err != nil {
+			return nil, err
+		}
+		return json.Marshal(Outcome{SessionID: sessionID, OwnershipEpoch: session.OwnershipEpoch})
+	})
+	if err != nil {
+		return Outcome{}, false, err
+	}
+	var outcome Outcome
+	if err := json.Unmarshal(result.JSON, &outcome); err != nil {
+		return Outcome{}, false, err
+	}
+	return outcome, result.Replayed, nil
+}
+
+func (s *Service) DestroyStoppedSession(ctx context.Context, principal, requestID string, sessionID model.SessionID, expectedEpoch, expectedGeneration uint64) (Outcome, bool, error) {
+	payload, _ := json.Marshal(struct {
+		OwnershipEpoch    uint64 `json:"ownership_epoch"`
+		RuntimeGeneration uint64 `json:"runtime_generation"`
+	}{expectedEpoch, expectedGeneration})
+	key := store.MutationKey{Principal: principal, RequestID: requestID, Operation: "destroy_session", SessionID: sessionID,
+		Fingerprint: store.Fingerprint("destroy_session", sessionID, payload)}
+	result, err := s.state.RunMutation(ctx, key, func(tx *sql.Tx) (json.RawMessage, error) {
+		session, err := s.state.GetSessionTx(ctx, tx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		ownerKind := model.OwnerTerminal
+		if strings.HasPrefix(principal, "cc:") {
+			ownerKind = model.OwnerCC
+		}
+		owner := model.Owner{Kind: ownerKind, ID: strings.TrimPrefix(strings.TrimPrefix(principal, "cc:"), "terminal:")}
+		if session.Kind == model.KindShell {
+			if ownerKind != model.OwnerTerminal {
+				return json.Marshal(rejection(protocol.ErrNotOwner, "Discord CC cannot destroy shell sessions", session))
+			}
+		} else if session.Writer == nil || *session.Writer != owner {
+			return json.Marshal(rejection(protocol.ErrNotOwner, "session writer changed", session))
+		}
+		if session.Status != model.StatusStopped {
+			return json.Marshal(rejection(protocol.ErrBusy, "session must be stopped before destroy", session))
+		}
+		if session.OwnershipEpoch != expectedEpoch {
+			return json.Marshal(rejection(protocol.ErrStaleEpoch, "ownership epoch changed", session))
+		}
+		if session.RuntimeGeneration != expectedGeneration {
+			return json.Marshal(rejection(protocol.ErrStaleGeneration, "runtime generation changed", session))
+		}
+		if err := s.audit(ctx, tx, principal, "destroy_session", "ok", session); err != nil {
+			return nil, err
+		}
+		if err := s.state.DeleteStoppedSessionTx(ctx, tx, sessionID, expectedEpoch, expectedGeneration); err != nil {
+			return nil, err
+		}
+		return json.Marshal(Outcome{SessionID: sessionID, OwnershipEpoch: expectedEpoch})
+	})
+	if err != nil {
+		return Outcome{}, false, err
+	}
+	var outcome Outcome
+	if err := json.Unmarshal(result.JSON, &outcome); err != nil {
+		return Outcome{}, false, err
+	}
+	return outcome, result.Replayed, nil
+}
+
+func (s *Service) ReplayDestroyedSession(ctx context.Context, principal, requestID string, sessionID model.SessionID) (Outcome, error) {
+	raw, err := s.state.ReplayCompletedMutation(ctx, principal, requestID, "destroy_session", sessionID)
+	if err != nil {
+		return Outcome{}, err
+	}
+	var outcome Outcome
+	if err := json.Unmarshal(raw, &outcome); err != nil {
+		return Outcome{}, err
+	}
+	if outcome.Error != nil || outcome.SessionID != sessionID {
+		return Outcome{}, fmt.Errorf("destroy mutation did not complete successfully")
+	}
+	return outcome, nil
+}
+
 func (s *Service) AdmitManagedTask(ctx context.Context, principal string, task store.ManagedTask) (store.ManagedTask, bool, *protocol.Error, error) {
 	if principal != principalFor(task.Owner) || task.Owner.Kind != model.OwnerCC {
 		return store.ManagedTask{}, false, &protocol.Error{Code: protocol.ErrNotOwner, Message: "task owner does not match authenticated CC"}, nil

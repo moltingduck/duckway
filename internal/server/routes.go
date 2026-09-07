@@ -477,6 +477,7 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	clientMux.HandleFunc("GET /client/cc/channels", ccClientH.ListChannels)
 	clientMux.HandleFunc("POST /client/cc/channels", ccClientH.CreateChannel)
 	clientMux.HandleFunc("POST /client/cc/channels/{handle}/archive", ccClientH.ArchiveChannel)
+	clientMux.HandleFunc("DELETE /client/cc/channels/{handle}", ccClientH.DeleteChannel)
 	clientMux.HandleFunc("POST /client/cc/channels/{handle}/session", ccClientH.SetChannelSession)
 	clientMux.HandleFunc("GET /client/cc/channels/{handle}/messages", ccClientH.GetMessages)
 	clientMux.HandleFunc("POST /client/cc/channels/{handle}/messages", ccClientH.PostMessage)

@@ -263,6 +263,18 @@ binding. If a bind response is lost, the client queries the session binding;
 it preserves an ambiguously bound channel and archives only after an
 authoritative rejection.
 
+`!end` and `!destroy` are also admitted as snowflake-deduplicated
+`CLIENT_COMMAND` jobs; the Gateway never archives or deletes a task channel
+before the host confirms the Ducklion lifecycle transition. Both operations
+are writer- and generation-fenced. `!end` stops the process, posts one stable
+farewell, archives the Discord channel, removes the Ducklion binding, and
+clears the server routing marker while retaining the stopped session and its
+PTY log. `!destroy` stops the process, transactionally deletes the Ducklion
+session (cascading its binding/task rows), removes its recovery key and PTY
+files, and then hard-deletes the Discord channel. Temporary archive/delete
+failures return the inbox job to `admitted`; replay uses step-specific operation
+IDs and treats an already-missing destroyed session/channel as success.
+
 Ducklion schema v4 adds `managed_tasks`. It stores only task correlation,
 SHA-256 prompt digest, immutable owner and ownership/runtime fences, state and
 output offsets. Prompt and response bytes are deliberately absent: the

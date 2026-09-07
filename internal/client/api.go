@@ -664,6 +664,28 @@ func (c *APIClient) ArchiveCCChannel(ctx context.Context, handle string) error {
 	return nil
 }
 
+func (c *APIClient) DeleteCCChannel(ctx context.Context, handle string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/client/cc/channels/"+url.PathEscape(handle), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Duckway-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete channel: %w", err)
+	}
+	defer resp.Body.Close()
+	// Deletion is idempotent: a replay after a lost response sees no cache row.
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete channel: server %d: %s", resp.StatusCode, string(raw))
+	}
+	return nil
+}
+
 // PostCC posts a bot-author message to a CC channel by handle.
 func (c *APIClient) PostCC(ctx context.Context, handle, content string) error {
 	return c.PostCCReply(ctx, handle, content, "")

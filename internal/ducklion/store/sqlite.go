@@ -459,6 +459,30 @@ func (s *SQLite) RunMutation(ctx context.Context, key MutationKey, fn func(*sql.
 	return MutationResult{JSON: append(json.RawMessage(nil), response...)}, nil
 }
 
+// ReplayMutation returns only a completed mutation owned by the exact
+// authenticated principal, operation, request, and session. It is used when a
+// destructive mutation already removed its session row but post-commit cleanup
+// still needs to be retried.
+func (s *SQLite) ReplayCompletedMutation(ctx context.Context, principal, requestID, operation string, sessionID model.SessionID) (json.RawMessage, error) {
+	var storedOperation, storedSession, status string
+	var response []byte
+	err := s.db.QueryRowContext(ctx, `SELECT operation,session_id,status,response_json FROM mutation_requests WHERE principal=? AND request_id=?`, principal, requestID).
+		Scan(&storedOperation, &storedSession, &status, &response)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if storedOperation != operation || storedSession != string(sessionID) {
+		return nil, ErrIdempotencyConflict
+	}
+	if status != "completed" || !json.Valid(response) {
+		return nil, ErrMutationInProgress
+	}
+	return append(json.RawMessage(nil), response...), nil
+}
+
 func equalBytes(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false

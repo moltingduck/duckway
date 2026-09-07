@@ -171,6 +171,17 @@ func (s *SQLite) GetSessionTx(ctx context.Context, tx *sql.Tx, id model.SessionI
 	return scanSession(tx.QueryRowContext(ctx, sessionSelect+` WHERE session_id=?`, id))
 }
 
+func (s *SQLite) DeleteStoppedSessionTx(ctx context.Context, tx *sql.Tx, id model.SessionID, expectedEpoch, expectedGeneration uint64) error {
+	result, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE session_id=? AND status='stopped' AND ownership_epoch=? AND runtime_generation=?`, id, expectedEpoch, expectedGeneration)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return fmt.Errorf("stopped session fencing conflict")
+	}
+	return nil
+}
+
 func (s *SQLite) InsertSessionTx(ctx context.Context, tx *sql.Tx, session model.Session) error {
 	if err := session.Validate(); err != nil {
 		return err

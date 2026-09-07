@@ -33,12 +33,14 @@ type clientCommandPayload struct {
 	Command   string   `json:"command"`
 	Args      []string `json:"args"`
 	RequestID string   `json:"request_id,omitempty"`
+	SessionID string   `json:"session_id,omitempty"`
 }
 
 type ccCommandDeliveryKey struct{}
 type ccCommandDelivery struct {
 	delivered bool
 	err       error
+	retryable error
 }
 
 type pendingNewProject struct {
@@ -53,10 +55,12 @@ type pendingNewProject struct {
 type ccCommandRunner struct {
 	queue            chan []byte
 	stop             chan struct{}
+	stopOnce         sync.Once
 	wg               sync.WaitGroup
 	handle           func(context.Context, []byte)
 	mu               sync.Mutex
 	stopped          bool
+	retiring         bool
 	activeCancel     context.CancelFunc
 	overflowNotified bool
 }
@@ -76,7 +80,7 @@ func (r *ccCommandRunner) Enqueue(data []byte) bool {
 	data = bytes.Clone(data)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.stopped {
+	if r.stopped || r.retiring {
 		return false
 	}
 	select {
@@ -91,9 +95,24 @@ func (r *ccCommandRunner) Stop() {
 	r.mu.Lock()
 	if !r.stopped {
 		r.stopped = true
-		close(r.stop)
+		r.stopOnce.Do(func() { close(r.stop) })
 		if r.activeCancel != nil {
 			r.activeCancel()
+		}
+	}
+	r.mu.Unlock()
+	r.wg.Wait()
+}
+
+// Retire rejects new commands but lets the active command finish. A Discord
+// CHANNEL_DELETE may be the result of that command itself; cancelling it before
+// its HTTP response arrives would strand the durable inbox lease as admitted.
+func (r *ccCommandRunner) Retire() {
+	r.mu.Lock()
+	if !r.stopped && !r.retiring {
+		r.retiring = true
+		if r.activeCancel == nil {
+			r.stopOnce.Do(func() { close(r.stop) })
 		}
 	}
 	r.mu.Unlock()
@@ -103,7 +122,7 @@ func (r *ccCommandRunner) Stop() {
 func (r *ccCommandRunner) markOverflowNotice() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.stopped || r.overflowNotified {
+	if r.stopped || r.retiring || r.overflowNotified {
 		return false
 	}
 	r.overflowNotified = true
@@ -124,7 +143,7 @@ func (r *ccCommandRunner) loop() {
 		case data := <-r.queue:
 			ctx, cancel := context.WithCancel(context.Background())
 			r.mu.Lock()
-			if r.stopped {
+			if r.stopped || r.retiring {
 				r.mu.Unlock()
 				cancel()
 				return
@@ -135,6 +154,9 @@ func (r *ccCommandRunner) loop() {
 			r.handle(ctx, data)
 			r.mu.Lock()
 			r.activeCancel = nil
+			if r.stopped || r.retiring {
+				r.stopOnce.Do(func() { close(r.stop) })
+			}
 			r.mu.Unlock()
 			cancel()
 		}
@@ -215,8 +237,11 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 			finishCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			status, detail := "completed", ""
-			requiresDurableReply := payload.Command == "!new" || payload.Command == "!new-confirm"
-			if requiresDurableReply && !delivery.delivered {
+			requiresDurableReply := payload.Command == "!new" || payload.Command == "!new-confirm" || payload.Command == "!end" || payload.Command == "!destroy"
+			if delivery.retryable != nil {
+				status = "admitted"
+				detail = delivery.retryable.Error()
+			} else if requiresDurableReply && !delivery.delivered {
 				status = "admitted"
 				if delivery.err != nil {
 					detail = delivery.err.Error()
@@ -255,6 +280,10 @@ func (w *CCWatch) handleClientCommandContext(ctx context.Context, data []byte) {
 		w.cmdNewProject(ctx, env.Handle, env.CCID, payload.RequestID, payload.Args)
 	case "!new-confirm":
 		w.cmdNewProjectConfirm(ctx, env.Handle, env.CCID, payload.RequestID, payload.Args)
+	case "!end":
+		w.cmdEndSession(ctx, env.Handle, payload.RequestID, payload.SessionID)
+	case "!destroy":
+		w.cmdDestroySession(ctx, env.Handle, payload.RequestID, payload.SessionID)
 	case "!log":
 		w.cmdLog(ctx, env.Handle, payload.Args)
 	case "!duckway-version":
@@ -285,6 +314,178 @@ func (w *CCWatch) postCommandReply(ctx context.Context, handle, requestID, conte
 		}
 	}
 	return err
+}
+
+func markCommandRetryable(ctx context.Context, err error) {
+	if err == nil {
+		return
+	}
+	if delivery, ok := ctx.Value(ccCommandDeliveryKey{}).(*ccCommandDelivery); ok {
+		delivery.retryable = err
+	}
+}
+
+func markCommandCompleted(ctx context.Context) {
+	if delivery, ok := ctx.Value(ccCommandDeliveryKey{}).(*ccCommandDelivery); ok {
+		delivery.delivered = true
+		delivery.err = nil
+	}
+}
+
+func isAmbiguousLifecycleRPC(err error) bool {
+	var remote *duckliondaemon.RemoteError
+	return err != nil && (!errors.As(err, &remote) || remote.Detail.Retryable)
+}
+
+func lifecycleOperationID(requestID, step string) string {
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+	return requestID + ":" + step
+}
+
+func findDucklionSession(client *duckliondaemon.Client, sessionID string) (protocol.SessionSummary, bool, error) {
+	sessions, err := client.ListSessions()
+	if err != nil {
+		return protocol.SessionSummary{}, false, err
+	}
+	for _, session := range sessions {
+		if session.SessionID == sessionID {
+			return session, true, nil
+		}
+	}
+	return protocol.SessionSummary{}, false, nil
+}
+
+func (w *CCWatch) cmdEndSession(ctx context.Context, replyHandle, requestID, sessionID string) {
+	client, err := w.dialDucklionCC(replyHandle)
+	if err != nil {
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ Ducklion is unavailable; the session was not ended: "+err.Error())
+		return
+	}
+	defer client.Close()
+	if sessionID == "" {
+		binding, bindErr := client.CurrentDiscordBinding(ctx)
+		if bindErr != nil {
+			_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ This channel is not bound to a Ducklion session.")
+			return
+		}
+		sessionID = binding.SessionID
+	}
+	session, found, err := findDucklionSession(client, sessionID)
+	if err != nil || !found {
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ The bound Ducklion session no longer exists; this channel was left unchanged.")
+		return
+	}
+	stopID := lifecycleOperationID(requestID, "stop")
+	err = client.StopSessionWithID(ctx, stopID, sessionID, session.OwnershipEpoch, session.RuntimeGeneration)
+	if err != nil && !isAuthoritativeDucklionError(err) {
+		if retry, dialErr := w.dialDucklionCC(replyHandle); dialErr == nil {
+			err = retry.StopSessionWithID(ctx, stopID, sessionID, session.OwnershipEpoch, session.RuntimeGeneration)
+			_ = retry.Close()
+		}
+	}
+	if err != nil {
+		if isAmbiguousLifecycleRPC(err) {
+			markCommandRetryable(ctx, err)
+			return
+		}
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ Session end rejected; this Discord channel is not the current writer or the runtime could not stop: "+err.Error())
+		return
+	}
+	if err := w.postCommandReply(ctx, replyHandle, requestID, "🔚 Agent session `"+sessionID+"` stopped. Archiving this channel with its history preserved."); err != nil {
+		markCommandRetryable(ctx, err)
+		return
+	}
+	if err := w.api.ArchiveCCChannel(ctx, replyHandle); err != nil {
+		log.Printf("[cc-watch] archive ended channel %s: %v", replyHandle, err)
+		markCommandRetryable(ctx, err)
+		return
+	}
+	if err := client.UnbindDiscordWithID(ctx, lifecycleOperationID(requestID, "unbind"), sessionID); err != nil {
+		log.Printf("[cc-watch] release ended session binding %s: %v", sessionID, err)
+		markCommandRetryable(ctx, err)
+		return
+	}
+	if err := w.api.SetCCChannelSession(ctx, replyHandle, "", session.CWD); err != nil {
+		log.Printf("[cc-watch] clear ended channel marker %s: %v", replyHandle, err)
+		markCommandRetryable(ctx, err)
+		return
+	}
+	_ = w.sessions.Drop(replyHandle)
+}
+
+func (w *CCWatch) cmdDestroySession(ctx context.Context, replyHandle, requestID, sessionID string) {
+	client, err := w.dialDucklionCC(replyHandle)
+	if err != nil {
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ Ducklion is unavailable; nothing was destroyed: "+err.Error())
+		return
+	}
+	defer client.Close()
+	if sessionID == "" {
+		binding, bindErr := client.CurrentDiscordBinding(ctx)
+		if bindErr != nil {
+			_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ This channel is not bound to a Ducklion session.")
+			return
+		}
+		sessionID = binding.SessionID
+	}
+	session, found, listErr := findDucklionSession(client, sessionID)
+	if listErr != nil {
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ Could not inspect the Ducklion session; nothing was destroyed: "+listErr.Error())
+		return
+	}
+	if found {
+		stopID := lifecycleOperationID(requestID, "stop")
+		err = client.StopSessionWithID(ctx, stopID, sessionID, session.OwnershipEpoch, session.RuntimeGeneration)
+		if err != nil && !isAuthoritativeDucklionError(err) {
+			if retry, dialErr := w.dialDucklionCC(replyHandle); dialErr == nil {
+				err = retry.StopSessionWithID(ctx, stopID, sessionID, session.OwnershipEpoch, session.RuntimeGeneration)
+				_ = retry.Close()
+			}
+		}
+		if err != nil {
+			if isAmbiguousLifecycleRPC(err) {
+				markCommandRetryable(ctx, err)
+				return
+			}
+			_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ Session destroy rejected; this Discord channel is not the current writer or the runtime could not stop: "+err.Error())
+			return
+		}
+		destroyID := lifecycleOperationID(requestID, "destroy")
+		err = client.DestroySessionWithID(ctx, destroyID, sessionID, session.OwnershipEpoch, session.RuntimeGeneration)
+		if err != nil && !isAuthoritativeDucklionError(err) {
+			if retry, dialErr := w.dialDucklionCC(replyHandle); dialErr == nil {
+				err = retry.DestroySessionWithID(ctx, destroyID, sessionID, session.OwnershipEpoch, session.RuntimeGeneration)
+				_ = retry.Close()
+			}
+		}
+		if err != nil {
+			if isAmbiguousLifecycleRPC(err) {
+				markCommandRetryable(ctx, err)
+				return
+			}
+			_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ Agent stopped, but Ducklion could not destroy session state: "+err.Error())
+			return
+		}
+	} else if err := client.ReplayDestroySessionWithID(ctx, lifecycleOperationID(requestID, "destroy"), sessionID); err != nil {
+		if isAmbiguousLifecycleRPC(err) {
+			markCommandRetryable(ctx, err)
+			return
+		}
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ The bound Ducklion session is missing and no completed destroy operation can be verified; this Discord channel was left unchanged.")
+		return
+	}
+	// No farewell is required: deletion removes the response surface. If this
+	// request is replayed after Ducklion destruction, a missing session and a
+	// 404 channel are both the already-completed state.
+	if err := w.api.DeleteCCChannel(ctx, replyHandle); err != nil {
+		_ = w.postCommandReply(ctx, replyHandle, requestID, "⚠️ Ducklion session was destroyed; Discord channel deletion is being retried: "+err.Error())
+		markCommandRetryable(ctx, err)
+		return
+	}
+	_ = w.sessions.Drop(replyHandle)
+	markCommandCompleted(ctx)
 }
 
 func (w *CCWatch) dialDucklionCC(handle string) (*duckliondaemon.Client, error) {

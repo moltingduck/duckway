@@ -456,27 +456,25 @@ func TestHandle_End_FromTaskChannel(t *testing.T) {
 	sub, unsub := h.hub.Subscribe("client1")
 	defer unsub()
 
-	h.handler.Handle(context.Background(), "cc1", task, "!end")
+	h.handler.HandleMessage(context.Background(), "cc1", task, "!end", "snow-end")
 
-	// PostMessage farewell + PATCH archive
-	if h.hitsFor("POST", "/messages") != 1 {
-		t.Errorf("expected farewell POST, hits=%v", h.hits)
+	if h.hitsFor("POST", "/messages") != 0 || h.hitsFor("PATCH", "/channels/T1") != 0 {
+		t.Errorf("server mutated Discord before Ducklion lifecycle: hits=%v", h.hits)
 	}
-	if h.hitsFor("PATCH", "/channels/T1") != 1 {
-		t.Errorf("expected archive PATCH, hits=%v", h.hits)
+	if _, err := h.cc.GetChannelByHandle("dwch_t"); err != nil {
+		t.Fatalf("task row removed before client lifecycle: %v", err)
 	}
-	// Row deleted
-	if _, err := h.cc.GetChannelByHandle("dwch_t"); err == nil {
-		t.Error("expected cc_channels row deleted")
+	var eventType, eventKey, payload string
+	if err := h.db.QueryRow(`SELECT event_type,event_key,payload FROM discord_inbox WHERE cc_id='cc1'`).Scan(&eventType, &eventKey, &payload); err != nil {
+		t.Fatal(err)
 	}
-	// Hub event fired
+	if eventType != "CLIENT_COMMAND" || eventKey != "CLIENT_COMMAND:snow-end" || !strings.Contains(payload, `"session_id":""`) {
+		t.Fatalf("durable end event type=%q key=%q payload=%s", eventType, eventKey, payload)
+	}
 	select {
 	case ev := <-sub:
-		if ev.Type != "channel_delete" || ev.Handle != "dwch_t" {
-			t.Errorf("unexpected event: %+v", ev)
-		}
+		t.Fatalf("durable command was also published ephemerally: %+v", ev)
 	default:
-		t.Error("expected channel_delete event published")
 	}
 }
 
@@ -497,24 +495,25 @@ func TestHandle_Destroy_FromTaskChannel(t *testing.T) {
 	sub, unsub := h.hub.Subscribe("client1")
 	defer unsub()
 
-	h.handler.Handle(context.Background(), "cc1", task, "!destroy")
+	h.handler.HandleMessage(context.Background(), "cc1", task, "!destroy", "snow-destroy")
 
-	// Discord DELETE call fired
-	if h.hitsFor("DELETE", "/channels/D-real") != 1 {
-		t.Errorf("expected DELETE /channels/D-real, hits=%v", h.hits)
+	if h.hitsFor("DELETE", "/channels/D-real") != 0 {
+		t.Errorf("server deleted Discord before Ducklion lifecycle: hits=%v", h.hits)
 	}
-	// Local row gone
-	if _, err := h.cc.GetChannelByHandle("dwch_d"); err == nil {
-		t.Error("cc_channels row should be deleted")
+	if _, err := h.cc.GetChannelByHandle("dwch_d"); err != nil {
+		t.Fatalf("task row removed before client lifecycle: %v", err)
 	}
-	// channel_delete event fired so daemon clears its session map
+	var eventType, eventKey, payload string
+	if err := h.db.QueryRow(`SELECT event_type,event_key,payload FROM discord_inbox WHERE cc_id='cc1'`).Scan(&eventType, &eventKey, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if eventType != "CLIENT_COMMAND" || eventKey != "CLIENT_COMMAND:snow-destroy" || !strings.Contains(payload, `"session_id":"sess-1"`) {
+		t.Fatalf("durable destroy event type=%q key=%q payload=%s", eventType, eventKey, payload)
+	}
 	select {
 	case ev := <-sub:
-		if ev.Type != "channel_delete" || ev.Handle != "dwch_d" {
-			t.Errorf("unexpected event: %+v", ev)
-		}
-	case <-time.After(time.Second):
-		t.Error("expected channel_delete event")
+		t.Fatalf("durable command was also published ephemerally: %+v", ev)
+	default:
 	}
 }
 

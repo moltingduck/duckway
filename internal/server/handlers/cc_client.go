@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"net/http"
 	"path/filepath"
@@ -342,9 +341,40 @@ func (h *CCClientHandler) ArchiveChannel(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := h.cc.MarkChannelArchived(handle); err != nil {
-		log.Printf("[cc-client] MarkChannelArchived %s: %v", handle, err)
+		jsonError(w, "archive channel state: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 	jsonResponse(w, map[string]string{"status": "archived"})
+}
+
+// DELETE /client/cc/channels/{handle} permanently removes one task channel.
+// A missing handle is reported as 404 so clients can treat replay as success.
+func (h *CCClientHandler) DeleteChannel(w http.ResponseWriter, r *http.Request) {
+	handle := r.PathValue("handle")
+	_, cc, botTok, ok := h.resolveCC(w, r)
+	if !ok {
+		return
+	}
+	ch, ok := h.resolveHandle(w, cc.ID, handle)
+	if !ok {
+		return
+	}
+	if ch.Kind == "management" {
+		jsonError(w, "cannot delete the management channel — delete the CC instead", http.StatusBadRequest)
+		return
+	}
+	if err := h.bot.DeleteChannel(r.Context(), botTok, ch.ChannelID); err != nil {
+		jsonError(w, "discord delete: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if err := h.cc.DeleteChannel(handle); err != nil {
+		jsonError(w, "delete channel state: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if h.hub != nil && cc.ClientID != "" {
+		h.hub.Publish(cc.ClientID, svc.CCEvent{Type: "channel_delete", CCID: cc.ID, Handle: handle})
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // SetChannelSession stores the authoritative Ducklion routing marker. An empty

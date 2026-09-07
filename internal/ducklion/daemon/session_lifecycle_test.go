@@ -117,9 +117,16 @@ func TestDuckwayCCCreatesAgentWithCCInitialOwner(t *testing.T) {
 	root := t.TempDir()
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
+	cleanerCalls := 0
 	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
 		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
 		return nil
+	}, SessionCleaner: func(path string) error {
+		cleanerCalls++
+		if cleanerCalls == 1 {
+			return errors.New("injected post-commit cleanup failure")
+		}
+		return os.RemoveAll(path)
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -142,6 +149,9 @@ func TestDuckwayCCCreatesAgentWithCCInitialOwner(t *testing.T) {
 	if created.Status != model.StatusRunning || created.Writer == nil || created.Writer.Kind != model.OwnerCC || created.Writer.ID != "dwch_task" {
 		t.Fatalf("created=%+v", created)
 	}
+	if _, err := cc.BindDiscordSession(context.Background(), "cc-bind-1", created.SessionID, "dwch_task"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := cc.CreateSession(context.Background(), protocol.SessionCreate{Handle: "forbidden", Kind: model.KindShell, CWD: root, Command: []string{"sh"}}); err == nil {
 		t.Fatal("Duckway CC created a shell session")
 	}
@@ -155,6 +165,36 @@ func TestDuckwayCCCreatesAgentWithCCInitialOwner(t *testing.T) {
 	_ = other.Close()
 	if err := cc.StopSessionWithID(context.Background(), "cc-stop-1", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err != nil {
 		t.Fatal(err)
+	}
+	other, err = DialCC(server.SocketPath(), "dwch_other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.DestroySessionWithID(context.Background(), "other-destroy", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err == nil {
+		t.Fatal("non-owner CC destroyed stopped agent session")
+	}
+	_ = other.Close()
+	if err := cc.UnbindDiscordWithID(context.Background(), "cc-unbind-1", created.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := cc.UnbindDiscordWithID(context.Background(), "cc-unbind-1", created.SessionID); err != nil {
+		t.Fatalf("unbind replay: %v", err)
+	}
+	if err := cc.DestroySessionWithID(context.Background(), "cc-destroy-1", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration); err == nil {
+		t.Fatal("post-commit cleanup failure was hidden")
+	}
+	if _, err := os.Stat(filepath.Join(root, "sessions", created.SessionID)); err != nil {
+		t.Fatalf("fixture did not preserve files across injected cleanup failure: %v", err)
+	}
+	if err := cc.ReplayDestroySessionWithID(context.Background(), "cc-destroy-1", created.SessionID); err != nil {
+		t.Fatalf("fenceless post-delete cleanup replay: %v", err)
+	}
+	sessions, err := cc.ListSessions()
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("sessions after destroy=%+v err=%v", sessions, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "sessions", created.SessionID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destroyed runtime directory remains: %v", err)
 	}
 }
 
