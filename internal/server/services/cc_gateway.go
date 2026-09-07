@@ -219,6 +219,18 @@ type ccGatewayCommand struct {
 	messageID string
 }
 
+// RouteDiscordGatewayEvent routes one already-decoded Discord Gateway
+// dispatch through the same authorization, channel lookup, snowflake
+// deduplication, durable inbox admission, and hub publication used by the
+// websocket connection. It is also the seam used by deterministic vertical
+// tests and alternate Gateway transports.
+func RouteDiscordGatewayEvent(apiKeyID, botToken, botUserID string, cc *queries.ControlChannelQueries, hub *CCEventHub,
+	commands *CCCommandHandler, approvals *CCApprovalRegistry, eventType string, payload json.RawMessage) {
+	conn := &ccBotConn{apiKeyID: apiKeyID, botToken: botToken, botUserID: botUserID, cc: cc, hub: hub, commands: commands, approvals: approvals,
+		stopCh: make(chan struct{})}
+	conn.handleDispatch(eventType, payload)
+}
+
 type discordCCPolicy struct {
 	GuildID              string `json:"guild_id"`
 	CategoryID           string `json:"category_id"`

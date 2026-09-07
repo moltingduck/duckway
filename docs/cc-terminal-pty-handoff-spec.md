@@ -1,6 +1,6 @@
 # CC ↔ Terminal PTY Handoff Specification
 
-Status: V1 design converged; implementation pending
+Status: V1 implemented; core E2E release gate available
 
 This document records only decisions confirmed with the user. Undecided
 behavior is added after its corresponding design discussion.
@@ -3419,7 +3419,7 @@ Status: Decided
 
 ## 196. Core end-to-end release gate
 
-Status: In progress
+Status: Implemented
 
 - A release implementing this specification must pass automated end-to-end
   coverage for CC agent-session creation, Ducklord attachment, immediate yield,
@@ -3487,7 +3487,7 @@ Status: Decided
 
 ## 200. First-version implementation phases
 
-Status: In progress
+Status: Implemented
 
 1. Implement Ducklion's protocol types, authoritative session state machine,
    SQLite schema and migrations, ownership fencing, and mutation idempotency.

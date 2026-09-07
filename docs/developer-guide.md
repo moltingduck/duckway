@@ -814,11 +814,19 @@ fail-closed for managed prompts rather than as an empty cache, preventing a
 previously rejected prompt from executing merely because ownership later
 returns to Discord.
 
+`TestDiscordOwnershipRejectionVerticalE2E` closes the durable-ingress boundary
+without a network Discord dependency. It sends an already-decoded Gateway
+dispatch through the production `ccBotConn.handleDispatch` path, then uses the
+real SQLite store, `ClaimInbox`, `FinishInbox`, `PostMessage`, `APIClient`,
+`CCWatch`, and Ducklion daemon. The fixture repeats the same snowflake before
+claiming and verifies one admitted row, one origin-referenced Discord reply, a
+persisted `completed / not owner` result, no reclaimable row, and no Ducklion
+task. The exported synchronous dispatch seam adds no HTTP endpoint and is also
+suitable for future alternate Gateway transports.
+
 `scripts/discord-e2e.sh` remains the broader Discord transport/policy fixture
-suite. Section 196 remains in progress until one vertical fixture also carries
-the ownership-rejected message through Gateway admission, a real inbox claim,
-the CC consumer, and the persisted completed receipt. The live `cc-smoke`
-remains the separate opt-in Discord infrastructure check.
+suite. Both it and `scripts/ducklion-core-e2e.sh` are release gates. The live
+`cc-smoke` remains the separate opt-in Discord infrastructure check.
 
 ### Ducklord / Ducklion smoke test
 

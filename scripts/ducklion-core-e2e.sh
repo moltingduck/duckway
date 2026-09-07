@@ -51,6 +51,7 @@ run_required "ownership fencing, bidirectional yield, recovery, shell sharing an
 
 run_required "durable Discord bind, ownership rejection, yield and restart delivery barriers" ./internal/client \
   TestDiscordBindExistingDucklionSessionE2E \
+  TestDiscordOwnershipRejectionVerticalE2E \
   TestDiscordYieldCommandUsesDurableDucklionBindingE2E \
   TestDiscordRestartWaitsForFinalEventDeliveryE2E \
   TestDiscordForceRestartDeliversCancellationBeforeReplacementE2E
