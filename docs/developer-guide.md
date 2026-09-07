@@ -779,6 +779,47 @@ detector.
 provisioning smoke and requires the bot/guild/category secrets documented in
 that script.
 
+### Ducklion core release gate
+
+Run the credential-free V1 handoff gate with:
+
+```bash
+scripts/ducklion-core-e2e.sh
+DUCKLION_E2E_RACE=1 scripts/ducklion-core-e2e.sh
+```
+
+The script preflights every selected scenario by its exact test name, so a
+renamed or removed test fails instead of silently reducing coverage. It covers:
+
+- CC-created agent PTYs, Ducklord stdio attachment, non-owner input fencing,
+  immediate handoff in both directions, and an ACK-completed waiting handoff;
+- loss of a committed create response at the stdio/SSH bridge boundary,
+  reconnect with the same mutation ID, and exactly one supervisor launch;
+- authenticated supervisor recovery, rejection of an invalid recovery key,
+  daemon restart with the PTY preserved, and lifecycle generation fencing;
+- two Ducklord principals concurrently writing and observing one shell PTY,
+  followed by immediate shell restart, end, and destroy;
+- graceful Discord restart drain, forced restart cancellation delivery, and a
+  terminal-owner prompt rejection completed as a durable business outcome;
+- retry of an ambiguously delivered ownership rejection with one originating
+  channel reply, Gateway admission, inbox snowflake deduplication and FIFO
+  claims, plus forward migration backup and newer-schema refusal.
+
+Ownership rejection is committed locally before its Discord post in
+`cc-processed-messages.json`. Pending rejection receipts are never removed by
+the completed-message LRU; the inbox terminal completion replaces the receipt
+with the normal completed marker. Writes use a mode-0600 temporary file,
+`fsync`, atomic rename, and directory `fsync`. A corrupt outcome file is treated
+fail-closed for managed prompts rather than as an empty cache, preventing a
+previously rejected prompt from executing merely because ownership later
+returns to Discord.
+
+`scripts/discord-e2e.sh` remains the broader Discord transport/policy fixture
+suite. Section 196 remains in progress until one vertical fixture also carries
+the ownership-rejected message through Gateway admission, a real inbox claim,
+the CC consumer, and the persisted completed receipt. The live `cc-smoke`
+remains the separate opt-in Discord infrastructure check.
+
 ### Ducklord / Ducklion smoke test
 
 Ducklord has a Podman demo that creates one developer laptop container and

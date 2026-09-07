@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
+	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 	"github.com/hackerduck/duckway/internal/ducklion/store"
 )
 
@@ -405,7 +407,7 @@ func TestCanonicalLifecycleDestroyReplaysAfterSessionDeletion(t *testing.T) {
 	}
 }
 
-func TestCanonicalLifecycleForceCancelsAndFencesAgentTask(t *testing.T) {
+func TestCanonicalLifecycleForceRestartCancelsAndFencesOldRuntimeEvent(t *testing.T) {
 	root := t.TempDir()
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
@@ -445,8 +447,8 @@ func TestCanonicalLifecycleForceCancelsAndFencesAgentTask(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	request := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleEnd, Mode: protocol.SessionLifecycleForce}
-	result, err := cc.LifecycleSessionWithID(context.Background(), "force-end", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+	request := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleRestart, Mode: protocol.SessionLifecycleForce}
+	result, err := cc.LifecycleSessionWithID(context.Background(), "force-restart", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +466,7 @@ func TestCanonicalLifecycleForceCancelsAndFencesAgentTask(t *testing.T) {
 		t.Fatalf("forced terminal event=%+v", cancelled)
 	}
 	// The runtime exit and lifecycle completion remain behind Discord's
-	// delivery acknowledgement, so a forced stop cannot silently lose notice.
+	// delivery acknowledgement, so a forced restart cannot silently lose notice.
 	if sessions, listErr := cc.ListSessions(); listErr != nil || len(sessions) != 1 || sessions[0].TaskState != model.TaskReplying {
 		t.Fatalf("pre-ack sessions=%+v err=%v", sessions, listErr)
 	}
@@ -474,13 +476,34 @@ func TestCanonicalLifecycleForceCancelsAndFencesAgentTask(t *testing.T) {
 	deadline = time.Now().Add(8 * time.Second)
 	for result.State != protocol.SessionLifecycleCompleted && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
-		result, err = cc.LifecycleSessionWithID(context.Background(), "force-end", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+		result, err = cc.LifecycleSessionWithID(context.Background(), "force-restart", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	if result.State != protocol.SessionLifecycleCompleted {
 		t.Fatalf("force lifecycle result=%+v", result)
+	}
+	if result.RuntimeGeneration != created.RuntimeGeneration+1 {
+		t.Fatalf("force restart generation=%d", result.RuntimeGeneration)
+	}
+	beforeLateEvent, err := server.state.SessionSnapshot(context.Background())
+	if err != nil || len(beforeLateEvent.Sessions) != 1 {
+		t.Fatalf("pre-stale-event snapshot=%+v err=%v", beforeLateEvent, err)
+	}
+	oldIdentity := duckruntime.RuntimeIdentity{SessionID: model.SessionID(created.SessionID), Generation: created.RuntimeGeneration, LeaseID: "delayed-old-runtime"}
+	stale := server.applySupervisorAgentEvent(oldIdentity, protocol.SupervisorAgentEvent{TaskID: "delayed-old-task", Sequence: 1, Kind: "failed", Summary: "must be fenced"})
+	if stale == nil || stale.Code != protocol.ErrStaleGeneration {
+		t.Fatalf("late generation-%d event result=%+v", created.RuntimeGeneration, stale)
+	}
+	afterLateEvent, err := server.state.SessionSnapshot(context.Background())
+	writerChanged := len(afterLateEvent.Sessions) == 1 && ((afterLateEvent.Sessions[0].Session.Writer == nil) != (beforeLateEvent.Sessions[0].Session.Writer == nil) ||
+		afterLateEvent.Sessions[0].Session.Writer != nil && *afterLateEvent.Sessions[0].Session.Writer != *beforeLateEvent.Sessions[0].Session.Writer)
+	if err != nil || afterLateEvent.Revision != beforeLateEvent.Revision || len(afterLateEvent.Sessions) != 1 ||
+		afterLateEvent.Sessions[0].Session.RuntimeGeneration != created.RuntimeGeneration+1 ||
+		afterLateEvent.Sessions[0].Session.TaskState != beforeLateEvent.Sessions[0].Session.TaskState ||
+		writerChanged {
+		t.Fatalf("stale event mutated replacement: before=%+v after=%+v err=%v", beforeLateEvent, afterLateEvent, err)
 	}
 }
 
@@ -713,6 +736,97 @@ func TestShellLifecycleRestartEndAndDestroy(t *testing.T) {
 	}
 	if _, err := os.Stat(sessionDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("destroy retained session directory: %v", err)
+	}
+}
+
+func TestShellConcurrentDucklordAttachmentsAreWritable(t *testing.T) {
+	root := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+
+	first, err := Dial(server.SocketPath(), "desk-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	created, err := first.CreateSession(context.Background(), protocol.SessionCreate{Handle: "shared-shell", Kind: model.KindShell, CWD: root, Command: []string{"sh"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Dial(server.SocketPath(), "desk-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	firstOutput, err := first.SubscribeOutput(created.SessionID, created.RuntimeGeneration, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstOutput.Close()
+	secondOutput, err := second.SubscribeOutput(created.SessionID, created.RuntimeGeneration, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondOutput.Close()
+
+	start := make(chan struct{})
+	writeErrors := make(chan error, 2)
+	go func() {
+		<-start
+		writeErrors <- first.SendInput(created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, []byte("printf 'from-desk-a\\n'\n"))
+	}()
+	go func() {
+		<-start
+		writeErrors <- second.SendInput(created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, []byte("printf 'from-desk-b\\n'\n"))
+	}()
+	close(start)
+	for range 2 {
+		if err := <-writeErrors; err != nil {
+			t.Fatalf("concurrent shell input: %v", err)
+		}
+	}
+
+	readBoth := func(label string, stream *OutputSubscription) <-chan error {
+		done := make(chan error, 1)
+		go func() {
+			var output bytes.Buffer
+			for !bytes.Contains(output.Bytes(), []byte("from-desk-a")) || !bytes.Contains(output.Bytes(), []byte("from-desk-b")) {
+				event, readErr := stream.Read()
+				if readErr != nil {
+					done <- fmt.Errorf("%s output %q: %w", label, output.String(), readErr)
+					return
+				}
+				output.Write(event.Frame.Data)
+			}
+			done <- nil
+		}()
+		return done
+	}
+	for label, done := range map[string]<-chan error{"desk-a": readBoth("desk-a", firstOutput), "desk-b": readBoth("desk-b", secondOutput)} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s attachment did not observe both writers", label)
+		}
+	}
+
+	end := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleEnd, Mode: protocol.SessionLifecycleImmediate}
+	ended := awaitLifecycleTestResult(t, second, "shared-shell-end", created, end, 8*time.Second)
+	if ended.State != protocol.SessionLifecycleCompleted {
+		t.Fatalf("shell end from second writer=%+v", ended)
 	}
 }
 

@@ -3419,7 +3419,7 @@ Status: Decided
 
 ## 196. Core end-to-end release gate
 
-Status: Decided
+Status: In progress
 
 - A release implementing this specification must pass automated end-to-end
   coverage for CC agent-session creation, Ducklord attachment, immediate yield,
@@ -3439,6 +3439,8 @@ Status: Decided
 - Service lifecycle coverage must verify both graceful restart draining and
   forced restart cancellation with stale-runtime event fencing.
 - Failure of any required scenario blocks release of the feature.
+- The executable gate is `scripts/ducklion-core-e2e.sh`; setting
+  `DUCKLION_E2E_RACE=1` runs the same named scenarios under Go's race detector.
 
 ## 197. Shell executable failure policy
 
@@ -3485,7 +3487,7 @@ Status: Decided
 
 ## 200. First-version implementation phases
 
-Status: Planned
+Status: In progress
 
 1. Implement Ducklion's protocol types, authoritative session state machine,
    SQLite schema and migrations, ownership fencing, and mutation idempotency.

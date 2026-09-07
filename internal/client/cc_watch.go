@@ -469,6 +469,19 @@ func (w *CCWatch) preflightBoundDucklionPrompt(handle, authoritativeSession, tas
 	}
 	_, parseErr := model.ParseSessionID(knownSession)
 	knownManaged := parseErr == nil
+	rejection, rejected, receiptErr := w.processed.PromptRejection(taskID, handle)
+	if receiptErr != nil && knownManaged {
+		finish(false, "read durable prompt outcome: "+receiptErr.Error())
+		return true
+	}
+	if rejected {
+		if err := w.api.PostCCDelivered(context.Background(), handle, rejection.Content, rejection.ReplyTo, rejection.DeliveryKey); err != nil {
+			finish(false, "post ownership rejection: "+err.Error())
+		} else {
+			finish(true, "not owner")
+		}
+		return true
+	}
 	client, err := w.dialDucklionCC(handle)
 	if err != nil {
 		if !knownManaged {
@@ -491,6 +504,10 @@ func (w *CCWatch) preflightBoundDucklionPrompt(handle, authoritativeSession, tas
 		return false
 	}
 	_ = w.sessions.Set(handle, binding.SessionID)
+	if receiptErr != nil {
+		finish(false, "read durable prompt outcome: "+receiptErr.Error())
+		return true
+	}
 	sessions, err := client.ListSessions()
 	if err != nil {
 		finish(false, err.Error())
@@ -523,7 +540,21 @@ func (w *CCWatch) preflightBoundDucklionPrompt(handle, authoritativeSession, tas
 		if session.Writer == nil || session.Writer.Kind != model.OwnerCC || session.Writer.ID != handle {
 			owner := ownerKind(session.Writer) + ":" + ownerID(session.Writer)
 			message := fmt.Sprintf("This prompt was not sent: session `%s` is controlled by `%s`. Run `!yield` or `!yield -w` in this channel to request control.", session.SessionID, owner)
-			if err := w.api.PostCC(context.Background(), handle, "❌ "+message); err != nil {
+			// A claimed inbox is retried when this HTTP response is lost. Bind
+			// the rejection to the prompt so replay observes the original
+			// Discord delivery rather than posting another copy.
+			digest := sha256.Sum256([]byte(handle + "\x00" + session.SessionID + "\x00" + taskID + "\x00not-owner"))
+			deliveryKey := fmt.Sprintf("managed-rejection-%x", digest[:])
+			replyTo := ""
+			if isDiscordSnowflake(taskID) {
+				replyTo = taskID
+			}
+			content := "❌ " + message
+			if err := w.processed.RecordPromptRejection(taskID, handle, content, replyTo, deliveryKey); err != nil {
+				finish(false, "persist ownership rejection: "+err.Error())
+				return true
+			}
+			if err := w.api.PostCCDelivered(context.Background(), handle, content, replyTo, deliveryKey); err != nil {
 				finish(false, "post ownership rejection: "+err.Error())
 			} else {
 				finish(true, "not owner")

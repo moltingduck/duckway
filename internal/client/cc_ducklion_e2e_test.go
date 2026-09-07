@@ -17,6 +17,7 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	ducklionstore "github.com/hackerduck/duckway/internal/ducklion/store"
+	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
 func TestDiscordBindExistingDucklionSessionE2E(t *testing.T) {
@@ -218,24 +219,72 @@ func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 	fake := newFakeServer(t)
 	watch := stubWatch(t, configDir, fake)
 	watch.configDir = configDir
-	var delivered bool
-	if handled := watch.preflightBoundDucklionPrompt("dwch_task", session.SessionID, "inbox-41", "must not reach another process", func(success bool, _ string) { delivered = success }, nil); !handled || !delivered {
-		t.Fatalf("terminal-owned prompt handled=%v delivered=%v", handled, delivered)
+	t.Setenv("DUCKLORD_TEST_BRIDGE_HELPER", "1")
+	t.Setenv("DUCKLORD_TEST_SOCKET", socket)
+	ducklordRemote := ducklord.Client{Name: "local", Host: "ignored", SSH: os.Args[0], Ducklion: "ignored"}
+	lord := ducklord.NewRunner()
+	lord.SetOwner("ducklord-e2e")
+	defer lord.Close()
+	attached, err := lord.AttachStream(context.Background(), ducklordRemote, session.SessionID)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer attached.Stdout.Close()
+	ownedMessageID := "1783330000000000041"
+	ownedPayload, _ := json.Marshal(map[string]any{"id": ownedMessageID, "content": "must not reach another process",
+		"channel_id": "discord-origin", "author": map[string]any{"id": "human", "username": "human", "bot": false}})
+	ownedEnvelope, _ := json.Marshal(sseEnvelope{Type: "message_create", CCID: "cc1", Handle: "dwch_task", Kind: "task", Payload: ownedPayload,
+		InboxID: 41, SessionID: session.SessionID, ClaimToken: "claim-41", AttemptCount: 1})
+	// Discord stores the rejection, but its HTTP response is lost. Durable
+	// replay must complete the business outcome without a duplicate message.
+	fake.mu.Lock()
+	fake.dropDeliveryOnce = true
+	fake.mu.Unlock()
+	watch.handleMessageCreate(ownedEnvelope)
+	finishes := fake.snapshotFinishes()
+	if len(finishes) != 1 || finishes[0]["status"] != "admitted" || !strings.Contains(finishes[0]["error"], "post ownership rejection") {
+		t.Fatalf("ambiguous rejection finish=%v", finishes)
+	}
+	// Ownership may change before the claimed row is replayed. The durable
+	// rejection receipt, not current ownership, must remain authoritative.
+	sendClientCommand(t, watch, "dwch_task", "!yield", nil)
+	ownedEnvelope, _ = json.Marshal(sseEnvelope{Type: "message_create", CCID: "cc1", Handle: "dwch_task", Kind: "task", Payload: ownedPayload,
+		InboxID: 41, SessionID: session.SessionID, ClaimToken: "claim-41-replay", AttemptCount: 2})
+	watch.handleMessageCreate(ownedEnvelope)
 	preflightMessages := fake.snapshotMessages()
-	if len(preflightMessages) != 1 || !strings.Contains(preflightMessages[0]["content"], "controlled by `terminal:e2e-terminal`") {
+	if len(preflightMessages) != 2 || preflightMessages[0]["_path"] != "/client/cc/channels/dwch_task/messages" ||
+		preflightMessages[0]["reply_to_message_id"] != ownedMessageID || preflightMessages[0]["delivery_key"] == "" ||
+		!strings.Contains(preflightMessages[0]["content"], "controlled by `terminal:e2e-terminal`") ||
+		!strings.Contains(preflightMessages[1]["content"], "Discord now owns session") {
 		t.Fatalf("ownership rejection=%v", preflightMessages)
 	}
-	sendClientCommand(t, watch, "dwch_task", "!yield", nil)
+	finishes = fake.snapshotFinishes()
+	if len(finishes) != 2 || finishes[1]["status"] != "completed" || finishes[1]["error"] != "not owner" {
+		t.Fatalf("durable ownership outcome=%v", finishes)
+	}
 	messages := fake.snapshotMessages()
 	if len(messages) != 2 || !strings.Contains(messages[1]["content"], "Discord now owns session") {
 		t.Fatalf("yield reply=%v", messages)
+	}
+	select {
+	case err := <-attached.Done:
+		t.Fatalf("Ducklord read-only attachment closed during CC yield: %v", err)
+	default:
 	}
 	sessions, err := terminal.ListSessions()
 	if err != nil || len(sessions) != 1 || sessions[0].Writer == nil || sessions[0].Writer.Kind != model.OwnerCC || sessions[0].Writer.ID != "dwch_task" {
 		t.Fatalf("sessions=%+v err=%v", sessions, err)
 	}
 	current := sessions[0]
+	ownershipCC, err := duckliondaemon.DialCC(socket, "dwch_task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ownershipCC.AgentTaskEvents(context.Background(), current.SessionID, ownedMessageID, 0); err == nil {
+		_ = ownershipCC.Close()
+		t.Fatal("durably rejected prompt executed after ownership returned")
+	}
+	_ = ownershipCC.Close()
 	output, err := terminal.SubscribeOutput(current.SessionID, current.RuntimeGeneration, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -342,7 +391,12 @@ func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 	if err != nil || len(beforeAck) != 1 || beforeAck[0].TaskState != model.TaskReplying || beforeAck[0].Writer == nil || beforeAck[0].Writer.Kind != model.OwnerCC {
 		t.Fatalf("terminal event became idle before delivery ACK: sessions=%+v err=%v", beforeAck, err)
 	}
-	waiting, err := terminal.YieldSession(context.Background(), current.SessionID, current.OwnershipEpoch, current.RuntimeGeneration, true)
+	// The daemon restart closes the old stdio bridge. A fresh Ducklord runner
+	// exercises normal SSH bridge reconnection before requesting the wait yield.
+	reconnectedLord := ducklord.NewRunner()
+	reconnectedLord.SetOwner("ducklord-e2e")
+	defer reconnectedLord.Close()
+	waiting, err := reconnectedLord.Yield(context.Background(), ducklordRemote, current.SessionID, true)
 	if err != nil || waiting.Decision != model.YieldWaiting {
 		t.Fatalf("wait-yield before delivery ACK=%+v err=%v", waiting, err)
 	}
@@ -353,11 +407,13 @@ func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 	if err != nil || len(afterAck) != 1 || afterAck[0].TaskState != model.TaskIdle || afterAck[0].Writer == nil || afterAck[0].Writer.Kind != model.OwnerTerminal || afterAck[0].OwnershipEpoch != current.OwnershipEpoch+1 {
 		t.Fatalf("delivery ACK did not apply waiting yield: sessions=%+v err=%v", afterAck, err)
 	}
-	returned, err := taskCC.YieldSession(context.Background(), current.SessionID, afterAck[0].OwnershipEpoch, current.RuntimeGeneration, false)
-	if err != nil || returned.Decision != model.YieldTransferred || returned.Writer == nil || returned.Writer.Kind != model.OwnerCC {
-		t.Fatalf("return control to CC=%+v err=%v", returned, err)
+	sendClientCommand(t, watch, "dwch_task", "!yield", nil)
+	returnedSessions, err := taskCC.ListSessions()
+	if err != nil || len(returnedSessions) != 1 || returnedSessions[0].Writer == nil || returnedSessions[0].Writer.Kind != model.OwnerCC ||
+		returnedSessions[0].OwnershipEpoch != afterAck[0].OwnershipEpoch+1 {
+		t.Fatalf("return control to CC sessions=%+v err=%v", returnedSessions, err)
 	}
-	current.OwnershipEpoch = returned.OwnershipEpoch
+	current.OwnershipEpoch = returnedSessions[0].OwnershipEpoch
 	_ = taskCC.Close()
 
 	messageSnowflake := "1783330000000000043"
@@ -385,7 +441,7 @@ func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 		summary, _ := terminal.ListSessions()
 		t.Fatalf("managed final Discord delivery was not attempted: sessions=%+v messages=%v edits=%v finishes=%v", summary, fake.snapshotMessages(), fake.snapshotEdits(), fake.snapshotFinishes())
 	}
-	waiting, err = terminal.YieldSession(context.Background(), current.SessionID, current.OwnershipEpoch, current.RuntimeGeneration, true)
+	waiting, err = reconnectedLord.Yield(context.Background(), ducklordRemote, current.SessionID, true)
 	if err != nil || waiting.Decision != model.YieldWaiting {
 		t.Fatalf("integrated wait-yield while Discord delivery blocked=%+v err=%v", waiting, err)
 	}
@@ -411,7 +467,16 @@ func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 		summary, _ := terminal.ListSessions()
 		t.Fatalf("managed durable inbox was not completed: finishes=%v sessions=%+v messages=%v edits=%v", finishes, summary, fake.snapshotMessages(), fake.snapshotEdits())
 	}
-	afterDelivery, err := terminal.ListSessions()
+	var afterDelivery []protocol.SessionSummary
+	deadline = time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		afterDelivery, err = terminal.ListSessions()
+		if err == nil && len(afterDelivery) == 1 && afterDelivery[0].TaskState == model.TaskIdle && afterDelivery[0].Writer != nil &&
+			afterDelivery[0].Writer.Kind == model.OwnerTerminal && afterDelivery[0].OwnershipEpoch == current.OwnershipEpoch+1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err != nil || len(afterDelivery) != 1 || afterDelivery[0].TaskState != model.TaskIdle || afterDelivery[0].Writer == nil || afterDelivery[0].Writer.Kind != model.OwnerTerminal || afterDelivery[0].OwnershipEpoch != current.OwnershipEpoch+1 {
 		t.Fatalf("Discord delivery ACK did not transfer waiting owner: sessions=%+v err=%v", afterDelivery, err)
 	}

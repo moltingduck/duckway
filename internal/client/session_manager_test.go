@@ -1,15 +1,23 @@
 package client
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/ducklion"
+	duckliondaemon "github.com/hackerduck/duckway/internal/ducklion/daemon"
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("DUCKLORD_TEST_BRIDGE_HELPER") == "1" {
+		if err := duckliondaemon.BridgeStdio(context.Background(), os.Getenv("DUCKLORD_TEST_SOCKET"), os.Stdin, os.Stdout); err != nil {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv("DUCKLION_SUPERVISE") == "1" && len(os.Args) > 1 && os.Args[1] == "__supervise" {
 		opts, err := ducklion.ParseSupervisorArgs(os.Args[2:])
 		if err != nil {
