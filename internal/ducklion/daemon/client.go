@@ -106,7 +106,7 @@ func ConnectRoleContext(ctx context.Context, conn io.ReadWriteCloser, principal 
 	}()
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	setDeadline(conn, time.Now().Add(10*time.Second))
-	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_events"}
+	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if role == protocol.RoleDuckwayCC {
 		offeredCapabilities = []string{"status", "sessions_list", "session_yield", "session_task", "discord_binding", "agent_task"}
 	}
@@ -426,14 +426,14 @@ func (c *Client) subscribeOutput(sessionID string, generation uint64, options pr
 		return nil, err
 	}
 	if response.Error != nil {
-		return nil, fmt.Errorf("subscribe output: %s", response.Error.Message)
+		return nil, fmt.Errorf("subscribe output: %w", &RemoteError{Detail: *response.Error})
 	}
 	var metadata protocol.OutputSubscribeResult
 	if err := json.Unmarshal(response.Result, &metadata); err != nil {
 		return nil, err
 	}
 	if metadata.SubscriptionID == "" || metadata.RuntimeID == "" || metadata.InstanceID != c.instanceID || metadata.SessionID != sessionID || metadata.RuntimeGeneration != generation ||
-		metadata.EndOffset < metadata.StartOffset || options.TailBytes == 0 && metadata.StartOffset < options.Offset && !metadata.Gap {
+		metadata.EndOffset < metadata.StartOffset || options.TailBytes == 0 && metadata.StartOffset != options.Offset && !metadata.Gap {
 		return nil, fmt.Errorf("ducklion returned invalid output subscription metadata")
 	}
 	subscription := &OutputSubscription{client: c, metadata: metadata, next: metadata.StartOffset, events: make(chan outputResult, 256), terminalDone: make(chan struct{})}
@@ -959,4 +959,33 @@ func (c *Client) Resize(sessionID string, epoch, generation uint64, rows, cols u
 		return &RemoteError{Detail: *response.Error}
 	}
 	return nil
+}
+
+func (c *Client) ResizeWithBarrier(sessionID string, epoch, generation uint64, rows, cols uint16) (protocol.SessionResizeResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return c.ResizeWithBarrierContext(ctx, sessionID, epoch, generation, rows, cols)
+}
+
+func (c *Client) ResizeWithBarrierContext(ctx context.Context, sessionID string, epoch, generation uint64, rows, cols uint16) (protocol.SessionResizeResult, error) {
+	if err := c.requireCapability("session_resize_barrier"); err != nil {
+		return protocol.SessionResizeResult{}, err
+	}
+	if err := c.requireCapability("session_resize"); err != nil {
+		return protocol.SessionResizeResult{}, err
+	}
+	body, _ := json.Marshal(protocol.SessionResize{Rows: rows, Cols: cols})
+	response, err := c.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "session.resize", InstanceID: c.instanceID, SessionID: sessionID,
+		OwnershipEpoch: &epoch, RuntimeGeneration: &generation, Body: body})
+	if err != nil {
+		return protocol.SessionResizeResult{}, err
+	}
+	if response.Error != nil {
+		return protocol.SessionResizeResult{}, &RemoteError{Detail: *response.Error}
+	}
+	var result protocol.SessionResizeResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return result, fmt.Errorf("decode resize barrier: %w", err)
+	}
+	return result, nil
 }

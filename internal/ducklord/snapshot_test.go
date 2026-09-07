@@ -2,6 +2,7 @@ package ducklord
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,5 +116,68 @@ func TestTerminalRenderStateRejectsControlsAndTruncatesWholeLines(t *testing.T) 
 	}
 	if !state.Truncated || !strings.HasSuffix(state.Text, "newest") || strings.HasPrefix(state.Text, string(line)) && len(state.Text) == len(text) {
 		t.Fatalf("truncated=%v length=%d suffix=%q", state.Truncated, len(state.Text), state.Text[len(state.Text)-6:])
+	}
+}
+
+func TestTerminalRenderStatePersistsFramebuffer(t *testing.T) {
+	terminal := NewTerminal(3, 20, 10)
+	terminal.Write([]byte("before\x1b[1D!"))
+	framebuffer := terminal.SnapshotState()
+	payload, err := EncodeTerminalRenderState(TerminalRenderState{Text: terminal.Text(), Framebuffer: &framebuffer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := DecodeTerminalRenderState(payload)
+	if err != nil || state.Framebuffer == nil {
+		t.Fatalf("state=%+v err=%v payload=%s", state, err, payload)
+	}
+	restored, ok := NewTerminalFromState(*state.Framebuffer, 10)
+	if !ok || restored.Text() != "befor!" {
+		t.Fatalf("restored ok=%v text=%q", ok, restored.Text())
+	}
+}
+
+func TestTerminalRenderStatePreservesOutputResumeBoundary(t *testing.T) {
+	terminal := NewTerminal(2, 20, 10)
+	terminal.Write([]byte("ready"))
+	framebuffer := terminal.SnapshotState()
+	payload, err := EncodeTerminalRenderState(TerminalRenderState{Framebuffer: &framebuffer, RuntimeGeneration: 7, OutputOffset: 1234})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := DecodeTerminalRenderState(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.RuntimeGeneration != 7 || restored.OutputOffset != 1234 {
+		t.Fatalf("resume boundary generation=%d offset=%d", restored.RuntimeGeneration, restored.OutputOffset)
+	}
+}
+
+func TestTerminalRenderStateRejectsObjectAmplificationBeforeDecode(t *testing.T) {
+	payload := []byte(`{"framebuffer":{"rows":1,"cols":1,"primary":{"lines":[{"cells":[` + strings.Repeat(`null,`, MaxTerminalRetainedCells) + `null]}],"cursor_row":0,"cursor_col":0},"alternate":{"lines":[{"cells":[{}]}],"cursor_row":0,"cursor_col":0}}}`)
+	if len(payload) > MaxSnapshotPayload {
+		t.Fatalf("test payload unexpectedly exceeds outer limit: %d", len(payload))
+	}
+	if _, err := DecodeTerminalRenderState(payload); err == nil || !strings.Contains(err.Error(), "structural budget") {
+		t.Fatalf("amplification error=%v", err)
+	}
+}
+
+func TestTerminalRenderStateRejectsControlCellsInScrollback(t *testing.T) {
+	terminal := NewTerminal(2, 8, 10)
+	state := terminal.SnapshotState()
+	state.Scrollback = []TerminalLine{{Cells: []TerminalCell{{Rune: '\x1b', Width: 1}}}}
+	payload, err := json.Marshal(TerminalRenderState{Framebuffer: &state})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeTerminalRenderState(payload); err == nil {
+		t.Fatal("control-bearing scrollback framebuffer accepted")
+	}
+	state.Scrollback[0].Cells[0] = TerminalCell{Width: 255}
+	payload, _ = json.Marshal(TerminalRenderState{Framebuffer: &state})
+	if _, err := DecodeTerminalRenderState(payload); err == nil {
+		t.Fatal("orphan wide continuation accepted")
 	}
 }

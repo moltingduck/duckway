@@ -402,11 +402,11 @@ The current TUI supports:
 - basic xterm mouse click selection when the terminal supports SGR mouse mode
 - a changed marker when recent remote output changes since the previous refresh
 
-The right pane is not a full VT terminal emulator. It renders a bounded,
-sanitized output view and handles common interactive echoes such as backspace.
-Remote terminal-global escape sequences are not allowed to control the local
-TUI. Future work should replace the simplified renderer with a bounded VT
-screen model.
+The right pane uses a bounded VT framebuffer with primary/alternate screens,
+cursor movement, common erase/edit operations, SGR styles, wide and combining
+characters, and soft-wrap-aware resize. Remote escape sequences are interpreted
+inside that model and never replayed directly into Ducklord's own terminal;
+rendering emits only locally generated, allowlisted SGR sequences.
 
 ## Target TUI Flow
 

@@ -124,7 +124,7 @@ func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation
 
 type RuntimeController interface {
 	SubmitInput(context.Context, duckruntime.InputFrame) error
-	Resize(rows, cols uint16, epoch, generation uint64) error
+	Resize(rows, cols uint16, epoch, generation uint64) (uint64, error)
 	Terminate(force bool) error
 	UpdateOwnership(epoch, generation uint64) error
 }
@@ -147,7 +147,7 @@ func (c *SupervisorClient) ServeControl(ctx context.Context, controller RuntimeC
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	handshake := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleSupervisorControl,
-		Principal: c.identity.SessionID, Capabilities: []string{"runtime_control"}}
+		Principal: c.identity.SessionID, Capabilities: []string{"runtime_control", "resize_barrier"}}
 	if err := codec.Write(handshake); err != nil {
 		return err
 	}
@@ -160,7 +160,7 @@ func (c *SupervisorClient) ServeControl(ctx context.Context, controller RuntimeC
 	}
 	negotiated := handshakeResponse.Handshake
 	if negotiated.Major != protocol.Major || negotiated.Minor < 0 || negotiated.Minor > protocol.Minor || negotiated.Role != protocol.RoleSupervisorControl ||
-		negotiated.Principal != c.identity.SessionID || !hasCapability(negotiated.Capabilities, "runtime_control") {
+		negotiated.Principal != c.identity.SessionID || !hasCapability(negotiated.Capabilities, "runtime_control") || !hasCapability(negotiated.Capabilities, "resize_barrier") {
 		return fmt.Errorf("runtime control returned an invalid handshake")
 	}
 	generation := c.identity.RuntimeGeneration
@@ -238,7 +238,12 @@ func (c *SupervisorClient) executeControl(ctx context.Context, controller Runtim
 		if decodeErr := decodeStrict(request.Body, &resize); decodeErr != nil {
 			err = decodeErr
 		} else {
-			err = controller.Resize(resize.Rows, resize.Cols, *request.OwnershipEpoch, generation)
+			var outputOffset uint64
+			outputOffset, err = controller.Resize(resize.Rows, resize.Cols, *request.OwnershipEpoch, generation)
+			if err == nil {
+				result, _ := json.Marshal(protocol.SessionResizeResult{OutputOffset: outputOffset})
+				return protocol.Response{ID: request.ID, Result: result}
+			}
 		}
 	case "supervisor.agent_prepare":
 		var prepare protocol.SupervisorAgentPrepare

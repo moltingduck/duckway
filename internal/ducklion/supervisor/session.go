@@ -43,6 +43,7 @@ type Options struct {
 
 type Session struct {
 	mu                 sync.Mutex
+	captureMu          sync.Mutex
 	agentMu            sync.Mutex
 	id                 model.SessionID
 	generation         uint64
@@ -522,22 +523,28 @@ func (s *Session) UpdateOwnership(epoch, generation uint64) error {
 	return nil
 }
 
-func (s *Session) Resize(rows, cols uint16, epoch, generation uint64) error {
+func (s *Session) Resize(rows, cols uint16, epoch, generation uint64) (uint64, error) {
 	if rows < 5 || rows > 200 || cols < 20 || cols > 500 {
-		return ErrInvalidPTYSize
+		return 0, ErrInvalidPTYSize
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return ErrClosed
+		return 0, ErrClosed
 	}
 	if generation != s.generation {
-		return model.ErrStaleGeneration
+		return 0, model.ErrStaleGeneration
 	}
 	if epoch != s.epoch {
-		return model.ErrStaleEpoch
+		return 0, model.ErrStaleEpoch
 	}
-	return pty.Setsize(s.pty, &pty.Winsize{Rows: rows, Cols: cols})
+	s.captureMu.Lock()
+	defer s.captureMu.Unlock()
+	if err := pty.Setsize(s.pty, &pty.Winsize{Rows: rows, Cols: cols}); err != nil {
+		return 0, err
+	}
+	_, offset := s.output.Bounds()
+	return offset, nil
 }
 
 func (s *Session) Wait() error {
@@ -591,6 +598,7 @@ func (s *Session) capture() {
 	for {
 		n, err := s.pty.Read(buffer)
 		if n > 0 {
+			s.captureMu.Lock()
 			s.output.Publish(buffer[:n])
 			if offsets := s.attentionDetector.FeedOffsets(buffer[:n]); len(offsets) != 0 {
 				s.attentionMu.Lock()
@@ -601,6 +609,7 @@ func (s *Session) capture() {
 				default:
 				}
 			}
+			s.captureMu.Unlock()
 		}
 		if err != nil {
 			return

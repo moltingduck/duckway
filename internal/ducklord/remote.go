@@ -278,11 +278,75 @@ func (s *commandStream) Close() error {
 }
 
 type AttachSession struct {
-	Stdin  io.WriteCloser
-	Stdout io.ReadCloser
-	Done   <-chan error
-	Resize func(rows, cols uint16) error
-	cmd    *exec.Cmd
+	Stdin             io.WriteCloser
+	Stdout            io.ReadCloser
+	Done              <-chan error
+	Resize            func(rows, cols uint16) error
+	ResizeBarrier     func(rows, cols uint16) (uint64, error)
+	RuntimeGeneration uint64
+	StartOffset       uint64
+	ExactResume       bool
+	OutputOffset      func() uint64
+	cmd               *exec.Cmd
+}
+
+type AttachResume struct {
+	RuntimeGeneration uint64
+	OutputOffset      uint64
+}
+
+type subscriptionReader struct {
+	subscription *daemon.OutputSubscription
+	mu           sync.Mutex
+	pending      []byte
+	offset       uint64
+	closed       bool
+}
+
+func (r *subscriptionReader) Read(buffer []byte) (int, error) {
+	for {
+		r.mu.Lock()
+		if len(r.pending) > 0 {
+			n := copy(buffer, r.pending)
+			r.pending = r.pending[n:]
+			r.offset += uint64(n)
+			r.mu.Unlock()
+			return n, nil
+		}
+		if r.closed {
+			r.mu.Unlock()
+			return 0, io.ErrClosedPipe
+		}
+		r.mu.Unlock()
+		event, err := r.subscription.Read()
+		if err != nil {
+			var ended *daemon.OutputStreamEnded
+			if errors.As(err, &ended) && ended.Reason == "runtime_disconnected" {
+				return 0, io.EOF
+			}
+			return 0, err
+		}
+		r.mu.Lock()
+		r.pending = append(r.pending[:0], event.Frame.Data...)
+		r.mu.Unlock()
+	}
+}
+
+func (r *subscriptionReader) Close() error {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil
+	}
+	r.closed = true
+	r.mu.Unlock()
+	return r.subscription.Close()
+}
+
+func (r *subscriptionReader) Offset() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.offset
 }
 
 func (r *Runner) Sessions(ctx context.Context, c Client, tailLines int) ([]RemoteSession, error) {
@@ -732,7 +796,7 @@ func (*Runner) Attach(c Client, name string) error {
 
 func (r *Runner) AttachStream(ctx context.Context, c Client, sessionRef string) (*AttachSession, error) {
 	if r != nil && r.hasOwner() {
-		return r.attachDaemonStream(ctx, c, sessionRef)
+		return r.attachDaemonStream(ctx, c, sessionRef, nil)
 	}
 	if !SafeIdentifier(sessionRef) {
 		return nil, fmt.Errorf("invalid session name %q", sessionRef)
@@ -764,7 +828,14 @@ func (r *Runner) AttachStream(ctx context.Context, c Client, sessionRef string) 
 	return &AttachSession{Stdin: stdin, Stdout: stdout, Done: done, cmd: cmd}, nil
 }
 
-func (r *Runner) attachDaemonStream(ctx context.Context, c Client, sessionRef string) (*AttachSession, error) {
+func (r *Runner) AttachStreamFrom(ctx context.Context, c Client, sessionRef string, resume AttachResume) (*AttachSession, error) {
+	if r == nil || !r.hasOwner() {
+		return r.AttachStream(ctx, c, sessionRef)
+	}
+	return r.attachDaemonStream(ctx, c, sessionRef, &resume)
+}
+
+func (r *Runner) attachDaemonStream(ctx context.Context, c Client, sessionRef string, resume *AttachResume) (*AttachSession, error) {
 	client, err := r.bridgeClient(ctx, c)
 	if err != nil {
 		return nil, err
@@ -794,35 +865,23 @@ func (r *Runner) attachDaemonStream(ctx context.Context, c Client, sessionRef st
 	if err != nil {
 		return nil, err
 	}
-	subscription, err := client.SubscribeOutputTail(selected.SessionID, selected.RuntimeGeneration, 256<<10)
+	var subscription *daemon.OutputSubscription
+	if resume != nil && resume.RuntimeGeneration == selected.RuntimeGeneration {
+		subscription, err = client.SubscribeOutput(selected.SessionID, selected.RuntimeGeneration, resume.OutputOffset)
+	} else {
+		subscription, err = client.SubscribeOutputTail(selected.SessionID, selected.RuntimeGeneration, 256<<10)
+	}
 	if err != nil {
 		releaseSlot()
 		return nil, err
 	}
+	metadata := subscription.Metadata()
+	exactResume := resume != nil && resume.RuntimeGeneration == selected.RuntimeGeneration && !metadata.Gap && metadata.StartOffset == resume.OutputOffset
+	outputReader := &subscriptionReader{subscription: subscription, offset: metadata.StartOffset}
 	inputReader, inputWriter := io.Pipe()
-	outputReader, outputWriter := io.Pipe()
 	attachCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	errResults := make(chan error, 2)
-	go func() {
-		defer releaseSlot()
-		defer outputWriter.Close()
-		for {
-			event, readErr := subscription.Read()
-			if readErr != nil {
-				var ended *daemon.OutputStreamEnded
-				if errors.As(readErr, &ended) && ended.Reason == "runtime_disconnected" {
-					readErr = nil
-				}
-				errResults <- readErr
-				return
-			}
-			if _, writeErr := outputWriter.Write(event.Frame.Data); writeErr != nil {
-				errResults <- writeErr
-				return
-			}
-		}
-	}()
+	errResults := make(chan error, 1)
 	go func() {
 		buffer := make([]byte, 32<<10)
 		for {
@@ -840,6 +899,7 @@ func (r *Runner) attachDaemonStream(ctx context.Context, c Client, sessionRef st
 		}
 	}()
 	go func() {
+		defer releaseSlot()
 		var finalErr error
 		select {
 		case finalErr = <-errResults:
@@ -855,14 +915,18 @@ func (r *Runner) attachDaemonStream(ctx context.Context, c Client, sessionRef st
 		cancel()
 		_ = inputReader.Close()
 		_ = inputWriter.Close()
-		_ = subscription.Close()
-		_ = outputWriter.Close()
+		_ = outputReader.Close()
 		done <- finalErr
 	}()
 	resize := func(rows, cols uint16) error {
 		return client.Resize(selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, rows, cols)
 	}
-	return &AttachSession{Stdin: inputWriter, Stdout: outputReader, Done: done, Resize: resize}, nil
+	resizeBarrier := func(rows, cols uint16) (uint64, error) {
+		result, resizeErr := client.ResizeWithBarrierContext(attachCtx, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, rows, cols)
+		return result.OutputOffset, resizeErr
+	}
+	return &AttachSession{Stdin: inputWriter, Stdout: outputReader, Done: done, Resize: resize, RuntimeGeneration: selected.RuntimeGeneration,
+		StartOffset: metadata.StartOffset, ExactResume: exactResume, OutputOffset: outputReader.Offset, ResizeBarrier: resizeBarrier}, nil
 }
 
 func sshOutput(ctx context.Context, c Client, ducklionArgs ...string) ([]byte, error) {

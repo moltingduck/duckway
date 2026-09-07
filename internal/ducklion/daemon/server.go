@@ -312,7 +312,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 			s.connMu.Unlock()
 		}()
 	}
-	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_events"}
+	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if remote.Role == protocol.RoleDuckwayCC {
 		capabilities = []string{"status", "sessions_list", "session_yield", "session_task", "discord_binding", "agent_task"}
 	}
@@ -677,11 +677,11 @@ func (s *Server) handleSupervisorControl(conn *net.UnixConn, codec *bridge.Codec
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "control principal must be the canonical session ID"}})
 		return
 	}
-	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"runtime_control"}}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"runtime_control", "resize_barrier"}}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
-	if protocolError != nil || !hasCapability(negotiated.Capabilities, "runtime_control") {
+	if protocolError != nil || !hasCapability(negotiated.Capabilities, "runtime_control") || !hasCapability(negotiated.Capabilities, "resize_barrier") {
 		if protocolError == nil {
-			protocolError = &protocol.Error{Code: protocol.ErrIncompatible, Message: "runtime control capability is required"}
+			protocolError = &protocol.Error{Code: protocol.ErrIncompatible, Message: "runtime control and resize barrier capabilities are required"}
 		}
 		_ = codec.Write(protocol.HandshakeResponse{Error: protocolError})
 		return

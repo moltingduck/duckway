@@ -126,10 +126,10 @@ func TestSessionResizeIsGenerationAndEpochFenced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := session.Resize(20, 80, 2, 2); !errors.Is(err, model.ErrStaleEpoch) {
+	if _, err := session.Resize(20, 80, 2, 2); !errors.Is(err, model.ErrStaleEpoch) {
 		t.Fatalf("stale epoch error=%v", err)
 	}
-	if err := session.Resize(20, 80, 3, 1); !errors.Is(err, model.ErrStaleGeneration) {
+	if _, err := session.Resize(20, 80, 3, 1); !errors.Is(err, model.ErrStaleGeneration) {
 		t.Fatalf("stale generation error=%v", err)
 	}
 	_ = session.Wait()
@@ -141,7 +141,7 @@ func TestSessionResizeRejectsUnsafeBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, size := range [][2]uint16{{4, 80}, {201, 80}, {20, 19}, {20, 501}} {
-		if err := session.Resize(size[0], size[1], 3, 2); !errors.Is(err, ErrInvalidPTYSize) {
+		if _, err := session.Resize(size[0], size[1], 3, 2); !errors.Is(err, ErrInvalidPTYSize) {
 			t.Fatalf("size=%v err=%v", size, err)
 		}
 	}

@@ -35,13 +35,13 @@ type remoteRunner interface {
 }
 
 type attachOutputEvent struct {
-	id   int
-	text string
-}
-
-type attachDoneEvent struct {
-	id  int
-	err error
+	id                int
+	text              string
+	runtimeGeneration uint64
+	outputOffset      uint64
+	startOffset       uint64
+	done              bool
+	err               error
 }
 
 type startDoneEvent struct {
@@ -55,13 +55,17 @@ type resizeRequest struct {
 	id     int
 	rows   uint16
 	cols   uint16
-	resize func(uint16, uint16) error
+	resize func(uint16, uint16) (uint64, error)
 }
 
 type resizeDoneEvent struct {
-	id  int
-	err error
+	id         int
+	rows, cols uint16
+	err        error
+	barrier    uint64
 }
+
+const maxResizeBufferedBytes = 256 << 10
 
 func main() {
 	runner := ducklord.NewRunner()
@@ -935,50 +939,54 @@ func splitCommandLine(line string) ([]string, error) {
 }
 
 type tuiState struct {
-	cfg                *ducklord.Config
-	cfgPath            string
-	runner             remoteRunner
-	refresh            time.Duration
-	sessions           []ducklord.RemoteSession
-	selected           int
-	hashes             map[string]string
-	selectedKey        string
-	outputText         string
-	outputErr          string
-	localWarning       string
-	resizeStatus       string
-	outputForKey       string
-	outputStale        bool
-	outputFresh        bool
-	activeAttachKey    string
-	activeAttachFresh  bool
-	pendingAttachKey   string
-	snapshotStore      ducklord.SnapshotStore
-	activityStore      ducklord.ActivityStateStore
-	activityState      *ducklord.ActivityState
-	focused            bool
-	newSessionMode     bool
-	newSessionClient   string
-	newSessionLine     string
-	newSessionErr      string
-	newSessionStarting bool
-	newSessionStep     string
-	newSessionAgent    string
-	newSessionCommand  []string
-	newSessionProjects []ducklord.RemoteProject
-	addClientMode      bool
-	addClientLine      string
-	addClientErr       string
-	addClientHosts     []ducklord.SSHHost
-	hostScoped         bool
-	ownerName          string
-	listPaneWidth      int
-	autoHideList       bool
-	hostSync           map[string]ducklord.SessionUpdate
-	eventDriven        bool
-	notificationMode   bool
-	notificationIndex  int
-	notificationStaged map[model.NotificationCategory]bool
+	cfg                 *ducklord.Config
+	cfgPath             string
+	runner              remoteRunner
+	refresh             time.Duration
+	sessions            []ducklord.RemoteSession
+	selected            int
+	hashes              map[string]string
+	selectedKey         string
+	outputText          string
+	outputErr           string
+	localWarning        string
+	resizeStatus        string
+	outputForKey        string
+	outputStale         bool
+	outputFresh         bool
+	terminal            *ducklord.Terminal
+	terminalGeneration  uint64
+	terminalOffset      uint64
+	terminalCursorValid bool
+	activeAttachKey     string
+	activeAttachFresh   bool
+	pendingAttachKey    string
+	snapshotStore       ducklord.SnapshotStore
+	activityStore       ducklord.ActivityStateStore
+	activityState       *ducklord.ActivityState
+	focused             bool
+	newSessionMode      bool
+	newSessionClient    string
+	newSessionLine      string
+	newSessionErr       string
+	newSessionStarting  bool
+	newSessionStep      string
+	newSessionAgent     string
+	newSessionCommand   []string
+	newSessionProjects  []ducklord.RemoteProject
+	addClientMode       bool
+	addClientLine       string
+	addClientErr        string
+	addClientHosts      []ducklord.SSHHost
+	hostScoped          bool
+	ownerName           string
+	listPaneWidth       int
+	autoHideList        bool
+	hostSync            map[string]ducklord.SessionUpdate
+	eventDriven         bool
+	notificationMode    bool
+	notificationIndex   int
+	notificationStaged  map[model.NotificationCategory]bool
 }
 
 func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, owner string) error {
@@ -1058,7 +1066,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	defer signal.Stop(resizeSignals)
 	input := make(chan []byte, 8)
 	attachOut := make(chan attachOutputEvent, 32)
-	attachDone := make(chan attachDoneEvent, 1)
+	attachOutputSource := (<-chan attachOutputEvent)(attachOut)
 	resizeRequests := make(chan resizeRequest, 1)
 	resizeResults := make(chan resizeDoneEvent, 1)
 	startDone := make(chan startDoneEvent, 1)
@@ -1066,15 +1074,33 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	var attachCancel context.CancelFunc
 	attachID := 0
 	attachCanResize := false
-	go runResizeWorker(ctx, resizeRequests, resizeResults)
+	var pendingFramebufferResize *resizeDoneEvent
+	resizeInFlight := false
+	var queuedResize *[2]uint16
+	var bufferedAttach []attachOutputEvent
+	bufferedAttachBytes := 0
+	resizeWorkerDone := make(chan struct{})
+	go func() {
+		defer close(resizeWorkerDone)
+		runResizeWorker(ctx, resizeRequests, resizeResults)
+	}()
+	defer func() {
+		stop()
+		<-resizeWorkerDone
+	}()
 	queueResize := func() {
-		if attach == nil || attach.Resize == nil || !attachCanResize {
+		if attach == nil || attach.ResizeBarrier == nil || !attachCanResize {
 			return
 		}
 		rows, cols := state.activePTYSize()
-		request := resizeRequest{id: attachID, rows: rows, cols: cols, resize: attach.Resize}
+		if resizeInFlight || pendingFramebufferResize != nil {
+			queuedResize = &[2]uint16{rows, cols}
+			return
+		}
+		request := resizeRequest{id: attachID, rows: rows, cols: cols, resize: attach.ResizeBarrier}
 		select {
 		case resizeRequests <- request:
+			resizeInFlight = true
 		default:
 			select {
 			case <-resizeRequests:
@@ -1082,8 +1108,30 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			select {
 			case resizeRequests <- request:
+				resizeInFlight = true
 			default:
 			}
+		}
+	}
+	finishAttach := func(event attachOutputEvent) {
+		attachID++
+		resizeInFlight = false
+		pendingFramebufferResize = nil
+		queuedResize = nil
+		bufferedAttach = nil
+		bufferedAttachBytes = 0
+		attachOutputSource = attachOut
+		if event.err != nil && state.focused {
+			state.outputErr = event.err.Error()
+		}
+		state.focused = false
+		state.activeAttachFresh = false
+		state.pendingAttachKey = ""
+		attachCanResize = false
+		attach = nil
+		if attachCancel != nil {
+			attachCancel()
+			attachCancel = nil
 		}
 	}
 	var startCancel context.CancelFunc
@@ -1112,9 +1160,27 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.render(os.Stdout)
 		case result := <-resizeResults:
 			if result.id == attachID {
+				resizeInFlight = false
 				state.resizeStatus = ""
 				if result.err != nil {
 					state.resizeStatus = "resize failed: " + sanitizeTerminalText(result.err.Error())
+				} else if state.terminal != nil && result.barrier > state.terminalOffset {
+					pendingFramebufferResize = &result
+					state.resizeStatus = "resize pending output drain"
+				} else if state.terminal != nil {
+					state.terminal.Resize(int(result.rows), int(result.cols))
+				}
+				completion := drainBufferedAttach(state, bufferedAttach, &pendingFramebufferResize)
+				bufferedAttach = nil
+				bufferedAttachBytes = 0
+				attachOutputSource = attachOut
+				if completion != nil {
+					finishAttach(*completion)
+				} else if pendingFramebufferResize == nil && queuedResize != nil {
+					queued := *queuedResize
+					queuedResize = nil
+					resizeRequests <- resizeRequest{id: attachID, rows: queued[0], cols: queued[1], resize: attach.ResizeBarrier}
+					resizeInFlight = true
 				}
 				state.render(os.Stdout)
 			}
@@ -1128,6 +1194,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 				_ = attach.Stdin.Close()
 				attachID++
+				resizeInFlight = false
+				pendingFramebufferResize = nil
+				queuedResize = nil
+				bufferedAttach = nil
+				bufferedAttachBytes = 0
+				attachOutputSource = attachOut
 				attach = nil
 				attachCanResize = false
 			}
@@ -1142,27 +1214,27 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			startCancel = nil
 			state.completeNewSessionStart(ctx, result.client, result.session, result.err)
 			state.render(os.Stdout)
-		case chunk := <-attachOut:
+		case chunk := <-attachOutputSource:
 			if chunk.id != attachID {
 				continue
 			}
-			state.applyAttachOutput(chunk.text)
-			state.render(os.Stdout)
-		case result := <-attachDone:
-			if result.id != attachID {
+			if resizeInFlight {
+				bufferedAttach = append(bufferedAttach, chunk)
+				bufferedAttachBytes += len(chunk.text)
+				if bufferedAttachBytes >= maxResizeBufferedBytes {
+					attachOutputSource = nil
+				}
 				continue
 			}
-			if result.err != nil && state.focused {
-				state.outputErr = result.err.Error()
+			if chunk.done {
+				finishAttach(chunk)
+				state.render(os.Stdout)
+				continue
 			}
-			state.focused = false
-			state.activeAttachFresh = false
-			state.pendingAttachKey = ""
-			attachCanResize = false
-			attach = nil
-			if attachCancel != nil {
-				attachCancel()
-				attachCancel = nil
+			applyOrderedAttachChunk(state, chunk, &pendingFramebufferResize)
+			if pendingFramebufferResize == nil && queuedResize != nil {
+				queuedResize = nil
+				queueResize()
 			}
 			state.render(os.Stdout)
 		case b := <-input:
@@ -1177,6 +1249,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						attachCancel = nil
 					}
 					attachID++
+					resizeInFlight = false
+					pendingFramebufferResize = nil
+					queuedResize = nil
+					bufferedAttach = nil
+					bufferedAttachBytes = 0
+					attachOutputSource = attachOut
 					state.focused = false
 					state.activeAttachFresh = false
 					state.pendingAttachKey = ""
@@ -1330,7 +1408,14 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				if sessionRef == "" {
 					sessionRef = s.Name
 				}
-				session, err := runner.AttachStream(attachCtx, c, sessionRef)
+				var session *ducklord.AttachSession
+				if resumer, ok := runner.(interface {
+					AttachStreamFrom(context.Context, ducklord.Client, string, ducklord.AttachResume) (*ducklord.AttachSession, error)
+				}); ok && state.terminal != nil && state.outputForKey == sessionKey(s) && state.terminalCursorValid {
+					session, err = resumer.AttachStreamFrom(attachCtx, c, sessionRef, ducklord.AttachResume{RuntimeGeneration: state.terminalGeneration, OutputOffset: state.terminalOffset})
+				} else {
+					session, err = runner.AttachStream(attachCtx, c, sessionRef)
+				}
 				if err != nil {
 					cancel()
 					state.outputErr = err.Error()
@@ -1340,16 +1425,30 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				attachCancel = cancel
 				state.resizeStatus = ""
 				attachID++
+				resizeInFlight = false
+				pendingFramebufferResize = nil
+				queuedResize = nil
+				bufferedAttach = nil
+				bufferedAttachBytes = 0
+				attachOutputSource = attachOut
 				id := attachID
 				state.pendingAttachKey = sessionKey(s)
-				attachCanResize = state.canResizeCurrentSession()
+				attachCanResize = state.canResizeCurrentSession() && session.ResizeBarrier != nil
 				state.outputForKey = state.pendingAttachKey
-				state.outputText = ""
+				if !session.ExactResume {
+					state.outputText = ""
+					state.terminal = nil
+					state.terminalGeneration = session.RuntimeGeneration
+					state.terminalOffset = session.StartOffset
+					state.terminalCursorValid = false
+				} else {
+					state.outputStale = false
+				}
 				state.outputErr = ""
 				state.outputStale = false
 				state.outputFresh = false
 				state.focused = true
-				go superviseAttach(attachCtx, id, session, attachOut, attachDone)
+				go superviseAttach(attachCtx, id, session, attachOut)
 				queueResize()
 			}
 			state.render(os.Stdout)
@@ -1568,12 +1667,23 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 	s.selectedKey = key
 	if s.outputForKey != key {
 		s.outputText = ""
+		s.terminal = nil
 		s.outputErr = ""
 		s.outputStale = false
 		s.outputFresh = false
 		if snapshot, err := s.snapshotStore.Load(sess.InstanceID, sess.SessionID); err == nil {
 			if state, decodeErr := ducklord.DecodeTerminalRenderState(snapshot.Payload); decodeErr == nil {
-				s.outputText = state.Text
+				s.terminalGeneration = state.RuntimeGeneration
+				s.terminalOffset = state.OutputOffset
+				s.terminalCursorValid = state.ResumeCursorValid
+				if state.Framebuffer != nil {
+					s.terminal, _ = ducklord.NewTerminalFromState(*state.Framebuffer, ducklord.DefaultTerminalScrollback)
+				}
+				if s.terminal != nil {
+					s.outputText = s.terminal.Text()
+				} else {
+					s.outputText = state.Text
+				}
 				s.outputStale = true
 			}
 		}
@@ -1590,6 +1700,11 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 		if s.outputErr == "" {
 			s.outputErr = sess.Status
 		}
+		return
+	}
+	if s.outputStale && s.terminal != nil && s.terminalCursorValid && s.terminalGeneration == sess.RuntimeGeneration {
+		s.outputFresh = false
+		s.outputErr = "saved terminal state; press enter to resume from its exact output position"
 		return
 	}
 	c, err := mustClient(s.cfg, sess.Client)
@@ -1610,18 +1725,28 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 		s.outputErr = err.Error()
 		return
 	}
-	s.outputText = sanitizeTerminalText(text)
+	rows, cols := s.activePTYSize()
+	s.terminal = ducklord.NewTerminal(int(rows), int(cols), ducklord.DefaultTerminalScrollback)
+	s.terminal.Write([]byte(text))
+	s.outputText = s.terminal.Text()
 	s.outputErr = ""
 	s.outputStale = false
 	s.outputFresh = true
+	s.terminalGeneration = sess.RuntimeGeneration
+	s.terminalOffset = 0
+	s.terminalCursorValid = false
 }
 
-func (s *tuiState) applyAttachOutput(text string) {
-	if s.outputStale {
-		s.outputText = ""
-		s.outputStale = false
+func (s *tuiState) applyAttachOutput(text string, runtimeGeneration, outputOffset uint64) {
+	s.outputStale = false
+	if s.terminal == nil {
+		rows, cols := s.activePTYSize()
+		s.terminal = ducklord.NewTerminal(int(rows), int(cols), ducklord.DefaultTerminalScrollback)
 	}
-	s.outputText = appendOutputText(s.outputText, text, 120)
+	s.terminal.Write([]byte(text))
+	s.terminalGeneration = runtimeGeneration
+	s.terminalOffset = outputOffset
+	s.terminalCursorValid = runtimeGeneration != 0
 	s.outputFresh = true
 	if s.pendingAttachKey != "" {
 		s.activeAttachKey = s.pendingAttachKey
@@ -1631,6 +1756,52 @@ func (s *tuiState) applyAttachOutput(text string) {
 	if sessionKey(s.currentSession()) == s.activeAttachKey {
 		s.markActivitySeen(s.currentSession())
 	}
+}
+
+func applyOrderedAttachChunk(state *tuiState, chunk attachOutputEvent, pending **resizeDoneEvent) {
+	if chunk.runtimeGeneration != 0 {
+		if chunk.outputOffset < chunk.startOffset || chunk.outputOffset-chunk.startOffset != uint64(len(chunk.text)) ||
+			state.terminalGeneration != 0 && chunk.runtimeGeneration != state.terminalGeneration || chunk.startOffset != state.terminalOffset {
+			state.outputErr = "PTY output stream lost byte continuity; detach and reattach to rebuild the view"
+			*pending = nil
+			state.resizeStatus = ""
+			return
+		}
+	}
+	resize := *pending
+	if resize != nil && resize.id == chunk.id && chunk.runtimeGeneration == state.terminalGeneration && resize.barrier > chunk.startOffset && resize.barrier < chunk.outputOffset {
+		split := int(resize.barrier - chunk.startOffset)
+		state.applyAttachOutput(chunk.text[:split], chunk.runtimeGeneration, resize.barrier)
+		state.terminal.Resize(int(resize.rows), int(resize.cols))
+		state.applyAttachOutput(chunk.text[split:], chunk.runtimeGeneration, chunk.outputOffset)
+		*pending = nil
+		state.resizeStatus = ""
+		return
+	}
+	if resize != nil && resize.id == chunk.id && chunk.startOffset >= resize.barrier {
+		if state.terminal != nil {
+			state.terminal.Resize(int(resize.rows), int(resize.cols))
+		}
+		*pending = nil
+		state.resizeStatus = ""
+	}
+	state.applyAttachOutput(chunk.text, chunk.runtimeGeneration, chunk.outputOffset)
+	if resize != nil && resize.id == chunk.id && chunk.runtimeGeneration == state.terminalGeneration && chunk.outputOffset == resize.barrier {
+		state.terminal.Resize(int(resize.rows), int(resize.cols))
+		*pending = nil
+		state.resizeStatus = ""
+	}
+}
+
+func drainBufferedAttach(state *tuiState, events []attachOutputEvent, pending **resizeDoneEvent) *attachOutputEvent {
+	for index := range events {
+		event := events[index]
+		if event.done {
+			return &event
+		}
+		applyOrderedAttachChunk(state, event, pending)
+	}
+	return nil
 }
 
 func (s *tuiState) activity() *ducklord.ActivityState {
@@ -1721,10 +1892,19 @@ func (s *tuiState) saveCurrentSnapshot() {
 }
 
 func (s *tuiState) saveSnapshot(session ducklord.RemoteSession, text string) {
-	if session.InstanceID == "" || session.SessionID == "" || text == "" {
+	if session.InstanceID == "" || session.SessionID == "" || text == "" && s.terminal == nil {
 		return
 	}
-	payload, err := ducklord.EncodeTerminalRenderState(ducklord.TerminalRenderState{Text: sanitizeTerminalText(text)})
+	renderState := ducklord.TerminalRenderState{Text: sanitizeTerminalText(text)}
+	if s.terminal != nil && sessionKey(session) == s.outputForKey {
+		framebuffer := s.terminal.SnapshotState()
+		renderState.Framebuffer = &framebuffer
+		renderState.Text = s.terminal.Text()
+		renderState.RuntimeGeneration = s.terminalGeneration
+		renderState.OutputOffset = s.terminalOffset
+		renderState.ResumeCursorValid = s.terminalCursorValid
+	}
+	payload, err := ducklord.EncodeTerminalRenderState(renderState)
 	if err == nil {
 		err = s.snapshotStore.Save(ducklord.TerminalSnapshot{InstanceID: session.InstanceID, SessionID: session.SessionID, Payload: payload})
 	}
@@ -1743,7 +1923,7 @@ func (s *tuiState) render(out io.Writer) {
 	menuWidth := layout.menuWidth
 	contentX := layout.contentX
 	contentWidth := layout.contentWidth
-	fmt.Fprint(out, "\033[H\033[2J")
+	fmt.Fprint(out, "\033[?25l\033[H\033[2J")
 	status := ""
 	if s.resizeStatus != "" {
 		status = "  " + s.resizeStatus
@@ -1856,6 +2036,11 @@ func (s *tuiState) render(out io.Writer) {
 	}
 	s.renderAddClientPrompt(out, height, 1, renderWidth)
 	s.renderCreatePrompt(out, height, 1, renderWidth)
+	if s.focused && s.terminal != nil && !s.outputStale {
+		if cursorRow, cursorCol, visible := s.terminal.CursorPosition(height-5, contentWidth); visible {
+			fmt.Fprintf(out, "\033[%d;%dH\033[?25h", 6+cursorRow, contentX+cursorCol)
+		}
+	}
 }
 
 func (s *tuiState) groupHasUnread(group string) bool {
@@ -1971,7 +2156,7 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 	}
 	fmt.Fprintf(out, "\033[5;%dH%s\033[K", x, truncate(header, width))
 	startRow := 6
-	if s.outputErr != "" && s.outputText == "" {
+	if s.outputErr != "" && s.outputText == "" && s.terminal == nil {
 		for i, line := range wrapDisplayText("error: "+sanitizeTerminalText(s.outputErr), width) {
 			if startRow+i > height {
 				break
@@ -1981,8 +2166,17 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 		return
 	}
 	lines := tailLines(strings.Split(strings.TrimRight(s.outputText, "\n"), "\n"), height-startRow+1)
+	styled := false
+	if s.terminal != nil {
+		lines = s.terminal.RenderLines(height-startRow+1, width)
+		styled = true
+	}
 	for i, line := range lines {
-		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", startRow+i, x, truncate(line, width))
+		if styled {
+			fmt.Fprintf(out, "\033[%d;%dH%s\033[K", startRow+i, x, line)
+		} else {
+			fmt.Fprintf(out, "\033[%d;%dH%s\033[K", startRow+i, x, truncate(line, width))
+		}
 	}
 }
 
@@ -2581,9 +2775,9 @@ func nextInputEvent(pending []byte) (event, rest []byte, ok bool) {
 	return append([]byte(nil), pending[:1]...), pending[1:], true
 }
 
-func superviseAttach(ctx context.Context, id int, session *ducklord.AttachSession, out chan<- attachOutputEvent, done chan<- attachDoneEvent) {
+func superviseAttach(ctx context.Context, id int, session *ducklord.AttachSession, out chan<- attachOutputEvent) {
 	stdoutDone := make(chan error, 1)
-	go readAttachOutput(ctx, id, session.Stdout, out, stdoutDone)
+	go readAttachOutput(ctx, id, session, out, stdoutDone)
 	var stdoutErr error
 	var commandErr error
 	stdoutOpen := true
@@ -2593,6 +2787,7 @@ func superviseAttach(ctx context.Context, id int, session *ducklord.AttachSessio
 		case err := <-stdoutDone:
 			stdoutErr = err
 			stdoutOpen = false
+			_ = session.Stdin.Close()
 		case err := <-session.Done:
 			commandErr = err
 			commandOpen = false
@@ -2602,13 +2797,13 @@ func superviseAttach(ctx context.Context, id int, session *ducklord.AttachSessio
 	}
 	if commandErr != nil {
 		select {
-		case done <- attachDoneEvent{id: id, err: commandErr}:
+		case out <- attachOutputEvent{id: id, done: true, err: commandErr}:
 		case <-ctx.Done():
 		}
 		return
 	}
 	select {
-	case done <- attachDoneEvent{id: id, err: stdoutErr}:
+	case out <- attachOutputEvent{id: id, done: true, err: stdoutErr}:
 	case <-ctx.Done():
 	}
 }
@@ -2629,9 +2824,9 @@ func runResizeWorker(ctx context.Context, requests <-chan resizeRequest, results
 				}
 			}
 		resize:
-			err := request.resize(request.rows, request.cols)
+			barrier, err := request.resize(request.rows, request.cols)
 			select {
-			case results <- resizeDoneEvent{id: request.id, err: err}:
+			case results <- resizeDoneEvent{id: request.id, rows: request.rows, cols: request.cols, barrier: barrier, err: err}:
 			case <-ctx.Done():
 				return
 			}
@@ -2639,13 +2834,21 @@ func runResizeWorker(ctx context.Context, requests <-chan resizeRequest, results
 	}
 }
 
-func readAttachOutput(ctx context.Context, id int, r io.Reader, out chan<- attachOutputEvent, done chan<- error) {
+func readAttachOutput(ctx context.Context, id int, session *ducklord.AttachSession, out chan<- attachOutputEvent, done chan<- error) {
 	buf := make([]byte, 4096)
 	for {
-		n, err := r.Read(buf)
+		n, err := session.Stdout.Read(buf)
 		if n > 0 {
+			offset := uint64(0)
+			if session.OutputOffset != nil {
+				offset = session.OutputOffset()
+			}
+			startOffset := offset
+			if offset >= uint64(n) {
+				startOffset = offset - uint64(n)
+			}
 			select {
-			case out <- attachOutputEvent{id: id, text: string(buf[:n])}:
+			case out <- attachOutputEvent{id: id, text: string(buf[:n]), runtimeGeneration: session.RuntimeGeneration, startOffset: startOffset, outputOffset: offset}:
 			case <-ctx.Done():
 				return
 			}

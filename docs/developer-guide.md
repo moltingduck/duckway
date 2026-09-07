@@ -724,8 +724,11 @@ globally.
 
 Detached views are atomically stored as mode-0600 files under
 `~/.ducklord/sessions/<ducklion-instance-id>/<session-id>.snapshot`. They hold
-sanitized render text, not replayable raw PTY bytes, and appear with a clear
-`STALE SNAPSHOT` label only until fresh remote output arrives.
+a validated VT framebuffer, parser continuation, runtime generation and output
+offset—not replayable raw PTY bytes. They appear with a clear `STALE SNAPSHOT`
+label. Enter resumes from the exact offset when Ducklion still retains it; a
+runtime change or output gap rebuilds from a bounded tail instead of combining
+incompatible terminal states.
 
 The TUI inventory is event-driven when using the versioned Ducklion bridge.
 Each host header shows `LIVE r<revision>` or `RECONNECTING r<revision>`.
@@ -744,8 +747,10 @@ attach output does. If the state file is malformed, Ducklord preserves it as
 When a writable PTY pane is attached, Ducklord sends its right-pane dimensions
 immediately and follows `SIGWINCH`. Resize is asynchronous and coalesced, so a
 slow remote host cannot freeze output; read-only agent views do not resize the
-shared PTY. A rejected resize appears in the persistent header status and is
-cleared by the next successful resize.
+shared PTY. Each acknowledgement carries an output-offset barrier, allowing the
+TUI to parse pre-resize bytes, reflow wide glyphs and cursor positions, then
+parse post-resize bytes. A rejected resize appears in the persistent header
+status and is cleared by the next successful resize.
 
 The session list defaults to 36 columns and hides when the PTY gains focus.
 Both settings are restart-only configuration:

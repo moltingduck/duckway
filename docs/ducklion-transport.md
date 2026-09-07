@@ -366,7 +366,7 @@ snapshots and reconnects do not. Pressing `n` stages per-category filters and
 Enter atomically persists them. Invalid local JSON is preserved as
 `state.json.corrupt-<timestamp>` and the TUI continues with a visible warning.
 
-The transitional Ducklord attach path requests at most the newest 256 KiB from
+The first attach path requests at most the newest 256 KiB from
 the raw ring and then follows live output. Its visible text cache is bounded by
 both 120 lines and 1 MiB, including newline-free output. Explicit detach wakes
 blocked readers locally before the bounded best-effort unsubscribe RPC, while
@@ -390,9 +390,40 @@ settings. Narrow terminals use a list overlay; local rendering always crops to
 the physical viewport even when the remote PTY must retain its 40-column
 protocol minimum.
 
-The remaining integration work includes the complete terminal framebuffer,
-notification sources beyond terminal attention and task
-completed/failed, and Discord CC binding.
+Ducklord now maintains a bounded VT framebuffer rather than replaying remote
+escape sequences into its own terminal. The model keeps primary and alternate
+screens, SGR style, wide/combining cells, cursor state, soft-wrap boundaries,
+partial UTF-8/CSI parser state, and bounded scrollback. Rendering emits only
+locally generated SGR sequences. Snapshot decoding validates every cell and
+applies both a payload-size and structural-object budget before allocating the
+framebuffer.
+
+Each framebuffer snapshot is coupled to its runtime generation and exclusive
+output offset. Reattach first asks Ducklion to subscribe at that exact point.
+When the generation and retained output range still match, Ducklord keeps the
+visible framebuffer and applies only the delta, including parser continuations.
+A generation change or replay gap rejects exact resume and falls back to a
+bounded fresh tail; Ducklord never applies an arbitrary tail to a stale
+framebuffer.
+
+Resize acknowledgements include a supervisor output-offset barrier. The
+supervisor serializes PTY capture publication with `TIOCSWINSZ`; Ducklord holds
+new attach chunks while the RPC is in flight, applies bytes before the barrier
+at the old dimensions, reflows once, then applies later bytes at the new
+dimensions. Wide cells are reflowed as indivisible glyphs, and cursor/saved
+cursor positions are translated with the logical line.
+
+This contract is capability-gated twice: Ducklord and the daemon negotiate
+`session_resize_barrier`, while the daemon and recovered supervisor negotiate
+`resize_barrier`. A supervisor without the inner capability cannot register a
+control connection, so the daemon never invents an offset during a mixed
+upgrade. The TUI does not resize an attachment unless the fenced callback is
+available. While waiting for an acknowledgement, it buffers at most 256 KiB;
+then it stops draining the bounded attach channel so backpressure remains
+bounded instead of converting a slow resize into unbounded memory growth.
+
+The remaining integration work includes notification sources beyond terminal
+attention and task completed/failed, plus the remaining Discord CC binding UI.
 Legacy CLI session state remains available only during
 this staged cutover and must not be mixed with daemon inventory.
 

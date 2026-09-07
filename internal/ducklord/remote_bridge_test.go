@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,7 +80,7 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve() }()
 	ptySession, err := supervisor.Start(supervisor.Options{SessionID: sessionModel.ID, RuntimeGeneration: 1, OwnershipEpoch: 1, CWD: root,
-		Command: []string{"sh", "-c", `IFS= read -r value; printf 'received:%s\n' "$value"`}, OutputCapacity: 1 << 20})
+		Command: []string{"sh", "-c", `IFS= read -r value; printf 'received:%s\n' "$value"; IFS= read -r value; printf 'resumed:%s\n' "$value"`}, OutputCapacity: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,9 +128,6 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 			}
 		}
 	}()
-	if err := ptySession.Wait(); err != nil {
-		t.Fatal(err)
-	}
 	var captured []byte
 	deadline = time.Now().Add(time.Second)
 	for !bytes.Contains(captured, []byte("received:hello")) {
@@ -140,8 +138,45 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 			t.Fatalf("attach output timed out: %q", captured)
 		}
 	}
-	cancel()
+	resumeOffset := attach.OutputOffset()
 	_ = attach.Stdin.Close()
+	_ = attach.Stdout.Close()
+	select {
+	case <-attach.Done:
+	case <-time.After(time.Second):
+		t.Fatal("first attach did not close")
+	}
+	resumed, err := runner.AttachStreamFrom(ctx, clientConfig, "ABC123", AttachResume{RuntimeGeneration: 1, OutputOffset: resumeOffset})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resumed.ExactResume || resumed.StartOffset != resumeOffset {
+		t.Fatalf("resume exact=%v start=%d want=%d", resumed.ExactResume, resumed.StartOffset, resumeOffset)
+	}
+	if _, err := resumed.Stdin.Write([]byte("again\r")); err != nil {
+		t.Fatal(err)
+	}
+	var resumedOutput bytes.Buffer
+	readBuffer := make([]byte, 4096)
+	deadline = time.Now().Add(time.Second)
+	for !bytes.Contains(resumedOutput.Bytes(), []byte("resumed:again")) {
+		n, readErr := resumed.Stdout.Read(readBuffer)
+		if n > 0 {
+			_, _ = resumedOutput.Write(readBuffer[:n])
+		}
+		if readErr != nil && readErr != io.EOF {
+			t.Fatal(readErr)
+		}
+		if readErr == io.EOF || time.Now().After(deadline) {
+			t.Fatalf("resumed output=%q", resumedOutput.Bytes())
+		}
+	}
+	if err := ptySession.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	_ = resumed.Stdin.Close()
+	_ = resumed.Stdout.Close()
+	cancel()
 	_ = runner.Close()
 	_ = runtimeClient.Close()
 	_ = server.Close()

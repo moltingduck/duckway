@@ -455,9 +455,9 @@ func TestTUIKeepsSnapshotForOfflineSessionAndReplacesItOnFreshOutput(t *testing.
 	if !state.outputStale || state.outputText != "stale only\n" || state.outputErr != "host offline" {
 		t.Fatalf("offline stale=%v text=%q err=%q", state.outputStale, state.outputText, state.outputErr)
 	}
-	state.applyAttachOutput("fresh only\n")
-	if state.outputStale || state.outputText != "fresh only\n" || strings.Contains(state.outputText, "stale only") {
-		t.Fatalf("fresh stale=%v text=%q", state.outputStale, state.outputText)
+	state.applyAttachOutput("fresh only\n", 1, 11)
+	if state.outputStale || state.terminal == nil || state.terminal.Text() != "fresh only\n" || strings.Contains(state.terminal.Text(), "stale only") {
+		t.Fatalf("fresh stale=%v text=%q", state.outputStale, state.terminal.Text())
 	}
 }
 
@@ -527,7 +527,7 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 	}
 	state.focused = true
 	state.pendingAttachKey = instance + "/DEF456"
-	state.applyAttachOutput("fresh\n")
+	state.applyAttachOutput("fresh\n", 1, 6)
 	if state.currentSession().Unread || state.groupHasUnread("work") {
 		t.Fatalf("fresh attach did not clear unread: %+v", state.sessions)
 	}
@@ -608,7 +608,7 @@ func TestResizeWorkerIsSingleFlightAndCoalescesLatest(t *testing.T) {
 	inFlight := 0
 	maxInFlight := 0
 	var mu sync.Mutex
-	resize := func(rows, cols uint16) error {
+	resize := func(rows, cols uint16) (uint64, error) {
 		mu.Lock()
 		inFlight++
 		if inFlight > maxInFlight {
@@ -620,7 +620,7 @@ func TestResizeWorkerIsSingleFlightAndCoalescesLatest(t *testing.T) {
 		mu.Lock()
 		inFlight--
 		mu.Unlock()
-		return nil
+		return 0, nil
 	}
 	go runResizeWorker(ctx, requests, results)
 	requests <- resizeRequest{id: 1, rows: 20, cols: 80, resize: resize}
@@ -640,6 +640,65 @@ func TestResizeWorkerIsSingleFlightAndCoalescesLatest(t *testing.T) {
 	defer mu.Unlock()
 	if maxInFlight != 1 {
 		t.Fatalf("max in flight=%d", maxInFlight)
+	}
+}
+
+func TestApplyOrderedAttachChunkSplitsAtResizeBarrier(t *testing.T) {
+	state := &tuiState{terminal: ducklord.NewTerminal(3, 5, 10), terminalGeneration: 2}
+	resize := &resizeDoneEvent{id: 7, rows: 4, cols: 4, barrier: 5}
+	chunk := attachOutputEvent{id: 7, text: "abcdeFG", runtimeGeneration: 2, startOffset: 0, outputOffset: 7}
+	applyOrderedAttachChunk(state, chunk, &resize)
+	if resize != nil {
+		t.Fatal("resize barrier was not consumed")
+	}
+	if state.terminal.Rows != 4 || state.terminal.Cols != 4 || state.terminalOffset != 7 {
+		t.Fatalf("terminal size=%dx%d offset=%d", state.terminal.Rows, state.terminal.Cols, state.terminalOffset)
+	}
+	if got := strings.ReplaceAll(state.terminal.Text(), "\n", ""); !strings.Contains(got, "abcdeFG") {
+		t.Fatalf("ordered text=%q", state.terminal.Text())
+	}
+}
+
+func TestApplyOrderedAttachChunkRejectsOffsetGap(t *testing.T) {
+	state := &tuiState{terminal: ducklord.NewTerminal(3, 5, 10), terminalGeneration: 2, terminalOffset: 10}
+	var resize *resizeDoneEvent
+	applyOrderedAttachChunk(state, attachOutputEvent{id: 7, text: "bad", runtimeGeneration: 2, startOffset: 11, outputOffset: 14}, &resize)
+	if state.terminalOffset != 10 || !strings.Contains(state.outputErr, "lost byte continuity") {
+		t.Fatalf("offset=%d error=%q", state.terminalOffset, state.outputErr)
+	}
+}
+
+func TestDrainBufferedAttachAppliesTailBeforeCompletion(t *testing.T) {
+	state := &tuiState{terminal: ducklord.NewTerminal(3, 5, 10), terminalGeneration: 2}
+	resize := &resizeDoneEvent{id: 7, rows: 4, cols: 4, barrier: 4}
+	events := []attachOutputEvent{
+		{id: 7, text: "tail", runtimeGeneration: 2, startOffset: 0, outputOffset: 4},
+		{id: 7, done: true},
+	}
+	completion := drainBufferedAttach(state, events, &resize)
+	if completion == nil || !completion.done || resize != nil {
+		t.Fatalf("completion=%+v resize=%+v", completion, resize)
+	}
+	if state.terminalOffset != 4 || !strings.Contains(state.terminal.Text(), "tail") {
+		t.Fatalf("tail offset=%d text=%q", state.terminalOffset, state.terminal.Text())
+	}
+}
+
+func TestTUIRenderShowsApplicationCursorOnlyForFocusedPTY(t *testing.T) {
+	terminal := ducklord.NewTerminal(3, 20, 0)
+	terminal.Write([]byte("prompt> "))
+	state := &tuiState{cfg: &ducklord.Config{}, sessions: []ducklord.RemoteSession{{Client: "host", Name: "agent", AgentType: "codex"}},
+		terminal: terminal, focused: true, outputFresh: true, listPaneWidth: ducklord.DefaultSessionListWidth}
+	var output bytes.Buffer
+	state.render(&output)
+	if !strings.Contains(output.String(), "\x1b[?25h") {
+		t.Fatalf("focused PTY cursor was not shown: %q", output.String())
+	}
+	terminal.Write([]byte("\x1b[?25l"))
+	output.Reset()
+	state.render(&output)
+	if strings.Contains(output.String(), "\x1b[?25h") {
+		t.Fatalf("application-hidden cursor was shown: %q", output.String())
 	}
 }
 
@@ -1038,15 +1097,19 @@ func TestSuperviseAttachReportsCommandError(t *testing.T) {
 	stdoutR, stdoutW := io.Pipe()
 	done := make(chan error, 1)
 	session := &ducklord.AttachSession{Stdin: nopWriteCloser{}, Stdout: stdoutR, Done: done}
-	out := make(chan attachOutputEvent, 1)
-	completed := make(chan attachDoneEvent, 1)
+	out := make(chan attachOutputEvent, 2)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go superviseAttach(ctx, 7, session, out, completed)
+	go superviseAttach(ctx, 7, session, out)
+	_, _ = stdoutW.Write([]byte("final-tail"))
 	_ = stdoutW.Close()
 	done <- fmt.Errorf("remote failed")
-	got := <-completed
-	if got.id != 7 || got.err == nil || !strings.Contains(got.err.Error(), "remote failed") {
+	first := <-out
+	if first.done || first.text != "final-tail" {
+		t.Fatalf("first ordered attach event = %+v", first)
+	}
+	got := <-out
+	if got.id != 7 || !got.done || got.err == nil || !strings.Contains(got.err.Error(), "remote failed") {
 		t.Fatalf("completion = %+v", got)
 	}
 }

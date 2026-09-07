@@ -84,6 +84,10 @@ type SupervisorResize struct {
 	Cols uint16 `json:"cols"`
 }
 
+type SessionResizeResult struct {
+	OutputOffset uint64 `json:"output_offset"`
+}
+
 type SupervisorExit struct {
 	Success bool   `json:"success"`
 	Reason  string `json:"reason,omitempty"`

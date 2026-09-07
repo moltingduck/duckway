@@ -30,9 +30,9 @@ func (c *fakeRuntimeController) SubmitInput(_ context.Context, frame duckruntime
 	return nil
 }
 
-func (c *fakeRuntimeController) Resize(rows, cols uint16, epoch, generation uint64) error {
+func (c *fakeRuntimeController) Resize(rows, cols uint16, epoch, generation uint64) (uint64, error) {
 	c.resize <- [4]uint64{uint64(rows), uint64(cols), epoch, generation}
-	return nil
+	return 42, nil
 }
 
 func (c *fakeRuntimeController) Terminate(bool) error { return nil }
@@ -694,11 +694,20 @@ func TestDucklordInputAndResizeAreOwnerFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = intruder.SendInput(string(session.ID), session.OwnershipEpoch, session.RuntimeGeneration, []byte("forbidden"))
-	_ = intruder.Close()
 	var remoteError *RemoteError
 	if !errors.As(err, &remoteError) || remoteError.Detail.Code != protocol.ErrNotOwner {
 		t.Fatalf("intruder error=%v", err)
 	}
+	_, err = intruder.ResizeWithBarrier(string(session.ID), session.OwnershipEpoch, session.RuntimeGeneration, 40, 120)
+	if !errors.As(err, &remoteError) || remoteError.Detail.Code != protocol.ErrNotOwner {
+		t.Fatalf("intruder resize error=%v", err)
+	}
+	select {
+	case got := <-controller.resize:
+		t.Fatalf("intruder reached resize controller: %v", got)
+	default:
+	}
+	_ = intruder.Close()
 	terminal, err := Dial(server.SocketPath(), "laptop")
 	if err != nil {
 		t.Fatal(err)
@@ -711,8 +720,12 @@ func TestDucklordInputAndResizeAreOwnerFenced(t *testing.T) {
 	if string(frame.Data) != "allowed" || frame.Owner != owner || frame.Sequence != 1 || frame.OwnershipEpoch != 7 {
 		t.Fatalf("input frame=%+v", frame)
 	}
-	if err := terminal.Resize(string(session.ID), session.OwnershipEpoch, session.RuntimeGeneration, 40, 120); err != nil {
+	resizeResult, err := terminal.ResizeWithBarrier(string(session.ID), session.OwnershipEpoch, session.RuntimeGeneration, 40, 120)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if resizeResult.OutputOffset != 42 {
+		t.Fatalf("resize output barrier=%d", resizeResult.OutputOffset)
 	}
 	if got := <-controller.resize; got != [4]uint64{40, 120, 7, 2} {
 		t.Fatalf("resize=%v", got)

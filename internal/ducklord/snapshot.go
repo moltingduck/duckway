@@ -34,13 +34,20 @@ type TerminalSnapshot struct {
 // terminal control sequences removed before construction; raw PTY bytes are
 // deliberately not part of this format.
 type TerminalRenderState struct {
-	Text      string `json:"text"`
-	Truncated bool   `json:"truncated,omitempty"`
+	Text              string         `json:"text,omitempty"`
+	Truncated         bool           `json:"truncated,omitempty"`
+	RuntimeGeneration uint64         `json:"runtime_generation,omitempty"`
+	OutputOffset      uint64         `json:"output_offset,omitempty"`
+	ResumeCursorValid bool           `json:"resume_cursor_valid,omitempty"`
+	Framebuffer       *TerminalState `json:"framebuffer,omitempty"`
 }
 
 func EncodeTerminalRenderState(state TerminalRenderState) ([]byte, error) {
 	if err := validateTerminalRenderText(state.Text); err != nil {
 		return nil, err
+	}
+	if state.Framebuffer != nil {
+		state.Text = ""
 	}
 	for {
 		payload, err := json.Marshal(state)
@@ -49,6 +56,15 @@ func EncodeTerminalRenderState(state TerminalRenderState) ([]byte, error) {
 		}
 		if len(payload) <= MaxSnapshotPayload {
 			return payload, nil
+		}
+		if state.Framebuffer != nil && len(state.Framebuffer.Scrollback) > 0 {
+			drop := len(state.Framebuffer.Scrollback) / 2
+			if drop < 1 {
+				drop = 1
+			}
+			state.Framebuffer.Scrollback = state.Framebuffer.Scrollback[drop:]
+			state.Truncated = true
+			continue
 		}
 		newline := strings.IndexByte(state.Text, '\n')
 		if newline < 0 {
@@ -63,6 +79,9 @@ func DecodeTerminalRenderState(payload []byte) (TerminalRenderState, error) {
 	if len(payload) > MaxSnapshotPayload {
 		return TerminalRenderState{}, fmt.Errorf("terminal render state exceeds 4 MiB")
 	}
+	if err := validateSnapshotStructuralBudget(payload); err != nil {
+		return TerminalRenderState{}, err
+	}
 	var state TerminalRenderState
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
@@ -75,7 +94,52 @@ func DecodeTerminalRenderState(payload []byte) (TerminalRenderState, error) {
 	if err := validateTerminalRenderText(state.Text); err != nil {
 		return TerminalRenderState{}, err
 	}
+	if state.Framebuffer != nil {
+		if _, ok := NewTerminalFromState(*state.Framebuffer, DefaultTerminalScrollback); !ok {
+			return TerminalRenderState{}, fmt.Errorf("terminal framebuffer is invalid")
+		}
+	}
 	return state, nil
+}
+
+func validateSnapshotStructuralBudget(payload []byte) error {
+	type container struct {
+		delim    json.Delim
+		elements int
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	stack := make([]container, 0, 8)
+	totalArrayElements := 0
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("decode terminal render state: %w", err)
+		}
+		delim, isDelim := token.(json.Delim)
+		isClose := isDelim && (delim == ']' || delim == '}')
+		if len(stack) > 0 && stack[len(stack)-1].delim == '[' && !isClose {
+			stack[len(stack)-1].elements++
+			totalArrayElements++
+			if stack[len(stack)-1].elements > MaxTerminalRetainedCells || totalArrayElements > MaxTerminalRetainedCells+2*DefaultTerminalScrollback+1_000 {
+				return fmt.Errorf("terminal render state exceeds structural budget")
+			}
+		}
+		if !isDelim {
+			continue
+		}
+		switch delim {
+		case '[', '{':
+			stack = append(stack, container{delim: delim})
+		case ']', '}':
+			if len(stack) == 0 {
+				return fmt.Errorf("decode terminal render state: unbalanced JSON")
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
 }
 
 func validateTerminalRenderText(text string) error {
