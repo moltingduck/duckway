@@ -775,6 +775,9 @@ daemon reconnect, binding continuity, and the single-message progress preview
 run through the same suite. Set `DISCORD_E2E_RACE=1` to run it under Go's race
 detector.
 
+The suite also checks secure `live-credentials/discord-bot.json` discovery,
+environment precedence, token redaction, and fail-closed file permissions.
+
 `scripts/cc-smoke.sh` without `--fixture` is the separate live Discord
 provisioning smoke and requires the bot/guild/category secrets documented in
 that script.
@@ -827,6 +830,19 @@ suitable for future alternate Gateway transports.
 `scripts/discord-e2e.sh` remains the broader Discord transport/policy fixture
 suite. Both it and `scripts/ducklion-core-e2e.sh` are release gates. The live
 `cc-smoke` remains the separate opt-in Discord infrastructure check.
+
+For live Discord smoke, place the dedicated test bot values in the ignored
+`live-credentials/discord-bot.json` file:
+
+```json
+{"bot_token":"...","guild_id":"...","category_id":"..."}
+```
+
+The file must be a regular, non-symlink mode-0600 file. Verify discovery without
+contacting Discord using `scripts/cc-smoke.sh --check-credentials`, then run
+`scripts/cc-smoke.sh`. `CC_SMOKE_CREDENTIALS` selects another JSON file, while
+explicit `CC_SMOKE_BOT_TOKEN`, `CC_SMOKE_GUILD_ID`, and
+`CC_SMOKE_CATEGORY_ID` values take precedence. Neither path prints the token.
 
 ### Ducklord / Ducklion smoke test
 

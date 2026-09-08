@@ -416,6 +416,23 @@ Same **Bot** page, scroll down to *Privileged Gateway Intents*:
 
 Save. ⚠️ If your app is verified (in 100+ servers) you'd need to apply for these — small / personal bots get them by toggling.
 
+For Duckway's live smoke test, store the dedicated test bot locally without
+putting its token in shell history:
+
+```bash
+install -d -m 700 live-credentials
+install -m 600 /dev/null live-credentials/discord-bot.json
+${EDITOR:-vi} live-credentials/discord-bot.json
+scripts/cc-smoke.sh --check-credentials
+scripts/cc-smoke.sh
+```
+
+Enter `{"bot_token":"...","guild_id":"...","category_id":"..."}` in the
+editor.
+
+The directory contents are git-ignored. Credential checking shows the selected
+guild/category and never prints the bot token.
+
 **3. Build the invite link**
 
 Left sidebar **OAuth2** → **URL Generator**:

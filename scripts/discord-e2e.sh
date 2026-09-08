@@ -14,6 +14,9 @@ if [ "${DISCORD_E2E_RACE:-0}" = "1" ]; then
   GO_TEST+=( -race )
 fi
 
+echo "[discord-e2e] secure live-credential discovery"
+"$SCRIPT_DIR/cc-smoke-credentials-test.sh"
+
 echo "[discord-e2e] gateway, resume replay, policy, thread and heartbeat"
 "${GO_TEST[@]}" ./internal/server/services -run 'TestDiscord.*E2E' -v
 

@@ -15,9 +15,16 @@
 #   ./scripts/cc-smoke.sh --fixture
 #
 # USAGE (live Discord provisioning/outbound smoke):
+#   # Default credential file (must be a regular mode-0600 file):
+#   # live-credentials/discord-bot.json
+#   # {"bot_token":"...","guild_id":"...","category_id":"..."}
+#   ./scripts/cc-smoke.sh --check-credentials
+#
+#   # Explicit environment variables override matching file fields:
 #   export CC_SMOKE_BOT_TOKEN=...           (required)
 #   export CC_SMOKE_GUILD_ID=...            (required)
 #   export CC_SMOKE_CATEGORY_ID=...         (required)
+#   export CC_SMOKE_CREDENTIALS=/path/to/discord-bot.json
 #   export CC_SMOKE_BASE=http://localhost:9090   (default)
 #   export CC_SMOKE_ADMIN_USER=duckway            (default)
 #   export CC_SMOKE_ADMIN_PASS=duckway             (default)
@@ -34,6 +41,48 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CREDENTIALS="${CC_SMOKE_CREDENTIALS:-$ROOT/live-credentials/discord-bot.json}"
+
+load_live_credentials() {
+  CREDENTIAL_SOURCE="environment"
+  if [ -n "${CC_SMOKE_BOT_TOKEN:-}" ] && [ -n "${CC_SMOKE_GUILD_ID:-}" ] && [ -n "${CC_SMOKE_CATEGORY_ID:-}" ]; then
+    return
+  fi
+  if [ ! -e "$CREDENTIALS" ]; then
+    return
+  fi
+  if [ -L "$CREDENTIALS" ] || [ ! -f "$CREDENTIALS" ]; then
+    echo "Refusing Discord credentials that are not a regular non-symlink file: $CREDENTIALS" >&2
+    exit 1
+  fi
+  mode="$(stat -c '%a' "$CREDENTIALS")"
+  if [ "$mode" != "600" ]; then
+    echo "Refusing Discord credentials with permissions $mode; run: chmod 600 '$CREDENTIALS'" >&2
+    exit 1
+  fi
+  mapfile -t values < <(python3 - "$CREDENTIALS" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+for key in ("bot_token", "guild_id", "category_id"):
+    field = value.get(key)
+    if not isinstance(field, str) or not field or "\n" in field or "\r" in field:
+        raise SystemExit(f"Discord credential field {key!r} must be a non-empty single-line string")
+    print(field)
+PY
+  )
+  if [ "${#values[@]}" -ne 3 ]; then
+    echo "Invalid Discord credential file: $CREDENTIALS" >&2
+    exit 1
+  fi
+  CC_SMOKE_BOT_TOKEN="${CC_SMOKE_BOT_TOKEN:-${values[0]}}"
+  CC_SMOKE_GUILD_ID="${CC_SMOKE_GUILD_ID:-${values[1]}}"
+  CC_SMOKE_CATEGORY_ID="${CC_SMOKE_CATEGORY_ID:-${values[2]}}"
+  CREDENTIAL_SOURCE="$CREDENTIALS"
+}
 
 if [ "${1:-}" = "--fixture" ] || [ "${1:-}" = "--automated" ]; then
   echo "[smoke] Running credential-free automated Discord Gateway + CC suite"
@@ -46,6 +95,18 @@ if [ "${1:-}" = "--watch" ]; then
   exit 2
 fi
 
+load_live_credentials
+
+if [ "${1:-}" = "--check-credentials" ]; then
+  if [ -z "${CC_SMOKE_BOT_TOKEN:-}" ] || [ -z "${CC_SMOKE_GUILD_ID:-}" ] || [ -z "${CC_SMOKE_CATEGORY_ID:-}" ]; then
+    echo "Discord smoke credentials are incomplete." >&2
+    echo "Create $CREDENTIALS as a mode-0600 JSON file with bot_token, guild_id, and category_id." >&2
+    exit 1
+  fi
+  echo "Discord smoke credentials ready (source: $CREDENTIAL_SOURCE, guild: $CC_SMOKE_GUILD_ID, category: $CC_SMOKE_CATEGORY_ID; token hidden)"
+  exit 0
+fi
+
 BASE="${CC_SMOKE_BASE:-http://localhost:9090}"
 USER="${CC_SMOKE_ADMIN_USER:-duckway}"
 PASS="${CC_SMOKE_ADMIN_PASS:-duckway}"
@@ -56,8 +117,9 @@ CC_ID=""
 CLIENT_ID=""
 KEY_ID=""
 
-if [ -z "$CC_SMOKE_BOT_TOKEN" ] || [ -z "$CC_SMOKE_GUILD_ID" ] || [ -z "$CC_SMOKE_CATEGORY_ID" ]; then
-  echo "Missing env vars. See header for required vars." >&2
+if [ -z "${CC_SMOKE_BOT_TOKEN:-}" ] || [ -z "${CC_SMOKE_GUILD_ID:-}" ] || [ -z "${CC_SMOKE_CATEGORY_ID:-}" ]; then
+  echo "Missing Discord smoke credentials." >&2
+  echo "Create $CREDENTIALS as a mode-0600 JSON file, or set CC_SMOKE_BOT_TOKEN, CC_SMOKE_GUILD_ID, and CC_SMOKE_CATEGORY_ID." >&2
   exit 1
 fi
 
