@@ -433,6 +433,12 @@ editor.
 The directory contents are git-ignored. Credential checking shows the selected
 guild/category and never prints the bot token.
 
+The live smoke creates its own uniquely named category in that guild. At exit,
+including most failure paths, it permanently deletes every channel created
+inside that category and then the category itself. It verifies the deletion and
+fails if cleanup leaves any test resource behind; your configured category is
+never used as the cleanup target.
+
 **3. Build the invite link**
 
 Left sidebar **OAuth2** → **URL Generator**:

@@ -6,8 +6,8 @@
 #
 # REQUIREMENTS:
 #   1. duckway-server running and reachable.
-#   2. A Discord bot you own + a guild it's invited to + a category it
-#      can manage. Bot needs MANAGE_CHANNELS, SEND_MESSAGES,
+#   2. A Discord bot you own + a guild where it can create a temporary
+#      category. Bot needs MANAGE_CHANNELS, SEND_MESSAGES,
 #      ADD_REACTIONS, READ_MESSAGE_HISTORY, MESSAGE_CONTENT INTENT.
 #   3. The `claude` binary in PATH if you want to drive the daemon.
 #
@@ -33,10 +33,11 @@
 # What it does (in order):
 #   1. Login to admin
 #   2. Upload bot token under service=discord
-#   3. Create a fresh client + a fresh CC bound to that client
+#   3. Create a temporary category, fresh client, and fresh CC
 #   4. POST /api/cc/{id}/test (round-trip channel create+delete)
 #   5. Print the management channel name + handle
-#   6. Cleanup: delete CC + client + bot key
+#   6. Cleanup: permanently delete every test channel and its category, then
+#      delete the CC + client + bot key
 
 set -e
 
@@ -116,6 +117,9 @@ COOKIES="$SMOKE_TMP/cookies"
 CC_ID=""
 CLIENT_ID=""
 KEY_ID=""
+TEMP_CATEGORY_ID=""
+TEMP_CATEGORY_NAME=""
+CLEANUP_DONE=0
 
 if [ -z "${CC_SMOKE_BOT_TOKEN:-}" ] || [ -z "${CC_SMOKE_GUILD_ID:-}" ] || [ -z "${CC_SMOKE_CATEGORY_ID:-}" ]; then
   echo "Missing Discord smoke credentials." >&2
@@ -138,20 +142,48 @@ ok()   { printf "  ${GREEN}OK${NC}  %s\n" "$*"; }
 die()  { printf "  ${RED}FAIL${NC} %s\n" "$*" >&2; exit 1; }
 
 cleanup() {
+  if [ "$CLEANUP_DONE" = "1" ]; then
+    return 0
+  fi
+  CLEANUP_DONE=1
+  cleanup_failed=0
   echo
   log "Cleanup..."
+  if [ -n "$TEMP_CATEGORY_ID" ]; then
+    if CC_SMOKE_BOT_TOKEN="$CC_SMOKE_BOT_TOKEN" \
+      CC_SMOKE_GUILD_ID="$CC_SMOKE_GUILD_ID" \
+      CC_SMOKE_TEMP_CATEGORY_ID="$TEMP_CATEGORY_ID" \
+      CC_SMOKE_TEMP_CATEGORY_NAME="$TEMP_CATEGORY_NAME" \
+      python3 "$SCRIPT_DIR/discord-smoke-cleanup.py"; then
+      ok "deleted all temporary Discord channels and category $TEMP_CATEGORY_ID"
+    else
+      printf "  ${RED}FAIL${NC} Discord resource cleanup failed for category %s\n" "$TEMP_CATEGORY_ID" >&2
+      cleanup_failed=1
+    fi
+  fi
   if [ -n "$CC_ID" ]; then
-    curl -s -b "$COOKIES" -X DELETE "$BASE/api/cc/$CC_ID" >/dev/null && ok "deleted CC $CC_ID" || true
+    curl --fail-with-body -s -b "$COOKIES" -X DELETE "$BASE/api/cc/$CC_ID" >/dev/null && ok "deleted CC $CC_ID" || cleanup_failed=1
   fi
   if [ -n "$CLIENT_ID" ]; then
-    curl -s -b "$COOKIES" -X DELETE "$BASE/api/clients/$CLIENT_ID" >/dev/null && ok "deleted client $CLIENT_ID" || true
+    curl --fail-with-body -s -b "$COOKIES" -X DELETE "$BASE/api/clients/$CLIENT_ID" >/dev/null && ok "deleted client $CLIENT_ID" || cleanup_failed=1
   fi
   if [ -n "$KEY_ID" ]; then
-    curl -s -b "$COOKIES" -X DELETE "$BASE/api/keys/$KEY_ID" >/dev/null && ok "deleted bot key $KEY_ID" || true
+    curl --fail-with-body -s -b "$COOKIES" -X DELETE "$BASE/api/keys/$KEY_ID" >/dev/null && ok "deleted bot key $KEY_ID" || cleanup_failed=1
   fi
   rm -rf "$SMOKE_TMP"
+  return "$cleanup_failed"
 }
-trap cleanup EXIT
+on_exit() {
+  original_status=$?
+  trap - EXIT
+  cleanup_status=0
+  cleanup || cleanup_status=$?
+  if [ "$original_status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
+    original_status=$cleanup_status
+  fi
+  exit "$original_status"
+}
+trap on_exit EXIT
 
 # ---- 1. login ----
 log "Login to $BASE as $USER..."
@@ -174,7 +206,16 @@ KEY_ID=$(echo "$KEY_RESP" | python3 -c "import sys,json;print(json.load(sys.stdi
 [ -n "$KEY_ID" ] || die "key upload failed: $KEY_RESP"
 ok "bot token stored as key $KEY_ID"
 
-# ---- 3. create client + CC ----
+# ---- 3. create isolated category + client + CC ----
+TEMP_CATEGORY_NAME="duckway-cc-smoke-$(date +%s)-$RANDOM"
+log "Create isolated Discord category '$TEMP_CATEGORY_NAME'..."
+CATEGORY_RESP=$(curl --fail-with-body -s -b "$COOKIES" -X POST "$BASE/api/cc/discord/categories" \
+  -H 'Content-Type: application/json' \
+  -d "{\"api_key_id\":\"$KEY_ID\",\"guild_id\":\"$CC_SMOKE_GUILD_ID\",\"name\":\"$TEMP_CATEGORY_NAME\"}")
+TEMP_CATEGORY_ID=$(echo "$CATEGORY_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+[ -n "$TEMP_CATEGORY_ID" ] || die "temporary category creation failed: $CATEGORY_RESP"
+ok "temporary category $TEMP_CATEGORY_ID"
+
 log "Create test client..."
 CLIENT_RESP=$(curl -s -b "$COOKIES" -X POST "$BASE/api/clients" \
   -H 'Content-Type: application/json' -d "{\"name\":\"cc-smoke-$(date +%s)\"}")
@@ -186,7 +227,7 @@ ok "client $CLIENT_ID"
 log "Create CC (calls Discord to provision management channel)..."
 CC_RESP=$(curl -s -b "$COOKIES" -X POST "$BASE/api/cc" \
   -H 'Content-Type: application/json' \
-  -d "{\"name\":\"cc-smoke\",\"client_id\":\"$CLIENT_ID\",\"agent_type\":\"claude_code\",\"service_id\":\"$DISCORD_SVC\",\"api_key_id\":\"$KEY_ID\",\"config\":{\"guild_id\":\"$CC_SMOKE_GUILD_ID\",\"category_id\":\"$CC_SMOKE_CATEGORY_ID\"}}")
+  -d "{\"name\":\"cc-smoke\",\"client_id\":\"$CLIENT_ID\",\"agent_type\":\"claude_code\",\"service_id\":\"$DISCORD_SVC\",\"api_key_id\":\"$KEY_ID\",\"config\":{\"guild_id\":\"$CC_SMOKE_GUILD_ID\",\"category_id\":\"$TEMP_CATEGORY_ID\"}}")
 CC_ID=$(echo "$CC_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
 if [ -z "$CC_ID" ]; then
   die "CC create failed: $CC_RESP"
@@ -194,7 +235,7 @@ fi
 MGMT_NAME=$(echo "$CC_RESP" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('channels',[{}])[0].get('name',''))")
 MGMT_HANDLE=$(echo "$CC_RESP" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('channels',[{}])[0].get('handle',''))")
 ok "CC $CC_ID — management channel '#$MGMT_NAME' (handle $MGMT_HANDLE)"
-echo "    👀 Go check Discord — '#$MGMT_NAME' should now exist under your category."
+echo "    👀 Go check Discord — '#$MGMT_NAME' should now exist under '$TEMP_CATEGORY_NAME'."
 
 # ---- 4. test endpoint ----
 log "Round-trip test (create+delete a temp channel)..."
@@ -223,5 +264,4 @@ echo "    👀 Check '#$MGMT_NAME' — you should see 'smoke test ✅'."
 # ---- 6. cleanup happens on exit (trap) ----
 echo
 log "All smoke checks passed."
-echo "    👀 The Discord channels will be archived (renamed to 'archived-…')"
-echo "       on the next line as cleanup runs."
+echo "    All channels created by this run and '$TEMP_CATEGORY_NAME' will now be permanently deleted."

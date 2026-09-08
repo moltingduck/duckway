@@ -843,6 +843,12 @@ contacting Discord using `scripts/cc-smoke.sh --check-credentials`, then run
 `scripts/cc-smoke.sh`. `CC_SMOKE_CREDENTIALS` selects another JSON file, while
 explicit `CC_SMOKE_BOT_TOKEN`, `CC_SMOKE_GUILD_ID`, and
 `CC_SMOKE_CATEGORY_ID` values take precedence. Neither path prints the token.
+Each live run creates a uniquely named temporary category rather than using the
+configured category for test resources. Cleanup validates the exact category
+ID, name, and type, permanently deletes every child channel, deletes the
+category, and verifies that neither remains. A cleanup failure fails the smoke
+run; an interrupted run performs the same best-effort cleanup from its exit
+trap.
 
 ### Ducklord / Ducklion smoke test
 
