@@ -4,6 +4,10 @@
 
 set -e
 
+# ── 0. Container script portability ───────────────────────────────────────
+echo "[pre-commit] Docker/Podman runtime selection"
+./scripts/container-runtime-test.sh
+
 # ── 1. Tests (with race detector when CGO is available) ────────────────────
 if CGO_ENABLED=1 go test -race -run '^$' ./internal/version > /dev/null 2>&1; then
   echo "[pre-commit] go test -race ./..."

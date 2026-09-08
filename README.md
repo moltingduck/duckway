@@ -199,6 +199,11 @@ docker compose --profile prod-split up -d             # split, no Tailscale, no 
 docker compose --profile client up -d client          # optional client test shell
 ```
 
+The `scripts/dev.sh`, `scripts/prod.sh`, and `scripts/reset-password.sh`
+wrappers support both Docker and Podman. They auto-detect a usable runtime, or
+accept `CONTAINER_RUNTIME=docker|podman`; Podman Compose workflows require a
+Compose provider such as `podman-compose`.
+
 ## Proxy Modes
 
 ### HTTPS Proxy (transparent)

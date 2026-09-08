@@ -10,6 +10,9 @@
 # The new password is printed ONCE to stdout. Save it immediately.
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/container-runtime.sh"
+
 USERNAME="duckway"
 
 while [ $# -gt 0 ]; do
@@ -26,13 +29,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+duckway_init_container_runtime
+
 # Detect which container holds the database
 CONTAINER=""
 BINARY=""
-if docker ps --format '{{.Names}}' | grep -qx "duckway-server"; then
+if "$CONTAINER_RUNTIME" ps --format '{{.Names}}' | grep -qx "duckway-server"; then
   CONTAINER="duckway-server"
   BINARY="duckway-server"
-elif docker ps --format '{{.Names}}' | grep -qx "duckway-admin"; then
+elif "$CONTAINER_RUNTIME" ps --format '{{.Names}}' | grep -qx "duckway-admin"; then
   CONTAINER="duckway-admin"
   BINARY="duckway-admin"
 else
@@ -42,4 +47,4 @@ else
 fi
 
 echo "Resetting password for '$USERNAME' in container '$CONTAINER'..."
-docker exec "$CONTAINER" "$BINARY" --reset-password --reset-username "$USERNAME" --data /data
+"$CONTAINER_RUNTIME" exec "$CONTAINER" "$BINARY" --reset-password --reset-username "$USERNAME" --data /data

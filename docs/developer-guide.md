@@ -1315,6 +1315,12 @@ For production, prefer the scripted restart modes:
 ./scripts/prod.sh ui                  # UI-bearing service only
 ```
 
+Operational scripts auto-select a healthy Docker daemon or Podman service.
+Set `CONTAINER_RUNTIME=docker` or `CONTAINER_RUNTIME=podman` to make the choice
+explicit. Compose-backed `dev.sh` and `prod.sh` require Docker Compose for
+Docker, or `podman-compose`/another configured Compose provider for Podman.
+Direct-runtime E2E and Ducklord demo scripts do not require Compose.
+
 `restart --minimal` avoids touching Tailscale sidecars and other dependency containers. Use the full `restart` when dependencies may be unhealthy or compose wiring changed. The `client` compose service is opt-in for tests/debugging and is not part of prod runtime:
 
 ```bash

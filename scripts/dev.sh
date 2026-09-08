@@ -3,6 +3,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+. "$SCRIPT_DIR/container-runtime.sh"
 
 cd "$PROJECT_DIR"
 
@@ -14,11 +15,12 @@ if [ -f "$PROJECT_DIR/.dev.env" ]; then
 fi
 
 MODE="${DUCKWAY_MODE:-combined}"
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile $MODE"
+duckway_init_compose_runtime
+COMPOSE=("${DUCKWAY_COMPOSE[@]}" -f docker-compose.yml -f docker-compose.dev.yml --profile "$MODE")
 
 # Stamp builds with the current git revision so `duckway version` reports it.
-# Falls back to "docker" when not in a clean repo (rare in dev).
-export DUCKWAY_VERSION="$(git -C "$PROJECT_DIR" describe --tags --always --dirty 2>/dev/null || echo docker)"
+# Falls back to a generic container marker when git metadata is unavailable.
+export DUCKWAY_VERSION="$(git -C "$PROJECT_DIR" describe --tags --always --dirty 2>/dev/null || echo container)"
 
 # Dev never uses tailscale profiles
 
@@ -32,10 +34,10 @@ ui_service() {
 
 case "${1:-up}" in
   up|start)
-    echo "Building Duckway ($MODE mode) in Docker..."
-    $COMPOSE build
+    echo "Building Duckway ($MODE mode) with $CONTAINER_RUNTIME..."
+    "${COMPOSE[@]}" build
     echo "Starting Duckway ($MODE mode)..."
-    $COMPOSE up -d
+    "${COMPOSE[@]}" up -d
     sleep 4
 
     # Auto-seed dev data
@@ -56,15 +58,16 @@ case "${1:-up}" in
     echo "Password: duckway"
     echo ""
     echo "Mode: $MODE (set DUCKWAY_MODE=split for separate admin/gateway)"
-    echo "Logs:   $COMPOSE logs -f"
-    echo "Client test shell: docker compose --profile client up -d client && docker exec -it duckway-client sh"
+    echo "Runtime: $CONTAINER_RUNTIME"
+    echo "Logs:   ${DUCKWAY_COMPOSE[*]} -f docker-compose.yml -f docker-compose.dev.yml --profile $MODE logs -f"
+    echo "Client test shell: ${DUCKWAY_COMPOSE[*]} --profile client up -d client && $CONTAINER_RUNTIME exec -it duckway-client sh"
     ;;
 
   restart)
     echo "Building new images before touching running containers ($MODE mode)..."
-    $COMPOSE build
+    "${COMPOSE[@]}" build
     echo "Recreating containers with new images..."
-    $COMPOSE up -d --remove-orphans
+    "${COMPOSE[@]}" up -d --remove-orphans
     sleep 3
     echo "Done."
     ;;
@@ -77,24 +80,24 @@ case "${1:-up}" in
       echo "Split mode embeds UI in admin only; gateway will not be restarted."
     fi
     echo "Building $svc before touching the running container..."
-    $COMPOSE build "$svc"
+    "${COMPOSE[@]}" build "$svc"
     echo "Recreating $svc..."
-    $COMPOSE up -d --no-deps "$svc"
+    "${COMPOSE[@]}" up -d --no-deps "$svc"
     sleep 2
     echo "Done."
     ;;
 
   down|stop)
-    $COMPOSE down
+    "${COMPOSE[@]}" down
     ;;
 
   nuke)
     echo "Removing containers + volumes..."
-    $COMPOSE down -v
+    "${COMPOSE[@]}" down -v
     ;;
 
   logs)
-    $COMPOSE logs -f
+    "${COMPOSE[@]}" logs -f
     ;;
 
   split)

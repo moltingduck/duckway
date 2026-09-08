@@ -309,6 +309,10 @@ services:
     profiles: ["client"]
 
 networks:
+  # Declare the implicit application network explicitly. Docker Compose creates
+  # it automatically, while podman-compose requires it when an override file
+  # (such as docker-compose.postgres.yml) references `default` by name.
+  default:
   tailscale-server-net:
   tailscale-admin-net:
   tailscale-gateway-net:

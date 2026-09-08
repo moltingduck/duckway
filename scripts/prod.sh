@@ -3,6 +3,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+. "$SCRIPT_DIR/container-runtime.sh"
 
 cd "$PROJECT_DIR"
 
@@ -48,20 +49,21 @@ else
   esac
 fi
 
-BASE_COMPOSE=(docker compose -f docker-compose.yml)
+duckway_init_compose_runtime
+BASE_COMPOSE=("${DUCKWAY_COMPOSE[@]}" -f docker-compose.yml)
 read -r -a PROFILE_ARGS <<< "$PROFILES"
 BASE_COMPOSE+=("${PROFILE_ARGS[@]}")
 COMPOSE=("${BASE_COMPOSE[@]}")
 DATABASE_BACKEND="${DUCKWAY_DATABASE:-sqlite}"
 if [ "$DATABASE_BACKEND" = "postgres" ]; then
-  COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.postgres.yml "${PROFILE_ARGS[@]}")
+  COMPOSE=("${DUCKWAY_COMPOSE[@]}" -f docker-compose.yml -f docker-compose.postgres.yml "${PROFILE_ARGS[@]}")
 elif [ "$DATABASE_BACKEND" != "sqlite" ]; then
   echo "Error: DUCKWAY_DATABASE must be 'sqlite' or 'postgres'"
   exit 1
 fi
 
 # Stamp builds with the current git revision so `duckway version` reports it.
-export DUCKWAY_VERSION="$(git -C "$PROJECT_DIR" describe --tags --always --dirty 2>/dev/null || echo docker)"
+export DUCKWAY_VERSION="$(git -C "$PROJECT_DIR" describe --tags --always --dirty 2>/dev/null || echo container)"
 
 ui_service() {
   if [ "$MODE" = "split" ]; then
@@ -184,10 +186,10 @@ case "${1:-up}" in
     echo ""
     echo "=== Tailscale Status ==="
     if [ "$MODE" = "split" ]; then
-      docker exec duckway-tailscale-admin tailscale status 2>/dev/null || echo "  tailscale-admin not running"
-      docker exec duckway-tailscale-gateway tailscale status 2>/dev/null || echo "  tailscale-gateway not running"
+      "$CONTAINER_RUNTIME" exec duckway-tailscale-admin tailscale status 2>/dev/null || echo "  tailscale-admin not running"
+      "$CONTAINER_RUNTIME" exec duckway-tailscale-gateway tailscale status 2>/dev/null || echo "  tailscale-gateway not running"
     else
-      docker exec duckway-tailscale-server tailscale status 2>/dev/null || echo "  tailscale-server not running"
+      "$CONTAINER_RUNTIME" exec duckway-tailscale-server tailscale status 2>/dev/null || echo "  tailscale-server not running"
     fi
     ;;
 
@@ -229,9 +231,9 @@ case "${1:-up}" in
       exit 1
     fi
     export DUCKWAY_POSTGRES_PASSWORD_FILE="$secret_file"
-    PG_COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.postgres.yml "${PROFILE_ARGS[@]}" --profile postgres-tools)
+    PG_COMPOSE=("${DUCKWAY_COMPOSE[@]}" -f docker-compose.yml -f docker-compose.postgres.yml "${PROFILE_ARGS[@]}" --profile postgres-tools)
     postgres_preexisting=false
-    if docker inspect duckway-postgres >/dev/null 2>&1; then
+    if "$CONTAINER_RUNTIME" inspect duckway-postgres >/dev/null 2>&1; then
       postgres_preexisting=true
     fi
     services="$(app_services)"
@@ -243,7 +245,7 @@ case "${1:-up}" in
     "${PG_COMPOSE[@]}" pull postgres
     echo "Stopping every Duckway writer before the SQLite snapshot..."
     for container in duckway-server duckway-admin duckway-gateway; do
-      docker stop "$container" >/dev/null 2>&1 || true
+      "$CONTAINER_RUNTIME" stop "$container" >/dev/null 2>&1 || true
     done
     migration_ok=false
     env_backup=""
@@ -254,7 +256,7 @@ case "${1:-up}" in
         fi
         echo "Migration failed; PostgreSQL was not enabled. Restarting SQLite services." >&2
         if [ "$postgres_preexisting" != "true" ]; then
-          docker stop duckway-postgres >/dev/null 2>&1 || true
+          "$CONTAINER_RUNTIME" stop duckway-postgres >/dev/null 2>&1 || true
         fi
         "${BASE_COMPOSE[@]}" up -d $services || true
       fi
@@ -309,7 +311,7 @@ case "${1:-up}" in
     for container in $health_containers; do
       healthy=false
       for _ in $(seq 1 24); do
-        if [ "$(docker inspect --format '{{.State.Health.Status}}' "$container" 2>/dev/null || true)" = "healthy" ]; then
+        if [ "$("$CONTAINER_RUNTIME" inspect --format '{{.State.Health.Status}}' "$container" 2>/dev/null || true)" = "healthy" ]; then
           healthy=true
           break
         fi
