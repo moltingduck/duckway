@@ -749,14 +749,13 @@ func TestTUIDetachedSelectionImmediatelyLoadsSelectedSessionPreview(t *testing.T
 			{Client: "host-a", InstanceID: instance, SessionID: "DEF456", Name: "b", Status: "running"},
 		},
 	}
-	state.clearAttachIdentity()
-	if state.effectiveAttachKey() != "" {
-		t.Fatalf("detached state retained attach identity: %q", state.effectiveAttachKey())
-	}
 	if action := state.handleInput([]byte("j")); action != "select" {
 		t.Fatalf("selection action=%q", action)
 	}
-	state.refreshSelectedOutput(context.Background())
+	state.followSelectedPreview(context.Background())
+	if state.effectiveAttachKey() != "" {
+		t.Fatalf("preview switch retained attach identity: %q", state.effectiveAttachKey())
+	}
 	if runner.readSession != "DEF456" || strings.Contains(state.outputText, "session-a") || !strings.Contains(state.outputText, "session-b") {
 		t.Fatalf("read=%q output=%q", runner.readSession, state.outputText)
 	}
@@ -779,6 +778,28 @@ func TestInitialReplayCatchUpAllowsIdleAttachResize(t *testing.T) {
 				t.Fatalf("initialReplayCaughtUp(%d, %d)=%v want %v", test.current, test.end, got, test.want)
 			}
 		})
+	}
+}
+
+func TestPreviewResultCannotOverwriteNewSelectionOrFocusedAttach(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	state := &tuiState{sessions: []ducklord.RemoteSession{
+		{Client: "host", InstanceID: instance, SessionID: "AAA111", RuntimeGeneration: 3},
+		{Client: "host", InstanceID: instance, SessionID: "BBB222", RuntimeGeneration: 7},
+	}, selected: 1, outputText: "current-b"}
+	if state.applyPreviewOutput(previewOutputEvent{id: 1, key: instance + "/AAA111", generation: 3, text: "late-a"}, 2) {
+		t.Fatal("late preview result was applied")
+	}
+	if state.outputText != "current-b" {
+		t.Fatalf("late preview overwrote selection: %q", state.outputText)
+	}
+	result := previewOutputEvent{id: 2, key: instance + "/BBB222", generation: 7, text: "fresh-b"}
+	if !state.applyPreviewOutput(result, 2) || !strings.Contains(state.outputText, "fresh-b") {
+		t.Fatalf("current preview was not applied: %q", state.outputText)
+	}
+	state.focused = true
+	if state.applyPreviewOutput(previewOutputEvent{id: 3, key: instance + "/BBB222", generation: 7, text: "stale-preview"}, 3) {
+		t.Fatal("preview overwrote focused attachment")
 	}
 }
 

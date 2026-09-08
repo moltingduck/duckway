@@ -81,6 +81,7 @@ type Runner struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	outputSlots chan struct{}
+	preview     *Runner
 }
 
 func NewRunner() *Runner {
@@ -123,17 +124,23 @@ func (r *Runner) acquireOutputSlot(ctx context.Context) (func(), error) {
 func (r *Runner) SetOwner(owner string) {
 	r.mu.Lock()
 	var stale []*daemon.Client
+	var stalePreview *Runner
 	if r.owner != owner {
 		r.generation++
 		for key, client := range r.bridges {
 			stale = append(stale, client)
 			delete(r.bridges, key)
 		}
+		stalePreview = r.preview
+		r.preview = nil
 	}
 	r.owner = owner
 	r.mu.Unlock()
 	for _, client := range stale {
 		_ = client.Close()
+	}
+	if stalePreview != nil {
+		_ = stalePreview.Close()
 	}
 }
 
@@ -143,6 +150,8 @@ func (r *Runner) Close() error {
 		r.cancel()
 	}
 	clients := make([]*daemon.Client, 0, len(r.bridges))
+	preview := r.preview
+	r.preview = nil
 	for key, client := range r.bridges {
 		clients = append(clients, client)
 		delete(r.bridges, key)
@@ -151,6 +160,11 @@ func (r *Runner) Close() error {
 	var closeErr error
 	for _, client := range clients {
 		if err := client.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	if preview != nil {
+		if err := preview.Close(); err != nil && closeErr == nil {
 			closeErr = err
 		}
 	}
@@ -507,9 +521,11 @@ func (r *Runner) Read(ctx context.Context, c Client, name string, lines int) (st
 		if err != nil {
 			return "", err
 		}
-		sessions, err := client.ListSessions()
+		sessions, err := client.ListSessionsContext(ctx)
 		if err != nil {
-			r.discardBridge(bridgeKey(c), client)
+			if ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				r.discardBridge(bridgeKey(c), client)
+			}
 			return "", err
 		}
 		var selected *protocol.SessionSummary
@@ -533,7 +549,7 @@ func (r *Runner) Read(ctx context.Context, c Client, name string, lines int) (st
 			return "", slotErr
 		}
 		defer release()
-		stream, err := client.SubscribeOutputTail(selected.SessionID, selected.RuntimeGeneration, 1<<20)
+		stream, err := client.SubscribeOutputTailContext(ctx, selected.SessionID, selected.RuntimeGeneration, 1<<20)
 		if err != nil {
 			return "", err
 		}
@@ -541,7 +557,7 @@ func (r *Runner) Read(ctx context.Context, c Client, name string, lines int) (st
 		metadata := stream.Metadata()
 		var snapshot bytes.Buffer
 		for uint64(snapshot.Len()) < metadata.EndOffset-metadata.StartOffset {
-			event, readErr := stream.Read()
+			event, readErr := stream.ReadContext(ctx)
 			if readErr != nil {
 				return "", readErr
 			}
@@ -567,6 +583,34 @@ func (r *Runner) Read(ctx context.Context, c Client, name string, lines int) (st
 	}
 	out, err := sshOutput(ctx, c, "read", name, "--lines", strconv.Itoa(lines))
 	return string(out), err
+}
+
+// ReadPreview isolates short-lived, cancellable preview snapshots from the
+// shared multiplex bridge used by session watchers and live attachments.
+// daemon.Client cancellation is deliberately fail-closed at the connection
+// level, so a preview timeout must only close its own bridge.
+func (r *Runner) ReadPreview(ctx context.Context, c Client, name string, lines int) (string, error) {
+	if r == nil || !r.hasOwner() {
+		return r.Read(ctx, c, name, lines)
+	}
+	r.mu.Lock()
+	preview := r.preview
+	if preview == nil {
+		preview = NewRunner()
+		preview.SetOwner(r.owner)
+		r.preview = preview
+	}
+	r.mu.Unlock()
+	text, err := preview.Read(ctx, c, name, lines)
+	if err != nil && ctx.Err() != nil {
+		r.mu.Lock()
+		if r.preview == preview {
+			r.preview = nil
+		}
+		r.mu.Unlock()
+		_ = preview.Close()
+	}
+	return text, err
 }
 
 func (r *Runner) Send(ctx context.Context, c Client, name, text string) error {

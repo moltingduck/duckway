@@ -527,6 +527,12 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	if listed, err := viewer.ListSessions(); err != nil || len(listed) != 1 {
 		t.Fatalf("multiplexed list sessions=%+v err=%v", listed, err)
 	}
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	_, readErr := secondSubscription.ReadContext(readCtx)
+	cancelRead()
+	if !errors.Is(readErr, context.DeadlineExceeded) {
+		t.Fatalf("idle output read error=%v, want deadline exceeded", readErr)
+	}
 	if err := client.PublishOutput([]byte("ghi")); err != nil {
 		t.Fatal(err)
 	}

@@ -403,13 +403,21 @@ func (c *Client) SubscribeOutput(sessionID string, generation, offset uint64) (*
 }
 
 func (c *Client) SubscribeOutputTail(sessionID string, generation, tailBytes uint64) (*OutputSubscription, error) {
+	return c.SubscribeOutputTailContext(context.Background(), sessionID, generation, tailBytes)
+}
+
+func (c *Client) SubscribeOutputTailContext(ctx context.Context, sessionID string, generation, tailBytes uint64) (*OutputSubscription, error) {
 	if tailBytes == 0 || tailBytes > 4<<20 {
 		return nil, fmt.Errorf("output tail must contain 1 to 4194304 bytes")
 	}
-	return c.subscribeOutput(sessionID, generation, protocol.OutputSubscribe{TailBytes: tailBytes})
+	return c.subscribeOutputContext(ctx, sessionID, generation, protocol.OutputSubscribe{TailBytes: tailBytes})
 }
 
 func (c *Client) subscribeOutput(sessionID string, generation uint64, options protocol.OutputSubscribe) (*OutputSubscription, error) {
+	return c.subscribeOutputContext(context.Background(), sessionID, generation, options)
+}
+
+func (c *Client) subscribeOutputContext(ctx context.Context, sessionID string, generation uint64, options protocol.OutputSubscribe) (*OutputSubscription, error) {
 	if err := c.requireCapability("output_subscribe"); err != nil {
 		return nil, err
 	}
@@ -418,7 +426,7 @@ func (c *Client) subscribeOutput(sessionID string, generation uint64, options pr
 	}
 	body, _ := json.Marshal(options)
 	request := protocol.Request{ID: uuid.NewString(), Type: "session.output_subscribe", InstanceID: c.instanceID, SessionID: sessionID, RuntimeGeneration: &generation, Body: body}
-	response, err := c.Call(request)
+	response, err := c.CallContext(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -451,6 +459,10 @@ func (c *Client) subscribeOutput(sessionID string, generation uint64, options pr
 func (s *OutputSubscription) Metadata() protocol.OutputSubscribeResult { return s.metadata }
 
 func (s *OutputSubscription) Read() (protocol.OutputEvent, error) {
+	return s.ReadContext(context.Background())
+}
+
+func (s *OutputSubscription) ReadContext(ctx context.Context) (protocol.OutputEvent, error) {
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
 	var outcome outputResult
@@ -458,6 +470,8 @@ func (s *OutputSubscription) Read() (protocol.OutputEvent, error) {
 		return protocol.OutputEvent{}, err
 	}
 	select {
+	case <-ctx.Done():
+		return protocol.OutputEvent{}, ctx.Err()
 	case <-s.terminalDone:
 		return protocol.OutputEvent{}, s.terminalError()
 	case outcome = <-s.events:
@@ -698,10 +712,14 @@ func (c *Client) shutdown(err error) {
 }
 
 func (c *Client) ListSessions() ([]protocol.SessionSummary, error) {
+	return c.ListSessionsContext(context.Background())
+}
+
+func (c *Client) ListSessionsContext(ctx context.Context) ([]protocol.SessionSummary, error) {
 	if err := c.requireCapability("sessions_list"); err != nil {
 		return nil, err
 	}
-	response, err := c.Call(protocol.Request{ID: uuid.NewString(), Type: "sessions.list"})
+	response, err := c.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "sessions.list"})
 	if err != nil {
 		return nil, err
 	}

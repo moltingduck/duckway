@@ -50,6 +50,13 @@ type attachOutputEvent struct {
 	err               error
 }
 
+type previewOutputEvent struct {
+	id, generation uint64
+	key            string
+	text           string
+	err            error
+}
+
 type startDoneEvent struct {
 	id        int
 	client    string
@@ -1203,6 +1210,60 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	startDone := make(chan startDoneEvent, 1)
 	createDone := make(chan createDiscoveryEvent, 1)
 	lifecycleDone := make(chan lifecycleDoneEvent, 1)
+	previewDone := make(chan previewOutputEvent, 1)
+	var previewID uint64
+	previewInFlight := false
+	previewQueued := false
+	var previewCancel context.CancelFunc
+	var startPreview func()
+	startPreview = func() {
+		if previewInFlight || !previewQueued || state.focused || len(state.sessions) == 0 {
+			return
+		}
+		previewQueued = false
+		previewInFlight = true
+		id := previewID
+		sess := state.currentSession()
+		key, generation := sessionKey(sess), sess.RuntimeGeneration
+		client, clientErr := mustClient(cfg, sess.Client)
+		previewCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		previewCancel = cancel
+		ref := sess.SessionID
+		if ref == "" {
+			ref = sess.Name
+		}
+		go func() {
+			var text string
+			err := clientErr
+			if err == nil {
+				if isolated, ok := runner.(interface {
+					ReadPreview(context.Context, ducklord.Client, string, int) (string, error)
+				}); ok {
+					text, err = isolated.ReadPreview(previewCtx, client, ref, 80)
+				} else {
+					text, err = runner.Read(previewCtx, client, ref, 80)
+				}
+			}
+			select {
+			case previewDone <- previewOutputEvent{id: id, key: key, generation: generation, text: text, err: err}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	requestPreview := func(fence bool) {
+		if state.focused || len(state.sessions) == 0 {
+			return
+		}
+		if fence || previewID == 0 {
+			previewID++
+		}
+		previewQueued = true
+		startPreview()
+	}
+	fencePreview := func() {
+		previewID++
+		previewQueued = false
+	}
 	var attach *ducklord.AttachSession
 	var attachCancel context.CancelFunc
 	attachID := 0
@@ -1276,7 +1337,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			attachCancel()
 			attachCancel = nil
 		}
-		state.refreshSelectedOutput(ctx)
+		requestPreview(true)
 		if event.err != nil && wasFocused {
 			state.outputErr = event.err.Error()
 		}
@@ -1296,13 +1357,23 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.cancelCreateDiscovery()
 			return nil
 		case <-ticker.C:
-			if !state.eventDriven && !state.focused && !state.newSessionMode {
-				state.refreshSessions(ctx)
-				if state.activeAttachKey == "" {
-					state.refreshSelectedOutput(ctx)
+			if !state.focused && !state.newSessionMode {
+				if !state.eventDriven {
+					state.refreshSessions(ctx)
 				}
+				requestPreview(false)
 			}
 			state.render(os.Stdout)
+		case result := <-previewDone:
+			if previewCancel != nil {
+				previewCancel()
+				previewCancel = nil
+			}
+			previewInFlight = false
+			if state.applyPreviewOutput(result, previewID) {
+				state.render(os.Stdout)
+			}
+			startPreview()
 		case <-resizeSignals:
 			queueResize()
 			state.render(os.Stdout)
@@ -1361,7 +1432,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				attachReplayEndOffset = 0
 			}
 			if !state.focused && state.activeAttachKey == "" {
-				state.refreshSelectedOutput(ctx)
+				requestPreview(false)
 			}
 			state.render(os.Stdout)
 		case result := <-createDone:
@@ -1405,7 +1476,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			state.refreshSessions(ctx)
 			if state.activeAttachKey == "" {
-				state.refreshSelectedOutput(ctx)
+				requestPreview(false)
 			}
 			state.render(os.Stdout)
 		case chunk := <-attachOutputSource:
@@ -1463,7 +1534,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					attachInitialResizeQueued = false
 					attachReplayEndOffset = 0
 					attach = nil
-					state.refreshSelectedOutput(ctx)
+					requestPreview(true)
 					state.render(os.Stdout)
 					continue
 				}
@@ -1601,15 +1672,17 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			case "refresh":
 				state.refreshSessions(ctx)
 				if state.activeAttachKey == "" {
-					state.refreshSelectedOutput(ctx)
+					requestPreview(true)
 				}
 			case "select":
-				// Keep a live focused attachment stable, but once detached make
-				// the right pane follow selection immediately instead of showing
-				// the previous session until another output byte arrives.
-				if state.activeAttachKey == "" && state.pendingAttachKey == "" {
-					state.refreshSelectedOutput(ctx)
-				}
+				// List navigation owns the preview pane. Never leave a stale
+				// attach identity pointing at the previously selected session.
+				state.clearAttachIdentity()
+				state.outputForKey = state.currentKey()
+				state.outputText = ""
+				state.terminal = nil
+				state.outputErr = "loading live preview..."
+				requestPreview(true)
 			case "new":
 				state.beginCreate()
 			case "notifications":
@@ -1676,6 +1749,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				if err != nil {
 					return err
 				}
+				fencePreview()
 				attachCtx, cancel := context.WithCancel(ctx)
 				sessionRef := s.SessionID
 				if sessionRef == "" {
@@ -1871,6 +1945,33 @@ func (s *tuiState) clearAttachIdentity() {
 	s.activeAttachKey = ""
 	s.activeAttachFresh = false
 	s.pendingAttachKey = ""
+}
+
+func (s *tuiState) followSelectedPreview(ctx context.Context) {
+	s.clearAttachIdentity()
+	s.refreshSelectedOutput(ctx)
+}
+
+func (s *tuiState) applyPreviewOutput(result previewOutputEvent, currentID uint64) bool {
+	if result.id != currentID || s.focused || result.key != s.currentKey() || result.generation != s.currentSession().RuntimeGeneration {
+		return false
+	}
+	if result.err != nil {
+		s.outputErr = result.err.Error()
+		return true
+	}
+	rows, cols := s.activePTYSize()
+	s.terminal = ducklord.NewTerminal(int(rows), int(cols), ducklord.DefaultTerminalScrollback)
+	s.terminal.Write([]byte(result.text))
+	s.outputText = s.terminal.Text()
+	s.outputForKey = result.key
+	s.outputErr = ""
+	s.outputStale = false
+	s.outputFresh = true
+	s.terminalGeneration = result.generation
+	s.terminalOffset = 0
+	s.terminalCursorValid = false
+	return true
 }
 
 func (s *tuiState) hostIsLive(client string) bool {
