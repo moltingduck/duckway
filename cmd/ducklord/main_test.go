@@ -732,6 +732,56 @@ func TestTUISelectionDoesNotMoveActiveSessionOrClearUnread(t *testing.T) {
 	}
 }
 
+func TestTUIDetachedSelectionImmediatelyLoadsSelectedSessionPreview(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	runner := &recordingRunner{readText: "session-b-screen\n"}
+	state := &tuiState{
+		cfg:               &ducklord.Config{Clients: []ducklord.Client{{Name: "host-a", Host: "host-a"}}},
+		runner:            runner,
+		activityState:     ducklord.NewActivityState(),
+		activeAttachKey:   instance + "/ABC123",
+		activeAttachFresh: true,
+		pendingAttachKey:  instance + "/ABC123",
+		outputForKey:      instance + "/ABC123",
+		outputText:        "session-a-screen\n",
+		sessions: []ducklord.RemoteSession{
+			{Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "a", Status: "running"},
+			{Client: "host-a", InstanceID: instance, SessionID: "DEF456", Name: "b", Status: "running"},
+		},
+	}
+	state.clearAttachIdentity()
+	if state.effectiveAttachKey() != "" {
+		t.Fatalf("detached state retained attach identity: %q", state.effectiveAttachKey())
+	}
+	if action := state.handleInput([]byte("j")); action != "select" {
+		t.Fatalf("selection action=%q", action)
+	}
+	state.refreshSelectedOutput(context.Background())
+	if runner.readSession != "DEF456" || strings.Contains(state.outputText, "session-a") || !strings.Contains(state.outputText, "session-b") {
+		t.Fatalf("read=%q output=%q", runner.readSession, state.outputText)
+	}
+}
+
+func TestInitialReplayCatchUpAllowsIdleAttachResize(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		current, end uint64
+		want         bool
+	}{
+		{"idle exact resume", 42, 42, true},
+		{"empty fresh session", 0, 0, true},
+		{"replay pending", 10, 20, false},
+		{"replay consumed", 20, 20, true},
+		{"live bytes passed boundary", 24, 20, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := initialReplayCaughtUp(test.current, test.end); got != test.want {
+				t.Fatalf("initialReplayCaughtUp(%d, %d)=%v want %v", test.current, test.end, got, test.want)
+			}
+		})
+	}
+}
+
 func TestTUIResizeOnlyForCurrentWriterOrSharedShell(t *testing.T) {
 	state := &tuiState{ownerName: "desk", sessions: []ducklord.RemoteSession{{Kind: string(model.KindAgent), WriterKind: string(model.OwnerTerminal), WriterID: "desk"}}}
 	if !state.canResizeCurrentSession() {

@@ -292,6 +292,7 @@ type AttachSession struct {
 	ResizeBarrier     func(rows, cols uint16) (uint64, error)
 	RuntimeGeneration uint64
 	StartOffset       uint64
+	ReplayEndOffset   uint64
 	ExactResume       bool
 	OutputOffset      func() uint64
 	cmd               *exec.Cmd
@@ -999,7 +1000,7 @@ func (r *Runner) attachDaemonStream(ctx context.Context, c Client, sessionRef st
 		return result.OutputOffset, resizeErr
 	}
 	return &AttachSession{Stdin: inputWriter, Stdout: outputReader, Done: done, Resize: resize, RuntimeGeneration: selected.RuntimeGeneration,
-		StartOffset: metadata.StartOffset, ExactResume: exactResume, OutputOffset: outputReader.Offset, ResizeBarrier: resizeBarrier}, nil
+		StartOffset: metadata.StartOffset, ReplayEndOffset: metadata.EndOffset, ExactResume: exactResume, OutputOffset: outputReader.Offset, ResizeBarrier: resizeBarrier}, nil
 }
 
 func sshOutput(ctx context.Context, c Client, ducklionArgs ...string) ([]byte, error) {

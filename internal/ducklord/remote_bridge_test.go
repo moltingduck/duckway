@@ -380,8 +380,8 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resumed.ExactResume || resumed.StartOffset != resumeOffset {
-		t.Fatalf("resume exact=%v start=%d want=%d", resumed.ExactResume, resumed.StartOffset, resumeOffset)
+	if !resumed.ExactResume || resumed.StartOffset != resumeOffset || resumed.ReplayEndOffset != resumeOffset {
+		t.Fatalf("resume exact=%v offsets=%d..%d want=%d", resumed.ExactResume, resumed.StartOffset, resumed.ReplayEndOffset, resumeOffset)
 	}
 	if _, err := resumed.Stdin.Write([]byte("again\r")); err != nil {
 		t.Fatal(err)

@@ -1207,6 +1207,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	var attachCancel context.CancelFunc
 	attachID := 0
 	attachCanResize := false
+	attachInitialResizeQueued := false
+	var attachReplayEndOffset uint64
 	var pendingFramebufferResize *resizeDoneEvent
 	resizeInFlight := false
 	var queuedResize *[2]uint16
@@ -1228,6 +1230,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			return
 		}
 		rows, cols := state.activePTYSize()
+		if !attachInitialResizeQueued && !initialReplayCaughtUp(state.terminalOffset, attachReplayEndOffset) {
+			// SIGWINCH may arrive while the initial replay is still being
+			// consumed. Remember only the latest dimensions; starting a barrier
+			// here would hide the replay until the network RPC returned.
+			queuedResize = &[2]uint16{rows, cols}
+			return
+		}
 		if resizeInFlight || pendingFramebufferResize != nil {
 			queuedResize = &[2]uint16{rows, cols}
 			return
@@ -1256,17 +1265,20 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		bufferedAttach = nil
 		bufferedAttachBytes = 0
 		attachOutputSource = attachOut
-		if event.err != nil && state.focused {
-			state.outputErr = event.err.Error()
-		}
+		wasFocused := state.focused
 		state.focused = false
-		state.activeAttachFresh = false
-		state.pendingAttachKey = ""
+		state.clearAttachIdentity()
 		attachCanResize = false
+		attachInitialResizeQueued = false
+		attachReplayEndOffset = 0
 		attach = nil
 		if attachCancel != nil {
 			attachCancel()
 			attachCancel = nil
+		}
+		state.refreshSelectedOutput(ctx)
+		if event.err != nil && wasFocused {
+			state.outputErr = event.err.Error()
 		}
 	}
 	var startCancel context.CancelFunc
@@ -1345,6 +1357,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				attachOutputSource = attachOut
 				attach = nil
 				attachCanResize = false
+				attachInitialResizeQueued = false
+				attachReplayEndOffset = 0
 			}
 			if !state.focused && state.activeAttachKey == "" {
 				state.refreshSelectedOutput(ctx)
@@ -1412,6 +1426,14 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			applyOrderedAttachChunk(state, chunk, &pendingFramebufferResize)
+			if !attachInitialResizeQueued && attachCanResize && initialReplayCaughtUp(state.terminalOffset, attachReplayEndOffset) {
+				// Show the initial replay before waiting on the remote resize
+				// barrier. Bytes emitted after this point remain ordered by the
+				// existing barrier buffering path.
+				attachInitialResizeQueued = true
+				queuedResize = nil
+				queueResize()
+			}
 			if pendingFramebufferResize == nil && queuedResize != nil {
 				queuedResize = nil
 				queueResize()
@@ -1436,10 +1458,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					bufferedAttachBytes = 0
 					attachOutputSource = attachOut
 					state.focused = false
-					state.activeAttachFresh = false
-					state.pendingAttachKey = ""
+					state.clearAttachIdentity()
 					attachCanResize = false
+					attachInitialResizeQueued = false
+					attachReplayEndOffset = 0
 					attach = nil
+					state.refreshSelectedOutput(ctx)
 					state.render(os.Stdout)
 					continue
 				}
@@ -1580,7 +1604,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.refreshSelectedOutput(ctx)
 				}
 			case "select":
-				// Moving the list cursor does not change the active PTY pane.
+				// Keep a live focused attachment stable, but once detached make
+				// the right pane follow selection immediately instead of showing
+				// the previous session until another output byte arrives.
+				if state.activeAttachKey == "" && state.pendingAttachKey == "" {
+					state.refreshSelectedOutput(ctx)
+				}
 			case "new":
 				state.beginCreate()
 			case "notifications":
@@ -1676,8 +1705,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				bufferedAttachBytes = 0
 				attachOutputSource = attachOut
 				id := attachID
+				state.activeAttachKey = ""
+				state.activeAttachFresh = false
 				state.pendingAttachKey = sessionKey(s)
 				attachCanResize = state.canResizeCurrentSession() && session.ResizeBarrier != nil
+				attachInitialResizeQueued = false
+				attachReplayEndOffset = session.ReplayEndOffset
 				state.outputForKey = state.pendingAttachKey
 				if !session.ExactResume {
 					state.outputText = ""
@@ -1693,11 +1726,18 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.outputFresh = false
 				state.focused = true
 				go superviseAttach(attachCtx, id, session, attachOut)
-				queueResize()
+				if initialReplayCaughtUp(session.StartOffset, session.ReplayEndOffset) && attachCanResize {
+					attachInitialResizeQueued = true
+					queueResize()
+				}
 			}
 			state.render(os.Stdout)
 		}
 	}
+}
+
+func initialReplayCaughtUp(currentOffset, replayEndOffset uint64) bool {
+	return currentOffset >= replayEndOffset
 }
 
 func (s *tuiState) refreshSessions(ctx context.Context) {
@@ -1825,6 +1865,12 @@ func (s *tuiState) effectiveAttachKey() string {
 		return s.activeAttachKey
 	}
 	return s.pendingAttachKey
+}
+
+func (s *tuiState) clearAttachIdentity() {
+	s.activeAttachKey = ""
+	s.activeAttachFresh = false
+	s.pendingAttachKey = ""
 }
 
 func (s *tuiState) hostIsLive(client string) bool {
