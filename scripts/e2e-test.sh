@@ -1285,16 +1285,6 @@ else
   ERRORS="$ERRORS\n  - automated Discord Gateway E2E failed"
 fi
 
-if LIVE_CREDENTIALS_E2E=$(./scripts/live-credentials-e2e.sh 2>&1); then
-  echo -e "  ${GREEN}PASS${NC} live credential injection safety"
-  PASS=$((PASS + 1))
-else
-  echo -e "  ${RED}FAIL${NC} live credential injection safety"
-  echo "$LIVE_CREDENTIALS_E2E"
-  FAIL=$((FAIL + 1))
-  ERRORS="$ERRORS\n  - live credential injection safety failed"
-fi
-
 UNIT=$(env -u DUCKWAY_DATABASE_DRIVER -u DUCKWAY_DATABASE_URL \
   go test ./internal/server/services/ ./internal/database/queries/ ./internal/server/handlers/ ./internal/client/ 2>&1)
 UNIT_OK=$(echo "$UNIT" | grep -c "^ok" || true)

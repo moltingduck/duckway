@@ -920,15 +920,9 @@ podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
 podman exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.yaml
 ```
 
-The demo automatically detects mode-`0600` credentials at
-`live-credentials/codex-auth.json` and
-`live-credentials/claude-credentials.json`. It installs agent CLIs in the
-image, but injects credentials only into `ducklion-client-a` at runtime. The
-host files are read-only bind mounts copied to the CLI's standard path on
-tmpfs; they never enter the build context, image, Ducklord container, or
-command output. Set `DUCKLORD_DEMO_LIVE_AGENTS=0` to disable discovery or `=1`
-to require at least one credential. `scripts/live-credentials-e2e.sh` runs the
-credential-free permissions, symlink, and redaction checks.
+The interactive demo intentionally does not mount live credentials. A live
+credential must be imported by Duckway server and replaced with a phantom by
+`duckway sync`; never mount the original credential into a Ducklion host.
 
 For a clean setup followed immediately by the interactive TUI, run this single
 command from the repository root:
