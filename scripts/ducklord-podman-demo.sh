@@ -2,10 +2,37 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/lib/live-credentials.sh"
 WORK="${WORK:-/tmp/ducklord-podman-demo}"
 RUNTIME="${CONTAINER_RUNTIME:-podman}"
 IMAGE="${IMAGE:-duckway-ducklord-demo:local}"
 NET="${NET:-ducklord-demo}"
+LIVE_DIR="${DUCKWAY_LIVE_CREDENTIALS_DIR:-$ROOT/live-credentials}"
+CODEX_AUTH="${DUCKLORD_DEMO_CODEX_AUTH:-$LIVE_DIR/codex-auth.json}"
+CLAUDE_AUTH="${DUCKLORD_DEMO_CLAUDE_AUTH:-$LIVE_DIR/claude-credentials.json}"
+LIVE_MODE="${DUCKLORD_DEMO_LIVE_AGENTS:-auto}"
+ENABLE_CODEX=0
+ENABLE_CLAUDE=0
+
+case "$LIVE_MODE" in
+  auto|0|1) ;;
+  *) echo "DUCKLORD_DEMO_LIVE_AGENTS must be auto, 0, or 1" >&2; exit 2 ;;
+esac
+
+if [ "$LIVE_MODE" != 0 ]; then
+  if duckway_live_credential Codex "$CODEX_AUTH"; then ENABLE_CODEX=1; else status=$?; [ "$status" -eq 1 ] || exit "$status"; fi
+  if duckway_live_credential Claude "$CLAUDE_AUTH"; then ENABLE_CLAUDE=1; else status=$?; [ "$status" -eq 1 ] || exit "$status"; fi
+fi
+if [ "$LIVE_MODE" = 1 ] && [ "$ENABLE_CODEX" = 0 ] && [ "$ENABLE_CLAUDE" = 0 ]; then
+  echo "Live agent mode requires a mode-0600 Codex or Claude credential in $LIVE_DIR" >&2
+  exit 1
+fi
+
+if [ "${1:-}" = "--check-live-credentials" ]; then
+  echo "Codex live credential: $([ "$ENABLE_CODEX" = 1 ] && echo ready || echo unavailable)"
+  echo "Claude live credential: $([ "$ENABLE_CLAUDE" = 1 ] && echo ready || echo unavailable)"
+  exit 0
+fi
 
 cleanup_existing() {
   "$RUNTIME" rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c >/dev/null 2>&1 || true
@@ -24,9 +51,15 @@ ssh-keygen -q -t ed25519 -N '' -f "$WORK/id_ed25519"
 
 cat >"$WORK/Containerfile" <<'EOF'
 FROM alpine:3.21
-RUN apk add --no-cache openssh openssh-client bash ca-certificates ncurses
+ARG INSTALL_AGENT_CLIS=0
+RUN apk add --no-cache openssh openssh-client bash ca-certificates ncurses \
+    && if [ "$INSTALL_AGENT_CLIS" = 1 ]; then \
+         apk add --no-cache nodejs npm \
+         && npm install -g @openai/codex @anthropic-ai/claude-code \
+         && npm cache clean --force; \
+       fi
 RUN adduser -D duck && echo "duck:duck-demo-password" | chpasswd && ssh-keygen -A
-RUN install -d -m 700 /home/duck/.ssh /root/.ssh /root/.ducklord && chown -R duck:duck /home/duck/.ssh
+RUN install -d -m 700 /home/duck/.ssh /home/duck/.codex /home/duck/.claude /root/.ssh /root/.ducklord && chown -R duck:duck /home/duck
 COPY ducklord /usr/local/bin/ducklord
 COPY duckway /usr/local/bin/duckway
 COPY ducklion /usr/local/bin/ducklion
@@ -37,15 +70,32 @@ CMD ["/usr/sbin/sshd", "-D", "-e"]
 EOF
 
 echo "[ducklord-demo] building demo image with $RUNTIME"
-"$RUNTIME" build -t "$IMAGE" -f "$WORK/Containerfile" "$WORK" >/dev/null
+INSTALL_AGENT_CLIS=0
+if [ "$ENABLE_CODEX" = 1 ] || [ "$ENABLE_CLAUDE" = 1 ]; then INSTALL_AGENT_CLIS=1; fi
+"$RUNTIME" build --build-arg "INSTALL_AGENT_CLIS=$INSTALL_AGENT_CLIS" -t "$IMAGE" -f "$WORK/Containerfile" "$WORK" >/dev/null
 
 cleanup_existing
 "$RUNTIME" network create "$NET" >/dev/null
 
 echo "[ducklord-demo] starting remote clients"
-"$RUNTIME" run -d --name ducklion-client-a --hostname client-a --network "$NET" "$IMAGE" >/dev/null
+CLIENT_A_ARGS=(run -d --name ducklion-client-a --hostname client-a --network "$NET")
+if [ "$ENABLE_CODEX" = 1 ]; then
+  CLIENT_A_ARGS+=(--mount "type=bind,src=$CODEX_AUTH,dst=/run/duckway-live/codex-auth.json,readonly")
+  CLIENT_A_ARGS+=(--tmpfs /home/duck/.codex:rw,nosuid,nodev,mode=0700)
+fi
+if [ "$ENABLE_CLAUDE" = 1 ]; then
+  CLIENT_A_ARGS+=(--mount "type=bind,src=$CLAUDE_AUTH,dst=/run/duckway-live/claude-credentials.json,readonly")
+  CLIENT_A_ARGS+=(--tmpfs /home/duck/.claude:rw,nosuid,nodev,mode=0700)
+fi
+"$RUNTIME" "${CLIENT_A_ARGS[@]}" "$IMAGE" >/dev/null
 "$RUNTIME" run -d --name ducklion-client-b --hostname client-b --network "$NET" "$IMAGE" >/dev/null
 "$RUNTIME" run -d --name ducklion-client-c --hostname client-c --network "$NET" "$IMAGE" >/dev/null
+if [ "$ENABLE_CODEX" = 1 ]; then
+  "$RUNTIME" exec ducklion-client-a sh -eu -c 'chown duck:duck /home/duck/.codex; install -o duck -g duck -m 600 /run/duckway-live/codex-auth.json /home/duck/.codex/auth.json'
+fi
+if [ "$ENABLE_CLAUDE" = 1 ]; then
+  "$RUNTIME" exec ducklion-client-a sh -eu -c 'chown duck:duck /home/duck/.claude; install -o duck -g duck -m 600 /run/duckway-live/claude-credentials.json /home/duck/.claude/.credentials.json'
+fi
 for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
   "$RUNTIME" exec -d -u duck "$container" sh -lc 'mkdir -p $HOME/.duckway; nohup ducklion daemon >$HOME/.duckway/ducklion-daemon.log 2>&1 </dev/null & echo $! >$HOME/.duckway/ducklion-daemon.pid' >/dev/null
 done
@@ -105,6 +155,21 @@ echo "[ducklord-demo] verifying daemon inventory, PTY input, and recovery"
 if ! "$RUNTIME" exec ducklord-dev ducklord agents client-a /home/duck --config /root/.ducklord/config.yaml | grep -q '^shell'; then
   echo "[ducklord-demo] remote agent discovery did not report the interactive shell" >&2
   exit 1
+fi
+agents="$($RUNTIME exec ducklord-dev ducklord agents client-a /home/duck --config /root/.ducklord/config.yaml)"
+if [ "$ENABLE_CODEX" = 1 ]; then
+  grep -q '^codex' <<<"$agents"
+  "$RUNTIME" exec -u duck ducklion-client-a test -r /home/duck/.codex/auth.json
+  [ "$($RUNTIME exec ducklion-client-a stat -c %a /home/duck/.codex/auth.json)" = 600 ]
+  "$RUNTIME" exec ducklion-client-a awk '$2 == "/run/duckway-live/codex-auth.json" && $4 ~ /(^|,)ro(,|$)/ { found=1 } END { exit !found }' /proc/mounts
+  "$RUNTIME" exec ducklion-client-a awk '$2 == "/home/duck/.codex" && $3 == "tmpfs" { found=1 } END { exit !found }' /proc/mounts
+fi
+if [ "$ENABLE_CLAUDE" = 1 ]; then
+  grep -q '^claude_code' <<<"$agents"
+  "$RUNTIME" exec -u duck ducklion-client-a test -r /home/duck/.claude/.credentials.json
+  [ "$($RUNTIME exec ducklion-client-a stat -c %a /home/duck/.claude/.credentials.json)" = 600 ]
+  "$RUNTIME" exec ducklion-client-a awk '$2 == "/run/duckway-live/claude-credentials.json" && $4 ~ /(^|,)ro(,|$)/ { found=1 } END { exit !found }' /proc/mounts
+  "$RUNTIME" exec ducklion-client-a awk '$2 == "/home/duck/.claude" && $3 == "tmpfs" { found=1 } END { exit !found }' /proc/mounts
 fi
 sessions="$($RUNTIME exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml)"
 grep -q 'alpha.*running' <<<"$sessions"
@@ -178,6 +243,9 @@ fi
 
 cat <<EOF
 [ducklord-demo] ready
+
+Live agents on client-a: codex=$ENABLE_CODEX claude=$ENABLE_CLAUDE
+Credentials were mounted read-only at runtime and copied into an in-memory filesystem.
 
 Open the dev laptop TUI:
   $RUNTIME exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
