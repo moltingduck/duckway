@@ -42,6 +42,8 @@ cleanup() {
   if [ "$KEEP" = 1 ] && [ "$SUCCESS" = 1 ]; then
     echo "[live-e2e] retained demo: server=$SERVER agent=$AGENT controller=$LORD network=$NET"
     echo "[live-e2e] open TUI: $RUNTIME exec -it $LORD ducklord tui"
+    echo "[live-e2e] interactive sessions: codex-demo, claude-demo"
+    echo "[live-e2e] cleanup: $RUNTIME rm -f $LORD $AGENT $SERVER && $RUNTIME network rm $NET && $RUNTIME image rm $IMAGE && rm -rf $WORK"
     return
   fi
   "$RUNTIME" rm -f "$LORD" "$AGENT" "$SERVER" >/dev/null 2>&1 || true
@@ -100,7 +102,7 @@ ssh-keygen -q -t ed25519 -N '' -f "$WORK/build/id_ed25519"
 cat >"$WORK/build/Containerfile" <<'EOF'
 FROM alpine:3.21
 RUN apk add --no-cache bash ca-certificates curl jq nodejs npm openssh openssh-client python3 \
- && npm install -g @openai/codex @anthropic-ai/claude-code \
+ && npm install -g @openai/codex@0.153.4 @anthropic-ai/claude-code@2.1.263 \
  && npm cache clean --force \
  && ssh-keygen -A
 COPY duckway-server duckway ducklion ducklord /usr/local/bin/
@@ -228,7 +230,21 @@ if env.get('OPENAI_API_KEY') != p['codex_phantom']: raise SystemExit('Codex phan
 if env.get('ANTHROPIC_AUTH_TOKEN') != p['claude_phantom']: raise SystemExit('Claude phantom assignment mismatch')
 if os.stat('/root/.codex/auth.json').st_mode & 0o777 != 0o600: raise SystemExit('Codex auth mode is not 0600')
 if os.stat('/root/.claude/.credentials.json').st_mode & 0o777 != 0o600: raise SystemExit('Claude auth mode is not 0600')
+# Demo sessions use a known empty workspace. Pre-approve that exact path so
+# retained interactive CLIs open directly at their prompt rather than at a
+# first-run dialog that automation could accidentally answer incorrectly.
+claude_path='/root/.claude.json'
+claude=json.load(open(claude_path)) if os.path.exists(claude_path) else {}
+claude.setdefault('projects', {}).setdefault('/workspace', {})['hasTrustDialogAccepted']=True
+tmp=claude_path+'.tmp'
+with open(tmp, 'w') as f: json.dump(claude, f)
+os.chmod(tmp, 0o600); os.replace(tmp, claude_path)
 PY
+cat >>/root/.codex/config.toml <<'EOF'
+
+[projects."/workspace"]
+trust_level = "trusted"
+EOF
 cp "$cfg/ca.pem" /usr/local/share/ca-certificates/duckway.crt
 update-ca-certificates >/dev/null
 set -a; . "$cfg/keys.env"; set +a
@@ -245,6 +261,7 @@ grep -q 'Duckway proxy listening' /tmp/proxy.log
 cat >/usr/local/bin/ducklion-live <<EOF
 #!/bin/sh
 export HOME=/root DUCKWAY_CONFIG_DIR=/root/.duckway
+export TERM=xterm-256color COLORTERM=truecolor
 export HTTP_PROXY=http://127.0.0.1:18080 HTTPS_PROXY=http://127.0.0.1:18080 NO_PROXY=localhost,127.0.0.1,server
 export NODE_EXTRA_CA_CERTS=/root/.duckway/ca.pem
 exec /usr/local/bin/ducklion "\$@"
@@ -324,6 +341,51 @@ if len(results) != 1 or results[0].get('is_error') or results[0].get('result',''
     raise SystemExit('Claude did not return one successful exact nonce result')
 PY
 if ! "$RUNTIME" exec "$AGENT" grep -q 'anthropic' /tmp/proxy.log; then echo 'proxy saw no Claude traffic' >&2; exit 1; fi
+
+if [ "$KEEP" = 1 ]; then
+  echo '[live-e2e] starting retained interactive Codex and Claude PTYs'
+  "$RUNTIME" exec "$LORD" ducklord start live-agent --name codex-demo --agent codex --cwd /workspace --config /root/.ducklord/config.yaml -- codex --sandbox workspace-write -C /workspace
+  "$RUNTIME" exec "$LORD" ducklord start live-agent --name claude-demo --agent claude_code --cwd /workspace --config /root/.ducklord/config.yaml -- claude
+  for handle in codex-demo claude-demo; do
+    running=0
+    for _ in $(seq 1 120); do
+      if "$RUNTIME" exec "$LORD" ducklord sessions live-agent | grep -q "$handle.*running"; then running=1; break; fi
+      sleep .25
+    done
+    if [ "$running" != 1 ]; then echo "$handle did not remain interactive" >&2; exit 1; fi
+  done
+  for handle in codex-demo claude-demo; do
+    ready=0
+    for _ in $(seq 1 120); do
+      "$RUNTIME" exec "$LORD" ducklord read live-agent "$handle" --lines 240 >"$WORK/$handle.out"
+      if python3 - "$WORK/$handle.out" "$handle" <<'PY'
+import sys
+data=open(sys.argv[1], 'rb').read().lower()
+blocked=(b'do you trust the contents' in data or b'quick safety check' in data or
+         b'login required' in data or b'authentication failed' in data)
+if blocked: raise SystemExit(2)
+marker=b'ask codex to do anything' if sys.argv[2] == 'codex-demo' else b'claude code'
+raise SystemExit(0 if marker in data else 1)
+PY
+      then
+        ready=1
+        break
+      else
+        status=$?
+        if [ "$status" = 2 ]; then echo "$handle stopped at a trust/authentication screen" >&2; exit 1; fi
+      fi
+      sleep .25
+    done
+    if [ "$ready" != 1 ]; then echo "$handle did not reach its interactive prompt" >&2; exit 1; fi
+  done
+  python3 - "$WORK/codex-demo.out" "$WORK/claude-demo.out" <<'PY'
+import re, sys
+for path in sys.argv[1:]:
+    data=open(path, 'rb').read()
+    if not re.search(rb'\x1b\[[0-9;:]*m', data):
+        raise SystemExit(f'interactive PTY emitted no SGR color/style output: {path}')
+PY
+fi
 
 SUCCESS=1
 echo '[live-e2e] PASS: server import, phantom sync, Ducklord, Ducklion, Codex, and Claude'

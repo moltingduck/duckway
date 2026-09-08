@@ -595,13 +595,20 @@ func (r *Runner) Send(ctx context.Context, c Client, name, text string) error {
 		if selected == nil {
 			return fmt.Errorf("session %q not found", name)
 		}
-		return client.SendInputContext(ctx, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, []byte(text+"\n"))
+		// Interactive PTYs expect the Enter key as carriage return. A line feed
+		// is only output-side newline data in raw-mode TUIs such as Codex and
+		// Claude Code, so it can leave prompts visibly typed but unsubmitted.
+		return client.SendInputContext(ctx, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, terminalSubmitLine(text))
 	}
 	if !SafeIdentifier(name) {
 		return fmt.Errorf("invalid session name %q", name)
 	}
 	_, err := sshOutput(ctx, c, "send", name, text)
 	return err
+}
+
+func terminalSubmitLine(text string) []byte {
+	return []byte(text + "\r")
 }
 
 func (r *Runner) Start(ctx context.Context, c Client, args []string) (string, error) {

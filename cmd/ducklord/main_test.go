@@ -573,6 +573,25 @@ func TestTUIShowsSavedSnapshotWhileRemoteReadFails(t *testing.T) {
 	}
 }
 
+func TestTUIRenderContentPreservesTerminalColorAndResetsBeforeErase(t *testing.T) {
+	terminal := ducklord.NewTerminal(4, 80, 10)
+	terminal.Write([]byte("\x1b[38;2;12;34;56mcolored\x1b[0m"))
+	state := &tuiState{
+		sessions: []ducklord.RemoteSession{{Client: "host", Name: "agent", Status: "running"}},
+		selected: 0,
+		terminal: terminal,
+	}
+	var rendered bytes.Buffer
+	state.renderContent(&rendered, 1, 80, 20)
+	got := rendered.String()
+	if !strings.Contains(got, "38;2;12;34;56mcolored\x1b[0m") {
+		t.Fatalf("rendered terminal lost truecolor style: %q", got)
+	}
+	if strings.Contains(got, "colored\x1b[K") {
+		t.Fatalf("styled terminal row was not reset before erase-to-EOL: %q", got)
+	}
+}
+
 func TestTUIStoppedSessionReplacesSameGenerationSnapshotWithRetainedOutput(t *testing.T) {
 	instance := string(model.NewInstanceID())
 	store := ducklord.SnapshotStore{Root: filepath.Join(t.TempDir(), "sessions")}

@@ -940,7 +940,17 @@ For a clean setup followed immediately by the interactive TUI, run this single
 command from the repository root:
 
 ```bash
-scripts/ducklord-podman-demo.sh && podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
+scripts/ducklord-podman-demo.sh
+```
+
+When live credentials are available, the script prints the randomized retained
+controller name, the exact `podman exec -it ... ducklord tui` command, and an
+exact cleanup command. It retains interactive `codex-demo` and `claude-demo`
+sessions in addition to the deterministic one-shot E2E assertions. Without
+live credentials, open the shell-only demo with:
+
+```bash
+podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
 ```
 
 Inside the TUI:

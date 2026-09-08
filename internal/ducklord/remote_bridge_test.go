@@ -273,6 +273,17 @@ func TestRunnerYieldTransfersCCSessionAndWaitsThroughBridge(t *testing.T) {
 	}
 }
 
+func TestTerminalSubmitLineUsesPTYEnter(t *testing.T) {
+	for _, test := range []struct {
+		text string
+		want string
+	}{{"prompt", "prompt\r"}, {"", "\r"}} {
+		if got := string(terminalSubmitLine(test.text)); got != test.want {
+			t.Fatalf("terminalSubmitLine(%q) = %q, want %q", test.text, got, test.want)
+		}
+	}
+}
+
 func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 	root := t.TempDir()
 	database, err := store.Open(context.Background(), filepath.Join(root, "ducklion.db"))
