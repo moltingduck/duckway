@@ -2,6 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ "${DUCKLORD_DEMO_SHELL_ONLY:-0}" != 1 ] && \
+   [ -f "$ROOT/live-credentials/codex-auth.json" ] && \
+   [ -f "$ROOT/live-credentials/claude-credentials.json" ]; then
+  echo "[ducklord-demo] live credentials found; using the isolated Duckway phantom-token topology"
+  DUCKWAY_LIVE_KEEP=1 exec "$ROOT/scripts/ducklion-phantom-live-e2e.sh"
+fi
 WORK="${WORK:-/tmp/ducklord-podman-demo}"
 RUNTIME="${CONTAINER_RUNTIME:-podman}"
 IMAGE="${IMAGE:-duckway-ducklord-demo:local}"

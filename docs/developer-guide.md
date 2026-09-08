@@ -920,9 +920,21 @@ podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
 podman exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.yaml
 ```
 
-The interactive demo intentionally does not mount live credentials. A live
-credential must be imported by Duckway server and replaced with a phantom by
-`duckway sync`; never mount the original credential into a Ducklion host.
+When both mode-`0600` files `live-credentials/codex-auth.json` and
+`live-credentials/claude-credentials.json` exist, the demo delegates to
+`scripts/ducklion-phantom-live-e2e.sh` and retains its successful environment.
+That topology has separate server/import, Ducklion agent, and Ducklord
+controller containers. Only the server container sees the real credentials;
+the agent receives the Codex and Claude phantom files from `duckway sync`.
+Set `DUCKLORD_DEMO_SHELL_ONLY=1` for the credential-free shell demo. Set
+`DUCKWAY_LIVE_KEEP=1` when invoking the live E2E directly to retain it as an
+interactive demo; the default E2E tears down all containers, network, image,
+and temporary state.
+
+The live E2E requires both OAuth access tokens to remain valid for at least 30
+minutes. It fails before launching an agent when either credential is stale so
+the ephemeral server cannot consume and then discard a rotated refresh token.
+Refresh both files with their native login commands before rerunning.
 
 For a clean setup followed immediately by the interactive TUI, run this single
 command from the repository root:

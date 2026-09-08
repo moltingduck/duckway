@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,30 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 )
+
+func TestSupervisedEnvironmentIncludesProxyTrustButNotCredentials(t *testing.T) {
+	for name, value := range map[string]string{
+		"HTTP_PROXY": "http://127.0.0.1:18080", "HTTPS_PROXY": "http://127.0.0.1:18080",
+		"NO_PROXY": "localhost,127.0.0.1", "NODE_EXTRA_CA_CERTS": "/tmp/ca.pem",
+		"OPENAI_API_KEY": "must-not-pass", "ANTHROPIC_AUTH_TOKEN": "must-not-pass",
+	} {
+		t.Setenv(name, value)
+	}
+	env := strings.Join(supervisedEnvironment("codex"), "\n")
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"} {
+		if !strings.Contains(env, name+"=") {
+			t.Fatalf("supervisor environment omitted %s: %q", name, env)
+		}
+	}
+	for _, name := range []string{"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
+		if strings.Contains(env, name+"=") {
+			t.Fatalf("supervisor environment leaked %s: %q", name, env)
+		}
+	}
+	if shellEnv := strings.Join(supervisedEnvironment("shell"), "\n"); strings.Contains(shellEnv, "HTTP_PROXY=") {
+		t.Fatalf("shell supervisor unexpectedly inherited agent proxy: %q", shellEnv)
+	}
+}
 
 func TestAgentPrepareCommitWritesExactlyOnceOnReplay(t *testing.T) {
 	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, CWD: t.TempDir(),

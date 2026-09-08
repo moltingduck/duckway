@@ -130,7 +130,7 @@ func Start(options Options) (*Session, error) {
 	}
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Dir = options.CWD
-	cmd.Env = supervisedEnvironment()
+	cmd.Env = supervisedEnvironment(options.AgentType)
 	var adapterRead, adapterWrite *os.File
 	if options.AgentType != "" {
 		var pipeErr error
@@ -573,8 +573,16 @@ func (s *Session) AbortAgentTask(taskID string) {
 	}
 }
 
-func supervisedEnvironment() []string {
-	allowed := []string{"HOME", "PATH", "TERM", "LANG", "LC_ALL", "USER", "LOGNAME", "SHELL", "TMPDIR", "COLORTERM"}
+func supervisedEnvironment(agentType string) []string {
+	allowed := []string{
+		"HOME", "PATH", "TERM", "LANG", "LC_ALL", "USER", "LOGNAME", "SHELL", "TMPDIR", "COLORTERM",
+	}
+	if agentType != "" && agentType != "shell" {
+		allowed = append(allowed,
+			"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+			"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+		)
+	}
 	environment := make([]string, 0, len(allowed))
 	for _, name := range allowed {
 		if value, ok := os.LookupEnv(name); ok && !strings.ContainsRune(value, 0) {
