@@ -5059,7 +5059,60 @@ func (s *tuiState) handleCreateInput(b []byte) string {
 			s.newSessionLine = strconv.Itoa(s.createModalSelectedIndex(len(choices)) + 1)
 		}
 	}
-	return s.handleLineInput(b, &s.newSessionLine)
+	action := s.handleLineInput(b, &s.newSessionLine)
+	if action == "" {
+		s.syncCreateSelectionToInput()
+	}
+	return action
+}
+
+func (s *tuiState) syncCreateSelectionToInput() {
+	input := strings.TrimSpace(s.newSessionLine)
+	if input == "" || s.newSessionStep == "handle" {
+		return
+	}
+	if n, err := strconv.Atoi(input); err == nil {
+		if count := len(s.createModalChoices()); n >= 1 && n <= count {
+			s.newSessionSelected = n - 1
+		}
+		return
+	}
+	match := func(index int, values ...string) bool {
+		for _, value := range values {
+			if input == value {
+				s.newSessionSelected = index
+				return true
+			}
+		}
+		return false
+	}
+	switch s.newSessionStep {
+	case "kind":
+		for index, value := range []string{"agent", "shell"} {
+			if strings.EqualFold(input, value) {
+				s.newSessionSelected = index
+				return
+			}
+		}
+	case "host":
+		for index, client := range s.cfg.Clients {
+			if match(index, client.Name) {
+				return
+			}
+		}
+	case "project":
+		for index, project := range s.newSessionProjects {
+			if match(index, project.Name, project.Path) {
+				return
+			}
+		}
+	case "agent":
+		for index, agent := range s.newSessionAgents {
+			if match(index, agent.Type) {
+				return
+			}
+		}
+	}
 }
 
 func (s *tuiState) handleLineInput(b []byte, line *string) string {

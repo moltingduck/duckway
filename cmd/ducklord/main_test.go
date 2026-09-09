@@ -2050,6 +2050,24 @@ func TestCreateModalKeyboardSelectionFeedsExistingWizard(t *testing.T) {
 	}
 }
 
+func TestCreateModalTypedChoiceSynchronizesHighlight(t *testing.T) {
+	state := &tuiState{
+		newSessionMode:     true,
+		newSessionStep:     "project",
+		newSessionProjects: []ducklord.RemoteProject{{Name: "one", Path: "/work/one"}, {Name: "中文專案", Path: "/work/two"}},
+	}
+	state.handleCreateInput([]byte("2"))
+	if state.newSessionSelected != 1 {
+		t.Fatalf("numeric selection = %d, want 1", state.newSessionSelected)
+	}
+	state.newSessionLine = ""
+	state.newSessionSelected = 0
+	state.handleCreateInput([]byte("中文專案"))
+	if state.newSessionSelected != 1 {
+		t.Fatalf("named selection = %d, want 1", state.newSessionSelected)
+	}
+}
+
 func TestNextInputEventKeepsUnicodeRuneIntactAcrossReads(t *testing.T) {
 	input := []byte("中文🦆")
 	for split := 1; split < len(input); split++ {
