@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	Major = 2
-	Minor = 0
+	Major = 1
+	Minor = 1
 )
 
 type Handshake struct {
