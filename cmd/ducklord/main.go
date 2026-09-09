@@ -2366,6 +2366,12 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 		return // retain the last authoritative rows while reconnecting
 	}
 	oldKey := s.currentKey()
+	previousActivity := make(map[string]map[model.NotificationCategory]uint64)
+	for _, session := range s.sessions {
+		if identity, ok := ducklord.IdentityFromSession(session); session.Client == update.Client && ok {
+			previousActivity[identity.Key()] = session.ActivitySequences
+		}
+	}
 	all := make([]ducklord.RemoteSession, 0, len(s.sessions)+len(update.Sessions))
 	for _, session := range s.sessions {
 		if session.Client != update.Client {
@@ -2374,6 +2380,14 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 	}
 	activityChanged := false
 	for _, session := range update.Sessions {
+		identity, identityOK := ducklord.IdentityFromSession(session)
+		if before, ok := previousActivity[identity.Key()]; identityOK && ok {
+			if session.ActivitySequences[model.NotificationTaskFailed] > before[model.NotificationTaskFailed] && s.activity().Enabled(session.InstanceID, session.SessionID, model.NotificationTaskFailed) {
+				s.outputErr = sanitizeTerminalText(session.Name) + ": agent turn failed"
+			} else if session.ActivitySequences[model.NotificationTaskCompleted] > before[model.NotificationTaskCompleted] && s.activity().Enabled(session.InstanceID, session.SessionID, model.NotificationTaskCompleted) {
+				s.outputErr = sanitizeTerminalText(session.Name) + ": agent turn completed"
+			}
+		}
 		activeFresh := sessionKey(session) == s.activeAttachKey && s.activeAttachFresh
 		unread, changed := s.activity().Reconcile(session, activeFresh)
 		session.Unread = unread

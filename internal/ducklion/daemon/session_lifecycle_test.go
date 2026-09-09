@@ -1075,6 +1075,53 @@ func TestManagedPTYDrainsFinalAttentionBeforeExit(t *testing.T) {
 	}
 }
 
+func TestInteractiveAgentHookProjectsTaskCompletion(t *testing.T) {
+	root := t.TempDir()
+	exitPath := filepath.Join(root, "exit-agent")
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	client, err := Dial(server.SocketPath(), "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	created, err := client.CreateSession(context.Background(), protocol.SessionCreate{Handle: "agent-demo", Kind: model.KindAgent, AgentType: "fixture", CWD: root,
+		Command: []string{"sh", "-c", `printf '%s\n' '{"kind":"completed","response":"must not be persisted"}' '{"kind":"completed","response":"second secret"}' >&3; while [ ! -f exit-agent ]; do sleep 0.02; done`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		sessions, listErr := client.ListSessions()
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		if len(sessions) == 1 && sessions[0].ActivitySequences[model.NotificationTaskCompleted] == 2 {
+			if sessions[0].ActivitySequences[model.NotificationTerminalAttention] != 0 {
+				t.Fatalf("completion was incorrectly projected as terminal attention: %+v", sessions)
+			}
+			if err := os.WriteFile(exitPath, []byte("done"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("interactive completion was not projected: created=%+v sessions=%+v", created, sessions)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestRetainedOutputPeriodicCleanupRemovesCrashOrphanWithoutBlockingDaemon(t *testing.T) {
 	root := t.TempDir()
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
@@ -1224,6 +1271,64 @@ func TestManagedPTYPersistsAcrossDaemonRestart(t *testing.T) {
 		if bytes.Contains(event.Frame.Data, []byte("survived-restart")) {
 			break
 		}
+	}
+}
+
+func TestInteractiveAgentActivitySurvivesDaemonRestart(t *testing.T) {
+	root := t.TempDir()
+	trigger := filepath.Join(root, "emit-completion")
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	launcher := func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: launcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	client, err := Dial(server.SocketPath(), "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := client.CreateSession(context.Background(), protocol.SessionCreate{Handle: "restart-notify", Kind: model.KindAgent, AgentType: "fixture", CWD: root,
+		Command: []string{"sh", "-c", `while [ ! -f emit-completion ]; do sleep 0.02; done; printf '%s\n' '{"kind":"completed","response":"restart secret"}' >&3; sleep 5`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trigger, []byte("go"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server, err = Open(context.Background(), Options{Root: root, RuntimeLauncher: launcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone = make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		viewer, dialErr := Dial(server.SocketPath(), "viewer")
+		if dialErr == nil {
+			sessions, listErr := viewer.ListSessions()
+			_ = viewer.Close()
+			if listErr == nil && len(sessions) == 1 && sessions[0].SessionID == created.SessionID && sessions[0].ActivitySequences[model.NotificationTaskCompleted] == 1 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("completion did not survive daemon restart: %v", dialErr)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

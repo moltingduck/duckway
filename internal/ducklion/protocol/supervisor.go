@@ -72,11 +72,16 @@ type SupervisorActivityReceipt struct {
 	Sequence     uint64                     `json:"sequence"`
 	Advanced     bool                       `json:"advanced"`
 	OutputOffset uint64                     `json:"output_offset"`
+	EventID      uint64                     `json:"event_id,omitempty"`
 }
 
-type SupervisorTerminalAttention struct {
-	OutputOffset uint64 `json:"output_offset"`
+type SupervisorActivity struct {
+	OutputOffset uint64                     `json:"output_offset"`
+	Category     model.NotificationCategory `json:"category,omitempty"`
+	EventID      uint64                     `json:"event_id,omitempty"`
 }
+
+type SupervisorTerminalAttention = SupervisorActivity
 
 type SupervisorInput struct {
 	Sequence uint64      `json:"sequence"`

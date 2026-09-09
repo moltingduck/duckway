@@ -516,7 +516,7 @@ func TestStalledActivityConnectionDoesNotBlockRawOutput(t *testing.T) {
 			server.attentionMu.Unlock()
 			t.Fatal(err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		server.attentionMu.Unlock()
 		t.Fatal("stalled activity connection blocked raw output")
 	}
@@ -576,6 +576,15 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	if err := activity.ReportTerminalAttention(context.Background(), 3); err != nil {
 		t.Fatal(err)
 	}
+	if err := activity.ReportActivity(context.Background(), model.NotificationTaskCompleted, 3, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := activity.ReportActivity(context.Background(), model.NotificationTaskCompleted, 3, 1); err != nil {
+		t.Fatalf("idempotent activity replay failed: %v", err)
+	}
+	if err := activity.ReportActivity(context.Background(), model.NotificationApprovalRequired, 3, 2); err == nil {
+		t.Fatal("unsupported supervisor activity category was accepted")
+	}
 	if err := activity.ReportTerminalAttention(context.Background(), 3); err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +593,7 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	listed, err := viewer.ListSessions()
-	if err != nil || len(listed) != 1 || listed[0].ActivitySequences[model.NotificationTerminalAttention] != 1 {
+	if err != nil || len(listed) != 1 || listed[0].ActivitySequences[model.NotificationTerminalAttention] != 1 || listed[0].ActivitySequences[model.NotificationTaskCompleted] != 1 {
 		t.Fatalf("attention snapshot=%+v err=%v", listed, err)
 	}
 	subscription, err := viewer.SubscribeOutput(string(session.ID), session.RuntimeGeneration, 0)

@@ -10,6 +10,32 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 )
 
+func openActivityTestStore(t *testing.T) (*SQLite, model.Session) {
+	t.Helper()
+	ctx := context.Background()
+	database, err := Open(ctx, filepath.Join(t.TempDir(), "ducklion.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	now := time.Now().UTC().UnixMilli()
+	owner := model.Owner{Kind: model.OwnerTerminal, ID: "desk"}
+	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(), Status: model.StatusRecovering,
+		Writer: &owner, OwnershipEpoch: 1, RuntimeGeneration: 2, TaskState: model.TaskIdle, AdapterState: model.AdapterRecovering,
+		RecoveryPublicKey: make([]byte, 32), CreatedAtMS: now, UpdatedAtMS: now}
+	tx, err := database.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InsertSessionTx(ctx, tx, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return database, session
+}
+
 func TestRecordActivityIsDurableCoalescedAndRevisioned(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "ducklion.db")
@@ -84,6 +110,22 @@ func TestRecordActivityIsDurableCoalescedAndRevisioned(t *testing.T) {
 	snapshot, err = database.SessionSnapshot(ctx)
 	if err != nil || snapshot.Sessions[0].ActivitySequences[model.NotificationTaskCompleted] != 2 {
 		t.Fatalf("reopened snapshot=%+v err=%v", snapshot, err)
+	}
+}
+
+func TestRecordAgentActivityUsesEventIdentityInsteadOfOutputOffset(t *testing.T) {
+	database, session := openActivityTestStore(t)
+	sequence, advanced, err := database.RecordAgentActivity(context.Background(), session.ID, model.NotificationTaskCompleted, 2, 1, 0)
+	if err != nil || !advanced || sequence != 1 {
+		t.Fatalf("first zero-output event: sequence=%d advanced=%v err=%v", sequence, advanced, err)
+	}
+	sequence, advanced, err = database.RecordAgentActivity(context.Background(), session.ID, model.NotificationTaskCompleted, 2, 1, 0)
+	if err != nil || advanced || sequence != 1 {
+		t.Fatalf("replay: sequence=%d advanced=%v err=%v", sequence, advanced, err)
+	}
+	sequence, advanced, err = database.RecordAgentActivity(context.Background(), session.ID, model.NotificationTaskCompleted, 2, 2, 0)
+	if err != nil || !advanced || sequence != 2 {
+		t.Fatalf("distinct same-offset event: sequence=%d advanced=%v err=%v", sequence, advanced, err)
 	}
 }
 

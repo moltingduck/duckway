@@ -620,7 +620,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "supervisor principal must be the canonical session ID"}})
 		return
 	}
-	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention"}}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention", "agent_activity"}}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
 	if protocolError != nil || !hasCapability(negotiated.Capabilities, "supervisor_recovery") || !hasCapability(negotiated.Capabilities, "output_publish") {
 		if protocolError == nil {
@@ -921,7 +921,7 @@ func (s *Server) handleSupervisorActivity(conn *net.UnixConn, codec *bridge.Code
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "activity principal must be the canonical session ID"}})
 		return
 	}
-	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"terminal_attention"}}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"terminal_attention", "agent_activity"}}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
 	if protocolError != nil || !hasCapability(negotiated.Capabilities, "terminal_attention") {
 		if protocolError == nil {
@@ -1000,9 +1000,41 @@ func (s *Server) handleSupervisorActivity(conn *net.UnixConn, codec *bridge.Code
 			writeSupervisorError(codec, request.ID, protocol.ErrStaleGeneration, "runtime activity identity changed")
 			continue
 		}
-		var attention protocol.SupervisorTerminalAttention
+		var attention protocol.SupervisorActivity
 		outputEnd, available := s.runtimeOutputEnd(identity)
-		if err := decodeStrict(request.Body, &attention); err != nil || attention.OutputOffset == 0 || !available || attention.OutputOffset > outputEnd {
+		if err := decodeStrict(request.Body, &attention); err != nil || !available || attention.OutputOffset > outputEnd {
+			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "supervisor activity has an invalid output boundary")
+			continue
+		}
+		category := attention.Category
+		if category == "" {
+			category = model.NotificationTerminalAttention
+		}
+		if category != model.NotificationTerminalAttention && category != model.NotificationTaskCompleted && category != model.NotificationTaskFailed {
+			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid supervisor activity category")
+			continue
+		}
+		if category != model.NotificationTerminalAttention && !hasCapability(negotiated.Capabilities, "agent_activity") {
+			writeSupervisorError(codec, request.ID, protocol.ErrIncompatible, "agent activity capability was not negotiated")
+			continue
+		}
+		if category != model.NotificationTerminalAttention {
+			if attention.EventID == 0 {
+				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "agent activity requires an event id")
+				continue
+			}
+			sequence, advanced, err := s.state.RecordAgentActivity(context.Background(), identity.SessionID, category, identity.Generation, attention.EventID, attention.OutputOffset)
+			if err != nil {
+				writeSupervisorError(codec, request.ID, protocol.ErrInternal, "could not record supervisor activity")
+				continue
+			}
+			result, _ := json.Marshal(protocol.SupervisorActivityReceipt{Category: category, Sequence: sequence, Advanced: advanced, OutputOffset: attention.OutputOffset, EventID: attention.EventID})
+			if err := codec.Write(protocol.Response{ID: request.ID, Result: result}); err != nil {
+				return
+			}
+			continue
+		}
+		if attention.OutputOffset == 0 || attention.EventID != 0 {
 			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "terminal attention requires a published output offset")
 			continue
 		}

@@ -304,7 +304,7 @@ func TestAgentHookCorrelatesEventWithCommittedTask(t *testing.T) {
 	}
 }
 
-func TestTasklessAgentHookMarksPayloadFreeTerminalAttention(t *testing.T) {
+func TestTasklessAgentHookMarksPayloadFreeCompletionActivity(t *testing.T) {
 	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, AgentType: "fixture", CWD: t.TempDir(),
 		Command: []string{"sh", "-c", `printf 'agent output'; sleep 10`}})
 	if err != nil {
@@ -323,9 +323,9 @@ func TestTasklessAgentHookMarksPayloadFreeTerminalAttention(t *testing.T) {
 	if err := session.acceptAgentHook(protocol.SupervisorAgentEvent{Kind: "completed", Response: "secret response"}); err != nil {
 		t.Fatal(err)
 	}
-	offset, pending := session.PendingAttention()
-	if !pending || offset != end {
-		t.Fatalf("attention offset=%d pending=%v, want %d", offset, pending, end)
+	category, offset, eventID, pending := session.PendingActivity()
+	if !pending || category != model.NotificationTaskCompleted || offset != end || eventID != 1 {
+		t.Fatalf("activity category=%q offset=%d pending=%v, want task_completed at %d", category, offset, pending, end)
 	}
 	if events := session.PendingAgentEvents(); len(events) != 0 {
 		t.Fatalf("taskless hook retained managed payload: %+v", events)
@@ -333,8 +333,24 @@ func TestTasklessAgentHookMarksPayloadFreeTerminalAttention(t *testing.T) {
 	if err := session.acceptAgentHook(protocol.SupervisorAgentEvent{Kind: "completed", Response: "duplicate"}); err != nil {
 		t.Fatal(err)
 	}
-	if duplicateOffset, _ := session.PendingAttention(); duplicateOffset != offset {
-		t.Fatalf("duplicate hook advanced attention without output: %d -> %d", offset, duplicateOffset)
+	session.AckActivity(category, offset, eventID)
+	if _, duplicateOffset, duplicateEventID, pending := session.PendingActivity(); !pending || duplicateOffset != offset || duplicateEventID != 2 {
+		t.Fatalf("second hook was collapsed: offset=%d event=%d pending=%v", duplicateOffset, duplicateEventID, pending)
+	}
+}
+
+func TestLegacyAgentHookDrainsBeforeFastProcessExit(t *testing.T) {
+	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, AgentType: "fixture", CWD: t.TempDir(),
+		Command: []string{"sh", "-c", `printf '%s\n' '{"kind":"completed","response":"discard me"}' >&3`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	category, offset, eventID, pending := session.PendingActivity()
+	if !pending || category != model.NotificationTaskCompleted || offset != 0 || eventID != 1 {
+		t.Fatalf("fast-exit activity category=%q offset=%d event=%d pending=%v", category, offset, eventID, pending)
 	}
 }
 
@@ -358,7 +374,7 @@ func TestAgentHookSocketRejectsWrongCapabilityToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
-	if _, pending := session.PendingAttention(); pending {
+	if _, _, _, pending := session.PendingActivity(); pending {
 		t.Fatal("wrong hook token emitted attention")
 	}
 }

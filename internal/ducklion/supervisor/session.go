@@ -82,8 +82,10 @@ type Session struct {
 	agentAckOrder      []string
 	attentionMu        sync.Mutex
 	attentionDetector  duckruntime.AttentionDetector
-	attentionPending   uint64
-	attentionAcked     uint64
+	attentionPending   map[model.NotificationCategory]uint64
+	attentionAcked     map[model.NotificationCategory]uint64
+	agentActivities    []pendingAgentActivity
+	nextActivityID     uint64
 	attentionNotify    chan struct{}
 }
 
@@ -93,11 +95,18 @@ type preparedAgentTask struct {
 	owner  model.Owner
 }
 
+type pendingAgentActivity struct {
+	category model.NotificationCategory
+	offset   uint64
+	eventID  uint64
+}
+
 const (
-	maxRetainedAgentEvents = 128
-	maxRetainedAgentBytes  = 512 << 10
-	maxAgentAckTombstones  = 1024
-	maxAgentHookFrameBytes = 300 << 10
+	maxRetainedAgentEvents    = 128
+	maxRetainedAgentBytes     = 512 << 10
+	maxAgentAckTombstones     = 1024
+	maxAgentHookFrameBytes    = 300 << 10
+	maxPendingAgentActivities = 128
 )
 
 type agentHookEnvelope struct {
@@ -215,6 +224,8 @@ func Start(options Options) (*Session, error) {
 	session.agentEventAcks = make(map[string]uint64)
 	session.agentEventNotify = make(chan struct{}, 1)
 	session.attentionNotify = make(chan struct{}, 1)
+	session.attentionPending = make(map[model.NotificationCategory]uint64)
+	session.attentionAcked = make(map[model.NotificationCategory]uint64)
 	session.input = duckruntime.NewInputPump((*inputGate)(session), ptmx, 64)
 	go session.capture()
 	if hookListener != nil {
@@ -323,18 +334,48 @@ func (s *Session) AgentEventNotify() <-chan struct{} { return s.agentEventNotify
 
 func (s *Session) AttentionNotify() <-chan struct{} { return s.attentionNotify }
 
+func (s *Session) PendingActivity() (model.NotificationCategory, uint64, uint64, bool) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if len(s.agentActivities) != 0 {
+		activity := s.agentActivities[0]
+		return activity.category, activity.offset, activity.eventID, true
+	}
+	for _, category := range []model.NotificationCategory{model.NotificationTaskFailed, model.NotificationTaskCompleted, model.NotificationTerminalAttention} {
+		if offset := s.attentionPending[category]; offset > s.attentionAcked[category] {
+			return category, offset, 0, true
+		}
+	}
+	return "", 0, 0, false
+}
+
+func (s *Session) AckActivity(category model.NotificationCategory, offset, eventID uint64) {
+	s.attentionMu.Lock()
+	if eventID != 0 {
+		if len(s.agentActivities) != 0 && s.agentActivities[0].eventID == eventID && s.agentActivities[0].category == category {
+			s.agentActivities = s.agentActivities[1:]
+		}
+		s.attentionMu.Unlock()
+		return
+	}
+	if offset > s.attentionAcked[category] {
+		s.attentionAcked[category] = offset
+	}
+	s.attentionMu.Unlock()
+}
+
+// PendingAttention is retained for focused terminal-attention tests and older
+// in-process callers. Runtime forwarding uses PendingActivity so completion
+// categories cannot be collapsed into BEL/OSC attention.
 func (s *Session) PendingAttention() (uint64, bool) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	return s.attentionPending, s.attentionPending > s.attentionAcked
+	offset := s.attentionPending[model.NotificationTerminalAttention]
+	return offset, offset > s.attentionAcked[model.NotificationTerminalAttention]
 }
 
 func (s *Session) AckAttention(offset uint64) {
-	s.attentionMu.Lock()
-	if offset > s.attentionAcked {
-		s.attentionAcked = offset
-	}
-	s.attentionMu.Unlock()
+	s.AckActivity(model.NotificationTerminalAttention, offset, 0)
 }
 
 func (s *Session) FailActiveAgentTask(summary string) bool {
@@ -604,10 +645,13 @@ func (s *Session) acceptAgentHook(event protocol.SupervisorAgentEvent) error {
 		if event.Kind != "completed" && event.Kind != "failed" {
 			return fmt.Errorf("invalid interactive agent hook event kind")
 		}
-		// Interactive Ducklord turns are not managed tasks. Treat their hook as
-		// payload-free terminal attention, never as a Discord task completion.
-		s.markAttentionAtCurrentOutput()
-		return nil
+		// Interactive Ducklord turns are not managed tasks. Retain only a
+		// payload-free completion category, never the agent response.
+		category := model.NotificationTaskCompleted
+		if event.Kind == "failed" {
+			category = model.NotificationTaskFailed
+		}
+		return s.markActivityAtCurrentOutput(category)
 	}
 	s.agentMu.Lock()
 	events := s.agentEvents[event.TaskID]
@@ -628,21 +672,24 @@ func (s *Session) acceptAgentHook(event protocol.SupervisorAgentEvent) error {
 	return nil
 }
 
-func (s *Session) markAttentionAtCurrentOutput() {
+func (s *Session) markActivityAtCurrentOutput(category model.NotificationCategory) error {
 	s.captureMu.Lock()
 	_, offset := s.output.Bounds()
-	if offset > 0 {
-		s.attentionMu.Lock()
-		if offset > s.attentionPending {
-			s.attentionPending = offset
-		}
+	s.attentionMu.Lock()
+	if len(s.agentActivities) >= maxPendingAgentActivities {
 		s.attentionMu.Unlock()
-		select {
-		case s.attentionNotify <- struct{}{}:
-		default:
-		}
+		s.captureMu.Unlock()
+		return fmt.Errorf("agent activity retention capacity reached")
 	}
+	s.nextActivityID++
+	s.agentActivities = append(s.agentActivities, pendingAgentActivity{category: category, offset: offset, eventID: s.nextActivityID})
+	s.attentionMu.Unlock()
 	s.captureMu.Unlock()
+	select {
+	case s.attentionNotify <- struct{}{}:
+	default:
+	}
+	return nil
 }
 
 func (s *Session) nextAgentSequence() uint64 {
@@ -738,10 +785,17 @@ func (s *Session) Wait() error {
 		_ = os.RemoveAll(s.agentHookDir)
 	}
 	if s.legacyAdapterRead != nil {
-		_ = s.legacyAdapterRead.Close()
 		if s.legacyAdapterDone != nil {
-			<-s.legacyAdapterDone
+			select {
+			case <-s.legacyAdapterDone:
+			case <-time.After(time.Second):
+				// A detached descendant may have inherited fd 3. Bound shutdown,
+				// but first allow the direct child's queued hook bytes to reach EOF.
+				_ = s.legacyAdapterRead.Close()
+				<-s.legacyAdapterDone
+			}
 		}
+		_ = s.legacyAdapterRead.Close()
 	}
 	s.mu.Lock()
 	s.closed = true
@@ -798,7 +852,7 @@ func (s *Session) capture() {
 			s.output.Publish(buffer[:n])
 			if offsets := s.attentionDetector.FeedOffsets(buffer[:n]); len(offsets) != 0 {
 				s.attentionMu.Lock()
-				s.attentionPending = offsets[len(offsets)-1]
+				s.attentionPending[model.NotificationTerminalAttention] = offsets[len(offsets)-1]
 				s.attentionMu.Unlock()
 				select {
 				case s.attentionNotify <- struct{}{}:

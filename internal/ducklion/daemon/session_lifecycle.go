@@ -1682,10 +1682,17 @@ func forwardPendingAttention(ctx context.Context, client *SupervisorClient, sess
 		// terminal_attention is optional for rolling upgrades. Bytes still
 		// reached the durable output ring; acknowledge the local hint so an old
 		// daemon cannot strand this supervisor in a retry loop.
-		if offset, pending := session.PendingAttention(); pending {
-			session.AckAttention(offset)
+		for {
+			if category, offset, eventID, pending := session.PendingActivity(); pending {
+				session.AckActivity(category, offset, eventID)
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-session.AttentionNotify():
+			}
 		}
-		return
 	}
 	var lastReport time.Time
 	var activity *SupervisorActivityClient
@@ -1695,8 +1702,12 @@ func forwardPendingAttention(ctx context.Context, client *SupervisorClient, sess
 		}
 	}()
 	for {
-		offset, pending := session.PendingAttention()
+		category, offset, eventID, pending := session.PendingActivity()
 		if pending {
+			if category != model.NotificationTerminalAttention && !client.SupportsAgentActivity() {
+				session.AckActivity(category, offset, eventID)
+				continue
+			}
 			for client.PublishedOffset() < offset {
 				select {
 				case <-ctx.Done():
@@ -1704,7 +1715,7 @@ func forwardPendingAttention(ctx context.Context, client *SupervisorClient, sess
 				case <-time.After(20 * time.Millisecond):
 				}
 			}
-			if delay := time.Second - time.Since(lastReport); !lastReport.IsZero() && delay > 0 {
+			if delay := time.Second - time.Since(lastReport); category == model.NotificationTerminalAttention && !lastReport.IsZero() && delay > 0 {
 				select {
 				case <-ctx.Done():
 					return
@@ -1724,7 +1735,7 @@ func forwardPendingAttention(ctx context.Context, client *SupervisorClient, sess
 				}
 			}
 			reportCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := activity.ReportTerminalAttention(reportCtx, offset)
+			err := activity.ReportActivity(reportCtx, category, offset, eventID)
 			cancel()
 			if err != nil {
 				_ = activity.Close()
@@ -1736,8 +1747,10 @@ func forwardPendingAttention(ctx context.Context, client *SupervisorClient, sess
 					continue
 				}
 			}
-			lastReport = time.Now()
-			session.AckAttention(offset)
+			if category == model.NotificationTerminalAttention {
+				lastReport = time.Now()
+			}
+			session.AckActivity(category, offset, eventID)
 			continue
 		}
 		select {
@@ -1763,23 +1776,35 @@ func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec,
 			replay := session.Output().Snapshot()
 			forwardErr := client.PublishSnapshot(replay)
 			if forwardErr == nil && client.SupportsAttention() {
-				if offset, pending := session.PendingAttention(); pending {
+				for {
+					category, offset, eventID, pending := session.PendingActivity()
+					if !pending || forwardErr != nil {
+						break
+					}
+					if category != model.NotificationTerminalAttention && !client.SupportsAgentActivity() {
+						session.AckActivity(category, offset, eventID)
+						continue
+					}
 					activity, activityErr := client.OpenActivity()
 					if activityErr == nil {
 						reportCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-						activityErr = activity.ReportTerminalAttention(reportCtx, offset)
+						activityErr = activity.ReportActivity(reportCtx, category, offset, eventID)
 						cancel()
 						_ = activity.Close()
 					}
 					if activityErr != nil {
 						forwardErr = activityErr
 					} else {
-						session.AckAttention(offset)
+						session.AckActivity(category, offset, eventID)
 					}
 				}
 			} else if forwardErr == nil {
-				if offset, pending := session.PendingAttention(); pending {
-					session.AckAttention(offset)
+				for {
+					category, offset, eventID, pending := session.PendingActivity()
+					if !pending {
+						break
+					}
+					session.AckActivity(category, offset, eventID)
 				}
 			}
 			if forwardErr == nil {

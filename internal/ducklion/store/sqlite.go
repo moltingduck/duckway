@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 13
+const SchemaVersion = 14
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -234,6 +234,11 @@ func (s *SQLite) migrate(ctx context.Context) error {
 	if userVersion < 13 {
 		if err := migrateV13(ctx, tx); err != nil {
 			return fmt.Errorf("migrate ducklion schema to v13: %w", err)
+		}
+	}
+	if userVersion < 14 {
+		if err := migrateV14(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v14: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
@@ -483,6 +488,11 @@ func migrateV12(ctx context.Context, tx *sql.Tx) error {
 
 func migrateV13(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `ALTER TABLE lifecycle_outcomes ADD COLUMN failure TEXT NOT NULL DEFAULT ''`)
+	return err
+}
+
+func migrateV14(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `ALTER TABLE session_activity ADD COLUMN last_source_event_id INTEGER NOT NULL DEFAULT 0 CHECK(last_source_event_id>=0)`)
 	return err
 }
 

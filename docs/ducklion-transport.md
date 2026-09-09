@@ -507,6 +507,18 @@ before reporting the runtime stopped. During rolling upgrade, a daemon that did
 not negotiate the optional capability still receives raw bytes and cannot
 strand the supervisor in a retry loop.
 
+The same isolated activity connection carries payload-free `task_completed`
+and `task_failed` categories from Codex notify and Claude Stop hooks when the
+turn was entered directly through Ducklord rather than through a managed CC
+task. A supervisor-owned monotonic event ID identifies each interactive turn;
+the sampled output offset is only a rendering boundary, so zero-output turns
+and consecutive hooks at the same offset are still distinct and replay-safe.
+These events are not coalesced with BEL/OSC attention, and response/summary
+payloads are never forwarded or durably retained. The optional `agent_activity`
+capability keeps rolling upgrades fail-safe: an older daemon receives neither
+an unknown request field nor a supervisor retry loop; completion hints produced
+during that downgrade window are intentionally dropped.
+
 Session list and revision-subscription snapshots include the category cursor
 map. Ducklord compares these authoritative cursors with the `notifications`
 section of its versioned, extensible, mode-0600 local-state envelope at

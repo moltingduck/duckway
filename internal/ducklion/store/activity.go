@@ -13,17 +13,24 @@ import (
 // invalidation in the same transaction. A positive coalesceWindow suppresses
 // additional advances within that window.
 func (s *SQLite) RecordActivity(ctx context.Context, sessionID model.SessionID, category model.NotificationCategory, coalesceWindow time.Duration) (uint64, bool, error) {
-	return s.recordActivity(ctx, sessionID, category, coalesceWindow, 0, 0, false)
+	return s.recordActivity(ctx, sessionID, category, coalesceWindow, 0, 0, 0, false, false)
 }
 
 func (s *SQLite) RecordActivityAtOffset(ctx context.Context, sessionID model.SessionID, category model.NotificationCategory, coalesceWindow time.Duration, runtimeGeneration, sourceOffset uint64) (uint64, bool, error) {
 	if runtimeGeneration == 0 || sourceOffset == 0 {
 		return 0, false, errors.New("activity runtime generation and source offset must be positive")
 	}
-	return s.recordActivity(ctx, sessionID, category, coalesceWindow, runtimeGeneration, sourceOffset, true)
+	return s.recordActivity(ctx, sessionID, category, coalesceWindow, runtimeGeneration, sourceOffset, 0, true, false)
 }
 
-func (s *SQLite) recordActivity(ctx context.Context, sessionID model.SessionID, category model.NotificationCategory, coalesceWindow time.Duration, runtimeGeneration, sourceOffset uint64, fenceSource bool) (uint64, bool, error) {
+func (s *SQLite) RecordAgentActivity(ctx context.Context, sessionID model.SessionID, category model.NotificationCategory, runtimeGeneration, eventID, sourceOffset uint64) (uint64, bool, error) {
+	if runtimeGeneration == 0 || eventID == 0 {
+		return 0, false, errors.New("agent activity runtime generation and event id must be positive")
+	}
+	return s.recordActivity(ctx, sessionID, category, 0, runtimeGeneration, sourceOffset, eventID, false, true)
+}
+
+func (s *SQLite) recordActivity(ctx context.Context, sessionID model.SessionID, category model.NotificationCategory, coalesceWindow time.Duration, runtimeGeneration, sourceOffset, sourceEventID uint64, fenceSource, fenceEvent bool) (uint64, bool, error) {
 	if _, err := model.ParseSessionID(string(sessionID)); err != nil {
 		return 0, false, err
 	}
@@ -45,15 +52,19 @@ func (s *SQLite) recordActivity(ctx context.Context, sessionID model.SessionID, 
 	var sequence uint64
 	var lastRuntimeGeneration uint64
 	var lastSourceOffset uint64
+	var lastSourceEventID uint64
 	var updatedAt int64
-	err = tx.QueryRowContext(ctx, `SELECT sequence,source_runtime_generation,last_source_offset,updated_at_ms FROM session_activity WHERE session_id=? AND category=?`, sessionID, category).Scan(&sequence, &lastRuntimeGeneration, &lastSourceOffset, &updatedAt)
+	err = tx.QueryRowContext(ctx, `SELECT sequence,source_runtime_generation,last_source_offset,last_source_event_id,updated_at_ms FROM session_activity WHERE session_id=? AND category=?`, sessionID, category).Scan(&sequence, &lastRuntimeGeneration, &lastSourceOffset, &lastSourceEventID, &updatedAt)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, false, err
 	}
 	if err == nil && fenceSource && (runtimeGeneration < lastRuntimeGeneration || runtimeGeneration == lastRuntimeGeneration && sourceOffset <= lastSourceOffset) {
 		return sequence, false, nil
 	}
-	generationChanged := fenceSource && runtimeGeneration > lastRuntimeGeneration
+	if err == nil && fenceEvent && (runtimeGeneration < lastRuntimeGeneration || runtimeGeneration == lastRuntimeGeneration && sourceEventID <= lastSourceEventID) {
+		return sequence, false, nil
+	}
+	generationChanged := (fenceSource || fenceEvent) && runtimeGeneration > lastRuntimeGeneration
 	if err == nil && !generationChanged && coalesceWindow > 0 && now-updatedAt < coalesceWindow.Milliseconds() {
 		if fenceSource {
 			if _, err := tx.ExecContext(ctx, `UPDATE session_activity SET source_runtime_generation=?,last_source_offset=? WHERE session_id=? AND category=?`, runtimeGeneration, sourceOffset, sessionID, category); err != nil {
@@ -67,10 +78,10 @@ func (s *SQLite) recordActivity(ctx context.Context, sessionID model.SessionID, 
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		sequence = 1
-		_, err = tx.ExecContext(ctx, `INSERT INTO session_activity(session_id,category,sequence,source_runtime_generation,last_source_offset,updated_at_ms) VALUES(?,?,?,?,?,?)`, sessionID, category, sequence, runtimeGeneration, sourceOffset, now)
+		_, err = tx.ExecContext(ctx, `INSERT INTO session_activity(session_id,category,sequence,source_runtime_generation,last_source_offset,last_source_event_id,updated_at_ms) VALUES(?,?,?,?,?,?,?)`, sessionID, category, sequence, runtimeGeneration, sourceOffset, sourceEventID, now)
 	} else {
 		sequence++
-		_, err = tx.ExecContext(ctx, `UPDATE session_activity SET sequence=?,source_runtime_generation=?,last_source_offset=?,updated_at_ms=? WHERE session_id=? AND category=?`, sequence, runtimeGeneration, sourceOffset, now, sessionID, category)
+		_, err = tx.ExecContext(ctx, `UPDATE session_activity SET sequence=?,source_runtime_generation=?,last_source_offset=?,last_source_event_id=?,updated_at_ms=? WHERE session_id=? AND category=?`, sequence, runtimeGeneration, sourceOffset, sourceEventID, now, sessionID, category)
 	}
 	if err != nil {
 		return 0, false, err

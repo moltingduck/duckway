@@ -2840,6 +2840,11 @@ Status: Decided
 
 - Agent sessions expose every first-version notification category in the
   per-session notification menu.
+- Direct Codex/Claude turns completed through Ducklord advance the payload-free
+  task-completed or task-failed category using a supervisor event ID. Ducklord
+  shows a completion/failure status notice even when that session is already
+  visible; background sessions additionally retain their session/group unread
+  marker until fresh output is attached.
 - Shell sessions expose terminal attention and unexpected process exit.
 - Agent-only task completion, failure, cancellation, timeout, approval-required,
   and agent-needs-input categories remain visible but disabled as unavailable

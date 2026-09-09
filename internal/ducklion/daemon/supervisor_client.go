@@ -16,24 +16,26 @@ import (
 )
 
 type SupervisorClient struct {
-	conn              *net.UnixConn
-	codec             *bridge.Codec
-	identity          protocol.SupervisorRegistered
-	instanceID        model.InstanceID
-	mu                sync.Mutex
-	nextOffset        uint64
-	nextID            uint64
-	socketPath        string
-	privateKey        ed25519.PrivateKey
-	supportsAttention bool
+	conn                  *net.UnixConn
+	codec                 *bridge.Codec
+	identity              protocol.SupervisorRegistered
+	instanceID            model.InstanceID
+	mu                    sync.Mutex
+	nextOffset            uint64
+	nextID                uint64
+	socketPath            string
+	privateKey            ed25519.PrivateKey
+	supportsAttention     bool
+	supportsAgentActivity bool
 }
 
 type SupervisorActivityClient struct {
-	conn       *net.UnixConn
-	codec      *bridge.Codec
-	identity   protocol.SupervisorRegistered
-	instanceID model.InstanceID
-	nextID     uint64
+	conn                  *net.UnixConn
+	codec                 *bridge.Codec
+	identity              protocol.SupervisorRegistered
+	instanceID            model.InstanceID
+	nextID                uint64
+	supportsAgentActivity bool
 }
 
 func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation uint64, privateKey ed25519.PrivateKey) (*SupervisorClient, error) {
@@ -61,7 +63,7 @@ func registerSupervisor(socketPath string, sessionID model.SessionID, generation
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	handshake := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleSupervisor,
-		Principal: string(sessionID), Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention"}}
+		Principal: string(sessionID), Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention", "agent_activity"}}
 	if err := codec.Write(handshake); err != nil {
 		return fail(err)
 	}
@@ -136,7 +138,8 @@ func registerSupervisor(socketPath string, sessionID model.SessionID, generation
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return &SupervisorClient{conn: conn, codec: codec, identity: identity, instanceID: instanceID, socketPath: socketPath,
-		privateKey: append(ed25519.PrivateKey(nil), privateKey...), supportsAttention: hasCapability(negotiated.Capabilities, "terminal_attention")}, nil
+		privateKey: append(ed25519.PrivateKey(nil), privateKey...), supportsAttention: hasCapability(negotiated.Capabilities, "terminal_attention"),
+		supportsAgentActivity: hasCapability(negotiated.Capabilities, "agent_activity")}, nil
 }
 
 type RuntimeController interface {
@@ -409,7 +412,7 @@ func (c *SupervisorClient) OpenActivity() (*SupervisorActivityClient, error) {
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	handshake := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleSupervisorActivity,
-		Principal: c.identity.SessionID, Capabilities: []string{"terminal_attention"}}
+		Principal: c.identity.SessionID, Capabilities: []string{"terminal_attention", "agent_activity"}}
 	if err := codec.Write(handshake); err != nil {
 		return fail(err)
 	}
@@ -458,7 +461,8 @@ func (c *SupervisorClient) OpenActivity() (*SupervisorActivityClient, error) {
 		return fail(fmt.Errorf("runtime activity returned an invalid ready receipt"))
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return &SupervisorActivityClient{conn: conn, codec: codec, identity: c.identity, instanceID: c.instanceID}, nil
+	return &SupervisorActivityClient{conn: conn, codec: codec, identity: c.identity, instanceID: c.instanceID,
+		supportsAgentActivity: hasCapability(negotiated.Capabilities, "agent_activity")}, nil
 }
 
 // SupportsAttention reports whether the daemon negotiated durable terminal
@@ -468,10 +472,19 @@ func (c *SupervisorClient) SupportsAttention() bool {
 	return c.supportsAttention
 }
 
+func (c *SupervisorClient) SupportsAgentActivity() bool { return c.supportsAgentActivity }
+
 func (c *SupervisorActivityClient) ReportTerminalAttention(ctx context.Context, outputOffset uint64) error {
-	body, _ := json.Marshal(protocol.SupervisorTerminalAttention{OutputOffset: outputOffset})
+	return c.ReportActivity(ctx, model.NotificationTerminalAttention, outputOffset, 0)
+}
+
+func (c *SupervisorActivityClient) ReportActivity(ctx context.Context, category model.NotificationCategory, outputOffset, eventID uint64) error {
+	if category != model.NotificationTerminalAttention && !c.supportsAgentActivity {
+		return fmt.Errorf("agent activity capability was not negotiated")
+	}
+	body, _ := json.Marshal(protocol.SupervisorActivity{OutputOffset: outputOffset, Category: category, EventID: eventID})
 	c.nextID++
-	requestID := fmt.Sprintf("attention-%d", c.nextID)
+	requestID := fmt.Sprintf("activity-%d", c.nextID)
 	generation := c.identity.RuntimeGeneration
 	request := protocol.Request{ID: requestID, Type: "supervisor.terminal_attention", InstanceID: string(c.instanceID), SessionID: c.identity.SessionID,
 		RuntimeGeneration: &generation, Body: body}
@@ -494,11 +507,11 @@ func (c *SupervisorActivityClient) ReportTerminalAttention(ctx context.Context, 
 		return err
 	}
 	if response.Error != nil {
-		return fmt.Errorf("report terminal attention: %s", response.Error.Message)
+		return fmt.Errorf("report supervisor activity %s: %s", category, response.Error.Message)
 	}
 	var receipt protocol.SupervisorActivityReceipt
-	if err := json.Unmarshal(response.Result, &receipt); err != nil || receipt.Category != model.NotificationTerminalAttention || receipt.Sequence == 0 || receipt.OutputOffset != outputOffset {
-		return fmt.Errorf("invalid terminal attention receipt")
+	if err := json.Unmarshal(response.Result, &receipt); err != nil || receipt.Category != category || receipt.Sequence == 0 || receipt.OutputOffset != outputOffset || receipt.EventID != eventID {
+		return fmt.Errorf("invalid activity receipt")
 	}
 	return nil
 }

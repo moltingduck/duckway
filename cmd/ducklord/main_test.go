@@ -1094,6 +1094,25 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 	}
 }
 
+func TestTUIShowsInteractiveAgentCompletionWhileAnotherSessionIsActive(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	active := ducklord.RemoteSession{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "ABC123", Name: "active"}
+	background := ducklord.RemoteSession{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "DEF456", Name: "agent-demo",
+		ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTaskCompleted: 0}}
+	state := &tuiState{hostSync: make(map[string]ducklord.SessionUpdate), activityState: ducklord.NewActivityState(), sessions: []ducklord.RemoteSession{active, background},
+		activeAttachKey: sessionKey(active), activeAttachFresh: true, outputForKey: sessionKey(active), outputFresh: true}
+	completed := background
+	completed.ActivitySequences = map[model.NotificationCategory]uint64{model.NotificationTaskCompleted: 1}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Revision: 2, Generation: 1, State: "live", ChangedSessionID: "DEF456",
+		Sessions: []ducklord.RemoteSession{active, completed}})
+	if state.outputErr != "agent-demo: agent turn completed" {
+		t.Fatalf("completion notice=%q", state.outputErr)
+	}
+	if state.sessions[0].Unread || !state.sessions[1].Unread || !state.groupHasUnread(ducklord.UngroupedGroupID) {
+		t.Fatalf("completion unread projection=%+v", state.sessions)
+	}
+}
+
 func TestTUISelectionDoesNotMoveActiveSessionOrClearUnread(t *testing.T) {
 	instance := string(model.NewInstanceID())
 	state := &tuiState{activityState: ducklord.NewActivityState(), activeAttachKey: "host-a/" + instance + "/ABC123", activeAttachFresh: true,
