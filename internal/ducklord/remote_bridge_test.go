@@ -261,6 +261,9 @@ func TestRunnerYieldTransfersCCSessionAndWaitsThroughBridge(t *testing.T) {
 	if err := runner.Send(context.Background(), remote, created.SessionID, "must-not-reach-agent"); err == nil || !strings.Contains(err.Error(), string(protocol.ErrNotOwner)) {
 		t.Fatalf("non-owner bridge input error=%v", err)
 	}
+	if control, err := runner.OpenControlSession(context.Background(), remote, created.SessionID); control != nil || err == nil || !strings.Contains(err.Error(), "read-only session") {
+		t.Fatalf("non-owner control=%v error=%v", control, err)
+	}
 	transferred, err := runner.Yield(context.Background(), remote, created.SessionID, false)
 	if err != nil || transferred.Decision != model.YieldTransferred || transferred.Writer == nil || transferred.Writer.ID != "desk-a" || transferred.OwnershipEpoch != 2 {
 		t.Fatalf("Ducklord immediate yield=%+v err=%v", transferred, err)
@@ -280,9 +283,14 @@ func TestRunnerYieldTransfersCCSessionAndWaitsThroughBridge(t *testing.T) {
 	if err != nil || completed.OwnershipEpoch != 4 || completed.Writer == nil || completed.Writer.ID != "desk-a" || completed.TaskState != model.TaskIdle {
 		t.Fatalf("waiting yield completion=%+v err=%v", completed, err)
 	}
-	if err := runner.Send(context.Background(), remote, created.SessionID, "accepted-after-wait"); err != nil {
+	control, err := runner.OpenControlSession(context.Background(), remote, created.SessionID)
+	if err != nil {
+		t.Fatalf("new owner control: %v", err)
+	}
+	if _, err := control.Stdin.Write([]byte("accepted-after-wait\r")); err != nil {
 		t.Fatalf("new owner input: %v", err)
 	}
+	defer control.Stdin.Close()
 	var observed bytes.Buffer
 	deadline := time.After(5 * time.Second)
 	for !bytes.Contains(observed.Bytes(), []byte("agent:accepted-after-wait")) {
@@ -312,7 +320,7 @@ func TestTerminalSubmitLineUsesPTYEnter(t *testing.T) {
 	}
 }
 
-func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
+func TestRunnerSplitOutputAndControlUseMultiplexedBridge(t *testing.T) {
 	root := t.TempDir()
 	database, err := store.Open(context.Background(), filepath.Join(root, "ducklion.db"))
 	if err != nil {
@@ -411,6 +419,13 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 	if !resumed.ExactResume || resumed.StartOffset != resumeOffset || resumed.ReplayEndOffset != resumeOffset {
 		t.Fatalf("resume exact=%v offsets=%d..%d want=%d", resumed.ExactResume, resumed.StartOffset, resumed.ReplayEndOffset, resumeOffset)
 	}
+	control, err := runner.OpenControlSession(ctx, clientConfig, "ABC123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if control.InstanceID != string(server.InstanceID()) || control.SessionID != "ABC123" || control.OwnershipEpoch != 1 || control.RuntimeGeneration != 1 {
+		t.Fatalf("control identity=%+v", control)
+	}
 	pool, err := NewOutputPool(1)
 	if err != nil {
 		t.Fatal(err)
@@ -440,7 +455,7 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 	if !ok || initialView.OutputOffset != resumeOffset || !strings.Contains(initialRendered, "\x1b[0;32mreceived:hello") {
 		t.Fatalf("pooled initial replay offset=%d want=%d rendered=%q", initialView.OutputOffset, resumeOffset, initialRendered)
 	}
-	if _, err := resumed.Stdin.Write([]byte("again\r")); err != nil {
+	if _, err := control.Stdin.Write([]byte("again\r")); err != nil {
 		t.Fatal(err)
 	}
 	deadline = time.Now().Add(5 * time.Second)
@@ -501,6 +516,15 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 	}
 	_ = resumed.Stdin.Close()
 	_ = resumed.Stdout.Close()
+	_ = control.Stdin.Close()
+	select {
+	case err := <-control.Done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("control session did not close")
+	}
 	cancel()
 	_ = runner.Close()
 	_ = runtimeClient.Close()

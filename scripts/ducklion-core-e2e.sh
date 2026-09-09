@@ -32,7 +32,7 @@ run_required() {
 }
 
 run_required "stdio bridge attach and mutation response-loss replay" ./internal/ducklord \
-  TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput \
+  TestRunnerSplitOutputAndControlUseMultiplexedBridge \
   TestRunnerStartReplaysCommittedMutationAfterBridgeDisconnect \
   TestRunnerYieldTransfersCCSessionAndWaitsThroughBridge
 

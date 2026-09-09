@@ -844,7 +844,7 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 	}
 	statePath := filepath.Join(stateDir, "state.json")
 	state := &tuiState{hostSync: make(map[string]ducklord.SessionUpdate), activityState: ducklord.NewActivityState(),
-		activityStore: ducklord.ActivityStateStore{Path: statePath}, outputForKey: instance + "/ABC123", outputFresh: true,
+		activityStore: ducklord.ActivityStateStore{Path: statePath}, outputForKey: "host-a/" + instance + "/ABC123", outputFresh: true,
 		sessions: []ducklord.RemoteSession{
 			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "ABC123", Name: "active"},
 			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "DEF456", Name: "background"},
@@ -859,7 +859,7 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 		t.Fatalf("unread projection=%+v", state.sessions)
 	}
 	state.selected = 1
-	state.outputForKey = instance + "/DEF456"
+	state.outputForKey = "host-a/" + instance + "/DEF456"
 	state.outputFresh = false // a stale detach snapshot is not proof of seeing it
 	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Revision: 3, Generation: 1, State: "live",
 		Sessions: append([]ducklord.RemoteSession(nil), state.sessions...)})
@@ -867,7 +867,7 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 		t.Fatal("selection or stale output cleared unread")
 	}
 	state.focused = true
-	state.pendingAttachKey = instance + "/DEF456"
+	state.pendingAttachKey = "host-a/" + instance + "/DEF456"
 	state.applyAttachOutput("fresh\n", 1, 6)
 	if state.currentSession().Unread || state.groupHasUnread("work") {
 		t.Fatalf("fresh attach did not clear unread: %+v", state.sessions)
@@ -883,8 +883,8 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 
 func TestTUISelectionDoesNotMoveActiveSessionOrClearUnread(t *testing.T) {
 	instance := string(model.NewInstanceID())
-	state := &tuiState{activityState: ducklord.NewActivityState(), activeAttachKey: instance + "/ABC123", activeAttachFresh: true,
-		outputForKey: instance + "/ABC123", outputFresh: true, sessions: []ducklord.RemoteSession{
+	state := &tuiState{activityState: ducklord.NewActivityState(), activeAttachKey: "host-a/" + instance + "/ABC123", activeAttachFresh: true,
+		outputForKey: "host-a/" + instance + "/ABC123", outputFresh: true, sessions: []ducklord.RemoteSession{
 			{Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "active"},
 			{Client: "host-a", InstanceID: instance, SessionID: "DEF456", Name: "background", Unread: true,
 				ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTerminalAttention: 1}},
@@ -892,8 +892,32 @@ func TestTUISelectionDoesNotMoveActiveSessionOrClearUnread(t *testing.T) {
 	if action := state.handleInput([]byte("j")); action != "select" {
 		t.Fatalf("action=%q", action)
 	}
-	if state.activeAttachKey != instance+"/ABC123" || !state.currentSession().Unread {
+	if state.activeAttachKey != "host-a/"+instance+"/ABC123" || !state.currentSession().Unread {
 		t.Fatalf("selection moved active or cleared unread: active=%q current=%+v", state.activeAttachKey, state.currentSession())
+	}
+}
+
+func TestSessionKeySeparatesClientAliases(t *testing.T) {
+	base := ducklord.RemoteSession{InstanceID: "same-instance", SessionID: "ABC123"}
+	first, second := base, base
+	first.Client, second.Client = "primary", "alias"
+	if sessionKey(first) == sessionKey(second) {
+		t.Fatalf("client aliases collided: %q", sessionKey(first))
+	}
+}
+
+func TestSaveCurrentSnapshotRejectsMismatchedOutputIdentity(t *testing.T) {
+	dir := t.TempDir()
+	instance := string(model.NewInstanceID())
+	state := &tuiState{
+		snapshotStore: ducklord.SnapshotStore{Root: dir},
+		sessions:      []ducklord.RemoteSession{{Client: "host-b", InstanceID: instance, SessionID: "BBB222"}},
+		outputForKey:  "host-a/" + instance + "/AAA111",
+		outputText:    "secret-from-a",
+	}
+	state.saveCurrentSnapshot()
+	if _, err := state.snapshotStore.Load(instance, "BBB222"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mismatched output was persisted: %v", err)
 	}
 }
 
@@ -904,10 +928,10 @@ func TestTUIDetachedSelectionImmediatelyLoadsSelectedSessionPreview(t *testing.T
 		cfg:               &ducklord.Config{Clients: []ducklord.Client{{Name: "host-a", Host: "host-a"}}},
 		runner:            runner,
 		activityState:     ducklord.NewActivityState(),
-		activeAttachKey:   instance + "/ABC123",
+		activeAttachKey:   "host-a/" + instance + "/ABC123",
 		activeAttachFresh: true,
-		pendingAttachKey:  instance + "/ABC123",
-		outputForKey:      instance + "/ABC123",
+		pendingAttachKey:  "host-a/" + instance + "/ABC123",
+		outputForKey:      "host-a/" + instance + "/ABC123",
 		outputText:        "session-a-screen\n",
 		sessions: []ducklord.RemoteSession{
 			{Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "a", Status: "running"},
@@ -952,18 +976,18 @@ func TestPreviewResultCannotOverwriteNewSelectionOrFocusedAttach(t *testing.T) {
 		{Client: "host", InstanceID: instance, SessionID: "AAA111", RuntimeGeneration: 3},
 		{Client: "host", InstanceID: instance, SessionID: "BBB222", RuntimeGeneration: 7},
 	}, selected: 1, outputText: "current-b"}
-	if state.applyPreviewOutput(previewOutputEvent{id: 1, key: instance + "/AAA111", generation: 3, text: "late-a"}, 2) {
+	if state.applyPreviewOutput(previewOutputEvent{id: 1, key: "host/" + instance + "/AAA111", generation: 3, text: "late-a"}, 2) {
 		t.Fatal("late preview result was applied")
 	}
 	if state.outputText != "current-b" {
 		t.Fatalf("late preview overwrote selection: %q", state.outputText)
 	}
-	result := previewOutputEvent{id: 2, key: instance + "/BBB222", generation: 7, text: "fresh-b"}
+	result := previewOutputEvent{id: 2, key: "host/" + instance + "/BBB222", generation: 7, text: "fresh-b"}
 	if !state.applyPreviewOutput(result, 2) || !strings.Contains(state.outputText, "fresh-b") {
 		t.Fatalf("current preview was not applied: %q", state.outputText)
 	}
 	state.focused = true
-	if state.applyPreviewOutput(previewOutputEvent{id: 3, key: instance + "/BBB222", generation: 7, text: "stale-preview"}, 3) {
+	if state.applyPreviewOutput(previewOutputEvent{id: 3, key: "host/" + instance + "/BBB222", generation: 7, text: "stale-preview"}, 3) {
 		t.Fatal("preview overwrote focused attachment")
 	}
 }
@@ -1001,7 +1025,7 @@ func TestTUIResizeOnlyForCurrentWriterOrSharedShell(t *testing.T) {
 
 func TestTUIPendingAttachIsFencedWhenSessionRemoved(t *testing.T) {
 	instance := string(model.NewInstanceID())
-	state := &tuiState{focused: true, pendingAttachKey: instance + "/ABC123", hostSync: make(map[string]ducklord.SessionUpdate), activityState: ducklord.NewActivityState(), sessions: []ducklord.RemoteSession{
+	state := &tuiState{focused: true, pendingAttachKey: "host-a/" + instance + "/ABC123", hostSync: make(map[string]ducklord.SessionUpdate), activityState: ducklord.NewActivityState(), sessions: []ducklord.RemoteSession{
 		{Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "quiet"},
 	}}
 	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Generation: 1, Revision: 2, State: "live"})

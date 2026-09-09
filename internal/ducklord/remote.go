@@ -325,6 +325,19 @@ type AttachSession struct {
 	cmd               *exec.Cmd
 }
 
+// ControlSession is the writer-only half of an interactive PTY. It captures
+// immutable ownership and runtime fences and deliberately has no output
+// reader, so focusing a pane does not consume a second output subscription.
+type ControlSession struct {
+	Stdin             io.WriteCloser
+	Done              <-chan error
+	ResizeBarrier     func(rows, cols uint16) (uint64, error)
+	InstanceID        string
+	SessionID         string
+	OwnershipEpoch    uint64
+	RuntimeGeneration uint64
+}
+
 type AttachResume struct {
 	RuntimeGeneration uint64
 	OutputOffset      uint64
@@ -1062,6 +1075,59 @@ func (r *Runner) AttachStreamFrom(ctx context.Context, c Client, sessionRef stri
 		return r.AttachStream(ctx, c, sessionRef)
 	}
 	return r.attachDaemonStream(ctx, c, sessionRef, &resume)
+}
+
+// OpenControlSession opens only input and resize capabilities for the exact
+// session revision returned by Ducklion. Read-only agent viewers never call
+// this method and therefore never receive a writer-capable object.
+func (r *Runner) OpenControlSession(ctx context.Context, c Client, sessionRef string) (*ControlSession, error) {
+	if r == nil || !r.hasOwner() {
+		return nil, fmt.Errorf("PTY control requires the Ducklion bridge")
+	}
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	selected, err := resolveSessionSummary(ctx, client, sessionRef)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	owner := r.owner
+	r.mu.Unlock()
+	if selected.Kind != model.KindShell && (selected.Writer == nil || selected.Writer.Kind != model.OwnerTerminal || selected.Writer.ID != owner) {
+		return nil, fmt.Errorf("read-only session; yield control to this Ducklord before sending input")
+	}
+	controlCtx, cancel := context.WithCancel(ctx)
+	reader, writer := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		defer cancel()
+		defer reader.Close()
+		buffer := make([]byte, 32<<10)
+		for {
+			n, readErr := reader.Read(buffer)
+			if n > 0 {
+				if sendErr := client.SendInputContext(controlCtx, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, buffer[:n]); sendErr != nil {
+					done <- sendErr
+					return
+				}
+			}
+			if readErr != nil {
+				if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrClosedPipe) {
+					readErr = nil
+				}
+				done <- readErr
+				return
+			}
+		}
+	}()
+	resize := func(rows, cols uint16) (uint64, error) {
+		result, resizeErr := client.ResizeWithBarrierContext(controlCtx, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, rows, cols)
+		return result.OutputOffset, resizeErr
+	}
+	return &ControlSession{Stdin: writer, Done: done, ResizeBarrier: resize, InstanceID: client.InstanceID(), SessionID: selected.SessionID,
+		OwnershipEpoch: selected.OwnershipEpoch, RuntimeGeneration: selected.RuntimeGeneration}, nil
 }
 
 // OpenOutputStream opens only the read side of a remote PTY. Unlike

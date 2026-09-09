@@ -2396,11 +2396,15 @@ func calculateTUILayout(width int, ptyFocused bool, configuredListWidth int, aut
 }
 
 func (s *tuiState) saveCurrentSnapshot() {
-	s.saveSnapshot(s.currentSession(), s.outputText)
+	session := s.currentSession()
+	if sessionKey(session) != s.outputForKey {
+		return
+	}
+	s.saveSnapshot(session, s.outputText)
 }
 
 func (s *tuiState) saveSnapshot(session ducklord.RemoteSession, text string) {
-	if session.InstanceID == "" || session.SessionID == "" || text == "" && s.terminal == nil {
+	if session.InstanceID == "" || session.SessionID == "" || sessionKey(session) != s.outputForKey || text == "" && s.terminal == nil {
 		return
 	}
 	renderState := ducklord.TerminalRenderState{Text: sanitizeTerminalText(text)}
@@ -3949,7 +3953,7 @@ func (s *tuiState) handleLineInput(b []byte, line *string) string {
 
 func sessionKey(sess ducklord.RemoteSession) string {
 	if sess.InstanceID != "" && sess.SessionID != "" {
-		return sess.InstanceID + "/" + sess.SessionID
+		return sess.Client + "/" + sess.InstanceID + "/" + sess.SessionID
 	}
 	return sess.Group + "/" + sess.Client + "/" + sess.Name
 }

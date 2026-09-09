@@ -93,13 +93,68 @@ func TestPooledTerminalWaitsForReplayAndPublishesImmutableView(t *testing.T) {
 	}
 	defer p.Close()
 	view := p.View()
-	if !view.Ready || view.OutputOffset != 6 {
+	if !view.Ready || view.OutputOffset != 6 || view.Revision < 2 {
 		t.Fatalf("view=%+v", view)
 	}
 	view.Framebuffer.Primary.Lines[0].Cells[0].Rune = 'X'
 	if p.View().Framebuffer.Primary.Lines[0].Cells[0].Rune == 'X' {
 		t.Fatal("View exposed mutable cells")
 	}
+}
+
+func TestPooledTerminalDirtySignalCoalescesWithoutBlockingReader(t *testing.T) {
+	reader := newFakePooledOutput()
+	p, err := newPooledTerminal(context.Background(), pooledMetadata(0), reader, pooledOptions(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	for offset := uint64(0); offset < 8; offset++ {
+		reader.results <- pooledReadResult{frame: OutputFrame{Data: []byte("x"), StartOffset: offset, EndOffset: offset + 1}}
+	}
+	waitPooledOffset(t, p, 8)
+	if len(p.Updates()) != 1 {
+		t.Fatalf("dirty signals=%d, want one coalesced notification", len(p.Updates()))
+	}
+	<-p.Updates()
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: []byte("y"), StartOffset: 8, EndOffset: 9}}
+	waitPooledOffset(t, p, 9)
+	select {
+	case <-p.Updates():
+	case <-time.After(time.Second):
+		t.Fatal("new frame did not publish a dirty signal")
+	}
+}
+
+func TestOutputPoolTerminalViewIsLeaseFenced(t *testing.T) {
+	pool, _ := NewOutputPool(1)
+	defer pool.Close()
+	reader := newFakePooledOutput()
+	options := pooledOptions(t.TempDir())
+	activation, err := pool.Activate(context.Background(), options.ExpectedKey, options.ExpectedRevision, func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+		return newPooledTerminal(context.Background(), pooledMetadata(0), reader, options)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: []byte("safe"), StartOffset: 0, EndOffset: 4}}
+	waitPooledOffset(t, mustPooledResource(t, pool, options.ExpectedKey, activation.Lease), 4)
+	view, err := pool.TerminalView(options.ExpectedKey, activation.Lease)
+	if err != nil || view.OutputOffset != 4 {
+		t.Fatalf("view=%+v err=%v", view, err)
+	}
+	if _, err := pool.TerminalView(options.ExpectedKey, activation.Lease+1); !errors.Is(err, ErrStaleOutputLease) {
+		t.Fatalf("stale view error=%v", err)
+	}
+}
+
+func mustPooledResource(t *testing.T, pool *OutputPool, key OutputKey, lease uint64) *PooledTerminal {
+	t.Helper()
+	var terminal *PooledTerminal
+	if err := pool.WithLease(key, lease, func(resource OutputResource) { terminal, _ = resource.(*PooledTerminal) }); err != nil || terminal == nil {
+		t.Fatalf("pooled resource unavailable: %v", err)
+	}
+	return terminal
 }
 
 func TestPooledTerminalReplayEOFFailsAndCloses(t *testing.T) {

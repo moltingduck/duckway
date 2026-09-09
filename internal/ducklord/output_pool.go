@@ -383,6 +383,23 @@ func (p *OutputPool) WithLease(key OutputKey, lease uint64, apply func(OutputRes
 	return nil
 }
 
+// TerminalView copies a framebuffer only while the requested lease is still
+// current. Callers must not retain a resource pointer across an eviction or a
+// runtime-generation replacement.
+func (p *OutputPool) TerminalView(key OutputKey, lease uint64) (PooledTerminalView, error) {
+	var view PooledTerminalView
+	var viewErr error
+	leaseErr := p.WithLease(key, lease, func(resource OutputResource) {
+		terminal, ok := resource.(*PooledTerminal)
+		if !ok {
+			viewErr = fmt.Errorf("raw output resource is not a pooled terminal")
+			return
+		}
+		view = terminal.View()
+	})
+	return view, errors.Join(leaseErr, viewErr)
+}
+
 // DisconnectLease conditionally detaches a naturally ended background
 // resource while preserving desired membership, active selection, and LRU for
 // reconnect. Stale readers and resources already being evicted are ignored.

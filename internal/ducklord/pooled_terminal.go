@@ -44,6 +44,7 @@ type PooledTerminalOptions struct {
 
 type PooledTerminalView struct {
 	Framebuffer       TerminalState
+	Revision          uint64
 	RuntimeGeneration uint64
 	OutputOffset      uint64
 	ReplayEndOffset   uint64
@@ -78,12 +79,14 @@ type PooledTerminal struct {
 	disconnect   bool
 	readErr      error
 	cleanEnd     bool
+	viewRevision uint64
 	pool         *OutputPool
 	lease        uint64
 	closing      bool
 	cancel       context.CancelFunc
 	done         chan struct{}
 	readyCh      chan struct{}
+	updates      chan struct{}
 	readyOnce    sync.Once
 	closeOnce    sync.Once
 	closeErr     error
@@ -135,8 +138,9 @@ func newPooledTerminal(ctx context.Context, metadata OutputStreamMetadata, reade
 	}
 	readCtx, cancel := context.WithCancel(context.Background())
 	p := &PooledTerminal{stream: reader, terminal: terminal, store: options.Store, expected: options.ExpectedKey, revision: options.ExpectedRevision,
-		offset: metadata.StartOffset, replayEnd: metadata.ReplayEndOffset, truncated: truncated, contiguous: true,
+		offset: metadata.StartOffset, replayEnd: metadata.ReplayEndOffset, truncated: truncated, contiguous: true, viewRevision: 1,
 		cancel: cancel, done: make(chan struct{}), readyCh: make(chan struct{})}
+	p.updates = make(chan struct{}, 1)
 	if p.offset >= p.replayEnd {
 		p.markReadyLocked()
 	}
@@ -231,6 +235,8 @@ func (p *PooledTerminal) applyFrameLocked(frame OutputFrame) bool {
 	}
 	p.terminal.Write(frame.Data)
 	p.offset = frame.EndOffset
+	p.viewRevision++
+	p.signalUpdateLocked()
 	if p.offset >= p.replayEnd {
 		p.markReadyLocked()
 	}
@@ -246,6 +252,8 @@ func (p *PooledTerminal) finishRead(err error) {
 	var ended *daemon.OutputStreamEnded
 	p.cleanEnd = errors.As(err, &ended)
 	p.disconnect, p.readErr = !p.cleanEnd, err
+	p.viewRevision++
+	p.signalUpdateLocked()
 	if !p.ready {
 		p.signalReadyLocked()
 	}
@@ -259,10 +267,26 @@ func (p *PooledTerminal) finishRead(err error) {
 func (p *PooledTerminal) markReadyLocked()   { p.ready = true; p.signalReadyLocked() }
 func (p *PooledTerminal) signalReadyLocked() { p.readyOnce.Do(func() { close(p.readyCh) }) }
 
+func (p *PooledTerminal) signalUpdateLocked() {
+	select {
+	case p.updates <- struct{}{}:
+	default:
+	}
+}
+
+// Updates reports that a newer immutable View may be available. Signals are
+// deliberately coalesced so a stalled renderer can never block the PTY reader.
+func (p *PooledTerminal) Updates() <-chan struct{} {
+	if p == nil {
+		return nil
+	}
+	return p.updates
+}
+
 func (p *PooledTerminal) View() PooledTerminalView {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	view := PooledTerminalView{Framebuffer: p.terminal.SnapshotState(), RuntimeGeneration: p.revision.RuntimeGeneration,
+	view := PooledTerminalView{Framebuffer: p.terminal.SnapshotState(), Revision: p.viewRevision, RuntimeGeneration: p.revision.RuntimeGeneration,
 		OutputOffset: p.offset, ReplayEndOffset: p.replayEnd, Ready: p.ready, Truncated: p.truncated, Disconnected: p.disconnect, Ended: p.cleanEnd}
 	if p.readErr != nil && !p.cleanEnd {
 		view.Error = "PTY output stream disconnected"
