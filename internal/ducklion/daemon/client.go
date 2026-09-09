@@ -433,7 +433,11 @@ func (s *SessionEventSubscription) sessionTerminalError() error {
 }
 
 func (c *Client) SubscribeOutput(sessionID string, generation, offset uint64) (*OutputSubscription, error) {
-	return c.subscribeOutput(sessionID, generation, protocol.OutputSubscribe{Offset: offset})
+	return c.SubscribeOutputContext(context.Background(), sessionID, generation, offset)
+}
+
+func (c *Client) SubscribeOutputContext(ctx context.Context, sessionID string, generation, offset uint64) (*OutputSubscription, error) {
+	return c.subscribeOutputContext(ctx, sessionID, generation, protocol.OutputSubscribe{Offset: offset})
 }
 
 func (c *Client) SubscribeOutputTail(sessionID string, generation, tailBytes uint64) (*OutputSubscription, error) {
@@ -445,10 +449,6 @@ func (c *Client) SubscribeOutputTailContext(ctx context.Context, sessionID strin
 		return nil, fmt.Errorf("output tail must contain 1 to 4194304 bytes")
 	}
 	return c.subscribeOutputContext(ctx, sessionID, generation, protocol.OutputSubscribe{TailBytes: tailBytes})
-}
-
-func (c *Client) subscribeOutput(sessionID string, generation uint64, options protocol.OutputSubscribe) (*OutputSubscription, error) {
-	return c.subscribeOutputContext(context.Background(), sessionID, generation, options)
 }
 
 func (c *Client) subscribeOutputContext(ctx context.Context, sessionID string, generation uint64, options protocol.OutputSubscribe) (*OutputSubscription, error) {

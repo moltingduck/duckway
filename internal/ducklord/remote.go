@@ -330,6 +330,47 @@ type AttachResume struct {
 	OutputOffset      uint64
 }
 
+// OutputStream is the read-only half of a PTY attachment. It deliberately has
+// no input or resize methods so background pool members cannot accidentally
+// gain writer capabilities or couple their lifetime to UI focus.
+type OutputStream struct {
+	subscription      *daemon.OutputSubscription
+	InstanceID        string
+	SessionID         string
+	RuntimeGeneration uint64
+	StartOffset       uint64
+	ReplayEndOffset   uint64
+	ExactResume       bool
+}
+
+type OutputFrame struct {
+	Data        []byte
+	StartOffset uint64
+	EndOffset   uint64
+}
+
+func (s *OutputStream) ReadContext(ctx context.Context) (OutputFrame, error) {
+	if s == nil || s.subscription == nil {
+		return OutputFrame{}, io.ErrClosedPipe
+	}
+	event, err := s.subscription.ReadContext(ctx)
+	if err != nil {
+		return OutputFrame{}, err
+	}
+	if event.Frame.Gap {
+		return OutputFrame{}, fmt.Errorf("PTY output stream is not contiguous")
+	}
+	data := append([]byte(nil), event.Frame.Data...)
+	return OutputFrame{Data: data, StartOffset: event.Frame.Offset, EndOffset: event.Frame.Offset + uint64(len(data))}, nil
+}
+
+func (s *OutputStream) Close() error {
+	if s == nil || s.subscription == nil {
+		return nil
+	}
+	return s.subscription.Close()
+}
+
 type subscriptionReader struct {
 	subscription *daemon.OutputSubscription
 	mu           sync.Mutex
@@ -1023,31 +1064,77 @@ func (r *Runner) AttachStreamFrom(ctx context.Context, c Client, sessionRef stri
 	return r.attachDaemonStream(ctx, c, sessionRef, &resume)
 }
 
-func (r *Runner) attachDaemonStream(ctx context.Context, c Client, sessionRef string, resume *AttachResume) (*AttachSession, error) {
+// OpenOutputStream opens only the read side of a remote PTY. Unlike
+// AttachStream it never obtains an input pipe, ownership epoch, or resize
+// capability, so it is safe for background framebuffer subscriptions.
+func (r *Runner) OpenOutputStream(ctx context.Context, c Client, sessionRef string) (*OutputStream, error) {
+	return r.openOutputStream(ctx, c, sessionRef, nil)
+}
+
+func (r *Runner) OpenOutputStreamFrom(ctx context.Context, c Client, sessionRef string, resume AttachResume) (*OutputStream, error) {
+	return r.openOutputStream(ctx, c, sessionRef, &resume)
+}
+
+func (r *Runner) openOutputStream(ctx context.Context, c Client, sessionRef string, resume *AttachResume) (*OutputStream, error) {
+	if r == nil || !r.hasOwner() {
+		return nil, fmt.Errorf("read-only PTY output requires the Ducklion bridge")
+	}
 	client, err := r.bridgeClient(ctx, c)
 	if err != nil {
 		return nil, err
 	}
-	sessions, err := client.ListSessions()
+	selected, err := resolveSessionSummary(ctx, client, sessionRef)
 	if err != nil {
-		r.discardBridge(bridgeKey(c), client)
+		return nil, err
+	}
+	var subscription *daemon.OutputSubscription
+	if resume != nil && resume.RuntimeGeneration == selected.RuntimeGeneration {
+		subscription, err = client.SubscribeOutputContext(ctx, selected.SessionID, selected.RuntimeGeneration, resume.OutputOffset)
+	} else {
+		subscription, err = client.SubscribeOutputTailContext(ctx, selected.SessionID, selected.RuntimeGeneration, 256<<10)
+	}
+	if err != nil {
+		return nil, err
+	}
+	metadata := subscription.Metadata()
+	exact := resume != nil && resume.RuntimeGeneration == selected.RuntimeGeneration && !metadata.Gap && metadata.StartOffset == resume.OutputOffset
+	return &OutputStream{subscription: subscription, InstanceID: metadata.InstanceID, SessionID: metadata.SessionID,
+		RuntimeGeneration: metadata.RuntimeGeneration, StartOffset: metadata.StartOffset, ReplayEndOffset: metadata.EndOffset, ExactResume: exact}, nil
+}
+
+func resolveSessionSummary(ctx context.Context, client *daemon.Client, sessionRef string) (*protocol.SessionSummary, error) {
+	sessions, err := client.ListSessionsContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 	var selected *protocol.SessionSummary
 	for i := range sessions {
 		if sessions[i].SessionID == sessionRef {
-			selected = &sessions[i]
-			break
+			copy := sessions[i]
+			return &copy, nil
 		}
 		if sessions[i].Handle == sessionRef {
 			if selected != nil {
 				return nil, fmt.Errorf("session handle %q is ambiguous; use its session ID", sessionRef)
 			}
-			selected = &sessions[i]
+			copy := sessions[i]
+			selected = &copy
 		}
 	}
 	if selected == nil {
 		return nil, fmt.Errorf("session %q was not found", sessionRef)
+	}
+	return selected, nil
+}
+
+func (r *Runner) attachDaemonStream(ctx context.Context, c Client, sessionRef string, resume *AttachResume) (*AttachSession, error) {
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	selected, err := resolveSessionSummary(ctx, client, sessionRef)
+	if err != nil {
+		return nil, err
 	}
 	releaseSlot, err := r.acquireOutputSlot(ctx)
 	if err != nil {

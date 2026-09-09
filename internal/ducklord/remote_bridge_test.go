@@ -338,7 +338,7 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve() }()
 	ptySession, err := supervisor.Start(supervisor.Options{SessionID: sessionModel.ID, RuntimeGeneration: 1, OwnershipEpoch: 1, CWD: root,
-		Command: []string{"sh", "-c", `IFS= read -r value; printf 'received:%s\n' "$value"; IFS= read -r value; printf 'resumed:%s\n' "$value"`}, OutputCapacity: 1 << 20})
+		Command: []string{"sh", "-c", `IFS= read -r value; printf '\033[32mreceived:%s\033[0m\n' "$value"; IFS= read -r value; printf '\033[36mresumed:%s\033[0m\n' "$value"`}, OutputCapacity: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,8 +411,32 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 	if !resumed.ExactResume || resumed.StartOffset != resumeOffset || resumed.ReplayEndOffset != resumeOffset {
 		t.Fatalf("resume exact=%v offsets=%d..%d want=%d", resumed.ExactResume, resumed.StartOffset, resumed.ReplayEndOffset, resumeOffset)
 	}
+	outputOnly, err := runner.OpenOutputStreamFrom(ctx, clientConfig, "ABC123", AttachResume{RuntimeGeneration: 1, OutputOffset: resumeOffset})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outputOnly.Close()
+	if !outputOnly.ExactResume || outputOnly.InstanceID != string(server.InstanceID()) || outputOnly.SessionID != "ABC123" || outputOnly.RuntimeGeneration != 1 ||
+		outputOnly.StartOffset != resumeOffset || outputOnly.ReplayEndOffset != resumeOffset {
+		t.Fatalf("output-only metadata=%+v want exact offset %d", outputOnly, resumeOffset)
+	}
 	if _, err := resumed.Stdin.Write([]byte("again\r")); err != nil {
 		t.Fatal(err)
+	}
+	readCtx, cancelRead := context.WithTimeout(ctx, time.Second)
+	defer cancelRead()
+	var outputOnlyBytes []byte
+	nextOffset := resumeOffset
+	for !bytes.Contains(outputOnlyBytes, []byte("\x1b[36mresumed:again\x1b[0m")) {
+		frame, readErr := outputOnly.ReadContext(readCtx)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if frame.StartOffset != nextOffset || frame.EndOffset != frame.StartOffset+uint64(len(frame.Data)) {
+			t.Fatalf("non-contiguous output-only frame=%+v next=%d", frame, nextOffset)
+		}
+		nextOffset = frame.EndOffset
+		outputOnlyBytes = append(outputOnlyBytes, frame.Data...)
 	}
 	var resumedOutput bytes.Buffer
 	readBuffer := make([]byte, 4096)
