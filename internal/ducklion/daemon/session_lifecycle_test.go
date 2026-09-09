@@ -1,11 +1,14 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -608,7 +611,7 @@ func TestCanonicalLifecycleRestartPreservesBindingAndAdvancesGeneration(t *testi
 	}
 	defer cc.Close()
 	created, err := cc.CreateSession(context.Background(), protocol.SessionCreate{Handle: "restart-agent", Kind: model.KindAgent, AgentType: "fixture", CWD: root,
-		Command: []string{"sh", "-c", `while IFS= read -r value; do printf '%s\n' '{"kind":"completed","response":"after restart"}' >&3; done`}})
+		Command: []string{os.Args[0], "-test.run=^TestAgentHookFixtureProcess$", "--", "agent-hook-fixture"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,6 +657,32 @@ func TestCanonicalLifecycleRestartPreservesBindingAndAdvancesGeneration(t *testi
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("replacement runtime did not execute an agent task")
+}
+
+func TestAgentHookFixtureProcess(t *testing.T) {
+	if len(os.Args) == 0 || os.Args[len(os.Args)-1] != "agent-hook-fixture" {
+		return
+	}
+	reader := bufio.NewScanner(os.Stdin)
+	for reader.Scan() {
+		conn, err := net.DialTimeout("unix", os.Getenv("DUCKLION_AGENT_EVENT_SOCKET"), time.Second)
+		if err != nil {
+			os.Exit(2)
+		}
+		_ = conn.SetDeadline(time.Now().Add(time.Second))
+		envelope := map[string]any{"token": os.Getenv("DUCKLION_AGENT_EVENT_TOKEN"), "event": map[string]string{"kind": "completed", "response": "after restart"}}
+		if json.NewEncoder(conn).Encode(envelope) != nil {
+			_ = conn.Close()
+			os.Exit(2)
+		}
+		ack := make([]byte, 3)
+		if _, err = io.ReadFull(conn, ack); err != nil || string(ack) != "ok\n" {
+			_ = conn.Close()
+			os.Exit(2)
+		}
+		_ = conn.Close()
+	}
+	os.Exit(0)
 }
 
 func TestShellLifecycleRestartEndAndDestroy(t *testing.T) {

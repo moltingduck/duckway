@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +19,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
@@ -59,8 +63,13 @@ type Session struct {
 	retainedOutput     *RetainedOutput
 	input              *duckruntime.InputPump
 	captureDone        chan struct{}
-	agentCaptureDone   chan struct{}
-	adapterRead        *os.File
+	agentHookListener  *net.UnixListener
+	agentHookDone      chan struct{}
+	agentHookPath      string
+	agentHookDir       string
+	agentHookToken     string
+	legacyAdapterRead  *os.File
+	legacyAdapterDone  chan struct{}
 	preparedTasks      map[string]preparedAgentTask
 	committedTasks     map[string][32]byte
 	activeAgentTask    string
@@ -88,7 +97,13 @@ const (
 	maxRetainedAgentEvents = 128
 	maxRetainedAgentBytes  = 512 << 10
 	maxAgentAckTombstones  = 1024
+	maxAgentHookFrameBytes = 300 << 10
 )
+
+type agentHookEnvelope struct {
+	Token string                        `json:"token"`
+	Event protocol.SupervisorAgentEvent `json:"event"`
+}
 
 func Start(options Options) (*Session, error) {
 	if _, err := model.ParseSessionID(string(options.SessionID)); err != nil {
@@ -131,27 +146,52 @@ func Start(options Options) (*Session, error) {
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Dir = options.CWD
 	cmd.Env = supervisedEnvironment(options.AgentType)
-	var adapterRead, adapterWrite *os.File
+	var hookListener *net.UnixListener
+	var hookDir, hookPath, hookToken string
+	var legacyAdapterRead, legacyAdapterWrite *os.File
 	if options.AgentType != "" {
-		var pipeErr error
-		adapterRead, adapterWrite, pipeErr = os.Pipe()
-		if pipeErr != nil {
-			return nil, fmt.Errorf("create agent adapter pipe: %w", pipeErr)
+		var hookErr error
+		hookDir, hookErr = os.MkdirTemp("", "ducklion-agent-hook-")
+		if hookErr != nil {
+			return nil, fmt.Errorf("create agent hook directory: %w", hookErr)
 		}
-		cmd.ExtraFiles = append(cmd.ExtraFiles, adapterWrite)
+		hookPath = filepath.Join(hookDir, "event.sock")
+		hookListener, hookErr = net.ListenUnix("unix", &net.UnixAddr{Name: hookPath, Net: "unix"})
+		if hookErr != nil {
+			_ = os.RemoveAll(hookDir)
+			return nil, fmt.Errorf("listen for agent hooks: %w", hookErr)
+		}
+		if hookErr = os.Chmod(hookPath, 0o600); hookErr != nil {
+			_ = hookListener.Close()
+			_ = os.RemoveAll(hookDir)
+			return nil, fmt.Errorf("protect agent hook socket: %w", hookErr)
+		}
+		hookToken = uuid.NewString()
+		cmd.Env = append(cmd.Env, "DUCKLION_AGENT_EVENT_SOCKET="+hookPath, "DUCKLION_AGENT_EVENT_TOKEN="+hookToken)
+		// Keep FD 3 for rolling compatibility with older custom adapters. Built-in
+		// Codex and Claude hooks use the authenticated socket above.
+		legacyAdapterRead, legacyAdapterWrite, hookErr = os.Pipe()
+		if hookErr != nil {
+			_ = hookListener.Close()
+			_ = os.RemoveAll(hookDir)
+			return nil, fmt.Errorf("create legacy agent adapter pipe: %w", hookErr)
+		}
+		cmd.ExtraFiles = append(cmd.ExtraFiles, legacyAdapterWrite)
 		cmd.Env = append(cmd.Env, "DUCKLION_AGENT_EVENT_FD=3")
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: options.Rows, Cols: options.Cols})
 	if err != nil {
-		if adapterRead != nil {
-			_ = adapterRead.Close()
-			_ = adapterWrite.Close()
+		if hookListener != nil {
+			_ = hookListener.Close()
+			_ = os.RemoveAll(hookDir)
+			_ = legacyAdapterRead.Close()
+			_ = legacyAdapterWrite.Close()
 		}
 		return nil, fmt.Errorf("start supervised PTY: %w", err)
 	}
-	if adapterWrite != nil {
-		_ = adapterWrite.Close()
+	if legacyAdapterWrite != nil {
+		_ = legacyAdapterWrite.Close()
 	}
 	var retainedOutput *RetainedOutput
 	if options.RetainedOutputDir != "" {
@@ -160,8 +200,10 @@ func Start(options Options) (*Session, error) {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			_ = ptmx.Close()
 			_ = cmd.Wait()
-			if adapterRead != nil {
-				_ = adapterRead.Close()
+			if hookListener != nil {
+				_ = hookListener.Close()
+				_ = os.RemoveAll(hookDir)
+				_ = legacyAdapterRead.Close()
 			}
 			return nil, err
 		}
@@ -175,12 +217,21 @@ func Start(options Options) (*Session, error) {
 	session.attentionNotify = make(chan struct{}, 1)
 	session.input = duckruntime.NewInputPump((*inputGate)(session), ptmx, 64)
 	go session.capture()
-	if adapterRead != nil {
-		session.adapterRead = adapterRead
-		session.agentCaptureDone = make(chan struct{})
+	if hookListener != nil {
+		session.agentHookListener = hookListener
+		session.agentHookPath = hookPath
+		session.agentHookDir = hookDir
+		session.agentHookToken = hookToken
+		session.agentHookDone = make(chan struct{})
 		go func() {
-			defer close(session.agentCaptureDone)
-			session.captureAgentEvents(adapterRead)
+			defer close(session.agentHookDone)
+			session.serveAgentHooks()
+		}()
+		session.legacyAdapterRead = legacyAdapterRead
+		session.legacyAdapterDone = make(chan struct{})
+		go func() {
+			defer close(session.legacyAdapterDone)
+			session.captureLegacyAgentEvents(legacyAdapterRead)
 		}()
 	}
 	return session, nil
@@ -510,50 +561,88 @@ func (s *Session) CommitAgentTask(ctx context.Context, taskID string, digest [32
 	return nil
 }
 
-func (s *Session) captureAgentEvents(reader *os.File) {
+func (s *Session) serveAgentHooks() {
+	for {
+		conn, err := s.agentHookListener.AcceptUnix()
+		if err != nil {
+			return
+		}
+		_ = conn.SetDeadline(time.Now().Add(time.Second))
+		decoder := json.NewDecoder(io.LimitReader(conn, maxAgentHookFrameBytes+1))
+		decoder.DisallowUnknownFields()
+		var envelope agentHookEnvelope
+		err = decoder.Decode(&envelope)
+		if err == nil && subtle.ConstantTimeCompare([]byte(envelope.Token), []byte(s.agentHookToken)) == 1 {
+			err = s.acceptAgentHook(envelope.Event)
+		} else if err == nil {
+			err = fmt.Errorf("invalid agent hook token")
+		}
+		if err == nil {
+			_, _ = conn.Write([]byte("ok\n"))
+		}
+		_ = conn.Close()
+	}
+}
+
+func (s *Session) captureLegacyAgentEvents(reader *os.File) {
 	defer reader.Close()
 	scanner := bufio.NewScanner(reader)
-	buffer := make([]byte, 4096)
-	scanner.Buffer(buffer, 300<<10)
+	scanner.Buffer(make([]byte, 4096), maxAgentHookFrameBytes)
 	for scanner.Scan() {
 		var event protocol.SupervisorAgentEvent
-		if json.Unmarshal(scanner.Bytes(), &event) != nil {
-			continue
-		}
-		s.agentMu.Lock()
-		if event.TaskID == "" {
-			s.mu.Lock()
-			event.TaskID = s.activeAgentTask
-			s.mu.Unlock()
-		}
-		events := s.agentEvents[event.TaskID]
-		if event.Sequence == 0 {
-			event.Sequence = uint64(len(events)) + s.agentEventAcks[event.TaskID] + 1
-		}
-		s.agentMu.Unlock()
-		if event.TaskID == "" {
-			continue
-		}
-		if s.QueueAgentEvent(event) == nil && (event.Kind == "completed" || event.Kind == "failed") {
-			s.mu.Lock()
-			if s.activeAgentTask == event.TaskID {
-				s.activeAgentTask = ""
-			}
-			s.mu.Unlock()
+		if json.Unmarshal(scanner.Bytes(), &event) == nil {
+			_ = s.acceptAgentHook(event)
 		}
 	}
-	if scanner.Err() != nil {
-		s.agentMu.Lock()
+}
+
+func (s *Session) acceptAgentHook(event protocol.SupervisorAgentEvent) error {
+	s.mu.Lock()
+	event.TaskID = s.activeAgentTask
+	s.mu.Unlock()
+	if event.TaskID == "" {
+		if event.Kind != "completed" && event.Kind != "failed" {
+			return fmt.Errorf("invalid interactive agent hook event kind")
+		}
+		// Interactive Ducklord turns are not managed tasks. Treat their hook as
+		// payload-free terminal attention, never as a Discord task completion.
+		s.markAttentionAtCurrentOutput()
+		return nil
+	}
+	s.agentMu.Lock()
+	events := s.agentEvents[event.TaskID]
+	if event.Sequence == 0 {
+		event.Sequence = uint64(len(events)) + s.agentEventAcks[event.TaskID] + 1
+	}
+	s.agentMu.Unlock()
+	if err := s.QueueAgentEvent(event); err != nil {
+		return err
+	}
+	if event.Kind == "completed" || event.Kind == "failed" {
 		s.mu.Lock()
-		taskID := s.activeAgentTask
+		if s.activeAgentTask == event.TaskID {
+			s.activeAgentTask = ""
+		}
 		s.mu.Unlock()
-		events := s.agentEvents[taskID]
-		sequence := uint64(len(events)) + s.agentEventAcks[taskID] + 1
-		s.agentMu.Unlock()
-		if taskID != "" {
-			_ = s.QueueAgentEvent(protocol.SupervisorAgentEvent{TaskID: taskID, Sequence: sequence, Kind: "failed", Summary: "Agent adapter event stream failed"})
+	}
+	return nil
+}
+
+func (s *Session) markAttentionAtCurrentOutput() {
+	s.captureMu.Lock()
+	_, offset := s.output.Bounds()
+	if offset > 0 {
+		s.attentionMu.Lock()
+		if offset > s.attentionPending {
+			s.attentionPending = offset
+		}
+		s.attentionMu.Unlock()
+		select {
+		case s.attentionNotify <- struct{}{}:
+		default:
 		}
 	}
+	s.captureMu.Unlock()
 }
 
 func (s *Session) nextAgentSequence() uint64 {
@@ -641,10 +730,17 @@ func (s *Session) Resize(rows, cols uint16, epoch, generation uint64) (uint64, e
 func (s *Session) Wait() error {
 	err := s.cmd.Wait()
 	<-s.captureDone // capture drains the slave's final output before returning
-	if s.adapterRead != nil {
-		_ = s.adapterRead.Close()
-		if s.agentCaptureDone != nil {
-			<-s.agentCaptureDone
+	if s.agentHookListener != nil {
+		_ = s.agentHookListener.Close()
+		if s.agentHookDone != nil {
+			<-s.agentHookDone
+		}
+		_ = os.RemoveAll(s.agentHookDir)
+	}
+	if s.legacyAdapterRead != nil {
+		_ = s.legacyAdapterRead.Close()
+		if s.legacyAdapterDone != nil {
+			<-s.legacyAdapterDone
 		}
 	}
 	s.mu.Lock()

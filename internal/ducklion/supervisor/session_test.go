@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"io"
+	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -272,9 +276,9 @@ func TestCancelRetentionFailurePreservesActiveTask(t *testing.T) {
 	}
 }
 
-func TestAgentAdapterPipeCorrelatesEventWithCommittedTask(t *testing.T) {
+func TestAgentHookCorrelatesEventWithCommittedTask(t *testing.T) {
 	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, AgentType: "fixture", CWD: t.TempDir(),
-		Command: []string{"sh", "-c", `IFS= read -r value; printf '%s\n' '{"kind":"completed","response":"fixture done"}' >&3; sleep 1`}})
+		Command: []string{"sh", "-c", `sleep 10`}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,21 +292,78 @@ func TestAgentAdapterPipeCorrelatesEventWithCommittedTask(t *testing.T) {
 	if err := session.CommitAgentTask(context.Background(), "inbox-42", digest, owner, 3, 2); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		pending := session.PendingAgentEvents()
-		if len(pending) == 1 {
-			if pending[0].TaskID != "inbox-42" || pending[0].Sequence != 1 || pending[0].Response != "fixture done" {
-				t.Fatalf("event=%+v", pending[0])
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if err := session.acceptAgentHook(protocol.SupervisorAgentEvent{Kind: "completed", Response: "fixture done"}); err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("adapter event was not captured")
+	pending := session.PendingAgentEvents()
+	if len(pending) != 1 || pending[0].TaskID != "inbox-42" || pending[0].Sequence != 1 || pending[0].Response != "fixture done" {
+		t.Fatalf("event=%+v", pending)
+	}
+	if _, attention := session.PendingAttention(); attention {
+		t.Fatal("managed task hook also emitted interactive attention")
+	}
 }
 
-func TestSessionWaitClosesAdapterReaderHeldByDetachedChild(t *testing.T) {
+func TestTasklessAgentHookMarksPayloadFreeTerminalAttention(t *testing.T) {
+	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, AgentType: "fixture", CWD: t.TempDir(),
+		Command: []string{"sh", "-c", `printf 'agent output'; sleep 10`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Terminate(true); _ = session.Wait() }()
+	deadline := time.Now().Add(time.Second)
+	var end uint64
+	for end == 0 && time.Now().Before(deadline) {
+		_, end = session.Output().Bounds()
+		time.Sleep(time.Millisecond)
+	}
+	if end == 0 {
+		t.Fatal("fixture output was not captured")
+	}
+	if err := session.acceptAgentHook(protocol.SupervisorAgentEvent{Kind: "completed", Response: "secret response"}); err != nil {
+		t.Fatal(err)
+	}
+	offset, pending := session.PendingAttention()
+	if !pending || offset != end {
+		t.Fatalf("attention offset=%d pending=%v, want %d", offset, pending, end)
+	}
+	if events := session.PendingAgentEvents(); len(events) != 0 {
+		t.Fatalf("taskless hook retained managed payload: %+v", events)
+	}
+	if err := session.acceptAgentHook(protocol.SupervisorAgentEvent{Kind: "completed", Response: "duplicate"}); err != nil {
+		t.Fatal(err)
+	}
+	if duplicateOffset, _ := session.PendingAttention(); duplicateOffset != offset {
+		t.Fatalf("duplicate hook advanced attention without output: %d -> %d", offset, duplicateOffset)
+	}
+}
+
+func TestAgentHookSocketRejectsWrongCapabilityToken(t *testing.T) {
+	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, AgentType: "fixture", CWD: t.TempDir(),
+		Command: []string{"sh", "-c", `printf 'agent output'; sleep 10`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Terminate(true); _ = session.Wait() }()
+	conn, err := net.DialTimeout("unix", session.agentHookPath, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(200 * time.Millisecond))
+	envelope := agentHookEnvelope{Token: "wrong-token", Event: protocol.SupervisorAgentEvent{Kind: "completed"}}
+	if err := json.NewEncoder(conn).Encode(envelope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(conn); err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	if _, pending := session.PendingAttention(); pending {
+		t.Fatal("wrong hook token emitted attention")
+	}
+}
+
+func TestSessionWaitClosesAgentHookSocketWithDetachedChild(t *testing.T) {
 	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, AgentType: "fixture", CWD: t.TempDir(),
 		Command: []string{"sh", "-c", `(sleep 2 </dev/null >/dev/null 2>&1)& exit 0`}})
 	if err != nil {

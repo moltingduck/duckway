@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion"
 	"github.com/hackerduck/duckway/internal/ducklion/daemon"
@@ -23,7 +25,6 @@ import (
 	"github.com/hackerduck/duckway/internal/duckwayconfig"
 	"github.com/hackerduck/duckway/internal/projectregistry"
 	"github.com/hackerduck/duckway/internal/version"
-	"golang.org/x/sys/unix"
 )
 
 type SessionManager interface {
@@ -105,11 +106,13 @@ func Main(args []string, stdout io.Writer) {
 }
 
 func runAgentHook(input io.Reader, args []string) error {
-	fd, err := strconv.Atoi(os.Getenv("DUCKLION_AGENT_EVENT_FD"))
-	if err != nil || fd < 3 || fd > 1<<20 {
-		return fmt.Errorf("invalid agent event fd")
+	socketPath := os.Getenv("DUCKLION_AGENT_EVENT_SOCKET")
+	token := os.Getenv("DUCKLION_AGENT_EVENT_TOKEN")
+	if socketPath == "" || token == "" {
+		return fmt.Errorf("agent hook endpoint is unavailable")
 	}
 	var data []byte
+	var err error
 	if len(args) > 0 {
 		data = []byte(args[len(args)-1])
 	} else {
@@ -146,8 +149,32 @@ func runAgentHook(input io.Reader, args []string) error {
 		eventBody = map[string]string{"kind": "failed", "summary": "Agent response exceeded Ducklion's delivery limit"}
 	}
 	event, _ := json.Marshal(eventBody)
-	_, err = unix.Write(fd, append(event, '\n'))
-	return err
+	var normalized protocol.SupervisorAgentEvent
+	if err := json.Unmarshal(event, &normalized); err != nil {
+		return err
+	}
+	conn, err := net.DialTimeout("unix", socketPath, time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	envelope := struct {
+		Token string                        `json:"token"`
+		Event protocol.SupervisorAgentEvent `json:"event"`
+	}{Token: token, Event: normalized}
+	if err := json.NewEncoder(conn).Encode(envelope); err != nil {
+		return err
+	}
+	ack := make([]byte, 3)
+	n, err := io.ReadFull(conn, ack)
+	if err != nil {
+		return err
+	}
+	if string(ack[:n]) != "ok\n" {
+		return fmt.Errorf("agent hook was rejected")
+	}
+	return nil
 }
 
 func Run(manager SessionManager, args []string, out io.Writer) error {
