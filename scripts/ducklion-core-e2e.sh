@@ -41,6 +41,7 @@ run_required "process-wide raw-output transactional handoff" ./internal/ducklord
   TestOutputPoolSnapshotFailureRollsBackDestination \
   TestOutputPoolLeaseFencesStaleReader \
   TestOutputPoolCloseDuringBlockedOpen \
+  TestOutputPoolCanceledOpenCannotCommitReturnedResource \
   TestOutputPoolDisconnectRestorePreservesDesiredOrder \
   TestOutputPoolDisconnectFencesDelayedRestore \
   TestOutputPoolWithLeaseSerializesTerminalMutation \

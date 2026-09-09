@@ -194,11 +194,10 @@ func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision Outpu
 	}
 
 	p.mu.Lock()
-	if !p.handoffCurrentLocked(handoff) {
+	if openCtx.Err() != nil || !p.handoffCurrentLocked(handoff) {
 		p.clearHandoffLocked(handoff)
 		p.mu.Unlock()
-		_ = resource.Close()
-		return OutputActivation{}, ErrStaleOutputLease
+		return OutputActivation{}, closeOutputAbort(ctx, resource, ErrStaleOutputLease)
 	}
 	existing := p.entries[key]
 	newMembership := existing == nil
@@ -248,7 +247,7 @@ func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision Outpu
 	}
 
 	p.mu.Lock()
-	if !p.handoffCurrentLocked(handoff) {
+	if openCtx.Err() != nil || !p.handoffCurrentLocked(handoff) {
 		if victim != nil && p.entries[victim.key] == victim {
 			victim.evicting = false
 		}
@@ -257,8 +256,7 @@ func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision Outpu
 		}
 		p.clearHandoffLocked(handoff)
 		p.mu.Unlock()
-		_ = resource.Close()
-		return OutputActivation{}, ErrStaleOutputLease
+		return OutputActivation{}, closeOutputAbort(ctx, resource, ErrStaleOutputLease)
 	}
 	entry := existing
 	if entry == nil {
@@ -465,11 +463,10 @@ func (p *OutputPool) RestoreDesired(ctx context.Context, key OutputKey, revision
 	}
 	p.mu.Lock()
 	current := p.entries[key]
-	if p.closed || current != entry || !entry.restoring || entry.lease != lease || entry.restoreEpoch != epoch || p.hostEpoch[key.host()] != epoch {
+	if openCtx.Err() != nil || p.closed || current != entry || !entry.restoring || entry.lease != lease || entry.restoreEpoch != epoch || p.hostEpoch[key.host()] != epoch {
 		p.mu.Unlock()
-		_ = resource.Close()
 		p.finishRestore(entry, lease)
-		return OutputActivation{}, ErrStaleOutputLease
+		return OutputActivation{}, closeOutputAbort(ctx, resource, ErrStaleOutputLease)
 	}
 	entry.resource = resource
 	entry.restoring = false
@@ -477,6 +474,14 @@ func (p *OutputPool) RestoreDesired(ctx context.Context, key OutputKey, revision
 	cancel()
 	p.mu.Unlock()
 	return OutputActivation{Key: key, Revision: revision, Lease: lease}, nil
+}
+
+func closeOutputAbort(ctx context.Context, resource OutputResource, fallback error) error {
+	primary := fallback
+	if err := ctx.Err(); err != nil {
+		primary = err
+	}
+	return errors.Join(primary, resource.Close())
 }
 
 func (p *OutputPool) finishRestore(entry *outputPoolEntry, lease uint64) {

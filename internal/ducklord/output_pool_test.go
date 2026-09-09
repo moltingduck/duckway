@@ -205,6 +205,31 @@ func TestOutputPoolCloseDuringBlockedOpen(t *testing.T) {
 	}
 }
 
+func TestOutputPoolCanceledOpenCannotCommitReturnedResource(t *testing.T) {
+	pool, _ := NewOutputPool(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	closeFailure := errors.New("close failed")
+	resource := &fakeOutputResource{closeErr: closeFailure}
+	_, err := pool.Activate(ctx, outputKey("A"), outputRevision(), func(openCtx context.Context, _ OutputKey, _ OutputRevision, _ uint64) (OutputResource, error) {
+		cancel()
+		<-openCtx.Done()
+		return resource, nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("activation err=%v", err)
+	}
+	if !errors.Is(err, closeFailure) {
+		t.Fatalf("activation hid cleanup failure: %v", err)
+	}
+	if resource.closed.Load() != 1 {
+		t.Fatalf("canceled resource close count=%d", resource.closed.Load())
+	}
+	status := pool.Status()
+	if status.Count != 0 || status.Active != nil || len(status.Desired) != 0 {
+		t.Fatalf("canceled activation committed: %+v", status)
+	}
+}
+
 func TestOutputPoolConcurrentExistingActivationDoesNotRace(t *testing.T) {
 	pool, _ := NewOutputPool(2)
 	activation, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
