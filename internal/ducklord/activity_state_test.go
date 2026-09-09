@@ -133,3 +133,142 @@ func TestActivityStateActiveAndDisabledEventsAreSeenImmediately(t *testing.T) {
 		t.Fatalf("background unread=%v changed=%v", unread, changed)
 	}
 }
+
+func TestActivityStateOrganizationRoundTripAndClone(t *testing.T) {
+	instanceA := string(model.NewInstanceID())
+	instanceB := string(model.NewInstanceID())
+	groupID := "9df68174-9e13-4dc9-b44d-8532c87f5971"
+	a := SessionIdentity{InstanceID: instanceA, SessionID: "ABC123"}
+	b := SessionIdentity{InstanceID: instanceB, SessionID: "ABC123"}
+	state := NewActivityState()
+	state.Organization = OrganizationState{
+		Mode:         OrganizationHost,
+		SessionOrder: []SessionIdentity{a, b},
+		Groups:       []CustomGroup{{ID: groupID, Name: "正式環境"}},
+		Membership:   map[SessionIdentity]string{a: groupID},
+		GroupOrders: map[OrganizationMode][]string{
+			OrganizationCustom: {groupID, UngroupedGroupID},
+			OrganizationHost:   {"prod", "lab"},
+			OrganizationType:   {"agent", "shell"},
+		},
+	}
+	path := filepath.Join(t.TempDir(), "private", "state.json")
+	store := ActivityStateStore{Path: path}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Organization.Mode != OrganizationHost || len(loaded.Organization.SessionOrder) != 2 || loaded.Organization.Membership[a] != groupID {
+		t.Fatalf("loaded organization=%+v", loaded.Organization)
+	}
+	if loaded.Organization.SessionOrder[0].Key() != instanceA+"/ABC123" || loaded.Organization.SessionOrder[1].Key() != instanceB+"/ABC123" {
+		t.Fatalf("canonical cross-instance identities lost: %+v", loaded.Organization.SessionOrder)
+	}
+	clone := loaded.Clone()
+	clone.Organization.Groups[0].Name = "changed"
+	clone.Organization.SessionOrder[0] = b
+	clone.Organization.Membership[b] = groupID
+	clone.Organization.GroupOrders[OrganizationHost][0] = "changed"
+	if loaded.Organization.Groups[0].Name != "正式環境" || loaded.Organization.SessionOrder[0] != a || loaded.Organization.Membership[b] != "" || loaded.Organization.GroupOrders[OrganizationHost][0] != "prod" {
+		t.Fatal("organization clone aliases original state")
+	}
+}
+
+func TestActivityStateLegacyJSONDefaultsOrganizationAndPreservesUnknownSections(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"notifications":{},"future":{"kept":true}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := (ActivityStateStore{Path: path}).Load()
+	if err != nil || state.Organization.Mode != OrganizationCustom || len(state.ExtraSections["future"]) == 0 {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+}
+
+func TestActivityStateUnknownOrganizationModeWarnsAndKeepsValidState(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "state.json")
+	groupID := "9df68174-9e13-4dc9-b44d-8532c87f5971"
+	data := []byte(`{"version":1,"notifications":{},"organization":{"mode":"future-mode","groups":[{"id":"` + groupID + `","name":"保留我"}]}}`)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := (ActivityStateStore{Path: path}).Load()
+	var warning *StateLoadWarning
+	if state == nil || !errors.As(err, &warning) {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+	if state.Organization.Mode != OrganizationCustom || len(state.Organization.Groups) != 1 || state.Organization.Groups[0].Name != "保留我" {
+		t.Fatalf("valid organization data was discarded: %+v", state.Organization)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("warning unexpectedly preserved state as corrupt: %v", statErr)
+	}
+}
+
+func TestActivityStateRejectsInvalidOrganization(t *testing.T) {
+	instanceID := string(model.NewInstanceID())
+	identity := SessionIdentity{InstanceID: instanceID, SessionID: "ABC123"}
+	groupID := "9df68174-9e13-4dc9-b44d-8532c87f5971"
+	tests := []struct {
+		name string
+		edit func(*ActivityState)
+	}{
+		{"duplicate session order", func(state *ActivityState) { state.Organization.SessionOrder = []SessionIdentity{identity, identity} }},
+		{"noncanonical session identity", func(state *ActivityState) {
+			state.Organization.SessionOrder = []SessionIdentity{{InstanceID: instanceID, SessionID: "abc123"}}
+		}},
+		{"duplicate group uuid", func(state *ActivityState) {
+			state.Organization.Groups = []CustomGroup{{ID: groupID, Name: "一"}, {ID: groupID, Name: "二"}}
+		}},
+		{"bidi group name", func(state *ActivityState) {
+			state.Organization.Groups = []CustomGroup{{ID: groupID, Name: "prod\u202e"}}
+		}},
+		{"newline group name", func(state *ActivityState) { state.Organization.Groups = []CustomGroup{{ID: groupID, Name: "a\nb"}} }},
+		{"dangling membership", func(state *ActivityState) { state.Organization.Membership[identity] = groupID }},
+		{"duplicate group order", func(state *ActivityState) {
+			state.Organization.GroupOrders[OrganizationHost] = []string{"prod", "prod"}
+		}},
+		{"unknown group order mode", func(state *ActivityState) { state.Organization.GroupOrders[OrganizationMode("future")] = []string{"x"} }},
+		{"invalid type group", func(state *ActivityState) { state.Organization.GroupOrders[OrganizationType] = []string{"codex"} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := NewActivityState()
+			test.edit(state)
+			if err := (ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")}).Save(state); err == nil {
+				t.Fatal("invalid organization state was saved")
+			}
+		})
+	}
+}
+
+func TestActivityStateSaveRejectsSymlinkDirectoryBeforeChmod(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "state-dir")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	err := (ActivityStateStore{Path: filepath.Join(link, "state.json")}).Save(NewActivityState())
+	if err == nil {
+		t.Fatal("state save accepted symlink directory")
+	}
+	info, statErr := os.Stat(target)
+	if statErr != nil || info.Mode().Perm() != 0755 {
+		t.Fatalf("symlink target permissions changed to %v: %v", info, statErr)
+	}
+}

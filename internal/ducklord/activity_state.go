@@ -10,16 +10,237 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 )
 
 const activityStateVersion = 1
 const maxActivityStateBytes = 1 << 20
 
+const (
+	maxOrganizationSessions = 16384
+	maxCustomGroups         = 4096
+	maxGroupNameRunes       = 64
+)
+
+type OrganizationMode string
+
+const (
+	OrganizationCustom OrganizationMode = "custom"
+	OrganizationHost   OrganizationMode = "host"
+	OrganizationType   OrganizationMode = "type"
+	UngroupedGroupID                    = "ungrouped"
+)
+
+// SessionIdentity is the stable, host-alias-independent identity used by all
+// Ducklord-local organization state.
+type SessionIdentity struct {
+	InstanceID string `json:"instance_id"`
+	SessionID  string `json:"session_id"`
+}
+
+func IdentityFromSession(session RemoteSession) (SessionIdentity, bool) {
+	instanceID, err := model.ParseInstanceID(session.InstanceID)
+	if err != nil {
+		return SessionIdentity{}, false
+	}
+	sessionID, err := model.ParseSessionID(session.SessionID)
+	if err != nil {
+		return SessionIdentity{}, false
+	}
+	return SessionIdentity{InstanceID: string(instanceID), SessionID: string(sessionID)}, true
+}
+
+func (i SessionIdentity) Key() string {
+	if err := i.validate(); err != nil {
+		return ""
+	}
+	return i.InstanceID + "/" + i.SessionID
+}
+
+func (i SessionIdentity) MarshalText() ([]byte, error) {
+	if err := i.validate(); err != nil {
+		return nil, err
+	}
+	return []byte(i.InstanceID + "/" + i.SessionID), nil
+}
+
+func (i *SessionIdentity) UnmarshalText(text []byte) error {
+	if i == nil {
+		return fmt.Errorf("session identity is nil")
+	}
+	parts := strings.Split(string(text), "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid session identity")
+	}
+	instanceID, err := model.ParseInstanceID(parts[0])
+	if err != nil {
+		return err
+	}
+	sessionID, err := model.ParseSessionID(parts[1])
+	if err != nil {
+		return err
+	}
+	*i = SessionIdentity{InstanceID: string(instanceID), SessionID: string(sessionID)}
+	return nil
+}
+
+type CustomGroup struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type OrganizationState struct {
+	Mode         OrganizationMode              `json:"mode,omitempty"`
+	SessionOrder []SessionIdentity             `json:"session_order,omitempty"`
+	Groups       []CustomGroup                 `json:"groups,omitempty"`
+	Membership   map[SessionIdentity]string    `json:"membership,omitempty"`
+	GroupOrders  map[OrganizationMode][]string `json:"group_orders,omitempty"`
+}
+
+func newOrganizationState() OrganizationState {
+	return OrganizationState{Mode: OrganizationCustom, Membership: make(map[SessionIdentity]string), GroupOrders: make(map[OrganizationMode][]string)}
+}
+
+func (o OrganizationState) clone() OrganizationState {
+	clone := OrganizationState{Mode: o.Mode, SessionOrder: append([]SessionIdentity(nil), o.SessionOrder...), Groups: append([]CustomGroup(nil), o.Groups...),
+		Membership: make(map[SessionIdentity]string, len(o.Membership)), GroupOrders: make(map[OrganizationMode][]string, len(o.GroupOrders))}
+	for identity, groupID := range o.Membership {
+		clone.Membership[identity] = groupID
+	}
+	for mode, order := range o.GroupOrders {
+		clone.GroupOrders[mode] = append([]string(nil), order...)
+	}
+	return clone
+}
+
+func (m OrganizationMode) valid() bool {
+	return m == OrganizationCustom || m == OrganizationHost || m == OrganizationType
+}
+
+func (m OrganizationMode) Valid() bool { return m.valid() }
+
+func (i SessionIdentity) validate() error {
+	instanceID, err := model.ParseInstanceID(i.InstanceID)
+	if err != nil || string(instanceID) != i.InstanceID {
+		return fmt.Errorf("invalid canonical organization instance id %q", i.InstanceID)
+	}
+	sessionID, err := model.ParseSessionID(i.SessionID)
+	if err != nil || string(sessionID) != i.SessionID {
+		return fmt.Errorf("invalid canonical organization session id %q", i.SessionID)
+	}
+	return nil
+}
+
+func validateCustomGroupName(name string) error {
+	if name != strings.TrimSpace(name) || !utf8.ValidString(name) {
+		return fmt.Errorf("custom group name must be trimmed valid UTF-8")
+	}
+	count := 0
+	for _, r := range name {
+		count++
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return fmt.Errorf("custom group name contains a control or format character")
+		}
+	}
+	if count < 1 || count > maxGroupNameRunes {
+		return fmt.Errorf("custom group name must contain 1 to %d Unicode code points", maxGroupNameRunes)
+	}
+	return nil
+}
+
+func ValidateCustomGroupName(name string) error { return validateCustomGroupName(name) }
+
+func (o *OrganizationState) validate() error {
+	if o.Mode == "" {
+		o.Mode = OrganizationCustom
+	}
+	if !o.Mode.valid() {
+		return fmt.Errorf("invalid organization mode %q", o.Mode)
+	}
+	if len(o.SessionOrder) > maxOrganizationSessions || len(o.Membership) > maxOrganizationSessions {
+		return fmt.Errorf("organization state has too many sessions")
+	}
+	seenSessions := make(map[SessionIdentity]bool, len(o.SessionOrder))
+	for _, identity := range o.SessionOrder {
+		if err := identity.validate(); err != nil {
+			return err
+		}
+		if seenSessions[identity] {
+			return fmt.Errorf("duplicate session identity in organization order")
+		}
+		seenSessions[identity] = true
+	}
+	if len(o.Groups) > maxCustomGroups {
+		return fmt.Errorf("organization state has too many custom groups")
+	}
+	groupIDs := make(map[string]bool, len(o.Groups))
+	for _, group := range o.Groups {
+		parsed, err := uuid.Parse(group.ID)
+		if err != nil || parsed.String() != group.ID || group.ID == UngroupedGroupID {
+			return fmt.Errorf("invalid canonical custom group id %q", group.ID)
+		}
+		if groupIDs[group.ID] {
+			return fmt.Errorf("duplicate custom group id %q", group.ID)
+		}
+		if err := validateCustomGroupName(group.Name); err != nil {
+			return fmt.Errorf("custom group %s: %w", group.ID, err)
+		}
+		groupIDs[group.ID] = true
+	}
+	for identity, groupID := range o.Membership {
+		if err := identity.validate(); err != nil {
+			return err
+		}
+		if !groupIDs[groupID] {
+			return fmt.Errorf("organization membership references unknown custom group %q", groupID)
+		}
+	}
+	for mode, order := range o.GroupOrders {
+		if !mode.valid() {
+			return fmt.Errorf("invalid organization group-order mode %q", mode)
+		}
+		if len(order) > maxCustomGroups+1 {
+			return fmt.Errorf("organization group order is too large")
+		}
+		seen := make(map[string]bool, len(order))
+		for _, id := range order {
+			if id == "" || seen[id] {
+				return fmt.Errorf("invalid or duplicate %s group-order identity %q", mode, id)
+			}
+			switch mode {
+			case OrganizationCustom:
+				if id != UngroupedGroupID && !groupIDs[id] {
+					return fmt.Errorf("custom group order references unknown group %q", id)
+				}
+			case OrganizationHost:
+				if !SafeIdentifier(id) {
+					return fmt.Errorf("invalid host group identity %q", id)
+				}
+			case OrganizationType:
+				if id != string(model.KindShell) && id != string(model.KindAgent) {
+					return fmt.Errorf("invalid session-kind group identity %q", id)
+				}
+			}
+			seen[id] = true
+		}
+	}
+	if o.Membership == nil {
+		o.Membership = make(map[SessionIdentity]string)
+	}
+	if o.GroupOrders == nil {
+		o.GroupOrders = make(map[OrganizationMode][]string)
+	}
+	return nil
+}
+
 type ActivityState struct {
 	Version       int                                 `json:"version"`
 	Sessions      map[string]SessionNotificationState `json:"notifications"`
+	Organization  OrganizationState                   `json:"organization,omitempty"`
 	ExtraSections map[string]json.RawMessage          `json:"-"`
 }
 
@@ -44,20 +265,26 @@ func (e *CorruptStateRecoveredError) Error() string {
 
 func (e *CorruptStateRecoveredError) Unwrap() error { return e.Cause }
 
+// StateLoadWarning reports a repaired, non-fatal state value. Load returns the
+// usable state together with this warning so the TUI can surface it locally.
+type StateLoadWarning struct{ Message string }
+
+func (e *StateLoadWarning) Error() string { return e.Message }
+
 func DefaultActivityStatePath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".ducklord", "state.json")
 }
 
 func NewActivityState() *ActivityState {
-	return &ActivityState{Version: activityStateVersion, Sessions: make(map[string]SessionNotificationState), ExtraSections: make(map[string]json.RawMessage)}
+	return &ActivityState{Version: activityStateVersion, Sessions: make(map[string]SessionNotificationState), Organization: newOrganizationState(), ExtraSections: make(map[string]json.RawMessage)}
 }
 
 func (s *ActivityState) Clone() *ActivityState {
 	if s == nil {
 		return NewActivityState()
 	}
-	clone := &ActivityState{Version: s.Version, Sessions: make(map[string]SessionNotificationState, len(s.Sessions)), ExtraSections: make(map[string]json.RawMessage, len(s.ExtraSections))}
+	clone := &ActivityState{Version: s.Version, Sessions: make(map[string]SessionNotificationState, len(s.Sessions)), Organization: s.Organization.clone(), ExtraSections: make(map[string]json.RawMessage, len(s.ExtraSections))}
 	for name, raw := range s.ExtraSections {
 		clone.ExtraSections[name] = append(json.RawMessage(nil), raw...)
 	}
@@ -98,14 +325,21 @@ func (s *ActivityState) UnmarshalJSON(data []byte) error {
 		}
 		delete(sections, "notifications")
 	}
+	s.Organization = newOrganizationState()
+	if raw, ok := sections["organization"]; ok {
+		if err := json.Unmarshal(raw, &s.Organization); err != nil {
+			return fmt.Errorf("decode organization state: %w", err)
+		}
+		delete(sections, "organization")
+	}
 	s.ExtraSections = sections
 	return nil
 }
 
 func (s ActivityState) MarshalJSON() ([]byte, error) {
-	sections := make(map[string]json.RawMessage, len(s.ExtraSections)+2)
+	sections := make(map[string]json.RawMessage, len(s.ExtraSections)+3)
 	for name, raw := range s.ExtraSections {
-		if name == "version" || name == "notifications" || !json.Valid(raw) {
+		if name == "version" || name == "notifications" || name == "organization" || !json.Valid(raw) {
 			return nil, fmt.Errorf("invalid Ducklord state section %q", name)
 		}
 		sections[name] = append(json.RawMessage(nil), raw...)
@@ -117,6 +351,11 @@ func (s ActivityState) MarshalJSON() ([]byte, error) {
 	}
 	sections["version"] = version
 	sections["notifications"] = notifications
+	organization, err := json.Marshal(s.Organization)
+	if err != nil {
+		return nil, err
+	}
+	sections["organization"] = organization
 	return json.Marshal(sections)
 }
 
@@ -149,10 +388,18 @@ func (s ActivityStateStore) Load() (*ActivityState, error) {
 	if err := decoder.Decode(&state); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
 		return s.recoverCorrupt(path, fmt.Errorf("decode ducklord state"))
 	}
+	var warning error
+	if state.Organization.Mode == "" {
+		state.Organization.Mode = OrganizationCustom
+	} else if !state.Organization.Mode.valid() {
+		unknown := state.Organization.Mode
+		state.Organization.Mode = OrganizationCustom
+		warning = &StateLoadWarning{Message: fmt.Sprintf("unknown Ducklord organization mode %q; using custom", unknown)}
+	}
 	if err := state.validate(); err != nil {
 		return s.recoverCorrupt(path, err)
 	}
-	return &state, nil
+	return &state, warning
 }
 
 func (s ActivityStateStore) recoverCorrupt(path string, cause error) (*ActivityState, error) {
@@ -190,10 +437,16 @@ func (s ActivityStateStore) Save(state *ActivityState) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	if err := os.Chmod(dir, 0700); err != nil {
-		return err
-	}
 	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("ducklord state directory must be a private directory")
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		if err := os.Chmod(dir, 0700); err != nil {
+			return err
+		}
+		info, err = os.Lstat(dir)
+	}
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
 		return fmt.Errorf("ducklord state directory must be private")
 	}
@@ -305,6 +558,9 @@ func (s *ActivityState) validate() error {
 	}
 	if s.Sessions == nil {
 		s.Sessions = make(map[string]SessionNotificationState)
+	}
+	if err := s.Organization.validate(); err != nil {
+		return err
 	}
 	for key, entry := range s.Sessions {
 		parts := strings.Split(key, "/")

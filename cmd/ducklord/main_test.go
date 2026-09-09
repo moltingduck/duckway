@@ -836,6 +836,97 @@ func TestTUIRevisionMarksOnlyChangedBackgroundSession(t *testing.T) {
 	}
 }
 
+type mutableSessionsRunner struct {
+	fakeRunner
+	current []ducklord.RemoteSession
+}
+
+func (r *mutableSessionsRunner) Sessions(context.Context, ducklord.Client, int) ([]ducklord.RemoteSession, error) {
+	return append([]ducklord.RemoteSession(nil), r.current...), nil
+}
+
+func TestTUIRefreshDistinguishesDuplicateHandlesByIdentity(t *testing.T) {
+	runner := &mutableSessionsRunner{current: []ducklord.RemoteSession{
+		{Client: "host-a", InstanceID: "instance", SessionID: "DEF456", Name: "same", TailHash: "b1"},
+		{Client: "host-a", InstanceID: "instance", SessionID: "ABC123", Name: "same", TailHash: "a1"},
+	}}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host-a"}}}, runner: runner, hashes: map[string]string{}, activityState: ducklord.NewActivityState()}
+	state.refreshSessions(context.Background())
+	if state.sessions[0].SessionID != "ABC123" || state.sessions[1].SessionID != "DEF456" {
+		t.Fatalf("initial stable order = %+v", state.sessions)
+	}
+	runner.current = []ducklord.RemoteSession{
+		{Client: "host-a", InstanceID: "instance", SessionID: "ABC123", Name: "same", TailHash: "a1"},
+		{Client: "host-a", InstanceID: "instance", SessionID: "DEF456", Name: "same", TailHash: "b2"},
+	}
+	state.refreshSessions(context.Background())
+	if state.sessions[0].Updated || !state.sessions[1].Updated {
+		t.Fatalf("duplicate handle updated markers = %+v", state.sessions)
+	}
+}
+
+func TestTUIOrganizationModeAndManualOrderPersist(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	statePath := filepath.Join(t.TempDir(), "private", "state.json")
+	state := &tuiState{
+		activityState: ducklord.NewActivityState(),
+		activityStore: ducklord.ActivityStateStore{Path: statePath},
+		sessions: []ducklord.RemoteSession{
+			{Client: "host-b", InstanceID: instance, SessionID: "BBB222", Name: "second", Kind: string(model.KindAgent)},
+			{Client: "host-a", InstanceID: instance, SessionID: "AAA111", Name: "first", Kind: string(model.KindShell)},
+		},
+	}
+	if !state.applyOrganizationOrder() {
+		t.Fatal("new session identities were not appended to local order")
+	}
+	state.selected = 1
+	state.moveSelectedSession(-1)
+	if state.currentSession().SessionID != "AAA111" || state.sessions[0].SessionID != "AAA111" {
+		t.Fatalf("moved session/order = %+v selected=%+v", state.sessions, state.currentSession())
+	}
+	state.cycleOrganizationMode()
+	if state.organizationMode() != ducklord.OrganizationHost {
+		t.Fatalf("mode = %q", state.organizationMode())
+	}
+	loaded, err := (ducklord.ActivityStateStore{Path: statePath}).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Organization.Mode != ducklord.OrganizationHost || len(loaded.Organization.SessionOrder) != 2 || loaded.Organization.SessionOrder[0].SessionID != "AAA111" {
+		t.Fatalf("persisted organization = %+v", loaded.Organization)
+	}
+	state.cycleOrganizationMode()
+	if state.organizationMode() != ducklord.OrganizationType || state.organizationGroupID(state.sessions[0]) != "shell" {
+		t.Fatalf("type projection mode=%q sessions=%+v", state.organizationMode(), state.sessions)
+	}
+}
+
+func TestTUIOrganizationPersistenceFailureKeepsLocalChangeAndWarns(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	badPath := filepath.Join(t.TempDir(), "state.json")
+	if err := os.Mkdir(badPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: badPath}, sessions: []ducklord.RemoteSession{
+		{Client: "host", InstanceID: instance, SessionID: "AAA111", Kind: string(model.KindShell)},
+		{Client: "host", InstanceID: instance, SessionID: "BBB222", Kind: string(model.KindShell)},
+	}}
+	state.applyOrganizationOrder()
+	state.cycleOrganizationMode()
+	if state.organizationMode() != ducklord.OrganizationHost || !strings.Contains(state.outputErr, "changed locally but was not saved") {
+		t.Fatalf("mode=%q error=%q", state.organizationMode(), state.outputErr)
+	}
+	state.activityStore = ducklord.ActivityStateStore{Path: badPath}
+	state.activityState.Organization.Mode = ducklord.OrganizationCustom
+	state.applyOrganizationOrder()
+	state.selected = 1
+	state.outputErr = ""
+	state.moveSelectedSession(-1)
+	if state.sessions[0].SessionID != "BBB222" || !strings.Contains(state.outputErr, "changed locally but was not saved") {
+		t.Fatalf("sessions=%+v error=%q", state.sessions, state.outputErr)
+	}
+}
+
 func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 	instance := string(model.NewInstanceID())
 	stateDir := filepath.Join(t.TempDir(), "private")
@@ -855,7 +946,7 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "DEF456", Name: "background",
 				ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTerminalAttention: 1}},
 		}})
-	if state.sessions[0].Unread || !state.sessions[1].Unread || !state.groupHasUnread("work") {
+	if state.sessions[0].Unread || !state.sessions[1].Unread || !state.groupHasUnread(ducklord.UngroupedGroupID) {
 		t.Fatalf("unread projection=%+v", state.sessions)
 	}
 	state.selected = 1
@@ -869,7 +960,7 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 	state.focused = true
 	state.pendingAttachKey = "host-a/" + instance + "/DEF456"
 	state.applyAttachOutput("fresh\n", 1, 6)
-	if state.currentSession().Unread || state.groupHasUnread("work") {
+	if state.currentSession().Unread || state.groupHasUnread(ducklord.UngroupedGroupID) {
 		t.Fatalf("fresh attach did not clear unread: %+v", state.sessions)
 	}
 	loaded, err := (ducklord.ActivityStateStore{Path: statePath}).Load()

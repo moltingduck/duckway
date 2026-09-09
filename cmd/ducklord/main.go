@@ -1225,8 +1225,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	activityState, err := activityStore.Load()
 	stateWarning := ""
 	var recovered *ducklord.CorruptStateRecoveredError
+	var stateLoadWarning *ducklord.StateLoadWarning
 	if errors.As(err, &recovered) && activityState != nil {
 		stateWarning = recovered.Error()
+	} else if errors.As(err, &stateLoadWarning) && activityState != nil {
+		stateWarning = stateLoadWarning.Error()
 	} else if err != nil {
 		return fmt.Errorf("load Ducklord activity state: %w", err)
 	}
@@ -2067,6 +2070,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				if state.activeAttachKey == "" {
 					requestPreview(true)
 				}
+			case "organize":
+				state.cycleOrganizationMode()
+			case "reorder-up":
+				state.moveSelectedSession(-1)
+			case "reorder-down":
+				state.moveSelectedSession(1)
 			case "select":
 				// List navigation owns the preview pane. Never leave a stale
 				// attach identity pointing at the previously selected session.
@@ -2277,11 +2286,14 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 		if all[i].Client != all[j].Client {
 			return all[i].Client < all[j].Client
 		}
-		return all[i].Name < all[j].Name
+		if all[i].Name != all[j].Name {
+			return all[i].Name < all[j].Name
+		}
+		return sessionKey(all[i]) < sessionKey(all[j])
 	})
 	activityChanged := false
 	for i := range all {
-		key := all[i].Client + "/" + all[i].Name
+		key := sessionKey(all[i])
 		if all[i].TailHash != "" && s.hashes[key] != "" && s.hashes[key] != all[i].TailHash {
 			all[i].Updated = true
 		}
@@ -2294,10 +2306,11 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 		all[i].Unread, changed = s.activity().Reconcile(all[i], sessionKey(all[i]) == s.activeAttachKey && s.activeAttachFresh)
 		activityChanged = activityChanged || changed
 	}
-	if activityChanged {
-		s.saveActivityState()
-	}
 	s.sessions = all
+	organizationChanged := s.applyOrganizationOrder()
+	if activityChanged || organizationChanged {
+		_ = s.saveActivityState()
+	}
 	if oldKey != "" {
 		for i, sess := range s.sessions {
 			if sessionKey(sess) == oldKey {
@@ -2355,10 +2368,13 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 		all = append(all, session)
 	}
 	if activityChanged {
-		s.saveActivityState()
+		_ = s.saveActivityState()
 	}
 	sortRemoteSessions(all)
 	s.sessions = all
+	if s.applyOrganizationOrder() {
+		_ = s.saveActivityState()
+	}
 	s.restoreSelection(oldKey)
 	if attachedKey := s.effectiveAttachKey(); attachedKey != "" {
 		activeExists := false
@@ -2432,8 +2448,197 @@ func sortRemoteSessions(sessions []ducklord.RemoteSession) {
 		if sessions[i].Client != sessions[j].Client {
 			return sessions[i].Client < sessions[j].Client
 		}
-		return sessions[i].Name < sessions[j].Name
+		if sessions[i].Name != sessions[j].Name {
+			return sessions[i].Name < sessions[j].Name
+		}
+		return sessionKey(sessions[i]) < sessionKey(sessions[j])
 	})
+}
+
+func (s *tuiState) organizationMode() ducklord.OrganizationMode {
+	mode := s.activity().Organization.Mode
+	if mode != ducklord.OrganizationCustom && mode != ducklord.OrganizationHost && mode != ducklord.OrganizationType {
+		return ducklord.OrganizationCustom
+	}
+	return mode
+}
+
+func (s *tuiState) organizationGroupID(session ducklord.RemoteSession) string {
+	switch s.organizationMode() {
+	case ducklord.OrganizationHost:
+		return session.Client
+	case ducklord.OrganizationType:
+		if session.Kind == string(model.KindShell) {
+			return "shell"
+		}
+		return "agent"
+	default:
+		if identity, ok := ducklord.IdentityFromSession(session); ok {
+			if group := s.activity().Organization.Membership[identity]; group != "" {
+				return group
+			}
+		}
+		return ducklord.UngroupedGroupID
+	}
+}
+
+func (s *tuiState) organizationGroupLabel(session ducklord.RemoteSession) string {
+	id := s.organizationGroupID(session)
+	if s.organizationMode() != ducklord.OrganizationCustom {
+		return id
+	}
+	if id == ducklord.UngroupedGroupID {
+		return "Ungrouped"
+	}
+	for _, group := range s.activity().Organization.Groups {
+		if group.ID == id {
+			duplicates := 0
+			for _, candidate := range s.activity().Organization.Groups {
+				if candidate.Name == group.Name {
+					duplicates++
+				}
+			}
+			if duplicates > 1 {
+				suffix := group.ID
+				if len(suffix) > 4 {
+					suffix = suffix[:4]
+				}
+				return group.Name + " · " + suffix
+			}
+			return group.Name
+		}
+	}
+	return "Ungrouped"
+}
+
+func (s *tuiState) applyOrganizationOrder() bool {
+	organization := &s.activity().Organization
+	if organization.Mode == "" {
+		organization.Mode = ducklord.OrganizationCustom
+	}
+	changed := false
+	sessionRank := make(map[string]int, len(organization.SessionOrder)+len(s.sessions))
+	for _, identity := range organization.SessionOrder {
+		if key := identity.Key(); key != "" {
+			if _, exists := sessionRank[key]; !exists {
+				sessionRank[key] = len(sessionRank)
+			}
+		}
+	}
+	for _, session := range s.sessions {
+		identity, ok := ducklord.IdentityFromSession(session)
+		if !ok {
+			continue
+		}
+		if _, exists := sessionRank[identity.Key()]; exists {
+			continue
+		}
+		sessionRank[identity.Key()] = len(sessionRank)
+		organization.SessionOrder = append(organization.SessionOrder, identity)
+		changed = true
+	}
+	mode := s.organizationMode()
+	if organization.GroupOrders == nil {
+		organization.GroupOrders = make(map[ducklord.OrganizationMode][]string)
+	}
+	groupOrder := organization.GroupOrders[mode]
+	groupRank := make(map[string]int, len(groupOrder)+len(s.sessions))
+	for _, group := range groupOrder {
+		if _, exists := groupRank[group]; !exists {
+			groupRank[group] = len(groupRank)
+		}
+	}
+	for _, session := range s.sessions {
+		group := s.organizationGroupID(session)
+		if _, exists := groupRank[group]; !exists {
+			groupRank[group] = len(groupRank)
+			groupOrder = append(groupOrder, group)
+			changed = true
+		}
+	}
+	organization.GroupOrders[mode] = groupOrder
+	sort.SliceStable(s.sessions, func(i, j int) bool {
+		leftGroup, rightGroup := s.organizationGroupID(s.sessions[i]), s.organizationGroupID(s.sessions[j])
+		if groupRank[leftGroup] != groupRank[rightGroup] {
+			return groupRank[leftGroup] < groupRank[rightGroup]
+		}
+		left, leftOK := ducklord.IdentityFromSession(s.sessions[i])
+		right, rightOK := ducklord.IdentityFromSession(s.sessions[j])
+		if leftOK != rightOK {
+			return leftOK
+		}
+		if leftOK && sessionRank[left.Key()] != sessionRank[right.Key()] {
+			return sessionRank[left.Key()] < sessionRank[right.Key()]
+		}
+		return sessionKey(s.sessions[i]) < sessionKey(s.sessions[j])
+	})
+	return changed
+}
+
+func (s *tuiState) cycleOrganizationMode() {
+	oldKey := s.currentKey()
+	switch s.organizationMode() {
+	case ducklord.OrganizationCustom:
+		s.activity().Organization.Mode = ducklord.OrganizationHost
+	case ducklord.OrganizationHost:
+		s.activity().Organization.Mode = ducklord.OrganizationType
+	default:
+		s.activity().Organization.Mode = ducklord.OrganizationCustom
+	}
+	s.applyOrganizationOrder()
+	s.restoreSelection(oldKey)
+	if err := s.saveActivityState(); err != nil {
+		s.outputErr = "session organization changed locally but was not saved: " + err.Error()
+	} else {
+		s.outputErr = "session organization: " + string(s.organizationMode())
+	}
+}
+
+func (s *tuiState) moveSelectedSession(direction int) {
+	if direction != -1 && direction != 1 || len(s.sessions) == 0 {
+		return
+	}
+	selected := s.currentSession()
+	group := s.organizationGroupID(selected)
+	targetIndex := s.selected + direction
+	for targetIndex >= 0 && targetIndex < len(s.sessions) && s.organizationGroupID(s.sessions[targetIndex]) != group {
+		targetIndex += direction
+	}
+	if targetIndex < 0 || targetIndex >= len(s.sessions) {
+		s.outputErr = "session is already at the group boundary"
+		return
+	}
+	selectedIdentity, selectedOK := ducklord.IdentityFromSession(selected)
+	targetIdentity, targetOK := ducklord.IdentityFromSession(s.sessions[targetIndex])
+	if !selectedOK || !targetOK {
+		s.outputErr = "session cannot be reordered without a stable identity"
+		return
+	}
+	s.applyOrganizationOrder()
+	order := s.activity().Organization.SessionOrder
+	selectedOrder, targetOrder := -1, -1
+	for index, identity := range order {
+		switch identity.Key() {
+		case selectedIdentity.Key():
+			selectedOrder = index
+		case targetIdentity.Key():
+			targetOrder = index
+		}
+	}
+	if selectedOrder < 0 || targetOrder < 0 {
+		s.outputErr = "session order is unavailable"
+		return
+	}
+	order[selectedOrder], order[targetOrder] = order[targetOrder], order[selectedOrder]
+	s.activity().Organization.SessionOrder = order
+	key := sessionKey(selected)
+	s.applyOrganizationOrder()
+	s.restoreSelection(key)
+	if err := s.saveActivityState(); err != nil {
+		s.outputErr = "session order changed locally but was not saved: " + err.Error()
+	} else {
+		s.outputErr = "session order saved"
+	}
 }
 
 func (s *tuiState) restoreSelection(key string) {
@@ -2662,14 +2867,16 @@ func (s *tuiState) markActivitySeen(session ducklord.RemoteSession) {
 				s.sessions[i].Unread = false
 			}
 		}
-		s.saveActivityState()
+		_ = s.saveActivityState()
 	}
 }
 
-func (s *tuiState) saveActivityState() {
-	if err := s.activityStore.Save(s.activity()); err != nil && s.outputErr == "" {
-		s.outputErr = "notification state: " + err.Error()
+func (s *tuiState) saveActivityState() error {
+	err := s.activityStore.Save(s.activity())
+	if err != nil && s.outputErr == "" {
+		s.outputErr = "local state: " + err.Error()
 	}
+	return err
 }
 
 func (s *tuiState) currentSession() ducklord.RemoteSession {
@@ -2800,9 +3007,9 @@ func (s *tuiState) render(out io.Writer) {
 	} else if s.lifecycleConfirm != "" {
 		fmt.Fprintln(out, truncate("lifecycle confirmation open; use the modal controls", renderWidth))
 	} else if s.hostScoped {
-		fmt.Fprintln(out, truncate("j/k move  enter focus  m actions  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k move  enter focus  o organize  m actions  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
 	} else {
-		fmt.Fprintln(out, truncate("j/k move  enter focus  m actions  y/Y yield  E end  R restart  X destroy  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k move  enter focus  o organize  m actions  y/Y yield  E end  R restart  X destroy  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
@@ -2826,7 +3033,7 @@ func (s *tuiState) render(out io.Writer) {
 		if layout.overlay {
 			clear = ""
 		}
-		heading := truncate("sessions", menuWidth)
+		heading := truncate("sessions ["+string(s.organizationMode())+"]", menuWidth)
 		fmt.Fprintf(out, "\033[4;1H%-*s%s%s", menuWidth, heading, separator, clear)
 	} else {
 		fmt.Fprintf(out, "\033[4;1H%s\033[K", truncate("content", renderWidth))
@@ -2840,13 +3047,11 @@ func (s *tuiState) render(out io.Writer) {
 		if row > height {
 			break
 		}
-		group := displayField(sess.Group)
-		if group == "" {
-			group = "default"
-		}
-		if group != currentGroup {
+		groupID := s.organizationGroupID(sess)
+		group := displayField(s.organizationGroupLabel(sess))
+		if groupID != currentGroup {
 			groupLabel := "[" + group + "]"
-			if s.groupHasUnread(sess.Group) {
+			if s.groupHasUnread(s.organizationGroupID(sess)) {
 				groupLabel += " •"
 			}
 			separator := " |"
@@ -2859,7 +3064,7 @@ func (s *tuiState) render(out io.Writer) {
 			}
 			fmt.Fprintf(out, "\033[%d;1H%-*s%s%s", row, menuWidth, truncate(groupLabel, menuWidth), separator, clear)
 			row++
-			currentGroup = group
+			currentGroup = groupID
 			if row > height {
 				break
 			}
@@ -2908,7 +3113,7 @@ func (s *tuiState) render(out io.Writer) {
 
 func (s *tuiState) groupHasUnread(group string) bool {
 	for _, session := range s.sessions {
-		if session.Group == group && session.Unread {
+		if s.organizationGroupID(session) == group && session.Unread {
 			return true
 		}
 	}
@@ -3725,6 +3930,12 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "quit"
 	case text == "r":
 		return "refresh"
+	case text == "o":
+		return "organize"
+	case text == "\x0b":
+		return "reorder-up"
+	case text == "\n":
+		return "reorder-down"
 	case text == "y":
 		return "yield"
 	case text == "Y":
@@ -3745,7 +3956,7 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "add-client"
 	case text == "d" && !s.hostScoped:
 		return "remove-client"
-	case text == "\r" || text == "\n":
+	case text == "\r":
 		return "attach"
 	case text == "j" || text == "\x1b[B":
 		if s.selected < len(s.sessions)-1 {
@@ -4810,7 +5021,7 @@ func sanitizeTerminalText(s string) string {
 			b.WriteRune(r)
 		case r == '\r':
 			b.WriteRune('\n')
-		case r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f:
+		case r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f || unicode.Is(unicode.Cf, r):
 			b.WriteRune(' ')
 		default:
 			b.WriteRune(r)
@@ -4859,13 +5070,10 @@ func tailLines(lines []string, max int) []string {
 
 func truncate(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) <= n {
+	if modalCellWidth(s) <= n {
 		return s
 	}
-	if n <= 3 {
-		return s[:n]
-	}
-	return s[:n-3] + "..."
+	return modalCellTruncate(s, n)
 }
 
 func printUsage(out io.Writer) {

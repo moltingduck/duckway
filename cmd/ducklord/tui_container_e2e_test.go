@@ -64,6 +64,38 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	capture := newTUICapture(terminal)
 	capture.wait(t, "ducklord remote agents", 20*time.Second)
 	capture.wait(t, "client-a alpha tick", 20*time.Second)
+	capture.waitCurrent(t, "sessions [custom]", 10*time.Second)
+	writePTY(t, terminal, "o")
+	capture.waitCurrent(t, "sessions [host]", 2*time.Second)
+	writePTY(t, terminal, "o")
+	capture.waitCurrent(t, "sessions [type]", 2*time.Second)
+	writePTY(t, terminal, "o")
+	capture.waitCurrent(t, "sessions [custom]", 2*time.Second)
+
+	var bashSession protocol.SessionSummary
+	for _, session := range before {
+		if session.Handle == "bash" {
+			bashSession = session
+		}
+	}
+	if bashSession.SessionID == "" {
+		t.Fatal("demo bash session is missing")
+	}
+	writePTY(t, terminal, "j\x0b") // select bash, then move it above alpha
+	waitE2E(t, 2*time.Second, func() bool {
+		out, readErr := exec.Command(runtime, "exec", controller, "cat", "/root/.ducklord/state.json").CombinedOutput()
+		if readErr != nil {
+			return false
+		}
+		var localState ducklord.ActivityState
+		if json.Unmarshal(out, &localState) != nil || len(localState.Organization.SessionOrder) < 2 {
+			return false
+		}
+		return localState.Organization.Mode == ducklord.OrganizationCustom && localState.Organization.SessionOrder[0].SessionID == bashSession.SessionID && localState.Organization.SessionOrder[1].SessionID == alpha.SessionID
+	}, func() string { return "organization mode/manual session order was not persisted" })
+	writePTY(t, terminal, "\x0a") // restore alpha above bash via Ctrl-J
+	writePTY(t, terminal, "k")    // return selection to alpha
+	capture.waitCurrent(t, "client-a alpha tick", 2*time.Second)
 	start := capture.position()
 	writePTY(t, terminal, "j") // alpha -> bash, without focusing the PTY
 	capture.waitCurrent(t, "DUCKLORD_POOLED_RED", 10*time.Second)
@@ -278,6 +310,29 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 		t.Fatalf("create session on dynamically watched host: %v: %s", err, out)
 	}
 	capture.waitCurrent(t, "gamma-live", 20*time.Second)
+
+	// Leave a non-default mode, stop this Ducklord cleanly, and prove a fresh
+	// process restores organization state from the same local state file.
+	writePTY(t, terminal, "o")
+	capture.waitCurrent(t, "sessions [host]", 2*time.Second)
+	writePTY(t, terminal, "q")
+	if err := command.Wait(); err != nil {
+		t.Fatalf("stop first Ducklord TUI: %v", err)
+	}
+	_ = terminal.Close()
+	restartedCommand := exec.Command(runtime, "exec", "-it", controller, "env", "TERM=xterm-256color", "ducklord", "tui", "--config", "/root/.ducklord/config.yaml")
+	restartedTerminal, err := pty.StartWithSize(restartedCommand, &pty.Winsize{Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("restart Ducklord TUI: %v", err)
+	}
+	defer func() {
+		_, _ = restartedTerminal.Write([]byte("q"))
+		_ = restartedTerminal.Close()
+		_ = restartedCommand.Process.Kill()
+		_ = restartedCommand.Wait()
+	}()
+	restartedCapture := newTUICapture(restartedTerminal)
+	restartedCapture.waitCurrent(t, "sessions [host]", 20*time.Second)
 }
 
 type tuiCapture struct {
