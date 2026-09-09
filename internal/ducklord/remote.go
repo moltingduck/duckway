@@ -73,20 +73,23 @@ type SessionUpdate struct {
 }
 
 type Runner struct {
-	mu          sync.Mutex
-	owner       string
-	generation  uint64
-	bridges     map[string]*daemon.Client
-	connectMu   map[string]*sync.Mutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	outputSlots chan struct{}
-	preview     *Runner
+	mu             sync.Mutex
+	owner          string
+	generation     uint64
+	bridges        map[string]*daemon.Client
+	connectMu      map[string]*sync.Mutex
+	ctx            context.Context
+	cancel         context.CancelFunc
+	outputSlots    chan struct{}
+	preview        *Runner
+	processID      string
+	connectionRole protocol.DucklordConnectionRole
 }
 
 func NewRunner() *Runner {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Runner{bridges: make(map[string]*daemon.Client), connectMu: make(map[string]*sync.Mutex), ctx: ctx, cancel: cancel,
+		processID: uuid.NewString(), connectionRole: protocol.ConnectionControl,
 		outputSlots: make(chan struct{}, DefaultRawOutputSubscriptions)}
 }
 
@@ -235,7 +238,7 @@ func (r *Runner) bridgeClient(ctx context.Context, c Client) (*daemon.Client, er
 		return nil, fmt.Errorf("start Ducklion bridge to %s: %w", c.Name, err)
 	}
 	stream := &commandStream{reader: stdout, writer: stdin, command: cmd, stderr: stderr}
-	client, err := daemon.ConnectContext(ctx, stream, owner)
+	client, err := daemon.ConnectDucklordContext(ctx, stream, owner, r.processID, uuid.NewString(), r.connectionRole)
 	if err != nil {
 		_ = stream.Close()
 		return nil, fmt.Errorf("connect Ducklion bridge to %s: %w", c.Name, err)
@@ -597,6 +600,8 @@ func (r *Runner) ReadPreview(ctx context.Context, c Client, name string, lines i
 	preview := r.preview
 	if preview == nil {
 		preview = NewRunner()
+		preview.processID = r.processID
+		preview.connectionRole = protocol.ConnectionObserver
 		preview.SetOwner(r.owner)
 		r.preview = preview
 	}

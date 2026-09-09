@@ -7,16 +7,20 @@ import (
 )
 
 const (
-	Major = 1
+	Major = 2
 	Minor = 0
 )
 
 type Handshake struct {
-	Major        int      `json:"major"`
-	Minor        int      `json:"minor"`
-	Role         PeerRole `json:"role"`
-	Principal    string   `json:"principal,omitempty"`
-	Capabilities []string `json:"capabilities"`
+	Major          int                    `json:"major"`
+	Minor          int                    `json:"minor"`
+	Role           PeerRole               `json:"role"`
+	Principal      string                 `json:"principal,omitempty"`
+	OwnerID        string                 `json:"owner_id,omitempty"`
+	ProcessID      string                 `json:"process_id,omitempty"`
+	ConnectionID   string                 `json:"connection_id,omitempty"`
+	ConnectionRole DucklordConnectionRole `json:"connection_role,omitempty"`
+	Capabilities   []string               `json:"capabilities"`
 }
 
 type HandshakeResponse struct {
@@ -33,12 +37,16 @@ func (r HandshakeResponse) Validate() error {
 
 type PeerRole string
 
+type DucklordConnectionRole string
+
 const (
-	RoleDucklord           PeerRole = "ducklord"
-	RoleDuckwayCC          PeerRole = "duckway_cc"
-	RoleSupervisor         PeerRole = "supervisor"
-	RoleSupervisorControl  PeerRole = "supervisor_control"
-	RoleSupervisorActivity PeerRole = "supervisor_activity"
+	RoleDucklord           PeerRole               = "ducklord"
+	RoleDuckwayCC          PeerRole               = "duckway_cc"
+	RoleSupervisor         PeerRole               = "supervisor"
+	RoleSupervisorControl  PeerRole               = "supervisor_control"
+	RoleSupervisorActivity PeerRole               = "supervisor_activity"
+	ConnectionControl      DucklordConnectionRole = "control"
+	ConnectionObserver     DucklordConnectionRole = "observer"
 )
 
 type Request struct {
@@ -122,7 +130,8 @@ func Negotiate(local, remote Handshake) (Handshake, *Error) {
 	if remote.Minor < minor {
 		minor = remote.Minor
 	}
-	return Handshake{Major: local.Major, Minor: minor, Role: remote.Role, Principal: remote.Principal, Capabilities: capabilities}, nil
+	return Handshake{Major: local.Major, Minor: minor, Role: remote.Role, Principal: remote.Principal, OwnerID: remote.OwnerID,
+		ProcessID: remote.ProcessID, ConnectionID: remote.ConnectionID, ConnectionRole: remote.ConnectionRole, Capabilities: capabilities}, nil
 }
 
 func (r Response) Validate() error {

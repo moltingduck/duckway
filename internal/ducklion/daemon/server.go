@@ -62,7 +62,7 @@ type Server struct {
 	done                         chan struct{}
 	connMu                       sync.Mutex
 	connections                  map[*net.UnixConn]struct{}
-	ducklords                    map[string]*net.UnixConn
+	ducklords                    map[string]*ducklordLease
 	handlers                     sync.WaitGroup
 	lifecycleMu                  sync.Mutex
 	lifecycleWorkersMu           sync.Mutex
@@ -97,6 +97,14 @@ type Server struct {
 	retainedOutputSweep          chan struct{}
 	retainedOutputCancel         context.CancelFunc
 }
+
+type ducklordLease struct {
+	processID   string
+	control     *net.UnixConn
+	connections map[string]*net.UnixConn
+}
+
+const maxDucklordObserverConnections = 8
 
 type attentionRate struct {
 	offset   uint64
@@ -229,7 +237,7 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 	}
 	server := &Server{root: root, socketPath: socketPath, lockFile: lockFile, listener: listener, state: state,
 		service: service.New(state), registry: duckruntime.NewRegistry(instanceID, state), instanceID: instanceID, done: make(chan struct{}),
-		connections: make(map[*net.UnixConn]struct{}), ducklords: make(map[string]*net.UnixConn), outputs: make(map[model.SessionID]registeredOutput), controls: make(map[model.SessionID]*controlPeer),
+		connections: make(map[*net.UnixConn]struct{}), ducklords: make(map[string]*ducklordLease), outputs: make(map[model.SessionID]registeredOutput), controls: make(map[model.SessionID]*controlPeer),
 		outputSubscriptionsBySession: make(map[model.SessionID]int),
 		activitySlots:                make(chan struct{}, maxSupervisorActivityConnections),
 		sequences:                    make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher, sessionCleaner: options.SessionCleaner,
@@ -330,24 +338,17 @@ func (s *Server) handle(conn *net.UnixConn) {
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid peer principal"}})
 		return
 	}
+	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if remote.Role == protocol.RoleDucklord {
-		s.connMu.Lock()
-		if s.ducklords[remote.Principal] != nil {
-			s.connMu.Unlock()
-			_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrBusy, Message: "Ducklord owner name is already connected"}})
+		if remote.OwnerID != remote.Principal || uuid.Validate(remote.ProcessID) != nil || uuid.Validate(remote.ConnectionID) != nil ||
+			(remote.ConnectionRole != protocol.ConnectionControl && remote.ConnectionRole != protocol.ConnectionObserver) {
+			_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid Ducklord connection identity"}})
 			return
 		}
-		s.ducklords[remote.Principal] = conn
-		s.connMu.Unlock()
-		defer func() {
-			s.connMu.Lock()
-			if s.ducklords[remote.Principal] == conn {
-				delete(s.ducklords, remote.Principal)
-			}
-			s.connMu.Unlock()
-		}()
+		if remote.ConnectionRole == protocol.ConnectionObserver {
+			capabilities = []string{"status", "sessions_list", "output_subscribe", "output_unsubscribe", "session_events"}
+		}
 	}
-	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if remote.Role == protocol.RoleDuckwayCC {
 		capabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "session_task", "discord_binding", "discord_unbind", "agent_task"}
 	}
@@ -356,6 +357,48 @@ func (s *Server) handle(conn *net.UnixConn) {
 	if protocolError != nil {
 		_ = codec.Write(protocol.HandshakeResponse{Error: protocolError})
 		return
+	}
+	if remote.Role == protocol.RoleDucklord {
+		s.connMu.Lock()
+		lease := s.ducklords[remote.Principal]
+		busy := false
+		if lease == nil {
+			lease = &ducklordLease{processID: remote.ProcessID, connections: make(map[string]*net.UnixConn)}
+			s.ducklords[remote.Principal] = lease
+		}
+		observerCount := len(lease.connections)
+		if lease.control != nil {
+			observerCount--
+		}
+		busy = lease.processID != remote.ProcessID || lease.connections[remote.ConnectionID] != nil ||
+			remote.ConnectionRole == protocol.ConnectionControl && lease.control != nil ||
+			remote.ConnectionRole == protocol.ConnectionObserver && observerCount >= maxDucklordObserverConnections
+		if !busy {
+			lease.connections[remote.ConnectionID] = conn
+			if remote.ConnectionRole == protocol.ConnectionControl {
+				lease.control = conn
+			}
+		}
+		s.connMu.Unlock()
+		if busy {
+			_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrBusy, Message: "Ducklord owner name is already connected by another process or control connection", Retryable: true}})
+			return
+		}
+		defer func() {
+			s.connMu.Lock()
+			lease := s.ducklords[remote.Principal]
+			key := remote.ConnectionID
+			if lease != nil && lease.connections[key] == conn {
+				delete(lease.connections, key)
+				if lease.control == conn {
+					lease.control = nil
+				}
+				if len(lease.connections) == 0 {
+					delete(s.ducklords, remote.Principal)
+				}
+			}
+			s.connMu.Unlock()
+		}()
 	}
 	if err := codec.Write(protocol.HandshakeResponse{Handshake: &negotiated}); err != nil {
 		return

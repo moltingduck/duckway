@@ -1215,8 +1215,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	previewInFlight := false
 	previewQueued := false
 	var previewCancel context.CancelFunc
-	var startPreview func()
-	startPreview = func() {
+	startPreview := func() {
 		if previewInFlight || !previewQueued || state.focused || len(state.sessions) == 0 {
 			return
 		}

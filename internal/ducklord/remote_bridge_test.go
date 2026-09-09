@@ -459,6 +459,12 @@ func TestRunnerListsSessionsThroughStdioBridge(t *testing.T) {
 		sessions[0].OwnershipEpoch != 3 || sessions[0].RuntimeGeneration != 7 {
 		t.Fatalf("sessions = %+v", sessions)
 	}
+	if _, err := runner.ReadPreview(context.Background(), client, "ABC123", 10); err == nil || !strings.Contains(err.Error(), string(protocol.ErrOutputUnavailable)) {
+		t.Fatalf("observer preview admission/error=%v", err)
+	}
+	if sessions, err = runner.Sessions(context.Background(), client, 8); err != nil || len(sessions) != 1 {
+		t.Fatalf("control bridge after observer preview sessions=%+v err=%v", sessions, err)
+	}
 	runner.SetOwner("desk-b")
 	if _, err := runner.Sessions(context.Background(), client, 8); err != nil {
 		t.Fatalf("reconnect with changed owner: %v", err)

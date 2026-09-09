@@ -66,6 +66,16 @@ func DialCC(socketPath, channelHandle string) (*Client, error) {
 	return DialRole(socketPath, channelHandle, protocol.RoleDuckwayCC)
 }
 
+func DialDucklord(socketPath, ownerID, processID, connectionID string, connectionRole protocol.DucklordConnectionRole) (*Client, error) {
+	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return ConnectDucklordContext(ctx, conn, ownerID, processID, connectionID, connectionRole)
+}
+
 func DialRole(socketPath, principal string, role protocol.PeerRole) (*Client, error) {
 	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
 	if err != nil {
@@ -89,6 +99,18 @@ func ConnectContext(ctx context.Context, conn io.ReadWriteCloser, principal stri
 }
 
 func ConnectRoleContext(ctx context.Context, conn io.ReadWriteCloser, principal string, role protocol.PeerRole) (client *Client, returnErr error) {
+	if role == protocol.RoleDucklord {
+		return ConnectDucklordContext(ctx, conn, principal, uuid.NewString(), uuid.NewString(), protocol.ConnectionControl)
+	}
+	return connectRoleContext(ctx, conn, protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: role, Principal: principal})
+}
+
+func ConnectDucklordContext(ctx context.Context, conn io.ReadWriteCloser, ownerID, processID, connectionID string, connectionRole protocol.DucklordConnectionRole) (client *Client, returnErr error) {
+	return connectRoleContext(ctx, conn, protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleDucklord, Principal: ownerID,
+		OwnerID: ownerID, ProcessID: processID, ConnectionID: connectionID, ConnectionRole: connectionRole})
+}
+
+func connectRoleContext(ctx context.Context, conn io.ReadWriteCloser, identity protocol.Handshake) (client *Client, returnErr error) {
 	cancelDone := make(chan struct{})
 	stopCancellation := context.AfterFunc(ctx, func() {
 		_ = conn.Close()
@@ -107,10 +129,14 @@ func ConnectRoleContext(ctx context.Context, conn io.ReadWriteCloser, principal 
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	setDeadline(conn, time.Now().Add(10*time.Second))
 	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
-	if role == protocol.RoleDuckwayCC {
+	if identity.ConnectionRole == protocol.ConnectionObserver {
+		offeredCapabilities = []string{"status", "sessions_list", "output_subscribe", "output_unsubscribe", "session_events"}
+	}
+	if identity.Role == protocol.RoleDuckwayCC {
 		offeredCapabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "session_task", "discord_binding", "discord_unbind", "agent_task"}
 	}
-	if err := codec.Write(protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: role, Principal: principal, Capabilities: offeredCapabilities}); err != nil {
+	identity.Capabilities = offeredCapabilities
+	if err := codec.Write(identity); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -136,8 +162,9 @@ func ConnectRoleContext(ctx context.Context, conn io.ReadWriteCloser, principal 
 	for _, capability := range negotiated.Capabilities {
 		validCapabilities = validCapabilities && offered[capability]
 	}
-	if negotiated.Major != protocol.Major || negotiated.Minor < 0 || negotiated.Minor > protocol.Minor || negotiated.Role != role ||
-		negotiated.Principal != principal || !hasCapability(negotiated.Capabilities, "status") || !validCapabilities {
+	if negotiated.Major != protocol.Major || negotiated.Minor < 0 || negotiated.Minor > protocol.Minor || negotiated.Role != identity.Role ||
+		negotiated.Principal != identity.Principal || negotiated.OwnerID != identity.OwnerID || negotiated.ProcessID != identity.ProcessID ||
+		negotiated.ConnectionID != identity.ConnectionID || negotiated.ConnectionRole != identity.ConnectionRole || !hasCapability(negotiated.Capabilities, "status") || !validCapabilities {
 		conn.Close()
 		return nil, fmt.Errorf("ducklion returned an invalid handshake")
 	}

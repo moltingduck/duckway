@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
@@ -131,6 +132,68 @@ func TestServerRejectsDuplicateLiveDucklordPrincipal(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("principal was not released: %v", retryErr)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	_ = server.Close()
+	if err := <-serveDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDucklordProcessAllowsObserverButFencesOtherProcesses(t *testing.T) {
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	processID := uuid.NewString()
+	control, err := DialDucklord(server.SocketPath(), "desk-a", processID, uuid.NewString(), protocol.ConnectionControl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer, err := DialDucklord(server.SocketPath(), "desk-a", processID, uuid.NewString(), protocol.ConnectionObserver)
+	if err != nil {
+		t.Fatalf("same-process observer: %v", err)
+	}
+	if _, err := observer.CreateSession(context.Background(), protocol.SessionCreate{}); err == nil || !strings.Contains(err.Error(), "capability") {
+		t.Fatalf("observer mutation error=%v", err)
+	}
+	if _, err := observer.ListSessions(); err != nil {
+		t.Fatalf("observer list: %v", err)
+	}
+	extraObservers := make([]*Client, 0, maxDucklordObserverConnections-1)
+	for i := 1; i < maxDucklordObserverConnections; i++ {
+		extra, dialErr := DialDucklord(server.SocketPath(), "desk-a", processID, uuid.NewString(), protocol.ConnectionObserver)
+		if dialErr != nil {
+			t.Fatalf("observer %d: %v", i+1, dialErr)
+		}
+		extraObservers = append(extraObservers, extra)
+	}
+	if _, err := DialDucklord(server.SocketPath(), "desk-a", processID, uuid.NewString(), protocol.ConnectionObserver); err == nil {
+		t.Fatal("observer connection limit was not enforced")
+	}
+	for _, extra := range extraObservers {
+		_ = extra.Close()
+	}
+	if _, err := DialDucklord(server.SocketPath(), "desk-a", uuid.NewString(), uuid.NewString(), protocol.ConnectionObserver); err == nil {
+		t.Fatal("different process reused live owner")
+	}
+	_ = control.Close()
+	if _, err := DialDucklord(server.SocketPath(), "desk-a", uuid.NewString(), uuid.NewString(), protocol.ConnectionControl); err == nil {
+		t.Fatal("observer did not retain process lease")
+	}
+	_ = observer.Close()
+	deadline := time.Now().Add(time.Second)
+	for {
+		replacement, retryErr := DialDucklord(server.SocketPath(), "desk-a", uuid.NewString(), uuid.NewString(), protocol.ConnectionControl)
+		if retryErr == nil {
+			_ = replacement.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("last connection did not release owner: %v", retryErr)
 		}
 		time.Sleep(time.Millisecond)
 	}
