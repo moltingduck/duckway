@@ -152,6 +152,9 @@ func TestRunnerOutputSubscriptionLimitIsProcessWide(t *testing.T) {
 		t.Fatalf("second slot error=%v", err)
 	}
 	release()
+	if err := runner.SetOutputSubscriptionLimit(2); err == nil {
+		t.Fatal("changed output limit after subscriptions had started")
+	}
 	second, err := runner.acquireOutputSlot(context.Background())
 	if err != nil {
 		t.Fatalf("released slot was not reusable: %v", err)

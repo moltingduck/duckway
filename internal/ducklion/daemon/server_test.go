@@ -281,6 +281,14 @@ func TestSessionEventSubscriptionHasAtomicSnapshotAndDurableRevision(t *testing.
 	if metadata.InstanceID != string(server.InstanceID()) || metadata.SnapshotRevision == 0 || len(metadata.Sessions) != 1 || metadata.Sessions[0].SessionID != "ABC123" {
 		t.Fatalf("metadata=%+v", metadata)
 	}
+	// Output and session-event subscription namespaces are independent. A
+	// crafted output-unsubscribe must not be able to cancel the durable event
+	// stream even when it knows that stream's identifier.
+	wrongKindBody, _ := json.Marshal(protocol.OutputUnsubscribe{SubscriptionID: metadata.SubscriptionID})
+	wrongKind, err := viewer.Call(protocol.Request{ID: "wrong-subscription-kind", Type: "session.output_unsubscribe", InstanceID: string(server.InstanceID()), Body: wrongKindBody})
+	if err != nil || wrongKind.Error == nil || wrongKind.Error.Code != protocol.ErrNotFound {
+		t.Fatalf("cross-kind unsubscribe=%+v err=%v", wrongKind, err)
+	}
 	if err := server.state.MarkRuntimeConnected(context.Background(), session.ID, 1); err != nil {
 		t.Fatal(err)
 	}

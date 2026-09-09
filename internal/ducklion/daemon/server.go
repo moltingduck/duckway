@@ -407,7 +407,8 @@ func (s *Server) handle(conn *net.UnixConn) {
 	_ = conn.SetDeadline(time.Time{})
 	wire := &ducklordWire{codec: codec, conn: conn}
 	var subscriptionsMu sync.Mutex
-	subscriptions := make(map[string]func())
+	outputSubscriptions := make(map[string]func())
+	var sessionSubscriptionCancel func()
 	var sessionSubscriptionID string
 	var subscriptionHandlers sync.WaitGroup
 	routeRequests := make(chan protocol.Request, 32)
@@ -424,9 +425,13 @@ func (s *Server) handle(conn *net.UnixConn) {
 	}()
 	defer func() {
 		subscriptionsMu.Lock()
-		for id, cancel := range subscriptions {
+		for id, cancel := range outputSubscriptions {
 			cancel()
-			delete(subscriptions, id)
+			delete(outputSubscriptions, id)
+		}
+		if sessionSubscriptionCancel != nil {
+			sessionSubscriptionCancel()
+			sessionSubscriptionCancel = nil
 		}
 		subscriptionsMu.Unlock()
 		subscriptionHandlers.Wait()
@@ -450,7 +455,10 @@ func (s *Server) handle(conn *net.UnixConn) {
 				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session events capability was not negotiated"}})
 				continue
 			}
-			if sessionSubscriptionID != "" {
+			subscriptionsMu.Lock()
+			hasSessionSubscription := sessionSubscriptionID != ""
+			subscriptionsMu.Unlock()
+			if hasSessionSubscription {
 				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrBusy, Message: "session event subscription already exists", Retryable: true}})
 				continue
 			}
@@ -464,16 +472,19 @@ func (s *Server) handle(conn *net.UnixConn) {
 				prepared.cancel()
 				return
 			}
-			sessionSubscriptionID = prepared.metadata.SubscriptionID
 			subscriptionsMu.Lock()
-			subscriptions[sessionSubscriptionID] = prepared.cancel
+			sessionSubscriptionID = prepared.metadata.SubscriptionID
+			sessionSubscriptionCancel = prepared.cancel
 			subscriptionsMu.Unlock()
 			subscriptionHandlers.Add(1)
 			go func() {
 				defer subscriptionHandlers.Done()
 				s.streamSessionSubscription(wire, prepared)
 				subscriptionsMu.Lock()
-				delete(subscriptions, prepared.metadata.SubscriptionID)
+				if sessionSubscriptionID == prepared.metadata.SubscriptionID {
+					sessionSubscriptionID = ""
+					sessionSubscriptionCancel = nil
+				}
 				subscriptionsMu.Unlock()
 			}()
 			continue
@@ -486,10 +497,10 @@ func (s *Server) handle(conn *net.UnixConn) {
 				continue
 			}
 			subscriptionsMu.Lock()
-			cancel := subscriptions[body.SubscriptionID]
+			cancel := sessionSubscriptionCancel
 			if cancel != nil && body.SubscriptionID == sessionSubscriptionID {
-				delete(subscriptions, body.SubscriptionID)
 				sessionSubscriptionID = ""
+				sessionSubscriptionCancel = nil
 			} else {
 				cancel = nil
 			}
@@ -511,7 +522,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 				continue
 			}
 			subscriptionsMu.Lock()
-			connectionFull := len(subscriptions) >= maxOutputSubscriptionsPerConnection
+			connectionFull := len(outputSubscriptions) >= maxOutputSubscriptionsPerConnection
 			subscriptionsMu.Unlock()
 			if connectionFull {
 				_ = wire.Write(protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrBusy, Message: "output subscription connection capacity reached", Retryable: true}})
@@ -528,14 +539,14 @@ func (s *Server) handle(conn *net.UnixConn) {
 				return
 			}
 			subscriptionsMu.Lock()
-			subscriptions[prepared.metadata.SubscriptionID] = prepared.cancel
+			outputSubscriptions[prepared.metadata.SubscriptionID] = prepared.cancel
 			subscriptionsMu.Unlock()
 			subscriptionHandlers.Add(1)
 			go func() {
 				defer subscriptionHandlers.Done()
 				s.streamOutputSubscription(wire, prepared)
 				subscriptionsMu.Lock()
-				delete(subscriptions, prepared.metadata.SubscriptionID)
+				delete(outputSubscriptions, prepared.metadata.SubscriptionID)
 				subscriptionsMu.Unlock()
 			}()
 			continue
@@ -552,9 +563,9 @@ func (s *Server) handle(conn *net.UnixConn) {
 				continue
 			}
 			subscriptionsMu.Lock()
-			cancel := subscriptions[body.SubscriptionID]
+			cancel := outputSubscriptions[body.SubscriptionID]
 			if cancel != nil {
-				delete(subscriptions, body.SubscriptionID)
+				delete(outputSubscriptions, body.SubscriptionID)
 			}
 			subscriptionsMu.Unlock()
 			if cancel == nil {

@@ -36,6 +36,12 @@ run_required "stdio bridge attach and mutation response-loss replay" ./internal/
   TestRunnerStartReplaysCommittedMutationAfterBridgeDisconnect \
   TestRunnerYieldTransfersCCSessionAndWaitsThroughBridge
 
+run_required "process-wide raw-output transactional handoff" ./internal/ducklord \
+  TestOutputPoolHandoffRollbackAndCommitAreAtomic \
+  TestOutputPoolSnapshotFailureRollsBackDestination \
+  TestOutputPoolLeaseFencesStaleReader \
+  TestOutputPoolCloseDuringBlockedOpen
+
 run_required "ownership fencing, bidirectional yield, recovery, shell sharing and lifecycle" ./internal/ducklion/daemon \
   TestDuckwayCCCreatesAgentWithCCInitialOwner \
   TestDucklordInputAndResizeAreOwnerFenced \

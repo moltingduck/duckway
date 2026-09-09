@@ -638,8 +638,11 @@ func (c *Client) dispatchSessionEvent(event protocol.SessionRevisionEvent) {
 		orphan := c.orphanSessionEvents[event.SubscriptionID]
 		if (len(orphan) > 0 || len(c.orphanSessionEvents) < 4) && len(orphan) < 80 {
 			c.orphanSessionEvents[event.SubscriptionID] = append(orphan, event)
+			c.stateMu.Unlock()
+			return
 		}
 		c.stateMu.Unlock()
+		c.shutdown(fmt.Errorf("session events arrived before subscription registration exceeded the safe replay window"))
 		return
 	}
 	if event.Type == "session_events_end" {
@@ -674,8 +677,11 @@ func (c *Client) dispatchOutput(event protocol.OutputEvent) {
 		orphan := c.orphanEvents[event.SubscriptionID]
 		if (len(orphan) > 0 || len(c.orphanEvents) < 4) && len(orphan) < 80 {
 			c.orphanEvents[event.SubscriptionID] = append(orphan, event)
+			c.stateMu.Unlock()
+			return
 		}
 		c.stateMu.Unlock()
+		c.shutdown(fmt.Errorf("output arrived before subscription registration exceeded the safe replay window"))
 		return
 	}
 	if event.Type == "output_end" {

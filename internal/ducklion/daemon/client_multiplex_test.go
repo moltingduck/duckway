@@ -50,6 +50,26 @@ func TestIgnoredOutputSubscriptionsStayBounded(t *testing.T) {
 	}
 }
 
+func TestPreRegistrationOutputOverflowClosesBridgeInsteadOfHidingGap(t *testing.T) {
+	stream := &writeBlockingStream{closed: make(chan struct{})}
+	c := &Client{conn: stream, subscriptions: make(map[string]*OutputSubscription), orphanEvents: make(map[string][]protocol.OutputEvent),
+		ignoredSubscriptions: make(map[string]bool), done: make(chan struct{})}
+	for index := 0; index < 81; index++ {
+		c.dispatchOutput(protocol.OutputEvent{Type: "output", SubscriptionID: "early", Frame: protocol.OutputFrame{Offset: uint64(index), Data: []byte("x")}})
+	}
+	select {
+	case <-c.done:
+	default:
+		t.Fatal("overflowed pre-registration replay window did not close bridge")
+	}
+	c.stateMu.Lock()
+	err := c.readErr
+	c.stateMu.Unlock()
+	if err == nil || !strings.Contains(err.Error(), "safe replay window") {
+		t.Fatalf("bridge error=%v", err)
+	}
+}
+
 func TestCallContextDeadlineInterruptsBlockedWrite(t *testing.T) {
 	stream := &writeBlockingStream{closed: make(chan struct{})}
 	c := &Client{conn: stream, codec: bridge.NewCodec(stream, stream, bridge.DefaultMaxFrame), pending: make(map[string]chan responseResult),

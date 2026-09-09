@@ -81,6 +81,7 @@ type Runner struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	outputSlots    chan struct{}
+	outputStarted  bool
 	preview        *Runner
 	processID      string
 	connectionRole protocol.DucklordConnectionRole
@@ -101,8 +102,8 @@ func (r *Runner) SetOutputSubscriptionLimit(limit int) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.outputSlots) != 0 {
-		return fmt.Errorf("raw output subscription limit cannot change while subscriptions are active")
+	if r.outputStarted {
+		return fmt.Errorf("raw output subscription limit cannot change after subscriptions have started")
 	}
 	r.outputSlots = make(chan struct{}, limit)
 	return nil
@@ -110,10 +111,19 @@ func (r *Runner) SetOutputSubscriptionLimit(limit int) error {
 
 func (r *Runner) acquireOutputSlot(ctx context.Context) (func(), error) {
 	r.mu.Lock()
+	if r.ctx.Err() != nil {
+		r.mu.Unlock()
+		return nil, io.ErrClosedPipe
+	}
+	r.outputStarted = true
 	slots := r.outputSlots
 	r.mu.Unlock()
 	select {
 	case slots <- struct{}{}:
+		if r.ctx.Err() != nil {
+			<-slots
+			return nil, io.ErrClosedPipe
+		}
 		var once sync.Once
 		return func() { once.Do(func() { <-slots }) }, nil
 	case <-ctx.Done():
