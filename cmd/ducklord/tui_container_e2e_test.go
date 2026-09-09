@@ -194,7 +194,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	}
 	start = capture.position()
 	writePTY(t, terminal, "r")
-	capture.waitAfter(t, start, "RESTART SESSION", 10*time.Second)
+	assertCurrentCreateModal(t, capture, start, "RESTART SESSION", created.SessionID, false)
 	writePTY(t, terminal, "\r")
 	waitE2E(t, 15*time.Second, func() bool {
 		session, ok := findContainerSession(t, runtime, controller, "client-a", created.SessionID)
@@ -205,13 +205,26 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	// the generation assertion above remains the authoritative result.
 	time.Sleep(750 * time.Millisecond)
 
+	// Notification settings are also a modal and remain staged until Enter.
+	start = capture.position()
+	writePTY(t, terminal, "n")
+	capture.waitCurrent(t, "Notifications", 10*time.Second)
+	if raw := capture.since(start); !strings.Contains(raw, modalBorder) || !strings.Contains(raw, modalSelected) {
+		t.Fatalf("notification modal lacks frame/color: %q", safeTerminalDiagnostic(raw))
+	}
+	writePTY(t, terminal, " \x1b") // toggle, then discard
+	writePTY(t, terminal, "n \r")  // reopen, toggle and save
+	waitE2E(t, 10*time.Second, func() bool {
+		return exec.Command(runtime, "exec", controller, "sh", "-lc", "test -s /root/.ducklord/state.json && grep -q '"+created.SessionID+"' /root/.ducklord/state.json && grep -q '\"terminal_attention\": true' /root/.ducklord/state.json").Run() == nil
+	}, func() string { return "notification modal did not persist exact session settings" })
+
 	// Destructive selection still requires a second confirmation, and Escape
 	// must leave the exact target untouched.
 	start = capture.position()
 	writePTY(t, terminal, "m")
 	capture.waitAfter(t, start, "Session actions", 10*time.Second)
 	writePTY(t, terminal, "x")
-	capture.waitAfter(t, start, "DESTROY SESSION", 10*time.Second)
+	assertCurrentCreateModal(t, capture, start, "DESTROY SESSION", created.SessionID, false)
 	writePTY(t, terminal, "\x1b")
 	if _, ok := findContainerSession(t, runtime, controller, "client-a", created.SessionID); !ok {
 		t.Fatal("canceling destructive confirmation removed the session")
@@ -221,12 +234,26 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "m")
 	capture.waitAfter(t, start, "Session actions", 10*time.Second)
 	writePTY(t, terminal, "x")
-	capture.waitAfter(t, start, "DESTROY SESSION", 10*time.Second)
+	assertCurrentCreateModal(t, capture, start, "DESTROY SESSION", created.SessionID, false)
 	writePTY(t, terminal, "\r")
 	waitE2E(t, 15*time.Second, func() bool {
 		_, ok := findContainerSession(t, runtime, controller, "client-a", created.SessionID)
 		return !ok
 	}, func() string { return "action-menu destroy did not remove the exact selected session" })
+
+	// Add-host uses the same centered modal and persists the selected SSH target.
+	start = capture.position()
+	writePTY(t, terminal, "a")
+	assertCurrentCreateModal(t, capture, start, "Add Ducklion host", "client-c", true)
+	writePTY(t, terminal, "client-c\r")
+	waitE2E(t, 15*time.Second, func() bool {
+		out, err := exec.Command(runtime, "exec", controller, "ducklord", "clients", "--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		return err == nil && bytes.Contains(out, []byte("client-c"))
+	}, func() string { return "add-host modal did not persist client-c" })
+	if out, err := exec.Command(runtime, "exec", controller, "sh", "-lc", "sed 's/^name: .*/name: e2e-inspector/' /root/.ducklord/config.yaml >/tmp/e2e-inspector-added.yaml && ducklord start client-c --name gamma-live --kind shell --cwd /home/duck/projects/gamma --config /tmp/e2e-inspector-added.yaml -- bash").CombinedOutput(); err != nil {
+		t.Fatalf("create session on dynamically watched host: %v: %s", err, out)
+	}
+	capture.waitCurrent(t, "gamma-live", 20*time.Second)
 }
 
 type tuiCapture struct {

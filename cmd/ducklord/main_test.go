@@ -452,7 +452,7 @@ func TestTUIRenderExplainsDestructiveLifecycleConfirmation(t *testing.T) {
 	var out bytes.Buffer
 	state.render(&out)
 	got := out.String()
-	for _, want := range []string{"destroy selected session?", "enter now", "w wait", "f force-cancel", "permanently removes", "ABC123"} {
+	for _, want := range []string{"DESTROY SESSION", "Enter now", "w wait", "f force-cancel", "permanently removes", "ABC123"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("confirmation missing %q in %q", want, got)
 		}
@@ -466,7 +466,7 @@ func TestTUIRenderExplainsImmediateShellLifecycle(t *testing.T) {
 	var out bytes.Buffer
 	state.render(&out)
 	got := out.String()
-	for _, want := range []string{"enter terminate process immediately", "it never waits"} {
+	for _, want := range []string{"Enter terminate process immediately", "it never waits"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("shell confirmation missing %q in %q", want, got)
 		}
@@ -510,7 +510,7 @@ func TestLifecycleConfirmationRendersCapturedTargetAfterSelectionMoves(t *testin
 	state := &tuiState{lifecycleConfirm: protocol.SessionLifecycleDestroy, lifecycleTarget: target,
 		sessions: []ducklord.RemoteSession{{Client: "host-b", InstanceID: "instance-b", SessionID: "OTHER", Name: "new selection", Kind: string(model.KindAgent)}}}
 	var out bytes.Buffer
-	state.renderContent(&out, 1, 80, 24)
+	state.renderLifecycleModal(&out, 80, 24)
 	if got := out.String(); !strings.Contains(got, "original") || !strings.Contains(got, "TARGET") || strings.Contains(got, "new selection") {
 		t.Fatalf("confirmation rendered mutable selection: %q", got)
 	}
@@ -1184,7 +1184,7 @@ func TestTUINotificationSaveFailureLeavesLiveStateUntouched(t *testing.T) {
 		t.Fatalf("missing save feedback: %q", state.outputErr)
 	}
 	var rendered strings.Builder
-	state.renderNotificationSettings(&rendered, 1, 100, 30, state.currentSession())
+	state.renderNotificationModal(&rendered, 100, 30)
 	if !strings.Contains(rendered.String(), "Not saved:") {
 		t.Fatalf("menu did not render error: %q", rendered.String())
 	}
@@ -1477,6 +1477,9 @@ func TestTUIAddClientFromSSHHostProbesAndSaves(t *testing.T) {
 	}
 	if state.addClientMode {
 		t.Fatal("add client prompt still active")
+	}
+	if state.cfg != cfg {
+		t.Fatal("add client replaced the live config pointer used by TUI watchers")
 	}
 	loaded, err := ducklord.LoadConfig(config)
 	if err != nil {
@@ -1772,6 +1775,72 @@ func TestCreateModalScrollsToSelectedChoice(t *testing.T) {
 	state.renderCreateModal(&output, 50, 8)
 	if !strings.Contains(output.String(), "project-6") || !strings.Contains(output.String(), modalSelected) {
 		t.Fatalf("selected choice was not visible: %q", output.String())
+	}
+}
+
+func TestSecondaryMenusRenderAsCenteredColoredModals(t *testing.T) {
+	target := ducklord.RemoteSession{Client: "host-a", InstanceID: string(model.NewInstanceID()), SessionID: "ABC123", Name: "中文 agent", Kind: string(model.KindAgent), RuntimeGeneration: 3}
+	tests := []struct {
+		name   string
+		render func(io.Writer)
+		want   string
+	}{
+		{name: "add host", want: "Add Ducklion host", render: func(out io.Writer) {
+			(&tuiState{addClientMode: true, addClientHosts: []ducklord.SSHHost{{Name: "client-a"}}}).renderAddClientModal(out, 80, 24)
+		}},
+		{name: "notifications", want: "Notifications", render: func(out io.Writer) {
+			(&tuiState{notificationMode: true, notificationTarget: target, notificationStaged: map[model.NotificationCategory]bool{model.NotificationTerminalAttention: true}}).renderNotificationModal(out, 80, 24)
+		}},
+		{name: "lifecycle", want: "DESTROY SESSION", render: func(out io.Writer) {
+			(&tuiState{lifecycleConfirm: protocol.SessionLifecycleDestroy, lifecycleTarget: target}).renderLifecycleModal(out, 80, 24)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			test.render(&output)
+			rendered := output.String()
+			if !strings.Contains(rendered, test.want) || !strings.Contains(rendered, modalBorder) || !strings.Contains(rendered, "\033[") || strings.Count(rendered, "╭") != 1 || strings.Count(rendered, "╯") != 1 {
+				t.Fatalf("menu is not a centered colored modal: %q", rendered)
+			}
+		})
+	}
+}
+
+func TestSharedModalBoxFitsTinyTerminal(t *testing.T) {
+	var output bytes.Buffer
+	renderModalBox(&output, 12, 4, []modalRenderLine{{modalTitle, "中文 title"}, {modalSelected, "› selected"}, {modalMuted, "hidden"}})
+	rendered := output.String()
+	if strings.Contains(rendered, "\033[-") || !utf8.ValidString(rendered) || strings.Count(rendered, "╭") != 1 || strings.Count(rendered, "╯") != 1 || !strings.Contains(rendered, modalSelected) {
+		t.Fatalf("tiny modal is invalid: %q", rendered)
+	}
+}
+
+func TestNotificationSettingsRemainBoundToCapturedSession(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	a := ducklord.RemoteSession{Client: "host-a", InstanceID: instance, SessionID: "AAA111", Name: "a"}
+	b := ducklord.RemoteSession{Client: "host-a", InstanceID: instance, SessionID: "BBB222", Name: "b"}
+	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")}, sessions: []ducklord.RemoteSession{a, b}}
+	state.beginNotificationSettings()
+	state.notificationStaged[model.NotificationTerminalAttention] = false
+	state.sessions = []ducklord.RemoteSession{b}
+	state.selected = 0
+	state.saveNotificationSettings()
+	if !state.notificationMode || !strings.Contains(state.outputErr, "target changed") {
+		t.Fatalf("stale notification target was not rejected: mode=%v err=%q", state.notificationMode, state.outputErr)
+	}
+	if !state.activity().Enabled(instance, b.SessionID, model.NotificationTerminalAttention) {
+		t.Fatal("stale modal changed the replacement session")
+	}
+}
+
+func TestAddHostModalArrowSelectionFeedsSubmission(t *testing.T) {
+	state := &tuiState{addClientMode: true, addClientLine: "stale", addClientHosts: []ducklord.SSHHost{{Name: "a"}, {Name: "b"}}}
+	if action := state.handleAddClientInput([]byte("\x1b[B")); action != "" || state.addClientSelected != 1 || state.addClientLine != "" {
+		t.Fatalf("arrow action=%q selected=%d line=%q", action, state.addClientSelected, state.addClientLine)
+	}
+	if action := state.handleAddClientInput([]byte("\r")); action != "submit" || state.addClientLine != "2" {
+		t.Fatalf("submit action=%q line=%q", action, state.addClientLine)
 	}
 }
 

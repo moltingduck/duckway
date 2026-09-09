@@ -1146,6 +1146,7 @@ type tuiState struct {
 	newSessionCWD             string
 	addClientMode             bool
 	addClientLine             string
+	addClientSelected         int
 	addClientErr              string
 	addClientHosts            []ducklord.SSHHost
 	hostScoped                bool
@@ -1157,6 +1158,7 @@ type tuiState struct {
 	notificationMode          bool
 	notificationIndex         int
 	notificationStaged        map[model.NotificationCategory]bool
+	notificationTarget        ducklord.RemoteSession
 	actionMenu                bool
 	actionIndex               int
 	actionTarget              ducklord.RemoteSession
@@ -1231,23 +1233,34 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		defer state.saveCurrentSnapshot()
 	}
 	sessionUpdates := make(chan ducklord.SessionUpdate, 32)
-	if watcher, ok := runner.(interface {
+	watchedClients := make(map[string]bool)
+	watcher, eventDriven := runner.(interface {
 		WatchSessionUpdates(context.Context, ducklord.Client) <-chan ducklord.SessionUpdate
-	}); ok {
+	})
+	watchClient := func(client ducklord.Client) {
+		key := bridgeKeyForTUI(client)
+		if !eventDriven || watchedClients[key] {
+			return
+		}
+		watchedClients[key] = true
 		state.eventDriven = true
-		for _, client := range cfg.Clients {
-			updates := watcher.WatchSessionUpdates(ctx, client)
-			go func() {
-				for update := range updates {
-					select {
-					case sessionUpdates <- update:
-					case <-ctx.Done():
-						return
-					}
+		updates := watcher.WatchSessionUpdates(ctx, client)
+		go func() {
+			for update := range updates {
+				select {
+				case sessionUpdates <- update:
+				case <-ctx.Done():
+					return
 				}
-			}()
+			}
+		}()
+	}
+	watchAllClients := func() {
+		for _, client := range state.cfg.Clients {
+			watchClient(client)
 		}
 	}
+	watchAllClients()
 	state.refreshSessions(ctx)
 	if outputManager == nil {
 		state.refreshSelectedOutput(ctx)
@@ -1823,13 +1836,15 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			if state.addClientMode {
-				action := state.handleLineInput(b, &state.addClientLine)
+				action := state.handleAddClientInput(b)
 				switch action {
 				case "cancel":
 					state.cancelAddClient()
 				case "submit":
 					if err := state.submitAddClient(ctx); err != nil {
 						state.addClientErr = err.Error()
+					} else {
+						watchAllClients()
 					}
 				}
 				state.render(os.Stdout)
@@ -1893,8 +1908,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				case "save":
 					state.saveNotificationSettings()
 				case "cancel":
-					state.notificationMode = false
-					state.notificationStaged = nil
+					state.closeNotificationSettings()
 				}
 				state.render(os.Stdout)
 				continue
@@ -2751,14 +2765,7 @@ func (s *tuiState) render(out io.Writer) {
 	} else if s.actionMenu {
 		fmt.Fprintln(out, truncate("session actions  ↑/↓ or j/k move  enter choose  esc close", renderWidth))
 	} else if s.lifecycleConfirm != "" {
-		verb := string(s.lifecycleConfirm)
-		if s.lifecycleTarget.Kind == string(model.KindShell) {
-			fmt.Fprintln(out, truncate(verb+" shell session now?  enter terminate process immediately  esc cancel", renderWidth))
-		} else if s.lifecycleConfirm == protocol.SessionLifecycleRestart {
-			fmt.Fprintln(out, truncate("restart selected session?  enter wait for idle  f force-cancel task  esc cancel", renderWidth))
-		} else {
-			fmt.Fprintln(out, truncate(verb+" selected session?  enter now  w wait for idle  f force-cancel task  esc cancel", renderWidth))
-		}
+		fmt.Fprintln(out, truncate("lifecycle confirmation open; use the modal controls", renderWidth))
 	} else if s.hostScoped {
 		fmt.Fprintln(out, truncate("j/k move  enter focus  m actions  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
 	} else {
@@ -2767,10 +2774,11 @@ func (s *tuiState) render(out io.Writer) {
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
 		fmt.Fprintln(out, truncate("No sessions.", renderWidth))
-		s.renderAddClientChoices(out, 5, 1, menuWidth, height)
-		s.renderAddClientPrompt(out, 4, 1, renderWidth)
 		s.renderCreateModal(out, width, modalHeight)
 		s.renderActionModal(out, width, modalHeight)
+		s.renderAddClientModal(out, width, modalHeight)
+		s.renderNotificationModal(out, width, modalHeight)
+		s.renderLifecycleModal(out, width, modalHeight)
 		return
 	}
 	if layout.overlay {
@@ -2850,13 +2858,14 @@ func (s *tuiState) render(out io.Writer) {
 		fmt.Fprintf(out, "\033[%d;1H%-*s%s%s", row, menuWidth, truncate(line, menuWidth), separator, clear)
 		row++
 	}
-	s.renderAddClientChoices(out, row, 1, menuWidth, height)
 	if !layout.overlay {
 		s.renderContent(out, contentX, contentWidth, height)
 	}
-	s.renderAddClientPrompt(out, height, 1, renderWidth)
 	s.renderCreateModal(out, width, modalHeight)
 	s.renderActionModal(out, width, modalHeight)
+	s.renderAddClientModal(out, width, modalHeight)
+	s.renderNotificationModal(out, width, modalHeight)
+	s.renderLifecycleModal(out, width, modalHeight)
 	if s.focused && s.terminal != nil && !s.outputStale {
 		if cursorRow, cursorCol, visible := s.terminal.CursorPosition(height-5, contentWidth); visible {
 			fmt.Fprintf(out, "\033[%d;%dH\033[?25h", 6+cursorRow, contentX+cursorCol)
@@ -2897,31 +2906,6 @@ func (s *tuiState) hostSyncLabel() string {
 	return "  " + strings.Join(parts, "  ")
 }
 
-func (s *tuiState) renderAddClientChoices(out io.Writer, row, x, width, height int) {
-	if !s.addClientMode || row > height-2 {
-		return
-	}
-	for i, host := range s.addClientHosts {
-		if row > height-2 {
-			return
-		}
-		line := fmt.Sprintf("%d %s", i+1, displayField(host.Name))
-		fmt.Fprintf(out, "\033[%d;%dH%-*s |\033[K", row, x, width, truncate(line, width))
-		row++
-	}
-}
-
-func (s *tuiState) renderAddClientPrompt(out io.Writer, row, x, width int) {
-	if !s.addClientMode {
-		return
-	}
-	prompt := fmt.Sprintf("host> %s", s.addClientLine)
-	fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row, x, truncate(prompt, width))
-	if s.addClientErr != "" && row > 1 {
-		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row-1, x, truncate("status: "+sanitizeTerminalText(s.addClientErr), width))
-	}
-}
-
 const (
 	modalReset    = "\033[0m"
 	modalBorder   = "\033[38;2;86;182;194m"
@@ -2933,6 +2917,78 @@ const (
 	modalDisabled = "\033[38;2;100;116;139m"
 	modalDanger   = "\033[1;38;2;255;255;255;48;2;190;24;93m"
 )
+
+type modalRenderLine struct {
+	style string
+	text  string
+}
+
+func renderModalBox(out io.Writer, cols, rows int, lines []modalRenderLine) {
+	if cols < 8 || rows < 3 || len(lines) == 0 {
+		return
+	}
+	maxLines := rows - 2
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+	boxWidth := min(72, max(8, cols-2))
+	innerWidth := boxWidth - 2
+	boxHeight := len(lines) + 2
+	top := max(1, (rows-boxHeight)/2+1)
+	left := max(1, (cols-boxWidth)/2+1)
+	fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+	for index, line := range lines {
+		text := modalCellPad(modalCellTruncate(modalDisplayText(line.text), innerWidth), innerWidth)
+		fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", top+index+1, left, modalBorder, line.style, text, modalReset+modalBorder, modalReset)
+	}
+	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+boxHeight-1, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+}
+
+func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
+	if !s.addClientMode {
+		return
+	}
+	selected := -1
+	if len(s.addClientHosts) > 0 && s.addClientLine == "" {
+		selected = min(max(s.addClientSelected, 0), len(s.addClientHosts)-1)
+	}
+	choices := s.addClientHosts
+	maxChoices := max(1, rows-7)
+	start := max(0, selected-maxChoices/2)
+	if len(choices) > maxChoices {
+		start = min(start, len(choices)-maxChoices)
+		choices = choices[start : start+maxChoices]
+	}
+	lines := []modalRenderLine{{modalTitle, "  Add Ducklion host"}}
+	if len(choices) == 0 {
+		lines = append(lines, modalRenderLine{modalMuted, "  No SSH config hosts found"})
+	}
+	for index, host := range choices {
+		style, prefix := "", "  "
+		if start+index == selected {
+			style, prefix = modalSelected, "› "
+		}
+		lines = append(lines, modalRenderLine{style, fmt.Sprintf("%s%d  %s", prefix, start+index+1, host.Name)})
+	}
+	status := s.addClientErr
+	if status == "" {
+		status = "Choose an SSH host or enter user@host"
+	}
+	lines = append(lines,
+		modalRenderLine{modalStatus, "  " + status},
+		modalRenderLine{modalInput, "  host › " + s.addClientLine},
+		modalRenderLine{modalMuted, "  ↑/↓ select   Enter add   Esc cancel"})
+	if rows < 7 {
+		choice := "No SSH config hosts"
+		if selected >= 0 {
+			choice = fmt.Sprintf("› %d  %s", selected+1, choices[selected-start].Name)
+		} else if s.addClientLine != "" {
+			choice = "Custom SSH target"
+		}
+		lines = []modalRenderLine{{modalSelected, choice}, {modalInput, "host › " + s.addClientLine}}
+	}
+	renderModalBox(out, cols, rows, lines)
+}
 
 type sessionAction struct {
 	ID             string
@@ -3263,40 +3319,6 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 		return
 	}
 	sess := s.sessions[s.selected]
-	if s.lifecycleConfirm != "" {
-		if s.lifecycleTarget.SessionID != "" {
-			sess = s.lifecycleTarget
-		}
-		status := "waiting for confirmation"
-		if s.lifecycleBusy {
-			status = "request accepted; waiting for durable completion"
-		}
-		lines := []string{
-			strings.ToUpper(string(s.lifecycleConfirm)) + " SESSION",
-			"Session: " + displayField(sess.Name) + "  [" + displayField(sess.SessionID) + "]",
-			"Host: " + displayField(sess.Client),
-			"Status: " + status,
-		}
-		switch s.lifecycleConfirm {
-		case protocol.SessionLifecycleDestroy:
-			lines = append(lines, "Destroy permanently removes this PTY and its retained logs.")
-		case protocol.SessionLifecycleEnd:
-			lines = append(lines, "End keeps the session metadata and retained logs for recovery.")
-		default:
-			lines = append(lines, "Restart keeps the session identity and starts a new runtime generation.")
-		}
-		if sess.Kind == string(model.KindShell) {
-			lines = append(lines, "Shell lifecycle terminates the current process immediately; it never waits for idle.")
-		}
-		for i, line := range lines {
-			fmt.Fprintf(out, "\033[%d;%dH%s\033[K", 5+i, x, truncate(line, width))
-		}
-		return
-	}
-	if s.notificationMode {
-		s.renderNotificationSettings(out, x, width, height, sess)
-		return
-	}
 	header := fmt.Sprintf("%s / %s  %s  %s", displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sessionTypeLabel(sess)))
 	if sess.Status == string(model.StatusStopped) && sess.RetainedOutputBytes > 0 {
 		header += fmt.Sprintf("  retained:%s until %s", formatByteCount(sess.RetainedOutputBytes), formatRetainedUntil(sess.RetainedOutputUntilMS))
@@ -3370,32 +3392,88 @@ func notificationLabel(category model.NotificationCategory) string {
 	}
 }
 
-func (s *tuiState) renderNotificationSettings(out io.Writer, x, width, height int, session ducklord.RemoteSession) {
-	header := fmt.Sprintf("Notifications · %s / %s", displayField(session.Client), displayField(session.Name))
-	fmt.Fprintf(out, "\033[5;%dH%s\033[K", x, truncate(header, width))
-	fmt.Fprintf(out, "\033[6;%dH%s\033[K", x, truncate("j/k move · Space toggle · a all · x none · r defaults · Enter save · Esc cancel", width))
-	for i, category := range model.NotificationCategories() {
-		row := 8 + i
-		if row > height {
-			break
-		}
-		cursor := " "
-		if i == s.notificationIndex {
-			cursor = ">"
-		}
+func (s *tuiState) renderNotificationModal(out io.Writer, cols, rows int) {
+	if !s.notificationMode {
+		return
+	}
+	target := s.notificationTarget
+	categories := model.NotificationCategories()
+	selected := min(max(s.notificationIndex, 0), len(categories)-1)
+	maxChoices := max(1, rows-7)
+	start := max(0, selected-maxChoices/2)
+	if len(categories) > maxChoices {
+		start = min(start, len(categories)-maxChoices)
+		categories = categories[start : start+maxChoices]
+	}
+	lines := []modalRenderLine{{modalTitle, fmt.Sprintf("  Notifications · %s / %s", target.Client, target.Name)}}
+	for index, category := range categories {
 		check := " "
 		if s.notificationStaged[category] {
 			check = "x"
 		}
-		line := fmt.Sprintf("%s [%s] %s", cursor, check, notificationLabel(category))
-		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row, x, truncate(line, width))
-	}
-	if s.outputErr != "" {
-		row := 8 + len(model.NotificationCategories()) + 1
-		if row <= height {
-			fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row, x, truncate("Not saved: "+sanitizeTerminalText(s.outputErr), width))
+		style, prefix := "", "  "
+		if start+index == selected {
+			style, prefix = modalSelected, "› "
 		}
+		lines = append(lines, modalRenderLine{style, fmt.Sprintf("%s[%s] %s", prefix, check, notificationLabel(category))})
 	}
+	status := fmt.Sprintf("  ID %s · changes are staged", target.SessionID)
+	if s.outputErr != "" {
+		status = "  Not saved: " + s.outputErr
+	}
+	lines = append(lines, modalRenderLine{modalStatus, status}, modalRenderLine{modalMuted, "  Space toggle · a all · x none · r defaults · Enter save · Esc cancel"})
+	if rows < 7 {
+		category := categories[selected-start]
+		check := " "
+		if s.notificationStaged[category] {
+			check = "x"
+		}
+		lines = []modalRenderLine{{modalSelected, fmt.Sprintf("› [%s] %s", check, notificationLabel(category))}, {modalMuted, "Space toggle · Enter save · Esc"}}
+	}
+	renderModalBox(out, cols, rows, lines)
+}
+
+func (s *tuiState) renderLifecycleModal(out io.Writer, cols, rows int) {
+	if s.lifecycleConfirm == "" {
+		return
+	}
+	target := s.lifecycleTarget
+	verb := strings.ToUpper(string(s.lifecycleConfirm))
+	style := modalTitle
+	if s.lifecycleConfirm == protocol.SessionLifecycleDestroy || s.lifecycleConfirm == protocol.SessionLifecycleEnd {
+		style = modalDanger
+	}
+	detail := "Restart keeps the session identity and starts a new runtime generation."
+	switch s.lifecycleConfirm {
+	case protocol.SessionLifecycleDestroy:
+		detail = "Destroy permanently removes this PTY and its retained logs."
+	case protocol.SessionLifecycleEnd:
+		detail = "End keeps the session metadata and retained logs for recovery."
+	}
+	help := "Enter wait for idle · f force-cancel task · Esc cancel"
+	if s.lifecycleConfirm != protocol.SessionLifecycleRestart {
+		help = "Enter now · w wait for idle · f force-cancel task · Esc cancel"
+	}
+	if s.lifecycleMode != "" {
+		help = "Enter confirm selected mode · Esc cancel"
+	}
+	if target.Kind == string(model.KindShell) {
+		detail = "Shell process ends immediately; it never waits for idle."
+		help = "Enter terminate process immediately · Esc cancel"
+	}
+	if rows < 7 {
+		warning := verb + ": " + detail + "  " + help
+		renderModalBox(out, cols, rows, []modalRenderLine{{style, warning}})
+		return
+	}
+	lines := []modalRenderLine{
+		{style, "  " + verb + " SESSION"},
+		{modalInput, fmt.Sprintf("  %s [%s]", target.Name, target.SessionID)},
+		{modalMuted, fmt.Sprintf("  Host %s · generation %d", target.Client, target.RuntimeGeneration)},
+		{modalStatus, "  " + detail},
+		{modalMuted, "  " + help},
+	}
+	renderModalBox(out, cols, rows, lines)
 }
 
 func (s *tuiState) beginNotificationSettings() {
@@ -3406,10 +3484,18 @@ func (s *tuiState) beginNotificationSettings() {
 	}
 	s.notificationMode = true
 	s.notificationIndex = 0
+	s.notificationTarget = session
+	s.outputErr = ""
 	s.notificationStaged = make(map[model.NotificationCategory]bool)
 	for _, category := range model.NotificationCategories() {
 		s.notificationStaged[category] = s.activity().Enabled(session.InstanceID, session.SessionID, category)
 	}
+}
+
+func (s *tuiState) closeNotificationSettings() {
+	s.notificationMode = false
+	s.notificationStaged = nil
+	s.notificationTarget = ducklord.RemoteSession{}
 }
 
 func (s *tuiState) beginActionMenu() {
@@ -3550,7 +3636,18 @@ func (s *tuiState) handleNotificationInput(input []byte) string {
 }
 
 func (s *tuiState) saveNotificationSettings() {
-	session := s.currentSession()
+	session := s.notificationTarget
+	found := false
+	for _, current := range s.sessions {
+		if current.Client == session.Client && current.InstanceID == session.InstanceID && current.SessionID == session.SessionID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.outputErr = "notification target changed; reopen settings"
+		return
+	}
 	next := s.activity().Clone()
 	for _, category := range model.NotificationCategories() {
 		if err := next.SetEnabled(session.InstanceID, session.SessionID, category, s.notificationStaged[category]); err != nil {
@@ -3563,8 +3660,7 @@ func (s *tuiState) saveNotificationSettings() {
 		return
 	}
 	s.activityState = next
-	s.notificationMode = false
-	s.notificationStaged = nil
+	s.closeNotificationSettings()
 	s.outputErr = "notification settings saved"
 }
 
@@ -3653,6 +3749,7 @@ func (s *tuiState) beginAddClient() {
 	}
 	s.addClientMode = true
 	s.addClientLine = ""
+	s.addClientSelected = 0
 	s.addClientErr = ""
 	s.addClientHosts = hosts
 	s.newSessionMode = false
@@ -3662,8 +3759,31 @@ func (s *tuiState) beginAddClient() {
 func (s *tuiState) cancelAddClient() {
 	s.addClientMode = false
 	s.addClientLine = ""
+	s.addClientSelected = 0
 	s.addClientErr = ""
 	s.addClientHosts = nil
+}
+
+func (s *tuiState) handleAddClientInput(input []byte) string {
+	switch string(input) {
+	case "\x1b[B":
+		if s.addClientSelected < len(s.addClientHosts)-1 {
+			s.addClientSelected++
+		}
+		s.addClientLine = ""
+		return ""
+	case "\x1b[A":
+		if s.addClientSelected > 0 {
+			s.addClientSelected--
+		}
+		s.addClientLine = ""
+		return ""
+	case "\r", "\n":
+		if s.addClientLine == "" && len(s.addClientHosts) > 0 {
+			s.addClientLine = strconv.Itoa(s.addClientSelected + 1)
+		}
+	}
+	return s.handleLineInput(input, &s.addClientLine)
 }
 
 func (s *tuiState) submitAddClient(ctx context.Context) error {
@@ -3700,7 +3820,7 @@ func (s *tuiState) submitAddClient(ctx context.Context) error {
 	if err := ducklord.SaveConfig(s.cfgPath, next); err != nil {
 		return err
 	}
-	s.cfg = next
+	*s.cfg = *next
 	s.cancelAddClient()
 	switch {
 	case installed && probe.Available:
@@ -4267,6 +4387,10 @@ func sessionKey(sess ducklord.RemoteSession) string {
 		return sess.Client + "/" + sess.InstanceID + "/" + sess.SessionID
 	}
 	return sess.Group + "/" + sess.Client + "/" + sess.Name
+}
+
+func bridgeKeyForTUI(client ducklord.Client) string {
+	return strings.Join([]string{client.Name, client.Host, client.User, client.SSH, client.Ducklion}, "\x00")
 }
 
 func terminalOutputKey(sess ducklord.RemoteSession) (ducklord.OutputKey, bool) {
