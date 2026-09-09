@@ -1545,6 +1545,97 @@ func TestTUIAddClientInstallsMissingDucklionAndReprobes(t *testing.T) {
 	}
 }
 
+type blockingAddClientRunner struct {
+	fakeRunner
+	started map[string]chan struct{}
+	release map[string]chan struct{}
+}
+
+func (r *blockingAddClientRunner) ProbeDucklion(_ context.Context, client ducklord.Client) (ducklord.DucklionProbe, error) {
+	close(r.started[client.Name])
+	<-r.release[client.Name] // deliberately ignores cancellation to exercise the stale-result fence
+	return ducklord.DucklionProbe{Available: true, Command: "ducklion", Version: "test", ListOK: true}, nil
+}
+
+func TestAsyncAddClientCancelFencesLateSuccessAndLatestAttemptWins(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "config.yaml")
+	runner := &blockingAddClientRunner{
+		started: map[string]chan struct{}{"a": make(chan struct{}), "b": make(chan struct{})},
+		release: map[string]chan struct{}{"a": make(chan struct{}), "b": make(chan struct{})},
+	}
+	state := &tuiState{cfg: &ducklord.Config{}, cfgPath: config, runner: runner, addClientMode: true, addClientLine: "a"}
+	done := make(chan addClientDoneEvent, 2)
+	if err := state.startAddClient(context.Background(), done); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started["a"]
+	state.cancelAddClient()
+
+	state.addClientMode = true
+	state.addClientLine = "b"
+	if err := state.startAddClient(context.Background(), done); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started["b"]
+	close(runner.release["b"])
+	if !state.completeAddClient(<-done) {
+		t.Fatal("latest add-client attempt was not committed")
+	}
+	close(runner.release["a"])
+	if state.completeAddClient(<-done) {
+		t.Fatal("canceled stale attempt was committed")
+	}
+	loaded, err := ducklord.LoadConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Clients) != 1 || loaded.Clients[0].Name != "b" {
+		t.Fatalf("saved clients = %+v", loaded.Clients)
+	}
+}
+
+func TestAsyncAddClientSaveFailureKeepsModal(t *testing.T) {
+	badPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.Mkdir(badPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := &tuiState{cfg: &ducklord.Config{}, cfgPath: badPath, runner: fakeRunner{}, addClientMode: true, addClientBusy: true, addClientRequestID: 7}
+	result := addClientDoneEvent{id: 7, client: ducklord.Client{Name: "remote", Host: "remote"}, installed: true}
+	if state.completeAddClient(result) {
+		t.Fatal("save failure reported as committed")
+	}
+	if !state.addClientMode || len(state.cfg.Clients) != 0 {
+		t.Fatalf("modal=%v config=%+v", state.addClientMode, state.cfg.Clients)
+	}
+	if !strings.Contains(state.addClientErr, "installed remotely") || !strings.Contains(state.addClientErr, "not saved") {
+		t.Fatalf("addClientErr = %q", state.addClientErr)
+	}
+}
+
+type verifyFailureAddClientRunner struct {
+	fakeRunner
+	probes int
+}
+
+func (r *verifyFailureAddClientRunner) ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error) {
+	r.probes++
+	if r.probes == 1 {
+		return ducklord.DucklionProbe{Available: false}, nil
+	}
+	return ducklord.DucklionProbe{}, errors.New("verification unavailable")
+}
+
+func TestAsyncAddClientReportsInstalledButVerificationFailed(t *testing.T) {
+	runner := &verifyFailureAddClientRunner{}
+	result := runAddClient(context.Background(), runner, ducklord.Client{Name: "remote", Host: "remote"})
+	if !result.installed || result.err == nil {
+		t.Fatalf("result = %+v", result)
+	}
+	if !strings.Contains(result.err.Error(), "installed remotely") || !strings.Contains(result.err.Error(), "not saved") {
+		t.Fatalf("error = %q", result.err)
+	}
+}
+
 func TestTUIRemoveSelectedHostEntryUpdatesCurrentConfig(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "config.yaml")
 	cfg := &ducklord.Config{Clients: []ducklord.Client{

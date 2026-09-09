@@ -242,6 +242,30 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	}, func() string { return "action-menu destroy did not remove the exact selected session" })
 
 	// Add-host uses the same centered modal and persists the selected SSH target.
+	// Make client-c's command entrypoint slow so this real PTY path proves that
+	// the modal remains responsive and a canceled, late probe cannot commit.
+	if out, err := exec.Command(runtime, "exec", "-u", "0", "ducklion-client-c", "sh", "-lc", `mv /usr/local/bin/ducklion /usr/local/bin/ducklion-real && printf '%s\n' '#!/bin/sh' 'if [ -e /tmp/slow-ducklion ]; then sleep 3; fi' 'exec /usr/local/bin/ducklion-real "$@"' >/usr/local/bin/ducklion && chmod 0755 /usr/local/bin/ducklion && touch /tmp/slow-ducklion`).CombinedOutput(); err != nil {
+		t.Fatalf("install slow client-c wrapper: %v: %s", err, out)
+	}
+	start = capture.position()
+	writePTY(t, terminal, "a")
+	assertCurrentCreateModal(t, capture, start, "Add Ducklion host", "client-c", true)
+	writePTY(t, terminal, "client-c\r")
+	capture.waitCurrent(t, "probing client-c...", 2*time.Second)
+	writePTY(t, terminal, "\x1b")
+	waitE2E(t, 500*time.Millisecond, func() bool {
+		screen := capture.currentText()
+		return !strings.Contains(screen, "Add Ducklion host") && !strings.Contains(screen, "probing client-c...")
+	}, func() string {
+		return "add-host modal did not dismiss promptly: " + safeTerminalDiagnostic(capture.currentText())
+	})
+	time.Sleep(3500 * time.Millisecond)
+	if out, err := exec.Command(runtime, "exec", controller, "ducklord", "clients", "--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil || bytes.Contains(out, []byte("client-c")) {
+		t.Fatalf("canceled late add-host changed config: err=%v output=%s", err, out)
+	}
+	if out, err := exec.Command(runtime, "exec", "-u", "0", "ducklion-client-c", "rm", "-f", "/tmp/slow-ducklion").CombinedOutput(); err != nil {
+		t.Fatalf("disable slow client-c wrapper: %v: %s", err, out)
+	}
 	start = capture.position()
 	writePTY(t, terminal, "a")
 	assertCurrentCreateModal(t, capture, start, "Add Ducklion host", "client-c", true)

@@ -93,6 +93,17 @@ type lifecycleDoneEvent struct {
 	err       error
 }
 
+type addClientDoneEvent struct {
+	id         uint64
+	progress   bool
+	status     string
+	client     ducklord.Client
+	probe      ducklord.DucklionProbe
+	installed  bool
+	installErr error
+	err        error
+}
+
 type resizeRequest struct {
 	id     int
 	rows   uint16
@@ -1149,6 +1160,9 @@ type tuiState struct {
 	addClientSelected         int
 	addClientErr              string
 	addClientHosts            []ducklord.SSHHost
+	addClientBusy             bool
+	addClientRequestID        uint64
+	addClientCancel           context.CancelFunc
 	hostScoped                bool
 	ownerName                 string
 	listPaneWidth             int
@@ -1278,6 +1292,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	resizeResults := make(chan resizeDoneEvent, 1)
 	startDone := make(chan startDoneEvent, 1)
 	createDone := make(chan createDiscoveryEvent, 1)
+	addClientDone := make(chan addClientDoneEvent, 1)
 	lifecycleDone := make(chan lifecycleDoneEvent, 1)
 	previewDone := make(chan previewOutputEvent, 1)
 	var previewID uint64
@@ -1478,6 +1493,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	for {
 		select {
 		case <-ctx.Done():
+			state.cancelAddClientWork()
 			if controlOpenCancel != nil {
 				controlOpenCancel()
 			}
@@ -1492,6 +1508,18 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			state.cancelCreateDiscovery()
 			return nil
+		case result := <-addClientDone:
+			if result.progress {
+				if state.addClientMode && state.addClientBusy && result.id == state.addClientRequestID {
+					state.addClientErr = result.status
+					state.render(os.Stdout)
+				}
+				continue
+			}
+			if state.completeAddClient(result) {
+				watchAllClients()
+			}
+			state.render(os.Stdout)
 		case <-ticker.C:
 			if !state.focused && !state.newSessionMode {
 				if !state.eventDriven {
@@ -1836,15 +1864,20 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			if state.addClientMode {
+				if state.addClientBusy {
+					if string(b) == "\x03" || string(b) == "\x1b" || string(b) == "q" {
+						state.cancelAddClient()
+						state.render(os.Stdout)
+					}
+					continue
+				}
 				action := state.handleAddClientInput(b)
 				switch action {
 				case "cancel":
 					state.cancelAddClient()
 				case "submit":
-					if err := state.submitAddClient(ctx); err != nil {
+					if err := state.startAddClient(ctx, addClientDone); err != nil {
 						state.addClientErr = err.Error()
-					} else {
-						watchAllClients()
 					}
 				}
 				state.render(os.Stdout)
@@ -2974,10 +3007,14 @@ func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
 	if status == "" {
 		status = "Choose an SSH host or enter user@host"
 	}
+	help := "  ↑/↓ select   Enter add   Esc cancel"
+	if s.addClientBusy {
+		help = "  Connecting in background   Esc cancel"
+	}
 	lines = append(lines,
 		modalRenderLine{modalStatus, "  " + status},
 		modalRenderLine{modalInput, "  host › " + s.addClientLine},
-		modalRenderLine{modalMuted, "  ↑/↓ select   Enter add   Esc cancel"})
+		modalRenderLine{modalMuted, help})
 	if rows < 7 {
 		choice := "No SSH config hosts"
 		if selected >= 0 {
@@ -3757,11 +3794,23 @@ func (s *tuiState) beginAddClient() {
 }
 
 func (s *tuiState) cancelAddClient() {
+	s.cancelAddClientWork()
 	s.addClientMode = false
 	s.addClientLine = ""
 	s.addClientSelected = 0
 	s.addClientErr = ""
 	s.addClientHosts = nil
+}
+
+func (s *tuiState) cancelAddClientWork() {
+	if s.addClientBusy {
+		s.addClientRequestID++ // fence a completion racing with cancellation
+	}
+	if s.addClientCancel != nil {
+		s.addClientCancel()
+		s.addClientCancel = nil
+	}
+	s.addClientBusy = false
 }
 
 func (s *tuiState) handleAddClientInput(input []byte) string {
@@ -3791,33 +3840,114 @@ func (s *tuiState) submitAddClient(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	probe, err := s.runner.ProbeDucklion(ctx, client)
+	result := runAddClient(ctx, s.runner, client)
+	if result.err != nil {
+		return result.err
+	}
+	return s.applyAddClientResult(result)
+}
+
+func (s *tuiState) startAddClient(ctx context.Context, done chan<- addClientDoneEvent) error {
+	client, err := s.clientFromAddLine(strings.TrimSpace(s.addClientLine))
 	if err != nil {
 		return err
+	}
+	s.cancelAddClientWork()
+	s.addClientRequestID++
+	id := s.addClientRequestID
+	workCtx, cancel := context.WithCancel(ctx)
+	s.addClientCancel = cancel
+	s.addClientBusy = true
+	s.addClientErr = "probing " + client.Name + "..."
+	go func() {
+		result := runAddClientWithProgress(workCtx, s.runner, client, func(status string) {
+			select {
+			case done <- addClientDoneEvent{id: id, progress: true, status: status}:
+			case <-workCtx.Done():
+			}
+		})
+		result.id = id
+		select {
+		case done <- result:
+		case <-ctx.Done():
+		}
+	}()
+	return nil
+}
+
+// completeAddClient applies a matching completion on the TUI event loop. It
+// returns true only when a new host was durably committed.
+func (s *tuiState) completeAddClient(result addClientDoneEvent) bool {
+	if !s.addClientMode || !s.addClientBusy || result.id != s.addClientRequestID {
+		return false
+	}
+	s.addClientBusy = false
+	if s.addClientCancel != nil {
+		s.addClientCancel()
+		s.addClientCancel = nil
+	}
+	if result.err != nil {
+		s.addClientErr = sanitizeTerminalText(result.err.Error())
+		return false
+	}
+	if err := s.applyAddClientResult(result); err != nil {
+		s.addClientErr = sanitizeTerminalText(err.Error())
+		return false
+	}
+	return true
+}
+
+func runAddClient(ctx context.Context, runner remoteRunner, client ducklord.Client) addClientDoneEvent {
+	return runAddClientWithProgress(ctx, runner, client, nil)
+}
+
+func runAddClientWithProgress(ctx context.Context, runner remoteRunner, client ducklord.Client, progress func(string)) addClientDoneEvent {
+	result := addClientDoneEvent{client: client}
+	probe, err := runner.ProbeDucklion(ctx, client)
+	if err != nil {
+		result.err = err
+		return result
 	}
 	var installErr error
 	installed := false
 	if !probe.Available {
-		installedPath, err := s.runner.InstallDucklion(ctx, client, "", "")
+		if progress != nil {
+			progress("installing ducklion on " + client.Name + "...")
+		}
+		installedPath, err := runner.InstallDucklion(ctx, client, "", "")
 		if err != nil {
 			installErr = err
 		} else {
 			installed = true
 			client.Ducklion = installedPath
-			probe, err = s.runner.ProbeDucklion(ctx, client)
+			if progress != nil {
+				progress("verifying ducklion on " + client.Name + "...")
+			}
+			probe, err = runner.ProbeDucklion(ctx, client)
 			if err != nil {
-				return err
+				result.client, result.installed = client, true
+				result.err = fmt.Errorf("ducklion was installed remotely, but host %s was not saved because verification failed: %w", client.Name, err)
+				return result
 			}
 		}
 	}
 	if probe.Available && probe.Command != "" {
 		client.Ducklion = probe.Command
 	}
+	result.client, result.probe, result.installed, result.installErr = client, probe, installed, installErr
+	return result
+}
+
+func (s *tuiState) applyAddClientResult(result addClientDoneEvent) error {
+	client, probe, installed, installErr := result.client, result.probe, result.installed, result.installErr
 	next := s.cfg.Clone()
 	if err := next.AddClient(client); err != nil {
 		return err
 	}
 	if err := ducklord.SaveConfig(s.cfgPath, next); err != nil {
+		if installed {
+			return fmt.Errorf("ducklion was installed remotely, but host %s was not saved: %w", client.Name, err)
+		}
 		return err
 	}
 	*s.cfg = *next
