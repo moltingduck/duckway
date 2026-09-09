@@ -3,6 +3,8 @@ package ducklord
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -143,6 +145,98 @@ func TestTerminalOutputManagerReconnectRestoresAllDesiredAndGeneration(t *testin
 	}
 	if event.Revision.RuntimeGeneration != 2 || event.Key.SessionID != "AAA111" {
 		t.Fatalf("restored generation event=%+v", event)
+	}
+}
+
+func TestTerminalOutputManagerSelectionDoesNotCancelHostRestore(t *testing.T) {
+	root := t.TempDir()
+	restoreA := make(chan struct{})
+	releaseA := make(chan struct{})
+	var reconnecting atomic.Bool
+	var blockOnce sync.Once
+	manager, err := newTerminalOutputManager(context.Background(), 2, unusedTerminalOutputSource{}, SnapshotStore{Root: root},
+		func(ctx context.Context, selection TerminalSelection, key OutputKey, revision OutputRevision, _ *TerminalRenderState) (*PooledTerminal, error) {
+			if reconnecting.Load() && key.SessionID == "AAA111" {
+				blockOnce.Do(func() { close(restoreA) })
+				select {
+				case <-releaseA:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return newPooledTerminal(ctx, OutputStreamMetadata{InstanceID: key.InstanceID, SessionID: key.SessionID, RuntimeGeneration: revision.RuntimeGeneration}, newFakePooledOutput(),
+				PooledTerminalOptions{ExpectedKey: key, ExpectedRevision: revision, Rows: selection.Rows, Cols: selection.Cols, Scrollback: 4, Store: SnapshotStore{Root: root}})
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	base := TerminalSelection{Client: Client{Name: "host"}, InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", RuntimeGeneration: 1, Rows: 2, Cols: 20}
+	a, b := base, base
+	a.SessionID, b.SessionID = "AAA111", "BBB222"
+	manager.Select(a)
+	waitManagerEvent(t, manager)
+	manager.Select(b)
+	waitManagerEvent(t, manager)
+	manager.SyncHost("host", base.InstanceID, false, nil)
+	waitOutputStatus(t, manager, func(status OutputPoolStatus) bool { return status.Count == 2 && status.Connected == 0 })
+	reconnecting.Store(true)
+	manager.SyncHost("host", base.InstanceID, true, []TerminalSelection{a, b})
+	select {
+	case <-restoreA:
+	case <-time.After(time.Second):
+		t.Fatal("host restore did not begin")
+	}
+	requestID := manager.Select(b)
+	close(releaseA)
+	waitOutputStatus(t, manager, func(status OutputPoolStatus) bool {
+		return status.Count == 2 && status.Connected == 2 && status.Active != nil && status.Active.SessionID == b.SessionID
+	})
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case event := <-manager.Events():
+			if event.RequestID == requestID && event.Err == nil && event.Key.SessionID == b.SessionID {
+				return
+			}
+		case <-deadline:
+			t.Fatal("selection did not complete after concurrent host restore")
+		}
+	}
+}
+
+func TestTerminalOutputManagerRestoreContinuesAfterOneOpenFailure(t *testing.T) {
+	root := t.TempDir()
+	var reconnecting atomic.Bool
+	manager, err := newTerminalOutputManager(context.Background(), 2, unusedTerminalOutputSource{}, SnapshotStore{Root: root},
+		func(ctx context.Context, selection TerminalSelection, key OutputKey, revision OutputRevision, _ *TerminalRenderState) (*PooledTerminal, error) {
+			if reconnecting.Load() && key.SessionID == "AAA111" {
+				return nil, errors.New("injected restore failure")
+			}
+			return newPooledTerminal(ctx, OutputStreamMetadata{InstanceID: key.InstanceID, SessionID: key.SessionID, RuntimeGeneration: revision.RuntimeGeneration}, newFakePooledOutput(),
+				PooledTerminalOptions{ExpectedKey: key, ExpectedRevision: revision, Rows: selection.Rows, Cols: selection.Cols, Scrollback: 4, Store: SnapshotStore{Root: root}})
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	base := TerminalSelection{Client: Client{Name: "host"}, InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", RuntimeGeneration: 1, Rows: 2, Cols: 20}
+	a, b := base, base
+	a.SessionID, b.SessionID = "AAA111", "BBB222"
+	manager.Select(a)
+	waitManagerEvent(t, manager)
+	manager.Select(b)
+	waitManagerEvent(t, manager)
+	manager.SyncHost("host", base.InstanceID, false, nil)
+	waitOutputStatus(t, manager, func(status OutputPoolStatus) bool { return status.Connected == 0 })
+	reconnecting.Store(true)
+	manager.SyncHost("host", base.InstanceID, true, []TerminalSelection{a, b})
+	waitOutputStatus(t, manager, func(status OutputPoolStatus) bool {
+		return status.Count == 2 && status.Connected == 1 && status.Active != nil && status.Active.SessionID == b.SessionID
+	})
+	status := manager.Status()
+	if len(status.Desired) != 2 || status.Desired[0].SessionID != a.SessionID || status.Desired[1].SessionID != b.SessionID {
+		t.Fatalf("restore failure changed desired order: %+v", status)
 	}
 }
 

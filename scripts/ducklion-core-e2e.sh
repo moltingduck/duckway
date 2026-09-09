@@ -70,7 +70,9 @@ run_required "pooled PTY replay, lease-fenced framebuffer, and snapshots" ./inte
 run_required "Ducklord live framebuffer selection and reconnect manager" ./internal/ducklord \
   TestTerminalOutputManagerLatestSelectionWinsWithoutBlockingCaller \
   TestTerminalOutputManagerPublishesFinalViewAfterLeaseDetaches \
-  TestTerminalOutputManagerReconnectRestoresAllDesiredAndGeneration
+  TestTerminalOutputManagerReconnectRestoresAllDesiredAndGeneration \
+  TestTerminalOutputManagerSelectionDoesNotCancelHostRestore \
+  TestTerminalOutputManagerRestoreContinuesAfterOneOpenFailure
 
 run_required "bounded multiplexed output delivery" ./internal/ducklion/daemon \
   TestSlowLocalOutputSubscriberReceivesTerminalError \

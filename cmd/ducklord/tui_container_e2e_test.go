@@ -108,6 +108,21 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "kk") // reactivate alpha from its exact saved cursor
 	capture.waitCurrent(t, "client-a alpha tick", 10*time.Second)
 
+	// Drop the real Ducklion daemon while alpha and bash are the two desired
+	// framebuffer subscriptions. Selection must remain responsive and the host
+	// restore must reconnect both views after the daemon returns.
+	if out, err := exec.Command(runtime, "exec", "-u", "duck", "ducklion-client-a", "sh", "-lc", `kill "$(cat $HOME/.duckway/ducklion-daemon.pid)"`).CombinedOutput(); err != nil {
+		t.Fatalf("stop Ducklion during TUI reconnect: %v: %s", err, out)
+	}
+	capture.waitCurrent(t, "RECONNECTING", 10*time.Second)
+	writePTY(t, terminal, "j") // selection remains local while the host is down
+	if out, err := exec.Command(runtime, "exec", "-d", "-u", "duck", "ducklion-client-a", "sh", "-lc", `nohup ducklion daemon >$HOME/.duckway/ducklion-daemon.log 2>&1 </dev/null & echo $! >$HOME/.duckway/ducklion-daemon.pid`).CombinedOutput(); err != nil {
+		t.Fatalf("restart Ducklion during TUI reconnect: %v: %s", err, out)
+	}
+	capture.waitCurrent(t, "DUCKLORD_POOLED_RED", 20*time.Second)
+	writePTY(t, terminal, "k")
+	capture.waitCurrent(t, "client-a alpha tick", 20*time.Second)
+
 	start = capture.position()
 	writePTY(t, terminal, "c")
 	assertCurrentCreateModal(t, capture, start, "new session: choose agent or shell", "Shell session", true)

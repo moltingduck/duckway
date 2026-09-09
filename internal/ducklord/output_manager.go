@@ -106,11 +106,6 @@ func newTerminalOutputManager(parent context.Context, capacity int, source Termi
 }
 
 func (m *TerminalOutputManager) Select(selection TerminalSelection) uint64 {
-	m.hostMu.Lock()
-	for _, cancel := range m.hostCancels {
-		cancel()
-	}
-	m.hostMu.Unlock()
 	m.mu.Lock()
 	m.nextID++
 	id := m.nextID
@@ -244,14 +239,12 @@ func (m *TerminalOutputManager) activate(ctx context.Context, request terminalOu
 			result.terminal = terminal
 			return terminal, openErr
 		})
-		if !errors.Is(err, ErrHandoffBusy) || ctx.Err() != nil {
+		if !outputTransitionBusy(err) || ctx.Err() != nil {
 			break
 		}
-		timer := time.NewTimer(5 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-		case <-timer.C:
+		if !waitOutputTransition(ctx) {
+			err = ctx.Err()
+			break
 		}
 	}
 	result.result, result.err = activation, err
@@ -307,6 +300,7 @@ func (m *TerminalOutputManager) watch(event TerminalOutputEvent) {
 				finalEvent := event
 				finalEvent.FinalView = &view
 				m.publish(finalEvent)
+				return
 			case <-done:
 				select {
 				case view := <-final:
@@ -392,6 +386,7 @@ func (m *TerminalOutputManager) applyHostSync(ctx context.Context, request termi
 		return
 	}
 	desired := m.pool.DesiredForHost(request.clientKey, request.instanceID)
+nextSession:
 	for _, key := range desired {
 		selection, exists := request.sessions[key]
 		if !exists {
@@ -399,11 +394,28 @@ func (m *TerminalOutputManager) applyHostSync(ctx context.Context, request termi
 			continue
 		}
 		revision := OutputRevision{RuntimeGeneration: selection.RuntimeGeneration}
-		activation, err := m.pool.ReplaceDesired(ctx, key, revision, func(openCtx context.Context, key OutputKey, revision OutputRevision, _ uint64) (OutputResource, error) {
-			return m.openResource(openCtx, selection, key, revision)
-		})
-		if err != nil {
-			continue
+		var activation OutputActivation
+		for {
+			var err error
+			activation, err = m.pool.ReplaceDesired(ctx, key, revision, func(openCtx context.Context, key OutputKey, revision OutputRevision, _ uint64) (OutputResource, error) {
+				return m.openResource(openCtx, selection, key, revision)
+			})
+			if !outputTransitionBusy(err) || ctx.Err() != nil {
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					m.publishRestoreError(key, revision, err)
+					continue nextSession
+				}
+				break
+			}
+			if !waitOutputTransition(ctx) {
+				return
+			}
+		}
+		if ctx.Err() != nil {
+			return
 		}
 		status := m.pool.Status()
 		if status.Active != nil && *status.Active == key {
@@ -414,6 +426,32 @@ func (m *TerminalOutputManager) applyHostSync(ctx context.Context, request termi
 			m.publish(event)
 			m.watch(event)
 		}
+	}
+}
+
+func (m *TerminalOutputManager) publishRestoreError(key OutputKey, revision OutputRevision, err error) {
+	m.mu.Lock()
+	current := m.current
+	m.mu.Unlock()
+	if current.selection.key() == key && current.selection.RuntimeGeneration == revision.RuntimeGeneration {
+		m.publish(TerminalOutputEvent{RequestID: current.id, Key: key, Revision: revision, Err: err})
+	}
+}
+
+func outputTransitionBusy(err error) bool {
+	return errors.Is(err, ErrHandoffBusy) || errors.Is(err, ErrRestoreBusy)
+}
+
+func waitOutputTransition(ctx context.Context) bool {
+	timer := time.NewTimer(5 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		if !timer.Stop() {
+			<-timer.C
+		}
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
