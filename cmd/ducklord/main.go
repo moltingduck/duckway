@@ -22,6 +22,7 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/ducklord"
 	"github.com/hackerduck/duckway/internal/version"
+	textwidth "golang.org/x/text/width"
 )
 
 type remoteRunner interface {
@@ -1094,6 +1095,7 @@ type tuiState struct {
 	newSessionMode            bool
 	newSessionClient          string
 	newSessionLine            string
+	newSessionSelected        int
 	newSessionErr             string
 	newSessionStarting        bool
 	newSessionStartGeneration uint64
@@ -2311,6 +2313,7 @@ func (s *tuiState) saveSnapshot(session ducklord.RemoteSession, text string) {
 
 func (s *tuiState) render(out io.Writer) {
 	width, height := terminalSize()
+	modalHeight := height
 	layout := calculateTUILayout(width, s.focused, s.listPaneWidth, s.autoHideList)
 	renderWidth := layout.width
 	if height < 12 {
@@ -2352,9 +2355,8 @@ func (s *tuiState) render(out io.Writer) {
 	if len(s.sessions) == 0 {
 		fmt.Fprintln(out, truncate("No sessions.", renderWidth))
 		s.renderAddClientChoices(out, 5, 1, menuWidth, height)
-		s.renderCreateChoices(out, 5, 1, menuWidth, height)
 		s.renderAddClientPrompt(out, 4, 1, renderWidth)
-		s.renderCreatePrompt(out, 4, 1, renderWidth)
+		s.renderCreateModal(out, width, modalHeight)
 		return
 	}
 	if layout.overlay {
@@ -2435,12 +2437,11 @@ func (s *tuiState) render(out io.Writer) {
 		row++
 	}
 	s.renderAddClientChoices(out, row, 1, menuWidth, height)
-	s.renderCreateChoices(out, row, 1, menuWidth, height)
 	if !layout.overlay {
 		s.renderContent(out, contentX, contentWidth, height)
 	}
 	s.renderAddClientPrompt(out, height, 1, renderWidth)
-	s.renderCreatePrompt(out, height, 1, renderWidth)
+	s.renderCreateModal(out, width, modalHeight)
 	if s.focused && s.terminal != nil && !s.outputStale {
 		if cursorRow, cursorCol, visible := s.terminal.CursorPosition(height-5, contentWidth); visible {
 			fmt.Fprintf(out, "\033[%d;%dH\033[?25h", 6+cursorRow, contentX+cursorCol)
@@ -2506,55 +2507,172 @@ func (s *tuiState) renderAddClientPrompt(out io.Writer, row, x, width int) {
 	}
 }
 
-func (s *tuiState) renderCreateChoices(out io.Writer, row, x, width, height int) {
-	if !s.newSessionMode || row > height-2 {
+const (
+	modalReset    = "\033[0m"
+	modalBorder   = "\033[38;2;86;182;194m"
+	modalTitle    = "\033[1;38;2;129;212;250m"
+	modalMuted    = "\033[38;2;148;163;184m"
+	modalStatus   = "\033[38;2;250;204;21m"
+	modalInput    = "\033[38;2;167;243;208m"
+	modalSelected = "\033[1;38;2;255;255;255;48;2;37;99;235m"
+)
+
+func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
+	if !s.newSessionMode || cols < 8 || rows < 3 {
 		return
 	}
+	if cols < 20 || rows < 7 {
+		choices := s.createModalChoices()
+		selected := s.createModalSelectedIndex(len(choices))
+		choice := ""
+		if selected >= 0 {
+			choice = "› " + choices[selected]
+		}
+		lines := []struct{ style, text string }{
+			{modalTitle, "[ " + s.createHeader() + " ]"},
+			{modalSelected, choice},
+			{modalInput, s.createPromptLabel() + " › " + s.newSessionLine},
+		}
+		start := max(1, (rows-len(lines))/2+1)
+		for i, line := range lines {
+			text := modalCellTruncate(modalDisplayText(line.text), cols)
+			left := max(1, (cols-modalCellWidth(text))/2+1)
+			fmt.Fprintf(out, "\033[%d;%dH%s%s%s\033[K", min(rows, start+i), left, line.style, text, modalReset)
+		}
+		return
+	}
+	boxWidth := min(72, cols-4)
+	innerWidth := boxWidth - 2
+	allChoices := s.createModalChoices()
+	selected := s.createModalSelectedIndex(len(allChoices))
+	choices := allChoices
+	maxChoices := max(1, rows-7)
+	hiddenBefore, hiddenAfter := 0, 0
+	if len(choices) > maxChoices {
+		start := max(0, selected-maxChoices/2)
+		start = min(start, len(choices)-maxChoices)
+		hiddenBefore = start
+		hiddenAfter = len(choices) - start - maxChoices
+		choices = choices[start : start+maxChoices]
+		selected -= start
+	}
+	boxHeight := len(choices) + 6
+	top := max(1, (rows-boxHeight)/2+1)
+	left := max(1, (cols-boxWidth)/2+1)
+	writeRow := func(row int, style, text string) {
+		text = modalCellPad(modalCellTruncate(modalDisplayText(text), innerWidth), innerWidth)
+		fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", row, left, modalBorder, style, text, modalReset+modalBorder, modalReset)
+	}
+	fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+	writeRow(top+1, modalTitle, "  "+s.createHeader())
+	for i, choice := range choices {
+		prefix, style := "  ", ""
+		if i == selected && !s.newSessionDiscovering && !s.newSessionStarting {
+			prefix, style = "› ", modalSelected
+		}
+		writeRow(top+2+i, style, prefix+choice)
+	}
+	status := s.newSessionErr
+	if hiddenBefore+hiddenAfter > 0 {
+		status = fmt.Sprintf("%s  (%d above, %d below)", status, hiddenBefore, hiddenAfter)
+	}
+	writeRow(top+2+len(choices), modalStatus, "  "+status)
+	prompt := fmt.Sprintf("  %s › %s", s.createPromptLabel(), s.newSessionLine)
+	writeRow(top+3+len(choices), modalInput, prompt)
+	writeRow(top+4+len(choices), modalMuted, "  ↑/↓ select   Enter continue   Esc cancel")
+	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+5+len(choices), left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+}
+
+func (s *tuiState) createModalChoices() []string {
 	switch s.newSessionStep {
 	case "kind":
-		fmt.Fprintf(out, "\033[%d;%dH%-*s |\033[K", row, x, width, truncate("1 agent", width))
-		if row+1 <= height-2 {
-			fmt.Fprintf(out, "\033[%d;%dH%-*s |\033[K", row+1, x, width, truncate("2 shell", width))
-		}
+		return []string{"1  Agent session", "2  Shell session"}
 	case "host":
+		choices := make([]string, 0, len(s.cfg.Clients))
 		for i, client := range s.cfg.Clients {
-			if row > height-2 {
-				return
-			}
-			line := fmt.Sprintf("%d %s %s", i+1, displayField(client.Name), displayField(client.Target()))
-			fmt.Fprintf(out, "\033[%d;%dH%-*s |\033[K", row, x, width, truncate(line, width))
-			row++
+			choices = append(choices, fmt.Sprintf("%d  %s  %s", i+1, displayField(client.Name), displayField(client.Target())))
 		}
+		return choices
 	case "project":
+		choices := make([]string, 0, len(s.newSessionProjects))
 		for i, project := range s.newSessionProjects {
-			if row > height-2 {
-				return
-			}
-			line := fmt.Sprintf("%d %s %s", i+1, displayField(project.Name), displayField(project.Path))
-			fmt.Fprintf(out, "\033[%d;%dH%-*s |\033[K", row, x, width, truncate(line, width))
-			row++
+			choices = append(choices, fmt.Sprintf("%d  %s  %s", i+1, displayField(project.Name), displayField(project.Path)))
 		}
+		return choices
 	case "agent":
+		choices := make([]string, 0, len(s.newSessionAgents))
 		for i, agent := range s.newSessionAgents {
-			if row > height-2 {
-				return
-			}
-			line := fmt.Sprintf("%d %s", i+1, displayField(agent.Type))
-			fmt.Fprintf(out, "\033[%d;%dH%-*s |\033[K", row, x, width, truncate(line, width))
-			row++
+			choices = append(choices, fmt.Sprintf("%d  %s", i+1, displayField(agent.Type)))
 		}
+		return choices
+	case "handle":
+		return nil
+	default:
+		return nil
 	}
 }
 
-func (s *tuiState) renderCreatePrompt(out io.Writer, row, x, width int) {
-	if !s.newSessionMode {
-		return
+func (s *tuiState) createModalSelectedIndex(choiceCount int) int {
+	if choiceCount == 0 {
+		return -1
 	}
-	prompt := fmt.Sprintf("%s> %s", s.createPromptLabel(), s.newSessionLine)
-	fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row, x, truncate(prompt, width))
-	if s.newSessionErr != "" && row > 1 {
-		fmt.Fprintf(out, "\033[%d;%dH%s\033[K", row-1, x, truncate("status: "+sanitizeTerminalText(s.newSessionErr), width))
+	return min(max(s.newSessionSelected, 0), choiceCount-1)
+}
+
+func modalDisplayText(value string) string {
+	value = sanitizeTerminalText(value)
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, value)
+}
+
+func modalRuneWidth(r rune) int {
+	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) {
+		return 0
 	}
+	switch textwidth.LookupRune(r).Kind() {
+	case textwidth.EastAsianWide, textwidth.EastAsianFullwidth:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func modalCellWidth(value string) int {
+	width := 0
+	for _, r := range value {
+		width += modalRuneWidth(r)
+	}
+	return width
+}
+
+func modalCellTruncate(value string, cells int) string {
+	if cells <= 0 {
+		return ""
+	}
+	if modalCellWidth(value) <= cells {
+		return value
+	}
+	ellipsis := "…"
+	limit := max(0, cells-modalCellWidth(ellipsis))
+	var b strings.Builder
+	used := 0
+	for _, r := range value {
+		w := modalRuneWidth(r)
+		if used+w > limit {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	return b.String() + ellipsis
+}
+
+func modalCellPad(value string, cells int) string {
+	return value + strings.Repeat(" ", max(0, cells-modalCellWidth(value)))
 }
 
 func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
@@ -2968,6 +3086,7 @@ func (s *tuiState) beginCreate() {
 	s.newSessionMode = true
 	s.newSessionClient = clientName
 	s.newSessionLine = ""
+	s.newSessionSelected = 0
 	s.newSessionErr = ""
 	s.newSessionStarting = false
 	s.cancelCreateDiscovery()
@@ -2986,6 +3105,7 @@ func (s *tuiState) cancelCreate() {
 	s.cancelCreateDiscovery()
 	s.newSessionMode = false
 	s.newSessionLine = ""
+	s.newSessionSelected = 0
 	s.newSessionErr = ""
 	s.newSessionStarting = false
 	s.newSessionStep = ""
@@ -3059,6 +3179,12 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 			return "", "", nil, false, fmt.Errorf("choose 1 (agent) or 2 (shell)")
 		}
 		s.newSessionStep, s.newSessionLine, s.newSessionErr = "host", "", "choose a connected host"
+		for i, client := range s.cfg.Clients {
+			if client.Name == s.newSessionClient {
+				s.newSessionSelected = i
+				break
+			}
+		}
 		return "", "", nil, false, nil
 	case "host":
 		clientName, err := s.resolveCreateClient(line)
@@ -3074,6 +3200,7 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 		}
 		s.newSessionClient = clientName
 		s.newSessionLine = ""
+		s.newSessionSelected = 0
 		s.newSessionErr = "loading projects..."
 		s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "projects", client: clientName}, func(workCtx context.Context) createDiscoveryEvent {
 			projects, projectErr := s.runner.Projects(workCtx, client)
@@ -3092,6 +3219,7 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 		s.newSessionProject = project
 		s.newSessionCWD = project.Path
 		s.newSessionLine = ""
+		s.newSessionSelected = 0
 		s.newSessionErr = "checking available runtime..."
 		s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "agents", client: s.newSessionClient, project: project}, func(workCtx context.Context) createDiscoveryEvent {
 			agents, agentErr := s.runner.Agents(workCtx, client, project.Path)
@@ -3107,6 +3235,7 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 		s.newSessionCommand = command
 		s.newSessionStep = "handle"
 		s.newSessionLine = ""
+		s.newSessionSelected = 0
 		s.newSessionErr = fmt.Sprintf("agent: %s; empty handle uses %s", agent, defaultSessionHandle(s.newSessionCWD))
 		return "", "", nil, false, nil
 	case "handle":
@@ -3218,6 +3347,7 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 		}
 		s.newSessionProjects = append([]ducklord.RemoteProject(nil), projects...)
 		s.newSessionStep = "project"
+		s.newSessionSelected = 0
 		s.newSessionErr = fmt.Sprintf("host: %s; choose a configured project", event.client)
 	case "agents":
 		if s.newSessionKind == model.KindShell {
@@ -3242,6 +3372,7 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 		}
 		s.newSessionAgents = agents
 		s.newSessionStep, s.newSessionErr = "agent", fmt.Sprintf("project: %s; choose an available agent", event.project.Path)
+		s.newSessionSelected = 0
 	case "validate":
 		return event.client, event.sessionName, event.args, true
 	}
@@ -3371,6 +3502,23 @@ func (s *tuiState) createPromptLabel() string {
 }
 
 func (s *tuiState) handleCreateInput(b []byte) string {
+	choices := s.createModalChoices()
+	switch string(b) {
+	case "\x1b[B":
+		if len(choices) > 0 && s.newSessionSelected < len(choices)-1 {
+			s.newSessionSelected++
+		}
+		return ""
+	case "\x1b[A":
+		if s.newSessionSelected > 0 {
+			s.newSessionSelected--
+		}
+		return ""
+	case "\r", "\n":
+		if s.newSessionLine == "" && len(choices) > 0 && s.newSessionStep != "handle" {
+			s.newSessionLine = strconv.Itoa(s.createModalSelectedIndex(len(choices)) + 1)
+		}
+	}
 	return s.handleLineInput(b, &s.newSessionLine)
 }
 

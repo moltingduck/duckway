@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
@@ -1484,6 +1485,61 @@ func TestTUIRightClickContentPaneKeepsSelectionButAttaches(t *testing.T) {
 	}
 	if state.selected != 1 {
 		t.Fatalf("selected changed to %d", state.selected)
+	}
+}
+
+func TestCreateModalIsCenteredColoredAndSanitizesRemoteLabels(t *testing.T) {
+	state := &tuiState{newSessionMode: true, newSessionStep: "project", newSessionClient: "host", newSessionErr: "choose project",
+		newSessionProjects: []ducklord.RemoteProject{{Name: "中文專案", Path: "/work/安全"}, {Name: "evil\u202Espoof", Path: "/work/evil"}}}
+	var output bytes.Buffer
+	state.renderCreateModal(&output, 80, 24)
+	rendered := output.String()
+	if !strings.Contains(rendered, "\033[9;5H") || !strings.Contains(rendered, modalBorder) || !strings.Contains(rendered, modalSelected) {
+		t.Fatalf("modal is not centered/colored: %q", rendered)
+	}
+	if !strings.Contains(rendered, "中文專案") || strings.ContainsRune(rendered, '\u202e') || !utf8.ValidString(rendered) {
+		t.Fatalf("modal Unicode sanitization failed: %q", rendered)
+	}
+	if strings.Count(rendered, "╭") != 1 || strings.Count(rendered, "╯") != 1 {
+		t.Fatalf("modal frame missing: %q", rendered)
+	}
+}
+
+func TestCreateModalKeyboardSelectionFeedsExistingWizard(t *testing.T) {
+	state := &tuiState{newSessionMode: true, newSessionStep: "kind"}
+	if action := state.handleCreateInput([]byte("\x1b[B")); action != "" || state.newSessionSelected != 1 {
+		t.Fatalf("down action=%q selected=%d", action, state.newSessionSelected)
+	}
+	if action := state.handleCreateInput([]byte("\r")); action != "submit" || state.newSessionLine != "2" {
+		t.Fatalf("enter action=%q line=%q", action, state.newSessionLine)
+	}
+	state.newSessionStep, state.newSessionLine = "handle", ""
+	if action := state.handleCreateInput([]byte("j")); action != "" || state.newSessionLine != "j" {
+		t.Fatalf("handle input action=%q line=%q", action, state.newSessionLine)
+	}
+}
+
+func TestCreateModalHandlesTinyTerminal(t *testing.T) {
+	state := &tuiState{newSessionMode: true, newSessionStep: "kind"}
+	var output bytes.Buffer
+	state.renderCreateModal(&output, 12, 4)
+	if strings.Contains(output.String(), "\033[-") || !utf8.ValidString(output.String()) {
+		t.Fatalf("invalid tiny modal output: %q", output.String())
+	}
+	if !strings.Contains(output.String(), "Agent") || !strings.Contains(output.String(), "type") {
+		t.Fatalf("tiny modal omitted selection/input: %q", output.String())
+	}
+}
+
+func TestCreateModalScrollsToSelectedChoice(t *testing.T) {
+	state := &tuiState{newSessionMode: true, newSessionStep: "project", newSessionSelected: 5}
+	for i := 1; i <= 10; i++ {
+		state.newSessionProjects = append(state.newSessionProjects, ducklord.RemoteProject{Name: fmt.Sprintf("project-%d", i), Path: fmt.Sprintf("/p/%d", i)})
+	}
+	var output bytes.Buffer
+	state.renderCreateModal(&output, 50, 8)
+	if !strings.Contains(output.String(), "project-6") || !strings.Contains(output.String(), modalSelected) {
+		t.Fatalf("selected choice was not visible: %q", output.String())
 	}
 }
 
