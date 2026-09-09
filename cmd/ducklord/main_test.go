@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/ducklord"
@@ -924,6 +925,127 @@ func TestTUIOrganizationPersistenceFailureKeepsLocalChangeAndWarns(t *testing.T)
 	state.moveSelectedSession(-1)
 	if state.sessions[0].SessionID != "BBB222" || !strings.Contains(state.outputErr, "changed locally but was not saved") {
 		t.Fatalf("sessions=%+v error=%q", state.sessions, state.outputErr)
+	}
+}
+
+func TestTUICustomGroupModalCRUDUsesStableIdentities(t *testing.T) {
+	instanceA, instanceB := string(model.NewInstanceID()), string(model.NewInstanceID())
+	state := &tuiState{
+		activityState: ducklord.NewActivityState(),
+		activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "private", "state.json")},
+		sessions: []ducklord.RemoteSession{
+			{Client: "a", InstanceID: instanceA, SessionID: "AAA111", Name: "same"},
+			{Client: "b", InstanceID: instanceB, SessionID: "BBB222", Name: "same"},
+		},
+	}
+	state.applyOrganizationOrder()
+	create := func(name string) {
+		state.beginGroupMenu()
+		state.handleGroupMenuInput([]byte("\r"))
+		state.handleGroupMenuInput([]byte(name))
+		state.handleGroupMenuInput([]byte("\r"))
+		if state.groupMenu {
+			t.Fatalf("create %q remained open: %s", name, state.groupMenuErr)
+		}
+	}
+	create("正式環境")
+	create("正式環境")
+	groups := state.activity().Organization.Groups
+	if len(groups) != 2 || groups[0].ID == groups[1].ID || groups[0].Name != groups[1].Name {
+		t.Fatalf("duplicate-name groups = %+v", groups)
+	}
+	firstID, secondID := groups[0].ID, groups[1].ID
+	identityA := ducklord.SessionIdentity{InstanceID: instanceA, SessionID: "AAA111"}
+
+	state.selected = 0
+	state.beginGroupMenu()
+	state.groupMenuAction, state.groupMenuStep, state.groupMenuTarget = "move", "group", firstID
+	state.commitGroupOperation()
+	if state.activity().Organization.Membership[identityA] != firstID {
+		t.Fatalf("membership = %+v", state.activity().Organization.Membership)
+	}
+
+	state.beginGroupMenu()
+	state.groupMenuAction, state.groupMenuStep, state.groupMenuTarget, state.groupMenuLine = "rename", "name", secondID, "已改名"
+	state.commitGroupName()
+	if state.activity().Organization.Groups[1].ID != secondID || state.activity().Organization.Groups[1].Name != "已改名" {
+		t.Fatalf("rename changed identity: %+v", state.activity().Organization.Groups)
+	}
+
+	state.beginGroupMenu()
+	state.groupMenuAction, state.groupMenuStep, state.groupMenuTarget = "group-up", "group", secondID
+	state.commitGroupOperation()
+	if state.activity().Organization.GroupOrders[ducklord.OrganizationCustom][1] != secondID {
+		t.Fatalf("group order = %+v first=%s second=%s", state.activity().Organization.GroupOrders, firstID, secondID)
+	}
+
+	state.beginGroupMenu()
+	state.groupMenuAction, state.groupMenuStep, state.groupMenuTarget = "delete", "group", firstID
+	state.commitGroupOperation()
+	if len(state.activity().Organization.Groups) != 1 || state.activity().Organization.Membership[identityA] != "" {
+		t.Fatalf("delete state groups=%+v membership=%+v", state.activity().Organization.Groups, state.activity().Organization.Membership)
+	}
+}
+
+func TestTUICustomGroupMoveRejectsStaleCapturedSession(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	groupID := uuid.NewString()
+	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")}, sessions: []ducklord.RemoteSession{
+		{Client: "a", InstanceID: instance, SessionID: "AAA111"},
+	}}
+	state.activity().Organization.Groups = []ducklord.CustomGroup{{ID: groupID, Name: "target"}}
+	state.activity().Organization.GroupOrders[ducklord.OrganizationCustom] = []string{ducklord.UngroupedGroupID, groupID}
+	state.beginGroupMenu()
+	state.sessions = []ducklord.RemoteSession{{Client: "a", InstanceID: instance, SessionID: "BBB222"}}
+	state.groupMenuAction, state.groupMenuStep, state.groupMenuTarget = "move", "group", groupID
+	state.commitGroupOperation()
+	if !state.groupMenu || !strings.Contains(state.groupMenuErr, "no longer exists") || len(state.activity().Organization.Membership) != 0 {
+		t.Fatalf("stale move modal=%v err=%q membership=%+v", state.groupMenu, state.groupMenuErr, state.activity().Organization.Membership)
+	}
+}
+
+func TestTUICustomGroupModalIsCenteredAndColored(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	state := &tuiState{activityState: ducklord.NewActivityState(), sessions: []ducklord.RemoteSession{{Client: "host", InstanceID: instance, SessionID: "AAA111"}}}
+	state.beginGroupMenu()
+	var out strings.Builder
+	state.renderGroupModal(&out, 80, 24)
+	raw := out.String()
+	if !strings.Contains(raw, "\033[7;5H") || !strings.Contains(raw, modalBorder) || !strings.Contains(raw, modalSelected) || !strings.Contains(raw, "Custom groups") {
+		t.Fatalf("group modal geometry/style = %q", raw)
+	}
+}
+
+func TestTUICustomGroupNameAcceptsQAndSaveFailureRollsBack(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	badPath := filepath.Join(t.TempDir(), "state.json")
+	if err := os.Mkdir(badPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: badPath}, sessions: []ducklord.RemoteSession{{InstanceID: instance, SessionID: "AAA111"}}}
+	state.beginGroupMenu()
+	state.handleGroupMenuInput([]byte("\r"))
+	for _, input := range []byte("qa") {
+		state.handleGroupMenuInput([]byte{input})
+	}
+	state.handleGroupMenuInput([]byte("\r"))
+	if !state.groupMenu || !strings.Contains(state.groupMenuErr, "not saved") || len(state.activity().Organization.Groups) != 0 {
+		t.Fatalf("modal=%v line=%q err=%q groups=%+v", state.groupMenu, state.groupMenuLine, state.groupMenuErr, state.activity().Organization.Groups)
+	}
+	if order := state.activity().Organization.GroupOrders[ducklord.OrganizationCustom]; len(order) != 1 || order[0] != ducklord.UngroupedGroupID {
+		t.Fatalf("default custom group order = %+v", order)
+	}
+}
+
+func TestTUICustomGroupLongMenuKeepsSelectionVisible(t *testing.T) {
+	state := &tuiState{activityState: ducklord.NewActivityState(), groupMenu: true, groupMenuStep: "group", groupMenuAction: "rename", groupMenuIndex: 11}
+	for index := 0; index < 12; index++ {
+		state.activity().Organization.Groups = append(state.activity().Organization.Groups, ducklord.CustomGroup{ID: uuid.NewString(), Name: fmt.Sprintf("group-%02d", index)})
+	}
+	var out strings.Builder
+	state.renderGroupModal(&out, 42, 10)
+	if !strings.Contains(out.String(), "group-11") || !strings.Contains(out.String(), modalSelected) {
+		t.Fatalf("selected group is not visible: %q", out.String())
 	}
 }
 

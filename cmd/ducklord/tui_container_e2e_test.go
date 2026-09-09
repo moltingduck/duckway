@@ -96,6 +96,52 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\x0a") // restore alpha above bash via Ctrl-J
 	writePTY(t, terminal, "k")    // return selection to alpha
 	capture.waitCurrent(t, "client-a alpha tick", 2*time.Second)
+
+	// Custom-group management is entirely local. Exercise Unicode duplicate
+	// names, exact membership, rename, ordering, and delete-to-Ungrouped.
+	loadGroupState := func() (ducklord.ActivityState, bool) {
+		out, readErr := exec.Command(runtime, "exec", controller, "cat", "/root/.ducklord/state.json").CombinedOutput()
+		var current ducklord.ActivityState
+		if readErr != nil || json.Unmarshal(out, &current) != nil {
+			return ducklord.ActivityState{}, false
+		}
+		return current, true
+	}
+	writePTY(t, terminal, "g\r正式環境\r")
+	waitE2E(t, 2*time.Second, func() bool { state, ok := loadGroupState(); return ok && len(state.Organization.Groups) == 1 }, func() string { return "first custom group was not saved" })
+	writePTY(t, terminal, "g\x1b[B\r\x1b[B\r")
+	capture.waitCurrent(t, "[正式環境]", 2*time.Second)
+	writePTY(t, terminal, "g\r正式環境\r")
+	waitE2E(t, 2*time.Second, func() bool { state, ok := loadGroupState(); return ok && len(state.Organization.Groups) == 2 }, func() string { return "duplicate-name custom group was not saved" })
+	writePTY(t, terminal, "g\x1b[B\x1b[B\r")
+	capture.waitCurrent(t, "正式環境 ·", 2*time.Second)
+	writePTY(t, terminal, "\x1b[B\r備援q\r")
+	waitE2E(t, 2*time.Second, func() bool {
+		state, ok := loadGroupState()
+		return ok && len(state.Organization.Groups) == 2 && state.Organization.Groups[1].Name == "備援q"
+	}, func() string { return "exact duplicate-name group was not renamed" })
+	writePTY(t, terminal, "g\x1b[B\x1b[B\x1b[B\x1b[B\r\x1b[B\r")
+	waitE2E(t, 2*time.Second, func() bool {
+		state, ok := loadGroupState()
+		return ok && len(state.Organization.GroupOrders[ducklord.OrganizationCustom]) >= 3 && state.Organization.GroupOrders[ducklord.OrganizationCustom][1] == state.Organization.Groups[1].ID
+	}, func() string { return "custom group order was not saved" })
+	writePTY(t, terminal, "g\x1b[B\x1b[B\x1b[B\r\x1b[B\r")
+	waitE2E(t, 2*time.Second, func() bool {
+		state, ok := loadGroupState()
+		return ok && len(state.Organization.Groups) == 1 && len(state.Organization.Membership) == 0
+	}, func() string { return "custom group delete did not move the session to Ungrouped" })
+	groupStateRaw, err := exec.Command(runtime, "exec", controller, "cat", "/root/.ducklord/state.json").CombinedOutput()
+	if err != nil {
+		t.Fatalf("read custom-group state: %v: %s", err, groupStateRaw)
+	}
+	var groupState ducklord.ActivityState
+	if err := json.Unmarshal(groupStateRaw, &groupState); err != nil || len(groupState.Organization.Groups) != 1 || groupState.Organization.Groups[0].Name != "備援q" || len(groupState.Organization.Membership) != 0 {
+		t.Fatalf("unexpected custom-group state=%+v err=%v", groupState.Organization, err)
+	}
+	alphaAfterGroups, ok := findContainerSession(t, runtime, controller, "client-a", alpha.SessionID)
+	if !ok || alphaAfterGroups.RuntimeGeneration != alpha.RuntimeGeneration {
+		t.Fatalf("local group operations mutated remote alpha: before=%+v after=%+v", alpha, alphaAfterGroups)
+	}
 	start := capture.position()
 	writePTY(t, terminal, "j") // alpha -> bash, without focusing the PTY
 	capture.waitCurrent(t, "DUCKLORD_POOLED_RED", 10*time.Second)

@@ -19,6 +19,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/ducklord"
@@ -1182,6 +1183,14 @@ type tuiState struct {
 	lifecycleTarget           ducklord.RemoteSession
 	lifecycleMode             protocol.SessionLifecycleMode
 	lifecycleBusy             bool
+	groupMenu                 bool
+	groupMenuStep             string
+	groupMenuAction           string
+	groupMenuIndex            int
+	groupMenuLine             string
+	groupMenuErr              string
+	groupMenuTarget           string
+	groupMenuSession          ducklord.SessionIdentity
 	pooledOutput              bool
 }
 
@@ -1949,6 +1958,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			if state.groupMenu {
+				state.handleGroupMenuInput(b)
+				state.render(os.Stdout)
+				continue
+			}
 			if state.actionMenu {
 				action := state.handleActionMenuInput(b)
 				state.render(os.Stdout)
@@ -2072,6 +2086,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 			case "organize":
 				state.cycleOrganizationMode()
+			case "groups":
+				state.beginGroupMenu()
 			case "reorder-up":
 				state.moveSelectedSession(-1)
 			case "reorder-down":
@@ -2492,20 +2508,7 @@ func (s *tuiState) organizationGroupLabel(session ducklord.RemoteSession) string
 	}
 	for _, group := range s.activity().Organization.Groups {
 		if group.ID == id {
-			duplicates := 0
-			for _, candidate := range s.activity().Organization.Groups {
-				if candidate.Name == group.Name {
-					duplicates++
-				}
-			}
-			if duplicates > 1 {
-				suffix := group.ID
-				if len(suffix) > 4 {
-					suffix = suffix[:4]
-				}
-				return group.Name + " · " + suffix
-			}
-			return group.Name
+			return s.customGroupDisplayName(group)
 		}
 	}
 	return "Ungrouped"
@@ -2639,6 +2642,260 @@ func (s *tuiState) moveSelectedSession(direction int) {
 	} else {
 		s.outputErr = "session order saved"
 	}
+}
+
+var groupMenuActions = []struct{ id, label string }{
+	{"create", "Create group"},
+	{"move", "Move selected session"},
+	{"rename", "Rename group"},
+	{"delete", "Delete group"},
+	{"group-up", "Move group up"},
+	{"group-down", "Move group down"},
+}
+
+func (s *tuiState) beginGroupMenu() {
+	if s.organizationMode() != ducklord.OrganizationCustom {
+		s.outputErr = "custom groups are available in custom organization mode"
+		return
+	}
+	identity, _ := ducklord.IdentityFromSession(s.currentSession())
+	s.groupMenu = true
+	s.groupMenuStep = "action"
+	s.groupMenuAction = ""
+	s.groupMenuIndex = 0
+	s.groupMenuLine = ""
+	s.groupMenuErr = ""
+	s.groupMenuTarget = ""
+	s.groupMenuSession = identity
+	s.actionMenu = false
+	s.outputErr = ""
+}
+
+func (s *tuiState) closeGroupMenu() {
+	s.groupMenu = false
+	s.groupMenuStep = ""
+	s.groupMenuAction = ""
+	s.groupMenuIndex = 0
+	s.groupMenuLine = ""
+	s.groupMenuErr = ""
+	s.groupMenuTarget = ""
+	s.groupMenuSession = ducklord.SessionIdentity{}
+}
+
+func (s *tuiState) customGroupsInOrder() []ducklord.CustomGroup {
+	groups := s.activity().Organization.Groups
+	byID := make(map[string]ducklord.CustomGroup, len(groups))
+	for _, group := range groups {
+		byID[group.ID] = group
+	}
+	ordered := make([]ducklord.CustomGroup, 0, len(groups))
+	seen := make(map[string]bool, len(groups))
+	for _, id := range s.activity().Organization.GroupOrders[ducklord.OrganizationCustom] {
+		if group, ok := byID[id]; ok {
+			ordered = append(ordered, group)
+			seen[id] = true
+		}
+	}
+	for _, group := range groups {
+		if !seen[group.ID] {
+			ordered = append(ordered, group)
+		}
+	}
+	return ordered
+}
+
+func (s *tuiState) groupMenuChoices() []ducklord.CustomGroup {
+	groups := s.customGroupsInOrder()
+	if s.groupMenuStep == "group" && s.groupMenuAction == "move" {
+		return append([]ducklord.CustomGroup{{ID: ducklord.UngroupedGroupID, Name: "Ungrouped"}}, groups...)
+	}
+	return groups
+}
+
+func (s *tuiState) handleGroupMenuInput(input []byte) {
+	text := string(input)
+	if s.groupMenuStep == "name" {
+		if action := s.handleLineInput(input, &s.groupMenuLine); action == "submit" {
+			s.commitGroupName()
+		} else if action == "cancel" {
+			s.closeGroupMenu()
+		}
+		return
+	}
+	if text == "\x1b" || text == "\x03" || text == "q" {
+		s.closeGroupMenu()
+		return
+	}
+	choiceCount := len(groupMenuActions)
+	if s.groupMenuStep == "group" {
+		choiceCount = len(s.groupMenuChoices())
+	}
+	switch text {
+	case "j", "\x1b[B":
+		if s.groupMenuIndex < choiceCount-1 {
+			s.groupMenuIndex++
+		}
+		return
+	case "k", "\x1b[A":
+		if s.groupMenuIndex > 0 {
+			s.groupMenuIndex--
+		}
+		return
+	case "\r", "\n":
+	default:
+		return
+	}
+	if choiceCount == 0 {
+		s.groupMenuErr = "create a custom group first"
+		return
+	}
+	if s.groupMenuStep == "action" {
+		s.groupMenuAction = groupMenuActions[s.groupMenuIndex].id
+		if s.groupMenuAction == "move" && s.groupMenuSession.Key() == "" {
+			s.groupMenuErr = "moving a session requires a synchronized session identity"
+			return
+		}
+		s.groupMenuIndex = 0
+		s.groupMenuErr = ""
+		if s.groupMenuAction == "create" {
+			s.groupMenuStep = "name"
+		} else {
+			s.groupMenuStep = "group"
+		}
+		return
+	}
+	choices := s.groupMenuChoices()
+	s.groupMenuTarget = choices[s.groupMenuIndex].ID
+	if s.groupMenuAction == "rename" {
+		s.groupMenuStep = "name"
+		s.groupMenuIndex = 0
+		return
+	}
+	s.commitGroupOperation()
+}
+
+func (s *tuiState) commitGroupName() {
+	name := strings.TrimSpace(s.groupMenuLine)
+	if err := ducklord.ValidateCustomGroupName(name); err != nil {
+		s.groupMenuErr = err.Error()
+		return
+	}
+	next := s.activity().Clone()
+	message := "group created"
+	if s.groupMenuAction == "create" {
+		id := uuid.NewString()
+		next.Organization.Groups = append(next.Organization.Groups, ducklord.CustomGroup{ID: id, Name: name})
+		next.Organization.GroupOrders[ducklord.OrganizationCustom] = append(next.Organization.GroupOrders[ducklord.OrganizationCustom], id)
+	} else {
+		found := false
+		for index := range next.Organization.Groups {
+			if next.Organization.Groups[index].ID == s.groupMenuTarget {
+				next.Organization.Groups[index].Name = name
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.groupMenuErr = "selected group no longer exists"
+			return
+		}
+		message = "group renamed"
+	}
+	s.commitGroupState(next, message)
+}
+
+func (s *tuiState) commitGroupOperation() {
+	next := s.activity().Clone()
+	target := s.groupMenuTarget
+	switch s.groupMenuAction {
+	case "move":
+		found := false
+		for _, session := range s.sessions {
+			if identity, ok := ducklord.IdentityFromSession(session); ok && identity == s.groupMenuSession {
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.groupMenuErr = "selected session no longer exists"
+			return
+		}
+		if target == ducklord.UngroupedGroupID {
+			delete(next.Organization.Membership, s.groupMenuSession)
+		} else {
+			next.Organization.Membership[s.groupMenuSession] = target
+		}
+		s.commitGroupState(next, "session moved")
+	case "delete":
+		found := false
+		groups := next.Organization.Groups[:0]
+		for _, group := range next.Organization.Groups {
+			if group.ID == target {
+				found = true
+				continue
+			}
+			groups = append(groups, group)
+		}
+		if !found {
+			s.groupMenuErr = "selected group no longer exists"
+			return
+		}
+		next.Organization.Groups = groups
+		for identity, group := range next.Organization.Membership {
+			if group == target {
+				delete(next.Organization.Membership, identity)
+			}
+		}
+		order := next.Organization.GroupOrders[ducklord.OrganizationCustom][:0]
+		for _, id := range next.Organization.GroupOrders[ducklord.OrganizationCustom] {
+			if id != target {
+				order = append(order, id)
+			}
+		}
+		next.Organization.GroupOrders[ducklord.OrganizationCustom] = order
+		s.commitGroupState(next, "group deleted; sessions moved to Ungrouped")
+	case "group-up", "group-down":
+		order := next.Organization.GroupOrders[ducklord.OrganizationCustom]
+		index := -1
+		for i, id := range order {
+			if id == target {
+				index = i
+				break
+			}
+		}
+		delta := -1
+		if s.groupMenuAction == "group-down" {
+			delta = 1
+		}
+		neighbor := index + delta
+		if index < 0 || neighbor < 0 || neighbor >= len(order) {
+			s.groupMenuErr = "group is already at the boundary"
+			return
+		}
+		order[index], order[neighbor] = order[neighbor], order[index]
+		next.Organization.GroupOrders[ducklord.OrganizationCustom] = order
+		s.commitGroupState(next, "group order saved")
+	}
+}
+
+func (s *tuiState) commitGroupState(next *ducklord.ActivityState, message string) {
+	if err := s.activityStore.Save(next); err != nil {
+		s.groupMenuErr = "not saved: " + err.Error()
+		return
+	}
+	selectedIdentity := s.groupMenuSession
+	s.activityState = next
+	s.applyOrganizationOrder()
+	selectedKey := ""
+	for _, session := range s.sessions {
+		if identity, ok := ducklord.IdentityFromSession(session); ok && identity == selectedIdentity {
+			selectedKey = sessionKey(session)
+			break
+		}
+	}
+	s.restoreSelection(selectedKey)
+	s.closeGroupMenu()
+	s.outputErr = message
 }
 
 func (s *tuiState) restoreSelection(key string) {
@@ -3004,12 +3261,14 @@ func (s *tuiState) render(out io.Writer) {
 		fmt.Fprintln(out, truncate(s.createHeader()+"  enter next  esc cancel", renderWidth))
 	} else if s.actionMenu {
 		fmt.Fprintln(out, truncate("session actions  ↑/↓ or j/k move  enter choose  esc close", renderWidth))
+	} else if s.groupMenu {
+		fmt.Fprintln(out, truncate("custom groups  ↑/↓ choose  enter confirm  esc close", renderWidth))
 	} else if s.lifecycleConfirm != "" {
 		fmt.Fprintln(out, truncate("lifecycle confirmation open; use the modal controls", renderWidth))
 	} else if s.hostScoped {
-		fmt.Fprintln(out, truncate("j/k move  enter focus  o organize  m actions  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k move  enter focus  o organize  g groups  m actions  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
 	} else {
-		fmt.Fprintln(out, truncate("j/k move  enter focus  o organize  m actions  y/Y yield  E end  R restart  X destroy  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k move  enter focus  o organize  g groups  m actions  y/Y yield  E end  R restart  X destroy  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
@@ -3017,6 +3276,7 @@ func (s *tuiState) render(out io.Writer) {
 		s.renderCreateModal(out, width, modalHeight)
 		s.renderActionModal(out, width, modalHeight)
 		s.renderAddClientModal(out, width, modalHeight)
+		s.renderGroupModal(out, width, modalHeight)
 		s.renderNotificationModal(out, width, modalHeight)
 		s.renderLifecycleModal(out, width, modalHeight)
 		return
@@ -3102,6 +3362,7 @@ func (s *tuiState) render(out io.Writer) {
 	s.renderCreateModal(out, width, modalHeight)
 	s.renderActionModal(out, width, modalHeight)
 	s.renderAddClientModal(out, width, modalHeight)
+	s.renderGroupModal(out, width, modalHeight)
 	s.renderNotificationModal(out, width, modalHeight)
 	s.renderLifecycleModal(out, width, modalHeight)
 	if s.focused && s.terminal != nil && !s.outputStale {
@@ -3230,6 +3491,95 @@ func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
 		lines = []modalRenderLine{{modalSelected, choice}, {modalInput, "host › " + s.addClientLine}}
 	}
 	renderModalBox(out, cols, rows, lines)
+}
+
+func (s *tuiState) renderGroupModal(out io.Writer, cols, rows int) {
+	if !s.groupMenu {
+		return
+	}
+	lines := []modalRenderLine{{modalTitle, "  Custom groups"}}
+	if s.groupMenuStep == "name" {
+		verb := "Create group"
+		if s.groupMenuAction == "rename" {
+			verb = "Rename group"
+		}
+		lines = append(lines,
+			modalRenderLine{modalStatus, "  " + verb + " · 1–64 Unicode characters"},
+			modalRenderLine{modalInput, "  name › " + s.groupMenuLine})
+	} else {
+		labels := make([]string, 0)
+		if s.groupMenuStep == "action" {
+			for _, action := range groupMenuActions {
+				labels = append(labels, action.label)
+			}
+		} else {
+			for _, group := range s.groupMenuChoices() {
+				label := group.Name
+				if group.ID != ducklord.UngroupedGroupID {
+					label = s.customGroupDisplayName(group)
+				}
+				labels = append(labels, label)
+			}
+		}
+		if len(labels) == 0 {
+			lines = append(lines, modalRenderLine{modalMuted, "  No custom groups"})
+		}
+		selected := min(max(s.groupMenuIndex, 0), max(0, len(labels)-1))
+		start := 0
+		maxChoices := max(1, rows-5)
+		if len(labels) > maxChoices {
+			start = max(0, selected-maxChoices/2)
+			start = min(start, len(labels)-maxChoices)
+			labels = labels[start : start+maxChoices]
+		}
+		for index, label := range labels {
+			absoluteIndex := start + index
+			style, prefix := "", "  "
+			if absoluteIndex == selected {
+				style, prefix = modalSelected, "› "
+			}
+			if s.groupMenuStep == "action" && groupMenuActions[absoluteIndex].id == "delete" {
+				style = modalDanger
+				if absoluteIndex != selected {
+					style = modalStatus
+				}
+			}
+			lines = append(lines, modalRenderLine{style, prefix + label})
+		}
+	}
+	status := s.groupMenuErr
+	if status == "" {
+		status = "Changes are local to Ducklord"
+	}
+	lines = append(lines, modalRenderLine{modalStatus, "  " + status}, modalRenderLine{modalMuted, "  ↑/↓ or j/k choose · Enter confirm · Esc cancel"})
+	renderModalBox(out, cols, rows, lines)
+}
+
+func (s *tuiState) customGroupDisplayName(group ducklord.CustomGroup) string {
+	duplicates := make([]string, 0)
+	for _, candidate := range s.activity().Organization.Groups {
+		if candidate.Name == group.Name {
+			duplicates = append(duplicates, candidate.ID)
+		}
+	}
+	if len(duplicates) < 2 {
+		return group.Name
+	}
+	prefixLength := 4
+	for ; prefixLength < len(group.ID); prefixLength++ {
+		prefix := group.ID[:prefixLength]
+		unique := true
+		for _, id := range duplicates {
+			if id != group.ID && strings.HasPrefix(id, prefix) {
+				unique = false
+				break
+			}
+		}
+		if unique {
+			break
+		}
+	}
+	return group.Name + " · " + group.ID[:min(prefixLength, len(group.ID))]
 }
 
 type sessionAction struct {
@@ -3932,6 +4282,8 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "refresh"
 	case text == "o":
 		return "organize"
+	case text == "g":
+		return "groups"
 	case text == "\x0b":
 		return "reorder-up"
 	case text == "\n":

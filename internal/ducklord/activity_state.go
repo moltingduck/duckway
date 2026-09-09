@@ -102,7 +102,7 @@ type OrganizationState struct {
 }
 
 func newOrganizationState() OrganizationState {
-	return OrganizationState{Mode: OrganizationCustom, Membership: make(map[SessionIdentity]string), GroupOrders: make(map[OrganizationMode][]string)}
+	return OrganizationState{Mode: OrganizationCustom, Membership: make(map[SessionIdentity]string), GroupOrders: map[OrganizationMode][]string{OrganizationCustom: {UngroupedGroupID}}}
 }
 
 func (o OrganizationState) clone() OrganizationState {
