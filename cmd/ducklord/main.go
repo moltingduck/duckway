@@ -2805,6 +2805,9 @@ func (s *tuiState) handleInput(b []byte) string {
 			s.selectedKey = s.currentKey()
 			return "select"
 		}
+		if s.contentPaneClicked(text) {
+			return "attach"
+		}
 	case strings.HasPrefix(text, "\x1b[<2;"):
 		if idx, ok := s.sessionIndexForMouse(text); ok {
 			s.selected = idx
@@ -3447,6 +3450,31 @@ func (s *tuiState) sessionIndexForMouse(seq string) (int, bool) {
 		row++
 	}
 	return 0, false
+}
+
+func (s *tuiState) contentPaneClicked(seq string) bool {
+	if !strings.HasPrefix(seq, "\x1b[<0;") || !strings.HasSuffix(seq, "M") {
+		return false
+	}
+	parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(seq, "\x1b[<0;"), "M"), ";")
+	if len(parts) != 2 {
+		return false
+	}
+	x, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
+	}
+	y, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false
+	}
+	width, height := terminalSize()
+	layout := calculateTUILayout(width, s.focused, s.listPaneWidth, s.autoHideList)
+	contentStart := 1
+	if layout.showList {
+		contentStart = layout.menuWidth + 3
+	}
+	return x >= contentStart && x <= width && y >= 4 && y <= height
 }
 
 func readInput(ctx context.Context, ch chan<- []byte) {

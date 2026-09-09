@@ -1487,6 +1487,25 @@ func TestTUIRightClickContentPaneKeepsSelectionButAttaches(t *testing.T) {
 	}
 }
 
+func TestTUILeftClickContentPaneKeepsSelectionButAttaches(t *testing.T) {
+	state := &tuiState{
+		selected: 1,
+		sessions: []ducklord.RemoteSession{
+			{Client: "client-a", Name: "alpha", Status: "running", AgentType: "shell", Group: "lab"},
+			{Client: "client-b", Name: "beta", Status: "running", AgentType: "shell", Group: "lab"},
+		},
+	}
+	if action := state.handleInput([]byte("\x1b[<0;70;7M")); action != "attach" {
+		t.Fatalf("left-click content action = %q", action)
+	}
+	if state.selected != 1 {
+		t.Fatalf("selected changed to %d", state.selected)
+	}
+	if action := state.handleInput([]byte("\x1b[<0;70;7m")); action != "" {
+		t.Fatalf("mouse release action = %q", action)
+	}
+}
+
 func TestSanitizeTerminalTextStripsControlBytes(t *testing.T) {
 	got := sanitizeTerminalText("ok\x1b]52;c;pw\a\nnext\rline\x9b2J")
 	for _, b := range []byte{0x1b, 0x07, 0x9b, 0x0d} {
