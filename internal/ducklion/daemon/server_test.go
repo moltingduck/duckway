@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,10 +21,13 @@ import (
 )
 
 type fakeRuntimeController struct {
+	mu                sync.Mutex
 	inputs            chan duckruntime.InputFrame
 	resize            chan [4]uint64
 	ownership         chan [2]uint64
 	ownershipFailures chan error
+	strictSequence    bool
+	lastSequence      uint64
 }
 
 func TestServiceMapErrorKeepsUnknownFailuresRetryable(t *testing.T) {
@@ -36,6 +40,13 @@ func TestServiceMapErrorKeepsUnknownFailuresRetryable(t *testing.T) {
 }
 
 func (c *fakeRuntimeController) SubmitInput(_ context.Context, frame duckruntime.InputFrame) error {
+	c.mu.Lock()
+	if c.strictSequence && frame.Sequence != c.lastSequence+1 {
+		c.mu.Unlock()
+		return supervisor.ErrInputSequence
+	}
+	c.lastSequence = frame.Sequence
+	c.mu.Unlock()
 	c.inputs <- frame
 	return nil
 }
@@ -750,7 +761,7 @@ func TestDucklordInputAndResizeAreOwnerFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer runtimeClient.Close()
-	controller := &fakeRuntimeController{inputs: make(chan duckruntime.InputFrame, 2), resize: make(chan [4]uint64, 1)}
+	controller := &fakeRuntimeController{inputs: make(chan duckruntime.InputFrame, 2), resize: make(chan [4]uint64, 1), strictSequence: true}
 	controlContext, cancelControl := context.WithCancel(context.Background())
 	defer cancelControl()
 	controlDone := make(chan error, 1)
@@ -799,6 +810,18 @@ func TestDucklordInputAndResizeAreOwnerFenced(t *testing.T) {
 	if string(frame.Data) != "allowed" || frame.Owner != owner || frame.Sequence != 1 || frame.OwnershipEpoch != 7 {
 		t.Fatalf("input frame=%+v", frame)
 	}
+	// A daemon restart loses its in-memory counter while the retained supervisor
+	// keeps the last accepted sequence. The first rejected candidate must be
+	// advanced without dropping or duplicating the user's input.
+	server.sequenceMu.Lock()
+	delete(server.sequences, session.ID)
+	server.sequenceMu.Unlock()
+	if err := terminal.SendInput(string(session.ID), session.OwnershipEpoch, session.RuntimeGeneration, []byte("after-daemon-restart")); err != nil {
+		t.Fatalf("sequence recovery failed: %v", err)
+	}
+	if frame := <-controller.inputs; frame.Sequence != 2 || string(frame.Data) != "after-daemon-restart" {
+		t.Fatalf("recovered input frame=%+v", frame)
+	}
 	resizeResult, err := terminal.ResizeWithBarrier(string(session.ID), session.OwnershipEpoch, session.RuntimeGeneration, 40, 120)
 	if err != nil {
 		t.Fatal(err)
@@ -841,7 +864,7 @@ func TestDucklordInputAndResizeAreOwnerFenced(t *testing.T) {
 	if err := terminal.SendInput(string(session.ID), session.OwnershipEpoch, session.RuntimeGeneration, []byte("after-reconnect")); err != nil {
 		t.Fatal(err)
 	}
-	if frame := <-controller.inputs; frame.Sequence != 2 || string(frame.Data) != "after-reconnect" {
+	if frame := <-controller.inputs; frame.Sequence != 3 || string(frame.Data) != "after-reconnect" {
 		t.Fatalf("reconnected input=%+v", frame)
 	}
 	cancelReconnect()

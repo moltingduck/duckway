@@ -37,6 +37,7 @@ const (
 	maxOutputSubscriptionsGlobal        = 512
 	maxSessionEventSubscriptionsGlobal  = 32
 	maxSupervisorActivityConnections    = 64
+	maxInputSequenceRecoveryAttempts    = 65536
 	defaultRetainedOutputTTL            = 7 * 24 * time.Hour
 	maxRetainedOutputBytesGlobal        = 512 << 20
 )
@@ -867,23 +868,36 @@ func (s *Server) handleSupervisorControl(conn *net.UnixConn, codec *bridge.Codec
 				call.result <- protocol.Response{ID: call.request.ID, Error: &protocol.Error{Code: protocol.ErrStaleGeneration, Message: "runtime is no longer current"}}
 				continue
 			}
-			if call.request.Type == "supervisor.input" {
-				var input protocol.SupervisorInput
+			isInput := call.request.Type == "supervisor.input"
+			var input protocol.SupervisorInput
+			if isInput {
 				if err := json.Unmarshal(call.request.Body, &input); err != nil {
 					call.result <- protocol.Response{ID: call.request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid runtime input command"}}
 					continue
 				}
-				input.Sequence = s.nextInputSequence(identity)
-				call.request.Body, _ = json.Marshal(input)
-			}
-			if err := codec.Write(call.request); err != nil {
-				call.result <- protocol.Response{ID: call.request.ID, Error: &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "runtime control disconnected", Retryable: true}}
-				return
 			}
 			var response protocol.Response
-			if err := codec.Read(&response); err != nil || response.Validate() != nil || response.ID != call.request.ID {
-				call.result <- protocol.Response{ID: call.request.ID, Error: &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "runtime control response failed", Retryable: true}}
-				return
+			for attempt := 0; ; attempt++ {
+				if isInput {
+					input.Sequence = s.nextInputSequence(identity)
+					call.request.Body, _ = json.Marshal(input)
+				}
+				if err := codec.Write(call.request); err != nil {
+					call.result <- protocol.Response{ID: call.request.ID, Error: &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "runtime control disconnected", Retryable: true}}
+					return
+				}
+				response = protocol.Response{}
+				readErr := codec.Read(&response)
+				validationErr := response.Validate()
+				if readErr != nil || validationErr != nil || response.ID != call.request.ID {
+					log.Printf("ducklion: runtime control response failed for %s: read=%v validate=%v response_id=%q request_id=%q", identity.SessionID, readErr, validationErr, response.ID, call.request.ID)
+					call.result <- protocol.Response{ID: call.request.ID, Error: &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "runtime control response failed", Retryable: true}}
+					return
+				}
+				if !isInput || response.Error == nil || response.Error.Message != supervisor.ErrInputSequence.Error() ||
+					attempt+1 >= maxInputSequenceRecoveryAttempts {
+					break
+				}
 			}
 			call.result <- response
 		}
