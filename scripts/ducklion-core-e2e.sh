@@ -40,6 +40,10 @@ run_required "process-wide raw-output transactional handoff" ./internal/ducklord
   TestOutputPoolHandoffRollbackAndCommitAreAtomic \
   TestOutputPoolSnapshotFailureRollsBackDestination \
   TestOutputPoolLeaseFencesStaleReader \
+  TestOutputPoolBindsBackgroundReaderBeforeCommitReturns \
+  TestOutputPoolRejectsResourceAlreadyOwnedByAnotherEntry \
+  TestOutputPoolRejectsReplacementResourceAlreadyOwnedBySameEntry \
+  TestOutputPoolDisconnectLeasePreservesDesiredAndFencesStaleReader \
   TestOutputPoolCloseDuringBlockedOpen \
   TestOutputPoolCanceledOpenCannotCommitReturnedResource \
   TestOutputPoolDisconnectRestorePreservesDesiredOrder \
@@ -50,6 +54,16 @@ run_required "process-wide raw-output transactional handoff" ./internal/ducklord
   TestOutputPoolBackgroundGenerationReplacementPreservesActiveLRU \
   TestOutputPoolVictimHostDisconnectRollsBackCrossHostHandoff \
   TestOutputPoolRemoveDesiredClosesOnlyExactSession
+
+run_required "pooled PTY replay, lease-fenced framebuffer, and snapshots" ./internal/ducklord \
+  TestPooledTerminalValidatesIdentityAndDimensionsBeforeReading \
+  TestPooledTerminalWaitsForReplayAndPublishesImmutableView \
+  TestPooledTerminalReplayEOFFailsAndCloses \
+  TestPooledTerminalPoolLeaseRejectsPostSnapshotFrame \
+  TestPooledTerminalSerializesSnapshotsWithoutOffsetRegression \
+  TestPooledTerminalCleanEndDetachesLeaseWithoutError \
+  TestPooledTerminalBoundGapDisconnectsWithoutLeakingErrorText \
+  TestPooledTerminalRestoresExactFramebuffer
 
 run_required "bounded multiplexed output delivery" ./internal/ducklion/daemon \
   TestSlowLocalOutputSubscriberReceivesTerminalError \

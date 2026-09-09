@@ -4,15 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 )
 
 var (
-	ErrOutputPoolClosed = errors.New("raw output subscription pool is closed")
-	ErrHandoffBusy      = errors.New("raw output subscription handoff is already in progress")
-	ErrRestoreBusy      = errors.New("raw output subscription restore is already in progress")
-	ErrOutputNotDesired = errors.New("raw output subscription is not desired")
-	ErrStaleOutputLease = errors.New("raw output subscription lease is stale")
+	ErrOutputPoolClosed    = errors.New("raw output subscription pool is closed")
+	ErrHandoffBusy         = errors.New("raw output subscription handoff is already in progress")
+	ErrRestoreBusy         = errors.New("raw output subscription restore is already in progress")
+	ErrOutputNotDesired    = errors.New("raw output subscription is not desired")
+	ErrStaleOutputLease    = errors.New("raw output subscription lease is stale")
+	ErrOutputResourceOwned = errors.New("raw output resource is already owned by the pool")
 )
 
 // OutputKey identifies one logical PTY. Runtime and bridge generations are
@@ -52,6 +54,8 @@ func (k OutputKey) host() outputHost { return outputHost{k.ClientKey, k.Instance
 type OutputResource interface {
 	Snapshot(context.Context) error
 	Close() error
+	BindOutputLease(*OutputPool, OutputKey, uint64) error
+	ValidateOutputCommit() error
 }
 
 type OutputOpenFunc func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error)
@@ -199,6 +203,11 @@ func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision Outpu
 		p.mu.Unlock()
 		return OutputActivation{}, closeOutputAbort(ctx, resource, ErrStaleOutputLease)
 	}
+	if err := resource.ValidateOutputCommit(); err != nil {
+		p.clearHandoffLocked(handoff)
+		p.mu.Unlock()
+		return OutputActivation{}, errors.Join(err, resource.Close())
+	}
 	existing := p.entries[key]
 	newMembership := existing == nil
 	var victim *outputPoolEntry
@@ -258,6 +267,43 @@ func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision Outpu
 		p.mu.Unlock()
 		return OutputActivation{}, closeOutputAbort(ctx, resource, ErrStaleOutputLease)
 	}
+	oldResource := replacementResource
+	if oldResource == nil && existing != nil {
+		oldResource = existing.resource
+	}
+	if p.resourceOwnedLocked(resource) {
+		if victim != nil && p.entries[victim.key] == victim {
+			victim.evicting = false
+		}
+		if replacement != nil && p.entries[replacement.key] == replacement {
+			replacement.evicting = false
+		}
+		p.clearHandoffLocked(handoff)
+		p.mu.Unlock()
+		return OutputActivation{}, ErrOutputResourceOwned
+	}
+	if err := resource.BindOutputLease(p, key, handoff.lease); err != nil {
+		if victim != nil && p.entries[victim.key] == victim {
+			victim.evicting = false
+		}
+		if replacement != nil && p.entries[replacement.key] == replacement {
+			replacement.evicting = false
+		}
+		p.clearHandoffLocked(handoff)
+		p.mu.Unlock()
+		return OutputActivation{}, errors.Join(err, resource.Close())
+	}
+	if err := resource.ValidateOutputCommit(); err != nil {
+		if victim != nil && p.entries[victim.key] == victim {
+			victim.evicting = false
+		}
+		if replacement != nil && p.entries[replacement.key] == replacement {
+			replacement.evicting = false
+		}
+		p.clearHandoffLocked(handoff)
+		p.mu.Unlock()
+		return OutputActivation{}, errors.Join(err, resource.Close())
+	}
 	entry := existing
 	if entry == nil {
 		entry = &outputPoolEntry{key: key}
@@ -265,10 +311,6 @@ func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision Outpu
 	}
 	entry.lease = handoff.lease
 	entry.revision = revision
-	oldResource := replacementResource
-	if oldResource == nil {
-		oldResource = entry.resource
-	}
 	entry.resource = resource
 	entry.restoring = false
 	entry.evicting = false
@@ -339,6 +381,32 @@ func (p *OutputPool) WithLease(key OutputKey, lease uint64, apply func(OutputRes
 		apply(resource)
 	}
 	return nil
+}
+
+// DisconnectLease conditionally detaches a naturally ended background
+// resource while preserving desired membership, active selection, and LRU for
+// reconnect. Stale readers and resources already being evicted are ignored.
+func (p *OutputPool) DisconnectLease(key OutputKey, lease uint64) bool {
+	p.mu.Lock()
+	entry := p.entries[key]
+	if entry == nil || entry.lease != lease || entry.resource == nil || entry.evicting || entry.restoring {
+		p.mu.Unlock()
+		return false
+	}
+	entry.evicting = true
+	p.mu.Unlock()
+	entry.useMu.Lock()
+	defer entry.useMu.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.entries[key] != entry || entry.lease != lease || entry.resource == nil || !entry.evicting || entry.restoring {
+		return false
+	}
+	p.nextLease++
+	entry.lease = p.nextLease
+	entry.resource = nil
+	entry.evicting = false
+	return true
 }
 
 // DisconnectHost preserves desired membership, active selection and LRU while
@@ -468,12 +536,45 @@ func (p *OutputPool) RestoreDesired(ctx context.Context, key OutputKey, revision
 		p.finishRestore(entry, lease)
 		return OutputActivation{}, closeOutputAbort(ctx, resource, ErrStaleOutputLease)
 	}
+	if err := resource.ValidateOutputCommit(); err != nil {
+		p.mu.Unlock()
+		p.finishRestore(entry, lease)
+		return OutputActivation{}, errors.Join(err, resource.Close())
+	}
+	if p.resourceOwnedLocked(resource) {
+		p.mu.Unlock()
+		p.finishRestore(entry, lease)
+		return OutputActivation{}, ErrOutputResourceOwned
+	}
+	if err := resource.BindOutputLease(p, key, lease); err != nil {
+		p.mu.Unlock()
+		p.finishRestore(entry, lease)
+		return OutputActivation{}, errors.Join(err, resource.Close())
+	}
+	if err := resource.ValidateOutputCommit(); err != nil {
+		p.mu.Unlock()
+		p.finishRestore(entry, lease)
+		return OutputActivation{}, errors.Join(err, resource.Close())
+	}
 	entry.resource = resource
 	entry.restoring = false
 	entry.restoreCancel = nil
 	cancel()
 	p.mu.Unlock()
 	return OutputActivation{Key: key, Revision: revision, Lease: lease}, nil
+}
+
+func (p *OutputPool) resourceOwnedLocked(resource OutputResource) bool {
+	typeOf := reflect.TypeOf(resource)
+	if typeOf == nil || !typeOf.Comparable() {
+		return false
+	}
+	for _, entry := range p.entries {
+		if entry.resource == resource {
+			return true
+		}
+	}
+	return false
 }
 
 func closeOutputAbort(ctx context.Context, resource OutputResource, fallback error) error {

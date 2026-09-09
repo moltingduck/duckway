@@ -25,6 +25,42 @@ type statefulOutputResource struct {
 	closed          atomic.Int32
 }
 
+type leaseBoundOutputResource struct {
+	mu     sync.Mutex
+	pool   *OutputPool
+	key    OutputKey
+	lease  uint64
+	text   string
+	closed atomic.Int32
+}
+
+func (r *leaseBoundOutputResource) BindOutputLease(pool *OutputPool, key OutputKey, lease uint64) error {
+	r.mu.Lock()
+	r.pool, r.key, r.lease = pool, key, lease
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *leaseBoundOutputResource) append(text string) error {
+	r.mu.Lock()
+	pool, key, lease := r.pool, r.key, r.lease
+	r.mu.Unlock()
+	if pool == nil {
+		return errors.New("resource is not lease-bound")
+	}
+	return pool.WithLease(key, lease, func(resource OutputResource) {
+		if resource != r {
+			return
+		}
+		r.mu.Lock()
+		r.text += text
+		r.mu.Unlock()
+	})
+}
+
+func (r *leaseBoundOutputResource) Snapshot(context.Context) error { return nil }
+func (r *leaseBoundOutputResource) Close() error                   { r.closed.Add(1); return nil }
+
 func (r *statefulOutputResource) append(text string) {
 	r.mu.Lock()
 	r.text += text
@@ -56,6 +92,16 @@ func (r *fakeOutputResource) Close() error {
 	}
 	return r.closeErr
 }
+
+func (r *fakeOutputResource) BindOutputLease(*OutputPool, OutputKey, uint64) error { return nil }
+func (r *fakeOutputResource) ValidateOutputCommit() error                          { return nil }
+
+func (r *statefulOutputResource) BindOutputLease(*OutputPool, OutputKey, uint64) error {
+	return nil
+}
+func (r *statefulOutputResource) ValidateOutputCommit() error { return nil }
+
+func (r *leaseBoundOutputResource) ValidateOutputCommit() error { return nil }
 
 func outputKey(name string) OutputKey {
 	return OutputKey{ClientKey: "host", InstanceID: "instance", SessionID: name}
@@ -181,6 +227,105 @@ func TestOutputPoolLeaseFencesStaleReader(t *testing.T) {
 	}
 	if applied.Load() != 1 {
 		t.Fatalf("applied=%d", applied.Load())
+	}
+}
+
+func TestOutputPoolBindsBackgroundReaderBeforeCommitReturns(t *testing.T) {
+	pool, _ := NewOutputPool(1)
+	resource := &leaseBoundOutputResource{}
+	activation, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+		return resource, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resource.append("accepted"); err != nil {
+		t.Fatal(err)
+	}
+	resource.mu.Lock()
+	defer resource.mu.Unlock()
+	if resource.pool != pool || resource.key != outputKey("A") || resource.lease != activation.Lease || resource.text != "accepted" {
+		t.Fatalf("resource binding pool=%p key=%+v lease=%d text=%q activation=%+v", resource.pool, resource.key, resource.lease, resource.text, activation)
+	}
+}
+
+func TestOutputPoolRejectsResourceAlreadyOwnedByAnotherEntry(t *testing.T) {
+	pool, _ := NewOutputPool(2)
+	resource := &leaseBoundOutputResource{}
+	if _, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+		return resource, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Activate(context.Background(), outputKey("B"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+		return resource, nil
+	}); !errors.Is(err, ErrOutputResourceOwned) {
+		t.Fatalf("duplicate resource error=%v", err)
+	}
+	if err := resource.append("still-owned-by-A"); err != nil {
+		t.Fatal(err)
+	}
+	status := pool.Status()
+	if status.Count != 1 || status.Active == nil || status.Active.SessionID != "A" {
+		t.Fatalf("duplicate binding changed pool: %+v", status)
+	}
+}
+
+func TestOutputPoolRejectsReplacementResourceAlreadyOwnedBySameEntry(t *testing.T) {
+	pool, _ := NewOutputPool(1)
+	resource := &leaseBoundOutputResource{}
+	first, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+		return resource, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := pool.Status()
+	if _, err := pool.ReplaceDesired(context.Background(), outputKey("A"), OutputRevision{RuntimeGeneration: 2}, func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+		return resource, nil
+	}); !errors.Is(err, ErrOutputResourceOwned) {
+		t.Fatalf("same-entry alias error=%v", err)
+	}
+	if resource.closed.Load() != 0 {
+		t.Fatalf("committed alias was closed %d times", resource.closed.Load())
+	}
+	if err := pool.WithLease(outputKey("A"), first.Lease, func(OutputResource) {}); err != nil {
+		t.Fatalf("old lease was not preserved: %v", err)
+	}
+	after := pool.Status()
+	if !reflect.DeepEqual(before, after) || after.Connected != 1 {
+		t.Fatalf("replacement alias changed pool: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestOutputPoolDisconnectLeasePreservesDesiredAndFencesStaleReader(t *testing.T) {
+	pool, _ := NewOutputPool(1)
+	first := &fakeOutputResource{}
+	activation, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+		return first, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pool.DisconnectLease(outputKey("A"), activation.Lease) {
+		t.Fatal("current reader was not disconnected")
+	}
+	status := pool.Status()
+	if status.Count != 1 || status.Connected != 0 || status.Active == nil || status.Active.SessionID != "A" || len(status.Desired) != 1 {
+		t.Fatalf("disconnected status=%+v", status)
+	}
+	replacement := &fakeOutputResource{}
+	_, err = pool.RestoreDesired(context.Background(), outputKey("A"), OutputRevision{RuntimeGeneration: 2}, func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+		return replacement, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.DisconnectLease(outputKey("A"), activation.Lease) {
+		t.Fatal("stale reader disconnected replacement")
+	}
+	if got := pool.Status(); got.Connected != 1 {
+		t.Fatalf("replacement status=%+v", got)
 	}
 }
 

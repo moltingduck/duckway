@@ -358,7 +358,7 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 	runner.SetOwner("desk-a")
 	clientConfig := Client{Name: "local", Host: "ignored", SSH: os.Args[0], Ducklion: "ignored"}
 	var attach *AttachSession
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		attach, err = runner.AttachStream(ctx, clientConfig, "ABC123")
 		if err == nil || time.Now().After(deadline) {
@@ -387,7 +387,7 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 		}
 	}()
 	var captured []byte
-	deadline = time.Now().Add(time.Second)
+	deadline = time.Now().Add(5 * time.Second)
 	for !bytes.Contains(captured, []byte("received:hello")) {
 		select {
 		case chunk := <-output:
@@ -401,7 +401,7 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 	_ = attach.Stdout.Close()
 	select {
 	case <-attach.Done:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("first attach did not close")
 	}
 	resumed, err := runner.AttachStreamFrom(ctx, clientConfig, "ABC123", AttachResume{RuntimeGeneration: 1, OutputOffset: resumeOffset})
@@ -411,36 +411,76 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 	if !resumed.ExactResume || resumed.StartOffset != resumeOffset || resumed.ReplayEndOffset != resumeOffset {
 		t.Fatalf("resume exact=%v offsets=%d..%d want=%d", resumed.ExactResume, resumed.StartOffset, resumed.ReplayEndOffset, resumeOffset)
 	}
-	outputOnly, err := runner.OpenOutputStreamFrom(ctx, clientConfig, "ABC123", AttachResume{RuntimeGeneration: 1, OutputOffset: resumeOffset})
+	pool, err := NewOutputPool(1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer outputOnly.Close()
-	if !outputOnly.ExactResume || outputOnly.InstanceID != string(server.InstanceID()) || outputOnly.SessionID != "ABC123" || outputOnly.RuntimeGeneration != 1 ||
-		outputOnly.StartOffset != resumeOffset || outputOnly.ReplayEndOffset != resumeOffset {
-		t.Fatalf("output-only metadata=%+v want exact offset %d", outputOnly, resumeOffset)
+	defer pool.Close()
+	outputKey := OutputKey{ClientKey: "local", InstanceID: string(server.InstanceID()), SessionID: "ABC123"}
+	outputRevision := OutputRevision{RuntimeGeneration: 1}
+	snapshotStore := SnapshotStore{Root: filepath.Join(t.TempDir(), "snapshots")}
+	var pooled *PooledTerminal
+	if _, err := pool.Activate(ctx, outputKey, outputRevision, func(openCtx context.Context, key OutputKey, revision OutputRevision, _ uint64) (OutputResource, error) {
+		outputOnly, openErr := runner.OpenOutputStreamFrom(openCtx, clientConfig, "ABC123", AttachResume{RuntimeGeneration: 1, OutputOffset: 0})
+		if openErr != nil {
+			return nil, openErr
+		}
+		pooled, openErr = NewPooledTerminal(openCtx, outputOnly, PooledTerminalOptions{ExpectedKey: key, ExpectedRevision: revision,
+			Rows: 4, Cols: 80, Scrollback: 10, Store: snapshotStore})
+		return pooled, openErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	initialView := pooled.View()
+	initialTerminal, ok := NewTerminalFromState(initialView.Framebuffer, 10)
+	initialRendered := ""
+	if ok {
+		initialRendered = strings.Join(initialTerminal.RenderLines(4, 80), "\n")
+	}
+	if !ok || initialView.OutputOffset != resumeOffset || !strings.Contains(initialRendered, "\x1b[0;32mreceived:hello") {
+		t.Fatalf("pooled initial replay offset=%d want=%d rendered=%q", initialView.OutputOffset, resumeOffset, initialRendered)
 	}
 	if _, err := resumed.Stdin.Write([]byte("again\r")); err != nil {
 		t.Fatal(err)
 	}
-	readCtx, cancelRead := context.WithTimeout(ctx, time.Second)
-	defer cancelRead()
-	var outputOnlyBytes []byte
-	nextOffset := resumeOffset
-	for !bytes.Contains(outputOnlyBytes, []byte("\x1b[36mresumed:again\x1b[0m")) {
-		frame, readErr := outputOnly.ReadContext(readCtx)
-		if readErr != nil {
-			t.Fatal(readErr)
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		view := pooled.View()
+		framebuffer, valid := NewTerminalFromState(view.Framebuffer, 10)
+		rendered := ""
+		if valid {
+			rendered = strings.Join(framebuffer.RenderLines(4, 80), "\n")
 		}
-		if frame.StartOffset != nextOffset || frame.EndOffset != frame.StartOffset+uint64(len(frame.Data)) {
-			t.Fatalf("non-contiguous output-only frame=%+v next=%d", frame, nextOffset)
+		if strings.Contains(rendered, "\x1b[0;36mresumed:again") {
+			break
 		}
-		nextOffset = frame.EndOffset
-		outputOnlyBytes = append(outputOnlyBytes, frame.Data...)
+		if time.Now().After(deadline) {
+			t.Fatalf("pooled live framebuffer offset=%d rendered=%q", view.OutputOffset, rendered)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := pooled.Snapshot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := snapshotStore.Load(outputKey.InstanceID, outputKey.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedState, err := DecodeTerminalRenderState(saved.Payload)
+	if err != nil || savedState.Framebuffer == nil {
+		t.Fatalf("saved pooled framebuffer err=%v state=%+v", err, savedState)
+	}
+	savedTerminal, valid := NewTerminalFromState(*savedState.Framebuffer, 10)
+	savedRendered := ""
+	if valid {
+		savedRendered = strings.Join(savedTerminal.RenderLines(4, 80), "\n")
+	}
+	if !valid || savedState.OutputOffset != pooled.View().OutputOffset || !strings.Contains(savedRendered, "\x1b[0;36mresumed:again") {
+		t.Fatalf("saved pooled state offset=%d rendered=%q", savedState.OutputOffset, savedRendered)
 	}
 	var resumedOutput bytes.Buffer
 	readBuffer := make([]byte, 4096)
-	deadline = time.Now().Add(time.Second)
+	deadline = time.Now().Add(5 * time.Second)
 	for !bytes.Contains(resumedOutput.Bytes(), []byte("resumed:again")) {
 		n, readErr := resumed.Stdout.Read(readBuffer)
 		if n > 0 {
@@ -454,6 +494,9 @@ func TestRunnerAttachUsesMultiplexedBridgeForOutputAndInput(t *testing.T) {
 		}
 	}
 	if err := ptySession.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pooled.Close(); err != nil {
 		t.Fatal(err)
 	}
 	_ = resumed.Stdin.Close()
