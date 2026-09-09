@@ -46,17 +46,26 @@ func TestCreateSessionStartsManagedPTYAndAcceptsInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	createRequest := protocol.SessionCreate{Handle: "測試", Kind: model.KindAgent, AgentType: "shell", CWD: root, Command: []string{"sh"}, Rows: 30, Cols: 90}
+	createRequest := protocol.SessionCreate{Handle: "測試", Kind: model.KindAgent, AgentType: "shell", ProjectName: "  中文專案  ", CWD: root, Command: []string{"sh"}, Rows: 30, Cols: 90}
 	created, err := client.CreateSessionWithID(context.Background(), "stable-create", createRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.SessionID == "" || created.Status != model.StatusRunning || created.Writer == nil || created.Writer.ID != "laptop" {
+	if created.SessionID == "" || created.ProjectName != "中文專案" || created.Status != model.StatusRunning || created.Writer == nil || created.Writer.ID != "laptop" {
 		t.Fatalf("created=%+v", created)
 	}
 	replayed, err := client.CreateSessionWithID(context.Background(), "stable-create", createRequest)
 	if err != nil || replayed.SessionID != created.SessionID || launches != 1 {
 		t.Fatalf("replayed=%+v launches=%d err=%v", replayed, launches, err)
+	}
+	if sessions, listErr := client.ListSessions(); listErr != nil || len(sessions) != 1 || sessions[0].ProjectName != "中文專案" {
+		t.Fatalf("sessions=%+v err=%v", sessions, listErr)
+	}
+	invalidProject := createRequest
+	invalidProject.Handle = "invalid-project"
+	invalidProject.ProjectName = "bad\x1b]52;clipboard\a"
+	if _, err := client.CreateSessionWithID(context.Background(), "invalid-project", invalidProject); err == nil || !strings.Contains(err.Error(), "project name") {
+		t.Fatalf("invalid project error=%v", err)
 	}
 	conflict := createRequest
 	conflict.Handle = "different"

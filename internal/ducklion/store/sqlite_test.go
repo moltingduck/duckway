@@ -51,6 +51,66 @@ func TestOpenCreatesPrivateDatabaseAndStableInstance(t *testing.T) {
 	}
 }
 
+func TestMigrateV14AddsProjectNameAndRoundTripsUnicode(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "ducklion.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := raw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations := []func(context.Context, *sql.Tx) error{migrateV1, migrateV2, migrateV3, migrateV4, migrateV5, migrateV6, migrateV7, migrateV8, migrateV9, migrateV10, migrateV11, migrateV12, migrateV13, migrateV14}
+	for index, migrate := range migrations {
+		if err := migrate(ctx, tx); err != nil {
+			t.Fatalf("migrate v%d: %v", index+1, err)
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO sessions
+		(session_id,handle,kind,agent_type,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_public_key,created_at_ms,updated_at_ms,exit_success,exit_reason)
+		VALUES('ABC123','legacy','shell','','/tmp','','running',NULL,NULL,1,1,'idle','unavailable',X'',1,1,NULL,'')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`PRAGMA user_version=14`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	legacy, err := database.GetSession(ctx, "ABC123")
+	if err != nil || legacy.ProjectName != "" || legacy.Handle != "legacy" {
+		t.Fatalf("legacy=%+v err=%v", legacy, err)
+	}
+	created := legacy
+	created.ID = "DEF456"
+	created.Handle = "unicode"
+	created.ProjectName = "中文專案"
+	tx, err = database.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InsertSessionTx(ctx, tx, created); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	roundTrip, err := database.GetSession(ctx, created.ID)
+	if err != nil || roundTrip.ProjectName != created.ProjectName {
+		t.Fatalf("round trip=%+v err=%v", roundTrip, err)
+	}
+}
+
 func TestOpenRejectsSymlinkDatabase(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target")

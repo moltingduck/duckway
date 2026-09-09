@@ -231,7 +231,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 		return fmt.Sprintf("created session did not appear in Ducklion inventory; host-a=%s host-b=%s tui=%q",
 			sessionInventoryDiagnostic(t, runtime, controller, "client-a"), sessionInventoryDiagnostic(t, runtime, controller, "client-b"), safeTerminalDiagnostic(capture.since(start)))
 	})
-	if created.SessionID == "" || created.Kind != "shell" || created.CWD != "/home/duck/projects/alpha" {
+	if created.SessionID == "" || created.Kind != "shell" || created.CWD != "/home/duck/projects/alpha" || created.ProjectName != "alpha-project" {
 		t.Fatalf("created identity = %#v", created)
 	}
 	for _, old := range before {
@@ -244,9 +244,41 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 			t.Fatalf("create escaped selected host: host-b has %#v", other)
 		}
 	}
+	stateBeforeSearch, err := exec.Command(runtime, "exec", controller, "cat", "/root/.ducklord/state.json").CombinedOutput()
+	if err != nil {
+		t.Fatalf("read state before search: %v: %s", err, stateBeforeSearch)
+	}
+	writePTY(t, terminal, "/不存在的工作")
+	capture.waitCurrent(t, "No matching sessions", 5*time.Second)
+	writePTY(t, terminal, "\x1b")
+	stateAfterSearch, err := exec.Command(runtime, "exec", controller, "cat", "/root/.ducklord/state.json").CombinedOutput()
+	if err != nil || !bytes.Equal(stateBeforeSearch, stateAfterSearch) {
+		t.Fatalf("local search changed persistent state: err=%v before=%q after=%q", err, stateBeforeSearch, stateAfterSearch)
+	}
+
+	// Search is a local, centered projection. The first Enter switches only the
+	// framebuffer and keeps the modal open; the unchanged second Enter focuses
+	// the exact PTY. Search command letters are consumed as query text.
+	start = capture.position()
+	writePTY(t, terminal, "/alpha")
+	capture.waitCurrent(t, "Search sessions", 5*time.Second)
+	capture.waitCurrent(t, "alpha", 5*time.Second)
+	if raw := capture.since(start); !strings.Contains(raw, modalBorder) || !strings.Contains(raw, modalInput) || !strings.Contains(raw, modalSelected) {
+		t.Fatalf("search modal lacks semantic colors: %q", safeTerminalDiagnostic(raw))
+	}
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
+	capture.waitCurrent(t, "Search sessions", 2*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "session focus", 10*time.Second)
+	writePTY(t, terminal, "\x1d")
+	capture.waitCurrent(t, "m actions", 5*time.Second)
 
 	start = capture.position()
-	writePTY(t, terminal, "\r") // focus the newly created PTY
+	writePTY(t, terminal, "/"+handle+"\r")
+	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
+	capture.waitCurrent(t, handle, 2*time.Second)
+	writePTY(t, terminal, "\r")
 	capture.waitAfter(t, start, "session focus", 10*time.Second)
 	marker := "DUCKLORD_TUI_INPUT_OK"
 	writePTY(t, terminal, "printf "+marker+"\r")
@@ -276,7 +308,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\r")
 	waitE2E(t, 15*time.Second, func() bool {
 		session, ok := findContainerSession(t, runtime, controller, "client-a", created.SessionID)
-		return ok && session.RuntimeGeneration == created.RuntimeGeneration+1 && session.Status == string(model.StatusRunning)
+		return ok && session.RuntimeGeneration == created.RuntimeGeneration+1 && session.Status == string(model.StatusRunning) && session.ProjectName == "alpha-project"
 	}, func() string { return "action-menu restart did not advance the selected session generation" })
 	// Inventory completion can precede the TUI goroutine consuming its durable
 	// completion event by one redraw. Give that local event loop a bounded beat;
@@ -533,7 +565,7 @@ func listContainerSessions(t *testing.T, runtime, controller, host string) []pro
 	sessions := listContainerRemoteSessions(t, runtime, controller, host)
 	result := make([]protocol.SessionSummary, 0, len(sessions))
 	for _, session := range sessions {
-		result = append(result, protocol.SessionSummary{SessionID: session.SessionID, Handle: session.Name, Kind: model.SessionKind(session.Kind), CWD: session.Cwd,
+		result = append(result, protocol.SessionSummary{SessionID: session.SessionID, Handle: session.Name, Kind: model.SessionKind(session.Kind), ProjectName: session.ProjectName, CWD: session.Cwd,
 			OwnershipEpoch: session.OwnershipEpoch, RuntimeGeneration: session.RuntimeGeneration})
 	}
 	return result

@@ -50,7 +50,7 @@ type CCWatch struct {
 	clientCommandHandler func(context.Context, []byte)
 	// provisionProjectSession is a test seam for the external Discord +
 	// Ducklion provisioning workflow.
-	provisionProjectSession func(context.Context, string, string, string, string, string, string) (*CreateCCChannelResult, protocol.SessionSummary, error)
+	provisionProjectSession func(context.Context, string, string, string, string, string, string, string) (*CreateCCChannelResult, protocol.SessionSummary, error)
 	sseConnected            bool
 	pendingNew              map[string]pendingNewProject
 	deleted                 map[string]struct{}

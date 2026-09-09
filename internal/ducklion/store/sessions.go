@@ -205,8 +205,8 @@ func (s *SQLite) InsertSessionTx(ctx context.Context, tx *sql.Tx, session model.
 		writerKind, writerID = session.Writer.Kind, session.Writer.ID
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO sessions
-		(session_id,handle,kind,agent_type,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_public_key,created_at_ms,updated_at_ms,exit_success,exit_reason)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, session.ID, session.Handle, session.Kind, session.AgentType, session.CWD, session.Shell,
+		(session_id,handle,kind,agent_type,project_name,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_public_key,created_at_ms,updated_at_ms,exit_success,exit_reason)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, session.ID, session.Handle, session.Kind, session.AgentType, session.ProjectName, session.CWD, session.Shell,
 		session.Status, writerKind, writerID, session.OwnershipEpoch, session.RuntimeGeneration, session.TaskState, session.AdapterState,
 		session.RecoveryPublicKey, session.CreatedAtMS, session.UpdatedAtMS, session.ExitSuccess, session.ExitReason)
 	return err
@@ -259,7 +259,7 @@ func (s *SQLite) DeletePendingYieldTx(ctx context.Context, tx *sql.Tx, id model.
 	return err
 }
 
-const sessionSelect = `SELECT session_id,handle,kind,agent_type,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_public_key,created_at_ms,updated_at_ms,exit_success,exit_reason FROM sessions`
+const sessionSelect = `SELECT session_id,handle,kind,agent_type,project_name,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_public_key,created_at_ms,updated_at_ms,exit_success,exit_reason FROM sessions`
 
 type rowScanner interface{ Scan(...any) error }
 
@@ -267,7 +267,7 @@ func scanSession(row rowScanner) (model.Session, error) {
 	var session model.Session
 	var writerKind, writerID sql.NullString
 	var exitSuccess sql.NullBool
-	err := row.Scan(&session.ID, &session.Handle, &session.Kind, &session.AgentType, &session.CWD, &session.Shell, &session.Status,
+	err := row.Scan(&session.ID, &session.Handle, &session.Kind, &session.AgentType, &session.ProjectName, &session.CWD, &session.Shell, &session.Status,
 		&writerKind, &writerID, &session.OwnershipEpoch, &session.RuntimeGeneration, &session.TaskState, &session.AdapterState,
 		&session.RecoveryPublicKey, &session.CreatedAtMS, &session.UpdatedAtMS, &exitSuccess, &session.ExitReason)
 	if errors.Is(err, sql.ErrNoRows) {

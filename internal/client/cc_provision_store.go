@@ -41,6 +41,7 @@ type ccProvisionRecord struct {
 	Slug             string                   `json:"slug"`
 	Topic            string                   `json:"topic,omitempty"`
 	CWD              string                   `json:"cwd"`
+	ProjectName      string                   `json:"project_name,omitempty"`
 	Phase            ccProvisionPhase         `json:"phase"`
 	Channel          *CreateCCChannelResult   `json:"channel,omitempty"`
 	Session          *protocol.SessionSummary `json:"session,omitempty"`
@@ -49,7 +50,7 @@ type ccProvisionRecord struct {
 }
 
 func (r ccProvisionRecord) sameRequest(other ccProvisionRecord) bool {
-	if r.Kind != other.Kind || r.SessionID != other.SessionID || r.BindIndex != other.BindIndex || r.ManagementHandle != other.ManagementHandle || r.CCID != other.CCID || r.Slug != other.Slug || r.Topic != other.Topic || r.CWD != other.CWD || len(r.BindItems) != len(other.BindItems) {
+	if r.Kind != other.Kind || r.SessionID != other.SessionID || r.BindIndex != other.BindIndex || r.ManagementHandle != other.ManagementHandle || r.CCID != other.CCID || r.Slug != other.Slug || r.Topic != other.Topic || r.CWD != other.CWD || r.ProjectName != other.ProjectName || len(r.BindItems) != len(other.BindItems) {
 		return false
 	}
 	for i := range r.BindItems {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1504,7 +1505,7 @@ func TestTUICreateWizardBuildsShellSessionFromProject(t *testing.T) {
 	}
 	state.newSessionLine = ""
 	clientName, name, args, ready := createSubmit(t, state)
-	want := []string{"--name", "duckway", "--kind", "shell", "--cwd", "/home/duck/duckway", "--", "/bin/bash"}
+	want := []string{"--name", "duckway", "--kind", "shell", "--cwd", "/home/duck/duckway", "--project-name", "duckway", "--", "/bin/bash"}
 	if !ready || name != "duckway" || clientName != "client-b" || strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("ready=%v name=%q client=%q args=%#v", ready, name, clientName, args)
 	}
@@ -2065,6 +2066,102 @@ func TestCreateModalTypedChoiceSynchronizesHighlight(t *testing.T) {
 	state.handleCreateInput([]byte("中文專案"))
 	if state.newSessionSelected != 1 {
 		t.Fatalf("named selection = %d, want 1", state.newSessionSelected)
+	}
+}
+
+func TestSessionSearchMatchesUnicodeTermsAcrossFieldsWithoutReordering(t *testing.T) {
+	state := &tuiState{sessions: []ducklord.RemoteSession{
+		{Client: "host-b", Name: "beta", ProjectName: "中文專案", Kind: "agent", AgentType: "codex"},
+		{Client: "host-a", Name: "alpha", ProjectName: "other", Kind: "shell"},
+		{Client: "host-c", Name: "gamma", ProjectName: "中文專案", Kind: "agent", AgentType: "claude"},
+	}}
+	state.beginSearch()
+	for _, input := range []string{"中", "文", " ", "C", "O", "D", "E", "X"} {
+		if action := state.handleSearchInput([]byte(input)); action != "" {
+			t.Fatalf("input %q action=%q", input, action)
+		}
+	}
+	results := state.searchResults()
+	if len(results) != 1 || results[0].Name != "beta" {
+		t.Fatalf("results=%#v", results)
+	}
+	if got := []string{state.sessions[0].Name, state.sessions[1].Name, state.sessions[2].Name}; !reflect.DeepEqual(got, []string{"beta", "alpha", "gamma"}) {
+		t.Fatalf("authoritative order changed: %v", got)
+	}
+}
+
+func TestSessionSearchConsumesCommandKeysAndKeepsPane(t *testing.T) {
+	state := &tuiState{sessions: []ducklord.RemoteSession{{Client: "host", Name: "alpha", Kind: "agent"}}, outputForKey: "pane-key", activeAttachKey: "pane-key"}
+	state.beginSearch()
+	for _, input := range []string{"q", "g", "o", "/", "y", "R"} {
+		state.handleSearchInput([]byte(input))
+	}
+	if state.searchQuery != "qgo/yR" || state.outputForKey != "pane-key" || state.activeAttachKey != "pane-key" {
+		t.Fatalf("query=%q output=%q active=%q", state.searchQuery, state.outputForKey, state.activeAttachKey)
+	}
+	if action := state.handleSearchInput([]byte("\x1b")); action != "cancel" {
+		t.Fatalf("escape action=%q", action)
+	}
+}
+
+func TestSessionSearchArrowNavigationTracksIdentityAcrossReorder(t *testing.T) {
+	state := &tuiState{sessions: []ducklord.RemoteSession{{Client: "host", Name: "a"}, {Client: "host", Name: "b"}, {Client: "host", Name: "c"}}}
+	state.beginSearch()
+	state.handleSearchInput([]byte("\x1b[B"))
+	state.handleSearchInput([]byte("\x1b[B"))
+	state.handleSearchInput([]byte("\x1b[A"))
+	if state.searchSelected != 1 || state.searchSelectedKey != sessionKey(state.sessions[1]) {
+		t.Fatalf("selected=%d key=%q", state.searchSelected, state.searchSelectedKey)
+	}
+	selectedKey := state.searchSelectedKey
+	state.sessions[0], state.sessions[1] = state.sessions[1], state.sessions[0]
+	state.syncSearchSelection()
+	if state.searchSelected != 0 || state.searchSelectedKey != selectedKey {
+		t.Fatalf("reordered selected=%d key=%q want=%q", state.searchSelected, state.searchSelectedKey, selectedKey)
+	}
+}
+
+func TestSessionSearchActivationRejectsRestartedGeneration(t *testing.T) {
+	session := ducklord.RemoteSession{Client: "host", InstanceID: "instance", SessionID: "ABC123", RuntimeGeneration: 2}
+	key := sessionKey(session)
+	state := &tuiState{searchRevision: 4, searchActivatedRevision: 4, searchActivatedKey: key, searchActivatedGeneration: 1, outputForKey: key, outputFresh: true}
+	if state.searchResultIsActivated(session) {
+		t.Fatal("old-generation framebuffer armed second Enter")
+	}
+	state.searchActivatedGeneration = 2
+	if !state.searchResultIsActivated(session) {
+		t.Fatal("exact-generation framebuffer was not recognized")
+	}
+	state.searchRevision++
+	if state.searchResultIsActivated(session) {
+		t.Fatal("edited query retained activation")
+	}
+}
+
+func TestSessionSearchModalIsCenteredColoredAndShowsEmptyResult(t *testing.T) {
+	state := &tuiState{searchMode: true, searchQuery: "不存在", sessions: []ducklord.RemoteSession{{Client: "host", Name: "alpha"}}}
+	var output bytes.Buffer
+	state.renderSearchModal(&output, 80, 24)
+	rendered := output.String()
+	for _, want := range []string{"\033[9;5H", modalBorder, modalTitle, modalInput, modalStatus, "No matching sessions"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("search modal missing %q: %q", want, rendered)
+		}
+	}
+}
+
+func TestSessionSearchModalKeepsOnlyMatchingGroups(t *testing.T) {
+	state := &tuiState{searchMode: true, searchQuery: "beta", sessions: []ducklord.RemoteSession{
+		{Client: "host-a", Group: "group-a", Name: "alpha"},
+		{Client: "host-b", Group: "group-b", Name: "beta"},
+	}}
+	state.activityState = ducklord.NewActivityState()
+	state.activityState.Organization.Mode = ducklord.OrganizationHost
+	var output bytes.Buffer
+	state.renderSearchModal(&output, 80, 24)
+	rendered := output.String()
+	if !strings.Contains(rendered, "[host-b]") || strings.Contains(rendered, "[host-a]") {
+		t.Fatalf("filtered group projection=%q", rendered)
 	}
 }
 

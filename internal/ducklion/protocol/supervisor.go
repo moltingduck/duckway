@@ -10,6 +10,7 @@ type SessionSummary struct {
 	Handle                string                                `json:"handle"`
 	Kind                  model.SessionKind                     `json:"kind"`
 	AgentType             string                                `json:"agent_type,omitempty"`
+	ProjectName           string                                `json:"project_name,omitempty"`
 	CWD                   string                                `json:"cwd"`
 	Status                model.SessionStatus                   `json:"status"`
 	Writer                *model.Owner                          `json:"writer,omitempty"`
@@ -27,13 +28,14 @@ type SessionSummary struct {
 }
 
 type SessionCreate struct {
-	Handle    string            `json:"handle"`
-	Kind      model.SessionKind `json:"kind"`
-	AgentType string            `json:"agent_type,omitempty"`
-	CWD       string            `json:"cwd"`
-	Command   []string          `json:"command"`
-	Rows      uint16            `json:"rows,omitempty"`
-	Cols      uint16            `json:"cols,omitempty"`
+	Handle      string            `json:"handle"`
+	Kind        model.SessionKind `json:"kind"`
+	AgentType   string            `json:"agent_type,omitempty"`
+	ProjectName string            `json:"project_name,omitempty"`
+	CWD         string            `json:"cwd"`
+	Command     []string          `json:"command"`
+	Rows        uint16            `json:"rows,omitempty"`
+	Cols        uint16            `json:"cols,omitempty"`
 }
 
 type SupervisorChallenge struct {

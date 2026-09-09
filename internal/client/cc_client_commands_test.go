@@ -290,7 +290,7 @@ func stubWatch(t *testing.T, projectsRoot string, fake *fakeServer) *CCWatch {
 		recoverSeen: map[string]struct{}{},
 		api:         NewAPIClient(fake.srv.URL, "tok"),
 	}
-	w.provisionProjectSession = func(ctx context.Context, managementHandle, ccID, requestID, slug, topic, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+	w.provisionProjectSession = func(ctx context.Context, managementHandle, ccID, requestID, slug, topic, projectName, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
 		created, err := w.createProjectChannel(ctx, slug, topic, cwd)
 		return created, protocol.SessionSummary{SessionID: "ABC123", AgentType: "fixture", Status: model.StatusRunning}, err
 	}
@@ -683,11 +683,33 @@ func TestCmdNewWithExistingCwdCreatesChannel(t *testing.T) {
 	}
 }
 
+func TestCmdNewConfiguredProjectCarriesDisplayName(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(root, "directory-basename")
+	if err := os.MkdirAll(cwd, 0700); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeServer(t)
+	w := stubWatch(t, filepath.Join(root, ".claude", "projects"), fake)
+	if _, err := NewCCProjectStore(w.configDir).Add([]string{cwd}, "中文專案"); err != nil {
+		t.Fatal(err)
+	}
+	var gotName, gotCWD string
+	w.provisionProjectSession = func(_ context.Context, _, _, _, _, _, projectName, projectCWD string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+		gotName, gotCWD = projectName, projectCWD
+		return &CreateCCChannelResult{Handle: "dwch_task", Name: "review"}, protocol.SessionSummary{SessionID: "ABC123", AgentType: "fixture"}, nil
+	}
+	w.cmdNewProject(context.Background(), "dwch_mgmt", "cc1", "project-name-request", []string{"review", "--project", "中文專案"})
+	if gotName != "中文專案" || gotCWD != cwd {
+		t.Fatalf("project name=%q cwd=%q", gotName, gotCWD)
+	}
+}
+
 func TestCmdNewBareSlugCreatesStableDefaultWorkspace(t *testing.T) {
 	fake := newFakeServer(t)
 	w := stubWatch(t, t.TempDir(), fake)
 	var gotCWD string
-	w.provisionProjectSession = func(_ context.Context, _, _, _, _, _ string, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+	w.provisionProjectSession = func(_ context.Context, _, _, _, _, _, _ string, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
 		gotCWD = cwd
 		return &CreateCCChannelResult{Handle: "dwch_task", Name: "review"}, protocol.SessionSummary{SessionID: "ABC123", AgentType: "fixture"}, nil
 	}
@@ -948,7 +970,7 @@ func TestNewConfirmationIsNotConsumedBeforeProvisioningIsActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.mu.Unlock()
-	w.provisionProjectSession = func(context.Context, string, string, string, string, string, string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+	w.provisionProjectSession = func(context.Context, string, string, string, string, string, string, string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
 		return nil, protocol.SessionSummary{}, errors.New("injected crash boundary")
 	}
 	w.cmdNewProjectConfirm(context.Background(), "dwch_mgmt", "cc1", "confirm-message", []string{token})
@@ -970,7 +992,7 @@ func TestNewConfirmationRetriesSuccessReplyBeforeConsumingToken(t *testing.T) {
 	}
 	w.mu.Unlock()
 	provisionCalls := 0
-	w.provisionProjectSession = func(context.Context, string, string, string, string, string, string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+	w.provisionProjectSession = func(context.Context, string, string, string, string, string, string, string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
 		provisionCalls++
 		return &CreateCCChannelResult{Handle: "dwch_ready", Name: "review"}, protocol.SessionSummary{
 			SessionID: "ABC123", AgentType: "codex", Status: model.StatusRunning,
@@ -1039,7 +1061,7 @@ func TestNewProvisionWorkflowReplaysOneChannelAndOneCCOwnedSession(t *testing.T)
 		t.Fatal(err)
 	}
 	w.provisions = newCCProvisionStore(configDir)
-	created, session, err := w.createProvisionedProjectSession(context.Background(), "dwch_mgmt", "cc1", "discord-9001", "review", "topic", configDir)
+	created, session, err := w.createProvisionedProjectSession(context.Background(), "dwch_mgmt", "cc1", "discord-9001", "review", "topic", "", configDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1048,7 +1070,7 @@ func TestNewProvisionWorkflowReplaysOneChannelAndOneCCOwnedSession(t *testing.T)
 	}
 	// Simulate a client restart and the same durable command being replayed.
 	w.provisions = newCCProvisionStore(configDir)
-	replayedChannel, replayedSession, err := w.createProvisionedProjectSession(context.Background(), "dwch_mgmt", "cc1", "discord-9001", "review", "topic", configDir)
+	replayedChannel, replayedSession, err := w.createProvisionedProjectSession(context.Background(), "dwch_mgmt", "cc1", "discord-9001", "review", "topic", "", configDir)
 	if err != nil || replayedChannel.Handle != created.Handle || replayedSession.SessionID != session.SessionID {
 		t.Fatalf("replay channel=%+v session=%+v err=%v", replayedChannel, replayedSession, err)
 	}
@@ -1102,7 +1124,7 @@ func TestNewProvisionWorkflowReplaysOneChannelAndOneCCOwnedSession(t *testing.T)
 		t.Fatalf("stable end replies=%+v", messages)
 	}
 
-	destroyedChannel, destroyedSession, err := w.createProvisionedProjectSession(context.Background(), "dwch_mgmt", "cc1", "discord-9002", "throwaway", "", configDir)
+	destroyedChannel, destroyedSession, err := w.createProvisionedProjectSession(context.Background(), "dwch_mgmt", "cc1", "discord-9002", "throwaway", "", "", configDir)
 	if err != nil {
 		t.Fatal(err)
 	}

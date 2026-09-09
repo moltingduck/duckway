@@ -1090,7 +1090,7 @@ func (w *CCWatch) cmdNewProject(ctx context.Context, replyHandle, ccID, requestI
 		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ "+err.Error()+" — run `!projects` to see saved projects.")
 		return
 	}
-	created, session, err := w.provisionProject(ctx, replyHandle, ccID, requestID, slug, flags["topic"], project.Path)
+	created, session, err := w.provisionProject(ctx, replyHandle, ccID, requestID, slug, flags["topic"], project.Name, project.Path)
 	if err != nil {
 		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ provision agent session: "+err.Error())
 		return
@@ -1119,7 +1119,7 @@ func (w *CCWatch) cmdNewWithCwd(ctx context.Context, replyHandle, ccID, requestI
 			_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ cwd exists but is not a directory: `"+cwd+"`")
 			return
 		}
-		created, session, err := w.provisionProject(ctx, replyHandle, ccID, requestID, slug, topic, cwd)
+		created, session, err := w.provisionProject(ctx, replyHandle, ccID, requestID, slug, topic, "", cwd)
 		if err != nil {
 			_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ provision agent session: "+err.Error())
 			return
@@ -1190,7 +1190,7 @@ func (w *CCWatch) cmdNewProjectConfirm(ctx context.Context, replyHandle, ccID, r
 	if len(added) > 0 {
 		projectName = added[0].Name
 	}
-	created, session, err := w.provisionProject(ctx, replyHandle, ccID, requestID, pending.Slug, pending.Topic, pending.Cwd)
+	created, session, err := w.provisionProject(ctx, replyHandle, ccID, requestID, pending.Slug, pending.Topic, projectName, pending.Cwd)
 	if err != nil {
 		_ = w.postCommandReply(ctx, replyHandle, requestID, "❌ provision agent session: "+err.Error())
 		return
@@ -1244,12 +1244,12 @@ func (w *CCWatch) markProvisionReplyDelivered(requestID string) error {
 // launching the agent, so the first and every later prompt share the same CC
 // writer and Ducklion session. The channel is archived on any known failure;
 // ambiguous external outcomes are reported instead of claiming readiness.
-func (w *CCWatch) createProvisionedProjectSession(ctx context.Context, managementHandle, ccID, requestID, slug, topic, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+func (w *CCWatch) createProvisionedProjectSession(ctx context.Context, managementHandle, ccID, requestID, slug, topic, projectName, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
 	workflowID := requestID
 	if workflowID == "" {
 		workflowID = uuid.NewString()
 	}
-	record := ccProvisionRecord{RequestID: workflowID, ManagementHandle: managementHandle, CCID: ccID, Slug: slug, Topic: topic, CWD: cwd}
+	record := ccProvisionRecord{RequestID: workflowID, ManagementHandle: managementHandle, CCID: ccID, Slug: slug, Topic: topic, ProjectName: projectName, CWD: cwd}
 	if w.provisions != nil {
 		var err error
 		record, err = w.provisions.Reserve(record)
@@ -1301,7 +1301,7 @@ func (w *CCWatch) createProvisionedProjectSession(ctx context.Context, managemen
 		return failChannel(fmt.Errorf("ducklion unavailable: %w", err))
 	}
 	createID := "cc-new-create:" + workflowID
-	createRequest := protocol.SessionCreate{Handle: slug, Kind: model.KindAgent, AgentType: spec.Type, CWD: cwd, Command: []string{spec.Bin}}
+	createRequest := protocol.SessionCreate{Handle: slug, Kind: model.KindAgent, AgentType: spec.Type, ProjectName: record.ProjectName, CWD: cwd, Command: []string{spec.Bin}}
 	session := summaryValue(record.Session)
 	if record.Session == nil {
 		session, err = taskClient.CreateSessionWithID(ctx, createID, createRequest)
@@ -1428,7 +1428,7 @@ func (w *CCWatch) recoverCCProvisions(ctx context.Context) {
 			continue
 		}
 		recoveryCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-		created, session, err := w.createProvisionedProjectSession(recoveryCtx, record.ManagementHandle, record.CCID, record.RequestID, record.Slug, record.Topic, record.CWD)
+		created, session, err := w.createProvisionedProjectSession(recoveryCtx, record.ManagementHandle, record.CCID, record.RequestID, record.Slug, record.Topic, record.ProjectName, record.CWD)
 		cancel()
 		if err != nil {
 			log.Printf("[cc-watch] recover !new %s phase=%s: %v", record.RequestID, record.Phase, err)
@@ -1578,11 +1578,11 @@ func (w *CCWatch) recoverOneBindProvision(ctx context.Context, record ccProvisio
 	return result, true
 }
 
-func (w *CCWatch) provisionProject(ctx context.Context, managementHandle, ccID, requestID, slug, topic, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
+func (w *CCWatch) provisionProject(ctx context.Context, managementHandle, ccID, requestID, slug, topic, projectName, cwd string) (*CreateCCChannelResult, protocol.SessionSummary, error) {
 	if w.provisionProjectSession != nil {
-		return w.provisionProjectSession(ctx, managementHandle, ccID, requestID, slug, topic, cwd)
+		return w.provisionProjectSession(ctx, managementHandle, ccID, requestID, slug, topic, projectName, cwd)
 	}
-	return w.createProvisionedProjectSession(ctx, managementHandle, ccID, requestID, slug, topic, cwd)
+	return w.createProvisionedProjectSession(ctx, managementHandle, ccID, requestID, slug, topic, projectName, cwd)
 }
 
 func (w *CCWatch) createProjectChannel(ctx context.Context, slug, topic, cwd string) (*CreateCCChannelResult, error) {

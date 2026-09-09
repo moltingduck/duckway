@@ -28,6 +28,7 @@ type RemoteSession struct {
 	Kind                  string                                `json:"kind,omitempty"`
 	Status                string                                `json:"status"`
 	AgentType             string                                `json:"agent_type"`
+	ProjectName           string                                `json:"project_name,omitempty"`
 	Cwd                   string                                `json:"cwd"`
 	TmuxSession           string                                `json:"tmux_session"`
 	LastLine              string                                `json:"last_line,omitempty"`
@@ -463,7 +464,7 @@ func (r *Runner) Sessions(ctx context.Context, c Client, tailLines int) ([]Remot
 		sessions := make([]RemoteSession, 0, len(summaries))
 		for _, summary := range summaries {
 			session := RemoteSession{Client: c.Name, InstanceID: client.InstanceID(), SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status), AgentType: summary.AgentType,
-				Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
+				ProjectName: summary.ProjectName, Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
 				TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason,
 				RetainedOutputBytes: summary.RetainedOutputBytes, RetainedOutputUntilMS: summary.RetainedOutputUntilMS}
 			if summary.Writer != nil {
@@ -561,7 +562,7 @@ func remoteSessionsFromSummaries(c Client, instanceID string, summaries []protoc
 	sessions := make([]RemoteSession, 0, len(summaries))
 	for _, summary := range summaries {
 		session := RemoteSession{Client: c.Name, InstanceID: instanceID, SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status),
-			AgentType: summary.AgentType, Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
+			AgentType: summary.AgentType, ProjectName: summary.ProjectName, Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
 			TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason,
 			ActivitySequences: summary.ActivitySequences, RetainedOutputBytes: summary.RetainedOutputBytes, RetainedOutputUntilMS: summary.RetainedOutputUntilMS}
 		if summary.Writer != nil {
@@ -804,6 +805,12 @@ func parseDaemonCreate(args []string) (protocol.SessionCreate, error) {
 				return create, fmt.Errorf("--cwd requires a value")
 			}
 			create.CWD = args[i+1]
+			i++
+		case "--project-name":
+			if i+1 >= len(args) {
+				return create, fmt.Errorf("--project-name requires a value")
+			}
+			create.ProjectName = args[i+1]
 			i++
 		default:
 			return create, fmt.Errorf("unknown start option: %s", args[i])

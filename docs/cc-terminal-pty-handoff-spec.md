@@ -2939,7 +2939,7 @@ Status: Decided
 
 ## 168. Ducklord local session search
 
-Status: Decided
+Status: Implemented
 
 - Ducklord provides an incremental local search/filter over its synchronized
   combined session model.
@@ -2955,7 +2955,7 @@ Status: Decided
 
 ## 169. Ducklord session-search matching
 
-Status: Decided
+Status: Implemented
 
 - The first version performs Unicode-aware case-insensitive substring matching
   and does not apply fuzzy ranking.
@@ -2968,7 +2968,7 @@ Status: Decided
 
 ## 170. Search-result group visibility
 
-Status: Decided
+Status: Implemented
 
 - While a search is active, Ducklord hides organization-mode groups containing
   no matching visible session.
@@ -2982,7 +2982,7 @@ Status: Decided
 
 ## 171. Search-result activation flow
 
-Status: Decided
+Status: Implemented
 
 - While search is active, the first Enter on a selected result attempts to make
   that session the active right-hand PTY through the normal safe attachment and

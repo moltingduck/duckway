@@ -989,10 +989,14 @@ func parseDucklordStartArgs(args []string) ([]string, error) {
 }
 
 func buildStartArgs(name, agent, cwd string, command []string) ([]string, error) {
-	return buildStartArgsKind(name, model.KindAgent, agent, cwd, command)
+	return buildStartArgsProject(name, model.KindAgent, agent, "", cwd, command)
 }
 
 func buildStartArgsKind(name string, kind model.SessionKind, agent, cwd string, command []string) ([]string, error) {
+	return buildStartArgsProject(name, kind, agent, "", cwd, command)
+}
+
+func buildStartArgsProject(name string, kind model.SessionKind, agent, projectName, cwd string, command []string) ([]string, error) {
 	if err := validateSessionHandle(name); err != nil {
 		return nil, err
 	}
@@ -1018,6 +1022,9 @@ func buildStartArgsKind(name string, kind model.SessionKind, agent, cwd string, 
 	}
 	if cwd != "" {
 		out = append(out, "--cwd", cwd)
+	}
+	if projectName != "" {
+		out = append(out, "--project-name", projectName)
 	}
 	if len(command) == 0 {
 		return nil, fmt.Errorf("command is required after --")
@@ -1192,6 +1199,19 @@ type tuiState struct {
 	groupMenuTarget           string
 	groupMenuSession          ducklord.SessionIdentity
 	pooledOutput              bool
+	searchMode                bool
+	searchQuery               string
+	searchSelected            int
+	searchSelectedKey         string
+	searchRevision            uint64
+	searchActivatedKey        string
+	searchActivatedRevision   uint64
+	searchActivatedGeneration uint64
+	searchErr                 string
+	searchPendingRequestID    uint64
+	searchPendingKey          string
+	searchPendingGeneration   uint64
+	searchPendingRevision     uint64
 }
 
 func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, owner string) error {
@@ -1307,6 +1327,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	addClientDone := make(chan addClientDoneEvent, 1)
 	lifecycleDone := make(chan lifecycleDoneEvent, 1)
 	previewDone := make(chan previewOutputEvent, 1)
+	searchActivationTimeout := make(chan uint64, 1)
 	var previewID uint64
 	previewInFlight := false
 	previewQueued := false
@@ -1533,19 +1554,56 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			state.render(os.Stdout)
 		case <-ticker.C:
-			if !state.focused && !state.newSessionMode {
+			if !state.focused && !state.newSessionMode && !state.searchMode {
 				if !state.eventDriven {
 					state.refreshSessions(ctx)
 				}
 				requestPreview(false)
 			}
 			state.render(os.Stdout)
+		case requestID := <-searchActivationTimeout:
+			if state.searchMode && state.searchPendingRequestID == requestID {
+				state.searchPendingRequestID = 0
+				state.searchErr = "PTY activation timed out; try again"
+				selectPooledOutput()
+				state.render(os.Stdout)
+			}
 		case event := <-outputEvents:
-			expectedKey, expectedOK := terminalOutputKey(state.currentSession())
-			if event.RequestID != outputRequestID || !expectedOK || event.Key != expectedKey || event.Revision.RuntimeGeneration != state.currentSession().RuntimeGeneration || event.Err != nil {
+			expectedSession := state.currentSession()
+			if state.searchMode && state.searchActivatedKey != "" {
+				if activated, ok := state.sessionForKey(state.searchActivatedKey); ok {
+					expectedSession = activated
+				}
+			}
+			searchActivation := state.searchMode && state.searchPendingRequestID != 0 && event.RequestID == state.searchPendingRequestID
+			if searchActivation {
+				if state.searchPendingRevision != state.searchRevision || !state.selectableSessionMatches(state.searchPendingKey, state.searchPendingGeneration) {
+					state.searchPendingRequestID = 0
+					state.searchErr = "session changed while switching; try again"
+					selectPooledOutput()
+					state.render(os.Stdout)
+					continue
+				}
+				expectedSession, _ = state.sessionForKey(state.searchPendingKey)
+			}
+			expectedKey, expectedOK := terminalOutputKey(expectedSession)
+			if searchActivation && (!expectedOK || event.Key != expectedKey || event.Revision.RuntimeGeneration != expectedSession.RuntimeGeneration) {
+				state.searchPendingRequestID = 0
+				state.searchErr = "PTY activation returned stale session output; try again"
+				selectPooledOutput()
+				state.render(os.Stdout)
+				continue
+			}
+			if event.RequestID != outputRequestID || !expectedOK || event.Key != expectedKey || event.Revision.RuntimeGeneration != expectedSession.RuntimeGeneration || event.Err != nil {
 				if event.RequestID == outputRequestID && event.Err != nil {
-					state.outputFresh = false
-					state.outputErr = "PTY output stream unavailable"
+					if searchActivation {
+						state.searchPendingRequestID = 0
+						state.searchErr = "PTY output stream unavailable"
+						selectPooledOutput()
+					} else {
+						state.outputFresh = false
+						state.outputErr = "PTY output stream unavailable"
+					}
 					state.render(os.Stdout)
 				}
 				continue
@@ -1557,13 +1615,32 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			} else {
 				view, viewErr = outputManager.View(event)
 				if viewErr != nil {
+					if searchActivation {
+						state.searchPendingRequestID = 0
+						state.searchErr = "PTY framebuffer is unavailable; try again"
+						selectPooledOutput()
+						state.render(os.Stdout)
+					}
 					continue
 				}
 			}
+			if searchActivation && (!view.Ready || view.Disconnected || view.Ended) {
+				state.searchPendingRequestID = 0
+				state.searchErr = "PTY output is not ready; try again"
+				selectPooledOutput()
+				state.render(os.Stdout)
+				continue
+			}
 			terminal, valid := ducklord.NewTerminalFromState(view.Framebuffer, ducklord.DefaultTerminalScrollback)
 			if !valid {
-				state.outputFresh = false
-				state.outputErr = "PTY framebuffer is invalid"
+				if searchActivation {
+					state.searchPendingRequestID = 0
+					state.searchErr = "PTY framebuffer is invalid"
+					selectPooledOutput()
+				} else {
+					state.outputFresh = false
+					state.outputErr = "PTY framebuffer is invalid"
+				}
 				state.render(os.Stdout)
 				continue
 			}
@@ -1579,6 +1656,16 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.outputErr = view.Error
 			if view.Ended {
 				state.outputErr = "PTY process ended"
+			}
+			if searchActivation {
+				state.outputForKey = state.searchPendingKey
+				state.activeAttachKey = state.searchPendingKey
+				state.activeAttachFresh = state.outputFresh
+				state.searchActivatedKey = state.searchPendingKey
+				state.searchActivatedRevision = state.searchPendingRevision
+				state.searchActivatedGeneration = state.searchPendingGeneration
+				state.searchPendingRequestID = 0
+				state.searchErr = "Active · Enter again to focus"
 			}
 			if state.focused && control != nil && !attachInitialResizeQueued && resizeCapability() != nil {
 				attachInitialResizeQueued = true
@@ -1734,7 +1821,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				attachInitialResizeQueued = false
 				attachReplayEndOffset = 0
 			}
-			if outputManager != nil {
+			if outputManager != nil && !state.searchMode {
 				selectPooledOutput()
 			} else if !state.focused && state.activeAttachKey == "" {
 				requestPreview(false)
@@ -1874,6 +1961,74 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					_, _ = attach.Stdin.Write(b)
 				}
 				continue
+			}
+			if state.searchMode {
+				if state.searchPendingRequestID != 0 {
+					if string(b) == "\x1b" || string(b) == "\x03" {
+						state.searchPendingRequestID = 0
+						state.closeSearch()
+						selectPooledOutput()
+						state.render(os.Stdout)
+						continue
+					}
+					state.searchErr = "switching PTY..."
+					state.render(os.Stdout)
+					continue
+				}
+				action := state.handleSearchInput(b)
+				if action == "cancel" {
+					state.closeSearch()
+				} else if action == "activate" {
+					target, ok := state.searchResult()
+					key := sessionKey(target)
+					if ok && state.searchResultIsActivated(target) {
+						state.selectSessionKey(key)
+						state.closeSearch()
+						b = []byte("\r")
+					} else if !ok || outputManager == nil {
+						state.searchErr = "PTY output activation is unavailable"
+						state.render(os.Stdout)
+						continue
+					} else if _, valid := terminalOutputKey(target); !valid || !canRead(target) || !state.hostIsLive(target.Client) {
+						state.searchErr = "selected session is unavailable"
+						state.render(os.Stdout)
+						continue
+					} else {
+						client, clientErr := mustClient(cfg, target.Client)
+						if clientErr != nil {
+							state.searchErr = clientErr.Error()
+							state.render(os.Stdout)
+							continue
+						}
+						rows, cols := state.activePTYSize()
+						requestID := outputManager.Select(ducklord.TerminalSelection{Client: client, InstanceID: target.InstanceID, SessionID: target.SessionID,
+							RuntimeGeneration: target.RuntimeGeneration, Rows: int(rows), Cols: int(cols)})
+						outputRequestID = requestID
+						state.searchPendingRequestID = requestID
+						state.searchPendingKey = key
+						state.searchPendingGeneration = target.RuntimeGeneration
+						state.searchPendingRevision = state.searchRevision
+						state.searchErr = "switching PTY..."
+						go func(id uint64) {
+							timer := time.NewTimer(15 * time.Second)
+							defer timer.Stop()
+							select {
+							case <-timer.C:
+								select {
+								case searchActivationTimeout <- id:
+								case <-ctx.Done():
+								}
+							case <-ctx.Done():
+							}
+						}(requestID)
+						state.render(os.Stdout)
+						continue
+					}
+				}
+				if state.searchMode {
+					state.render(os.Stdout)
+					continue
+				}
 			}
 			if state.addClientMode {
 				if state.addClientBusy {
@@ -2103,6 +2258,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				requestPreview(true)
 			case "new":
 				state.beginCreate()
+			case "search":
+				state.beginSearch()
 			case "notifications":
 				state.beginNotificationSettings()
 			case "actions":
@@ -2342,6 +2499,9 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 		s.selected = 0
 	}
 	s.selectedKey = s.currentKey()
+	if s.searchMode {
+		s.syncSearchSelection()
+	}
 }
 
 func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
@@ -2406,6 +2566,9 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 		_ = s.saveActivityState()
 	}
 	s.restoreSelection(oldKey)
+	if s.searchMode {
+		s.syncSearchSelection()
+	}
 	if attachedKey := s.effectiveAttachKey(); attachedKey != "" {
 		activeExists := false
 		for _, session := range s.sessions {
@@ -3273,6 +3436,8 @@ func (s *tuiState) render(out io.Writer) {
 		fmt.Fprintln(out, truncate("add ducklion host: ssh config number/name or user@host  enter add  esc cancel", renderWidth))
 	} else if s.newSessionMode {
 		fmt.Fprintln(out, truncate(s.createHeader()+"  enter next  esc cancel", renderWidth))
+	} else if s.searchMode {
+		fmt.Fprintln(out, truncate("search sessions  type to filter  ↑/↓ move  enter activate  esc close", renderWidth))
 	} else if s.actionMenu {
 		fmt.Fprintln(out, truncate("session actions  ↑/↓ or j/k move  enter choose  esc close", renderWidth))
 	} else if s.groupMenu {
@@ -3280,14 +3445,15 @@ func (s *tuiState) render(out io.Writer) {
 	} else if s.lifecycleConfirm != "" {
 		fmt.Fprintln(out, truncate("lifecycle confirmation open; use the modal controls", renderWidth))
 	} else if s.hostScoped {
-		fmt.Fprintln(out, truncate("j/k move  enter focus  o organize  g groups  m actions  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k move  / search  enter focus  o organize  g groups  m actions  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
 	} else {
-		fmt.Fprintln(out, truncate("j/k move  enter focus  o organize  g groups  m actions  y/Y yield  E end  R restart  X destroy  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k move  / search  enter focus  o organize  g groups  m actions  y/Y yield  E end  R restart  X destroy  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
 		fmt.Fprintln(out, truncate("No sessions.", renderWidth))
 		s.renderCreateModal(out, width, modalHeight)
+		s.renderSearchModal(out, width, modalHeight)
 		s.renderActionModal(out, width, modalHeight)
 		s.renderAddClientModal(out, width, modalHeight)
 		s.renderGroupModal(out, width, modalHeight)
@@ -3374,6 +3540,7 @@ func (s *tuiState) render(out io.Writer) {
 		s.renderContent(out, contentX, contentWidth, height)
 	}
 	s.renderCreateModal(out, width, modalHeight)
+	s.renderSearchModal(out, width, modalHeight)
 	s.renderActionModal(out, width, modalHeight)
 	s.renderAddClientModal(out, width, modalHeight)
 	s.renderGroupModal(out, width, modalHeight)
@@ -3998,6 +4165,62 @@ func notificationLabel(category model.NotificationCategory) string {
 	}
 }
 
+func (s *tuiState) renderSearchModal(out io.Writer, cols, rows int) {
+	if !s.searchMode {
+		return
+	}
+	results := s.searchResults()
+	totalResults := len(results)
+	lines := []modalRenderLine{
+		{modalTitle, "  Search sessions"},
+		{modalInput, "  search › " + s.searchQuery},
+	}
+	maxResults := max(1, (rows-7)/2)
+	start := 0
+	if len(results) > maxResults {
+		start = min(max(0, s.searchSelected-maxResults/2), len(results)-maxResults)
+		results = results[start : start+maxResults]
+	}
+	if len(results) == 0 {
+		lines = append(lines, modalRenderLine{modalStatus, "  No matching sessions"})
+	} else {
+		currentGroup := "\x00"
+		for index, session := range results {
+			absolute := start + index
+			groupID := s.organizationGroupID(session)
+			if groupID != currentGroup {
+				groupLabel := "  [" + displayField(s.organizationGroupLabel(session)) + "]"
+				if s.groupHasUnread(groupID) {
+					groupLabel += " •"
+				}
+				lines = append(lines, modalRenderLine{modalMuted, groupLabel})
+				currentGroup = groupID
+			}
+			style, prefix := "", "  "
+			if absolute == s.searchSelected {
+				style, prefix = modalSelected, "› "
+			}
+			mark := " "
+			if sessionKey(session) == s.activeAttachKey {
+				mark = "●"
+			} else if session.Unread {
+				mark = "•"
+			}
+			lines = append(lines, modalRenderLine{style, fmt.Sprintf("%s%s %-12s %-18s %-8s %s", prefix, mark,
+				displayField(session.Client), displayField(session.Name), displayField(session.Kind), displayField(session.AgentType))})
+		}
+	}
+	status := fmt.Sprintf("  %d match", totalResults)
+	if totalResults != 1 {
+		status += "es"
+	}
+	if s.searchErr != "" {
+		status = "  " + sanitizeTerminalText(s.searchErr)
+	}
+	lines = append(lines, modalRenderLine{modalStatus, status}, modalRenderLine{modalMuted, "  ↑/↓ select · Enter activate · Esc close"})
+	renderModalBox(out, cols, rows, lines)
+}
+
 func (s *tuiState) renderNotificationModal(out io.Writer, cols, rows int) {
 	if !s.notificationMode {
 		return
@@ -4287,6 +4510,171 @@ func wrapDisplayText(text string, width int) []string {
 	return lines
 }
 
+func (s *tuiState) beginSearch() {
+	s.searchMode = true
+	s.searchQuery = ""
+	s.searchSelected = 0
+	s.searchSelectedKey = ""
+	s.searchRevision++
+	s.searchActivatedKey = ""
+	s.searchActivatedRevision = 0
+	s.searchActivatedGeneration = 0
+	s.searchErr = ""
+	s.syncSearchSelection()
+}
+
+func (s *tuiState) closeSearch() {
+	s.searchMode = false
+	s.searchQuery = ""
+	s.searchSelected = 0
+	s.searchSelectedKey = ""
+	s.searchActivatedKey = ""
+	s.searchActivatedRevision = 0
+	s.searchActivatedGeneration = 0
+	s.searchErr = ""
+	s.searchPendingRequestID = 0
+	s.searchPendingKey = ""
+	s.searchPendingGeneration = 0
+	s.searchPendingRevision = 0
+}
+
+func (s *tuiState) searchResult() (ducklord.RemoteSession, bool) {
+	results := s.searchResults()
+	if len(results) == 0 || s.searchSelected < 0 || s.searchSelected >= len(results) {
+		return ducklord.RemoteSession{}, false
+	}
+	return results[s.searchSelected], true
+}
+
+func (s *tuiState) selectSessionKey(key string) bool {
+	for index, session := range s.sessions {
+		if sessionKey(session) == key {
+			s.selected = index
+			s.selectedKey = key
+			return true
+		}
+	}
+	return false
+}
+
+func (s *tuiState) sessionForKey(key string) (ducklord.RemoteSession, bool) {
+	for _, session := range s.sessions {
+		if sessionKey(session) == key {
+			return session, true
+		}
+	}
+	return ducklord.RemoteSession{}, false
+}
+
+func (s *tuiState) selectableSessionMatches(key string, generation uint64) bool {
+	session, ok := s.sessionForKey(key)
+	return ok && session.RuntimeGeneration == generation && canRead(session) && s.hostIsLive(session.Client)
+}
+
+func (s *tuiState) searchResultIsActivated(session ducklord.RemoteSession) bool {
+	key := sessionKey(session)
+	return s.searchActivatedKey == key && s.searchActivatedRevision == s.searchRevision &&
+		s.searchActivatedGeneration == session.RuntimeGeneration && s.outputForKey == key && s.outputFresh
+}
+
+func (s *tuiState) searchResults() []ducklord.RemoteSession {
+	terms := strings.Fields(strings.ToLower(modalDisplayText(s.searchQuery)))
+	if len(terms) == 0 {
+		return append([]ducklord.RemoteSession(nil), s.sessions...)
+	}
+	results := make([]ducklord.RemoteSession, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		fields := strings.ToLower(strings.Join([]string{
+			modalDisplayText(session.Name), modalDisplayText(session.ProjectName), modalDisplayText(session.Client),
+			modalDisplayText(s.organizationGroupLabel(session)), modalDisplayText(session.Kind), modalDisplayText(session.AgentType),
+		}, "\n"))
+		matched := true
+		for _, term := range terms {
+			if !strings.Contains(fields, term) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			results = append(results, session)
+		}
+	}
+	return results
+}
+
+func (s *tuiState) syncSearchSelection() {
+	results := s.searchResults()
+	if len(results) == 0 {
+		s.searchSelected = 0
+		s.searchSelectedKey = ""
+		return
+	}
+	if s.searchSelectedKey != "" {
+		for index, session := range results {
+			if sessionKey(session) == s.searchSelectedKey {
+				s.searchSelected = index
+				return
+			}
+		}
+	}
+	s.searchSelected = min(max(s.searchSelected, 0), len(results)-1)
+	s.searchSelectedKey = sessionKey(results[s.searchSelected])
+}
+
+func (s *tuiState) handleSearchInput(input []byte) string {
+	results := s.searchResults()
+	switch string(input) {
+	case "\x1b":
+		return "cancel"
+	case "\x1b[B":
+		if s.searchSelected < len(results)-1 {
+			s.searchSelected++
+			s.searchSelectedKey = sessionKey(results[s.searchSelected])
+		}
+	case "\x1b[A":
+		if s.searchSelected > 0 {
+			s.searchSelected--
+			s.searchSelectedKey = sessionKey(results[s.searchSelected])
+		}
+	case "\r", "\n":
+		if len(results) > 0 {
+			return "activate"
+		}
+		return ""
+	case "\b", "\x7f":
+		if s.searchQuery != "" {
+			runes := []rune(s.searchQuery)
+			s.searchQuery = string(runes[:len(runes)-1])
+			s.searchRevision++
+			s.searchSelected = 0
+			s.searchSelectedKey = ""
+			s.searchActivatedKey = ""
+			s.searchActivatedGeneration = 0
+		}
+	default:
+		if utf8.Valid(input) {
+			for _, r := range string(input) {
+				if !unicode.IsControl(r) && !unicode.Is(unicode.Cf, r) && len(s.searchQuery)+utf8.RuneLen(r) <= 1024 {
+					s.searchQuery += string(r)
+				}
+			}
+			s.searchRevision++
+			s.searchSelected = 0
+			s.searchSelectedKey = ""
+			s.searchActivatedKey = ""
+			s.searchActivatedGeneration = 0
+		}
+	}
+	if string(input) == "\x1b[A" || string(input) == "\x1b[B" {
+		s.searchRevision++
+		s.searchActivatedKey = ""
+		s.searchActivatedRevision = 0
+		s.searchActivatedGeneration = 0
+	}
+	s.syncSearchSelection()
+	return ""
+}
+
 func (s *tuiState) handleInput(b []byte) string {
 	text := string(b)
 	switch {
@@ -4294,6 +4682,8 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "quit"
 	case text == "r":
 		return "refresh"
+	case text == "/":
+		return "search"
 	case text == "o":
 		return "organize"
 	case text == "g":
@@ -4808,9 +5198,9 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 			}
 			var startArgs []string
 			if kind == model.KindShell {
-				startArgs, agentErr = buildStartArgsKind(name, model.KindShell, "", project.Path, resolved.Command)
+				startArgs, agentErr = buildStartArgsProject(name, model.KindShell, "", project.Name, project.Path, resolved.Command)
 			} else {
-				startArgs, agentErr = buildStartArgs(name, resolved.Type, project.Path, resolved.Command)
+				startArgs, agentErr = buildStartArgsProject(name, model.KindAgent, resolved.Type, project.Name, project.Path, resolved.Command)
 			}
 			return createDiscoveryEvent{sessionName: name, args: startArgs, err: agentErr}
 		})

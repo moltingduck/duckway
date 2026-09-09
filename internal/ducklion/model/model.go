@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -134,6 +135,7 @@ type Session struct {
 	Handle            string
 	Kind              SessionKind
 	AgentType         string
+	ProjectName       string
 	CWD               string
 	Shell             string
 	Status            SessionStatus
@@ -158,6 +160,9 @@ func (s Session) Validate() error {
 	}
 	if s.Kind != KindAgent && s.Kind != KindShell {
 		return fmt.Errorf("invalid session kind %q", s.Kind)
+	}
+	if _, err := ValidateProjectName(s.ProjectName); err != nil {
+		return err
 	}
 	if s.Status != StatusProvisioning && s.Status != StatusRunning && s.Status != StatusStopped && s.Status != StatusRecovering && s.Status != StatusDestroying {
 		return fmt.Errorf("invalid session status %q", s.Status)
@@ -185,6 +190,21 @@ func (s Session) Validate() error {
 		return fmt.Errorf("shell session cannot have writer, agent, adapter, or task state")
 	}
 	return nil
+}
+
+// ValidateProjectName validates optional caller-supplied display metadata. It
+// is never a filesystem path or authorization identity.
+func ValidateProjectName(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if len(value) > 1024 || !utf8.ValidString(value) {
+		return "", fmt.Errorf("invalid project name")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return "", fmt.Errorf("invalid project name")
+		}
+	}
+	return value, nil
 }
 
 type PendingYield struct {

@@ -366,6 +366,10 @@ func (s *Server) routeSessionCreate(request protocol.Request, role protocol.Peer
 	if err != nil || (create.Kind != model.KindAgent && create.Kind != model.KindShell) || len(create.Command) == 0 || len(create.Command) > 64 {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "handle, kind, and command are required"}}
 	}
+	projectName, err := model.ValidateProjectName(create.ProjectName)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "project name contains invalid display text"}}
+	}
 	if !filepath.IsAbs(create.CWD) {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "working directory must be absolute"}}
 	}
@@ -463,7 +467,7 @@ func (s *Server) routeSessionCreate(request protocol.Request, role protocol.Peer
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not allocate session"}}
 	}
 	now := time.Now().UTC().UnixMilli()
-	session := model.Session{ID: id, Handle: handle, Kind: create.Kind, AgentType: strings.TrimSpace(create.AgentType), CWD: create.CWD,
+	session := model.Session{ID: id, Handle: handle, Kind: create.Kind, AgentType: strings.TrimSpace(create.AgentType), ProjectName: projectName, CWD: create.CWD,
 		Status: model.StatusRecovering, OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle,
 		AdapterState: model.AdapterRecovering, RecoveryPublicKey: publicKey, CreatedAtMS: now, UpdatedAtMS: now}
 	if create.Kind == model.KindAgent {
@@ -1308,7 +1312,7 @@ func (s *Server) restoreOwnershipOrQuarantine(previous model.Session) {
 }
 
 func summaryFor(session model.Session) protocol.SessionSummary {
-	return protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind, AgentType: session.AgentType, CWD: session.CWD,
+	return protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind, AgentType: session.AgentType, ProjectName: session.ProjectName, CWD: session.CWD,
 		Status: session.Status, Writer: session.Writer, OwnershipEpoch: session.OwnershipEpoch, RuntimeGeneration: session.RuntimeGeneration,
 		TaskState: session.TaskState, AdapterState: session.AdapterState, ExitSuccess: session.ExitSuccess, ExitReason: session.ExitReason}
 }

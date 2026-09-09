@@ -2,8 +2,20 @@ package model
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
+
+func TestValidateProjectNameIsUnicodeDisplayMetadata(t *testing.T) {
+	if got, err := ValidateProjectName("  中文專案  "); err != nil || got != "中文專案" {
+		t.Fatalf("project name=%q err=%v", got, err)
+	}
+	for _, bad := range []string{"bad\nname", "bad\x1b]52;clipboard\a", "bad\u202ename", strings.Repeat("x", 1025), string([]byte{0xff})} {
+		if _, err := ValidateProjectName(bad); err == nil {
+			t.Fatalf("invalid project name %q accepted", bad)
+		}
+	}
+}
 
 func TestSessionIDAndUnicodeHandle(t *testing.T) {
 	id, err := NewSessionID()

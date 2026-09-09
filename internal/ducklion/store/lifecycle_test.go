@@ -237,8 +237,11 @@ func TestMigrateV9LifecycleRowsGainRecoveryMetadata(t *testing.T) {
 	owner := model.Owner{Kind: model.OwnerTerminal, ID: "desk"}
 	session := model.Session{ID: "ABC123", Handle: "agent", Kind: model.KindAgent, AgentType: "fixture", CWD: t.TempDir(), Status: model.StatusRunning,
 		Writer: &owner, OwnershipEpoch: 2, RuntimeGeneration: 3, TaskState: model.TaskIdle, AdapterState: model.AdapterHealthy, CreatedAtMS: now, UpdatedAtMS: now}
-	fixtureStore := &SQLite{db: raw, path: path}
-	if err := fixtureStore.InsertSessionTx(ctx, tx, session); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sessions
+		(session_id,handle,kind,agent_type,cwd,shell,status,writer_kind,writer_id,ownership_epoch,runtime_generation,task_state,adapter_state,recovery_public_key,created_at_ms,updated_at_ms,exit_success,exit_reason)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, session.ID, session.Handle, session.Kind, session.AgentType, session.CWD, session.Shell,
+		session.Status, owner.Kind, owner.ID, session.OwnershipEpoch, session.RuntimeGeneration, session.TaskState, session.AdapterState,
+		session.RecoveryPublicKey, session.CreatedAtMS, session.UpdatedAtMS, session.ExitSuccess, session.ExitReason); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(`INSERT INTO pending_lifecycle_operations

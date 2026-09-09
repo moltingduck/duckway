@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -26,6 +27,25 @@ func TestResponseRequiresExactlyOneOutcome(t *testing.T) {
 	}
 	if err := (Response{ID: "1", Result: json.RawMessage(`{"ok":true}`)}).Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSessionProjectNameJSONCompatibility(t *testing.T) {
+	raw, err := json.Marshal(SessionCreate{Handle: "agent", ProjectName: "中文專案"})
+	if err != nil || !json.Valid(raw) {
+		t.Fatalf("marshal=%q err=%v", raw, err)
+	}
+	var create SessionCreate
+	if err := json.Unmarshal(raw, &create); err != nil || create.ProjectName != "中文專案" {
+		t.Fatalf("create=%+v err=%v", create, err)
+	}
+	create = SessionCreate{}
+	if err := json.Unmarshal([]byte(`{"handle":"legacy"}`), &create); err != nil || create.ProjectName != "" {
+		t.Fatalf("legacy create=%+v err=%v", create, err)
+	}
+	empty, err := json.Marshal(SessionSummary{SessionID: "ABC123"})
+	if err != nil || bytes.Contains(empty, []byte("project_name")) {
+		t.Fatalf("empty summary=%q err=%v", empty, err)
 	}
 }
 
