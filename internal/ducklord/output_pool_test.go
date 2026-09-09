@@ -3,6 +3,7 @@ package ducklord
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -398,6 +399,34 @@ func TestOutputPoolConcurrentExistingActivationDoesNotRace(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestOutputPoolEnforcesPerDaemonObserverConnectionBudgetAcrossAliases(t *testing.T) {
+	pool, err := NewOutputPool(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var first OutputKey
+	for i := 0; i < maxStableOutputObserversPerDaemon+1; i++ {
+		key := OutputKey{ClientKey: fmt.Sprintf("alias-%d", i%2), InstanceID: "instance", SessionID: fmt.Sprintf("S%05d", i)}
+		if i == 0 {
+			first = key
+		}
+		activation, activateErr := pool.Activate(context.Background(), key, outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+			return &fakeOutputResource{}, nil
+		})
+		if activateErr != nil {
+			t.Fatal(activateErr)
+		}
+		if i == maxStableOutputObserversPerDaemon && (activation.Evicted == nil || *activation.Evicted != first) {
+			t.Fatalf("per-host overflow evicted=%v want=%v", activation.Evicted, first)
+		}
+	}
+	status := pool.Status()
+	if status.Count != maxStableOutputObserversPerDaemon || status.Connected != maxStableOutputObserversPerDaemon {
+		t.Fatalf("status=%+v", status)
+	}
 }
 
 func TestOutputPoolWithLeaseSerializesTerminalMutation(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +29,25 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	runtime := requiredE2EEnv(t, "DUCKLORD_E2E_RUNTIME")
 	controller := requiredE2EEnv(t, "DUCKLORD_E2E_CONTROLLER")
 	before := listContainerSessions(t, runtime, controller, "client-a")
+	if out, err := exec.Command(runtime, "exec", controller, "sh", "-lc", "printf '\nraw_output_subscription_limit: 2\n' >>/root/.ducklord/config.yaml").CombinedOutput(); err != nil {
+		t.Fatalf("configure pooled output limit: %v: %s", err, out)
+	}
+	if out, err := exec.Command(runtime, "exec", controller, "ducklord", "send", "client-a", "bash", `printf '\033[31mDUCKLORD_POOLED_RED\033[0m\n'`, "--config", "/tmp/e2e-inspector.yaml").CombinedOutput(); err != nil {
+		t.Fatalf("seed colored PTY output: %v: %s", err, out)
+	}
+	var alpha protocol.SessionSummary
+	for _, session := range before {
+		if session.Handle == "alpha" {
+			alpha = session
+		}
+	}
+	if alpha.SessionID == "" {
+		t.Fatal("demo alpha session is missing")
+	}
+	alphaRemote, ok := findContainerSession(t, runtime, controller, "client-a", alpha.SessionID)
+	if !ok || alphaRemote.InstanceID == "" {
+		t.Fatal("demo alpha session has no remote instance identity")
+	}
 	handle := fmt.Sprintf("job-tui-e2e-%d", os.Getpid())
 	command := exec.Command(runtime, "exec", "-it", controller, "env", "TERM=xterm-256color", "ducklord", "tui", "--config", "/root/.ducklord/config.yaml")
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 80})
@@ -43,23 +63,64 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 
 	capture := newTUICapture(terminal)
 	capture.wait(t, "ducklord remote agents", 20*time.Second)
+	capture.wait(t, "client-a alpha tick", 20*time.Second)
 	start := capture.position()
-	writePTY(t, terminal, "c")
-	capture.waitAfter(t, start, "new session: choose agent or shell", 10*time.Second)
-	modal := capture.since(start)
-	if !strings.Contains(modal, "\x1b[") || !strings.Contains(modal, "╭") || !strings.Contains(modal, "Shell session") {
-		t.Fatalf("create modal lacks frame/color/choices: %q", safeTerminalDiagnostic(modal))
+	writePTY(t, terminal, "j") // alpha -> bash, without focusing the PTY
+	capture.waitCurrent(t, "DUCKLORD_POOLED_RED", 10*time.Second)
+	if !capture.markerHasForeground("DUCKLORD_POOLED_RED", 2) {
+		t.Fatalf("pooled marker is not semantically red on current screen: %q", safeTerminalDiagnostic(capture.currentText()))
 	}
+	start = capture.position()
+	writePTY(t, terminal, "j") // bash -> build; capacity 2 evicts alpha
+	capture.waitCurrent(t, "client-a build output", 10*time.Second)
+	snapshotPath := fmt.Sprintf("/root/.ducklord/sessions/%s/%s.snapshot", alphaRemote.InstanceID, alpha.SessionID)
+	waitE2E(t, 10*time.Second, func() bool {
+		return exec.Command(runtime, "exec", controller, "test", "-s", snapshotPath).Run() == nil
+	}, func() string { return "LRU eviction did not persist alpha framebuffer snapshot at " + snapshotPath })
+	localSnapshots := t.TempDir()
+	localInstanceDir := filepath.Join(localSnapshots, alphaRemote.InstanceID)
+	if err := os.MkdirAll(localInstanceDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	localSnapshot := filepath.Join(localInstanceDir, alpha.SessionID+".snapshot")
+	if out, err := exec.Command(runtime, "cp", controller+":"+snapshotPath, localSnapshot).CombinedOutput(); err != nil {
+		t.Fatalf("copy LRU snapshot: %v: %s", err, out)
+	}
+	info, err := os.Stat(localSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("snapshot mode=%v", info.Mode().Perm())
+	}
+	snapshot, err := (ducklord.SnapshotStore{Root: localSnapshots}).Load(alphaRemote.InstanceID, alpha.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderState, err := ducklord.DecodeTerminalRenderState(snapshot.Payload)
+	if err != nil || renderState.Framebuffer == nil || renderState.RuntimeGeneration != alpha.RuntimeGeneration || renderState.OutputOffset == 0 {
+		t.Fatalf("invalid LRU snapshot state=%+v err=%v", renderState, err)
+	}
+	snapshotTerminal, valid := ducklord.NewTerminalFromState(*renderState.Framebuffer, ducklord.DefaultTerminalScrollback)
+	if !valid || !strings.Contains(snapshotTerminal.Text(), "client-a alpha tick") || strings.Contains(snapshotTerminal.Text(), "DUCKLORD_POOLED_RED") {
+		t.Fatalf("LRU snapshot crossed session identity: %q", safeTerminalDiagnostic(snapshotTerminal.Text()))
+	}
+	writePTY(t, terminal, "kk") // reactivate alpha from its exact saved cursor
+	capture.waitCurrent(t, "client-a alpha tick", 10*time.Second)
+
+	start = capture.position()
+	writePTY(t, terminal, "c")
+	assertCurrentCreateModal(t, capture, start, "new session: choose agent or shell", "Shell session", true)
 
 	start = capture.position()
 	writePTY(t, terminal, "\x1b[B\r") // shell, then submit
-	capture.waitAfter(t, start, "choose host number/name", 10*time.Second)
+	assertCurrentCreateModal(t, capture, start, "choose host number/name", "client-a", true)
 	start = capture.position()
 	writePTY(t, terminal, "\r") // currently selected client-a
-	capture.waitAfter(t, start, "choose configured project", 15*time.Second)
+	assertCurrentCreateModal(t, capture, start, "choose configured project", "alpha-project", true)
 	start = capture.position()
 	writePTY(t, terminal, "\r") // alpha-project
-	capture.waitAfter(t, start, "handle (default alpha)", 15*time.Second)
+	assertCurrentCreateModal(t, capture, start, "handle (default alpha)", "handle", false)
 	start = capture.position()
 	writePTY(t, terminal, handle+"\r")
 	capture.waitAfter(t, start, "j/k move", 20*time.Second)
@@ -154,12 +215,13 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 }
 
 type tuiCapture struct {
-	mu   sync.Mutex
-	data []byte
+	mu     sync.Mutex
+	data   []byte
+	screen *ducklord.Terminal
 }
 
 func newTUICapture(terminal *os.File) *tuiCapture {
-	capture := &tuiCapture{}
+	capture := &tuiCapture{screen: ducklord.NewTerminal(24, 80, 0)}
 	go func() {
 		buffer := make([]byte, 8192)
 		for {
@@ -167,6 +229,7 @@ func newTUICapture(terminal *os.File) *tuiCapture {
 			if n > 0 {
 				capture.mu.Lock()
 				capture.data = append(capture.data, buffer[:n]...)
+				capture.screen.Write(buffer[:n])
 				capture.mu.Unlock()
 			}
 			if err != nil {
@@ -175,6 +238,91 @@ func newTUICapture(terminal *os.File) *tuiCapture {
 		}
 	}()
 	return capture
+}
+
+func (c *tuiCapture) currentText() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return strings.Join(c.screen.RenderLines(24, 80), "\n")
+}
+
+func (c *tuiCapture) waitCurrent(t *testing.T, needle string, timeout time.Duration) {
+	t.Helper()
+	waitE2E(t, timeout, func() bool { return strings.Contains(c.currentText(), needle) }, func() string {
+		return fmt.Sprintf("current TUI screen did not contain %q; screen=%q", needle, safeTerminalDiagnostic(c.currentText()))
+	})
+}
+
+func (c *tuiCapture) markerHasForeground(marker string, foreground int32) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state := c.screen.SnapshotState()
+	screen := state.Primary
+	if state.UseAlternate {
+		screen = state.Alternate
+	}
+	for _, line := range screen.Lines {
+		for start := 0; start < len(line.Cells); start++ {
+			var text strings.Builder
+			valid := true
+			for index := start; index < len(line.Cells) && text.Len() < len(marker); index++ {
+				cell := line.Cells[index]
+				if cell.Width == 0 {
+					continue
+				}
+				if cell.Style.Foreground != foreground {
+					valid = false
+				}
+				text.WriteRune(cell.Rune)
+			}
+			if valid && text.String() == marker {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func assertCurrentCreateModal(t *testing.T, capture *tuiCapture, start int, title, choice string, selected bool) {
+	t.Helper()
+	capture.waitCurrent(t, title, 15*time.Second)
+	capture.waitCurrent(t, choice, 15*time.Second)
+	screen := capture.currentText()
+	lines := strings.Split(screen, "\n")
+	for top, line := range lines {
+		runes := []rune(line)
+		left, right := -1, -1
+		for index, r := range runes {
+			if r == '╭' && left < 0 {
+				left = index
+			}
+			if r == '╮' {
+				right = index
+			}
+		}
+		if left < 0 || right <= left {
+			continue
+		}
+		bottom := -1
+		for index := top + 1; index < len(lines); index++ {
+			if strings.ContainsRune(lines[index], '╰') && strings.ContainsRune(lines[index], '╯') {
+				bottom = index
+				break
+			}
+		}
+		if bottom < 0 || top != (24-(bottom-top+1))/2 {
+			t.Fatalf("create modal is not vertically centered: %q", safeTerminalDiagnostic(screen))
+		}
+		raw := capture.since(start)
+		if !strings.Contains(raw, ";5H"+modalBorder+"╭") {
+			t.Fatalf("create modal is not horizontally centered: %q", safeTerminalDiagnostic(raw))
+		}
+		if !strings.Contains(raw, modalBorder) || !strings.Contains(raw, modalInput) || selected && !strings.Contains(raw, modalSelected) {
+			t.Fatalf("create modal lacks semantic colors: %q", safeTerminalDiagnostic(raw))
+		}
+		return
+	}
+	t.Fatalf("current create modal has no frame: %q", safeTerminalDiagnostic(screen))
 }
 
 func (c *tuiCapture) position() int {

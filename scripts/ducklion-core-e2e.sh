@@ -52,6 +52,7 @@ run_required "process-wide raw-output transactional handoff" ./internal/ducklord
   TestOutputPoolEvictionQuiescesAcceptedFramesBeforeSnapshot \
   TestOutputPoolRuntimeGenerationReplacementIsSingleMembership \
   TestOutputPoolBackgroundGenerationReplacementPreservesActiveLRU \
+  TestOutputPoolEnforcesPerDaemonObserverConnectionBudgetAcrossAliases \
   TestOutputPoolVictimHostDisconnectRollsBackCrossHostHandoff \
   TestOutputPoolRemoveDesiredClosesOnlyExactSession
 
@@ -63,7 +64,13 @@ run_required "pooled PTY replay, lease-fenced framebuffer, and snapshots" ./inte
   TestPooledTerminalSerializesSnapshotsWithoutOffsetRegression \
   TestPooledTerminalCleanEndDetachesLeaseWithoutError \
   TestPooledTerminalBoundGapDisconnectsWithoutLeakingErrorText \
+  TestOutputPoolResizeAppliesAtExactOutputBarrier \
   TestPooledTerminalRestoresExactFramebuffer
+
+run_required "Ducklord live framebuffer selection and reconnect manager" ./internal/ducklord \
+  TestTerminalOutputManagerLatestSelectionWinsWithoutBlockingCaller \
+  TestTerminalOutputManagerPublishesFinalViewAfterLeaseDetaches \
+  TestTerminalOutputManagerReconnectRestoresAllDesiredAndGeneration
 
 run_required "bounded multiplexed output delivery" ./internal/ducklion/daemon \
   TestSlowLocalOutputSubscriberReceivesTerminalError \

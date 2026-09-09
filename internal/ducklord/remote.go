@@ -101,11 +101,12 @@ func (r *Runner) SetOutputSubscriptionLimit(limit int) error {
 		return fmt.Errorf("raw output subscription limit must be between 1 and 100")
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.outputStarted {
+		r.mu.Unlock()
 		return fmt.Errorf("raw output subscription limit cannot change after subscriptions have started")
 	}
 	r.outputSlots = make(chan struct{}, limit)
+	r.mu.Unlock()
 	return nil
 }
 
@@ -332,6 +333,7 @@ type ControlSession struct {
 	Stdin             io.WriteCloser
 	Done              <-chan error
 	ResizeBarrier     func(rows, cols uint16) (uint64, error)
+	ClientKey         string
 	InstanceID        string
 	SessionID         string
 	OwnershipEpoch    uint64
@@ -348,6 +350,9 @@ type AttachResume struct {
 // gain writer capabilities or couple their lifetime to UI focus.
 type OutputStream struct {
 	subscription      *daemon.OutputSubscription
+	owner             *Runner
+	closeOnce         sync.Once
+	closeErr          error
 	InstanceID        string
 	SessionID         string
 	RuntimeGeneration uint64
@@ -381,7 +386,13 @@ func (s *OutputStream) Close() error {
 	if s == nil || s.subscription == nil {
 		return nil
 	}
-	return s.subscription.Close()
+	s.closeOnce.Do(func() {
+		s.closeErr = s.subscription.Close()
+		if s.owner != nil {
+			s.closeErr = errors.Join(s.closeErr, s.owner.Close())
+		}
+	})
+	return s.closeErr
 }
 
 type subscriptionReader struct {
@@ -1126,7 +1137,7 @@ func (r *Runner) OpenControlSession(ctx context.Context, c Client, sessionRef st
 		result, resizeErr := client.ResizeWithBarrierContext(controlCtx, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, rows, cols)
 		return result.OutputOffset, resizeErr
 	}
-	return &ControlSession{Stdin: writer, Done: done, ResizeBarrier: resize, InstanceID: client.InstanceID(), SessionID: selected.SessionID,
+	return &ControlSession{Stdin: writer, Done: done, ResizeBarrier: resize, ClientKey: c.Name, InstanceID: client.InstanceID(), SessionID: selected.SessionID,
 		OwnershipEpoch: selected.OwnershipEpoch, RuntimeGeneration: selected.RuntimeGeneration}, nil
 }
 
@@ -1144,6 +1155,22 @@ func (r *Runner) OpenOutputStreamFrom(ctx context.Context, c Client, sessionRef 
 func (r *Runner) openOutputStream(ctx context.Context, c Client, sessionRef string, resume *AttachResume) (*OutputStream, error) {
 	if r == nil || !r.hasOwner() {
 		return nil, fmt.Errorf("read-only PTY output requires the Ducklion bridge")
+	}
+	if r.connectionRole != protocol.ConnectionObserver {
+		r.mu.Lock()
+		owner, processID := r.owner, r.processID
+		r.mu.Unlock()
+		isolated := NewRunner()
+		isolated.processID = processID
+		isolated.connectionRole = protocol.ConnectionObserver
+		isolated.SetOwner(owner)
+		stream, err := isolated.openOutputStream(ctx, c, sessionRef, resume)
+		if err != nil {
+			_ = isolated.Close()
+			return nil, err
+		}
+		stream.owner = isolated
+		return stream, nil
 	}
 	client, err := r.bridgeClient(ctx, c)
 	if err != nil {

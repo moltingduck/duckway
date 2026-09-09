@@ -1677,26 +1677,35 @@ func TestTUIRightClickContentPaneKeepsSelectionButAttaches(t *testing.T) {
 }
 
 func TestCreateModalIsCenteredColoredAndSanitizesRemoteLabels(t *testing.T) {
-	state := &tuiState{newSessionMode: true, newSessionStep: "project", newSessionClient: "host", newSessionErr: "choose project",
-		newSessionProjects: []ducklord.RemoteProject{{Name: "中文專案", Path: "/work/安全"}, {Name: "evil\u202Espoof", Path: "/work/evil"}}}
-	var output bytes.Buffer
-	state.renderCreateModal(&output, 80, 24)
-	rendered := output.String()
-	if !strings.Contains(rendered, "\033[9;5H") || !strings.Contains(rendered, modalBorder) || !strings.Contains(rendered, modalSelected) {
-		t.Fatalf("modal is not centered/colored: %q", rendered)
+	states := []*tuiState{
+		{newSessionMode: true, newSessionStep: "host", cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host\nspoof", Host: "target\tbad"}}}},
+		{newSessionMode: true, newSessionStep: "project", newSessionClient: "host", newSessionProjects: []ducklord.RemoteProject{{Name: "中文專案", Path: "/work/安全\rhidden"}}},
+		{newSessionMode: true, newSessionStep: "agent", newSessionClient: "host", newSessionCWD: "/work", newSessionAgents: []ducklord.RemoteAgent{{Type: "evil\u202Espoof\x1b]2;fake\a"}}},
 	}
-	if !strings.Contains(rendered, "中文專案") || strings.ContainsRune(rendered, '\u202e') || !utf8.ValidString(rendered) {
-		t.Fatalf("modal Unicode sanitization failed: %q", rendered)
-	}
-	if strings.Count(rendered, "╭") != 1 || strings.Count(rendered, "╯") != 1 {
-		t.Fatalf("modal frame missing: %q", rendered)
+	for _, state := range states {
+		state.newSessionErr = "choose\nforged\tstatus"
+		var output bytes.Buffer
+		state.renderCreateModal(&output, 80, 24)
+		rendered := output.String()
+		if !strings.Contains(rendered, modalBorder) || !strings.Contains(rendered, modalSelected) {
+			t.Fatalf("modal is not centered/colored: %q", rendered)
+		}
+		if strings.Contains(rendered, "\n") || strings.Contains(rendered, "\t") || strings.ContainsRune(rendered, '\u202e') || !utf8.ValidString(rendered) {
+			t.Fatalf("modal cell sanitization failed: %q", rendered)
+		}
+		if strings.Count(rendered, "╭") != 1 || strings.Count(rendered, "╯") != 1 {
+			t.Fatalf("modal frame missing: %q", rendered)
+		}
 	}
 }
 
 func TestCreateModalKeyboardSelectionFeedsExistingWizard(t *testing.T) {
-	state := &tuiState{newSessionMode: true, newSessionStep: "kind"}
+	state := &tuiState{newSessionMode: true, newSessionStep: "kind", newSessionLine: "stale"}
 	if action := state.handleCreateInput([]byte("\x1b[B")); action != "" || state.newSessionSelected != 1 {
 		t.Fatalf("down action=%q selected=%d", action, state.newSessionSelected)
+	}
+	if state.newSessionLine != "" {
+		t.Fatalf("arrow navigation retained stale typed selection %q", state.newSessionLine)
 	}
 	if action := state.handleCreateInput([]byte("\r")); action != "submit" || state.newSessionLine != "2" {
 		t.Fatalf("enter action=%q line=%q", action, state.newSessionLine)
@@ -1704,6 +1713,41 @@ func TestCreateModalKeyboardSelectionFeedsExistingWizard(t *testing.T) {
 	state.newSessionStep, state.newSessionLine = "handle", ""
 	if action := state.handleCreateInput([]byte("j")); action != "" || state.newSessionLine != "j" {
 		t.Fatalf("handle input action=%q line=%q", action, state.newSessionLine)
+	}
+	state.handleCreateInput([]byte("中文🦆"))
+	if state.newSessionLine != "j中文🦆" {
+		t.Fatalf("Unicode handle input = %q", state.newSessionLine)
+	}
+	state.handleCreateInput([]byte{0x7f})
+	if state.newSessionLine != "j中文" {
+		t.Fatalf("Unicode backspace input = %q", state.newSessionLine)
+	}
+}
+
+func TestNextInputEventKeepsUnicodeRuneIntactAcrossReads(t *testing.T) {
+	input := []byte("中文🦆")
+	for split := 1; split < len(input); split++ {
+		pending := append([]byte(nil), input[:split]...)
+		var decoded strings.Builder
+		event, rest, ok := nextInputEvent(pending)
+		if ok {
+			decoded.Write(event)
+		}
+		if !ok {
+			pending = append(rest, input[split:]...)
+		} else {
+			pending = append(rest, input[split:]...)
+		}
+		for len(pending) > 0 {
+			event, pending, ok = nextInputEvent(pending)
+			if !ok {
+				t.Fatalf("split %d left incomplete input %x", split, pending)
+			}
+			decoded.Write(event)
+		}
+		if got := decoded.String(); got != string(input) || !utf8.ValidString(got) {
+			t.Fatalf("split %d decoded invalid suffix %q", split, got)
+		}
 	}
 }
 
@@ -1714,7 +1758,7 @@ func TestCreateModalHandlesTinyTerminal(t *testing.T) {
 	if strings.Contains(output.String(), "\033[-") || !utf8.ValidString(output.String()) {
 		t.Fatalf("invalid tiny modal output: %q", output.String())
 	}
-	if !strings.Contains(output.String(), "Agent") || !strings.Contains(output.String(), "type") {
+	if !strings.Contains(output.String(), "╭") || !strings.Contains(output.String(), "╯") || !strings.Contains(output.String(), "Ag") || !strings.Contains(output.String(), "type") {
 		t.Fatalf("tiny modal omitted selection/input: %q", output.String())
 	}
 }

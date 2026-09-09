@@ -148,6 +148,57 @@ func TestOutputPoolTerminalViewIsLeaseFenced(t *testing.T) {
 	}
 }
 
+func TestOutputPoolResizeAppliesAtExactOutputBarrier(t *testing.T) {
+	pool, _ := NewOutputPool(1)
+	defer pool.Close()
+	reader := newFakePooledOutput()
+	options := pooledOptions(t.TempDir())
+	activation, err := pool.Activate(context.Background(), options.ExpectedKey, options.ExpectedRevision, func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+		return newPooledTerminal(context.Background(), pooledMetadata(0), reader, options)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := mustPooledResource(t, pool, options.ExpectedKey, activation.Lease)
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: []byte("abc"), StartOffset: 0, EndOffset: 3}}
+	waitPooledOffset(t, terminal, 3)
+	barrier, err := pool.ResizeTerminalAt(options.ExpectedKey, activation.Lease, 3, 10, func(rows, cols uint16) (uint64, error) {
+		if rows != 3 || cols != 10 {
+			t.Fatalf("remote resize=%dx%d", rows, cols)
+		}
+		return 5, nil
+	})
+	if err != nil || barrier != 5 {
+		t.Fatalf("barrier=%d err=%v", barrier, err)
+	}
+	if _, err := pool.ResizeTerminalAt(options.ExpectedKey, activation.Lease, 4, 12, func(uint16, uint16) (uint64, error) { return 6, nil }); err != nil {
+		t.Fatal(err)
+	}
+	terminal.mu.Lock()
+	pendingCount := len(terminal.pendingResizes)
+	terminal.mu.Unlock()
+	if pendingCount != 2 {
+		t.Fatalf("pending resize barriers=%d, want 2", pendingCount)
+	}
+	if err := terminal.Snapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := options.Store.Load(options.ExpectedKey.InstanceID, options.ExpectedKey.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := DecodeTerminalRenderState(snapshot.Payload)
+	if err != nil || saved.ResumeCursorValid {
+		t.Fatalf("snapshot with pending resize claimed exact resume: state=%+v err=%v", saved, err)
+	}
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: []byte("defg"), StartOffset: 3, EndOffset: 7}}
+	waitPooledOffset(t, terminal, 7)
+	view, err := pool.TerminalView(options.ExpectedKey, activation.Lease)
+	if err != nil || view.Framebuffer.Rows != 4 || view.Framebuffer.Cols != 12 {
+		t.Fatalf("resized view=%+v err=%v", view, err)
+	}
+}
+
 func mustPooledResource(t *testing.T, pool *OutputPool, key OutputKey, lease uint64) *PooledTerminal {
 	t.Helper()
 	var terminal *PooledTerminal

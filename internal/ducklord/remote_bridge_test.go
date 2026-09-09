@@ -525,6 +525,9 @@ func TestRunnerSplitOutputAndControlUseMultiplexedBridge(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("control session did not close")
 	}
+	if sessions, listErr := runner.Sessions(context.Background(), clientConfig, 8); listErr != nil || len(sessions) != 1 || sessions[0].SessionID != "ABC123" {
+		t.Fatalf("closing isolated observer disrupted control bridge: sessions=%+v err=%v", sessions, listErr)
+	}
 	cancel()
 	_ = runner.Close()
 	_ = runtimeClient.Close()

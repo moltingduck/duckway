@@ -17,6 +17,11 @@ var (
 	ErrOutputResourceOwned = errors.New("raw output resource is already owned by the pool")
 )
 
+// Ducklion admits at most eight observer connections for one Ducklord owner
+// on a host. Pooled streams use isolated observer connections so canceling one
+// replay cannot tear down unrelated subscriptions.
+const maxStableOutputObserversPerDaemon = 7
+
 // OutputKey identifies one logical PTY. Runtime and bridge generations are
 // stream revisions, not identity, so a restarted session cannot occupy two
 // desired pool entries.
@@ -46,7 +51,10 @@ func (k OutputKey) validate() error {
 
 type outputHost struct{ clientKey, instanceID string }
 
-func (k OutputKey) host() outputHost { return outputHost{k.ClientKey, k.InstanceID} }
+type outputDaemon struct{ instanceID string }
+
+func (k OutputKey) host() outputHost     { return outputHost{k.ClientKey, k.InstanceID} }
+func (k OutputKey) daemon() outputDaemon { return outputDaemon{k.InstanceID} }
 
 // OutputResource owns one connection-scoped stream. Snapshot must atomically
 // serialize parsed render state. The pool quiesces WithLease callbacks before
@@ -216,8 +224,14 @@ func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision Outpu
 		replacement = existing
 		replacement.evicting = true
 	}
-	if newMembership && len(p.entries) >= p.capacity {
-		victim = p.oldestEvictionCandidateLocked()
+	if newMembership {
+		if p.membersForDaemonLocked(key.daemon()) >= maxStableOutputObserversPerDaemon {
+			victim = p.oldestEvictionCandidateForDaemonLocked(key.daemon())
+		} else if len(p.entries) >= p.capacity {
+			victim = p.oldestEvictionCandidateLocked()
+		}
+	}
+	if newMembership && (len(p.entries) >= p.capacity || p.membersForDaemonLocked(key.daemon()) >= maxStableOutputObserversPerDaemon) {
 		if victim == nil {
 			p.clearHandoffLocked(handoff)
 			p.mu.Unlock()
@@ -398,6 +412,46 @@ func (p *OutputPool) TerminalView(key OutputKey, lease uint64) (PooledTerminalVi
 		view = terminal.View()
 	})
 	return view, errors.Join(leaseErr, viewErr)
+}
+
+// TerminalSignals returns read-only lifecycle signals for the exact current
+// lease. Receiving a stale signal is harmless because View fences the lease.
+func (p *OutputPool) TerminalSignals(key OutputKey, lease uint64) (<-chan struct{}, <-chan PooledTerminalView, <-chan struct{}, error) {
+	var updates, done <-chan struct{}
+	var final <-chan PooledTerminalView
+	var viewErr error
+	leaseErr := p.WithLease(key, lease, func(resource OutputResource) {
+		terminal, ok := resource.(*PooledTerminal)
+		if !ok {
+			viewErr = fmt.Errorf("raw output resource is not a pooled terminal")
+			return
+		}
+		updates, final, done = terminal.Updates(), terminal.finalViews, terminal.done
+	})
+	return updates, final, done, errors.Join(leaseErr, viewErr)
+}
+
+// ResizeTerminalAt invokes the authoritative remote resize while output frame
+// application is quiesced, then schedules the framebuffer dimension change at
+// the returned byte barrier before readers may continue.
+func (p *OutputPool) ResizeTerminalAt(key OutputKey, lease uint64, rows, cols uint16, resize func(uint16, uint16) (uint64, error)) (uint64, error) {
+	if resize == nil {
+		return 0, fmt.Errorf("PTY resize function is required")
+	}
+	var barrier uint64
+	var resizeErr error
+	leaseErr := p.WithLease(key, lease, func(resource OutputResource) {
+		terminal, ok := resource.(*PooledTerminal)
+		if !ok {
+			resizeErr = fmt.Errorf("raw output resource is not a pooled terminal")
+			return
+		}
+		barrier, resizeErr = resize(rows, cols)
+		if resizeErr == nil {
+			resizeErr = terminal.scheduleResize(barrier, int(rows), int(cols))
+		}
+	})
+	return barrier, errors.Join(leaseErr, resizeErr)
 }
 
 // DisconnectLease conditionally detaches a naturally ended background
@@ -763,4 +817,26 @@ func (p *OutputPool) oldestEvictionCandidateLocked() *outputPoolEntry {
 		return nil
 	}
 	return p.entries[p.lru[0]]
+}
+
+func (p *OutputPool) membersForDaemonLocked(daemon outputDaemon) int {
+	count := 0
+	for key := range p.entries {
+		if key.daemon() == daemon {
+			count++
+		}
+	}
+	return count
+}
+
+func (p *OutputPool) oldestEvictionCandidateForDaemonLocked(daemon outputDaemon) *outputPoolEntry {
+	for _, key := range p.lru {
+		if key.daemon() != daemon {
+			continue
+		}
+		if entry := p.entries[key]; entry != nil && !entry.evicting && !entry.restoring {
+			return entry
+		}
+	}
+	return nil
 }

@@ -64,33 +64,40 @@ type pooledOutputReader interface {
 // lease before it becomes visible. After binding, every framebuffer mutation
 // passes through OutputPool.WithLease so eviction snapshots are lossless.
 type PooledTerminal struct {
-	mu           sync.Mutex
-	snapshotMu   sync.Mutex
-	stream       pooledOutputReader
-	terminal     *Terminal
-	store        SnapshotStore
-	expected     OutputKey
-	revision     OutputRevision
-	offset       uint64
-	replayEnd    uint64
-	ready        bool
-	truncated    bool
-	contiguous   bool
-	disconnect   bool
-	readErr      error
-	cleanEnd     bool
-	viewRevision uint64
-	pool         *OutputPool
-	lease        uint64
-	closing      bool
-	cancel       context.CancelFunc
-	done         chan struct{}
-	readyCh      chan struct{}
-	updates      chan struct{}
-	readyOnce    sync.Once
-	closeOnce    sync.Once
-	closeErr     error
-	snapshotHook func()
+	mu             sync.Mutex
+	snapshotMu     sync.Mutex
+	stream         pooledOutputReader
+	terminal       *Terminal
+	store          SnapshotStore
+	expected       OutputKey
+	revision       OutputRevision
+	offset         uint64
+	replayEnd      uint64
+	ready          bool
+	truncated      bool
+	contiguous     bool
+	disconnect     bool
+	readErr        error
+	cleanEnd       bool
+	viewRevision   uint64
+	pendingResizes []pooledTerminalResize
+	finalViews     chan PooledTerminalView
+	pool           *OutputPool
+	lease          uint64
+	closing        bool
+	cancel         context.CancelFunc
+	done           chan struct{}
+	readyCh        chan struct{}
+	updates        chan struct{}
+	readyOnce      sync.Once
+	closeOnce      sync.Once
+	closeErr       error
+	snapshotHook   func()
+}
+
+type pooledTerminalResize struct {
+	offset     uint64
+	rows, cols int
 }
 
 func NewPooledTerminal(ctx context.Context, stream *OutputStream, options PooledTerminalOptions) (*PooledTerminal, error) {
@@ -141,6 +148,7 @@ func newPooledTerminal(ctx context.Context, metadata OutputStreamMetadata, reade
 		offset: metadata.StartOffset, replayEnd: metadata.ReplayEndOffset, truncated: truncated, contiguous: true, viewRevision: 1,
 		cancel: cancel, done: make(chan struct{}), readyCh: make(chan struct{})}
 	p.updates = make(chan struct{}, 1)
+	p.finalViews = make(chan PooledTerminalView, 1)
 	if p.offset >= p.replayEnd {
 		p.markReadyLocked()
 	}
@@ -233,7 +241,19 @@ func (p *PooledTerminal) applyFrameLocked(frame OutputFrame) bool {
 		p.contiguous = false
 		return false
 	}
-	p.terminal.Write(frame.Data)
+	cursor := frame.StartOffset
+	for len(p.pendingResizes) > 0 && p.pendingResizes[0].offset <= frame.EndOffset {
+		resize := p.pendingResizes[0]
+		if resize.offset < cursor {
+			p.contiguous = false
+			return false
+		}
+		p.terminal.Write(frame.Data[int(cursor-frame.StartOffset):int(resize.offset-frame.StartOffset)])
+		p.terminal.Resize(resize.rows, resize.cols)
+		cursor = resize.offset
+		p.pendingResizes = p.pendingResizes[1:]
+	}
+	p.terminal.Write(frame.Data[int(cursor-frame.StartOffset):])
 	p.offset = frame.EndOffset
 	p.viewRevision++
 	p.signalUpdateLocked()
@@ -241,6 +261,28 @@ func (p *PooledTerminal) applyFrameLocked(frame OutputFrame) bool {
 		p.markReadyLocked()
 	}
 	return true
+}
+
+func (p *PooledTerminal) scheduleResize(barrier uint64, rows, cols int) error {
+	if rows < 1 || rows > MaxPooledTerminalRows || cols < 1 || cols > MaxPooledTerminalCols {
+		return fmt.Errorf("PTY framebuffer dimensions are out of range")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if barrier < p.offset {
+		return fmt.Errorf("PTY resize barrier was overtaken by output")
+	}
+	if barrier == p.offset {
+		p.terminal.Resize(rows, cols)
+		p.viewRevision++
+		p.signalUpdateLocked()
+		return nil
+	}
+	if count := len(p.pendingResizes); count > 0 && barrier < p.pendingResizes[count-1].offset {
+		return fmt.Errorf("PTY resize barriers are not monotonic")
+	}
+	p.pendingResizes = append(p.pendingResizes, pooledTerminalResize{offset: barrier, rows: rows, cols: cols})
+	return nil
 }
 
 func (p *PooledTerminal) finishRead(err error) {
@@ -253,6 +295,11 @@ func (p *PooledTerminal) finishRead(err error) {
 	p.cleanEnd = errors.As(err, &ended)
 	p.disconnect, p.readErr = !p.cleanEnd, err
 	p.viewRevision++
+	finalView := p.viewLocked()
+	select {
+	case p.finalViews <- finalView:
+	default:
+	}
 	p.signalUpdateLocked()
 	if !p.ready {
 		p.signalReadyLocked()
@@ -286,6 +333,10 @@ func (p *PooledTerminal) Updates() <-chan struct{} {
 func (p *PooledTerminal) View() PooledTerminalView {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.viewLocked()
+}
+
+func (p *PooledTerminal) viewLocked() PooledTerminalView {
 	view := PooledTerminalView{Framebuffer: p.terminal.SnapshotState(), Revision: p.viewRevision, RuntimeGeneration: p.revision.RuntimeGeneration,
 		OutputOffset: p.offset, ReplayEndOffset: p.replayEnd, Ready: p.ready, Truncated: p.truncated, Disconnected: p.disconnect, Ended: p.cleanEnd}
 	if p.readErr != nil && !p.cleanEnd {
@@ -303,7 +354,7 @@ func (p *PooledTerminal) Snapshot(ctx context.Context) error {
 	p.mu.Lock()
 	state := p.terminal.SnapshotState()
 	generation, offset, truncated := p.revision.RuntimeGeneration, p.offset, p.truncated
-	resumeValid := p.ready && p.contiguous
+	resumeValid := p.ready && p.contiguous && len(p.pendingResizes) == 0
 	instanceID, sessionID := p.expected.InstanceID, p.expected.SessionID
 	hook := p.snapshotHook
 	p.mu.Unlock()

@@ -54,6 +54,13 @@ type attachOutputEvent struct {
 	err               error
 }
 
+type controlOpenEvent struct {
+	id      int
+	key     string
+	control *ducklord.ControlSession
+	err     error
+}
+
 type previewOutputEvent struct {
 	id, generation uint64
 	key            string
@@ -1159,6 +1166,7 @@ type tuiState struct {
 	lifecycleTarget           ducklord.RemoteSession
 	lifecycleMode             protocol.SessionLifecycleMode
 	lifecycleBusy             bool
+	pooledOutput              bool
 }
 
 func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, owner string) error {
@@ -1209,7 +1217,19 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner,
 		snapshotStore: ducklord.SnapshotStore{}, activityStore: activityStore, activityState: activityState, hostSync: make(map[string]ducklord.SessionUpdate), localWarning: stateWarning,
 		listPaneWidth: cfg.SessionListPaneWidth(), autoHideList: cfg.SessionListAutoHide()}
-	defer state.saveCurrentSnapshot()
+	var outputManager *ducklord.TerminalOutputManager
+	var outputEvents <-chan ducklord.TerminalOutputEvent
+	if source, ok := runner.(ducklord.TerminalOutputSource); ok {
+		outputManager, err = ducklord.NewTerminalOutputManager(ctx, cfg.RawOutputSubscriptionLimit(), source, state.snapshotStore)
+		if err != nil {
+			return err
+		}
+		outputEvents = outputManager.Events()
+		state.pooledOutput = true
+		defer outputManager.Close()
+	} else {
+		defer state.saveCurrentSnapshot()
+	}
 	sessionUpdates := make(chan ducklord.SessionUpdate, 32)
 	if watcher, ok := runner.(interface {
 		WatchSessionUpdates(context.Context, ducklord.Client) <-chan ducklord.SessionUpdate
@@ -1229,7 +1249,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		}
 	}
 	state.refreshSessions(ctx)
-	state.refreshSelectedOutput(ctx)
+	if outputManager == nil {
+		state.refreshSelectedOutput(ctx)
+	}
 	state.render(os.Stdout)
 	ticker := time.NewTicker(refresh)
 	defer ticker.Stop()
@@ -1249,6 +1271,38 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	previewInFlight := false
 	previewQueued := false
 	var previewCancel context.CancelFunc
+	var outputRequestID uint64
+	var activeOutputEvent ducklord.TerminalOutputEvent
+	selectPooledOutput := func() {
+		if outputManager == nil || len(state.sessions) == 0 {
+			return
+		}
+		sess := state.currentSession()
+		key, keyOK := terminalOutputKey(sess)
+		selectedKey := sessionKey(sess)
+		if state.outputForKey != selectedKey || !keyOK || activeOutputEvent.Key != key || activeOutputEvent.Revision.RuntimeGeneration != sess.RuntimeGeneration {
+			state.outputText = ""
+			state.terminal = nil
+			activeOutputEvent = ducklord.TerminalOutputEvent{}
+			state.outputForKey = selectedKey
+		}
+		if sess.Client == "" || sess.InstanceID == "" || sess.SessionID == "" || sess.RuntimeGeneration == 0 || !canRead(sess) || !state.hostIsLive(sess.Client) {
+			state.outputFresh = false
+			state.outputErr = "PTY output is unavailable until the host session is synchronized"
+			return
+		}
+		client, clientErr := mustClient(cfg, sess.Client)
+		if clientErr != nil {
+			state.outputErr = clientErr.Error()
+			return
+		}
+		rows, cols := state.activePTYSize()
+		outputRequestID = outputManager.Select(ducklord.TerminalSelection{Client: client, InstanceID: sess.InstanceID, SessionID: sess.SessionID,
+			RuntimeGeneration: sess.RuntimeGeneration, Rows: int(rows), Cols: int(cols)})
+		state.outputForKey = selectedKey
+		state.outputFresh = false
+		state.outputErr = "loading live PTY output..."
+	}
 	startPreview := func() {
 		if previewInFlight || !previewQueued || state.focused || len(state.sessions) == 0 {
 			return
@@ -1284,6 +1338,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		}()
 	}
 	requestPreview := func(fence bool) {
+		if outputManager != nil {
+			selectPooledOutput()
+			return
+		}
 		if state.focused || len(state.sessions) == 0 {
 			return
 		}
@@ -1294,10 +1352,18 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		startPreview()
 	}
 	fencePreview := func() {
+		if outputManager != nil {
+			return
+		}
 		previewID++
 		previewQueued = false
 	}
 	var attach *ducklord.AttachSession
+	var control *ducklord.ControlSession
+	var controlDone <-chan error
+	controlOpened := make(chan controlOpenEvent, 1)
+	controlID := 0
+	var controlOpenCancel context.CancelFunc
 	var attachCancel context.CancelFunc
 	attachID := 0
 	attachCanResize := false
@@ -1319,8 +1385,25 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		state.createWorkers.Wait()
 		<-resizeWorkerDone
 	}()
+	resizeCapability := func() func(uint16, uint16) (uint64, error) {
+		var resize func(uint16, uint16) (uint64, error)
+		expectedKey, keyOK := terminalOutputKey(state.currentSession())
+		if outputManager != nil && control != nil && control.ResizeBarrier != nil && activeOutputEvent.Lease != 0 && keyOK && activeOutputEvent.Key == expectedKey &&
+			activeOutputEvent.Revision.RuntimeGeneration == control.RuntimeGeneration && control.RuntimeGeneration == state.currentSession().RuntimeGeneration {
+			resize = func(rows, cols uint16) (uint64, error) {
+				return outputManager.Resize(activeOutputEvent, rows, cols, control.ResizeBarrier)
+			}
+		} else if attach != nil {
+			resize = attach.ResizeBarrier
+		}
+		return resize
+	}
 	queueResize := func() {
-		if attach == nil || attach.ResizeBarrier == nil || !attachCanResize {
+		if !attachCanResize {
+			return
+		}
+		resize := resizeCapability()
+		if resize == nil {
 			return
 		}
 		rows, cols := state.activePTYSize()
@@ -1335,7 +1418,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			queuedResize = &[2]uint16{rows, cols}
 			return
 		}
-		request := resizeRequest{id: attachID, rows: rows, cols: cols, resize: attach.ResizeBarrier}
+		request := resizeRequest{id: attachID, rows: rows, cols: cols, resize: resize}
 		select {
 		case resizeRequests <- request:
 			resizeInFlight = true
@@ -1377,10 +1460,17 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	}
 	var startCancel context.CancelFunc
 	startID := 0
+	selectPooledOutput()
 	go readInput(ctx, input)
 	for {
 		select {
 		case <-ctx.Done():
+			if controlOpenCancel != nil {
+				controlOpenCancel()
+			}
+			if control != nil {
+				_ = control.Stdin.Close()
+			}
 			if attachCancel != nil {
 				attachCancel()
 			}
@@ -1395,6 +1485,83 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.refreshSessions(ctx)
 				}
 				requestPreview(false)
+			}
+			state.render(os.Stdout)
+		case event := <-outputEvents:
+			expectedKey, expectedOK := terminalOutputKey(state.currentSession())
+			if event.RequestID != outputRequestID || !expectedOK || event.Key != expectedKey || event.Revision.RuntimeGeneration != state.currentSession().RuntimeGeneration || event.Err != nil {
+				if event.RequestID == outputRequestID && event.Err != nil {
+					state.outputFresh = false
+					state.outputErr = "PTY output stream unavailable"
+					state.render(os.Stdout)
+				}
+				continue
+			}
+			var view ducklord.PooledTerminalView
+			var viewErr error
+			if event.FinalView != nil {
+				view = *event.FinalView
+			} else {
+				view, viewErr = outputManager.View(event)
+				if viewErr != nil {
+					continue
+				}
+			}
+			terminal, valid := ducklord.NewTerminalFromState(view.Framebuffer, ducklord.DefaultTerminalScrollback)
+			if !valid {
+				state.outputFresh = false
+				state.outputErr = "PTY framebuffer is invalid"
+				state.render(os.Stdout)
+				continue
+			}
+			state.terminal = terminal
+			activeOutputEvent = event
+			activeOutputEvent.FinalView = nil
+			state.outputText = terminal.Text()
+			state.terminalGeneration = view.RuntimeGeneration
+			state.terminalOffset = view.OutputOffset
+			state.terminalCursorValid = view.Ready && !view.Disconnected
+			state.outputStale = false
+			state.outputFresh = view.Ready && !view.Disconnected
+			state.outputErr = view.Error
+			if view.Ended {
+				state.outputErr = "PTY process ended"
+			}
+			if state.focused && control != nil && !attachInitialResizeQueued && resizeCapability() != nil {
+				attachInitialResizeQueued = true
+				queueResize()
+			}
+			state.render(os.Stdout)
+		case opened := <-controlOpened:
+			if opened.id != controlID || opened.key != state.activeAttachKey || opened.control != nil && !controlMatchesSession(opened.control, state.currentSession(), state.ownerName) {
+				if opened.control != nil {
+					_ = opened.control.Stdin.Close()
+				}
+				continue
+			}
+			controlOpenCancel = nil
+			if opened.err != nil {
+				state.outputErr = sanitizeTerminalText(opened.err.Error())
+				state.clearAttachIdentity()
+				state.render(os.Stdout)
+				continue
+			}
+			control = opened.control
+			controlDone = control.Done
+			state.focused = true
+			attachCanResize = control.ResizeBarrier != nil
+			state.outputErr = ""
+			if resizeCapability() != nil {
+				attachInitialResizeQueued = true
+				queueResize()
+			}
+			state.render(os.Stdout)
+		case controlErr := <-controlDone:
+			controlDone = nil
+			control = nil
+			attachCanResize = false
+			if controlErr != nil {
+				state.outputErr = "PTY control connection closed"
 			}
 			state.render(os.Stdout)
 		case result := <-previewDone:
@@ -1414,6 +1581,17 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			if result.id == attachID {
 				resizeInFlight = false
 				state.resizeStatus = ""
+				if outputManager != nil {
+					if result.err != nil {
+						state.resizeStatus = "resize failed: " + sanitizeTerminalText(result.err.Error())
+					}
+					if queuedResize != nil {
+						queuedResize = nil
+						queueResize()
+					}
+					state.render(os.Stdout)
+					continue
+				}
 				if result.err != nil {
 					state.resizeStatus = "resize failed: " + sanitizeTerminalText(result.err.Error())
 				} else if state.terminal != nil && result.barrier > state.terminalOffset {
@@ -1431,12 +1609,15 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				} else if pendingFramebufferResize == nil && queuedResize != nil {
 					queued := *queuedResize
 					queuedResize = nil
-					resizeRequests <- resizeRequest{id: attachID, rows: queued[0], cols: queued[1], resize: attach.ResizeBarrier}
-					resizeInFlight = true
+					if resize := resizeCapability(); resize != nil {
+						resizeRequests <- resizeRequest{id: attachID, rows: queued[0], cols: queued[1], resize: resize}
+						resizeInFlight = true
+					}
 				}
 				state.render(os.Stdout)
 			}
 		case update := <-sessionUpdates:
+			previousHost := state.hostSync[update.Client]
 			previousActive := state.effectiveAttachKey()
 			if state.invalidateCreateStart(update) {
 				if startCancel != nil {
@@ -1446,12 +1627,48 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				startID++ // fence a completion racing with cancellation
 			}
 			state.applySessionUpdate(update)
-			if previousActive != "" && state.effectiveAttachKey() == "" && attach != nil {
+			if outputManager != nil {
+				if previousHost.InstanceID != "" && (update.InstanceID != previousHost.InstanceID || previousHost.State == "live" && update.State != "live") {
+					outputManager.SyncHost(update.Client, previousHost.InstanceID, false, nil)
+				}
+				if update.State == "live" && update.InstanceID != "" {
+					rows, cols := state.activePTYSize()
+					selections := make([]ducklord.TerminalSelection, 0, len(update.Sessions))
+					if client, clientErr := mustClient(cfg, update.Client); clientErr == nil {
+						for _, session := range update.Sessions {
+							if session.SessionID != "" && session.RuntimeGeneration != 0 && canRead(session) {
+								selections = append(selections, ducklord.TerminalSelection{Client: client, InstanceID: session.InstanceID, SessionID: session.SessionID,
+									RuntimeGeneration: session.RuntimeGeneration, Rows: int(rows), Cols: int(cols)})
+							}
+						}
+					}
+					outputManager.SyncHost(update.Client, update.InstanceID, true, selections)
+				}
+			}
+			if control != nil && !controlMatchesSession(control, state.currentSession(), state.ownerName) {
+				controlID++
+				if controlOpenCancel != nil {
+					controlOpenCancel()
+					controlOpenCancel = nil
+				}
+				_ = control.Stdin.Close()
+				control, controlDone = nil, nil
+				attachCanResize = false
+				state.outputErr = "PTY control changed; yield control again before sending input"
+			}
+			if previousActive != "" && state.effectiveAttachKey() == "" {
+				controlID++
+				if control != nil {
+					_ = control.Stdin.Close()
+				}
+				control, controlDone = nil, nil
 				if attachCancel != nil {
 					attachCancel()
 					attachCancel = nil
 				}
-				_ = attach.Stdin.Close()
+				if attach != nil {
+					_ = attach.Stdin.Close()
+				}
 				attachID++
 				resizeInFlight = false
 				pendingFramebufferResize = nil
@@ -1464,7 +1681,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				attachInitialResizeQueued = false
 				attachReplayEndOffset = 0
 			}
-			if !state.focused && state.activeAttachKey == "" {
+			if outputManager != nil {
+				selectPooledOutput()
+			} else if !state.focused && state.activeAttachKey == "" {
 				requestPreview(false)
 			}
 			state.render(os.Stdout)
@@ -1498,6 +1717,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			startCancel = nil
 			state.completeNewSessionStart(ctx, result.client, result.sessionID, result.err)
+			if outputManager != nil && result.err == nil {
+				selectPooledOutput()
+			}
 			state.render(os.Stdout)
 		case result := <-lifecycleDone:
 			state.lifecycleBusy = false
@@ -1548,7 +1770,18 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			var selectedActionTarget *ducklord.RemoteSession
 			if state.focused {
 				if isDetachInput(b) {
-					state.saveCurrentSnapshot()
+					if outputManager == nil {
+						state.saveCurrentSnapshot()
+					}
+					controlID++
+					if controlOpenCancel != nil {
+						controlOpenCancel()
+						controlOpenCancel = nil
+					}
+					if control != nil {
+						_ = control.Stdin.Close()
+					}
+					control, controlDone = nil, nil
 					if attach != nil {
 						_ = attach.Stdin.Close()
 					}
@@ -1573,7 +1806,18 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.render(os.Stdout)
 					continue
 				}
-				if attach != nil {
+				if control != nil && controlMatchesSession(control, state.currentSession(), state.ownerName) {
+					_, _ = control.Stdin.Write(b)
+				} else if control != nil {
+					controlID++
+					if controlOpenCancel != nil {
+						controlOpenCancel()
+					}
+					_ = control.Stdin.Close()
+					control, controlDone = nil, nil
+					attachCanResize = false
+					state.outputErr = "PTY control changed; input was not sent"
+				} else if attach != nil {
 					_, _ = attach.Stdin.Write(b)
 				}
 				continue
@@ -1814,6 +2058,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			case "remove-client":
 				if err := state.removeSelectedClient(ctx); err != nil {
 					state.outputErr = err.Error()
+				} else if outputManager != nil {
+					selectPooledOutput()
 				}
 			case "yield", "yield-wait":
 				if len(state.sessions) == 0 {
@@ -1861,6 +2107,47 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					return err
 				}
 				fencePreview()
+				if outputManager != nil {
+					state.focused = false
+					state.activeAttachKey = sessionKey(s)
+					state.activeAttachFresh = state.outputFresh
+					state.pendingAttachKey = ""
+					controlID++
+					attachID++
+					resizeInFlight = false
+					queuedResize = nil
+					id := controlID
+					if !state.canResizeCurrentSession() {
+						state.focused = true
+						state.outputErr = "read-only PTY view; yield control before sending input"
+						break
+					}
+					controlRunner, ok := runner.(interface {
+						OpenControlSession(context.Context, ducklord.Client, string) (*ducklord.ControlSession, error)
+					})
+					if !ok {
+						state.outputErr = "PTY control is unavailable"
+						break
+					}
+					state.outputErr = "opening PTY control..."
+					key := sessionKey(s)
+					if controlOpenCancel != nil {
+						controlOpenCancel()
+					}
+					controlCtx, cancelControlOpen := context.WithCancel(ctx)
+					controlOpenCancel = cancelControlOpen
+					go func() {
+						opened, openErr := controlRunner.OpenControlSession(controlCtx, c, s.SessionID)
+						select {
+						case controlOpened <- controlOpenEvent{id: id, key: key, control: opened, err: openErr}:
+						case <-ctx.Done():
+							if opened != nil {
+								_ = opened.Stdin.Close()
+							}
+						}
+					}()
+					break
+				}
 				attachCtx, cancel := context.WithCancel(ctx)
 				sessionRef := s.SessionID
 				if sessionRef == "" {
@@ -2160,7 +2447,9 @@ func (s *tuiState) completeNewSessionStart(ctx context.Context, clientName, sess
 	s.outputErr = ""
 	s.refreshSessions(ctx)
 	s.selectSession(clientName, sessionID)
-	s.refreshSelectedOutput(ctx)
+	if !s.pooledOutput {
+		s.refreshSelectedOutput(ctx)
+	}
 }
 
 func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
@@ -2349,6 +2638,14 @@ func (s *tuiState) canResizeCurrentSession() bool {
 		return true
 	}
 	return session.WriterKind == string(model.OwnerTerminal) && session.WriterID == s.ownerName
+}
+
+func controlMatchesSession(control *ducklord.ControlSession, session ducklord.RemoteSession, owner string) bool {
+	if control == nil || session.Client != control.ClientKey || session.InstanceID != control.InstanceID || session.SessionID != control.SessionID ||
+		session.OwnershipEpoch != control.OwnershipEpoch || session.RuntimeGeneration != control.RuntimeGeneration {
+		return false
+	}
+	return session.Kind == string(model.KindShell) || session.WriterKind == string(model.OwnerTerminal) && session.WriterID == owner
 }
 
 func (s *tuiState) activePTYSize() (rows, cols uint16) {
@@ -2736,17 +3033,23 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 		if selected >= 0 {
 			choice = "› " + choices[selected]
 		}
-		lines := []struct{ style, text string }{
-			{modalTitle, "[ " + s.createHeader() + " ]"},
-			{modalSelected, choice},
-			{modalInput, s.createPromptLabel() + " › " + s.newSessionLine},
+		boxWidth := max(8, cols-2)
+		innerWidth := boxWidth - 2
+		boxHeight := min(4, rows)
+		top := max(1, (rows-boxHeight)/2+1)
+		left := max(1, (cols-boxWidth)/2+1)
+		writeRow := func(row int, style, text string) {
+			text = modalCellPad(modalCellTruncate(modalDisplayText(text), innerWidth), innerWidth)
+			fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", row, left, modalBorder, style, text, modalReset+modalBorder, modalReset)
 		}
-		start := max(1, (rows-len(lines))/2+1)
-		for i, line := range lines {
-			text := modalCellTruncate(modalDisplayText(line.text), cols)
-			left := max(1, (cols-modalCellWidth(text))/2+1)
-			fmt.Fprintf(out, "\033[%d;%dH%s%s%s\033[K", min(rows, start+i), left, line.style, text, modalReset)
+		fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+		if boxHeight == 3 {
+			writeRow(top+1, modalSelected, choice+"  "+s.createPromptLabel()+" › "+s.newSessionLine)
+		} else {
+			writeRow(top+1, modalSelected, choice)
+			writeRow(top+2, modalInput, s.createPromptLabel()+" › "+s.newSessionLine)
 		}
+		fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+boxHeight-1, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
 		return
 	}
 	boxWidth := min(72, cols-4)
@@ -2902,11 +3205,11 @@ func (s *tuiState) createModalSelectedIndex(choiceCount int) int {
 func modalDisplayText(value string) string {
 	value = sanitizeTerminalText(value)
 	return strings.Map(func(r rune) rune {
-		if unicode.Is(unicode.Cf, r) {
+		if unicode.Is(unicode.Cf, r) || unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
 			return -1
 		}
 		return r
-	}, value)
+	}, strings.ToValidUTF8(value, "�"))
 }
 
 func modalRuneWidth(r rune) int {
@@ -3430,7 +3733,9 @@ func (s *tuiState) removeSelectedClient(ctx context.Context) error {
 	s.outputText = ""
 	s.outputForKey = ""
 	s.refreshSessions(ctx)
-	s.refreshSelectedOutput(ctx)
+	if !s.pooledOutput {
+		s.refreshSelectedOutput(ctx)
+	}
 	s.outputErr = fmt.Sprintf("removed host entry %s from config", clientName)
 	return nil
 }
@@ -3914,11 +4219,13 @@ func (s *tuiState) handleCreateInput(b []byte) string {
 		if len(choices) > 0 && s.newSessionSelected < len(choices)-1 {
 			s.newSessionSelected++
 		}
+		s.newSessionLine = ""
 		return ""
 	case "\x1b[A":
 		if s.newSessionSelected > 0 {
 			s.newSessionSelected--
 		}
+		s.newSessionLine = ""
 		return ""
 	case "\r", "\n":
 		if s.newSessionLine == "" && len(choices) > 0 && s.newSessionStep != "handle" {
@@ -3945,8 +4252,12 @@ func (s *tuiState) handleLineInput(b []byte, line *string) string {
 		}
 		return ""
 	}
-	if len(b) == 1 && b[0] >= 0x20 && b[0] != 0x7f {
-		*line += string(b)
+	if utf8.Valid(b) {
+		for _, r := range string(b) {
+			if !unicode.IsControl(r) && !unicode.Is(unicode.Cf, r) {
+				*line += string(r)
+			}
+		}
 	}
 	return ""
 }
@@ -3956,6 +4267,11 @@ func sessionKey(sess ducklord.RemoteSession) string {
 		return sess.Client + "/" + sess.InstanceID + "/" + sess.SessionID
 	}
 	return sess.Group + "/" + sess.Client + "/" + sess.Name
+}
+
+func terminalOutputKey(sess ducklord.RemoteSession) (ducklord.OutputKey, bool) {
+	key := ducklord.OutputKey{ClientKey: sess.Client, InstanceID: sess.InstanceID, SessionID: sess.SessionID}
+	return key, key.ClientKey != "" && key.InstanceID != "" && key.SessionID != "" && sess.RuntimeGeneration != 0
 }
 
 func canAttach(sess ducklord.RemoteSession) bool {
@@ -4061,7 +4377,14 @@ func nextInputEvent(pending []byte) (event, rest []byte, ok bool) {
 		return nil, nil, false
 	}
 	if pending[0] != 0x1b {
-		return append([]byte(nil), pending[:1]...), pending[1:], true
+		if pending[0] < utf8.RuneSelf {
+			return append([]byte(nil), pending[:1]...), pending[1:], true
+		}
+		if !utf8.FullRune(pending) {
+			return nil, pending, false
+		}
+		_, size := utf8.DecodeRune(pending)
+		return append([]byte(nil), pending[:size]...), pending[size:], true
 	}
 	if len(pending) >= 3 && pending[1] == '[' && (pending[2] == 'A' || pending[2] == 'B') {
 		return append([]byte(nil), pending[:3]...), pending[3:], true
