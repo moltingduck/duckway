@@ -766,7 +766,33 @@ func (r *Runner) Lifecycle(ctx context.Context, c Client, ref string, operation 
 	if err != nil {
 		return protocol.SessionLifecycleResult{}, err
 	}
-	mode, err = normalizeLifecycleMode(selected.Kind, operation, mode)
+	return r.lifecycleSelected(ctx, c, client, selected, operation, mode)
+}
+
+// LifecycleSelected executes a lifecycle mutation against the exact session
+// revision shown to the user. Unlike Lifecycle it deliberately does not
+// resolve a fresh session by handle or ID, so a confirmation cannot silently
+// advance to a newer ownership epoch or runtime generation.
+func (r *Runner) LifecycleSelected(ctx context.Context, c Client, selected RemoteSession, operation protocol.SessionLifecycleOperation, mode protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
+	if r == nil || !r.hasOwner() {
+		return protocol.SessionLifecycleResult{}, fmt.Errorf("ducklord owner is not configured")
+	}
+	if selected.SessionID == "" || selected.Client != c.Name {
+		return protocol.SessionLifecycleResult{}, fmt.Errorf("invalid selected session identity")
+	}
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return protocol.SessionLifecycleResult{}, err
+	}
+	summary := protocol.SessionSummary{
+		SessionID: selected.SessionID, Kind: model.SessionKind(selected.Kind),
+		OwnershipEpoch: selected.OwnershipEpoch, RuntimeGeneration: selected.RuntimeGeneration,
+	}
+	return r.lifecycleSelected(ctx, c, client, summary, operation, mode)
+}
+
+func (r *Runner) lifecycleSelected(ctx context.Context, c Client, client *daemon.Client, selected protocol.SessionSummary, operation protocol.SessionLifecycleOperation, mode protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
+	mode, err := normalizeLifecycleMode(selected.Kind, operation, mode)
 	if err != nil {
 		return protocol.SessionLifecycleResult{}, err
 	}

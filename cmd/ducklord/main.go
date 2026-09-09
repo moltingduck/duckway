@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +33,7 @@ type remoteRunner interface {
 	Start(context.Context, ducklord.Client, []string) (string, error)
 	Stop(context.Context, ducklord.Client, string) error
 	Lifecycle(context.Context, ducklord.Client, string, protocol.SessionLifecycleOperation, protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error)
+	LifecycleSelected(context.Context, ducklord.Client, ducklord.RemoteSession, protocol.SessionLifecycleOperation, protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error)
 	Yield(context.Context, ducklord.Client, string, bool) (protocol.SessionYieldResult, error)
 	Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error)
 	Agents(context.Context, ducklord.Client, string) ([]ducklord.RemoteAgent, error)
@@ -176,10 +178,11 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		if err != nil {
 			return err
 		}
-		if len(rest) != 1 {
-			return fmt.Errorf("usage: ducklord sessions <client> [--config <path>]")
+		clientName, jsonOutput, err := parseSessionsArgs(rest)
+		if err != nil {
+			return err
 		}
-		c, err := mustClient(cfg, rest[0])
+		c, err := mustClient(cfg, clientName)
 		if err != nil {
 			return err
 		}
@@ -193,6 +196,9 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		sessions, err := runner.Sessions(context.Background(), c, 8)
 		if err != nil {
 			return err
+		}
+		if jsonOutput {
+			return json.NewEncoder(out).Encode(sessions)
 		}
 		return printSessions(out, sessions)
 	case "projects":
@@ -788,6 +794,24 @@ func printSessions(out io.Writer, sessions []ducklord.RemoteSession) error {
 	return nil
 }
 
+func parseSessionsArgs(args []string) (client string, jsonOutput bool, err error) {
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		default:
+			if client != "" {
+				return "", false, fmt.Errorf("usage: ducklord sessions <client> [--json] [--config <path>]")
+			}
+			client = arg
+		}
+	}
+	if client == "" {
+		return "", false, fmt.Errorf("usage: ducklord sessions <client> [--json] [--config <path>]")
+	}
+	return client, jsonOutput, nil
+}
+
 func parseReadArgs(args []string) (clientName, sessionName string, lines int, err error) {
 	lines = 120
 	pos := []string{}
@@ -1126,6 +1150,7 @@ type tuiState struct {
 	notificationIndex         int
 	notificationStaged        map[model.NotificationCategory]bool
 	lifecycleConfirm          protocol.SessionLifecycleOperation
+	lifecycleTarget           ducklord.RemoteSession
 	lifecycleBusy             bool
 }
 
@@ -1470,6 +1495,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		case result := <-lifecycleDone:
 			state.lifecycleBusy = false
 			state.lifecycleConfirm = ""
+			state.lifecycleTarget = ducklord.RemoteSession{}
 			if result.err != nil {
 				state.outputErr = string(result.operation) + " failed: " + sanitizeTerminalText(result.err.Error())
 			} else {
@@ -1625,11 +1651,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				text := string(b)
 				if text == "\x1b" || text == "q" {
 					state.lifecycleConfirm = ""
+					state.lifecycleTarget = ducklord.RemoteSession{}
 					state.render(os.Stdout)
 					continue
 				}
 				mode := protocol.SessionLifecycleImmediate
-				sess := state.currentSession()
+				sess := state.lifecycleTarget
 				if sess.Kind != string(model.KindShell) && state.lifecycleConfirm == protocol.SessionLifecycleRestart {
 					mode = protocol.SessionLifecycleWait
 				}
@@ -1643,21 +1670,27 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				} else if text != "\r" && text != "\n" {
 					continue
 				}
+				if !state.lifecycleTargetIsCurrent() {
+					state.outputErr = "session changed while awaiting confirmation; reopen the lifecycle action"
+					state.lifecycleConfirm = ""
+					state.lifecycleTarget = ducklord.RemoteSession{}
+					state.render(os.Stdout)
+					continue
+				}
 				client, clientErr := mustClient(cfg, sess.Client)
 				if clientErr != nil {
 					state.outputErr = clientErr.Error()
 					state.lifecycleConfirm = ""
+					state.lifecycleTarget = ducklord.RemoteSession{}
 					continue
 				}
-				ref, operation := sess.SessionID, state.lifecycleConfirm
-				if ref == "" {
-					ref = sess.Name
-				}
+				operation := state.lifecycleConfirm
 				state.lifecycleBusy = true
 				state.lifecycleConfirm = ""
+				state.lifecycleTarget = ducklord.RemoteSession{}
 				state.outputErr = string(operation) + " accepted; Ducklion will continue it across reconnects"
 				go func() {
-					result, err := runner.Lifecycle(ctx, client, ref, operation, mode)
+					result, err := runner.LifecycleSelected(ctx, client, sess, operation, mode)
 					select {
 					case lifecycleDone <- lifecycleDoneEvent{operation: operation, result: result, err: err}:
 					case <-ctx.Done():
@@ -1703,6 +1736,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					break
 				}
 				state.lifecycleConfirm = protocol.SessionLifecycleOperation(action)
+				state.lifecycleTarget = sess
 				state.outputErr = ""
 			case "add-client":
 				state.beginAddClient()
@@ -2681,6 +2715,9 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 	}
 	sess := s.sessions[s.selected]
 	if s.lifecycleConfirm != "" {
+		if s.lifecycleTarget.SessionID != "" {
+			sess = s.lifecycleTarget
+		}
 		status := "waiting for confirmation"
 		if s.lifecycleBusy {
 			status = "request accepted; waiting for durable completion"
@@ -2745,6 +2782,23 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 			fmt.Fprintf(out, "\033[%d;%dH%s\033[K", startRow+i, x, truncate(line, width))
 		}
 	}
+}
+
+func (s *tuiState) lifecycleTargetIsCurrent() bool {
+	target := s.lifecycleTarget
+	if target.Client == "" || target.InstanceID == "" || target.SessionID == "" {
+		return false
+	}
+	for _, session := range s.sessions {
+		if session.Client != target.Client || session.InstanceID != target.InstanceID || session.SessionID != target.SessionID {
+			continue
+		}
+		return session.Kind == target.Kind &&
+			session.WriterKind == target.WriterKind && session.WriterID == target.WriterID &&
+			session.OwnershipEpoch == target.OwnershipEpoch &&
+			session.RuntimeGeneration == target.RuntimeGeneration
+	}
+	return false
 }
 
 func notificationLabel(category model.NotificationCategory) string {

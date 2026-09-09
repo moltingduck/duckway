@@ -474,6 +474,66 @@ func TestTUIRenderExplainsImmediateShellLifecycle(t *testing.T) {
 	}
 }
 
+func TestLifecycleConfirmationIsBoundToExactSessionRevision(t *testing.T) {
+	target := ducklord.RemoteSession{Client: "host-a", InstanceID: "instance-a", SessionID: "ABC123", Name: "target",
+		Kind: string(model.KindAgent), WriterKind: string(model.OwnerTerminal), WriterID: "desk", OwnershipEpoch: 4, RuntimeGeneration: 7}
+	state := &tuiState{ownerName: "desk", selected: 0, lifecycleConfirm: protocol.SessionLifecycleDestroy, lifecycleTarget: target,
+		sessions: []ducklord.RemoteSession{target}}
+	if !state.lifecycleTargetIsCurrent() {
+		t.Fatal("unchanged lifecycle target was rejected")
+	}
+
+	// A list refresh may select another row with the same short ID. It must not
+	// inherit the destructive confirmation from the original host/instance.
+	state.sessions = []ducklord.RemoteSession{{Client: "host-b", InstanceID: "instance-b", SessionID: "ABC123", Name: "other",
+		Kind: string(model.KindAgent), WriterKind: string(model.OwnerTerminal), WriterID: "desk", OwnershipEpoch: 4, RuntimeGeneration: 7}}
+	if state.lifecycleTargetIsCurrent() {
+		t.Fatal("confirmation followed a same-ID session onto another host")
+	}
+
+	state.sessions = []ducklord.RemoteSession{target}
+	state.sessions[0].RuntimeGeneration++
+	if state.lifecycleTargetIsCurrent() {
+		t.Fatal("confirmation advanced to a newer runtime generation")
+	}
+	state.sessions[0] = target
+	state.sessions[0].OwnershipEpoch++
+	if state.lifecycleTargetIsCurrent() {
+		t.Fatal("confirmation advanced to a newer ownership epoch")
+	}
+}
+
+func TestLifecycleConfirmationRendersCapturedTargetAfterSelectionMoves(t *testing.T) {
+	target := ducklord.RemoteSession{Client: "host-a", InstanceID: "instance-a", SessionID: "TARGET", Name: "original", Kind: string(model.KindAgent)}
+	state := &tuiState{lifecycleConfirm: protocol.SessionLifecycleDestroy, lifecycleTarget: target,
+		sessions: []ducklord.RemoteSession{{Client: "host-b", InstanceID: "instance-b", SessionID: "OTHER", Name: "new selection", Kind: string(model.KindAgent)}}}
+	var out bytes.Buffer
+	state.renderContent(&out, 1, 80, 24)
+	if got := out.String(); !strings.Contains(got, "original") || !strings.Contains(got, "TARGET") || strings.Contains(got, "new selection") {
+		t.Fatalf("confirmation rendered mutable selection: %q", got)
+	}
+}
+
+func TestParseSessionsArgsSupportsMachineReadableInventory(t *testing.T) {
+	for _, tc := range []struct {
+		args     []string
+		client   string
+		json     bool
+		wantFail bool
+	}{
+		{args: []string{"host-a"}, client: "host-a"},
+		{args: []string{"--json", "host-a"}, client: "host-a", json: true},
+		{args: []string{"host-a", "--json"}, client: "host-a", json: true},
+		{args: nil, wantFail: true},
+		{args: []string{"host-a", "host-b"}, wantFail: true},
+	} {
+		client, jsonOutput, err := parseSessionsArgs(tc.args)
+		if (err != nil) != tc.wantFail || client != tc.client || jsonOutput != tc.json {
+			t.Fatalf("parseSessionsArgs(%q) = %q,%v,%v", tc.args, client, jsonOutput, err)
+		}
+	}
+}
+
 func TestTUIRenderShowsStoppedRetainedOutputWindow(t *testing.T) {
 	until := time.Date(2030, time.January, 2, 15, 4, 0, 0, time.Local).UnixMilli()
 	state := &tuiState{ownerName: "desk", sessions: []ducklord.RemoteSession{{Client: "host", Name: "agent", SessionID: "ABC123",
@@ -1687,6 +1747,9 @@ func (f fakeRunner) Stop(context.Context, ducklord.Client, string) error { retur
 func (f fakeRunner) Lifecycle(context.Context, ducklord.Client, string, protocol.SessionLifecycleOperation, protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
 	return protocol.SessionLifecycleResult{SessionID: "ABC123", Operation: protocol.SessionLifecycleRestart, Mode: protocol.SessionLifecycleWait, State: protocol.SessionLifecycleCompleted, OwnershipEpoch: 1, RuntimeGeneration: 2}, nil
 }
+func (f fakeRunner) LifecycleSelected(_ context.Context, _ ducklord.Client, session ducklord.RemoteSession, operation protocol.SessionLifecycleOperation, mode protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
+	return protocol.SessionLifecycleResult{SessionID: session.SessionID, Operation: operation, Mode: mode, State: protocol.SessionLifecycleCompleted, OwnershipEpoch: session.OwnershipEpoch, RuntimeGeneration: session.RuntimeGeneration}, nil
+}
 func (f fakeRunner) Yield(context.Context, ducklord.Client, string, bool) (protocol.SessionYieldResult, error) {
 	return protocol.SessionYieldResult{}, nil
 }
@@ -1768,6 +1831,10 @@ func (r *recordingRunner) Stop(context.Context, ducklord.Client, string) error {
 func (r *recordingRunner) Lifecycle(_ context.Context, client ducklord.Client, session string, operation protocol.SessionLifecycleOperation, mode protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
 	r.lifecycleClient, r.lifecycleSession, r.lifecycleOp, r.lifecycleMode = client.Name, session, operation, mode
 	return protocol.SessionLifecycleResult{SessionID: session, Operation: operation, Mode: mode, State: protocol.SessionLifecycleCompleted, OwnershipEpoch: 1, RuntimeGeneration: 2}, nil
+}
+func (r *recordingRunner) LifecycleSelected(_ context.Context, client ducklord.Client, selected ducklord.RemoteSession, operation protocol.SessionLifecycleOperation, mode protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
+	r.lifecycleClient, r.lifecycleSession, r.lifecycleOp, r.lifecycleMode = client.Name, selected.SessionID, operation, mode
+	return protocol.SessionLifecycleResult{SessionID: selected.SessionID, Operation: operation, Mode: mode, State: protocol.SessionLifecycleCompleted, OwnershipEpoch: selected.OwnershipEpoch, RuntimeGeneration: selected.RuntimeGeneration}, nil
 }
 func (r *recordingRunner) Yield(_ context.Context, client ducklord.Client, session string, wait bool) (protocol.SessionYieldResult, error) {
 	r.yieldClient = client.Name

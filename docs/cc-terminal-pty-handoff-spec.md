@@ -3541,7 +3541,8 @@ Status: Implemented
   native PTYs, restarts Ducklion without losing them, and leaves an interactive
   multi-host TUI ready for inspection.
 - Phase 5 is enforced by `scripts/discord-e2e.sh`,
-  `scripts/cc-smoke.sh --fixture`, and `scripts/ducklion-core-e2e.sh`; use
+  `scripts/cc-smoke.sh --fixture`, `scripts/ducklion-core-e2e.sh`, and the
+  real-terminal `scripts/ducklord-tui-e2e.sh`; use
   `DUCKLION_E2E_RACE=1` for the race-detector form. The real-Discord smoke is
   deliberately opt-in because it requires dedicated external credentials.
 - Phase 6's required gate is executable and fails if any named scenario is

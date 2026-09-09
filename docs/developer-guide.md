@@ -791,6 +791,16 @@ scripts/ducklion-core-e2e.sh
 DUCKLION_E2E_RACE=1 scripts/ducklion-core-e2e.sh
 ```
 
+The credential-free terminal UI gate drives a real 80×24 PTY through
+Ducklord, its SSH stdio bridge, and Ducklion. It verifies the centered colored
+create dialog, keyboard selection, authoritative host/session identity, and
+focused input delivery to the newly created remote PTY:
+
+```bash
+CONTAINER_RUNTIME=podman scripts/ducklord-tui-e2e.sh
+# or CONTAINER_RUNTIME=docker when Docker is installed
+```
+
 The script preflights every selected scenario by its exact test name, so a
 renamed or removed test fails instead of silently reducing coverage. It covers:
 
