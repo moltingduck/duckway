@@ -71,7 +71,7 @@ func TestOutputPoolHandoffRollbackAndCommitAreAtomic(t *testing.T) {
 	resources := map[string]*fakeOutputResource{}
 	var live atomic.Int32
 	var maxLive atomic.Int32
-	open := func(_ context.Context, key OutputKey, _ uint64) (OutputResource, error) {
+	open := func(_ context.Context, key OutputKey, _ OutputRevision, _ uint64) (OutputResource, error) {
 		current := live.Add(1)
 		for observed := maxLive.Load(); current > observed && !maxLive.CompareAndSwap(observed, current); observed = maxLive.Load() {
 		}
@@ -90,7 +90,7 @@ func TestOutputPoolHandoffRollbackAndCommitAreAtomic(t *testing.T) {
 	failed := errors.New("destination snapshot failed")
 	result := make(chan error, 1)
 	go func() {
-		_, err := pool.Activate(context.Background(), outputKey("C"), outputRevision(), func(_ context.Context, _ OutputKey, _ uint64) (OutputResource, error) {
+		_, err := pool.Activate(context.Background(), outputKey("C"), outputRevision(), func(_ context.Context, _ OutputKey, _ OutputRevision, _ uint64) (OutputResource, error) {
 			close(admitted)
 			<-release
 			return nil, failed
@@ -103,7 +103,7 @@ func TestOutputPoolHandoffRollbackAndCommitAreAtomic(t *testing.T) {
 		t.Fatalf("pool changed before handoff commit: %+v", status)
 	}
 	openedD := false
-	if _, err := pool.Activate(context.Background(), outputKey("D"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	if _, err := pool.Activate(context.Background(), outputKey("D"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 		openedD = true
 		return &fakeOutputResource{}, nil
 	}); !errors.Is(err, ErrHandoffBusy) || openedD {
@@ -144,13 +144,13 @@ func TestOutputPoolSnapshotFailureRollsBackDestination(t *testing.T) {
 	pool, _ := NewOutputPool(1)
 	snapshotErr := errors.New("disk full")
 	victim := &fakeOutputResource{snapshot: func(context.Context) error { return snapshotErr }}
-	if _, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	if _, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 		return victim, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	destination := &fakeOutputResource{}
-	if _, err := pool.Activate(context.Background(), outputKey("B"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	if _, err := pool.Activate(context.Background(), outputKey("B"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 		return destination, nil
 	}); !errors.Is(err, snapshotErr) {
 		t.Fatalf("err=%v", err)
@@ -166,7 +166,7 @@ func TestOutputPoolSnapshotFailureRollsBackDestination(t *testing.T) {
 
 func TestOutputPoolLeaseFencesStaleReader(t *testing.T) {
 	pool, _ := NewOutputPool(1)
-	activation, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	activation, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 		return &fakeOutputResource{}, nil
 	})
 	if err != nil {
@@ -189,7 +189,7 @@ func TestOutputPoolCloseDuringBlockedOpen(t *testing.T) {
 	started := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		_, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(ctx context.Context, _ OutputKey, _ uint64) (OutputResource, error) {
+		_, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(ctx context.Context, _ OutputKey, _ OutputRevision, _ uint64) (OutputResource, error) {
 			close(started)
 			<-ctx.Done()
 			return nil, ctx.Err()
@@ -207,7 +207,7 @@ func TestOutputPoolCloseDuringBlockedOpen(t *testing.T) {
 
 func TestOutputPoolConcurrentExistingActivationDoesNotRace(t *testing.T) {
 	pool, _ := NewOutputPool(2)
-	activation, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	activation, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 		return &fakeOutputResource{}, nil
 	})
 	if err != nil {
@@ -218,7 +218,7 @@ func TestOutputPoolConcurrentExistingActivationDoesNotRace(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			got, activateErr := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+			got, activateErr := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 				t.Error("existing activation called opener")
 				return nil, nil
 			})
@@ -230,10 +230,58 @@ func TestOutputPoolConcurrentExistingActivationDoesNotRace(t *testing.T) {
 	wg.Wait()
 }
 
+func TestOutputPoolWithLeaseSerializesTerminalMutation(t *testing.T) {
+	pool, _ := NewOutputPool(1)
+	activation, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+		return &fakeOutputResource{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstEntered := make(chan struct{})
+	statusPassed := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondEntered := make(chan struct{})
+	done := make(chan error, 2)
+	go func() {
+		done <- pool.WithLease(outputKey("A"), activation.Lease, func(OutputResource) {
+			close(firstEntered)
+			_ = pool.Status()
+			close(statusPassed)
+			<-releaseFirst
+		})
+	}()
+	<-firstEntered
+	select {
+	case <-statusPassed:
+	case <-time.After(time.Second):
+		t.Fatal("terminal mutation deadlocked while re-entering pool status")
+	}
+	go func() {
+		done <- pool.WithLease(outputKey("A"), activation.Lease, func(OutputResource) { close(secondEntered) })
+	}()
+	select {
+	case <-secondEntered:
+		t.Fatal("two terminal mutations overlapped")
+	default:
+	}
+	close(releaseFirst)
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case <-secondEntered:
+	default:
+		t.Fatal("second mutation never ran")
+	}
+}
+
 func TestOutputPoolDisconnectRestorePreservesDesiredOrder(t *testing.T) {
 	pool, _ := NewOutputPool(2)
 	resources := map[string]*fakeOutputResource{}
-	open := func(_ context.Context, key OutputKey, _ uint64) (OutputResource, error) {
+	open := func(_ context.Context, key OutputKey, _ OutputRevision, _ uint64) (OutputResource, error) {
 		resource := &fakeOutputResource{}
 		resources[key.SessionID] = resource
 		return resource, nil
@@ -280,7 +328,7 @@ func TestOutputPoolDisconnectRestorePreservesDesiredOrder(t *testing.T) {
 
 func TestOutputPoolDisconnectFencesDelayedRestore(t *testing.T) {
 	pool, _ := NewOutputPool(1)
-	if _, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	if _, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 		return &fakeOutputResource{}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -293,7 +341,7 @@ func TestOutputPoolDisconnectFencesDelayedRestore(t *testing.T) {
 	late := &fakeOutputResource{}
 	done := make(chan error, 1)
 	go func() {
-		_, err := pool.RestoreDesired(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+		_, err := pool.RestoreDesired(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 			close(started)
 			<-release // Deliberately model an opener slow to honor cancellation.
 			return late, nil
@@ -301,7 +349,7 @@ func TestOutputPoolDisconnectFencesDelayedRestore(t *testing.T) {
 		done <- err
 	}()
 	<-started
-	if _, err := pool.RestoreDesired(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	if _, err := pool.RestoreDesired(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 		return &fakeOutputResource{}, nil
 	}); !errors.Is(err, ErrRestoreBusy) {
 		t.Fatalf("parallel restore err=%v", err)
@@ -316,7 +364,7 @@ func TestOutputPoolDisconnectFencesDelayedRestore(t *testing.T) {
 	if late.closed.Load() != 1 || pool.Status().Connected != 0 {
 		t.Fatalf("late close=%d status=%+v", late.closed.Load(), pool.Status())
 	}
-	if _, err := pool.RestoreDesired(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	if _, err := pool.RestoreDesired(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 		return &fakeOutputResource{}, nil
 	}); err != nil {
 		t.Fatalf("fresh restore: %v", err)
@@ -326,7 +374,7 @@ func TestOutputPoolDisconnectFencesDelayedRestore(t *testing.T) {
 func TestOutputPoolEvictionQuiescesAcceptedFramesBeforeSnapshot(t *testing.T) {
 	pool, _ := NewOutputPool(1)
 	victim := &statefulOutputResource{}
-	activation, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	activation, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 		return victim, nil
 	})
 	if err != nil {
@@ -345,7 +393,7 @@ func TestOutputPoolEvictionQuiescesAcceptedFramesBeforeSnapshot(t *testing.T) {
 	<-applyEntered
 	activateDone := make(chan error, 1)
 	go func() {
-		_, err := pool.Activate(context.Background(), outputKey("B"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+		_, err := pool.Activate(context.Background(), outputKey("B"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 			return &fakeOutputResource{}, nil
 		})
 		activateDone <- err
@@ -368,7 +416,7 @@ func TestOutputPoolEvictionQuiescesAcceptedFramesBeforeSnapshot(t *testing.T) {
 func TestOutputPoolRuntimeGenerationReplacementIsSingleMembership(t *testing.T) {
 	pool, _ := NewOutputPool(1)
 	old := &fakeOutputResource{}
-	first, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	first, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 		return old, nil
 	})
 	if err != nil {
@@ -376,7 +424,10 @@ func TestOutputPoolRuntimeGenerationReplacementIsSingleMembership(t *testing.T) 
 	}
 	newRevision := OutputRevision{RuntimeGeneration: 2}
 	replacement := &fakeOutputResource{}
-	second, err := pool.Activate(context.Background(), outputKey("A"), newRevision, func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	second, err := pool.Activate(context.Background(), outputKey("A"), newRevision, func(_ context.Context, _ OutputKey, gotRevision OutputRevision, _ uint64) (OutputResource, error) {
+		if gotRevision != newRevision {
+			t.Fatalf("opener revision=%+v want=%+v", gotRevision, newRevision)
+		}
 		return replacement, nil
 	})
 	if err != nil {
@@ -397,10 +448,39 @@ func TestOutputPoolRuntimeGenerationReplacementIsSingleMembership(t *testing.T) 
 	}
 }
 
+func TestOutputPoolBackgroundGenerationReplacementPreservesActiveLRU(t *testing.T) {
+	pool, _ := NewOutputPool(2)
+	resources := map[string]*fakeOutputResource{}
+	open := func(_ context.Context, key OutputKey, _ OutputRevision, _ uint64) (OutputResource, error) {
+		resource := &fakeOutputResource{}
+		resources[key.SessionID] = resource
+		return resource, nil
+	}
+	if _, err := pool.Activate(context.Background(), outputKey("B"), outputRevision(), open); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), open); err != nil {
+		t.Fatal(err)
+	}
+	before := pool.Status()
+	oldB := resources["B"]
+	newRevision := OutputRevision{RuntimeGeneration: 2}
+	if _, err := pool.ReplaceDesired(context.Background(), outputKey("B"), newRevision, open); err != nil {
+		t.Fatal(err)
+	}
+	after := pool.Status()
+	if !reflect.DeepEqual(after.Desired, before.Desired) || after.Active == nil || before.Active == nil || *after.Active != *before.Active {
+		t.Fatalf("background replacement changed active/LRU: before=%+v after=%+v", before, after)
+	}
+	if oldB.closed.Load() != 1 || resources["B"] == oldB {
+		t.Fatalf("old B close=%d replacement=%p old=%p", oldB.closed.Load(), resources["B"], oldB)
+	}
+}
+
 func TestOutputPoolRemoveDesiredClosesOnlyExactSession(t *testing.T) {
 	pool, _ := NewOutputPool(2)
 	resources := map[string]*fakeOutputResource{}
-	open := func(_ context.Context, key OutputKey, _ uint64) (OutputResource, error) {
+	open := func(_ context.Context, key OutputKey, _ OutputRevision, _ uint64) (OutputResource, error) {
 		resource := &fakeOutputResource{}
 		resources[key.SessionID] = resource
 		return resource, nil
@@ -432,7 +512,7 @@ func TestOutputPoolVictimHostDisconnectRollsBackCrossHostHandoff(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	}}
-	if _, err := pool.Activate(context.Background(), a, outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	if _, err := pool.Activate(context.Background(), a, outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 		return victim, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -440,7 +520,7 @@ func TestOutputPoolVictimHostDisconnectRollsBackCrossHostHandoff(t *testing.T) {
 	destination := &fakeOutputResource{}
 	activateDone := make(chan error, 1)
 	go func() {
-		_, err := pool.Activate(context.Background(), b, outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+		_, err := pool.Activate(context.Background(), b, outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 			return destination, nil
 		})
 		activateDone <- err
@@ -463,7 +543,7 @@ func TestOutputPoolVictimHostDisconnectRollsBackCrossHostHandoff(t *testing.T) {
 
 func TestOutputPoolRestoreErrorCancelsDerivedContext(t *testing.T) {
 	pool, _ := NewOutputPool(1)
-	if _, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, uint64) (OutputResource, error) {
+	if _, err := pool.Activate(context.Background(), outputKey("A"), outputRevision(), func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
 		return &fakeOutputResource{}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -473,7 +553,7 @@ func TestOutputPoolRestoreErrorCancelsDerivedContext(t *testing.T) {
 	}
 	workerDone := make(chan struct{})
 	wantErr := errors.New("subscribe failed")
-	_, err := pool.RestoreDesired(context.Background(), outputKey("A"), outputRevision(), func(ctx context.Context, _ OutputKey, _ uint64) (OutputResource, error) {
+	_, err := pool.RestoreDesired(context.Background(), outputKey("A"), outputRevision(), func(ctx context.Context, _ OutputKey, _ OutputRevision, _ uint64) (OutputResource, error) {
 		go func() {
 			<-ctx.Done()
 			close(workerDone)
@@ -498,7 +578,7 @@ func TestOutputPoolCloseErrorIsStableAndAllResourcesClose(t *testing.T) {
 		"B": {},
 	}
 	for _, name := range []string{"A", "B"} {
-		if _, err := pool.Activate(context.Background(), outputKey(name), outputRevision(), func(_ context.Context, key OutputKey, _ uint64) (OutputResource, error) {
+		if _, err := pool.Activate(context.Background(), outputKey(name), outputRevision(), func(_ context.Context, key OutputKey, _ OutputRevision, _ uint64) (OutputResource, error) {
 			return resources[key.SessionID], nil
 		}); err != nil {
 			t.Fatal(err)

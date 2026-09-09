@@ -43,9 +43,18 @@ run_required "process-wide raw-output transactional handoff" ./internal/ducklord
   TestOutputPoolCloseDuringBlockedOpen \
   TestOutputPoolDisconnectRestorePreservesDesiredOrder \
   TestOutputPoolDisconnectFencesDelayedRestore \
+  TestOutputPoolWithLeaseSerializesTerminalMutation \
   TestOutputPoolEvictionQuiescesAcceptedFramesBeforeSnapshot \
   TestOutputPoolRuntimeGenerationReplacementIsSingleMembership \
-  TestOutputPoolVictimHostDisconnectRollsBackCrossHostHandoff
+  TestOutputPoolBackgroundGenerationReplacementPreservesActiveLRU \
+  TestOutputPoolVictimHostDisconnectRollsBackCrossHostHandoff \
+  TestOutputPoolRemoveDesiredClosesOnlyExactSession
+
+run_required "bounded multiplexed output delivery" ./internal/ducklion/daemon \
+  TestSlowLocalOutputSubscriberReceivesTerminalError \
+  TestOutputSubscriberQueueIsByteBounded \
+  TestPreRegistrationOutputOverflowClosesBridgeInsteadOfHidingGap \
+  TestPreRegistrationOutputIsByteBounded
 
 run_required "ownership fencing, bidirectional yield, recovery, shell sharing and lifecycle" ./internal/ducklion/daemon \
   TestDuckwayCCCreatesAgentWithCCInitialOwner \

@@ -26,15 +26,38 @@ func (s *writeBlockingStream) Write([]byte) (int, error) {
 func (s *writeBlockingStream) Close() error { s.once.Do(func() { close(s.closed) }); return nil }
 
 func TestSlowLocalOutputSubscriberReceivesTerminalError(t *testing.T) {
-	c := &Client{subscriptions: make(map[string]*OutputSubscription), orphanEvents: make(map[string][]protocol.OutputEvent),
+	stream := &writeBlockingStream{closed: make(chan struct{})}
+	c := &Client{conn: stream, subscriptions: make(map[string]*OutputSubscription), orphanEvents: make(map[string][]protocol.OutputEvent),
 		ignoredSubscriptions: make(map[string]bool), done: make(chan struct{})}
 	metadata := protocol.OutputSubscribeResult{SubscriptionID: "sub", RuntimeID: "runtime", InstanceID: "instance", SessionID: "ABC123", RuntimeGeneration: 1}
 	subscription := &OutputSubscription{client: c, metadata: metadata, events: make(chan outputResult, 1), terminalDone: make(chan struct{})}
 	c.subscriptions[metadata.SubscriptionID] = subscription
 	c.dispatchOutput(protocol.OutputEvent{Type: "output", SubscriptionID: "sub", Frame: protocol.OutputFrame{Data: []byte("a")}})
 	c.dispatchOutput(protocol.OutputEvent{Type: "output", SubscriptionID: "sub", Frame: protocol.OutputFrame{Offset: 1, Data: []byte("b")}})
-	if _, err := subscription.Read(); err == nil || !strings.Contains(err.Error(), "lagged") {
+	if _, err := subscription.Read(); !errors.Is(err, ErrOutputSubscriberLagged) {
 		t.Fatalf("slow subscriber error = %v", err)
+	}
+}
+
+func TestOutputSubscriberQueueIsByteBounded(t *testing.T) {
+	stream := &writeBlockingStream{closed: make(chan struct{})}
+	c := &Client{conn: stream, subscriptions: make(map[string]*OutputSubscription), orphanEvents: make(map[string][]protocol.OutputEvent),
+		ignoredSubscriptions: make(map[string]bool), done: make(chan struct{})}
+	metadata := protocol.OutputSubscribeResult{SubscriptionID: "sub", RuntimeID: "runtime", InstanceID: "instance", SessionID: "ABC123", RuntimeGeneration: 1}
+	subscription := &OutputSubscription{client: c, metadata: metadata, events: make(chan outputResult, 64), terminalDone: make(chan struct{})}
+	c.subscriptions[metadata.SubscriptionID] = subscription
+	frame := make([]byte, 64<<10)
+	for index := 0; index < 17; index++ {
+		c.dispatchOutput(protocol.OutputEvent{Type: "output", SubscriptionID: "sub", Frame: protocol.OutputFrame{Offset: uint64(index) * uint64(len(frame)), Data: frame}})
+	}
+	if _, err := subscription.Read(); !errors.Is(err, ErrOutputSubscriberLagged) {
+		t.Fatalf("byte-bounded subscriber error=%v", err)
+	}
+	subscription.queueMu.Lock()
+	queued := subscription.queuedBytes
+	subscription.queueMu.Unlock()
+	if queued > maxQueuedOutputBytesPerSubscription {
+		t.Fatalf("queued bytes=%d limit=%d", queued, maxQueuedOutputBytesPerSubscription)
 	}
 }
 
@@ -67,6 +90,24 @@ func TestPreRegistrationOutputOverflowClosesBridgeInsteadOfHidingGap(t *testing.
 	c.stateMu.Unlock()
 	if err == nil || !strings.Contains(err.Error(), "safe replay window") {
 		t.Fatalf("bridge error=%v", err)
+	}
+}
+
+func TestPreRegistrationOutputIsByteBounded(t *testing.T) {
+	stream := &writeBlockingStream{closed: make(chan struct{})}
+	c := &Client{conn: stream, subscriptions: make(map[string]*OutputSubscription), orphanEvents: make(map[string][]protocol.OutputEvent),
+		ignoredSubscriptions: make(map[string]bool), done: make(chan struct{})}
+	frame := make([]byte, 64<<10)
+	for index := 0; index < 17; index++ {
+		c.dispatchOutput(protocol.OutputEvent{Type: "output", SubscriptionID: "early", Frame: protocol.OutputFrame{Offset: uint64(index) * uint64(len(frame)), Data: frame}})
+	}
+	select {
+	case <-c.done:
+	default:
+		t.Fatal("byte-overflowed pre-registration replay window did not close bridge")
+	}
+	if got := orphanOutputBytes(c.orphanEvents["early"]); got > maxQueuedOutputBytesPerSubscription {
+		t.Fatalf("orphan bytes=%d limit=%d", got, maxQueuedOutputBytesPerSubscription)
 	}
 }
 

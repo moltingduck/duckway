@@ -54,7 +54,7 @@ type OutputResource interface {
 	Close() error
 }
 
-type OutputOpenFunc func(context.Context, OutputKey, uint64) (OutputResource, error)
+type OutputOpenFunc func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error)
 
 type OutputActivation struct {
 	Key                OutputKey
@@ -130,6 +130,16 @@ func NewOutputPool(capacity int) (*OutputPool, error) {
 // when full, a quiesced victim snapshot both succeed. At most one preparation
 // may temporarily exceed capacity.
 func (p *OutputPool) Activate(ctx context.Context, key OutputKey, revision OutputRevision, open OutputOpenFunc) (OutputActivation, error) {
+	return p.activate(ctx, key, revision, open, true, false)
+}
+
+// ReplaceDesired prepares a new stream revision for an existing background
+// member without stealing active selection or changing LRU order.
+func (p *OutputPool) ReplaceDesired(ctx context.Context, key OutputKey, revision OutputRevision, open OutputOpenFunc) (OutputActivation, error) {
+	return p.activate(ctx, key, revision, open, false, true)
+}
+
+func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision OutputRevision, open OutputOpenFunc, makeActive, requireDesired bool) (OutputActivation, error) {
 	if err := key.validate(); err != nil {
 		return OutputActivation{}, err
 	}
@@ -148,12 +158,18 @@ func (p *OutputPool) Activate(ctx context.Context, key OutputKey, revision Outpu
 		p.mu.Unlock()
 		return OutputActivation{}, ErrHandoffBusy
 	}
+	if requireDesired && p.entries[key] == nil {
+		p.mu.Unlock()
+		return OutputActivation{}, ErrOutputNotDesired
+	}
 	if entry := p.entries[key]; entry != nil && entry.restoring {
 		p.mu.Unlock()
 		return OutputActivation{}, ErrRestoreBusy
 	}
 	if entry := p.entries[key]; entry != nil && entry.resource != nil && entry.revision == revision && !entry.evicting {
-		p.setActiveLocked(key)
+		if makeActive {
+			p.setActiveLocked(key)
+		}
 		result := OutputActivation{Key: key, Revision: revision, Lease: entry.lease, Existing: true}
 		p.mu.Unlock()
 		return result, nil
@@ -167,7 +183,7 @@ func (p *OutputPool) Activate(ctx context.Context, key OutputKey, revision Outpu
 	p.mu.Unlock()
 	defer p.workers.Done()
 
-	resource, err := open(openCtx, key, handoff.lease)
+	resource, err := open(openCtx, key, revision, handoff.lease)
 	if err != nil {
 		p.finishHandoff(handoff)
 		return OutputActivation{}, err
@@ -258,7 +274,9 @@ func (p *OutputPool) Activate(ctx context.Context, key OutputKey, revision Outpu
 	entry.resource = resource
 	entry.restoring = false
 	entry.evicting = false
-	p.setActiveLocked(key)
+	if makeActive {
+		p.setActiveLocked(key)
+	}
 	var evicted *OutputKey
 	var victimResource OutputResource
 	if victim != nil {
@@ -309,11 +327,18 @@ func (p *OutputPool) WithLease(key OutputKey, lease uint64, apply func(OutputRes
 		p.mu.Unlock()
 		return ErrStaleOutputLease
 	}
-	entry.useMu.RLock()
 	p.mu.Unlock()
-	defer entry.useMu.RUnlock()
+	entry.useMu.Lock()
+	defer entry.useMu.Unlock()
+	p.mu.Lock()
+	if p.entries[key] != entry || entry.lease != lease || entry.resource == nil || entry.evicting || entry.restoring {
+		p.mu.Unlock()
+		return ErrStaleOutputLease
+	}
+	resource := entry.resource
+	p.mu.Unlock()
 	if apply != nil {
-		apply(entry.resource)
+		apply(resource)
 	}
 	return nil
 }
@@ -429,7 +454,7 @@ func (p *OutputPool) RestoreDesired(ctx context.Context, key OutputKey, revision
 	p.mu.Unlock()
 	defer p.workers.Done()
 
-	resource, err := open(openCtx, key, lease)
+	resource, err := open(openCtx, key, revision, lease)
 	if err != nil {
 		p.finishRestore(entry, lease)
 		return OutputActivation{}, err

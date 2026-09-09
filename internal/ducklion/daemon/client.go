@@ -50,7 +50,12 @@ type OutputStreamEnded struct {
 	NextOffset uint64
 }
 
-var ErrOutputSubscriptionClosed = errors.New("output subscription is closed")
+var (
+	ErrOutputSubscriptionClosed = errors.New("output subscription is closed")
+	ErrOutputSubscriberLagged   = errors.New("output subscriber lagged behind")
+)
+
+const maxQueuedOutputBytesPerSubscription = 1 << 20
 
 type RemoteError struct{ Detail protocol.Error }
 
@@ -299,6 +304,8 @@ type OutputSubscription struct {
 	next         uint64
 	readMu       sync.Mutex
 	events       chan outputResult
+	queueMu      sync.Mutex
+	queuedBytes  int
 	terminalMu   sync.Mutex
 	terminalErr  error
 	terminalDone chan struct{}
@@ -471,15 +478,29 @@ func (c *Client) subscribeOutputContext(ctx context.Context, sessionID string, g
 		metadata.EndOffset < metadata.StartOffset || options.TailBytes == 0 && metadata.StartOffset != options.Offset && !metadata.Gap {
 		return nil, fmt.Errorf("ducklion returned invalid output subscription metadata")
 	}
-	subscription := &OutputSubscription{client: c, metadata: metadata, next: metadata.StartOffset, events: make(chan outputResult, 256), terminalDone: make(chan struct{})}
+	subscription := &OutputSubscription{client: c, metadata: metadata, next: metadata.StartOffset, events: make(chan outputResult, 64), terminalDone: make(chan struct{})}
 	c.stateMu.Lock()
 	orphans := c.orphanEvents[metadata.SubscriptionID]
 	delete(c.orphanEvents, metadata.SubscriptionID)
-	for _, event := range orphans {
-		subscription.events <- outputResult{event: event}
-	}
 	c.subscriptions[metadata.SubscriptionID] = subscription
+	var replayOverflow bool
+	for _, event := range orphans {
+		if !subscription.enqueue(event) {
+			replayOverflow = true
+			break
+		}
+	}
+	if replayOverflow {
+		delete(c.subscriptions, metadata.SubscriptionID)
+		c.markIgnoredLocked(metadata.SubscriptionID)
+	}
 	c.stateMu.Unlock()
+	if replayOverflow {
+		err := fmt.Errorf("output arrived before subscription registration exceeded the bounded queue")
+		subscription.terminate(err)
+		c.shutdown(err)
+		return nil, err
+	}
 	return subscription, nil
 }
 
@@ -502,6 +523,9 @@ func (s *OutputSubscription) ReadContext(ctx context.Context) (protocol.OutputEv
 	case <-s.terminalDone:
 		return protocol.OutputEvent{}, s.terminalError()
 	case outcome = <-s.events:
+		s.queueMu.Lock()
+		s.queuedBytes -= len(outcome.event.Frame.Data)
+		s.queueMu.Unlock()
 	case <-s.client.done:
 		s.client.stateMu.Lock()
 		err := s.client.readErr
@@ -675,7 +699,7 @@ func (c *Client) dispatchOutput(event protocol.OutputEvent) {
 	subscription := c.subscriptions[event.SubscriptionID]
 	if subscription == nil {
 		orphan := c.orphanEvents[event.SubscriptionID]
-		if (len(orphan) > 0 || len(c.orphanEvents) < 4) && len(orphan) < 80 {
+		if (len(orphan) > 0 || len(c.orphanEvents) < 4) && len(orphan) < 80 && orphanOutputBytes(orphan)+len(event.Frame.Data) <= maxQueuedOutputBytesPerSubscription {
 			c.orphanEvents[event.SubscriptionID] = append(orphan, event)
 			c.stateMu.Unlock()
 			return
@@ -689,14 +713,45 @@ func (c *Client) dispatchOutput(event protocol.OutputEvent) {
 		c.markIgnoredLocked(event.SubscriptionID)
 	}
 	c.stateMu.Unlock()
-	select {
-	case subscription.events <- outputResult{event: event}:
-	default:
+	if !subscription.enqueue(event) {
 		c.stateMu.Lock()
 		delete(c.subscriptions, event.SubscriptionID)
 		c.markIgnoredLocked(event.SubscriptionID)
 		c.stateMu.Unlock()
-		subscription.terminate(fmt.Errorf("output subscriber lagged behind"))
+		subscription.terminate(ErrOutputSubscriberLagged)
+		// dispatchOutput runs on the sole read loop, so it cannot synchronously
+		// issue an unsubscribe RPC. Closing the multiplexed bridge guarantees the
+		// daemon releases this stream (and all sibling quotas); Ducklord restores
+		// its desired set from exact offsets on the next bridge.
+		c.shutdown(ErrOutputSubscriberLagged)
+	}
+}
+
+func orphanOutputBytes(events []protocol.OutputEvent) int {
+	total := 0
+	for _, event := range events {
+		total += len(event.Frame.Data)
+	}
+	return total
+}
+
+func (s *OutputSubscription) enqueue(event protocol.OutputEvent) bool {
+	size := len(event.Frame.Data)
+	s.queueMu.Lock()
+	if s.queuedBytes+size > maxQueuedOutputBytesPerSubscription {
+		s.queueMu.Unlock()
+		return false
+	}
+	s.queuedBytes += size
+	s.queueMu.Unlock()
+	select {
+	case s.events <- outputResult{event: event}:
+		return true
+	default:
+		s.queueMu.Lock()
+		s.queuedBytes -= size
+		s.queueMu.Unlock()
+		return false
 	}
 }
 
