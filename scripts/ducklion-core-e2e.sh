@@ -40,7 +40,12 @@ run_required "process-wide raw-output transactional handoff" ./internal/ducklord
   TestOutputPoolHandoffRollbackAndCommitAreAtomic \
   TestOutputPoolSnapshotFailureRollsBackDestination \
   TestOutputPoolLeaseFencesStaleReader \
-  TestOutputPoolCloseDuringBlockedOpen
+  TestOutputPoolCloseDuringBlockedOpen \
+  TestOutputPoolDisconnectRestorePreservesDesiredOrder \
+  TestOutputPoolDisconnectFencesDelayedRestore \
+  TestOutputPoolEvictionQuiescesAcceptedFramesBeforeSnapshot \
+  TestOutputPoolRuntimeGenerationReplacementIsSingleMembership \
+  TestOutputPoolVictimHostDisconnectRollsBackCrossHostHandoff
 
 run_required "ownership fencing, bidirectional yield, recovery, shell sharing and lifecycle" ./internal/ducklion/daemon \
   TestDuckwayCCCreatesAgentWithCCInitialOwner \
