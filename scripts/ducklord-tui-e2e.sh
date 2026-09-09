@@ -8,6 +8,26 @@ source "$ROOT/scripts/container-runtime.sh"
 duckway_init_container_runtime
 RUNTIME="$CONTAINER_RUNTIME"
 SETUP_LOG="$(mktemp -t ducklord-tui-e2e-XXXXXX.log)"
+LOCK_FILE="${TMPDIR:-/tmp}/ducklord-tui-e2e.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+	echo "[ducklord-tui-e2e] another demo or E2E owns $LOCK_FILE" >&2
+	rm -f "$SETUP_LOG"
+	exit 1
+fi
+
+for resource in ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c; do
+	if "$RUNTIME" container inspect "$resource" >/dev/null 2>&1; then
+		echo "[ducklord-tui-e2e] refusing to replace existing container $resource" >&2
+		rm -f "$SETUP_LOG"
+		exit 1
+	fi
+done
+if "$RUNTIME" network inspect ducklord-demo >/dev/null 2>&1; then
+	echo "[ducklord-tui-e2e] refusing to replace existing network ducklord-demo" >&2
+	rm -f "$SETUP_LOG"
+	exit 1
+fi
 
 cleanup() {
 	local status=$?

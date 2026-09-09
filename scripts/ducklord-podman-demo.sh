@@ -203,6 +203,7 @@ Inside the TUI:
   Enter or right-click: focus the selected session in the right pane
   a: add a ducklion host from ~/.ssh/config (try client-c)
   c: create a session: agent -> host -> project -> agent -> handle, or shell -> host -> project -> handle
+  m: open the centered action menu for attach, yield, notifications, and lifecycle
   n: configure notifications for the selected session
   E / R / X: end, restart, or destroy the selected session (with confirmation)
   attach-host mode: same split-pane attach UI scoped to one host; add/new are disabled

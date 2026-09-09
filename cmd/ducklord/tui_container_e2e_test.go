@@ -100,6 +100,57 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 		out, runErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", created.SessionID, "--lines", "20", "--config", "/tmp/e2e-inspector.yaml").CombinedOutput()
 		return runErr == nil && bytes.Contains(out, []byte(marker))
 	}, func() string { return "focused PTY input did not reach selected remote session" })
+
+	// Return to the list and exercise the state-aware action modal. Backend
+	// generation/identity changes, rather than screen coordinates, are the
+	// authoritative assertions.
+	start = capture.position()
+	writePTY(t, terminal, "\x1d") // Ctrl-]
+	capture.waitAfter(t, start, "m actions", 10*time.Second)
+	start = capture.position()
+	writePTY(t, terminal, "m")
+	capture.waitAfter(t, start, "Session actions", 10*time.Second)
+	actionScreen := capture.since(start)
+	for _, want := range []string{"Restart shell immediately", "Destroy shell and logs", created.SessionID, "╭"} {
+		if !strings.Contains(actionScreen, want) {
+			t.Fatalf("action modal missing %q: %q", want, safeTerminalDiagnostic(actionScreen))
+		}
+	}
+	start = capture.position()
+	writePTY(t, terminal, "r")
+	capture.waitAfter(t, start, "RESTART SESSION", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	waitE2E(t, 15*time.Second, func() bool {
+		session, ok := findContainerSession(t, runtime, controller, "client-a", created.SessionID)
+		return ok && session.RuntimeGeneration == created.RuntimeGeneration+1 && session.Status == string(model.StatusRunning)
+	}, func() string { return "action-menu restart did not advance the selected session generation" })
+	// Inventory completion can precede the TUI goroutine consuming its durable
+	// completion event by one redraw. Give that local event loop a bounded beat;
+	// the generation assertion above remains the authoritative result.
+	time.Sleep(750 * time.Millisecond)
+
+	// Destructive selection still requires a second confirmation, and Escape
+	// must leave the exact target untouched.
+	start = capture.position()
+	writePTY(t, terminal, "m")
+	capture.waitAfter(t, start, "Session actions", 10*time.Second)
+	writePTY(t, terminal, "x")
+	capture.waitAfter(t, start, "DESTROY SESSION", 10*time.Second)
+	writePTY(t, terminal, "\x1b")
+	if _, ok := findContainerSession(t, runtime, controller, "client-a", created.SessionID); !ok {
+		t.Fatal("canceling destructive confirmation removed the session")
+	}
+
+	start = capture.position()
+	writePTY(t, terminal, "m")
+	capture.waitAfter(t, start, "Session actions", 10*time.Second)
+	writePTY(t, terminal, "x")
+	capture.waitAfter(t, start, "DESTROY SESSION", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	waitE2E(t, 15*time.Second, func() bool {
+		_, ok := findContainerSession(t, runtime, controller, "client-a", created.SessionID)
+		return !ok
+	}, func() string { return "action-menu destroy did not remove the exact selected session" })
 }
 
 type tuiCapture struct {
@@ -164,14 +215,7 @@ func requiredE2EEnv(t *testing.T, name string) string {
 
 func listContainerSessions(t *testing.T, runtime, controller, host string) []protocol.SessionSummary {
 	t.Helper()
-	out, err := exec.Command(runtime, "exec", controller, "ducklord", "sessions", host, "--json", "--config", "/tmp/e2e-inspector.yaml").CombinedOutput()
-	if err != nil {
-		t.Fatalf("list sessions on %s: %v: %s", host, err, safeTerminalDiagnostic(string(out)))
-	}
-	var sessions []ducklord.RemoteSession
-	if err := json.Unmarshal(out, &sessions); err != nil {
-		t.Fatalf("decode session inventory from %s: %v", host, err)
-	}
+	sessions := listContainerRemoteSessions(t, runtime, controller, host)
 	result := make([]protocol.SessionSummary, 0, len(sessions))
 	for _, session := range sessions {
 		result = append(result, protocol.SessionSummary{SessionID: session.SessionID, Handle: session.Name, Kind: model.SessionKind(session.Kind), CWD: session.Cwd,
@@ -188,6 +232,29 @@ func sessionInventoryDiagnostic(t *testing.T, runtime, controller, host string) 
 		values = append(values, fmt.Sprintf("%s/%s/%s/%s", session.SessionID, session.Handle, session.Kind, session.CWD))
 	}
 	return strings.Join(values, ",")
+}
+
+func findContainerSession(t *testing.T, runtime, controller, host, sessionID string) (ducklord.RemoteSession, bool) {
+	t.Helper()
+	for _, session := range listContainerRemoteSessions(t, runtime, controller, host) {
+		if session.SessionID == sessionID {
+			return session, true
+		}
+	}
+	return ducklord.RemoteSession{}, false
+}
+
+func listContainerRemoteSessions(t *testing.T, runtime, controller, host string) []ducklord.RemoteSession {
+	t.Helper()
+	out, err := exec.Command(runtime, "exec", controller, "ducklord", "sessions", host, "--json", "--config", "/tmp/e2e-inspector.yaml").CombinedOutput()
+	if err != nil {
+		t.Fatalf("list sessions on %s: %v: %s", host, err, safeTerminalDiagnostic(string(out)))
+	}
+	var sessions []ducklord.RemoteSession
+	if err := json.Unmarshal(out, &sessions); err != nil {
+		t.Fatalf("decode session inventory from %s: %v", host, err)
+	}
+	return sessions
 }
 
 func writePTY(t *testing.T, terminal *os.File, value string) {

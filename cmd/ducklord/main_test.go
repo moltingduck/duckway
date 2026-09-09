@@ -446,8 +446,9 @@ func TestHostScopedTUIDisablesAddAndNewShortcuts(t *testing.T) {
 }
 
 func TestTUIRenderExplainsDestructiveLifecycleConfirmation(t *testing.T) {
-	state := &tuiState{ownerName: "desk", lifecycleConfirm: protocol.SessionLifecycleDestroy,
-		sessions: []ducklord.RemoteSession{{Client: "host", Name: "agent", SessionID: "ABC123", Kind: string(model.KindAgent), Status: "running"}}}
+	session := ducklord.RemoteSession{Client: "host", Name: "agent", SessionID: "ABC123", Kind: string(model.KindAgent), Status: "running"}
+	state := &tuiState{ownerName: "desk", lifecycleConfirm: protocol.SessionLifecycleDestroy, lifecycleTarget: session,
+		sessions: []ducklord.RemoteSession{session}}
 	var out bytes.Buffer
 	state.render(&out)
 	got := out.String()
@@ -459,8 +460,9 @@ func TestTUIRenderExplainsDestructiveLifecycleConfirmation(t *testing.T) {
 }
 
 func TestTUIRenderExplainsImmediateShellLifecycle(t *testing.T) {
-	state := &tuiState{ownerName: "desk", lifecycleConfirm: protocol.SessionLifecycleRestart,
-		sessions: []ducklord.RemoteSession{{Client: "host", Name: "shell", SessionID: "ABC123", Kind: string(model.KindShell), Status: "running"}}}
+	session := ducklord.RemoteSession{Client: "host", Name: "shell", SessionID: "ABC123", Kind: string(model.KindShell), Status: "running"}
+	state := &tuiState{ownerName: "desk", lifecycleConfirm: protocol.SessionLifecycleRestart, lifecycleTarget: session,
+		sessions: []ducklord.RemoteSession{session}}
 	var out bytes.Buffer
 	state.render(&out)
 	got := out.String()
@@ -531,6 +533,108 @@ func TestParseSessionsArgsSupportsMachineReadableInventory(t *testing.T) {
 		if (err != nil) != tc.wantFail || client != tc.client || jsonOutput != tc.json {
 			t.Fatalf("parseSessionsArgs(%q) = %q,%v,%v", tc.args, client, jsonOutput, err)
 		}
+	}
+}
+
+func TestSessionActionsReflectKindOwnerTaskAndAdapter(t *testing.T) {
+	live := map[string]ducklord.SessionUpdate{"host": {State: "live"}}
+	state := &tuiState{ownerName: "desk", hostSync: live}
+	shell := ducklord.RemoteSession{Client: "host", InstanceID: "instance", SessionID: "SHELL1", Kind: string(model.KindShell), Status: string(model.StatusRunning)}
+	shellActions := state.sessionActions(shell)
+	for _, action := range shellActions {
+		if strings.HasPrefix(action.ID, "yield") || strings.Contains(action.ID, "wait") || strings.Contains(action.ID, "force") {
+			t.Fatalf("shell exposed agent-only action %#v", action)
+		}
+	}
+	if len(shellActions) != 5 || shellActions[2].Mode != protocol.SessionLifecycleImmediate {
+		t.Fatalf("shell actions=%#v", shellActions)
+	}
+
+	agent := ducklord.RemoteSession{Client: "host", InstanceID: "instance", SessionID: "AGENT1", Kind: string(model.KindAgent), Status: string(model.StatusRunning),
+		WriterKind: string(model.OwnerCC), WriterID: "channel", OwnershipEpoch: 2, RuntimeGeneration: 3, TaskState: string(model.TaskRunning), AdapterState: string(model.AdapterHealthy)}
+	agentActions := state.sessionActions(agent)
+	if agentActions[0].Label != "View PTY (read-only)" || agentActions[1].Enabled || !agentActions[2].Enabled {
+		t.Fatalf("busy CC-owned agent actions=%#v", agentActions[:3])
+	}
+	for _, action := range agentActions {
+		if action.Operation != "" && action.Enabled {
+			t.Fatalf("read-only agent enabled lifecycle action %#v", action)
+		}
+	}
+	agent.WriterKind, agent.WriterID = string(model.OwnerTerminal), "desk"
+	agentActions = state.sessionActions(agent)
+	actionByID := make(map[string]sessionAction, len(agentActions))
+	for _, action := range agentActions {
+		actionByID[action.ID] = action
+	}
+	if actionByID["restart"].Enabled || !actionByID["restart-wait"].Enabled || !actionByID["restart-force"].Enabled {
+		t.Fatalf("busy terminal-owned lifecycle modes=%#v", actionByID)
+	}
+	agent.WriterKind, agent.WriterID = string(model.OwnerCC), "channel"
+	agent.AdapterState = string(model.AdapterUnhealthy)
+	agent.TaskState = string(model.TaskIdle)
+	agentActions = state.sessionActions(agent)
+	if agentActions[1].Enabled || agentActions[2].Enabled {
+		t.Fatalf("unhealthy adapter enabled yield actions=%#v", agentActions[:3])
+	}
+}
+
+func TestSessionActionsDisableLifecycleWhileAnotherOperationIsPending(t *testing.T) {
+	session := ducklord.RemoteSession{Client: "host", InstanceID: "instance", SessionID: "SHELL1", Kind: string(model.KindShell), Status: string(model.StatusRunning)}
+	state := &tuiState{ownerName: "desk", lifecycleBusy: true, hostSync: map[string]ducklord.SessionUpdate{"host": {State: "live"}}}
+	for _, action := range state.sessionActions(session) {
+		if action.Operation == "" {
+			continue
+		}
+		if action.Enabled || action.DisabledReason != "another lifecycle operation is pending" {
+			t.Fatalf("pending lifecycle action=%#v", action)
+		}
+	}
+}
+
+func TestActionModalIsCenteredColoredAndSelectsStableAction(t *testing.T) {
+	target := ducklord.RemoteSession{Client: "host", InstanceID: "instance", SessionID: "SHELL1", Name: "中文 shell", Kind: string(model.KindShell), Status: string(model.StatusRunning), RuntimeGeneration: 4}
+	state := &tuiState{ownerName: "desk", actionMenu: true, actionTarget: target, actionIndex: 4,
+		hostSync: map[string]ducklord.SessionUpdate{"host": {State: "live"}}, sessions: []ducklord.RemoteSession{target}}
+	var out bytes.Buffer
+	state.renderActionModal(&out, 80, 24)
+	got := out.String()
+	for _, want := range []string{"Session actions", "中文 shell", "Destroy shell and logs", modalDanger, "SHELL1", "╭", "╯"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("action modal missing %q in %q", want, got)
+		}
+	}
+	if action := state.handleActionMenuInput([]byte("\r")); action != "lifecycle-action" || state.actionOperation != protocol.SessionLifecycleDestroy || state.actionMode != protocol.SessionLifecycleImmediate {
+		t.Fatalf("chosen action=%q operation=%q mode=%q", action, state.actionOperation, state.actionMode)
+	}
+	if !state.selectActionTarget() || state.selected != 0 {
+		t.Fatal("captured action target could not be rebound")
+	}
+	state.actionMenu, state.actionTarget, state.actionIndex = true, target, 0
+	if action := state.handleActionMenuInput([]byte("x")); action != "lifecycle-action" || state.actionOperation != protocol.SessionLifecycleDestroy {
+		t.Fatalf("stable destroy accelerator action=%q operation=%q", action, state.actionOperation)
+	}
+}
+
+func TestActionTargetFailsClosedAfterRevisionOrHostChange(t *testing.T) {
+	target := ducklord.RemoteSession{Client: "host", InstanceID: "instance", SessionID: "AGENT1", Kind: string(model.KindAgent), Status: string(model.StatusRunning),
+		WriterKind: string(model.OwnerTerminal), WriterID: "desk", OwnershipEpoch: 2, RuntimeGeneration: 3}
+	state := &tuiState{ownerName: "desk", actionTarget: target, sessions: []ducklord.RemoteSession{target}, hostSync: map[string]ducklord.SessionUpdate{"host": {State: "live"}}}
+	if !state.selectActionTarget() {
+		t.Fatal("unchanged action target rejected")
+	}
+	state.sessions[0].RuntimeGeneration++
+	if state.selectActionTarget() {
+		t.Fatal("action target followed new runtime generation")
+	}
+	state.sessions[0] = target
+	state.hostSync["host"] = ducklord.SessionUpdate{State: "reconnecting"}
+	if state.selectActionTarget() {
+		t.Fatal("action target remained valid while host reconnects")
+	}
+	state.lifecycleTarget = target
+	if state.lifecycleTargetIsCurrent() {
+		t.Fatal("lifecycle confirmation remained valid while host reconnects")
 	}
 }
 
@@ -1753,6 +1857,9 @@ func (f fakeRunner) LifecycleSelected(_ context.Context, _ ducklord.Client, sess
 func (f fakeRunner) Yield(context.Context, ducklord.Client, string, bool) (protocol.SessionYieldResult, error) {
 	return protocol.SessionYieldResult{}, nil
 }
+func (f fakeRunner) YieldSelected(context.Context, ducklord.Client, ducklord.RemoteSession, bool) (protocol.SessionYieldResult, error) {
+	return protocol.SessionYieldResult{}, nil
+}
 func (f fakeRunner) Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error) {
 	return f.projects, nil
 }
@@ -1840,6 +1947,10 @@ func (r *recordingRunner) Yield(_ context.Context, client ducklord.Client, sessi
 	r.yieldClient = client.Name
 	r.yieldSession = session
 	r.yieldWait = wait
+	return r.yieldResult, nil
+}
+func (r *recordingRunner) YieldSelected(_ context.Context, client ducklord.Client, session ducklord.RemoteSession, wait bool) (protocol.SessionYieldResult, error) {
+	r.yieldClient, r.yieldSession, r.yieldWait = client.Name, session.SessionID, wait
 	return r.yieldResult, nil
 }
 func (r *recordingRunner) Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error) {

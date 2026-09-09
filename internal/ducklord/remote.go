@@ -766,7 +766,7 @@ func (r *Runner) Lifecycle(ctx context.Context, c Client, ref string, operation 
 	if err != nil {
 		return protocol.SessionLifecycleResult{}, err
 	}
-	return r.lifecycleSelected(ctx, c, client, selected, operation, mode)
+	return r.lifecycleSelected(ctx, c, client, client.InstanceID(), selected, operation, mode)
 }
 
 // LifecycleSelected executes a lifecycle mutation against the exact session
@@ -788,10 +788,10 @@ func (r *Runner) LifecycleSelected(ctx context.Context, c Client, selected Remot
 		SessionID: selected.SessionID, Kind: model.SessionKind(selected.Kind),
 		OwnershipEpoch: selected.OwnershipEpoch, RuntimeGeneration: selected.RuntimeGeneration,
 	}
-	return r.lifecycleSelected(ctx, c, client, summary, operation, mode)
+	return r.lifecycleSelected(ctx, c, client, selected.InstanceID, summary, operation, mode)
 }
 
-func (r *Runner) lifecycleSelected(ctx context.Context, c Client, client *daemon.Client, selected protocol.SessionSummary, operation protocol.SessionLifecycleOperation, mode protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
+func (r *Runner) lifecycleSelected(ctx context.Context, c Client, client *daemon.Client, expectedInstance string, selected protocol.SessionSummary, operation protocol.SessionLifecycleOperation, mode protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error) {
 	mode, err := normalizeLifecycleMode(selected.Kind, operation, mode)
 	if err != nil {
 		return protocol.SessionLifecycleResult{}, err
@@ -799,6 +799,9 @@ func (r *Runner) lifecycleSelected(ctx context.Context, c Client, client *daemon
 	requestID := uuid.NewString()
 	request := protocol.SessionLifecycleRequest{Operation: operation, Mode: mode}
 	for {
+		if expectedInstance == "" || client.InstanceID() != expectedInstance {
+			return protocol.SessionLifecycleResult{}, fmt.Errorf("host instance changed; reopen the lifecycle action")
+		}
 		result, callErr := client.LifecycleSessionWithID(ctx, requestID, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, request)
 		if callErr == nil {
 			if result.State == protocol.SessionLifecycleCompleted {
@@ -856,8 +859,34 @@ func (r *Runner) Yield(ctx context.Context, c Client, ref string, wait bool) (pr
 	if err != nil {
 		return protocol.SessionYieldResult{}, err
 	}
+	return r.yieldSelected(ctx, c, client, client.InstanceID(), selected, wait)
+}
+
+// YieldSelected transfers ownership only for the exact instance/session
+// revision displayed by Ducklord's action menu.
+func (r *Runner) YieldSelected(ctx context.Context, c Client, selected RemoteSession, wait bool) (protocol.SessionYieldResult, error) {
+	if r == nil || !r.hasOwner() {
+		return protocol.SessionYieldResult{}, fmt.Errorf("ducklord owner is not configured")
+	}
+	if selected.InstanceID == "" || selected.SessionID == "" || selected.Client != c.Name {
+		return protocol.SessionYieldResult{}, fmt.Errorf("invalid selected session identity")
+	}
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return protocol.SessionYieldResult{}, err
+	}
+	summary := protocol.SessionSummary{SessionID: selected.SessionID, Kind: model.SessionKind(selected.Kind),
+		OwnershipEpoch: selected.OwnershipEpoch, RuntimeGeneration: selected.RuntimeGeneration}
+	return r.yieldSelected(ctx, c, client, selected.InstanceID, summary, wait)
+}
+
+func (r *Runner) yieldSelected(ctx context.Context, c Client, client *daemon.Client, expectedInstance string, selected protocol.SessionSummary, wait bool) (protocol.SessionYieldResult, error) {
 	operationID := uuid.NewString()
+	var err error
 	for attempt := 0; attempt < 2; attempt++ {
+		if expectedInstance == "" || client.InstanceID() != expectedInstance {
+			return protocol.SessionYieldResult{}, fmt.Errorf("host instance changed; reopen the yield action")
+		}
 		result, callErr := client.YieldSessionWithID(ctx, operationID, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, wait)
 		if callErr == nil {
 			return result, nil

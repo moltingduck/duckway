@@ -814,6 +814,8 @@ Inside the TUI:
 - `a` adds a host entry from `~/.ssh/config`; use `client-c`
 - `d` removes the selected host entry from the current `config.yaml`
 - `c` creates an agent or shell session with the type-specific wizard
+- `m` opens the centered session action menu; unavailable actions remain visible
+  with their reason, and destructive lifecycle actions require confirmation
 - `n` configures notifications for the selected session
 - `E`, `R`, and `X` confirm end, restart, and destroy
 - `q` exits

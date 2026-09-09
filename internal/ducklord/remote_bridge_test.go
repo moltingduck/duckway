@@ -48,6 +48,31 @@ func TestNormalizeNativeShellLifecycleMode(t *testing.T) {
 	}
 }
 
+func TestRunnerSelectedMutationsRejectChangedDucklionInstance(t *testing.T) {
+	root := t.TempDir()
+	server, err := daemon.Open(context.Background(), daemon.Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	t.Setenv("DUCKLORD_TEST_BRIDGE_HELPER", "1")
+	t.Setenv("DUCKLORD_TEST_SOCKET", server.SocketPath())
+	runner := NewRunner()
+	defer runner.Close()
+	runner.SetOwner("desk-a")
+	client := Client{Name: "local", Host: "ignored", SSH: os.Args[0], Ducklion: "ignored"}
+	selected := RemoteSession{Client: "local", InstanceID: "different-instance", SessionID: "ABC123", Kind: string(model.KindAgent), OwnershipEpoch: 1, RuntimeGeneration: 1}
+
+	if _, err := runner.LifecycleSelected(context.Background(), client, selected, protocol.SessionLifecycleDestroy, protocol.SessionLifecycleImmediate); err == nil || !strings.Contains(err.Error(), "host instance changed") {
+		t.Fatalf("lifecycle instance fence error=%v", err)
+	}
+	if _, err := runner.YieldSelected(context.Background(), client, selected, false); err == nil || !strings.Contains(err.Error(), "host instance changed") {
+		t.Fatalf("yield instance fence error=%v", err)
+	}
+}
+
 func TestMain(m *testing.M) {
 	if os.Getenv("DUCKLORD_TEST_BRIDGE_HELPER") == "1" {
 		var output io.Writer = os.Stdout

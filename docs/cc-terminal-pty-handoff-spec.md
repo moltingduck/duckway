@@ -2994,7 +2994,7 @@ Status: Decided
 
 ## 172. Ducklord session action menu
 
-Status: Decided
+Status: Implemented
 
 - From the session list, Ducklord provides a local action menu for the selected
   session with attach, immediate yield, waiting yield, restart, waiting restart,
@@ -3013,6 +3013,11 @@ Status: Decided
   request even when Ducklord displayed it as enabled.
 - An action rejected due to a concurrent state change reports the current state
   and does not cause Ducklord to retry or substitute another mode automatically.
+- The real-terminal `scripts/ducklord-tui-e2e.sh` opens this modal through a
+  native PTY, restarts a shell through its stable action key, verifies the
+  runtime-generation transition, checks destructive cancellation, then destroys
+  the exact session and verifies its removal. Unit and bridge tests cover
+  owner/task/adapter availability plus fail-closed instance fencing.
 
 ## 173. Ducklord-created agent sessions and Discord binding
 

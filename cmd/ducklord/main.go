@@ -35,6 +35,7 @@ type remoteRunner interface {
 	Lifecycle(context.Context, ducklord.Client, string, protocol.SessionLifecycleOperation, protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error)
 	LifecycleSelected(context.Context, ducklord.Client, ducklord.RemoteSession, protocol.SessionLifecycleOperation, protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error)
 	Yield(context.Context, ducklord.Client, string, bool) (protocol.SessionYieldResult, error)
+	YieldSelected(context.Context, ducklord.Client, ducklord.RemoteSession, bool) (protocol.SessionYieldResult, error)
 	Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error)
 	Agents(context.Context, ducklord.Client, string) ([]ducklord.RemoteAgent, error)
 	ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error)
@@ -1149,8 +1150,14 @@ type tuiState struct {
 	notificationMode          bool
 	notificationIndex         int
 	notificationStaged        map[model.NotificationCategory]bool
+	actionMenu                bool
+	actionIndex               int
+	actionTarget              ducklord.RemoteSession
+	actionOperation           protocol.SessionLifecycleOperation
+	actionMode                protocol.SessionLifecycleMode
 	lifecycleConfirm          protocol.SessionLifecycleOperation
 	lifecycleTarget           ducklord.RemoteSession
+	lifecycleMode             protocol.SessionLifecycleMode
 	lifecycleBusy             bool
 }
 
@@ -1538,6 +1545,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			state.render(os.Stdout)
 		case b := <-input:
+			var selectedActionTarget *ducklord.RemoteSession
 			if state.focused {
 				if isDetachInput(b) {
 					state.saveCurrentSnapshot()
@@ -1647,25 +1655,83 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			if state.actionMenu {
+				action := state.handleActionMenuInput(b)
+				state.render(os.Stdout)
+				if action == "" {
+					continue
+				}
+				if action == "cancel" {
+					continue
+				}
+				// Selection is rebound to the exact captured identity before the
+				// ordinary dispatch path runs. A stale menu always fails closed.
+				if !state.selectActionTarget() {
+					state.outputErr = "session changed while action menu was open; reopen the menu"
+					state.actionTarget = ducklord.RemoteSession{}
+					state.actionOperation, state.actionMode = "", ""
+					state.render(os.Stdout)
+					continue
+				}
+				target := state.actionTarget
+				selectedActionTarget = &target
+				state.actionTarget = ducklord.RemoteSession{}
+				if action == "lifecycle-action" {
+					if state.lifecycleBusy {
+						state.actionOperation, state.actionMode = "", ""
+						state.outputErr = "another lifecycle operation is still pending; wait for its result"
+						state.render(os.Stdout)
+						continue
+					}
+					state.lifecycleConfirm = state.actionOperation
+					state.lifecycleMode = state.actionMode
+					state.lifecycleTarget = target
+					state.actionOperation, state.actionMode = "", ""
+					state.render(os.Stdout)
+					continue
+				}
+				if action == "notifications-action" {
+					state.beginNotificationSettings()
+					state.render(os.Stdout)
+					continue
+				}
+				// Attach and yield reuse the canonical handlers below.
+				b = nil
+				switch action {
+				case "attach":
+					b = []byte("\r")
+				case "yield":
+					b = []byte("y")
+				case "yield-wait":
+					b = []byte("Y")
+				}
+			}
 			if state.lifecycleConfirm != "" {
 				text := string(b)
 				if text == "\x1b" || text == "q" {
 					state.lifecycleConfirm = ""
 					state.lifecycleTarget = ducklord.RemoteSession{}
+					state.lifecycleMode = ""
 					state.render(os.Stdout)
 					continue
 				}
-				mode := protocol.SessionLifecycleImmediate
+				mode := state.lifecycleMode
 				sess := state.lifecycleTarget
-				if sess.Kind != string(model.KindShell) && state.lifecycleConfirm == protocol.SessionLifecycleRestart {
+				if mode == "" && sess.Kind != string(model.KindShell) && state.lifecycleConfirm == protocol.SessionLifecycleRestart {
 					mode = protocol.SessionLifecycleWait
+				}
+				if mode == "" {
+					mode = protocol.SessionLifecycleImmediate
 				}
 				if sess.Kind == string(model.KindShell) && text != "\r" && text != "\n" {
 					continue
 				}
-				if text == "w" && state.lifecycleConfirm != protocol.SessionLifecycleRestart {
+				if state.lifecycleMode != "" && text != "\r" && text != "\n" {
+					continue
+				}
+				if state.lifecycleMode == "" && text == "w" && state.lifecycleConfirm != protocol.SessionLifecycleRestart {
 					mode = protocol.SessionLifecycleWait
-				} else if text == "f" {
+				} else if state.lifecycleMode == "" && text == "f" {
 					mode = protocol.SessionLifecycleForce
 				} else if text != "\r" && text != "\n" {
 					continue
@@ -1674,6 +1740,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.outputErr = "session changed while awaiting confirmation; reopen the lifecycle action"
 					state.lifecycleConfirm = ""
 					state.lifecycleTarget = ducklord.RemoteSession{}
+					state.lifecycleMode = ""
 					state.render(os.Stdout)
 					continue
 				}
@@ -1688,6 +1755,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.lifecycleBusy = true
 				state.lifecycleConfirm = ""
 				state.lifecycleTarget = ducklord.RemoteSession{}
+				state.lifecycleMode = ""
 				state.outputErr = string(operation) + " accepted; Ducklion will continue it across reconnects"
 				go func() {
 					result, err := runner.LifecycleSelected(ctx, client, sess, operation, mode)
@@ -1721,6 +1789,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.beginCreate()
 			case "notifications":
 				state.beginNotificationSettings()
+			case "actions":
+				state.beginActionMenu()
 			case "end", "restart", "destroy":
 				if state.lifecycleBusy {
 					state.outputErr = "another lifecycle operation is still pending; wait for its result"
@@ -1737,6 +1807,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 				state.lifecycleConfirm = protocol.SessionLifecycleOperation(action)
 				state.lifecycleTarget = sess
+				state.lifecycleMode = ""
 				state.outputErr = ""
 			case "add-client":
 				state.beginAddClient()
@@ -1758,11 +1829,16 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.outputErr = err.Error()
 					break
 				}
-				ref := sess.SessionID
-				if ref == "" {
-					ref = sess.Name
+				var result protocol.SessionYieldResult
+				if selectedActionTarget != nil {
+					result, err = runner.YieldSelected(ctx, client, *selectedActionTarget, action == "yield-wait")
+				} else {
+					ref := sess.SessionID
+					if ref == "" {
+						ref = sess.Name
+					}
+					result, err = runner.Yield(ctx, client, ref, action == "yield-wait")
 				}
-				result, err := runner.Yield(ctx, client, ref, action == "yield-wait")
 				if err != nil {
 					state.outputErr = err.Error()
 					break
@@ -2371,9 +2447,11 @@ func (s *tuiState) render(out io.Writer) {
 		fmt.Fprintln(out, truncate("add ducklion host: ssh config number/name or user@host  enter add  esc cancel", renderWidth))
 	} else if s.newSessionMode {
 		fmt.Fprintln(out, truncate(s.createHeader()+"  enter next  esc cancel", renderWidth))
+	} else if s.actionMenu {
+		fmt.Fprintln(out, truncate("session actions  ↑/↓ or j/k move  enter choose  esc close", renderWidth))
 	} else if s.lifecycleConfirm != "" {
 		verb := string(s.lifecycleConfirm)
-		if s.currentSession().Kind == string(model.KindShell) {
+		if s.lifecycleTarget.Kind == string(model.KindShell) {
 			fmt.Fprintln(out, truncate(verb+" shell session now?  enter terminate process immediately  esc cancel", renderWidth))
 		} else if s.lifecycleConfirm == protocol.SessionLifecycleRestart {
 			fmt.Fprintln(out, truncate("restart selected session?  enter wait for idle  f force-cancel task  esc cancel", renderWidth))
@@ -2381,9 +2459,9 @@ func (s *tuiState) render(out io.Writer) {
 			fmt.Fprintln(out, truncate(verb+" selected session?  enter now  w wait for idle  f force-cancel task  esc cancel", renderWidth))
 		}
 	} else if s.hostScoped {
-		fmt.Fprintln(out, truncate("j/k move  enter focus  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k move  enter focus  m actions  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
 	} else {
-		fmt.Fprintln(out, truncate("j/k move  enter focus  y/Y yield  E end  R restart  X destroy  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k move  enter focus  m actions  y/Y yield  E end  R restart  X destroy  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
@@ -2391,6 +2469,7 @@ func (s *tuiState) render(out io.Writer) {
 		s.renderAddClientChoices(out, 5, 1, menuWidth, height)
 		s.renderAddClientPrompt(out, 4, 1, renderWidth)
 		s.renderCreateModal(out, width, modalHeight)
+		s.renderActionModal(out, width, modalHeight)
 		return
 	}
 	if layout.overlay {
@@ -2476,6 +2555,7 @@ func (s *tuiState) render(out io.Writer) {
 	}
 	s.renderAddClientPrompt(out, height, 1, renderWidth)
 	s.renderCreateModal(out, width, modalHeight)
+	s.renderActionModal(out, width, modalHeight)
 	if s.focused && s.terminal != nil && !s.outputStale {
 		if cursorRow, cursorCol, visible := s.terminal.CursorPosition(height-5, contentWidth); visible {
 			fmt.Fprintf(out, "\033[%d;%dH\033[?25h", 6+cursorRow, contentX+cursorCol)
@@ -2549,7 +2629,97 @@ const (
 	modalStatus   = "\033[38;2;250;204;21m"
 	modalInput    = "\033[38;2;167;243;208m"
 	modalSelected = "\033[1;38;2;255;255;255;48;2;37;99;235m"
+	modalDisabled = "\033[38;2;100;116;139m"
+	modalDanger   = "\033[1;38;2;255;255;255;48;2;190;24;93m"
 )
+
+type sessionAction struct {
+	ID             string
+	Key            string
+	Label          string
+	Enabled        bool
+	DisabledReason string
+	Danger         bool
+	Operation      protocol.SessionLifecycleOperation
+	Mode           protocol.SessionLifecycleMode
+}
+
+func actionOwnerLabel(session ducklord.RemoteSession) string {
+	if session.Kind == string(model.KindShell) {
+		return "shared"
+	}
+	if session.WriterID == "" {
+		return "none"
+	}
+	return session.WriterKind + ":" + session.WriterID
+}
+
+func (s *tuiState) sessionActions(session ducklord.RemoteSession) []sessionAction {
+	live := session.SessionID != "" && s.hostIsLive(session.Client)
+	attachEnabled := live && canAttach(session)
+	attachLabel := "Open PTY"
+	if session.Kind == string(model.KindAgent) && (session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName) {
+		attachLabel = "View PTY (read-only)"
+	}
+	actions := []sessionAction{{ID: "attach", Key: "o", Label: attachLabel, Enabled: attachEnabled, DisabledReason: "session is not running or host is reconnecting"}}
+	if session.Kind == string(model.KindAgent) {
+		adapterHealthy := session.AdapterState == string(model.AdapterHealthy)
+		nonOwner := session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName
+		yieldReady := live && adapterHealthy && nonOwner
+		actions = append(actions,
+			sessionAction{ID: "yield", Key: "y", Label: "Yield control now", Enabled: yieldReady && session.TaskState == string(model.TaskIdle), DisabledReason: actionDisabledReason(live, adapterHealthy, nonOwner, session.TaskState == string(model.TaskIdle))},
+			sessionAction{ID: "yield-wait", Key: "Y", Label: "Yield when idle", Enabled: yieldReady, DisabledReason: actionDisabledReason(live, adapterHealthy, nonOwner, true)},
+		)
+	}
+	actions = append(actions, sessionAction{ID: "notifications", Key: "n", Label: "Notification settings", Enabled: session.InstanceID != "" && session.SessionID != "", DisabledReason: "session identity is unavailable"})
+	lifecycleEnabled := live && !s.lifecycleBusy && (session.Kind == string(model.KindShell) || session.WriterKind == string(model.OwnerTerminal) && session.WriterID == s.ownerName)
+	lifecycleReason := "host is reconnecting"
+	if s.lifecycleBusy {
+		lifecycleReason = "another lifecycle operation is pending"
+	} else if live && session.Kind == string(model.KindAgent) {
+		lifecycleReason = "yield control to this Ducklord first"
+	}
+	addLifecycle := func(id, key, label string, operation protocol.SessionLifecycleOperation, mode protocol.SessionLifecycleMode, allowed bool, danger bool) {
+		reason := lifecycleReason
+		if lifecycleEnabled && !allowed {
+			reason = "current task or adapter state does not support this mode"
+		}
+		actions = append(actions, sessionAction{ID: id, Key: key, Label: label, Enabled: lifecycleEnabled && allowed, DisabledReason: reason, Danger: danger, Operation: operation, Mode: mode})
+	}
+	if session.Kind == string(model.KindShell) {
+		addLifecycle("restart", "r", "Restart shell immediately", protocol.SessionLifecycleRestart, protocol.SessionLifecycleImmediate, true, false)
+		addLifecycle("end", "e", "End shell immediately", protocol.SessionLifecycleEnd, protocol.SessionLifecycleImmediate, true, true)
+		addLifecycle("destroy", "x", "Destroy shell and logs", protocol.SessionLifecycleDestroy, protocol.SessionLifecycleImmediate, true, true)
+		return actions
+	}
+	idle := session.TaskState == string(model.TaskIdle)
+	adapterHealthy := session.AdapterState == string(model.AdapterHealthy)
+	addLifecycle("restart", "r", "Restart now", protocol.SessionLifecycleRestart, protocol.SessionLifecycleImmediate, idle, false)
+	addLifecycle("restart-wait", "", "Restart when idle", protocol.SessionLifecycleRestart, protocol.SessionLifecycleWait, adapterHealthy, false)
+	addLifecycle("restart-force", "", "Restart and force-cancel task", protocol.SessionLifecycleRestart, protocol.SessionLifecycleForce, adapterHealthy, true)
+	addLifecycle("end", "e", "End now", protocol.SessionLifecycleEnd, protocol.SessionLifecycleImmediate, idle, true)
+	addLifecycle("end-wait", "", "End when idle", protocol.SessionLifecycleEnd, protocol.SessionLifecycleWait, adapterHealthy, true)
+	addLifecycle("end-force", "", "End and force-cancel task", protocol.SessionLifecycleEnd, protocol.SessionLifecycleForce, adapterHealthy, true)
+	addLifecycle("destroy", "x", "Destroy now", protocol.SessionLifecycleDestroy, protocol.SessionLifecycleImmediate, idle, true)
+	addLifecycle("destroy-wait", "", "Destroy when idle", protocol.SessionLifecycleDestroy, protocol.SessionLifecycleWait, adapterHealthy, true)
+	addLifecycle("destroy-force", "", "Destroy and force-cancel task", protocol.SessionLifecycleDestroy, protocol.SessionLifecycleForce, adapterHealthy, true)
+	return actions
+}
+
+func actionDisabledReason(live, adapterHealthy, nonOwner, idle bool) string {
+	switch {
+	case !live:
+		return "host is reconnecting"
+	case !adapterHealthy:
+		return "agent adapter is not healthy"
+	case !nonOwner:
+		return "this Ducklord already controls the session"
+	case !idle:
+		return "agent task is running; use Yield when idle"
+	default:
+		return "unavailable"
+	}
+}
 
 func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 	if !s.newSessionMode || cols < 8 || rows < 3 {
@@ -2615,6 +2785,78 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 	writeRow(top+3+len(choices), modalInput, prompt)
 	writeRow(top+4+len(choices), modalMuted, "  ↑/↓ select   Enter continue   Esc cancel")
 	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+5+len(choices), left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+}
+
+func (s *tuiState) renderActionModal(out io.Writer, cols, rows int) {
+	if !s.actionMenu || cols < 8 || rows < 3 {
+		return
+	}
+	actions := s.sessionActions(s.actionTarget)
+	if len(actions) == 0 {
+		return
+	}
+	selected := min(max(s.actionIndex, 0), len(actions)-1)
+	if cols < 20 || rows < 7 {
+		action := actions[selected]
+		text := "› " + action.Label
+		style := modalSelected
+		if !action.Enabled {
+			style = modalDisabled
+		} else if action.Danger {
+			style = modalDanger
+		}
+		fmt.Fprintf(out, "\033[%d;1H%s%s%s\033[K", max(1, rows/2), modalTitle, modalCellTruncate("[ Session actions ]", cols), modalReset)
+		fmt.Fprintf(out, "\033[%d;1H%s%s%s\033[K", min(rows, max(1, rows/2)+1), style, modalCellTruncate(text, cols), modalReset)
+		return
+	}
+	boxWidth := min(72, cols-4)
+	innerWidth := boxWidth - 2
+	maxChoices := max(1, rows-7)
+	start := 0
+	if len(actions) > maxChoices {
+		start = max(0, selected-maxChoices/2)
+		start = min(start, len(actions)-maxChoices)
+	}
+	end := min(len(actions), start+maxChoices)
+	visible := actions[start:end]
+	visibleSelected := selected - start
+	boxHeight := len(visible) + 6
+	top := max(1, (rows-boxHeight)/2+1)
+	left := max(1, (cols-boxWidth)/2+1)
+	writeRow := func(row int, style, value string) {
+		value = modalCellPad(modalCellTruncate(modalDisplayText(value), innerWidth), innerWidth)
+		fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", row, left, modalBorder, style, value, modalReset+modalBorder, modalReset)
+	}
+	fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+	title := fmt.Sprintf("  Session actions · %s / %s", s.actionTarget.Client, s.actionTarget.Name)
+	writeRow(top+1, modalTitle, title)
+	for i, action := range visible {
+		prefix, style := "  ", ""
+		if !action.Enabled {
+			style = modalDisabled
+		}
+		if i == visibleSelected {
+			prefix = "› "
+			if action.Enabled && action.Danger {
+				style = modalDanger
+			} else if action.Enabled {
+				style = modalSelected
+			}
+		}
+		label := action.Label
+		if action.Key != "" {
+			label = "[" + action.Key + "] " + label
+		}
+		writeRow(top+2+i, style, prefix+label)
+	}
+	status := fmt.Sprintf("  %s · %s · owner %s", s.actionTarget.Kind, s.actionTarget.Status, actionOwnerLabel(s.actionTarget))
+	if !actions[selected].Enabled {
+		status = "  unavailable: " + actions[selected].DisabledReason
+	}
+	writeRow(top+2+len(visible), modalStatus, status)
+	writeRow(top+3+len(visible), modalMuted, "  ↑/↓ or j/k select   Enter choose   Esc close")
+	writeRow(top+4+len(visible), modalMuted, fmt.Sprintf("  ID %s · generation %d", s.actionTarget.SessionID, s.actionTarget.RuntimeGeneration))
+	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+5+len(visible), left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
 }
 
 func (s *tuiState) createModalChoices() []string {
@@ -2786,17 +3028,14 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 
 func (s *tuiState) lifecycleTargetIsCurrent() bool {
 	target := s.lifecycleTarget
-	if target.Client == "" || target.InstanceID == "" || target.SessionID == "" {
+	if target.Client == "" || target.InstanceID == "" || target.SessionID == "" || !s.hostIsLive(target.Client) {
 		return false
 	}
 	for _, session := range s.sessions {
 		if session.Client != target.Client || session.InstanceID != target.InstanceID || session.SessionID != target.SessionID {
 			continue
 		}
-		return session.Kind == target.Kind &&
-			session.WriterKind == target.WriterKind && session.WriterID == target.WriterID &&
-			session.OwnershipEpoch == target.OwnershipEpoch &&
-			session.RuntimeGeneration == target.RuntimeGeneration
+		return sameSessionRevision(session, target)
 	}
 	return false
 }
@@ -2864,6 +3103,113 @@ func (s *tuiState) beginNotificationSettings() {
 	for _, category := range model.NotificationCategories() {
 		s.notificationStaged[category] = s.activity().Enabled(session.InstanceID, session.SessionID, category)
 	}
+}
+
+func (s *tuiState) beginActionMenu() {
+	if len(s.sessions) == 0 || s.selected < 0 || s.selected >= len(s.sessions) {
+		s.outputErr = "no session selected"
+		return
+	}
+	target := s.sessions[s.selected]
+	if target.InstanceID == "" || target.SessionID == "" {
+		s.outputErr = "session identity is unavailable while the host reconnects"
+		return
+	}
+	s.actionMenu = true
+	s.actionTarget = target
+	s.actionIndex = 0
+	s.actionOperation, s.actionMode = "", ""
+	s.outputErr = ""
+}
+
+func (s *tuiState) closeActionMenu() {
+	s.actionMenu = false
+	s.actionIndex = 0
+	s.actionTarget = ducklord.RemoteSession{}
+	s.actionOperation, s.actionMode = "", ""
+}
+
+func (s *tuiState) handleActionMenuInput(input []byte) string {
+	actions := s.sessionActions(s.actionTarget)
+	if len(actions) == 0 {
+		s.closeActionMenu()
+		return "cancel"
+	}
+	s.actionIndex = min(max(s.actionIndex, 0), len(actions)-1)
+	text := string(input)
+	for index, action := range actions {
+		if action.Key != "" && text == action.Key && action.Enabled {
+			s.actionIndex = index
+			return s.chooseActionMenuItem(action)
+		}
+	}
+	switch text {
+	case "\x1b", "q":
+		s.closeActionMenu()
+		return "cancel"
+	case "j", "\x1b[B":
+		for next := s.actionIndex + 1; next < len(actions); next++ {
+			if actions[next].Enabled {
+				s.actionIndex = next
+				break
+			}
+		}
+	case "k", "\x1b[A":
+		for next := s.actionIndex - 1; next >= 0; next-- {
+			if actions[next].Enabled {
+				s.actionIndex = next
+				break
+			}
+		}
+	case "\r", "\n":
+		action := actions[s.actionIndex]
+		if !action.Enabled {
+			return ""
+		}
+		return s.chooseActionMenuItem(action)
+	}
+	return ""
+}
+
+func (s *tuiState) chooseActionMenuItem(action sessionAction) string {
+	switch action.ID {
+	case "attach", "yield", "yield-wait":
+		s.actionMenu = false
+		s.actionOperation, s.actionMode = action.Operation, action.Mode
+		return action.ID
+	case "notifications":
+		s.actionMenu = false
+		s.actionOperation, s.actionMode = action.Operation, action.Mode
+		return "notifications-action"
+	default:
+		if action.Operation != "" {
+			s.actionMenu = false
+			s.actionOperation, s.actionMode = action.Operation, action.Mode
+			return "lifecycle-action"
+		}
+		return ""
+	}
+}
+
+func sameSessionRevision(left, right ducklord.RemoteSession) bool {
+	return left.Client == right.Client && left.InstanceID == right.InstanceID && left.SessionID == right.SessionID &&
+		left.Kind == right.Kind && left.WriterKind == right.WriterKind && left.WriterID == right.WriterID &&
+		left.OwnershipEpoch == right.OwnershipEpoch && left.RuntimeGeneration == right.RuntimeGeneration &&
+		left.Status == right.Status && left.TaskState == right.TaskState && left.AdapterState == right.AdapterState
+}
+
+func (s *tuiState) selectActionTarget() bool {
+	if !s.hostIsLive(s.actionTarget.Client) {
+		return false
+	}
+	for i, session := range s.sessions {
+		if sameSessionRevision(session, s.actionTarget) {
+			s.selected = i
+			s.selectedKey = sessionKey(session)
+			return true
+		}
+	}
+	return false
 }
 
 func (s *tuiState) handleNotificationInput(input []byte) string {
@@ -2953,6 +3299,8 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "new"
 	case text == "n":
 		return "notifications"
+	case text == "m":
+		return "actions"
 	case text == "a" && !s.hostScoped:
 		return "add-client"
 	case text == "d" && !s.hostScoped:

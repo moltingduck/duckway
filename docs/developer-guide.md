@@ -975,6 +975,9 @@ Inside the TUI:
   follows `host -> configured project or Ducklion default -> handle`. Empty
   handles use the folder name. Discovery is cancellable and final choices are
   revalidated before creation.
+- `m` opens the centered action menu for the selected session. It derives
+  attach, yield, notification, and lifecycle availability from synchronized
+  owner/task/adapter/host state. Ducklion still performs final authorization.
 - `n` opens per-session notification settings; changes are staged until Enter.
 - `Enter` or right-click focuses the selected PTY session.
 - `Ctrl-]` returns focus to the left menu.
