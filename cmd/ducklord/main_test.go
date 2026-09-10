@@ -1060,14 +1060,14 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 	state := &tuiState{hostSync: make(map[string]ducklord.SessionUpdate), activityState: ducklord.NewActivityState(),
 		activityStore: ducklord.ActivityStateStore{Path: statePath}, outputForKey: "host-a/" + instance + "/ABC123", outputFresh: true,
 		sessions: []ducklord.RemoteSession{
-			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "ABC123", Name: "active"},
-			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "DEF456", Name: "background"},
+			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "ABC123", Name: "active", RuntimeGeneration: 1},
+			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "DEF456", Name: "background", RuntimeGeneration: 1},
 		}}
 	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Revision: 2, Generation: 1, State: "live", ChangedSessionID: "DEF456",
 		Sessions: []ducklord.RemoteSession{
-			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "ABC123", Name: "active"},
+			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "ABC123", Name: "active", RuntimeGeneration: 1},
 			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "DEF456", Name: "background",
-				ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTerminalAttention: 1}},
+				RuntimeGeneration: 1, ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTerminalAttention: 1}},
 		}})
 	if state.sessions[0].Unread || !state.sessions[1].Unread || !state.groupHasUnread(ducklord.UngroupedGroupID) {
 		t.Fatalf("unread projection=%+v", state.sessions)
@@ -1092,6 +1092,33 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 	}
 	if loaded.Sessions[instance+"/DEF456"].Seen[model.NotificationTerminalAttention] != 1 {
 		t.Fatalf("seen state=%+v", loaded.Sessions)
+	}
+}
+
+func TestTUICopyModeKeepsBackgroundActivityUnreadUntilLatestFrameIsRevealed(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	session := ducklord.RemoteSession{
+		Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "agent", Status: "running",
+		RuntimeGeneration: 1, Unread: true,
+		ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTaskCompleted: 1},
+	}
+	state := &tuiState{
+		activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")},
+		sessions: []ducklord.RemoteSession{session}, focused: true, copyMode: true,
+		outputForKey: sessionKey(session), activeAttachKey: sessionKey(session),
+		terminal: ducklord.NewTerminal(24, 80, ducklord.DefaultTerminalScrollback), terminalGeneration: 1,
+	}
+	state.applyAttachOutput("completed while copying\n", 1, 24)
+	if !state.currentSession().Unread || state.activity().Sessions[instance+"/ABC123"].Seen[model.NotificationTaskCompleted] != 0 {
+		t.Fatalf("hidden output was marked seen: session=%+v activity=%+v", state.currentSession(), state.activity())
+	}
+	state.copyMode = false
+	if !state.sessionFreshlyDisplayed(state.currentSession()) {
+		t.Fatal("latest frame was not considered visible after leaving copy mode")
+	}
+	state.markActivitySeen(state.currentSession())
+	if state.currentSession().Unread || state.activity().Sessions[instance+"/ABC123"].Seen[model.NotificationTaskCompleted] != 1 {
+		t.Fatalf("revealed output stayed unread: session=%+v activity=%+v", state.currentSession(), state.activity())
 	}
 }
 
@@ -2065,6 +2092,61 @@ func TestTUIRightClickContentPaneKeepsSelectionButAttaches(t *testing.T) {
 	}
 }
 
+func TestTUICopyModeShortcutAndFrozenRender(t *testing.T) {
+	state := &tuiState{sessions: []ducklord.RemoteSession{{Name: "agent"}}}
+	if action := state.handleInput([]byte("v")); action != "copy-mode" {
+		t.Fatalf("copy shortcut action=%q", action)
+	}
+	state.copyMode = true
+	var output bytes.Buffer
+	state.render(&output)
+	if output.Len() != 0 {
+		t.Fatalf("copy mode redraw disturbed terminal selection: %q", output.String())
+	}
+}
+
+func TestTUICopyModeTransitionsAndInputIsolation(t *testing.T) {
+	state := &tuiState{}
+	var output bytes.Buffer
+	state.enterCopyMode(&output)
+	if !state.copyMode || !strings.Contains(output.String(), "\033[?1000l\033[?1006l") || !strings.Contains(output.String(), "COPY MODE") {
+		t.Fatalf("enter copy mode output=%q state=%v", output.String(), state.copyMode)
+	}
+	before := output.String()
+	state.enterCopyMode(&output)
+	if output.String() != before {
+		t.Fatal("enter copy mode was not idempotent")
+	}
+	for _, input := range [][]byte{[]byte("x"), []byte("\x1bq"), []byte("\x1bc"), []byte("\x1b[A"), []byte("\x1b[<0;2;7M"), []byte("\x1b[<0;2;7m")} {
+		if copyModeExitInput(input) {
+			t.Fatalf("ordinary copy-mode input %q exited", input)
+		}
+	}
+	for _, input := range [][]byte{[]byte("q"), []byte("v"), []byte("\x03"), []byte("\x1b")} {
+		if !copyModeExitInput(input) {
+			t.Fatalf("copy-mode exit input %q was ignored", input)
+		}
+	}
+	state.exitCopyMode(&output)
+	if state.copyMode || !strings.Contains(output.String(), "\033[?1006h\033[?1000h") {
+		t.Fatalf("exit copy mode output=%q state=%v", output.String(), state.copyMode)
+	}
+	before = output.String()
+	state.exitCopyMode(&output)
+	if output.String() != before {
+		t.Fatal("exit copy mode was not idempotent")
+	}
+}
+
+func TestNextInputEventKeepsAltChordAtomic(t *testing.T) {
+	for _, chord := range []string{"\x1bq", "\x1bc", "\x1b界"} {
+		event, rest, ok := nextInputEvent([]byte(chord))
+		if !ok || string(event) != chord || len(rest) != 0 {
+			t.Fatalf("chord=%q event=%q rest=%q ok=%v", chord, event, rest, ok)
+		}
+	}
+}
+
 func TestCreateModalIsCenteredColoredAndSanitizesRemoteLabels(t *testing.T) {
 	states := []*tuiState{
 		{newSessionMode: true, newSessionStep: "host", cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host\nspoof", Host: "target\tbad"}}}},
@@ -2431,6 +2513,19 @@ func TestTUILeftClickContentPaneKeepsSelectionButAttaches(t *testing.T) {
 	}
 	if action := state.handleInput([]byte("\x1b[<0;70;7m")); action != "" {
 		t.Fatalf("mouse release action = %q", action)
+	}
+}
+
+func TestTUIMouseReleaseNeverTriggersSessionAction(t *testing.T) {
+	state := &tuiState{sessions: []ducklord.RemoteSession{
+		{Client: "client-a", Name: "alpha", Status: "running", AgentType: "shell", Group: "lab"},
+		{Client: "client-b", Name: "beta", Status: "running", AgentType: "shell", Group: "lab"},
+	}}
+	for _, release := range []string{"\x1b[<0;2;7m", "\x1b[<2;2;7m", "\x1b[<2;70;7m"} {
+		state.selected = 0
+		if action := state.handleInput([]byte(release)); action != "" || state.selected != 0 {
+			t.Fatalf("release=%q action=%q selected=%d", release, action, state.selected)
+		}
 	}
 }
 

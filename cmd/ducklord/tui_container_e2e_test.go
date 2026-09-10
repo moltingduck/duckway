@@ -65,6 +65,30 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	capture.wait(t, "ducklord remote agents", 20*time.Second)
 	capture.wait(t, "client-a alpha tick", 20*time.Second)
 	capture.waitCurrent(t, "sessions [custom]", 10*time.Second)
+	copyStart := capture.position()
+	writePTY(t, terminal, "v")
+	capture.waitCurrent(t, "COPY MODE", 5*time.Second)
+	if raw := capture.since(copyStart); !strings.Contains(raw, "\033[?1000l\033[?1006l") || !strings.Contains(raw, modalSelected) {
+		t.Fatalf("copy mode did not release mouse tracking with a visible status: %q", safeTerminalDiagnostic(raw))
+	}
+	frozen := capture.currentText()
+	copyMarker := fmt.Sprintf("DUCKLORD_COPY_MODE_%d", os.Getpid())
+	if out, err := exec.Command(runtime, "exec", controller, "ducklord", "send", "client-a", alpha.SessionID, "printf "+copyMarker+"\\n\r", "--config", "/tmp/e2e-inspector.yaml").CombinedOutput(); err != nil {
+		t.Fatalf("inject output while copy mode is frozen: %v: %s", err, out)
+	}
+	waitE2E(t, 10*time.Second, func() bool {
+		out, readErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", alpha.SessionID, "--lines", "20", "--config", "/tmp/e2e-inspector.yaml").CombinedOutput()
+		return readErr == nil && bytes.Contains(out, []byte(copyMarker))
+	}, func() string { return "copy-mode marker never reached the authoritative remote PTY" })
+	// The remote read above proves new PTY output exists before we assert that
+	// Ducklord kept the selectable framebuffer stable.
+	time.Sleep(1200 * time.Millisecond)
+	if current := capture.currentText(); current != frozen {
+		t.Fatalf("copy mode redraw disturbed selectable text: before=%q after=%q", safeTerminalDiagnostic(frozen), safeTerminalDiagnostic(current))
+	}
+	writePTY(t, terminal, "\x1b")
+	capture.waitCurrent(t, "sessions [custom]", 5*time.Second)
+	capture.waitCurrent(t, copyMarker, 10*time.Second)
 	writePTY(t, terminal, "o")
 	capture.waitCurrent(t, "sessions [host]", 2*time.Second)
 	writePTY(t, terminal, "o")
@@ -323,7 +347,10 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 		t.Fatalf("notification modal lacks frame/color: %q", safeTerminalDiagnostic(raw))
 	}
 	writePTY(t, terminal, " \x1b") // toggle, then discard
-	writePTY(t, terminal, "n \r")  // reopen, toggle and save
+	// Let the standalone Escape cross the input parser's ambiguity window;
+	// otherwise one synthetic PTY write can turn Esc+n into an Alt+n chord.
+	time.Sleep(50 * time.Millisecond)
+	writePTY(t, terminal, "n \r") // reopen, toggle and save
 	waitE2E(t, 10*time.Second, func() bool {
 		return exec.Command(runtime, "exec", controller, "sh", "-lc", "test -s /root/.ducklord/state.json && grep -q '"+created.SessionID+"' /root/.ducklord/state.json && grep -q '\"terminal_attention\": true' /root/.ducklord/state.json").Run() == nil
 	}, func() string { return "notification modal did not persist exact session settings" })

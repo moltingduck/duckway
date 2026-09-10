@@ -1,0 +1,51 @@
+# Ducklord quick guide
+
+Start the TUI:
+
+```bash
+ducklord tui
+```
+
+The session list is on the left and the selected PTY is on the right. A bright
+border shows which pane owns keyboard input.
+
+## Everyday controls
+
+| Key | Action |
+| --- | --- |
+| `j` / `k`, `↑` / `↓` | Select a session |
+| `Enter` | Focus the selected PTY |
+| `Ctrl+]` | Return from the PTY to the session list |
+| `v` | Freeze the screen and enter copy mode |
+| `/` | Search sessions |
+| `c` | Create a session |
+| `m` | Open session actions |
+| `n` | Configure notifications |
+| `y` / `Y` | Yield now / wait until idle |
+| `q` | Quit from the session list |
+
+Central dialogs use the same rules: `↑`/`↓` selects, `Enter` continues, `Esc`
+goes back, and `Ctrl+C` closes the dialog. Left and right arrows do nothing, so
+they cannot accidentally dismiss a dialog.
+
+## Copy PTY text
+
+1. Return to the session list with `Ctrl+]` if the PTY is focused.
+2. Press `v`. Ducklord freezes redraws and releases mouse selection.
+3. Drag over the PTY text and use the terminal application's normal Copy action
+   (`Ctrl+Shift+C` on many Linux terminals, `Cmd+C` on macOS).
+4. Press `Esc`, `q`, `v`, or `Ctrl+C` to resume Ducklord.
+
+Copy mode only changes local viewing. It does not detach the PTY or yield its
+writer ownership.
+
+## Create a session
+
+Press `c`, then choose the session type, host, project, and runtime. If the host
+has no saved project, type a remote path and choose a suggestion. The first
+`Enter` completes the path; the second confirms it. You can save the path as a
+Duckway project or use it once. An empty handle uses the light-colored default
+shown in the input box.
+
+Shell sessions are writable like tmux. Agent sessions have one writer; a
+read-only session must be yielded to this Ducklord before it accepts input.

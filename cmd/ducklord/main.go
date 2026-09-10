@@ -28,6 +28,8 @@ import (
 	textwidth "golang.org/x/text/width"
 )
 
+const inputEscapeAmbiguityTimeout = 25 * time.Millisecond
+
 type remoteRunner interface {
 	Sessions(context.Context, ducklord.Client, int) ([]ducklord.RemoteSession, error)
 	Read(context.Context, ducklord.Client, string, int) (string, error)
@@ -1153,6 +1155,7 @@ type tuiState struct {
 	activityStore             ducklord.ActivityStateStore
 	activityState             *ducklord.ActivityState
 	focused                   bool
+	copyMode                  bool
 	newSessionMode            bool
 	newSessionClient          string
 	newSessionLine            string
@@ -1946,6 +1949,16 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.render(os.Stdout)
 		case b := <-input:
 			var selectedActionTarget *ducklord.RemoteSession
+			if state.copyMode {
+				if copyModeExitInput(b) {
+					state.exitCopyMode(os.Stdout)
+					if state.sessionFreshlyDisplayed(state.currentSession()) {
+						state.markActivitySeen(state.currentSession())
+					}
+					state.render(os.Stdout)
+				}
+				continue
+			}
 			if state.focused {
 				if isDetachInput(b) {
 					if outputManager == nil {
@@ -2353,6 +2366,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.beginSearch()
 			case "notifications":
 				state.beginNotificationSettings()
+			case "copy-mode":
+				state.enterCopyMode(os.Stdout)
+				continue
 			case "actions":
 				state.beginActionMenu()
 			case "end", "restart", "destroy":
@@ -2568,7 +2584,7 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 		all[i].LastLine = sanitizeTerminalText(all[i].LastLine)
 		all[i].Error = sanitizeTerminalText(all[i].Error)
 		var changed bool
-		all[i].Unread, changed = s.activity().Reconcile(all[i], sessionKey(all[i]) == s.activeAttachKey && s.activeAttachFresh)
+		all[i].Unread, changed = s.activity().Reconcile(all[i], s.sessionFreshlyDisplayed(all[i]))
 		activityChanged = activityChanged || changed
 	}
 	s.sessions = all
@@ -2732,7 +2748,7 @@ func (s *tuiState) applyPreviewOutput(result previewOutputEvent, currentID uint6
 
 func (s *tuiState) sessionFreshlyDisplayed(session ducklord.RemoteSession) bool {
 	_, identityOK := ducklord.IdentityFromSession(session)
-	return identityOK && !s.centralModalOpen() && s.outputFresh && !s.outputStale && s.terminal != nil &&
+	return identityOK && !s.copyMode && !s.centralModalOpen() && s.outputFresh && !s.outputStale && s.terminal != nil &&
 		canRead(session) && s.hostIsLive(session.Client) && s.outputForKey == sessionKey(session) &&
 		s.terminalGeneration > 0 && s.terminalGeneration == session.RuntimeGeneration
 }
@@ -3348,7 +3364,7 @@ func (s *tuiState) applyAttachOutput(text string, runtimeGeneration, outputOffse
 		s.pendingAttachKey = ""
 	}
 	s.activeAttachFresh = true
-	if sessionKey(s.currentSession()) == s.activeAttachKey {
+	if s.sessionFreshlyDisplayed(s.currentSession()) {
 		s.markActivitySeen(s.currentSession())
 	}
 }
@@ -3530,6 +3546,9 @@ func (s *tuiState) saveSnapshot(session ducklord.RemoteSession, text string) {
 }
 
 func (s *tuiState) render(out io.Writer) {
+	if s.copyMode {
+		return
+	}
 	width, height := terminalSize()
 	modalHeight := height
 	layout := calculateTUILayout(width, s.focused, s.listPaneWidth, s.autoHideList)
@@ -3564,9 +3583,9 @@ func (s *tuiState) render(out io.Writer) {
 	} else if s.lifecycleConfirm != "" {
 		fmt.Fprintln(out, truncate("lifecycle confirmation open; use the modal controls", renderWidth))
 	} else if s.hostScoped {
-		fmt.Fprintln(out, truncate("j/k move  / search  enter focus  o organize  g groups  m actions  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k move  / search  enter focus  v copy  o organize  g groups  m actions  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
 	} else {
-		fmt.Fprintln(out, truncate("j/k move  / search  enter focus  o organize  g groups  m actions  y/Y yield  E end  R restart  X destroy  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k move  / search  enter focus  v copy  o organize  g groups  m actions  y/Y yield  E end  R restart  X destroy  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
@@ -4869,6 +4888,8 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "new"
 	case text == "n":
 		return "notifications"
+	case text == "v":
+		return "copy-mode"
 	case text == "m":
 		return "actions"
 	case text == "a" && !s.hostScoped:
@@ -4889,7 +4910,7 @@ func (s *tuiState) handleInput(b []byte) string {
 			s.selectedKey = s.currentKey()
 			return "select"
 		}
-	case strings.HasPrefix(text, "\x1b[<0;"):
+	case strings.HasPrefix(text, "\x1b[<0;") && strings.HasSuffix(text, "M"):
 		if idx, ok := s.sessionIndexForMouse(text); ok {
 			s.selected = idx
 			s.selectedKey = s.currentKey()
@@ -4898,7 +4919,7 @@ func (s *tuiState) handleInput(b []byte) string {
 		if s.contentPaneClicked(text) {
 			return "attach"
 		}
-	case strings.HasPrefix(text, "\x1b[<2;"):
+	case strings.HasPrefix(text, "\x1b[<2;") && strings.HasSuffix(text, "M"):
 		if idx, ok := s.sessionIndexForMouse(text); ok {
 			s.selected = idx
 			s.selectedKey = s.currentKey()
@@ -4906,6 +4927,33 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "attach"
 	}
 	return ""
+}
+
+func copyModeExitInput(input []byte) bool {
+	text := string(input)
+	return text == "q" || text == "v" || text == "\x03" || text == "\x1b"
+}
+
+func (s *tuiState) enterCopyMode(out io.Writer) {
+	if s.copyMode {
+		return
+	}
+	s.copyMode = true
+	cols, _ := terminalSize()
+	status := modalCellTruncate(" COPY MODE  Drag to select PTY text; use terminal Copy; Esc/q/v/Ctrl+C exits", max(1, cols))
+	// Stop event tracking before disabling its SGR encoding. This hands mouse
+	// drags back to the terminal emulator for native selection.
+	fmt.Fprintf(out, "\033[?1000l\033[?1006l\033[2;1H\033[2K%s%s%s", modalSelected, status, modalReset)
+}
+
+func (s *tuiState) exitCopyMode(out io.Writer) {
+	if !s.copyMode {
+		return
+	}
+	s.copyMode = false
+	// Restore the encoding before event tracking so no mouse report can arrive
+	// in an unexpected format during the transition.
+	fmt.Fprint(out, "\033[?1006h\033[?1000h")
 }
 
 func (s *tuiState) beginAddClient() {
@@ -5973,6 +6021,9 @@ func canRead(sess ducklord.RemoteSession) bool {
 }
 
 func (s *tuiState) sessionIndexForMouse(seq string) (int, bool) {
+	if !strings.HasSuffix(seq, "M") {
+		return 0, false
+	}
 	if strings.HasPrefix(seq, "\x1b[<0;") || strings.HasPrefix(seq, "\x1b[<2;") {
 		seq = seq[len("\x1b[<0;"):]
 	}
@@ -6099,7 +6150,7 @@ func readInput(ctx context.Context, ch chan<- []byte) {
 			if !ok {
 				pending = rest
 				if len(pending) <= 2 && pending[0] == 0x1b {
-					escapeTimer = time.NewTimer(25 * time.Millisecond)
+					escapeTimer = time.NewTimer(inputEscapeAmbiguityTimeout)
 					escapeTimeout = escapeTimer.C
 				}
 				break
@@ -6139,6 +6190,19 @@ func nextInputEvent(pending []byte) (event, rest []byte, ok bool) {
 			}
 		}
 		return nil, pending, false
+	}
+	// Preserve Alt/Meta key chords as one event. In particular, this prevents
+	// the Esc prefix from closing copy mode and its suffix from becoming a
+	// normal-mode shortcut such as q or c.
+	if len(pending) >= 2 && pending[1] != '[' {
+		if pending[1] < utf8.RuneSelf {
+			return append([]byte(nil), pending[:2]...), pending[2:], true
+		}
+		if !utf8.FullRune(pending[1:]) {
+			return nil, pending, false
+		}
+		_, size := utf8.DecodeRune(pending[1:])
+		return append([]byte(nil), pending[:1+size]...), pending[1+size:], true
 	}
 	return append([]byte(nil), pending[:1]...), pending[1:], true
 }
