@@ -2651,7 +2651,7 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 		unread, changed := s.activity().Reconcile(session, activeFresh)
 		session.Unread = unread
 		activityChanged = activityChanged || changed
-		if session.SessionID == update.ChangedSessionID && sessionKey(session) != oldKey {
+		if session.SessionID == update.ChangedSessionID && sessionKey(session) != oldKey && !activeFresh {
 			session.Updated = true
 		}
 		all = append(all, session)
@@ -3408,17 +3408,18 @@ func (s *tuiState) activity() *ducklord.ActivityState {
 
 func (s *tuiState) markActivitySeen(session ducklord.RemoteSession) {
 	next := s.activity().Clone()
-	if !next.MarkSeen(session) {
-		return
+	activityChanged := next.MarkSeen(session)
+	if activityChanged {
+		if err := s.activityStore.Save(next); err != nil {
+			s.outputErr = "local state: " + err.Error()
+			return
+		}
+		s.activityState = next
 	}
-	if err := s.activityStore.Save(next); err != nil {
-		s.outputErr = "local state: " + err.Error()
-		return
-	}
-	s.activityState = next
 	for i := range s.sessions {
 		if sessionKey(s.sessions[i]) == sessionKey(session) {
 			s.sessions[i].Unread = false
+			s.sessions[i].Updated = false
 		}
 	}
 }

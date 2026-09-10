@@ -2160,15 +2160,15 @@ func TestCreateModalConsumesLeftAndRightAndEscapeMovesBack(t *testing.T) {
 
 func TestFreshSelectedPreviewClearsUnread(t *testing.T) {
 	instance := string(model.NewInstanceID())
-	session := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: "ABC123", RuntimeGeneration: 3, Unread: true,
+	session := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: "ABC123", RuntimeGeneration: 3, Unread: true, Updated: true,
 		ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTaskCompleted: 1}}
 	state := &tuiState{sessions: []ducklord.RemoteSession{session}, activityState: ducklord.NewActivityState(),
 		activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")}}
 	if !state.applyPreviewOutput(previewOutputEvent{id: 7, key: sessionKey(session), generation: 3, text: "done"}, 7) {
 		t.Fatal("fresh preview was rejected")
 	}
-	if state.currentSession().Unread {
-		t.Fatal("fresh browsed preview retained unread marker")
+	if state.currentSession().Unread || state.currentSession().Updated {
+		t.Fatal("fresh browsed preview retained an unread or updated marker")
 	}
 }
 
