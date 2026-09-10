@@ -95,6 +95,16 @@ type createDiscoveryEvent struct {
 	directory              ducklord.RemoteDirectoryStatus
 }
 
+type hostSessionUpdate struct {
+	update ducklord.SessionUpdate
+	epoch  uint64
+}
+
+type hostWatchState struct {
+	cancel context.CancelFunc
+	epoch  uint64
+}
+
 type pathSuggestionEvent struct {
 	id, generation          uint64
 	client, instance, query string
@@ -104,6 +114,7 @@ type pathSuggestionEvent struct {
 
 type lifecycleDoneEvent struct {
 	operation protocol.SessionLifecycleOperation
+	client    string
 	result    protocol.SessionLifecycleResult
 	err       error
 }
@@ -1204,6 +1215,12 @@ type tuiState struct {
 	removeClientMode          bool
 	removeClientSelected      int
 	removeClientConfirm       string
+	helpMode                  bool
+	helpOffset                int
+	hostMenuMode              bool
+	hostMenuTarget            string
+	hostMenuIndex             int
+	disconnectedHosts         map[string]bool
 	hostScoped                bool
 	ownerName                 string
 	listPaneWidth             int
@@ -1298,7 +1315,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	}
 	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner,
 		snapshotStore: ducklord.SnapshotStore{}, activityStore: activityStore, activityState: activityState, hostSync: make(map[string]ducklord.SessionUpdate), localWarning: stateWarning,
-		listPaneWidth: cfg.SessionListPaneWidth(), autoHideList: cfg.SessionListAutoHide()}
+		listPaneWidth: cfg.SessionListPaneWidth(), autoHideList: cfg.SessionListAutoHide(), disconnectedHosts: make(map[string]bool)}
 	var outputManager *ducklord.TerminalOutputManager
 	var outputEvents <-chan ducklord.TerminalOutputEvent
 	if source, ok := runner.(ducklord.TerminalOutputSource); ok {
@@ -1312,24 +1329,30 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	} else {
 		defer state.saveCurrentSnapshot()
 	}
-	sessionUpdates := make(chan ducklord.SessionUpdate, 32)
-	watchedClients := make(map[string]bool)
+	sessionUpdates := make(chan hostSessionUpdate, 32)
+	watchedClients := make(map[string]hostWatchState)
+	var watchEpoch uint64
 	watcher, eventDriven := runner.(interface {
 		WatchSessionUpdates(context.Context, ducklord.Client) <-chan ducklord.SessionUpdate
 	})
 	watchClient := func(client ducklord.Client) {
-		key := bridgeKeyForTUI(client)
-		if !eventDriven || watchedClients[key] {
+		if !eventDriven || state.disconnectedHosts[client.Name] {
 			return
 		}
-		watchedClients[key] = true
+		if _, exists := watchedClients[client.Name]; exists {
+			return
+		}
+		watchEpoch++
+		watchCtx, cancel := context.WithCancel(ctx)
+		current := hostWatchState{cancel: cancel, epoch: watchEpoch}
+		watchedClients[client.Name] = current
 		state.eventDriven = true
-		updates := watcher.WatchSessionUpdates(ctx, client)
+		updates := watcher.WatchSessionUpdates(watchCtx, client)
 		go func() {
 			for update := range updates {
 				select {
-				case sessionUpdates <- update:
-				case <-ctx.Done():
+				case sessionUpdates <- hostSessionUpdate{update: update, epoch: current.epoch}:
+				case <-watchCtx.Done():
 					return
 				}
 			}
@@ -1589,6 +1612,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			if state.completeAddClient(result) {
+				delete(state.disconnectedHosts, result.client.Name)
 				watchAllClients()
 			}
 			state.render(os.Stdout)
@@ -1810,7 +1834,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 				state.render(os.Stdout)
 			}
-		case update := <-sessionUpdates:
+		case envelope := <-sessionUpdates:
+			update := envelope.update
+			currentWatch, current := watchedClients[update.Client]
+			if !current || currentWatch.epoch != envelope.epoch || state.disconnectedHosts[update.Client] {
+				continue
+			}
 			previousHost := state.hostSync[update.Client]
 			previousInstance := previousHost.InstanceID
 			if previousInstance == "" {
@@ -1935,6 +1964,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 			}
 		case result := <-startDone:
+			if state.disconnectedHosts[result.client] {
+				startCancel = nil
+				state.newSessionStarting = false
+				state.newSessionErr = "host disconnected; remote start result was discarded"
+				state.render(os.Stdout)
+				continue
+			}
 			if result.id != startID {
 				continue
 			}
@@ -1946,6 +1982,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.render(os.Stdout)
 		case result := <-lifecycleDone:
 			state.lifecycleBusy = false
+			if state.disconnectedHosts[result.client] {
+				state.outputErr = string(result.operation) + " result discarded because host is disconnected"
+				state.render(os.Stdout)
+				continue
+			}
 			state.lifecycleConfirm = ""
 			state.lifecycleTarget = ducklord.RemoteSession{}
 			if result.err != nil {
@@ -2010,7 +2051,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.render(os.Stdout)
 					continue
 				}
-				if isDetachInput(b) {
+				if state.shortcut("pty_unfocus", string(b)) {
 					if outputManager == nil {
 						state.saveCurrentSnapshot()
 					}
@@ -2071,6 +2112,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				switch {
 				case state.searchMode:
 					state.closeSearch()
+				case state.helpMode:
+					state.helpMode = false
+				case state.hostMenuMode:
+					state.hostMenuMode = false
 				case state.addClientMode:
 					state.cancelAddClient()
 				case state.removeClientMode:
@@ -2165,6 +2210,96 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					continue
 				}
 			}
+			if state.hostMenuMode {
+				action := state.handleHostMenuInput(b)
+				target := state.hostMenuTarget
+				switch action {
+				case "host-add":
+					state.hostMenuMode = false
+					state.beginAddClient()
+				case "host-remove":
+					state.hostMenuMode = false
+					state.beginRemoveClient()
+				case "host-disconnect", "host-reconnect":
+					wasActive := len(state.sessions) > 0 && state.currentSession().Client == target
+					if current, ok := watchedClients[target]; ok {
+						current.cancel()
+						delete(watchedClients, target)
+					}
+					previous := state.hostSync[target]
+					state.disconnectedHosts[target] = true
+					if state.newSessionMode && state.newSessionClient == target {
+						state.cancelCreateDiscovery()
+						state.cancelPathSuggestions()
+						state.newSessionErr = "host disconnected; pending session operation was canceled"
+					}
+					if outputManager != nil && previous.InstanceID != "" {
+						outputManager.ForgetHost(target, previous.InstanceID)
+					}
+					filtered := state.sessions[:0]
+					for _, session := range state.sessions {
+						if session.Client != target {
+							filtered = append(filtered, session)
+						}
+					}
+					state.sessions = filtered
+					if wasActive {
+						if attachCancel != nil {
+							attachCancel()
+							attachCancel = nil
+						}
+						if controlOpenCancel != nil {
+							controlOpenCancel()
+							controlOpenCancel = nil
+						}
+						if control != nil {
+							_ = control.Stdin.Close()
+							control, controlDone = nil, nil
+						}
+						state.focused = false
+						state.clearAttachIdentity()
+					}
+					state.hostSync[target] = ducklord.SessionUpdate{Client: target, InstanceID: previous.InstanceID, Generation: previous.Generation, Revision: previous.Revision, State: "disconnected"}
+					state.hostMenuMode = false
+					state.outputErr = "disconnected " + target + "; its sessions and notifications are detached"
+					if action == "host-reconnect" {
+						delete(state.disconnectedHosts, target)
+						if outputManager != nil && previous.InstanceID != "" {
+							outputManager.RestoreHost(target, previous.InstanceID)
+						}
+						state.hostSync[target] = ducklord.SessionUpdate{Client: target, State: "reconnecting"}
+						if client, ok := state.cfg.Client(target); ok {
+							watchClient(client)
+						}
+						if !eventDriven {
+							state.refreshSessions(ctx)
+						}
+						state.outputErr = "reconnecting " + target
+					}
+				case "host-connect":
+					if !state.disconnectedHosts[target] {
+						state.hostMenuMode = false
+						state.outputErr = target + " is already connected"
+						break
+					}
+					delete(state.disconnectedHosts, target)
+					previous := state.hostSync[target]
+					if outputManager != nil && previous.InstanceID != "" {
+						outputManager.RestoreHost(target, previous.InstanceID)
+					}
+					state.hostSync[target] = ducklord.SessionUpdate{Client: target, State: "connecting"}
+					if client, ok := state.cfg.Client(target); ok {
+						watchClient(client)
+					}
+					if !eventDriven {
+						state.refreshSessions(ctx)
+					}
+					state.hostMenuMode = false
+					state.outputErr = "connecting " + target
+				}
+				state.render(os.Stdout)
+				continue
+			}
 			if state.addClientMode {
 				if state.addClientBusy {
 					if string(b) == "\x03" || string(b) == "\x1b" || string(b) == "q" {
@@ -2185,6 +2320,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			if state.helpMode {
+				state.handleHelpInput(b)
+				state.render(os.Stdout)
+				continue
+			}
 			if state.removeClientMode {
 				action := state.handleRemoveClientInput(b)
 				if action == "remove" {
@@ -2192,9 +2332,16 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					instance := state.hostSync[name].InstanceID
 					if err := state.removeClient(ctx, name); err != nil {
 						state.outputErr = err.Error()
-					} else if outputManager != nil {
-						outputManager.ForgetHost(name, instance)
-						selectPooledOutput()
+					} else {
+						if current, ok := watchedClients[name]; ok {
+							current.cancel()
+							delete(watchedClients, name)
+						}
+						state.disconnectedHosts[name] = true
+						if outputManager != nil {
+							outputManager.ForgetHost(name, instance)
+							selectPooledOutput()
+						}
 					}
 				}
 				state.render(os.Stdout)
@@ -2425,7 +2572,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				go func() {
 					result, err := runner.LifecycleSelected(ctx, client, sess, operation, mode)
 					select {
-					case lifecycleDone <- lifecycleDoneEvent{operation: operation, result: result, err: err}:
+					case lifecycleDone <- lifecycleDoneEvent{operation: operation, client: sess.Client, result: result, err: err}:
 					case <-ctx.Done():
 					}
 				}()
@@ -2445,6 +2592,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			switch action {
 			case "quit":
 				return nil
+			case "help":
+				state.helpMode, state.helpOffset = true, 0
+			case "host-actions":
+				state.beginHostMenu()
 			case "refresh":
 				state.refreshSessions(ctx)
 				if state.activeAttachKey == "" {
@@ -2656,6 +2807,9 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 	oldKey := s.currentKey()
 	var all []ducklord.RemoteSession
 	for _, c := range s.cfg.Clients {
+		if s.disconnectedHosts[c.Name] {
+			continue
+		}
 		sessions, err := s.runner.Sessions(ctx, c, 8)
 		if err != nil {
 			all = append(all, ducklord.RemoteSession{Client: c.Name, Group: c.Group, Name: "(offline)", Status: "error", Error: err.Error()})
@@ -3587,6 +3741,11 @@ func (s *tuiState) currentKey() string {
 }
 
 func (s *tuiState) selectedClientName() string {
+	if s.selectedGroupID != "" && s.organizationMode() == ducklord.OrganizationHost {
+		if _, ok := s.cfg.Client(s.selectedGroupID); ok {
+			return s.selectedGroupID
+		}
+	}
 	if len(s.sessions) > 0 && s.selected >= 0 && s.selected < len(s.sessions) && s.sessions[s.selected].Client != "" {
 		return s.sessions[s.selected].Client
 	}
@@ -3942,10 +4101,8 @@ func (s *tuiState) render(out io.Writer) {
 		fmt.Fprintln(out, truncate("custom groups  ↑/↓ choose  enter confirm  esc close", renderWidth))
 	} else if s.lifecycleConfirm != "" {
 		fmt.Fprintln(out, truncate("lifecycle confirmation open; use the modal controls", renderWidth))
-	} else if s.hostScoped {
-		fmt.Fprintln(out, truncate("j/k rows  enter focus/group  m actions  g groups  drag→group  / search  v copy  o organize  y/Y yield  E end  R restart  X destroy  n notify  r refresh  q quit", renderWidth))
 	} else {
-		fmt.Fprintln(out, truncate("j/k rows  enter focus/group  m actions  g groups  drag→group  / search  v copy  o organize  y/Y yield  E end  R restart  X destroy  n notify  c new  a add  d remove  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate(s.cfg.Shortcut("help")+" help · Enter focus/group · "+s.cfg.Shortcut("pty_unfocus")+" leave PTY", renderWidth))
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
@@ -3955,6 +4112,8 @@ func (s *tuiState) render(out io.Writer) {
 		s.renderActionModal(out, width, modalHeight)
 		s.renderAddClientModal(out, width, modalHeight)
 		s.renderRemoveClientModal(out, width, modalHeight)
+		s.renderHelpModal(out, width, modalHeight)
+		s.renderHostModal(out, width, modalHeight)
 		s.renderGroupModal(out, width, modalHeight)
 		s.renderNotificationModal(out, width, modalHeight)
 		s.renderLifecycleModal(out, width, modalHeight)
@@ -4065,6 +4224,8 @@ func (s *tuiState) render(out io.Writer) {
 	s.renderActionModal(out, width, modalHeight)
 	s.renderAddClientModal(out, width, modalHeight)
 	s.renderRemoveClientModal(out, width, modalHeight)
+	s.renderHelpModal(out, width, modalHeight)
+	s.renderHostModal(out, width, modalHeight)
 	s.renderGroupModal(out, width, modalHeight)
 	s.renderNotificationModal(out, width, modalHeight)
 	s.renderLifecycleModal(out, width, modalHeight)
@@ -4125,6 +4286,29 @@ func mouseCursorShape(shape string) string {
 		shape = "default"
 	}
 	return "\033]22;" + shape + "\033\\"
+}
+
+func shortcutInput(binding string) string {
+	if strings.HasPrefix(binding, "ctrl-") {
+		runes := []rune(strings.TrimPrefix(binding, "ctrl-"))
+		if len(runes) == 1 {
+			return string(byte(unicode.ToUpper(runes[0])) & 0x1f)
+		}
+	}
+	return binding
+}
+
+func (s *tuiState) shortcut(action, input string) bool {
+	return input == shortcutInput(s.cfg.Shortcut(action))
+}
+
+func (s *tuiState) sessionShortcut(input string) bool {
+	for _, action := range []string{"session_actions", "session_notifications", "session_yield", "session_yield_wait", "session_end", "session_restart", "session_destroy"} {
+		if s.shortcut(action, input) {
+			return true
+		}
+	}
+	return false
 }
 
 type modalRenderLine struct {
@@ -4228,6 +4412,107 @@ func (s *tuiState) renderRemoveClientModal(out io.Writer, cols, rows int) {
 	}
 	lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ select   Enter continue   Esc/Ctrl+C cancel"})
 	renderModalBox(out, cols, rows, lines)
+}
+
+func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
+	if !s.helpMode {
+		return
+	}
+	type helpEntry struct{ category, action, label string }
+	entries := []helpEntry{
+		{"SESSION LIST & GROUPS", "list_search", "Search sessions"}, {"", "list_organize", "Cycle custom / host / type"}, {"", "list_groups", "Manage custom groups"}, {"", "list_reorder_up", "Move session up"}, {"", "list_reorder_down", "Move session down"}, {"", "refresh", "Refresh"},
+		{"SESSION", "session_create", "Create session"}, {"", "session_actions", "Session action menu"}, {"", "session_notifications", "Notification settings"}, {"", "session_yield", "Yield now"}, {"", "session_yield_wait", "Yield when idle"}, {"", "session_restart", "Restart session"}, {"", "session_end", "End session"}, {"", "session_destroy", "Destroy session"},
+		{"HOST", "host_actions", "Host action menu"}, {"", "host_add", "Add host configuration"}, {"", "host_remove", "Remove host configuration"},
+		{"PTY PANEL", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return focus to session list"},
+		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
+	}
+	lines := []modalRenderLine{{modalTitle, "  Keyboard shortcuts · grouped by target"}}
+	for _, entry := range entries {
+		if s.hostScoped && (entry.action == "host_add" || entry.action == "host_remove" || entry.action == "session_create") {
+			continue
+		}
+		if entry.category != "" {
+			lines = append(lines, modalRenderLine{modalStatus, "  " + entry.category})
+		}
+		lines = append(lines, modalRenderLine{modalInput, fmt.Sprintf("  %-12s %s", s.cfg.Shortcut(entry.action), entry.label)})
+	}
+	lines = append(lines,
+		modalRenderLine{modalStatus, "  MOUSE"}, modalRenderLine{modalMuted, "  Click select · drag reorder · right-click focus/toggle"},
+		modalRenderLine{modalStatus, "  MODALS"}, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter confirm · Esc back · Ctrl+C close"},
+		modalRenderLine{modalMuted, "  Host connect/disconnect/reconnect affects all host sessions and notifications"},
+		modalRenderLine{modalMuted, "  ↑/↓ scroll · Esc/? close · shortcut changes require restart"})
+	maxVisible := max(1, rows-4)
+	s.helpOffset = min(max(s.helpOffset, 0), max(0, len(lines)-maxVisible))
+	visible := lines[s.helpOffset:min(len(lines), s.helpOffset+maxVisible)]
+	renderModalBox(out, cols, rows, visible)
+}
+
+var hostActions = []string{"Connect", "Disconnect", "Reconnect", "Add host", "Remove host"}
+
+func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
+	if !s.hostMenuMode {
+		return
+	}
+	lines := []modalRenderLine{{modalTitle, "  Host actions · " + displayField(s.hostMenuTarget)}}
+	for index, label := range hostActions {
+		style, prefix := "", "  "
+		if s.hostScoped && index >= 3 {
+			style, label = modalDisabled, label+" (unavailable in host-scoped mode)"
+		}
+		if index == s.hostMenuIndex {
+			prefix = "› "
+			if style == "" {
+				style = modalSelected
+			}
+		}
+		lines = append(lines, modalRenderLine{style, prefix + label})
+	}
+	lines = append(lines, modalRenderLine{modalMuted, "  Host connect state covers every session and notification on that host"}, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter run · Esc close"})
+	renderModalBox(out, cols, rows, lines)
+}
+
+func (s *tuiState) beginHostMenu() {
+	s.hostMenuTarget = s.selectedClientName()
+	if s.hostMenuTarget == "" {
+		s.outputErr = "no host selected"
+		return
+	}
+	s.hostMenuMode, s.hostMenuIndex = true, 0
+}
+
+func (s *tuiState) handleHostMenuInput(input []byte) string {
+	switch string(input) {
+	case "\x1b", "\x03":
+		s.hostMenuMode = false
+		return "cancel"
+	case "j", "\x1b[B":
+		s.hostMenuIndex = min(len(hostActions)-1, s.hostMenuIndex+1)
+	case "k", "\x1b[A":
+		s.hostMenuIndex = max(0, s.hostMenuIndex-1)
+	case "\r", "\n":
+		action := []string{"host-connect", "host-disconnect", "host-reconnect", "host-add", "host-remove"}[s.hostMenuIndex]
+		if s.hostScoped && (action == "host-add" || action == "host-remove") {
+			s.outputErr = "host configuration changes are unavailable in host-scoped mode"
+			return ""
+		}
+		return action
+	}
+	return ""
+}
+
+func (s *tuiState) handleHelpInput(input []byte) {
+	switch string(input) {
+	case "\x1b", "\x03":
+		s.helpMode = false
+	case "\x1b[B", "j":
+		s.helpOffset++
+	case "\x1b[A", "k":
+		s.helpOffset = max(0, s.helpOffset-1)
+	default:
+		if s.shortcut("help", string(input)) {
+			s.helpMode = false
+		}
+	}
 }
 
 func (s *tuiState) renderGroupModal(out io.Writer, cols, rows int) {
@@ -5290,9 +5575,13 @@ func (s *tuiState) handleInput(b []byte) string {
 		s.dragSession, s.dragTargetGroup, s.dragTargetSession = ducklord.SessionIdentity{}, "", ducklord.SessionIdentity{}
 	}
 	switch {
-	case text == "q" || text == "\x03":
+	case s.shortcut("quit", text) || text == "\x03":
 		return "quit"
-	case s.selectedGroupID != "" && (text == "g" || text == "y" || text == "Y" || text == "E" || text == "R" || text == "X" || text == "n" || text == "m" || text == "d" || text == "\x0b" || text == "\n"):
+	case s.shortcut("help", text):
+		return "help"
+	case s.shortcut("host_actions", text):
+		return "host-actions"
+	case s.selectedGroupID != "" && (s.sessionShortcut(text) || s.shortcut("list_reorder_up", text) || s.shortcut("list_reorder_down", text)):
 		s.outputErr = "select a session row for this action"
 		return "group-select"
 	case text == "\x1b[D":
@@ -5308,39 +5597,39 @@ func (s *tuiState) handleInput(b []byte) string {
 			return "group-toggle"
 		}
 		return "group-select"
-	case text == "r":
+	case s.shortcut("refresh", text):
 		return "refresh"
-	case text == "/":
+	case s.shortcut("list_search", text):
 		return "search"
-	case text == "o":
+	case s.shortcut("list_organize", text):
 		return "organize"
-	case text == "g":
+	case s.shortcut("list_groups", text):
 		return "groups"
-	case text == "\x0b":
+	case s.shortcut("list_reorder_up", text):
 		return "reorder-up"
-	case text == "\n":
+	case s.shortcut("list_reorder_down", text):
 		return "reorder-down"
-	case text == "y":
+	case s.shortcut("session_yield", text):
 		return "yield"
-	case text == "Y":
+	case s.shortcut("session_yield_wait", text):
 		return "yield-wait"
-	case text == "E":
+	case s.shortcut("session_end", text):
 		return "end"
-	case text == "R":
+	case s.shortcut("session_restart", text):
 		return "restart"
-	case text == "X":
+	case s.shortcut("session_destroy", text):
 		return "destroy"
-	case text == "c" && !s.hostScoped:
+	case s.shortcut("session_create", text) && !s.hostScoped:
 		return "new"
-	case text == "n":
+	case s.shortcut("session_notifications", text):
 		return "notifications"
-	case text == "v":
+	case s.shortcut("pty_copy", text):
 		return "copy-mode"
-	case text == "m":
+	case s.shortcut("session_actions", text):
 		return "actions"
-	case text == "a" && !s.hostScoped:
+	case s.shortcut("host_add", text) && !s.hostScoped:
 		return "add-client"
-	case text == "d" && !s.hostScoped:
+	case s.shortcut("host_remove", text) && !s.hostScoped:
 		return "remove-client"
 	case text == "\r":
 		if s.selectedGroupID != "" {
@@ -6556,7 +6845,7 @@ func (s *tuiState) backCreateStep() {
 }
 
 func (s *tuiState) centralModalOpen() bool {
-	return s.searchMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.lifecycleConfirm != ""
+	return s.helpMode || s.hostMenuMode || s.searchMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.lifecycleConfirm != ""
 }
 
 func (s *tuiState) syncCreateSelectionToInput() {
@@ -6640,10 +6929,6 @@ func sessionKey(sess ducklord.RemoteSession) string {
 		return sess.Client + "/" + sess.InstanceID + "/" + sess.SessionID
 	}
 	return sess.Group + "/" + sess.Client + "/" + sess.Name
-}
-
-func bridgeKeyForTUI(client ducklord.Client) string {
-	return strings.Join([]string{client.Name, client.Host, client.User, client.SSH, client.Ducklion}, "\x00")
 }
 
 func terminalOutputKey(sess ducklord.RemoteSession) (ducklord.OutputKey, bool) {
@@ -6950,10 +7235,6 @@ func readAttachOutput(ctx context.Context, id int, session *ducklord.AttachSessi
 		default:
 		}
 	}
-}
-
-func isDetachInput(b []byte) bool {
-	return len(b) == 1 && b[0] == 0x1d
 }
 
 func appendOutputText(current, chunk string, maxLines int) string {

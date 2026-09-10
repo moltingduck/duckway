@@ -696,6 +696,62 @@ func TestTUILifecycleWaitDoesNotBlockNavigationOrQuit(t *testing.T) {
 	}
 }
 
+func TestTUIHelpUsesConfiguredBindingsAndCategories(t *testing.T) {
+	state := &tuiState{cfg: &ducklord.Config{Shortcuts: map[string]string{"help": "!"}}}
+	if action := state.handleInput([]byte("!")); action != "help" {
+		t.Fatalf("custom help action=%q", action)
+	}
+	state.helpMode = true
+	var out bytes.Buffer
+	state.renderHelpModal(&out, 100, 40)
+	for _, want := range []string{"Keyboard shortcuts", "SESSION LIST & GROUPS", "SESSION", "HOST", "PTY PANEL", "MOUSE", "MODALS", "!"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("help missing %q: %q", want, out.String())
+		}
+	}
+	state.handleHelpInput([]byte("!"))
+	if state.helpMode {
+		t.Fatal("configured help key did not close help")
+	}
+}
+
+func TestTUIHostMenuTargetsSelectedHostGroup(t *testing.T) {
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host-a", Host: "a"}, {Name: "host-b", Host: "b"}}}, activityState: ducklord.NewActivityState(), selectedGroupID: "host-b"}
+	state.activity().Organization.Mode = ducklord.OrganizationHost
+	state.beginHostMenu()
+	if !state.hostMenuMode || state.hostMenuTarget != "host-b" {
+		t.Fatalf("host menu mode=%v target=%q", state.hostMenuMode, state.hostMenuTarget)
+	}
+	state.hostMenuIndex = 1
+	if action := state.handleHostMenuInput([]byte("\r")); action != "host-disconnect" {
+		t.Fatalf("host menu action=%q", action)
+	}
+	var out bytes.Buffer
+	state.renderHostModal(&out, 100, 30)
+	if !strings.Contains(out.String(), "Host actions") || !strings.Contains(out.String(), "every session") {
+		t.Fatalf("host modal=%q", out.String())
+	}
+}
+
+type countingSessionsRunner struct {
+	fakeRunner
+	calls int
+}
+
+func (r *countingSessionsRunner) Sessions(ctx context.Context, client ducklord.Client, tail int) ([]ducklord.RemoteSession, error) {
+	r.calls++
+	return r.fakeRunner.Sessions(ctx, client, tail)
+}
+
+func TestTUIDisconnectedHostIsExcludedFromPollingRefresh(t *testing.T) {
+	runner := &countingSessionsRunner{fakeRunner: fakeRunner{sessions: []ducklord.RemoteSession{{Client: "host", Name: "late"}}}}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, runner: runner, disconnectedHosts: map[string]bool{"host": true}, hashes: map[string]string{}}
+	state.refreshSessions(context.Background())
+	if runner.calls != 0 || len(state.sessions) != 0 {
+		t.Fatalf("disconnected refresh calls=%d sessions=%+v", runner.calls, state.sessions)
+	}
+}
+
 func TestTUISelectionSurvivesRefreshByKey(t *testing.T) {
 	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a", Host: "client-a"}, {Name: "client-b", Host: "client-b"}}}
 	state := &tuiState{
@@ -951,10 +1007,16 @@ func TestTUIListSelectsAndCollapsesStableGroupRows(t *testing.T) {
 	if action := state.handleInput([]byte("j")); action != "group-select" || state.selectedGroupID != "host-b" {
 		t.Fatalf("group navigation action=%q selected=%q", action, state.selectedGroupID)
 	}
-	for _, input := range []string{"g", "m", "n", "y", "Y", "E", "R", "X", "d", "\x0b", "\n"} {
+	for _, input := range []string{"m", "n", "y", "Y", "E", "R", "X", "\x0b", "\n"} {
 		if action := state.handleInput([]byte(input)); action != "group-select" {
 			t.Fatalf("group header accepted session action %q as %q", input, action)
 		}
+	}
+	if action := state.handleInput([]byte("g")); action != "groups" {
+		t.Fatalf("group management action=%q", action)
+	}
+	if action := state.handleInput([]byte("d")); action != "remove-client" {
+		t.Fatalf("host-group remove action=%q", action)
 	}
 	var rendered bytes.Buffer
 	state.render(&rendered)

@@ -240,6 +240,13 @@ podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
 
 Useful keys:
 
+Press `?` to open the centered shortcut reference. It groups operations by
+their target: **Host**, **Session**, **Session List & Groups**, and **PTY Panel**.
+Host connect/disconnect/reconnect attaches or detaches every session and all
+notification delivery for that host only for the current Ducklord process; it
+does not stop remote PTYs or edit the host config. Add writes a host config and
+Remove deletes it. Create/restart/end/destroy always target one session.
+
 - `j` / `k` or arrow keys move across both group headers and sessions. Press
   `Enter` on a group to collapse or expand it without detaching the active PTY.
   On a group, `Left` always collapses and `Right` always expands; on a session,
@@ -281,6 +288,21 @@ dialog. It removes only the local Ducklord configuration, never remote sessions.
 
 Remote shell discovery preserves the configured default `$SHELL` and offers
 installed `zsh`, `bash`, and `sh` executables as explicit choices.
+
+Shortcut bindings are optional in `~/.ducklord/config.yaml` and take effect
+after Ducklord restarts. Values are one printable Unicode key or a `ctrl-X`
+token. Unknown actions, control/format characters, and duplicate bindings fail
+closed during config loading:
+
+```yaml
+shortcuts:
+  help: "?"
+  host_actions: "h"
+  session_create: "c"
+  session_restart: "R"
+  list_search: "/"
+  pty_unfocus: "ctrl-]"
+```
 
 The session list shows `💀` when a process has stopped or an agent adapter is
 unhealthy/non-responsive. A temporary host reconnect retains the last screen

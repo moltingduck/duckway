@@ -251,6 +251,18 @@ func TestConfigRemoveClient(t *testing.T) {
 	}
 }
 
+func TestConfigShortcutsOverrideAndRejectCollisions(t *testing.T) {
+	cfg := &Config{Shortcuts: map[string]string{"help": "!"}}
+	if err := cfg.normalize(); err != nil || cfg.Shortcut("help") != "!" || cfg.Shortcut("quit") != "q" {
+		t.Fatalf("shortcut override failed: help=%q quit=%q err=%v", cfg.Shortcut("help"), cfg.Shortcut("quit"), err)
+	}
+	for _, shortcuts := range []map[string]string{{"unknown": "!"}, {"help": "\x1b"}, {"help": "q"}, {"help": "ctrl-A", "quit": "ctrl-a"}, {"help": "ctrl-?"}} {
+		if err := (&Config{Shortcuts: shortcuts}).normalize(); err == nil {
+			t.Fatalf("invalid shortcuts accepted: %#v", shortcuts)
+		}
+	}
+}
+
 func TestSSHArgsDoNotUseLocalShell(t *testing.T) {
 	c := Client{Name: "vulns", Host: "vulns.ts", User: "duck", Ducklion: "ducklion", SSH: "ssh"}
 	got := SSHArgs(c, false, "ducklion", "send", "alpha", "hello; rm -rf /")

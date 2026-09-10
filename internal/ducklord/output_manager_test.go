@@ -294,6 +294,33 @@ func TestTerminalOutputManagerCloseIsConcurrentAndClosesEvents(t *testing.T) {
 	}
 }
 
+func TestTerminalOutputManagerForgetFencesQueuedHostSyncUntilRestore(t *testing.T) {
+	root := t.TempDir()
+	manager, err := newTerminalOutputManager(context.Background(), 1, unusedTerminalOutputSource{}, SnapshotStore{Root: root},
+		func(ctx context.Context, selection TerminalSelection, key OutputKey, revision OutputRevision, _ *TerminalRenderState) (*PooledTerminal, error) {
+			return newPooledTerminal(ctx, OutputStreamMetadata{InstanceID: key.InstanceID, SessionID: key.SessionID, RuntimeGeneration: revision.RuntimeGeneration}, newFakePooledOutput(),
+				PooledTerminalOptions{ExpectedKey: key, ExpectedRevision: revision, Rows: 2, Cols: 20, Scrollback: 4, Store: SnapshotStore{Root: root}})
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	selection := TerminalSelection{Client: Client{Name: "host"}, InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", SessionID: "AAA111", RuntimeGeneration: 1, Rows: 2, Cols: 20}
+	manager.ForgetHost("host", selection.InstanceID)
+	manager.SyncHost("host", selection.InstanceID, true, []TerminalSelection{selection})
+	time.Sleep(20 * time.Millisecond)
+	if status := manager.Status(); status.Count != 0 {
+		t.Fatalf("retired host restored from queued sync: %+v", status)
+	}
+	manager.RestoreHost("host", selection.InstanceID)
+	manager.hostMu.Lock()
+	retired := manager.hostRetired[outputHost{"host", selection.InstanceID}]
+	manager.hostMu.Unlock()
+	if retired {
+		t.Fatal("explicit restore left host retired")
+	}
+}
+
 func waitManagerEvent(t *testing.T, manager *TerminalOutputManager) TerminalOutputEvent {
 	t.Helper()
 	select {

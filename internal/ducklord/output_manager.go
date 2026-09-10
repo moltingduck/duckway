@@ -79,6 +79,7 @@ type TerminalOutputManager struct {
 	hostMu      sync.Mutex
 	hostCancels map[outputHost]context.CancelFunc
 	hostEpoch   map[outputHost]uint64
+	hostRetired map[outputHost]bool
 	closeOnce   sync.Once
 	closeDone   chan struct{}
 	closeErr    error
@@ -101,7 +102,7 @@ func newTerminalOutputManager(parent context.Context, capacity int, source Termi
 	ctx, cancel := context.WithCancel(parent)
 	m := &TerminalOutputManager{ctx: ctx, cancel: cancel, source: source, store: store, pool: pool,
 		requests: make(chan terminalOutputRequest, 1), hostSync: make(chan terminalHostSync, 32), events: make(chan TerminalOutputEvent, 1), done: make(chan struct{}),
-		opener: opener, hostCancels: make(map[outputHost]context.CancelFunc), hostEpoch: make(map[outputHost]uint64), closeDone: make(chan struct{})}
+		opener: opener, hostCancels: make(map[outputHost]context.CancelFunc), hostEpoch: make(map[outputHost]uint64), hostRetired: make(map[outputHost]bool), closeDone: make(chan struct{})}
 	go m.run()
 	return m, nil
 }
@@ -376,12 +377,18 @@ func (m *TerminalOutputManager) ForgetHost(clientKey, instanceID string) {
 		delete(m.hostCancels, host)
 	}
 	m.hostEpoch[host]++
+	m.hostRetired[host] = true
 	m.hostMu.Unlock()
-	m.workers.Add(1)
-	go func() {
-		defer m.workers.Done()
-		_ = m.pool.ForgetHost(clientKey, instanceID)
-	}()
+	_ = m.pool.ForgetHost(clientKey, instanceID)
+}
+
+// RestoreHost explicitly permits subscriptions for a manually reconnected
+// Ducklion instance. ForgetHost otherwise leaves a tombstone that fences
+// already-queued SyncHost requests.
+func (m *TerminalOutputManager) RestoreHost(clientKey, instanceID string) {
+	m.hostMu.Lock()
+	delete(m.hostRetired, outputHost{clientKey, instanceID})
+	m.hostMu.Unlock()
 }
 
 func (m *TerminalOutputManager) SyncHost(clientKey, instanceID string, live bool, selections []TerminalSelection) {
@@ -402,6 +409,11 @@ func (m *TerminalOutputManager) scheduleHostSync(request terminalHostSync) {
 	host := outputHost{request.clientKey, request.instanceID}
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.hostMu.Lock()
+	if m.hostRetired[host] {
+		m.hostMu.Unlock()
+		cancel()
+		return
+	}
 	if previous := m.hostCancels[host]; previous != nil {
 		previous()
 	}

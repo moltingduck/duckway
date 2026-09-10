@@ -287,7 +287,11 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	assertCurrentCreateModal(t, capture, start, "handle (default alpha)", "handle", false)
 	start = capture.position()
 	writePTY(t, terminal, handle+"\r")
-	capture.waitAfter(t, start, "j/k rows", 20*time.Second)
+	capture.waitAfter(t, start, "? help", 20*time.Second)
+	start = capture.position()
+	writePTY(t, terminal, "?")
+	assertCurrentCreateModal(t, capture, start, "Keyboard shortcuts", "SESSION LIST", false)
+	writePTY(t, terminal, "\x1b")
 
 	var created protocol.SessionSummary
 	waitE2E(t, 15*time.Second, func() bool {
@@ -343,7 +347,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "session focus", 10*time.Second)
 	writePTY(t, terminal, "\x1d")
-	capture.waitCurrent(t, "m actions", 5*time.Second)
+	capture.waitCurrent(t, "? help", 5*time.Second)
 
 	start = capture.position()
 	writePTY(t, terminal, "/"+handle+"\r")
@@ -363,7 +367,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	// authoritative assertions.
 	start = capture.position()
 	writePTY(t, terminal, "\x1d") // Ctrl-]
-	capture.waitAfter(t, start, "m actions", 10*time.Second)
+	capture.waitAfter(t, start, "? help", 10*time.Second)
 	start = capture.position()
 	writePTY(t, terminal, "m")
 	capture.waitAfter(t, start, "Session actions", 10*time.Second)

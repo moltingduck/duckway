@@ -14,11 +14,12 @@ import (
 )
 
 type Config struct {
-	Name                   string   `json:"name,omitempty" yaml:"name,omitempty"`
-	RawOutputSubscriptions *int     `json:"raw_output_subscription_limit,omitempty" yaml:"raw_output_subscription_limit,omitempty"`
-	SessionListWidth       *int     `json:"session_list_width,omitempty" yaml:"session_list_width,omitempty"`
-	AutoHideSessionList    *bool    `json:"auto_hide_session_list,omitempty" yaml:"auto_hide_session_list,omitempty"`
-	Clients                []Client `json:"hosts" yaml:"hosts"`
+	Name                   string            `json:"name,omitempty" yaml:"name,omitempty"`
+	RawOutputSubscriptions *int              `json:"raw_output_subscription_limit,omitempty" yaml:"raw_output_subscription_limit,omitempty"`
+	SessionListWidth       *int              `json:"session_list_width,omitempty" yaml:"session_list_width,omitempty"`
+	AutoHideSessionList    *bool             `json:"auto_hide_session_list,omitempty" yaml:"auto_hide_session_list,omitempty"`
+	Shortcuts              map[string]string `json:"shortcuts,omitempty" yaml:"shortcuts,omitempty"`
+	Clients                []Client          `json:"hosts" yaml:"hosts"`
 }
 
 const DefaultRawOutputSubscriptions = 10
@@ -161,7 +162,57 @@ func (c *Config) normalize() error {
 	if c.SessionListWidth != nil && (*c.SessionListWidth < 20 || *c.SessionListWidth > 80) {
 		return fmt.Errorf("session_list_width must be between 20 and 80")
 	}
+	for action, binding := range c.Shortcuts {
+		if _, ok := DefaultShortcuts[action]; !ok {
+			return fmt.Errorf("unknown shortcut action %q", action)
+		}
+		if !validShortcutBinding(binding) {
+			return fmt.Errorf("invalid shortcut binding %q for %s", binding, action)
+		}
+		c.Shortcuts[action] = canonicalShortcutBinding(binding)
+	}
+	seen := make(map[string]string)
+	for action, fallback := range DefaultShortcuts {
+		binding := fallback
+		if c.Shortcuts[action] != "" {
+			binding = c.Shortcuts[action]
+		}
+		if previous := seen[binding]; previous != "" {
+			return fmt.Errorf("shortcut %q is assigned to both %s and %s", binding, previous, action)
+		}
+		seen[binding] = action
+	}
 	return nil
+}
+
+var DefaultShortcuts = map[string]string{
+	"help": "?", "quit": "q", "host_actions": "h", "host_add": "a", "host_remove": "d",
+	"session_create": "c", "session_actions": "m", "session_notifications": "n", "session_yield": "y", "session_yield_wait": "Y",
+	"session_end": "E", "session_restart": "R", "session_destroy": "X", "list_search": "/", "list_organize": "o", "list_groups": "g",
+	"list_reorder_up": "ctrl-k", "list_reorder_down": "ctrl-j", "pty_copy": "v", "pty_unfocus": "ctrl-]", "refresh": "r",
+}
+
+func validShortcutBinding(binding string) bool {
+	if strings.HasPrefix(binding, "ctrl-") {
+		runes := []rune(strings.TrimPrefix(binding, "ctrl-"))
+		return len(runes) == 1 && (runes[0] >= 'a' && runes[0] <= 'z' || runes[0] >= 'A' && runes[0] <= 'Z' || runes[0] == ']')
+	}
+	runes := []rune(binding)
+	return len(runes) == 1 && !unicode.IsControl(runes[0]) && !unicode.Is(unicode.Cf, runes[0])
+}
+
+func canonicalShortcutBinding(binding string) string {
+	if strings.HasPrefix(binding, "ctrl-") {
+		return "ctrl-" + strings.ToLower(strings.TrimPrefix(binding, "ctrl-"))
+	}
+	return binding
+}
+
+func (c *Config) Shortcut(action string) string {
+	if c != nil && c.Shortcuts != nil && c.Shortcuts[action] != "" {
+		return c.Shortcuts[action]
+	}
+	return DefaultShortcuts[action]
 }
 
 func (c *Config) RawOutputSubscriptionLimit() int {
@@ -217,6 +268,10 @@ func (c *Config) Client(name string) (Client, bool) {
 func (c *Config) Clone() *Config {
 	clone := *c
 	clone.Clients = append([]Client(nil), c.Clients...)
+	clone.Shortcuts = make(map[string]string, len(c.Shortcuts))
+	for action, binding := range c.Shortcuts {
+		clone.Shortcuts[action] = binding
+	}
 	if c.RawOutputSubscriptions != nil {
 		value := *c.RawOutputSubscriptions
 		clone.RawOutputSubscriptions = &value
