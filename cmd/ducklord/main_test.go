@@ -563,15 +563,15 @@ func TestSessionActionsReflectKindOwnerTaskAndAdapter(t *testing.T) {
 			t.Fatalf("shell exposed agent-only action %#v", action)
 		}
 	}
-	if len(shellActions) != 5 || shellActions[2].Mode != protocol.SessionLifecycleImmediate {
+	if len(shellActions) != 6 || shellActions[1].ID != "reconnect" || !shellActions[1].Enabled || shellActions[3].Mode != protocol.SessionLifecycleImmediate {
 		t.Fatalf("shell actions=%#v", shellActions)
 	}
 
 	agent := ducklord.RemoteSession{Client: "host", InstanceID: "instance", SessionID: "AGENT1", Kind: string(model.KindAgent), Status: string(model.StatusRunning),
 		WriterKind: string(model.OwnerCC), WriterID: "channel", OwnershipEpoch: 2, RuntimeGeneration: 3, TaskState: string(model.TaskRunning), AdapterState: string(model.AdapterHealthy)}
 	agentActions := state.sessionActions(agent)
-	if agentActions[0].Label != "View PTY (read-only)" || agentActions[1].Enabled || !agentActions[2].Enabled {
-		t.Fatalf("busy CC-owned agent actions=%#v", agentActions[:3])
+	if agentActions[0].Label != "View PTY (read-only)" || agentActions[1].ID != "reconnect" || !agentActions[1].Enabled || agentActions[2].Enabled || !agentActions[3].Enabled {
+		t.Fatalf("busy CC-owned agent actions=%#v", agentActions[:4])
 	}
 	for _, action := range agentActions {
 		if action.Operation != "" && action.Enabled {
@@ -591,8 +591,8 @@ func TestSessionActionsReflectKindOwnerTaskAndAdapter(t *testing.T) {
 	agent.AdapterState = string(model.AdapterUnhealthy)
 	agent.TaskState = string(model.TaskIdle)
 	agentActions = state.sessionActions(agent)
-	if agentActions[1].Enabled || agentActions[2].Enabled {
-		t.Fatalf("unhealthy adapter enabled yield actions=%#v", agentActions[:3])
+	if agentActions[2].Enabled || agentActions[3].Enabled {
+		t.Fatalf("unhealthy adapter enabled yield actions=%#v", agentActions[:4])
 	}
 }
 
@@ -611,7 +611,7 @@ func TestSessionActionsDisableLifecycleWhileAnotherOperationIsPending(t *testing
 
 func TestActionModalIsCenteredColoredAndSelectsStableAction(t *testing.T) {
 	target := ducklord.RemoteSession{Client: "host", InstanceID: "instance", SessionID: "SHELL1", Name: "中文 shell", Kind: string(model.KindShell), Status: string(model.StatusRunning), RuntimeGeneration: 4}
-	state := &tuiState{ownerName: "desk", actionMenu: true, actionTarget: target, actionIndex: 4,
+	state := &tuiState{ownerName: "desk", actionMenu: true, actionTarget: target, actionIndex: 5,
 		hostSync: map[string]ducklord.SessionUpdate{"host": {State: "live"}}, sessions: []ducklord.RemoteSession{target}}
 	var out bytes.Buffer
 	state.renderActionModal(&out, 80, 24)
@@ -661,10 +661,28 @@ func TestTUIRenderShowsStoppedRetainedOutputWindow(t *testing.T) {
 		Kind: string(model.KindAgent), Status: string(model.StatusStopped), RetainedOutputBytes: 1536, RetainedOutputUntilMS: until}}}
 	var out bytes.Buffer
 	state.render(&out)
-	for _, want := range []string{"stopped", "retained:1.5 KiB", "until Jan 02 15:04"} {
+	for _, want := range []string{"💀", "stopped", "retained:1.5 KiB", "until Jan 02 15:04"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("retention header missing %q in %q", want, out.String())
 		}
+	}
+}
+
+func TestSessionNeedsAttentionForStoppedOrUnresponsiveRuntime(t *testing.T) {
+	for _, session := range []ducklord.RemoteSession{
+		{Status: string(model.StatusStopped)},
+		{Status: string(model.StatusRunning), AdapterState: string(model.AdapterUnhealthy)},
+	} {
+		if !sessionNeedsAttention(session) {
+			t.Fatalf("session should show death indicator: %+v", session)
+		}
+	}
+	succeeded := true
+	if sessionNeedsAttention(ducklord.RemoteSession{Status: string(model.StatusStopped), ExitSuccess: &succeeded}) {
+		t.Fatal("successful stopped runtime was marked as dead")
+	}
+	if sessionNeedsAttention(ducklord.RemoteSession{Status: string(model.StatusRunning), AdapterState: string(model.AdapterRecovering)}) {
+		t.Fatal("recovering session was incorrectly marked dead")
 	}
 }
 

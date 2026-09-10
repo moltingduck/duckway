@@ -247,10 +247,17 @@ Useful keys:
 - `a` adds a Ducklion host from `~/.ssh/config`; use `client-c` in the demo.
 - `c` creates a new remote session with the wizard. Choose `agent` or `shell`,
   then follow the type-specific flow.
+- `m` opens session actions. Choose **Reconnect PTY output** to replace a
+  broken viewer stream and rebuild the screen from Ducklion without restarting
+  the shell/agent or changing its writer.
 - `n` configures notification categories for the selected session.
 - `E`, `R`, and `X` open confirmation views for end, restart, and destroy.
 - `r` refreshes immediately.
 - `q` quits.
+
+The session list shows `💀` when a process has stopped or an agent adapter is
+unhealthy/non-responsive. A temporary host reconnect retains the last screen
+instead of immediately declaring each remote process dead.
 
 ### 4. Interact With A Bash Session
 
@@ -815,7 +822,8 @@ Inside the TUI:
 - `d` removes the selected host entry from the current `config.yaml`
 - `c` creates an agent or shell session with the type-specific wizard
 - `m` opens the centered session action menu; unavailable actions remain visible
-  with their reason, and destructive lifecycle actions require confirmation
+  with their reason. It also provides PTY-output reconnect; destructive
+  lifecycle actions require confirmation
 - `n` configures notifications for the selected session
 - `E`, `R`, and `X` confirm end, restart, and destroy
 - `q` exits

@@ -63,7 +63,16 @@ func TestSupervisedEnvironmentIncludesProxyTrustButNotCredentials(t *testing.T) 
 	} {
 		t.Setenv(name, value)
 	}
+	t.Setenv("TERM", "")
+	t.Setenv("COLORTERM", "")
 	env := strings.Join(supervisedEnvironment("codex"), "\n")
+	if !strings.Contains(env, "TERM=xterm-256color") || !strings.Contains(env, "COLORTERM=truecolor") {
+		t.Fatalf("supervisor did not advertise PTY color capabilities: %q", env)
+	}
+	t.Setenv("TERM", "dumb")
+	if dumbEnv := strings.Join(supervisedEnvironment("codex"), "\n"); !strings.Contains(dumbEnv, "TERM=xterm-256color") || strings.Contains(dumbEnv, "TERM=dumb") {
+		t.Fatalf("supervisor preserved a color-disabled TERM inside a capable PTY: %q", dumbEnv)
+	}
 	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"} {
 		if !strings.Contains(env, name+"=") {
 			t.Fatalf("supervisor environment omitted %s: %q", name, env)

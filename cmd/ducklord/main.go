@@ -1148,6 +1148,7 @@ type tuiState struct {
 	outputForKey              string
 	outputStale               bool
 	outputFresh               bool
+	outputReconnecting        bool
 	terminal                  *ducklord.Terminal
 	terminalGeneration        uint64
 	terminalOffset            uint64
@@ -1358,11 +1359,14 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	previewQueued := false
 	var previewCancel context.CancelFunc
 	var outputRequestID uint64
+	var reconnectRequestID uint64
 	var activeOutputEvent ducklord.TerminalOutputEvent
 	selectPooledOutput := func() {
 		if outputManager == nil || len(state.sessions) == 0 {
 			return
 		}
+		reconnectRequestID = 0
+		state.outputReconnecting = false
 		sess := state.currentSession()
 		key, keyOK := terminalOutputKey(sess)
 		selectedKey := sessionKey(sess)
@@ -1622,6 +1626,14 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			if event.RequestID != outputRequestID || !expectedOK || event.Key != expectedKey || event.Revision.RuntimeGeneration != expectedSession.RuntimeGeneration || event.Err != nil {
 				if event.RequestID == outputRequestID && event.Err != nil {
+					state.outputReconnecting = false
+					if event.RequestID == reconnectRequestID {
+						reconnectRequestID = 0
+						state.outputStale = true
+						state.outputErr = "PTY reconnect failed; previous live view retained"
+						state.render(os.Stdout)
+						continue
+					}
 					if searchActivation {
 						state.searchPendingRequestID = 0
 						state.searchErr = "PTY output stream unavailable"
@@ -1678,6 +1690,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.terminalOffset = view.OutputOffset
 			state.terminalCursorValid = view.Ready && !view.Disconnected
 			state.outputStale = false
+			state.outputReconnecting = false
+			if event.RequestID == reconnectRequestID {
+				reconnectRequestID = 0
+			}
 			state.outputFresh = view.Ready && !view.Disconnected
 			state.outputErr = view.Error
 			if view.Ended {
@@ -1787,6 +1803,15 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 		case update := <-sessionUpdates:
 			previousHost := state.hostSync[update.Client]
+			previousInstance := previousHost.InstanceID
+			if previousInstance == "" {
+				for _, session := range state.sessions {
+					if session.Client == update.Client && session.InstanceID != "" {
+						previousInstance = session.InstanceID
+						break
+					}
+				}
+			}
 			previousActive := state.effectiveAttachKey()
 			if state.invalidateCreateStart(update) {
 				if startCancel != nil {
@@ -1797,7 +1822,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			state.applySessionUpdate(update)
 			if outputManager != nil {
-				if previousHost.InstanceID != "" && (update.InstanceID != previousHost.InstanceID || previousHost.State == "live" && update.State != "live") {
+				if previousInstance != "" && update.InstanceID != "" && update.InstanceID != previousInstance {
+					outputManager.ForgetHost(update.Client, previousInstance)
+				} else if previousHost.InstanceID != "" && previousHost.State == "live" && update.State != "live" {
 					outputManager.SyncHost(update.Client, previousHost.InstanceID, false, nil)
 				}
 				if update.State == "live" && update.InstanceID != "" {
@@ -1814,7 +1841,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					outputManager.SyncHost(update.Client, update.InstanceID, true, selections)
 				}
 			}
-			if control != nil && !controlMatchesSession(control, state.currentSession(), state.ownerName) {
+			if control != nil && (!state.hostIsLive(state.currentSession().Client) || !controlMatchesSession(control, state.currentSession(), state.ownerName)) {
 				controlID++
 				if controlOpenCancel != nil {
 					controlOpenCancel()
@@ -1823,7 +1850,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				_ = control.Stdin.Close()
 				control, controlDone = nil, nil
 				attachCanResize = false
-				state.outputErr = "PTY control changed; yield control again before sending input"
+				state.focused = false
+				state.clearAttachIdentity()
+				state.outputErr = "PTY control disconnected; reconnect and focus it again"
 			}
 			if previousActive != "" && state.effectiveAttachKey() == "" {
 				controlID++
@@ -1964,6 +1993,14 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			if state.focused {
+				if !state.hostIsLive(state.currentSession().Client) {
+					state.focused = false
+					state.clearAttachIdentity()
+					state.outputFresh = false
+					state.outputErr = "host reconnecting; input was not sent"
+					state.render(os.Stdout)
+					continue
+				}
 				if isDetachInput(b) {
 					if outputManager == nil {
 						state.saveCurrentSnapshot()
@@ -2264,6 +2301,29 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				switch action {
 				case "attach":
 					b = []byte("\r")
+				case "reconnect":
+					if outputManager == nil {
+						state.refreshSelectedOutput(ctx)
+						state.render(os.Stdout)
+						continue
+					}
+					client, clientErr := mustClient(cfg, target.Client)
+					if clientErr != nil {
+						state.outputErr = clientErr.Error()
+						state.render(os.Stdout)
+						continue
+					}
+					rows, cols := state.activePTYSize()
+					outputRequestID = outputManager.Reconnect(ducklord.TerminalSelection{Client: client, InstanceID: target.InstanceID, SessionID: target.SessionID,
+						RuntimeGeneration: target.RuntimeGeneration, Rows: int(rows), Cols: int(cols)})
+					reconnectRequestID = outputRequestID
+					activeOutputEvent = ducklord.TerminalOutputEvent{}
+					state.outputReconnecting = true
+					state.outputStale = true
+					state.outputFresh = false
+					state.outputErr = "reconnecting PTY output from Ducklion..."
+					state.render(os.Stdout)
+					continue
 				case "yield":
 					b = []byte("y")
 				case "yield-wait":
@@ -3656,16 +3716,30 @@ func (s *tuiState) render(out io.Writer) {
 			prefix = ">"
 		}
 		mark := " "
-		if sessionKey(sess) == s.activeAttachKey {
+		if sessionNeedsAttention(sess) {
+			mark = "💀"
+		} else if sessionKey(sess) == s.activeAttachKey {
 			mark = "●"
 		} else if sess.Unread {
 			mark = "•"
 		} else if sess.Updated {
 			mark = "*"
 		}
-		line := fmt.Sprintf("%s%s %-12s %-18s %-9s %-14s %s", prefix, mark, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sessionTypeLabel(sess)), sess.LastLine)
+		markColumn := mark + " "
+		if modalCellWidth(mark) >= 2 {
+			markColumn = mark
+		}
+		line := fmt.Sprintf("%s%s%-12s %-18s %-9s %-14s %s", prefix, markColumn, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sessionTypeLabel(sess)), sess.LastLine)
 		if sess.Error != "" {
-			line = fmt.Sprintf("%s! %-12s %-18s %-9s %s", prefix, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), sess.Error)
+			errorMark := "!"
+			if sessionNeedsAttention(sess) {
+				errorMark = "💀"
+			}
+			errorColumn := errorMark + " "
+			if modalCellWidth(errorMark) >= 2 {
+				errorColumn = errorMark
+			}
+			line = fmt.Sprintf("%s%s%-12s %-18s %-9s %s", prefix, errorColumn, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), sess.Error)
 		}
 		separator := " |"
 		if layout.overlay {
@@ -3933,7 +4007,10 @@ func (s *tuiState) sessionActions(session ducklord.RemoteSession) []sessionActio
 	if session.Kind == string(model.KindAgent) && (session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName) {
 		attachLabel = "View PTY (read-only)"
 	}
-	actions := []sessionAction{{ID: "attach", Key: "o", Label: attachLabel, Enabled: attachEnabled, DisabledReason: "session is not running or host is reconnecting"}}
+	actions := []sessionAction{
+		{ID: "attach", Key: "o", Label: attachLabel, Enabled: attachEnabled, DisabledReason: "session is not running or host is reconnecting"},
+		{ID: "reconnect", Key: "c", Label: "Reconnect PTY output", Enabled: attachEnabled, DisabledReason: "session is not running or host is reconnecting"},
+	}
 	if session.Kind == string(model.KindAgent) {
 		adapterHealthy := session.AdapterState == string(model.AdapterHealthy)
 		nonOwner := session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName
@@ -3943,7 +4020,7 @@ func (s *tuiState) sessionActions(session ducklord.RemoteSession) []sessionActio
 			sessionAction{ID: "yield-wait", Key: "Y", Label: "Yield when idle", Enabled: yieldReady, DisabledReason: actionDisabledReason(live, adapterHealthy, nonOwner, true)},
 		)
 	}
-	actions = append(actions, sessionAction{ID: "notifications", Key: "n", Label: "Notification settings", Enabled: session.InstanceID != "" && session.SessionID != "", DisabledReason: "session identity is unavailable"})
+	actions = append(actions, sessionAction{ID: "notifications", Key: "n", Label: "Notification settings (local)", Enabled: session.InstanceID != "" && session.SessionID != "", DisabledReason: "session identity is unavailable"})
 	lifecycleEnabled := live && !s.lifecycleBusy && (session.Kind == string(model.KindShell) || session.WriterKind == string(model.OwnerTerminal) && session.WriterID == s.ownerName)
 	lifecycleReason := "host is reconnecting"
 	if s.lifecycleBusy {
@@ -4286,7 +4363,11 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 		header += "  [focus]"
 	}
 	if s.outputStale {
-		header += "  [STALE SNAPSHOT]"
+		if s.outputReconnecting {
+			header += "  [RECONNECTING PTY…]"
+		} else {
+			header += "  [STALE SNAPSHOT]"
+		}
 	}
 	fmt.Fprintf(out, "\033[5;%dH%s\033[K", x, truncate(header, width))
 	startRow := 6
@@ -4581,7 +4662,7 @@ func (s *tuiState) handleActionMenuInput(input []byte) string {
 
 func (s *tuiState) chooseActionMenuItem(action sessionAction) string {
 	switch action.ID {
-	case "attach", "yield", "yield-wait":
+	case "attach", "reconnect", "yield", "yield-wait":
 		s.actionMenu = false
 		s.actionOperation, s.actionMode = action.Operation, action.Mode
 		return action.ID
@@ -6388,6 +6469,11 @@ func sessionTypeLabel(session ducklord.RemoteSession) string {
 		return "agent"
 	}
 	return "agent:" + session.AgentType
+}
+
+func sessionNeedsAttention(session ducklord.RemoteSession) bool {
+	return session.AdapterState == string(model.AdapterUnhealthy) ||
+		session.Status == string(model.StatusStopped) && (session.ExitSuccess == nil || !*session.ExitSuccess)
 }
 
 func formatByteCount(bytes int64) string {

@@ -39,6 +39,7 @@ type TerminalOutputEvent struct {
 type terminalOutputRequest struct {
 	id        uint64
 	selection TerminalSelection
+	reconnect bool
 }
 
 type terminalOutputResult struct {
@@ -106,11 +107,21 @@ func newTerminalOutputManager(parent context.Context, capacity int, source Termi
 }
 
 func (m *TerminalOutputManager) Select(selection TerminalSelection) uint64 {
+	return m.request(selection, false)
+}
+
+// Reconnect discards the selected session's current raw-output connection and
+// framebuffer, then rebuilds both from Ducklion's authoritative replay.
+func (m *TerminalOutputManager) Reconnect(selection TerminalSelection) uint64 {
+	return m.request(selection, true)
+}
+
+func (m *TerminalOutputManager) request(selection TerminalSelection, reconnect bool) uint64 {
 	m.mu.Lock()
 	m.nextID++
 	id := m.nextID
 	m.mu.Unlock()
-	request := terminalOutputRequest{id: id, selection: selection}
+	request := terminalOutputRequest{id: id, selection: selection, reconnect: reconnect}
 	m.mu.Lock()
 	m.current = request
 	m.mu.Unlock()
@@ -234,11 +245,16 @@ func (m *TerminalOutputManager) activate(ctx context.Context, request terminalOu
 	var activation OutputActivation
 	var err error
 	for {
-		activation, err = m.pool.Activate(ctx, key, revision, func(openCtx context.Context, key OutputKey, revision OutputRevision, _ uint64) (OutputResource, error) {
-			terminal, openErr := m.openResource(openCtx, selection, key, revision)
+		open := func(openCtx context.Context, key OutputKey, revision OutputRevision, _ uint64) (OutputResource, error) {
+			terminal, openErr := m.openResource(openCtx, selection, key, revision, !request.reconnect)
 			result.terminal = terminal
 			return terminal, openErr
-		})
+		}
+		if request.reconnect {
+			activation, err = m.pool.ReconnectDesired(ctx, key, revision, open)
+		} else {
+			activation, err = m.pool.Activate(ctx, key, revision, open)
+		}
 		if !outputTransitionBusy(err) || ctx.Err() != nil {
 			break
 		}
@@ -251,11 +267,13 @@ func (m *TerminalOutputManager) activate(ctx context.Context, request terminalOu
 	return result
 }
 
-func (m *TerminalOutputManager) openResource(ctx context.Context, selection TerminalSelection, key OutputKey, revision OutputRevision) (*PooledTerminal, error) {
+func (m *TerminalOutputManager) openResource(ctx context.Context, selection TerminalSelection, key OutputKey, revision OutputRevision, restoreSnapshot bool) (*PooledTerminal, error) {
 	var initial *TerminalRenderState
-	if snapshot, loadErr := m.store.Load(key.InstanceID, key.SessionID); loadErr == nil {
-		if decoded, decodeErr := DecodeTerminalRenderState(snapshot.Payload); decodeErr == nil {
-			initial = &decoded
+	if restoreSnapshot {
+		if snapshot, loadErr := m.store.Load(key.InstanceID, key.SessionID); loadErr == nil {
+			if decoded, decodeErr := DecodeTerminalRenderState(snapshot.Payload); decodeErr == nil {
+				initial = &decoded
+			}
 		}
 	}
 	if m.opener != nil {
@@ -296,14 +314,20 @@ func (m *TerminalOutputManager) watch(event TerminalOutputEvent) {
 			select {
 			case <-watchCtx.Done():
 				return
-			case view := <-final:
+			case view, ok := <-final:
+				if !ok {
+					return
+				}
 				finalEvent := event
 				finalEvent.FinalView = &view
 				m.publish(finalEvent)
 				return
 			case <-done:
 				select {
-				case view := <-final:
+				case view, ok := <-final:
+					if !ok {
+						return
+					}
 					finalEvent := event
 					finalEvent.FinalView = &view
 					m.publish(finalEvent)
@@ -342,6 +366,24 @@ func (m *TerminalOutputManager) DisconnectHost(clientKey, instanceID string) err
 	return m.pool.DisconnectHost(clientKey, instanceID)
 }
 
+// ForgetHost fences pending restores and removes desired subscriptions for a
+// Ducklion process that has been authoritatively replaced.
+func (m *TerminalOutputManager) ForgetHost(clientKey, instanceID string) {
+	host := outputHost{clientKey, instanceID}
+	m.hostMu.Lock()
+	if cancel := m.hostCancels[host]; cancel != nil {
+		cancel()
+		delete(m.hostCancels, host)
+	}
+	m.hostEpoch[host]++
+	m.hostMu.Unlock()
+	m.workers.Add(1)
+	go func() {
+		defer m.workers.Done()
+		_ = m.pool.ForgetHost(clientKey, instanceID)
+	}()
+}
+
 func (m *TerminalOutputManager) SyncHost(clientKey, instanceID string, live bool, selections []TerminalSelection) {
 	sessions := make(map[OutputKey]TerminalSelection, len(selections))
 	for _, selection := range selections {
@@ -371,7 +413,7 @@ func (m *TerminalOutputManager) scheduleHostSync(request terminalHostSync) {
 	go func() {
 		defer m.workers.Done()
 		defer cancel()
-		m.applyHostSync(ctx, request)
+		m.applyHostSync(ctx, request, host, epoch)
 		m.hostMu.Lock()
 		if m.hostEpoch[host] == epoch {
 			delete(m.hostCancels, host)
@@ -380,8 +422,16 @@ func (m *TerminalOutputManager) scheduleHostSync(request terminalHostSync) {
 	}()
 }
 
-func (m *TerminalOutputManager) applyHostSync(ctx context.Context, request terminalHostSync) {
+func (m *TerminalOutputManager) applyHostSync(ctx context.Context, request terminalHostSync, host outputHost, epoch uint64) {
+	current := func() bool {
+		m.hostMu.Lock()
+		defer m.hostMu.Unlock()
+		return ctx.Err() == nil && m.hostEpoch[host] == epoch
+	}
 	if !request.live {
+		if !current() {
+			return
+		}
 		_ = m.pool.DisconnectHost(request.clientKey, request.instanceID)
 		return
 	}
@@ -398,14 +448,16 @@ nextSession:
 		for {
 			var err error
 			activation, err = m.pool.ReplaceDesired(ctx, key, revision, func(openCtx context.Context, key OutputKey, revision OutputRevision, _ uint64) (OutputResource, error) {
-				return m.openResource(openCtx, selection, key, revision)
+				return m.openResource(openCtx, selection, key, revision, true)
 			})
 			if !outputTransitionBusy(err) || ctx.Err() != nil {
 				if err != nil {
 					if ctx.Err() != nil {
 						return
 					}
-					m.publishRestoreError(key, revision, err)
+					if current() {
+						m.publishRestoreError(key, revision, err)
+					}
 					continue nextSession
 				}
 				break
@@ -414,8 +466,11 @@ nextSession:
 				return
 			}
 		}
-		if ctx.Err() != nil {
+		if !current() {
 			return
+		}
+		if _, err := m.pool.TerminalView(key, activation.Lease); err != nil {
+			continue
 		}
 		status := m.pool.Status()
 		if status.Active != nil && *status.Active == key {

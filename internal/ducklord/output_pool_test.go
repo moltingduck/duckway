@@ -701,6 +701,70 @@ func TestOutputPoolRemoveDesiredClosesOnlyExactSession(t *testing.T) {
 	}
 }
 
+func TestOutputPoolRemoveHostDesiredForgetsOnlyReplacedInstance(t *testing.T) {
+	pool, _ := NewOutputPool(3)
+	defer pool.Close()
+	oldA := OutputKey{ClientKey: "host", InstanceID: "old", SessionID: "A"}
+	oldB := OutputKey{ClientKey: "host", InstanceID: "old", SessionID: "B"}
+	current := OutputKey{ClientKey: "host", InstanceID: "new", SessionID: "C"}
+	for _, key := range []OutputKey{oldA, oldB, current} {
+		if _, err := pool.Activate(context.Background(), key, OutputRevision{RuntimeGeneration: 1}, func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+			return &fakeOutputResource{}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pool.ForgetHost("host", "old"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool.DesiredForHost("host", "old"); len(got) != 0 {
+		t.Fatalf("old instance remained desired: %#v", got)
+	}
+	if got := pool.DesiredForHost("host", "new"); len(got) != 1 || got[0] != current {
+		t.Fatalf("current instance was disturbed: %#v", got)
+	}
+}
+
+func TestOutputPoolForgetHostFencesBlockedActivation(t *testing.T) {
+	pool, _ := NewOutputPool(1)
+	defer pool.Close()
+	key := OutputKey{ClientKey: "host", InstanceID: "retired", SessionID: "A"}
+	entered, release := make(chan struct{}), make(chan struct{})
+	activationDone := make(chan error, 1)
+	go func() {
+		_, err := pool.Activate(context.Background(), key, OutputRevision{RuntimeGeneration: 1}, func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+			close(entered)
+			<-release
+			return &fakeOutputResource{}, nil
+		})
+		activationDone <- err
+	}()
+	<-entered
+	forgetDone := make(chan error, 1)
+	go func() { forgetDone <- pool.ForgetHost("host", "retired") }()
+	for {
+		pool.mu.Lock()
+		retired := pool.retired[key.host()]
+		pool.mu.Unlock()
+		if retired {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	if err := <-activationDone; !errors.Is(err, ErrStaleOutputLease) {
+		t.Fatalf("retired activation error=%v", err)
+	}
+	if err := <-forgetDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Activate(context.Background(), key, OutputRevision{RuntimeGeneration: 1}, func(context.Context, OutputKey, OutputRevision, uint64) (OutputResource, error) {
+		return &fakeOutputResource{}, nil
+	}); !errors.Is(err, ErrStaleOutputLease) {
+		t.Fatalf("retired host accepted a new activation: %v", err)
+	}
+}
+
 func TestOutputPoolVictimHostDisconnectRollsBackCrossHostHandoff(t *testing.T) {
 	pool, _ := NewOutputPool(1)
 	a := OutputKey{ClientKey: "host-a", InstanceID: "instance-a", SessionID: "A"}

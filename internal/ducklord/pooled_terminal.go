@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	MaxPooledTerminalRows = 200
-	MaxPooledTerminalCols = 500
+	MaxPooledTerminalRows      = 200
+	MaxPooledTerminalCols      = 500
+	maxSynchronizedOutputBytes = 256 * 1024
 )
 
 type OutputStreamMetadata struct {
@@ -64,35 +65,36 @@ type pooledOutputReader interface {
 // lease before it becomes visible. After binding, every framebuffer mutation
 // passes through OutputPool.WithLease so eviction snapshots are lossless.
 type PooledTerminal struct {
-	mu             sync.Mutex
-	snapshotMu     sync.Mutex
-	stream         pooledOutputReader
-	terminal       *Terminal
-	store          SnapshotStore
-	expected       OutputKey
-	revision       OutputRevision
-	offset         uint64
-	replayEnd      uint64
-	ready          bool
-	truncated      bool
-	contiguous     bool
-	disconnect     bool
-	readErr        error
-	cleanEnd       bool
-	viewRevision   uint64
-	pendingResizes []pooledTerminalResize
-	finalViews     chan PooledTerminalView
-	pool           *OutputPool
-	lease          uint64
-	closing        bool
-	cancel         context.CancelFunc
-	done           chan struct{}
-	readyCh        chan struct{}
-	updates        chan struct{}
-	readyOnce      sync.Once
-	closeOnce      sync.Once
-	closeErr       error
-	snapshotHook   func()
+	mu                sync.Mutex
+	snapshotMu        sync.Mutex
+	stream            pooledOutputReader
+	terminal          *Terminal
+	store             SnapshotStore
+	expected          OutputKey
+	revision          OutputRevision
+	offset            uint64
+	replayEnd         uint64
+	ready             bool
+	truncated         bool
+	contiguous        bool
+	disconnect        bool
+	readErr           error
+	cleanEnd          bool
+	viewRevision      uint64
+	synchronizedBytes int
+	pendingResizes    []pooledTerminalResize
+	finalViews        chan PooledTerminalView
+	pool              *OutputPool
+	lease             uint64
+	closing           bool
+	cancel            context.CancelFunc
+	done              chan struct{}
+	readyCh           chan struct{}
+	updates           chan struct{}
+	readyOnce         sync.Once
+	closeOnce         sync.Once
+	closeErr          error
+	snapshotHook      func()
 }
 
 type pooledTerminalResize struct {
@@ -241,6 +243,7 @@ func (p *PooledTerminal) applyFrameLocked(frame OutputFrame) bool {
 		p.contiguous = false
 		return false
 	}
+	wasSynchronized := p.terminal.SynchronizedOutput()
 	cursor := frame.StartOffset
 	for len(p.pendingResizes) > 0 && p.pendingResizes[0].offset <= frame.EndOffset {
 		resize := p.pendingResizes[0]
@@ -256,7 +259,23 @@ func (p *PooledTerminal) applyFrameLocked(frame OutputFrame) bool {
 	p.terminal.Write(frame.Data[int(cursor-frame.StartOffset):])
 	p.offset = frame.EndOffset
 	p.viewRevision++
-	p.signalUpdateLocked()
+	// Codex and other full-screen TUIs use DEC mode 2026 to make erase/redraw
+	// sequences atomic. Publishing the intermediate erase frame makes the UI
+	// appear blank or "eaten", so retain the last rendered view until the mode
+	// is closed. The closing frame then emits one coalesced update.
+	if p.terminal.SynchronizedOutput() {
+		if !wasSynchronized {
+			p.synchronizedBytes = 0
+		}
+		p.synchronizedBytes += len(frame.Data)
+		if p.synchronizedBytes >= maxSynchronizedOutputBytes {
+			p.synchronizedBytes = 0
+			p.signalUpdateLocked()
+		}
+	} else {
+		p.synchronizedBytes = 0
+		p.signalUpdateLocked()
+	}
 	if p.offset >= p.replayEnd {
 		p.markReadyLocked()
 	}
@@ -275,7 +294,9 @@ func (p *PooledTerminal) scheduleResize(barrier uint64, rows, cols int) error {
 	if barrier == p.offset {
 		p.terminal.Resize(rows, cols)
 		p.viewRevision++
-		p.signalUpdateLocked()
+		if !p.terminal.SynchronizedOutput() {
+			p.signalUpdateLocked()
+		}
 		return nil
 	}
 	if count := len(p.pendingResizes); count > 0 && barrier < p.pendingResizes[count-1].offset {
@@ -354,7 +375,7 @@ func (p *PooledTerminal) Snapshot(ctx context.Context) error {
 	p.mu.Lock()
 	state := p.terminal.SnapshotState()
 	generation, offset, truncated := p.revision.RuntimeGeneration, p.offset, p.truncated
-	resumeValid := p.ready && p.contiguous && len(p.pendingResizes) == 0
+	resumeValid := p.ready && p.contiguous && len(p.pendingResizes) == 0 && !p.terminal.SynchronizedOutput()
 	instanceID, sessionID := p.expected.InstanceID, p.expected.SessionID
 	hook := p.snapshotHook
 	p.mu.Unlock()

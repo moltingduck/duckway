@@ -1,6 +1,7 @@
 package ducklord
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -123,6 +124,61 @@ func TestPooledTerminalDirtySignalCoalescesWithoutBlockingReader(t *testing.T) {
 	case <-p.Updates():
 	case <-time.After(time.Second):
 		t.Fatal("new frame did not publish a dirty signal")
+	}
+}
+
+func TestPooledTerminalPublishesSynchronizedRedrawAtomically(t *testing.T) {
+	reader := newFakePooledOutput()
+	p, err := newPooledTerminal(context.Background(), pooledMetadata(0), reader, pooledOptions(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: []byte("old screen"), StartOffset: 0, EndOffset: 10}}
+	waitPooledOffset(t, p, 10)
+	select {
+	case <-p.Updates():
+	default:
+	}
+
+	begin := []byte("\x1b[?2026h\x1b[2J\x1b[H")
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: begin, StartOffset: 10, EndOffset: 10 + uint64(len(begin))}}
+	waitPooledOffset(t, p, 10+uint64(len(begin)))
+	select {
+	case <-p.Updates():
+		t.Fatal("published a partially erased synchronized frame")
+	default:
+	}
+
+	finish := []byte("\x1b[38;2;80;160;240mcomplete\x1b[0m\x1b[?2026l")
+	start := 10 + uint64(len(begin))
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: finish, StartOffset: start, EndOffset: start + uint64(len(finish))}}
+	waitPooledOffset(t, p, start+uint64(len(finish)))
+	select {
+	case <-p.Updates():
+	case <-time.After(time.Second):
+		t.Fatal("synchronized redraw completion was not published")
+	}
+	restored, ok := NewTerminalFromState(p.View().Framebuffer, 4)
+	if !ok || !strings.Contains(restored.Text(), "complete") {
+		t.Fatalf("completed framebuffer missing redraw: ok=%v text=%q", ok, restored.Text())
+	}
+}
+
+func TestPooledTerminalBoundsUnclosedSynchronizedOutput(t *testing.T) {
+	reader := newFakePooledOutput()
+	p, err := newPooledTerminal(context.Background(), pooledMetadata(0), reader, pooledOptions(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	begin := append([]byte("\x1b[?2026h"), bytes.Repeat([]byte("x"), maxSynchronizedOutputBytes)...)
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: begin, StartOffset: 0, EndOffset: uint64(len(begin))}}
+	waitPooledOffset(t, p, uint64(len(begin)))
+	select {
+	case <-p.Updates():
+	case <-time.After(time.Second):
+		t.Fatal("unterminated synchronized output froze updates past the byte budget")
 	}
 }
 

@@ -124,6 +124,7 @@ type OutputPool struct {
 	nextLease uint64
 	nextID    uint64
 	hostEpoch map[outputHost]uint64
+	retired   map[outputHost]bool
 	handoff   *outputHandoff
 	closed    bool
 	workers   sync.WaitGroup
@@ -135,23 +136,29 @@ func NewOutputPool(capacity int) (*OutputPool, error) {
 	if capacity < 1 || capacity > 100 {
 		return nil, fmt.Errorf("raw output subscription limit must be between 1 and 100")
 	}
-	return &OutputPool{capacity: capacity, entries: make(map[OutputKey]*outputPoolEntry), hostEpoch: make(map[outputHost]uint64), closeDone: make(chan struct{})}, nil
+	return &OutputPool{capacity: capacity, entries: make(map[OutputKey]*outputPoolEntry), hostEpoch: make(map[outputHost]uint64), retired: make(map[outputHost]bool), closeDone: make(chan struct{})}, nil
 }
 
 // Activate changes the displayed PTY only after destination preparation and,
 // when full, a quiesced victim snapshot both succeed. At most one preparation
 // may temporarily exceed capacity.
 func (p *OutputPool) Activate(ctx context.Context, key OutputKey, revision OutputRevision, open OutputOpenFunc) (OutputActivation, error) {
-	return p.activate(ctx, key, revision, open, true, false)
+	return p.activate(ctx, key, revision, open, true, false, false)
 }
 
 // ReplaceDesired prepares a new stream revision for an existing background
 // member without stealing active selection or changing LRU order.
 func (p *OutputPool) ReplaceDesired(ctx context.Context, key OutputKey, revision OutputRevision, open OutputOpenFunc) (OutputActivation, error) {
-	return p.activate(ctx, key, revision, open, false, true)
+	return p.activate(ctx, key, revision, open, false, true, false)
 }
 
-func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision OutputRevision, open OutputOpenFunc, makeActive, requireDesired bool) (OutputActivation, error) {
+// ReconnectDesired atomically replaces an existing desired stream even when
+// its runtime generation is unchanged. The selected session remains active.
+func (p *OutputPool) ReconnectDesired(ctx context.Context, key OutputKey, revision OutputRevision, open OutputOpenFunc) (OutputActivation, error) {
+	return p.activate(ctx, key, revision, open, true, false, true)
+}
+
+func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision OutputRevision, open OutputOpenFunc, makeActive, requireDesired, forceReplace bool) (OutputActivation, error) {
 	if err := key.validate(); err != nil {
 		return OutputActivation{}, err
 	}
@@ -166,6 +173,10 @@ func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision Outpu
 		p.mu.Unlock()
 		return OutputActivation{}, ErrOutputPoolClosed
 	}
+	if p.retired[key.host()] {
+		p.mu.Unlock()
+		return OutputActivation{}, ErrStaleOutputLease
+	}
 	if p.handoff != nil {
 		p.mu.Unlock()
 		return OutputActivation{}, ErrHandoffBusy
@@ -178,7 +189,7 @@ func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision Outpu
 		p.mu.Unlock()
 		return OutputActivation{}, ErrRestoreBusy
 	}
-	if entry := p.entries[key]; entry != nil && entry.resource != nil && entry.revision == revision && !entry.evicting {
+	if entry := p.entries[key]; entry != nil && entry.resource != nil && entry.revision == revision && !entry.evicting && !forceReplace {
 		if makeActive {
 			p.setActiveLocked(key)
 		}
@@ -341,6 +352,7 @@ func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision Outpu
 		victimResource = victim.resource
 	}
 	p.clearHandoffLocked(handoff)
+	committedLease := entry.lease
 	p.mu.Unlock()
 	var closeErr error
 	if victimResource != nil {
@@ -349,7 +361,7 @@ func (p *OutputPool) activate(ctx context.Context, key OutputKey, revision Outpu
 	if oldResource != nil && oldResource != victimResource {
 		closeErr = errors.Join(closeErr, oldResource.Close())
 	}
-	return OutputActivation{Key: key, Revision: revision, Lease: entry.lease, Evicted: evicted, EvictionCloseError: closeErr}, nil
+	return OutputActivation{Key: key, Revision: revision, Lease: committedLease, Evicted: evicted, EvictionCloseError: closeErr}, nil
 }
 
 func (p *OutputPool) handoffCurrentLocked(h *outputHandoff) bool {
@@ -685,6 +697,35 @@ func (p *OutputPool) DesiredForHost(clientKey, instanceID string) []OutputKey {
 		}
 	}
 	return result
+}
+
+// RemoveHostDesired forgets every subscription belonging to an authoritative
+// daemon instance replacement. A new Ducklion must not revive old leases.
+func (p *OutputPool) ForgetHost(clientKey, instanceID string) error {
+	host := outputHost{clientKey, instanceID}
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return ErrOutputPoolClosed
+	}
+	p.retired[host] = true
+	p.mu.Unlock()
+	// This advances the pool host epoch and cancels an opener that captured the
+	// old epoch before the instance was retired.
+	if err := p.DisconnectHost(clientKey, instanceID); err != nil {
+		return err
+	}
+	for {
+		keys := p.DesiredForHost(clientKey, instanceID)
+		if len(keys) == 0 {
+			return nil
+		}
+		for _, key := range keys {
+			if err := p.RemoveDesired(key); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // RemoveDesired applies an authoritative session removal. A matching in-flight

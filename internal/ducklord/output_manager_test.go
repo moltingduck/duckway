@@ -108,6 +108,39 @@ func TestTerminalOutputManagerPublishesFinalViewAfterLeaseDetaches(t *testing.T)
 	}
 }
 
+func TestTerminalOutputManagerReconnectReplacesSameGenerationFromFreshReplay(t *testing.T) {
+	root := t.TempDir()
+	var opens atomic.Int32
+	var readers []*fakePooledOutput
+	manager, err := newTerminalOutputManager(context.Background(), 1, unusedTerminalOutputSource{}, SnapshotStore{Root: root},
+		func(ctx context.Context, selection TerminalSelection, key OutputKey, revision OutputRevision, initial *TerminalRenderState) (*PooledTerminal, error) {
+			if opens.Add(1) == 2 && initial != nil {
+				t.Fatal("manual reconnect reused a possibly corrupt framebuffer snapshot")
+			}
+			reader := newFakePooledOutput()
+			readers = append(readers, reader)
+			return newPooledTerminal(ctx, OutputStreamMetadata{InstanceID: key.InstanceID, SessionID: key.SessionID, RuntimeGeneration: revision.RuntimeGeneration}, reader,
+				PooledTerminalOptions{ExpectedKey: key, ExpectedRevision: revision, Rows: selection.Rows, Cols: selection.Cols, Scrollback: 4, Store: SnapshotStore{Root: root}})
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	selection := TerminalSelection{Client: Client{Name: "host"}, InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971",
+		SessionID: "ABC123", RuntimeGeneration: 1, Rows: 2, Cols: 20}
+	first := manager.Select(selection)
+	if event := waitManagerEvent(t, manager); event.RequestID != first {
+		t.Fatalf("first event=%+v", event)
+	}
+	second := manager.Reconnect(selection)
+	if event := waitManagerEvent(t, manager); event.RequestID != second || event.Lease == 0 {
+		t.Fatalf("reconnect event=%+v", event)
+	}
+	if opens.Load() != 2 || len(readers) != 2 || readers[0].closeCount.Load() != 1 || readers[1].closeCount.Load() != 0 {
+		t.Fatalf("opens=%d readers=%d close counts=%d/%d", opens.Load(), len(readers), readers[0].closeCount.Load(), readers[1].closeCount.Load())
+	}
+}
+
 func TestTerminalOutputManagerReconnectRestoresAllDesiredAndGeneration(t *testing.T) {
 	root := t.TempDir()
 	manager, err := newTerminalOutputManager(context.Background(), 2, unusedTerminalOutputSource{}, SnapshotStore{Root: root},

@@ -49,19 +49,20 @@ type TerminalScreenState struct {
 }
 
 type TerminalState struct {
-	Rows          int                 `json:"rows"`
-	Cols          int                 `json:"cols"`
-	Scrollback    []TerminalLine      `json:"scrollback,omitempty"`
-	Primary       TerminalScreenState `json:"primary"`
-	Alternate     TerminalScreenState `json:"alternate"`
-	UseAlternate  bool                `json:"use_alternate,omitempty"`
-	Style         CellStyle           `json:"style,omitempty"`
-	Autowrap      bool                `json:"autowrap"`
-	ParserState   terminalParseState  `json:"parser_state,omitempty"`
-	CSI           []byte              `json:"csi,omitempty"`
-	UTF8Pending   []byte              `json:"utf8_pending,omitempty"`
-	WrapPending   bool                `json:"wrap_pending,omitempty"`
-	CursorVisible bool                `json:"cursor_visible"`
+	Rows               int                 `json:"rows"`
+	Cols               int                 `json:"cols"`
+	Scrollback         []TerminalLine      `json:"scrollback,omitempty"`
+	Primary            TerminalScreenState `json:"primary"`
+	Alternate          TerminalScreenState `json:"alternate"`
+	UseAlternate       bool                `json:"use_alternate,omitempty"`
+	Style              CellStyle           `json:"style,omitempty"`
+	Autowrap           bool                `json:"autowrap"`
+	ParserState        terminalParseState  `json:"parser_state,omitempty"`
+	CSI                []byte              `json:"csi,omitempty"`
+	UTF8Pending        []byte              `json:"utf8_pending,omitempty"`
+	WrapPending        bool                `json:"wrap_pending,omitempty"`
+	CursorVisible      bool                `json:"cursor_visible"`
+	SynchronizedOutput bool                `json:"synchronized_output,omitempty"`
 }
 
 type terminalParseState uint8
@@ -79,20 +80,21 @@ const (
 // Terminal is Ducklord's bounded, incremental VT framebuffer. It deliberately
 // interprets terminal controls instead of retaining replayable raw PTY bytes.
 type Terminal struct {
-	Rows, Cols    int
-	ScrollbackMax int
-	Scrollback    []TerminalLine
-	primary       terminalScreen
-	alternate     terminalScreen
-	useAlternate  bool
-	style         CellStyle
-	state         terminalParseState
-	csi           []byte
-	utf8Pending   []byte
-	autowrap      bool
-	wrapPending   bool
-	cursorVisible bool
-	retainedCells int
+	Rows, Cols         int
+	ScrollbackMax      int
+	Scrollback         []TerminalLine
+	primary            terminalScreen
+	alternate          terminalScreen
+	useAlternate       bool
+	style              CellStyle
+	state              terminalParseState
+	csi                []byte
+	utf8Pending        []byte
+	autowrap           bool
+	wrapPending        bool
+	cursorVisible      bool
+	synchronizedOutput bool
+	retainedCells      int
 }
 
 func NewTerminal(rows, cols, scrollback int) *Terminal {
@@ -141,6 +143,7 @@ func NewTerminalFromState(state TerminalState, scrollback int) (*Terminal, bool)
 	terminal.utf8Pending = append([]byte(nil), state.UTF8Pending...)
 	terminal.wrapPending = state.WrapPending
 	terminal.cursorVisible = state.CursorVisible
+	terminal.synchronizedOutput = state.SynchronizedOutput
 	return terminal, true
 }
 
@@ -203,8 +206,14 @@ func (t *Terminal) SnapshotState() TerminalState {
 		UseAlternate: t.useAlternate, Style: t.style, Autowrap: t.autowrap, ParserState: t.state, CSI: append([]byte(nil), t.csi...),
 		UTF8Pending: append([]byte(nil), t.utf8Pending...), WrapPending: t.wrapPending}
 	state.CursorVisible = t.cursorVisible
+	state.SynchronizedOutput = t.synchronizedOutput
 	return state
 }
+
+// SynchronizedOutput reports DEC private mode 2026. Full-screen applications
+// use it to bracket an atomic redraw; renderers must keep the previous frame
+// visible until the matching reset arrives.
+func (t *Terminal) SynchronizedOutput() bool { return t.synchronizedOutput }
 
 // Resize reflows primary soft-wrapped lines while preserving hard line
 // boundaries. Alternate-screen content is cropped/padded because full-screen
@@ -683,6 +692,8 @@ func (t *Terminal) executeCSI(final byte, raw string) {
 					t.cursorVisible = enabled
 				case 47, 1047, 1049:
 					t.setAlternate(enabled, param == 1049)
+				case 2026:
+					t.synchronizedOutput = enabled
 				}
 			}
 		}

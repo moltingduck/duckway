@@ -726,10 +726,25 @@ func supervisedEnvironment(agentType string) []string {
 		)
 	}
 	environment := make([]string, 0, len(allowed))
+	hasTERM, hasColorTERM := false, false
 	for _, name := range allowed {
-		if value, ok := os.LookupEnv(name); ok && !strings.ContainsRune(value, 0) {
+		if value, ok := os.LookupEnv(name); ok && value != "" && !strings.ContainsRune(value, 0) {
+			if name == "TERM" && (value == "dumb" || value == "unknown") {
+				value = "xterm-256color"
+			}
 			environment = append(environment, name+"="+value)
+			hasTERM = hasTERM || name == "TERM"
+			hasColorTERM = hasColorTERM || name == "COLORTERM"
 		}
+	}
+	// Services commonly start without terminal capability variables even though
+	// Ducklion allocates a fully capable PTY. Advertise the renderer Ducklord
+	// actually implements so fullscreen agents retain ANSI and truecolor output.
+	if !hasTERM {
+		environment = append(environment, "TERM=xterm-256color")
+	}
+	if !hasColorTERM {
+		environment = append(environment, "COLORTERM=truecolor")
 	}
 	return environment
 }
