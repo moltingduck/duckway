@@ -136,6 +136,26 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\x1b")
 	capture.waitCurrent(t, "sessions [custom]", 5*time.Second)
 	capture.waitCurrent(t, copyMarker, 10*time.Second)
+
+	// The unified desired-state form disconnects only Ducklord's transport.
+	// Reconnecting the same Ducklion instance must restore raw output without
+	// stopping or replacing the remote PTY session.
+	writePTY(t, terminal, "h\r")
+	capture.waitCurrent(t, "Host connections", 5*time.Second)
+	writePTY(t, terminal, " \r")
+	capture.waitCurrent(t, "client-a:DISCONNECTED", 5*time.Second)
+	if current, ok := findContainerSession(t, runtime, controller, "client-a", alpha.SessionID); !ok || current.Status != string(model.StatusRunning) || current.InstanceID != alphaRemote.InstanceID {
+		t.Fatalf("disconnect changed remote session: ok=%v session=%+v", ok, current)
+	}
+	writePTY(t, terminal, "h\r")
+	capture.waitCurrent(t, "Host connections", 5*time.Second)
+	writePTY(t, terminal, " \r")
+	capture.waitCurrent(t, "client-a:", 5*time.Second)
+	reconnectedMarker := fmt.Sprintf("DUCKLORD_RECONNECTED_%d", os.Getpid())
+	if out, err := exec.Command(runtime, "exec", controller, "ducklord", "send", "client-a", alpha.SessionID, "printf "+reconnectedMarker+"\\n\r", "--config", "/tmp/e2e-inspector.yaml").CombinedOutput(); err != nil {
+		t.Fatalf("write after same-instance reconnect: %v: %s", err, out)
+	}
+	capture.waitCurrent(t, reconnectedMarker, 15*time.Second)
 	writePTY(t, terminal, "o")
 	capture.waitCurrent(t, "sessions [host]", 2*time.Second)
 	writePTY(t, terminal, "o")

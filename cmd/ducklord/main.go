@@ -1240,7 +1240,6 @@ type tuiState struct {
 	hostMenuTarget            string
 	hostMenuIndex             int
 	hostMenuSelected          map[string]bool
-	hostMenuOperation         string
 	hostMenuErr               string
 	disconnectedHosts         map[string]bool
 	hostScoped                bool
@@ -1892,7 +1891,6 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				if update.State == "live" && update.InstanceID != "" {
 					// Only an authoritative live update from the current watch epoch
 					// may clear a disconnect tombstone for this instance.
-					outputManager.RestoreHost(update.Client, update.InstanceID)
 					rows, cols := state.activePTYSize()
 					selections := make([]ducklord.TerminalSelection, 0, len(update.Sessions))
 					if client, clientErr := mustClient(cfg, update.Client); clientErr == nil {
@@ -2281,8 +2279,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				action := state.handleHostMenuInput(b)
 				target := state.hostMenuTarget
 				targets := []string{target}
-				if action == "host-connect-selected" || action == "host-disconnect-selected" {
-					targets = state.selectedHostMenuTargets()
+				var connectTargets []string
+				if action == "host-apply-connections" {
+					targets = state.changedHostMenuTargets(false)
+					connectTargets = state.changedHostMenuTargets(true)
 				}
 				switch action {
 				case "host-add":
@@ -2291,7 +2291,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				case "host-remove":
 					state.hostMenuMode = false
 					state.beginRemoveClient()
-				case "host-disconnect", "host-reconnect", "host-disconnect-selected":
+				case "host-disconnect", "host-reconnect", "host-apply-connections":
 					for _, target := range targets {
 						wasActive := len(state.sessions) > 0 && state.currentSession().Client == target
 						if current, ok := watchedClients[target]; ok {
@@ -2306,7 +2306,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 							state.newSessionErr = "host disconnected; pending session operation was canceled"
 						}
 						if outputManager != nil && previous.InstanceID != "" {
-							outputManager.ForgetHost(target, previous.InstanceID)
+							// A user disconnect is reversible and keeps the desired LRU
+							// membership. ForgetHost is reserved for daemon replacement
+							// and permanent host removal.
+							outputManager.SyncHost(target, previous.InstanceID, false, nil)
 						}
 						if wasActive {
 							if attachCancel != nil {
@@ -2339,10 +2342,21 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 							state.outputErr = "reconnecting " + target
 						}
 					}
-					if action == "host-disconnect-selected" {
-						state.outputErr = fmt.Sprintf("disconnected %d hosts; their sessions remain available as read-only snapshots", len(targets))
+					if action == "host-apply-connections" {
+						for _, target := range connectTargets {
+							delete(state.disconnectedHosts, target)
+							state.hostSync[target] = ducklord.SessionUpdate{Client: target, State: "connecting"}
+							if client, ok := state.cfg.Client(target); ok {
+								watchClient(client)
+							}
+							if !eventDriven {
+								state.refreshSessions(ctx)
+							}
+						}
+						state.hostMenuMode = false
+						state.outputErr = fmt.Sprintf("host connections updated: %d connecting, %d disconnected", len(connectTargets), len(targets))
 					}
-				case "host-connect", "host-connect-selected":
+				case "host-connect":
 					for _, target := range targets {
 						if !state.disconnectedHosts[target] {
 							continue
@@ -2357,9 +2371,6 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						}
 						state.hostMenuMode = false
 						state.outputErr = "connecting " + target
-					}
-					if action == "host-connect-selected" {
-						state.outputErr = fmt.Sprintf("connecting %d selected hosts", len(targets))
 					}
 				}
 				state.render(os.Stdout)
@@ -4700,20 +4711,21 @@ func (s *tuiState) handleShortcutInput(input []byte) string {
 	return ""
 }
 
-var hostActions = []string{"Connect", "Disconnect", "Reconnect", "Add host", "Remove host"}
+var hostActions = []string{"Connections", "Reconnect", "Add host", "Remove host"}
 
 func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 	if !s.hostMenuMode {
 		return
 	}
-	if s.hostMenuStep == "hosts" {
-		operationLabel := "Connect"
-		if s.hostMenuOperation == "disconnect" {
-			operationLabel = "Disconnect"
-		}
-		lines := []modalRenderLine{{modalTitle, "  " + operationLabel + " hosts"}}
+	if s.hostMenuStep == "connections" {
+		lines := []modalRenderLine{{modalTitle, "  Host connections · checked means connected"}}
 		for index, client := range s.cfg.Clients {
 			style, cursor := modalInput, "  "
+			changed := s.hostMenuSelected[client.Name] == s.disconnectedHosts[client.Name]
+			changeMark := " "
+			if changed {
+				style, changeMark = modalStatus, "◆"
+			}
 			if index == s.hostMenuIndex {
 				style, cursor = modalSelected, "› "
 			}
@@ -4725,12 +4737,15 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 			if s.disconnectedHosts[client.Name] {
 				state = "disconnected"
 			}
-			if !s.hostMenuEligible(client.Name) {
-				style = modalDisabled
+			intent := ""
+			if changed && s.hostMenuSelected[client.Name] {
+				intent = " → will connect"
+			} else if changed {
+				intent = " → will disconnect"
 			}
-			lines = append(lines, modalRenderLine{style, fmt.Sprintf("%s%s %-18s %s", cursor, check, displayField(client.Name), state)})
+			lines = append(lines, modalRenderLine{style, fmt.Sprintf("%s%s%s %-18s %s%s", cursor, changeMark, check, displayField(client.Name), state, intent)})
 		}
-		lines = append(lines, modalRenderLine{modalMuted, "  Space toggle · Enter apply · Esc back · Ctrl+C close"})
+		lines = append(lines, modalRenderLine{modalMuted, "  ◆ changed · Space toggle · Enter apply all changes · Esc back"})
 		if s.hostMenuErr != "" {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostMenuErr})
 		}
@@ -4740,7 +4755,7 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 	lines := []modalRenderLine{{modalTitle, "  Host actions · " + displayField(s.hostMenuTarget)}}
 	for index, label := range hostActions {
 		style, prefix := "", "  "
-		if s.hostScoped && index >= 3 {
+		if s.hostScoped && index >= 2 {
 			style, label = modalDisabled, label+" (unavailable in host-scoped mode)"
 		}
 		if index == s.hostMenuIndex {
@@ -4763,12 +4778,11 @@ func (s *tuiState) beginHostMenu() {
 	}
 	s.hostMenuMode, s.hostMenuStep, s.hostMenuIndex = true, "actions", 0
 	s.hostMenuSelected = make(map[string]bool)
-	s.hostMenuOperation = ""
 	s.hostMenuErr = ""
 }
 
 func (s *tuiState) handleHostMenuInput(input []byte) string {
-	if s.hostMenuStep == "hosts" {
+	if s.hostMenuStep == "connections" {
 		if len(s.cfg.Clients) == 0 {
 			return ""
 		}
@@ -4785,16 +4799,14 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 			s.hostMenuIndex = max(0, s.hostMenuIndex-1)
 		case " ":
 			name := s.cfg.Clients[s.hostMenuIndex].Name
-			if s.hostMenuEligible(name) {
-				s.hostMenuSelected[name] = !s.hostMenuSelected[name]
-				s.hostMenuErr = ""
-			}
+			s.hostMenuSelected[name] = !s.hostMenuSelected[name]
+			s.hostMenuErr = ""
 		case "\r", "\n":
-			if len(s.selectedHostMenuTargets()) == 0 {
-				s.hostMenuErr = "select at least one host"
+			if len(s.changedHostMenuTargets(true))+len(s.changedHostMenuTargets(false)) == 0 {
+				s.hostMenuErr = "no connection changes selected"
 				return ""
 			}
-			return "host-" + s.hostMenuOperation + "-selected"
+			return "host-apply-connections"
 		}
 		return ""
 	}
@@ -4807,18 +4819,19 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 	case "k", "\x1b[A":
 		s.hostMenuIndex = max(0, s.hostMenuIndex-1)
 	case "\r", "\n":
-		action := []string{"host-connect", "host-disconnect", "host-reconnect", "host-add", "host-remove"}[s.hostMenuIndex]
+		action := []string{"host-connections", "host-reconnect", "host-add", "host-remove"}[s.hostMenuIndex]
 		if s.hostScoped && (action == "host-add" || action == "host-remove") {
 			s.outputErr = "host configuration changes are unavailable in host-scoped mode"
 			return ""
 		}
-		if action == "host-connect" || action == "host-disconnect" {
-			s.hostMenuStep = "hosts"
-			s.hostMenuOperation = strings.TrimPrefix(action, "host-")
+		if action == "host-connections" {
+			s.hostMenuStep = "connections"
 			s.hostMenuIndex = 0
 			s.hostMenuErr = ""
-			if s.hostMenuTarget != "" && s.hostMenuEligible(s.hostMenuTarget) {
-				s.hostMenuSelected[s.hostMenuTarget] = true
+			for _, client := range s.cfg.Clients {
+				s.hostMenuSelected[client.Name] = !s.disconnectedHosts[client.Name]
+			}
+			if s.hostMenuTarget != "" {
 				for index, client := range s.cfg.Clients {
 					if client.Name == s.hostMenuTarget {
 						s.hostMenuIndex = index
@@ -4833,17 +4846,11 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 	return ""
 }
 
-func (s *tuiState) hostMenuEligible(name string) bool {
-	if s.hostMenuOperation == "connect" {
-		return s.disconnectedHosts[name]
-	}
-	return !s.disconnectedHosts[name]
-}
-
-func (s *tuiState) selectedHostMenuTargets() []string {
-	targets := make([]string, 0, len(s.hostMenuSelected))
+func (s *tuiState) changedHostMenuTargets(desired bool) []string {
+	targets := make([]string, 0, len(s.cfg.Clients))
 	for _, client := range s.cfg.Clients {
-		if s.hostMenuSelected[client.Name] {
+		currentDesired := !s.disconnectedHosts[client.Name]
+		if s.hostMenuSelected[client.Name] == desired && desired != currentDesired {
 			targets = append(targets, client.Name)
 		}
 	}

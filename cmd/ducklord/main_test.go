@@ -768,30 +768,31 @@ func TestTUIHostMenuTargetsSelectedHostGroup(t *testing.T) {
 	if !state.hostMenuMode || state.hostMenuTarget != "host-b" {
 		t.Fatalf("host menu mode=%v target=%q", state.hostMenuMode, state.hostMenuTarget)
 	}
-	state.hostMenuIndex = 1
-	if action := state.handleHostMenuInput([]byte("\r")); action != "" || state.hostMenuStep != "hosts" {
+	if action := state.handleHostMenuInput([]byte("\r")); action != "" || state.hostMenuStep != "connections" {
 		t.Fatalf("host menu selection action=%q step=%q", action, state.hostMenuStep)
 	}
-	if action := state.handleHostMenuInput([]byte("\r")); action != "host-disconnect-selected" {
-		t.Fatalf("host menu action=%q", action)
-	}
+	state.handleHostMenuInput([]byte(" "))
 	var out bytes.Buffer
 	state.renderHostModal(&out, 100, 30)
-	if !strings.Contains(out.String(), "Disconnect hosts") || !strings.Contains(out.String(), "[✓] host-b") {
+	if !strings.Contains(out.String(), "Host connections") || !strings.Contains(out.String(), "will disconnect") || !strings.Contains(out.String(), "◆") {
 		t.Fatalf("host modal=%q", out.String())
+	}
+	if action := state.handleHostMenuInput([]byte("\r")); action != "host-apply-connections" {
+		t.Fatalf("host menu action=%q", action)
 	}
 }
 
 func TestTUIHostConnectDisconnectMenuSupportsMultiSelect(t *testing.T) {
-	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "a"}, {Name: "b"}}}, disconnectedHosts: map[string]bool{}, hostMenuTarget: "a", hostMenuSelected: map[string]bool{}, hostMenuMode: true, hostMenuStep: "actions", hostMenuIndex: 1}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "a"}, {Name: "b"}}}, disconnectedHosts: map[string]bool{"b": true}, hostMenuTarget: "a", hostMenuSelected: map[string]bool{}, hostMenuMode: true, hostMenuStep: "actions"}
 	state.handleHostMenuInput([]byte("\r"))
+	state.handleHostMenuInput([]byte(" ")) // a: connected -> disconnected
 	state.handleHostMenuInput([]byte("\x1b[B"))
-	state.handleHostMenuInput([]byte(" "))
-	if action := state.handleHostMenuInput([]byte("\r")); action != "host-disconnect-selected" {
+	state.handleHostMenuInput([]byte(" ")) // b: disconnected -> connected
+	if action := state.handleHostMenuInput([]byte("\r")); action != "host-apply-connections" {
 		t.Fatalf("action=%q", action)
 	}
-	if targets := state.selectedHostMenuTargets(); len(targets) != 2 || targets[0] != "a" || targets[1] != "b" {
-		t.Fatalf("targets=%v", targets)
+	if disconnect, connect := state.changedHostMenuTargets(false), state.changedHostMenuTargets(true); len(disconnect) != 1 || disconnect[0] != "a" || len(connect) != 1 || connect[0] != "b" {
+		t.Fatalf("disconnect=%v connect=%v", disconnect, connect)
 	}
 }
 

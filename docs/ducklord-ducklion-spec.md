@@ -323,8 +323,10 @@ the saved custom session order.
 
 In host organization mode, the group header owns the host label, so nested
 session rows do not repeat it. Disconnect keeps the host's last session rows
-as gray read-only snapshots. Connect and Disconnect open a second page where
-Space toggles one or more configured hosts and Enter applies the batch.
+as gray read-only snapshots. **Host connections** opens one desired-state page:
+checked means connected and unchecked means disconnected. Space toggles a host,
+changed rows are highlighted with `◆`, and Enter applies every change together.
+The independent Reconnect action forcibly rebuilds one selected live connection.
 
 `S` opens the shortcut editor in the TUI. Saving writes the config atomically
 but leaves the current keymap unchanged. Ducklord then asks whether to restart

@@ -294,7 +294,7 @@ func TestTerminalOutputManagerCloseIsConcurrentAndClosesEvents(t *testing.T) {
 	}
 }
 
-func TestTerminalOutputManagerForgetFencesQueuedHostSyncUntilRestore(t *testing.T) {
+func TestTerminalOutputManagerTemporaryDisconnectRestoresSameInstance(t *testing.T) {
 	root := t.TempDir()
 	manager, err := newTerminalOutputManager(context.Background(), 1, unusedTerminalOutputSource{}, SnapshotStore{Root: root},
 		func(ctx context.Context, selection TerminalSelection, key OutputKey, revision OutputRevision, _ *TerminalRenderState) (*PooledTerminal, error) {
@@ -306,18 +306,19 @@ func TestTerminalOutputManagerForgetFencesQueuedHostSyncUntilRestore(t *testing.
 	}
 	defer manager.Close()
 	selection := TerminalSelection{Client: Client{Name: "host"}, InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", SessionID: "AAA111", RuntimeGeneration: 1, Rows: 2, Cols: 20}
-	manager.ForgetHost("host", selection.InstanceID)
-	manager.SyncHost("host", selection.InstanceID, true, []TerminalSelection{selection})
-	time.Sleep(20 * time.Millisecond)
-	if status := manager.Status(); status.Count != 0 {
-		t.Fatalf("retired host restored from queued sync: %+v", status)
+	requestID := manager.Select(selection)
+	if event := waitManagerEvent(t, manager); event.RequestID != requestID {
+		t.Fatalf("initial event=%+v request=%d", event, requestID)
 	}
-	manager.RestoreHost("host", selection.InstanceID)
-	manager.hostMu.Lock()
-	retired := manager.hostRetired[outputHost{"host", selection.InstanceID}]
-	manager.hostMu.Unlock()
-	if retired {
-		t.Fatal("explicit restore left host retired")
+	manager.SyncHost("host", selection.InstanceID, false, nil)
+	waitOutputStatus(t, manager, func(status OutputPoolStatus) bool { return status.Connected == 0 })
+	if desired := manager.Status().Desired; len(desired) != 1 || desired[0].SessionID != selection.SessionID {
+		t.Fatalf("temporary disconnect lost desired LRU membership: %+v", manager.Status())
+	}
+	manager.SyncHost("host", selection.InstanceID, true, []TerminalSelection{selection})
+	waitOutputStatus(t, manager, func(status OutputPoolStatus) bool { return status.Connected == 1 })
+	if status := manager.Status(); status.Count != 1 || status.Desired[0].SessionID != selection.SessionID {
+		t.Fatalf("same-instance reconnect status=%+v", status)
 	}
 }
 
