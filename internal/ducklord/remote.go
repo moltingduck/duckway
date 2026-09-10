@@ -1156,6 +1156,26 @@ func (*Runner) Agents(ctx context.Context, c Client, cwd string) ([]RemoteAgent,
 	if len(agents) == 0 {
 		return nil, fmt.Errorf("ducklion reported no available agent types for %s", cwd)
 	}
+	if len(agents) > 16 {
+		return nil, fmt.Errorf("ducklion reported too many agent types for %s", cwd)
+	}
+	seen := make(map[string]bool, len(agents))
+	for _, agent := range agents {
+		switch agent.Type {
+		case "shell", "zsh", "bash", "sh", "codex", "claude_code":
+		default:
+			return nil, fmt.Errorf("ducklion reported unsupported agent type %q", agent.Type)
+		}
+		if seen[agent.Type] || len(agent.Command) == 0 || len(agent.Command) > 16 {
+			return nil, fmt.Errorf("ducklion reported invalid agent command for %q", agent.Type)
+		}
+		seen[agent.Type] = true
+		for _, arg := range agent.Command {
+			if err := validateRemoteText("agent command", arg, 4096, false); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return agents, nil
 }
 

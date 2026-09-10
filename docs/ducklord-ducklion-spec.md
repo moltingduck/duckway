@@ -245,6 +245,9 @@ Useful keys:
   On a group, `Left` always collapses and `Right` always expands; on a session,
   `Left` first selects its parent group.
 - Mouse click selects a row.
+- Drag a session onto another session to save its order. In host/type modes the
+  target must be in the same group; custom mode may also move it across custom
+  groups by dropping on a session or group header.
 - `Enter` or right-click focuses the selected session in the right pane.
 - `Ctrl-]` returns keyboard focus to the left menu.
 - `a` adds a Ducklion host from `~/.ssh/config`; use `client-c` in the demo.
@@ -268,6 +271,14 @@ Directory creation does not automatically register a project—the existing
 - `E`, `R`, and `X` open confirmation views for end, restart, and destroy.
 - `r` refreshes immediately.
 - `q` quits.
+
+Create and host-management workflows use centered modal dialogs. `Esc` moves
+back one page; on the first create page it closes the dialog. Removing a host
+requires choosing the configured host and confirming in a separate danger
+dialog. It removes only the local Ducklord configuration, never remote sessions.
+
+Remote shell discovery preserves the configured default `$SHELL` and offers
+installed `zsh`, `bash`, and `sh` executables as explicit choices.
 
 The session list shows `💀` when a process has stopped or an agent adapter is
 unhealthy/non-responsive. A temporary host reconnect retains the last screen

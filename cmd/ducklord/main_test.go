@@ -1019,6 +1019,27 @@ func TestTUIMouseDragMovesExactSessionToCustomGroup(t *testing.T) {
 	}
 }
 
+func TestTUIMouseDragReordersSessionsInsideProjectedGroup(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	first := ducklord.SessionIdentity{InstanceID: instance, SessionID: "AAA111"}
+	second := ducklord.SessionIdentity{InstanceID: instance, SessionID: "BBB222"}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")},
+		sessions: []ducklord.RemoteSession{{Client: "host", InstanceID: instance, SessionID: "AAA111", Name: "first"}, {Client: "host", InstanceID: instance, SessionID: "BBB222", Name: "second"}}}
+	state.activity().Organization.Mode = ducklord.OrganizationHost
+	state.applyOrganizationOrder()
+	// Rows are group at 5, first at 6, second at 7. Drag second before first.
+	if action := state.handleInput([]byte("\x1b[<0;2;7M")); action != "select" || state.dragSession != second {
+		t.Fatalf("drag start action=%q identity=%+v", action, state.dragSession)
+	}
+	state.handleInput([]byte("\x1b[<32;2;6M"))
+	if action := state.handleInput([]byte("\x1b[<0;2;6m")); action != "group-drop" {
+		t.Fatalf("drop action=%q", action)
+	}
+	if order := state.activity().Organization.SessionOrder; len(order) != 2 || order[0] != second || order[1] != first {
+		t.Fatalf("session order=%+v", order)
+	}
+}
+
 func TestTUIOrganizationPersistenceFailureKeepsLocalChangeAndWarns(t *testing.T) {
 	instance := string(model.NewInstanceID())
 	badPath := filepath.Join(t.TempDir(), "state.json")
@@ -1620,8 +1641,8 @@ func TestTUICreatePromptUsesSelectedClient(t *testing.T) {
 	if state.newSessionLine != "ne" {
 		t.Fatalf("create input after backspace = %q", state.newSessionLine)
 	}
-	if action := state.handleCreateInput([]byte("\x1b")); action != "back" || state.newSessionStep != "kind" {
-		t.Fatalf("back action = %q step=%q", action, state.newSessionStep)
+	if action := state.handleCreateInput([]byte("\x1b")); action != "cancel" {
+		t.Fatalf("escape on first page action=%q", action)
 	}
 }
 
@@ -2145,8 +2166,35 @@ func TestTUIRemoveSelectedHostEntryUpdatesCurrentConfig(t *testing.T) {
 	if _, ok := loaded.Client("client-a"); !ok {
 		t.Fatalf("client-a missing: %+v", loaded.Clients)
 	}
+	if state.cfg != cfg {
+		t.Fatal("remove replaced the shared config pointer")
+	}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "client-b", Generation: 99, State: "live", Sessions: []ducklord.RemoteSession{{Client: "client-b", Name: "late"}}})
+	for _, session := range state.sessions {
+		if session.Client == "client-b" {
+			t.Fatalf("late removed-host update restored session: %+v", session)
+		}
+	}
 	if !strings.Contains(state.outputErr, "removed host entry client-b") {
 		t.Fatalf("outputErr = %q", state.outputErr)
+	}
+}
+
+func TestTUIRemoveHostUsesChooserAndConfirmation(t *testing.T) {
+	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a", Host: "a"}, {Name: "client-b", Host: "b"}}}
+	state := &tuiState{cfg: cfg, sessions: []ducklord.RemoteSession{{Client: "client-b"}}, selected: 0}
+	state.beginRemoveClient()
+	if !state.removeClientMode || state.removeClientSelected != 1 {
+		t.Fatalf("remove chooser mode=%v selected=%d", state.removeClientMode, state.removeClientSelected)
+	}
+	if action := state.handleRemoveClientInput([]byte("\r")); action != "confirm" || state.removeClientConfirm != "client-b" {
+		t.Fatalf("first enter action=%q confirm=%q", action, state.removeClientConfirm)
+	}
+	if action := state.handleRemoveClientInput([]byte("\x1b")); action != "back" || !state.removeClientMode {
+		t.Fatalf("escape confirm action=%q mode=%v", action, state.removeClientMode)
+	}
+	if action := state.handleRemoveClientInput([]byte("\x1b")); action != "cancel" || state.removeClientMode {
+		t.Fatalf("escape chooser action=%q mode=%v", action, state.removeClientMode)
 	}
 }
 

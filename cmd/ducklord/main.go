@@ -1144,6 +1144,7 @@ type tuiState struct {
 	selectedGroupID           string
 	dragSession               ducklord.SessionIdentity
 	dragTargetGroup           string
+	dragTargetSession         ducklord.SessionIdentity
 	hashes                    map[string]string
 	selectedKey               string
 	outputText                string
@@ -1200,6 +1201,9 @@ type tuiState struct {
 	addClientBusy             bool
 	addClientRequestID        uint64
 	addClientCancel           context.CancelFunc
+	removeClientMode          bool
+	removeClientSelected      int
+	removeClientConfirm       string
 	hostScoped                bool
 	ownerName                 string
 	listPaneWidth             int
@@ -2069,6 +2073,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.closeSearch()
 				case state.addClientMode:
 					state.cancelAddClient()
+				case state.removeClientMode:
+					state.cancelRemoveClient()
 				case state.newSessionMode:
 					if startCancel != nil {
 						startCancel()
@@ -2174,6 +2180,21 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				case "submit":
 					if err := state.startAddClient(ctx, addClientDone); err != nil {
 						state.addClientErr = err.Error()
+					}
+				}
+				state.render(os.Stdout)
+				continue
+			}
+			if state.removeClientMode {
+				action := state.handleRemoveClientInput(b)
+				if action == "remove" {
+					name := state.removeClientConfirm
+					instance := state.hostSync[name].InstanceID
+					if err := state.removeClient(ctx, name); err != nil {
+						state.outputErr = err.Error()
+					} else if outputManager != nil {
+						outputManager.ForgetHost(name, instance)
+						selectPooledOutput()
 					}
 				}
 				state.render(os.Stdout)
@@ -2470,11 +2491,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			case "add-client":
 				state.beginAddClient()
 			case "remove-client":
-				if err := state.removeSelectedClient(ctx); err != nil {
-					state.outputErr = err.Error()
-				} else if outputManager != nil {
-					selectPooledOutput()
-				}
+				state.beginRemoveClient()
 			case "yield", "yield-wait":
 				if len(state.sessions) == 0 {
 					break
@@ -2693,11 +2710,15 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 	if update.Client == "" {
 		return
 	}
+	if s.cfg != nil {
+		if _, configured := s.cfg.Client(update.Client); !configured {
+			return
+		}
+	}
 	previous := s.hostSync[update.Client]
 	if update.Generation < previous.Generation || update.Generation == previous.Generation && update.InstanceID == previous.InstanceID && update.Revision < previous.Revision {
 		return
 	}
-	s.dragSession, s.dragTargetGroup = ducklord.SessionIdentity{}, ""
 	s.hostSync[update.Client] = update
 	if s.newSessionMode && s.newSessionDiscovering && s.newSessionClient == update.Client &&
 		(update.State != "live" || update.Generation != previous.Generation || update.InstanceID != previous.InstanceID) {
@@ -3023,24 +3044,27 @@ func (s *tuiState) setSelectedGroupCollapsed(want bool) {
 	s.activityState = next
 }
 
-func (s *tuiState) moveDraggedSession(target string) {
+func (s *tuiState) moveDraggedSessionBefore(target string, before ducklord.SessionIdentity) {
 	identity := s.dragSession
-	s.dragSession, s.dragTargetGroup = ducklord.SessionIdentity{}, ""
-	if identity.Key() == "" || s.organizationMode() != ducklord.OrganizationCustom {
+	s.dragSession, s.dragTargetGroup, s.dragTargetSession = ducklord.SessionIdentity{}, "", ducklord.SessionIdentity{}
+	if identity.Key() == "" {
 		return
 	}
-	validTarget := target == ducklord.UngroupedGroupID
-	for _, group := range s.activity().Organization.Groups {
-		validTarget = validTarget || group.ID == target
+	if s.organizationMode() == ducklord.OrganizationCustom {
+		validTarget := target == ducklord.UngroupedGroupID
+		for _, group := range s.activity().Organization.Groups {
+			validTarget = validTarget || group.ID == target
+		}
+		if !validTarget {
+			s.outputErr = "drop target group no longer exists"
+			return
+		}
 	}
-	if !validTarget {
-		s.outputErr = "drop target group no longer exists"
-		return
-	}
-	current := false
+	current, currentGroup := false, ""
 	for _, session := range s.sessions {
 		if candidate, ok := ducklord.IdentityFromSession(session); ok && candidate == identity {
 			current = true
+			currentGroup = s.organizationGroupID(session)
 			break
 		}
 	}
@@ -3048,12 +3072,46 @@ func (s *tuiState) moveDraggedSession(target string) {
 		s.outputErr = "dragged session no longer exists"
 		return
 	}
-	next := s.activity().Clone()
-	if target == ducklord.UngroupedGroupID {
-		delete(next.Organization.Membership, identity)
-	} else {
-		next.Organization.Membership[identity] = target
+	if s.organizationMode() != ducklord.OrganizationCustom && target != currentGroup {
+		s.outputErr = "sessions can only be reordered inside this group"
+		return
 	}
+	next := s.activity().Clone()
+	if s.organizationMode() == ducklord.OrganizationCustom {
+		if target == ducklord.UngroupedGroupID {
+			delete(next.Organization.Membership, identity)
+		} else {
+			next.Organization.Membership[identity] = target
+		}
+	}
+	originalOrder := append([]ducklord.SessionIdentity(nil), next.Organization.SessionOrder...)
+	order := next.Organization.SessionOrder[:0]
+	for _, candidate := range originalOrder {
+		if candidate != identity {
+			order = append(order, candidate)
+		}
+	}
+	insert := len(order)
+	if before.Key() != "" && before != identity {
+		for index, candidate := range order {
+			if candidate == before {
+				insert = index
+				break
+			}
+		}
+	} else {
+		for index, candidate := range order {
+			for _, session := range s.sessions {
+				if candidateSession, ok := ducklord.IdentityFromSession(session); ok && candidateSession == candidate && s.organizationGroupID(session) == target {
+					insert = index + 1
+				}
+			}
+		}
+	}
+	order = append(order, ducklord.SessionIdentity{})
+	copy(order[insert+1:], order[insert:])
+	order[insert] = identity
+	next.Organization.SessionOrder = order
 	if err := s.activityStore.Save(next); err != nil {
 		s.outputErr = "session move was not saved: " + err.Error()
 		return
@@ -3070,7 +3128,7 @@ func (s *tuiState) moveDraggedSession(target string) {
 	}
 	s.selectedGroupID = ""
 	s.selectedKey = selectedKey
-	s.outputErr = "session moved"
+	s.outputErr = "session order saved"
 }
 
 var hostRowPalette = []string{"\033[38;5;39m", "\033[38;5;214m", "\033[38;5;170m", "\033[38;5;42m", "\033[38;5;141m", "\033[38;5;81m", "\033[38;5;203m", "\033[38;5;118m", "\033[38;5;207m", "\033[38;5;45m", "\033[38;5;221m", "\033[38;5;135m"}
@@ -3887,6 +3945,7 @@ func (s *tuiState) render(out io.Writer) {
 		s.renderSearchModal(out, width, modalHeight)
 		s.renderActionModal(out, width, modalHeight)
 		s.renderAddClientModal(out, width, modalHeight)
+		s.renderRemoveClientModal(out, width, modalHeight)
 		s.renderGroupModal(out, width, modalHeight)
 		s.renderNotificationModal(out, width, modalHeight)
 		s.renderLifecycleModal(out, width, modalHeight)
@@ -3996,6 +4055,7 @@ func (s *tuiState) render(out io.Writer) {
 	s.renderSearchModal(out, width, modalHeight)
 	s.renderActionModal(out, width, modalHeight)
 	s.renderAddClientModal(out, width, modalHeight)
+	s.renderRemoveClientModal(out, width, modalHeight)
 	s.renderGroupModal(out, width, modalHeight)
 	s.renderNotificationModal(out, width, modalHeight)
 	s.renderLifecycleModal(out, width, modalHeight)
@@ -4124,6 +4184,33 @@ func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
 		}
 		lines = []modalRenderLine{{modalSelected, choice}, {modalInput, "host › " + s.addClientLine}}
 	}
+	renderModalBox(out, cols, rows, lines)
+}
+
+func (s *tuiState) renderRemoveClientModal(out io.Writer, cols, rows int) {
+	if !s.removeClientMode || len(s.cfg.Clients) == 0 {
+		return
+	}
+	selected := min(max(s.removeClientSelected, 0), len(s.cfg.Clients)-1)
+	client := s.cfg.Clients[selected]
+	lines := []modalRenderLine{{modalTitle, "  Remove Ducklion host"}}
+	if s.removeClientConfirm != "" {
+		lines = append(lines,
+			modalRenderLine{modalDanger, "  REMOVE HOST CONFIGURATION?"},
+			modalRenderLine{modalInput, "  " + displayField(client.Name) + " · " + displayField(client.Host)},
+			modalRenderLine{modalMuted, "  Remote sessions will not be destroyed"},
+			modalRenderLine{modalMuted, "  Enter remove   Esc back   Ctrl+C cancel"})
+		renderModalBox(out, cols, rows, lines)
+		return
+	}
+	for index, candidate := range s.cfg.Clients {
+		style, prefix := "", "  "
+		if index == selected {
+			style, prefix = modalSelected, "› "
+		}
+		lines = append(lines, modalRenderLine{style, fmt.Sprintf("%s%d  %s · %s", prefix, index+1, displayField(candidate.Name), displayField(candidate.Host))})
+	}
+	lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ select   Enter continue   Esc/Ctrl+C cancel"})
 	renderModalBox(out, cols, rows, lines)
 }
 
@@ -5184,7 +5271,7 @@ func (s *tuiState) handleSearchInput(input []byte) string {
 func (s *tuiState) handleInput(b []byte) string {
 	text := string(b)
 	if !strings.HasPrefix(text, "\x1b[<") {
-		s.dragSession, s.dragTargetGroup = ducklord.SessionIdentity{}, ""
+		s.dragSession, s.dragTargetGroup, s.dragTargetSession = ducklord.SessionIdentity{}, "", ducklord.SessionIdentity{}
 	}
 	switch {
 	case text == "q" || text == "\x03":
@@ -5260,24 +5347,44 @@ func (s *tuiState) handleInput(b []byte) string {
 			return "select"
 		}
 	case strings.HasPrefix(text, "\x1b[<32;") && strings.HasSuffix(text, "M"):
-		if row, ok := s.listRowForMouse(text); ok && row.isGroup && s.dragSession.Key() != "" && s.organizationMode() == ducklord.OrganizationCustom {
-			s.dragTargetGroup = row.groupID
-			s.selectedGroupID = row.groupID
-			return "group-select"
+		if row, ok := s.listRowForMouse(text); ok && s.dragSession.Key() != "" {
+			s.dragTargetGroup, s.dragTargetSession = row.groupID, ducklord.SessionIdentity{}
+			if row.isGroup {
+				s.selectedGroupID = row.groupID
+				return "group-select"
+			}
+			s.dragTargetSession, _ = ducklord.IdentityFromSession(s.sessions[row.sessionIndex])
+			s.selectedGroupID, s.selected = "", row.sessionIndex
+			return "select"
 		}
 	case strings.HasPrefix(text, "\x1b[<0;") && strings.HasSuffix(text, "m"):
-		if row, ok := s.listRowForMouse(text); ok && row.isGroup && row.groupID == s.dragTargetGroup && s.dragSession.Key() != "" {
-			s.moveDraggedSession(row.groupID)
+		if row, ok := s.listRowForMouse(text); ok && row.groupID == s.dragTargetGroup && s.dragSession.Key() != "" {
+			if !row.isGroup {
+				released, valid := ducklord.IdentityFromSession(s.sessions[row.sessionIndex])
+				if !valid || released != s.dragTargetSession {
+					s.dragSession, s.dragTargetGroup, s.dragTargetSession = ducklord.SessionIdentity{}, "", ducklord.SessionIdentity{}
+					s.outputErr = "session list changed during drag; try again"
+					return "group-drop"
+				}
+			}
+			if row.isGroup && s.organizationMode() != ducklord.OrganizationCustom {
+				s.dragSession, s.dragTargetGroup, s.dragTargetSession = ducklord.SessionIdentity{}, "", ducklord.SessionIdentity{}
+				s.outputErr = "drop onto a session to reorder inside this group"
+				return "group-drop"
+			}
+			before := ducklord.SessionIdentity{}
+			if !row.isGroup {
+				before, _ = ducklord.IdentityFromSession(s.sessions[row.sessionIndex])
+			}
+			s.moveDraggedSessionBefore(row.groupID, before)
 			return "group-drop"
 		}
-		s.dragSession, s.dragTargetGroup = ducklord.SessionIdentity{}, ""
+		s.dragSession, s.dragTargetGroup, s.dragTargetSession = ducklord.SessionIdentity{}, "", ducklord.SessionIdentity{}
 	case strings.HasPrefix(text, "\x1b[<0;") && strings.HasSuffix(text, "M"):
 		if session, ok := s.selectListRowForMouse(text); ok {
 			if session {
 				s.selectedKey = s.currentKey()
-				if s.organizationMode() == ducklord.OrganizationCustom {
-					s.dragSession, _ = ducklord.IdentityFromSession(s.currentSession())
-				}
+				s.dragSession, _ = ducklord.IdentityFromSession(s.currentSession())
 				return "select"
 			}
 			return "group-select"
@@ -5358,6 +5465,69 @@ func (s *tuiState) cancelAddClientWork() {
 		s.addClientCancel = nil
 	}
 	s.addClientBusy = false
+}
+
+func (s *tuiState) beginRemoveClient() {
+	if s.cfg == nil || len(s.cfg.Clients) == 0 {
+		s.outputErr = "no Ducklion host configured"
+		return
+	}
+	s.removeClientMode = true
+	s.removeClientConfirm = ""
+	s.removeClientSelected = 0
+	if selected := s.selectedClientName(); selected != "" {
+		for index, client := range s.cfg.Clients {
+			if client.Name == selected {
+				s.removeClientSelected = index
+				break
+			}
+		}
+	}
+	s.outputErr = ""
+}
+
+func (s *tuiState) cancelRemoveClient() {
+	s.removeClientMode = false
+	s.removeClientConfirm = ""
+	s.removeClientSelected = 0
+}
+
+func (s *tuiState) handleRemoveClientInput(input []byte) string {
+	if len(s.cfg.Clients) == 0 {
+		s.cancelRemoveClient()
+		return "cancel"
+	}
+	s.removeClientSelected = min(max(s.removeClientSelected, 0), len(s.cfg.Clients)-1)
+	switch string(input) {
+	case "\x03":
+		s.cancelRemoveClient()
+		return "cancel"
+	case "\x1b":
+		if s.removeClientConfirm != "" {
+			s.removeClientConfirm = ""
+			return "back"
+		}
+		s.cancelRemoveClient()
+		return "cancel"
+	case "j", "\x1b[B":
+		if s.removeClientConfirm == "" && s.removeClientSelected < len(s.cfg.Clients)-1 {
+			s.removeClientSelected++
+		}
+	case "k", "\x1b[A":
+		if s.removeClientConfirm == "" && s.removeClientSelected > 0 {
+			s.removeClientSelected--
+		}
+	case "\r", "\n":
+		name := s.cfg.Clients[s.removeClientSelected].Name
+		if s.removeClientConfirm == "" {
+			s.removeClientConfirm = name
+			return "confirm"
+		}
+		if s.removeClientConfirm == name {
+			return "remove"
+		}
+	}
+	return ""
 }
 
 func (s *tuiState) handleAddClientInput(input []byte) string {
@@ -5514,8 +5684,7 @@ func (s *tuiState) applyAddClientResult(result addClientDoneEvent) error {
 	return nil
 }
 
-func (s *tuiState) removeSelectedClient(ctx context.Context) error {
-	clientName := s.selectedClientName()
+func (s *tuiState) removeClient(ctx context.Context, clientName string) error {
 	if clientName == "" {
 		return fmt.Errorf("no client selected")
 	}
@@ -5526,7 +5695,8 @@ func (s *tuiState) removeSelectedClient(ctx context.Context) error {
 	if err := ducklord.SaveConfig(s.cfgPath, next); err != nil {
 		return err
 	}
-	s.cfg = next
+	*s.cfg = *next
+	s.cancelRemoveClient()
 	s.outputText = ""
 	s.outputForKey = ""
 	s.refreshSessions(ctx)
@@ -5535,6 +5705,10 @@ func (s *tuiState) removeSelectedClient(ctx context.Context) error {
 	}
 	s.outputErr = fmt.Sprintf("removed host entry %s from config", clientName)
 	return nil
+}
+
+func (s *tuiState) removeSelectedClient(ctx context.Context) error {
+	return s.removeClient(ctx, s.selectedClientName())
 }
 
 func (s *tuiState) clientFromAddLine(input string) (ducklord.Client, error) {
@@ -6071,18 +6245,29 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 		s.newSessionErr = "project added; press Enter to continue"
 	case "agents":
 		if s.newSessionKind == model.KindShell {
-			shell, ok := findRemoteAgent(event.agents, "shell")
-			if !ok {
+			shells := make([]ducklord.RemoteAgent, 0, 3)
+			for _, agent := range event.agents {
+				if agent.Type == "shell" || agent.Type == "zsh" || agent.Type == "bash" || agent.Type == "sh" {
+					shells = append(shells, agent)
+				}
+			}
+			if len(shells) == 0 {
 				s.newSessionStep, s.newSessionErr = "project", "remote shell is unavailable"
 				return "", "", nil, false
 			}
-			s.newSessionAgent, s.newSessionCommand = shell.Type, append([]string(nil), shell.Command...)
-			s.newSessionStep, s.newSessionErr = "handle", fmt.Sprintf("shell project: %s; empty handle uses %s", event.project.Path, defaultSessionHandle(event.project.Path))
+			if len(shells) == 1 && shells[0].Type == "shell" {
+				s.newSessionAgent, s.newSessionCommand = shells[0].Type, append([]string(nil), shells[0].Command...)
+				s.newSessionStep, s.newSessionErr = "handle", fmt.Sprintf("shell project: %s; empty handle uses %s", event.project.Path, defaultSessionHandle(event.project.Path))
+				return "", "", nil, false
+			}
+			s.newSessionAgents = shells
+			s.newSessionStep, s.newSessionErr = "agent", fmt.Sprintf("project: %s; choose zsh, bash, or sh", event.project.Path)
+			s.newSessionSelected = 0
 			return "", "", nil, false
 		}
 		agents := make([]ducklord.RemoteAgent, 0, len(event.agents))
 		for _, agent := range event.agents {
-			if agent.Type != "shell" {
+			if agent.Type != "shell" && agent.Type != "zsh" && agent.Type != "bash" && agent.Type != "sh" {
 				agents = append(agents, agent)
 			}
 		}
@@ -6204,7 +6389,11 @@ func (s *tuiState) createHeader() string {
 	case "project-name":
 		return "add remote path to Duckway projects"
 	case "agent":
-		return fmt.Sprintf("new session: host=%s project=%s  choose agent", displayField(s.newSessionClient), displayField(s.newSessionCWD))
+		label := "agent"
+		if s.newSessionKind == model.KindShell {
+			label = "shell"
+		}
+		return fmt.Sprintf("new session: host=%s project=%s  choose %s", displayField(s.newSessionClient), displayField(s.newSessionCWD), label)
 	case "handle":
 		return fmt.Sprintf("new session: agent=%s  handle (default %s)", displayField(s.newSessionAgent), displayField(defaultSessionHandle(s.newSessionCWD)))
 	default:
@@ -6229,6 +6418,9 @@ func (s *tuiState) createPromptLabel() string {
 	case "project-name":
 		return "project name"
 	case "agent":
+		if s.newSessionKind == model.KindShell {
+			return "shell"
+		}
 		return "agent"
 	case "handle":
 		return "handle"
@@ -6242,6 +6434,9 @@ func (s *tuiState) handleCreateInput(b []byte) string {
 	case "\x03":
 		return "cancel"
 	case "\x1b":
+		if s.newSessionStep == "kind" {
+			return "cancel"
+		}
 		s.backCreateStep()
 		return "back"
 	case "\x1b[D", "\x1b[C":
@@ -6333,7 +6528,7 @@ func (s *tuiState) backCreateStep() {
 			s.newSessionStep = "project"
 		}
 	case "handle":
-		if s.newSessionKind == model.KindAgent {
+		if len(s.newSessionAgents) > 0 {
 			s.newSessionStep = "agent"
 		} else if s.newSessionProject.Source == "path" {
 			s.newSessionStep = "project-policy"
@@ -6345,7 +6540,7 @@ func (s *tuiState) backCreateStep() {
 }
 
 func (s *tuiState) centralModalOpen() bool {
-	return s.searchMode || s.addClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.lifecycleConfirm != ""
+	return s.searchMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.lifecycleConfirm != ""
 }
 
 func (s *tuiState) syncCreateSelectionToInput() {

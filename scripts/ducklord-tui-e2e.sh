@@ -42,7 +42,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "[ducklord-tui-e2e] preparing credential-free Ducklion topology with $RUNTIME"
-DUCKLORD_DEMO_LOCK_HELD=1 DUCKLORD_DEMO_AGENT_CREDENTIALS=none DUCKLORD_DEMO_SHELL_ONLY=1 \
+DUCKLORD_DEMO_LOCK_HELD=1 DUCKLORD_DEMO_AGENT_CREDENTIALS=none DUCKLORD_DEMO_SHELL_ONLY=1 DUCKLORD_DEMO_INCLUDE_CLIENT_C=0 \
 CONTAINER_RUNTIME="$RUNTIME" "$ROOT/scripts/ducklord-podman-demo.sh" >"$SETUP_LOG"
 "$RUNTIME" exec ducklord-dev sh -lc "sed 's/^name: .*/name: e2e-inspector/' /root/.ducklord/config.yaml >/tmp/e2e-inspector.yaml"
 

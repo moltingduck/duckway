@@ -13,9 +13,12 @@ IMAGE="${IMAGE:-duckway-ducklord-demo:local}"
 NET="${NET:-ducklord-demo}"
 CREDENTIALS="${DUCKLORD_DEMO_AGENT_CREDENTIALS:-all}"
 CREDENTIAL_CLIENTS="${DUCKLORD_DEMO_CREDENTIAL_CLIENTS:-all}"
+INCLUDE_CLIENT_C="${DUCKLORD_DEMO_INCLUDE_CLIENT_C:-1}"
 
 case "$CREDENTIALS" in all|codex|claude|none) ;; *) echo "invalid DUCKLORD_DEMO_AGENT_CREDENTIALS=$CREDENTIALS" >&2; exit 2;; esac
 case "$CREDENTIAL_CLIENTS" in all|client-a|client-b|client-c) ;; *) echo "invalid DUCKLORD_DEMO_CREDENTIAL_CLIENTS=$CREDENTIAL_CLIENTS" >&2; exit 2;; esac
+if [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = codex ]; then ducklord_require_demo_secret "$CODEX_AUTH"; fi
+if [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = claude ]; then ducklord_require_demo_secret "$CLAUDE_AUTH"; fi
 
 if [ "${DUCKLORD_DEMO_LOCK_HELD:-0}" != 1 ]; then
 	ducklord_reexec_with_demo_lock "$0" "$@"
@@ -41,7 +44,7 @@ printf '%s\n' '{"hasCompletedOnboarding":true,"theme":"dark","installMethod":"gl
 
 cat >"$WORK/Containerfile" <<'EOF'
 FROM alpine:3.21
-RUN apk add --no-cache openssh openssh-client bash ca-certificates ncurses nodejs npm \
+RUN apk add --no-cache openssh openssh-client bash zsh ca-certificates ncurses nodejs npm \
  && npm install -g @openai/codex@0.153.4 @anthropic-ai/claude-code@2.1.263 \
  && npm cache clean --force
 RUN adduser -D duck && echo "duck:duck-demo-password" | chpasswd && ssh-keygen -A
@@ -76,19 +79,22 @@ if [ "$CREDENTIALS" != none ] && { [ -f "$CODEX_AUTH" ] || [ -f "$CLAUDE_AUTH" ]
     fi
     "$RUNTIME" exec -u duck "$container" sh -lc 'mkdir -p $HOME/.codex $HOME/.claude && chmod 700 $HOME/.codex $HOME/.claude'
     if { [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = codex ]; } && [ -f "$CODEX_AUTH" ]; then
-      ducklord_require_demo_secret "$CODEX_AUTH"
       "$RUNTIME" cp "$CODEX_AUTH" "$container":/tmp/codex-auth.json
       "$RUNTIME" exec "$container" install -o duck -g duck -m 600 /tmp/codex-auth.json /home/duck/.codex/auth.json
       "$RUNTIME" exec "$container" rm -f /tmp/codex-auth.json
     fi
     if { [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = claude ]; } && [ -f "$CLAUDE_AUTH" ]; then
-      ducklord_require_demo_secret "$CLAUDE_AUTH"
       "$RUNTIME" cp "$CLAUDE_AUTH" "$container":/tmp/claude-credentials.json
       "$RUNTIME" exec "$container" install -o duck -g duck -m 600 /tmp/claude-credentials.json /home/duck/.claude/.credentials.json
       "$RUNTIME" cp "$WORK/claude-demo-state.json" "$container":/tmp/claude-demo-state.json
       "$RUNTIME" exec "$container" install -o duck -g duck -m 600 /tmp/claude-demo-state.json /home/duck/.claude.json
       "$RUNTIME" exec "$container" rm -f /tmp/claude-credentials.json /tmp/claude-demo-state.json
     fi
+  done
+fi
+if [ "$CREDENTIALS" = all ] && [ "$CREDENTIAL_CLIENTS" = all ]; then
+  for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
+    "$RUNTIME" exec "$container" sh -lc 'test "$(stat -c %U:%G:%a /home/duck/.codex/auth.json)" = duck:duck:600 && test "$(stat -c %U:%G:%a /home/duck/.claude/.credentials.json)" = duck:duck:600'
   done
 fi
 for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
@@ -130,6 +136,14 @@ hosts:
     user: duck
     group: lab
 EOF'
+if [ "$INCLUDE_CLIENT_C" = 1 ]; then
+  "$RUNTIME" exec ducklord-dev sh -lc 'cat >>/root/.ducklord/config.yaml <<EOF
+  - name: client-c
+    host: client-c
+    user: duck
+    group: lab
+EOF'
+fi
 
 echo "[ducklord-demo] creating sample remote sessions"
 "$RUNTIME" exec -u duck ducklion-client-a sh -lc 'mkdir -p /home/duck/projects/alpha && duckway projects add --name alpha-project /home/duck/projects/alpha' >/dev/null
@@ -139,6 +153,10 @@ echo "[ducklord-demo] creating sample remote sessions"
 "$RUNTIME" exec ducklord-dev ducklord start client-a --name bash --kind shell --cwd /home/duck -- bash >/dev/null
 "$RUNTIME" exec ducklord-dev ducklord start client-a --name build --kind shell --cwd /home/duck -- bash >/dev/null
 "$RUNTIME" exec ducklord-dev ducklord start client-b --name beta --kind shell --cwd /home/duck -- bash >/dev/null
+"$RUNTIME" exec ducklord-dev ducklord start client-b --name zsh --kind shell --cwd /home/duck -- zsh >/dev/null
+if [ "$INCLUDE_CLIENT_C" = 1 ]; then
+  "$RUNTIME" exec ducklord-dev ducklord start client-c --name sh --kind shell --cwd /home/duck -- sh >/dev/null
+fi
 "$RUNTIME" exec ducklord-dev ducklord send client-a alpha 'i=0; while :; do i=$((i+1)); echo client-a alpha tick $i; sleep 4; done' >/dev/null
 "$RUNTIME" exec ducklord-dev ducklord send client-a build 'i=0; while :; do i=$((i+1)); echo client-a build output $i; sleep 6; done' >/dev/null
 "$RUNTIME" exec ducklord-dev ducklord send client-b beta 'i=0; while :; do i=$((i+1)); echo client-b beta tick $i; sleep 5; done' >/dev/null
@@ -152,6 +170,10 @@ sessions="$($RUNTIME exec ducklord-dev ducklord sessions client-a --config /root
 grep -q 'alpha.*running' <<<"$sessions"
 grep -q 'bash.*running' <<<"$sessions"
 grep -q 'build.*running' <<<"$sessions"
+"$RUNTIME" exec ducklord-dev ducklord sessions client-b --config /root/.ducklord/config.yaml | grep -q 'zsh.*running'
+if [ "$INCLUDE_CLIENT_C" = 1 ]; then
+  "$RUNTIME" exec ducklord-dev ducklord sessions client-c --config /root/.ducklord/config.yaml | grep -q 'sh.*running'
+fi
 "$RUNTIME" exec ducklord-dev ducklord send client-a bash 'printf ducklord-e2e-ready' --config /root/.ducklord/config.yaml >/dev/null
 ready=false
 for _ in $(seq 1 50); do

@@ -281,6 +281,9 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	assertCurrentCreateModal(t, capture, start, "choose configured project", "alpha-project", true)
 	start = capture.position()
 	writePTY(t, terminal, "\r") // alpha-project
+	assertCurrentCreateModal(t, capture, start, "choose shell", "zsh", true)
+	start = capture.position()
+	writePTY(t, terminal, "\r") // default remote shell
 	assertCurrentCreateModal(t, capture, start, "handle (default alpha)", "handle", false)
 	start = capture.position()
 	writePTY(t, terminal, handle+"\r")

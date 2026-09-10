@@ -10,13 +10,13 @@ import (
 
 func TestRunAgentsReportsOnlyHostAvailableTypesForProject(t *testing.T) {
 	bin := t.TempDir()
-	for _, name := range []string{"codex", "claude"} {
+	for _, name := range []string{"zsh", "bash", "sh", "codex", "claude"} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Setenv("PATH", bin)
-	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("SHELL", "/bin/fish")
 	project := t.TempDir()
 	var output bytes.Buffer
 	if err := runAgents([]string{"--cwd", project, "--json"}, &output); err != nil {
@@ -26,7 +26,7 @@ func TestRunAgentsReportsOnlyHostAvailableTypesForProject(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &agents); err != nil {
 		t.Fatal(err)
 	}
-	if len(agents) != 3 || agents[0].Type != "shell" || agents[0].Command[0] != "/bin/zsh" || agents[1].Type != "codex" || agents[2].Type != "claude_code" {
+	if len(agents) != 6 || agents[0].Type != "shell" || agents[0].Command[0] != "/bin/fish" || agents[1].Type != "zsh" || agents[2].Type != "bash" || agents[3].Type != "sh" || agents[4].Type != "codex" || agents[5].Type != "claude_code" {
 		t.Fatalf("agents=%+v", agents)
 	}
 }

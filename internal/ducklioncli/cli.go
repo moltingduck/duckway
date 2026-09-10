@@ -312,11 +312,16 @@ func runAgents(args []string, out io.Writer) error {
 	if err != nil || !info.IsDir() {
 		return fmt.Errorf("agent project directory is unavailable: %s", cwd)
 	}
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
+	defaultShell := os.Getenv("SHELL")
+	if defaultShell == "" {
+		defaultShell = "/bin/sh"
 	}
-	result := []AgentOutput{{Type: "shell", Command: []string{shell}}}
+	result := []AgentOutput{{Type: "shell", Command: []string{defaultShell}}}
+	for _, shell := range []string{"zsh", "bash", "sh"} {
+		if path, lookupErr := exec.LookPath(shell); lookupErr == nil {
+			result = append(result, AgentOutput{Type: shell, Command: []string{path}})
+		}
+	}
 	for _, candidate := range []struct{ agentType, binary string }{{"codex", "codex"}, {"claude_code", "claude"}} {
 		if path, lookupErr := exec.LookPath(candidate.binary); lookupErr == nil {
 			result = append(result, AgentOutput{Type: candidate.agentType, Command: []string{path}})
