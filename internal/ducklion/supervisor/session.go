@@ -679,6 +679,22 @@ func (s *Session) acceptAgentHook(event protocol.SupervisorAgentEvent) error {
 }
 
 func (s *Session) markActivityAtCurrentOutput(category model.NotificationCategory) error {
+	// The hook subprocess can win a scheduler race against the goroutine that
+	// drains the agent's final PTY write. Wait until the PTY kernel queue is
+	// empty, then take captureMu: if capture already read those bytes, the mutex
+	// waits for their publication; otherwise the queue remains non-empty.
+	if s.pty == nil {
+		// Test/embedded producers have no kernel PTY queue. Give an immediately
+		// preceding asynchronous publisher the same capture opportunity.
+		time.Sleep(60 * time.Millisecond)
+	}
+	for s.pty != nil {
+		pending, err := pendingPTYBytes(s.pty)
+		if err != nil || pending == 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	s.captureMu.Lock()
 	_, offset := s.output.Bounds()
 	s.attentionMu.Lock()

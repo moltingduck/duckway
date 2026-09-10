@@ -99,20 +99,24 @@ type OrganizationState struct {
 	Groups       []CustomGroup                 `json:"groups,omitempty"`
 	Membership   map[SessionIdentity]string    `json:"membership,omitempty"`
 	GroupOrders  map[OrganizationMode][]string `json:"group_orders,omitempty"`
+	Collapsed    map[OrganizationMode][]string `json:"collapsed,omitempty"`
 }
 
 func newOrganizationState() OrganizationState {
-	return OrganizationState{Mode: OrganizationCustom, Membership: make(map[SessionIdentity]string), GroupOrders: map[OrganizationMode][]string{OrganizationCustom: {UngroupedGroupID}}}
+	return OrganizationState{Mode: OrganizationCustom, Membership: make(map[SessionIdentity]string), GroupOrders: map[OrganizationMode][]string{OrganizationCustom: {UngroupedGroupID}}, Collapsed: make(map[OrganizationMode][]string)}
 }
 
 func (o OrganizationState) clone() OrganizationState {
 	clone := OrganizationState{Mode: o.Mode, SessionOrder: append([]SessionIdentity(nil), o.SessionOrder...), Groups: append([]CustomGroup(nil), o.Groups...),
-		Membership: make(map[SessionIdentity]string, len(o.Membership)), GroupOrders: make(map[OrganizationMode][]string, len(o.GroupOrders))}
+		Membership: make(map[SessionIdentity]string, len(o.Membership)), GroupOrders: make(map[OrganizationMode][]string, len(o.GroupOrders)), Collapsed: make(map[OrganizationMode][]string, len(o.Collapsed))}
 	for identity, groupID := range o.Membership {
 		clone.Membership[identity] = groupID
 	}
 	for mode, order := range o.GroupOrders {
 		clone.GroupOrders[mode] = append([]string(nil), order...)
+	}
+	for mode, collapsed := range o.Collapsed {
+		clone.Collapsed[mode] = append([]string(nil), collapsed...)
 	}
 	return clone
 }
@@ -228,11 +232,40 @@ func (o *OrganizationState) validate() error {
 			seen[id] = true
 		}
 	}
+	for mode, collapsed := range o.Collapsed {
+		if !mode.valid() || len(collapsed) > maxCustomGroups+1 {
+			return fmt.Errorf("invalid collapsed organization groups")
+		}
+		seen := make(map[string]bool, len(collapsed))
+		for _, id := range collapsed {
+			if id == "" || seen[id] {
+				return fmt.Errorf("invalid or duplicate collapsed group identity %q", id)
+			}
+			switch mode {
+			case OrganizationCustom:
+				if id != UngroupedGroupID && !groupIDs[id] {
+					return fmt.Errorf("collapsed custom group is unknown")
+				}
+			case OrganizationHost:
+				if !SafeIdentifier(id) {
+					return fmt.Errorf("invalid collapsed host group")
+				}
+			case OrganizationType:
+				if id != string(model.KindShell) && id != string(model.KindAgent) {
+					return fmt.Errorf("invalid collapsed type group")
+				}
+			}
+			seen[id] = true
+		}
+	}
 	if o.Membership == nil {
 		o.Membership = make(map[SessionIdentity]string)
 	}
 	if o.GroupOrders == nil {
 		o.GroupOrders = make(map[OrganizationMode][]string)
+	}
+	if o.Collapsed == nil {
+		o.Collapsed = make(map[OrganizationMode][]string)
 	}
 	return nil
 }

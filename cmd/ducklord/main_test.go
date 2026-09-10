@@ -936,6 +936,76 @@ func TestTUIOrganizationModeAndManualOrderPersist(t *testing.T) {
 	}
 }
 
+func TestTUIListSelectsAndCollapsesStableGroupRows(t *testing.T) {
+	instanceA, instanceB := string(model.NewInstanceID()), string(model.NewInstanceID())
+	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")},
+		sessions: []ducklord.RemoteSession{
+			{Client: "host-a", InstanceID: instanceA, SessionID: "AAA111", Name: "alpha"},
+			{Client: "host-b", InstanceID: instanceB, SessionID: "BBB222", Name: "beta", Unread: true},
+		}, selected: 0, activeAttachKey: "host-a/" + instanceA + "/AAA111"}
+	state.activity().Organization.Mode = ducklord.OrganizationHost
+	state.applyOrganizationOrder()
+	if rows := state.sessionListRows(); len(rows) != 4 || !rows[0].isGroup || rows[1].sessionIndex != 0 || !rows[2].isGroup || rows[3].sessionIndex != 1 {
+		t.Fatalf("visible row projection=%+v", rows)
+	}
+	if action := state.handleInput([]byte("j")); action != "group-select" || state.selectedGroupID != "host-b" {
+		t.Fatalf("group navigation action=%q selected=%q", action, state.selectedGroupID)
+	}
+	for _, input := range []string{"g", "m", "n", "y", "Y", "E", "R", "X", "d", "\x0b", "\n"} {
+		if action := state.handleInput([]byte(input)); action != "group-select" {
+			t.Fatalf("group header accepted session action %q as %q", input, action)
+		}
+	}
+	var rendered bytes.Buffer
+	state.render(&rendered)
+	if strings.Count(rendered.String(), ">") != 1 {
+		t.Fatalf("group selection rendered more than one cursor: %q", rendered.String())
+	}
+	if action := state.handleInput([]byte("\r")); action != "group-toggle" || !state.groupCollapsed("host-b") {
+		t.Fatalf("collapse action=%q collapsed=%v", action, state.groupCollapsed("host-b"))
+	}
+	if rows := state.sessionListRows(); len(rows) != 3 || !rows[2].isGroup || !state.groupHasUnread("host-b") {
+		t.Fatalf("collapsed rows/unread=%+v unread=%v", rows, state.groupHasUnread("host-b"))
+	}
+	if state.activeAttachKey == "" {
+		t.Fatal("collapsing the list detached the active PTY")
+	}
+	loaded, err := (ducklord.ActivityStateStore{Path: state.activityStore.Path}).Load()
+	if err != nil || len(loaded.Organization.Collapsed[ducklord.OrganizationHost]) != 1 || loaded.Organization.Collapsed[ducklord.OrganizationHost][0] != "host-b" {
+		t.Fatalf("persisted collapse=%+v err=%v", loaded.Organization.Collapsed, err)
+	}
+}
+
+func TestTUIHostRowsUseStableSafePalette(t *testing.T) {
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host-a"}, {Name: "host-b"}}}}
+	if state.hostRowColor("host-a") == state.hostRowColor("host-b") {
+		t.Fatal("fixture hosts unexpectedly share a palette slot")
+	}
+	if strings.Contains(state.hostRowColor("host-a\x1b]52;c;bad\a"), "52;") {
+		t.Fatal("host input escaped the fixed ANSI palette")
+	}
+}
+
+func TestTUIMouseDragMovesExactSessionToCustomGroup(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	groupID := uuid.NewString()
+	identity := ducklord.SessionIdentity{InstanceID: instance, SessionID: "AAA111"}
+	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")},
+		sessions: []ducklord.RemoteSession{{Client: "host", InstanceID: instance, SessionID: "AAA111", Name: "same"}}}
+	state.activity().Organization.Groups = []ducklord.CustomGroup{{ID: groupID, Name: "target"}}
+	state.activity().Organization.GroupOrders[ducklord.OrganizationCustom] = []string{ducklord.UngroupedGroupID, groupID}
+	state.applyOrganizationOrder()
+	if action := state.handleInput([]byte("\x1b[<0;2;6M")); action != "select" || state.dragSession != identity {
+		t.Fatalf("drag start action=%q identity=%+v", action, state.dragSession)
+	}
+	if action := state.handleInput([]byte("\x1b[<32;2;7M")); action != "group-select" || state.dragTargetGroup != groupID {
+		t.Fatalf("drag hover action=%q target=%q", action, state.dragTargetGroup)
+	}
+	if action := state.handleInput([]byte("\x1b[<0;2;7m")); action != "group-drop" || state.activity().Organization.Membership[identity] != groupID {
+		t.Fatalf("drop action=%q membership=%+v", action, state.activity().Organization.Membership)
+	}
+}
+
 func TestTUIOrganizationPersistenceFailureKeepsLocalChangeAndWarns(t *testing.T) {
 	instance := string(model.NewInstanceID())
 	badPath := filepath.Join(t.TempDir(), "state.json")
@@ -2142,7 +2212,7 @@ func TestTUICopyModeTransitionsAndInputIsolation(t *testing.T) {
 	state := &tuiState{}
 	var output bytes.Buffer
 	state.enterCopyMode(&output)
-	if !state.copyMode || !strings.Contains(output.String(), "\033[?1000l\033[?1006l") || !strings.Contains(output.String(), "COPY MODE") {
+	if !state.copyMode || !strings.Contains(output.String(), "\033[?1002l\033[?1006l") || !strings.Contains(output.String(), "COPY MODE") {
 		t.Fatalf("enter copy mode output=%q state=%v", output.String(), state.copyMode)
 	}
 	before := output.String()
@@ -2161,7 +2231,7 @@ func TestTUICopyModeTransitionsAndInputIsolation(t *testing.T) {
 		}
 	}
 	state.exitCopyMode(&output)
-	if state.copyMode || !strings.Contains(output.String(), "\033[?1006h\033[?1000h") {
+	if state.copyMode || !strings.Contains(output.String(), "\033[?1006h\033[?1002h") {
 		t.Fatalf("exit copy mode output=%q state=%v", output.String(), state.copyMode)
 	}
 	before = output.String()

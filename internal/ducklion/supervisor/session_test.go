@@ -385,6 +385,21 @@ func TestTasklessAgentHookMarksPayloadFreeCompletionActivity(t *testing.T) {
 	}
 }
 
+func TestInteractiveActivityWaitsForRacingFinalCapture(t *testing.T) {
+	session := &Session{output: duckruntime.NewOutputHub(1024), attentionNotify: make(chan struct{}, 1)}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		session.output.Publish([]byte("final marker"))
+	}()
+	if err := session.markActivityAtCurrentOutput(model.NotificationTaskCompleted); err != nil {
+		t.Fatal(err)
+	}
+	category, offset, _, pending := session.PendingActivity()
+	if !pending || category != model.NotificationTaskCompleted || offset != uint64(len("final marker")) {
+		t.Fatalf("activity raced ahead of final capture: category=%q offset=%d pending=%v", category, offset, pending)
+	}
+}
+
 func TestLegacyAgentHookDrainsBeforeFastProcessExit(t *testing.T) {
 	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, AgentType: "fixture", CWD: t.TempDir(),
 		Command: []string{"sh", "-c", `printf '%s\n' '{"kind":"completed","response":"discard me"}' >&3`}})

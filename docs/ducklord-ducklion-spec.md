@@ -240,7 +240,8 @@ podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
 
 Useful keys:
 
-- `j` / `k` or arrow keys move the selection.
+- `j` / `k` or arrow keys move across both group headers and sessions. Press
+  `Enter` on a group to collapse or expand it without detaching the active PTY.
 - Mouse click selects a row.
 - `Enter` or right-click focuses the selected session in the right pane.
 - `Ctrl-]` returns keyboard focus to the left menu.
@@ -251,6 +252,10 @@ Useful keys:
   broken viewer stream and rebuild the screen from Ducklion without restarting
   the shell/agent or changing its writer.
 - `n` configures notification categories for the selected session.
+- Hosts use stable, distinct palette colors in the session list. In custom
+  organization mode, drag a session row onto a group header to move it; the
+  same exact-identity operation remains available under `g` → **Move selected
+  session** for keyboard-only use.
 - `E`, `R`, and `X` open confirmation views for end, restart, and destroy.
 - `r` refreshes immediately.
 - `q` quits.

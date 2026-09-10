@@ -1139,6 +1139,9 @@ type tuiState struct {
 	refresh                   time.Duration
 	sessions                  []ducklord.RemoteSession
 	selected                  int
+	selectedGroupID           string
+	dragSession               ducklord.SessionIdentity
+	dragTargetGroup           string
 	hashes                    map[string]string
 	selectedKey               string
 	outputText                string
@@ -1270,8 +1273,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		return err
 	}
 	defer restore(oldState)
-	fmt.Print("\033[?1049h\033[?25l\033[?1000h\033[?1006h")
-	defer fmt.Print("\033[?1006l\033[?1000l\033[?25h\033[?1049l")
+	fmt.Print("\033[?1049h\033[?25l\033[?1002h\033[?1006h")
+	defer fmt.Print("\033[?1006l\033[?1002l\033[?25h\033[?1049l")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -2684,6 +2687,7 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 	if update.Generation < previous.Generation || update.Generation == previous.Generation && update.InstanceID == previous.InstanceID && update.Revision < previous.Revision {
 		return
 	}
+	s.dragSession, s.dragTargetGroup = ducklord.SessionIdentity{}, ""
 	s.hostSync[update.Client] = update
 	if s.newSessionMode && s.newSessionDiscovering && s.newSessionClient == update.Client &&
 		(update.State != "live" || update.Generation != previous.Generation || update.InstanceID != previous.InstanceID) {
@@ -2880,6 +2884,205 @@ func (s *tuiState) organizationGroupLabel(session ducklord.RemoteSession) string
 	return "Ungrouped"
 }
 
+type sessionListRow struct {
+	groupID      string
+	groupLabel   string
+	sessionIndex int
+	isGroup      bool
+}
+
+func (s *tuiState) groupCollapsed(groupID string) bool {
+	for _, id := range s.activity().Organization.Collapsed[s.organizationMode()] {
+		if id == groupID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *tuiState) sessionListRows() []sessionListRow {
+	groupLabels := make(map[string]string)
+	groupSessions := make(map[string][]int)
+	order := append([]string(nil), s.activity().Organization.GroupOrders[s.organizationMode()]...)
+	seen := make(map[string]bool)
+	if s.organizationMode() == ducklord.OrganizationCustom {
+		groupLabels[ducklord.UngroupedGroupID] = "Ungrouped"
+		for _, group := range s.activity().Organization.Groups {
+			groupLabels[group.ID] = s.customGroupDisplayName(group)
+		}
+	}
+	for index, session := range s.sessions {
+		id := s.organizationGroupID(session)
+		if groupLabels[id] == "" {
+			groupLabels[id] = s.organizationGroupLabel(session)
+		}
+		groupSessions[id] = append(groupSessions[id], index)
+		if !seen[id] {
+			order = append(order, id)
+		}
+		seen[id] = true
+	}
+	rows := make([]sessionListRow, 0, len(s.sessions)+len(order))
+	emitted := make(map[string]bool)
+	for _, id := range order {
+		if emitted[id] || groupLabels[id] == "" {
+			continue
+		}
+		emitted[id] = true
+		rows = append(rows, sessionListRow{groupID: id, groupLabel: groupLabels[id], sessionIndex: -1, isGroup: true})
+		if !s.groupCollapsed(id) {
+			for _, index := range groupSessions[id] {
+				rows = append(rows, sessionListRow{groupID: id, sessionIndex: index})
+			}
+		}
+	}
+	return rows
+}
+
+func (s *tuiState) moveListSelection(direction int) bool {
+	rows := s.sessionListRows()
+	if len(rows) == 0 {
+		return false
+	}
+	current := 0
+	for i, row := range rows {
+		if s.selectedGroupID != "" && row.isGroup && row.groupID == s.selectedGroupID || s.selectedGroupID == "" && !row.isGroup && row.sessionIndex == s.selected {
+			current = i
+			break
+		}
+	}
+	next := max(0, min(len(rows)-1, current+direction))
+	if next == current {
+		return false
+	}
+	row := rows[next]
+	if row.isGroup {
+		s.selectedGroupID = row.groupID
+	} else {
+		s.selectedGroupID = ""
+		s.selected = row.sessionIndex
+		s.selectedKey = s.currentKey()
+	}
+	return true
+}
+
+func (s *tuiState) toggleSelectedGroup() {
+	id := s.selectedGroupID
+	if id == "" {
+		return
+	}
+	valid := false
+	for _, row := range s.sessionListRows() {
+		if row.isGroup && row.groupID == id {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		s.selectedGroupID = ""
+		s.outputErr = "selected group no longer exists"
+		return
+	}
+	next := s.activity().Clone()
+	mode := s.organizationMode()
+	collapsed := next.Organization.Collapsed[mode]
+	found := -1
+	for i, candidate := range collapsed {
+		if candidate == id {
+			found = i
+			break
+		}
+	}
+	if found >= 0 {
+		collapsed = append(collapsed[:found], collapsed[found+1:]...)
+	} else {
+		collapsed = append(collapsed, id)
+	}
+	next.Organization.Collapsed[mode] = collapsed
+	if err := s.activityStore.Save(next); err != nil {
+		s.outputErr = "group collapse was not saved: " + err.Error()
+		return
+	}
+	s.activityState = next
+}
+
+func (s *tuiState) moveDraggedSession(target string) {
+	identity := s.dragSession
+	s.dragSession, s.dragTargetGroup = ducklord.SessionIdentity{}, ""
+	if identity.Key() == "" || s.organizationMode() != ducklord.OrganizationCustom {
+		return
+	}
+	validTarget := target == ducklord.UngroupedGroupID
+	for _, group := range s.activity().Organization.Groups {
+		validTarget = validTarget || group.ID == target
+	}
+	if !validTarget {
+		s.outputErr = "drop target group no longer exists"
+		return
+	}
+	current := false
+	for _, session := range s.sessions {
+		if candidate, ok := ducklord.IdentityFromSession(session); ok && candidate == identity {
+			current = true
+			break
+		}
+	}
+	if !current {
+		s.outputErr = "dragged session no longer exists"
+		return
+	}
+	next := s.activity().Clone()
+	if target == ducklord.UngroupedGroupID {
+		delete(next.Organization.Membership, identity)
+	} else {
+		next.Organization.Membership[identity] = target
+	}
+	if err := s.activityStore.Save(next); err != nil {
+		s.outputErr = "session move was not saved: " + err.Error()
+		return
+	}
+	s.activityState = next
+	s.applyOrganizationOrder()
+	selectedKey := ""
+	for index, session := range s.sessions {
+		if candidate, ok := ducklord.IdentityFromSession(session); ok && candidate == identity {
+			s.selected = index
+			selectedKey = sessionKey(session)
+			break
+		}
+	}
+	s.selectedGroupID = ""
+	s.selectedKey = selectedKey
+	s.outputErr = "session moved"
+}
+
+var hostRowPalette = []string{"\033[38;5;39m", "\033[38;5;214m", "\033[38;5;170m", "\033[38;5;42m", "\033[38;5;141m", "\033[38;5;81m", "\033[38;5;203m", "\033[38;5;118m", "\033[38;5;207m", "\033[38;5;45m", "\033[38;5;221m", "\033[38;5;135m"}
+
+func (s *tuiState) hostRowColor(host string) string {
+	hosts, seen := make([]string, 0), make(map[string]bool)
+	if s.cfg != nil {
+		for _, client := range s.cfg.Clients {
+			if client.Name != "" && !seen[client.Name] {
+				hosts = append(hosts, client.Name)
+				seen[client.Name] = true
+			}
+		}
+	}
+	for _, session := range s.sessions {
+		if session.Client != "" && !seen[session.Client] {
+			hosts = append(hosts, session.Client)
+			seen[session.Client] = true
+		}
+	}
+	sort.Strings(hosts)
+	for index, candidate := range hosts {
+		if candidate == host {
+			return hostRowPalette[index%len(hostRowPalette)]
+		}
+	}
+	return hostRowPalette[0]
+}
+
 func (s *tuiState) applyOrganizationOrder() bool {
 	organization := &s.activity().Organization
 	if organization.Mode == "" {
@@ -2946,6 +3149,8 @@ func (s *tuiState) applyOrganizationOrder() bool {
 
 func (s *tuiState) cycleOrganizationMode() {
 	oldKey := s.currentKey()
+	s.selectedGroupID = ""
+	s.dragSession, s.dragTargetGroup = ducklord.SessionIdentity{}, ""
 	switch s.organizationMode() {
 	case ducklord.OrganizationCustom:
 		s.activity().Organization.Mode = ducklord.OrganizationHost
@@ -3219,6 +3424,13 @@ func (s *tuiState) commitGroupOperation() {
 			}
 		}
 		next.Organization.GroupOrders[ducklord.OrganizationCustom] = order
+		collapsed := next.Organization.Collapsed[ducklord.OrganizationCustom][:0]
+		for _, id := range next.Organization.Collapsed[ducklord.OrganizationCustom] {
+			if id != target {
+				collapsed = append(collapsed, id)
+			}
+		}
+		next.Organization.Collapsed[ducklord.OrganizationCustom] = collapsed
 		s.commitGroupState(next, "group deleted; sessions moved to Ungrouped")
 	case "group-up", "group-down":
 		order := next.Organization.GroupOrders[ducklord.OrganizationCustom]
@@ -3647,9 +3859,9 @@ func (s *tuiState) render(out io.Writer) {
 	} else if s.lifecycleConfirm != "" {
 		fmt.Fprintln(out, truncate("lifecycle confirmation open; use the modal controls", renderWidth))
 	} else if s.hostScoped {
-		fmt.Fprintln(out, truncate("j/k move  / search  enter focus  v copy  o organize  g groups  m actions  y/Y yield  E end  R restart  X destroy  n notifications  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k rows  enter focus/group  m actions  g groups  drag→group  / search  v copy  o organize  y/Y yield  E end  R restart  X destroy  n notify  r refresh  q quit", renderWidth))
 	} else {
-		fmt.Fprintln(out, truncate("j/k move  / search  enter focus  v copy  o organize  g groups  m actions  y/Y yield  E end  R restart  X destroy  n notifications  c new  a add  d remove  r refresh  q quit", renderWidth))
+		fmt.Fprintln(out, truncate("j/k rows  enter focus/group  m actions  g groups  drag→group  / search  v copy  o organize  y/Y yield  E end  R restart  X destroy  n notify  c new  a add  d remove  r refresh  q quit", renderWidth))
 	}
 	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
 	if len(s.sessions) == 0 {
@@ -3680,20 +3892,25 @@ func (s *tuiState) render(out io.Writer) {
 	} else {
 		fmt.Fprintf(out, "\033[4;1H%s\033[K", truncate("content", renderWidth))
 	}
-	currentGroup := "\000"
 	row := 5
-	for i, sess := range s.sessions {
+	for _, listRow := range s.sessionListRows() {
 		if !layout.showList {
 			break
 		}
 		if row > height {
 			break
 		}
-		groupID := s.organizationGroupID(sess)
-		group := displayField(s.organizationGroupLabel(sess))
-		if groupID != currentGroup {
-			groupLabel := "[" + group + "]"
-			if s.groupHasUnread(s.organizationGroupID(sess)) {
+		if listRow.isGroup {
+			prefix := " "
+			if s.selectedGroupID == listRow.groupID {
+				prefix = ">"
+			}
+			disclosure := "▾"
+			if s.groupCollapsed(listRow.groupID) {
+				disclosure = "▸"
+			}
+			groupLabel := prefix + disclosure + " [" + displayField(listRow.groupLabel) + "]"
+			if s.groupHasUnread(listRow.groupID) {
 				groupLabel += " •"
 			}
 			separator := " |"
@@ -3704,15 +3921,17 @@ func (s *tuiState) render(out io.Writer) {
 			if layout.overlay {
 				clear = ""
 			}
-			fmt.Fprintf(out, "\033[%d;1H%-*s%s%s", row, menuWidth, truncate(groupLabel, menuWidth), separator, clear)
-			row++
-			currentGroup = groupID
-			if row > height {
-				break
+			plain := modalCellPad(modalCellTruncate(groupLabel, menuWidth), menuWidth)
+			if s.organizationMode() == ducklord.OrganizationHost {
+				plain = s.hostRowColor(listRow.groupID) + plain + modalReset
 			}
+			fmt.Fprintf(out, "\033[%d;1H%s%s%s", row, plain, separator, clear)
+			row++
+			continue
 		}
+		i, sess := listRow.sessionIndex, s.sessions[listRow.sessionIndex]
 		prefix := " "
-		if i == s.selected {
+		if s.selectedGroupID == "" && i == s.selected {
 			prefix = ">"
 		}
 		mark := " "
@@ -3749,7 +3968,8 @@ func (s *tuiState) render(out io.Writer) {
 		if layout.overlay {
 			clear = ""
 		}
-		fmt.Fprintf(out, "\033[%d;1H%-*s%s%s", row, menuWidth, truncate(line, menuWidth), separator, clear)
+		plain := modalCellPad(modalCellTruncate(line, menuWidth), menuWidth)
+		fmt.Fprintf(out, "\033[%d;1H%s%s%s%s%s", row, s.hostRowColor(sess.Client), plain, modalReset, separator, clear)
 		row++
 	}
 	if !layout.overlay {
@@ -4944,9 +5164,15 @@ func (s *tuiState) handleSearchInput(input []byte) string {
 
 func (s *tuiState) handleInput(b []byte) string {
 	text := string(b)
+	if !strings.HasPrefix(text, "\x1b[<") {
+		s.dragSession, s.dragTargetGroup = ducklord.SessionIdentity{}, ""
+	}
 	switch {
 	case text == "q" || text == "\x03":
 		return "quit"
+	case s.selectedGroupID != "" && (text == "g" || text == "y" || text == "Y" || text == "E" || text == "R" || text == "X" || text == "n" || text == "m" || text == "d" || text == "\x0b" || text == "\n"):
+		s.outputErr = "select a session row for this action"
+		return "group-select"
 	case text == "r":
 		return "refresh"
 	case text == "/":
@@ -4982,31 +5208,57 @@ func (s *tuiState) handleInput(b []byte) string {
 	case text == "d" && !s.hostScoped:
 		return "remove-client"
 	case text == "\r":
+		if s.selectedGroupID != "" {
+			s.toggleSelectedGroup()
+			return "group-toggle"
+		}
 		return "attach"
 	case text == "j" || text == "\x1b[B":
-		if s.selected < len(s.sessions)-1 {
-			s.selected++
-			s.selectedKey = s.currentKey()
+		if s.moveListSelection(1) {
+			if s.selectedGroupID != "" {
+				return "group-select"
+			}
 			return "select"
 		}
 	case text == "k" || text == "\x1b[A":
-		if s.selected > 0 {
-			s.selected--
-			s.selectedKey = s.currentKey()
+		if s.moveListSelection(-1) {
+			if s.selectedGroupID != "" {
+				return "group-select"
+			}
 			return "select"
 		}
+	case strings.HasPrefix(text, "\x1b[<32;") && strings.HasSuffix(text, "M"):
+		if row, ok := s.listRowForMouse(text); ok && row.isGroup && s.dragSession.Key() != "" && s.organizationMode() == ducklord.OrganizationCustom {
+			s.dragTargetGroup = row.groupID
+			s.selectedGroupID = row.groupID
+			return "group-select"
+		}
+	case strings.HasPrefix(text, "\x1b[<0;") && strings.HasSuffix(text, "m"):
+		if row, ok := s.listRowForMouse(text); ok && row.isGroup && row.groupID == s.dragTargetGroup && s.dragSession.Key() != "" {
+			s.moveDraggedSession(row.groupID)
+			return "group-drop"
+		}
+		s.dragSession, s.dragTargetGroup = ducklord.SessionIdentity{}, ""
 	case strings.HasPrefix(text, "\x1b[<0;") && strings.HasSuffix(text, "M"):
-		if idx, ok := s.sessionIndexForMouse(text); ok {
-			s.selected = idx
-			s.selectedKey = s.currentKey()
-			return "select"
+		if session, ok := s.selectListRowForMouse(text); ok {
+			if session {
+				s.selectedKey = s.currentKey()
+				if s.organizationMode() == ducklord.OrganizationCustom {
+					s.dragSession, _ = ducklord.IdentityFromSession(s.currentSession())
+				}
+				return "select"
+			}
+			return "group-select"
 		}
 		if s.contentPaneClicked(text) {
 			return "attach"
 		}
 	case strings.HasPrefix(text, "\x1b[<2;") && strings.HasSuffix(text, "M"):
-		if idx, ok := s.sessionIndexForMouse(text); ok {
-			s.selected = idx
+		if session, ok := s.selectListRowForMouse(text); ok {
+			if !session {
+				s.toggleSelectedGroup()
+				return "group-toggle"
+			}
 			s.selectedKey = s.currentKey()
 		}
 		return "attach"
@@ -5028,7 +5280,7 @@ func (s *tuiState) enterCopyMode(out io.Writer) {
 	status := modalCellTruncate(" COPY MODE  Drag to select PTY text; use terminal Copy; Esc/q/v/Ctrl+C exits", max(1, cols))
 	// Stop event tracking before disabling its SGR encoding. This hands mouse
 	// drags back to the terminal emulator for native selection.
-	fmt.Fprintf(out, "\033[?1000l\033[?1006l\033[2;1H\033[2K%s%s%s", modalSelected, status, modalReset)
+	fmt.Fprintf(out, "\033[?1002l\033[?1006l\033[2;1H\033[2K%s%s%s", modalSelected, status, modalReset)
 }
 
 func (s *tuiState) exitCopyMode(out io.Writer) {
@@ -5038,7 +5290,7 @@ func (s *tuiState) exitCopyMode(out io.Writer) {
 	s.copyMode = false
 	// Restore the encoding before event tracking so no mouse report can arrive
 	// in an unexpected format during the transition.
-	fmt.Fprint(out, "\033[?1006h\033[?1000h")
+	fmt.Fprint(out, "\033[?1006h\033[?1002h")
 }
 
 func (s *tuiState) beginAddClient() {
@@ -6105,47 +6357,57 @@ func canRead(sess ducklord.RemoteSession) bool {
 	return sess.Error == "" && sess.Status != "error" && sess.Name != "(offline)"
 }
 
-func (s *tuiState) sessionIndexForMouse(seq string) (int, bool) {
-	if !strings.HasSuffix(seq, "M") {
-		return 0, false
+func (s *tuiState) selectListRowForMouse(seq string) (bool, bool) {
+	selected, ok := s.listRowForMouse(seq)
+	if !ok {
+		return false, false
 	}
-	if strings.HasPrefix(seq, "\x1b[<0;") || strings.HasPrefix(seq, "\x1b[<2;") {
-		seq = seq[len("\x1b[<0;"):]
+	if selected.isGroup {
+		s.selectedGroupID = selected.groupID
+		return false, true
 	}
-	parts := strings.FieldsFunc(seq, func(r rune) bool { return r == ';' || r == 'M' || r == 'm' })
-	if len(parts) < 2 {
-		return 0, false
+	s.selectedGroupID = ""
+	s.selected = selected.sessionIndex
+	return true, true
+}
+
+func (s *tuiState) listRowForMouse(seq string) (sessionListRow, bool) {
+	if !strings.HasPrefix(seq, "\x1b[<") || len(seq) < 7 {
+		return sessionListRow{}, false
 	}
-	x, err := strconv.Atoi(parts[0])
+	parts := strings.FieldsFunc(strings.TrimPrefix(seq, "\x1b[<"), func(r rune) bool { return r == ';' || r == 'M' || r == 'm' })
+	if len(parts) != 3 {
+		return sessionListRow{}, false
+	}
+	x, err := strconv.Atoi(parts[1])
 	if err != nil {
-		return 0, false
+		return sessionListRow{}, false
 	}
 	width, _ := terminalSize()
 	layout := calculateTUILayout(width, s.focused, s.listPaneWidth, s.autoHideList)
 	if !layout.showList || x > layout.menuWidth+2 {
-		return 0, false
+		return sessionListRow{}, false
 	}
-	y, err := strconv.Atoi(parts[1])
+	y, err := strconv.Atoi(parts[2])
 	if err != nil {
-		return 0, false
+		return sessionListRow{}, false
 	}
-	row := 5
-	currentGroup := "\000"
-	for i, sess := range s.sessions {
-		group := sess.Group
-		if group == "" {
-			group = "default"
-		}
-		if group != currentGroup {
-			row++
-			currentGroup = group
-		}
-		if y == row {
-			return i, true
-		}
-		row++
+	row := y - 5
+	rows := s.sessionListRows()
+	if row < 0 || row >= len(rows) {
+		return sessionListRow{}, false
 	}
-	return 0, false
+	return rows[row], true
+}
+
+// sessionIndexForMouse remains the non-mutating compatibility helper used by
+// tests and callers that only care about session rows.
+func (s *tuiState) sessionIndexForMouse(seq string) (int, bool) {
+	oldSelected, oldGroup := s.selected, s.selectedGroupID
+	session, ok := s.selectListRowForMouse(seq)
+	index := s.selected
+	s.selected, s.selectedGroupID = oldSelected, oldGroup
+	return index, ok && session
 }
 
 func (s *tuiState) contentPaneClicked(seq string) bool {

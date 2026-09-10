@@ -112,7 +112,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	copyStart := capture.position()
 	writePTY(t, terminal, "v")
 	capture.waitCurrent(t, "COPY MODE", 5*time.Second)
-	if raw := capture.since(copyStart); !strings.Contains(raw, "\033[?1000l\033[?1006l") || !strings.Contains(raw, modalSelected) {
+	if raw := capture.since(copyStart); !strings.Contains(raw, "\033[?1002l\033[?1006l") || !strings.Contains(raw, modalSelected) {
 		t.Fatalf("copy mode did not release mouse tracking with a visible status: %q", safeTerminalDiagnostic(raw))
 	}
 	frozen := capture.currentText()
@@ -284,7 +284,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	assertCurrentCreateModal(t, capture, start, "handle (default alpha)", "handle", false)
 	start = capture.position()
 	writePTY(t, terminal, handle+"\r")
-	capture.waitAfter(t, start, "j/k move", 20*time.Second)
+	capture.waitAfter(t, start, "j/k rows", 20*time.Second)
 
 	var created protocol.SessionSummary
 	waitE2E(t, 15*time.Second, func() bool {
