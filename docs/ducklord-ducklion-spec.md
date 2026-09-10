@@ -240,8 +240,11 @@ podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
 
 Useful keys:
 
-Press `?` to open the centered shortcut reference. It groups operations by
-their target: **Host**, **Session**, **Session List & Groups**, and **PTY Panel**.
+Press `?` to pin or unpin the centered shortcut reference. It stays visible
+while normal shortcuts operate underneath it, is temporarily hidden by another
+centered dialog, and reappears when that dialog closes. `Esc` does not close
+the reference. It groups operations by their target: **Host**, **Session**,
+**Session List & Groups**, and **PTY Panel**.
 Host connect/disconnect/reconnect attaches or detaches every session and all
 notification delivery for that host only for the current Ducklord process; it
 does not stop remote PTYs or edit the host config. Add writes a host config and
@@ -257,6 +260,11 @@ Remove deletes it. Create/restart/end/destroy always target one session.
   groups by dropping on a session or group header. Ducklord requests a
   `grabbing` mouse cursor through OSC 22 while dragging and restores `default`
   afterward; terminals without OSC 22 support simply ignore the hint.
+- In custom mode, `Ctrl-J` / `Ctrl-K` moves a session through the global custom
+  order and transfers it into the adjacent session's group at a boundary.
+- Mouse-wheel input over the PTY pane scrolls its local framebuffer by three
+  rows per notch. Mouse reports are consumed by Ducklord and never injected
+  into the remote PTY.
 - `Enter` or right-click focuses the selected session in the right pane.
 - `Ctrl-]` returns keyboard focus to the left menu.
 - `a` adds a Ducklion host from `~/.ssh/config`; use `client-c` in the demo.
@@ -302,7 +310,13 @@ shortcuts:
   session_restart: "R"
   list_search: "/"
   pty_unfocus: "ctrl-]"
+  shortcut_settings: "S"
 ```
+
+`S` opens the shortcut editor in the TUI. Saving writes the config atomically
+but leaves the current keymap unchanged. Ducklord then asks whether to restart
+its local TUI process; this never restarts or changes ownership of a remote
+Ducklion session.
 
 The session list shows `💀` when a process has stopped or an agent adapter is
 unhealthy/non-responsive. A temporary host reconnect retains the last screen

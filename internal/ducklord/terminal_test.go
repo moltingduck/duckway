@@ -162,3 +162,13 @@ func TestTerminalRenderLinesRecreatesStylesWithoutPayloadEscapes(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalRenderLinesOffsetInspectsScrollback(t *testing.T) {
+	terminal := NewTerminal(2, 20, 20)
+	terminal.Write([]byte("one\r\ntwo\r\nthree\r\nfour"))
+	live := strings.Join(terminal.RenderLinesOffset(2, 20, 0), "\n")
+	older := strings.Join(terminal.RenderLinesOffset(2, 20, 2), "\n")
+	if !strings.Contains(live, "four") || strings.Contains(older, "four") || !strings.Contains(older, "one") {
+		t.Fatalf("live=%q older=%q", live, older)
+	}
+}

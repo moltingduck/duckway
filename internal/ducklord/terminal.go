@@ -976,14 +976,26 @@ func (t *Terminal) Text() string {
 // generated only from validated style fields; terminal-provided escapes never
 // pass through this method.
 func (t *Terminal) RenderLines(maxRows, maxCols int) []string {
+	return t.RenderLinesOffset(maxRows, maxCols, 0)
+}
+
+// RenderLinesOffset renders a viewport offset from the live tail. Positive
+// offsets inspect older primary-screen scrollback.
+func (t *Terminal) RenderLinesOffset(maxRows, maxCols, offset int) []string {
 	lines := make([]TerminalLine, 0, len(t.Scrollback)+len(t.screen().Lines))
 	if !t.useAlternate {
 		lines = append(lines, t.Scrollback...)
 	}
 	lines = append(lines, t.screen().Lines...)
-	if maxRows > 0 && len(lines) > maxRows {
-		lines = lines[len(lines)-maxRows:]
+	if offset < 0 || t.useAlternate {
+		offset = 0
 	}
+	end := len(lines) - min(offset, max(0, len(lines)-1))
+	start := 0
+	if maxRows > 0 && end > maxRows {
+		start = end - maxRows
+	}
+	lines = lines[start:end]
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
 		var rendered strings.Builder

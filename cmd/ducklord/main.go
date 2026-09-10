@@ -28,6 +28,8 @@ import (
 	textwidth "golang.org/x/text/width"
 )
 
+var errRestartTUI = errors.New("restart ducklord TUI")
+
 const inputEscapeAmbiguityTimeout = 25 * time.Millisecond
 
 type remoteRunner interface {
@@ -148,8 +150,16 @@ const maxResizeBufferedBytes = 256 << 10
 
 func main() {
 	runner := ducklord.NewRunner()
-	defer runner.Close()
-	if err := run(os.Args[1:], os.Stdout, runner); err != nil {
+	err := run(os.Args[1:], os.Stdout, runner)
+	runner.Close()
+	if errors.Is(err, errRestartTUI) {
+		executable, execErr := os.Executable()
+		if execErr == nil {
+			execErr = syscall.Exec(executable, os.Args, os.Environ())
+		}
+		log.Fatal("restart ducklord TUI: ", execErr)
+	}
+	if err != nil {
 		log.Fatal(err)
 	}
 }
@@ -1217,6 +1227,13 @@ type tuiState struct {
 	removeClientConfirm       string
 	helpMode                  bool
 	helpOffset                int
+	ptyScrollOffset           int
+	shortcutMode              bool
+	shortcutStep              string
+	shortcutIndex             int
+	shortcutLine              string
+	shortcutErr               string
+	shortcutDraft             *ducklord.Config
 	hostMenuMode              bool
 	hostMenuTarget            string
 	hostMenuIndex             int
@@ -1405,6 +1422,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		if state.outputForKey != selectedKey || !keyOK || activeOutputEvent.Key != key || activeOutputEvent.Revision.RuntimeGeneration != sess.RuntimeGeneration {
 			state.outputText = ""
 			state.terminal = nil
+			state.ptyScrollOffset = 0
 			activeOutputEvent = ducklord.TerminalOutputEvent{}
 			state.outputForKey = selectedKey
 		}
@@ -1716,6 +1734,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			state.terminal = terminal
+			state.ptyScrollOffset = 0
 			activeOutputEvent = event
 			activeOutputEvent.FinalView = nil
 			state.outputText = terminal.Text()
@@ -2032,6 +2051,25 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.render(os.Stdout)
 		case b := <-input:
 			var selectedActionTarget *ducklord.RemoteSession
+			mouseReport := strings.HasPrefix(string(b), "\x1b[<")
+			if button, x, y, ok := parseSGRMouse(string(b)); ok {
+				// Mouse reports are always local UI input. Never inject their
+				// escape sequences into a focused remote PTY.
+				if (button == 64 || button == 65) && state.contentPanePoint(x, y) && state.terminal != nil {
+					if button == 64 {
+						state.ptyScrollOffset = min(len(state.terminal.Scrollback), state.ptyScrollOffset+3)
+					} else {
+						state.ptyScrollOffset = max(0, state.ptyScrollOffset-3)
+					}
+					state.render(os.Stdout)
+					continue
+				}
+				if button == 64 || button == 65 || state.focused {
+					continue
+				}
+			} else if mouseReport {
+				continue
+			}
 			if state.copyMode {
 				if copyModeExitInput(b) {
 					state.exitCopyMode(os.Stdout)
@@ -2110,6 +2148,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			if string(b) == "\x03" && state.centralModalOpen() {
 				switch {
+				case state.shortcutMode:
+					state.shortcutMode = false
 				case state.searchMode:
 					state.closeSearch()
 				case state.helpMode:
@@ -2209,6 +2249,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.render(os.Stdout)
 					continue
 				}
+			}
+			if state.shortcutMode {
+				if state.handleShortcutInput(b) == "restart-tui" {
+					return errRestartTUI
+				}
+				state.render(os.Stdout)
+				continue
 			}
 			if state.hostMenuMode {
 				action := state.handleHostMenuInput(b)
@@ -2317,11 +2364,6 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						state.addClientErr = err.Error()
 					}
 				}
-				state.render(os.Stdout)
-				continue
-			}
-			if state.helpMode {
-				state.handleHelpInput(b)
 				state.render(os.Stdout)
 				continue
 			}
@@ -2593,7 +2635,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			case "quit":
 				return nil
 			case "help":
-				state.helpMode, state.helpOffset = true, 0
+				state.helpMode = !state.helpMode
+				if !state.helpMode {
+					state.helpOffset = 0
+				}
+			case "shortcut-settings":
+				state.beginShortcutSettings()
 			case "host-actions":
 				state.beginHostMenu()
 			case "refresh":
@@ -2616,6 +2663,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.outputForKey = state.currentKey()
 				state.outputText = ""
 				state.terminal = nil
+				state.ptyScrollOffset = 0
 				state.outputErr = "loading live preview..."
 				requestPreview(true)
 			case "new":
@@ -2993,6 +3041,7 @@ func (s *tuiState) applyPreviewOutput(result previewOutputEvent, currentID uint6
 	}
 	rows, cols := s.activePTYSize()
 	s.terminal = ducklord.NewTerminal(int(rows), int(cols), ducklord.DefaultTerminalScrollback)
+	s.ptyScrollOffset = 0
 	s.terminal.Write([]byte(result.text))
 	s.outputText = s.terminal.Text()
 	s.outputForKey = result.key
@@ -3411,10 +3460,13 @@ func (s *tuiState) moveSelectedSession(direction int) {
 		return
 	}
 	selected := s.currentSession()
-	group := s.organizationGroupID(selected)
+	before := s.activity().Clone()
 	targetIndex := s.selected + direction
-	for targetIndex >= 0 && targetIndex < len(s.sessions) && s.organizationGroupID(s.sessions[targetIndex]) != group {
-		targetIndex += direction
+	if s.organizationMode() != ducklord.OrganizationCustom {
+		group := s.organizationGroupID(selected)
+		for targetIndex >= 0 && targetIndex < len(s.sessions) && s.organizationGroupID(s.sessions[targetIndex]) != group {
+			targetIndex += direction
+		}
 	}
 	if targetIndex < 0 || targetIndex >= len(s.sessions) {
 		s.outputErr = "session is already at the group boundary"
@@ -3443,11 +3495,22 @@ func (s *tuiState) moveSelectedSession(direction int) {
 	}
 	order[selectedOrder], order[targetOrder] = order[targetOrder], order[selectedOrder]
 	s.activity().Organization.SessionOrder = order
+	if s.organizationMode() == ducklord.OrganizationCustom {
+		targetGroup := s.organizationGroupID(s.sessions[targetIndex])
+		if targetGroup == ducklord.UngroupedGroupID {
+			delete(s.activity().Organization.Membership, selectedIdentity)
+		} else {
+			s.activity().Organization.Membership[selectedIdentity] = targetGroup
+		}
+	}
 	key := sessionKey(selected)
 	s.applyOrganizationOrder()
 	s.restoreSelection(key)
 	if err := s.saveActivityState(); err != nil {
-		s.outputErr = "session order changed locally but was not saved: " + err.Error()
+		s.activityState = before
+		s.applyOrganizationOrder()
+		s.restoreSelection(key)
+		s.outputErr = "session order was not changed: " + err.Error()
 	} else {
 		s.outputErr = "session order saved"
 	}
@@ -3795,6 +3858,7 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 	if s.outputForKey != key {
 		s.outputText = ""
 		s.terminal = nil
+		s.ptyScrollOffset = 0
 		s.outputErr = ""
 		s.outputStale = false
 		s.outputFresh = false
@@ -3805,6 +3869,7 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 				s.terminalCursorValid = state.ResumeCursorValid
 				if state.Framebuffer != nil {
 					s.terminal, _ = ducklord.NewTerminalFromState(*state.Framebuffer, ducklord.DefaultTerminalScrollback)
+					s.ptyScrollOffset = 0
 				}
 				if s.terminal != nil {
 					s.outputText = s.terminal.Text()
@@ -3854,6 +3919,7 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 	}
 	rows, cols := s.activePTYSize()
 	s.terminal = ducklord.NewTerminal(int(rows), int(cols), ducklord.DefaultTerminalScrollback)
+	s.ptyScrollOffset = 0
 	s.terminal.Write([]byte(text))
 	s.outputText = s.terminal.Text()
 	s.outputErr = ""
@@ -3872,6 +3938,7 @@ func (s *tuiState) applyAttachOutput(text string, runtimeGeneration, outputOffse
 	if s.terminal == nil {
 		rows, cols := s.activePTYSize()
 		s.terminal = ducklord.NewTerminal(int(rows), int(cols), ducklord.DefaultTerminalScrollback)
+		s.ptyScrollOffset = 0
 	}
 	s.terminal.Write([]byte(text))
 	s.terminalGeneration = runtimeGeneration
@@ -4113,6 +4180,7 @@ func (s *tuiState) render(out io.Writer) {
 		s.renderAddClientModal(out, width, modalHeight)
 		s.renderRemoveClientModal(out, width, modalHeight)
 		s.renderHelpModal(out, width, modalHeight)
+		s.renderShortcutModal(out, width, modalHeight)
 		s.renderHostModal(out, width, modalHeight)
 		s.renderGroupModal(out, width, modalHeight)
 		s.renderNotificationModal(out, width, modalHeight)
@@ -4225,11 +4293,12 @@ func (s *tuiState) render(out io.Writer) {
 	s.renderAddClientModal(out, width, modalHeight)
 	s.renderRemoveClientModal(out, width, modalHeight)
 	s.renderHelpModal(out, width, modalHeight)
+	s.renderShortcutModal(out, width, modalHeight)
 	s.renderHostModal(out, width, modalHeight)
 	s.renderGroupModal(out, width, modalHeight)
 	s.renderNotificationModal(out, width, modalHeight)
 	s.renderLifecycleModal(out, width, modalHeight)
-	if s.focused && s.terminal != nil && !s.outputStale {
+	if s.focused && s.terminal != nil && !s.outputStale && s.ptyScrollOffset == 0 {
 		if cursorRow, cursorCol, visible := s.terminal.CursorPosition(height-5, contentWidth); visible {
 			fmt.Fprintf(out, "\033[%d;%dH\033[?25h", 6+cursorRow, contentX+cursorCol)
 		}
@@ -4415,7 +4484,7 @@ func (s *tuiState) renderRemoveClientModal(out io.Writer, cols, rows int) {
 }
 
 func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
-	if !s.helpMode {
+	if !s.helpMode || s.blockingModalOpen() {
 		return
 	}
 	type helpEntry struct{ category, action, label string }
@@ -4425,10 +4494,11 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		{"HOST", "host_actions", "Host action menu"}, {"", "host_add", "Add host configuration"}, {"", "host_remove", "Remove host configuration"},
 		{"PTY PANEL", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return focus to session list"},
 		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
+		{"", "shortcut_settings", "Configure shortcuts"},
 	}
 	lines := []modalRenderLine{{modalTitle, "  Keyboard shortcuts · grouped by target"}}
 	for _, entry := range entries {
-		if s.hostScoped && (entry.action == "host_add" || entry.action == "host_remove" || entry.action == "session_create") {
+		if s.hostScoped && (entry.action == "host_add" || entry.action == "host_remove" || entry.action == "session_create" || entry.action == "shortcut_settings") {
 			continue
 		}
 		if entry.category != "" {
@@ -4440,11 +4510,123 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		modalRenderLine{modalStatus, "  MOUSE"}, modalRenderLine{modalMuted, "  Click select · drag reorder · right-click focus/toggle"},
 		modalRenderLine{modalStatus, "  MODALS"}, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter confirm · Esc back · Ctrl+C close"},
 		modalRenderLine{modalMuted, "  Host connect/disconnect/reconnect affects all host sessions and notifications"},
-		modalRenderLine{modalMuted, "  ↑/↓ scroll · Esc/? close · shortcut changes require restart"})
+		modalRenderLine{modalMuted, "  Help stays pinned while you operate · ? closes"})
 	maxVisible := max(1, rows-4)
 	s.helpOffset = min(max(s.helpOffset, 0), max(0, len(lines)-maxVisible))
 	visible := lines[s.helpOffset:min(len(lines), s.helpOffset+maxVisible)]
 	renderModalBox(out, cols, rows, visible)
+}
+
+func shortcutActions() []string {
+	actions := make([]string, 0, len(ducklord.DefaultShortcuts))
+	for action := range ducklord.DefaultShortcuts {
+		actions = append(actions, action)
+	}
+	sort.Strings(actions)
+	return actions
+}
+
+func trimLastRune(text string) string {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return text
+	}
+	return string(runes[:len(runes)-1])
+}
+
+func (s *tuiState) beginShortcutSettings() {
+	if s.cfgPath == "" {
+		s.outputErr = "shortcut settings are unavailable without a config path"
+		return
+	}
+	s.shortcutMode, s.shortcutStep, s.shortcutIndex = true, "list", 0
+	s.shortcutLine, s.shortcutErr = "", ""
+	s.shortcutDraft = s.cfg.Clone()
+}
+
+func (s *tuiState) renderShortcutModal(out io.Writer, cols, rows int) {
+	if !s.shortcutMode {
+		return
+	}
+	actions := shortcutActions()
+	lines := []modalRenderLine{{modalTitle, "  Configure keyboard shortcuts"}}
+	switch s.shortcutStep {
+	case "edit":
+		action := actions[s.shortcutIndex]
+		lines = append(lines, modalRenderLine{modalStatus, "  " + action}, modalRenderLine{modalInput, "  binding › " + s.shortcutLine}, modalRenderLine{modalMuted, "  Examples: x, ?, ctrl-k, ctrl-] · Enter save · Esc back"})
+	case "restart":
+		lines = append(lines, modalRenderLine{modalStatus, "  Shortcut saved. Restart Ducklord TUI now?"}, modalRenderLine{modalInput, "  y / Enter  restart now"}, modalRenderLine{modalMuted, "  n / Esc     keep running with current bindings"})
+	default:
+		visible := max(3, rows-8)
+		start := max(0, min(s.shortcutIndex-visible/2, len(actions)-visible))
+		for index := start; index < min(len(actions), start+visible); index++ {
+			style, prefix := modalInput, "  "
+			if index == s.shortcutIndex {
+				style, prefix = modalSelected, "› "
+			}
+			lines = append(lines, modalRenderLine{style, fmt.Sprintf("%s%-24s %s", prefix, actions[index], s.shortcutDraft.Shortcut(actions[index]))})
+		}
+		lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter edit · Esc/Ctrl+C close"})
+	}
+	if s.shortcutErr != "" {
+		lines = append(lines, modalRenderLine{modalDanger, "  " + sanitizeTerminalText(s.shortcutErr)})
+	}
+	renderModalBox(out, cols, rows, lines)
+}
+
+func (s *tuiState) handleShortcutInput(input []byte) string {
+	actions := shortcutActions()
+	text := string(input)
+	switch s.shortcutStep {
+	case "restart":
+		if text == "y" || text == "Y" || text == "\r" || text == "\n" {
+			return "restart-tui"
+		}
+		if text == "n" || text == "N" || text == "\x1b" || text == "\x03" {
+			s.shortcutMode = false
+			s.outputErr = "shortcuts saved; restart Ducklord to load them"
+		}
+		return ""
+	case "edit":
+		if text == "\x1b" || text == "\x03" {
+			s.shortcutStep, s.shortcutLine, s.shortcutErr = "list", "", ""
+			return ""
+		}
+		if text == "\x7f" || text == "\b" {
+			s.shortcutLine = trimLastRune(s.shortcutLine)
+			return ""
+		}
+		if text == "\r" || text == "\n" {
+			action := actions[s.shortcutIndex]
+			candidate := s.shortcutDraft.Clone()
+			candidate.Shortcuts[action] = strings.TrimSpace(s.shortcutLine)
+			if err := ducklord.SaveConfig(s.cfgPath, candidate); err != nil {
+				s.shortcutErr = err.Error()
+				return ""
+			}
+			s.shortcutDraft, s.shortcutStep, s.shortcutErr = candidate, "restart", ""
+			return ""
+		}
+		for _, r := range text {
+			if !unicode.IsControl(r) && len(s.shortcutLine) < 16 {
+				s.shortcutLine += string(r)
+			}
+		}
+	default:
+		switch text {
+		case "\x1b", "\x03":
+			s.shortcutMode = false
+		case "j", "\x1b[B":
+			s.shortcutIndex = min(len(actions)-1, s.shortcutIndex+1)
+		case "k", "\x1b[A":
+			s.shortcutIndex = max(0, s.shortcutIndex-1)
+		case "\r", "\n":
+			s.shortcutStep = "edit"
+			s.shortcutLine = s.shortcutDraft.Shortcut(actions[s.shortcutIndex])
+			s.shortcutErr = ""
+		}
+	}
+	return ""
 }
 
 var hostActions = []string{"Connect", "Disconnect", "Reconnect", "Add host", "Remove host"}
@@ -4498,21 +4680,6 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 		return action
 	}
 	return ""
-}
-
-func (s *tuiState) handleHelpInput(input []byte) {
-	switch string(input) {
-	case "\x1b", "\x03":
-		s.helpMode = false
-	case "\x1b[B", "j":
-		s.helpOffset++
-	case "\x1b[A", "k":
-		s.helpOffset = max(0, s.helpOffset-1)
-	default:
-		if s.shortcut("help", string(input)) {
-			s.helpMode = false
-		}
-	}
 }
 
 func (s *tuiState) renderGroupModal(out io.Writer, cols, rows int) {
@@ -5010,7 +5177,7 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 	lines := tailLines(strings.Split(strings.TrimRight(s.outputText, "\n"), "\n"), height-startRow+1)
 	styled := false
 	if s.terminal != nil {
-		lines = s.terminal.RenderLines(height-startRow+1, width)
+		lines = s.terminal.RenderLinesOffset(height-startRow+1, width, s.ptyScrollOffset)
 		styled = true
 	}
 	for i, line := range lines {
@@ -5579,6 +5746,8 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "quit"
 	case s.shortcut("help", text):
 		return "help"
+	case s.shortcut("shortcut_settings", text) && !s.hostScoped:
+		return "shortcut-settings"
 	case s.shortcut("host_actions", text):
 		return "host-actions"
 	case s.selectedGroupID != "" && (s.sessionShortcut(text) || s.shortcut("list_reorder_up", text) || s.shortcut("list_reorder_down", text)):
@@ -6845,7 +7014,11 @@ func (s *tuiState) backCreateStep() {
 }
 
 func (s *tuiState) centralModalOpen() bool {
-	return s.helpMode || s.hostMenuMode || s.searchMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.lifecycleConfirm != ""
+	return s.blockingModalOpen()
+}
+
+func (s *tuiState) blockingModalOpen() bool {
+	return s.shortcutMode || s.hostMenuMode || s.searchMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.lifecycleConfirm != ""
 }
 
 func (s *tuiState) syncCreateSelectionToInput() {
@@ -7022,6 +7195,35 @@ func (s *tuiState) contentPaneClicked(seq string) bool {
 	return x >= contentStart && x <= width && y >= 4 && y <= height
 }
 
+func parseSGRMouse(seq string) (button, x, y int, ok bool) {
+	if len(seq) > 64 || !strings.HasPrefix(seq, "\x1b[<") || len(seq) < 7 || seq[len(seq)-1] != 'M' && seq[len(seq)-1] != 'm' {
+		return 0, 0, 0, false
+	}
+	parts := strings.Split(seq[3:len(seq)-1], ";")
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	values := []*int{&button, &x, &y}
+	for index, part := range parts {
+		value, err := strconv.Atoi(part)
+		if err != nil || value < 0 || value > 10000 {
+			return 0, 0, 0, false
+		}
+		*values[index] = value
+	}
+	return button, x, y, true
+}
+
+func (s *tuiState) contentPanePoint(x, y int) bool {
+	width, height := terminalSize()
+	layout := calculateTUILayout(width, s.focused, s.listPaneWidth, s.autoHideList)
+	contentStart := 1
+	if layout.showList {
+		contentStart = layout.menuWidth + 3
+	}
+	return x >= contentStart && x <= width && y >= 5 && y <= height
+}
+
 func readInput(ctx context.Context, ch chan<- []byte) {
 	raw := make(chan []byte, 1)
 	go func() {
@@ -7122,6 +7324,9 @@ func nextInputEvent(pending []byte) (event, rest []byte, ok bool) {
 			if pending[i] == 'M' || pending[i] == 'm' {
 				return append([]byte(nil), pending[:i+1]...), pending[i+1:], true
 			}
+		}
+		if len(pending) > 64 {
+			return append([]byte(nil), pending...), nil, true
 		}
 		return nil, pending, false
 	}

@@ -291,7 +291,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	start = capture.position()
 	writePTY(t, terminal, "?")
 	assertCurrentCreateModal(t, capture, start, "Keyboard shortcuts", "SESSION LIST", false)
-	writePTY(t, terminal, "\x1b")
+	writePTY(t, terminal, "?")
 
 	var created protocol.SessionSummary
 	waitE2E(t, 15*time.Second, func() bool {

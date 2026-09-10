@@ -709,9 +709,55 @@ func TestTUIHelpUsesConfiguredBindingsAndCategories(t *testing.T) {
 			t.Fatalf("help missing %q: %q", want, out.String())
 		}
 	}
-	state.handleHelpInput([]byte("!"))
+	if action := state.handleInput([]byte("!")); action != "help" {
+		t.Fatalf("configured help toggle action=%q", action)
+	}
+	state.helpMode = !state.helpMode
 	if state.helpMode {
-		t.Fatal("configured help key did not close help")
+		t.Fatal("configured help key did not toggle pinned help")
+	}
+}
+
+func TestPinnedHelpDoesNotCaptureEscapeOrNavigation(t *testing.T) {
+	state := &tuiState{cfg: &ducklord.Config{}, helpMode: true, sessions: []ducklord.RemoteSession{{Name: "one"}, {Name: "two"}}}
+	if action := state.handleInput([]byte("\x1b")); action != "" || !state.helpMode {
+		t.Fatalf("escape action=%q help=%v", action, state.helpMode)
+	}
+	if action := state.handleInput([]byte("j")); action != "select" || state.selected != 1 || !state.helpMode {
+		t.Fatalf("navigation action=%q selected=%d help=%v", action, state.selected, state.helpMode)
+	}
+}
+
+func TestParseSGRMouseWheel(t *testing.T) {
+	button, x, y, ok := parseSGRMouse("\x1b[<64;80;12M")
+	if !ok || button != 64 || x != 80 || y != 12 {
+		t.Fatalf("parsed=(%d,%d,%d,%v)", button, x, y, ok)
+	}
+	if _, _, _, ok := parseSGRMouse("\x1b[<64;999999;12M"); ok {
+		t.Fatal("accepted oversized coordinate")
+	}
+}
+
+func TestShortcutEditorStagesSaveUntilRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	state := &tuiState{cfg: &ducklord.Config{}, cfgPath: path}
+	state.beginShortcutSettings()
+	actions := shortcutActions()
+	for index, action := range actions {
+		if action == "help" {
+			state.shortcutIndex = index
+			break
+		}
+	}
+	state.handleShortcutInput([]byte("\r"))
+	state.shortcutLine = "!"
+	state.handleShortcutInput([]byte("\r"))
+	if state.shortcutStep != "restart" || state.cfg.Shortcut("help") != "?" {
+		t.Fatalf("step=%q runtime help=%q", state.shortcutStep, state.cfg.Shortcut("help"))
+	}
+	loaded, err := ducklord.LoadConfig(path)
+	if err != nil || loaded.Shortcut("help") != "!" {
+		t.Fatalf("loaded help=%q err=%v", loaded.Shortcut("help"), err)
 	}
 }
 
@@ -992,6 +1038,25 @@ func TestTUIOrganizationModeAndManualOrderPersist(t *testing.T) {
 	}
 }
 
+func TestTUICustomKeyboardReorderCrossesGroup(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	first := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: "AAA111", Name: "first"}
+	second := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: "BBB222", Name: "second"}
+	firstID, _ := ducklord.IdentityFromSession(first)
+	secondID, _ := ducklord.IdentityFromSession(second)
+	groupA, groupB := uuid.NewString(), uuid.NewString()
+	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")}, sessions: []ducklord.RemoteSession{first, second}}
+	state.activity().Organization.Groups = []ducklord.CustomGroup{{ID: groupA, Name: "A"}, {ID: groupB, Name: "B"}}
+	state.activity().Organization.Membership[firstID] = groupA
+	state.activity().Organization.Membership[secondID] = groupB
+	state.applyOrganizationOrder()
+	state.selected = 1
+	state.moveSelectedSession(-1)
+	if state.activity().Organization.Membership[secondID] != groupA || state.sessions[0].SessionID != second.SessionID {
+		t.Fatalf("membership=%+v sessions=%+v", state.activity().Organization.Membership, state.sessions)
+	}
+}
+
 func TestTUIListSelectsAndCollapsesStableGroupRows(t *testing.T) {
 	instanceA, instanceB := string(model.NewInstanceID()), string(model.NewInstanceID())
 	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")},
@@ -1132,7 +1197,7 @@ func TestTUIOrganizationPersistenceFailureKeepsLocalChangeAndWarns(t *testing.T)
 	state.selected = 1
 	state.outputErr = ""
 	state.moveSelectedSession(-1)
-	if state.sessions[0].SessionID != "BBB222" || !strings.Contains(state.outputErr, "changed locally but was not saved") {
+	if state.sessions[0].SessionID != "AAA111" || !strings.Contains(state.outputErr, "was not changed") {
 		t.Fatalf("sessions=%+v error=%q", state.sessions, state.outputErr)
 	}
 }
