@@ -42,6 +42,7 @@ type remoteRunner interface {
 	YieldSelected(context.Context, ducklord.Client, ducklord.RemoteSession, bool) (protocol.SessionYieldResult, error)
 	Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error)
 	SuggestProjectPaths(context.Context, ducklord.Client, string) ([]string, error)
+	EnsureDirectory(context.Context, ducklord.Client, string, bool) (ducklord.RemoteDirectoryStatus, error)
 	AddProject(context.Context, ducklord.Client, string, string) (ducklord.RemoteProject, error)
 	Agents(context.Context, ducklord.Client, string) ([]ducklord.RemoteAgent, error)
 	ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error)
@@ -91,6 +92,7 @@ type createDiscoveryEvent struct {
 	failureStep            string
 	args                   []string
 	err                    error
+	directory              ducklord.RemoteDirectoryStatus
 }
 
 type pathSuggestionEvent struct {
@@ -2192,9 +2194,17 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 							startID++
 							state.newSessionStarting = false
 						} else {
+							if state.newSessionStep == "path" && state.newSessionProject.Path != "" {
+								state.newSessionLine = state.newSessionProject.Path
+							}
+							creatingDirectory := state.newSessionStep == "path-confirm"
 							state.cancelCreateDiscovery()
+							if creatingDirectory {
+								state.newSessionErr = "request canceled; the directory may have been created—recheck before retrying"
+							} else {
+								state.newSessionErr = "operation canceled; edit or press Esc to go back"
+							}
 						}
-						state.newSessionErr = "operation canceled; edit or press Esc to go back"
 						state.render(os.Stdout)
 					}
 					continue
@@ -2967,6 +2977,10 @@ func (s *tuiState) moveListSelection(direction int) bool {
 }
 
 func (s *tuiState) toggleSelectedGroup() {
+	s.setSelectedGroupCollapsed(!s.groupCollapsed(s.selectedGroupID))
+}
+
+func (s *tuiState) setSelectedGroupCollapsed(want bool) {
 	id := s.selectedGroupID
 	if id == "" {
 		return
@@ -2983,6 +2997,9 @@ func (s *tuiState) toggleSelectedGroup() {
 		s.outputErr = "selected group no longer exists"
 		return
 	}
+	if s.groupCollapsed(id) == want {
+		return
+	}
 	next := s.activity().Clone()
 	mode := s.organizationMode()
 	collapsed := next.Organization.Collapsed[mode]
@@ -2993,9 +3010,9 @@ func (s *tuiState) toggleSelectedGroup() {
 			break
 		}
 	}
-	if found >= 0 {
+	if !want && found >= 0 {
 		collapsed = append(collapsed[:found], collapsed[found+1:]...)
-	} else {
+	} else if want && found < 0 {
 		collapsed = append(collapsed, id)
 	}
 	next.Organization.Collapsed[mode] = collapsed
@@ -4490,6 +4507,8 @@ func (s *tuiState) createModalChoices() []string {
 			choices = append(choices, displayField(path))
 		}
 		return choices
+	case "path-confirm":
+		return []string{"1  Create directory recursively", "2  Back without creating"}
 	case "project-policy":
 		return []string{"1  Add path to Duckway projects", "2  Use path once"}
 	case "project-name":
@@ -5173,6 +5192,19 @@ func (s *tuiState) handleInput(b []byte) string {
 	case s.selectedGroupID != "" && (text == "g" || text == "y" || text == "Y" || text == "E" || text == "R" || text == "X" || text == "n" || text == "m" || text == "d" || text == "\x0b" || text == "\n"):
 		s.outputErr = "select a session row for this action"
 		return "group-select"
+	case text == "\x1b[D":
+		if s.selectedGroupID == "" {
+			s.selectedGroupID = s.organizationGroupID(s.currentSession())
+			return "group-select"
+		}
+		s.setSelectedGroupCollapsed(true)
+		return "group-toggle"
+	case text == "\x1b[C":
+		if s.selectedGroupID != "" {
+			s.setSelectedGroupCollapsed(false)
+			return "group-toggle"
+		}
+		return "group-select"
 	case text == "r":
 		return "refresh"
 	case text == "/":
@@ -5786,8 +5818,36 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 		s.cancelPathSuggestions()
 		s.newSessionCWD = filepath.Clean(path)
 		s.newSessionProject = ducklord.RemoteProject{Path: s.newSessionCWD, Source: "path"}
-		s.newSessionStep, s.newSessionLine, s.newSessionSelected = "project-policy", "", 0
-		s.newSessionErr = "add this path to projects or use it once"
+		client, clientErr := mustClient(s.cfg, s.newSessionClient)
+		if clientErr != nil {
+			return "", "", nil, false, clientErr
+		}
+		s.newSessionLine, s.newSessionErr = "", "checking remote directory..."
+		project := s.newSessionProject
+		s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "path-status", client: s.newSessionClient, project: project, failureStep: "path"}, func(workCtx context.Context) createDiscoveryEvent {
+			status, checkErr := s.runner.EnsureDirectory(workCtx, client, project.Path, false)
+			return createDiscoveryEvent{directory: status, project: project, err: checkErr}
+		})
+		return "", "", nil, false, nil
+	case "path-confirm":
+		switch strings.ToLower(line) {
+		case "", "1", "create", "yes":
+			client, clientErr := mustClient(s.cfg, s.newSessionClient)
+			if clientErr != nil {
+				return "", "", nil, false, clientErr
+			}
+			project := s.newSessionProject
+			s.newSessionErr = "creating directory and missing parents..."
+			s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "path-create", client: s.newSessionClient, project: project, failureStep: "path-confirm"}, func(workCtx context.Context) createDiscoveryEvent {
+				status, createErr := s.runner.EnsureDirectory(workCtx, client, project.Path, true)
+				return createDiscoveryEvent{directory: status, project: project, err: createErr}
+			})
+		case "2", "back", "no":
+			s.newSessionStep, s.newSessionLine = "path", s.newSessionCWD
+			s.newSessionErr = "directory was not created"
+		default:
+			return "", "", nil, false, fmt.Errorf("choose Create or Back")
+		}
 		return "", "", nil, false, nil
 	case "project-policy":
 		switch strings.ToLower(line) {
@@ -5953,10 +6013,34 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 			if s.newSessionStep == "" {
 				s.newSessionStep = "handle"
 			}
+		case "path-status", "path-create":
+			s.newSessionStep = event.failureStep
+			if event.kind == "path-status" {
+				s.newSessionLine = event.project.Path
+			}
 		}
 		return "", "", nil, false
 	}
 	switch event.kind {
+	case "path-status":
+		if event.directory.Exists {
+			s.newSessionStep, s.newSessionSelected = "project-policy", 0
+			s.newSessionErr = "directory exists; add it to projects or use it once"
+		} else {
+			s.newSessionStep, s.newSessionSelected = "path-confirm", 0
+			s.newSessionErr = "directory does not exist; confirm recursive creation"
+		}
+	case "path-create":
+		if !event.directory.Exists {
+			s.newSessionStep, s.newSessionErr = "path-confirm", "Ducklion did not create the directory"
+			return "", "", nil, false
+		}
+		s.newSessionStep, s.newSessionSelected = "project-policy", 0
+		if event.directory.Created {
+			s.newSessionErr = "directory created recursively; add it to projects or use it once"
+		} else {
+			s.newSessionErr = "directory already exists; add it to projects or use it once"
+		}
 	case "projects":
 		projects := event.projects
 		if s.newSessionKind == model.KindAgent {
@@ -6113,6 +6197,8 @@ func (s *tuiState) createHeader() string {
 		return fmt.Sprintf("new %s session: host=%s  choose configured project", s.newSessionKind, displayField(s.newSessionClient))
 	case "path":
 		return fmt.Sprintf("new %s session: browse remote path on %s", s.newSessionKind, displayField(s.newSessionClient))
+	case "path-confirm":
+		return fmt.Sprintf("CREATE REMOTE DIRECTORY · %s · %s", displayField(s.newSessionClient), displayField(s.newSessionCWD))
 	case "project-policy":
 		return "remote path selected: add to projects or use once"
 	case "project-name":
@@ -6136,6 +6222,8 @@ func (s *tuiState) createPromptLabel() string {
 		return "project"
 	case "path":
 		return "path"
+	case "path-confirm":
+		return "choice"
 	case "project-policy":
 		return "choice"
 	case "project-name":
@@ -6230,6 +6318,9 @@ func (s *tuiState) backCreateStep() {
 		} else {
 			s.newSessionStep = "host"
 		}
+	case "path-confirm":
+		s.newSessionStep = "path"
+		s.newSessionLine = s.newSessionCWD
 	case "project-policy":
 		s.newSessionStep = "path"
 		s.newSessionLine = s.newSessionCWD

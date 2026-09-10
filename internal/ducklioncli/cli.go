@@ -334,13 +334,13 @@ func runAgents(args []string, out io.Writer) error {
 
 func runProjects(args []string, out io.Writer) error {
 	jsonOut := false
-	var suggest, add, name string
-	var suggestSet, addSet, nameSet bool
+	var suggest, add, name, inspectDir, createDir string
+	var suggestSet, addSet, nameSet, inspectSet, createSet bool
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
 			jsonOut = true
-		case "--suggest", "--add", "--name":
+		case "--suggest", "--add", "--name", "--inspect-dir", "--create-dir":
 			if i+1 >= len(args) {
 				return fmt.Errorf("%s requires a value", args[i])
 			}
@@ -364,16 +364,71 @@ func runProjects(args []string, out io.Writer) error {
 				}
 				nameSet = true
 				name = args[i]
+			case "--inspect-dir":
+				if inspectSet {
+					return fmt.Errorf("--inspect-dir may only be specified once")
+				}
+				inspectSet, inspectDir = true, args[i]
+			case "--create-dir":
+				if createSet {
+					return fmt.Errorf("--create-dir may only be specified once")
+				}
+				createSet, createDir = true, args[i]
 			}
 		default:
 			return fmt.Errorf("unknown projects option: %s", args[i])
 		}
 	}
-	if suggestSet && addSet || suggestSet && nameSet || nameSet && !addSet {
+	modeCount := 0
+	for _, set := range []bool{suggestSet, addSet, inspectSet, createSet} {
+		if set {
+			modeCount++
+		}
+	}
+	if modeCount > 1 || nameSet && !addSet {
 		return fmt.Errorf("choose either --suggest or --add; --name requires --add")
 	}
-	if suggestSet && strings.TrimSpace(suggest) == "" || addSet && strings.TrimSpace(add) == "" || nameSet && strings.TrimSpace(name) == "" {
+	if suggestSet && strings.TrimSpace(suggest) == "" || addSet && strings.TrimSpace(add) == "" || nameSet && strings.TrimSpace(name) == "" || inspectSet && strings.TrimSpace(inspectDir) == "" || createSet && strings.TrimSpace(createDir) == "" {
 		return fmt.Errorf("project option values must not be empty")
+	}
+	if inspectSet || createSet {
+		requested := inspectDir
+		if createSet {
+			requested = createDir
+		}
+		if !filepath.IsAbs(requested) {
+			return fmt.Errorf("directory path must be absolute")
+		}
+		path, created := filepath.Clean(requested), false
+		if err := rejectSymlinkPath(path); err != nil {
+			return err
+		}
+		info, err := os.Stat(path)
+		if os.IsNotExist(err) && createSet {
+			if err = os.MkdirAll(path, 0755); err == nil {
+				created = true
+				if err = rejectSymlinkPath(path); err != nil {
+					return err
+				}
+				info, err = os.Stat(path)
+			}
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err == nil && !info.IsDir() {
+			return fmt.Errorf("path exists but is not a directory")
+		}
+		result := struct {
+			Path    string `json:"path"`
+			Exists  bool   `json:"exists"`
+			Created bool   `json:"created,omitempty"`
+		}{Path: path, Exists: err == nil, Created: created}
+		if jsonOut {
+			return json.NewEncoder(out).Encode(result)
+		}
+		fmt.Fprintf(out, "%s exists=%t created=%t\n", path, result.Exists, created)
+		return nil
 	}
 	if suggestSet {
 		paths, err := projectregistry.SuggestDirectories(suggest, 20)
@@ -424,6 +479,30 @@ func runProjects(args []string, out io.Writer) error {
 	fmt.Fprintf(out, "%-18s %s\n", "NAME", "PATH")
 	for _, p := range result {
 		fmt.Fprintf(out, "%-18s %s\n", p.Name, p.Path)
+	}
+	return nil
+}
+
+// rejectSymlinkPath prevents a confirmed directory path from being silently
+// redirected through an existing symlink. Directory creation still runs with
+// the Ducklion user's normal filesystem authority.
+func rejectSymlinkPath(path string) error {
+	current := string(filepath.Separator)
+	for _, component := range strings.Split(strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)), string(filepath.Separator)) {
+		if component == "" {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("directory path contains a symbolic link: %s", current)
+		}
 	}
 	return nil
 }
@@ -565,7 +644,7 @@ func PrintUsage(out io.Writer) {
 Usage:
   ducklion daemon
   ducklion list [--json] [--tail-lines N]
-  ducklion projects [--json]
+  ducklion projects [--json|--suggest PATH|--add PATH [--name NAME]|--inspect-dir PATH|--create-dir PATH]
   ducklion agents --cwd <project-dir> [--json]
   ducklion start --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
   ducklion read <name> [--lines N] [--json]

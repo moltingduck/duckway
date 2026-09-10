@@ -242,6 +242,8 @@ Useful keys:
 
 - `j` / `k` or arrow keys move across both group headers and sessions. Press
   `Enter` on a group to collapse or expand it without detaching the active PTY.
+  On a group, `Left` always collapses and `Right` always expands; on a session,
+  `Left` first selects its parent group.
 - Mouse click selects a row.
 - `Enter` or right-click focuses the selected session in the right pane.
 - `Ctrl-]` returns keyboard focus to the left menu.
@@ -256,6 +258,13 @@ Useful keys:
   organization mode, drag a session row onto a group header to move it; the
   same exact-identity operation remains available under `g` → **Move selected
   session** for keyboard-only use.
+
+When the create wizard receives an absolute remote path that does not exist, it
+shows a centered **CREATE REMOTE DIRECTORY** confirmation. Confirming asks
+Ducklion to create the directory and all missing parents as the Ducklion Unix
+user; choosing Back or pressing Esc leaves the remote filesystem unchanged.
+Directory creation does not automatically register a project—the existing
+**Add path to Duckway projects / Use path once** choice follows afterward.
 - `E`, `R`, and `X` open confirmation views for end, restart, and destroy.
 - `r` refreshes immediately.
 - `q` quits.

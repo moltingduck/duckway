@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +56,12 @@ type RemoteProject struct {
 	Name   string `json:"name"`
 	Path   string `json:"path"`
 	Source string `json:"source"`
+}
+
+type RemoteDirectoryStatus struct {
+	Path    string `json:"path"`
+	Exists  bool   `json:"exists"`
+	Created bool   `json:"created,omitempty"`
 }
 
 type RemoteAgent struct {
@@ -1057,6 +1064,38 @@ func (*Runner) SuggestProjectPaths(ctx context.Context, c Client, query string) 
 		seen[path] = true
 	}
 	return paths, nil
+}
+
+func (*Runner) EnsureDirectory(ctx context.Context, c Client, path string, create bool) (RemoteDirectoryStatus, error) {
+	if err := validateRemoteText("directory path", path, 4096, true); err != nil {
+		return RemoteDirectoryStatus{}, err
+	}
+	requested := filepath.Clean(path)
+	args := []string{"projects", "--inspect-dir", path, "--json"}
+	if create {
+		args = []string{"projects", "--create-dir", path, "--json"}
+	}
+	out, err := sshOutput(ctx, c, args...)
+	if err != nil {
+		return RemoteDirectoryStatus{}, err
+	}
+	var status RemoteDirectoryStatus
+	if json.Unmarshal(out, &status) != nil || status.Path == "" {
+		return RemoteDirectoryStatus{}, fmt.Errorf("parse Ducklion directory status from %s", c.Name)
+	}
+	if err := validateRemoteText("directory path", status.Path, 4096, true); err != nil {
+		return RemoteDirectoryStatus{}, err
+	}
+	if filepath.Clean(status.Path) != requested {
+		return RemoteDirectoryStatus{}, fmt.Errorf("ducklion directory status path mismatch from %s", c.Name)
+	}
+	if status.Created && !status.Exists {
+		return RemoteDirectoryStatus{}, fmt.Errorf("ducklion returned an invalid directory status from %s", c.Name)
+	}
+	if !create && status.Created {
+		return RemoteDirectoryStatus{}, fmt.Errorf("ducklion inspect unexpectedly reported a created directory from %s", c.Name)
+	}
+	return status, nil
 }
 
 func (*Runner) AddProject(ctx context.Context, c Client, path, name string) (RemoteProject, error) {

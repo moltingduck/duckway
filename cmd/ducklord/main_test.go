@@ -961,9 +961,22 @@ func TestTUIListSelectsAndCollapsesStableGroupRows(t *testing.T) {
 	if strings.Count(rendered.String(), ">") != 1 {
 		t.Fatalf("group selection rendered more than one cursor: %q", rendered.String())
 	}
-	if action := state.handleInput([]byte("\r")); action != "group-toggle" || !state.groupCollapsed("host-b") {
+	if action := state.handleInput([]byte("\x1b[D")); action != "group-toggle" || !state.groupCollapsed("host-b") {
 		t.Fatalf("collapse action=%q collapsed=%v", action, state.groupCollapsed("host-b"))
 	}
+	state.handleInput([]byte("\x1b[D"))
+	if !state.groupCollapsed("host-b") {
+		t.Fatal("repeated Left expanded the group")
+	}
+	state.handleInput([]byte("\x1b[C"))
+	if state.groupCollapsed("host-b") {
+		t.Fatal("Right did not expand the group")
+	}
+	state.handleInput([]byte("\x1b[C"))
+	if state.groupCollapsed("host-b") {
+		t.Fatal("repeated Right collapsed the group")
+	}
+	state.handleInput([]byte("\r"))
 	if rows := state.sessionListRows(); len(rows) != 3 || !rows[2].isGroup || !state.groupHasUnread("host-b") {
 		t.Fatalf("collapsed rows/unread=%+v unread=%v", rows, state.groupHasUnread("host-b"))
 	}
@@ -1653,8 +1666,9 @@ func TestTUICreateWizardBrowsesAndAddsProjectWhenRegistryIsEmpty(t *testing.T) {
 		t.Fatalf("empty registry step=%q err=%q", state.newSessionStep, state.newSessionErr)
 	}
 	state.newSessionLine = "/srv/中文 app"
-	if _, _, _, ready, err := state.submitCreateStep(context.Background(), make(chan createDiscoveryEvent, 1)); err != nil || ready || state.newSessionStep != "project-policy" {
-		t.Fatalf("path submit ready=%v step=%q err=%v", ready, state.newSessionStep, err)
+	createSubmit(t, state)
+	if state.newSessionStep != "project-policy" {
+		t.Fatalf("path submit step=%q err=%v", state.newSessionStep, state.newSessionErr)
 	}
 	state.newSessionLine = ""
 	if _, _, _, ready, err := state.submitCreateStep(context.Background(), make(chan createDiscoveryEvent, 1)); err != nil || ready || state.newSessionStep != "project-name" {
@@ -1668,6 +1682,44 @@ func TestTUICreateWizardBrowsesAndAddsProjectWhenRegistryIsEmpty(t *testing.T) {
 	createSubmit(t, state)
 	if state.newSessionStep != "agent" {
 		t.Fatalf("added project did not continue to agent selection: step=%q err=%q", state.newSessionStep, state.newSessionErr)
+	}
+}
+
+type missingPathRunner struct {
+	fakeRunner
+	createCalls int
+}
+
+func (r *missingPathRunner) EnsureDirectory(_ context.Context, _ ducklord.Client, path string, create bool) (ducklord.RemoteDirectoryStatus, error) {
+	if create {
+		r.createCalls++
+		return ducklord.RemoteDirectoryStatus{Path: path, Exists: true, Created: true}, nil
+	}
+	return ducklord.RemoteDirectoryStatus{Path: path, Exists: false}, nil
+}
+
+func TestTUICreateWizardConfirmsRecursiveMissingDirectory(t *testing.T) {
+	runner := &missingPathRunner{fakeRunner: fakeRunner{agents: []ducklord.RemoteAgent{{Type: "codex", Command: []string{"codex"}}}}}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, runner: runner, hostSync: map[string]ducklord.SessionUpdate{"host": {State: "live"}}}
+	state.beginCreate()
+	state.newSessionStep, state.newSessionClient, state.newSessionLine = "path", "host", "/srv/new/deep/path"
+	createSubmit(t, state)
+	if state.newSessionStep != "path-confirm" || runner.createCalls != 0 {
+		t.Fatalf("step=%q creates=%d", state.newSessionStep, runner.createCalls)
+	}
+	var modal bytes.Buffer
+	state.renderCreateModal(&modal, 100, 30)
+	if !strings.Contains(modal.String(), "CREATE REMOTE DIRECTORY") || !strings.Contains(modal.String(), "/srv/new/deep/path") {
+		t.Fatalf("confirmation modal=%q", modal.String())
+	}
+	state.backCreateStep()
+	if state.newSessionStep != "path" || state.newSessionLine != "/srv/new/deep/path" {
+		t.Fatalf("back step=%q line=%q", state.newSessionStep, state.newSessionLine)
+	}
+	createSubmit(t, state)
+	createSubmit(t, state)
+	if state.newSessionStep != "project-policy" || runner.createCalls != 1 {
+		t.Fatalf("step=%q creates=%d err=%q", state.newSessionStep, runner.createCalls, state.newSessionErr)
 	}
 }
 
@@ -2791,6 +2843,9 @@ func (f fakeRunner) Projects(context.Context, ducklord.Client) ([]ducklord.Remot
 func (f fakeRunner) SuggestProjectPaths(context.Context, ducklord.Client, string) ([]string, error) {
 	return nil, nil
 }
+func (f fakeRunner) EnsureDirectory(context.Context, ducklord.Client, string, bool) (ducklord.RemoteDirectoryStatus, error) {
+	return ducklord.RemoteDirectoryStatus{Path: "/tmp", Exists: true}, nil
+}
 func (f fakeRunner) AddProject(_ context.Context, _ ducklord.Client, path, name string) (ducklord.RemoteProject, error) {
 	return ducklord.RemoteProject{Name: name, Path: path, Source: "duckway-client"}, nil
 }
@@ -2848,6 +2903,9 @@ type recordingRunner struct {
 
 func (r *recordingRunner) SuggestProjectPaths(context.Context, ducklord.Client, string) ([]string, error) {
 	return nil, nil
+}
+func (r *recordingRunner) EnsureDirectory(_ context.Context, _ ducklord.Client, path string, create bool) (ducklord.RemoteDirectoryStatus, error) {
+	return ducklord.RemoteDirectoryStatus{Path: path, Exists: true, Created: create}, nil
 }
 func (r *recordingRunner) AddProject(_ context.Context, _ ducklord.Client, path, name string) (ducklord.RemoteProject, error) {
 	return ducklord.RemoteProject{Name: name, Path: path, Source: "duckway-client"}, nil
