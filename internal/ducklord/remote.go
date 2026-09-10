@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/daemon"
@@ -1021,6 +1022,80 @@ func (*Runner) Projects(ctx context.Context, c Client) ([]RemoteProject, error) 
 		return nil, fmt.Errorf("parse ducklion projects from %s: %w", c.Name, err)
 	}
 	return projects, nil
+}
+
+func (*Runner) SuggestProjectPaths(ctx context.Context, c Client, query string) ([]string, error) {
+	if err := validateRemoteText("path query", query, 4096, false); err != nil {
+		return nil, err
+	}
+	out, err := sshOutput(ctx, c, "projects", "--suggest", query, "--json")
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	if err := json.Unmarshal(out, &paths); err != nil {
+		return nil, fmt.Errorf("parse Ducklion path suggestions from %s: %w", c.Name, err)
+	}
+	if len(paths) > 20 {
+		return nil, fmt.Errorf("ducklion returned too many path suggestions")
+	}
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		if err := validateRemoteText("suggested path", path, 4096, true); err != nil {
+			return nil, err
+		}
+		if seen[path] {
+			return nil, fmt.Errorf("ducklion returned duplicate path suggestion")
+		}
+		seen[path] = true
+	}
+	return paths, nil
+}
+
+func (*Runner) AddProject(ctx context.Context, c Client, path, name string) (RemoteProject, error) {
+	if err := validateRemoteText("project path", path, 4096, true); err != nil {
+		return RemoteProject{}, err
+	}
+	if name != "" {
+		if err := validateRemoteText("project name", name, 256, false); err != nil {
+			return RemoteProject{}, err
+		}
+	}
+	args := []string{"projects", "--add", path, "--json"}
+	if name != "" {
+		args = append(args, "--name", name)
+	}
+	out, err := sshOutput(ctx, c, args...)
+	if err != nil {
+		return RemoteProject{}, err
+	}
+	var projects []RemoteProject
+	if err := json.Unmarshal(out, &projects); err != nil || len(projects) != 1 {
+		return RemoteProject{}, fmt.Errorf("parse added Ducklion project from %s", c.Name)
+	}
+	if err := validateRemoteText("added project path", projects[0].Path, 4096, true); err != nil {
+		return RemoteProject{}, err
+	}
+	if err := validateRemoteText("added project name", projects[0].Name, 256, false); err != nil || strings.TrimSpace(projects[0].Name) == "" {
+		return RemoteProject{}, fmt.Errorf("invalid added project returned by %s", c.Name)
+	}
+	projects[0].Source = "duckway-client"
+	return projects[0], nil
+}
+
+func validateRemoteText(field, value string, maxBytes int, absolute bool) error {
+	if strings.TrimSpace(value) == "" || len(value) > maxBytes {
+		return fmt.Errorf("invalid %s", field)
+	}
+	if absolute && !strings.HasPrefix(value, "/") {
+		return fmt.Errorf("%s must be absolute", field)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
+			return fmt.Errorf("invalid %s", field)
+		}
+	}
+	return nil
 }
 
 func (*Runner) Agents(ctx context.Context, c Client, cwd string) ([]RemoteAgent, error) {

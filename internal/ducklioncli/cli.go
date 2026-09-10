@@ -306,15 +306,76 @@ func runAgents(args []string, out io.Writer) error {
 
 func runProjects(args []string, out io.Writer) error {
 	jsonOut := false
-	for _, arg := range args {
-		switch arg {
+	var suggest, add, name string
+	var suggestSet, addSet, nameSet bool
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--json":
 			jsonOut = true
+		case "--suggest", "--add", "--name":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%s requires a value", args[i])
+			}
+			i++
+			switch args[i-1] {
+			case "--suggest":
+				if suggestSet {
+					return fmt.Errorf("--suggest may only be specified once")
+				}
+				suggestSet = true
+				suggest = args[i]
+			case "--add":
+				if addSet {
+					return fmt.Errorf("--add may only be specified once")
+				}
+				addSet = true
+				add = args[i]
+			case "--name":
+				if nameSet {
+					return fmt.Errorf("--name may only be specified once")
+				}
+				nameSet = true
+				name = args[i]
+			}
 		default:
-			return fmt.Errorf("unknown projects option: %s", arg)
+			return fmt.Errorf("unknown projects option: %s", args[i])
 		}
 	}
-	projects, err := projectregistry.NewStore(duckwayconfig.DefaultConfigDir()).List()
+	if suggestSet && addSet || suggestSet && nameSet || nameSet && !addSet {
+		return fmt.Errorf("choose either --suggest or --add; --name requires --add")
+	}
+	if suggestSet && strings.TrimSpace(suggest) == "" || addSet && strings.TrimSpace(add) == "" || nameSet && strings.TrimSpace(name) == "" {
+		return fmt.Errorf("project option values must not be empty")
+	}
+	if suggestSet {
+		paths, err := projectregistry.SuggestDirectories(suggest, 20)
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return json.NewEncoder(out).Encode(paths)
+		}
+		for _, path := range paths {
+			fmt.Fprintln(out, path)
+		}
+		return nil
+	}
+	store := projectregistry.NewStore(duckwayconfig.DefaultConfigDir())
+	if addSet {
+		project, err := store.AddResolvedPath(add, name)
+		if err != nil {
+			return err
+		}
+		projects := []projectregistry.Project{project}
+		if jsonOut {
+			return json.NewEncoder(out).Encode(projects)
+		}
+		for _, project := range projects {
+			fmt.Fprintf(out, "Added %s %s\n", project.Name, project.Path)
+		}
+		return nil
+	}
+	projects, err := store.List()
 	if err != nil {
 		return err
 	}

@@ -1511,6 +1511,36 @@ func TestTUICreateWizardBuildsShellSessionFromProject(t *testing.T) {
 	}
 }
 
+func TestTUICreateWizardBrowsesAndAddsProjectWhenRegistryIsEmpty(t *testing.T) {
+	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}
+	state := &tuiState{cfg: cfg, runner: fakeRunner{agents: []ducklord.RemoteAgent{{Type: "codex", Command: []string{"codex"}}}}, hostSync: map[string]ducklord.SessionUpdate{"host": {State: "live"}}}
+	state.beginCreate()
+	state.newSessionLine = "agent"
+	createSubmit(t, state)
+	state.newSessionLine = "host"
+	createSubmit(t, state)
+	if state.newSessionStep != "path" {
+		t.Fatalf("empty registry step=%q err=%q", state.newSessionStep, state.newSessionErr)
+	}
+	state.newSessionLine = "/srv/中文 app"
+	if _, _, _, ready, err := state.submitCreateStep(context.Background(), make(chan createDiscoveryEvent, 1)); err != nil || ready || state.newSessionStep != "project-policy" {
+		t.Fatalf("path submit ready=%v step=%q err=%v", ready, state.newSessionStep, err)
+	}
+	state.newSessionLine = ""
+	if _, _, _, ready, err := state.submitCreateStep(context.Background(), make(chan createDiscoveryEvent, 1)); err != nil || ready || state.newSessionStep != "project-name" {
+		t.Fatalf("policy submit ready=%v step=%q err=%v", ready, state.newSessionStep, err)
+	}
+	state.newSessionLine = ""
+	createSubmit(t, state)
+	if state.newSessionStep != "project" || state.newSessionProject.Path != "/srv/中文 app" || state.newSessionProject.Name != "app" {
+		t.Fatalf("added project step=%q project=%#v err=%q", state.newSessionStep, state.newSessionProject, state.newSessionErr)
+	}
+	createSubmit(t, state)
+	if state.newSessionStep != "agent" {
+		t.Fatalf("added project did not continue to agent selection: step=%q err=%q", state.newSessionStep, state.newSessionErr)
+	}
+}
+
 func TestTUICreateWizardRejectsCustomProjectPath(t *testing.T) {
 	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a", Host: "client-a"}}}
 	state := &tuiState{cfg: cfg, runner: fakeRunner{projects: []ducklord.RemoteProject{{Name: "app", Path: "/work/app", Source: "duckway-client"}}, agents: []ducklord.RemoteAgent{{Type: "codex", Command: []string{"/usr/bin/codex"}}}}}
@@ -1587,6 +1617,38 @@ func TestTUICreateDiscoveryRejectsHostGenerationChange(t *testing.T) {
 	close(release)
 	state.applyCreateDiscovery(<-done)
 	if state.newSessionStep != "host" || !strings.Contains(state.newSessionErr, "host changed") {
+		t.Fatalf("step=%q err=%q", state.newSessionStep, state.newSessionErr)
+	}
+}
+
+func TestTUIPathSuggestionIsCanceledWhenHostChanges(t *testing.T) {
+	state := &tuiState{
+		cfg:                       &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}},
+		newSessionMode:            true,
+		newSessionStep:            "path",
+		newSessionClient:          "host",
+		newSessionPathBusy:        true,
+		newSessionPathCancel:      func() {},
+		newSessionPathSuggestions: []string{"/stale"},
+		hostSync:                  map[string]ducklord.SessionUpdate{"host": {Client: "host", State: "live", Generation: 1, InstanceID: "old"}},
+	}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host", State: "reconnecting", Generation: 2, InstanceID: "new"})
+	if state.newSessionPathBusy || state.newSessionStep != "host" || len(state.newSessionPathSuggestions) != 0 {
+		t.Fatalf("stale suggestion state survived reconnect: busy=%v step=%q paths=%#v", state.newSessionPathBusy, state.newSessionStep, state.newSessionPathSuggestions)
+	}
+}
+
+func TestTUIUseOnceAgentFailureReturnsToPolicy(t *testing.T) {
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, runner: fakeRunner{agentsErr: errors.New("runtime unavailable")},
+		newSessionMode: true, newSessionKind: model.KindAgent, newSessionStep: "project-policy", newSessionClient: "host",
+		newSessionProject: ducklord.RemoteProject{Path: "/work/once", Source: "path"}, newSessionLine: "2",
+		hostSync: map[string]ducklord.SessionUpdate{"host": {Client: "host", State: "live"}}}
+	done := make(chan createDiscoveryEvent, 1)
+	if _, _, _, _, err := state.submitCreateStep(context.Background(), done); err != nil {
+		t.Fatal(err)
+	}
+	state.applyCreateDiscovery(<-done)
+	if state.newSessionStep != "project-policy" || !strings.Contains(state.newSessionErr, "runtime unavailable") {
 		t.Fatalf("step=%q err=%q", state.newSessionStep, state.newSessionErr)
 	}
 }
@@ -2051,6 +2113,29 @@ func TestCreateModalKeyboardSelectionFeedsExistingWizard(t *testing.T) {
 	}
 }
 
+func TestCreateModalShowsDefaultHandleAsMutedPlaceholder(t *testing.T) {
+	state := &tuiState{newSessionMode: true, newSessionStep: "handle", newSessionCWD: "/work/中文-project"}
+	var output bytes.Buffer
+	state.renderCreateModal(&output, 80, 24)
+	rendered := output.String()
+	if state.newSessionLine != "" {
+		t.Fatalf("placeholder mutated input to %q", state.newSessionLine)
+	}
+	if !strings.Contains(rendered, modalInput+"  handle › "+modalMuted+"中文-project") {
+		t.Fatalf("missing muted handle placeholder: %q", rendered)
+	}
+}
+
+func TestCreatePathPickerSelectsSuggestionWithoutChangingInputEarly(t *testing.T) {
+	state := &tuiState{newSessionMode: true, newSessionStep: "path", newSessionLine: "/work/p", newSessionPathSuggestions: []string{"/work/project-a", "/work/project-b"}}
+	if action := state.handleCreateInput([]byte("\x1b[B")); action != "" || state.newSessionPathSelected != 1 || state.newSessionLine != "/work/p" {
+		t.Fatalf("down action=%q selected=%d input=%q", action, state.newSessionPathSelected, state.newSessionLine)
+	}
+	if action := state.handleCreateInput([]byte("\r")); action != "submit" || state.newSessionLine != "/work/project-b" {
+		t.Fatalf("enter action=%q input=%q", action, state.newSessionLine)
+	}
+}
+
 func TestCreateModalTypedChoiceSynchronizesHighlight(t *testing.T) {
 	state := &tuiState{
 		newSessionMode:     true,
@@ -2438,6 +2523,12 @@ func (f fakeRunner) YieldSelected(context.Context, ducklord.Client, ducklord.Rem
 func (f fakeRunner) Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error) {
 	return f.projects, nil
 }
+func (f fakeRunner) SuggestProjectPaths(context.Context, ducklord.Client, string) ([]string, error) {
+	return nil, nil
+}
+func (f fakeRunner) AddProject(_ context.Context, _ ducklord.Client, path, name string) (ducklord.RemoteProject, error) {
+	return ducklord.RemoteProject{Name: name, Path: path, Source: "duckway-client"}, nil
+}
 func (f fakeRunner) Agents(context.Context, ducklord.Client, string) ([]ducklord.RemoteAgent, error) {
 	if f.agentsErr != nil {
 		return nil, f.agentsErr
@@ -2488,6 +2579,13 @@ type recordingRunner struct {
 	lifecycleSession string
 	lifecycleOp      protocol.SessionLifecycleOperation
 	lifecycleMode    protocol.SessionLifecycleMode
+}
+
+func (r *recordingRunner) SuggestProjectPaths(context.Context, ducklord.Client, string) ([]string, error) {
+	return nil, nil
+}
+func (r *recordingRunner) AddProject(_ context.Context, _ ducklord.Client, path, name string) (ducklord.RemoteProject, error) {
+	return ducklord.RemoteProject{Name: name, Path: path, Source: "duckway-client"}, nil
 }
 
 func (r *recordingRunner) Sessions(_ context.Context, client ducklord.Client, _ int) ([]ducklord.RemoteSession, error) {

@@ -48,6 +48,21 @@ func TestNormalizeNativeShellLifecycleMode(t *testing.T) {
 	}
 }
 
+func TestRunnerProjectBrowserRejectsUnsafeInputBeforeSSH(t *testing.T) {
+	runner := NewRunner()
+	client := Client{Name: "host", Host: "unused", SSH: "/definitely/not/ssh"}
+	for _, path := range []string{"relative", "/tmp/line\nbreak", "/tmp/hidden\u202ename", strings.Repeat("x", 4097)} {
+		if _, err := runner.AddProject(context.Background(), client, path, "name"); err == nil || strings.Contains(err.Error(), "fork/exec") {
+			t.Fatalf("path %q reached SSH or was accepted: %v", path, err)
+		}
+	}
+	for _, query := range []string{"line\nbreak", "hidden\u202ename", strings.Repeat("x", 4097)} {
+		if _, err := runner.SuggestProjectPaths(context.Background(), client, query); err == nil || strings.Contains(err.Error(), "fork/exec") {
+			t.Fatalf("query %q reached SSH or was accepted: %v", query, err)
+		}
+	}
+}
+
 func TestRunnerSelectedMutationsRejectChangedDucklionInstance(t *testing.T) {
 	root := t.TempDir()
 	server, err := daemon.Open(context.Background(), daemon.Options{Root: root})

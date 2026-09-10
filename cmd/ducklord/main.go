@@ -23,6 +23,7 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/ducklord"
+	"github.com/hackerduck/duckway/internal/projectregistry"
 	"github.com/hackerduck/duckway/internal/version"
 	textwidth "golang.org/x/text/width"
 )
@@ -38,6 +39,8 @@ type remoteRunner interface {
 	Yield(context.Context, ducklord.Client, string, bool) (protocol.SessionYieldResult, error)
 	YieldSelected(context.Context, ducklord.Client, ducklord.RemoteSession, bool) (protocol.SessionYieldResult, error)
 	Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error)
+	SuggestProjectPaths(context.Context, ducklord.Client, string) ([]string, error)
+	AddProject(context.Context, ducklord.Client, string, string) (ducklord.RemoteProject, error)
 	Agents(context.Context, ducklord.Client, string) ([]ducklord.RemoteAgent, error)
 	ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error)
 	InstallDucklion(context.Context, ducklord.Client, string, string) (string, error)
@@ -86,6 +89,13 @@ type createDiscoveryEvent struct {
 	failureStep            string
 	args                   []string
 	err                    error
+}
+
+type pathSuggestionEvent struct {
+	id, generation          uint64
+	client, instance, query string
+	paths                   []string
+	err                     error
 }
 
 type lifecycleDoneEvent struct {
@@ -1163,6 +1173,11 @@ type tuiState struct {
 	newSessionProject         ducklord.RemoteProject
 	newSessionAgents          []ducklord.RemoteAgent
 	newSessionCWD             string
+	newSessionPathSuggestions []string
+	newSessionPathSelected    int
+	newSessionPathRequestID   uint64
+	newSessionPathCancel      context.CancelFunc
+	newSessionPathBusy        bool
 	addClientMode             bool
 	addClientLine             string
 	addClientSelected         int
@@ -1324,6 +1339,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	resizeResults := make(chan resizeDoneEvent, 1)
 	startDone := make(chan startDoneEvent, 1)
 	createDone := make(chan createDiscoveryEvent, 1)
+	pathSuggestionsDone := make(chan pathSuggestionEvent, 1)
 	addClientDone := make(chan addClientDoneEvent, 1)
 	lifecycleDone := make(chan lifecycleDoneEvent, 1)
 	previewDone := make(chan previewOutputEvent, 1)
@@ -1851,6 +1867,22 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 			}
 			state.render(os.Stdout)
+		case result := <-pathSuggestionsDone:
+			generation, instance := state.hostFingerprint(result.client)
+			if state.newSessionMode && state.newSessionStep == "path" && result.id == state.newSessionPathRequestID &&
+				result.query == state.newSessionLine && result.generation == generation && result.instance == instance && state.hostIsLive(result.client) {
+				state.newSessionPathBusy = false
+				state.newSessionPathCancel = nil
+				if result.err != nil {
+					state.newSessionPathSuggestions = nil
+					state.newSessionErr = sanitizeTerminalText(result.err.Error())
+				} else {
+					state.newSessionPathSuggestions = append([]string(nil), result.paths...)
+					state.newSessionPathSelected = min(state.newSessionPathSelected, max(0, len(result.paths)-1))
+					state.newSessionErr = fmt.Sprintf("%d matching remote directories", len(result.paths))
+				}
+				state.render(os.Stdout)
+			}
 		case result := <-startDone:
 			if result.id != startID {
 				continue
@@ -2063,7 +2095,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					}
 					continue
 				}
+				beforeLine := state.newSessionLine
 				action := state.handleCreateInput(b)
+				if action == "" && state.newSessionStep == "path" && state.newSessionLine != beforeLine {
+					state.requestPathSuggestions(ctx, pathSuggestionsDone)
+				}
 				switch action {
 				case "cancel":
 					state.cancelCreate()
@@ -2516,6 +2552,13 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 	if s.newSessionMode && s.newSessionDiscovering && s.newSessionClient == update.Client &&
 		(update.State != "live" || update.Generation != previous.Generation || update.InstanceID != previous.InstanceID) {
 		s.cancelCreateDiscovery()
+		s.newSessionStep = "host"
+		s.newSessionErr = "host connection changed; choose it again"
+	}
+	if s.newSessionMode && s.newSessionPathBusy && s.newSessionClient == update.Client &&
+		(update.State != "live" || update.Generation != previous.Generation || update.InstanceID != previous.InstanceID) {
+		s.cancelPathSuggestions()
+		s.newSessionPathSuggestions = nil
 		s.newSessionStep = "host"
 		s.newSessionErr = "host connection changed; choose it again"
 	}
@@ -3858,6 +3901,12 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 	if cols < 20 || rows < 7 {
 		choices := s.createModalChoices()
 		selected := s.createModalSelectedIndex(len(choices))
+		if s.newSessionStep == "path" {
+			selected = -1
+			if len(choices) > 0 {
+				selected = min(max(s.newSessionPathSelected, 0), len(choices)-1)
+			}
+		}
 		choice := ""
 		if selected >= 0 {
 			choice = "› " + choices[selected]
@@ -3871,12 +3920,15 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 			text = modalCellPad(modalCellTruncate(modalDisplayText(text), innerWidth), innerWidth)
 			fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", row, left, modalBorder, style, text, modalReset+modalBorder, modalReset)
 		}
+		writePrompt := func(row int) {
+			s.renderCreatePromptRow(out, row, left, innerWidth, "")
+		}
 		fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
 		if boxHeight == 3 {
-			writeRow(top+1, modalSelected, choice+"  "+s.createPromptLabel()+" › "+s.newSessionLine)
+			s.renderCreatePromptRow(out, top+1, left, innerWidth, choice+"  ")
 		} else {
 			writeRow(top+1, modalSelected, choice)
-			writeRow(top+2, modalInput, s.createPromptLabel()+" › "+s.newSessionLine)
+			writePrompt(top + 2)
 		}
 		fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+boxHeight-1, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
 		return
@@ -3885,6 +3937,12 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 	innerWidth := boxWidth - 2
 	allChoices := s.createModalChoices()
 	selected := s.createModalSelectedIndex(len(allChoices))
+	if s.newSessionStep == "path" {
+		selected = -1
+		if len(allChoices) > 0 {
+			selected = min(max(s.newSessionPathSelected, 0), len(allChoices)-1)
+		}
+	}
 	choices := allChoices
 	maxChoices := max(1, rows-7)
 	hiddenBefore, hiddenAfter := 0, 0
@@ -3917,10 +3975,28 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 		status = fmt.Sprintf("%s  (%d above, %d below)", status, hiddenBefore, hiddenAfter)
 	}
 	writeRow(top+2+len(choices), modalStatus, "  "+status)
-	prompt := fmt.Sprintf("  %s › %s", s.createPromptLabel(), s.newSessionLine)
-	writeRow(top+3+len(choices), modalInput, prompt)
+	s.renderCreatePromptRow(out, top+3+len(choices), left, innerWidth, "  ")
 	writeRow(top+4+len(choices), modalMuted, "  ↑/↓ select   Enter continue   Esc cancel")
 	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+5+len(choices), left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+}
+
+func (s *tuiState) renderCreatePromptRow(out io.Writer, row, left, innerWidth int, indent string) {
+	prefix := modalDisplayText(indent + s.createPromptLabel() + " › " + s.newSessionLine)
+	ghost := ""
+	if s.newSessionLine == "" {
+		switch s.newSessionStep {
+		case "handle", "project-name":
+			ghost = modalDisplayText(defaultSessionHandle(s.newSessionCWD))
+			if s.newSessionStep == "project-name" {
+				ghost = modalDisplayText(projectregistry.DefaultProjectName(filepath.Base(s.newSessionCWD)))
+			}
+		}
+	}
+	prefix = modalCellTruncate(prefix, innerWidth)
+	remaining := max(0, innerWidth-modalCellWidth(prefix))
+	ghost = modalCellTruncate(ghost, remaining)
+	padding := strings.Repeat(" ", max(0, remaining-modalCellWidth(ghost)))
+	fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s%s%s%s│%s", row, left, modalBorder, modalInput, prefix, modalMuted, ghost, padding, modalReset+modalBorder, modalReset)
 }
 
 func (s *tuiState) renderActionModal(out io.Writer, cols, rows int) {
@@ -4006,11 +4082,22 @@ func (s *tuiState) createModalChoices() []string {
 		}
 		return choices
 	case "project":
-		choices := make([]string, 0, len(s.newSessionProjects))
+		choices := make([]string, 0, len(s.newSessionProjects)+1)
 		for i, project := range s.newSessionProjects {
 			choices = append(choices, fmt.Sprintf("%d  %s  %s", i+1, displayField(project.Name), displayField(project.Path)))
 		}
+		choices = append(choices, fmt.Sprintf("%d  Browse remote path…", len(choices)+1))
 		return choices
+	case "path":
+		choices := make([]string, 0, len(s.newSessionPathSuggestions))
+		for _, path := range s.newSessionPathSuggestions {
+			choices = append(choices, displayField(path))
+		}
+		return choices
+	case "project-policy":
+		return []string{"1  Add path to Duckway projects", "2  Use path once"}
+	case "project-name":
+		return nil
 	case "agent":
 		choices := make([]string, 0, len(s.newSessionAgents))
 		for i, agent := range s.newSessionAgents {
@@ -5026,6 +5113,9 @@ func (s *tuiState) beginCreate() {
 	s.newSessionProject = ducklord.RemoteProject{}
 	s.newSessionAgents = nil
 	s.newSessionCWD = ""
+	s.cancelPathSuggestions()
+	s.newSessionPathSuggestions = nil
+	s.newSessionPathSelected = 0
 	s.outputErr = ""
 }
 
@@ -5044,6 +5134,9 @@ func (s *tuiState) cancelCreate() {
 	s.newSessionProject = ducklord.RemoteProject{}
 	s.newSessionAgents = nil
 	s.newSessionCWD = ""
+	s.cancelPathSuggestions()
+	s.newSessionPathSuggestions = nil
+	s.newSessionPathSelected = 0
 }
 
 func (s *tuiState) cancelCreateDiscovery() {
@@ -5053,6 +5146,58 @@ func (s *tuiState) cancelCreateDiscovery() {
 	}
 	s.newSessionRequestID++
 	s.newSessionDiscovering = false
+}
+
+func (s *tuiState) cancelPathSuggestions() {
+	if s.newSessionPathCancel != nil {
+		s.newSessionPathCancel()
+		s.newSessionPathCancel = nil
+	}
+	s.newSessionPathRequestID++
+	s.newSessionPathBusy = false
+}
+
+func (s *tuiState) requestPathSuggestions(ctx context.Context, done chan<- pathSuggestionEvent) {
+	s.cancelPathSuggestions()
+	if !s.newSessionMode || s.newSessionStep != "path" || strings.TrimSpace(s.newSessionLine) == "" {
+		s.newSessionPathSuggestions = nil
+		return
+	}
+	if !s.hostIsLive(s.newSessionClient) {
+		s.newSessionErr = "host is reconnecting; choose it again"
+		s.newSessionStep = "host"
+		return
+	}
+	client, err := mustClient(s.cfg, s.newSessionClient)
+	if err != nil {
+		s.newSessionErr = err.Error()
+		return
+	}
+	requestCtx, cancel := context.WithCancel(ctx)
+	s.newSessionPathCancel = cancel
+	s.newSessionPathBusy = true
+	s.newSessionPathSelected = 0
+	id := s.newSessionPathRequestID
+	generation, instance := s.hostFingerprint(s.newSessionClient)
+	query := s.newSessionLine
+	s.createWorkers.Add(1)
+	go func() {
+		defer s.createWorkers.Done()
+		timer := time.NewTimer(120 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-requestCtx.Done():
+			return
+		}
+		paths, suggestErr := s.runner.SuggestProjectPaths(requestCtx, client, query)
+		event := pathSuggestionEvent{id: id, generation: generation, client: client.Name, instance: instance, query: query, paths: paths, err: suggestErr}
+		select {
+		case done <- event:
+		case <-requestCtx.Done():
+		case <-ctx.Done():
+		}
+	}()
 }
 
 func (s *tuiState) hostFingerprint(client string) (uint64, string) {
@@ -5085,7 +5230,13 @@ func (s *tuiState) beginCreateDiscovery(ctx context.Context, done chan<- createD
 		defer s.createWorkers.Done()
 		result := work(requestCtx)
 		result.id, result.generation, result.instance = event.id, event.generation, event.instance
-		result.kind, result.client, result.project = event.kind, event.client, event.project
+		result.kind, result.client = event.kind, event.client
+		if result.failureStep == "" {
+			result.failureStep = event.failureStep
+		}
+		if result.project.Path == "" {
+			result.project = event.project
+		}
 		select {
 		case done <- result:
 		case <-requestCtx.Done():
@@ -5136,6 +5287,16 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 		})
 		return "", "", nil, false, nil
 	case "project":
+		if line == "browse" || line == "path" {
+			s.newSessionStep, s.newSessionLine, s.newSessionSelected = "path", "", 0
+			s.newSessionErr = "type a remote directory path"
+			return "", "", nil, false, nil
+		}
+		if n, numberErr := strconv.Atoi(line); numberErr == nil && n == len(s.newSessionProjects)+1 {
+			s.newSessionStep, s.newSessionLine, s.newSessionSelected = "path", "", 0
+			s.newSessionErr = "type a remote directory path"
+			return "", "", nil, false, nil
+		}
 		project, err := s.resolveCreateProject(line)
 		if err != nil {
 			return "", "", nil, false, err
@@ -5152,6 +5313,54 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 		s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "agents", client: s.newSessionClient, project: project}, func(workCtx context.Context) createDiscoveryEvent {
 			agents, agentErr := s.runner.Agents(workCtx, client, project.Path)
 			return createDiscoveryEvent{agents: agents, err: agentErr}
+		})
+		return "", "", nil, false, nil
+	case "path":
+		path := strings.TrimSpace(line)
+		if path == "" || !filepath.IsAbs(path) {
+			return "", "", nil, false, fmt.Errorf("choose an absolute remote directory path")
+		}
+		s.cancelPathSuggestions()
+		s.newSessionCWD = filepath.Clean(path)
+		s.newSessionProject = ducklord.RemoteProject{Path: s.newSessionCWD, Source: "path"}
+		s.newSessionStep, s.newSessionLine, s.newSessionSelected = "project-policy", "", 0
+		s.newSessionErr = "add this path to projects or use it once"
+		return "", "", nil, false, nil
+	case "project-policy":
+		switch strings.ToLower(line) {
+		case "", "1", "add":
+			s.newSessionStep, s.newSessionLine = "project-name", ""
+			s.newSessionErr = "empty name uses " + projectregistry.DefaultProjectName(filepath.Base(s.newSessionCWD))
+			return "", "", nil, false, nil
+		case "2", "once", "use":
+			project := s.newSessionProject
+			client, clientErr := mustClient(s.cfg, s.newSessionClient)
+			if clientErr != nil {
+				return "", "", nil, false, clientErr
+			}
+			s.newSessionErr = "checking available runtime..."
+			s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "agents", client: s.newSessionClient, project: project, failureStep: "project-policy"}, func(workCtx context.Context) createDiscoveryEvent {
+				agents, agentErr := s.runner.Agents(workCtx, client, project.Path)
+				return createDiscoveryEvent{agents: agents, err: agentErr}
+			})
+			return "", "", nil, false, nil
+		default:
+			return "", "", nil, false, fmt.Errorf("choose 1 (add project) or 2 (use once)")
+		}
+	case "project-name":
+		name := line
+		if name == "" {
+			name = projectregistry.DefaultProjectName(filepath.Base(s.newSessionCWD))
+		}
+		client, clientErr := mustClient(s.cfg, s.newSessionClient)
+		if clientErr != nil {
+			return "", "", nil, false, clientErr
+		}
+		path := s.newSessionCWD
+		s.newSessionErr = "adding remote project..."
+		s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "add-project", client: s.newSessionClient}, func(workCtx context.Context) createDiscoveryEvent {
+			project, addErr := s.runner.AddProject(workCtx, client, path, name)
+			return createDiscoveryEvent{project: project, failureStep: "project-name", err: addErr}
 		})
 		return "", "", nil, false, nil
 	case "agent":
@@ -5181,12 +5390,14 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 		s.newSessionErr = "revalidating project and runtime..."
 		project, agentType, kind := s.newSessionProject, s.newSessionAgent, s.newSessionKind
 		s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "validate", client: s.newSessionClient, project: project, sessionName: name}, func(workCtx context.Context) createDiscoveryEvent {
-			projects, projectErr := s.runner.Projects(workCtx, client)
-			if projectErr != nil {
-				return createDiscoveryEvent{sessionName: name, failureStep: "project", err: fmt.Errorf("project revalidation failed: %w", projectErr)}
-			}
-			if !containsProject(projects, project) {
-				return createDiscoveryEvent{sessionName: name, failureStep: "project", err: fmt.Errorf("selected project is no longer available")}
+			if project.Source != "path" {
+				projects, projectErr := s.runner.Projects(workCtx, client)
+				if projectErr != nil {
+					return createDiscoveryEvent{sessionName: name, failureStep: "project", err: fmt.Errorf("project revalidation failed: %w", projectErr)}
+				}
+				if !containsProject(projects, project) {
+					return createDiscoveryEvent{sessionName: name, failureStep: "project", err: fmt.Errorf("selected project is no longer available")}
+				}
 			}
 			agents, agentErr := s.runner.Agents(workCtx, client, project.Path)
 			if agentErr != nil {
@@ -5228,6 +5439,16 @@ func findRemoteAgent(agents []ducklord.RemoteAgent, agentType string) (ducklord.
 	return ducklord.RemoteAgent{}, false
 }
 
+func appendRemoteProjectOnce(projects []ducklord.RemoteProject, added ducklord.RemoteProject) []ducklord.RemoteProject {
+	for index, project := range projects {
+		if project.Path == added.Path {
+			projects[index] = added
+			return projects
+		}
+	}
+	return append(projects, added)
+}
+
 func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName, sessionName string, args []string, ready bool) {
 	if !s.newSessionMode || !s.newSessionDiscovering || event.id != s.newSessionRequestID {
 		return "", "", nil, false
@@ -5236,7 +5457,11 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 	if generation != event.generation || instance != event.instance || !s.hostIsLive(event.client) {
 		s.cancelCreateDiscovery()
 		s.newSessionStep = "host"
-		s.newSessionErr = "host changed while loading; choose it again"
+		if event.kind == "add-project" && event.project.Path != "" {
+			s.newSessionErr = "project was added, but the host changed; choose it again"
+		} else {
+			s.newSessionErr = "host changed while loading; choose it again"
+		}
 		return "", "", nil, false
 	}
 	s.newSessionDiscovering = false
@@ -5247,7 +5472,19 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 		case "projects":
 			s.newSessionStep = "host"
 		case "agents":
-			s.newSessionStep = "project"
+			s.newSessionStep = event.failureStep
+			if s.newSessionStep == "" {
+				s.newSessionStep = "project"
+			}
+		case "add-project":
+			if event.project.Path != "" {
+				s.newSessionProject = event.project
+				s.newSessionProjects = appendRemoteProjectOnce(s.newSessionProjects, event.project)
+				s.newSessionStep = "project"
+				s.newSessionErr = "project was added, but runtime discovery failed: " + event.err.Error()
+			} else {
+				s.newSessionStep = event.failureStep
+			}
 		case "validate":
 			s.newSessionStep = event.failureStep
 			if s.newSessionStep == "" {
@@ -5269,14 +5506,22 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 			projects = filtered
 		}
 		if len(projects) == 0 {
-			s.newSessionStep = "host"
-			s.newSessionErr = "this host has no configured projects"
+			s.newSessionStep = "path"
+			s.newSessionLine = ""
+			s.newSessionErr = "no configured projects; type an absolute remote directory path"
 			return "", "", nil, false
 		}
 		s.newSessionProjects = append([]ducklord.RemoteProject(nil), projects...)
 		s.newSessionStep = "project"
 		s.newSessionSelected = 0
 		s.newSessionErr = fmt.Sprintf("host: %s; choose a configured project", event.client)
+	case "add-project":
+		s.newSessionProject = event.project
+		s.newSessionCWD = event.project.Path
+		s.newSessionProjects = appendRemoteProjectOnce(s.newSessionProjects, event.project)
+		s.newSessionStep = "project"
+		s.newSessionLine = event.project.Name
+		s.newSessionErr = "project added; press Enter to continue"
 	case "agents":
 		if s.newSessionKind == model.KindShell {
 			shell, ok := findRemoteAgent(event.agents, "shell")
@@ -5403,6 +5648,12 @@ func (s *tuiState) createHeader() string {
 		return "new session: choose host number/name"
 	case "project":
 		return fmt.Sprintf("new %s session: host=%s  choose configured project", s.newSessionKind, displayField(s.newSessionClient))
+	case "path":
+		return fmt.Sprintf("new %s session: browse remote path on %s", s.newSessionKind, displayField(s.newSessionClient))
+	case "project-policy":
+		return "remote path selected: add to projects or use once"
+	case "project-name":
+		return "add remote path to Duckway projects"
 	case "agent":
 		return fmt.Sprintf("new session: host=%s project=%s  choose agent", displayField(s.newSessionClient), displayField(s.newSessionCWD))
 	case "handle":
@@ -5420,6 +5671,12 @@ func (s *tuiState) createPromptLabel() string {
 		return "host"
 	case "project":
 		return "project"
+	case "path":
+		return "path"
+	case "project-policy":
+		return "choice"
+	case "project-name":
+		return "project name"
 	case "agent":
 		return "agent"
 	case "handle":
@@ -5430,6 +5687,24 @@ func (s *tuiState) createPromptLabel() string {
 }
 
 func (s *tuiState) handleCreateInput(b []byte) string {
+	if s.newSessionStep == "path" {
+		switch string(b) {
+		case "\x1b[B":
+			if s.newSessionPathSelected < len(s.newSessionPathSuggestions)-1 {
+				s.newSessionPathSelected++
+			}
+			return ""
+		case "\x1b[A":
+			if s.newSessionPathSelected > 0 {
+				s.newSessionPathSelected--
+			}
+			return ""
+		case "\r", "\n":
+			if len(s.newSessionPathSuggestions) > 0 && s.newSessionPathSelected < len(s.newSessionPathSuggestions) {
+				s.newSessionLine = s.newSessionPathSuggestions[s.newSessionPathSelected]
+			}
+		}
+	}
 	choices := s.createModalChoices()
 	switch string(b) {
 	case "\x1b[B":
