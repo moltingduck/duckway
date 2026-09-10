@@ -3,6 +3,7 @@ package ducklord
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestTerminalInterpretsCursorEraseAndChunkedUTF8(t *testing.T) {
@@ -108,6 +109,45 @@ func TestTerminalStateRoundTrip(t *testing.T) {
 	restored, ok := NewTerminalFromState(terminal.SnapshotState(), 10)
 	if !ok || restored.Text() != terminal.Text() || restored.screen().CursorCol != terminal.screen().CursorCol {
 		t.Fatalf("restored ok=%v text=%q cursor=%d", ok, restored.Text(), restored.screen().CursorCol)
+	}
+}
+
+func TestTerminalNoWrapWideRuneAtRightEdgeRoundTrips(t *testing.T) {
+	for _, value := range []string{"界", "🙂"} {
+		terminal := NewTerminal(2, 4, 10)
+		terminal.Write([]byte("\x1b[?7l\x1b[1;4H" + value))
+		restored, ok := NewTerminalFromState(terminal.SnapshotState(), 10)
+		if !ok {
+			t.Fatalf("framebuffer containing clipped %q did not round-trip", value)
+		}
+		if got := restored.primary.Lines[0].Cells[3]; got.Rune != utf8.RuneError || got.Width != 1 {
+			t.Fatalf("clipped cell for %q = %+v", value, got)
+		}
+	}
+}
+
+func TestTerminalGlyphOverwritePreservesWideCellPairs(t *testing.T) {
+	tests := []struct {
+		name string
+		seq  string
+		want string
+	}{
+		{name: "narrow over wide lead", seq: "a中bc\x1b[1;2HA", want: "aA bc"},
+		{name: "narrow over wide continuation", seq: "a中bc\x1b[1;3HA", want: "a Abc"},
+		{name: "wide over prior continuation", seq: "a中bc\x1b[1;3H界", want: "a 界c"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			terminal := NewTerminal(2, 8, 0)
+			terminal.Write([]byte(test.seq))
+			restored, ok := NewTerminalFromState(terminal.SnapshotState(), 0)
+			if !ok {
+				t.Fatalf("framebuffer did not round-trip: %+v", terminal.primary.Lines[0])
+			}
+			if got := restored.Text(); got != test.want {
+				t.Fatalf("text=%q want=%q", got, test.want)
+			}
+		})
 	}
 }
 

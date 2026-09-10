@@ -2882,6 +2882,8 @@ func initialReplayCaughtUp(currentOffset, replayEndOffset uint64) bool {
 
 func (s *tuiState) refreshSessions(ctx context.Context) {
 	oldKey := s.currentKey()
+	// Keep the selected PTY identity stable while the session slice is replaced.
+	s.selectedKey = oldKey
 	var all []ducklord.RemoteSession
 	for _, session := range s.sessions {
 		if s.disconnectedHosts[session.Client] {
@@ -2985,6 +2987,9 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 		return // retain the last authoritative rows while reconnecting
 	}
 	oldKey := s.currentKey()
+	// Sorting must protect the selected PTY's group by identity, not by an index
+	// that belongs to the previous session slice.
+	s.selectedKey = oldKey
 	previousActivity := make(map[string]map[model.NotificationCategory]uint64)
 	for _, session := range s.sessions {
 		if identity, ok := ducklord.IdentityFromSession(session); session.Client == update.Client && ok {
@@ -3415,6 +3420,17 @@ func (s *tuiState) hostRowColor(host string) string {
 
 func (s *tuiState) applyOrganizationOrder() bool {
 	organization := &s.activity().Organization
+	selectedGroup := ""
+	selectedKey := s.selectedKey
+	if selectedKey == "" && len(s.sessions) > 0 && s.selected >= 0 && s.selected < len(s.sessions) {
+		selectedKey = sessionKey(s.sessions[s.selected])
+	}
+	for _, session := range s.sessions {
+		if sessionKey(session) == selectedKey {
+			selectedGroup = s.organizationGroupID(session)
+			break
+		}
+	}
 	if organization.Mode == "" {
 		organization.Mode = ducklord.OrganizationCustom
 	}
@@ -3464,7 +3480,7 @@ func (s *tuiState) applyOrganizationOrder() bool {
 		if groupRank[leftGroup] != groupRank[rightGroup] {
 			return groupRank[leftGroup] < groupRank[rightGroup]
 		}
-		if s.cfg.PromoteUnread() && s.sessions[i].Unread != s.sessions[j].Unread {
+		if s.cfg.PromoteUnread() && leftGroup != selectedGroup && s.sessions[i].Unread != s.sessions[j].Unread {
 			return s.sessions[i].Unread
 		}
 		left, leftOK := ducklord.IdentityFromSession(s.sessions[i])

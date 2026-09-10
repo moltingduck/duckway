@@ -317,9 +317,10 @@ shortcuts:
 ```
 
 By default, unread sessions temporarily sort to the top of their current
-group and return to their saved position as soon as the activity is seen. Set
-`promote_unread_sessions: false` to disable this projection; it never rewrites
-the saved custom session order.
+group and return to their saved position as soon as the activity is seen. The
+group containing the currently selected PTY keeps its saved order, preventing
+the list from moving underneath the user. Set `promote_unread_sessions: false`
+to disable this projection; it never rewrites the saved custom session order.
 
 In host organization mode, the group header owns the host label, so nested
 session rows do not repeat it. Disconnect keeps the host's last session rows

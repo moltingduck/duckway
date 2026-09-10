@@ -1106,24 +1106,54 @@ func TestTUICustomKeyboardReorderMovesIntoEmptyGroup(t *testing.T) {
 func TestTUIUnreadSessionTemporarilyPromotesWithinGroup(t *testing.T) {
 	instance := string(model.NewInstanceID())
 	state := &tuiState{cfg: &ducklord.Config{}, activityState: ducklord.NewActivityState(), sessions: []ducklord.RemoteSession{
-		{Client: "host", InstanceID: instance, SessionID: "AAA111", Name: "first"},
-		{Client: "host", InstanceID: instance, SessionID: "BBB222", Name: "second", Unread: true},
+		{Client: "host", InstanceID: instance, SessionID: "AAA111", Name: "selected"},
+		{Client: "host", InstanceID: instance, SessionID: "BBB222", Name: "first"},
+		{Client: "host", InstanceID: instance, SessionID: "CCC333", Name: "second", Unread: true},
 	}}
+	selectedID, _ := ducklord.IdentityFromSession(state.sessions[0])
+	firstID, _ := ducklord.IdentityFromSession(state.sessions[1])
+	secondID, _ := ducklord.IdentityFromSession(state.sessions[2])
+	selectedGroup, promotedGroup := uuid.NewString(), uuid.NewString()
+	state.activity().Organization.Membership[selectedID] = selectedGroup
+	state.activity().Organization.Membership[firstID] = promotedGroup
+	state.activity().Organization.Membership[secondID] = promotedGroup
 	state.applyOrganizationOrder()
-	if state.sessions[0].SessionID != "BBB222" {
+	if state.sessions[1].SessionID != "CCC333" {
 		t.Fatalf("unread session was not promoted: %+v", state.sessions)
 	}
-	state.sessions[0].Unread = false
+	state.sessions[1].Unread = false
 	state.applyOrganizationOrder()
-	if state.sessions[0].SessionID != "AAA111" {
+	if state.sessions[1].SessionID != "BBB222" {
 		t.Fatalf("cleared session did not return to saved order: %+v", state.sessions)
 	}
 	disabled := false
 	state.cfg.PromoteUnreadSessions = &disabled
-	state.sessions[1].Unread = true
+	state.sessions[2].Unread = true
 	state.applyOrganizationOrder()
-	if state.sessions[0].SessionID != "AAA111" {
+	if state.sessions[1].SessionID != "BBB222" {
 		t.Fatalf("disabled promotion changed order: %+v", state.sessions)
+	}
+}
+
+func TestTUIUnreadPromotionSkipsSelectedSessionGroup(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	state := &tuiState{cfg: &ducklord.Config{}, activityState: ducklord.NewActivityState(), sessions: []ducklord.RemoteSession{
+		{Client: "host", InstanceID: instance, SessionID: "AAA111", Name: "selected"},
+		{Client: "host", InstanceID: instance, SessionID: "BBB222", Name: "unread", Unread: true},
+		{Client: "host", InstanceID: instance, SessionID: "CCC333", Name: "other group"},
+	}, selected: 2, selectedKey: "host/" + instance + "/AAA111"}
+	groupID, otherGroupID := uuid.NewString(), uuid.NewString()
+	for index, session := range state.sessions {
+		identity, _ := ducklord.IdentityFromSession(session)
+		if index < 2 {
+			state.activity().Organization.Membership[identity] = groupID
+		} else {
+			state.activity().Organization.Membership[identity] = otherGroupID
+		}
+	}
+	state.applyOrganizationOrder()
+	if state.sessions[0].SessionID != "AAA111" || state.sessions[1].SessionID != "BBB222" {
+		t.Fatalf("selected PTY group was reordered using stale index: %+v", state.sessions)
 	}
 }
 
@@ -1412,10 +1442,10 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "DEF456", Name: "background",
 				RuntimeGeneration: 1, ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTerminalAttention: 1}},
 		}})
-	if state.sessions[0].SessionID != "DEF456" || !state.sessions[0].Unread || state.sessions[1].Unread || !state.groupHasUnread(ducklord.UngroupedGroupID) {
+	if state.sessions[0].SessionID != "ABC123" || state.sessions[0].Unread || !state.sessions[1].Unread || !state.groupHasUnread(ducklord.UngroupedGroupID) {
 		t.Fatalf("unread projection=%+v", state.sessions)
 	}
-	state.selected = 0
+	state.selected = 1
 	state.outputForKey = "host-a/" + instance + "/DEF456"
 	state.outputFresh = false // a stale detach snapshot is not proof of seeing it
 	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Revision: 3, Generation: 1, State: "live",
@@ -1479,7 +1509,7 @@ func TestTUIShowsInteractiveAgentCompletionWhileAnotherSessionIsActive(t *testin
 	if state.outputErr != "agent-demo: agent turn completed" {
 		t.Fatalf("completion notice=%q", state.outputErr)
 	}
-	if state.sessions[0].SessionID != "DEF456" || !state.sessions[0].Unread || state.sessions[1].Unread || !state.groupHasUnread(ducklord.UngroupedGroupID) {
+	if state.sessions[0].SessionID != "ABC123" || state.sessions[0].Unread || !state.sessions[1].Unread || !state.groupHasUnread(ducklord.UngroupedGroupID) {
 		t.Fatalf("completion unread projection=%+v", state.sessions)
 	}
 }

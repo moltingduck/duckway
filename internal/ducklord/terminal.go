@@ -556,6 +556,10 @@ func (t *Terminal) putRune(r rune) {
 			t.lineFeed(true)
 			s.CursorCol = 0
 		} else {
+			// A clipped wide rune cannot be serialized as width one: doing so
+			// creates a framebuffer that our own validator must reject. Render a
+			// narrow replacement glyph at the right edge instead.
+			r = utf8.RuneError
 			width = 1
 		}
 	}
@@ -563,6 +567,13 @@ func (t *Terminal) putRune(r rune) {
 		return
 	}
 	line := &s.Lines[s.CursorRow]
+	// Ordinary cursor-addressed redraws can land on either half of an existing
+	// wide glyph. Clear every intersecting pair before writing the replacement,
+	// otherwise a lead or continuation cell can be left orphaned.
+	clearStart, clearEnd := expandWideRange(line.Cells, s.CursorCol, minInt(t.Cols, s.CursorCol+width))
+	for col := clearStart; col < clearEnd; col++ {
+		line.Cells[col] = TerminalCell{}
+	}
 	line.Cells[s.CursorCol] = TerminalCell{Rune: r, Width: uint8(width), Style: t.style}
 	if width == 2 && s.CursorCol+1 < t.Cols {
 		line.Cells[s.CursorCol+1] = TerminalCell{Width: 255, Style: t.style}
