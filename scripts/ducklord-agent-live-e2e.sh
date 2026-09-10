@@ -74,7 +74,13 @@ DUCKLORD_DEMO_CREDENTIAL_CLIENTS=client-a CONTAINER_RUNTIME="$RUNTIME" \
   "$ROOT/scripts/ducklord-podman-demo.sh" >/dev/null
 
 if [ "$RUN_CODEX" = 1 ]; then "$RUNTIME" exec ducklion-client-a test -f /home/duck/.codex/auth.json; fi
-if [ "$RUN_CLAUDE" = 1 ]; then "$RUNTIME" exec ducklion-client-a test -f /home/duck/.claude/.credentials.json; fi
+if [ "$RUN_CLAUDE" = 1 ]; then
+  "$RUNTIME" exec ducklion-client-a test -f /home/duck/.claude/.credentials.json
+  "$RUNTIME" exec -u duck ducklion-client-a node -e '
+    const state=require(process.env.HOME+"/.claude.json");
+    if (state.hasCompletedOnboarding !== true || typeof state.theme !== "string") process.exit(1)'
+  "$RUNTIME" exec -u duck ducklion-client-a sh -lc 'claude auth status | node -e '\''let d=""; process.stdin.on("data",c=>d+=c).on("end",()=>{if(!JSON.parse(d).loggedIn)process.exit(1)})'\'''
+fi
 if [ "$RUN_CODEX" = 0 ]; then "$RUNTIME" exec ducklion-client-a test ! -e /home/duck/.codex/auth.json; fi
 if [ "$RUN_CLAUDE" = 0 ]; then "$RUNTIME" exec ducklion-client-a test ! -e /home/duck/.claude/.credentials.json; fi
 for remote in ducklion-client-b ducklion-client-c; do

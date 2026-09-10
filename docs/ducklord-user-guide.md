@@ -88,9 +88,10 @@ itself automatically.
 
 Ducklion uses the agent's normal files (`~/.codex/auth.json` and
 `~/.claude/.credentials.json`); Ducklord never displays or stores them. Complete
-the agent's own first-run trust or theme screen inside the PTY. If an agent
-returns to its login screen, refresh that credential on the remote host and
-restart the session.
+the agent's per-project trust screen inside the PTY. The demo preconfigures only
+Claude's non-sensitive theme/onboarding state; real hosts keep their own CLI
+preferences. If an agent returns to its login screen, refresh that credential
+on the remote host and restart the session.
 
 Developers can run an isolated integration check by placing mode-`600` copies
 in `live-credentials/` and running:

@@ -37,6 +37,7 @@ CGO_ENABLED=0 go build -o "$WORK/duckway" "$ROOT/cmd/client"
 CGO_ENABLED=0 go build -o "$WORK/ducklion" "$ROOT/cmd/ducklion"
 
 ssh-keygen -q -t ed25519 -N '' -f "$WORK/id_ed25519"
+printf '%s\n' '{"hasCompletedOnboarding":true,"theme":"dark","installMethod":"global"}' >"$WORK/claude-demo-state.json"
 
 cat >"$WORK/Containerfile" <<'EOF'
 FROM alpine:3.21
@@ -84,7 +85,9 @@ if [ "$CREDENTIALS" != none ] && { [ -f "$CODEX_AUTH" ] || [ -f "$CLAUDE_AUTH" ]
       ducklord_require_demo_secret "$CLAUDE_AUTH"
       "$RUNTIME" cp "$CLAUDE_AUTH" "$container":/tmp/claude-credentials.json
       "$RUNTIME" exec "$container" install -o duck -g duck -m 600 /tmp/claude-credentials.json /home/duck/.claude/.credentials.json
-      "$RUNTIME" exec "$container" rm -f /tmp/claude-credentials.json
+      "$RUNTIME" cp "$WORK/claude-demo-state.json" "$container":/tmp/claude-demo-state.json
+      "$RUNTIME" exec "$container" install -o duck -g duck -m 600 /tmp/claude-demo-state.json /home/duck/.claude.json
+      "$RUNTIME" exec "$container" rm -f /tmp/claude-credentials.json /tmp/claude-demo-state.json
     fi
   done
 fi
