@@ -96,6 +96,19 @@ func TestSaveConfigWritesYAMLAndMode(t *testing.T) {
 	}
 }
 
+func TestConfigPromoteUnreadDefaultAndClone(t *testing.T) {
+	if !(&Config{}).PromoteUnread() {
+		t.Fatal("unread promotion should default on")
+	}
+	enabled := false
+	original := &Config{PromoteUnreadSessions: &enabled}
+	clone := original.Clone()
+	*clone.PromoteUnreadSessions = true
+	if original.PromoteUnread() || !clone.PromoteUnread() {
+		t.Fatalf("original=%v clone=%v", original.PromoteUnread(), clone.PromoteUnread())
+	}
+}
+
 func TestResolveOwnerNamePrecedenceAndValidation(t *testing.T) {
 	name, err := ResolveOwnerName("flag-name", "config-name")
 	if err != nil || name != "flag-name" {

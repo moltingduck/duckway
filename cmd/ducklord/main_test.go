@@ -769,13 +769,29 @@ func TestTUIHostMenuTargetsSelectedHostGroup(t *testing.T) {
 		t.Fatalf("host menu mode=%v target=%q", state.hostMenuMode, state.hostMenuTarget)
 	}
 	state.hostMenuIndex = 1
-	if action := state.handleHostMenuInput([]byte("\r")); action != "host-disconnect" {
+	if action := state.handleHostMenuInput([]byte("\r")); action != "" || state.hostMenuStep != "hosts" {
+		t.Fatalf("host menu selection action=%q step=%q", action, state.hostMenuStep)
+	}
+	if action := state.handleHostMenuInput([]byte("\r")); action != "host-disconnect-selected" {
 		t.Fatalf("host menu action=%q", action)
 	}
 	var out bytes.Buffer
 	state.renderHostModal(&out, 100, 30)
-	if !strings.Contains(out.String(), "Host actions") || !strings.Contains(out.String(), "every session") {
+	if !strings.Contains(out.String(), "Disconnect hosts") || !strings.Contains(out.String(), "[✓] host-b") {
 		t.Fatalf("host modal=%q", out.String())
+	}
+}
+
+func TestTUIHostConnectDisconnectMenuSupportsMultiSelect(t *testing.T) {
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "a"}, {Name: "b"}}}, disconnectedHosts: map[string]bool{}, hostMenuTarget: "a", hostMenuSelected: map[string]bool{}, hostMenuMode: true, hostMenuStep: "actions", hostMenuIndex: 1}
+	state.handleHostMenuInput([]byte("\r"))
+	state.handleHostMenuInput([]byte("\x1b[B"))
+	state.handleHostMenuInput([]byte(" "))
+	if action := state.handleHostMenuInput([]byte("\r")); action != "host-disconnect-selected" {
+		t.Fatalf("action=%q", action)
+	}
+	if targets := state.selectedHostMenuTargets(); len(targets) != 2 || targets[0] != "a" || targets[1] != "b" {
+		t.Fatalf("targets=%v", targets)
 	}
 }
 
@@ -791,10 +807,23 @@ func (r *countingSessionsRunner) Sessions(ctx context.Context, client ducklord.C
 
 func TestTUIDisconnectedHostIsExcludedFromPollingRefresh(t *testing.T) {
 	runner := &countingSessionsRunner{fakeRunner: fakeRunner{sessions: []ducklord.RemoteSession{{Client: "host", Name: "late"}}}}
-	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, runner: runner, disconnectedHosts: map[string]bool{"host": true}, hashes: map[string]string{}}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, runner: runner, disconnectedHosts: map[string]bool{"host": true}, hashes: map[string]string{}, sessions: []ducklord.RemoteSession{{Client: "host", Name: "retained"}}}
 	state.refreshSessions(context.Background())
-	if runner.calls != 0 || len(state.sessions) != 0 {
+	if runner.calls != 0 || len(state.sessions) != 1 || state.sessions[0].Name != "retained" {
 		t.Fatalf("disconnected refresh calls=%d sessions=%+v", runner.calls, state.sessions)
+	}
+}
+
+func TestTUIHostModeHidesRepeatedHostAndGraysDisconnectedRows(t *testing.T) {
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host-a"}}}, activityState: ducklord.NewActivityState(), disconnectedHosts: map[string]bool{"host-a": true}, sessions: []ducklord.RemoteSession{{Client: "host-a", Name: "alpha", Status: "running"}}}
+	state.activity().Organization.Mode = ducklord.OrganizationHost
+	state.applyOrganizationOrder()
+	var out bytes.Buffer
+	state.render(&out)
+	// The host appears once in the group header and once in the PTY header, but
+	// is intentionally omitted from the nested session row.
+	if strings.Count(out.String(), "host-a") != 2 || !strings.Contains(out.String(), disconnectedRowColor) {
+		t.Fatalf("rendered host mode=%q", out.String())
 	}
 }
 
@@ -1054,6 +1083,46 @@ func TestTUICustomKeyboardReorderCrossesGroup(t *testing.T) {
 	state.moveSelectedSession(-1)
 	if state.activity().Organization.Membership[secondID] != groupA || state.sessions[0].SessionID != second.SessionID {
 		t.Fatalf("membership=%+v sessions=%+v", state.activity().Organization.Membership, state.sessions)
+	}
+}
+
+func TestTUICustomKeyboardReorderMovesIntoEmptyGroup(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	session := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: "AAA111", Name: "first"}
+	identity, _ := ducklord.IdentityFromSession(session)
+	groupA, emptyGroup := uuid.NewString(), uuid.NewString()
+	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")}, sessions: []ducklord.RemoteSession{session}}
+	state.activity().Organization.Groups = []ducklord.CustomGroup{{ID: groupA, Name: "A"}, {ID: emptyGroup, Name: "Empty"}}
+	state.activity().Organization.GroupOrders[ducklord.OrganizationCustom] = []string{groupA, emptyGroup, ducklord.UngroupedGroupID}
+	state.activity().Organization.Membership[identity] = groupA
+	state.applyOrganizationOrder()
+	state.moveSelectedSession(1)
+	if state.activity().Organization.Membership[identity] != emptyGroup {
+		t.Fatalf("membership=%+v error=%q", state.activity().Organization.Membership, state.outputErr)
+	}
+}
+
+func TestTUIUnreadSessionTemporarilyPromotesWithinGroup(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	state := &tuiState{cfg: &ducklord.Config{}, activityState: ducklord.NewActivityState(), sessions: []ducklord.RemoteSession{
+		{Client: "host", InstanceID: instance, SessionID: "AAA111", Name: "first"},
+		{Client: "host", InstanceID: instance, SessionID: "BBB222", Name: "second", Unread: true},
+	}}
+	state.applyOrganizationOrder()
+	if state.sessions[0].SessionID != "BBB222" {
+		t.Fatalf("unread session was not promoted: %+v", state.sessions)
+	}
+	state.sessions[0].Unread = false
+	state.applyOrganizationOrder()
+	if state.sessions[0].SessionID != "AAA111" {
+		t.Fatalf("cleared session did not return to saved order: %+v", state.sessions)
+	}
+	disabled := false
+	state.cfg.PromoteUnreadSessions = &disabled
+	state.sessions[1].Unread = true
+	state.applyOrganizationOrder()
+	if state.sessions[0].SessionID != "AAA111" {
+		t.Fatalf("disabled promotion changed order: %+v", state.sessions)
 	}
 }
 
@@ -1342,10 +1411,10 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 			{Client: "host-a", Group: "work", InstanceID: instance, SessionID: "DEF456", Name: "background",
 				RuntimeGeneration: 1, ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTerminalAttention: 1}},
 		}})
-	if state.sessions[0].Unread || !state.sessions[1].Unread || !state.groupHasUnread(ducklord.UngroupedGroupID) {
+	if state.sessions[0].SessionID != "DEF456" || !state.sessions[0].Unread || state.sessions[1].Unread || !state.groupHasUnread(ducklord.UngroupedGroupID) {
 		t.Fatalf("unread projection=%+v", state.sessions)
 	}
-	state.selected = 1
+	state.selected = 0
 	state.outputForKey = "host-a/" + instance + "/DEF456"
 	state.outputFresh = false // a stale detach snapshot is not proof of seeing it
 	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Revision: 3, Generation: 1, State: "live",
@@ -1409,7 +1478,7 @@ func TestTUIShowsInteractiveAgentCompletionWhileAnotherSessionIsActive(t *testin
 	if state.outputErr != "agent-demo: agent turn completed" {
 		t.Fatalf("completion notice=%q", state.outputErr)
 	}
-	if state.sessions[0].Unread || !state.sessions[1].Unread || !state.groupHasUnread(ducklord.UngroupedGroupID) {
+	if state.sessions[0].SessionID != "DEF456" || !state.sessions[0].Unread || state.sessions[1].Unread || !state.groupHasUnread(ducklord.UngroupedGroupID) {
 		t.Fatalf("completion unread projection=%+v", state.sessions)
 	}
 }
@@ -2445,16 +2514,21 @@ func TestTUICopyModeShortcutAndFrozenRender(t *testing.T) {
 }
 
 func TestTUICopyModeTransitionsAndInputIsolation(t *testing.T) {
-	state := &tuiState{}
+	state := &tuiState{terminal: ducklord.NewTerminal(2, 20, 20)}
+	state.terminal.Write([]byte("frozen"))
 	var output bytes.Buffer
 	state.enterCopyMode(&output)
-	if !state.copyMode || !strings.Contains(output.String(), "\033[?1002l\033[?1006l") || !strings.Contains(output.String(), "COPY MODE") {
+	if !state.copyMode || !strings.Contains(output.String(), "\033[?1002l\033[?1000h\033[?1006h") || !strings.Contains(output.String(), "COPY MODE") {
 		t.Fatalf("enter copy mode output=%q state=%v", output.String(), state.copyMode)
 	}
 	before := output.String()
 	state.enterCopyMode(&output)
 	if output.String() != before {
 		t.Fatal("enter copy mode was not idempotent")
+	}
+	state.terminal.Write([]byte(" live-change"))
+	if state.copyTerminal == nil || strings.Contains(state.copyTerminal.Text(), "live-change") {
+		t.Fatalf("copy framebuffer was not frozen: %q", state.copyTerminal.Text())
 	}
 	for _, input := range [][]byte{[]byte("x"), []byte("\x1bq"), []byte("\x1bc"), []byte("\x1b[A"), []byte("\x1b[<0;2;7M"), []byte("\x1b[<0;2;7m")} {
 		if copyModeExitInput(input) {
@@ -2467,7 +2541,7 @@ func TestTUICopyModeTransitionsAndInputIsolation(t *testing.T) {
 		}
 	}
 	state.exitCopyMode(&output)
-	if state.copyMode || !strings.Contains(output.String(), "\033[?1006h\033[?1002h") {
+	if state.copyMode || state.copyTerminal != nil || !strings.Contains(output.String(), "\033[?1000l\033[?1006h\033[?1002h") {
 		t.Fatalf("exit copy mode output=%q state=%v", output.String(), state.copyMode)
 	}
 	before = output.String()

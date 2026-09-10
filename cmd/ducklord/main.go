@@ -1188,6 +1188,7 @@ type tuiState struct {
 	activityState             *ducklord.ActivityState
 	focused                   bool
 	copyMode                  bool
+	copyTerminal              *ducklord.Terminal
 	newSessionMode            bool
 	newSessionClient          string
 	newSessionLine            string
@@ -1235,8 +1236,12 @@ type tuiState struct {
 	shortcutErr               string
 	shortcutDraft             *ducklord.Config
 	hostMenuMode              bool
+	hostMenuStep              string
 	hostMenuTarget            string
 	hostMenuIndex             int
+	hostMenuSelected          map[string]bool
+	hostMenuOperation         string
+	hostMenuErr               string
 	disconnectedHosts         map[string]bool
 	hostScoped                bool
 	ownerName                 string
@@ -1885,6 +1890,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					outputManager.SyncHost(update.Client, previousHost.InstanceID, false, nil)
 				}
 				if update.State == "live" && update.InstanceID != "" {
+					// Only an authoritative live update from the current watch epoch
+					// may clear a disconnect tombstone for this instance.
+					outputManager.RestoreHost(update.Client, update.InstanceID)
 					rows, cols := state.activePTYSize()
 					selections := make([]ducklord.TerminalSelection, 0, len(update.Sessions))
 					if client, clientErr := mustClient(cfg, update.Client); clientErr == nil {
@@ -2055,13 +2063,17 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			if button, x, y, ok := parseSGRMouse(string(b)); ok {
 				// Mouse reports are always local UI input. Never inject their
 				// escape sequences into a focused remote PTY.
-				if (button == 64 || button == 65) && state.contentPanePoint(x, y) && state.terminal != nil {
+				if (button == 64 || button == 65) && state.contentPanePoint(x, y) && state.viewportTerminal() != nil {
 					if button == 64 {
-						state.ptyScrollOffset = min(len(state.terminal.Scrollback), state.ptyScrollOffset+3)
+						state.scrollPTY(3)
 					} else {
-						state.ptyScrollOffset = max(0, state.ptyScrollOffset-3)
+						state.scrollPTY(-3)
 					}
-					state.render(os.Stdout)
+					if state.copyMode {
+						state.renderCopyMode(os.Stdout)
+					} else {
+						state.render(os.Stdout)
+					}
 					continue
 				}
 				if button == 64 || button == 65 || state.focused {
@@ -2077,6 +2089,14 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						state.markActivitySeen(state.currentSession())
 					}
 					state.render(os.Stdout)
+				} else if string(b) == "\x1b[A" || string(b) == "k" {
+					if state.viewportTerminal() != nil {
+						state.scrollPTY(1)
+						state.renderCopyMode(os.Stdout)
+					}
+				} else if string(b) == "\x1b[B" || string(b) == "j" {
+					state.scrollPTY(-1)
+					state.renderCopyMode(os.Stdout)
 				}
 				continue
 			}
@@ -2260,6 +2280,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			if state.hostMenuMode {
 				action := state.handleHostMenuInput(b)
 				target := state.hostMenuTarget
+				targets := []string{target}
+				if action == "host-connect-selected" || action == "host-disconnect-selected" {
+					targets = state.selectedHostMenuTargets()
+				}
 				switch action {
 				case "host-add":
 					state.hostMenuMode = false
@@ -2267,82 +2291,76 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				case "host-remove":
 					state.hostMenuMode = false
 					state.beginRemoveClient()
-				case "host-disconnect", "host-reconnect":
-					wasActive := len(state.sessions) > 0 && state.currentSession().Client == target
-					if current, ok := watchedClients[target]; ok {
-						current.cancel()
-						delete(watchedClients, target)
-					}
-					previous := state.hostSync[target]
-					state.disconnectedHosts[target] = true
-					if state.newSessionMode && state.newSessionClient == target {
-						state.cancelCreateDiscovery()
-						state.cancelPathSuggestions()
-						state.newSessionErr = "host disconnected; pending session operation was canceled"
-					}
-					if outputManager != nil && previous.InstanceID != "" {
-						outputManager.ForgetHost(target, previous.InstanceID)
-					}
-					filtered := state.sessions[:0]
-					for _, session := range state.sessions {
-						if session.Client != target {
-							filtered = append(filtered, session)
+				case "host-disconnect", "host-reconnect", "host-disconnect-selected":
+					for _, target := range targets {
+						wasActive := len(state.sessions) > 0 && state.currentSession().Client == target
+						if current, ok := watchedClients[target]; ok {
+							current.cancel()
+							delete(watchedClients, target)
 						}
-					}
-					state.sessions = filtered
-					if wasActive {
-						if attachCancel != nil {
-							attachCancel()
-							attachCancel = nil
+						previous := state.hostSync[target]
+						state.disconnectedHosts[target] = true
+						if state.newSessionMode && state.newSessionClient == target {
+							state.cancelCreateDiscovery()
+							state.cancelPathSuggestions()
+							state.newSessionErr = "host disconnected; pending session operation was canceled"
 						}
-						if controlOpenCancel != nil {
-							controlOpenCancel()
-							controlOpenCancel = nil
-						}
-						if control != nil {
-							_ = control.Stdin.Close()
-							control, controlDone = nil, nil
-						}
-						state.focused = false
-						state.clearAttachIdentity()
-					}
-					state.hostSync[target] = ducklord.SessionUpdate{Client: target, InstanceID: previous.InstanceID, Generation: previous.Generation, Revision: previous.Revision, State: "disconnected"}
-					state.hostMenuMode = false
-					state.outputErr = "disconnected " + target + "; its sessions and notifications are detached"
-					if action == "host-reconnect" {
-						delete(state.disconnectedHosts, target)
 						if outputManager != nil && previous.InstanceID != "" {
-							outputManager.RestoreHost(target, previous.InstanceID)
+							outputManager.ForgetHost(target, previous.InstanceID)
 						}
-						state.hostSync[target] = ducklord.SessionUpdate{Client: target, State: "reconnecting"}
+						if wasActive {
+							if attachCancel != nil {
+								attachCancel()
+								attachCancel = nil
+							}
+							if controlOpenCancel != nil {
+								controlOpenCancel()
+								controlOpenCancel = nil
+							}
+							if control != nil {
+								_ = control.Stdin.Close()
+								control, controlDone = nil, nil
+							}
+							state.focused = false
+							state.clearAttachIdentity()
+						}
+						state.hostSync[target] = ducklord.SessionUpdate{Client: target, InstanceID: previous.InstanceID, Generation: previous.Generation, Revision: previous.Revision, State: "disconnected"}
+						state.hostMenuMode = false
+						state.outputErr = "disconnected " + target + "; its sessions and notifications are detached"
+						if action == "host-reconnect" {
+							delete(state.disconnectedHosts, target)
+							state.hostSync[target] = ducklord.SessionUpdate{Client: target, State: "reconnecting"}
+							if client, ok := state.cfg.Client(target); ok {
+								watchClient(client)
+							}
+							if !eventDriven {
+								state.refreshSessions(ctx)
+							}
+							state.outputErr = "reconnecting " + target
+						}
+					}
+					if action == "host-disconnect-selected" {
+						state.outputErr = fmt.Sprintf("disconnected %d hosts; their sessions remain available as read-only snapshots", len(targets))
+					}
+				case "host-connect", "host-connect-selected":
+					for _, target := range targets {
+						if !state.disconnectedHosts[target] {
+							continue
+						}
+						delete(state.disconnectedHosts, target)
+						state.hostSync[target] = ducklord.SessionUpdate{Client: target, State: "connecting"}
 						if client, ok := state.cfg.Client(target); ok {
 							watchClient(client)
 						}
 						if !eventDriven {
 							state.refreshSessions(ctx)
 						}
-						state.outputErr = "reconnecting " + target
-					}
-				case "host-connect":
-					if !state.disconnectedHosts[target] {
 						state.hostMenuMode = false
-						state.outputErr = target + " is already connected"
-						break
+						state.outputErr = "connecting " + target
 					}
-					delete(state.disconnectedHosts, target)
-					previous := state.hostSync[target]
-					if outputManager != nil && previous.InstanceID != "" {
-						outputManager.RestoreHost(target, previous.InstanceID)
+					if action == "host-connect-selected" {
+						state.outputErr = fmt.Sprintf("connecting %d selected hosts", len(targets))
 					}
-					state.hostSync[target] = ducklord.SessionUpdate{Client: target, State: "connecting"}
-					if client, ok := state.cfg.Client(target); ok {
-						watchClient(client)
-					}
-					if !eventDriven {
-						state.refreshSessions(ctx)
-					}
-					state.hostMenuMode = false
-					state.outputErr = "connecting " + target
 				}
 				state.render(os.Stdout)
 				continue
@@ -2854,6 +2872,11 @@ func initialReplayCaughtUp(currentOffset, replayEndOffset uint64) bool {
 func (s *tuiState) refreshSessions(ctx context.Context) {
 	oldKey := s.currentKey()
 	var all []ducklord.RemoteSession
+	for _, session := range s.sessions {
+		if s.disconnectedHosts[session.Client] {
+			all = append(all, session)
+		}
+	}
 	for _, c := range s.cfg.Clients {
 		if s.disconnectedHosts[c.Name] {
 			continue
@@ -3345,6 +3368,15 @@ func (s *tuiState) moveDraggedSessionBefore(target string, before ducklord.Sessi
 
 var hostRowPalette = []string{"\033[38;5;39m", "\033[38;5;214m", "\033[38;5;170m", "\033[38;5;42m", "\033[38;5;141m", "\033[38;5;81m", "\033[38;5;203m", "\033[38;5;118m", "\033[38;5;207m", "\033[38;5;45m", "\033[38;5;221m", "\033[38;5;135m"}
 
+const disconnectedRowColor = "\033[38;5;244m"
+
+func (s *tuiState) hostRowStyle(host string) string {
+	if s.disconnectedHosts[host] {
+		return disconnectedRowColor
+	}
+	return s.hostRowColor(host)
+}
+
 func (s *tuiState) hostRowColor(host string) string {
 	hosts, seen := make([]string, 0), make(map[string]bool)
 	if s.cfg != nil {
@@ -3421,6 +3453,9 @@ func (s *tuiState) applyOrganizationOrder() bool {
 		if groupRank[leftGroup] != groupRank[rightGroup] {
 			return groupRank[leftGroup] < groupRank[rightGroup]
 		}
+		if s.cfg.PromoteUnread() && s.sessions[i].Unread != s.sessions[j].Unread {
+			return s.sessions[i].Unread
+		}
 		left, leftOK := ducklord.IdentityFromSession(s.sessions[i])
 		right, rightOK := ducklord.IdentityFromSession(s.sessions[j])
 		if leftOK != rightOK {
@@ -3460,6 +3495,34 @@ func (s *tuiState) moveSelectedSession(direction int) {
 		return
 	}
 	selected := s.currentSession()
+	selectedIdentity, selectedOK := ducklord.IdentityFromSession(selected)
+	if !selectedOK {
+		s.outputErr = "session cannot be reordered without a stable identity"
+		return
+	}
+	if s.organizationMode() == ducklord.OrganizationCustom {
+		rows := s.sessionListRows()
+		currentRow := -1
+		for index, row := range rows {
+			if !row.isGroup && row.sessionIndex == s.selected {
+				currentRow = index
+				break
+			}
+		}
+		currentGroup := s.organizationGroupID(selected)
+		for index := currentRow + direction; currentRow >= 0 && index >= 0 && index < len(rows); index += direction {
+			row := rows[index]
+			if row.isGroup {
+				if row.groupID == currentGroup {
+					continue
+				}
+				s.dragSession = selectedIdentity
+				s.moveDraggedSessionBefore(row.groupID, ducklord.SessionIdentity{})
+				return
+			}
+			break
+		}
+	}
 	before := s.activity().Clone()
 	targetIndex := s.selected + direction
 	if s.organizationMode() != ducklord.OrganizationCustom {
@@ -3472,9 +3535,8 @@ func (s *tuiState) moveSelectedSession(direction int) {
 		s.outputErr = "session is already at the group boundary"
 		return
 	}
-	selectedIdentity, selectedOK := ducklord.IdentityFromSession(selected)
 	targetIdentity, targetOK := ducklord.IdentityFromSession(s.sessions[targetIndex])
-	if !selectedOK || !targetOK {
+	if !targetOK {
 		s.outputErr = "session cannot be reordered without a stable identity"
 		return
 	}
@@ -4009,6 +4071,7 @@ func (s *tuiState) activity() *ducklord.ActivityState {
 }
 
 func (s *tuiState) markActivitySeen(session ducklord.RemoteSession) {
+	selectedKey := s.currentKey()
 	next := s.activity().Clone()
 	activityChanged := next.MarkSeen(session)
 	if activityChanged {
@@ -4024,6 +4087,8 @@ func (s *tuiState) markActivitySeen(session ducklord.RemoteSession) {
 			s.sessions[i].Updated = false
 		}
 	}
+	s.applyOrganizationOrder()
+	s.restoreSelection(selectedKey)
 }
 
 func (s *tuiState) saveActivityState() error {
@@ -4235,7 +4300,7 @@ func (s *tuiState) render(out io.Writer) {
 			}
 			plain := modalCellPad(modalCellTruncate(groupLabel, menuWidth), menuWidth)
 			if s.organizationMode() == ducklord.OrganizationHost {
-				plain = s.hostRowColor(listRow.groupID) + plain + modalReset
+				plain = s.hostRowStyle(listRow.groupID) + plain + modalReset
 			}
 			fmt.Fprintf(out, "\033[%d;1H%s%s%s", row, plain, separator, clear)
 			row++
@@ -4261,6 +4326,9 @@ func (s *tuiState) render(out io.Writer) {
 			markColumn = mark
 		}
 		line := fmt.Sprintf("%s%s%-12s %-18s %-9s %-14s %s", prefix, markColumn, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), displayField(sessionTypeLabel(sess)), sess.LastLine)
+		if s.organizationMode() == ducklord.OrganizationHost {
+			line = fmt.Sprintf("%s%s%-18s %-9s %-14s %s", prefix, markColumn, displayField(sess.Name), displayField(sess.Status), displayField(sessionTypeLabel(sess)), sess.LastLine)
+		}
 		if sess.Error != "" {
 			errorMark := "!"
 			if sessionNeedsAttention(sess) {
@@ -4271,6 +4339,9 @@ func (s *tuiState) render(out io.Writer) {
 				errorColumn = errorMark
 			}
 			line = fmt.Sprintf("%s%s%-12s %-18s %-9s %s", prefix, errorColumn, displayField(sess.Client), displayField(sess.Name), displayField(sess.Status), sess.Error)
+			if s.organizationMode() == ducklord.OrganizationHost {
+				line = fmt.Sprintf("%s%s%-18s %-9s %s", prefix, errorColumn, displayField(sess.Name), displayField(sess.Status), sess.Error)
+			}
 		}
 		separator := " |"
 		if layout.overlay {
@@ -4281,7 +4352,7 @@ func (s *tuiState) render(out io.Writer) {
 			clear = ""
 		}
 		plain := modalCellPad(modalCellTruncate(line, menuWidth), menuWidth)
-		fmt.Fprintf(out, "\033[%d;1H%s%s%s%s%s", row, s.hostRowColor(sess.Client), plain, modalReset, separator, clear)
+		fmt.Fprintf(out, "\033[%d;1H%s%s%s%s%s", row, s.hostRowStyle(sess.Client), plain, modalReset, separator, clear)
 		row++
 	}
 	if !layout.overlay {
@@ -4635,6 +4706,37 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 	if !s.hostMenuMode {
 		return
 	}
+	if s.hostMenuStep == "hosts" {
+		operationLabel := "Connect"
+		if s.hostMenuOperation == "disconnect" {
+			operationLabel = "Disconnect"
+		}
+		lines := []modalRenderLine{{modalTitle, "  " + operationLabel + " hosts"}}
+		for index, client := range s.cfg.Clients {
+			style, cursor := modalInput, "  "
+			if index == s.hostMenuIndex {
+				style, cursor = modalSelected, "› "
+			}
+			check := "[ ]"
+			if s.hostMenuSelected[client.Name] {
+				check = "[✓]"
+			}
+			state := "connected"
+			if s.disconnectedHosts[client.Name] {
+				state = "disconnected"
+			}
+			if !s.hostMenuEligible(client.Name) {
+				style = modalDisabled
+			}
+			lines = append(lines, modalRenderLine{style, fmt.Sprintf("%s%s %-18s %s", cursor, check, displayField(client.Name), state)})
+		}
+		lines = append(lines, modalRenderLine{modalMuted, "  Space toggle · Enter apply · Esc back · Ctrl+C close"})
+		if s.hostMenuErr != "" {
+			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostMenuErr})
+		}
+		renderModalBox(out, cols, rows, lines)
+		return
+	}
 	lines := []modalRenderLine{{modalTitle, "  Host actions · " + displayField(s.hostMenuTarget)}}
 	for index, label := range hostActions {
 		style, prefix := "", "  "
@@ -4659,10 +4761,43 @@ func (s *tuiState) beginHostMenu() {
 		s.outputErr = "no host selected"
 		return
 	}
-	s.hostMenuMode, s.hostMenuIndex = true, 0
+	s.hostMenuMode, s.hostMenuStep, s.hostMenuIndex = true, "actions", 0
+	s.hostMenuSelected = make(map[string]bool)
+	s.hostMenuOperation = ""
+	s.hostMenuErr = ""
 }
 
 func (s *tuiState) handleHostMenuInput(input []byte) string {
+	if s.hostMenuStep == "hosts" {
+		if len(s.cfg.Clients) == 0 {
+			return ""
+		}
+		switch string(input) {
+		case "\x03":
+			s.hostMenuMode = false
+			return "cancel"
+		case "\x1b":
+			s.hostMenuStep, s.hostMenuIndex = "actions", 0
+			return ""
+		case "j", "\x1b[B":
+			s.hostMenuIndex = min(len(s.cfg.Clients)-1, s.hostMenuIndex+1)
+		case "k", "\x1b[A":
+			s.hostMenuIndex = max(0, s.hostMenuIndex-1)
+		case " ":
+			name := s.cfg.Clients[s.hostMenuIndex].Name
+			if s.hostMenuEligible(name) {
+				s.hostMenuSelected[name] = !s.hostMenuSelected[name]
+				s.hostMenuErr = ""
+			}
+		case "\r", "\n":
+			if len(s.selectedHostMenuTargets()) == 0 {
+				s.hostMenuErr = "select at least one host"
+				return ""
+			}
+			return "host-" + s.hostMenuOperation + "-selected"
+		}
+		return ""
+	}
 	switch string(input) {
 	case "\x1b", "\x03":
 		s.hostMenuMode = false
@@ -4677,9 +4812,42 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 			s.outputErr = "host configuration changes are unavailable in host-scoped mode"
 			return ""
 		}
+		if action == "host-connect" || action == "host-disconnect" {
+			s.hostMenuStep = "hosts"
+			s.hostMenuOperation = strings.TrimPrefix(action, "host-")
+			s.hostMenuIndex = 0
+			s.hostMenuErr = ""
+			if s.hostMenuTarget != "" && s.hostMenuEligible(s.hostMenuTarget) {
+				s.hostMenuSelected[s.hostMenuTarget] = true
+				for index, client := range s.cfg.Clients {
+					if client.Name == s.hostMenuTarget {
+						s.hostMenuIndex = index
+						break
+					}
+				}
+			}
+			return ""
+		}
 		return action
 	}
 	return ""
+}
+
+func (s *tuiState) hostMenuEligible(name string) bool {
+	if s.hostMenuOperation == "connect" {
+		return s.disconnectedHosts[name]
+	}
+	return !s.disconnectedHosts[name]
+}
+
+func (s *tuiState) selectedHostMenuTargets() []string {
+	targets := make([]string, 0, len(s.hostMenuSelected))
+	for _, client := range s.cfg.Clients {
+		if s.hostMenuSelected[client.Name] {
+			targets = append(targets, client.Name)
+		}
+	}
+	return targets
 }
 
 func (s *tuiState) renderGroupModal(out io.Writer, cols, rows int) {
@@ -5176,8 +5344,8 @@ func (s *tuiState) renderContent(out io.Writer, x, width, height int) {
 	}
 	lines := tailLines(strings.Split(strings.TrimRight(s.outputText, "\n"), "\n"), height-startRow+1)
 	styled := false
-	if s.terminal != nil {
-		lines = s.terminal.RenderLinesOffset(height-startRow+1, width, s.ptyScrollOffset)
+	if terminal := s.viewportTerminal(); terminal != nil {
+		lines = terminal.RenderLinesOffset(height-startRow+1, width, s.ptyScrollOffset)
 		styled = true
 	}
 	for i, line := range lines {
@@ -5889,11 +6057,25 @@ func (s *tuiState) enterCopyMode(out io.Writer) {
 		return
 	}
 	s.copyMode = true
+	if s.terminal != nil {
+		s.copyTerminal, _ = ducklord.NewTerminalFromState(s.terminal.SnapshotState(), ducklord.DefaultTerminalScrollback)
+	}
+	// Button tracking reports wheel events while leaving drag tracking off.
+	// Most terminals allow text selection with Shift-drag in this mode.
+	fmt.Fprint(out, "\033[?1002l\033[?1000h\033[?1006h")
+	s.renderCopyMode(out)
+}
+
+func (s *tuiState) renderCopyMode(out io.Writer) {
+	if !s.copyMode {
+		return
+	}
+	s.copyMode = false
+	s.render(out)
+	s.copyMode = true
 	cols, _ := terminalSize()
-	status := modalCellTruncate(" COPY MODE  Drag to select PTY text; use terminal Copy; Esc/q/v/Ctrl+C exits", max(1, cols))
-	// Stop event tracking before disabling its SGR encoding. This hands mouse
-	// drags back to the terminal emulator for native selection.
-	fmt.Fprintf(out, "\033[?1002l\033[?1006l\033[2;1H\033[2K%s%s%s", modalSelected, status, modalReset)
+	status := modalCellTruncate(" COPY MODE  Wheel/j/k browse · Shift-drag select · Esc/q/v/Ctrl+C exits", max(1, cols))
+	fmt.Fprintf(out, "\033[2;1H\033[2K%s%s%s", modalSelected, status, modalReset)
 }
 
 func (s *tuiState) exitCopyMode(out io.Writer) {
@@ -5901,9 +6083,25 @@ func (s *tuiState) exitCopyMode(out io.Writer) {
 		return
 	}
 	s.copyMode = false
+	s.copyTerminal = nil
 	// Restore the encoding before event tracking so no mouse report can arrive
 	// in an unexpected format during the transition.
-	fmt.Fprint(out, "\033[?1006h\033[?1002h")
+	fmt.Fprint(out, "\033[?1000l\033[?1006h\033[?1002h")
+}
+
+func (s *tuiState) viewportTerminal() *ducklord.Terminal {
+	if s.copyTerminal != nil {
+		return s.copyTerminal
+	}
+	return s.terminal
+}
+
+func (s *tuiState) scrollPTY(delta int) {
+	terminal := s.viewportTerminal()
+	if terminal == nil {
+		return
+	}
+	s.ptyScrollOffset = min(len(terminal.Scrollback), max(0, s.ptyScrollOffset+delta))
 }
 
 func (s *tuiState) beginAddClient() {

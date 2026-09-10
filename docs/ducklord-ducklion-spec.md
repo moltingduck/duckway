@@ -261,10 +261,13 @@ Remove deletes it. Create/restart/end/destroy always target one session.
   `grabbing` mouse cursor through OSC 22 while dragging and restores `default`
   afterward; terminals without OSC 22 support simply ignore the hint.
 - In custom mode, `Ctrl-J` / `Ctrl-K` moves a session through the global custom
-  order and transfers it into the adjacent session's group at a boundary.
+  order and transfers it into the adjacent session's group at a boundary. An
+  empty newly-created group is also a valid keyboard destination.
 - Mouse-wheel input over the PTY pane scrolls its local framebuffer by three
   rows per notch. Mouse reports are consumed by Ducklord and never injected
   into the remote PTY.
+- Copy mode keeps a frozen local framebuffer and accepts wheel or `j` / `k`
+  scrolling. Use Shift-drag for terminal-native text selection.
 - `Enter` or right-click focuses the selected session in the right pane.
 - `Ctrl-]` returns keyboard focus to the left menu.
 - `a` adds a Ducklion host from `~/.ssh/config`; use `client-c` in the demo.
@@ -312,6 +315,16 @@ shortcuts:
   pty_unfocus: "ctrl-]"
   shortcut_settings: "S"
 ```
+
+By default, unread sessions temporarily sort to the top of their current
+group and return to their saved position as soon as the activity is seen. Set
+`promote_unread_sessions: false` to disable this projection; it never rewrites
+the saved custom session order.
+
+In host organization mode, the group header owns the host label, so nested
+session rows do not repeat it. Disconnect keeps the host's last session rows
+as gray read-only snapshots. Connect and Disconnect open a second page where
+Space toggles one or more configured hosts and Enter applies the batch.
 
 `S` opens the shortcut editor in the TUI. Saving writes the config atomically
 but leaves the current keymap unchanged. Ducklord then asks whether to restart

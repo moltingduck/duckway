@@ -18,6 +18,7 @@ type Config struct {
 	RawOutputSubscriptions *int              `json:"raw_output_subscription_limit,omitempty" yaml:"raw_output_subscription_limit,omitempty"`
 	SessionListWidth       *int              `json:"session_list_width,omitempty" yaml:"session_list_width,omitempty"`
 	AutoHideSessionList    *bool             `json:"auto_hide_session_list,omitempty" yaml:"auto_hide_session_list,omitempty"`
+	PromoteUnreadSessions  *bool             `json:"promote_unread_sessions,omitempty" yaml:"promote_unread_sessions,omitempty"`
 	Shortcuts              map[string]string `json:"shortcuts,omitempty" yaml:"shortcuts,omitempty"`
 	Clients                []Client          `json:"hosts" yaml:"hosts"`
 }
@@ -233,6 +234,10 @@ func (c *Config) SessionListAutoHide() bool {
 	return c == nil || c.AutoHideSessionList == nil || *c.AutoHideSessionList
 }
 
+func (c *Config) PromoteUnread() bool {
+	return c == nil || c.PromoteUnreadSessions == nil || *c.PromoteUnreadSessions
+}
+
 // ResolveOwnerName applies --name > config.name > local hostname precedence.
 func ResolveOwnerName(explicit, configured string) (string, error) {
 	name := explicit
@@ -283,6 +288,10 @@ func (c *Config) Clone() *Config {
 	if c.AutoHideSessionList != nil {
 		value := *c.AutoHideSessionList
 		clone.AutoHideSessionList = &value
+	}
+	if c.PromoteUnreadSessions != nil {
+		value := *c.PromoteUnreadSessions
+		clone.PromoteUnreadSessions = &value
 	}
 	return &clone
 }

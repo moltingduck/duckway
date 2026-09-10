@@ -85,10 +85,13 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	if screen := capture.currentText(); !strings.Contains(screen, "[Ungrouped] •") || !strings.Contains(screen, "• client-a") {
 		t.Fatalf("background agent completion did not render session/group unread: %q", safeTerminalDiagnostic(screen))
 	}
-	for range 3 {
-		writePTY(t, terminal, "j")
-		time.Sleep(100 * time.Millisecond)
-	}
+	// Notification promotion changes visual row positions, so activate the
+	// exact completed session through search instead of relying on row counts.
+	writePTY(t, terminal, "/"+notificationHandle+"\r")
+	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "session focus", 10*time.Second)
+	writePTY(t, terminal, "\x1d")
 	waitE2E(t, 10*time.Second, func() bool {
 		data, readErr := exec.Command(runtime, "exec", controller, "cat", "/root/.ducklord/state.json").Output()
 		if readErr != nil {
@@ -112,8 +115,8 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	copyStart := capture.position()
 	writePTY(t, terminal, "v")
 	capture.waitCurrent(t, "COPY MODE", 5*time.Second)
-	if raw := capture.since(copyStart); !strings.Contains(raw, "\033[?1002l\033[?1006l") || !strings.Contains(raw, modalSelected) {
-		t.Fatalf("copy mode did not release mouse tracking with a visible status: %q", safeTerminalDiagnostic(raw))
+	if raw := capture.since(copyStart); !strings.Contains(raw, "\033[?1002l\033[?1000h\033[?1006h") || !strings.Contains(raw, modalSelected) {
+		t.Fatalf("copy mode did not enable local wheel tracking with a visible status: %q", safeTerminalDiagnostic(raw))
 	}
 	frozen := capture.currentText()
 	copyMarker := fmt.Sprintf("DUCKLORD_COPY_MODE_%d", os.Getpid())
