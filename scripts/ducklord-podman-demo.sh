@@ -4,27 +4,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CODEX_AUTH="$ROOT/live-credentials/codex-auth.json"
 CLAUDE_AUTH="$ROOT/live-credentials/claude-credentials.json"
-if [ "${DUCKLORD_DEMO_SHELL_ONLY:-0}" != 1 ] && \
-   [ -f "$CODEX_AUTH" ] && [ -f "$CLAUDE_AUTH" ]; then
-  if python3 - "$CODEX_AUTH" "$CLAUDE_AUTH" <<'PY' >/dev/null 2>&1
-import base64, json, sys, time
-codex = json.load(open(sys.argv[1]))
-tokens = codex.get("tokens", codex)
-access = tokens.get("access_token") or codex.get("access_token") or ""
-payload = access.split(".")[1]
-payload += "=" * (-len(payload) % 4)
-codex_exp = int(json.loads(base64.urlsafe_b64decode(payload))["exp"]) * 1000
-claude = json.load(open(sys.argv[2])).get("claudeAiOauth", {})
-deadline = int((time.time() + 1800) * 1000)
-if codex_exp <= deadline or int(claude.get("expiresAt") or 0) <= deadline:
-    raise SystemExit(1)
-PY
-  then
-    echo "[ducklord-demo] fresh live credentials found; using the isolated Duckway phantom-token topology"
-    DUCKWAY_LIVE_KEEP=1 exec "$ROOT/scripts/ducklion-phantom-live-e2e.sh"
-  fi
-  echo "[ducklord-demo] live credentials are expired or incomplete; building local agent runtimes without injecting credentials"
-fi
 WORK="${WORK:-/tmp/ducklord-podman-demo}"
 RUNTIME="${CONTAINER_RUNTIME:-podman}"
 IMAGE="${IMAGE:-duckway-ducklord-demo:local}"
@@ -74,6 +53,22 @@ echo "[ducklord-demo] starting remote clients"
 for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
   "$RUNTIME" exec -d -u duck "$container" sh -lc 'mkdir -p $HOME/.duckway; nohup ducklion daemon >$HOME/.duckway/ducklion-daemon.log 2>&1 </dev/null & echo $! >$HOME/.duckway/ducklion-daemon.pid' >/dev/null
 done
+if [ -f "$CODEX_AUTH" ] || [ -f "$CLAUDE_AUTH" ]; then
+  echo "[ducklord-demo] injecting available local agent credentials into remote demo users"
+  for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
+    "$RUNTIME" exec -u duck "$container" sh -lc 'mkdir -p $HOME/.codex $HOME/.claude && chmod 700 $HOME/.codex $HOME/.claude'
+    if [ -f "$CODEX_AUTH" ]; then
+      "$RUNTIME" cp "$CODEX_AUTH" "$container":/tmp/codex-auth.json
+      "$RUNTIME" exec "$container" install -o duck -g duck -m 600 /tmp/codex-auth.json /home/duck/.codex/auth.json
+      "$RUNTIME" exec "$container" rm -f /tmp/codex-auth.json
+    fi
+    if [ -f "$CLAUDE_AUTH" ]; then
+      "$RUNTIME" cp "$CLAUDE_AUTH" "$container":/tmp/claude-credentials.json
+      "$RUNTIME" exec "$container" install -o duck -g duck -m 600 /tmp/claude-credentials.json /home/duck/.claude/.credentials.json
+      "$RUNTIME" exec "$container" rm -f /tmp/claude-credentials.json
+    fi
+  done
+fi
 for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
   ready=false
   for _ in $(seq 1 100); do
