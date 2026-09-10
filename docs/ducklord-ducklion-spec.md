@@ -247,7 +247,9 @@ Useful keys:
 - Mouse click selects a row.
 - Drag a session onto another session to save its order. In host/type modes the
   target must be in the same group; custom mode may also move it across custom
-  groups by dropping on a session or group header.
+  groups by dropping on a session or group header. Ducklord requests a
+  `grabbing` mouse cursor through OSC 22 while dragging and restores `default`
+  afterward; terminals without OSC 22 support simply ignore the hint.
 - `Enter` or right-click focuses the selected session in the right pane.
 - `Ctrl-]` returns keyboard focus to the left menu.
 - `a` adds a Ducklion host from `~/.ssh/config`; use `client-c` in the demo.

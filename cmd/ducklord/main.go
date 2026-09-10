@@ -1280,7 +1280,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	}
 	defer restore(oldState)
 	fmt.Print("\033[?1049h\033[?25l\033[?1002h\033[?1006h")
-	defer fmt.Print("\033[?1006l\033[?1002l\033[?25h\033[?1049l")
+	defer fmt.Print(mouseCursorShape("default") + "\033[?1006l\033[?1002l\033[?25h\033[?1049l")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -2432,7 +2432,16 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			wasDragging := state.dragSession.Key() != ""
 			action := state.handleInput(b)
+			isDragging := state.dragSession.Key() != ""
+			if wasDragging != isDragging {
+				shape := "default"
+				if isDragging {
+					shape = "grabbing"
+				}
+				fmt.Fprint(os.Stdout, mouseCursorShape(shape))
+			}
 			switch action {
 			case "quit":
 				return nil
@@ -4110,6 +4119,13 @@ const (
 	modalDisabled = "\033[38;2;100;116;139m"
 	modalDanger   = "\033[1;38;2;255;255;255;48;2;190;24;93m"
 )
+
+func mouseCursorShape(shape string) string {
+	if shape != "grabbing" {
+		shape = "default"
+	}
+	return "\033]22;" + shape + "\033\\"
+}
 
 type modalRenderLine struct {
 	style string

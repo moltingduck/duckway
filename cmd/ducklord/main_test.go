@@ -1040,6 +1040,15 @@ func TestTUIMouseDragReordersSessionsInsideProjectedGroup(t *testing.T) {
 	}
 }
 
+func TestMouseCursorShapeIsBoundedAndRestorable(t *testing.T) {
+	if got := mouseCursorShape("grabbing"); got != "\x1b]22;grabbing\x1b\\" {
+		t.Fatalf("grabbing cursor sequence=%q", got)
+	}
+	if got := mouseCursorShape("untrusted;payload"); got != "\x1b]22;default\x1b\\" {
+		t.Fatalf("cursor reset sequence=%q", got)
+	}
+}
+
 func TestTUIOrganizationPersistenceFailureKeepsLocalChangeAndWarns(t *testing.T) {
 	instance := string(model.NewInstanceID())
 	badPath := filepath.Join(t.TempDir(), "state.json")
