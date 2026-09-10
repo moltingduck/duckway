@@ -9,9 +9,9 @@ source "$ROOT/scripts/ducklord-demo-common.sh"
 duckway_init_container_runtime
 RUNTIME="$CONTAINER_RUNTIME"
 SETUP_LOG="$(mktemp -t ducklord-tui-e2e-XXXXXX.log)"
-if ! ducklord_lock_demo_topology; then
+if [ "${DUCKLORD_DEMO_LOCK_HELD:-0}" != 1 ]; then
 	rm -f "$SETUP_LOG"
-	exit 1
+	ducklord_reexec_with_demo_lock "$0" "$@"
 fi
 
 for resource in ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c; do

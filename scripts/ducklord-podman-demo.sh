@@ -18,7 +18,7 @@ case "$CREDENTIALS" in all|codex|claude|none) ;; *) echo "invalid DUCKLORD_DEMO_
 case "$CREDENTIAL_CLIENTS" in all|client-a|client-b|client-c) ;; *) echo "invalid DUCKLORD_DEMO_CREDENTIAL_CLIENTS=$CREDENTIAL_CLIENTS" >&2; exit 2;; esac
 
 if [ "${DUCKLORD_DEMO_LOCK_HELD:-0}" != 1 ]; then
-  ducklord_lock_demo_topology
+	ducklord_reexec_with_demo_lock "$0" "$@"
 fi
 
 [ -d "$WORK_PARENT" ] && [ ! -L "$WORK_PARENT" ] || { echo "demo work parent must be a non-symlink directory: $WORK_PARENT" >&2; exit 2; }

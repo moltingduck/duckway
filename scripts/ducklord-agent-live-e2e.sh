@@ -10,6 +10,7 @@ duckway_init_container_runtime
 RUNTIME="$CONTAINER_RUNTIME"
 RUN_CODEX=1
 RUN_CLAUDE=1
+ORIGINAL_ARGS=("$@")
 
 for dependency in flock jq stat; do
   command -v "$dependency" >/dev/null 2>&1 || { echo "missing required command: $dependency" >&2; exit 2; }
@@ -24,6 +25,10 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
+if [ "${DUCKLORD_DEMO_LOCK_HELD:-0}" != 1 ]; then
+  ducklord_reexec_with_demo_lock "$0" "${ORIGINAL_ARGS[@]}"
+fi
+
 require_secret() {
   ducklord_require_demo_secret "$1" || exit 2
 }
@@ -37,8 +42,6 @@ if [ "$RUN_CLAUDE" = 1 ]; then
     exit 1
   fi
 fi
-
-ducklord_lock_demo_topology
 
 for resource in ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c; do
   if "$RUNTIME" container inspect "$resource" >/dev/null 2>&1; then

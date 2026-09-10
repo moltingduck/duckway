@@ -11,15 +11,21 @@ ducklord_demo_lock_file() {
   printf '%s/ducklord-demo.lock\n' "$runtime_dir"
 }
 
-ducklord_lock_demo_topology() {
-  local lock_file
-  lock_file="$(ducklord_demo_lock_file)" || return
-  exec 9>"$lock_file"
-  chmod 600 "$lock_file"
-  flock -n 9 || {
-    echo "another Ducklord demo/E2E owns $lock_file" >&2
-    return 1
-  }
+ducklord_reexec_with_demo_lock() {
+	local lock_file
+	lock_file="$(ducklord_demo_lock_file)" || return
+	if [ -e "$lock_file" ]; then
+		[ -f "$lock_file" ] && [ ! -L "$lock_file" ] || {
+			echo "refusing unsafe demo lock: $lock_file" >&2
+			return 1
+		}
+	else
+		(umask 077; set -o noclobber; : >"$lock_file") || return
+	fi
+	chmod 600 "$lock_file"
+	# flock remains the lock owner while --close prevents Podman/Docker and
+	# their long-lived monitor processes from inheriting the descriptor.
+	exec flock -n --close "$lock_file" env DUCKLORD_DEMO_LOCK_HELD=1 "$@"
 }
 
 ducklord_require_demo_secret() {
