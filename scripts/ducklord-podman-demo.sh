@@ -2,11 +2,28 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CODEX_AUTH="$ROOT/live-credentials/codex-auth.json"
+CLAUDE_AUTH="$ROOT/live-credentials/claude-credentials.json"
 if [ "${DUCKLORD_DEMO_SHELL_ONLY:-0}" != 1 ] && \
-   [ -f "$ROOT/live-credentials/codex-auth.json" ] && \
-   [ -f "$ROOT/live-credentials/claude-credentials.json" ]; then
-  echo "[ducklord-demo] live credentials found; using the isolated Duckway phantom-token topology"
-  DUCKWAY_LIVE_KEEP=1 exec "$ROOT/scripts/ducklion-phantom-live-e2e.sh"
+   [ -f "$CODEX_AUTH" ] && [ -f "$CLAUDE_AUTH" ]; then
+  if python3 - "$CODEX_AUTH" "$CLAUDE_AUTH" <<'PY' >/dev/null 2>&1
+import base64, json, sys, time
+codex = json.load(open(sys.argv[1]))
+tokens = codex.get("tokens", codex)
+access = tokens.get("access_token") or codex.get("access_token") or ""
+payload = access.split(".")[1]
+payload += "=" * (-len(payload) % 4)
+codex_exp = int(json.loads(base64.urlsafe_b64decode(payload))["exp"]) * 1000
+claude = json.load(open(sys.argv[2])).get("claudeAiOauth", {})
+deadline = int((time.time() + 1800) * 1000)
+if codex_exp <= deadline or int(claude.get("expiresAt") or 0) <= deadline:
+    raise SystemExit(1)
+PY
+  then
+    echo "[ducklord-demo] fresh live credentials found; using the isolated Duckway phantom-token topology"
+    DUCKWAY_LIVE_KEEP=1 exec "$ROOT/scripts/ducklion-phantom-live-e2e.sh"
+  fi
+  echo "[ducklord-demo] live credentials are expired or incomplete; building local agent runtimes without injecting credentials"
 fi
 WORK="${WORK:-/tmp/ducklord-podman-demo}"
 RUNTIME="${CONTAINER_RUNTIME:-podman}"
@@ -30,7 +47,9 @@ ssh-keygen -q -t ed25519 -N '' -f "$WORK/id_ed25519"
 
 cat >"$WORK/Containerfile" <<'EOF'
 FROM alpine:3.21
-RUN apk add --no-cache openssh openssh-client bash ca-certificates ncurses
+RUN apk add --no-cache openssh openssh-client bash ca-certificates ncurses nodejs npm \
+ && npm install -g @openai/codex@0.153.4 @anthropic-ai/claude-code@2.1.263 \
+ && npm cache clean --force
 RUN adduser -D duck && echo "duck:duck-demo-password" | chpasswd && ssh-keygen -A
 RUN install -d -m 700 /home/duck/.ssh /root/.ssh /root/.ducklord && chown -R duck:duck /home/duck/.ssh
 COPY ducklord /usr/local/bin/ducklord
