@@ -1178,6 +1178,7 @@ type tuiState struct {
 	newSessionPathRequestID   uint64
 	newSessionPathCancel      context.CancelFunc
 	newSessionPathBusy        bool
+	newSessionPathCompletion  string
 	addClientMode             bool
 	addClientLine             string
 	addClientSelected         int
@@ -1202,6 +1203,7 @@ type tuiState struct {
 	actionOperation           protocol.SessionLifecycleOperation
 	actionMode                protocol.SessionLifecycleMode
 	lifecycleConfirm          protocol.SessionLifecycleOperation
+	lifecycleReturnToAction   bool
 	lifecycleTarget           ducklord.RemoteSession
 	lifecycleMode             protocol.SessionLifecycleMode
 	lifecycleBusy             bool
@@ -1459,6 +1461,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	defer func() {
 		stop()
 		state.cancelCreateDiscovery()
+		state.cancelPathSuggestions()
 		state.createWorkers.Wait()
 		<-resizeWorkerDone
 	}()
@@ -1682,6 +1685,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.searchActivatedGeneration = state.searchPendingGeneration
 				state.searchPendingRequestID = 0
 				state.searchErr = "Active · Enter again to focus"
+			}
+			if state.sessionFreshlyDisplayed(state.currentSession()) {
+				state.markActivitySeen(state.currentSession())
 			}
 			if state.focused && control != nil && !attachInitialResizeQueued && resizeCapability() != nil {
 				attachInitialResizeQueued = true
@@ -1994,6 +2000,38 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 				continue
 			}
+			if (string(b) == "\x1b[D" || string(b) == "\x1b[C") && state.centralModalOpen() {
+				state.render(os.Stdout)
+				continue
+			}
+			if string(b) == "\x03" && state.centralModalOpen() {
+				switch {
+				case state.searchMode:
+					state.closeSearch()
+				case state.addClientMode:
+					state.cancelAddClient()
+				case state.newSessionMode:
+					if startCancel != nil {
+						startCancel()
+						startCancel = nil
+						startID++
+					}
+					state.cancelCreate()
+				case state.notificationMode:
+					state.closeNotificationSettings()
+				case state.groupMenu:
+					state.closeGroupMenu()
+				case state.actionMenu:
+					state.closeActionMenu()
+				case state.lifecycleConfirm != "":
+					state.lifecycleConfirm = ""
+					state.lifecycleReturnToAction = false
+					state.lifecycleTarget = ducklord.RemoteSession{}
+					state.lifecycleMode = ""
+				}
+				state.render(os.Stdout)
+				continue
+			}
 			if state.searchMode {
 				if state.searchPendingRequestID != 0 {
 					if string(b) == "\x1b" || string(b) == "\x03" {
@@ -2084,13 +2122,22 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			if state.newSessionMode {
 				if state.newSessionStarting || state.newSessionDiscovering {
-					if string(b) == "\x03" || string(b) == "\x1b" || string(b) == "q" {
+					if string(b) == "\x03" {
 						if state.newSessionStarting && startCancel != nil {
 							startCancel()
-							state.newSessionErr = "canceling start..."
-						} else {
-							state.cancelCreate()
 						}
+						state.cancelCreate()
+						state.render(os.Stdout)
+					} else if string(b) == "\x1b" {
+						if state.newSessionStarting && startCancel != nil {
+							startCancel()
+							startCancel = nil
+							startID++
+							state.newSessionStarting = false
+						} else {
+							state.cancelCreateDiscovery()
+						}
+						state.newSessionErr = "operation canceled; edit or press Esc to go back"
 						state.render(os.Stdout)
 					}
 					continue
@@ -2183,6 +2230,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						continue
 					}
 					state.lifecycleConfirm = state.actionOperation
+					state.lifecycleReturnToAction = true
 					state.lifecycleMode = state.actionMode
 					state.lifecycleTarget = target
 					state.actionOperation, state.actionMode = "", ""
@@ -2208,9 +2256,16 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			if state.lifecycleConfirm != "" {
 				text := string(b)
 				if text == "\x1b" || text == "q" {
+					returnToAction := state.lifecycleReturnToAction
+					target := state.lifecycleTarget
 					state.lifecycleConfirm = ""
+					state.lifecycleReturnToAction = false
 					state.lifecycleTarget = ducklord.RemoteSession{}
 					state.lifecycleMode = ""
+					if text == "\x1b" && returnToAction {
+						state.actionMenu = true
+						state.actionTarget = target
+					}
 					state.render(os.Stdout)
 					continue
 				}
@@ -2315,6 +2370,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					break
 				}
 				state.lifecycleConfirm = protocol.SessionLifecycleOperation(action)
+				state.lifecycleReturnToAction = false
 				state.lifecycleTarget = sess
 				state.lifecycleMode = ""
 				state.outputErr = ""
@@ -2591,7 +2647,7 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 				s.outputErr = sanitizeTerminalText(session.Name) + ": agent turn completed"
 			}
 		}
-		activeFresh := sessionKey(session) == s.activeAttachKey && s.activeAttachFresh
+		activeFresh := s.sessionFreshlyDisplayed(session)
 		unread, changed := s.activity().Reconcile(session, activeFresh)
 		session.Unread = unread
 		activityChanged = activityChanged || changed
@@ -2668,7 +2724,17 @@ func (s *tuiState) applyPreviewOutput(result previewOutputEvent, currentID uint6
 	s.terminalGeneration = result.generation
 	s.terminalOffset = 0
 	s.terminalCursorValid = false
+	if s.sessionFreshlyDisplayed(s.currentSession()) {
+		s.markActivitySeen(s.currentSession())
+	}
 	return true
+}
+
+func (s *tuiState) sessionFreshlyDisplayed(session ducklord.RemoteSession) bool {
+	_, identityOK := ducklord.IdentityFromSession(session)
+	return identityOK && !s.centralModalOpen() && s.outputFresh && !s.outputStale && s.terminal != nil &&
+		canRead(session) && s.hostIsLive(session.Client) && s.outputForKey == sessionKey(session) &&
+		s.terminalGeneration > 0 && s.terminalGeneration == session.RuntimeGeneration
 }
 
 func (s *tuiState) hostIsLive(client string) bool {
@@ -3261,6 +3327,9 @@ func (s *tuiState) refreshSelectedOutput(ctx context.Context) {
 	s.terminalGeneration = sess.RuntimeGeneration
 	s.terminalOffset = 0
 	s.terminalCursorValid = false
+	if s.sessionFreshlyDisplayed(sess) {
+		s.markActivitySeen(sess)
+	}
 }
 
 func (s *tuiState) applyAttachOutput(text string, runtimeGeneration, outputOffset uint64) {
@@ -3338,13 +3407,19 @@ func (s *tuiState) activity() *ducklord.ActivityState {
 }
 
 func (s *tuiState) markActivitySeen(session ducklord.RemoteSession) {
-	if s.activity().MarkSeen(session) {
-		for i := range s.sessions {
-			if sessionKey(s.sessions[i]) == sessionKey(session) {
-				s.sessions[i].Unread = false
-			}
+	next := s.activity().Clone()
+	if !next.MarkSeen(session) {
+		return
+	}
+	if err := s.activityStore.Save(next); err != nil {
+		s.outputErr = "local state: " + err.Error()
+		return
+	}
+	s.activityState = next
+	for i := range s.sessions {
+		if sessionKey(s.sessions[i]) == sessionKey(session) {
+			s.sessions[i].Unread = false
 		}
-		_ = s.saveActivityState()
 	}
 }
 
@@ -3976,7 +4051,7 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 	}
 	writeRow(top+2+len(choices), modalStatus, "  "+status)
 	s.renderCreatePromptRow(out, top+3+len(choices), left, innerWidth, "  ")
-	writeRow(top+4+len(choices), modalMuted, "  ↑/↓ select   Enter continue   Esc cancel")
+	writeRow(top+4+len(choices), modalMuted, "  ↑/↓ select   Enter continue   Esc back   Ctrl+C close")
 	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+5+len(choices), left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
 }
 
@@ -5116,6 +5191,7 @@ func (s *tuiState) beginCreate() {
 	s.cancelPathSuggestions()
 	s.newSessionPathSuggestions = nil
 	s.newSessionPathSelected = 0
+	s.newSessionPathCompletion = ""
 	s.outputErr = ""
 }
 
@@ -5137,6 +5213,7 @@ func (s *tuiState) cancelCreate() {
 	s.cancelPathSuggestions()
 	s.newSessionPathSuggestions = nil
 	s.newSessionPathSelected = 0
+	s.newSessionPathCompletion = ""
 }
 
 func (s *tuiState) cancelCreateDiscovery() {
@@ -5687,21 +5764,38 @@ func (s *tuiState) createPromptLabel() string {
 }
 
 func (s *tuiState) handleCreateInput(b []byte) string {
+	switch string(b) {
+	case "\x03":
+		return "cancel"
+	case "\x1b":
+		s.backCreateStep()
+		return "back"
+	case "\x1b[D", "\x1b[C":
+		return ""
+	}
 	if s.newSessionStep == "path" {
 		switch string(b) {
 		case "\x1b[B":
 			if s.newSessionPathSelected < len(s.newSessionPathSuggestions)-1 {
 				s.newSessionPathSelected++
 			}
+			s.newSessionPathCompletion = ""
 			return ""
 		case "\x1b[A":
 			if s.newSessionPathSelected > 0 {
 				s.newSessionPathSelected--
 			}
+			s.newSessionPathCompletion = ""
 			return ""
 		case "\r", "\n":
 			if len(s.newSessionPathSuggestions) > 0 && s.newSessionPathSelected < len(s.newSessionPathSuggestions) {
-				s.newSessionLine = s.newSessionPathSuggestions[s.newSessionPathSelected]
+				selected := s.newSessionPathSuggestions[s.newSessionPathSelected]
+				if s.newSessionPathCompletion != selected {
+					s.cancelPathSuggestions()
+					s.newSessionLine = selected
+					s.newSessionPathCompletion = selected
+					return "complete"
+				}
 			}
 		}
 	}
@@ -5726,9 +5820,55 @@ func (s *tuiState) handleCreateInput(b []byte) string {
 	}
 	action := s.handleLineInput(b, &s.newSessionLine)
 	if action == "" {
+		if s.newSessionStep == "path" {
+			s.newSessionPathCompletion = ""
+		}
 		s.syncCreateSelectionToInput()
 	}
 	return action
+}
+
+func (s *tuiState) backCreateStep() {
+	s.cancelPathSuggestions()
+	s.newSessionPathCompletion = ""
+	s.newSessionSelected = 0
+	s.newSessionLine = ""
+	switch s.newSessionStep {
+	case "host":
+		s.newSessionStep = "kind"
+	case "project":
+		s.newSessionStep = "host"
+	case "path":
+		if len(s.newSessionProjects) > 0 {
+			s.newSessionStep = "project"
+		} else {
+			s.newSessionStep = "host"
+		}
+	case "project-policy":
+		s.newSessionStep = "path"
+		s.newSessionLine = s.newSessionCWD
+	case "project-name":
+		s.newSessionStep = "project-policy"
+	case "agent":
+		if s.newSessionProject.Source == "path" {
+			s.newSessionStep = "project-policy"
+		} else {
+			s.newSessionStep = "project"
+		}
+	case "handle":
+		if s.newSessionKind == model.KindAgent {
+			s.newSessionStep = "agent"
+		} else if s.newSessionProject.Source == "path" {
+			s.newSessionStep = "project-policy"
+		} else {
+			s.newSessionStep = "project"
+		}
+	}
+	s.newSessionErr = "choose an option"
+}
+
+func (s *tuiState) centralModalOpen() bool {
+	return s.searchMode || s.addClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.lifecycleConfirm != ""
 }
 
 func (s *tuiState) syncCreateSelectionToInput() {
@@ -5897,24 +6037,74 @@ func (s *tuiState) contentPaneClicked(seq string) bool {
 }
 
 func readInput(ctx context.Context, ch chan<- []byte) {
-	buf := make([]byte, 64)
-	var pending []byte
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			return
-		}
-		pending = append(pending, buf[:n]...)
+	raw := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 64)
 		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil {
+				close(raw)
+				return
+			}
+			select {
+			case raw <- append([]byte(nil), buf[:n]...):
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	var pending []byte
+	var escapeTimer *time.Timer
+	var escapeTimeout <-chan time.Time
+	stopEscapeTimer := func() {
+		if escapeTimer != nil && !escapeTimer.Stop() {
+			select {
+			case <-escapeTimer.C:
+			default:
+			}
+		}
+		escapeTimeout = nil
+	}
+	emit := func(event []byte) bool {
+		select {
+		case ch <- event:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			stopEscapeTimer()
+			return
+		case data, open := <-raw:
+			if !open {
+				return
+			}
+			stopEscapeTimer()
+			pending = append(pending, data...)
+		case <-escapeTimeout:
+			escapeTimeout = nil
+			if len(pending) > 0 && pending[0] == 0x1b {
+				if !emit([]byte{0x1b}) {
+					return
+				}
+				pending = pending[1:]
+			}
+		}
+		for len(pending) > 0 {
 			event, rest, ok := nextInputEvent(pending)
 			if !ok {
 				pending = rest
+				if len(pending) <= 2 && pending[0] == 0x1b {
+					escapeTimer = time.NewTimer(25 * time.Millisecond)
+					escapeTimeout = escapeTimer.C
+				}
 				break
 			}
 			pending = rest
-			select {
-			case ch <- event:
-			case <-ctx.Done():
+			if !emit(event) {
 				return
 			}
 		}
@@ -5935,7 +6125,10 @@ func nextInputEvent(pending []byte) (event, rest []byte, ok bool) {
 		_, size := utf8.DecodeRune(pending)
 		return append([]byte(nil), pending[:size]...), pending[size:], true
 	}
-	if len(pending) >= 3 && pending[1] == '[' && (pending[2] == 'A' || pending[2] == 'B') {
+	if len(pending) == 1 || len(pending) == 2 && pending[1] == '[' {
+		return nil, pending, false
+	}
+	if len(pending) >= 3 && pending[1] == '[' && (pending[2] == 'A' || pending[2] == 'B' || pending[2] == 'C' || pending[2] == 'D') {
 		return append([]byte(nil), pending[:3]...), pending[3:], true
 	}
 	if len(pending) >= 4 && pending[1] == '[' && pending[2] == '<' {

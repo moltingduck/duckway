@@ -1477,8 +1477,8 @@ func TestTUICreatePromptUsesSelectedClient(t *testing.T) {
 	if state.newSessionLine != "ne" {
 		t.Fatalf("create input after backspace = %q", state.newSessionLine)
 	}
-	if action := state.handleCreateInput([]byte("\x1b")); action != "cancel" {
-		t.Fatalf("cancel action = %q", action)
+	if action := state.handleCreateInput([]byte("\x1b")); action != "back" || state.newSessionStep != "kind" {
+		t.Fatalf("back action = %q step=%q", action, state.newSessionStep)
 	}
 }
 
@@ -2127,12 +2127,60 @@ func TestCreateModalShowsDefaultHandleAsMutedPlaceholder(t *testing.T) {
 }
 
 func TestCreatePathPickerSelectsSuggestionWithoutChangingInputEarly(t *testing.T) {
-	state := &tuiState{newSessionMode: true, newSessionStep: "path", newSessionLine: "/work/p", newSessionPathSuggestions: []string{"/work/project-a", "/work/project-b"}}
+	state := &tuiState{newSessionMode: true, newSessionStep: "path", newSessionLine: "/work/p", newSessionPathSuggestions: []string{"/work/project-a", "/work/project-b"}, newSessionPathBusy: true, newSessionPathCancel: func() {}}
 	if action := state.handleCreateInput([]byte("\x1b[B")); action != "" || state.newSessionPathSelected != 1 || state.newSessionLine != "/work/p" {
 		t.Fatalf("down action=%q selected=%d input=%q", action, state.newSessionPathSelected, state.newSessionLine)
 	}
-	if action := state.handleCreateInput([]byte("\r")); action != "submit" || state.newSessionLine != "/work/project-b" {
-		t.Fatalf("enter action=%q input=%q", action, state.newSessionLine)
+	if action := state.handleCreateInput([]byte("\r")); action != "complete" || state.newSessionLine != "/work/project-b" || state.newSessionStep != "path" {
+		t.Fatalf("first enter action=%q input=%q step=%q", action, state.newSessionLine, state.newSessionStep)
+	}
+	if state.newSessionPathBusy || state.newSessionPathCancel != nil {
+		t.Fatal("autocomplete did not fence the pending suggestion request")
+	}
+	if action := state.handleCreateInput([]byte("\r")); action != "submit" {
+		t.Fatalf("second enter action=%q input=%q", action, state.newSessionLine)
+	}
+}
+
+func TestCreateModalConsumesLeftAndRightAndEscapeMovesBack(t *testing.T) {
+	state := &tuiState{newSessionMode: true, newSessionStep: "project-policy", newSessionCWD: "/work/app", newSessionLine: "typed", newSessionSelected: 1}
+	for _, input := range []string{"\x1b[D", "\x1b[C"} {
+		beforeStep, beforeLine, beforeSelected := state.newSessionStep, state.newSessionLine, state.newSessionSelected
+		if action := state.handleCreateInput([]byte(input)); action != "" || state.newSessionStep != beforeStep || state.newSessionLine != beforeLine || state.newSessionSelected != beforeSelected {
+			t.Fatalf("direction %q changed modal: action=%q state=%+v", input, action, state)
+		}
+	}
+	if action := state.handleCreateInput([]byte("\x1b")); action != "back" || state.newSessionStep != "path" || state.newSessionLine != "/work/app" {
+		t.Fatalf("escape action=%q step=%q line=%q", action, state.newSessionStep, state.newSessionLine)
+	}
+	if action := state.handleCreateInput([]byte("\x03")); action != "cancel" {
+		t.Fatalf("ctrl-c action=%q", action)
+	}
+}
+
+func TestFreshSelectedPreviewClearsUnread(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	session := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: "ABC123", RuntimeGeneration: 3, Unread: true,
+		ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTaskCompleted: 1}}
+	state := &tuiState{sessions: []ducklord.RemoteSession{session}, activityState: ducklord.NewActivityState(),
+		activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")}}
+	if !state.applyPreviewOutput(previewOutputEvent{id: 7, key: sessionKey(session), generation: 3, text: "done"}, 7) {
+		t.Fatal("fresh preview was rejected")
+	}
+	if state.currentSession().Unread {
+		t.Fatal("fresh browsed preview retained unread marker")
+	}
+}
+
+func TestFreshPreviewKeepsUnreadWhenSeenStateCannotPersist(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	session := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: "ABC123", RuntimeGeneration: 3, Unread: true,
+		ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationTaskCompleted: 1}}
+	state := &tuiState{sessions: []ducklord.RemoteSession{session}, activityState: ducklord.NewActivityState(),
+		activityStore: ducklord.ActivityStateStore{Path: t.TempDir()}}
+	state.applyPreviewOutput(previewOutputEvent{id: 7, key: sessionKey(session), generation: 3, text: "done"}, 7)
+	if !state.currentSession().Unread || state.activityState.Sessions[instance+"/ABC123"].Seen[model.NotificationTaskCompleted] != 0 || !strings.Contains(state.outputErr, "local state") {
+		t.Fatalf("failed persistence falsely cleared unread: unread=%v state=%+v err=%q", state.currentSession().Unread, state.activityState, state.outputErr)
 	}
 }
 
@@ -2456,6 +2504,25 @@ func TestNextInputEventSplitsCoalescedKeys(t *testing.T) {
 	}
 	if len(input) != 0 {
 		t.Fatalf("remaining input = %q", input)
+	}
+}
+
+func TestNextInputEventParsesAllArrowKeysAtomically(t *testing.T) {
+	for _, sequence := range []string{"\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"} {
+		event, rest, ok := nextInputEvent([]byte(sequence + "x"))
+		if !ok || string(event) != sequence || string(rest) != "x" {
+			t.Fatalf("sequence=%q event=%q rest=%q ok=%v", sequence, event, rest, ok)
+		}
+		for split := 1; split < len(sequence); split++ {
+			_, pending, early := nextInputEvent([]byte(sequence[:split]))
+			if early {
+				t.Fatalf("sequence=%q split=%d emitted ambiguous escape prefix", sequence, split)
+			}
+			event, rest, ok = nextInputEvent(append(pending, sequence[split:]...))
+			if !ok || string(event) != sequence || len(rest) != 0 {
+				t.Fatalf("sequence=%q split=%d event=%q rest=%q ok=%v", sequence, split, event, rest, ok)
+			}
+		}
 	}
 }
 
