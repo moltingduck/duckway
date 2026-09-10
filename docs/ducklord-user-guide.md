@@ -21,7 +21,9 @@ border shows which pane owns keyboard input.
 | `c` | Create a session |
 | `m` | Open session actions |
 | `n` | Configure notifications |
+| `o` / `g` | Organize sessions / manage groups |
 | `y` / `Y` | Yield now / wait until idle |
+| `E` / `R` / `X` | End / restart / destroy |
 | `q` | Quit from the session list |
 
 Central dialogs use the same rules: `↑`/`↓` selects, `Enter` continues, `Esc`
@@ -50,6 +52,38 @@ shown in the input box.
 Shell sessions are writable like tmux. Agent sessions have one writer; a
 read-only session must be yielded to this Ducklord before it accepts input.
 
+## Ownership and Discord
+
+The writer shown in the session list is authoritative. A Discord-controlled
+agent is read-only in Ducklord until you press `y`; Ducklion transfers it only
+when the agent is idle. Press `Y` to wait and transfer immediately after the
+current turn finishes. To return control from Discord, send `!yield` in that
+session's channel. Shell sessions remain multi-writer and cannot be controlled
+from Discord.
+
+## Manage sessions
+
+Press `m` for the complete action menu. `E` stops the current process but keeps
+the session, `R` starts a new runtime generation, and `X` permanently removes
+the session and retained PTY logs. Destructive actions always use the same
+centered confirmation dialog.
+
+Press `n` to enable or disable completion, failure, and terminal-attention
+notifications for the selected session. A dot marks unread activity; selecting
+that session clears it. A group also shows a dot while any child session is
+unread.
+
+Use `o` to assign a session to one custom group and change its order. Use `g` to
+create, rename, reorder, or remove groups. These settings live locally under
+`~/.ducklord`; they do not rename remote Ducklion sessions.
+
+## Hosts and configuration
+
+Ducklord reads `~/.ducklord/config.yaml` and uses your normal SSH configuration,
+keys, and agent. Press `a` to add a host discovered from `~/.ssh/config`.
+Configuration changes take effect after restarting Ducklord; it never restarts
+itself automatically.
+
 ## Agent sign-in
 
 Ducklion uses the agent's normal files (`~/.codex/auth.json` and
@@ -58,8 +92,8 @@ the agent's own first-run trust or theme screen inside the PTY. If an agent
 returns to its login screen, refresh that credential on the remote host and
 restart the session.
 
-For an isolated live check, place mode-`600` copies in `live-credentials/` and
-run:
+Developers can run an isolated integration check by placing mode-`600` copies
+in `live-credentials/` and running:
 
 ```bash
 CONTAINER_RUNTIME=podman scripts/ducklord-agent-live-e2e.sh
