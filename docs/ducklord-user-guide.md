@@ -49,3 +49,23 @@ shown in the input box.
 
 Shell sessions are writable like tmux. Agent sessions have one writer; a
 read-only session must be yielded to this Ducklord before it accepts input.
+
+## Agent sign-in
+
+Ducklion uses the agent's normal files (`~/.codex/auth.json` and
+`~/.claude/.credentials.json`); Ducklord never displays or stores them. Complete
+the agent's own first-run trust or theme screen inside the PTY. If an agent
+returns to its login screen, refresh that credential on the remote host and
+restart the session.
+
+For an isolated live check, place mode-`600` copies in `live-credentials/` and
+run:
+
+```bash
+CONTAINER_RUNTIME=podman scripts/ducklord-agent-live-e2e.sh
+```
+
+Use `CONTAINER_RUNTIME=docker` for Docker, or add `--codex-only` /
+`--claude-only` while diagnosing one runtime. This developer check sends one
+real prompt per selected runtime, can incur provider usage, and may take up to
+three minutes per runtime. Never commit files from `live-credentials/`.

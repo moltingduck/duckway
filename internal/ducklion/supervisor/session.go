@@ -139,12 +139,12 @@ func Start(options Options) (*Session, error) {
 		switch strings.ToLower(options.AgentType) {
 		case "codex":
 			if filepath.Base(command[0]) == "codex" {
-				notifyJSON, _ := json.Marshal([]string{executable, "__ducklion_agent_hook_v1"})
+				notifyJSON, _ := json.Marshal([]string{executable, "__ducklion_agent_hook_v1", "codex"})
 				command = append([]string{command[0], "-c", "notify=" + string(notifyJSON)}, command[1:]...)
 			}
 		case "claude", "claude_code":
 			if filepath.Base(command[0]) == "claude" {
-				hookCommand := shellQuote(executable) + " __ducklion_agent_hook_v1"
+				hookCommand := shellQuote(executable) + " __ducklion_agent_hook_v1 claude"
 				hook := []any{map[string]any{"matcher": "*", "hooks": []any{map[string]any{"type": "command", "command": hookCommand}}}}
 				settings := map[string]any{"hooks": map[string]any{"Stop": hook, "StopFailure": hook}}
 				settingsJSON, _ := json.Marshal(settings)
@@ -177,16 +177,20 @@ func Start(options Options) (*Session, error) {
 		}
 		hookToken = uuid.NewString()
 		cmd.Env = append(cmd.Env, "DUCKLION_AGENT_EVENT_SOCKET="+hookPath, "DUCKLION_AGENT_EVENT_TOKEN="+hookToken)
-		// Keep FD 3 for rolling compatibility with older custom adapters. Built-in
-		// Codex and Claude hooks use the authenticated socket above.
-		legacyAdapterRead, legacyAdapterWrite, hookErr = os.Pipe()
-		if hookErr != nil {
-			_ = hookListener.Close()
-			_ = os.RemoveAll(hookDir)
-			return nil, fmt.Errorf("create legacy agent adapter pipe: %w", hookErr)
+		agentType := strings.ToLower(options.AgentType)
+		if agentType != "codex" && agentType != "claude" && agentType != "claude_code" {
+			// Keep FD 3 only for explicitly custom adapters. Built-in Codex and
+			// Claude processes must not expose an unauthenticated event channel to
+			// provider-launched repository commands.
+			legacyAdapterRead, legacyAdapterWrite, hookErr = os.Pipe()
+			if hookErr != nil {
+				_ = hookListener.Close()
+				_ = os.RemoveAll(hookDir)
+				return nil, fmt.Errorf("create legacy agent adapter pipe: %w", hookErr)
+			}
+			cmd.ExtraFiles = append(cmd.ExtraFiles, legacyAdapterWrite)
+			cmd.Env = append(cmd.Env, "DUCKLION_AGENT_EVENT_FD=3")
 		}
-		cmd.ExtraFiles = append(cmd.ExtraFiles, legacyAdapterWrite)
-		cmd.Env = append(cmd.Env, "DUCKLION_AGENT_EVENT_FD=3")
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: options.Rows, Cols: options.Cols})
@@ -620,6 +624,8 @@ func (s *Session) serveAgentHooks() {
 		}
 		if err == nil {
 			_, _ = conn.Write([]byte("ok\n"))
+		} else {
+			_, _ = conn.Write([]byte("rejected\n"))
 		}
 		_ = conn.Close()
 	}

@@ -464,15 +464,7 @@ func (r *Runner) Sessions(ctx context.Context, c Client, tailLines int) ([]Remot
 		}
 		sessions := make([]RemoteSession, 0, len(summaries))
 		for _, summary := range summaries {
-			session := RemoteSession{Client: c.Name, InstanceID: client.InstanceID(), SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status), AgentType: summary.AgentType,
-				ProjectName: summary.ProjectName, Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
-				TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason,
-				RetainedOutputBytes: summary.RetainedOutputBytes, RetainedOutputUntilMS: summary.RetainedOutputUntilMS}
-			if summary.Writer != nil {
-				session.WriterKind = string(summary.Writer.Kind)
-				session.WriterID = summary.Writer.ID
-			}
-			sessions = append(sessions, session)
+			sessions = append(sessions, remoteSessionFromSummary(c, client.InstanceID(), summary))
 		}
 		return sessions, nil
 	}
@@ -562,17 +554,32 @@ func (r *Runner) WatchSessionUpdates(ctx context.Context, c Client) <-chan Sessi
 func remoteSessionsFromSummaries(c Client, instanceID string, summaries []protocol.SessionSummary) []RemoteSession {
 	sessions := make([]RemoteSession, 0, len(summaries))
 	for _, summary := range summaries {
-		session := RemoteSession{Client: c.Name, InstanceID: instanceID, SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status),
-			AgentType: summary.AgentType, ProjectName: summary.ProjectName, Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
-			TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason,
-			ActivitySequences: summary.ActivitySequences, RetainedOutputBytes: summary.RetainedOutputBytes, RetainedOutputUntilMS: summary.RetainedOutputUntilMS}
-		if summary.Writer != nil {
-			session.WriterKind = string(summary.Writer.Kind)
-			session.WriterID = summary.Writer.ID
-		}
-		sessions = append(sessions, session)
+		sessions = append(sessions, remoteSessionFromSummary(c, instanceID, summary))
 	}
 	return sessions
+}
+
+func remoteSessionFromSummary(c Client, instanceID string, summary protocol.SessionSummary) RemoteSession {
+	session := RemoteSession{Client: c.Name, InstanceID: instanceID, SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status),
+		AgentType: summary.AgentType, ProjectName: summary.ProjectName, Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
+		TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason,
+		ActivitySequences: cloneActivitySequences(summary.ActivitySequences), RetainedOutputBytes: summary.RetainedOutputBytes, RetainedOutputUntilMS: summary.RetainedOutputUntilMS}
+	if summary.Writer != nil {
+		session.WriterKind = string(summary.Writer.Kind)
+		session.WriterID = summary.Writer.ID
+	}
+	return session
+}
+
+func cloneActivitySequences(source map[model.NotificationCategory]uint64) map[model.NotificationCategory]uint64 {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[model.NotificationCategory]uint64, len(source))
+	for category, sequence := range source {
+		cloned[category] = sequence
+	}
+	return cloned
 }
 
 func sendSessionUpdate(ctx context.Context, updates chan<- SessionUpdate, update SessionUpdate) bool {

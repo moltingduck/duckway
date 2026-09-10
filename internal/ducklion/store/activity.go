@@ -58,6 +58,16 @@ func (s *SQLite) recordActivity(ctx context.Context, sessionID model.SessionID, 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, false, err
 	}
+	if fenceEvent {
+		var globalGeneration, globalEventID uint64
+		globalErr := tx.QueryRowContext(ctx, `SELECT source_runtime_generation,last_source_event_id FROM session_activity WHERE session_id=? AND last_source_event_id>0 ORDER BY source_runtime_generation DESC,last_source_event_id DESC LIMIT 1`, sessionID).Scan(&globalGeneration, &globalEventID)
+		if globalErr != nil && !errors.Is(globalErr, sql.ErrNoRows) {
+			return 0, false, globalErr
+		}
+		if globalErr == nil && (runtimeGeneration < globalGeneration || runtimeGeneration == globalGeneration && sourceEventID <= globalEventID) {
+			return sequence, false, nil
+		}
+	}
 	if err == nil && fenceSource && (runtimeGeneration < lastRuntimeGeneration || runtimeGeneration == lastRuntimeGeneration && sourceOffset <= lastSourceOffset) {
 		return sequence, false, nil
 	}

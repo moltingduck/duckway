@@ -594,6 +594,10 @@ func loadWithFlags(args []string) (*ducklord.Config, []string, error) {
 	path := ""
 	rest := []string{}
 	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			rest = append(rest, args[i:]...)
+			break
+		}
 		switch args[i] {
 		case "--config", "-c":
 			if i+1 >= len(args) {

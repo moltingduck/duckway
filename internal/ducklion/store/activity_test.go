@@ -129,6 +129,19 @@ func TestRecordAgentActivityUsesEventIdentityInsteadOfOutputOffset(t *testing.T)
 	}
 }
 
+func TestRecordAgentActivityEventIdentityCannotChangeCategory(t *testing.T) {
+	database, session := openActivityTestStore(t)
+	if sequence, advanced, err := database.RecordAgentActivity(context.Background(), session.ID, model.NotificationTaskCompleted, 2, 1, 0); err != nil || !advanced || sequence != 1 {
+		t.Fatalf("completed event: sequence=%d advanced=%v err=%v", sequence, advanced, err)
+	}
+	if sequence, advanced, err := database.RecordAgentActivity(context.Background(), session.ID, model.NotificationTaskFailed, 2, 1, 0); err != nil || advanced || sequence != 0 {
+		t.Fatalf("same event changed category: sequence=%d advanced=%v err=%v", sequence, advanced, err)
+	}
+	if sequence, advanced, err := database.RecordAgentActivity(context.Background(), session.ID, model.NotificationTaskFailed, 2, 2, 0); err != nil || !advanced || sequence != 1 {
+		t.Fatalf("next event: sequence=%d advanced=%v err=%v", sequence, advanced, err)
+	}
+}
+
 func TestRecordActivityRejectsUnknownSessionAndCategory(t *testing.T) {
 	database, err := Open(context.Background(), filepath.Join(t.TempDir(), "ducklion.db"))
 	if err != nil {

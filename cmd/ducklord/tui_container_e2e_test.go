@@ -49,6 +49,22 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 		t.Fatal("demo alpha session has no remote instance identity")
 	}
 	handle := fmt.Sprintf("job-tui-e2e-%d", os.Getpid())
+	notificationHandle := fmt.Sprintf("notify-tui-e2e-%d", os.Getpid())
+	notifyCommand := `sleep 3; printf '%s\n' '{"kind":"completed","response":"fixture completed"}' >&3; sleep 30`
+	if out, startErr := exec.Command(runtime, "exec", controller, "ducklord", "start", "client-a", "--name", notificationHandle,
+		"--agent", "fixture", "--cwd", "/home/duck/projects/alpha", "--config", "/tmp/e2e-inspector.yaml", "--", "sh", "-c", notifyCommand).CombinedOutput(); startErr != nil {
+		t.Fatalf("start notification fixture: %v: %s", startErr, out)
+	}
+	var notificationSession protocol.SessionSummary
+	waitE2E(t, 5*time.Second, func() bool {
+		for _, session := range listContainerSessions(t, runtime, controller, "client-a") {
+			if session.Handle == notificationHandle {
+				notificationSession = session
+				return true
+			}
+		}
+		return false
+	}, func() string { return "notification fixture was not listed" })
 	command := exec.Command(runtime, "exec", "-it", controller, "env", "TERM=xterm-256color", "ducklord", "tui", "--config", "/root/.ducklord/config.yaml")
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
@@ -65,6 +81,34 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	capture.wait(t, "ducklord remote agents", 20*time.Second)
 	capture.wait(t, "client-a alpha tick", 20*time.Second)
 	capture.waitCurrent(t, "sessions [custom]", 10*time.Second)
+	capture.waitCurrent(t, "[Ungrouped] •", 10*time.Second)
+	if screen := capture.currentText(); !strings.Contains(screen, "[Ungrouped] •") || !strings.Contains(screen, "• client-a") {
+		t.Fatalf("background agent completion did not render session/group unread: %q", safeTerminalDiagnostic(screen))
+	}
+	for range 3 {
+		writePTY(t, terminal, "j")
+		time.Sleep(100 * time.Millisecond)
+	}
+	waitE2E(t, 10*time.Second, func() bool {
+		data, readErr := exec.Command(runtime, "exec", controller, "cat", "/root/.ducklord/state.json").Output()
+		if readErr != nil {
+			return false
+		}
+		var activity ducklord.ActivityState
+		if json.Unmarshal(data, &activity) != nil {
+			return false
+		}
+		entry := activity.Sessions[alphaRemote.InstanceID+"/"+notificationSession.SessionID]
+		return entry.Seen[model.NotificationTaskCompleted] == 1 && !entry.Unread[model.NotificationTaskCompleted]
+	}, func() string { return "freshly browsing the completed agent did not persist seen state" })
+	if screen := capture.currentText(); strings.Contains(screen, "[Ungrouped] •") {
+		t.Fatalf("group unread survived browsing completed session: %q", safeTerminalDiagnostic(screen))
+	}
+	for range 3 {
+		writePTY(t, terminal, "k")
+		time.Sleep(100 * time.Millisecond)
+	}
+	capture.waitCurrent(t, "client-a / alpha", 5*time.Second)
 	copyStart := capture.position()
 	writePTY(t, terminal, "v")
 	capture.waitCurrent(t, "COPY MODE", 5*time.Second)

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,42 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 )
+
+func TestCodexManagedPTYInjectsCompletionHookWithoutBypassingHookTrust(t *testing.T) {
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	codexPath := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\nprintf '%s' \"${DUCKLION_AGENT_EVENT_FD-}\" > " + shellQuote(filepath.Join(dir, "event-fd")) + "\nprintf '%s\\n' \"$@\" > " + shellQuote(argsPath) + "\nsleep 30\n"
+	if err := os.WriteFile(codexPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 1, OwnershipEpoch: 1, AgentType: "codex", CWD: dir,
+		Command: []string{codexPath}, OutputCapacity: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Terminate(true); _ = session.Wait() }()
+	deadline := time.Now().Add(2 * time.Second)
+	var args string
+	for time.Now().Before(deadline) {
+		data, readErr := os.ReadFile(argsPath)
+		if readErr == nil {
+			args = string(data)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if strings.Contains(args, "--dangerously-bypass-hook-trust") || !strings.Contains(args, "notify=[") || !strings.Contains(args, "__ducklion_agent_hook_v1") {
+		t.Fatalf("managed Codex args did not install the authenticated hook: %q", args)
+	}
+	fd, err := os.ReadFile(filepath.Join(dir, "event-fd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fd) != 0 {
+		t.Fatalf("built-in Codex inherited unauthenticated legacy event fd %q", fd)
+	}
+}
 
 func TestSupervisedEnvironmentIncludesProxyTrustButNotCredentials(t *testing.T) {
 	for name, value := range map[string]string{

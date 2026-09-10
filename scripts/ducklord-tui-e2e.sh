@@ -5,13 +5,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/container-runtime.sh"
+source "$ROOT/scripts/ducklord-demo-common.sh"
 duckway_init_container_runtime
 RUNTIME="$CONTAINER_RUNTIME"
 SETUP_LOG="$(mktemp -t ducklord-tui-e2e-XXXXXX.log)"
-LOCK_FILE="${TMPDIR:-/tmp}/ducklord-tui-e2e.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-	echo "[ducklord-tui-e2e] another demo or E2E owns $LOCK_FILE" >&2
+if ! ducklord_lock_demo_topology; then
 	rm -f "$SETUP_LOG"
 	exit 1
 fi
@@ -44,7 +42,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "[ducklord-tui-e2e] preparing credential-free Ducklion topology with $RUNTIME"
-DUCKLORD_DEMO_SHELL_ONLY=1 CONTAINER_RUNTIME="$RUNTIME" "$ROOT/scripts/ducklord-podman-demo.sh" >"$SETUP_LOG"
+DUCKLORD_DEMO_LOCK_HELD=1 DUCKLORD_DEMO_AGENT_CREDENTIALS=none DUCKLORD_DEMO_SHELL_ONLY=1 \
+CONTAINER_RUNTIME="$RUNTIME" "$ROOT/scripts/ducklord-podman-demo.sh" >"$SETUP_LOG"
 "$RUNTIME" exec ducklord-dev sh -lc "sed 's/^name: .*/name: e2e-inspector/' /root/.ducklord/config.yaml >/tmp/e2e-inspector.yaml"
 
 echo "[ducklord-tui-e2e] driving create modal, SSH bridge, and remote PTY"

@@ -2,20 +2,34 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/container-runtime.sh"
+source "$ROOT/scripts/ducklord-demo-common.sh"
+duckway_init_container_runtime
 CODEX_AUTH="$ROOT/live-credentials/codex-auth.json"
 CLAUDE_AUTH="$ROOT/live-credentials/claude-credentials.json"
-WORK="${WORK:-/tmp/ducklord-podman-demo}"
-RUNTIME="${CONTAINER_RUNTIME:-podman}"
+WORK_PARENT="${WORK:-${TMPDIR:-/tmp}}"
+RUNTIME="$CONTAINER_RUNTIME"
 IMAGE="${IMAGE:-duckway-ducklord-demo:local}"
 NET="${NET:-ducklord-demo}"
+CREDENTIALS="${DUCKLORD_DEMO_AGENT_CREDENTIALS:-all}"
+CREDENTIAL_CLIENTS="${DUCKLORD_DEMO_CREDENTIAL_CLIENTS:-all}"
+
+case "$CREDENTIALS" in all|codex|claude|none) ;; *) echo "invalid DUCKLORD_DEMO_AGENT_CREDENTIALS=$CREDENTIALS" >&2; exit 2;; esac
+case "$CREDENTIAL_CLIENTS" in all|client-a|client-b|client-c) ;; *) echo "invalid DUCKLORD_DEMO_CREDENTIAL_CLIENTS=$CREDENTIAL_CLIENTS" >&2; exit 2;; esac
+
+if [ "${DUCKLORD_DEMO_LOCK_HELD:-0}" != 1 ]; then
+  ducklord_lock_demo_topology
+fi
+
+[ -d "$WORK_PARENT" ] && [ ! -L "$WORK_PARENT" ] || { echo "demo work parent must be a non-symlink directory: $WORK_PARENT" >&2; exit 2; }
+WORK="$(mktemp -d "$WORK_PARENT/ducklord-podman-demo.XXXXXX")"
+cleanup_work() { rm -rf -- "$WORK"; }
+trap cleanup_work EXIT
 
 cleanup_existing() {
   "$RUNTIME" rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c >/dev/null 2>&1 || true
   "$RUNTIME" network rm "$NET" >/dev/null 2>&1 || true
 }
-
-mkdir -p "$WORK"
-rm -rf "$WORK"/*
 
 echo "[ducklord-demo] building local binaries"
 CGO_ENABLED=0 go build -o "$WORK/ducklord" "$ROOT/cmd/ducklord"
@@ -53,16 +67,21 @@ echo "[ducklord-demo] starting remote clients"
 for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
   "$RUNTIME" exec -d -u duck "$container" sh -lc 'mkdir -p $HOME/.duckway; nohup ducklion daemon >$HOME/.duckway/ducklion-daemon.log 2>&1 </dev/null & echo $! >$HOME/.duckway/ducklion-daemon.pid' >/dev/null
 done
-if [ -f "$CODEX_AUTH" ] || [ -f "$CLAUDE_AUTH" ]; then
+if [ "$CREDENTIALS" != none ] && { [ -f "$CODEX_AUTH" ] || [ -f "$CLAUDE_AUTH" ]; }; then
   echo "[ducklord-demo] injecting available local agent credentials into remote demo users"
   for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
+    if [ "$CREDENTIAL_CLIENTS" != all ] && [ "$CREDENTIAL_CLIENTS" != "${container#ducklion-}" ]; then
+      continue
+    fi
     "$RUNTIME" exec -u duck "$container" sh -lc 'mkdir -p $HOME/.codex $HOME/.claude && chmod 700 $HOME/.codex $HOME/.claude'
-    if [ -f "$CODEX_AUTH" ]; then
+    if { [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = codex ]; } && [ -f "$CODEX_AUTH" ]; then
+      ducklord_require_demo_secret "$CODEX_AUTH"
       "$RUNTIME" cp "$CODEX_AUTH" "$container":/tmp/codex-auth.json
       "$RUNTIME" exec "$container" install -o duck -g duck -m 600 /tmp/codex-auth.json /home/duck/.codex/auth.json
       "$RUNTIME" exec "$container" rm -f /tmp/codex-auth.json
     fi
-    if [ -f "$CLAUDE_AUTH" ]; then
+    if { [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = claude ]; } && [ -f "$CLAUDE_AUTH" ]; then
+      ducklord_require_demo_secret "$CLAUDE_AUTH"
       "$RUNTIME" cp "$CLAUDE_AUTH" "$container":/tmp/claude-credentials.json
       "$RUNTIME" exec "$container" install -o duck -g duck -m 600 /tmp/claude-credentials.json /home/duck/.claude/.credentials.json
       "$RUNTIME" exec "$container" rm -f /tmp/claude-credentials.json

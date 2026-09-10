@@ -270,8 +270,8 @@ func TestDucklordStartRejectsInvalidArgsBeforeRunner(t *testing.T) {
 	config := writeConfig(t)
 	runner := &recordingRunner{}
 	for _, args := range [][]string{
-		{"start", "client-a", "--name", "bad\nname", "--", "bash", "--config", config},
-		{"start", "client-a", "--bad", "--", "bash", "--config", config},
+		{"start", "client-a", "--name", "bad\nname", "--config", config, "--", "bash"},
+		{"start", "client-a", "--bad", "--config", config, "--", "bash"},
 		{"start", "client-a", "--name", "alpha", "--config", config},
 	} {
 		if err := run(args, io.Discard, runner); err == nil {
@@ -286,7 +286,7 @@ func TestDucklordStartRejectsInvalidArgsBeforeRunner(t *testing.T) {
 func TestDucklordStartValidatesAndUsesRunner(t *testing.T) {
 	config := writeConfig(t)
 	runner := &recordingRunner{}
-	err := run([]string{"start", "client-a", "--name", "alpha", "--agent", "shell", "--cwd", "/tmp", "--", "bash", "--config", config}, io.Discard, runner)
+	err := run([]string{"start", "client-a", "--name", "alpha", "--agent", "shell", "--cwd", "/tmp", "--config", config, "--", "bash"}, io.Discard, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestDucklordStartValidatesAndUsesRunner(t *testing.T) {
 func TestDucklordStartCreatesNativeShellSession(t *testing.T) {
 	config := writeConfig(t)
 	runner := &recordingRunner{}
-	if err := run([]string{"start", "client-a", "--name", "terminal", "--kind", "shell", "--cwd", "/tmp", "--", "bash", "--config", config}, io.Discard, runner); err != nil {
+	if err := run([]string{"start", "client-a", "--name", "terminal", "--kind", "shell", "--cwd", "/tmp", "--config", config, "--", "bash"}, io.Discard, runner); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"--name", "terminal", "--kind", "shell", "--cwd", "/tmp", "--", "bash"}
@@ -307,13 +307,28 @@ func TestDucklordStartCreatesNativeShellSession(t *testing.T) {
 		t.Fatalf("start args=%#v", runner.startArgs)
 	}
 	for _, args := range [][]string{
-		{"start", "client-a", "--name", "bad-shell", "--kind", "shell", "--agent", "codex", "--cwd", "/tmp", "--", "bash", "--config", config},
-		{"start", "client-a", "--name", "bad-shell", "--kind", "shell", "--cwd", "/tmp", "--", "bash", "-l", "--config", config},
-		{"start", "client-a", "--name", "bad-kind", "--kind", "other", "--cwd", "/tmp", "--", "bash", "--config", config},
+		{"start", "client-a", "--name", "bad-shell", "--kind", "shell", "--agent", "codex", "--cwd", "/tmp", "--config", config, "--", "bash"},
+		{"start", "client-a", "--name", "bad-shell", "--kind", "shell", "--cwd", "/tmp", "--config", config, "--", "bash", "-l"},
+		{"start", "client-a", "--name", "bad-kind", "--kind", "other", "--cwd", "/tmp", "--config", config, "--", "bash"},
 	} {
 		if err := run(args, io.Discard, runner); err == nil {
 			t.Fatalf("args %#v accepted", args)
 		}
+	}
+}
+
+func TestLoadWithFlagsStopsAtCommandDelimiter(t *testing.T) {
+	config := writeConfig(t)
+	_, rest, err := loadWithFlags([]string{
+		"client-a", "--config", config, "--",
+		"sh", "-c", "printf ok", "--config", "child.yaml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"client-a", "--", "sh", "-c", "printf ok", "--config", "child.yaml"}
+	if strings.Join(rest, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("rest=%#v, want %#v", rest, want)
 	}
 }
 

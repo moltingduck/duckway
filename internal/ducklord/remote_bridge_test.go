@@ -48,6 +48,15 @@ func TestNormalizeNativeShellLifecycleMode(t *testing.T) {
 	}
 }
 
+func TestCloneActivitySequencesOwnsProjectionMap(t *testing.T) {
+	source := map[model.NotificationCategory]uint64{model.NotificationTaskCompleted: 1}
+	cloned := cloneActivitySequences(source)
+	source[model.NotificationTaskCompleted] = 2
+	if cloned[model.NotificationTaskCompleted] != 1 {
+		t.Fatalf("projection shared mutable activity map: %+v", cloned)
+	}
+}
+
 func TestRunnerProjectBrowserRejectsUnsafeInputBeforeSSH(t *testing.T) {
 	runner := NewRunner()
 	client := Client{Name: "host", Host: "unused", SSH: "/definitely/not/ssh"}
@@ -573,6 +582,9 @@ func TestRunnerListsSessionsThroughStdioBridge(t *testing.T) {
 	if _, _, err := service.New(database).CreateSession(context.Background(), "terminal:desk-a", "seed", want); err != nil {
 		t.Fatal(err)
 	}
+	if _, advanced, err := database.RecordActivity(context.Background(), want.ID, model.NotificationTaskCompleted, 0); err != nil || !advanced {
+		t.Fatalf("seed activity advanced=%v err=%v", advanced, err)
+	}
 	if err := database.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -593,7 +605,7 @@ func TestRunnerListsSessionsThroughStdioBridge(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(sessions) != 1 || sessions[0].SessionID != "ABC123" || sessions[0].Name != "build" || sessions[0].WriterID != "desk-a" ||
-		sessions[0].OwnershipEpoch != 3 || sessions[0].RuntimeGeneration != 7 {
+		sessions[0].OwnershipEpoch != 3 || sessions[0].RuntimeGeneration != 7 || sessions[0].ActivitySequences[model.NotificationTaskCompleted] != 1 {
 		t.Fatalf("sessions = %+v", sessions)
 	}
 	if _, err := runner.ReadPreview(context.Background(), client, "ABC123", 10); err == nil || !strings.Contains(err.Error(), string(protocol.ErrOutputUnavailable)) {

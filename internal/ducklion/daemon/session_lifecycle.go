@@ -1688,8 +1688,15 @@ func forwardPendingAttention(ctx context.Context, client *SupervisorClient, sess
 		// daemon cannot strand this supervisor in a retry loop.
 		for {
 			if category, offset, eventID, pending := session.PendingActivity(); pending {
-				session.AckActivity(category, offset, eventID)
-				continue
+				if category == model.NotificationTerminalAttention {
+					session.AckActivity(category, offset, eventID)
+					continue
+				}
+				// Completion/failure is authoritative agent state. Keep it in
+				// supervisor memory until a newer daemon reconnects and negotiates
+				// agent_activity; never downgrade it to a disposable hint.
+				<-ctx.Done()
+				return
 			}
 			select {
 			case <-ctx.Done():
@@ -1709,8 +1716,8 @@ func forwardPendingAttention(ctx context.Context, client *SupervisorClient, sess
 		category, offset, eventID, pending := session.PendingActivity()
 		if pending {
 			if category != model.NotificationTerminalAttention && !client.SupportsAgentActivity() {
-				session.AckActivity(category, offset, eventID)
-				continue
+				<-ctx.Done()
+				return
 			}
 			for client.PublishedOffset() < offset {
 				select {
@@ -1786,8 +1793,8 @@ func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec,
 						break
 					}
 					if category != model.NotificationTerminalAttention && !client.SupportsAgentActivity() {
-						session.AckActivity(category, offset, eventID)
-						continue
+						forwardErr = fmt.Errorf("daemon does not support agent activity")
+						break
 					}
 					activity, activityErr := client.OpenActivity()
 					if activityErr == nil {
@@ -1806,6 +1813,10 @@ func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec,
 				for {
 					category, offset, eventID, pending := session.PendingActivity()
 					if !pending {
+						break
+					}
+					if category != model.NotificationTerminalAttention {
+						forwardErr = fmt.Errorf("daemon does not support agent activity")
 						break
 					}
 					session.AckActivity(category, offset, eventID)

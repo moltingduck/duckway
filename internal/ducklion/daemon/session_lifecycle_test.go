@@ -21,6 +21,7 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 	"github.com/hackerduck/duckway/internal/ducklion/store"
+	"github.com/hackerduck/duckway/internal/ducklion/supervisor"
 )
 
 func TestCreateSessionStartsManagedPTYAndAcceptsInput(t *testing.T) {
@@ -692,6 +693,47 @@ func TestAgentHookFixtureProcess(t *testing.T) {
 		_ = conn.Close()
 	}
 	os.Exit(0)
+}
+
+func TestUnsupportedDaemonCapabilityDoesNotAcknowledgeAgentActivity(t *testing.T) {
+	for _, supportsAttention := range []bool{false, true} {
+		t.Run(fmt.Sprintf("attention=%v", supportsAttention), func(t *testing.T) {
+			ptySession, err := supervisor.Start(supervisor.Options{SessionID: "ABC123", RuntimeGeneration: 1, OwnershipEpoch: 1,
+				AgentType: "fixture", CWD: t.TempDir(), OutputCapacity: 1024,
+				Command: []string{"sh", "-c", `printf '%s\n' '{"kind":"completed","response":"done"}' >&3; sleep 30`}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = ptySession.Terminate(true); _ = ptySession.Wait() }()
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				if category, _, _, pending := ptySession.PendingActivity(); pending {
+					if category != model.NotificationTaskCompleted {
+						t.Fatalf("category=%q", category)
+					}
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("fixture did not queue agent activity")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			client := &SupervisorClient{supportsAttention: supportsAttention, supportsAgentActivity: false}
+			go func() { forwardPendingAttention(ctx, client, ptySession); close(done) }()
+			time.Sleep(20 * time.Millisecond)
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("capability wait did not stop with its connection")
+			}
+			if category, _, _, pending := ptySession.PendingActivity(); !pending || category != model.NotificationTaskCompleted {
+				t.Fatalf("unsupported daemon acknowledged activity: category=%q pending=%v", category, pending)
+			}
+		})
+	}
 }
 
 func TestShellLifecycleRestartEndAndDestroy(t *testing.T) {

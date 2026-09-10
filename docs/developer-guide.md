@@ -507,8 +507,10 @@ Codex PTY turns intentionally do not use the legacy five-minute tmux timeout; lo
 
 Ducklion-managed task channels reuse one native interactive PTY instead of the
 per-turn runner above. Codex completion is received through its `notify`
-callback and Claude Code completion through a `Stop` hook, both over an
-agent-only inherited file descriptor. Ducklion never screen-scrapes the TUI or
+callback and Claude Code completion through `Stop`/`StopFailure` hooks, both
+over a private mode-`0600` Unix socket with a per-session capability token. The agent process
+and its children necessarily possess that capability; it prevents cross-session
+injection, not a compromised agent process. Ducklion never screen-scrapes the TUI or
 uses terminal silence as proof of completion. Unacknowledged final payloads
 live only in the independent supervisor's bounded memory and are replayed
 after daemon restart. The server's `cc_message_deliveries` table stores only a
@@ -518,6 +520,13 @@ leaves the Ducklion session in `replying`; only the event ACK issued after the
 final Discord post succeeds changes it to `idle` and atomically grants any
 waiting yield. This keeps ownership with CC until its reply is actually
 delivered.
+
+`scripts/ducklord-agent-live-e2e.sh` verifies the separate interactive-agent
+path through Ducklord, SSH, Ducklion, a native PTY, the real Codex or Claude
+runtime, authenticated completion hooks, durable activity projection, and
+retained output. It accepts `CONTAINER_RUNTIME=podman|docker` and
+`--codex-only` / `--claude-only`; it refuses missing or non-`0600` credentials
+and removes its isolated containers on success or failure.
 
 Lifecycle drains are persisted in Ducklion's
 `pending_lifecycle_operations` table rather than represented by a sleeping

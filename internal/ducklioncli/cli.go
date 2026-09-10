@@ -1,6 +1,7 @@
 package ducklioncli
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hackerduck/duckway/internal/ducklion"
 	"github.com/hackerduck/duckway/internal/ducklion/daemon"
@@ -111,9 +113,13 @@ func runAgentHook(input io.Reader, args []string) error {
 	if socketPath == "" || token == "" {
 		return fmt.Errorf("agent hook endpoint is unavailable")
 	}
+	if len(args) == 0 || args[0] != "codex" && args[0] != "claude" {
+		return fmt.Errorf("agent hook source is missing or unsupported")
+	}
+	source := args[0]
 	var data []byte
 	var err error
-	if len(args) > 0 {
+	if len(args) > 1 {
 		data = []byte(args[len(args)-1])
 	} else {
 		data, err = io.ReadAll(io.LimitReader(input, 2<<20))
@@ -122,36 +128,48 @@ func runAgentHook(input io.Reader, args []string) error {
 		}
 	}
 	var payload struct {
-		LastAssistantMessage string `json:"last_assistant_message"`
-		LastAgentMessage     string `json:"last-agent-message"`
-		HookEventName        string `json:"hook_event_name"`
-		Error                string `json:"error"`
+		LastAssistantMessage       string `json:"last_assistant_message"`
+		LastAssistantMessageHyphen string `json:"last-assistant-message"`
+		LastAgentMessage           string `json:"last-agent-message"`
+		HookEventName              string `json:"hook_event_name"`
+		Type                       string `json:"type"`
+		Error                      string `json:"error"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return err
 	}
-	response := payload.LastAssistantMessage
-	if response == "" {
-		response = payload.LastAgentMessage
+	var response string
+	failedHook := false
+	switch source {
+	case "claude":
+		if payload.HookEventName != "Stop" && payload.HookEventName != "StopFailure" {
+			return fmt.Errorf("unsupported Claude hook event %q", payload.HookEventName)
+		}
+		response = payload.LastAssistantMessage
+		failedHook = payload.HookEventName == "StopFailure"
+	case "codex":
+		if payload.Type != "agent-turn-complete" {
+			return fmt.Errorf("unsupported Codex hook event %q", payload.Type)
+		}
+		response = payload.LastAssistantMessageHyphen
+		if response == "" {
+			response = payload.LastAgentMessage
+		}
 	}
-	eventBody := map[string]string{"kind": "completed", "response": response}
-	if response == "" {
+	normalized := protocol.SupervisorAgentEvent{Kind: "completed", Response: response}
+	if response == "" || failedHook {
 		summary := payload.Error
 		if summary == "" {
-			summary = "Agent turn failed before producing a final response"
+			if failedHook {
+				summary = "Agent hook reported an unsuccessful or unsupported terminal event"
+			} else {
+				summary = "Agent turn failed before producing a final response"
+			}
 		}
-		if len(summary) > 500 {
-			summary = summary[:500]
-		}
-		eventBody = map[string]string{"kind": "failed", "summary": summary}
+		normalized = protocol.SupervisorAgentEvent{Kind: "failed", Summary: truncateUTF8Bytes(summary, 500)}
 	}
 	if len(response) > protocol.MaxAgentResponseBytes {
-		eventBody = map[string]string{"kind": "failed", "summary": "Agent response exceeded Ducklion's delivery limit"}
-	}
-	event, _ := json.Marshal(eventBody)
-	var normalized protocol.SupervisorAgentEvent
-	if err := json.Unmarshal(event, &normalized); err != nil {
-		return err
+		normalized = protocol.SupervisorAgentEvent{Kind: "failed", Summary: "Agent response exceeded Ducklion's delivery limit"}
 	}
 	conn, err := net.DialTimeout("unix", socketPath, time.Second)
 	if err != nil {
@@ -166,15 +184,25 @@ func runAgentHook(input io.Reader, args []string) error {
 	if err := json.NewEncoder(conn).Encode(envelope); err != nil {
 		return err
 	}
-	ack := make([]byte, 3)
-	n, err := io.ReadFull(conn, ack)
+	ack, err := bufio.NewReader(io.LimitReader(conn, 64)).ReadString('\n')
 	if err != nil {
 		return err
 	}
-	if string(ack[:n]) != "ok\n" {
+	if ack != "ok\n" {
 		return fmt.Errorf("agent hook was rejected")
 	}
 	return nil
+}
+
+func truncateUTF8Bytes(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for len(value) > 0 && !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func Run(manager SessionManager, args []string, out io.Writer) error {
