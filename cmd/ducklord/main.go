@@ -4519,10 +4519,12 @@ func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
 			integratedStyle = modalSelected
 		}
 		lines := []modalRenderLine{
-			{modalTitle, "  Add Ducklion host · management mode"},
-			{standaloneStyle, "  Standalone · Ducklord installs and manages Ducklion"},
-			{integratedStyle, "  Duckway proxy · connect only; Duckway manages Ducklion"},
-			{modalMuted, "  Standalone may upload and start Ducklion on the chosen host."},
+			{modalTitle, "  Add Ducklion host · who manages Ducklion?"},
+			{standaloneStyle, "  Standalone · Ducklord installs missing Ducklion"},
+			{integratedStyle, "  Duckway proxy · Duckway installs and manages Ducklion"},
+			{modalMuted, "  Already installed: verify and connect; no reinstall."},
+			{modalMuted, "  Missing: Standalone installs; proxy requires remote setup."},
+			{modalMuted, "  Wrong mode or stopped daemon: host is not added."},
 			{modalMuted, "  ↑/↓ choose   Enter continue   Esc cancel"},
 		}
 		renderModalBox(out, cols, rows, lines)

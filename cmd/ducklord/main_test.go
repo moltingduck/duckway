@@ -2286,6 +2286,11 @@ func TestTUIAddHostModeSelectionAndBack(t *testing.T) {
 	if !strings.Contains(out.String(), "Standalone") || !strings.Contains(out.String(), "Duckway proxy") {
 		t.Fatalf("mode choices missing: %q", out.String())
 	}
+	for _, explanation := range []string{"Already installed: verify and connect; no reinstall.", "Missing: Standalone installs; proxy requires remote setup.", "Wrong mode or stopped daemon: host is not added."} {
+		if !strings.Contains(out.String(), explanation) {
+			t.Fatalf("mode explanation %q missing: %q", explanation, out.String())
+		}
+	}
 	state.handleAddClientInput([]byte("\x1b[B"))
 	if action := state.handleAddClientInput([]byte("\r")); action != "next" || state.addClientProvisionMode != "integrated" || state.addClientStep != "host" {
 		t.Fatalf("mode selection action=%q state=%+v", action, state)
