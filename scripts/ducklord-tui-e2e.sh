@@ -14,7 +14,7 @@ if [ "${DUCKLORD_DEMO_LOCK_HELD:-0}" != 1 ]; then
 	ducklord_reexec_with_demo_lock "$0" "$@"
 fi
 
-for resource in ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c; do
+for resource in ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c ducklion-client-d; do
 	if "$RUNTIME" container inspect "$resource" >/dev/null 2>&1; then
 		echo "[ducklord-tui-e2e] refusing to replace existing container $resource" >&2
 		rm -f "$SETUP_LOG"
@@ -30,7 +30,7 @@ fi
 cleanup() {
 	local status=$?
 	trap - EXIT INT TERM
-  "$RUNTIME" rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c >/dev/null 2>&1 || true
+  "$RUNTIME" rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c ducklion-client-d >/dev/null 2>&1 || true
   "$RUNTIME" network rm ducklord-demo >/dev/null 2>&1 || true
 	if [ "$status" -ne 0 ]; then
 		echo "[ducklord-tui-e2e] setup tail:" >&2
@@ -42,7 +42,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "[ducklord-tui-e2e] preparing credential-free Ducklion topology with $RUNTIME"
-DUCKLORD_DEMO_LOCK_HELD=1 DUCKLORD_DEMO_AGENT_CREDENTIALS=none DUCKLORD_DEMO_SHELL_ONLY=1 DUCKLORD_DEMO_INCLUDE_CLIENT_C=0 \
+DUCKLORD_DEMO_LOCK_HELD=1 DUCKLORD_DEMO_AGENT_CREDENTIALS=none DUCKLORD_DEMO_SHELL_ONLY=1 DUCKLORD_DEMO_INCLUDE_CLIENT_C=0 DUCKLORD_DEMO_INCLUDE_CLIENT_D=0 \
 CONTAINER_RUNTIME="$RUNTIME" "$ROOT/scripts/ducklord-podman-demo.sh" >"$SETUP_LOG"
 "$RUNTIME" exec ducklord-dev sh -lc "sed 's/^name: .*/name: e2e-inspector/' /root/.ducklord/config.yaml >/tmp/e2e-inspector.yaml"
 

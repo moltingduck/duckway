@@ -14,9 +14,11 @@ NET="${NET:-ducklord-demo}"
 CREDENTIALS="${DUCKLORD_DEMO_AGENT_CREDENTIALS:-all}"
 CREDENTIAL_CLIENTS="${DUCKLORD_DEMO_CREDENTIAL_CLIENTS:-all}"
 INCLUDE_CLIENT_C="${DUCKLORD_DEMO_INCLUDE_CLIENT_C:-1}"
+INCLUDE_CLIENT_D="${DUCKLORD_DEMO_INCLUDE_CLIENT_D:-1}"
 
 case "$CREDENTIALS" in all|codex|claude|none) ;; *) echo "invalid DUCKLORD_DEMO_AGENT_CREDENTIALS=$CREDENTIALS" >&2; exit 2;; esac
-case "$CREDENTIAL_CLIENTS" in all|client-a|client-b|client-c) ;; *) echo "invalid DUCKLORD_DEMO_CREDENTIAL_CLIENTS=$CREDENTIAL_CLIENTS" >&2; exit 2;; esac
+case "$CREDENTIAL_CLIENTS" in all|client-a|client-b|client-c|client-d) ;; *) echo "invalid DUCKLORD_DEMO_CREDENTIAL_CLIENTS=$CREDENTIAL_CLIENTS" >&2; exit 2;; esac
+case "$INCLUDE_CLIENT_D" in 0|1) ;; *) echo "invalid DUCKLORD_DEMO_INCLUDE_CLIENT_D=$INCLUDE_CLIENT_D" >&2; exit 2;; esac
 if [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = codex ]; then ducklord_require_demo_secret "$CODEX_AUTH"; fi
 if [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = claude ]; then ducklord_require_demo_secret "$CLAUDE_AUTH"; fi
 
@@ -30,7 +32,7 @@ cleanup_work() { rm -rf -- "$WORK"; }
 trap cleanup_work EXIT
 
 cleanup_existing() {
-  "$RUNTIME" rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c >/dev/null 2>&1 || true
+  "$RUNTIME" rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c ducklion-client-d >/dev/null 2>&1 || true
   "$RUNTIME" network rm "$NET" >/dev/null 2>&1 || true
 }
 
@@ -68,12 +70,18 @@ echo "[ducklord-demo] starting remote clients"
 "$RUNTIME" run -d --name ducklion-client-a --hostname client-a --network "$NET" "$IMAGE" >/dev/null
 "$RUNTIME" run -d --name ducklion-client-b --hostname client-b --network "$NET" "$IMAGE" >/dev/null
 "$RUNTIME" run -d --name ducklion-client-c --hostname client-c --network "$NET" "$IMAGE" >/dev/null
+if [ "$INCLUDE_CLIENT_D" = 1 ]; then
+  "$RUNTIME" run -d --name ducklion-client-d --hostname client-d --network "$NET" "$IMAGE" >/dev/null
+  "$RUNTIME" exec ducklion-client-d rm /usr/local/bin/ducklion
+  "$RUNTIME" exec -u duck ducklion-client-d sh -lc 'test ! -e /usr/local/bin/ducklion && test ! -e "$HOME/.duckway/ducklion/management.json"'
+fi
 for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
   "$RUNTIME" exec -d -u duck "$container" sh -lc 'mkdir -p $HOME/.duckway; nohup ducklion daemon >$HOME/.duckway/ducklion-daemon.log 2>&1 </dev/null & echo $! >$HOME/.duckway/ducklion-daemon.pid' >/dev/null
 done
 if [ "$CREDENTIALS" != none ] && { [ -f "$CODEX_AUTH" ] || [ -f "$CLAUDE_AUTH" ]; }; then
   echo "[ducklord-demo] injecting available local agent credentials into remote demo users"
-  for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
+  for container in ducklion-client-a ducklion-client-b ducklion-client-c ducklion-client-d; do
+    if [ "$container" = ducklion-client-d ] && [ "$INCLUDE_CLIENT_D" != 1 ]; then continue; fi
     if [ "$CREDENTIAL_CLIENTS" != all ] && [ "$CREDENTIAL_CLIENTS" != "${container#ducklion-}" ]; then
       continue
     fi
@@ -93,7 +101,8 @@ if [ "$CREDENTIALS" != none ] && { [ -f "$CODEX_AUTH" ] || [ -f "$CLAUDE_AUTH" ]
   done
 fi
 if [ "$CREDENTIALS" = all ] && [ "$CREDENTIAL_CLIENTS" = all ]; then
-  for container in ducklion-client-a ducklion-client-b ducklion-client-c; do
+  for container in ducklion-client-a ducklion-client-b ducklion-client-c ducklion-client-d; do
+    if [ "$container" = ducklion-client-d ] && [ "$INCLUDE_CLIENT_D" != 1 ]; then continue; fi
     "$RUNTIME" exec "$container" sh -lc 'test "$(stat -c %U:%G:%a /home/duck/.codex/auth.json)" = duck:duck:600 && test "$(stat -c %U:%G:%a /home/duck/.claude/.credentials.json)" = duck:duck:600'
   done
 fi
@@ -116,7 +125,7 @@ echo "[ducklord-demo] starting dev laptop"
 "$RUNTIME" run -d --name ducklord-dev --hostname dev-laptop --network "$NET" "$IMAGE" sleep infinity >/dev/null
 "$RUNTIME" cp "$WORK/id_ed25519" ducklord-dev:/root/.ssh/id_ed25519
 "$RUNTIME" exec ducklord-dev sh -lc 'chmod 600 /root/.ssh/id_ed25519 && cat >/root/.ssh/config <<EOF
-Host client-a client-b client-c
+Host client-a client-b client-c client-d
   User duck
 
 Host *
@@ -146,6 +155,12 @@ EOF'
 fi
 
 echo "[ducklord-demo] creating sample remote sessions"
+if [ "$INCLUDE_CLIENT_D" = 1 ]; then
+  "$RUNTIME" exec ducklord-dev sh -lc 'ssh client-d "command -v ducklion >/dev/null 2>&1"' && {
+    echo "[ducklord-demo] client-d unexpectedly has Ducklion installed" >&2
+    exit 1
+  }
+fi
 "$RUNTIME" exec -u duck ducklion-client-a sh -lc 'mkdir -p /home/duck/projects/alpha && duckway projects add --name alpha-project /home/duck/projects/alpha' >/dev/null
 "$RUNTIME" exec -u duck ducklion-client-b sh -lc 'mkdir -p /home/duck/projects/beta && duckway projects add --name beta-project /home/duck/projects/beta' >/dev/null
 "$RUNTIME" exec -u duck ducklion-client-c sh -lc 'mkdir -p /home/duck/projects/gamma && duckway projects add --name gamma-project /home/duck/projects/gamma' >/dev/null
@@ -243,6 +258,11 @@ fi
 cat <<EOF
 [ducklord-demo] ready
 
+client-d is reachable over SSH but has no Ducklion and is not yet in Ducklord's host list.
+In the TUI press a, choose Standalone, then select client-d to test installation.
+For Duckway proxy integration, configure Duckway on client-d first, then run
+  $RUNTIME exec -it -u duck ducklion-client-d sh -lc 'duckway integrate ducklion'
+
 Open the dev laptop TUI:
   $RUNTIME exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
 
@@ -270,6 +290,6 @@ Inside the TUI:
   q: quit
 
 Clean up:
-  $RUNTIME rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c
+  $RUNTIME rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c ducklion-client-d
   $RUNTIME network rm $NET
 EOF

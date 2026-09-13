@@ -43,7 +43,7 @@ if [ "$RUN_CLAUDE" = 1 ]; then
   fi
 fi
 
-for resource in ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c; do
+for resource in ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c ducklion-client-d; do
   if "$RUNTIME" container inspect "$resource" >/dev/null 2>&1; then
     echo "refusing to replace existing demo container $resource" >&2
     exit 1
@@ -57,7 +57,7 @@ fi
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
-  "$RUNTIME" rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c >/dev/null 2>&1 || true
+  "$RUNTIME" rm -f ducklord-dev ducklion-client-a ducklion-client-b ducklion-client-c ducklion-client-d >/dev/null 2>&1 || true
   "$RUNTIME" network rm ducklord-demo >/dev/null 2>&1 || true
   exit "$status"
 }
