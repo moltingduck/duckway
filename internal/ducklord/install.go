@@ -3,7 +3,10 @@ package ducklord
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,15 +18,19 @@ const defaultDucklionInstallPath = "~/.local/bin/ducklion"
 
 const remoteDucklionInstallScript = `set -eu
 dest="$1"
+sha="$2"
 case "$dest" in "~/"*) dest="$HOME/${dest#\~/}" ;; esac
 dir=$(dirname "$dest")
 tmp="${dest}.tmp.$$"
 mkdir -p "$dir"
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
 cat > "$tmp"
 chmod 0755 "$tmp"
-mv "$tmp" "$dest"
+"$tmp" management install-standalone "$dest" "$sha"
+if ! "$dest" daemon status | grep -q 'running=true'; then
+  "$dest" daemon start
+fi
 "$dest" version
-printf 'DUCKLION_INSTALLED\t%s\n' "$dest"
 `
 
 func FindLocalDucklion(source string) (string, error) {
@@ -70,9 +77,17 @@ func (*Runner) InstallDucklion(ctx context.Context, c Client, source, dest strin
 		return "", err
 	}
 	defer f.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return "", err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	wantSHA := hex.EncodeToString(hasher.Sum(nil))
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	args := SSHArgs(c, false, "sh", "-lc", remoteDucklionInstallScript, "ducklord-install-ducklion", dest)
+	args := SSHArgs(c, false, "sh", "-lc", remoteDucklionInstallScript, "ducklord-install-ducklion", dest, wantSHA)
 	sshParts := c.SSHCommandParts()
 	cmd := exec.CommandContext(ctx, sshParts[0], append(sshParts[1:], args...)...)
 	cmd.Stdin = f

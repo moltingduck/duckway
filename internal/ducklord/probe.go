@@ -5,15 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/hackerduck/duckway/internal/ducklion/management"
 )
 
 type DucklionProbe struct {
-	Available bool
-	Command   string
-	Version   string
-	ListOK    bool
-	Sessions  int
-	ListError string
+	Available      bool
+	Command        string
+	Version        string
+	ListOK         bool
+	Sessions       int
+	ListError      string
+	Manager        string
+	DuckwayPresent bool
 }
 
 const ducklionProbeScript = `
@@ -29,21 +33,36 @@ probe_list() {
     printf '\n'
   fi
 }
+probe_manager() {
+  cmd="$1"
+  if out=$($cmd management status --json 2>/dev/null); then
+    printf 'management\t%s\n' "$out"
+  else
+    printf 'management-error\tunavailable\n'
+  fi
+}
 candidate="$1"
 if [ -n "$candidate" ] && $candidate version >/dev/null 2>&1; then
   printf 'configured:%s\t' "$candidate"
   $candidate version
   probe_list "$candidate"
+  probe_manager "$candidate"
 elif command -v ducklion >/dev/null 2>&1; then
   printf 'ducklion\t'
   ducklion version
   probe_list ducklion
+  probe_manager ducklion
 elif command -v duckway >/dev/null 2>&1 && duckway ducklion version >/dev/null 2>&1; then
   printf 'duckway-ducklion\t'
   duckway ducklion version
   probe_list "duckway ducklion"
+  probe_manager "duckway ducklion"
 else
-  printf 'missing\n'
+  if command -v duckway >/dev/null 2>&1; then
+    printf 'missing-duckway\n'
+  else
+    printf 'missing\n'
+  fi
 fi
 `
 
@@ -59,6 +78,9 @@ func ParseDucklionProbeOutput(out string) (DucklionProbe, error) {
 	lines := nonEmptyLines(out)
 	if len(lines) == 0 || lines[0] == "missing" {
 		return DucklionProbe{Available: false}, nil
+	}
+	if lines[0] == "missing-duckway" {
+		return DucklionProbe{DuckwayPresent: true}, nil
 	}
 	kind, versionText, ok := strings.Cut(lines[0], "\t")
 	if !ok {
@@ -92,6 +114,11 @@ func ParseDucklionProbeOutput(out string) (DucklionProbe, error) {
 			probe.Sessions = countJSONListItems(value)
 		case "list-error":
 			probe.ListError = strings.TrimSpace(value)
+		case "management":
+			var manager management.Record
+			if err := json.Unmarshal([]byte(value), &manager); err == nil && manager.Valid() {
+				probe.Manager = string(manager.Mode)
+			}
 		}
 	}
 	return probe, nil

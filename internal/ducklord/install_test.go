@@ -2,6 +2,8 @@ package ducklord
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,9 +38,10 @@ func TestSafeRemoteInstallPath(t *testing.T) {
 
 func TestRemoteDucklionInstallScriptExpandsTildeDest(t *testing.T) {
 	home := t.TempDir()
-	cmd := exec.Command("sh", "-lc", remoteDucklionInstallScript, "ducklord-install-ducklion", "~/.local/bin/ducklion")
+	fixture := []byte("#!/bin/sh\nif [ \"$1\" = management ]; then mv \"$0\" \"$3\"; printf 'DUCKLION_INSTALLED\\t%s\\n' \"$3\"; elif [ \"$1\" = daemon ]; then echo running=true; else echo ducklion fake; fi\n")
+	cmd := exec.Command("sh", "-lc", remoteDucklionInstallScript, "ducklord-install-ducklion", "~/.local/bin/ducklion", fmt.Sprintf("%x", sha256.Sum256(fixture)))
 	cmd.Env = append(os.Environ(), "HOME="+home)
-	cmd.Stdin = strings.NewReader("#!/bin/sh\necho ducklion fake \"$1\"\n")
+	cmd.Stdin = bytes.NewReader(fixture)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

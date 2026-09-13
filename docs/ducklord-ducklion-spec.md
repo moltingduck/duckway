@@ -37,6 +37,125 @@ remote agent host
   agent process / shell / codex / claude
 ```
 
+## Standalone Host Provisioning (Target Design)
+
+This section specifies the Ducklord-managed flow for a host that uses
+Ducklion without the Duckway proxy/client.
+
+Ducklord uses the operator's existing SSH access to detect the remote OS, CPU
+architecture, and shell. It selects a compatible local Ducklion binary,
+uploads it to a temporary path, verifies its checksum, and atomically installs
+it at `~/.local/bin/ducklion`. It creates `~/.duckway/ducklion/` with private
+`state/`, `logs/`, and `run/` subdirectories and records the installation mode,
+manager, and version (`mode: standalone`, `managed_by: ducklord`). No Go,
+container runtime, systemd, or Duckway proxy is required on the host.
+
+Ducklion itself provides `ducklion daemon start`, `status`, `restart`,
+`restart -f`, and `stop` for its daemon. Ducklord invokes those commands over SSH; it does not manage
+the daemon PID. After starting, Ducklord verifies the SSH stdio bridge and
+health endpoint. Only a successful probe allows Ducklord to save the host
+entry. A failed installation or probe leaves an explicit error and no new
+connected host entry.
+
+For updates, Ducklord verifies the new binary's platform, checksum, and
+version, then atomically replaces the installed binary. Installing a new
+binary never automatically restarts Ducklion. Ducklord offers **Restart
+safely**, **Force restart**, and **Later**. A safe restart waits for running
+agent tasks to finish before replacing the daemon process; `-f` requests an
+immediate daemon restart. Session PTY supervisors remain independent of the
+daemon and survive either restart. The new daemon reconnects to supervisors
+and restores sessions, output, and bindings. `stop` stops only the daemon;
+session deletion requires an explicit session lifecycle operation.
+
+Only one installation manager may own Ducklion on a host. A Duckway client
+must not silently take over a `managed_by: ducklord` installation or start a
+second daemon. Switching to Duckway-integrated management requires the
+explicit local command specified below.
+
+## Duckway Proxy-Integrated Host Provisioning (Target Design)
+
+On a host using the Duckway proxy, the remote Duckway client is the sole
+installer, version owner, and daemon manager for its bundled Ducklion. Ducklord
+only connects over SSH and uses the Ducklion bridge. It must not replace the
+binary or start/stop/restart Duckway services as a side effect of connecting.
+
+The operator installs Duckway client and configures its server URL, token, and
+proxy. Ordinarily, `duckway start` starts the proxy, CC watch, and separate
+Ducklion daemon. Ducklord's Add Host flow probes the SSH bridge and Ducklion
+health, then saves the host only after a successful probe.
+
+If Duckway setup detects an existing standalone Ducklion, it displays a clear
+instruction to run `duckway integrate ducklion` on that host. Until conversion
+completes, `duckway start` may start proxy and CC watch but must skip Ducklion,
+report that Ducklion remains standalone, and repeat the integration instruction.
+It must not start a second Ducklion daemon against the same state root or
+silently claim the standalone installation's ownership.
+
+`duckway update` installs a mutually compatible Duckway client and Ducklion
+version, verifies the installation, and reports that a restart is required. It
+does not restart automatically. Ducklord may display a version mismatch but
+must not perform the update on Duckway's behalf.
+Before `duckway integrate ducklion` succeeds, an update may replace Duckway's
+own bundled artifacts but must not overwrite the standalone Ducklion binary
+or modify its state and manager marker. Ducklord remains responsible for
+standalone Ducklion updates until conversion completes. `duckway update
+--restart` is rejected; the operator explicitly runs `duckway restart` after
+reviewing the update.
+
+`duckway restart` waits for active agent tasks to finish before restarting the
+three daemons. `duckway restart -f` skips the wait and must warn that active
+work may be interrupted. Neither form destroys PTY sessions: independent PTY
+supervisors remain alive and the restarted Ducklion reconnects to them. During
+the restart Ducklord shows the host as temporarily disconnected and reconnects
+its bridge when available.
+
+Ducklord **Reconnect host** only re-establishes its own SSH/bridge connection.
+It never invokes `duckway restart`; restarting remote services requires a
+separate explicit operator action.
+
+### Converting A Standalone Host
+
+The operator runs `duckway integrate ducklion` on the remote host after
+installing and configuring Duckway client. Reserve `duckway integrate <component>` as the command
+family for future integrations; only `ducklion` is defined here. The command
+must be run by the operator on the remote host; Ducklord does not offer a
+button or SSH action that executes it on the operator's behalf. Duckway setup
+only detects the standalone installation and prints the instruction; it does
+not convert automatically. The command
+converts `mode: standalone, managed_by: ducklord` to
+`mode: integrated, managed_by: duckway` without changing Ducklion session IDs,
+bindings, or the state root at `~/.duckway/ducklion/`.
+This conversion is one-way. There is no supported command to return an
+integrated host to standalone management; removing or stopping the Duckway
+proxy does not transfer Ducklion ownership back to Ducklord.
+
+The command takes an exclusive management lock, checks the installation mode,
+Duckway/Ducklion compatibility, state permissions, and absence of running
+agent tasks. If any agent task is running, it immediately fails with a clear
+busy result; it does not queue a conversion or wait for the task to finish.
+Open shell sessions do not count as busy and must remain alive across the
+daemon handoff. The operator may retry later. After preflight, it stops only
+the standalone Ducklion daemon, starts the Duckway-managed Ducklion daemon
+against the same state root, and verifies that the daemon has reconnected to
+the existing PTY supervisors. Only after health
+and session-inventory checks succeed does it atomically write the new manager
+marker. The proxy and CC watch remain under ordinary `duckway start` control;
+integration must not implicitly start or restart them.
+
+If a preflight fails, nothing changes. If takeover or verification fails,
+the command stops the new daemon and restores the standalone daemon and
+original manager marker. The design assumes the operator maintains a working
+standalone installation; recovery from a failure to restart that original
+daemon is outside this scope. The command must never run two Ducklion daemons
+against the same state root. Ducklord may reconnect to the integrated host,
+but no longer offers standalone install/update/restart actions.
+
+After a successful conversion, Ducklord retains the existing host entry,
+session identities, local groups, and sort order. On its next connection it
+re-probes the Ducklion command path and management mode, updates only the
+resolved connection metadata, and resumes the same session inventory. The
+operator does not remove and re-add the host.
+
 ## Terminology
 
 - Host entry: a Ducklord config item under `~/.ducklord/config.yaml` that

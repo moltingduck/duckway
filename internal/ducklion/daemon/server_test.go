@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
+	"github.com/hackerduck/duckway/internal/ducklion/management"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 	"github.com/hackerduck/duckway/internal/ducklion/supervisor"
@@ -28,6 +29,57 @@ type fakeRuntimeController struct {
 	ownershipFailures chan error
 	strictSequence    bool
 	lastSequence      uint64
+}
+
+func TestManagementQuiesceRejectsSpoofedPeerAndNewWork(t *testing.T) {
+	root := t.TempDir()
+	server, err := Open(context.Background(), Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve() }()
+	defer func() { _ = server.Close(); <-done }()
+	body, err := management.RequestBody(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attacker, err := Dial(server.SocketPath(), "other-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer attacker.Close()
+	request := protocol.Request{ID: "quiesce", Type: "management.quiesce", InstanceID: string(server.instanceID), Body: body}
+	if response, err := attacker.Call(request); err != nil || response.Error == nil || response.Error.Code != protocol.ErrNotOwner {
+		t.Fatalf("spoofed quiesce=%+v err=%v", response, err)
+	}
+	admin, err := Dial(server.SocketPath(), "duckway-integration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	request.Body = []byte(`{"token":"wrong"}`)
+	if response, err := admin.Call(request); err != nil || response.Error == nil || response.Error.Code != protocol.ErrNotOwner {
+		t.Fatalf("wrong token quiesce=%+v err=%v", response, err)
+	}
+	request.Body = body
+	if response, err := admin.Call(request); err != nil || response.Error != nil {
+		t.Fatalf("authorized quiesce=%+v err=%v", response, err)
+	}
+	cc, err := DialCC(server.SocketPath(), "dwch_maintenance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	if response, err := cc.Call(protocol.Request{ID: "create-during-quiesce", Type: "session.create", InstanceID: string(server.instanceID)}); err != nil || response.Error == nil || response.Error.Code != protocol.ErrDraining {
+		t.Fatalf("new work during quiesce=%+v err=%v", response, err)
+	}
+	if response, err := admin.Call(protocol.Request{ID: "resume", Type: "management.resume", InstanceID: string(server.instanceID), Body: body}); err != nil || response.Error != nil {
+		t.Fatalf("resume=%+v err=%v", response, err)
+	}
+	if response, err := cc.Call(protocol.Request{ID: "create-after-resume", Type: "session.create", InstanceID: string(server.instanceID)}); err != nil || response.Error == nil || response.Error.Code == protocol.ErrDraining {
+		t.Fatalf("new work remained drained after resume=%+v err=%v", response, err)
+	}
 }
 
 func TestServiceMapErrorKeepsUnknownFailuresRetryable(t *testing.T) {

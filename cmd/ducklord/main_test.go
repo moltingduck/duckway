@@ -2199,7 +2199,7 @@ func TestTUIAddClientFromSSHHostProbesAndSaves(t *testing.T) {
 	state := &tuiState{
 		cfg:     cfg,
 		cfgPath: config,
-		runner:  fakeRunner{probe: ducklord.DucklionProbe{Available: true, Command: "ducklion", Version: "ducklion v1"}},
+		runner:  fakeRunner{probe: ducklord.DucklionProbe{Available: true, Command: "ducklion", Version: "ducklion v1", Manager: "integrated"}},
 		addClientHosts: []ducklord.SSHHost{
 			{Name: "duck@example.internal"},
 		},
@@ -2247,7 +2247,7 @@ func TestTUIAddClientInstallsMissingDucklionAndReprobes(t *testing.T) {
 		installPath: "/home/duck/.local/bin/ducklion",
 		probes: []ducklord.DucklionProbe{
 			{Available: false},
-			{Available: true, Command: "/home/duck/.local/bin/ducklion", Version: "ducklion v2", ListOK: true, Sessions: 1},
+			{Available: true, Command: "/home/duck/.local/bin/ducklion", Version: "ducklion v2", Manager: "standalone", ListOK: true, Sessions: 1},
 		},
 	}
 	state := &tuiState{
@@ -2279,6 +2279,25 @@ func TestTUIAddClientInstallsMissingDucklionAndReprobes(t *testing.T) {
 	}
 }
 
+func TestTUIAddHostModeSelectionAndBack(t *testing.T) {
+	state := &tuiState{addClientMode: true, addClientStep: "mode"}
+	var out strings.Builder
+	state.renderAddClientModal(&out, 80, 24)
+	if !strings.Contains(out.String(), "Standalone") || !strings.Contains(out.String(), "Duckway proxy") {
+		t.Fatalf("mode choices missing: %q", out.String())
+	}
+	state.handleAddClientInput([]byte("\x1b[B"))
+	if action := state.handleAddClientInput([]byte("\r")); action != "next" || state.addClientProvisionMode != "integrated" || state.addClientStep != "host" {
+		t.Fatalf("mode selection action=%q state=%+v", action, state)
+	}
+	if action := state.handleAddClientInput([]byte("\x1b")); action != "back" || state.addClientStep != "mode" {
+		t.Fatalf("Esc did not return to mode: action=%q step=%q", action, state.addClientStep)
+	}
+	if action := state.handleAddClientInput([]byte("\x1b")); action != "cancel" {
+		t.Fatalf("Esc did not close first page: action=%q", action)
+	}
+}
+
 type blockingAddClientRunner struct {
 	fakeRunner
 	started map[string]chan struct{}
@@ -2288,7 +2307,7 @@ type blockingAddClientRunner struct {
 func (r *blockingAddClientRunner) ProbeDucklion(_ context.Context, client ducklord.Client) (ducklord.DucklionProbe, error) {
 	close(r.started[client.Name])
 	<-r.release[client.Name] // deliberately ignores cancellation to exercise the stale-result fence
-	return ducklord.DucklionProbe{Available: true, Command: "ducklion", Version: "test", ListOK: true}, nil
+	return ducklord.DucklionProbe{Available: true, Command: "ducklion", Version: "test", Manager: "integrated", ListOK: true}, nil
 }
 
 func TestAsyncAddClientCancelFencesLateSuccessAndLatestAttemptWins(t *testing.T) {
@@ -2297,7 +2316,7 @@ func TestAsyncAddClientCancelFencesLateSuccessAndLatestAttemptWins(t *testing.T)
 		started: map[string]chan struct{}{"a": make(chan struct{}), "b": make(chan struct{})},
 		release: map[string]chan struct{}{"a": make(chan struct{}), "b": make(chan struct{})},
 	}
-	state := &tuiState{cfg: &ducklord.Config{}, cfgPath: config, runner: runner, addClientMode: true, addClientLine: "a"}
+	state := &tuiState{cfg: &ducklord.Config{}, cfgPath: config, runner: runner, addClientMode: true, addClientLine: "a", addClientProvisionMode: "integrated"}
 	done := make(chan addClientDoneEvent, 2)
 	if err := state.startAddClient(context.Background(), done); err != nil {
 		t.Fatal(err)
@@ -2312,11 +2331,19 @@ func TestAsyncAddClientCancelFencesLateSuccessAndLatestAttemptWins(t *testing.T)
 	}
 	<-runner.started["b"]
 	close(runner.release["b"])
-	if !state.completeAddClient(<-done) {
+	result := <-done
+	for result.progress {
+		result = <-done
+	}
+	if !state.completeAddClient(result) {
 		t.Fatal("latest add-client attempt was not committed")
 	}
 	close(runner.release["a"])
-	if state.completeAddClient(<-done) {
+	result = <-done
+	for result.progress {
+		result = <-done
+	}
+	if state.completeAddClient(result) {
 		t.Fatal("canceled stale attempt was committed")
 	}
 	loaded, err := ducklord.LoadConfig(config)

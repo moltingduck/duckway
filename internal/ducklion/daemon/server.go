@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/bridge"
+	"github.com/hackerduck/duckway/internal/ducklion/management"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
@@ -83,6 +84,8 @@ type Server struct {
 	sequences                    map[model.SessionID]runtimeSequence
 	operationMu                  sync.Mutex
 	operations                   map[model.SessionID]*sync.Mutex
+	maintenanceMu                sync.RWMutex
+	maintenance                  bool
 	agentEventMu                 sync.Mutex
 	agentEvents                  map[string][]protocol.SupervisorAgentEvent
 	agentEventCount              int
@@ -190,6 +193,9 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 	}
 	if err := secureRoot(root); err != nil {
 		return nil, err
+	}
+	if err := management.EnsureToken(root); err != nil {
+		return nil, fmt.Errorf("prepare Ducklion management token: %w", err)
 	}
 	lockFile, err := openSecureLock(filepath.Join(root, "daemon.lock"))
 	if err != nil {
@@ -1614,6 +1620,49 @@ func writeSupervisorError(codec *bridge.Codec, requestID string, code protocol.E
 }
 
 func (s *Server) route(request protocol.Request, capabilities []string, role protocol.PeerRole, principal string) protocol.Response {
+	if request.Type == "management.runtime_status" {
+		if role != protocol.RoleDucklord || principal != "duckway-integration" || request.InstanceID != string(s.instanceID) || !management.VerifyBody(s.root, request.Body) {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotOwner, Message: "local Duckway integration only"}}
+		}
+		s.controlMu.Lock()
+		active := make(map[string]uint64, len(s.controls))
+		for sessionID, peer := range s.controls {
+			active[string(sessionID)] = peer.identity.Generation
+		}
+		s.controlMu.Unlock()
+		result, _ := json.Marshal(active)
+		return protocol.Response{ID: request.ID, Result: result}
+	}
+	if request.Type == "management.quiesce" || request.Type == "management.resume" {
+		if role != protocol.RoleDucklord || principal != "duckway-integration" || request.InstanceID != string(s.instanceID) || !management.VerifyBody(s.root, request.Body) {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotOwner, Message: "local Duckway integration only"}}
+		}
+		s.maintenanceMu.Lock()
+		defer s.maintenanceMu.Unlock()
+		if request.Type == "management.resume" {
+			s.maintenance = false
+			return protocol.Response{ID: request.ID, Result: json.RawMessage(`{}`)}
+		}
+		snapshot, err := s.state.SessionSnapshot(context.Background())
+		if err != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect tasks"}}
+		}
+		for _, projection := range snapshot.Sessions {
+			if projection.Session.Kind == model.KindAgent && projection.Session.TaskState != model.TaskIdle {
+				return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrTaskActive, Message: "agent task is active"}}
+			}
+		}
+		s.maintenance = true
+		return protocol.Response{ID: request.ID, Result: json.RawMessage(`{}`)}
+	}
+	s.maintenanceMu.RLock()
+	defer s.maintenanceMu.RUnlock()
+	if s.maintenance {
+		switch request.Type {
+		case "session.create", "session.stop", "session.destroy", "session.lifecycle", "session.yield", "session.task_begin", "session.agent_submit", "session.input", "session.bind_discord", "session.unbind_discord":
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrDraining, Message: "Ducklion is being integrated; new work is temporarily paused"}}
+		}
+	}
 	if request.InstanceID != "" && request.InstanceID != string(s.instanceID) {
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "Ducklion instance does not match"}}
 	}

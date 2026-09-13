@@ -24,6 +24,7 @@ import (
 
 	"github.com/hackerduck/duckway/internal/client"
 	duckliondaemon "github.com/hackerduck/duckway/internal/ducklion/daemon"
+	"github.com/hackerduck/duckway/internal/ducklion/management"
 	ducklionprotocol "github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/duckwayconfig"
 	"github.com/hackerduck/duckway/internal/version"
@@ -143,6 +144,11 @@ func main() {
 			log.Fatal(err)
 		}
 	case "__ducklion_daemon":
+		record, err := management.Read(filepath.Join(configDir, "ducklion"))
+		allowedTransition := record.Mode == management.Transitioning && os.Getenv("DUCKWAY_INTEGRATE_DUCKLION") == "1"
+		if err != nil || (record.Mode != management.Integrated && !allowedTransition) {
+			log.Fatal("Ducklion is not managed by Duckway; run duckway integrate ducklion on this host")
+		}
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
 		settings, err := duckwayconfig.LoadRuntimeSettings(configDir)
@@ -166,11 +172,30 @@ func main() {
 	case "git":
 		cmdGit(configDir, os.Args[2:])
 	case "start":
+		lock, err := acquireUpdateLock(configDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer releaseUpdateLock(lock)
 		cmdStart(configDir)
 	case "stop":
+		lock, err := acquireUpdateLock(configDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer releaseUpdateLock(lock)
 		cmdStop(configDir)
 	case "restart":
-		cmdRestart(configDir)
+		lock, err := acquireUpdateLock(configDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer releaseUpdateLock(lock)
+		cmdRestart(configDir, os.Args[2:])
+	case "integrate":
+		if err := runIntegrateCommand(configDir, os.Args[2:], os.Stdout); err != nil {
+			log.Fatal(err)
+		}
 	case "version", "--version", "-v":
 		fmt.Println("duckway", version.Get())
 	case "help", "--help", "-h":
@@ -190,7 +215,9 @@ Usage:
   duckway sync           Fetch placeholder keys + statusline from server
   duckway start          Start Ducklion, proxy, and cc-watch daemons
   duckway stop           Stop all three daemons
-  duckway restart        Restart all three daemons
+  duckway restart [-f]   Wait for agent tasks, then restart all three daemons (-f skips wait)
+  duckway integrate ducklion
+                         Convert a standalone Ducklion to Duckway management
   duckway logs [-f]      Show daemon logs (Ducklion + proxy + cc-watch)
   duckway logs proxy     Show only proxy logs
   duckway logs cc -f     Follow only cc-watch logs
@@ -216,7 +243,7 @@ Usage:
                          (uses saved config; override with --server <url>
                           or DUCKWAY_SERVER_URL — works without init)
   duckway update --restart
-                         After an update, restart any duckway daemons that were running
+                         No longer supported; run duckway restart separately after update
   duckway mcp serve      Run the Control-Channel MCP server over stdio
                          (launched by Claude Code from ~/.claude/mcp.json)
   duckway cc watch       Connect to the server's SSE feed and run a
@@ -405,6 +432,9 @@ func cmdInit(configDir string) {
 	}
 
 	fmt.Printf("\nConfig saved to %s/config.yaml\n", configDir)
+	if record, err := management.Read(filepath.Join(configDir, "ducklion")); err == nil && record.Mode == management.Standalone {
+		fmt.Println("Standalone Ducklion detected. To let Duckway manage it, run duckway integrate ducklion on this host.")
+	}
 	fmt.Println("\nNext steps:")
 	fmt.Printf("  %s           — start HTTPS proxy (background daemon)\n", cyan("duckway proxy -d"))
 	fmt.Printf("  %s\n", cyan(fmt.Sprintf("export HTTPS_PROXY=%s", client.LocalProxyURL(cfg.ProxyPort))))
@@ -1534,6 +1564,9 @@ func cmdUpdate(configDir string) {
 	// before they've configured it, or upgrade a binary on a host that
 	// never had a client config.
 	opts := parseUpdateOptions(os.Args[2:], os.Getenv("DUCKWAY_SERVER_URL"))
+	if opts.restartAfter {
+		log.Fatal("duckway update never restarts daemons; run duckway update, then duckway restart separately")
+	}
 	serverURL := opts.serverURL
 	if serverURL == "" {
 		if cfg, err := client.LoadConfig(configDir); err == nil {
@@ -1545,6 +1578,15 @@ func cmdUpdate(configDir string) {
 		log.Fatalf("cannot start update: %v", err)
 	}
 	defer releaseUpdateLock(updateLock)
+	ducklionRoot := filepath.Join(configDir, "ducklion")
+	if err := os.MkdirAll(ducklionRoot, 0700); err != nil {
+		log.Fatalf("cannot inspect Ducklion state: %v", err)
+	}
+	managerLock, err := management.Acquire(ducklionRoot)
+	if err != nil {
+		log.Fatalf("cannot lock Ducklion management: %v", err)
+	}
+	defer managerLock.Close()
 	if os.Getenv("DUCKWAY_MANAGED_UPDATE") == "1" &&
 		(opts.expectedVersion == "" || opts.expectedBinary == "" || opts.expectedSHA256 == "" || opts.expectedSize <= 0) {
 		log.Fatal("managed update is missing its pinned artifact manifest")
@@ -1592,7 +1634,14 @@ func cmdUpdate(configDir string) {
 	}
 
 	fmt.Println("New version available — downloading...")
-	if err := client.DownloadAndReplaceClientWithInfo(serverURL, updateInfo); err != nil {
+	updateBinary := client.DownloadAndReplaceClientWithInfo
+	if record, err := management.Read(filepath.Join(configDir, "ducklion")); err == nil && record.Mode == management.Standalone {
+		updateBinary = client.DownloadAndReplaceClientOnly
+		fmt.Println("Standalone Ducklion detected: its binary will not be replaced.")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Fatalf("cannot determine Ducklion manager before update: %v", err)
+	}
+	if err := updateBinary(serverURL, updateInfo); err != nil {
 		// Permission-denied usually means the install dir is root-owned
 		// (e.g. /usr/local/bin). In an interactive terminal, offer to re-run
 		// through sudo and let sudo handle password input. In non-interactive
@@ -1624,11 +1673,6 @@ func cmdUpdate(configDir string) {
 		fmt.Printf("\nUpdated. New binary: %s", string(out))
 	} else {
 		fmt.Printf("\nUpdated. Run %s to confirm.\n", cyan("duckway version"))
-	}
-
-	if opts.restartAfter {
-		restartDaemonsRunningBeforeUpdate(configDir)
-		return
 	}
 
 	if pid, alive := readPID(filepath.Join(configDir, "ducklion", "daemon.pid")); alive {
@@ -1684,6 +1728,9 @@ func restartDaemonsRunningBeforeUpdate(configDir string) {
 	ccLogFile := filepath.Join(configDir, "cc-watch.log")
 
 	ducklionPID, ducklionAlive := readPID(ducklionPidFile)
+	if record, err := management.Read(filepath.Join(configDir, "ducklion")); err != nil || record.Mode != management.Integrated {
+		ducklionAlive = false
+	}
 	proxyPID, proxyAlive := readPID(proxyPidFile)
 	ccPID, ccAlive := readPID(ccPidFile)
 	if !ducklionAlive && !proxyAlive && !ccAlive {
@@ -1937,22 +1984,39 @@ func cmdStart(configDir string) {
 	}
 	ducklionPidFile := filepath.Join(ducklionRoot, "daemon.pid")
 	ducklionLogFile := filepath.Join(ducklionRoot, "daemon.log")
+	managerLock, err := management.Acquire(ducklionRoot)
+	if err != nil {
+		log.Fatalf("Ducklion management lock: %v", err)
+	}
+	managerErr := management.EnsureIntegrated(ducklionRoot)
+	ducklionManaged := managerErr == nil
 	proxyPidFile := filepath.Join(configDir, "proxy.pid")
 	proxyLogFile := filepath.Join(configDir, "proxy.log")
 	ccPidFile := filepath.Join(configDir, "cc-watch.pid")
 	ccLogFile := filepath.Join(configDir, "cc-watch.log")
 
 	// Ducklion must be available before cc-watch starts accepting work.
-	if pid, alive := readPID(ducklionPidFile); alive {
-		fmt.Printf("ducklion: already running (PID %d)\n", pid)
-	} else if err := spawnDaemonProcess([]string{"__ducklion_daemon"}, ducklionPidFile, ducklionLogFile); err != nil {
-		log.Fatalf("Failed to start Ducklion: %v", err)
+	if ducklionManaged {
+		if pid, alive := management.ReadPID(ducklionPidFile); alive {
+			fmt.Printf("ducklion: already running (PID %d)\n", pid)
+		} else if err := func() error {
+			exe, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			return management.Start(ducklionRoot, exe, []string{"__ducklion_daemon"}, nil, ducklionPidFile, ducklionLogFile)
+		}(); err != nil {
+			log.Fatalf("Failed to start Ducklion: %v", err)
+		} else {
+			fmt.Printf("ducklion: started (logs %s)\n", ducklionLogFile)
+		}
+		if err := waitForDucklion(filepath.Join(ducklionRoot, "ducklion.sock"), 5*time.Second); err != nil {
+			log.Fatalf("Ducklion did not become ready: %v (logs %s)", err, ducklionLogFile)
+		}
 	} else {
-		fmt.Printf("ducklion: started (logs %s)\n", ducklionLogFile)
+		fmt.Printf("ducklion: skipped (%v). Run duckway integrate ducklion on this host.\n", managerErr)
 	}
-	if err := waitForDucklion(filepath.Join(ducklionRoot, "ducklion.sock"), 5*time.Second); err != nil {
-		log.Fatalf("Ducklion did not become ready: %v (logs %s)", err, ducklionLogFile)
-	}
+	_ = managerLock.Close()
 
 	// Proxy
 	if pid, alive := readPID(proxyPidFile); alive {
@@ -2032,12 +2096,58 @@ func warnIfTmuxRequestedButUnavailable() {
 func cmdStop(configDir string) {
 	stopBackgroundDaemon("duckway cc watch", filepath.Join(configDir, "cc-watch.pid"))
 	stopBackgroundDaemon("duckway proxy", filepath.Join(configDir, "proxy.pid"))
-	stopBackgroundDaemon("ducklion", filepath.Join(configDir, "ducklion", "daemon.pid"))
+	root := filepath.Join(configDir, "ducklion")
+	if record, err := management.Read(root); err == nil && record.Mode == management.Integrated {
+		lock, err := management.Acquire(root)
+		if err != nil {
+			log.Fatalf("Ducklion management lock: %v", err)
+		}
+		defer lock.Close()
+		if _, alive := management.ReadPID(management.IntegratedPID(root)); alive {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			err := management.Stop(ctx, root, management.IntegratedPID(root))
+			cancel()
+			if err != nil {
+				log.Fatalf("stop Ducklion: %v", err)
+			}
+			fmt.Println("ducklion: stopped; PTY supervisors remain alive")
+		}
+	} else {
+		fmt.Println("ducklion: not Duckway-managed; skipped")
+	}
 }
 
 // cmdRestart is just stop + start. Sequential (proxy stop → cc stop →
 // proxy start → cc start) so the PID files don't race.
-func cmdRestart(configDir string) {
+func cmdRestart(configDir string, args []string) {
+	if len(args) > 1 || len(args) == 1 && args[0] != "-f" {
+		log.Fatal("usage: duckway restart [-f]")
+	}
+	if len(args) == 0 {
+		if record, err := management.Read(filepath.Join(configDir, "ducklion")); err == nil && record.Mode == management.Integrated {
+			if err := waitForDucklionIdle(configDir); err != nil {
+				log.Fatalf("Ducklion did not become idle: %v", err)
+			}
+			root := filepath.Join(configDir, "ducklion")
+			if _, alive := management.ReadPID(management.IntegratedPID(root)); alive {
+				managerLock, err := management.Acquire(root)
+				if err != nil {
+					_ = resumeDucklion(root)
+					log.Fatalf("Ducklion management lock: %v", err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				err = management.Stop(ctx, root, management.IntegratedPID(root))
+				cancel()
+				_ = managerLock.Close()
+				if err != nil {
+					_ = resumeDucklion(root)
+					log.Fatalf("stop Ducklion after drain: %v", err)
+				}
+			}
+		}
+	} else {
+		fmt.Println("Warning: forcing Duckway daemon restart while agent work may be active")
+	}
 	cmdStop(configDir)
 	cmdStart(configDir)
 }
@@ -2341,7 +2451,11 @@ func readPID(pidFile string) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(fields[0])
 	if err != nil || pid <= 0 {
 		return 0, false
 	}

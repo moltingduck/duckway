@@ -23,6 +23,7 @@ import (
 
 	"github.com/hackerduck/duckway/internal/ducklion"
 	"github.com/hackerduck/duckway/internal/ducklion/daemon"
+	"github.com/hackerduck/duckway/internal/ducklion/management"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/duckwayconfig"
 	"github.com/hackerduck/duckway/internal/projectregistry"
@@ -51,6 +52,12 @@ type SessionOutput struct {
 }
 
 func Main(args []string, stdout io.Writer) {
+	if len(args) > 0 && args[0] == "management" {
+		if err := runManagementCommand(args[1:], stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(args) >= 1 && args[0] == "__ducklion_agent_hook_v1" {
 		if err := runAgentHook(os.Stdin, args[1:]); err != nil {
 			os.Exit(1)
@@ -76,8 +83,33 @@ func Main(args []string, stdout io.Writer) {
 		return
 	}
 	if len(args) > 0 && args[0] == "daemon" {
-		if len(args) != 1 {
-			log.Fatal("usage: ducklion daemon")
+		if len(args) > 1 {
+			if err := runStandaloneDaemonCommand(args[1:], stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
+		root := daemon.DefaultRoot()
+		if err := os.MkdirAll(root, 0700); err != nil {
+			log.Fatal(err)
+		}
+		record, err := management.Read(root)
+		if os.IsNotExist(err) {
+			lock, lockErr := management.Acquire(root)
+			if lockErr != nil {
+				log.Fatal(lockErr)
+			}
+			exe, exeErr := os.Executable()
+			if exeErr == nil {
+				exeErr = management.EnsureStandalone(root, exe)
+			}
+			_ = lock.Close()
+			err = exeErr
+		} else if err == nil && record.Mode != management.Standalone {
+			err = fmt.Errorf("ducklion is not standalone-managed")
+		}
+		if err != nil {
+			log.Fatalf("Ducklion standalone ownership: %v", err)
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -104,6 +136,170 @@ func Main(args []string, stdout io.Writer) {
 	manager := ducklion.NewManager(ducklion.DefaultRoot(), "")
 	if err := Run(manager, args, stdout); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func runManagementCommand(args []string, out io.Writer) error {
+	root := daemon.DefaultRoot()
+	if len(args) == 2 && args[0] == "status" && args[1] == "--json" {
+		record, err := management.Read(root)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(record)
+	}
+	if len(args) != 3 || args[0] != "install-standalone" {
+		return fmt.Errorf("usage: ducklion management status --json | install-standalone <dest> <sha256>")
+	}
+	dest, wantSHA := args[1], strings.ToLower(args[2])
+	if !filepath.IsAbs(dest) || filepath.Base(dest) != "ducklion" || len(wantSHA) != 64 {
+		return fmt.Errorf("invalid Ducklion install destination or checksum")
+	}
+	staged, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	file, err := os.Open(staged)
+	if err != nil {
+		return err
+	}
+	hasher := sha256.New()
+	_, copyErr := io.Copy(hasher, file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if hex.EncodeToString(hasher.Sum(nil)) != wantSHA {
+		return fmt.Errorf("staged Ducklion checksum mismatch")
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
+		return err
+	}
+	parent, err := os.Lstat(filepath.Dir(dest))
+	if err != nil || !parent.IsDir() || parent.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("ducklion install directory is not a real directory")
+	}
+	if stat, ok := parent.Sys().(*syscall.Stat_t); !ok || stat.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("ducklion install directory must belong to the current user")
+	}
+	if info, err := os.Lstat(dest); err == nil && !info.Mode().IsRegular() || err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("ducklion destination must be a regular file or absent")
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return err
+	}
+	lock, err := management.Acquire(root)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := management.EnsureStandalone(root, dest); err != nil {
+		return err
+	}
+	if err := os.Rename(staged, dest); err != nil {
+		return err
+	}
+	if err := management.Write(root, management.Record{Mode: management.Standalone, ManagedBy: "ducklord", Binary: dest, Version: version.Get()}); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "DUCKLION_INSTALLED\t%s\n", dest)
+	return nil
+}
+
+func runStandaloneDaemonCommand(args []string, out io.Writer) error {
+	if len(args) == 0 || len(args) > 2 || len(args) == 2 && args[1] != "-f" {
+		return fmt.Errorf("usage: ducklion daemon <start|status|stop|restart [-f]>")
+	}
+	root := daemon.DefaultRoot()
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return err
+	}
+	lock, err := management.Acquire(root)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	pidPath := management.StandalonePID(root)
+	switch args[0] {
+	case "status":
+		record, err := management.Read(root)
+		if err != nil {
+			return err
+		}
+		pid, alive := management.ReadPID(pidPath)
+		fmt.Fprintf(out, "Ducklion: %s, manager=%s, running=%t, pid=%d\n", record.Mode, record.ManagedBy, alive, pid)
+		return nil
+	case "start":
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		if err := management.EnsureStandalone(root, exe); err != nil {
+			return err
+		}
+		if err := management.Start(root, exe, []string{"daemon"}, nil, pidPath, filepath.Join(root, "standalone.log")); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "Ducklion standalone daemon started")
+		return nil
+	case "stop", "restart":
+		record, err := management.Read(root)
+		if err != nil || record.Mode != management.Standalone {
+			return fmt.Errorf("ducklion is not standalone-managed")
+		}
+		if args[0] == "restart" && len(args) == 1 {
+			if err := waitForIdleAndQuiesce(root); err != nil {
+				return err
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := management.Stop(ctx, root, pidPath); err != nil {
+			return err
+		}
+		if args[0] == "stop" {
+			fmt.Fprintln(out, "Ducklion standalone daemon stopped; PTY supervisors remain alive")
+			return nil
+		}
+		if len(args) == 2 {
+			fmt.Fprintln(out, "Warning: forcing Ducklion daemon restart while agent work may be active")
+		}
+		if err := management.Start(root, record.Binary, []string{"daemon"}, nil, pidPath, filepath.Join(root, "standalone.log")); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "Ducklion standalone daemon restarted")
+		return nil
+	default:
+		return fmt.Errorf("usage: ducklion daemon <start|status|stop|restart [-f]>")
+	}
+}
+
+func waitForIdleAndQuiesce(root string) error {
+	for {
+		conn, err := daemon.Dial(filepath.Join(root, "ducklion.sock"), "duckway-integration")
+		if err != nil {
+			return err
+		}
+		body, bodyErr := management.RequestBody(root)
+		if bodyErr != nil {
+			_ = conn.Close()
+			return bodyErr
+		}
+		response, callErr := conn.Call(protocol.Request{ID: "maintenance-quiesce", Type: "management.quiesce", InstanceID: conn.InstanceID(), Body: body})
+		_ = conn.Close()
+		if callErr != nil {
+			return callErr
+		}
+		if response.Error == nil {
+			return nil
+		}
+		if response.Error.Code != protocol.ErrTaskActive {
+			return fmt.Errorf("ducklion quiesce: %s", response.Error.Message)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

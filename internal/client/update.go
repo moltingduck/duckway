@@ -114,6 +114,16 @@ func DownloadAndReplaceClient(serverURL string) error {
 }
 
 func DownloadAndReplaceClientWithInfo(serverURL string, info *UpdateInfo) error {
+	return downloadAndReplaceClientWithInfo(serverURL, info, true)
+}
+
+// DownloadAndReplaceClientOnly keeps an independently managed Ducklion binary
+// untouched while updating the Duckway client executable.
+func DownloadAndReplaceClientOnly(serverURL string, info *UpdateInfo) error {
+	return downloadAndReplaceClientWithInfo(serverURL, info, false)
+}
+
+func downloadAndReplaceClientWithInfo(serverURL string, info *UpdateInfo, includeDucklion bool) error {
 	if err := validateUpdateInfo(info, runtime.GOOS, runtime.GOARCH); err != nil {
 		return err
 	}
@@ -133,7 +143,7 @@ func DownloadAndReplaceClientWithInfo(serverURL string, info *UpdateInfo) error 
 	defer os.Remove(clientTmp)
 
 	ducklionTmp := ""
-	if info.DucklionBinary != "" || info.DucklionDownloadURL != "" || info.DucklionSHA256 != "" {
+	if includeDucklion && (info.DucklionBinary != "" || info.DucklionDownloadURL != "" || info.DucklionSHA256 != "") {
 		if info.DucklionSHA256 == "" {
 			return fmt.Errorf("server returned ducklion manifest without sha256")
 		}

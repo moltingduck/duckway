@@ -1216,6 +1216,9 @@ type tuiState struct {
 	newSessionPathBusy        bool
 	newSessionPathCompletion  string
 	addClientMode             bool
+	addClientStep             string
+	addClientProvisionMode    string
+	addClientModeSelected     int
 	addClientLine             string
 	addClientSelected         int
 	addClientErr              string
@@ -4508,6 +4511,23 @@ func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
 	if !s.addClientMode {
 		return
 	}
+	if s.addClientStep == "mode" {
+		standaloneStyle, integratedStyle := "", ""
+		if s.addClientModeSelected == 0 {
+			standaloneStyle = modalSelected
+		} else {
+			integratedStyle = modalSelected
+		}
+		lines := []modalRenderLine{
+			{modalTitle, "  Add Ducklion host · management mode"},
+			{standaloneStyle, "  Standalone · Ducklord installs and manages Ducklion"},
+			{integratedStyle, "  Duckway proxy · connect only; Duckway manages Ducklion"},
+			{modalMuted, "  Standalone may upload and start Ducklion on the chosen host."},
+			{modalMuted, "  ↑/↓ choose   Enter continue   Esc cancel"},
+		}
+		renderModalBox(out, cols, rows, lines)
+		return
+	}
 	selected := -1
 	if len(s.addClientHosts) > 0 && s.addClientLine == "" {
 		selected = min(max(s.addClientSelected, 0), len(s.addClientHosts)-1)
@@ -4519,7 +4539,7 @@ func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
 		start = min(start, len(choices)-maxChoices)
 		choices = choices[start : start+maxChoices]
 	}
-	lines := []modalRenderLine{{modalTitle, "  Add Ducklion host"}}
+	lines := []modalRenderLine{{modalTitle, "  Add Ducklion host · " + s.addClientProvisionMode}}
 	if len(choices) == 0 {
 		lines = append(lines, modalRenderLine{modalMuted, "  No SSH config hosts found"})
 	}
@@ -4534,7 +4554,7 @@ func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
 	if status == "" {
 		status = "Choose an SSH host or enter user@host"
 	}
-	help := "  ↑/↓ select   Enter add   Esc cancel"
+	help := "  ↑/↓ select   Enter add   Esc back"
 	if s.addClientBusy {
 		help = "  Connecting in background   Esc cancel"
 	}
@@ -6134,6 +6154,9 @@ func (s *tuiState) beginAddClient() {
 		return
 	}
 	s.addClientMode = true
+	s.addClientStep = "mode"
+	s.addClientProvisionMode = ""
+	s.addClientModeSelected = 0
 	s.addClientLine = ""
 	s.addClientSelected = 0
 	s.addClientErr = ""
@@ -6145,6 +6168,8 @@ func (s *tuiState) beginAddClient() {
 func (s *tuiState) cancelAddClient() {
 	s.cancelAddClientWork()
 	s.addClientMode = false
+	s.addClientStep = ""
+	s.addClientProvisionMode = ""
 	s.addClientLine = ""
 	s.addClientSelected = 0
 	s.addClientErr = ""
@@ -6226,6 +6251,30 @@ func (s *tuiState) handleRemoveClientInput(input []byte) string {
 }
 
 func (s *tuiState) handleAddClientInput(input []byte) string {
+	if s.addClientStep == "mode" {
+		switch string(input) {
+		case "j", "\x1b[B":
+			s.addClientModeSelected = 1
+		case "k", "\x1b[A":
+			s.addClientModeSelected = 0
+		case "\r", "\n":
+			if s.addClientModeSelected == 0 {
+				s.addClientProvisionMode = "standalone"
+			} else {
+				s.addClientProvisionMode = "integrated"
+			}
+			s.addClientStep = "host"
+			return "next"
+		case "\x1b":
+			return "cancel"
+		}
+		return ""
+	}
+	if string(input) == "\x1b" && s.addClientStep == "host" {
+		s.addClientStep = "mode"
+		s.addClientLine = ""
+		return "back"
+	}
 	switch string(input) {
 	case "\x1b[B":
 		if s.addClientSelected < len(s.addClientHosts)-1 {
@@ -6252,7 +6301,7 @@ func (s *tuiState) submitAddClient(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	result := runAddClient(ctx, s.runner, client)
+	result := runAddClientWithMode(ctx, s.runner, client, s.addClientProvisionMode, nil)
 	if result.err != nil {
 		return result.err
 	}
@@ -6271,8 +6320,9 @@ func (s *tuiState) startAddClient(ctx context.Context, done chan<- addClientDone
 	s.addClientCancel = cancel
 	s.addClientBusy = true
 	s.addClientErr = "probing " + client.Name + "..."
+	mode := s.addClientProvisionMode
 	go func() {
-		result := runAddClientWithProgress(workCtx, s.runner, client, func(status string) {
+		result := runAddClientWithMode(workCtx, s.runner, client, mode, func(status string) {
 			select {
 			case done <- addClientDoneEvent{id: id, progress: true, status: status}:
 			case <-workCtx.Done():
@@ -6314,6 +6364,10 @@ func runAddClient(ctx context.Context, runner remoteRunner, client ducklord.Clie
 }
 
 func runAddClientWithProgress(ctx context.Context, runner remoteRunner, client ducklord.Client, progress func(string)) addClientDoneEvent {
+	return runAddClientWithMode(ctx, runner, client, "", progress)
+}
+
+func runAddClientWithMode(ctx context.Context, runner remoteRunner, client ducklord.Client, mode string, progress func(string)) addClientDoneEvent {
 	result := addClientDoneEvent{client: client}
 	probe, err := runner.ProbeDucklion(ctx, client)
 	if err != nil {
@@ -6323,12 +6377,17 @@ func runAddClientWithProgress(ctx context.Context, runner remoteRunner, client d
 	var installErr error
 	installed := false
 	if !probe.Available {
+		if mode == "integrated" || mode == "" && probe.DuckwayPresent {
+			result.err = fmt.Errorf("duckway is installed on %s but Ducklion is unavailable; run duckway start or duckway integrate ducklion on that host", client.Name)
+			return result
+		}
 		if progress != nil {
 			progress("installing ducklion on " + client.Name + "...")
 		}
 		installedPath, err := runner.InstallDucklion(ctx, client, "", "")
 		if err != nil {
-			installErr = err
+			result.err = fmt.Errorf("ducklion was not installed on %s; host was not saved: %w", client.Name, err)
+			return result
 		} else {
 			installed = true
 			client.Ducklion = installedPath
@@ -6343,9 +6402,31 @@ func runAddClientWithProgress(ctx context.Context, runner remoteRunner, client d
 			}
 		}
 	}
+	if probe.Manager != "standalone" && probe.Manager != "integrated" {
+		result.err = fmt.Errorf("ducklion management mode on %s is unavailable; host was not saved", client.Name)
+		return result
+	}
+	if mode != "" && probe.Manager != mode {
+		result.err = fmt.Errorf("ducklion on %s is %s-managed, not %s; host was not saved", client.Name, probe.Manager, mode)
+		return result
+	}
+	if installed && probe.Manager != "standalone" {
+		result.err = fmt.Errorf("installed Ducklion on %s did not report standalone management; host was not saved", client.Name)
+		return result
+	}
 	if probe.Available && probe.Command != "" {
 		client.Ducklion = probe.Command
 	}
+	if progress != nil {
+		progress("connecting to Ducklion bridge on " + client.Name + "...")
+	}
+	sessions, err := runner.Sessions(ctx, client, 8)
+	if err != nil {
+		result.err = fmt.Errorf("ducklion bridge on %s is unavailable; host was not saved: %w", client.Name, err)
+		return result
+	}
+	probe.ListOK = true
+	probe.Sessions = len(sessions)
 	result.client, result.probe, result.installed, result.installErr = client, probe, installed, installErr
 	return result
 }
