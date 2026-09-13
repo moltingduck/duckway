@@ -1231,6 +1231,8 @@ type tuiState struct {
 	removeClientConfirm       string
 	helpMode                  bool
 	helpOffset                int
+	helpSearchActive          bool
+	helpSearchQuery           string
 	ptyScrollOffset           int
 	shortcutMode              bool
 	shortcutStep              string
@@ -2101,6 +2103,23 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 				continue
 			}
+			if state.helpSearchActive && !state.blockingModalOpen() {
+				if state.shortcut("help", string(b)) {
+					state.helpMode = false
+					state.helpOffset = 0
+					state.helpSearchActive = false
+					state.helpSearchQuery = ""
+				} else {
+					state.handleHelpSearchInput(b)
+				}
+				state.render(os.Stdout)
+				continue
+			}
+			if state.helpMode && !state.focused && !state.blockingModalOpen() && string(b) == "/" && !state.shortcut("help", string(b)) {
+				state.helpSearchActive = true
+				state.render(os.Stdout)
+				continue
+			}
 			if state.focused {
 				if !state.hostIsLive(state.currentSession().Client) {
 					state.focused = false
@@ -2670,6 +2689,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.helpMode = !state.helpMode
 				if !state.helpMode {
 					state.helpOffset = 0
+					state.helpSearchActive = false
+					state.helpSearchQuery = ""
 				}
 			case "shortcut-settings":
 				state.beginShortcutSettings()
@@ -4520,7 +4541,7 @@ func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
 		}
 		lines := []modalRenderLine{
 			{modalTitle, "  Add Ducklion host · who manages Ducklion?"},
-			{standaloneStyle, "  Standalone · Ducklord installs missing Ducklion"},
+			{standaloneStyle, "  Standalone · Use Ducklion without Duckway proxy"},
 			{integratedStyle, "  Duckway proxy · Duckway installs and manages Ducklion"},
 			{modalMuted, "  Already installed: verify and connect; no reinstall."},
 			{modalMuted, "  Missing: Standalone installs; proxy requires remote setup."},
@@ -4616,25 +4637,82 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
 		{"", "shortcut_settings", "Configure shortcuts"},
 	}
-	lines := []modalRenderLine{{modalTitle, "  Keyboard shortcuts · grouped by target"}}
+	query := strings.ToLower(strings.TrimSpace(s.helpSearchQuery))
+	results := []modalRenderLine{}
+	category := ""
+	categoryEntries := []modalRenderLine{}
+	flushCategory := func() {
+		if len(categoryEntries) == 0 {
+			return
+		}
+		results = append(results, modalRenderLine{modalStatus, "  " + category})
+		results = append(results, categoryEntries...)
+		categoryEntries = nil
+	}
 	for _, entry := range entries {
 		if s.hostScoped && (entry.action == "host_add" || entry.action == "host_remove" || entry.action == "session_create" || entry.action == "shortcut_settings") {
 			continue
 		}
 		if entry.category != "" {
-			lines = append(lines, modalRenderLine{modalStatus, "  " + entry.category})
+			flushCategory()
+			category = entry.category
 		}
-		lines = append(lines, modalRenderLine{modalInput, fmt.Sprintf("  %-12s %s", s.cfg.Shortcut(entry.action), entry.label)})
+		shortcut := s.cfg.Shortcut(entry.action)
+		if query == "" || strings.Contains(strings.ToLower(category+" "+entry.action+" "+entry.label+" "+shortcut), query) {
+			categoryEntries = append(categoryEntries, modalRenderLine{modalInput, fmt.Sprintf("  %-12s %s", shortcut, entry.label)})
+		}
 	}
-	lines = append(lines,
-		modalRenderLine{modalStatus, "  MOUSE"}, modalRenderLine{modalMuted, "  Click select · drag reorder · right-click focus/toggle"},
-		modalRenderLine{modalStatus, "  MODALS"}, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter confirm · Esc back · Ctrl+C close"},
-		modalRenderLine{modalMuted, "  Host connect/disconnect/reconnect affects all host sessions and notifications"},
-		modalRenderLine{modalMuted, "  Help stays pinned while you operate · ? closes"})
-	maxVisible := max(1, rows-4)
-	s.helpOffset = min(max(s.helpOffset, 0), max(0, len(lines)-maxVisible))
-	visible := lines[s.helpOffset:min(len(lines), s.helpOffset+maxVisible)]
-	renderModalBox(out, cols, rows, visible)
+	flushCategory()
+	if query == "" || strings.Contains("mouse click select drag reorder right-click focus toggle", query) {
+		results = append(results, modalRenderLine{modalStatus, "  MOUSE"}, modalRenderLine{modalMuted, "  Click select · drag reorder · right-click focus/toggle"})
+	}
+	if query == "" || strings.Contains("modals choose enter confirm esc back ctrl+c close", query) {
+		results = append(results, modalRenderLine{modalStatus, "  MODALS"}, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter confirm · Esc back · Ctrl+C close"})
+	}
+	if query == "" || strings.Contains("host connect disconnect reconnect sessions notifications", query) {
+		results = append(results, modalRenderLine{modalMuted, "  Host connect/disconnect/reconnect affects all host sessions and notifications"})
+	}
+	if len(results) == 0 {
+		results = append(results, modalRenderLine{modalMuted, "  No matching shortcuts"})
+	}
+	helpKey := s.cfg.Shortcut("help")
+	searchHint := "  / search shortcuts · " + helpKey + " close help"
+	if s.helpSearchActive {
+		searchHint = "  Search: " + s.helpSearchQuery + "_"
+	} else if s.helpSearchQuery != "" {
+		searchHint = "  Filter: " + s.helpSearchQuery + "  (/ edit · Esc in search clears)"
+	}
+	maxVisible := max(1, rows-5)
+	s.helpOffset = min(max(s.helpOffset, 0), max(0, len(results)-maxVisible))
+	lines := []modalRenderLine{{modalTitle, "  Keyboard shortcuts · grouped by target"}, {modalInput, searchHint}}
+	lines = append(lines, results[s.helpOffset:min(len(results), s.helpOffset+maxVisible)]...)
+	lines = append(lines, modalRenderLine{modalMuted, "  Pinned help · / search · Enter pin results · Esc clear · " + helpKey + " close"})
+	renderModalBox(out, cols, rows, lines)
+}
+
+func (s *tuiState) handleHelpSearchInput(input []byte) {
+	switch string(input) {
+	case "\x1b", "\x03":
+		s.helpSearchActive, s.helpSearchQuery, s.helpOffset = false, "", 0
+	case "\r", "\n":
+		s.helpSearchActive = false
+	case "\x1b[A":
+		s.helpOffset = max(0, s.helpOffset-1)
+	case "\x1b[B":
+		s.helpOffset++
+	case "\b", "\x7f":
+		s.helpSearchQuery = trimLastRune(s.helpSearchQuery)
+		s.helpOffset = 0
+	default:
+		if utf8.Valid(input) && !strings.ContainsRune(string(input), '\x1b') {
+			for _, r := range string(input) {
+				if !unicode.IsControl(r) && !unicode.Is(unicode.Cf, r) && len(s.helpSearchQuery)+utf8.RuneLen(r) <= 256 {
+					s.helpSearchQuery += string(r)
+				}
+			}
+			s.helpOffset = 0
+		}
+	}
 }
 
 func shortcutActions() []string {

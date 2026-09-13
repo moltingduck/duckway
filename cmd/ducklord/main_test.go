@@ -728,6 +728,50 @@ func TestPinnedHelpDoesNotCaptureEscapeOrNavigation(t *testing.T) {
 	}
 }
 
+func TestHelpSearchFiltersLabelsCategoriesAndConfiguredKeys(t *testing.T) {
+	state := &tuiState{cfg: &ducklord.Config{Shortcuts: map[string]string{"session_destroy": "Z"}}, helpMode: true, helpSearchActive: true}
+	state.handleHelpSearchInput([]byte("destroy"))
+	var out bytes.Buffer
+	state.renderHelpModal(&out, 100, 30)
+	if !strings.Contains(out.String(), "Destroy session") || strings.Contains(out.String(), "Create session") || !strings.Contains(out.String(), "SESSION") {
+		t.Fatalf("label filter rendered unexpected entries: %q", out.String())
+	}
+	state.helpSearchQuery = "z"
+	out.Reset()
+	state.renderHelpModal(&out, 100, 30)
+	if !strings.Contains(out.String(), "Destroy session") {
+		t.Fatalf("configured shortcut was not searchable: %q", out.String())
+	}
+	state.helpSearchQuery = "no-such-shortcut"
+	out.Reset()
+	state.renderHelpModal(&out, 100, 30)
+	if !strings.Contains(out.String(), "No matching shortcuts") {
+		t.Fatalf("missing empty-results feedback: %q", out.String())
+	}
+}
+
+func TestHelpSearchEditingAndPinnedExit(t *testing.T) {
+	state := &tuiState{cfg: &ducklord.Config{}, helpMode: true, helpSearchActive: true}
+	state.handleHelpSearchInput([]byte("中文"))
+	state.handleHelpSearchInput([]byte("\x7f"))
+	if state.helpSearchQuery != "中" {
+		t.Fatalf("rune-aware backspace query=%q", state.helpSearchQuery)
+	}
+	state.handleHelpSearchInput([]byte("\x1b[31m"))
+	if state.helpSearchQuery != "中" {
+		t.Fatalf("accepted control sequence: %q", state.helpSearchQuery)
+	}
+	state.handleHelpSearchInput([]byte("\r"))
+	if state.helpSearchActive || !state.helpMode || state.helpSearchQuery != "中" {
+		t.Fatalf("Enter did not pin filtered help: %+v", state)
+	}
+	state.helpSearchActive = true
+	state.handleHelpSearchInput([]byte("\x1b"))
+	if state.helpSearchActive || !state.helpMode || state.helpSearchQuery != "" {
+		t.Fatalf("Esc did not clear search while retaining help: %+v", state)
+	}
+}
+
 func TestParseSGRMouseWheel(t *testing.T) {
 	button, x, y, ok := parseSGRMouse("\x1b[<64;80;12M")
 	if !ok || button != 64 || x != 80 || y != 12 {
