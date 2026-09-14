@@ -94,6 +94,7 @@ type Terminal struct {
 	wrapPending        bool
 	cursorVisible      bool
 	synchronizedOutput bool
+	onSyncBegin        func()
 	retainedCells      int
 }
 
@@ -207,6 +208,15 @@ func (t *Terminal) SnapshotState() TerminalState {
 		UTF8Pending: append([]byte(nil), t.utf8Pending...), WrapPending: t.wrapPending}
 	state.CursorVisible = t.cursorVisible
 	state.SynchronizedOutput = t.synchronizedOutput
+	return state
+}
+
+func cloneTerminalState(state TerminalState) TerminalState {
+	state.Scrollback = cloneTerminalLines(state.Scrollback)
+	state.Primary.Lines = cloneTerminalLines(state.Primary.Lines)
+	state.Alternate.Lines = cloneTerminalLines(state.Alternate.Lines)
+	state.CSI = append([]byte(nil), state.CSI...)
+	state.UTF8Pending = append([]byte(nil), state.UTF8Pending...)
 	return state
 }
 
@@ -695,6 +705,14 @@ func (t *Terminal) executeCSI(final byte, raw string) {
 	case 'h', 'l':
 		enabled := final == 'h'
 		if private {
+			if enabled && !t.synchronizedOutput && t.onSyncBegin != nil {
+				for _, param := range params {
+					if param == 2026 {
+						t.onSyncBegin()
+						break
+					}
+				}
+			}
 			for _, param := range params {
 				switch param {
 				case 7:

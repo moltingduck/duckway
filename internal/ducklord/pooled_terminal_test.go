@@ -143,11 +143,19 @@ func TestPooledTerminalPublishesSynchronizedRedrawAtomically(t *testing.T) {
 
 	begin := []byte("\x1b[?2026h\x1b[2J\x1b[H")
 	reader.results <- pooledReadResult{frame: OutputFrame{Data: begin, StartOffset: 10, EndOffset: 10 + uint64(len(begin))}}
-	waitPooledOffset(t, p, 10+uint64(len(begin)))
+	waitPooledRawOffset(t, p, 10+uint64(len(begin)))
 	select {
 	case <-p.Updates():
 		t.Fatal("published a partially erased synchronized frame")
 	default:
+	}
+	intermediate := p.View()
+	if intermediate.OutputOffset != 10 || intermediate.Framebuffer.Primary.Lines[0].Cells[0].Rune != 'o' {
+		t.Fatal("View exposed a partially erased synchronized frame")
+	}
+	intermediate.Framebuffer.Primary.Lines[0].Cells[0].Rune = 'X'
+	if p.View().Framebuffer.Primary.Lines[0].Cells[0].Rune != 'o' {
+		t.Fatal("published synchronized frame was mutable")
 	}
 
 	finish := []byte("\x1b[38;2;80;160;240mcomplete\x1b[0m\x1b[?2026l")
@@ -162,6 +170,115 @@ func TestPooledTerminalPublishesSynchronizedRedrawAtomically(t *testing.T) {
 	restored, ok := NewTerminalFromState(p.View().Framebuffer, 4)
 	if !ok || !strings.Contains(restored.Text(), "complete") {
 		t.Fatalf("completed framebuffer missing redraw: ok=%v text=%q", ok, restored.Text())
+	}
+}
+
+func TestPooledTerminalFlushesUnclosedSynchronizedRedrawAfterQuietPeriod(t *testing.T) {
+	reader := newFakePooledOutput()
+	p, err := newPooledTerminal(context.Background(), pooledMetadata(0), reader, pooledOptions(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	begin := []byte("\x1b[?2026hnew answer")
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: begin, StartOffset: 0, EndOffset: uint64(len(begin))}}
+	waitPooledRawOffset(t, p, uint64(len(begin)))
+	if p.View().OutputOffset != 0 {
+		t.Fatal("published unclosed synchronized redraw too early")
+	}
+	select {
+	case <-p.Updates():
+	case <-time.After(2 * time.Second):
+		t.Fatal("unclosed synchronized redraw remained frozen")
+	}
+	if got := p.View().OutputOffset; got != uint64(len(begin)) {
+		t.Fatalf("quiet-period publish offset=%d want=%d", got, len(begin))
+	}
+}
+
+func TestPooledTerminalFlushesContinuouslyStreamingSynchronizedRedraw(t *testing.T) {
+	reader := newFakePooledOutput()
+	p, err := newPooledTerminal(context.Background(), pooledMetadata(0), reader, pooledOptions(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	begin := []byte("\x1b[?2026h")
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: begin, StartOffset: 0, EndOffset: uint64(len(begin))}}
+	waitPooledRawOffset(t, p, uint64(len(begin)))
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		offset := uint64(len(begin))
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				select {
+				case reader.results <- pooledReadResult{frame: OutputFrame{Data: []byte("x"), StartOffset: offset, EndOffset: offset + 1}}:
+				case <-stop:
+					return
+				}
+				offset++
+			}
+		}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for p.View().OutputOffset <= uint64(len(begin)) {
+		if time.Now().After(deadline) {
+			t.Fatal("continuous low-volume synchronized output froze the published view")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestPooledTerminalRestoredSynchronizedCheckpointKeepsStableView(t *testing.T) {
+	base := NewTerminal(2, 20, 4)
+	base.Write([]byte("old\x1b[?2026h"))
+	state := base.SnapshotState()
+	options := pooledOptions(t.TempDir())
+	options.Initial = &TerminalRenderState{Framebuffer: &state, RuntimeGeneration: 2, OutputOffset: 12, ResumeCursorValid: true}
+	metadata := pooledMetadata(12)
+	metadata.StartOffset = 12
+	metadata.ExactResume = true
+	reader := newFakePooledOutput()
+	p, err := newPooledTerminal(context.Background(), metadata, reader, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	erase := []byte("\x1b[2J")
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: erase, StartOffset: 12, EndOffset: 12 + uint64(len(erase))}}
+	waitPooledRawOffset(t, p, 12+uint64(len(erase)))
+	if got := p.View().Framebuffer.Primary.Lines[0].Cells[0].Rune; got != 'o' {
+		t.Fatalf("restored synchronized checkpoint exposed in-progress redraw: %q", got)
+	}
+}
+
+func TestPooledTerminalCleanEndRevealsUnclosedSynchronizedFrame(t *testing.T) {
+	reader := newFakePooledOutput()
+	p, err := newPooledTerminal(context.Background(), pooledMetadata(0), reader, pooledOptions(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	data := []byte("old\x1b[?2026h\x1b[2J\x1b[Hfinal answer")
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: data, StartOffset: 0, EndOffset: uint64(len(data))}}
+	waitPooledRawOffset(t, p, uint64(len(data)))
+	reader.results <- pooledReadResult{err: &daemon.OutputStreamEnded{Reason: "runtime_stopped", NextOffset: uint64(len(data))}}
+	deadline := time.Now().Add(time.Second)
+	for !p.View().Ended {
+		if time.Now().After(deadline) {
+			t.Fatal("clean PTY end did not publish a final view")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	terminal, ok := NewTerminalFromState(p.View().Framebuffer, 4)
+	if !ok || !strings.Contains(terminal.Text(), "final answer") {
+		t.Fatal("clean end lost synchronized final answer")
 	}
 }
 
@@ -333,6 +450,23 @@ func waitPooledOffset(t *testing.T, p *PooledTerminal, want uint64) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("offset=%d want=%d", p.View().OutputOffset, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func waitPooledRawOffset(t *testing.T, p *PooledTerminal, want uint64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		p.mu.Lock()
+		got := p.offset
+		p.mu.Unlock()
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("raw offset=%d want=%d", got, want)
 		}
 		time.Sleep(time.Millisecond)
 	}

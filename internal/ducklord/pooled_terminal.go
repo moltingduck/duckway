@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion/daemon"
 )
@@ -14,6 +15,7 @@ const (
 	MaxPooledTerminalRows      = 200
 	MaxPooledTerminalCols      = 500
 	maxSynchronizedOutputBytes = 256 * 1024
+	maxSynchronizedOutputDelay = 500 * time.Millisecond
 )
 
 type OutputStreamMetadata struct {
@@ -81,6 +83,11 @@ type PooledTerminal struct {
 	readErr           error
 	cleanEnd          bool
 	viewRevision      uint64
+	publishedState    TerminalState
+	publishedOffset   uint64
+	publishedRevision uint64
+	syncFlushEpoch    uint64
+	syncFlushTimer    *time.Timer
 	synchronizedBytes int
 	pendingResizes    []pooledTerminalResize
 	finalViews        chan PooledTerminalView
@@ -149,6 +156,12 @@ func newPooledTerminal(ctx context.Context, metadata OutputStreamMetadata, reade
 	p := &PooledTerminal{stream: reader, terminal: terminal, store: options.Store, expected: options.ExpectedKey, revision: options.ExpectedRevision,
 		offset: metadata.StartOffset, replayEnd: metadata.ReplayEndOffset, truncated: truncated, contiguous: true, viewRevision: 1,
 		cancel: cancel, done: make(chan struct{}), readyCh: make(chan struct{})}
+	p.terminal.onSyncBegin = func() { p.publishFrameLocked() }
+	if p.terminal.SynchronizedOutput() {
+		// A legacy checkpoint may have captured an unfinished synchronized
+		// redraw. Keep that state stable while replay finishes the redraw.
+		p.publishFrameLocked()
+	}
 	p.updates = make(chan struct{}, 1)
 	p.finalViews = make(chan PooledTerminalView, 1)
 	if p.offset >= p.replayEnd {
@@ -270,16 +283,54 @@ func (p *PooledTerminal) applyFrameLocked(frame OutputFrame) bool {
 		p.synchronizedBytes += len(frame.Data)
 		if p.synchronizedBytes >= maxSynchronizedOutputBytes {
 			p.synchronizedBytes = 0
+			p.publishFrameLocked()
 			p.signalUpdateLocked()
+			p.cancelSynchronizedFlushLocked()
 		}
+		p.scheduleSynchronizedFlushLocked()
 	} else {
 		p.synchronizedBytes = 0
+		p.cancelSynchronizedFlushLocked()
 		p.signalUpdateLocked()
 	}
 	if p.offset >= p.replayEnd {
 		p.markReadyLocked()
 	}
 	return true
+}
+
+func (p *PooledTerminal) publishFrameLocked() {
+	p.publishedState = p.terminal.SnapshotState()
+	p.publishedOffset = p.offset
+	p.publishedRevision = p.viewRevision
+}
+
+func (p *PooledTerminal) cancelSynchronizedFlushLocked() {
+	p.syncFlushEpoch++
+	if p.syncFlushTimer != nil {
+		p.syncFlushTimer.Stop()
+		p.syncFlushTimer = nil
+	}
+}
+
+func (p *PooledTerminal) scheduleSynchronizedFlushLocked() {
+	if p.syncFlushTimer != nil {
+		return
+	}
+	epoch := p.syncFlushEpoch
+	p.syncFlushTimer = time.AfterFunc(maxSynchronizedOutputDelay, func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.closing || p.syncFlushEpoch != epoch || !p.terminal.SynchronizedOutput() {
+			return
+		}
+		p.syncFlushTimer = nil
+		if p.publishedOffset == p.offset {
+			return
+		}
+		p.publishFrameLocked()
+		p.signalUpdateLocked()
+	})
 }
 
 func (p *PooledTerminal) scheduleResize(barrier uint64, rows, cols int) error {
@@ -308,6 +359,7 @@ func (p *PooledTerminal) scheduleResize(barrier uint64, rows, cols int) error {
 
 func (p *PooledTerminal) finishRead(err error) {
 	p.mu.Lock()
+	p.cancelSynchronizedFlushLocked()
 	if p.closing || errors.Is(err, context.Canceled) || errors.Is(err, daemon.ErrOutputSubscriptionClosed) || errors.Is(err, ErrStaleOutputLease) {
 		p.mu.Unlock()
 		return
@@ -358,8 +410,15 @@ func (p *PooledTerminal) View() PooledTerminalView {
 }
 
 func (p *PooledTerminal) viewLocked() PooledTerminalView {
-	view := PooledTerminalView{Framebuffer: p.terminal.SnapshotState(), Revision: p.viewRevision, RuntimeGeneration: p.revision.RuntimeGeneration,
-		OutputOffset: p.offset, ReplayEndOffset: p.replayEnd, Ready: p.ready, Truncated: p.truncated, Disconnected: p.disconnect, Ended: p.cleanEnd}
+	var framebuffer TerminalState
+	offset, revision := p.offset, p.viewRevision
+	if p.terminal.SynchronizedOutput() && !p.cleanEnd && p.publishedRevision != 0 {
+		framebuffer, offset, revision = cloneTerminalState(p.publishedState), p.publishedOffset, p.publishedRevision
+	} else {
+		framebuffer = p.terminal.SnapshotState()
+	}
+	view := PooledTerminalView{Framebuffer: framebuffer, Revision: revision, RuntimeGeneration: p.revision.RuntimeGeneration,
+		OutputOffset: offset, ReplayEndOffset: p.replayEnd, Ready: p.ready, Truncated: p.truncated, Disconnected: p.disconnect, Ended: p.cleanEnd}
 	if p.readErr != nil && !p.cleanEnd {
 		view.Error = "PTY output stream disconnected"
 	}
@@ -394,6 +453,7 @@ func (p *PooledTerminal) Close() error {
 	p.closeOnce.Do(func() {
 		p.mu.Lock()
 		p.closing = true
+		p.cancelSynchronizedFlushLocked()
 		p.mu.Unlock()
 		p.cancel()
 		p.closeErr = p.stream.Close()
