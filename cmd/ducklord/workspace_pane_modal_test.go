@@ -54,9 +54,10 @@ func TestWorkspacePaneModalPlacesExistingAtomicallyAndKeepsQuickSelection(t *tes
 	state.handleWorkspacePaneInput([]byte("\r"))
 	state.handleWorkspacePaneInput([]byte("j")) // add existing
 	state.handleWorkspacePaneInput([]byte("\r"))
-	if state.workspacePaneStep != "existing" || len(state.workspacePaneCandidates()) != 1 {
-		t.Fatalf("existing picker did not filter current Project: %v", state.workspacePaneChoices())
+	if state.workspacePaneStep != "existing" || len(state.workspacePaneCandidates()) != 2 {
+		t.Fatalf("existing picker did not offer current Project pane for move: %v", state.workspacePaneChoices())
 	}
+	state.handleWorkspacePaneInput([]byte("\x1b[B")) // choose B, not A already in Project
 	state.handleWorkspacePaneInput([]byte("\r"))
 	if state.workspacePaneMode || state.selected != 0 || state.focused || state.currentSession().SessionID != a.SessionID {
 		t.Fatal("local placement changed quick-list selection or PTY focus")
@@ -231,5 +232,89 @@ func TestWorkspacePaneActionStaleSourceAndSaveFailureAreAtomic(t *testing.T) {
 	}
 	if _, ok := state.activity().ProjectLayout.PaneSession(projectID, state.workspacePaneSourceID); !ok || state.workspacePaneChanged {
 		t.Fatal("failed save mutated live layout")
+	}
+}
+
+func TestWorkspaceExistingPickerMovesSameProjectPaneOnlyAfterConfirmation(t *testing.T) {
+	state, projectID, a, _ := workspacePaneTestState(t)
+	nav, _ := state.workspaceNavigation()
+	_ = nav.SelectProject(projectID)
+	oldID := nav.CurrentPaneID()
+	state.beginWorkspacePane()
+	state.handleWorkspacePaneInput([]byte("\r"))     // new tab
+	state.handleWorkspacePaneInput([]byte("\x1b[B")) // existing
+	state.handleWorkspacePaneInput([]byte("\r"))
+	if choices := state.workspacePaneChoices(); len(choices) == 0 || !strings.Contains(choices[0], "move in Project") {
+		t.Fatalf("same-Project pane missing from picker: %v", choices)
+	}
+	state.handleWorkspacePaneInput([]byte("\r"))
+	if state.workspacePaneStep != "existing-move-confirm" || state.workspacePaneIndex != 1 {
+		t.Fatalf("move confirmation missing or unsafe default: %s %d", state.workspacePaneStep, state.workspacePaneIndex)
+	}
+	state.handleWorkspacePaneInput([]byte("\r")) // default Cancel
+	if _, ok := state.activity().ProjectLayout.PaneSession(projectID, oldID); !ok || state.workspacePaneChanged {
+		t.Fatal("Cancel moved pane")
+	}
+	state.beginWorkspacePane()
+	state.handleWorkspacePaneInput([]byte("\r"))
+	state.handleWorkspacePaneInput([]byte("\x1b[B"))
+	state.handleWorkspacePaneInput([]byte("\r"))
+	state.handleWorkspacePaneInput([]byte("\r"))
+	state.handleWorkspacePaneInput([]byte("\x1b[A")) // explicitly Move
+	state.handleWorkspacePaneInput([]byte("\r"))
+	identity, _ := ducklord.IdentityFromSession(a)
+	if state.workspacePaneMode || !state.workspacePaneChanged {
+		t.Fatal("confirmed move did not commit")
+	}
+	if _, ok := state.activity().ProjectLayout.PaneSession(projectID, oldID); ok {
+		t.Fatal("old pane survived")
+	}
+	if got := state.activity().ProjectLayout.ProjectsFor(identity); len(got) != 1 || got[0] != projectID {
+		t.Fatalf("move duplicated membership: %v", got)
+	}
+	if len(state.sessions) != 2 || state.sessions[0].SessionID != a.SessionID {
+		t.Fatal("local move touched remote inventory")
+	}
+}
+
+func TestWorkspaceExistingPickerRejectsStaleTargetAndSaveFailure(t *testing.T) {
+	for _, failure := range []string{"stale target", "save failure"} {
+		t.Run(failure, func(t *testing.T) {
+			state, projectID, a, b := workspacePaneTestState(t)
+			nav, _ := state.workspaceNavigation()
+			_ = nav.SelectProject(projectID)
+			aID, _ := ducklord.IdentityFromSession(a)
+			bID, _ := ducklord.IdentityFromSession(b)
+			bPaneID, err := state.activity().ProjectLayout.Place(projectID, bID, ducklord.PlaceNewTab, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = nav.SelectPane(projectID, bPaneID)
+			state.beginWorkspacePane()
+			state.handleWorkspacePaneInput([]byte("j")) // split beside B
+			state.handleWorkspacePaneInput([]byte("\r"))
+			state.handleWorkspacePaneInput([]byte("\x1b[B"))
+			state.handleWorkspacePaneInput([]byte("\r"))
+			state.handleWorkspacePaneInput([]byte("\r")) // A -> confirmation
+			if state.workspacePaneStep != "existing-move-confirm" {
+				t.Fatalf("no confirmation: %s", state.workspacePaneStep)
+			}
+			if failure == "stale target" {
+				state.workspacePaneIntent.targetID = "missing"
+			} else {
+				state.activityStore.Path = t.TempDir()
+			}
+			state.handleWorkspacePaneInput([]byte("\x1b[A"))
+			state.handleWorkspacePaneInput([]byte("\r"))
+			if !state.workspacePaneMode || state.workspacePaneErr == "" || state.workspacePaneChanged {
+				t.Fatalf("failed move did not remain in modal: %q", state.workspacePaneErr)
+			}
+			if _, ok := state.activity().ProjectLayout.PaneSession(projectID, bPaneID); !ok {
+				t.Fatal("failed move changed target pane")
+			}
+			if got := state.activity().ProjectLayout.ProjectsFor(aID); len(got) != 1 || got[0] != projectID {
+				t.Fatalf("failed move changed A: %v", got)
+			}
+		})
 	}
 }

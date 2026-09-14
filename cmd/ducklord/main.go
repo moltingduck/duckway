@@ -2498,6 +2498,15 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.workspacePaneChanged = false
 					controlID++
 					attachID++
+					resizeInFlight = false
+					pendingFramebufferResize = nil
+					queuedResize = nil
+					bufferedAttach = nil
+					bufferedAttachBytes = 0
+					attachOutputSource = attachOut
+					attachCanResize = false
+					attachInitialResizeQueued = false
+					attachReplayEndOffset = 0
 					if controlOpenCancel != nil {
 						controlOpenCancel()
 						controlOpenCancel = nil

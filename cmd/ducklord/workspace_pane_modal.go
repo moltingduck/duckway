@@ -144,17 +144,36 @@ func (s *tuiState) workspacePaneCandidates() []ducklord.RemoteSession {
 			!strings.Contains(strings.ToLower(session.Name+" "+session.Client+" "+session.SessionID), query) {
 			continue
 		}
-		inProject := false
-		for _, projectID := range s.activity().ProjectLayout.ProjectsFor(identity) {
-			inProject = inProject || projectID == s.workspacePaneIntent.projectID
-		}
-		if inProject {
-			continue
-		}
 		seen[identity] = true
 		candidates = append(candidates, session)
 	}
 	return candidates
+}
+
+func paneIDForSession(pane *ducklord.SessionPane, identity ducklord.SessionIdentity) string {
+	if pane == nil {
+		return ""
+	}
+	if pane.Session != nil && *pane.Session == identity {
+		return pane.ID
+	}
+	if id := paneIDForSession(pane.First, identity); id != "" {
+		return id
+	}
+	return paneIDForSession(pane.Second, identity)
+}
+
+func (s *tuiState) projectPaneForSession(identity ducklord.SessionIdentity) string {
+	project := s.activity().ProjectLayout.Project(s.workspacePaneIntent.projectID)
+	if project == nil {
+		return ""
+	}
+	for _, tab := range project.Tabs {
+		if id := paneIDForSession(tab.Root, identity); id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 func (s *tuiState) workspacePaneChoices() []string {
@@ -182,13 +201,19 @@ func (s *tuiState) workspacePaneChoices() []string {
 		return choices
 	case "move-confirm":
 		return []string{"Move local pane", "Cancel"}
+	case "existing-move-confirm":
+		return []string{"Move existing pane here", "Cancel"}
 	case "detach-confirm":
 		return []string{"Detach local pane", "Cancel"}
 	case "existing":
 		candidates := s.workspacePaneCandidates()
 		choices := make([]string, 0, len(candidates))
 		for _, session := range candidates {
-			choices = append(choices, fmt.Sprintf("%s @%s  [%s]", displayField(session.Name), displayField(session.Client), session.SessionID))
+			label := fmt.Sprintf("%s @%s  [%s]", displayField(session.Name), displayField(session.Client), session.SessionID)
+			if identity, ok := ducklord.IdentityFromSession(session); ok && s.projectPaneForSession(identity) != "" {
+				label += "  (move in Project)"
+			}
+			choices = append(choices, label)
 		}
 		return choices
 	}
@@ -222,6 +247,17 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 	}
 	if s.workspacePaneStep == "move-confirm" {
 		lines = append(lines, modalRenderLine{modalMuted, "  Local view only; remote session stays running."})
+	}
+	if s.workspacePaneStep == "existing-move-confirm" {
+		lines = append(lines, modalRenderLine{modalMuted, "  Already in this Project; move its pane, not duplicate it."})
+		label := s.workspacePaneIdentity.SessionID
+		for _, session := range s.sessions {
+			if identity, ok := ducklord.IdentityFromSession(session); ok && identity == s.workspacePaneIdentity {
+				label = displayField(session.Name) + " @" + displayField(session.Client)
+				break
+			}
+		}
+		lines = append(lines, modalRenderLine{modalMuted, "  Session: " + label})
 	}
 	if s.workspacePaneStep == "existing" {
 		lines = append(lines, modalRenderLine{modalInput, "  find › " + s.workspacePaneQuery + "_"})
@@ -297,6 +333,7 @@ func (s *tuiState) placeWorkspacePane(intent workspacePaneIntent, session ducklo
 		return fmt.Errorf("save Session pane: %w", err)
 	}
 	s.activityState = next
+	s.workspacePaneChanged = true
 	nav, err := s.workspaceNavigation()
 	if err != nil {
 		s.outputErr = "Session pane saved; navigation will refresh: " + sanitizeTerminalText(err.Error())
@@ -368,6 +405,8 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 			} else {
 				s.workspacePaneStep = "move-target"
 			}
+		case "existing-move-confirm":
+			s.workspacePaneStep = "existing"
 		default:
 			s.closeWorkspacePane()
 		}
@@ -416,7 +455,7 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 		case "move-target":
 			s.workspacePaneIntent.targetID = s.workspaceMoveTargets()[index]
 			s.workspacePaneStep, s.workspacePaneIndex = "move-confirm", 1
-		case "move-confirm", "detach-confirm":
+		case "move-confirm", "detach-confirm", "existing-move-confirm":
 			if index == 1 {
 				s.closeWorkspacePane()
 				return false
@@ -442,7 +481,18 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 			}
 			s.workspacePaneStep, s.workspacePaneIndex, s.workspacePaneErr, s.workspacePaneQuery = "existing", 0, "", ""
 		case "existing":
-			if err := s.placeWorkspacePane(s.workspacePaneIntent, s.workspacePaneCandidates()[index]); err != nil {
+			candidate := s.workspacePaneCandidates()[index]
+			identity, _ := ducklord.IdentityFromSession(candidate)
+			if sourceID := s.projectPaneForSession(identity); sourceID != "" {
+				if s.workspacePaneIntent.placement != ducklord.PlaceNewTab && sourceID == s.workspacePaneIntent.targetID {
+					s.workspacePaneErr = "select a different pane to split"
+					return false
+				}
+				s.workspacePaneSourceID, s.workspacePaneIdentity = sourceID, identity
+				s.workspacePaneStep, s.workspacePaneIndex, s.workspacePaneErr = "existing-move-confirm", 1, ""
+				return false
+			}
+			if err := s.placeWorkspacePane(s.workspacePaneIntent, candidate); err != nil {
 				s.workspacePaneErr = sanitizeTerminalText(err.Error())
 				return false
 			}

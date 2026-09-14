@@ -714,6 +714,7 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	for _, handle := range []string{sessions[0].Handle, sessions[1].Handle} {
 		capture.waitCurrent(t, "client-a/"+handle, 20*time.Second)
 	}
+	oldBPaneID := ""
 	if data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output(); err != nil {
 		t.Fatalf("read persisted pane layout: %v", err)
 	} else {
@@ -725,6 +726,39 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 		if ids := persisted.ProjectLayout.ProjectsFor(identity); len(ids) != 1 || ids[0] != projectID {
 			t.Fatalf("TUI pane placement did not persist: %v", ids)
 		}
+		for _, tab := range persisted.ProjectLayout.Project(projectID).Tabs {
+			if id := paneIDForSession(tab.Root, identity); id != "" {
+				oldBPaneID = id
+			}
+		}
+	}
+	if oldBPaneID == "" {
+		t.Fatal("placed B pane ID missing")
+	}
+	writePTY(t, terminal, "H") // select A so B can be re-split beside it
+	writePTY(t, terminal, "pj\rj\r"+sessions[1].Handle+"\r")
+	capture.waitCurrent(t, "move its pane, not duplicate it", 10*time.Second)
+	writePTY(t, terminal, "\r") // Cancel is the safe default
+	writePTY(t, terminal, "pj\rj\r"+sessions[1].Handle+"\r")
+	capture.waitCurrent(t, "move its pane, not duplicate it", 10*time.Second)
+	writePTY(t, terminal, "\x1b[A\r") // Move explicitly
+	moveData, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+	if err != nil {
+		t.Fatalf("read moved layout: %v", err)
+	}
+	var movedState ducklord.ActivityState
+	if err := json.Unmarshal(moveData, &movedState); err != nil {
+		t.Fatal(err)
+	}
+	identityB, _ := ducklord.IdentityFromSession(remoteB)
+	if _, ok := movedState.ProjectLayout.PaneSession(projectID, oldBPaneID); ok {
+		t.Fatal("old B pane survived confirmed move")
+	}
+	if ids := movedState.ProjectLayout.ProjectsFor(identityB); len(ids) != 1 || ids[0] != projectID {
+		t.Fatalf("B move duplicated membership: %v", ids)
+	}
+	if _, ok := findContainerSession(t, runtime, controller, "client-a", sessions[1].SessionID); !ok {
+		t.Fatal("local pane move stopped remote B")
 	}
 	writePTY(t, terminal, "P") // return to Session list before existing output assertions
 	for round := 1; round <= 2; round++ {
