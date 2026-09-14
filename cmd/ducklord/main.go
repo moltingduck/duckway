@@ -104,6 +104,16 @@ type hostHookEvent struct {
 	err                             error
 }
 
+func hostHookResultMessage(event hostHookEvent) string {
+	if !event.result.Changed {
+		return "Already in the requested state"
+	}
+	if event.action == "remove" {
+		return "Host hook removed; agent settings were preserved"
+	}
+	return "Host configuration updated; activation awaits a real agent callback"
+}
+
 type createDiscoveryEvent struct {
 	id, generation         uint64
 	kind, client, instance string
@@ -1924,11 +1934,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.hostMenuErr = sanitizeTerminalText(event.err.Error())
 			} else {
 				state.hostMenuStep = "hook-done"
-				if event.result.Changed {
-					state.hostMenuErr = "Host configuration updated; activation awaits a real agent callback"
-				} else {
-					state.hostMenuErr = "Already in the requested state"
-				}
+				state.hostMenuErr = hostHookResultMessage(event)
 			}
 			state.render(os.Stdout)
 		case <-workspaceRepaint:

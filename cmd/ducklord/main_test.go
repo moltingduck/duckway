@@ -3713,6 +3713,24 @@ func TestHostHookMenuRequiresExplicitConfirmation(t *testing.T) {
 	}
 }
 
+func TestHostHookResultMessageDistinguishesRemovalFromActivation(t *testing.T) {
+	for _, test := range []struct {
+		name, action, want string
+		changed            bool
+	}{
+		{"installed", "install", "activation awaits a real agent callback", true},
+		{"removed", "remove", "Host hook removed", true},
+		{"already removed", "remove", "Already in the requested state", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			message := hostHookResultMessage(hostHookEvent{action: test.action, result: protocol.HostAgentHookConfigResult{Changed: test.changed}})
+			if !strings.Contains(message, test.want) {
+				t.Fatalf("result message = %q, want %q", message, test.want)
+			}
+		})
+	}
+}
+
 func TestHostHookMenuCodexTrustPreview(t *testing.T) {
 	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, hostMenuMode: true,
 		hostMenuStep: "hook-select", hostMenuTarget: "host"}
