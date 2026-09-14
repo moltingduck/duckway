@@ -136,7 +136,13 @@ func (m *PaneOutputManager) SetVisible(ctx context.Context, priority TerminalSel
 			failures = append(failures, fmt.Errorf("focused Session: %w", err))
 		}
 	}
+	m.requestMu.Lock()
+	if m.requestID != requestID {
+		m.requestMu.Unlock()
+		return overflow, context.Canceled
+	}
 	if err := workCtx.Err(); err != nil {
+		m.requestMu.Unlock()
 		return overflow, err
 	}
 	m.mu.Lock()
@@ -150,6 +156,7 @@ func (m *PaneOutputManager) SetVisible(ctx context.Context, priority TerminalSel
 		m.focusEpoch++
 	}
 	m.mu.Unlock()
+	m.requestMu.Unlock()
 	m.pruneEvicted()
 	return overflow, errors.Join(failures...)
 }

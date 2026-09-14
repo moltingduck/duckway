@@ -9,6 +9,39 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
+func (s *tuiState) workspacePaneRectAt(width, height int) (ducklord.WorkspaceRect, error) {
+	selected := s.currentSession()
+	identity, ok := ducklord.IdentityFromSession(selected)
+	if !ok {
+		return ducklord.WorkspaceRect{}, fmt.Errorf("current Session has no stable identity")
+	}
+	layout := &s.activity().ProjectLayout
+	nav, err := ducklord.NewWorkspaceState(layout)
+	if err != nil {
+		return ducklord.WorkspaceRect{}, err
+	}
+	if err := nav.SelectQuickSession(identity); err != nil {
+		return ducklord.WorkspaceRect{}, err
+	}
+	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	if focused, err := nav.FocusVisiblePane(geometry); err != nil || focused != identity {
+		if err != nil {
+			return ducklord.WorkspaceRect{}, err
+		}
+		return ducklord.WorkspaceRect{}, fmt.Errorf("focused pane no longer matches selected Session")
+	}
+	rect, visible := ducklord.WorkspaceVisiblePaneRect(layout, nav, geometry)
+	if !visible {
+		return ducklord.WorkspaceRect{}, fmt.Errorf("current Session pane is not visible")
+	}
+	return rect, nil
+}
+
+func (s *tuiState) workspacePaneRect() (ducklord.WorkspaceRect, error) {
+	width, height := terminalSize()
+	return s.workspacePaneRectAt(width, height)
+}
+
 // renderWorkspacePreview is the first live TUI integration of the Project
 // renderer. The legacy event loop still owns control and one output stream;
 // it is deliberately opt-in until multi-pane output and navigation are wired.
@@ -42,9 +75,6 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	selected := s.currentSession()
 	if identity, ok := ducklord.IdentityFromSession(selected); ok {
 		_ = nav.SelectQuickSession(identity)
-		if s.focused {
-			_, _ = nav.FocusVisiblePane(ducklord.CalculateWorkspaceGeometry(width, height, 4))
-		}
 	}
 	items := make([]ducklord.WorkspaceListItem, 0, len(s.sessions))
 	for _, session := range s.sessions {
@@ -103,10 +133,10 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	s.renderGroupModal(out, width, height)
 	s.renderNotificationModal(out, width, height)
 	s.renderLifecycleModal(out, width, height)
-	if s.focused && s.terminal != nil && geometry.Terminal.Height > 2 && geometry.Terminal.Width > 0 &&
+	if pane, err := s.workspacePaneRectAt(width, height); err == nil && s.focused && s.terminal != nil && pane.Height > 1 && pane.Width > 0 &&
 		!s.outputStale && s.ptyScrollOffset == 0 {
-		if row, col, visible := s.terminal.CursorPosition(geometry.Terminal.Height-2, geometry.Terminal.Width); visible {
-			fmt.Fprintf(out, "\033[%d;%dH\033[?25h", geometry.Terminal.Y+2+row, geometry.Terminal.X+col)
+		if row, col, visible := s.terminal.CursorPosition(pane.Height-1, pane.Width); visible {
+			fmt.Fprintf(out, "\033[%d;%dH\033[?25h", pane.Y+1+row, pane.X+col)
 		}
 	}
 }

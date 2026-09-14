@@ -48,3 +48,42 @@ func TestWorkspacePreviewRendersLiveSelectedSessionWithoutGrantingFocus(t *testi
 		t.Fatalf("focused session was not marked: %q", out.String())
 	}
 }
+
+func TestWorkspacePreviewPreflightUsesVisibleLeafNotWholeTerminal(t *testing.T) {
+	a := ducklord.SessionIdentity{InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", SessionID: "AAA111"}
+	b := ducklord.SessionIdentity{InstanceID: a.InstanceID, SessionID: "BBB222"}
+	activity := ducklord.NewActivityState()
+	first, err := activity.ProjectLayout.Place(ducklord.DefaultProjectID, a, ducklord.PlaceNewTab, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activity.ProjectLayout.Place(ducklord.DefaultProjectID, b, ducklord.PlaceVertical, first); err != nil {
+		t.Fatal(err)
+	}
+	state := &tuiState{activityState: activity, selected: 1, sessions: []ducklord.RemoteSession{
+		{Client: "host", InstanceID: a.InstanceID, SessionID: a.SessionID, Kind: "shell"},
+		{Client: "host", InstanceID: b.InstanceID, SessionID: b.SessionID, Kind: "shell"},
+	}}
+	rect, err := state.workspacePaneRectAt(120, 20)
+	if err != nil || rect.X != 88 || rect.Width != 33 || rect.Height != 16 {
+		t.Fatalf("selected right pane rect=%+v err=%v", rect, err)
+	}
+	state.focused = true
+	state.terminal = ducklord.NewTerminal(15, 33, 0)
+	var rendered bytes.Buffer
+	state.renderWorkspacePreviewAt(&rendered, 120, 20)
+	if !strings.Contains(rendered.String(), "\033[6;88H\033[?25h") {
+		t.Fatalf("focused cursor was not placed inside right pane: %q", rendered.String())
+	}
+	activity.ProjectLayout = ducklord.NewProjectLayout()
+	first, err = activity.ProjectLayout.Place(ducklord.DefaultProjectID, a, ducklord.PlaceNewTab, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activity.ProjectLayout.Place(ducklord.DefaultProjectID, b, ducklord.PlaceHorizontal, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.workspacePaneRectAt(120, 5); err == nil {
+		t.Fatal("hidden lower pane passed control preflight")
+	}
+}

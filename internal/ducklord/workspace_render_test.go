@@ -127,11 +127,40 @@ func TestWorkspaceVisibleSessionsMatchesSuppressedSplit(t *testing.T) {
 	if _, err := nav.FocusVisiblePane(narrow); err == nil {
 		t.Fatal("hidden split pane acquired PTY input focus")
 	}
+	if _, visible := WorkspaceVisiblePaneRect(&layout, nav, narrow); visible {
+		t.Fatal("hidden split pane reported a PTY rectangle")
+	}
 	wide := WorkspaceGeometry{Terminal: WorkspaceRect{X: 1, Y: 1, Width: 70, Height: 6}}
 	if got := WorkspaceVisibleSessions(&layout, nav, wide); len(got) != 2 || got[0] != a || got[1] != b {
 		t.Fatalf("restored split not visible: %+v", got)
 	}
 	if focused, err := nav.FocusVisiblePane(wide); err != nil || focused != b {
 		t.Fatalf("visible pane focus=%+v err=%v", focused, err)
+	}
+	if rect, visible := WorkspaceVisiblePaneRect(&layout, nav, wide); !visible || rect.Y != 4 || rect.Height != 3 || rect.Width != 70 {
+		t.Fatalf("horizontal split PTY rectangle=%+v visible=%v", rect, visible)
+	}
+}
+
+func TestWorkspaceVisiblePaneRectUsesVerticalLeafWidthAndPosition(t *testing.T) {
+	layout := NewProjectLayout()
+	a, b := testLayoutIdentity("ABC123"), testLayoutIdentity("DEF456")
+	first, err := layout.Place(DefaultProjectID, a, PlaceNewTab, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := layout.Place(DefaultProjectID, b, PlaceVertical, first); err != nil {
+		t.Fatal(err)
+	}
+	nav, err := NewWorkspaceState(&layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectQuickSession(b); err != nil {
+		t.Fatal(err)
+	}
+	geometry := WorkspaceGeometry{Terminal: WorkspaceRect{X: 55, Y: 4, Width: 66, Height: 16}}
+	if rect, visible := WorkspaceVisiblePaneRect(&layout, nav, geometry); !visible || rect.X != 88 || rect.Y != 5 || rect.Width != 33 || rect.Height != 15 {
+		t.Fatalf("vertical split PTY rectangle=%+v visible=%v", rect, visible)
 	}
 }

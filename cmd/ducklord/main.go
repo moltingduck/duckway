@@ -1542,8 +1542,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		expectedKey, keyOK := terminalOutputKey(state.currentSession())
 		if outputManager != nil && control != nil && control.ResizeBarrier != nil && activeOutputEvent.Lease != 0 && keyOK && activeOutputEvent.Key == expectedKey &&
 			activeOutputEvent.Revision.RuntimeGeneration == control.RuntimeGeneration && control.RuntimeGeneration == state.currentSession().RuntimeGeneration {
+			event := activeOutputEvent
+			controlSnapshot := control
 			resize = func(rows, cols uint16) (uint64, error) {
-				return outputManager.Resize(activeOutputEvent, rows, cols, control.ResizeBarrier)
+				return outputManager.Resize(event, rows, cols, controlSnapshot.ResizeBarrier)
 			}
 		} else if attach != nil {
 			resize = attach.ResizeBarrier
@@ -1781,9 +1783,19 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			state.render(os.Stdout)
 		case opened := <-controlOpened:
-			if opened.id != controlID || opened.key != state.activeAttachKey || opened.control != nil && !controlMatchesSession(opened.control, state.currentSession(), state.ownerName) {
+			paneVisible := true
+			if state.workspacePreview {
+				_, paneErr := state.workspacePaneRect()
+				paneVisible = paneErr == nil
+			}
+			if !paneVisible || opened.id != controlID || opened.key != state.activeAttachKey || opened.control != nil && !controlMatchesSession(opened.control, state.currentSession(), state.ownerName) {
 				if opened.control != nil {
 					_ = opened.control.Stdin.Close()
+				}
+				if !paneVisible && opened.id == controlID {
+					state.clearAttachIdentity()
+					state.outputErr = "Session pane became hidden; PTY control was not opened"
+					state.render(os.Stdout)
 				}
 				continue
 			}
@@ -2123,6 +2135,33 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			if state.focused {
+				if state.workspacePreview {
+					if _, visibleErr := state.workspacePaneRect(); visibleErr != nil {
+						controlID++
+						attachID++
+						if controlOpenCancel != nil {
+							controlOpenCancel()
+							controlOpenCancel = nil
+						}
+						if control != nil {
+							_ = control.Stdin.Close()
+							control, controlDone = nil, nil
+						}
+						if attachCancel != nil {
+							attachCancel()
+							attachCancel = nil
+						}
+						if attach != nil {
+							_ = attach.Stdin.Close()
+							attach = nil
+						}
+						state.focused = false
+						state.clearAttachIdentity()
+						state.outputErr = "Session pane is no longer visible; input was not sent: " + visibleErr.Error()
+						state.render(os.Stdout)
+						continue
+					}
+				}
 				if !state.hostIsLive(state.currentSession().Client) {
 					state.focused = false
 					state.clearAttachIdentity()
@@ -2788,6 +2827,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			case "attach":
 				if len(state.sessions) == 0 {
 					continue
+				}
+				if state.workspacePreview {
+					if _, visibleErr := state.workspacePaneRect(); visibleErr != nil {
+						state.outputErr = "cannot focus hidden Session pane: " + visibleErr.Error()
+						break
+					}
 				}
 				s := state.sessions[state.selected]
 				if !canAttach(s) || !state.hostIsLive(s.Client) {
@@ -4223,8 +4268,11 @@ func controlMatchesSession(control *ducklord.ControlSession, session ducklord.Re
 func (s *tuiState) activePTYSize() (rows, cols uint16) {
 	width, height := terminalSize()
 	if s.workspacePreview {
-		geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
-		return uint16(max(1, min(200, geometry.Terminal.Height-2))), uint16(max(1, min(500, geometry.Terminal.Width)))
+		pane, err := s.workspacePaneRectAt(width, height)
+		if err != nil {
+			return 1, 1
+		}
+		return uint16(max(1, min(200, pane.Height-1))), uint16(max(1, min(500, pane.Width)))
 	}
 	layout := calculateTUILayout(width, true, s.listPaneWidth, s.autoHideList)
 	contentWidth := layout.contentWidth

@@ -160,6 +160,55 @@ func WorkspaceVisibleSessions(layout *ProjectLayout, nav *WorkspaceState, geomet
 	return nil
 }
 
+// WorkspaceVisiblePaneRect returns the selected leaf's actual screen cell.
+// The PTY viewport starts one row below that leaf's title, not at the top of
+// the overall Terminal area.
+func WorkspaceVisiblePaneRect(layout *ProjectLayout, nav *WorkspaceState, geometry WorkspaceGeometry) (WorkspaceRect, bool) {
+	if layout == nil || nav == nil {
+		return WorkspaceRect{}, false
+	}
+	project := layout.Project(nav.CurrentProjectID())
+	if project == nil {
+		return WorkspaceRect{}, false
+	}
+	content := geometry.Terminal
+	content.Y++
+	content.Height--
+	for _, tab := range project.Tabs {
+		if tab.ID == nav.CurrentTabID() {
+			return workspaceFindVisiblePane(tab.Root, content, nav.CurrentPaneID())
+		}
+	}
+	return WorkspaceRect{}, false
+}
+
+func workspaceFindVisiblePane(node *SessionPane, rect WorkspaceRect, paneID string) (WorkspaceRect, bool) {
+	if node == nil || rect.Width < 1 || rect.Height < 2 {
+		return WorkspaceRect{}, false
+	}
+	if node.Session != nil {
+		return rect, node.ID == paneID
+	}
+	if node.Direction == SplitHorizontal {
+		firstHeight := rect.Height / 2
+		if firstHeight < 1 || rect.Height-firstHeight < 1 {
+			return workspaceFindVisiblePane(node.First, rect, paneID)
+		}
+		if found, ok := workspaceFindVisiblePane(node.First, WorkspaceRect{X: rect.X, Y: rect.Y, Width: rect.Width, Height: firstHeight}, paneID); ok {
+			return found, true
+		}
+		return workspaceFindVisiblePane(node.Second, WorkspaceRect{X: rect.X, Y: rect.Y + firstHeight, Width: rect.Width, Height: rect.Height - firstHeight}, paneID)
+	}
+	firstWidth := rect.Width / 2
+	if firstWidth < 1 || rect.Width-firstWidth < 1 {
+		return workspaceFindVisiblePane(node.First, rect, paneID)
+	}
+	if found, ok := workspaceFindVisiblePane(node.First, WorkspaceRect{X: rect.X, Y: rect.Y, Width: firstWidth, Height: rect.Height}, paneID); ok {
+		return found, true
+	}
+	return workspaceFindVisiblePane(node.Second, WorkspaceRect{X: rect.X + firstWidth, Y: rect.Y, Width: rect.Width - firstWidth, Height: rect.Height}, paneID)
+}
+
 func workspaceVisibleLeaves(node *SessionPane, rect WorkspaceRect) ([]SessionIdentity, int) {
 	if node == nil || rect.Width < 1 || rect.Height < 1 {
 		return nil, len(node.sessions())
