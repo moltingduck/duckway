@@ -99,6 +99,55 @@ func TestWorkspacePanePreviewCannotImplicitlyTransferFocus(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCyclesTabsAndOnlyVisiblePanesWithoutFocusing(t *testing.T) {
+	layout := NewProjectLayout()
+	projectID, _ := layout.AddProject("Work")
+	a, b, c := testLayoutIdentity("ABC123"), testLayoutIdentity("DEF456"), testLayoutIdentity("CDE789")
+	first, _ := layout.Place(projectID, a, PlaceNewTab, "")
+	second, _ := layout.Place(projectID, b, PlaceVertical, first)
+	_, _ = layout.Place(projectID, c, PlaceNewTab, "")
+	w, err := NewWorkspaceState(&layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SelectProject(projectID); err != nil {
+		t.Fatal(err)
+	}
+	geometry := CalculateWorkspaceGeometry(120, 24, 4)
+	if err := w.CycleVisiblePane(geometry, 1); err != nil {
+		t.Fatal(err)
+	}
+	if w.CurrentPaneID() != second || w.Region() != RegionProjects {
+		t.Fatalf("pane cycle changed focus or wrong pane: %+v", w.location)
+	}
+	if err := w.CycleVisiblePane(geometry, 1); err != nil {
+		t.Fatal(err)
+	}
+	if w.CurrentPaneID() != first {
+		t.Fatalf("pane cycle failed to wrap: %+v", w.location)
+	}
+	if err := w.CycleTab(1); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := layout.PaneSession(w.CurrentProjectID(), w.CurrentPaneID()); !ok || got != c || w.Region() != RegionProjects {
+		t.Fatalf("tab cycle changed focus or wrong tab: %+v", w.location)
+	}
+	if err := w.CycleTab(-1); err != nil || w.CurrentPaneID() != first {
+		t.Fatalf("reverse tab cycle failed: %+v %v", w.location, err)
+	}
+	// A one-column terminal hides the second split leaf; it cannot be selected.
+	narrow := CalculateWorkspaceGeometry(1, 24, 4)
+	if err := w.CycleVisiblePane(narrow, 1); err != nil || w.CurrentPaneID() != first {
+		t.Fatalf("hidden pane became selected: %+v %v", w.location, err)
+	}
+	if err := w.SelectPane(projectID, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.CycleVisiblePane(narrow, 1); err != nil || w.CurrentPaneID() != first {
+		t.Fatalf("cycling from hidden pane skipped first visible pane: %+v %v", w.location, err)
+	}
+}
+
 func TestWorkspaceDetailJumpAndExitRepairRemovedPane(t *testing.T) {
 	layout := NewProjectLayout()
 	projectID, _ := layout.AddProject("Work")

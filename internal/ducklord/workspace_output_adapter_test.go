@@ -2,10 +2,14 @@ package ducklord
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/hackerduck/duckway/internal/ducklion/daemon"
 )
 
 func TestWorkspaceOutputAdapterTwoLivePanesOnePool(t *testing.T) {
@@ -171,5 +175,86 @@ func TestWorkspaceOutputAdapterReconnectNeverLabelsOldLeaseFresh(t *testing.T) {
 		case <-deadline:
 			t.Fatal("superseding selection did not become live")
 		}
+	}
+}
+
+func TestWorkspaceOutputAdapterPublishesFinalViewAfterDetachedLease(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		err                 error
+		ended, disconnected bool
+	}{
+		{name: "clean end", err: &daemon.OutputStreamEnded{Reason: "runtime_stopped", NextOffset: 5}, ended: true},
+		{name: "disconnect", err: io.EOF, disconnected: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := SnapshotStore{Root: t.TempDir()}
+			selection := paneSelection("AAA111")
+			adapter, err := NewWorkspaceOutputAdapter(context.Background(), 1, unusedTerminalOutputSource{}, store,
+				func(TerminalSelection) []TerminalSelection { return []TerminalSelection{selection} })
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = adapter.Close() })
+			reader := newFakePooledOutput()
+			var opens int
+			adapter.pane.opener = func(ctx context.Context, _ TerminalSelection, key OutputKey, revision OutputRevision,
+				_ *TerminalRenderState) (*PooledTerminal, error) {
+				opens++
+				currentReader := reader
+				if opens > 1 {
+					currentReader = newFakePooledOutput()
+				}
+				return newPooledTerminal(ctx, OutputStreamMetadata{InstanceID: key.InstanceID, SessionID: key.SessionID,
+					RuntimeGeneration: revision.RuntimeGeneration}, currentReader, PooledTerminalOptions{ExpectedKey: key,
+					ExpectedRevision: revision, Rows: 3, Cols: 40, Scrollback: 8, Store: store})
+			}
+			id := adapter.Select(selection)
+			select {
+			case event := <-adapter.Events():
+				if event.RequestID != id || event.Lease == 0 || event.Err != nil {
+					t.Fatalf("activation = %+v", event)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("activation event missing")
+			}
+			reader.results <- pooledReadResult{frame: OutputFrame{Data: []byte("final"), StartOffset: 0, EndOffset: 5}}
+			reader.results <- pooledReadResult{err: tc.err}
+			deadline := time.After(2 * time.Second)
+			for {
+				select {
+				case event := <-adapter.Events():
+					if event.RequestID != id || event.FinalView == nil {
+						continue
+					}
+					if event.FinalView.OutputOffset != 5 || event.FinalView.Ended != tc.ended || event.FinalView.Disconnected != tc.disconnected {
+						t.Fatalf("final event = %+v", event)
+					}
+					if _, err := adapter.pane.pool.TerminalView(selection.key(), event.Lease); !errors.Is(err, ErrStaleOutputLease) {
+						t.Fatalf("detached lease still live: %v", err)
+					}
+					reconnectID := adapter.Reconnect(selection)
+					for {
+						select {
+						case next := <-adapter.Events():
+							if next.RequestID != reconnectID {
+								continue
+							}
+							if next.Err != nil || next.Lease == event.Lease || next.FinalView != nil {
+								t.Fatalf("new lease inherited old final: %+v", next)
+							}
+							if _, err := adapter.pane.FinalViewLease(selection.key(), event.Lease); !errors.Is(err, ErrStaleOutputLease) {
+								t.Fatalf("old final survived replacement: %v", err)
+							}
+							return
+						case <-deadline:
+							t.Fatal("reconnected lease missing")
+						}
+					}
+				case <-deadline:
+					t.Fatal("detached final framebuffer event missing")
+				}
+			}
+		})
 	}
 }

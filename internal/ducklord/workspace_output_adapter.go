@@ -84,6 +84,9 @@ func (m *WorkspaceOutputAdapter) selectOutput(selection TerminalSelection, recon
 		if activation, err := m.pane.Activation(event.Key); err == nil && activation.Revision == event.Revision {
 			event.Lease = activation.Lease
 			event.Warning = openErr
+			if final, finalErr := m.pane.FinalViewLease(event.Key, event.Lease); finalErr == nil {
+				event.FinalView = &final
+			}
 			m.mu.Lock()
 			if m.nextID == id {
 				m.selectedLease = event.Lease
@@ -169,7 +172,11 @@ func (m *WorkspaceOutputAdapter) watchDirty() {
 				}
 				activation, err := m.pane.Activation(key)
 				if err == nil && activation.Lease == selectedLease && activation.Revision.RuntimeGeneration == selected.RuntimeGeneration {
-					m.publish(TerminalOutputEvent{RequestID: id, Key: key, Revision: activation.Revision, Lease: activation.Lease})
+					event := TerminalOutputEvent{RequestID: id, Key: key, Revision: activation.Revision, Lease: activation.Lease}
+					if final, finalErr := m.pane.FinalViewLease(key, activation.Lease); finalErr == nil {
+						event.FinalView = &final
+					}
+					m.publish(event)
 					m.repaintNow() // a Project-only priority may not be the quick-list Session
 				}
 			}

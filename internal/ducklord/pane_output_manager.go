@@ -30,10 +30,16 @@ type PaneOutputManager struct {
 	focusEpoch   uint64
 	visible      map[OutputKey]OutputRevision
 	leases       map[OutputKey]OutputActivation
+	finals       map[OutputKey]pooledTerminalFinal
 	watchers     map[OutputKey]context.CancelFunc
 	dirty        map[OutputKey]bool
 	dirtyReady   chan struct{}
 	workers      sync.WaitGroup
+}
+
+type pooledTerminalFinal struct {
+	lease uint64
+	view  PooledTerminalView
 }
 
 func NewPaneOutputManager(parent context.Context, capacity int, source TerminalOutputSource, store SnapshotStore) (*PaneOutputManager, error) {
@@ -46,7 +52,7 @@ func NewPaneOutputManager(parent context.Context, capacity int, source TerminalO
 	}
 	ctx, cancel := context.WithCancel(parent)
 	return &PaneOutputManager{ctx: ctx, cancel: cancel, pool: pool, source: source, store: store,
-		capacity: capacity, visible: make(map[OutputKey]OutputRevision), leases: make(map[OutputKey]OutputActivation), watchers: make(map[OutputKey]context.CancelFunc),
+		capacity: capacity, visible: make(map[OutputKey]OutputRevision), leases: make(map[OutputKey]OutputActivation), finals: make(map[OutputKey]pooledTerminalFinal), watchers: make(map[OutputKey]context.CancelFunc),
 		dirty: make(map[OutputKey]bool), dirtyReady: make(chan struct{}, 1)}, nil
 }
 
@@ -181,6 +187,7 @@ func (m *PaneOutputManager) activate(ctx context.Context, selection TerminalSele
 	previous, had := m.leases[key]
 	m.leases[key] = activation
 	if !had || previous.Lease != activation.Lease {
+		delete(m.finals, key)
 		if cancel := m.watchers[key]; cancel != nil {
 			cancel()
 		}
@@ -219,6 +226,7 @@ func (m *PaneOutputManager) ReconnectVisible(ctx context.Context, selection Term
 		cancel()
 	}
 	m.leases[key] = activation
+	delete(m.finals, key)
 	m.watchers[key] = m.watch(key, activation.Lease)
 	m.mu.Unlock()
 	m.markDirty(key)
@@ -241,6 +249,7 @@ func (m *PaneOutputManager) pruneEvicted() {
 		}
 		delete(m.watchers, key)
 		delete(m.leases, key)
+		delete(m.finals, key)
 		delete(m.dirty, key)
 	}
 	m.mu.Unlock()
@@ -272,7 +281,7 @@ func (m *PaneOutputManager) open(ctx context.Context, selection TerminalSelectio
 }
 
 func (m *PaneOutputManager) watch(key OutputKey, lease uint64) context.CancelFunc {
-	updates, _, done, err := m.pool.TerminalSignals(key, lease)
+	updates, final, done, err := m.pool.TerminalSignals(key, lease)
 	if err != nil {
 		return func() {}
 	}
@@ -280,12 +289,34 @@ func (m *PaneOutputManager) watch(key OutputKey, lease uint64) context.CancelFun
 	m.workers.Add(1)
 	go func() {
 		defer m.workers.Done()
+		storeFinal := func(view PooledTerminalView) {
+			m.mu.Lock()
+			if activation, ok := m.leases[key]; ok && activation.Lease == lease && activation.Revision.RuntimeGeneration == view.RuntimeGeneration {
+				m.finals[key] = pooledTerminalFinal{lease: lease, view: view}
+				m.dirty[key] = true
+			}
+			m.mu.Unlock()
+			select {
+			case m.dirtyReady <- struct{}{}:
+			default:
+			}
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case view := <-final:
+				storeFinal(view)
+				return
 			case <-done:
-				m.markDirty(key)
+				// finishRead queues the final view before closing done. Drain it
+				// even when select chose done first, after the pool detached it.
+				select {
+				case view := <-final:
+					storeFinal(view)
+				default:
+					m.markDirty(key)
+				}
 				return
 			case <-updates:
 				m.markDirty(key)
@@ -348,6 +379,21 @@ func (m *PaneOutputManager) ViewLease(key OutputKey, lease uint64) (PooledTermin
 		return PooledTerminalView{}, ErrStaleOutputLease
 	}
 	return m.pool.TerminalView(key, lease)
+}
+
+// FinalViewLease is retained only for the current visible activation. A late
+// final from an evicted/reconnected observer can never label a new lease ended.
+func (m *PaneOutputManager) FinalViewLease(key OutputKey, lease uint64) (PooledTerminalView, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	activation, exists := m.leases[key]
+	revision, visible := m.visible[key]
+	final, found := m.finals[key]
+	if !exists || !visible || !found || activation.Lease != lease || final.lease != lease || activation.Revision != revision ||
+		final.view.RuntimeGeneration != revision.RuntimeGeneration {
+		return PooledTerminalView{}, ErrStaleOutputLease
+	}
+	return final.view, nil
 }
 
 // SetInputFocus is called only after the UI has given a Session pane keyboard
@@ -440,6 +486,7 @@ func (m *PaneOutputManager) fenceHost(clientKey, instanceID string, forget bool)
 			delete(m.watchers, key)
 		}
 		delete(m.leases, key)
+		delete(m.finals, key)
 		delete(m.visible, key)
 		delete(m.dirty, key)
 		if m.inputFocus == key {

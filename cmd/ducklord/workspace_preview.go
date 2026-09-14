@@ -87,6 +87,30 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		s.workspaceProjectFocus = false
 		return true, false
 	}
+	if s.shortcut("project_prev_tab", key) || s.shortcut("project_next_tab", key) ||
+		s.shortcut("project_prev_pane", key) || s.shortcut("project_next_pane", key) {
+		nav, err := s.workspaceNavigation()
+		if err == nil {
+			switch {
+			case s.shortcut("project_prev_tab", key):
+				err = nav.CycleTab(-1)
+			case s.shortcut("project_next_tab", key):
+				err = nav.CycleTab(1)
+			case s.shortcut("project_prev_pane", key):
+				width, height := terminalSize()
+				err = nav.CycleVisiblePane(ducklord.CalculateWorkspaceGeometry(width, height, 4), -1)
+			case s.shortcut("project_next_pane", key):
+				width, height := terminalSize()
+				err = nav.CycleVisiblePane(ducklord.CalculateWorkspaceGeometry(width, height, 4), 1)
+			}
+		}
+		if err != nil {
+			s.outputErr = err.Error()
+			return true, false
+		}
+		s.outputErr = ""
+		return true, true
+	}
 	if key != "j" && key != "k" && key != "\x1b[A" && key != "\x1b[B" {
 		return true, false
 	}
@@ -204,7 +228,9 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	fmt.Fprintln(out, truncate("ducklord workspace  owner:"+displayField(s.ownerName)+s.hostSyncLabel(), width))
 	status := "Preview: ↑/↓ Session · " + s.cfg.Shortcut("project_focus") + " Project pane · Enter focus · Ctrl-] leave PTY"
 	if s.workspaceProjectFocus {
-		status = "Project pane: ↑/↓ choose Project · " + s.cfg.Shortcut("project_focus") + "/Enter return to Session list"
+		status = fmt.Sprintf("Project pane: ↑/↓ Project · %s/%s tab · %s/%s pane · Enter focus · Esc list",
+			s.cfg.Shortcut("project_prev_tab"), s.cfg.Shortcut("project_next_tab"),
+			s.cfg.Shortcut("project_prev_pane"), s.cfg.Shortcut("project_next_pane"))
 	}
 	if s.focused {
 		status = "Session focus: keys go to PTY · Ctrl-] return to list"

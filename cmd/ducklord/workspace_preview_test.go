@@ -256,3 +256,39 @@ func TestWorkspaceProjectPaneRejectsStaleControlIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkspaceProjectShortcutsBrowseTabsAndSplitPanesWithoutQuickSelection(t *testing.T) {
+	a := ducklord.SessionIdentity{InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", SessionID: "AAA111"}
+	b := ducklord.SessionIdentity{InstanceID: a.InstanceID, SessionID: "BBB222"}
+	c := ducklord.SessionIdentity{InstanceID: a.InstanceID, SessionID: "CCC333"}
+	activity := ducklord.NewActivityState()
+	projectID, err := activity.ProjectLayout.AddProject("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := activity.ProjectLayout.Place(projectID, a, ducklord.PlaceNewTab, "")
+	second, _ := activity.ProjectLayout.Place(projectID, b, ducklord.PlaceVertical, first)
+	third, _ := activity.ProjectLayout.Place(projectID, c, ducklord.PlaceNewTab, "")
+	state := &tuiState{workspacePreview: true, workspaceProjectFocus: true, cfg: &ducklord.Config{}, activityState: activity,
+		sessions: []ducklord.RemoteSession{{InstanceID: a.InstanceID, SessionID: a.SessionID}, {InstanceID: b.InstanceID, SessionID: b.SessionID}, {InstanceID: c.InstanceID, SessionID: c.SessionID}}, selected: 0}
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(projectID); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		key, want string
+	}{
+		{"L", second}, {"H", first}, {"]", third}, {"[", first},
+	} {
+		handled, changed := state.handleWorkspaceProjectInput([]byte(step.key))
+		if !handled || !changed || nav.CurrentPaneID() != step.want || nav.Region() != ducklord.RegionProjects {
+			t.Fatalf("key %q: handled=%v changed=%v location=%+v", step.key, handled, changed, nav)
+		}
+		if state.selected != 0 || state.focused || state.workspaceAttachFromProject {
+			t.Fatalf("key %q changed quick selection or PTY focus", step.key)
+		}
+	}
+}

@@ -703,8 +703,8 @@ func TestTUIHelpUsesConfiguredBindingsAndCategories(t *testing.T) {
 	}
 	state.helpMode = true
 	var out bytes.Buffer
-	state.renderHelpModal(&out, 100, 40)
-	for _, want := range []string{"Keyboard shortcuts", "SESSION LIST & GROUPS", "SESSION", "HOST", "PTY PANEL", "MOUSE", "MODALS", "!"} {
+	state.renderHelpModal(&out, 100, 50)
+	for _, want := range []string{"Keyboard shortcuts", "SESSION LIST & GROUPS", "SESSION", "HOST", "PROJECT PANE", "TERMINAL AREA", "MOUSE", "MODALS", "!", "Previous Terminal tab", "Next visible Session pane"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("help missing %q: %q", want, out.String())
 		}

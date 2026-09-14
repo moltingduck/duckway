@@ -1905,6 +1905,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			if opened.control == nil {
+				state.outputErr = "PTY control unavailable"
+				state.clearAttachIdentity()
+				state.render(os.Stdout)
+				continue
+			}
 			control = opened.control
 			controlDone = control.Done
 			if workspaceOutput != nil {
@@ -4934,7 +4940,8 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		{"SESSION LIST & GROUPS", "list_search", "Search sessions"}, {"", "list_organize", "Cycle custom / host / type"}, {"", "list_groups", "Manage custom groups"}, {"", "list_reorder_up", "Move session up"}, {"", "list_reorder_down", "Move session down"}, {"", "refresh", "Refresh"},
 		{"SESSION", "session_create", "Create session"}, {"", "session_actions", "Session action menu"}, {"", "session_notifications", "Notification settings"}, {"", "session_yield", "Yield now"}, {"", "session_yield_wait", "Yield when idle"}, {"", "session_restart", "Restart session"}, {"", "session_end", "End session"}, {"", "session_destroy", "Destroy session"},
 		{"HOST", "host_actions", "Host action menu"}, {"", "host_add", "Add host configuration"}, {"", "host_remove", "Remove host configuration"},
-		{"PTY PANEL", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return focus to session list"},
+		{"PROJECT PANE", "project_focus", "Focus Project pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
+		{"TERMINAL AREA", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return focus to Session list pane"},
 		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
 		{"", "shortcut_settings", "Configure shortcuts"},
 	}

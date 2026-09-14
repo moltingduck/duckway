@@ -191,7 +191,8 @@ var DefaultShortcuts = map[string]string{
 	"session_create": "c", "session_actions": "m", "session_notifications": "n", "session_yield": "y", "session_yield_wait": "Y",
 	"session_end": "E", "session_restart": "R", "session_destroy": "X", "list_search": "/", "list_organize": "o", "list_groups": "g",
 	"list_reorder_up": "ctrl-k", "list_reorder_down": "ctrl-j", "pty_copy": "v", "pty_unfocus": "ctrl-]", "refresh": "r", "shortcut_settings": "S",
-	"project_focus": "P",
+	"project_focus":    "P",
+	"project_prev_tab": "[", "project_next_tab": "]", "project_prev_pane": "H", "project_next_pane": "L",
 }
 
 func validShortcutBinding(binding string) bool {

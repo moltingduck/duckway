@@ -798,6 +798,12 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 		if _, err := state.ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
 			t.Fatal(err)
 		}
+		if i == 1 {
+			other, _ := ducklord.IdentityFromSession(sessions[0])
+			if _, err := state.ProjectLayout.Place(projectID, other, ducklord.PlaceNewTab, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	home := fmt.Sprintf("/tmp/ducklord-project-focus-e2e-%d", os.Getpid())
 	if out, err := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/.ducklord").CombinedOutput(); err != nil {
@@ -853,6 +859,10 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "› Focus B", 10*time.Second)
 	capture.waitCurrent(t, "◇ client-a/"+handles[1], 10*time.Second)
 	capture.waitCurrent(t, "› "+handles[0]+" @client-a", 10*time.Second)
+	writePTY(t, terminal, "]")
+	capture.waitCurrent(t, "◇ client-a/"+handles[0], 10*time.Second)
+	writePTY(t, terminal, "[")
+	capture.waitCurrent(t, "◇ client-a/"+handles[1], 10*time.Second)
 	noRoute := fmt.Sprintf("%d", time.Now().UnixNano())
 	writePTY(t, terminal, noRoute)
 	time.Sleep(200 * time.Millisecond)

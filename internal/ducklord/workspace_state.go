@@ -184,6 +184,63 @@ func (w *WorkspaceState) SelectPane(projectID, paneID string) error {
 	return fmt.Errorf("session pane no longer exists")
 }
 
+// CycleTab moves among the current Project's tabs without changing keyboard
+// focus. Empty tabs are skipped; a tab always selects one of its Session panes.
+func (w *WorkspaceState) CycleTab(delta int) error {
+	if w.detail {
+		return fmt.Errorf("normal Terminal area unavailable in detailed-list mode")
+	}
+	project := w.layout.Project(w.location.projectID)
+	if project == nil || len(project.Tabs) == 0 {
+		return fmt.Errorf("current Project has no Terminal tabs")
+	}
+	index := 0
+	for i := range project.Tabs {
+		if project.Tabs[i].ID == w.location.tabID {
+			index = i
+			break
+		}
+	}
+	for offset := 1; offset <= len(project.Tabs); offset++ {
+		candidate := (index + delta*offset%len(project.Tabs) + len(project.Tabs)) % len(project.Tabs)
+		if leaf := project.Tabs[candidate].Root.firstLeaf(); leaf != nil {
+			return w.SelectPane(project.ID, leaf.ID)
+		}
+	}
+	return fmt.Errorf("current Project has no Session panes")
+}
+
+// CycleVisiblePane navigates only cells currently rendered by the Terminal
+// area. Hidden split leaves cannot become a keyboard-control target.
+func (w *WorkspaceState) CycleVisiblePane(geometry WorkspaceGeometry, delta int) error {
+	if w.detail {
+		return fmt.Errorf("normal Terminal area unavailable in detailed-list mode")
+	}
+	panes := WorkspaceVisiblePaneRects(w.layout, w, geometry)
+	if len(panes) == 0 {
+		return fmt.Errorf("current Terminal tab has no visible Session panes")
+	}
+	project := w.layout.Project(w.location.projectID)
+	index := 0
+	for i, pane := range panes {
+		_, paneID := project.findSessionLocation(pane.Identity)
+		if paneID == w.location.paneID {
+			index = i
+			break
+		}
+	}
+	if _, visible := WorkspaceVisiblePaneRect(w.layout, w, geometry); !visible {
+		if delta > 0 {
+			index = -1
+		} else {
+			index = 0
+		}
+	}
+	index = (index + delta%len(panes) + len(panes)) % len(panes)
+	_, paneID := project.findSessionLocation(panes[index].Identity)
+	return w.SelectPane(project.ID, paneID)
+}
+
 func (w *WorkspaceState) FocusPane() (SessionIdentity, error) {
 	if w.detail {
 		if w.detailSelection.Key() == "" {
