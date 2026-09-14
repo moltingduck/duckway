@@ -161,6 +161,9 @@ func TestWorkspacePreviewPreflightUsesVisibleLeafNotWholeTerminal(t *testing.T) 
 	if err != nil || rect.X != 88 || rect.Width != 33 || rect.Height != 16 {
 		t.Fatalf("selected right pane rect=%+v err=%v", rect, err)
 	}
+	if state.workspaceNav.Region() != ducklord.RegionQuickList {
+		t.Fatalf("geometry lookup stole keyboard region: %s", state.workspaceNav.Region())
+	}
 	state.focused = true
 	state.terminal = ducklord.NewTerminal(15, 33, 0)
 	var rendered bytes.Buffer
@@ -178,5 +181,78 @@ func TestWorkspacePreviewPreflightUsesVisibleLeafNotWholeTerminal(t *testing.T) 
 	}
 	if _, err := state.workspacePaneRectAt(120, 5); err == nil {
 		t.Fatal("hidden lower pane passed control preflight")
+	}
+}
+
+func TestWorkspaceProjectPaneTargetsBDuringQuickSelectionA(t *testing.T) {
+	a := ducklord.SessionIdentity{InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", SessionID: "AAA111"}
+	b := ducklord.SessionIdentity{InstanceID: a.InstanceID, SessionID: "BBB222"}
+	activity := ducklord.NewActivityState()
+	projectA, err := activity.ProjectLayout.AddProject("A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := activity.ProjectLayout.AddProject("B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activity.ProjectLayout.Place(projectA, a, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activity.ProjectLayout.Place(projectB, b, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	sessionA := ducklord.RemoteSession{Client: "host", InstanceID: a.InstanceID, SessionID: a.SessionID, Kind: "shell", Status: "running", RuntimeGeneration: 1}
+	sessionB := ducklord.RemoteSession{Client: "host", InstanceID: b.InstanceID, SessionID: b.SessionID, Kind: "shell", Status: "running", RuntimeGeneration: 1}
+	state := &tuiState{workspacePreview: true, cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}},
+		activityState: activity, sessions: []ducklord.RemoteSession{sessionA, sessionB}, selected: 0}
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(projectB); err != nil {
+		t.Fatal(err)
+	}
+	target, err := state.workspaceSelectedPaneSession()
+	if err != nil || sessionKey(target) != sessionKey(sessionB) {
+		t.Fatalf("Project B target=%+v err=%v", target, err)
+	}
+	if state.selected != 0 || sessionKey(state.currentSession()) != sessionKey(sessionA) {
+		t.Fatal("Project pane targeting changed quick-list selection")
+	}
+	state.activeAttachKey = sessionKey(target)
+	if sessionKey(state.activePTYSession()) != sessionKey(sessionB) || !state.canResizeCurrentSession() {
+		t.Fatal("active PTY target did not follow Project B's pane")
+	}
+	if _, err := state.workspacePaneRectAt(120, 20); err != nil {
+		t.Fatalf("Project B pane geometry: %v", err)
+	}
+	if nav.Region() != ducklord.RegionProjects {
+		t.Fatalf("geometry query stole keyboard focus: %s", nav.Region())
+	}
+}
+
+func TestWorkspaceProjectPaneRejectsStaleControlIdentity(t *testing.T) {
+	instance := "9df68174-9e13-4dc9-b44d-8532c87f5971"
+	target := ducklord.RemoteSession{Client: "host-b", InstanceID: instance, SessionID: "BBB222", Kind: "agent",
+		WriterKind: "terminal", WriterID: "desk", OwnershipEpoch: 8, RuntimeGeneration: 3}
+	base := ducklord.ControlSession{ClientKey: target.Client, InstanceID: target.InstanceID, SessionID: target.SessionID,
+		OwnershipEpoch: target.OwnershipEpoch, RuntimeGeneration: target.RuntimeGeneration}
+	if !controlMatchesSession(&base, target, "desk") {
+		t.Fatal("current Project pane control was rejected")
+	}
+	for name, mutate := range map[string]func(*ducklord.ControlSession){
+		"old quick-list pane": func(c *ducklord.ControlSession) { c.SessionID = "AAA111" },
+		"old host instance":   func(c *ducklord.ControlSession) { c.InstanceID = "4af68174-9e13-4dc9-b44d-8532c87f5971" },
+		"old writer epoch":    func(c *ducklord.ControlSession) { c.OwnershipEpoch-- },
+		"old runtime":         func(c *ducklord.ControlSession) { c.RuntimeGeneration-- },
+	} {
+		t.Run(name, func(t *testing.T) {
+			stale := base
+			mutate(&stale)
+			if controlMatchesSession(&stale, target, "desk") {
+				t.Fatalf("stale Project pane control accepted: %+v", stale)
+			}
+		})
 	}
 }

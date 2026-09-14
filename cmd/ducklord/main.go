@@ -1156,145 +1156,147 @@ func splitCommandLine(line string) ([]string, error) {
 }
 
 type tuiState struct {
-	cfg                       *ducklord.Config
-	cfgPath                   string
-	runner                    remoteRunner
-	refresh                   time.Duration
-	sessions                  []ducklord.RemoteSession
-	selected                  int
-	selectedGroupID           string
-	dragSession               ducklord.SessionIdentity
-	dragTargetGroup           string
-	dragTargetSession         ducklord.SessionIdentity
-	hashes                    map[string]string
-	selectedKey               string
-	outputText                string
-	outputErr                 string
-	localWarning              string
-	resizeStatus              string
-	outputForKey              string
-	outputStale               bool
-	outputFresh               bool
-	outputReconnecting        bool
-	terminal                  *ducklord.Terminal
-	terminalGeneration        uint64
-	terminalOffset            uint64
-	terminalCursorValid       bool
-	activeAttachKey           string
-	activeAttachFresh         bool
-	pendingAttachKey          string
-	snapshotStore             ducklord.SnapshotStore
-	activityStore             ducklord.ActivityStateStore
-	activityState             *ducklord.ActivityState
-	focused                   bool
-	copyMode                  bool
-	copyTerminal              *ducklord.Terminal
-	newSessionMode            bool
-	newSessionClient          string
-	newSessionLine            string
-	newSessionSelected        int
-	newSessionErr             string
-	newSessionStarting        bool
-	newSessionStartGeneration uint64
-	newSessionStartInstance   string
-	newSessionDiscovering     bool
-	newSessionRequestID       uint64
-	newSessionCancel          context.CancelFunc
-	createWorkers             sync.WaitGroup
-	newSessionStep            string
-	newSessionKind            model.SessionKind
-	newSessionAgent           string
-	newSessionCommand         []string
-	newSessionProjects        []ducklord.RemoteProject
-	newSessionProject         ducklord.RemoteProject
-	newSessionAgents          []ducklord.RemoteAgent
-	newSessionCWD             string
-	newSessionPathSuggestions []string
-	newSessionPathSelected    int
-	newSessionPathRequestID   uint64
-	newSessionPathCancel      context.CancelFunc
-	newSessionPathBusy        bool
-	newSessionPathCompletion  string
-	addClientMode             bool
-	addClientStep             string
-	addClientProvisionMode    string
-	addClientModeSelected     int
-	addClientLine             string
-	addClientSelected         int
-	addClientErr              string
-	addClientHosts            []ducklord.SSHHost
-	addClientBusy             bool
-	addClientRequestID        uint64
-	addClientCancel           context.CancelFunc
-	removeClientMode          bool
-	removeClientSelected      int
-	removeClientConfirm       string
-	helpMode                  bool
-	helpOffset                int
-	helpSearchActive          bool
-	helpSearchQuery           string
-	ptyScrollOffset           int
-	shortcutMode              bool
-	shortcutStep              string
-	shortcutIndex             int
-	shortcutLine              string
-	shortcutErr               string
-	shortcutDraft             *ducklord.Config
-	hostMenuMode              bool
-	hostMenuStep              string
-	hostMenuTarget            string
-	hostMenuIndex             int
-	hostMenuSelected          map[string]bool
-	hostMenuErr               string
-	disconnectedHosts         map[string]bool
-	hostScoped                bool
-	ownerName                 string
-	listPaneWidth             int
-	autoHideList              bool
-	hostSync                  map[string]ducklord.SessionUpdate
-	eventDriven               bool
-	notificationMode          bool
-	notificationIndex         int
-	notificationStaged        map[model.NotificationCategory]bool
-	notificationTarget        ducklord.RemoteSession
-	actionMenu                bool
-	actionIndex               int
-	actionTarget              ducklord.RemoteSession
-	actionOperation           protocol.SessionLifecycleOperation
-	actionMode                protocol.SessionLifecycleMode
-	lifecycleConfirm          protocol.SessionLifecycleOperation
-	lifecycleReturnToAction   bool
-	lifecycleTarget           ducklord.RemoteSession
-	lifecycleMode             protocol.SessionLifecycleMode
-	lifecycleBusy             bool
-	groupMenu                 bool
-	groupMenuStep             string
-	groupMenuAction           string
-	groupMenuIndex            int
-	groupMenuLine             string
-	groupMenuErr              string
-	groupMenuTarget           string
-	groupMenuSession          ducklord.SessionIdentity
-	pooledOutput              bool
-	workspacePreview          bool
-	workspaceOutput           *ducklord.WorkspaceOutputAdapter
-	workspaceNav              *ducklord.WorkspaceState
-	workspaceQuickKey         string
-	workspaceProjectFocus     bool
-	clearOutputFocus          func()
-	searchMode                bool
-	searchQuery               string
-	searchSelected            int
-	searchSelectedKey         string
-	searchRevision            uint64
-	searchActivatedKey        string
-	searchActivatedRevision   uint64
-	searchActivatedGeneration uint64
-	searchErr                 string
-	searchPendingRequestID    uint64
-	searchPendingKey          string
-	searchPendingGeneration   uint64
-	searchPendingRevision     uint64
+	cfg                        *ducklord.Config
+	cfgPath                    string
+	runner                     remoteRunner
+	refresh                    time.Duration
+	sessions                   []ducklord.RemoteSession
+	selected                   int
+	selectedGroupID            string
+	dragSession                ducklord.SessionIdentity
+	dragTargetGroup            string
+	dragTargetSession          ducklord.SessionIdentity
+	hashes                     map[string]string
+	selectedKey                string
+	outputText                 string
+	outputErr                  string
+	localWarning               string
+	resizeStatus               string
+	outputForKey               string
+	outputStale                bool
+	outputFresh                bool
+	outputReconnecting         bool
+	terminal                   *ducklord.Terminal
+	terminalGeneration         uint64
+	terminalOffset             uint64
+	terminalCursorValid        bool
+	activeAttachKey            string
+	activeAttachFresh          bool
+	pendingAttachKey           string
+	snapshotStore              ducklord.SnapshotStore
+	activityStore              ducklord.ActivityStateStore
+	activityState              *ducklord.ActivityState
+	focused                    bool
+	copyMode                   bool
+	copyTerminal               *ducklord.Terminal
+	newSessionMode             bool
+	newSessionClient           string
+	newSessionLine             string
+	newSessionSelected         int
+	newSessionErr              string
+	newSessionStarting         bool
+	newSessionStartGeneration  uint64
+	newSessionStartInstance    string
+	newSessionDiscovering      bool
+	newSessionRequestID        uint64
+	newSessionCancel           context.CancelFunc
+	createWorkers              sync.WaitGroup
+	newSessionStep             string
+	newSessionKind             model.SessionKind
+	newSessionAgent            string
+	newSessionCommand          []string
+	newSessionProjects         []ducklord.RemoteProject
+	newSessionProject          ducklord.RemoteProject
+	newSessionAgents           []ducklord.RemoteAgent
+	newSessionCWD              string
+	newSessionPathSuggestions  []string
+	newSessionPathSelected     int
+	newSessionPathRequestID    uint64
+	newSessionPathCancel       context.CancelFunc
+	newSessionPathBusy         bool
+	newSessionPathCompletion   string
+	addClientMode              bool
+	addClientStep              string
+	addClientProvisionMode     string
+	addClientModeSelected      int
+	addClientLine              string
+	addClientSelected          int
+	addClientErr               string
+	addClientHosts             []ducklord.SSHHost
+	addClientBusy              bool
+	addClientRequestID         uint64
+	addClientCancel            context.CancelFunc
+	removeClientMode           bool
+	removeClientSelected       int
+	removeClientConfirm        string
+	helpMode                   bool
+	helpOffset                 int
+	helpSearchActive           bool
+	helpSearchQuery            string
+	ptyScrollOffset            int
+	shortcutMode               bool
+	shortcutStep               string
+	shortcutIndex              int
+	shortcutLine               string
+	shortcutErr                string
+	shortcutDraft              *ducklord.Config
+	hostMenuMode               bool
+	hostMenuStep               string
+	hostMenuTarget             string
+	hostMenuIndex              int
+	hostMenuSelected           map[string]bool
+	hostMenuErr                string
+	disconnectedHosts          map[string]bool
+	hostScoped                 bool
+	ownerName                  string
+	listPaneWidth              int
+	autoHideList               bool
+	hostSync                   map[string]ducklord.SessionUpdate
+	eventDriven                bool
+	notificationMode           bool
+	notificationIndex          int
+	notificationStaged         map[model.NotificationCategory]bool
+	notificationTarget         ducklord.RemoteSession
+	actionMenu                 bool
+	actionIndex                int
+	actionTarget               ducklord.RemoteSession
+	actionOperation            protocol.SessionLifecycleOperation
+	actionMode                 protocol.SessionLifecycleMode
+	lifecycleConfirm           protocol.SessionLifecycleOperation
+	lifecycleReturnToAction    bool
+	lifecycleTarget            ducklord.RemoteSession
+	lifecycleMode              protocol.SessionLifecycleMode
+	lifecycleBusy              bool
+	groupMenu                  bool
+	groupMenuStep              string
+	groupMenuAction            string
+	groupMenuIndex             int
+	groupMenuLine              string
+	groupMenuErr               string
+	groupMenuTarget            string
+	groupMenuSession           ducklord.SessionIdentity
+	pooledOutput               bool
+	workspacePreview           bool
+	workspaceOutput            *ducklord.WorkspaceOutputAdapter
+	workspaceNav               *ducklord.WorkspaceState
+	workspaceQuickKey          string
+	workspaceProjectFocus      bool
+	workspaceAttachFromProject bool
+	workspaceFocusFromProject  bool
+	clearOutputFocus           func()
+	searchMode                 bool
+	searchQuery                string
+	searchSelected             int
+	searchSelectedKey          string
+	searchRevision             uint64
+	searchActivatedKey         string
+	searchActivatedRevision    uint64
+	searchActivatedGeneration  uint64
+	searchErr                  string
+	searchPendingRequestID     uint64
+	searchPendingKey           string
+	searchPendingGeneration    uint64
+	searchPendingRevision      uint64
 }
 
 func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, owner string) error {
@@ -1445,7 +1447,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		}
 		reconnectRequestID = 0
 		state.outputReconnecting = false
-		sess := state.currentSession()
+		sess := state.activePTYSession()
 		key, keyOK := terminalOutputKey(sess)
 		selectedKey := sessionKey(sess)
 		if state.outputForKey != selectedKey || !keyOK || activeOutputEvent.Key != key || activeOutputEvent.Revision.RuntimeGeneration != sess.RuntimeGeneration {
@@ -1455,15 +1457,34 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			activeOutputEvent = ducklord.TerminalOutputEvent{}
 			state.outputForKey = selectedKey
 		}
+		if workspaceOutput != nil {
+			visible := state.workspaceVisibleSelections(ducklord.TerminalSelection{Client: ducklord.Client{Name: sess.Client}})
+			if len(visible) == 0 {
+				workspaceOutput.ClearVisible()
+				state.outputFresh = false
+				state.outputErr = "current Project has no live Session pane"
+				return
+			}
+			priority := visible[0]
+			for _, candidate := range visible {
+				if candidate.Client.Name == sess.Client && candidate.InstanceID == sess.InstanceID && candidate.SessionID == sess.SessionID {
+					priority = candidate
+					break
+				}
+			}
+			outputRequestID = workspaceOutput.Select(priority)
+			if priority.Client.Name != sess.Client || priority.SessionID != sess.SessionID {
+				state.outputFresh = false
+				return
+			}
+			state.outputForKey = selectedKey
+			state.outputFresh = false
+			state.outputErr = "loading live PTY output..."
+			return
+		}
 		if sess.Client == "" || sess.InstanceID == "" || sess.SessionID == "" || sess.RuntimeGeneration == 0 || !canRead(sess) || !state.hostIsLive(sess.Client) {
 			state.outputFresh = false
 			state.outputErr = "PTY output is unavailable until the host session is synchronized"
-			if workspaceOutput != nil {
-				visible := state.workspaceVisibleSelections(ducklord.TerminalSelection{})
-				if len(visible) > 0 {
-					outputRequestID = workspaceOutput.Select(visible[0])
-				}
-			}
 			return
 		}
 		client, clientErr := mustClient(cfg, sess.Client)
@@ -1536,6 +1557,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	var attach *ducklord.AttachSession
 	var control *ducklord.ControlSession
 	var controlDone <-chan error
+	var pendingControlSince time.Time
 	controlOpened := make(chan controlOpenEvent, 1)
 	controlID := 0
 	var controlOpenCancel context.CancelFunc
@@ -1563,9 +1585,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	}()
 	resizeCapability := func() func(uint16, uint16) (uint64, error) {
 		var resize func(uint16, uint16) (uint64, error)
-		expectedKey, keyOK := terminalOutputKey(state.currentSession())
+		expectedKey, keyOK := terminalOutputKey(state.activePTYSession())
 		if outputManager != nil && control != nil && control.ResizeBarrier != nil && activeOutputEvent.Lease != 0 && keyOK && activeOutputEvent.Key == expectedKey &&
-			activeOutputEvent.Revision.RuntimeGeneration == control.RuntimeGeneration && control.RuntimeGeneration == state.currentSession().RuntimeGeneration {
+			activeOutputEvent.Revision.RuntimeGeneration == control.RuntimeGeneration && control.RuntimeGeneration == state.activePTYSession().RuntimeGeneration {
 			event := activeOutputEvent
 			controlSnapshot := control
 			resize = func(rows, cols uint16) (uint64, error) {
@@ -1612,6 +1634,39 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 		}
 	}
+	acceptWorkspaceControl := func() bool {
+		if workspaceOutput == nil || control == nil || state.focused {
+			return false
+		}
+		session := state.activePTYSession()
+		if _, err := state.workspacePaneRect(); err != nil || !state.hostIsLive(session.Client) || !controlMatchesSession(control, session, state.ownerName) {
+			_ = control.Stdin.Close()
+			control, controlDone = nil, nil
+			state.clearAttachIdentity()
+			state.outputErr = "Session pane or writer changed before PTY control became ready"
+			return false
+		}
+		key, ok := terminalOutputKey(session)
+		if !ok || workspaceOutput.SetInputFocus(key) != nil {
+			return false // the visible raw-output lease may still be opening
+		}
+		state.focused = true
+		pendingControlSince = time.Time{}
+		attachCanResize = control.ResizeBarrier != nil
+		if nav, err := state.workspaceNavigation(); err == nil {
+			width, height := terminalSize()
+			_, _ = nav.FocusVisiblePane(ducklord.CalculateWorkspaceGeometry(width, height, 4))
+		}
+		state.outputErr = ""
+		if state.sessionFreshlyDisplayed(session) {
+			state.markActivitySeen(session)
+		}
+		if resizeCapability() != nil && !attachInitialResizeQueued {
+			attachInitialResizeQueued = true
+			queueResize()
+		}
+		return true
+	}
 	finishAttach := func(event attachOutputEvent) {
 		attachID++
 		resizeInFlight = false
@@ -1643,6 +1698,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	for {
 		select {
 		case <-workspaceRepaint:
+			if control != nil && !state.focused {
+				acceptWorkspaceControl()
+			}
 			state.render(os.Stdout)
 		case <-ctx.Done():
 			state.cancelAddClientWork()
@@ -1674,6 +1732,18 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			state.render(os.Stdout)
 		case <-ticker.C:
+			if workspaceOutput != nil && control != nil && !state.focused {
+				if !pendingControlSince.IsZero() && time.Since(pendingControlSince) >= 15*time.Second {
+					_ = control.Stdin.Close()
+					control, controlDone = nil, nil
+					state.clearAttachIdentity()
+					state.outputErr = "PTY focus timed out waiting for Session output"
+				} else {
+					acceptWorkspaceControl()
+				}
+				state.render(os.Stdout)
+				continue
+			}
 			if !state.focused && !state.newSessionMode && !state.searchMode {
 				if !state.eventDriven {
 					state.refreshSessions(ctx)
@@ -1689,7 +1759,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 			}
 		case event := <-outputEvents:
-			expectedSession := state.currentSession()
+			expectedSession := state.activePTYSession()
 			if state.searchMode && state.searchActivatedKey != "" {
 				if activated, ok := state.sessionForKey(state.searchActivatedKey); ok {
 					expectedSession = activated
@@ -1800,8 +1870,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.searchPendingRequestID = 0
 				state.searchErr = "Active · Enter again to focus"
 			}
-			if state.sessionFreshlyDisplayed(state.currentSession()) {
-				state.markActivitySeen(state.currentSession())
+			if control != nil && !state.focused {
+				acceptWorkspaceControl()
+			}
+			if state.sessionFreshlyDisplayed(state.activePTYSession()) {
+				state.markActivitySeen(state.activePTYSession())
 			}
 			if state.focused && control != nil && !attachInitialResizeQueued && resizeCapability() != nil {
 				attachInitialResizeQueued = true
@@ -1814,7 +1887,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				_, paneErr := state.workspacePaneRect()
 				paneVisible = paneErr == nil
 			}
-			if !paneVisible || opened.id != controlID || opened.key != state.activeAttachKey || opened.control != nil && !controlMatchesSession(opened.control, state.currentSession(), state.ownerName) {
+			if !paneVisible || opened.id != controlID || opened.key != state.activeAttachKey || opened.control != nil && !controlMatchesSession(opened.control, state.activePTYSession(), state.ownerName) {
 				if opened.control != nil {
 					_ = opened.control.Stdin.Close()
 				}
@@ -1834,22 +1907,24 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			control = opened.control
 			controlDone = control.Done
-			state.focused = true
 			if workspaceOutput != nil {
-				key, ok := terminalOutputKey(state.currentSession())
-				if !ok || workspaceOutput.SetInputFocus(key) != nil {
-					_ = control.Stdin.Close()
-					control = nil
-					controlDone = nil
-					state.focused = false
-					state.clearAttachIdentity()
-					state.outputErr = "Session output is no longer visible; PTY control was not opened"
+				if !acceptWorkspaceControl() {
+					if control != nil {
+						pendingControlSince = time.Now()
+						state.outputErr = "waiting for Session pane output before PTY input"
+					}
 					state.render(os.Stdout)
 					continue
 				}
+				state.render(os.Stdout)
+				continue
 			}
+			state.focused = true
 			attachCanResize = control.ResizeBarrier != nil
 			state.outputErr = ""
+			if state.sessionFreshlyDisplayed(state.activePTYSession()) {
+				state.markActivitySeen(state.activePTYSession())
+			}
 			if resizeCapability() != nil {
 				attachInitialResizeQueued = true
 				queueResize()
@@ -1859,6 +1934,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			controlDone = nil
 			control = nil
 			attachCanResize = false
+			if state.focused || workspaceOutput != nil && state.activeAttachKey != "" {
+				state.focused = false
+				state.clearAttachIdentity()
+			}
 			if controlErr != nil {
 				state.outputErr = "PTY control connection closed"
 			}
@@ -1965,7 +2044,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					selectPooledOutput()
 				}
 			}
-			if control != nil && (!state.hostIsLive(state.currentSession().Client) || !controlMatchesSession(control, state.currentSession(), state.ownerName)) {
+			if control != nil && (!state.hostIsLive(state.activePTYSession().Client) || !controlMatchesSession(control, state.activePTYSession(), state.ownerName)) {
 				controlID++
 				if controlOpenCancel != nil {
 					controlOpenCancel()
@@ -2118,6 +2197,18 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.render(os.Stdout)
 		case b := <-input:
 			var selectedActionTarget *ducklord.RemoteSession
+			if workspaceOutput != nil && control != nil && !state.focused {
+				if state.shortcut("pty_unfocus", string(b)) || string(b) == "\x1b" || string(b) == "\x03" {
+					_ = control.Stdin.Close()
+					control, controlDone = nil, nil
+					state.clearAttachIdentity()
+					state.outputErr = "PTY focus canceled while waiting for output"
+				} else {
+					state.outputErr = "waiting for Session pane output before PTY input"
+				}
+				state.render(os.Stdout)
+				continue
+			}
 			mouseReport := strings.HasPrefix(string(b), "\x1b[<")
 			if button, x, y, ok := parseSGRMouse(string(b)); ok {
 				// Mouse reports are always local UI input. Never inject their
@@ -2204,7 +2295,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						continue
 					}
 				}
-				if !state.hostIsLive(state.currentSession().Client) {
+				if !state.hostIsLive(state.activePTYSession().Client) {
 					state.focused = false
 					state.clearAttachIdentity()
 					state.outputFresh = false
@@ -2249,7 +2340,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.render(os.Stdout)
 					continue
 				}
-				if control != nil && controlMatchesSession(control, state.currentSession(), state.ownerName) {
+				if control != nil && controlMatchesSession(control, state.activePTYSession(), state.ownerName) {
 					_, _ = control.Stdin.Write(b)
 				} else if control != nil {
 					controlID++
@@ -2756,6 +2847,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			if handled, changed := state.handleWorkspaceProjectInput(b); handled {
+				if changed && control != nil && !state.focused {
+					_ = control.Stdin.Close()
+					control, controlDone = nil, nil
+					state.clearAttachIdentity()
+				}
 				if changed && workspaceOutput != nil {
 					visible := state.workspaceVisibleSelections(ducklord.TerminalSelection{})
 					if len(visible) == 0 {
@@ -2805,6 +2901,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			case "reorder-down":
 				state.moveSelectedSession(1)
 			case "select":
+				if control != nil && !state.focused {
+					_ = control.Stdin.Close()
+					control, controlDone = nil, nil
+				}
 				// List navigation owns the preview pane. Never leave a stale
 				// attach identity pointing at the previously selected session.
 				state.clearAttachIdentity()
@@ -2879,20 +2979,37 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.refreshSessions(ctx)
 				state.outputErr = fmt.Sprintf("yield %s (epoch %d)", result.Decision, result.OwnershipEpoch)
 			case "attach":
+				if control != nil && !state.focused {
+					_ = control.Stdin.Close()
+					control, controlDone = nil, nil
+					state.clearAttachIdentity()
+				}
 				if len(state.sessions) == 0 {
 					continue
+				}
+				s := state.currentSession()
+				if state.workspaceAttachFromProject {
+					state.workspaceAttachFromProject = false
+					var targetErr error
+					s, targetErr = state.workspaceSelectedPaneSession()
+					if targetErr != nil {
+						state.outputErr = targetErr.Error()
+						break
+					}
+					state.activeAttachKey = sessionKey(s)
 				}
 				if state.workspacePreview {
 					if _, visibleErr := state.workspacePaneRect(); visibleErr != nil {
 						state.outputErr = "cannot focus hidden Session pane: " + visibleErr.Error()
+						state.clearAttachIdentity()
 						break
 					}
 				}
-				s := state.sessions[state.selected]
 				if !canAttach(s) || !state.hostIsLive(s.Client) {
 					if !state.hostIsLive(s.Client) {
 						state.outputErr = "host is reconnecting; PTY controls are disabled"
 					}
+					state.clearAttachIdentity()
 					continue
 				}
 				c, err := mustClient(cfg, s.Client)
@@ -2903,6 +3020,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				if outputManager != nil {
 					state.focused = false
 					state.activeAttachKey = sessionKey(s)
+					if workspaceOutput != nil {
+						selectPooledOutput()
+					}
 					state.activeAttachFresh = state.outputFresh
 					state.pendingAttachKey = ""
 					controlID++
@@ -2920,6 +3040,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					})
 					if !ok {
 						state.outputErr = "PTY control is unavailable"
+						state.clearAttachIdentity()
 						break
 					}
 					state.outputErr = "opening PTY control..."
@@ -3126,7 +3247,7 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 		s.newSessionErr = "host connection changed; choose it again"
 	}
 	if update.State != "live" {
-		if s.currentSession().Client == update.Client {
+		if s.activePTYSession().Client == update.Client {
 			s.outputFresh = false
 		}
 		return // retain the last authoritative rows while reconnecting
@@ -3233,6 +3354,15 @@ func (s *tuiState) clearAttachIdentity() {
 	if s.clearOutputFocus != nil {
 		s.clearOutputFocus()
 	}
+	if s.workspacePreview && s.workspaceNav != nil && s.activeAttachKey != "" {
+		if s.workspaceFocusFromProject {
+			_ = s.workspaceNav.SelectProject(s.workspaceNav.CurrentProjectID())
+			s.workspaceProjectFocus = true
+		} else if identity, ok := ducklord.IdentityFromSession(s.currentSession()); ok {
+			_ = s.workspaceNav.SelectQuickSession(identity)
+		}
+	}
+	s.workspaceFocusFromProject = false
 	s.activeAttachKey = ""
 	s.activeAttachFresh = false
 	s.pendingAttachKey = ""
@@ -4307,8 +4437,18 @@ func (s *tuiState) currentSession() ducklord.RemoteSession {
 	return s.sessions[s.selected]
 }
 
+func (s *tuiState) activePTYSession() ducklord.RemoteSession {
+	if s.workspacePreview && s.activeAttachKey != "" {
+		if session, ok := s.sessionForKey(s.activeAttachKey); ok {
+			return session
+		}
+		return ducklord.RemoteSession{}
+	}
+	return s.currentSession()
+}
+
 func (s *tuiState) canResizeCurrentSession() bool {
-	session := s.currentSession()
+	session := s.activePTYSession()
 	if session.Kind == string(model.KindShell) {
 		return true
 	}

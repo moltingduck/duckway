@@ -31,6 +31,33 @@ func (s *tuiState) workspaceNavigation() (*ducklord.WorkspaceState, error) {
 	return s.workspaceNav, nil
 }
 
+func (s *tuiState) workspaceSelectedPaneSession() (ducklord.RemoteSession, error) {
+	nav, err := s.workspaceNavigation()
+	if err != nil {
+		return ducklord.RemoteSession{}, err
+	}
+	identity, ok := s.activity().ProjectLayout.PaneSession(nav.CurrentProjectID(), nav.CurrentPaneID())
+	if !ok {
+		return ducklord.RemoteSession{}, fmt.Errorf("selected Project has no Session pane")
+	}
+	width, height := terminalSize()
+	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	if _, visible := ducklord.WorkspaceVisiblePaneRect(&s.activity().ProjectLayout, nav, geometry); !visible {
+		return ducklord.RemoteSession{}, fmt.Errorf("selected Session pane is hidden by terminal size")
+	}
+	for _, selection := range s.workspaceVisibleSelections(ducklord.TerminalSelection{}) {
+		if selection.InstanceID == identity.InstanceID && selection.SessionID == identity.SessionID {
+			key := ducklord.OutputKey{ClientKey: selection.Client.Name, InstanceID: identity.InstanceID, SessionID: identity.SessionID}
+			for _, session := range s.sessions {
+				if candidate, ok := terminalOutputKey(session); ok && candidate == key {
+					return session, nil
+				}
+			}
+		}
+	}
+	return ducklord.RemoteSession{}, fmt.Errorf("selected Session pane has no live host connection")
+}
+
 // P is a read-only Project-list focus switch. Project movement never changes
 // the quick-list selection or grants PTY control.
 func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed bool) {
@@ -45,7 +72,18 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 	if !s.workspaceProjectFocus {
 		return false, false
 	}
-	if key == "\x1b" || key == "\t" || key == "\r" {
+	if key == "\r" {
+		if _, err := s.workspaceSelectedPaneSession(); err != nil {
+			s.outputErr = err.Error()
+			return true, false
+		}
+		s.workspaceProjectFocus = false
+		s.workspaceAttachFromProject = true
+		s.workspaceFocusFromProject = true
+		s.selectedGroupID = ""
+		return false, false // the normal attach action consumes this Enter
+	}
+	if key == "\x1b" || key == "\t" {
 		s.workspaceProjectFocus = false
 		return true, false
 	}
@@ -77,11 +115,12 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		s.outputErr = err.Error()
 		return true, false
 	}
+	s.outputErr = ""
 	return true, true
 }
 
 func (s *tuiState) workspacePaneRectAt(width, height int) (ducklord.WorkspaceRect, error) {
-	selected := s.currentSession()
+	selected := s.activePTYSession()
 	identity, ok := ducklord.IdentityFromSession(selected)
 	if !ok {
 		return ducklord.WorkspaceRect{}, fmt.Errorf("current Session has no stable identity")
@@ -92,11 +131,9 @@ func (s *tuiState) workspacePaneRectAt(width, height int) (ducklord.WorkspaceRec
 		return ducklord.WorkspaceRect{}, err
 	}
 	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
-	if focused, err := nav.FocusVisiblePane(geometry); err != nil || focused != identity {
-		if err != nil {
-			return ducklord.WorkspaceRect{}, err
-		}
-		return ducklord.WorkspaceRect{}, fmt.Errorf("focused pane no longer matches selected Session")
+	actual, ok := layout.PaneSession(nav.CurrentProjectID(), nav.CurrentPaneID())
+	if !ok || actual != identity {
+		return ducklord.WorkspaceRect{}, fmt.Errorf("active pane no longer matches PTY Session")
 	}
 	rect, visible := ducklord.WorkspaceVisiblePaneRect(layout, nav, geometry)
 	if !visible {
@@ -185,6 +222,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 		return
 	}
 	selected := s.currentSession()
+	displayed := s.activePTYSession()
 	items := make([]ducklord.WorkspaceListItem, 0, len(s.sessions))
 	for _, session := range s.sessions {
 		identity, ok := ducklord.IdentityFromSession(session)
@@ -226,7 +264,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 			view := ducklord.WorkspacePaneView{Title: displayField(session.Client) + "/" + displayField(session.Name),
 				Stale: true, ReadOnly: session.Kind != string(model.KindShell) &&
 					(session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName)}
-			if sessionKey(session) != sessionKey(selected) {
+			if sessionKey(session) != sessionKey(displayed) {
 				if selection, ok := visibleOutput[identity]; ok && s.workspaceOutput != nil {
 					key := ducklord.OutputKey{ClientKey: selection.Client.Name, InstanceID: selection.InstanceID, SessionID: selection.SessionID}
 					if live, err := s.workspaceOutput.PaneView(key); err == nil && live.Ready && !live.Disconnected && !live.Ended &&

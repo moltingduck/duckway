@@ -546,14 +546,28 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 	if binary == "" {
 		binary = "ducklord"
 	}
+	owner := fmt.Sprintf("workspace-e2e-%d", time.Now().UnixNano())
 	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", "DUCKLORD_WORKSPACE_PREVIEW=1",
-		binary, "tui", "--name", "workspace-e2e", "--config", "/root/.ducklord/config.yaml")
+		binary, "tui", "--name", owner, "--config", "/root/.ducklord/config.yaml")
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
 		_, _ = terminal.Write([]byte("q"))
+		time.Sleep(300 * time.Millisecond)
+		if listing, err := exec.Command(runtime, "exec", controller, "ps", "-ef").Output(); err == nil {
+			needle := binary + " tui --name " + owner + " --config"
+			for _, line := range strings.Split(string(listing), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) < 3 || !strings.Contains(line, needle) {
+					continue
+				}
+				if pid, parseErr := strconv.Atoi(fields[0]); parseErr == nil {
+					_, _ = exec.Command(runtime, "exec", controller, "kill", strconv.Itoa(pid)).CombinedOutput()
+				}
+			}
+		}
 		_ = terminal.Close()
 		_ = command.Process.Kill()
 		_ = command.Wait()
@@ -730,6 +744,140 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	}
 	capture.waitCurrent(t, projectMarker, 10*time.Second)
 	writePTY(t, terminal, "P")
+}
+
+// TestDucklordWorkspaceProjectEnterFocusContainerE2E keeps quick-list selection
+// independent from the Project pane's focused PTY across a real SSH bridge.
+func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
+	if os.Getenv("DUCKLORD_TUI_CONTAINER_E2E") != "1" {
+		t.Skip("run through scripts/ducklord-tui-e2e.sh")
+	}
+	runtime := requiredE2EEnv(t, "DUCKLORD_E2E_RUNTIME")
+	controller := requiredE2EEnv(t, "DUCKLORD_E2E_CONTROLLER")
+	binary := os.Getenv("DUCKLORD_E2E_BINARY")
+	if binary == "" {
+		binary = "ducklord"
+	}
+	cliOwner := fmt.Sprintf("project-focus-cli-%d", time.Now().UnixNano())
+	handles := []string{
+		fmt.Sprintf("pfa%x", time.Now().UnixNano()&0xffffff),
+		fmt.Sprintf("pfb%x", (time.Now().UnixNano()+1)&0xffffff),
+	}
+	sessions := make([]ducklord.RemoteSession, 2)
+	for i, handle := range handles {
+		out, err := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "start", "client-a", "--name", handle,
+			"--kind", "shell", "--cwd", "/home/duck", "--config", "/root/.ducklord/config.yaml", "--", "bash").CombinedOutput()
+		if err != nil {
+			t.Fatalf("start isolated shell %s: %v: %s", handle, err, out)
+		}
+		t.Cleanup(func() {
+			_, _ = exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "destroy", "client-a", handle,
+				"--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		})
+		waitE2E(t, 10*time.Second, func() bool {
+			for _, session := range listContainerSessions(t, runtime, controller, "client-a") {
+				if session.Handle == handle {
+					var ok bool
+					sessions[i], ok = findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+					return ok && sessions[i].InstanceID != ""
+				}
+			}
+			return false
+		}, func() string { return "isolated shell not listed: " + handle })
+	}
+	state := ducklord.NewActivityState()
+	for i, name := range []string{"Focus A", "Focus B"} {
+		projectID, err := state.ProjectLayout.AddProject(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, ok := ducklord.IdentityFromSession(sessions[i])
+		if !ok {
+			t.Fatalf("missing Session identity for %s", handles[i])
+		}
+		if _, err := state.ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	home := fmt.Sprintf("/tmp/ducklord-project-focus-e2e-%d", os.Getpid())
+	if out, err := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/.ducklord").CombinedOutput(); err != nil {
+		t.Fatalf("prepare isolated home: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _, _ = exec.Command(runtime, "exec", controller, "rm", "-r", home).CombinedOutput() })
+	if out, err := exec.Command(runtime, "exec", controller, "ln", "-s", "/root/.ssh", home+"/.ssh").CombinedOutput(); err != nil {
+		t.Fatalf("link isolated SSH: %v: %s", err, out)
+	}
+	localState := filepath.Join(t.TempDir(), "state.json")
+	if err := (ducklord.ActivityStateStore{Path: localState}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(runtime, "cp", localState, controller+":"+home+"/.ducklord/state.json").CombinedOutput(); err != nil {
+		t.Fatalf("install isolated layout: %v: %s", err, out)
+	}
+	owner := fmt.Sprintf("project-focus-%d", time.Now().UnixNano())
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", "DUCKLORD_WORKSPACE_PREVIEW=1",
+		binary, "tui", "--name", owner, "--config", "/root/.ducklord/config.yaml")
+	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = terminal.Write([]byte("\x1d\x1bq"))
+		time.Sleep(300 * time.Millisecond)
+		if listing, err := exec.Command(runtime, "exec", controller, "ps", "-ef").Output(); err == nil {
+			needle := binary + " tui --name " + owner + " --config"
+			for _, line := range strings.Split(string(listing), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) < 3 || !strings.Contains(line, needle) {
+					continue
+				}
+				if pid, parseErr := strconv.Atoi(fields[0]); parseErr == nil {
+					_, _ = exec.Command(runtime, "exec", controller, "kill", strconv.Itoa(pid)).CombinedOutput()
+				}
+			}
+		}
+		_ = terminal.Close()
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	})
+	capture := newSizedTUICapture(terminal, 24, 120)
+	capture.waitCurrent(t, "Focus A", 20*time.Second)
+	writePTY(t, terminal, "/"+handles[0]+"\r")
+	capture.waitCurrent(t, "Active · Enter again to focus", 20*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Session focus:", 20*time.Second)
+	writePTY(t, terminal, "\x1d")
+	capture.waitCurrent(t, "› Focus A", 20*time.Second)
+	capture.waitCurrent(t, "› "+handles[0]+" @client-a", 20*time.Second)
+	writePTY(t, terminal, "Pj")
+	capture.waitCurrent(t, "› Focus B", 10*time.Second)
+	capture.waitCurrent(t, "◇ client-a/"+handles[1], 10*time.Second)
+	capture.waitCurrent(t, "› "+handles[0]+" @client-a", 10*time.Second)
+	noRoute := fmt.Sprintf("%d", time.Now().UnixNano())
+	writePTY(t, terminal, noRoute)
+	time.Sleep(200 * time.Millisecond)
+	for _, handle := range handles {
+		out, readErr := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "read", "client-a", handle,
+			"--lines", "50", "--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		if readErr != nil || bytes.Contains(out, []byte(noRoute)) {
+			t.Fatalf("Project-list input reached %s: err=%v output=%q", handle, readErr, safeTerminalDiagnostic(string(out)))
+		}
+	}
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "▣ client-a/"+handles[1], 20*time.Second)
+	capture.waitCurrent(t, "› "+handles[0]+" @client-a", 10*time.Second)
+	toB := fmt.Sprintf("TOB-%d", time.Now().UnixNano())
+	writePTY(t, terminal, "printf '"+toB+"\\n'\r")
+	waitE2E(t, 10*time.Second, func() bool {
+		out, readErr := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "read", "client-a", handles[1],
+			"--lines", "50", "--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		return readErr == nil && bytes.Contains(out, []byte(toB))
+	}, func() string { return "Project B shell did not receive focused PTY input" })
+	out, readErr := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "read", "client-a", handles[0],
+		"--lines", "50", "--config", "/root/.ducklord/config.yaml").CombinedOutput()
+	if readErr != nil || bytes.Contains(out, []byte(toB)) {
+		t.Fatalf("focused input reached quick-selected A: err=%v output=%q", readErr, safeTerminalDiagnostic(string(out)))
+	}
 }
 
 type tuiCapture struct {
