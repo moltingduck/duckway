@@ -279,10 +279,27 @@ type ActivityState struct {
 }
 
 type SessionNotificationState struct {
-	Seen          map[model.NotificationCategory]uint64 `json:"seen,omitempty"`
-	Disabled      map[model.NotificationCategory]bool   `json:"disabled,omitempty"`
-	Unread        map[model.NotificationCategory]bool   `json:"unread,omitempty"`
-	LastEventAtMS int64                                 `json:"last_event_at_ms,omitempty"`
+	Seen              map[model.NotificationCategory]uint64 `json:"seen,omitempty"`
+	Observed          map[model.NotificationCategory]uint64 `json:"observed,omitempty"`
+	Disabled          map[model.NotificationCategory]bool   `json:"disabled,omitempty"`
+	Unread            map[model.NotificationCategory]bool   `json:"unread,omitempty"`
+	LastEventAtMS     int64                                 `json:"last_event_at_ms,omitempty"`
+	LastEventCategory model.NotificationCategory            `json:"last_event_category,omitempty"`
+}
+
+func notificationImportance(category model.NotificationCategory) int {
+	switch category {
+	case model.NotificationAgentNeedsInput, model.NotificationApprovalRequired:
+		return 0
+	case model.NotificationTaskFailed, model.NotificationTaskTimeout, model.NotificationUnexpectedProcessExit:
+		return 1
+	case model.NotificationTaskCompleted:
+		return 2
+	case model.NotificationTerminalAttention:
+		return 3
+	default:
+		return 4
+	}
 }
 
 type ActivityStateStore struct{ Path string }
@@ -325,12 +342,18 @@ func (s *ActivityState) Clone() *ActivityState {
 	}
 	for key, entry := range s.Sessions {
 		copied := SessionNotificationState{
-			Seen:     make(map[model.NotificationCategory]uint64, len(entry.Seen)),
-			Disabled: make(map[model.NotificationCategory]bool, len(entry.Disabled)),
-			Unread:   make(map[model.NotificationCategory]bool, len(entry.Unread)),
+			Seen:              make(map[model.NotificationCategory]uint64, len(entry.Seen)),
+			Observed:          make(map[model.NotificationCategory]uint64, len(entry.Observed)),
+			Disabled:          make(map[model.NotificationCategory]bool, len(entry.Disabled)),
+			Unread:            make(map[model.NotificationCategory]bool, len(entry.Unread)),
+			LastEventAtMS:     entry.LastEventAtMS,
+			LastEventCategory: entry.LastEventCategory,
 		}
 		for category, sequence := range entry.Seen {
 			copied.Seen[category] = sequence
+		}
+		for category, sequence := range entry.Observed {
+			copied.Observed[category] = sequence
 		}
 		for category, disabled := range entry.Disabled {
 			copied.Disabled[category] = disabled
@@ -538,12 +561,26 @@ func (s *ActivityState) Reconcile(session RemoteSession, activeFresh bool) (unre
 	if entry.Seen == nil {
 		entry.Seen = make(map[model.NotificationCategory]uint64)
 	}
+	initialObservation := entry.Observed == nil
+	if initialObservation {
+		entry.Observed = make(map[model.NotificationCategory]uint64)
+	}
 	if entry.Unread == nil {
 		entry.Unread = make(map[model.NotificationCategory]bool)
 	}
 	for category, current := range session.ActivitySequences {
-		if current > entry.Seen[category] && !entry.Unread[category] {
-			entry.LastEventAtMS = time.Now().UnixMilli()
+		if eventAt := session.ActivityUpdatedAtMS[category]; eventAt > 0 &&
+			(eventAt > entry.LastEventAtMS || eventAt == entry.LastEventAtMS && notificationImportance(category) < notificationImportance(entry.LastEventCategory)) {
+			entry.LastEventAtMS = eventAt
+			entry.LastEventCategory = category
+			changed = true
+		}
+		if initialObservation {
+			entry.Observed[category] = current
+			changed = true
+		}
+		if current > entry.Observed[category] {
+			entry.Observed[category] = current
 			changed = true
 		}
 		if activeFresh {
@@ -629,6 +666,19 @@ func (s *ActivityState) validate() error {
 		}
 		for category := range entry.Seen {
 			if err := category.Validate(); err != nil {
+				return err
+			}
+		}
+		for category := range entry.Observed {
+			if err := category.Validate(); err != nil {
+				return err
+			}
+		}
+		if entry.LastEventAtMS < 0 {
+			return fmt.Errorf("invalid notification event timestamp")
+		}
+		if entry.LastEventCategory != "" {
+			if err := entry.LastEventCategory.Validate(); err != nil {
 				return err
 			}
 		}

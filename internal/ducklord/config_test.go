@@ -53,6 +53,22 @@ func TestLoadConfigValidatesSessionListLayout(t *testing.T) {
 	}
 }
 
+func TestQuickSortConfigRoundTripAndValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := &Config{QuickSort: "event_importance", QuickOldestFirst: true}
+	if err := SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil || loaded.QuickSort != "event_importance" || !loaded.QuickOldestFirst {
+		t.Fatalf("quick sort round trip: %+v err=%v", loaded, err)
+	}
+	cfg.QuickSort = "custom"
+	if err := SaveConfig(path, cfg); err == nil {
+		t.Fatal("removed custom quick ordering was accepted")
+	}
+}
+
 func TestLoadConfigValidatesRawOutputSubscriptionLimit(t *testing.T) {
 	for _, value := range []int{-1, 0, 101} {
 		path := filepath.Join(t.TempDir(), "config.yaml")

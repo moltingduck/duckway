@@ -2993,6 +2993,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 			case "organize":
 				state.cycleOrganizationMode()
+			case "quick-sort":
+				state.cycleQuickSort()
+			case "quick-sort-direction":
+				state.reverseQuickSortTime()
 			case "groups":
 				state.beginGroupMenu()
 			case "reorder-up":
@@ -3870,6 +3874,10 @@ func (s *tuiState) applyOrganizationOrder() bool {
 		sessionRank[identity.Key()] = len(sessionRank)
 		organization.SessionOrder = append(organization.SessionOrder, identity)
 		changed = true
+	}
+	if s.workspacePreview {
+		s.sortQuickSessions()
+		return changed
 	}
 	mode := s.organizationMode()
 	if organization.GroupOrders == nil {
@@ -5082,6 +5090,12 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		{"TERMINAL AREA", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return to navigation pane"},
 		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
 		{"", "shortcut_settings", "Configure shortcuts"},
+	}
+	if s.workspacePreview {
+		entries[0] = helpEntry{"SESSION LIST PANE", "list_search", "Search sessions"}
+		entries[1] = helpEntry{"", "list_sort", "Cycle time / importance / Host / type"}
+		entries[2] = helpEntry{"", "list_sort_direction", "Reverse event-time direction"}
+		entries = append(entries[:3], append([]helpEntry{{"", "refresh", "Refresh"}}, entries[6:]...)...)
 	}
 	query := strings.ToLower(strings.TrimSpace(s.helpSearchQuery))
 	results := []modalRenderLine{}
@@ -6490,14 +6504,14 @@ func (s *tuiState) handleInput(b []byte) string {
 	case s.selectedGroupID != "" && (s.sessionShortcut(text) || s.shortcut("list_reorder_up", text) || s.shortcut("list_reorder_down", text)):
 		s.outputErr = "select a session row for this action"
 		return "group-select"
-	case text == "\x1b[D":
+	case !s.workspacePreview && text == "\x1b[D":
 		if s.selectedGroupID == "" {
 			s.selectedGroupID = s.organizationGroupID(s.currentSession())
 			return "group-select"
 		}
 		s.setSelectedGroupCollapsed(true)
 		return "group-toggle"
-	case text == "\x1b[C":
+	case !s.workspacePreview && text == "\x1b[C":
 		if s.selectedGroupID != "" {
 			s.setSelectedGroupCollapsed(false)
 			return "group-toggle"
@@ -6507,13 +6521,17 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "refresh"
 	case s.shortcut("list_search", text):
 		return "search"
-	case s.shortcut("list_organize", text):
+	case s.workspacePreview && s.shortcut("list_sort", text):
+		return "quick-sort"
+	case s.workspacePreview && s.shortcut("list_sort_direction", text):
+		return "quick-sort-direction"
+	case !s.workspacePreview && s.shortcut("list_organize", text):
 		return "organize"
-	case s.shortcut("list_groups", text):
+	case !s.workspacePreview && s.shortcut("list_groups", text):
 		return "groups"
-	case s.shortcut("list_reorder_up", text):
+	case !s.workspacePreview && s.shortcut("list_reorder_up", text):
 		return "reorder-up"
-	case s.shortcut("list_reorder_down", text):
+	case !s.workspacePreview && s.shortcut("list_reorder_down", text):
 		return "reorder-down"
 	case s.shortcut("session_yield", text):
 		return "yield"

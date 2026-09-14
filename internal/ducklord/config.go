@@ -19,6 +19,8 @@ type Config struct {
 	SessionListWidth       *int              `json:"session_list_width,omitempty" yaml:"session_list_width,omitempty"`
 	AutoHideSessionList    *bool             `json:"auto_hide_session_list,omitempty" yaml:"auto_hide_session_list,omitempty"`
 	PromoteUnreadSessions  *bool             `json:"promote_unread_sessions,omitempty" yaml:"promote_unread_sessions,omitempty"`
+	QuickSort              string            `json:"quick_sort,omitempty" yaml:"quick_sort,omitempty"`
+	QuickOldestFirst       bool              `json:"quick_oldest_first,omitempty" yaml:"quick_oldest_first,omitempty"`
 	Shortcuts              map[string]string `json:"shortcuts,omitempty" yaml:"shortcuts,omitempty"`
 	Clients                []Client          `json:"hosts" yaml:"hosts"`
 }
@@ -157,6 +159,9 @@ func SaveConfig(path string, cfg *Config) error {
 }
 
 func (c *Config) normalize() error {
+	if c.QuickSort != "" && c.QuickSort != "event_time" && c.QuickSort != "event_importance" && c.QuickSort != "host" && c.QuickSort != "type" {
+		return fmt.Errorf("quick_sort must be event_time, event_importance, host, or type")
+	}
 	if c.RawOutputSubscriptions != nil && (*c.RawOutputSubscriptions < 1 || *c.RawOutputSubscriptions > 100) {
 		return fmt.Errorf("raw_output_subscription_limit must be between 1 and 100")
 	}
@@ -206,6 +211,7 @@ var DefaultShortcuts = map[string]string{
 	"project_create":    "N",
 	"project_move_pane": "M", "project_detach_pane": "x",
 	"detail_list": "D", "detail_search": "/", "detail_jump": "g", "detail_filter": "f",
+	"list_sort": "t", "list_sort_direction": "T",
 }
 
 func validShortcutBinding(binding string) bool {

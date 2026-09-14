@@ -23,6 +23,7 @@ type SessionSummary struct {
 	ChannelHandle         string                                `json:"channel_handle,omitempty"`
 	ManagementHandle      string                                `json:"management_handle,omitempty"`
 	ActivitySequences     map[model.NotificationCategory]uint64 `json:"activity_sequences,omitempty"`
+	ActivityUpdatedAtMS   map[model.NotificationCategory]int64  `json:"activity_updated_at_ms,omitempty"`
 	RetainedOutputBytes   int64                                 `json:"retained_output_bytes,omitempty"`
 	RetainedOutputUntilMS int64                                 `json:"retained_output_until_ms,omitempty"`
 }

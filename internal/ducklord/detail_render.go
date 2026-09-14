@@ -99,7 +99,7 @@ func renderDetailList(out io.Writer, rect WorkspaceRect, items []DetailedSession
 		return
 	}
 	workspaceWrite(out, rect.X, rect.Y+1, rect.Width, " find › "+query, "\x1b[1;36m")
-	if len(items) == 0 {
+	if len(items) == 0 && rect.Height >= 3 {
 		workspaceWrite(out, rect.X, rect.Y+2, rect.Width, " No matching Sessions", "\x1b[2m")
 		for row := 3; row < rect.Height; row++ {
 			workspaceWrite(out, rect.X, rect.Y+row, rect.Width, "", "")

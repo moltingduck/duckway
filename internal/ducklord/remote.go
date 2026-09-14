@@ -48,6 +48,7 @@ type RemoteSession struct {
 	ExitSuccess           *bool                                 `json:"exit_success,omitempty"`
 	ExitReason            string                                `json:"exit_reason,omitempty"`
 	ActivitySequences     map[model.NotificationCategory]uint64 `json:"activity_sequences,omitempty"`
+	ActivityUpdatedAtMS   map[model.NotificationCategory]int64  `json:"activity_updated_at_ms,omitempty"`
 	RetainedOutputBytes   int64                                 `json:"retained_output_bytes,omitempty"`
 	RetainedOutputUntilMS int64                                 `json:"retained_output_until_ms,omitempty"`
 }
@@ -570,7 +571,7 @@ func remoteSessionFromSummary(c Client, instanceID string, summary protocol.Sess
 	session := RemoteSession{Client: c.Name, InstanceID: instanceID, SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status),
 		AgentType: summary.AgentType, ProjectName: summary.ProjectName, Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
 		TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason,
-		ActivitySequences: cloneActivitySequences(summary.ActivitySequences), RetainedOutputBytes: summary.RetainedOutputBytes, RetainedOutputUntilMS: summary.RetainedOutputUntilMS}
+		ActivitySequences: cloneActivitySequences(summary.ActivitySequences), ActivityUpdatedAtMS: cloneActivityUpdatedAtMS(summary.ActivityUpdatedAtMS), RetainedOutputBytes: summary.RetainedOutputBytes, RetainedOutputUntilMS: summary.RetainedOutputUntilMS}
 	if summary.Writer != nil {
 		session.WriterKind = string(summary.Writer.Kind)
 		session.WriterID = summary.Writer.ID
@@ -585,6 +586,17 @@ func cloneActivitySequences(source map[model.NotificationCategory]uint64) map[mo
 	cloned := make(map[model.NotificationCategory]uint64, len(source))
 	for category, sequence := range source {
 		cloned[category] = sequence
+	}
+	return cloned
+}
+
+func cloneActivityUpdatedAtMS(source map[model.NotificationCategory]int64) map[model.NotificationCategory]int64 {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[model.NotificationCategory]int64, len(source))
+	for category, timestamp := range source {
+		cloned[category] = timestamp
 	}
 	return cloned
 }

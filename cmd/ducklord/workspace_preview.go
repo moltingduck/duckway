@@ -312,7 +312,11 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	}
 	fmt.Fprint(out, "\033[?25l\033[H\033[2J")
 	fmt.Fprintln(out, truncate("ducklord workspace  owner:"+displayField(s.ownerName)+s.hostSyncLabel(), width))
-	status := "Session list pane: ↑/↓ Session · " + s.cfg.Shortcut("project_focus") + " Project pane · Enter focus · Ctrl-] leave PTY"
+	direction := "newest"
+	if s.cfg != nil && s.cfg.QuickOldestFirst {
+		direction = "oldest"
+	}
+	status := "Session list pane: ↑/↓ Session · " + s.cfg.Shortcut("list_sort") + " sort:" + s.quickSortMode() + " (" + direction + ") · " + s.cfg.Shortcut("list_sort_direction") + " time direction · " + s.cfg.Shortcut("project_focus") + " Project pane · Enter focus · Ctrl-] leave PTY"
 	if s.workspaceProjectFocus {
 		status = fmt.Sprintf("Project pane: ↑/↓ Project · %s new · %s add · %s move · %s detach · %s/%s tab · %s/%s pane · Enter focus · Esc list",
 			s.cfg.Shortcut("project_create"), s.cfg.Shortcut("project_add_pane"), s.cfg.Shortcut("project_move_pane"), s.cfg.Shortcut("project_detach_pane"),

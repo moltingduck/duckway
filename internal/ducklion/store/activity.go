@@ -108,29 +108,35 @@ func (s *SQLite) recordActivity(ctx context.Context, sessionID model.SessionID, 
 	return sequence, true, nil
 }
 
-func activityForSessionsTx(ctx context.Context, tx *sql.Tx) (map[model.SessionID]map[model.NotificationCategory]uint64, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT session_id,category,sequence FROM session_activity ORDER BY session_id,category`)
+func activityForSessionsTx(ctx context.Context, tx *sql.Tx) (map[model.SessionID]map[model.NotificationCategory]uint64, map[model.SessionID]map[model.NotificationCategory]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT session_id,category,sequence,updated_at_ms FROM session_activity ORDER BY session_id,category`)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	result := make(map[model.SessionID]map[model.NotificationCategory]uint64)
+	timestamps := make(map[model.SessionID]map[model.NotificationCategory]int64)
 	for rows.Next() {
 		var sessionID model.SessionID
 		var category model.NotificationCategory
 		var sequence uint64
-		if err := rows.Scan(&sessionID, &category, &sequence); err != nil {
-			return nil, err
+		var updatedAtMS int64
+		if err := rows.Scan(&sessionID, &category, &sequence, &updatedAtMS); err != nil {
+			return nil, nil, err
 		}
 		if err := category.Validate(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if result[sessionID] == nil {
 			result[sessionID] = make(map[model.NotificationCategory]uint64)
 		}
 		result[sessionID][category] = sequence
+		if timestamps[sessionID] == nil {
+			timestamps[sessionID] = make(map[model.NotificationCategory]int64)
+		}
+		timestamps[sessionID][category] = updatedAtMS
 	}
-	return result, rows.Err()
+	return result, timestamps, rows.Err()
 }
 
 func recordActivityTx(ctx context.Context, tx *sql.Tx, sessionID model.SessionID, category model.NotificationCategory, now int64) (uint64, error) {

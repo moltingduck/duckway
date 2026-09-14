@@ -9,10 +9,11 @@ import (
 )
 
 type SessionProjection struct {
-	Session           model.Session
-	ChannelHandle     string
-	ManagementHandle  string
-	ActivitySequences map[model.NotificationCategory]uint64
+	Session             model.Session
+	ChannelHandle       string
+	ManagementHandle    string
+	ActivitySequences   map[model.NotificationCategory]uint64
+	ActivityUpdatedAtMS map[model.NotificationCategory]int64
 }
 
 type SessionRevisionSnapshot struct {
@@ -69,12 +70,13 @@ func (s *SQLite) SessionSnapshot(ctx context.Context) (SessionRevisionSnapshot, 
 			return SessionRevisionSnapshot{}, bindingErr
 		}
 	}
-	activity, err := activityForSessionsTx(ctx, tx)
+	activity, timestamps, err := activityForSessionsTx(ctx, tx)
 	if err != nil {
 		return SessionRevisionSnapshot{}, err
 	}
 	for i := range projections {
 		projections[i].ActivitySequences = activity[projections[i].Session.ID]
+		projections[i].ActivityUpdatedAtMS = timestamps[projections[i].Session.ID]
 	}
 	if err := tx.Commit(); err != nil {
 		return SessionRevisionSnapshot{}, err

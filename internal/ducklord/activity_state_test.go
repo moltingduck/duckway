@@ -10,6 +10,64 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 )
 
+func TestActivityStateClonePreservesNotificationHistory(t *testing.T) {
+	state := NewActivityState()
+	identity := testLayoutIdentity("ABC123")
+	state.Sessions[identity.Key()] = SessionNotificationState{
+		Seen:          map[model.NotificationCategory]uint64{model.NotificationTaskCompleted: 1},
+		Observed:      map[model.NotificationCategory]uint64{model.NotificationTaskCompleted: 2},
+		Unread:        map[model.NotificationCategory]bool{model.NotificationTaskCompleted: true},
+		LastEventAtMS: 123456789,
+	}
+	clone := state.Clone()
+	entry := clone.Sessions[identity.Key()]
+	if entry.LastEventAtMS != 123456789 || entry.Observed[model.NotificationTaskCompleted] != 2 {
+		t.Fatalf("clone lost notification history: %+v", entry)
+	}
+	entry.Observed[model.NotificationTaskCompleted] = 9
+	if state.Sessions[identity.Key()].Observed[model.NotificationTaskCompleted] != 2 {
+		t.Fatal("clone shares observed sequence map")
+	}
+}
+
+func TestReconcileUpdatesLastEventWhileAlreadyUnread(t *testing.T) {
+	state := NewActivityState()
+	identity := testLayoutIdentity("ABC123")
+	session := RemoteSession{InstanceID: identity.InstanceID, SessionID: identity.SessionID,
+		ActivitySequences:   map[model.NotificationCategory]uint64{model.NotificationTaskCompleted: 1},
+		ActivityUpdatedAtMS: map[model.NotificationCategory]int64{model.NotificationTaskCompleted: 10}}
+	if unread, _ := state.Reconcile(session, false); !unread {
+		t.Fatal("first event should be unread")
+	}
+	session.ActivitySequences[model.NotificationTaskCompleted] = 2
+	session.ActivityUpdatedAtMS[model.NotificationTaskCompleted] = 20
+	state.Reconcile(session, false)
+	if got := state.Sessions[identity.Key()]; got.Observed[model.NotificationTaskCompleted] != 2 || got.LastEventAtMS != 20 {
+		t.Fatalf("new event while unread was not recorded: %+v", got)
+	}
+}
+
+func TestDisabledNotificationDoesNotResurfaceAfterReenabled(t *testing.T) {
+	state := NewActivityState()
+	identity := testLayoutIdentity("ABC123")
+	session := RemoteSession{InstanceID: identity.InstanceID, SessionID: identity.SessionID,
+		ActivitySequences: map[model.NotificationCategory]uint64{model.NotificationAgentNeedsInput: 0}}
+	state.Reconcile(session, false)
+	if err := state.SetEnabled(identity.InstanceID, identity.SessionID, model.NotificationAgentNeedsInput, false); err != nil {
+		t.Fatal(err)
+	}
+	session.ActivitySequences[model.NotificationAgentNeedsInput] = 1
+	if unread, _ := state.Reconcile(session, false); unread {
+		t.Fatal("disabled event became unread")
+	}
+	if err := state.SetEnabled(identity.InstanceID, identity.SessionID, model.NotificationAgentNeedsInput, true); err != nil {
+		t.Fatal(err)
+	}
+	if unread, _ := state.Reconcile(session, false); unread {
+		t.Fatal("old event resurrected after re-enabling")
+	}
+}
+
 func TestActivityStatePreservesCorruptFileAndRecovers(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private")
 	if err := os.MkdirAll(dir, 0700); err != nil {

@@ -99,6 +99,9 @@ func TestRecordActivityIsDurableCoalescedAndRevisioned(t *testing.T) {
 	if activity[model.NotificationTerminalAttention] != 2 || activity[model.NotificationTaskCompleted] != 2 {
 		t.Fatalf("activity=%+v", activity)
 	}
+	if snapshot.Sessions[0].ActivityUpdatedAtMS[model.NotificationTaskCompleted] <= 0 {
+		t.Fatalf("missing authoritative event timestamp: %+v", snapshot.Sessions[0].ActivityUpdatedAtMS)
+	}
 	if err := database.Close(); err != nil {
 		t.Fatal(err)
 	}

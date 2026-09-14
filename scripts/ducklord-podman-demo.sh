@@ -281,6 +281,7 @@ Useful checks:
 
 Inside the TUI:
   j/k or arrow keys: move through the quick Session list pane
+  t: cycle Session sort (event time / importance / Host / type); T: reverse event-time direction
   P: move keyboard focus to the Project pane; N creates a Project, p adds a Session pane
   D: open the detailed Session list; / searches, f filters, Enter focuses, g jumps to its Project
   Enter: focus the selected Session pane (through Ducklion writer control)

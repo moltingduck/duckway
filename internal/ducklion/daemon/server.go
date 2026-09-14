@@ -1537,7 +1537,8 @@ func (s *Server) summariesFor(projections []store.SessionProjection) []protocol.
 		summary := protocol.SessionSummary{SessionID: string(session.ID), Handle: session.Handle, Kind: session.Kind, AgentType: session.AgentType,
 			ProjectName: session.ProjectName, CWD: session.CWD, Status: session.Status, Writer: session.Writer, OwnershipEpoch: session.OwnershipEpoch, RuntimeGeneration: session.RuntimeGeneration,
 			TaskState: session.TaskState, AdapterState: session.AdapterState, ExitSuccess: session.ExitSuccess, ExitReason: session.ExitReason,
-			ChannelHandle: projection.ChannelHandle, ManagementHandle: projection.ManagementHandle, ActivitySequences: projection.ActivitySequences}
+			ChannelHandle: projection.ChannelHandle, ManagementHandle: projection.ManagementHandle, ActivitySequences: projection.ActivitySequences,
+			ActivityUpdatedAtMS: projection.ActivityUpdatedAtMS}
 		if session.Status == model.StatusStopped {
 			if retained, err := supervisor.RetainedOutputInfo(filepath.Join(s.root, "sessions", string(session.ID)), session.ID, session.RuntimeGeneration); err == nil &&
 				time.Since(retained.UpdatedAt) <= s.retainedOutputTTL {

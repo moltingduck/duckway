@@ -55,6 +55,9 @@ the current TUI implementation.
   detection is uncertain, classify it as Shell without claiming agent status.
 - The quick list defaults to event-time sorting with newest notifications
   first; Sessions without notification history follow those with history.
+- Event time is Ducklion's persisted `session_activity.updated_at_ms`, carried
+  in the authoritative Session snapshot. Ducklord must not substitute the
+  time it first observes a snapshot, which could make old events look new.
 - Qualifying unread events may temporarily promote Sessions across the whole
   list without changing Project order or the saved base order. Promotion is
   the first sort partition: qualifying Sessions come before other Sessions,

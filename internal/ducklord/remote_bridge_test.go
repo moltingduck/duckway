@@ -57,6 +57,15 @@ func TestCloneActivitySequencesOwnsProjectionMap(t *testing.T) {
 	}
 }
 
+func TestCloneActivityUpdatedAtMSOwnsProjectionMap(t *testing.T) {
+	source := map[model.NotificationCategory]int64{model.NotificationTaskCompleted: 1234}
+	cloned := cloneActivityUpdatedAtMS(source)
+	source[model.NotificationTaskCompleted] = 5678
+	if cloned[model.NotificationTaskCompleted] != 1234 {
+		t.Fatalf("projection shared mutable activity timestamp map: %+v", cloned)
+	}
+}
+
 func TestRunnerProjectBrowserRejectsUnsafeInputBeforeSSH(t *testing.T) {
 	runner := NewRunner()
 	client := Client{Name: "host", Host: "unused", SSH: "/definitely/not/ssh"}
