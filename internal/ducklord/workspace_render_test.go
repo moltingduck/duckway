@@ -59,6 +59,23 @@ func TestWorkspaceRendererShowsProjectsSplitPanesAndPreservesColor(t *testing.T)
 	}
 }
 
+func TestWorkspaceMarkedRowPreservesUnreadMarkerForLongNames(t *testing.T) {
+	for _, test := range []struct {
+		prefix, label, suffix string
+		width                 int
+	}{
+		{"› ", "very-long-project-name", " •", 18},
+		{"  ", "very-long-session-name @host-a", " •", 24},
+		{"› ", "非常非常長的中文專案名稱", " • ◎", 18},
+		{"  ", "非常非常長的工作階段名稱 @主機", " •", 24},
+	} {
+		row := workspaceMarkedRow(test.prefix, test.label, test.suffix, test.width)
+		if !strings.HasPrefix(row, test.prefix) || !strings.HasSuffix(row, test.suffix) || workspaceCellWidth(row) > test.width {
+			t.Fatalf("marked row lost its prefix, marker, or bounds: %q", row)
+		}
+	}
+}
+
 func TestWorkspaceVTLineRejectsCursorAndOSCInjection(t *testing.T) {
 	var out bytes.Buffer
 	workspaceWriteVT(&out, 4, 8, 10, "\x1b[2J\x1b]0;bad\a\x1b[32mOK")

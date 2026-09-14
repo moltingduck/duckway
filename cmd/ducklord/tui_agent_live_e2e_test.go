@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -134,8 +135,18 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		// Fresh Codex profiles require a separate, agent-owned trust decision.
 		// Approve only the hook we just installed in this disposable Host.
 		waitLiveAgentScreen(t, capture, "Hooks need review", 20*time.Second)
-		writePTY(t, terminal, "\x1b[B\r") // Trust all and continue.
-		waitLiveAgentScreen(t, capture, "Ask Codex to do anything", 20*time.Second)
+		waitLiveAgentScreen(t, capture, "Trust all and continue", 20*time.Second)
+		time.Sleep(250 * time.Millisecond) // Let the interactive choice become input-ready.
+		writePTY(t, terminal, "\x1b[B\r")  // Trust all and continue.
+		waitE2E(t, 20*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, "Codex") && strings.Contains(screen, "Session focus:") && !strings.Contains(screen, "Hooks need review")
+		}, func() string {
+			screen := capture.currentText()
+			return fmt.Sprintf("Codex hook review did not return to the interactive prompt (review=%t choice=%t loading=%t login=%t); PTY content suppressed",
+				strings.Contains(screen, "Hooks need review"), strings.Contains(screen, "Trust all and continue"),
+				strings.Contains(screen, "loading live PTY"), strings.Contains(strings.ToLower(screen), "login"))
+		})
 	}
 	t.Log("interactive agent launched in Ducklord TUI")
 	if agent == "codex" {
@@ -220,14 +231,139 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 			waitLiveAgentScreen(t, capture, "Session focus:", 20*time.Second)
 		}
 	}
+	backgroundPrefix := fmt.Sprintf("LIVE_%s_%s_BACKGROUND_", strings.ToUpper(agent), stamp)
+	backgroundResponse := backgroundPrefix + "OK"
+	backgroundPrompt := "Join " + backgroundPrefix + " and OK without spaces. Reply with only the joined text."
+	if agent == "codex" {
+		// Keep the turn active while Ducklord leaves the focused pane; a
+		// trivially fast answer could otherwise be correctly marked seen.
+		backgroundPrompt = "First run `sleep 3` in the shell. Then " + backgroundPrompt
+	}
+	writePTY(t, terminal, backgroundPrompt)
+	time.Sleep(150 * time.Millisecond)
+	writePTY(t, terminal, "\r")
+	if agent == "codex" {
+		time.Sleep(time.Second)
+		writePTY(t, terminal, "\r")
+	}
+	writePTY(t, terminal, "\x1d")
+	waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
+	writePTY(t, terminal, "P")
+	waitLiveAgentScreen(t, capture, "Project pane:", 20*time.Second)
+	writePTY(t, terminal, "k")
+	waitLiveAgentScreen(t, capture, "› Default Project", 20*time.Second)
+	if latest, exists := findContainerSession(t, runtime, controller, "client-a", session.SessionID); !exists || latest.ActivitySequences[model.NotificationTaskCompleted] != baselineSequence+2 {
+		t.Fatal(agent + " background task finished before Ducklord left the focused Session; unread precondition was not met")
+	}
+	backgroundTimeout := 180 * time.Second
+	if os.Getenv("DUCKLORD_LIVE_TUI_DEBUG_TIMEOUT") == "1" {
+		backgroundTimeout = 45 * time.Second
+	}
+	waitE2E(t, backgroundTimeout, func() bool {
+		output, err := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", session.SessionID,
+			"--lines", "200", "--config", "/root/.ducklord/config.yaml").Output()
+		return err == nil && strings.Contains(string(output), backgroundResponse)
+	}, func() string { return agent + " background turn missing remote answer; PTY content suppressed" })
+	waitE2E(t, 25*time.Second, func() bool {
+		latest, exists := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+		return exists && latest.ActivitySequences[model.NotificationTaskCompleted] >= baselineSequence+3
+	}, func() string { return agent + " background turn produced an answer but no native Stop event" })
+	waitE2E(t, 25*time.Second, func() bool {
+		data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+		if err != nil {
+			return false
+		}
+		var current ducklord.ActivityState
+		if json.Unmarshal(data, &current) != nil {
+			return false
+		}
+		entry := current.Sessions[identity.Key()]
+		return entry.Observed[model.NotificationTaskCompleted] >= baselineSequence+3 && entry.Unread[model.NotificationTaskCompleted]
+	}, func() string { return agent + " native background completion did not mark its Session unread" })
+	var projectRow, projectMarker, sessionMarker, quickBullet, quickHeader bool
+	waitE2E(t, 10*time.Second, func() bool {
+		screen := capture.currentText()
+		geometry := ducklord.CalculateWorkspaceGeometry(130, 28, 4)
+		quick := liveScreenQuickColumn(screen)
+		projectRow = liveScreenHasRow(screen, "Live "+agent, geometry.Projects)
+		projectMarker = liveScreenHasMarkedRow(screen, "Live "+agent, true, geometry.Projects)
+		sessionMarker = liveScreenHasMarkedRow(screen, "", true, quick)
+		quickBullet = liveScreenHasRow(screen, "•", quick)
+		quickHeader = quick.Width > 0
+		return projectMarker && sessionMarker
+	}, func() string {
+		return fmt.Sprintf("%s background unread marker absent (project-row=%t project-marker=%t session-marker=%t quick-bullet=%t quick-header=%t); screen suppressed", agent, projectRow, projectMarker, sessionMarker, quickBullet, quickHeader)
+	})
+	writePTY(t, terminal, "P")
+	waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
+	writePTY(t, terminal, "/"+handle+"\r")
+	waitLiveAgentScreen(t, capture, "Active · Enter again to focus", 20*time.Second)
+	writePTY(t, terminal, "\r")
+	waitLiveAgentScreen(t, capture, "Session focus:", 20*time.Second)
+	waitE2E(t, 15*time.Second, func() bool {
+		data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+		if err != nil {
+			return false
+		}
+		var current ducklord.ActivityState
+		if json.Unmarshal(data, &current) != nil {
+			return false
+		}
+		entry := current.Sessions[identity.Key()]
+		return entry.Seen[model.NotificationTaskCompleted] >= baselineSequence+3 && !entry.Unread[model.NotificationTaskCompleted]
+	}, func() string { return agent + " unread Session did not clear after browsing its live pane" })
+	waitE2E(t, 10*time.Second, func() bool {
+		screen := capture.currentText()
+		geometry := ducklord.CalculateWorkspaceGeometry(130, 28, 4)
+		quick := liveScreenQuickColumn(screen)
+		return quick.Width > 0 && liveScreenHasMarkedRow(screen, "Live "+agent, false, geometry.Projects) && !liveScreenHasMarkedRow(screen, "", true, quick)
+	}, func() string {
+		return agent + " unread marker remained visible after browsing the Session pane; screen suppressed"
+	})
 	if latest, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID); !found || latest.RuntimeGeneration != session.RuntimeGeneration {
 		t.Fatal("interactive agent shell changed identity during TUI navigation")
 	}
 	time.Sleep(4 * time.Second) // Exceeds the notifier deadline; catch duplicate delayed deliveries.
 	log, err := exec.Command(runtime, "exec", controller, "cat", home+"/notifications.log").Output()
-	if err != nil || strings.Count(string(log), handle) != baselineNotifications+2 || strings.Contains(string(log), "LIVE_"+strings.ToUpper(agent)+"_") {
-		t.Fatalf("%s native turns did not produce exactly two private-safe notifications: %v (log content suppressed)", agent, err)
+	if err != nil || strings.Count(string(log), handle) != baselineNotifications+3 || strings.Contains(string(log), "LIVE_"+strings.ToUpper(agent)+"_") {
+		t.Fatalf("%s native turns did not produce exactly three private-safe notifications: %v (log content suppressed)", agent, err)
 	}
+}
+
+func liveScreenHasMarkedRow(screen, label string, marked bool, column ducklord.WorkspaceRect) bool {
+	return liveScreenHasRowMatching(screen, label, column, func(cell string) bool { return strings.HasSuffix(cell, "•") == marked })
+}
+
+func liveScreenQuickColumn(screen string) ducklord.WorkspaceRect {
+	for _, line := range strings.Split(screen, "\n") {
+		if index := strings.Index(line, " SESSIONS "); index >= 0 {
+			width := 30
+			if index < 21 { // 80-column fallback has a 24-cell Session list.
+				width = 24
+			}
+			return ducklord.WorkspaceRect{X: index + 1, Width: width}
+		}
+	}
+	return ducklord.WorkspaceRect{}
+}
+
+func liveScreenHasRow(screen, label string, column ducklord.WorkspaceRect) bool {
+	return liveScreenHasRowMatching(screen, label, column, func(string) bool { return true })
+}
+
+func liveScreenHasRowMatching(screen, label string, column ducklord.WorkspaceRect, matches func(string) bool) bool {
+	for _, line := range strings.Split(screen, "\n") {
+		runes := []rune(line)
+		start, end := column.X-1, column.X-1+column.Width
+		if start < 0 || end > len(runes) {
+			continue
+		}
+		cell := strings.TrimSpace(string(runes[start:end]))
+		if strings.Contains(cell, label) && matches(cell) {
+			return true
+		}
+	}
+	return false
 }
 
 func killNamedContainerTUI(runtime, controller, owner string, configPaths ...string) {

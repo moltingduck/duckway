@@ -90,7 +90,7 @@ func RenderWorkspaceBody(out io.Writer, geometry WorkspaceGeometry, layout *Proj
 			if project.ID == nav.NotificationFocusProjectID() {
 				suffix += " ◎"
 			}
-			return prefix + project.Name + suffix
+			return workspaceMarkedRow(prefix, project.Name, suffix, geometry.Projects.Width)
 		})
 	}
 	if geometry.Quick.Width > 0 {
@@ -106,7 +106,7 @@ func RenderWorkspaceBody(out io.Writer, geometry WorkspaceGeometry, layout *Proj
 			if item.Unread {
 				suffix = " •"
 			}
-			return prefix + item.Name + " @" + item.Host + suffix
+			return workspaceMarkedRow(prefix, item.Name+" @"+item.Host, suffix, geometry.Quick.Width)
 		})
 	}
 	terminal := geometry.Terminal
@@ -289,6 +289,16 @@ func renderWorkspaceColumn(out io.Writer, rect WorkspaceRect, title string, row 
 		}
 		workspaceWrite(out, rect.X, rect.Y+1+i, rect.Width, line, color)
 	}
+}
+
+// Keep unread/focus markers visible even when a Project or Session label is
+// wider than its column. Cropping the whole row would silently hide them.
+func workspaceMarkedRow(prefix, label, suffix string, cells int) string {
+	available := cells - workspaceCellWidth(prefix) - workspaceCellWidth(suffix)
+	if available < 0 {
+		return workspaceTruncate(prefix+suffix, cells)
+	}
+	return prefix + workspaceTruncate(label, available) + suffix
 }
 
 func renderWorkspaceNode(out io.Writer, node *SessionPane, rect WorkspaceRect, selectedPaneID string,
