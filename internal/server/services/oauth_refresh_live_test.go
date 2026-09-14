@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -39,11 +38,6 @@ const (
 	liveCredentialStrictEnv      = "DUCKWAY_LIVE_CREDENTIALS_STRICT"
 	liveClaudeCredentialsPathEnv = "DUCKWAY_CLAUDE_LIVE_CREDENTIALS"
 	liveCodexAuthPathEnv         = "DUCKWAY_CODEX_LIVE_AUTH"
-)
-
-var (
-	liveOAuthJWTRE          = regexp.MustCompile(`[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`)
-	liveOAuthRefreshTokenRE = regexp.MustCompile(`rt\.[A-Za-z0-9._-]+`)
 )
 
 func TestClaudeCodeOAuthLiveRefreshIfCredentialsExist(t *testing.T) {
@@ -615,14 +609,14 @@ func handleLiveRefreshFailure(t *testing.T, provider string, resp liveRefreshRes
 func liveOAuthError(body map[string]interface{}) (string, string) {
 	raw := body["error"]
 	if obj, ok := raw.(map[string]interface{}); ok {
-		code := liveString(obj, "code", "type")
+		code := safeLiveErrorCode(liveString(obj, "code", "type"))
 		message := liveString(obj, "message")
 		return code, redactLiveMessage(message)
 	}
 	if s, ok := raw.(string); ok {
-		return s, ""
+		return safeLiveErrorCode(s), ""
 	}
-	return liveString(body, "code"), redactLiveMessage(liveString(body, "message"))
+	return safeLiveErrorCode(liveString(body, "code")), redactLiveMessage(liveString(body, "message"))
 }
 
 func isLivePermanentRefreshFailure(statusCode int, code string) bool {
@@ -803,13 +797,30 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func redactLiveMessage(message string) string {
-	message = liveOAuthRefreshTokenRE.ReplaceAllString(message, "[REDACTED_REFRESH_TOKEN]")
-	message = liveOAuthJWTRE.ReplaceAllString(message, "[REDACTED_JWT]")
-	if len(message) > 500 {
-		return message[:500] + "...[truncated]"
+func redactLiveMessage(_ string) string {
+	// Upstream bodies are untrusted and may contain opaque access tokens in
+	// arbitrary formats. No pattern-based redaction is safe for live logs.
+	return "[upstream body omitted]"
+}
+
+func safeLiveErrorCode(code string) string {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "invalid_grant", "invalid_token", "invalid_request", "unauthorized", "access_denied", "server_error", "temporarily_unavailable", "expired_token", "revoked_token":
+		return strings.ToLower(strings.TrimSpace(code))
 	}
-	return message
+	return "upstream_error"
+}
+
+func TestLiveOAuthDiagnosticsOmitOpaqueSecrets(t *testing.T) {
+	secret := "sk-ant-secret-value-that-must-not-be-logged"
+	code, message := liveOAuthError(map[string]interface{}{"error": map[string]interface{}{"code": "invalid_grant", "message": "token " + secret}})
+	if code != "invalid_grant" || strings.Contains(message, secret) {
+		t.Fatalf("live diagnostics exposed an opaque token: code=%q message=%q", code, message)
+	}
+	code, _ = liveOAuthError(map[string]interface{}{"error": secret})
+	if code != "upstream_error" {
+		t.Fatalf("unsafe upstream error code was logged: %q", code)
+	}
 }
 
 func decodeJWTExpirationMillis(token string) int64 {

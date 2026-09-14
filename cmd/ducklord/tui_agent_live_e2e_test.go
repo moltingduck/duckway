@@ -60,7 +60,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	home := "/tmp/ducklord-live-tui-" + stamp
-	if err := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/.ducklord").Run(); err != nil {
+	if err := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/.ducklord", home+"/bin").Run(); err != nil {
 		t.Fatal("prepare isolated TUI home: ", err)
 	}
 	t.Cleanup(func() { _, _ = exec.Command(runtime, "exec", controller, "rm", "-r", home).CombinedOutput() })
@@ -74,8 +74,23 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	if err := exec.Command(runtime, "cp", localState, controller+":"+home+"/.ducklord/state.json").Run(); err != nil {
 		t.Fatal("install isolated Project layout: ", err)
 	}
-	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color",
-		"ducklord", "tui", "--name", owner, "--config", "/root/.ducklord/config.yaml")
+	configPath := home + "/.ducklord/config.yaml"
+	if output, err := exec.Command(runtime, "exec", controller, "sh", "-c", `cp "$1" "$2" && printf '\nnotification_levels:\n  task_completed: system\n' >> "$2"`,
+		"_", "/root/.ducklord/config.yaml", configPath).CombinedOutput(); err != nil {
+		t.Fatalf("prepare isolated notification policy: %v (output bytes=%d)", err, len(output))
+	}
+	notifier := filepath.Join(t.TempDir(), "notify-send")
+	if err := os.WriteFile(notifier, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$DUCKLORD_NOTIFY_E2E_LOG\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(runtime, "cp", notifier, controller+":"+home+"/bin/notify-send").CombinedOutput(); err != nil {
+		t.Fatalf("install local notifier fixture: %v (output bytes=%d)", err, len(output))
+	}
+	if err := exec.Command(runtime, "exec", controller, "chmod", "700", home+"/bin/notify-send").Run(); err != nil {
+		t.Fatal("make notifier fixture executable: ", err)
+	}
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", "PATH="+home+"/bin:/usr/local/bin:/usr/bin:/bin",
+		"DUCKLORD_NOTIFY_E2E_LOG="+home+"/notifications.log", "ducklord", "tui", "--name", owner, "--config", configPath)
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 28, Cols: 130})
 	if err != nil {
 		t.Fatal("start TUI: ", err)
@@ -83,7 +98,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = terminal.Write([]byte("\x1d\x1bq"))
 		time.Sleep(200 * time.Millisecond)
-		killNamedContainerTUI(runtime, controller, owner)
+		killNamedContainerTUI(runtime, controller, owner, configPath)
 		_ = terminal.Close()
 		_ = command.Process.Kill()
 		_ = command.Wait()
@@ -133,6 +148,16 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 			t.Fatal("Codex startup requires an unconfigured prompt; no automatic choice made")
 		}
 	}
+	baselineSession, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+	if !found {
+		t.Fatal("live agent Session disappeared before first prompt")
+	}
+	baselineSequence := baselineSession.ActivitySequences[model.NotificationTaskCompleted]
+	baselineOutput, baselineErr := exec.Command(runtime, "exec", controller, "sh", "-c", `if [ -e "$1" ]; then cat "$1"; fi`, "_", home+"/notifications.log").Output()
+	if baselineErr != nil {
+		t.Fatal("read baseline notifier state: ", baselineErr)
+	}
+	baselineNotifications := strings.Count(string(baselineOutput), handle)
 	for turn := 1; turn <= 2; turn++ {
 		prefix := fmt.Sprintf("LIVE_%s_%s_%d_", strings.ToUpper(agent), stamp, turn)
 		response := prefix + "OK"
@@ -167,9 +192,15 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		})
 		waitE2E(t, 25*time.Second, func() bool {
 			latest, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
-			return found && latest.ActivitySequences[model.NotificationTaskCompleted] >= uint64(turn)
+			return found && latest.ActivitySequences[model.NotificationTaskCompleted] >= baselineSequence+uint64(turn)
 		}, func() string {
 			return fmt.Sprintf("%s turn %d produced an answer but no native Stop hook completion", agent, turn)
+		})
+		waitE2E(t, 25*time.Second, func() bool {
+			log, err := exec.Command(runtime, "exec", controller, "cat", home+"/notifications.log").Output()
+			return err == nil && strings.Count(string(log), handle) >= baselineNotifications+turn && strings.Count(string(log), "task completed") >= baselineNotifications+turn
+		}, func() string {
+			return fmt.Sprintf("%s turn %d reached Ducklion but not Ducklord desktop delivery; notification log content suppressed", agent, turn)
 		})
 		if turn == 1 {
 			writePTY(t, terminal, "\x1d")
@@ -191,6 +222,11 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	}
 	if latest, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID); !found || latest.RuntimeGeneration != session.RuntimeGeneration {
 		t.Fatal("interactive agent shell changed identity during TUI navigation")
+	}
+	time.Sleep(4 * time.Second) // Exceeds the notifier deadline; catch duplicate delayed deliveries.
+	log, err := exec.Command(runtime, "exec", controller, "cat", home+"/notifications.log").Output()
+	if err != nil || strings.Count(string(log), handle) != baselineNotifications+2 || strings.Contains(string(log), "LIVE_"+strings.ToUpper(agent)+"_") {
+		t.Fatalf("%s native turns did not produce exactly two private-safe notifications: %v (log content suppressed)", agent, err)
 	}
 }
 
