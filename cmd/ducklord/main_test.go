@@ -3321,6 +3321,9 @@ type fakeRunner struct {
 
 func (fakeRunner) HostLogRetention(context.Context, ducklord.Client) (int, error)  { return 7, nil }
 func (fakeRunner) SetHostLogRetention(context.Context, ducklord.Client, int) error { return nil }
+func (fakeRunner) ConfigureHostAgentHook(context.Context, ducklord.Client, string, string) (protocol.HostAgentHookConfigResult, error) {
+	return protocol.HostAgentHookConfigResult{}, nil
+}
 
 func TestHostRetentionMenuRequiresReviewAndConfirmation(t *testing.T) {
 	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, hostMenuMode: true,
@@ -3464,6 +3467,91 @@ func (*recordingRunner) HostLogRetention(context.Context, ducklord.Client) (int,
 	return 7, nil
 }
 func (*recordingRunner) SetHostLogRetention(context.Context, ducklord.Client, int) error { return nil }
+func (*recordingRunner) ConfigureHostAgentHook(context.Context, ducklord.Client, string, string) (protocol.HostAgentHookConfigResult, error) {
+	return protocol.HostAgentHookConfigResult{}, nil
+}
+
+func TestHostHookMenuRequiresExplicitConfirmation(t *testing.T) {
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, hostMenuMode: true,
+		hostMenuStep: "actions", hostMenuTarget: "host", hostMenuIndex: 3}
+	if action := state.handleHostMenuInput([]byte("\r")); action != "" || state.hostMenuStep != "hook-select" {
+		t.Fatalf("did not open hook selector: action=%q step=%q", action, state.hostMenuStep)
+	}
+	state.handleHostMenuInput([]byte("\x1b[B"))
+	state.handleHostMenuInput([]byte("\x1b[B"))
+	if action := state.handleHostMenuInput([]byte("\r")); action != "" || state.hostMenuStep != "hook-confirm" || state.hostHookAgent != "claude" || state.hostHookAction != "install" {
+		t.Fatalf("did not review Claude install: action=%q state=%+v", action, state)
+	}
+	var out strings.Builder
+	state.renderHostModal(&out, 100, 30)
+	if !strings.Contains(out.String(), "~/.claude/settings.json") || !strings.Contains(out.String(), "private backup") {
+		t.Fatalf("hook preview omits file or backup: %q", out.String())
+	}
+	state.handleHostMenuInput([]byte("\x1b"))
+	if state.hostMenuStep != "hook-select" {
+		t.Fatalf("Esc should return to hook choices: %q", state.hostMenuStep)
+	}
+	state.handleHostMenuInput([]byte("\r"))
+	if action := state.handleHostMenuInput([]byte("\r")); action != "host-hook-save" || state.hostMenuStep != "hook-saving" {
+		t.Fatalf("confirmation did not save: action=%q step=%q", action, state.hostMenuStep)
+	}
+}
+
+func TestHostHookMenuCodexTrustPreview(t *testing.T) {
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, hostMenuMode: true,
+		hostMenuStep: "hook-select", hostMenuTarget: "host"}
+	state.handleHostMenuInput([]byte("\r"))
+	var out strings.Builder
+	state.renderHostModal(&out, 100, 30)
+	if !strings.Contains(out.String(), "~/.codex/hooks.json") || !strings.Contains(out.String(), "/hooks") {
+		t.Fatalf("Codex preview omits path or trust step: %q", out.String())
+	}
+}
+
+func TestHostHookEventRejectsStaleHostAndRequest(t *testing.T) {
+	state := &tuiState{hostMenuMode: true, hostMenuStep: "hook-saving", hostMenuTarget: "host", hostMenuRequestID: 8,
+		hostHookAgent: "codex", hostHookAction: "install",
+		disconnectedHosts: map[string]bool{}, hostSync: map[string]ducklord.SessionUpdate{}}
+	event := hostHookEvent{host: "host", id: 8, agent: "codex", action: "install", epoch: 3}
+	if !state.acceptHostHookEvent(event, 3) {
+		t.Fatal("current Host hook event rejected")
+	}
+	state.hostMenuStep = "hook-confirm"
+	if state.acceptHostHookEvent(event, 3) {
+		t.Fatal("hook result accepted outside saving state")
+	}
+	state.hostMenuStep = "hook-saving"
+	event.id = 7
+	if state.acceptHostHookEvent(event, 3) {
+		t.Fatal("stale Host hook request accepted")
+	}
+	event.id = 8
+	state.disconnectedHosts["host"] = true
+	if state.acceptHostHookEvent(event, 3) {
+		t.Fatal("disconnected Host hook event accepted")
+	}
+}
+
+func TestHostHookOperationGuardsOverlappingWrites(t *testing.T) {
+	state := &tuiState{}
+	if !state.beginHostHookOperation("host", 1) {
+		t.Fatal("first operation rejected")
+	}
+	if state.beginHostHookOperation("host", 2) {
+		t.Fatal("overlapping operation accepted")
+	}
+	if !state.beginHostHookOperation("other", 3) {
+		t.Fatal("independent Host operation rejected")
+	}
+	state.finishHostHookOperation("host", 2)
+	if state.beginHostHookOperation("host", 4) {
+		t.Fatal("stale completion released active operation")
+	}
+	state.finishHostHookOperation("host", 1)
+	if !state.beginHostHookOperation("host", 4) {
+		t.Fatal("completed operation did not release Host")
+	}
+}
 
 func (r *recordingRunner) SuggestProjectPaths(context.Context, ducklord.Client, string) ([]string, error) {
 	return nil, nil

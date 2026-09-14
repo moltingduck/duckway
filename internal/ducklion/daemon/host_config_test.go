@@ -133,3 +133,84 @@ func TestHostRetentionSettingsRejectPermissiveAndLinkedFiles(t *testing.T) {
 		})
 	}
 }
+
+func TestHostAgentHookConfigRejectsUnauthorizedAndMalformedRequests(t *testing.T) {
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	valid := []byte(`{"agent":"codex","action":"install"}`)
+	request := protocol.Request{ID: uuid.NewString(), Type: "host.agent_hook_config", InstanceID: string(server.instanceID), Body: valid}
+	for _, tc := range []struct {
+		name         string
+		request      protocol.Request
+		capabilities []string
+		role         protocol.PeerRole
+		wantCode     protocol.ErrorCode
+	}{
+		{name: "observer", request: request, role: protocol.RoleDucklord, wantCode: protocol.ErrNotOwner},
+		{name: "cc", request: request, capabilities: []string{"host_config"}, role: protocol.RoleDuckwayCC, wantCode: protocol.ErrNotOwner},
+		{name: "wrong instance", request: protocol.Request{ID: request.ID, Type: request.Type, InstanceID: "wrong", Body: valid}, capabilities: []string{"host_config"}, role: protocol.RoleDucklord, wantCode: protocol.ErrNotFound},
+		{name: "missing instance", request: protocol.Request{ID: request.ID, Type: request.Type, Body: valid}, capabilities: []string{"host_config"}, role: protocol.RoleDucklord, wantCode: protocol.ErrNotOwner},
+		{name: "session scoped", request: protocol.Request{ID: request.ID, Type: request.Type, InstanceID: request.InstanceID, SessionID: uuid.NewString(), Body: valid}, capabilities: []string{"host_config"}, role: protocol.RoleDucklord, wantCode: protocol.ErrNotOwner},
+		{name: "unknown field", request: protocol.Request{ID: request.ID, Type: request.Type, InstanceID: request.InstanceID, Body: []byte(`{"agent":"codex","action":"install","path":"/tmp/hijack"}`)}, capabilities: []string{"host_config"}, role: protocol.RoleDucklord, wantCode: protocol.ErrInvalidArgument},
+		{name: "unknown agent", request: protocol.Request{ID: request.ID, Type: request.Type, InstanceID: request.InstanceID, Body: []byte(`{"agent":"other","action":"install"}`)}, capabilities: []string{"host_config"}, role: protocol.RoleDucklord, wantCode: protocol.ErrInvalidArgument},
+		{name: "unknown action", request: protocol.Request{ID: request.ID, Type: request.Type, InstanceID: request.InstanceID, Body: []byte(`{"agent":"claude","action":"toggle"}`)}, capabilities: []string{"host_config"}, role: protocol.RoleDucklord, wantCode: protocol.ErrInvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := server.route(tc.request, tc.capabilities, tc.role, "test")
+			if response.Error == nil || response.Error.Code != tc.wantCode {
+				t.Fatalf("response=%+v want %s", response, tc.wantCode)
+			}
+		})
+	}
+	server.maintenanceMu.Lock()
+	server.maintenance = true
+	server.maintenanceMu.Unlock()
+	response := server.route(request, []string{"host_config"}, protocol.RoleDucklord, "test")
+	if response.Error == nil || response.Error.Code != protocol.ErrDraining {
+		t.Fatalf("maintenance did not reject Host hook update: %+v", response)
+	}
+}
+
+func TestHostAgentHookConfigControlRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve() }()
+	defer func() {
+		_ = server.Close()
+		<-done
+	}()
+	processID := uuid.NewString()
+	control, err := DialDucklord(server.SocketPath(), "hook-owner", processID, uuid.NewString(), protocol.ConnectionControl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	observer, err := DialDucklord(server.SocketPath(), "hook-owner", processID, uuid.NewString(), protocol.ConnectionObserver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Close()
+	if _, err := observer.ConfigureHostAgentHook(context.Background(), "codex", "install"); err == nil {
+		t.Fatal("observer should not have Host configuration capability")
+	}
+	result, err := control.ConfigureHostAgentHook(context.Background(), "codex", "install")
+	if err != nil || !result.Installed || !result.Changed || result.Activation != "pending" {
+		t.Fatalf("install result=%+v err=%v", result, err)
+	}
+	result, err = control.ConfigureHostAgentHook(context.Background(), "codex", "install")
+	if err != nil || !result.Installed || result.Changed {
+		t.Fatalf("idempotent install result=%+v err=%v", result, err)
+	}
+	result, err = control.ConfigureHostAgentHook(context.Background(), "codex", "remove")
+	if err != nil || result.Installed || !result.Changed {
+		t.Fatalf("remove result=%+v err=%v", result, err)
+	}
+}

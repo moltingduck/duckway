@@ -48,8 +48,9 @@ CONTAINER_RUNTIME="$RUNTIME" "$ROOT/scripts/ducklord-podman-demo.sh" >"$SETUP_LO
 
 echo "[ducklord-tui-e2e] driving create modal, SSH bridge, and remote PTY"
 DUCKLORD_TUI_CONTAINER_E2E=1 \
+DUCKLORD_E2E_DISPOSABLE_HOST=1 \
 DUCKLORD_E2E_RUNTIME="$RUNTIME" \
 DUCKLORD_E2E_CONTROLLER=ducklord-dev \
-go test -count=1 ./cmd/ducklord -run '^TestDucklord(WorkspacePreviewContainer|WorkspaceTwoLivePanesContainer|WorkspaceProjectEnterFocusContainer|DetailedListContainer|HostRetentionContainer|ShellFirstHookContainer)E2E$' -v
+go test -count=1 ./cmd/ducklord -run '^TestDucklord(WorkspacePreviewContainer|WorkspaceTwoLivePanesContainer|WorkspaceProjectEnterFocusContainer|DetailedListContainer|HostRetentionContainer|HostHookConfigContainer|ShellFirstHookContainer)E2E$' -v
 
 echo "[ducklord-tui-e2e] PASS"

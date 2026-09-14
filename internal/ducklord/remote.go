@@ -312,6 +312,16 @@ func (r *Runner) SetHostLogRetention(ctx context.Context, c Client, days int) er
 	return client.SetHostLogRetention(ctx, days)
 }
 
+// ConfigureHostAgentHook asks the running Ducklion to merge or remove only its
+// own agent callback entry from the remote user's settings.
+func (r *Runner) ConfigureHostAgentHook(ctx context.Context, c Client, agent, action string) (protocol.HostAgentHookConfigResult, error) {
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return protocol.HostAgentHookConfigResult{}, err
+	}
+	return client.ConfigureHostAgentHook(ctx, agent, action)
+}
+
 type commandStream struct {
 	reader  io.ReadCloser
 	writer  io.WriteCloser

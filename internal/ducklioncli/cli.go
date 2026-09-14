@@ -344,10 +344,13 @@ func runAgentHook(input io.Reader, args []string) error {
 		response = payload.LastAssistantMessage
 		failedHook = payload.HookEventName == "StopFailure"
 	case "codex":
-		if payload.Type != "agent-turn-complete" {
+		if payload.Type != "agent-turn-complete" && payload.HookEventName != "Stop" {
 			return fmt.Errorf("unsupported Codex hook event %q", payload.Type)
 		}
-		response = payload.LastAssistantMessageHyphen
+		response = payload.LastAssistantMessage
+		if response == "" {
+			response = payload.LastAssistantMessageHyphen
+		}
 		if response == "" {
 			response = payload.LastAgentMessage
 		}

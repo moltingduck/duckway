@@ -81,6 +81,7 @@ func TestRunAgentHookNormalizesClaudeAndCodexPayloads(t *testing.T) {
 		"claude":        {"claude", `{"hook_event_name":"Stop","last_assistant_message":"claude done"}`},
 		"codex-current": {"codex", `{"type":"agent-turn-complete","last-assistant-message":"codex-current done"}`},
 		"codex-legacy":  {"codex", `{"type":"agent-turn-complete","last-agent-message":"codex-legacy done"}`},
+		"codex-stop":    {"codex", `{"hook_event_name":"Stop","last_assistant_message":"codex-stop done"}`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			events := hookReceiver(t)

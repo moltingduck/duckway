@@ -241,6 +241,28 @@ func (c *Client) SetHostLogRetention(ctx context.Context, days int) error {
 	return nil
 }
 
+func (c *Client) ConfigureHostAgentHook(ctx context.Context, agent, action string) (protocol.HostAgentHookConfigResult, error) {
+	if !c.capabilities["host_config"] {
+		return protocol.HostAgentHookConfigResult{}, fmt.Errorf("host configuration capability was not negotiated")
+	}
+	if (agent != "codex" && agent != "claude") || (action != "install" && action != "remove") {
+		return protocol.HostAgentHookConfigResult{}, fmt.Errorf("invalid agent hook configuration")
+	}
+	body, _ := json.Marshal(protocol.HostAgentHookConfig{Agent: agent, Action: action})
+	response, err := c.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "host.agent_hook_config", InstanceID: c.instanceID, Body: body})
+	if err != nil {
+		return protocol.HostAgentHookConfigResult{}, err
+	}
+	if response.Error != nil {
+		return protocol.HostAgentHookConfigResult{}, &RemoteError{Detail: *response.Error}
+	}
+	var result protocol.HostAgentHookConfigResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		return protocol.HostAgentHookConfigResult{}, fmt.Errorf("invalid Host agent hook result: %w", err)
+	}
+	return result, nil
+}
+
 func (c *Client) CallContext(ctx context.Context, request protocol.Request) (protocol.Response, error) {
 	if err := request.Validate(); err != nil {
 		return protocol.Response{}, err

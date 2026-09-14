@@ -1672,7 +1672,7 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 	defer s.maintenanceMu.RUnlock()
 	if s.maintenance {
 		switch request.Type {
-		case "host.retention_update", "session.create", "session.stop", "session.destroy", "session.lifecycle", "session.yield", "session.task_begin", "session.agent_submit", "session.input", "session.bind_discord", "session.unbind_discord":
+		case "host.retention_update", "host.agent_hook_config", "session.create", "session.stop", "session.destroy", "session.lifecycle", "session.yield", "session.task_begin", "session.agent_submit", "session.input", "session.bind_discord", "session.unbind_discord":
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrDraining, Message: "Ducklion is being integrated; new work is temporarily paused"}}
 		}
 	}
@@ -1680,6 +1680,20 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "Ducklion instance does not match"}}
 	}
 	switch request.Type {
+	case "host.agent_hook_config":
+		if role != protocol.RoleDucklord || !hasCapability(capabilities, "host_config") || request.InstanceID != string(s.instanceID) || request.SessionID != "" {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotOwner, Message: "Ducklord Host control is required"}}
+		}
+		var update protocol.HostAgentHookConfig
+		if err := decodeStrict(request.Body, &update); err != nil || (update.Agent != "codex" && update.Agent != "claude") || (update.Action != "install" && update.Action != "remove") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid Host agent hook configuration"}}
+		}
+		result, err := configureAgentHook(update.Agent, update.Action)
+		if err != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not update Host agent hooks"}}
+		}
+		body, _ := json.Marshal(result)
+		return protocol.Response{ID: request.ID, Result: body}
 	case "host.retention_update":
 		if role != protocol.RoleDucklord || !hasCapability(capabilities, "host_config") || request.InstanceID != string(s.instanceID) || request.SessionID != "" {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotOwner, Message: "Ducklord Host control is required"}}

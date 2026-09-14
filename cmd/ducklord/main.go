@@ -50,6 +50,7 @@ type remoteRunner interface {
 	ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error)
 	HostLogRetention(context.Context, ducklord.Client) (int, error)
 	SetHostLogRetention(context.Context, ducklord.Client, int) error
+	ConfigureHostAgentHook(context.Context, ducklord.Client, string, string) (protocol.HostAgentHookConfigResult, error)
 	InstallDucklion(context.Context, ducklord.Client, string, string) (string, error)
 	Attach(ducklord.Client, string) error
 	AttachStream(context.Context, ducklord.Client, string) (*ducklord.AttachSession, error)
@@ -94,6 +95,13 @@ type hostRetentionEvent struct {
 	days       int
 	err        error
 	saved      bool
+}
+
+type hostHookEvent struct {
+	id, epoch                       uint64
+	instanceID, host, agent, action string
+	result                          protocol.HostAgentHookConfigResult
+	err                             error
 }
 
 type createDiscoveryEvent struct {
@@ -1264,6 +1272,9 @@ type tuiState struct {
 	hostMenuDraft              string
 	hostMenuReplaceDraft       bool
 	hostMenuRequestID          uint64
+	hostHookInFlight           map[string]uint64
+	hostHookAgent              string
+	hostHookAction             string
 	disconnectedHosts          map[string]bool
 	hostScoped                 bool
 	ownerName                  string
@@ -1461,6 +1472,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	resizeResults := make(chan resizeDoneEvent, 1)
 	startDone := make(chan startDoneEvent, 1)
 	hostRetentionDone := make(chan hostRetentionEvent, 1)
+	hostHookDone := make(chan hostHookEvent, 1)
 	var hostRetentionCancel context.CancelFunc
 	createDone := make(chan createDiscoveryEvent, 1)
 	pathSuggestionsDone := make(chan pathSuggestionEvent, 1)
@@ -1772,6 +1784,28 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.hostMenuReplaceDraft = true
 				state.hostMenuStep = "retention-edit"
 				state.hostMenuErr = ""
+			}
+			state.render(os.Stdout)
+		case event := <-hostHookDone:
+			state.finishHostHookOperation(event.host, event.id)
+			if event.id == state.hostMenuRequestID && hostRetentionCancel != nil {
+				hostRetentionCancel()
+				hostRetentionCancel = nil
+			}
+			watch := watchedClients[event.host]
+			if !state.acceptHostHookEvent(event, watch.epoch) {
+				continue
+			}
+			if event.err != nil {
+				state.hostMenuStep = "hook-error"
+				state.hostMenuErr = sanitizeTerminalText(event.err.Error())
+			} else {
+				state.hostMenuStep = "hook-done"
+				if event.result.Changed {
+					state.hostMenuErr = "Host configuration updated; activation awaits a real agent callback"
+				} else {
+					state.hostMenuErr = "Already in the requested state"
+				}
 			}
 			state.render(os.Stdout)
 		case <-workspaceRepaint:
@@ -2623,6 +2657,35 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					connectTargets = state.changedHostMenuTargets(true)
 				}
 				switch action {
+				case "host-hook-save":
+					client, ok := state.cfg.Client(target)
+					if !ok || state.disconnectedHosts[target] {
+						state.hostMenuStep = "hook-error"
+						state.hostMenuErr = "Host is disconnected or unavailable"
+						break
+					}
+					requestID := state.hostMenuRequestID + 1
+					if !state.beginHostHookOperation(target, requestID) {
+						state.hostMenuStep = "hook-error"
+						state.hostMenuErr = "Another hook update is still running on this Host"
+						break
+					}
+					if hostRetentionCancel != nil {
+						hostRetentionCancel()
+					}
+					state.hostMenuRequestID = requestID
+					epoch, instanceID := watchedClients[target].epoch, state.hostSync[target].InstanceID
+					agent, operation := state.hostHookAgent, state.hostHookAction
+					saveCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+					hostRetentionCancel = cancel
+					go func() {
+						defer cancel()
+						result, err := runner.ConfigureHostAgentHook(saveCtx, client, agent, operation)
+						select {
+						case hostHookDone <- hostHookEvent{id: requestID, epoch: epoch, instanceID: instanceID, host: target, agent: agent, action: operation, result: result, err: err}:
+						case <-ctx.Done():
+						}
+					}()
 				case "host-retention-read":
 					if hostRetentionCancel != nil {
 						hostRetentionCancel()
@@ -4755,6 +4818,29 @@ func (s *tuiState) acceptHostRetentionEvent(event hostRetentionEvent, watchEpoch
 		watchEpoch == event.epoch && s.hostSync[event.host].InstanceID == event.instanceID
 }
 
+func (s *tuiState) acceptHostHookEvent(event hostHookEvent, watchEpoch uint64) bool {
+	return s.hostMenuMode && s.hostMenuStep == "hook-saving" && s.hostMenuTarget == event.host && s.hostMenuRequestID == event.id &&
+		s.hostHookAgent == event.agent && s.hostHookAction == event.action && !s.disconnectedHosts[event.host] &&
+		watchEpoch == event.epoch && s.hostSync[event.host].InstanceID == event.instanceID
+}
+
+func (s *tuiState) beginHostHookOperation(host string, id uint64) bool {
+	if s.hostHookInFlight == nil {
+		s.hostHookInFlight = make(map[string]uint64)
+	}
+	if _, exists := s.hostHookInFlight[host]; exists {
+		return false
+	}
+	s.hostHookInFlight[host] = id
+	return true
+}
+
+func (s *tuiState) finishHostHookOperation(host string, id uint64) {
+	if s.hostHookInFlight[host] == id {
+		delete(s.hostHookInFlight, host)
+	}
+}
+
 func (s *tuiState) canResizeCurrentSession() bool {
 	session := s.activePTYSession()
 	if session.Kind == string(model.KindShell) {
@@ -5444,7 +5530,7 @@ func (s *tuiState) handleShortcutInput(input []byte) string {
 	return ""
 }
 
-var hostActions = []string{"Connections", "Reconnect", "PTY log retention", "Add host", "Remove host"}
+var hostActions = []string{"Connections", "Reconnect", "PTY log retention", "Agent notification hooks", "Add host", "Remove host"}
 
 func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 	if !s.hostMenuMode {
@@ -5468,6 +5554,43 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 		}
 		if s.hostMenuErr != "" && s.hostMenuStep != "retention-error" {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostMenuErr})
+		}
+		renderModalBox(out, cols, rows, lines)
+		return
+	}
+	if strings.HasPrefix(s.hostMenuStep, "hook-") {
+		lines := []modalRenderLine{{modalTitle, "  Agent notification hooks · " + displayField(s.hostMenuTarget)}}
+		switch s.hostMenuStep {
+		case "hook-select":
+			choices := []string{"Install Codex Stop hook", "Remove Codex Stop hook", "Install Claude Stop hooks", "Remove Claude Stop hooks"}
+			for index, choice := range choices {
+				style, prefix := modalInput, "  "
+				if index == s.hostMenuIndex {
+					style, prefix = modalSelected, "› "
+				}
+				lines = append(lines, modalRenderLine{style, prefix + choice})
+			}
+			lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter review · Esc back"})
+		case "hook-confirm":
+			path := "~/.claude/settings.json"
+			if s.hostHookAgent == "codex" {
+				path = "~/.codex/hooks.json"
+			}
+			lines = append(lines,
+				modalRenderLine{modalSelected, "  " + strings.ToUpper(s.hostHookAction[:1]) + s.hostHookAction[1:] + " " + s.hostHookAgent + " hook on this Host?"},
+				modalRenderLine{modalInput, "  Edit: " + path},
+				modalRenderLine{modalMuted, "  Existing settings are preserved; changed files get a private backup."},
+				modalRenderLine{modalMuted, "  Only Ducklion's own hook entry is changed."})
+			if s.hostHookAgent == "codex" && s.hostHookAction == "install" {
+				lines = append(lines, modalRenderLine{modalDanger, "  Codex activation pending until trusted with /hooks."})
+			}
+			lines = append(lines, modalRenderLine{modalMuted, "  Enter confirm · Esc choose again"})
+		case "hook-saving":
+			lines = append(lines, modalRenderLine{modalMuted, "  Updating Host hook configuration…"})
+		case "hook-done":
+			lines = append(lines, modalRenderLine{modalStatus, "  " + s.hostMenuErr}, modalRenderLine{modalMuted, "  Enter or Esc close"})
+		case "hook-error":
+			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostMenuErr}, modalRenderLine{modalMuted, "  Enter retry · Esc back"})
 		}
 		renderModalBox(out, cols, rows, lines)
 		return
@@ -5510,7 +5633,7 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 	lines := []modalRenderLine{{modalTitle, "  Host actions · " + displayField(s.hostMenuTarget)}}
 	for index, label := range hostActions {
 		style, prefix := "", "  "
-		if s.hostScoped && index >= 3 {
+		if s.hostScoped && index >= 4 {
 			style, label = modalDisabled, label+" (unavailable in host-scoped mode)"
 		}
 		if index == s.hostMenuIndex {
@@ -5537,6 +5660,47 @@ func (s *tuiState) beginHostMenu() {
 }
 
 func (s *tuiState) handleHostMenuInput(input []byte) string {
+	if strings.HasPrefix(s.hostMenuStep, "hook-") {
+		switch string(input) {
+		case "\x03":
+			if s.hostMenuStep != "hook-saving" {
+				s.hostMenuMode = false
+			}
+		case "\x1b":
+			switch s.hostMenuStep {
+			case "hook-confirm":
+				s.hostMenuStep = "hook-select"
+			case "hook-done":
+				s.hostMenuMode = false
+			case "hook-saving":
+			default:
+				s.hostMenuStep, s.hostMenuIndex = "actions", 3
+			}
+		case "j", "\x1b[B":
+			if s.hostMenuStep == "hook-select" {
+				s.hostMenuIndex = min(3, s.hostMenuIndex+1)
+			}
+		case "k", "\x1b[A":
+			if s.hostMenuStep == "hook-select" {
+				s.hostMenuIndex = max(0, s.hostMenuIndex-1)
+			}
+		case "\r", "\n":
+			switch s.hostMenuStep {
+			case "hook-select":
+				s.hostHookAgent, s.hostHookAction = []string{"codex", "codex", "claude", "claude"}[s.hostMenuIndex], []string{"install", "remove", "install", "remove"}[s.hostMenuIndex]
+				s.hostMenuStep = "hook-confirm"
+			case "hook-confirm":
+				s.hostMenuStep = "hook-saving"
+				return "host-hook-save"
+			case "hook-error":
+				s.hostMenuStep = "hook-saving"
+				return "host-hook-save"
+			case "hook-done":
+				s.hostMenuMode = false
+			}
+		}
+		return ""
+	}
 	if strings.HasPrefix(s.hostMenuStep, "retention-") {
 		switch string(input) {
 		case "\x03":
@@ -5631,7 +5795,7 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 	case "k", "\x1b[A":
 		s.hostMenuIndex = max(0, s.hostMenuIndex-1)
 	case "\r", "\n":
-		action := []string{"host-connections", "host-reconnect", "host-retention-read", "host-add", "host-remove"}[s.hostMenuIndex]
+		action := []string{"host-connections", "host-reconnect", "host-retention-read", "host-hooks", "host-add", "host-remove"}[s.hostMenuIndex]
 		if s.hostScoped && (action == "host-add" || action == "host-remove") {
 			s.outputErr = "host configuration changes are unavailable in host-scoped mode"
 			return ""
@@ -5656,6 +5820,11 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 		if action == "host-retention-read" {
 			s.hostMenuStep = "retention-loading"
 			s.hostMenuErr = ""
+		}
+		if action == "host-hooks" {
+			s.hostMenuStep, s.hostMenuIndex = "hook-select", 0
+			s.hostMenuErr = ""
+			return ""
 		}
 		return action
 	}
