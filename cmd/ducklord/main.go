@@ -1453,6 +1453,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	var outputRequestID uint64
 	var reconnectRequestID uint64
 	var activeOutputEvent ducklord.TerminalOutputEvent
+	var selectedOutputSession ducklord.RemoteSession
 	selectPooledOutput := func() {
 		if outputManager == nil || len(state.sessions) == 0 {
 			return
@@ -1460,6 +1461,24 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		reconnectRequestID = 0
 		state.outputReconnecting = false
 		sess := state.activePTYSession()
+		var workspacePriority ducklord.TerminalSelection
+		if workspaceOutput != nil {
+			visible := state.workspaceVisibleSelections(ducklord.TerminalSelection{Client: ducklord.Client{Name: sess.Client}})
+			if len(visible) == 0 {
+				workspaceOutput.ClearVisible()
+				state.outputFresh = false
+				state.outputErr = "current Project has no live Session pane"
+				return
+			}
+			workspacePriority = state.workspacePreferredSelection(visible, sess)
+			for _, candidate := range state.sessions {
+				if candidate.Client == workspacePriority.Client.Name && candidate.InstanceID == workspacePriority.InstanceID && candidate.SessionID == workspacePriority.SessionID && candidate.RuntimeGeneration == workspacePriority.RuntimeGeneration {
+					sess = candidate
+					break
+				}
+			}
+		}
+		selectedOutputSession = sess
 		key, keyOK := terminalOutputKey(sess)
 		selectedKey := sessionKey(sess)
 		if state.outputForKey != selectedKey || !keyOK || activeOutputEvent.Key != key || activeOutputEvent.Revision.RuntimeGeneration != sess.RuntimeGeneration {
@@ -1470,25 +1489,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.outputForKey = selectedKey
 		}
 		if workspaceOutput != nil {
-			visible := state.workspaceVisibleSelections(ducklord.TerminalSelection{Client: ducklord.Client{Name: sess.Client}})
-			if len(visible) == 0 {
-				workspaceOutput.ClearVisible()
-				state.outputFresh = false
-				state.outputErr = "current Project has no live Session pane"
-				return
-			}
-			priority := visible[0]
-			for _, candidate := range visible {
-				if candidate.Client.Name == sess.Client && candidate.InstanceID == sess.InstanceID && candidate.SessionID == sess.SessionID {
-					priority = candidate
-					break
-				}
-			}
-			outputRequestID = workspaceOutput.Select(priority)
-			if priority.Client.Name != sess.Client || priority.SessionID != sess.SessionID {
-				state.outputFresh = false
-				return
-			}
+			outputRequestID = workspaceOutput.Select(workspacePriority)
 			state.outputForKey = selectedKey
 			state.outputFresh = false
 			state.outputErr = "loading live PTY output..."
@@ -1772,6 +1773,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 		case event := <-outputEvents:
 			expectedSession := state.activePTYSession()
+			if workspaceOutput != nil {
+				expectedSession = selectedOutputSession
+			}
 			if state.searchMode && state.searchActivatedKey != "" {
 				if activated, ok := state.sessionForKey(state.searchActivatedKey); ok {
 					expectedSession = activated
@@ -2921,12 +2925,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.clearAttachIdentity()
 				}
 				if changed && workspaceOutput != nil {
-					visible := state.workspaceVisibleSelections(ducklord.TerminalSelection{})
-					if len(visible) == 0 {
-						workspaceOutput.ClearVisible()
-					} else {
-						outputRequestID = workspaceOutput.Select(visible[0])
-					}
+					selectPooledOutput()
 				}
 				state.render(os.Stdout)
 				continue

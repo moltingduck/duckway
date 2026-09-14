@@ -914,9 +914,14 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 	if out, err := exec.Command(runtime, "cp", localState, controller+":"+home+"/.ducklord/state.json").CombinedOutput(); err != nil {
 		t.Fatalf("install isolated layout: %v: %s", err, out)
 	}
+	// Keep only one raw subscription so Project navigation must promote the
+	// selected pane rather than the first visible/quick-list pane.
+	if out, err := exec.Command(runtime, "exec", controller, "sh", "-lc", "cp /root/.ducklord/config.yaml "+home+"/.ducklord/limited.yaml && printf '\nraw_output_subscription_limit: 1\n' >>"+home+"/.ducklord/limited.yaml").CombinedOutput(); err != nil {
+		t.Fatalf("prepare limited subscription config: %v: %s", err, out)
+	}
 	owner := fmt.Sprintf("project-focus-%d", time.Now().UnixNano())
 	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", "DUCKLORD_WORKSPACE_PREVIEW=1",
-		binary, "tui", "--name", owner, "--config", "/root/.ducklord/config.yaml")
+		binary, "tui", "--name", owner, "--config", home+"/.ducklord/limited.yaml")
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 120})
 	if err != nil {
 		t.Fatal(err)
@@ -957,6 +962,12 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "◇ client-a/"+handles[0], 10*time.Second)
 	writePTY(t, terminal, "[")
 	capture.waitCurrent(t, "◇ client-a/"+handles[1], 10*time.Second)
+	projectMarker := fmt.Sprintf("PROJECTONLY-%d", time.Now().UnixNano())
+	if out, err := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "send", "client-a", handles[1],
+		"printf '"+projectMarker+"\\n'", "--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil {
+		t.Fatalf("send Project-only output marker: %v: %s", err, out)
+	}
+	capture.waitCurrent(t, projectMarker, 10*time.Second)
 	noRoute := fmt.Sprintf("%d", time.Now().UnixNano())
 	writePTY(t, terminal, noRoute)
 	time.Sleep(200 * time.Millisecond)

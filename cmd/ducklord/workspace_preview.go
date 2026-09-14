@@ -58,6 +58,29 @@ func (s *tuiState) workspaceSelectedPaneSession() (ducklord.RemoteSession, error
 	return ducklord.RemoteSession{}, fmt.Errorf("selected Session pane has no live host connection")
 }
 
+// workspacePreferredSelection keeps output priority on the selected Project
+// pane without changing the independent quick-list selection.
+func (s *tuiState) workspacePreferredSelection(visible []ducklord.TerminalSelection, quick ducklord.RemoteSession) ducklord.TerminalSelection {
+	if len(visible) == 0 {
+		return ducklord.TerminalSelection{}
+	}
+	if nav, err := s.workspaceNavigation(); err == nil {
+		if identity, ok := s.activity().ProjectLayout.PaneSession(nav.CurrentProjectID(), nav.CurrentPaneID()); ok {
+			for _, candidate := range visible {
+				if candidate.InstanceID == identity.InstanceID && candidate.SessionID == identity.SessionID {
+					return candidate
+				}
+			}
+		}
+	}
+	for _, candidate := range visible {
+		if candidate.Client.Name == quick.Client && candidate.InstanceID == quick.InstanceID && candidate.SessionID == quick.SessionID {
+			return candidate
+		}
+	}
+	return visible[0]
+}
+
 // P is a read-only Project-list focus switch. Project movement never changes
 // the quick-list selection or grants PTY control.
 func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed bool) {
@@ -266,6 +289,11 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	}
 	selected := s.currentSession()
 	displayed := s.activePTYSession()
+	if s.workspaceOutput != nil && s.outputForKey != "" {
+		if outputSession, ok := s.sessionForKey(s.outputForKey); ok {
+			displayed = outputSession
+		}
+	}
 	items := make([]ducklord.WorkspaceListItem, 0, len(s.sessions))
 	for _, session := range s.sessions {
 		identity, ok := ducklord.IdentityFromSession(session)

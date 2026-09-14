@@ -87,16 +87,17 @@ if [ "$CREDENTIALS" != none ] && { [ -f "$CODEX_AUTH" ] || [ -f "$CLAUDE_AUTH" ]
     fi
     "$RUNTIME" exec -u duck "$container" sh -lc 'mkdir -p $HOME/.codex $HOME/.claude && chmod 700 $HOME/.codex $HOME/.claude'
     if { [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = codex ]; } && [ -f "$CODEX_AUTH" ]; then
-      "$RUNTIME" cp "$CODEX_AUTH" "$container":/tmp/codex-auth.json
-      "$RUNTIME" exec "$container" install -o duck -g duck -m 600 /tmp/codex-auth.json /home/duck/.codex/auth.json
-      "$RUNTIME" exec "$container" rm -f /tmp/codex-auth.json
+      "$RUNTIME" cp "$CODEX_AUTH" "$container":/home/duck/.codex/auth.json
+      "$RUNTIME" exec "$container" chown duck:duck /home/duck/.codex/auth.json
+      "$RUNTIME" exec "$container" chmod 600 /home/duck/.codex/auth.json
     fi
     if { [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = claude ]; } && [ -f "$CLAUDE_AUTH" ]; then
-      "$RUNTIME" cp "$CLAUDE_AUTH" "$container":/tmp/claude-credentials.json
-      "$RUNTIME" exec "$container" install -o duck -g duck -m 600 /tmp/claude-credentials.json /home/duck/.claude/.credentials.json
+      "$RUNTIME" cp "$CLAUDE_AUTH" "$container":/home/duck/.claude/.credentials.json
+      "$RUNTIME" exec "$container" chown duck:duck /home/duck/.claude/.credentials.json
+      "$RUNTIME" exec "$container" chmod 600 /home/duck/.claude/.credentials.json
       "$RUNTIME" cp "$WORK/claude-demo-state.json" "$container":/tmp/claude-demo-state.json
       "$RUNTIME" exec "$container" install -o duck -g duck -m 600 /tmp/claude-demo-state.json /home/duck/.claude.json
-      "$RUNTIME" exec "$container" rm -f /tmp/claude-credentials.json /tmp/claude-demo-state.json
+      "$RUNTIME" exec "$container" rm -f /tmp/claude-demo-state.json
     fi
   done
 fi

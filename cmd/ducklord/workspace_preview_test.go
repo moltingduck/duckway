@@ -49,6 +49,42 @@ func TestWorkspacePreviewRendersLiveSelectedSessionWithoutGrantingFocus(t *testi
 	}
 }
 
+func TestWorkspaceOutputPriorityFollowsSelectedProjectPaneNotQuickList(t *testing.T) {
+	state, projectID, a, b := workspacePaneTestState(t)
+	bIdentity, _ := ducklord.IdentityFromSession(b)
+	bPaneID, err := state.activity().ProjectLayout.Place(projectID, bIdentity, ducklord.PlaceNewTab, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectPane(projectID, bPaneID); err != nil {
+		t.Fatal(err)
+	}
+	visible := []ducklord.TerminalSelection{
+		{Client: ducklord.Client{Name: a.Client}, InstanceID: a.InstanceID, SessionID: a.SessionID, RuntimeGeneration: a.RuntimeGeneration},
+		{Client: ducklord.Client{Name: b.Client}, InstanceID: b.InstanceID, SessionID: b.SessionID, RuntimeGeneration: b.RuntimeGeneration},
+	}
+	priority := state.workspacePreferredSelection(visible, a)
+	if priority.SessionID != b.SessionID || state.currentSession().SessionID != a.SessionID {
+		t.Fatalf("output priority changed quick selection or ignored B: %+v", priority)
+	}
+	other, _, quick, defaultSession := workspacePaneTestState(t)
+	otherNav, _ := other.workspaceNavigation()
+	if err := otherNav.SelectProject(ducklord.DefaultProjectID); err != nil {
+		t.Fatal(err)
+	}
+	priority = other.workspacePreferredSelection([]ducklord.TerminalSelection{
+		{Client: ducklord.Client{Name: quick.Client}, InstanceID: quick.InstanceID, SessionID: quick.SessionID, RuntimeGeneration: 1},
+		{Client: ducklord.Client{Name: defaultSession.Client}, InstanceID: defaultSession.InstanceID, SessionID: defaultSession.SessionID, RuntimeGeneration: 1},
+	}, quick)
+	if priority.SessionID != defaultSession.SessionID || other.currentSession().SessionID != quick.SessionID {
+		t.Fatalf("Project-only B did not win output priority: %+v", priority)
+	}
+}
+
 func TestWorkspacePreviewDoesNotMarkUnreadSeenBeforePaneFocus(t *testing.T) {
 	identity := ducklord.SessionIdentity{InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", SessionID: "ABC123"}
 	session := ducklord.RemoteSession{Client: "host-a", InstanceID: identity.InstanceID, SessionID: identity.SessionID,
