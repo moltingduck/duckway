@@ -648,17 +648,13 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 		t.Fatal("second session identity missing")
 	}
 	a, _ := ducklord.IdentityFromSession(remoteA)
-	b, _ := ducklord.IdentityFromSession(remoteB)
 	state := ducklord.NewActivityState()
 	projectID, err := state.ProjectLayout.AddProject("Live split")
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstPane, err := state.ProjectLayout.Place(projectID, a, ducklord.PlaceNewTab, "")
+	_, err = state.ProjectLayout.Place(projectID, a, ducklord.PlaceNewTab, "")
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := state.ProjectLayout.Place(projectID, b, ducklord.PlaceVertical, firstPane); err != nil {
 		t.Fatal(err)
 	}
 	home := fmt.Sprintf("/tmp/ducklord-two-pane-e2e-%d", os.Getpid())
@@ -710,9 +706,27 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Session focus:", 20*time.Second)
 	writePTY(t, terminal, "\x1d")
 	capture.waitCurrent(t, "client-a/"+sessions[0].Handle, 20*time.Second)
+	writePTY(t, terminal, "Pp")
+	capture.waitCurrent(t, "Add Session pane", 10*time.Second)
+	writePTY(t, terminal, "j\rj\r"+sessions[1].Handle)
+	capture.waitCurrent(t, "find › "+sessions[1].Handle, 10*time.Second)
+	writePTY(t, terminal, "\r")
 	for _, handle := range []string{sessions[0].Handle, sessions[1].Handle} {
 		capture.waitCurrent(t, "client-a/"+handle, 20*time.Second)
 	}
+	if data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output(); err != nil {
+		t.Fatalf("read persisted pane layout: %v", err)
+	} else {
+		var persisted ducklord.ActivityState
+		if err := json.Unmarshal(data, &persisted); err != nil {
+			t.Fatal(err)
+		}
+		identity, _ := ducklord.IdentityFromSession(remoteB)
+		if ids := persisted.ProjectLayout.ProjectsFor(identity); len(ids) != 1 || ids[0] != projectID {
+			t.Fatalf("TUI pane placement did not persist: %v", ids)
+		}
+	}
+	writePTY(t, terminal, "P") // return to Session list before existing output assertions
 	for round := 1; round <= 2; round++ {
 		markers := []string{fmt.Sprintf("LIVEA%d-%d", round, os.Getpid()), fmt.Sprintf("LIVEB%d-%d", round, os.Getpid())}
 		for i, session := range sessions {
@@ -744,6 +758,52 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	}
 	capture.waitCurrent(t, projectMarker, 10*time.Second)
 	writePTY(t, terminal, "P")
+	// Create a shell-first Session pane through the same Project modal. The
+	// first remote directory choice must be this host's home, not Ducklion's
+	// own working directory or a previous bookmark.
+	newHandle := fmt.Sprintf("wsh%x", time.Now().UnixNano()&0xffffff)
+	t.Cleanup(func() {
+		_, _ = exec.Command(runtime, "exec", controller, binary, "--name", "workspace-two-cli", "destroy", "client-a", newHandle,
+			"--config", "/root/.ducklord/config.yaml").CombinedOutput()
+	})
+	writePTY(t, terminal, "Pp\r\r") // new tab, new shell
+	capture.waitCurrent(t, "host ›", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "choose a configured project", 15*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "choose zsh, bash, or sh", 15*time.Second)
+	writePTY(t, terminal, "\r") // default interactive shell
+	capture.waitCurrent(t, "handle (default", 10*time.Second)
+	writePTY(t, terminal, newHandle+"\r")
+	waitE2E(t, 20*time.Second, func() bool {
+		for _, session := range listContainerSessions(t, runtime, controller, "client-a") {
+			if session.Handle != newHandle || session.Kind != model.KindShell || session.CWD != "/home/duck" {
+				continue
+			}
+			data, readErr := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+			if readErr != nil {
+				return false
+			}
+			var persisted ducklord.ActivityState
+			if json.Unmarshal(data, &persisted) != nil {
+				return false
+			}
+			remote, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+			if !found {
+				return false
+			}
+			identity, ok := ducklord.IdentityFromSession(remote)
+			if !ok {
+				return false
+			}
+			ids := persisted.ProjectLayout.ProjectsFor(identity)
+			return len(ids) == 1 && ids[0] == projectID
+		}
+		return false
+	}, func() string {
+		return "new shell pane did not start in host home and persist in selected Project: screen=" +
+			safeTerminalDiagnostic(capture.currentText()) + fmt.Sprintf(" sessions=%+v", listContainerSessions(t, runtime, controller, "client-a"))
+	})
 }
 
 // TestDucklordWorkspaceProjectEnterFocusContainerE2E keeps quick-list selection

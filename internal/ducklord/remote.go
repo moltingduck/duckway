@@ -1038,6 +1038,24 @@ func (*Runner) Projects(ctx context.Context, c Client) ([]RemoteProject, error) 
 	return projects, nil
 }
 
+// HomeDir asks the SSH account that launches Ducklion for its actual home.
+// It does not infer a home from the daemon's working directory or bookmarks,
+// which older Ducklion installations may expose as their default project.
+func (*Runner) HomeDir(ctx context.Context, c Client) (string, error) {
+	out, err := sshOutputRaw(ctx, c, "sh", "-c", `printf %s "$HOME"`)
+	if err != nil {
+		return "", err
+	}
+	home := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(home) || home == "/" {
+		return "", fmt.Errorf("host %s returned an invalid home directory", c.Name)
+	}
+	if err := validateRemoteText("host home", home, 4096, true); err != nil {
+		return "", err
+	}
+	return filepath.Clean(home), nil
+}
+
 func (*Runner) SuggestProjectPaths(ctx context.Context, c Client, query string) ([]string, error) {
 	if err := validateRemoteText("path query", query, 4096, false); err != nil {
 		return nil, err

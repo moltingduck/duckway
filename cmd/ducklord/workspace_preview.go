@@ -72,6 +72,14 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 	if !s.workspaceProjectFocus {
 		return false, false
 	}
+	if s.shortcut("project_create", key) {
+		s.beginWorkspaceProject()
+		return true, false
+	}
+	if s.shortcut("project_add_pane", key) {
+		s.beginWorkspacePane()
+		return true, false
+	}
 	if key == "\r" {
 		if _, err := s.workspaceSelectedPaneSession(); err != nil {
 			s.outputErr = err.Error()
@@ -228,7 +236,8 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	fmt.Fprintln(out, truncate("ducklord workspace  owner:"+displayField(s.ownerName)+s.hostSyncLabel(), width))
 	status := "Preview: ↑/↓ Session · " + s.cfg.Shortcut("project_focus") + " Project pane · Enter focus · Ctrl-] leave PTY"
 	if s.workspaceProjectFocus {
-		status = fmt.Sprintf("Project pane: ↑/↓ Project · %s/%s tab · %s/%s pane · Enter focus · Esc list",
+		status = fmt.Sprintf("Project pane: ↑/↓ Project · %s new Project · %s add pane · %s/%s tab · %s/%s pane · Enter focus · Esc list",
+			s.cfg.Shortcut("project_create"), s.cfg.Shortcut("project_add_pane"),
 			s.cfg.Shortcut("project_prev_tab"), s.cfg.Shortcut("project_next_tab"),
 			s.cfg.Shortcut("project_prev_pane"), s.cfg.Shortcut("project_next_pane"))
 	}
@@ -317,6 +326,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 		return ducklord.WorkspacePaneView{Title: "Session unavailable", Stale: true}
 	})
 	s.renderCreateModal(out, width, height)
+	s.renderWorkspacePaneModal(out, width, height)
 	s.renderSearchModal(out, width, height)
 	s.renderActionModal(out, width, height)
 	s.renderAddClientModal(out, width, height)

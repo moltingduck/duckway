@@ -95,6 +95,7 @@ type createDiscoveryEvent struct {
 	args                   []string
 	err                    error
 	directory              ducklord.RemoteDirectoryStatus
+	homePath               string
 }
 
 type hostSessionUpdate struct {
@@ -1283,6 +1284,14 @@ type tuiState struct {
 	workspaceProjectFocus      bool
 	workspaceAttachFromProject bool
 	workspaceFocusFromProject  bool
+	workspacePaneMode          bool
+	workspacePaneStep          string
+	workspacePaneIndex         int
+	workspacePaneErr           string
+	workspacePaneName          string
+	workspacePaneQuery         string
+	workspacePaneIntent        workspacePaneIntent
+	workspaceNewSessionIntent  *workspacePaneIntent
 	clearOutputFocus           func()
 	searchMode                 bool
 	searchQuery                string
@@ -2135,14 +2144,19 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 			}
 		case result := <-startDone:
+			if result.id != startID {
+				continue
+			}
 			if state.disconnectedHosts[result.client] {
 				startCancel = nil
 				state.newSessionStarting = false
-				state.newSessionErr = "host disconnected; remote start result was discarded"
+				if state.workspaceNewSessionIntent != nil {
+					state.newSessionErr = "host disconnected; shell may have started—resync, then reopen Add Session pane"
+				} else {
+					state.newSessionErr = "host disconnected; remote start result was discarded"
+				}
+				state.workspaceNewSessionIntent = nil
 				state.render(os.Stdout)
-				continue
-			}
-			if result.id != startID {
 				continue
 			}
 			startCancel = nil
@@ -2368,6 +2382,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			if string(b) == "\x03" && state.centralModalOpen() {
 				switch {
+				case state.workspacePaneMode:
+					state.closeWorkspacePane()
 				case state.shortcutMode:
 					state.shortcutMode = false
 				case state.searchMode:
@@ -2469,6 +2485,16 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.render(os.Stdout)
 					continue
 				}
+			}
+			if state.workspacePaneMode {
+				if state.handleWorkspacePaneInput(b) {
+					state.beginCreate()
+				}
+				if workspaceOutput != nil {
+					selectPooledOutput()
+				}
+				state.render(os.Stdout)
+				continue
 			}
 			if state.shortcutMode {
 				if state.handleShortcutInput(b) == "restart-tui" {
@@ -2921,6 +2947,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.outputErr = "loading live preview..."
 				requestPreview(true)
 			case "new":
+				state.workspaceNewSessionIntent = nil
 				state.beginCreate()
 			case "search":
 				state.beginSearch()
@@ -4233,12 +4260,34 @@ func (s *tuiState) completeNewSessionStart(ctx context.Context, clientName, sess
 		s.newSessionErr = err.Error()
 		return
 	}
+	intent := s.workspaceNewSessionIntent
+	s.workspaceNewSessionIntent = nil
 	s.newSessionMode = false
 	s.newSessionLine = ""
 	s.newSessionErr = ""
 	s.outputErr = ""
 	s.refreshSessions(ctx)
 	s.selectSession(clientName, sessionID)
+	if intent != nil {
+		generation, instance := s.hostFingerprint(clientName)
+		if !s.hostIsLive(clientName) || generation != s.newSessionStartGeneration || instance != s.newSessionStartInstance {
+			s.outputErr = "shell started, but host changed before pane placement; find it in Default Project"
+		} else {
+			found := false
+			for _, session := range s.sessions {
+				if session.Client == clientName && session.InstanceID == instance && session.SessionID == sessionID {
+					found = true
+					if placeErr := s.placeWorkspacePane(*intent, session); placeErr != nil {
+						s.outputErr = "shell started, but pane placement failed: " + sanitizeTerminalText(placeErr.Error())
+					}
+					break
+				}
+			}
+			if !found {
+				s.outputErr = "shell started, but it is not synchronized yet; find it in Default Project"
+			}
+		}
+	}
 	if !s.pooledOutput {
 		s.refreshSelectedOutput(ctx)
 	}
@@ -4940,7 +4989,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		{"SESSION LIST & GROUPS", "list_search", "Search sessions"}, {"", "list_organize", "Cycle custom / host / type"}, {"", "list_groups", "Manage custom groups"}, {"", "list_reorder_up", "Move session up"}, {"", "list_reorder_down", "Move session down"}, {"", "refresh", "Refresh"},
 		{"SESSION", "session_create", "Create session"}, {"", "session_actions", "Session action menu"}, {"", "session_notifications", "Notification settings"}, {"", "session_yield", "Yield now"}, {"", "session_yield_wait", "Yield when idle"}, {"", "session_restart", "Restart session"}, {"", "session_end", "End session"}, {"", "session_destroy", "Destroy session"},
 		{"HOST", "host_actions", "Host action menu"}, {"", "host_add", "Add host configuration"}, {"", "host_remove", "Remove host configuration"},
-		{"PROJECT PANE", "project_focus", "Focus Project pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
+		{"PROJECT PANE", "project_focus", "Focus Project pane"}, {"", "project_create", "Create Project"}, {"", "project_add_pane", "Add Session pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
 		{"TERMINAL AREA", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return focus to Session list pane"},
 		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
 		{"", "shortcut_settings", "Configure shortcuts"},
@@ -6926,6 +6975,7 @@ func uniqueClientName(cfg *ducklord.Config, base string) string {
 func (s *tuiState) beginCreate() {
 	clientName := s.selectedClientName()
 	if clientName == "" {
+		s.workspaceNewSessionIntent = nil
 		s.outputErr = "no ducklord client configured"
 		return
 	}
@@ -6952,6 +7002,7 @@ func (s *tuiState) beginCreate() {
 }
 
 func (s *tuiState) cancelCreate() {
+	s.workspaceNewSessionIntent = nil
 	s.cancelCreateDiscovery()
 	s.newSessionMode = false
 	s.newSessionLine = ""
@@ -7046,6 +7097,7 @@ func (s *tuiState) invalidateCreateStart(update ducklord.SessionUpdate) bool {
 		return false
 	}
 	s.newSessionStarting = false
+	s.workspaceNewSessionIntent = nil
 	s.newSessionStep = "host"
 	s.newSessionErr = "host changed while starting; creation was canceled—refresh the session list before retrying"
 	return true
@@ -7114,9 +7166,23 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 		s.newSessionLine = ""
 		s.newSessionSelected = 0
 		s.newSessionErr = "loading projects..."
+		needHome := s.workspaceNewSessionIntent != nil
 		s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "projects", client: clientName}, func(workCtx context.Context) createDiscoveryEvent {
+			home := ""
+			if needHome {
+				resolver, ok := s.runner.(interface {
+					HomeDir(context.Context, ducklord.Client) (string, error)
+				})
+				if ok {
+					var homeErr error
+					home, homeErr = resolver.HomeDir(workCtx, client)
+					if homeErr != nil {
+						return createDiscoveryEvent{err: homeErr}
+					}
+				}
+			}
 			projects, projectErr := s.runner.Projects(workCtx, client)
-			return createDiscoveryEvent{projects: projects, err: projectErr}
+			return createDiscoveryEvent{projects: projects, homePath: home, err: projectErr}
 		})
 		return "", "", nil, false, nil
 	case "project":
@@ -7381,6 +7447,9 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 		}
 	case "projects":
 		projects := event.projects
+		if s.workspaceNewSessionIntent != nil && event.homePath != "" {
+			projects = append([]ducklord.RemoteProject{{Name: "Host home", Path: event.homePath, Source: "path"}}, projects...)
+		}
 		if s.newSessionKind == model.KindAgent {
 			filtered := projects[:0]
 			for _, project := range projects {
@@ -7708,7 +7777,7 @@ func (s *tuiState) centralModalOpen() bool {
 }
 
 func (s *tuiState) blockingModalOpen() bool {
-	return s.shortcutMode || s.hostMenuMode || s.searchMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.lifecycleConfirm != ""
+	return s.workspacePaneMode || s.shortcutMode || s.hostMenuMode || s.searchMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.lifecycleConfirm != ""
 }
 
 func (s *tuiState) syncCreateSelectionToInput() {
