@@ -160,7 +160,14 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\r")
 	waitLiveAgentScreen(t, capture, "Session focus:", 20*time.Second)
 	if split {
-		waitLiveAgentScreen(t, capture, "client-a/"+sidecarHandle, 20*time.Second)
+		left, right := liveSplitColumns(int(cols))
+		waitE2E(t, 20*time.Second, func() bool {
+			screen := capture.currentText()
+			return liveScreenHasLabelInColumn(screen, "client-a/"+handle, left) &&
+				liveScreenHasLabelInColumn(screen, "client-a/"+sidecarHandle, right)
+		}, func() string {
+			return "agent and sidecar titles did not render in separate split cells; screen suppressed"
+		})
 	}
 	precheck := "SHELL_INPUT_" + stamp
 	writePTY(t, terminal, "printf 'SHELL_%s_"+stamp+"\\n' INPUT\r")
@@ -319,7 +326,9 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		waitLiveAgentScreen(t, capture, "Session focus:", 20*time.Second)
 		marker := "SPLIT_INPUT_" + stamp
 		writePTY(t, terminal, "printf '"+marker+"\\n'\r")
-		waitLiveAgentScreen(t, capture, marker, 20*time.Second)
+		_, right := liveSplitColumns(int(cols))
+		waitE2E(t, 20*time.Second, func() bool { return liveScreenHasLabelInColumn(capture.currentText(), marker, right) },
+			func() string { return "sidecar marker did not render in its split cell; screen suppressed" })
 		sidecarOutput, sidecarErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", sidecar.SessionID,
 			"--lines", "80", "--config", "/root/.ducklord/config.yaml").Output()
 		agentOutput, agentErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", session.SessionID,
@@ -479,6 +488,18 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 
 func liveScreenHasMarkedRow(screen, label string, marked bool, column ducklord.WorkspaceRect) bool {
 	return liveScreenHasRowMatching(screen, label, column, func(cell string) bool { return strings.HasSuffix(cell, "•") == marked })
+}
+
+func liveSplitColumns(cols int) (ducklord.WorkspaceRect, ducklord.WorkspaceRect) {
+	terminal := ducklord.CalculateWorkspaceGeometry(cols, 28, 4).Terminal
+	width := terminal.Width / 2
+	return ducklord.WorkspaceRect{X: terminal.X, Width: width},
+		ducklord.WorkspaceRect{X: terminal.X + width, Width: terminal.Width - width}
+}
+
+func liveScreenHasLabelInColumn(screen, label string, column ducklord.WorkspaceRect) bool {
+	_, _, found := workspaceScreenPoint(screen, label, column.X, column.X+column.Width)
+	return found
 }
 
 func liveScreenQuickColumn(screen string) ducklord.WorkspaceRect {
