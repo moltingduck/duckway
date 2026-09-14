@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
@@ -96,8 +95,8 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 }
 
 func (s *tuiState) beginWorkspaceDrop(source ducklord.RemoteSession, identity ducklord.SessionIdentity, projectID, targetID string) {
-	if !s.workspaceDragCandidateCurrent(source) {
-		s.outputErr = "dragged Session changed or Host disconnected; try again"
+	if !s.workspacePaneCandidateCurrent(source) {
+		s.outputErr = "dragged Session changed or is unavailable; try again"
 		return
 	}
 	s.workspacePaneIntent = workspacePaneIntent{projectID: projectID, targetID: targetID}
@@ -125,11 +124,13 @@ func (s *tuiState) projectPaneID(projectID string, identity ducklord.SessionIden
 	return ""
 }
 
-func (s *tuiState) workspaceDragCandidateCurrent(source ducklord.RemoteSession) bool {
+// Pane placement is local-only. A disconnected Host must not prevent an
+// already-known Session view from being reorganized, but a changed identity
+// or runtime generation invalidates the selected candidate.
+func (s *tuiState) workspacePaneCandidateCurrent(source ducklord.RemoteSession) bool {
 	for _, candidate := range s.sessions {
 		if candidate.Client == source.Client && candidate.InstanceID == source.InstanceID && candidate.SessionID == source.SessionID &&
-			candidate.RuntimeGeneration == source.RuntimeGeneration && candidate.Status == string(model.StatusRunning) &&
-			canRead(candidate) && s.hostIsLive(candidate.Client) {
+			candidate.RuntimeGeneration == source.RuntimeGeneration && workspacePaneKnownSession(candidate) {
 			return true
 		}
 	}
@@ -139,8 +140,8 @@ func (s *tuiState) workspaceDragCandidateCurrent(source ducklord.RemoteSession) 
 func (s *tuiState) placeDroppedWorkspacePane() error {
 	candidate := s.workspacePaneCandidate
 	identity, ok := ducklord.IdentityFromSession(candidate)
-	if !ok || identity != s.workspacePaneIdentity || !s.workspaceDragCandidateCurrent(candidate) {
-		return fmt.Errorf("dragged Session changed or Host disconnected; try again")
+	if !ok || identity != s.workspacePaneIdentity || !s.workspacePaneCandidateCurrent(candidate) {
+		return fmt.Errorf("dragged Session changed or is unavailable; try again")
 	}
 	if sourceID := s.projectPaneID(s.workspacePaneIntent.projectID, identity); sourceID != "" {
 		if s.workspacePaneIntent.placement != ducklord.PlaceNewTab && sourceID == s.workspacePaneIntent.targetID {

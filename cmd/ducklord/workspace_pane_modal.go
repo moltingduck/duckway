@@ -89,8 +89,8 @@ func (s *tuiState) workspaceMoveTargets() []string {
 }
 
 func (s *tuiState) commitWorkspacePaneAction(detach bool) error {
-	if s.workspacePaneCandidate.Client != "" && !s.workspaceDragCandidateCurrent(s.workspacePaneCandidate) {
-		return fmt.Errorf("dragged Session changed or Host disconnected; try again")
+	if s.workspacePaneCandidate.Client != "" && !s.workspacePaneCandidateCurrent(s.workspacePaneCandidate) {
+		return fmt.Errorf("selected Session changed or is unavailable; try again")
 	}
 	next := s.activity().Clone()
 	identity, ok := next.ProjectLayout.PaneSession(s.workspacePaneIntent.projectID, s.workspacePaneSourceID)
@@ -162,6 +162,7 @@ func (s *tuiState) commitWorkspaceProjectDelete() error {
 	if projectID == "" || projectID == ducklord.DefaultProjectID || s.activity().ProjectLayout.Project(projectID) == nil {
 		return fmt.Errorf("project changed; reopen delete confirmation")
 	}
+	focusWasOnDeletedProject := s.workspaceNav != nil && s.workspaceNav.NotificationFocusProjectID() == projectID
 	next := s.activity().Clone()
 	if err := next.ProjectLayout.RemoveProject(projectID); err != nil {
 		return err
@@ -175,6 +176,9 @@ func (s *tuiState) commitWorkspaceProjectDelete() error {
 		s.outputErr = "Project deleted; navigation will refresh: " + sanitizeTerminalText(err.Error())
 	} else {
 		s.outputErr = "Project deleted locally; remote Sessions continue running"
+		if focusWasOnDeletedProject {
+			s.outputErr += "; notification focus turned off"
+		}
 	}
 	return nil
 }
@@ -414,16 +418,8 @@ func (s *tuiState) placeWorkspacePane(intent workspacePaneIntent, session ducklo
 	if !ok {
 		return fmt.Errorf("session has no stable identity")
 	}
-	current := false
-	for _, candidate := range s.sessions {
-		if candidate.Client == session.Client && candidate.InstanceID == session.InstanceID && candidate.SessionID == session.SessionID &&
-			candidate.RuntimeGeneration == session.RuntimeGeneration && workspacePaneKnownSession(candidate) {
-			current = true
-			break
-		}
-	}
-	if !current {
-		return fmt.Errorf("session changed or host disconnected; refresh before placing its pane")
+	if !s.workspacePaneCandidateCurrent(session) {
+		return fmt.Errorf("session changed or is unavailable; refresh before placing its pane")
 	}
 	next := s.activity().Clone()
 	paneID, err := next.ProjectLayout.Place(intent.projectID, identity, intent.placement, intent.targetID)

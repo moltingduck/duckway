@@ -92,6 +92,28 @@ func TestWorkspaceMouseDragRejectsChangedSessionAtCommit(t *testing.T) {
 	}
 }
 
+func TestWorkspaceMouseDragKnownOfflineSessionLocally(t *testing.T) {
+	state, projectID, _, b := workspacePaneTestState(t)
+	nav, _ := state.workspaceNavigation()
+	_ = nav.SelectProject(projectID)
+	state.sessions[1].Status = "disconnected"
+	state.disconnectedHosts = map[string]bool{"host": true}
+	width, height := terminalSize()
+	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	target := ducklord.WorkspaceVisiblePaneRects(&state.activity().ProjectLayout, nav, geometry)[0].Rect
+	state.handleWorkspaceMouse(workspaceMouse(0, geometry.Quick.X+1, geometry.Quick.Y+2, false))
+	state.handleWorkspaceMouse(workspaceMouse(0, target.X+1, target.Y+1, true))
+	if !state.workspacePaneMode {
+		t.Fatal("known offline Session could not open local drag placement")
+	}
+	state.handleWorkspacePaneInput([]byte("\r")) // new tab
+	identity, _ := ducklord.IdentityFromSession(b)
+	if state.workspacePaneMode || len(state.sessions) != 2 || len(state.activity().ProjectLayout.ProjectsFor(identity)) != 1 ||
+		state.activity().ProjectLayout.ProjectsFor(identity)[0] != projectID {
+		t.Fatal("offline drag did not place local pane without touching remote inventory")
+	}
+}
+
 func TestWorkspaceMouseDragRejectsSelfSplitAndCancelKeepsLayout(t *testing.T) {
 	state, projectID, a, b := workspacePaneTestState(t)
 	nav, _ := state.workspaceNavigation()

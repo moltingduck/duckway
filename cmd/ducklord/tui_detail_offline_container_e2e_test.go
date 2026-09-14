@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
 // Disconnect is local to this Ducklord process. Ducklion and its shells keep
@@ -52,6 +54,60 @@ func TestDucklordDetailedOfflineContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Host connections", 10*time.Second)
 	writePTY(t, terminal, " \r") // client-a is first in the disposable config.
 	capture.waitCurrent(t, "client-a:DISCONNECTED", 10*time.Second)
+	var alpha ducklord.RemoteSession
+	for _, session := range listContainerSessions(t, runtime, controller, "client-a") {
+		if session.Handle == "alpha" {
+			var found bool
+			alpha, found = findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+			if !found {
+				t.Fatal("alpha Session detail missing after local Host disconnect")
+			}
+			break
+		}
+	}
+	identity, valid := ducklord.IdentityFromSession(alpha)
+	if !valid {
+		t.Fatal("remote alpha Session missing after local Host disconnect")
+	}
+	readPaneID := func() string {
+		data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+		if err != nil {
+			return ""
+		}
+		var saved ducklord.ActivityState
+		if json.Unmarshal(data, &saved) != nil {
+			return ""
+		}
+		project := saved.ProjectLayout.Project(ducklord.DefaultProjectID)
+		if project == nil {
+			return ""
+		}
+		for _, tab := range project.Tabs {
+			if id := paneIDForSession(tab.Root, identity); id != "" {
+				return id
+			}
+		}
+		return ""
+	}
+	var oldPaneID string
+	waitE2E(t, 10*time.Second, func() bool { oldPaneID = readPaneID(); return oldPaneID != "" }, func() string {
+		return "offline alpha did not retain a local Default Project pane"
+	})
+	writePTY(t, terminal, "Pp\r") // Project pane; new Terminal tab.
+	capture.waitCurrent(t, "New shell session", 10*time.Second)
+	writePTY(t, terminal, "\x1b[B\r") // Add existing Session.
+	capture.waitCurrent(t, "find ›", 10*time.Second)
+	writePTY(t, terminal, "alpha")
+	capture.waitCurrent(t, "alpha @client-a", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Move existing pane here", 10*time.Second)
+	writePTY(t, terminal, "\x1b[A\r") // Explicitly confirm local move.
+	waitE2E(t, 10*time.Second, func() bool { id := readPaneID(); return id != "" && id != oldPaneID }, func() string {
+		return "offline existing Session pane did not move locally"
+	})
+	if remote, found := findContainerSession(t, runtime, controller, "client-a", alpha.SessionID); !found || remote.RuntimeGeneration != alpha.RuntimeGeneration {
+		t.Fatal("offline local pane move changed the remote Session")
+	}
 	writePTY(t, terminal, "D")
 	capture.waitCurrent(t, "Detailed Sessions:", 10*time.Second)
 	waitE2E(t, 10*time.Second, func() bool {

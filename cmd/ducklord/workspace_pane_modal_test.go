@@ -64,6 +64,9 @@ func TestWorkspaceProjectDeleteIsLocalAndRehomesLastReference(t *testing.T) {
 	if nav.CurrentProjectID() != ducklord.DefaultProjectID || nav.NotificationFocusProjectID() != "" {
 		t.Fatal("deleted Project remained selected or notification-focused")
 	}
+	if !strings.Contains(state.outputErr, "notification focus turned off") {
+		t.Fatalf("deleted focused Project gave no focus-off notice: %q", state.outputErr)
+	}
 	loaded, err := state.activityStore.Load()
 	if err != nil || loaded.ProjectLayout.Project(projectID) != nil {
 		t.Fatalf("deletion was not persisted: %v", err)
@@ -210,7 +213,7 @@ func TestWorkspacePanePickerExcludesUnavailableAndPrefersLiveAlias(t *testing.T)
 	if got := state.workspacePaneCandidates(); len(got) != 1 || got[0].Client != "offline-alias" {
 		t.Fatalf("picker failed to preserve known offline Session: %+v", got)
 	}
-	if err := state.placeWorkspacePane(state.workspacePaneIntent, b); err == nil || !strings.Contains(err.Error(), "changed or host disconnected") {
+	if err := state.placeWorkspacePane(state.workspacePaneIntent, b); err == nil || !strings.Contains(err.Error(), "changed or is unavailable") {
 		t.Fatalf("stale candidate was placed: %v", err)
 	}
 }
@@ -430,7 +433,7 @@ func TestWorkspaceExistingPickerMovesSameProjectPaneOnlyAfterConfirmation(t *tes
 }
 
 func TestWorkspaceExistingPickerRejectsSessionChangeBeforeMoveConfirmation(t *testing.T) {
-	for _, change := range []string{"host disconnected", "runtime restarted"} {
+	for _, change := range []string{"runtime restarted", "session removed"} {
 		t.Run(change, func(t *testing.T) {
 			state, projectID, a, _ := workspacePaneTestState(t)
 			nav, _ := state.workspaceNavigation()
@@ -445,20 +448,52 @@ func TestWorkspaceExistingPickerRejectsSessionChangeBeforeMoveConfirmation(t *te
 				t.Fatal("picker did not retain the selected Session generation for confirmation")
 			}
 			switch change {
-			case "host disconnected":
-				state.hostSync = map[string]ducklord.SessionUpdate{"host": {State: "disconnected"}}
 			case "runtime restarted":
 				state.sessions[0].RuntimeGeneration++
+			case "session removed":
+				state.sessions = state.sessions[1:]
 			}
 			state.handleWorkspacePaneInput([]byte("\x1b[A")) // explicitly Move
 			state.handleWorkspacePaneInput([]byte("\r"))
-			if !state.workspacePaneMode || !strings.Contains(state.workspacePaneErr, "changed or Host disconnected") || state.workspacePaneChanged {
+			if !state.workspacePaneMode || !strings.Contains(state.workspacePaneErr, "changed or is unavailable") || state.workspacePaneChanged {
 				t.Fatalf("stale Session move was not rejected: mode=%t error=%q changed=%t", state.workspacePaneMode, state.workspacePaneErr, state.workspacePaneChanged)
 			}
 			if _, ok := state.activity().ProjectLayout.PaneSession(projectID, oldID); !ok {
 				t.Fatal("stale Session move modified the Project layout")
 			}
 		})
+	}
+}
+
+func TestWorkspaceExistingPickerMovesKnownOfflinePaneLocally(t *testing.T) {
+	state, projectID, a, _ := workspacePaneTestState(t)
+	nav, err := state.workspaceNavigation()
+	if err != nil || nav.SelectProject(projectID) != nil {
+		t.Fatal("select Project: ", err)
+	}
+	oldID := nav.CurrentPaneID()
+	state.sessions[0].Status = "disconnected"
+	state.hostSync = map[string]ducklord.SessionUpdate{"host": {State: "disconnected"}}
+	state.disconnectedHosts = map[string]bool{"host": true}
+	state.beginWorkspacePane()
+	state.handleWorkspacePaneInput([]byte("\r"))     // new tab
+	state.handleWorkspacePaneInput([]byte("\x1b[B")) // add existing
+	state.handleWorkspacePaneInput([]byte("\r"))
+	if choices := state.workspacePaneChoices(); len(choices) == 0 || !strings.Contains(choices[0], "(offline)") {
+		t.Fatalf("offline Session missing from picker: %v", choices)
+	}
+	state.handleWorkspacePaneInput([]byte("\r"))     // choose A
+	state.handleWorkspacePaneInput([]byte("\x1b[A")) // select Move
+	state.handleWorkspacePaneInput([]byte("\r"))
+	identity, _ := ducklord.IdentityFromSession(a)
+	if state.workspacePaneMode || !state.workspacePaneChanged || len(state.sessions) != 2 {
+		t.Fatalf("offline local move did not commit: mode=%t err=%q", state.workspacePaneMode, state.workspacePaneErr)
+	}
+	if _, ok := state.activity().ProjectLayout.PaneSession(projectID, oldID); ok {
+		t.Fatal("old offline pane survived move")
+	}
+	if got := state.activity().ProjectLayout.ProjectsFor(identity); len(got) != 1 || got[0] != projectID {
+		t.Fatalf("offline move changed Project membership: %v", got)
 	}
 }
 
