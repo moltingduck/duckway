@@ -1,5 +1,345 @@
 # Ducklord / Ducklion Remote Agent Control MVP
 
+## Future Ducklord Project and Pane Redesign — Agreed Decisions
+
+This section records decisions for the planned redesign. It does not describe
+the current TUI implementation.
+
+### Project Membership
+
+- A Project is a Ducklord-local entity with a stable ID. Its display name is
+  not an identifier. It may reference sessions from any number of hosts.
+- Project-to-session membership is many-to-many and is driven by Session pane
+  placement, not a separate manual membership list. A session is stored once;
+  each Project's Session pane holds a reference rather than a copy. A session
+  may appear in several Projects, each with its own tab and split placement.
+- A session's control owner, runtime state, lifecycle, and notification seen
+  state are shared across every Project that references it. Viewing a
+  notification through one Project marks the same session notification seen
+  in all other Projects. Destroying a session removes its references from all
+  Projects; removing a Project reference does not destroy the session.
+- Ducklord provides one built-in Default Project for sessions with no explicit
+  Project membership. Its membership is derived: adding a session to any
+  user-created Project removes it from Default, and removing its last explicit
+  membership returns it to Default. Default does not duplicate a session that
+  is already classified elsewhere.
+- Project progress accounting is deferred. A session referenced by multiple
+  Projects must not be silently counted as independent work in each Project;
+  its contribution will be specified before progress management is added.
+
+### Project Notification Badge
+
+- The first version uses a binary unread indicator. A Project shows the
+  indicator whenever at least one member session has an unread notification.
+- Notification seen state belongs to the shared session, not the Project
+  reference. Viewing the session from any Project updates every Project badge
+  that includes it.
+- The badge does not show a numeric count in the first version. A future count
+  would need an explicit definition of whether it counts sessions or events.
+
+### Session List Navigation and Ordering
+
+- The Session list pane is one cross-Project quick-navigation list. It has no
+  group hierarchy; group organization belongs to the Project pane. It offers
+  user-switchable Host, Session type, event time, and event importance sorting,
+  but no custom ordering. A separate detailed Session list pane will support
+  searching Sessions and inspecting their state. The quick list's selected
+  sort mode is saved in Ducklord's local
+  config and restored after restart. The event-time mode uses each Session's
+  most recent notification-event timestamp, not its creation time, and supports
+  a newest-first/oldest-first toggle; its direction is saved alongside the sort
+  mode. Sessions with no notification-event history come after those with
+  history in either direction and maintain a stable relative order.
+- Session-type sorting uses the currently detected foreground runtime rather
+  than the shell root process: Codex, Claude, other agent, then Shell. If
+  detection is uncertain, classify it as Shell without claiming agent status.
+- The quick list defaults to event-time sorting with newest notifications
+  first; Sessions without notification history follow those with history.
+- Qualifying unread events may temporarily promote Sessions across the whole
+  list without changing Project order or the saved base order. Promotion is
+  the first sort partition: qualifying Sessions come before other Sessions,
+  and each partition uses the currently selected sort mode. Event
+  importance is determined by each Session's most recent event class:
+  user action needed, task failed, task completed, then generic terminal
+  attention. Sessions with equal importance sort by newest event first.
+
+### Detailed Session List Mode
+
+- Detailed Session list mode replaces the normal three-region Project pane,
+  quick Session list pane, and Terminal area layout with two columns. The left
+  column is a searchable detailed Session list and status view; the right
+  column displays only the selected Session's pane, not its entire Project
+  layout.
+- Moving up or down in the detailed list immediately switches the Session
+  displayed on the right. Enter moves keyboard focus into that right-hand
+  Session pane; it does not navigate to a Project. The right-hand pane obeys
+  the same Ducklion writer ownership as any other view: non-owners are
+  read-only, and entering this mode never implicitly calls `yield`.
+- Switching detailed-list previews never requests a remote PTY resize. Only
+  after Enter focuses the right-hand Session pane may that focused pane drive
+  the remote PTY dimensions, subject to writer ownership.
+- Moving through the detailed list only previews Sessions and does not clear
+  unread marks. Enter clears the selected Session's unread state only after
+  its right-hand pane actually receives keyboard focus.
+- Sessions on disconnected Hosts remain searchable in the detailed list, with
+  gray styling and an explicit disconnected state. The right-hand pane shows
+  the last locally available view or a connection/error placeholder, not a
+  false impression of live output.
+- Each detailed-list row shows the Session name, Host, Project membership,
+  Session type, current writer, connection/runtime state, last notification
+  time, and unread indicator. The design leaves room for a later per-Session
+  detail view with more information; that view is not defined in this version.
+- Detailed-list search performs live fuzzy matching on Session name, Host
+  name, and Project name. State filters are separate controls, not magic
+  tokens embedded in the search text. The first version offers All, Unread,
+  Needs action, and Disconnected filters.
+- Search operates only on Ducklord's already-known Session metadata; typing
+  does not query remote Hosts. Matching is Unicode-aware and case-insensitive,
+  and one Session appears once even if several of its Project names match.
+  Apply the chosen state filter first, then rank text matches by match quality;
+  ties retain the detailed list's current sort order and stable Session ID.
+- `/` focuses the search field. Results update as text changes without changing
+  remote state or clearing unread. Keep the selected Session if it remains in
+  the results; otherwise select the first result and update the right-hand
+  preview. An empty result shows a clear no-matches state rather than the
+  previous Session preview. Escape clears a nonempty query first, then returns
+  keyboard focus to the detailed list. Search text and filter choice are
+  temporary to this detailed-list visit and reset on exit.
+- The rebindable `g` shortcut navigates from the selected Session to an
+  appropriate Project's normal Terminal area, restores the three-region
+  layout, and focuses that Session pane. Project choice follows the shared
+  Session-to-Project navigation rules.
+- Initial detailed-mode bindings are `D` to enter the mode from the normal
+  layout, `/` to search, arrow keys or `j`/`k` to move through results,
+  `Enter` to focus the preview pane, `Ctrl-]` to return focus to the detailed
+  list, and `g` to jump to the selected Session in its Project layout.
+  Ducklord's existing configurable shortcut mechanism covers these actions;
+  defaults are provisional and may be revised after use.
+- Leaving detailed mode without using `g` restores the Project, Terminal tab,
+  Session pane, and keyboard focus that were active before entering it.
+  Merely previewing other Sessions does not change that saved workspace state.
+
+### Terminal Layout Terminology
+
+- **Terminal area** means the entire right-side terminal region. It contains
+  the selected Project's tabs and split layout; it is not itself a pane.
+- **Terminal tab** means one page within a Project's Terminal area. A tab may
+  contain horizontally and vertically split panes.
+- **Session pane** means one split cell displaying one Ducklion session. It is
+  a view, not the remote PTY process itself. The same session may have a
+  Session pane in multiple Projects, but at most one Session pane in any one
+  Project, across all its tabs.
+- **Project pane** and **Session list pane** name the two left-side UI regions.
+  Older sections of this document that say “right PTY pane” refer to the
+  Terminal area; they do not mean a single Session pane.
+
+### Project Terminal Layout
+
+- The Terminal area is user-arrangeable. Each Project owns its own Terminal
+  tabs, pane placements, and split geometry.
+- Session identity, runtime, output source, notification seen state, and
+  control owner remain shared across Projects.
+- Multiple Project views within the same Ducklord refer to the same Ducklion
+  session and Ducklord owner; switching among them never invokes `yield`.
+  Only the currently focused Session pane sends input and requests a remote PTY
+  resize. Other views display the shared output without driving PTY size.
+- Creating a Session pane is how a session is added to a Project. Within the
+  selected Project, the user first chooses a horizontal split, vertical
+  split, or new Terminal tab, then chooses **New session** or **Add existing
+  session**.
+- **New session** uses the normal host, runtime, and directory selection flow.
+  When the user has not chosen a directory, the default is the selected host's
+  home directory, not Ducklion's working directory.
+- **Add existing session** opens a centered picker of existing Ducklion
+  sessions. It adds a view of the chosen session without starting another
+  process.
+- A session can also be dragged from the Session list pane onto a Session pane
+  in the Terminal area. A centered choice then asks whether to split
+  horizontally, split vertically, or open a new Terminal tab. If the dragged
+  session already has a Session pane in the selected Project, Ducklord asks
+  whether to move that existing pane to the new position; it never silently
+  duplicates the session within the Project.
+
+### Detach and Destroy
+
+- Closing or detaching a Session pane removes only that local view. It never
+  stops or destroys the Ducklion session, including when the pane is in the
+  Default Project. Other viewers and the remote process are unaffected.
+- If the last Session pane reference in user-created Projects is detached,
+  the still-live session returns to the built-in Default Project.
+- **Destroy** is a separate, explicit action on the underlying Ducklion
+  session, not an effect of removing a pane or a Project reference. It ends
+  the remote session and invalidates every viewer's Session pane. A read-only
+  viewer cannot destroy it.
+
+### Shell-First Runtime and Retained Logs
+
+- Every newly created Session pane starts with an interactive shell as the
+  Ducklion session's long-lived root process. Agents such as Codex and Claude
+  are launched inside that shell, so the user can supply arbitrary agent CLI
+  options. An agent process exiting returns to the shell; it does not remove
+  the Ducklion session or its Session pane.
+- If the root shell itself exits, Ducklion removes the live/stopped session
+  from its session inventory and Ducklord removes its Session pane references.
+  A stopped session is not retained as a selectable session.
+- PTY output logs are retained separately by Ducklion after the session is
+  removed. Ducklord can retrieve retained logs when needed for diagnosis.
+  The default retention is one week. Ducklion rotates and deletes logs older
+  than the configured retention period.
+- Log-retention configuration is adjustable from Ducklord and takes effect in
+  Ducklion by hot reload without restarting the shell sessions. This is an
+  explicit exception to the earlier restart-required configuration policy.
+- Shell-first launching changes notification authority: the shell remaining
+  alive proves neither that an agent turn is active nor that it completed.
+  Foreground-process/screen detection improves visibility only: it may label
+  a likely agent and tentative working/idle/blocked state, but it does not
+  claim an exact task completion or authorize control transfer.
+- Exact completion/failure notifications and their sounds require explicit
+  agent hook events. Without a hook, allowlisted BEL/OSC may produce only a
+  generic terminal-attention notification, not a claimed agent completion.
+  Shell-first Codex/Claude hooks are installed explicitly into the agent's
+  host-side configuration; the current direct-exec CLI-flag injection is not
+  assumed to work unchanged.
+
+### Host Configuration Ownership
+
+- Ducklord is the operator-facing TUI for host settings. It presents the
+  intended changes and obtains explicit user approval for agent integration
+  installation or removal before sending a structured request to Ducklion.
+  Installing an integration may modify the selected host's Codex/Claude
+  configuration, and the confirmation must make that effect clear.
+- Ducklion alone validates and applies host-side configuration changes,
+  including agent hooks and log rotation/retention. Ducklord does not edit
+  remote configuration files over SSH or copy a completed config file into
+  place; it sends a configuration object/operation for Ducklion to apply.
+- Log-retention changes take effect through Ducklion hot reload. The exact
+  merge and removal policy for agent hooks is structured append: Ducklion
+  parses the existing agent configuration and adds only its own identifiable
+  hook entries to the appropriate event arrays. It never appends raw text to
+  a JSON file or replaces existing user hook arrays.
+- Installation is idempotent: repeating it does not create duplicate Ducklion
+  hooks. Removal deletes only Ducklion-owned entries and preserves user and
+  third-party hooks. Before changing a file, Ducklion retains a recoverable
+  backup and writes the merged configuration atomically.
+- Codex may require its own hook trust review after installation. Ducklord's
+  approval to modify host settings does not substitute for that Codex trust
+  decision. After installation, Ducklord shows the integration as installed
+  but pending activation, tells the user to review and trust it through
+  Codex `/hooks`, and marks it operational only after receiving a valid
+  session-scoped hook event. No event means status remains unverified, not
+  that the hook is assumed active.
+
+### Local Notification Audio
+
+- Ducklion sends notification events and does not store, stream, or play
+  notification audio. Ducklord plays sounds on the operator's local machine.
+- Ducklord exposes notification settings at three scopes: global defaults in
+  its settings menu, Host defaults in Host actions, and per-Session overrides
+  in Session actions. All three use the same four event classes and ordered
+  delivery-level controls.
+- Custom sound file paths are Ducklord-local settings. Different Ducklord
+  users observing the same Ducklion session may choose different sounds.
+  Remote hosts do not receive copies of the audio files.
+- Custom audio supports WAV, MP3, and OGG in the first version. If a file is
+  missing or cannot be decoded, skip only the sound; unread state and any
+  other configured delivery remain unaffected.
+- Missing, invalid, or unplayable local audio is reported in the settings UI,
+  not as a repeated error popup for every notification event.
+- Ducklord configures one local sound file per notification event class.
+  Hosts and Sessions override delivery levels, not sound-file mappings.
+- Four notification event classes are available for independent user control:
+  agent task completed, agent task failed, user action needed, and generic
+  terminal attention (allowlisted BEL/OSC). Terminal attention never claims
+  an agent task completed. Each class may be enabled or disabled separately.
+- Coalesce bursts of generic terminal-attention events from the same Session
+  into one delivery. Do not coalesce agent task completed, task failed, or
+  user-action-needed events. Deliver the first generic-attention event
+  immediately, then suppress repeated generic-attention delivery from that
+  Session for two seconds.
+- Delivery may escalate from an in-app indicator to sound to a system
+  notification. The ordered levels are **off**, **in-app indicator**,
+  **sound**, and **system notification**; a higher level includes lower
+  delivery levels. A level is selected independently for each event class.
+- The baseline policy inherits from Ducklord's global default to a Host
+  default to an optional per-session override. A session may explicitly
+  choose **inherit Host** so later Host changes affect it. Host settings are
+  defaults, not a cap: a session may choose a higher or lower level.
+- If the effective Host/Session policy for an event class is **off**, do not
+  deliver that event or create an unread mark. This differs from Project-focus
+  suppression, which retains unread state without immediate delivery.
+- Project focus is an explicit mode the user turns on or off. Merely selecting,
+  browsing, or switching to a Project does not silently alter notification
+  policy. Ducklord starts with Project focus off by default and does not
+  restore the previous focus state after restart. When enabled, the selected
+  Project keeps its normal notification policy; notifications from other
+  Projects are delivered only when their
+  effective per-session level meets or exceeds the user-selected focus
+  threshold. The threshold is one Ducklord-wide setting, reused when switching
+  the focused Project; it is not configured separately for each Project. Its
+  default is **system notification**, the highest delivery level.
+  Focus does not promote notifications to a higher level.
+- While Project focus is active, mark the focused Project prominently in the
+  Project pane and show the active other-Project threshold in Ducklord's
+  status line.
+- Project-pane actions expose a focus toggle for the currently selected
+  Project, with a rebindable shortcut. The other-Project threshold is edited
+  in Ducklord's global notification settings.
+- Deleting the focused Project turns Project focus off immediately and shows a
+  Ducklord notice; it does not silently choose another Project.
+- Notifications originate from the Ducklion Session, not from each Project
+  view. Ducklord evaluates the Host policy, then the Session policy, then the
+  Project focus threshold (when enabled), before choosing in-app, sound, and
+  system-notification delivery. A Session shown in multiple Projects produces
+  one notification event, not one per view. If any of its Projects is focused,
+  treat the Session as focused and do not apply the other-Project threshold.
+- A notification event suppressed by the Project focus threshold still marks
+  its Session unread (and contributes to its Projects' unread indicators), but
+  does not temporarily move that Session to the top of the Session list pane.
+  Turning focus off does not retroactively promote previously suppressed,
+  still-unread Sessions; only new qualifying events can trigger promotion.
+- Notification activity never reorders Projects in the Project pane. Only the
+  Session list pane may temporarily reorder Sessions for qualifying events,
+  across the entire list rather than within Project groups.
+  A reorder preserves the identity of the currently selected Session-list
+  item; its screen position may change, but the cursor must not silently
+  select another Session. If its position moves outside the visible list,
+  scroll the list to keep that selected item visible.
+  Selecting a Session in that list navigates to an appropriate Project and
+  switches the Terminal area to show that Session. If the Session appears in
+  multiple Projects, stay in the currently viewed Project when it contains
+  the Session; otherwise use the Project in which this user last viewed that
+  Session. If neither applies, choose the first Project containing it in the
+  user's Project-pane order.
+- Moving the selection cursor in the Session list pane does not mark a Session
+  as read, but immediately navigates the Project pane and Terminal area to
+  that Session; Enter is not required. Its unread state clears only after the
+  corresponding Session pane is actually displayed in the Terminal area and
+  receives keyboard focus. Other visible Session panes in a split layout stay
+  unread until each receives focus.
+- Project focus can be enabled only for the currently selected Project. The
+  Project pane selection follows the Project shown in the Terminal area, and
+  the Terminal area switches to follow the Session selected in the Session
+  list pane. Selecting a Project directly in the Project pane immediately
+  switches the Terminal area to that Project's tabs and pane layout.
+  The Session list pane is a one-way quick-navigation source: changing Project
+  or Terminal-area selection does not change its selected row. Navigation
+  alone does not enable or retarget Project focus.
+- A new event for the currently keyboard-focused Session pane does not add an
+  unread mark, but its configured sound and system-notification delivery still
+  applies.
+- A system notification identifies the Project, Session, and event class; it
+  does not include raw agent output or prompt content. If the Session belongs
+  to multiple Projects, show the focused Project when it contains the Session;
+  otherwise use the currently viewed Project when it contains the Session,
+  then the user's last-viewed Project for that Session, then the first
+  containing Project in Project-pane order.
+- In the first version, activating a desktop notification does not navigate
+  or focus the Ducklord TUI; the user enters via the Session list pane.
+- If the local environment cannot deliver desktop notifications, skip only
+  that delivery channel. Its included sound and in-app indicator still work,
+  and the settings UI reports that desktop notifications are unavailable.
+
+
 ## Goal
 
 Duckway will add a developer-facing remote agent control plane that lives in the
@@ -435,11 +775,11 @@ shortcuts:
   shortcut_settings: "S"
 ```
 
-By default, unread sessions temporarily sort to the top of their current
-group and return to their saved position as soon as the activity is seen. The
-group containing the currently selected PTY keeps its saved order, preventing
-the list from moving underneath the user. Set `promote_unread_sessions: false`
-to disable this projection; it never rewrites the saved custom session order.
+In the redesigned Session list pane, qualifying unread sessions temporarily
+sort to the top across Projects and return to the selected sort order when seen.
+This projection preserves the selected Session identity and scrolls to keep it
+visible. Set `promote_unread_sessions: false` to disable it; it never rewrites
+the selected sort mode.
 
 In host organization mode, the group header owns the host label, so nested
 session rows do not repeat it. Disconnect keeps the host's last session rows

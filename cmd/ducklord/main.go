@@ -2948,6 +2948,11 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 		}
 		all[i].LastLine = sanitizeTerminalText(all[i].LastLine)
 		all[i].Error = sanitizeTerminalText(all[i].Error)
+		if identity, ok := ducklord.IdentityFromSession(all[i]); ok && len(s.activity().ProjectLayout.ProjectsFor(identity)) == 0 {
+			if err := s.activity().ProjectLayout.Discover(identity); err == nil {
+				activityChanged = true
+			}
+		}
 		var changed bool
 		all[i].Unread, changed = s.activity().Reconcile(all[i], s.sessionFreshlyDisplayed(all[i]))
 		activityChanged = activityChanged || changed
@@ -2955,7 +2960,9 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 	s.sessions = all
 	organizationChanged := s.applyOrganizationOrder()
 	if activityChanged || organizationChanged {
-		_ = s.saveActivityState()
+		if err := s.saveActivityState(); err != nil {
+			s.localWarning = "could not save Project and notification state: " + sanitizeTerminalText(err.Error())
+		}
 	}
 	if oldKey != "" {
 		for i, sess := range s.sessions {
@@ -2990,6 +2997,19 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 	if update.Generation < previous.Generation || update.Generation == previous.Generation && update.InstanceID == previous.InstanceID && update.Revision < previous.Revision {
 		return
 	}
+	if update.State == "live" {
+		for _, session := range update.Sessions {
+			if session.InstanceID != update.InstanceID || session.Client != update.Client {
+				s.localWarning = "ignored inconsistent Ducklion session inventory"
+				return
+			}
+		}
+		for client, snapshot := range s.hostSync {
+			if client != update.Client && snapshot.State == "live" && snapshot.InstanceID == update.InstanceID && snapshot.Revision > update.Revision {
+				return // another alias has already observed a newer full inventory
+			}
+		}
+	}
 	s.hostSync[update.Client] = update
 	if s.newSessionMode && s.newSessionDiscovering && s.newSessionClient == update.Client &&
 		(update.State != "live" || update.Generation != previous.Generation || update.InstanceID != previous.InstanceID) {
@@ -3015,9 +3035,16 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 	// that belongs to the previous session slice.
 	s.selectedKey = oldKey
 	previousActivity := make(map[string]map[model.NotificationCategory]uint64)
+	previousIdentities := make(map[ducklord.SessionIdentity]bool)
+	for _, identity := range s.activity().ProjectLayout.SessionsForInstance(update.InstanceID) {
+		previousIdentities[identity] = true
+	}
 	for _, session := range s.sessions {
 		if identity, ok := ducklord.IdentityFromSession(session); session.Client == update.Client && ok {
 			previousActivity[identity.Key()] = session.ActivitySequences
+			if session.InstanceID == update.InstanceID {
+				previousIdentities[identity] = true
+			}
 		}
 	}
 	all := make([]ducklord.RemoteSession, 0, len(s.sessions)+len(update.Sessions))
@@ -3029,6 +3056,14 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 	activityChanged := false
 	for _, session := range update.Sessions {
 		identity, identityOK := ducklord.IdentityFromSession(session)
+		if identityOK {
+			delete(previousIdentities, identity)
+		}
+		if identityOK && len(s.activity().ProjectLayout.ProjectsFor(identity)) == 0 {
+			if err := s.activity().ProjectLayout.Discover(identity); err == nil {
+				activityChanged = true
+			}
+		}
 		if before, ok := previousActivity[identity.Key()]; identityOK && ok {
 			if session.ActivitySequences[model.NotificationTaskFailed] > before[model.NotificationTaskFailed] && s.activity().Enabled(session.InstanceID, session.SessionID, model.NotificationTaskFailed) {
 				s.outputErr = sanitizeTerminalText(session.Name) + ": agent turn failed"
@@ -3045,8 +3080,18 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 		}
 		all = append(all, session)
 	}
+	// A live SessionUpdate contains the host's full authoritative inventory.
+	// Reconnecting/offline updates are handled above and must never prune panes.
+	for identity := range previousIdentities {
+		if len(s.activity().ProjectLayout.ProjectsFor(identity)) != 0 {
+			s.activity().ProjectLayout.Destroy(identity)
+			activityChanged = true
+		}
+	}
 	if activityChanged {
-		_ = s.saveActivityState()
+		if err := s.saveActivityState(); err != nil {
+			s.localWarning = "could not save Project and notification state: " + sanitizeTerminalText(err.Error())
+		}
 	}
 	sortRemoteSessions(all)
 	s.sessions = all

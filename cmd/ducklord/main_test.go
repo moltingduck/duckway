@@ -1512,6 +1512,111 @@ func TestTUIActivityUnreadRequiresFreshActiveOutputToClear(t *testing.T) {
 	}
 }
 
+func TestTUIProjectReferencesFollowAuthoritativeLiveInventory(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	path := filepath.Join(t.TempDir(), "state.json")
+	activity := ducklord.NewActivityState()
+	state := &tuiState{activityState: activity, activityStore: ducklord.ActivityStateStore{Path: path},
+		hostSync: make(map[string]ducklord.SessionUpdate)}
+	a := ducklord.RemoteSession{Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "a"}
+	b := ducklord.RemoteSession{Client: "host-a", InstanceID: instance, SessionID: "DEF456", Name: "b"}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Generation: 1, Revision: 1,
+		State: "live", Sessions: []ducklord.RemoteSession{a, b}})
+	identityA, _ := ducklord.IdentityFromSession(a)
+	projectID, err := activity.ProjectLayout.AddProject("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activity.ProjectLayout.Place(projectID, identityA, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Generation: 1, Revision: 2,
+		State: "reconnecting"})
+	if len(activity.ProjectLayout.ProjectsFor(identityA)) != 1 {
+		t.Fatal("reconnecting pruned a Project pane")
+	}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Generation: 1, Revision: 3,
+		State: "live", Sessions: []ducklord.RemoteSession{b}})
+	if got := activity.ProjectLayout.ProjectsFor(identityA); len(got) != 0 {
+		t.Fatalf("authoritatively removed Session retained panes: %v", got)
+	}
+	loaded, err := (ducklord.ActivityStateStore{Path: path}).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.ProjectLayout.ProjectsFor(identityA); len(got) != 0 {
+		t.Fatalf("removed pane survived persisted state: %v", got)
+	}
+}
+
+func TestTUIPersistedProjectPanePrunedOnFirstAuthoritativeSnapshot(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	path := filepath.Join(t.TempDir(), "state.json")
+	store := ducklord.ActivityStateStore{Path: path}
+	activity := ducklord.NewActivityState()
+	projectID, err := activity.ProjectLayout.AddProject("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := ducklord.SessionIdentity{InstanceID: instance, SessionID: "ABC123"}
+	if _, err := activity.ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(activity); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &tuiState{activityState: loaded, activityStore: store, hostSync: make(map[string]ducklord.SessionUpdate)}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Generation: 1, Revision: 1, State: "reconnecting"})
+	if got := loaded.ProjectLayout.ProjectsFor(identity); len(got) != 1 {
+		t.Fatalf("reconnect pruned persisted pane: %v", got)
+	}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Generation: 1, Revision: 2, State: "live", Sessions: nil})
+	if got := loaded.ProjectLayout.ProjectsFor(identity); len(got) != 0 {
+		t.Fatalf("first authoritative empty inventory retained ghost pane: %v", got)
+	}
+}
+
+func TestTUIOlderAliasInventoryCannotPruneNewerProjectPane(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	store := ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")}
+	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: store,
+		hostSync: make(map[string]ducklord.SessionUpdate)}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "alias-a", InstanceID: instance, Generation: 1, Revision: 9, State: "live"})
+	session := ducklord.RemoteSession{Client: "alias-b", InstanceID: instance, SessionID: "ABC123", Name: "new"}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "alias-b", InstanceID: instance, Generation: 1, Revision: 11,
+		State: "live", Sessions: []ducklord.RemoteSession{session}})
+	identity, _ := ducklord.IdentityFromSession(session)
+	projectID, err := state.activity().ProjectLayout.AddProject("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.activity().ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "alias-a", InstanceID: instance, Generation: 1, Revision: 10, State: "live"})
+	if got := state.activity().ProjectLayout.ProjectsFor(identity); len(got) != 1 || got[0] != projectID {
+		t.Fatalf("older alias snapshot removed newer custom pane: %v", got)
+	}
+	if state.hostSync["alias-a"].Revision != 9 {
+		t.Fatal("older alias snapshot advanced host state")
+	}
+}
+
+func TestTUIRejectsCrossInstanceSessionInventory(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	other := string(model.NewInstanceID())
+	state := &tuiState{activityState: ducklord.NewActivityState(), hostSync: make(map[string]ducklord.SessionUpdate)}
+	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: instance, Revision: 1, State: "live",
+		Sessions: []ducklord.RemoteSession{{Client: "host-a", InstanceID: other, SessionID: "ABC123"}}})
+	if len(state.sessions) != 0 || len(state.hostSync) != 0 {
+		t.Fatalf("inconsistent inventory was accepted: sessions=%v sync=%v", state.sessions, state.hostSync)
+	}
+}
+
 func TestTUICopyModeKeepsBackgroundActivityUnreadUntilLatestFrameIsRevealed(t *testing.T) {
 	instance := string(model.NewInstanceID())
 	session := ducklord.RemoteSession{

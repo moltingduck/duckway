@@ -274,6 +274,7 @@ type ActivityState struct {
 	Version       int                                 `json:"version"`
 	Sessions      map[string]SessionNotificationState `json:"notifications"`
 	Organization  OrganizationState                   `json:"organization,omitempty"`
+	ProjectLayout ProjectLayout                       `json:"project_layout"`
 	ExtraSections map[string]json.RawMessage          `json:"-"`
 }
 
@@ -310,14 +311,14 @@ func DefaultActivityStatePath() string {
 }
 
 func NewActivityState() *ActivityState {
-	return &ActivityState{Version: activityStateVersion, Sessions: make(map[string]SessionNotificationState), Organization: newOrganizationState(), ExtraSections: make(map[string]json.RawMessage)}
+	return &ActivityState{Version: activityStateVersion, Sessions: make(map[string]SessionNotificationState), Organization: newOrganizationState(), ProjectLayout: NewProjectLayout(), ExtraSections: make(map[string]json.RawMessage)}
 }
 
 func (s *ActivityState) Clone() *ActivityState {
 	if s == nil {
 		return NewActivityState()
 	}
-	clone := &ActivityState{Version: s.Version, Sessions: make(map[string]SessionNotificationState, len(s.Sessions)), Organization: s.Organization.clone(), ExtraSections: make(map[string]json.RawMessage, len(s.ExtraSections))}
+	clone := &ActivityState{Version: s.Version, Sessions: make(map[string]SessionNotificationState, len(s.Sessions)), Organization: s.Organization.clone(), ProjectLayout: s.ProjectLayout.Clone(), ExtraSections: make(map[string]json.RawMessage, len(s.ExtraSections))}
 	for name, raw := range s.ExtraSections {
 		clone.ExtraSections[name] = append(json.RawMessage(nil), raw...)
 	}
@@ -365,14 +366,21 @@ func (s *ActivityState) UnmarshalJSON(data []byte) error {
 		}
 		delete(sections, "organization")
 	}
+	s.ProjectLayout = NewProjectLayout()
+	if raw, ok := sections["project_layout"]; ok {
+		if err := json.Unmarshal(raw, &s.ProjectLayout); err != nil {
+			return fmt.Errorf("decode project layout: %w", err)
+		}
+		delete(sections, "project_layout")
+	}
 	s.ExtraSections = sections
 	return nil
 }
 
 func (s ActivityState) MarshalJSON() ([]byte, error) {
-	sections := make(map[string]json.RawMessage, len(s.ExtraSections)+3)
+	sections := make(map[string]json.RawMessage, len(s.ExtraSections)+4)
 	for name, raw := range s.ExtraSections {
-		if name == "version" || name == "notifications" || name == "organization" || !json.Valid(raw) {
+		if name == "version" || name == "notifications" || name == "organization" || name == "project_layout" || !json.Valid(raw) {
 			return nil, fmt.Errorf("invalid Ducklord state section %q", name)
 		}
 		sections[name] = append(json.RawMessage(nil), raw...)
@@ -389,6 +397,11 @@ func (s ActivityState) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	sections["organization"] = organization
+	projectLayout, err := json.Marshal(s.ProjectLayout)
+	if err != nil {
+		return nil, err
+	}
+	sections["project_layout"] = projectLayout
 	return json.Marshal(sections)
 }
 
@@ -593,6 +606,9 @@ func (s *ActivityState) validate() error {
 		s.Sessions = make(map[string]SessionNotificationState)
 	}
 	if err := s.Organization.validate(); err != nil {
+		return err
+	}
+	if err := s.ProjectLayout.Validate(); err != nil {
 		return err
 	}
 	for key, entry := range s.Sessions {
