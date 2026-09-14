@@ -180,22 +180,34 @@ func (s *tuiState) commitWorkspaceProjectDelete() error {
 }
 
 func (s *tuiState) workspacePaneCandidates() []ducklord.RemoteSession {
-	seen := make(map[ducklord.SessionIdentity]bool)
+	seen := make(map[ducklord.SessionIdentity]int)
 	var candidates []ducklord.RemoteSession
 	for _, session := range s.sessions {
 		identity, ok := ducklord.IdentityFromSession(session)
-		if !ok || seen[identity] || !s.hostIsLive(session.Client) || !canRead(session) ||
-			session.Status != "running" || session.RuntimeGeneration == 0 {
+		if !ok || !workspacePaneKnownSession(session) {
 			continue
 		}
 		if query := strings.ToLower(strings.TrimSpace(s.workspacePaneQuery)); query != "" &&
 			!strings.Contains(strings.ToLower(session.Name+" "+session.Client+" "+session.SessionID), query) {
 			continue
 		}
-		seen[identity] = true
+		if index, exists := seen[identity]; exists {
+			if s.hostIsLive(session.Client) && !s.hostIsLive(candidates[index].Client) {
+				candidates[index] = session
+			}
+			continue
+		}
+		seen[identity] = len(candidates)
 		candidates = append(candidates, session)
 	}
 	return candidates
+}
+
+// Pane placement is local organization, not a remote control operation. A
+// previously observed Session remains placeable while its Host is offline.
+func workspacePaneKnownSession(session ducklord.RemoteSession) bool {
+	return session.RuntimeGeneration != 0 && session.Name != "(offline)" &&
+		(session.Status == "running" || session.Status == "disconnected")
 }
 
 func paneIDForSession(pane *ducklord.SessionPane, identity ducklord.SessionIdentity) string {
@@ -265,6 +277,9 @@ func (s *tuiState) workspacePaneChoices() []string {
 		choices := make([]string, 0, len(candidates))
 		for _, session := range candidates {
 			label := fmt.Sprintf("%s @%s  [%s]", displayField(session.Name), displayField(session.Client), session.SessionID)
+			if session.Status == "disconnected" || !s.hostIsLive(session.Client) {
+				label += "  (offline)"
+			}
 			if identity, ok := ducklord.IdentityFromSession(session); ok && s.projectPaneForSession(identity) != "" {
 				label += "  (move in Project)"
 			}
@@ -402,7 +417,7 @@ func (s *tuiState) placeWorkspacePane(intent workspacePaneIntent, session ducklo
 	current := false
 	for _, candidate := range s.sessions {
 		if candidate.Client == session.Client && candidate.InstanceID == session.InstanceID && candidate.SessionID == session.SessionID &&
-			candidate.RuntimeGeneration == session.RuntimeGeneration && candidate.Status == "running" && canRead(candidate) && s.hostIsLive(candidate.Client) {
+			candidate.RuntimeGeneration == session.RuntimeGeneration && workspacePaneKnownSession(candidate) {
 			current = true
 			break
 		}

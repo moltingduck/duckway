@@ -207,8 +207,8 @@ func TestWorkspacePanePickerExcludesUnavailableAndPrefersLiveAlias(t *testing.T)
 		t.Fatalf("picker did not prefer live alias: %+v", got)
 	}
 	state.sessions[1].Status = "stopped"
-	if got := state.workspacePaneCandidates(); len(got) != 0 {
-		t.Fatalf("picker offered stopped Session: %+v", got)
+	if got := state.workspacePaneCandidates(); len(got) != 1 || got[0].Client != "offline-alias" {
+		t.Fatalf("picker failed to preserve known offline Session: %+v", got)
 	}
 	if err := state.placeWorkspacePane(state.workspacePaneIntent, b); err == nil || !strings.Contains(err.Error(), "changed or host disconnected") {
 		t.Fatalf("stale candidate was placed: %v", err)
@@ -501,5 +501,27 @@ func TestWorkspaceExistingPickerRejectsStaleTargetAndSaveFailure(t *testing.T) {
 				t.Fatalf("failed move changed A: %v", got)
 			}
 		})
+	}
+}
+
+func TestWorkspaceExistingPickerCanPlaceKnownOfflineSession(t *testing.T) {
+	state, projectID, _, offline := workspacePaneTestState(t)
+	for i := range state.sessions {
+		if state.sessions[i].SessionID == offline.SessionID {
+			state.sessions[i].Status = "disconnected"
+			state.sessions[i].Error = "SSH unavailable"
+		}
+	}
+	state.disconnectedHosts = map[string]bool{offline.Client: true}
+	identity, ok := ducklord.IdentityFromSession(offline)
+	if !ok {
+		t.Fatal("offline fixture has no identity")
+	}
+	intent := workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceNewTab}
+	if err := state.placeWorkspacePane(intent, state.sessions[1]); err != nil {
+		t.Fatalf("place known offline Session: %v", err)
+	}
+	if got := state.activity().ProjectLayout.ProjectsFor(identity); len(got) != 1 || got[0] != projectID {
+		t.Fatalf("offline Session placement=%v", got)
 	}
 }

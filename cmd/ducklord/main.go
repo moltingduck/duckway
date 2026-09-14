@@ -3560,9 +3560,17 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 	// Keep the selected PTY identity stable while the session slice is replaced.
 	s.selectedKey = oldKey
 	var all []ducklord.RemoteSession
+	// A successful Sessions call is a full inventory for that Host. Keep
+	// candidates separate from transient failures, which must not retire panes.
+	missingCandidates := make(map[ducklord.SessionIdentity]bool)
+	authoritative := make(map[ducklord.SessionIdentity]bool)
+	uncertain := make(map[ducklord.SessionIdentity]bool)
 	for _, session := range s.sessions {
 		if s.disconnectedHosts[session.Client] {
 			all = append(all, session)
+			if identity, ok := ducklord.IdentityFromSession(session); ok {
+				uncertain[identity] = true
+			}
 		}
 	}
 	for _, c := range s.cfg.Clients {
@@ -3576,6 +3584,9 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 				if prior.Client != c.Name || prior.Name == "(offline)" {
 					continue
 				}
+				if identity, ok := ducklord.IdentityFromSession(prior); ok {
+					uncertain[identity] = true
+				}
 				prior.Status = "disconnected"
 				prior.Error = err.Error()
 				prior.Updated = false
@@ -3586,6 +3597,18 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 				all = append(all, ducklord.RemoteSession{Client: c.Name, Group: c.Group, Name: "(offline)", Status: "error", Error: err.Error()})
 			}
 			continue
+		}
+		for _, prior := range s.sessions {
+			if prior.Client == c.Name {
+				if identity, ok := ducklord.IdentityFromSession(prior); ok {
+					missingCandidates[identity] = true
+				}
+			}
+		}
+		for _, current := range sessions {
+			if identity, ok := ducklord.IdentityFromSession(current); ok && current.Status != string(model.StatusStopped) {
+				authoritative[identity] = true
+			}
 		}
 		all = append(all, sessions...)
 	}
@@ -3602,6 +3625,15 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 		return sessionKey(all[i]) < sessionKey(all[j])
 	})
 	activityChanged := false
+	for identity := range missingCandidates {
+		if authoritative[identity] || uncertain[identity] {
+			continue
+		}
+		if len(s.activity().ProjectLayout.ProjectsFor(identity)) != 0 {
+			s.activity().ProjectLayout.Destroy(identity)
+			activityChanged = true
+		}
+	}
 	for i := range all {
 		key := sessionKey(all[i])
 		if all[i].TailHash != "" && s.hashes[key] != "" && s.hashes[key] != all[i].TailHash {

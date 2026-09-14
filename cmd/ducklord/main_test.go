@@ -900,6 +900,50 @@ func TestTUITransientHostFailureRetainsSessionsAndProjectPlacement(t *testing.T)
 	}
 }
 
+func TestTUISuccessfulInventoryRetiresMissingProjectPane(t *testing.T) {
+	identity := ducklord.SessionIdentity{InstanceID: uuid.NewString(), SessionID: "ABC123"}
+	activity := ducklord.NewActivityState()
+	projectID, err := activity.ProjectLayout.AddProject("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activity.ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	known := ducklord.RemoteSession{Client: "host", InstanceID: identity.InstanceID, SessionID: identity.SessionID, Name: "agent", Kind: "shell", Status: "running", RuntimeGeneration: 1}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}},
+		runner: fakeRunner{}, activityState: activity, hashes: map[string]string{}, sessions: []ducklord.RemoteSession{known}}
+	state.refreshSessions(context.Background())
+	if len(state.sessions) != 0 || len(state.activity().ProjectLayout.ProjectsFor(identity)) != 0 {
+		t.Fatalf("authoritatively missing Session retained row or Project pane: rows=%+v projects=%+v", state.sessions, state.activity().ProjectLayout.ProjectsFor(identity))
+	}
+}
+
+func TestTUISuccessfulInventoryPrunesOnlyMatchingHostIdentity(t *testing.T) {
+	first := ducklord.SessionIdentity{InstanceID: uuid.NewString(), SessionID: "ABC123"}
+	second := ducklord.SessionIdentity{InstanceID: uuid.NewString(), SessionID: "ABC123"}
+	activity := ducklord.NewActivityState()
+	projectID, err := activity.ProjectLayout.AddProject("Shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, identity := range []ducklord.SessionIdentity{first, second} {
+		if _, err := activity.ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := ducklord.RemoteSession{Client: "a", InstanceID: first.InstanceID, SessionID: first.SessionID, Name: "same", Kind: "shell", Status: "running", RuntimeGeneration: 1}
+	b := ducklord.RemoteSession{Client: "b", InstanceID: second.InstanceID, SessionID: second.SessionID, Name: "same", Kind: "shell", Status: "running", RuntimeGeneration: 1}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "a", Host: "a"}, {Name: "b", Host: "b"}}},
+		runner:        fakeRunner{sessionsByClient: map[string][]ducklord.RemoteSession{"a": nil, "b": {b}}},
+		activityState: activity, hashes: map[string]string{}, sessions: []ducklord.RemoteSession{a, b}}
+	state.refreshSessions(context.Background())
+	if len(state.sessions) != 1 || state.sessions[0].Client != "b" || len(state.activity().ProjectLayout.ProjectsFor(first)) != 0 || len(state.activity().ProjectLayout.ProjectsFor(second)) != 1 {
+		t.Fatalf("cross-Host prune affected wrong Session: rows=%+v first=%v second=%v", state.sessions,
+			state.activity().ProjectLayout.ProjectsFor(first), state.activity().ProjectLayout.ProjectsFor(second))
+	}
+}
+
 func TestTUIHostModeHidesRepeatedHostAndGraysDisconnectedRows(t *testing.T) {
 	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host-a"}}}, activityState: ducklord.NewActivityState(), disconnectedHosts: map[string]bool{"host-a": true}, sessions: []ducklord.RemoteSession{{Client: "host-a", Name: "alpha", Status: "running"}}}
 	state.activity().Organization.Mode = ducklord.OrganizationHost
