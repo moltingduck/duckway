@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
@@ -89,6 +90,17 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	})
 	capture := newSizedTUICapture(terminal, 28, 130)
 	waitLiveAgentScreen(t, capture, "Live "+agent, 20*time.Second)
+	// Install through the same explicit Host confirmation flow operators use.
+	writePTY(t, terminal, "hjjj\r")
+	waitLiveAgentScreen(t, capture, "Agent notification hooks", 10*time.Second)
+	if agent == "claude" {
+		writePTY(t, terminal, "jj")
+	}
+	writePTY(t, terminal, "\r")
+	waitLiveAgentScreen(t, capture, "Edit: ~", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	waitLiveAgentScreen(t, capture, "Host configuration updated", 20*time.Second)
+	writePTY(t, terminal, "\r")
 	writePTY(t, terminal, "/"+handle+"\r")
 	waitLiveAgentScreen(t, capture, "Active · Enter again to focus", 20*time.Second)
 	writePTY(t, terminal, "\r")
@@ -103,6 +115,13 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	}
 	writePTY(t, terminal, launch)
 	waitLiveAgentScreen(t, capture, ready, 45*time.Second)
+	if agent == "codex" {
+		// Fresh Codex profiles require a separate, agent-owned trust decision.
+		// Approve only the hook we just installed in this disposable Host.
+		waitLiveAgentScreen(t, capture, "Hooks need review", 20*time.Second)
+		writePTY(t, terminal, "\x1b[B\r") // Trust all and continue.
+		waitLiveAgentScreen(t, capture, "Ask Codex to do anything", 20*time.Second)
+	}
 	t.Log("interactive agent launched in Ducklord TUI")
 	if agent == "codex" {
 		output, readErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", session.SessionID,
@@ -145,6 +164,12 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 			return screenSeen && remoteSeen
 		}, func() string {
 			return fmt.Sprintf("%s turn %d missing answer (screen=%t remote=%t remote-trust=%t remote-prompt=%t remote-continue=%t); no PTY content logged", agent, turn, screenSeen, remoteSeen, remoteTrust, remotePrompt, remoteContinue)
+		})
+		waitE2E(t, 25*time.Second, func() bool {
+			latest, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+			return found && latest.ActivitySequences[model.NotificationTaskCompleted] >= uint64(turn)
+		}, func() string {
+			return fmt.Sprintf("%s turn %d produced an answer but no native Stop hook completion", agent, turn)
 		})
 		if turn == 1 {
 			writePTY(t, terminal, "\x1d")
