@@ -373,6 +373,32 @@ func (l *ProjectLayout) DetachPane(projectID, paneID string) (SessionIdentity, e
 	return SessionIdentity{}, fmt.Errorf("session pane no longer exists")
 }
 
+// MovePane repositions one local view within its Project. The source pane ID
+// fences stale UI actions, and the original layout is untouched if the target
+// is invalid or the resulting split tree fails validation.
+func (l *ProjectLayout) MovePane(projectID, sourcePaneID string, placement PanePlacement, targetPaneID string) (string, error) {
+	identity, ok := l.PaneSession(projectID, sourcePaneID)
+	if !ok {
+		return "", fmt.Errorf("source Session pane no longer exists")
+	}
+	if placement != PlaceNewTab && sourcePaneID == targetPaneID {
+		return "", fmt.Errorf("cannot split a Session pane onto itself")
+	}
+	next := l.Clone()
+	if !next.removeSessionFromProject(projectID, identity) {
+		return "", fmt.Errorf("source Session pane no longer exists")
+	}
+	paneID, err := next.Place(projectID, identity, placement, targetPaneID)
+	if err != nil {
+		return "", err
+	}
+	if err := next.Validate(); err != nil {
+		return "", err
+	}
+	*l = next
+	return paneID, nil
+}
+
 func (l *ProjectLayout) ensureDefault(session SessionIdentity) {
 	for _, project := range l.Projects {
 		if project.ID != DefaultProjectID && project.hasSession(session) {

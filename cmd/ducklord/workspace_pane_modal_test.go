@@ -179,3 +179,57 @@ func TestWorkspaceNewShellIntentClearsOnHostChangeAndCancel(t *testing.T) {
 		t.Fatal("cancel retained stale Project placement intent")
 	}
 }
+
+func TestWorkspacePaneMoveAndDetachLeaveRemoteInventoryUntouched(t *testing.T) {
+	state, projectID, a, b := workspacePaneTestState(t)
+	nav, _ := state.workspaceNavigation()
+	_ = nav.SelectProject(projectID)
+	bID, _ := ducklord.IdentityFromSession(b)
+	paneID, err := state.activity().ProjectLayout.Place(projectID, bID, ducklord.PlaceNewTab, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectPane(projectID, paneID); err != nil {
+		t.Fatal(err)
+	}
+	state.beginWorkspaceMove()
+	state.handleWorkspacePaneInput([]byte("\r"))     // new tab
+	state.handleWorkspacePaneInput([]byte("\x1b[A")) // select Move
+	state.handleWorkspacePaneInput([]byte("\r"))     // confirm
+	if state.workspacePaneMode || !state.workspacePaneChanged || len(state.sessions) != 2 || state.sessions[0].SessionID != a.SessionID || state.sessions[1].SessionID != b.SessionID {
+		t.Fatal("move affected remote inventory or did not commit")
+	}
+	if _, ok := state.activity().ProjectLayout.PaneSession(projectID, paneID); ok {
+		t.Fatal("old pane survived move")
+	}
+	state.workspacePaneChanged = false
+	state.beginWorkspaceDetach()
+	state.handleWorkspacePaneInput([]byte("\x1b[A")) // select Detach
+	state.handleWorkspacePaneInput([]byte("\r"))
+	if state.workspacePaneMode || !state.workspacePaneChanged || len(state.sessions) != 2 {
+		t.Fatal("detach affected remote inventory or did not commit")
+	}
+	if got := state.activity().ProjectLayout.ProjectsFor(bID); len(got) != 1 || got[0] != ducklord.DefaultProjectID {
+		t.Fatalf("detached session not in Default: %v", got)
+	}
+}
+
+func TestWorkspacePaneActionStaleSourceAndSaveFailureAreAtomic(t *testing.T) {
+	state, projectID, _, _ := workspacePaneTestState(t)
+	nav, _ := state.workspaceNavigation()
+	_ = nav.SelectProject(projectID)
+	state.beginWorkspaceDetach()
+	state.workspacePaneSourceID = "stale"
+	if err := state.commitWorkspacePaneAction(true); err == nil {
+		t.Fatal("stale source accepted")
+	}
+	state.closeWorkspacePane()
+	state.beginWorkspaceDetach()
+	state.activityStore.Path = t.TempDir()
+	if err := state.commitWorkspacePaneAction(true); err == nil || !strings.Contains(err.Error(), "save Session pane") {
+		t.Fatalf("save failure not reported: %v", err)
+	}
+	if _, ok := state.activity().ProjectLayout.PaneSession(projectID, state.workspacePaneSourceID); !ok || state.workspacePaneChanged {
+		t.Fatal("failed save mutated live layout")
+	}
+}

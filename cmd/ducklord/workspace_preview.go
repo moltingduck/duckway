@@ -80,6 +80,14 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		s.beginWorkspacePane()
 		return true, false
 	}
+	if s.shortcut("project_move_pane", key) {
+		s.beginWorkspaceMove()
+		return true, false
+	}
+	if s.shortcut("project_detach_pane", key) {
+		s.beginWorkspaceDetach()
+		return true, false
+	}
 	if key == "\r" {
 		if _, err := s.workspaceSelectedPaneSession(); err != nil {
 			s.outputErr = err.Error()
@@ -236,8 +244,8 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	fmt.Fprintln(out, truncate("ducklord workspace  owner:"+displayField(s.ownerName)+s.hostSyncLabel(), width))
 	status := "Preview: ↑/↓ Session · " + s.cfg.Shortcut("project_focus") + " Project pane · Enter focus · Ctrl-] leave PTY"
 	if s.workspaceProjectFocus {
-		status = fmt.Sprintf("Project pane: ↑/↓ Project · %s new Project · %s add pane · %s/%s tab · %s/%s pane · Enter focus · Esc list",
-			s.cfg.Shortcut("project_create"), s.cfg.Shortcut("project_add_pane"),
+		status = fmt.Sprintf("Project pane: ↑/↓ Project · %s new · %s add · %s move · %s detach · %s/%s tab · %s/%s pane · Enter focus · Esc list",
+			s.cfg.Shortcut("project_create"), s.cfg.Shortcut("project_add_pane"), s.cfg.Shortcut("project_move_pane"), s.cfg.Shortcut("project_detach_pane"),
 			s.cfg.Shortcut("project_prev_tab"), s.cfg.Shortcut("project_next_tab"),
 			s.cfg.Shortcut("project_prev_pane"), s.cfg.Shortcut("project_next_pane"))
 	}

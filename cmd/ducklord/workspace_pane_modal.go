@@ -34,6 +34,91 @@ func (s *tuiState) beginWorkspacePane() {
 	s.workspacePaneErr = ""
 }
 
+func (s *tuiState) beginWorkspaceMove()   { s.beginWorkspacePaneAction("move-placement") }
+func (s *tuiState) beginWorkspaceDetach() { s.beginWorkspacePaneAction("detach-confirm") }
+
+func (s *tuiState) beginWorkspacePaneAction(step string) {
+	if !s.workspacePreview || !s.workspaceProjectFocus {
+		return
+	}
+	if s.hostScoped {
+		s.outputErr = "Project pane actions require the full Ducklord workspace"
+		return
+	}
+	nav, err := s.workspaceNavigation()
+	if err != nil {
+		s.outputErr = err.Error()
+		return
+	}
+	projectID, paneID := nav.CurrentProjectID(), nav.CurrentPaneID()
+	identity, ok := s.activity().ProjectLayout.PaneSession(projectID, paneID)
+	if !ok {
+		s.outputErr = "select a Session pane first"
+		return
+	}
+	s.workspacePaneIntent = workspacePaneIntent{projectID: projectID}
+	s.workspacePaneSourceID, s.workspacePaneIdentity = paneID, identity
+	s.workspacePaneMode, s.workspacePaneStep, s.workspacePaneIndex = true, step, 0
+	if step == "detach-confirm" {
+		s.workspacePaneIndex = 1
+	}
+	s.workspacePaneErr = ""
+}
+
+func paneLeafIDs(pane *ducklord.SessionPane, exclude string, ids *[]string) {
+	if pane == nil {
+		return
+	}
+	if pane.Session != nil && pane.ID != exclude {
+		*ids = append(*ids, pane.ID)
+	}
+	paneLeafIDs(pane.First, exclude, ids)
+	paneLeafIDs(pane.Second, exclude, ids)
+}
+
+func (s *tuiState) workspaceMoveTargets() []string {
+	project := s.activity().ProjectLayout.Project(s.workspacePaneIntent.projectID)
+	if project == nil {
+		return nil
+	}
+	var ids []string
+	for _, tab := range project.Tabs {
+		paneLeafIDs(tab.Root, s.workspacePaneSourceID, &ids)
+	}
+	return ids
+}
+
+func (s *tuiState) commitWorkspacePaneAction(detach bool) error {
+	next := s.activity().Clone()
+	identity, ok := next.ProjectLayout.PaneSession(s.workspacePaneIntent.projectID, s.workspacePaneSourceID)
+	if !ok || identity != s.workspacePaneIdentity {
+		return fmt.Errorf("source Session pane changed; reopen this action")
+	}
+	var paneID string
+	var err error
+	if detach {
+		_, err = next.ProjectLayout.DetachPane(s.workspacePaneIntent.projectID, s.workspacePaneSourceID)
+	} else {
+		paneID, err = next.ProjectLayout.MovePane(s.workspacePaneIntent.projectID, s.workspacePaneSourceID, s.workspacePaneIntent.placement, s.workspacePaneIntent.targetID)
+	}
+	if err != nil {
+		return err
+	}
+	if err = s.activityStore.Save(next); err != nil {
+		return fmt.Errorf("save Session pane: %w", err)
+	}
+	s.activityState = next
+	s.workspacePaneChanged = true
+	if nav, navErr := s.workspaceNavigation(); navErr == nil {
+		if !detach {
+			_ = nav.SelectPane(s.workspacePaneIntent.projectID, paneID)
+		}
+	} else {
+		s.outputErr = "Session pane saved; navigation will refresh: " + sanitizeTerminalText(navErr.Error())
+	}
+	return nil
+}
+
 func (s *tuiState) beginWorkspaceProject() {
 	if !s.workspacePreview || !s.workspaceProjectFocus {
 		return
@@ -78,6 +163,27 @@ func (s *tuiState) workspacePaneChoices() []string {
 		return []string{"New Terminal tab", "Split vertically", "Split horizontally"}
 	case "source":
 		return []string{"New shell session", "Add existing session"}
+	case "move-placement":
+		return []string{"New Terminal tab", "Split vertically", "Split horizontally"}
+	case "move-target":
+		ids := s.workspaceMoveTargets()
+		choices := make([]string, 0, len(ids))
+		for _, id := range ids {
+			identity, _ := s.activity().ProjectLayout.PaneSession(s.workspacePaneIntent.projectID, id)
+			label := identity.SessionID
+			for _, session := range s.sessions {
+				if candidate, ok := ducklord.IdentityFromSession(session); ok && candidate == identity {
+					label = displayField(session.Name) + " @" + displayField(session.Client)
+					break
+				}
+			}
+			choices = append(choices, label)
+		}
+		return choices
+	case "move-confirm":
+		return []string{"Move local pane", "Cancel"}
+	case "detach-confirm":
+		return []string{"Detach local pane", "Cancel"}
 	case "existing":
 		candidates := s.workspacePaneCandidates()
 		choices := make([]string, 0, len(candidates))
@@ -103,7 +209,20 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 		return
 	}
 	choices := s.workspacePaneChoices()
-	lines := []modalRenderLine{{modalTitle, "  Add Session pane"}}
+	title := "  Add Session pane"
+	if strings.HasPrefix(s.workspacePaneStep, "move-") {
+		title = "  Move Session pane"
+	}
+	if s.workspacePaneStep == "detach-confirm" {
+		title = "  Detach Session pane"
+	}
+	lines := []modalRenderLine{{modalTitle, title}}
+	if s.workspacePaneStep == "detach-confirm" {
+		lines = append(lines, modalRenderLine{modalMuted, "  Remote session keeps running."})
+	}
+	if s.workspacePaneStep == "move-confirm" {
+		lines = append(lines, modalRenderLine{modalMuted, "  Local view only; remote session stays running."})
+	}
 	if s.workspacePaneStep == "existing" {
 		lines = append(lines, modalRenderLine{modalInput, "  find › " + s.workspacePaneQuery + "_"})
 	}
@@ -125,7 +244,11 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 		lines = append(lines, modalRenderLine{style, prefix + choice})
 	}
 	if len(choices) == 0 {
-		lines = append(lines, modalRenderLine{modalMuted, "  No eligible sessions"})
+		empty := "  No eligible sessions"
+		if s.workspacePaneStep == "move-target" {
+			empty = "  No other pane to split; choose a new tab"
+		}
+		lines = append(lines, modalRenderLine{modalMuted, empty})
 	}
 	if start > 0 || end < len(choices) {
 		lines = append(lines, modalRenderLine{modalMuted, fmt.Sprintf("  %d above · %d below", start, len(choices)-end)})
@@ -142,6 +265,8 @@ func (s *tuiState) closeWorkspacePane() {
 	s.workspacePaneName = ""
 	s.workspacePaneQuery = ""
 	s.workspacePaneIntent = workspacePaneIntent{}
+	s.workspacePaneSourceID = ""
+	s.workspacePaneIdentity = ducklord.SessionIdentity{}
 	s.workspacePaneIndex = 0
 }
 
@@ -235,6 +360,14 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 			s.workspacePaneQuery = ""
 		case "source":
 			s.workspacePaneStep = "placement"
+		case "move-target":
+			s.workspacePaneStep = "move-placement"
+		case "move-confirm":
+			if s.workspacePaneIntent.placement == ducklord.PlaceNewTab {
+				s.workspacePaneStep = "move-placement"
+			} else {
+				s.workspacePaneStep = "move-target"
+			}
 		default:
 			s.closeWorkspacePane()
 		}
@@ -270,6 +403,29 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 		}
 		index := min(s.workspacePaneIndex, len(choices)-1)
 		switch s.workspacePaneStep {
+		case "move-placement":
+			s.workspacePaneIntent.placement = []ducklord.PanePlacement{ducklord.PlaceNewTab, ducklord.PlaceVertical, ducklord.PlaceHorizontal}[index]
+			s.workspacePaneIndex, s.workspacePaneErr = 0, ""
+			if s.workspacePaneIntent.placement == ducklord.PlaceNewTab {
+				s.workspacePaneIntent.targetID = ""
+				s.workspacePaneStep = "move-confirm"
+				s.workspacePaneIndex = 1
+			} else {
+				s.workspacePaneStep = "move-target"
+			}
+		case "move-target":
+			s.workspacePaneIntent.targetID = s.workspaceMoveTargets()[index]
+			s.workspacePaneStep, s.workspacePaneIndex = "move-confirm", 1
+		case "move-confirm", "detach-confirm":
+			if index == 1 {
+				s.closeWorkspacePane()
+				return false
+			}
+			if err := s.commitWorkspacePaneAction(s.workspacePaneStep == "detach-confirm"); err != nil {
+				s.workspacePaneErr = sanitizeTerminalText(err.Error())
+				return false
+			}
+			s.closeWorkspacePane()
 		case "placement":
 			s.workspacePaneIntent.placement = []ducklord.PanePlacement{ducklord.PlaceNewTab, ducklord.PlaceVertical, ducklord.PlaceHorizontal}[index]
 			if s.workspacePaneIntent.placement != ducklord.PlaceNewTab && s.workspacePaneIntent.targetID == "" {

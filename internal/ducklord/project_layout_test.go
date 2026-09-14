@@ -205,6 +205,37 @@ func TestProjectLayoutDetachPaneRejectsStaleViewID(t *testing.T) {
 	}
 }
 
+func TestProjectLayoutMovePaneIsAtomicAndKeepsOneProjectReference(t *testing.T) {
+	layout := NewProjectLayout()
+	projectID, _ := layout.AddProject("Work")
+	a, b := testLayoutIdentity("ABC123"), testLayoutIdentity("DEF456")
+	first, _ := layout.Place(projectID, a, PlaceNewTab, "")
+	second, _ := layout.Place(projectID, b, PlaceVertical, first)
+	before := layout.Clone()
+	if _, err := layout.MovePane(projectID, second, PlaceVertical, second); err == nil {
+		t.Fatal("self split accepted")
+	}
+	if _, err := layout.MovePane(projectID, second, PlaceVertical, "missing"); err == nil {
+		t.Fatal("invalid target accepted")
+	}
+	if got := layout.ProjectsFor(b); len(got) != 1 || got[0] != projectID || len(layout.Project(projectID).Tabs) != len(before.Project(projectID).Tabs) {
+		t.Fatalf("failed move changed membership: %v", got)
+	}
+	moved, err := layout.MovePane(projectID, second, PlaceNewTab, "")
+	if err != nil || moved == second {
+		t.Fatalf("move failed or reused pane ID: %s %v", moved, err)
+	}
+	if got := layout.ProjectsFor(b); len(got) != 1 || got[0] != projectID {
+		t.Fatalf("move duplicated or rehomed Session: %v", got)
+	}
+	if _, err := layout.DetachPane(projectID, second); err == nil {
+		t.Fatal("stale source pane ID remained live")
+	}
+	if err := layout.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCorruptPersistedProjectLayoutIsPreserved(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	data := `{"version":1,"notifications":{},"organization":{"mode":"custom"},"project_layout":{"projects":[{"id":"default","name":"Default Project","tabs":[{"id":"not-a-uuid","root":{"id":"also-bad","session":{"instance_id":"11111111-1111-4111-8111-111111111111","session_id":"ABC123"}}}]}]}}`

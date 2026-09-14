@@ -193,8 +193,9 @@ var DefaultShortcuts = map[string]string{
 	"list_reorder_up": "ctrl-k", "list_reorder_down": "ctrl-j", "pty_copy": "v", "pty_unfocus": "ctrl-]", "refresh": "r", "shortcut_settings": "S",
 	"project_focus":    "P",
 	"project_prev_tab": "[", "project_next_tab": "]", "project_prev_pane": "H", "project_next_pane": "L",
-	"project_add_pane": "p",
-	"project_create":   "N",
+	"project_add_pane":  "p",
+	"project_create":    "N",
+	"project_move_pane": "M", "project_detach_pane": "x",
 }
 
 func validShortcutBinding(binding string) bool {

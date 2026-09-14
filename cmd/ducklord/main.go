@@ -1291,6 +1291,9 @@ type tuiState struct {
 	workspacePaneName          string
 	workspacePaneQuery         string
 	workspacePaneIntent        workspacePaneIntent
+	workspacePaneSourceID      string
+	workspacePaneIdentity      ducklord.SessionIdentity
+	workspacePaneChanged       bool
 	workspaceNewSessionIntent  *workspacePaneIntent
 	clearOutputFocus           func()
 	searchMode                 bool
@@ -1896,12 +1899,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				_, paneErr := state.workspacePaneRect()
 				paneVisible = paneErr == nil
 			}
-			if !paneVisible || opened.id != controlID || opened.key != state.activeAttachKey || opened.control != nil && !controlMatchesSession(opened.control, state.activePTYSession(), state.ownerName) {
+			if state.workspacePaneMode || state.workspaceProjectFocus || !paneVisible || opened.id != controlID || opened.key != state.activeAttachKey || opened.control != nil && !controlMatchesSession(opened.control, state.activePTYSession(), state.ownerName) {
 				if opened.control != nil {
 					_ = opened.control.Stdin.Close()
 				}
 				if !paneVisible && opened.id == controlID {
 					state.clearAttachIdentity()
+					state.focused = false
 					state.outputErr = "Session pane became hidden; PTY control was not opened"
 					state.render(os.Stdout)
 				}
@@ -2489,6 +2493,29 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			if state.workspacePaneMode {
 				if state.handleWorkspacePaneInput(b) {
 					state.beginCreate()
+				}
+				if state.workspacePaneChanged {
+					state.workspacePaneChanged = false
+					controlID++
+					attachID++
+					if controlOpenCancel != nil {
+						controlOpenCancel()
+						controlOpenCancel = nil
+					}
+					if control != nil {
+						_ = control.Stdin.Close()
+						control, controlDone = nil, nil
+					}
+					if attachCancel != nil {
+						attachCancel()
+						attachCancel = nil
+					}
+					if attach != nil {
+						_ = attach.Stdin.Close()
+						attach = nil
+					}
+					state.clearAttachIdentity()
+					state.focused = false
 				}
 				if workspaceOutput != nil {
 					selectPooledOutput()
@@ -4989,7 +5016,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		{"SESSION LIST & GROUPS", "list_search", "Search sessions"}, {"", "list_organize", "Cycle custom / host / type"}, {"", "list_groups", "Manage custom groups"}, {"", "list_reorder_up", "Move session up"}, {"", "list_reorder_down", "Move session down"}, {"", "refresh", "Refresh"},
 		{"SESSION", "session_create", "Create session"}, {"", "session_actions", "Session action menu"}, {"", "session_notifications", "Notification settings"}, {"", "session_yield", "Yield now"}, {"", "session_yield_wait", "Yield when idle"}, {"", "session_restart", "Restart session"}, {"", "session_end", "End session"}, {"", "session_destroy", "Destroy session"},
 		{"HOST", "host_actions", "Host action menu"}, {"", "host_add", "Add host configuration"}, {"", "host_remove", "Remove host configuration"},
-		{"PROJECT PANE", "project_focus", "Focus Project pane"}, {"", "project_create", "Create Project"}, {"", "project_add_pane", "Add Session pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
+		{"PROJECT PANE", "project_focus", "Focus Project pane"}, {"", "project_create", "Create Project"}, {"", "project_add_pane", "Add Session pane"}, {"", "project_move_pane", "Move Session pane"}, {"", "project_detach_pane", "Detach local Session pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
 		{"TERMINAL AREA", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return focus to Session list pane"},
 		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
 		{"", "shortcut_settings", "Configure shortcuts"},
