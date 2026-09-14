@@ -898,7 +898,7 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 			}
 		}
 	}
-	home := fmt.Sprintf("/tmp/ducklord-project-focus-e2e-%d", os.Getpid())
+	home := fmt.Sprintf("/tmp/ducklord-project-focus-e2e-%d-%d", os.Getpid(), time.Now().UnixNano())
 	if out, err := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/.ducklord").CombinedOutput(); err != nil {
 		t.Fatalf("prepare isolated home: %v: %s", err, out)
 	}
@@ -915,11 +915,28 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 	}
 	// Keep only one raw subscription so Project navigation must promote the
 	// selected pane rather than the first visible/quick-list pane.
-	if out, err := exec.Command(runtime, "exec", controller, "sh", "-lc", "cp /root/.ducklord/config.yaml "+home+"/.ducklord/limited.yaml && printf '\nraw_output_subscription_limit: 1\n' >>"+home+"/.ducklord/limited.yaml").CombinedOutput(); err != nil {
+	soundPath := home + "/" + handles[1] + ".wav"
+	if out, err := exec.Command(runtime, "exec", controller, "sh", "-lc", "cp /root/.ducklord/config.yaml "+home+"/.ducklord/limited.yaml && printf '\nraw_output_subscription_limit: 1\nnotification_levels:\n  task_completed: sound\nnotification_sounds:\n  task_completed: "+soundPath+"\n' >>"+home+"/.ducklord/limited.yaml").CombinedOutput(); err != nil {
 		t.Fatalf("prepare limited subscription config: %v: %s", err, out)
 	}
+	if out, err := exec.Command(runtime, "exec", controller, "sh", "-c", `printf RIFF > "$1"`, "_", soundPath).CombinedOutput(); err != nil {
+		t.Fatalf("prepare sound fixture: %v: %s", err, out)
+	}
+	if out, err := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/bin").CombinedOutput(); err != nil {
+		t.Fatalf("prepare notifier fixture directory: %v: %s", err, out)
+	}
+	notifier := filepath.Join(t.TempDir(), "ffplay")
+	if err := os.WriteFile(notifier, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$DUCKLORD_NOTIFY_E2E_LOG\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(runtime, "cp", notifier, controller+":"+home+"/bin/ffplay").CombinedOutput(); err != nil {
+		t.Fatalf("install local notifier fixture: %v: %s", err, out)
+	}
+	if out, err := exec.Command(runtime, "exec", controller, "chmod", "700", home+"/bin/ffplay").CombinedOutput(); err != nil {
+		t.Fatalf("make notifier fixture executable: %v: %s", err, out)
+	}
 	owner := fmt.Sprintf("project-focus-%d", time.Now().UnixNano())
-	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color",
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", "PATH="+home+"/bin:/usr/local/bin:/usr/bin:/bin", "DUCKLORD_NOTIFY_E2E_LOG="+home+"/notifications.log",
 		binary, "tui", "--name", owner, "--config", home+"/.ducklord/limited.yaml")
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 120})
 	if err != nil {
@@ -928,18 +945,7 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = terminal.Write([]byte("\x1d\x1bq"))
 		time.Sleep(300 * time.Millisecond)
-		if listing, err := exec.Command(runtime, "exec", controller, "ps", "-ef").Output(); err == nil {
-			needle := binary + " tui --name " + owner + " --config"
-			for _, line := range strings.Split(string(listing), "\n") {
-				fields := strings.Fields(line)
-				if len(fields) < 3 || !strings.Contains(line, needle) {
-					continue
-				}
-				if pid, parseErr := strconv.Atoi(fields[0]); parseErr == nil {
-					_, _ = exec.Command(runtime, "exec", controller, "kill", strconv.Itoa(pid)).CombinedOutput()
-				}
-			}
-		}
+		killNamedContainerTUI(runtime, controller, owner, home+"/.ducklord/limited.yaml")
 		_ = terminal.Close()
 		_ = command.Process.Kill()
 		_ = command.Wait()
@@ -991,6 +997,78 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 		"--lines", "50", "--config", "/root/.ducklord/config.yaml").CombinedOutput()
 	if readErr != nil || bytes.Contains(out, []byte(toB)) {
 		t.Fatalf("focused input reached quick-selected A: err=%v output=%q", readErr, safeTerminalDiagnostic(string(out)))
+	}
+	writePTY(t, terminal, "\x1d")
+	capture.waitCurrent(t, "Project pane:", 10*time.Second)
+	writePTY(t, terminal, "k") // Focus A contains only A; B is outside it.
+	capture.waitCurrent(t, "› Focus A", 10*time.Second)
+	writePTY(t, terminal, "F")
+	capture.waitCurrent(t, "Focus: Focus A", 10*time.Second)
+	baseline, ok := findContainerSession(t, runtime, controller, "client-a", sessions[1].SessionID)
+	if !ok {
+		t.Fatal("Focus B Session vanished before notification test")
+	}
+	baselineSeq := baseline.ActivitySequences[model.NotificationTaskCompleted]
+	insideBaseline, ok := findContainerSession(t, runtime, controller, "client-a", sessions[0].SessionID)
+	if !ok {
+		t.Fatal("Focus A Session vanished before notification test")
+	}
+	insideSeq := insideBaseline.ActivitySequences[model.NotificationTaskCompleted]
+	hook := fmt.Sprintf("ducklion __ducklion_agent_hook_v1 codex '{\"type\":\"agent-turn-complete\",\"last-assistant-message\":\"private-focus-%d\"}'", time.Now().UnixNano())
+	for turn := 1; turn <= 2; turn++ {
+		if turn == 2 {
+			writePTY(t, terminal, "F") // Clear focus; the same outside Project can now deliver.
+			waitE2E(t, 10*time.Second, func() bool {
+				return !strings.Contains(capture.currentText(), "Focus:")
+			}, func() string { return "Project notification focus did not clear" })
+		}
+		if output, err := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "send", "client-a", handles[1], hook,
+			"--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil {
+			t.Fatalf("send Project focus hook %d: %v: %s", turn, err, output)
+		}
+		waitE2E(t, 10*time.Second, func() bool {
+			remote, exists := findContainerSession(t, runtime, controller, "client-a", sessions[1].SessionID)
+			return exists && remote.ActivitySequences[model.NotificationTaskCompleted] >= baselineSeq+uint64(turn)
+		}, func() string { return "Project focus hook did not reach Ducklion" })
+		waitE2E(t, 10*time.Second, func() bool {
+			data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+			if err != nil {
+				return false
+			}
+			var current ducklord.ActivityState
+			if json.Unmarshal(data, &current) != nil {
+				return false
+			}
+			identity, _ := ducklord.IdentityFromSession(sessions[1])
+			entry := current.Sessions[identity.Key()]
+			return entry.Observed[model.NotificationTaskCompleted] >= baselineSeq+uint64(turn) && entry.Unread[model.NotificationTaskCompleted]
+		}, func() string { return "outside Project completion was not retained as unread" })
+		if turn == 1 {
+			time.Sleep(4 * time.Second)
+			output, err := exec.Command(runtime, "exec", controller, "sh", "-c", `if [ -e "$1" ]; then cat "$1"; fi`, "_", home+"/notifications.log").Output()
+			if err != nil || len(strings.TrimSpace(string(output))) != 0 {
+				t.Fatalf("focused Project played sound for outside completion: %v: %s", err, output)
+			}
+			if output, err := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "send", "client-a", handles[0], hook,
+				"--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil {
+				t.Fatalf("send in-focus hook: %v: %s", err, output)
+			}
+			waitE2E(t, 10*time.Second, func() bool {
+				remote, exists := findContainerSession(t, runtime, controller, "client-a", sessions[0].SessionID)
+				return exists && remote.ActivitySequences[model.NotificationTaskCompleted] >= insideSeq+1
+			}, func() string { return "in-focus hook did not reach Ducklion" })
+			waitE2E(t, 10*time.Second, func() bool {
+				output, err := exec.Command(runtime, "exec", controller, "cat", home+"/notifications.log").Output()
+				return err == nil && strings.Count(string(output), soundPath) == 1
+			}, func() string { return "focused Project completion did not play sound" })
+		}
+	}
+	waitE2E(t, 10*time.Second, func() bool {
+		output, err := exec.Command(runtime, "exec", controller, "cat", home+"/notifications.log").Output()
+		return err == nil && strings.Count(string(output), soundPath) == 2
+	}, func() string { return "completion sound did not play after clearing Project focus" })
+	if output, err := exec.Command(runtime, "exec", controller, "cat", home+"/notifications.log").Output(); err != nil || strings.Contains(string(output), "private-focus-") {
+		t.Fatalf("notifier log unavailable or leaked agent output: %v", err)
 	}
 }
 

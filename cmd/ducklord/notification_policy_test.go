@@ -72,3 +72,27 @@ func TestProjectFocusSuppressesDeliveryButKeepsUnread(t *testing.T) {
 		t.Fatal("normal delivery stayed suppressed after turning focus off")
 	}
 }
+
+func TestProjectFocusAllowsSessionSharedWithFocusedProject(t *testing.T) {
+	instance := "9df68174-9e13-4dc9-b44d-8532c87f5971"
+	session := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: "ABC123"}
+	activity := ducklord.NewActivityState()
+	first, _ := activity.ProjectLayout.AddProject("First")
+	second, _ := activity.ProjectLayout.AddProject("Second")
+	identity, _ := ducklord.IdentityFromSession(session)
+	_, _ = activity.ProjectLayout.Place(first, identity, ducklord.PlaceNewTab, "")
+	_, _ = activity.ProjectLayout.Place(second, identity, ducklord.PlaceNewTab, "")
+	state := tuiState{cfg: &ducklord.Config{NotificationLevels: map[ducklord.NotificationClass]ducklord.NotificationLevel{
+		ducklord.NotificationCompleted: ducklord.NotificationSound}}, activityState: activity, workspacePreview: true}
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(second); err != nil {
+		t.Fatal(err)
+	}
+	nav.ToggleNotificationFocus()
+	if !state.shouldDeliverNotification(session, model.NotificationTaskCompleted) {
+		t.Fatal("shared Session was suppressed despite membership in the focused Project")
+	}
+}
