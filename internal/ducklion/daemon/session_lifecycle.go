@@ -802,7 +802,18 @@ func (s *Server) driveLifecycle(sessionID model.SessionID) {
 		}
 	case store.LifecycleRuntimeStopped:
 		if pending.Operation == store.LifecycleEnd {
-			s.completeLifecycle(*pending)
+			operation := s.sessionOperation(sessionID)
+			operation.Lock()
+			defer operation.Unlock()
+			session, err := s.state.GetSession(context.Background(), sessionID)
+			if err != nil {
+				return
+			}
+			if session.Kind == model.KindShell {
+				_ = s.state.CompleteEndedShell(context.Background(), *pending)
+			} else {
+				_ = s.state.CompleteLifecycle(context.Background(), *pending)
+			}
 			return
 		}
 		if pending.Operation == store.LifecycleRestart {
@@ -981,6 +992,31 @@ func (s *Server) routeSessionStop(request protocol.Request, role protocol.PeerRo
 	operation := s.sessionOperation(sessionID)
 	operation.Lock()
 	if request.InstanceID == string(s.instanceID) && request.OwnershipEpoch != nil && request.RuntimeGeneration != nil {
+		requester := lifecycleOwner(role, principal)
+		candidate := store.PendingLifecycle{SessionID: sessionID, Operation: store.LifecycleEnd, Mode: store.LifecycleImmediate,
+			Requester: requester, SourceEpoch: *request.OwnershipEpoch, SourceGeneration: *request.RuntimeGeneration, RequestID: request.ID}
+		outcome, outcomeErr := s.state.GetLifecycleOutcome(context.Background(), requester, request.ID)
+		if outcomeErr != nil {
+			operation.Unlock()
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not replay Shell stop", Retryable: true}}
+		}
+		if outcome != nil {
+			operation.Unlock()
+			if !outcome.Matches(candidate) {
+				return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrIdempotencyConflict, Message: "request id belongs to another lifecycle operation"}}
+			}
+			if current, err := s.state.GetSession(context.Background(), sessionID); err == nil && current.Status == model.StatusStopped {
+				body, _ := json.Marshal(summaryFor(current))
+				return protocol.Response{ID: request.ID, Result: body}
+			}
+			result := protocol.SessionSummary{SessionID: string(sessionID), Kind: model.KindShell, Status: model.StatusStopped,
+				OwnershipEpoch: *request.OwnershipEpoch, RuntimeGeneration: *request.RuntimeGeneration}
+			if retained, err := s.state.GetRetainedShellSession(context.Background(), sessionID, *request.RuntimeGeneration); err == nil {
+				result.Handle = retained.Handle
+			}
+			body, _ := json.Marshal(result)
+			return protocol.Response{ID: request.ID, Result: body}
+		}
 		current, getErr := s.state.GetSession(context.Background(), sessionID)
 		ownerKind := model.OwnerTerminal
 		if role == protocol.RoleDuckwayCC {
@@ -1043,6 +1079,13 @@ func (s *Server) routeSessionStop(request protocol.Request, role protocol.PeerRo
 		if err == nil && current.Status == model.StatusStopped {
 			result, _ := json.Marshal(summaryFor(current))
 			return protocol.Response{ID: request.ID, Result: result}
+		}
+		outcome, outcomeErr := s.state.GetLifecycleOutcome(context.Background(), owner, request.ID)
+		if outcomeErr == nil && outcome != nil && outcome.SessionID == session.ID && outcome.Operation == store.LifecycleEnd {
+			result := protocol.SessionSummary{SessionID: string(session.ID), Kind: model.KindShell, Status: model.StatusStopped,
+				OwnershipEpoch: session.OwnershipEpoch, RuntimeGeneration: session.RuntimeGeneration, Handle: session.Handle}
+			body, _ := json.Marshal(result)
+			return protocol.Response{ID: request.ID, Result: body}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

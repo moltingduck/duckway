@@ -789,36 +789,19 @@ func TestShellLifecycleRestartEndAndDestroy(t *testing.T) {
 	if ended.State != protocol.SessionLifecycleCompleted {
 		t.Fatalf("shell end=%+v", ended)
 	}
-	retained, err := terminal.SubscribeOutputTail(current.SessionID, current.RuntimeGeneration, 1<<20)
-	if err != nil {
-		t.Fatal(err)
+	if sessions, err := terminal.ListSessions(); err != nil || len(sessions) != 0 {
+		t.Fatalf("ended shell remained in active inventory=%+v err=%v", sessions, err)
 	}
-	var output bytes.Buffer
-	for {
-		event, readErr := retained.Read()
-		if readErr != nil {
-			break
-		}
-		output.Write(event.Frame.Data)
-	}
-	_ = retained.Close()
-	if !bytes.Contains(output.Bytes(), []byte("generation-two-only")) || bytes.Contains(output.Bytes(), []byte("generation-one-only")) {
-		t.Fatalf("current-generation retained output=%q", output.String())
+	if retained, err := server.state.GetRetainedShellSession(context.Background(), model.SessionID(current.SessionID), current.RuntimeGeneration); err != nil || retained.Handle != "shell-lifecycle" {
+		t.Fatalf("ended shell retained identity=%+v err=%v", retained, err)
 	}
 	sessionDir := filepath.Join(root, "sessions", current.SessionID)
+	output, err := os.ReadFile(filepath.Join(sessionDir, fmt.Sprintf("output.%d.log", current.RuntimeGeneration)))
+	if err != nil || !bytes.Contains(output, []byte("generation-two-only")) || bytes.Contains(output, []byte("generation-one-only")) {
+		t.Fatalf("current-generation retained output=%q err=%v", output, err)
+	}
 	if _, err := os.Stat(filepath.Join(sessionDir, "output.1.log")); err != nil {
 		t.Fatalf("generation-one diagnostic output missing: %v", err)
-	}
-	destroy := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleDestroy, Mode: protocol.SessionLifecycleImmediate}
-	destroyed := awaitLifecycleTestResult(t, terminal, "shell-destroy", current, destroy, 8*time.Second)
-	if destroyed.State != protocol.SessionLifecycleCompleted {
-		t.Fatalf("shell destroy=%+v", destroyed)
-	}
-	if sessions, err := terminal.ListSessions(); err != nil || len(sessions) != 0 {
-		t.Fatalf("shell sessions after destroy=%+v err=%v", sessions, err)
-	}
-	if _, err := os.Stat(sessionDir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("destroy retained session directory: %v", err)
 	}
 }
 
@@ -1002,32 +985,12 @@ func TestRealSupervisorReportsMissingShellOnRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	end := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleEnd, Mode: protocol.SessionLifecycleImmediate}
-	ended := awaitLifecycleTestResult(t, terminal, "missing-shell-end", created, end, 8*time.Second)
-	// The stopped generation may finish its wrapper just after Ducklion commits
-	// the exit receipt. Wait for its process lock so this test isolates the
-	// replacement executable failure rather than the normal overlap retry.
-	lockPath := filepath.Join(root, "sessions", created.SessionID, "runtime.lock")
-	lockDeadline := time.Now().Add(8 * time.Second)
-	for {
-		lock, lockErr := acquireRuntimeLock(lockPath)
-		if lockErr == nil {
-			_ = lock.Close()
-			break
-		}
-		if time.Now().After(lockDeadline) {
-			t.Fatalf("stopped runtime retained process lock: %v", lockErr)
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	for len(runtimeErrors) != 0 {
-		<-runtimeErrors
-	}
+	// Removing the executable does not affect the already-running process,
+	// but makes the replacement launch fail after Restart stops that process.
 	if err := os.Remove(shellPath); err != nil {
 		t.Fatal(err)
 	}
 	restartSession := created
-	restartSession.RuntimeGeneration = ended.RuntimeGeneration
 	restart := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleRestart, Mode: protocol.SessionLifecycleImmediate}
 	result, err := terminal.LifecycleSessionWithID(context.Background(), "missing-shell-restart", restartSession.SessionID, restartSession.OwnershipEpoch, restartSession.RuntimeGeneration, restart)
 	if err != nil || result.State != protocol.SessionLifecycleWaiting {

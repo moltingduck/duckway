@@ -244,18 +244,16 @@ if [ "$lifecycle_ready" != true ]; then
   exit 1
 fi
 "$RUNTIME" exec ducklord-dev ducklord end client-a lifecycle --config /root/.ducklord/config.yaml | grep -q 'Ended '
-"$RUNTIME" exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml | grep -q 'lifecycle.*stopped.*shell'
-if ! "$RUNTIME" exec ducklord-dev ducklord read client-a lifecycle --lines 20 --config /root/.ducklord/config.yaml | grep -q ducklord-lifecycle-generation-2; then
-  echo "[ducklord-demo] stopped session did not expose retained generation-2 output" >&2
+if "$RUNTIME" exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml | grep -q 'lifecycle'; then
+  echo "[ducklord-demo] ended shell remains in active inventory" >&2
+  exit 1
+fi
+if ! "$RUNTIME" exec ducklord-dev ducklord retained client-a --config /root/.ducklord/config.yaml | grep -q 'lifecycle'; then
+  echo "[ducklord-demo] ended shell is missing from retained diagnostics" >&2
   exit 1
 fi
 if ! "$RUNTIME" exec -u duck ducklion-client-a sh -lc 'find "$HOME/.duckway/ducklion/sessions" -name "output.*" -type f -exec stat -c %a {} \; | grep -q . && ! find "$HOME/.duckway/ducklion/sessions" -name "output.*" -type f -exec stat -c %a {} \; | grep -vx 600'; then
   echo "[ducklord-demo] retained output files are missing or not mode 0600" >&2
-  exit 1
-fi
-"$RUNTIME" exec ducklord-dev ducklord destroy client-a lifecycle --config /root/.ducklord/config.yaml | grep -q 'Destroyed '
-if "$RUNTIME" exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml | grep -q 'lifecycle'; then
-  echo "[ducklord-demo] destroyed shell remains in inventory" >&2
   exit 1
 fi
 

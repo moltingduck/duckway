@@ -147,3 +147,135 @@ func TestRetireExitedShellRejectsStaleGenerationWithoutTombstone(t *testing.T) {
 		t.Fatalf("stale attempt wrote tombstone: %v", err)
 	}
 }
+
+func TestCompleteEndedShellAtomicallyRetiresAndReplays(t *testing.T) {
+	ctx := context.Background()
+	database, err := Open(ctx, filepath.Join(t.TempDir(), "ducklion.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	session := createRetirementTestSession(t, database, "ABC123", model.KindShell)
+	request := PendingLifecycle{SessionID: session.ID, Operation: LifecycleEnd, Mode: LifecycleImmediate,
+		Requester: model.Owner{Kind: model.OwnerTerminal, ID: "desk"}, SourceEpoch: 1, SourceGeneration: 3, RequestID: "end-shell"}
+	if _, _, err := database.ReserveLifecycle(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkRuntimeExited(ctx, session.ID, session.RuntimeGeneration, false, "ended by owner"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := database.SessionSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteEndedShell(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.GetSession(ctx, session.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("shell still selectable: %v", err)
+	}
+	if pending, err := database.GetPendingLifecycle(ctx, session.ID); err != nil || pending != nil {
+		t.Fatalf("pending: %+v %v", pending, err)
+	}
+	if retained, err := database.GetRetainedShellSession(ctx, session.ID, 3); err != nil || retained.ExitSuccess || retained.ExitReason != "ended by owner" || retained.Handle != session.Handle {
+		t.Fatalf("retained: %+v %v", retained, err)
+	}
+	if outcome, err := database.GetLifecycleOutcome(ctx, request.Requester, request.RequestID); err != nil || outcome == nil || !outcome.Matches(request) || outcome.Failure != "" {
+		t.Fatalf("outcome: %+v %v", outcome, err)
+	}
+	after, err := database.SessionSnapshot(ctx)
+	if err != nil || after.Revision != before.Revision+1 {
+		t.Fatalf("snapshot: %+v %v", after, err)
+	}
+	changes, _, _, err := database.SessionRevisionsAfter(ctx, before.Revision, 10)
+	if err != nil || len(changes) != 1 || changes[0].Change != "delete" {
+		t.Fatalf("journal: %+v %v", changes, err)
+	}
+	if err := database.CompleteEndedShell(ctx, request); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	replay, err := database.SessionSnapshot(ctx)
+	if err != nil || replay.Revision != after.Revision {
+		t.Fatalf("replay revision: %+v %v", replay, err)
+	}
+	conflict := request
+	conflict.Mode = LifecycleForce
+	if err := database.CompleteEndedShell(ctx, conflict); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("conflicting replay: %v", err)
+	}
+}
+
+func TestCompleteEndedShellRejectsWrongPhaseAndGenerationWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	database, err := Open(ctx, filepath.Join(t.TempDir(), "ducklion.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	session := createRetirementTestSession(t, database, "ABC123", model.KindShell)
+	request := PendingLifecycle{SessionID: session.ID, Operation: LifecycleEnd, Mode: LifecycleImmediate,
+		Requester: model.Owner{Kind: model.OwnerTerminal, ID: "desk"}, SourceEpoch: 1, SourceGeneration: 3, RequestID: "end-shell"}
+	if _, _, err := database.ReserveLifecycle(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteEndedShell(ctx, request); err == nil {
+		t.Fatal("accepted running shell/waiting lifecycle")
+	}
+	if err := database.MarkRuntimeExited(ctx, session.ID, 3, true, "exit"); err != nil {
+		t.Fatal(err)
+	}
+	stale := request
+	stale.SourceGeneration++
+	if err := database.CompleteEndedShell(ctx, stale); err == nil {
+		t.Fatal("accepted stale generation")
+	}
+	wrong := request
+	wrong.RequestID = "other"
+	if err := database.CompleteEndedShell(ctx, wrong); err == nil {
+		t.Fatal("accepted wrong request")
+	}
+	if _, err := database.GetSession(ctx, session.ID); err != nil {
+		t.Fatalf("shell disappeared: %v", err)
+	}
+	if pending, err := database.GetPendingLifecycle(ctx, session.ID); err != nil || pending == nil || pending.Phase != LifecycleRuntimeStopped {
+		t.Fatalf("pending changed: %+v %v", pending, err)
+	}
+	if outcome, err := database.GetLifecycleOutcome(ctx, request.Requester, request.RequestID); err != nil || outcome != nil {
+		t.Fatalf("unexpected outcome: %+v %v", outcome, err)
+	}
+	if _, err := database.GetRetainedShellSession(ctx, session.ID, 3); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unexpected tombstone: %v", err)
+	}
+}
+
+func TestCompleteEndedShellPreservesAgentEndAndShellRestart(t *testing.T) {
+	ctx := context.Background()
+	database, err := Open(ctx, filepath.Join(t.TempDir(), "ducklion.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, tc := range []struct {
+		id        model.SessionID
+		kind      model.SessionKind
+		operation LifecycleOperation
+	}{
+		{"ABC123", model.KindAgent, LifecycleEnd}, {"DEF456", model.KindShell, LifecycleRestart},
+	} {
+		session := createRetirementTestSession(t, database, tc.id, tc.kind)
+		request := PendingLifecycle{SessionID: session.ID, Operation: tc.operation, Mode: LifecycleImmediate,
+			Requester: model.Owner{Kind: model.OwnerTerminal, ID: "desk"}, SourceEpoch: 1, SourceGeneration: 3, RequestID: "op-" + string(tc.id)}
+		if _, _, err := database.ReserveLifecycle(ctx, request); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.MarkRuntimeExited(ctx, session.ID, 3, true, "exit"); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.CompleteEndedShell(ctx, request); err == nil {
+			t.Fatalf("accepted %s %s", tc.kind, tc.operation)
+		}
+		if got, err := database.GetSession(ctx, session.ID); err != nil || got.Status != model.StatusStopped {
+			t.Fatalf("session lost: %+v %v", got, err)
+		}
+	}
+}

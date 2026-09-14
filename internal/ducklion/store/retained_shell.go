@@ -82,6 +82,100 @@ func (s *SQLite) RetireExitedShell(ctx context.Context, id model.SessionID, gene
 	return true, nil
 }
 
+// CompleteEndedShell commits an explicit Shell End as one durable transition:
+// the replayable receipt, retained-output identity, lifecycle barrier removal,
+// and active inventory deletion either all happen or none do. Restart and
+// Agent End continue to use their existing stopped-session lifecycle.
+func (s *SQLite) CompleteEndedShell(ctx context.Context, pending PendingLifecycle) error {
+	if err := pending.validate(); err != nil {
+		return err
+	}
+	if pending.Operation != LifecycleEnd {
+		return fmt.Errorf("not a shell end lifecycle")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	current, err := s.GetPendingLifecycleTx(ctx, tx, pending.SessionID)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		// A successful commit may be replayed after the acknowledgement was
+		// lost. Require both the exact receipt and the retained identity.
+		var outcome LifecycleOutcome
+		outcome.Requester, outcome.RequestID = pending.Requester, pending.RequestID
+		err := tx.QueryRowContext(ctx, `SELECT session_id,operation,mode,source_epoch,source_generation,completed_at_ms,failure
+			FROM lifecycle_outcomes WHERE requester_kind=? AND requester_id=? AND request_id=?`, pending.Requester.Kind, pending.Requester.ID, pending.RequestID).
+			Scan(&outcome.SessionID, &outcome.Operation, &outcome.Mode, &outcome.SourceEpoch, &outcome.SourceGeneration, &outcome.CompletedAtMS, &outcome.Failure)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("shell end lifecycle fencing conflict")
+		}
+		if err != nil {
+			return err
+		}
+		if !outcome.Matches(pending) || outcome.Failure != "" {
+			return ErrIdempotencyConflict
+		}
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM retained_shell_sessions WHERE session_id=? AND runtime_generation=?`, pending.SessionID, pending.SourceGeneration).Scan(&exists); err != nil {
+			return fmt.Errorf("shell end retained identity missing: %w", err)
+		}
+		return nil
+	}
+	if current.Operation != LifecycleEnd || current.Mode != pending.Mode || current.Requester != pending.Requester ||
+		current.SourceEpoch != pending.SourceEpoch || current.SourceGeneration != pending.SourceGeneration ||
+		current.RequestID != pending.RequestID || current.Phase != LifecycleRuntimeStopped {
+		return fmt.Errorf("shell end lifecycle fencing conflict")
+	}
+	session, err := s.GetSessionTx(ctx, tx, pending.SessionID)
+	if err != nil {
+		return err
+	}
+	if session.Kind != model.KindShell || session.Status != model.StatusStopped || session.ExitSuccess == nil ||
+		session.RuntimeGeneration != pending.SourceGeneration || session.OwnershipEpoch != pending.SourceEpoch {
+		return fmt.Errorf("shell end session fencing conflict")
+	}
+	now := time.Now().UTC().UnixMilli()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO retained_shell_sessions
+		(session_id,runtime_generation,handle,exited_at_ms,exit_success,exit_reason) VALUES(?,?,?,?,?,?)`,
+		pending.SessionID, pending.SourceGeneration, session.Handle, now, *session.ExitSuccess, session.ExitReason); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO lifecycle_outcomes
+		(requester_kind,requester_id,request_id,session_id,operation,mode,source_epoch,source_generation,completed_at_ms,failure)
+		VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(requester_kind,requester_id,request_id) DO NOTHING`,
+		pending.Requester.Kind, pending.Requester.ID, pending.RequestID, pending.SessionID, pending.Operation, pending.Mode,
+		pending.SourceEpoch, pending.SourceGeneration, now, "")
+	if err != nil {
+		return err
+	}
+	if inserted, _ := result.RowsAffected(); inserted != 1 {
+		return ErrIdempotencyConflict
+	}
+	result, err = tx.ExecContext(ctx, `DELETE FROM pending_lifecycle_operations
+		WHERE session_id=? AND operation='end' AND request_id=? AND source_epoch=? AND source_generation=? AND phase='runtime_stopped'`,
+		pending.SessionID, pending.RequestID, pending.SourceEpoch, pending.SourceGeneration)
+	if err != nil {
+		return err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return fmt.Errorf("shell end lifecycle fencing conflict")
+	}
+	result, err = tx.ExecContext(ctx, `DELETE FROM sessions
+		WHERE session_id=? AND kind='shell' AND status='stopped' AND ownership_epoch=? AND runtime_generation=?`,
+		pending.SessionID, pending.SourceEpoch, pending.SourceGeneration)
+	if err != nil {
+		return err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return fmt.Errorf("shell end session fencing conflict")
+	}
+	return tx.Commit()
+}
+
 func (s *SQLite) GetRetainedShellSession(ctx context.Context, id model.SessionID, generation uint64) (RetainedShellSession, error) {
 	return scanRetainedShellSession(s.db.QueryRowContext(ctx, `SELECT session_id,runtime_generation,handle,exited_at_ms,exit_success,exit_reason
 		FROM retained_shell_sessions WHERE session_id=? AND runtime_generation=?`, id, generation))
