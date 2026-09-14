@@ -1,9 +1,11 @@
 # Ducklord / Ducklion Remote Agent Control MVP
 
-## Future Ducklord Project and Pane Redesign — Agreed Decisions
+## Ducklord Project and Pane Redesign — Agreed Decisions
 
-This section records decisions for the planned redesign. It does not describe
-the current TUI implementation.
+This section is the implementation target for the Project and pane redesign.
+The operator-facing behavior already available is described in the
+[Ducklord quick guide](ducklord-user-guide.md); any remaining gaps against
+this target still require implementation and verification.
 
 ### Project Membership
 
