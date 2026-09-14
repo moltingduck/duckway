@@ -7000,7 +7000,7 @@ func (s *tuiState) searchResults() []ducklord.RemoteSession {
 	for _, session := range s.sessions {
 		fields := strings.ToLower(strings.Join([]string{
 			modalDisplayText(session.Name), modalDisplayText(session.ProjectName), modalDisplayText(session.Client),
-			modalDisplayText(s.organizationGroupLabel(session)), modalDisplayText(session.Kind), modalDisplayText(session.AgentType),
+			modalDisplayText(s.organizationGroupLabel(session)), modalDisplayText(session.Kind), modalDisplayText(session.AgentType), modalDisplayText(sessionTypeLabel(session)),
 		}, "\n"))
 		matched := true
 		for _, term := range terms {
@@ -8987,6 +8987,9 @@ func displayField(s string) string {
 
 func sessionTypeLabel(session ducklord.RemoteSession) string {
 	if session.Kind == string(model.KindShell) {
+		if session.DetectedForeground == "codex" || session.DetectedForeground == "claude" {
+			return session.DetectedForeground + "?" // process detection is advisory, not an exact task state
+		}
 		return "shell"
 	}
 	if session.AgentType == "" {

@@ -10,6 +10,7 @@ type SessionSummary struct {
 	Handle                string                                `json:"handle"`
 	Kind                  model.SessionKind                     `json:"kind"`
 	AgentType             string                                `json:"agent_type,omitempty"`
+	DetectedForeground    string                                `json:"detected_foreground,omitempty"`
 	ProjectName           string                                `json:"project_name,omitempty"`
 	CWD                   string                                `json:"cwd"`
 	Status                model.SessionStatus                   `json:"status"`
@@ -104,6 +105,12 @@ type SessionResizeResult struct {
 type SupervisorExit struct {
 	Success bool   `json:"success"`
 	Reason  string `json:"reason,omitempty"`
+}
+
+// SupervisorForeground is advisory visibility only. It cannot authorize
+// input, yield, or task-completion notifications.
+type SupervisorForeground struct {
+	Agent string `json:"agent"` // shell, codex, or claude
 }
 
 type SupervisorControlReady struct {

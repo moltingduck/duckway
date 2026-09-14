@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -27,6 +28,9 @@ type SupervisorClient struct {
 	privateKey            ed25519.PrivateKey
 	supportsAttention     bool
 	supportsAgentActivity bool
+	supportsForeground    bool
+	controlReady          chan struct{}
+	controlReadyOnce      sync.Once
 }
 
 type SupervisorActivityClient struct {
@@ -37,6 +41,8 @@ type SupervisorActivityClient struct {
 	nextID                uint64
 	supportsAgentActivity bool
 }
+
+var errForegroundTransport = errors.New("foreground transport failed")
 
 func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation uint64, privateKey ed25519.PrivateKey) (*SupervisorClient, error) {
 	return registerSupervisor(socketPath, sessionID, generation, privateKey, "")
@@ -63,7 +69,7 @@ func registerSupervisor(socketPath string, sessionID model.SessionID, generation
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	handshake := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleSupervisor,
-		Principal: string(sessionID), Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention", "agent_activity"}}
+		Principal: string(sessionID), Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention", "agent_activity", "foreground_visibility"}}
 	if err := codec.Write(handshake); err != nil {
 		return fail(err)
 	}
@@ -139,7 +145,9 @@ func registerSupervisor(socketPath string, sessionID model.SessionID, generation
 	_ = conn.SetDeadline(time.Time{})
 	return &SupervisorClient{conn: conn, codec: codec, identity: identity, instanceID: instanceID, socketPath: socketPath,
 		privateKey: append(ed25519.PrivateKey(nil), privateKey...), supportsAttention: hasCapability(negotiated.Capabilities, "terminal_attention"),
-		supportsAgentActivity: hasCapability(negotiated.Capabilities, "agent_activity")}, nil
+		supportsAgentActivity: hasCapability(negotiated.Capabilities, "agent_activity"),
+		supportsForeground:    hasCapability(negotiated.Capabilities, "foreground_visibility"),
+		controlReady:          make(chan struct{})}, nil
 }
 
 type RuntimeController interface {
@@ -212,6 +220,9 @@ func (c *SupervisorClient) ServeControl(ctx context.Context, controller RuntimeC
 	}
 	if err := validateResponse(completeResponse, "control-complete"); err != nil || completeResponse.Error != nil {
 		return fmt.Errorf("runtime control authentication failed")
+	}
+	if c.controlReady != nil {
+		c.controlReadyOnce.Do(func() { close(c.controlReady) })
 	}
 	_ = conn.SetDeadline(time.Time{})
 	done := make(chan struct{})
@@ -366,6 +377,51 @@ func (c *SupervisorClient) ReportExit(success bool, reason string) error {
 	}
 	if response.Error != nil {
 		return fmt.Errorf("report supervisor exit: %s", response.Error.Message)
+	}
+	return nil
+}
+
+func (c *SupervisorClient) ReportForeground(agent string) error {
+	if !c.supportsForeground {
+		return nil // older Ducklion daemons do not support advisory visibility
+	}
+	if agent == "" {
+		agent = "shell"
+	}
+	if agent != "shell" && agent != "codex" && agent != "claude" {
+		return fmt.Errorf("invalid foreground agent")
+	}
+	body, _ := json.Marshal(protocol.SupervisorForeground{Agent: agent})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	transportFailure := func(err error) error {
+		if c.conn != nil {
+			_ = c.conn.Close() // A late response would desynchronize the shared codec.
+		}
+		return fmt.Errorf("%w: %w", errForegroundTransport, err)
+	}
+	if c.conn != nil {
+		if err := c.conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			return transportFailure(err)
+		}
+		defer func() { _ = c.conn.SetDeadline(time.Time{}) }()
+	}
+	c.nextID++
+	id := fmt.Sprintf("foreground-%d", c.nextID)
+	generation := c.identity.RuntimeGeneration
+	if err := c.codec.Write(protocol.Request{ID: id, Type: "supervisor.foreground", InstanceID: string(c.instanceID),
+		SessionID: c.identity.SessionID, RuntimeGeneration: &generation, Body: body}); err != nil {
+		return transportFailure(err)
+	}
+	var response protocol.Response
+	if err := c.codec.Read(&response); err != nil {
+		return transportFailure(err)
+	}
+	if err := validateResponse(response, id); err != nil {
+		return transportFailure(err)
+	}
+	if response.Error != nil {
+		return fmt.Errorf("report foreground: %s", response.Error.Message)
 	}
 	return nil
 }

@@ -30,6 +30,7 @@ type RemoteSession struct {
 	Kind                  string                                `json:"kind,omitempty"`
 	Status                string                                `json:"status"`
 	AgentType             string                                `json:"agent_type"`
+	DetectedForeground    string                                `json:"detected_foreground,omitempty"`
 	ProjectName           string                                `json:"project_name,omitempty"`
 	Cwd                   string                                `json:"cwd"`
 	TmuxSession           string                                `json:"tmux_session"`
@@ -610,7 +611,7 @@ func remoteSessionsFromSummaries(c Client, instanceID string, summaries []protoc
 
 func remoteSessionFromSummary(c Client, instanceID string, summary protocol.SessionSummary) RemoteSession {
 	session := RemoteSession{Client: c.Name, InstanceID: instanceID, SessionID: summary.SessionID, Name: summary.Handle, Kind: string(summary.Kind), Status: string(summary.Status),
-		AgentType: summary.AgentType, ProjectName: summary.ProjectName, Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
+		AgentType: summary.AgentType, DetectedForeground: summary.DetectedForeground, ProjectName: summary.ProjectName, Cwd: summary.CWD, Group: c.Group, OwnershipEpoch: summary.OwnershipEpoch, RuntimeGeneration: summary.RuntimeGeneration,
 		TaskState: string(summary.TaskState), AdapterState: string(summary.AdapterState), ExitSuccess: summary.ExitSuccess, ExitReason: summary.ExitReason,
 		ActivitySequences: cloneActivitySequences(summary.ActivitySequences), ActivityUpdatedAtMS: cloneActivityUpdatedAtMS(summary.ActivityUpdatedAtMS), RetainedOutputBytes: summary.RetainedOutputBytes, RetainedOutputUntilMS: summary.RetainedOutputUntilMS}
 	if summary.Writer != nil {

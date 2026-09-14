@@ -55,6 +55,14 @@ func (s *tuiState) workspaceQuickSessions() []ducklord.RemoteSession {
 	return rows
 }
 
+func workspacePaneTitle(session ducklord.RemoteSession) string {
+	title := displayField(session.Client) + "/" + displayField(session.Name)
+	if session.Kind == string(model.KindShell) && (session.DetectedForeground == "codex" || session.DetectedForeground == "claude") {
+		title += " [" + session.DetectedForeground + "?]"
+	}
+	return title
+}
+
 func (s *tuiState) workspaceColumnOffsets(geometry ducklord.WorkspaceGeometry, nav *ducklord.WorkspaceState, quick []ducklord.RemoteSession) ducklord.WorkspaceColumnOffsets {
 	layout := &s.activity().ProjectLayout
 	projectIndex := -1
@@ -401,7 +409,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 				if !ok {
 					return ducklord.WorkspacePaneView{Title: "Session unavailable", Stale: true, ReadOnly: true}
 				}
-				view := ducklord.WorkspacePaneView{Title: displayField(session.Client) + "/" + displayField(session.Name),
+				view := ducklord.WorkspacePaneView{Title: workspacePaneTitle(session),
 					Stale:    !s.outputFresh || s.outputStale || !s.hostIsLive(session.Client),
 					ReadOnly: session.Kind != string(model.KindShell) && (session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName),
 					Focused:  s.focused && s.activeAttachKey == sessionKey(session)}
@@ -459,7 +467,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 			if selection, live := visibleOutput[identity]; live && session.Client != selection.Client.Name {
 				continue // title, ACL and framebuffer must come from the same host alias
 			}
-			view := ducklord.WorkspacePaneView{Title: displayField(session.Client) + "/" + displayField(session.Name),
+			view := ducklord.WorkspacePaneView{Title: workspacePaneTitle(session),
 				Stale: true, ReadOnly: session.Kind != string(model.KindShell) &&
 					(session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName)}
 			if sessionKey(session) != sessionKey(displayed) {

@@ -19,7 +19,14 @@ func (s *tuiState) quickSortMode() string {
 
 func quickTypeRank(session ducklord.RemoteSession) int {
 	if session.Kind == string(model.KindShell) {
-		return 3 // do not infer an agent from the shell root or output text
+		switch session.DetectedForeground {
+		case "codex":
+			return 0
+		case "claude":
+			return 1
+		default:
+			return 3 // uncertainty never claims an agent
+		}
 	}
 	switch strings.ToLower(session.AgentType) {
 	case "codex":

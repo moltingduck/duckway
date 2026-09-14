@@ -8,6 +8,35 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 )
 
+var ErrVisibilityRuntimeChanged = errors.New("session runtime changed before visibility update")
+
+// InvalidateVisibility appends a revision for an ephemeral, generation-fenced
+// visibility change. It never changes task, ownership, or notification state.
+func (s *SQLite) InvalidateVisibility(ctx context.Context, sessionID model.SessionID, generation uint64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `INSERT INTO session_revision_events(session_id,change_kind,created_at_ms)
+		SELECT session_id,'invalidate',unixepoch('subsec')*1000 FROM sessions
+		WHERE session_id=? AND runtime_generation=? AND status='running'`, sessionID, generation)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return ErrVisibilityRuntimeChanged
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM session_revision_events WHERE revision <= (SELECT max(revision)-4096 FROM session_revision_events)`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 type SessionProjection struct {
 	Session             model.Session
 	ChannelHandle       string

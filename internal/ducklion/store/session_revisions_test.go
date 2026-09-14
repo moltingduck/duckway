@@ -11,6 +11,53 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 )
 
+func TestInvalidateVisibilityRequiresCurrentRunningGeneration(t *testing.T) {
+	ctx := context.Background()
+	database, err := Open(ctx, filepath.Join(t.TempDir(), "ducklion.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	now := time.Now().UnixMilli()
+	session := model.Session{ID: "ABC123", Handle: "shell", Kind: model.KindShell, CWD: t.TempDir(), Status: model.StatusRecovering,
+		RuntimeGeneration: 1, TaskState: model.TaskIdle, AdapterState: model.AdapterUnavailable,
+		RecoveryPublicKey: make([]byte, 32), CreatedAtMS: now, UpdatedAtMS: now}
+	if _, _, err := database.CreateSessionIdempotent(ctx, "terminal:desk", "create-foreground", sha256.Sum256([]byte("foreground")), session); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := database.SessionSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InvalidateVisibility(ctx, session.ID, 1); err == nil {
+		t.Fatal("recovering runtime must not publish foreground visibility")
+	}
+	if err := database.MarkRuntimeConnected(ctx, session.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	connected, err := database.SessionSnapshot(ctx)
+	if err != nil || connected.Revision <= initial.Revision {
+		t.Fatalf("connected revision=%d err=%v", connected.Revision, err)
+	}
+	if err := database.InvalidateVisibility(ctx, session.ID, 2); err == nil {
+		t.Fatal("stale generation must not publish foreground visibility")
+	}
+	unchanged, err := database.SessionSnapshot(ctx)
+	if err != nil || unchanged.Revision != connected.Revision {
+		t.Fatalf("stale revision=%d want=%d err=%v", unchanged.Revision, connected.Revision, err)
+	}
+	if err := database.InvalidateVisibility(ctx, session.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := database.SessionSnapshot(ctx)
+	if err != nil || updated.Revision != connected.Revision+1 {
+		t.Fatalf("visibility revision=%d want=%d err=%v", updated.Revision, connected.Revision+1, err)
+	}
+	if updated.Sessions[0].Session.TaskState != connected.Sessions[0].Session.TaskState {
+		t.Fatal("visibility invalidation changed task state")
+	}
+}
+
 func TestSessionRevisionJournalTracksCommittedProjectionChanges(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "ducklion.db")

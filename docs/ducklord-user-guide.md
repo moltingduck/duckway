@@ -51,6 +51,11 @@ shown in the input box.
 
 Shell sessions are writable like tmux. Agent sessions have one writer; a
 read-only session must be yielded to this Ducklord before it accepts input.
+When Codex or Claude runs in a shell-first Session, Ducklord may show
+`[codex?]` or `[claude?]` beside its pane. The question mark means this is a
+best-effort foreground-process hint, not a change to Session ownership or a
+task-completion signal. The label returns to Shell when the agent leaves the
+foreground.
 
 ## Ownership and Discord
 

@@ -1461,6 +1461,10 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 		go func() { forwardDone <- client.ForwardOutput(connectionCtx, ptySession.Output()) }()
 		go func() { controlDone <- client.ServeControl(connectionCtx, ptySession) }()
 		go func() { eventDone <- forwardPendingAgentEvents(connectionCtx, client, ptySession) }()
+		if spec.Kind == model.KindShell && client.supportsForeground {
+			// Advisory visibility cannot terminate or reconnect the PTY bridge.
+			go func() { _ = forwardForeground(connectionCtx, client, ptySession) }()
+		}
 		go forwardPendingAttention(connectionCtx, client, ptySession)
 		select {
 		case err := <-wait:
@@ -1564,6 +1568,38 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func forwardForeground(ctx context.Context, client *SupervisorClient, session *supervisor.Session) error {
+	if client == nil || client.controlReady == nil {
+		return fmt.Errorf("foreground reporting requires a registered control bridge")
+	}
+	select {
+	case <-client.controlReady:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	last := "unreported"
+	for {
+		agent := session.ForegroundAgent()
+		if agent == "" {
+			agent = "shell"
+		}
+		if agent != last {
+			if err := client.ReportForeground(agent); errors.Is(err, errForegroundTransport) {
+				return err // shared codec is closed; the normal bridge paths reconnect.
+			} else if err == nil {
+				last = agent
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 }
 

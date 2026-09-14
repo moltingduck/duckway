@@ -32,6 +32,7 @@ import (
 )
 
 var ErrAlreadyRunning = errors.New("ducklion daemon is already running")
+var errForegroundStale = errors.New("foreground runtime is no longer current")
 
 const (
 	maxOutputSubscriptionsPerConnection = 101 // configured Ducklord maximum plus one atomic handoff slot
@@ -91,6 +92,8 @@ type Server struct {
 	agentEvents                  map[string][]protocol.SupervisorAgentEvent
 	agentEventCount              int
 	agentEventBytes              int
+	foregroundMu                 sync.Mutex
+	foreground                   map[model.SessionID]foregroundObservation
 	sessionEventMu               sync.Mutex
 	sessionEventSubscriptions    int
 	attentionMu                  sync.Mutex
@@ -108,6 +111,11 @@ type ducklordLease struct {
 	processID   string
 	control     *net.UnixConn
 	connections map[string]*net.UnixConn
+}
+
+type foregroundObservation struct {
+	identity duckruntime.RuntimeIdentity
+	agent    string
 }
 
 const maxDucklordObserverConnections = 8
@@ -261,6 +269,7 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 	server.retainedOutputTTL.Store(int64(initialTTL))
 	server.retainedOutputSweep = make(chan struct{}, 1)
 	server.agentEvents = make(map[string][]protocol.SupervisorAgentEvent)
+	server.foreground = make(map[model.SessionID]foregroundObservation)
 	server.lifecycleWorkers = make(map[model.SessionID]struct{})
 	if server.runtimeLauncher == nil {
 		server.runtimeLauncher = server.spawnRuntime
@@ -636,7 +645,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "supervisor principal must be the canonical session ID"}})
 		return
 	}
-	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention", "agent_activity"}}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention", "agent_activity", "foreground_visibility"}}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
 	if protocolError != nil || !hasCapability(negotiated.Capabilities, "supervisor_recovery") || !hasCapability(negotiated.Capabilities, "output_publish") {
 		if protocolError == nil {
@@ -704,6 +713,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 	defer func() {
 		s.deactivateOutput(identity)
 		s.registry.Disconnect(identity)
+		s.forgetForeground(identity)
 		s.forgetAttention(identity)
 		_ = s.state.MarkRuntimeDisconnected(context.Background(), identity.SessionID, identity.Generation)
 	}()
@@ -733,6 +743,26 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 		case "supervisor.ping":
 			if len(request.Body) != 0 {
 				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid supervisor ping")
+				continue
+			}
+			result, _ = json.Marshal(map[string]bool{"ok": true})
+		case "supervisor.foreground":
+			if !hasCapability(negotiated.Capabilities, "foreground_visibility") {
+				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "foreground visibility was not negotiated")
+				continue
+			}
+			var foreground protocol.SupervisorForeground
+			if err := decodeStrict(request.Body, &foreground); err != nil ||
+				(foreground.Agent != "shell" && foreground.Agent != "codex" && foreground.Agent != "claude") {
+				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid foreground agent")
+				continue
+			}
+			if err := s.applyForeground(identity, foreground.Agent); err != nil {
+				if errors.Is(err, errForegroundStale) {
+					writeSupervisorError(codec, request.ID, protocol.ErrStaleGeneration, "foreground runtime changed")
+				} else {
+					writeSupervisorError(codec, request.ID, protocol.ErrInternal, "could not publish foreground visibility")
+				}
 				continue
 			}
 			result, _ = json.Marshal(map[string]bool{"ok": true})
@@ -1542,6 +1572,53 @@ func (s *Server) forgetAttention(identity duckruntime.RuntimeIdentity) {
 	s.attentionMu.Unlock()
 }
 
+func (s *Server) applyForeground(identity duckruntime.RuntimeIdentity, agent string) error {
+	if !s.registry.IsCurrent(identity) {
+		return errForegroundStale
+	}
+	session, err := s.state.GetSession(context.Background(), identity.SessionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return errForegroundStale
+		}
+		return err
+	}
+	if session.Kind != model.KindShell || session.Status != model.StatusRunning || session.RuntimeGeneration != identity.Generation {
+		return errForegroundStale
+	}
+	s.foregroundMu.Lock()
+	defer s.foregroundMu.Unlock()
+	old, hadOld := s.foreground[identity.SessionID]
+	if hadOld && old.identity == identity && old.agent == agent || !hadOld && agent == "shell" {
+		return nil
+	}
+	if agent == "shell" {
+		delete(s.foreground, identity.SessionID)
+	} else {
+		s.foreground[identity.SessionID] = foregroundObservation{identity: identity, agent: agent}
+	}
+	if err := s.state.InvalidateVisibility(context.Background(), identity.SessionID, identity.Generation); err != nil {
+		if hadOld {
+			s.foreground[identity.SessionID] = old
+		} else {
+			delete(s.foreground, identity.SessionID)
+		}
+		if errors.Is(err, store.ErrVisibilityRuntimeChanged) {
+			return errForegroundStale
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *Server) forgetForeground(identity duckruntime.RuntimeIdentity) {
+	s.foregroundMu.Lock()
+	if current, ok := s.foreground[identity.SessionID]; ok && current.identity == identity {
+		delete(s.foreground, identity.SessionID)
+	}
+	s.foregroundMu.Unlock()
+}
+
 func (s *Server) summariesFor(projections []store.SessionProjection) []protocol.SessionSummary {
 	summaries := make([]protocol.SessionSummary, 0, len(projections))
 	for _, projection := range projections {
@@ -1551,6 +1628,14 @@ func (s *Server) summariesFor(projections []store.SessionProjection) []protocol.
 			TaskState: session.TaskState, AdapterState: session.AdapterState, ExitSuccess: session.ExitSuccess, ExitReason: session.ExitReason,
 			ChannelHandle: projection.ChannelHandle, ManagementHandle: projection.ManagementHandle, ActivitySequences: projection.ActivitySequences,
 			ActivityUpdatedAtMS: projection.ActivityUpdatedAtMS}
+		if session.Kind == model.KindShell && session.Status == model.StatusRunning {
+			s.foregroundMu.Lock()
+			observation, ok := s.foreground[session.ID]
+			s.foregroundMu.Unlock()
+			if ok && observation.identity.Generation == session.RuntimeGeneration && s.registry.IsCurrent(observation.identity) {
+				summary.DetectedForeground = observation.agent
+			}
+		}
 		if session.Status == model.StatusStopped {
 			if retained, err := supervisor.RetainedOutputInfo(filepath.Join(s.root, "sessions", string(session.ID)), session.ID, session.RuntimeGeneration); err == nil &&
 				time.Since(retained.UpdatedAt) <= s.retainedTTL() {
