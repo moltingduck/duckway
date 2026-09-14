@@ -88,6 +88,16 @@ type startDoneEvent struct {
 	err       error
 }
 
+type pendingWorkspacePlacement struct {
+	intent          workspacePaneIntent
+	client          string
+	instanceID      string
+	sessionID       string
+	generation      uint64
+	connectionEpoch uint64
+	createdAt       time.Time
+}
+
 type hostRetentionEvent struct {
 	id         uint64
 	epoch      uint64
@@ -1363,6 +1373,7 @@ type tuiState struct {
 	newSessionStarting         bool
 	newSessionStartGeneration  uint64
 	newSessionStartInstance    string
+	newSessionStartEpoch       uint64
 	newSessionDiscovering      bool
 	newSessionRequestID        uint64
 	newSessionCancel           context.CancelFunc
@@ -1491,6 +1502,7 @@ type tuiState struct {
 	workspaceQuickOffset       int
 	workspacePaneChanged       bool
 	workspaceNewSessionIntent  *workspacePaneIntent
+	pendingWorkspacePlacements []pendingWorkspacePlacement
 	detailQuery                string
 	detailFilter               ducklord.DetailFilter
 	detailSearchFocused        bool
@@ -2072,6 +2084,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			state.render(os.Stdout)
 		case <-ticker.C:
+			// Start and inventory are separate RPCs. While a new pane is
+			// awaiting its Session, poll even in event-driven mode so a missed
+			// update cannot strand the placement or its deadline forever.
+			hadPendingPlacement := len(state.pendingWorkspacePlacements) > 0
+			if hadPendingPlacement {
+				state.refreshSessions(ctx)
+			}
 			if workspaceOutput != nil && control != nil && !state.focused {
 				if !pendingControlSince.IsZero() && time.Since(pendingControlSince) >= 15*time.Second {
 					_ = control.Stdin.Close()
@@ -2085,7 +2104,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			if !state.focused && !state.newSessionMode && !state.searchMode {
-				if !state.eventDriven {
+				if !state.eventDriven && !hadPendingPlacement {
 					state.refreshSessions(ctx)
 				}
 				requestPreview(false)
@@ -2456,6 +2475,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					id := startID
 					state.newSessionStarting = true
 					state.newSessionStartGeneration, state.newSessionStartInstance = state.hostFingerprint(clientName)
+					state.newSessionStartEpoch = state.hostConnectionEpoch[clientName]
 					state.newSessionErr = "starting..."
 					go func() {
 						sessionID, startErr := runner.Start(startCtx, client, args)
@@ -3140,6 +3160,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					if string(b) == "\x03" {
 						if state.newSessionStarting && startCancel != nil {
 							startCancel()
+							startCancel = nil
+							startID++ // fence a Start result racing with Ctrl+C
 						}
 						state.cancelCreate()
 						state.render(os.Stdout)
@@ -3196,6 +3218,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					id := startID
 					state.newSessionStarting = true
 					state.newSessionStartGeneration, state.newSessionStartInstance = state.hostFingerprint(clientName)
+					state.newSessionStartEpoch = state.hostConnectionEpoch[clientName]
 					state.newSessionErr = "starting..."
 					go func() {
 						sessionID, err := runner.Start(startCtx, c, args)
@@ -3831,6 +3854,7 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 	if s.workspaceNav != nil && s.workspaceNav.InDetailMode() {
 		s.syncDetailSelection()
 	}
+	s.reconcilePendingWorkspacePlacements()
 }
 
 // applySessionUpdate reports whether the update became authoritative. Callers
@@ -3906,6 +3930,7 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) bool {
 		if s.activePTYSession().Client == update.Client {
 			s.outputFresh = false
 		}
+		s.reconcilePendingWorkspacePlacements()
 		return true // retain the last authoritative rows while reconnecting
 	}
 	oldKey := s.currentKey()
@@ -4014,6 +4039,7 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) bool {
 	if s.workspaceNav != nil && s.workspaceNav.InDetailMode() {
 		s.syncDetailSelection()
 	}
+	s.reconcilePendingWorkspacePlacements()
 	if attachedKey := s.effectiveAttachKey(); attachedKey != "" {
 		activeExists := false
 		for _, session := range s.sessions {
@@ -4912,16 +4938,6 @@ func (s *tuiState) selectedClientName() string {
 	return ""
 }
 
-func (s *tuiState) selectSession(clientName, sessionID string) {
-	for i, sess := range s.sessions {
-		if sess.Client == clientName && strings.EqualFold(sess.SessionID, sessionID) {
-			s.selected = i
-			s.selectedKey = s.currentKey()
-			return
-		}
-	}
-}
-
 func (s *tuiState) completeNewSessionStart(ctx context.Context, clientName, sessionID string, err error) {
 	s.newSessionStarting = false
 	if err != nil {
@@ -4934,31 +4950,81 @@ func (s *tuiState) completeNewSessionStart(ctx context.Context, clientName, sess
 	s.newSessionLine = ""
 	s.newSessionErr = ""
 	s.outputErr = ""
-	s.refreshSessions(ctx)
-	s.selectSession(clientName, sessionID)
 	if intent != nil {
 		generation, instance := s.hostFingerprint(clientName)
-		if !s.hostIsLive(clientName) || generation != s.newSessionStartGeneration || instance != s.newSessionStartInstance {
+		if !s.hostIsLive(clientName) || generation != s.newSessionStartGeneration || instance != s.newSessionStartInstance ||
+			s.hostConnectionEpoch[clientName] != s.newSessionStartEpoch {
 			s.outputErr = "shell started, but host changed before pane placement; find it in Default Project"
 		} else {
-			found := false
-			for _, session := range s.sessions {
-				if session.Client == clientName && session.InstanceID == instance && session.SessionID == sessionID {
-					found = true
-					if placeErr := s.placeWorkspacePane(*intent, session); placeErr != nil {
-						s.outputErr = "shell started, but pane placement failed: " + sanitizeTerminalText(placeErr.Error())
-					}
-					break
-				}
-			}
-			if !found {
-				s.outputErr = "shell started, but it is not synchronized yet; find it in Default Project"
+			s.pendingWorkspacePlacements = append(s.pendingWorkspacePlacements, pendingWorkspacePlacement{
+				intent: *intent, client: clientName, instanceID: instance, sessionID: sessionID,
+				generation: generation, connectionEpoch: s.newSessionStartEpoch, createdAt: time.Now(),
+			})
+		}
+	}
+	s.refreshSessions(ctx)
+	for index, session := range s.sessions {
+		if session.Client == clientName && session.InstanceID == s.newSessionStartInstance && session.SessionID == sessionID {
+			s.selected = index
+			s.selectedKey = s.currentKey()
+			break
+		}
+	}
+	if s.outputErr == "" {
+		for _, pending := range s.pendingWorkspacePlacements {
+			if pending.client == clientName && pending.instanceID == s.newSessionStartInstance && pending.sessionID == sessionID &&
+				pending.generation == s.newSessionStartGeneration && pending.connectionEpoch == s.newSessionStartEpoch {
+				s.outputErr = "shell started; waiting for session synchronization before placing its pane"
+				break
 			}
 		}
 	}
 	if !s.pooledOutput {
+		placementMessage := s.outputErr
 		s.refreshSelectedOutput(ctx)
+		if placementMessage != "" {
+			s.outputErr = placementMessage
+		}
 	}
+}
+
+// A successful Start may precede the next authoritative inventory. Preserve
+// its exact pane intent until that Session appears, while fencing Host changes.
+func (s *tuiState) reconcilePendingWorkspacePlacements() {
+	if len(s.pendingWorkspacePlacements) == 0 {
+		return
+	}
+	remaining := s.pendingWorkspacePlacements[:0]
+	for _, pending := range s.pendingWorkspacePlacements {
+		generation, instance := s.hostFingerprint(pending.client)
+		if !s.hostIsLive(pending.client) || generation != pending.generation || instance != pending.instanceID ||
+			s.hostConnectionEpoch[pending.client] != pending.connectionEpoch {
+			s.outputErr = "shell started, but Host changed before pane placement; find it in Default Project"
+			continue
+		}
+		if time.Since(pending.createdAt) > 30*time.Second {
+			s.outputErr = "shell started, but its Session was not synchronized; find it in Default Project"
+			continue
+		}
+		found := false
+		for _, session := range s.sessions {
+			if session.Client != pending.client || session.InstanceID != pending.instanceID || session.SessionID != pending.sessionID {
+				continue
+			}
+			found = true
+			s.outputErr = ""
+			if err := s.placeWorkspacePane(pending.intent, session); err != nil {
+				s.outputErr = "shell started, but pane placement failed: " + sanitizeTerminalText(err.Error())
+			} else if s.outputErr == "" {
+				s.outputErr = "Session pane created"
+			}
+			break
+		}
+		if !found {
+			remaining = append(remaining, pending)
+		}
+	}
+	s.pendingWorkspacePlacements = remaining
 }
 
 func (s *tuiState) refreshSelectedOutput(ctx context.Context) {

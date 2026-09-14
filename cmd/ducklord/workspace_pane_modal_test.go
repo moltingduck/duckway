@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
@@ -261,7 +262,7 @@ func TestWorkspaceNewShellCompletionPlacesExactSessionOrLeavesDefault(t *testing
 				if len(projects) != 1 || projects[0] != ducklord.DefaultProjectID || !strings.Contains(state.outputErr, "host changed") {
 					t.Fatalf("changed host placed shell into stale Project: %v %q", projects, state.outputErr)
 				}
-			} else if len(projects) != 1 || projects[0] != projectID || state.outputErr != "" {
+			} else if len(projects) != 1 || projects[0] != projectID || state.outputErr != "Session pane created" {
 				t.Fatalf("stable host did not place new shell: %v %q", projects, state.outputErr)
 			}
 			if state.workspaceNewSessionIntent != nil {
@@ -283,6 +284,102 @@ func TestWorkspaceNewShellIntentClearsOnHostChangeAndCancel(t *testing.T) {
 	state.cancelCreate()
 	if state.workspaceNewSessionIntent != nil {
 		t.Fatal("cancel retained stale Project placement intent")
+	}
+}
+
+func TestWorkspaceNewShellWaitsForExactSessionSynchronization(t *testing.T) {
+	state, projectID, a, b := workspacePaneTestState(t)
+	state.runner = fakeRunner{sessions: []ducklord.RemoteSession{a}}
+	state.pooledOutput = true
+	state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceNewTab}
+	state.newSessionMode, state.newSessionStarting = true, true
+	state.newSessionStartGeneration, state.newSessionStartInstance = 2, a.InstanceID
+	state.hostSync = map[string]ducklord.SessionUpdate{"host": {Client: "host", State: "live", Generation: 2, InstanceID: a.InstanceID}}
+	state.completeNewSessionStart(context.Background(), "host", b.SessionID, nil)
+	if len(state.pendingWorkspacePlacements) != 1 || !strings.Contains(state.outputErr, "waiting for session synchronization") {
+		t.Fatalf("start discarded pending pane placement: %+v %q", state.pendingWorkspacePlacements, state.outputErr)
+	}
+	identity, _ := ducklord.IdentityFromSession(b)
+	if got := state.activity().ProjectLayout.ProjectsFor(identity); len(got) != 0 {
+		t.Fatalf("placed shell before inventory listed it: %v", got)
+	}
+	state.runner = fakeRunner{sessions: []ducklord.RemoteSession{a, b}}
+	state.refreshSessions(context.Background())
+	if len(state.pendingWorkspacePlacements) != 0 {
+		t.Fatal("synchronized shell retained pending placement")
+	}
+	if got := state.activity().ProjectLayout.ProjectsFor(identity); len(got) != 1 || got[0] != projectID {
+		t.Fatalf("synchronized shell was not placed: %v", got)
+	}
+}
+
+func TestWorkspacePendingPlacementRejectsHostConnectionEpochChange(t *testing.T) {
+	state, projectID, a, b := workspacePaneTestState(t)
+	state.runner = fakeRunner{sessions: []ducklord.RemoteSession{a}}
+	state.pooledOutput = true
+	state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceNewTab}
+	state.newSessionMode, state.newSessionStarting = true, true
+	state.newSessionStartGeneration, state.newSessionStartInstance = 2, a.InstanceID
+	state.hostSync = map[string]ducklord.SessionUpdate{"host": {Client: "host", State: "live", Generation: 2, InstanceID: a.InstanceID}}
+	state.completeNewSessionStart(context.Background(), "host", b.SessionID, nil)
+	state.bumpHostConnectionEpoch("host")
+	state.runner = fakeRunner{sessions: []ducklord.RemoteSession{a, b}}
+	state.refreshSessions(context.Background())
+	identity, _ := ducklord.IdentityFromSession(b)
+	if got := state.activity().ProjectLayout.ProjectsFor(identity); len(got) != 1 || got[0] != ducklord.DefaultProjectID || len(state.pendingWorkspacePlacements) != 0 {
+		t.Fatalf("stale connection placed pane: %v pending=%d", got, len(state.pendingWorkspacePlacements))
+	}
+}
+
+func TestWorkspacePendingPlacementClearsOnHostDisconnect(t *testing.T) {
+	state, projectID, a, b := workspacePaneTestState(t)
+	state.runner = fakeRunner{sessions: []ducklord.RemoteSession{a}}
+	state.pooledOutput = true
+	state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceNewTab}
+	state.newSessionMode, state.newSessionStarting = true, true
+	state.newSessionStartGeneration, state.newSessionStartInstance = 2, a.InstanceID
+	state.hostSync = map[string]ducklord.SessionUpdate{"host": {Client: "host", State: "live", Generation: 2, InstanceID: a.InstanceID}}
+	state.completeNewSessionStart(context.Background(), "host", b.SessionID, nil)
+	if !state.applySessionUpdate(ducklord.SessionUpdate{Client: "host", State: "disconnected", Generation: 3, InstanceID: a.InstanceID}) {
+		t.Fatal("disconnect update was rejected")
+	}
+	if len(state.pendingWorkspacePlacements) != 0 {
+		t.Fatal("Host disconnect retained stale pending placement")
+	}
+}
+
+func TestWorkspacePendingPlacementUsesDelayedHostUpdate(t *testing.T) {
+	state, projectID, a, b := workspacePaneTestState(t)
+	state.runner = fakeRunner{sessions: []ducklord.RemoteSession{a}}
+	state.pooledOutput = true
+	state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceNewTab}
+	state.newSessionMode, state.newSessionStarting = true, true
+	state.newSessionStartGeneration, state.newSessionStartInstance = 2, a.InstanceID
+	state.hostSync = map[string]ducklord.SessionUpdate{"host": {Client: "host", State: "live", Generation: 2, InstanceID: a.InstanceID}}
+	state.completeNewSessionStart(context.Background(), "host", b.SessionID, nil)
+	if !state.applySessionUpdate(ducklord.SessionUpdate{Client: "host", State: "live", Generation: 2, InstanceID: a.InstanceID,
+		Revision: 1, Sessions: []ducklord.RemoteSession{a, b}}) {
+		t.Fatal("delayed Host inventory was rejected")
+	}
+	identity, _ := ducklord.IdentityFromSession(b)
+	if got := state.activity().ProjectLayout.ProjectsFor(identity); len(got) != 1 || got[0] != projectID || len(state.pendingWorkspacePlacements) != 0 {
+		t.Fatalf("delayed Host update did not place pane: %v pending=%d", got, len(state.pendingWorkspacePlacements))
+	}
+}
+
+func TestWorkspacePendingPlacementExpiresWithoutSession(t *testing.T) {
+	state, projectID, a, b := workspacePaneTestState(t)
+	state.runner = fakeRunner{sessions: []ducklord.RemoteSession{a}}
+	state.pooledOutput = true
+	state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceNewTab}
+	state.newSessionMode, state.newSessionStarting = true, true
+	state.newSessionStartGeneration, state.newSessionStartInstance = 2, a.InstanceID
+	state.hostSync = map[string]ducklord.SessionUpdate{"host": {Client: "host", State: "live", Generation: 2, InstanceID: a.InstanceID}}
+	state.completeNewSessionStart(context.Background(), "host", b.SessionID, nil)
+	state.pendingWorkspacePlacements[0].createdAt = time.Now().Add(-31 * time.Second)
+	state.refreshSessions(context.Background()) // same bounded poll used by the TUI ticker
+	if len(state.pendingWorkspacePlacements) != 0 || !strings.Contains(state.outputErr, "not synchronized") {
+		t.Fatalf("missing Session retained pending pane forever: %+v %q", state.pendingWorkspacePlacements, state.outputErr)
 	}
 }
 
