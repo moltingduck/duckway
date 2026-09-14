@@ -204,8 +204,12 @@ func Start(options Options) (*Session, error) {
 		if hookListener != nil {
 			_ = hookListener.Close()
 			_ = os.RemoveAll(hookDir)
-			_ = legacyAdapterRead.Close()
-			_ = legacyAdapterWrite.Close()
+			if legacyAdapterRead != nil {
+				_ = legacyAdapterRead.Close()
+			}
+			if legacyAdapterWrite != nil {
+				_ = legacyAdapterWrite.Close()
+			}
 		}
 		return nil, fmt.Errorf("start supervised PTY: %w", err)
 	}
@@ -222,7 +226,9 @@ func Start(options Options) (*Session, error) {
 			if hookListener != nil {
 				_ = hookListener.Close()
 				_ = os.RemoveAll(hookDir)
-				_ = legacyAdapterRead.Close()
+				if legacyAdapterRead != nil {
+					_ = legacyAdapterRead.Close()
+				}
 			}
 			return nil, err
 		}

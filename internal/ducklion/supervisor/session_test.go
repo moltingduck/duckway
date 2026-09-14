@@ -19,6 +19,31 @@ import (
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 )
 
+func TestBuiltInAgentLaunchFailureReturnsErrorWithoutPanic(t *testing.T) {
+	for _, agent := range []string{"codex", "claude"} {
+		t.Run(agent, func(t *testing.T) {
+			_, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 1, OwnershipEpoch: 1,
+				AgentType: agent, CWD: t.TempDir(), Command: []string{"/definitely/missing-agent-binary"}})
+			if err == nil {
+				t.Fatal("missing built-in agent binary unexpectedly started")
+			}
+		})
+	}
+}
+
+func TestBuiltInAgentRetainedOutputFailureReturnsErrorWithoutPanic(t *testing.T) {
+	for _, agent := range []string{"codex", "claude"} {
+		t.Run(agent, func(t *testing.T) {
+			_, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 1, OwnershipEpoch: 1,
+				AgentType: agent, CWD: t.TempDir(), Command: []string{"sh", "-c", "sleep 30"},
+				RetainedOutputDir: filepath.Join(t.TempDir(), "missing")})
+			if err == nil {
+				t.Fatal("missing retained-output directory unexpectedly accepted")
+			}
+		})
+	}
+}
+
 func TestCodexManagedPTYInjectsCompletionHookWithoutBypassingHookTrust(t *testing.T) {
 	dir := t.TempDir()
 	argsPath := filepath.Join(dir, "args")

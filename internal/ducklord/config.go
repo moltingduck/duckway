@@ -14,27 +14,30 @@ import (
 )
 
 type Config struct {
-	Name                   string            `json:"name,omitempty" yaml:"name,omitempty"`
-	RawOutputSubscriptions *int              `json:"raw_output_subscription_limit,omitempty" yaml:"raw_output_subscription_limit,omitempty"`
-	SessionListWidth       *int              `json:"session_list_width,omitempty" yaml:"session_list_width,omitempty"`
-	AutoHideSessionList    *bool             `json:"auto_hide_session_list,omitempty" yaml:"auto_hide_session_list,omitempty"`
-	PromoteUnreadSessions  *bool             `json:"promote_unread_sessions,omitempty" yaml:"promote_unread_sessions,omitempty"`
-	QuickSort              string            `json:"quick_sort,omitempty" yaml:"quick_sort,omitempty"`
-	QuickOldestFirst       bool              `json:"quick_oldest_first,omitempty" yaml:"quick_oldest_first,omitempty"`
-	Shortcuts              map[string]string `json:"shortcuts,omitempty" yaml:"shortcuts,omitempty"`
-	Clients                []Client          `json:"hosts" yaml:"hosts"`
+	Name                   string                                  `json:"name,omitempty" yaml:"name,omitempty"`
+	RawOutputSubscriptions *int                                    `json:"raw_output_subscription_limit,omitempty" yaml:"raw_output_subscription_limit,omitempty"`
+	SessionListWidth       *int                                    `json:"session_list_width,omitempty" yaml:"session_list_width,omitempty"`
+	AutoHideSessionList    *bool                                   `json:"auto_hide_session_list,omitempty" yaml:"auto_hide_session_list,omitempty"`
+	PromoteUnreadSessions  *bool                                   `json:"promote_unread_sessions,omitempty" yaml:"promote_unread_sessions,omitempty"`
+	QuickSort              string                                  `json:"quick_sort,omitempty" yaml:"quick_sort,omitempty"`
+	QuickOldestFirst       bool                                    `json:"quick_oldest_first,omitempty" yaml:"quick_oldest_first,omitempty"`
+	NotificationLevels     map[NotificationClass]NotificationLevel `json:"notification_levels,omitempty" yaml:"notification_levels,omitempty"`
+	OtherProjectThreshold  NotificationLevel                       `json:"other_project_threshold,omitempty" yaml:"other_project_threshold,omitempty"`
+	Shortcuts              map[string]string                       `json:"shortcuts,omitempty" yaml:"shortcuts,omitempty"`
+	Clients                []Client                                `json:"hosts" yaml:"hosts"`
 }
 
 const DefaultRawOutputSubscriptions = 10
 const DefaultSessionListWidth = 36
 
 type Client struct {
-	Name     string `json:"name" yaml:"name"`
-	Host     string `json:"host" yaml:"host"`
-	User     string `json:"user,omitempty" yaml:"user,omitempty"`
-	Group    string `json:"group,omitempty" yaml:"group,omitempty"`
-	Ducklion string `json:"ducklion,omitempty" yaml:"ducklion,omitempty"`
-	SSH      string `json:"ssh,omitempty" yaml:"ssh,omitempty"`
+	Name               string                                  `json:"name" yaml:"name"`
+	Host               string                                  `json:"host" yaml:"host"`
+	User               string                                  `json:"user,omitempty" yaml:"user,omitempty"`
+	Group              string                                  `json:"group,omitempty" yaml:"group,omitempty"`
+	Ducklion           string                                  `json:"ducklion,omitempty" yaml:"ducklion,omitempty"`
+	SSH                string                                  `json:"ssh,omitempty" yaml:"ssh,omitempty"`
+	NotificationLevels map[NotificationClass]NotificationLevel `json:"notification_levels,omitempty" yaml:"notification_levels,omitempty"`
 }
 
 func DefaultConfigPath() string {
@@ -159,6 +162,14 @@ func SaveConfig(path string, cfg *Config) error {
 }
 
 func (c *Config) normalize() error {
+	if err := ValidateNotificationLevels(c.NotificationLevels); err != nil {
+		return err
+	}
+	if c.OtherProjectThreshold != "" {
+		if err := c.OtherProjectThreshold.Validate(); err != nil {
+			return err
+		}
+	}
 	if c.QuickSort != "" && c.QuickSort != "event_time" && c.QuickSort != "event_importance" && c.QuickSort != "host" && c.QuickSort != "type" {
 		return fmt.Errorf("quick_sort must be event_time, event_importance, host, or type")
 	}
@@ -207,9 +218,10 @@ var DefaultShortcuts = map[string]string{
 	"list_reorder_up": "ctrl-k", "list_reorder_down": "ctrl-j", "pty_copy": "v", "pty_unfocus": "ctrl-]", "refresh": "r", "shortcut_settings": "S",
 	"project_focus":    "P",
 	"project_prev_tab": "[", "project_next_tab": "]", "project_prev_pane": "H", "project_next_pane": "L",
-	"project_add_pane":  "p",
-	"project_create":    "N",
-	"project_move_pane": "M", "project_detach_pane": "x",
+	"project_add_pane":           "p",
+	"project_create":             "N",
+	"project_notification_focus": "F",
+	"project_move_pane":          "M", "project_detach_pane": "x",
 	"detail_list": "D", "detail_search": "/", "detail_jump": "g", "detail_filter": "f",
 	"list_sort": "t", "list_sort_direction": "T",
 }
@@ -235,6 +247,13 @@ func (c *Config) Shortcut(action string) string {
 		return c.Shortcuts[action]
 	}
 	return DefaultShortcuts[action]
+}
+
+func (c *Config) FocusThreshold() NotificationLevel {
+	if c == nil || c.OtherProjectThreshold == "" {
+		return NotificationSystem
+	}
+	return c.OtherProjectThreshold
 }
 
 func (c *Config) RawOutputSubscriptionLimit() int {
@@ -298,6 +317,10 @@ func (c *Config) Clone() *Config {
 	for action, binding := range c.Shortcuts {
 		clone.Shortcuts[action] = binding
 	}
+	clone.NotificationLevels = cloneNotificationLevels(c.NotificationLevels)
+	for i := range clone.Clients {
+		clone.Clients[i].NotificationLevels = cloneNotificationLevels(c.Clients[i].NotificationLevels)
+	}
 	if c.RawOutputSubscriptions != nil {
 		value := *c.RawOutputSubscriptions
 		clone.RawOutputSubscriptions = &value
@@ -345,6 +368,9 @@ func (c *Config) RemoveClient(name string) bool {
 }
 
 func (c *Client) Normalize() error {
+	if err := ValidateNotificationLevels(c.NotificationLevels); err != nil {
+		return err
+	}
 	c.Name = strings.TrimSpace(c.Name)
 	c.Host = strings.TrimSpace(c.Host)
 	c.User = strings.TrimSpace(c.User)

@@ -50,6 +50,10 @@ func quickEventImportance(category model.NotificationCategory) int {
 
 func (s *tuiState) sortQuickSessions() {
 	activity := s.activity().Sessions
+	baseRank := make(map[string]int, len(s.activity().Organization.SessionOrder))
+	for index, identity := range s.activity().Organization.SessionOrder {
+		baseRank[identity.Key()] = index
+	}
 	mode := s.quickSortMode()
 	oldest := s.cfg != nil && s.cfg.QuickOldestFirst
 	sort.SliceStable(s.sessions, func(i, j int) bool {
@@ -63,8 +67,10 @@ func (s *tuiState) sortQuickSessions() {
 		if rightOK {
 			rightEvent = activity[rightIdentity.Key()]
 		}
-		if s.cfg.PromoteUnread() && left.Unread != right.Unread {
-			return left.Unread
+		leftPromoted := left.Unread && s.promoted[sessionKey(left)]
+		rightPromoted := right.Unread && s.promoted[sessionKey(right)]
+		if s.cfg.PromoteUnread() && leftPromoted != rightPromoted {
+			return leftPromoted
 		}
 		switch mode {
 		case "host":
@@ -90,7 +96,10 @@ func (s *tuiState) sortQuickSessions() {
 				}
 				return leftEvent.LastEventAtMS > rightEvent.LastEventAtMS
 			}
-			return false // preserve the prior stable order for equal or absent history
+			if leftOK && rightOK && baseRank[leftIdentity.Key()] != baseRank[rightIdentity.Key()] {
+				return baseRank[leftIdentity.Key()] < baseRank[rightIdentity.Key()]
+			}
+			return false
 		}
 		if left.Name != right.Name {
 			return left.Name < right.Name

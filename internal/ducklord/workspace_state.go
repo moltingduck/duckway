@@ -24,14 +24,15 @@ type workspaceLocation struct {
 // local pane placement; Ducklion owns remote Session identity and control.
 // Previewing never grants input, resizes a PTY, or marks a notification seen.
 type WorkspaceState struct {
-	layout          *ProjectLayout
-	location        workspaceLocation
-	quickSelection  SessionIdentity
-	lastProject     map[SessionIdentity]string
-	projectLocation map[string]workspaceLocation
-	detail          bool
-	detailSelection SessionIdentity
-	beforeDetail    workspaceLocation
+	layout                     *ProjectLayout
+	location                   workspaceLocation
+	quickSelection             SessionIdentity
+	lastProject                map[SessionIdentity]string
+	projectLocation            map[string]workspaceLocation
+	detail                     bool
+	detailSelection            SessionIdentity
+	beforeDetail               workspaceLocation
+	notificationFocusProjectID string
 }
 
 func NewWorkspaceState(layout *ProjectLayout) (*WorkspaceState, error) {
@@ -49,12 +50,22 @@ func NewWorkspaceState(layout *ProjectLayout) (*WorkspaceState, error) {
 	return w, nil
 }
 
-func (w *WorkspaceState) CurrentProjectID() string         { return w.location.projectID }
-func (w *WorkspaceState) CurrentTabID() string             { return w.location.tabID }
-func (w *WorkspaceState) CurrentPaneID() string            { return w.location.paneID }
-func (w *WorkspaceState) Region() WorkspaceRegion          { return w.location.region }
-func (w *WorkspaceState) InDetailMode() bool               { return w.detail }
-func (w *WorkspaceState) DetailSelection() SessionIdentity { return w.detailSelection }
+func (w *WorkspaceState) CurrentProjectID() string           { return w.location.projectID }
+func (w *WorkspaceState) CurrentTabID() string               { return w.location.tabID }
+func (w *WorkspaceState) CurrentPaneID() string              { return w.location.paneID }
+func (w *WorkspaceState) Region() WorkspaceRegion            { return w.location.region }
+func (w *WorkspaceState) InDetailMode() bool                 { return w.detail }
+func (w *WorkspaceState) DetailSelection() SessionIdentity   { return w.detailSelection }
+func (w *WorkspaceState) NotificationFocusProjectID() string { return w.notificationFocusProjectID }
+
+func (w *WorkspaceState) ToggleNotificationFocus() string {
+	if w.notificationFocusProjectID == w.location.projectID {
+		w.notificationFocusProjectID = ""
+	} else if w.layout.Project(w.location.projectID) != nil {
+		w.notificationFocusProjectID = w.location.projectID
+	}
+	return w.notificationFocusProjectID
+}
 
 // RebindLayout preserves transient navigation when ActivityState is cloned
 // for an atomic local save. The replacement layout remains authoritative.
@@ -339,6 +350,9 @@ func (w *WorkspaceState) JumpDetail() (SessionIdentity, error) {
 // Project removal, or authoritative remote Session exit. It never recreates
 // a remote Session or marks notifications seen.
 func (w *WorkspaceState) ReconcileLayout() {
+	if w.notificationFocusProjectID != "" && w.layout.Project(w.notificationFocusProjectID) == nil {
+		w.notificationFocusProjectID = ""
+	}
 	fix := func(location *workspaceLocation) {
 		project := w.layout.Project(location.projectID)
 		if project == nil {

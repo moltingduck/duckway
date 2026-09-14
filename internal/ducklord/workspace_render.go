@@ -87,6 +87,9 @@ func RenderWorkspaceBody(out io.Writer, geometry WorkspaceGeometry, layout *Proj
 			if projectUnread != nil && projectUnread(project.ID) {
 				suffix = " •"
 			}
+			if project.ID == nav.NotificationFocusProjectID() {
+				suffix += " ◎"
+			}
 			return prefix + project.Name + suffix
 		})
 	}

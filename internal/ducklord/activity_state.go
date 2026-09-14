@@ -279,12 +279,13 @@ type ActivityState struct {
 }
 
 type SessionNotificationState struct {
-	Seen              map[model.NotificationCategory]uint64 `json:"seen,omitempty"`
-	Observed          map[model.NotificationCategory]uint64 `json:"observed,omitempty"`
-	Disabled          map[model.NotificationCategory]bool   `json:"disabled,omitempty"`
-	Unread            map[model.NotificationCategory]bool   `json:"unread,omitempty"`
-	LastEventAtMS     int64                                 `json:"last_event_at_ms,omitempty"`
-	LastEventCategory model.NotificationCategory            `json:"last_event_category,omitempty"`
+	Seen               map[model.NotificationCategory]uint64   `json:"seen,omitempty"`
+	Observed           map[model.NotificationCategory]uint64   `json:"observed,omitempty"`
+	Disabled           map[model.NotificationCategory]bool     `json:"disabled,omitempty"`
+	Unread             map[model.NotificationCategory]bool     `json:"unread,omitempty"`
+	LastEventAtMS      int64                                   `json:"last_event_at_ms,omitempty"`
+	LastEventCategory  model.NotificationCategory              `json:"last_event_category,omitempty"`
+	NotificationLevels map[NotificationClass]NotificationLevel `json:"notification_levels,omitempty"`
 }
 
 func notificationImportance(category model.NotificationCategory) int {
@@ -342,12 +343,13 @@ func (s *ActivityState) Clone() *ActivityState {
 	}
 	for key, entry := range s.Sessions {
 		copied := SessionNotificationState{
-			Seen:              make(map[model.NotificationCategory]uint64, len(entry.Seen)),
-			Observed:          make(map[model.NotificationCategory]uint64, len(entry.Observed)),
-			Disabled:          make(map[model.NotificationCategory]bool, len(entry.Disabled)),
-			Unread:            make(map[model.NotificationCategory]bool, len(entry.Unread)),
-			LastEventAtMS:     entry.LastEventAtMS,
-			LastEventCategory: entry.LastEventCategory,
+			Seen:               make(map[model.NotificationCategory]uint64, len(entry.Seen)),
+			Observed:           make(map[model.NotificationCategory]uint64, len(entry.Observed)),
+			Disabled:           make(map[model.NotificationCategory]bool, len(entry.Disabled)),
+			Unread:             make(map[model.NotificationCategory]bool, len(entry.Unread)),
+			LastEventAtMS:      entry.LastEventAtMS,
+			LastEventCategory:  entry.LastEventCategory,
+			NotificationLevels: cloneNotificationLevels(entry.NotificationLevels),
 		}
 		for category, sequence := range entry.Seen {
 			copied.Seen[category] = sequence
@@ -553,6 +555,13 @@ func (s ActivityStateStore) Save(state *ActivityState) error {
 }
 
 func (s *ActivityState) Reconcile(session RemoteSession, activeFresh bool) (unread, changed bool) {
+	return s.ReconcileWithEnabled(session, activeFresh, nil)
+}
+
+// ReconcileWithEnabled consumes events whose effective presentation policy is
+// off without creating new unread state. Existing unread cursors are not
+// retroactively erased when the operator changes a filter.
+func (s *ActivityState) ReconcileWithEnabled(session RemoteSession, activeFresh bool, enabled func(model.NotificationCategory) bool) (unread, changed bool) {
 	key := activitySessionKey(session.InstanceID, session.SessionID)
 	if key == "" {
 		return false, false
@@ -592,7 +601,7 @@ func (s *ActivityState) Reconcile(session RemoteSession, activeFresh bool) (unre
 				delete(entry.Unread, category)
 				changed = true
 			}
-		} else if entry.Disabled[category] {
+		} else if entry.Disabled[category] || enabled != nil && !enabled(category) {
 			if current > entry.Seen[category] {
 				entry.Seen[category] = current
 				changed = true
@@ -681,6 +690,9 @@ func (s *ActivityState) validate() error {
 			if err := entry.LastEventCategory.Validate(); err != nil {
 				return err
 			}
+		}
+		if err := ValidateNotificationLevels(entry.NotificationLevels); err != nil {
+			return err
 		}
 		for category, disabled := range entry.Disabled {
 			if err := category.Validate(); err != nil || !disabled {

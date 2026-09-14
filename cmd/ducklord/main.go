@@ -1162,6 +1162,7 @@ type tuiState struct {
 	runner                     remoteRunner
 	refresh                    time.Duration
 	sessions                   []ducklord.RemoteSession
+	promoted                   map[string]bool
 	selected                   int
 	selectedGroupID            string
 	dragSession                ducklord.SessionIdentity
@@ -3288,7 +3289,10 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 			}
 		}
 		var changed bool
-		all[i].Unread, changed = s.activity().Reconcile(all[i], s.sessionFreshlyDisplayed(all[i]))
+		all[i].Unread, changed = s.reconcileNotificationState(all[i], s.sessionFreshlyDisplayed(all[i]))
+		if !all[i].Unread {
+			delete(s.promoted, sessionKey(all[i]))
+		}
 		activityChanged = activityChanged || changed
 	}
 	s.sessions = all
@@ -3401,15 +3405,27 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) bool {
 			}
 		}
 		if before, ok := previousActivity[identity.Key()]; identityOK && ok {
-			if session.ActivitySequences[model.NotificationTaskFailed] > before[model.NotificationTaskFailed] && s.activity().Enabled(session.InstanceID, session.SessionID, model.NotificationTaskFailed) {
+			if session.ActivitySequences[model.NotificationTaskFailed] > before[model.NotificationTaskFailed] && s.shouldDeliverNotification(session, model.NotificationTaskFailed) {
 				s.outputErr = sanitizeTerminalText(session.Name) + ": agent turn failed"
-			} else if session.ActivitySequences[model.NotificationTaskCompleted] > before[model.NotificationTaskCompleted] && s.activity().Enabled(session.InstanceID, session.SessionID, model.NotificationTaskCompleted) {
+			} else if session.ActivitySequences[model.NotificationTaskCompleted] > before[model.NotificationTaskCompleted] && s.shouldDeliverNotification(session, model.NotificationTaskCompleted) {
 				s.outputErr = sanitizeTerminalText(session.Name) + ": agent turn completed"
 			}
 		}
 		activeFresh := s.sessionFreshlyDisplayed(session)
-		unread, changed := s.activity().Reconcile(session, activeFresh)
+		unread, changed := s.reconcileNotificationState(session, activeFresh)
 		session.Unread = unread
+		if !unread {
+			delete(s.promoted, sessionKey(session))
+		} else if before, known := previousActivity[identity.Key()]; identityOK && known {
+			for category, current := range session.ActivitySequences {
+				if current > before[category] && s.shouldDeliverNotification(session, category) {
+					if s.promoted == nil {
+						s.promoted = make(map[string]bool)
+					}
+					s.promoted[sessionKey(session)] = true
+				}
+			}
+		}
 		activityChanged = activityChanged || changed
 		if session.SessionID == update.ChangedSessionID && sessionKey(session) != oldKey && !activeFresh {
 			session.Updated = true
@@ -3419,6 +3435,11 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) bool {
 	// A live SessionUpdate contains the host's full authoritative inventory.
 	// Reconnecting/offline updates are handled above and must never prune panes.
 	for identity := range previousIdentities {
+		for key := range s.promoted {
+			if strings.HasSuffix(key, "/"+identity.Key()) {
+				delete(s.promoted, key)
+			}
+		}
 		if len(s.activity().ProjectLayout.ProjectsFor(identity)) != 0 {
 			s.activity().ProjectLayout.Destroy(identity)
 			activityChanged = true
@@ -5085,7 +5106,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		{"SESSION LIST & GROUPS", "list_search", "Search sessions"}, {"", "list_organize", "Cycle custom / host / type"}, {"", "list_groups", "Manage custom groups"}, {"", "list_reorder_up", "Move session up"}, {"", "list_reorder_down", "Move session down"}, {"", "refresh", "Refresh"},
 		{"SESSION", "session_create", "Create session"}, {"", "session_actions", "Session action menu"}, {"", "session_notifications", "Notification settings"}, {"", "session_yield", "Yield now"}, {"", "session_yield_wait", "Yield when idle"}, {"", "session_restart", "Restart session"}, {"", "session_end", "End session"}, {"", "session_destroy", "Destroy session"},
 		{"HOST", "host_actions", "Host action menu"}, {"", "host_add", "Add host configuration"}, {"", "host_remove", "Remove host configuration"},
-		{"PROJECT PANE", "project_focus", "Move keyboard focus to Project pane"}, {"", "project_create", "Create Project"}, {"", "project_add_pane", "Add Session pane"}, {"", "project_move_pane", "Move Session pane"}, {"", "project_detach_pane", "Detach local Session pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
+		{"PROJECT PANE", "project_focus", "Move keyboard focus to Project pane"}, {"", "project_notification_focus", "Toggle Project notification focus"}, {"", "project_create", "Create Project"}, {"", "project_add_pane", "Add Session pane"}, {"", "project_move_pane", "Move Session pane"}, {"", "project_detach_pane", "Detach local Session pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
 		{"DETAILED SESSION LIST", "detail_list", "Open / close detailed list"}, {"", "detail_search", "Search name, Host, or Project"}, {"", "detail_filter", "Cycle state filter"}, {"", "detail_jump", "Jump to selected Session's Project"},
 		{"TERMINAL AREA", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return to navigation pane"},
 		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},

@@ -113,6 +113,12 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 	if !s.workspaceProjectFocus {
 		return false, false
 	}
+	if s.shortcut("project_notification_focus", key) {
+		if nav, err := s.workspaceNavigation(); err == nil {
+			nav.ToggleNotificationFocus()
+		}
+		return true, false
+	}
 	if s.shortcut("project_create", key) {
 		s.beginWorkspaceProject()
 		return true, false
@@ -318,7 +324,8 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	}
 	status := "Session list pane: ↑/↓ Session · " + s.cfg.Shortcut("list_sort") + " sort:" + s.quickSortMode() + " (" + direction + ") · " + s.cfg.Shortcut("list_sort_direction") + " time direction · " + s.cfg.Shortcut("project_focus") + " Project pane · Enter focus · Ctrl-] leave PTY"
 	if s.workspaceProjectFocus {
-		status = fmt.Sprintf("Project pane: ↑/↓ Project · %s new · %s add · %s move · %s detach · %s/%s tab · %s/%s pane · Enter focus · Esc list",
+		status = fmt.Sprintf("Project pane: ↑/↓ Project · %s focus · %s new · %s add · %s move · %s detach · %s/%s tab · %s/%s pane · Enter focus · Esc list",
+			s.cfg.Shortcut("project_notification_focus"),
 			s.cfg.Shortcut("project_create"), s.cfg.Shortcut("project_add_pane"), s.cfg.Shortcut("project_move_pane"), s.cfg.Shortcut("project_detach_pane"),
 			s.cfg.Shortcut("project_prev_tab"), s.cfg.Shortcut("project_next_tab"),
 			s.cfg.Shortcut("project_prev_pane"), s.cfg.Shortcut("project_next_pane"))
@@ -328,6 +335,13 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	}
 	if s.workspaceNav != nil && s.workspaceNav.InDetailMode() && !s.focused {
 		status = s.detailStatusLine()
+	}
+	if s.workspaceNav != nil && s.workspaceNav.NotificationFocusProjectID() != "" {
+		focused := s.workspaceNav.NotificationFocusProjectID()
+		if project := s.activity().ProjectLayout.Project(focused); project != nil {
+			focused = displayField(project.Name)
+		}
+		status = "Focus: " + focused + " (others ≥ " + string(s.cfg.FocusThreshold()) + ") · " + status
 	}
 	if s.outputErr != "" {
 		status += "  " + sanitizeTerminalText(s.outputErr)

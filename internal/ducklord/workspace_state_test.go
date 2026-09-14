@@ -35,6 +35,37 @@ func TestWorkspaceQuickNavigationIsOneWayAndDoesNotFocus(t *testing.T) {
 	}
 }
 
+func TestNotificationFocusIsExplicitAndClearsWhenProjectDeleted(t *testing.T) {
+	layout := NewProjectLayout()
+	a, _ := layout.AddProject("First")
+	b, _ := layout.AddProject("Second")
+	w, err := NewWorkspaceState(&layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.NotificationFocusProjectID() != "" {
+		t.Fatal("notification focus started enabled")
+	}
+	if err := w.SelectProject(a); err != nil {
+		t.Fatal(err)
+	}
+	w.ToggleNotificationFocus()
+	if err := w.SelectProject(b); err != nil || w.NotificationFocusProjectID() != a {
+		t.Fatal("ordinary Project navigation retargeted focus")
+	}
+	w.ToggleNotificationFocus()
+	if w.NotificationFocusProjectID() != b {
+		t.Fatal("explicit focus toggle did not switch target")
+	}
+	if err := layout.RemoveProject(b); err != nil {
+		t.Fatal(err)
+	}
+	w.ReconcileLayout()
+	if w.NotificationFocusProjectID() != "" {
+		t.Fatal("deleted focused Project retained notification focus")
+	}
+}
+
 func TestWorkspaceDetailPreviewRestoresNormalWorkspace(t *testing.T) {
 	layout := NewProjectLayout()
 	a := testLayoutIdentity("ABC123")

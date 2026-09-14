@@ -53,3 +53,23 @@ func TestQuickSortImportanceAndHostIgnoreLegacyGroups(t *testing.T) {
 		t.Fatalf("host ordering still grouped by legacy organization: %+v", state.sessions)
 	}
 }
+
+func TestQuickSortPromotesOnlyEligibleUnreadEvents(t *testing.T) {
+	instance := "9df68174-9e13-4dc9-b44d-8532c87f5971"
+	suppressed := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: "AAA111", Name: "suppressed", Unread: true}
+	eligible := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: "BBB222", Name: "eligible", Unread: true}
+	state := tuiState{cfg: &ducklord.Config{QuickSort: "event_time"}, workspacePreview: true,
+		sessions: []ducklord.RemoteSession{suppressed, eligible}, promoted: map[string]bool{sessionKey(eligible): true}}
+	firstIdentity, _ := ducklord.IdentityFromSession(suppressed)
+	secondIdentity, _ := ducklord.IdentityFromSession(eligible)
+	state.activity().Organization.SessionOrder = []ducklord.SessionIdentity{firstIdentity, secondIdentity}
+	state.sortQuickSessions()
+	if state.sessions[0].SessionID != eligible.SessionID {
+		t.Fatalf("suppressed unread event was promoted: %+v", state.sessions)
+	}
+	state.promoted[sessionKey(eligible)] = false
+	state.sortQuickSessions()
+	if state.sessions[0].SessionID != suppressed.SessionID {
+		t.Fatal("stable base order was not restored when promotion expired")
+	}
+}
