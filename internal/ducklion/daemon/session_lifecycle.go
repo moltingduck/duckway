@@ -341,15 +341,16 @@ func (s *Server) abortPreparedAgentTask(request protocol.Request, taskID string)
 const runtimeSubcommand = "__ducklion_runtime_v1"
 
 type runtimeSpec struct {
-	SocketPath        string          `json:"socket_path"`
-	SessionID         model.SessionID `json:"session_id"`
-	RuntimeGeneration uint64          `json:"runtime_generation"`
-	OwnershipEpoch    uint64          `json:"ownership_epoch"`
-	AgentType         string          `json:"agent_type,omitempty"`
-	CWD               string          `json:"cwd"`
-	Command           []string        `json:"command"`
-	Rows              uint16          `json:"rows"`
-	Cols              uint16          `json:"cols"`
+	SocketPath        string            `json:"socket_path"`
+	SessionID         model.SessionID   `json:"session_id"`
+	RuntimeGeneration uint64            `json:"runtime_generation"`
+	OwnershipEpoch    uint64            `json:"ownership_epoch"`
+	AgentType         string            `json:"agent_type,omitempty"`
+	Kind              model.SessionKind `json:"kind,omitempty"`
+	CWD               string            `json:"cwd"`
+	Command           []string          `json:"command"`
+	Rows              uint16            `json:"rows"`
+	Cols              uint16            `json:"cols"`
 }
 
 func (s *Server) routeSessionCreate(request protocol.Request, role protocol.PeerRole, principal string) protocol.Response {
@@ -1340,6 +1341,7 @@ func newRuntimeIdentity(state *store.SQLite, root string) (model.SessionID, ed25
 }
 
 func (s *Server) writeRuntimeFiles(session model.Session, privateKey ed25519.PrivateKey, spec runtimeSpec) (string, error) {
+	spec.Kind = session.Kind
 	dir := filepath.Join(s.root, "sessions", string(session.ID))
 	if err := os.MkdirAll(filepath.Dir(dir), 0700); err != nil {
 		return "", err
@@ -1422,7 +1424,7 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 	if err != nil || len(decoded) != ed25519.PrivateKeySize {
 		return fmt.Errorf("invalid recovery key")
 	}
-	ptySession, err := supervisor.Start(supervisor.Options{SessionID: spec.SessionID, RuntimeGeneration: spec.RuntimeGeneration, OwnershipEpoch: spec.OwnershipEpoch, AgentType: spec.AgentType,
+	ptySession, err := supervisor.Start(supervisor.Options{SessionID: spec.SessionID, RuntimeGeneration: spec.RuntimeGeneration, OwnershipEpoch: spec.OwnershipEpoch, AgentType: spec.AgentType, ShellFirstHooks: spec.Kind == model.KindShell,
 		CWD: spec.CWD, Command: spec.Command, Rows: spec.Rows, Cols: spec.Cols, OutputCapacity: 1 << 20, RetainedOutputDir: filepath.Dir(specPath)})
 	if err != nil {
 		return reportRuntimeLaunchFailure(ctx, specPath, spec, ed25519.PrivateKey(decoded), err)

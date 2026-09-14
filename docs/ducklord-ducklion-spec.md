@@ -203,6 +203,11 @@ the current TUI implementation.
   Shell-first Codex/Claude hooks are installed explicitly into the agent's
   host-side configuration; the current direct-exec CLI-flag injection is not
   assumed to work unchanged.
+  The shell-first hook endpoint carries no bearer token in the shell
+  environment. Ducklion accepts a payload-free advisory completion/failure
+  only from a process in that Session's PTY descendant tree. Same-user code
+  inside the Session can still invoke the hook helper, so a hook report is a
+  notification hint, never authorization for yield or managed task state.
 
 ### Host Configuration Ownership
 

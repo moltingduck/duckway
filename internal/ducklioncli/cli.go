@@ -306,7 +306,7 @@ func waitForIdleAndQuiesce(root string) error {
 func runAgentHook(input io.Reader, args []string) error {
 	socketPath := os.Getenv("DUCKLION_AGENT_EVENT_SOCKET")
 	token := os.Getenv("DUCKLION_AGENT_EVENT_TOKEN")
-	if socketPath == "" || token == "" {
+	if socketPath == "" {
 		return fmt.Errorf("agent hook endpoint is unavailable")
 	}
 	if len(args) == 0 || args[0] != "codex" && args[0] != "claude" {
@@ -366,6 +366,15 @@ func runAgentHook(input io.Reader, args []string) error {
 	}
 	if len(response) > protocol.MaxAgentResponseBytes {
 		normalized = protocol.SupervisorAgentEvent{Kind: "failed", Summary: "Agent response exceeded Ducklion's delivery limit"}
+	}
+	if token == "" {
+		// Shell-first hook reports are advisory UI hints. Do not forward agent
+		// text or an error detail to the supervisor notification path.
+		if !failedHook {
+			normalized.Kind = "completed"
+		}
+		normalized.Response = ""
+		normalized.Summary = ""
 	}
 	conn, err := net.DialTimeout("unix", socketPath, time.Second)
 	if err != nil {

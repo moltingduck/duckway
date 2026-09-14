@@ -3,14 +3,83 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 )
+
+func TestShellFirstHookDaemonEmitter(t *testing.T) {
+	if os.Getenv("DUCKLION_TEST_DAEMON_HOOK") != "1" {
+		return
+	}
+	if os.Getenv("DUCKLION_AGENT_EVENT_TOKEN") != "" {
+		os.Exit(3)
+	}
+	conn, err := net.DialTimeout("unix", os.Getenv("DUCKLION_AGENT_EVENT_SOCKET"), time.Second)
+	if err != nil {
+		os.Exit(4)
+	}
+	defer conn.Close()
+	_ = json.NewEncoder(conn).Encode(map[string]any{"event": map[string]string{"kind": "completed", "response": "must not escape"}})
+	answer, _ := io.ReadAll(conn)
+	if string(answer) != "ok\n" {
+		os.Exit(5)
+	}
+}
+
+func TestShellFirstHookUpdatesDaemonActivityWithoutEndingShell(t *testing.T) {
+	root := t.TempDir()
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+		go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveDone }()
+	client, err := Dial(server.SocketPath(), "shell-hook-e2e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	created, err := client.CreateSession(context.Background(), protocol.SessionCreate{Handle: "shell-hook", Kind: model.KindShell, CWD: root, Command: []string{"sh"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := fmt.Sprintf("DUCKLION_TEST_DAEMON_HOOK=1 %s -test.run=^TestShellFirstHookDaemonEmitter$\n", strconv.Quote(executable))
+	if err := client.SendInput(created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, []byte(command)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		sessions, listErr := client.ListSessions()
+		if listErr == nil && len(sessions) == 1 && sessions[0].ActivitySequences[model.NotificationTaskCompleted] == 1 {
+			if sessions[0].Status != model.StatusRunning || sessions[0].RuntimeGeneration != created.RuntimeGeneration || sessions[0].TaskState != model.TaskIdle {
+				t.Fatalf("advisory hook changed shell lifecycle/task state: %+v", sessions[0])
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("shell-first hook did not reach daemon activity sequence")
+}
 
 // This exercises the shell-first contract without contacting either agent's
 // service. The fixture commands stand in for short-lived Codex/Claude CLI

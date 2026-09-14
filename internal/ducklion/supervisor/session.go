@@ -39,6 +39,7 @@ type Options struct {
 	RuntimeGeneration uint64
 	OwnershipEpoch    uint64
 	AgentType         string
+	ShellFirstHooks   bool
 	CWD               string
 	Command           []string
 	Rows              uint16
@@ -74,6 +75,9 @@ type Session struct {
 	agentHookPath      string
 	agentHookDir       string
 	agentHookToken     string
+	shellFirstHooks    bool
+	rootProcessID      int
+	rootProcessStart   uint64
 	legacyAdapterRead  *os.File
 	legacyAdapterDone  chan struct{}
 	preparedTasks      map[string]preparedAgentTask
@@ -164,7 +168,7 @@ func Start(options Options) (*Session, error) {
 	var hookListener *net.UnixListener
 	var hookDir, hookPath, hookToken string
 	var legacyAdapterRead, legacyAdapterWrite *os.File
-	if options.AgentType != "" {
+	if options.AgentType != "" || options.ShellFirstHooks {
 		var hookErr error
 		hookDir, hookErr = os.MkdirTemp("", "ducklion-agent-hook-")
 		if hookErr != nil {
@@ -181,10 +185,14 @@ func Start(options Options) (*Session, error) {
 			_ = os.RemoveAll(hookDir)
 			return nil, fmt.Errorf("protect agent hook socket: %w", hookErr)
 		}
-		hookToken = uuid.NewString()
-		cmd.Env = append(cmd.Env, "DUCKLION_AGENT_EVENT_SOCKET="+hookPath, "DUCKLION_AGENT_EVENT_TOKEN="+hookToken)
+		if options.ShellFirstHooks {
+			cmd.Env = append(cmd.Env, "DUCKLION_AGENT_EVENT_SOCKET="+hookPath)
+		} else {
+			hookToken = uuid.NewString()
+			cmd.Env = append(cmd.Env, "DUCKLION_AGENT_EVENT_SOCKET="+hookPath, "DUCKLION_AGENT_EVENT_TOKEN="+hookToken)
+		}
 		agentType := strings.ToLower(options.AgentType)
-		if agentType != "codex" && agentType != "claude" && agentType != "claude_code" {
+		if !options.ShellFirstHooks && agentType != "codex" && agentType != "claude" && agentType != "claude_code" {
 			// Keep FD 3 only for explicitly custom adapters. Built-in Codex and
 			// Claude processes must not expose an unauthenticated event channel to
 			// provider-launched repository commands.
@@ -233,7 +241,22 @@ func Start(options Options) (*Session, error) {
 			return nil, err
 		}
 	}
+	_, rootStart, rootOK := procIdentity(cmd.Process.Pid)
+	if options.ShellFirstHooks && !rootOK {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = ptmx.Close()
+		_ = cmd.Wait()
+		if retainedOutput != nil {
+			_ = retainedOutput.Close()
+		}
+		if hookListener != nil {
+			_ = hookListener.Close()
+			_ = os.RemoveAll(hookDir)
+		}
+		return nil, fmt.Errorf("cannot identify shell process for session hook attribution")
+	}
 	session := &Session{id: options.SessionID, generation: options.RuntimeGeneration, epoch: options.OwnershipEpoch,
+		shellFirstHooks: options.ShellFirstHooks, rootProcessID: cmd.Process.Pid, rootProcessStart: rootStart,
 		pty: ptmx, cmd: cmd, output: duckruntime.NewOutputHub(options.OutputCapacity), retainedOutput: retainedOutput, captureDone: make(chan struct{}),
 		preparedTasks: make(map[string]preparedAgentTask), committedTasks: make(map[string][32]byte),
 		agentEvents: make(map[string][]protocol.SupervisorAgentEvent), terminalAgentTasks: make(map[string]uint64)}
@@ -258,12 +281,14 @@ func Start(options Options) (*Session, error) {
 			defer close(session.agentHookDone)
 			session.serveAgentHooks()
 		}()
-		session.legacyAdapterRead = legacyAdapterRead
-		session.legacyAdapterDone = make(chan struct{})
-		go func() {
-			defer close(session.legacyAdapterDone)
-			session.captureLegacyAgentEvents(legacyAdapterRead)
-		}()
+		if legacyAdapterRead != nil {
+			session.legacyAdapterRead = legacyAdapterRead
+			session.legacyAdapterDone = make(chan struct{})
+			go func() {
+				defer close(session.legacyAdapterDone)
+				session.captureLegacyAgentEvents(legacyAdapterRead)
+			}()
+		}
 	}
 	return session, nil
 }
@@ -623,28 +648,49 @@ func (s *Session) CommitAgentTask(ctx context.Context, taskID string, digest [32
 }
 
 func (s *Session) serveAgentHooks() {
+	var active sync.WaitGroup
+	limit := make(chan struct{}, 16)
+	defer active.Wait()
 	for {
 		conn, err := s.agentHookListener.AcceptUnix()
 		if err != nil {
 			return
 		}
-		_ = conn.SetDeadline(time.Now().Add(time.Second))
-		decoder := json.NewDecoder(io.LimitReader(conn, maxAgentHookFrameBytes+1))
-		decoder.DisallowUnknownFields()
-		var envelope agentHookEnvelope
-		err = decoder.Decode(&envelope)
-		if err == nil && subtle.ConstantTimeCompare([]byte(envelope.Token), []byte(s.agentHookToken)) == 1 {
-			err = s.acceptAgentHook(envelope.Event)
-		} else if err == nil {
-			err = fmt.Errorf("invalid agent hook token")
+		select {
+		case limit <- struct{}{}:
+			active.Add(1)
+			go func() {
+				defer active.Done()
+				defer func() { <-limit }()
+				s.handleAgentHook(conn)
+			}()
+		default:
+			_ = conn.Close()
 		}
-		if err == nil {
-			_, _ = conn.Write([]byte("ok\n"))
-		} else {
-			_, _ = conn.Write([]byte("rejected\n"))
-		}
-		_ = conn.Close()
 	}
+}
+
+func (s *Session) handleAgentHook(conn *net.UnixConn) {
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	decoder := json.NewDecoder(io.LimitReader(conn, maxAgentHookFrameBytes+1))
+	decoder.DisallowUnknownFields()
+	var envelope agentHookEnvelope
+	err := decoder.Decode(&envelope)
+	if err == nil && s.shellFirstHooks && envelope.Token == "" && shellHookPeerIsDescendant(conn, s.rootProcessID, s.rootProcessStart) {
+		envelope.Event.Response = ""
+		envelope.Event.Summary = ""
+		err = s.acceptAgentHook(envelope.Event)
+	} else if err == nil && !s.shellFirstHooks && subtle.ConstantTimeCompare([]byte(envelope.Token), []byte(s.agentHookToken)) == 1 {
+		err = s.acceptAgentHook(envelope.Event)
+	} else if err == nil {
+		err = fmt.Errorf("invalid agent hook token")
+	}
+	if err == nil {
+		_, _ = conn.Write([]byte("ok\n"))
+	} else {
+		_, _ = conn.Write([]byte("rejected\n"))
+	}
+	_ = conn.Close()
 }
 
 func (s *Session) captureLegacyAgentEvents(reader *os.File) {

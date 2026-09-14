@@ -12,6 +12,10 @@ import (
 )
 
 func hookReceiver(t *testing.T) <-chan protocol.SupervisorAgentEvent {
+	return hookReceiverWithToken(t, "test-token")
+}
+
+func hookReceiverWithToken(t *testing.T, token string) <-chan protocol.SupervisorAgentEvent {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "hook.sock")
 	listener, err := net.Listen("unix", path)
@@ -20,7 +24,7 @@ func hookReceiver(t *testing.T) <-chan protocol.SupervisorAgentEvent {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	t.Setenv("DUCKLION_AGENT_EVENT_SOCKET", path)
-	t.Setenv("DUCKLION_AGENT_EVENT_TOKEN", "test-token")
+	t.Setenv("DUCKLION_AGENT_EVENT_TOKEN", token)
 	events := make(chan protocol.SupervisorAgentEvent, 1)
 	go func() {
 		conn, acceptErr := listener.Accept()
@@ -32,12 +36,33 @@ func hookReceiver(t *testing.T) <-chan protocol.SupervisorAgentEvent {
 			Token string                        `json:"token"`
 			Event protocol.SupervisorAgentEvent `json:"event"`
 		}
-		if json.NewDecoder(conn).Decode(&envelope) == nil && envelope.Token == "test-token" {
+		if json.NewDecoder(conn).Decode(&envelope) == nil && envelope.Token == token {
 			events <- envelope.Event
 			_, _ = conn.Write([]byte("ok\n"))
 		}
 	}()
 	return events
+}
+
+func TestRunAgentHookShellFirstSendsPayloadFreeAdvisoryEvent(t *testing.T) {
+	events := hookReceiverWithToken(t, "")
+	if err := runAgentHook(strings.NewReader(`{"type":"agent-turn-complete","last-assistant-message":"secret answer"}`), []string{"codex"}); err != nil {
+		t.Fatal(err)
+	}
+	event := waitHookEvent(t, events)
+	if event.Kind != "completed" || event.Response != "" || event.Summary != "" {
+		t.Fatalf("shell-first hook leaked agent payload: %+v", event)
+	}
+}
+
+func TestRunAgentHookShellFirstEmptySuccessfulTurnIsCompleted(t *testing.T) {
+	events := hookReceiverWithToken(t, "")
+	if err := runAgentHook(strings.NewReader(`{"hook_event_name":"Stop"}`), []string{"claude"}); err != nil {
+		t.Fatal(err)
+	}
+	if event := waitHookEvent(t, events); event.Kind != "completed" || event.Response != "" || event.Summary != "" {
+		t.Fatalf("empty successful shell-first turn = %+v", event)
+	}
 }
 
 func waitHookEvent(t *testing.T, events <-chan protocol.SupervisorAgentEvent) protocol.SupervisorAgentEvent {
