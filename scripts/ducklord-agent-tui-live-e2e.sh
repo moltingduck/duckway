@@ -62,9 +62,14 @@ DUCKLORD_DEMO_CREDENTIAL_CLIENTS=client-a CONTAINER_RUNTIME="$RUNTIME" \
   "$ROOT/scripts/ducklord-podman-demo.sh" >/dev/null
 "$RUNTIME" exec ducklord-dev cp /root/.ducklord/config.yaml /tmp/e2e-inspector.yaml
 for agent in "${AGENTS[@]}"; do
-  echo "[live-tui] testing interactive $agent in a shell-first Session pane"
-  DUCKLORD_AGENT_LIVE_TUI_E2E=1 DUCKLORD_E2E_RUNTIME="$RUNTIME" \
-  DUCKLORD_E2E_CONTROLLER=ducklord-dev DUCKLORD_E2E_AGENT="$agent" \
-    go test -count=1 ./cmd/ducklord -run '^TestDucklordInteractiveAgentLiveTUIContainerE2E$' -v
+  for layout in single split; do
+    if [ "${DUCKLORD_LIVE_TUI_SPLIT_ONLY:-0}" = 1 ] && [ "$layout" != split ]; then continue; fi
+    echo "[live-tui] testing interactive $agent in $layout shell-first Session pane layout"
+    split=0
+    if [ "$layout" = split ]; then split=1; fi
+    DUCKLORD_AGENT_LIVE_TUI_E2E=1 DUCKLORD_AGENT_LIVE_TUI_SPLIT="$split" DUCKLORD_E2E_RUNTIME="$RUNTIME" \
+    DUCKLORD_E2E_CONTROLLER=ducklord-dev DUCKLORD_E2E_AGENT="$agent" \
+      go test -count=1 ./cmd/ducklord -run '^TestDucklordInteractiveAgentLiveTUIContainerE2E$' -v
+  done
 done
 echo "[live-tui] PASS"

@@ -26,6 +26,11 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	runtime := requiredE2EEnv(t, "DUCKLORD_E2E_RUNTIME")
 	controller := requiredE2EEnv(t, "DUCKLORD_E2E_CONTROLLER")
 	agent := requiredE2EEnv(t, "DUCKLORD_E2E_AGENT")
+	split := os.Getenv("DUCKLORD_AGENT_LIVE_TUI_SPLIT") == "1"
+	cols := uint16(130)
+	if split {
+		cols = 180
+	}
 	if agent != "codex" && agent != "claude" {
 		t.Fatalf("unsupported agent type %q", agent)
 	}
@@ -58,8 +63,37 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := activity.ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+	agentPaneID, err := activity.ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, "")
+	if err != nil {
 		t.Fatal(err)
+	}
+	var sidecar ducklord.RemoteSession
+	sidecarHandle := fmt.Sprintf("side-%x", time.Now().UnixNano()&0xffffff)
+	if split {
+		sidecarArgs := []string{"--name", owner, "start", "client-a", "--name", sidecarHandle, "--kind", "shell", "--cwd", "/home/duck/projects/alpha", "--config", "/root/.ducklord/config.yaml", "--", "bash"}
+		if out, err := exec.Command(runtime, append([]string{"exec", controller, "ducklord"}, sidecarArgs...)...).CombinedOutput(); err != nil {
+			t.Fatalf("start split sidecar shell: %v; status=%d", err, len(out))
+		}
+		t.Cleanup(func() {
+			_, _ = exec.Command(runtime, "exec", controller, "ducklord", "--name", owner, "destroy", "client-a", sidecarHandle, "--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		})
+		waitE2E(t, 15*time.Second, func() bool {
+			for _, item := range listContainerSessions(t, runtime, controller, "client-a") {
+				if item.Handle == sidecarHandle {
+					var ok bool
+					sidecar, ok = findContainerSession(t, runtime, controller, "client-a", item.SessionID)
+					return ok && sidecar.RuntimeGeneration > 0
+				}
+			}
+			return false
+		}, func() string { return "split sidecar shell was not listed" })
+		sidecarIdentity, ok := ducklord.IdentityFromSession(sidecar)
+		if !ok {
+			t.Fatal("split sidecar has no stable identity")
+		}
+		if _, err := activity.ProjectLayout.Place(projectID, sidecarIdentity, ducklord.PlaceVertical, agentPaneID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	home := "/tmp/ducklord-live-tui-" + stamp
 	if err := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/.ducklord", home+"/bin").Run(); err != nil {
@@ -93,7 +127,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	}
 	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", "PATH="+home+"/bin:/usr/local/bin:/usr/bin:/bin",
 		"DUCKLORD_NOTIFY_E2E_LOG="+home+"/notifications.log", "ducklord", "tui", "--name", owner, "--config", configPath)
-	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 28, Cols: 130})
+	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 28, Cols: cols})
 	if err != nil {
 		t.Fatal("start TUI: ", err)
 	}
@@ -105,7 +139,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		_ = command.Process.Kill()
 		_ = command.Wait()
 	})
-	capture := newSizedTUICapture(terminal, 28, 130)
+	capture := newSizedTUICapture(terminal, 28, int(cols))
 	waitLiveAgentScreen(t, capture, "Live "+agent, 20*time.Second)
 	// Install through the same explicit Host confirmation flow operators use.
 	writePTY(t, terminal, "hjjj\r")
@@ -125,6 +159,9 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	waitLiveAgentScreen(t, capture, "Active · Enter again to focus", 20*time.Second)
 	writePTY(t, terminal, "\r")
 	waitLiveAgentScreen(t, capture, "Session focus:", 20*time.Second)
+	if split {
+		waitLiveAgentScreen(t, capture, "client-a/"+sidecarHandle, 20*time.Second)
+	}
 	precheck := "SHELL_INPUT_" + stamp
 	writePTY(t, terminal, "printf 'SHELL_%s_"+stamp+"\\n' INPUT\r")
 	waitLiveAgentScreen(t, capture, precheck, 10*time.Second)
@@ -273,6 +310,30 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 			waitLiveAgentScreen(t, capture, "Session focus:", 20*time.Second)
 		}
 	}
+	if split {
+		// A live agent must keep rendering while the adjacent shell receives
+		// input, and switching back must restore the same agent PTY.
+		writePTY(t, terminal, "\x1dP")
+		waitLiveAgentScreen(t, capture, "Project pane:", 20*time.Second)
+		writePTY(t, terminal, "L\r")
+		waitLiveAgentScreen(t, capture, "Session focus:", 20*time.Second)
+		marker := "SPLIT_INPUT_" + stamp
+		writePTY(t, terminal, "printf '"+marker+"\\n'\r")
+		waitLiveAgentScreen(t, capture, marker, 20*time.Second)
+		sidecarOutput, sidecarErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", sidecar.SessionID,
+			"--lines", "80", "--config", "/root/.ducklord/config.yaml").Output()
+		agentOutput, agentErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", session.SessionID,
+			"--lines", "80", "--config", "/root/.ducklord/config.yaml").Output()
+		if sidecarErr != nil || agentErr != nil || !strings.Contains(string(sidecarOutput), marker) || strings.Contains(string(agentOutput), marker) {
+			t.Fatalf("split input did not stay in selected sidecar PTY (sidecar=%t agent=%t read-errors=%t/%t); output suppressed",
+				strings.Contains(string(sidecarOutput), marker), strings.Contains(string(agentOutput), marker), sidecarErr != nil, agentErr != nil)
+		}
+		writePTY(t, terminal, "\x1d")
+		waitLiveAgentScreen(t, capture, "Project pane:", 20*time.Second)
+		writePTY(t, terminal, "H\r")
+		waitLiveAgentScreen(t, capture, "Session focus:", 20*time.Second)
+		waitLiveAgentScreen(t, capture, "client-a/"+sidecarHandle, 20*time.Second)
+	}
 	backgroundPrefix := fmt.Sprintf("LIVE_%s_%s_BACKGROUND_", strings.ToUpper(agent), stamp)
 	backgroundResponse := backgroundPrefix + "OK"
 	backgroundPrompt := "Join " + backgroundPrefix + " and OK without spaces. Reply with only the joined text."
@@ -298,8 +359,10 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	}, func() string { return agent + " background prompt never reached the remote PTY" })
 	time.Sleep(200 * time.Millisecond)
 	writePTY(t, terminal, "\x1d")
-	waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
-	writePTY(t, terminal, "P")
+	if !split {
+		waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
+		writePTY(t, terminal, "P")
+	}
 	waitLiveAgentScreen(t, capture, "Project pane:", 20*time.Second)
 	writePTY(t, terminal, "k")
 	waitLiveAgentScreen(t, capture, "› Default Project", 20*time.Second)
@@ -367,7 +430,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	var projectRow, projectMarker, sessionMarker, quickBullet, quickHeader bool
 	waitE2E(t, 10*time.Second, func() bool {
 		screen := capture.currentText()
-		geometry := ducklord.CalculateWorkspaceGeometry(130, 28, 4)
+		geometry := ducklord.CalculateWorkspaceGeometry(int(cols), 28, 4)
 		quick := liveScreenQuickColumn(screen)
 		projectRow = liveScreenHasRow(screen, "Live "+agent, geometry.Projects)
 		projectMarker = liveScreenHasMarkedRow(screen, "Live "+agent, true, geometry.Projects)
@@ -398,7 +461,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	}, func() string { return agent + " unread Session did not clear after browsing its live pane" })
 	waitE2E(t, 10*time.Second, func() bool {
 		screen := capture.currentText()
-		geometry := ducklord.CalculateWorkspaceGeometry(130, 28, 4)
+		geometry := ducklord.CalculateWorkspaceGeometry(int(cols), 28, 4)
 		quick := liveScreenQuickColumn(screen)
 		return quick.Width > 0 && liveScreenHasMarkedRow(screen, "Live "+agent, false, geometry.Projects) && !liveScreenHasMarkedRow(screen, "", true, quick)
 	}, func() string {
