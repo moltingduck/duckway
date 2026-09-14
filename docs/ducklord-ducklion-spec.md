@@ -1258,8 +1258,11 @@ and preserves the pre-migration database backup behavior.
   stores only the newest 1 MiB of PTY output in generation-specific `0600`
   diagnostic logs. Logs expire after seven days by default, are capped at 32
   generations per session, and are removed with the session on destroy.
-  Configure 1–3650 days with `pty_log_retention_days` in
-  `~/.duckway/config.yaml`; restart Ducklion explicitly to apply it.
+  The Duckway-configured `pty_log_retention_days` is the startup default.
+  Ducklord Host control may set 1–3650 days through `host.retention_update`;
+  Ducklion persists this in its private `host-settings.json`, applies it
+  immediately, and runs a retention sweep. The saved Host setting takes
+  precedence over Duckway's startup default on subsequent restarts.
 - Ducklord does not trust Duckway server metadata and does not require Duckway
   server registration. SSH host access is the authorization boundary.
 

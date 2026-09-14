@@ -19,6 +19,18 @@ import (
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 )
 
+func TestWaitForOutputDrainBoundsContinuousOutput(t *testing.T) {
+	start := time.Now()
+	calls := 0
+	waitForOutputDrain(15*time.Millisecond, func() (int, error) {
+		calls++
+		return 1, nil
+	})
+	if calls < 2 || time.Since(start) > 250*time.Millisecond {
+		t.Fatalf("continuous PTY output stalled hook admission: calls=%d elapsed=%s", calls, time.Since(start))
+	}
+}
+
 func TestBuiltInAgentLaunchFailureReturnsErrorWithoutPanic(t *testing.T) {
 	for _, agent := range []string{"codex", "claude"} {
 		t.Run(agent, func(t *testing.T) {

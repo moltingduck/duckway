@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -97,7 +98,8 @@ type Server struct {
 	activitySlots                chan struct{}
 	runtimeLauncher              func(string) error
 	sessionCleaner               func(string) error
-	retainedOutputTTL            time.Duration
+	retainedOutputTTL            atomic.Int64
+	hostConfigMu                 sync.Mutex
 	retainedOutputSweep          chan struct{}
 	retainedOutputCancel         context.CancelFunc
 }
@@ -248,7 +250,15 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 		outputSubscriptionsBySession: make(map[model.SessionID]int),
 		activitySlots:                make(chan struct{}, maxSupervisorActivityConnections),
 		sequences:                    make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher, sessionCleaner: options.SessionCleaner,
-		retainedOutputTTL: options.RetainedOutputTTL}
+	}
+	initialTTL, err := loadRetainedOutputTTL(root, options.RetainedOutputTTL)
+	if err != nil {
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+		_ = state.Close()
+		return fail(fmt.Errorf("load Ducklion host settings: %w", err))
+	}
+	server.retainedOutputTTL.Store(int64(initialTTL))
 	server.retainedOutputSweep = make(chan struct{}, 1)
 	server.agentEvents = make(map[string][]protocol.SupervisorAgentEvent)
 	server.lifecycleWorkers = make(map[model.SessionID]struct{})
@@ -258,8 +268,8 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 	if server.sessionCleaner == nil {
 		server.sessionCleaner = os.RemoveAll
 	}
-	if server.retainedOutputTTL <= 0 {
-		server.retainedOutputTTL = defaultRetainedOutputTTL
+	if server.retainedOutputTTL.Load() <= 0 {
+		server.retainedOutputTTL.Store(int64(defaultRetainedOutputTTL))
 	}
 	if err := server.cleanupExpiredRetainedOutput(ctx, time.Now()); err != nil {
 		log.Printf("[ducklion] retained PTY cleanup: %v", err)
@@ -345,7 +355,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid peer principal"}})
 		return
 	}
-	capabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
+	capabilities := []string{"status", "sessions_list", "host_config", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if remote.Role == protocol.RoleDucklord {
 		if remote.OwnerID != remote.Principal || uuid.Validate(remote.ProcessID) != nil || uuid.Validate(remote.ConnectionID) != nil ||
 			(remote.ConnectionRole != protocol.ConnectionControl && remote.ConnectionRole != protocol.ConnectionObserver) {
@@ -1199,7 +1209,7 @@ func (s *Server) prepareRetainedOutputSubscription(sessionID model.SessionID, ge
 	if err != nil {
 		return nil, &protocol.Error{Code: protocol.ErrOutputUnavailable, Message: "retained PTY output is unavailable or has expired"}
 	}
-	if !snapshot.UpdatedAt.IsZero() && time.Since(snapshot.UpdatedAt) > s.retainedOutputTTL {
+	if !snapshot.UpdatedAt.IsZero() && time.Since(snapshot.UpdatedAt) > s.retainedTTL() {
 		_ = removeRetainedOutputPair(supervisor.RetainedOutputPath(filepath.Join(s.root, "sessions", string(sessionID)), generation))
 		return nil, &protocol.Error{Code: protocol.ErrOutputUnavailable, Message: "retained PTY output has expired"}
 	}
@@ -1276,7 +1286,7 @@ func (s *Server) cleanupExpiredRetainedOutput(ctx context.Context, now time.Time
 				// crash leftovers enter normal TTL/quota eviction afterward.
 				if now.Sub(info.ModTime()) >= 5*time.Minute {
 					candidates = append(candidates, candidate{path: path, updatedAt: info.ModTime(), size: info.Size(), removable: true})
-					if now.Sub(info.ModTime()) > s.retainedOutputTTL {
+					if now.Sub(info.ModTime()) > s.retainedTTL() {
 						if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 							cleanupErrors = append(cleanupErrors, err)
 						} else {
@@ -1308,7 +1318,7 @@ func (s *Server) cleanupExpiredRetainedOutput(ctx context.Context, now time.Time
 			if active {
 				continue
 			}
-			if updatedAt.IsZero() || now.Sub(updatedAt) <= s.retainedOutputTTL {
+			if updatedAt.IsZero() || now.Sub(updatedAt) <= s.retainedTTL() {
 				candidates = append(candidates, candidate{path: path, updatedAt: updatedAt, size: size, removable: true})
 				continue
 			}
@@ -1354,10 +1364,12 @@ func (s *Server) requestRetainedOutputSweep() {
 	}
 }
 
+func (s *Server) retainedTTL() time.Duration { return time.Duration(s.retainedOutputTTL.Load()) }
+
 func (s *Server) runRetainedOutputSweeper(ctx context.Context) {
 	defer s.retainedOutputWG.Done()
 	interval := time.Hour
-	if half := s.retainedOutputTTL / 2; half > 0 && half < interval {
+	if half := s.retainedTTL() / 2; half > 0 && half < interval {
 		interval = half
 	}
 	ticker := time.NewTicker(interval)
@@ -1541,9 +1553,9 @@ func (s *Server) summariesFor(projections []store.SessionProjection) []protocol.
 			ActivityUpdatedAtMS: projection.ActivityUpdatedAtMS}
 		if session.Status == model.StatusStopped {
 			if retained, err := supervisor.RetainedOutputInfo(filepath.Join(s.root, "sessions", string(session.ID)), session.ID, session.RuntimeGeneration); err == nil &&
-				time.Since(retained.UpdatedAt) <= s.retainedOutputTTL {
+				time.Since(retained.UpdatedAt) <= s.retainedTTL() {
 				summary.RetainedOutputBytes = int64(retained.EndOffset - retained.StartOffset)
-				summary.RetainedOutputUntilMS = retained.UpdatedAt.Add(s.retainedOutputTTL).UnixMilli()
+				summary.RetainedOutputUntilMS = retained.UpdatedAt.Add(s.retainedTTL()).UnixMilli()
 			}
 		}
 		summaries = append(summaries, summary)
@@ -1660,7 +1672,7 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 	defer s.maintenanceMu.RUnlock()
 	if s.maintenance {
 		switch request.Type {
-		case "session.create", "session.stop", "session.destroy", "session.lifecycle", "session.yield", "session.task_begin", "session.agent_submit", "session.input", "session.bind_discord", "session.unbind_discord":
+		case "host.retention_update", "session.create", "session.stop", "session.destroy", "session.lifecycle", "session.yield", "session.task_begin", "session.agent_submit", "session.input", "session.bind_discord", "session.unbind_discord":
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrDraining, Message: "Ducklion is being integrated; new work is temporarily paused"}}
 		}
 	}
@@ -1668,12 +1680,25 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "Ducklion instance does not match"}}
 	}
 	switch request.Type {
+	case "host.retention_update":
+		if role != protocol.RoleDucklord || !hasCapability(capabilities, "host_config") || request.InstanceID != string(s.instanceID) || request.SessionID != "" {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotOwner, Message: "Ducklord Host control is required"}}
+		}
+		var update protocol.HostRetentionUpdate
+		if err := decodeStrict(request.Body, &update); err != nil || !validRetainedOutputDays(update.PTYLogRetentionDays) {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid Host retention update"}}
+		}
+		if err := s.setRetainedOutputDays(update.PTYLogRetentionDays); err != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not persist Host retention settings"}}
+		}
+		result, _ := json.Marshal(update)
+		return protocol.Response{ID: request.ID, Result: result}
 	case "status":
 		if !hasCapability(capabilities, "status") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "status capability was not negotiated"}}
 		}
 		result, _ := json.Marshal(map[string]any{"instance_id": s.instanceID, "protocol_major": protocol.Major, "protocol_minor": protocol.Minor,
-			"pty_log_retention_days": int(s.retainedOutputTTL / (24 * time.Hour))})
+			"pty_log_retention_days": int(s.retainedTTL() / (24 * time.Hour))})
 		return protocol.Response{ID: request.ID, Result: result}
 	case "sessions.list":
 		if !hasCapability(capabilities, "sessions_list") {

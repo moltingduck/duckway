@@ -133,7 +133,7 @@ func connectRoleContext(ctx context.Context, conn io.ReadWriteCloser, identity p
 	}()
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	setDeadline(conn, time.Now().Add(10*time.Second))
-	offeredCapabilities := []string{"status", "sessions_list", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
+	offeredCapabilities := []string{"status", "sessions_list", "host_config", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if identity.ConnectionRole == protocol.ConnectionObserver {
 		offeredCapabilities = []string{"status", "sessions_list", "output_subscribe", "output_unsubscribe", "session_events"}
 	}
@@ -221,6 +221,24 @@ func (c *Client) Call(request protocol.Request) (protocol.Response, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return c.CallContext(ctx, request)
+}
+
+func (c *Client) SetHostLogRetention(ctx context.Context, days int) error {
+	if !c.capabilities["host_config"] {
+		return fmt.Errorf("host configuration capability was not negotiated")
+	}
+	if days < 1 || days > 3650 {
+		return fmt.Errorf("PTY log retention days must be between 1 and 3650")
+	}
+	body, _ := json.Marshal(protocol.HostRetentionUpdate{PTYLogRetentionDays: days})
+	response, err := c.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "host.retention_update", InstanceID: c.instanceID, Body: body})
+	if err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return &RemoteError{Detail: *response.Error}
+	}
+	return nil
 }
 
 func (c *Client) CallContext(ctx context.Context, request protocol.Request) (protocol.Response, error) {

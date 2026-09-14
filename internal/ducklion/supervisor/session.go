@@ -696,20 +696,16 @@ func (s *Session) acceptAgentHook(event protocol.SupervisorAgentEvent) error {
 
 func (s *Session) markActivityAtCurrentOutput(category model.NotificationCategory) error {
 	// The hook subprocess can win a scheduler race against the goroutine that
-	// drains the agent's final PTY write. Wait until the PTY kernel queue is
-	// empty, then take captureMu: if capture already read those bytes, the mutex
-	// waits for their publication; otherwise the queue remains non-empty.
+	// drains the agent's final PTY write. Briefly wait for the PTY kernel queue
+	// to empty, then take captureMu. Continuous output must not block hook
+	// admission or Session.Wait indefinitely.
 	if s.pty == nil {
 		// Test/embedded producers have no kernel PTY queue. Give an immediately
 		// preceding asynchronous publisher the same capture opportunity.
 		time.Sleep(60 * time.Millisecond)
 	}
-	for s.pty != nil {
-		pending, err := pendingPTYBytes(s.pty)
-		if err != nil || pending == 0 {
-			break
-		}
-		time.Sleep(time.Millisecond)
+	if s.pty != nil {
+		waitForOutputDrain(500*time.Millisecond, func() (int, error) { return pendingPTYBytes(s.pty) })
 	}
 	s.captureMu.Lock()
 	_, offset := s.output.Bounds()
@@ -728,6 +724,17 @@ func (s *Session) markActivityAtCurrentOutput(category model.NotificationCategor
 	default:
 	}
 	return nil
+}
+
+func waitForOutputDrain(limit time.Duration, pending func() (int, error)) {
+	deadline := time.Now().Add(limit)
+	for {
+		bytes, err := pending()
+		if err != nil || bytes == 0 || !time.Now().Before(deadline) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func (s *Session) nextAgentSequence() uint64 {
