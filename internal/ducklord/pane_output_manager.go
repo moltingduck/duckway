@@ -279,25 +279,18 @@ func (m *PaneOutputManager) ClearInputFocus() {
 
 func (m *PaneOutputManager) ResizeFocused(key OutputKey, rows, cols uint16, resize func(uint16, uint16) (uint64, error)) (uint64, error) {
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if key != m.inputFocus {
-		m.mu.RUnlock()
 		return 0, fmt.Errorf("session pane is not focused")
 	}
 	activation, ok := m.leases[key]
 	revision, visible := m.visible[key]
-	epoch := m.focusEpoch
-	m.mu.RUnlock()
 	if !ok || !visible || activation.Revision != revision {
 		return 0, ErrStaleOutputLease
 	}
-	barrier, err := m.pool.ResizeTerminalAt(key, activation.Lease, rows, cols, resize)
-	m.mu.RLock()
-	stale := m.focusEpoch != epoch || m.inputFocus != key
-	m.mu.RUnlock()
-	if stale {
-		return 0, ErrStaleOutputLease
-	}
-	return barrier, err
+	// Keep focus stable through the authoritative remote resize. Returning a
+	// stale error after the RPC cannot undo an already applied PTY dimension.
+	return m.pool.ResizeTerminalAt(key, activation.Lease, rows, cols, resize)
 }
 
 func (m *PaneOutputManager) Close() error {

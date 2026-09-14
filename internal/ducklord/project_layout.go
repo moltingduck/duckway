@@ -124,6 +124,32 @@ func (l *ProjectLayout) SessionsForInstance(instanceID string) []SessionIdentity
 	return sessions
 }
 
+func (l *ProjectLayout) TabSessions(projectID, tabID string) []SessionIdentity {
+	project := l.Project(projectID)
+	if project == nil {
+		return nil
+	}
+	for _, tab := range project.Tabs {
+		if tab.ID == tabID {
+			return tab.Root.sessions()
+		}
+	}
+	return nil
+}
+
+func (l *ProjectLayout) PaneSession(projectID, paneID string) (SessionIdentity, bool) {
+	project := l.Project(projectID)
+	if project == nil {
+		return SessionIdentity{}, false
+	}
+	for _, tab := range project.Tabs {
+		if pane := tab.Root.findPane(paneID); pane != nil && pane.Session != nil {
+			return *pane.Session, true
+		}
+	}
+	return SessionIdentity{}, false
+}
+
 // NavigateProject picks the user's current Project when it contains the
 // Session, then the last Project used for that Session, then Project-pane
 // order. It does not mutate focus or notification state.

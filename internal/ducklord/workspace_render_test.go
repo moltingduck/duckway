@@ -42,7 +42,7 @@ func TestWorkspaceRendererShowsProjectsSplitPanesAndPreservesColor(t *testing.T)
 		[]WorkspaceListItem{{Identity: a, Name: "Codex", Host: "host-a", Selected: true},
 			{Identity: b, Name: "Claude", Host: "host-b", Unread: true}},
 		func(id string) bool { return id == projectID },
-		func(session SessionIdentity) WorkspacePaneView {
+		func(session SessionIdentity, _, _ int) WorkspacePaneView {
 			if session == a {
 				return WorkspacePaneView{Title: "Codex", Lines: []string{"\x1b[31mred\x1b[0m"}}
 			}

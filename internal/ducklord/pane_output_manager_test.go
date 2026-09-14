@@ -112,6 +112,48 @@ func TestPaneOutputManagerOverflowAndStaleFocusAreExplicit(t *testing.T) {
 	}
 }
 
+func TestPaneOutputManagerFocusChangeWaitsForRemoteResize(t *testing.T) {
+	manager, _, _ := newTestPaneOutputManager(t, 2)
+	a, b := paneSelection("AAA111"), paneSelection("BBB222")
+	if _, err := manager.SetVisible(context.Background(), a, []TerminalSelection{a, b}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetInputFocus(a.key()); err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	resized := make(chan error, 1)
+	go func() {
+		_, err := manager.ResizeFocused(a.key(), 4, 50, func(uint16, uint16) (uint64, error) {
+			close(started)
+			<-release
+			return 0, nil
+		})
+		resized <- err
+	}()
+	<-started
+	focused := make(chan error, 1)
+	go func() { focused <- manager.SetInputFocus(b.key()) }()
+	select {
+	case err := <-focused:
+		t.Fatalf("focus switched before resize completed: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-resized; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-focused; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.ResizeFocused(a.key(), 4, 50, func(uint16, uint16) (uint64, error) {
+		t.Fatal("old pane reached remote resize")
+		return 0, nil
+	}); err == nil {
+		t.Fatal("old pane retained resize focus")
+	}
+}
+
 func TestPaneOutputManagerFailedHandoffPreservesPreviousView(t *testing.T) {
 	manager, _, _ := newTestPaneOutputManager(t, 1)
 	a, b := paneSelection("AAA111"), paneSelection("BBB222")

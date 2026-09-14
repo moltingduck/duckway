@@ -6673,8 +6673,8 @@ func (s *tuiState) beginCreate() {
 	s.newSessionErr = ""
 	s.newSessionStarting = false
 	s.cancelCreateDiscovery()
-	s.newSessionStep = "kind"
-	s.newSessionKind = model.KindAgent
+	s.newSessionStep = "host"
+	s.newSessionKind = model.KindShell
 	s.newSessionAgent = ""
 	s.newSessionCommand = nil
 	s.newSessionProjects = nil
@@ -7335,7 +7335,7 @@ func (s *tuiState) handleCreateInput(b []byte) string {
 	case "\x03":
 		return "cancel"
 	case "\x1b":
-		if s.newSessionStep == "kind" {
+		if s.newSessionStep == "kind" || s.newSessionStep == "host" {
 			return "cancel"
 		}
 		s.backCreateStep()

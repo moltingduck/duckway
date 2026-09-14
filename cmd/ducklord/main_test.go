@@ -2013,7 +2013,7 @@ func TestTUICreatePromptUsesSelectedClient(t *testing.T) {
 		selected: 1,
 	}
 	state.beginCreate()
-	if !state.newSessionMode || state.newSessionClient != "client-b" || state.newSessionStep != "kind" {
+	if !state.newSessionMode || state.newSessionClient != "client-b" || state.newSessionStep != "host" || state.newSessionKind != model.KindShell {
 		t.Fatalf("create state = newSessionMode %v client %q step %q", state.newSessionMode, state.newSessionClient, state.newSessionStep)
 	}
 	for _, b := range []byte("new") {
@@ -2040,8 +2040,6 @@ func TestTUICreateWizardBuildsShellSessionFromProject(t *testing.T) {
 		}, agents: []ducklord.RemoteAgent{{Type: "shell", Command: []string{"/bin/bash"}}}},
 	}
 	state.beginCreate()
-	state.newSessionLine = "shell"
-	createSubmit(t, state)
 	state.newSessionLine = "2"
 	createSubmit(t, state)
 	if state.newSessionClient != "client-b" || state.newSessionStep != "project" {
@@ -2064,8 +2062,7 @@ func TestTUICreateWizardBrowsesAndAddsProjectWhenRegistryIsEmpty(t *testing.T) {
 	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}
 	state := &tuiState{cfg: cfg, runner: fakeRunner{agents: []ducklord.RemoteAgent{{Type: "codex", Command: []string{"codex"}}}}, hostSync: map[string]ducklord.SessionUpdate{"host": {State: "live"}}}
 	state.beginCreate()
-	state.newSessionLine = "agent"
-	createSubmit(t, state)
+	state.newSessionKind = model.KindAgent
 	state.newSessionLine = "host"
 	createSubmit(t, state)
 	if state.newSessionStep != "path" {
@@ -2133,8 +2130,7 @@ func TestTUICreateWizardRejectsCustomProjectPath(t *testing.T) {
 	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a", Host: "client-a"}}}
 	state := &tuiState{cfg: cfg, runner: fakeRunner{projects: []ducklord.RemoteProject{{Name: "app", Path: "/work/app", Source: "duckway-client"}}, agents: []ducklord.RemoteAgent{{Type: "codex", Command: []string{"/usr/bin/codex"}}}}}
 	state.beginCreate()
-	state.newSessionLine = ""
-	createSubmit(t, state) // agent
+	state.newSessionKind = model.KindAgent
 	state.newSessionLine = ""
 	createSubmit(t, state) // host
 	state.newSessionLine = "/other/path"

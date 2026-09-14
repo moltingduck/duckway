@@ -663,13 +663,16 @@ func runProjects(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	result := make([]ProjectOutput, 0, len(projects))
+	// New shell sessions start in the remote user's home by default.
+	// Agent-session clients filter this capability by Source.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	result := []ProjectOutput{{Name: "Host home", Path: home, Source: "ducklion-default"}}
 	for _, p := range projects {
 		result = append(result, ProjectOutput{Name: p.Name, Path: p.Path, Source: "duckway-client"})
 	}
-	// Shell-session creation may explicitly use Ducklion's own working directory.
-	// Agent-session clients filter this capability by Source.
-	result = append(result, ProjectOutput{Name: "Ducklion default", Path: daemon.DefaultRoot(), Source: "ducklion-default"})
 	if jsonOut {
 		return json.NewEncoder(out).Encode(result)
 	}

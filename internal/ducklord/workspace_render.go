@@ -63,7 +63,7 @@ func CalculateWorkspaceGeometry(width, height, top int) WorkspaceGeometry {
 // one Project's tab/split tree. It is presentation-only: no PTY input, resize,
 // unread mutation, or yield can occur here.
 func RenderWorkspaceBody(out io.Writer, geometry WorkspaceGeometry, layout *ProjectLayout, nav *WorkspaceState,
-	items []WorkspaceListItem, projectUnread func(string) bool, paneView func(SessionIdentity) WorkspacePaneView) {
+	items []WorkspaceListItem, projectUnread func(string) bool, paneView func(SessionIdentity, int, int) WorkspacePaneView) {
 	if out == nil || layout == nil || nav == nil {
 		return
 	}
@@ -143,7 +143,7 @@ func renderWorkspaceColumn(out io.Writer, rect WorkspaceRect, title string, row 
 }
 
 func renderWorkspaceNode(out io.Writer, node *SessionPane, rect WorkspaceRect, selectedPaneID string,
-	view func(SessionIdentity) WorkspacePaneView) {
+	view func(SessionIdentity, int, int) WorkspacePaneView) {
 	if node == nil || rect.Width < 1 || rect.Height < 1 {
 		return
 	}
@@ -169,7 +169,7 @@ func renderWorkspaceNode(out io.Writer, node *SessionPane, rect WorkspaceRect, s
 	}
 	data := WorkspacePaneView{Title: node.Session.SessionID, Stale: true}
 	if view != nil {
-		data = view(*node.Session)
+		data = view(*node.Session, rect.Width, rect.Height-1)
 	}
 	if data.Title == "" {
 		data.Title = node.Session.SessionID
