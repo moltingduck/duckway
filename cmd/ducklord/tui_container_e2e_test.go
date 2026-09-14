@@ -1183,7 +1183,7 @@ func listContainerRemoteSessions(t *testing.T, runtime, controller, host string)
 	t.Helper()
 	out, err := exec.Command(runtime, "exec", controller, "ducklord", "sessions", host, "--json", "--config", "/tmp/e2e-inspector.yaml").CombinedOutput()
 	if err != nil {
-		t.Fatalf("list sessions on %s: %v: %s", host, err, safeTerminalDiagnostic(string(out)))
+		t.Fatalf("list sessions on %s: %v (remote output suppressed)", host, err)
 	}
 	var sessions []ducklord.RemoteSession
 	if err := json.Unmarshal(out, &sessions); err != nil {

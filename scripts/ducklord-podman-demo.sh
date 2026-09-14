@@ -90,6 +90,9 @@ if [ "$CREDENTIALS" != none ] && { [ -f "$CODEX_AUTH" ] || [ -f "$CLAUDE_AUTH" ]
       "$RUNTIME" cp "$CODEX_AUTH" "$container":/home/duck/.codex/auth.json
       "$RUNTIME" exec "$container" chown duck:duck /home/duck/.codex/auth.json
       "$RUNTIME" exec "$container" chmod 600 /home/duck/.codex/auth.json
+      "$RUNTIME" cp "$ROOT/scripts/fixtures/ducklord-live-codex-config.toml" "$container":/home/duck/.codex/config.toml
+      "$RUNTIME" exec "$container" chown duck:duck /home/duck/.codex/config.toml
+      "$RUNTIME" exec "$container" chmod 600 /home/duck/.codex/config.toml
     fi
     if { [ "$CREDENTIALS" = all ] || [ "$CREDENTIALS" = claude ]; } && [ -f "$CLAUDE_AUTH" ]; then
       "$RUNTIME" cp "$CLAUDE_AUTH" "$container":/home/duck/.claude/.credentials.json

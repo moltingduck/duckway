@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -49,6 +50,11 @@ type Options struct {
 type Session struct {
 	mu                 sync.Mutex
 	captureMu          sync.Mutex
+	ptyWriteMu         sync.Mutex
+	ptySize            atomic.Uint32
+	terminalQueries    terminalQueryParser
+	terminalReplyQueue chan []byte
+	terminalReplyDone  chan struct{}
 	agentMu            sync.Mutex
 	id                 model.SessionID
 	generation         uint64
@@ -230,7 +236,11 @@ func Start(options Options) (*Session, error) {
 	session.attentionNotify = make(chan struct{}, 1)
 	session.attentionPending = make(map[model.NotificationCategory]uint64)
 	session.attentionAcked = make(map[model.NotificationCategory]uint64)
-	session.input = duckruntime.NewInputPump((*inputGate)(session), ptmx, 64)
+	session.ptySize.Store(uint32(options.Rows)<<16 | uint32(options.Cols))
+	session.terminalReplyQueue = make(chan []byte, maxTerminalQueryReplies)
+	session.terminalReplyDone = make(chan struct{})
+	session.input = duckruntime.NewInputPump((*inputGate)(session), &serializedPTYWriter{pty: ptmx, mu: &session.ptyWriteMu}, 64)
+	go session.sendTerminalReplies()
 	go session.capture()
 	if hookListener != nil {
 		session.agentHookListener = hookListener
@@ -807,6 +817,7 @@ func (s *Session) Resize(rows, cols uint16, epoch, generation uint64) (uint64, e
 	if err := pty.Setsize(s.pty, &pty.Winsize{Rows: rows, Cols: cols}); err != nil {
 		return 0, err
 	}
+	s.ptySize.Store(uint32(rows)<<16 | uint32(cols))
 	_, offset := s.output.Bounds()
 	return offset, nil
 }
@@ -843,6 +854,13 @@ func (s *Session) Wait() error {
 	}
 	s.output.Close()
 	_ = s.pty.Close()
+	if s.terminalReplyDone != nil {
+		select {
+		case <-s.terminalReplyDone:
+		case <-time.After(time.Second):
+			// A blocked kernel PTY write must not strand session shutdown.
+		}
+	}
 	return err
 }
 
@@ -875,10 +893,18 @@ func (s *Session) Terminate(force bool) error {
 
 func (s *Session) capture() {
 	defer close(s.captureDone)
+	defer close(s.terminalReplyQueue)
 	buffer := make([]byte, 32<<10)
 	for {
 		n, err := s.pty.Read(buffer)
 		if n > 0 {
+			for _, reply := range s.terminalQueries.Feed(buffer[:n], s.ptySize.Load()) {
+				// Do not let a child that floods terminal queries block capture.
+				select {
+				case s.terminalReplyQueue <- reply:
+				default:
+				}
+			}
 			s.captureMu.Lock()
 			if s.retainedOutput != nil {
 				if writeErr := s.retainedOutput.Write(buffer[:n]); writeErr != nil {
@@ -899,6 +925,22 @@ func (s *Session) capture() {
 			s.captureMu.Unlock()
 		}
 		if err != nil {
+			return
+		}
+	}
+}
+
+func (s *Session) sendTerminalReplies() {
+	defer close(s.terminalReplyDone)
+	writer := &serializedPTYWriter{pty: s.pty, mu: &s.ptyWriteMu}
+	var limiter terminalReplyLimiter
+	for reply := range s.terminalReplyQueue {
+		if !limiter.Allow(time.Now()) {
+			continue
+		}
+		// Replies are local PTY control traffic, never writer input frames or
+		// retained output. Failed writes mean the child/PTY is exiting.
+		if _, err := writer.Write(reply); err != nil {
 			return
 		}
 	}

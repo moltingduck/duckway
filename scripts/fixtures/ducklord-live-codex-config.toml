@@ -1,0 +1,4 @@
+check_for_update_on_startup = false
+
+[projects."/home/duck/projects/alpha"]
+trust_level = "trusted"
