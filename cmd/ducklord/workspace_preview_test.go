@@ -153,6 +153,47 @@ func TestWorkspaceProjectNavigationDoesNotStealQuickSelectionOrPTYControl(t *tes
 	}
 }
 
+func TestWorkspaceAsyncQuickCursorChangeDoesNotStealFocusedProjectPane(t *testing.T) {
+	a := ducklord.SessionIdentity{InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", SessionID: "AAA111"}
+	b := ducklord.SessionIdentity{InstanceID: a.InstanceID, SessionID: "BBB222"}
+	activity := ducklord.NewActivityState()
+	projectA, _ := activity.ProjectLayout.AddProject("A")
+	projectB, _ := activity.ProjectLayout.AddProject("B")
+	_, _ = activity.ProjectLayout.Place(projectA, a, ducklord.PlaceNewTab, "")
+	_, _ = activity.ProjectLayout.Place(projectB, b, ducklord.PlaceNewTab, "")
+	state := &tuiState{workspacePreview: true, activityState: activity, sessions: []ducklord.RemoteSession{
+		{Client: "host", InstanceID: a.InstanceID, SessionID: a.SessionID, Kind: "shell"},
+		{Client: "host", InstanceID: b.InstanceID, SessionID: b.SessionID, Kind: "shell"},
+	}, selected: 1}
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(projectA); err != nil {
+		t.Fatal(err)
+	}
+	state.activeAttachKey = sessionKey(state.sessions[0])
+	state.focused = true
+	state.selected = 0 // an async inventory update chose a fallback quick row
+	if _, err := state.workspaceNavigation(); err != nil {
+		t.Fatal(err)
+	}
+	if nav.CurrentProjectID() != projectA || !state.focused || state.activeAttachKey != sessionKey(state.sessions[0]) {
+		t.Fatal("async quick-list selection stole focused Project pane")
+	}
+	state.focused = false
+	state.selected = 1
+	state.clearAttachIdentity() // failed control cleanup is not quick-list navigation
+	if nav.CurrentProjectID() != projectA {
+		t.Fatal("control cleanup stole Project navigation")
+	}
+	state.selected = 1
+	state.workspaceFollowQuickSelection()
+	if nav.CurrentProjectID() != projectB {
+		t.Fatal("explicit quick-list navigation failed")
+	}
+}
+
 func TestWorkspaceVisibleSelectionsKeepsLiveBackgroundWhenQuickSessionOffline(t *testing.T) {
 	a := ducklord.SessionIdentity{InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", SessionID: "AAA111"}
 	b := ducklord.SessionIdentity{InstanceID: a.InstanceID, SessionID: "BBB222"}

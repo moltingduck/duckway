@@ -179,11 +179,20 @@ func (c *Config) normalize() error {
 			binding = c.Shortcuts[action]
 		}
 		if previous := seen[binding]; previous != "" {
-			return fmt.Errorf("shortcut %q is assigned to both %s and %s", binding, previous, action)
+			if !contextualShortcutPair(previous, action) {
+				return fmt.Errorf("shortcut %q is assigned to both %s and %s", binding, previous, action)
+			}
 		}
 		seen[binding] = action
 	}
 	return nil
+}
+
+// These pairs live in mutually exclusive TUI regions. Sharing their initial
+// keys does not make either action ambiguous to the operator.
+func contextualShortcutPair(a, b string) bool {
+	return a == "detail_jump" && b == "list_groups" || a == "list_groups" && b == "detail_jump" ||
+		a == "detail_search" && b == "list_search" || a == "list_search" && b == "detail_search"
 }
 
 var DefaultShortcuts = map[string]string{
@@ -196,6 +205,7 @@ var DefaultShortcuts = map[string]string{
 	"project_add_pane":  "p",
 	"project_create":    "N",
 	"project_move_pane": "M", "project_detach_pane": "x",
+	"detail_list": "D", "detail_search": "/", "detail_jump": "g", "detail_filter": "f",
 }
 
 func validShortcutBinding(binding string) bool {

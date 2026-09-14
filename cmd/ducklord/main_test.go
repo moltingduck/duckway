@@ -1028,9 +1028,51 @@ func TestTUIRevisionSnapshotPreservesSelectionAndRowsWhileReconnecting(t *testin
 	if len(state.sessions) != 2 || state.currentSession().Name != "renamed" {
 		t.Fatalf("reconnecting discarded rows: %+v", state.sessions)
 	}
-	state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", Revision: 9, State: "live", Sessions: nil})
+	if state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", Revision: 9, State: "live", Sessions: nil}) {
+		t.Fatal("stale update was accepted and could tear down the output lease")
+	}
 	if len(state.sessions) != 2 {
 		t.Fatalf("old revision replaced rows: %+v", state.sessions)
+	}
+}
+
+func TestTUIRejectsInconsistentSessionUpdateBeforeOutputEffects(t *testing.T) {
+	state := &tuiState{hostSync: map[string]ducklord.SessionUpdate{
+		"host-a": {Client: "host-a", InstanceID: "instance", Generation: 1, Revision: 4, State: "live"},
+	}}
+	if state.applySessionUpdate(ducklord.SessionUpdate{Client: "host-a", InstanceID: "instance", Generation: 1,
+		Revision: 5, State: "live", Sessions: []ducklord.RemoteSession{{Client: "other", InstanceID: "instance"}}}) {
+		t.Fatal("inconsistent inventory was accepted")
+	}
+	if got := state.hostSync["host-a"]; got.Revision != 4 || got.State != "live" {
+		t.Fatalf("rejected inventory changed authoritative host state: %+v", got)
+	}
+}
+
+func TestTUIStoppedShellRemovesProjectPaneButKeepsDiagnosticRow(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	identity := ducklord.SessionIdentity{InstanceID: instance, SessionID: "ABC123"}
+	activity := ducklord.NewActivityState()
+	projectID, err := activity.ProjectLayout.AddProject("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activity.ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	state := &tuiState{activityState: activity, activityStore: ducklord.ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")},
+		hostSync: make(map[string]ducklord.SessionUpdate)}
+	stopped := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: "ABC123", Kind: "shell",
+		Status: string(model.StatusStopped), RuntimeGeneration: 1, RetainedOutputBytes: 128}
+	if !state.applySessionUpdate(ducklord.SessionUpdate{Client: "host", InstanceID: instance, Generation: 1, Revision: 1,
+		State: "live", Sessions: []ducklord.RemoteSession{stopped}}) {
+		t.Fatal("authoritative stopped inventory was rejected")
+	}
+	if got := state.activity().ProjectLayout.ProjectsFor(identity); len(got) != 0 {
+		t.Fatalf("stopped shell kept Project pane: %v", got)
+	}
+	if len(state.sessions) != 1 || state.sessions[0].RetainedOutputBytes != 128 {
+		t.Fatal("retained-log metadata was lost when Project pane was removed")
 	}
 }
 

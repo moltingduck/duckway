@@ -1280,7 +1280,6 @@ type tuiState struct {
 	workspacePreview           bool
 	workspaceOutput            *ducklord.WorkspaceOutputAdapter
 	workspaceNav               *ducklord.WorkspaceState
-	workspaceQuickKey          string
 	workspaceProjectFocus      bool
 	workspaceAttachFromProject bool
 	workspaceFocusFromProject  bool
@@ -1295,6 +1294,10 @@ type tuiState struct {
 	workspacePaneIdentity      ducklord.SessionIdentity
 	workspacePaneChanged       bool
 	workspaceNewSessionIntent  *workspacePaneIntent
+	detailQuery                string
+	detailFilter               ducklord.DetailFilter
+	detailSearchFocused        bool
+	detailSelected             ducklord.SessionIdentity
 	clearOutputFocus           func()
 	searchMode                 bool
 	searchQuery                string
@@ -1362,7 +1365,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner,
 		snapshotStore: ducklord.SnapshotStore{}, activityStore: activityStore, activityState: activityState, hostSync: make(map[string]ducklord.SessionUpdate), localWarning: stateWarning,
 		listPaneWidth: cfg.SessionListPaneWidth(), autoHideList: cfg.SessionListAutoHide(), disconnectedHosts: make(map[string]bool),
-		workspacePreview: os.Getenv("DUCKLORD_WORKSPACE_PREVIEW") == "1"}
+		workspacePreview: os.Getenv("DUCKLORD_LEGACY_TUI") != "1"}
 	var outputManager tuiOutputManager
 	var workspaceOutput *ducklord.WorkspaceOutputAdapter
 	var outputEvents <-chan ducklord.TerminalOutputEvent
@@ -1466,6 +1469,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			visible := state.workspaceVisibleSelections(ducklord.TerminalSelection{Client: ducklord.Client{Name: sess.Client}})
 			if len(visible) == 0 {
 				workspaceOutput.ClearVisible()
+				outputRequestID++
+				selectedOutputSession = ducklord.RemoteSession{}
+				activeOutputEvent = ducklord.TerminalOutputEvent{}
+				state.outputForKey = ""
+				state.outputText = ""
+				state.terminal = nil
 				state.outputFresh = false
 				state.outputErr = "current Project has no live Session pane"
 				return
@@ -1879,6 +1888,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			if searchActivation {
 				state.outputForKey = state.searchPendingKey
 				state.activeAttachKey = state.searchPendingKey
+				if state.selectSessionKey(state.searchPendingKey) {
+					state.workspaceFollowQuickSelection()
+				}
 				state.activeAttachFresh = state.outputFresh
 				state.searchActivatedKey = state.searchPendingKey
 				state.searchActivatedRevision = state.searchPendingRevision
@@ -2034,6 +2046,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 			}
 			previousActive := state.effectiveAttachKey()
+			if !state.applySessionUpdate(update) {
+				continue
+			}
 			if state.invalidateCreateStart(update) {
 				if startCancel != nil {
 					startCancel()
@@ -2041,7 +2056,6 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 				startID++ // fence a completion racing with cancellation
 			}
-			state.applySessionUpdate(update)
 			if outputManager != nil {
 				if previousInstance != "" && update.InstanceID != "" && update.InstanceID != previousInstance {
 					outputManager.ForgetHost(update.Client, previousInstance)
@@ -2447,6 +2461,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					key := sessionKey(target)
 					if ok && state.searchResultIsActivated(target) {
 						state.selectSessionKey(key)
+						state.workspaceFollowQuickSelection()
 						state.closeSearch()
 						b = []byte("\r")
 					} else if !ok || outputManager == nil {
@@ -2918,6 +2933,23 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			wasDetailed := state.workspaceNav != nil && state.workspaceNav.InDetailMode()
+			previousDetail := state.detailSelected
+			if detailAction := state.handleDetailedInput(b); detailAction != "" {
+				switch detailAction {
+				case "changed":
+					isDetailed := state.workspaceNav != nil && state.workspaceNav.InDetailMode()
+					if workspaceOutput != nil && (wasDetailed != isDetailed || previousDetail != state.detailSelected) {
+						selectPooledOutput()
+					}
+					state.render(os.Stdout)
+					continue
+				case "focus", "jump":
+					state.workspaceAttachFromProject = true
+					state.workspaceFocusFromProject = detailAction == "jump"
+					b = []byte("\r") // continue through the owner-gated attach action
+				}
+			}
 			if handled, changed := state.handleWorkspaceProjectInput(b); handled {
 				if changed && control != nil && !state.focused {
 					_ = control.Stdin.Close()
@@ -2968,6 +3000,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			case "reorder-down":
 				state.moveSelectedSession(1)
 			case "select":
+				state.workspaceFollowQuickSelection()
 				if control != nil && !state.focused {
 					_ = control.Stdin.Close()
 					control, controlDone = nil, nil
@@ -3238,9 +3271,16 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 		}
 		all[i].LastLine = sanitizeTerminalText(all[i].LastLine)
 		all[i].Error = sanitizeTerminalText(all[i].Error)
-		if identity, ok := ducklord.IdentityFromSession(all[i]); ok && len(s.activity().ProjectLayout.ProjectsFor(identity)) == 0 {
-			if err := s.activity().ProjectLayout.Discover(identity); err == nil {
-				activityChanged = true
+		if identity, ok := ducklord.IdentityFromSession(all[i]); ok {
+			if all[i].Status == string(model.StatusStopped) {
+				if len(s.activity().ProjectLayout.ProjectsFor(identity)) != 0 {
+					s.activity().ProjectLayout.Destroy(identity)
+					activityChanged = true
+				}
+			} else if len(s.activity().ProjectLayout.ProjectsFor(identity)) == 0 {
+				if err := s.activity().ProjectLayout.Discover(identity); err == nil {
+					activityChanged = true
+				}
 			}
 		}
 		var changed bool
@@ -3274,29 +3314,31 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 	}
 }
 
-func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
+// applySessionUpdate reports whether the update became authoritative. Callers
+// must not apply output or lifecycle side effects for a rejected snapshot.
+func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) bool {
 	if update.Client == "" {
-		return
+		return false
 	}
 	if s.cfg != nil {
 		if _, configured := s.cfg.Client(update.Client); !configured {
-			return
+			return false
 		}
 	}
 	previous := s.hostSync[update.Client]
 	if update.Generation < previous.Generation || update.Generation == previous.Generation && update.InstanceID == previous.InstanceID && update.Revision < previous.Revision {
-		return
+		return false
 	}
 	if update.State == "live" {
 		for _, session := range update.Sessions {
 			if session.InstanceID != update.InstanceID || session.Client != update.Client {
 				s.localWarning = "ignored inconsistent Ducklion session inventory"
-				return
+				return false
 			}
 		}
 		for client, snapshot := range s.hostSync {
 			if client != update.Client && snapshot.State == "live" && snapshot.InstanceID == update.InstanceID && snapshot.Revision > update.Revision {
-				return // another alias has already observed a newer full inventory
+				return false // another alias has already observed a newer full inventory
 			}
 		}
 	}
@@ -3318,7 +3360,7 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 		if s.activePTYSession().Client == update.Client {
 			s.outputFresh = false
 		}
-		return // retain the last authoritative rows while reconnecting
+		return true // retain the last authoritative rows while reconnecting
 	}
 	oldKey := s.currentKey()
 	// Sorting must protect the selected PTY's group by identity, not by an index
@@ -3346,10 +3388,10 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 	activityChanged := false
 	for _, session := range update.Sessions {
 		identity, identityOK := ducklord.IdentityFromSession(session)
-		if identityOK {
+		if identityOK && session.Status != string(model.StatusStopped) {
 			delete(previousIdentities, identity)
 		}
-		if identityOK && len(s.activity().ProjectLayout.ProjectsFor(identity)) == 0 {
+		if identityOK && session.Status != string(model.StatusStopped) && len(s.activity().ProjectLayout.ProjectsFor(identity)) == 0 {
 			if err := s.activity().ProjectLayout.Discover(identity); err == nil {
 				activityChanged = true
 			}
@@ -3409,6 +3451,7 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) {
 			s.outputErr = "active session was removed remotely"
 		}
 	}
+	return true
 }
 
 func (s *tuiState) effectiveAttachKey() string {
@@ -3422,12 +3465,13 @@ func (s *tuiState) clearAttachIdentity() {
 	if s.clearOutputFocus != nil {
 		s.clearOutputFocus()
 	}
+	if s.workspaceNav != nil && s.workspaceNav.InDetailMode() && s.detailSelected.Key() != "" {
+		_ = s.workspaceNav.PreviewDetail(s.detailSelected)
+	}
 	if s.workspacePreview && s.workspaceNav != nil && s.activeAttachKey != "" {
 		if s.workspaceFocusFromProject {
 			_ = s.workspaceNav.SelectProject(s.workspaceNav.CurrentProjectID())
 			s.workspaceProjectFocus = true
-		} else if identity, ok := ducklord.IdentityFromSession(s.currentSession()); ok {
-			_ = s.workspaceNav.SelectQuickSession(identity)
 		}
 	}
 	s.workspaceFocusFromProject = false
@@ -4534,6 +4578,15 @@ func (s *tuiState) activePTYSession() ducklord.RemoteSession {
 		}
 		return ducklord.RemoteSession{}
 	}
+	if s.workspacePreview && s.workspaceNav != nil && s.workspaceNav.InDetailMode() {
+		identity := s.workspaceNav.DetailSelection()
+		for _, session := range s.sessions {
+			if candidate, ok := ducklord.IdentityFromSession(session); ok && candidate == identity {
+				return session
+			}
+		}
+		return ducklord.RemoteSession{}
+	}
 	return s.currentSession()
 }
 
@@ -5024,8 +5077,9 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		{"SESSION LIST & GROUPS", "list_search", "Search sessions"}, {"", "list_organize", "Cycle custom / host / type"}, {"", "list_groups", "Manage custom groups"}, {"", "list_reorder_up", "Move session up"}, {"", "list_reorder_down", "Move session down"}, {"", "refresh", "Refresh"},
 		{"SESSION", "session_create", "Create session"}, {"", "session_actions", "Session action menu"}, {"", "session_notifications", "Notification settings"}, {"", "session_yield", "Yield now"}, {"", "session_yield_wait", "Yield when idle"}, {"", "session_restart", "Restart session"}, {"", "session_end", "End session"}, {"", "session_destroy", "Destroy session"},
 		{"HOST", "host_actions", "Host action menu"}, {"", "host_add", "Add host configuration"}, {"", "host_remove", "Remove host configuration"},
-		{"PROJECT PANE", "project_focus", "Focus Project pane"}, {"", "project_create", "Create Project"}, {"", "project_add_pane", "Add Session pane"}, {"", "project_move_pane", "Move Session pane"}, {"", "project_detach_pane", "Detach local Session pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
-		{"TERMINAL AREA", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return focus to Session list pane"},
+		{"PROJECT PANE", "project_focus", "Move keyboard focus to Project pane"}, {"", "project_create", "Create Project"}, {"", "project_add_pane", "Add Session pane"}, {"", "project_move_pane", "Move Session pane"}, {"", "project_detach_pane", "Detach local Session pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
+		{"DETAILED SESSION LIST", "detail_list", "Open / close detailed list"}, {"", "detail_search", "Search name, Host, or Project"}, {"", "detail_filter", "Cycle state filter"}, {"", "detail_jump", "Jump to selected Session's Project"},
+		{"TERMINAL AREA", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return to navigation pane"},
 		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
 		{"", "shortcut_settings", "Configure shortcuts"},
 	}

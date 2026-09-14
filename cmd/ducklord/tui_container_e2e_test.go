@@ -20,12 +20,11 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
-// TestDucklordCreateTUIContainerE2E is driven by scripts/ducklord-tui-e2e.sh.
-// It uses a real terminal, Ducklord process, SSH stdio bridge, Ducklion daemon,
-// and native remote PTY. The ordinary unit suite remains container-free.
+// TestDucklordCreateTUIContainerE2E retains the old TUI wizard regression as
+// an explicit legacy-only test; the production Project TUI has separate E2E.
 func TestDucklordCreateTUIContainerE2E(t *testing.T) {
-	if os.Getenv("DUCKLORD_TUI_CONTAINER_E2E") != "1" {
-		t.Skip("run through scripts/ducklord-tui-e2e.sh")
+	if os.Getenv("DUCKLORD_LEGACY_TUI_E2E") != "1" {
+		t.Skip("legacy TUI wizard is outside the production Project E2E")
 	}
 	runtime := requiredE2EEnv(t, "DUCKLORD_E2E_RUNTIME")
 	controller := requiredE2EEnv(t, "DUCKLORD_E2E_CONTROLLER")
@@ -66,7 +65,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 		}
 		return false
 	}, func() string { return "notification fixture was not listed" })
-	command := exec.Command(runtime, "exec", "-it", controller, "env", "TERM=xterm-256color", "ducklord", "tui", "--config", "/root/.ducklord/config.yaml")
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "TERM=xterm-256color", "DUCKLORD_LEGACY_TUI=1", "ducklord", "tui", "--config", "/root/.ducklord/config.yaml")
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		t.Fatalf("start Ducklord TUI: %v", err)
@@ -547,7 +546,7 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 		binary = "ducklord"
 	}
 	owner := fmt.Sprintf("workspace-e2e-%d", time.Now().UnixNano())
-	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", "DUCKLORD_WORKSPACE_PREVIEW=1",
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color",
 		binary, "tui", "--name", owner, "--config", "/root/.ducklord/config.yaml")
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
@@ -673,7 +672,7 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 		t.Fatalf("install isolated layout: %v: %s", err, out)
 	}
 	owner := fmt.Sprintf("workspace-two-%d", time.Now().UnixNano())
-	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", "DUCKLORD_WORKSPACE_PREVIEW=1",
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color",
 		binary, "tui", "--name", owner, "--config", "/root/.ducklord/config.yaml")
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 120})
 	if err != nil {
@@ -920,7 +919,7 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 		t.Fatalf("prepare limited subscription config: %v: %s", err, out)
 	}
 	owner := fmt.Sprintf("project-focus-%d", time.Now().UnixNano())
-	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", "DUCKLORD_WORKSPACE_PREVIEW=1",
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color",
 		binary, "tui", "--name", owner, "--config", home+"/.ducklord/limited.yaml")
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 120})
 	if err != nil {

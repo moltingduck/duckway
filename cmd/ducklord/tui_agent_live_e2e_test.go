@@ -73,7 +73,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	if err := exec.Command(runtime, "cp", localState, controller+":"+home+"/.ducklord/state.json").Run(); err != nil {
 		t.Fatal("install isolated Project layout: ", err)
 	}
-	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", "DUCKLORD_WORKSPACE_PREVIEW=1",
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color",
 		"ducklord", "tui", "--name", owner, "--config", "/root/.ducklord/config.yaml")
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 28, Cols: 130})
 	if err != nil {
@@ -82,19 +82,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = terminal.Write([]byte("\x1d\x1bq"))
 		time.Sleep(200 * time.Millisecond)
-		if listing, listErr := exec.Command(runtime, "exec", controller, "ps", "-ef").Output(); listErr == nil {
-			for _, line := range strings.Split(string(listing), "\n") {
-				if !strings.Contains(line, "ducklord tui --name "+owner+" --config") {
-					continue
-				}
-				fields := strings.Fields(line)
-				if len(fields) > 0 {
-					if pid, parseErr := strconv.Atoi(fields[0]); parseErr == nil {
-						_, _ = exec.Command(runtime, "exec", controller, "kill", strconv.Itoa(pid)).CombinedOutput()
-					}
-				}
-			}
-		}
+		killNamedContainerTUI(runtime, controller, owner)
 		_ = terminal.Close()
 		_ = command.Process.Kill()
 		_ = command.Wait()
@@ -160,7 +148,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		})
 		if turn == 1 {
 			writePTY(t, terminal, "\x1d")
-			waitLiveAgentScreen(t, capture, "Preview:", 20*time.Second)
+			waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
 			writePTY(t, terminal, "P")
 			waitLiveAgentScreen(t, capture, "Project pane:", 20*time.Second)
 			writePTY(t, terminal, "k")
@@ -169,7 +157,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 			waitLiveAgentScreen(t, capture, "› Live "+agent, 20*time.Second)
 			waitLiveAgentScreen(t, capture, response, 20*time.Second)
 			writePTY(t, terminal, "P")
-			waitLiveAgentScreen(t, capture, "Preview:", 20*time.Second)
+			waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
 			writePTY(t, terminal, "/"+handle+"\r")
 			waitLiveAgentScreen(t, capture, "Active · Enter again to focus", 20*time.Second)
 			writePTY(t, terminal, "\r")
@@ -178,6 +166,23 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	}
 	if latest, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID); !found || latest.RuntimeGeneration != session.RuntimeGeneration {
 		t.Fatal("interactive agent shell changed identity during TUI navigation")
+	}
+}
+
+func killNamedContainerTUI(runtime, controller, owner string) {
+	listing, err := exec.Command(runtime, "exec", controller, "ps", "-eo", "pid=,args=").Output()
+	if err != nil {
+		return
+	}
+	want := "ducklord tui --name " + owner + " --config /root/.ducklord/config.yaml"
+	for _, line := range strings.Split(string(listing), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 7 || strings.Join(fields[1:], " ") != want {
+			continue
+		}
+		if pid, parseErr := strconv.Atoi(fields[0]); parseErr == nil {
+			_, _ = exec.Command(runtime, "exec", controller, "kill", strconv.Itoa(pid)).CombinedOutput()
+		}
 	}
 }
 

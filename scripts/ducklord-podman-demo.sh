@@ -280,17 +280,18 @@ Useful checks:
   $RUNTIME exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.yaml
 
 Inside the TUI:
-  j/k or arrow keys: move
-  mouse click: select a session row
-  Enter or right-click: focus the selected session in the right pane
+  j/k or arrow keys: move through the quick Session list pane
+  P: move keyboard focus to the Project pane; N creates a Project, p adds a Session pane
+  D: open the detailed Session list; / searches, f filters, Enter focuses, g jumps to its Project
+  Enter: focus the selected Session pane (through Ducklion writer control)
   a: add another ducklion host from ~/.ssh/config
-  c: create a session: agent -> host -> project -> agent -> handle, or shell -> host -> project -> shell -> handle
+  c: create a shell-first Session; launch Codex or Claude inside that shell
   m: open the centered action menu for attach, yield, notifications, and lifecycle
   n: configure notifications for the selected session
   E / R / X: end, restart, or destroy the selected session (with confirmation)
-  attach-host mode: same split-pane attach UI scoped to one host; add/new are disabled
-  right pane: selected session output preview
-  Ctrl-]: return keyboard focus to the left menu
+  Terminal area: one Project's tabs and split Session panes
+  Ctrl-]: return keyboard focus to the current navigation pane
+  ?: pinned searchable shortcut help
   q: quit
 
 Clean up:

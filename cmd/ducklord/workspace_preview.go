@@ -17,24 +17,42 @@ func (s *tuiState) workspaceNavigation() (*ducklord.WorkspaceState, error) {
 			return nil, err
 		}
 		s.workspaceNav = nav
+		// Initial quick-list selection establishes the first visible Project.
+		if identity, ok := ducklord.IdentityFromSession(s.currentSession()); ok {
+			_ = nav.SelectQuickSession(identity)
+		}
 	} else if err := s.workspaceNav.RebindLayout(layout); err != nil {
 		return nil, err
 	}
-	key := s.currentKey()
-	if key != s.workspaceQuickKey {
-		if identity, ok := ducklord.IdentityFromSession(s.currentSession()); ok {
-			if err := s.workspaceNav.SelectQuickSession(identity); err == nil {
-				s.workspaceQuickKey = key
-			}
-		}
-	}
 	return s.workspaceNav, nil
+}
+
+// Only an explicit quick-list selection navigates the Terminal area. Async
+// inventory refreshes may change the quick cursor's fallback row, but must
+// never pull a focused Session pane out from under the user's keyboard.
+func (s *tuiState) workspaceFollowQuickSelection() {
+	if !s.workspacePreview || s.workspaceProjectFocus || s.focused {
+		return
+	}
+	identity, ok := ducklord.IdentityFromSession(s.currentSession())
+	if !ok {
+		return
+	}
+	if nav, err := s.workspaceNavigation(); err == nil {
+		_ = nav.SelectQuickSession(identity)
+	}
 }
 
 func (s *tuiState) workspaceSelectedPaneSession() (ducklord.RemoteSession, error) {
 	nav, err := s.workspaceNavigation()
 	if err != nil {
 		return ducklord.RemoteSession{}, err
+	}
+	if nav.InDetailMode() {
+		if session, ok := s.detailSelectionSession(); ok && session.Status == string(model.StatusRunning) && s.hostIsLive(session.Client) && canRead(session) {
+			return session, nil
+		}
+		return ducklord.RemoteSession{}, fmt.Errorf("selected detailed Session has no live host connection")
 	}
 	identity, ok := s.activity().ProjectLayout.PaneSession(nav.CurrentProjectID(), nav.CurrentPaneID())
 	if !ok {
@@ -193,6 +211,16 @@ func (s *tuiState) workspacePaneRectAt(width, height int) (ducklord.WorkspaceRec
 	if err != nil {
 		return ducklord.WorkspaceRect{}, err
 	}
+	if nav.InDetailMode() {
+		if actual := nav.DetailSelection(); actual != identity || actual != s.detailSelected {
+			return ducklord.WorkspaceRect{}, fmt.Errorf("active detailed Session no longer matches PTY Session")
+		}
+		rect := ducklord.CalculateDetailGeometry(width, height, 4).Pane
+		if rect.Width < 1 || rect.Height < 2 {
+			return ducklord.WorkspaceRect{}, fmt.Errorf("detailed Session pane is hidden by terminal size")
+		}
+		return rect, nil
+	}
 	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
 	actual, ok := layout.PaneSession(nav.CurrentProjectID(), nav.CurrentPaneID())
 	if !ok || actual != identity {
@@ -217,6 +245,25 @@ func (s *tuiState) workspaceVisibleSelections(selected ducklord.TerminalSelectio
 	if err != nil {
 		return nil
 	}
+	if nav.InDetailMode() {
+		if s.detailSelected.Key() == "" || nav.DetailSelection() != s.detailSelected {
+			return nil
+		}
+		rect := ducklord.CalculateDetailGeometry(width, height, 4).Pane
+		for _, session := range s.sessions {
+			identity, ok := ducklord.IdentityFromSession(session)
+			if !ok || identity != s.detailSelected || !canRead(session) || session.Status != string(model.StatusRunning) ||
+				!s.hostIsLive(session.Client) || session.RuntimeGeneration == 0 {
+				continue
+			}
+			client, err := mustClient(s.cfg, session.Client)
+			if err == nil {
+				return []ducklord.TerminalSelection{{Client: client, InstanceID: session.InstanceID, SessionID: session.SessionID,
+					RuntimeGeneration: session.RuntimeGeneration, Rows: max(1, rect.Height-1), Cols: max(1, rect.Width)}}
+			}
+		}
+		return nil
+	}
 	panes := ducklord.WorkspaceVisiblePaneRects(layout, nav, ducklord.CalculateWorkspaceGeometry(width, height, 4))
 	result := make([]ducklord.TerminalSelection, 0, len(panes))
 	seen := make(map[ducklord.SessionIdentity]bool, len(panes))
@@ -228,7 +275,8 @@ func (s *tuiState) workspaceVisibleSelections(selected ducklord.TerminalSelectio
 		var chosen ducklord.RemoteSession
 		for _, session := range s.sessions {
 			identity, ok := ducklord.IdentityFromSession(session)
-			if !ok || identity != pane.Identity || !canRead(session) || !s.hostIsLive(session.Client) || session.RuntimeGeneration == 0 {
+			if !ok || identity != pane.Identity || !canRead(session) || session.Status != string(model.StatusRunning) ||
+				!s.hostIsLive(session.Client) || session.RuntimeGeneration == 0 {
 				continue
 			}
 			if chosen.SessionID == "" || session.Client == selected.Client.Name {
@@ -251,9 +299,8 @@ func (s *tuiState) workspaceVisibleSelections(selected ducklord.TerminalSelectio
 	return result
 }
 
-// renderWorkspacePreview is the first live TUI integration of the Project
-// renderer. The legacy event loop still owns control and one output stream;
-// it is deliberately opt-in until multi-pane output and navigation are wired.
+// renderWorkspacePreview draws the default Project, quick-list, and Terminal
+// area workspace. The legacy renderer remains a temporary test escape hatch.
 func (s *tuiState) renderWorkspacePreview(out io.Writer) {
 	width, height := terminalSize()
 	s.renderWorkspacePreviewAt(out, width, height)
@@ -265,7 +312,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	}
 	fmt.Fprint(out, "\033[?25l\033[H\033[2J")
 	fmt.Fprintln(out, truncate("ducklord workspace  owner:"+displayField(s.ownerName)+s.hostSyncLabel(), width))
-	status := "Preview: ↑/↓ Session · " + s.cfg.Shortcut("project_focus") + " Project pane · Enter focus · Ctrl-] leave PTY"
+	status := "Session list pane: ↑/↓ Session · " + s.cfg.Shortcut("project_focus") + " Project pane · Enter focus · Ctrl-] leave PTY"
 	if s.workspaceProjectFocus {
 		status = fmt.Sprintf("Project pane: ↑/↓ Project · %s new · %s add · %s move · %s detach · %s/%s tab · %s/%s pane · Enter focus · Esc list",
 			s.cfg.Shortcut("project_create"), s.cfg.Shortcut("project_add_pane"), s.cfg.Shortcut("project_move_pane"), s.cfg.Shortcut("project_detach_pane"),
@@ -274,6 +321,9 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	}
 	if s.focused {
 		status = "Session focus: keys go to PTY · Ctrl-] return to list"
+	}
+	if s.workspaceNav != nil && s.workspaceNav.InDetailMode() && !s.focused {
+		status = s.detailStatusLine()
 	}
 	if s.outputErr != "" {
 		status += "  " + sanitizeTerminalText(s.outputErr)
@@ -285,6 +335,28 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	nav, err := s.workspaceNavigation()
 	if err != nil {
 		fmt.Fprintln(out, truncate("Project layout unavailable: "+sanitizeTerminalText(err.Error()), width))
+		return
+	}
+	if nav.InDetailMode() {
+		results := s.detailedResults()
+		ducklord.RenderDetailedSessionBody(out, ducklord.CalculateDetailGeometry(width, height, 4), results, s.detailSelected,
+			s.detailQuery, s.detailFilter, s.focused, func(identity ducklord.SessionIdentity, cols, rows int) ducklord.WorkspacePaneView {
+				session, ok := s.detailSelectionSession()
+				if !ok {
+					return ducklord.WorkspacePaneView{Title: "Session unavailable", Stale: true, ReadOnly: true}
+				}
+				view := ducklord.WorkspacePaneView{Title: displayField(session.Client) + "/" + displayField(session.Name),
+					Stale:    !s.outputFresh || s.outputStale || !s.hostIsLive(session.Client),
+					ReadOnly: session.Kind != string(model.KindShell) && (session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName),
+					Focused:  s.focused && s.activeAttachKey == sessionKey(session)}
+				if s.terminal != nil && s.outputForKey == sessionKey(session) && s.terminalGeneration == session.RuntimeGeneration {
+					view.Lines = s.terminal.RenderLinesOffset(rows, cols, s.ptyScrollOffset)
+				} else {
+					view.Lines = []string{sanitizeTerminalText(session.LastLine), "PTY output unavailable"}
+				}
+				return view
+			})
+		s.renderHelpModal(out, width, height)
 		return
 	}
 	selected := s.currentSession()

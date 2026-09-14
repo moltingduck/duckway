@@ -72,6 +72,9 @@ func TestWorkspaceDetailPreviewRestoresNormalWorkspace(t *testing.T) {
 	if err != nil || got != b || w.InDetailMode() || w.Region() != RegionTerminal {
 		t.Fatalf("detail jump failed: identity=%+v err=%v state=%+v", got, err, w.location)
 	}
+	if w.quickSelection != a {
+		t.Fatal("detail jump changed one-way quick-list selection")
+	}
 }
 
 func TestWorkspacePanePreviewCannotImplicitlyTransferFocus(t *testing.T) {

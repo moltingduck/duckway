@@ -33,7 +33,6 @@ func workspacePaneTestState(t *testing.T) (*tuiState, string, ducklord.RemoteSes
 	}
 	state := &tuiState{workspacePreview: true, workspaceProjectFocus: true, cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}},
 		activityState: activity, activityStore: store, sessions: []ducklord.RemoteSession{a, b}, selected: 0}
-	state.workspaceQuickKey = state.currentKey()
 	return state, projectID, a, b
 }
 

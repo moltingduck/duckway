@@ -49,11 +49,12 @@ func NewWorkspaceState(layout *ProjectLayout) (*WorkspaceState, error) {
 	return w, nil
 }
 
-func (w *WorkspaceState) CurrentProjectID() string { return w.location.projectID }
-func (w *WorkspaceState) CurrentTabID() string     { return w.location.tabID }
-func (w *WorkspaceState) CurrentPaneID() string    { return w.location.paneID }
-func (w *WorkspaceState) Region() WorkspaceRegion  { return w.location.region }
-func (w *WorkspaceState) InDetailMode() bool       { return w.detail }
+func (w *WorkspaceState) CurrentProjectID() string         { return w.location.projectID }
+func (w *WorkspaceState) CurrentTabID() string             { return w.location.tabID }
+func (w *WorkspaceState) CurrentPaneID() string            { return w.location.paneID }
+func (w *WorkspaceState) Region() WorkspaceRegion          { return w.location.region }
+func (w *WorkspaceState) InDetailMode() bool               { return w.detail }
+func (w *WorkspaceState) DetailSelection() SessionIdentity { return w.detailSelection }
 
 // RebindLayout preserves transient navigation when ActivityState is cloned
 // for an atomic local save. The replacement layout remains authoritative.
@@ -323,9 +324,14 @@ func (w *WorkspaceState) JumpDetail() (SessionIdentity, error) {
 		return SessionIdentity{}, fmt.Errorf("selected Session no longer has a Project pane")
 	}
 	w.ExitDetail()
-	if err := w.SelectQuickSession(session); err != nil {
+	projectID := w.layout.NavigateProject(session, w.location.projectID, w.lastProject[session])
+	if err := w.selectProject(projectID, RegionProjects); err != nil {
 		return SessionIdentity{}, err
 	}
+	w.lastProject[session] = projectID
+	project := w.layout.Project(projectID)
+	tabID, paneID := project.findSessionLocation(session)
+	w.location.tabID, w.location.paneID = tabID, paneID
 	return w.FocusPane()
 }
 

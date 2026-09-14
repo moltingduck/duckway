@@ -279,9 +279,10 @@ type ActivityState struct {
 }
 
 type SessionNotificationState struct {
-	Seen     map[model.NotificationCategory]uint64 `json:"seen,omitempty"`
-	Disabled map[model.NotificationCategory]bool   `json:"disabled,omitempty"`
-	Unread   map[model.NotificationCategory]bool   `json:"unread,omitempty"`
+	Seen          map[model.NotificationCategory]uint64 `json:"seen,omitempty"`
+	Disabled      map[model.NotificationCategory]bool   `json:"disabled,omitempty"`
+	Unread        map[model.NotificationCategory]bool   `json:"unread,omitempty"`
+	LastEventAtMS int64                                 `json:"last_event_at_ms,omitempty"`
 }
 
 type ActivityStateStore struct{ Path string }
@@ -541,6 +542,10 @@ func (s *ActivityState) Reconcile(session RemoteSession, activeFresh bool) (unre
 		entry.Unread = make(map[model.NotificationCategory]bool)
 	}
 	for category, current := range session.ActivitySequences {
+		if current > entry.Seen[category] && !entry.Unread[category] {
+			entry.LastEventAtMS = time.Now().UnixMilli()
+			changed = true
+		}
 		if activeFresh {
 			if current > entry.Seen[category] {
 				entry.Seen[category] = current
