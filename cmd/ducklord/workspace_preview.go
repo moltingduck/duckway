@@ -9,6 +9,77 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
+func (s *tuiState) workspaceNavigation() (*ducklord.WorkspaceState, error) {
+	layout := &s.activity().ProjectLayout
+	if s.workspaceNav == nil {
+		nav, err := ducklord.NewWorkspaceState(layout)
+		if err != nil {
+			return nil, err
+		}
+		s.workspaceNav = nav
+	} else if err := s.workspaceNav.RebindLayout(layout); err != nil {
+		return nil, err
+	}
+	key := s.currentKey()
+	if key != s.workspaceQuickKey {
+		if identity, ok := ducklord.IdentityFromSession(s.currentSession()); ok {
+			if err := s.workspaceNav.SelectQuickSession(identity); err == nil {
+				s.workspaceQuickKey = key
+			}
+		}
+	}
+	return s.workspaceNav, nil
+}
+
+// P is a read-only Project-list focus switch. Project movement never changes
+// the quick-list selection or grants PTY control.
+func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed bool) {
+	if !s.workspacePreview {
+		return false, false
+	}
+	key := string(input)
+	if s.shortcut("project_focus", key) {
+		s.workspaceProjectFocus = !s.workspaceProjectFocus
+		return true, false
+	}
+	if !s.workspaceProjectFocus {
+		return false, false
+	}
+	if key == "\x1b" || key == "\t" || key == "\r" {
+		s.workspaceProjectFocus = false
+		return true, false
+	}
+	if key != "j" && key != "k" && key != "\x1b[A" && key != "\x1b[B" {
+		return true, false
+	}
+	nav, err := s.workspaceNavigation()
+	if err != nil {
+		s.outputErr = err.Error()
+		return true, false
+	}
+	projects := s.activity().ProjectLayout.Projects
+	index := 0
+	for i := range projects {
+		if projects[i].ID == nav.CurrentProjectID() {
+			index = i
+			break
+		}
+	}
+	if key == "j" || key == "\x1b[B" {
+		index = min(len(projects)-1, index+1)
+	} else {
+		index = max(0, index-1)
+	}
+	if len(projects) == 0 || projects[index].ID == nav.CurrentProjectID() {
+		return true, false
+	}
+	if err := nav.SelectProject(projects[index].ID); err != nil {
+		s.outputErr = err.Error()
+		return true, false
+	}
+	return true, true
+}
+
 func (s *tuiState) workspacePaneRectAt(width, height int) (ducklord.WorkspaceRect, error) {
 	selected := s.currentSession()
 	identity, ok := ducklord.IdentityFromSession(selected)
@@ -16,11 +87,8 @@ func (s *tuiState) workspacePaneRectAt(width, height int) (ducklord.WorkspaceRec
 		return ducklord.WorkspaceRect{}, fmt.Errorf("current Session has no stable identity")
 	}
 	layout := &s.activity().ProjectLayout
-	nav, err := ducklord.NewWorkspaceState(layout)
+	nav, err := s.workspaceNavigation()
 	if err != nil {
-		return ducklord.WorkspaceRect{}, err
-	}
-	if err := nav.SelectQuickSession(identity); err != nil {
 		return ducklord.WorkspaceRect{}, err
 	}
 	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
@@ -45,12 +113,9 @@ func (s *tuiState) workspacePaneRect() (ducklord.WorkspaceRect, error) {
 func (s *tuiState) workspaceVisibleSelections(selected ducklord.TerminalSelection) []ducklord.TerminalSelection {
 	width, height := terminalSize()
 	layout := &s.activity().ProjectLayout
-	nav, err := ducklord.NewWorkspaceState(layout)
+	nav, err := s.workspaceNavigation()
 	if err != nil {
 		return nil
-	}
-	if identity, ok := ducklord.IdentityFromSession(s.currentSession()); ok {
-		_ = nav.SelectQuickSession(identity)
 	}
 	panes := ducklord.WorkspaceVisiblePaneRects(layout, nav, ducklord.CalculateWorkspaceGeometry(width, height, 4))
 	result := make([]ducklord.TerminalSelection, 0, len(panes))
@@ -100,7 +165,10 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	}
 	fmt.Fprint(out, "\033[?25l\033[H\033[2J")
 	fmt.Fprintln(out, truncate("ducklord workspace  owner:"+displayField(s.ownerName)+s.hostSyncLabel(), width))
-	status := "Preview: ↑/↓ select · Enter focus · Ctrl-] leave PTY"
+	status := "Preview: ↑/↓ Session · " + s.cfg.Shortcut("project_focus") + " Project pane · Enter focus · Ctrl-] leave PTY"
+	if s.workspaceProjectFocus {
+		status = "Project pane: ↑/↓ choose Project · " + s.cfg.Shortcut("project_focus") + "/Enter return to Session list"
+	}
 	if s.focused {
 		status = "Session focus: keys go to PTY · Ctrl-] return to list"
 	}
@@ -111,15 +179,12 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	fmt.Fprintln(out, strings.Repeat("─", width))
 
 	layout := &s.activity().ProjectLayout
-	nav, err := ducklord.NewWorkspaceState(layout)
+	nav, err := s.workspaceNavigation()
 	if err != nil {
 		fmt.Fprintln(out, truncate("Project layout unavailable: "+sanitizeTerminalText(err.Error()), width))
 		return
 	}
 	selected := s.currentSession()
-	if identity, ok := ducklord.IdentityFromSession(selected); ok {
-		_ = nav.SelectQuickSession(identity)
-	}
 	items := make([]ducklord.WorkspaceListItem, 0, len(s.sessions))
 	for _, session := range s.sessions {
 		identity, ok := ducklord.IdentityFromSession(session)
@@ -154,6 +219,9 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 			current, ok := ducklord.IdentityFromSession(session)
 			if !ok || current != identity {
 				continue
+			}
+			if selection, live := visibleOutput[identity]; live && session.Client != selection.Client.Name {
+				continue // title, ACL and framebuffer must come from the same host alias
 			}
 			view := ducklord.WorkspacePaneView{Title: displayField(session.Client) + "/" + displayField(session.Name),
 				Stale: true, ReadOnly: session.Kind != string(model.KindShell) &&

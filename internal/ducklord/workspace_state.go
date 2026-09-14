@@ -55,6 +55,20 @@ func (w *WorkspaceState) CurrentPaneID() string    { return w.location.paneID }
 func (w *WorkspaceState) Region() WorkspaceRegion  { return w.location.region }
 func (w *WorkspaceState) InDetailMode() bool       { return w.detail }
 
+// RebindLayout preserves transient navigation when ActivityState is cloned
+// for an atomic local save. The replacement layout remains authoritative.
+func (w *WorkspaceState) RebindLayout(layout *ProjectLayout) error {
+	if layout == nil {
+		return fmt.Errorf("Project layout is required")
+	}
+	if err := layout.Validate(); err != nil {
+		return err
+	}
+	w.layout = layout
+	w.ReconcileLayout()
+	return nil
+}
+
 func (w *WorkspaceState) selectProject(projectID string, region WorkspaceRegion) error {
 	project := w.layout.Project(projectID)
 	if project == nil {

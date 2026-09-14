@@ -10,19 +10,21 @@ import (
 // terminal event contract while also exposing live background pane views. One
 // pool owns every raw stream and snapshot writer in the workspace TUI.
 type WorkspaceOutputAdapter struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	pane      *PaneOutputManager
-	visible   func(TerminalSelection) []TerminalSelection
-	events    chan TerminalOutputEvent
-	repaint   chan struct{}
-	mu        sync.Mutex
-	nextID    uint64
-	selected  TerminalSelection
-	workers   sync.WaitGroup
-	closeOnce sync.Once
-	closeDone chan struct{}
-	closeErr  error
+	ctx           context.Context
+	cancel        context.CancelFunc
+	pane          *PaneOutputManager
+	visible       func(TerminalSelection) []TerminalSelection
+	events        chan TerminalOutputEvent
+	repaint       chan struct{}
+	mu            sync.Mutex
+	nextID        uint64
+	selected      TerminalSelection
+	selectedLease uint64
+	requestCancel context.CancelFunc
+	workers       sync.WaitGroup
+	closeOnce     sync.Once
+	closeDone     chan struct{}
+	closeErr      error
 }
 
 func NewWorkspaceOutputAdapter(parent context.Context, capacity int, source TerminalOutputSource, store SnapshotStore,
@@ -49,22 +51,31 @@ func (m *WorkspaceOutputAdapter) selectOutput(selection TerminalSelection, recon
 		visible = m.visible(selection)
 	}
 	m.mu.Lock()
+	if m.requestCancel != nil {
+		m.requestCancel()
+	}
+	requestCtx, requestCancel := context.WithCancel(m.ctx)
+	m.requestCancel = requestCancel
 	m.nextID++
 	id := m.nextID
 	m.selected = selection
+	m.selectedLease = 0
 	m.mu.Unlock()
 	m.workers.Add(1)
 	go func() {
 		defer m.workers.Done()
+		defer requestCancel()
 		if reconnect {
-			if err := m.pane.DisconnectHost(selection.Client.Name, selection.InstanceID); err != nil {
-				m.publish(TerminalOutputEvent{RequestID: id, Key: selection.key(), Err: err})
+			if err := m.pane.ReconnectVisible(requestCtx, selection); err != nil {
+				if m.currentRequest(id) {
+					m.publish(TerminalOutputEvent{RequestID: id, Key: selection.key(), Err: err})
+				}
 				return
 			}
 		}
-		_, openErr := m.pane.SetVisible(m.ctx, selection, visible)
+		_, openErr := m.pane.SetVisible(requestCtx, selection, visible)
 		m.mu.Lock()
-		current := m.nextID == id
+		current := m.nextID == id && requestCtx.Err() == nil
 		m.mu.Unlock()
 		if !current || m.ctx.Err() != nil {
 			return
@@ -73,6 +84,11 @@ func (m *WorkspaceOutputAdapter) selectOutput(selection TerminalSelection, recon
 		if activation, err := m.pane.Activation(event.Key); err == nil && activation.Revision == event.Revision {
 			event.Lease = activation.Lease
 			event.Warning = openErr
+			m.mu.Lock()
+			if m.nextID == id {
+				m.selectedLease = event.Lease
+			}
+			m.mu.Unlock()
 		} else {
 			event.Err = errors.Join(openErr, err)
 		}
@@ -80,6 +96,12 @@ func (m *WorkspaceOutputAdapter) selectOutput(selection TerminalSelection, recon
 		m.repaintNow()
 	}()
 	return id
+}
+
+func (m *WorkspaceOutputAdapter) currentRequest(id uint64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.nextID == id && m.ctx.Err() == nil
 }
 
 func (m *WorkspaceOutputAdapter) Reconnect(selection TerminalSelection) uint64 {
@@ -99,6 +121,11 @@ func (m *WorkspaceOutputAdapter) View(event TerminalOutputEvent) (PooledTerminal
 
 func (m *WorkspaceOutputAdapter) PaneView(key OutputKey) (PooledTerminalView, error) {
 	return m.pane.View(key)
+}
+
+func (m *WorkspaceOutputAdapter) ClearVisible() {
+	m.pane.ClearVisible()
+	m.repaintNow()
 }
 
 func (m *WorkspaceOutputAdapter) Resize(event TerminalOutputEvent, rows, cols uint16,
@@ -133,7 +160,7 @@ func (m *WorkspaceOutputAdapter) watchDirty() {
 		case <-m.pane.DirtyReady():
 			keys := m.pane.DrainDirty()
 			m.mu.Lock()
-			id, selected := m.nextID, m.selected
+			id, selected, selectedLease := m.nextID, m.selected, m.selectedLease
 			m.mu.Unlock()
 			for _, key := range keys {
 				if key != selected.key() {
@@ -141,8 +168,9 @@ func (m *WorkspaceOutputAdapter) watchDirty() {
 					continue
 				}
 				activation, err := m.pane.Activation(key)
-				if err == nil && activation.Revision.RuntimeGeneration == selected.RuntimeGeneration {
+				if err == nil && activation.Lease == selectedLease && activation.Revision.RuntimeGeneration == selected.RuntimeGeneration {
 					m.publish(TerminalOutputEvent{RequestID: id, Key: key, Revision: activation.Revision, Lease: activation.Lease})
+					m.repaintNow() // a Project-only priority may not be the quick-list Session
 				}
 			}
 		}

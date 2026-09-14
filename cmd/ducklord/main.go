@@ -1278,6 +1278,9 @@ type tuiState struct {
 	pooledOutput              bool
 	workspacePreview          bool
 	workspaceOutput           *ducklord.WorkspaceOutputAdapter
+	workspaceNav              *ducklord.WorkspaceState
+	workspaceQuickKey         string
+	workspaceProjectFocus     bool
 	clearOutputFocus          func()
 	searchMode                bool
 	searchQuery               string
@@ -1455,6 +1458,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		if sess.Client == "" || sess.InstanceID == "" || sess.SessionID == "" || sess.RuntimeGeneration == 0 || !canRead(sess) || !state.hostIsLive(sess.Client) {
 			state.outputFresh = false
 			state.outputErr = "PTY output is unavailable until the host session is synchronized"
+			if workspaceOutput != nil {
+				visible := state.workspaceVisibleSelections(ducklord.TerminalSelection{})
+				if len(visible) > 0 {
+					outputRequestID = workspaceOutput.Select(visible[0])
+				}
+			}
 			return
 		}
 		client, clientErr := mustClient(cfg, sess.Client)
@@ -1952,7 +1961,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					}
 					outputManager.SyncHost(update.Client, update.InstanceID, true, selections)
 				}
-				if workspaceOutput != nil && (previousHost.State != update.State || previousInstance != update.InstanceID) {
+				if workspaceOutput != nil && (previousHost.State != update.State || previousInstance != update.InstanceID || update.ChangedSessionID != "") {
 					selectPooledOutput()
 				}
 			}
@@ -2746,6 +2755,18 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			if handled, changed := state.handleWorkspaceProjectInput(b); handled {
+				if changed && workspaceOutput != nil {
+					visible := state.workspaceVisibleSelections(ducklord.TerminalSelection{})
+					if len(visible) == 0 {
+						workspaceOutput.ClearVisible()
+					} else {
+						outputRequestID = workspaceOutput.Select(visible[0])
+					}
+				}
+				state.render(os.Stdout)
+				continue
+			}
 			wasDragging := state.dragSession.Key() != ""
 			action := state.handleInput(b)
 			isDragging := state.dragSession.Key() != ""
@@ -3250,7 +3271,8 @@ func (s *tuiState) applyPreviewOutput(result previewOutputEvent, currentID uint6
 
 func (s *tuiState) sessionFreshlyDisplayed(session ducklord.RemoteSession) bool {
 	_, identityOK := ducklord.IdentityFromSession(session)
-	return identityOK && !s.copyMode && !s.centralModalOpen() && s.outputFresh && !s.outputStale && s.terminal != nil &&
+	workspaceFocused := !s.workspacePreview || s.focused && s.activeAttachKey == sessionKey(session)
+	return identityOK && workspaceFocused && !s.copyMode && !s.centralModalOpen() && s.outputFresh && !s.outputStale && s.terminal != nil &&
 		canRead(session) && s.hostIsLive(session.Client) && s.outputForKey == sessionKey(session) &&
 		s.terminalGeneration > 0 && s.terminalGeneration == session.RuntimeGeneration
 }

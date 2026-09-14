@@ -191,6 +191,40 @@ func (m *PaneOutputManager) activate(ctx context.Context, selection TerminalSele
 	return nil
 }
 
+// ReconnectVisible replaces only one visible Session stream. Other panes on
+// the same Ducklion keep their leases, output, and input focus unchanged.
+func (m *PaneOutputManager) ReconnectVisible(ctx context.Context, selection TerminalSelection) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	key := selection.key()
+	revision := OutputRevision{RuntimeGeneration: selection.RuntimeGeneration}
+	m.mu.RLock()
+	current, visible := m.visible[key]
+	m.mu.RUnlock()
+	if !visible || current != revision {
+		return ErrStaleOutputLease
+	}
+	activation, err := m.pool.ReconnectDesired(ctx, key, revision, func(openCtx context.Context, key OutputKey,
+		revision OutputRevision, _ uint64) (OutputResource, error) {
+		return m.open(openCtx, selection, key, revision)
+	})
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if cancel := m.watchers[key]; cancel != nil {
+		cancel()
+	}
+	m.leases[key] = activation
+	m.watchers[key] = m.watch(key, activation.Lease)
+	m.mu.Unlock()
+	m.markDirty(key)
+	return nil
+}
+
 func (m *PaneOutputManager) pruneEvicted() {
 	status := m.pool.Status()
 	desired := make(map[OutputKey]bool, len(status.Desired))

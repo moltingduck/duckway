@@ -233,6 +233,42 @@ func TestPaneOutputManagerOtherHostDisconnectDoesNotCancelVisibleOpen(t *testing
 	}
 }
 
+func TestPaneOutputManagerReconnectVisibleKeepsOtherPaneLease(t *testing.T) {
+	manager, _, _ := newTestPaneOutputManager(t, 2)
+	a, b := paneSelection("AAA111"), paneSelection("BBB222")
+	if _, err := manager.SetVisible(context.Background(), a, []TerminalSelection{a, b}); err != nil {
+		t.Fatal(err)
+	}
+	beforeA, err := manager.Activation(a.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeB, err := manager.Activation(b.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetInputFocus(a.key()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ReconnectVisible(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	afterA, err := manager.Activation(a.key())
+	if err != nil || afterA.Lease == beforeA.Lease {
+		t.Fatalf("selected stream did not reconnect: before=%+v after=%+v err=%v", beforeA, afterA, err)
+	}
+	afterB, err := manager.Activation(b.key())
+	if err != nil || afterB.Lease != beforeB.Lease {
+		t.Fatalf("background pane was disrupted: before=%+v after=%+v err=%v", beforeB, afterB, err)
+	}
+	if _, err := manager.ViewLease(a.key(), beforeA.Lease); !errors.Is(err, ErrStaleOutputLease) {
+		t.Fatalf("old selected lease remained readable: %v", err)
+	}
+	if view, err := manager.ViewLease(b.key(), beforeB.Lease); err != nil || !view.Ready {
+		t.Fatalf("background view lost during selected reconnect: view=%+v err=%v", view, err)
+	}
+}
+
 func TestPaneOutputManagerHostDisconnectAndReplacementFenceLeases(t *testing.T) {
 	manager, readers, readersMu := newTestPaneOutputManager(t, 2)
 	a := paneSelection("AAA111")

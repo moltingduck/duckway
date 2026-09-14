@@ -715,6 +715,21 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 			return "split pane markers not simultaneously live: " + safeTerminalDiagnostic(capture.currentText())
 		})
 	}
+	writePTY(t, terminal, "Pk") // Project pane: Live split -> Default Project
+	capture.waitCurrent(t, "› Default Project", 10*time.Second)
+	if screen := capture.currentText(); strings.Contains(screen, "client-a/"+sessions[0].Handle) {
+		t.Fatalf("Project navigation kept the previous Terminal area: %q", safeTerminalDiagnostic(screen))
+	}
+	writePTY(t, terminal, "j") // Project pane: Default -> Live split
+	capture.waitCurrent(t, "› Live split", 10*time.Second)
+	capture.waitCurrent(t, "client-a/"+sessions[1].Handle, 10*time.Second)
+	projectMarker := fmt.Sprintf("PROJECTB3-%d", os.Getpid())
+	if out, err := exec.Command(runtime, "exec", controller, binary, "--name", "workspace-two-cli", "send", "client-a", sessions[1].Handle,
+		"printf '"+projectMarker+"\\n'", "--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil {
+		t.Fatalf("send Project-only pane marker: %v: %s", err, out)
+	}
+	capture.waitCurrent(t, projectMarker, 10*time.Second)
+	writePTY(t, terminal, "P")
 }
 
 type tuiCapture struct {
