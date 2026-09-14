@@ -382,6 +382,80 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		}
 		fmt.Fprint(out, text)
 		return nil
+	case "retained":
+		cfg, rest, err := loadWithFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		if len(rest) != 1 {
+			return fmt.Errorf("usage: ducklord retained <client> [--config <path>]")
+		}
+		c, err := mustClient(cfg, rest[0])
+		if err != nil {
+			return err
+		}
+		owner, err := ducklord.ResolveOwnerName(globalOwner, cfg.Name)
+		if err != nil {
+			return err
+		}
+		if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+			ownerRunner.SetOwner(owner)
+		}
+		diagnostics, ok := runner.(interface {
+			RetainedShells(context.Context, ducklord.Client) ([]protocol.RetainedShellSummary, error)
+		})
+		if !ok {
+			return fmt.Errorf("retained Shell diagnostics are unavailable")
+		}
+		items, err := diagnostics.RetainedShells(context.Background(), c)
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			fmt.Fprintf(out, "%s  generation %d  %s  exited %s\n", item.SessionID, item.RuntimeGeneration,
+				item.Handle, time.UnixMilli(item.ExitedAtMS).Local().Format(time.RFC3339))
+		}
+		return nil
+	case "read-retained":
+		cfg, rest, err := loadWithFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		if len(rest) < 3 {
+			return fmt.Errorf("usage: ducklord read-retained <client> <session-id> <generation> [--lines N] [--config <path>]")
+		}
+		generation, err := strconv.ParseUint(rest[2], 10, 64)
+		if err != nil || generation == 0 {
+			return fmt.Errorf("invalid retained Shell generation %q", rest[2])
+		}
+		readArgs := append([]string{rest[0], rest[1]}, rest[3:]...)
+		clientName, sessionID, lines, err := parseReadArgs(readArgs)
+		if err != nil {
+			return err
+		}
+		c, err := mustClient(cfg, clientName)
+		if err != nil {
+			return err
+		}
+		owner, err := ducklord.ResolveOwnerName(globalOwner, cfg.Name)
+		if err != nil {
+			return err
+		}
+		if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+			ownerRunner.SetOwner(owner)
+		}
+		diagnostics, ok := runner.(interface {
+			ReadRetainedShell(context.Context, ducklord.Client, string, uint64, int) (string, error)
+		})
+		if !ok {
+			return fmt.Errorf("retained Shell diagnostics are unavailable")
+		}
+		text, err := diagnostics.ReadRetainedShell(context.Background(), c, sessionID, generation, lines)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(out, text)
+		return nil
 	case "send":
 		cfg, rest, err := loadWithFlags(args[1:])
 		if err != nil {
@@ -3497,7 +3571,20 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 		}
 		sessions, err := s.runner.Sessions(ctx, c, 8)
 		if err != nil {
-			all = append(all, ducklord.RemoteSession{Client: c.Name, Group: c.Group, Name: "(offline)", Status: "error", Error: err.Error()})
+			retained := false
+			for _, prior := range s.sessions {
+				if prior.Client != c.Name || prior.Name == "(offline)" {
+					continue
+				}
+				prior.Status = "disconnected"
+				prior.Error = err.Error()
+				prior.Updated = false
+				all = append(all, prior)
+				retained = true
+			}
+			if !retained {
+				all = append(all, ducklord.RemoteSession{Client: c.Name, Group: c.Group, Name: "(offline)", Status: "error", Error: err.Error()})
+			}
 			continue
 		}
 		all = append(all, sessions...)
@@ -3525,6 +3612,11 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 		}
 		all[i].LastLine = sanitizeTerminalText(all[i].LastLine)
 		all[i].Error = sanitizeTerminalText(all[i].Error)
+		if all[i].Error != "" {
+			// A failed Host query is not an authoritative Session deletion or
+			// notification update. Keep the last known Project and unread state.
+			continue
+		}
 		if identity, ok := ducklord.IdentityFromSession(all[i]); ok {
 			if all[i].Status == string(model.StatusStopped) {
 				if len(s.activity().ProjectLayout.ProjectsFor(identity)) != 0 {
@@ -4120,6 +4212,11 @@ const disconnectedRowColor = "\033[38;5;244m"
 func (s *tuiState) hostRowStyle(host string) string {
 	if s.disconnectedHosts[host] {
 		return disconnectedRowColor
+	}
+	for _, session := range s.sessions {
+		if session.Client == host && session.Status == "disconnected" {
+			return disconnectedRowColor
+		}
 	}
 	return s.hostRowColor(host)
 }
@@ -9052,6 +9149,8 @@ Usage:
   ducklord attach-host <client> [--config <path>]
   ducklord attach <client> <session> [--config <path>]
   ducklord read <client> <session> [--lines N] [--config <path>]
+  ducklord retained <client> [--config <path>]
+  ducklord read-retained <client> <session-id> <generation> [--lines N] [--config <path>]
   ducklord send <client> <session> <text> [--config <path>]
   ducklord start <client> --name <name> [--kind shell | --agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
   ducklord stop <client> <session> [--config <path>]

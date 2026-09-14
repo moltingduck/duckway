@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
@@ -997,63 +998,53 @@ func (s *Server) routeSessionStop(request protocol.Request, role protocol.PeerRo
 		operation.Unlock()
 		return protocol.Response{ID: request.ID, Error: protocolError}
 	}
-	if session.Kind == model.KindAgent {
-		_, _, reserveErr := s.state.ReserveLifecycle(context.Background(), store.PendingLifecycle{SessionID: session.ID, Operation: store.LifecycleEnd,
-			Mode: store.LifecycleImmediate, Requester: owner, SourceEpoch: session.OwnershipEpoch, SourceGeneration: session.RuntimeGeneration, RequestID: request.ID})
-		if reserveErr != nil {
-			operation.Unlock()
-			code := protocol.ErrInternal
-			switch {
-			case errors.Is(reserveErr, model.ErrTaskActive):
-				code = protocol.ErrTaskActive
-			case errors.Is(reserveErr, model.ErrLifecyclePending):
-				code = protocol.ErrDraining
-			case errors.Is(reserveErr, model.ErrPendingYield):
-				code = protocol.ErrPendingYield
-			case errors.Is(reserveErr, model.ErrNotOwner):
-				code = protocol.ErrNotOwner
-			case errors.Is(reserveErr, model.ErrStaleEpoch):
-				code = protocol.ErrStaleEpoch
-			case errors.Is(reserveErr, model.ErrStaleGeneration):
-				code = protocol.ErrStaleGeneration
-			}
-			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: code, Message: reserveErr.Error(), Retryable: code == protocol.ErrInternal}}
-		}
-		// The durable barrier now rejects admission; release the in-memory lock
-		// so final event delivery and ACK processing can finish runtime exit.
+	// Shell stop also needs a durable lifecycle barrier. Without it a
+	// normally delivered root-exit report would retire the Session before
+	// this legacy synchronous API can observe its stopped result.
+	_, _, reserveErr := s.state.ReserveLifecycle(context.Background(), store.PendingLifecycle{SessionID: session.ID, Operation: store.LifecycleEnd,
+		Mode: store.LifecycleImmediate, Requester: owner, SourceEpoch: session.OwnershipEpoch, SourceGeneration: session.RuntimeGeneration, RequestID: request.ID})
+	if reserveErr != nil {
 		operation.Unlock()
+		code := protocol.ErrInternal
+		switch {
+		case errors.Is(reserveErr, model.ErrTaskActive):
+			code = protocol.ErrTaskActive
+		case errors.Is(reserveErr, model.ErrLifecyclePending):
+			code = protocol.ErrDraining
+		case errors.Is(reserveErr, model.ErrPendingYield):
+			code = protocol.ErrPendingYield
+		case errors.Is(reserveErr, model.ErrNotOwner):
+			code = protocol.ErrNotOwner
+		case errors.Is(reserveErr, model.ErrStaleEpoch):
+			code = protocol.ErrStaleEpoch
+		case errors.Is(reserveErr, model.ErrStaleGeneration):
+			code = protocol.ErrStaleGeneration
+		}
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: code, Message: reserveErr.Error(), Retryable: code == protocol.ErrInternal}}
 	}
+	// The durable barrier now rejects admission; release the in-memory lock
+	// so final event delivery and ACK processing can finish runtime exit.
+	operation.Unlock()
 	forwarded := request
 	forwarded.Type = "supervisor.terminate"
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	response := s.callControl(ctx, session.ID, forwarded)
 	if response.Error != nil {
-		if session.Kind == model.KindShell {
-			operation.Unlock()
-		} else {
-			// Once the durable barrier is committed, only an observed stopped
-			// state is terminal. Keep the inbox request replayable with the same
-			// ID across transport loss, supervisor reconnect, or daemon restart.
-			response.Error.Retryable = true
-			response.Error.Message = "stop outcome is not durable yet; retry the same request: " + response.Error.Message
-		}
+		// Once the durable barrier is committed, only an observed stopped
+		// state is terminal. Keep the request replayable with the same ID.
+		response.Error.Retryable = true
+		response.Error.Message = "stop outcome is not durable yet; retry the same request: " + response.Error.Message
 		return response
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		current, err := s.state.GetSession(context.Background(), session.ID)
 		if err == nil && current.Status == model.StatusStopped {
-			if session.Kind == model.KindShell {
-				operation.Unlock()
-			}
 			result, _ := json.Marshal(summaryFor(current))
 			return protocol.Response{ID: request.ID, Result: result}
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-	if session.Kind == model.KindShell {
-		operation.Unlock()
 	}
 	return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrBusy, Message: "session is still stopping", Retryable: true}}
 }
@@ -1821,6 +1812,15 @@ func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec,
 			return ctx.Err()
 		}
 		client, err := RegisterSupervisor(spec.SocketPath, spec.SessionID, spec.RuntimeGeneration, privateKey)
+		if err != nil {
+			// The exit transaction may have committed while its ACK was lost.
+			// Once the old generation is absent from the authoritative inventory,
+			// a new supervisor registration is impossible and retrying forever
+			// would strand this exited runtime process.
+			if terminal, checkErr := runtimeExitTerminal(ctx, spec); checkErr == nil && terminal {
+				return processErr
+			}
+		}
 		if err == nil {
 			replay := session.Output().Snapshot()
 			forwardErr := client.PublishSnapshot(replay)
@@ -1880,6 +1880,31 @@ func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec,
 		case <-timer.C:
 		}
 	}
+}
+
+// runtimeExitTerminal checks a read-only, authoritative inventory snapshot.
+// It is used only after registration fails; a transient check failure keeps
+// the normal retry path, while an absent/advanced generation ends an exited
+// supervisor whose final exit receipt may have been committed but lost.
+func runtimeExitTerminal(ctx context.Context, spec runtimeSpec) (bool, error) {
+	client, err := DialDucklord(spec.SocketPath, "runtime-exit-"+uuid.NewString(), uuid.NewString(), uuid.NewString(), protocol.ConnectionObserver)
+	if err != nil {
+		return false, err
+	}
+	defer client.Close()
+	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	sessions, err := client.ListSessionsContext(checkCtx)
+	if err != nil {
+		return false, err
+	}
+	for _, session := range sessions {
+		if session.SessionID == string(spec.SessionID) && session.RuntimeGeneration == spec.RuntimeGeneration &&
+			(session.Status == model.StatusRunning || session.Status == model.StatusRecovering) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func removeRuntimeCredentials(specPath string) {

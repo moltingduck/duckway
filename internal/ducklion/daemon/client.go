@@ -133,9 +133,9 @@ func connectRoleContext(ctx context.Context, conn io.ReadWriteCloser, identity p
 	}()
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	setDeadline(conn, time.Now().Add(10*time.Second))
-	offeredCapabilities := []string{"status", "sessions_list", "host_config", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
+	offeredCapabilities := []string{"status", "sessions_list", "retained_list", "host_config", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if identity.ConnectionRole == protocol.ConnectionObserver {
-		offeredCapabilities = []string{"status", "sessions_list", "output_subscribe", "output_unsubscribe", "session_events"}
+		offeredCapabilities = []string{"status", "sessions_list", "retained_list", "output_subscribe", "output_unsubscribe", "session_events"}
 	}
 	if identity.Role == protocol.RoleDuckwayCC {
 		offeredCapabilities = []string{"status", "sessions_list", "session_create_agent", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "session_task", "discord_binding", "discord_unbind", "agent_task"}
@@ -841,6 +841,24 @@ func (c *Client) shutdown(err error) {
 
 func (c *Client) ListSessions() ([]protocol.SessionSummary, error) {
 	return c.ListSessionsContext(context.Background())
+}
+
+func (c *Client) ListRetainedShellsContext(ctx context.Context) ([]protocol.RetainedShellSummary, error) {
+	if err := c.requireCapability("retained_list"); err != nil {
+		return nil, err
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "retained.list"})
+	if err != nil {
+		return nil, err
+	}
+	if response.Error != nil {
+		return nil, &RemoteError{Detail: *response.Error}
+	}
+	var items []protocol.RetainedShellSummary
+	if err := json.Unmarshal(response.Result, &items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 func (c *Client) ListSessionsContext(ctx context.Context) ([]protocol.SessionSummary, error) {

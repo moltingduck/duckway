@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 15
+const SchemaVersion = 16
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -244,6 +244,11 @@ func (s *SQLite) migrate(ctx context.Context) error {
 	if userVersion < 15 {
 		if err := migrateV15(ctx, tx); err != nil {
 			return fmt.Errorf("migrate ducklion schema to v15: %w", err)
+		}
+	}
+	if userVersion < 16 {
+		if err := migrateV16(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v16: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
@@ -503,6 +508,18 @@ func migrateV14(ctx context.Context, tx *sql.Tx) error {
 
 func migrateV15(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN project_name TEXT NOT NULL DEFAULT ''`)
+	return err
+}
+
+func migrateV16(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `CREATE TABLE retained_shell_sessions (
+		session_id TEXT NOT NULL CHECK(length(session_id)=6),
+		runtime_generation INTEGER NOT NULL CHECK(runtime_generation>0),
+		handle TEXT NOT NULL,
+		exited_at_ms INTEGER NOT NULL CHECK(exited_at_ms>0),
+		exit_success INTEGER NOT NULL CHECK(exit_success IN (0,1)),
+		exit_reason TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY(session_id,runtime_generation))`)
 	return err
 }
 

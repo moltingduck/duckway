@@ -287,6 +287,15 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		time.Sleep(time.Second)
 		writePTY(t, terminal, "\r")
 	}
+	// The TUI may still be flushing this input to the remote PTY. Observe the
+	// prompt there before navigating away; otherwise Ctrl-] can race the
+	// submission and leave a partially entered Claude prompt behind.
+	waitE2E(t, 10*time.Second, func() bool {
+		output, err := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", session.SessionID,
+			"--lines", "100", "--config", "/root/.ducklord/config.yaml").Output()
+		return err == nil && strings.Contains(string(output), backgroundPrefix)
+	}, func() string { return agent + " background prompt never reached the remote PTY" })
+	time.Sleep(200 * time.Millisecond)
 	writePTY(t, terminal, "\x1d")
 	waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
 	writePTY(t, terminal, "P")

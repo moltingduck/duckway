@@ -143,6 +143,9 @@ func TestCreateSessionStartsManagedPTYAndAcceptsInput(t *testing.T) {
 	if err != nil || len(sessions) != 1 || sessions[0].Status != model.StatusStopped {
 		t.Fatalf("stopped sessions=%+v err=%v", sessions, err)
 	}
+	if _, err := server.state.GetRetainedShellSession(context.Background(), model.SessionID(created.SessionID), created.RuntimeGeneration); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("explicit legacy stop incorrectly retired its shell Session: %v", err)
+	}
 	if sessions[0].ExitSuccess == nil || *sessions[0].ExitSuccess || sessions[0].ExitReason == "" {
 		t.Fatalf("missing forced-stop outcome: %+v", sessions[0])
 	}
@@ -1204,11 +1207,13 @@ func TestRetainedOutputPeriodicCleanupRemovesCrashOrphanWithoutBlockingDaemon(t 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		sessions, listErr := client.ListSessions()
-		if listErr == nil && len(sessions) == 1 && sessions[0].Status == model.StatusStopped {
-			break
+		if listErr == nil && len(sessions) == 0 {
+			if _, retainedErr := server.state.GetRetainedShellSession(context.Background(), model.SessionID(created.SessionID), created.RuntimeGeneration); retainedErr == nil {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("runtime did not stop: %+v err=%v", sessions, listErr)
+			t.Fatalf("root shell was not retired: %+v err=%v", sessions, listErr)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

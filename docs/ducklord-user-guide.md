@@ -56,6 +56,10 @@ When Codex or Claude runs in a shell-first Session, Ducklord may show
 best-effort foreground-process hint, not a change to Session ownership or a
 task-completion signal. The label returns to Shell when the agent leaves the
 foreground.
+When the root shell exits, its Session disappears from the live lists. Its
+recent PTY output remains available for diagnosis for the Host's configured
+retention period: run `ducklord retained <host>` to find its Session ID and
+generation, then `ducklord read-retained <host> <session-id> <generation>`.
 
 ## Ownership and Discord
 

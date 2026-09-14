@@ -364,7 +364,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid peer principal"}})
 		return
 	}
-	capabilities := []string{"status", "sessions_list", "host_config", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
+	capabilities := []string{"status", "sessions_list", "retained_list", "host_config", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if remote.Role == protocol.RoleDucklord {
 		if remote.OwnerID != remote.Principal || uuid.Validate(remote.ProcessID) != nil || uuid.Validate(remote.ConnectionID) != nil ||
 			(remote.ConnectionRole != protocol.ConnectionControl && remote.ConnectionRole != protocol.ConnectionObserver) {
@@ -372,7 +372,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 			return
 		}
 		if remote.ConnectionRole == protocol.ConnectionObserver {
-			capabilities = []string{"status", "sessions_list", "output_subscribe", "output_unsubscribe", "session_events"}
+			capabilities = []string{"status", "sessions_list", "retained_list", "output_subscribe", "output_unsubscribe", "session_events"}
 		}
 	}
 	if remote.Role == protocol.RoleDuckwayCC {
@@ -698,7 +698,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 			s.registry.Disconnect(identity)
 			return
 		}
-		if err := s.state.MarkRuntimeExited(context.Background(), identity.SessionID, identity.Generation, false, complete.LaunchFailure); err != nil {
+		if err := s.recordRuntimeExit(identity, false, complete.LaunchFailure); err != nil {
 			s.registry.Disconnect(identity)
 			writeSupervisorError(codec, completeRequest.ID, protocol.ErrStaleGeneration, "runtime state changed before launch failure")
 			return
@@ -808,7 +808,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid supervisor exit report")
 				continue
 			}
-			if err := s.state.MarkRuntimeExited(context.Background(), identity.SessionID, identity.Generation, exited.Success, exited.Reason); err != nil {
+			if err := s.recordRuntimeExit(identity, exited.Success, exited.Reason); err != nil {
 				writeSupervisorError(codec, request.ID, protocol.ErrStaleGeneration, "runtime state changed before exit")
 				continue
 			}
@@ -1226,14 +1226,25 @@ func (s *Server) prepareOutputSubscription(request protocol.Request) (*preparedO
 
 func (s *Server) prepareRetainedOutputSubscription(sessionID model.SessionID, generation uint64, subscription protocol.OutputSubscribe) (*preparedOutputSubscription, *protocol.Error) {
 	session, err := s.state.GetSession(context.Background(), sessionID)
-	if err != nil {
-		return nil, &protocol.Error{Code: protocol.ErrNotFound, Message: "session does not exist"}
-	}
-	if session.RuntimeGeneration != generation {
-		return nil, &protocol.Error{Code: protocol.ErrStaleGeneration, Message: "runtime generation changed"}
-	}
-	if session.Status != model.StatusStopped {
-		return nil, &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "session runtime is reconnecting", Retryable: true}
+	if err == nil {
+		if session.RuntimeGeneration != generation {
+			return nil, &protocol.Error{Code: protocol.ErrStaleGeneration, Message: "runtime generation changed"}
+		}
+		if session.Status != model.StatusStopped {
+			return nil, &protocol.Error{Code: protocol.ErrAdapterUnhealthy, Message: "session runtime is reconnecting", Retryable: true}
+		}
+	} else if errors.Is(err, store.ErrNotFound) {
+		// Naturally exited root shells leave a private diagnostic index, not a
+		// selectable Session row. The exact ID+generation tombstone is required
+		// before any retained bytes can be read.
+		if _, err := s.state.GetRetainedShellSession(context.Background(), sessionID, generation); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, &protocol.Error{Code: protocol.ErrNotFound, Message: "session does not exist"}
+			}
+			return nil, &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect retained session"}
+		}
+	} else {
+		return nil, &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect retained session"}
 	}
 	snapshot, err := supervisor.ReadRetainedOutput(filepath.Join(s.root, "sessions", string(sessionID)), sessionID, generation)
 	if err != nil {
@@ -1277,6 +1288,20 @@ func (s *Server) cleanupExpiredRetainedOutput(ctx context.Context, now time.Time
 	sessions, err := s.state.ListSessions(ctx)
 	if err != nil {
 		return err
+	}
+	retired, err := s.state.ListRetainedShellSessions(ctx, 0)
+	if err != nil {
+		return err
+	}
+	visited := make(map[model.SessionID]bool, len(sessions)+len(retired))
+	for _, session := range sessions {
+		visited[session.ID] = true
+	}
+	for _, item := range retired {
+		if !visited[item.SessionID] {
+			sessions = append(sessions, model.Session{ID: item.SessionID, Status: model.StatusStopped, RuntimeGeneration: item.RuntimeGeneration})
+			visited[item.SessionID] = true
+		}
 	}
 	type candidate struct {
 		path      string
@@ -1371,6 +1396,34 @@ func (s *Server) cleanupExpiredRetainedOutput(ctx context.Context, now time.Time
 					continue
 				}
 				total -= item.size
+			}
+		}
+	}
+	// A retired shell's metadata is useful only while its log exists. Keep a
+	// short grace period because a freshly exited supervisor may still be
+	// finalizing the retained file when the sweep starts.
+	for _, item := range retired {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(cleanupErrors, err)...)
+		}
+		if now.Sub(time.UnixMilli(item.ExitedAtMS)) < 5*time.Minute {
+			continue
+		}
+		path := supervisor.RetainedOutputPath(filepath.Join(s.root, "sessions", string(item.SessionID)), item.RuntimeGeneration)
+		_, outputErr := os.Lstat(path)
+		_, metadataErr := os.Lstat(path + ".json")
+		// A one-sided pair cannot be read and is not visited by the regular
+		// output-file sweep when only metadata remains. Clear it after grace.
+		if errors.Is(outputErr, os.ErrNotExist) != errors.Is(metadataErr, os.ErrNotExist) {
+			if err := removeRetainedOutputPair(path); err != nil {
+				cleanupErrors = append(cleanupErrors, err)
+				continue
+			}
+			outputErr, metadataErr = os.ErrNotExist, os.ErrNotExist
+		}
+		if errors.Is(outputErr, os.ErrNotExist) && errors.Is(metadataErr, os.ErrNotExist) {
+			if err := s.state.DeleteRetainedShellSession(ctx, item.SessionID, item.RuntimeGeneration); err != nil {
+				cleanupErrors = append(cleanupErrors, err)
 			}
 		}
 	}
@@ -1570,6 +1623,30 @@ func (s *Server) forgetAttention(identity duckruntime.RuntimeIdentity) {
 	s.attentionMu.Lock()
 	delete(s.attentionRates, attentionRateKey(identity))
 	s.attentionMu.Unlock()
+}
+
+// recordRuntimeExit retires naturally exited shell roots from the selectable
+// inventory. Explicit lifecycle operations keep their durable Session row so
+// their existing restart/end coordinator can finish before cleanup.
+func (s *Server) recordRuntimeExit(identity duckruntime.RuntimeIdentity, success bool, reason string) error {
+	ctx := context.Background()
+	session, err := s.state.GetSession(ctx, identity.SessionID)
+	if errors.Is(err, store.ErrNotFound) {
+		// A duplicate exit on an already authenticated connection may follow a
+		// lost acknowledgement. The exact retired generation is idempotent.
+		_, err = s.state.GetRetainedShellSession(ctx, identity.SessionID, identity.Generation)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if session.Kind == model.KindShell {
+		retired, err := s.state.RetireExitedShell(ctx, identity.SessionID, identity.Generation, success, reason)
+		if err != nil || retired {
+			return err
+		}
+	}
+	return s.state.MarkRuntimeExited(ctx, identity.SessionID, identity.Generation, success, reason)
 }
 
 func (s *Server) applyForeground(identity duckruntime.RuntimeIdentity, agent string) error {
@@ -1809,6 +1886,24 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 		}
 		result, _ := json.Marshal(s.summariesFor(snapshot.Sessions))
 		return protocol.Response{ID: request.ID, Result: result}
+	case "retained.list":
+		if role != protocol.RoleDucklord || !hasCapability(capabilities, "retained_list") || len(request.Body) != 0 || request.SessionID != "" || request.RuntimeGeneration != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotOwner, Message: "Ducklord diagnostic access is required"}}
+		}
+		items, err := s.state.ListRetainedShellSessions(context.Background(), 512)
+		if err != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not list retained Shell sessions", Retryable: true}}
+		}
+		result := make([]protocol.RetainedShellSummary, 0, len(items))
+		for _, item := range items {
+			if time.Since(time.UnixMilli(item.ExitedAtMS)) > s.retainedTTL() {
+				continue
+			}
+			result = append(result, protocol.RetainedShellSummary{SessionID: string(item.SessionID), RuntimeGeneration: item.RuntimeGeneration,
+				Handle: item.Handle, ExitedAtMS: item.ExitedAtMS, ExitSuccess: item.ExitSuccess, ExitReason: item.ExitReason})
+		}
+		body, _ := json.Marshal(result)
+		return protocol.Response{ID: request.ID, Result: body}
 	case "session.create":
 		if role == protocol.RoleDuckwayCC && !hasCapability(capabilities, "session_create_agent") || role != protocol.RoleDuckwayCC && !hasCapability(capabilities, "session_create") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session create capability was not negotiated"}}

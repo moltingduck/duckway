@@ -733,6 +733,74 @@ func (r *Runner) Read(ctx context.Context, c Client, name string, lines int) (st
 	return string(out), err
 }
 
+func (r *Runner) RetainedShells(ctx context.Context, c Client) ([]protocol.RetainedShellSummary, error) {
+	if r == nil || !r.hasOwner() {
+		return nil, fmt.Errorf("ducklord owner is required for retained Shell diagnostics")
+	}
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	return client.ListRetainedShellsContext(ctx)
+}
+
+func (r *Runner) ReadRetainedShell(ctx context.Context, c Client, sessionID string, generation uint64, lines int) (string, error) {
+	if r == nil || !r.hasOwner() {
+		return "", fmt.Errorf("ducklord owner is required for retained Shell diagnostics")
+	}
+	if _, err := model.ParseSessionID(sessionID); err != nil || generation == 0 {
+		return "", fmt.Errorf("retained Shell read requires a valid Session ID and generation")
+	}
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return "", err
+	}
+	items, err := client.ListRetainedShellsContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	found := false
+	for _, item := range items {
+		if item.SessionID == sessionID && item.RuntimeGeneration == generation {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", fmt.Errorf("retained Shell %s generation %d is unavailable", sessionID, generation)
+	}
+	release, err := r.acquireOutputSlot(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	stream, err := client.SubscribeOutputTailContext(ctx, sessionID, generation, 1<<20)
+	if err != nil {
+		return "", err
+	}
+	defer stream.Close()
+	metadata := stream.Metadata()
+	var snapshot bytes.Buffer
+	for uint64(snapshot.Len()) < metadata.EndOffset-metadata.StartOffset {
+		event, err := stream.ReadContext(ctx)
+		if err != nil {
+			return "", err
+		}
+		if event.Frame.Gap {
+			return "", fmt.Errorf("retained Shell output snapshot has a gap")
+		}
+		snapshot.Write(event.Frame.Data)
+	}
+	text := snapshot.String()
+	if lines > 0 {
+		parts := strings.Split(text, "\n")
+		if len(parts) > lines+1 {
+			text = strings.Join(parts[len(parts)-lines-1:], "\n")
+		}
+	}
+	return text, nil
+}
+
 // ReadPreview isolates short-lived, cancellable preview snapshots from the
 // shared multiplex bridge used by session watchers and live attachments.
 // daemon.Client cancellation is deliberately fail-closed at the connection

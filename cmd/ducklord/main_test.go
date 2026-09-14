@@ -845,6 +845,12 @@ type countingSessionsRunner struct {
 	calls int
 }
 
+type failingSessionsRunner struct{ fakeRunner }
+
+func (f failingSessionsRunner) Sessions(context.Context, ducklord.Client, int) ([]ducklord.RemoteSession, error) {
+	return nil, errors.New("temporary SSH failure")
+}
+
 func (r *countingSessionsRunner) Sessions(ctx context.Context, client ducklord.Client, tail int) ([]ducklord.RemoteSession, error) {
 	r.calls++
 	return r.fakeRunner.Sessions(ctx, client, tail)
@@ -856,6 +862,41 @@ func TestTUIDisconnectedHostIsExcludedFromPollingRefresh(t *testing.T) {
 	state.refreshSessions(context.Background())
 	if runner.calls != 0 || len(state.sessions) != 1 || state.sessions[0].Name != "retained" {
 		t.Fatalf("disconnected refresh calls=%d sessions=%+v", runner.calls, state.sessions)
+	}
+}
+
+func TestTUITransientHostFailureRetainsSessionsAndProjectPlacement(t *testing.T) {
+	identity := ducklord.SessionIdentity{InstanceID: uuid.NewString(), SessionID: "ABC123"}
+	activity := ducklord.NewActivityState()
+	projectID, err := activity.ProjectLayout.AddProject("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activity.ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	known := ducklord.RemoteSession{Client: "host", InstanceID: identity.InstanceID, SessionID: "ABC123", Name: "agent", Kind: "shell", Status: "running", RuntimeGeneration: 1}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}},
+		runner: failingSessionsRunner{}, activityState: activity, hashes: map[string]string{},
+		disconnectedHosts: map[string]bool{}, sessions: []ducklord.RemoteSession{known}}
+	state.refreshSessions(context.Background())
+	if len(state.sessions) != 1 || state.sessions[0].SessionID != known.SessionID || state.sessions[0].Status != "disconnected" ||
+		state.sessions[0].Error == "" || canAttach(state.sessions[0]) {
+		t.Fatalf("transient failure lost or exposed Session: %+v", state.sessions)
+	}
+	if projects := state.activity().ProjectLayout.ProjectsFor(identity); len(projects) != 1 || projects[0] != projectID {
+		t.Fatalf("transient failure changed Project placement: %+v", projects)
+	}
+	if state.hostRowStyle("host") != disconnectedRowColor {
+		t.Fatal("temporarily disconnected Host was not gray")
+	}
+	state.runner = fakeRunner{sessions: []ducklord.RemoteSession{known}}
+	state.refreshSessions(context.Background())
+	if len(state.sessions) != 1 || state.sessions[0].SessionID != known.SessionID || state.sessions[0].Status != "running" || state.sessions[0].Error != "" {
+		t.Fatalf("successful refresh did not restore Session: %+v", state.sessions)
+	}
+	if projects := state.activity().ProjectLayout.ProjectsFor(identity); len(projects) != 1 || projects[0] != projectID {
+		t.Fatalf("recovery changed Project placement: %+v", projects)
 	}
 }
 
