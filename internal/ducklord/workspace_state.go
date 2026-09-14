@@ -313,6 +313,14 @@ func (w *WorkspaceState) PreviewDetail(session SessionIdentity) error {
 	return nil
 }
 
+func (w *WorkspaceState) ClearDetailSelection() {
+	if !w.detail {
+		return
+	}
+	w.detailSelection = SessionIdentity{}
+	w.location.region = RegionDetailList
+}
+
 func (w *WorkspaceState) ExitDetail() {
 	if !w.detail {
 		return

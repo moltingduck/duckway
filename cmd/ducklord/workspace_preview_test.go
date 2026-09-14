@@ -49,6 +49,32 @@ func TestWorkspacePreviewRendersLiveSelectedSessionWithoutGrantingFocus(t *testi
 	}
 }
 
+func TestWorkspaceReadOnlyHintMatchesOfflineAndOwnerPreflight(t *testing.T) {
+	state := &tuiState{ownerName: "local", disconnectedHosts: map[string]bool{}}
+	shell := ducklord.RemoteSession{Client: "host", Name: "shell", Status: "running", Kind: "shell", RuntimeGeneration: 1}
+	if state.workspaceSessionReadOnly(shell) {
+		t.Fatal("connected Shell should be presented as writable")
+	}
+	state.disconnectedHosts["host"] = true
+	if !state.workspaceSessionReadOnly(shell) {
+		t.Fatal("explicitly disconnected Shell appeared writable")
+	}
+	state.disconnectedHosts["host"] = false
+	shell.Status, shell.Error = "disconnected", "SSH unavailable"
+	if !state.workspaceSessionReadOnly(shell) {
+		t.Fatal("stale Shell preview appeared writable")
+	}
+	agent := ducklord.RemoteSession{Client: "host", Name: "agent", Status: "running", Kind: "agent", RuntimeGeneration: 1,
+		WriterKind: "terminal", WriterID: "another"}
+	if !state.workspaceSessionReadOnly(agent) {
+		t.Fatal("non-owner Agent appeared writable")
+	}
+	agent.WriterID = "local"
+	if state.workspaceSessionReadOnly(agent) {
+		t.Fatal("owned Agent appeared read-only")
+	}
+}
+
 func TestWorkspaceOutputPriorityFollowsSelectedProjectPaneNotQuickList(t *testing.T) {
 	state, projectID, a, b := workspacePaneTestState(t)
 	bIdentity, _ := ducklord.IdentityFromSession(b)

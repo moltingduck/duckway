@@ -63,6 +63,16 @@ func workspacePaneTitle(session ducklord.RemoteSession) string {
 	return title
 }
 
+// Read-only is a presentation hint, not an authorization decision. Keep it
+// aligned with the attach gate so an offline Shell is not shown as writable.
+func (s *tuiState) workspaceSessionReadOnly(session ducklord.RemoteSession) bool {
+	if s.disconnectedHosts[session.Client] || !s.hostIsLive(session.Client) || !canAttach(session) {
+		return true
+	}
+	return session.Kind != string(model.KindShell) &&
+		(session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName)
+}
+
 func (s *tuiState) workspaceColumnOffsets(geometry ducklord.WorkspaceGeometry, nav *ducklord.WorkspaceState, quick []ducklord.RemoteSession) ducklord.WorkspaceColumnOffsets {
 	layout := &s.activity().ProjectLayout
 	projectIndex := -1
@@ -411,7 +421,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 				}
 				view := ducklord.WorkspacePaneView{Title: workspacePaneTitle(session),
 					Stale:    !s.outputFresh || s.outputStale || !s.hostIsLive(session.Client),
-					ReadOnly: session.Kind != string(model.KindShell) && (session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName),
+					ReadOnly: s.workspaceSessionReadOnly(session),
 					Focused:  s.focused && s.activeAttachKey == sessionKey(session)}
 				if s.terminal != nil && s.outputForKey == sessionKey(session) && s.terminalGeneration == session.RuntimeGeneration {
 					view.Lines = s.terminal.RenderPaneLinesOffset(rows, cols, s.ptyScrollOffset)
@@ -468,8 +478,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 				continue // title, ACL and framebuffer must come from the same host alias
 			}
 			view := ducklord.WorkspacePaneView{Title: workspacePaneTitle(session),
-				Stale: true, ReadOnly: session.Kind != string(model.KindShell) &&
-					(session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName)}
+				Stale: true, ReadOnly: s.workspaceSessionReadOnly(session)}
 			if sessionKey(session) != sessionKey(displayed) {
 				if selection, ok := visibleOutput[identity]; ok && s.workspaceOutput != nil {
 					key := ducklord.OutputKey{ClientKey: selection.Client.Name, InstanceID: selection.InstanceID, SessionID: selection.SessionID}

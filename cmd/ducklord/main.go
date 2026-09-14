@@ -1604,6 +1604,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			return
 		}
 		if len(state.sessions) == 0 {
+			if workspaceOutput != nil {
+				workspaceOutput.ClearVisible()
+			}
 			outputRequestID++
 			selectedOutputSession = ducklord.RemoteSession{}
 			activeOutputEvent = ducklord.TerminalOutputEvent{}
@@ -3693,6 +3696,9 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 	if s.searchMode {
 		s.syncSearchSelection()
 	}
+	if s.workspaceNav != nil && s.workspaceNav.InDetailMode() {
+		s.syncDetailSelection()
+	}
 }
 
 // applySessionUpdate reports whether the update became authoritative. Callers
@@ -3872,6 +3878,9 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) bool {
 	s.restoreSelection(oldKey)
 	if s.searchMode {
 		s.syncSearchSelection()
+	}
+	if s.workspaceNav != nil && s.workspaceNav.InDetailMode() {
+		s.syncDetailSelection()
 	}
 	if attachedKey := s.effectiveAttachKey(); attachedKey != "" {
 		activeExists := false

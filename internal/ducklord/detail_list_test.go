@@ -135,3 +135,15 @@ func TestRenderDetailedSessionListScrollsToSelectedCard(t *testing.T) {
 		t.Fatalf("selected card was not scrolled into list viewport: %q", output.String())
 	}
 }
+
+func TestRenderDetailedOfflineUnselectedRowIsMuted(t *testing.T) {
+	items := []DetailedSessionItem{
+		{Identity: detailIdentity("AAA111"), Name: "first", Host: "host", State: "disconnected", Disconnected: true},
+		{Identity: detailIdentity("BBB222"), Name: "second", Host: "host", State: "disconnected", Disconnected: true},
+	}
+	var output bytes.Buffer
+	RenderDetailedSessionBody(&output, CalculateDetailGeometry(110, 14, 1), items, items[0].Identity, "", DetailAll, false, nil)
+	if !strings.Contains(output.String(), "\x1b[2;37m") || !strings.Contains(output.String(), "second @host") {
+		t.Fatalf("offline unselected row was not muted: %q", output.String())
+	}
+}

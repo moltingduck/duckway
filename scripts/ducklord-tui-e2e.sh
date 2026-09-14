@@ -51,6 +51,6 @@ DUCKLORD_TUI_CONTAINER_E2E=1 \
 DUCKLORD_E2E_DISPOSABLE_HOST=1 \
 DUCKLORD_E2E_RUNTIME="$RUNTIME" \
 DUCKLORD_E2E_CONTROLLER=ducklord-dev \
-go test -count=1 ./cmd/ducklord -run "${DUCKLORD_TUI_E2E_PATTERN:-^TestDucklord(WorkspacePreviewContainer|WorkspaceTwoLivePanesContainer|WorkspaceProjectEnterFocusContainer|SharedProjectNotificationContainer|DetailedListContainer|HostRetentionContainer|HostHookConfigContainer|LocalNotificationContainer|ShellFirstHookContainer|ProjectDeleteContainer|ForegroundAgentLabelsContainer|ShellRetirementContainer|ExplicitShellEndRetainsLogContainer)E2E$}" -v
+go test -count=1 ./cmd/ducklord -run "${DUCKLORD_TUI_E2E_PATTERN:-^TestDucklord(WorkspacePreviewContainer|WorkspaceTwoLivePanesContainer|WorkspaceProjectEnterFocusContainer|SharedProjectNotificationContainer|DetailedListContainer|DetailedOfflineContainer|HostRetentionContainer|HostHookConfigContainer|LocalNotificationContainer|ShellFirstHookContainer|ProjectDeleteContainer|ForegroundAgentLabelsContainer|ShellRetirementContainer|ExplicitShellEndRetainsLogContainer)E2E$}" -v
 
 echo "[ducklord-tui-e2e] PASS"

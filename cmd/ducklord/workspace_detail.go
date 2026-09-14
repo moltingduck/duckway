@@ -62,6 +62,9 @@ func (s *tuiState) syncDetailSelection() bool {
 	results := s.detailedResults()
 	if len(results) == 0 {
 		s.detailSelected = ducklord.SessionIdentity{}
+		if nav, err := s.workspaceNavigation(); err == nil {
+			nav.ClearDetailSelection()
+		}
 		return false
 	}
 	for _, item := range results {
