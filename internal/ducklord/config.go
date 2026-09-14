@@ -337,6 +337,7 @@ var DefaultShortcuts = map[string]string{
 	"project_prev_tab": "[", "project_next_tab": "]", "project_prev_pane": "H", "project_next_pane": "L",
 	"project_add_pane":           "p",
 	"project_create":             "N",
+	"project_delete":             "Z",
 	"project_notification_focus": "F",
 	"project_move_pane":          "M", "project_detach_pane": "x",
 	"detail_list": "D", "detail_search": "/", "detail_jump": "g", "detail_filter": "f",

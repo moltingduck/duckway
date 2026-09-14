@@ -26,6 +26,11 @@ the current TUI implementation.
 - Project progress accounting is deferred. A session referenced by multiple
   Projects must not be silently counted as independent work in each Project;
   its contribution will be specified before progress management is added.
+- Deleting a user-created Project removes only its local panes; Ducklion
+  Sessions continue running, and Sessions without another explicit Project
+  return to Default. Default Project cannot be deleted. The centered delete
+  confirmation defaults to Cancel, and deleting a notification-focused
+  Project turns that focus off.
 
 ### Project Notification Badge
 

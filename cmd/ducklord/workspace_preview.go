@@ -157,6 +157,10 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		s.beginWorkspaceProject()
 		return true, false
 	}
+	if s.shortcut("project_delete", key) {
+		s.beginWorkspaceProjectDelete()
+		return true, false
+	}
 	if s.shortcut("project_add_pane", key) {
 		s.beginWorkspacePane()
 		return true, false
@@ -358,9 +362,9 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	}
 	status := "Session list pane: ↑/↓ Session · " + s.cfg.Shortcut("list_sort") + " sort:" + s.quickSortMode() + " (" + direction + ") · " + s.cfg.Shortcut("list_sort_direction") + " time direction · " + s.cfg.Shortcut("project_focus") + " Project pane · Enter focus · Ctrl-] leave PTY"
 	if s.workspaceProjectFocus {
-		status = fmt.Sprintf("Project pane: ↑/↓ Project · %s focus · %s new · %s add · %s move · %s detach · %s/%s tab · %s/%s pane · Enter focus · Esc list",
+		status = fmt.Sprintf("Project pane: ↑/↓ Project · %s focus · %s new · %s delete · %s add · %s move · %s detach · %s/%s tab · %s/%s pane · Enter focus · Esc list",
 			s.cfg.Shortcut("project_notification_focus"),
-			s.cfg.Shortcut("project_create"), s.cfg.Shortcut("project_add_pane"), s.cfg.Shortcut("project_move_pane"), s.cfg.Shortcut("project_detach_pane"),
+			s.cfg.Shortcut("project_create"), s.cfg.Shortcut("project_delete"), s.cfg.Shortcut("project_add_pane"), s.cfg.Shortcut("project_move_pane"), s.cfg.Shortcut("project_detach_pane"),
 			s.cfg.Shortcut("project_prev_tab"), s.cfg.Shortcut("project_next_tab"),
 			s.cfg.Shortcut("project_prev_pane"), s.cfg.Shortcut("project_next_pane"))
 	}

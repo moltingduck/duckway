@@ -36,6 +36,109 @@ func workspacePaneTestState(t *testing.T) (*tuiState, string, ducklord.RemoteSes
 	return state, projectID, a, b
 }
 
+func TestWorkspaceProjectDeleteIsLocalAndRehomesLastReference(t *testing.T) {
+	state, projectID, a, _ := workspacePaneTestState(t)
+	nav, err := state.workspaceNavigation()
+	if err != nil || nav.SelectProject(projectID) != nil {
+		t.Fatal("select Project: ", err)
+	}
+	nav.ToggleNotificationFocus()
+	state.beginWorkspaceProjectDelete()
+	if !state.workspacePaneMode || state.workspacePaneStep != "project-delete-confirm" || state.workspacePaneIndex != 1 || state.workspacePaneIntent.projectID != projectID {
+		t.Fatal("delete modal did not pin selected Project and default to Cancel")
+	}
+	state.handleWorkspacePaneInput([]byte("\r")) // Default Cancel must be a no-op.
+	if state.activity().ProjectLayout.Project(projectID) == nil {
+		t.Fatal("Cancel deleted Project")
+	}
+	state.beginWorkspaceProjectDelete()
+	state.handleWorkspacePaneInput([]byte("\x1b[A"))
+	state.handleWorkspacePaneInput([]byte("\r"))
+	identity, _ := ducklord.IdentityFromSession(a)
+	if state.workspacePaneMode || state.activity().ProjectLayout.Project(projectID) != nil || state.sessions[0].SessionID != a.SessionID || !state.workspacePaneChanged {
+		t.Fatal("local Project deletion removed remote Session or left modal open")
+	}
+	if projects := state.activity().ProjectLayout.ProjectsFor(identity); len(projects) != 1 || projects[0] != ducklord.DefaultProjectID {
+		t.Fatalf("last Session reference not rehomed: %v", projects)
+	}
+	if nav.CurrentProjectID() != ducklord.DefaultProjectID || nav.NotificationFocusProjectID() != "" {
+		t.Fatal("deleted Project remained selected or notification-focused")
+	}
+	loaded, err := state.activityStore.Load()
+	if err != nil || loaded.ProjectLayout.Project(projectID) != nil {
+		t.Fatalf("deletion was not persisted: %v", err)
+	}
+}
+
+func TestWorkspaceProjectDeleteRejectsDefaultStaleAndSaveFailure(t *testing.T) {
+	state, projectID, a, _ := workspacePaneTestState(t)
+	nav, _ := state.workspaceNavigation()
+	_ = nav.SelectProject(ducklord.DefaultProjectID)
+	state.beginWorkspaceProjectDelete()
+	if state.workspacePaneMode || state.activity().ProjectLayout.Project(ducklord.DefaultProjectID) == nil {
+		t.Fatal("Default Project deletion was allowed")
+	}
+	_ = nav.SelectProject(projectID)
+	state.beginWorkspaceProjectDelete()
+	state.activityStore.Path = t.TempDir() // Saving over directory must fail.
+	state.handleWorkspacePaneInput([]byte("\x1b[A"))
+	state.handleWorkspacePaneInput([]byte("\r"))
+	if !state.workspacePaneMode || !strings.Contains(state.workspacePaneErr, "save Project deletion") || state.activity().ProjectLayout.Project(projectID) == nil || nav.CurrentProjectID() != projectID {
+		t.Fatal("save failure mutated Project or navigation")
+	}
+	state.closeWorkspacePane()
+	state.workspacePaneIntent.projectID = "missing-project"
+	if err := state.commitWorkspaceProjectDelete(); err == nil || state.activity().ProjectLayout.Project(projectID) == nil {
+		t.Fatal("stale Project identity deleted another Project")
+	}
+	identity, _ := ducklord.IdentityFromSession(a)
+	if projects := state.activity().ProjectLayout.ProjectsFor(identity); len(projects) != 1 || projects[0] != projectID {
+		t.Fatalf("failed deletion changed membership: %v", projects)
+	}
+}
+
+func TestWorkspaceProjectDeleteKeepsSharedSessionInOtherProject(t *testing.T) {
+	state, projectID, a, _ := workspacePaneTestState(t)
+	identity, _ := ducklord.IdentityFromSession(a)
+	otherID, err := state.activity().ProjectLayout.AddProject("Other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.activity().ProjectLayout.Place(otherID, identity, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	nav, _ := state.workspaceNavigation()
+	_ = nav.SelectProject(projectID)
+	state.beginWorkspaceProjectDelete()
+	state.handleWorkspacePaneInput([]byte("\x1b[A"))
+	state.handleWorkspacePaneInput([]byte("\r"))
+	if projects := state.activity().ProjectLayout.ProjectsFor(identity); len(projects) != 1 || projects[0] != otherID {
+		t.Fatalf("shared Session was duplicated in Default or lost: %v", projects)
+	}
+}
+
+func TestWorkspaceProjectDeleteEmptyAndHostScoped(t *testing.T) {
+	state, _, _, _ := workspacePaneTestState(t)
+	emptyID, err := state.activity().ProjectLayout.AddProject("Empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nav, _ := state.workspaceNavigation()
+	_ = nav.SelectProject(emptyID)
+	state.hostScoped = true
+	state.beginWorkspaceProjectDelete()
+	if state.workspacePaneMode {
+		t.Fatal("host-scoped TUI opened local Project deletion")
+	}
+	state.hostScoped = false
+	state.beginWorkspaceProjectDelete()
+	state.handleWorkspacePaneInput([]byte("\x1b[A"))
+	state.handleWorkspacePaneInput([]byte("\r"))
+	if state.activity().ProjectLayout.Project(emptyID) != nil || nav.CurrentProjectID() == emptyID {
+		t.Fatal("empty Project deletion did not reconcile navigation")
+	}
+}
+
 func TestWorkspacePaneModalPlacesExistingAtomicallyAndKeepsQuickSelection(t *testing.T) {
 	state, projectID, a, b := workspacePaneTestState(t)
 	nav, err := state.workspaceNavigation()

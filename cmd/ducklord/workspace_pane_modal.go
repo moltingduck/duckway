@@ -134,6 +134,51 @@ func (s *tuiState) beginWorkspaceProject() {
 	s.workspacePaneName, s.workspacePaneErr = "", ""
 }
 
+func (s *tuiState) beginWorkspaceProjectDelete() {
+	if !s.workspacePreview || !s.workspaceProjectFocus || s.hostScoped {
+		return
+	}
+	nav, err := s.workspaceNavigation()
+	if err != nil {
+		s.outputErr = err.Error()
+		return
+	}
+	projectID := nav.CurrentProjectID()
+	if projectID == ducklord.DefaultProjectID {
+		s.outputErr = "Default Project cannot be deleted"
+		return
+	}
+	if s.activity().ProjectLayout.Project(projectID) == nil {
+		s.outputErr = "selected Project no longer exists"
+		return
+	}
+	s.workspacePaneIntent = workspacePaneIntent{projectID: projectID}
+	s.workspacePaneMode, s.workspacePaneStep, s.workspacePaneIndex = true, "project-delete-confirm", 1 // Cancel is safest.
+	s.workspacePaneErr = ""
+}
+
+func (s *tuiState) commitWorkspaceProjectDelete() error {
+	projectID := s.workspacePaneIntent.projectID
+	if projectID == "" || projectID == ducklord.DefaultProjectID || s.activity().ProjectLayout.Project(projectID) == nil {
+		return fmt.Errorf("project changed; reopen delete confirmation")
+	}
+	next := s.activity().Clone()
+	if err := next.ProjectLayout.RemoveProject(projectID); err != nil {
+		return err
+	}
+	if err := s.activityStore.Save(next); err != nil {
+		return fmt.Errorf("save Project deletion: %w", err)
+	}
+	s.activityState = next
+	s.workspacePaneChanged = true
+	if _, err := s.workspaceNavigation(); err != nil {
+		s.outputErr = "Project deleted; navigation will refresh: " + sanitizeTerminalText(err.Error())
+	} else {
+		s.outputErr = "Project deleted locally; remote Sessions continue running"
+	}
+	return nil
+}
+
 func (s *tuiState) workspacePaneCandidates() []ducklord.RemoteSession {
 	seen := make(map[ducklord.SessionIdentity]bool)
 	var candidates []ducklord.RemoteSession
@@ -213,6 +258,8 @@ func (s *tuiState) workspacePaneChoices() []string {
 		return []string{"Move existing pane here", "Cancel"}
 	case "detach-confirm":
 		return []string{"Detach local pane", "Cancel"}
+	case "project-delete-confirm":
+		return []string{"Delete local Project", "Cancel"}
 	case "existing":
 		candidates := s.workspacePaneCandidates()
 		choices := make([]string, 0, len(candidates))
@@ -238,6 +285,29 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.workspacePaneErr})
 		}
 		lines = append(lines, modalRenderLine{modalMuted, "  Enter create · Esc/Ctrl+C close"})
+		renderModalBox(out, cols, rows, lines)
+		return
+	}
+	if s.workspacePaneStep == "project-delete-confirm" {
+		project := s.activity().ProjectLayout.Project(s.workspacePaneIntent.projectID)
+		name := "Project unavailable"
+		if project != nil {
+			name = displayField(project.Name)
+		}
+		lines := []modalRenderLine{{modalTitle, "  Delete Project"}, {modalMuted, "  " + name},
+			{modalMuted, "  Removes local panes only; remote Sessions keep running."},
+			{modalMuted, "  Sessions with no other Project return to Default."}}
+		for i, choice := range s.workspacePaneChoices() {
+			style, prefix := "", "  "
+			if i == s.workspacePaneIndex {
+				style, prefix = modalSelected, "› "
+			}
+			lines = append(lines, modalRenderLine{style, prefix + choice})
+		}
+		if s.workspacePaneErr != "" {
+			lines = append(lines, modalRenderLine{modalDanger, "  " + s.workspacePaneErr})
+		}
+		lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter confirm · Esc/Ctrl+C close"})
 		renderModalBox(out, cols, rows, lines)
 		return
 	}
@@ -483,6 +553,16 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 				return false
 			}
 			if err := s.commitWorkspacePaneAction(s.workspacePaneStep == "detach-confirm"); err != nil {
+				s.workspacePaneErr = sanitizeTerminalText(err.Error())
+				return false
+			}
+			s.closeWorkspacePane()
+		case "project-delete-confirm":
+			if index == 1 {
+				s.closeWorkspacePane()
+				return false
+			}
+			if err := s.commitWorkspaceProjectDelete(); err != nil {
 				s.workspacePaneErr = sanitizeTerminalText(err.Error())
 				return false
 			}
