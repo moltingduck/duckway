@@ -129,3 +129,24 @@ func TestWorkspaceQuickMouseRowsUseRenderedIdentityProjection(t *testing.T) {
 		t.Fatalf("quick mouse mapping diverged from rendered rows: %+v", rows)
 	}
 }
+
+func TestWorkspaceQuickMousePressUsesScrolledRow(t *testing.T) {
+	state, _, a, _ := workspacePaneTestState(t)
+	width, height := terminalSize()
+	for i := 0; i < 40; i++ {
+		extra := a
+		extra.SessionID = fmt.Sprintf("X%05d", i)
+		extra.Name = extra.SessionID
+		state.sessions = append(state.sessions, extra)
+	}
+	state.selected = len(state.sessions) - 1
+	state.selectedKey = sessionKey(state.sessions[state.selected])
+	actualGeometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	rows := state.workspaceQuickSessions()
+	state.workspaceQuickOffset = ducklord.WorkspaceListOffset(0, len(rows)-1, actualGeometry.Quick.Height-1, len(rows))
+	expected := rows[state.workspaceQuickOffset]
+	state.handleWorkspaceMouse(workspaceMouse(0, actualGeometry.Quick.X+1, actualGeometry.Quick.Y+1, false))
+	if state.workspaceDragSession.SessionID != expected.SessionID {
+		t.Fatalf("scrolled first row selected %q, want %q", state.workspaceDragSession.SessionID, expected.SessionID)
+	}
+}

@@ -519,7 +519,7 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 					s.workspacePaneErr = "select a different pane to split"
 					return false
 				}
-				s.workspacePaneSourceID, s.workspacePaneIdentity = sourceID, identity
+				s.workspacePaneSourceID, s.workspacePaneIdentity, s.workspacePaneCandidate = sourceID, identity, candidate
 				s.workspacePaneStep, s.workspacePaneIndex, s.workspacePaneErr = "existing-move-confirm", 1, ""
 				return false
 			}

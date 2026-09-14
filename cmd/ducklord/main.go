@@ -1341,6 +1341,8 @@ type tuiState struct {
 	workspaceDragMoved         bool
 	workspaceDragX             int
 	workspaceDragY             int
+	workspaceProjectOffset     int
+	workspaceQuickOffset       int
 	workspacePaneChanged       bool
 	workspaceNewSessionIntent  *workspacePaneIntent
 	detailQuery                string

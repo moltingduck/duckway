@@ -55,6 +55,28 @@ func (s *tuiState) workspaceQuickSessions() []ducklord.RemoteSession {
 	return rows
 }
 
+func (s *tuiState) workspaceColumnOffsets(geometry ducklord.WorkspaceGeometry, nav *ducklord.WorkspaceState, quick []ducklord.RemoteSession) ducklord.WorkspaceColumnOffsets {
+	layout := &s.activity().ProjectLayout
+	projectIndex := -1
+	for i := range layout.Projects {
+		if layout.Projects[i].ID == nav.CurrentProjectID() {
+			projectIndex = i
+			break
+		}
+	}
+	quickIndex := -1
+	selectedKey := sessionKey(s.currentSession())
+	for i := range quick {
+		if sessionKey(quick[i]) == selectedKey {
+			quickIndex = i
+			break
+		}
+	}
+	s.workspaceProjectOffset = ducklord.WorkspaceListOffset(s.workspaceProjectOffset, projectIndex, geometry.Projects.Height-1, len(layout.Projects))
+	s.workspaceQuickOffset = ducklord.WorkspaceListOffset(s.workspaceQuickOffset, quickIndex, geometry.Quick.Height-1, len(quick))
+	return ducklord.WorkspaceColumnOffsets{Projects: s.workspaceProjectOffset, Quick: s.workspaceQuickOffset}
+}
+
 func (s *tuiState) workspaceSelectedPaneSession() (ducklord.RemoteSession, error) {
 	nav, err := s.workspaceNavigation()
 	if err != nil {
@@ -404,6 +426,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 			Unread: session.Unread, Selected: sessionKey(session) == sessionKey(selected)})
 	}
 	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	offsets := s.workspaceColumnOffsets(geometry, nav, quickSessions)
 	var visibleOutput map[ducklord.SessionIdentity]ducklord.TerminalSelection
 	if s.workspaceOutput != nil {
 		visibleOutput = make(map[ducklord.SessionIdentity]ducklord.TerminalSelection)
@@ -460,7 +483,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 			return view
 		}
 		return ducklord.WorkspacePaneView{Title: "Session unavailable", Stale: true}
-	})
+	}, offsets)
 	s.renderCreateModal(out, width, height)
 	s.renderWorkspacePaneModal(out, width, height)
 	s.renderSearchModal(out, width, height)

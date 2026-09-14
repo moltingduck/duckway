@@ -127,10 +127,34 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	launch := "codex --no-alt-screen --sandbox read-only\r"
 	ready := "OpenAI Codex"
 	if agent == "claude" {
-		launch, ready = "claude --permission-mode plan\r", "Claude"
+		launch = "claude --permission-mode plan\r"
 	}
 	writePTY(t, terminal, launch)
-	waitLiveAgentScreen(t, capture, ready, 45*time.Second)
+	if agent == "claude" {
+		// The disposable Project is new to Claude. The first screen is a
+		// safety decision; its ❯ points to "No, exit", not the input prompt.
+		// Approve only this isolated E2E workspace, never a user's directory.
+		waitLiveAgentScreen(t, capture, "Quick safety check", 45*time.Second)
+		time.Sleep(350 * time.Millisecond) // Wait until the visible choice is accepting input.
+		writePTY(t, terminal, "\x1b[B")
+		time.Sleep(250 * time.Millisecond)
+		writePTY(t, terminal, "\r")
+		var safetyVisible, inputPromptVisible, remoteShell, remoteApp bool
+		waitE2E(t, 45*time.Second, func() bool {
+			screen := capture.currentText()
+			safetyVisible = strings.Contains(screen, "Quick safety check")
+			inputPromptVisible = strings.Contains(screen, "❯")
+			out, err := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", session.SessionID,
+				"--lines", "40", "--config", "/root/.ducklord/config.yaml").Output()
+			remoteShell = err == nil && strings.Contains(string(out), "client-a:~/projects/alpha$")
+			remoteApp = err == nil && (strings.Contains(string(out), "shift+tab") || strings.Contains(string(out), "Auto-update"))
+			return !safetyVisible && inputPromptVisible && remoteApp
+		}, func() string {
+			return fmt.Sprintf("Claude did not reach its interactive input after disposable Project trust (safety=%t prompt=%t remote-shell=%t remote-app=%t); output suppressed", safetyVisible, inputPromptVisible, remoteShell, remoteApp)
+		})
+	} else {
+		waitLiveAgentScreen(t, capture, ready, 45*time.Second)
+	}
 	if agent == "codex" {
 		// Fresh Codex profiles require a separate, agent-owned trust decision.
 		// Approve only the hook we just installed in this disposable Host.
@@ -187,19 +211,29 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 			turnTimeout = 45 * time.Second
 		}
 		var screenSeen, remoteSeen, remoteTrust, remotePrompt, remoteContinue bool
+		var remoteAuth, remoteError, screenError, screenPrompt, focusVisible, inputBlocked, controlChanged bool
 		waitE2E(t, turnTimeout, func() bool {
-			screenSeen = strings.Contains(capture.currentText(), response)
+			screen := capture.currentText()
+			screenSeen = strings.Contains(screen, response)
+			screenError = strings.Contains(strings.ToLower(screen), "error")
+			screenPrompt = strings.Contains(screen, prefix)
+			focusVisible = strings.Contains(screen, "Session focus:")
+			inputBlocked = strings.Contains(screen, "waiting for Session pane output") || strings.Contains(screen, "input was not sent")
+			controlChanged = strings.Contains(screen, "PTY control changed") || strings.Contains(screen, "host reconnecting")
 			output, readErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", session.SessionID,
 				"--lines", "200", "--config", "/root/.ducklord/config.yaml").Output()
 			remoteSeen = readErr == nil && strings.Contains(string(output), response)
 			if readErr == nil {
-				remoteTrust = strings.Contains(string(output), "Yes, continue") || strings.Contains(string(output), "Do you trust")
-				remotePrompt = strings.Contains(string(output), "Join") || strings.Contains(string(output), prefix)
-				remoteContinue = strings.Contains(string(output), "Press enter to continue")
+				remote := string(output)
+				remoteTrust = strings.Contains(remote, "Yes, continue") || strings.Contains(remote, "Do you trust")
+				remotePrompt = strings.Contains(remote, "Join") || strings.Contains(remote, prefix)
+				remoteContinue = strings.Contains(remote, "Press enter to continue")
+				remoteAuth = strings.Contains(strings.ToLower(remote), "login") || strings.Contains(strings.ToLower(remote), "authentication")
+				remoteError = strings.Contains(strings.ToLower(remote), "error")
 			}
 			return screenSeen && remoteSeen
 		}, func() string {
-			return fmt.Sprintf("%s turn %d missing answer (screen=%t remote=%t remote-trust=%t remote-prompt=%t remote-continue=%t); no PTY content logged", agent, turn, screenSeen, remoteSeen, remoteTrust, remotePrompt, remoteContinue)
+			return fmt.Sprintf("%s turn %d missing answer (screen=%t remote=%t screen-prompt=%t screen-error=%t focused=%t input-blocked=%t control-changed=%t remote-trust=%t remote-prompt=%t remote-continue=%t remote-auth=%t remote-error=%t); no PTY content logged", agent, turn, screenSeen, remoteSeen, screenPrompt, screenError, focusVisible, inputBlocked, controlChanged, remoteTrust, remotePrompt, remoteContinue, remoteAuth, remoteError)
 		})
 		waitE2E(t, 25*time.Second, func() bool {
 			latest, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID)

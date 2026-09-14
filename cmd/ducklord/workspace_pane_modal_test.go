@@ -326,6 +326,39 @@ func TestWorkspaceExistingPickerMovesSameProjectPaneOnlyAfterConfirmation(t *tes
 	}
 }
 
+func TestWorkspaceExistingPickerRejectsSessionChangeBeforeMoveConfirmation(t *testing.T) {
+	for _, change := range []string{"host disconnected", "runtime restarted"} {
+		t.Run(change, func(t *testing.T) {
+			state, projectID, a, _ := workspacePaneTestState(t)
+			nav, _ := state.workspaceNavigation()
+			_ = nav.SelectProject(projectID)
+			oldID := nav.CurrentPaneID()
+			state.beginWorkspacePane()
+			state.handleWorkspacePaneInput([]byte("\r"))     // new tab
+			state.handleWorkspacePaneInput([]byte("\x1b[B")) // existing Session
+			state.handleWorkspacePaneInput([]byte("\r"))
+			state.handleWorkspacePaneInput([]byte("\r")) // A -> move confirmation
+			if state.workspacePaneStep != "existing-move-confirm" || state.workspacePaneCandidate.SessionID != a.SessionID {
+				t.Fatal("picker did not retain the selected Session generation for confirmation")
+			}
+			switch change {
+			case "host disconnected":
+				state.hostSync = map[string]ducklord.SessionUpdate{"host": {State: "disconnected"}}
+			case "runtime restarted":
+				state.sessions[0].RuntimeGeneration++
+			}
+			state.handleWorkspacePaneInput([]byte("\x1b[A")) // explicitly Move
+			state.handleWorkspacePaneInput([]byte("\r"))
+			if !state.workspacePaneMode || !strings.Contains(state.workspacePaneErr, "changed or Host disconnected") || state.workspacePaneChanged {
+				t.Fatalf("stale Session move was not rejected: mode=%t error=%q changed=%t", state.workspacePaneMode, state.workspacePaneErr, state.workspacePaneChanged)
+			}
+			if _, ok := state.activity().ProjectLayout.PaneSession(projectID, oldID); !ok {
+				t.Fatal("stale Session move modified the Project layout")
+			}
+		})
+	}
+}
+
 func TestWorkspaceExistingPickerRejectsStaleTargetAndSaveFailure(t *testing.T) {
 	for _, failure := range []string{"stale target", "save failure"} {
 		t.Run(failure, func(t *testing.T) {

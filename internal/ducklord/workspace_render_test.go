@@ -18,6 +18,45 @@ func TestWorkspaceGeometryKeepsThreeRegionsAndNarrowFallback(t *testing.T) {
 	}
 }
 
+func TestWorkspaceListOffsetFollowsSelectionAndClampsAfterResize(t *testing.T) {
+	if got := WorkspaceListOffset(0, 12, 4, 20); got != 9 {
+		t.Fatalf("selection below viewport offset=%d", got)
+	}
+	if got := WorkspaceListOffset(9, 10, 4, 20); got != 9 {
+		t.Fatalf("visible selection shifted viewport to %d", got)
+	}
+	if got := WorkspaceListOffset(9, 2, 4, 20); got != 2 {
+		t.Fatalf("selection above viewport offset=%d", got)
+	}
+	if got := WorkspaceListOffset(9, 2, 8, 7); got != 0 {
+		t.Fatalf("shrunk list offset=%d", got)
+	}
+}
+
+func TestWorkspaceRendererUsesColumnOffsets(t *testing.T) {
+	layout := NewProjectLayout()
+	for _, name := range []string{"one", "two", "three", "four", "five"} {
+		if _, err := layout.AddProject(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nav, err := NewWorkspaceState(&layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(layout.Projects[5].ID); err != nil {
+		t.Fatal(err)
+	}
+	items := []WorkspaceListItem{{Name: "one", Host: "h"}, {Name: "two", Host: "h"}, {Name: "three", Host: "h"}, {Name: "four", Host: "h"}, {Name: "five", Host: "h", Selected: true}}
+	geometry := WorkspaceGeometry{Projects: WorkspaceRect{X: 1, Y: 1, Width: 20, Height: 3}, Quick: WorkspaceRect{X: 22, Y: 1, Width: 20, Height: 3}}
+	var out bytes.Buffer
+	RenderWorkspaceBody(&out, geometry, &layout, nav, items, nil, nil, WorkspaceColumnOffsets{Projects: 4, Quick: 3})
+	text := out.String()
+	if !strings.Contains(text, "› five") || !strings.Contains(text, "› five @h") || strings.Contains(text, "one @h") {
+		t.Fatalf("offset columns did not show selected rows: %q", text)
+	}
+}
+
 func TestWorkspaceRendererShowsProjectsSplitPanesAndPreservesColor(t *testing.T) {
 	layout := NewProjectLayout()
 	projectID, _ := layout.AddProject("中文工作")

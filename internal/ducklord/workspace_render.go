@@ -39,6 +39,34 @@ type WorkspaceGeometry struct {
 	Terminal WorkspaceRect
 }
 
+type WorkspaceColumnOffsets struct {
+	Projects int
+	Quick    int
+}
+
+// WorkspaceListOffset keeps the selected row visible while preserving the
+// current scroll position whenever possible. It also clamps after a resize
+// or list shrink.
+func WorkspaceListOffset(offset, selected, visible, total int) int {
+	if visible <= 0 || total <= visible {
+		return 0
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total-visible {
+		offset = total - visible
+	}
+	if selected >= 0 && selected < total {
+		if selected < offset {
+			offset = selected
+		} else if selected >= offset+visible {
+			offset = selected - visible + 1
+		}
+	}
+	return offset
+}
+
 // CalculateWorkspaceGeometry reserves distinct Project, quick-list, and
 // Terminal regions. Narrow terminals retain the Terminal region and hide
 // columns in order, never producing negative pane dimensions.
@@ -70,12 +98,17 @@ func CalculateWorkspaceGeometry(width, height, top int) WorkspaceGeometry {
 // one Project's tab/split tree. It is presentation-only: no PTY input, resize,
 // unread mutation, or yield can occur here.
 func RenderWorkspaceBody(out io.Writer, geometry WorkspaceGeometry, layout *ProjectLayout, nav *WorkspaceState,
-	items []WorkspaceListItem, projectUnread func(string) bool, paneView func(SessionIdentity, int, int) WorkspacePaneView) {
+	items []WorkspaceListItem, projectUnread func(string) bool, paneView func(SessionIdentity, int, int) WorkspacePaneView, columnOffsets ...WorkspaceColumnOffsets) {
 	if out == nil || layout == nil || nav == nil {
 		return
 	}
+	offsets := WorkspaceColumnOffsets{}
+	if len(columnOffsets) > 0 {
+		offsets = columnOffsets[0]
+	}
 	if geometry.Projects.Width > 0 {
 		renderWorkspaceColumn(out, geometry.Projects, " PROJECTS ", func(index int) string {
+			index += offsets.Projects
 			if index >= len(layout.Projects) {
 				return ""
 			}
@@ -95,6 +128,7 @@ func RenderWorkspaceBody(out io.Writer, geometry WorkspaceGeometry, layout *Proj
 	}
 	if geometry.Quick.Width > 0 {
 		renderWorkspaceColumn(out, geometry.Quick, " SESSIONS ", func(index int) string {
+			index += offsets.Quick
 			if index >= len(items) {
 				return ""
 			}

@@ -35,12 +35,13 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 	width, height := terminalSize()
 	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
 	quickSessions := s.workspaceQuickSessions()
+	quickOffset := s.workspaceColumnOffsets(geometry, nav, quickSessions).Quick
 	if button == 0 && strings.HasSuffix(key, "M") {
 		s.workspaceDragSession = ducklord.RemoteSession{}
 		s.workspaceDragMoved = false
 		s.workspaceDragX, s.workspaceDragY = x, y
-		if index, inside := workspaceQuickRowAt(geometry.Quick, x, y); inside && index < len(quickSessions) {
-			s.workspaceDragSession = quickSessions[index]
+		if index, inside := workspaceQuickRowAt(geometry.Quick, x, y); inside && index+quickOffset < len(quickSessions) {
+			s.workspaceDragSession = quickSessions[index+quickOffset]
 		}
 		return true, false
 	}
@@ -64,8 +65,8 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 		return true, false
 	}
 	if !moved {
-		if index, inside := workspaceQuickRowAt(geometry.Quick, x, y); inside && index < len(quickSessions) {
-			candidate := quickSessions[index]
+		if index, inside := workspaceQuickRowAt(geometry.Quick, x, y); inside && index+quickOffset < len(quickSessions) {
+			candidate := quickSessions[index+quickOffset]
 			if current, ok := ducklord.IdentityFromSession(candidate); ok && current == identity && candidate.RuntimeGeneration == source.RuntimeGeneration {
 				s.selectSessionKey(sessionKey(candidate))
 				s.workspaceFollowQuickSelection()

@@ -1044,6 +1044,14 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "› "+handles[0]+" @client-a", 10*time.Second)
 	writePTY(t, terminal, "]")
 	capture.waitCurrent(t, "◇ client-a/"+handles[0], 10*time.Second)
+	// The one-slot output pool must reopen A after B was visible. A title
+	// alone does not prove its resumed PTY stream is live.
+	returnedMarker := fmt.Sprintf("RETURNED-A-%d", time.Now().UnixNano())
+	if out, err := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "send", "client-a", handles[0],
+		"printf '"+returnedMarker+"\\n'", "--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil {
+		t.Fatalf("send resumed A marker: %v: %s", err, out)
+	}
+	capture.waitCurrent(t, returnedMarker, 10*time.Second)
 	writePTY(t, terminal, "[")
 	capture.waitCurrent(t, "◇ client-a/"+handles[1], 10*time.Second)
 	projectMarker := fmt.Sprintf("PROJECTONLY-%d", time.Now().UnixNano())
