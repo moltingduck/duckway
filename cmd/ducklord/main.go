@@ -9181,6 +9181,9 @@ func sessionTypeLabel(session ducklord.RemoteSession) string {
 		if session.DetectedForeground == "codex" || session.DetectedForeground == "claude" {
 			return session.DetectedForeground + "?" // process detection is advisory, not an exact task state
 		}
+		if session.DetectedForeground == "other_agent" {
+			return "other agent?" // conservative executable detection, not an exact task state
+		}
 		return "shell"
 	}
 	if session.AgentType == "" {

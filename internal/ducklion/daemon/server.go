@@ -753,7 +753,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 			}
 			var foreground protocol.SupervisorForeground
 			if err := decodeStrict(request.Body, &foreground); err != nil ||
-				(foreground.Agent != "shell" && foreground.Agent != "codex" && foreground.Agent != "claude") {
+				(foreground.Agent != "shell" && foreground.Agent != "codex" && foreground.Agent != "claude" && foreground.Agent != "other_agent") {
 				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid foreground agent")
 				continue
 			}

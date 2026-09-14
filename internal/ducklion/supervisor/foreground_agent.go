@@ -140,6 +140,8 @@ func classifyForegroundAgent(exe string, args [][]byte) string {
 	case argv0 == "claude" && (exeBase == "claude" || exeBase == "node" ||
 		strings.Contains(exe, "/claude/versions/") && versionedClaudeExecutable(exeBase)):
 		return "claude"
+	case argv0 == "opencode" && exeBase == "opencode":
+		return "other_agent"
 	default:
 		return ""
 	}

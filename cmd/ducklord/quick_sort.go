@@ -24,6 +24,8 @@ func quickTypeRank(session ducklord.RemoteSession) int {
 			return 0
 		case "claude":
 			return 1
+		case "other_agent":
+			return 2
 		default:
 			return 3 // uncertainty never claims an agent
 		}

@@ -14,7 +14,8 @@ import (
 )
 
 // Foreground labels are advisory visibility for shell-first Sessions. This
-// fixture uses Node with an agent-like argv[0], never real agent credentials.
+// fixture uses Node with an agent-like argv[0] or a copied native executable,
+// never real agent credentials.
 func TestDucklordForegroundAgentLabelsContainerE2E(t *testing.T) {
 	if os.Getenv("DUCKLORD_TUI_CONTAINER_E2E") != "1" {
 		t.Skip("run through scripts/ducklord-tui-e2e.sh")
@@ -39,7 +40,17 @@ func TestDucklordForegroundAgentLabelsContainerE2E(t *testing.T) {
 		session       ducklord.RemoteSession
 	}
 	fixtures := []fixture{{agent: "codex", handle: fmt.Sprintf("fgc%x", stamp&0xffffff)},
-		{agent: "claude", handle: fmt.Sprintf("fgl%x", (stamp+1)&0xffffff)}}
+		{agent: "claude", handle: fmt.Sprintf("fgl%x", (stamp+1)&0xffffff)},
+		{agent: "other_agent", handle: fmt.Sprintf("fgo%x", (stamp+2)&0xffffff)}}
+	// The other-agent detector requires argv[0] and /proc/PID/exe to agree
+	// on a vetted native executable name. A copied Node binary gives us that
+	// process identity without installing OpenCode or providing credentials.
+	if out, err := exec.Command(runtime, "exec", "-u", "duck", "ducklion-client-a", "cp", "/usr/bin/node", "/home/duck/opencode").CombinedOutput(); err != nil {
+		t.Fatalf("prepare native other-agent fixture: %v (output bytes=%d)", err, len(out))
+	}
+	t.Cleanup(func() {
+		_, _ = exec.Command(runtime, "exec", "ducklion-client-a", "rm", "-f", "/home/duck/opencode").CombinedOutput()
+	})
 	for i := range fixtures {
 		item := &fixtures[i]
 		out, err := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "start", "client-a", "--name", item.handle,
@@ -72,6 +83,9 @@ func TestDucklordForegroundAgentLabelsContainerE2E(t *testing.T) {
 		// Interactive bash starts this Node child in the terminal foreground
 		// process group. `exec -a` sets argv[0] without requiring OAuth.
 		command := "bash -c 'exec -a " + item.agent + " /usr/bin/node -e \"process.stdin.resume()\"'"
+		if item.agent == "other_agent" {
+			command = "bash -c 'exec /home/duck/opencode -e \"process.stdin.resume()\"'"
+		}
 		out, err = exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "send", "client-a", handle, command,
 			"--config", "/root/.ducklord/config.yaml").CombinedOutput()
 		if err != nil {
@@ -118,6 +132,8 @@ func TestDucklordForegroundAgentLabelsContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "client-a/"+fixtures[0].handle+" [codex?]", 15*time.Second)
 	writePTY(t, terminal, "]")
 	capture.waitCurrent(t, "client-a/"+fixtures[1].handle+" [claude?]", 15*time.Second)
+	writePTY(t, terminal, "]")
+	capture.waitCurrent(t, "client-a/"+fixtures[2].handle+" [other agent?]", 15*time.Second)
 	for _, item := range fixtures {
 		latest, found := findContainerSession(t, runtime, controller, "client-a", item.session.SessionID)
 		if !found || latest.RuntimeGeneration != item.session.RuntimeGeneration || latest.Kind != item.session.Kind {

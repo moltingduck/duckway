@@ -75,12 +75,22 @@ func TestForegroundVisibilityIsAdvisoryAndGenerationFenced(t *testing.T) {
 	if err := runtimeClient.ReportForeground("claude-invalid"); err == nil {
 		t.Fatal("unknown foreground agent accepted")
 	}
+	if err := runtimeClient.ReportForeground("other_agent"); err != nil {
+		t.Fatal(err)
+	}
+	other, err := server.state.SessionSnapshot(context.Background())
+	if err != nil || other.Revision != baseline.Revision+2 {
+		t.Fatalf("other agent revision=%d want=%d err=%v", other.Revision, baseline.Revision+2, err)
+	}
+	if projected := server.summariesFor(other.Sessions); len(projected) != 1 || projected[0].DetectedForeground != "other_agent" || projected[0].Kind != model.KindShell || projected[0].TaskState != model.TaskIdle {
+		t.Fatalf("other agent changed canonical shell state: %+v", projected)
+	}
 	if err := runtimeClient.ReportForeground("shell"); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err = server.state.SessionSnapshot(context.Background())
-	if err != nil || snapshot.Revision != baseline.Revision+2 {
-		t.Fatalf("shell revision=%d want=%d err=%v", snapshot.Revision, baseline.Revision+2, err)
+	if err != nil || snapshot.Revision != baseline.Revision+3 {
+		t.Fatalf("shell revision=%d want=%d err=%v", snapshot.Revision, baseline.Revision+3, err)
 	}
 	if got := server.summariesFor(snapshot.Sessions)[0].DetectedForeground; got != "" {
 		t.Fatalf("shell fallback retained foreground label %q", got)

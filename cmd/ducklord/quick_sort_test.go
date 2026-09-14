@@ -73,3 +73,40 @@ func TestQuickSortPromotesOnlyEligibleUnreadEvents(t *testing.T) {
 		t.Fatal("stable base order was not restored when promotion expired")
 	}
 }
+
+func TestQuickTypeRankSeparatesOtherAgentFromUncertainShell(t *testing.T) {
+	shell := ducklord.RemoteSession{Kind: string(model.KindShell)}
+	other := shell
+	other.DetectedForeground = "other_agent"
+	if quickTypeRank(other) != 2 || quickTypeRank(shell) != 3 {
+		t.Fatalf("other agent rank=%d, shell rank=%d", quickTypeRank(other), quickTypeRank(shell))
+	}
+	if got := sessionTypeLabel(other); got != "other agent?" {
+		t.Fatalf("other agent label=%q", got)
+	}
+	if got := workspacePaneTitle(other); got != "/ [other agent?]" {
+		t.Fatalf("other agent pane title=%q", got)
+	}
+}
+
+func TestQuickSortTypeOrdersDetectedAgentsBeforeShell(t *testing.T) {
+	instance := "9df68174-9e13-4dc9-b44d-8532c87f5971"
+	sessions := []ducklord.RemoteSession{
+		{Client: "host", InstanceID: instance, SessionID: "AAA111", Name: "shell", Kind: string(model.KindShell)},
+		{Client: "host", InstanceID: instance, SessionID: "BBB222", Name: "other", Kind: string(model.KindShell), DetectedForeground: "other_agent"},
+		{Client: "host", InstanceID: instance, SessionID: "CCC333", Name: "claude", Kind: string(model.KindShell), DetectedForeground: "claude"},
+		{Client: "host", InstanceID: instance, SessionID: "DDD444", Name: "codex", Kind: string(model.KindShell), DetectedForeground: "codex"},
+	}
+	state := tuiState{cfg: &ducklord.Config{QuickSort: "type"}, sessions: sessions, selected: 1, workspacePreview: true}
+	selected := state.currentKey()
+	state.sortQuickSessions()
+	state.restoreSelection(selected)
+	for i, want := range []string{"codex", "claude", "other", "shell"} {
+		if state.sessions[i].Name != want {
+			t.Fatalf("type order[%d]=%q want %q", i, state.sessions[i].Name, want)
+		}
+	}
+	if state.currentKey() != selected {
+		t.Fatal("type sort changed selected session identity")
+	}
+}

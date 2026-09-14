@@ -388,7 +388,7 @@ func (c *SupervisorClient) ReportForeground(agent string) error {
 	if agent == "" {
 		agent = "shell"
 	}
-	if agent != "shell" && agent != "codex" && agent != "claude" {
+	if agent != "shell" && agent != "codex" && agent != "claude" && agent != "other_agent" {
 		return fmt.Errorf("invalid foreground agent")
 	}
 	body, _ := json.Marshal(protocol.SupervisorForeground{Agent: agent})

@@ -57,8 +57,13 @@ func (s *tuiState) workspaceQuickSessions() []ducklord.RemoteSession {
 
 func workspacePaneTitle(session ducklord.RemoteSession) string {
 	title := displayField(session.Client) + "/" + displayField(session.Name)
-	if session.Kind == string(model.KindShell) && (session.DetectedForeground == "codex" || session.DetectedForeground == "claude") {
-		title += " [" + session.DetectedForeground + "?]"
+	if session.Kind == string(model.KindShell) {
+		switch session.DetectedForeground {
+		case "other_agent":
+			title += " [other agent?]"
+		case "codex", "claude":
+			title += " [" + session.DetectedForeground + "?]"
+		}
 	}
 	return title
 }
