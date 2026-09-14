@@ -13,24 +13,55 @@ import (
 // invalidation in the same transaction. A positive coalesceWindow suppresses
 // additional advances within that window.
 func (s *SQLite) RecordActivity(ctx context.Context, sessionID model.SessionID, category model.NotificationCategory, coalesceWindow time.Duration) (uint64, bool, error) {
-	return s.recordActivity(ctx, sessionID, category, coalesceWindow, 0, 0, 0, false, false)
+	return s.recordActivity(ctx, sessionID, category, coalesceWindow, 0, 0, 0, "", false, false)
 }
 
 func (s *SQLite) RecordActivityAtOffset(ctx context.Context, sessionID model.SessionID, category model.NotificationCategory, coalesceWindow time.Duration, runtimeGeneration, sourceOffset uint64) (uint64, bool, error) {
 	if runtimeGeneration == 0 || sourceOffset == 0 {
 		return 0, false, errors.New("activity runtime generation and source offset must be positive")
 	}
-	return s.recordActivity(ctx, sessionID, category, coalesceWindow, runtimeGeneration, sourceOffset, 0, true, false)
+	return s.recordActivity(ctx, sessionID, category, coalesceWindow, runtimeGeneration, sourceOffset, 0, "", true, false)
 }
 
 func (s *SQLite) RecordAgentActivity(ctx context.Context, sessionID model.SessionID, category model.NotificationCategory, runtimeGeneration, eventID, sourceOffset uint64) (uint64, bool, error) {
+	return s.RecordAgentActivityWithSource(ctx, sessionID, category, runtimeGeneration, eventID, sourceOffset, "")
+}
+
+func (s *SQLite) RecordAgentActivityWithSource(ctx context.Context, sessionID model.SessionID, category model.NotificationCategory, runtimeGeneration, eventID, sourceOffset uint64, source string) (uint64, bool, error) {
 	if runtimeGeneration == 0 || eventID == 0 {
 		return 0, false, errors.New("agent activity runtime generation and event id must be positive")
 	}
-	return s.recordActivity(ctx, sessionID, category, 0, runtimeGeneration, sourceOffset, eventID, false, true)
+	if source != "" && source != "codex" && source != "claude" {
+		return 0, false, errors.New("unsupported agent hook callback source")
+	}
+	return s.recordActivity(ctx, sessionID, category, 0, runtimeGeneration, sourceOffset, eventID, source, false, true)
 }
 
-func (s *SQLite) recordActivity(ctx context.Context, sessionID model.SessionID, category model.NotificationCategory, coalesceWindow time.Duration, runtimeGeneration, sourceOffset, sourceEventID uint64, fenceSource, fenceEvent bool) (uint64, bool, error) {
+type HookCallback struct {
+	SessionID         model.SessionID
+	RuntimeGeneration uint64
+	LastEventID       uint64
+	UpdatedAtMS       int64
+}
+
+// LastHookCallback reports the newest admitted callback on this Host. The
+// source is self-declared by the Session process tree,
+// so this is observability, never agent identity or authorization evidence.
+func (s *SQLite) LastHookCallback(ctx context.Context, source string) (HookCallback, bool, error) {
+	if source != "codex" && source != "claude" {
+		return HookCallback{}, false, errors.New("unsupported agent hook callback source")
+	}
+	var callback HookCallback
+	err := s.db.QueryRowContext(ctx, `SELECT session_id,runtime_generation,last_event_id,updated_at_ms
+		FROM host_hook_callbacks WHERE source=?`, source).
+		Scan(&callback.SessionID, &callback.RuntimeGeneration, &callback.LastEventID, &callback.UpdatedAtMS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return HookCallback{}, false, nil
+	}
+	return callback, err == nil, err
+}
+
+func (s *SQLite) recordActivity(ctx context.Context, sessionID model.SessionID, category model.NotificationCategory, coalesceWindow time.Duration, runtimeGeneration, sourceOffset, sourceEventID uint64, source string, fenceSource, fenceEvent bool) (uint64, bool, error) {
 	if _, err := model.ParseSessionID(string(sessionID)); err != nil {
 		return 0, false, err
 	}
@@ -98,6 +129,13 @@ func (s *SQLite) recordActivity(ctx context.Context, sessionID model.SessionID, 
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO session_revision_events(session_id,change_kind,created_at_ms,activity_category,activity_sequence) VALUES(?,'invalidate',?,?,?)`, sessionID, now, category, sequence); err != nil {
 		return 0, false, err
+	}
+	if source != "" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO host_hook_callbacks(source,session_id,runtime_generation,last_event_id,updated_at_ms) VALUES(?,?,?,?,?)
+			ON CONFLICT(source) DO UPDATE SET session_id=excluded.session_id,runtime_generation=excluded.runtime_generation,last_event_id=excluded.last_event_id,updated_at_ms=excluded.updated_at_ms`,
+			source, sessionID, runtimeGeneration, sourceEventID, now); err != nil {
+			return 0, false, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM session_revision_events WHERE revision <= (SELECT max(revision)-4096 FROM session_revision_events)`); err != nil {
 		return 0, false, err

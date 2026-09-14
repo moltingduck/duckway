@@ -14,6 +14,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
@@ -115,6 +116,18 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		"_", "/root/.ducklord/config.yaml", configPath).CombinedOutput(); err != nil {
 		t.Fatalf("prepare isolated notification policy: %v (output bytes=%d)", err, len(output))
 	}
+	readHookStatus := func(source string) (protocol.HostAgentHookStatus, error) {
+		output, err := exec.Command(runtime, "exec", controller, "ducklord", "--name", "hook-inspector-"+stamp, "hook-status", "client-a", source,
+			"--config", configPath).Output()
+		if err != nil {
+			return protocol.HostAgentHookStatus{}, err
+		}
+		var status protocol.HostAgentHookStatus
+		if err := json.Unmarshal(output, &status); err != nil {
+			return protocol.HostAgentHookStatus{}, err
+		}
+		return status, nil
+	}
 	notifier := filepath.Join(t.TempDir(), "notify-send")
 	if err := os.WriteFile(notifier, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$DUCKLORD_NOTIFY_E2E_LOG\"\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -141,6 +154,10 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	})
 	capture := newSizedTUICapture(terminal, 28, int(cols))
 	waitLiveAgentScreen(t, capture, "Live "+agent, 20*time.Second)
+	beforeInstall, beforeInstallErr := readHookStatus(agent)
+	if beforeInstallErr != nil {
+		t.Fatalf("read Host hook status before install: %v", beforeInstallErr)
+	}
 	// Install through the same explicit Host confirmation flow operators use.
 	writePTY(t, terminal, "hjjj\r")
 	waitLiveAgentScreen(t, capture, "Agent notification hooks", 10*time.Second)
@@ -150,9 +167,20 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\r")
 	waitLiveAgentScreen(t, capture, "Edit: ~", 10*time.Second)
 	writePTY(t, terminal, "\r")
-	waitLiveAgentScreen(t, capture, "Host configuration updated", 20*time.Second)
+	waitE2E(t, 20*time.Second, func() bool {
+		screen := capture.currentText()
+		return strings.Contains(screen, "Host configuration updated") || strings.Contains(screen, "Already in the requested state")
+	}, func() string { return agent + " hook installation did not reach a confirmed state; screen suppressed" })
 	writePTY(t, terminal, "\r")
 	waitLiveAgentScreen(t, capture, "Session list pane:", 10*time.Second)
+	baselineHookStatuses := make(map[string]protocol.HostAgentHookStatus, 2)
+	for _, source := range []string{"codex", "claude"} {
+		status, err := readHookStatus(source)
+		if err != nil || source == agent && !status.Installed {
+			t.Fatalf("%s hook status was unavailable before agent launch: installed=%t err=%v", source, status.Installed, err)
+		}
+		baselineHookStatuses[source] = status
+	}
 	writePTY(t, terminal, "/"+handle)
 	waitLiveAgentScreen(t, capture, "search › "+handle, 10*time.Second)
 	writePTY(t, terminal, "\r")
@@ -179,14 +207,15 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	}
 	writePTY(t, terminal, launch)
 	if agent == "claude" {
-		// The disposable Project is new to Claude. The first screen is a
-		// safety decision; its ❯ points to "No, exit", not the input prompt.
-		// Approve only this isolated E2E workspace, never a user's directory.
-		waitLiveAgentScreen(t, capture, "Quick safety check", 45*time.Second)
-		time.Sleep(350 * time.Millisecond) // Wait until the visible choice is accepting input.
-		writePTY(t, terminal, "\x1b[B")
-		time.Sleep(250 * time.Millisecond)
-		writePTY(t, terminal, "\r")
+		if !beforeInstall.Installed {
+			// The first variant approves this disposable workspace only.
+			// Later variants on the same Host reuse Claude's trust decision.
+			waitLiveAgentScreen(t, capture, "Quick safety check", 45*time.Second)
+			time.Sleep(350 * time.Millisecond) // Wait until the visible choice is accepting input.
+			writePTY(t, terminal, "\x1b[B")
+			time.Sleep(250 * time.Millisecond)
+			writePTY(t, terminal, "\r")
+		}
 		var safetyVisible, inputPromptVisible, remoteShell, remoteApp bool
 		waitE2E(t, 45*time.Second, func() bool {
 			screen := capture.currentText()
@@ -204,21 +233,23 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		waitLiveAgentScreen(t, capture, ready, 45*time.Second)
 	}
 	if agent == "codex" {
-		// Fresh Codex profiles require a separate, agent-owned trust decision.
-		// Approve only the hook we just installed in this disposable Host.
-		waitLiveAgentScreen(t, capture, "Hooks need review", 20*time.Second)
-		waitLiveAgentScreen(t, capture, "Trust all and continue", 20*time.Second)
-		time.Sleep(250 * time.Millisecond) // Let the interactive choice become input-ready.
-		writePTY(t, terminal, "\x1b[B\r")  // Trust all and continue.
-		waitE2E(t, 20*time.Second, func() bool {
-			screen := capture.currentText()
-			return strings.Contains(screen, "Codex") && strings.Contains(screen, "Session focus:") && !strings.Contains(screen, "Hooks need review")
-		}, func() string {
-			screen := capture.currentText()
-			return fmt.Sprintf("Codex hook review did not return to the interactive prompt (review=%t choice=%t loading=%t login=%t); PTY content suppressed",
-				strings.Contains(screen, "Hooks need review"), strings.Contains(screen, "Trust all and continue"),
-				strings.Contains(screen, "loading live PTY"), strings.Contains(strings.ToLower(screen), "login"))
-		})
+		// The first variant approves the hook; later variants on the same
+		// disposable Host reuse Codex's agent-owned trust decision.
+		if !beforeInstall.Installed {
+			waitLiveAgentScreen(t, capture, "Hooks need review", 20*time.Second)
+			waitLiveAgentScreen(t, capture, "Trust all and continue", 20*time.Second)
+			time.Sleep(250 * time.Millisecond) // Let the interactive choice become input-ready.
+			writePTY(t, terminal, "\x1b[B\r")  // Trust all and continue.
+			waitE2E(t, 20*time.Second, func() bool {
+				screen := capture.currentText()
+				return strings.Contains(screen, "Codex") && strings.Contains(screen, "Session focus:") && !strings.Contains(screen, "Hooks need review")
+			}, func() string {
+				screen := capture.currentText()
+				return fmt.Sprintf("Codex hook review did not return to the interactive prompt (review=%t choice=%t loading=%t login=%t); PTY content suppressed",
+					strings.Contains(screen, "Hooks need review"), strings.Contains(screen, "Trust all and continue"),
+					strings.Contains(screen, "loading live PTY"), strings.Contains(strings.ToLower(screen), "login"))
+			})
+		}
 	}
 	t.Log("interactive agent launched in Ducklord TUI")
 	if agent == "codex" {
@@ -295,6 +326,20 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		}, func() string {
 			return fmt.Sprintf("%s turn %d reached Ducklion but not Ducklord desktop delivery; notification log content suppressed", agent, turn)
 		})
+		if turn == 1 {
+			waitE2E(t, 15*time.Second, func() bool {
+				status, err := readHookStatus(agent)
+				return err == nil && status.Installed && status.CallbackObserved && status.CallbackSessionID == session.SessionID && status.CallbackGeneration == session.RuntimeGeneration
+			}, func() string { return agent + " admitted callback was not reflected in Host hook status" })
+			other := "codex"
+			if agent == "codex" {
+				other = "claude"
+			}
+			if status, err := readHookStatus(other); err != nil || status.CallbackObserved != baselineHookStatuses[other].CallbackObserved ||
+				status.CallbackSessionID != baselineHookStatuses[other].CallbackSessionID || status.CallbackUpdatedAtMS != baselineHookStatuses[other].CallbackUpdatedAtMS {
+				t.Fatalf("%s callback changed %s's status: observed=%t err=%v", agent, other, status.CallbackObserved, err)
+			}
+		}
 		if turn == 1 {
 			writePTY(t, terminal, "\x1d")
 			waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)

@@ -14,6 +14,9 @@ func TestAgentHookConfigInstallPreservesExistingAndRemovesOnlyOwned(t *testing.T
 	for _, agent := range []string{"codex", "claude"} {
 		t.Run(agent, func(t *testing.T) {
 			home := t.TempDir()
+			if installed, err := agentHookInstalledInHome(home, agent); err != nil || installed {
+				t.Fatalf("missing settings reported installed: %t %v", installed, err)
+			}
 			filename := "hooks.json"
 			if agent == "claude" {
 				filename = "settings.json"
@@ -29,6 +32,9 @@ func TestAgentHookConfigInstallPreservesExistingAndRemovesOnlyOwned(t *testing.T
 			result, err := configureAgentHookInHome(home, "/opt/duck lion/bin/ducklion", agent, "install")
 			if err != nil || !result.Installed || !result.Changed || !result.BackupCreated || result.Activation != "pending" {
 				t.Fatalf("install: result=%+v err=%v", result, err)
+			}
+			if installed, err := agentHookInstalledInHome(home, agent); err != nil || !installed {
+				t.Fatalf("installed settings not detected: %t %v", installed, err)
 			}
 			installed, err := os.ReadFile(path)
 			if err != nil {
@@ -47,6 +53,9 @@ func TestAgentHookConfigInstallPreservesExistingAndRemovesOnlyOwned(t *testing.T
 			result, err = configureAgentHookInHome(home, "/opt/duck lion/bin/ducklion", agent, "remove")
 			if err != nil || result.Installed || !result.Changed {
 				t.Fatalf("remove: %+v %v", result, err)
+			}
+			if installed, err := agentHookInstalledInHome(home, agent); err != nil || installed {
+				t.Fatalf("removed settings still detected: %t %v", installed, err)
 			}
 			removed, _ := os.ReadFile(path)
 			if bytes.Contains(removed, []byte("__ducklion_agent_hook_v1")) || !bytes.Contains(removed, []byte("custom")) {

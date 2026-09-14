@@ -535,10 +535,14 @@ func (c *SupervisorActivityClient) ReportTerminalAttention(ctx context.Context, 
 }
 
 func (c *SupervisorActivityClient) ReportActivity(ctx context.Context, category model.NotificationCategory, outputOffset, eventID uint64) error {
+	return c.ReportActivityWithSource(ctx, category, outputOffset, eventID, "")
+}
+
+func (c *SupervisorActivityClient) ReportActivityWithSource(ctx context.Context, category model.NotificationCategory, outputOffset, eventID uint64, source string) error {
 	if category != model.NotificationTerminalAttention && !c.supportsAgentActivity {
 		return fmt.Errorf("agent activity capability was not negotiated")
 	}
-	body, _ := json.Marshal(protocol.SupervisorActivity{OutputOffset: outputOffset, Category: category, EventID: eventID})
+	body, _ := json.Marshal(protocol.SupervisorActivity{OutputOffset: outputOffset, Category: category, EventID: eventID, Source: source})
 	c.nextID++
 	requestID := fmt.Sprintf("activity-%d", c.nextID)
 	generation := c.identity.RuntimeGeneration

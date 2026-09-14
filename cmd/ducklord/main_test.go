@@ -3540,6 +3540,9 @@ func (fakeRunner) SetHostLogRetention(context.Context, ducklord.Client, int) err
 func (fakeRunner) ConfigureHostAgentHook(context.Context, ducklord.Client, string, string) (protocol.HostAgentHookConfigResult, error) {
 	return protocol.HostAgentHookConfigResult{}, nil
 }
+func (fakeRunner) HostAgentHookStatus(_ context.Context, _ ducklord.Client, agent string) (protocol.HostAgentHookStatus, error) {
+	return protocol.HostAgentHookStatus{Agent: agent}, nil
+}
 
 func TestHostRetentionMenuRequiresReviewAndConfirmation(t *testing.T) {
 	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, hostMenuMode: true,
@@ -3686,11 +3689,14 @@ func (*recordingRunner) SetHostLogRetention(context.Context, ducklord.Client, in
 func (*recordingRunner) ConfigureHostAgentHook(context.Context, ducklord.Client, string, string) (protocol.HostAgentHookConfigResult, error) {
 	return protocol.HostAgentHookConfigResult{}, nil
 }
+func (*recordingRunner) HostAgentHookStatus(_ context.Context, _ ducklord.Client, agent string) (protocol.HostAgentHookStatus, error) {
+	return protocol.HostAgentHookStatus{Agent: agent}, nil
+}
 
 func TestHostHookMenuRequiresExplicitConfirmation(t *testing.T) {
 	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, hostMenuMode: true,
 		hostMenuStep: "actions", hostMenuTarget: "host", hostMenuIndex: 3}
-	if action := state.handleHostMenuInput([]byte("\r")); action != "" || state.hostMenuStep != "hook-select" {
+	if action := state.handleHostMenuInput([]byte("\r")); action != "host-hooks-read" || state.hostMenuStep != "hook-select" {
 		t.Fatalf("did not open hook selector: action=%q step=%q", action, state.hostMenuStep)
 	}
 	state.handleHostMenuInput([]byte("\x1b[B"))
@@ -3710,6 +3716,17 @@ func TestHostHookMenuRequiresExplicitConfirmation(t *testing.T) {
 	state.handleHostMenuInput([]byte("\r"))
 	if action := state.handleHostMenuInput([]byte("\r")); action != "host-hook-save" || state.hostMenuStep != "hook-saving" {
 		t.Fatalf("confirmation did not save: action=%q step=%q", action, state.hostMenuStep)
+	}
+}
+
+func TestHostHookStatusLineSeparatesInstallAndAdvisoryCallback(t *testing.T) {
+	installed := hostHookStatusLine(protocol.HostAgentHookStatus{Agent: "codex", Installed: true})
+	if !strings.Contains(installed, "installed") || !strings.Contains(installed, "no callback observed") {
+		t.Fatalf("installed-but-unobserved status=%q", installed)
+	}
+	removed := hostHookStatusLine(protocol.HostAgentHookStatus{Agent: "claude", CallbackObserved: true})
+	if !strings.Contains(removed, "not installed") || !strings.Contains(removed, "advisory callback observed") {
+		t.Fatalf("removed-but-previously-observed status=%q", removed)
 	}
 }
 

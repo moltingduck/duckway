@@ -323,6 +323,14 @@ func (r *Runner) ConfigureHostAgentHook(ctx context.Context, c Client, agent, ac
 	return client.ConfigureHostAgentHook(ctx, agent, action)
 }
 
+func (r *Runner) HostAgentHookStatus(ctx context.Context, c Client, agent string) (protocol.HostAgentHookStatus, error) {
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return protocol.HostAgentHookStatus{}, err
+	}
+	return client.HostAgentHookStatus(ctx, agent)
+}
+
 type commandStream struct {
 	reader  io.ReadCloser
 	writer  io.WriteCloser

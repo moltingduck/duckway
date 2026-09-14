@@ -1060,6 +1060,10 @@ func (s *Server) handleSupervisorActivity(conn *net.UnixConn, codec *bridge.Code
 			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid supervisor activity category")
 			continue
 		}
+		if attention.Source != "" && (category == model.NotificationTerminalAttention || attention.Source != "codex" && attention.Source != "claude") {
+			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid agent hook callback source")
+			continue
+		}
 		if category != model.NotificationTerminalAttention && !hasCapability(negotiated.Capabilities, "agent_activity") {
 			writeSupervisorError(codec, request.ID, protocol.ErrIncompatible, "agent activity capability was not negotiated")
 			continue
@@ -1069,7 +1073,7 @@ func (s *Server) handleSupervisorActivity(conn *net.UnixConn, codec *bridge.Code
 				writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "agent activity requires an event id")
 				continue
 			}
-			sequence, advanced, err := s.state.RecordAgentActivity(context.Background(), identity.SessionID, category, identity.Generation, attention.EventID, attention.OutputOffset)
+			sequence, advanced, err := s.state.RecordAgentActivityWithSource(context.Background(), identity.SessionID, category, identity.Generation, attention.EventID, attention.OutputOffset, attention.Source)
 			if err != nil {
 				writeSupervisorError(codec, request.ID, protocol.ErrInternal, "could not record supervisor activity")
 				continue
@@ -1842,6 +1846,30 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "Ducklion instance does not match"}}
 	}
 	switch request.Type {
+	case "host.agent_hook_status":
+		if role != protocol.RoleDucklord || !hasCapability(capabilities, "host_config") || request.InstanceID != string(s.instanceID) || request.SessionID != "" {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotOwner, Message: "Ducklord Host access is required"}}
+		}
+		var query struct {
+			Agent string `json:"agent"`
+		}
+		if err := decodeStrict(request.Body, &query); err != nil || query.Agent != "codex" && query.Agent != "claude" {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid Host agent hook status query"}}
+		}
+		installed, err := agentHookInstalled(query.Agent)
+		if err != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect Host agent hooks"}}
+		}
+		callback, observed, err := s.state.LastHookCallback(context.Background(), query.Agent)
+		if err != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect Host hook callbacks"}}
+		}
+		status := protocol.HostAgentHookStatus{Agent: query.Agent, Installed: installed, CallbackObserved: observed}
+		if observed {
+			status.CallbackSessionID, status.CallbackGeneration, status.CallbackUpdatedAtMS = string(callback.SessionID), callback.RuntimeGeneration, callback.UpdatedAtMS
+		}
+		body, _ := json.Marshal(status)
+		return protocol.Response{ID: request.ID, Result: body}
 	case "host.agent_hook_config":
 		if role != protocol.RoleDucklord || !hasCapability(capabilities, "host_config") || request.InstanceID != string(s.instanceID) || request.SessionID != "" {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotOwner, Message: "Ducklord Host control is required"}}

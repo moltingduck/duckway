@@ -116,6 +116,48 @@ func TestRecordActivityIsDurableCoalescedAndRevisioned(t *testing.T) {
 	}
 }
 
+func TestHookCallbackProjectionIsFencedAndSourceSpecific(t *testing.T) {
+	database, session := openActivityTestStore(t)
+	ctx := context.Background()
+	if _, found, err := database.LastHookCallback(ctx, "codex"); err != nil || found {
+		t.Fatalf("callback existed before event: found=%t err=%v", found, err)
+	}
+	if sequence, advanced, err := database.RecordAgentActivityWithSource(ctx, session.ID, model.NotificationTaskCompleted, 2, 1, 0, "codex"); err != nil || !advanced || sequence != 1 {
+		t.Fatalf("first source callback: sequence=%d advanced=%t err=%v", sequence, advanced, err)
+	}
+	first, found, err := database.LastHookCallback(ctx, "codex")
+	if err != nil || !found || first.SessionID != session.ID || first.RuntimeGeneration != 2 || first.LastEventID != 1 {
+		t.Fatalf("missing durable Codex callback: %+v found=%t err=%v", first, found, err)
+	}
+	if _, advanced, err := database.RecordAgentActivityWithSource(ctx, session.ID, model.NotificationTaskFailed, 2, 1, 0, "claude"); err != nil || advanced {
+		t.Fatalf("duplicate event changed category/source: advanced=%t err=%v", advanced, err)
+	}
+	if _, found, err := database.LastHookCallback(ctx, "claude"); err != nil || found {
+		t.Fatalf("duplicate event was attributed to Claude: found=%t err=%v", found, err)
+	}
+	if _, advanced, err := database.RecordAgentActivityWithSource(ctx, session.ID, model.NotificationTaskFailed, 2, 2, 0, "claude"); err != nil || !advanced {
+		t.Fatalf("distinct Claude event not recorded: advanced=%t err=%v", advanced, err)
+	}
+	if callback, found, err := database.LastHookCallback(ctx, "claude"); err != nil || !found || callback.LastEventID != 2 {
+		t.Fatalf("missing Claude callback: %+v found=%t err=%v", callback, found, err)
+	}
+	if _, _, err := database.RecordAgentActivityWithSource(ctx, session.ID, model.NotificationTaskCompleted, 2, 3, 0, "unknown"); err == nil {
+		t.Fatal("unknown callback source was accepted")
+	}
+	path := database.path
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if callback, found, err := reopened.LastHookCallback(ctx, "codex"); err != nil || !found || callback.LastEventID != 1 {
+		t.Fatalf("Codex callback did not survive Ducklion restart: %+v found=%t err=%v", callback, found, err)
+	}
+}
+
 func TestRecordAgentActivityUsesEventIdentityInsteadOfOutputOffset(t *testing.T) {
 	database, session := openActivityTestStore(t)
 	sequence, advanced, err := database.RecordAgentActivity(context.Background(), session.ID, model.NotificationTaskCompleted, 2, 1, 0)

@@ -174,6 +174,36 @@ func TestHostAgentHookConfigRejectsUnauthorizedAndMalformedRequests(t *testing.T
 	}
 }
 
+func TestHostAgentHookStatusRejectsUnauthorizedAndMalformedRequests(t *testing.T) {
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	request := protocol.Request{ID: uuid.NewString(), Type: "host.agent_hook_status", InstanceID: string(server.instanceID), Body: []byte(`{"agent":"codex"}`)}
+	for _, test := range []struct {
+		name         string
+		request      protocol.Request
+		capabilities []string
+		role         protocol.PeerRole
+		want         protocol.ErrorCode
+	}{
+		{"observer", request, nil, protocol.RoleDucklord, protocol.ErrNotOwner},
+		{"cc", request, []string{"host_config"}, protocol.RoleDuckwayCC, protocol.ErrNotOwner},
+		{"wrong instance", protocol.Request{ID: request.ID, Type: request.Type, InstanceID: "wrong", Body: request.Body}, []string{"host_config"}, protocol.RoleDucklord, protocol.ErrNotFound},
+		{"session scoped", protocol.Request{ID: request.ID, Type: request.Type, InstanceID: request.InstanceID, SessionID: "ABC123", Body: request.Body}, []string{"host_config"}, protocol.RoleDucklord, protocol.ErrNotOwner},
+		{"unknown source", protocol.Request{ID: request.ID, Type: request.Type, InstanceID: request.InstanceID, Body: []byte(`{"agent":"other"}`)}, []string{"host_config"}, protocol.RoleDucklord, protocol.ErrInvalidArgument},
+		{"unknown field", protocol.Request{ID: request.ID, Type: request.Type, InstanceID: request.InstanceID, Body: []byte(`{"agent":"codex","path":"/tmp"}`)}, []string{"host_config"}, protocol.RoleDucklord, protocol.ErrInvalidArgument},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := server.route(test.request, test.capabilities, test.role, "test")
+			if response.Error == nil || response.Error.Code != test.want {
+				t.Fatalf("status response=%+v want=%s", response, test.want)
+			}
+		})
+	}
+}
+
 func TestHostAgentHookConfigControlRoundTrip(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -201,9 +231,18 @@ func TestHostAgentHookConfigControlRoundTrip(t *testing.T) {
 	if _, err := observer.ConfigureHostAgentHook(context.Background(), "codex", "install"); err == nil {
 		t.Fatal("observer should not have Host configuration capability")
 	}
+	if _, err := observer.HostAgentHookStatus(context.Background(), "codex"); err == nil {
+		t.Fatal("observer should not read Host hook status")
+	}
+	if status, err := control.HostAgentHookStatus(context.Background(), "codex"); err != nil || status.Installed || status.CallbackObserved {
+		t.Fatalf("initial hook status=%+v err=%v", status, err)
+	}
 	result, err := control.ConfigureHostAgentHook(context.Background(), "codex", "install")
 	if err != nil || !result.Installed || !result.Changed || result.Activation != "pending" {
 		t.Fatalf("install result=%+v err=%v", result, err)
+	}
+	if status, err := control.HostAgentHookStatus(context.Background(), "codex"); err != nil || !status.Installed || status.CallbackObserved {
+		t.Fatalf("installed hook status=%+v err=%v", status, err)
 	}
 	result, err = control.ConfigureHostAgentHook(context.Background(), "codex", "install")
 	if err != nil || !result.Installed || result.Changed {
@@ -212,5 +251,8 @@ func TestHostAgentHookConfigControlRoundTrip(t *testing.T) {
 	result, err = control.ConfigureHostAgentHook(context.Background(), "codex", "remove")
 	if err != nil || result.Installed || !result.Changed {
 		t.Fatalf("remove result=%+v err=%v", result, err)
+	}
+	if status, err := control.HostAgentHookStatus(context.Background(), "codex"); err != nil || status.Installed {
+		t.Fatalf("removed hook status=%+v err=%v", status, err)
 	}
 }

@@ -83,6 +83,7 @@ type SupervisorActivity struct {
 	OutputOffset uint64                     `json:"output_offset"`
 	Category     model.NotificationCategory `json:"category,omitempty"`
 	EventID      uint64                     `json:"event_id,omitempty"`
+	Source       string                     `json:"source,omitempty"`
 }
 
 type SupervisorTerminalAttention = SupervisorActivity

@@ -109,6 +109,7 @@ type pendingAgentActivity struct {
 	category model.NotificationCategory
 	offset   uint64
 	eventID  uint64
+	source   string
 }
 
 const (
@@ -120,8 +121,9 @@ const (
 )
 
 type agentHookEnvelope struct {
-	Token string                        `json:"token"`
-	Event protocol.SupervisorAgentEvent `json:"event"`
+	Token  string                        `json:"token"`
+	Source string                        `json:"source,omitempty"`
+	Event  protocol.SupervisorAgentEvent `json:"event"`
 }
 
 func Start(options Options) (*Session, error) {
@@ -380,18 +382,23 @@ func (s *Session) AgentEventNotify() <-chan struct{} { return s.agentEventNotify
 func (s *Session) AttentionNotify() <-chan struct{} { return s.attentionNotify }
 
 func (s *Session) PendingActivity() (model.NotificationCategory, uint64, uint64, bool) {
+	category, offset, eventID, _, pending := s.PendingActivityWithSource()
+	return category, offset, eventID, pending
+}
+
+func (s *Session) PendingActivityWithSource() (model.NotificationCategory, uint64, uint64, string, bool) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	if len(s.agentActivities) != 0 {
 		activity := s.agentActivities[0]
-		return activity.category, activity.offset, activity.eventID, true
+		return activity.category, activity.offset, activity.eventID, activity.source, true
 	}
 	for _, category := range []model.NotificationCategory{model.NotificationTaskFailed, model.NotificationTaskCompleted, model.NotificationTerminalAttention} {
 		if offset := s.attentionPending[category]; offset > s.attentionAcked[category] {
-			return category, offset, 0, true
+			return category, offset, 0, "", true
 		}
 	}
-	return "", 0, 0, false
+	return "", 0, 0, "", false
 }
 
 func (s *Session) AckActivity(category model.NotificationCategory, offset, eventID uint64) {
@@ -676,10 +683,10 @@ func (s *Session) handleAgentHook(conn *net.UnixConn) {
 	decoder.DisallowUnknownFields()
 	var envelope agentHookEnvelope
 	err := decoder.Decode(&envelope)
-	if err == nil && s.shellFirstHooks && envelope.Token == "" && shellHookPeerIsDescendant(conn, s.rootProcessID, s.rootProcessStart) {
+	if err == nil && s.shellFirstHooks && envelope.Token == "" && (envelope.Source == "codex" || envelope.Source == "claude") && shellHookPeerIsDescendant(conn, s.rootProcessID, s.rootProcessStart) {
 		envelope.Event.Response = ""
 		envelope.Event.Summary = ""
-		err = s.acceptAgentHook(envelope.Event)
+		err = s.acceptAgentHookWithSource(envelope.Event, envelope.Source)
 	} else if err == nil && !s.shellFirstHooks && subtle.ConstantTimeCompare([]byte(envelope.Token), []byte(s.agentHookToken)) == 1 {
 		err = s.acceptAgentHook(envelope.Event)
 	} else if err == nil {
@@ -706,6 +713,10 @@ func (s *Session) captureLegacyAgentEvents(reader *os.File) {
 }
 
 func (s *Session) acceptAgentHook(event protocol.SupervisorAgentEvent) error {
+	return s.acceptAgentHookWithSource(event, "")
+}
+
+func (s *Session) acceptAgentHookWithSource(event protocol.SupervisorAgentEvent, source string) error {
 	s.mu.Lock()
 	event.TaskID = s.activeAgentTask
 	s.mu.Unlock()
@@ -719,7 +730,7 @@ func (s *Session) acceptAgentHook(event protocol.SupervisorAgentEvent) error {
 		if event.Kind == "failed" {
 			category = model.NotificationTaskFailed
 		}
-		return s.markActivityAtCurrentOutput(category)
+		return s.markActivityAtCurrentOutputSource(category, source)
 	}
 	s.agentMu.Lock()
 	events := s.agentEvents[event.TaskID]
@@ -741,6 +752,10 @@ func (s *Session) acceptAgentHook(event protocol.SupervisorAgentEvent) error {
 }
 
 func (s *Session) markActivityAtCurrentOutput(category model.NotificationCategory) error {
+	return s.markActivityAtCurrentOutputSource(category, "")
+}
+
+func (s *Session) markActivityAtCurrentOutputSource(category model.NotificationCategory, source string) error {
 	// The hook subprocess can win a scheduler race against the goroutine that
 	// drains the agent's final PTY write. Briefly wait for the PTY kernel queue
 	// to empty, then take captureMu. Continuous output must not block hook
@@ -762,7 +777,7 @@ func (s *Session) markActivityAtCurrentOutput(category model.NotificationCategor
 		return fmt.Errorf("agent activity retention capacity reached")
 	}
 	s.nextActivityID++
-	s.agentActivities = append(s.agentActivities, pendingAgentActivity{category: category, offset: offset, eventID: s.nextActivityID})
+	s.agentActivities = append(s.agentActivities, pendingAgentActivity{category: category, offset: offset, eventID: s.nextActivityID, source: source})
 	s.attentionMu.Unlock()
 	s.captureMu.Unlock()
 	select {

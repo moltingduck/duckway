@@ -29,7 +29,7 @@ func TestShellFirstHookDaemonEmitter(t *testing.T) {
 		os.Exit(4)
 	}
 	defer conn.Close()
-	_ = json.NewEncoder(conn).Encode(map[string]any{"event": map[string]string{"kind": "completed", "response": "must not escape"}})
+	_ = json.NewEncoder(conn).Encode(map[string]any{"source": "codex", "event": map[string]string{"kind": "completed", "response": "must not escape"}})
 	answer, _ := io.ReadAll(conn)
 	if string(answer) != "ok\n" {
 		os.Exit(5)
@@ -73,6 +73,13 @@ func TestShellFirstHookUpdatesDaemonActivityWithoutEndingShell(t *testing.T) {
 		if listErr == nil && len(sessions) == 1 && sessions[0].ActivitySequences[model.NotificationTaskCompleted] == 1 {
 			if sessions[0].Status != model.StatusRunning || sessions[0].RuntimeGeneration != created.RuntimeGeneration || sessions[0].TaskState != model.TaskIdle {
 				t.Fatalf("advisory hook changed shell lifecycle/task state: %+v", sessions[0])
+			}
+			callback, observed, err := server.state.LastHookCallback(context.Background(), "codex")
+			if err != nil || !observed || string(callback.SessionID) != created.SessionID || callback.RuntimeGeneration != created.RuntimeGeneration {
+				t.Fatalf("advisory source was not projected: %+v observed=%t err=%v", callback, observed, err)
+			}
+			if _, observed, err := server.state.LastHookCallback(context.Background(), "claude"); err != nil || observed {
+				t.Fatalf("Codex callback was attributed to Claude: observed=%t err=%v", observed, err)
 			}
 			return
 		}

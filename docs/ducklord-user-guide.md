@@ -59,6 +59,10 @@ does not change writer ownership or claim that a task completed. Exact agent
 completion/failure notifications require installed Host-side hooks. Install
 or remove those through `h` → agent notification hooks after reviewing the
 confirmation; Codex may also require trust approval in `/hooks`.
+The Host hook dialog shows configuration presence separately from the last
+observed callback. A callback is an advisory report from a process inside a
+Session; it is not proof of the agent binary's identity and never authorizes
+PTY control. A previous callback may remain visible after removing the hook.
 
 When the root shell exits, its Session and panes disappear from the live
 inventory. Ducklion retains recent PTY output separately for the configured

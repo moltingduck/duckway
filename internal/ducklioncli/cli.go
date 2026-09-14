@@ -386,9 +386,10 @@ func runAgentHook(input io.Reader, args []string) error {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(time.Second))
 	envelope := struct {
-		Token string                        `json:"token"`
-		Event protocol.SupervisorAgentEvent `json:"event"`
-	}{Token: token, Event: normalized}
+		Token  string                        `json:"token"`
+		Source string                        `json:"source"`
+		Event  protocol.SupervisorAgentEvent `json:"event"`
+	}{Token: token, Source: source, Event: normalized}
 	if err := json.NewEncoder(conn).Encode(envelope); err != nil {
 		return err
 	}

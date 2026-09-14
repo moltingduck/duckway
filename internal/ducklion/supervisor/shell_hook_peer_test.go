@@ -39,7 +39,17 @@ func TestShellFirstHookEmitter(t *testing.T) {
 		os.Exit(4)
 	}
 	defer conn.Close()
-	_ = json.NewEncoder(conn).Encode(agentHookEnvelope{Event: protocol.SupervisorAgentEvent{Kind: "completed", Response: "must not be retained"}})
+	missing, missingErr := net.DialTimeout("unix", os.Getenv("DUCKLION_AGENT_EVENT_SOCKET"), time.Second)
+	if missingErr != nil {
+		os.Exit(6)
+	}
+	_ = json.NewEncoder(missing).Encode(agentHookEnvelope{Event: protocol.SupervisorAgentEvent{Kind: "completed"}})
+	rejected, _ := io.ReadAll(missing)
+	_ = missing.Close()
+	if string(rejected) != "rejected\n" {
+		os.Exit(7)
+	}
+	_ = json.NewEncoder(conn).Encode(agentHookEnvelope{Source: "codex", Event: protocol.SupervisorAgentEvent{Kind: "completed", Response: "must not be retained"}})
 	response, _ := io.ReadAll(conn)
 	if string(response) != "ok\n" {
 		os.Exit(5)
@@ -60,7 +70,7 @@ func TestShellFirstHookIsAdvisoryAndRejectsForeignProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = json.NewEncoder(foreign).Encode(agentHookEnvelope{Event: protocol.SupervisorAgentEvent{Kind: "failed"}})
+	_ = json.NewEncoder(foreign).Encode(agentHookEnvelope{Source: "codex", Event: protocol.SupervisorAgentEvent{Kind: "failed"}})
 	answer, _ := io.ReadAll(foreign)
 	_ = foreign.Close()
 	if string(answer) != "rejected\n" {

@@ -263,6 +263,30 @@ func (c *Client) ConfigureHostAgentHook(ctx context.Context, agent, action strin
 	return result, nil
 }
 
+func (c *Client) HostAgentHookStatus(ctx context.Context, agent string) (protocol.HostAgentHookStatus, error) {
+	if !c.capabilities["host_config"] {
+		return protocol.HostAgentHookStatus{}, fmt.Errorf("host configuration capability was not negotiated")
+	}
+	if agent != "codex" && agent != "claude" {
+		return protocol.HostAgentHookStatus{}, fmt.Errorf("invalid agent hook status query")
+	}
+	body, _ := json.Marshal(struct {
+		Agent string `json:"agent"`
+	}{Agent: agent})
+	response, err := c.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "host.agent_hook_status", InstanceID: c.instanceID, Body: body})
+	if err != nil {
+		return protocol.HostAgentHookStatus{}, err
+	}
+	if response.Error != nil {
+		return protocol.HostAgentHookStatus{}, &RemoteError{Detail: *response.Error}
+	}
+	var status protocol.HostAgentHookStatus
+	if err := json.Unmarshal(response.Result, &status); err != nil || status.Agent != agent {
+		return protocol.HostAgentHookStatus{}, fmt.Errorf("invalid Host agent hook status")
+	}
+	return status, nil
+}
+
 func (c *Client) CallContext(ctx context.Context, request protocol.Request) (protocol.Response, error) {
 	if err := request.Validate(); err != nil {
 		return protocol.Response{}, err

@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 16
+const SchemaVersion = 17
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -249,6 +249,11 @@ func (s *SQLite) migrate(ctx context.Context) error {
 	if userVersion < 16 {
 		if err := migrateV16(ctx, tx); err != nil {
 			return fmt.Errorf("migrate ducklion schema to v16: %w", err)
+		}
+	}
+	if userVersion < 17 {
+		if err := migrateV17(ctx, tx); err != nil {
+			return fmt.Errorf("migrate ducklion schema to v17: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
@@ -520,6 +525,16 @@ func migrateV16(ctx context.Context, tx *sql.Tx) error {
 		exit_success INTEGER NOT NULL CHECK(exit_success IN (0,1)),
 		exit_reason TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY(session_id,runtime_generation))`)
+	return err
+}
+
+func migrateV17(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `CREATE TABLE host_hook_callbacks (
+		source TEXT PRIMARY KEY CHECK(source IN ('codex','claude')),
+		session_id TEXT NOT NULL CHECK(length(session_id)=6),
+		runtime_generation INTEGER NOT NULL CHECK(runtime_generation>0),
+		last_event_id INTEGER NOT NULL CHECK(last_event_id>0),
+		updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms>0))`)
 	return err
 }
 

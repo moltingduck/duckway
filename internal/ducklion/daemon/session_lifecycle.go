@@ -1785,7 +1785,7 @@ func forwardPendingAttention(ctx context.Context, client *SupervisorClient, sess
 		}
 	}()
 	for {
-		category, offset, eventID, pending := session.PendingActivity()
+		category, offset, eventID, source, pending := session.PendingActivityWithSource()
 		if pending {
 			if category != model.NotificationTerminalAttention && !client.SupportsAgentActivity() {
 				<-ctx.Done()
@@ -1818,7 +1818,7 @@ func forwardPendingAttention(ctx context.Context, client *SupervisorClient, sess
 				}
 			}
 			reportCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := activity.ReportActivity(reportCtx, category, offset, eventID)
+			err := activity.ReportActivityWithSource(reportCtx, category, offset, eventID, source)
 			cancel()
 			if err != nil {
 				_ = activity.Close()
@@ -1869,7 +1869,7 @@ func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec,
 			forwardErr := client.PublishSnapshot(replay)
 			if forwardErr == nil && client.SupportsAttention() {
 				for {
-					category, offset, eventID, pending := session.PendingActivity()
+					category, offset, eventID, source, pending := session.PendingActivityWithSource()
 					if !pending || forwardErr != nil {
 						break
 					}
@@ -1880,7 +1880,7 @@ func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec,
 					activity, activityErr := client.OpenActivity()
 					if activityErr == nil {
 						reportCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-						activityErr = activity.ReportActivity(reportCtx, category, offset, eventID)
+						activityErr = activity.ReportActivityWithSource(reportCtx, category, offset, eventID, source)
 						cancel()
 						_ = activity.Close()
 					}

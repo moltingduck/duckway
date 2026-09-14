@@ -51,6 +51,7 @@ type remoteRunner interface {
 	HostLogRetention(context.Context, ducklord.Client) (int, error)
 	SetHostLogRetention(context.Context, ducklord.Client, int) error
 	ConfigureHostAgentHook(context.Context, ducklord.Client, string, string) (protocol.HostAgentHookConfigResult, error)
+	HostAgentHookStatus(context.Context, ducklord.Client, string) (protocol.HostAgentHookStatus, error)
 	InstallDucklion(context.Context, ducklord.Client, string, string) (string, error)
 	Attach(ducklord.Client, string) error
 	AttachStream(context.Context, ducklord.Client, string) (*ducklord.AttachSession, error)
@@ -104,6 +105,13 @@ type hostHookEvent struct {
 	err                             error
 }
 
+type hostHookStatusEvent struct {
+	id, epoch        uint64
+	instanceID, host string
+	statuses         map[string]protocol.HostAgentHookStatus
+	err              error
+}
+
 func hostHookResultMessage(event hostHookEvent) string {
 	if !event.result.Changed {
 		return "Already in the requested state"
@@ -112,6 +120,24 @@ func hostHookResultMessage(event hostHookEvent) string {
 		return "Host hook removed; agent settings were preserved"
 	}
 	return "Host configuration updated; activation awaits a real agent callback"
+}
+
+func hostHookStatusLine(status protocol.HostAgentHookStatus) string {
+	if status.Agent != "codex" && status.Agent != "claude" {
+		return "  Hook status unavailable"
+	}
+	installed := "not installed"
+	if status.Installed {
+		installed = "installed"
+	}
+	callback := "no callback observed"
+	if status.CallbackObserved {
+		callback = "advisory callback observed"
+		if status.CallbackUpdatedAtMS > 0 {
+			callback += " " + time.UnixMilli(status.CallbackUpdatedAtMS).Local().Format("2006-01-02 15:04")
+		}
+	}
+	return "  " + strings.ToUpper(status.Agent[:1]) + status.Agent[1:] + ": " + installed + " · " + callback
 }
 
 type createDiscoveryEvent struct {
@@ -309,6 +335,30 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 			return err
 		}
 		return printProjects(out, projects)
+	case "hook-status":
+		cfg, rest, err := loadWithFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		if len(rest) != 2 || rest[1] != "codex" && rest[1] != "claude" {
+			return fmt.Errorf("usage: ducklord hook-status <client> <codex|claude> [--config <path>]")
+		}
+		client, err := mustClient(cfg, rest[0])
+		if err != nil {
+			return err
+		}
+		owner, err := ducklord.ResolveOwnerName(globalOwner, cfg.Name)
+		if err != nil {
+			return err
+		}
+		if ownerRunner, ok := runner.(interface{ SetOwner(string) }); ok {
+			ownerRunner.SetOwner(owner)
+		}
+		status, err := runner.HostAgentHookStatus(context.Background(), client, rest[1])
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(status)
 	case "agents":
 		cfg, rest, err := loadWithFlags(args[1:])
 		if err != nil {
@@ -1377,6 +1427,10 @@ type tuiState struct {
 	hostMenuReplaceDraft       bool
 	hostMenuRequestID          uint64
 	hostHookInFlight           map[string]uint64
+	hostHookStatuses           map[string]protocol.HostAgentHookStatus
+	hostHookStatusRequestID    uint64
+	hostHookStatusLoading      bool
+	hostHookStatusErr          string
 	hostHookAgent              string
 	hostHookAction             string
 	disconnectedHosts          map[string]bool
@@ -1602,7 +1656,38 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	startDone := make(chan startDoneEvent, 1)
 	hostRetentionDone := make(chan hostRetentionEvent, 1)
 	hostHookDone := make(chan hostHookEvent, 1)
+	hostHookStatusDone := make(chan hostHookStatusEvent, 1)
 	var hostRetentionCancel context.CancelFunc
+	launchHostHookStatus := func(target string) {
+		state.hostHookStatusRequestID++
+		requestID := state.hostHookStatusRequestID
+		state.hostHookStatusLoading = true
+		state.hostHookStatusErr = ""
+		state.hostHookStatuses = nil
+		client, ok := state.cfg.Client(target)
+		if !ok || state.disconnectedHosts[target] {
+			state.hostHookStatusLoading = false
+			state.hostHookStatusErr = "Host is disconnected or unavailable"
+			return
+		}
+		epoch, instanceID := watchedClients[target].epoch, state.hostSync[target].InstanceID
+		go func() {
+			readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			statuses := make(map[string]protocol.HostAgentHookStatus, 2)
+			var readErr error
+			for _, agent := range []string{"codex", "claude"} {
+				statuses[agent], readErr = runner.HostAgentHookStatus(readCtx, client, agent)
+				if readErr != nil {
+					break
+				}
+			}
+			select {
+			case hostHookStatusDone <- hostHookStatusEvent{id: requestID, epoch: epoch, instanceID: instanceID, host: target, statuses: statuses, err: readErr}:
+			case <-ctx.Done():
+			}
+		}()
+	}
 	createDone := make(chan createDiscoveryEvent, 1)
 	pathSuggestionsDone := make(chan pathSuggestionEvent, 1)
 	addClientDone := make(chan addClientDoneEvent, 1)
@@ -1935,6 +2020,20 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			} else {
 				state.hostMenuStep = "hook-done"
 				state.hostMenuErr = hostHookResultMessage(event)
+				launchHostHookStatus(event.host)
+			}
+			state.render(os.Stdout)
+		case event := <-hostHookStatusDone:
+			if event.id != state.hostHookStatusRequestID || !state.hostMenuMode || !strings.HasPrefix(state.hostMenuStep, "hook-") ||
+				event.host != state.hostMenuTarget || state.disconnectedHosts[event.host] || event.epoch != watchedClients[event.host].epoch ||
+				event.instanceID != state.hostSync[event.host].InstanceID {
+				continue
+			}
+			state.hostHookStatusLoading = false
+			if event.err != nil {
+				state.hostHookStatusErr = "Host hook status unavailable"
+			} else {
+				state.hostHookStatuses = event.statuses
 			}
 			state.render(os.Stdout)
 		case <-workspaceRepaint:
@@ -2800,6 +2899,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					connectTargets = state.changedHostMenuTargets(true)
 				}
 				switch action {
+				case "host-hooks-read":
+					launchHostHookStatus(target)
 				case "host-hook-save":
 					client, ok := state.cfg.Client(target)
 					if !ok || state.disconnectedHosts[target] {
@@ -5847,6 +5948,17 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 	}
 	if strings.HasPrefix(s.hostMenuStep, "hook-") {
 		lines := []modalRenderLine{{modalTitle, "  Agent notification hooks · " + displayField(s.hostMenuTarget)}}
+		if s.hostHookStatusLoading {
+			lines = append(lines, modalRenderLine{modalMuted, "  Reading Host hook status…"})
+		} else if s.hostHookStatusErr != "" {
+			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostHookStatusErr})
+		} else if len(s.hostHookStatuses) > 0 {
+			for _, agent := range []string{"codex", "claude"} {
+				if status, ok := s.hostHookStatuses[agent]; ok {
+					lines = append(lines, modalRenderLine{modalStatus, hostHookStatusLine(status)})
+				}
+			}
+		}
 		switch s.hostMenuStep {
 		case "hook-select":
 			choices := []string{"Install Codex Stop hook", "Remove Codex Stop hook", "Install Claude Stop hooks", "Remove Claude Stop hooks"}
@@ -6111,7 +6223,7 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 		if action == "host-hooks" {
 			s.hostMenuStep, s.hostMenuIndex = "hook-select", 0
 			s.hostMenuErr = ""
-			return ""
+			return "host-hooks-read"
 		}
 		return action
 	}
@@ -9245,6 +9357,7 @@ Usage:
   ducklord import-ssh-hosts [--ssh-config <ssh_config>] [--config <path>]
   ducklord sessions <client> [--config <path>]
   ducklord projects <client> [--config <path>]
+  ducklord hook-status <client> <codex|claude> [--config <path>]
   ducklord agents <client> <project-path> [--config <path>]
   ducklord probe <client> [--config <path>]
   ducklord install-ducklion <client> [--source <path>] [--dest <remote-path>] [--config <path>]

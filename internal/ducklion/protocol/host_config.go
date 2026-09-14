@@ -21,3 +21,15 @@ type HostAgentHookConfigResult struct {
 	BackupCreated bool   `json:"backup_created"`
 	Activation    string `json:"activation"`
 }
+
+// HostAgentHookStatus separates settings presence from advisory callbacks.
+// A callback's source is self-reported by a Session descendant, not proof of
+// the vendor process or a trusted agent installation.
+type HostAgentHookStatus struct {
+	Agent               string `json:"agent"`
+	Installed           bool   `json:"installed"`
+	CallbackObserved    bool   `json:"callback_observed"`
+	CallbackSessionID   string `json:"callback_session_id,omitempty"`
+	CallbackGeneration  uint64 `json:"callback_generation,omitempty"`
+	CallbackUpdatedAtMS int64  `json:"callback_updated_at_ms,omitempty"`
+}

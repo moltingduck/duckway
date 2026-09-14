@@ -52,10 +52,18 @@ func TestDucklordHostHookConfigContainerE2E(t *testing.T) {
 	} {
 		writePTY(t, terminal, "hjjj\r")
 		capture.waitCurrent(t, "Agent notification hooks", 10*time.Second)
+		waitE2E(t, 15*time.Second, func() bool {
+			return strings.Contains(capture.currentText(), strings.ToUpper(tc.agent[:1])+tc.agent[1:]+":")
+		}, func() string {
+			screen := capture.currentText()
+			return fmt.Sprintf("%s Host status missing (loading=%t unavailable=%t disconnected=%t); screen suppressed", tc.agent,
+				strings.Contains(screen, "Reading Host hook status"), strings.Contains(screen, "Host hook status unavailable"), strings.Contains(screen, "Host is disconnected"))
+		})
 		writePTY(t, terminal, tc.selectKeys+"\r")
 		capture.waitCurrent(t, "Edit: ~", 10*time.Second)
 		writePTY(t, terminal, "\r")
 		capture.waitCurrent(t, "Host configuration updated", 20*time.Second)
+		capture.waitCurrent(t, strings.ToUpper(tc.agent[:1])+tc.agent[1:]+": installed ·", 15*time.Second)
 		out, err := exec.Command(runtime, "exec", "-u", "duck", "ducklion-client-a", "cat", tc.path).CombinedOutput()
 		if err != nil || !strings.Contains(string(out), tc.marker) {
 			t.Fatalf("%s hook was not installed: %v", tc.agent, err)
@@ -71,6 +79,7 @@ func TestDucklordHostHookConfigContainerE2E(t *testing.T) {
 		capture.waitCurrent(t, "Edit: ~", 10*time.Second)
 		writePTY(t, terminal, "\r")
 		capture.waitCurrent(t, "Host hook removed", 20*time.Second)
+		capture.waitCurrent(t, strings.ToUpper(tc.agent[:1])+tc.agent[1:]+": not installed ·", 15*time.Second)
 		out, err = exec.Command(runtime, "exec", "-u", "duck", "ducklion-client-a", "cat", tc.path).CombinedOutput()
 		if err != nil || strings.Contains(string(out), tc.marker) {
 			t.Fatalf("%s hook was not removed cleanly: %v", tc.agent, err)

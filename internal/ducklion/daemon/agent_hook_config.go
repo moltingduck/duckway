@@ -35,6 +35,69 @@ func configureAgentHook(agent, action string) (protocol.HostAgentHookConfigResul
 	return configureAgentHookInHome(home, executable, agent, action)
 }
 
+func agentHookInstalled(agent string) (bool, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false, err
+	}
+	return agentHookInstalledInHome(home, agent)
+}
+
+func agentHookInstalledInHome(home, agent string) (bool, error) {
+	agentHookSettingsMu.Lock()
+	defer agentHookSettingsMu.Unlock()
+	var relative string
+	var events []string
+	switch agent {
+	case "codex":
+		relative, events = filepath.Join(".codex", "hooks.json"), []string{"Stop"}
+	case "claude":
+		relative, events = filepath.Join(".claude", "settings.json"), []string{"Stop", "StopFailure"}
+	default:
+		return false, errors.New("invalid agent type")
+	}
+	dir := filepath.Join(home, filepath.Dir(relative))
+	if _, err := os.Lstat(dir); os.IsNotExist(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	dirfd, err := openPrivateSettingsDir(dir)
+	if err != nil {
+		return false, err
+	}
+	defer unix.Close(dirfd)
+	data, info, err := readPrivateSettingsAt(dirfd, filepath.Base(relative))
+	if err != nil || info == nil {
+		return false, err
+	}
+	var document map[string]json.RawMessage
+	if json.Unmarshal(data, &document) != nil {
+		return false, errors.New("invalid agent settings JSON object")
+	}
+	var hooks map[string]json.RawMessage
+	if len(document["hooks"]) == 0 {
+		return false, nil
+	}
+	if json.Unmarshal(document["hooks"], &hooks) != nil {
+		return false, errors.New("invalid agent hooks JSON object")
+	}
+	for _, event := range events {
+		var groups []json.RawMessage
+		if json.Unmarshal(hooks[event], &groups) != nil {
+			return false, nil
+		}
+		found := false
+		for _, group := range groups {
+			found = found || isOwnedHookGroup(group, agent)
+		}
+		if !found {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // configureAgentHook edits only Ducklion's own hook entries. home and executable
 // must be supplied by the daemon, never by the remote caller.
 func configureAgentHookInHome(home, executable, agent, action string) (protocol.HostAgentHookConfigResult, error) {
