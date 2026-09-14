@@ -194,12 +194,16 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	}
 }
 
-func killNamedContainerTUI(runtime, controller, owner string) {
+func killNamedContainerTUI(runtime, controller, owner string, configPaths ...string) {
 	listing, err := exec.Command(runtime, "exec", controller, "ps", "-eo", "pid=,args=").Output()
 	if err != nil {
 		return
 	}
-	want := "ducklord tui --name " + owner + " --config /root/.ducklord/config.yaml"
+	configPath := "/root/.ducklord/config.yaml"
+	if len(configPaths) > 0 {
+		configPath = configPaths[0]
+	}
+	want := "ducklord tui --name " + owner + " --config " + configPath
 	for _, line := range strings.Split(string(listing), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 7 || strings.Join(fields[1:], " ") != want {
