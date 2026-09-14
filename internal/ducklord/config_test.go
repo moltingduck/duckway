@@ -112,6 +112,77 @@ func TestSaveConfigWritesYAMLAndMode(t *testing.T) {
 	}
 }
 
+func TestSaveConfigIfUnchangedRejectsStaleWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	base := &Config{Name: "desk", Clients: []Client{}}
+	if err := SaveConfig(path, base); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer := &Config{Name: "newer", Clients: []Client{}}
+	if err := SaveConfigIfUnchanged(path, newer, expected); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveConfigIfUnchanged(path, base, expected); err == nil {
+		t.Fatal("stale writer was accepted")
+	}
+	saved, err := LoadConfig(path)
+	if err != nil || saved.Name != "newer" {
+		t.Fatalf("saved=%+v err=%v", saved, err)
+	}
+}
+
+func TestNewNotificationShortcutPreservesExistingUserBinding(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := &Config{Shortcuts: map[string]string{"host_actions": "O"}, Clients: []Client{}}
+	if err := SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Shortcut("host_actions") != "O" || loaded.Shortcut("notification_settings") != "ctrl-o" {
+		t.Fatalf("existing shortcut lost: host=%q notification=%q", loaded.Shortcut("host_actions"), loaded.Shortcut("notification_settings"))
+	}
+}
+
+func TestSaveConfigRejectsUnsafePaths(t *testing.T) {
+	dir := t.TempDir()
+	config := &Config{Clients: []Client{}}
+	other := filepath.Join(dir, "other.yaml")
+	if err := os.WriteFile(other, []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "linked.yaml")
+	if err := os.Symlink(other, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveConfig(link, config); err == nil {
+		t.Fatal("config symlink accepted")
+	}
+	linkedDir := filepath.Join(dir, "linked-dir")
+	if err := os.Symlink(dir, linkedDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveConfig(filepath.Join(linkedDir, "config.yaml"), config); err == nil {
+		t.Fatal("directory symlink accepted")
+	}
+	unsafeDir := filepath.Join(dir, "unsafe")
+	if err := os.Mkdir(unsafeDir, 0777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unsafeDir, 0777); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveConfig(filepath.Join(unsafeDir, "config.yaml"), config); err == nil {
+		t.Fatal("world-writable directory accepted")
+	}
+}
+
 func TestConfigPromoteUnreadDefaultAndClone(t *testing.T) {
 	if !(&Config{}).PromoteUnread() {
 		t.Fatal("unread promotion should default on")

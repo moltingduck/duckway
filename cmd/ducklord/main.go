@@ -1265,6 +1265,16 @@ type tuiState struct {
 	shortcutLine               string
 	shortcutErr                string
 	shortcutDraft              *ducklord.Config
+	notificationConfigMode     bool
+	notificationConfigStep     string
+	notificationConfigScope    string
+	notificationConfigHost     string
+	notificationConfigIndex    int
+	notificationConfigChoice   int
+	notificationConfigPath     string
+	notificationConfigErr      string
+	notificationConfigDraft    *ducklord.Config
+	notificationConfigBase     []byte
 	hostMenuMode               bool
 	hostMenuStep               string
 	hostMenuTarget             string
@@ -2514,6 +2524,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.closeWorkspacePane()
 				case state.shortcutMode:
 					state.shortcutMode = false
+				case state.notificationConfigMode:
+					state.closeNotificationConfig()
 				case state.searchMode:
 					state.closeSearch()
 				case state.helpMode:
@@ -2664,6 +2676,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			if state.notificationConfigMode {
+				if state.handleNotificationConfigInput(b) == "restart-tui" {
+					return errRestartTUI
+				}
+				state.render(os.Stdout)
+				continue
+			}
 			if state.hostMenuMode {
 				action := state.handleHostMenuInput(b)
 				target := state.hostMenuTarget
@@ -2757,6 +2776,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						case <-ctx.Done():
 						}
 					}()
+				case "host-notification-settings":
+					state.hostMenuMode = false
+					state.beginNotificationConfig("host", target)
 				case "host-add":
 					state.hostMenuMode = false
 					state.beginAddClient()
@@ -3184,6 +3206,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 			case "shortcut-settings":
 				state.beginShortcutSettings()
+			case "notification-settings":
+				state.beginNotificationConfig("global", "")
 			case "host-actions":
 				state.beginHostMenu()
 			case "refresh":
@@ -5054,6 +5078,7 @@ func (s *tuiState) render(out io.Writer) {
 		s.renderRemoveClientModal(out, width, modalHeight)
 		s.renderHelpModal(out, width, modalHeight)
 		s.renderShortcutModal(out, width, modalHeight)
+		s.renderNotificationConfigModal(out, width, modalHeight)
 		s.renderHostModal(out, width, modalHeight)
 		s.renderGroupModal(out, width, modalHeight)
 		s.renderNotificationModal(out, width, modalHeight)
@@ -5173,6 +5198,7 @@ func (s *tuiState) render(out io.Writer) {
 	s.renderRemoveClientModal(out, width, modalHeight)
 	s.renderHelpModal(out, width, modalHeight)
 	s.renderShortcutModal(out, width, modalHeight)
+	s.renderNotificationConfigModal(out, width, modalHeight)
 	s.renderHostModal(out, width, modalHeight)
 	s.renderGroupModal(out, width, modalHeight)
 	s.renderNotificationModal(out, width, modalHeight)
@@ -5394,7 +5420,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		{"DETAILED SESSION LIST", "detail_list", "Open / close detailed list"}, {"", "detail_search", "Search name, Host, or Project"}, {"", "detail_filter", "Cycle state filter"}, {"", "detail_jump", "Jump to selected Session's Project"},
 		{"TERMINAL AREA", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return to navigation pane"},
 		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
-		{"", "shortcut_settings", "Configure shortcuts"},
+		{"", "shortcut_settings", "Configure shortcuts"}, {"", "notification_settings", "Global notification settings"},
 	}
 	if s.workspacePreview {
 		entries[0] = helpEntry{"SESSION LIST PANE", "list_search", "Search sessions"}
@@ -5415,7 +5441,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		categoryEntries = nil
 	}
 	for _, entry := range entries {
-		if s.hostScoped && (entry.action == "host_add" || entry.action == "host_remove" || entry.action == "session_create" || entry.action == "shortcut_settings") {
+		if s.hostScoped && (entry.action == "host_add" || entry.action == "host_remove" || entry.action == "session_create" || entry.action == "shortcut_settings" || entry.action == "notification_settings") {
 			continue
 		}
 		if entry.category != "" {
@@ -5592,7 +5618,7 @@ func (s *tuiState) handleShortcutInput(input []byte) string {
 	return ""
 }
 
-var hostActions = []string{"Connections", "Reconnect", "PTY log retention", "Agent notification hooks", "Add host", "Remove host"}
+var hostActions = []string{"Connections", "Reconnect", "PTY log retention", "Agent notification hooks", "Notification defaults", "Add host", "Remove host"}
 
 func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 	if !s.hostMenuMode {
@@ -5857,8 +5883,8 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 	case "k", "\x1b[A":
 		s.hostMenuIndex = max(0, s.hostMenuIndex-1)
 	case "\r", "\n":
-		action := []string{"host-connections", "host-reconnect", "host-retention-read", "host-hooks", "host-add", "host-remove"}[s.hostMenuIndex]
-		if s.hostScoped && (action == "host-add" || action == "host-remove") {
+		action := []string{"host-connections", "host-reconnect", "host-retention-read", "host-hooks", "host-notification-settings", "host-add", "host-remove"}[s.hostMenuIndex]
+		if s.hostScoped && (action == "host-add" || action == "host-remove" || action == "host-notification-settings") {
 			s.outputErr = "host configuration changes are unavailable in host-scoped mode"
 			return ""
 		}
@@ -6970,6 +6996,8 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "help"
 	case s.shortcut("shortcut_settings", text) && !s.hostScoped:
 		return "shortcut-settings"
+	case s.shortcut("notification_settings", text) && !s.hostScoped:
+		return "notification-settings"
 	case s.shortcut("host_actions", text):
 		return "host-actions"
 	case s.selectedGroupID != "" && (s.sessionShortcut(text) || s.shortcut("list_reorder_up", text) || s.shortcut("list_reorder_down", text)):
@@ -8355,7 +8383,7 @@ func (s *tuiState) centralModalOpen() bool {
 }
 
 func (s *tuiState) blockingModalOpen() bool {
-	return s.workspacePaneMode || s.shortcutMode || s.hostMenuMode || s.searchMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.lifecycleConfirm != ""
+	return s.workspacePaneMode || s.shortcutMode || s.notificationConfigMode || s.hostMenuMode || s.searchMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.lifecycleConfirm != ""
 }
 
 func (s *tuiState) syncCreateSelectionToInput() {

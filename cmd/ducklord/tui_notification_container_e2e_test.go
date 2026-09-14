@@ -75,6 +75,26 @@ func TestDucklordLocalNotificationContainerE2E(t *testing.T) {
 	capture := newSizedTUICapture(terminal, 28, 130)
 	capture.waitCurrent(t, "PROJECTS", 20*time.Second)
 	capture.waitCurrent(t, "notify-e2e", 20*time.Second)
+	writePTY(t, terminal, "\x1d") // Leave any focused PTY before opening a global modal.
+	writePTY(t, terminal, "O")    // Global notification settings.
+	capture.waitCurrent(t, "Global notification settings", 10*time.Second)
+	writePTY(t, terminal, "s")
+	capture.waitCurrent(t, "Restart Ducklord TUI to load settings?", 10*time.Second)
+	writePTY(t, terminal, "n") // Explicitly defer restart without Esc-chord ambiguity.
+	capture.waitCurrent(t, "PROJECTS", 10*time.Second)
+	writePTY(t, terminal, "h")
+	capture.waitCurrent(t, "Host actions", 10*time.Second)
+	writePTY(t, terminal, "jjjj\r") // Host actions → Notification defaults.
+	capture.waitCurrent(t, "Host notification defaults", 10*time.Second)
+	writePTY(t, terminal, "j")      // task failed
+	writePTY(t, terminal, "\rjj\r") // inherit → indicator
+	writePTY(t, terminal, "s")
+	capture.waitCurrent(t, "Restart Ducklord TUI to load settings?", 10*time.Second)
+	writePTY(t, terminal, "n")
+	configAfter, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/config.yaml").Output()
+	if err != nil || !strings.Contains(string(configAfter), "task_failed: indicator") {
+		t.Fatalf("Host notification override was not persisted: %v: %s", err, configAfter)
+	}
 	marker := "private-agent-answer-" + stamp
 	hook := fmt.Sprintf("ducklion __ducklion_agent_hook_v1 codex '{\"type\":\"agent-turn-complete\",\"last-assistant-message\":\"%s\"}'", marker)
 	if output, err := exec.Command(runtime, "exec", controller, "ducklord", "send", "client-a", handle, hook,

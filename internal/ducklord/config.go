@@ -1,12 +1,14 @@
 package ducklord
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"unicode"
 
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
@@ -101,6 +103,19 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func SaveConfig(path string, cfg *Config) error {
+	return saveConfig(path, cfg, nil)
+}
+
+// SaveConfigIfUnchanged prevents a settings editor from overwriting another
+// Ducklord process's changes between its read and write.
+func SaveConfigIfUnchanged(path string, cfg *Config, expected []byte) error {
+	if expected == nil {
+		return fmt.Errorf("expected config contents are required")
+	}
+	return saveConfig(path, cfg, expected)
+}
+
+func saveConfig(path string, cfg *Config, expected []byte) error {
 	if strings.TrimSpace(path) == "" {
 		path = DefaultConfigPath()
 	}
@@ -129,6 +144,39 @@ func SaveConfig(path string, cfg *Config) error {
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
+	}
+	if err := validateConfigSavePath(path); err != nil {
+		return err
+	}
+	lockPath := filepath.Join(filepath.Dir(path), ".config.lock")
+	lockFD, err := syscall.Open(lockPath, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	if err != nil {
+		return err
+	}
+	lock := os.NewFile(uintptr(lockFD), lockPath)
+	defer lock.Close()
+	lockInfo, err := lock.Stat()
+	if err != nil || !lockInfo.Mode().IsRegular() {
+		return fmt.Errorf("ducklord config lock must be a regular file")
+	}
+	if stat, ok := lockInfo.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != os.Getuid() {
+		return fmt.Errorf("ducklord config lock must be owned by the current user")
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	if err := validateConfigSavePath(path); err != nil {
+		return err
+	}
+	if expected != nil {
+		current, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(current, expected) {
+			return fmt.Errorf("ducklord config changed on disk; close and reopen settings")
+		}
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml")
 	if err != nil {
@@ -160,6 +208,37 @@ func SaveConfig(path string, cfg *Config) error {
 	}
 	defer dir.Close()
 	return dir.Sync()
+}
+
+func validateConfigSavePath(path string) error {
+	dir := filepath.Dir(path)
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("ducklord config directory must be a real directory")
+	}
+	if info.Mode().Perm()&0022 != 0 {
+		return fmt.Errorf("ducklord config directory must not be writable by group or others")
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != os.Getuid() {
+		return fmt.Errorf("ducklord config directory must be owned by the current user")
+	}
+	info, err = os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("ducklord config must be a regular file")
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != os.Getuid() {
+		return fmt.Errorf("ducklord config must be owned by the current user")
+	}
+	return nil
 }
 
 func (c *Config) normalize() error {
@@ -197,6 +276,35 @@ func (c *Config) normalize() error {
 		}
 		c.Shortcuts[action] = canonicalShortcutBinding(binding)
 	}
+	// Older configs may already use the new default key for another action.
+	// Keep that user's binding and move only the newly introduced default.
+	if c.Shortcuts["notification_settings"] == "" {
+		used := make(map[string]bool, len(DefaultShortcuts))
+		for action, fallback := range DefaultShortcuts {
+			if action == "notification_settings" {
+				continue
+			}
+			binding := c.Shortcuts[action]
+			if binding == "" {
+				binding = fallback
+			}
+			used[binding] = true
+		}
+		if used[DefaultShortcuts["notification_settings"]] {
+			for _, alternate := range []string{"ctrl-o", "ctrl-p", "ctrl-u", "ctrl-b", "ctrl-g"} {
+				if !used[alternate] {
+					if c.Shortcuts == nil {
+						c.Shortcuts = make(map[string]string)
+					}
+					c.Shortcuts["notification_settings"] = alternate
+					break
+				}
+			}
+			if c.Shortcuts["notification_settings"] == "" {
+				return fmt.Errorf("no free shortcut for notification settings; assign notification_settings explicitly")
+			}
+		}
+	}
 	seen := make(map[string]string)
 	for action, fallback := range DefaultShortcuts {
 		binding := fallback
@@ -221,7 +329,7 @@ func contextualShortcutPair(a, b string) bool {
 }
 
 var DefaultShortcuts = map[string]string{
-	"help": "?", "quit": "q", "host_actions": "h", "host_add": "a", "host_remove": "d",
+	"help": "?", "quit": "q", "host_actions": "h", "host_add": "a", "host_remove": "d", "notification_settings": "O",
 	"session_create": "c", "session_actions": "m", "session_notifications": "n", "session_yield": "y", "session_yield_wait": "Y",
 	"session_end": "E", "session_restart": "R", "session_destroy": "X", "list_search": "/", "list_organize": "o", "list_groups": "g",
 	"list_reorder_up": "ctrl-k", "list_reorder_down": "ctrl-j", "pty_copy": "v", "pty_unfocus": "ctrl-]", "refresh": "r", "shortcut_settings": "S",

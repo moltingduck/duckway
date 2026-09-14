@@ -459,6 +459,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	s.renderRemoveClientModal(out, width, height)
 	s.renderHelpModal(out, width, height)
 	s.renderShortcutModal(out, width, height)
+	s.renderNotificationConfigModal(out, width, height)
 	s.renderHostModal(out, width, height)
 	s.renderGroupModal(out, width, height)
 	s.renderNotificationModal(out, width, height)
