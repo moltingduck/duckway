@@ -246,6 +246,23 @@ func (s *tuiState) deliverNotification(session ducklord.RemoteSession, category 
 	if !ok {
 		return
 	}
+	if class == ducklord.NotificationAttention {
+		key := sessionKey(session)
+		if identity, valid := ducklord.IdentityFromSession(session); valid {
+			key = identity.Key()
+		}
+		now := time.Now()
+		if s.notificationNow != nil {
+			now = s.notificationNow()
+		}
+		if now.Sub(s.attentionDeliveryAt[key]) < 2*time.Second {
+			return
+		}
+		if s.attentionDeliveryAt == nil {
+			s.attentionDeliveryAt = make(map[string]time.Time)
+		}
+		s.attentionDeliveryAt[key] = now
+	}
 	projectName := "Default Project"
 	if identity, valid := ducklord.IdentityFromSession(session); valid {
 		current := ""

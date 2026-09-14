@@ -113,6 +113,27 @@ func TestAttentionDeliveryCoalescesOnlyPerSession(t *testing.T) {
 	}
 }
 
+func TestAttentionBellIsCoalescedWithLocalDelivery(t *testing.T) {
+	state, _, session, _ := workspacePaneTestState(t)
+	now := time.Now()
+	state.notificationNow = func() time.Time { return now }
+	state.cfg.NotificationLevels = map[ducklord.NotificationClass]ducklord.NotificationLevel{
+		ducklord.NotificationAttention: ducklord.NotificationSound,
+	}
+	sink := &recordingNotificationSink{}
+	state.notificationSink = sink
+	state.deliverNotification(session, model.NotificationTerminalAttention)
+	state.deliverNotification(session, model.NotificationTerminalAttention)
+	if state.pendingBells != 1 || len(sink.got) != 1 {
+		t.Fatalf("attention burst generated duplicate bell/delivery: bells=%d events=%d", state.pendingBells, len(sink.got))
+	}
+	now = now.Add(2 * time.Second)
+	state.deliverNotification(session, model.NotificationTerminalAttention)
+	if state.pendingBells != 2 || len(sink.got) != 2 {
+		t.Fatalf("attention did not resume after window: bells=%d events=%d", state.pendingBells, len(sink.got))
+	}
+}
+
 func TestLocalNotificationQueueReportsOverflow(t *testing.T) {
 	sink := &localNotificationSink{queue: make(chan localNotification, 1), now: time.Now,
 		lastAttention: make(map[string]time.Time)}

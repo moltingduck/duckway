@@ -136,10 +136,15 @@ type pathSuggestionEvent struct {
 }
 
 type lifecycleDoneEvent struct {
-	operation protocol.SessionLifecycleOperation
-	client    string
-	result    protocol.SessionLifecycleResult
-	err       error
+	id              uint64
+	watchEpoch      uint64
+	connectionEpoch uint64
+	hostGeneration  uint64
+	hostInstance    string
+	operation       protocol.SessionLifecycleOperation
+	client          string
+	result          protocol.SessionLifecycleResult
+	err             error
 }
 
 type addClientDoneEvent struct {
@@ -1268,6 +1273,8 @@ type tuiState struct {
 	outputErr                  string
 	localWarning               string
 	notificationSink           notificationDelivery
+	attentionDeliveryAt        map[string]time.Time
+	notificationNow            func() time.Time
 	notificationObserved       map[string]map[model.NotificationCategory]uint64
 	pendingBells               uint8
 	resizeStatus               string
@@ -1368,6 +1375,7 @@ type tuiState struct {
 	listPaneWidth              int
 	autoHideList               bool
 	hostSync                   map[string]ducklord.SessionUpdate
+	hostConnectionEpoch        map[string]uint64
 	eventDriven                bool
 	notificationMode           bool
 	notificationIndex          int
@@ -1589,6 +1597,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	pathSuggestionsDone := make(chan pathSuggestionEvent, 1)
 	addClientDone := make(chan addClientDoneEvent, 1)
 	lifecycleDone := make(chan lifecycleDoneEvent, 1)
+	var lifecycleRequestID uint64
 	previewDone := make(chan previewOutputEvent, 1)
 	searchActivationTimeout := make(chan uint64, 1)
 	var previewID uint64
@@ -1952,6 +1961,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			if state.completeAddClient(result) {
+				state.bumpHostConnectionEpoch(result.client.Name)
 				delete(state.disconnectedHosts, result.client.Name)
 				watchAllClients()
 			}
@@ -2391,9 +2401,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			state.render(os.Stdout)
 		case result := <-lifecycleDone:
+			currentWatch := watchedClients[result.client]
+			if result.id != lifecycleRequestID {
+				continue
+			}
 			state.lifecycleBusy = false
-			if state.disconnectedHosts[result.client] {
-				state.outputErr = string(result.operation) + " result discarded because host is disconnected"
+			if !state.lifecycleResultCurrent(result, lifecycleRequestID, currentWatch.epoch) {
+				state.outputErr = string(result.operation) + " outcome unknown after Host connection changed; resync before retrying"
 				state.render(os.Stdout)
 				continue
 			}
@@ -2884,6 +2898,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 							delete(watchedClients, target)
 						}
 						previous := state.hostSync[target]
+						state.bumpHostConnectionEpoch(target)
 						state.disconnectedHosts[target] = true
 						if state.newSessionMode && state.newSessionClient == target {
 							state.cancelCreateDiscovery()
@@ -2932,6 +2947,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					}
 					if action == "host-apply-connections" {
 						for _, target := range connectTargets {
+							state.bumpHostConnectionEpoch(target)
 							delete(state.disconnectedHosts, target)
 							state.hostSync[target] = ducklord.SessionUpdate{Client: target, State: "connecting"}
 							if client, ok := state.cfg.Client(target); ok {
@@ -2949,6 +2965,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						if !state.disconnectedHosts[target] {
 							continue
 						}
+						state.bumpHostConnectionEpoch(target)
 						delete(state.disconnectedHosts, target)
 						state.hostSync[target] = ducklord.SessionUpdate{Client: target, State: "connecting"}
 						if client, ok := state.cfg.Client(target); ok {
@@ -3001,6 +3018,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 							delete(watchedClients, name)
 						}
 						state.disconnectedHosts[name] = true
+						state.bumpHostConnectionEpoch(name)
 						if outputManager != nil {
 							outputManager.ForgetHost(name, instance)
 							selectPooledOutput()
@@ -3227,6 +3245,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					continue
 				}
 				operation := state.lifecycleConfirm
+				lifecycleRequestID++
+				requestID := lifecycleRequestID
+				generation, instance := state.hostFingerprint(sess.Client)
+				epoch := watchedClients[sess.Client].epoch
+				connectionEpoch := state.hostConnectionEpoch[sess.Client]
 				state.lifecycleBusy = true
 				state.lifecycleConfirm = ""
 				state.lifecycleTarget = ducklord.RemoteSession{}
@@ -3235,7 +3258,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				go func() {
 					result, err := runner.LifecycleSelected(ctx, client, sess, operation, mode)
 					select {
-					case lifecycleDone <- lifecycleDoneEvent{operation: operation, client: sess.Client, result: result, err: err}:
+					case lifecycleDone <- lifecycleDoneEvent{id: requestID, watchEpoch: epoch, connectionEpoch: connectionEpoch,
+						hostGeneration: generation, hostInstance: instance,
+						operation: operation, client: sess.Client, result: result, err: err}:
 					case <-ctx.Done():
 					}
 				}()
@@ -6780,8 +6805,17 @@ func (s *tuiState) renderLifecycleModal(out io.Writer, cols, rows int) {
 		help = "Enter confirm selected mode · Esc cancel"
 	}
 	if target.Kind == string(model.KindShell) {
-		detail = "Shell process ends immediately; it never waits for idle."
-		help = "Enter terminate process immediately · Esc cancel"
+		switch s.lifecycleConfirm {
+		case protocol.SessionLifecycleRestart:
+			detail = "Shell restarts immediately; this Session pane stays."
+			help = "Enter restart process immediately · Esc cancel"
+		case protocol.SessionLifecycleEnd:
+			detail = "Shell and Session pane disappear; retained PTY logs remain."
+			help = "Enter end process immediately · Esc cancel"
+		case protocol.SessionLifecycleDestroy:
+			detail = "Shell and Session pane disappear; retained PTY logs are removed."
+			help = "Enter destroy process immediately · Esc cancel"
+		}
 	}
 	if rows < 7 {
 		warning := verb + ": " + detail + "  " + help
@@ -7936,6 +7970,25 @@ func (s *tuiState) requestPathSuggestions(ctx context.Context, done chan<- pathS
 func (s *tuiState) hostFingerprint(client string) (uint64, string) {
 	update := s.hostSync[client]
 	return update.Generation, update.InstanceID
+}
+
+func (s *tuiState) bumpHostConnectionEpoch(client string) {
+	if s.hostConnectionEpoch == nil {
+		s.hostConnectionEpoch = make(map[string]uint64)
+	}
+	s.hostConnectionEpoch[client]++
+}
+
+func (s *tuiState) lifecycleResultCurrent(result lifecycleDoneEvent, requestID, watchEpoch uint64) bool {
+	if result.id != requestID || s.disconnectedHosts[result.client] || result.watchEpoch != watchEpoch ||
+		result.connectionEpoch != s.hostConnectionEpoch[result.client] {
+		return false
+	}
+	current := s.hostSync[result.client]
+	if current.Generation != result.hostGeneration || current.InstanceID != result.hostInstance {
+		return false
+	}
+	return current.State == "" || current.State == "live"
 }
 
 func (s *tuiState) invalidateCreateStart(update ducklord.SessionUpdate) bool {

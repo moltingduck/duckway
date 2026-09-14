@@ -483,7 +483,7 @@ func TestTUIRenderExplainsImmediateShellLifecycle(t *testing.T) {
 	var out bytes.Buffer
 	state.render(&out)
 	got := out.String()
-	for _, want := range []string{"Enter terminate process immediately", "it never waits"} {
+	for _, want := range []string{"Enter restart process immediately", "Session pane stays"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("shell confirmation missing %q in %q", want, got)
 		}
@@ -530,6 +530,24 @@ func TestLifecycleConfirmationRendersCapturedTargetAfterSelectionMoves(t *testin
 	state.renderLifecycleModal(&out, 80, 24)
 	if got := out.String(); !strings.Contains(got, "original") || !strings.Contains(got, "TARGET") || strings.Contains(got, "new selection") {
 		t.Fatalf("confirmation rendered mutable selection: %q", got)
+	}
+}
+
+func TestShellLifecycleConfirmationExplainsPaneAndLogEffect(t *testing.T) {
+	target := ducklord.RemoteSession{Client: "host", SessionID: "ABC123", Name: "shell", Kind: string(model.KindShell)}
+	for _, test := range []struct {
+		operation protocol.SessionLifecycleOperation
+		want      string
+	}{
+		{protocol.SessionLifecycleRestart, "Session pane stays"},
+		{protocol.SessionLifecycleEnd, "Session pane disappear"},
+		{protocol.SessionLifecycleDestroy, "retained PTY logs are removed"},
+	} {
+		var output bytes.Buffer
+		(&tuiState{lifecycleConfirm: test.operation, lifecycleTarget: target}).renderLifecycleModal(&output, 100, 24)
+		if !strings.Contains(output.String(), test.want) {
+			t.Fatalf("%s confirmation did not explain effect: %q", test.operation, output.String())
+		}
 	}
 }
 
@@ -941,6 +959,35 @@ func TestTUISuccessfulInventoryPrunesOnlyMatchingHostIdentity(t *testing.T) {
 	if len(state.sessions) != 1 || state.sessions[0].Client != "b" || len(state.activity().ProjectLayout.ProjectsFor(first)) != 0 || len(state.activity().ProjectLayout.ProjectsFor(second)) != 1 {
 		t.Fatalf("cross-Host prune affected wrong Session: rows=%+v first=%v second=%v", state.sessions,
 			state.activity().ProjectLayout.ProjectsFor(first), state.activity().ProjectLayout.ProjectsFor(second))
+	}
+}
+
+func TestTUILifecycleCompletionRejectsOldHostConnection(t *testing.T) {
+	state := &tuiState{hostSync: map[string]ducklord.SessionUpdate{
+		"host": {Client: "host", State: "live", InstanceID: "old-instance", Generation: 4},
+	}, disconnectedHosts: make(map[string]bool)}
+	result := lifecycleDoneEvent{id: 11, client: "host", watchEpoch: 7, hostGeneration: 4, hostInstance: "old-instance"}
+	if !state.lifecycleResultCurrent(result, 11, 7) {
+		t.Fatal("current lifecycle result was rejected")
+	}
+	if state.lifecycleResultCurrent(result, 12, 7) {
+		t.Fatal("older lifecycle request result was accepted")
+	}
+	if state.lifecycleResultCurrent(result, 11, 8) {
+		t.Fatal("result from prior Host watch epoch was accepted")
+	}
+	state.bumpHostConnectionEpoch("host")
+	if state.lifecycleResultCurrent(result, 11, 7) {
+		t.Fatal("polling fallback accepted result after local disconnect/reconnect")
+	}
+	result.connectionEpoch = state.hostConnectionEpoch["host"]
+	state.hostSync["host"] = ducklord.SessionUpdate{Client: "host", State: "reconnecting", InstanceID: "old-instance", Generation: 4}
+	if state.lifecycleResultCurrent(result, 11, 7) {
+		t.Fatal("result was accepted while Host was reconnecting")
+	}
+	state.hostSync["host"] = ducklord.SessionUpdate{Client: "host", State: "live", InstanceID: "new-instance", Generation: 5}
+	if state.lifecycleResultCurrent(result, 11, 7) {
+		t.Fatal("result from old Ducklion instance was accepted")
 	}
 }
 
