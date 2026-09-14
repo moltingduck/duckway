@@ -1974,9 +1974,13 @@ func TestTUINotificationMenuStagesAndAtomicallySaves(t *testing.T) {
 	if !state.notificationMode || len(state.notificationStaged) != len(model.NotificationCategories()) {
 		t.Fatalf("menu state=%+v", state.notificationStaged)
 	}
-	if action := state.handleNotificationInput([]byte(" ")); action != "" || state.notificationStaged[model.NotificationTerminalAttention] {
+	if action := state.handleNotificationInput([]byte("\r")); action != "" || state.notificationStaged[model.NotificationTerminalAttention] {
+		t.Fatalf("Enter should toggle selected source without saving: action=%q staged=%+v", action, state.notificationStaged)
+	}
+	if action := state.handleNotificationInput([]byte(" ")); action != "" || !state.notificationStaged[model.NotificationTerminalAttention] {
 		t.Fatalf("toggle action=%q staged=%+v", action, state.notificationStaged)
 	}
+	state.handleNotificationInput([]byte(" "))
 	if state.activity().Enabled(instance, "ABC123", model.NotificationTerminalAttention) == false {
 		t.Fatal("staged toggle mutated durable state before save")
 	}
@@ -2011,6 +2015,86 @@ func TestTUINotificationSaveFailureLeavesLiveStateUntouched(t *testing.T) {
 	state.renderNotificationModal(&rendered, 100, 30)
 	if !strings.Contains(rendered.String(), "Not saved:") {
 		t.Fatalf("menu did not render error: %q", rendered.String())
+	}
+}
+
+func TestTUINotificationDeliveryLevelStagesPersistsAndInherits(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	stateDir := filepath.Join(t.TempDir(), "private")
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	session := ducklord.RemoteSession{Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "agent"}
+	store := ducklord.ActivityStateStore{Path: filepath.Join(stateDir, "state.json")}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host-a", Host: "a", NotificationLevels: map[ducklord.NotificationClass]ducklord.NotificationLevel{ducklord.NotificationCompleted: ducklord.NotificationSound}}}},
+		activityState: ducklord.NewActivityState(), activityStore: store, sessions: []ducklord.RemoteSession{session}}
+	state.beginNotificationSettings()
+	for range len(model.NotificationCategories()) {
+		state.handleNotificationInput([]byte("j"))
+	}
+	if action := state.handleNotificationInput([]byte("\r")); action != "" || !state.notificationLevelEditing {
+		t.Fatalf("delivery editor did not open: action=%q", action)
+	}
+	state.handleNotificationInput([]byte("j")) // inherit -> off
+	state.handleNotificationInput([]byte("\r"))
+	if got := state.notificationLevelsStaged[ducklord.NotificationCompleted]; got != ducklord.NotificationOff {
+		t.Fatalf("off not staged: %q", got)
+	}
+	if got := state.effectiveNotificationLevel(session, model.NotificationTaskCompleted); got != ducklord.NotificationSound {
+		t.Fatalf("staging changed live policy: %q", got)
+	}
+	if action := state.handleNotificationInput([]byte("s")); action != "save" {
+		t.Fatalf("save shortcut returned %q", action)
+	}
+	state.saveNotificationSettings()
+	if state.notificationMode || state.effectiveNotificationLevel(session, model.NotificationTaskCompleted) != ducklord.NotificationOff {
+		t.Fatalf("session override did not take effect: %v", state.activityState)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, _ := ducklord.IdentityFromSession(session)
+	if got := loaded.Sessions[identity.Key()].NotificationLevels[ducklord.NotificationCompleted]; got != ducklord.NotificationOff {
+		t.Fatalf("saved Session override = %q", got)
+	}
+	state.beginNotificationSettings()
+	state.notificationIndex = len(model.NotificationCategories())
+	state.handleNotificationInput([]byte("\r"))
+	state.handleNotificationInput([]byte("k")) // off -> inherit
+	state.handleNotificationInput([]byte("\r"))
+	state.saveNotificationSettings()
+	if got := state.effectiveNotificationLevel(session, model.NotificationTaskCompleted); got != ducklord.NotificationSound {
+		t.Fatalf("Host inheritance not restored: %q", got)
+	}
+}
+
+func TestTUINotificationDeliveryRejectsChangedTargetAndInvalidLevel(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	store := ducklord.ActivityStateStore{Path: filepath.Join(dir, "state.json")}
+	session := ducklord.RemoteSession{Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "agent"}
+	state := &tuiState{activityState: ducklord.NewActivityState(), activityStore: store, sessions: []ducklord.RemoteSession{session}}
+	state.beginNotificationSettings()
+	state.notificationLevelsStaged[ducklord.NotificationCompleted] = "invalid"
+	state.saveNotificationSettings()
+	if !state.notificationMode || !strings.Contains(state.outputErr, "invalid notification level") {
+		t.Fatalf("invalid override was saved: mode=%v err=%q", state.notificationMode, state.outputErr)
+	}
+	if _, err := os.Stat(store.Path); !os.IsNotExist(err) {
+		t.Fatalf("invalid override wrote state file: %v", err)
+	}
+	state.notificationLevelsStaged[ducklord.NotificationCompleted] = ducklord.NotificationSound
+	state.sessions = nil
+	state.saveNotificationSettings()
+	if !state.notificationMode || !strings.Contains(state.outputErr, "target changed") {
+		t.Fatalf("removed target was saved: mode=%v err=%q", state.notificationMode, state.outputErr)
+	}
+	if _, err := os.Stat(store.Path); !os.IsNotExist(err) {
+		t.Fatalf("removed target wrote state file: %v", err)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/hackerduck/duckway/internal/ducklion/model"
+	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
@@ -94,6 +95,41 @@ func TestDucklordLocalNotificationContainerE2E(t *testing.T) {
 	configAfter, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/config.yaml").Output()
 	if err != nil || !strings.Contains(string(configAfter), "task_failed: indicator") {
 		t.Fatalf("Host notification override was not persisted: %v: %s", err, configAfter)
+	}
+	alphaSessions := listContainerSessions(t, runtime, controller, "client-a")
+	var alpha protocol.SessionSummary
+	for _, candidate := range alphaSessions {
+		if candidate.Handle == "alpha" {
+			alpha = candidate
+		}
+	}
+	if alpha.SessionID == "" {
+		t.Fatal("alpha Session missing before notification edit")
+	}
+	writePTY(t, terminal, "n")
+	capture.waitCurrent(t, "Notifications ·", 10*time.Second)
+	capture.waitCurrent(t, "ID "+alpha.SessionID, 10*time.Second)
+	for range len(model.NotificationCategories()) {
+		writePTY(t, terminal, "j")
+	}
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Notification delivery", 10*time.Second)
+	writePTY(t, terminal, "j\rs") // inherit Host → off, then save the Session state.
+	capture.waitCurrent(t, "PROJECTS", 10*time.Second)
+	alphaRemote, ok := findContainerSession(t, runtime, controller, "client-a", alpha.SessionID)
+	if !ok {
+		t.Fatal("alpha Session identity missing after notification edit")
+	}
+	stateFile, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var edited ducklord.ActivityState
+	if err := json.Unmarshal(stateFile, &edited); err != nil {
+		t.Fatal(err)
+	}
+	if level := edited.Sessions[alphaRemote.InstanceID+"/"+alpha.SessionID].NotificationLevels[ducklord.NotificationCompleted]; level != ducklord.NotificationOff {
+		t.Fatalf("Session notification level was not saved: %q", level)
 	}
 	marker := "private-agent-answer-" + stamp
 	hook := fmt.Sprintf("ducklion __ducklion_agent_hook_v1 codex '{\"type\":\"agent-turn-complete\",\"last-assistant-message\":\"%s\"}'", marker)
