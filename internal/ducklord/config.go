@@ -22,6 +22,7 @@ type Config struct {
 	QuickSort              string                                  `json:"quick_sort,omitempty" yaml:"quick_sort,omitempty"`
 	QuickOldestFirst       bool                                    `json:"quick_oldest_first,omitempty" yaml:"quick_oldest_first,omitempty"`
 	NotificationLevels     map[NotificationClass]NotificationLevel `json:"notification_levels,omitempty" yaml:"notification_levels,omitempty"`
+	NotificationSounds     map[NotificationClass]string            `json:"notification_sounds,omitempty" yaml:"notification_sounds,omitempty"`
 	OtherProjectThreshold  NotificationLevel                       `json:"other_project_threshold,omitempty" yaml:"other_project_threshold,omitempty"`
 	Shortcuts              map[string]string                       `json:"shortcuts,omitempty" yaml:"shortcuts,omitempty"`
 	Clients                []Client                                `json:"hosts" yaml:"hosts"`
@@ -164,6 +165,14 @@ func SaveConfig(path string, cfg *Config) error {
 func (c *Config) normalize() error {
 	if err := ValidateNotificationLevels(c.NotificationLevels); err != nil {
 		return err
+	}
+	for class, path := range c.NotificationSounds {
+		if err := class.Validate(); err != nil {
+			return err
+		}
+		if strings.ContainsRune(path, 0) {
+			return fmt.Errorf("notification sound path contains NUL")
+		}
 	}
 	if c.OtherProjectThreshold != "" {
 		if err := c.OtherProjectThreshold.Validate(); err != nil {
@@ -318,6 +327,10 @@ func (c *Config) Clone() *Config {
 		clone.Shortcuts[action] = binding
 	}
 	clone.NotificationLevels = cloneNotificationLevels(c.NotificationLevels)
+	clone.NotificationSounds = make(map[NotificationClass]string, len(c.NotificationSounds))
+	for class, path := range c.NotificationSounds {
+		clone.NotificationSounds[class] = path
+	}
 	for i := range clone.Clients {
 		clone.Clients[i].NotificationLevels = cloneNotificationLevels(c.Clients[i].NotificationLevels)
 	}

@@ -318,3 +318,23 @@ func TestSSHArgsSupportDuckwayDucklionSubcommand(t *testing.T) {
 		t.Fatalf("SSHArgs = %#v, want %#v", got, want)
 	}
 }
+
+func TestNotificationSoundConfigRoundTripAndClone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := &Config{NotificationSounds: map[NotificationClass]string{NotificationCompleted: "/tmp/done.wav"}}
+	if err := SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.NotificationSounds[NotificationCompleted]; got != "/tmp/done.wav" {
+		t.Fatalf("sound path not retained: %q", got)
+	}
+	clone := loaded.Clone()
+	clone.NotificationSounds[NotificationCompleted] = "/tmp/other.ogg"
+	if loaded.NotificationSounds[NotificationCompleted] != "/tmp/done.wav" {
+		t.Fatal("sound path clone aliases original")
+	}
+}

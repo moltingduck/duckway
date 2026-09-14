@@ -1193,6 +1193,9 @@ type tuiState struct {
 	outputText                 string
 	outputErr                  string
 	localWarning               string
+	notificationSink           notificationDelivery
+	notificationObserved       map[string]map[model.NotificationCategory]uint64
+	pendingBells               uint8
 	resizeStatus               string
 	outputForKey               string
 	outputStale                bool
@@ -1390,10 +1393,24 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	} else if err != nil {
 		return fmt.Errorf("load Ducklord activity state: %w", err)
 	}
+	if warning := soundSetupWarning(cfg); warning != "" {
+		if stateWarning != "" {
+			stateWarning += "; "
+		}
+		stateWarning += warning
+	}
+	if warning := desktopSetupWarning(cfg, activityState); warning != "" {
+		if stateWarning != "" {
+			stateWarning += "; "
+		}
+		stateWarning += warning
+	}
 	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner,
 		snapshotStore: ducklord.SnapshotStore{}, activityStore: activityStore, activityState: activityState, hostSync: make(map[string]ducklord.SessionUpdate), localWarning: stateWarning,
 		listPaneWidth: cfg.SessionListPaneWidth(), autoHideList: cfg.SessionListAutoHide(), disconnectedHosts: make(map[string]bool),
 		workspacePreview: os.Getenv("DUCKLORD_LEGACY_TUI") != "1"}
+	state.notificationSink = newLocalNotificationSink()
+	defer state.notificationSink.Close()
 	var outputManager tuiOutputManager
 	var workspaceOutput *ducklord.WorkspaceOutputAdapter
 	var outputEvents <-chan ducklord.TerminalOutputEvent
@@ -3506,6 +3523,33 @@ func (s *tuiState) refreshSessions(ctx context.Context) {
 
 // applySessionUpdate reports whether the update became authoritative. Callers
 // must not apply output or lifecycle side effects for a rejected snapshot.
+func (s *tuiState) notificationDeltas(identity string, before map[model.NotificationCategory]uint64, known bool,
+	current map[model.NotificationCategory]uint64) map[model.NotificationCategory]uint64 {
+	if s.notificationObserved == nil {
+		s.notificationObserved = make(map[string]map[model.NotificationCategory]uint64)
+	}
+	observed, seen := s.notificationObserved[identity]
+	if observed == nil {
+		observed = make(map[model.NotificationCategory]uint64)
+		s.notificationObserved[identity] = observed
+	}
+	deltas := make(map[model.NotificationCategory]uint64)
+	for category, value := range current {
+		baseline := before[category]
+		if !known && !seen {
+			baseline = value // First inventory is history, not a new local delivery.
+		}
+		if observed[category] > baseline {
+			baseline = observed[category]
+		}
+		if value > baseline {
+			deltas[category] = value - baseline
+		}
+		observed[category] = value
+	}
+	return deltas
+}
+
 func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) bool {
 	if update.Client == "" {
 		return false
@@ -3586,21 +3630,35 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) bool {
 				activityChanged = true
 			}
 		}
-		if before, ok := previousActivity[identity.Key()]; identityOK && ok {
-			if session.ActivitySequences[model.NotificationTaskFailed] > before[model.NotificationTaskFailed] && s.shouldDeliverNotification(session, model.NotificationTaskFailed) {
-				s.outputErr = sanitizeTerminalText(session.Name) + ": agent turn failed"
-			} else if session.ActivitySequences[model.NotificationTaskCompleted] > before[model.NotificationTaskCompleted] && s.shouldDeliverNotification(session, model.NotificationTaskCompleted) {
-				s.outputErr = sanitizeTerminalText(session.Name) + ": agent turn completed"
-			}
+		before, known := previousActivity[identity.Key()]
+		var deltas map[model.NotificationCategory]uint64
+		if identityOK {
+			deltas = s.notificationDeltas(identity.Key(), before, known, session.ActivitySequences)
+		}
+		if deltas[model.NotificationTaskFailed] > 0 && s.shouldDeliverNotification(session, model.NotificationTaskFailed) {
+			s.outputErr = sanitizeTerminalText(session.Name) + ": agent turn failed"
+		} else if deltas[model.NotificationTaskCompleted] > 0 && s.shouldDeliverNotification(session, model.NotificationTaskCompleted) {
+			s.outputErr = sanitizeTerminalText(session.Name) + ": agent turn completed"
 		}
 		activeFresh := s.sessionFreshlyDisplayed(session)
 		unread, changed := s.reconcileNotificationState(session, activeFresh)
 		session.Unread = unread
+		for category, delta := range deltas {
+			if !s.shouldDeliverNotification(session, category) {
+				continue
+			}
+			for sequence := uint64(0); sequence < min(delta, uint64(1024)); sequence++ {
+				s.deliverNotification(session, category)
+			}
+			if delta > 1024 {
+				s.localWarning = "notification burst exceeded local delivery capacity; check unread Sessions"
+			}
+		}
 		if !unread {
 			delete(s.promoted, sessionKey(session))
-		} else if before, known := previousActivity[identity.Key()]; identityOK && known {
-			for category, current := range session.ActivitySequences {
-				if current > before[category] && s.shouldDeliverNotification(session, category) {
+		} else {
+			for category, delta := range deltas {
+				if delta > 0 && s.shouldDeliverNotification(session, category) {
 					if s.promoted == nil {
 						s.promoted = make(map[string]bool)
 					}
@@ -4939,6 +4997,10 @@ func (s *tuiState) saveSnapshot(session ducklord.RemoteSession, text string) {
 }
 
 func (s *tuiState) render(out io.Writer) {
+	for s.pendingBells > 0 {
+		_, _ = out.Write([]byte{'\a'})
+		s.pendingBells--
+	}
 	if s.copyMode {
 		return
 	}
