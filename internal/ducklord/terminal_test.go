@@ -21,6 +21,28 @@ func TestTerminalInterpretsCursorEraseAndChunkedUTF8(t *testing.T) {
 	}
 }
 
+func TestTerminalRISResetsParserAndSynchronizedOutput(t *testing.T) {
+	terminal := NewTerminal(2, 20, 4)
+	terminal.Write([]byte("old\x1b[?2026h\x1bcnew"))
+	if terminal.SynchronizedOutput() || terminal.state != terminalGround || terminal.Text() != "new" {
+		t.Fatalf("RIS left parser or synchronized output active: sync=%t state=%d text=%q",
+			terminal.SynchronizedOutput(), terminal.state, terminal.Text())
+	}
+}
+
+func TestTerminalCSIExplicitScrollPreservesPrimaryHistory(t *testing.T) {
+	terminal := NewTerminal(2, 20, 4)
+	terminal.Write([]byte("answer\r\nnext"))
+	terminal.Write([]byte("\x1b[1S"))
+	if got := strings.TrimRight(terminal.Text(), "\n"); got != "answer\nnext" {
+		t.Fatalf("CSI S lost primary-screen history: %q", got)
+	}
+	terminal.Write([]byte("\x1b[1T"))
+	if got := terminal.Text(); got != "answer\n\nnext" {
+		t.Fatalf("CSI T removed scrollback history: %q", got)
+	}
+}
+
 func TestTerminalAlternateScreenRestoresPrimary(t *testing.T) {
 	terminal := NewTerminal(3, 20, 10)
 	terminal.Write([]byte("primary"))

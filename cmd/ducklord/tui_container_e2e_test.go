@@ -1165,6 +1165,7 @@ type tuiCapture struct {
 	screen *ducklord.Terminal
 	rows   int
 	cols   int
+	watch  map[string]bool
 }
 
 func newTUICapture(terminal *os.File) *tuiCapture {
@@ -1181,6 +1182,14 @@ func newSizedTUICapture(terminal *os.File, rows, cols int) *tuiCapture {
 				capture.mu.Lock()
 				capture.data = append(capture.data, buffer[:n]...)
 				capture.screen.Write(buffer[:n])
+				if len(capture.watch) != 0 {
+					visible := strings.Join(capture.screen.RenderLines(capture.rows, capture.cols), "\n")
+					for marker, seen := range capture.watch {
+						if !seen && strings.Contains(visible, marker) {
+							capture.watch[marker] = true
+						}
+					}
+				}
 				capture.mu.Unlock()
 			}
 			if err != nil {
@@ -1189,6 +1198,21 @@ func newSizedTUICapture(terminal *os.File, rows, cols int) *tuiCapture {
 		}
 	}()
 	return capture
+}
+
+func (c *tuiCapture) watchCurrent(marker string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.watch == nil {
+		c.watch = make(map[string]bool)
+	}
+	c.watch[marker] = strings.Contains(strings.Join(c.screen.RenderLines(c.rows, c.cols), "\n"), marker)
+}
+
+func (c *tuiCapture) everCurrent(marker string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.watch[marker]
 }
 
 func (c *tuiCapture) currentText() string {

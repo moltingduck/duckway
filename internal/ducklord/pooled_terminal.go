@@ -325,7 +325,7 @@ func (p *PooledTerminal) scheduleSynchronizedFlushLocked() {
 			return
 		}
 		p.syncFlushTimer = nil
-		if p.publishedOffset == p.offset {
+		if p.publishedOffset == p.offset || !p.terminal.hasVisibleContent() {
 			return
 		}
 		p.publishFrameLocked()

@@ -621,25 +621,42 @@ func (t *Terminal) lineFeed(soft bool) {
 		return
 	}
 	s.Lines[s.CursorRow].SoftWrapped = soft
-	if !t.useAlternate && t.ScrollbackMax > 0 {
-		line := cloneTerminalLine(s.Lines[0])
-		for len(line.Cells) > 0 {
-			cell := line.Cells[len(line.Cells)-1]
-			if cell.Rune != 0 || cell.Width == 255 || cell.Combining != "" {
-				break
-			}
-			line.Cells = line.Cells[:len(line.Cells)-1]
-		}
-		t.Scrollback = append(t.Scrollback, line)
-		t.retainedCells += len(line.Cells)
-		for len(t.Scrollback) > t.ScrollbackMax || t.retainedCells+2*t.Rows*t.Cols > MaxTerminalRetainedCells {
-			t.retainedCells -= len(t.Scrollback[0].Cells)
-			t.Scrollback = t.Scrollback[1:]
-		}
-	}
-	copy(s.Lines, s.Lines[1:])
-	s.Lines[t.Rows-1] = TerminalLine{Cells: make([]TerminalCell, t.Cols)}
+	t.scrollUp(1)
 	t.wrapPending = false
+}
+
+func (t *Terminal) scrollUp(count int) {
+	s := t.screen()
+	count = clampInt(count, 0, t.Rows)
+	for range count {
+		if !t.useAlternate && t.ScrollbackMax > 0 {
+			line := cloneTerminalLine(s.Lines[0])
+			for len(line.Cells) > 0 {
+				cell := line.Cells[len(line.Cells)-1]
+				if cell.Rune != 0 || cell.Width == 255 || cell.Combining != "" {
+					break
+				}
+				line.Cells = line.Cells[:len(line.Cells)-1]
+			}
+			t.Scrollback = append(t.Scrollback, line)
+			t.retainedCells += len(line.Cells)
+			for len(t.Scrollback) > t.ScrollbackMax || t.retainedCells+2*t.Rows*t.Cols > MaxTerminalRetainedCells {
+				t.retainedCells -= len(t.Scrollback[0].Cells)
+				t.Scrollback = t.Scrollback[1:]
+			}
+		}
+		copy(s.Lines, s.Lines[1:])
+		s.Lines[t.Rows-1] = TerminalLine{Cells: make([]TerminalCell, t.Cols)}
+	}
+}
+
+func (t *Terminal) scrollDown(count int) {
+	s := t.screen()
+	count = clampInt(count, 0, t.Rows)
+	for range count {
+		copy(s.Lines[1:], s.Lines[:t.Rows-1])
+		s.Lines[0] = TerminalLine{Cells: make([]TerminalCell, t.Cols)}
+	}
 }
 
 func terminalCellCount(lines []TerminalLine) int {
@@ -694,6 +711,10 @@ func (t *Terminal) executeCSI(final byte, raw string) {
 		s.CursorCol = clampInt(csiParam(params, 1, 1)-1, 0, t.Cols-1)
 	case 'J':
 		t.eraseDisplay(csiParam(params, 0, 0))
+	case 'S':
+		t.scrollUp(first)
+	case 'T':
+		t.scrollDown(first)
 	case 'K':
 		t.eraseLine(csiParam(params, 0, 0))
 	case 'm':
@@ -974,11 +995,27 @@ func (t *Terminal) reset() {
 	t.primary = newTerminalScreen(t.Rows, t.Cols)
 	t.alternate = newTerminalScreen(t.Rows, t.Cols)
 	t.Scrollback = nil
+	t.retainedCells = 0
 	t.useAlternate = false
 	t.style = CellStyle{}
 	t.autowrap = true
 	t.cursorVisible = true
 	t.wrapPending = false
+	t.synchronizedOutput = false
+	t.state = terminalGround
+	t.csi = t.csi[:0]
+	t.utf8Pending = t.utf8Pending[:0]
+}
+
+func (t *Terminal) hasVisibleContent() bool {
+	for _, line := range t.screen().Lines {
+		for _, cell := range line.Cells {
+			if cell.Rune != 0 && cell.Rune != ' ' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (t *Terminal) Text() string {

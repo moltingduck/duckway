@@ -275,6 +275,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	for turn := 1; turn <= 2; turn++ {
 		prefix := fmt.Sprintf("LIVE_%s_%s_%d_", strings.ToUpper(agent), stamp, turn)
 		response := prefix + "OK"
+		capture.watchCurrent(response)
 		writePTY(t, terminal, "Join "+prefix+" and OK without spaces. Reply with only the joined text.")
 		time.Sleep(150 * time.Millisecond) // Codex treats a prompt and Enter in one PTY write as a paste.
 		writePTY(t, terminal, "\r")
@@ -291,6 +292,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		}
 		var screenSeen, remoteSeen, remoteTrust, remotePrompt, remoteContinue bool
 		var remoteAuth, remoteError, screenError, screenPrompt, focusVisible, inputBlocked, controlChanged bool
+		var remoteAfterAnswer string
 		waitE2E(t, turnTimeout, func() bool {
 			screen := capture.currentText()
 			screenSeen = strings.Contains(screen, response)
@@ -304,6 +306,9 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 			remoteSeen = readErr == nil && strings.Contains(string(output), response)
 			if readErr == nil {
 				remote := string(output)
+				if index := strings.LastIndex(remote, response); index >= 0 {
+					remoteAfterAnswer = remote[index+len(response):]
+				}
 				remoteTrust = strings.Contains(remote, "Yes, continue") || strings.Contains(remote, "Do you trust")
 				remotePrompt = strings.Contains(remote, "Join") || strings.Contains(remote, prefix)
 				remoteContinue = strings.Contains(remote, "Press enter to continue")
@@ -312,7 +317,8 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 			}
 			return screenSeen && remoteSeen
 		}, func() string {
-			return fmt.Sprintf("%s turn %d missing answer (screen=%t remote=%t screen-prompt=%t screen-error=%t focused=%t input-blocked=%t control-changed=%t remote-trust=%t remote-prompt=%t remote-continue=%t remote-auth=%t remote-error=%t); no PTY content logged", agent, turn, screenSeen, remoteSeen, screenPrompt, screenError, focusVisible, inputBlocked, controlChanged, remoteTrust, remotePrompt, remoteContinue, remoteAuth, remoteError)
+			latest, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+			return fmt.Sprintf("%s turn %d missing answer (screen=%t ever-screen=%t remote=%t screen-prompt=%t screen-error=%t focused=%t input-blocked=%t control-changed=%t remote-trust=%t remote-prompt=%t remote-continue=%t remote-auth=%t remote-error=%t session-found=%t task=%q adapter=%q completed=%d failed=%d after-answer=%s); no PTY content logged", agent, turn, screenSeen, capture.everCurrent(response), remoteSeen, screenPrompt, screenError, focusVisible, inputBlocked, controlChanged, remoteTrust, remotePrompt, remoteContinue, remoteAuth, remoteError, found, latest.TaskState, latest.AdapterState, latest.ActivitySequences[model.NotificationTaskCompleted], latest.ActivitySequences[model.NotificationTaskFailed], liveAnswerControlSummary(remoteAfterAnswer))
 		})
 		waitE2E(t, 25*time.Second, func() bool {
 			latest, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
@@ -533,6 +539,21 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 
 func liveScreenHasMarkedRow(screen, label string, marked bool, column ducklord.WorkspaceRect) bool {
 	return liveScreenHasRowMatching(screen, label, column, func(cell string) bool { return strings.HasSuffix(cell, "•") == marked })
+}
+
+// Return only control-sequence counts. Live PTY text may contain credentials
+// or prompts and must never be included in a failed test's output.
+func liveAnswerControlSummary(after string) string {
+	if after == "" {
+		return "none"
+	}
+	counts := map[byte]int{}
+	for _, match := range regexp.MustCompile(`\x1b\[[0-9;?]*([@-~])`).FindAllStringSubmatch(after, -1) {
+		counts[match[1][0]]++
+	}
+	return fmt.Sprintf("bytes:%d,CR:%d,LF:%d,J:%d,K:%d,H:%d,f:%d,A:%d,B:%d,C:%d,D:%d,G:%d,r:%d,S:%d,T:%d,h:%d,l:%d",
+		len(after), strings.Count(after, "\r"), strings.Count(after, "\n"), counts['J'], counts['K'], counts['H'], counts['f'],
+		counts['A'], counts['B'], counts['C'], counts['D'], counts['G'], counts['r'], counts['S'], counts['T'], counts['h'], counts['l'])
 }
 
 func liveSplitColumns(cols int) (ducklord.WorkspaceRect, ducklord.WorkspaceRect) {

@@ -196,6 +196,35 @@ func TestPooledTerminalFlushesUnclosedSynchronizedRedrawAfterQuietPeriod(t *test
 	}
 }
 
+func TestPooledTerminalKeepsPreviousFrameWhenTimedSynchronizedRedrawIsBlank(t *testing.T) {
+	reader := newFakePooledOutput()
+	p, err := newPooledTerminal(context.Background(), pooledMetadata(0), reader, pooledOptions(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	old := []byte("old answer")
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: old, StartOffset: 0, EndOffset: uint64(len(old))}}
+	waitPooledOffset(t, p, uint64(len(old)))
+	begin := []byte("\x1b[?2026h\x1b[2J")
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: begin, StartOffset: uint64(len(old)), EndOffset: uint64(len(old) + len(begin))}}
+	waitPooledRawOffset(t, p, uint64(len(old)+len(begin)))
+	time.Sleep(maxSynchronizedOutputDelay + 100*time.Millisecond)
+	if view := p.View(); view.OutputOffset != uint64(len(old)) || view.Framebuffer.Primary.Lines[0].Cells[0].Rune != 'o' {
+		t.Fatal("timed synchronized redraw replaced previous frame with blank content")
+	}
+	newText := []byte("new answer")
+	reader.results <- pooledReadResult{frame: OutputFrame{Data: newText, StartOffset: uint64(len(old) + len(begin)), EndOffset: uint64(len(old) + len(begin) + len(newText))}}
+	waitPooledRawOffset(t, p, uint64(len(old)+len(begin)+len(newText)))
+	deadline := time.Now().Add(2 * time.Second)
+	for p.View().OutputOffset != uint64(len(old)+len(begin)+len(newText)) {
+		if time.Now().After(deadline) {
+			t.Fatal("nonblank synchronized redraw did not publish after the next bounded delay")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestPooledTerminalFlushesContinuouslyStreamingSynchronizedRedraw(t *testing.T) {
 	reader := newFakePooledOutput()
 	p, err := newPooledTerminal(context.Background(), pooledMetadata(0), reader, pooledOptions(t.TempDir()))
