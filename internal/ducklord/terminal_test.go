@@ -212,3 +212,25 @@ func TestTerminalRenderLinesOffsetInspectsScrollback(t *testing.T) {
 		t.Fatalf("live=%q older=%q", live, older)
 	}
 }
+
+func TestTerminalPaneCropKeepsShellCursorVisibleAfterLocalSplit(t *testing.T) {
+	terminal := NewTerminal(20, 40, 20)
+	terminal.Write([]byte("one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nLATEST"))
+	if plain := strings.Join(terminal.RenderLinesOffset(8, 40, 0), "\n"); strings.Contains(plain, "LATEST") {
+		t.Fatalf("fixture did not expose the old bottom-crop bug: %q", plain)
+	}
+	visible := strings.Join(terminal.RenderPaneLinesOffset(8, 40, 0), "\n")
+	if !strings.Contains(visible, "LATEST") || !strings.Contains(visible, "one") {
+		t.Fatalf("short pane hid live shell output: %q", visible)
+	}
+	if _, _, oldVisible := terminal.CursorPosition(8, 40); oldVisible {
+		t.Fatal("fixture did not expose the old cropped-cursor bug")
+	}
+	if row, col, caret := terminal.PaneCursorPosition(8, 40); !caret || row != 6 || col != 6 {
+		t.Fatalf("pane caret did not follow cursor-anchored crop: (%d,%d,%t)", row, col, caret)
+	}
+	older := strings.Join(terminal.RenderPaneLinesOffset(3, 40, 3), "\n")
+	if strings.Contains(older, "LATEST") || !strings.Contains(older, "two") {
+		t.Fatalf("pane scroll did not move through older output: %q", older)
+	}
+}

@@ -990,6 +990,24 @@ func (t *Terminal) RenderLines(maxRows, maxCols int) []string {
 	return t.RenderLinesOffset(maxRows, maxCols, 0)
 }
 
+// RenderPaneLinesOffset keeps the shell cursor's content in view when a local
+// split becomes shorter than the remote PTY framebuffer. Only a focused pane
+// may resize the remote PTY; background panes must crop their existing frame.
+func (t *Terminal) RenderPaneLinesOffset(maxRows, maxCols, scroll int) []string {
+	if t == nil {
+		return nil
+	}
+	offset := t.paneTailOffset(maxRows) + max(0, scroll)
+	return t.RenderLinesOffset(maxRows, maxCols, offset)
+}
+
+func (t *Terminal) paneTailOffset(maxRows int) int {
+	if t.useAlternate || maxRows <= 0 || maxRows >= t.Rows {
+		return 0
+	}
+	return max(0, len(t.primary.Lines)-t.primary.CursorRow-1)
+}
+
 // RenderLinesOffset renders a viewport offset from the live tail. Positive
 // offsets inspect older primary-screen scrollback.
 func (t *Terminal) RenderLinesOffset(maxRows, maxCols, offset int) []string {
@@ -1047,6 +1065,16 @@ func (t *Terminal) RenderLinesOffset(maxRows, maxCols, offset int) []string {
 // used by RenderLines. False means the application hid the cursor or the cursor
 // is outside the cropped viewport.
 func (t *Terminal) CursorPosition(maxRows, maxCols int) (int, int, bool) {
+	return t.cursorPositionOffset(maxRows, maxCols, 0)
+}
+
+// PaneCursorPosition uses the same cursor-anchored local crop as
+// RenderPaneLinesOffset, so a shorter focused pane does not hide its caret.
+func (t *Terminal) PaneCursorPosition(maxRows, maxCols int) (int, int, bool) {
+	return t.cursorPositionOffset(maxRows, maxCols, t.paneTailOffset(maxRows))
+}
+
+func (t *Terminal) cursorPositionOffset(maxRows, maxCols, offset int) (int, int, bool) {
 	if !t.cursorVisible {
 		return 0, 0, false
 	}
@@ -1056,13 +1084,14 @@ func (t *Terminal) CursorPosition(maxRows, maxCols int) (int, int, bool) {
 		total += len(t.Scrollback)
 		globalRow += len(t.Scrollback)
 	}
+	end := total - min(max(0, offset), max(0, total-1))
 	start := 0
-	if maxRows > 0 && total > maxRows {
-		start = total - maxRows
+	if maxRows > 0 && end > maxRows {
+		start = end - maxRows
 	}
 	row := globalRow - start
 	col := t.screen().CursorCol
-	if row < 0 || maxRows > 0 && row >= maxRows || col < 0 || maxCols > 0 && col >= maxCols {
+	if globalRow >= end || row < 0 || maxRows > 0 && row >= maxRows || col < 0 || maxCols > 0 && col >= maxCols {
 		return 0, 0, false
 	}
 	return row, col, true

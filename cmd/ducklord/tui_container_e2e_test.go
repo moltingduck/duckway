@@ -759,7 +759,77 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	if _, ok := findContainerSession(t, runtime, controller, "client-a", sessions[1].SessionID); !ok {
 		t.Fatal("local pane move stopped remote B")
 	}
+	writePTY(t, terminal, "P") // the original keyboard move must still stream both panes
+	var preDragMarkers [2]string
+	for i, session := range sessions {
+		marker := fmt.Sprintf("BEFOREDRAG%d-%d", i, os.Getpid())
+		preDragMarkers[i] = marker
+		if out, err := exec.Command(runtime, "exec", controller, binary, "--name", "workspace-two-cli", "send", "client-a", session.Handle,
+			"printf '"+marker+"\\n'", "--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil {
+			t.Fatalf("seed pre-drag marker: %v: %s", err, out)
+		}
+		capture.waitCurrent(t, marker, 20*time.Second)
+	}
+	writePTY(t, terminal, "P") // Project focus for the drag target
+	// Drag an already-placed Session from the quick list onto A's live pane.
+	// The centered move confirmation must avoid duplicating B in this Project.
+	oldDraggedPaneID := ""
+	for _, tab := range movedState.ProjectLayout.Project(projectID).Tabs {
+		if id := paneIDForSession(tab.Root, identityB); id != "" {
+			oldDraggedPaneID = id
+		}
+	}
+	if oldDraggedPaneID == "" {
+		t.Fatal("moved B pane missing before drag")
+	}
+	sourceX, sourceY, sourceFound := workspaceScreenPoint(capture.currentText(), sessions[1].Handle, 1, 50)
+	targetX, targetY, targetFound := workspaceScreenPoint(capture.currentText(), "client-a/"+sessions[0].Handle, 50, 120)
+	if !sourceFound || !targetFound {
+		t.Fatal("drag source or target not visible in the workspace TUI")
+	}
+	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<32;1;1M\x1b[<0;1;1m", sourceX, sourceY))
+	time.Sleep(200 * time.Millisecond)
+	if screen := capture.currentText(); strings.Contains(screen, "Place dragged Session pane") {
+		t.Fatal("drop outside Terminal area opened a placement modal")
+	}
+	if data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output(); err != nil {
+		t.Fatal("read layout after invalid drop: ", err)
+	} else {
+		var unchanged ducklord.ActivityState
+		if json.Unmarshal(data, &unchanged) != nil {
+			t.Fatal("decode layout after invalid drop")
+		}
+		if _, still := unchanged.ProjectLayout.PaneSession(projectID, oldDraggedPaneID); !still {
+			t.Fatal("drop outside Terminal area changed pane placement")
+		}
+	}
+	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<32;%d;%dM\x1b[<0;%d;%dm", sourceX, sourceY, targetX, targetY, targetX, targetY))
+	capture.waitCurrent(t, "Place dragged Session pane", 10*time.Second)
+	writePTY(t, terminal, "jj\r") // split horizontally
+	capture.waitCurrent(t, "move its pane, not duplicate it", 10*time.Second)
+	writePTY(t, terminal, "\x1b[A\r") // explicitly move B
+	waitE2E(t, 10*time.Second, func() bool {
+		data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+		if err != nil {
+			return false
+		}
+		var latest ducklord.ActivityState
+		if json.Unmarshal(data, &latest) != nil {
+			return false
+		}
+		if _, still := latest.ProjectLayout.PaneSession(projectID, oldDraggedPaneID); still {
+			return false
+		}
+		project := latest.ProjectLayout.Project(projectID)
+		return project != nil && len(project.Tabs) == 1 && project.Tabs[0].Root != nil && project.Tabs[0].Root.Direction == ducklord.SplitHorizontal &&
+			paneIDForSession(project.Tabs[0].Root, a) != "" && paneIDForSession(project.Tabs[0].Root, identityB) != "" &&
+			len(latest.ProjectLayout.ProjectsFor(identityB)) == 1 && latest.ProjectLayout.ProjectsFor(identityB)[0] == projectID
+	}, func() string { return "TUI drag did not atomically move B's pane without duplication" })
 	writePTY(t, terminal, "P") // return to Session list before existing output assertions
+	waitE2E(t, 20*time.Second, func() bool {
+		screen := capture.currentText()
+		return strings.Contains(screen, preDragMarkers[0]) && strings.Contains(screen, preDragMarkers[1])
+	}, func() string { return "dragged layout did not restore both pre-existing PTY views" })
 	for round := 1; round <= 2; round++ {
 		markers := []string{fmt.Sprintf("LIVEA%d-%d", round, os.Getpid()), fmt.Sprintf("LIVEB%d-%d", round, os.Getpid())}
 		for i, session := range sessions {
@@ -773,7 +843,16 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 			screen := capture.currentText()
 			return strings.Contains(screen, markers[0]) && strings.Contains(screen, markers[1])
 		}, func() string {
-			return "split pane markers not simultaneously live: " + safeTerminalDiagnostic(capture.currentText())
+			screen := capture.currentText()
+			remoteSeen := [2]bool{}
+			for i, session := range sessions {
+				out, err := exec.Command(runtime, "exec", controller, binary, "--name", "workspace-two-cli", "read", "client-a", session.Handle,
+					"--lines", "30", "--config", "/root/.ducklord/config.yaml").Output()
+				remoteSeen[i] = err == nil && strings.Contains(string(out), markers[i])
+			}
+			return fmt.Sprintf("split pane markers not simultaneously live (remote=%v stale=%t unavailable=%t loading=%t A=%t B=%t): %s",
+				remoteSeen, strings.Contains(screen, "PTY output unavailable"), strings.Contains(screen, "PTY output is unavailable"),
+				strings.Contains(screen, "loading live PTY output"), strings.Contains(screen, markers[0]), strings.Contains(screen, markers[1]), safeTerminalDiagnostic(screen))
 		})
 	}
 	writePTY(t, terminal, "Pk") // Project pane: Live split -> Default Project
@@ -1274,6 +1353,18 @@ func writePTY(t *testing.T, terminal *os.File, value string) {
 	if _, err := terminal.Write([]byte(value)); err != nil {
 		t.Fatalf("write TUI input: %v", err)
 	}
+}
+
+func workspaceScreenPoint(screen, label string, minX, maxX int) (x, y int, found bool) {
+	for row, line := range strings.Split(screen, "\n") {
+		if offset := strings.Index(line, label); offset >= 0 {
+			column := len([]rune(line[:offset])) + 1
+			if column >= minX && column < maxX {
+				return column, row + 1, true
+			}
+		}
+	}
+	return 0, 0, false
 }
 
 func waitE2E(t *testing.T, timeout time.Duration, ready func() bool, diagnostic func() string) {

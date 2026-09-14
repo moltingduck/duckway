@@ -1336,6 +1336,11 @@ type tuiState struct {
 	workspacePaneIntent        workspacePaneIntent
 	workspacePaneSourceID      string
 	workspacePaneIdentity      ducklord.SessionIdentity
+	workspacePaneCandidate     ducklord.RemoteSession
+	workspaceDragSession       ducklord.RemoteSession
+	workspaceDragMoved         bool
+	workspaceDragX             int
+	workspaceDragY             int
 	workspacePaneChanged       bool
 	workspaceNewSessionIntent  *workspacePaneIntent
 	detailQuery                string
@@ -3155,6 +3160,22 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					case <-ctx.Done():
 					}
 				}()
+				state.render(os.Stdout)
+				continue
+			}
+			wasWorkspaceDragging := state.workspaceDragMoved
+			handledWorkspaceMouse, changedWorkspaceMouse := state.handleWorkspaceMouse(b)
+			if wasWorkspaceDragging != state.workspaceDragMoved {
+				shape := "default"
+				if state.workspaceDragMoved {
+					shape = "grabbing"
+				}
+				fmt.Fprint(os.Stdout, mouseCursorShape(shape))
+			}
+			if handledWorkspaceMouse {
+				if changedWorkspaceMouse && workspaceOutput != nil {
+					selectPooledOutput()
+				}
 				state.render(os.Stdout)
 				continue
 			}
@@ -5457,8 +5478,12 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		}
 	}
 	flushCategory()
-	if query == "" || strings.Contains("mouse click select drag reorder right-click focus toggle", query) {
-		results = append(results, modalRenderLine{modalStatus, "  MOUSE"}, modalRenderLine{modalMuted, "  Click select · drag reorder · right-click focus/toggle"})
+	mouseHelp := "Click select · drag reorder · right-click focus/toggle"
+	if s.workspacePreview {
+		mouseHelp = "Click Session select · drag Session into Terminal area to add a pane"
+	}
+	if query == "" || strings.Contains(strings.ToLower("mouse "+mouseHelp), query) {
+		results = append(results, modalRenderLine{modalStatus, "  MOUSE"}, modalRenderLine{modalMuted, "  " + mouseHelp})
 	}
 	if query == "" || strings.Contains("modals choose enter confirm esc back ctrl+c close", query) {
 		results = append(results, modalRenderLine{modalStatus, "  MODALS"}, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter confirm · Esc back · Ctrl+C close"})

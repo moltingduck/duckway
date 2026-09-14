@@ -162,6 +162,8 @@ the current TUI implementation.
   session already has a Session pane in the selected Project, Ducklord asks
   whether to move that existing pane to the new position; it never silently
   duplicates the session within the Project.
+- Dropping onto empty Terminal area offers a new tab only. Dragging does not
+  change the quick-list selection, focus a PTY, or request writer ownership.
 
 ### Detach and Destroy
 

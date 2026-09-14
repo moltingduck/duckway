@@ -43,6 +43,18 @@ func (s *tuiState) workspaceFollowQuickSelection() {
 	}
 }
 
+// The Quick column omits sessions without a stable identity. Mouse row lookup
+// must use this exact projection, not the unfiltered inventory index.
+func (s *tuiState) workspaceQuickSessions() []ducklord.RemoteSession {
+	rows := make([]ducklord.RemoteSession, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		if _, ok := ducklord.IdentityFromSession(session); ok {
+			rows = append(rows, session)
+		}
+	}
+	return rows
+}
+
 func (s *tuiState) workspaceSelectedPaneSession() (ducklord.RemoteSession, error) {
 	nav, err := s.workspaceNavigation()
 	if err != nil {
@@ -368,7 +380,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 					ReadOnly: session.Kind != string(model.KindShell) && (session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName),
 					Focused:  s.focused && s.activeAttachKey == sessionKey(session)}
 				if s.terminal != nil && s.outputForKey == sessionKey(session) && s.terminalGeneration == session.RuntimeGeneration {
-					view.Lines = s.terminal.RenderLinesOffset(rows, cols, s.ptyScrollOffset)
+					view.Lines = s.terminal.RenderPaneLinesOffset(rows, cols, s.ptyScrollOffset)
 				} else {
 					view.Lines = []string{sanitizeTerminalText(session.LastLine), "PTY output unavailable"}
 				}
@@ -384,12 +396,10 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 			displayed = outputSession
 		}
 	}
-	items := make([]ducklord.WorkspaceListItem, 0, len(s.sessions))
-	for _, session := range s.sessions {
-		identity, ok := ducklord.IdentityFromSession(session)
-		if !ok {
-			continue
-		}
+	quickSessions := s.workspaceQuickSessions()
+	items := make([]ducklord.WorkspaceListItem, 0, len(quickSessions))
+	for _, session := range quickSessions {
+		identity, _ := ducklord.IdentityFromSession(session)
 		items = append(items, ducklord.WorkspaceListItem{Identity: identity, Name: displayField(session.Name), Host: displayField(session.Client),
 			Unread: session.Unread, Selected: sessionKey(session) == sessionKey(selected)})
 	}
@@ -431,7 +441,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 					if live, err := s.workspaceOutput.PaneView(key); err == nil && live.Ready && !live.Disconnected && !live.Ended &&
 						live.RuntimeGeneration == selection.RuntimeGeneration {
 						if terminal, valid := ducklord.NewTerminalFromState(live.Framebuffer, ducklord.DefaultTerminalScrollback); valid {
-							view.Lines = terminal.RenderLinesOffset(rows, cols, 0)
+							view.Lines = terminal.RenderPaneLinesOffset(rows, cols, 0)
 							view.Stale = false
 							return view
 						}
@@ -443,7 +453,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 			view.Focused = s.focused && s.activeAttachKey == sessionKey(session)
 			view.Stale = !s.outputFresh || s.outputStale || !s.hostIsLive(session.Client) || s.outputForKey != sessionKey(session)
 			if s.terminal != nil && s.outputForKey == sessionKey(session) {
-				view.Lines = s.terminal.RenderLinesOffset(rows, cols, s.ptyScrollOffset)
+				view.Lines = s.terminal.RenderPaneLinesOffset(rows, cols, s.ptyScrollOffset)
 			} else if s.outputText != "" {
 				view.Lines = tailLines(strings.Split(strings.TrimRight(s.outputText, "\n"), "\n"), rows)
 			}
@@ -466,7 +476,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	s.renderLifecycleModal(out, width, height)
 	if pane, err := s.workspacePaneRectAt(width, height); err == nil && s.focused && s.terminal != nil && pane.Height > 1 && pane.Width > 0 &&
 		!s.outputStale && s.ptyScrollOffset == 0 {
-		if row, col, visible := s.terminal.CursorPosition(pane.Height-1, pane.Width); visible {
+		if row, col, visible := s.terminal.PaneCursorPosition(pane.Height-1, pane.Width); visible {
 			fmt.Fprintf(out, "\033[%d;%dH\033[?25h", pane.Y+1+row, pane.X+col)
 		}
 	}

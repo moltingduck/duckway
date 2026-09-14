@@ -89,6 +89,9 @@ func (s *tuiState) workspaceMoveTargets() []string {
 }
 
 func (s *tuiState) commitWorkspacePaneAction(detach bool) error {
+	if s.workspacePaneCandidate.Client != "" && !s.workspaceDragCandidateCurrent(s.workspacePaneCandidate) {
+		return fmt.Errorf("dragged Session changed or Host disconnected; try again")
+	}
 	next := s.activity().Clone()
 	identity, ok := next.ProjectLayout.PaneSession(s.workspacePaneIntent.projectID, s.workspacePaneSourceID)
 	if !ok || identity != s.workspacePaneIdentity {
@@ -180,6 +183,11 @@ func (s *tuiState) workspacePaneChoices() []string {
 	switch s.workspacePaneStep {
 	case "placement":
 		return []string{"New Terminal tab", "Split vertically", "Split horizontally"}
+	case "drop-placement":
+		if s.workspacePaneIntent.targetID == "" {
+			return []string{"New Terminal tab"}
+		}
+		return []string{"New Terminal tab", "Split vertically", "Split horizontally"}
 	case "source":
 		return []string{"New shell session", "Add existing session"}
 	case "move-placement":
@@ -238,10 +246,17 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 	if strings.HasPrefix(s.workspacePaneStep, "move-") {
 		title = "  Move Session pane"
 	}
+	if s.workspacePaneStep == "drop-placement" {
+		title = "  Place dragged Session pane"
+	}
 	if s.workspacePaneStep == "detach-confirm" {
 		title = "  Detach Session pane"
 	}
 	lines := []modalRenderLine{{modalTitle, title}}
+	if s.workspacePaneStep == "drop-placement" {
+		candidate := s.workspacePaneCandidate
+		lines = append(lines, modalRenderLine{modalMuted, "  Session: " + displayField(candidate.Name) + " @" + displayField(candidate.Client)})
+	}
 	if s.workspacePaneStep == "detach-confirm" {
 		lines = append(lines, modalRenderLine{modalMuted, "  Remote session keeps running."})
 	}
@@ -303,6 +318,7 @@ func (s *tuiState) closeWorkspacePane() {
 	s.workspacePaneIntent = workspacePaneIntent{}
 	s.workspacePaneSourceID = ""
 	s.workspacePaneIdentity = ducklord.SessionIdentity{}
+	s.workspacePaneCandidate = ducklord.RemoteSession{}
 	s.workspacePaneIndex = 0
 }
 
@@ -406,7 +422,11 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 				s.workspacePaneStep = "move-target"
 			}
 		case "existing-move-confirm":
-			s.workspacePaneStep = "existing"
+			if s.workspacePaneCandidate.Client != "" {
+				s.workspacePaneStep = "drop-placement"
+			} else {
+				s.workspacePaneStep = "existing"
+			}
 		default:
 			s.closeWorkspacePane()
 		}
@@ -474,6 +494,15 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 				return false
 			}
 			s.workspacePaneStep, s.workspacePaneIndex, s.workspacePaneErr = "source", 0, ""
+		case "drop-placement":
+			s.workspacePaneIntent.placement = []ducklord.PanePlacement{ducklord.PlaceNewTab, ducklord.PlaceVertical, ducklord.PlaceHorizontal}[index]
+			if err := s.placeDroppedWorkspacePane(); err != nil {
+				s.workspacePaneErr = sanitizeTerminalText(err.Error())
+				return false
+			}
+			if s.workspacePaneStep == "drop-placement" {
+				s.closeWorkspacePane()
+			}
 		case "source":
 			if index == 0 {
 				intent := s.workspacePaneIntent
