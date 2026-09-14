@@ -514,6 +514,82 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	restartedCapture.waitCurrent(t, "sessions [host]", 20*time.Second)
 }
 
+// TestDucklordWorkspacePreviewContainerE2E proves that the new three-region
+// renderer is connected to the real TUI event loop, while preview and control
+// remain separate across the SSH/Ducklion/PTY boundary.
+func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
+	if os.Getenv("DUCKLORD_TUI_CONTAINER_E2E") != "1" {
+		t.Skip("run through scripts/ducklord-tui-e2e.sh")
+	}
+	runtime := requiredE2EEnv(t, "DUCKLORD_E2E_RUNTIME")
+	controller := requiredE2EEnv(t, "DUCKLORD_E2E_CONTROLLER")
+	handle := fmt.Sprintf("a0ws%d", time.Now().UnixNano())
+	start := exec.Command(runtime, "exec", controller, "ducklord", "--name", "workspace-e2e-cli", "start", "client-a", "--name", handle,
+		"--kind", "shell", "--cwd", "/home/duck", "--config", "/root/.ducklord/config.yaml", "--", "bash")
+	if out, startErr := start.CombinedOutput(); startErr != nil {
+		t.Fatalf("start isolated workspace shell: %v: %s", startErr, out)
+	}
+	defer func() {
+		_, _ = exec.Command(runtime, "exec", controller, "ducklord", "--name", "workspace-e2e-cli", "destroy", "client-a", handle,
+			"--config", "/root/.ducklord/config.yaml").CombinedOutput()
+	}()
+	home := fmt.Sprintf("/tmp/ducklord-workspace-e2e-%d", os.Getpid())
+	if out, setupErr := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/.ducklord").CombinedOutput(); setupErr != nil {
+		t.Fatalf("prepare isolated Ducklord state: %v: %s", setupErr, out)
+	}
+	if out, setupErr := exec.Command(runtime, "exec", controller, "ln", "-s", "/root/.ssh", home+"/.ssh").CombinedOutput(); setupErr != nil {
+		t.Fatalf("prepare isolated SSH config: %v: %s", setupErr, out)
+	}
+	defer func() { _, _ = exec.Command(runtime, "exec", controller, "rm", "-r", home).CombinedOutput() }()
+	binary := os.Getenv("DUCKLORD_E2E_BINARY")
+	if binary == "" {
+		binary = "ducklord"
+	}
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", "DUCKLORD_WORKSPACE_PREVIEW=1",
+		binary, "tui", "--name", "workspace-e2e", "--config", "/root/.ducklord/config.yaml")
+	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = terminal.Write([]byte("q"))
+		_ = terminal.Close()
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	}()
+	capture := newTUICapture(terminal)
+	for _, heading := range []string{"PROJECTS", "SESSIONS", "Default Project", "client-a/" + handle} {
+		capture.waitCurrent(t, heading, 20*time.Second)
+	}
+	capture.waitCurrent(t, "◇ client-a/"+handle, 10*time.Second)
+	// Digits are deliberately unbound list keys; letters could trigger a TUI
+	// shortcut and make this a false input-isolation test.
+	marker := fmt.Sprintf("%d", time.Now().UnixNano())
+	writePTY(t, terminal, marker)
+	assertAbsent := func() {
+		t.Helper()
+		for _, target := range []string{"alpha", handle} {
+			out, readErr := exec.Command(runtime, "exec", controller, "ducklord", "--name", "workspace-e2e-cli", "read", "client-a", target,
+				"--lines", "50", "--config", "/root/.ducklord/config.yaml").CombinedOutput()
+			if readErr != nil || bytes.Contains(out, []byte(marker)) {
+				t.Fatalf("preview input reached %s: err=%v output=%q", target, readErr, safeTerminalDiagnostic(string(out)))
+			}
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	assertAbsent()
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "▣ client-a/"+handle, 10*time.Second)
+	writePTY(t, terminal, "printf '"+marker+"'\r")
+	waitE2E(t, 10*time.Second, func() bool {
+		out, readErr := exec.Command(runtime, "exec", controller, "ducklord", "--name", "workspace-e2e-cli", "read", "client-a", handle,
+			"--lines", "50", "--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		return readErr == nil && bytes.Contains(out, []byte(marker))
+	}, func() string { return "focused shell did not receive PTY input" })
+	writePTY(t, terminal, "\x1d")
+	capture.waitCurrent(t, "◇ client-a/"+handle, 10*time.Second)
+}
+
 type tuiCapture struct {
 	mu     sync.Mutex
 	data   []byte

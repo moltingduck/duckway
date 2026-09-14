@@ -1276,6 +1276,7 @@ type tuiState struct {
 	groupMenuTarget           string
 	groupMenuSession          ducklord.SessionIdentity
 	pooledOutput              bool
+	workspacePreview          bool
 	searchMode                bool
 	searchQuery               string
 	searchSelected            int
@@ -1341,7 +1342,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	}
 	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner,
 		snapshotStore: ducklord.SnapshotStore{}, activityStore: activityStore, activityState: activityState, hostSync: make(map[string]ducklord.SessionUpdate), localWarning: stateWarning,
-		listPaneWidth: cfg.SessionListPaneWidth(), autoHideList: cfg.SessionListAutoHide(), disconnectedHosts: make(map[string]bool)}
+		listPaneWidth: cfg.SessionListPaneWidth(), autoHideList: cfg.SessionListAutoHide(), disconnectedHosts: make(map[string]bool),
+		workspacePreview: os.Getenv("DUCKLORD_WORKSPACE_PREVIEW") == "1"}
 	var outputManager *ducklord.TerminalOutputManager
 	var outputEvents <-chan ducklord.TerminalOutputEvent
 	if source, ok := runner.(ducklord.TerminalOutputSource); ok {
@@ -4220,6 +4222,10 @@ func controlMatchesSession(control *ducklord.ControlSession, session ducklord.Re
 
 func (s *tuiState) activePTYSize() (rows, cols uint16) {
 	width, height := terminalSize()
+	if s.workspacePreview {
+		geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+		return uint16(max(1, min(200, geometry.Terminal.Height-2))), uint16(max(1, min(500, geometry.Terminal.Width)))
+	}
 	layout := calculateTUILayout(width, true, s.listPaneWidth, s.autoHideList)
 	contentWidth := layout.contentWidth
 	contentHeight := height - 4
@@ -4294,6 +4300,10 @@ func (s *tuiState) saveSnapshot(session ducklord.RemoteSession, text string) {
 
 func (s *tuiState) render(out io.Writer) {
 	if s.copyMode {
+		return
+	}
+	if s.workspacePreview {
+		s.renderWorkspacePreview(out)
 		return
 	}
 	width, height := terminalSize()
@@ -7643,6 +7653,10 @@ func parseSGRMouse(seq string) (button, x, y int, ok bool) {
 
 func (s *tuiState) contentPanePoint(x, y int) bool {
 	width, height := terminalSize()
+	if s.workspacePreview {
+		pane := ducklord.CalculateWorkspaceGeometry(width, height, 4).Terminal
+		return x >= pane.X && x < pane.X+pane.Width && y >= pane.Y+2 && y < pane.Y+pane.Height
+	}
 	layout := calculateTUILayout(width, s.focused, s.listPaneWidth, s.autoHideList)
 	contentStart := 1
 	if layout.showList {
