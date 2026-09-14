@@ -20,6 +20,9 @@ type PaneOutputManager struct {
 	opener     terminalOutputOpenFunc
 	capacity   int
 	opMu       sync.Mutex
+	requestMu  sync.Mutex
+	requestID  uint64
+	requestEnd context.CancelFunc
 	mu         sync.RWMutex
 	priority   OutputKey
 	inputFocus OutputKey
@@ -51,11 +54,31 @@ func NewPaneOutputManager(parent context.Context, capacity int, source TerminalO
 // rendering. Priority selects output/LRU order; it does not grant input or
 // resize focus. The returned keys are never counted as live subscriptions.
 func (m *PaneOutputManager) SetVisible(ctx context.Context, priority TerminalSelection, visible []TerminalSelection) ([]OutputKey, error) {
+	requestCtx, requestEnd := context.WithCancel(ctx)
+	m.requestMu.Lock()
+	if m.requestEnd != nil {
+		m.requestEnd()
+	}
+	m.requestID++
+	requestID := m.requestID
+	m.requestEnd = requestEnd
+	m.requestMu.Unlock()
+	defer func() {
+		requestEnd()
+		m.requestMu.Lock()
+		if m.requestID == requestID {
+			m.requestEnd = nil
+		}
+		m.requestMu.Unlock()
+	}()
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-	workCtx, cancel := context.WithCancel(ctx)
+	workCtx, cancel := context.WithCancel(requestCtx)
 	stop := context.AfterFunc(m.ctx, cancel)
 	defer func() { stop(); cancel() }()
+	if err := workCtx.Err(); err != nil {
+		return nil, err
+	}
 	if err := m.ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -112,6 +135,9 @@ func (m *PaneOutputManager) SetVisible(ctx context.Context, priority TerminalSel
 		if err := m.activate(workCtx, priority); err != nil {
 			failures = append(failures, fmt.Errorf("focused Session: %w", err))
 		}
+	}
+	if err := workCtx.Err(); err != nil {
+		return overflow, err
 	}
 	m.mu.Lock()
 	m.priority = priority.key()
@@ -295,6 +321,11 @@ func (m *PaneOutputManager) ResizeFocused(key OutputKey, rows, cols uint16, resi
 
 func (m *PaneOutputManager) Close() error {
 	m.cancel()
+	m.requestMu.Lock()
+	if m.requestEnd != nil {
+		m.requestEnd()
+	}
+	m.requestMu.Unlock()
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 	m.mu.Lock()

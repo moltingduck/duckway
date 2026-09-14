@@ -1282,7 +1282,11 @@ func (r *Runner) OpenControlSession(ctx context.Context, c Client, sessionRef st
 		}
 	}()
 	resize := func(rows, cols uint16) (uint64, error) {
-		result, resizeErr := client.ResizeWithBarrierContext(controlCtx, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, rows, cols)
+		// Pane focus transitions serialize with resize. Bound this remote call
+		// so a disconnected bridge cannot pin focus or shutdown indefinitely.
+		resizeCtx, resizeCancel := context.WithTimeout(controlCtx, 15*time.Second)
+		defer resizeCancel()
+		result, resizeErr := client.ResizeWithBarrierContext(resizeCtx, selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, rows, cols)
 		return result.OutputOffset, resizeErr
 	}
 	return &ControlSession{Stdin: writer, Done: done, ResizeBarrier: resize, ClientKey: c.Name, InstanceID: client.InstanceID(), SessionID: selected.SessionID,

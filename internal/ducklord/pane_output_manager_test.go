@@ -154,6 +154,52 @@ func TestPaneOutputManagerFocusChangeWaitsForRemoteResize(t *testing.T) {
 	}
 }
 
+func TestPaneOutputManagerNewVisibleRequestCancelsSlowPreviousOpen(t *testing.T) {
+	manager, _, _ := newTestPaneOutputManager(t, 2)
+	a, b := paneSelection("AAA111"), paneSelection("BBB222")
+	started := make(chan struct{})
+	manager.opener = func(ctx context.Context, selection TerminalSelection, key OutputKey, revision OutputRevision, _ *TerminalRenderState) (*PooledTerminal, error) {
+		if selection.SessionID == a.SessionID {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return newPooledTerminal(ctx, OutputStreamMetadata{InstanceID: key.InstanceID, SessionID: key.SessionID,
+			RuntimeGeneration: revision.RuntimeGeneration}, newFakePooledOutput(), PooledTerminalOptions{ExpectedKey: key,
+			ExpectedRevision: revision, Rows: selection.Rows, Cols: selection.Cols, Scrollback: 8, Store: manager.store})
+	}
+	first := make(chan error, 1)
+	go func() {
+		_, err := manager.SetVisible(context.Background(), a, nil)
+		first <- err
+	}()
+	<-started
+	second := make(chan error, 1)
+	go func() {
+		_, err := manager.SetVisible(context.Background(), b, nil)
+		second <- err
+	}()
+	select {
+	case err := <-first:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("superseded open error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("superseded open was not canceled")
+	}
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("new visible pane waited for stale host")
+	}
+	if view, err := manager.View(b.key()); err != nil || !view.Ready {
+		t.Fatalf("new pane view=%+v err=%v", view, err)
+	}
+}
+
 func TestPaneOutputManagerFailedHandoffPreservesPreviousView(t *testing.T) {
 	manager, _, _ := newTestPaneOutputManager(t, 1)
 	a, b := paneSelection("AAA111"), paneSelection("BBB222")

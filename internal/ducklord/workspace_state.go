@@ -195,6 +195,29 @@ func (w *WorkspaceState) FocusPane() (SessionIdentity, error) {
 	return SessionIdentity{}, fmt.Errorf("current Session pane no longer exists")
 }
 
+// FocusVisiblePane is the TUI entry point for granting PTY input and resize.
+// A pane hidden by a narrow split can still be selected for navigation, but
+// it must not become a writer target until it is actually displayed.
+func (w *WorkspaceState) FocusVisiblePane(geometry WorkspaceGeometry) (SessionIdentity, error) {
+	if w.detail {
+		return w.FocusPane()
+	}
+	project := w.layout.Project(w.location.projectID)
+	if project == nil || !project.hasPane(w.location.tabID, w.location.paneID) {
+		return SessionIdentity{}, fmt.Errorf("current Session pane no longer exists")
+	}
+	identity, ok := w.layout.PaneSession(w.location.projectID, w.location.paneID)
+	if !ok {
+		return SessionIdentity{}, fmt.Errorf("current Session pane no longer exists")
+	}
+	for _, visible := range WorkspaceVisibleSessions(w.layout, w, geometry) {
+		if visible == identity {
+			return w.FocusPane()
+		}
+	}
+	return SessionIdentity{}, fmt.Errorf("current Session pane is hidden by the terminal size")
+}
+
 func (w *WorkspaceState) EnterDetail() {
 	if w.detail {
 		return

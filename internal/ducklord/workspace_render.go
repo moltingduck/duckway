@@ -19,9 +19,11 @@ type WorkspaceListItem struct {
 }
 
 type WorkspacePaneView struct {
-	Title string
-	Lines []string // already VT-rendered and bounded by the source Terminal
-	Stale bool
+	Title    string
+	Lines    []string // already VT-rendered and bounded by the source Terminal
+	Stale    bool
+	Focused  bool
+	ReadOnly bool
 }
 
 type WorkspaceRect struct{ X, Y, Width, Height int }
@@ -118,16 +120,71 @@ func RenderWorkspaceBody(out io.Writer, geometry WorkspaceGeometry, layout *Proj
 		}
 		tabs = append(tabs, fmt.Sprintf(" %s%d ", marker, i+1))
 	}
-	workspaceWrite(out, terminal.X, terminal.Y, terminal.Width, " "+project.Name+"  "+strings.Join(tabs, ""), "\x1b[1;36m")
 	content := WorkspaceRect{X: terminal.X, Y: terminal.Y + 1, Width: terminal.Width, Height: terminal.Height - 1}
 	if active == nil && len(project.Tabs) != 0 {
 		active = &project.Tabs[0]
 	}
 	if active == nil || active.Root == nil {
+		workspaceWrite(out, terminal.X, terminal.Y, terminal.Width, " "+project.Name+"  "+strings.Join(tabs, ""), "\x1b[1;36m")
 		workspaceWrite(out, content.X, content.Y, content.Width, "No Session panes in this Project", "\x1b[2m")
 		return
 	}
+	_, hidden := workspaceVisibleLeaves(active.Root, content)
+	heading := " " + project.Name + "  " + strings.Join(tabs, "")
+	if hidden > 0 {
+		heading += fmt.Sprintf(" +%d hidden", hidden)
+	}
+	workspaceWrite(out, terminal.X, terminal.Y, terminal.Width, heading, "\x1b[1;36m")
 	renderWorkspaceNode(out, active.Root, content, nav.CurrentPaneID(), paneView)
+}
+
+// WorkspaceVisibleSessions uses the same split geometry as the renderer, so
+// a suppressed leaf cannot consume a raw-output subscription or receive focus.
+func WorkspaceVisibleSessions(layout *ProjectLayout, nav *WorkspaceState, geometry WorkspaceGeometry) []SessionIdentity {
+	if layout == nil || nav == nil {
+		return nil
+	}
+	project := layout.Project(nav.CurrentProjectID())
+	if project == nil {
+		return nil
+	}
+	content := geometry.Terminal
+	content.Y++
+	content.Height--
+	for _, tab := range project.Tabs {
+		if tab.ID == nav.CurrentTabID() {
+			leaves, _ := workspaceVisibleLeaves(tab.Root, content)
+			return leaves
+		}
+	}
+	return nil
+}
+
+func workspaceVisibleLeaves(node *SessionPane, rect WorkspaceRect) ([]SessionIdentity, int) {
+	if node == nil || rect.Width < 1 || rect.Height < 1 {
+		return nil, len(node.sessions())
+	}
+	if node.Session != nil {
+		return []SessionIdentity{*node.Session}, 0
+	}
+	if node.Direction == SplitHorizontal {
+		firstHeight := rect.Height / 2
+		if firstHeight < 1 || rect.Height-firstHeight < 1 {
+			leaves, hidden := workspaceVisibleLeaves(node.First, rect)
+			return leaves, hidden + len(node.Second.sessions())
+		}
+		first, firstHidden := workspaceVisibleLeaves(node.First, WorkspaceRect{X: rect.X, Y: rect.Y, Width: rect.Width, Height: firstHeight})
+		second, secondHidden := workspaceVisibleLeaves(node.Second, WorkspaceRect{X: rect.X, Y: rect.Y + firstHeight, Width: rect.Width, Height: rect.Height - firstHeight})
+		return append(first, second...), firstHidden + secondHidden
+	}
+	firstWidth := rect.Width / 2
+	if firstWidth < 1 || rect.Width-firstWidth < 1 {
+		leaves, hidden := workspaceVisibleLeaves(node.First, rect)
+		return leaves, hidden + len(node.Second.sessions())
+	}
+	first, firstHidden := workspaceVisibleLeaves(node.First, WorkspaceRect{X: rect.X, Y: rect.Y, Width: firstWidth, Height: rect.Height})
+	second, secondHidden := workspaceVisibleLeaves(node.Second, WorkspaceRect{X: rect.X + firstWidth, Y: rect.Y, Width: rect.Width - firstWidth, Height: rect.Height})
+	return append(first, second...), firstHidden + secondHidden
 }
 
 func renderWorkspaceColumn(out io.Writer, rect WorkspaceRect, title string, row func(int) string) {
@@ -175,8 +232,16 @@ func renderWorkspaceNode(out io.Writer, node *SessionPane, rect WorkspaceRect, s
 		data.Title = node.Session.SessionID
 	}
 	marker, color := " ", "\x1b[2;37m"
+	if data.ReadOnly {
+		marker, color = "◌", "\x1b[1;33m"
+	}
 	if node.ID == selectedPaneID {
-		marker, color = "▣", "\x1b[1;36m"
+		marker, color = "◇", "\x1b[1;36m"
+		if data.ReadOnly {
+			marker, color = "◌", "\x1b[1;33m"
+		} else if data.Focused {
+			marker, color = "▣", "\x1b[1;32m"
+		}
 	}
 	if data.Stale {
 		data.Title += " [stale]"

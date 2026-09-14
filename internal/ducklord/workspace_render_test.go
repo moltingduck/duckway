@@ -70,3 +70,68 @@ func TestWorkspaceVTLineRejectsCursorAndOSCInjection(t *testing.T) {
 		t.Fatalf("safe SGR color lost: %q", text)
 	}
 }
+
+func TestWorkspaceRendererDistinguishesFocusAndReadonly(t *testing.T) {
+	layout := NewProjectLayout()
+	a := testLayoutIdentity("ABC123")
+	if err := layout.Discover(a); err != nil {
+		t.Fatal(err)
+	}
+	nav, err := NewWorkspaceState(&layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	geometry := WorkspaceGeometry{Terminal: WorkspaceRect{X: 1, Y: 1, Width: 70, Height: 4}}
+	render := func(view WorkspacePaneView) string {
+		var out bytes.Buffer
+		RenderWorkspaceBody(&out, geometry, &layout, nav, nil, nil, func(SessionIdentity, int, int) WorkspacePaneView { return view })
+		return out.String()
+	}
+	if got := render(WorkspacePaneView{Title: "Codex"}); !strings.Contains(got, "◇ Codex") {
+		t.Fatalf("selected preview not distinguished: %q", got)
+	}
+	if got := render(WorkspacePaneView{Title: "Codex", Focused: true}); !strings.Contains(got, "▣ Codex") {
+		t.Fatalf("focused writer not distinguished: %q", got)
+	}
+	if got := render(WorkspacePaneView{Title: "Codex", Focused: true, ReadOnly: true}); !strings.Contains(got, "◌ Codex") || strings.Contains(got, "▣ Codex") {
+		t.Fatalf("readonly pane appeared writable: %q", got)
+	}
+}
+
+func TestWorkspaceVisibleSessionsMatchesSuppressedSplit(t *testing.T) {
+	layout := NewProjectLayout()
+	a, b := testLayoutIdentity("ABC123"), testLayoutIdentity("DEF456")
+	first, err := layout.Place(DefaultProjectID, a, PlaceNewTab, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := layout.Place(DefaultProjectID, b, PlaceHorizontal, first); err != nil {
+		t.Fatal(err)
+	}
+	nav, err := NewWorkspaceState(&layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrow := WorkspaceGeometry{Terminal: WorkspaceRect{X: 1, Y: 1, Width: 70, Height: 2}}
+	if got := WorkspaceVisibleSessions(&layout, nav, narrow); len(got) != 1 || got[0] != a {
+		t.Fatalf("suppressed pane remained subscribed: %+v", got)
+	}
+	var out bytes.Buffer
+	RenderWorkspaceBody(&out, narrow, &layout, nav, nil, nil, nil)
+	if !strings.Contains(out.String(), "+1 hidden") {
+		t.Fatalf("suppressed pane was invisible to user: %q", out.String())
+	}
+	if err := nav.SelectQuickSession(b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nav.FocusVisiblePane(narrow); err == nil {
+		t.Fatal("hidden split pane acquired PTY input focus")
+	}
+	wide := WorkspaceGeometry{Terminal: WorkspaceRect{X: 1, Y: 1, Width: 70, Height: 6}}
+	if got := WorkspaceVisibleSessions(&layout, nav, wide); len(got) != 2 || got[0] != a || got[1] != b {
+		t.Fatalf("restored split not visible: %+v", got)
+	}
+	if focused, err := nav.FocusVisiblePane(wide); err != nil || focused != b {
+		t.Fatalf("visible pane focus=%+v err=%v", focused, err)
+	}
+}
