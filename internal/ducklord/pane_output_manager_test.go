@@ -200,6 +200,92 @@ func TestPaneOutputManagerNewVisibleRequestCancelsSlowPreviousOpen(t *testing.T)
 	}
 }
 
+func TestPaneOutputManagerOtherHostDisconnectDoesNotCancelVisibleOpen(t *testing.T) {
+	manager, _, _ := newTestPaneOutputManager(t, 2)
+	b := paneSelection("BBB222")
+	b.Client.Name = "host-b"
+	started, release := make(chan struct{}), make(chan struct{})
+	manager.opener = func(ctx context.Context, selection TerminalSelection, key OutputKey, revision OutputRevision, _ *TerminalRenderState) (*PooledTerminal, error) {
+		close(started)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return newPooledTerminal(ctx, OutputStreamMetadata{InstanceID: key.InstanceID, SessionID: key.SessionID,
+			RuntimeGeneration: revision.RuntimeGeneration}, newFakePooledOutput(), PooledTerminalOptions{ExpectedKey: key,
+			ExpectedRevision: revision, Rows: selection.Rows, Cols: selection.Cols, Scrollback: 8, Store: manager.store})
+	}
+	opened := make(chan error, 1)
+	go func() { _, err := manager.SetVisible(context.Background(), b, nil); opened <- err }()
+	<-started
+	disconnected := make(chan error, 1)
+	go func() { disconnected <- manager.DisconnectHost("host-a", b.InstanceID) }()
+	close(release)
+	if err := <-opened; err != nil {
+		t.Fatalf("unrelated host canceled visible open: %v", err)
+	}
+	if err := <-disconnected; err != nil {
+		t.Fatal(err)
+	}
+	if view, err := manager.View(b.key()); err != nil || !view.Ready {
+		t.Fatalf("other host lost live pane: view=%+v err=%v", view, err)
+	}
+}
+
+func TestPaneOutputManagerHostDisconnectAndReplacementFenceLeases(t *testing.T) {
+	manager, readers, readersMu := newTestPaneOutputManager(t, 2)
+	a := paneSelection("AAA111")
+	if _, err := manager.SetVisible(context.Background(), a, nil); err != nil {
+		t.Fatal(err)
+	}
+	readersMu.Lock()
+	first := readers[a.SessionID]
+	readersMu.Unlock()
+	if err := manager.SetInputFocus(a.key()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.DisconnectHost(a.Client.Name, a.InstanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.View(a.key()); !errors.Is(err, ErrStaleOutputLease) {
+		t.Fatalf("disconnected host appeared live: %v", err)
+	}
+	if _, err := manager.ResizeFocused(a.key(), 4, 50, func(uint16, uint16) (uint64, error) {
+		t.Fatal("disconnected host reached remote resize")
+		return 0, nil
+	}); err == nil {
+		t.Fatal("disconnected host retained input focus")
+	}
+	if _, err := manager.SetVisible(context.Background(), a, nil); err != nil {
+		t.Fatalf("same-instance replay reconnect failed: %v", err)
+	}
+	readersMu.Lock()
+	second := readers[a.SessionID]
+	readersMu.Unlock()
+	if second == first {
+		t.Fatal("same-instance reconnect reused old raw-output stream")
+	}
+	if _, err := manager.View(a.key()); err != nil {
+		t.Fatalf("reconnected host has no live view: %v", err)
+	}
+	if err := manager.ForgetHost(a.Client.Name, a.InstanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.SetVisible(context.Background(), a, nil); !errors.Is(err, ErrStaleOutputLease) {
+		t.Fatalf("retired instance was revived: %v", err)
+	}
+	b := a
+	b.InstanceID = "39d1d165-a1c1-4db8-9354-4b380c4812a0"
+	if _, err := manager.SetVisible(context.Background(), b, nil); err != nil {
+		t.Fatalf("replacement instance was blocked: %v", err)
+	}
+	manager.ClearVisible()
+	if _, err := manager.View(b.key()); !errors.Is(err, ErrStaleOutputLease) {
+		t.Fatalf("cleared pane was still presented: %v", err)
+	}
+}
+
 func TestPaneOutputManagerFailedHandoffPreservesPreviousView(t *testing.T) {
 	manager, _, _ := newTestPaneOutputManager(t, 1)
 	a, b := paneSelection("AAA111"), paneSelection("BBB222")

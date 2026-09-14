@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -590,14 +591,146 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "◇ client-a/"+handle, 10*time.Second)
 }
 
+// TestDucklordWorkspaceTwoLivePanesContainerE2E proves that split panes keep
+// separate, concurrent SSH/Ducklion raw subscriptions without list selection.
+func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
+	if os.Getenv("DUCKLORD_TUI_CONTAINER_E2E") != "1" {
+		t.Skip("run through scripts/ducklord-tui-e2e.sh")
+	}
+	runtime := requiredE2EEnv(t, "DUCKLORD_E2E_RUNTIME")
+	controller := requiredE2EEnv(t, "DUCKLORD_E2E_CONTROLLER")
+	binary := os.Getenv("DUCKLORD_E2E_BINARY")
+	if binary == "" {
+		binary = "ducklord"
+	}
+	var sessions []protocol.SessionSummary
+	for _, suffix := range []string{"a", "b"} {
+		handle := fmt.Sprintf("ws2%s%x", suffix, time.Now().UnixNano()&0xffffff)
+		out, err := exec.Command(runtime, "exec", controller, binary, "--name", "workspace-two-cli", "start", "client-a", "--name", handle,
+			"--kind", "shell", "--cwd", "/home/duck", "--config", "/root/.ducklord/config.yaml", "--", "bash").CombinedOutput()
+		if err != nil {
+			t.Fatalf("start %s: %v: %s", handle, err, out)
+		}
+		t.Cleanup(func() {
+			_, _ = exec.Command(runtime, "exec", controller, binary, "--name", "workspace-two-cli", "destroy", "client-a", handle,
+				"--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		})
+		for _, session := range listContainerSessions(t, runtime, controller, "client-a") {
+			if session.Handle == handle {
+				sessions = append(sessions, session)
+				break
+			}
+		}
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("dedicated sessions missing: %+v", sessions)
+	}
+	remoteA, ok := findContainerSession(t, runtime, controller, "client-a", sessions[0].SessionID)
+	if !ok {
+		t.Fatal("first session identity missing")
+	}
+	remoteB, ok := findContainerSession(t, runtime, controller, "client-a", sessions[1].SessionID)
+	if !ok {
+		t.Fatal("second session identity missing")
+	}
+	a, _ := ducklord.IdentityFromSession(remoteA)
+	b, _ := ducklord.IdentityFromSession(remoteB)
+	state := ducklord.NewActivityState()
+	projectID, err := state.ProjectLayout.AddProject("Live split")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPane, err := state.ProjectLayout.Place(projectID, a, ducklord.PlaceNewTab, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.ProjectLayout.Place(projectID, b, ducklord.PlaceVertical, firstPane); err != nil {
+		t.Fatal(err)
+	}
+	home := fmt.Sprintf("/tmp/ducklord-two-pane-e2e-%d", os.Getpid())
+	if out, err := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/.ducklord").CombinedOutput(); err != nil {
+		t.Fatalf("prepare isolated home: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _, _ = exec.Command(runtime, "exec", controller, "rm", "-r", home).CombinedOutput() })
+	if out, err := exec.Command(runtime, "exec", controller, "ln", "-s", "/root/.ssh", home+"/.ssh").CombinedOutput(); err != nil {
+		t.Fatalf("link isolated SSH: %v: %s", err, out)
+	}
+	localState := filepath.Join(t.TempDir(), "state.json")
+	if err := (ducklord.ActivityStateStore{Path: localState}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(runtime, "cp", localState, controller+":"+home+"/.ducklord/state.json").CombinedOutput(); err != nil {
+		t.Fatalf("install isolated layout: %v: %s", err, out)
+	}
+	owner := fmt.Sprintf("workspace-two-%d", time.Now().UnixNano())
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", "DUCKLORD_WORKSPACE_PREVIEW=1",
+		binary, "tui", "--name", owner, "--config", "/root/.ducklord/config.yaml")
+	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = terminal.Write([]byte("\x1bq"))
+		time.Sleep(300 * time.Millisecond)
+		if listing, err := exec.Command(runtime, "exec", controller, "ps", "-ef").Output(); err == nil {
+			needle := binary + " tui --name " + owner + " --config"
+			for _, line := range strings.Split(string(listing), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) < 3 || !strings.Contains(line, needle) {
+					continue
+				}
+				if pid, parseErr := strconv.Atoi(fields[0]); parseErr == nil {
+					_, _ = exec.Command(runtime, "exec", controller, "kill", strconv.Itoa(pid)).CombinedOutput()
+				}
+			}
+		}
+		_ = terminal.Close()
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	})
+	capture := newSizedTUICapture(terminal, 24, 120)
+	capture.waitCurrent(t, sessions[0].Handle, 20*time.Second)
+	writePTY(t, terminal, "/"+sessions[0].Handle+"\r")
+	capture.waitCurrent(t, "Active · Enter again to focus", 20*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Session focus:", 20*time.Second)
+	writePTY(t, terminal, "\x1d")
+	capture.waitCurrent(t, "client-a/"+sessions[0].Handle, 20*time.Second)
+	for _, handle := range []string{sessions[0].Handle, sessions[1].Handle} {
+		capture.waitCurrent(t, "client-a/"+handle, 20*time.Second)
+	}
+	for round := 1; round <= 2; round++ {
+		markers := []string{fmt.Sprintf("LIVEA%d-%d", round, os.Getpid()), fmt.Sprintf("LIVEB%d-%d", round, os.Getpid())}
+		for i, session := range sessions {
+			out, err := exec.Command(runtime, "exec", controller, binary, "--name", "workspace-two-cli", "send", "client-a", session.Handle,
+				"printf '"+markers[i]+"\\n'", "--config", "/root/.ducklord/config.yaml").CombinedOutput()
+			if err != nil {
+				t.Fatalf("send marker %s: %v: %s", markers[i], err, out)
+			}
+		}
+		waitE2E(t, 20*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, markers[0]) && strings.Contains(screen, markers[1])
+		}, func() string {
+			return "split pane markers not simultaneously live: " + safeTerminalDiagnostic(capture.currentText())
+		})
+	}
+}
+
 type tuiCapture struct {
 	mu     sync.Mutex
 	data   []byte
 	screen *ducklord.Terminal
+	rows   int
+	cols   int
 }
 
 func newTUICapture(terminal *os.File) *tuiCapture {
-	capture := &tuiCapture{screen: ducklord.NewTerminal(24, 80, 0)}
+	return newSizedTUICapture(terminal, 24, 80)
+}
+
+func newSizedTUICapture(terminal *os.File, rows, cols int) *tuiCapture {
+	capture := &tuiCapture{screen: ducklord.NewTerminal(rows, cols, 0), rows: rows, cols: cols}
 	go func() {
 		buffer := make([]byte, 8192)
 		for {
@@ -619,7 +752,7 @@ func newTUICapture(terminal *os.File) *tuiCapture {
 func (c *tuiCapture) currentText() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return strings.Join(c.screen.RenderLines(24, 80), "\n")
+	return strings.Join(c.screen.RenderLines(c.rows, c.cols), "\n")
 }
 
 func (c *tuiCapture) waitCurrent(t *testing.T, needle string, timeout time.Duration) {

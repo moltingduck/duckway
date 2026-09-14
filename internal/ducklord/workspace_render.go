@@ -28,6 +28,11 @@ type WorkspacePaneView struct {
 
 type WorkspaceRect struct{ X, Y, Width, Height int }
 
+type VisibleWorkspacePane struct {
+	Identity SessionIdentity
+	Rect     WorkspaceRect
+}
+
 type WorkspaceGeometry struct {
 	Projects WorkspaceRect
 	Quick    WorkspaceRect
@@ -141,6 +146,17 @@ func RenderWorkspaceBody(out io.Writer, geometry WorkspaceGeometry, layout *Proj
 // WorkspaceVisibleSessions uses the same split geometry as the renderer, so
 // a suppressed leaf cannot consume a raw-output subscription or receive focus.
 func WorkspaceVisibleSessions(layout *ProjectLayout, nav *WorkspaceState, geometry WorkspaceGeometry) []SessionIdentity {
+	panes := WorkspaceVisiblePaneRects(layout, nav, geometry)
+	sessions := make([]SessionIdentity, 0, len(panes))
+	for _, pane := range panes {
+		sessions = append(sessions, pane.Identity)
+	}
+	return sessions
+}
+
+// WorkspaceVisiblePaneRects is the subscription set and size for the exact
+// tab/split cells drawn by RenderWorkspaceBody. Hidden branches are absent.
+func WorkspaceVisiblePaneRects(layout *ProjectLayout, nav *WorkspaceState, geometry WorkspaceGeometry) []VisibleWorkspacePane {
 	if layout == nil || nav == nil {
 		return nil
 	}
@@ -153,11 +169,35 @@ func WorkspaceVisibleSessions(layout *ProjectLayout, nav *WorkspaceState, geomet
 	content.Height--
 	for _, tab := range project.Tabs {
 		if tab.ID == nav.CurrentTabID() {
-			leaves, _ := workspaceVisibleLeaves(tab.Root, content)
-			return leaves
+			return workspaceCollectVisiblePanes(tab.Root, content)
 		}
 	}
 	return nil
+}
+
+func workspaceCollectVisiblePanes(node *SessionPane, rect WorkspaceRect) []VisibleWorkspacePane {
+	if node == nil || rect.Width < 1 || rect.Height < 1 {
+		return nil
+	}
+	if node.Session != nil {
+		return []VisibleWorkspacePane{{Identity: *node.Session, Rect: rect}}
+	}
+	if node.Direction == SplitHorizontal {
+		firstHeight := rect.Height / 2
+		if firstHeight < 1 || rect.Height-firstHeight < 1 {
+			return workspaceCollectVisiblePanes(node.First, rect)
+		}
+		first := workspaceCollectVisiblePanes(node.First, WorkspaceRect{X: rect.X, Y: rect.Y, Width: rect.Width, Height: firstHeight})
+		second := workspaceCollectVisiblePanes(node.Second, WorkspaceRect{X: rect.X, Y: rect.Y + firstHeight, Width: rect.Width, Height: rect.Height - firstHeight})
+		return append(first, second...)
+	}
+	firstWidth := rect.Width / 2
+	if firstWidth < 1 || rect.Width-firstWidth < 1 {
+		return workspaceCollectVisiblePanes(node.First, rect)
+	}
+	first := workspaceCollectVisiblePanes(node.First, WorkspaceRect{X: rect.X, Y: rect.Y, Width: firstWidth, Height: rect.Height})
+	second := workspaceCollectVisiblePanes(node.Second, WorkspaceRect{X: rect.X + firstWidth, Y: rect.Y, Width: rect.Width - firstWidth, Height: rect.Height})
+	return append(first, second...)
 }
 
 // WorkspaceVisiblePaneRect returns the selected leaf's actual screen cell.

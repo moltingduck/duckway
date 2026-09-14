@@ -42,6 +42,50 @@ func (s *tuiState) workspacePaneRect() (ducklord.WorkspaceRect, error) {
 	return s.workspacePaneRectAt(width, height)
 }
 
+func (s *tuiState) workspaceVisibleSelections(selected ducklord.TerminalSelection) []ducklord.TerminalSelection {
+	width, height := terminalSize()
+	layout := &s.activity().ProjectLayout
+	nav, err := ducklord.NewWorkspaceState(layout)
+	if err != nil {
+		return nil
+	}
+	if identity, ok := ducklord.IdentityFromSession(s.currentSession()); ok {
+		_ = nav.SelectQuickSession(identity)
+	}
+	panes := ducklord.WorkspaceVisiblePaneRects(layout, nav, ducklord.CalculateWorkspaceGeometry(width, height, 4))
+	result := make([]ducklord.TerminalSelection, 0, len(panes))
+	seen := make(map[ducklord.SessionIdentity]bool, len(panes))
+	for _, pane := range panes {
+		if seen[pane.Identity] {
+			continue
+		}
+		seen[pane.Identity] = true
+		var chosen ducklord.RemoteSession
+		for _, session := range s.sessions {
+			identity, ok := ducklord.IdentityFromSession(session)
+			if !ok || identity != pane.Identity || !canRead(session) || !s.hostIsLive(session.Client) || session.RuntimeGeneration == 0 {
+				continue
+			}
+			if chosen.SessionID == "" || session.Client == selected.Client.Name {
+				chosen = session
+			}
+			if session.Client == selected.Client.Name {
+				break
+			}
+		}
+		if chosen.SessionID == "" {
+			continue
+		}
+		client, err := mustClient(s.cfg, chosen.Client)
+		if err != nil {
+			continue
+		}
+		result = append(result, ducklord.TerminalSelection{Client: client, InstanceID: chosen.InstanceID, SessionID: chosen.SessionID,
+			RuntimeGeneration: chosen.RuntimeGeneration, Rows: max(1, pane.Rect.Height-1), Cols: max(1, pane.Rect.Width)})
+	}
+	return result
+}
+
 // renderWorkspacePreview is the first live TUI integration of the Project
 // renderer. The legacy event loop still owns control and one output stream;
 // it is deliberately opt-in until multi-pane output and navigation are wired.
@@ -86,6 +130,13 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 			Unread: session.Unread, Selected: sessionKey(session) == sessionKey(selected)})
 	}
 	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	var visibleOutput map[ducklord.SessionIdentity]ducklord.TerminalSelection
+	if s.workspaceOutput != nil {
+		visibleOutput = make(map[ducklord.SessionIdentity]ducklord.TerminalSelection)
+		for _, selection := range s.workspaceVisibleSelections(ducklord.TerminalSelection{Client: ducklord.Client{Name: selected.Client}}) {
+			visibleOutput[ducklord.SessionIdentity{InstanceID: selection.InstanceID, SessionID: selection.SessionID}] = selection
+		}
+	}
 	ducklord.RenderWorkspaceBody(out, geometry, layout, nav, items, func(projectID string) bool {
 		for _, session := range s.sessions {
 			identity, ok := ducklord.IdentityFromSession(session)
@@ -108,7 +159,18 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 				Stale: true, ReadOnly: session.Kind != string(model.KindShell) &&
 					(session.WriterKind != string(model.OwnerTerminal) || session.WriterID != s.ownerName)}
 			if sessionKey(session) != sessionKey(selected) {
-				view.Lines = []string{sanitizeTerminalText(session.LastLine), "PTY preview pending"}
+				if selection, ok := visibleOutput[identity]; ok && s.workspaceOutput != nil {
+					key := ducklord.OutputKey{ClientKey: selection.Client.Name, InstanceID: selection.InstanceID, SessionID: selection.SessionID}
+					if live, err := s.workspaceOutput.PaneView(key); err == nil && live.Ready && !live.Disconnected && !live.Ended &&
+						live.RuntimeGeneration == selection.RuntimeGeneration {
+						if terminal, valid := ducklord.NewTerminalFromState(live.Framebuffer, ducklord.DefaultTerminalScrollback); valid {
+							view.Lines = terminal.RenderLinesOffset(rows, cols, 0)
+							view.Stale = false
+							return view
+						}
+					}
+				}
+				view.Lines = []string{sanitizeTerminalText(session.LastLine), "PTY output unavailable"}
 				return view
 			}
 			view.Focused = s.focused && s.activeAttachKey == sessionKey(session)

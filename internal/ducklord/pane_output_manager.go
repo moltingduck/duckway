@@ -12,27 +12,28 @@ import (
 // focus separate from stream identity and never silently presents an evicted
 // pane as live.
 type PaneOutputManager struct {
-	ctx        context.Context
-	cancel     context.CancelFunc
-	pool       *OutputPool
-	source     TerminalOutputSource
-	store      SnapshotStore
-	opener     terminalOutputOpenFunc
-	capacity   int
-	opMu       sync.Mutex
-	requestMu  sync.Mutex
-	requestID  uint64
-	requestEnd context.CancelFunc
-	mu         sync.RWMutex
-	priority   OutputKey
-	inputFocus OutputKey
-	focusEpoch uint64
-	visible    map[OutputKey]OutputRevision
-	leases     map[OutputKey]OutputActivation
-	watchers   map[OutputKey]context.CancelFunc
-	dirty      map[OutputKey]bool
-	dirtyReady chan struct{}
-	workers    sync.WaitGroup
+	ctx          context.Context
+	cancel       context.CancelFunc
+	pool         *OutputPool
+	source       TerminalOutputSource
+	store        SnapshotStore
+	opener       terminalOutputOpenFunc
+	capacity     int
+	opMu         sync.Mutex
+	requestMu    sync.Mutex
+	requestID    uint64
+	requestEnd   context.CancelFunc
+	requestHosts map[OutputKey]bool
+	mu           sync.RWMutex
+	priority     OutputKey
+	inputFocus   OutputKey
+	focusEpoch   uint64
+	visible      map[OutputKey]OutputRevision
+	leases       map[OutputKey]OutputActivation
+	watchers     map[OutputKey]context.CancelFunc
+	dirty        map[OutputKey]bool
+	dirtyReady   chan struct{}
+	workers      sync.WaitGroup
 }
 
 func NewPaneOutputManager(parent context.Context, capacity int, source TerminalOutputSource, store SnapshotStore) (*PaneOutputManager, error) {
@@ -62,12 +63,18 @@ func (m *PaneOutputManager) SetVisible(ctx context.Context, priority TerminalSel
 	m.requestID++
 	requestID := m.requestID
 	m.requestEnd = requestEnd
+	m.requestHosts = make(map[OutputKey]bool, len(visible)+1)
+	m.requestHosts[priority.key()] = true
+	for _, selection := range visible {
+		m.requestHosts[selection.key()] = true
+	}
 	m.requestMu.Unlock()
 	defer func() {
 		requestEnd()
 		m.requestMu.Lock()
 		if m.requestID == requestID {
 			m.requestEnd = nil
+			m.requestHosts = nil
 		}
 		m.requestMu.Unlock()
 	}()
@@ -288,6 +295,27 @@ func (m *PaneOutputManager) View(key OutputKey) (PooledTerminalView, error) {
 	return m.pool.TerminalView(key, activation.Lease)
 }
 
+// Activation returns the exact visible lease for an event-loop fence. A
+// caller must still use ViewLease when it consumes a delayed event.
+func (m *PaneOutputManager) Activation(key OutputKey) (OutputActivation, error) {
+	m.mu.RLock()
+	activation, ok := m.leases[key]
+	revision, visible := m.visible[key]
+	m.mu.RUnlock()
+	if !ok || !visible || activation.Revision != revision {
+		return OutputActivation{}, ErrStaleOutputLease
+	}
+	return activation, nil
+}
+
+func (m *PaneOutputManager) ViewLease(key OutputKey, lease uint64) (PooledTerminalView, error) {
+	activation, err := m.Activation(key)
+	if err != nil || activation.Lease != lease {
+		return PooledTerminalView{}, ErrStaleOutputLease
+	}
+	return m.pool.TerminalView(key, lease)
+}
+
 // SetInputFocus is called only after the UI has given a Session pane keyboard
 // focus and verified the local writer. Preview/list navigation must clear it.
 func (m *PaneOutputManager) SetInputFocus(key OutputKey) error {
@@ -310,7 +338,94 @@ func (m *PaneOutputManager) ClearInputFocus() {
 	m.mu.Unlock()
 }
 
+// ClearVisible stops presenting panes when the current Project has no usable
+// PTY cells. Desired LRU readers may remain subscribed for a later revisit.
+func (m *PaneOutputManager) ClearVisible() {
+	m.cancelVisibleRequest()
+	m.opMu.Lock()
+	m.mu.Lock()
+	m.visible = make(map[OutputKey]OutputRevision)
+	m.inputFocus = OutputKey{}
+	m.focusEpoch++
+	m.mu.Unlock()
+	m.opMu.Unlock()
+}
+
+func (m *PaneOutputManager) cancelVisibleRequest() {
+	m.requestMu.Lock()
+	m.requestID++
+	if m.requestEnd != nil {
+		m.requestEnd()
+		m.requestEnd = nil
+	}
+	m.requestMu.Unlock()
+}
+
+// DisconnectHost fences presentation and closes every live observer for a
+// temporarily unavailable transport. Its desired LRU membership survives so
+// a same-instance reconnect can reopen from Ducklion's replay.
+func (m *PaneOutputManager) DisconnectHost(clientKey, instanceID string) error {
+	return m.fenceHost(clientKey, instanceID, false)
+}
+
+// ForgetHost also removes desired membership after an authoritative Ducklion
+// instance replacement. The retired instance can never revive an old lease.
+func (m *PaneOutputManager) ForgetHost(clientKey, instanceID string) error {
+	return m.fenceHost(clientKey, instanceID, true)
+}
+
+func (m *PaneOutputManager) fenceHost(clientKey, instanceID string, forget bool) error {
+	m.requestMu.Lock()
+	for key := range m.requestHosts {
+		if key.ClientKey == clientKey && key.InstanceID == instanceID {
+			m.requestID++
+			if m.requestEnd != nil {
+				m.requestEnd()
+				m.requestEnd = nil
+			}
+			m.requestHosts = nil
+			break
+		}
+	}
+	m.requestMu.Unlock()
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	var err error
+	if forget {
+		err = m.pool.ForgetHost(clientKey, instanceID)
+	} else {
+		err = m.pool.DisconnectHost(clientKey, instanceID)
+	}
+	m.mu.Lock()
+	for key := range m.leases {
+		if key.ClientKey != clientKey || key.InstanceID != instanceID {
+			continue
+		}
+		if cancel := m.watchers[key]; cancel != nil {
+			cancel()
+			delete(m.watchers, key)
+		}
+		delete(m.leases, key)
+		delete(m.visible, key)
+		delete(m.dirty, key)
+		if m.inputFocus == key {
+			m.inputFocus = OutputKey{}
+			m.focusEpoch++
+		}
+	}
+	m.mu.Unlock()
+	return err
+}
+
 func (m *PaneOutputManager) ResizeFocused(key OutputKey, rows, cols uint16, resize func(uint16, uint16) (uint64, error)) (uint64, error) {
+	return m.ResizeFocusedLease(key, 0, OutputRevision{}, rows, cols, resize)
+}
+
+// ResizeFocusedLease verifies the event's exact lease under the same lock that
+// fences focus and visibility. A reconnect cannot swap a lease between the
+// check and invoking the old control session's resize callback.
+func (m *PaneOutputManager) ResizeFocusedLease(key OutputKey, lease uint64, expected OutputRevision, rows, cols uint16,
+	resize func(uint16, uint16) (uint64, error)) (uint64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if key != m.inputFocus {
@@ -318,7 +433,7 @@ func (m *PaneOutputManager) ResizeFocused(key OutputKey, rows, cols uint16, resi
 	}
 	activation, ok := m.leases[key]
 	revision, visible := m.visible[key]
-	if !ok || !visible || activation.Revision != revision {
+	if !ok || !visible || activation.Revision != revision || lease != 0 && activation.Lease != lease || expected.RuntimeGeneration != 0 && activation.Revision != expected {
 		return 0, ErrStaleOutputLease
 	}
 	// Keep focus stable through the authoritative remote resize. Returning a

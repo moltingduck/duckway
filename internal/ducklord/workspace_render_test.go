@@ -160,6 +160,10 @@ func TestWorkspaceVisiblePaneRectUsesVerticalLeafWidthAndPosition(t *testing.T) 
 		t.Fatal(err)
 	}
 	geometry := WorkspaceGeometry{Terminal: WorkspaceRect{X: 55, Y: 4, Width: 66, Height: 16}}
+	panes := WorkspaceVisiblePaneRects(&layout, nav, geometry)
+	if len(panes) != 2 || panes[0].Identity != a || panes[1].Identity != b || panes[0].Rect.Width != 33 || panes[1].Rect.X != 88 {
+		t.Fatalf("visible subscription geometry=%+v", panes)
+	}
 	if rect, visible := WorkspaceVisiblePaneRect(&layout, nav, geometry); !visible || rect.X != 88 || rect.Y != 5 || rect.Width != 33 || rect.Height != 15 {
 		t.Fatalf("vertical split PTY rectangle=%+v visible=%v", rect, visible)
 	}

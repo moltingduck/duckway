@@ -1277,6 +1277,8 @@ type tuiState struct {
 	groupMenuSession          ducklord.SessionIdentity
 	pooledOutput              bool
 	workspacePreview          bool
+	workspaceOutput           *ducklord.WorkspaceOutputAdapter
+	clearOutputFocus          func()
 	searchMode                bool
 	searchQuery               string
 	searchSelected            int
@@ -1344,10 +1346,23 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		snapshotStore: ducklord.SnapshotStore{}, activityStore: activityStore, activityState: activityState, hostSync: make(map[string]ducklord.SessionUpdate), localWarning: stateWarning,
 		listPaneWidth: cfg.SessionListPaneWidth(), autoHideList: cfg.SessionListAutoHide(), disconnectedHosts: make(map[string]bool),
 		workspacePreview: os.Getenv("DUCKLORD_WORKSPACE_PREVIEW") == "1"}
-	var outputManager *ducklord.TerminalOutputManager
+	var outputManager tuiOutputManager
+	var workspaceOutput *ducklord.WorkspaceOutputAdapter
 	var outputEvents <-chan ducklord.TerminalOutputEvent
+	var workspaceRepaint <-chan struct{}
 	if source, ok := runner.(ducklord.TerminalOutputSource); ok {
-		outputManager, err = ducklord.NewTerminalOutputManager(ctx, cfg.RawOutputSubscriptionLimit(), source, state.snapshotStore)
+		if state.workspacePreview {
+			workspaceOutput, err = ducklord.NewWorkspaceOutputAdapter(ctx, cfg.RawOutputSubscriptionLimit(), source, state.snapshotStore,
+				func(selected ducklord.TerminalSelection) []ducklord.TerminalSelection {
+					return state.workspaceVisibleSelections(selected)
+				})
+			outputManager = workspaceOutput
+			workspaceRepaint = workspaceOutput.RepaintReady()
+			state.workspaceOutput = workspaceOutput
+			state.clearOutputFocus = workspaceOutput.ClearInputFocus
+		} else {
+			outputManager, err = ducklord.NewTerminalOutputManager(ctx, cfg.RawOutputSubscriptionLimit(), source, state.snapshotStore)
+		}
 		if err != nil {
 			return err
 		}
@@ -1618,6 +1633,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	go readInput(ctx, input)
 	for {
 		select {
+		case <-workspaceRepaint:
+			state.render(os.Stdout)
 		case <-ctx.Done():
 			state.cancelAddClientWork()
 			if controlOpenCancel != nil {
@@ -1809,6 +1826,19 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			control = opened.control
 			controlDone = control.Done
 			state.focused = true
+			if workspaceOutput != nil {
+				key, ok := terminalOutputKey(state.currentSession())
+				if !ok || workspaceOutput.SetInputFocus(key) != nil {
+					_ = control.Stdin.Close()
+					control = nil
+					controlDone = nil
+					state.focused = false
+					state.clearAttachIdentity()
+					state.outputErr = "Session output is no longer visible; PTY control was not opened"
+					state.render(os.Stdout)
+					continue
+				}
+			}
 			attachCanResize = control.ResizeBarrier != nil
 			state.outputErr = ""
 			if resizeCapability() != nil {
@@ -1921,6 +1951,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						}
 					}
 					outputManager.SyncHost(update.Client, update.InstanceID, true, selections)
+				}
+				if workspaceOutput != nil && (previousHost.State != update.State || previousInstance != update.InstanceID) {
+					selectPooledOutput()
 				}
 			}
 			if control != nil && (!state.hostIsLive(state.currentSession().Client) || !controlMatchesSession(control, state.currentSession(), state.ownerName)) {
@@ -3176,6 +3209,9 @@ func (s *tuiState) effectiveAttachKey() string {
 }
 
 func (s *tuiState) clearAttachIdentity() {
+	if s.clearOutputFocus != nil {
+		s.clearOutputFocus()
+	}
 	s.activeAttachKey = ""
 	s.activeAttachFresh = false
 	s.pendingAttachKey = ""
