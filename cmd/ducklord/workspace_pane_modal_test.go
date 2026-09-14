@@ -180,6 +180,56 @@ func TestWorkspaceNewShellIntentClearsOnHostChangeAndCancel(t *testing.T) {
 	}
 }
 
+func TestWorkspaceMoveTargetEmptyNavigationKeepsValidIndex(t *testing.T) {
+	state, projectID, a, _ := workspacePaneTestState(t)
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(projectID); err != nil {
+		t.Fatal(err)
+	}
+	state.workspacePaneIntent = workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceVertical}
+	identity, _ := ducklord.IdentityFromSession(a)
+	paneID := state.projectPaneForSession(identity)
+	if paneID == "" {
+		t.Fatal("fixture has no Session pane")
+	}
+	state.workspacePaneMode = true
+	state.workspacePaneStep = "move-target"
+	state.workspacePaneIntent = workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceVertical}
+	state.workspacePaneSourceID = paneID
+	if choices := state.workspacePaneChoices(); len(choices) != 0 {
+		t.Fatalf("expected no move target, got %v", choices)
+	}
+	state.handleWorkspacePaneInput([]byte("j"))
+	state.handleWorkspacePaneInput([]byte("\x1b[B"))
+	state.handleWorkspacePaneInput([]byte("\r"))
+	if state.workspacePaneIndex != 0 || state.workspacePaneStep != "move-target" {
+		t.Fatalf("empty choices changed modal state: index=%d step=%s", state.workspacePaneIndex, state.workspacePaneStep)
+	}
+}
+
+func TestHostDisconnectTargetsControlledPaneNotQuickListCursor(t *testing.T) {
+	state, _, a, b := workspacePaneTestState(t)
+	a.Client = "quick-host"
+	b.Client = "focused-host"
+	state.sessions = []ducklord.RemoteSession{a, b}
+	state.selected = 0
+	state.activeAttachKey = sessionKey(b)
+	if !state.hostOwnsActivePTY("focused-host", nil) {
+		t.Fatal("focused pane Host was not detected")
+	}
+	if state.hostOwnsActivePTY("quick-host", nil) {
+		t.Fatal("quick-list cursor Host incorrectly owns controlled PTY")
+	}
+	state.activeAttachKey = ""
+	state.pendingAttachKey = sessionKey(b)
+	if !state.hostOwnsActivePTY("focused-host", nil) {
+		t.Fatal("pending attach Host was not detected")
+	}
+}
+
 func TestWorkspacePaneMoveAndDetachLeaveRemoteInventoryUntouched(t *testing.T) {
 	state, projectID, a, b := workspacePaneTestState(t)
 	nav, _ := state.workspaceNavigation()

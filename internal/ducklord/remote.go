@@ -281,6 +281,37 @@ func (r *Runner) hasOwner() bool {
 	return r.owner != ""
 }
 
+// HostLogRetention reads the running daemon's effective setting, including a
+// Host override that may differ from Duckway's startup configuration.
+func (r *Runner) HostLogRetention(ctx context.Context, c Client) (int, error) {
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return 0, err
+	}
+	response, err := client.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "status", InstanceID: client.InstanceID()})
+	if err != nil {
+		return 0, err
+	}
+	if response.Error != nil {
+		return 0, fmt.Errorf("ducklion status: %s", response.Error.Message)
+	}
+	var status struct {
+		Days int `json:"pty_log_retention_days"`
+	}
+	if err := json.Unmarshal(response.Result, &status); err != nil || status.Days < 1 || status.Days > 3650 {
+		return 0, fmt.Errorf("invalid Host log retention status from %s", c.Name)
+	}
+	return status.Days, nil
+}
+
+func (r *Runner) SetHostLogRetention(ctx context.Context, c Client, days int) error {
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return err
+	}
+	return client.SetHostLogRetention(ctx, days)
+}
+
 type commandStream struct {
 	reader  io.ReadCloser
 	writer  io.WriteCloser

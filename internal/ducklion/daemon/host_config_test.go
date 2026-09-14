@@ -107,3 +107,29 @@ func TestHostRetentionUpdateFailureKeepsActiveTTL(t *testing.T) {
 		t.Fatalf("failed persistence changed active TTL: %s", server.retainedTTL())
 	}
 }
+
+func TestHostRetentionSettingsRejectPermissiveAndLinkedFiles(t *testing.T) {
+	for _, mode := range []os.FileMode{0644, 0600} {
+		t.Run(mode.String(), func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, hostConfigFilename)
+			if err := os.WriteFile(path, []byte(`{"pty_log_retention_days":7}`), mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatal(err)
+			}
+			if mode == 0600 {
+				if err := os.Link(path, filepath.Join(root, "second-link")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := loadRetainedOutputTTL(root, 7*24*time.Hour); err == nil {
+				t.Fatal("insecure Host settings file was read")
+			}
+			if err := saveRetainedOutputDays(root, 3); err == nil {
+				t.Fatal("insecure Host settings file was replaced")
+			}
+		})
+	}
+}

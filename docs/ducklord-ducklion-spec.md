@@ -1263,6 +1263,10 @@ and preserves the pre-migration database backup behavior.
   Ducklion persists this in its private `host-settings.json`, applies it
   immediately, and runs a retention sweep. The saved Host setting takes
   precedence over Duckway's startup default on subsequent restarts.
+  Ducklord's Host actions open a centered PTY log retention editor: it reads
+  the effective Host value, requires explicit old→new confirmation, then
+  verifies the value reported by Ducklion after saving. Disconnected Hosts
+  cannot be edited.
 - Ducklord does not trust Duckway server metadata and does not require Duckway
   server registration. SSH host access is the authorization boundary.
 

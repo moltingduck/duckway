@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -17,6 +18,18 @@ const hostConfigFilename = "host-settings.json"
 
 type hostSettings struct {
 	RetainedOutputDays int `json:"pty_log_retention_days"`
+}
+
+type hostConfigCommittedError struct{ cause error }
+
+func (e *hostConfigCommittedError) Error() string {
+	return "host setting applied but directory sync failed: " + e.cause.Error()
+}
+func (e *hostConfigCommittedError) Unwrap() error { return e.cause }
+
+func secureHostSettingsFile(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && info.Mode().IsRegular() && info.Mode().Perm()&0077 == 0 && stat.Uid == uint32(os.Geteuid()) && stat.Nlink == 1
 }
 
 func validRetainedOutputDays(days int) bool { return days >= 1 && days <= 3650 }
@@ -36,8 +49,8 @@ func loadRetainedOutputTTL(root string, fallback time.Duration) (time.Duration, 
 	file := os.NewFile(uintptr(fd), path)
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 {
-		return 0, fmt.Errorf("host settings must be a regular file no larger than 4 KiB")
+	if err != nil || !secureHostSettingsFile(info) || info.Size() > 4096 {
+		return 0, fmt.Errorf("host settings must be a private regular file no larger than 4 KiB")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, 4097))
 	if err != nil {
@@ -61,8 +74,8 @@ func saveRetainedOutputDays(root string, days int) error {
 	}
 	path := filepath.Join(root, hostConfigFilename)
 	if info, err := os.Lstat(path); err == nil {
-		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("host settings path is not a regular file")
+		if !secureHostSettingsFile(info) {
+			return fmt.Errorf("host settings path is not a private regular file")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -94,19 +107,24 @@ func saveRetainedOutputDays(root string, days int) error {
 	}
 	dir, err := os.Open(root)
 	if err != nil {
-		return err
+		return &hostConfigCommittedError{cause: err}
 	}
 	defer dir.Close()
-	return dir.Sync()
+	if err := dir.Sync(); err != nil {
+		return &hostConfigCommittedError{cause: err}
+	}
+	return nil
 }
 
 func (s *Server) setRetainedOutputDays(days int) error {
 	s.hostConfigMu.Lock()
 	defer s.hostConfigMu.Unlock()
-	if err := saveRetainedOutputDays(s.root, days); err != nil {
+	err := saveRetainedOutputDays(s.root, days)
+	var committed *hostConfigCommittedError
+	if err != nil && !errors.As(err, &committed) {
 		return err
 	}
 	s.retainedOutputTTL.Store(int64(time.Duration(days) * 24 * time.Hour))
 	s.requestRetainedOutputSweep()
-	return nil
+	return err
 }

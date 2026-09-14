@@ -419,7 +419,9 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 	case "j", "k":
 		if s.workspacePaneStep != "existing" {
 			if key == "j" {
-				s.workspacePaneIndex = min(len(choices)-1, s.workspacePaneIndex+1)
+				if len(choices) > 0 {
+					s.workspacePaneIndex = min(len(choices)-1, s.workspacePaneIndex+1)
+				}
 			} else {
 				s.workspacePaneIndex = max(0, s.workspacePaneIndex-1)
 			}
@@ -440,7 +442,7 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 		if len(choices) == 0 {
 			return false
 		}
-		index := min(s.workspacePaneIndex, len(choices)-1)
+		index := max(0, min(s.workspacePaneIndex, len(choices)-1))
 		switch s.workspacePaneStep {
 		case "move-placement":
 			s.workspacePaneIntent.placement = []ducklord.PanePlacement{ducklord.PlaceNewTab, ducklord.PlaceVertical, ducklord.PlaceHorizontal}[index]

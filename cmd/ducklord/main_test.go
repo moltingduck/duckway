@@ -3319,6 +3319,57 @@ type fakeRunner struct {
 	installPath      string
 }
 
+func (fakeRunner) HostLogRetention(context.Context, ducklord.Client) (int, error)  { return 7, nil }
+func (fakeRunner) SetHostLogRetention(context.Context, ducklord.Client, int) error { return nil }
+
+func TestHostRetentionMenuRequiresReviewAndConfirmation(t *testing.T) {
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, hostMenuMode: true,
+		hostMenuStep: "actions", hostMenuTarget: "host", hostMenuIndex: 2}
+	if action := state.handleHostMenuInput([]byte("\r")); action != "host-retention-read" || state.hostMenuStep != "retention-loading" {
+		t.Fatalf("did not start Host retention read: action=%q step=%q", action, state.hostMenuStep)
+	}
+	state.hostMenuOldDays, state.hostMenuDraft, state.hostMenuStep = 7, "", "retention-edit"
+	state.handleHostMenuInput([]byte("0"))
+	state.handleHostMenuInput([]byte("\r"))
+	if state.hostMenuStep != "retention-edit" || state.hostMenuErr == "" {
+		t.Fatalf("invalid retention accepted: step=%q error=%q", state.hostMenuStep, state.hostMenuErr)
+	}
+	state.handleHostMenuInput([]byte("\x7f"))
+	state.handleHostMenuInput([]byte("3"))
+	if action := state.handleHostMenuInput([]byte("\r")); action != "" || state.hostMenuStep != "retention-confirm" {
+		t.Fatalf("retention skipped confirmation: action=%q step=%q", action, state.hostMenuStep)
+	}
+	state.handleHostMenuInput([]byte("\x1b"))
+	if state.hostMenuStep != "retention-edit" {
+		t.Fatal("Esc did not return to edit")
+	}
+	state.handleHostMenuInput([]byte("\r"))
+	if action := state.handleHostMenuInput([]byte("\r")); action != "host-retention-save" || state.hostMenuStep != "retention-saving" {
+		t.Fatalf("confirmed retention did not save: action=%q step=%q", action, state.hostMenuStep)
+	}
+}
+
+func TestHostRetentionResultRejectsReconnectedOrReplacedHost(t *testing.T) {
+	state := &tuiState{hostMenuMode: true, hostMenuTarget: "host", hostMenuRequestID: 4,
+		disconnectedHosts: map[string]bool{}, hostSync: map[string]ducklord.SessionUpdate{"host": {InstanceID: "old"}}}
+	event := hostRetentionEvent{id: 4, host: "host", instanceID: "old", epoch: 7}
+	if !state.acceptHostRetentionEvent(event, 7) {
+		t.Fatal("current Host result rejected")
+	}
+	if state.acceptHostRetentionEvent(event, 8) {
+		t.Fatal("old Host watch epoch accepted after reconnect")
+	}
+	state.hostSync["host"] = ducklord.SessionUpdate{InstanceID: "new"}
+	if state.acceptHostRetentionEvent(event, 7) {
+		t.Fatal("old Ducklion instance result accepted")
+	}
+	state.hostSync["host"] = ducklord.SessionUpdate{InstanceID: "old"}
+	state.disconnectedHosts["host"] = true
+	if state.acceptHostRetentionEvent(event, 7) {
+		t.Fatal("disconnected Host result accepted")
+	}
+}
+
 func (f fakeRunner) Sessions(_ context.Context, client ducklord.Client, _ int) ([]ducklord.RemoteSession, error) {
 	if f.sessionsByClient != nil {
 		return f.sessionsByClient[client.Name], nil
@@ -3408,6 +3459,11 @@ type recordingRunner struct {
 	lifecycleOp      protocol.SessionLifecycleOperation
 	lifecycleMode    protocol.SessionLifecycleMode
 }
+
+func (*recordingRunner) HostLogRetention(context.Context, ducklord.Client) (int, error) {
+	return 7, nil
+}
+func (*recordingRunner) SetHostLogRetention(context.Context, ducklord.Client, int) error { return nil }
 
 func (r *recordingRunner) SuggestProjectPaths(context.Context, ducklord.Client, string) ([]string, error) {
 	return nil, nil

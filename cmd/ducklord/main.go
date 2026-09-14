@@ -48,6 +48,8 @@ type remoteRunner interface {
 	AddProject(context.Context, ducklord.Client, string, string) (ducklord.RemoteProject, error)
 	Agents(context.Context, ducklord.Client, string) ([]ducklord.RemoteAgent, error)
 	ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error)
+	HostLogRetention(context.Context, ducklord.Client) (int, error)
+	SetHostLogRetention(context.Context, ducklord.Client, int) error
 	InstallDucklion(context.Context, ducklord.Client, string, string) (string, error)
 	Attach(ducklord.Client, string) error
 	AttachStream(context.Context, ducklord.Client, string) (*ducklord.AttachSession, error)
@@ -82,6 +84,16 @@ type startDoneEvent struct {
 	client    string
 	sessionID string
 	err       error
+}
+
+type hostRetentionEvent struct {
+	id         uint64
+	epoch      uint64
+	instanceID string
+	host       string
+	days       int
+	err        error
+	saved      bool
 }
 
 type createDiscoveryEvent struct {
@@ -1248,6 +1260,10 @@ type tuiState struct {
 	hostMenuIndex              int
 	hostMenuSelected           map[string]bool
 	hostMenuErr                string
+	hostMenuOldDays            int
+	hostMenuDraft              string
+	hostMenuReplaceDraft       bool
+	hostMenuRequestID          uint64
 	disconnectedHosts          map[string]bool
 	hostScoped                 bool
 	ownerName                  string
@@ -1444,6 +1460,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	resizeRequests := make(chan resizeRequest, 1)
 	resizeResults := make(chan resizeDoneEvent, 1)
 	startDone := make(chan startDoneEvent, 1)
+	hostRetentionDone := make(chan hostRetentionEvent, 1)
+	var hostRetentionCancel context.CancelFunc
 	createDone := make(chan createDiscoveryEvent, 1)
 	pathSuggestionsDone := make(chan pathSuggestionEvent, 1)
 	addClientDone := make(chan addClientDoneEvent, 1)
@@ -1459,7 +1477,15 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	var activeOutputEvent ducklord.TerminalOutputEvent
 	var selectedOutputSession ducklord.RemoteSession
 	selectPooledOutput := func() {
-		if outputManager == nil || len(state.sessions) == 0 {
+		if outputManager == nil {
+			return
+		}
+		if len(state.sessions) == 0 {
+			outputRequestID++
+			selectedOutputSession = ducklord.RemoteSession{}
+			activeOutputEvent = ducklord.TerminalOutputEvent{}
+			state.outputForKey, state.outputText, state.terminal = "", "", nil
+			state.outputFresh = false
 			return
 		}
 		reconnectRequestID = 0
@@ -1506,6 +1532,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			return
 		}
 		if sess.Client == "" || sess.InstanceID == "" || sess.SessionID == "" || sess.RuntimeGeneration == 0 || !canRead(sess) || !state.hostIsLive(sess.Client) {
+			outputRequestID++
+			selectedOutputSession = ducklord.RemoteSession{}
+			activeOutputEvent = ducklord.TerminalOutputEvent{}
+			state.outputForKey, state.outputText, state.terminal = "", "", nil
 			state.outputFresh = false
 			state.outputErr = "PTY output is unavailable until the host session is synchronized"
 			return
@@ -1720,6 +1750,30 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	go readInput(ctx, input)
 	for {
 		select {
+		case event := <-hostRetentionDone:
+			if event.id == state.hostMenuRequestID && hostRetentionCancel != nil {
+				hostRetentionCancel()
+				hostRetentionCancel = nil
+			}
+			watch := watchedClients[event.host]
+			if !state.acceptHostRetentionEvent(event, watch.epoch) {
+				continue
+			}
+			if event.err != nil {
+				state.hostMenuStep = "retention-error"
+				state.hostMenuErr = sanitizeTerminalText(event.err.Error())
+			} else if event.saved {
+				state.hostMenuOldDays = event.days
+				state.hostMenuStep = "retention-saved"
+				state.hostMenuErr = ""
+			} else {
+				state.hostMenuOldDays = event.days
+				state.hostMenuDraft = strconv.Itoa(event.days)
+				state.hostMenuReplaceDraft = true
+				state.hostMenuStep = "retention-edit"
+				state.hostMenuErr = ""
+			}
+			state.render(os.Stdout)
 		case <-workspaceRepaint:
 			if control != nil && !state.focused {
 				acceptWorkspaceControl()
@@ -2569,6 +2623,60 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					connectTargets = state.changedHostMenuTargets(true)
 				}
 				switch action {
+				case "host-retention-read":
+					if hostRetentionCancel != nil {
+						hostRetentionCancel()
+					}
+					state.hostMenuRequestID++
+					requestID := state.hostMenuRequestID
+					epoch, instanceID := watchedClients[target].epoch, state.hostSync[target].InstanceID
+					client, ok := state.cfg.Client(target)
+					if !ok || state.disconnectedHosts[target] {
+						state.hostMenuStep = "retention-error"
+						state.hostMenuErr = "Host is disconnected or unavailable"
+						break
+					}
+					readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+					hostRetentionCancel = cancel
+					go func() {
+						defer cancel()
+						days, err := runner.HostLogRetention(readCtx, client)
+						select {
+						case hostRetentionDone <- hostRetentionEvent{id: requestID, epoch: epoch, instanceID: instanceID, host: target, days: days, err: err}:
+						case <-ctx.Done():
+						}
+					}()
+				case "host-retention-save":
+					if hostRetentionCancel != nil {
+						hostRetentionCancel()
+					}
+					state.hostMenuRequestID++
+					requestID := state.hostMenuRequestID
+					epoch, instanceID := watchedClients[target].epoch, state.hostSync[target].InstanceID
+					client, ok := state.cfg.Client(target)
+					if !ok || state.disconnectedHosts[target] {
+						state.hostMenuStep = "retention-error"
+						state.hostMenuErr = "Host is disconnected or unavailable"
+						break
+					}
+					days, _ := strconv.Atoi(state.hostMenuDraft)
+					saveCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+					hostRetentionCancel = cancel
+					go func() {
+						defer cancel()
+						err := runner.SetHostLogRetention(saveCtx, client, days)
+						if err == nil {
+							var actual int
+							actual, err = runner.HostLogRetention(saveCtx, client)
+							if err == nil && actual != days {
+								err = fmt.Errorf("host reported %d retention days after update, expected %d", actual, days)
+							}
+						}
+						select {
+						case hostRetentionDone <- hostRetentionEvent{id: requestID, epoch: epoch, instanceID: instanceID, host: target, days: days, err: err, saved: true}:
+						case <-ctx.Done():
+						}
+					}()
 				case "host-add":
 					state.hostMenuMode = false
 					state.beginAddClient()
@@ -2577,7 +2685,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.beginRemoveClient()
 				case "host-disconnect", "host-reconnect", "host-apply-connections":
 					for _, target := range targets {
-						wasActive := len(state.sessions) > 0 && state.currentSession().Client == target
+						if target == state.hostMenuTarget && hostRetentionCancel != nil {
+							hostRetentionCancel()
+							hostRetentionCancel = nil
+						}
+						wasActive := state.hostOwnsActivePTY(target, control)
 						if current, ok := watchedClients[target]; ok {
 							current.cancel()
 							delete(watchedClients, target)
@@ -2626,6 +2738,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 							state.outputErr = "reconnecting " + target
 						}
 					}
+					if outputManager != nil {
+						selectPooledOutput()
+					}
 					if action == "host-apply-connections" {
 						for _, target := range connectTargets {
 							delete(state.disconnectedHosts, target)
@@ -2656,6 +2771,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						state.hostMenuMode = false
 						state.outputErr = "connecting " + target
 					}
+				}
+				if !state.hostMenuMode && hostRetentionCancel != nil {
+					hostRetentionCancel()
+					hostRetentionCancel = nil
 				}
 				state.render(os.Stdout)
 				continue
@@ -4619,6 +4738,23 @@ func (s *tuiState) activePTYSession() ducklord.RemoteSession {
 	return s.currentSession()
 }
 
+func (s *tuiState) hostOwnsActivePTY(host string, control *ducklord.ControlSession) bool {
+	if s.activePTYSession().Client == host || control != nil && control.ClientKey == host {
+		return true
+	}
+	if s.pendingAttachKey != "" {
+		if pending, ok := s.sessionForKey(s.pendingAttachKey); ok && pending.Client == host {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *tuiState) acceptHostRetentionEvent(event hostRetentionEvent, watchEpoch uint64) bool {
+	return s.hostMenuMode && s.hostMenuTarget == event.host && s.hostMenuRequestID == event.id && !s.disconnectedHosts[event.host] &&
+		watchEpoch == event.epoch && s.hostSync[event.host].InstanceID == event.instanceID
+}
+
 func (s *tuiState) canResizeCurrentSession() bool {
 	session := s.activePTYSession()
 	if session.Kind == string(model.KindShell) {
@@ -5308,10 +5444,32 @@ func (s *tuiState) handleShortcutInput(input []byte) string {
 	return ""
 }
 
-var hostActions = []string{"Connections", "Reconnect", "Add host", "Remove host"}
+var hostActions = []string{"Connections", "Reconnect", "PTY log retention", "Add host", "Remove host"}
 
 func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 	if !s.hostMenuMode {
+		return
+	}
+	if strings.HasPrefix(s.hostMenuStep, "retention-") {
+		lines := []modalRenderLine{{modalTitle, "  Host PTY log retention · " + displayField(s.hostMenuTarget)}}
+		switch s.hostMenuStep {
+		case "retention-loading":
+			lines = append(lines, modalRenderLine{modalMuted, "  Reading current Host setting…"})
+		case "retention-edit":
+			lines = append(lines, modalRenderLine{modalInput, fmt.Sprintf("  Current: %d days", s.hostMenuOldDays)}, modalRenderLine{modalSelected, "  New days (1–3650): " + s.hostMenuDraft + "▏"}, modalRenderLine{modalMuted, "  Enter review · Esc back"})
+		case "retention-confirm":
+			lines = append(lines, modalRenderLine{modalSelected, fmt.Sprintf("  Change %d → %s days?", s.hostMenuOldDays, s.hostMenuDraft)}, modalRenderLine{modalDanger, "  Shortening retention may delete expired PTY logs now."}, modalRenderLine{modalMuted, "  Enter confirm · Esc edit"})
+		case "retention-saving":
+			lines = append(lines, modalRenderLine{modalMuted, "  Saving and verifying Host setting…"})
+		case "retention-saved":
+			lines = append(lines, modalRenderLine{modalStatus, fmt.Sprintf("  Saved: %d days", s.hostMenuOldDays)}, modalRenderLine{modalMuted, "  Enter or Esc close"})
+		case "retention-error":
+			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostMenuErr}, modalRenderLine{modalMuted, "  Enter retry · Esc back"})
+		}
+		if s.hostMenuErr != "" && s.hostMenuStep != "retention-error" {
+			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostMenuErr})
+		}
+		renderModalBox(out, cols, rows, lines)
 		return
 	}
 	if s.hostMenuStep == "connections" {
@@ -5352,7 +5510,7 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 	lines := []modalRenderLine{{modalTitle, "  Host actions · " + displayField(s.hostMenuTarget)}}
 	for index, label := range hostActions {
 		style, prefix := "", "  "
-		if s.hostScoped && index >= 2 {
+		if s.hostScoped && index >= 3 {
 			style, label = modalDisabled, label+" (unavailable in host-scoped mode)"
 		}
 		if index == s.hostMenuIndex {
@@ -5379,6 +5537,63 @@ func (s *tuiState) beginHostMenu() {
 }
 
 func (s *tuiState) handleHostMenuInput(input []byte) string {
+	if strings.HasPrefix(s.hostMenuStep, "retention-") {
+		switch string(input) {
+		case "\x03":
+			if s.hostMenuStep != "retention-saving" {
+				s.hostMenuMode = false
+			}
+		case "\x1b":
+			if s.hostMenuStep == "retention-confirm" {
+				s.hostMenuStep = "retention-edit"
+			} else if s.hostMenuStep == "retention-saved" {
+				s.hostMenuMode = false
+			} else if s.hostMenuStep != "retention-saving" {
+				s.hostMenuStep, s.hostMenuIndex = "actions", 2
+			}
+		case "\x7f", "\b":
+			if s.hostMenuStep == "retention-edit" && len(s.hostMenuDraft) > 0 {
+				if s.hostMenuReplaceDraft {
+					s.hostMenuDraft = ""
+				} else {
+					s.hostMenuDraft = s.hostMenuDraft[:len(s.hostMenuDraft)-1]
+				}
+				s.hostMenuReplaceDraft = false
+				s.hostMenuErr = ""
+			}
+		case "\r", "\n":
+			switch s.hostMenuStep {
+			case "retention-saved":
+				s.hostMenuMode = false
+			case "retention-error":
+				s.hostMenuStep, s.hostMenuErr = "retention-loading", ""
+				return "host-retention-read"
+			case "retention-edit":
+				days, err := strconv.Atoi(s.hostMenuDraft)
+				if err != nil || days < 1 || days > 3650 {
+					s.hostMenuErr = "Enter a number from 1 to 3650"
+				} else if days == s.hostMenuOldDays {
+					s.hostMenuStep, s.hostMenuIndex = "actions", 2
+				} else {
+					s.hostMenuStep = "retention-confirm"
+				}
+			case "retention-confirm":
+				s.hostMenuStep = "retention-saving"
+				return "host-retention-save"
+			}
+		default:
+			if s.hostMenuStep == "retention-edit" && len(input) == 1 && input[0] >= '0' && input[0] <= '9' && len(s.hostMenuDraft) < 4 {
+				if s.hostMenuReplaceDraft {
+					s.hostMenuDraft = string(input)
+				} else {
+					s.hostMenuDraft += string(input)
+				}
+				s.hostMenuReplaceDraft = false
+				s.hostMenuErr = ""
+			}
+		}
+		return ""
+	}
 	if s.hostMenuStep == "connections" {
 		if len(s.cfg.Clients) == 0 {
 			return ""
@@ -5416,7 +5631,7 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 	case "k", "\x1b[A":
 		s.hostMenuIndex = max(0, s.hostMenuIndex-1)
 	case "\r", "\n":
-		action := []string{"host-connections", "host-reconnect", "host-add", "host-remove"}[s.hostMenuIndex]
+		action := []string{"host-connections", "host-reconnect", "host-retention-read", "host-add", "host-remove"}[s.hostMenuIndex]
 		if s.hostScoped && (action == "host-add" || action == "host-remove") {
 			s.outputErr = "host configuration changes are unavailable in host-scoped mode"
 			return ""
@@ -5437,6 +5652,10 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 				}
 			}
 			return ""
+		}
+		if action == "host-retention-read" {
+			s.hostMenuStep = "retention-loading"
+			s.hostMenuErr = ""
 		}
 		return action
 	}
