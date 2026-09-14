@@ -181,7 +181,13 @@ fi
 "$RUNTIME" exec ducklord-dev ducklord send client-b beta 'i=0; while :; do i=$((i+1)); echo client-b beta tick $i; sleep 5; done' >/dev/null
 
 echo "[ducklord-demo] verifying daemon inventory, PTY input, and recovery"
-if ! "$RUNTIME" exec ducklord-dev ducklord agents client-a /home/duck --config /root/.ducklord/config.yaml | grep -q '^shell'; then
+agents_ready=false
+for _ in $(seq 1 20); do
+  agents="$($RUNTIME exec ducklord-dev ducklord agents client-a /home/duck --config /root/.ducklord/config.yaml 2>/dev/null)" || agents=""
+  if grep -q '^shell' <<<"$agents"; then agents_ready=true; break; fi
+  sleep .25
+done
+if [ "$agents_ready" != true ]; then
   echo "[ducklord-demo] remote agent discovery did not report the interactive shell" >&2
   exit 1
 fi

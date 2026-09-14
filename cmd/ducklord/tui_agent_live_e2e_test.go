@@ -309,11 +309,39 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	if os.Getenv("DUCKLORD_LIVE_TUI_DEBUG_TIMEOUT") == "1" {
 		backgroundTimeout = 45 * time.Second
 	}
+	var backgroundPromptVisible, backgroundAgentBusy, backgroundAuth, backgroundError bool
+	var backgroundRateLimit, backgroundAPIError, backgroundNetworkError, backgroundPermission, backgroundSubmitHint bool
 	waitE2E(t, backgroundTimeout, func() bool {
 		output, err := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", session.SessionID,
 			"--lines", "200", "--config", "/root/.ducklord/config.yaml").Output()
-		return err == nil && strings.Contains(string(output), backgroundResponse)
-	}, func() string { return agent + " background turn missing remote answer; PTY content suppressed" })
+		if err != nil {
+			return false
+		}
+		remote := string(output)
+		backgroundPromptVisible = strings.Contains(remote, backgroundPrefix)
+		if index := strings.Index(remote, backgroundPrefix); index >= 0 {
+			remote = remote[index:]
+		}
+		lower := strings.ToLower(remote)
+		backgroundAgentBusy = strings.Contains(lower, "esc to interrupt")
+		backgroundAuth = strings.Contains(lower, "login") || strings.Contains(lower, "authentication")
+		backgroundError = strings.Contains(lower, "error")
+		backgroundRateLimit = strings.Contains(lower, "rate limit") || strings.Contains(lower, "429")
+		backgroundAPIError = strings.Contains(lower, "api error") || strings.Contains(lower, "overloaded")
+		backgroundNetworkError = strings.Contains(lower, "network error") || strings.Contains(lower, "connection error")
+		backgroundPermission = strings.Contains(lower, "permission") || strings.Contains(lower, "approve")
+		backgroundSubmitHint = strings.Contains(lower, "press enter") || strings.Contains(lower, "return to submit")
+		return strings.Contains(remote, backgroundResponse)
+	}, func() string {
+		completed, failed := uint64(0), uint64(0)
+		if latest, exists := findContainerSession(t, runtime, controller, "client-a", session.SessionID); exists {
+			completed = latest.ActivitySequences[model.NotificationTaskCompleted]
+			failed = latest.ActivitySequences[model.NotificationTaskFailed]
+		}
+		return fmt.Sprintf("%s background turn missing remote answer (prompt=%t busy=%t auth=%t error=%t rate=%t api=%t network=%t permission=%t submit-hint=%t completed=%d failed=%d baseline=%d); PTY content suppressed",
+			agent, backgroundPromptVisible, backgroundAgentBusy, backgroundAuth, backgroundError,
+			backgroundRateLimit, backgroundAPIError, backgroundNetworkError, backgroundPermission, backgroundSubmitHint, completed, failed, baselineSequence)
+	})
 	waitE2E(t, 25*time.Second, func() bool {
 		latest, exists := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
 		return exists && latest.ActivitySequences[model.NotificationTaskCompleted] >= baselineSequence+3
