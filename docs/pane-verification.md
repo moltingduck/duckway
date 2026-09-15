@@ -53,3 +53,16 @@ Names in the integration column abbreviate
 
 For current work and outstanding processes, see
 [the implementation checkpoint](pane-implementation-status.md).
+
+## Stacked panes and mouse-first follow-up (2026-09-15)
+
+- Project pane now sits above Session list pane; theme validation, persistence,
+  focused headings, separators, and detailed-list geometry have unit coverage.
+- Mouse tests cover pane focus requests, Project/list navigation, modal choices,
+  disabled/clipped controls, host toggles, confirmations, and pinned help actions.
+- Full Podman Go suite and Ducklord race tests passed. Podman container E2E
+  passed for TwoLivePanes (drag/move/create) and ProjectEnterFocus (mouse focus
+  with input reaching the intended shell, not the independent list selection).
+- Screen hit-testing in E2E strips generated ANSI styling and accounts for cell
+  width; drag tests explicitly select focus instead of assuming old behavior.
+- Provider-consuming agent tests were not repeated for these UI-only changes.

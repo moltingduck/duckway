@@ -300,13 +300,14 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 	if !s.workspacePaneMode {
 		return
 	}
+	s.resetModalMouse()
 	if s.workspacePaneStep == "project-create" {
 		lines := []modalRenderLine{{modalTitle, "  Create Project"}, {modalInput, "  name › " + s.workspacePaneName + "_"}}
 		if s.workspacePaneErr != "" {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.workspacePaneErr})
 		}
 		lines = append(lines, modalRenderLine{modalMuted, "  Enter create · Esc/Ctrl+C close"})
-		renderModalBox(out, cols, rows, lines)
+		s.renderModalBox(out, cols, rows, lines)
 		return
 	}
 	if s.workspacePaneStep == "project-delete-confirm" {
@@ -319,6 +320,7 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 			{modalMuted, "  Removes local panes only; remote Sessions keep running."},
 			{modalMuted, "  Sessions with no other Project return to Default."}}
 		for i, choice := range s.workspacePaneChoices() {
+			s.modalChoice(len(lines), &s.workspacePaneIndex, i, "\r")
 			style, prefix := "", "  "
 			if i == s.workspacePaneIndex {
 				style, prefix = modalSelected, "› "
@@ -329,7 +331,7 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.workspacePaneErr})
 		}
 		lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter confirm · Esc/Ctrl+C close"})
-		renderModalBox(out, cols, rows, lines)
+		s.renderModalBox(out, cols, rows, lines)
 		return
 	}
 	choices := s.workspacePaneChoices()
@@ -378,6 +380,7 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 	}
 	end := min(len(choices), start+maxChoices)
 	for i := start; i < end; i++ {
+		s.modalChoice(len(lines), &s.workspacePaneIndex, i, "\r")
 		choice := choices[i]
 		style, prefix := "", "  "
 		if i == s.workspacePaneIndex {
@@ -399,7 +402,7 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 		lines = append(lines, modalRenderLine{modalDanger, "  " + s.workspacePaneErr})
 	}
 	lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter continue · Esc back · Ctrl+C close"})
-	renderModalBox(out, cols, rows, lines)
+	s.renderModalBox(out, cols, rows, lines)
 }
 
 func (s *tuiState) closeWorkspacePane() {

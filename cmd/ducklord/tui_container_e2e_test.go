@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -950,8 +951,9 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	if oldDraggedPaneID == "" {
 		t.Fatal("moved B pane missing before drag")
 	}
-	sourceX, sourceY, sourceFound := workspaceScreenPoint(capture.currentText(), sessions[1].Handle, 1, 50)
-	targetX, targetY, targetFound := workspaceScreenPoint(capture.currentText(), "client-a/"+sessions[0].Handle, 50, 120)
+	geometry := ducklord.CalculateWorkspaceGeometry(120, 24, 4)
+	sourceX, sourceY, sourceFound := workspaceScreenPoint(capture.currentText(), sessions[1].Handle, 1, geometry.Terminal.X-1)
+	targetX, targetY, targetFound := workspaceScreenPoint(capture.currentText(), "client-a/"+sessions[0].Handle, geometry.Terminal.X, 120)
 	if !sourceFound || !targetFound {
 		t.Fatal("drag source or target not visible in the workspace TUI")
 	}
@@ -993,7 +995,12 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 			paneIDForSession(project.Tabs[0].Root, a) != "" && paneIDForSession(project.Tabs[0].Root, identityB) != "" &&
 			len(latest.ProjectLayout.ProjectsFor(identityB)) == 1 && latest.ProjectLayout.ProjectsFor(identityB)[0] == projectID
 	}, func() string { return "TUI drag did not atomically move B's pane without duplication" })
-	writePTY(t, terminal, "P") // return to Session list before existing output assertions
+	// Drag starts by focusing the Session list. Explicitly establish Project
+	// focus before toggling back, rather than relying on the pre-drag focus.
+	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;1;%dM\x1b[<0;1;%dm", geometry.Projects.Y, geometry.Projects.Y))
+	capture.waitCurrent(t, "Project pane:", 10*time.Second)
+	writePTY(t, terminal, "P")
+	capture.waitCurrent(t, "Session list pane:", 10*time.Second)
 	waitE2E(t, 20*time.Second, func() bool {
 		screen := capture.currentText()
 		return strings.Contains(screen, preDragMarkers[0]) && strings.Contains(screen, preDragMarkers[1])
@@ -1038,6 +1045,7 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	}
 	capture.waitCurrent(t, projectMarker, 10*time.Second)
 	writePTY(t, terminal, "P")
+	capture.waitCurrent(t, "Session list pane:", 10*time.Second)
 	// Create a shell-first Session pane through the same Project modal. The
 	// first remote directory choice must be this host's home, not Ducklion's
 	// own working directory or a previous bookmark.
@@ -1046,7 +1054,13 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 		_, _ = exec.Command(runtime, "exec", controller, binary, "--name", "workspace-two-cli", "destroy", "client-a", newHandle,
 			"--config", "/root/.ducklord/config.yaml").CombinedOutput()
 	})
-	writePTY(t, terminal, "Pp\r\r") // new tab, new shell
+	writePTY(t, terminal, "P")
+	waitE2E(t, 10*time.Second, func() bool { return strings.Contains(capture.currentText(), "Project pane:") }, func() string {
+		return "Project focus header: " + safeTerminalDiagnostic(strings.Join(strings.Split(capture.currentText(), "\n")[:3], "\n"))
+	})
+	writePTY(t, terminal, "p")
+	capture.waitCurrent(t, "Add Session pane", 10*time.Second)
+	writePTY(t, terminal, "\r\r") // new tab, new shell
 	capture.waitCurrent(t, "host ›", 10*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "choose a directory", 15*time.Second)
@@ -1381,7 +1395,12 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 			t.Fatalf("Project-list input reached %s: err=%v output=%q", handle, readErr, safeTerminalDiagnostic(string(out)))
 		}
 	}
-	writePTY(t, terminal, "\r")
+	// A pane click uses the same owner-gated focus path as Enter.
+	paneX, paneY, found := workspaceScreenPoint(capture.currentText(), "client-a/"+handles[1], 32, 120)
+	if !found {
+		t.Fatal("mouse focus target not visible")
+	}
+	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<0;%d;%dm", paneX, paneY, paneX, paneY))
 	capture.waitCurrent(t, "▣ client-a/"+handles[1], 20*time.Second)
 	capture.waitCurrent(t, "› "+handles[0]+" @client-a", 10*time.Second)
 	toB := fmt.Sprintf("TOB-%d", time.Now().UnixNano())
@@ -1730,13 +1749,28 @@ func writePTY(t *testing.T, terminal *os.File, value string) {
 	}
 }
 
+func TestWorkspaceScreenPointIgnoresStylesAndFindsRepeatedLabels(t *testing.T) {
+	x, y, ok := workspaceScreenPoint("\x1b[38;2;1;2;3mpane\x1b[0m   pane", "pane", 7, 20)
+	if !ok || x != 8 || y != 1 {
+		t.Fatalf("styled repeated label: (%d, %d, %t)", x, y, ok)
+	}
+}
+
 func workspaceScreenPoint(screen, label string, minX, maxX int) (x, y int, found bool) {
+	// RenderLines includes generated SGR styles; they occupy no screen cells.
+	screen = regexp.MustCompile(`\x1b\[[0-9;:]*m`).ReplaceAllString(screen, "")
 	for row, line := range strings.Split(screen, "\n") {
-		if offset := strings.Index(line, label); offset >= 0 {
-			column := len([]rune(line[:offset])) + 1
+		for start := 0; start < len(line); {
+			offset := strings.Index(line[start:], label)
+			if offset < 0 {
+				break
+			}
+			offset += start
+			column := modalCellWidth(line[:offset]) + 1
 			if column >= minX && column < maxX {
 				return column, row + 1, true
 			}
+			start = offset + len(label)
 		}
 	}
 	return 0, 0, false

@@ -482,7 +482,15 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	}
 	if nav.InDetailMode() {
 		results := s.detailedResults()
-		ducklord.RenderDetailedSessionBody(out, ducklord.CalculateDetailGeometry(width, height, 4), results, s.detailSelected,
+		focus := ducklord.WorkspaceFocusSessions
+		if s.focused {
+			focus = ducklord.WorkspaceFocusTerminal
+		}
+		theme := ducklord.WorkspaceTheme{}
+		if s.cfg != nil {
+			theme = s.cfg.WorkspaceTheme
+		}
+		ducklord.RenderDetailedSessionBodyWithOptions(out, ducklord.CalculateDetailGeometry(width, height, 4), results, s.detailSelected,
 			s.detailQuery, s.detailFilter, s.focused, func(identity ducklord.SessionIdentity, cols, rows int) ducklord.WorkspacePaneView {
 				session, ok := s.detailSelectionSession()
 				if !ok {
@@ -498,7 +506,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 					view.Lines = []string{sanitizeTerminalText(session.LastLine), "PTY output unavailable"}
 				}
 				return view
-			})
+			}, ducklord.WorkspaceRenderOptions{Focus: focus, Theme: theme})
 		s.renderHelpModal(out, width, height)
 		return
 	}
@@ -525,7 +533,18 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 			visibleOutput[ducklord.SessionIdentity{InstanceID: selection.InstanceID, SessionID: selection.SessionID}] = selection
 		}
 	}
-	ducklord.RenderWorkspaceBody(out, geometry, layout, nav, items, func(projectID string) bool {
+	focus := ducklord.WorkspaceFocusSessions
+	if s.workspaceProjectFocus {
+		focus = ducklord.WorkspaceFocusProjects
+	}
+	if s.focused {
+		focus = ducklord.WorkspaceFocusTerminal
+	}
+	theme := ducklord.WorkspaceTheme{}
+	if s.cfg != nil {
+		theme = s.cfg.WorkspaceTheme
+	}
+	ducklord.RenderWorkspaceBodyWithOptions(out, geometry, layout, nav, items, func(projectID string) bool {
 		for _, session := range s.sessions {
 			identity, ok := ducklord.IdentityFromSession(session)
 			if ok && session.Unread {
@@ -573,7 +592,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 			return view
 		}
 		return ducklord.WorkspacePaneView{Title: "Session unavailable", Stale: true}
-	}, offsets)
+	}, ducklord.WorkspaceRenderOptions{Offsets: offsets, Focus: focus, Theme: theme})
 	s.renderCreateModal(out, width, height)
 	s.renderWorkspacePaneModal(out, width, height)
 	s.renderSearchModal(out, width, height)

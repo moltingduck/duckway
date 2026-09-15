@@ -1430,3 +1430,10 @@ Inside the TUI:
 - `n` configures notifications for the selected session
 - `E`, `R`, and `X` confirm end, restart, and destroy
 - `q` exits
+# Workspace pane layout / mouse amendment (2026-09-15)
+
+- Project pane sits above Session list pane in the left sidebar; Terminal area occupies the right side.
+- Pane headings/backgrounds and separators distinguish regions. Keyboard focus uses a contrasting configurable style via `workspace_theme`; local changes require restart.
+- Mouse clicks select Projects, Sessions, Terminal tabs, individual Session panes and enabled modal choices. Modal input must not pass through to the underlying PTY.
+- Clicking a PTY follows existing writer authorization, including pending-focus cancellation and stale-completion fencing; it never implies yield.
+- Mouse wheel reports remain local scroll input. PTY application colors remain unchanged.

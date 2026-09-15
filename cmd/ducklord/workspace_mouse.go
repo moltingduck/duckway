@@ -26,12 +26,39 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 		return true, false
 	}
 	nav, err := s.workspaceNavigation()
-	if err != nil || nav.InDetailMode() {
+	if err != nil {
 		s.workspaceDragSession = ducklord.RemoteSession{}
 		s.workspaceDragMoved = false
 		return false, false
 	}
 	width, height := terminalSize()
+	if nav.InDetailMode() {
+		if button != 0 || !strings.HasSuffix(key, "M") {
+			return true, false
+		}
+		geometry := ducklord.CalculateDetailGeometry(width, height, 4)
+		if insideWorkspaceRect(geometry.Pane, x, y) && s.detailSelected.Key() != "" {
+			s.detailSearchFocused = false
+			s.workspaceMouseFocus = true
+			return true, true
+		}
+		if insideWorkspaceRect(geometry.List, x, y) {
+			s.detailSearchFocused = y == geometry.List.Y+1
+			results := s.detailedResults()
+			selected := -1
+			for i := range results {
+				if results[i].Identity == s.detailSelected {
+					selected = i
+					break
+				}
+			}
+			if index := ducklord.DetailSessionIndexAt(geometry.List, selected, len(results), x, y); index >= 0 {
+				s.detailSelected = results[index].Identity
+				return true, nav.PreviewDetail(s.detailSelected) == nil
+			}
+		}
+		return true, false
+	}
 	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
 	quickSessions := s.workspaceQuickSessions()
 	quickOffset := s.workspaceColumnOffsets(geometry, nav, quickSessions).Quick
@@ -41,6 +68,43 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 		s.workspaceDragX, s.workspaceDragY = x, y
 		if index, inside := workspaceQuickRowAt(geometry.Quick, x, y); inside && index+quickOffset < len(quickSessions) {
 			s.workspaceDragSession = quickSessions[index+quickOffset]
+			s.workspaceProjectFocus = false
+		}
+		if insideWorkspaceRect(geometry.Projects, x, y) {
+			s.workspaceProjectFocus = true
+			index, inside := workspaceQuickRowAt(geometry.Projects, x, y)
+			index += s.workspaceColumnOffsets(geometry, nav, quickSessions).Projects
+			projects := s.activity().ProjectLayout.Projects
+			if inside && index < len(projects) {
+				return true, nav.SelectProject(projects[index].ID) == nil
+			}
+		}
+		if y == geometry.Terminal.Y && insideWorkspaceRect(geometry.Terminal, x, y) {
+			project := s.activity().ProjectLayout.Project(nav.CurrentProjectID())
+			if project != nil {
+				left := geometry.Terminal.X + modalCellWidth(" "+project.Name+"  ")
+				for i, tab := range project.Tabs {
+					cells := modalCellWidth(fmt.Sprintf("  %d ", i+1))
+					if x >= left && x < left+cells {
+						if id := firstWorkspacePaneID(tab.Root); id != "" {
+							s.workspaceProjectFocus = true
+							return true, nav.SelectPane(project.ID, id) == nil
+						}
+					}
+					left += cells
+				}
+			}
+		}
+		for _, pane := range ducklord.WorkspaceVisiblePaneRects(&s.activity().ProjectLayout, nav, geometry) {
+			if insideWorkspaceRect(pane.Rect, x, y) {
+				if err := nav.SelectPane(nav.CurrentProjectID(), s.projectPaneID(nav.CurrentProjectID(), pane.Identity)); err != nil {
+					s.outputErr = err.Error()
+					return true, false
+				}
+				s.workspaceProjectFocus = false
+				s.workspaceMouseFocus = true
+				return true, true
+			}
 		}
 		return true, false
 	}
@@ -91,6 +155,23 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 		s.beginWorkspaceDrop(source, identity, nav.CurrentProjectID(), "")
 	}
 	return true, false
+}
+
+func insideWorkspaceRect(rect ducklord.WorkspaceRect, x, y int) bool {
+	return rect.Width > 0 && rect.Height > 0 && x >= rect.X && x < rect.X+rect.Width && y >= rect.Y && y < rect.Y+rect.Height
+}
+
+func firstWorkspacePaneID(pane *ducklord.SessionPane) string {
+	if pane == nil {
+		return ""
+	}
+	if pane.Session != nil {
+		return pane.ID
+	}
+	if id := firstWorkspacePaneID(pane.First); id != "" {
+		return id
+	}
+	return firstWorkspacePaneID(pane.Second)
 }
 
 func (s *tuiState) beginWorkspaceDrop(source ducklord.RemoteSession, identity ducklord.SessionIdentity, projectID, targetID string) {

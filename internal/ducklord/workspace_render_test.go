@@ -2,6 +2,7 @@ package ducklord
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -9,12 +10,83 @@ import (
 func TestWorkspaceGeometryKeepsThreeRegionsAndNarrowFallback(t *testing.T) {
 	wide := CalculateWorkspaceGeometry(120, 30, 4)
 	if wide.Projects.Width <= 0 || wide.Quick.Width <= 0 || wide.Terminal.Width <= 0 ||
-		wide.Terminal.X <= wide.Quick.X || wide.Quick.X <= wide.Projects.X {
+		wide.Terminal.X <= wide.Quick.X+wide.Quick.Width || wide.Quick.X != wide.Projects.X || wide.Quick.Y < wide.Projects.Y+wide.Projects.Height {
 		t.Fatalf("three regions overlap: %+v", wide)
 	}
 	narrow := CalculateWorkspaceGeometry(50, 20, 4)
 	if narrow.Projects.Width != 0 || narrow.Quick.Width != 0 || narrow.Terminal.Width != 50 {
 		t.Fatalf("narrow fallback: %+v", narrow)
+	}
+}
+
+func TestWorkspaceStackedGeometryStaysInsideScreen(t *testing.T) {
+	for width := 0; width <= 125; width++ {
+		for height := 0; height <= 35; height++ {
+			g := CalculateWorkspaceGeometry(width, height, 4)
+			for _, r := range []WorkspaceRect{g.Projects, g.Quick, g.Terminal} {
+				if r.Width < 0 || r.Height < 0 {
+					t.Fatalf("negative rect %+v", r)
+				}
+				if r.Width == 0 || r.Height == 0 {
+					continue
+				}
+				if r.X < 1 || r.Y < 4 || r.X+r.Width-1 > width || r.Y+r.Height-1 > height {
+					t.Fatalf("%dx%d: rect outside screen %+v", width, height, r)
+				}
+			}
+			if g.Projects.Width > 0 {
+				if g.Projects.X != g.Quick.X || g.Projects.Width != g.Quick.Width || g.Projects.Y+g.Projects.Height != g.Quick.Y || g.Quick.X+g.Quick.Width >= g.Terminal.X {
+					t.Fatalf("stacked regions overlap: %+v", g)
+				}
+			}
+		}
+	}
+}
+
+func TestWorkspaceThemeFocusAndViewport(t *testing.T) {
+	layout := NewProjectLayout()
+	id := testLayoutIdentity("ABC123")
+	if _, err := layout.Place(layout.Projects[0].ID, id, PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	nav, err := NewWorkspaceState(&layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectQuickSession(id); err != nil {
+		t.Fatal(err)
+	}
+	g := CalculateWorkspaceGeometry(120, 25, 4)
+	theme := WorkspaceTheme{FocusBackground: "#123456", FocusForeground: "#abcdef"}
+	for _, focus := range []WorkspaceFocus{WorkspaceFocusProjects, WorkspaceFocusSessions, WorkspaceFocusTerminal} {
+		var out bytes.Buffer
+		RenderWorkspaceBodyWithOptions(&out, g, &layout, nav, nil, nil, func(_ SessionIdentity, w, h int) WorkspacePaneView {
+			if w != g.Terminal.Width || h != g.Terminal.Height-2 {
+				t.Fatalf("viewport changed: %dx%d", w, h)
+			}
+			return WorkspacePaneView{Title: "pane", Lines: []string{"\x1b[31mred\x1b[0m"}}
+		}, WorkspaceRenderOptions{Focus: focus, Theme: theme})
+		r := g.Projects
+		title := " PROJECTS "
+		if focus == WorkspaceFocusSessions {
+			r, title = g.Quick, " SESSIONS "
+		}
+		if focus == WorkspaceFocusTerminal {
+			r, title = g.Terminal, " "+layout.Projects[0].Name
+		}
+		start := fmt.Sprintf("\x1b[%d;%dH\x1b[0m", r.Y, r.X)
+		at := strings.Index(out.String(), start)
+		if at < 0 {
+			t.Fatalf("missing heading position %q", start)
+		}
+		line := out.String()[at+len(start):]
+		end := strings.Index(line, "\x1b[0m")
+		if end < 0 || !strings.Contains(line[:end], "\x1b[48;2;18;52;86m") || !strings.Contains(line[:end], title) || !strings.HasSuffix(line[:end], " ") {
+			t.Fatalf("focus heading missing full-width background: %q", line)
+		}
+		if !strings.Contains(out.String(), "\x1b[31mred") {
+			t.Fatal("PTY styling lost")
+		}
 	}
 }
 

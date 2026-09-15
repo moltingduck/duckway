@@ -144,3 +144,24 @@ CONTAINER_RUNTIME=podman scripts/ducklord-agent-tui-live-e2e.sh
 Use `CONTAINER_RUNTIME=docker` for Docker, or `--codex-only` / `--claude-only`
 to isolate a runtime. This test uses real provider calls and can incur usage;
 never commit `live-credentials/`.
+
+# Workspace 外觀與滑鼠
+
+左側上方是 Project pane，下方是 Session list pane；右側是 Terminal area。
+標題背景與分隔線區分窗格，取得鍵盤 focus 的窗格會使用不同配色。
+點擊 Project、Session、Terminal tab 或 Session pane 可導覽；點擊 PTY
+仍會經過既有的 writer 控制權檢查，不會自動 yield。中央選單可點選選項與操作提示，
+停用選項不可點擊，危險操作仍需確認。固定的 `?` 說明也可點擊快捷鍵操作。
+
+可在 `~/.ducklord/config.yaml` 自訂顏色，重開 Ducklord 後生效：
+
+```yaml
+workspace_theme:
+  separator: "#526071"
+  background: "#202833"
+  foreground: "#c5cfdb"
+  focus_background: "#24536b"
+  focus_foreground: "#ffffff"
+```
+
+未指定的欄位沿用預設；PTY 內 agent 的原始配色不會被覆蓋。

@@ -68,6 +68,11 @@ Updated: 2026-09-15. Agreed Project/pane scope implemented and verified.
 
 ## Change safety
 
+The 2026-09-15 UI follow-up implements stacked Project/Session list panes,
+configurable workspace colors, visible focus, and mouse navigation/modal
+activation. Focus requests reuse existing owner-gated control paths. Verification
+is recorded in `docs/pane-verification.md`.
+
 Commit only task-owned files. Exclude unrelated user changes to `CLAUDE.md`,
 `internal/client/local_sessions.go`, client supplychain files, and server
 supplychain service/handler files. Never print live credentials or raw live logs.

@@ -1329,6 +1329,8 @@ func splitCommandLine(line string) ([]string, error) {
 }
 
 type tuiState struct {
+	modalMouseRegions          []modalMouseRegion
+	modalMouseLines            map[int]modalMouseAction
 	cfg                        *ducklord.Config
 	cfgPath                    string
 	runner                     remoteRunner
@@ -1487,6 +1489,7 @@ type tuiState struct {
 	workspaceProjectFocus      bool
 	workspaceAttachFromProject bool
 	workspaceFocusFromProject  bool
+	workspaceMouseFocus        bool
 	workspacePaneMode          bool
 	workspacePaneStep          string
 	workspacePaneIndex         int
@@ -2590,6 +2593,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.render(os.Stdout)
 		case b := <-input:
 			var selectedActionTarget *ducklord.RemoteSession
+			// Clicking another pane cancels pending focus before changing its
+			// target. Late control completions remain fenced by controlID.
+			if button, _, _, ok := parseSGRMouse(string(b)); ok && button == 0 && strings.HasSuffix(string(b), "M") && state.workspacePreview && !state.blockingModalOpen() {
+				if handlePendingPTYInput(state, []byte("\x1b"), workspaceOutput != nil, &control, &controlOpenCancel, &controlID) {
+					controlDone = nil
+				}
+			}
 			if handlePendingPTYInput(state, b, workspaceOutput != nil, &control, &controlOpenCancel, &controlID) {
 				if control == nil {
 					controlDone = nil
@@ -2598,27 +2608,81 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			mouseReport := strings.HasPrefix(string(b), "\x1b[<")
+			var helpMouseKey []byte
 			if button, x, y, ok := parseSGRMouse(string(b)); ok {
-				// Mouse reports are always local UI input. Never inject their
-				// escape sequences into a focused remote PTY.
-				if (button == 64 || button == 65) && state.contentPanePoint(x, y) && state.viewportTerminal() != nil {
-					if button == 64 {
-						state.scrollPTY(3)
-					} else {
-						state.scrollPTY(-3)
+				if state.blockingModalOpen() {
+					if button != 0 || !strings.HasSuffix(string(b), "M") {
+						continue
 					}
-					if state.copyMode {
-						state.renderCopyMode(os.Stdout)
-					} else {
-						state.render(os.Stdout)
+					b = state.modalMouseInput(x, y)
+					if len(b) == 0 {
+						continue
 					}
-					continue
-				}
-				if button == 64 || button == 65 || state.focused {
-					continue
+				} else {
+					if state.helpMode && state.modalMouseHit(x, y) {
+						if button != 0 || !strings.HasSuffix(string(b), "M") {
+							continue
+						}
+						helpMouseKey = state.modalMouseInput(x, y)
+					}
+					// Mouse reports are always local UI input. Never inject their
+					// escape sequences into a focused remote PTY.
+					if (button == 64 || button == 65) && state.contentPanePoint(x, y) && state.viewportTerminal() != nil {
+						if button == 64 {
+							state.scrollPTY(3)
+						} else {
+							state.scrollPTY(-3)
+						}
+						if state.copyMode {
+							state.renderCopyMode(os.Stdout)
+						} else {
+							state.render(os.Stdout)
+						}
+						continue
+					}
+					if button == 64 || button == 65 {
+						continue
+					}
+					if state.copyMode && button == 0 && strings.HasSuffix(string(b), "M") {
+						state.exitCopyMode(os.Stdout)
+					}
+					if state.focused {
+						if !state.workspacePreview || button != 0 || !strings.HasSuffix(string(b), "M") {
+							continue
+						}
+						controlID++
+						if controlOpenCancel != nil {
+							controlOpenCancel()
+							controlOpenCancel = nil
+						}
+						if control != nil {
+							_ = control.Stdin.Close()
+						}
+						control, controlDone = nil, nil
+						if attach != nil {
+							_ = attach.Stdin.Close()
+						}
+						if attachCancel != nil {
+							attachCancel()
+							attachCancel = nil
+						}
+						attachID++
+						resizeInFlight = false
+						pendingFramebufferResize, queuedResize = nil, nil
+						bufferedAttach, bufferedAttachBytes = nil, 0
+						attachOutputSource = attachOut
+						state.focused = false
+						state.clearAttachIdentity()
+						attachCanResize, attachInitialResizeQueued = false, false
+						attachReplayEndOffset = 0
+						attach = nil
+					}
 				}
 			} else if mouseReport {
 				continue
+			}
+			if len(helpMouseKey) != 0 {
+				b = helpMouseKey
 			}
 			if state.copyMode {
 				if copyModeExitInput(b) {
@@ -3419,8 +3483,19 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				if changedWorkspaceMouse && workspaceOutput != nil {
 					selectPooledOutput()
 				}
-				state.render(os.Stdout)
-				continue
+				if state.workspaceMouseFocus {
+					state.workspaceMouseFocus = false
+					state.workspaceAttachFromProject = true
+					state.workspaceFocusFromProject = true
+					state.selectedGroupID = ""
+					b = []byte("\r")
+					if state.workspaceNav != nil && state.workspaceNav.InDetailMode() {
+						b = []byte(shortcutInput(state.cfg.Shortcut("detail_focus")))
+					}
+				} else {
+					state.render(os.Stdout)
+					continue
+				}
 			}
 			wasDetailed := state.workspaceNav != nil && state.workspaceNav.InDetailMode()
 			previousDetail := state.detailSelected
@@ -5425,6 +5500,7 @@ func (s *tuiState) saveSnapshot(session ducklord.RemoteSession, text string) {
 }
 
 func (s *tuiState) render(out io.Writer) {
+	s.modalMouseRegions = nil
 	for s.pendingBells > 0 {
 		_, _ = out.Write([]byte{'\a'})
 		s.pendingBells--
@@ -5722,6 +5798,7 @@ func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
 	if !s.addClientMode {
 		return
 	}
+	s.resetModalMouse()
 	if s.addClientStep == "mode" {
 		standaloneStyle, integratedStyle := "", ""
 		if s.addClientModeSelected == 0 {
@@ -5738,7 +5815,9 @@ func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
 			{modalMuted, "  Wrong mode or stopped daemon: host is not added."},
 			{modalMuted, "  ↑/↓ choose   Enter continue   Esc cancel"},
 		}
-		renderModalBox(out, cols, rows, lines)
+		s.modalChoice(1, &s.addClientModeSelected, 0, "\r")
+		s.modalChoice(2, &s.addClientModeSelected, 1, "\r")
+		s.renderModalBox(out, cols, rows, lines)
 		return
 	}
 	selected := -1
@@ -5757,6 +5836,12 @@ func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
 		lines = append(lines, modalRenderLine{modalMuted, "  No SSH config hosts found"})
 	}
 	for index, host := range choices {
+		if !s.addClientBusy {
+			s.modalChoice(len(lines), &s.addClientSelected, start+index, "\r")
+			a := s.modalMouseLines[len(lines)]
+			a.before = func() { s.addClientLine = "" }
+			s.modalMouseLines[len(lines)] = a
+		}
 		style, prefix := "", "  "
 		if start+index == selected {
 			style, prefix = modalSelected, "› "
@@ -5783,14 +5868,19 @@ func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
 			choice = "Custom SSH target"
 		}
 		lines = []modalRenderLine{{modalSelected, choice}, {modalInput, "host › " + s.addClientLine}}
+		s.modalMouseLines = make(map[int]modalMouseAction)
+		if selected >= 0 && !s.addClientBusy {
+			s.modalChoice(0, &s.addClientSelected, selected, "\r")
+		}
 	}
-	renderModalBox(out, cols, rows, lines)
+	s.renderModalBox(out, cols, rows, lines)
 }
 
 func (s *tuiState) renderRemoveClientModal(out io.Writer, cols, rows int) {
 	if !s.removeClientMode || len(s.cfg.Clients) == 0 {
 		return
 	}
+	s.resetModalMouse()
 	selected := min(max(s.removeClientSelected, 0), len(s.cfg.Clients)-1)
 	client := s.cfg.Clients[selected]
 	lines := []modalRenderLine{{modalTitle, "  Remove Ducklion host"}}
@@ -5800,10 +5890,11 @@ func (s *tuiState) renderRemoveClientModal(out io.Writer, cols, rows int) {
 			modalRenderLine{modalInput, "  " + displayField(client.Name) + " · " + displayField(client.Host)},
 			modalRenderLine{modalMuted, "  Remote sessions will not be destroyed"},
 			modalRenderLine{modalMuted, "  Enter remove   Esc back   Ctrl+C cancel"})
-		renderModalBox(out, cols, rows, lines)
+		s.renderModalBox(out, cols, rows, lines)
 		return
 	}
 	for index, candidate := range s.cfg.Clients {
+		s.modalChoice(len(lines), &s.removeClientSelected, index, "\r")
 		style, prefix := "", "  "
 		if index == selected {
 			style, prefix = modalSelected, "› "
@@ -5811,13 +5902,14 @@ func (s *tuiState) renderRemoveClientModal(out io.Writer, cols, rows int) {
 		lines = append(lines, modalRenderLine{style, fmt.Sprintf("%s%d  %s · %s", prefix, index+1, displayField(candidate.Name), displayField(candidate.Host))})
 	}
 	lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ select   Enter continue   Esc/Ctrl+C cancel"})
-	renderModalBox(out, cols, rows, lines)
+	s.renderModalBox(out, cols, rows, lines)
 }
 
 func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 	if !s.helpMode || s.blockingModalOpen() {
 		return
 	}
+	s.resetModalMouse()
 	type helpEntry struct{ category, action, label string }
 	entries := []helpEntry{
 		{"SESSION LIST & GROUPS", "list_search", "Search sessions"}, {"", "list_organize", "Cycle custom / host / type"}, {"", "list_groups", "Manage custom groups"}, {"", "list_reorder_up", "Move session up"}, {"", "list_reorder_down", "Move session down"}, {"", "refresh", "Refresh"},
@@ -5837,6 +5929,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 	}
 	query := strings.ToLower(strings.TrimSpace(s.helpSearchQuery))
 	results := []modalRenderLine{}
+	helpMouseActions := make(map[string]string)
 	category := ""
 	categoryEntries := []modalRenderLine{}
 	flushCategory := func() {
@@ -5858,6 +5951,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		shortcut := s.cfg.Shortcut(entry.action)
 		if query == "" || strings.Contains(strings.ToLower(category+" "+entry.action+" "+entry.label+" "+shortcut), query) {
 			categoryEntries = append(categoryEntries, modalRenderLine{modalInput, fmt.Sprintf("  %-12s %s", shortcut, entry.label)})
+			helpMouseActions[categoryEntries[len(categoryEntries)-1].text] = shortcutInput(shortcut)
 		}
 	}
 	flushCategory()
@@ -5889,7 +5983,31 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 	lines := []modalRenderLine{{modalTitle, "  Keyboard shortcuts · grouped by target"}, {modalInput, searchHint}}
 	lines = append(lines, results[s.helpOffset:min(len(results), s.helpOffset+maxVisible)]...)
 	lines = append(lines, modalRenderLine{modalMuted, "  Pinned help · / search · Enter pin results · Esc clear · " + helpKey + " close"})
-	renderModalBox(out, cols, rows, lines)
+	for i, line := range lines {
+		if key := helpMouseActions[line.text]; key != "" {
+			s.modalChoice(i, nil, 0, key)
+			a := s.modalMouseLines[i]
+			a.before = func() { s.helpSearchActive = false }
+			s.modalMouseLines[i] = a
+		}
+	}
+	if !s.helpSearchActive {
+		s.modalChoice(1, nil, 0, "/")
+	}
+	s.renderModalBox(out, cols, rows, lines)
+	if cols >= 8 && rows >= 3 && len(lines) <= rows-2 {
+		width := min(72, max(8, cols-2))
+		left := max(1, (cols-width)/2+1) + 1
+		row := max(1, (rows-len(lines)-2)/2+1) + len(lines)
+		footer := lines[len(lines)-1].text
+		for _, button := range []struct{ label, key string }{{"/ search", "/"}, {helpKey + " close", shortcutInput(helpKey)}} {
+			start := strings.LastIndex(footer, button.label)
+			column := modalCellWidth(footer[:start])
+			if column+modalCellWidth(button.label) <= width-2 {
+				s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left + column, left + column + modalCellWidth(button.label) - 1, row, modalMouseAction{key: button.key}})
+			}
+		}
+	}
 }
 
 func (s *tuiState) handleHelpSearchInput(input []byte) {
@@ -5948,6 +6066,7 @@ func (s *tuiState) renderShortcutModal(out io.Writer, cols, rows int) {
 	if !s.shortcutMode {
 		return
 	}
+	s.resetModalMouse()
 	actions := shortcutActions()
 	lines := []modalRenderLine{{modalTitle, "  Configure keyboard shortcuts"}}
 	switch s.shortcutStep {
@@ -5956,10 +6075,13 @@ func (s *tuiState) renderShortcutModal(out io.Writer, cols, rows int) {
 		lines = append(lines, modalRenderLine{modalStatus, "  " + action}, modalRenderLine{modalInput, "  binding › " + s.shortcutLine}, modalRenderLine{modalMuted, "  Examples: x, ?, ctrl-k, ctrl-] · Enter save · Esc back"})
 	case "restart":
 		lines = append(lines, modalRenderLine{modalStatus, "  Shortcut saved. Restart Ducklord TUI now?"}, modalRenderLine{modalInput, "  y / Enter  restart now"}, modalRenderLine{modalMuted, "  n / Esc     keep running with current bindings"})
+		s.modalChoice(2, nil, 0, "\r")
+		s.modalChoice(3, nil, 0, "\x1b")
 	default:
 		visible := max(3, rows-8)
 		start := max(0, min(s.shortcutIndex-visible/2, len(actions)-visible))
 		for index := start; index < min(len(actions), start+visible); index++ {
+			s.modalChoice(len(lines), &s.shortcutIndex, index, "\r")
 			style, prefix := modalInput, "  "
 			if index == s.shortcutIndex {
 				style, prefix = modalSelected, "› "
@@ -5971,7 +6093,7 @@ func (s *tuiState) renderShortcutModal(out io.Writer, cols, rows int) {
 	if s.shortcutErr != "" {
 		lines = append(lines, modalRenderLine{modalDanger, "  " + sanitizeTerminalText(s.shortcutErr)})
 	}
-	renderModalBox(out, cols, rows, lines)
+	s.renderModalBox(out, cols, rows, lines)
 }
 
 func (s *tuiState) handleShortcutInput(input []byte) string {
@@ -6035,6 +6157,7 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 	if !s.hostMenuMode {
 		return
 	}
+	s.resetModalMouse()
 	if strings.HasPrefix(s.hostMenuStep, "retention-") {
 		lines := []modalRenderLine{{modalTitle, "  Host PTY log retention · " + displayField(s.hostMenuTarget)}}
 		switch s.hostMenuStep {
@@ -6054,7 +6177,7 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 		if s.hostMenuErr != "" && s.hostMenuStep != "retention-error" {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostMenuErr})
 		}
-		renderModalBox(out, cols, rows, lines)
+		s.renderModalBox(out, cols, rows, lines)
 		return
 	}
 	if strings.HasPrefix(s.hostMenuStep, "hook-") {
@@ -6077,6 +6200,7 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 		case "hook-select":
 			choices := []string{"Install Codex Stop hook", "Remove Codex Stop hook", "Install Claude Stop hooks", "Remove Claude Stop hooks"}
 			for index, choice := range choices {
+				s.modalChoice(len(lines), &s.hostMenuIndex, index, "\r")
 				style, prefix := modalInput, "  "
 				if index == s.hostMenuIndex {
 					style, prefix = modalSelected, "› "
@@ -6105,12 +6229,13 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 		case "hook-error":
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostMenuErr}, modalRenderLine{modalMuted, "  Enter retry · Esc back"})
 		}
-		renderModalBox(out, cols, rows, lines)
+		s.renderModalBox(out, cols, rows, lines)
 		return
 	}
 	if s.hostMenuStep == "connections" {
 		lines := []modalRenderLine{{modalTitle, "  Host connections · checked means connected"}}
 		for index, client := range s.cfg.Clients {
+			s.modalChoice(len(lines), &s.hostMenuIndex, index, " ")
 			style, cursor := modalInput, "  "
 			changed := s.hostMenuSelected[client.Name] == s.disconnectedHosts[client.Name]
 			changeMark := " "
@@ -6140,11 +6265,14 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 		if s.hostMenuErr != "" {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostMenuErr})
 		}
-		renderModalBox(out, cols, rows, lines)
+		s.renderModalBox(out, cols, rows, lines)
 		return
 	}
 	lines := []modalRenderLine{{modalTitle, "  Host actions · " + displayField(s.hostMenuTarget)}}
 	for index, label := range hostActions {
+		if !s.hostScoped || index < 4 {
+			s.modalChoice(len(lines), &s.hostMenuIndex, index, "\r")
+		}
 		style, prefix := "", "  "
 		if s.hostScoped && index >= 4 {
 			style, label = modalDisabled, label+" (unavailable in host-scoped mode)"
@@ -6158,7 +6286,7 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 		lines = append(lines, modalRenderLine{style, prefix + label})
 	}
 	lines = append(lines, modalRenderLine{modalMuted, "  Host connect state covers every session and notification on that host"}, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter run · Esc close"})
-	renderModalBox(out, cols, rows, lines)
+	s.renderModalBox(out, cols, rows, lines)
 }
 
 func (s *tuiState) beginHostMenu() {
@@ -6359,6 +6487,7 @@ func (s *tuiState) renderGroupModal(out io.Writer, cols, rows int) {
 	if !s.groupMenu {
 		return
 	}
+	s.resetModalMouse()
 	lines := []modalRenderLine{{modalTitle, "  Custom groups"}}
 	if s.groupMenuStep == "name" {
 		verb := "Create group"
@@ -6396,6 +6525,7 @@ func (s *tuiState) renderGroupModal(out io.Writer, cols, rows int) {
 		}
 		for index, label := range labels {
 			absoluteIndex := start + index
+			s.modalChoice(len(lines), &s.groupMenuIndex, absoluteIndex, "\r")
 			style, prefix := "", "  "
 			if absoluteIndex == selected {
 				style, prefix = modalSelected, "› "
@@ -6414,7 +6544,7 @@ func (s *tuiState) renderGroupModal(out io.Writer, cols, rows int) {
 		status = "Changes are local to Ducklord"
 	}
 	lines = append(lines, modalRenderLine{modalStatus, "  " + status}, modalRenderLine{modalMuted, "  ↑/↓ or j/k choose · Enter confirm · Esc cancel"})
-	renderModalBox(out, cols, rows, lines)
+	s.renderModalBox(out, cols, rows, lines)
 }
 
 func (s *tuiState) customGroupDisplayName(group ducklord.CustomGroup) string {
@@ -6539,6 +6669,7 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 	if !s.newSessionMode || cols < 8 || rows < 3 {
 		return
 	}
+	s.resetModalMouse()
 	if cols < 20 || rows < 7 {
 		choices := s.createModalChoices()
 		selected := s.createModalSelectedIndex(len(choices))
@@ -6567,8 +6698,10 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 		fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
 		if boxHeight == 3 {
 			s.renderCreatePromptRow(out, top+1, left, innerWidth, choice+"  ")
+			s.createMouseRegion(left+1, top+1, min(innerWidth, modalCellWidth(choice)), selected)
 		} else {
 			writeRow(top+1, modalSelected, choice)
+			s.createMouseRegion(left+1, top+1, innerWidth, selected)
 			writePrompt(top + 2)
 		}
 		fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+boxHeight-1, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
@@ -6610,6 +6743,7 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 			prefix, style = "› ", modalSelected
 		}
 		writeRow(top+2+i, style, prefix+choice)
+		s.createMouseRegion(left+1, top+2+i, innerWidth, hiddenBefore+i)
 	}
 	status := s.newSessionErr
 	if hiddenBefore+hiddenAfter > 0 {
@@ -6618,6 +6752,7 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 	writeRow(top+2+len(choices), modalStatus, "  "+status)
 	s.renderCreatePromptRow(out, top+3+len(choices), left, innerWidth, "  ")
 	writeRow(top+4+len(choices), modalMuted, "  ↑/↓ select   Enter continue   Esc back   Ctrl+C close")
+	s.modalHintRegions("  ↑/↓ select   Enter continue   Esc back   Ctrl+C close", left+1, top+4+len(choices), innerWidth)
 	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+5+len(choices), left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
 }
 
@@ -6644,6 +6779,7 @@ func (s *tuiState) renderActionModal(out io.Writer, cols, rows int) {
 	if !s.actionMenu || cols < 8 || rows < 3 {
 		return
 	}
+	s.resetModalMouse()
 	actions := s.sessionActions(s.actionTarget)
 	if len(actions) == 0 {
 		return
@@ -6660,6 +6796,9 @@ func (s *tuiState) renderActionModal(out io.Writer, cols, rows int) {
 		}
 		fmt.Fprintf(out, "\033[%d;1H%s%s%s\033[K", max(1, rows/2), modalTitle, modalCellTruncate("[ Session actions ]", cols), modalReset)
 		fmt.Fprintf(out, "\033[%d;1H%s%s%s\033[K", min(rows, max(1, rows/2)+1), style, modalCellTruncate(text, cols), modalReset)
+		if action.Enabled {
+			s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{1, cols, min(rows, max(1, rows/2)+1), modalMouseAction{selection: &s.actionIndex, index: selected, key: "\r"}})
+		}
 		return
 	}
 	boxWidth := min(72, cols-4)
@@ -6701,6 +6840,9 @@ func (s *tuiState) renderActionModal(out io.Writer, cols, rows int) {
 			label = "[" + action.Key + "] " + label
 		}
 		writeRow(top+2+i, style, prefix+label)
+		if action.Enabled {
+			s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left + 1, left + innerWidth, top + 2 + i, modalMouseAction{selection: &s.actionIndex, index: start + i, key: "\r"}})
+		}
 	}
 	status := fmt.Sprintf("  %s · %s · owner %s", s.actionTarget.Kind, s.actionTarget.Status, actionOwnerLabel(s.actionTarget))
 	if !actions[selected].Enabled {
@@ -6708,6 +6850,7 @@ func (s *tuiState) renderActionModal(out io.Writer, cols, rows int) {
 	}
 	writeRow(top+2+len(visible), modalStatus, status)
 	writeRow(top+3+len(visible), modalMuted, "  ↑/↓ or j/k select   Enter choose   Esc close")
+	s.modalHintRegions("  ↑/↓ or j/k select   Enter choose   Esc close", left+1, top+3+len(visible), innerWidth)
 	writeRow(top+4+len(visible), modalMuted, fmt.Sprintf("  ID %s · generation %d", s.actionTarget.SessionID, s.actionTarget.RuntimeGeneration))
 	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+5+len(visible), left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
 }
@@ -6903,6 +7046,7 @@ func (s *tuiState) renderSearchModal(out io.Writer, cols, rows int) {
 	if !s.searchMode {
 		return
 	}
+	s.resetModalMouse()
 	results := s.searchResults()
 	totalResults := len(results)
 	lines := []modalRenderLine{
@@ -6940,6 +7084,7 @@ func (s *tuiState) renderSearchModal(out io.Writer, cols, rows int) {
 			} else if session.Unread {
 				mark = "•"
 			}
+			s.modalChoice(len(lines), &s.searchSelected, absolute, "\r")
 			lines = append(lines, modalRenderLine{style, fmt.Sprintf("%s%s %-12s %-18s %-8s %s", prefix, mark,
 				displayField(session.Client), displayField(session.Name), displayField(session.Kind), displayField(session.AgentType))})
 		}
@@ -6952,13 +7097,14 @@ func (s *tuiState) renderSearchModal(out io.Writer, cols, rows int) {
 		status = "  " + sanitizeTerminalText(s.searchErr)
 	}
 	lines = append(lines, modalRenderLine{modalStatus, status}, modalRenderLine{modalMuted, "  ↑/↓ select · Enter activate · Esc close"})
-	renderModalBox(out, cols, rows, lines)
+	s.renderModalBox(out, cols, rows, lines)
 }
 
 func (s *tuiState) renderNotificationModal(out io.Writer, cols, rows int) {
 	if !s.notificationMode {
 		return
 	}
+	s.resetModalMouse()
 	target := s.notificationTarget
 	categories := model.NotificationCategories()
 	if s.notificationLevelEditing {
@@ -6966,11 +7112,13 @@ func (s *tuiState) renderNotificationModal(out io.Writer, cols, rows int) {
 		lines := []modalRenderLine{{modalTitle, fmt.Sprintf("  Notification delivery · %s / %s", target.Client, target.Name)},
 			{modalStatus, "  " + notificationClassLabel(class)}}
 		lines = append(lines, modalRenderLine{modalInput, choiceLine(s.notificationLevelChoice == 0, "inherit Host")})
+		s.modalChoice(len(lines)-1, &s.notificationLevelChoice, 0, "\r")
 		for i, level := range notificationConfigLevels {
+			s.modalChoice(len(lines), &s.notificationLevelChoice, i+1, "\r")
 			lines = append(lines, modalRenderLine{modalInput, choiceLine(s.notificationLevelChoice == i+1, string(level))})
 		}
 		lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter stage · Esc back"})
-		renderModalBox(out, cols, rows, lines)
+		s.renderModalBox(out, cols, rows, lines)
 		return
 	}
 	selected := min(max(s.notificationIndex, 0), len(categories)+len(notificationConfigClasses)-1)
@@ -6979,6 +7127,7 @@ func (s *tuiState) renderNotificationModal(out io.Writer, cols, rows int) {
 	start = min(start, max(0, len(categories)+len(notificationConfigClasses)-maxChoices))
 	lines := []modalRenderLine{{modalTitle, fmt.Sprintf("  Notifications · %s / %s", target.Client, target.Name)}}
 	for index := start; index < min(len(categories)+len(notificationConfigClasses), start+maxChoices); index++ {
+		s.modalChoice(len(lines), &s.notificationIndex, index, "\r")
 		label := ""
 		if index < len(categories) {
 			category := categories[index]
@@ -7009,13 +7158,14 @@ func (s *tuiState) renderNotificationModal(out io.Writer, cols, rows int) {
 	if rows < 7 {
 		lines = lines[:min(len(lines), 2)]
 	}
-	renderModalBox(out, cols, rows, lines)
+	s.renderModalBox(out, cols, rows, lines)
 }
 
 func (s *tuiState) renderLifecycleModal(out io.Writer, cols, rows int) {
 	if s.lifecycleConfirm == "" {
 		return
 	}
+	s.resetModalMouse()
 	target := s.lifecycleTarget
 	verb := strings.ToUpper(string(s.lifecycleConfirm))
 	style := modalTitle
@@ -7051,7 +7201,7 @@ func (s *tuiState) renderLifecycleModal(out io.Writer, cols, rows int) {
 	}
 	if rows < 7 {
 		warning := verb + ": " + detail + "  " + help
-		renderModalBox(out, cols, rows, []modalRenderLine{{style, warning}})
+		s.renderModalBox(out, cols, rows, []modalRenderLine{{style, warning}})
 		return
 	}
 	lines := []modalRenderLine{
@@ -7061,7 +7211,7 @@ func (s *tuiState) renderLifecycleModal(out io.Writer, cols, rows int) {
 		{modalStatus, "  " + detail},
 		{modalMuted, "  " + help},
 	}
-	renderModalBox(out, cols, rows, lines)
+	s.renderModalBox(out, cols, rows, lines)
 }
 
 func (s *tuiState) beginNotificationSettings() {

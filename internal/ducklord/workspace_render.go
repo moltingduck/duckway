@@ -44,6 +44,20 @@ type WorkspaceColumnOffsets struct {
 	Quick    int
 }
 
+type WorkspaceFocus string
+
+const (
+	WorkspaceFocusProjects WorkspaceFocus = "projects"
+	WorkspaceFocusSessions WorkspaceFocus = "sessions"
+	WorkspaceFocusTerminal WorkspaceFocus = "terminal"
+)
+
+type WorkspaceRenderOptions struct {
+	Offsets WorkspaceColumnOffsets
+	Focus   WorkspaceFocus
+	Theme   WorkspaceTheme
+}
+
 // WorkspaceListOffset keeps the selected row visible while preserving the
 // current scroll position whenever possible. It also clamps after a resize
 // or list shrink.
@@ -67,30 +81,32 @@ func WorkspaceListOffset(offset, selected, visible, total int) int {
 	return offset
 }
 
-// CalculateWorkspaceGeometry reserves distinct Project, quick-list, and
-// Terminal regions. Narrow terminals retain the Terminal region and hide
-// columns in order, never producing negative pane dimensions.
+// CalculateWorkspaceGeometry stacks Projects above Sessions in a left sidebar.
+// Narrow or short terminals retain only the Terminal region.
 func CalculateWorkspaceGeometry(width, height, top int) WorkspaceGeometry {
+	if top < 1 {
+		top = 1
+	}
 	if width < 1 || height < top {
 		return WorkspaceGeometry{}
 	}
 	remaining := height - top + 1
 	geometry := WorkspaceGeometry{Terminal: WorkspaceRect{X: 1, Y: top, Width: width, Height: remaining}}
-	if width < 62 {
+	if width < 62 || remaining < 5 {
 		return geometry
 	}
-	projectsWidth := 22
+	sidebarWidth := 30
 	if width < 90 {
-		projectsWidth = 18
+		sidebarWidth = 24
 	}
-	quickWidth := 30
-	if width < 90 {
-		quickWidth = 24
+	projectsHeight := remaining / 3
+	if projectsHeight < 2 {
+		projectsHeight = 2
 	}
-	geometry.Projects = WorkspaceRect{X: 1, Y: top, Width: projectsWidth, Height: remaining}
-	geometry.Quick = WorkspaceRect{X: projectsWidth + 2, Y: top, Width: quickWidth, Height: remaining}
-	geometry.Terminal = WorkspaceRect{X: projectsWidth + quickWidth + 3, Y: top,
-		Width: width - projectsWidth - quickWidth - 2, Height: remaining}
+	geometry.Projects = WorkspaceRect{X: 1, Y: top, Width: sidebarWidth, Height: projectsHeight}
+	geometry.Quick = WorkspaceRect{X: 1, Y: top + projectsHeight, Width: sidebarWidth, Height: remaining - projectsHeight}
+	geometry.Terminal = WorkspaceRect{X: sidebarWidth + 2, Y: top,
+		Width: width - sidebarWidth - 1, Height: remaining}
 	return geometry
 }
 
@@ -106,8 +122,25 @@ func RenderWorkspaceBody(out io.Writer, geometry WorkspaceGeometry, layout *Proj
 	if len(columnOffsets) > 0 {
 		offsets = columnOffsets[0]
 	}
+	RenderWorkspaceBodyWithOptions(out, geometry, layout, nav, items, projectUnread, paneView, WorkspaceRenderOptions{Offsets: offsets})
+}
+
+// RenderWorkspaceBodyWithOptions adds configurable colors and navigation focus
+// without changing the PTY viewport or its one-row title offset.
+func RenderWorkspaceBodyWithOptions(out io.Writer, geometry WorkspaceGeometry, layout *ProjectLayout, nav *WorkspaceState,
+	items []WorkspaceListItem, projectUnread func(string) bool, paneView func(SessionIdentity, int, int) WorkspacePaneView, options WorkspaceRenderOptions) {
+	if out == nil || layout == nil || nav == nil {
+		return
+	}
+	offsets := options.Offsets
+	options.Theme = options.Theme.resolved()
+	if geometry.Projects.Width > 0 && geometry.Terminal.X == geometry.Projects.X+geometry.Projects.Width+1 {
+		for y := geometry.Terminal.Y; y < geometry.Terminal.Y+geometry.Terminal.Height; y++ {
+			workspaceWrite(out, geometry.Terminal.X-1, y, 1, "│", workspaceSGRColor(options.Theme.Separator, false))
+		}
+	}
 	if geometry.Projects.Width > 0 {
-		renderWorkspaceColumn(out, geometry.Projects, " PROJECTS ", func(index int) string {
+		renderWorkspaceColumn(out, geometry.Projects, " PROJECTS ", options.Theme, options.Focus == WorkspaceFocusProjects, func(index int) string {
 			index += offsets.Projects
 			if index >= len(layout.Projects) {
 				return ""
@@ -127,7 +160,7 @@ func RenderWorkspaceBody(out io.Writer, geometry WorkspaceGeometry, layout *Proj
 		})
 	}
 	if geometry.Quick.Width > 0 {
-		renderWorkspaceColumn(out, geometry.Quick, " SESSIONS ", func(index int) string {
+		renderWorkspaceColumn(out, geometry.Quick, " SESSIONS ", options.Theme, options.Focus == WorkspaceFocusSessions, func(index int) string {
 			index += offsets.Quick
 			if index >= len(items) {
 				return ""
@@ -167,8 +200,10 @@ func RenderWorkspaceBody(out io.Writer, geometry WorkspaceGeometry, layout *Proj
 		active = &project.Tabs[0]
 	}
 	if active == nil || active.Root == nil {
-		workspaceWrite(out, terminal.X, terminal.Y, terminal.Width, " "+project.Name+"  "+strings.Join(tabs, ""), "\x1b[1;36m")
-		workspaceWrite(out, content.X, content.Y, content.Width, "No Session panes in this Project", "\x1b[2m")
+		workspaceWrite(out, terminal.X, terminal.Y, terminal.Width, " "+project.Name+"  "+strings.Join(tabs, ""), options.Theme.style(options.Focus == WorkspaceFocusTerminal))
+		if content.Height > 0 {
+			workspaceWrite(out, content.X, content.Y, content.Width, "No Session panes in this Project", "\x1b[2m")
+		}
 		return
 	}
 	_, hidden := workspaceVisibleLeaves(active.Root, content)
@@ -176,8 +211,8 @@ func RenderWorkspaceBody(out io.Writer, geometry WorkspaceGeometry, layout *Proj
 	if hidden > 0 {
 		heading += fmt.Sprintf(" +%d hidden", hidden)
 	}
-	workspaceWrite(out, terminal.X, terminal.Y, terminal.Width, heading, "\x1b[1;36m")
-	renderWorkspaceNode(out, active.Root, content, nav.CurrentPaneID(), paneView)
+	workspaceWrite(out, terminal.X, terminal.Y, terminal.Width, heading, options.Theme.style(options.Focus == WorkspaceFocusTerminal))
+	renderWorkspaceNode(out, active.Root, content, nav.CurrentPaneID(), paneView, options)
 }
 
 // WorkspaceVisibleSessions uses the same split geometry as the renderer, so
@@ -313,13 +348,16 @@ func workspaceVisibleLeaves(node *SessionPane, rect WorkspaceRect) ([]SessionIde
 	return append(first, second...), firstHidden + secondHidden
 }
 
-func renderWorkspaceColumn(out io.Writer, rect WorkspaceRect, title string, row func(int) string) {
-	workspaceWrite(out, rect.X, rect.Y, rect.Width, title, "\x1b[1;34m")
+func renderWorkspaceColumn(out io.Writer, rect WorkspaceRect, title string, theme WorkspaceTheme, focused bool, row func(int) string) {
+	if rect.Height <= 0 {
+		return
+	}
+	workspaceWrite(out, rect.X, rect.Y, rect.Width, title, "\x1b[1m"+theme.style(focused))
 	for i := 0; i < rect.Height-1; i++ {
 		line := row(i)
-		color := ""
+		color := theme.style(false)
 		if strings.HasPrefix(line, "›") {
-			color = "\x1b[1;36m"
+			color = "\x1b[1m" + theme.style(focused)
 		}
 		workspaceWrite(out, rect.X, rect.Y+1+i, rect.Width, line, color)
 	}
@@ -336,7 +374,7 @@ func workspaceMarkedRow(prefix, label, suffix string, cells int) string {
 }
 
 func renderWorkspaceNode(out io.Writer, node *SessionPane, rect WorkspaceRect, selectedPaneID string,
-	view func(SessionIdentity, int, int) WorkspacePaneView) {
+	view func(SessionIdentity, int, int) WorkspacePaneView, options WorkspaceRenderOptions) {
 	if node == nil || rect.Width < 1 || rect.Height < 1 {
 		return
 	}
@@ -344,20 +382,20 @@ func renderWorkspaceNode(out io.Writer, node *SessionPane, rect WorkspaceRect, s
 		if node.Direction == SplitHorizontal {
 			firstHeight := rect.Height / 2
 			if firstHeight < 1 || rect.Height-firstHeight < 1 {
-				renderWorkspaceNode(out, node.First, rect, selectedPaneID, view)
+				renderWorkspaceNode(out, node.First, rect, selectedPaneID, view, options)
 				return
 			}
-			renderWorkspaceNode(out, node.First, WorkspaceRect{X: rect.X, Y: rect.Y, Width: rect.Width, Height: firstHeight}, selectedPaneID, view)
-			renderWorkspaceNode(out, node.Second, WorkspaceRect{X: rect.X, Y: rect.Y + firstHeight, Width: rect.Width, Height: rect.Height - firstHeight}, selectedPaneID, view)
+			renderWorkspaceNode(out, node.First, WorkspaceRect{X: rect.X, Y: rect.Y, Width: rect.Width, Height: firstHeight}, selectedPaneID, view, options)
+			renderWorkspaceNode(out, node.Second, WorkspaceRect{X: rect.X, Y: rect.Y + firstHeight, Width: rect.Width, Height: rect.Height - firstHeight}, selectedPaneID, view, options)
 			return
 		}
 		firstWidth := rect.Width / 2
 		if firstWidth < 1 || rect.Width-firstWidth < 1 {
-			renderWorkspaceNode(out, node.First, rect, selectedPaneID, view)
+			renderWorkspaceNode(out, node.First, rect, selectedPaneID, view, options)
 			return
 		}
-		renderWorkspaceNode(out, node.First, WorkspaceRect{X: rect.X, Y: rect.Y, Width: firstWidth, Height: rect.Height}, selectedPaneID, view)
-		renderWorkspaceNode(out, node.Second, WorkspaceRect{X: rect.X + firstWidth, Y: rect.Y, Width: rect.Width - firstWidth, Height: rect.Height}, selectedPaneID, view)
+		renderWorkspaceNode(out, node.First, WorkspaceRect{X: rect.X, Y: rect.Y, Width: firstWidth, Height: rect.Height}, selectedPaneID, view, options)
+		renderWorkspaceNode(out, node.Second, WorkspaceRect{X: rect.X + firstWidth, Y: rect.Y, Width: rect.Width - firstWidth, Height: rect.Height}, selectedPaneID, view, options)
 		return
 	}
 	data := WorkspacePaneView{Title: node.Session.SessionID, Stale: true}
@@ -367,21 +405,22 @@ func renderWorkspaceNode(out io.Writer, node *SessionPane, rect WorkspaceRect, s
 	if data.Title == "" {
 		data.Title = node.Session.SessionID
 	}
-	marker, color := " ", "\x1b[2;37m"
+	marker := " "
 	if data.ReadOnly {
-		marker, color = "◌", "\x1b[1;33m"
+		marker = "◌"
 	}
 	if node.ID == selectedPaneID {
-		marker, color = "◇", "\x1b[1;36m"
+		marker = "◇"
 		if data.ReadOnly {
-			marker, color = "◌", "\x1b[1;33m"
+			marker = "◌"
 		} else if data.Focused {
-			marker, color = "▣", "\x1b[1;32m"
+			marker = "▣"
 		}
 	}
 	if data.Stale {
 		data.Title += " [stale]"
 	}
+	color := options.Theme.style(node.ID == selectedPaneID && options.Focus == WorkspaceFocusTerminal)
 	workspaceWrite(out, rect.X, rect.Y, rect.Width, marker+" "+data.Title, color)
 	for row := 1; row < rect.Height; row++ {
 		line := ""
@@ -397,7 +436,7 @@ func workspaceWrite(out io.Writer, x, y, cells int, line, color string) {
 		return
 	}
 	line = workspaceTruncate(line, cells)
-	fmt.Fprintf(out, "\x1b[%d;%dH\x1b[0m%s%s\x1b[0m%s", y, x, color, line, strings.Repeat(" ", cells-workspaceCellWidth(line)))
+	fmt.Fprintf(out, "\x1b[%d;%dH\x1b[0m%s%s%s\x1b[0m", y, x, color, line, strings.Repeat(" ", cells-workspaceCellWidth(line)))
 }
 
 // Only SGR styling from a trusted Terminal renderer is carried into a Session

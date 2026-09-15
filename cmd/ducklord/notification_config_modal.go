@@ -100,6 +100,7 @@ func (s *tuiState) renderNotificationConfigModal(out io.Writer, cols, rows int) 
 	if !s.notificationConfigMode {
 		return
 	}
+	s.resetModalMouse()
 	title := "Global notification settings"
 	if s.notificationConfigScope == "host" {
 		title = "Host notification defaults · " + displayField(s.notificationConfigHost)
@@ -110,13 +111,21 @@ func (s *tuiState) renderNotificationConfigModal(out io.Writer, cols, rows int) 
 		lines = append(lines, modalRenderLine{modalStatus, "  Saved. Restart Ducklord TUI to load settings?"},
 			modalRenderLine{modalInput, "  Enter / y  restart now"},
 			modalRenderLine{modalMuted, "  Esc / n    keep current settings until restart"})
+		s.modalChoice(2, nil, 0, "\r")
+		s.modalChoice(3, nil, 0, "\x1b")
 	case "level":
 		lines = append(lines, modalRenderLine{modalStatus, "  " + s.notificationConfigRows()[s.notificationConfigIndex]})
 		choices := notificationConfigLevels
 		if s.notificationConfigScope == "host" {
+			s.modalChoice(len(lines), &s.notificationConfigChoice, 0, "\r")
 			lines = append(lines, modalRenderLine{modalInput, choiceLine(s.notificationConfigChoice == 0, "inherit global")})
 		}
 		for index, level := range choices {
+			choice := index
+			if s.notificationConfigScope == "host" {
+				choice++
+			}
+			s.modalChoice(len(lines), &s.notificationConfigChoice, choice, "\r")
 			selected := s.notificationConfigChoice == index
 			if s.notificationConfigScope == "host" {
 				selected = s.notificationConfigChoice == index+1
@@ -149,6 +158,7 @@ func (s *tuiState) renderNotificationConfigModal(out io.Writer, cols, rows int) 
 		visible := max(1, rows-7-reserved)
 		start := max(0, min(s.notificationConfigIndex-visible/2, len(options)-visible))
 		for index := start; index < min(len(options), start+visible); index++ {
+			s.modalChoice(len(lines), &s.notificationConfigIndex, index, "\r")
 			lines = append(lines, modalRenderLine{modalInput, choiceLine(index == s.notificationConfigIndex, options[index])})
 		}
 		lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ select · Enter edit · s save · Esc cancel"})
@@ -159,7 +169,7 @@ func (s *tuiState) renderNotificationConfigModal(out io.Writer, cols, rows int) 
 	if s.notificationConfigErr != "" {
 		lines = append(lines, modalRenderLine{modalDanger, "  " + sanitizeTerminalText(s.notificationConfigErr)})
 	}
-	renderModalBox(out, cols, rows, lines)
+	s.renderModalBox(out, cols, rows, lines)
 }
 
 func choiceLine(selected bool, label string) string {

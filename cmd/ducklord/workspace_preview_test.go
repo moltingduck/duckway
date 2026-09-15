@@ -425,17 +425,17 @@ func TestWorkspacePreviewPreflightUsesVisibleLeafNotWholeTerminal(t *testing.T) 
 		{Client: "host", InstanceID: b.InstanceID, SessionID: b.SessionID, Kind: "shell"},
 	}}
 	rect, err := state.workspacePaneRectAt(120, 20)
-	if err != nil || rect.X != 88 || rect.Width != 33 || rect.Height != 16 {
+	if err != nil || rect.X != 76 || rect.Width != 45 || rect.Height != 16 {
 		t.Fatalf("selected right pane rect=%+v err=%v", rect, err)
 	}
 	if state.workspaceNav.Region() != ducklord.RegionQuickList {
 		t.Fatalf("geometry lookup stole keyboard region: %s", state.workspaceNav.Region())
 	}
 	state.focused = true
-	state.terminal = ducklord.NewTerminal(15, 33, 0)
+	state.terminal = ducklord.NewTerminal(15, 45, 0)
 	var rendered bytes.Buffer
 	state.renderWorkspacePreviewAt(&rendered, 120, 20)
-	if !strings.Contains(rendered.String(), "\033[6;88H\033[?25h") {
+	if !strings.Contains(rendered.String(), "\033[6;76H\033[?25h") {
 		t.Fatalf("focused cursor was not placed inside right pane: %q", rendered.String())
 	}
 	activity.ProjectLayout = ducklord.NewProjectLayout()

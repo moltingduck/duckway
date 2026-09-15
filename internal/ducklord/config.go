@@ -16,6 +16,7 @@ import (
 )
 
 type Config struct {
+	WorkspaceTheme         WorkspaceTheme                          `json:"workspace_theme,omitempty" yaml:"workspace_theme,omitempty"`
 	Name                   string                                  `json:"name,omitempty" yaml:"name,omitempty"`
 	RawOutputSubscriptions *int                                    `json:"raw_output_subscription_limit,omitempty" yaml:"raw_output_subscription_limit,omitempty"`
 	SessionListWidth       *int                                    `json:"session_list_width,omitempty" yaml:"session_list_width,omitempty"`
@@ -242,6 +243,9 @@ func validateConfigSavePath(path string) error {
 }
 
 func (c *Config) normalize() error {
+	if err := c.WorkspaceTheme.Validate(); err != nil {
+		return err
+	}
 	if err := ValidateNotificationLevels(c.NotificationLevels); err != nil {
 		return err
 	}

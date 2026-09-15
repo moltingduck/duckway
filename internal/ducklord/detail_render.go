@@ -13,6 +13,9 @@ type DetailGeometry struct {
 // CalculateDetailGeometry replaces the three-region workspace with a list
 // and one Session pane. A very narrow terminal retains the single preview.
 func CalculateDetailGeometry(width, height, top int) DetailGeometry {
+	if top < 1 {
+		top = 1
+	}
 	if width < 1 || height < top {
 		return DetailGeometry{}
 	}
@@ -33,8 +36,24 @@ func CalculateDetailGeometry(width, height, top int) DetailGeometry {
 func RenderDetailedSessionBody(out io.Writer, geometry DetailGeometry, items []DetailedSessionItem,
 	selected SessionIdentity, query string, filter DetailFilter, focused bool,
 	paneView func(SessionIdentity, int, int) WorkspacePaneView) {
+	focus := WorkspaceFocusSessions
+	if focused {
+		focus = WorkspaceFocusTerminal
+	}
+	RenderDetailedSessionBodyWithOptions(out, geometry, items, selected, query, filter, focused, paneView, WorkspaceRenderOptions{Focus: focus})
+}
+
+func RenderDetailedSessionBodyWithOptions(out io.Writer, geometry DetailGeometry, items []DetailedSessionItem,
+	selected SessionIdentity, query string, filter DetailFilter, focused bool,
+	paneView func(SessionIdentity, int, int) WorkspacePaneView, options WorkspaceRenderOptions) {
 	if out == nil {
 		return
+	}
+	options.Theme = options.Theme.resolved()
+	if geometry.List.Width > 0 && geometry.Pane.X == geometry.List.X+geometry.List.Width+1 {
+		for y := geometry.Pane.Y; y < geometry.Pane.Y+geometry.Pane.Height; y++ {
+			workspaceWrite(out, geometry.Pane.X-1, y, 1, "│", workspaceSGRColor(options.Theme.Separator, false))
+		}
 	}
 	selectedIndex := -1
 	for i := range items {
@@ -44,18 +63,20 @@ func RenderDetailedSessionBody(out io.Writer, geometry DetailGeometry, items []D
 		}
 	}
 	if geometry.List.Width > 0 && geometry.List.Height > 0 {
-		renderDetailList(out, geometry.List, items, selectedIndex, query, filter)
+		renderDetailList(out, geometry.List, items, selectedIndex, query, filter, options)
 	}
 	if geometry.Pane.Width < 1 || geometry.Pane.Height < 1 {
 		return
 	}
 	if selectedIndex < 0 {
-		workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y, geometry.Pane.Width, " SESSION PREVIEW ", "\x1b[1;34m")
+		workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y, geometry.Pane.Width, " SESSION PREVIEW ", options.Theme.style(options.Focus == WorkspaceFocusTerminal))
 		message := "No matching Sessions"
 		if len(items) != 0 {
 			message = "Select a Session to preview"
 		}
-		workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y+1, geometry.Pane.Width, message, "\x1b[2m")
+		if geometry.Pane.Height > 1 {
+			workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y+1, geometry.Pane.Width, message, "\x1b[2m")
+		}
 		for row := 2; row < geometry.Pane.Height; row++ {
 			workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y+row, geometry.Pane.Width, "", "")
 		}
@@ -73,16 +94,16 @@ func RenderDetailedSessionBody(out io.Writer, geometry DetailGeometry, items []D
 		data.Stale = true
 		data.ReadOnly = true
 	}
-	marker, color := "◇", "\x1b[1;36m"
+	marker := "◇"
 	if data.ReadOnly {
-		marker, color = "◌", "\x1b[1;33m"
+		marker = "◌"
 	} else if focused {
-		marker, color = "▣", "\x1b[1;32m"
+		marker = "▣"
 	}
 	if data.Stale {
 		data.Title += " [disconnected/stale]"
 	}
-	workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y, geometry.Pane.Width, marker+" "+data.Title, color)
+	workspaceWrite(out, geometry.Pane.X, geometry.Pane.Y, geometry.Pane.Width, marker+" "+data.Title, options.Theme.style(options.Focus == WorkspaceFocusTerminal))
 	for row := 1; row < geometry.Pane.Height; row++ {
 		line := ""
 		if row-1 < len(data.Lines) {
@@ -92,54 +113,77 @@ func RenderDetailedSessionBody(out io.Writer, geometry DetailGeometry, items []D
 	}
 }
 
-func renderDetailList(out io.Writer, rect WorkspaceRect, items []DetailedSessionItem, selectedIndex int, query string, filter DetailFilter) {
-	workspaceWrite(out, rect.X, rect.Y, rect.Width, " SESSIONS · "+string(filter), "\x1b[1;34m")
+func renderDetailList(out io.Writer, rect WorkspaceRect, items []DetailedSessionItem, selectedIndex int, query string, filter DetailFilter, renderOptions ...WorkspaceRenderOptions) {
+	options := WorkspaceRenderOptions{Focus: WorkspaceFocusSessions}
+	if len(renderOptions) > 0 {
+		options = renderOptions[0]
+	}
+	options.Theme = options.Theme.resolved()
+	focused := options.Focus == WorkspaceFocusSessions
+	workspaceWrite(out, rect.X, rect.Y, rect.Width, " SESSIONS · "+string(filter), "\x1b[1m"+options.Theme.style(focused))
 	if rect.Height < 2 {
 		return
 	}
-	workspaceWrite(out, rect.X, rect.Y+1, rect.Width, " find › "+query, "\x1b[1;36m")
+	workspaceWrite(out, rect.X, rect.Y+1, rect.Width, " find › "+query, options.Theme.style(false))
 	if len(items) == 0 && rect.Height >= 3 {
-		workspaceWrite(out, rect.X, rect.Y+2, rect.Width, " No matching Sessions", "\x1b[2m")
+		workspaceWrite(out, rect.X, rect.Y+2, rect.Width, " No matching Sessions", options.Theme.style(false))
 		for row := 3; row < rect.Height; row++ {
-			workspaceWrite(out, rect.X, rect.Y+row, rect.Width, "", "")
+			workspaceWrite(out, rect.X, rect.Y+row, rect.Width, "", options.Theme.style(false))
 		}
 		return
 	}
 	// Narrow lists put notification time on its own line so the state and
 	// writer remain readable. Keep the selected card inside the viewport.
-	cardHeight := 3
-	if rect.Width < 40 {
-		cardHeight = 4
-	}
-	// Even when only the name line fits, scroll that partial card to the
-	// selection so the list stays aligned with its preview.
-	cards := max(1, (rect.Height-2)/cardHeight)
-	start := 0
-	if selectedIndex >= cards {
-		start = selectedIndex - cards + 1
-	}
-	start = min(start, max(0, len(items)-cards))
+	cardHeight, start := detailCardViewport(rect, selectedIndex, len(items))
 	for row := 2; row < rect.Height; row++ {
 		cardIndex := (row - 2) / cardHeight
 		lineIndex := (row - 2) % cardHeight
 		index := start + cardIndex
-		line, color := "", ""
+		line, color := "", options.Theme.style(false)
 		if index < len(items) {
 			item := items[index]
 			if item.Disconnected {
-				color = "\x1b[2;37m"
+				color += "\x1b[2;37m"
 			}
 			prefix := "  "
 			if index == selectedIndex {
 				prefix = "› "
 				if !item.Disconnected {
-					color = "\x1b[1;36m"
+					color = "\x1b[1m" + options.Theme.style(focused)
 				}
 			}
 			line = detailRowLine(item, lineIndex, rect.Width, prefix)
 		}
 		workspaceWrite(out, rect.X, rect.Y+row, rect.Width, line, color)
 	}
+}
+
+func detailCardViewport(rect WorkspaceRect, selectedIndex, itemCount int) (cardHeight, start int) {
+	cardHeight = 3
+	if rect.Width < 40 {
+		cardHeight = 4
+	}
+	// Keep a partial name row visible when the viewport cannot fit a card.
+	cards := max(1, (rect.Height-2)/cardHeight)
+	if selectedIndex >= cards {
+		start = selectedIndex - cards + 1
+	}
+	start = min(start, max(0, itemCount-cards))
+	return cardHeight, start
+}
+
+// DetailSessionIndexAt returns the exact rendered card under a screen cell.
+// Headings, search rows, empty rows, and cells outside the list return -1.
+func DetailSessionIndexAt(rect WorkspaceRect, selectedIndex, itemCount, x, y int) int {
+	if itemCount <= 0 || rect.Width <= 0 || rect.Height <= 2 || x < rect.X || x >= rect.X+rect.Width || y < rect.Y+2 || y >= rect.Y+rect.Height {
+		return -1
+	}
+	cardHeight, start := detailCardViewport(rect, selectedIndex, itemCount)
+	index := start + (y-rect.Y-2)/cardHeight
+	if index >= itemCount {
+		return -1
+	}
+	return index
 }
 
 func detailRowLine(item DetailedSessionItem, row, cells int, prefix string) string {

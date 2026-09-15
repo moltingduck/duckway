@@ -16,6 +16,24 @@ func workspaceMouse(button, x, y int, release bool) []byte {
 	return []byte(fmt.Sprintf("\x1b[<%d;%d;%d%s", button, x, y, suffix))
 }
 
+func TestWorkspaceMousePaneRequestsOwnerGatedFocus(t *testing.T) {
+	state, projectID, _, _ := workspacePaneTestState(t)
+	nav, _ := state.workspaceNavigation()
+	_ = nav.SelectProject(projectID)
+	width, height := terminalSize()
+	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	target := ducklord.WorkspaceVisiblePaneRects(&state.activity().ProjectLayout, nav, geometry)[0].Rect
+	handled, changed := state.handleWorkspaceMouse(workspaceMouse(0, target.X+1, target.Y+1, false))
+	if !handled || !changed || !state.workspaceMouseFocus || state.focused {
+		t.Fatal("pane click must request focus, not bypass remote control authorization")
+	}
+	state.workspaceMouseFocus = false
+	state.handleWorkspaceMouse(workspaceMouse(0, geometry.Projects.X+1, geometry.Projects.Y+1, false))
+	if !state.workspaceProjectFocus || state.workspaceMouseFocus {
+		t.Fatal("Project click should focus local navigation only")
+	}
+}
+
 func TestWorkspaceMouseDragPlacesExistingSessionWithoutYield(t *testing.T) {
 	state, projectID, a, b := workspacePaneTestState(t)
 	nav, _ := state.workspaceNavigation()
