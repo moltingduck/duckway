@@ -1,6 +1,7 @@
 package ducklord
 
 import (
+	"maps"
 	"reflect"
 	"testing"
 )
@@ -364,6 +365,121 @@ func TestWorkspaceCyclesTabsAndOnlyVisiblePanesWithoutFocusing(t *testing.T) {
 	}
 	if err := w.CycleVisiblePane(narrow, 1); err != nil || w.CurrentPaneID() != first {
 		t.Fatalf("cycling from hidden pane skipped first visible pane: %+v %v", w.location, err)
+	}
+}
+
+func TestWorkspacePaneNavigationTargetDoesNotMutateState(t *testing.T) {
+	layout := NewProjectLayout()
+	projectID, _ := layout.AddProject("Work")
+	a, b := testLayoutIdentity("ABC123"), testLayoutIdentity("DEF456")
+	c, d := testLayoutIdentity("CDE789"), testLayoutIdentity("ABC012")
+	first, _ := layout.Place(projectID, a, PlaceNewTab, "")
+	right, _ := layout.Place(projectID, b, PlaceVertical, first)
+	secondTab, _ := layout.Place(projectID, c, PlaceNewTab, "")
+	lastTab, _ := layout.Place(projectID, d, PlaceNewTab, "")
+	w, err := NewWorkspaceState(&layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	geometry := CalculateWorkspaceGeometry(120, 24, 4)
+	for _, tc := range []struct {
+		name, from, command, want string
+		wantErr                   bool
+	}{
+		{"neighbor", first, "right", right, false},
+		{"edge", first, "left", first, false},
+		{"next tab", first, "pagedown", secondTab, false},
+		{"previous tab wraps", first, "pageup", lastTab, false},
+		{"next tab wraps", lastTab, "pagedown", first, false},
+		{"invalid command", first, "diagonal", first, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := w.SelectPane(projectID, tc.from); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.FocusPane(); err != nil {
+				t.Fatal(err)
+			}
+			// Planning a successful move would populate this map and save
+			// the focused location if it shared the live state's maps.
+			clear(w.lastProject)
+			before := *w
+			before.lastProject = maps.Clone(w.lastProject)
+			before.projectLocation = maps.Clone(w.projectLocation)
+			got, err := w.PaneNavigationTarget(geometry, tc.command)
+			if got != tc.want || (err != nil) != tc.wantErr {
+				t.Fatalf("target=%q err=%v; want=%q wantErr=%v", got, err, tc.want, tc.wantErr)
+			}
+			if !reflect.DeepEqual(*w, before) {
+				t.Fatalf("planning mutated live state: before=%+v after=%+v", before, *w)
+			}
+		})
+	}
+}
+
+func TestWorkspaceMoveVisiblePaneUsesScreenDirections(t *testing.T) {
+	layout := NewProjectLayout()
+	projectID, _ := layout.AddProject("Work")
+	topLeft, _ := layout.Place(projectID, testLayoutIdentity("ABC123"), PlaceNewTab, "")
+	topRight, _ := layout.Place(projectID, testLayoutIdentity("DEF456"), PlaceVertical, topLeft)
+	bottomLeft, _ := layout.Place(projectID, testLayoutIdentity("CDE789"), PlaceHorizontal, topLeft)
+	bottomRight, _ := layout.Place(projectID, testLayoutIdentity("ABC012"), PlaceHorizontal, topRight)
+	w, _ := NewWorkspaceState(&layout)
+	_ = w.SelectProject(projectID)
+	geometry := WorkspaceGeometry{Terminal: WorkspaceRect{X: 1, Y: 1, Width: 80, Height: 25}}
+	for _, step := range []struct {
+		direction string
+		want      string
+	}{
+		{"right", topRight}, // Tree order would select bottomLeft.
+		{"right", topRight}, // No wrap at the right edge.
+		{"down", bottomRight},
+		{"down", bottomRight},
+		{"left", bottomLeft},
+		{"left", bottomLeft},
+		{"up", topLeft},
+		{"up", topLeft},
+	} {
+		if err := w.MoveVisiblePane(geometry, step.direction); err != nil {
+			t.Fatal(err)
+		}
+		if w.CurrentPaneID() != step.want || w.Region() != RegionProjects {
+			t.Fatalf("move %s: pane=%s want=%s region=%s", step.direction, w.CurrentPaneID(), step.want, w.Region())
+		}
+	}
+	_, _ = w.FocusPane()
+	if err := w.MoveVisiblePane(geometry, "up"); err != nil || w.Region() != RegionTerminal {
+		t.Fatalf("edge move changed focus: %s, %v", w.Region(), err)
+	}
+	if err := w.MoveVisiblePane(geometry, "right"); err != nil || w.Region() != RegionTerminalPreview {
+		t.Fatalf("move implicitly granted input: %s, %v", w.Region(), err)
+	}
+}
+
+func TestWorkspaceMoveVisiblePaneHandlesHiddenAndUnavailablePanes(t *testing.T) {
+	layout := NewProjectLayout()
+	projectID, _ := layout.AddProject("Work")
+	first, _ := layout.Place(projectID, testLayoutIdentity("ABC123"), PlaceNewTab, "")
+	second, _ := layout.Place(projectID, testLayoutIdentity("DEF456"), PlaceVertical, first)
+	w, _ := NewWorkspaceState(&layout)
+	_ = w.SelectProject(projectID)
+	narrow := CalculateWorkspaceGeometry(1, 24, 4)
+	if err := w.MoveVisiblePane(narrow, "right"); err != nil || w.CurrentPaneID() != first {
+		t.Fatalf("selected hidden pane: %s, %v", w.CurrentPaneID(), err)
+	}
+	_ = w.SelectPane(projectID, second)
+	if err := w.MoveVisiblePane(narrow, "left"); err != nil || w.CurrentPaneID() != first {
+		t.Fatalf("did not recover hidden selection: %s, %v", w.CurrentPaneID(), err)
+	}
+	if err := w.MoveVisiblePane(narrow, "diagonal"); err == nil || w.CurrentPaneID() != first {
+		t.Fatal("invalid direction should fail without changing selection")
+	}
+	if err := w.MoveVisiblePane(WorkspaceGeometry{}, "right"); err == nil {
+		t.Fatal("empty geometry should fail")
+	}
+	w.EnterDetail()
+	if err := w.MoveVisiblePane(narrow, "right"); err == nil {
+		t.Fatal("detail mode should reject normal pane navigation")
 	}
 }
 

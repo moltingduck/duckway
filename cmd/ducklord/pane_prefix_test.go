@@ -6,17 +6,36 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
+func TestPageKeyInputIsAtomicAcrossReads(t *testing.T) {
+	for _, key := range []string{"pageup", "pagedown"} {
+		sequence := shortcutInput(key)
+		for n := 1; n < len(sequence); n++ {
+			_, rest, ok := nextInputEvent([]byte(sequence[:n]))
+			if ok || string(rest) != sequence[:n] {
+				t.Fatalf("partial %s at %d consumed", key, n)
+			}
+		}
+		event, rest, ok := nextInputEvent([]byte(sequence + "x"))
+		if !ok || string(event) != sequence || string(rest) != "x" {
+			t.Fatalf("%s split incorrectly: %q %q", key, event, rest)
+		}
+	}
+}
+
 func TestPanePrefixCommandsAndCancellation(t *testing.T) {
-	for _, key := range []string{"-", "\\", "t", ","} {
+	for _, key := range []string{"-", "\\", "t", ",", "up", "down", "left", "right", "pageup", "pagedown"} {
 		s := &tuiState{workspacePreview: true, cfg: &ducklord.Config{}}
 		if consumed, cmd := s.handlePanePrefix([]byte{2}); !consumed || cmd != "" {
 			t.Fatal("prefix not armed")
 		}
-		if consumed, cmd := s.handlePanePrefix([]byte(key)); !consumed || cmd != key {
+		if consumed, cmd := s.handlePanePrefix([]byte(shortcutInput(key))); !consumed || cmd != key {
 			t.Fatalf("command %q not consumed", key)
 		}
 		if s.panePrefixPending {
 			t.Fatal("prefix remained armed")
+		}
+		if consumed, cmd := s.handlePanePrefix([]byte("\x02" + shortcutInput(key))); !consumed || cmd != key {
+			t.Fatalf("combined command %q failed", key)
 		}
 	}
 	s := &tuiState{workspacePreview: true, cfg: &ducklord.Config{Shortcuts: map[string]string{"pane_prefix": "ctrl-a"}}}

@@ -650,7 +650,7 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 			// rmdir cannot delete unexpected files, even on a failed test.
 			_, _ = run("ssh", "client-a", "rmdir", remotePath, remoteRoot+"/nested", remoteRoot)
 		})
-		writePTY(t, terminal, "Pp")
+		writePTY(t, terminal, "bp")
 		capture.waitCurrent(t, "Add Session pane", 10*time.Second)
 		writePTY(t, terminal, "\r\r") // new tab, new shell
 		capture.waitCurrent(t, "host ›", 10*time.Second)
@@ -734,7 +734,7 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 					"--config", "/root/.ducklord/config.yaml")
 			})
 			if strings.Contains(capture.currentText(), "Session list pane:") {
-				writePTY(t, terminal, "P")
+				writePTY(t, terminal, "b")
 				capture.waitCurrent(t, "Project pane:", 10*time.Second)
 			}
 			writePTY(t, terminal, "p")
@@ -867,7 +867,7 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Session focus:", 20*time.Second)
 	writePTY(t, terminal, "\x1d")
 	capture.waitCurrent(t, "client-a/"+sessions[0].Handle, 20*time.Second)
-	writePTY(t, terminal, "Pp")
+	writePTY(t, terminal, "bp")
 	capture.waitCurrent(t, "Add Session pane", 10*time.Second)
 	writePTY(t, terminal, "j\rj\r"+sessions[1].Handle)
 	capture.waitCurrent(t, "find › "+sessions[1].Handle, 10*time.Second)
@@ -896,7 +896,7 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	if oldBPaneID == "" {
 		t.Fatal("placed B pane ID missing")
 	}
-	writePTY(t, terminal, "H") // select A so B can be re-split beside it
+	writePTY(t, terminal, "(") // select A so B can be re-split beside it
 	writePTY(t, terminal, "pj\rj\r"+sessions[1].Handle+"\r")
 	capture.waitCurrent(t, "move its pane, not duplicate it", 10*time.Second)
 	writePTY(t, terminal, "\r") // Cancel is the safe default
@@ -921,7 +921,7 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	if _, ok := findContainerSession(t, runtime, controller, "client-a", sessions[1].SessionID); !ok {
 		t.Fatal("local pane move stopped remote B")
 	}
-	writePTY(t, terminal, "P") // the original keyboard move must still stream both panes
+	writePTY(t, terminal, "b") // the original keyboard move must still stream both panes
 	var preDragMarkers [2]string
 	for i, session := range sessions {
 		marker := fmt.Sprintf("BEFOREDRAG%d-%d", i, os.Getpid())
@@ -932,7 +932,7 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 		}
 		capture.waitCurrent(t, marker, 20*time.Second)
 	}
-	writePTY(t, terminal, "P") // Project focus for the drag target
+	writePTY(t, terminal, "b") // Project focus for the drag target
 	// Drag an already-placed Session from the quick list onto A's live pane.
 	// The centered move confirmation must avoid duplicating B in this Project.
 	oldDraggedPaneID := ""
@@ -992,7 +992,7 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	// focus before toggling back, rather than relying on the pre-drag focus.
 	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;1;%dM\x1b[<0;1;%dm", geometry.Projects.Y, geometry.Projects.Y))
 	capture.waitCurrent(t, "Project pane:", 10*time.Second)
-	writePTY(t, terminal, "P")
+	writePTY(t, terminal, "b")
 	capture.waitCurrent(t, "Session list pane:", 10*time.Second)
 	waitE2E(t, 20*time.Second, func() bool {
 		screen := capture.currentText()
@@ -1023,7 +1023,7 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 				strings.Contains(screen, "loading live PTY output"), strings.Contains(screen, markers[0]), strings.Contains(screen, markers[1]), safeTerminalDiagnostic(screen))
 		})
 	}
-	writePTY(t, terminal, "Pk") // Project pane: Live split -> Default Project
+	writePTY(t, terminal, "bk") // Project pane: Live split -> Default Project
 	capture.waitCurrent(t, "› Default Project", 10*time.Second)
 	if screen := capture.currentText(); strings.Contains(screen, "client-a/"+sessions[0].Handle) {
 		t.Fatalf("Project navigation kept the previous Terminal area: %q", safeTerminalDiagnostic(screen))
@@ -1037,7 +1037,7 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 		t.Fatalf("send Project-only pane marker: %v: %s", err, out)
 	}
 	capture.waitCurrent(t, projectMarker, 10*time.Second)
-	writePTY(t, terminal, "P")
+	writePTY(t, terminal, "b")
 	capture.waitCurrent(t, "Session list pane:", 10*time.Second)
 	// Create a shell-first Session pane through the same Project modal. The
 	// first remote directory choice must be this host's home, not Ducklion's
@@ -1047,7 +1047,7 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 		_, _ = exec.Command(runtime, "exec", controller, binary, "--name", "workspace-two-cli", "destroy", "client-a", newHandle,
 			"--config", "/root/.ducklord/config.yaml").CombinedOutput()
 	})
-	writePTY(t, terminal, "P")
+	writePTY(t, terminal, "b")
 	waitE2E(t, 10*time.Second, func() bool { return strings.Contains(capture.currentText(), "Project pane:") }, func() string {
 		return "Project focus header: " + safeTerminalDiagnostic(strings.Join(strings.Split(capture.currentText(), "\n")[:3], "\n"))
 	})
@@ -1386,11 +1386,11 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\x1d")
 	capture.waitCurrent(t, "› Focus A", 20*time.Second)
 	capture.waitCurrent(t, "› "+handles[0]+" @client-a", 20*time.Second)
-	writePTY(t, terminal, "Pj")
+	writePTY(t, terminal, "bj")
 	capture.waitCurrent(t, "› Focus B", 10*time.Second)
 	capture.waitCurrent(t, "◇ client-a/"+handles[1], 10*time.Second)
 	capture.waitCurrent(t, "› "+handles[0]+" @client-a", 10*time.Second)
-	writePTY(t, terminal, "]")
+	writePTY(t, terminal, "\x1b[6~")
 	capture.waitCurrent(t, "◇ client-a/"+handles[0], 10*time.Second)
 	// The one-slot output pool must reopen A after B was visible. A title
 	// alone does not prove its resumed PTY stream is live.
@@ -1400,7 +1400,7 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 		t.Fatalf("send resumed A marker: %v: %s", err, out)
 	}
 	capture.waitCurrent(t, returnedMarker, 10*time.Second)
-	writePTY(t, terminal, "[")
+	writePTY(t, terminal, "\x1b[5~")
 	capture.waitCurrent(t, "◇ client-a/"+handles[1], 10*time.Second)
 	projectMarker := fmt.Sprintf("PROJECTONLY-%d", time.Now().UnixNano())
 	if out, err := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "send", "client-a", handles[1],
@@ -1442,7 +1442,7 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Project pane:", 10*time.Second)
 	writePTY(t, terminal, "k") // Focus A contains only A; B is outside it.
 	capture.waitCurrent(t, "› Focus A", 10*time.Second)
-	writePTY(t, terminal, "F")
+	writePTY(t, terminal, "i")
 	capture.waitCurrent(t, "Focus: Focus A", 10*time.Second)
 	baseline, ok := findContainerSession(t, runtime, controller, "client-a", sessions[1].SessionID)
 	if !ok {
@@ -1457,7 +1457,7 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 	hook := fmt.Sprintf("ducklion __ducklion_agent_hook_v1 codex '{\"type\":\"agent-turn-complete\",\"last-assistant-message\":\"private-focus-%d\"}'", time.Now().UnixNano())
 	for turn := 1; turn <= 2; turn++ {
 		if turn == 2 {
-			writePTY(t, terminal, "F") // Clear focus; the same outside Project can now deliver.
+			writePTY(t, terminal, "i") // Clear focus; the same outside Project can now deliver.
 			waitE2E(t, 10*time.Second, func() bool {
 				return !strings.Contains(capture.currentText(), "Focus:")
 			}, func() string { return "Project notification focus did not clear" })

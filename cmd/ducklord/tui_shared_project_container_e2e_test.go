@@ -131,9 +131,9 @@ func testDucklordSharedProjectNotificationContainerE2E(t *testing.T, level strin
 	capture := newSizedTUICapture(terminal, 26, 130)
 	capture.waitCurrent(t, "Shared A", 20*time.Second)
 	capture.waitCurrent(t, "Shared B", 20*time.Second)
-	writePTY(t, terminal, "\x1dPkkkj") // Clamp at Default, then select Shared A.
+	writePTY(t, terminal, "\x1dbkkkj") // Clamp at Default, then select Shared A.
 	capture.waitCurrent(t, "› Shared A", 10*time.Second)
-	writePTY(t, terminal, "F")
+	writePTY(t, terminal, "i")
 	capture.waitCurrent(t, "Focus: Shared A (others ≥ system)", 10*time.Second)
 	writePTY(t, terminal, "k") // Browse Default; neither shared pane has keyboard focus.
 	capture.waitCurrent(t, "› Default", 10*time.Second)

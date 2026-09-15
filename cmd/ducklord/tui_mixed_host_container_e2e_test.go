@@ -115,7 +115,7 @@ func TestDucklordMixedHostProjectContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\x1b")
 	waitE2E(t, 10*time.Second, func() bool { return !strings.Contains(capture.currentText(), "search ›") },
 		func() string { return "search did not close before Project navigation" })
-	writePTY(t, terminal, "P")
+	writePTY(t, terminal, "b")
 	capture.waitCurrent(t, "Project pane:", 10*time.Second)
 	capture.waitCurrent(t, "› Mixed Hosts", 10*time.Second)
 	// Refresh both panes twice after selection: a cached snapshot or a single
@@ -148,9 +148,9 @@ func TestDucklordMixedHostProjectContainerE2E(t *testing.T) {
 		if phase > 0 {
 			writePTY(t, terminal, "\x1d")
 			capture.waitCurrent(t, "Project pane:", 10*time.Second)
-			key := "L"
+			key := ")"
 			if target == 0 {
-				key = "H"
+				key = "("
 			}
 			writePTY(t, terminal, key)
 		}

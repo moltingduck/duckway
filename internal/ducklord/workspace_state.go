@@ -1,6 +1,27 @@
 package ducklord
 
-import "fmt"
+import (
+	"fmt"
+	"maps"
+)
+
+// PaneNavigationTarget plans a local move without changing focus or selection.
+// The UI can keep its existing writer when an edge command is a no-op.
+func (w *WorkspaceState) PaneNavigationTarget(geometry WorkspaceGeometry, command string) (string, error) {
+	preview := *w
+	preview.lastProject = maps.Clone(w.lastProject)
+	preview.projectLocation = maps.Clone(w.projectLocation)
+	var err error
+	switch command {
+	case "pageup":
+		err = preview.CycleTab(-1)
+	case "pagedown":
+		err = preview.CycleTab(1)
+	default:
+		err = preview.MoveVisiblePane(geometry, command)
+	}
+	return preview.CurrentPaneID(), err
+}
 
 type WorkspaceRegion string
 
@@ -269,6 +290,74 @@ func (w *WorkspaceState) CycleVisiblePane(geometry WorkspaceGeometry, delta int)
 	}
 	index = (index + delta%len(panes) + len(panes)) % len(panes)
 	_, paneID := project.findSessionLocation(panes[index].Identity)
+	return w.SelectPane(project.ID, paneID)
+}
+
+// MoveVisiblePane selects the closest visible cell in a screen direction.
+// At an outer edge it leaves selection and keyboard focus unchanged.
+func (w *WorkspaceState) MoveVisiblePane(geometry WorkspaceGeometry, direction string) error {
+	if w.detail {
+		return fmt.Errorf("normal Terminal area unavailable in detailed-list mode")
+	}
+	switch direction {
+	case "up", "down", "left", "right":
+	default:
+		return fmt.Errorf("unknown pane direction %q", direction)
+	}
+	panes := WorkspaceVisiblePaneRects(w.layout, w, geometry)
+	if len(panes) == 0 {
+		return fmt.Errorf("current Terminal tab has no visible Session panes")
+	}
+	project := w.layout.Project(w.location.projectID)
+	current := -1
+	for i, pane := range panes {
+		_, paneID := project.findSessionLocation(pane.Identity)
+		if paneID == w.location.paneID {
+			current = i
+			break
+		}
+	}
+	if current < 0 {
+		_, paneID := project.findSessionLocation(panes[0].Identity)
+		return w.SelectPane(project.ID, paneID)
+	}
+	origin := panes[current].Rect
+	best, bestGap, bestCenter := -1, 0, 0
+	for i, pane := range panes {
+		if i == current {
+			continue
+		}
+		r := pane.Rect
+		eligible := false
+		switch direction {
+		case "up":
+			eligible = r.Y+r.Height <= origin.Y
+		case "down":
+			eligible = r.Y >= origin.Y+origin.Height
+		case "left":
+			eligible = r.X+r.Width <= origin.X
+		case "right":
+			eligible = r.X >= origin.X+origin.Width
+		}
+		if !eligible {
+			continue
+		}
+		// Measure between occupied cells, so a shared edge is closer than
+		// a shared corner. Center distance resolves equally close neighbors.
+		dx := max(0, max(origin.X, r.X)-min(origin.X+origin.Width-1, r.X+r.Width-1))
+		dy := max(0, max(origin.Y, r.Y)-min(origin.Y+origin.Height-1, r.Y+r.Height-1))
+		gap := dx*dx + dy*dy
+		cx := (2*r.X + r.Width) - (2*origin.X + origin.Width)
+		cy := (2*r.Y + r.Height) - (2*origin.Y + origin.Height)
+		center := cx*cx + cy*cy
+		if best < 0 || gap < bestGap || (gap == bestGap && center < bestCenter) {
+			best, bestGap, bestCenter = i, gap, center
+		}
+	}
+	if best < 0 {
+		return nil
+	}
+	_, paneID := project.findSessionLocation(panes[best].Identity)
 	return w.SelectPane(project.ID, paneID)
 }
 

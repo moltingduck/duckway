@@ -1445,7 +1445,7 @@ func TestTUIListSelectsAndCollapsesStableGroupRows(t *testing.T) {
 	if action := state.handleInput([]byte("g")); action != "groups" {
 		t.Fatalf("group management action=%q", action)
 	}
-	if action := state.handleInput([]byte("d")); action != "remove-client" {
+	if action := state.handleInput([]byte("A")); action != "remove-client" {
 		t.Fatalf("host-group remove action=%q", action)
 	}
 	var rendered bytes.Buffer

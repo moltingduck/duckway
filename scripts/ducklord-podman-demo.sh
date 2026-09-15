@@ -285,10 +285,10 @@ Useful checks:
 
 Inside the TUI:
   j/k or arrow keys: move through the quick Session list pane
-  t: cycle Session sort (event time / importance / Host / type); T: reverse event-time direction
-  P: move keyboard focus to the Project pane; N creates a Project, p adds a Session pane
-  F (while Project pane focused): toggle notification focus for the visible Project
-  D: open the detailed Session list; / searches, f filters, Enter focuses, g jumps to its Project
+  t: cycle Session sort (event time / importance / Host / type); Ctrl-T: reverse event-time direction
+  b: move keyboard focus to the Project pane; e creates a Project, p adds a Session pane
+  i (while Project pane focused): toggle notification focus for the visible Project
+  l: open the detailed Session list; / searches, f filters, Enter focuses, g jumps to its Project
   Enter: focus the selected Session pane (through Ducklion writer control)
   a: add another ducklion host from ~/.ssh/config
   c: create a shell-first Session; launch Codex or Claude inside that shell
@@ -296,6 +296,7 @@ Inside the TUI:
   n: configure notifications for the selected session
   E / R / X: end, restart, or destroy the selected session (with confirmation)
   Terminal area: one Project's tabs and split Session panes
+  Ctrl-B then arrows: focus a neighboring pane; Ctrl-B then PageUp/PageDown: switch tabs
   Ctrl-]: return keyboard focus to the current navigation pane
   ?: pinned searchable shortcut help
   q: quit

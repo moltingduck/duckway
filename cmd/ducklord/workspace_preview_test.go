@@ -321,7 +321,7 @@ func TestWorkspaceProjectNavigationDoesNotStealQuickSelectionOrPTYControl(t *tes
 	if err != nil || nav.CurrentProjectID() != first {
 		t.Fatalf("quick Session did not select its Project: project=%q err=%v", nav.CurrentProjectID(), err)
 	}
-	if handled, _ := state.handleWorkspaceProjectInput([]byte("P")); !handled || !state.workspaceProjectFocus {
+	if handled, _ := state.handleWorkspaceProjectInput([]byte("b")); !handled || !state.workspaceProjectFocus {
 		t.Fatal("Project pane did not gain read-only focus")
 	}
 	if handled, changed := state.handleWorkspaceProjectInput([]byte("j")); !handled || !changed {
@@ -571,7 +571,7 @@ func TestWorkspaceProjectShortcutsBrowseTabsAndSplitPanesWithoutQuickSelection(t
 	for _, step := range []struct {
 		key, want string
 	}{
-		{"L", second}, {"H", first}, {"]", third}, {"[", first},
+		{")", second}, {"(", first}, {"\x1b[6~", third}, {"\x1b[5~", first},
 	} {
 		handled, changed := state.handleWorkspaceProjectInput([]byte(step.key))
 		if !handled || !changed || nav.CurrentPaneID() != step.want || nav.Region() != ducklord.RegionProjects {

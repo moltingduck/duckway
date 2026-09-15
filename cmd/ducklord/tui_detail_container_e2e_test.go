@@ -61,9 +61,9 @@ func TestDucklordDetailedListContainerE2E(t *testing.T) {
 	waitLiveAgentScreen(t, capture, "sort:type", 10*time.Second)
 	writePTY(t, terminal, "t")
 	waitLiveAgentScreen(t, capture, "sort:event_time", 10*time.Second)
-	writePTY(t, terminal, "T")
+	writePTY(t, terminal, "\x14")
 	waitLiveAgentScreen(t, capture, "sort:event_time (oldest)", 10*time.Second)
-	writePTY(t, terminal, "P")
+	writePTY(t, terminal, "b")
 	waitLiveAgentScreen(t, capture, "Project pane:", 10*time.Second)
 	workspaceHeading := func(screen string) string {
 		for _, line := range strings.Split(screen, "\n") {
@@ -77,8 +77,8 @@ func TestDucklordDetailedListContainerE2E(t *testing.T) {
 	if beforeDetail == "" {
 		t.Fatal("normal workspace heading was missing before detailed mode")
 	}
-	for _, exitKey := range []string{"D", "\x1b"} {
-		writePTY(t, terminal, "D")
+	for _, exitKey := range []string{"l", "\x1b"} {
+		writePTY(t, terminal, "l")
 		waitLiveAgentScreen(t, capture, "Detailed Sessions:", 10*time.Second)
 		writePTY(t, terminal, exitKey)
 		waitE2E(t, 10*time.Second, func() bool {
@@ -88,12 +88,12 @@ func TestDucklordDetailedListContainerE2E(t *testing.T) {
 			return "leaving detailed mode did not restore Project keyboard focus and the original Project/tab"
 		})
 	}
-	writePTY(t, terminal, "F")
+	writePTY(t, terminal, "i")
 	waitLiveAgentScreen(t, capture, "Focus:", 10*time.Second)
-	writePTY(t, terminal, "F")
-	writePTY(t, terminal, "P")
+	writePTY(t, terminal, "i")
+	writePTY(t, terminal, "b")
 	waitLiveAgentScreen(t, capture, "Session list pane:", 10*time.Second)
-	writePTY(t, terminal, "D")
+	writePTY(t, terminal, "l")
 	waitLiveAgentScreen(t, capture, "Detailed Sessions:", 10*time.Second)
 	writePTY(t, terminal, "/alpha")
 	waitE2E(t, 10*time.Second, func() bool {

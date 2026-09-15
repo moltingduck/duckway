@@ -77,7 +77,7 @@ func TestDucklordLocalNotificationContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "PROJECTS", 20*time.Second)
 	capture.waitCurrent(t, "notify-e2e", 20*time.Second)
 	writePTY(t, terminal, "\x1d") // Leave any focused PTY before opening a global modal.
-	writePTY(t, terminal, "O")    // Global notification settings.
+	writePTY(t, terminal, "\x0f") // Global notification settings.
 	capture.waitCurrent(t, "Global notification settings", 10*time.Second)
 	writePTY(t, terminal, "s")
 	capture.waitCurrent(t, "Restart Ducklord TUI to load settings?", 10*time.Second)

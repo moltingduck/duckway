@@ -16,7 +16,7 @@ func TestPendingPTYInputRejectsNavigationBeforeControlOpens(t *testing.T) {
 		openCancel := cancel
 		var control *ducklord.ControlSession
 		id := 7
-		for _, key := range []string{"P", "j", "/", "\r", "q", "\x1b[<0;10;10M"} {
+		for _, key := range []string{"b", "j", "/", "\r", "q", "\x1b[<0;10;10M"} {
 			if !handlePendingPTYInput(s, []byte(key), workspace, &control, &openCancel, &id) {
 				t.Fatalf("workspace=%t pending-open input %q escaped to navigation", workspace, key)
 			}
@@ -56,7 +56,7 @@ func TestPendingPTYInputCancellationFencesLateCompletion(t *testing.T) {
 					t.Fatalf("canceled control writer remains open: %v", err)
 				}
 			}
-			if handlePendingPTYInput(s, []byte("P"), true, &control, &openCancel, &id) {
+			if handlePendingPTYInput(s, []byte("b"), true, &control, &openCancel, &id) {
 				t.Fatal("canceled focus still blocks navigation")
 			}
 			cancel()
@@ -106,7 +106,7 @@ func TestPendingPTYSessionRemovalBeforeControlCompletionRestoresNavigation(t *te
 	}
 	// The stale completion is discarded by ID, so it cannot release the
 	// pending-input gate: removal itself must already have released it.
-	for _, key := range []string{"j", "P", "q"} {
+	for _, key := range []string{"j", "b", "q"} {
 		if handlePendingPTYInput(s, []byte(key), true, &control, &openCancel, &id) {
 			t.Fatalf("navigation %q remained blocked after Session removal", key)
 		}

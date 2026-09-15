@@ -2731,12 +2731,39 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.render(os.Stdout)
 					continue
 				}
-				if !state.focused {
-					state.openPrefixPane(command)
-					state.render(os.Stdout)
-					continue
+				if state.focused && paneNavigationCommand(command) {
+					nav, err := state.workspaceNavigation()
+					if err == nil {
+						width, height := terminalSize()
+						var target string
+						target, err = nav.PaneNavigationTarget(ducklord.CalculateWorkspaceGeometry(width, height, 4), command)
+						if err == nil && target == nav.CurrentPaneID() {
+							state.render(os.Stdout)
+							continue
+						}
+					}
+					if err != nil {
+						state.outputErr = err.Error()
+						state.render(os.Stdout)
+						continue
+					}
 				}
-				b = []byte(shortcutInput(state.cfg.Shortcut("pty_unfocus")))
+				if !state.focused {
+					if paneNavigationCommand(command) {
+						if !state.navigatePrefixPane(command) {
+							state.render(os.Stdout)
+							continue
+						}
+						requestPreview(true)
+						b = []byte("\r")
+					} else {
+						state.openPrefixPane(command)
+						state.render(os.Stdout)
+						continue
+					}
+				} else {
+					b = []byte(shortcutInput(state.cfg.Shortcut("pty_unfocus")))
+				}
 			}
 			if state.focused {
 				if state.workspacePreview {
@@ -2810,28 +2837,39 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					attachInitialResizeQueued = false
 					attachReplayEndOffset = 0
 					attach = nil
-					requestPreview(true)
-					if paneCommand != "" {
-						state.openPrefixPane(paneCommand)
+					if paneNavigationCommand(paneCommand) {
+						if !state.navigatePrefixPane(paneCommand) {
+							state.render(os.Stdout)
+							continue
+						}
+						requestPreview(true)
+						b = []byte("\r")
+					} else {
+						requestPreview(true)
+						if paneCommand != "" {
+							state.openPrefixPane(paneCommand)
+						}
+						state.render(os.Stdout)
+						continue
 					}
-					state.render(os.Stdout)
+				}
+				if state.focused {
+					if control != nil && controlMatchesSession(control, state.activePTYSession(), state.ownerName) {
+						_, _ = control.Stdin.Write(b)
+					} else if control != nil {
+						controlID++
+						if controlOpenCancel != nil {
+							controlOpenCancel()
+						}
+						_ = control.Stdin.Close()
+						control, controlDone = nil, nil
+						attachCanResize = false
+						state.outputErr = "PTY control changed; input was not sent"
+					} else if attach != nil {
+						_, _ = attach.Stdin.Write(b)
+					}
 					continue
 				}
-				if control != nil && controlMatchesSession(control, state.activePTYSession(), state.ownerName) {
-					_, _ = control.Stdin.Write(b)
-				} else if control != nil {
-					controlID++
-					if controlOpenCancel != nil {
-						controlOpenCancel()
-					}
-					_ = control.Stdin.Close()
-					control, controlDone = nil, nil
-					attachCanResize = false
-					state.outputErr = "PTY control changed; input was not sent"
-				} else if attach != nil {
-					_, _ = attach.Stdin.Write(b)
-				}
-				continue
 			}
 			if (string(b) == "\x1b[D" || string(b) == "\x1b[C") && state.centralModalOpen() {
 				state.render(os.Stdout)
@@ -5766,6 +5804,20 @@ func mouseCursorShape(shape string) string {
 }
 
 func shortcutInput(binding string) string {
+	switch binding {
+	case "up":
+		return "\x1b[A"
+	case "down":
+		return "\x1b[B"
+	case "right":
+		return "\x1b[C"
+	case "left":
+		return "\x1b[D"
+	case "pageup":
+		return "\x1b[5~"
+	case "pagedown":
+		return "\x1b[6~"
+	}
 	if binding == "enter" {
 		return "\r"
 	}
@@ -5955,6 +6007,12 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 			helpEntry{"", "prefix+\\", "New vertical Session pane"},
 			helpEntry{"", "prefix+t", "New Terminal tab"},
 			helpEntry{"", "prefix+,", "Rename Terminal tab"},
+			helpEntry{"", "prefix+up", "Focus Session pane above"},
+			helpEntry{"", "prefix+down", "Focus Session pane below"},
+			helpEntry{"", "prefix+left", "Focus Session pane to the left"},
+			helpEntry{"", "prefix+right", "Focus Session pane to the right"},
+			helpEntry{"", "prefix+pageup", "Previous Terminal tab"},
+			helpEntry{"", "prefix+pagedown", "Next Terminal tab"},
 			helpEntry{"", "project_hosts", "Edit Project SSH hosts"})
 	}
 	query := strings.ToLower(strings.TrimSpace(s.helpSearchQuery))
@@ -5983,7 +6041,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		if strings.HasPrefix(entry.action, "prefix+") {
 			suffix := strings.TrimPrefix(entry.action, "prefix+")
 			shortcut = s.cfg.Shortcut("pane_prefix") + " " + suffix
-			keyInput = shortcutInput(s.cfg.Shortcut("pane_prefix")) + suffix
+			keyInput = shortcutInput(s.cfg.Shortcut("pane_prefix")) + shortcutInput(suffix)
 		}
 		if query == "" || strings.Contains(strings.ToLower(category+" "+entry.action+" "+entry.label+" "+shortcut), query) {
 			categoryEntries = append(categoryEntries, modalRenderLine{modalInput, fmt.Sprintf("  %-12s %s", shortcut, entry.label)})
@@ -9425,6 +9483,14 @@ func nextInputEvent(pending []byte) (event, rest []byte, ok bool) {
 	}
 	if len(pending) >= 3 && pending[1] == '[' && (pending[2] == 'A' || pending[2] == 'B' || pending[2] == 'C' || pending[2] == 'D') {
 		return append([]byte(nil), pending[:3]...), pending[3:], true
+	}
+	if len(pending) >= 3 && pending[1] == '[' && (pending[2] == '5' || pending[2] == '6') {
+		if len(pending) == 3 {
+			return nil, pending, false
+		}
+		if pending[3] == '~' {
+			return append([]byte(nil), pending[:4]...), pending[4:], true
+		}
 	}
 	if len(pending) >= 4 && pending[1] == '[' && pending[2] == '<' {
 		for i := 3; i < len(pending); i++ {

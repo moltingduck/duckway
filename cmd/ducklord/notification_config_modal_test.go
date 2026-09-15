@@ -119,7 +119,7 @@ func TestNotificationConfigRejectsMissingAndLinkedSound(t *testing.T) {
 
 func TestNotificationSettingsShortcutOpensGlobalEditor(t *testing.T) {
 	state, _ := notificationConfigTestState(t)
-	if action := state.handleInput([]byte("O")); action != "notification-settings" {
+	if action := state.handleInput([]byte("\x0f")); action != "notification-settings" {
 		t.Fatalf("global settings shortcut returned %q", action)
 	}
 	state.beginNotificationConfig("global", "")

@@ -137,7 +137,7 @@ func TestSaveConfigIfUnchangedRejectsStaleWriter(t *testing.T) {
 
 func TestNewNotificationShortcutPreservesExistingUserBinding(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	cfg := &Config{Shortcuts: map[string]string{"host_actions": "O"}, Clients: []Client{}}
+	cfg := &Config{Shortcuts: map[string]string{"host_actions": "ctrl-o"}, Clients: []Client{}}
 	if err := SaveConfig(path, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -145,8 +145,30 @@ func TestNewNotificationShortcutPreservesExistingUserBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Shortcut("host_actions") != "O" || loaded.Shortcut("notification_settings") != "ctrl-o" {
+	if loaded.Shortcut("host_actions") != "ctrl-o" || loaded.Shortcut("notification_settings") != "ctrl-p" {
 		t.Fatalf("existing shortcut lost: host=%q notification=%q", loaded.Shortcut("host_actions"), loaded.Shortcut("notification_settings"))
+	}
+}
+
+func TestShortcutDefaultsAndLegacyOverridesRoundTrip(t *testing.T) {
+	for _, shortcuts := range []map[string]string{
+		nil,
+		{"project_prev_tab": "pageup", "project_next_tab": "pagedown"},
+		{"project_focus": "P", "project_create": "N", "project_hosts": "W", "project_prev_tab": "[", "project_next_tab": "]", "project_prev_pane": "H", "project_next_pane": "L", "project_move_pane": "M", "project_notification_focus": "F", "detail_list": "D", "shortcut_settings": "S", "notification_settings": "O", "list_sort_direction": "T", "host_remove": "d"},
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := SaveConfig(path, &Config{Shortcuts: shortcuts}); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for action, want := range shortcuts {
+			if got := loaded.Shortcut(action); got != want {
+				t.Fatalf("%s override = %q, want %q", action, got, want)
+			}
+		}
 	}
 }
 

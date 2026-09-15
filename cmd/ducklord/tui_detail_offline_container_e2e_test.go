@@ -93,7 +93,7 @@ func TestDucklordDetailedOfflineContainerE2E(t *testing.T) {
 	waitE2E(t, 10*time.Second, func() bool { oldPaneID = readPaneID(); return oldPaneID != "" }, func() string {
 		return "offline alpha did not retain a local Default Project pane"
 	})
-	writePTY(t, terminal, "Pp\r") // Project pane; new Terminal tab.
+	writePTY(t, terminal, "bp\r") // Project pane; new Terminal tab.
 	capture.waitCurrent(t, "New shell session", 10*time.Second)
 	writePTY(t, terminal, "\x1b[B\r") // Add existing Session.
 	capture.waitCurrent(t, "find ›", 10*time.Second)
@@ -108,7 +108,7 @@ func TestDucklordDetailedOfflineContainerE2E(t *testing.T) {
 	if remote, found := findContainerSession(t, runtime, controller, "client-a", alpha.SessionID); !found || remote.RuntimeGeneration != alpha.RuntimeGeneration {
 		t.Fatal("offline local pane move changed the remote Session")
 	}
-	writePTY(t, terminal, "D")
+	writePTY(t, terminal, "l")
 	capture.waitCurrent(t, "Detailed Sessions:", 10*time.Second)
 	waitE2E(t, 10*time.Second, func() bool {
 		screen := capture.currentText()

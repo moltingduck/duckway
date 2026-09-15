@@ -92,7 +92,7 @@ func testDucklordDetailedUnreadFilterContainerE2E(t *testing.T, count int) {
 	})
 	capture := newSizedTUICapture(terminal, 28, 140)
 	waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
-	writePTY(t, terminal, "D/"+sessions[0].Name+"\r")
+	writePTY(t, terminal, "l/"+sessions[0].Name+"\r")
 	waitLiveAgentScreen(t, capture, "client-a/"+sessions[0].Name, 10*time.Second)
 	readState := func() ducklord.ActivityState {
 		data, _ := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()

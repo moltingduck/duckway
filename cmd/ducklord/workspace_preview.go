@@ -217,7 +217,7 @@ func (s *tuiState) workspacePreferredSelection(visible []ducklord.TerminalSelect
 	return visible[0]
 }
 
-// P is a read-only Project-list focus switch. Project movement never changes
+// Project-list focus is read-only. Project movement never changes
 // the quick-list selection or grants PTY control.
 func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed bool) {
 	if !s.workspacePreview {
@@ -482,7 +482,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 		status = s.detailStatusLine()
 	}
 	if s.panePrefixPending {
-		status = "Pane command: - horizontal · \\ vertical · t new tab · , rename · Esc cancel"
+		status = "Pane command: arrows focus · PgUp/PgDn tabs · - horizontal · \\ vertical · t new tab · , rename · Esc cancel"
 	}
 	if s.workspaceNav != nil && s.workspaceNav.NotificationFocusProjectID() != "" {
 		focused := s.workspaceNav.NotificationFocusProjectID()

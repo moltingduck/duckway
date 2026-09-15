@@ -12,7 +12,7 @@ Start the TUI with `ducklord tui`. The normal workspace has three regions:
 
 The highlighted border shows where keyboard input goes. Press `?` for a pinned,
 searchable shortcut guide; press `?` again to close it. Shortcuts can be changed
-with `S`; Ducklord asks whether to restart to load the new bindings.
+with `s`; Ducklord asks whether to restart to load the new bindings.
 
 ## Navigate and arrange
 
@@ -21,24 +21,37 @@ with `S`; Ducklord asks whether to restart to load the new bindings.
 | `j` / `k`, `↑` / `↓` | Navigate the focused list |
 | `Enter` | Focus the selected Session pane; never implicitly yield ownership |
 | `Ctrl+]` | Leave PTY input and return to navigation |
-| `P` | Move focus to the Project pane |
-| `N` / `Z` | Create / delete a local Project |
+| `b` | Move focus to the Project pane |
+| `e` / `Z` | Create / delete a local Project |
 | `p` | Add a Session pane in the selected Project |
 | `Ctrl+B`, then `-` / `\` / `t` | Add horizontal / vertical pane / new tab |
 | `Ctrl+B`, then `,` | Rename the current Terminal tab |
-| `W` | Edit the selected Project's SSH hosts |
-| `[` / `]` | Previous / next Terminal tab |
-| `H` / `L` | Previous / next visible Session pane |
-| `M` / `x` | Move / detach the selected local Session pane |
-| `t` / `T` | Cycle quick-list sort / reverse event-time direction |
-| `D` | Open the detailed Session list |
+| `Ctrl+B`, then `←` / `→` / `↑` / `↓` | Move to the visible pane in that direction |
+| `Ctrl+B`, then `PageUp` / `PageDown` | Previous / next Terminal tab |
+| `w` | Edit the selected Project's SSH hosts |
+| `PageUp` / `PageDown` | Previous / next Terminal tab in Project navigation |
+| `(` / `)` | Previous / next visible Session pane in traversal order |
+| `u` / `x` | Move / detach the selected local Session pane |
+| `i` | Toggle Project notification focus |
+| `t` / `Ctrl+T` | Cycle quick-list sort / reverse event-time direction |
+| `l` | Open the detailed Session list |
 | `v` | Freeze redraws for terminal text selection |
+| `s` / `Ctrl+O` | Shortcut / global notification settings |
+| `A` | Remove Host configuration |
 
 Up from the first Session list item enters the Project pane; down from the last
 Project returns to the Session list. Prefix commands also work while typing in a
-PTY. Configure `shortcuts.pane_prefix` (default `ctrl-b`) through `S` or config;
+PTY. Configure `shortcuts.pane_prefix` (default `ctrl-b`) through `s` or config;
 it must be an unused control key. Escape or any unknown suffix cancels locally.
 Click `+` beside the tabs to add a new tab.
+
+Shortcut design rules: ordinary actions use lowercase letters or control keys;
+uppercase letters are reserved for important or destructive actions, such as
+`Y` (yield when idle), `E` (end), `R` (restart), `X` (destroy), `Z` (delete
+Project), and `A` (remove Host). Prefix arrows follow the visible pane layout;
+PageUp/PageDown switch tabs. New shortcut defaults must avoid conflicts across
+active contexts. Explicit customized bindings are preserved; the table shows
+defaults. In config, PageUp/PageDown are spelled `pageup`/`pagedown`.
 
 Use `p` while the Project pane is focused: choose a new tab or horizontal or
 vertical split, then **New shell session** or **Add existing session**. The

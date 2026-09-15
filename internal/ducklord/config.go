@@ -335,27 +335,31 @@ func contextualShortcutPair(a, b string) bool {
 		a == "detail_search" && b == "list_search" || a == "list_search" && b == "detail_search"
 }
 
+// Ordinary actions use lowercase letters or control keys; uppercase letters are
+// reserved for important or destructive actions. Keep defaults conflict-free and
+// preserve explicit user overrides. Pane prefix arrows follow spatial layout;
+// PageUp/PageDown switch tabs.
 var DefaultShortcuts = map[string]string{
-	"help": "?", "quit": "q", "host_actions": "h", "host_add": "a", "host_remove": "d", "notification_settings": "O",
+	"help": "?", "quit": "q", "host_actions": "h", "host_add": "a", "host_remove": "A", "notification_settings": "ctrl-o",
 	"session_create": "c", "session_actions": "m", "session_notifications": "n", "session_yield": "y", "session_yield_wait": "Y",
 	"session_end": "E", "session_restart": "R", "session_destroy": "X", "list_search": "/", "list_organize": "o", "list_groups": "g",
-	"list_reorder_up": "ctrl-k", "list_reorder_down": "ctrl-j", "pty_copy": "v", "pty_unfocus": "ctrl-]", "refresh": "r", "shortcut_settings": "S",
-	"project_focus":    "P",
+	"list_reorder_up": "ctrl-k", "list_reorder_down": "ctrl-j", "pty_copy": "v", "pty_unfocus": "ctrl-]", "refresh": "r", "shortcut_settings": "s",
+	"project_focus":    "b",
 	"pane_prefix":      "ctrl-b",
-	"project_hosts":    "W",
-	"project_prev_tab": "[", "project_next_tab": "]", "project_prev_pane": "H", "project_next_pane": "L",
+	"project_hosts":    "w",
+	"project_prev_tab": "pageup", "project_next_tab": "pagedown", "project_prev_pane": "(", "project_next_pane": ")",
 	"project_add_pane":           "p",
-	"project_create":             "N",
+	"project_create":             "e",
 	"project_delete":             "Z",
-	"project_notification_focus": "F",
-	"project_move_pane":          "M", "project_detach_pane": "x",
-	"detail_list": "D", "detail_search": "/", "detail_jump": "g", "detail_filter": "f",
+	"project_notification_focus": "i",
+	"project_move_pane":          "u", "project_detach_pane": "x",
+	"detail_list": "l", "detail_search": "/", "detail_jump": "g", "detail_filter": "f",
 	"detail_next": "j", "detail_previous": "k", "detail_focus": "enter",
-	"list_sort": "t", "list_sort_direction": "T",
+	"list_sort": "t", "list_sort_direction": "ctrl-t",
 }
 
 func validShortcutBinding(binding string) bool {
-	if binding == "enter" {
+	if binding == "enter" || binding == "pageup" || binding == "pagedown" {
 		return true
 	}
 	if strings.HasPrefix(binding, "ctrl-") {

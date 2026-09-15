@@ -376,14 +376,14 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		if turn == 1 {
 			writePTY(t, terminal, "\x1d")
 			waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
-			writePTY(t, terminal, "P")
+			writePTY(t, terminal, "b")
 			waitLiveAgentScreen(t, capture, "Project pane:", 20*time.Second)
 			writePTY(t, terminal, "k")
 			waitLiveAgentScreen(t, capture, "› Default Project", 20*time.Second)
 			writePTY(t, terminal, "j")
 			waitLiveAgentScreen(t, capture, "› Live "+agent, 20*time.Second)
 			waitLiveAgentScreen(t, capture, response, 20*time.Second)
-			writePTY(t, terminal, "P")
+			writePTY(t, terminal, "b")
 			waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
 			writePTY(t, terminal, "/")
 			waitLiveAgentScreen(t, capture, "Search sessions", 10*time.Second)
@@ -398,9 +398,9 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	if split {
 		// A live agent must keep rendering while the adjacent shell receives
 		// input, and switching back must restore the same agent PTY.
-		writePTY(t, terminal, "\x1dP")
+		writePTY(t, terminal, "\x1db")
 		waitLiveAgentScreen(t, capture, "Project pane:", 20*time.Second)
-		writePTY(t, terminal, "L\r")
+		writePTY(t, terminal, ")\r")
 		waitLiveAgentScreen(t, capture, "Session focus:", 20*time.Second)
 		marker := "SPLIT_INPUT_" + stamp
 		writePTY(t, terminal, "printf '"+marker+"\\n'\r")
@@ -426,7 +426,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		}
 		writePTY(t, terminal, "\x1d")
 		waitLiveAgentScreen(t, capture, "Project pane:", 20*time.Second)
-		writePTY(t, terminal, "H\r")
+		writePTY(t, terminal, "(\r")
 		waitLiveAgentScreen(t, capture, "Session focus:", 20*time.Second)
 		waitLiveAgentScreen(t, capture, "client-a/"+sidecarHandle, 20*time.Second)
 	}
@@ -451,7 +451,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\x1d")
 	if !split {
 		waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
-		writePTY(t, terminal, "P")
+		writePTY(t, terminal, "b")
 	}
 	waitLiveAgentScreen(t, capture, "Project pane:", 20*time.Second)
 	writePTY(t, terminal, "k")
@@ -536,7 +536,7 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	beforeNavigate, beforeNavigateFound := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
 	beforeNavigateSequence := beforeNavigate.ActivitySequences[model.NotificationTaskCompleted]
 	t.Logf("background completion checkpoint before return navigation: session-found=%t sequence=%d", beforeNavigateFound, beforeNavigateSequence)
-	writePTY(t, terminal, "P")
+	writePTY(t, terminal, "b")
 	waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
 	writePTY(t, terminal, "/"+handle+"\r")
 	waitLiveAgentScreen(t, capture, "Active · Enter again to focus", 20*time.Second)

@@ -94,7 +94,7 @@ func TestDucklordProjectDeleteContainerE2E(t *testing.T) {
 	})
 	capture := newSizedTUICapture(terminal, 24, 120)
 	capture.waitCurrent(t, projectName, 20*time.Second)
-	writePTY(t, terminal, "Pj")
+	writePTY(t, terminal, "bj")
 	capture.waitCurrent(t, "› "+projectName, 10*time.Second)
 	writePTY(t, terminal, "Z")
 	capture.waitCurrent(t, "Delete Project", 10*time.Second)
@@ -107,7 +107,7 @@ func TestDucklordProjectDeleteContainerE2E(t *testing.T) {
 			t.Fatal("Cancel deleted the Project")
 		}
 	}
-	writePTY(t, terminal, "F")
+	writePTY(t, terminal, "i")
 	capture.waitCurrent(t, "Focus: "+projectName, 10*time.Second)
 	writePTY(t, terminal, "Z")
 	capture.waitCurrent(t, "Delete Project", 10*time.Second)
@@ -140,7 +140,7 @@ func TestDucklordProjectDeleteContainerE2E(t *testing.T) {
 	// Default also contains the demo's other Sessions. Navigate its tabs to
 	// the rehomed fixture before checking the live framebuffer.
 	for tab := 0; tab < defaultTabCount && !strings.Contains(capture.currentText(), "client-a/"+handle); tab++ {
-		writePTY(t, terminal, "]")
+		writePTY(t, terminal, "\x1b[6~")
 		time.Sleep(150 * time.Millisecond)
 	}
 	capture.waitCurrent(t, "client-a/"+handle, 10*time.Second)

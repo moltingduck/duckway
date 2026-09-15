@@ -33,7 +33,7 @@ func TestDetailedUnreadFocusSurvivesInventoryUntilUnfocus(t *testing.T) {
 				inventory[1].ActivitySequences = map[model.NotificationCategory]uint64{model.NotificationTaskCompleted: 1}
 			}
 			applyInventory(2)
-			state.handleDetailedInput([]byte("D"))
+			state.handleDetailedInput([]byte("l"))
 			state.handleDetailedInput([]byte("f"))
 			identity, _ := ducklord.IdentityFromSession(first)
 			if state.detailFilter != ducklord.DetailUnread || state.detailSelected != identity {
@@ -137,7 +137,7 @@ func TestDetailedModeConfigurablePreviewAndFocus(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if action := state.handleDetailedInput([]byte("D")); action != "changed" {
+	if action := state.handleDetailedInput([]byte("l")); action != "changed" {
 		t.Fatalf("enter detailed mode: %q", action)
 	}
 	first := state.detailSelected
@@ -197,7 +197,7 @@ func TestDetailedSearchAcceptsPrintableHelpBinding(t *testing.T) {
 }
 
 func TestDetailedModeRestoresKeyboardFocus(t *testing.T) {
-	for _, exit := range []struct{ name, key string }{{"toggle", "D"}, {"escape", "\x1b"}} {
+	for _, exit := range []struct{ name, key string }{{"toggle", "l"}, {"escape", "\x1b"}} {
 		t.Run(exit.name, func(t *testing.T) {
 			instance := "9df68174-9e13-4dc9-b44d-8532c87f5971"
 			activity := ducklord.NewActivityState()
@@ -233,7 +233,7 @@ func TestDetailedModeRestoresKeyboardFocus(t *testing.T) {
 					}
 				}
 				region, tab, pane := nav.Region(), nav.CurrentTabID(), nav.CurrentPaneID()
-				if action := state.handleDetailedInput([]byte("D")); action != "changed" || state.workspaceProjectFocus {
+				if action := state.handleDetailedInput([]byte("l")); action != "changed" || state.workspaceProjectFocus {
 					t.Fatalf("enter with Project focus %v: action=%q focus=%v", projectFocus, action, state.workspaceProjectFocus)
 				}
 				if state.enterDetailedMode() {
@@ -296,7 +296,7 @@ func TestDetailedSessionModeSearchPreviewAndJumpPreserveNormalLocation(t *testin
 	if nav.CurrentProjectID() != projectA {
 		t.Fatal("normal workspace did not begin in selected Session's Project")
 	}
-	if action := state.handleDetailedInput([]byte("D")); action != "changed" || !nav.InDetailMode() {
+	if action := state.handleDetailedInput([]byte("l")); action != "changed" || !nav.InDetailMode() {
 		t.Fatalf("enter detailed mode: %q", action)
 	}
 	if action := state.handleDetailedInput([]byte("/")); action != "changed" || !state.detailSearchFocused {
@@ -330,11 +330,11 @@ func TestDetailedSessionModeSearchPreviewAndJumpPreserveNormalLocation(t *testin
 	if state.detailSearchFocused {
 		t.Fatal("second Escape did not return to detailed list")
 	}
-	state.handleDetailedInput([]byte("D"))
+	state.handleDetailedInput([]byte("l"))
 	if nav.InDetailMode() || nav.CurrentProjectID() != projectA || state.detailQuery != "" {
 		t.Fatal("leaving detailed mode did not restore the normal workspace")
 	}
-	state.handleDetailedInput([]byte("D"))
+	state.handleDetailedInput([]byte("l"))
 	state.handleDetailedInput([]byte("j"))
 	if state.detailSelected != b {
 		t.Fatal("moving detailed selection did not preview the next Session")

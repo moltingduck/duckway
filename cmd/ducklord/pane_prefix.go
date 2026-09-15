@@ -1,6 +1,10 @@
 package main
 
-import "github.com/hackerduck/duckway/internal/ducklord"
+import (
+	"strings"
+
+	"github.com/hackerduck/duckway/internal/ducklord"
+)
 
 // Prefix handling stays on the UI event loop and never forwards command bytes.
 func (s *tuiState) handlePanePrefix(input []byte) (bool, string) {
@@ -10,7 +14,7 @@ func (s *tuiState) handlePanePrefix(input []byte) (bool, string) {
 	}
 	// Clickable help entries submit an entire local key sequence.
 	prefix := shortcutInput(s.cfg.Shortcut("pane_prefix"))
-	if len(input) == len(prefix)+1 && string(input[:len(prefix)]) == prefix {
+	if len(input) > len(prefix) && strings.HasPrefix(string(input), prefix) {
 		s.panePrefixPending = true
 		input = input[len(prefix):]
 	}
@@ -20,6 +24,11 @@ func (s *tuiState) handlePanePrefix(input []byte) (bool, string) {
 		case "-", "\\", "t", ",":
 			return true, string(input)
 		default:
+			for _, key := range []string{"up", "down", "left", "right", "pageup", "pagedown"} {
+				if string(input) == shortcutInput(key) {
+					return true, key
+				}
+			}
 			return true, ""
 		}
 	}
@@ -28,6 +37,39 @@ func (s *tuiState) handlePanePrefix(input []byte) (bool, string) {
 		return true, ""
 	}
 	return false, ""
+}
+
+func paneNavigationCommand(command string) bool {
+	switch command {
+	case "up", "down", "left", "right", "pageup", "pagedown":
+		return true
+	}
+	return false
+}
+
+func (s *tuiState) navigatePrefixPane(command string) bool {
+	nav, err := s.workspaceNavigation()
+	if err == nil {
+		switch command {
+		case "pageup":
+			err = nav.CycleTab(-1)
+		case "pagedown":
+			err = nav.CycleTab(1)
+		default:
+			width, height := terminalSize()
+			err = nav.MoveVisiblePane(ducklord.CalculateWorkspaceGeometry(width, height, 4), command)
+		}
+	}
+	if err != nil {
+		s.outputErr = err.Error()
+		return false
+	}
+	s.outputErr = ""
+	s.workspaceProjectFocus = true
+	s.workspaceAttachFromProject = true
+	s.workspaceFocusFromProject = true
+	s.selectedGroupID = ""
+	return true
 }
 
 func (s *tuiState) openPrefixPane(command string) {

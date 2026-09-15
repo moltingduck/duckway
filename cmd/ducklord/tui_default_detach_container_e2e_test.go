@@ -148,7 +148,7 @@ func TestDucklordDefaultDetachContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Session focus:", 20*time.Second)
 	writePTY(t, terminal, "\x1d")
 	capture.waitCurrent(t, "Session list pane:", 10*time.Second)
-	writePTY(t, terminal, "P")
+	writePTY(t, terminal, "b")
 	capture.waitCurrent(t, "Project pane:", 10*time.Second)
 	writePTY(t, terminal, "x")
 	capture.waitCurrent(t, "Detach Session pane", 10*time.Second)
@@ -172,7 +172,7 @@ func TestDucklordDefaultDetachContainerE2E(t *testing.T) {
 	}, func() string { return "rediscovery did not preserve the closed Default pane" })
 	stop()
 	terminal, capture, _ = launch("reload")
-	writePTY(t, terminal, "D")
+	writePTY(t, terminal, "l")
 	capture.waitCurrent(t, "Detailed Sessions:", 10*time.Second)
 	writePTY(t, terminal, "/"+handle)
 	waitE2E(t, 10*time.Second, func() bool {

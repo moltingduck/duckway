@@ -8,7 +8,7 @@ import (
 )
 
 func TestPanePrefixAcrossPendingControlCompletion(t *testing.T) {
-	for _, suffix := range []string{"-", "\\", "t", ","} {
+	for _, suffix := range []string{"-", "\\", "t", ",", "up", "down", "left", "right", "pageup", "pagedown"} {
 		t.Run(suffix, func(t *testing.T) {
 			s := &tuiState{cfg: &ducklord.Config{}, workspacePreview: true, activeAttachKey: "target"}
 			ctx, cancel := context.WithCancel(context.Background())
@@ -25,10 +25,10 @@ func TestPanePrefixAcrossPendingControlCompletion(t *testing.T) {
 			s.handlePanePrefix(prefix)
 			openCancel = nil
 			s.focused = true
-			if handlePendingPTYInput(s, []byte(suffix), true, &control, &openCancel, &controlID) {
+			if handlePendingPTYInput(s, []byte(shortcutInput(suffix)), true, &control, &openCancel, &controlID) {
 				t.Fatal("completed control still gated input")
 			}
-			consumed, command := s.handlePanePrefix([]byte(suffix))
+			consumed, command := s.handlePanePrefix([]byte(shortcutInput(suffix)))
 			if !consumed || command != suffix || s.panePrefixPending {
 				t.Fatalf("command could leak to PTY after completion: consumed=%t command=%q", consumed, command)
 			}
