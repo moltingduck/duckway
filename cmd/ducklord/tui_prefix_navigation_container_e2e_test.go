@@ -124,7 +124,7 @@ func TestDucklordPrefixNavigationContainerE2E(t *testing.T) {
 		target int
 	}{
 		{"", 0}, {"\x1b[C", 1}, {"\x1b[D", 0},
-		{"\x1b[6~", 2}, {"\x1b[5~", 0},
+		{"\x1b[6~", 2}, {"\x1b[5~", 0}, {"n", 2}, {"p", 0},
 	} {
 		if step.key != "" {
 			// Exercise separately delivered prefix and terminal escape sequence.

@@ -2597,7 +2597,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			var selectedActionTarget *ducklord.RemoteSession
 			// Clicking another pane cancels pending focus before changing its
 			// target. Late control completions remain fenced by controlID.
-			if button, _, _, ok := parseSGRMouse(string(b)); ok && button == 0 && strings.HasSuffix(string(b), "M") && state.workspacePreview && !state.blockingModalOpen() {
+			if button, _, _, ok := parseSGRMouse(string(b)); ok && (button == 0 || button == 2) && strings.HasSuffix(string(b), "M") && state.workspacePreview && !state.blockingModalOpen() {
 				state.panePrefixPending = false
 				if handlePendingPTYInput(state, []byte("\x1b"), workspaceOutput != nil, &control, &controlOpenCancel, &controlID) {
 					controlDone = nil
@@ -2648,11 +2648,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					if button == 64 || button == 65 {
 						continue
 					}
-					if state.copyMode && button == 0 && strings.HasSuffix(string(b), "M") {
+					if state.copyMode && (button == 0 || button == 2) && strings.HasSuffix(string(b), "M") {
 						state.exitCopyMode(os.Stdout)
 					}
 					if state.focused {
-						if !state.workspacePreview || button != 0 || !strings.HasSuffix(string(b), "M") {
+						if !state.workspacePreview || (button != 0 && button != 2) || !strings.HasSuffix(string(b), "M") {
 							continue
 						}
 						controlID++
@@ -2736,7 +2736,14 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					if err == nil {
 						width, height := terminalSize()
 						var target string
-						target, err = nav.PaneNavigationTarget(ducklord.CalculateWorkspaceGeometry(width, height, 4), command)
+						navigationKey := command
+						switch command {
+						case "n":
+							navigationKey = "pagedown"
+						case "p":
+							navigationKey = "pageup"
+						}
+						target, err = nav.PaneNavigationTarget(ducklord.CalculateWorkspaceGeometry(width, height, 4), navigationKey)
 						if err == nil && target == nav.CurrentPaneID() {
 							state.render(os.Stdout)
 							continue
@@ -6011,8 +6018,8 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 			helpEntry{"", "prefix+down", "Focus Session pane below"},
 			helpEntry{"", "prefix+left", "Focus Session pane to the left"},
 			helpEntry{"", "prefix+right", "Focus Session pane to the right"},
-			helpEntry{"", "prefix+pageup", "Previous Terminal tab"},
-			helpEntry{"", "prefix+pagedown", "Next Terminal tab"},
+			helpEntry{"", "prefix+p", "Previous Terminal tab"},
+			helpEntry{"", "prefix+n", "Next Terminal tab"},
 			helpEntry{"", "project_hosts", "Edit Project SSH hosts"})
 	}
 	query := strings.ToLower(strings.TrimSpace(s.helpSearchQuery))
@@ -6044,14 +6051,18 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 			keyInput = shortcutInput(s.cfg.Shortcut("pane_prefix")) + shortcutInput(suffix)
 		}
 		if query == "" || strings.Contains(strings.ToLower(category+" "+entry.action+" "+entry.label+" "+shortcut), query) {
-			categoryEntries = append(categoryEntries, modalRenderLine{modalInput, fmt.Sprintf("  %-12s %s", shortcut, entry.label)})
+			style := modalInput
+			if s.helpActionAvailable(entry.action) {
+				style = modalSelected
+			}
+			categoryEntries = append(categoryEntries, modalRenderLine{style, fmt.Sprintf("  %-12s %s", shortcut, entry.label)})
 			helpMouseActions[categoryEntries[len(categoryEntries)-1].text] = keyInput
 		}
 	}
 	flushCategory()
 	mouseHelp := "Click select · drag reorder · right-click focus/toggle"
 	if s.workspacePreview {
-		mouseHelp = "Click Session select · drag Session into Terminal area to add a pane"
+		mouseHelp = "Right-click target: config · drag Session into Terminal: add pane"
 	}
 	if query == "" || strings.Contains(strings.ToLower("mouse "+mouseHelp), query) {
 		results = append(results, modalRenderLine{modalStatus, "  MOUSE"}, modalRenderLine{modalMuted, "  " + mouseHelp})
@@ -6074,7 +6085,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 	}
 	maxVisible := max(1, rows-5)
 	s.helpOffset = min(max(s.helpOffset, 0), max(0, len(results)-maxVisible))
-	lines := []modalRenderLine{{modalTitle, "  Keyboard shortcuts · grouped by target"}, {modalInput, searchHint}}
+	lines := []modalRenderLine{{modalTitle, "  Keyboard shortcuts · background = available here"}, {modalInput, searchHint}}
 	lines = append(lines, results[s.helpOffset:min(len(results), s.helpOffset+maxVisible)]...)
 	lines = append(lines, modalRenderLine{modalMuted, "  Pinned help · / search · Enter pin results · Esc clear · " + helpKey + " close"})
 	for i, line := range lines {
@@ -7345,7 +7356,10 @@ func (s *tuiState) beginActionMenu() {
 		s.outputErr = "no session selected"
 		return
 	}
-	target := s.sessions[s.selected]
+	s.beginSessionActionMenu(s.sessions[s.selected])
+}
+
+func (s *tuiState) beginSessionActionMenu(target ducklord.RemoteSession) {
 	if target.InstanceID == "" || target.SessionID == "" {
 		s.outputErr = "session identity is unavailable while the host reconnects"
 		return

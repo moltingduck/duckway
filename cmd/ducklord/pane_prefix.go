@@ -21,7 +21,7 @@ func (s *tuiState) handlePanePrefix(input []byte) (bool, string) {
 	if s.panePrefixPending {
 		s.panePrefixPending = false
 		switch string(input) {
-		case "-", "\\", "t", ",":
+		case "-", "\\", "t", ",", "n", "p":
 			return true, string(input)
 		default:
 			for _, key := range []string{"up", "down", "left", "right", "pageup", "pagedown"} {
@@ -41,7 +41,7 @@ func (s *tuiState) handlePanePrefix(input []byte) (bool, string) {
 
 func paneNavigationCommand(command string) bool {
 	switch command {
-	case "up", "down", "left", "right", "pageup", "pagedown":
+	case "up", "down", "left", "right", "pageup", "pagedown", "n", "p":
 		return true
 	}
 	return false
@@ -51,9 +51,9 @@ func (s *tuiState) navigatePrefixPane(command string) bool {
 	nav, err := s.workspaceNavigation()
 	if err == nil {
 		switch command {
-		case "pageup":
+		case "pageup", "p":
 			err = nav.CycleTab(-1)
-		case "pagedown":
+		case "pagedown", "n":
 			err = nav.CycleTab(1)
 		default:
 			width, height := terminalSize()

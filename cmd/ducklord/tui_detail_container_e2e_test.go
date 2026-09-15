@@ -67,16 +67,17 @@ func TestDucklordDetailedListContainerE2E(t *testing.T) {
 	waitLiveAgentScreen(t, capture, "Project pane:", 10*time.Second)
 	workspaceHeading := func(screen string) string {
 		for _, line := range strings.Split(screen, "\n") {
-			if strings.Contains(line, "PROJECTS") && strings.Contains(line, "SESSIONS") {
+			if strings.Contains(line, "PROJECTS") {
 				return line // Includes the current Project and selected Terminal tab.
 			}
 		}
 		return ""
 	}
-	beforeDetail := workspaceHeading(capture.currentText())
-	if beforeDetail == "" {
-		t.Fatal("normal workspace heading was missing before detailed mode")
-	}
+	var beforeDetail string
+	waitE2E(t, 10*time.Second, func() bool {
+		beforeDetail = workspaceHeading(capture.currentText())
+		return beforeDetail != ""
+	}, func() string { return "normal workspace heading was missing before detailed mode" })
 	for _, exitKey := range []string{"l", "\x1b"} {
 		writePTY(t, terminal, "l")
 		waitLiveAgentScreen(t, capture, "Detailed Sessions:", 10*time.Second)

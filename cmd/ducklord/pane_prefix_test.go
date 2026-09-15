@@ -23,7 +23,7 @@ func TestPageKeyInputIsAtomicAcrossReads(t *testing.T) {
 }
 
 func TestPanePrefixCommandsAndCancellation(t *testing.T) {
-	for _, key := range []string{"-", "\\", "t", ",", "up", "down", "left", "right", "pageup", "pagedown"} {
+	for _, key := range []string{"-", "\\", "t", ",", "up", "down", "left", "right", "pageup", "pagedown", "n", "p"} {
 		s := &tuiState{workspacePreview: true, cfg: &ducklord.Config{}}
 		if consumed, cmd := s.handlePanePrefix([]byte{2}); !consumed || cmd != "" {
 			t.Fatal("prefix not armed")
@@ -75,5 +75,47 @@ func TestWorkspaceArrowsCrossStackedLists(t *testing.T) {
 	}
 	if s.focused {
 		t.Fatal("navigation acquired writer")
+	}
+}
+
+func TestPanePrefixLetterTabNavigation(t *testing.T) {
+	s, projectID, _, b := workspacePaneTestState(t)
+	identity, _ := ducklord.IdentityFromSession(b)
+	if _, err := s.activity().ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	nav, _ := s.workspaceNavigation()
+	_ = nav.SelectProject(projectID)
+	project := s.activity().ProjectLayout.Project(projectID)
+	for _, step := range []struct {
+		key string
+		tab int
+	}{{"n", 1}, {"n", 0}, {"p", 1}, {"p", 0}} {
+		consumed, command := s.handlePanePrefix([]byte("\x02" + step.key))
+		if !consumed || !paneNavigationCommand(command) || !s.navigatePrefixPane(command) {
+			t.Fatalf("prefix+%s did not navigate: %s", step.key, s.outputErr)
+		}
+		if nav.CurrentTabID() != project.Tabs[step.tab].ID || s.workspacePaneMode {
+			t.Fatalf("prefix+%s selected wrong tab or opened modal", step.key)
+		}
+	}
+}
+
+func TestWorkspaceEmptyProjectEnterCreatesPaneInNewTab(t *testing.T) {
+	s, _, _, _ := workspacePaneTestState(t)
+	projectID, err := s.activity().ProjectLayout.AddProject("Empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nav, _ := s.workspaceNavigation()
+	_ = nav.SelectProject(projectID)
+	s.outputErr = "old error"
+	handled, _ := s.handleWorkspaceProjectInput([]byte("\r"))
+	if !handled || !s.workspacePaneMode || s.workspacePaneStep != "source" ||
+		s.workspacePaneIntent.projectID != projectID || s.workspacePaneIntent.placement != ducklord.PlaceNewTab || s.outputErr != "" {
+		t.Fatalf("Enter did not open empty Project new-tab flow: %+v", s.workspacePaneIntent)
+	}
+	if !s.handleWorkspacePaneInput([]byte("\r")) || s.workspaceNewSessionIntent == nil || s.workspaceNewSessionIntent.projectID != projectID {
+		t.Fatal("new tab did not hand off to Session creation")
 	}
 }

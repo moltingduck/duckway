@@ -32,6 +32,12 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 		return false, false
 	}
 	width, height := terminalSize()
+	if button == 2 && strings.HasSuffix(key, "M") {
+		s.workspaceDragSession = ducklord.RemoteSession{}
+		s.workspaceDragMoved = false
+		s.workspaceMouseFocus = false
+		return true, s.openWorkspaceContextConfig(x, y, width, height)
+	}
 	if nav.InDetailMode() {
 		if button != 0 || !strings.HasSuffix(key, "M") {
 			return true, false

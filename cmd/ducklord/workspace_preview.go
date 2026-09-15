@@ -224,6 +224,9 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		return false, false
 	}
 	key := string(input)
+	if s.shortcut("help", key) {
+		return false, false
+	}
 	if s.shortcut("project_focus", key) {
 		s.workspaceProjectFocus = !s.workspaceProjectFocus
 		return true, false
@@ -272,6 +275,13 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		return true, false
 	}
 	if key == "\r" {
+		if nav, err := s.workspaceNavigation(); err == nil {
+			if project := s.activity().ProjectLayout.Project(nav.CurrentProjectID()); project != nil && len(project.Tabs) == 0 {
+				s.outputErr = ""
+				s.openPrefixPane("t")
+				return true, false
+			}
+		}
 		if _, err := s.workspaceSelectedPaneSession(); err != nil {
 			s.outputErr = err.Error()
 			return true, false

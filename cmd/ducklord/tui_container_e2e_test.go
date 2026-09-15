@@ -1386,7 +1386,11 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\x1d")
 	capture.waitCurrent(t, "› Focus A", 20*time.Second)
 	capture.waitCurrent(t, "› "+handles[0]+" @client-a", 20*time.Second)
-	writePTY(t, terminal, "bj")
+	writePTY(t, terminal, "b?")
+	capture.waitCurrent(t, "Keyboard shortcuts", 10*time.Second)
+	writePTY(t, terminal, "?")
+	capture.waitCurrent(t, "Project pane:", 10*time.Second)
+	writePTY(t, terminal, "j")
 	capture.waitCurrent(t, "› Focus B", 10*time.Second)
 	capture.waitCurrent(t, "◇ client-a/"+handles[1], 10*time.Second)
 	capture.waitCurrent(t, "› "+handles[0]+" @client-a", 10*time.Second)
@@ -1438,7 +1442,20 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 	if readErr != nil || bytes.Contains(out, []byte(toB)) {
 		t.Fatalf("focused input reached quick-selected A: err=%v output=%q", readErr, safeTerminalDiagnostic(string(out)))
 	}
-	writePTY(t, terminal, "\x1d")
+	geometry := ducklord.CalculateWorkspaceGeometry(120, 24, 4)
+	writePTY(t, terminal, string(workspaceMouse(2, geometry.Terminal.X+2, geometry.Terminal.Y+2, false)))
+	capture.waitCurrent(t, "Session actions", 10*time.Second)
+	capture.waitCurrent(t, handles[1], 10*time.Second)
+	writePTY(t, terminal, "q")
+	var projectFocused bool
+	waitE2E(t, 10*time.Second, func() bool {
+		screen := capture.currentText()
+		projectFocused = strings.Contains(screen, "Project pane:")
+		return (projectFocused || strings.Contains(screen, "Session list pane:")) && !strings.Contains(screen, "Session actions")
+	}, func() string { return "right-click Session menu did not close" })
+	if !projectFocused {
+		writePTY(t, terminal, "b")
+	}
 	capture.waitCurrent(t, "Project pane:", 10*time.Second)
 	writePTY(t, terminal, "k") // Focus A contains only A; B is outside it.
 	capture.waitCurrent(t, "› Focus A", 10*time.Second)

@@ -8,7 +8,7 @@ import (
 )
 
 func TestPanePrefixAcrossPendingControlCompletion(t *testing.T) {
-	for _, suffix := range []string{"-", "\\", "t", ",", "up", "down", "left", "right", "pageup", "pagedown"} {
+	for _, suffix := range []string{"-", "\\", "t", ",", "up", "down", "left", "right", "pageup", "pagedown", "n", "p"} {
 		t.Run(suffix, func(t *testing.T) {
 			s := &tuiState{cfg: &ducklord.Config{}, workspacePreview: true, activeAttachKey: "target"}
 			ctx, cancel := context.WithCancel(context.Background())
