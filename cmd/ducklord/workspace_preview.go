@@ -492,7 +492,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 		status = s.detailStatusLine()
 	}
 	if s.panePrefixPending {
-		status = "Pane command: arrows focus · PgUp/PgDn tabs · - horizontal · \\ vertical · t new tab · , rename · Esc cancel"
+		status = "Pane command: c config · arrows focus · PgUp/PgDn tabs · - horizontal · \\ vertical · t new tab · , rename · Esc cancel"
 	}
 	if s.workspaceNav != nil && s.workspaceNav.NotificationFocusProjectID() != "" {
 		focused := s.workspaceNav.NotificationFocusProjectID()

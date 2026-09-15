@@ -15,13 +15,17 @@ func (s *tuiState) handlePanePrefix(input []byte) (bool, string) {
 	// Clickable help entries submit an entire local key sequence.
 	prefix := shortcutInput(s.cfg.Shortcut("pane_prefix"))
 	if len(input) > len(prefix) && strings.HasPrefix(string(input), prefix) {
+		if s.focused {
+			s.workspaceConfigFocus = "session"
+			s.workspaceConfigIdentity, _ = ducklord.IdentityFromSession(s.activePTYSession())
+		}
 		s.panePrefixPending = true
 		input = input[len(prefix):]
 	}
 	if s.panePrefixPending {
 		s.panePrefixPending = false
 		switch string(input) {
-		case "-", "\\", "t", ",", "n", "p":
+		case "-", "\\", "t", ",", "n", "p", "c":
 			return true, string(input)
 		default:
 			for _, key := range []string{"up", "down", "left", "right", "pageup", "pagedown"} {
@@ -33,8 +37,15 @@ func (s *tuiState) handlePanePrefix(input []byte) (bool, string) {
 		}
 	}
 	if s.shortcut("pane_prefix", string(input)) {
+		if s.focused {
+			s.workspaceConfigFocus = "session"
+			s.workspaceConfigIdentity, _ = ducklord.IdentityFromSession(s.activePTYSession())
+		}
 		s.panePrefixPending = true
 		return true, ""
+	}
+	if !strings.HasPrefix(string(input), "\x1b[<") {
+		s.workspaceConfigFocus = ""
 	}
 	return false, ""
 }
@@ -48,6 +59,7 @@ func paneNavigationCommand(command string) bool {
 }
 
 func (s *tuiState) navigatePrefixPane(command string) bool {
+	s.workspaceConfigFocus = ""
 	nav, err := s.workspaceNavigation()
 	if err == nil {
 		switch command {
@@ -73,6 +85,10 @@ func (s *tuiState) navigatePrefixPane(command string) bool {
 }
 
 func (s *tuiState) openPrefixPane(command string) {
+	if command == "c" {
+		s.openFocusedWorkspaceConfig()
+		return
+	}
 	s.workspaceProjectFocus = true
 	if command == "," {
 		s.beginWorkspaceTabRename()

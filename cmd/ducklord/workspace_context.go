@@ -7,6 +7,8 @@ import "github.com/hackerduck/duckway/internal/ducklord"
 func (s *tuiState) openWorkspaceSessionConfig(identity ducklord.SessionIdentity) {
 	for _, session := range s.sessions {
 		if current, ok := ducklord.IdentityFromSession(session); ok && current == identity {
+			s.workspaceConfigFocus = "session"
+			s.workspaceConfigIdentity = identity
 			s.beginSessionActionMenu(session)
 			return
 		}
@@ -22,7 +24,9 @@ func (s *tuiState) openWorkspaceContextConfig(x, y, width, height int) bool {
 	if nav.InDetailMode() {
 		geometry := ducklord.CalculateDetailGeometry(width, height, 4)
 		if insideWorkspaceRect(geometry.Pane, x, y) {
-			if s.detailSelected.Key() != "" {
+			if y == geometry.Pane.Y || s.detailSelected.Key() == "" {
+				s.beginWorkspaceAreaConfig("terminal")
+			} else if s.detailSelected.Key() != "" {
 				s.openWorkspaceSessionConfig(s.detailSelected)
 			}
 			return false
@@ -42,6 +46,9 @@ func (s *tuiState) openWorkspaceContextConfig(x, y, width, height int) bool {
 			s.openWorkspaceSessionConfig(s.detailSelected)
 			return err == nil
 		}
+		if insideWorkspaceRect(geometry.List, x, y) {
+			s.beginWorkspaceAreaConfig("session-list")
+		}
 		return false
 	}
 	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
@@ -58,14 +65,26 @@ func (s *tuiState) openWorkspaceContextConfig(x, y, width, height int) bool {
 	if row, ok := workspaceQuickRowAt(geometry.Projects, x, y); ok && row+offsets.Projects < len(s.activity().ProjectLayout.Projects) {
 		project := s.activity().ProjectLayout.Projects[row+offsets.Projects]
 		if nav.SelectProject(project.ID) == nil {
+			s.workspaceConfigFocus = ""
 			s.workspaceProjectFocus = true
 			s.beginWorkspaceProjectHosts()
 			return true
 		}
 		return false
 	}
+	if insideWorkspaceRect(geometry.Projects, x, y) {
+		s.beginWorkspaceAreaConfig("project-pane")
+		return false
+	}
+	if insideWorkspaceRect(geometry.Quick, x, y) {
+		s.beginWorkspaceAreaConfig("session-list")
+		return false
+	}
 	project := s.activity().ProjectLayout.Project(nav.CurrentProjectID())
 	if project == nil {
+		if insideWorkspaceRect(geometry.Terminal, x, y) {
+			s.beginWorkspaceAreaConfig("terminal")
+		}
 		return false
 	}
 	if y == geometry.Terminal.Y && insideWorkspaceRect(geometry.Terminal, x, y) {
@@ -74,6 +93,7 @@ func (s *tuiState) openWorkspaceContextConfig(x, y, width, height int) bool {
 			cells := modalCellWidth(ducklord.WorkspaceTabLabel(tab, i, tab.ID == nav.CurrentTabID()))
 			if x >= left && x < left+cells {
 				if id := firstWorkspacePaneID(tab.Root); id != "" && nav.SelectPane(project.ID, id) == nil {
+					s.workspaceConfigFocus = "tab"
 					s.workspaceProjectFocus = true
 					s.beginWorkspaceTabRename()
 					return true
@@ -82,6 +102,7 @@ func (s *tuiState) openWorkspaceContextConfig(x, y, width, height int) bool {
 			}
 			left += cells
 		}
+		s.beginWorkspaceAreaConfig("terminal")
 		return false
 	}
 	for _, pane := range ducklord.WorkspaceVisiblePaneRects(&s.activity().ProjectLayout, nav, geometry) {
@@ -92,6 +113,9 @@ func (s *tuiState) openWorkspaceContextConfig(x, y, width, height int) bool {
 			}
 			return false
 		}
+	}
+	if insideWorkspaceRect(geometry.Terminal, x, y) {
+		s.beginWorkspaceAreaConfig("terminal")
 	}
 	return false
 }

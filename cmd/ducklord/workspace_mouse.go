@@ -43,6 +43,17 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 			return true, false
 		}
 		geometry := ducklord.CalculateDetailGeometry(width, height, 4)
+		s.workspaceConfigFocus = ""
+		if insideWorkspaceRect(geometry.Pane, x, y) && (y == geometry.Pane.Y || s.detailSelected.Key() == "") {
+			s.workspaceConfigFocus = "terminal"
+			s.workspaceMouseFocus = false
+			return true, false
+		}
+		if insideWorkspaceRect(geometry.List, x, y) {
+			s.workspaceConfigFocus = "session-list"
+			s.workspaceProjectFocus = false
+			s.workspaceMouseFocus = false
+		}
 		if insideWorkspaceRect(geometry.Pane, x, y) && s.detailSelected.Key() != "" {
 			s.detailSearchFocused = false
 			s.workspaceMouseFocus = true
@@ -59,6 +70,7 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 				}
 			}
 			if index := ducklord.DetailSessionIndexAt(geometry.List, selected, len(results), x, y); index >= 0 {
+				s.workspaceConfigFocus = ""
 				s.detailSelected = results[index].Identity
 				return true, nav.PreviewDetail(s.detailSelected) == nil
 			}
@@ -72,7 +84,17 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 		s.workspaceDragSession = ducklord.RemoteSession{}
 		s.workspaceDragMoved = false
 		s.workspaceDragX, s.workspaceDragY = x, y
+		s.workspaceConfigFocus = "terminal"
+		if insideWorkspaceRect(geometry.Quick, x, y) {
+			s.workspaceConfigFocus = "session-list"
+			s.workspaceProjectFocus = false
+			s.workspaceMouseFocus = false
+		}
+		if insideWorkspaceRect(geometry.Projects, x, y) {
+			s.workspaceConfigFocus = "project-pane"
+		}
 		if index, inside := workspaceQuickRowAt(geometry.Quick, x, y); inside && index+quickOffset < len(quickSessions) {
+			s.workspaceConfigFocus = ""
 			s.workspaceDragSession = quickSessions[index+quickOffset]
 			s.workspaceProjectFocus = false
 		}
@@ -82,6 +104,7 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 			index += s.workspaceColumnOffsets(geometry, nav, quickSessions).Projects
 			projects := s.activity().ProjectLayout.Projects
 			if inside && index < len(projects) {
+				s.workspaceConfigFocus = ""
 				return true, nav.SelectProject(projects[index].ID) == nil
 			}
 		}
@@ -93,6 +116,7 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 					cells := modalCellWidth(ducklord.WorkspaceTabLabel(tab, i, tab.ID == nav.CurrentTabID()))
 					if x >= left && x < left+cells {
 						if id := firstWorkspacePaneID(tab.Root); id != "" {
+							s.workspaceConfigFocus = "tab"
 							s.workspaceProjectFocus = true
 							return true, nav.SelectPane(project.ID, id) == nil
 						}

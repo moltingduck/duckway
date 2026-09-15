@@ -107,6 +107,30 @@ func TestDucklordPrefixNavigationContainerE2E(t *testing.T) {
 	})
 	capture := newSizedTUICapture(terminal, 30, 160)
 	capture.waitCurrent(t, handles[0], 20*time.Second)
+	geometry := ducklord.CalculateWorkspaceGeometry(160, 30, 4)
+	for _, target := range []struct {
+		rect  ducklord.WorkspaceRect
+		title string
+	}{
+		{geometry.Projects, "Project pane config"},
+		{geometry.Quick, "Session list pane config"},
+		{geometry.Terminal, "Terminal area config"},
+	} {
+		writePTY(t, terminal, string(workspaceMouse(2, target.rect.X, target.rect.Y, false)))
+		capture.waitCurrent(t, target.title, 10*time.Second)
+		writePTY(t, terminal, "\x1b")
+		waitE2E(t, 10*time.Second, func() bool { return !strings.Contains(capture.currentText(), target.title) }, func() string { return "area config did not close" })
+		writePTY(t, terminal, string(workspaceMouse(0, target.rect.X, target.rect.Y, false))+string(workspaceMouse(0, target.rect.X, target.rect.Y, true)))
+		writePTY(t, terminal, "\x02c")
+		capture.waitCurrent(t, target.title, 10*time.Second)
+		writePTY(t, terminal, "\x1b")
+		waitE2E(t, 10*time.Second, func() bool { return !strings.Contains(capture.currentText(), target.title) }, func() string { return "prefix area config did not close" })
+	}
+
+	if strings.Contains(capture.currentText(), "Project pane:") {
+		writePTY(t, terminal, "b")
+		capture.waitCurrent(t, "Session list pane:", 10*time.Second)
+	}
 	writePTY(t, terminal, "/"+handles[0]+"\r")
 	capture.waitCurrent(t, "Active · Enter again to focus", 20*time.Second)
 	writePTY(t, terminal, "\r")

@@ -1487,6 +1487,8 @@ type tuiState struct {
 	workspaceOutput            *ducklord.WorkspaceOutputAdapter
 	workspaceNav               *ducklord.WorkspaceState
 	workspaceProjectFocus      bool
+	workspaceConfigFocus       string
+	workspaceConfigIdentity    ducklord.SessionIdentity
 	panePrefixPending          bool
 	workspaceAttachFromProject bool
 	workspaceFocusFromProject  bool
@@ -5576,6 +5578,16 @@ func (s *tuiState) render(out io.Writer) {
 	if s.copyMode {
 		return
 	}
+	// Build the complete frame before clearing the display. Synchronized output
+	// keeps terminals from displaying the erase or a partially written redraw.
+	var frame strings.Builder
+	frame.WriteString("\033[?2026h")
+	destination := out
+	out = &frame
+	defer func() {
+		frame.WriteString("\033[?2026l")
+		_, _ = io.WriteString(destination, frame.String())
+	}()
 	if s.workspacePreview {
 		s.renderWorkspacePreview(out)
 		return
@@ -5792,13 +5804,14 @@ func (s *tuiState) hostSyncLabel() string {
 }
 
 const (
+	modalSurface  = "\033[38;2;211;222;235;48;2;24;34;49m"
 	modalReset    = "\033[0m"
-	modalBorder   = "\033[38;2;86;182;194m"
+	modalBorder   = "\033[38;2;78;116;139m"
 	modalTitle    = "\033[1;38;2;129;212;250m"
 	modalMuted    = "\033[38;2;148;163;184m"
 	modalStatus   = "\033[38;2;250;204;21m"
 	modalInput    = "\033[38;2;167;243;208m"
-	modalSelected = "\033[1;38;2;255;255;255;48;2;37;99;235m"
+	modalSelected = "\033[1;38;2;255;255;255;48;2;36;83;107m"
 	modalDisabled = "\033[38;2;100;116;139m"
 	modalDanger   = "\033[1;38;2;255;255;255;48;2;190;24;93m"
 )
@@ -5868,12 +5881,12 @@ func renderModalBox(out io.Writer, cols, rows int, lines []modalRenderLine) {
 	boxHeight := len(lines) + 2
 	top := max(1, (rows-boxHeight)/2+1)
 	left := max(1, (cols-boxWidth)/2+1)
-	fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+	fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalSurface+modalBorder, strings.Repeat("─", innerWidth), modalReset)
 	for index, line := range lines {
 		text := modalCellPad(modalCellTruncate(modalDisplayText(line.text), innerWidth), innerWidth)
-		fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", top+index+1, left, modalBorder, line.style, text, modalReset+modalBorder, modalReset)
+		fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", top+index+1, left, modalSurface+modalBorder, modalSurface+line.style, text, modalReset+modalSurface+modalBorder, modalReset)
 	}
-	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+boxHeight-1, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+boxHeight-1, left, modalSurface+modalBorder, strings.Repeat("─", innerWidth), modalReset)
 }
 
 func (s *tuiState) renderAddClientModal(out io.Writer, cols, rows int) {
@@ -6014,6 +6027,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 			helpEntry{"", "prefix+\\", "New vertical Session pane"},
 			helpEntry{"", "prefix+t", "New Terminal tab"},
 			helpEntry{"", "prefix+,", "Rename Terminal tab"},
+			helpEntry{"", "prefix+c", "Configure focused item or pane (also right-click)"},
 			helpEntry{"", "prefix+up", "Focus Session pane above"},
 			helpEntry{"", "prefix+down", "Focus Session pane below"},
 			helpEntry{"", "prefix+left", "Focus Session pane to the left"},
@@ -6795,12 +6809,12 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 		left := max(1, (cols-boxWidth)/2+1)
 		writeRow := func(row int, style, text string) {
 			text = modalCellPad(modalCellTruncate(modalDisplayText(text), innerWidth), innerWidth)
-			fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", row, left, modalBorder, style, text, modalReset+modalBorder, modalReset)
+			fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", row, left, modalSurface+modalBorder, modalSurface+style, text, modalReset+modalSurface+modalBorder, modalReset)
 		}
 		writePrompt := func(row int) {
 			s.renderCreatePromptRow(out, row, left, innerWidth, "")
 		}
-		fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+		fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalSurface+modalBorder, strings.Repeat("─", innerWidth), modalReset)
 		if boxHeight == 3 {
 			s.renderCreatePromptRow(out, top+1, left, innerWidth, choice+"  ")
 			s.createMouseRegion(left+1, top+1, min(innerWidth, modalCellWidth(choice)), selected)
@@ -6809,7 +6823,7 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 			s.createMouseRegion(left+1, top+1, innerWidth, selected)
 			writePrompt(top + 2)
 		}
-		fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+boxHeight-1, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+		fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+boxHeight-1, left, modalSurface+modalBorder, strings.Repeat("─", innerWidth), modalReset)
 		return
 	}
 	boxWidth := min(72, cols-4)
@@ -6838,9 +6852,9 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 	left := max(1, (cols-boxWidth)/2+1)
 	writeRow := func(row int, style, text string) {
 		text = modalCellPad(modalCellTruncate(modalDisplayText(text), innerWidth), innerWidth)
-		fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", row, left, modalBorder, style, text, modalReset+modalBorder, modalReset)
+		fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", row, left, modalSurface+modalBorder, modalSurface+style, text, modalReset+modalSurface+modalBorder, modalReset)
 	}
-	fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+	fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalSurface+modalBorder, strings.Repeat("─", innerWidth), modalReset)
 	writeRow(top+1, modalTitle, "  "+s.createHeader())
 	for i, choice := range choices {
 		prefix, style := "  ", ""
@@ -6858,7 +6872,7 @@ func (s *tuiState) renderCreateModal(out io.Writer, cols, rows int) {
 	s.renderCreatePromptRow(out, top+3+len(choices), left, innerWidth, "  ")
 	writeRow(top+4+len(choices), modalMuted, "  ↑/↓ select   Enter continue   Esc back   Ctrl+C close")
 	s.modalHintRegions("  ↑/↓ select   Enter continue   Esc back   Ctrl+C close", left+1, top+4+len(choices), innerWidth)
-	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+5+len(choices), left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+5+len(choices), left, modalSurface+modalBorder, strings.Repeat("─", innerWidth), modalReset)
 }
 
 func (s *tuiState) renderCreatePromptRow(out io.Writer, row, left, innerWidth int, indent string) {
@@ -6877,7 +6891,7 @@ func (s *tuiState) renderCreatePromptRow(out io.Writer, row, left, innerWidth in
 	remaining := max(0, innerWidth-modalCellWidth(prefix))
 	ghost = modalCellTruncate(ghost, remaining)
 	padding := strings.Repeat(" ", max(0, remaining-modalCellWidth(ghost)))
-	fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s%s%s%s│%s", row, left, modalBorder, modalInput, prefix, modalMuted, ghost, padding, modalReset+modalBorder, modalReset)
+	fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s%s%s%s│%s", row, left, modalSurface+modalBorder, modalSurface+modalInput, prefix, modalMuted, ghost, padding, modalReset+modalSurface+modalBorder, modalReset)
 }
 
 func (s *tuiState) renderActionModal(out io.Writer, cols, rows int) {
@@ -6922,9 +6936,9 @@ func (s *tuiState) renderActionModal(out io.Writer, cols, rows int) {
 	left := max(1, (cols-boxWidth)/2+1)
 	writeRow := func(row int, style, value string) {
 		value = modalCellPad(modalCellTruncate(modalDisplayText(value), innerWidth), innerWidth)
-		fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", row, left, modalBorder, style, value, modalReset+modalBorder, modalReset)
+		fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", row, left, modalSurface+modalBorder, modalSurface+style, value, modalReset+modalSurface+modalBorder, modalReset)
 	}
-	fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+	fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalSurface+modalBorder, strings.Repeat("─", innerWidth), modalReset)
 	title := fmt.Sprintf("  Session actions · %s / %s", s.actionTarget.Client, s.actionTarget.Name)
 	writeRow(top+1, modalTitle, title)
 	for i, action := range visible {
@@ -6957,7 +6971,7 @@ func (s *tuiState) renderActionModal(out io.Writer, cols, rows int) {
 	writeRow(top+3+len(visible), modalMuted, "  ↑/↓ or j/k select   Enter choose   Esc close")
 	s.modalHintRegions("  ↑/↓ or j/k select   Enter choose   Esc close", left+1, top+3+len(visible), innerWidth)
 	writeRow(top+4+len(visible), modalMuted, fmt.Sprintf("  ID %s · generation %d", s.actionTarget.SessionID, s.actionTarget.RuntimeGeneration))
-	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+5+len(visible), left, modalBorder, strings.Repeat("─", innerWidth), modalReset)
+	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+5+len(visible), left, modalSurface+modalBorder, strings.Repeat("─", innerWidth), modalReset)
 }
 
 func (s *tuiState) createModalChoices() []string {

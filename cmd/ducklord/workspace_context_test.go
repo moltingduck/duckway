@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -54,6 +56,10 @@ func TestWorkspaceContextConfigTargets(t *testing.T) {
 				}
 				if !s.actionMenu || s.actionTarget.SessionID != want.SessionID || s.actionTarget.InstanceID != want.InstanceID {
 					t.Fatalf("wrong session target: %+v", s.actionTarget)
+				}
+			case "blank":
+				if !s.workspacePaneMode || s.workspacePaneName != "session-list" {
+					t.Fatal("list header did not open settings")
 				}
 			default:
 				if s.actionMenu || s.workspacePaneMode {
@@ -159,5 +165,140 @@ func TestWorkspaceContextDetailedTargets(t *testing.T) {
 		if !s.actionMenu || !valid || actual != want || s.workspaceMouseFocus || s.focused {
 			t.Fatalf("wrong detailed context: %+v", s.actionTarget)
 		}
+	}
+}
+
+func TestWorkspaceAreaMouseAndPrefix(t *testing.T) {
+	for _, area := range []string{"project-pane", "session-list", "terminal", "tab"} {
+		for _, right := range []bool{false, true} {
+			t.Run(area+fmt.Sprint(right), func(t *testing.T) {
+				s, projectID, _, _ := workspacePaneTestState(t)
+				nav, _ := s.workspaceNavigation()
+				_ = nav.SelectProject(projectID)
+				w, h := terminalSize()
+				g := ducklord.CalculateWorkspaceGeometry(w, h, 4)
+				x, y := g.Projects.X, g.Projects.Y
+				switch area {
+				case "session-list":
+					x, y = g.Quick.X, g.Quick.Y
+				case "terminal":
+					x, y = g.Terminal.X, g.Terminal.Y
+				case "tab":
+					x, y = g.Terminal.X+modalCellWidth(" Work  ")+1, g.Terminal.Y
+				}
+				button := 0
+				if right {
+					button = 2
+				}
+				for _, release := range []bool{false, true} {
+					input := workspaceMouse(button, x, y, release)
+					s.handlePanePrefix(input)
+					s.handleWorkspaceMouse(input)
+				}
+				if !right {
+					handled, _ := s.handlePanePrefix([]byte(shortcutInput(s.cfg.Shortcut("pane_prefix"))))
+					if !handled {
+						t.Fatal("prefix not handled")
+					}
+					handled, command := s.handlePanePrefix([]byte("c"))
+					if !handled || command != "c" {
+						t.Fatal("config suffix forwarded")
+					}
+					s.openPrefixPane(command)
+				}
+				if area == "tab" {
+					if s.workspacePaneStep != "tab-rename" {
+						t.Fatal("wrong tab config", s.workspacePaneStep)
+					}
+					return
+				}
+				if s.workspacePaneStep != "context-config" || s.workspacePaneName != area {
+					t.Fatalf("wrong area: %s %s", s.workspacePaneStep, s.workspacePaneName)
+				}
+			})
+		}
+	}
+}
+
+func TestWorkspaceAreaPersistencePreservesDiskChanges(t *testing.T) {
+	s, _, _, _ := workspacePaneTestState(t)
+	s.cfgPath = filepath.Join(t.TempDir(), "config.yaml")
+	disk := s.cfg.Clone()
+	disk.QuickSort = "host"
+	if err := ducklord.SaveConfig(s.cfgPath, disk); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.saveWorkspaceAreaSetting(func(c *ducklord.Config) { c.WorkspaceTheme = ducklord.DefaultWorkspaceTheme() }); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := ducklord.LoadConfig(s.cfgPath)
+	if err != nil || loaded.QuickSort != "host" || loaded.WorkspaceTheme.Background != "#111c2b" {
+		t.Fatal("settings overwritten", err)
+	}
+	before := s.cfg
+	s.cfgPath = filepath.Join(t.TempDir(), "missing", "config.yaml")
+	if err := s.saveWorkspaceAreaSetting(func(c *ducklord.Config) { c.QuickSort = "type" }); err == nil || s.cfg != before {
+		t.Fatal("failed save changed live config")
+	}
+}
+
+func TestWorkspaceConfigFocusedSessionCombinedPrefix(t *testing.T) {
+	for _, combined := range []bool{false, true} {
+		s, _, _, b := workspacePaneTestState(t)
+		s.focused = true
+		s.workspaceProjectFocus = false
+		s.activeAttachKey = sessionKey(b)
+		prefix := shortcutInput(s.cfg.Shortcut("pane_prefix"))
+		if !combined {
+			s.handlePanePrefix([]byte(prefix))
+			prefix = ""
+		}
+		handled, command := s.handlePanePrefix([]byte(prefix + "c"))
+		if !handled || command != "c" {
+			t.Fatal("not local")
+		}
+		s.focused = false
+		s.activeAttachKey = ""
+		s.openPrefixPane(command)
+		if !s.actionMenu || s.actionTarget.SessionID != b.SessionID {
+			t.Fatal("lost attached identity")
+		}
+	}
+}
+
+func TestWorkspaceDetailAreaPrefix(t *testing.T) {
+	for _, area := range []string{"session-list", "terminal"} {
+		s, _, _, _ := workspacePaneTestState(t)
+		s.workspaceProjectFocus = false
+		if !s.enterDetailedMode() {
+			t.Fatal("detail mode")
+		}
+		w, h := terminalSize()
+		g := ducklord.CalculateDetailGeometry(w, h, 4)
+		rect := g.List
+		if area == "terminal" {
+			rect = g.Pane
+		}
+		for _, release := range []bool{false, true} {
+			input := workspaceMouse(0, rect.X, rect.Y, release)
+			s.handlePanePrefix(input)
+			s.handleWorkspaceMouse(input)
+		}
+		s.handlePanePrefix([]byte(shortcutInput(s.cfg.Shortcut("pane_prefix"))))
+		_, command := s.handlePanePrefix([]byte("c"))
+		s.openPrefixPane(command)
+		if s.workspacePaneName != area {
+			t.Fatal("wrong detail area", s.workspacePaneName)
+		}
+	}
+}
+
+func TestWorkspaceAreaCreateProjectFromSessionFocus(t *testing.T) {
+	s, _, _, _ := workspacePaneTestState(t)
+	s.workspaceProjectFocus = false
+	s.beginWorkspaceAreaConfig("project-pane")
+	s.handleWorkspaceAreaConfig([]byte("\r"))
+	if !s.workspacePaneMode || s.workspacePaneStep != "project-create" {
+		t.Fatal("project action failed")
 	}
 }

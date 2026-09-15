@@ -314,6 +314,10 @@ func (s *tuiState) workspacePaneChoices() []string {
 }
 
 func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
+	if s.workspacePaneMode && s.workspacePaneStep == "context-config" {
+		s.renderWorkspaceAreaConfig(out, cols, rows)
+		return
+	}
 	if s.workspacePaneStep == "tab-rename" {
 		s.renderWorkspaceTabRenameModal(out, cols, rows)
 		return
@@ -506,6 +510,10 @@ func (s *tuiState) commitWorkspacePanePlacement(intent workspacePaneIntent, sess
 // handleWorkspacePaneInput returns whether the existing Create wizard should
 // open. Modal input never reaches a PTY.
 func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
+	if s.workspacePaneStep == "context-config" {
+		s.handleWorkspaceAreaConfig(input)
+		return false
+	}
 	if s.workspacePaneStep == "tab-rename" {
 		return s.handleWorkspaceTabRenameInput(input)
 	}

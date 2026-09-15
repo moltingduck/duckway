@@ -15,7 +15,7 @@ type WorkspaceTheme struct {
 }
 
 func DefaultWorkspaceTheme() WorkspaceTheme {
-	return WorkspaceTheme{Separator: "#526071", Background: "#202833", Foreground: "#c5cfdb", FocusBackground: "#24536b", FocusForeground: "#ffffff"}
+	return WorkspaceTheme{Separator: "#40566e", Background: "#111c2b", Foreground: "#cbd8e7", FocusBackground: "#24536b", FocusForeground: "#e8f6ff"}
 }
 
 func workspaceColor(value string) (uint64, bool) {
