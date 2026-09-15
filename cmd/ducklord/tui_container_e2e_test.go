@@ -117,8 +117,8 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	copyStart := capture.position()
 	writePTY(t, terminal, "v")
 	capture.waitCurrent(t, "COPY MODE", 5*time.Second)
-	if raw := capture.since(copyStart); !strings.Contains(raw, "\033[?1002l\033[?1000h\033[?1006h") || !strings.Contains(raw, modalSelected) {
-		t.Fatalf("copy mode did not enable local wheel tracking with a visible status: %q", safeTerminalDiagnostic(raw))
+	if raw := capture.since(copyStart); !strings.Contains(raw, "\033[?1000l\033[?1002l\033[?1003l\033[?1006l") || !strings.Contains(raw, strings.TrimPrefix(modalSelected, "\033[")) {
+		t.Fatalf("copy mode did not disable mouse reporting with a visible status: %q", safeTerminalDiagnostic(raw))
 	}
 	frozen := capture.currentText()
 	copyMarker := fmt.Sprintf("DUCKLORD_COPY_MODE_%d", os.Getpid())
@@ -361,7 +361,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "/alpha")
 	capture.waitCurrent(t, "Search sessions", 5*time.Second)
 	capture.waitCurrent(t, "alpha", 5*time.Second)
-	if raw := capture.since(start); !strings.Contains(raw, modalBorder) || !strings.Contains(raw, modalInput) || !strings.Contains(raw, modalSelected) {
+	if raw := capture.since(start); !strings.Contains(raw, strings.TrimPrefix(modalBorder, "\033[")) || !strings.Contains(raw, strings.TrimPrefix(modalInput, "\033[")) || !strings.Contains(raw, strings.TrimPrefix(modalSelected, "\033[")) {
 		t.Fatalf("search modal lacks semantic colors: %q", safeTerminalDiagnostic(raw))
 	}
 	writePTY(t, terminal, "\r")
@@ -417,7 +417,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	start = capture.position()
 	writePTY(t, terminal, "n")
 	capture.waitCurrent(t, "Notifications", 10*time.Second)
-	if raw := capture.since(start); !strings.Contains(raw, modalBorder) || !strings.Contains(raw, modalSelected) {
+	if raw := capture.since(start); !strings.Contains(raw, strings.TrimPrefix(modalBorder, "\033[")) || !strings.Contains(raw, strings.TrimPrefix(modalSelected, "\033[")) {
 		t.Fatalf("notification modal lacks frame/color: %q", safeTerminalDiagnostic(raw))
 	}
 	writePTY(t, terminal, " \x1b") // toggle, then discard
@@ -867,6 +867,30 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Session focus:", 20*time.Second)
 	writePTY(t, terminal, "\x1d")
 	capture.waitCurrent(t, "client-a/"+sessions[0].Handle, 20*time.Second)
+	// Leaving PTY control exposes native selection through the frozen copy view.
+	copyStart := capture.position()
+	writePTY(t, terminal, "v")
+	capture.waitCurrent(t, "COPY MODE", 5*time.Second)
+	if !strings.Contains(capture.since(copyStart), "\033[?1000l\033[?1002l\033[?1003l\033[?1006l") {
+		t.Fatal("workspace copy mode left mouse reporting enabled")
+	}
+	frozen := capture.currentText()
+	copyMarker := fmt.Sprintf("WSCOPY%d", os.Getpid())
+	if out, err := exec.Command(runtime, "exec", controller, binary, "--name", "workspace-two-cli", "send", "client-a", sessions[0].Handle,
+		"printf '"+copyMarker+"\\n'", "--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil {
+		t.Fatalf("seed copy marker: %v: %s", err, out)
+	}
+	waitE2E(t, 10*time.Second, func() bool {
+		out, err := exec.Command(runtime, "exec", controller, binary, "--name", "workspace-copy-inspector", "read", "client-a", sessions[0].Handle,
+			"--lines", "20", "--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		return err == nil && bytes.Contains(out, []byte(copyMarker))
+	}, func() string { return "workspace copy marker missing from remote PTY" })
+	time.Sleep(1200 * time.Millisecond)
+	if capture.currentText() != frozen {
+		t.Fatal("live output disturbed workspace selection")
+	}
+	writePTY(t, terminal, "\x1b")
+	capture.waitCurrent(t, copyMarker, 10*time.Second)
 	writePTY(t, terminal, "bp")
 	capture.waitCurrent(t, "Add Session pane", 10*time.Second)
 	writePTY(t, terminal, "j\rj\r"+sessions[1].Handle)
@@ -1662,7 +1686,7 @@ func assertCurrentCreateModal(t *testing.T, capture *tuiCapture, start int, titl
 		if !strings.Contains(raw, ";5H"+modalBorder+"╭") {
 			t.Fatalf("create modal is not horizontally centered: %q", safeTerminalDiagnostic(raw))
 		}
-		if !strings.Contains(raw, modalBorder) || !strings.Contains(raw, modalInput) || selected && !strings.Contains(raw, modalSelected) {
+		if !strings.Contains(raw, strings.TrimPrefix(modalBorder, "\033[")) || !strings.Contains(raw, strings.TrimPrefix(modalInput, "\033[")) || selected && !strings.Contains(raw, modalSelected) {
 			t.Fatalf("create modal lacks semantic colors: %q", safeTerminalDiagnostic(raw))
 		}
 		return

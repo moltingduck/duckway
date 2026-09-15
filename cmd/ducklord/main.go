@@ -1369,6 +1369,8 @@ type tuiState struct {
 	activityState              *ducklord.ActivityState
 	focused                    bool
 	copyMode                   bool
+	copyRendering              bool
+	frameOutput                frameOutput
 	copyTerminal               *ducklord.Terminal
 	newSessionMode             bool
 	newSessionClient           string
@@ -2650,8 +2652,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					if button == 64 || button == 65 {
 						continue
 					}
-					if state.copyMode && (button == 0 || button == 2) && strings.HasSuffix(string(b), "M") {
-						state.exitCopyMode(os.Stdout)
+					if state.copyMode {
+						continue
 					}
 					if state.focused {
 						if !state.workspacePreview || (button != 0 && button != 2) || !strings.HasSuffix(string(b), "M") {
@@ -5578,15 +5580,16 @@ func (s *tuiState) render(out io.Writer) {
 	if s.copyMode {
 		return
 	}
-	// Build the complete frame before clearing the display. Synchronized output
-	// keeps terminals from displaying the erase or a partially written redraw.
 	var frame strings.Builder
-	frame.WriteString("\033[?2026h")
 	destination := out
 	out = &frame
 	defer func() {
-		frame.WriteString("\033[?2026l")
-		_, _ = io.WriteString(destination, frame.String())
+		width, height := terminalSize()
+		if s.copyRendering {
+			status := modalCellTruncate(" COPY MODE  Drag to select · j/k browse · Esc/q/v/Ctrl+C exits", max(1, width))
+			fmt.Fprintf(&frame, "\033[2;1H\033[2K%s%s%s", modalSelected, status, modalReset)
+		}
+		s.frameOutput.write(destination, frame.String(), width, height)
 	}()
 	if s.workspacePreview {
 		s.renderWorkspacePreview(out)
@@ -6012,7 +6015,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		{"HOST", "host_actions", "Host action menu"}, {"", "host_add", "Add host configuration"}, {"", "host_remove", "Remove host configuration"},
 		{"PROJECT PANE", "project_focus", "Move keyboard focus to Project pane"}, {"", "project_notification_focus", "Toggle Project notification focus"}, {"", "project_create", "Create Project"}, {"", "project_delete", "Delete local Project"}, {"", "project_add_pane", "Add Session pane"}, {"", "project_move_pane", "Move Session pane"}, {"", "project_detach_pane", "Detach local Session pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
 		{"DETAILED SESSION LIST", "detail_list", "Open / close detailed list"}, {"", "detail_search", "Search name, Host, or Project"}, {"", "detail_filter", "Cycle state filter"}, {"", "detail_previous", "Preview previous Session"}, {"", "detail_next", "Preview next Session"}, {"", "detail_focus", "Focus preview Session pane"}, {"", "detail_jump", "Jump to selected Session's Project"},
-		{"TERMINAL AREA", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return to navigation pane"},
+		{"TERMINAL AREA", "pty_copy", "Freeze screen for drag selection"}, {"", "pty_unfocus", "Return to navigation pane"},
 		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
 		{"", "shortcut_settings", "Configure shortcuts"}, {"", "notification_settings", "Global notification settings"},
 	}
@@ -7928,9 +7931,8 @@ func (s *tuiState) enterCopyMode(out io.Writer) {
 	if s.terminal != nil {
 		s.copyTerminal, _ = ducklord.NewTerminalFromState(s.terminal.SnapshotState(), ducklord.DefaultTerminalScrollback)
 	}
-	// Button tracking reports wheel events while leaving drag tracking off.
-	// Most terminals allow text selection with Shift-drag in this mode.
-	fmt.Fprint(out, "\033[?1002l\033[?1000h\033[?1006h")
+	// Native terminal selection requires all mouse reporting to be disabled.
+	fmt.Fprint(out, "\033[?1000l\033[?1002l\033[?1003l\033[?1006l")
 	s.renderCopyMode(out)
 }
 
@@ -7939,11 +7941,10 @@ func (s *tuiState) renderCopyMode(out io.Writer) {
 		return
 	}
 	s.copyMode = false
+	s.copyRendering = true
 	s.render(out)
+	s.copyRendering = false
 	s.copyMode = true
-	cols, _ := terminalSize()
-	status := modalCellTruncate(" COPY MODE  Wheel/j/k browse · Shift-drag select · Esc/q/v/Ctrl+C exits", max(1, cols))
-	fmt.Fprintf(out, "\033[2;1H\033[2K%s%s%s", modalSelected, status, modalReset)
 }
 
 func (s *tuiState) exitCopyMode(out io.Writer) {

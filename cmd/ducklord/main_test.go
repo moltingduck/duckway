@@ -3097,7 +3097,7 @@ func TestTUICopyModeTransitionsAndInputIsolation(t *testing.T) {
 	state.terminal.Write([]byte("frozen"))
 	var output bytes.Buffer
 	state.enterCopyMode(&output)
-	if !state.copyMode || !strings.Contains(output.String(), "\033[?1002l\033[?1000h\033[?1006h") || !strings.Contains(output.String(), "COPY MODE") {
+	if !state.copyMode || !strings.Contains(output.String(), "\033[?1000l\033[?1002l\033[?1003l\033[?1006l") || !strings.Contains(output.String(), "COPY MODE") {
 		t.Fatalf("enter copy mode output=%q state=%v", output.String(), state.copyMode)
 	}
 	before := output.String()

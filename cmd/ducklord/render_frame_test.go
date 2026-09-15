@@ -40,3 +40,47 @@ func TestTUIRenderCopyModeDoesNotStartFrame(t *testing.T) {
 		t.Fatal("copy mode emitted a frame")
 	}
 }
+
+func TestFrameOutputUpdatesRowsWithoutErasingScreen(t *testing.T) {
+	var output frameOutput
+	var out strings.Builder
+	first := "\033[?25l\033[H\033[2Jhello\n\033[31m世界\033[0m\nlast"
+	output.write(&out, first, 12, 4)
+	screen := ducklord.NewTerminal(4, 12, 0)
+	screen.Write([]byte(strings.ReplaceAll(out.String(), "\n", "\r\n")))
+	out.Reset()
+	output.write(&out, first, 12, 4)
+	if out.Len() != 0 {
+		t.Fatal("unchanged frame redrawn")
+	}
+	second := "\033[?25l\033[H\033[2Jhi\n\033[32m界\033[0m\nlast"
+	output.write(&out, second, 12, 4)
+	if strings.Contains(out.String(), "\033[2J") || strings.Contains(out.String(), "last") {
+		t.Fatal("unchanged rows or full screen redrawn")
+	}
+	screen.Write([]byte(out.String()))
+	want := ducklord.NewTerminal(4, 12, 0)
+	want.Write([]byte(strings.ReplaceAll(second, "\n", "\r\n")))
+	if strings.Join(screen.RenderLines(4, 12), "\n") != strings.Join(want.RenderLines(4, 12), "\n") {
+		t.Fatalf("incremental output differs: %q", screen.RenderLines(4, 12))
+	}
+	out.Reset()
+	output.write(&out, second, 14, 5)
+	if !strings.Contains(out.String(), "\033[2J") {
+		t.Fatal("resize did not reset screen")
+	}
+}
+
+type shortFrameWriter struct{}
+
+func (shortFrameWriter) Write(p []byte) (int, error) { return len(p) / 2, nil }
+
+func TestFrameOutputRetriesAfterShortWrite(t *testing.T) {
+	var output frameOutput
+	output.write(shortFrameWriter{}, "\033[H\033[2Jhello", 12, 4)
+	var out strings.Builder
+	output.write(&out, "\033[H\033[2Jhello", 12, 4)
+	if !strings.Contains(out.String(), "\033[2J") {
+		t.Fatal("short write cached incomplete screen")
+	}
+}

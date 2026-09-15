@@ -534,7 +534,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 					ReadOnly: s.workspaceSessionReadOnly(session),
 					Focused:  s.focused && s.activeAttachKey == sessionKey(session)}
 				if s.terminal != nil && s.outputForKey == sessionKey(session) && s.terminalGeneration == session.RuntimeGeneration {
-					view.Lines = s.terminal.RenderPaneLinesOffset(rows, cols, s.ptyScrollOffset)
+					view.Lines = s.viewportTerminal().RenderPaneLinesOffset(rows, cols, s.ptyScrollOffset)
 				} else {
 					view.Lines = []string{sanitizeTerminalText(session.LastLine), "PTY output unavailable"}
 				}
@@ -618,7 +618,7 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 			view.Focused = s.focused && s.activeAttachKey == sessionKey(session)
 			view.Stale = !s.outputFresh || s.outputStale || !s.hostIsLive(session.Client) || s.outputForKey != sessionKey(session)
 			if s.terminal != nil && s.outputForKey == sessionKey(session) {
-				view.Lines = s.terminal.RenderPaneLinesOffset(rows, cols, s.ptyScrollOffset)
+				view.Lines = s.viewportTerminal().RenderPaneLinesOffset(rows, cols, s.ptyScrollOffset)
 			} else if s.outputText != "" {
 				view.Lines = tailLines(strings.Split(strings.TrimRight(s.outputText, "\n"), "\n"), rows)
 			}
