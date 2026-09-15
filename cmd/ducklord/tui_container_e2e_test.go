@@ -306,9 +306,6 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	assertCurrentCreateModal(t, capture, start, "choose directory", "alpha-project", true)
 	start = capture.position()
 	writePTY(t, terminal, "\r") // alpha-project
-	assertCurrentCreateModal(t, capture, start, "choose shell", "zsh", true)
-	start = capture.position()
-	writePTY(t, terminal, "\r") // default remote shell
 	assertCurrentCreateModal(t, capture, start, "handle (default alpha)", "handle", false)
 	start = capture.position()
 	writePTY(t, terminal, handle+"\r")
@@ -676,8 +673,6 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 		writePTY(t, terminal, bookmark+"\r")
 		capture.waitCurrent(t, "bookmark added; press Enter to continue", 15*time.Second)
 		writePTY(t, terminal, "\r") // accept the newly selected bookmark
-		capture.waitCurrent(t, "shell ›", 15*time.Second)
-		writePTY(t, terminal, "\r")
 		capture.waitCurrent(t, "handle (default", 10*time.Second)
 		writePTY(t, terminal, newHandle+"\r")
 		waitE2E(t, 20*time.Second, func() bool {
@@ -746,7 +741,7 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 			capture.waitCurrent(t, "Add Session pane", 10*time.Second)
 			writePTY(t, terminal, "\r\r")
 			capture.waitCurrent(t, "host ›", 10*time.Second)
-			writePTY(t, terminal, "\r")
+			writePTY(t, terminal, "client-a\r")
 			capture.waitCurrent(t, "choose a directory", 15*time.Second)
 			if mode == "existing bookmark" {
 				writePTY(t, terminal, "alpha-project\r")
@@ -759,8 +754,6 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 				capture.waitCurrent(t, "directory created recursively", 15*time.Second)
 				writePTY(t, terminal, "\x1b[B\r") // Use path once
 			}
-			capture.waitCurrent(t, "shell ›", 15*time.Second)
-			writePTY(t, terminal, "\r")
 			capture.waitCurrent(t, "handle (default", 10*time.Second)
 			writePTY(t, terminal, newHandle+"\r")
 			capture.waitCurrent(t, "client-a/"+newHandle, 20*time.Second)
@@ -1065,8 +1058,6 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "choose a directory", 15*time.Second)
 	writePTY(t, terminal, "\r")
-	capture.waitCurrent(t, "choose zsh, bash, or sh", 15*time.Second)
-	writePTY(t, terminal, "\r") // default interactive shell
 	capture.waitCurrent(t, "handle (default", 10*time.Second)
 	writePTY(t, terminal, newHandle+"\r")
 	waitE2E(t, 20*time.Second, func() bool {
@@ -1182,17 +1173,38 @@ func TestDucklordWorkspaceDefaultNewShellSplitContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Active · Enter again to focus", 20*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Session focus:", 20*time.Second)
-	writePTY(t, terminal, "\x1d")
-	capture.waitCurrent(t, "client-a/"+targetHandle, 20*time.Second)
-	writePTY(t, terminal, "Pp")
-	capture.waitCurrent(t, "Add Session pane", 10*time.Second)
-	writePTY(t, terminal, "j\r\r") // vertical split, new shell
+	// Prefix commands must leave the focused remote writer before opening a
+	// local modal; neither the prefix nor its command may reach the shell.
+	writePTY(t, terminal, "\x02,")
+	capture.waitCurrent(t, "Rename Terminal tab", 10*time.Second)
+	writePTY(t, terminal, "Shell work\r")
+	capture.waitCurrent(t, "Shell work", 10*time.Second)
+	waitE2E(t, 10*time.Second, func() bool {
+		data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+		var persisted ducklord.ActivityState
+		if err != nil || json.Unmarshal(data, &persisted) != nil {
+			return false
+		}
+		project := persisted.ProjectLayout.Project(ducklord.DefaultProjectID)
+		if project == nil {
+			return false
+		}
+		for _, tab := range project.Tabs {
+			if tab.ID == targetTab.ID {
+				return tab.Name == "Shell work"
+			}
+		}
+		return false
+	}, func() string { return "renamed tab was not persisted" })
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Session focus:", 10*time.Second)
+	writePTY(t, terminal, "\x02\\")
+	capture.waitCurrent(t, "New shell session", 10*time.Second)
+	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "host ›", 10*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "choose a directory", 15*time.Second)
 	writePTY(t, terminal, "\r") // selected host's home
-	capture.waitCurrent(t, "choose zsh, bash, or sh", 15*time.Second)
-	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "handle (default", 10*time.Second)
 	writePTY(t, terminal, newHandle+"\r")
 	var lastLayout []byte
@@ -1241,6 +1253,17 @@ func TestDucklordWorkspaceDefaultNewShellSplitContainerE2E(t *testing.T) {
 	}, func() string {
 		return "Default split panes not both visible: " + safeTerminalDiagnostic(capture.currentText())
 	})
+	// The add button is a real mouse target and enters the new-tab source
+	// chooser directly, without asking for a split placement first.
+	x, y, foundAdd := workspaceScreenPoint(capture.currentText(), "[+]", 1, 120)
+	if !foundAdd {
+		t.Fatal("tab add button was not visible")
+	}
+	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<0;%d;%dm", x+1, y, x+1, y))
+	capture.waitCurrent(t, "New shell session", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "host ›", 10*time.Second)
+	writePTY(t, terminal, "\x1b") // cancel before creating another remote session
 }
 
 // TestDucklordWorkspaceProjectEnterFocusContainerE2E keeps quick-list selection

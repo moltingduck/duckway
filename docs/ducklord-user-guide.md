@@ -24,12 +24,21 @@ with `S`; Ducklord asks whether to restart to load the new bindings.
 | `P` | Move focus to the Project pane |
 | `N` / `Z` | Create / delete a local Project |
 | `p` | Add a Session pane in the selected Project |
+| `Ctrl+B`, then `-` / `\` / `t` | Add horizontal / vertical pane / new tab |
+| `Ctrl+B`, then `,` | Rename the current Terminal tab |
+| `W` | Edit the selected Project's SSH hosts |
 | `[` / `]` | Previous / next Terminal tab |
 | `H` / `L` | Previous / next visible Session pane |
 | `M` / `x` | Move / detach the selected local Session pane |
 | `t` / `T` | Cycle quick-list sort / reverse event-time direction |
 | `D` | Open the detailed Session list |
 | `v` | Freeze redraws for terminal text selection |
+
+Up from the first Session list item enters the Project pane; down from the last
+Project returns to the Session list. Prefix commands also work while typing in a
+PTY. Configure `shortcuts.pane_prefix` (default `ctrl-b`) through `S` or config;
+it must be an unused control key. Escape or any unknown suffix cancels locally.
+Click `+` beside the tabs to add a new tab.
 
 Use `p` while the Project pane is focused: choose a new tab or horizontal or
 vertical split, then **New shell session** or **Add existing session**. The
@@ -165,3 +174,14 @@ workspace_theme:
 ```
 
 未指定的欄位沿用預設；PTY 內 agent 的原始配色不會被覆蓋。
+
+## Project Hosts 與 Terminal tabs
+
+建立 Project 時先勾選要包含的 SSH Hosts。之後新增 Session 或加入既有
+Session，只會列出該 Project 允許的 Hosts。選取 Project 後按 `W` 可調整；
+仍有 Session pane 使用的 Host 必須先移除對應 pane 才能取消勾選。
+Default Project 維持接納所有 Hosts，舊 Project 未設定範圍時也維持原有行為。
+
+點擊 tab 列的 `+` 可新增 tab，再選擇建立 Session 或加入既有 Session。
+`Ctrl+B` 後按 `,` 可重新命名目前 tab；空白名稱恢復預設編號。
+新 Shell Session 直接使用遠端 SSH 帳號的預設互動式 shell，不再要求選擇 shell。

@@ -2361,7 +2361,11 @@ func TestTUICreateWizardDefaultsShellToHostHome(t *testing.T) {
 					sessions: []ducklord.RemoteSession{{Client: "host", Name: "existing", Kind: "shell"}},
 				}
 				if pane {
-					state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: "work", placement: ducklord.PlaceNewTab}
+					projectID, err := state.activity().ProjectLayout.AddProject("work")
+					if err != nil {
+						t.Fatal(err)
+					}
+					state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceNewTab}
 				}
 				state.beginCreate()
 				createSubmit(t, state)

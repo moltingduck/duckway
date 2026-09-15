@@ -189,12 +189,12 @@ func RenderWorkspaceBodyWithOptions(out io.Writer, geometry WorkspaceGeometry, l
 	var active *TerminalTab
 	for i := range project.Tabs {
 		tab := &project.Tabs[i]
-		marker := " "
 		if tab.ID == nav.CurrentTabID() {
-			marker, active = "●", tab
+			active = tab
 		}
-		tabs = append(tabs, fmt.Sprintf(" %s%d ", marker, i+1))
+		tabs = append(tabs, WorkspaceTabLabel(*tab, i, tab.ID == nav.CurrentTabID()))
 	}
+	tabs = append(tabs, " [+] ")
 	content := WorkspaceRect{X: terminal.X, Y: terminal.Y + 1, Width: terminal.Width, Height: terminal.Height - 1}
 	if active == nil && len(project.Tabs) != 0 {
 		active = &project.Tabs[0]
@@ -213,6 +213,19 @@ func RenderWorkspaceBodyWithOptions(out io.Writer, geometry WorkspaceGeometry, l
 	}
 	workspaceWrite(out, terminal.X, terminal.Y, terminal.Width, heading, options.Theme.style(options.Focus == WorkspaceFocusTerminal))
 	renderWorkspaceNode(out, active.Root, content, nav.CurrentPaneID(), paneView, options)
+}
+
+// WorkspaceTabLabel is shared by rendering and mouse hit testing.
+func WorkspaceTabLabel(tab TerminalTab, index int, active bool) string {
+	marker := " "
+	if active {
+		marker = "●"
+	}
+	name := tab.Name
+	if name == "" {
+		name = fmt.Sprint(index + 1)
+	}
+	return " " + marker + name + " "
 }
 
 // WorkspaceVisibleSessions uses the same split geometry as the renderer, so

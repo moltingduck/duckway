@@ -235,6 +235,12 @@ func TestWorkspaceProjectCreateAndNewShellIntent(t *testing.T) {
 		}
 	}
 	state.handleWorkspacePaneInput([]byte("\r"))
+	if state.workspacePaneStep != "project-hosts-create" {
+		t.Fatal("missing Project Host selection")
+	}
+	state.handleWorkspacePaneInput([]byte("\r")) // select host
+	state.handleWorkspacePaneInput([]byte("\x1b[B"))
+	state.handleWorkspacePaneInput([]byte("\r")) // save project
 	if state.workspacePaneMode || nav.CurrentProjectID() == projectID || state.activity().ProjectLayout.Project(nav.CurrentProjectID()).Name != "新專案" {
 		t.Fatalf("Project creation failed: %+v", nav)
 	}

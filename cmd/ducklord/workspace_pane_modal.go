@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -12,6 +13,7 @@ import (
 
 type workspacePaneIntent struct {
 	projectID string
+	tabID     string
 	targetID  string
 	placement ducklord.PanePlacement
 
@@ -134,6 +136,8 @@ func (s *tuiState) beginWorkspaceProject() {
 	}
 	s.workspacePaneMode, s.workspacePaneStep, s.workspacePaneIndex = true, "project-create", 0
 	s.workspacePaneName, s.workspacePaneErr = "", ""
+	s.workspacePaneIntent = workspacePaneIntent{}
+	s.workspacePaneHosts = []string{}
 }
 
 func (s *tuiState) beginWorkspaceProjectDelete() {
@@ -189,6 +193,9 @@ func (s *tuiState) workspacePaneCandidates() []ducklord.RemoteSession {
 	seen := make(map[ducklord.SessionIdentity]int)
 	var candidates []ducklord.RemoteSession
 	for _, session := range s.sessions {
+		if s.workspacePaneIntent.projectID != "" && !s.workspaceProjectAllowsHost(s.workspacePaneIntent.projectID, session.Client) {
+			continue
+		}
 		identity, ok := ducklord.IdentityFromSession(session)
 		if !ok || !workspacePaneKnownSession(session) {
 			continue
@@ -244,6 +251,16 @@ func (s *tuiState) projectPaneForSession(identity ducklord.SessionIdentity) stri
 
 func (s *tuiState) workspacePaneChoices() []string {
 	switch s.workspacePaneStep {
+	case "project-hosts-create", "project-hosts-edit":
+		choices := []string{}
+		for _, host := range s.workspaceProjectHostOptions() {
+			mark := "[ ] "
+			if slices.Contains(s.workspacePaneHosts, host) {
+				mark = "[x] "
+			}
+			choices = append(choices, mark+displayField(host))
+		}
+		return append(choices, "Save Project Hosts")
 	case "placement":
 		return []string{"New Terminal tab", "Split vertically", "Split horizontally"}
 	case "drop-placement":
@@ -297,6 +314,10 @@ func (s *tuiState) workspacePaneChoices() []string {
 }
 
 func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
+	if s.workspacePaneStep == "tab-rename" {
+		s.renderWorkspaceTabRenameModal(out, cols, rows)
+		return
+	}
 	if !s.workspacePaneMode {
 		return
 	}
@@ -306,7 +327,7 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 		if s.workspacePaneErr != "" {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.workspacePaneErr})
 		}
-		lines = append(lines, modalRenderLine{modalMuted, "  Enter create · Esc/Ctrl+C close"})
+		lines = append(lines, modalRenderLine{modalMuted, "  Enter choose Hosts · Esc/Ctrl+C close"})
 		s.renderModalBox(out, cols, rows, lines)
 		return
 	}
@@ -336,6 +357,9 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 	}
 	choices := s.workspacePaneChoices()
 	title := "  Add Session pane"
+	if strings.HasPrefix(s.workspacePaneStep, "project-hosts-") {
+		title = "  Project SSH Hosts · select multiple"
+	}
 	if strings.HasPrefix(s.workspacePaneStep, "move-") {
 		title = "  Move Session pane"
 	}
@@ -346,6 +370,9 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 		title = "  Detach Session pane"
 	}
 	lines := []modalRenderLine{{modalTitle, title}}
+	if strings.HasPrefix(s.workspacePaneStep, "project-hosts-") {
+		lines = append(lines, modalRenderLine{modalMuted, "  Enter/Space toggle Hosts; choose Save when done."}, modalRenderLine{modalMuted, "  Removing a Host requires detaching its panes first."})
+	}
 	if s.workspacePaneStep == "drop-placement" {
 		candidate := s.workspacePaneCandidate
 		lines = append(lines, modalRenderLine{modalMuted, "  Session: " + displayField(candidate.Name) + " @" + displayField(candidate.Client)})
@@ -374,6 +401,9 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 	maxChoices := max(1, rows-6)
 	if s.workspacePaneStep == "existing" {
 		maxChoices = max(1, rows-7)
+	}
+	if s.workspacePaneStep == "project-hosts-create" || s.workspacePaneStep == "project-hosts-edit" {
+		maxChoices = max(1, rows-8)
 	}
 	if len(choices) > maxChoices {
 		start = min(max(0, s.workspacePaneIndex-maxChoices/2), len(choices)-maxChoices)
@@ -408,6 +438,7 @@ func (s *tuiState) renderWorkspacePaneModal(out io.Writer, cols, rows int) {
 func (s *tuiState) closeWorkspacePane() {
 	s.workspacePaneMode, s.workspacePaneStep, s.workspacePaneErr = false, "", ""
 	s.workspacePaneName = ""
+	s.workspacePaneHosts = nil
 	s.workspacePaneQuery = ""
 	s.workspacePaneIntent = workspacePaneIntent{}
 	s.workspacePaneSourceID = ""
@@ -427,6 +458,9 @@ func (s *tuiState) placeCreatedWorkspacePane(intent workspacePaneIntent, session
 }
 
 func (s *tuiState) commitWorkspacePanePlacement(intent workspacePaneIntent, session ducklord.RemoteSession, created bool) error {
+	if !s.workspaceProjectAllowsHost(intent.projectID, session.Client) {
+		return fmt.Errorf("host is not associated with this Project; edit Project Hosts first")
+	}
 	identity, ok := ducklord.IdentityFromSession(session)
 	if !ok {
 		return fmt.Errorf("session has no stable identity")
@@ -472,7 +506,13 @@ func (s *tuiState) commitWorkspacePanePlacement(intent workspacePaneIntent, sess
 // handleWorkspacePaneInput returns whether the existing Create wizard should
 // open. Modal input never reaches a PTY.
 func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
+	if s.workspacePaneStep == "tab-rename" {
+		return s.handleWorkspaceTabRenameInput(input)
+	}
 	key := string(input)
+	if key == " " && strings.HasPrefix(s.workspacePaneStep, "project-hosts-") {
+		key = "\r"
+	}
 	if s.workspacePaneStep == "project-create" {
 		switch key {
 		case "\x03", "\x1b":
@@ -484,19 +524,12 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 			}
 		case "\r":
 			next := s.activity().Clone()
-			projectID, err := next.ProjectLayout.AddProject(s.workspacePaneName)
-			if err == nil {
-				err = s.activityStore.Save(next)
-			}
+			_, err := next.ProjectLayout.AddProject(s.workspacePaneName)
 			if err != nil {
 				s.workspacePaneErr = sanitizeTerminalText(err.Error())
 				return false
 			}
-			s.activityState = next
-			s.closeWorkspacePane()
-			if nav, err := s.workspaceNavigation(); err == nil {
-				_ = nav.SelectProject(projectID)
-			}
+			s.workspacePaneStep, s.workspacePaneIndex = "project-hosts-create", 0
 		default:
 			if utf8.Valid(input) && !strings.ContainsRune(key, '\x1b') {
 				for _, r := range key {
@@ -516,6 +549,8 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 		s.workspacePaneErr = ""
 		s.workspacePaneIndex = 0
 		switch s.workspacePaneStep {
+		case "project-hosts-create":
+			s.workspacePaneStep = "project-create"
 		case "existing":
 			s.workspacePaneStep = "source"
 			s.workspacePaneQuery = ""
@@ -572,6 +607,21 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 		}
 		index := max(0, min(s.workspacePaneIndex, len(choices)-1))
 		switch s.workspacePaneStep {
+		case "project-hosts-create", "project-hosts-edit":
+			hosts := s.workspaceProjectHostOptions()
+			if index == len(hosts) {
+				if err := s.commitWorkspaceProjectHosts(); err != nil {
+					s.workspacePaneErr = sanitizeTerminalText(err.Error())
+				}
+				return false
+			}
+			host := hosts[index]
+			if i := slices.Index(s.workspacePaneHosts, host); i >= 0 {
+				s.workspacePaneHosts = slices.Delete(s.workspacePaneHosts, i, i+1)
+			} else {
+				s.workspacePaneHosts = append(s.workspacePaneHosts, host)
+			}
+			s.workspacePaneErr = ""
 		case "move-placement":
 			s.workspacePaneIntent.placement = []ducklord.PanePlacement{ducklord.PlaceNewTab, ducklord.PlaceVertical, ducklord.PlaceHorizontal}[index]
 			s.workspacePaneIndex, s.workspacePaneErr = 0, ""

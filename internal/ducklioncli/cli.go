@@ -541,10 +541,7 @@ func runAgents(args []string, out io.Writer) error {
 	if err != nil || !info.IsDir() {
 		return fmt.Errorf("agent directory is unavailable: %s", cwd)
 	}
-	defaultShell := os.Getenv("SHELL")
-	if defaultShell == "" {
-		defaultShell = "/bin/sh"
-	}
+	defaultShell := hostLoginShell()
 	result := []AgentOutput{{Type: "shell", Command: []string{defaultShell}}}
 	for _, shell := range []string{"zsh", "bash", "sh"} {
 		if path, lookupErr := exec.LookPath(shell); lookupErr == nil {

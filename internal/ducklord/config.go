@@ -279,6 +279,9 @@ func (c *Config) normalize() error {
 			return fmt.Errorf("invalid shortcut binding %q for %s", binding, action)
 		}
 		c.Shortcuts[action] = canonicalShortcutBinding(binding)
+		if action == "pane_prefix" && (!strings.HasPrefix(c.Shortcuts[action], "ctrl-") || c.Shortcuts[action] == "ctrl-i" || c.Shortcuts[action] == "ctrl-j" || c.Shortcuts[action] == "ctrl-c") {
+			return fmt.Errorf("pane_prefix must be a control key other than Tab, Enter, or Ctrl-C")
+		}
 	}
 	// Older configs may already use the new default key for another action.
 	// Keep that user's binding and move only the newly introduced default.
@@ -338,6 +341,8 @@ var DefaultShortcuts = map[string]string{
 	"session_end": "E", "session_restart": "R", "session_destroy": "X", "list_search": "/", "list_organize": "o", "list_groups": "g",
 	"list_reorder_up": "ctrl-k", "list_reorder_down": "ctrl-j", "pty_copy": "v", "pty_unfocus": "ctrl-]", "refresh": "r", "shortcut_settings": "S",
 	"project_focus":    "P",
+	"pane_prefix":      "ctrl-b",
+	"project_hosts":    "W",
 	"project_prev_tab": "[", "project_next_tab": "]", "project_prev_pane": "H", "project_next_pane": "L",
 	"project_add_pane":           "p",
 	"project_create":             "N",

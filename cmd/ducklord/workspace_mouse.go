@@ -84,7 +84,7 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 			if project != nil {
 				left := geometry.Terminal.X + modalCellWidth(" "+project.Name+"  ")
 				for i, tab := range project.Tabs {
-					cells := modalCellWidth(fmt.Sprintf("  %d ", i+1))
+					cells := modalCellWidth(ducklord.WorkspaceTabLabel(tab, i, tab.ID == nav.CurrentTabID()))
 					if x >= left && x < left+cells {
 						if id := firstWorkspacePaneID(tab.Root); id != "" {
 							s.workspaceProjectFocus = true
@@ -92,6 +92,10 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 						}
 					}
 					left += cells
+				}
+				if x >= left && x < left+modalCellWidth(" [+] ") {
+					s.beginWorkspaceNewTab()
+					return true, false
 				}
 			}
 		}

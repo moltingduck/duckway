@@ -35,6 +35,7 @@ type SessionPane struct {
 
 type TerminalTab struct {
 	ID   string       `json:"id"`
+	Name string       `json:"name,omitempty"`
 	Root *SessionPane `json:"root"`
 }
 
@@ -42,6 +43,9 @@ type LocalProject struct {
 	ID   string        `json:"id"`
 	Name string        `json:"name"`
 	Tabs []TerminalTab `json:"tabs,omitempty"`
+	// Hosts is nil for legacy unrestricted projects. An empty list explicitly
+	// allows no hosts; preserve it when saving and cloning.
+	Hosts []string `json:"hosts"`
 }
 
 // ProjectLayout is Ducklord-local. The built-in Default Project holds a
@@ -57,8 +61,11 @@ func (l ProjectLayout) Clone() ProjectLayout {
 	clone.SuppressedDefaultSessions = append([]SessionIdentity(nil), l.SuppressedDefaultSessions...)
 	for i, project := range l.Projects {
 		clone.Projects[i] = LocalProject{ID: project.ID, Name: project.Name, Tabs: make([]TerminalTab, len(project.Tabs))}
+		if project.Hosts != nil {
+			clone.Projects[i].Hosts = append([]string{}, project.Hosts...)
+		}
 		for j, tab := range project.Tabs {
-			clone.Projects[i].Tabs[j] = TerminalTab{ID: tab.ID, Root: tab.Root.clone()}
+			clone.Projects[i].Tabs[j] = TerminalTab{ID: tab.ID, Name: tab.Name, Root: tab.Root.clone()}
 		}
 	}
 	return clone
@@ -87,6 +94,23 @@ func (l *ProjectLayout) AddProject(name string) (string, error) {
 	id := uuid.NewString()
 	l.Projects = append(l.Projects, LocalProject{ID: id, Name: name})
 	return id, nil
+}
+
+func (l *ProjectLayout) RenameTab(projectID, tabID, name string) error {
+	if err := validateCustomGroupName(name); name != "" && err != nil {
+		return fmt.Errorf("invalid tab name: %w", err)
+	}
+	project := l.Project(projectID)
+	if project == nil {
+		return fmt.Errorf("project not found")
+	}
+	for i := range project.Tabs {
+		if project.Tabs[i].ID == tabID {
+			project.Tabs[i].Name = name
+			return nil
+		}
+	}
+	return fmt.Errorf("tab not found")
 }
 
 func (l *ProjectLayout) Project(id string) *LocalProject {
@@ -506,8 +530,18 @@ func (l *ProjectLayout) Validate() error {
 			return fmt.Errorf("invalid or duplicate project")
 		}
 		projectIDs[project.ID] = true
+		hosts := make(map[string]bool)
+		for _, host := range project.Hosts {
+			if !SafeIdentifier(host) || hosts[host] {
+				return fmt.Errorf("invalid or duplicate Project Host")
+			}
+			hosts[host] = true
+		}
 		seen := make(map[SessionIdentity]bool)
 		for _, tab := range project.Tabs {
+			if tab.Name != "" && validateCustomGroupName(tab.Name) != nil {
+				return fmt.Errorf("invalid terminal tab name")
+			}
 			if !canonicalLayoutUUID(tab.ID) || tabIDs[tab.ID] || tab.Root == nil {
 				return fmt.Errorf("invalid or duplicate terminal tab")
 			}

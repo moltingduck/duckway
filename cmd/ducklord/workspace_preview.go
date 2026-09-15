@@ -229,7 +229,21 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		return true, false
 	}
 	if !s.workspaceProjectFocus {
+		if key == "\x1b[A" && s.selected == 0 {
+			if nav, err := s.workspaceNavigation(); err == nil && !nav.InDetailMode() {
+				projects := s.activity().ProjectLayout.Projects
+				if len(projects) > 0 {
+					_ = nav.SelectProject(projects[len(projects)-1].ID)
+					s.workspaceProjectFocus = true
+					return true, true
+				}
+			}
+		}
 		return false, false
+	}
+	if s.shortcut("project_hosts", key) {
+		s.beginWorkspaceProjectHosts()
+		return true, false
 	}
 	if s.shortcut("project_notification_focus", key) {
 		if nav, err := s.workspaceNavigation(); err == nil {
@@ -313,6 +327,12 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		}
 	}
 	if key == "j" || key == "\x1b[B" {
+		if key == "\x1b[B" && index == len(projects)-1 {
+			s.workspaceProjectFocus = false
+			s.selected = 0
+			s.workspaceFollowQuickSelection()
+			return true, true
+		}
 		index = min(len(projects)-1, index+1)
 	} else {
 		index = max(0, index-1)
@@ -460,6 +480,9 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	}
 	if s.workspaceNav != nil && s.workspaceNav.InDetailMode() && !s.focused {
 		status = s.detailStatusLine()
+	}
+	if s.panePrefixPending {
+		status = "Pane command: - horizontal · \\ vertical · t new tab · , rename · Esc cancel"
 	}
 	if s.workspaceNav != nil && s.workspaceNav.NotificationFocusProjectID() != "" {
 		focused := s.workspaceNav.NotificationFocusProjectID()

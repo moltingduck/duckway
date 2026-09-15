@@ -26,7 +26,7 @@ func TestRunAgentsReportsOnlyHostAvailableTypesForProject(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &agents); err != nil {
 		t.Fatal(err)
 	}
-	if len(agents) != 6 || agents[0].Type != "shell" || agents[0].Command[0] != "/bin/fish" || agents[1].Type != "zsh" || agents[2].Type != "bash" || agents[3].Type != "sh" || agents[4].Type != "codex" || agents[5].Type != "claude_code" {
+	if len(agents) != 6 || agents[0].Type != "shell" || agents[0].Command[0] != hostLoginShell() || agents[1].Type != "zsh" || agents[2].Type != "bash" || agents[3].Type != "sh" || agents[4].Type != "codex" || agents[5].Type != "claude_code" {
 		t.Fatalf("agents=%+v", agents)
 	}
 }
