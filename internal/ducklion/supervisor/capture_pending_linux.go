@@ -9,5 +9,16 @@ import (
 )
 
 func pendingPTYBytes(file *os.File) (int, error) {
-	return unix.IoctlGetInt(int(file.Fd()), unix.TIOCINQ)
+	conn, err := file.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var pending int
+	var ioctlErr error
+	if err := conn.Control(func(fd uintptr) {
+		pending, ioctlErr = unix.IoctlGetInt(int(fd), unix.TIOCINQ)
+	}); err != nil {
+		return 0, err
+	}
+	return pending, ioctlErr
 }

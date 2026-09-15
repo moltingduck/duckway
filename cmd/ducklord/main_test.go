@@ -165,15 +165,62 @@ func TestDucklordSessionsDistinguishesNativeShellFromAgent(t *testing.T) {
 	}
 }
 
-func TestDucklordProjectsUsesRunner(t *testing.T) {
+func TestDucklordBookmarksAndLegacyProjectsUseRunner(t *testing.T) {
 	config := writeConfig(t)
-	var out bytes.Buffer
 	runner := fakeRunner{projects: []ducklord.RemoteProject{{Name: "duckway", Path: "/home/duck/duckway", Source: "duckway-client"}}}
-	if err := run([]string{"projects", "client-a", "--config", config}, &out, runner); err != nil {
-		t.Fatal(err)
+	for _, command := range []string{"bookmarks", "projects"} {
+		t.Run(command, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := run([]string{command, "client-a", "--config", config}, &out, runner); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), "duckway") || !strings.Contains(out.String(), "/home/duck/duckway") {
+				t.Fatalf("bookmarks output = %q", out.String())
+			}
+			out.Reset()
+			if err := run([]string{command, "client-a", "--config", config}, &out, fakeRunner{}); err != nil {
+				t.Fatal(err)
+			}
+			if out.String() != "No remote bookmarks.\n" {
+				t.Fatalf("empty bookmarks output = %q", out.String())
+			}
+			if err := run([]string{command, "--config", config}, &out, runner); err == nil || !strings.Contains(err.Error(), "usage: ducklord bookmarks") {
+				t.Fatalf("usage error = %v", err)
+			}
+		})
 	}
-	if !strings.Contains(out.String(), "duckway") || !strings.Contains(out.String(), "/home/duck/duckway") {
-		t.Fatalf("projects output = %q", out.String())
+}
+
+func TestTUICreateUsesDirectoryAndBookmarkTerms(t *testing.T) {
+	state := &tuiState{newSessionKind: model.KindAgent, newSessionClient: "host", newSessionCWD: "/work/app"}
+	for _, tc := range []struct{ step, headerTerm, label string }{
+		{"project", "choose directory", "directory"},
+		{"project-policy", "add to bookmarks", "choice"},
+		{"project-name", "remote path to bookmarks", "bookmark name"},
+		{"agent", "directory=/work/app", "agent"},
+	} {
+		t.Run(tc.step, func(t *testing.T) {
+			state.newSessionStep = tc.step
+			if got := state.createHeader(); !strings.Contains(got, tc.headerTerm) {
+				t.Fatalf("header = %q; want %q", got, tc.headerTerm)
+			}
+			if got := state.createPromptLabel(); got != tc.label {
+				t.Fatalf("prompt = %q; want %q", got, tc.label)
+			}
+		})
+	}
+	state.newSessionStep = "project-policy"
+	if got := state.createModalChoices(); len(got) != 2 || got[0] != "1  Add path to bookmarks" {
+		t.Fatalf("policy choices = %q", got)
+	}
+	state.newSessionProjects = []ducklord.RemoteProject{{Name: "Host home", Path: "/home/duck", Source: "path"}, {Name: "app", Path: "/work/app", Source: "duckway-client"}}
+	for _, input := range []string{"Host home", "app"} {
+		if _, err := state.resolveCreateProject(input); err != nil {
+			t.Fatalf("resolve directory %q: %v", input, err)
+		}
+	}
+	if _, err := state.resolveCreateProject("missing"); err == nil || !strings.Contains(err.Error(), "choose a listed directory") {
+		t.Fatalf("unknown directory error = %v", err)
 	}
 }
 
@@ -2289,6 +2336,68 @@ func TestTUICreatePromptUsesSelectedClient(t *testing.T) {
 	}
 }
 
+type homeCreateRunner struct {
+	fakeRunner
+	homeClient string
+	homeErr    error
+}
+
+func (r *homeCreateRunner) HomeDir(_ context.Context, client ducklord.Client) (string, error) {
+	r.homeClient = client.Name
+	return "/home/duck", r.homeErr
+}
+
+func TestTUICreateWizardDefaultsShellToHostHome(t *testing.T) {
+	for _, pane := range []bool{false, true} {
+		for _, bookmarks := range []bool{false, true} {
+			t.Run(fmt.Sprintf("pane=%t/bookmarks=%t", pane, bookmarks), func(t *testing.T) {
+				runner := &homeCreateRunner{fakeRunner: fakeRunner{agents: []ducklord.RemoteAgent{{Type: "shell", Command: []string{"/bin/bash"}}}}}
+				if bookmarks {
+					runner.projects = []ducklord.RemoteProject{{Name: "app", Path: "/work/app", Source: "duckway-client"}}
+				}
+				state := &tuiState{
+					cfg:      &ducklord.Config{Clients: []ducklord.Client{{Name: "other", Host: "other"}, {Name: "host", Host: "host"}}},
+					runner:   runner,
+					sessions: []ducklord.RemoteSession{{Client: "host", Name: "existing", Kind: "shell"}},
+				}
+				if pane {
+					state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: "work", placement: ducklord.PlaceNewTab}
+				}
+				state.beginCreate()
+				createSubmit(t, state)
+				if runner.homeClient != "host" || state.newSessionStep != "project" || state.newSessionSelected != 0 || len(state.newSessionProjects) == 0 {
+					t.Fatalf("home client=%q step=%q selected=%d projects=%+v", runner.homeClient, state.newSessionStep, state.newSessionSelected, state.newSessionProjects)
+				}
+				if got := state.newSessionProjects[0]; got.Path != "/home/duck" || got.Source != "path" {
+					t.Fatalf("default directory=%+v", got)
+				}
+				if bookmarks && (len(state.newSessionProjects) != 2 || state.newSessionProjects[1] != runner.projects[0]) {
+					t.Fatalf("bookmark choices=%+v", state.newSessionProjects)
+				}
+				if action := state.handleCreateInput([]byte("\r")); action != "submit" {
+					t.Fatalf("directory Enter action=%q", action)
+				}
+				createSubmit(t, state)
+				state.newSessionLine = "shell"
+				client, _, args, ready := createSubmit(t, state)
+				if !ready || client != "host" || !strings.Contains(strings.Join(args, "\x00"), "--cwd\x00/home/duck\x00") {
+					t.Fatalf("ready=%v client=%q args=%q error=%q", ready, client, args, state.newSessionErr)
+				}
+			})
+		}
+	}
+}
+
+func TestTUICreateWizardHomeDiscoveryFailureKeepsHostStep(t *testing.T) {
+	runner := &homeCreateRunner{homeErr: errors.New("home directory unavailable")}
+	state := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}}, runner: runner}
+	state.beginCreate()
+	createSubmit(t, state)
+	if state.newSessionStep != "host" || !strings.Contains(state.newSessionErr, "home directory unavailable") {
+		t.Fatalf("step=%q error=%q", state.newSessionStep, state.newSessionErr)
+	}
+}
+
 func TestTUICreateWizardBuildsShellSessionFromProject(t *testing.T) {
 	cfg := &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a", Host: "client-a"}, {Name: "client-b", Host: "client-b"}}}
 	state := &tuiState{
@@ -3727,6 +3836,41 @@ func TestHostHookStatusLineSeparatesInstallAndAdvisoryCallback(t *testing.T) {
 	removed := hostHookStatusLine(protocol.HostAgentHookStatus{Agent: "claude", CallbackObserved: true})
 	if !strings.Contains(removed, "not installed") || !strings.Contains(removed, "advisory callback observed") {
 		t.Fatalf("removed-but-previously-observed status=%q", removed)
+	}
+}
+
+func TestHostHookActivationRequiresCurrentInstallationEvidence(t *testing.T) {
+	for _, activation := range []string{"", "pending", "unknown"} {
+		line := hostHookStatusLine(protocol.HostAgentHookStatus{Agent: "codex", Installed: true, Activation: activation, CallbackObserved: true})
+		if !strings.Contains(line, "pending activation") || strings.Contains(line, "operational") {
+			t.Fatalf("historical callback incorrectly activates installation: %q", line)
+		}
+	}
+	line := hostHookStatusLine(protocol.HostAgentHookStatus{Agent: "codex", Installed: true, Activation: "operational", CallbackObserved: true})
+	if !strings.Contains(line, "operational (advisory)") || strings.Contains(line, "pending activation") {
+		t.Fatalf("verified installation status: %q", line)
+	}
+	line = hostHookStatusLine(protocol.HostAgentHookStatus{Agent: "codex", Activation: "operational", CallbackObserved: true})
+	if strings.Contains(line, "operational") || !strings.Contains(line, "not installed") {
+		t.Fatalf("removed installation status: %q", line)
+	}
+}
+
+func TestHostHookPendingStatusOffersCodexTrustReview(t *testing.T) {
+	state := &tuiState{hostMenuMode: true, hostMenuStep: "hook-select", hostMenuTarget: "host",
+		hostHookStatuses: map[string]protocol.HostAgentHookStatus{
+			"codex": {Agent: "codex", Installed: true, Activation: "pending", CallbackObserved: true},
+		}}
+	var out strings.Builder
+	state.renderHostModal(&out, 130, 28)
+	if !strings.Contains(out.String(), "pending activation") || !strings.Contains(out.String(), "Review Codex /hooks") {
+		t.Fatal("pending installation lacks trust guidance")
+	}
+	state.hostHookStatuses["codex"] = protocol.HostAgentHookStatus{Agent: "codex", Installed: true, Activation: "operational"}
+	out.Reset()
+	state.renderHostModal(&out, 130, 28)
+	if strings.Contains(out.String(), "Review Codex /hooks") || !strings.Contains(out.String(), "operational (advisory)") {
+		t.Fatal("verified installation retains pending guidance")
 	}
 }
 

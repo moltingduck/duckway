@@ -130,19 +130,30 @@ func (s *tuiState) renderNotificationConfigModal(out io.Writer, cols, rows int) 
 			modalRenderLine{modalMuted, "  Absolute WAV / MP3 / OGG; empty uses terminal bell"},
 			modalRenderLine{modalMuted, "  Enter stage · Esc back"})
 	default:
+		var warnings []string
+		if s.notificationConfigScope == "global" {
+			for _, warning := range []string{soundSetupWarning(s.notificationConfigDraft), desktopSetupWarning(s.notificationConfigDraft, s.activity())} {
+				if warning != "" {
+					warnings = append(warnings, warning)
+				}
+			}
+			if diagnostics, ok := s.notificationSink.(interface{ Warnings() []string }); ok {
+				warnings = append(warnings, diagnostics.Warnings()...)
+			}
+		}
 		options := s.notificationConfigRows()
-		visible := max(3, rows-7)
+		reserved := len(warnings)
+		if s.notificationConfigErr != "" {
+			reserved++
+		}
+		visible := max(1, rows-7-reserved)
 		start := max(0, min(s.notificationConfigIndex-visible/2, len(options)-visible))
 		for index := start; index < min(len(options), start+visible); index++ {
 			lines = append(lines, modalRenderLine{modalInput, choiceLine(index == s.notificationConfigIndex, options[index])})
 		}
 		lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ select · Enter edit · s save · Esc cancel"})
-		if s.notificationConfigScope == "global" {
-			for _, warning := range []string{soundSetupWarning(s.notificationConfigDraft), desktopSetupWarning(s.notificationConfigDraft, s.activity())} {
-				if warning != "" {
-					lines = append(lines, modalRenderLine{modalDanger, "  " + warning})
-				}
-			}
+		for _, warning := range warnings {
+			lines = append(lines, modalRenderLine{modalDanger, "  " + warning})
 		}
 	}
 	if s.notificationConfigErr != "" {

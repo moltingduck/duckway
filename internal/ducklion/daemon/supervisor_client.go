@@ -17,32 +17,35 @@ import (
 )
 
 type SupervisorClient struct {
-	conn                  *net.UnixConn
-	codec                 *bridge.Codec
-	identity              protocol.SupervisorRegistered
-	instanceID            model.InstanceID
-	mu                    sync.Mutex
-	nextOffset            uint64
-	nextID                uint64
-	socketPath            string
-	privateKey            ed25519.PrivateKey
-	supportsAttention     bool
-	supportsAgentActivity bool
-	supportsForeground    bool
-	controlReady          chan struct{}
-	controlReadyOnce      sync.Once
+	conn                         *net.UnixConn
+	codec                        *bridge.Codec
+	identity                     protocol.SupervisorRegistered
+	instanceID                   model.InstanceID
+	mu                           sync.Mutex
+	nextOffset                   uint64
+	nextID                       uint64
+	socketPath                   string
+	privateKey                   ed25519.PrivateKey
+	supportsAttention            bool
+	supportsAgentActivity        bool
+	supportsActionNeededActivity bool
+	supportsForeground           bool
+	controlReady                 chan struct{}
+	controlReadyOnce             sync.Once
 }
 
 type SupervisorActivityClient struct {
-	conn                  *net.UnixConn
-	codec                 *bridge.Codec
-	identity              protocol.SupervisorRegistered
-	instanceID            model.InstanceID
-	nextID                uint64
-	supportsAgentActivity bool
+	conn                         *net.UnixConn
+	codec                        *bridge.Codec
+	identity                     protocol.SupervisorRegistered
+	instanceID                   model.InstanceID
+	nextID                       uint64
+	supportsAgentActivity        bool
+	supportsActionNeededActivity bool
 }
 
 var errForegroundTransport = errors.New("foreground transport failed")
+var errUnsupportedActionNeededActivity = errors.New("action-needed activity capability was not negotiated")
 
 func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation uint64, privateKey ed25519.PrivateKey) (*SupervisorClient, error) {
 	return registerSupervisor(socketPath, sessionID, generation, privateKey, "")
@@ -69,7 +72,7 @@ func registerSupervisor(socketPath string, sessionID model.SessionID, generation
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	handshake := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleSupervisor,
-		Principal: string(sessionID), Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention", "agent_activity", "foreground_visibility"}}
+		Principal: string(sessionID), Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention", "agent_activity", "action_needed_activity", "foreground_visibility"}}
 	if err := codec.Write(handshake); err != nil {
 		return fail(err)
 	}
@@ -145,9 +148,10 @@ func registerSupervisor(socketPath string, sessionID model.SessionID, generation
 	_ = conn.SetDeadline(time.Time{})
 	return &SupervisorClient{conn: conn, codec: codec, identity: identity, instanceID: instanceID, socketPath: socketPath,
 		privateKey: append(ed25519.PrivateKey(nil), privateKey...), supportsAttention: hasCapability(negotiated.Capabilities, "terminal_attention"),
-		supportsAgentActivity: hasCapability(negotiated.Capabilities, "agent_activity"),
-		supportsForeground:    hasCapability(negotiated.Capabilities, "foreground_visibility"),
-		controlReady:          make(chan struct{})}, nil
+		supportsAgentActivity:        hasCapability(negotiated.Capabilities, "agent_activity"),
+		supportsActionNeededActivity: hasCapability(negotiated.Capabilities, "action_needed_activity"),
+		supportsForeground:           hasCapability(negotiated.Capabilities, "foreground_visibility"),
+		controlReady:                 make(chan struct{})}, nil
 }
 
 type RuntimeController interface {
@@ -469,6 +473,9 @@ func (c *SupervisorClient) OpenActivity() (*SupervisorActivityClient, error) {
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	handshake := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Role: protocol.RoleSupervisorActivity,
 		Principal: c.identity.SessionID, Capabilities: []string{"terminal_attention", "agent_activity"}}
+	if c.SupportsActionNeededActivity() {
+		handshake.Capabilities = append(handshake.Capabilities, "action_needed_activity")
+	}
 	if err := codec.Write(handshake); err != nil {
 		return fail(err)
 	}
@@ -518,7 +525,8 @@ func (c *SupervisorClient) OpenActivity() (*SupervisorActivityClient, error) {
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return &SupervisorActivityClient{conn: conn, codec: codec, identity: c.identity, instanceID: c.instanceID,
-		supportsAgentActivity: hasCapability(negotiated.Capabilities, "agent_activity")}, nil
+		supportsAgentActivity:        hasCapability(negotiated.Capabilities, "agent_activity"),
+		supportsActionNeededActivity: hasCapability(negotiated.Capabilities, "action_needed_activity")}, nil
 }
 
 // SupportsAttention reports whether the daemon negotiated durable terminal
@@ -530,6 +538,14 @@ func (c *SupervisorClient) SupportsAttention() bool {
 
 func (c *SupervisorClient) SupportsAgentActivity() bool { return c.supportsAgentActivity }
 
+func (c *SupervisorClient) SupportsActionNeededActivity() bool {
+	return c.supportsAttention && c.supportsAgentActivity && c.supportsActionNeededActivity
+}
+
+func isActionNeededActivity(category model.NotificationCategory) bool {
+	return category == model.NotificationApprovalRequired || category == model.NotificationAgentNeedsInput
+}
+
 func (c *SupervisorActivityClient) ReportTerminalAttention(ctx context.Context, outputOffset uint64) error {
 	return c.ReportActivity(ctx, model.NotificationTerminalAttention, outputOffset, 0)
 }
@@ -539,6 +555,9 @@ func (c *SupervisorActivityClient) ReportActivity(ctx context.Context, category 
 }
 
 func (c *SupervisorActivityClient) ReportActivityWithSource(ctx context.Context, category model.NotificationCategory, outputOffset, eventID uint64, source string) error {
+	if isActionNeededActivity(category) && (!c.supportsAgentActivity || !c.supportsActionNeededActivity) {
+		return errUnsupportedActionNeededActivity
+	}
 	if category != model.NotificationTerminalAttention && !c.supportsAgentActivity {
 		return fmt.Errorf("agent activity capability was not negotiated")
 	}

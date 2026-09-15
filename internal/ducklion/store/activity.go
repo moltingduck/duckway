@@ -131,6 +131,11 @@ func (s *SQLite) recordActivity(ctx context.Context, sessionID model.SessionID, 
 		return 0, false, err
 	}
 	if source != "" {
+		// This runs only after the Session generation/event replay fences. It
+		// verifies the current installed epoch, never historical callback rows.
+		if _, err := tx.ExecContext(ctx, `UPDATE host_hook_installations SET verified_epoch=epoch WHERE source=? AND installed=1`, source); err != nil {
+			return 0, false, err
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO host_hook_callbacks(source,session_id,runtime_generation,last_event_id,updated_at_ms) VALUES(?,?,?,?,?)
 			ON CONFLICT(source) DO UPDATE SET session_id=excluded.session_id,runtime_generation=excluded.runtime_generation,last_event_id=excluded.last_event_id,updated_at_ms=excluded.updated_at_ms`,
 			source, sessionID, runtimeGeneration, sourceEventID, now); err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -301,7 +302,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	assertCurrentCreateModal(t, capture, start, "choose host number/name", "client-a", true)
 	start = capture.position()
 	writePTY(t, terminal, "\r") // currently selected client-a
-	assertCurrentCreateModal(t, capture, start, "choose configured project", "alpha-project", true)
+	assertCurrentCreateModal(t, capture, start, "choose directory", "alpha-project", true)
 	start = capture.position()
 	writePTY(t, terminal, "\r") // alpha-project
 	assertCurrentCreateModal(t, capture, start, "choose shell", "zsh", true)
@@ -332,6 +333,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	if created.SessionID == "" || created.Kind != "shell" || created.CWD != "/home/duck/projects/alpha" || created.ProjectName != "alpha-project" {
 		t.Fatalf("created identity = %#v", created)
 	}
+	assertContainerShellPWD(t, runtime, controller, "ducklord", "", "client-a", handle, "/home/duck/projects/alpha")
 	for _, old := range before {
 		if old.SessionID == created.SessionID {
 			t.Fatalf("create reused existing session ID %q", created.SessionID)
@@ -546,6 +548,28 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 		binary = "ducklord"
 	}
 	owner := fmt.Sprintf("workspace-e2e-%d", time.Now().UnixNano())
+	t.Run("remote bookmarks command", func(t *testing.T) {
+		bookmarks, err := exec.Command(runtime, "exec", controller, binary, "bookmarks", "client-a",
+			"--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		if err != nil {
+			t.Fatalf("list remote bookmarks: %v: %s", err, bookmarks)
+		}
+		found := false
+		for _, line := range strings.Split(string(bookmarks), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 3 && fields[0] == "alpha-project" && fields[1] == "/home/duck/projects/alpha" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("remote bookmark fixture not listed: %s", bookmarks)
+		}
+		alias, err := exec.Command(runtime, "exec", controller, binary, "projects", "client-a",
+			"--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		if err != nil || !bytes.Equal(alias, bookmarks) {
+			t.Fatalf("projects alias differs from bookmarks: err=%v alias=%s bookmarks=%s", err, alias, bookmarks)
+		}
+	})
 	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color",
 		binary, "tui", "--name", owner, "--config", "/root/.ducklord/config.yaml")
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 80})
@@ -602,6 +626,150 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 	}, func() string { return "focused shell did not receive PTY input" })
 	writePTY(t, terminal, "\x1d")
 	capture.waitCurrent(t, "◇ client-a/"+handle, 10*time.Second)
+
+	t.Run("create missing directory and save remote bookmark", func(t *testing.T) {
+		// Keep this inside the real workspace test so the normal E2E script
+		// exercises the complete pane wizard through SSH, not just CLI creation.
+		token := strconv.FormatInt(time.Now().UnixNano(), 36)
+		newHandle := "wb" + token
+		bookmark := "pane-" + token
+		remoteRoot := "/tmp/dwb-" + token
+		remotePath := remoteRoot + "/nested/leaf"
+		run := func(args ...string) ([]byte, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			return exec.CommandContext(ctx, runtime, append([]string{"exec", controller}, args...)...).CombinedOutput()
+		}
+		if out, err := run("ssh", "client-a", "test", "!", "-e", remoteRoot); err != nil {
+			t.Fatalf("remote test path must be absent: %v: %s", err, out)
+		}
+		t.Cleanup(func() {
+			_, _ = run(binary, "--name", "workspace-e2e-cli", "destroy", "client-a", newHandle,
+				"--config", "/root/.ducklord/config.yaml")
+			// The registry operation locks and removes only this exact path;
+			// never restore a snapshot over other bookmarks added meanwhile.
+			_, _ = run("ssh", "client-a", "duckway", "projects", "remove", remotePath)
+			// rmdir cannot delete unexpected files, even on a failed test.
+			_, _ = run("ssh", "client-a", "rmdir", remotePath, remoteRoot+"/nested", remoteRoot)
+		})
+		writePTY(t, terminal, "Pp")
+		capture.waitCurrent(t, "Add Session pane", 10*time.Second)
+		writePTY(t, terminal, "\r\r") // new tab, new shell
+		capture.waitCurrent(t, "host ›", 10*time.Second)
+		writePTY(t, terminal, "\r")
+		capture.waitCurrent(t, "choose a directory", 15*time.Second)
+		writePTY(t, terminal, "browse\r")
+		capture.waitCurrent(t, "type a remote directory path", 10*time.Second)
+		writePTY(t, terminal, remotePath+"\r")
+		capture.waitCurrent(t, "confirm recursive creation", 15*time.Second)
+		if out, err := run("ssh", "client-a", "test", "!", "-e", remoteRoot); err != nil {
+			t.Fatalf("path inspection created directories before confirmation: %v: %s", err, out)
+		}
+		writePTY(t, terminal, "\r")
+		capture.waitCurrent(t, "directory created recursively", 15*time.Second)
+		if out, err := run("ssh", "client-a", "test", "-d", remotePath); err != nil {
+			t.Fatalf("recursive creation did not reach remote filesystem: %v: %s", err, out)
+		}
+		writePTY(t, terminal, "\r") // save as a remote bookmark
+		capture.waitCurrent(t, "bookmark name", 10*time.Second)
+		writePTY(t, terminal, bookmark+"\r")
+		capture.waitCurrent(t, "bookmark added; press Enter to continue", 15*time.Second)
+		writePTY(t, terminal, "\r") // accept the newly selected bookmark
+		capture.waitCurrent(t, "shell ›", 15*time.Second)
+		writePTY(t, terminal, "\r")
+		capture.waitCurrent(t, "handle (default", 10*time.Second)
+		writePTY(t, terminal, newHandle+"\r")
+		waitE2E(t, 20*time.Second, func() bool {
+			out, err := run(binary, "--name", "workspace-e2e-cli", "sessions", "client-a", "--json",
+				"--config", "/root/.ducklord/config.yaml")
+			var sessions []ducklord.RemoteSession
+			if err != nil || json.Unmarshal(out, &sessions) != nil {
+				return false
+			}
+			for _, session := range sessions {
+				if session.Name == newHandle && session.Kind == string(model.KindShell) && session.Cwd == remotePath {
+					return true
+				}
+			}
+			return false
+		}, func() string {
+			return "new shell did not start in recursively created directory: " + safeTerminalDiagnostic(capture.currentText())
+		})
+		capture.waitCurrent(t, "client-a/"+newHandle, 15*time.Second)
+		assertContainerShellPWD(t, runtime, controller, binary, owner, "client-a", newHandle, remotePath)
+		out, err := run(binary, "bookmarks", "client-a", "--config", "/root/.ducklord/config.yaml")
+		if err != nil {
+			t.Fatalf("read saved remote bookmarks: %v: %s", err, out)
+		}
+		found, fixturePreserved := false, false
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 3 {
+				found = found || fields[0] == bookmark && fields[1] == remotePath
+				fixturePreserved = fixturePreserved || fields[0] == "alpha-project" && fields[1] == "/home/duck/projects/alpha"
+			}
+		}
+		if !found || !fixturePreserved {
+			t.Fatalf("saved bookmark missing or existing fixture changed: %s", out)
+		}
+	})
+	for _, mode := range []string{"existing bookmark", "use path once"} {
+		t.Run(mode, func(t *testing.T) {
+			run := func(args ...string) ([]byte, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				return exec.CommandContext(ctx, runtime, append([]string{"exec", controller}, args...)...).CombinedOutput()
+			}
+			before, err := run(binary, "bookmarks", "client-a", "--config", "/root/.ducklord/config.yaml")
+			if err != nil {
+				t.Fatalf("read initial bookmarks: %v: %s", err, before)
+			}
+			newHandle := "wd" + strconv.FormatInt(time.Now().UnixNano(), 36)
+			remotePath := "/home/duck/projects/alpha"
+			if mode == "use path once" {
+				remotePath = "/tmp/" + newHandle + "/nested"
+				if out, err := run("ssh", "client-a", "test", "!", "-e", "/tmp/"+newHandle); err != nil {
+					t.Fatalf("one-time path must be absent: %v: %s", err, out)
+				}
+				t.Cleanup(func() { _, _ = run("ssh", "client-a", "rmdir", remotePath, "/tmp/"+newHandle) })
+			}
+			t.Cleanup(func() {
+				_, _ = run(binary, "--name", "workspace-e2e-cli", "destroy", "client-a", newHandle,
+					"--config", "/root/.ducklord/config.yaml")
+			})
+			if strings.Contains(capture.currentText(), "Session list pane:") {
+				writePTY(t, terminal, "P")
+				capture.waitCurrent(t, "Project pane:", 10*time.Second)
+			}
+			writePTY(t, terminal, "p")
+			capture.waitCurrent(t, "Add Session pane", 10*time.Second)
+			writePTY(t, terminal, "\r\r")
+			capture.waitCurrent(t, "host ›", 10*time.Second)
+			writePTY(t, terminal, "\r")
+			capture.waitCurrent(t, "choose a directory", 15*time.Second)
+			if mode == "existing bookmark" {
+				writePTY(t, terminal, "alpha-project\r")
+			} else {
+				writePTY(t, terminal, "browse\r")
+				capture.waitCurrent(t, "type a remote directory path", 10*time.Second)
+				writePTY(t, terminal, remotePath+"\r")
+				capture.waitCurrent(t, "confirm recursive creation", 15*time.Second)
+				writePTY(t, terminal, "\r")
+				capture.waitCurrent(t, "directory created recursively", 15*time.Second)
+				writePTY(t, terminal, "\x1b[B\r") // Use path once
+			}
+			capture.waitCurrent(t, "shell ›", 15*time.Second)
+			writePTY(t, terminal, "\r")
+			capture.waitCurrent(t, "handle (default", 10*time.Second)
+			writePTY(t, terminal, newHandle+"\r")
+			capture.waitCurrent(t, "client-a/"+newHandle, 20*time.Second)
+			assertContainerShellPWD(t, runtime, controller, binary, owner, "client-a", newHandle, remotePath)
+			after, err := run(binary, "bookmarks", "client-a", "--config", "/root/.ducklord/config.yaml")
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("%s changed bookmark inventory: err=%v before=%s after=%s", mode, err, before, after)
+			}
+		})
+	}
 }
 
 // TestDucklordWorkspaceTwoLivePanesContainerE2E proves that split panes keep
@@ -881,7 +1049,7 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "Pp\r\r") // new tab, new shell
 	capture.waitCurrent(t, "host ›", 10*time.Second)
 	writePTY(t, terminal, "\r")
-	capture.waitCurrent(t, "choose a configured project", 15*time.Second)
+	capture.waitCurrent(t, "choose a directory", 15*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "choose zsh, bash, or sh", 15*time.Second)
 	writePTY(t, terminal, "\r") // default interactive shell
@@ -915,6 +1083,149 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	}, func() string {
 		return "new shell pane did not start in host home and persist in selected Project: screen=" +
 			safeTerminalDiagnostic(capture.currentText()) + fmt.Sprintf(" sessions=%+v", listContainerSessions(t, runtime, controller, "client-a"))
+	})
+	assertContainerShellPWD(t, runtime, controller, binary, owner, "client-a", newHandle, "/home/duck")
+}
+
+// TestDucklordWorkspaceDefaultNewShellSplitContainerE2E catches discovery of a
+// newly created shell becoming a separate Default tab before placement finishes.
+func TestDucklordWorkspaceDefaultNewShellSplitContainerE2E(t *testing.T) {
+	if os.Getenv("DUCKLORD_TUI_CONTAINER_E2E") != "1" {
+		t.Skip("run through scripts/ducklord-tui-e2e.sh")
+	}
+	runtime := requiredE2EEnv(t, "DUCKLORD_E2E_RUNTIME")
+	controller := requiredE2EEnv(t, "DUCKLORD_E2E_CONTROLLER")
+	binary := os.Getenv("DUCKLORD_E2E_BINARY")
+	if binary == "" {
+		binary = "ducklord"
+	}
+	cliOwner := fmt.Sprintf("default-split-cli-%d", time.Now().UnixNano())
+	targetHandle := fmt.Sprintf("dsta%x", time.Now().UnixNano()&0xffffff)
+	newHandle := fmt.Sprintf("dstb%x", time.Now().UnixNano()&0xffffff)
+	for _, handle := range []string{targetHandle, newHandle} {
+		t.Cleanup(func() {
+			_, _ = exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "destroy", "client-a", handle,
+				"--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		})
+	}
+	if out, err := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "start", "client-a", "--name", targetHandle,
+		"--kind", "shell", "--cwd", "/home/duck", "--config", "/root/.ducklord/config.yaml", "--", "bash").CombinedOutput(); err != nil {
+		t.Fatalf("start Default target shell: %v: %s", err, out)
+	}
+	var targetIdentity ducklord.SessionIdentity
+	waitE2E(t, 10*time.Second, func() bool {
+		for _, session := range listContainerSessions(t, runtime, controller, "client-a") {
+			if session.Handle == targetHandle {
+				remote, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+				if found {
+					var ok bool
+					targetIdentity, ok = ducklord.IdentityFromSession(remote)
+					return ok
+				}
+			}
+		}
+		return false
+	}, func() string { return "Default target shell identity not listed: " + targetHandle })
+	state := ducklord.NewActivityState()
+	if err := state.ProjectLayout.Discover(targetIdentity); err != nil {
+		t.Fatal(err)
+	}
+	targetTab := state.ProjectLayout.Project(ducklord.DefaultProjectID).Tabs[0]
+	targetPaneID := targetTab.Root.ID
+	home := fmt.Sprintf("/tmp/ducklord-default-split-e2e-%d-%d", os.Getpid(), time.Now().UnixNano())
+	if out, err := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/.ducklord").CombinedOutput(); err != nil {
+		t.Fatalf("prepare isolated home: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _, _ = exec.Command(runtime, "exec", controller, "rm", "-r", home).CombinedOutput() })
+	if out, err := exec.Command(runtime, "exec", controller, "ln", "-s", "/root/.ssh", home+"/.ssh").CombinedOutput(); err != nil {
+		t.Fatalf("link isolated SSH: %v: %s", err, out)
+	}
+	localState := filepath.Join(t.TempDir(), "state.json")
+	if err := (ducklord.ActivityStateStore{Path: localState}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(runtime, "cp", localState, controller+":"+home+"/.ducklord/state.json").CombinedOutput(); err != nil {
+		t.Fatalf("install Default layout: %v: %s", err, out)
+	}
+	owner := fmt.Sprintf("default-split-%d", time.Now().UnixNano())
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color",
+		binary, "tui", "--name", owner, "--config", "/root/.ducklord/config.yaml")
+	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = terminal.Write([]byte("\x1d\x1bq"))
+		time.Sleep(300 * time.Millisecond)
+		killNamedContainerTUI(runtime, controller, owner, "/root/.ducklord/config.yaml")
+		_ = terminal.Close()
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	})
+	capture := newSizedTUICapture(terminal, 24, 120)
+	capture.waitCurrent(t, targetHandle, 20*time.Second)
+	writePTY(t, terminal, "/"+targetHandle+"\r")
+	capture.waitCurrent(t, "Active · Enter again to focus", 20*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Session focus:", 20*time.Second)
+	writePTY(t, terminal, "\x1d")
+	capture.waitCurrent(t, "client-a/"+targetHandle, 20*time.Second)
+	writePTY(t, terminal, "Pp")
+	capture.waitCurrent(t, "Add Session pane", 10*time.Second)
+	writePTY(t, terminal, "j\r\r") // vertical split, new shell
+	capture.waitCurrent(t, "host ›", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "choose a directory", 15*time.Second)
+	writePTY(t, terminal, "\r") // selected host's home
+	capture.waitCurrent(t, "choose zsh, bash, or sh", 15*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "handle (default", 10*time.Second)
+	writePTY(t, terminal, newHandle+"\r")
+	var lastLayout []byte
+	waitE2E(t, 20*time.Second, func() bool {
+		for _, session := range listContainerSessions(t, runtime, controller, "client-a") {
+			if session.Handle != newHandle || session.Kind != model.KindShell || session.CWD != "/home/duck" {
+				continue
+			}
+			remote, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+			identity, ok := ducklord.IdentityFromSession(remote)
+			if !found || !ok {
+				return false
+			}
+			var err error
+			lastLayout, err = exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+			var persisted ducklord.ActivityState
+			if err != nil || json.Unmarshal(lastLayout, &persisted) != nil {
+				return false
+			}
+			project := persisted.ProjectLayout.Project(ducklord.DefaultProjectID)
+			ids := persisted.ProjectLayout.ProjectsFor(identity)
+			if project == nil || len(ids) != 1 || ids[0] != ducklord.DefaultProjectID {
+				return false
+			}
+			for _, tab := range project.Tabs {
+				if tab.ID != targetTab.ID {
+					continue
+				}
+				root := tab.Root
+				return root != nil && root.Direction == ducklord.SplitVertical && root.First != nil && root.Second != nil &&
+					root.First.ID == targetPaneID && root.First.Session != nil && *root.First.Session == targetIdentity &&
+					root.Second.Session != nil && *root.Second.Session == identity && persisted.ProjectLayout.Validate() == nil
+			}
+		}
+		return false
+	}, func() string {
+		return "new shell did not persist as a Default vertical split: screen=" + safeTerminalDiagnostic(capture.currentText()) +
+			" layout=" + string(lastLayout)
+	})
+	assertContainerShellPWD(t, runtime, controller, binary, owner, "client-a", newHandle, "/home/duck")
+	// Both headers must be visible in the selected tab, not merely discoverable
+	// as separate Default tabs in the saved layout.
+	waitE2E(t, 10*time.Second, func() bool {
+		screen := capture.currentText()
+		return strings.Contains(screen, "client-a/"+targetHandle) && strings.Contains(screen, "client-a/"+newHandle)
+	}, func() string {
+		return "Default split panes not both visible: " + safeTerminalDiagnostic(capture.currentText())
 	})
 }
 
@@ -1324,6 +1635,38 @@ func (c *tuiCapture) waitAfter(t *testing.T, position int, needle string, timeou
 	t.Helper()
 	waitE2E(t, timeout, func() bool { return strings.Contains(c.since(position), needle) }, func() string {
 		return fmt.Sprintf("TUI did not render %q; tail=%q", needle, safeTerminalDiagnostic(c.since(position)))
+	})
+}
+
+// Read pwd from the live shell, independently of the session's reported CWD.
+// The expected path never appears in the command, so terminal input echo cannot
+// satisfy this assertion without the shell actually executing pwd.
+func assertContainerShellPWD(t *testing.T, runtime, controller, binary, owner, host, handle, want string) {
+	t.Helper()
+	// Shell sessions support independent writers. Never reuse the connected
+	// TUI's name for this short-lived inspection connection.
+	owner = "pwd-check-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	run := func(args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		command := []string{"exec", controller, binary}
+		if owner != "" {
+			command = append(command, "--name", owner)
+		}
+		return exec.CommandContext(ctx, runtime, append(command, args...)...).CombinedOutput()
+	}
+	marker := "PWD" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	command := fmt.Sprintf("printf '\\n%%s%%s%%s\\n' '%s:' \"$(pwd -P)\" ':%s'", marker, marker)
+	if out, err := run("send", host, handle, command, "--config", "/root/.ducklord/config.yaml"); err != nil {
+		t.Fatalf("request live shell pwd for %s: %v: %s", handle, err, safeTerminalDiagnostic(string(out)))
+	}
+	var output []byte
+	var readErr error
+	waitE2E(t, 15*time.Second, func() bool {
+		output, readErr = run("read", host, handle, "--lines", "100", "--config", "/root/.ducklord/config.yaml")
+		return readErr == nil && bytes.Contains(output, []byte(marker+":"+want+":"+marker))
+	}, func() string {
+		return fmt.Sprintf("shell %s pwd did not equal %q: err=%v output=%s", handle, want, readErr, safeTerminalDiagnostic(string(output)))
 	})
 }
 

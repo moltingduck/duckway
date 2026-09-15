@@ -720,15 +720,20 @@ func (s *Session) acceptAgentHookWithSource(event protocol.SupervisorAgentEvent,
 	s.mu.Lock()
 	event.TaskID = s.activeAgentTask
 	s.mu.Unlock()
-	if event.TaskID == "" {
-		if event.Kind != "completed" && event.Kind != "failed" {
-			return fmt.Errorf("invalid interactive agent hook event kind")
-		}
-		// Interactive Ducklord turns are not managed tasks. Retain only a
-		// payload-free completion category, never the agent response.
-		category := model.NotificationTaskCompleted
-		if event.Kind == "failed" {
+	if s.shellFirstHooks || event.TaskID == "" || event.Kind == "approval_required" || event.Kind == "agent_needs_input" {
+		// Advisory callbacks never enqueue task events or alter task ownership.
+		var category model.NotificationCategory
+		switch event.Kind {
+		case "completed":
+			category = model.NotificationTaskCompleted
+		case "failed":
 			category = model.NotificationTaskFailed
+		case "approval_required":
+			category = model.NotificationApprovalRequired
+		case "agent_needs_input":
+			category = model.NotificationAgentNeedsInput
+		default:
+			return fmt.Errorf("invalid interactive agent hook event kind")
 		}
 		return s.markActivityAtCurrentOutputSource(category, source)
 	}

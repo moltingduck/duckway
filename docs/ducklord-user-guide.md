@@ -45,6 +45,9 @@ In detailed-list mode, `/` searches Session, Host, and Project names; `f`
 cycles All, Unread, Needs action, and Disconnected filters. Up/down previews
 one Session on the right without clearing its unread mark. `Enter` focuses
 that Session pane; `g` jumps to its Project in the normal three-region layout.
+The shortcut editor exposes `detail_previous`, `detail_next`, and `detail_focus`
+(defaults `k`, `j`, and `enter`). Arrow keys also navigate while the corresponding
+`k`/`j` default remains; rebinding that action replaces its arrow alias too.
 
 ## Create and use Sessions
 
@@ -53,16 +56,30 @@ Select a Host and directory; if you leave the directory unset, the Host's home
 directory is used. The shell stays alive while you run Codex, Claude, or other
 commands with your own CLI options. An agent exiting returns to that shell.
 
+Saved Host directories are called **bookmarks**, separate from your local
+Projects. Choose a bookmark or type a directory with autocomplete. A missing
+directory requires confirmation before it is created, including missing parent
+directories. Choose **Add path to bookmarks** to reuse it later, or **Use path
+once**. From the CLI, list them with `ducklord bookmarks <host>`; on the Host,
+save one with `ducklion bookmarks --add /absolute/path --name work`.
+
 Ducklord may show `[codex?]`, `[claude?]`, or `[other agent?]` beside a shell
 pane. The question mark means foreground-process detection is advisory: it
 does not change writer ownership or claim that a task completed. Exact agent
 completion/failure notifications require installed Host-side hooks. Install
 or remove those through `h` → agent notification hooks after reviewing the
 confirmation; Codex may also require trust approval in `/hooks`.
+Hook status remains pending until a valid session callback arrives. Reinstalling
+after removal requires a new callback; older callback history does not activate it.
 The Host hook dialog shows configuration presence separately from the last
 observed callback. A callback is an advisory report from a process inside a
 Session; it is not proof of the agent binary's identity and never authorizes
 PTY control. A previous callback may remain visible after removing the hook.
+
+Shell Sessions retain tmux-like shared writing: another Ducklord can focus and
+use the shell without `yield`. Agent detection inside that shell does not
+change this policy. Managed agent Sessions still require writer ownership;
+simply previewing either kind never sends input or resizes the remote PTY.
 
 When the root shell exits, its Session and panes disappear from the live
 inventory. Ducklion retains recent PTY output separately for the configured

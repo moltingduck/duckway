@@ -46,7 +46,7 @@ func quickEventImportance(category model.NotificationCategory) int {
 	switch category {
 	case model.NotificationAgentNeedsInput, model.NotificationApprovalRequired:
 		return 0
-	case model.NotificationTaskFailed, model.NotificationTaskTimeout, model.NotificationUnexpectedProcessExit:
+	case model.NotificationTaskFailed, model.NotificationTaskCancelled, model.NotificationTaskTimeout, model.NotificationUnexpectedProcessExit:
 		return 1
 	case model.NotificationTaskCompleted:
 		return 2

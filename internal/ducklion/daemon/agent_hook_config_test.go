@@ -3,12 +3,34 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestAgentHookConfigInvalidatesBeforeWriteAndSkipsUnchangedInstall(t *testing.T) {
+	home := t.TempDir()
+	wantErr := errors.New("activation persistence failed")
+	if _, err := configureAgentHookInHomeBeforeWrite(home, "/bin/ducklion", "codex", "install", func() error { return wantErr }); !errors.Is(err, wantErr) {
+		t.Fatalf("invalidation failure=%v", err)
+	}
+	if installed, err := agentHookInstalledInHome(home, "codex"); err != nil || installed {
+		t.Fatalf("settings written despite failed invalidation: installed=%v err=%v", installed, err)
+	}
+	calls := 0
+	beforeWrite := func() error { calls++; return nil }
+	for _, action := range []string{"install", "install", "remove", "install"} {
+		if _, err := configureAgentHookInHomeBeforeWrite(home, "/bin/ducklion", "codex", action, beforeWrite); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("invalidation calls=%d want 3 (unchanged install preserves verification)", calls)
+	}
+}
 
 func TestAgentHookConfigInstallPreservesExistingAndRemovesOnlyOwned(t *testing.T) {
 	for _, agent := range []string{"codex", "claude"} {
@@ -29,6 +51,26 @@ func TestAgentHookConfigInstallPreservesExistingAndRemovesOnlyOwned(t *testing.T
 			if err := os.WriteFile(path, original, 0600); err != nil {
 				t.Fatal(err)
 			}
+			readBackups := func() map[string][]byte {
+				t.Helper()
+				paths, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".ducklion-hook-backup-*.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				backups := make(map[string][]byte, len(paths))
+				for _, backup := range paths {
+					info, err := os.Stat(backup)
+					if err != nil || info.Mode().Perm() != 0600 {
+						t.Fatalf("insecure backup %s: %v", backup, err)
+					}
+					data, err := os.ReadFile(backup)
+					if err != nil {
+						t.Fatal(err)
+					}
+					backups[backup] = data
+				}
+				return backups
+			}
 			result, err := configureAgentHookInHome(home, "/opt/duck lion/bin/ducklion", agent, "install")
 			if err != nil || !result.Installed || !result.Changed || !result.BackupCreated || result.Activation != "pending" {
 				t.Fatalf("install: result=%+v err=%v", result, err)
@@ -46,9 +88,27 @@ func TestAgentHookConfigInstallPreservesExistingAndRemovesOnlyOwned(t *testing.T
 			if agent == "claude" && !bytes.Contains(installed, []byte("StopFailure")) {
 				t.Fatal("Claude StopFailure missing")
 			}
+			installBackups := readBackups()
+			if len(installBackups) != 1 {
+				t.Fatalf("install created %d backups, want exactly one", len(installBackups))
+			}
+			for _, data := range installBackups {
+				if !bytes.Equal(data, original) {
+					t.Fatal("install backup does not preserve exact original bytes")
+				}
+			}
 			result, err = configureAgentHookInHome(home, "/opt/duck lion/bin/ducklion", agent, "install")
 			if err != nil || result.Changed || result.BackupCreated {
 				t.Fatalf("non-idempotent install: %+v %v", result, err)
+			}
+			reinstallBackups := readBackups()
+			if len(reinstallBackups) != len(installBackups) {
+				t.Fatalf("reinstall changed backup count: got %d want %d", len(reinstallBackups), len(installBackups))
+			}
+			for name, data := range installBackups {
+				if !bytes.Equal(reinstallBackups[name], data) {
+					t.Fatal("reinstall replaced or changed the original backup")
+				}
 			}
 			result, err = configureAgentHookInHome(home, "/opt/duck lion/bin/ducklion", agent, "remove")
 			if err != nil || result.Installed || !result.Changed {
@@ -61,14 +121,18 @@ func TestAgentHookConfigInstallPreservesExistingAndRemovesOnlyOwned(t *testing.T
 			if bytes.Contains(removed, []byte("__ducklion_agent_hook_v1")) || !bytes.Contains(removed, []byte("custom")) {
 				t.Fatalf("removed custom hook: %s", removed)
 			}
-			backups, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".ducklion-hook-backup-*.json"))
-			if len(backups) < 1 {
-				t.Fatal("no recoverable backup")
+			removeBackups := readBackups()
+			if len(removeBackups) != 2 {
+				t.Fatalf("removal left %d backups, want install and removal backups", len(removeBackups))
 			}
-			for _, backup := range backups {
-				info, err := os.Stat(backup)
-				if err != nil || info.Mode().Perm() != 0600 {
-					t.Fatalf("insecure backup %s: %v", backup, err)
+			for name, data := range installBackups {
+				if !bytes.Equal(removeBackups[name], data) {
+					t.Fatal("removal replaced or changed the original backup")
+				}
+			}
+			for name, data := range removeBackups {
+				if _, exists := installBackups[name]; !exists && !bytes.Equal(data, installed) {
+					t.Fatal("removal backup does not preserve exact installed bytes")
 				}
 			}
 		})
@@ -229,7 +293,46 @@ func TestAgentHookConfigConcurrentInstallsAreIdempotent(t *testing.T) {
 		}
 	}
 	data, _ := os.ReadFile(filepath.Join(home, ".codex", "hooks.json"))
-	if bytes.Count(data, []byte("__ducklion_agent_hook_v1")) != 1 {
+	if bytes.Count(data, []byte("__ducklion_agent_hook_v1")) != 2 {
 		t.Fatalf("duplicate hook after parallel calls: %s", data)
+	}
+}
+
+func TestAgentHookConfigInstallsSupportedActionNeededEvents(t *testing.T) {
+	for _, agent := range []string{"codex", "claude"} {
+		t.Run(agent, func(t *testing.T) {
+			home := t.TempDir()
+			_, err := configureAgentHookInHome(home, "/bin/ducklion", agent, "install")
+			if err != nil {
+				t.Fatal(err)
+			}
+			filename := filepath.Join(home, ".codex", "hooks.json")
+			if agent == "claude" {
+				filename = filepath.Join(home, ".claude", "settings.json")
+			}
+			data, err := os.ReadFile(filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document struct {
+				Hooks map[string][]json.RawMessage `json:"hooks"`
+			}
+			if err := json.Unmarshal(data, &document); err != nil {
+				t.Fatal(err)
+			}
+			if len(document.Hooks["PermissionRequest"]) != 1 || !isOwnedHookGroup(document.Hooks["PermissionRequest"][0], agent, "PermissionRequest") {
+				t.Fatal("approval hook missing")
+			}
+			if agent == "claude" {
+				if len(document.Hooks["Notification"]) != 1 || !isOwnedHookGroup(document.Hooks["Notification"][0], agent, "Notification") || bytes.Contains(document.Hooks["Notification"][0], []byte("permission_prompt")) {
+					t.Fatal("filtered Claude input hook missing or duplicates approval hook")
+				}
+			} else if len(document.Hooks["Notification"]) != 0 {
+				t.Fatal("installed unsupported Codex notification hook")
+			}
+			if installed, err := agentHookInstalledInHome(home, agent); err != nil || !installed {
+				t.Fatalf("installed=%v err=%v", installed, err)
+			}
+		})
 	}
 }

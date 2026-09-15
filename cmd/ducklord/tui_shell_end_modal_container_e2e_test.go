@@ -15,8 +15,8 @@ import (
 )
 
 // Shell End must make its distinct effect clear before confirmation. Cancel
-// leaves the process alone; confirmation removes the live pane but preserves
-// separately retrievable diagnostic PTY output.
+// leaves the process and both Project views alone; confirmation removes every
+// reference in this Ducklord but preserves retrievable diagnostic PTY output.
 func TestDucklordShellEndModalContainerE2E(t *testing.T) {
 	if os.Getenv("DUCKLORD_TUI_CONTAINER_E2E") != "1" || os.Getenv("DUCKLORD_E2E_DISPOSABLE_HOST") != "1" {
 		t.Skip("run through scripts/ducklord-tui-e2e.sh on a disposable Host")
@@ -60,12 +60,16 @@ func TestDucklordShellEndModalContainerE2E(t *testing.T) {
 		return err == nil && strings.Contains(string(out), marker)
 	}, func() string { return "retained log marker did not reach Shell PTY" })
 	state := ducklord.NewActivityState()
-	projectID, err := state.ProjectLayout.AddProject("End Fixture")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := state.ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
-		t.Fatal(err)
+	var projectIDs []string
+	for _, name := range []string{"End Fixture", "End Shared View"} {
+		projectID, err := state.ProjectLayout.AddProject(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := state.ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+			t.Fatal(err)
+		}
+		projectIDs = append(projectIDs, projectID)
 	}
 	home := fmt.Sprintf("/tmp/ducklord-end-modal-%d", stamp)
 	if out, err := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/.ducklord").CombinedOutput(); err != nil {
@@ -99,6 +103,39 @@ func TestDucklordShellEndModalContainerE2E(t *testing.T) {
 	})
 	capture := newSizedTUICapture(terminal, 28, 130)
 	capture.waitCurrent(t, "End Fixture", 20*time.Second)
+	capture.waitCurrent(t, "End Shared View", 20*time.Second)
+	// Inspect actual pane leaves as well as membership, so an accidentally
+	// missing second view cannot make the removal assertion pass vacuously.
+	persistedViewsMatch := func(want int) bool {
+		data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+		if err != nil {
+			return false
+		}
+		var current ducklord.ActivityState
+		if json.Unmarshal(data, &current) != nil || len(current.ProjectLayout.ProjectsFor(identity)) != 2*want {
+			return false
+		}
+		for _, id := range projectIDs {
+			project := current.ProjectLayout.Project(id)
+			if project == nil {
+				return false // Removing a Session must not delete its Projects.
+			}
+			count := 0
+			for _, tab := range project.Tabs {
+				for _, paneIdentity := range current.ProjectLayout.TabSessions(id, tab.ID) {
+					if paneIdentity == identity {
+						count++
+					}
+				}
+			}
+			if count != want {
+				return false
+			}
+		}
+		return true
+	}
+	waitE2E(t, 10*time.Second, func() bool { return persistedViewsMatch(1) },
+		func() string { return "shared Shell fixture did not retain both Project pane references" })
 	writePTY(t, terminal, "/"+handle+"\r")
 	capture.waitCurrent(t, "Active · Enter again to focus", 20*time.Second)
 	writePTY(t, terminal, "\x1b") // close search without focusing the PTY
@@ -115,6 +152,9 @@ func TestDucklordShellEndModalContainerE2E(t *testing.T) {
 	if current, ok := findContainerSession(t, runtime, controller, "client-a", session.SessionID); !ok || current.Status != "running" {
 		t.Fatalf("Cancel affected remote Shell: found=%t status=%s", ok, current.Status)
 	}
+	if !persistedViewsMatch(1) {
+		t.Fatal("Cancel changed shared Shell Project pane references")
+	}
 	writePTY(t, terminal, "E")
 	capture.waitCurrent(t, "END SESSION", 10*time.Second)
 	writePTY(t, terminal, "\r")
@@ -126,14 +166,10 @@ func TestDucklordShellEndModalContainerE2E(t *testing.T) {
 		}
 		return true
 	}, func() string { return "confirmed Shell End left Session selectable" })
-	waitE2E(t, 15*time.Second, func() bool {
-		data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
-		if err != nil {
-			return false
-		}
-		var current ducklord.ActivityState
-		return json.Unmarshal(data, &current) == nil && len(current.ProjectLayout.ProjectsFor(identity)) == 0
-	}, func() string { return "confirmed End left a ghost Session pane in Project layout" })
+	waitE2E(t, 15*time.Second, func() bool { return persistedViewsMatch(0) },
+		func() string {
+			return "confirmed End did not remove both shared Session panes while preserving Projects"
+		})
 	read, err := exec.Command(runtime, "exec", controller, "ducklord", "--name", cliOwner, "read-retained", "client-a", session.SessionID,
 		fmt.Sprint(session.RuntimeGeneration), "--lines", "30", "--config", config).CombinedOutput()
 	if err != nil || !strings.Contains(string(read), marker) {

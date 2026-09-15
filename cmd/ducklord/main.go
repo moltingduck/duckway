@@ -138,7 +138,10 @@ func hostHookStatusLine(status protocol.HostAgentHookStatus) string {
 	}
 	installed := "not installed"
 	if status.Installed {
-		installed = "installed"
+		installed = "installed · pending activation"
+		if status.Activation == "operational" {
+			installed = "installed · operational (advisory)"
+		}
 	}
 	callback := "no callback observed"
 	if status.CallbackObserved {
@@ -328,13 +331,13 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 			return json.NewEncoder(out).Encode(sessions)
 		}
 		return printSessions(out, sessions)
-	case "projects":
+	case "bookmarks", "projects":
 		cfg, rest, err := loadWithFlags(args[1:])
 		if err != nil {
 			return err
 		}
 		if len(rest) != 1 {
-			return fmt.Errorf("usage: ducklord projects <client> [--config <path>]")
+			return fmt.Errorf("usage: ducklord bookmarks <client> [--config <path>]")
 		}
 		c, err := mustClient(cfg, rest[0])
 		if err != nil {
@@ -375,7 +378,7 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 			return err
 		}
 		if len(rest) != 2 {
-			return fmt.Errorf("usage: ducklord agents <client> <project-path> [--config <path>]")
+			return fmt.Errorf("usage: ducklord agents <client> <directory-path> [--config <path>]")
 		}
 		c, err := mustClient(cfg, rest[0])
 		if err != nil {
@@ -975,7 +978,7 @@ func printClients(out io.Writer, cfg *ducklord.Config) error {
 
 func printProjects(out io.Writer, projects []ducklord.RemoteProject) error {
 	if len(projects) == 0 {
-		fmt.Fprintln(out, "No remote projects.")
+		fmt.Fprintln(out, "No remote bookmarks.")
 		return nil
 	}
 	fmt.Fprintf(out, "%-18s %-40s %s\n", "NAME", "PATH", "SOURCE")
@@ -987,7 +990,7 @@ func printProjects(out io.Writer, projects []ducklord.RemoteProject) error {
 
 func printAgents(out io.Writer, agents []ducklord.RemoteAgent) error {
 	if len(agents) == 0 {
-		fmt.Fprintln(out, "No available agents for this project.")
+		fmt.Fprintln(out, "No available agents for this directory.")
 		return nil
 	}
 	fmt.Fprintf(out, "%-14s %s\n", "TYPE", "COMMAND")
@@ -1506,6 +1509,7 @@ type tuiState struct {
 	detailQuery                string
 	detailFilter               ducklord.DetailFilter
 	detailSearchFocused        bool
+	detailReturnProjectFocus   bool
 	detailSelected             ducklord.SessionIdentity
 	clearOutputFocus           func()
 	searchMode                 bool
@@ -2204,6 +2208,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			if searchActivation && !state.prepareSearchWorkspaceSelection(state.searchPendingKey) {
+				selectPooledOutput()
+				state.render(os.Stdout)
+				continue
+			}
 			state.terminal = terminal
 			state.ptyScrollOffset = 0
 			activeOutputEvent = event
@@ -2225,9 +2234,6 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			if searchActivation {
 				state.outputForKey = state.searchPendingKey
 				state.activeAttachKey = state.searchPendingKey
-				if state.selectSessionKey(state.searchPendingKey) {
-					state.workspaceFollowQuickSelection()
-				}
 				state.activeAttachFresh = state.outputFresh
 				state.searchActivatedKey = state.searchPendingKey
 				state.searchActivatedRevision = state.searchPendingRevision
@@ -2255,6 +2261,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			if state.workspacePaneMode || state.workspaceProjectFocus || !paneVisible || opened.id != controlID || opened.key != state.activeAttachKey || opened.control != nil && !controlMatchesSession(opened.control, state.activePTYSession(), state.ownerName) {
 				if opened.control != nil {
 					_ = opened.control.Stdin.Close()
+				}
+				if opened.id == controlID {
+					if controlOpenCancel != nil {
+						controlOpenCancel()
+						controlOpenCancel = nil
+					}
+					state.clearAttachIdentity()
 				}
 				if !paneVisible && opened.id == controlID {
 					state.clearAttachIdentity()
@@ -2431,12 +2444,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.clearAttachIdentity()
 				state.outputErr = "PTY control disconnected; reconnect and focus it again"
 			}
-			if previousActive != "" && state.effectiveAttachKey() == "" {
-				controlID++
-				if control != nil {
-					_ = control.Stdin.Close()
-				}
-				control, controlDone = nil, nil
+			if cancelRemovedPTYControl(state, previousActive, &control, &controlOpenCancel, &controlID) {
+				controlDone = nil
 				if attachCancel != nil {
 					attachCancel()
 					attachCancel = nil
@@ -2581,14 +2590,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.render(os.Stdout)
 		case b := <-input:
 			var selectedActionTarget *ducklord.RemoteSession
-			if workspaceOutput != nil && control != nil && !state.focused {
-				if state.shortcut("pty_unfocus", string(b)) || string(b) == "\x1b" || string(b) == "\x03" {
-					_ = control.Stdin.Close()
-					control, controlDone = nil, nil
-					state.clearAttachIdentity()
-					state.outputErr = "PTY focus canceled while waiting for output"
-				} else {
-					state.outputErr = "waiting for Session pane output before PTY input"
+			if handlePendingPTYInput(state, b, workspaceOutput != nil, &control, &controlOpenCancel, &controlID) {
+				if control == nil {
+					controlDone = nil
 				}
 				state.render(os.Stdout)
 				continue
@@ -2716,6 +2720,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					attachOutputSource = attachOut
 					state.focused = false
 					state.clearAttachIdentity()
+					if state.workspaceNav != nil && state.workspaceNav.InDetailMode() {
+						state.syncDetailSelection()
+					}
 					attachCanResize = false
 					attachInitialResizeQueued = false
 					attachReplayEndOffset = 0
@@ -2804,8 +2811,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					target, ok := state.searchResult()
 					key := sessionKey(target)
 					if ok && state.searchResultIsActivated(target) {
-						state.selectSessionKey(key)
-						state.workspaceFollowQuickSelection()
+						if !state.prepareSearchWorkspaceSelection(key) {
+							state.render(os.Stdout)
+							continue
+						}
 						state.closeSearch()
 						b = []byte("\r")
 					} else if !ok || outputManager == nil {
@@ -3486,20 +3495,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			case "reorder-down":
 				state.moveSelectedSession(1)
 			case "select":
-				state.workspaceFollowQuickSelection()
-				if control != nil && !state.focused {
-					_ = control.Stdin.Close()
-					control, controlDone = nil, nil
-				}
-				// List navigation owns the preview pane. Never leave a stale
-				// attach identity pointing at the previously selected session.
-				state.clearAttachIdentity()
-				state.outputForKey = state.currentKey()
-				state.outputText = ""
-				state.terminal = nil
-				state.ptyScrollOffset = 0
-				state.outputErr = "loading live preview..."
-				requestPreview(true)
+				state.handleQuickSelection(&control, &controlDone, requestPreview)
 			case "new":
 				state.workspaceNewSessionIntent = nil
 				state.beginCreate()
@@ -4056,6 +4052,52 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) bool {
 			s.outputFresh = false
 			s.outputErr = "active session was removed remotely"
 		}
+	}
+	return true
+}
+
+// Invalidate both an opening request and an established writer when inventory
+// removes the active Session. A stale completion must not leave input blocked.
+func cancelRemovedPTYControl(s *tuiState, previousActive string, control **ducklord.ControlSession, openCancel *context.CancelFunc, controlID *int) bool {
+	if previousActive == "" || s.effectiveAttachKey() != "" {
+		return false
+	}
+	*controlID++
+	if *openCancel != nil {
+		(*openCancel)()
+		*openCancel = nil
+	}
+	if *control != nil {
+		_ = (*control).Stdin.Close()
+		*control = nil
+	}
+	return true
+}
+
+// Pending focus owns keyboard input until its writer and output are ready.
+// Reject early input explicitly: interpreting it as navigation could change
+// the target session while an asynchronous control request is still opening.
+func handlePendingPTYInput(s *tuiState, input []byte, workspaceOutput bool, control **ducklord.ControlSession, openCancel *context.CancelFunc, controlID *int) bool {
+	opening := *openCancel != nil
+	if s.focused || !opening && (!workspaceOutput || *control == nil) {
+		return false
+	}
+	if s.shortcut("pty_unfocus", string(input)) || string(input) == "\x1b" || string(input) == "\x03" {
+		*controlID++ // fence a completion already queued by the canceled request
+		if opening {
+			(*openCancel)()
+			*openCancel = nil
+		}
+		if *control != nil {
+			_ = (*control).Stdin.Close()
+			*control = nil
+		}
+		s.clearAttachIdentity()
+		s.outputErr = "PTY focus canceled while waiting for control or output"
+	} else if opening {
+		s.outputErr = "opening PTY control; input was not sent"
+	} else {
+		s.outputErr = "waiting for Session pane output; input was not sent"
 	}
 	return true
 }
@@ -5013,7 +5055,7 @@ func (s *tuiState) reconcilePendingWorkspacePlacements() {
 			}
 			found = true
 			s.outputErr = ""
-			if err := s.placeWorkspacePane(pending.intent, session); err != nil {
+			if err := s.placeCreatedWorkspacePane(pending.intent, session); err != nil {
 				s.outputErr = "shell started, but pane placement failed: " + sanitizeTerminalText(err.Error())
 			} else if s.outputErr == "" {
 				s.outputErr = "Session pane created"
@@ -5625,6 +5667,9 @@ func mouseCursorShape(shape string) string {
 }
 
 func shortcutInput(binding string) string {
+	if binding == "enter" {
+		return "\r"
+	}
 	if strings.HasPrefix(binding, "ctrl-") {
 		runes := []rune(strings.TrimPrefix(binding, "ctrl-"))
 		if len(runes) == 1 {
@@ -5779,7 +5824,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		{"SESSION", "session_create", "Create session"}, {"", "session_actions", "Session action menu"}, {"", "session_notifications", "Notification settings"}, {"", "session_yield", "Yield now"}, {"", "session_yield_wait", "Yield when idle"}, {"", "session_restart", "Restart session"}, {"", "session_end", "End session"}, {"", "session_destroy", "Destroy session"},
 		{"HOST", "host_actions", "Host action menu"}, {"", "host_add", "Add host configuration"}, {"", "host_remove", "Remove host configuration"},
 		{"PROJECT PANE", "project_focus", "Move keyboard focus to Project pane"}, {"", "project_notification_focus", "Toggle Project notification focus"}, {"", "project_create", "Create Project"}, {"", "project_delete", "Delete local Project"}, {"", "project_add_pane", "Add Session pane"}, {"", "project_move_pane", "Move Session pane"}, {"", "project_detach_pane", "Detach local Session pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
-		{"DETAILED SESSION LIST", "detail_list", "Open / close detailed list"}, {"", "detail_search", "Search name, Host, or Project"}, {"", "detail_filter", "Cycle state filter"}, {"", "detail_jump", "Jump to selected Session's Project"},
+		{"DETAILED SESSION LIST", "detail_list", "Open / close detailed list"}, {"", "detail_search", "Search name, Host, or Project"}, {"", "detail_filter", "Cycle state filter"}, {"", "detail_previous", "Preview previous Session"}, {"", "detail_next", "Preview next Session"}, {"", "detail_focus", "Focus preview Session pane"}, {"", "detail_jump", "Jump to selected Session's Project"},
 		{"TERMINAL AREA", "pty_copy", "Copy mode"}, {"", "pty_unfocus", "Return to navigation pane"},
 		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
 		{"", "shortcut_settings", "Configure shortcuts"}, {"", "notification_settings", "Global notification settings"},
@@ -6022,6 +6067,9 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 			for _, agent := range []string{"codex", "claude"} {
 				if status, ok := s.hostHookStatuses[agent]; ok {
 					lines = append(lines, modalRenderLine{modalStatus, hostHookStatusLine(status)})
+					if agent == "codex" && status.Installed && status.Activation != "operational" {
+						lines = append(lines, modalRenderLine{modalMuted, "  Review Codex /hooks; awaiting a valid session callback."})
+					}
 				}
 			}
 		}
@@ -6690,7 +6738,7 @@ func (s *tuiState) createModalChoices() []string {
 	case "path-confirm":
 		return []string{"1  Create directory recursively", "2  Back without creating"}
 	case "project-policy":
-		return []string{"1  Add path to Duckway projects", "2  Use path once"}
+		return []string{"1  Add path to bookmarks", "2  Use path once"}
 	case "project-name":
 		return nil
 	case "agent":
@@ -8251,8 +8299,8 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 		s.newSessionClient = clientName
 		s.newSessionLine = ""
 		s.newSessionSelected = 0
-		s.newSessionErr = "loading projects..."
-		needHome := s.workspaceNewSessionIntent != nil
+		s.newSessionErr = "loading bookmarks..."
+		needHome := s.newSessionKind == model.KindShell || s.workspaceNewSessionIntent != nil
 		s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "projects", client: clientName}, func(workCtx context.Context) createDiscoveryEvent {
 			home := ""
 			if needHome {
@@ -8358,7 +8406,7 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 			})
 			return "", "", nil, false, nil
 		default:
-			return "", "", nil, false, fmt.Errorf("choose 1 (add project) or 2 (use once)")
+			return "", "", nil, false, fmt.Errorf("choose 1 (add bookmark) or 2 (use once)")
 		}
 	case "project-name":
 		name := line
@@ -8370,7 +8418,7 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 			return "", "", nil, false, clientErr
 		}
 		path := s.newSessionCWD
-		s.newSessionErr = "adding remote project..."
+		s.newSessionErr = "adding remote bookmark..."
 		s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "add-project", client: s.newSessionClient}, func(workCtx context.Context) createDiscoveryEvent {
 			project, addErr := s.runner.AddProject(workCtx, client, path, name)
 			return createDiscoveryEvent{project: project, failureStep: "project-name", err: addErr}
@@ -8400,16 +8448,16 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 		if clientErr != nil {
 			return "", "", nil, false, clientErr
 		}
-		s.newSessionErr = "revalidating project and runtime..."
+		s.newSessionErr = "revalidating directory and runtime..."
 		project, agentType, kind := s.newSessionProject, s.newSessionAgent, s.newSessionKind
 		s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "validate", client: s.newSessionClient, project: project, sessionName: name}, func(workCtx context.Context) createDiscoveryEvent {
 			if project.Source != "path" {
 				projects, projectErr := s.runner.Projects(workCtx, client)
 				if projectErr != nil {
-					return createDiscoveryEvent{sessionName: name, failureStep: "project", err: fmt.Errorf("project revalidation failed: %w", projectErr)}
+					return createDiscoveryEvent{sessionName: name, failureStep: "project", err: fmt.Errorf("bookmark revalidation failed: %w", projectErr)}
 				}
 				if !containsProject(projects, project) {
-					return createDiscoveryEvent{sessionName: name, failureStep: "project", err: fmt.Errorf("selected project is no longer available")}
+					return createDiscoveryEvent{sessionName: name, failureStep: "project", err: fmt.Errorf("selected bookmark is no longer available")}
 				}
 			}
 			agents, agentErr := s.runner.Agents(workCtx, client, project.Path)
@@ -8471,7 +8519,7 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 		s.cancelCreateDiscovery()
 		s.newSessionStep = "host"
 		if event.kind == "add-project" && event.project.Path != "" {
-			s.newSessionErr = "project was added, but the host changed; choose it again"
+			s.newSessionErr = "bookmark was added, but the host changed; choose it again"
 		} else {
 			s.newSessionErr = "host changed while loading; choose it again"
 		}
@@ -8494,7 +8542,7 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 				s.newSessionProject = event.project
 				s.newSessionProjects = appendRemoteProjectOnce(s.newSessionProjects, event.project)
 				s.newSessionStep = "project"
-				s.newSessionErr = "project was added, but runtime discovery failed: " + event.err.Error()
+				s.newSessionErr = "bookmark was added, but runtime discovery failed: " + event.err.Error()
 			} else {
 				s.newSessionStep = event.failureStep
 			}
@@ -8515,7 +8563,7 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 	case "path-status":
 		if event.directory.Exists {
 			s.newSessionStep, s.newSessionSelected = "project-policy", 0
-			s.newSessionErr = "directory exists; add it to projects or use it once"
+			s.newSessionErr = "directory exists; add it to bookmarks or use it once"
 		} else {
 			s.newSessionStep, s.newSessionSelected = "path-confirm", 0
 			s.newSessionErr = "directory does not exist; confirm recursive creation"
@@ -8527,13 +8575,13 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 		}
 		s.newSessionStep, s.newSessionSelected = "project-policy", 0
 		if event.directory.Created {
-			s.newSessionErr = "directory created recursively; add it to projects or use it once"
+			s.newSessionErr = "directory created recursively; add it to bookmarks or use it once"
 		} else {
-			s.newSessionErr = "directory already exists; add it to projects or use it once"
+			s.newSessionErr = "directory already exists; add it to bookmarks or use it once"
 		}
 	case "projects":
 		projects := event.projects
-		if s.workspaceNewSessionIntent != nil && event.homePath != "" {
+		if (s.newSessionKind == model.KindShell || s.workspaceNewSessionIntent != nil) && event.homePath != "" {
 			projects = append([]ducklord.RemoteProject{{Name: "Host home", Path: event.homePath, Source: "path"}}, projects...)
 		}
 		if s.newSessionKind == model.KindAgent {
@@ -8548,20 +8596,20 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 		if len(projects) == 0 {
 			s.newSessionStep = "path"
 			s.newSessionLine = ""
-			s.newSessionErr = "no configured projects; type an absolute remote directory path"
+			s.newSessionErr = "no configured bookmarks; type an absolute remote directory path"
 			return "", "", nil, false
 		}
 		s.newSessionProjects = append([]ducklord.RemoteProject(nil), projects...)
 		s.newSessionStep = "project"
 		s.newSessionSelected = 0
-		s.newSessionErr = fmt.Sprintf("host: %s; choose a configured project", event.client)
+		s.newSessionErr = fmt.Sprintf("host: %s; choose a directory", event.client)
 	case "add-project":
 		s.newSessionProject = event.project
 		s.newSessionCWD = event.project.Path
 		s.newSessionProjects = appendRemoteProjectOnce(s.newSessionProjects, event.project)
 		s.newSessionStep = "project"
 		s.newSessionLine = event.project.Name
-		s.newSessionErr = "project added; press Enter to continue"
+		s.newSessionErr = "bookmark added; press Enter to continue"
 	case "agents":
 		if s.newSessionKind == model.KindShell {
 			shells := make([]ducklord.RemoteAgent, 0, 3)
@@ -8576,11 +8624,11 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 			}
 			if len(shells) == 1 && shells[0].Type == "shell" {
 				s.newSessionAgent, s.newSessionCommand = shells[0].Type, append([]string(nil), shells[0].Command...)
-				s.newSessionStep, s.newSessionErr = "handle", fmt.Sprintf("shell project: %s; empty handle uses %s", event.project.Path, defaultSessionHandle(event.project.Path))
+				s.newSessionStep, s.newSessionErr = "handle", fmt.Sprintf("shell directory: %s; empty handle uses %s", event.project.Path, defaultSessionHandle(event.project.Path))
 				return "", "", nil, false
 			}
 			s.newSessionAgents = shells
-			s.newSessionStep, s.newSessionErr = "agent", fmt.Sprintf("project: %s; choose zsh, bash, or sh", event.project.Path)
+			s.newSessionStep, s.newSessionErr = "agent", fmt.Sprintf("directory: %s; choose zsh, bash, or sh", event.project.Path)
 			s.newSessionSelected = 0
 			return "", "", nil, false
 		}
@@ -8591,11 +8639,11 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 			}
 		}
 		if len(agents) == 0 {
-			s.newSessionStep, s.newSessionErr = "project", "this project has no available agent runtime"
+			s.newSessionStep, s.newSessionErr = "project", "this directory has no available agent runtime"
 			return "", "", nil, false
 		}
 		s.newSessionAgents = agents
-		s.newSessionStep, s.newSessionErr = "agent", fmt.Sprintf("project: %s; choose an available agent", event.project.Path)
+		s.newSessionStep, s.newSessionErr = "agent", fmt.Sprintf("directory: %s; choose an available agent", event.project.Path)
 		s.newSessionSelected = 0
 	case "validate":
 		return event.client, event.sessionName, event.args, true
@@ -8626,7 +8674,7 @@ func (s *tuiState) resolveCreateAgent(input string) (string, []string, error) {
 			return agent.Type, append([]string(nil), agent.Command...), nil
 		}
 	}
-	return "", nil, fmt.Errorf("agent %q is not available for this project", input)
+	return "", nil, fmt.Errorf("agent %q is not available for this directory", input)
 }
 
 func defaultSessionHandle(cwd string) string {
@@ -8675,11 +8723,11 @@ func (s *tuiState) resolveCreateProject(input string) (ducklord.RemoteProject, e
 		if len(s.newSessionProjects) == 1 {
 			return s.newSessionProjects[0], nil
 		}
-		return ducklord.RemoteProject{}, fmt.Errorf("project name or number is required")
+		return ducklord.RemoteProject{}, fmt.Errorf("directory name or number is required")
 	}
 	if n, err := strconv.Atoi(input); err == nil {
 		if n < 1 || n > len(s.newSessionProjects) {
-			return ducklord.RemoteProject{}, fmt.Errorf("project number out of range")
+			return ducklord.RemoteProject{}, fmt.Errorf("directory number out of range")
 		}
 		return s.newSessionProjects[n-1], nil
 	}
@@ -8688,7 +8736,7 @@ func (s *tuiState) resolveCreateProject(input string) (ducklord.RemoteProject, e
 			return project, nil
 		}
 	}
-	return ducklord.RemoteProject{}, fmt.Errorf("unknown project %q; choose a configured project", input)
+	return ducklord.RemoteProject{}, fmt.Errorf("unknown directory %q; choose a listed directory", input)
 }
 
 func (s *tuiState) createHeader() string {
@@ -8698,21 +8746,21 @@ func (s *tuiState) createHeader() string {
 	case "host":
 		return "new session: choose host number/name"
 	case "project":
-		return fmt.Sprintf("new %s session: host=%s  choose configured project", s.newSessionKind, displayField(s.newSessionClient))
+		return fmt.Sprintf("new %s session: host=%s  choose directory", s.newSessionKind, displayField(s.newSessionClient))
 	case "path":
 		return fmt.Sprintf("new %s session: browse remote path on %s", s.newSessionKind, displayField(s.newSessionClient))
 	case "path-confirm":
 		return fmt.Sprintf("CREATE REMOTE DIRECTORY · %s · %s", displayField(s.newSessionClient), displayField(s.newSessionCWD))
 	case "project-policy":
-		return "remote path selected: add to projects or use once"
+		return "remote path selected: add to bookmarks or use once"
 	case "project-name":
-		return "add remote path to Duckway projects"
+		return "add remote path to bookmarks"
 	case "agent":
 		label := "agent"
 		if s.newSessionKind == model.KindShell {
 			label = "shell"
 		}
-		return fmt.Sprintf("new session: host=%s project=%s  choose %s", displayField(s.newSessionClient), displayField(s.newSessionCWD), label)
+		return fmt.Sprintf("new session: host=%s directory=%s  choose %s", displayField(s.newSessionClient), displayField(s.newSessionCWD), label)
 	case "handle":
 		return fmt.Sprintf("new session: agent=%s  handle (default %s)", displayField(s.newSessionAgent), displayField(defaultSessionHandle(s.newSessionCWD)))
 	default:
@@ -8727,7 +8775,7 @@ func (s *tuiState) createPromptLabel() string {
 	case "host":
 		return "host"
 	case "project":
-		return "project"
+		return "directory"
 	case "path":
 		return "path"
 	case "path-confirm":
@@ -8735,7 +8783,7 @@ func (s *tuiState) createPromptLabel() string {
 	case "project-policy":
 		return "choice"
 	case "project-name":
-		return "project name"
+		return "bookmark name"
 	case "agent":
 		if s.newSessionKind == model.KindShell {
 			return "shell"
@@ -9422,9 +9470,9 @@ Usage:
   ducklord ssh-hosts [--config-file <ssh_config>]
   ducklord import-ssh-hosts [--ssh-config <ssh_config>] [--config <path>]
   ducklord sessions <client> [--config <path>]
-  ducklord projects <client> [--config <path>]
+  ducklord bookmarks <client> [--config <path>] (alias: projects)
   ducklord hook-status <client> <codex|claude> [--config <path>]
-  ducklord agents <client> <project-path> [--config <path>]
+  ducklord agents <client> <directory-path> [--config <path>]
   ducklord probe <client> [--config <path>]
   ducklord install-ducklion <client> [--source <path>] [--dest <remote-path>] [--config <path>]
   ducklord tui [--config <path>] [--name <owner>] [--refresh 2s]

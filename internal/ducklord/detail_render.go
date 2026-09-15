@@ -1,7 +1,6 @@
 package ducklord
 
 import (
-	"fmt"
 	"io"
 	"strings"
 )
@@ -106,53 +105,99 @@ func renderDetailList(out io.Writer, rect WorkspaceRect, items []DetailedSession
 		}
 		return
 	}
-	// Three rows expose all required metadata without forcing an extremely
-	// wide list. Keep the selected item inside the available card viewport.
-	cards := max(0, (rect.Height-2)/3)
+	// Narrow lists put notification time on its own line so the state and
+	// writer remain readable. Keep the selected card inside the viewport.
+	cardHeight := 3
+	if rect.Width < 40 {
+		cardHeight = 4
+	}
+	// Even when only the name line fits, scroll that partial card to the
+	// selection so the list stays aligned with its preview.
+	cards := max(1, (rect.Height-2)/cardHeight)
 	start := 0
-	if cards > 0 && selectedIndex >= cards {
+	if selectedIndex >= cards {
 		start = selectedIndex - cards + 1
 	}
 	start = min(start, max(0, len(items)-cards))
 	for row := 2; row < rect.Height; row++ {
-		cardIndex := (row - 2) / 3
-		lineIndex := (row - 2) % 3
+		cardIndex := (row - 2) / cardHeight
+		lineIndex := (row - 2) % cardHeight
 		index := start + cardIndex
 		line, color := "", ""
-		if index < len(items) && (cards > 0 || cardIndex == 0) {
+		if index < len(items) {
 			item := items[index]
 			if item.Disconnected {
 				color = "\x1b[2;37m"
 			}
 			prefix := "  "
 			if index == selectedIndex {
-				prefix, color = "› ", "\x1b[1;36m"
+				prefix = "› "
+				if !item.Disconnected {
+					color = "\x1b[1;36m"
+				}
 			}
-			switch lineIndex {
-			case 0:
-				badge := ""
-				if item.Unread {
-					badge = " •"
-				}
-				line = prefix + item.Name + " @" + item.Host + badge
-			case 1:
-				projects := strings.Join(item.Projects, ", ")
-				if projects == "" {
-					projects = "Default Project"
-				}
-				line = "  " + projects + " · " + item.Type
-			case 2:
-				when := "never"
-				if !item.LastNotification.IsZero() {
-					when = item.LastNotification.Format("01-02 15:04")
-				}
-				writer := item.Writer
-				if writer == "" {
-					writer = "none"
-				}
-				line = fmt.Sprintf("  %s · %s · %s", item.State, writer, when)
-			}
+			line = detailRowLine(item, lineIndex, rect.Width, prefix)
 		}
 		workspaceWrite(out, rect.X, rect.Y+row, rect.Width, line, color)
 	}
+}
+
+func detailRowLine(item DetailedSessionItem, row, cells int, prefix string) string {
+	available := max(0, cells-2)
+	switch row {
+	case 0:
+		badge := ""
+		if item.Unread {
+			badge = " •"
+		}
+		// Split the remaining space between Session and Host, giving either
+		// field unused space when the other is short.
+		budget := max(0, available-2-workspaceCellWidth(badge))
+		hostWidth := min(workspaceCellWidth(item.Host), budget/2)
+		nameWidth := min(workspaceCellWidth(item.Name), budget-hostWidth)
+		hostWidth = budget - nameWidth
+		return prefix + detailField(item.Name, nameWidth) + " @" + detailField(item.Host, hostWidth) + badge
+	case 1:
+		projects := strings.Join(item.Projects, ", ")
+		if projects == "" {
+			projects = "Default Project"
+		}
+		sessionType := detailField(item.Type, available-5)
+		return "  " + detailField(projects, available-3-workspaceCellWidth(sessionType)) + " · " + sessionType
+	case 2:
+		writer := item.Writer
+		if writer == "" {
+			writer = "none"
+		}
+		suffix := ""
+		if cells >= 40 {
+			suffix = " · " + detailNotificationTime(item)
+		}
+		state := detailField(item.State, 12) // includes the full disconnected label
+		return "  " + state + " · " + detailField(writer, available-workspaceCellWidth(state)-3-workspaceCellWidth(suffix)) + suffix
+	case 3:
+		return "  " + detailNotificationTime(item)
+	default:
+		return ""
+	}
+}
+
+func detailNotificationTime(item DetailedSessionItem) string {
+	if item.LastNotification.IsZero() {
+		return "never"
+	}
+	return item.LastNotification.Format("01-02 15:04")
+}
+
+// Truncate display fields in terminal cells, including an explicit ellipsis
+// so a shortened identifier cannot be mistaken for its full value.
+func detailField(value string, cells int) string {
+	if cells <= 0 {
+		return ""
+	}
+	value = workspaceTruncate(value, workspaceCellWidth(value))
+	if workspaceCellWidth(value) <= cells {
+		return value
+	}
+	return workspaceTruncate(value, cells-1) + "…"
 }

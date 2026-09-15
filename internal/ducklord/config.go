@@ -341,10 +341,14 @@ var DefaultShortcuts = map[string]string{
 	"project_notification_focus": "F",
 	"project_move_pane":          "M", "project_detach_pane": "x",
 	"detail_list": "D", "detail_search": "/", "detail_jump": "g", "detail_filter": "f",
+	"detail_next": "j", "detail_previous": "k", "detail_focus": "enter",
 	"list_sort": "t", "list_sort_direction": "T",
 }
 
 func validShortcutBinding(binding string) bool {
+	if binding == "enter" {
+		return true
+	}
 	if strings.HasPrefix(binding, "ctrl-") {
 		runes := []rune(strings.TrimPrefix(binding, "ctrl-"))
 		return len(runes) == 1 && (runes[0] >= 'a' && runes[0] <= 'z' || runes[0] >= 'A' && runes[0] <= 'Z' || runes[0] == ']')
@@ -354,6 +358,10 @@ func validShortcutBinding(binding string) bool {
 }
 
 func canonicalShortcutBinding(binding string) string {
+	// Enter and Ctrl-M produce the same terminal byte.
+	if strings.EqualFold(binding, "ctrl-m") {
+		return "enter"
+	}
 	if strings.HasPrefix(binding, "ctrl-") {
 		return "ctrl-" + strings.ToLower(strings.TrimPrefix(binding, "ctrl-"))
 	}

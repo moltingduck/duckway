@@ -83,11 +83,173 @@ func TestProjectLayoutMembershipAndDetach(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := layout.ProjectsFor(a); len(got) != 1 || got[0] != DefaultProjectID {
-		t.Fatalf("Default detach should retain navigable pane: %v", got)
+		t.Fatalf("Default detach should retain implicit membership: %v", got)
 	}
 	layout.Destroy(a)
 	if got := layout.ProjectsFor(a); len(got) != 0 {
 		t.Fatalf("destroy should remove every view: %v", got)
+	}
+	if err := layout.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProjectLayoutSuppressedDefaultLifecycle(t *testing.T) {
+	state := NewActivityState()
+	layout := &state.ProjectLayout
+	session := testLayoutIdentity("ABC123")
+	pane, err := layout.Place(DefaultProjectID, session, PlaceNewTab, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := layout.DetachPane(DefaultProjectID, pane); err != nil || got != session {
+		t.Fatalf("close = %v, %v", got, err)
+	}
+	assertClosed := func(layout *ProjectLayout) {
+		t.Helper()
+		if got := layout.ProjectsFor(session); len(got) != 1 || got[0] != DefaultProjectID {
+			t.Fatalf("closed pane lost membership: %v", got)
+		}
+		if layout.Project(DefaultProjectID).hasSession(session) || !layout.defaultSuppressed(session) {
+			t.Fatal("closed Default pane was reopened")
+		}
+		if err := layout.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertClosed(layout)
+	if _, err := layout.DetachPane(DefaultProjectID, pane); err == nil {
+		t.Fatal("stale close accepted")
+	}
+	if err := layout.Discover(session); err != nil {
+		t.Fatal(err)
+	}
+	assertClosed(layout)
+	store := ActivityStateStore{Path: filepath.Join(t.TempDir(), "state.json")}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout = &loaded.ProjectLayout
+	assertClosed(layout)
+	if err := layout.Discover(session); err != nil {
+		t.Fatal(err)
+	}
+	assertClosed(layout)
+	if changed, err := layout.RestoreDefaultPane(session); err != nil || !changed {
+		t.Fatalf("restore = %v, %v", changed, err)
+	}
+	if !layout.Project(DefaultProjectID).hasSession(session) || layout.defaultSuppressed(session) {
+		t.Fatal("explicit restore did not replace suppression with a pane")
+	}
+	if changed, err := layout.RestoreDefaultPane(session); err != nil || changed {
+		t.Fatalf("repeated restore = %v, %v", changed, err)
+	}
+	if err := layout.Detach(DefaultProjectID, session); err != nil {
+		t.Fatal(err)
+	}
+	layout.Destroy(session)
+	if len(layout.ProjectsFor(session)) != 0 || len(layout.SuppressedDefaultSessions) != 0 {
+		t.Fatal("destroy retained hidden membership")
+	}
+	if changed, err := layout.RestoreDefaultPane(session); err != nil || changed {
+		t.Fatalf("destroyed Session restored = %v, %v", changed, err)
+	}
+}
+
+func TestProjectLayoutSuppressionClassificationAndClone(t *testing.T) {
+	layout := NewProjectLayout()
+	session := testLayoutIdentity("ABC123")
+	layout.SuppressedDefaultSessions = []SessionIdentity{session}
+	clone := layout.Clone()
+	clone.SuppressedDefaultSessions[0] = testLayoutIdentity("DEF456")
+	if layout.SuppressedDefaultSessions[0] != session {
+		t.Fatal("clone aliases suppression identities")
+	}
+	project, err := layout.AddProject("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := layout.Place(project, session, PlaceHorizontal, "missing"); err == nil {
+		t.Fatal("invalid split accepted")
+	}
+	if !layout.defaultSuppressed(session) {
+		t.Fatal("failed placement cleared suppression")
+	}
+	if _, err := layout.Place(project, session, PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	if layout.defaultSuppressed(session) {
+		t.Fatal("custom placement retained suppression")
+	}
+	if got := layout.ProjectsFor(session); len(got) != 1 || got[0] != project {
+		t.Fatalf("membership = %v", got)
+	}
+	if err := layout.Detach(project, session); err != nil {
+		t.Fatal(err)
+	}
+	if !layout.Project(DefaultProjectID).hasSession(session) {
+		t.Fatal("last custom detach did not restore Default pane")
+	}
+	if err := layout.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProjectLayoutRejectsInvalidDefaultSuppression(t *testing.T) {
+	for _, kind := range []string{"invalid", "duplicate", "default overlap", "custom overlap"} {
+		t.Run(kind, func(t *testing.T) {
+			layout := NewProjectLayout()
+			session := testLayoutIdentity("ABC123")
+			switch kind {
+			case "invalid":
+				session.InstanceID = "invalid"
+			case "duplicate":
+				layout.SuppressedDefaultSessions = append(layout.SuppressedDefaultSessions, session)
+			case "default overlap", "custom overlap":
+				project := DefaultProjectID
+				if kind == "custom overlap" {
+					var err error
+					project, err = layout.AddProject("Work")
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := layout.Place(project, session, PlaceNewTab, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			layout.SuppressedDefaultSessions = append(layout.SuppressedDefaultSessions, session)
+			if err := layout.Validate(); err == nil {
+				t.Fatal("invalid suppression accepted")
+			}
+		})
+	}
+}
+
+func TestProjectLayoutSessionsForInstanceIncludesSuppressedDefault(t *testing.T) {
+	layout := NewProjectLayout()
+	visible, hidden := testLayoutIdentity("ABC123"), testLayoutIdentity("DEF456")
+	other := SessionIdentity{InstanceID: "22222222-2222-4222-8222-222222222222", SessionID: "FED789"}
+	layout.SuppressedDefaultSessions = []SessionIdentity{hidden, other}
+	for _, name := range []string{"Work", "Review"} {
+		project, err := layout.AddProject(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := layout.Place(project, visible, PlaceNewTab, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := layout.SessionsForInstance(visible.InstanceID)
+	if len(got) != 2 || got[0] != visible || got[1] != hidden {
+		t.Fatalf("inventory references = %v", got)
+	}
+	if got := layout.SessionsForInstance(other.InstanceID); len(got) != 1 || got[0] != other {
+		t.Fatalf("other instance references = %v", got)
 	}
 	if err := layout.Validate(); err != nil {
 		t.Fatal(err)

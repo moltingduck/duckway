@@ -20,6 +20,72 @@ func (r *recordingNotificationSink) Deliver(n localNotification) bool {
 }
 func (r *recordingNotificationSink) Close() {}
 
+func TestNotificationDeliveryProjectLabelPrecedence(t *testing.T) {
+	state, first, session, other := workspacePaneTestState(t)
+	layout := &state.activity().ProjectLayout
+	second, err := layout.AddProject("Shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, _ := ducklord.IdentityFromSession(session)
+	if _, err := layout.Place(second, identity, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectProject := func(id string) {
+		t.Helper()
+		if err := nav.SelectProject(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sink := &recordingNotificationSink{}
+	state.notificationSink = sink
+	state.cfg.NotificationLevels = map[ducklord.NotificationClass]ducklord.NotificationLevel{
+		ducklord.NotificationCompleted: ducklord.NotificationSystem,
+	}
+	check := func(want string) {
+		t.Helper()
+		project, tab, pane, region, focus := nav.CurrentProjectID(), nav.CurrentTabID(), nav.CurrentPaneID(), nav.Region(), nav.NotificationFocusProjectID()
+		sink.got = nil
+		state.deliverNotification(session, model.NotificationTaskCompleted)
+		if len(sink.got) != 1 || sink.got[0].Project != want {
+			t.Fatalf("notification Project want %q, got %+v", want, sink.got)
+		}
+		if nav.CurrentProjectID() != project || nav.CurrentTabID() != tab || nav.CurrentPaneID() != pane || nav.Region() != region || nav.NotificationFocusProjectID() != focus {
+			t.Fatal("notification delivery moved the workspace or notification focus")
+		}
+	}
+	selectProject(second)
+	nav.ToggleNotificationFocus()
+	selectProject(first)
+	check("Shared") // Notification focus wins over the current containing Project.
+	otherIdentity, _ := ducklord.IdentityFromSession(other)
+	otherPane, err := layout.Place(first, otherIdentity, ducklord.PlaceNewTab, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectPane(first, otherPane); err != nil {
+		t.Fatal(err)
+	}
+	selectProject(second)
+	nav.ToggleNotificationFocus()
+	if err := nav.SelectQuickSession(identity); err != nil {
+		t.Fatal(err)
+	}
+	selectProject(first)
+	// Work restores the other Session's pane, so this Session's last visit
+	// remains Shared while the current containing Project is Work.
+	check("Work") // Current Project wins over the last-viewed Project.
+	selectProject(ducklord.DefaultProjectID)
+	nav.ToggleNotificationFocus()
+	check("Shared") // Unrelated focus/current Projects fall back to last-viewed.
+	state.workspaceNav = nil
+	check("Work") // Before navigation exists, use persisted layout order.
+}
+
 func TestFocusedSessionDeliversSoundWithoutUnread(t *testing.T) {
 	state, _, session, other := workspacePaneTestState(t)
 	sink := &recordingNotificationSink{}
@@ -174,9 +240,13 @@ func TestLocalNotificationCommandsContainOnlySafeMetadata(t *testing.T) {
 	if err := os.WriteFile(sound, []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	playLocalSound(context.Background(), sound)
-	showDesktopNotification(context.Background(), localNotification{Project: "Alpha", Session: "Agent", Class: ducklord.NotificationCompleted,
-		Level: ducklord.NotificationSystem})
+	if err := playLocalSound(context.Background(), sound); err != nil {
+		t.Fatal(err)
+	}
+	if err := showDesktopNotification(context.Background(), localNotification{Project: "Alpha", Session: "Agent", Class: ducklord.NotificationCompleted,
+		Level: ducklord.NotificationSystem}); err != nil {
+		t.Fatal(err)
+	}
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)

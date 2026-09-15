@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/management"
+	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 	duckruntime "github.com/hackerduck/duckway/internal/ducklion/runtime"
 	"github.com/hackerduck/duckway/internal/ducklion/supervisor"
@@ -634,7 +634,51 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	if err := activity.ReportActivity(context.Background(), model.NotificationTaskCompleted, 3, 1); err != nil {
 		t.Fatalf("idempotent activity replay failed: %v", err)
 	}
-	if err := activity.ReportActivity(context.Background(), model.NotificationApprovalRequired, 3, 2); err == nil {
+	if !client.SupportsActionNeededActivity() || !activity.supportsActionNeededActivity {
+		t.Fatal("action-needed activity capability was not negotiated on both connections")
+	}
+	// Model an older supervisor that negotiated only the original activity
+	// categories. Bypass the client guard to exercise the daemon's boundary.
+	client.supportsActionNeededActivity = false
+	legacyActivity, err := client.OpenActivity()
+	client.supportsActionNeededActivity = true
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacyActivity.Close()
+	if legacyActivity.supportsActionNeededActivity {
+		t.Fatal("daemon granted an unrequested capability")
+	}
+	for _, category := range []model.NotificationCategory{model.NotificationApprovalRequired, model.NotificationAgentNeedsInput} {
+		body, _ := json.Marshal(protocol.SupervisorActivity{Category: category, EventID: 2, OutputOffset: 3})
+		if err := legacyActivity.codec.Write(protocol.Request{ID: "unsupported-action", Type: "supervisor.terminal_attention",
+			InstanceID: string(client.instanceID), SessionID: string(session.ID), RuntimeGeneration: &session.RuntimeGeneration, Body: body}); err != nil {
+			t.Fatal(err)
+		}
+		var response protocol.Response
+		if err := legacyActivity.codec.Read(&response); err != nil {
+			t.Fatal(err)
+		}
+		if response.Error == nil || response.Error.Code != protocol.ErrIncompatible {
+			t.Fatalf("unnegotiated category %s response=%+v", category, response)
+		}
+	}
+	if err := legacyActivity.ReportActivity(context.Background(), model.NotificationTaskCompleted, 3, 1); err != nil {
+		t.Fatalf("legacy completion stopped working: %v", err)
+	}
+	for _, notice := range []struct {
+		category model.NotificationCategory
+		id       uint64
+	}{
+		{model.NotificationApprovalRequired, 2},
+		{model.NotificationApprovalRequired, 2}, // Replay must be idempotent.
+		{model.NotificationAgentNeedsInput, 3},
+	} {
+		if err := activity.ReportActivity(context.Background(), notice.category, 3, notice.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := activity.ReportActivity(context.Background(), model.NotificationCategory("unknown"), 3, 4); err == nil {
 		t.Fatal("unsupported supervisor activity category was accepted")
 	}
 	if err := activity.ReportTerminalAttention(context.Background(), 3); err != nil {
@@ -647,6 +691,9 @@ func TestSupervisorRecoveryRegistrationIsConnectionBound(t *testing.T) {
 	listed, err := viewer.ListSessions()
 	if err != nil || len(listed) != 1 || listed[0].ActivitySequences[model.NotificationTerminalAttention] != 1 || listed[0].ActivitySequences[model.NotificationTaskCompleted] != 1 {
 		t.Fatalf("attention snapshot=%+v err=%v", listed, err)
+	}
+	if listed[0].ActivitySequences[model.NotificationApprovalRequired] != 1 || listed[0].ActivitySequences[model.NotificationAgentNeedsInput] != 1 {
+		t.Fatalf("action-needed snapshot=%+v", listed[0].ActivitySequences)
 	}
 	subscription, err := viewer.SubscribeOutput(string(session.ID), session.RuntimeGeneration, 0)
 	if err != nil {

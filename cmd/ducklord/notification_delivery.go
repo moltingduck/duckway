@@ -33,15 +33,16 @@ type localNotification struct {
 // The queue keeps session inventory updates independent of local audio and
 // desktop services. It deliberately never includes agent output or prompts.
 type localNotificationSink struct {
-	queue         chan localNotification
-	done          chan struct{}
-	ctx           context.Context
-	cancel        context.CancelFunc
-	now           func() time.Time
-	mu            sync.Mutex
-	lastAttention map[string]time.Time
-	closed        bool
-	workers       sync.WaitGroup
+	queue           chan localNotification
+	done            chan struct{}
+	ctx             context.Context
+	cancel          context.CancelFunc
+	now             func() time.Time
+	mu              sync.Mutex
+	lastAttention   map[string]time.Time
+	closed          bool
+	workers         sync.WaitGroup
+	backendWarnings map[string]string
 }
 
 func newLocalNotificationSink() *localNotificationSink {
@@ -104,49 +105,105 @@ func (s *localNotificationSink) run() {
 			n = item
 		}
 		if n.Level == ducklord.NotificationSystem {
-			showDesktopNotification(s.ctx, n)
+			s.recordBackendResult("desktop", showDesktopNotification(s.ctx, n))
 		}
 		if n.Sound != "" {
-			playLocalSound(s.ctx, n.Sound)
+			s.recordBackendResult("sound", playLocalSound(s.ctx, n.Sound), n.Sound)
 		}
 	}
 }
 
-func playLocalSound(parent context.Context, path string) {
-	if !filepath.IsAbs(path) {
+// Keep diagnostics bounded and free of subprocess output, paths and credentials.
+func (s *localNotificationSink) recordBackendResult(backend string, err error, configuration ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
 		return
+	}
+	if s.backendWarnings == nil {
+		s.backendWarnings = make(map[string]string)
+	}
+	key := backend + "\x00" + strings.Join(configuration, "\x00")
+	if err == nil {
+		delete(s.backendWarnings, key)
+		return
+	}
+	s.backendWarnings[key] = backend + " notification failed; check the local notification backend and settings"
+}
+
+func (s *localNotificationSink) Warnings() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var warnings []string
+	for _, backend := range []string{"sound", "desktop"} {
+		for key, warning := range s.backendWarnings {
+			if strings.HasPrefix(key, backend+"\x00") {
+				warnings = append(warnings, warning)
+				break
+			}
+		}
+	}
+	return warnings
+}
+
+// Drain the player's diagnostics without allowing arbitrary decoder output to
+// grow memory usage. Diagnostics are never included in operator-facing errors.
+type soundErrorCapture struct {
+	data [4096]byte
+	n    int
+}
+
+func (w *soundErrorCapture) Write(p []byte) (int, error) {
+	w.n += copy(w.data[w.n:], p)
+	return len(p), nil
+}
+
+func playLocalSound(parent context.Context, path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("sound path must be absolute")
 	}
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".wav", ".mp3", ".ogg":
 	default:
-		return
+		return fmt.Errorf("unsupported sound format")
 	}
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return
+		return fmt.Errorf("sound file unavailable")
 	}
 	player, err := exec.LookPath("ffplay")
 	if err != nil {
-		return
+		return fmt.Errorf("sound player unavailable")
 	}
 	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, player, "-nodisp", "-autoexit", "-loglevel", "quiet", path)
-	cmd.Stdout, cmd.Stderr = nil, nil
-	_ = cmd.Run()
+	cmd := exec.CommandContext(ctx, player, "-nodisp", "-autoexit", "-loglevel", "error", path)
+	var diagnostics soundErrorCapture
+	cmd.Stderr = &diagnostics
+	cmd.WaitDelay = time.Second
+	err = cmd.Run()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	// ffplay can exit zero after failing to decode input or open an audio
+	// device. At error log level, any diagnostic means playback failed.
+	if err != nil || diagnostics.n != 0 {
+		return fmt.Errorf("sound playback failed")
+	}
+	return nil
 }
 
-func showDesktopNotification(parent context.Context, n localNotification) {
+func showDesktopNotification(parent context.Context, n localNotification) error {
 	program, err := exec.LookPath("notify-send")
 	if err != nil {
-		return
+		return err
 	}
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, program, "--", "Ducklord · "+n.Project,
 		fmt.Sprintf("%s · %s", n.Session, notificationClassLabel(n.Class)))
 	cmd.Stdout, cmd.Stderr = nil, nil
-	_ = cmd.Run()
+	return cmd.Run()
 }
 
 func notificationClassLabel(class ducklord.NotificationClass) string {
@@ -265,11 +322,10 @@ func (s *tuiState) deliverNotification(session ducklord.RemoteSession, category 
 	}
 	projectName := "Default Project"
 	if identity, valid := ducklord.IdentityFromSession(session); valid {
-		current := ""
+		projectID := s.activity().ProjectLayout.NavigateProject(identity, "", "")
 		if s.workspaceNav != nil {
-			current = s.workspaceNav.CurrentProjectID()
+			projectID = s.workspaceNav.NotificationProjectID(identity)
 		}
-		projectID := s.activity().ProjectLayout.NavigateProject(identity, current, "")
 		if project := s.activity().ProjectLayout.Project(projectID); project != nil {
 			projectName = project.Name
 		}

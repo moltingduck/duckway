@@ -12,8 +12,8 @@ type HostAgentHookConfig struct {
 	Action string `json:"action"`
 }
 
-// HostAgentHookConfigResult describes the settings write, not hook activation.
-// Agent hook activation still requires the agent's own trust/approval flow.
+// HostAgentHookConfigResult describes the settings write and current callback
+// verification. Agent hook trust/approval still belongs to the agent itself.
 type HostAgentHookConfigResult struct {
 	Agent         string `json:"agent"`
 	Installed     bool   `json:"installed"`
@@ -26,8 +26,11 @@ type HostAgentHookConfigResult struct {
 // A callback's source is self-reported by a Session descendant, not proof of
 // the vendor process or a trusted agent installation.
 type HostAgentHookStatus struct {
-	Agent               string `json:"agent"`
-	Installed           bool   `json:"installed"`
+	Agent     string `json:"agent"`
+	Installed bool   `json:"installed"`
+	// Activation is pending or operational for the current installation, empty
+	// when absent. Historical callbacks alone never establish activation.
+	Activation          string `json:"activation"`
 	CallbackObserved    bool   `json:"callback_observed"`
 	CallbackSessionID   string `json:"callback_session_id,omitempty"`
 	CallbackGeneration  uint64 `json:"callback_generation,omitempty"`

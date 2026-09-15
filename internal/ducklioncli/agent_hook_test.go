@@ -55,6 +55,47 @@ func TestRunAgentHookShellFirstSendsPayloadFreeAdvisoryEvent(t *testing.T) {
 	}
 }
 
+func TestRunAgentHookActionNeededIsAlwaysPayloadFree(t *testing.T) {
+	for _, token := range []string{"", "test-token"} {
+		for _, tc := range []struct{ source, hook, notification, kind string }{
+			{"codex", "PermissionRequest", "", "approval_required"},
+			{"claude", "PermissionRequest", "", "approval_required"},
+			{"claude", "Notification", "permission_prompt", "approval_required"},
+			{"claude", "Notification", "idle_prompt", "agent_needs_input"},
+			{"claude", "Notification", "elicitation_dialog", "agent_needs_input"},
+			{"claude", "Notification", "elicitation_url_dialog", "agent_needs_input"},
+			{"claude", "Notification", "agent_needs_input", "agent_needs_input"},
+		} {
+			t.Run(token+tc.source+tc.hook+tc.notification, func(t *testing.T) {
+				events := hookReceiverWithToken(t, token)
+				input, _ := json.Marshal(map[string]string{"hook_event_name": tc.hook, "notification_type": tc.notification, "last_assistant_message": "secret", "error": "secret", "message": "secret"})
+				if err := runAgentHook(strings.NewReader(string(input)), []string{tc.source}); err != nil {
+					t.Fatal(err)
+				}
+				if event := waitHookEvent(t, events); event.Kind != tc.kind || event.Response != "" || event.Summary != "" || event.TaskID != "" {
+					t.Fatalf("action-needed event = %+v", event)
+				}
+			})
+		}
+	}
+}
+
+func TestRunAgentHookIgnoresUnrelatedClaudeNotifications(t *testing.T) {
+	for _, kind := range []string{"auth_success", "elicitation_complete", "agent_completed", "unknown"} {
+		t.Run(kind, func(t *testing.T) {
+			events := hookReceiverWithToken(t, "")
+			if err := runAgentHook(strings.NewReader(`{"hook_event_name":"Notification","notification_type":"`+kind+`"}`), []string{"claude"}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case event := <-events:
+				t.Fatalf("unrelated notification emitted %+v", event)
+			default:
+			}
+		})
+	}
+}
+
 func TestRunAgentHookShellFirstEmptySuccessfulTurnIsCompleted(t *testing.T) {
 	events := hookReceiverWithToken(t, "")
 	if err := runAgentHook(strings.NewReader(`{"hook_event_name":"Stop"}`), []string{"claude"}); err != nil {

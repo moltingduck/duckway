@@ -18,7 +18,7 @@ func (s *Session) ForegroundAgent() string {
 	if s == nil || !s.shellFirstHooks || s.rootProcessID <= 0 || s.rootProcessStart == 0 || s.pty == nil {
 		return ""
 	}
-	group, err := unix.IoctlGetInt(int(s.pty.Fd()), unix.TIOCGPGRP)
+	group, err := foregroundProcessGroup(s.pty)
 	if err != nil || group <= 0 {
 		return ""
 	}
@@ -64,11 +64,28 @@ func (s *Session) ForegroundAgent() string {
 	if !ok || finalRoot != root {
 		return ""
 	}
-	finalGroup, err := unix.IoctlGetInt(int(s.pty.Fd()), unix.TIOCGPGRP)
+	finalGroup, err := foregroundProcessGroup(s.pty)
 	if err != nil || finalGroup != group {
 		return ""
 	}
 	return result
+}
+
+// Control pins the descriptor for the ioctl while capture or shutdown may close
+// the PTY. File.Fd alone neither synchronizes with close nor prevents fd reuse.
+func foregroundProcessGroup(master *os.File) (int, error) {
+	conn, err := master.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var group int
+	var ioctlErr error
+	if err := conn.Control(func(fd uintptr) {
+		group, ioctlErr = unix.IoctlGetInt(int(fd), unix.TIOCGPGRP)
+	}); err != nil {
+		return 0, err
+	}
+	return group, ioctlErr
 }
 
 const maxForegroundProcEntries = 4096

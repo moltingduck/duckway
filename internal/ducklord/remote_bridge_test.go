@@ -79,6 +79,11 @@ func TestRunnerProjectBrowserRejectsUnsafeInputBeforeSSH(t *testing.T) {
 			t.Fatalf("query %q reached SSH or was accepted: %v", query, err)
 		}
 	}
+	for _, name := range []string{" ", "line\nbreak", "hidden\u202ename", strings.Repeat("x", 257)} {
+		if _, err := runner.AddProject(context.Background(), client, "/tmp", name); err == nil || !strings.Contains(err.Error(), "bookmark name") {
+			t.Fatalf("name %q reached SSH or lacked bookmark error: %v", name, err)
+		}
+	}
 }
 
 func TestRunnerSelectedMutationsRejectChangedDucklionInstance(t *testing.T) {

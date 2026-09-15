@@ -23,7 +23,7 @@ const maxAgentSettingsBytes = 1 << 20
 // Codex/Claude edits from interleaving inside this daemon process.
 var agentHookSettingsMu sync.Mutex
 
-func configureAgentHook(agent, action string) (protocol.HostAgentHookConfigResult, error) {
+func configureAgentHook(agent, action string, beforeWrite func() error) (protocol.HostAgentHookConfigResult, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return protocol.HostAgentHookConfigResult{}, err
@@ -32,7 +32,7 @@ func configureAgentHook(agent, action string) (protocol.HostAgentHookConfigResul
 	if err != nil {
 		return protocol.HostAgentHookConfigResult{}, err
 	}
-	return configureAgentHookInHome(home, executable, agent, action)
+	return configureAgentHookInHomeBeforeWrite(home, executable, agent, action, beforeWrite)
 }
 
 func agentHookInstalled(agent string) (bool, error) {
@@ -50,9 +50,9 @@ func agentHookInstalledInHome(home, agent string) (bool, error) {
 	var events []string
 	switch agent {
 	case "codex":
-		relative, events = filepath.Join(".codex", "hooks.json"), []string{"Stop"}
+		relative, events = filepath.Join(".codex", "hooks.json"), []string{"Stop", "PermissionRequest"}
 	case "claude":
-		relative, events = filepath.Join(".claude", "settings.json"), []string{"Stop", "StopFailure"}
+		relative, events = filepath.Join(".claude", "settings.json"), []string{"Stop", "StopFailure", "PermissionRequest", "Notification"}
 	default:
 		return false, errors.New("invalid agent type")
 	}
@@ -89,7 +89,7 @@ func agentHookInstalledInHome(home, agent string) (bool, error) {
 		}
 		found := false
 		for _, group := range groups {
-			found = found || isOwnedHookGroup(group, agent)
+			found = found || isOwnedHookGroup(group, agent, event)
 		}
 		if !found {
 			return false, nil
@@ -101,6 +101,10 @@ func agentHookInstalledInHome(home, agent string) (bool, error) {
 // configureAgentHook edits only Ducklion's own hook entries. home and executable
 // must be supplied by the daemon, never by the remote caller.
 func configureAgentHookInHome(home, executable, agent, action string) (protocol.HostAgentHookConfigResult, error) {
+	return configureAgentHookInHomeBeforeWrite(home, executable, agent, action, nil)
+}
+
+func configureAgentHookInHomeBeforeWrite(home, executable, agent, action string, beforeWrite func() error) (protocol.HostAgentHookConfigResult, error) {
 	agentHookSettingsMu.Lock()
 	defer agentHookSettingsMu.Unlock()
 	result := protocol.HostAgentHookConfigResult{Agent: agent}
@@ -114,9 +118,9 @@ func configureAgentHookInHome(home, executable, agent, action string) (protocol.
 	var events []string
 	switch agent {
 	case "codex":
-		relative, events = filepath.Join(".codex", "hooks.json"), []string{"Stop"}
+		relative, events = filepath.Join(".codex", "hooks.json"), []string{"Stop", "PermissionRequest"}
 	case "claude":
-		relative, events = filepath.Join(".claude", "settings.json"), []string{"Stop", "StopFailure"}
+		relative, events = filepath.Join(".claude", "settings.json"), []string{"Stop", "StopFailure", "PermissionRequest", "Notification"}
 	default:
 		return result, errors.New("invalid agent type")
 	}
@@ -165,14 +169,14 @@ func configureAgentHookInHome(home, executable, agent, action string) (protocol.
 				return result, fmt.Errorf("invalid %s hook list", event)
 			}
 		}
-		owned, err := ownedHookGroup(agent, command)
+		owned, err := ownedHookGroup(agent, command, event)
 		if err != nil {
 			return result, err
 		}
 		found := false
 		kept := make([]json.RawMessage, 0, len(groups)+1)
 		for _, group := range groups {
-			if isOwnedHookGroup(group, agent) {
+			if isOwnedHookGroup(group, agent, event) {
 				found = true
 				removedAny = true
 				continue
@@ -203,6 +207,11 @@ func configureAgentHookInHome(home, executable, agent, action string) (protocol.
 	if semanticJSONEqual(old, next) {
 		return result, nil
 	}
+	if beforeWrite != nil {
+		if err := beforeWrite(); err != nil {
+			return protocol.HostAgentHookConfigResult{}, err
+		}
+	}
 	if err := writePrivateSettingsAt(dirfd, filename, old, info, next); err != nil {
 		return protocol.HostAgentHookConfigResult{}, err
 	}
@@ -213,11 +222,22 @@ func configureAgentHookInHome(home, executable, agent, action string) (protocol.
 
 func shellQuoteHook(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 
-func ownedHookGroup(agent, command string) (json.RawMessage, error) {
+const claudeInputNotificationMatcher = "idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input"
+
+func hookMatcher(event string) string {
+	if event == "Notification" {
+		// PermissionRequest already reports approval immediately; exclude the
+		// delayed permission_prompt to avoid duplicate approval alerts.
+		return claudeInputNotificationMatcher
+	}
+	return "*"
+}
+
+func ownedHookGroup(agent, command, event string) (json.RawMessage, error) {
 	hook := map[string]any{"type": "command", "command": command, "timeout": 5}
 	group := map[string]any{"hooks": []any{hook}}
 	if agent == "claude" {
-		group["matcher"] = "*"
+		group["matcher"] = hookMatcher(event)
 	}
 	return json.Marshal(group)
 }
@@ -225,14 +245,14 @@ func ownedHookGroup(agent, command string) (json.RawMessage, error) {
 // The command suffix identifies Ducklion's generated single-command group
 // across executable upgrades. Extra group/handler fields mean it is no longer
 // ours to remove and are deliberately preserved.
-func isOwnedHookGroup(raw json.RawMessage, agent string) bool {
+func isOwnedHookGroup(raw json.RawMessage, agent, event string) bool {
 	var group map[string]json.RawMessage
 	if json.Unmarshal(raw, &group) != nil || (len(group) != 1 && (agent != "claude" || len(group) != 2)) {
 		return false
 	}
 	if agent == "claude" {
 		var matcher string
-		if json.Unmarshal(group["matcher"], &matcher) != nil || matcher != "*" {
+		if json.Unmarshal(group["matcher"], &matcher) != nil || matcher != hookMatcher(event) {
 			return false
 		}
 	}

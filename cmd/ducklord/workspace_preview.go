@@ -30,17 +30,78 @@ func (s *tuiState) workspaceNavigation() (*ducklord.WorkspaceState, error) {
 // Only an explicit quick-list selection navigates the Terminal area. Async
 // inventory refreshes may change the quick cursor's fallback row, but must
 // never pull a focused Session pane out from under the user's keyboard.
-func (s *tuiState) workspaceFollowQuickSelection() {
+func (s *tuiState) workspaceFollowQuickSelection() bool {
 	if !s.workspacePreview || s.workspaceProjectFocus || s.focused {
-		return
+		return true
 	}
 	identity, ok := ducklord.IdentityFromSession(s.currentSession())
 	if !ok {
+		return true
+	}
+	if err := s.restoreWorkspaceDefaultPane(identity); err != nil {
+		s.outputErr = err.Error()
+		return false
+	}
+	nav, err := s.workspaceNavigation()
+	if err == nil {
+		err = nav.SelectQuickSession(identity)
+	}
+	if err != nil {
+		s.outputErr = err.Error()
+		return false
+	}
+	return true
+}
+
+// handleQuickSelection keeps a failed local reopen from tearing down the
+// previous preview or replacing the persistence error with loading status.
+func (s *tuiState) handleQuickSelection(control **ducklord.ControlSession, controlDone *<-chan error, requestPreview func(bool)) {
+	if !s.workspaceFollowQuickSelection() {
 		return
 	}
-	if nav, err := s.workspaceNavigation(); err == nil {
-		_ = nav.SelectQuickSession(identity)
+	if *control != nil && !s.focused {
+		_ = (*control).Stdin.Close()
+		*control, *controlDone = nil, nil
 	}
+	// List navigation owns the preview pane. Never leave a stale attach
+	// identity pointing at the previously selected session.
+	s.clearAttachIdentity()
+	s.outputForKey = s.currentKey()
+	s.outputText = ""
+	s.terminal = nil
+	s.ptyScrollOffset = 0
+	s.outputErr = "loading live preview..."
+	requestPreview(true)
+}
+
+// Search must not publish activation or synthesize focus until its local pane
+// navigation succeeds. Keep failures visible in the still-open search modal.
+func (s *tuiState) prepareSearchWorkspaceSelection(key string) bool {
+	if !s.selectSessionKey(key) {
+		s.searchErr = "selected session is unavailable"
+	} else if s.workspaceFollowQuickSelection() {
+		return true
+	} else {
+		s.searchErr = s.outputErr
+	}
+	s.searchPendingRequestID = 0
+	return false
+}
+
+// Reopening is an explicit navigation action, never a side effect of rendering
+// or inventory discovery. Publish only after persistence succeeds.
+func (s *tuiState) restoreWorkspaceDefaultPane(identity ducklord.SessionIdentity) error {
+	next := s.activity().Clone()
+	changed, err := next.ProjectLayout.RestoreDefaultPane(identity)
+	if err != nil || !changed {
+		return err
+	}
+	if err := s.activityStore.Save(next); err != nil {
+		return fmt.Errorf("reopen Session pane: %w", err)
+	}
+	s.activityState = next
+	s.workspacePaneChanged = true
+	return nil
 }
 
 // The Quick column omits sessions without a stable identity. Mouse row lookup
@@ -393,6 +454,9 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	}
 	if s.focused {
 		status = "Session focus: keys go to PTY · Ctrl-] return to list"
+		if !s.canResizeCurrentSession() {
+			status = "Session focus: read-only · yield control to send input · Ctrl-] return to list"
+		}
 	}
 	if s.workspaceNav != nil && s.workspaceNav.InDetailMode() && !s.focused {
 		status = s.detailStatusLine()

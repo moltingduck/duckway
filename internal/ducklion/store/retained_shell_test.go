@@ -27,6 +27,78 @@ func createRetirementTestSession(t *testing.T, database *SQLite, id model.Sessio
 	return session
 }
 
+func TestFailedLifecycleRestartRetiresOnlyShells(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		kind   model.SessionKind
+		launch bool
+	}{
+		{"shell-launch", model.KindShell, true},
+		{"shell-preparation", model.KindShell, false},
+		{"agent-launch", model.KindAgent, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			database, err := Open(ctx, filepath.Join(t.TempDir(), "ducklion.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			session := createRetirementTestSession(t, database, "ABC123", tc.kind)
+			request := PendingLifecycle{SessionID: session.ID, Operation: LifecycleRestart, Mode: LifecycleImmediate,
+				Requester: model.Owner{Kind: model.OwnerTerminal, ID: "desk"}, SourceEpoch: session.OwnershipEpoch,
+				SourceGeneration: session.RuntimeGeneration, RequestID: "restart-failure"}
+			if _, _, err := database.ReserveLifecycle(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.MarkRuntimeExited(ctx, session.ID, session.RuntimeGeneration, true, "restart"); err != nil {
+				t.Fatal(err)
+			}
+			if tc.launch {
+				if _, err := database.BeginLifecycleRestart(ctx, request, make([]byte, 32)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stale := request
+			stale.SourceGeneration++
+			if err := database.FailLifecycleRestart(ctx, stale, "wrong generation"); err == nil {
+				t.Fatal("stale failure accepted")
+			}
+			if err := database.FailLifecycleRestart(ctx, request, "definitive failure"); err != nil {
+				t.Fatal(err)
+			}
+			if pending, err := database.GetPendingLifecycle(ctx, session.ID); err != nil || pending != nil {
+				t.Fatalf("barrier=%+v %v", pending, err)
+			}
+			if outcome, err := database.GetLifecycleOutcome(ctx, request.Requester, request.RequestID); err != nil || outcome == nil || !outcome.Matches(request) || outcome.Failure != "definitive failure" {
+				t.Fatalf("failure receipt=%+v %v", outcome, err)
+			}
+			got, err := database.GetSession(ctx, session.ID)
+			if tc.kind == model.KindAgent {
+				if err != nil || got.Status != model.StatusStopped || got.RuntimeGeneration != session.RuntimeGeneration+1 {
+					t.Fatalf("agent lifecycle changed: %+v %v", got, err)
+				}
+				if logs, err := database.ListRetainedShellSessions(ctx, 0); err != nil || len(logs) != 0 {
+					t.Fatalf("agent shell logs=%+v %v", logs, err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrNotFound) {
+				t.Fatalf("failed shell selectable: %+v %v", got, err)
+			}
+			generations := []uint64{session.RuntimeGeneration}
+			if tc.launch {
+				generations = append(generations, session.RuntimeGeneration+1)
+			}
+			for _, generation := range generations {
+				if log, err := database.GetRetainedShellSession(ctx, session.ID, generation); err != nil || log.ExitSuccess || log.ExitReason != "definitive failure" {
+					t.Fatalf("retained generation %d: %+v %v", generation, log, err)
+				}
+			}
+		})
+	}
+}
+
 func TestRetireExitedShellAtomicallyDeletesInventoryAndRetainsLogIdentity(t *testing.T) {
 	ctx := context.Background()
 	database, err := Open(ctx, filepath.Join(t.TempDir(), "ducklion.db"))

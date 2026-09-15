@@ -14,6 +14,8 @@ type workspacePaneIntent struct {
 	projectID string
 	targetID  string
 	placement ducklord.PanePlacement
+
+	moveConfirmationBackStep string
 }
 
 func (s *tuiState) beginWorkspacePane() {
@@ -414,6 +416,14 @@ func (s *tuiState) closeWorkspacePane() {
 // placeWorkspacePane is one atomic local transaction. The remote Session is
 // never started, stopped, or yielded by placing its local view.
 func (s *tuiState) placeWorkspacePane(intent workspacePaneIntent, session ducklord.RemoteSession) error {
+	return s.commitWorkspacePanePlacement(intent, session, false)
+}
+
+func (s *tuiState) placeCreatedWorkspacePane(intent workspacePaneIntent, session ducklord.RemoteSession) error {
+	return s.commitWorkspacePanePlacement(intent, session, true)
+}
+
+func (s *tuiState) commitWorkspacePanePlacement(intent workspacePaneIntent, session ducklord.RemoteSession, created bool) error {
 	identity, ok := ducklord.IdentityFromSession(session)
 	if !ok {
 		return fmt.Errorf("session has no stable identity")
@@ -422,7 +432,21 @@ func (s *tuiState) placeWorkspacePane(intent workspacePaneIntent, session ducklo
 		return fmt.Errorf("session changed or is unavailable; refresh before placing its pane")
 	}
 	next := s.activity().Clone()
-	paneID, err := next.ProjectLayout.Place(intent.projectID, identity, intent.placement, intent.targetID)
+	var paneID string
+	var err error
+	// Inventory discovery adds newly created Sessions to Default before their
+	// pending placement runs. Reposition that implicit pane for this creation
+	// only; existing-session actions still require explicit move confirmation.
+	if created && intent.projectID == ducklord.DefaultProjectID {
+		paneID = s.projectPaneID(intent.projectID, identity)
+	}
+	if paneID != "" {
+		if intent.placement != ducklord.PlaceNewTab {
+			paneID, err = next.ProjectLayout.MovePane(intent.projectID, paneID, intent.placement, intent.targetID)
+		}
+	} else {
+		paneID, err = next.ProjectLayout.Place(intent.projectID, identity, intent.placement, intent.targetID)
+	}
 	if err != nil {
 		return err
 	}
@@ -471,7 +495,7 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 				_ = nav.SelectProject(projectID)
 			}
 		default:
-			if utf8.Valid(input) {
+			if utf8.Valid(input) && !strings.ContainsRune(key, '\x1b') {
 				for _, r := range key {
 					if !unicode.IsControl(r) && !unicode.Is(unicode.Cf, r) && utf8.RuneCountInString(s.workspacePaneName) < 128 {
 						s.workspacePaneName += string(r)
@@ -503,7 +527,7 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 				s.workspacePaneStep = "move-target"
 			}
 		case "existing-move-confirm":
-			if s.workspacePaneCandidate.Client != "" {
+			if s.workspacePaneIntent.moveConfirmationBackStep == "drop-placement" {
 				s.workspacePaneStep = "drop-placement"
 			} else {
 				s.workspacePaneStep = "existing"
@@ -586,6 +610,7 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 			}
 			s.workspacePaneStep, s.workspacePaneIndex, s.workspacePaneErr = "source", 0, ""
 		case "drop-placement":
+			s.workspacePaneIntent.moveConfirmationBackStep = "drop-placement"
 			s.workspacePaneIntent.placement = []ducklord.PanePlacement{ducklord.PlaceNewTab, ducklord.PlaceVertical, ducklord.PlaceHorizontal}[index]
 			if err := s.placeDroppedWorkspacePane(); err != nil {
 				s.workspacePaneErr = sanitizeTerminalText(err.Error())
@@ -611,6 +636,7 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 					return false
 				}
 				s.workspacePaneSourceID, s.workspacePaneIdentity, s.workspacePaneCandidate = sourceID, identity, candidate
+				s.workspacePaneIntent.moveConfirmationBackStep = "existing"
 				s.workspacePaneStep, s.workspacePaneIndex, s.workspacePaneErr = "existing-move-confirm", 1, ""
 				return false
 			}
@@ -621,7 +647,7 @@ func (s *tuiState) handleWorkspacePaneInput(input []byte) (openCreate bool) {
 			s.closeWorkspacePane()
 		}
 	default:
-		if s.workspacePaneStep == "existing" && utf8.Valid(input) {
+		if s.workspacePaneStep == "existing" && utf8.Valid(input) && !strings.ContainsRune(key, '\x1b') {
 			for _, r := range key {
 				if !unicode.IsControl(r) && !unicode.Is(unicode.Cf, r) && utf8.RuneCountInString(s.workspacePaneQuery) < 128 {
 					s.workspacePaneQuery += string(r)

@@ -1,6 +1,129 @@
 package ducklord
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+func TestWorkspaceSuppressedDefaultRequiresExplicitRestore(t *testing.T) {
+	layout := NewProjectLayout()
+	session := testLayoutIdentity("ABC123")
+	if err := layout.Discover(session); err != nil {
+		t.Fatal(err)
+	}
+	if err := layout.Detach(DefaultProjectID, session); err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWorkspaceState(&layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertClosed := func() {
+		t.Helper()
+		if len(layout.Project(DefaultProjectID).Tabs) != 0 || !layout.defaultSuppressed(session) {
+			t.Fatal("passive navigation reopened closed Default pane")
+		}
+		if w.CurrentPaneID() != "" || w.CurrentTabID() != "" {
+			t.Fatal("closed pane retained navigation target")
+		}
+	}
+	assertClosed()
+	w.ReconcileLayout()
+	if err := w.SelectProject(DefaultProjectID); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.NotificationProjectID(session); got != DefaultProjectID {
+		t.Fatalf("hidden membership label = %q", got)
+	}
+	assertClosed()
+	if err := w.SelectQuickSession(session); err == nil {
+		t.Fatal("quick navigation accepted a closed pane without restore")
+	}
+	w.EnterDetail()
+	if err := w.PreviewDetail(session); err != nil {
+		t.Fatal(err)
+	}
+	w.ReconcileLayout()
+	if w.DetailSelection() != session {
+		t.Fatal("reconcile lost hidden detail selection")
+	}
+	assertClosed()
+	if _, err := w.JumpDetail(); err == nil || !w.InDetailMode() {
+		t.Fatal("failed jump changed detail mode")
+	}
+	w.ExitDetail()
+	clone := layout.Clone()
+	if err := w.RebindLayout(&clone); err != nil {
+		t.Fatal(err)
+	}
+	if len(clone.Project(DefaultProjectID).Tabs) != 0 || !clone.defaultSuppressed(session) {
+		t.Fatal("rebind reopened pane")
+	}
+	if changed, err := clone.RestoreDefaultPane(session); err != nil || !changed {
+		t.Fatalf("restore = %v, %v", changed, err)
+	}
+	if err := w.SelectQuickSession(session); err != nil {
+		t.Fatal(err)
+	}
+	if w.CurrentPaneID() == "" || w.Region() != RegionQuickList {
+		t.Fatal("restored pane not navigable")
+	}
+	w.EnterDetail()
+	if err := w.PreviewDetail(session); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := w.JumpDetail(); err != nil || got != session || w.Region() != RegionTerminal {
+		t.Fatalf("restored detail jump = %v, %v", got, err)
+	}
+}
+
+func TestNotificationProjectPrecedenceDoesNotNavigate(t *testing.T) {
+	layout := NewProjectLayout()
+	session := testLayoutIdentity("ABC123")
+	first, _ := layout.AddProject("First")
+	second, _ := layout.AddProject("Second")
+	third, _ := layout.AddProject("Third")
+	for _, project := range []string{first, second, third} {
+		if _, err := layout.Place(project, session, PlaceNewTab, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tt := range []struct {
+		name, focused, current, last, want string
+	}{
+		{"focused before current", third, second, first, third},
+		{"current before last", "", second, third, second},
+		{"unrelated focus", DefaultProjectID, second, third, second},
+		{"last before order", "", DefaultProjectID, third, third},
+		{"order fallback", "", DefaultProjectID, "", first},
+		{"stale preferences", "removed", "removed", "removed", first},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w, err := NewWorkspaceState(&layout)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w.notificationFocusProjectID = tt.focused
+			w.location.projectID = tt.current
+			w.lastProject[session] = tt.last
+			before := *w
+			before.lastProject = map[SessionIdentity]string{session: tt.last}
+			before.projectLocation = make(map[string]workspaceLocation)
+			for id, location := range w.projectLocation {
+				before.projectLocation[id] = location
+			}
+			if got := w.NotificationProjectID(session); got != tt.want {
+				t.Fatalf("Project = %q, want %q", got, tt.want)
+			}
+			if got := w.NotificationProjectID(testLayoutIdentity("DEF456")); got != "" {
+				t.Fatalf("unknown Session resolved to Project %q", got)
+			}
+			if !reflect.DeepEqual(before, *w) {
+				t.Fatal("notification label changed workspace navigation")
+			}
+		})
+	}
+}
 
 func TestWorkspaceQuickNavigationIsOneWayAndDoesNotFocus(t *testing.T) {
 	layout := NewProjectLayout()
@@ -32,6 +155,68 @@ func TestWorkspaceQuickNavigationIsOneWayAndDoesNotFocus(t *testing.T) {
 	identity, err := w.FocusPane()
 	if err != nil || identity != b || w.Region() != RegionTerminal {
 		t.Fatalf("focus did not select intended Session: %v %+v", err, w.location)
+	}
+}
+
+func TestWorkspaceProjectVisitUpdatesSessionNavigationHistory(t *testing.T) {
+	for _, focus := range []bool{false, true} {
+		for _, navigation := range []string{"quick", "detail"} {
+			name := navigation + "/preview"
+			if focus {
+				name = navigation + "/focused"
+			}
+			t.Run(name, func(t *testing.T) {
+				layout := NewProjectLayout()
+				session := testLayoutIdentity("ABC123")
+				first, _ := layout.AddProject("First")
+				lastViewed, _ := layout.AddProject("Last viewed")
+				unrelated, _ := layout.AddProject("Unrelated")
+				for _, project := range []string{first, lastViewed} {
+					if _, err := layout.Place(project, session, PlaceNewTab, ""); err != nil {
+						t.Fatal(err)
+					}
+				}
+				w, err := NewWorkspaceState(&layout)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := w.SelectQuickSession(session); err != nil {
+					t.Fatal(err)
+				}
+				if w.CurrentProjectID() != first {
+					t.Fatal("initial navigation did not establish first Project")
+				}
+				if err := w.SelectProject(lastViewed); err != nil {
+					t.Fatal(err)
+				}
+				if focus {
+					if _, err := w.FocusPane(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := w.SelectProject(unrelated); err != nil {
+					t.Fatal(err)
+				}
+				// Merely previewing the Session in detailed mode must not
+				// replace its last normal Project with the unrelated one.
+				w.EnterDetail()
+				if err := w.PreviewDetail(session); err != nil {
+					t.Fatal(err)
+				}
+				if navigation == "detail" {
+					_, err = w.JumpDetail()
+				} else {
+					w.ExitDetail()
+					err = w.SelectQuickSession(session)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if w.CurrentProjectID() != lastViewed {
+					t.Fatalf("navigation selected %q, want last-viewed Project %q", w.CurrentProjectID(), lastViewed)
+				}
+			})
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -227,6 +228,12 @@ func TestWorkspaceProjectCreateAndNewShellIntent(t *testing.T) {
 	for _, key := range []string{"新", "專", "案"} {
 		state.handleWorkspacePaneInput([]byte(key))
 	}
+	for _, key := range []string{"\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D", "\x1b[H", "\x1b[F", "\x1b[3~", "\x1bOP", "\x1bx"} {
+		state.handleWorkspacePaneInput([]byte(key))
+		if state.workspacePaneName != "新專案" || !state.workspacePaneMode || state.workspacePaneStep != "project-create" {
+			t.Fatalf("key %q corrupted Project creation: name=%q mode=%v step=%q", key, state.workspacePaneName, state.workspacePaneMode, state.workspacePaneStep)
+		}
+	}
 	state.handleWorkspacePaneInput([]byte("\r"))
 	if state.workspacePaneMode || nav.CurrentProjectID() == projectID || state.activity().ProjectLayout.Project(nav.CurrentProjectID()).Name != "新專案" {
 		t.Fatalf("Project creation failed: %+v", nav)
@@ -238,6 +245,26 @@ func TestWorkspaceProjectCreateAndNewShellIntent(t *testing.T) {
 	}
 	if state.workspaceNewSessionIntent.projectID != nav.CurrentProjectID() || state.workspaceNewSessionIntent.placement != ducklord.PlaceNewTab {
 		t.Fatalf("wrong new-shell intent: %+v", state.workspaceNewSessionIntent)
+	}
+}
+
+func TestWorkspaceExistingSessionSearchIgnoresEscapeSequences(t *testing.T) {
+	state, _, _, _ := workspacePaneTestState(t)
+	state.workspacePaneMode, state.workspacePaneStep = true, "existing"
+	state.workspacePaneQuery, state.workspacePaneIndex = "專案", 1
+	for _, key := range []string{"\x1b[C", "\x1b[D", "\x1b[H", "\x1b[F", "\x1b[3~", "\x1bOP", "\x1bx"} {
+		state.handleWorkspacePaneInput([]byte(key))
+		if state.workspacePaneQuery != "專案" || state.workspacePaneIndex != 1 || state.workspacePaneStep != "existing" {
+			t.Fatalf("key %q corrupted existing Session search: query=%q index=%d step=%q", key, state.workspacePaneQuery, state.workspacePaneIndex, state.workspacePaneStep)
+		}
+	}
+	state.handleWorkspacePaneInput([]byte("\x7f"))
+	if state.workspacePaneQuery != "專" {
+		t.Fatalf("Unicode backspace: query=%q", state.workspacePaneQuery)
+	}
+	state.handleWorkspacePaneInput([]byte("\x1b"))
+	if state.workspacePaneStep != "source" || state.workspacePaneQuery != "" {
+		t.Fatal("Escape did not return to source selection and clear search")
 	}
 }
 
@@ -284,6 +311,79 @@ func TestWorkspaceNewShellIntentClearsOnHostChangeAndCancel(t *testing.T) {
 	state.cancelCreate()
 	if state.workspaceNewSessionIntent != nil {
 		t.Fatal("cancel retained stale Project placement intent")
+	}
+}
+
+func TestWorkspaceNewShellDefaultPlacementAfterDiscovery(t *testing.T) {
+	for _, delivery := range []string{"immediate", "delayed poll", "delayed update"} {
+		for _, placement := range []ducklord.PanePlacement{ducklord.PlaceNewTab, ducklord.PlaceVertical, ducklord.PlaceHorizontal} {
+			t.Run(delivery+"/"+string(placement), func(t *testing.T) {
+				state, _, a, b := workspacePaneTestState(t)
+				created := b
+				created.SessionID, created.Name = "CCC333", "Created"
+				identity, _ := ducklord.IdentityFromSession(created)
+				targetIdentity, _ := ducklord.IdentityFromSession(b)
+				targetID := state.projectPaneID(ducklord.DefaultProjectID, targetIdentity)
+				state.workspaceNewSessionIntent = &workspacePaneIntent{
+					projectID: ducklord.DefaultProjectID, targetID: targetID, placement: placement,
+				}
+				state.pooledOutput = true
+				state.newSessionMode, state.newSessionStarting = true, true
+				state.newSessionStartGeneration, state.newSessionStartInstance = 2, a.InstanceID
+				state.hostSync = map[string]ducklord.SessionUpdate{"host": {Client: "host", State: "live", Generation: 2, InstanceID: a.InstanceID}}
+				inventory := []ducklord.RemoteSession{a, b, created}
+				state.runner = fakeRunner{sessions: inventory}
+				if delivery != "immediate" {
+					state.runner = fakeRunner{sessions: inventory[:2]}
+				}
+				state.completeNewSessionStart(context.Background(), "host", created.SessionID, nil)
+				if delivery != "immediate" {
+					if len(state.pendingWorkspacePlacements) != 1 {
+						t.Fatal("creation did not retain pending placement")
+					}
+					if delivery == "delayed poll" {
+						state.runner = fakeRunner{sessions: inventory}
+						state.refreshSessions(context.Background())
+					} else if !state.applySessionUpdate(ducklord.SessionUpdate{Client: "host", State: "live", Generation: 2,
+						InstanceID: a.InstanceID, Revision: 1, Sessions: inventory}) {
+						t.Fatal("delayed inventory was rejected")
+					}
+				}
+				if len(state.pendingWorkspacePlacements) != 0 || state.outputErr != "Session pane created" {
+					t.Fatalf("creation failed: pending=%d message=%q", len(state.pendingWorkspacePlacements), state.outputErr)
+				}
+				saved, err := state.activityStore.Load()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, layout := range []*ducklord.ProjectLayout{&state.activity().ProjectLayout, &saved.ProjectLayout} {
+					project := layout.Project(ducklord.DefaultProjectID)
+					if placement == ducklord.PlaceNewTab {
+						if len(project.Tabs) != 2 || project.Tabs[1].Root.Session == nil || *project.Tabs[1].Root.Session != identity {
+							t.Fatalf("new tab was not preserved: %+v", project.Tabs)
+						}
+					} else {
+						if len(project.Tabs) != 1 {
+							t.Fatalf("split left extra discovered tab: %d", len(project.Tabs))
+						}
+						root := project.Tabs[0].Root
+						if root.Direction != ducklord.SplitDirection(placement) || root.First == nil || root.Second == nil ||
+							root.First.ID != targetID || root.First.Session == nil || *root.First.Session != targetIdentity ||
+							root.Second.Session == nil || *root.Second.Session != identity {
+							t.Fatalf("created session did not split chosen target: %+v", root)
+						}
+					}
+				}
+				nav, err := state.workspaceNavigation()
+				if err != nil {
+					t.Fatal(err)
+				}
+				selected, ok := state.activity().ProjectLayout.PaneSession(nav.CurrentProjectID(), nav.CurrentPaneID())
+				if !ok || selected != identity {
+					t.Fatal("new pane was not selected")
+				}
+			})
+		}
 	}
 }
 
@@ -467,6 +567,52 @@ func TestWorkspacePaneMoveAndDetachLeaveRemoteInventoryUntouched(t *testing.T) {
 	}
 }
 
+func TestWorkspaceDefaultPaneDetachPersistsClosedViewAndMembership(t *testing.T) {
+	state, _, _, session := workspacePaneTestState(t)
+	identity, _ := ducklord.IdentityFromSession(session)
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectQuickSession(identity); err != nil {
+		t.Fatal(err)
+	}
+	paneID := nav.CurrentPaneID()
+	state.beginWorkspaceDetach()
+	state.handleWorkspacePaneInput([]byte("\r")) // Cancel is the default.
+	if _, ok := state.activity().ProjectLayout.PaneSession(ducklord.DefaultProjectID, paneID); !ok {
+		t.Fatal("default Cancel removed the pane")
+	}
+	state.beginWorkspaceDetach()
+	state.handleWorkspacePaneInput([]byte("\x1b[A"))
+	state.handleWorkspacePaneInput([]byte("\r"))
+	if state.workspacePaneMode || !state.workspacePaneChanged {
+		t.Fatal("Default pane closure did not commit")
+	}
+	loaded, err := state.activityStore.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loaded.ProjectLayout.PaneSession(ducklord.DefaultProjectID, paneID); ok {
+		t.Fatal("closed Default pane remained in persisted layout")
+	}
+	if projects := loaded.ProjectLayout.ProjectsFor(identity); len(projects) != 1 || projects[0] != ducklord.DefaultProjectID {
+		t.Fatalf("closure lost implicit Default membership: %v", projects)
+	}
+	if suppressed := loaded.ProjectLayout.SuppressedDefaultSessions; len(suppressed) != 1 || suppressed[0] != identity {
+		t.Fatalf("closure did not persist Default suppression: %v", suppressed)
+	}
+	if err := loaded.ProjectLayout.Discover(identity); err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.ProjectLayout.Project(ducklord.DefaultProjectID).Tabs) != 0 {
+		t.Fatal("rediscovery reopened the closed Default pane")
+	}
+	if len(state.sessions) != 2 || !reflect.DeepEqual(state.sessions[1], session) {
+		t.Fatal("local closure changed remote inventory")
+	}
+}
+
 func TestWorkspacePaneActionStaleSourceAndSaveFailureAreAtomic(t *testing.T) {
 	state, projectID, _, _ := workspacePaneTestState(t)
 	nav, _ := state.workspaceNavigation()
@@ -526,6 +672,57 @@ func TestWorkspaceExistingPickerMovesSameProjectPaneOnlyAfterConfirmation(t *tes
 	}
 	if len(state.sessions) != 2 || state.sessions[0].SessionID != a.SessionID {
 		t.Fatal("local move touched remote inventory")
+	}
+}
+
+func TestWorkspaceExistingPickerMoveConfirmationEscapeReturnsToPicker(t *testing.T) {
+	state, projectID, a, _ := workspacePaneTestState(t)
+	nav, _ := state.workspaceNavigation()
+	_ = nav.SelectProject(projectID)
+	oldID := nav.CurrentPaneID()
+	state.beginWorkspacePane()
+	state.handleWorkspacePaneInput([]byte("\r"))     // new tab
+	state.handleWorkspacePaneInput([]byte("\x1b[B")) // existing Session
+	state.handleWorkspacePaneInput([]byte("\r"))
+	state.handleWorkspacePaneInput([]byte(a.SessionID)) // retain search when going back
+	state.handleWorkspacePaneInput([]byte("\r"))
+	if state.workspacePaneStep != "existing-move-confirm" || state.workspacePaneCandidate.Client == "" {
+		t.Fatal("picker did not open move confirmation with a pinned candidate")
+	}
+	state.handleWorkspacePaneInput([]byte("\x1b"))
+	if !state.workspacePaneMode || state.workspacePaneStep != "existing" || state.workspacePaneQuery != a.SessionID {
+		t.Fatalf("Escape did not return to filtered picker: mode=%t step=%q query=%q", state.workspacePaneMode, state.workspacePaneStep, state.workspacePaneQuery)
+	}
+	if _, ok := state.activity().ProjectLayout.PaneSession(projectID, oldID); !ok || state.workspacePaneChanged {
+		t.Fatal("Escape changed the existing pane")
+	}
+	state.handleWorkspacePaneInput([]byte("\x1b"))
+	if state.workspacePaneStep != "source" || state.workspacePaneQuery != "" {
+		t.Fatal("second Escape did not return to source selection")
+	}
+}
+
+func TestWorkspaceDroppedPaneMoveConfirmationEscapeReturnsToPlacement(t *testing.T) {
+	state, projectID, a, _ := workspacePaneTestState(t)
+	identity, _ := ducklord.IdentityFromSession(a)
+	oldID := state.projectPaneID(projectID, identity)
+	state.beginWorkspaceDrop(a, identity, projectID, oldID)
+	state.handleWorkspacePaneInput([]byte("\r")) // new tab
+	if state.workspacePaneStep != "existing-move-confirm" {
+		t.Fatalf("drop did not open move confirmation: %q", state.workspacePaneStep)
+	}
+	state.handleWorkspacePaneInput([]byte("\x1b"))
+	if !state.workspacePaneMode || state.workspacePaneStep != "drop-placement" || state.workspacePaneCandidate.SessionID != a.SessionID || state.workspacePaneCandidate.RuntimeGeneration != a.RuntimeGeneration || len(state.workspacePaneChoices()) != 3 {
+		t.Fatalf("Escape did not restore drag placement: mode=%t step=%q", state.workspacePaneMode, state.workspacePaneStep)
+	}
+	if _, ok := state.activity().ProjectLayout.PaneSession(projectID, oldID); !ok || state.workspacePaneChanged {
+		t.Fatal("Escape moved the dragged pane")
+	}
+	state.handleWorkspacePaneInput([]byte("\r"))
+	state.handleWorkspacePaneInput([]byte("\x1b[A")) // confirm Move after returning
+	state.handleWorkspacePaneInput([]byte("\r"))
+	if state.workspacePaneMode || !state.workspacePaneChanged {
+		t.Fatalf("move after Escape failed: %q", state.workspacePaneErr)
 	}
 }
 

@@ -363,6 +363,26 @@ func TestConfigShortcutsOverrideAndRejectCollisions(t *testing.T) {
 	}
 }
 
+func TestDetailedShortcutsRoundTripAndEnterCollision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := &Config{Shortcuts: map[string]string{"detail_next": "J", "detail_previous": "K", "detail_focus": "ctrl-M"}}
+	if err := SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Shortcut("detail_next") != "J" || loaded.Shortcut("detail_previous") != "K" || loaded.Shortcut("detail_focus") != "enter" {
+		t.Fatalf("detailed bindings not preserved: %#v", loaded.Shortcuts)
+	}
+	for _, binding := range []string{"enter", "ctrl-m", "ctrl-M"} {
+		if err := (&Config{Shortcuts: map[string]string{"help": binding}}).normalize(); err == nil {
+			t.Fatalf("accepted Enter collision via %q", binding)
+		}
+	}
+}
+
 func TestSSHArgsDoNotUseLocalShell(t *testing.T) {
 	c := Client{Name: "vulns", Host: "vulns.ts", User: "duck", Ducklion: "ducklion", SSH: "ssh"}
 	got := SSHArgs(c, false, "ducklion", "send", "alpha", "hello; rm -rf /")

@@ -817,8 +817,16 @@ func (s *Server) driveLifecycle(sessionID model.SessionID) {
 			return
 		}
 		if pending.Operation == store.LifecycleRestart {
+			session, err := s.state.GetSession(context.Background(), sessionID)
+			if err != nil {
+				return
+			}
 			specPath, publicKey, prepareErr := s.prepareLifecycleRestart(*pending)
 			if prepareErr != nil {
+				if session.Kind == model.KindShell && errors.Is(prepareErr, errInvalidRetainedRestartState) {
+					s.failLifecycleRestart(*pending, "could not prepare replacement runtime: "+prepareErr.Error())
+					return
+				}
 				_, _ = s.state.CompareAndSwapLifecyclePhase(context.Background(), sessionID, pending.RequestID, store.LifecycleRuntimeStopped, store.LifecycleRuntimeStopped, prepareErr.Error())
 				return
 			}
@@ -894,17 +902,22 @@ func (s *Server) failLifecycleRestart(pending store.PendingLifecycle, failure st
 	_ = s.state.FailLifecycleRestart(context.Background(), pending, failure)
 }
 
+var errInvalidRetainedRestartState = errors.New("retained restart state is invalid")
+
 func (s *Server) prepareLifecycleRestart(pending store.PendingLifecycle) (string, ed25519.PublicKey, error) {
 	dir := filepath.Join(s.root, "sessions", string(pending.SessionID))
 	specPath := filepath.Join(dir, "runtime.json")
 	data, err := os.ReadFile(specPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil, fmt.Errorf("%w: read retained runtime spec: %w", errInvalidRetainedRestartState, err)
+		}
 		return "", nil, fmt.Errorf("read retained runtime spec: %w", err)
 	}
 	var spec runtimeSpec
 	if err := json.Unmarshal(data, &spec); err != nil || spec.SessionID != pending.SessionID ||
 		(spec.RuntimeGeneration != pending.SourceGeneration && spec.RuntimeGeneration != pending.SourceGeneration+1) {
-		return "", nil, fmt.Errorf("retained runtime spec is invalid")
+		return "", nil, fmt.Errorf("%w: retained runtime spec is invalid", errInvalidRetainedRestartState)
 	}
 	spec.SocketPath = s.socketPath
 	spec.OwnershipEpoch = pending.SourceEpoch
@@ -914,7 +927,7 @@ func (s *Server) prepareLifecycleRestart(pending store.PendingLifecycle) (string
 	if keyData, readErr := os.ReadFile(keyPath); readErr == nil {
 		decoded, decodeErr := base64.RawStdEncoding.DecodeString(strings.TrimSpace(string(keyData)))
 		if decodeErr != nil || len(decoded) != ed25519.PrivateKeySize {
-			return "", nil, fmt.Errorf("retained recovery key is invalid")
+			return "", nil, fmt.Errorf("%w: retained recovery key is invalid", errInvalidRetainedRestartState)
 		}
 		privateKey := ed25519.PrivateKey(decoded)
 		publicKey = append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...)
@@ -1753,13 +1766,28 @@ func forwardPendingAgentEvents(ctx context.Context, client *SupervisorClient, se
 	}
 }
 
+// pendingForwardableActivity drops only unsupported advisory action-needed
+// hints. Older daemons already negotiate agent_activity for completion/failure,
+// but cannot accept these newer categories. Keeping such a hint at the queue
+// head would strand both subsequent completion delivery and runtime exit.
+func pendingForwardableActivity(client *SupervisorClient, session *supervisor.Session) (model.NotificationCategory, uint64, uint64, string, bool) {
+	for {
+		category, offset, eventID, source, pending := session.PendingActivityWithSource()
+		if pending && isActionNeededActivity(category) && !client.SupportsActionNeededActivity() {
+			session.AckActivity(category, offset, eventID)
+			continue
+		}
+		return category, offset, eventID, source, pending
+	}
+}
+
 func forwardPendingAttention(ctx context.Context, client *SupervisorClient, session *supervisor.Session) {
 	if !client.SupportsAttention() {
 		// terminal_attention is optional for rolling upgrades. Bytes still
 		// reached the durable output ring; acknowledge the local hint so an old
 		// daemon cannot strand this supervisor in a retry loop.
 		for {
-			if category, offset, eventID, pending := session.PendingActivity(); pending {
+			if category, offset, eventID, _, pending := pendingForwardableActivity(client, session); pending {
 				if category == model.NotificationTerminalAttention {
 					session.AckActivity(category, offset, eventID)
 					continue
@@ -1785,7 +1813,7 @@ func forwardPendingAttention(ctx context.Context, client *SupervisorClient, sess
 		}
 	}()
 	for {
-		category, offset, eventID, source, pending := session.PendingActivityWithSource()
+		category, offset, eventID, source, pending := pendingForwardableActivity(client, session)
 		if pending {
 			if category != model.NotificationTerminalAttention && !client.SupportsAgentActivity() {
 				<-ctx.Done()
@@ -1820,6 +1848,12 @@ func forwardPendingAttention(ctx context.Context, client *SupervisorClient, sess
 			reportCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			err := activity.ReportActivityWithSource(reportCtx, category, offset, eventID, source)
 			cancel()
+			if errors.Is(err, errUnsupportedActionNeededActivity) {
+				// The independently negotiated activity connection is also a
+				// capability boundary; never send unknown advisory categories.
+				session.AckActivity(category, offset, eventID)
+				continue
+			}
 			if err != nil {
 				_ = activity.Close()
 				activity = nil
@@ -1869,7 +1903,7 @@ func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec,
 			forwardErr := client.PublishSnapshot(replay)
 			if forwardErr == nil && client.SupportsAttention() {
 				for {
-					category, offset, eventID, source, pending := session.PendingActivityWithSource()
+					category, offset, eventID, source, pending := pendingForwardableActivity(client, session)
 					if !pending || forwardErr != nil {
 						break
 					}
@@ -1884,7 +1918,7 @@ func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec,
 						cancel()
 						_ = activity.Close()
 					}
-					if activityErr != nil {
+					if activityErr != nil && !errors.Is(activityErr, errUnsupportedActionNeededActivity) {
 						forwardErr = activityErr
 					} else {
 						session.AckActivity(category, offset, eventID)
@@ -1892,7 +1926,7 @@ func reportExitedRuntime(ctx context.Context, specPath string, spec runtimeSpec,
 				}
 			} else if forwardErr == nil {
 				for {
-					category, offset, eventID, pending := session.PendingActivity()
+					category, offset, eventID, _, pending := pendingForwardableActivity(client, session)
 					if !pending {
 						break
 					}

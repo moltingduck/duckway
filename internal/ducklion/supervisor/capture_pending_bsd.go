@@ -10,5 +10,16 @@ import (
 
 func pendingPTYBytes(file *os.File) (int, error) {
 	const fionread = 0x4004667f
-	return unix.IoctlGetInt(int(file.Fd()), fionread)
+	conn, err := file.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var pending int
+	var ioctlErr error
+	if err := conn.Control(func(fd uintptr) {
+		pending, ioctlErr = unix.IoctlGetInt(int(fd), fionread)
+	}); err != nil {
+		return 0, err
+	}
+	return pending, ioctlErr
 }

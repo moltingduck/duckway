@@ -227,8 +227,9 @@ func (s *SQLite) CompleteLifecycle(ctx context.Context, pending PendingLifecycle
 }
 
 // FailLifecycleRestart turns a definitive replacement-launch failure into a
-// durable negative receipt, restores a usable stopped session, and releases
-// the lifecycle barrier. Ambiguous supervisor outcomes never call this path.
+// durable negative receipt and releases the lifecycle barrier. Shells retire
+// into diagnostic history; managed agents remain stopped for recovery.
+// Ambiguous supervisor outcomes never call this path.
 func (s *SQLite) FailLifecycleRestart(ctx context.Context, pending PendingLifecycle, failure string) error {
 	if pending.Operation != LifecycleRestart || strings.TrimSpace(failure) == "" {
 		return fmt.Errorf("invalid failed lifecycle restart")
@@ -242,12 +243,21 @@ func (s *SQLite) FailLifecycleRestart(ctx context.Context, pending PendingLifecy
 	}
 	defer tx.Rollback()
 	current, err := s.GetPendingLifecycleTx(ctx, tx, pending.SessionID)
-	if err != nil || current == nil || current.RequestID != pending.RequestID || current.Phase != LifecycleLaunching {
+	if err != nil || current == nil || current.RequestID != pending.RequestID || current.Operation != pending.Operation ||
+		current.Mode != pending.Mode || current.Requester != pending.Requester || current.SourceEpoch != pending.SourceEpoch ||
+		current.SourceGeneration != pending.SourceGeneration || (current.Phase != LifecycleLaunching && current.Phase != LifecycleRuntimeStopped) {
 		return fmt.Errorf("restart failure fencing conflict")
 	}
 	now := time.Now().UTC().UnixMilli()
 	session, getErr := s.GetSessionTx(ctx, tx, pending.SessionID)
-	if getErr != nil || session.RuntimeGeneration != pending.SourceGeneration+1 || session.OwnershipEpoch != pending.SourceEpoch ||
+	expectedGeneration := pending.SourceGeneration + 1
+	if current.Phase == LifecycleRuntimeStopped {
+		expectedGeneration = pending.SourceGeneration
+		if getErr != nil || session.Kind != model.KindShell || session.Status != model.StatusStopped {
+			return fmt.Errorf("restart preparation failure session fencing conflict")
+		}
+	}
+	if getErr != nil || session.RuntimeGeneration != expectedGeneration || session.OwnershipEpoch != pending.SourceEpoch ||
 		(session.Status != model.StatusRecovering && session.Status != model.StatusStopped) {
 		return fmt.Errorf("restart failure session fencing conflict")
 	}
@@ -278,6 +288,24 @@ func (s *SQLite) FailLifecycleRestart(ctx context.Context, pending PendingLifecy
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM pending_lifecycle_operations WHERE session_id=? AND request_id=?`, pending.SessionID, pending.RequestID); err != nil {
 		return err
+	}
+	if session.Kind == model.KindShell {
+		// The source log contains the user's last shell output. Preserve its
+		// identity even when a replacement never opened its own PTY log.
+		generations := []uint64{pending.SourceGeneration}
+		if session.RuntimeGeneration != pending.SourceGeneration {
+			generations = append(generations, session.RuntimeGeneration)
+		}
+		for _, generation := range generations {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO retained_shell_sessions
+				(session_id,runtime_generation,handle,exited_at_ms,exit_success,exit_reason) VALUES(?,?,?,?,?,?)`,
+				session.ID, generation, session.Handle, now, false, failure); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE session_id=?`, session.ID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

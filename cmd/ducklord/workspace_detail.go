@@ -55,7 +55,29 @@ func (s *tuiState) detailedSessionItems() []ducklord.DetailedSessionItem {
 }
 
 func (s *tuiState) detailedResults() []ducklord.DetailedSessionItem {
-	return ducklord.FilterDetailedSessions(s.detailedSessionItems(), s.detailQuery, s.detailFilter)
+	items := s.detailedSessionItems()
+	results := ducklord.FilterDetailedSessions(items, s.detailQuery, s.detailFilter)
+	// Reading a focused PTY clears unread immediately. Keep that Session in
+	// the list until focus ends, so rendering and inventory reconciliation
+	// cannot switch the pane out from under the active input stream.
+	if !s.focused || s.workspaceNav == nil || !s.workspaceNav.InDetailMode() {
+		return results
+	}
+	identity, ok := ducklord.IdentityFromSession(s.activePTYSession())
+	if !ok || identity != s.detailSelected || s.workspaceNav.DetailSelection() != identity {
+		return results
+	}
+	for _, item := range results {
+		if item.Identity == identity {
+			return results
+		}
+	}
+	for _, item := range items {
+		if item.Identity == identity {
+			return append(results, item)
+		}
+	}
+	return results
 }
 
 func (s *tuiState) syncDetailSelection() bool {
@@ -88,6 +110,10 @@ func (s *tuiState) enterDetailedMode() bool {
 		s.outputErr = err.Error()
 		return false
 	}
+	if nav.InDetailMode() {
+		return false
+	}
+	s.detailReturnProjectFocus = s.workspaceProjectFocus
 	nav.EnterDetail()
 	s.detailQuery, s.detailFilter, s.detailSearchFocused = "", ducklord.DetailAll, false
 	s.detailSelected = nav.DetailSelection()
@@ -97,9 +123,11 @@ func (s *tuiState) enterDetailedMode() bool {
 }
 
 func (s *tuiState) exitDetailedMode() {
-	if nav, err := s.workspaceNavigation(); err == nil {
+	if nav, err := s.workspaceNavigation(); err == nil && nav.InDetailMode() {
 		nav.ExitDetail()
+		s.workspaceProjectFocus = s.detailReturnProjectFocus
 	}
+	s.detailReturnProjectFocus = false
 	s.detailQuery, s.detailFilter, s.detailSearchFocused = "", ducklord.DetailAll, false
 	s.detailSelected = ducklord.SessionIdentity{}
 }
@@ -116,9 +144,6 @@ func (s *tuiState) handleDetailedInput(input []byte) string {
 		if s.shortcut("detail_list", key) && s.enterDetailedMode() {
 			return "changed"
 		}
-		return ""
-	}
-	if s.shortcut("help", key) {
 		return ""
 	}
 	if s.detailSearchFocused {
@@ -140,7 +165,7 @@ func (s *tuiState) handleDetailedInput(input []byte) string {
 				s.detailQuery = string(runes[:len(runes)-1])
 			}
 		default:
-			if utf8.Valid(input) {
+			if utf8.Valid(input) && !strings.ContainsRune(key, '\x1b') {
 				for _, r := range key {
 					if !unicode.IsControl(r) && !unicode.Is(unicode.Cf, r) && utf8.RuneCountInString(s.detailQuery) < 128 {
 						s.detailQuery += string(r)
@@ -150,6 +175,9 @@ func (s *tuiState) handleDetailedInput(input []byte) string {
 		}
 		s.syncDetailSelection()
 		return "changed"
+	}
+	if s.shortcut("help", key) {
+		return ""
 	}
 	if s.shortcut("detail_list", key) || key == "\x1b" {
 		s.exitDetailedMode()
@@ -170,7 +198,9 @@ func (s *tuiState) handleDetailedInput(input []byte) string {
 		s.syncDetailSelection()
 		return "changed"
 	}
-	if key == "j" || key == "\x1b[B" || key == "k" || key == "\x1b[A" {
+	next := s.shortcut("detail_next", key) || s.cfg.Shortcut("detail_next") == "j" && key == "\x1b[B"
+	previous := s.shortcut("detail_previous", key) || s.cfg.Shortcut("detail_previous") == "k" && key == "\x1b[A"
+	if next || previous {
 		results := s.detailedResults()
 		if len(results) == 0 {
 			return "changed"
@@ -182,7 +212,7 @@ func (s *tuiState) handleDetailedInput(input []byte) string {
 				break
 			}
 		}
-		if key == "j" || key == "\x1b[B" {
+		if next {
 			index = min(len(results)-1, index+1)
 		} else {
 			index = max(0, index-1)
@@ -195,15 +225,24 @@ func (s *tuiState) handleDetailedInput(input []byte) string {
 		return "changed"
 	}
 	if s.shortcut("detail_jump", key) {
+		if err := s.restoreWorkspaceDefaultPane(s.detailSelected); err != nil {
+			s.outputErr = err.Error()
+			return "changed"
+		}
+		if nav, err = s.workspaceNavigation(); err != nil {
+			s.outputErr = err.Error()
+			return "changed"
+		}
 		if _, err := nav.JumpDetail(); err != nil {
 			s.outputErr = err.Error()
 			return "changed"
 		}
 		s.detailQuery, s.detailSearchFocused = "", false
 		s.detailFilter, s.detailSelected = ducklord.DetailAll, ducklord.SessionIdentity{}
+		s.detailReturnProjectFocus = false
 		return "jump"
 	}
-	if key == "\r" {
+	if s.shortcut("detail_focus", key) {
 		return "focus"
 	}
 	// Unbound keys do not leak into the previewed PTY.
@@ -224,7 +263,7 @@ func (s *tuiState) detailSelectionSession() (ducklord.RemoteSession, bool) {
 }
 
 func (s *tuiState) detailStatusLine() string {
-	parts := []string{"Detailed Sessions: ↑/↓ preview · Enter focus · " + s.cfg.Shortcut("detail_jump") + " Project · " + s.cfg.Shortcut("detail_search") + " search · " + s.cfg.Shortcut("detail_filter") + " filter · " + s.cfg.Shortcut("detail_list") + " close"}
+	parts := []string{"Detailed Sessions: " + s.cfg.Shortcut("detail_previous") + "/" + s.cfg.Shortcut("detail_next") + " preview · " + s.cfg.Shortcut("detail_focus") + " focus · " + s.cfg.Shortcut("detail_jump") + " Project · " + s.cfg.Shortcut("detail_search") + " search · " + s.cfg.Shortcut("detail_filter") + " filter · " + s.cfg.Shortcut("detail_list") + " close"}
 	if s.detailSearchFocused {
 		parts = append(parts, "searching")
 	}

@@ -47,6 +47,27 @@ func TestReconcileUpdatesLastEventWhileAlreadyUnread(t *testing.T) {
 	}
 }
 
+func TestReconcileCancelledWinsCompletionAtSameTimestamp(t *testing.T) {
+	for _, first := range []model.NotificationCategory{model.NotificationTaskCompleted, model.NotificationTaskCancelled} {
+		t.Run(string(first), func(t *testing.T) {
+			state := NewActivityState()
+			identity := testLayoutIdentity("ABC123")
+			session := RemoteSession{InstanceID: identity.InstanceID, SessionID: identity.SessionID,
+				ActivitySequences:   map[model.NotificationCategory]uint64{first: 1},
+				ActivityUpdatedAtMS: map[model.NotificationCategory]int64{first: 10}}
+			state.Reconcile(session, false)
+			session.ActivitySequences[model.NotificationTaskCompleted] = 1
+			session.ActivitySequences[model.NotificationTaskCancelled] = 1
+			session.ActivityUpdatedAtMS[model.NotificationTaskCompleted] = 10
+			session.ActivityUpdatedAtMS[model.NotificationTaskCancelled] = 10
+			state.Reconcile(session, false)
+			if got := state.Sessions[identity.Key()]; got.LastEventCategory != model.NotificationTaskCancelled || got.LastEventAtMS != 10 {
+				t.Fatalf("equal-time cancellation lost failure priority: %+v", got)
+			}
+		})
+	}
+}
+
 func TestDisabledNotificationDoesNotResurfaceAfterReenabled(t *testing.T) {
 	state := NewActivityState()
 	identity := testLayoutIdentity("ABC123")

@@ -7,6 +7,24 @@ The operator-facing behavior already available is described in the
 [Ducklord quick guide](ducklord-user-guide.md); any remaining gaps against
 this target still require implementation and verification.
 
+### Terminology: Projects, Bookmarks, and Panes
+
+- A **Project** organizes local Ducklord Session panes across Hosts; it is not
+  a remote working directory.
+- A **bookmark** is a named directory saved on a Host by Ducklion. Creation
+  offers saved bookmarks or a typed directory, with directory suggestions and
+  explicit confirmation before recursive directory creation. The operator
+  chooses **Add path to bookmarks** or **Use path once**. The default working
+  directory for a new shell-first Session is that Host user's home directory.
+- `ducklion bookmarks` manages Host directory bookmarks; `ducklord bookmarks
+  <host>` lists them through SSH. The old `projects` command remains an alias.
+  Existing `cc-projects.json` storage and wire identifiers remain unchanged;
+  this terminology change does not discard saved paths or require migration.
+- The **Project pane** and **Session list pane** are navigation regions. The
+  **Terminal area** holds the current Project's **Terminal tabs**. Each tab
+  contains one or more **Session panes**, arranged in horizontal/vertical
+  splits. A Session pane references a Ducklion Session, not a separate process.
+
 ### Project Membership
 
 - A Project is a Ducklord-local entity with a stable ID. Its display name is
@@ -85,12 +103,22 @@ this target still require implementation and verification.
   Session pane; it does not navigate to a Project. The right-hand pane obeys
   the same Ducklion writer ownership as any other view: non-owners are
   read-only, and entering this mode never implicitly calls `yield`.
+- The existing shell exception still applies: shell Sessions are tmux-like,
+  terminal-only shared-writer Sessions. Another Ducklord may explicitly focus
+  and write to a shell without `yield`; mere preview never sends input or
+  resize. The non-owner read-only restriction above applies to managed agent
+  Sessions, not to this shell exception. Detecting an agent launched inside a
+  shell does not convert its ownership policy to managed-agent mode.
 - Switching detailed-list previews never requests a remote PTY resize. Only
   after Enter focuses the right-hand Session pane may that focused pane drive
   the remote PTY dimensions, subject to writer ownership.
 - Moving through the detailed list only previews Sessions and does not clear
   unread marks. Enter clears the selected Session's unread state only after
   its right-hand pane actually receives keyboard focus.
+- While that pane has keyboard focus, retain its live inventory row even if
+  clearing unread makes it fail the current filter. Leaving pane focus
+  reapplies the filter and reconciles selection. This never retains a removed
+  or stopped Session or bypasses runtime/ownership checks.
 - Sessions on disconnected Hosts remain searchable in the detailed list, with
   gray styling and an explicit disconnected state. The right-hand pane shows
   the last locally available view or a connection/error placeholder, not a
@@ -177,6 +205,11 @@ this target still require implementation and verification.
 - Closing or detaching a Session pane removes only that local view. It never
   stops or destroys the Ducklion session, including when the pane is in the
   Default Project. Other viewers and the remote process are unaffected.
+- Closing a Default pane persists the closed view while retaining the session's
+  implicit Default membership. Inventory refresh, startup, and Detailed Sessions
+  preview do not reopen it. Explicit quick-list navigation, a Detailed Sessions
+  jump to Project, or Add Existing restores its pane. Destroy or authoritative
+  session removal clears the closed-view record too.
 - If the last Session pane reference in user-created Projects is detached,
   the still-live session returns to the built-in Default Project.
 - **Destroy** is a separate, explicit action on the underlying Ducklion
@@ -245,6 +278,10 @@ this target still require implementation and verification.
   Codex `/hooks`, and marks it operational only after receiving a valid
   session-scoped hook event. No event means status remains unverified, not
   that the hook is assumed active.
+- Activation belongs to the current installation and persists across daemon
+  restarts. Removing and reinstalling the integration resets it to pending;
+  historical callbacks remain diagnostic history, not activation evidence.
+  Repeating an unchanged installation preserves its verified state.
 
 ### Local Notification Audio
 
@@ -688,7 +725,7 @@ flow.
 podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.yaml
 podman exec ducklord-dev ducklord ssh-hosts
 podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.yaml
-podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord bookmarks client-a --config /root/.ducklord/config.yaml
 podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml
 podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.yaml
 podman exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.yaml
@@ -705,7 +742,7 @@ client-a     build              running    shell        ...
 
 `ducklord ssh-hosts` should include `client-a`, `client-b`, and `client-c`.
 `ducklord probe client-a` should report `ducklion: available`. `ducklord
-projects client-a` should show the remote Duckway project registry, including
+bookmarks client-a` should show the remote directory bookmark registry, including
 `alpha-project`.
 
 ### 3. Open The TUI
@@ -762,8 +799,8 @@ When the create wizard receives an absolute remote path that does not exist, it
 shows a centered **CREATE REMOTE DIRECTORY** confirmation. Confirming asks
 Ducklion to create the directory and all missing parents as the Ducklion Unix
 user; choosing Back or pressing Esc leaves the remote filesystem unchanged.
-Directory creation does not automatically register a project—the existing
-**Add path to Duckway projects / Use path once** choice follows afterward.
+Directory creation does not automatically register a bookmark—the existing
+**Add path to bookmarks / Use path once** choice follows afterward.
 - `E`, `R`, and `X` open confirmation views for end, restart, and destroy.
 - `r` refreshes immediately.
 - `q` quits.
@@ -777,8 +814,8 @@ Remote shell discovery preserves the configured default `$SHELL` and offers
 installed `zsh`, `bash`, and `sh` executables as explicit choices.
 
 Shortcut bindings are optional in `~/.ducklord/config.yaml` and take effect
-after Ducklord restarts. Values are one printable Unicode key or a `ctrl-X`
-token. Unknown actions, control/format characters, and duplicate bindings fail
+after Ducklord restarts. Values are one printable Unicode key, a `ctrl-X`
+token, or `enter`. Unknown actions, control/format characters, and duplicate bindings fail
 closed during config loading:
 
 ```yaml
@@ -788,6 +825,9 @@ shortcuts:
   session_create: "c"
   session_restart: "R"
   list_search: "/"
+  detail_previous: "k"
+  detail_next: "j"
+  detail_focus: "enter"
   pty_unfocus: "ctrl-]"
   shortcut_settings: "S"
 ```
@@ -869,7 +909,7 @@ Verify the config was updated:
 ```bash
 podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.yaml
 podman exec ducklord-dev ducklord probe client-c --config /root/.ducklord/config.yaml
-podman exec ducklord-dev ducklord projects client-c --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord bookmarks client-c --config /root/.ducklord/config.yaml
 ```
 
 ### 6. Create A Remote Session From The TUI
@@ -877,26 +917,24 @@ podman exec ducklord-dev ducklord projects client-c --config /root/.ducklord/con
 Inside the TUI, press `c`, then follow the wizard:
 
 ```text
-agent -> host -> configured project -> available agent -> handle
-shell -> host -> configured project (or Ducklion default) -> handle
+shell -> host -> bookmark or directory (default: Host home) -> shell -> handle
 ```
 
 For example:
 
-1. Choose `agent` or `shell`.
+1. Create a shell-first Session pane.
 2. Choose `client-a` by number or name.
-3. Choose `alpha-project` by number or name. Shell sessions may also choose
-   `Ducklion default` (`~/.duckway/ducklion`). Arbitrary paths are deliberately
-   not accepted.
-4. For an agent session, choose Codex or Claude only when installed remotely.
+3. Choose the `alpha-project` bookmark, use the Host home directory, or enter
+   a directory. Confirm before creating missing directories recursively.
+4. Choose an available shell; launch Codex or Claude inside it with your options.
 5. Enter a Unicode display handle, or press Enter to use the folder name.
 
-Ducklord fetches projects with `ducklion projects --json`, then revalidates the
+Ducklord fetches bookmarks with `ducklion bookmarks --json`, then revalidates the
 directory and discovers available commands with
 `ducklion agents --cwd <path> --json`. Discovery and final revalidation run in
 cancellable workers so SSH latency never freezes navigation. A host generation
 change discards stale results. Immediately before creation Ducklord re-reads the
-project registry and runtime capabilities; stale choices return to their
+bookmark registry and runtime capabilities; stale choices return to their
 relevant step without a partial session. It then starts asynchronously and
 selects the exact returned six-character session ID, including for duplicate
 handles.
@@ -932,7 +970,7 @@ Remote host:
 
 ```bash
 ducklion list --json [--tail-lines N]
-ducklion projects --json
+ducklion bookmarks --json
 ducklion start --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
 ducklion read <name> [--lines N] [--json]
 ducklion send <name> <text>
@@ -948,7 +986,7 @@ ducklord clients [--config <path>]
 ducklord ssh-hosts
 ducklord probe <client> [--config <path>]
 ducklord sessions <client> [--config <path>]
-ducklord projects <client> [--config <path>]
+ducklord bookmarks <client> [--config <path>]
 ducklord tui [--config <path>] [--refresh 2s]
 ducklord attach-host <client> [--config <path>]
 ducklord attach <client> <session> [--config <path>]
@@ -1012,21 +1050,21 @@ The probe distinguishes:
 Stage 2 asks for:
 
 ```text
-agent -> host -> configured project -> available agent -> handle
-shell -> host -> configured project or Ducklion default -> handle
+shell -> host -> bookmark or directory (default: Host home) -> shell -> handle
 ```
 
-Projects come from:
+Bookmarks and runtime availability come from:
 
 ```text
-ducklord -> ssh -> ducklion projects --json
-ducklord -> ssh -> ducklion agents --cwd <project> --json
+ducklord -> ssh -> ducklion bookmarks --json
+ducklord -> ssh -> ducklion agents --cwd <directory> --json
 ```
 
-`ducklion projects --json` reads the Duckway client project registry under
+`ducklion bookmarks --json` reads the existing shared directory registry under
 `~/.duckway/cc-projects.json` and returns each entry with
-`source: "duckway-client"`. It also reports Ducklion's own directory as
-`source: "ducklion-default"`; only the shell wizard presents that entry.
+`source: "duckway-client"`. Compatibility entries may still use the legacy
+`source: "ducklion-default"` identifier; new shell-first Sessions default to
+the Host user's home directory.
 
 ## Technical Details
 
@@ -1108,31 +1146,31 @@ State transitions:
 ```text
 normal mode
   -> c
-  -> type step: agent or shell
   -> host step: configured Ducklord client number or name
-  -> project step: a stable entry returned by the remote registry
-  -> agent step: agent sessions only; only types reported by that host
-  -> handle step: Unicode display handle; empty uses the project folder name
+  -> directory step: saved bookmark, Host home, or typed directory
+  -> optional confirmation: recursively create missing directory and/or save bookmark
+  -> shell step: available shell reported by that host
+  -> handle step: Unicode display handle; empty uses the directory name
   -> Enter starts the remote PTY session
 ```
 
 The wizard is local and does not execute through a local shell:
 
 1. The host step resolves a connected Ducklord client by number or name.
-2. The project step uses `ducklion projects --json` and rejects arbitrary paths.
-   Shell sessions additionally expose `Ducklion default`.
+2. The directory step uses `ducklion bookmarks --json`, supports typed absolute
+   paths with suggestions, and defaults to the Host home directory.
 3. Ducklion validates that cwd and resolves its own `PATH` and login shell.
    `ducklion agents --cwd ... --json` always reports `shell` and reports Codex
    or Claude only when its executable is available on the remote host.
-4. The agent flow excludes `shell` from the agent step. The separate shell flow
-   resolves the remote user's shell without presenting an agent choice.
+4. The shell-first flow offers available shells. The operator launches an
+   agent from the resulting interactive shell with their own options.
 5. The handle is an independent 1–128-code-point Unicode display name and may
-   repeat. Empty input uses the final project directory name. The six-character
+   repeat. Empty input uses the final directory name. The six-character
    session ID, not the handle, remains the mutation/routing identity.
 6. Remote discovery is asynchronous and request-fenced by wizard request ID,
    host generation, and Ducklion instance ID. Escape cancels immediately;
    shutdown joins discovery workers. Final creation revalidates the exact
-   `(source, name, path)` project tuple and runtime, then selects by returned ID.
+   `(source, name, path)` bookmark tuple and runtime, then selects by returned ID.
 
 The non-TUI `ducklord start` CLI accepts either `--kind shell` with exactly one
 shell executable or `--agent <type>` with an agent command. It uses the same
@@ -1238,9 +1276,12 @@ have no agent adapter or exclusive writer, restart/end/destroy are always
 immediate: they terminate the current shell process directly and reject wait or
 force modes. A retained shell launch spec contains one resolved executable and
 the CWD, never arbitrary arguments or environment overrides. A definitive
-replacement-launch failure returns the session to `stopped`, records an
-immutable failed receipt, and releases the barrier so the operator may retry or
-destroy it. Discord CC is never authorized to manage shell sessions.
+replacement-launch failure removes the shell session from selectable inventory,
+retains its diagnostic logs, and records an immutable failed receipt. A
+definitive preparation failure after the old shell exits follows the same rule;
+it must not leave a stopped shell retrying indefinitely. The operator can create
+a new shell after correcting the cause. Managed-agent restart semantics remain
+unchanged. Discord CC is never authorized to manage shell sessions.
 
 Ducklord does not cancel an accepted durable lifecycle operation when its CLI
 wait is interrupted or the TUI exits. The CLI reports that the request remains
@@ -1326,7 +1367,7 @@ scripts/ducklord-podman-demo.sh
 podman exec ducklord-dev ducklord clients --config /root/.ducklord/config.yaml
 podman exec ducklord-dev ducklord ssh-hosts
 podman exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.yaml
-podman exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.yaml
+podman exec ducklord-dev ducklord bookmarks client-a --config /root/.ducklord/config.yaml
 podman exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml
 podman exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.yaml
 podman exec -it ducklord-dev ducklord tui --config /root/.ducklord/config.yaml

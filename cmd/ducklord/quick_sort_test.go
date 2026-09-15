@@ -54,6 +54,34 @@ func TestQuickSortImportanceAndHostIgnoreLegacyGroups(t *testing.T) {
 	}
 }
 
+func TestQuickSortCancelledUsesFailureImportance(t *testing.T) {
+	instance := "9df68174-9e13-4dc9-b44d-8532c87f5971"
+	activity := ducklord.NewActivityState()
+	state := tuiState{cfg: &ducklord.Config{QuickSort: "event_importance"}, activityState: activity}
+	for _, event := range []struct {
+		id       string
+		category model.NotificationCategory
+		at       int64
+	}{
+		{"AAA111", model.NotificationTaskCompleted, 40},
+		{"BBB222", model.NotificationTaskFailed, 20},
+		{"CCC333", model.NotificationTaskCancelled, 30},
+		{"DDD444", model.NotificationAgentNeedsInput, 10},
+	} {
+		session := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: event.id}
+		identity, _ := ducklord.IdentityFromSession(session)
+		activity.Sessions[identity.Key()] = ducklord.SessionNotificationState{LastEventAtMS: event.at, LastEventCategory: event.category}
+		state.sessions = append(state.sessions, session)
+		activity.Organization.SessionOrder = append(activity.Organization.SessionOrder, identity)
+	}
+	state.sortQuickSessions()
+	for i, want := range []string{"DDD444", "CCC333", "BBB222", "AAA111"} {
+		if got := state.sessions[i].SessionID; got != want {
+			t.Fatalf("importance order[%d]=%s, want %s", i, got, want)
+		}
+	}
+}
+
 func TestQuickSortPromotesOnlyEligibleUnreadEvents(t *testing.T) {
 	instance := "9df68174-9e13-4dc9-b44d-8532c87f5971"
 	suppressed := ducklord.RemoteSession{Client: "host", InstanceID: instance, SessionID: "AAA111", Name: "suppressed", Unread: true}

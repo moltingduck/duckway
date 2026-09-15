@@ -2,11 +2,175 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
+
+func TestWorkspaceClosedDefaultPaneOnlyReopensOnExplicitNavigation(t *testing.T) {
+	for _, route := range []string{"quick", "detail"} {
+		t.Run(route, func(t *testing.T) {
+			state, _, _, session := workspacePaneTestState(t)
+			identity, _ := ducklord.IdentityFromSession(session)
+			if err := state.activity().ProjectLayout.Detach(ducklord.DefaultProjectID, identity); err != nil {
+				t.Fatal(err)
+			}
+			if err := state.activityStore.Save(state.activity()); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := state.activityStore.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.activityState = loaded
+			state.selected, state.workspaceProjectFocus = 1, false
+			nav, err := state.workspaceNavigation()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(state.activity().ProjectLayout.Project(ducklord.DefaultProjectID).Tabs) != 0 {
+				t.Fatal("startup reopened closed pane")
+			}
+			if route == "detail" {
+				nav.EnterDetail()
+				state.detailSelected = identity
+				if err := nav.PreviewDetail(identity); err != nil {
+					t.Fatal(err)
+				}
+				if len(state.activity().ProjectLayout.Project(ducklord.DefaultProjectID).Tabs) != 0 {
+					t.Fatal("preview reopened closed pane")
+				}
+				if got := state.handleDetailedInput([]byte(state.cfg.Shortcut("detail_jump"))); got != "jump" {
+					t.Fatalf("jump = %q: %s", got, state.outputErr)
+				}
+			} else {
+				state.workspaceFollowQuickSelection()
+			}
+			loaded, err = state.activityStore.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(loaded.ProjectLayout.Project(ducklord.DefaultProjectID).Tabs) != 1 || len(loaded.ProjectLayout.SuppressedDefaultSessions) != 0 {
+				t.Fatal("explicit reopening was not persisted")
+			}
+			if nav.CurrentProjectID() != ducklord.DefaultProjectID || nav.CurrentPaneID() == "" {
+				t.Fatal("reopened pane was not selected")
+			}
+		})
+	}
+}
+
+func TestWorkspaceDefaultPaneReopenSaveFailurePreservesClosedView(t *testing.T) {
+	state, _, _, session := workspacePaneTestState(t)
+	identity, _ := ducklord.IdentityFromSession(session)
+	if err := state.activity().ProjectLayout.Detach(ducklord.DefaultProjectID, identity); err != nil {
+		t.Fatal(err)
+	}
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeProject, beforePane := nav.CurrentProjectID(), nav.CurrentPaneID()
+	// The existing state file cannot serve as a directory.
+	state.activityStore.Path = filepath.Join(state.activityStore.Path, "state.json")
+	state.selected, state.workspaceProjectFocus = 1, false
+	state.outputForKey, state.outputText = "previous-preview", "previous output"
+	state.ptyScrollOffset = 3
+	var control *ducklord.ControlSession
+	var controlDone <-chan error
+	previewRequested := false
+	state.handleQuickSelection(&control, &controlDone, func(bool) { previewRequested = true })
+	if !strings.Contains(state.outputErr, "reopen Session pane:") || len(state.activity().ProjectLayout.SuppressedDefaultSessions) != 1 || len(state.activity().ProjectLayout.Project(ducklord.DefaultProjectID).Tabs) != 0 {
+		t.Fatal("failed persistence changed closed view")
+	}
+	if previewRequested || state.outputForKey != "previous-preview" || state.outputText != "previous output" || state.ptyScrollOffset != 3 {
+		t.Fatal("failed reopen reset or requested preview")
+	}
+	if nav.CurrentProjectID() != beforeProject || nav.CurrentPaneID() != beforePane {
+		t.Fatal("failed persistence changed navigation")
+	}
+}
+
+func TestWorkspaceQuickSelectionReopensBeforeRequestingPreview(t *testing.T) {
+	state, _, _, session := workspacePaneTestState(t)
+	identity, _ := ducklord.IdentityFromSession(session)
+	if err := state.activity().ProjectLayout.Detach(ducklord.DefaultProjectID, identity); err != nil {
+		t.Fatal(err)
+	}
+	state.selected, state.workspaceProjectFocus = 1, false
+	var control *ducklord.ControlSession
+	var controlDone <-chan error
+	requests := 0
+	state.handleQuickSelection(&control, &controlDone, func(fence bool) {
+		requests++
+		if !fence {
+			t.Fatal("selection did not fence previous preview")
+		}
+		loaded, err := state.activityStore.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(loaded.ProjectLayout.SuppressedDefaultSessions) != 0 || len(loaded.ProjectLayout.Project(ducklord.DefaultProjectID).Tabs) != 1 {
+			t.Fatal("preview requested before reopen was persisted")
+		}
+		nav, err := state.workspaceNavigation()
+		if err != nil || nav.CurrentProjectID() != ducklord.DefaultProjectID || nav.CurrentPaneID() == "" {
+			t.Fatal("preview requested before reopened pane was selected")
+		}
+	})
+	if requests != 1 || state.outputErr != "loading live preview..." {
+		t.Fatalf("requests = %d, status = %q", requests, state.outputErr)
+	}
+}
+
+func TestWorkspaceMouseAndSearchStopAfterReopenSaveFailure(t *testing.T) {
+	for _, route := range []string{"mouse", "search-activation", "search-focus"} {
+		t.Run(route, func(t *testing.T) {
+			state, _, _, session := workspacePaneTestState(t)
+			identity, _ := ducklord.IdentityFromSession(session)
+			if err := state.activity().ProjectLayout.Detach(ducklord.DefaultProjectID, identity); err != nil {
+				t.Fatal(err)
+			}
+			nav, err := state.workspaceNavigation()
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeProject, beforePane := nav.CurrentProjectID(), nav.CurrentPaneID()
+			state.activityStore.Path = filepath.Join(state.activityStore.Path, "state.json")
+			state.workspaceProjectFocus = false
+			state.outputForKey, state.outputText = "previous-preview", "previous output"
+			if route == "mouse" {
+				width, height := terminalSize()
+				geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+				x, y := geometry.Quick.X+1, geometry.Quick.Y+2
+				state.handleWorkspaceMouse(workspaceMouse(0, x, y, false))
+				handled, changed := state.handleWorkspaceMouse(workspaceMouse(0, x, y, true))
+				if !handled || changed {
+					t.Fatal("failed mouse reopen requested output selection")
+				}
+			} else {
+				state.searchMode = true
+				if route == "search-activation" {
+					state.searchPendingRequestID = 42
+				}
+				if state.prepareSearchWorkspaceSelection(sessionKey(session)) {
+					t.Fatal("failed search reopen allowed activation/focus")
+				}
+				if !state.searchMode || state.searchPendingRequestID != 0 || !strings.Contains(state.searchErr, "reopen Session pane:") {
+					t.Fatal("failed search reopen did not retain modal and report retryable failure")
+				}
+			}
+			if !strings.Contains(state.outputErr, "reopen Session pane:") || state.outputForKey != "previous-preview" || state.outputText != "previous output" {
+				t.Fatal("failed reopen masked error or replaced preview")
+			}
+			if nav.CurrentProjectID() != beforeProject || nav.CurrentPaneID() != beforePane || len(state.activity().ProjectLayout.SuppressedDefaultSessions) != 1 {
+				t.Fatal("failed reopen changed layout/navigation")
+			}
+		})
+	}
+}
 
 func TestWorkspacePreviewRendersLiveSelectedSessionWithoutGrantingFocus(t *testing.T) {
 	identity := ducklord.SessionIdentity{InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", SessionID: "ABC123"}
@@ -284,6 +448,29 @@ func TestWorkspacePreviewPreflightUsesVisibleLeafNotWholeTerminal(t *testing.T) 
 	}
 	if _, err := state.workspacePaneRectAt(120, 5); err == nil {
 		t.Fatal("hidden lower pane passed control preflight")
+	}
+}
+
+func TestWorkspaceFocusedReadOnlyStatusSurvivesClearedError(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, writer string
+		readOnly           bool
+	}{
+		{"foreign agent", "agent", "other", true},
+		{"owned agent", "agent", "viewer", false},
+		{"shared shell", "shell", "other", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := ducklord.RemoteSession{Client: "host", SessionID: "AAA111", Kind: tc.kind, WriterKind: "terminal", WriterID: tc.writer}
+			state := &tuiState{cfg: &ducklord.Config{}, ownerName: "viewer", focused: true,
+				sessions: []ducklord.RemoteSession{session}, activeAttachKey: sessionKey(session)}
+			var output bytes.Buffer
+			state.renderWorkspacePreviewAt(&output, 130, 28)
+			got := strings.Contains(output.String(), "Session focus: read-only")
+			if got != tc.readOnly {
+				t.Fatalf("read-only status = %v, want %v", got, tc.readOnly)
+			}
+		})
 	}
 }
 

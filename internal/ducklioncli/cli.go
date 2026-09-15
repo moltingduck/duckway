@@ -328,6 +328,7 @@ func runAgentHook(input io.Reader, args []string) error {
 		LastAssistantMessageHyphen string `json:"last-assistant-message"`
 		LastAgentMessage           string `json:"last-agent-message"`
 		HookEventName              string `json:"hook_event_name"`
+		NotificationType           string `json:"notification_type"`
 		Type                       string `json:"type"`
 		Error                      string `json:"error"`
 	}
@@ -336,15 +337,29 @@ func runAgentHook(input io.Reader, args []string) error {
 	}
 	var response string
 	failedHook := false
+	actionKind := ""
+	if payload.HookEventName == "PermissionRequest" {
+		actionKind = "approval_required"
+	} else if source == "claude" && payload.HookEventName == "Notification" {
+		switch payload.NotificationType {
+		case "permission_prompt":
+			actionKind = "approval_required"
+		case "idle_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input":
+			actionKind = "agent_needs_input"
+		default:
+			// Unrelated notifications must not create action-needed alerts.
+			return nil
+		}
+	}
 	switch source {
 	case "claude":
-		if payload.HookEventName != "Stop" && payload.HookEventName != "StopFailure" {
+		if actionKind == "" && payload.HookEventName != "Stop" && payload.HookEventName != "StopFailure" {
 			return fmt.Errorf("unsupported Claude hook event %q", payload.HookEventName)
 		}
 		response = payload.LastAssistantMessage
 		failedHook = payload.HookEventName == "StopFailure"
 	case "codex":
-		if payload.Type != "agent-turn-complete" && payload.HookEventName != "Stop" {
+		if actionKind == "" && payload.Type != "agent-turn-complete" && payload.HookEventName != "Stop" {
 			return fmt.Errorf("unsupported Codex hook event %q", payload.Type)
 		}
 		response = payload.LastAssistantMessage
@@ -378,6 +393,11 @@ func runAgentHook(input io.Reader, args []string) error {
 		}
 		normalized.Response = ""
 		normalized.Summary = ""
+	}
+	if actionKind != "" {
+		// Approval/input callbacks are always payload-free advisory events,
+		// including for authenticated managed-agent callbacks.
+		normalized = protocol.SupervisorAgentEvent{Kind: actionKind}
 	}
 	conn, err := net.DialTimeout("unix", socketPath, time.Second)
 	if err != nil {
@@ -422,7 +442,7 @@ func Run(manager SessionManager, args []string, out io.Writer) error {
 	switch args[0] {
 	case "list":
 		return runList(manager, args[1:], out)
-	case "projects":
+	case "bookmarks", "projects":
 		return runProjects(args[1:], out)
 	case "agents":
 		return runAgents(args[1:], out)
@@ -519,7 +539,7 @@ func runAgents(args []string, out io.Writer) error {
 	}
 	info, err := os.Stat(cwd)
 	if err != nil || !info.IsDir() {
-		return fmt.Errorf("agent project directory is unavailable: %s", cwd)
+		return fmt.Errorf("agent directory is unavailable: %s", cwd)
 	}
 	defaultShell := os.Getenv("SHELL")
 	if defaultShell == "" {
@@ -590,7 +610,7 @@ func runProjects(args []string, out io.Writer) error {
 				createSet, createDir = true, args[i]
 			}
 		default:
-			return fmt.Errorf("unknown projects option: %s", args[i])
+			return fmt.Errorf("unknown bookmarks option: %s", args[i])
 		}
 	}
 	modeCount := 0
@@ -600,10 +620,10 @@ func runProjects(args []string, out io.Writer) error {
 		}
 	}
 	if modeCount > 1 || nameSet && !addSet {
-		return fmt.Errorf("choose either --suggest or --add; --name requires --add")
+		return fmt.Errorf("choose one of --suggest, --add, --inspect-dir, or --create-dir; --name requires --add")
 	}
 	if suggestSet && strings.TrimSpace(suggest) == "" || addSet && strings.TrimSpace(add) == "" || nameSet && strings.TrimSpace(name) == "" || inspectSet && strings.TrimSpace(inspectDir) == "" || createSet && strings.TrimSpace(createDir) == "" {
-		return fmt.Errorf("project option values must not be empty")
+		return fmt.Errorf("bookmark option values must not be empty")
 	}
 	if inspectSet || createSet {
 		requested := inspectDir
@@ -661,7 +681,7 @@ func runProjects(args []string, out io.Writer) error {
 	if addSet {
 		project, err := store.AddResolvedPath(add, name)
 		if err != nil {
-			return err
+			return bookmarkRegistryError(err)
 		}
 		projects := []projectregistry.Project{project}
 		if jsonOut {
@@ -674,7 +694,7 @@ func runProjects(args []string, out io.Writer) error {
 	}
 	projects, err := store.List()
 	if err != nil {
-		return err
+		return bookmarkRegistryError(err)
 	}
 	// New shell sessions start in the remote user's home by default.
 	// Agent-session clients filter this capability by Source.
@@ -690,7 +710,7 @@ func runProjects(args []string, out io.Writer) error {
 		return json.NewEncoder(out).Encode(result)
 	}
 	if len(result) == 0 {
-		fmt.Fprintln(out, "No saved Duckway projects.")
+		fmt.Fprintln(out, "No saved Duckway bookmarks.")
 		return nil
 	}
 	fmt.Fprintf(out, "%-18s %s\n", "NAME", "PATH")
@@ -699,6 +719,28 @@ func runProjects(args []string, out io.Writer) error {
 	}
 	return nil
 }
+
+// Keep the registry's legacy API and filenames while presenting bookmark
+// terminology at the CLI boundary. Only replace known leading descriptions;
+// names and filesystem paths in the rest of the error are user data.
+func bookmarkRegistryError(err error) error {
+	if err != nil {
+		for _, prefix := range []string{"project name ", "project registry "} {
+			if strings.HasPrefix(err.Error(), prefix) {
+				return bookmarkDisplayError{cause: err, message: "bookmark" + strings.TrimPrefix(err.Error(), "project")}
+			}
+		}
+	}
+	return err
+}
+
+type bookmarkDisplayError struct {
+	cause   error
+	message string
+}
+
+func (e bookmarkDisplayError) Error() string { return e.message }
+func (e bookmarkDisplayError) Unwrap() error { return e.cause }
 
 // rejectSymlinkPath prevents a confirmed directory path from being silently
 // redirected through an existing symlink. Directory creation still runs with
@@ -861,8 +903,8 @@ func PrintUsage(out io.Writer) {
 Usage:
   ducklion daemon
   ducklion list [--json] [--tail-lines N]
-  ducklion projects [--json|--suggest PATH|--add PATH [--name NAME]|--inspect-dir PATH|--create-dir PATH]
-  ducklion agents --cwd <project-dir> [--json]
+  ducklion bookmarks [--json|--suggest PATH|--add PATH [--name NAME]|--inspect-dir PATH|--create-dir PATH]
+  ducklion agents --cwd <directory> [--json]
   ducklion start --name <name> [--agent <agent>] [--cwd <dir>] -- CMD [ARGS...]
   ducklion read <name> [--lines N] [--json]
   ducklion send <name> <text>

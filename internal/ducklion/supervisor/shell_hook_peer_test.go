@@ -49,7 +49,11 @@ func TestShellFirstHookEmitter(t *testing.T) {
 	if string(rejected) != "rejected\n" {
 		os.Exit(7)
 	}
-	_ = json.NewEncoder(conn).Encode(agentHookEnvelope{Source: "codex", Event: protocol.SupervisorAgentEvent{Kind: "completed", Response: "must not be retained"}})
+	kind := os.Getenv("DUCKLION_TEST_SHELL_HOOK_KIND")
+	if kind == "" {
+		kind = "completed"
+	}
+	_ = json.NewEncoder(conn).Encode(agentHookEnvelope{Source: "claude", Event: protocol.SupervisorAgentEvent{Kind: kind, Response: "must not be retained"}})
 	response, _ := io.ReadAll(conn)
 	if string(response) != "ok\n" {
 		os.Exit(5)
@@ -57,8 +61,23 @@ func TestShellFirstHookEmitter(t *testing.T) {
 }
 
 func TestShellFirstHookIsAdvisoryAndRejectsForeignProcess(t *testing.T) {
+	for _, tc := range []struct {
+		kind     string
+		category model.NotificationCategory
+	}{
+		{"completed", model.NotificationTaskCompleted},
+		{"approval_required", model.NotificationApprovalRequired},
+		{"agent_needs_input", model.NotificationAgentNeedsInput},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			testShellFirstHookIsAdvisoryAndRejectsForeignProcess(t, tc.kind, tc.category)
+		})
+	}
+}
+
+func testShellFirstHookIsAdvisoryAndRejectsForeignProcess(t *testing.T, kind string, expected model.NotificationCategory) {
 	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 1, OwnershipEpoch: 1, ShellFirstHooks: true,
-		CWD: t.TempDir(), Command: []string{"sh", "-c", `DUCKLION_TEST_SHELL_HOOK_EMITTER=1 "$1" -test.run=^TestShellFirstHookEmitter$; sleep 5`, "sh", os.Args[0]}})
+		CWD: t.TempDir(), Command: []string{"sh", "-c", `DUCKLION_TEST_SHELL_HOOK_KIND="$2" DUCKLION_TEST_SHELL_HOOK_EMITTER=1 "$1" -test.run=^TestShellFirstHookEmitter$; sleep 5`, "sh", os.Args[0], kind}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +89,7 @@ func TestShellFirstHookIsAdvisoryAndRejectsForeignProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = json.NewEncoder(foreign).Encode(agentHookEnvelope{Source: "codex", Event: protocol.SupervisorAgentEvent{Kind: "failed"}})
+	_ = json.NewEncoder(foreign).Encode(agentHookEnvelope{Source: "claude", Event: protocol.SupervisorAgentEvent{Kind: kind}})
 	answer, _ := io.ReadAll(foreign)
 	_ = foreign.Close()
 	if string(answer) != "rejected\n" {
@@ -80,7 +99,7 @@ func TestShellFirstHookIsAdvisoryAndRejectsForeignProcess(t *testing.T) {
 	for time.Now().Before(deadline) {
 		category, _, _, ok := session.PendingActivity()
 		if ok {
-			if category != model.NotificationTaskCompleted {
+			if category != expected {
 				t.Fatalf("shell-first hook category = %s", category)
 			}
 			session.mu.Lock()

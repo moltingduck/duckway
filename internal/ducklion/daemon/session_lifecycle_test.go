@@ -896,7 +896,7 @@ func TestShellConcurrentDucklordAttachmentsAreWritable(t *testing.T) {
 	}
 }
 
-func TestShellLifecycleRestartLaunchFailureStopsAndReleasesBarrier(t *testing.T) {
+func TestShellLifecycleRestartLaunchFailureRetiresAndReleasesBarrier(t *testing.T) {
 	root := t.TempDir()
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	defer stopRuntime()
@@ -945,14 +945,10 @@ func TestShellLifecycleRestartLaunchFailureStopsAndReleasesBarrier(t *testing.T)
 		t.Fatalf("definitive failure retried: launches=%d", launches.Load())
 	}
 	sessions, err := terminal.ListSessions()
-	if err != nil || len(sessions) != 1 || sessions[0].Status != model.StatusStopped || sessions[0].RuntimeGeneration != 2 {
+	if err != nil || len(sessions) != 0 {
 		t.Fatalf("failed replacement session=%+v err=%v", sessions, err)
 	}
-	destroy := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleDestroy, Mode: protocol.SessionLifecycleImmediate}
-	destroyed := awaitLifecycleTestResult(t, terminal, "destroy-after-restart-failure", sessions[0], destroy, 8*time.Second)
-	if destroyed.State != protocol.SessionLifecycleCompleted {
-		t.Fatalf("destroy after failure=%+v", destroyed)
-	}
+	assertFailedShellRestartRetained(t, server, created)
 }
 
 func TestRealSupervisorReportsMissingShellOnRestart(t *testing.T) {
@@ -1019,11 +1015,109 @@ func TestRealSupervisorReportsMissingShellOnRestart(t *testing.T) {
 		t.Fatalf("missing shell caused restart storm: launches=%d", launches.Load())
 	}
 	sessions, err := terminal.ListSessions()
-	if err != nil || len(sessions) != 1 || sessions[0].Status != model.StatusStopped || sessions[0].RuntimeGeneration != 2 {
+	if err != nil || len(sessions) != 0 {
 		t.Fatalf("missing shell session=%+v err=%v", sessions, err)
 	}
-	destroy := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleDestroy, Mode: protocol.SessionLifecycleImmediate}
-	_ = awaitLifecycleTestResult(t, terminal, "missing-shell-destroy", sessions[0], destroy, 8*time.Second)
+	assertFailedShellRestartRetained(t, server, created)
+}
+
+func assertFailedShellRestartRetained(t *testing.T, server *Server, created protocol.SessionSummary) {
+	t.Helper()
+	id := model.SessionID(created.SessionID)
+	if pending, err := server.state.GetPendingLifecycle(context.Background(), id); err != nil || pending != nil {
+		t.Fatalf("failed restart barrier=%+v err=%v", pending, err)
+	}
+	if retained, err := server.state.GetRetainedShellSession(context.Background(), id, created.RuntimeGeneration); err != nil || retained.ExitSuccess || retained.ExitReason == "" {
+		t.Fatalf("failed restart retained identity=%+v err=%v", retained, err)
+	}
+	if _, err := supervisor.ReadRetainedOutput(filepath.Join(server.root, "sessions", created.SessionID), id, created.RuntimeGeneration); err != nil {
+		t.Fatalf("failed restart lost source PTY diagnostics: %v", err)
+	}
+}
+
+func TestShellLifecycleRestartInvalidPreparationRetires(t *testing.T) {
+	for _, invalid := range []string{"missing-spec", "corrupt-spec"} {
+		t.Run(invalid, func(t *testing.T) {
+			root := t.TempDir()
+			runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+			defer stopRuntime()
+			var launches atomic.Int32
+			server, err := Open(context.Background(), Options{Root: root, RuntimeLauncher: func(specPath string) error {
+				launches.Add(1)
+				go func() { _ = RunManagedSupervisor(runtimeCtx, specPath) }()
+				return nil
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			serveDone := make(chan error, 1)
+			go func() { serveDone <- server.Serve() }()
+			defer func() { _ = server.Close(); <-serveDone }()
+			terminal, err := Dial(server.SocketPath(), "invalid-restart")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer terminal.Close()
+			created, err := terminal.CreateSession(context.Background(), protocol.SessionCreate{Handle: "invalid-restart", Kind: model.KindShell, CWD: root, Command: []string{"sh"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, "sessions", created.SessionID, "runtime.json")
+			if invalid == "missing-spec" {
+				err = os.Remove(path)
+			} else {
+				err = os.WriteFile(path, []byte("invalid"), 0600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := protocol.SessionLifecycleRequest{Operation: protocol.SessionLifecycleRestart, Mode: protocol.SessionLifecycleImmediate}
+			deadline := time.Now().Add(8 * time.Second)
+			for time.Now().Before(deadline) {
+				_, err = terminal.LifecycleSessionWithID(context.Background(), "invalid-restart", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+				if err != nil {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			if err == nil || !strings.Contains(err.Error(), "could not prepare replacement runtime") {
+				t.Fatalf("preparation failure receipt: %v", err)
+			}
+			// Replays remain a durable failure even though the inventory row is gone.
+			_, replayErr := terminal.LifecycleSessionWithID(context.Background(), "invalid-restart", created.SessionID, created.OwnershipEpoch, created.RuntimeGeneration, request)
+			if replayErr == nil || replayErr.Error() != err.Error() {
+				t.Fatalf("failure replay=%v original=%v", replayErr, err)
+			}
+			if sessions, err := terminal.ListSessions(); err != nil || len(sessions) != 0 {
+				t.Fatalf("failed shell selectable: %+v %v", sessions, err)
+			}
+			if launches.Load() != 1 {
+				t.Fatalf("invalid preparation launched replacement: %d", launches.Load())
+			}
+			assertFailedShellRestartRetained(t, server, created)
+		})
+	}
+}
+
+func TestPrepareLifecycleRestartRejectsCorruptStoppedRecoveryKey(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sessions", "ABC123")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Exercise preparation directly, after the old runtime has stopped: corrupting
+	// a live supervisor's key would instead prevent its authenticated exit report.
+	if err := os.WriteFile(filepath.Join(dir, "runtime.json"), []byte(`{"session_id":"ABC123","runtime_generation":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "recovery.key"), []byte("invalid"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{root: root}
+	_, _, err := server.prepareLifecycleRestart(store.PendingLifecycle{SessionID: "ABC123", SourceEpoch: 1, SourceGeneration: 1, Phase: store.LifecycleRuntimeStopped})
+	if !errors.Is(err, errInvalidRetainedRestartState) || !strings.Contains(err.Error(), "recovery key") {
+		t.Fatalf("corrupt recovery key must be definitive: %v", err)
+	}
 }
 
 func awaitLifecycleTestResult(t *testing.T, client *Client, requestID string, session protocol.SessionSummary, request protocol.SessionLifecycleRequest, timeout time.Duration) protocol.SessionLifecycleResult {

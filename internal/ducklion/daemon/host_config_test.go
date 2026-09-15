@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hackerduck/duckway/internal/ducklion/model"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
 )
 
@@ -241,11 +242,24 @@ func TestHostAgentHookConfigControlRoundTrip(t *testing.T) {
 	if err != nil || !result.Installed || !result.Changed || result.Activation != "pending" {
 		t.Fatalf("install result=%+v err=%v", result, err)
 	}
-	if status, err := control.HostAgentHookStatus(context.Background(), "codex"); err != nil || !status.Installed || status.CallbackObserved {
+	if status, err := control.HostAgentHookStatus(context.Background(), "codex"); err != nil || !status.Installed || status.CallbackObserved || status.Activation != "pending" {
 		t.Fatalf("installed hook status=%+v err=%v", status, err)
 	}
+	now := time.Now().UTC().UnixMilli()
+	session := model.Session{ID: "ABC123", Handle: "hook-test", Kind: model.KindShell, CWD: home, Status: model.StatusRecovering,
+		OwnershipEpoch: 1, RuntimeGeneration: 1, TaskState: model.TaskIdle, AdapterState: model.AdapterUnavailable,
+		RecoveryPublicKey: make([]byte, 32), CreatedAtMS: now, UpdatedAtMS: now}
+	if _, _, err := server.state.CreateSessionIdempotent(context.Background(), "test", uuid.NewString(), [32]byte{}, session); err != nil {
+		t.Fatal(err)
+	}
+	if _, advanced, err := server.state.RecordAgentActivityWithSource(context.Background(), session.ID, model.NotificationTaskCompleted, 1, 1, 0, "codex"); err != nil || !advanced {
+		t.Fatalf("callback: advanced=%v err=%v", advanced, err)
+	}
+	if status, err := control.HostAgentHookStatus(context.Background(), "codex"); err != nil || status.Activation != "operational" || !status.CallbackObserved {
+		t.Fatalf("verified status=%+v err=%v", status, err)
+	}
 	result, err = control.ConfigureHostAgentHook(context.Background(), "codex", "install")
-	if err != nil || !result.Installed || result.Changed {
+	if err != nil || !result.Installed || result.Changed || result.Activation != "operational" {
 		t.Fatalf("idempotent install result=%+v err=%v", result, err)
 	}
 	result, err = control.ConfigureHostAgentHook(context.Background(), "codex", "remove")
@@ -254,5 +268,12 @@ func TestHostAgentHookConfigControlRoundTrip(t *testing.T) {
 	}
 	if status, err := control.HostAgentHookStatus(context.Background(), "codex"); err != nil || status.Installed {
 		t.Fatalf("removed hook status=%+v err=%v", status, err)
+	}
+	result, err = control.ConfigureHostAgentHook(context.Background(), "codex", "install")
+	if err != nil || !result.Changed || result.Activation != "pending" {
+		t.Fatalf("reinstall result=%+v err=%v", result, err)
+	}
+	if status, err := control.HostAgentHookStatus(context.Background(), "codex"); err != nil || status.Activation != "pending" || !status.CallbackObserved {
+		t.Fatalf("historical callback activated reinstall: status=%+v err=%v", status, err)
 	}
 }

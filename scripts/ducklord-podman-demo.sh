@@ -165,9 +165,9 @@ if [ "$INCLUDE_CLIENT_D" = 1 ]; then
     exit 1
   }
 fi
-"$RUNTIME" exec -u duck ducklion-client-a sh -lc 'mkdir -p /home/duck/projects/alpha && duckway projects add --name alpha-project /home/duck/projects/alpha' >/dev/null
-"$RUNTIME" exec -u duck ducklion-client-b sh -lc 'mkdir -p /home/duck/projects/beta && duckway projects add --name beta-project /home/duck/projects/beta' >/dev/null
-"$RUNTIME" exec -u duck ducklion-client-c sh -lc 'mkdir -p /home/duck/projects/gamma && duckway projects add --name gamma-project /home/duck/projects/gamma' >/dev/null
+"$RUNTIME" exec -u duck ducklion-client-a sh -lc 'mkdir -p /home/duck/projects/alpha && ducklion bookmarks --add /home/duck/projects/alpha --name alpha-project' >/dev/null
+"$RUNTIME" exec -u duck ducklion-client-b sh -lc 'mkdir -p /home/duck/projects/beta && ducklion bookmarks --add /home/duck/projects/beta --name beta-project' >/dev/null
+"$RUNTIME" exec -u duck ducklion-client-c sh -lc 'mkdir -p /home/duck/projects/gamma && ducklion bookmarks --add /home/duck/projects/gamma --name gamma-project' >/dev/null
 "$RUNTIME" exec ducklord-dev ducklord start client-a --name alpha --kind shell --cwd /home/duck -- bash >/dev/null
 "$RUNTIME" exec ducklord-dev ducklord start client-a --name bash --kind shell --cwd /home/duck -- bash >/dev/null
 "$RUNTIME" exec ducklord-dev ducklord start client-a --name build --kind shell --cwd /home/duck -- bash >/dev/null
@@ -279,7 +279,7 @@ Useful checks:
   $RUNTIME exec ducklord-dev ducklord ssh-hosts
   $RUNTIME exec ducklord-dev ducklord probe client-a --config /root/.ducklord/config.yaml
   $RUNTIME exec ducklord-dev ducklord sessions client-a --config /root/.ducklord/config.yaml
-  $RUNTIME exec ducklord-dev ducklord projects client-a --config /root/.ducklord/config.yaml
+  $RUNTIME exec ducklord-dev ducklord bookmarks client-a --config /root/.ducklord/config.yaml
   $RUNTIME exec ducklord-dev ducklord read client-a alpha --lines 20 --config /root/.ducklord/config.yaml
   $RUNTIME exec -it ducklord-dev ducklord attach-host client-a --config /root/.ducklord/config.yaml
 

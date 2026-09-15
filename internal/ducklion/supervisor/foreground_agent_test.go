@@ -1,8 +1,61 @@
 package supervisor
 
 import (
+	"os"
 	"testing"
+	"time"
+
+	"github.com/creack/pty"
 )
+
+func TestPTYProbesConcurrentShutdown(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		probe func(*os.File) (int, error)
+	}{
+		{"foreground", foregroundProcessGroup},
+		{"pending-output", pendingPTYBytes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for iteration := 0; iteration < 32; iteration++ {
+				master, slave, err := pty.Open()
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Mirror capture's pending Read: its deferred descriptor release
+				// may perform the actual close concurrently with a probe.
+				readDone := make(chan struct{})
+				go func() {
+					defer close(readDone)
+					var buffer [1]byte
+					_, _ = master.Read(buffer[:])
+				}()
+				started, probeDone := make(chan struct{}), make(chan struct{})
+				go func() {
+					defer close(probeDone)
+					_, _ = tc.probe(master)
+					close(started)
+					for attempt := 0; attempt < 256; attempt++ {
+						_, _ = tc.probe(master)
+					}
+				}()
+				<-started
+				_ = master.Close()
+				_ = slave.Close()
+				for _, done := range []chan struct{}{readDone, probeDone} {
+					select {
+					case <-done:
+					case <-time.After(3 * time.Second):
+						t.Fatal("PTY probe or capture did not finish after shutdown")
+					}
+				}
+				if _, err := tc.probe(master); err == nil {
+					t.Fatal("probe after shutdown unexpectedly succeeded")
+				}
+			}
+		})
+	}
+}
 
 func TestParseForegroundProcStatHandlesParenthesesAndFields(t *testing.T) {
 	data := []byte("123 (name ) with spaces) S 12 34 56 78 0 0 0 0 0 0 0 0 0 0 0 0 0 0 999 0\n")

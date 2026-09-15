@@ -93,31 +93,25 @@ func detailFold(value string) string {
 	return cases.Fold().String(norm.NFKC.String(value))
 }
 
-// Lower scores are better. Name matches win over Host matches, which win
-// over Project matches; exact/prefix/substring beat fuzzy subsequences.
+// Lower scores are better. Across all searchable fields, exact matches beat
+// prefixes, then substrings, then fuzzy subsequences. Field choice does not
+// break ties, so equal-quality matches retain the caller's current sort order.
 func detailMatchScore(item DetailedSessionItem, query string) (int, bool) {
 	if query == "" {
 		return 0, true
 	}
 	best := 1 << 30
 	fields := append([]string{item.Name, item.Host}, item.Projects...)
-	for index, field := range fields {
+	for _, field := range fields {
 		folded := detailFold(field)
-		base := 200
-		switch index {
-		case 0:
-			base = 0
-		case 1:
-			base = 100
-		}
 		if folded == query {
-			best = min(best, base)
+			best = min(best, 0)
 		} else if strings.HasPrefix(folded, query) {
-			best = min(best, base+10)
+			best = min(best, 10)
 		} else if strings.Contains(folded, query) {
-			best = min(best, base+20)
+			best = min(best, 20)
 		} else if detailSubsequence(folded, query) {
-			best = min(best, base+30)
+			best = min(best, 30)
 		}
 	}
 	return best, best != 1<<30

@@ -645,7 +645,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "supervisor principal must be the canonical session ID"}})
 		return
 	}
-	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention", "agent_activity", "foreground_visibility"}}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"supervisor_recovery", "output_publish", "terminal_attention", "agent_activity", "action_needed_activity", "foreground_visibility"}}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
 	if protocolError != nil || !hasCapability(negotiated.Capabilities, "supervisor_recovery") || !hasCapability(negotiated.Capabilities, "output_publish") {
 		if protocolError == nil {
@@ -710,13 +710,7 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 		return
 	}
 	output := s.activateOutput(identity)
-	defer func() {
-		s.deactivateOutput(identity)
-		s.registry.Disconnect(identity)
-		s.forgetForeground(identity)
-		s.forgetAttention(identity)
-		_ = s.state.MarkRuntimeDisconnected(context.Background(), identity.SessionID, identity.Generation)
-	}()
+	defer s.disconnectSupervisor(identity)
 	if err := runtimeConn.arm(); err != nil {
 		return
 	}
@@ -824,6 +818,21 @@ func (s *Server) handleSupervisor(conn *net.UnixConn, codec *bridge.Codec, remot
 	}
 }
 
+func (s *Server) disconnectSupervisor(identity duckruntime.RuntimeIdentity) {
+	s.deactivateOutput(identity)
+	s.registry.Disconnect(identity)
+	s.forgetForeground(identity)
+	s.forgetAttention(identity)
+	// A replacement lease can register while the old transport is cleaning
+	// up. Serialize the durable status write with control registration, and
+	// never let the old lease downgrade its replacement.
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	if _, replaced := s.registry.Current(identity.SessionID, identity.Generation); !replaced {
+		_ = s.state.MarkRuntimeDisconnected(context.Background(), identity.SessionID, identity.Generation)
+	}
+}
+
 func (s *Server) handleSupervisorControl(conn *net.UnixConn, codec *bridge.Codec, remote protocol.Handshake) {
 	sessionID, err := model.ParseSessionID(remote.Principal)
 	if err != nil || string(sessionID) != remote.Principal {
@@ -880,12 +889,20 @@ func (s *Server) handleSupervisorControl(conn *net.UnixConn, codec *bridge.Codec
 		writeSupervisorError(codec, complete.ID, protocol.ErrAdapterUnhealthy, "runtime control authentication failed")
 		return
 	}
+	// Peer publication and its durable status must be one transition with
+	// respect to both output and control transport teardown.
+	s.controlMu.Lock()
 	if current, currentOK := s.registry.Current(sessionID, generation); !currentOK || current != identity {
+		s.controlMu.Unlock()
 		writeSupervisorError(codec, complete.ID, protocol.ErrStaleGeneration, "runtime changed during control authentication")
 		return
 	}
+	if err := s.state.MarkRuntimeConnected(context.Background(), identity.SessionID, identity.Generation); err != nil {
+		s.controlMu.Unlock()
+		writeSupervisorError(codec, complete.ID, protocol.ErrStaleGeneration, "runtime state changed during control registration")
+		return
+	}
 	peer := &controlPeer{identity: identity, conn: conn, calls: make(chan controlCall), done: make(chan struct{})}
-	s.controlMu.Lock()
 	old := s.controls[sessionID]
 	s.controls[sessionID] = peer
 	s.controlMu.Unlock()
@@ -894,21 +911,13 @@ func (s *Server) handleSupervisorControl(conn *net.UnixConn, codec *bridge.Codec
 	}
 	defer func() {
 		peer.stop()
-		removed := false
 		s.controlMu.Lock()
+		defer s.controlMu.Unlock()
 		if s.controls[sessionID] == peer {
 			delete(s.controls, sessionID)
-			removed = true
-		}
-		s.controlMu.Unlock()
-		if removed {
 			_ = s.state.MarkRuntimeDisconnected(context.Background(), identity.SessionID, identity.Generation)
 		}
 	}()
-	if err := s.state.MarkRuntimeConnected(context.Background(), identity.SessionID, identity.Generation); err != nil {
-		writeSupervisorError(codec, complete.ID, protocol.ErrStaleGeneration, "runtime state changed during control registration")
-		return
-	}
 	ready, _ := json.Marshal(protocol.SupervisorControlReady{SessionID: string(sessionID), RuntimeGeneration: generation})
 	if err := codec.Write(protocol.Response{ID: complete.ID, Result: ready}); err != nil {
 		return
@@ -967,7 +976,7 @@ func (s *Server) handleSupervisorActivity(conn *net.UnixConn, codec *bridge.Code
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "activity principal must be the canonical session ID"}})
 		return
 	}
-	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"terminal_attention", "agent_activity"}}
+	local := protocol.Handshake{Major: protocol.Major, Minor: protocol.Minor, Capabilities: []string{"terminal_attention", "agent_activity", "action_needed_activity"}}
 	negotiated, protocolError := protocol.Negotiate(local, remote)
 	if protocolError != nil || !hasCapability(negotiated.Capabilities, "terminal_attention") {
 		if protocolError == nil {
@@ -1056,7 +1065,7 @@ func (s *Server) handleSupervisorActivity(conn *net.UnixConn, codec *bridge.Code
 		if category == "" {
 			category = model.NotificationTerminalAttention
 		}
-		if category != model.NotificationTerminalAttention && category != model.NotificationTaskCompleted && category != model.NotificationTaskFailed {
+		if category != model.NotificationTerminalAttention && category != model.NotificationTaskCompleted && category != model.NotificationTaskFailed && category != model.NotificationApprovalRequired && category != model.NotificationAgentNeedsInput {
 			writeSupervisorError(codec, request.ID, protocol.ErrInvalidArgument, "invalid supervisor activity category")
 			continue
 		}
@@ -1066,6 +1075,10 @@ func (s *Server) handleSupervisorActivity(conn *net.UnixConn, codec *bridge.Code
 		}
 		if category != model.NotificationTerminalAttention && !hasCapability(negotiated.Capabilities, "agent_activity") {
 			writeSupervisorError(codec, request.ID, protocol.ErrIncompatible, "agent activity capability was not negotiated")
+			continue
+		}
+		if isActionNeededActivity(category) && !hasCapability(negotiated.Capabilities, "action_needed_activity") {
+			writeSupervisorError(codec, request.ID, protocol.ErrIncompatible, "action-needed activity capability was not negotiated")
 			continue
 		}
 		if category != model.NotificationTerminalAttention {
@@ -1856,6 +1869,8 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 		if err := decodeStrict(request.Body, &query); err != nil || query.Agent != "codex" && query.Agent != "claude" {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid Host agent hook status query"}}
 		}
+		s.hostConfigMu.Lock()
+		defer s.hostConfigMu.Unlock()
 		installed, err := agentHookInstalled(query.Agent)
 		if err != nil {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect Host agent hooks"}}
@@ -1865,6 +1880,18 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect Host hook callbacks"}}
 		}
 		status := protocol.HostAgentHookStatus{Agent: query.Agent, Installed: installed, CallbackObserved: observed}
+		if !installed {
+			// Observing external removal also clears verification.
+			err = s.state.SetHookInstallation(context.Background(), query.Agent, false)
+		} else {
+			err = s.state.SetHookInstallation(context.Background(), query.Agent, true)
+			if err == nil {
+				status.Activation, err = s.state.HookActivation(context.Background(), query.Agent)
+			}
+		}
+		if err != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect Host hook activation"}}
+		}
 		if observed {
 			status.CallbackSessionID, status.CallbackGeneration, status.CallbackUpdatedAtMS = string(callback.SessionID), callback.RuntimeGeneration, callback.UpdatedAtMS
 		}
@@ -1878,9 +1905,22 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 		if err := decodeStrict(request.Body, &update); err != nil || (update.Agent != "codex" && update.Agent != "claude") || (update.Action != "install" && update.Action != "remove") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid Host agent hook configuration"}}
 		}
-		result, err := configureAgentHook(update.Agent, update.Action)
+		s.hostConfigMu.Lock()
+		defer s.hostConfigMu.Unlock()
+		result, err := configureAgentHook(update.Agent, update.Action, func() error {
+			return s.state.InvalidateHookInstallation(context.Background(), update.Agent)
+		})
 		if err != nil {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not update Host agent hooks"}}
+		}
+		if err := s.state.SetHookInstallation(context.Background(), update.Agent, result.Installed); err != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not persist Host hook installation"}}
+		}
+		if result.Installed {
+			result.Activation, err = s.state.HookActivation(context.Background(), update.Agent)
+			if err != nil {
+				return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect Host hook activation"}}
+			}
 		}
 		body, _ := json.Marshal(result)
 		return protocol.Response{ID: request.ID, Result: body}

@@ -45,13 +45,16 @@ type LocalProject struct {
 }
 
 // ProjectLayout is Ducklord-local. The built-in Default Project holds a
-// navigable implicit pane for every live Session without explicit membership.
+// implicit membership for every live Session without explicit membership.
+// Closing a Default view suppresses its pane, not its membership or process.
 type ProjectLayout struct {
-	Projects []LocalProject `json:"projects"`
+	Projects                  []LocalProject    `json:"projects"`
+	SuppressedDefaultSessions []SessionIdentity `json:"suppressed_default_sessions,omitempty"`
 }
 
 func (l ProjectLayout) Clone() ProjectLayout {
 	clone := ProjectLayout{Projects: make([]LocalProject, len(l.Projects))}
+	clone.SuppressedDefaultSessions = append([]SessionIdentity(nil), l.SuppressedDefaultSessions...)
 	for i, project := range l.Projects {
 		clone.Projects[i] = LocalProject{ID: project.ID, Name: project.Name, Tabs: make([]TerminalTab, len(project.Tabs))}
 		for j, tab := range project.Tabs {
@@ -98,11 +101,44 @@ func (l *ProjectLayout) Project(id string) *LocalProject {
 func (l *ProjectLayout) ProjectsFor(session SessionIdentity) []string {
 	var ids []string
 	for _, project := range l.Projects {
-		if project.hasSession(session) {
+		if l.hasMembership(project.ID, session) {
 			ids = append(ids, project.ID)
 		}
 	}
 	return ids
+}
+
+func (l *ProjectLayout) defaultSuppressed(session SessionIdentity) bool {
+	for _, identity := range l.SuppressedDefaultSessions {
+		if identity == session {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *ProjectLayout) hasMembership(projectID string, session SessionIdentity) bool {
+	project := l.Project(projectID)
+	return project != nil && (project.hasSession(session) || projectID == DefaultProjectID && l.defaultSuppressed(session))
+}
+
+func (l *ProjectLayout) clearDefaultSuppression(session SessionIdentity) {
+	for i, identity := range l.SuppressedDefaultSessions {
+		if identity == session {
+			l.SuppressedDefaultSessions = append(l.SuppressedDefaultSessions[:i], l.SuppressedDefaultSessions[i+1:]...)
+			return
+		}
+	}
+}
+
+// RestoreDefaultPane is used only by explicit navigation. Inventory refresh,
+// rendering and detailed previews must leave closed views closed.
+func (l *ProjectLayout) RestoreDefaultPane(session SessionIdentity) (bool, error) {
+	if !l.defaultSuppressed(session) {
+		return false, nil
+	}
+	_, err := l.Place(DefaultProjectID, session, PlaceNewTab, "")
+	return err == nil, err
 }
 
 // SessionsForInstance returns each locally referenced Session once. It is
@@ -119,6 +155,12 @@ func (l *ProjectLayout) SessionsForInstance(instanceID string) []SessionIdentity
 					sessions = append(sessions, session)
 				}
 			}
+		}
+	}
+	for _, session := range l.SuppressedDefaultSessions {
+		if session.InstanceID == instanceID && !seen[session] {
+			seen[session] = true
+			sessions = append(sessions, session)
 		}
 	}
 	return sessions
@@ -155,12 +197,12 @@ func (l *ProjectLayout) PaneSession(projectID, paneID string) (SessionIdentity, 
 // order. It does not mutate focus or notification state.
 func (l *ProjectLayout) NavigateProject(session SessionIdentity, currentID, lastID string) string {
 	for _, candidate := range []string{currentID, lastID} {
-		if project := l.Project(candidate); project != nil && project.hasSession(session) {
+		if l.hasMembership(candidate, session) {
 			return candidate
 		}
 	}
 	for _, project := range l.Projects {
-		if project.hasSession(session) {
+		if l.hasMembership(project.ID, session) {
 			return project.ID
 		}
 	}
@@ -292,6 +334,7 @@ func (l *ProjectLayout) Place(projectID string, session SessionIdentity, placeme
 	if projectID != DefaultProjectID {
 		l.removeSessionFromProject(DefaultProjectID, session)
 	}
+	l.clearDefaultSuppression(session)
 	return paneID, nil
 }
 
@@ -342,13 +385,17 @@ func (l *ProjectLayout) removeSessionFromProject(projectID string, session Sessi
 	return false
 }
 
-// Detach removes only the local view. An unclassified live Session always
-// returns to the built-in Default Project, including when detached there.
+// Detach removes only the local view. Closing a Default pane retains implicit
+// membership without reopening it until explicit navigation.
 func (l *ProjectLayout) Detach(projectID string, session SessionIdentity) error {
 	if !l.removeSessionFromProject(projectID, session) {
 		return fmt.Errorf("session has no pane in project %q", projectID)
 	}
-	l.ensureDefault(session)
+	if projectID == DefaultProjectID {
+		l.SuppressedDefaultSessions = append(l.SuppressedDefaultSessions, session)
+	} else {
+		l.ensureDefault(session)
+	}
 	return nil
 }
 
@@ -400,6 +447,9 @@ func (l *ProjectLayout) MovePane(projectID, sourcePaneID string, placement PaneP
 }
 
 func (l *ProjectLayout) ensureDefault(session SessionIdentity) {
+	if l.defaultSuppressed(session) {
+		return
+	}
 	for _, project := range l.Projects {
 		if project.ID != DefaultProjectID && project.hasSession(session) {
 			return
@@ -435,6 +485,7 @@ func (p *SessionPane) sessions() []SessionIdentity {
 // Destroy removes all local references after the caller has successfully
 // destroyed the authoritative remote Session.
 func (l *ProjectLayout) Destroy(session SessionIdentity) {
+	l.clearDefaultSuppression(session)
 	for _, project := range l.Projects {
 		l.removeSessionFromProject(project.ID, session)
 	}
@@ -477,6 +528,13 @@ func (l *ProjectLayout) Validate() error {
 		if customSessions[session] {
 			return fmt.Errorf("classified session also appears in Default Project")
 		}
+	}
+	suppressed := make(map[SessionIdentity]bool)
+	for _, session := range l.SuppressedDefaultSessions {
+		if session.validate() != nil || suppressed[session] || defaultSessions[session] || customSessions[session] {
+			return fmt.Errorf("invalid or duplicate suppressed Default Session")
+		}
+		suppressed[session] = true
 	}
 	return nil
 }

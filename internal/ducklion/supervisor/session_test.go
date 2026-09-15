@@ -437,6 +437,55 @@ func TestInteractiveActivityWaitsForRacingFinalCapture(t *testing.T) {
 	}
 }
 
+func TestActionNeededHooksAreAdvisoryWithActiveTask(t *testing.T) {
+	for _, shellFirst := range []bool{false, true} {
+		for _, category := range []model.NotificationCategory{model.NotificationApprovalRequired, model.NotificationAgentNeedsInput} {
+			session := &Session{shellFirstHooks: shellFirst, activeAgentTask: "active-task", output: duckruntime.NewOutputHub(1024), attentionNotify: make(chan struct{}, 1)}
+			for i := uint64(1); i <= 2; i++ {
+				if err := session.acceptAgentHookWithSource(protocol.SupervisorAgentEvent{Kind: string(category), Response: "secret", Summary: "secret"}, "claude"); err != nil {
+					t.Fatal(err)
+				}
+				got, offset, id, pending := session.PendingActivity()
+				if !pending || got != category || id != i || offset != 0 {
+					t.Fatalf("action-needed activity: %s %d %d %v", got, offset, id, pending)
+				}
+				session.AckActivity(got, offset, id)
+			}
+			if session.activeAgentTask != "active-task" || len(session.PendingAgentEvents()) != 0 {
+				t.Fatal("advisory hook changed managed task state")
+			}
+		}
+	}
+}
+
+func TestShellFirstTerminalHooksPreserveActiveManagedTask(t *testing.T) {
+	for _, tc := range []struct {
+		kind     string
+		category model.NotificationCategory
+	}{{"completed", model.NotificationTaskCompleted}, {"failed", model.NotificationTaskFailed}} {
+		t.Run(tc.kind, func(t *testing.T) {
+			session := &Session{
+				shellFirstHooks: true, activeAgentTask: "active-task",
+				output: duckruntime.NewOutputHub(1024), attentionNotify: make(chan struct{}, 1),
+				agentEvents:    make(map[string][]protocol.SupervisorAgentEvent),
+				agentEventAcks: make(map[string]uint64), terminalAgentTasks: make(map[string]uint64),
+			}
+			if err := session.acceptAgentHookWithSource(protocol.SupervisorAgentEvent{
+				Kind: tc.kind, TaskID: "active-task", Response: "secret response", Summary: "secret summary",
+			}, "claude"); err != nil {
+				t.Fatal(err)
+			}
+			category, _, _, pending := session.PendingActivity()
+			if !pending || category != tc.category {
+				t.Fatalf("advisory activity = %q, pending=%v", category, pending)
+			}
+			if session.activeAgentTask != "active-task" || len(session.PendingAgentEvents()) != 0 || len(session.terminalAgentTasks) != 0 {
+				t.Fatalf("shell-first %s altered managed task: active=%q events=%+v terminal=%+v", tc.kind, session.activeAgentTask, session.PendingAgentEvents(), session.terminalAgentTasks)
+			}
+		})
+	}
+}
+
 func TestLegacyAgentHookDrainsBeforeFastProcessExit(t *testing.T) {
 	session, err := Start(Options{SessionID: "ABC123", RuntimeGeneration: 2, OwnershipEpoch: 3, AgentType: "fixture", CWD: t.TempDir(),
 		Command: []string{"sh", "-c", `printf '%s\n' '{"kind":"completed","response":"discard me"}' >&3`}})
@@ -459,21 +508,32 @@ func TestAgentHookSocketRejectsWrongCapabilityToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = session.Terminate(true); _ = session.Wait() }()
-	conn, err := net.DialTimeout("unix", session.agentHookPath, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = conn.SetDeadline(time.Now().Add(200 * time.Millisecond))
-	envelope := agentHookEnvelope{Token: "wrong-token", Event: protocol.SupervisorAgentEvent{Kind: "completed"}}
-	if err := json.NewEncoder(conn).Encode(envelope); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := io.ReadAll(conn); err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatal(err)
-	}
-	_ = conn.Close()
-	if _, _, _, pending := session.PendingActivity(); pending {
-		t.Fatal("wrong hook token emitted attention")
+	for _, kind := range []string{"completed", "approval_required", "agent_needs_input"} {
+		t.Run(kind, func(t *testing.T) {
+			conn, err := net.DialTimeout("unix", session.agentHookPath, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(time.Second))
+			envelope := agentHookEnvelope{Token: "wrong-token", Event: protocol.SupervisorAgentEvent{Kind: kind}}
+			if err := json.NewEncoder(conn).Encode(envelope); err != nil {
+				t.Fatal(err)
+			}
+			response, err := io.ReadAll(conn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(response) != "rejected\n" {
+				t.Fatalf("wrong token response = %q", response)
+			}
+			if _, _, _, pending := session.PendingActivity(); pending {
+				t.Fatal("wrong hook token emitted attention")
+			}
+			if events := session.PendingAgentEvents(); len(events) != 0 {
+				t.Fatalf("wrong hook token queued managed events: %+v", events)
+			}
+		})
 	}
 }
 

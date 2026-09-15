@@ -1157,13 +1157,13 @@ func resolveSession(client *daemon.Client, ref string) (protocol.SessionSummary,
 }
 
 func (*Runner) Projects(ctx context.Context, c Client) ([]RemoteProject, error) {
-	out, err := sshOutput(ctx, c, "projects", "--json")
+	out, err := sshOutput(ctx, c, "bookmarks", "--json")
 	if err != nil {
 		return nil, err
 	}
 	var projects []RemoteProject
 	if err := json.Unmarshal(out, &projects); err != nil {
-		return nil, fmt.Errorf("parse ducklion projects from %s: %w", c.Name, err)
+		return nil, fmt.Errorf("parse ducklion bookmarks from %s: %w", c.Name, err)
 	}
 	return projects, nil
 }
@@ -1190,7 +1190,7 @@ func (*Runner) SuggestProjectPaths(ctx context.Context, c Client, query string) 
 	if err := validateRemoteText("path query", query, 4096, false); err != nil {
 		return nil, err
 	}
-	out, err := sshOutput(ctx, c, "projects", "--suggest", query, "--json")
+	out, err := sshOutput(ctx, c, "bookmarks", "--suggest", query, "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -1219,9 +1219,9 @@ func (*Runner) EnsureDirectory(ctx context.Context, c Client, path string, creat
 		return RemoteDirectoryStatus{}, err
 	}
 	requested := filepath.Clean(path)
-	args := []string{"projects", "--inspect-dir", path, "--json"}
+	args := []string{"bookmarks", "--inspect-dir", path, "--json"}
 	if create {
-		args = []string{"projects", "--create-dir", path, "--json"}
+		args = []string{"bookmarks", "--create-dir", path, "--json"}
 	}
 	out, err := sshOutput(ctx, c, args...)
 	if err != nil {
@@ -1247,15 +1247,15 @@ func (*Runner) EnsureDirectory(ctx context.Context, c Client, path string, creat
 }
 
 func (*Runner) AddProject(ctx context.Context, c Client, path, name string) (RemoteProject, error) {
-	if err := validateRemoteText("project path", path, 4096, true); err != nil {
+	if err := validateRemoteText("bookmark path", path, 4096, true); err != nil {
 		return RemoteProject{}, err
 	}
 	if name != "" {
-		if err := validateRemoteText("project name", name, 256, false); err != nil {
+		if err := validateRemoteText("bookmark name", name, 256, false); err != nil {
 			return RemoteProject{}, err
 		}
 	}
-	args := []string{"projects", "--add", path, "--json"}
+	args := []string{"bookmarks", "--add", path, "--json"}
 	if name != "" {
 		args = append(args, "--name", name)
 	}
@@ -1265,13 +1265,13 @@ func (*Runner) AddProject(ctx context.Context, c Client, path, name string) (Rem
 	}
 	var projects []RemoteProject
 	if err := json.Unmarshal(out, &projects); err != nil || len(projects) != 1 {
-		return RemoteProject{}, fmt.Errorf("parse added Ducklion project from %s", c.Name)
+		return RemoteProject{}, fmt.Errorf("parse added Ducklion bookmark from %s", c.Name)
 	}
-	if err := validateRemoteText("added project path", projects[0].Path, 4096, true); err != nil {
+	if err := validateRemoteText("added bookmark path", projects[0].Path, 4096, true); err != nil {
 		return RemoteProject{}, err
 	}
-	if err := validateRemoteText("added project name", projects[0].Name, 256, false); err != nil || strings.TrimSpace(projects[0].Name) == "" {
-		return RemoteProject{}, fmt.Errorf("invalid added project returned by %s", c.Name)
+	if err := validateRemoteText("added bookmark name", projects[0].Name, 256, false); err != nil || strings.TrimSpace(projects[0].Name) == "" {
+		return RemoteProject{}, fmt.Errorf("invalid added bookmark returned by %s", c.Name)
 	}
 	projects[0].Source = "duckway-client"
 	return projects[0], nil

@@ -203,7 +203,10 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	launch := "codex --no-alt-screen --sandbox read-only\r"
 	ready := "OpenAI Codex"
 	if agent == "claude" {
-		launch = "claude --permission-mode plan\r"
+		// Keep this three-turn fixture synchronous. Claude can otherwise
+		// auto-background the delay and emit a separate, legitimate Stop when
+		// it later processes the background task's completion.
+		launch = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude --permission-mode plan\r"
 	}
 	writePTY(t, terminal, launch)
 	if agent == "claude" {
@@ -276,15 +279,31 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		prefix := fmt.Sprintf("LIVE_%s_%s_%d_", strings.ToUpper(agent), stamp, turn)
 		response := prefix + "OK"
 		capture.watchCurrent(response)
-		writePTY(t, terminal, "Join "+prefix+" and OK without spaces. Reply with only the joined text.")
-		time.Sleep(150 * time.Millisecond) // Codex treats a prompt and Enter in one PTY write as a paste.
+		turnSession, exists := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+		if !exists {
+			t.Fatal("live agent Session disappeared before prompt")
+		}
+		turnBaseline := turnSession.ActivitySequences[model.NotificationTaskCompleted]
+		prompt := "Join " + prefix + " and OK without spaces. Reply with only the joined text."
+		typeLiveAgentPrompt(t, terminal, agent, prompt)
 		writePTY(t, terminal, "\r")
 		if agent == "codex" {
-			time.Sleep(time.Second)
-			// Some Codex terminal modes accept the first Enter as paste completion.
-			// A second Enter submits the now-visible prompt; a completed turn
-			// treats it as an empty input and does not start another task.
-			writePTY(t, terminal, "\r")
+			for retry := 0; retry < 2; retry++ {
+				time.Sleep(time.Second)
+				latest, exists := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+				output, readErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", session.SessionID,
+					"--lines", "200", "--config", "/root/.ducklord/config.yaml").Output()
+				recent := string(output)
+				if index := strings.LastIndex(recent, prefix); index >= 0 {
+					recent = recent[index:]
+				}
+				if !exists || readErr != nil || latest.ActivitySequences[model.NotificationTaskCompleted] > turnBaseline ||
+					strings.Contains(recent, response) || strings.Contains(strings.ToLower(recent), "esc to interrupt") ||
+					!strings.Contains(capture.currentText(), prefix) {
+					break
+				}
+				writePTY(t, terminal, "\r")
+			}
 		}
 		turnTimeout := 180 * time.Second
 		if os.Getenv("DUCKLORD_LIVE_TUI_DEBUG_TIMEOUT") == "1" {
@@ -292,6 +311,8 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		}
 		var screenSeen, remoteSeen, remoteTrust, remotePrompt, remoteContinue bool
 		var remoteAuth, remoteError, screenError, screenPrompt, focusVisible, inputBlocked, controlChanged bool
+		var remoteBusyEver bool
+		var remoteAfterPrefix string
 		var remoteAfterAnswer string
 		waitE2E(t, turnTimeout, func() bool {
 			screen := capture.currentText()
@@ -306,11 +327,17 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 			remoteSeen = readErr == nil && strings.Contains(string(output), response)
 			if readErr == nil {
 				remote := string(output)
+				remoteAfterPrefix = ""
+				remoteAfterAnswer = ""
+				if index := strings.LastIndex(remote, prefix); index >= 0 {
+					remoteAfterPrefix = remote[index+len(prefix):]
+				}
+				remoteBusyEver = remoteBusyEver || strings.Contains(strings.ToLower(remoteAfterPrefix), "esc to interrupt")
 				if index := strings.LastIndex(remote, response); index >= 0 {
 					remoteAfterAnswer = remote[index+len(response):]
 				}
 				remoteTrust = strings.Contains(remote, "Yes, continue") || strings.Contains(remote, "Do you trust")
-				remotePrompt = strings.Contains(remote, "Join") || strings.Contains(remote, prefix)
+				remotePrompt = strings.Contains(remote, prefix)
 				remoteContinue = strings.Contains(remote, "Press enter to continue")
 				remoteAuth = strings.Contains(strings.ToLower(remote), "login") || strings.Contains(strings.ToLower(remote), "authentication")
 				remoteError = strings.Contains(strings.ToLower(remote), "error")
@@ -318,11 +345,11 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 			return screenSeen && remoteSeen
 		}, func() string {
 			latest, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
-			return fmt.Sprintf("%s turn %d missing answer (screen=%t ever-screen=%t remote=%t screen-prompt=%t screen-error=%t focused=%t input-blocked=%t control-changed=%t remote-trust=%t remote-prompt=%t remote-continue=%t remote-auth=%t remote-error=%t session-found=%t task=%q adapter=%q completed=%d failed=%d after-answer=%s); no PTY content logged", agent, turn, screenSeen, capture.everCurrent(response), remoteSeen, screenPrompt, screenError, focusVisible, inputBlocked, controlChanged, remoteTrust, remotePrompt, remoteContinue, remoteAuth, remoteError, found, latest.TaskState, latest.AdapterState, latest.ActivitySequences[model.NotificationTaskCompleted], latest.ActivitySequences[model.NotificationTaskFailed], liveAnswerControlSummary(remoteAfterAnswer))
+			return fmt.Sprintf("%s turn %d missing answer (screen=%t ever-screen=%t remote=%t screen-prompt=%t screen-error=%t focused=%t input-blocked=%t control-changed=%t remote-trust=%t remote-prompt=%t remote-continue=%t remote-auth=%t remote-error=%t busy-ever=%t session-found=%t foreground=%q task=%q adapter=%q completed-before=%d completed-after=%d failed=%d after-prefix=%s after-answer=%s); no PTY content logged", agent, turn, screenSeen, capture.everCurrent(response), remoteSeen, screenPrompt, screenError, focusVisible, inputBlocked, controlChanged, remoteTrust, remotePrompt, remoteContinue, remoteAuth, remoteError, remoteBusyEver, found, latest.DetectedForeground, latest.TaskState, latest.AdapterState, turnBaseline, latest.ActivitySequences[model.NotificationTaskCompleted], latest.ActivitySequences[model.NotificationTaskFailed], liveAnswerControlSummary(remoteAfterPrefix), liveAnswerControlSummary(remoteAfterAnswer))
 		})
 		waitE2E(t, 25*time.Second, func() bool {
 			latest, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
-			return found && latest.ActivitySequences[model.NotificationTaskCompleted] >= baselineSequence+uint64(turn)
+			return found && latest.ActivitySequences[model.NotificationTaskCompleted] > turnBaseline
 		}, func() string {
 			return fmt.Sprintf("%s turn %d produced an answer but no native Stop hook completion", agent, turn)
 		})
@@ -379,7 +406,16 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		writePTY(t, terminal, "printf '"+marker+"\\n'\r")
 		_, right := liveSplitColumns(int(cols))
 		waitE2E(t, 20*time.Second, func() bool { return liveScreenHasLabelInColumn(capture.currentText(), marker, right) },
-			func() string { return "sidecar marker did not render in its split cell; screen suppressed" })
+			func() string {
+				side, sideErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", sidecar.SessionID,
+					"--lines", "80", "--config", "/root/.ducklord/config.yaml").Output()
+				main, mainErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", session.SessionID,
+					"--lines", "80", "--config", "/root/.ducklord/config.yaml").Output()
+				screen := capture.currentText()
+				return fmt.Sprintf("sidecar marker did not render in its split cell (remote-sidecar=%t remote-agent=%t read-errors=%t/%t screen-anywhere=%t input-blocked=%t); screen suppressed",
+					strings.Contains(string(side), marker), strings.Contains(string(main), marker), sideErr != nil, mainErr != nil,
+					strings.Contains(screen, marker), strings.Contains(screen, "input was not sent") || strings.Contains(screen, "waiting for Session pane output"))
+			})
 		sidecarOutput, sidecarErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", sidecar.SessionID,
 			"--lines", "80", "--config", "/root/.ducklord/config.yaml").Output()
 		agentOutput, agentErr := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", session.SessionID,
@@ -397,18 +433,12 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	backgroundPrefix := fmt.Sprintf("LIVE_%s_%s_BACKGROUND_", strings.ToUpper(agent), stamp)
 	backgroundResponse := backgroundPrefix + "OK"
 	backgroundPrompt := "Join " + backgroundPrefix + " and OK without spaces. Reply with only the joined text."
-	if agent == "codex" {
-		// Keep the turn active while Ducklord leaves the focused pane; a
-		// trivially fast answer could otherwise be correctly marked seen.
-		backgroundPrompt = "First run `sleep 3` in the shell. Then " + backgroundPrompt
-	}
-	writePTY(t, terminal, backgroundPrompt)
-	time.Sleep(150 * time.Millisecond)
+	// Both agents need time to leave the focused pane before completing.
+	// A trivially fast Claude answer is correctly marked seen, just like
+	// Codex, and cannot test background unread delivery.
+	backgroundPrompt = "Run exactly one foreground shell command `sleep 3` and wait for it to finish before replying. Then " + backgroundPrompt
+	typeLiveAgentPrompt(t, terminal, agent, backgroundPrompt)
 	writePTY(t, terminal, "\r")
-	if agent == "codex" {
-		time.Sleep(time.Second)
-		writePTY(t, terminal, "\r")
-	}
 	// The TUI may still be flushing this input to the remote PTY. Observe the
 	// prompt there before navigating away; otherwise Ctrl-] can race the
 	// submission and leave a partially entered Claude prompt behind.
@@ -435,8 +465,8 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	}
 	var backgroundPromptVisible, backgroundAgentBusy, backgroundAuth, backgroundError bool
 	var backgroundRateLimit, backgroundAPIError, backgroundNetworkError, backgroundPermission, backgroundSubmitHint bool
-	backgroundAPIStatus := "none"
-	apiStatusPattern := regexp.MustCompile(`(?i)api error[^0-9]{0,20}([0-9]{3})`)
+	var backgroundSleepToolSeen, backgroundSleepResultSeen bool
+	backgroundDiagnostic := liveAgentDiagnostic{APIClass: "none", APIStatus: "none"}
 	waitE2E(t, backgroundTimeout, func() bool {
 		output, err := exec.Command(runtime, "exec", controller, "ducklord", "read", "client-a", session.SessionID,
 			"--lines", "200", "--config", "/root/.ducklord/config.yaml").Output()
@@ -452,13 +482,15 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 		backgroundAgentBusy = strings.Contains(lower, "esc to interrupt")
 		backgroundAuth = strings.Contains(lower, "login") || strings.Contains(lower, "authentication")
 		backgroundError = strings.Contains(lower, "error")
-		backgroundRateLimit = strings.Contains(lower, "rate limit") || strings.Contains(lower, "429")
 		backgroundAPIError = strings.Contains(lower, "api error") || strings.Contains(lower, "overloaded")
-		if match := apiStatusPattern.FindStringSubmatch(remote); len(match) == 2 {
-			backgroundAPIStatus = match[1]
-		}
+		backgroundDiagnostic = classifyLiveAgentDiagnostic(remote)
+		// Fixture IDs and request IDs can contain arbitrary digits, including
+		// 429. Only a recognized API status/category is evidence of throttling.
+		backgroundRateLimit = backgroundDiagnostic.APIStatus == "429" || backgroundDiagnostic.APIClass == "rate_limit_error" || backgroundDiagnostic.APIClass == "rate_limit"
+		backgroundSleepToolSeen = backgroundSleepToolSeen || backgroundDiagnostic.SleepToolVisible
+		backgroundSleepResultSeen = backgroundSleepResultSeen || backgroundDiagnostic.SleepResultVisible
 		backgroundNetworkError = strings.Contains(lower, "network error") || strings.Contains(lower, "connection error")
-		backgroundPermission = strings.Contains(lower, "permission") || strings.Contains(lower, "approve")
+		backgroundPermission = backgroundDiagnostic.Permission
 		backgroundSubmitHint = strings.Contains(lower, "press enter") || strings.Contains(lower, "return to submit")
 		return strings.Contains(remote, backgroundResponse)
 	}, func() string {
@@ -467,9 +499,9 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 			completed = latest.ActivitySequences[model.NotificationTaskCompleted]
 			failed = latest.ActivitySequences[model.NotificationTaskFailed]
 		}
-		return fmt.Sprintf("%s background turn missing remote answer (prompt=%t busy=%t auth=%t error=%t rate=%t api=%t api-status=%s network=%t permission=%t submit-hint=%t completed=%d failed=%d baseline=%d); PTY content suppressed",
+		return fmt.Sprintf("%s background turn missing remote answer (prompt=%t busy=%t auth=%t error=%t rate=%t api=%t api-status=%s api-class=%s network=%t permission=%t submit-hint=%t sleep-tool-screen-seen=%t sleep-result-screen-seen=%t completed=%d failed=%d baseline=%d); PTY content suppressed",
 			agent, backgroundPromptVisible, backgroundAgentBusy, backgroundAuth, backgroundError,
-			backgroundRateLimit, backgroundAPIError, backgroundAPIStatus, backgroundNetworkError, backgroundPermission, backgroundSubmitHint, completed, failed, baselineSequence)
+			backgroundRateLimit, backgroundAPIError, backgroundDiagnostic.APIStatus, backgroundDiagnostic.APIClass, backgroundNetworkError, backgroundPermission, backgroundSubmitHint, backgroundSleepToolSeen, backgroundSleepResultSeen, completed, failed, baselineSequence)
 	})
 	waitE2E(t, 25*time.Second, func() bool {
 		latest, exists := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
@@ -501,12 +533,18 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	}, func() string {
 		return fmt.Sprintf("%s background unread marker absent (project-row=%t project-marker=%t session-marker=%t quick-bullet=%t quick-header=%t); screen suppressed", agent, projectRow, projectMarker, sessionMarker, quickBullet, quickHeader)
 	})
+	beforeNavigate, beforeNavigateFound := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+	beforeNavigateSequence := beforeNavigate.ActivitySequences[model.NotificationTaskCompleted]
+	t.Logf("background completion checkpoint before return navigation: session-found=%t sequence=%d", beforeNavigateFound, beforeNavigateSequence)
 	writePTY(t, terminal, "P")
 	waitLiveAgentScreen(t, capture, "Session list pane:", 20*time.Second)
 	writePTY(t, terminal, "/"+handle+"\r")
 	waitLiveAgentScreen(t, capture, "Active · Enter again to focus", 20*time.Second)
 	writePTY(t, terminal, "\r")
 	waitLiveAgentScreen(t, capture, "Session focus:", 20*time.Second)
+	afterFocus, afterFocusFound := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+	afterFocusSequence := afterFocus.ActivitySequences[model.NotificationTaskCompleted]
+	t.Logf("background completion checkpoint after focus: session-found=%t sequence=%d", afterFocusFound, afterFocusSequence)
 	waitE2E(t, 15*time.Second, func() bool {
 		data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
 		if err != nil {
@@ -533,12 +571,35 @@ func TestDucklordInteractiveAgentLiveTUIContainerE2E(t *testing.T) {
 	time.Sleep(4 * time.Second) // Exceeds the notifier deadline; catch duplicate delayed deliveries.
 	log, err := exec.Command(runtime, "exec", controller, "cat", home+"/notifications.log").Output()
 	if err != nil || strings.Count(string(log), handle) != baselineNotifications+3 || strings.Contains(string(log), "LIVE_"+strings.ToUpper(agent)+"_") {
-		t.Fatalf("%s native turns did not produce exactly three private-safe notifications: %v (log content suppressed)", agent, err)
+		latest, exists := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+		// These are visible-screen marker counts, not native transcript event
+		// counts. Never emit screen contents, which may contain private text.
+		screen := strings.ToLower(capture.currentText())
+		t.Fatalf("%s native turns did not produce exactly three private-safe notifications: %v (baseline=%d session-deliveries=%d completed-deliveries=%d session-found=%t sequence-before=%d sequence-background-before-navigate=%d before-navigate-found=%t sequence-after-focus=%d after-focus-found=%t sequence-after=%d private-text=%t screen-task-notification-markers=%d screen-background-task-markers=%d screen-exit-plan-mode-markers=%d; log and screen content suppressed)", agent, err,
+			baselineNotifications, strings.Count(string(log), handle), strings.Count(string(log), "task completed"), exists, baselineSequence,
+			beforeNavigateSequence, beforeNavigateFound, afterFocusSequence, afterFocusFound, latest.ActivitySequences[model.NotificationTaskCompleted],
+			strings.Contains(string(log), "LIVE_"+strings.ToUpper(agent)+"_"), strings.Count(screen, "<task-notification>"), strings.Count(screen, "background task"), strings.Count(screen, "exitplanmode"))
 	}
 }
 
 func liveScreenHasMarkedRow(screen, label string, marked bool, column ducklord.WorkspaceRect) bool {
 	return liveScreenHasRowMatching(screen, label, column, func(cell string) bool { return strings.HasSuffix(cell, "•") == marked })
+}
+
+func typeLiveAgentPrompt(t *testing.T, terminal *os.File, agent, prompt string) {
+	t.Helper()
+	if agent == "codex" {
+		// A human types into the composer; a bulk PTY write is interpreted by
+		// Codex as a paste and can require an extra Enter to accept it.
+		for _, character := range prompt {
+			writePTY(t, terminal, string(character))
+			time.Sleep(8 * time.Millisecond)
+		}
+		time.Sleep(150 * time.Millisecond)
+		return
+	}
+	writePTY(t, terminal, prompt)
+	time.Sleep(150 * time.Millisecond)
 }
 
 // Return only control-sequence counts. Live PTY text may contain credentials

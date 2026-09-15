@@ -58,6 +58,15 @@ func (w *WorkspaceState) InDetailMode() bool                 { return w.detail }
 func (w *WorkspaceState) DetailSelection() SessionIdentity   { return w.detailSelection }
 func (w *WorkspaceState) NotificationFocusProjectID() string { return w.notificationFocusProjectID }
 
+// NotificationProjectID labels a shared Session without navigating or changing
+// focus. Notification focus takes precedence over the normal navigation order.
+func (w *WorkspaceState) NotificationProjectID(session SessionIdentity) string {
+	if w.layout.hasMembership(w.notificationFocusProjectID, session) {
+		return w.notificationFocusProjectID
+	}
+	return w.layout.NavigateProject(session, w.location.projectID, w.lastProject[session])
+}
+
 func (w *WorkspaceState) ToggleNotificationFocus() string {
 	if w.notificationFocusProjectID == w.location.projectID {
 		w.notificationFocusProjectID = ""
@@ -105,7 +114,13 @@ func (w *WorkspaceState) SelectProject(projectID string) error {
 	if w.detail {
 		return fmt.Errorf("cannot select a Project in detailed-list mode")
 	}
-	return w.selectProject(projectID, RegionProjects)
+	if err := w.selectProject(projectID, RegionProjects); err != nil {
+		return err
+	}
+	if session, ok := w.layout.PaneSession(projectID, w.location.paneID); ok {
+		w.lastProject[session] = projectID
+	}
+	return nil
 }
 
 func (p *LocalProject) hasPane(tabID, paneID string) bool {
@@ -158,10 +173,14 @@ func (w *WorkspaceState) SelectQuickSession(session SessionIdentity) error {
 	if projectID == "" {
 		return fmt.Errorf("session has no Project pane")
 	}
+	tabID, paneID := w.layout.Project(projectID).findSessionLocation(session)
+	if paneID == "" {
+		return fmt.Errorf("session Project pane is closed")
+	}
 	if err := w.selectProject(projectID, RegionQuickList); err != nil {
 		return err
 	}
-	w.location.tabID, w.location.paneID = w.layout.Project(projectID).findSessionLocation(session)
+	w.location.tabID, w.location.paneID = tabID, paneID
 	w.quickSelection = session
 	w.lastProject[session] = projectID
 	return nil
@@ -272,6 +291,7 @@ func (w *WorkspaceState) FocusPane() (SessionIdentity, error) {
 		pane := tab.Root.findPane(w.location.paneID)
 		if pane != nil && pane.Session != nil {
 			w.location.region = RegionTerminal
+			w.lastProject[*pane.Session] = project.ID
 			return *pane.Session, nil
 		}
 	}
@@ -339,17 +359,19 @@ func (w *WorkspaceState) JumpDetail() (SessionIdentity, error) {
 		return SessionIdentity{}, fmt.Errorf("not in detailed-list mode")
 	}
 	session := w.detailSelection
-	if w.layout.NavigateProject(session, w.beforeDetail.projectID, w.lastProject[session]) == "" {
+	projectID := w.layout.NavigateProject(session, w.beforeDetail.projectID, w.lastProject[session])
+	if projectID == "" {
 		return SessionIdentity{}, fmt.Errorf("selected Session no longer has a Project pane")
 	}
+	tabID, paneID := w.layout.Project(projectID).findSessionLocation(session)
+	if paneID == "" {
+		return SessionIdentity{}, fmt.Errorf("selected Session Project pane is closed")
+	}
 	w.ExitDetail()
-	projectID := w.layout.NavigateProject(session, w.location.projectID, w.lastProject[session])
 	if err := w.selectProject(projectID, RegionProjects); err != nil {
 		return SessionIdentity{}, err
 	}
 	w.lastProject[session] = projectID
-	project := w.layout.Project(projectID)
-	tabID, paneID := project.findSessionLocation(session)
 	w.location.tabID, w.location.paneID = tabID, paneID
 	return w.FocusPane()
 }

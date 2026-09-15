@@ -68,8 +68,7 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 			candidate := quickSessions[index+quickOffset]
 			if current, ok := ducklord.IdentityFromSession(candidate); ok && current == identity && candidate.RuntimeGeneration == source.RuntimeGeneration {
 				s.selectSessionKey(sessionKey(candidate))
-				s.workspaceFollowQuickSelection()
-				return true, true
+				return true, s.workspaceFollowQuickSelection()
 			}
 		}
 		return true, false

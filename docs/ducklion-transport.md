@@ -519,6 +519,14 @@ capability keeps rolling upgrades fail-safe: an older daemon receives neither
 an unknown request field nor a supervisor retry loop; completion hints produced
 during that downgrade window are intentionally dropped.
 
+Payload-free `approval_required` and `agent_needs_input` callbacks additionally
+require `action_needed_activity` on both the supervisor registration and the
+activity connection. An older daemon may support `agent_activity` but not these
+newer categories. The supervisor discards only unsupported action-needed hints
+before forwarding or draining on exit, preserving subsequent completion/failure
+events and their original event IDs. This prevents an unsupported advisory hint
+from blocking the activity queue or runtime exit during a downgrade.
+
 Session list and revision-subscription snapshots include the category cursor
 map. Ducklord compares these authoritative cursors with the `notifications`
 section of its versioned, extensible, mode-0600 local-state envelope at
