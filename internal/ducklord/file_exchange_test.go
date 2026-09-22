@@ -490,3 +490,57 @@ func TestRemoteToLocalOverwriteRejectsDestinationTypeMismatch(t *testing.T) {
 		t.Fatalf("destination changed: %q %v", got, err)
 	}
 }
+
+func TestCrossEndpointNonTransferableDestinationConflictPolicies(t *testing.T) {
+	for _, kind := range []string{"symlink", "special"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			src, dst := filepath.Join(root, "src"), filepath.Join(root, "dst")
+			if err := os.Mkdir(src, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(dst, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(src, "item"), []byte("payload"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ssh := filepath.Join(root, "ssh")
+			script := "#!/bin/sh\ncase \"$*\" in\n  *'files list'*) printf '[{\"name\":\"item\",\"is_dir\":false,\"size\":0,\"non_transferable\":true}]\\n' ;;\n  *) cat >/dev/null ;;\nesac\n"
+			if err := os.WriteFile(ssh, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			destination := FileEndpoint{Client: &Client{Name: "remote", Host: "remote", SSH: ssh, Ducklion: "ducklion"}, Path: dst}
+			for _, policy := range []string{"skip", "rename"} {
+				results, err := CopyFiles(context.Background(), FileCopyRequest{Source: FileEndpoint{Path: src}, Destination: destination, Names: []string{"item"}, Conflict: policy})
+				if err != nil {
+					t.Fatalf("%s: %v", policy, err)
+				}
+				if policy == "skip" {
+					if len(results) != 1 || !results[0].Skipped {
+						t.Fatalf("skip results: %#v", results)
+					}
+				} else if len(results) != 1 || filepath.Base(results[0].Destination) != "item (1)" {
+					t.Fatalf("rename results: %#v", results)
+				}
+			}
+		})
+	}
+}
+
+func TestChooseLocalDestinationRenameHonorsCancellation(t *testing.T) {
+	root := t.TempDir()
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if err := os.WriteFile(filepath.Join(root, "item"), []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := chooseLocalDestination(ctx, r, "item", "rename"); err == nil || !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("rename cancellation: %v", err)
+	}
+}

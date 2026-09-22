@@ -15,9 +15,10 @@ import (
 )
 
 type fileCLIEntry struct {
-	Name  string `json:"name"`
-	IsDir bool   `json:"is_dir"`
-	Size  int64  `json:"size"`
+	Name            string `json:"name"`
+	IsDir           bool   `json:"is_dir"`
+	Size            int64  `json:"size"`
+	NonTransferable bool   `json:"non_transferable,omitempty"`
 }
 
 const exchangePayloadRoot = "__duckway_payload"
@@ -74,10 +75,8 @@ func runFilesContext(ctx context.Context, args []string, in io.Reader, out io.Wr
 				if e != nil {
 					return e
 				}
-				if x.Type()&os.ModeSymlink != 0 || !x.Type().IsRegular() && !x.IsDir() {
-					continue
-				}
-				result = append(result, fileCLIEntry{Name: x.Name(), IsDir: x.IsDir(), Size: i.Size()})
+				nonTransferable := !x.Type().IsRegular() && !x.IsDir()
+				result = append(result, fileCLIEntry{Name: x.Name(), IsDir: x.IsDir(), Size: i.Size(), NonTransferable: nonTransferable})
 				if len(result) > 100000 {
 					return fmt.Errorf("directory listing exceeds entry limit")
 				}

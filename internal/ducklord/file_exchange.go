@@ -24,9 +24,10 @@ type FileEndpoint struct {
 	Path   string
 }
 type FileEntry struct {
-	Name  string `json:"name"`
-	IsDir bool   `json:"is_dir"`
-	Size  int64  `json:"size"`
+	Name            string `json:"name"`
+	IsDir           bool   `json:"is_dir"`
+	Size            int64  `json:"size"`
+	NonTransferable bool   `json:"non_transferable,omitempty"`
 }
 type FileCopyRequest struct {
 	Source, Destination FileEndpoint
@@ -96,10 +97,8 @@ func ListFiles(ctx context.Context, endpoint FileEndpoint) ([]FileEntry, error) 
 				if err != nil {
 					return nil, err
 				}
-				if e.Type()&os.ModeSymlink != 0 || !e.Type().IsRegular() && !e.IsDir() {
-					continue
-				}
-				out = append(out, FileEntry{Name: e.Name(), IsDir: e.IsDir(), Size: i.Size()})
+				nonTransferable := !e.Type().IsRegular() && !e.IsDir()
+				out = append(out, FileEntry{Name: e.Name(), IsDir: e.IsDir(), Size: i.Size(), NonTransferable: nonTransferable})
 				if len(out) > 100000 {
 					return nil, fmt.Errorf("directory listing exceeds entry limit")
 				}
@@ -145,15 +144,24 @@ func CopyFiles(parent context.Context, req FileCopyRequest) ([]FileCopyResult, e
 		return copyLocal(ctx, req)
 	}
 	results := make([]FileCopyResult, 0, len(req.Names))
-	var remoteSourceDirs map[string]bool
-	if sameClient(req.Source.Client, req.Destination.Client) && req.Source.Client != nil {
+	var remoteSourceEntries map[string]FileEntry
+	if req.Source.Client != nil {
 		entries, err := ListFiles(ctx, req.Source)
 		if err != nil {
 			return nil, err
 		}
-		remoteSourceDirs = make(map[string]bool, len(entries))
+		remoteSourceEntries = make(map[string]FileEntry, len(entries))
 		for _, entry := range entries {
-			remoteSourceDirs[entry.Name] = entry.IsDir
+			remoteSourceEntries[entry.Name] = entry
+		}
+		for _, name := range req.Names {
+			entry, ok := remoteSourceEntries[name]
+			if !ok {
+				return nil, fmt.Errorf("source does not exist %q", name)
+			}
+			if entry.NonTransferable {
+				return nil, fmt.Errorf("unsupported source %q", name)
+			}
 		}
 	}
 	for _, name := range req.Names {
@@ -165,7 +173,7 @@ func CopyFiles(parent context.Context, req FileCopyRequest) ([]FileCopyResult, e
 		if sameClient(req.Source.Client, req.Destination.Client) {
 			candidate := filepath.Join(req.Source.Path, name)
 			if rel, e := filepath.Rel(candidate, req.Destination.Path); e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				if (remoteSourceDirs != nil && remoteSourceDirs[name]) || (remoteSourceDirs == nil && func() bool { si, se := os.Stat(candidate); return se == nil && si.IsDir() }()) {
+				if (remoteSourceEntries != nil && remoteSourceEntries[name].IsDir) || (remoteSourceEntries == nil && func() bool { si, se := os.Stat(candidate); return se == nil && si.IsDir() }()) {
 					return results, fmt.Errorf("destination is inside source %q", name)
 				}
 			}
@@ -261,7 +269,7 @@ func copyLocal(ctx context.Context, req FileCopyRequest) ([]FileCopyResult, erro
 		if i.Mode()&os.ModeSymlink != 0 || !i.Mode().IsRegular() && !i.IsDir() {
 			return res, fmt.Errorf("unsupported source %q", n)
 		}
-		dn, skip, err := chooseLocalDestination(dstRoot, n, req.Conflict)
+		dn, skip, err := chooseLocalDestination(ctx, dstRoot, n, req.Conflict)
 		if err != nil {
 			return res, err
 		}
@@ -431,7 +439,7 @@ func noSymlinkPath(p string) error {
 	}
 	return nil
 }
-func chooseLocalDestination(r *os.Root, n, policy string) (string, bool, error) {
+func chooseLocalDestination(ctx context.Context, r *os.Root, n, policy string) (string, bool, error) {
 	i, e := r.Lstat(n)
 	if os.IsNotExist(e) {
 		return n, false, nil
@@ -451,45 +459,58 @@ func chooseLocalDestination(r *os.Root, n, policy string) (string, bool, error) 
 		}
 		return n, false, nil
 	}
-	for x := 1; ; x++ {
+	for x := 1; x <= 100000; x++ {
+		select {
+		case <-ctx.Done():
+			return "", false, ctx.Err()
+		default:
+		}
 		d := fmt.Sprintf("%s (%d)", n, x)
 		if _, e = r.Lstat(d); os.IsNotExist(e) {
 			return d, false, nil
+		} else if e != nil {
+			return "", false, e
 		}
 	}
+	return "", false, fmt.Errorf("destination rename exceeds conflict limit")
 }
 func chooseRemoteDestination(ctx context.Context, e FileEndpoint, n, policy string) (string, bool, error) {
 	es, err := ListFiles(ctx, FileEndpoint{Client: e.Client, Path: e.Path})
 	if err != nil {
 		return "", false, err
 	}
-	for _, x := range es {
-		if x.Name == n {
-			if policy == "skip" {
-				return n, true, nil
-			}
-			if policy == "overwrite" && x.IsDir {
-				return "", false, fmt.Errorf("refusing non-atomic directory overwrite")
-			}
-			if policy == "overwrite" {
-				return n, false, nil
-			}
-			for i := 1; ; i++ {
-				d := fmt.Sprintf("%s (%d)", n, i)
-				found := false
-				for _, y := range es {
-					if y.Name == d {
-						found = true
-						break
-					}
-				}
-				if !found {
-					return d, false, nil
-				}
-			}
+	occupied := make(map[string]FileEntry, len(es))
+	for _, entry := range es {
+		occupied[entry.Name] = entry
+	}
+	entry, found := occupied[n]
+	if !found {
+		return n, false, nil
+	}
+	if policy == "skip" {
+		return n, true, nil
+	}
+	if policy == "overwrite" {
+		if entry.NonTransferable {
+			return "", false, fmt.Errorf("refusing overwrite of non-transferable destination")
+		}
+		if entry.IsDir {
+			return "", false, fmt.Errorf("refusing non-atomic directory overwrite")
+		}
+		return n, false, nil
+	}
+	for i := 1; i <= 100000; i++ {
+		select {
+		case <-ctx.Done():
+			return "", false, ctx.Err()
+		default:
+		}
+		d := fmt.Sprintf("%s (%d)", n, i)
+		if _, found := occupied[d]; !found {
+			return d, false, nil
 		}
 	}
-	return n, false, nil
+	return "", false, fmt.Errorf("destination rename exceeds conflict limit")
 }
 
 func remoteRun(ctx context.Context, c Client, args []string, in io.Reader, consume func(io.Reader) error) error {

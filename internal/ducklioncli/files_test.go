@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -300,4 +301,31 @@ func TestFilesReadWritePreservesOwnerExecutableBit(t *testing.T) {
 	if info.Mode().Perm() != 0700 {
 		t.Fatalf("mode %o, want 0700", info.Mode().Perm())
 	}
+}
+
+func TestFilesListReportsSymlinkAsNonTransferableOccupant(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "target"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target", filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runFiles([]string{"list", root}, nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	var entries []fileCLIEntry
+	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name == "link" {
+			if !entry.NonTransferable {
+				t.Fatal("symlink reported as transferable")
+			}
+			return
+		}
+	}
+	t.Fatal("symlink omitted from occupied entries")
 }
