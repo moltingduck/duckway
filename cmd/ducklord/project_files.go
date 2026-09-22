@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/hackerduck/duckway/internal/ducklord"
@@ -41,6 +42,7 @@ type projectFilesState struct {
 	copyCancel                context.CancelFunc
 	copySource                int
 	endpointIndex             int
+	editorOriginal            string
 	done                      chan projectFilesEvent
 	dragSource                int
 	dragSourceIndex           int
@@ -74,6 +76,7 @@ func (s *tuiState) openProjectFiles() {
 			for i := range s.cfg.Clients {
 				if s.cfg.Clients[i].Name == sess.Client {
 					q.endpoint = ducklord.FileEndpoint{Client: &s.cfg.Clients[i], Path: sess.Cwd}
+					q.label = s.cfg.Clients[i].Name
 					break
 				}
 			}
@@ -81,10 +84,12 @@ func (s *tuiState) openProjectFiles() {
 	}
 	if nav, err := s.workspaceNavigation(); err == nil {
 		s.projectFiles.originProject, s.projectFiles.originPane, s.projectFiles.originTab = nav.CurrentProjectID(), nav.CurrentPaneID(), nav.CurrentTabID()
-		if shelf, e := ducklord.ProjectExchangePath(s.cfgPath, nav.CurrentProjectID()); e == nil {
-			q.label, q.endpoint = "PROJECT SHELF", ducklord.FileEndpoint{Path: shelf}
-		} else {
-			q.status = "Project shelf unavailable: " + sanitizeTerminalText(e.Error())
+		if q.endpoint.Path == "" {
+			if shelf, e := ducklord.ProjectExchangePath(s.cfgPath, nav.CurrentProjectID()); e == nil {
+				q.label, q.endpoint = "PROJECT SHELF", ducklord.FileEndpoint{Path: shelf}
+			} else {
+				q.status = "Project shelf unavailable: " + sanitizeTerminalText(e.Error())
+			}
 		}
 	}
 	if q.endpoint.Path == "" {
@@ -164,6 +169,9 @@ func (s *tuiState) visibleProjectEntries(p *projectFilesPane) []ducklord.FileEnt
 	return out
 }
 func (s *tuiState) loadProjectFilesPane(parent context.Context, side int) {
+	if previous := s.projectFiles.cancels[side]; previous != nil {
+		previous()
+	}
 	p := s.projectFiles.left
 	if side == 1 {
 		p = s.projectFiles.right
@@ -171,6 +179,7 @@ func (s *tuiState) loadProjectFilesPane(parent context.Context, side int) {
 	s.projectFiles.panegen[side]++
 	gen := s.projectFiles.panegen[side]
 	globalGen := s.projectFiles.generation
+	p.endpoint = snapshotProjectFilesEndpoint(p.endpoint)
 	ctx, cancel := context.WithCancel(parent)
 	done := s.projectFiles.done
 	s.projectFiles.cancels[side] = cancel
@@ -186,6 +195,15 @@ func (s *tuiState) loadProjectFilesPane(parent context.Context, side int) {
 	}()
 }
 
+func snapshotProjectFilesEndpoint(endpoint ducklord.FileEndpoint) ducklord.FileEndpoint {
+	if endpoint.Client == nil {
+		return endpoint
+	}
+	client := *endpoint.Client
+	endpoint.Client = &client
+	return endpoint
+}
+
 func (s *tuiState) projectFilesEndpointNames() []string {
 	n := []string{"LOCAL"}
 	for _, c := range s.cfg.Clients {
@@ -197,21 +215,31 @@ func (s *tuiState) applyProjectFilesEndpoint(i int) {
 	p := s.projectFilesPane()
 	if i <= 0 {
 		p.endpoint.Client = nil
-		return
-	}
-	if i <= len(s.cfg.Clients) {
-		p.endpoint.Client = &s.cfg.Clients[i-1]
-		return
-	}
-	if nav, err := s.workspaceNavigation(); err == nil {
+		p.label = "LOCAL"
+	} else if i <= len(s.cfg.Clients) {
+		client := s.cfg.Clients[i-1]
+		p.endpoint.Client = &client
+		p.label = client.Name
+	} else if nav, err := s.workspaceNavigation(); err == nil {
 		if path, e := ducklord.ProjectExchangePath(s.cfgPath, nav.CurrentProjectID()); e == nil {
 			p.endpoint.Client = nil
 			p.endpoint.Path = path
 			p.label = "PROJECT SHELF"
 		} else {
 			p.status = "Project shelf unavailable: " + sanitizeTerminalText(e.Error())
+			return
 		}
 	}
+	p.entries, p.selected, p.marked, p.status, p.loading = nil, 0, map[string]bool{}, "Loading…", true
+	s.loadProjectFilesPane(context.Background(), s.projectFiles.active)
+}
+
+func removeLastRune(v string) string {
+	r := []rune(v)
+	if len(r) == 0 {
+		return ""
+	}
+	return string(r[:len(r)-1])
 }
 
 func projectClip(v string, width int) string {
@@ -251,7 +279,8 @@ func (s *tuiState) applyProjectFilesEvent(event projectFilesEvent) {
 		s.projectFiles.right.entries = event.entries
 		s.projectFiles.right.loading = false
 	}
-	var pane *projectFilesPane = &s.projectFiles.left
+	s.projectFiles.cancels[event.side] = nil
+	pane := &s.projectFiles.left
 	if event.side == 1 {
 		pane = &s.projectFiles.right
 	}
@@ -275,39 +304,48 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 	p := s.projectFilesPane()
 	entries := s.visibleProjectEntries(p)
 	if s.projectFiles.step == "filter" {
-		if text == "\r" || text == "\n" || text == "\x1b" {
+		if text == "\r" || text == "\n" {
+			s.projectFiles.step = "browse"
+			return true
+		}
+		if text == "\x1b" {
+			p.query = s.projectFiles.editorOriginal
 			s.projectFiles.step = "browse"
 			return true
 		}
 		if text == "\b" || text == "\x7f" {
-			if len(p.query) > 0 {
-				p.query = p.query[:len(p.query)-1]
-			}
-		} else if len(text) == 1 && text[0] >= 0x20 {
+			p.query = removeLastRune(p.query)
+		} else if strings.TrimSpace(text) != "" {
 			p.query += text
 		}
 		p.selected = 0
 		return true
 	}
-	if s.projectFiles.step == "path" {
+	switch s.projectFiles.step {
+	case "path":
 		if text == "\r" || text == "\n" {
 			if filepath.IsAbs(p.endpoint.Path) {
 				p.entries = nil
+				p.selected, p.marked, p.loading, p.status = 0, map[string]bool{}, true, "Loading…"
 				s.projectFiles.step = "browse"
 				s.loadProjectFilesPane(context.Background(), s.projectFiles.active)
 			}
 			return true
 		}
+		if text == "\x1b" {
+			p.endpoint.Path = s.projectFiles.editorOriginal
+			s.projectFiles.step = "browse"
+			return true
+		}
 		if text == "\b" || text == "\x7f" {
-			if len(p.endpoint.Path) > 0 {
-				p.endpoint.Path = p.endpoint.Path[:len(p.endpoint.Path)-1]
-			}
-		} else if len(text) == 1 && text[0] >= 0x20 {
+			p.endpoint.Path = removeLastRune(p.endpoint.Path)
+		} else if strings.TrimSpace(text) != "" {
 			p.endpoint.Path += text
 		}
 		return true
 	}
-	if s.projectFiles.step == "endpoints" {
+	switch s.projectFiles.step {
+	case "endpoints":
 		names := s.projectFilesEndpointNames()
 		if text == "j" || text == "\x1b[B" {
 			if s.projectFiles.endpointIndex < len(names)-1 {
@@ -321,10 +359,11 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 			}
 			return true
 		}
-		if text == "\r" || text == "\n" {
+		switch text {
+		case "\r", "\n":
 			s.applyProjectFilesEndpoint(s.projectFiles.endpointIndex)
 			s.projectFiles.step = "browse"
-		} else if text == "\x1b" {
+		case "\x1b":
 			s.projectFiles.step = "browse"
 		}
 		return true
@@ -372,13 +411,17 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 		s.projectFiles.active = 1 - s.projectFiles.active
 		return true
 	case "/":
+		s.projectFiles.editorOriginal = p.query
 		p.query = ""
 		s.projectFiles.step = "filter"
 		return true
 	case "h":
+		// Start at Local on every open so keyboard choices are deterministic.
+		s.projectFiles.endpointIndex = 0
 		s.projectFiles.step = "endpoints"
 		return true
 	case "g":
+		s.projectFiles.editorOriginal = p.endpoint.Path
 		s.projectFiles.step = "path"
 		return true
 	case " ":
@@ -408,8 +451,7 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 		e := entries[p.selected]
 		if e.IsDir {
 			p.endpoint.Path = filepath.Join(p.endpoint.Path, e.Name)
-			p.selected = 0
-			p.entries = nil
+			p.selected, p.marked, p.entries, p.loading, p.status = 0, map[string]bool{}, nil, true, "Loading…"
 			s.loadProjectFilesPane(context.Background(), s.projectFiles.active)
 		}
 		return true
@@ -429,11 +471,11 @@ func (s *tuiState) projectFilesMouseRelease(x, y int) []byte {
 	if x < 0 || y < 0 {
 		return nil
 	}
-	target := 1 - s.projectFiles.dragSource
 	for _, r := range s.modalMouseRegions {
 		if r.row != y || x < r.left || x > r.right || r.action.selection == nil {
 			continue
 		}
+		var target int
 		if r.action.selection == &s.projectFiles.left.selected {
 			target = 0
 		} else if r.action.selection == &s.projectFiles.right.selected {
@@ -483,18 +525,25 @@ func (s *tuiState) startProjectFilesCopy() {
 			names = append(names, name)
 		}
 	}
+	sort.Strings(names)
 	if len(names) == 0 {
 		s.projectFiles.status = "Select files first"
 		return
 	}
 	s.projectFiles.step, s.projectFiles.status = "busy", "Copying…"
 	s.projectFiles.generation++
+	for i, listCancel := range s.projectFiles.cancels {
+		if listCancel != nil {
+			listCancel()
+			s.projectFiles.cancels[i] = nil
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.projectFiles.cancel = cancel
 	s.projectFiles.copyCancel = cancel
 	gen := s.projectFiles.generation
 	done := s.projectFiles.done
-	req := ducklord.FileCopyRequest{Source: source.endpoint, Destination: destination.endpoint, Names: names, Conflict: s.projectFiles.conflict}
+	req := ducklord.FileCopyRequest{Source: snapshotProjectFilesEndpoint(source.endpoint), Destination: snapshotProjectFilesEndpoint(destination.endpoint), Names: names, Conflict: s.projectFiles.conflict}
 	go func() {
 		result, err := ducklord.CopyFiles(ctx, req)
 		if done != nil {
@@ -511,7 +560,7 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 		return
 	}
 	s.modalMouseLines = make(map[int]modalMouseAction)
-	width := min(72, max(8, cols-2))
+	width := min(110, max(8, cols-4))
 	cw := max(8, (width-4)/2)
 	leftLabel, rightLabel := s.projectFiles.left.label, s.projectFiles.right.label
 	lines := []modalRenderLine{{modalTitle, "Project files"}, {modalMuted, projectClip(leftLabel, cw) + strings.Repeat(" ", max(1, width-4-cw)) + projectClip(rightLabel, cw)}, {modalInput, projectClip(s.projectFiles.left.endpoint.Path, cw) + "  " + projectClip(s.projectFiles.right.endpoint.Path, cw)}}
