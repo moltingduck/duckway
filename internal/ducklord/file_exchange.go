@@ -2,6 +2,7 @@ package ducklord
 
 import (
 	"archive/tar"
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -276,6 +277,11 @@ func copyLocal(ctx context.Context, req FileCopyRequest) ([]FileCopyResult, erro
 		if err = copyTreeRoot(ctx, srcRoot, dstRoot, n, stageRel, &bytes); err != nil {
 			return res, err
 		}
+		select {
+		case <-ctx.Done():
+			return res, ctx.Err()
+		default:
+		}
 		if !i.IsDir() && req.Conflict != "overwrite" {
 			err = dstRoot.Link(stageRel, dn)
 			if err == nil {
@@ -369,6 +375,13 @@ func copyTreeRoot(ctx context.Context, srcRoot, dstRoot *os.Root, src, dst strin
 		err = fmt.Errorf("file exceeds transfer limit")
 	}
 	*bytes += n
+	if err == nil {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+		default:
+		}
+	}
 	if closeErr := out.Close(); err == nil {
 		err = closeErr
 	}
@@ -610,6 +623,11 @@ func remoteToLocal(ctx context.Context, c Client, src, dst, name string, overwri
 	if e = remoteRun(ctx, c, c.DucklionArgs("files", "read", src), nil, func(r io.Reader) error { return extractTarRoot(r, dstRoot, stage, exchangePayloadRoot) }); e != nil {
 		return e
 	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	payload := filepath.Join(stage, exchangePayloadRoot)
 	if old, err := dstRoot.Lstat(name); err == nil {
 		if !overwrite {
@@ -671,10 +689,14 @@ func remotePipe(ctx context.Context, sc Client, src string, dc Client, dst, name
 		footer := false
 		bytes := int64(0)
 		relayErr := remoteRun(ctx, sc, sc.DucklionArgs("files", "read", src), nil, func(r io.Reader) error {
-			tr := tar.NewReader(r)
+			br := bufio.NewReader(r)
+			tr := tar.NewReader(br)
 			for {
 				h, err := tr.Next()
 				if err == io.EOF {
+					if _, trailing := br.ReadByte(); trailing != io.EOF {
+						return fmt.Errorf("archive has trailing data")
+					}
 					break
 				}
 				if err != nil {
@@ -755,13 +777,17 @@ func extractTarRoot(r io.Reader, dstRoot *os.Root, stage, expectedRoot string) e
 		return err
 	}
 	defer stageRoot.Close()
-	tr := tar.NewReader(r)
+	br := bufio.NewReader(r)
+	tr := tar.NewReader(br)
 	root := ""
 	complete := false
 	bytes := int64(0)
 	for {
 		h, e := tr.Next()
 		if e == io.EOF {
+			if _, trailing := br.ReadByte(); trailing != io.EOF {
+				return fmt.Errorf("archive has trailing data")
+			}
 			if !complete {
 				return fmt.Errorf("incomplete transfer")
 			}

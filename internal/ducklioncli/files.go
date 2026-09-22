@@ -2,6 +2,7 @@ package ducklioncli
 
 import (
 	"archive/tar"
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -99,14 +100,14 @@ func safeFileName(s string) bool {
 	return s != "" && s != "." && s != ".." && filepath.Base(s) == s && !strings.ContainsAny(s, "/\\")
 }
 func writeTar(ctx context.Context, src string, out io.Writer) error {
-	root, err := os.OpenRoot(src)
+	root, err := os.OpenRoot(filepath.Dir(src))
 	if err != nil {
 		return err
 	}
 	defer root.Close()
 	tw := tar.NewWriter(out)
 	bytes := int64(0)
-	err = writeTarRoot(ctx, root, ".", exchangePayloadRoot, tw, &bytes)
+	err = writeTarRoot(ctx, root, filepath.Base(src), exchangePayloadRoot, tw, &bytes)
 	if err != nil {
 		return err
 	}
@@ -188,7 +189,8 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 		return e
 	}
 	defer stageRoot.Close()
-	tr := tar.NewReader(in)
+	br := bufio.NewReader(in)
+	tr := tar.NewReader(br)
 	rootSeen := false
 	complete := false
 	bytes := int64(0)
@@ -200,6 +202,9 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 		}
 		h, e := tr.Next()
 		if e == io.EOF {
+			if _, trailing := br.ReadByte(); trailing != io.EOF {
+				return fmt.Errorf("archive has trailing data")
+			}
 			break
 		}
 		if e != nil {

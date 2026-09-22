@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -89,6 +90,29 @@ func TestFilesWriteCancellationNeverCommits(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dst, "cancelled")); !os.IsNotExist(err) {
 		t.Fatalf("destination committed: %v", err)
+	}
+}
+
+func TestFilesReadWriteRegularFile(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "source")
+	dst := filepath.Join(root, "dst")
+	if err := os.WriteFile(src, []byte("payload"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dst, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	if err := runFiles([]string{"read", src}, nil, &archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := runFiles([]string{"write", dst, "result"}, &archive, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "result"))
+	if err != nil || string(got) != "payload" {
+		t.Fatalf("received %q: %v", got, err)
 	}
 }
 

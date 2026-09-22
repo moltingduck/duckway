@@ -1,12 +1,15 @@
 package ducklord
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestListFilesAndCopyLocal(t *testing.T) {
@@ -180,5 +183,71 @@ func TestLimitedBufferReportsFullWriteLength(t *testing.T) {
 	n, err := b.Write([]byte("012345"))
 	if err != nil || n != 6 || b.String() != "012" {
 		t.Fatalf("write result n=%d err=%v contents=%q", n, err, b.String())
+	}
+}
+
+func TestRemotePipeWithholdsFooterWhenSourceFails(t *testing.T) {
+	root := t.TempDir()
+	archive := filepath.Join(root, "archive.tar")
+	received := filepath.Join(root, "received.tar")
+	var b bytes.Buffer
+	tw := tar.NewWriter(&b)
+	if err := tw.WriteHeader(&tar.Header{Name: exchangePayloadRoot, Typeflag: tar.TypeReg, Size: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("ok")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archive, b.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ssh := filepath.Join(root, "ssh")
+	script := "#!/bin/sh\ncase \"$*\" in\n  *source*) cat \"$EXCHANGE_ARCHIVE\"; exit 1 ;;\n  *) cat > \"$EXCHANGE_RECEIVED\" ;;\nesac\n"
+	if err := os.WriteFile(ssh, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EXCHANGE_ARCHIVE", archive)
+	t.Setenv("EXCHANGE_RECEIVED", received)
+	source := Client{Name: "source", Host: "source", SSH: ssh, Ducklion: "source"}
+	destination := Client{Name: "destination", Host: "destination", SSH: ssh, Ducklion: "destination"}
+	if err := remotePipe(context.Background(), source, "/source/item", destination, "/destination", "item", false); err == nil {
+		t.Fatal("accepted source command failure")
+	}
+	got, err := os.ReadFile(received)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(got, []byte(exchangeFooter)) {
+		t.Fatal("destination received completion footer after source failure")
+	}
+}
+
+func TestRemotePipeCancellationJoinsBlockedSource(t *testing.T) {
+	root := t.TempDir()
+	ssh := filepath.Join(root, "ssh")
+	script := "#!/bin/sh\ncase \"$*\" in\n  *source*) while :; do printf x; done ;;\n  *) cat >/dev/null ;;\nesac\n"
+	if err := os.WriteFile(ssh, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	source := Client{Name: "source", Host: "source", SSH: ssh, Ducklion: "source"}
+	destination := Client{Name: "destination", Host: "destination", SSH: ssh, Ducklion: "destination"}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- remotePipe(ctx, source, "/source/item", destination, "/destination", "item", false) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("accepted canceled transfer")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled transfer did not join source and destination")
 	}
 }
