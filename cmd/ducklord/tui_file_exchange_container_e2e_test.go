@@ -35,7 +35,7 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	aFile, bFile := fmt.Sprintf("a-file-%d.txt", stamp), fmt.Sprintf("b-file-%d.txt", stamp)
 	cancelFile, failureFile := fmt.Sprintf("cancel-%d.txt", stamp), fmt.Sprintf("failure-%d.txt", stamp)
 	multiOne, multiTwo := fmt.Sprintf("multi-one-%d.txt", stamp), fmt.Sprintf("multi-two-%d.txt", stamp)
-	shelfFile, bundle := fmt.Sprintf("shelf-%d.txt", stamp), fmt.Sprintf("bundle-%d", stamp)
+	shelfFile, bundle, emptyDir := fmt.Sprintf("shelf-%d.txt", stamp), fmt.Sprintf("bundle-%d", stamp), fmt.Sprintf("empty-%d", stamp)
 	terminalMarker := fmt.Sprintf("/home/duck/terminal-ready-%d", stamp)
 	failureRelease := fmt.Sprintf("/tmp/duckway-file-exchange-release-%d", stamp)
 	aBytes := fmt.Sprintf("a bytes %d\n", stamp)
@@ -47,8 +47,8 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	cancelBytes := fmt.Sprintf("cancel bytes %d\n", stamp)
 	failureBytes := fmt.Sprintf("failure bytes %d\n", stamp)
 
-	prepareA := fmt.Sprintf("rm -rf %s %s; mkdir -p %s/%s %s/drop-dir; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s/nested.txt",
-		sourceA, targetA, sourceA, bundle, targetA,
+	prepareA := fmt.Sprintf("rm -rf %s %s; mkdir -p %s/%s %s/drop-dir %s/%s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s/nested.txt",
+		sourceA, targetA, sourceA, bundle, targetA, sourceA, bundle, emptyDir,
 		aBytes, sourceA, aFile, multiOneBytes, sourceA, multiOne, multiTwoBytes, sourceA, multiTwo,
 		shelfBytes, sourceA, shelfFile, cancelBytes, sourceA, cancelFile, failureBytes, sourceA, failureFile, nestedBytes, sourceA, bundle)
 	prepareB := fmt.Sprintf("rm -rf %s %s; mkdir -p %s %s/drop-dir; printf %q > %s/%s",
@@ -318,6 +318,9 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Copied", 20*time.Second)
 	assertRemoteText(clientB, targetB+"/drop-dir/"+bundle+"/nested.txt", nestedBytes, "dragged directory copy failed")
+	if out, err := exec.Command(runtime, "exec", "-u", "duck", clientB, "test", "-d", targetB+"/drop-dir/"+bundle+"/"+emptyDir).CombinedOutput(); err != nil {
+		t.Fatalf("dragged directory copy omitted empty directory: %v: %s; screen: %s", err, out, safeTerminalDiagnostic(capture.currentText()))
+	}
 
 	// Dragging onto drop-dir makes that child the pending destination; reset the
 	// target pane before the following root-level multiselect transfer.
@@ -354,7 +357,12 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	})
 	writePTY(t, terminal, "\x1b\x02f")
 	activePane = 0 // every new Project files modal starts on the left.
+	selectEndpoint(0, clientBEndpoint, targetB, "drop-dir")
 	selectEndpoint(1, shelfEndpoint, "", shelfFile)
+	activatePane(1)
+	selectOnly(shelfFile)
+	copyPreview("")
+	assertRemoteText(clientB, targetB+"/"+shelfFile, shelfBytes, "project shelf -> client-b file copy failed")
 
 	// Seed one real destination conflict, then prove all policies by bytes.
 	selectEndpoint(0, clientAEndpoint, sourceA, aFile)
