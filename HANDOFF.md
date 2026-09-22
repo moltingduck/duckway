@@ -29,6 +29,37 @@ clients --config /root/.ducklord/config.yaml` lists client-a, client-b, and
 client-c.
 Usage metrics: unavailable/unmeasured.
 
+## Development resource-cleanup gate (2026-09-22 Asia/Taipei)
+
+The reusable development rules now require an owner-specific resource ledger,
+scoped temporary roots, interruption-safe teardown, reviewed worktree disposal,
+and a non-destructive final resource scan. Completion is blocked by any
+batch-owned worktree, process, container, socket, temporary root, generated
+artifact, or unreviewed branch. See `AGENTS.md` and
+`docs/agent-workflow.md` section 1b.
+
+Validation:
+
+- `git diff --check` — PASS.
+- `git rev-parse --is-bare-repository` — `false`; `git status --short` showed
+  only this documentation batch before it is committed.
+- Resource scan found no batch-owned `/tmp/duckway-*`, test Ducklion daemon,
+  root `ducklord` binary, `.orig`, coverage, or generated artifact.
+- `git worktree list --porcelain` contains the primary checkout plus five
+  pre-existing `.claude/worktrees` snapshots. They are explicitly retained as
+  the prior cleanup baseline, not resources created by this documentation batch.
+- Rebuilt and restarted the retained owner-labelled demo with
+  `DUCKLORD_DEMO_NAME_PREFIX=ducklord-verified`
+  `DUCKLORD_DEMO_OWNER_TOKEN=ducklord-verified-20260917`
+  `scripts/ducklord-podman-demo.sh` — PASS. The five `ducklord-verified-*`
+  containers are running; `ducklord clients --config /root/.ducklord/config.yaml`
+  lists client-a, client-b, and client-c with Ducklion.
+
+Resource ledger: this documentation-only batch created no worktree, test
+runtime, temporary root, process, or container. The restarted
+`ducklord-verified-*` Podman demo is intentionally retained for inspection.
+Usage metrics: unavailable/unmeasured.
+
 ## Workspace capabilities: palette, terminal tools, resources, transfer (2026-09-22)
 
 Completed the four selected workspace capabilities. `prefix+Space` opens a

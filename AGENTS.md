@@ -55,6 +55,31 @@
 - Worktrees do not reduce model usage by themselves. Parallel subagents can
   increase token use, so use them only when the work is genuinely independent.
 
+### Resource ownership and disposal
+
+- Before creating a worktree, test runtime, container, daemon, socket, temporary
+  root, build output, or log, record its owner token and intended disposal in the
+  current task or handoff. A persistent demo is an exception only when it is
+  explicitly named as retained.
+- Confirm the checkout is usable before creating worktrees: `git rev-parse
+  --is-bare-repository` must report `false`, and `git status` must succeed.
+  Repair or recover a broken checkout before doing more work; do not leave a
+  bare repository or redirected worktree as the next agent's starting point.
+- Put transient data under a uniquely named, ignored task root. Scripts must
+  remove it with an `EXIT INT TERM` trap; Go tests must use `t.Cleanup` for
+  every process, socket, container, fixture, and temporary directory they own.
+  Do not place ad-hoc artifacts in the repository root, home directory, or a
+  shared `/tmp` location without an owner-specific name.
+- A subagent report must identify its branch, worktree, runtime IDs/PIDs, and
+  cleanup result. The integrating agent owns disposal: inspect and preserve a
+  worktree's result before removal, then remove the worktree, delete an
+  integrated or abandoned branch when appropriate, and run `git worktree prune`.
+  Never force-remove unreviewed or unrecovered work.
+- At batch completion, inspect the resource ledger and prove that owned
+  processes, containers, sockets, temporary roots, generated binaries, coverage
+  files, and patch backups are gone. Clean only resources owned by the batch;
+  record pre-existing resources as a baseline instead of deleting them.
+
 ## Verification and handoff
 
 - After every completed batch, rebuild and restart the demo with the latest changes
@@ -69,6 +94,9 @@
 - Track long-running process IDs and use bounded waits, not rapid empty polling.
 - Update `HANDOFF.md` at meaningful checkpoints with decisions, exact validation,
   remaining work, and owned processes. Link evidence instead of copying it.
+- Treat cleanup as a completion requirement: include the final resource scan and
+  the retained demo, if any, in `HANDOFF.md`. Do not report completion while a
+  batch-owned worktree or runtime artifact remains.
 - Record available usage metrics per completed batch as described in the workflow;
   mark unavailable values as unmeasured, never zero or an estimate presented as fact.
 - Create a goal only on explicit request. Keep an existing goal's agreed scope;

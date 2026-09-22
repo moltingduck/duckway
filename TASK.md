@@ -1,26 +1,16 @@
 # Current batch
 
 ## Objective
-Repair terminal output-bookmark retention and make output-search results move
-the visible terminal viewport to the selected match. Document the Project
-export/import route for direct use.
-
-## Delivery order
-1. Preserve or deterministically recover bookmark anchors when retained terminal
-   output changes.
-2. Couple local search selection to the terminal viewport without leaking input
-   to the PTY.
-3. Add direct user-facing instructions for Project transfer.
+Make resource ownership and cleanup a required Duckway development completion
+gate, so worktrees and test artifacts do not accumulate after a batch.
 
 ## Acceptance criteria
-- A bookmark selection reveals its retained anchor, or stays in the picker with
-  a clear fallback when the anchor can no longer be recovered.
-- Output search visibly reveals the selected match and preserves modal input
-  ownership and exact focus restoration.
-- Focused state tests and real PTY container E2E cover both behaviours.
-- The routing specification, verification mapping, direct user instructions,
-  affected checks, and restarted demo are current.
+- [x] Agent rules define resource ownership, scoped temporary storage, teardown,
+  worktree disposal, and a final cleanup gate.
+- [x] The reusable workflow defines a resource ledger, non-destructive exit scan,
+  and handoff evidence requirements.
+- [x] Restart the demo and record readiness plus cleanup evidence in HANDOFF.md.
 
 ## Status
-Complete — bookmark recovery, viewport-coupled search, documentation, routing
-verification, and demo restart are recorded in `HANDOFF.md`.
+Complete — the cleanup gate, resource ledger, exit scan, and handoff template
+are documented; the owner-labelled Podman demo restarted and passed readiness.

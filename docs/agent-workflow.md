@@ -46,6 +46,52 @@ git worktree remove ../duckway-<batch>-<role>
 git worktree prune
 ```
 
+## 1b. Own and dispose of development resources
+
+Every batch starts with a resource ledger. Record a short owner token and every
+resource the batch creates: worktree and branch, temporary root, build output,
+log directory, PID, port, socket, container, and fixture store. Record a
+pre-existing resource as a baseline; never delete it merely because it appears
+in a scan. A running demo may remain only when the handoff names it as retained.
+
+Before creating a worktree, verify that the primary checkout is a normal Git
+working tree:
+
+```bash
+git rev-parse --is-bare-repository  # must print false
+git status --short
+git worktree list --porcelain
+```
+
+Use an owner-specific ignored temporary root and give every daemon/container a
+matching name or label. Shell scripts must clean their owned root and child
+processes on `EXIT`, `INT`, and `TERM`. Go tests must use `t.Cleanup` immediately
+after acquiring each resource, so cleanup also runs after setup failures. Do not
+write generated binaries, coverage files, patch backups, sockets, or test logs
+to the source tree, home directory, or an unscoped shared `/tmp` path.
+
+At integration, inspect a subagent worktree before disposal. Commit, integrate,
+or explicitly abandon the reviewed result first; then remove the worktree, prune
+Git's registry, and remove its branch when it is no longer needed. Never use a
+forced worktree removal to hide an unreviewed diff.
+
+Run this non-destructive exit check before claiming a batch complete. Use the
+recorded owner token and exact IDs rather than broad `pkill`, global container
+removal, or deletion of unknown temporary directories:
+
+```bash
+git status --short
+git worktree list --porcelain
+ps -eo pid,ppid,args
+podman ps --all --format '{{.ID}} {{.Names}} {{.Labels}}'
+```
+
+The handoff must state: the baseline resources intentionally retained, resources
+created by the batch, the cleanup command or teardown owner, and evidence that
+each owned resource is gone. A leftover owned process, container, socket,
+temporary root, generated artifact, or worktree is a failed batch even if its
+product tests passed.
+
 ### Parallel test and runtime rules
 
 - Run tests in parallel only when they have independent packages, ports, fixture
@@ -160,6 +206,9 @@ progress evidence only. It does not close the batch while any of these remain:
 3. the required E2E route or smoke path has not passed on the integrated
    artifact; or
 4. a requested demo restart and readiness check has not passed.
+5. the final resource ledger has not been checked, or it still contains a
+   batch-owned worktree, process, container, socket, temporary root, generated
+   artifact, or unreviewed branch.
 
 Use explicit status words in updates: **in progress** for implementation,
 **partial validation passed** for a subset of checks, **blocked** with the
@@ -200,6 +249,9 @@ Updated: <date and timezone>
 <Unrelated dirty files and ownership constraints>
 ## Validation and processes
 <Exact commands, results, unrun checks, owned session IDs/PIDs or none started>
+## Resource ledger and cleanup
+<Baseline retained resources; batch-owned worktrees, temp roots, PIDs, containers,
+and logs; disposal evidence; retained demo if applicable>
 ## Next action
 <Next authorized step, blocker, or await next user request>
 ```
