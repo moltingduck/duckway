@@ -54,23 +54,37 @@ podman cp ./project.duckproj.json ducklord-verified-ducklord-dev:/root/project.d
 
 ## Exchange Project files
 
-Open **Project files** with `f` from the Project or Session list, with the pane
+Open **Project files** with `f` from the Project or quick Session list, with the pane
 prefix then `f` (by default `Ctrl+B`, `f`) from a focused terminal, or by
 choosing **Project files** in the Command palette (`Ctrl+B`, Space). The modal
-has a local/source column and a destination column. `Tab` switches columns;
+has two directory columns; either column can be the source. `Tab` switches columns;
 `h` chooses local, a Host, or the current Project shelf; `g` enters a path;
 `/` searches the current directory only; Space marks entries; and Enter opens a
-directory or confirms an action. Press `c` to review a copy and choose `skip`,
-`rename`, or `overwrite`. Esc backs out one level and then closes. Ctrl-C
-cancels an active copy or closes the modal.
+directory or confirms an action. Backspace opens the parent directory and clears
+the filter. Choosing another endpoint or confirming a new path also clears the
+current-directory filter. Wait for the directory to load and mark entries with
+Space, then press `c` to copy them to the other column, or drag an
+entry across columns; dropping onto a directory selects that directory as the
+destination. Review the source, destination, and `skip`, `rename`, or `overwrite`
+policy before confirming. Esc backs out of a form or closes the browser. During
+a transfer, Ctrl-C requests cancellation; wait for cleanup to finish before
+closing. Esc does not cancel a running transfer.
 
 Copies leave the source unchanged. Each transferred item is limited to 1 GiB.
-Host-to-host copies are routed through the controller. The Project shelf is persistent for each Project. An existing
+Remote archives also have entry-count and path-depth limits. Copied files keep
+the owner execute bit; files and directories are otherwise private to the owner.
+Host-to-host copies stream through the controller without a persistent local
+copy. Choosing **Project shelf** explicitly stores a persistent copy for that
+Project. In a container demo, **Local** means the controller container's
+filesystem, not the computer running your terminal. An existing
 destination directory is refused for overwrite instead of being merged; use
 skip or rename when appropriate. Temporary destination data is cleaned up on
 cancel or failure. Remote Ducklions must support the file-exchange commands
 before Host exchange is available. Closing restores the Project, Session, or
 terminal that opened the modal, even if shell output arrived while it was open.
+For a multi-entry copy, completed entries remain if a later entry fails or the
+transfer is cancelled; the result reports copied and skipped counts. Symbolic
+links and special files are not selectable sources.
 
 ## Navigate and arrange
 

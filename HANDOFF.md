@@ -3,6 +3,78 @@
 
 Updated: 2026-09-22 Asia/Taipei
 
+## Project file exchange v1 — complete
+
+Bounded batch: `TASK.md`; implementation base `8d9474f`, integrated code
+`86a56e0`. Lower-tier agents implemented isolated backend, UI, and E2E scopes.
+Two directory columns support Local, configured SSH hosts, and a persistent
+Project shelf. Host copies stream through Ducklord without direct host links.
+Current-directory search, multiselect, drag/drop, conflict preview, and modal
+focus restoration are implemented. Recursive search and task-bundle metadata
+remain outside v1. In the demo, Local means the controller container.
+
+Five independent review roles cleared the integrated changes; affected fixes
+received follow-up reviews. A final E2E review initially suspected a status-row
+offset error, then cleared it after checking 1-based screen coordinates against
+0-based slice indexes. No code change was needed for that finding.
+
+Validation:
+- `GOFLAGS=-buildvcs=false go test ./...` — PASS at `7373ace`.
+- `CGO_ENABLED=1 GOFLAGS=-buildvcs=false go test -race ./...` — PASS at `51eaf19`.
+- Later directory-relay and filter fixes passed affected normal/race tests.
+  Final empty-copy guard passed full `cmd/ducklord` normal/race tests.
+- Routing manifest — PASS (21 mappings; not behavioral acceptance).
+- `bash scripts/pre-commit-env-test.sh` — PASS.
+- `GOFLAGS=-buildvcs=false golangci-lint run ./...` — 13 pre-existing findings;
+  no new issues from this batch.
+- `scripts/check-coverage.sh` — PASS, 56.6% >= 37.5% at `94bbd7a`. Use default
+  `/tmp`: longer TMPDIR caused unrelated Unix-socket path-length failures.
+- Real exchange PTY/container E2E — PASS at `86a56e0`, 21.378s (run 6).
+  Proves cross-host file/directory/multiselect and drag transfers, shelf transfer
+  both directions and persistence, skip/rename/overwrite, preview cancellation,
+  actual staged-transfer cancellation/read failure cleanup, intact sources, and
+  restored terminal control through an executed sentinel.
+- Full default PTY/container suite — PASS at `86a56e0`, 267.285s: 31 passed,
+  1 intentional legacy-wizard skip, 0 failures. Exit 0; fixture teardown passed.
+
+Failures discovered and fixed during real E2E: missing modal overlay in workspace
+layouts, Ctrl-C intercepted by PTY gates, directory archive EOF, stale directory
+filters, and empty copy previews during asynchronous list loading. E2E now
+waits for reconstructed current-screen controls, the correct column's endpoint,
+path and load status, and an actual marked entry before copying. Destination
+filesystem bytes remain the acceptance evidence. Cancellation/failure waits for
+receiver staging before triggering interruption and requires staging removal.
+
+Test infrastructure repair: inherited Git hook environment contaminated fixture
+`git init --bare`; restored `core.bare=false`, verified origin/HEAD, and added hook
+environment isolation with a regression. Integration commits disable hooks;
+required checks run explicitly outside hook state.
+
+Demo rebuilt/restarted successfully with `scripts/ducklord-podman-demo.sh`
+using prefix `ducklord-verified` and owner `ducklord-verified-20260917`.
+Controller and clients a–d are Up; `ducklord clients` succeeds and SSH Ducklion
+probes for configured clients a/b/c all report available. The retained demo's
+SHA-256 values match the full E2E fixture exactly:
+- ducklord: `224096a29a09b624f5b4d3e6d9d7cb4024e9c841a4d5611038983664a0184a8c`
+- ducklion: `e547089b8b738315907eedf0524417b22b1c6142c15f8135e6336f2b8133e553`
+
+Launch:
+```sh
+podman exec -it ducklord-verified-ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
+```
+From Project/quick Session list press `f`; focused terminal uses `prefix+f`.
+Operation guide: [Exchange Project files](docs/ducklord-user-guide.md#exchange-project-files).
+
+Resources: all batch worktrees/branches integrated and removed; Git registry
+pruned. Owned temporary roots `/tmp/duckway-exchange-v1-20260922` and `/tmp/x0922`
+removed after recording results here. Test script traps removed fixture containers
+and networks, including final full-suite prefix `ducklord-tui-e2e-1752833`.
+Final process scan found no owned workers. Preserved five baseline
+`.claude/worktrees`, old `dw-*-1788855706-1278453`, and seven older E2E networks
+(created September 17/20). Retained demo is explicitly user-requested above.
+Usage metrics unavailable/unmeasured; see the workflow batch ledger. No remaining
+implementation or verification work; await the next user request.
+
 ## Terminal bookmark retention and output-search viewport repair (2026-09-22)
 
 Terminal bookmarks now persist a session identity plus a line anchor and line

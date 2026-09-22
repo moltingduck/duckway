@@ -249,12 +249,15 @@ document omits a required branch.
 
 The file-exchange E2E uses real container paths on two Ducklions and the
 controller. It checks current-directory-only filtering, source-preserving copy
-semantics, the persistent per-Project shelf, and destination cleanup on cancel
-or failure. Directory overwrite is refused rather than merged; skip and rename
+semantics, the persistent per-Project shelf in both transfer directions, and
+destination cleanup on cancel or failure. Cancellation/failure checks wait for
+actual receiver staging before triggering the interruption and then require
+its removal, absent destination, and unchanged source. Directory overwrite is
+refused rather than merged; skip and rename
 are the available conflict policies. A remote Ducklion must support the
 file-exchange commands before the route is usable.
 
-The default container manifest must include these rows before any of the four
+The default container manifest must include these rows before any of these
 capabilities is reported complete:
 
 | Route | Required state/dispatcher evidence | Required default container evidence | Required causal assertion |

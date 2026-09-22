@@ -211,22 +211,51 @@ rolled out of retained scrollback is shown as unavailable; Enter then selects th
 deterministic current-history fallback without changing focus or creating a
 Session.
 
-`route.file-exchange` opens Project files from Project/session-list focus with
+`route.file-exchange` opens Project files from Project/quick-session-list focus with
 `f`, from a focused terminal with the pane prefix followed by `f`, or from the
 Command palette's **Project files** action. The modal owns both columns while
 host and Project-shelf listings load. Its stable states are `browse`,
 `endpoints`, `path`, `filter`, `preview`, and `busy`; `Tab` changes columns,
 `h` chooses local/host/Project shelf endpoints, `g` edits a path, `/` filters
 the current directory, Space marks entries, Enter opens or confirms, and `c`
-opens the copy preview. Esc unwinds one state and then closes; Ctrl-C cancels a
-copy or closes the modal. Close restores the captured Project/session/terminal
+opens the copy preview. Backspace opens the parent directory and clears its
+filter. Endpoint selection and confirmed path changes clear the old directory
+filter. Esc unwinds one form state or closes the browser; it is ignored during
+copy. Ctrl-C requests cancellation and holds the busy state until cleanup
+acknowledges completion, or closes an idle modal. Close restores the captured Project/session/terminal
 origin even when shell output arrives while a listing or copy is pending.
-Copies preserve the source. Each transferred item is limited to 1 GiB. Host
+Copies preserve the source and owner execute permission. Each transferred item
+is limited to 1 GiB; remote archives are bounded to 10,000 records (including
+the completion record) and 64 path components. Host
 copies stream through the controller, never copy host-to-host directly, and temporary destination state is removed on
 cancel or failure. A Project shelf persists per Project. Existing destination
 directories are refused for overwrite rather than merged; skip and rename
 remain available. Remote Ducklions must support the file-exchange commands
 before Host exchange is available; older Ducklions show the command failure.
+
+```text
+Project / quick Session list -- f ------+
+Focused terminal ----------- prefix+f -+--> Project files (modal owns focus)
+Command palette ------------ select --+      |
+                                            +-- Tab: left <-> right
+                                            +-- h: Local / Host / Project shelf
+                                            +-- g: path; /: filter; Enter: directory
+                                            +-- Space: select entries
+                                            |
+                              c / drag -----+--> Copy preview
+                                                  | source + destination + policy
+                                                  +-- Esc --> browser
+                                                  +-- Enter --> Copying
+                                                                | Ctrl-C: cancel
+                                                                | wait for cleanup
+                                                                v
+                                                             browser
+Idle browser -- Esc / Ctrl-C --> exact opening pane / terminal
+```
+
+The modal must render in the default workspace, an empty layout, and detailed
+Session mode. A palette item containing its title is not evidence that the modal
+opened: PTY checks must observe browser controls and verify copied bytes.
 
 `route.host-resources` is Host list -> Host settings -> Resources. It displays
 portable Ducklion process/resource data (host OS/architecture, CPU count,
@@ -251,4 +280,4 @@ Session.
 | `route.output-bookmarks` | focused terminal; `P m` / `P M` | label form or bookmark picker | Enter reveals the retained anchor or shows the deterministic current-history fallback; Esc/Ctrl-C restores exact terminal control | bookmark write/read is fenced by Session identity | no raw terminal output in durable state/export; no PTY input leak | bookmark persistence tests; `TestDucklordOutputSearchBookmarksContainerE2E` (default E2E) |
 | `route.host-resources` | `h`, Enter Host, Resources | resource screen | Esc Host settings -> Host list -> origin | Host ID + request ID + screen mode must match | no focus change, PTY input, or Host mutation on refresh | host-resource protocol/router tests; `TestDucklordHostResourcesContainerE2E` (default E2E) |
 | `route.project-transfer` | Project navigation; `P c`, Export/Import | transfer form/preview/confirmation | Esc one parent; Ctrl-C exact origin | import document hash/name and selected Project are revalidated at confirmation | no write before confirmation; no credential/output export; no remote mutation | project-transfer unit/router tests; `TestDucklordProjectTransferContainerE2E` (default E2E) |
-| `route.file-exchange` | Project/session-list `f`, focused terminal `P f`, or Command palette **Project files** | two-column file browser; `browse`/`endpoints`/`path`/`filter`/`preview`/`busy` | Esc unwinds one state then closes; Ctrl-C cancels/closes and restores exact origin | listing/copy generation and endpoint identity must match the open modal; pending shell output cannot reclaim focus | no PTY bytes, source deletion, host-to-host copy, or destination write before preview confirmation | `TestProjectFilesInputSelectionAndConflictPreview`, `TestProjectFilesCloseCancelsAndRestoresOrigin` (state); `TestDucklordFileExchangeContainerE2E` (default E2E) |
+| `route.file-exchange` | Project/session-list `f`, focused terminal `P f`, or Command palette **Project files** | two-column file browser; `browse`/`endpoints`/`path`/`filter`/`preview`/`busy` | Esc backs out/closes while idle; busy Ctrl-C cancels and waits for cleanup; idle close restores exact origin | listing/copy generation and endpoint identity must match the open modal; pending shell output cannot reclaim focus | no PTY bytes, source deletion, direct host-to-host connection, or destination write before preview confirmation | `TestProjectFilesInputSelectionAndConflictPreview`, `TestProjectFilesCloseCancelsAndRestoresOrigin` (state); `TestDucklordFileExchangeContainerE2E` (default E2E) |
