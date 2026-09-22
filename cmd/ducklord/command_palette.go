@@ -81,7 +81,7 @@ func (s *tuiState) closeCommandPalette() {
 }
 
 func (s *tuiState) commandPaletteItems() []commandPaletteItem {
-	items := []commandPaletteItem{{"Notes", "notes", "", ""}, {"Help", "help", "", ""}, {"Host list", "host", "", ""}}
+	items := []commandPaletteItem{{"Notes", "notes", "", ""}, {"Help", "help", "", ""}, {"Host list", "host", "", ""}, {"Project files", "project-files", "", ""}}
 	if s.activityState != nil {
 		for _, p := range s.activity().ProjectLayout.Projects {
 			items = append(items, commandPaletteItem{p.Name, "project", p.ID, ""})
@@ -181,6 +181,8 @@ func (s *tuiState) handleCommandPaletteInput(input []byte) bool {
 			s.helpMode = true
 		case "host":
 			s.beginHostMenu()
+		case "project-files":
+			s.openProjectFiles()
 		case "project":
 			if s.commandPaletteGeneration() != s.commandPaletteWorkspaceGeneration {
 				s.outputErr = "command palette target is stale"

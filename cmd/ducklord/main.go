@@ -1568,6 +1568,7 @@ type tuiState struct {
 	sessionRenameLine                  string
 	sessionRenameErr                   string
 	lifecycleConfirm                   protocol.SessionLifecycleOperation
+	projectFiles                       projectFilesState
 	lifecycleReturnToAction            bool
 	lifecycleTarget                    ducklord.RemoteSession
 	lifecycleMode                      protocol.SessionLifecycleMode
@@ -1859,6 +1860,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	hostHookStatusDone := make(chan hostHookStatusEvent, 1)
 	hostSkillsDone := make(chan hostSkillsEvent)
 	state.hostSkillsDone = hostSkillsDone
+	projectFilesDone := make(chan projectFilesEvent, 8)
+	state.projectFiles.done = projectFilesDone
 	var hostRetentionCancel context.CancelFunc
 	launchHostHookStatus := func(target string) {
 		state.hostHookStatusRequestID++
@@ -2538,6 +2541,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			state.applyHostSkillsEvent(event)
 			state.render(os.Stdout)
+		case event := <-projectFilesDone:
+			state.applyProjectFilesEvent(event)
+			if state.projectFiles.open {
+				state.render(os.Stdout)
+			}
 		case <-workspaceRepaint:
 			if control != nil && !state.focused {
 				if state.workspacePaneFocusRestorePending {
@@ -3497,16 +3505,27 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			if state.handleProjectFilesInput(b) {
+				state.render(os.Stdout)
+				continue
+			}
 			mouseReport := strings.HasPrefix(string(b), "\x1b[<")
 			var helpMouseKey []byte
 			if button, x, y, ok := parseSGRMouse(string(b)); ok {
 				if state.blockingModalOpen() {
-					if button != 0 || !strings.HasSuffix(string(b), "M") {
-						continue
-					}
-					b = state.modalMouseInput(x, y)
-					if len(b) == 0 {
-						continue
+					if state.projectFiles.open && button == 0 && strings.HasSuffix(string(b), "m") {
+						b = state.projectFilesMouseRelease(x, y)
+						if len(b) == 0 {
+							continue
+						}
+					} else {
+						if button != 0 || !strings.HasSuffix(string(b), "M") {
+							continue
+						}
+						b = state.modalMouseInput(x, y)
+						if len(b) == 0 {
+							continue
+						}
 					}
 				} else {
 					if state.helpMode && state.modalMouseHit(x, y) {
@@ -3828,6 +3847,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			if string(b) == "\x03" && state.centralModalOpen() {
 				switch {
+				case state.projectFiles.open:
+					state.handleProjectFilesInput(b)
 				case state.workspacePaneMode:
 					if state.workspacePaneStep == "notes" {
 						state.closeNotesModal()
@@ -4607,6 +4628,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				return nil
 			case "help":
 				state.dispatchHelpAction(action)
+			case "project-files":
+				state.openProjectFiles()
 			case "shortcut-settings":
 				state.beginShortcutSettings()
 			case "notification-settings":
@@ -6894,6 +6917,7 @@ func (s *tuiState) render(out io.Writer) {
 		s.renderNotificationModal(out, width, modalHeight)
 		s.renderLifecycleModal(out, width, modalHeight)
 		s.renderCommandPalette(out, width, modalHeight)
+		s.renderProjectFilesModal(out, width, modalHeight)
 		return
 	}
 	if layout.overlay {
@@ -7016,6 +7040,7 @@ func (s *tuiState) render(out io.Writer) {
 	s.renderNotificationModal(out, width, modalHeight)
 	s.renderLifecycleModal(out, width, modalHeight)
 	s.renderCommandPalette(out, width, modalHeight)
+	s.renderProjectFilesModal(out, width, modalHeight)
 	if s.focused && s.terminal != nil && !s.outputStale && s.ptyScrollOffset == 0 {
 		if cursorRow, cursorCol, visible := s.terminal.CursorPosition(height-5, contentWidth); visible {
 			fmt.Fprintf(out, "\033[%d;%dH\033[?25h", 6+cursorRow, contentX+cursorCol)
@@ -9178,6 +9203,8 @@ func (s *tuiState) handleInput(b []byte) string {
 		return "group-select"
 	case s.shortcut("refresh", text):
 		return "refresh"
+	case text == "f" && !s.focused:
+		return "project-files"
 	case s.shortcut("list_search", text):
 		return "search"
 	case s.workspacePreview && s.shortcut("list_sort", text):
@@ -10739,13 +10766,13 @@ func (s *tuiState) centralModalOpen() bool {
 }
 
 func (s *tuiState) blockingModalOpen() bool {
-	return s.commandPaletteMode || s.workspacePaneMode || s.shortcutMode || s.notificationConfigMode || s.hostMenuMode || s.searchMode || s.terminalSearchMode || s.terminalBookmarkMode || s.terminalBookmarkListMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.sessionRenameMode || s.lifecycleConfirm != ""
+	return s.projectFiles.open || s.commandPaletteMode || s.workspacePaneMode || s.shortcutMode || s.notificationConfigMode || s.hostMenuMode || s.searchMode || s.terminalSearchMode || s.terminalBookmarkMode || s.terminalBookmarkListMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.sessionRenameMode || s.lifecycleConfirm != ""
 }
 
 // workspaceControlMayAccept gates asynchronous PTY ownership. Workspace
 // modals keep ownership until they close and the deferred focus lease runs.
 func (s *tuiState) workspaceControlMayAccept() bool {
-	return !s.focused && !s.workspacePaneMode && !s.newSessionMode && !s.helpMode
+	return !s.focused && !s.workspacePaneMode && !s.newSessionMode && !s.helpMode && !s.projectFiles.open
 }
 
 func (s *tuiState) syncCreateSelectionToInput() {

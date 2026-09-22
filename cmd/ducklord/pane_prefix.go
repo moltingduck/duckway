@@ -84,7 +84,7 @@ func (s *tuiState) handlePanePrefix(input []byte) (bool, string) {
 		}
 		s.panePrefixPending = false
 		switch string(input) {
-		case "-", "\\", "t", ",", "n", "p", "c", "d", "o", "O", "?", " ", "/", "m", "M":
+		case "-", "\\", "t", ",", "n", "p", "c", "d", "o", "O", "?", " ", "/", "m", "M", "f":
 			return true, string(input)
 		default:
 			for _, key := range []string{"up", "down", "left", "right", "pageup", "pagedown"} {
@@ -280,6 +280,10 @@ func (s *tuiState) openPrefixPane(command string) {
 
 // dispatchPaneCommand applies a completed pane prefix command on the UI loop.
 func (s *tuiState) dispatchFocusedPaneCommand(command string) bool {
+	if command == "f" {
+		s.openProjectFiles()
+		return true
+	}
 	if command == "/" || command == "m" || command == "M" {
 		return s.openTerminalTool(command)
 	}

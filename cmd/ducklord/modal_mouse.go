@@ -64,6 +64,10 @@ func (s *tuiState) modalMouseInput(x, y int) []byte {
 		if a.before != nil {
 			a.before()
 		}
+		if s.projectFiles.open {
+			s.projectFiles.dragSource = s.projectFiles.active
+			s.projectFiles.dragArmed = true
+		}
 		return []byte(a.key)
 	}
 	return nil
