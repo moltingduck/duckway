@@ -1,8 +1,8 @@
 package main
 
-// This test deliberately drives file exchange through a real PTY.  The files
-// are created in the two Ducklion containers and are checked from the
-// controller, so a rendered list or a mocked copy cannot satisfy the test.
+// This test drives file exchange through a real PTY and verifies the bytes in
+// the two Ducklion containers. A rendered list or mocked copy cannot satisfy
+// it.
 
 import (
 	"fmt"
@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"gopkg.in/yaml.v3"
 )
 
 func TestDucklordFileExchangeContainerE2E(t *testing.T) {
@@ -26,28 +27,41 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	stamp := time.Now().UnixNano()
 	home := fmt.Sprintf("/tmp/ducklord-file-exchange-e2e-%d", stamp)
 	owner, handle := fmt.Sprintf("file-exchange-%d", stamp), fmt.Sprintf("exchange-%x", stamp&0xffffff)
-	sourceDir, targetDir := fmt.Sprintf("/home/duck/exchange-source-%d", stamp), fmt.Sprintf("/home/duck/exchange-target-%d", stamp)
-	dropDir := targetDir + "/drop-dir"
-	source, nested := sourceDir+"/exchange.txt", sourceDir+"/nested/nested.txt"
-	prepare := fmt.Sprintf("rm -rf %s %s %s; mkdir -p %s/nested %s %s; printf 'exchange bytes %d\\n' > %s; printf 'nested bytes %d\\n' > %s", sourceDir, targetDir, sourceDir, sourceDir, targetDir, dropDir, stamp, source, stamp, nested)
-	for _, client := range []string{clientA, clientB} {
-		if out, err := exec.Command(runtime, "exec", "-u", "duck", client, "sh", "-lc", prepare).CombinedOutput(); err != nil {
+
+	sourceA := fmt.Sprintf("/home/duck/exchange-a-source-%d", stamp)
+	sourceB := fmt.Sprintf("/home/duck/exchange-b-source-%d", stamp)
+	targetA := fmt.Sprintf("/home/duck/exchange-a-target-%d", stamp)
+	targetB := fmt.Sprintf("/home/duck/exchange-b-target-%d", stamp)
+	aFile, bFile := fmt.Sprintf("a-file-%d.txt", stamp), fmt.Sprintf("b-file-%d.txt", stamp)
+	multiOne, multiTwo := fmt.Sprintf("multi-one-%d.txt", stamp), fmt.Sprintf("multi-two-%d.txt", stamp)
+	shelfFile, bundle := fmt.Sprintf("shelf-%d.txt", stamp), fmt.Sprintf("bundle-%d", stamp)
+	terminalMarker := fmt.Sprintf("/home/duck/terminal-ready-%d", stamp)
+	aBytes := fmt.Sprintf("a bytes %d\n", stamp)
+	bBytes := fmt.Sprintf("b bytes %d\n", stamp)
+	multiOneBytes := fmt.Sprintf("multi one bytes %d\n", stamp)
+	multiTwoBytes := fmt.Sprintf("multi two bytes %d\n", stamp)
+	shelfBytes := fmt.Sprintf("shelf bytes %d\n", stamp)
+	nestedBytes := fmt.Sprintf("nested bytes %d\n", stamp)
+
+	prepareA := fmt.Sprintf("rm -rf %s %s; mkdir -p %s/%s %s/drop-dir; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s/nested.txt",
+		sourceA, targetA, sourceA, bundle, targetA,
+		aBytes, sourceA, aFile, multiOneBytes, sourceA, multiOne, multiTwoBytes, sourceA, multiTwo,
+		shelfBytes, sourceA, shelfFile, nestedBytes, sourceA, bundle)
+	prepareB := fmt.Sprintf("rm -rf %s %s; mkdir -p %s %s/drop-dir; printf %q > %s/%s",
+		sourceB, targetB, sourceB, targetB, bBytes, sourceB, bFile)
+	for client, command := range map[string]string{clientA: prepareA, clientB: prepareB} {
+		if out, err := exec.Command(runtime, "exec", "-u", "duck", client, "sh", "-lc", command).CombinedOutput(); err != nil {
 			t.Fatalf("prepare %s fixture: %v: %s", client, err, out)
 		}
-		// Register cleanup immediately after each fixture is created so every
-		// later failure path still removes the files it owns.
 		client := client
 		t.Cleanup(func() {
-			_, _ = exec.Command(runtime, "exec", "-u", "duck", client, "rm", "-rf", sourceDir, targetDir).CombinedOutput()
+			_, _ = exec.Command(runtime, "exec", "-u", "duck", client, "sh", "-lc", "rm -rf "+sourceA+" "+sourceB+" "+targetA+" "+targetB).CombinedOutput()
 		})
 	}
-	if out, err := exec.Command(runtime, "exec", "-u", "duck", clientB, "sh", "-lc", "rm -rf "+targetDir+"/*").CombinedOutput(); err != nil {
-		t.Fatalf("clear destination fixture: %v: %s", err, out)
-	}
+	t.Cleanup(func() {
+		_, _ = exec.Command(runtime, "exec", "-u", "duck", clientA, "rm", "-f", terminalMarker).CombinedOutput()
+	})
 
-	// Give the TUI a live terminal with an owner-specific HOME. The route is
-	// opened from this terminal, then its close path is proved by delivering a
-	// unique sentinel to the PTY.
 	if out, err := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/.ducklord").CombinedOutput(); err != nil {
 		t.Fatalf("prepare isolated HOME: %v: %s", err, out)
 	}
@@ -55,6 +69,30 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	if out, err := exec.Command(runtime, "exec", controller, "cp", "/root/.ducklord/config.yaml", configPath).CombinedOutput(); err != nil {
 		t.Fatalf("copy isolated config: %v: %s", err, out)
 	}
+	configBytes, err := exec.Command(runtime, "exec", controller, "cat", configPath).Output()
+	if err != nil {
+		t.Fatalf("read isolated config: %v", err)
+	}
+	var endpointConfig struct {
+		Hosts []struct {
+			Name string `yaml:"name"`
+		} `yaml:"hosts"`
+	}
+	if err := yaml.Unmarshal(configBytes, &endpointConfig); err != nil {
+		t.Fatalf("decode isolated config: %v", err)
+	}
+	endpointIndex := func(name string) int {
+		t.Helper()
+		for i, host := range endpointConfig.Hosts {
+			if host.Name == name {
+				return i + 1 // Local is the first picker entry.
+			}
+		}
+		t.Fatalf("test config has no endpoint %q", name)
+		return 0
+	}
+	clientAEndpoint, clientBEndpoint := endpointIndex("client-a"), endpointIndex("client-b")
+	shelfEndpoint := len(endpointConfig.Hosts) + 1
 	t.Cleanup(func() { _, _ = exec.Command(runtime, "exec", controller, "rm", "-rf", home).CombinedOutput() })
 	start := exec.Command(runtime, "exec", controller, "ducklord", "--name", owner, "start", "client-a", "--name", handle, "--kind", "shell", "--cwd", "/home/duck", "--config", configPath, "--", "sh")
 	if out, err := start.CombinedOutput(); err != nil {
@@ -79,157 +117,175 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	capture := newSizedTUICapture(terminal, 32, 150)
 	capture.waitCurrent(t, handle, 20*time.Second)
 
-	// The workspace/session-list opener must work before a terminal receives
-	// focus. Close it with Esc, then exercise the command-palette action too.
-	writePTY(t, terminal, "f")
-	capture.waitCurrent(t, "Project files", 10*time.Second)
-	writePTY(t, terminal, "\x1b")
-	waitE2E(t, 10*time.Second, func() bool { return !strings.Contains(capture.currentText(), "Project files") }, func() string { return "Project-list f did not close" })
-	writePTY(t, terminal, "\x02 ")
-	capture.waitCurrent(t, "Command palette", 10*time.Second)
-	writePTY(t, terminal, "Project files\r")
-	capture.waitCurrent(t, "Project files", 10*time.Second)
-	writePTY(t, terminal, "\x1b")
-
-	// Focus the terminal, establish the sentinel, and open the route through
-	// the focused-terminal shortcut.  The palette route is checked separately.
-	writePTY(t, terminal, "\r")
-	writePTY(t, terminal, "printf FILE_EXCHANGE_SENTINEL\n")
-	capture.waitCurrent(t, "FILE_EXCHANGE_SENTINEL", 10*time.Second)
-	writePTY(t, terminal, "\x02f")
-	capture.waitCurrent(t, "Project files", 10*time.Second)
-	current := strings.ToLower(capture.currentText())
-	if !strings.Contains(current, "local") || !strings.Contains(current, "project") {
-		t.Fatalf("file exchange did not render endpoint choices: %s", safeTerminalDiagnostic(capture.currentText()))
-	}
-	if out, err := exec.Command(runtime, "exec", controller, "ducklord", "--name", owner+"-output", "send", "client-a", handle, "printf ASYNC_EXCHANGE_OUTPUT\n", "--config", configPath).CombinedOutput(); err != nil {
-		t.Fatalf("send async shell output: %v: %s", err, out)
-	}
-	capture.waitCurrent(t, "Project files", 10*time.Second)
-
-	// Choose Hosts explicitly, then choose client-a from the host list. The
-	// endpoint picker is a real modal: h opens it, j selects Hosts, and Enter
-	// confirms each level. This keeps host choice deterministic when more than
-	// one configured host is present.
-	writePTY(t, terminal, "hj\r")
-	capture.waitCurrent(t, "client-a", 10*time.Second)
-	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+sourceDir+"\r")
-	capture.waitCurrent(t, "exchange.txt", 15*time.Second)
-	if !strings.Contains(capture.currentText(), "nested") {
-		t.Fatalf("source directory was not listed: %s", safeTerminalDiagnostic(capture.currentText()))
-	}
-
-	// Search is scoped to the current directory. Select the source file, then
-	// make the destination column active and choose client-b explicitly.
-	writePTY(t, terminal, "/exchange.txt\r")
-	capture.waitCurrent(t, "exchange.txt", 10*time.Second)
-	writePTY(t, terminal, " \thjj\r")
-	capture.waitCurrent(t, "client-b", 10*time.Second)
-	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+targetDir+"\r")
-	capture.waitCurrent(t, "Copy", 10*time.Second)
-	// c is owned by the left/source column. Return focus there before opening
-	// the preview, otherwise a destination key must remain a no-op.
-	writePTY(t, terminal, "\tc")
-	capture.waitCurrent(t, "Copy preview", 10*time.Second)
-	if !strings.Contains(strings.ToLower(capture.currentText()), "skip") || !strings.Contains(strings.ToLower(capture.currentText()), "rename") || !strings.Contains(strings.ToLower(capture.currentText()), "overwrite") {
-		t.Fatalf("copy preview omitted conflict policies: %s", safeTerminalDiagnostic(capture.currentText()))
-	}
-	writePTY(t, terminal, "\r")
-	waitE2E(t, 20*time.Second, func() bool {
-		out, err := exec.Command(runtime, "exec", "-u", "duck", clientB, "cat", targetDir+"/exchange.txt").Output()
-		return err == nil && strings.Contains(string(out), fmt.Sprintf("exchange bytes %d", stamp))
-	}, func() string {
-		return "client-a -> client-b copy did not produce source bytes: " + safeTerminalDiagnostic(capture.currentText())
-	})
 	assertRemoteText := func(client, path, want, failure string) {
 		t.Helper()
 		waitE2E(t, 20*time.Second, func() bool {
 			out, err := exec.Command(runtime, "exec", "-u", "duck", client, "cat", path).Output()
-			return err == nil && strings.Contains(string(out), want)
+			return err == nil && string(out) == want
 		}, func() string { return failure + ": " + safeTerminalDiagnostic(capture.currentText()) })
 	}
+	activePane := 0
+	activatePane := func(want int) {
+		t.Helper()
+		if activePane != want {
+			writePTY(t, terminal, "\t")
+			activePane = want
+		}
+	}
+	selectEndpoint := func(active int, endpoint int, path string, listed string) {
+		t.Helper()
+		activatePane(active)
+		writePTY(t, terminal, "h"+strings.Repeat("j", endpoint)+"\r")
+		if path != "" {
+			writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+path+"\r")
+		}
+		capture.waitCurrent(t, listed, 15*time.Second)
+	}
+	selectOnly := func(name string) {
+		t.Helper()
+		writePTY(t, terminal, "/"+name+"\r")
+		capture.waitCurrent(t, name, 10*time.Second)
+		writePTY(t, terminal, " ")
+	}
+	copyPreview := func(policy string) {
+		t.Helper()
+		start := capture.position()
+		writePTY(t, terminal, "c")
+		capture.waitAfter(t, start, "Copy preview", 10*time.Second)
+		if policy != "" {
+			writePTY(t, terminal, policy)
+		}
+		start = capture.position()
+		writePTY(t, terminal, "\r")
+		capture.waitAfter(t, start, "Copied", 20*time.Second)
+	}
 
-	// The Project shelf is persistent for this Project. Select it in the
-	// destination column, then return to the source column before copying.
-	writePTY(t, terminal, "\thjjj\r")
-	capture.waitCurrent(t, "PROJECT SHELF", 10*time.Second)
-	writePTY(t, terminal, "\tc")
+	// The quick list may initially select a demo session. Select and focus the
+	// shell created for this exchange so prefix, async-output, and close checks
+	// all exercise its actual PTY.
+	writePTY(t, terminal, "/"+handle+"\r")
+	capture.waitCurrent(t, "Active · Enter again to focus", 15*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Session focus:", 15*time.Second)
+
+	// The palette opens from the focused exchange shell and returns there when
+	// closed, proving the palette route independently of the terminal prefix.
+	writePTY(t, terminal, "\x02 ")
+	capture.waitCurrent(t, "Command palette", 10*time.Second)
+	writePTY(t, terminal, "Project files\r")
+	capture.waitCurrent(t, "Project files", 10*time.Second)
+	writePTY(t, terminal, "\x03")
+	capture.waitCurrent(t, "Session focus:", 10*time.Second)
+
+	// A terminal prefix opens the same modal. Output arriving while it is open
+	// must remain hidden by the modal, then appear after closing it.
+	ready := fmt.Sprintf("TERMINAL_READY_%d", stamp)
+	writePTY(t, terminal, fmt.Sprintf("printf %q > %s; printf '%s\\n'\r", ready+"\n", terminalMarker, ready))
+	capture.waitCurrent(t, ready, 10*time.Second)
+	assertRemoteText(clientA, terminalMarker, ready+"\n", "terminal sentinel did not execute in the selected exchange shell")
+	writePTY(t, terminal, "\x02f")
+	capture.waitCurrent(t, "Project files", 10*time.Second)
+	async := fmt.Sprintf("ASYNC_EXCHANGE_OUTPUT_%d", stamp)
+	if out, err := exec.Command(runtime, "exec", controller, "ducklord", "--name", owner+"-output", "send", "client-a", handle, fmt.Sprintf("printf '%s\\n'", async), "--config", configPath).CombinedOutput(); err != nil {
+		t.Fatalf("send async shell output: %v: %s", err, out)
+	}
+	capture.waitCurrent(t, "Project files", 10*time.Second)
+	writePTY(t, terminal, "\x03")
+	capture.waitCurrent(t, async, 15*time.Second)
+
+	// Ctrl-] returns to the list and f opens the documented list-level route.
+	// Send them in one PTY write: the input decoder must split both key events.
+	writePTY(t, terminal, "\x1df")
+	capture.waitCurrent(t, "Project files", 10*time.Second)
+
+	// Client A -> client B file, directory drag/drop, and a two-file selection.
+	selectEndpoint(0, clientAEndpoint, sourceA, aFile)
+	selectEndpoint(1, clientBEndpoint, targetB, "drop-dir")
+	activatePane(0)
+	selectOnly(aFile)
+	copyPreview("")
+	assertRemoteText(clientB, targetB+"/"+aFile, aBytes, "client-a -> client-b file copy failed")
+	assertRemoteText(clientA, sourceA+"/"+aFile, aBytes, "copy modified client-a source")
+
+	writePTY(t, terminal, "/"+bundle+"\r")
+	capture.waitCurrent(t, bundle, 10*time.Second)
+	leftX, leftY, ok := projectFilesScreenPoint(capture, bundle, 0, 74)
+	if !ok {
+		t.Fatalf("could not locate source directory %q: %s", bundle, safeTerminalDiagnostic(capture.currentText()))
+	}
+	rightX, rightY, ok := projectFilesScreenPoint(capture, "drop-dir", 75, 150)
+	if !ok {
+		t.Fatalf("could not locate destination directory: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
+	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<0;%d;%dm", leftX, leftY, rightX, rightY))
 	capture.waitCurrent(t, "Copy preview", 10*time.Second)
 	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Copied", 20*time.Second)
+	assertRemoteText(clientB, targetB+"/drop-dir/"+bundle+"/nested.txt", nestedBytes, "dragged directory copy failed")
+
+	// Dragging onto drop-dir makes that child the pending destination; reset the
+	// target pane before the following root-level multiselect transfer.
+	selectEndpoint(1, clientBEndpoint, targetB, "drop-dir")
+	selectEndpoint(0, clientAEndpoint, sourceA, multiOne)
+	selectOnly(multiOne)
+	writePTY(t, terminal, "/"+multiTwo+"\r")
+	capture.waitCurrent(t, multiTwo, 10*time.Second)
+	writePTY(t, terminal, " ")
+	copyPreview("")
+	assertRemoteText(clientB, targetB+"/"+multiOne, multiOneBytes, "first multiselect file was not copied")
+	assertRemoteText(clientB, targetB+"/"+multiTwo, multiTwoBytes, "second multiselect file was not copied")
+
+	// Client B -> client A is a separate direction with different bytes.
+	selectEndpoint(0, clientBEndpoint, sourceB, bFile)
+	selectEndpoint(1, clientAEndpoint, targetA, "drop-dir")
+	activatePane(0)
+	selectOnly(bFile)
+	copyPreview("")
+	assertRemoteText(clientA, targetA+"/"+bFile, bBytes, "client-b -> client-a copy failed")
+
+	// The per-project shelf survives closing and reopening the modal.
+	selectEndpoint(0, clientAEndpoint, sourceA, shelfFile)
+	selectOnly(shelfFile)
+	selectEndpoint(1, shelfEndpoint, "", "PROJECT SHELF")
+	activatePane(0)
+	copyPreview("")
 	waitE2E(t, 20*time.Second, func() bool {
-		out, err := exec.Command(runtime, "exec", controller, "sh", "-lc", "find "+home+"/.ducklord/exchange -type f -name exchange.txt -print -quit 2>/dev/null | xargs -r cat").Output()
-		return err == nil && strings.Contains(string(out), fmt.Sprintf("exchange bytes %d", stamp))
+		out, err := exec.Command(runtime, "exec", controller, "sh", "-lc", fmt.Sprintf("find %q -type f -name %q -exec cat {} \\;", home, shelfFile)).Output()
+		return err == nil && string(out) == shelfBytes
 	}, func() string {
-		return "Project shelf copy did not produce source bytes: " + safeTerminalDiagnostic(capture.currentText())
+		return "project shelf did not retain exact copied bytes: " + safeTerminalDiagnostic(capture.currentText())
 	})
+	writePTY(t, terminal, "\x1b\x02f")
+	activePane = 0 // every new Project files modal starts on the left.
+	selectEndpoint(1, shelfEndpoint, "", shelfFile)
 
-	// Clear the current-directory query, select the directory by keyboard, and
-	// copy it to client-b. No fixed mouse coordinate is used: a rendered row is
-	// not evidence that a drag changed the transfer source.
-	writePTY(t, terminal, "/\r")
-	writePTY(t, terminal, "j k") // mark exchange.txt, then return to nested for a multi-select drag
-	writePTY(t, terminal, "\thjj\r")
-	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+targetDir+"\r")
-	capture.waitCurrent(t, "drop-dir", 10*time.Second)
-	// At 150x32 the first source and destination rows are y=17. The columns
-	// occupy x=41..74 and x=77..110; press the nested directory, then release
-	// on the visible drop-dir row. This exercises drag/drop onto a directory.
-	writePTY(t, terminal, "\t")
-	writePTY(t, terminal, "\x1b[<0;65;16M\x1b[<0;95;16m")
-	capture.waitCurrent(t, "Copy preview", 10*time.Second)
-	writePTY(t, terminal, "\r")
-	assertRemoteText(clientB, dropDir+"/nested/nested.txt", fmt.Sprintf("nested bytes %d", stamp), "directory copy did not preserve nested bytes")
-	assertRemoteText(clientA, source, fmt.Sprintf("exchange bytes %d", stamp), "source was modified by copy")
-
-	// Reverse the direction: choose client-b as the source and local client-a
-	// as the destination. This catches one-way controller routing and proves
-	// that endpoint changes do not leave the other column's stale listing active.
-	writePTY(t, terminal, "hjj\r")
-	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+sourceDir+"\r")
-	capture.waitCurrent(t, "exchange.txt", 10*time.Second)
-	writePTY(t, terminal, "\th\r")
-	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+targetDir+"\r")
-	capture.waitCurrent(t, "drop-dir", 10*time.Second)
-	writePTY(t, terminal, "\tj ")
-	writePTY(t, terminal, "c")
-	capture.waitCurrent(t, "Copy preview", 10*time.Second)
-	writePTY(t, terminal, "\r")
-	assertRemoteText(clientA, targetDir+"/exchange.txt", fmt.Sprintf("exchange bytes %d", stamp), "reverse client-b -> client-a copy failed")
-
-	// Return to client-a -> client-b for the conflict policy checks.
-	writePTY(t, terminal, "hj\r")
-	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+sourceDir+"\r")
-	writePTY(t, terminal, "\thjj\r")
-	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+targetDir+"\r")
-
-	// Make a conflicting destination deliberately, then prove each policy by
-	// inspecting bytes and the rename result, rather than only closing the UI.
-	if out, err := exec.Command(runtime, "exec", "-u", "duck", clientB, "sh", "-lc", "printf 'conflict bytes\\n' > "+targetDir+"/exchange.txt").CombinedOutput(); err != nil {
+	// Seed one real destination conflict, then prove all policies by bytes.
+	selectEndpoint(0, clientAEndpoint, sourceA, aFile)
+	selectOnly(aFile)
+	selectEndpoint(1, clientBEndpoint, targetB, "drop-dir")
+	if out, err := exec.Command(runtime, "exec", "-u", "duck", clientB, "sh", "-lc", fmt.Sprintf("printf %q > %s/%s", "conflict bytes\n", targetB, aFile)).CombinedOutput(); err != nil {
 		t.Fatalf("seed conflict: %v: %s", err, out)
 	}
-	writePTY(t, terminal, " k ") // unmark nested, select and mark exchange.txt
-	writePTY(t, terminal, "\tc")
-	capture.waitCurrent(t, "Copy preview", 10*time.Second)
-	writePTY(t, terminal, "s\r")
-	assertRemoteText(clientB, targetDir+"/exchange.txt", "conflict bytes", "skip policy changed the destination")
-	writePTY(t, terminal, "c")
-	capture.waitCurrent(t, "Copy preview", 10*time.Second)
-	writePTY(t, terminal, "r\r")
-	assertRemoteText(clientB, targetDir+"/exchange.txt (1)", fmt.Sprintf("exchange bytes %d", stamp), "rename policy did not create a suffixed file")
-	writePTY(t, terminal, "c")
-	capture.waitCurrent(t, "Copy preview", 10*time.Second)
-	writePTY(t, terminal, "o\r")
-	assertRemoteText(clientB, targetDir+"/exchange.txt", fmt.Sprintf("exchange bytes %d", stamp), "overwrite policy did not replace the destination")
+	activatePane(0)
+	copyPreview("s")
+	assertRemoteText(clientB, targetB+"/"+aFile, "conflict bytes\n", "skip policy changed destination bytes")
+	copyPreview("r")
+	assertRemoteText(clientB, targetB+"/"+aFile+" (1)", aBytes, "rename policy did not create suffixed file")
+	copyPreview("o")
+	assertRemoteText(clientB, targetB+"/"+aFile, aBytes, "overwrite policy did not replace destination bytes")
 
-	// Esc closes the browse modal and restores the original terminal. Assert
-	// that closure before sending the sentinel, so a focused modal cannot mask
-	// a failed focus restoration.
-	writePTY(t, terminal, "\x1b")
-	waitE2E(t, 10*time.Second, func() bool { return !strings.Contains(capture.currentText(), "Project files") }, func() string {
-		return "Esc did not close file exchange: " + safeTerminalDiagnostic(capture.currentText())
-	})
+	// The close restores terminal input. The distinct completed output proves
+	// this is shell output, not merely echoed input while a modal owns keys.
+	writePTY(t, terminal, "\x03")
 	closed := fmt.Sprintf("CLOSED_%d", stamp)
-	writePTY(t, terminal, fmt.Sprintf("printf 'FILE_%%s\\n' '%s'\n", closed))
-	capture.waitCurrent(t, "FILE_"+closed, 15*time.Second)
+	startAt := capture.position()
+	writePTY(t, terminal, fmt.Sprintf("printf 'FILE_%%s\\n' '%s'\r", closed))
+	capture.waitAfter(t, startAt, "FILE_"+closed, 15*time.Second)
+}
 
+func projectFilesScreenPoint(capture *tuiCapture, label string, minX, maxX int) (int, int, bool) {
+	capture.mu.Lock()
+	screen := strings.Join(capture.screen.RenderLines(capture.rows, capture.cols), "\n")
+	capture.mu.Unlock()
+	return workspaceScreenPoint(screen, label, minX, maxX)
 }
