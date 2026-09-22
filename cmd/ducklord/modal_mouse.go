@@ -114,6 +114,9 @@ func (s *tuiState) renderModalBox(out io.Writer, cols, rows int, lines []modalRe
 	if cols >= 8 && rows >= 3 && len(lines) > 0 {
 		visible := min(len(lines), rows-2)
 		width := min(72, max(8, cols-2))
+		if s.projectFiles.open {
+			width = min(110, max(8, cols-2))
+		}
 		top, left := max(1, (rows-visible-2)/2+1), max(1, (cols-width)/2+1)
 		for i, line := range lines[:visible] {
 			if action, ok := s.modalMouseLines[i]; ok && line.style != modalDisabled {
@@ -122,6 +125,10 @@ func (s *tuiState) renderModalBox(out io.Writer, cols, rows int, lines []modalRe
 				s.modalHintRegions(line.text, left+1, top+i+1, width-2)
 			}
 		}
+	}
+	if s.projectFiles.open {
+		renderModalBoxWidth(out, cols, rows, 110, lines)
+		return
 	}
 	renderModalBox(out, cols, rows, lines)
 }

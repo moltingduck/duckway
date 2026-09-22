@@ -7160,6 +7160,12 @@ type modalRenderLine struct {
 }
 
 func renderModalBox(out io.Writer, cols, rows int, lines []modalRenderLine) {
+	renderModalBoxWidth(out, cols, rows, 72, lines)
+}
+
+// renderModalBoxWidth keeps the rendered frame, its clipping, and mouse layout
+// on the same width for wide modals such as Project files.
+func renderModalBoxWidth(out io.Writer, cols, rows, preferredWidth int, lines []modalRenderLine) {
 	if cols < 8 || rows < 3 || len(lines) == 0 {
 		return
 	}
@@ -7167,7 +7173,7 @@ func renderModalBox(out io.Writer, cols, rows int, lines []modalRenderLine) {
 	if len(lines) > maxLines {
 		lines = lines[:maxLines]
 	}
-	boxWidth := min(72, max(8, cols-2))
+	boxWidth := min(preferredWidth, max(8, cols-2))
 	innerWidth := boxWidth - 2
 	boxHeight := len(lines) + 2
 	top := max(1, (rows-boxHeight)/2+1)

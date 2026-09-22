@@ -320,6 +320,11 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		s.outputErr = ""
 		return true, true
 	}
+	// Project file exchange is an explicit Project-surface command. Let it
+	// reach the common route instead of treating it as a read-only list key.
+	if key == "f" {
+		return false, false
+	}
 	if key != "j" && key != "k" && key != "\x1b[A" && key != "\x1b[B" {
 		return true, false
 	}

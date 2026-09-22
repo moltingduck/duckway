@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/ducklord"
@@ -113,13 +114,12 @@ func TestProjectFilesCtrlCCancelsCopyAndFencesCompletion(t *testing.T) {
 	default:
 		t.Fatal("Ctrl+C did not cancel the copy context")
 	}
-	if s.projectFiles.step != "browse" || s.projectFiles.generation != 10 || s.projectFiles.status != "Cancelled" {
-		t.Fatalf("cancel state = %#v", s.projectFiles)
+	if s.projectFiles.step != "busy" || !s.projectFiles.copyCancelling || s.projectFiles.status != "Cancelling…" {
+		t.Fatalf("cancel must wait for backend acknowledgement: %#v", s.projectFiles)
 	}
-	// A late completion for the cancelled generation must not overwrite status.
 	s.applyProjectFilesEvent(projectFilesEvent{generation: 9, copy: true})
-	if s.projectFiles.status != "Cancelled" {
-		t.Fatalf("stale copy completion replaced cancellation status: %q", s.projectFiles.status)
+	if s.projectFiles.step != "browse" || s.projectFiles.status != "Cancelled" {
+		t.Fatalf("cancellation acknowledgement state = %#v", s.projectFiles)
 	}
 }
 
@@ -150,7 +150,45 @@ func TestProjectFilesMouseDragUsesDirectoryTarget(t *testing.T) {
 	if s.projectFiles.step != "preview" || !s.projectFiles.left.marked["nested"] {
 		t.Fatalf("drag did not select source and open preview: %#v", s.projectFiles)
 	}
-	if got := s.projectFiles.right.endpoint.Path; got != filepath.Join(targetDir, "drop") {
-		t.Fatalf("drag target path = %q", got)
+	if got := s.projectFiles.right.endpoint.Path; got != targetDir {
+		t.Fatalf("drag must not mutate browse destination path = %q", got)
+	}
+	if got := s.projectFiles.pendingDestination.Path; got != filepath.Join(targetDir, "drop") {
+		t.Fatalf("drag destination = %q", got)
+	}
+}
+
+func TestProjectFilesWideModalKeepsColumnsAndOnlyBrowseHasEntryMouse(t *testing.T) {
+	s := &tuiState{}
+	s.projectFiles = projectFilesState{open: true, step: "browse", left: projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: "/left"}, entries: []ducklord.FileEntry{{Name: "a"}}, marked: map[string]bool{}}, right: projectFilesPane{label: "REMOTE", endpoint: ducklord.FileEndpoint{Path: "/right"}, entries: []ducklord.FileEntry{{Name: "right-entry"}}, marked: map[string]bool{}}}
+	var out bytes.Buffer
+	s.renderProjectFilesModal(&out, 150, 32)
+	if !strings.Contains(out.String(), "right-entry") || len(s.modalMouseRegions) < 2 {
+		t.Fatalf("wide modal lost right column or regions: %q %#v", out.String(), s.modalMouseRegions)
+	}
+	s.projectFiles.step = "filter"
+	out.Reset()
+	s.renderProjectFilesModal(&out, 150, 32)
+	for _, r := range s.modalMouseRegions {
+		if r.action.selection != nil {
+			t.Fatalf("editor registered entry region: %#v", r)
+		}
+	}
+}
+
+func TestProjectFilesEditorsAcceptSpacesAndCtrlCCancels(t *testing.T) {
+	s := &tuiState{}
+	s.projectFiles = projectFilesState{open: true, step: "filter", left: projectFilesPane{marked: map[string]bool{}}}
+	s.handleProjectFilesInput([]byte("two words"))
+	if s.projectFiles.left.query != "two words" {
+		t.Fatalf("query = %q", s.projectFiles.left.query)
+	}
+	s.handleProjectFilesInput([]byte("\x1b[A"))
+	if s.projectFiles.left.query != "two words" {
+		t.Fatalf("control bytes entered query = %q", s.projectFiles.left.query)
+	}
+	s.handleProjectFilesInput([]byte("\x03"))
+	if s.projectFiles.open {
+		t.Fatal("Ctrl+C in editor did not close modal")
 	}
 }
