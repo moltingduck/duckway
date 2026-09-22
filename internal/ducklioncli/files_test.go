@@ -2,6 +2,7 @@ package ducklioncli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,5 +46,32 @@ func TestFilesTarWriteStagesAndValidatesRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dst, "broken")); !os.IsNotExist(err) {
 		t.Fatalf("partial destination exists: %v", err)
+	}
+}
+
+func TestFilesWriteCancellationNeverCommits(t *testing.T) {
+	root := t.TempDir()
+	dst := filepath.Join(root, "dst")
+	if err := os.Mkdir(dst, 0700); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(root, "src")
+	if err := os.Mkdir(src, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "data"), []byte("payload"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	if err := runFiles([]string{"read", src}, nil, &archive); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runFilesContext(ctx, []string{"write", dst, "cancelled"}, bytes.NewReader(archive.Bytes()), &bytes.Buffer{}); err == nil {
+		t.Fatal("accepted canceled transfer")
+	}
+	if _, err := os.Stat(filepath.Join(dst, "cancelled")); !os.IsNotExist(err) {
+		t.Fatalf("destination committed: %v", err)
 	}
 }

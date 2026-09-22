@@ -64,7 +64,7 @@ func Main(args []string, stdout io.Writer) {
 			case <-done:
 			}
 		}()
-		err := runFiles(args[1:], os.Stdin, stdout)
+		err := runFilesContext(ctx, args[1:], os.Stdin, stdout)
 		close(done)
 		if err != nil {
 			log.Print(err)

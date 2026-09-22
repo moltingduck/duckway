@@ -105,3 +105,80 @@ func TestProjectExchangePathPersistentPrivate(t *testing.T) {
 		t.Fatalf("mode %o", i.Mode().Perm())
 	}
 }
+
+func TestCopyRejectsSymlinkAndSelfSubtreeButAllowsSibling(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
+	if err := os.MkdirAll(filepath.Join(src, "child"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "file"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "outside"), filepath.Join(src, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(root, "dst")
+	if err := os.Mkdir(dst, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CopyFiles(context.Background(), FileCopyRequest{Source: FileEndpoint{Path: src}, Destination: FileEndpoint{Path: dst}, Names: []string{"escape"}}); err == nil {
+		t.Fatal("accepted symlink source")
+	}
+	if _, err := CopyFiles(context.Background(), FileCopyRequest{Source: FileEndpoint{Path: src}, Destination: FileEndpoint{Path: filepath.Join(src, "child")}, Names: []string{"file"}}); err == nil {
+		t.Fatal("accepted destination inside source")
+	}
+	sibling := filepath.Join(root, "sibling")
+	if err := os.Mkdir(sibling, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CopyFiles(context.Background(), FileCopyRequest{Source: FileEndpoint{Path: src}, Destination: FileEndpoint{Path: sibling}, Names: []string{"file"}}); err != nil {
+		t.Fatalf("sibling copy: %v", err)
+	}
+}
+
+func TestCopyDirectoryOverwriteRefusedAndLateCollisionPreservesDestination(t *testing.T) {
+	root := t.TempDir()
+	src, dst := filepath.Join(root, "src"), filepath.Join(root, "dst")
+	if err := os.MkdirAll(src, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dst, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(src, "dir"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "dir", "x"), []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dst, "dir"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CopyFiles(context.Background(), FileCopyRequest{Source: FileEndpoint{Path: src}, Destination: FileEndpoint{Path: dst}, Names: []string{"dir"}, Conflict: "overwrite"}); err == nil {
+		t.Fatal("overwrote existing directory")
+	}
+	if err := os.WriteFile(filepath.Join(dst, "x"), []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "x"), []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CopyFiles(context.Background(), FileCopyRequest{Source: FileEndpoint{Path: src}, Destination: FileEndpoint{Path: dst}, Names: []string{"x"}, Conflict: "skip"}); err == nil {
+		// skip is expected to succeed and preserve the existing file.
+	} else {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dst, "x"))
+	if err != nil || string(b) != "old" {
+		t.Fatalf("destination changed: %q %v", b, err)
+	}
+}
+
+func TestLimitedBufferReportsFullWriteLength(t *testing.T) {
+	b := &limitedBuffer{limit: 3}
+	n, err := b.Write([]byte("012345"))
+	if err != nil || n != 6 || b.String() != "012" {
+		t.Fatalf("write result n=%d err=%v contents=%q", n, err, b.String())
+	}
+}

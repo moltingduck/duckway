@@ -2,8 +2,10 @@ package ducklioncli
 
 import (
 	"archive/tar"
+	"context"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/sys/unix"
 	"io"
 	"io/fs"
 	"os"
@@ -21,6 +23,10 @@ const exchangePayloadRoot = "__duckway_payload"
 const exchangeFooter = "__duckway_complete__"
 
 func runFiles(args []string, in io.Reader, out io.Writer) error {
+	return runFilesContext(context.Background(), args, in, out)
+}
+
+func runFilesContext(ctx context.Context, args []string, in io.Reader, out io.Writer) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: ducklion files {list|read|write} PATH [NAME]")
 	}
@@ -44,6 +50,11 @@ func runFiles(args []string, in io.Reader, out io.Writer) error {
 		}
 		result := make([]fileCLIEntry, 0, len(es))
 		for _, x := range es {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 			i, e := x.Info()
 			if e != nil {
 				return e
@@ -61,12 +72,12 @@ func runFiles(args []string, in io.Reader, out io.Writer) error {
 		if len(args) != 2 {
 			return fmt.Errorf("usage: ducklion files read PATH")
 		}
-		return writeTar(p, out)
+		return writeTar(ctx, p, out)
 	case "write":
 		if (len(args) != 3 && len(args) != 4) || !safeFileName(args[2]) || len(args) == 4 && args[3] != "--overwrite" {
 			return fmt.Errorf("usage: ducklion files write DIRECTORY NAME")
 		}
-		return readTar(in, p, args[2], len(args) == 4)
+		return readTar(ctx, in, p, args[2], len(args) == 4)
 	default:
 		return fmt.Errorf("unknown files operation %q", op)
 	}
@@ -74,9 +85,14 @@ func runFiles(args []string, in io.Reader, out io.Writer) error {
 func safeFileName(s string) bool {
 	return s != "" && s != "." && s != ".." && filepath.Base(s) == s && !strings.ContainsAny(s, "/\\")
 }
-func writeTar(src string, out io.Writer) error {
+func writeTar(ctx context.Context, src string, out io.Writer) error {
 	tw := tar.NewWriter(out)
 	err := filepath.Walk(src, func(p string, i os.FileInfo, e error) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		if e != nil {
 			return e
 		}
@@ -118,7 +134,7 @@ func writeTar(src string, out io.Writer) error {
 	}
 	return tw.Close()
 }
-func readTar(in io.Reader, dst, name string, overwrite bool) error {
+func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool) error {
 	if i, e := os.Lstat(dst); e != nil || !i.IsDir() || i.Mode()&os.ModeSymlink != 0 {
 		if e != nil {
 			return e
@@ -135,6 +151,11 @@ func readTar(in io.Reader, dst, name string, overwrite bool) error {
 	complete := false
 	bytes := int64(0)
 	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		h, e := tr.Next()
 		if e == io.EOF {
 			break
@@ -143,6 +164,9 @@ func readTar(in io.Reader, dst, name string, overwrite bool) error {
 			return e
 		}
 		if h.Name == exchangeFooter {
+			if h.Typeflag != tar.TypeReg || h.Size != 0 {
+				return fmt.Errorf("invalid completion footer")
+			}
 			complete = true
 			continue
 		}
@@ -203,6 +227,11 @@ func readTar(in io.Reader, dst, name string, overwrite bool) error {
 	if !rootSeen || !complete {
 		return fmt.Errorf("empty archive")
 	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	dest := filepath.Join(dst, name)
 	if old, err := os.Lstat(dest); err == nil {
 		if !overwrite {
@@ -210,6 +239,9 @@ func readTar(in io.Reader, dst, name string, overwrite bool) error {
 		}
 		if old.IsDir() {
 			return fmt.Errorf("refusing non-atomic directory overwrite")
+		}
+		if !old.Mode().IsRegular() {
+			return fmt.Errorf("refusing overwrite of non-regular destination")
 		}
 	} else if !os.IsNotExist(err) {
 		return err
@@ -223,5 +255,8 @@ func readTar(in io.Reader, dst, name string, overwrite bool) error {
 			return nil
 		}
 	}
-	return os.Rename(payload, dest)
+	if overwrite {
+		return os.Rename(payload, dest)
+	}
+	return unix.Renameat2(unix.AT_FDCWD, payload, unix.AT_FDCWD, dest, unix.RENAME_NOREPLACE)
 }
