@@ -221,8 +221,8 @@ the current directory, Space marks entries, Enter opens or confirms, and `c`
 opens the copy preview. Esc unwinds one state and then closes; Ctrl-C cancels a
 copy or closes the modal. Close restores the captured Project/session/terminal
 origin even when shell output arrives while a listing or copy is pending.
-Copies preserve the source. Host copies stream through the controller, never
-copy host-to-host directly, and temporary destination state is removed on
+Copies preserve the source. Each transferred item is limited to 1 GiB. Host
+copies stream through the controller, never copy host-to-host directly, and temporary destination state is removed on
 cancel or failure. A Project shelf persists per Project. Existing destination
 directories are refused for overwrite rather than merged; skip and rename
 remain available. Remote Ducklions must support the file-exchange commands

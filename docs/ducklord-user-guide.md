@@ -64,8 +64,8 @@ directory or confirms an action. Press `c` to review a copy and choose `skip`,
 `rename`, or `overwrite`. Esc backs out one level and then closes. Ctrl-C
 cancels an active copy or closes the modal.
 
-Copies leave the source unchanged. Host-to-host copies are routed through the
-controller. The Project shelf is persistent for each Project. An existing
+Copies leave the source unchanged. Each transferred item is limited to 1 GiB.
+Host-to-host copies are routed through the controller. The Project shelf is persistent for each Project. An existing
 destination directory is refused for overwrite instead of being merged; use
 skip or rename when appropriate. Temporary destination data is cleaned up on
 cancel or failure. Remote Ducklions must support the file-exchange commands

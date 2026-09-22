@@ -27,8 +27,9 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	home := fmt.Sprintf("/tmp/ducklord-file-exchange-e2e-%d", stamp)
 	owner, handle := fmt.Sprintf("file-exchange-%d", stamp), fmt.Sprintf("exchange-%x", stamp&0xffffff)
 	sourceDir, targetDir := fmt.Sprintf("/home/duck/exchange-source-%d", stamp), fmt.Sprintf("/home/duck/exchange-target-%d", stamp)
+	dropDir := targetDir + "/drop-dir"
 	source, nested := sourceDir+"/exchange.txt", sourceDir+"/nested/nested.txt"
-	prepare := fmt.Sprintf("rm -rf %s %s %s; mkdir -p %s/nested %s; printf 'exchange bytes %d\\n' > %s; printf 'nested bytes %d\\n' > %s", sourceDir, targetDir, sourceDir, sourceDir, targetDir, stamp, source, stamp, nested)
+	prepare := fmt.Sprintf("rm -rf %s %s %s; mkdir -p %s/nested %s %s; printf 'exchange bytes %d\\n' > %s; printf 'nested bytes %d\\n' > %s", sourceDir, targetDir, sourceDir, sourceDir, targetDir, dropDir, stamp, source, stamp, nested)
 	for _, client := range []string{clientA, clientB} {
 		if out, err := exec.Command(runtime, "exec", "-u", "duck", client, "sh", "-lc", prepare).CombinedOutput(); err != nil {
 			t.Fatalf("prepare %s fixture: %v: %s", client, err, out)
@@ -110,7 +111,7 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	// endpoint picker is a real modal: h opens it, j selects Hosts, and Enter
 	// confirms each level. This keeps host choice deterministic when more than
 	// one configured host is present.
-	writePTY(t, terminal, "hj\rj\r")
+	writePTY(t, terminal, "hj\r")
 	capture.waitCurrent(t, "client-a", 10*time.Second)
 	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+sourceDir+"\r")
 	capture.waitCurrent(t, "exchange.txt", 15*time.Second)
@@ -122,7 +123,7 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	// make the destination column active and choose client-b explicitly.
 	writePTY(t, terminal, "/exchange.txt\r")
 	capture.waitCurrent(t, "exchange.txt", 10*time.Second)
-	writePTY(t, terminal, " \thj\rj\r")
+	writePTY(t, terminal, " \thjj\r")
 	capture.waitCurrent(t, "client-b", 10*time.Second)
 	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+targetDir+"\r")
 	capture.waitCurrent(t, "Copy", 10*time.Second)
@@ -150,7 +151,7 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 
 	// The Project shelf is persistent for this Project. Select it in the
 	// destination column, then return to the source column before copying.
-	writePTY(t, terminal, "\thjj\r")
+	writePTY(t, terminal, "\thjjj\r")
 	capture.waitCurrent(t, "PROJECT SHELF", 10*time.Second)
 	writePTY(t, terminal, "\tc")
 	capture.waitCurrent(t, "Copy preview", 10*time.Second)
@@ -166,18 +167,40 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	// copy it to client-b. No fixed mouse coordinate is used: a rendered row is
 	// not evidence that a drag changed the transfer source.
 	writePTY(t, terminal, "/\r")
-	writePTY(t, terminal, " j")
-	writePTY(t, terminal, "\thj\rj\r")
+	writePTY(t, terminal, "j k") // mark exchange.txt, then return to nested for a multi-select drag
+	writePTY(t, terminal, "\thjj\r")
 	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+targetDir+"\r")
-	// At the fixed 150x32 PTY size the second source row is y=17. A real SGR
-	// press selects and marks it; releasing over the destination column is the
-	// drag path and must open the same copy preview as keyboard c.
+	capture.waitCurrent(t, "drop-dir", 10*time.Second)
+	// At 150x32 the first source and destination rows are y=17. The columns
+	// occupy x=41..74 and x=77..110; press the nested directory, then release
+	// on the visible drop-dir row. This exercises drag/drop onto a directory.
 	writePTY(t, terminal, "\t")
-	writePTY(t, terminal, "\x1b[<0;65;17M\x1b[<0;125;17m")
+	writePTY(t, terminal, "\x1b[<0;65;16M\x1b[<0;95;16m")
 	capture.waitCurrent(t, "Copy preview", 10*time.Second)
 	writePTY(t, terminal, "\r")
-	assertRemoteText(clientB, targetDir+"/nested/nested.txt", fmt.Sprintf("nested bytes %d", stamp), "directory copy did not preserve nested bytes")
+	assertRemoteText(clientB, dropDir+"/nested/nested.txt", fmt.Sprintf("nested bytes %d", stamp), "directory copy did not preserve nested bytes")
 	assertRemoteText(clientA, source, fmt.Sprintf("exchange bytes %d", stamp), "source was modified by copy")
+
+	// Reverse the direction: choose client-b as the source and local client-a
+	// as the destination. This catches one-way controller routing and proves
+	// that endpoint changes do not leave the other column's stale listing active.
+	writePTY(t, terminal, "hjj\r")
+	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+sourceDir+"\r")
+	capture.waitCurrent(t, "exchange.txt", 10*time.Second)
+	writePTY(t, terminal, "\th\r")
+	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+targetDir+"\r")
+	capture.waitCurrent(t, "drop-dir", 10*time.Second)
+	writePTY(t, terminal, "\tj ")
+	writePTY(t, terminal, "c")
+	capture.waitCurrent(t, "Copy preview", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	assertRemoteText(clientA, targetDir+"/exchange.txt", fmt.Sprintf("exchange bytes %d", stamp), "reverse client-b -> client-a copy failed")
+
+	// Return to client-a -> client-b for the conflict policy checks.
+	writePTY(t, terminal, "hj\r")
+	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+sourceDir+"\r")
+	writePTY(t, terminal, "\thjj\r")
+	writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+targetDir+"\r")
 
 	// Make a conflicting destination deliberately, then prove each policy by
 	// inspecting bytes and the rename result, rather than only closing the UI.
