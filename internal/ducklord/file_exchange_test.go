@@ -125,7 +125,7 @@ func TestCopyRejectsSymlinkAndSelfSubtreeButAllowsSibling(t *testing.T) {
 	if _, err := CopyFiles(context.Background(), FileCopyRequest{Source: FileEndpoint{Path: src}, Destination: FileEndpoint{Path: dst}, Names: []string{"escape"}}); err == nil {
 		t.Fatal("accepted symlink source")
 	}
-	if _, err := CopyFiles(context.Background(), FileCopyRequest{Source: FileEndpoint{Path: src}, Destination: FileEndpoint{Path: filepath.Join(src, "child")}, Names: []string{"file"}}); err == nil {
+	if _, err := CopyFiles(context.Background(), FileCopyRequest{Source: FileEndpoint{Path: src}, Destination: FileEndpoint{Path: filepath.Join(src, "child")}, Names: []string{"child"}}); err == nil {
 		t.Fatal("accepted destination inside source")
 	}
 	sibling := filepath.Join(root, "sibling")

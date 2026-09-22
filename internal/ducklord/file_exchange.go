@@ -7,9 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,27 +65,40 @@ func ListFiles(ctx context.Context, endpoint FileEndpoint) ([]FileEntry, error) 
 			return nil, err
 		}
 		defer r.Close()
-		es, err := fs.ReadDir(r.FS(), ".")
+		dir, err := r.Open(".")
 		if err != nil {
 			return nil, err
 		}
-		out := make([]FileEntry, 0, len(es))
-		for _, e := range es {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			default:
+		defer dir.Close()
+		out := make([]FileEntry, 0)
+		for {
+			es, readErr := dir.ReadDir(256)
+			if readErr == io.EOF {
+				break
 			}
-			i, err := e.Info()
-			if err != nil {
-				return nil, err
+			if readErr != nil {
+				return nil, readErr
 			}
-			if e.Type()&os.ModeSymlink != 0 || !e.Type().IsRegular() && !e.IsDir() {
-				continue
+			if len(es) == 0 {
+				break
 			}
-			out = append(out, FileEntry{Name: e.Name(), IsDir: e.IsDir(), Size: i.Size()})
-			if len(out) > 100000 {
-				return nil, fmt.Errorf("directory listing exceeds entry limit")
+			for _, e := range es {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				default:
+				}
+				i, err := e.Info()
+				if err != nil {
+					return nil, err
+				}
+				if e.Type()&os.ModeSymlink != 0 || !e.Type().IsRegular() && !e.IsDir() {
+					continue
+				}
+				out = append(out, FileEntry{Name: e.Name(), IsDir: e.IsDir(), Size: i.Size()})
+				if len(out) > 100000 {
+					return nil, fmt.Errorf("directory listing exceeds entry limit")
+				}
 			}
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -129,17 +140,31 @@ func CopyFiles(parent context.Context, req FileCopyRequest) ([]FileCopyResult, e
 	if req.Source.Client == nil && req.Destination.Client == nil {
 		return copyLocal(ctx, req)
 	}
-	if sameClient(req.Source.Client, req.Destination.Client) {
-		if rel, err := filepath.Rel(req.Source.Path, req.Destination.Path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil, fmt.Errorf("destination is inside source")
+	results := make([]FileCopyResult, 0, len(req.Names))
+	var remoteSourceDirs map[string]bool
+	if sameClient(req.Source.Client, req.Destination.Client) && req.Source.Client != nil {
+		entries, err := ListFiles(ctx, req.Source)
+		if err != nil {
+			return nil, err
+		}
+		remoteSourceDirs = make(map[string]bool, len(entries))
+		for _, entry := range entries {
+			remoteSourceDirs[entry.Name] = entry.IsDir
 		}
 	}
-	results := make([]FileCopyResult, 0, len(req.Names))
 	for _, name := range req.Names {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
+		}
+		if sameClient(req.Source.Client, req.Destination.Client) {
+			candidate := filepath.Join(req.Source.Path, name)
+			if rel, e := filepath.Rel(candidate, req.Destination.Path); e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				if (remoteSourceDirs != nil && remoteSourceDirs[name]) || (remoteSourceDirs == nil && func() bool { si, se := os.Stat(candidate); return se == nil && si.IsDir() }()) {
+					return nil, fmt.Errorf("destination is inside source %q", name)
+				}
+			}
 		}
 		destName, skip, err := chooseRemoteDestination(ctx, req.Destination, name, req.Conflict)
 		if err != nil {
@@ -203,9 +228,6 @@ func copyLocal(ctx context.Context, req FileCopyRequest) ([]FileCopyResult, erro
 	if err := noSymlinkPath(req.Destination.Path); err != nil {
 		return nil, err
 	}
-	if rel, e := filepath.Rel(req.Source.Path, req.Destination.Path); e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("destination is inside source")
-	}
 	srcRoot, err := os.OpenRoot(req.Source.Path)
 	if err != nil {
 		return nil, err
@@ -222,6 +244,11 @@ func copyLocal(ctx context.Context, req FileCopyRequest) ([]FileCopyResult, erro
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
+		}
+		if rel, e := filepath.Rel(filepath.Join(req.Source.Path, n), req.Destination.Path); e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if si, se := srcRoot.Lstat(n); se == nil && si.IsDir() {
+				return nil, fmt.Errorf("destination is inside source %q", n)
+			}
 		}
 		i, err := srcRoot.Lstat(n)
 		if err != nil {
@@ -260,7 +287,7 @@ func copyLocal(ctx context.Context, req FileCopyRequest) ([]FileCopyResult, erro
 		} else if req.Conflict == "overwrite" {
 			err = os.Rename(stagePath, destPath)
 		} else {
-			err = unix.Renameat2(unix.AT_FDCWD, stagePath, unix.AT_FDCWD, destPath, unix.RENAME_NOREPLACE)
+			err = renameNoReplace(stagePath, destPath)
 		}
 		if err != nil {
 			return nil, err
@@ -299,13 +326,18 @@ func copyTreeRoot(ctx context.Context, srcRoot, dstRoot *os.Root, src, dst strin
 		if err = dstRoot.Mkdir(dst, 0700); err != nil {
 			return err
 		}
-		entries, err := f.ReadDir(-1)
-		if err != nil {
-			return err
-		}
-		for _, entry := range entries {
-			if err = copyTreeRoot(ctx, srcRoot, dstRoot, filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
-				return err
+		for {
+			entries, readErr := f.ReadDir(256)
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				return readErr
+			}
+			for _, entry := range entries {
+				if err = copyTreeRoot(ctx, srcRoot, dstRoot, filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -414,61 +446,6 @@ func chooseRemoteDestination(ctx context.Context, e FileEndpoint, n, policy stri
 	return n, false, nil
 }
 
-func copyTree(ctx context.Context, src, dst string) error {
-	i, e := os.Lstat(src)
-	if e != nil {
-		return e
-	}
-	if i.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("symlink source rejected")
-	}
-	if i.IsDir() {
-		if e = os.Mkdir(dst, 0700); e != nil {
-			return e
-		}
-		es, e := os.ReadDir(src)
-		if e != nil {
-			return e
-		}
-		for _, x := range es {
-			if e = copyTree(ctx, filepath.Join(src, x.Name()), filepath.Join(dst, x.Name())); e != nil {
-				return e
-			}
-		}
-		return nil
-	}
-	if !i.Mode().IsRegular() {
-		return fmt.Errorf("special source rejected")
-	}
-	in, e := os.Open(src)
-	if e != nil {
-		return e
-	}
-	defer in.Close()
-	out, e := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if e != nil {
-		return e
-	}
-	n, copyErr := io.Copy(out, io.LimitReader(in, exchangeLimit+1))
-	if copyErr == nil && n > exchangeLimit {
-		copyErr = fmt.Errorf("file exceeds transfer limit")
-	}
-	e = copyErr
-	ce := out.Close()
-	if e == nil {
-		e = ce
-	}
-	if e != nil {
-		os.Remove(dst)
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-	return e
-}
-
 func remoteRun(ctx context.Context, c Client, args []string, in io.Reader, consume func(io.Reader) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -484,6 +461,13 @@ func remoteRun(ctx context.Context, c Client, args []string, in io.Reader, consu
 	if err = cmd.Start(); err != nil {
 		return err
 	}
+	stop := context.AfterFunc(ctx, func() {
+		_ = stdout.Close()
+		if x, ok := in.(io.Closer); ok {
+			_ = x.Close()
+		}
+	})
+	defer stop()
 	ce := consume(stdout)
 	if ce != nil {
 		_ = stdout.Close()
@@ -603,7 +587,7 @@ func remoteToLocal(ctx context.Context, c Client, src, dst, name string, overwri
 	if overwrite {
 		return os.Rename(payload, filepath.Join(dst, name))
 	}
-	return unix.Renameat2(unix.AT_FDCWD, payload, unix.AT_FDCWD, filepath.Join(dst, name), unix.RENAME_NOREPLACE)
+	return renameNoReplace(payload, filepath.Join(dst, name))
 }
 func localToRemote(ctx context.Context, src string, c Client, dst, name string, overwrite bool) error {
 	pr, pw := io.Pipe()
@@ -627,7 +611,65 @@ func remotePipe(ctx context.Context, sc Client, src string, dc Client, dst, name
 	pr, pw := io.Pipe()
 	ch := make(chan error, 1)
 	go func() {
-		ch <- remoteRun(ctx, sc, sc.DucklionArgs("files", "read", src), nil, func(r io.Reader) error { _, e := io.Copy(pw, r); pw.CloseWithError(e); return e })
+		// Relay archive entries as they arrive, but hold the completion footer until
+		// the source SSH command has exited successfully. This prevents a source
+		// command that fails after producing a valid looking tar from committing.
+		tw := tar.NewWriter(pw)
+		footer := false
+		relayErr := remoteRun(ctx, sc, sc.DucklionArgs("files", "read", src), nil, func(r io.Reader) error {
+			tr := tar.NewReader(io.LimitReader(r, exchangeLimit+1))
+			for {
+				h, err := tr.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					return err
+				}
+				if !safeTarPath(h.Name) {
+					return fmt.Errorf("unsafe archive path")
+				}
+				if h.Name == exchangeFooter {
+					if h.Typeflag != tar.TypeReg || h.Size != 0 {
+						return fmt.Errorf("invalid completion footer")
+					}
+					footer = true
+					continue
+				}
+				if footer {
+					return fmt.Errorf("archive data after completion footer")
+				}
+				if err = tw.WriteHeader(h); err != nil {
+					return err
+				}
+				if h.Size > 0 {
+					if _, err = io.CopyN(tw, tr, h.Size); err != nil {
+						return err
+					}
+				}
+			}
+			if !footer {
+				return fmt.Errorf("incomplete transfer")
+			}
+			return nil
+		})
+		if relayErr != nil {
+			_ = pw.CloseWithError(relayErr)
+			ch <- relayErr
+			return
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}); err != nil {
+			_ = pw.CloseWithError(err)
+			ch <- err
+			return
+		}
+		if err := tw.Close(); err != nil {
+			_ = pw.CloseWithError(err)
+			ch <- err
+			return
+		}
+		_ = pw.Close()
+		ch <- nil
 	}()
 	args := dc.DucklionArgs("files", "write", dst, name)
 	if overwrite {

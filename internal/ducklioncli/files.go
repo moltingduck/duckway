@@ -5,9 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,27 +42,40 @@ func runFilesContext(ctx context.Context, args []string, in io.Reader, out io.Wr
 			return e
 		}
 		defer r.Close()
-		es, e := fs.ReadDir(r.FS(), ".")
+		dir, e := r.Open(".")
 		if e != nil {
 			return e
 		}
-		result := make([]fileCLIEntry, 0, len(es))
-		for _, x := range es {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
+		defer dir.Close()
+		result := make([]fileCLIEntry, 0)
+		for {
+			es, readErr := dir.ReadDir(256)
+			if readErr == io.EOF {
+				break
 			}
-			i, e := x.Info()
-			if e != nil {
-				return e
+			if readErr != nil {
+				return readErr
 			}
-			if x.Type()&os.ModeSymlink != 0 || !x.Type().IsRegular() && !x.IsDir() {
-				continue
+			if len(es) == 0 {
+				break
 			}
-			result = append(result, fileCLIEntry{Name: x.Name(), IsDir: x.IsDir(), Size: i.Size()})
-			if len(result) > 100000 {
-				return fmt.Errorf("directory listing exceeds entry limit")
+			for _, x := range es {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+				i, e := x.Info()
+				if e != nil {
+					return e
+				}
+				if x.Type()&os.ModeSymlink != 0 || !x.Type().IsRegular() && !x.IsDir() {
+					continue
+				}
+				result = append(result, fileCLIEntry{Name: x.Name(), IsDir: x.IsDir(), Size: i.Size()})
+				if len(result) > 100000 {
+					return fmt.Errorf("directory listing exceeds entry limit")
+				}
 			}
 		}
 		return json.NewEncoder(out).Encode(result)
@@ -258,5 +269,5 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 	if overwrite {
 		return os.Rename(payload, dest)
 	}
-	return unix.Renameat2(unix.AT_FDCWD, payload, unix.AT_FDCWD, dest, unix.RENAME_NOREPLACE)
+	return renameNoReplace(payload, dest)
 }
