@@ -116,6 +116,32 @@ func TestFilesReadWriteRegularFile(t *testing.T) {
 	}
 }
 
+func TestFilesWriteLateCollisionPreservesDestination(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "source")
+	dst := filepath.Join(root, "dst")
+	if err := os.WriteFile(src, []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dst, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	if err := runFiles([]string{"read", src}, nil, &archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "result"), []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runFiles([]string{"write", dst, "result"}, &archive, io.Discard); err == nil {
+		t.Fatal("accepted destination collision")
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "result"))
+	if err != nil || string(got) != "old" {
+		t.Fatalf("collision replaced destination with %q: %v", got, err)
+	}
+}
+
 func TestFilesWriteRejectsTraversalAndDuplicateFooter(t *testing.T) {
 	root := t.TempDir()
 	dst := filepath.Join(root, "dst")
