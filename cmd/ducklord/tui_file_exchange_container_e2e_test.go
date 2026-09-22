@@ -355,7 +355,14 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	}, func() string {
 		return "project shelf did not retain exact copied bytes: " + safeTerminalDiagnostic(capture.currentText())
 	})
-	writePTY(t, terminal, "\x1b\x02f")
+	// Project Files was opened from the Session list, so close to that same
+	// route and reopen through its list-level binding. A terminal prefix here
+	// would be delivered to the list rather than opening Project Files.
+	writePTY(t, terminal, "\x1b")
+	capture.waitCurrent(t, "Session list pane:", 10*time.Second)
+	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
+	writePTY(t, terminal, "f")
+	waitProjectFiles()
 	activePane = 0 // every new Project files modal starts on the left.
 	selectEndpoint(0, clientBEndpoint, targetB, "drop-dir")
 	selectEndpoint(1, shelfEndpoint, "", shelfFile)
