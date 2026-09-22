@@ -359,8 +359,14 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	// route and reopen through its list-level binding. A terminal prefix here
 	// would be delivered to the list rather than opening Project Files.
 	writePTY(t, terminal, "\x1b")
-	capture.waitCurrent(t, "Session list pane:", 10*time.Second)
-	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
+	waitE2E(t, 10*time.Second, func() bool {
+		screen := capture.currentText()
+		return strings.Contains(screen, "Session list pane:") &&
+			strings.Contains(screen, "Active · Enter again to focus") &&
+			!strings.Contains(screen, "Tab switch column")
+	}, func() string {
+		return "Project Files did not fully close to the Session list: " + safeTerminalDiagnostic(capture.currentText())
+	})
 	writePTY(t, terminal, "f")
 	waitProjectFiles()
 	activePane = 0 // every new Project files modal starts on the left.
