@@ -234,6 +234,57 @@ func TestWorkspacePreviewRendersLiveSelectedSessionWithoutGrantingFocus(t *testi
 	}
 }
 
+func TestWorkspacePreviewRendersProjectFilesModalForEveryLayoutMode(t *testing.T) {
+	identity := ducklord.SessionIdentity{InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", SessionID: "ABC123"}
+	for _, tc := range []struct {
+		name  string
+		setup func(*tuiState)
+	}{
+		{
+			name:  "no saved layout",
+			setup: func(*tuiState) {},
+		},
+		{
+			name: "workspace layout",
+			setup: func(s *tuiState) {
+				if err := s.activity().ProjectLayout.Discover(identity); err != nil {
+					t.Fatal(err)
+				}
+				s.sessions = []ducklord.RemoteSession{{Client: "host", InstanceID: identity.InstanceID, SessionID: identity.SessionID, Kind: "shell"}}
+			},
+		},
+		{
+			name: "detail layout",
+			setup: func(s *tuiState) {
+				if err := s.activity().ProjectLayout.Discover(identity); err != nil {
+					t.Fatal(err)
+				}
+				nav, err := s.workspaceNavigation()
+				if err != nil {
+					t.Fatal(err)
+				}
+				nav.EnterDetail()
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &tuiState{
+				activityState: ducklord.NewActivityState(),
+				projectFiles: projectFilesState{open: true, step: "browse",
+					left:  projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: "/"}, marked: map[string]bool{}},
+					right: projectFilesPane{label: "host", endpoint: ducklord.FileEndpoint{Path: "/"}, marked: map[string]bool{}},
+				},
+			}
+			tc.setup(state)
+			var out bytes.Buffer
+			state.renderWorkspacePreviewAt(&out, 120, 20)
+			if !strings.Contains(out.String(), "Tab switch column") {
+				t.Fatalf("project files modal footer missing from %s render: %q", tc.name, out.String())
+			}
+		})
+	}
+}
+
 func TestWorkspaceReadOnlyHintMatchesOfflineAndOwnerPreflight(t *testing.T) {
 	state := &tuiState{ownerName: "local", disconnectedHosts: map[string]bool{}}
 	shell := ducklord.RemoteSession{Client: "host", Name: "shell", Status: "running", Kind: "shell", RuntimeGeneration: 1}

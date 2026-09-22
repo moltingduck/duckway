@@ -166,13 +166,10 @@ func (s *tuiState) projectFilesPane() *projectFilesPane {
 	return &s.projectFiles.right
 }
 func (s *tuiState) visibleProjectEntries(p *projectFilesPane) []ducklord.FileEntry {
-	if p.query == "" {
-		return p.entries
-	}
-	out := make([]ducklord.FileEntry, 0)
+	out := make([]ducklord.FileEntry, 0, len(p.entries))
 	q := strings.ToLower(p.query)
 	for _, e := range p.entries {
-		if strings.Contains(strings.ToLower(e.Name), q) {
+		if !e.NonTransferable && (q == "" || strings.Contains(strings.ToLower(e.Name), q)) {
 			out = append(out, e)
 		}
 	}

@@ -34,6 +34,25 @@ func TestProjectFilesInputSelectionAndConflictPreview(t *testing.T) {
 	}
 }
 
+func TestProjectFilesHidesNonTransferableEntriesFromBrowser(t *testing.T) {
+	s := &tuiState{}
+	s.projectFiles = projectFilesState{open: true, step: "browse", left: projectFilesPane{
+		entries: []ducklord.FileEntry{{Name: "regular.txt"}, {Name: "socket", NonTransferable: true}},
+		marked:  map[string]bool{},
+	}}
+	visible := s.visibleProjectEntries(&s.projectFiles.left)
+	if len(visible) != 1 || visible[0].Name != "regular.txt" {
+		t.Fatalf("visible entries = %#v, want only transferable entry", visible)
+	}
+	if len(s.projectFiles.left.entries) != 2 {
+		t.Fatal("browser filtering discarded the raw listing needed for backend conflict checks")
+	}
+	s.handleProjectFilesInput([]byte(" "))
+	if !s.projectFiles.left.marked["regular.txt"] || s.projectFiles.left.marked["socket"] {
+		t.Fatalf("selection included a nontransferable entry: %#v", s.projectFiles.left.marked)
+	}
+}
+
 func TestProjectFilesCloseCancelsAndRestoresOrigin(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &tuiState{focused: true, activeAttachKey: "session-key", workspaceProjectFocus: false}

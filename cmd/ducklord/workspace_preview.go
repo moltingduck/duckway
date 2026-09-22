@@ -492,6 +492,12 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	if width < 1 || height < 4 {
 		return
 	}
+	defer func() {
+		if s.projectFiles.open {
+			fmt.Fprint(out, "\033[?25l")
+		}
+		s.renderProjectFilesModal(out, width, height)
+	}()
 	fmt.Fprint(out, "\033[?25l\033[H\033[2J")
 	fmt.Fprintln(out, truncate("ducklord workspace  owner:"+displayField(s.ownerName)+s.hostSyncLabel(), width))
 	direction := "newest"
