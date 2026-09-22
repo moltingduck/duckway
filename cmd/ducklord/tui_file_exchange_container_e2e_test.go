@@ -151,17 +151,50 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 		capture.waitCurrent(t, name, 10*time.Second)
 		writePTY(t, terminal, " ")
 	}
+	hasCopyResult := func(screen string) bool {
+		for _, line := range strings.Split(screen, "\n") {
+			start := strings.Index(line, "Copied ")
+			if start < 0 {
+				continue
+			}
+			var copied, skipped int
+			if _, err := fmt.Sscanf(line[start:], "Copied %d, skipped %d", &copied, &skipped); err == nil {
+				return true
+			}
+		}
+		return false
+	}
 	copyPreview := func(policy string) {
 		t.Helper()
-		start := capture.position()
 		writePTY(t, terminal, "c")
-		capture.waitAfter(t, start, "Copy preview", 10*time.Second)
+		// The terminal renderer emits deltas, so a raw-output search can miss a
+		// frame that remains visible. The preview deliberately does not render
+		// the prior browse status; waiting for its complete screen also makes a
+		// stale successful-copy status unable to satisfy the next operation.
+		waitE2E(t, 10*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, "Copy preview") && !strings.Contains(screen, "Copied ")
+		}, func() string {
+			return "copy preview did not open: " + safeTerminalDiagnostic(capture.currentText())
+		})
 		if policy != "" {
 			writePTY(t, terminal, policy)
 		}
-		start = capture.position()
 		writePTY(t, terminal, "\r")
-		capture.waitAfter(t, start, "Copied", 20*time.Second)
+		waitE2E(t, 20*time.Second, func() bool {
+			screen := capture.currentText()
+			// Completion must be the current browse view. In particular, a
+			// historical "Copied" delta cannot pass while the preview is open,
+			// while the operation is still running, or after the modal has closed.
+			// A partial result is an E2E failure even if some files copied.
+			return strings.Contains(screen, "Tab switch column") &&
+				!strings.Contains(screen, "Copy preview") &&
+				!strings.Contains(screen, "Copying") &&
+				hasCopyResult(screen) &&
+				!strings.Contains(screen, "; partial:")
+		}, func() string {
+			return "copy preview did not complete successfully: " + safeTerminalDiagnostic(capture.currentText())
+		})
 	}
 	waitProjectFiles := func() {
 		t.Helper()
