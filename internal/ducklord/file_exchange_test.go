@@ -544,3 +544,62 @@ func TestChooseLocalDestinationRenameHonorsCancellation(t *testing.T) {
 		t.Fatalf("rename cancellation: %v", err)
 	}
 }
+
+func TestRemotePipeRelaysDirectoryArchive(t *testing.T) {
+	root := t.TempDir()
+	archive := filepath.Join(root, "source.tar")
+	received := filepath.Join(root, "received.tar")
+	var b bytes.Buffer
+	tw := tar.NewWriter(&b)
+	if err := tw.WriteHeader(&tar.Header{Name: exchangePayloadRoot, Typeflag: tar.TypeDir, Size: 4096}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: exchangePayloadRoot + "/nested.txt", Typeflag: tar.TypeReg, Size: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("nested\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archive, b.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ssh := filepath.Join(root, "ssh")
+	script := "#!/bin/sh\ncase \"$*\" in\n  *source*) cat \"$EXCHANGE_ARCHIVE\" ;;\n  *) cat > \"$EXCHANGE_RECEIVED\" ;;\nesac\n"
+	if err := os.WriteFile(ssh, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EXCHANGE_ARCHIVE", archive)
+	t.Setenv("EXCHANGE_RECEIVED", received)
+	source := Client{Name: "source", Host: "source", SSH: ssh, Ducklion: "source"}
+	destination := Client{Name: "destination", Host: "destination", SSH: ssh, Ducklion: "destination"}
+	if err := remotePipe(context.Background(), source, "/source/item", destination, "/destination", "item", false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(received)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := t.TempDir()
+	dstRoot, err := os.OpenRoot(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstRoot.Close()
+	stage, err := makeExchangeStage(dstRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstRoot.RemoveAll(stage)
+	if err := extractTarRoot(bytes.NewReader(got), dstRoot, stage, exchangePayloadRoot); err != nil {
+		t.Fatal(err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(dst, stage, exchangePayloadRoot, "nested.txt")); err != nil || string(contents) != "nested\n" {
+		t.Fatalf("relayed directory payload = %q, %v", contents, err)
+	}
+}

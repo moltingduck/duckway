@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -616,9 +617,11 @@ func tarRoot(ctx context.Context, root *os.Root, source, name string, tw *tar.Wr
 	if i.Mode()&os.ModeSymlink != 0 || (!i.Mode().IsRegular() && !i.IsDir()) {
 		return fmt.Errorf("unsupported source %q", source)
 	}
-	h := &tar.Header{Name: name, Mode: int64(i.Mode().Perm()), Size: i.Size(), ModTime: time.Unix(0, 0)}
+	h := &tar.Header{Name: name, Mode: int64(i.Mode().Perm()), ModTime: time.Unix(0, 0)}
 	if i.IsDir() {
 		h.Typeflag = tar.TypeDir
+	} else {
+		h.Size = i.Size()
 	}
 	if err = tw.WriteHeader(h); err != nil {
 		return err
@@ -796,7 +799,7 @@ func remotePipe(ctx context.Context, sc Client, src string, dc Client, dst, name
 				if err = tw.WriteHeader(h); err != nil {
 					return err
 				}
-				if h.Size > 0 {
+				if h.Typeflag == tar.TypeReg && h.Size > 0 {
 					var n int64
 					if n, err = io.CopyN(tw, tr, h.Size); err != nil {
 						return err
@@ -833,9 +836,11 @@ func remotePipe(ctx context.Context, sc Client, src string, dc Client, dst, name
 	}
 	e := remoteRun(ctx, dc, args, pr, func(r io.Reader) error { _, err := io.Copy(io.Discard, r); return err })
 	if e != nil {
-		pr.CloseWithError(e)
+		_ = pr.CloseWithError(e)
 		cancel()
-		<-ch
+		if relayErr := <-ch; relayErr != nil && !errors.Is(relayErr, context.Canceled) {
+			return relayErr
+		}
 		return e
 	}
 	return <-ch

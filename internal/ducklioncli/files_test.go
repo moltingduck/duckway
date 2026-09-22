@@ -329,3 +329,26 @@ func TestFilesListReportsSymlinkAsNonTransferableOccupant(t *testing.T) {
 	}
 	t.Fatal("symlink omitted from occupied entries")
 }
+
+func TestFilesReadDirectoryWritesZeroSizedDirectoryHeader(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "source")
+	if err := os.MkdirAll(filepath.Join(src, "child"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "child", "nested.txt"), []byte("nested\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	if err := runFiles([]string{"read", src}, nil, &archive); err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(bytes.NewReader(archive.Bytes()))
+	h, err := tr.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Name != exchangePayloadRoot || h.Typeflag != tar.TypeDir || h.Size != 0 {
+		t.Fatalf("root header = name %q type %q size %d", h.Name, h.Typeflag, h.Size)
+	}
+}

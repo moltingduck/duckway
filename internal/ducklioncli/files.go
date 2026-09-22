@@ -138,9 +138,11 @@ func writeTarRoot(ctx context.Context, root *os.Root, source, name string, tw *t
 	if i.Mode()&os.ModeSymlink != 0 || (!i.Mode().IsRegular() && !i.IsDir()) {
 		return fmt.Errorf("unsupported file %q", source)
 	}
-	h := &tar.Header{Name: name, Mode: int64(i.Mode().Perm()), Size: i.Size()}
+	h := &tar.Header{Name: name, Mode: int64(i.Mode().Perm())}
 	if i.IsDir() {
 		h.Typeflag = tar.TypeDir
+	} else {
+		h.Size = i.Size()
 	}
 	if err = tw.WriteHeader(h); err != nil {
 		return err
@@ -288,8 +290,11 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 			return e
 		}
 	}
-	if !rootSeen || !complete {
+	if !rootSeen {
 		return fmt.Errorf("empty archive")
+	}
+	if !complete {
+		return fmt.Errorf("incomplete transfer")
 	}
 	select {
 	case <-ctx.Done():
