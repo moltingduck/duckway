@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -249,5 +251,242 @@ func TestRemotePipeCancellationJoinsBlockedSource(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("canceled transfer did not join source and destination")
+	}
+}
+
+func TestExtractTarRootRejectsArchiveResourceLimits(t *testing.T) {
+	archive := func(flag byte, count int) []byte {
+		var b bytes.Buffer
+		tw := tar.NewWriter(&b)
+		if err := tw.WriteHeader(&tar.Header{Name: exchangePayloadRoot, Typeflag: tar.TypeDir}); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < count; i++ {
+			if err := tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("%s/e%05d", exchangePayloadRoot, i), Typeflag: flag}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+	for _, flag := range []byte{tar.TypeReg, tar.TypeDir} {
+		t.Run(fmt.Sprintf("type-%d", flag), func(t *testing.T) {
+			dst := t.TempDir()
+			dstRoot, err := os.OpenRoot(dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer dstRoot.Close()
+			stage, err := makeExchangeStage(dstRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := extractTarRoot(bytes.NewReader(archive(flag, exchangeMaxEntries)), dstRoot, stage, exchangePayloadRoot); err == nil {
+				t.Fatal("accepted archive with too many zero-size entries")
+			}
+			if err := dstRoot.RemoveAll(stage); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := dstRoot.Lstat(stage); !os.IsNotExist(err) {
+				t.Fatalf("staging directory remains: %v", err)
+			}
+		})
+	}
+}
+
+func TestTarOneAndExtractTarRootRejectArchivePathDepth(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "source")
+	if err := os.Mkdir(src, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < exchangeMaxPathComponents; i++ {
+		src = filepath.Join(src, "d")
+		if err := os.Mkdir(src, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarOne(context.Background(), filepath.Join(root, "source"), "ignored", io.Discard); err == nil {
+		t.Fatal("produced archive with excessive path depth")
+	}
+
+	var archive bytes.Buffer
+	tw := tar.NewWriter(&archive)
+	if err := tw.WriteHeader(&tar.Header{Name: exchangePayloadRoot, Typeflag: tar.TypeDir}); err != nil {
+		t.Fatal(err)
+	}
+	name := exchangePayloadRoot
+	for i := 0; i < exchangeMaxPathComponents; i++ {
+		name += "/d"
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeDir}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dst := t.TempDir()
+	dstRoot, err := os.OpenRoot(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstRoot.Close()
+	stage, err := makeExchangeStage(dstRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstRoot.RemoveAll(stage)
+	if err := extractTarRoot(bytes.NewReader(archive.Bytes()), dstRoot, stage, exchangePayloadRoot); err == nil {
+		t.Fatal("accepted archive with excessive path depth")
+	}
+	if _, err := dstRoot.Lstat(filepath.Join(stage, name)); !os.IsNotExist(err) {
+		t.Fatalf("created excessive path: %v", err)
+	}
+}
+
+func TestLocalToRemoteCancellationJoinsTarProducer(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "source")
+	if err := os.WriteFile(src, bytes.Repeat([]byte("x"), 2<<20), 0600); err != nil {
+		t.Fatal(err)
+	}
+	started := filepath.Join(root, "started")
+	ssh := filepath.Join(root, "ssh")
+	if err := os.WriteFile(ssh, []byte("#!/bin/sh\ntouch \"$EXCHANGE_STARTED\"\nexec sleep 30\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EXCHANGE_STARTED", started)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- localToRemote(ctx, src, Client{Name: "remote", Host: "remote", SSH: ssh, Ducklion: "ducklion"}, root, "result", false)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("remote command did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "canceled") {
+			t.Fatalf("cancellation result: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("local-to-remote transfer did not join tar producer")
+	}
+	if _, err := os.Lstat(filepath.Join(root, "result")); !os.IsNotExist(err) {
+		t.Fatalf("canceled transfer committed destination: %v", err)
+	}
+}
+
+func TestCopyLocalOverwriteRejectsDestinationTypeMismatch(t *testing.T) {
+	root := t.TempDir()
+	src, dst := filepath.Join(root, "src"), filepath.Join(root, "dst")
+	if err := os.MkdirAll(filepath.Join(src, "dir"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dst, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "dir", "new"), []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "dir"), []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CopyFiles(context.Background(), FileCopyRequest{Source: FileEndpoint{Path: src}, Destination: FileEndpoint{Path: dst}, Names: []string{"dir"}, Conflict: "overwrite"}); err == nil {
+		t.Fatal("accepted directory overwrite of regular destination")
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "dir"))
+	if err != nil || string(got) != "old" {
+		t.Fatalf("destination changed: %q %v", got, err)
+	}
+}
+
+func TestCopyLocalPreservesOwnerExecutableBit(t *testing.T) {
+	root := t.TempDir()
+	src, dst := filepath.Join(root, "src"), filepath.Join(root, "dst")
+	if err := os.Mkdir(src, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dst, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "run"), []byte("#!/bin/sh\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(src, "run"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CopyFiles(context.Background(), FileCopyRequest{Source: FileEndpoint{Path: src}, Destination: FileEndpoint{Path: dst}, Names: []string{"run"}}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dst, "run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0700 {
+		t.Fatalf("mode %o, want 0700", info.Mode().Perm())
+	}
+}
+
+func TestRemoteToLocalOverwriteRejectsDestinationTypeMismatch(t *testing.T) {
+	root := t.TempDir()
+	archivePath := filepath.Join(root, "source.tar")
+	var archive bytes.Buffer
+	tw := tar.NewWriter(&archive)
+	if err := tw.WriteHeader(&tar.Header{Name: exchangePayloadRoot, Typeflag: tar.TypeDir, Mode: 0700}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: exchangePayloadRoot + "/new", Typeflag: tar.TypeReg, Size: 3, Mode: 0600}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archivePath, archive.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(root, "dst")
+	if err := os.Mkdir(dst, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "result"), []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ssh := filepath.Join(root, "ssh")
+	if err := os.WriteFile(ssh, []byte("#!/bin/sh\ncat \"$EXCHANGE_ARCHIVE\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EXCHANGE_ARCHIVE", archivePath)
+	client := Client{Name: "source", Host: "source", SSH: ssh, Ducklion: "ducklion"}
+	if err := remoteToLocal(context.Background(), client, "/source", dst, "result", true); err == nil {
+		t.Fatal("accepted directory overwrite of regular destination")
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "result"))
+	if err != nil || string(got) != "old" {
+		t.Fatalf("destination changed: %q %v", got, err)
 	}
 }

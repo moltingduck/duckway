@@ -22,6 +22,8 @@ type fileCLIEntry struct {
 
 const exchangePayloadRoot = "__duckway_payload"
 const exchangeFooter = "__duckway_complete__"
+const exchangeMaxEntries = 10000
+const exchangeMaxPathComponents = 64
 
 func runFiles(args []string, in io.Reader, out io.Writer) error {
 	return runFilesContext(context.Background(), args, in, out)
@@ -107,8 +109,12 @@ func writeTar(ctx context.Context, src string, out io.Writer) error {
 	defer root.Close()
 	tw := tar.NewWriter(out)
 	bytes := int64(0)
-	err = writeTarRoot(ctx, root, filepath.Base(src), exchangePayloadRoot, tw, &bytes)
+	entries := 0
+	err = writeTarRoot(ctx, root, filepath.Base(src), exchangePayloadRoot, tw, &bytes, &entries)
 	if err != nil {
+		return err
+	}
+	if err = checkArchiveEntry(&entries, exchangeFooter); err != nil {
 		return err
 	}
 	if err = tw.WriteHeader(&tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}); err != nil {
@@ -117,11 +123,14 @@ func writeTar(ctx context.Context, src string, out io.Writer) error {
 	return tw.Close()
 }
 
-func writeTarRoot(ctx context.Context, root *os.Root, source, name string, tw *tar.Writer, bytes *int64) error {
+func writeTarRoot(ctx context.Context, root *os.Root, source, name string, tw *tar.Writer, bytes *int64, entries *int) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+	if err := checkArchiveEntry(entries, name); err != nil {
+		return err
 	}
 	i, err := root.Lstat(source)
 	if err != nil {
@@ -142,6 +151,8 @@ func writeTarRoot(ctx context.Context, root *os.Root, source, name string, tw *t
 		return err
 	}
 	defer f.Close()
+	stop := context.AfterFunc(ctx, func() { _ = f.Close() })
+	defer stop()
 	actual, err := f.Stat()
 	if err != nil {
 		return err
@@ -159,7 +170,7 @@ func writeTarRoot(ctx context.Context, root *os.Root, source, name string, tw *t
 				return e
 			}
 			for _, entry := range es {
-				if e := writeTarRoot(ctx, root, filepath.Join(source, entry.Name()), filepath.ToSlash(filepath.Join(name, entry.Name())), tw, bytes); e != nil {
+				if e := writeTarRoot(ctx, root, filepath.Join(source, entry.Name()), filepath.ToSlash(filepath.Join(name, entry.Name())), tw, bytes, entries); e != nil {
 					return e
 				}
 			}
@@ -167,6 +178,9 @@ func writeTarRoot(ctx context.Context, root *os.Root, source, name string, tw *t
 		return nil
 	}
 	n, err := io.Copy(tw, io.LimitReader(f, 1<<30+1))
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	}
 	if err == nil && (n > 1<<30 || *bytes > 1<<30-n) {
 		err = fmt.Errorf("file exceeds transfer limit")
 	}
@@ -194,6 +208,7 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 	rootSeen := false
 	complete := false
 	bytes := int64(0)
+	entries := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -208,6 +223,9 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 			break
 		}
 		if e != nil {
+			return e
+		}
+		if e = checkArchiveEntry(&entries, h.Name); e != nil {
 			return e
 		}
 		if h.Name == exchangeFooter {
@@ -249,7 +267,7 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 		if e = stageRoot.MkdirAll(filepath.Dir(target), 0700); e != nil {
 			return e
 		}
-		f, e := stageRoot.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		f, e := stageRoot.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600|os.FileMode(h.Mode)&0100)
 		if e != nil {
 			return e
 		}
@@ -279,7 +297,15 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 		return ctx.Err()
 	default:
 	}
+	payload := filepath.Join(stage, exchangePayloadRoot)
+	payloadInfo, err := dstRoot.Lstat(payload)
+	if err != nil {
+		return err
+	}
 	if old, err := dstRoot.Lstat(name); err == nil {
+		if overwrite && old.IsDir() != payloadInfo.IsDir() {
+			return fmt.Errorf("refusing overwrite of different destination type")
+		}
 		if !overwrite {
 			return fmt.Errorf("destination already exists")
 		}
@@ -292,7 +318,6 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	payload := filepath.Join(stage, exchangePayloadRoot)
 	if !overwrite {
 		if i, err := dstRoot.Lstat(payload); err == nil && !i.IsDir() {
 			if err = dstRoot.Link(payload, name); err != nil {
@@ -310,6 +335,17 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 	}
 	defer dir.Close()
 	return renameNoReplaceAt(dir, payload, name)
+}
+
+func checkArchiveEntry(entries *int, name string) error {
+	if *entries >= exchangeMaxEntries {
+		return fmt.Errorf("archive exceeds entry limit")
+	}
+	if len(strings.Split(filepath.ToSlash(name), "/")) > exchangeMaxPathComponents {
+		return fmt.Errorf("archive path exceeds component limit")
+	}
+	*entries++
+	return nil
 }
 
 func makeStage(root *os.Root) (string, error) {

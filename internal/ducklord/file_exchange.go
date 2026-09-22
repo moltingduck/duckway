@@ -40,6 +40,8 @@ type FileCopyResult struct {
 }
 
 const exchangeLimit = int64(1 << 30)
+const exchangeMaxEntries = 10000
+const exchangeMaxPathComponents = 64
 const exchangeTimeout = 30 * time.Minute
 const exchangePayloadRoot = "__duckway_payload"
 const exchangeFooter = "__duckway_complete__"
@@ -263,6 +265,13 @@ func copyLocal(ctx context.Context, req FileCopyRequest) ([]FileCopyResult, erro
 		if err != nil {
 			return res, err
 		}
+		if req.Conflict == "overwrite" {
+			if old, e := dstRoot.Lstat(dn); e == nil && old.IsDir() != i.IsDir() {
+				return res, fmt.Errorf("refusing overwrite of different destination type")
+			} else if e != nil && !os.IsNotExist(e) {
+				return res, e
+			}
+		}
 		if skip {
 			res = append(res, FileCopyResult{Name: n, Destination: filepath.Join(req.Destination.Path, n), Skipped: true})
 			continue
@@ -339,6 +348,8 @@ func copyTreeRoot(ctx context.Context, srcRoot, dstRoot *os.Root, src, dst strin
 		return err
 	}
 	defer f.Close()
+	stop := context.AfterFunc(ctx, func() { _ = f.Close() })
+	defer stop()
 	info, err := f.Stat()
 	if err != nil {
 		return err
@@ -366,11 +377,14 @@ func copyTreeRoot(ctx context.Context, srcRoot, dstRoot *os.Root, src, dst strin
 		}
 		return nil
 	}
-	out, err := dstRoot.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	out, err := dstRoot.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600|info.Mode().Perm()&0100)
 	if err != nil {
 		return err
 	}
 	n, err := io.Copy(out, io.LimitReader(f, exchangeLimit+1))
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	}
 	if err == nil && (n > exchangeLimit || *bytes > exchangeLimit-n) {
 		err = fmt.Errorf("file exceeds transfer limit")
 	}
@@ -510,6 +524,9 @@ func remoteRun(ctx context.Context, c Client, args []string, in io.Reader, consu
 	}
 	we := cmd.Wait()
 	if ce != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return ce
 	}
 	if we != nil {
@@ -539,7 +556,7 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 }
 func (b *limitedBuffer) String() string { return b.b.String() }
 
-func tarOne(src, name string, w io.Writer) error {
+func tarOne(ctx context.Context, src, name string, w io.Writer) error {
 	base := filepath.Dir(src)
 	root, err := os.OpenRoot(base)
 	if err != nil {
@@ -548,8 +565,12 @@ func tarOne(src, name string, w io.Writer) error {
 	defer root.Close()
 	tw := tar.NewWriter(w)
 	bytes := int64(0)
-	err = tarRoot(root, filepath.Base(src), exchangePayloadRoot, tw, &bytes)
+	entries := 0
+	err = tarRoot(ctx, root, filepath.Base(src), exchangePayloadRoot, tw, &bytes, &entries)
 	if err != nil {
+		return err
+	}
+	if err = checkArchiveEntry(&entries, exchangeFooter); err != nil {
 		return err
 	}
 	if err = tw.WriteHeader(&tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}); err != nil {
@@ -558,7 +579,15 @@ func tarOne(src, name string, w io.Writer) error {
 	return tw.Close()
 }
 
-func tarRoot(root *os.Root, source, name string, tw *tar.Writer, bytes *int64) error {
+func tarRoot(ctx context.Context, root *os.Root, source, name string, tw *tar.Writer, bytes *int64, entries *int) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if err := checkArchiveEntry(entries, name); err != nil {
+		return err
+	}
 	i, err := root.Lstat(source)
 	if err != nil {
 		return err
@@ -578,6 +607,8 @@ func tarRoot(root *os.Root, source, name string, tw *tar.Writer, bytes *int64) e
 		return err
 	}
 	defer f.Close()
+	stop := context.AfterFunc(ctx, func() { _ = f.Close() })
+	defer stop()
 	actual, err := f.Stat()
 	if err != nil {
 		return err
@@ -595,7 +626,7 @@ func tarRoot(root *os.Root, source, name string, tw *tar.Writer, bytes *int64) e
 				return e
 			}
 			for _, entry := range es {
-				if e := tarRoot(root, filepath.Join(source, entry.Name()), filepath.ToSlash(filepath.Join(name, entry.Name())), tw, bytes); e != nil {
+				if e := tarRoot(ctx, root, filepath.Join(source, entry.Name()), filepath.ToSlash(filepath.Join(name, entry.Name())), tw, bytes, entries); e != nil {
 					return e
 				}
 			}
@@ -603,6 +634,9 @@ func tarRoot(root *os.Root, source, name string, tw *tar.Writer, bytes *int64) e
 		return nil
 	}
 	n, err := io.Copy(tw, io.LimitReader(f, exchangeLimit+1))
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	}
 	if err == nil && (n > exchangeLimit || *bytes > exchangeLimit-n) {
 		err = fmt.Errorf("file exceeds transfer limit")
 	}
@@ -629,7 +663,14 @@ func remoteToLocal(ctx context.Context, c Client, src, dst, name string, overwri
 	default:
 	}
 	payload := filepath.Join(stage, exchangePayloadRoot)
+	payloadInfo, err := dstRoot.Lstat(payload)
+	if err != nil {
+		return err
+	}
 	if old, err := dstRoot.Lstat(name); err == nil {
+		if overwrite && old.IsDir() != payloadInfo.IsDir() {
+			return fmt.Errorf("refusing overwrite of different destination type")
+		}
 		if !overwrite {
 			return fmt.Errorf("destination already exists")
 		}
@@ -661,15 +702,18 @@ func remoteToLocal(ctx context.Context, c Client, src, dst, name string, overwri
 	return renameNoReplaceAt(dir, payload, name)
 }
 func localToRemote(ctx context.Context, src string, c Client, dst, name string, overwrite bool) error {
+	pipeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	pr, pw := io.Pipe()
 	errc := make(chan error, 1)
-	go func() { err := tarOne(src, filepath.Base(src), pw); pw.CloseWithError(err); errc <- err }()
+	go func() { err := tarOne(pipeCtx, src, filepath.Base(src), pw); _ = pw.CloseWithError(err); errc <- err }()
 	args := c.DucklionArgs("files", "write", dst, name)
 	if overwrite {
 		args = append(args, "--overwrite")
 	}
 	e := remoteRun(ctx, c, args, pr, func(r io.Reader) error { _, err := io.Copy(io.Discard, r); return err })
 	if e != nil {
+		cancel()
 		_ = pr.CloseWithError(e)
 		<-errc
 		return e
@@ -688,6 +732,7 @@ func remotePipe(ctx context.Context, sc Client, src string, dc Client, dst, name
 		tw := tar.NewWriter(pw)
 		footer := false
 		bytes := int64(0)
+		entries := 0
 		relayErr := remoteRun(ctx, sc, sc.DucklionArgs("files", "read", src), nil, func(r io.Reader) error {
 			br := bufio.NewReader(r)
 			tr := tar.NewReader(br)
@@ -704,6 +749,9 @@ func remotePipe(ctx context.Context, sc Client, src string, dc Client, dst, name
 				}
 				if !safeTarPath(h.Name) {
 					return fmt.Errorf("unsafe archive path")
+				}
+				if err := checkArchiveEntry(&entries, h.Name); err != nil {
+					return err
 				}
 				if h.Name == exchangeFooter {
 					if h.Typeflag != tar.TypeReg || h.Size != 0 {
@@ -782,6 +830,7 @@ func extractTarRoot(r io.Reader, dstRoot *os.Root, stage, expectedRoot string) e
 	root := ""
 	complete := false
 	bytes := int64(0)
+	entries := 0
 	for {
 		h, e := tr.Next()
 		if e == io.EOF {
@@ -798,6 +847,9 @@ func extractTarRoot(r io.Reader, dstRoot *os.Root, stage, expectedRoot string) e
 		}
 		if !safeTarPath(h.Name) {
 			return fmt.Errorf("unsafe archive path")
+		}
+		if err := checkArchiveEntry(&entries, h.Name); err != nil {
+			return err
 		}
 		if h.Name == exchangeFooter {
 			if h.Typeflag != tar.TypeReg || h.Size != 0 {
@@ -835,7 +887,7 @@ func extractTarRoot(r io.Reader, dstRoot *os.Root, stage, expectedRoot string) e
 		if h.Size < 0 || h.Size > exchangeLimit || bytes > exchangeLimit-h.Size {
 			return fmt.Errorf("archive exceeds size limit")
 		}
-		f, e := stageRoot.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		f, e := stageRoot.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600|os.FileMode(h.Mode)&0100)
 		if e != nil {
 			return e
 		}
@@ -860,6 +912,17 @@ func extractTarRoot(r io.Reader, dstRoot *os.Root, stage, expectedRoot string) e
 	}
 	return nil
 }
+func checkArchiveEntry(entries *int, name string) error {
+	if *entries >= exchangeMaxEntries {
+		return fmt.Errorf("archive exceeds entry limit")
+	}
+	if len(strings.Split(filepath.ToSlash(name), "/")) > exchangeMaxPathComponents {
+		return fmt.Errorf("archive path exceeds component limit")
+	}
+	*entries++
+	return nil
+}
+
 func safeTarPath(n string) bool {
 	clean := filepath.Clean(n)
 	return n != "" && n != "." && n != ".." && !filepath.IsAbs(n) && clean == n && !strings.HasPrefix(clean, ".."+string(filepath.Separator)) && !strings.Contains(n, "\\")
