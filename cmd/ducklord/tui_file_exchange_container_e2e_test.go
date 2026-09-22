@@ -136,20 +136,82 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 			activePane = want
 		}
 	}
+	paneBounds := func(side int) (int, int) {
+		if side == 0 {
+			return 0, 75
+		}
+		return 75, 151
+	}
+	paneContains := func(side int, value string) bool {
+		minX, maxX := paneBounds(side)
+		_, _, found := projectFilesScreenPoint(capture, value, minX, maxX)
+		return found
+	}
+	paneStatusContains := func(side int, label, value string) bool {
+		minX, maxX := paneBounds(side)
+		_, labelRow, found := projectFilesScreenPoint(capture, label, minX, maxX)
+		if !found {
+			return false
+		}
+		lines := strings.Split(capture.currentText(), "\n")
+		statusRow := labelRow + 1 // label, path, then the per-pane status row.
+		if statusRow >= len(lines) {
+			return false
+		}
+		_, _, found = workspaceScreenPoint(lines[statusRow], value, minX, maxX)
+		return found
+	}
+	endpointLabel := func(endpoint int) string {
+		switch {
+		case endpoint == 0:
+			return "LOCAL"
+		case endpoint <= len(endpointConfig.Hosts):
+			return endpointConfig.Hosts[endpoint-1].Name
+		default:
+			return "PROJECT SHELF"
+		}
+	}
 	selectEndpoint := func(active int, endpoint int, path string, listed string) {
 		t.Helper()
 		activatePane(active)
-		writePTY(t, terminal, "h"+strings.Repeat("j", endpoint)+"\r")
+		writePTY(t, terminal, "h")
+		capture.waitCurrent(t, "Endpoint picker", 10*time.Second)
+		writePTY(t, terminal, strings.Repeat("j", endpoint)+"\r")
 		if path != "" {
-			writePTY(t, terminal, "g"+strings.Repeat("\b", 256)+path+"\r")
+			writePTY(t, terminal, "g")
+			capture.waitCurrent(t, "Path:", 10*time.Second)
+			writePTY(t, terminal, strings.Repeat("\b", 256)+path+"\r")
 		}
-		capture.waitCurrent(t, listed, 15*time.Second)
+		waitE2E(t, 15*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, "Tab switch column") &&
+				paneContains(active, endpointLabel(endpoint)) &&
+				(path == "" || paneContains(active, path)) &&
+				!paneStatusContains(active, endpointLabel(endpoint), "Loading…") &&
+				(listed == "" || paneContains(active, listed))
+		}, func() string {
+			return "endpoint pane did not finish loading the requested entry: " + safeTerminalDiagnostic(capture.currentText())
+		})
 	}
 	selectOnly := func(name string) {
 		t.Helper()
-		writePTY(t, terminal, "/"+name+"\r")
-		capture.waitCurrent(t, name, 10*time.Second)
+		writePTY(t, terminal, "/")
+		capture.waitCurrent(t, "Filter:", 10*time.Second)
+		writePTY(t, terminal, name+"\r")
+		waitE2E(t, 10*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, "Tab switch column") &&
+				!strings.Contains(screen, "Filter:") &&
+				paneContains(activePane, name)
+		}, func() string {
+			return "filter did not resolve the requested source entry: " + safeTerminalDiagnostic(capture.currentText())
+		})
 		writePTY(t, terminal, " ")
+		waitE2E(t, 10*time.Second, func() bool {
+			return paneContains(activePane, "[x] "+name)
+		}, func() string {
+			return "source entry was not selected in its active pane: " + safeTerminalDiagnostic(capture.currentText())
+		})
 	}
 	hasCopyResult := func(screen string) bool {
 		for _, line := range strings.Split(screen, "\n") {
@@ -379,7 +441,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	// The per-project shelf survives closing and reopening the modal.
 	selectEndpoint(0, clientAEndpoint, sourceA, shelfFile)
 	selectOnly(shelfFile)
-	selectEndpoint(1, shelfEndpoint, "", "PROJECT SHELF")
+	selectEndpoint(1, shelfEndpoint, "", "")
 	activatePane(0)
 	copyPreview("")
 	waitE2E(t, 20*time.Second, func() bool {
