@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,7 +120,7 @@ func TestProjectFilesCtrlCCancelsCopyAndFencesCompletion(t *testing.T) {
 		t.Fatalf("cancel must wait for backend acknowledgement: %#v", s.projectFiles)
 	}
 	s.applyProjectFilesEvent(projectFilesEvent{generation: 9, copy: true})
-	if s.projectFiles.step != "browse" || s.projectFiles.status != "Cancelled" {
+	if s.projectFiles.step != "browse" || s.projectFiles.status != "Cancelled: copied 0, skipped 0" {
 		t.Fatalf("cancellation acknowledgement state = %#v", s.projectFiles)
 	}
 }
@@ -190,5 +192,82 @@ func TestProjectFilesEditorsAcceptSpacesAndCtrlCCancels(t *testing.T) {
 	s.handleProjectFilesInput([]byte("\x03"))
 	if s.projectFiles.open {
 		t.Fatal("Ctrl+C in editor did not close modal")
+	}
+}
+
+func TestProjectFilesPreviewClearsDragDestinationAndShowsIt(t *testing.T) {
+	s := &tuiState{}
+	s.projectFiles = projectFilesState{open: true, step: "preview", copySource: 0, hasPendingDestination: true,
+		pendingDestination: ducklord.FileEndpoint{Path: "/target/child"},
+		left:               projectFilesPane{endpoint: ducklord.FileEndpoint{Path: "/source"}, marked: map[string]bool{"one": true}},
+		right:              projectFilesPane{endpoint: ducklord.FileEndpoint{Path: "/target"}, marked: map[string]bool{}},
+	}
+	var out bytes.Buffer
+	s.renderProjectFilesModal(&out, 120, 8)
+	if !strings.Contains(out.String(), "To: /target/child") || !strings.Contains(out.String(), "Enter confirm") {
+		t.Fatalf("preview omitted actual target or controls: %q", out.String())
+	}
+	s.handleProjectFilesInput([]byte("\x1b"))
+	if s.projectFiles.hasPendingDestination || s.projectFiles.right.endpoint.Path != "/target" {
+		t.Fatalf("Esc retained drag target or changed browsing pane: %#v", s.projectFiles)
+	}
+	s.projectFiles.pendingDestination = ducklord.FileEndpoint{Path: "/stale"}
+	s.projectFiles.hasPendingDestination = true
+	s.handleProjectFilesInput([]byte("c"))
+	if s.projectFiles.hasPendingDestination {
+		t.Fatal("keyboard copy retained a previous drag target")
+	}
+}
+
+func TestProjectFilesCellClippingAndParentClearsFilter(t *testing.T) {
+	if got := projectClip("界界", 3); got != "界…" {
+		t.Fatalf("cell clipping = %q, want one wide rune and ellipsis", got)
+	}
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := &tuiState{}
+	s.projectFiles = projectFilesState{open: true, step: "browse", left: projectFilesPane{endpoint: ducklord.FileEndpoint{Path: child}, query: "old", marked: map[string]bool{}}, done: make(chan projectFilesEvent, 1)}
+	s.handleProjectFilesInput([]byte("\b"))
+	if s.projectFiles.left.endpoint.Path != parent || s.projectFiles.left.query != "" {
+		t.Fatalf("parent navigation = %#v", s.projectFiles.left)
+	}
+	s.closeProjectFiles()
+}
+
+func TestProjectFilesCopyResultCountsAndRefreshesDraggedDestination(t *testing.T) {
+	target := t.TempDir()
+	child := filepath.Join(target, "child")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := &tuiState{}
+	s.projectFiles = projectFilesState{open: true, step: "busy", generation: 4, copyDestination: 1,
+		right: projectFilesPane{endpoint: ducklord.FileEndpoint{Path: child}, marked: map[string]bool{}},
+		done:  make(chan projectFilesEvent, 1),
+	}
+	s.applyProjectFilesEvent(projectFilesEvent{generation: 4, copy: true, result: []ducklord.FileCopyResult{{Name: "copied"}, {Name: "skipped", Skipped: true}}, err: errors.New("relay stopped")})
+	if got := s.projectFiles.status; !strings.Contains(got, "Copied 1, skipped 1; partial: relay stopped") {
+		t.Fatalf("partial result status = %q", got)
+	}
+	if s.projectFiles.right.endpoint.Path != child || s.projectFiles.panegen[1] == 0 {
+		t.Fatalf("copy completion did not refresh actual destination: %#v", s.projectFiles)
+	}
+	s.closeProjectFiles()
+}
+
+func TestProjectFilesPreviewKeepsControlsBeforeLongSelection(t *testing.T) {
+	marked := make(map[string]bool)
+	for i := 0; i < 32; i++ {
+		marked[fmt.Sprintf("file-%02d", i)] = true
+	}
+	s := &tuiState{}
+	s.projectFiles = projectFilesState{open: true, step: "preview", left: projectFilesPane{endpoint: ducklord.FileEndpoint{Path: "/source"}, marked: marked}, right: projectFilesPane{endpoint: ducklord.FileEndpoint{Path: "/target"}, marked: map[string]bool{}}}
+	var out bytes.Buffer
+	s.renderProjectFilesModal(&out, 80, 5)
+	if !strings.Contains(out.String(), "Enter confirm") {
+		t.Fatalf("short preview lost confirmation control: %q", out.String())
 	}
 }

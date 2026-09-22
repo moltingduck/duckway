@@ -106,6 +106,9 @@ func (s *tuiState) openProjectFiles() {
 	s.projectFiles.originProjectFocus = s.workspaceProjectFocus
 	s.projectFiles.left, s.projectFiles.right = p, q
 	s.projectFiles.active, s.projectFiles.step, s.projectFiles.open = 0, "browse", true
+	s.projectFiles.pendingDestination = ducklord.FileEndpoint{}
+	s.projectFiles.hasPendingDestination = false
+	s.projectFiles.copyCancelling = false
 	s.projectFiles.status = "Loading…"
 	s.focused = false
 	s.projectFiles.generation++
@@ -263,17 +266,13 @@ func projectFilesEditorText(text string) bool {
 
 func projectClip(v string, width int) string {
 	v = sanitizeTerminalText(v)
-	r := []rune(v)
 	if width < 1 {
 		return ""
 	}
-	if len(r) <= width {
+	if modalCellWidth(v) <= width {
 		return v
 	}
-	if width == 1 {
-		return string(r[:1])
-	}
-	return string(r[:width-1]) + "…"
+	return modalCellTruncate(v, width)
 }
 
 func (s *tuiState) applyProjectFilesEvent(event projectFilesEvent) {
@@ -282,20 +281,25 @@ func (s *tuiState) applyProjectFilesEvent(event projectFilesEvent) {
 	}
 	if event.copy {
 		s.projectFiles.copyCancel = nil
+		copied, skipped := 0, 0
+		for _, result := range event.result {
+			if result.Skipped {
+				skipped++
+			} else {
+				copied++
+			}
+		}
 		if s.projectFiles.copyCancelling {
 			s.projectFiles.copyCancelling = false
-			s.projectFiles.status = "Cancelled"
-			s.projectFiles.step = "browse"
-			return
-		}
-		if event.err != nil {
-			s.projectFiles.status = sanitizeTerminalText(event.err.Error())
+			s.projectFiles.status = fmt.Sprintf("Cancelled: copied %d, skipped %d", copied, skipped)
+		} else if event.err != nil {
+			s.projectFiles.status = fmt.Sprintf("Copied %d, skipped %d; partial: %s", copied, skipped, sanitizeTerminalText(event.err.Error()))
 		} else {
-			s.projectFiles.status = fmt.Sprintf("Copied %d item(s)", len(event.result))
+			s.projectFiles.status = fmt.Sprintf("Copied %d, skipped %d", copied, skipped)
 		}
 		s.projectFiles.step = "browse"
-		// Refresh the actual destination. Drag previews may target a child
-		// directory without changing the browsing pane until copy is confirmed.
+		// A cancelled copy can have completed work. Always reload the destination
+		// that the request actually used, including a dragged child directory.
 		s.loadProjectFilesPane(context.Background(), s.projectFiles.copyDestination)
 		return
 	}
@@ -411,6 +415,8 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 		switch text {
 		case "\x1b", "q":
 			s.projectFiles.step = "browse"
+			s.projectFiles.pendingDestination = ducklord.FileEndpoint{}
+			s.projectFiles.hasPendingDestination = false
 		case "s":
 			s.projectFiles.conflict = "skip"
 		case "r":
@@ -456,6 +462,10 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 		}
 		return true
 	case "c":
+		// Keyboard previews use the pane's current root. A previous drag target
+		// must not survive a cancelled preview.
+		s.projectFiles.pendingDestination = ducklord.FileEndpoint{}
+		s.projectFiles.hasPendingDestination = false
 		s.projectFiles.copySource = s.projectFiles.active
 		s.projectFiles.step = "preview"
 		s.projectFiles.conflict = "skip"
@@ -473,7 +483,7 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 	case "\b", "\x7f":
 		parent := filepath.Dir(p.endpoint.Path)
 		if parent != p.endpoint.Path {
-			p.endpoint.Path, p.selected, p.marked, p.entries, p.loading, p.status = parent, 0, map[string]bool{}, nil, true, "Loading…"
+			p.endpoint.Path, p.query, p.selected, p.marked, p.entries, p.loading, p.status = parent, "", 0, map[string]bool{}, nil, true, "Loading…"
 			s.loadProjectFilesPane(context.Background(), s.projectFiles.active)
 		}
 		return true
@@ -563,10 +573,20 @@ func (s *tuiState) startProjectFilesCopy() {
 	sort.Strings(names)
 	if len(names) == 0 {
 		s.projectFiles.status = "Select files first"
+		s.projectFiles.pendingDestination = ducklord.FileEndpoint{}
+		s.projectFiles.hasPendingDestination = false
 		return
+	}
+	// Confirmation is the point at which a dragged child becomes the visible
+	// destination. Esc leaves the browsing pane and its entries untouched.
+	if s.projectFiles.copyDestination == 0 {
+		s.projectFiles.left.endpoint = snapshotProjectFilesEndpoint(destination.endpoint)
+	} else {
+		s.projectFiles.right.endpoint = snapshotProjectFilesEndpoint(destination.endpoint)
 	}
 	s.projectFiles.step, s.projectFiles.status = "busy", "Copying…"
 	s.projectFiles.copyCancelling = false
+	s.projectFiles.pendingDestination = ducklord.FileEndpoint{}
 	s.projectFiles.hasPendingDestination = false
 	s.projectFiles.generation++
 	for i, listCancel := range s.projectFiles.cancels {
@@ -596,10 +616,53 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 		return
 	}
 	s.modalMouseLines = make(map[int]modalMouseAction)
-	width := min(110, max(8, cols-4))
-	cw := max(8, (width-4)/2)
+	// Match the width used by the shared modal renderer and mouse coordinate
+	// mapping. A two-cell separator leaves two independently addressable panes.
+	width := min(110, max(8, cols-2))
+	cw := max(1, (width-4)/2)
+	if s.projectFiles.step == "preview" {
+		src, dst := s.projectFiles.left, s.projectFiles.right
+		if s.projectFiles.copySource == 1 {
+			src, dst = dst, src
+		}
+		if s.projectFiles.hasPendingDestination {
+			dst.endpoint = snapshotProjectFilesEndpoint(s.projectFiles.pendingDestination)
+		}
+		// Put confirmation first so it remains reachable on a short terminal;
+		// selected names are informational and may be clipped below it.
+		lines := []modalRenderLine{
+			{modalTitle, "Copy preview · Enter confirm · Esc cancel"},
+			{modalMuted, "From: " + projectClip(src.endpoint.Path, width-6)},
+			{modalMuted, "To: " + projectClip(dst.endpoint.Path, width-4)},
+			{modalMuted, "Conflict: [s] Skip  [r] Rename  [o] Overwrite (" + s.projectFiles.conflict + ")"},
+		}
+		names := make([]string, 0, len(src.marked))
+		for name, marked := range src.marked {
+			if marked {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		available := max(0, rows-2-len(lines))
+		for i, name := range names {
+			if i >= available {
+				break
+			}
+			lines = append(lines, modalRenderLine{modalMuted, "  " + projectClip(name, width-4)})
+		}
+		if len(names) > available && available > 0 {
+			lines[len(lines)-1] = modalRenderLine{modalMuted, fmt.Sprintf("  +%d more selected", len(names)-available+1)}
+		}
+		s.renderModalBox(out, cols, rows, lines)
+		return
+	}
+
 	leftLabel, rightLabel := s.projectFiles.left.label, s.projectFiles.right.label
-	lines := []modalRenderLine{{modalTitle, "Project files"}, {modalMuted, projectClip(leftLabel, cw) + strings.Repeat(" ", max(1, width-4-cw)) + projectClip(rightLabel, cw)}, {modalInput, modalCellPad(projectClip(s.projectFiles.left.endpoint.Path, cw), cw) + "  " + projectClip(s.projectFiles.right.endpoint.Path, cw)}}
+	lines := []modalRenderLine{
+		{modalTitle, "Project files"},
+		{modalMuted, modalCellPad(projectClip(leftLabel, cw), cw) + "  " + modalCellPad(projectClip(rightLabel, cw), cw)},
+		{modalInput, modalCellPad(projectClip(s.projectFiles.left.endpoint.Path, cw), cw) + "  " + modalCellPad(projectClip(s.projectFiles.right.endpoint.Path, cw), cw)},
+	}
 	leftStatus, rightStatus := s.projectFiles.left.status, s.projectFiles.right.status
 	if leftStatus == "" {
 		leftStatus = s.projectFiles.status
@@ -607,7 +670,7 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 	if rightStatus == "" {
 		rightStatus = s.projectFiles.status
 	}
-	lines = append(lines, modalRenderLine{modalMuted, modalCellPad(projectClip(leftStatus, cw), cw) + "  " + projectClip(rightStatus, cw)})
+	lines = append(lines, modalRenderLine{modalMuted, modalCellPad(projectClip(leftStatus, cw), cw) + "  " + modalCellPad(projectClip(rightStatus, cw), cw)})
 	if s.projectFiles.step == "path" {
 		lines = append(lines, modalRenderLine{modalInput, "Path: " + projectClip(s.projectFilesPane().endpoint.Path, width-8) + "  (Enter apply, Esc cancel)"})
 	}
@@ -625,31 +688,16 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 		}
 		lines = append(lines, modalRenderLine{modalMuted, "j/k choose · Enter apply · Esc cancel"})
 	}
-	if s.projectFiles.step == "preview" {
-		src, dst := s.projectFiles.left, s.projectFiles.right
-		if s.projectFiles.copySource == 1 {
-			src, dst = dst, src
-		}
-		lines = append(lines, modalRenderLine{modalTitle, "Copy preview"}, modalRenderLine{modalMuted, "From: " + projectClip(src.endpoint.Path, width-8)}, modalRenderLine{modalMuted, "To: " + projectClip(dst.endpoint.Path, width-6)}, modalRenderLine{modalMuted, "Conflict: [s] Skip  [r] Rename  [o] Overwrite (" + s.projectFiles.conflict + ")"})
-		for name, marked := range src.marked {
-			if marked {
-				lines = append(lines, modalRenderLine{modalMuted, "  " + projectClip(name, width-4)})
-			}
-		}
-	}
 	left, right := s.visibleProjectEntries(&s.projectFiles.left), s.visibleProjectEntries(&s.projectFiles.right)
-	n := len(left)
-	if len(right) > n {
-		n = len(right)
-	}
+	n := max(len(left), len(right))
 	// The common renderer can show rows-2 content lines. Reserve the footer
 	// after every step-specific header so no invisible entry receives a hitbox.
 	maxRows := max(0, rows-2-len(lines)-3)
 	offsetL, offsetR := 0, 0
-	if s.projectFiles.left.selected >= maxRows {
+	if maxRows > 0 && s.projectFiles.left.selected >= maxRows {
 		offsetL = s.projectFiles.left.selected - maxRows + 1
 	}
-	if s.projectFiles.right.selected >= maxRows {
+	if maxRows > 0 && s.projectFiles.right.selected >= maxRows {
 		offsetR = s.projectFiles.right.selected - maxRows + 1
 	}
 	for i := 0; i < n && i < maxRows; i++ {
@@ -679,39 +727,37 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 		if ri == s.projectFiles.right.selected && s.projectFiles.active == 1 {
 			r = "› " + r
 		}
-		lines = append(lines, modalRenderLine{modalMuted, modalCellPad(projectClip(l, cw), cw) + "  " + projectClip(r, cw)})
+		lines = append(lines, modalRenderLine{modalMuted, modalCellPad(projectClip(l, cw), cw) + "  " + modalCellPad(projectClip(r, cw), cw)})
 	}
 	lines = append(lines, modalRenderLine{modalMuted, s.projectFiles.status}, modalRenderLine{modalMuted, "Tab switch column · h endpoint · g path · / filter · Space select"}, modalRenderLine{modalMuted, "c copy preview · Enter open/confirm · Esc back/close · Ctrl+C cancel"})
 	s.renderModalBox(out, cols, rows, lines)
 	// Register independent hit regions after box rendering; modalChoice cannot represent two columns on one row.
+	if s.projectFiles.step != "browse" {
+		return
+	}
 	visible := min(len(lines), rows-2)
 	top := max(1, (rows-visible-2)/2+1)
 	entryStart := 4
-	if s.projectFiles.step == "preview" {
-		entryStart += 4 + len(s.projectFiles.left.marked)
-	}
-	if s.projectFiles.step == "browse" {
-		for i := 0; i < n && i < maxRows; i++ {
-			row := top + entryStart + i + 1
-			base := max(1, (cols-width)/2+2)
-			if i+offsetL < len(left) {
-				s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: base, right: base + cw - 1, row: row, action: modalMouseAction{selection: &s.projectFiles.left.selected, index: i + offsetL, key: " "}})
-			}
-			if i+offsetR < len(right) {
-				x := base + cw + 2
-				s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: x, right: x + cw - 1, row: row, action: modalMouseAction{selection: &s.projectFiles.right.selected, index: i + offsetR, key: " "}})
-			}
+	for i := 0; i < n && i < maxRows; i++ {
+		row := top + entryStart + i + 1
+		base := max(1, (cols-width)/2+2)
+		if i+offsetL < len(left) {
+			s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: base, right: base + cw - 1, row: row, action: modalMouseAction{selection: &s.projectFiles.left.selected, index: i + offsetL, key: " "}})
 		}
-		// An empty destination is still a valid drop root.
-		if maxRows > 0 {
-			base, row := max(1, (cols-width)/2+2), top+entryStart+1
-			if len(left) == 0 {
-				s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: base, right: base + cw - 1, row: row, action: modalMouseAction{selection: &s.projectFiles.left.selected, index: -1, key: " "}})
-			}
-			if len(right) == 0 {
-				x := base + cw + 2
-				s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: x, right: x + cw - 1, row: row, action: modalMouseAction{selection: &s.projectFiles.right.selected, index: -1, key: " "}})
-			}
+		if i+offsetR < len(right) {
+			x := base + cw + 2
+			s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: x, right: x + cw - 1, row: row, action: modalMouseAction{selection: &s.projectFiles.right.selected, index: i + offsetR, key: " "}})
+		}
+	}
+	// An empty destination is still a valid drop root.
+	if maxRows > 0 {
+		base, row := max(1, (cols-width)/2+2), top+entryStart+1
+		if len(left) == 0 {
+			s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: base, right: base + cw - 1, row: row, action: modalMouseAction{selection: &s.projectFiles.left.selected, index: -1, key: " "}})
+		}
+		if len(right) == 0 {
+			x := base + cw + 2
+			s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: x, right: x + cw - 1, row: row, action: modalMouseAction{selection: &s.projectFiles.right.selected, index: -1, key: " "}})
 		}
 	}
 }
