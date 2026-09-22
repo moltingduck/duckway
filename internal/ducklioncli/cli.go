@@ -53,6 +53,25 @@ type SessionOutput struct {
 }
 
 func Main(args []string, stdout io.Writer) {
+	if len(args) > 0 && args[0] == "files" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer stop()
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = os.Stdin.Close()
+			case <-done:
+			}
+		}()
+		err := runFiles(args[1:], os.Stdin, stdout)
+		close(done)
+		if err != nil {
+			log.Print(err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(args) > 0 && args[0] == "skill" {
 		if err := ducklionskill.Run(args[1:], os.Stdin, stdout, os.Stderr); err != nil {
 			log.Print(err)
