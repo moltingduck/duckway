@@ -28,6 +28,7 @@ const (
 type SessionPane struct {
 	ID        string           `json:"id"`
 	Session   *SessionIdentity `json:"session,omitempty"`
+	Note      bool             `json:"note,omitempty"`
 	Direction SplitDirection   `json:"direction,omitempty"`
 	First     *SessionPane     `json:"first,omitempty"`
 	Second    *SessionPane     `json:"second,omitempty"`
@@ -75,7 +76,7 @@ func (p *SessionPane) clone() *SessionPane {
 	if p == nil {
 		return nil
 	}
-	clone := &SessionPane{ID: p.ID, Direction: p.Direction, First: p.First.clone(), Second: p.Second.clone()}
+	clone := &SessionPane{ID: p.ID, Note: p.Note, Direction: p.Direction, First: p.First.clone(), Second: p.Second.clone()}
 	if p.Session != nil {
 		identity := *p.Session
 		clone.Session = &identity
@@ -113,6 +114,104 @@ func (l *ProjectLayout) RenameTab(projectID, tabID, name string) error {
 	return fmt.Errorf("tab not found")
 }
 
+// RenameProject updates the local display name of a custom project.
+func (l *ProjectLayout) RenameProject(projectID, name string) error {
+	if projectID == DefaultProjectID {
+		return fmt.Errorf("default project cannot be renamed")
+	}
+	if err := validateCustomGroupName(name); err != nil {
+		return fmt.Errorf("invalid project name: %w", err)
+	}
+	project := l.Project(projectID)
+	if project == nil {
+		return fmt.Errorf("project not found")
+	}
+	project.Name = name
+	return nil
+}
+
+// MoveProject reorders a project relative to another project. The built-in
+// Default Project is always first and cannot be moved.
+func (l *ProjectLayout) MoveProject(projectID, targetID string, before bool) error {
+	if projectID == DefaultProjectID {
+		return fmt.Errorf("default project cannot be moved")
+	}
+	from, target := -1, -1
+	for i := range l.Projects {
+		if l.Projects[i].ID == projectID {
+			from = i
+		}
+		if l.Projects[i].ID == targetID {
+			target = i
+		}
+	}
+	if from < 0 || target < 0 {
+		return fmt.Errorf("project not found")
+	}
+	if from == target {
+		return nil
+	}
+	moved := l.Projects[from]
+	l.Projects = append(l.Projects[:from], l.Projects[from+1:]...)
+	if from < target {
+		target--
+	}
+	if !before {
+		target++
+	}
+	if target < 1 {
+		target = 1
+	}
+	if target > len(l.Projects) {
+		target = len(l.Projects)
+	}
+	l.Projects = append(l.Projects, LocalProject{})
+	copy(l.Projects[target+1:], l.Projects[target:])
+	l.Projects[target] = moved
+	return nil
+}
+
+// MoveTab reorders tabs within one project relative to another tab.
+func (l *ProjectLayout) MoveTab(projectID, tabID, targetID string, before bool) error {
+	p := l.Project(projectID)
+	if p == nil {
+		return fmt.Errorf("project not found")
+	}
+	from, target := -1, -1
+	for i := range p.Tabs {
+		if p.Tabs[i].ID == tabID {
+			from = i
+		}
+		if p.Tabs[i].ID == targetID {
+			target = i
+		}
+	}
+	if from < 0 || target < 0 {
+		return fmt.Errorf("tab not found")
+	}
+	if from == target {
+		return nil
+	}
+	moved := p.Tabs[from]
+	p.Tabs = append(p.Tabs[:from], p.Tabs[from+1:]...)
+	if from < target {
+		target--
+	}
+	if !before {
+		target++
+	}
+	if target < 0 {
+		target = 0
+	}
+	if target > len(p.Tabs) {
+		target = len(p.Tabs)
+	}
+	p.Tabs = append(p.Tabs, TerminalTab{})
+	copy(p.Tabs[target+1:], p.Tabs[target:])
+	p.Tabs[target] = moved
+	return nil
+}
+
 func (l *ProjectLayout) Project(id string) *LocalProject {
 	for i := range l.Projects {
 		if l.Projects[i].ID == id {
@@ -130,6 +229,27 @@ func (l *ProjectLayout) ProjectsFor(session SessionIdentity) []string {
 		}
 	}
 	return ids
+}
+
+// SessionsForProject returns each session currently attached to a project.
+// A session may appear in more than one project; callers should deduplicate
+// when aggregating across projects.
+func (l *ProjectLayout) SessionsForProject(projectID string) []SessionIdentity {
+	p := l.Project(projectID)
+	if p == nil {
+		return nil
+	}
+	seen := map[SessionIdentity]bool{}
+	var out []SessionIdentity
+	for _, tab := range p.Tabs {
+		for _, session := range tab.Root.sessions() {
+			if !seen[session] {
+				seen[session] = true
+				out = append(out, session)
+			}
+		}
+	}
+	return out
 }
 
 func (l *ProjectLayout) defaultSuppressed(session SessionIdentity) bool {
@@ -203,6 +323,36 @@ func (l *ProjectLayout) TabSessions(projectID, tabID string) []SessionIdentity {
 	return nil
 }
 
+// FirstSessionPane returns a navigable session leaf for leaving a Notes pane.
+func (l *ProjectLayout) FirstSessionPane(projectID string) (string, string, bool) {
+	p := l.Project(projectID)
+	if p == nil {
+		return "", "", false
+	}
+	for _, tab := range p.Tabs {
+		for _, s := range tab.Root.sessions() {
+			if pane := tab.Root.findSession(s); pane != nil {
+				return tab.ID, pane.ID, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// PaneTabID returns the tab containing a pane.
+func (l *ProjectLayout) PaneTabID(projectID, paneID string) (string, bool) {
+	project := l.Project(projectID)
+	if project == nil {
+		return "", false
+	}
+	for _, tab := range project.Tabs {
+		if tab.Root.findPane(paneID) != nil {
+			return tab.ID, true
+		}
+	}
+	return "", false
+}
+
 func (l *ProjectLayout) PaneSession(projectID, paneID string) (SessionIdentity, bool) {
 	project := l.Project(projectID)
 	if project == nil {
@@ -214,6 +364,21 @@ func (l *ProjectLayout) PaneSession(projectID, paneID string) (SessionIdentity, 
 		}
 	}
 	return SessionIdentity{}, false
+}
+
+// HasPane reports whether paneID is a leaf in the Project.  Unlike
+// PaneSession, this also recognizes Project-owned panes such as Notes.
+func (l *ProjectLayout) HasPane(projectID, paneID string) bool {
+	project := l.Project(projectID)
+	if project == nil || paneID == "" {
+		return false
+	}
+	for _, tab := range project.Tabs {
+		if tab.Root != nil && tab.Root.findPane(paneID) != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // NavigateProject picks the user's current Project when it contains the
@@ -303,6 +468,39 @@ func (p *LocalProject) addTab(session SessionIdentity) string {
 	leaf := newSessionPane(session)
 	p.Tabs = append(p.Tabs, TerminalTab{ID: uuid.NewString(), Root: leaf})
 	return leaf.ID
+}
+
+// PlaceNote creates a project notebook leaf in a new tab.
+func (l *ProjectLayout) PlaceNote(projectID string) (string, error) {
+	p := l.Project(projectID)
+	if p == nil {
+		return "", fmt.Errorf("project not found")
+	}
+	if _, paneID, ok := l.NotePane(projectID); ok {
+		return paneID, nil
+	}
+	leaf := &SessionPane{ID: uuid.NewString(), Note: true}
+	p.Tabs = append(p.Tabs, TerminalTab{ID: uuid.NewString(), Name: "Notes", Root: leaf})
+	return leaf.ID, nil
+}
+
+// NotePane returns the tab and leaf containing the project's notebook.
+func (l *ProjectLayout) NotePane(projectID string) (tabID, paneID string, ok bool) {
+	p := l.Project(projectID)
+	if p == nil {
+		return "", "", false
+	}
+	for _, tab := range p.Tabs {
+		if tab.Root != nil && tab.Root.Note {
+			return tab.ID, tab.Root.ID, true
+		}
+	}
+	return "", "", false
+}
+
+func (l *ProjectLayout) IsNotePane(projectID, paneID string) bool {
+	_, id, ok := l.NotePane(projectID)
+	return ok && id == paneID
 }
 
 // Place adds one view to a Project. Splits require a target leaf in that same
@@ -538,7 +736,15 @@ func (l *ProjectLayout) Validate() error {
 			hosts[host] = true
 		}
 		seen := make(map[SessionIdentity]bool)
+		notes := 0
 		for _, tab := range project.Tabs {
+			if tab.Root != nil && countNotePanes(tab.Root) > 0 && !tab.Root.Note {
+				return fmt.Errorf("notes pane must be a standalone tab root")
+			}
+			notes += countNotePanes(tab.Root)
+			if notes > 1 {
+				return fmt.Errorf("project has duplicate Notes panes")
+			}
 			if tab.Name != "" && validateCustomGroupName(tab.Name) != nil {
 				return fmt.Errorf("invalid terminal tab name")
 			}
@@ -573,11 +779,24 @@ func (l *ProjectLayout) Validate() error {
 	return nil
 }
 
+func countNotePanes(p *SessionPane) int {
+	if p == nil {
+		return 0
+	}
+	if p.Note {
+		return 1
+	}
+	return countNotePanes(p.First) + countNotePanes(p.Second)
+}
+
 func (p *SessionPane) validate(paneIDs map[string]bool, seen map[SessionIdentity]bool) error {
 	if p == nil || !canonicalLayoutUUID(p.ID) || paneIDs[p.ID] {
 		return fmt.Errorf("invalid or duplicate Session pane")
 	}
 	paneIDs[p.ID] = true
+	if p.Session != nil && p.Note {
+		return fmt.Errorf("invalid Session/Notes pane leaf")
+	}
 	if p.Session != nil {
 		if p.Direction != "" || p.First != nil || p.Second != nil || seen[*p.Session] {
 			return fmt.Errorf("invalid or duplicate Session pane leaf")
@@ -586,6 +805,12 @@ func (p *SessionPane) validate(paneIDs map[string]bool, seen map[SessionIdentity
 			return err
 		}
 		seen[*p.Session] = true
+		return nil
+	}
+	if p.Note {
+		if p.Direction != "" || p.First != nil || p.Second != nil {
+			return fmt.Errorf("invalid notes pane leaf")
+		}
 		return nil
 	}
 	if (p.Direction != SplitHorizontal && p.Direction != SplitVertical) || p.First == nil || p.Second == nil {

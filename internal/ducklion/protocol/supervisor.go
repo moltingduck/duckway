@@ -40,6 +40,12 @@ type SessionCreate struct {
 	Cols        uint16            `json:"cols,omitempty"`
 }
 
+// SessionRename changes the user-visible handle while retaining the session
+// identity and its ownership fences.
+type SessionRename struct {
+	Handle string `json:"handle"`
+}
+
 type SupervisorChallenge struct {
 	ChallengeID string `json:"challenge_id"`
 	Nonce       []byte `json:"nonce"`

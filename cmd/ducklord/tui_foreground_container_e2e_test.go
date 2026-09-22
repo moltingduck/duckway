@@ -45,11 +45,11 @@ func TestDucklordForegroundAgentLabelsContainerE2E(t *testing.T) {
 	// The other-agent detector requires argv[0] and /proc/PID/exe to agree
 	// on a vetted native executable name. A copied Node binary gives us that
 	// process identity without installing OpenCode or providing credentials.
-	if out, err := exec.Command(runtime, "exec", "-u", "duck", "ducklion-client-a", "cp", "/usr/bin/node", "/home/duck/opencode").CombinedOutput(); err != nil {
+	if out, err := exec.Command(runtime, "exec", "-u", "duck", e2eContainerName("ducklion-client-a"), "cp", "/usr/bin/node", "/home/duck/opencode").CombinedOutput(); err != nil {
 		t.Fatalf("prepare native other-agent fixture: %v (output bytes=%d)", err, len(out))
 	}
 	t.Cleanup(func() {
-		_, _ = exec.Command(runtime, "exec", "ducklion-client-a", "rm", "-f", "/home/duck/opencode").CombinedOutput()
+		_, _ = exec.Command(runtime, "exec", e2eContainerName("ducklion-client-a"), "rm", "-f", "/home/duck/opencode").CombinedOutput()
 	})
 	for i := range fixtures {
 		item := &fixtures[i]

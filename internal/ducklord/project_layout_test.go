@@ -94,6 +94,31 @@ func TestProjectLayoutMembershipAndDetach(t *testing.T) {
 	}
 }
 
+func TestProjectLayoutRenameProject(t *testing.T) {
+	layout := NewProjectLayout()
+	id, err := layout.AddProject("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := layout.RenameProject(id, "Renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if got := layout.Project(id).Name; got != "Renamed" {
+		t.Fatalf("project name = %q", got)
+	}
+	for _, tc := range []struct {
+		id, name string
+	}{
+		{DefaultProjectID, "Nope"},
+		{id, ""},
+		{"missing", "Name"},
+	} {
+		if err := layout.RenameProject(tc.id, tc.name); err == nil {
+			t.Fatalf("RenameProject(%q, %q) unexpectedly succeeded", tc.id, tc.name)
+		}
+	}
+}
+
 func TestProjectLayoutSuppressedDefaultLifecycle(t *testing.T) {
 	state := NewActivityState()
 	layout := &state.ProjectLayout
@@ -321,6 +346,38 @@ func TestProjectLayoutNavigationAndProjectRemoval(t *testing.T) {
 	}
 	if err := layout.RemoveProject(DefaultProjectID); err == nil {
 		t.Fatal("Default Project removal accepted")
+	}
+}
+
+func TestProjectLayoutMoveProjectAndTab(t *testing.T) {
+	layout := NewProjectLayout()
+	a, _ := layout.AddProject("A")
+	b, _ := layout.AddProject("B")
+	c, _ := layout.AddProject("C")
+	if err := layout.MoveProject(c, a, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{layout.Projects[0].ID, layout.Projects[1].ID, layout.Projects[2].ID, layout.Projects[3].ID}; got[0] != DefaultProjectID || got[1] != c || got[2] != a || got[3] != b {
+		t.Fatalf("project order: %v", got)
+	}
+	if err := layout.MoveProject(DefaultProjectID, a, false); err == nil {
+		t.Fatal("moving Default Project succeeded")
+	}
+	first := testLayoutIdentity("ABC123")
+	second := testLayoutIdentity("DEF456")
+	if _, err := layout.Place(a, first, PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := layout.Place(a, second, PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	tabs := layout.Project(a).Tabs
+	tab1, tab2 := tabs[0].ID, tabs[1].ID
+	if err := layout.MoveTab(a, tab2, tab1, true); err != nil {
+		t.Fatal(err)
+	}
+	if tabs := layout.Project(a).Tabs; tabs[0].ID != tab2 || tabs[1].ID != tab1 {
+		t.Fatalf("tab order: %+v", tabs)
 	}
 }
 

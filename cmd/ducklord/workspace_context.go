@@ -65,9 +65,10 @@ func (s *tuiState) openWorkspaceContextConfig(x, y, width, height int) bool {
 	if row, ok := workspaceQuickRowAt(geometry.Projects, x, y); ok && row+offsets.Projects < len(s.activity().ProjectLayout.Projects) {
 		project := s.activity().ProjectLayout.Projects[row+offsets.Projects]
 		if nav.SelectProject(project.ID) == nil {
-			s.workspaceConfigFocus = ""
+			s.workspaceConfigFocus = "project-pane"
 			s.workspaceProjectFocus = true
-			s.beginWorkspaceProjectHosts()
+			s.beginWorkspaceAreaConfig("project-pane")
+			s.workspacePaneIntent.projectID = project.ID
 			return true
 		}
 		return false

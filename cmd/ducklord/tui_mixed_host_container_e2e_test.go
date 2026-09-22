@@ -33,7 +33,7 @@ func TestDucklordMixedHostProjectContainerE2E(t *testing.T) {
 	viewer := fmt.Sprintf("mixed-viewer-%d", stamp)
 	inputFile := fmt.Sprintf("/tmp/ducklord-mixed-%d.input", stamp)
 	hosts := []string{"client-a", "client-b"}
-	containers := []string{"ducklion-client-a", "ducklion-client-b"}
+	containers := []string{e2eContainerName("ducklion-client-a"), e2eContainerName("ducklion-client-b")}
 	handles := []string{fmt.Sprintf("mha%x", stamp&0xffffff), fmt.Sprintf("mhb%x", stamp&0xffffff)}
 	sessions := make([]ducklord.RemoteSession, 2)
 	identities := make([]ducklord.SessionIdentity, 2)

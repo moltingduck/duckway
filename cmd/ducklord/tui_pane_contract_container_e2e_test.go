@@ -33,7 +33,7 @@ func runPaneControlContractE2E(t *testing.T, managed bool) {
 	t.Helper()
 	runtime := requiredE2EEnv(t, "DUCKLORD_E2E_RUNTIME")
 	controller := requiredE2EEnv(t, "DUCKLORD_E2E_CONTROLLER")
-	const hostContainer = "ducklion-client-a"
+	hostContainer := e2eContainerName("ducklion-client-a")
 	const config = "/root/.ducklord/config.yaml"
 	stamp := time.Now().UnixNano()
 	handle := fmt.Sprintf("contract-%d", stamp)
@@ -156,14 +156,39 @@ func runPaneControlContractE2E(t *testing.T, managed bool) {
 	capture := newSizedTUICapture(terminal, 28, 130)
 	capture.waitCurrent(t, "Session list pane:", 20*time.Second)
 	assertStable("47 151", "initial unfocused preview")
-	writePTY(t, terminal, "bj")
-	capture.waitCurrent(t, "› Contract A", 10*time.Second)
+	// Let the focus handoff render the initial Project selection before moving
+	// it. A burst can be consumed while the project pane is still synchronizing,
+	// leaving Contract B selected when this assertion expects Contract A.
+	writePTY(t, terminal, "b")
+	// Project navigation owns the workspace header. The Session list keeps its
+	// independent quick selection marker, so the selected project is identified
+	// by its header while alpha remains marked in the Session list.
+	capture.waitCurrent(t, "Contract A", 10*time.Second)
+	capture.waitCurrent(t, "› alpha @client-a", 10*time.Second)
+	writePTY(t, terminal, "j")
 	assertStable("47 151", "first Project preview")
 	writePTY(t, terminal, "j")
-	capture.waitCurrent(t, "› Contract B", 10*time.Second)
+	capture.waitCurrent(t, "Contract B", 10*time.Second)
+	capture.waitCurrent(t, "› alpha @client-a", 10*time.Second)
 	assertStable("47 151", "shared Session Project switch")
-	writePTY(t, terminal, "l/"+handle)
-	capture.waitCurrent(t, "find › "+handle, 10*time.Second)
+	focusStart := capture.position()
+	writePTY(t, terminal, "b")
+	capture.waitAfter(t, focusStart, "Session list pane:", 10*time.Second)
+	// Send the mode transition and search opener separately. A single burst can
+	// arrive while the event loop is still repainting the detailed list, causing
+	// the slash and query to be interpreted by the Session list typeahead.
+	detailStart := capture.position()
+	writePTY(t, terminal, "l")
+	capture.waitAfter(t, detailStart, "Detailed Sessions:", 10*time.Second)
+	searchStart := capture.position()
+	writePTY(t, terminal, "/")
+	capture.waitAfter(t, searchStart, "searching", 10*time.Second)
+	queryStart := capture.position()
+	for _, r := range handle {
+		writePTY(t, terminal, string(r))
+		time.Sleep(20 * time.Millisecond)
+	}
+	capture.waitAfter(t, queryStart, "find › "+handle, 10*time.Second)
 	writePTY(t, terminal, "\r")
 	assertStable("47 151", "detailed search preview")
 	writePTY(t, terminal, "\r")
@@ -187,9 +212,11 @@ func runPaneControlContractE2E(t *testing.T, managed bool) {
 		return err == nil && strings.Contains(string(out), marker)
 	}, func() string { return "focused shared-shell input did not reach original remote PTY" })
 	focusedSize := dimensions()
+	ctrlStart := capture.position()
 	writePTY(t, terminal, "\x1d")
-	capture.waitCurrent(t, "Detailed Sessions:", 10*time.Second)
+	capture.waitAfter(t, ctrlStart, "Detailed Sessions:", 10*time.Second)
 	writePTY(t, terminal, "lk")
-	capture.waitCurrent(t, "› Contract A", 10*time.Second)
+	capture.waitCurrent(t, "Contract A", 10*time.Second)
+	capture.waitCurrent(t, "› alpha @client-a", 10*time.Second)
 	assertStable(focusedSize, "return to unfocused Project navigation")
 }

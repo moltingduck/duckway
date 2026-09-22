@@ -137,6 +137,22 @@ func TestApplyManagedRCFile_PreservesUserContentOnClear(t *testing.T) {
 	}
 }
 
+func TestKnownManagedRCPathsIncludesSeparatePnpmConfig(t *testing.T) {
+	paths := allManagedRCPaths(map[string][]string{".npmrc": {"min-release-age=3"}})
+	if !containsString(paths, ".config/pnpm/rc") {
+		t.Fatalf("managed paths must include pnpm rc for stale-setting cleanup: %v", paths)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestFormatAndSummarizeChanges(t *testing.T) {
 	changes := []SupplyChainRCChange{
 		{Path: "~/.npmrc", Action: "written", Lines: []string{"# c", "ignore-scripts=true", "", "min-release-age=3"}},

@@ -70,7 +70,7 @@ func TestSupplyChainHandler_DefaultsAndToggle(t *testing.T) {
 		t.Errorf("min_age_days = %s, want 3", out["min_age_days"])
 	}
 
-	// ClientRC default: npm before= + pnpm minimum-release-age in .npmrc.
+	// ClientRC keeps npm and pnpm settings in manager-specific files.
 	code, rc := doJSON(t, mux, "GET", "/client/supply-chain-rc", "")
 	if code != 200 {
 		t.Fatalf("rc status %d", code)
@@ -78,26 +78,34 @@ func TestSupplyChainHandler_DefaultsAndToggle(t *testing.T) {
 	var npmrc []string
 	_ = json.Unmarshal(rc[".npmrc"], &npmrc)
 	joined := strings.Join(npmrc, "\n")
-	for _, want := range []string{"ignore-scripts=true", "min-release-age=3", "allow-git=none", "allow-remote=none", "minimum-release-age=4320"} {
+	for _, want := range []string{"ignore-scripts=true", "min-release-age=3", "allow-git=none", "allow-remote=none"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf(".npmrc default missing %q: %v", want, npmrc)
 		}
 	}
+	if strings.Contains(joined, "minimum-release-age") {
+		t.Fatalf(".npmrc contains pnpm-only config: %v", npmrc)
+	}
+	var pnpmrc []string
+	_ = json.Unmarshal(rc[".config/pnpm/rc"], &pnpmrc)
+	if !strings.Contains(strings.Join(pnpmrc, "\n"), "minimum-release-age=4320") {
+		t.Fatalf("pnpm rc missing minimum-release-age: %v", pnpmrc)
+	}
 
-	// Toggle npm off → npm keys disappear, pnpm settings remain.
+	// Toggle npm off → .npmrc disappears, pnpm settings remain separately.
 	code, _ = doJSON(t, mux, "POST", "/api/supply-chain/npm", `{"enabled":false}`)
 	if code != 200 {
 		t.Fatalf("toggle status %d", code)
 	}
 	_, rc = doJSON(t, mux, "GET", "/client/supply-chain-rc", "")
-	npmrc = nil
-	_ = json.Unmarshal(rc[".npmrc"], &npmrc)
-	joined = strings.Join(npmrc, "\n")
-	if strings.Contains(joined, "min-release-age=3") || strings.Contains(joined, "allow-git=none") {
-		t.Errorf("npm keys should be gone after npm disabled: %v", npmrc)
+	if _, ok := rc[".npmrc"]; ok {
+		t.Errorf(".npmrc should be absent after npm disabled: %s", rc[".npmrc"])
 	}
+	pnpmrc = nil
+	_ = json.Unmarshal(rc[".config/pnpm/rc"], &pnpmrc)
+	joined = strings.Join(pnpmrc, "\n")
 	if !strings.Contains(joined, "minimum-release-age=4320") || !strings.Contains(joined, "ignore-scripts=true") {
-		t.Errorf("pnpm settings should remain: %v", npmrc)
+		t.Errorf("pnpm settings should remain: %v", pnpmrc)
 	}
 
 	// Unsupported / unknown id rejected.
@@ -115,10 +123,10 @@ func TestSupplyChainHandler_SetMinAge(t *testing.T) {
 		t.Fatalf("set min-age status %d", code)
 	}
 	_, rc := doJSON(t, mux, "GET", "/client/supply-chain-rc", "")
-	var npmrc []string
-	_ = json.Unmarshal(rc[".npmrc"], &npmrc)
-	if !strings.Contains(strings.Join(npmrc, "\n"), "minimum-release-age=4320") {
-		t.Errorf("3-day cooldown → 4320 min expected, got %v", npmrc)
+	var pnpmrc []string
+	_ = json.Unmarshal(rc[".config/pnpm/rc"], &pnpmrc)
+	if !strings.Contains(strings.Join(pnpmrc, "\n"), "minimum-release-age=4320") {
+		t.Errorf("3-day cooldown → 4320 min expected, got %v", pnpmrc)
 	}
 
 	// Rejects non-positive.

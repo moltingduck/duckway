@@ -31,6 +31,7 @@ type WorkspaceRect struct{ X, Y, Width, Height int }
 type VisibleWorkspacePane struct {
 	Identity SessionIdentity
 	Rect     WorkspaceRect
+	PaneID   string
 }
 
 type WorkspaceGeometry struct {
@@ -53,9 +54,14 @@ const (
 )
 
 type WorkspaceRenderOptions struct {
-	Offsets WorkspaceColumnOffsets
-	Focus   WorkspaceFocus
-	Theme   WorkspaceTheme
+	Offsets    WorkspaceColumnOffsets
+	Focus      WorkspaceFocus
+	Theme      WorkspaceTheme
+	Notes      []NoteEntry
+	NoteIndex  int
+	NoteOffset int
+	NoteScope  NotesScope
+	NoteQuery  string
 }
 
 // WorkspaceListOffset keeps the selected row visible while preserving the
@@ -265,7 +271,10 @@ func workspaceCollectVisiblePanes(node *SessionPane, rect WorkspaceRect) []Visib
 		return nil
 	}
 	if node.Session != nil {
-		return []VisibleWorkspacePane{{Identity: *node.Session, Rect: rect}}
+		return []VisibleWorkspacePane{{Identity: *node.Session, Rect: rect, PaneID: node.ID}}
+	}
+	if node.Note {
+		return nil
 	}
 	if node.Direction == SplitHorizontal {
 		firstHeight := rect.Height / 2
@@ -283,6 +292,52 @@ func workspaceCollectVisiblePanes(node *SessionPane, rect WorkspaceRect) []Visib
 	first := workspaceCollectVisiblePanes(node.First, WorkspaceRect{X: rect.X, Y: rect.Y, Width: firstWidth, Height: rect.Height})
 	second := workspaceCollectVisiblePanes(node.Second, WorkspaceRect{X: rect.X + firstWidth, Y: rect.Y, Width: rect.Width - firstWidth, Height: rect.Height})
 	return append(first, second...)
+}
+
+// WorkspaceVisibleLeafRects includes Notes leaves for hit testing. Notes are
+// deliberately absent from WorkspaceVisiblePaneRects, which is the PTY set.
+func WorkspaceVisibleLeafRects(layout *ProjectLayout, nav *WorkspaceState, geometry WorkspaceGeometry) []VisibleWorkspacePane {
+	if layout == nil || nav == nil {
+		return nil
+	}
+	p := layout.Project(nav.CurrentProjectID())
+	if p == nil {
+		return nil
+	}
+	r := geometry.Terminal
+	r.Y++
+	r.Height--
+	for _, tab := range p.Tabs {
+		if tab.ID == nav.CurrentTabID() {
+			return workspaceCollectLeaves(tab.Root, r)
+		}
+	}
+	return nil
+}
+func workspaceCollectLeaves(n *SessionPane, r WorkspaceRect) []VisibleWorkspacePane {
+	if n == nil || r.Width < 1 || r.Height < 1 {
+		return nil
+	}
+	if n.Session != nil || n.Note {
+		return []VisibleWorkspacePane{{Identity: func() SessionIdentity {
+			if n.Session != nil {
+				return *n.Session
+			}
+			return SessionIdentity{}
+		}(), Rect: r, PaneID: n.ID}}
+	}
+	if n.Direction == SplitHorizontal {
+		h := r.Height / 2
+		if h < 1 || r.Height-h < 1 {
+			return workspaceCollectLeaves(n.First, r)
+		}
+		return append(workspaceCollectLeaves(n.First, WorkspaceRect{r.X, r.Y, r.Width, h}), workspaceCollectLeaves(n.Second, WorkspaceRect{r.X, r.Y + h, r.Width, r.Height - h})...)
+	}
+	w := r.Width / 2
+	if w < 1 || r.Width-w < 1 {
+		return workspaceCollectLeaves(n.First, r)
+	}
+	return append(workspaceCollectLeaves(n.First, WorkspaceRect{r.X, r.Y, w, r.Height}), workspaceCollectLeaves(n.Second, WorkspaceRect{r.X + w, r.Y, r.Width - w, r.Height})...)
 }
 
 // WorkspaceVisiblePaneRect returns the selected leaf's actual screen cell.
@@ -314,6 +369,9 @@ func workspaceFindVisiblePane(node *SessionPane, rect WorkspaceRect, paneID stri
 	if node.Session != nil {
 		return rect, node.ID == paneID
 	}
+	if node.Note {
+		return rect, node.ID == paneID
+	}
 	if node.Direction == SplitHorizontal {
 		firstHeight := rect.Height / 2
 		if firstHeight < 1 || rect.Height-firstHeight < 1 {
@@ -335,11 +393,17 @@ func workspaceFindVisiblePane(node *SessionPane, rect WorkspaceRect, paneID stri
 }
 
 func workspaceVisibleLeaves(node *SessionPane, rect WorkspaceRect) ([]SessionIdentity, int) {
-	if node == nil || rect.Width < 1 || rect.Height < 1 {
+	if node == nil {
+		return nil, 0
+	}
+	if rect.Width < 1 || rect.Height < 1 {
 		return nil, len(node.sessions())
 	}
 	if node.Session != nil {
 		return []SessionIdentity{*node.Session}, 0
+	}
+	if node.Note {
+		return nil, 0
 	}
 	if node.Direction == SplitHorizontal {
 		firstHeight := rect.Height / 2
@@ -389,6 +453,55 @@ func workspaceMarkedRow(prefix, label, suffix string, cells int) string {
 func renderWorkspaceNode(out io.Writer, node *SessionPane, rect WorkspaceRect, selectedPaneID string,
 	view func(SessionIdentity, int, int) WorkspacePaneView, options WorkspaceRenderOptions) {
 	if node == nil || rect.Width < 1 || rect.Height < 1 {
+		return
+	}
+	if node.Note {
+		scope := string(options.NoteScope)
+		if scope == "" {
+			scope = "project"
+		}
+		header := fmt.Sprintf(" ╔ NOTES · %s book ╗ ", strings.ToUpper(scope))
+		workspaceWrite(out, rect.X, rect.Y, rect.Width, header, "\x1b[1;33m")
+		// A one-row pane can only show its heading. Keep the minimal state
+		// readable instead of letting the footer overwrite it.
+		if rect.Height == 1 {
+			return
+		}
+		for y := 1; y < rect.Height; y++ {
+			workspaceWrite(out, rect.X, rect.Y+y, rect.Width, "", "")
+		}
+		visible := max(0, rect.Height-3)
+		start := max(0, min(options.NoteOffset, max(0, len(options.Notes)-visible)))
+		for i, n := range options.Notes[start:] {
+			y := rect.Y + 1 + i
+			if y >= rect.Y+rect.Height-1 {
+				break
+			}
+			prefix := " "
+			styleRow := ""
+			if i+start == options.NoteIndex {
+				prefix, styleRow = ">", "\x1b[7m"
+			}
+			workspaceWrite(out, rect.X, y, rect.Width, fmt.Sprintf("%s %s — %s", prefix, n.Title, n.Preview), styleRow)
+		}
+		page, pages := 0, 1
+		if len(options.Notes) > 0 {
+			page = 1
+			if visible > 0 {
+				page = start/visible + 1
+			}
+		}
+		if visible > 0 && len(options.Notes) > 0 {
+			pages = (len(options.Notes) + visible - 1) / visible
+			if pages < 1 {
+				pages = 1
+			}
+		}
+		footer := fmt.Sprintf(" a add · e edit · E all · Enter copy body to system clipboard · j/k select · h/l page · g/p/s scope · / search · %d/%d ", page, pages)
+		if options.NoteQuery != "" {
+			footer += " · /" + options.NoteQuery
+		}
+		workspaceWrite(out, rect.X, rect.Y+rect.Height-1, rect.Width, footer, "\x1b[2;33m")
 		return
 	}
 	if node.Session == nil {

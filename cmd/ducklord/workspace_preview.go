@@ -224,7 +224,7 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		return false, false
 	}
 	key := string(input)
-	if s.shortcut("help", key) {
+	if s.shortcut("help", key) || s.shortcut("pty_copy", key) {
 		return false, false
 	}
 	if s.shortcut("project_focus", key) {
@@ -292,7 +292,7 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		s.selectedGroupID = ""
 		return false, false // the normal attach action consumes this Enter
 	}
-	if key == "\x1b" || key == "\t" {
+	if key == "\x1b" || key == "\x03" || key == "\t" {
 		s.workspaceProjectFocus = false
 		return true, false
 	}
@@ -457,6 +457,25 @@ func (s *tuiState) workspaceVisibleSelections(selected ducklord.TerminalSelectio
 	return result
 }
 
+// workspaceSelectionsChanged reports whether a host inventory update changed
+// the actual output subscriptions needed by the visible Project panes. A
+// ChangedSessionID is also emitted for ordinary session output/activity
+// updates; rebuilding the subscriptions for those updates needlessly tears
+// down the current lease and briefly renders the pane as stale.
+func workspaceSelectionsChanged(before, after []ducklord.TerminalSelection) bool {
+	if len(before) != len(after) {
+		return true
+	}
+	for i := range before {
+		if before[i].Client.Name != after[i].Client.Name || before[i].InstanceID != after[i].InstanceID ||
+			before[i].SessionID != after[i].SessionID || before[i].RuntimeGeneration != after[i].RuntimeGeneration ||
+			before[i].Rows != after[i].Rows || before[i].Cols != after[i].Cols {
+			return true
+		}
+	}
+	return false
+}
+
 // renderWorkspacePreview draws the default Project, quick-list, and Terminal
 // area workspace. The legacy renderer remains a temporary test escape hatch.
 func (s *tuiState) renderWorkspacePreview(out io.Writer) {
@@ -474,9 +493,9 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	if s.cfg != nil && s.cfg.QuickOldestFirst {
 		direction = "oldest"
 	}
-	status := "Session list pane: ↑/↓ Session · " + s.cfg.Shortcut("list_sort") + " sort:" + s.quickSortMode() + " (" + direction + ") · " + s.cfg.Shortcut("list_sort_direction") + " time direction · " + s.cfg.Shortcut("project_focus") + " Project pane · Enter focus · Ctrl-] leave PTY"
+	status := "Session list pane: ↑/↓ Session · o Notes · " + s.cfg.Shortcut("list_sort") + " sort:" + s.quickSortMode() + " (" + direction + ") · " + s.cfg.Shortcut("list_sort_direction") + " time direction · " + s.cfg.Shortcut("project_focus") + " Project pane · Enter focus · Ctrl-] leave PTY"
 	if s.workspaceProjectFocus {
-		status = fmt.Sprintf("Project pane: ↑/↓ Project · %s focus · %s new · %s delete · %s add · %s move · %s detach · %s/%s tab · %s/%s pane · Enter focus · Esc list",
+		status = fmt.Sprintf("Project pane: ↑/↓ Project · o Notes · %s focus · %s new · %s delete · %s add · %s move · %s detach · %s/%s tab · %s/%s pane · Enter focus · Esc list",
 			s.cfg.Shortcut("project_notification_focus"),
 			s.cfg.Shortcut("project_create"), s.cfg.Shortcut("project_delete"), s.cfg.Shortcut("project_add_pane"), s.cfg.Shortcut("project_move_pane"), s.cfg.Shortcut("project_detach_pane"),
 			s.cfg.Shortcut("project_prev_tab"), s.cfg.Shortcut("project_next_tab"),
@@ -577,6 +596,10 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	if s.cfg != nil {
 		theme = s.cfg.WorkspaceTheme
 	}
+	noteVisible := max(0, height-3)
+	if noteRect, visible := ducklord.WorkspaceVisiblePaneRect(layout, nav, geometry); visible {
+		noteVisible = max(0, noteRect.Height-3)
+	}
 	ducklord.RenderWorkspaceBodyWithOptions(out, geometry, layout, nav, items, func(projectID string) bool {
 		for _, session := range s.sessions {
 			identity, ok := ducklord.IdentityFromSession(session)
@@ -625,11 +648,14 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 			return view
 		}
 		return ducklord.WorkspacePaneView{Title: "Session unavailable", Stale: true}
-	}, ducklord.WorkspaceRenderOptions{Offsets: offsets, Focus: focus, Theme: theme})
+	}, ducklord.WorkspaceRenderOptions{Offsets: offsets, Focus: focus, Theme: theme, Notes: s.notesEntries, NoteIndex: s.workspacePaneIndex,
+		NoteScope: s.notesScope, NoteQuery: s.notesQuery,
+		NoteOffset: ducklord.WorkspaceListOffset(0, s.workspacePaneIndex, noteVisible, len(s.notesEntries))})
 	s.renderCreateModal(out, width, height)
 	s.renderWorkspacePaneModal(out, width, height)
 	s.renderSearchModal(out, width, height)
 	s.renderActionModal(out, width, height)
+	s.renderSessionHandleRenameModal(out, width, height)
 	s.renderAddClientModal(out, width, height)
 	s.renderRemoveClientModal(out, width, height)
 	s.renderHelpModal(out, width, height)
@@ -639,6 +665,8 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 	s.renderGroupModal(out, width, height)
 	s.renderNotificationModal(out, width, height)
 	s.renderLifecycleModal(out, width, height)
+	s.renderTerminalTool(out, width, height)
+	s.renderCommandPalette(out, width, height)
 	if pane, err := s.workspacePaneRectAt(width, height); err == nil && s.focused && s.terminal != nil && pane.Height > 1 && pane.Width > 0 &&
 		!s.outputStale && s.ptyScrollOffset == 0 {
 		if row, col, visible := s.terminal.PaneCursorPosition(pane.Height-1, pane.Width); visible {

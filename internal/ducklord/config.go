@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -28,6 +29,7 @@ type Config struct {
 	NotificationSounds     map[NotificationClass]string            `json:"notification_sounds,omitempty" yaml:"notification_sounds,omitempty"`
 	OtherProjectThreshold  NotificationLevel                       `json:"other_project_threshold,omitempty" yaml:"other_project_threshold,omitempty"`
 	Shortcuts              map[string]string                       `json:"shortcuts,omitempty" yaml:"shortcuts,omitempty"`
+	SkillSources           []SkillTrackingSource                   `json:"skill_sources,omitempty" yaml:"skill_sources,omitempty"`
 	Clients                []Client                                `json:"hosts" yaml:"hosts"`
 }
 
@@ -41,7 +43,33 @@ type Client struct {
 	Group              string                                  `json:"group,omitempty" yaml:"group,omitempty"`
 	Ducklion           string                                  `json:"ducklion,omitempty" yaml:"ducklion,omitempty"`
 	SSH                string                                  `json:"ssh,omitempty" yaml:"ssh,omitempty"`
+	SkillTargets       []SkillInstallTarget                    `json:"skill_targets,omitempty" yaml:"skill_targets,omitempty"`
+	SelectedSkills     []string                                `json:"selected_skills,omitempty" yaml:"selected_skills,omitempty"`
 	NotificationLevels map[NotificationClass]NotificationLevel `json:"notification_levels,omitempty" yaml:"notification_levels,omitempty"`
+}
+
+// SkillTrackingSource is a public source used to refresh a locally managed
+// skill. TLS verification remains enabled unless explicitly opted out.
+type SkillTrackingSource struct {
+	SkillID       string `json:"skill_id,omitempty" yaml:"skill_id,omitempty"`
+	URL           string `json:"url" yaml:"url"`
+	InsecureHTTPS bool   `json:"insecure_https,omitempty" yaml:"insecure_https,omitempty"`
+}
+
+// SkillInstallTarget identifies a remote directory into which selected skills
+// are installed for a host.
+type SkillInstallTarget struct {
+	ID     string             `json:"id" yaml:"id"`
+	Path   string             `json:"path" yaml:"path"`
+	Skills []ManagedHostSkill `json:"skills,omitempty" yaml:"skills,omitempty"`
+}
+
+// ManagedHostSkill records Ducklord's relationship with one skill for one
+// agent target. An absent record is legacy/unmanaged; an explicit "none"
+// record prevents legacy selected_skills from being applied to this target.
+type ManagedHostSkill struct {
+	ID         string `json:"id" yaml:"id"`
+	Management string `json:"management" yaml:"management"` // none, push, or pull
 }
 
 func DefaultConfigPath() string {
@@ -243,6 +271,21 @@ func validateConfigSavePath(path string) error {
 }
 
 func (c *Config) normalize() error {
+	seenSources := make(map[string]bool, len(c.SkillSources))
+	seenSkillIDs := make(map[string]bool, len(c.SkillSources))
+	for i := range c.SkillSources {
+		if err := c.SkillSources[i].Normalize(); err != nil {
+			return fmt.Errorf("skill source %d: %w", i+1, err)
+		}
+		if seenSources[c.SkillSources[i].URL] {
+			return fmt.Errorf("duplicate skill source %q", c.SkillSources[i].URL)
+		}
+		seenSources[c.SkillSources[i].URL] = true
+		if seenSkillIDs[c.SkillSources[i].SkillID] {
+			return fmt.Errorf("duplicate skill source for %q", c.SkillSources[i].SkillID)
+		}
+		seenSkillIDs[c.SkillSources[i].SkillID] = true
+	}
 	if err := c.WorkspaceTheme.Validate(); err != nil {
 		return err
 	}
@@ -452,6 +495,7 @@ func (c *Config) Client(name string) (Client, bool) {
 func (c *Config) Clone() *Config {
 	clone := *c
 	clone.Clients = append([]Client(nil), c.Clients...)
+	clone.SkillSources = append([]SkillTrackingSource(nil), c.SkillSources...)
 	clone.Shortcuts = make(map[string]string, len(c.Shortcuts))
 	for action, binding := range c.Shortcuts {
 		clone.Shortcuts[action] = binding
@@ -463,6 +507,11 @@ func (c *Config) Clone() *Config {
 	}
 	for i := range clone.Clients {
 		clone.Clients[i].NotificationLevels = cloneNotificationLevels(c.Clients[i].NotificationLevels)
+		clone.Clients[i].SkillTargets = append([]SkillInstallTarget(nil), c.Clients[i].SkillTargets...)
+		for j := range clone.Clients[i].SkillTargets {
+			clone.Clients[i].SkillTargets[j].Skills = append([]ManagedHostSkill(nil), c.Clients[i].SkillTargets[j].Skills...)
+		}
+		clone.Clients[i].SelectedSkills = append([]string(nil), c.Clients[i].SelectedSkills...)
 	}
 	if c.RawOutputSubscriptions != nil {
 		value := *c.RawOutputSubscriptions
@@ -520,6 +569,29 @@ func (c *Client) Normalize() error {
 	c.Group = strings.TrimSpace(c.Group)
 	c.Ducklion = strings.TrimSpace(c.Ducklion)
 	c.SSH = strings.TrimSpace(c.SSH)
+	for i := range c.SkillTargets {
+		if err := c.SkillTargets[i].Normalize(); err != nil {
+			return fmt.Errorf("skill target %d: %w", i+1, err)
+		}
+	}
+	seenTargets := make(map[string]bool, len(c.SkillTargets))
+	for _, target := range c.SkillTargets {
+		if seenTargets[target.ID] {
+			return fmt.Errorf("duplicate skill target %q", target.ID)
+		}
+		seenTargets[target.ID] = true
+	}
+	seenSkills := make(map[string]bool, len(c.SelectedSkills))
+	for i, skill := range c.SelectedSkills {
+		c.SelectedSkills[i] = strings.TrimSpace(skill)
+		if !SafeIdentifier(c.SelectedSkills[i]) {
+			return fmt.Errorf("invalid selected skill %q", skill)
+		}
+		if seenSkills[c.SelectedSkills[i]] {
+			return fmt.Errorf("duplicate selected skill %q", c.SelectedSkills[i])
+		}
+		seenSkills[c.SelectedSkills[i]] = true
+	}
 	if c.Name == "" {
 		return fmt.Errorf("name is required")
 	}
@@ -549,6 +621,47 @@ func (c *Client) Normalize() error {
 	}
 	if !safeRemoteCommandLine(c.SSH) {
 		return fmt.Errorf("invalid ssh command %q", c.SSH)
+	}
+	return nil
+}
+
+func (s *SkillTrackingSource) Normalize() error {
+	s.SkillID = strings.TrimSpace(s.SkillID)
+	if !SafeIdentifier(s.SkillID) {
+		return fmt.Errorf("invalid skill ID %q", s.SkillID)
+	}
+	s.URL = strings.TrimSpace(s.URL)
+	u, err := url.Parse(s.URL)
+	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+		return fmt.Errorf("skill source URL must be an HTTPS URL")
+	}
+	return nil
+}
+
+func (t *SkillInstallTarget) Normalize() error {
+	t.ID = strings.TrimSpace(t.ID)
+	t.Path = strings.TrimSpace(t.Path)
+	if !SafeIdentifier(t.ID) {
+		return fmt.Errorf("invalid skill target identifier %q", t.ID)
+	}
+	if t.Path == "" || !filepath.IsAbs(t.Path) || strings.ContainsRune(t.Path, 0) {
+		return fmt.Errorf("skill target %q path must be absolute", t.ID)
+	}
+	seen := make(map[string]bool, len(t.Skills))
+	for i := range t.Skills {
+		skill := &t.Skills[i]
+		skill.ID = strings.TrimSpace(skill.ID)
+		skill.Management = strings.ToLower(strings.TrimSpace(skill.Management))
+		if !SafeIdentifier(skill.ID) {
+			return fmt.Errorf("invalid managed skill %q", skill.ID)
+		}
+		if skill.Management != "none" && skill.Management != "push" && skill.Management != "pull" {
+			return fmt.Errorf("managed skill %q must use none, push, or pull", skill.ID)
+		}
+		if seen[skill.ID] {
+			return fmt.Errorf("duplicate managed skill %q", skill.ID)
+		}
+		seen[skill.ID] = true
 	}
 	return nil
 }

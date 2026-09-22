@@ -83,6 +83,23 @@ func TestPendingPTYInputRejectsUntilOutputReady(t *testing.T) {
 	}
 }
 
+func TestPendingPTYInputYieldsToNewSessionWizard(t *testing.T) {
+	s := &tuiState{cfg: &ducklord.Config{}, newSessionMode: true}
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	control := &ducklord.ControlSession{Stdin: writer}
+	var openCancel context.CancelFunc
+	id := 7
+
+	if handlePendingPTYInput(s, []byte("\r"), true, &control, &openCancel, &id) {
+		t.Fatal("new-session wizard input was consumed by the stale PTY lease")
+	}
+	if control == nil || id != 7 {
+		t.Fatal("new-session wizard input changed the stale PTY lease")
+	}
+}
+
 func TestPendingPTYSessionRemovalBeforeControlCompletionRestoresNavigation(t *testing.T) {
 	s, _, removed, remaining := workspacePaneTestState(t)
 	s.hostSync = make(map[string]ducklord.SessionUpdate)

@@ -44,15 +44,19 @@ func TestDucklordHostRetentionContainerE2E(t *testing.T) {
 	})
 	capture := newSizedTUICapture(terminal, 28, 130)
 	capture.waitCurrent(t, "PROJECTS", 20*time.Second)
-	writePTY(t, terminal, "hjj\r")
-	capture.waitCurrent(t, "Host PTY log retention", 15*time.Second)
+	writePTY(t, terminal, "h")
+	capture.waitCurrent(t, "Choose a host to view its settings", 10*time.Second)
+	capture.waitCurrent(t, "› client-a · connected", 10*time.Second)
+	writePTY(t, terminal, "\r") // select client-a from the Host list.
+	capture.waitCurrent(t, "Host actions · client-a", 10*time.Second)
+	writePTY(t, terminal, "jj\r") // Host PTY log retention is action index 2.
 	capture.waitCurrent(t, "Current: 7 days", 20*time.Second)
 	writePTY(t, terminal, "8\r")
 	capture.waitCurrent(t, "Change 7 → 8 days?", 10*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Saved: 8 days", 20*time.Second)
 	readDays := func() (int, bool) {
-		output, readErr := exec.Command(runtime, "exec", "-u", "duck", "ducklion-client-a", "sh", "-lc",
+		output, readErr := exec.Command(runtime, "exec", "-u", "duck", e2eContainerName("ducklion-client-a"), "sh", "-lc",
 			"cat \"$HOME/.duckway/ducklion/host-settings.json\"").Output()
 		if readErr != nil {
 			return 0, false
@@ -81,7 +85,12 @@ func TestDucklordHostRetentionContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\r") // close the persistent success confirmation
 	// Restore the fixture through the same TUI path so the shared host starts
 	// subsequent cases with its seven-day default.
-	writePTY(t, terminal, "hjj\r")
+	writePTY(t, terminal, "h")
+	capture.waitCurrent(t, "Choose a host to view its settings", 10*time.Second)
+	capture.waitCurrent(t, "› client-a · connected", 10*time.Second)
+	writePTY(t, terminal, "\r") // select client-a from the Host list.
+	capture.waitCurrent(t, "Host actions · client-a", 10*time.Second)
+	writePTY(t, terminal, "jj\r") // Host PTY log retention is action index 2.
 	capture.waitCurrent(t, "Current: 8 days", 20*time.Second)
 	writePTY(t, terminal, "7\r")
 	capture.waitCurrent(t, "Change 8 → 7 days?", 10*time.Second)

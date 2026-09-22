@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -317,6 +319,117 @@ func TestWorkspaceNewShellIntentClearsOnHostChangeAndCancel(t *testing.T) {
 	state.cancelCreate()
 	if state.workspaceNewSessionIntent != nil {
 		t.Fatal("cancel retained stale Project placement intent")
+	}
+}
+
+func TestWorkspaceNewShellDiscoveryIgnoresTransientNonLiveUpdate(t *testing.T) {
+	state, projectID, a, _ := workspacePaneTestState(t)
+	state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceNewTab}
+	state.newSessionMode = true
+	state.newSessionDiscovering = true
+	state.newSessionStep = "host"
+	state.newSessionClient = "host"
+	state.hostSync = map[string]ducklord.SessionUpdate{"host": {
+		Client: "host", State: "live", Generation: 2, InstanceID: a.InstanceID,
+	}}
+
+	if !state.applySessionUpdate(ducklord.SessionUpdate{
+		Client: "host", State: "reconnecting", Generation: 2, InstanceID: a.InstanceID,
+	}) {
+		t.Fatal("transient non-live update was rejected")
+	}
+	if !state.newSessionDiscovering || state.newSessionStep != "host" || state.workspaceNewSessionIntent == nil {
+		t.Fatalf("workspace shell discovery was cancelled: discovering=%v step=%q intent=%+v", state.newSessionDiscovering, state.newSessionStep, state.workspaceNewSessionIntent)
+	}
+	_, _, _, ready := state.applyCreateDiscovery(createDiscoveryEvent{
+		kind: "projects", client: "host", generation: 2, instance: a.InstanceID,
+		projects: []ducklord.RemoteProject{{Name: "Work", Path: "/work"}},
+	})
+	if ready || state.newSessionDiscovering || state.newSessionStep != "project" || state.workspaceNewSessionIntent == nil {
+		t.Fatalf("workspace shell discovery result was discarded: ready=%v discovering=%v step=%q intent=%+v", ready, state.newSessionDiscovering, state.newSessionStep, state.workspaceNewSessionIntent)
+	}
+}
+
+func TestWorkspaceNewShellDiscoveryRetriesAfterHostReconnect(t *testing.T) {
+	state, projectID, _, _ := workspacePaneTestState(t)
+	state.runner = fakeRunner{}
+	state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceNewTab}
+	state.newSessionMode = true
+	state.newSessionClient = "host"
+	state.newSessionKind = "shell"
+	state.newSessionStep = "host"
+	state.newSessionErr = "host connection changed; choose it again"
+	done := make(chan createDiscoveryEvent, 1)
+	previous := ducklord.SessionUpdate{Client: "host", State: "offline", Generation: 1, InstanceID: "old"}
+	update := ducklord.SessionUpdate{Client: "host", State: "live", Generation: 2, InstanceID: "new"}
+	state.hostSync = map[string]ducklord.SessionUpdate{"host": update}
+	if !state.retryWorkspaceCreateDiscovery(context.Background(), done, previous, update) {
+		t.Fatal("workspace discovery was not retried after reconnect")
+	}
+	if state.workspaceNewSessionIntent == nil || state.newSessionClient != "host" || state.newSessionStep != "host" {
+		t.Fatalf("workspace selection was not retained: intent=%+v client=%q step=%q", state.workspaceNewSessionIntent, state.newSessionClient, state.newSessionStep)
+	}
+	select {
+	case event := <-done:
+		if event.kind != "projects" || event.client != "host" {
+			t.Fatalf("unexpected retry event: %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("workspace discovery retry did not complete")
+	}
+}
+
+func TestWorkspaceNewShellDiscoveryRetriesWhenInFlightRequestIsCanceled(t *testing.T) {
+	state, projectID, a, _ := workspacePaneTestState(t)
+	state.runner = fakeRunner{}
+	state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceVertical}
+	state.newSessionMode = true
+	state.newSessionDiscovering = true
+	state.newSessionClient = "host"
+	state.newSessionKind = "shell"
+	state.newSessionStep = "host"
+	previous := ducklord.SessionUpdate{Client: "host", State: "live", Generation: 1, InstanceID: "old"}
+	update := ducklord.SessionUpdate{Client: "host", State: "live", Generation: 2, InstanceID: a.InstanceID}
+	state.hostSync = map[string]ducklord.SessionUpdate{"host": update}
+	done := make(chan createDiscoveryEvent, 1)
+	if !state.retryWorkspaceCreateDiscovery(context.Background(), done, previous, update) {
+		t.Fatal("workspace discovery was not retried after the in-flight request was canceled")
+	}
+	if !state.newSessionDiscovering || state.workspaceNewSessionIntent == nil {
+		t.Fatalf("workspace selection was not retained: discovering=%v intent=%+v", state.newSessionDiscovering, state.workspaceNewSessionIntent)
+	}
+	select {
+	case event := <-done:
+		if event.kind != "projects" || event.client != "host" {
+			t.Fatalf("unexpected retry event: %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("workspace discovery retry did not complete")
+	}
+}
+
+func TestWorkspaceNewShellDiscoveryDoesNotRestartActiveRequestOnInventoryUpdate(t *testing.T) {
+	state, projectID, _, _ := workspacePaneTestState(t)
+	state.runner = fakeRunner{}
+	state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceHorizontal}
+	state.newSessionMode = true
+	state.newSessionDiscovering = true
+	state.newSessionClient = "host"
+	state.newSessionKind = "shell"
+	state.newSessionStep = "host"
+	state.newSessionErr = "loading bookmarks..."
+	state.newSessionCancel = func() {}
+	previous := ducklord.SessionUpdate{Client: "host", State: "live", Generation: 1, InstanceID: "old"}
+	update := ducklord.SessionUpdate{Client: "host", State: "live", Generation: 2, InstanceID: "new"}
+	state.hostSync = map[string]ducklord.SessionUpdate{"host": update}
+	done := make(chan createDiscoveryEvent, 1)
+	if state.retryWorkspaceCreateDiscovery(context.Background(), done, previous, update) {
+		t.Fatal("active host discovery was restarted after an inventory update")
+	}
+	select {
+	case event := <-done:
+		t.Fatalf("unexpected replacement discovery event: %+v", event)
+	default:
 	}
 }
 
@@ -858,5 +971,669 @@ func TestWorkspaceExistingPickerCanPlaceKnownOfflineSession(t *testing.T) {
 	}
 	if got := state.activity().ProjectLayout.ProjectsFor(identity); len(got) != 1 || got[0] != projectID {
 		t.Fatalf("offline Session placement=%v", got)
+	}
+}
+
+func TestNotesEmptyEnterIsSafe(t *testing.T) {
+	s, _, _, _ := workspacePaneTestState(t)
+	s.notesEntries = nil
+	s.handleNotesInput([]byte("\r"))
+	if s.outputErr == "" {
+		t.Fatal("empty Notes Enter produced no feedback")
+	}
+}
+
+func TestNotesExitNeverFallsThroughToCreate(t *testing.T) {
+	s, projectID, _, _ := workspacePaneTestState(t)
+	nav, err := s.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorPane := nav.CurrentPaneID()
+	s.notesPreviousProjectID, s.notesPreviousPaneID = projectID, priorPane
+	s.notesPreviousProjectFocus = true
+	s.workspacePaneMode, s.workspacePaneStep = true, "notes"
+	if !s.handleCentralModalCancel([]byte("\x1b")) {
+		t.Fatal("Notes Esc was not consumed")
+	}
+	if s.workspacePaneMode || s.newSessionMode {
+		t.Fatalf("Notes Esc leaked into Create: pane=%v create=%v", s.workspacePaneMode, s.newSessionMode)
+	}
+	if nav.CurrentProjectID() != projectID || nav.CurrentPaneID() != priorPane {
+		t.Fatalf("Notes Esc changed navigation: %s/%s", nav.CurrentProjectID(), nav.CurrentPaneID())
+	}
+
+	s.workspacePaneMode, s.workspacePaneStep, s.notesFormActive = true, "notes", true
+	s.notesPreviousProjectID, s.notesPreviousPaneID = projectID, priorPane
+	s.openPrefixPane("o")
+	if s.workspacePaneMode || s.newSessionMode || s.notesFormActive {
+		t.Fatalf("Notes prefix+o leaked state: pane=%v create=%v form=%v", s.workspacePaneMode, s.newSessionMode, s.notesFormActive)
+	}
+
+	// Ctrl-C follows the same modal cancellation path and must not be routed
+	// into Project actions while the built-in form is active.
+	s.workspacePaneMode, s.workspacePaneStep, s.notesFormActive = true, "notes", true
+	if !s.handleCentralModalCancel([]byte("\x03")) {
+		t.Fatal("Notes Ctrl-C was not consumed")
+	}
+	if !s.workspacePaneMode || s.newSessionMode || s.notesFormActive {
+		t.Fatalf("Notes Ctrl-C did not clear form: pane=%v create=%v form=%v", s.workspacePaneMode, s.newSessionMode, s.notesFormActive)
+	}
+	if !s.handleCentralModalCancel([]byte("\x03")) || s.workspacePaneMode {
+		t.Fatal("second Notes Ctrl-C did not close modal")
+	}
+}
+
+func TestNotesFormCursorEditsAtInsertionPoint(t *testing.T) {
+	s, _, _, _ := workspacePaneTestState(t)
+	s.notesFormActive, s.notesFormField, s.notesFormTitle = true, 0, "abc"
+	s.notesFormCursor = 1
+	s.handleNotesInput([]byte("X"))
+	if s.notesFormTitle != "aXbc" || s.notesFormCursor != 2 {
+		t.Fatalf("insert at cursor: value=%q cursor=%d", s.notesFormTitle, s.notesFormCursor)
+	}
+	s.handleNotesInput([]byte("\x1b[C"))
+	s.handleNotesInput([]byte("\x1b[D"))
+	s.handleNotesInput([]byte("\x7f"))
+	if s.notesFormTitle != "abc" || s.notesFormCursor != 1 {
+		t.Fatalf("delete before cursor: value=%q cursor=%d", s.notesFormTitle, s.notesFormCursor)
+	}
+	s.handleNotesInput([]byte("\x1b[3~"))
+	if s.notesFormTitle != "ac" || s.notesFormCursor != 1 {
+		t.Fatalf("forward delete at cursor: value=%q cursor=%d", s.notesFormTitle, s.notesFormCursor)
+	}
+	s.handleNotesInput([]byte("\x1b[C"))
+	s.handleNotesInput([]byte("\x1b[3~"))
+	if s.notesFormTitle != "ac" || s.notesFormCursor != 2 {
+		t.Fatalf("forward delete at end changed value: value=%q cursor=%d", s.notesFormTitle, s.notesFormCursor)
+	}
+	s.handleNotesInput([]byte("\x1b[D"))
+	var out strings.Builder
+	s.renderNotesModal(&out, 80, 20)
+	if !strings.Contains(out.String(), "Editing Title") || !strings.Contains(out.String(), "cursor 1/2") || !strings.Contains(out.String(), "a│c") {
+		t.Fatalf("cursor state not visible: %q", out.String())
+	}
+}
+
+func TestNotesFormArrowsSurviveModalInputRouting(t *testing.T) {
+	s := &tuiState{
+		workspacePaneMode: true,
+		workspacePaneStep: "notes",
+		notesFormActive:   true,
+		notesFormField:    0,
+		notesFormTitle:    "abc",
+		notesFormCursor:   1,
+	}
+	for _, tc := range []struct {
+		input  []byte
+		cursor int
+	}{
+		{[]byte("\x1b[C"), 2},
+		{[]byte("\x1b[D"), 1},
+	} {
+		if s.shouldDiscardModalArrow(tc.input) {
+			t.Fatalf("Notes form arrow %q was discarded by modal routing", tc.input)
+		}
+		if s.handleCentralModalCancel(tc.input) {
+			t.Fatalf("Notes form arrow %q was treated as modal cancellation", tc.input)
+		}
+		if !s.handleWorkspacePaneInput(tc.input) || s.notesFormCursor != tc.cursor {
+			t.Fatalf("Notes form arrow %q did not reach cursor handler: cursor=%d", tc.input, s.notesFormCursor)
+		}
+	}
+}
+
+func TestDetachConfirmationArrowThenEnterKeepsModalSelection(t *testing.T) {
+	s := &tuiState{
+		workspacePaneMode:  true,
+		workspacePaneStep:  "detach-confirm",
+		workspacePaneIndex: 1, // Cancel is the safe default.
+	}
+	s.handleWorkspacePaneInput([]byte("\x1b[A"))
+	if !s.workspacePaneMode || s.workspacePaneIndex != 0 {
+		t.Fatalf("up arrow changed detach modal incorrectly: open=%v index=%d", s.workspacePaneMode, s.workspacePaneIndex)
+	}
+}
+
+func TestNotesModalRendersManuscriptExcerptWithinHeight(t *testing.T) {
+	s, _, _, _ := workspacePaneTestState(t)
+	s.workspacePaneMode = true
+	s.workspacePaneStep = "notes"
+	s.notesScope = ducklord.NotesProject
+	s.notesEntries = []ducklord.NoteEntry{{Title: "Chronicle", Body: "first line\nwith a very long body that should be shortened before it reaches the modal display"}}
+
+	var out strings.Builder
+	s.renderWorkspacePaneModal(&out, 100, 8)
+	rendered := out.String()
+	for _, want := range []string{"Notes Codex", "Chronicle", "first line with a very long body", "Enter copies selected CONTENT"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("Notes modal missing %q in %q", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "before it reaches the modal display") {
+		t.Fatalf("Notes modal rendered an unbounded body excerpt: %q", rendered)
+	}
+}
+
+func TestOpenPrefixNotesCreatesLoadsAndIsIdempotent(t *testing.T) {
+	s, projectID, a, _ := workspacePaneTestState(t)
+	s.cfgPath = filepath.Join(t.TempDir(), "config.yaml")
+	s.notesProjectID = projectID
+	priorNav, err := s.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorProject, priorPane := priorNav.CurrentProjectID(), priorNav.CurrentPaneID()
+	if err := ducklord.SaveNotes(filepath.Dir(s.cfgPath), projectID, "## Seed\nbody\n"); err != nil {
+		t.Fatal(err)
+	}
+	s.openPrefixPane("o")
+	if !s.workspacePaneMode || s.workspacePaneStep != "notes" || len(s.notesEntries) != 1 || s.notesEntries[0].Body != "body" {
+		t.Fatalf("Notes open failed: mode=%v entries=%v err=%s", s.workspacePaneMode, s.notesEntries, s.outputErr)
+	}
+	wantIdentity, ok := ducklord.IdentityFromSession(a)
+	if !ok || s.notesSessionIdentity != wantIdentity {
+		t.Fatalf("Notes open lost selected Session identity: got=%+v want=%+v", s.notesSessionIdentity, wantIdentity)
+	}
+	if !s.syncCurrentNotes() || s.notesSessionIdentity != wantIdentity {
+		t.Fatalf("Notes sync lost selected Session identity: got=%+v want=%+v", s.notesSessionIdentity, wantIdentity)
+	}
+	s.handleNotesInput([]byte("s"))
+	if strings.Contains(s.outputErr, "unavailable") {
+		t.Fatalf("Session scope became unavailable after opening Notes: %q", s.outputErr)
+	}
+	p := s.activity().ProjectLayout.Project(projectID)
+	count := len(p.Tabs)
+	s.openPrefixPane("o")
+	if len(p.Tabs) != count {
+		t.Fatalf("repeated Notes open added tab: %d -> %d", count, len(p.Tabs))
+	}
+	if s.workspacePaneMode {
+		t.Fatal("prefix+o did not toggle Notes modal closed")
+	}
+	nav, err := s.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nav.CurrentProjectID() != priorProject || nav.CurrentPaneID() != priorPane {
+		t.Fatalf("Esc after repeated Notes open returned to %s/%s, want %s/%s", nav.CurrentProjectID(), nav.CurrentPaneID(), priorProject, priorPane)
+	}
+}
+
+func TestProjectFocusPrefixNotesRouteReturnsToProjectPane(t *testing.T) {
+	s, projectID, _, _ := workspacePaneTestState(t)
+	nav, err := s.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(projectID); err != nil {
+		t.Fatal(err)
+	}
+	s.workspaceProjectFocus = true
+	priorPane := nav.CurrentPaneID()
+
+	if consumed, command := s.handlePanePrefix([]byte("\x02")); !consumed || command != "" {
+		t.Fatalf("prefix start consumed=%v command=%q", consumed, command)
+	}
+	consumed, command := s.handlePanePrefix([]byte("o"))
+	if !consumed || command != "o" {
+		t.Fatalf("prefix+o consumed=%v command=%q", consumed, command)
+	}
+	s.openPrefixPane(command)
+	if !s.workspacePaneMode || s.workspacePaneStep != "notes" {
+		t.Fatalf("prefix+o did not open Notes modal: project=%q pane=%q err=%q", nav.CurrentProjectID(), nav.CurrentPaneID(), s.outputErr)
+	}
+	if !s.handleCentralModalCancel([]byte("\x1b")) {
+		t.Fatal("Esc was not consumed by Notes modal")
+	}
+	if nav.CurrentProjectID() != projectID || nav.CurrentPaneID() != priorPane {
+		t.Fatalf("Esc returned to %s/%s, want %s/%s", nav.CurrentProjectID(), nav.CurrentPaneID(), projectID, priorPane)
+	}
+	if !s.workspaceProjectFocus {
+		t.Fatal("Esc did not restore Project focus")
+	}
+}
+
+func TestNotesModalDoesNotMutateLayoutAndFormPersists(t *testing.T) {
+	s, projectID, _, _ := workspacePaneTestState(t)
+	s.cfgPath = filepath.Join(t.TempDir(), "config.yaml")
+	before := s.activity().ProjectLayout.Clone()
+	nav, err := s.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, pane := nav.CurrentProjectID(), nav.CurrentPaneID()
+	s.openPrefixPane("o")
+	if !s.workspacePaneMode || s.workspacePaneStep != "notes" {
+		t.Fatalf("Notes modal did not open: %q", s.outputErr)
+	}
+	if !reflect.DeepEqual(before, s.activity().ProjectLayout) || nav.CurrentProjectID() != project || nav.CurrentPaneID() != pane {
+		t.Fatal("opening Notes changed the workspace layout or selection")
+	}
+	s.handleNotesInput([]byte("a"))
+	for _, b := range [][]byte{[]byte("New note"), []byte("\t"), []byte("body"), []byte("\x13")} {
+		s.handleNotesInput(b)
+	}
+	entries, err := ducklord.LoadNotes(filepath.Dir(s.cfgPath), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Title != "New note" || entries[0].Body != "body" {
+		t.Fatalf("form did not persist note: %+v", entries)
+	}
+	s.handleNotesInput([]byte("e"))
+	s.handleNotesInput([]byte("\x13"))
+}
+
+func TestEditNotesRestoreFailureLeavesError(t *testing.T) {
+	s, projectID, _, _ := workspacePaneTestState(t)
+	s.cfgPath = filepath.Join(t.TempDir(), "config.yaml")
+	s.notesProjectID = projectID
+	if err := ducklord.SaveNotes(filepath.Dir(s.cfgPath), projectID, "## Seed\nbody\n"); err != nil {
+		t.Fatal(err)
+	}
+	oldMakeRaw, oldRestore := notesMakeRaw, notesRestore
+	defer func() { notesMakeRaw, notesRestore = oldMakeRaw, oldRestore }()
+	calls := 0
+	notesMakeRaw = func() (*termState, error) {
+		calls++
+		if calls == 2 {
+			return nil, fmt.Errorf("injected restore failure")
+		}
+		return &termState{}, nil
+	}
+	notesRestore = func(*termState) {}
+	t.Setenv("EDITOR", "true")
+	s.editNotesNotebook()
+	if s.outputErr != "restore editor terminal: injected restore failure" {
+		t.Fatalf("restore failure outputErr=%q", s.outputErr)
+	}
+}
+
+func TestSyncCurrentNotesLoadsSelectedProject(t *testing.T) {
+	s, first, _, _ := workspacePaneTestState(t)
+	root := t.TempDir()
+	s.cfgPath = filepath.Join(root, "config.yaml")
+	second, err := s.activity().ProjectLayout.AddProject("Second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.activity().ProjectLayout.PlaceNote(second); err != nil {
+		t.Fatal(err)
+	}
+	if err = ducklord.SaveNotes(root, first, "## First\nfirst body\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err = ducklord.SaveNotes(root, second, "## Second\nsecond body\n"); err != nil {
+		t.Fatal(err)
+	}
+	nav, err := s.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = nav.SelectProject(second); err != nil {
+		t.Fatal(err)
+	}
+	_, pane, ok := s.activity().ProjectLayout.NotePane(second)
+	if !ok {
+		t.Fatal("missing second Notes pane")
+	}
+	if err = nav.SelectPane(second, pane); err != nil {
+		t.Fatal(err)
+	}
+	s.notesSessionIdentity = ducklord.SessionIdentity{InstanceID: "9df68174-9e13-4dc9-b44d-8532c87f5971", SessionID: "ABC123"}
+	s.notesProjectID = first
+	if !s.syncCurrentNotes() || len(s.notesEntries) != 1 || s.notesEntries[0].Body != "second body" {
+		t.Fatalf("sync did not replace entries: %+v", s.notesEntries)
+	}
+	if s.notesSessionIdentity.Key() != "" || s.notesSessionID != "" {
+		t.Fatalf("stale session identity retained on Notes pane: %+v/%q", s.notesSessionIdentity, s.notesSessionID)
+	}
+	s.notesScope = ducklord.NotesSession
+	s.handleNotesInput([]byte("s"))
+	if !strings.Contains(s.outputErr, "unavailable") {
+		t.Fatalf("expected unavailable Session book, got %q", s.outputErr)
+	}
+}
+
+func TestNotesEntryEditorsPersistAddEditAndWholeNotebook(t *testing.T) {
+	s, projectID, _, _ := workspacePaneTestState(t)
+	root := t.TempDir()
+	s.cfgPath = filepath.Join(root, "config.yaml")
+	s.notesProjectID = projectID
+	if err := ducklord.SaveNotes(root, projectID, "## First\none\n"); err != nil {
+		t.Fatal(err)
+	}
+	editor := filepath.Join(root, "editor")
+	if err := os.WriteFile(editor, []byte("#!/bin/sh\nprintf '%s\\n' '## Edited' 'changed' > \"$1\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s.notesEntries, _ = ducklord.LoadNotes(root, projectID)
+	s.workspacePaneIndex = 0
+	oldMakeRaw, oldRestore := notesMakeRaw, notesRestore
+	defer func() { notesMakeRaw, notesRestore = oldMakeRaw, oldRestore }()
+	notesMakeRaw = func() (*termState, error) { return &termState{}, nil }
+	notesRestore = func(*termState) {}
+	t.Setenv("EDITOR", editor)
+	s.editNotesEntry(0)
+	entries, err := ducklord.LoadNotes(root, projectID)
+	if err != nil || len(entries) != 1 || entries[0].Title != "Edited" || entries[0].Body != "changed" {
+		t.Fatalf("selected edit entries=%+v err=%v", entries, err)
+	}
+	s.editNotesEntry(-1)
+	entries, err = ducklord.LoadNotes(root, projectID)
+	if err != nil || len(entries) != 2 || entries[1].Title != "Edited" {
+		t.Fatalf("add entries=%+v err=%v", entries, err)
+	}
+	if err := os.WriteFile(editor, []byte("#!/bin/sh\nprintf '%s\\n' '## Whole' 'notebook body' > \"$1\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s.editNotesNotebook()
+	entries, err = ducklord.LoadNotes(root, projectID)
+	if err != nil || len(entries) != 1 || entries[0].Title != "Whole" || entries[0].Body != "notebook body" {
+		t.Fatalf("whole edit entries=%+v err=%v output=%q", entries, err, s.outputErr)
+	}
+}
+
+func TestNotesEntryEditRejectsReorderedSelectionBeforeEditor(t *testing.T) {
+	s, projectID, _, _ := workspacePaneTestState(t)
+	root := t.TempDir()
+	s.cfgPath = filepath.Join(root, "config.yaml")
+	s.notesProjectID = projectID
+	s.notesEntries = []ducklord.NoteEntry{{Title: "Old", Body: "old body"}}
+	if err := ducklord.SaveNotes(root, projectID, "## Current\ncurrent body\n## Other\nbody\n"); err != nil {
+		t.Fatal(err)
+	}
+	s.editNotesEntry(0)
+	if !strings.Contains(s.outputErr, "note changed while editing") {
+		t.Fatalf("missing stale selection error: %q", s.outputErr)
+	}
+	if len(s.notesEntries) != 2 || s.notesEntries[0].Title != "Current" {
+		t.Fatalf("stale selection was not refreshed: %+v", s.notesEntries)
+	}
+	entries, err := ducklord.LoadNotes(root, projectID)
+	if err != nil || len(entries) != 2 || entries[0].Title != "Current" {
+		t.Fatalf("disk notes changed after rejected edit: %+v err=%v", entries, err)
+	}
+}
+
+func TestNotesInputDoesNotConsumeHelpKeys(t *testing.T) {
+	s, projectID, _, _ := workspacePaneTestState(t)
+	s.notesProjectID = projectID
+	s.notesEntries = []ducklord.NoteEntry{{Title: "One"}, {Title: "Two"}}
+	s.workspacePaneIndex = 0
+	s.helpMode = true
+	for _, key := range []string{"j", "a", "e", "E", "\r", "\x1b"} {
+		if s.handleNotesInput([]byte(key)) {
+			t.Fatalf("help key %q was consumed", key)
+		}
+	}
+	if s.workspacePaneIndex != 0 || len(s.notesEntries) != 2 {
+		t.Fatalf("help input changed Notes state: index=%d entries=%d", s.workspacePaneIndex, len(s.notesEntries))
+	}
+}
+
+func TestScopedNotesInputRoutesSearchAndPages(t *testing.T) {
+	s, projectID, a, b := workspacePaneTestState(t)
+	root := t.TempDir()
+	s.cfgPath = filepath.Join(root, "config.yaml")
+	if _, err := s.activity().ProjectLayout.Place(projectID, ducklord.SessionIdentity{InstanceID: b.InstanceID, SessionID: b.SessionID}, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	s.notesProjectID = projectID
+	s.notesSessionIdentity, _ = ducklord.IdentityFromSession(a)
+	var sessionBook string
+	var err error
+	sessionBook, err = ducklord.SessionNotesIdentity(s.notesSessionIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ducklord.SaveScopedNotes(root, ducklord.NotesGlobal, "", "## Global\nalpha\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ducklord.SaveScopedNotes(root, ducklord.NotesProject, projectID, "## Project\nbeta\n## Other\ngamma\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ducklord.SaveScopedNotes(root, ducklord.NotesSession, sessionBook, "## Session\ndelta\n"); err != nil {
+		t.Fatal(err)
+	}
+	s.notesScope = ducklord.NotesProject
+	s.loadNotesScope()
+	s.handleNotesInput([]byte("g"))
+	if s.notesScope != ducklord.NotesGlobal || len(s.notesEntries) != 1 || s.notesEntries[0].Title != "Global" {
+		t.Fatalf("global route: scope=%q entries=%+v", s.notesScope, s.notesEntries)
+	}
+	s.handleNotesInput([]byte("s"))
+	if s.notesScope != ducklord.NotesSession || len(s.notesEntries) != 1 || s.notesEntries[0].Title != "Session" {
+		t.Fatalf("session route: scope=%q entries=%+v err=%q", s.notesScope, s.notesEntries, s.outputErr)
+	}
+	s.handleNotesInput([]byte("p"))
+	s.handleNotesInput([]byte("/"))
+	s.handleNotesInput([]byte("g"))
+	s.handleNotesInput([]byte("\r"))
+	if len(s.notesEntries) != 1 || s.notesEntries[0].Title != "Other" {
+		t.Fatalf("project search: query=%q entries=%+v", s.notesQuery, s.notesEntries)
+	}
+	if len(s.notesEntryIndexes) != 1 || s.notesEntryIndexes[0] != 1 {
+		t.Fatalf("search lost raw entry identity: indexes=%v", s.notesEntryIndexes)
+	}
+	s.notesQuery = ""
+	s.loadNotesScope()
+	s.workspacePaneIndex = 0
+	firstIdentity, _ := ducklord.IdentityFromSession(a)
+	s.notesSessionIdentity = firstIdentity
+	s.notesSessionID = firstIdentity.SessionID
+	s.handleNotesInput([]byte("\x1b[C"))
+	// Project Notes opens the Session picker when the Project has multiple
+	// attached Sessions; select the second child explicitly.
+	s.handleNotesInput([]byte("\x1b[B"))
+	s.handleNotesInput([]byte("\r"))
+	if s.notesScope != ducklord.NotesSession || s.notesSessionID != b.SessionID {
+		t.Fatalf("right did not navigate project to child session: scope=%q session=%q", s.notesScope, s.notesSessionID)
+	}
+}
+
+func TestProjectNotesRightArrowOpensItsOnlySession(t *testing.T) {
+	s, projectID, a, _ := workspacePaneTestState(t)
+	s.notesProjectID = projectID
+	s.notesScope = ducklord.NotesProject
+	s.notesSessionIdentity, _ = ducklord.IdentityFromSession(a)
+	s.notesSessionID = a.SessionID
+	if !s.handleNotesInput([]byte("\x1b[C")) {
+		t.Fatal("right arrow was not consumed")
+	}
+	if s.notesScope != ducklord.NotesSession || s.notesSessionName() != a.Name {
+		t.Fatalf("Project Notes did not enter named Session scope: scope=%q name=%q id=%q", s.notesScope, s.notesSessionName(), s.notesSessionID)
+	}
+}
+
+func TestProjectNotesRightArrowListsSessionsAddedAfterOpening(t *testing.T) {
+	s, projectID, a, b := workspacePaneTestState(t)
+	first, _ := ducklord.IdentityFromSession(a)
+	second, _ := ducklord.IdentityFromSession(b)
+	s.notesProjectID = projectID
+	s.notesScope = ducklord.NotesProject
+	s.notesSessionIdentity = first
+	s.notesSessionID = first.SessionID
+	s.loadNotesScope()
+	if _, err := s.activity().ProjectLayout.Place(projectID, second, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if !s.handleNotesInput([]byte("\x1b[C")) {
+		t.Fatal("right arrow was not consumed")
+	}
+	if s.notesPickerMode != "session" || !reflect.DeepEqual(s.notesPickerChoices, []string{first.Key(), second.Key()}) {
+		t.Fatalf("Project Notes picker choices=%v mode=%q", s.notesPickerChoices, s.notesPickerMode)
+	}
+	var out strings.Builder
+	s.renderNotesModal(&out, 100, 30)
+	if !strings.Contains(out.String(), a.Name) || !strings.Contains(out.String(), b.Name) {
+		t.Fatalf("Project Notes picker omitted attached Session: %q", out.String())
+	}
+
+	s.handleNotesInput([]byte("j"))
+	s.handleNotesInput([]byte("\r"))
+	if s.notesScope != ducklord.NotesSession || s.notesSessionIdentity != second {
+		t.Fatalf("Project Notes picker did not select added Session: scope=%q identity=%+v", s.notesScope, s.notesSessionIdentity)
+	}
+}
+
+func TestSessionNotesPickerUsesSessionNames(t *testing.T) {
+	s, projectID, a, b := workspacePaneTestState(t)
+	first, _ := ducklord.IdentityFromSession(a)
+	second, _ := ducklord.IdentityFromSession(b)
+	if _, err := s.activity().ProjectLayout.Place(projectID, second, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	s.openNotesPicker("session", []string{first.Key(), second.Key()})
+	var out strings.Builder
+	s.renderNotesModal(&out, 100, 30)
+	if !strings.Contains(out.String(), a.Name) || !strings.Contains(out.String(), b.Name) {
+		t.Fatalf("Session picker omitted names: %q", out.String())
+	}
+	if strings.Contains(out.String(), first.Key()) || strings.Contains(out.String(), second.Key()) {
+		t.Fatalf("Session picker exposed stable IDs: %q", out.String())
+	}
+}
+
+func TestCloseNotesModalClearsPickerState(t *testing.T) {
+	s, _, _, _ := workspacePaneTestState(t)
+	s.workspacePaneMode, s.workspacePaneStep = true, "notes"
+	s.notesPickerMode = "session"
+	s.notesPickerChoices = []string{"one"}
+	s.notesPickerIndex = 1
+	s.closeNotesModal()
+	if s.notesPickerMode != "" || s.notesPickerChoices != nil || s.notesPickerIndex != 0 {
+		t.Fatalf("closing Notes retained picker state: mode=%q choices=%v index=%d", s.notesPickerMode, s.notesPickerChoices, s.notesPickerIndex)
+	}
+}
+
+func TestCloseNotesModalFallsBackWhenOriginSessionDisappears(t *testing.T) {
+	s, projectID, origin, _ := workspacePaneTestState(t)
+	originKey := sessionKey(origin)
+	s.workspacePaneMode = true
+	s.workspacePaneStep = "notes"
+	s.notesPreviousProjectID = projectID
+	s.notesPreviousPaneID = "removed-origin"
+	s.notesPreviousFocused = true
+	s.notesPreviousAttachKey = originKey
+	s.notesPreviousAttachValid = true
+	s.activeAttachKey = originKey
+	s.notesFocusRestorePending = true
+	s.notesPendingInputKey = originKey
+	s.notesPendingInput = []byte("stale")
+	s.sessions = s.sessions[1:]
+
+	s.closeNotesModal()
+
+	if s.activeAttachKey != "" || s.focused || s.notesFocusRestorePending || s.notesFocusRestoreReselect {
+		t.Fatalf("stale origin retained focus state: active=%q focused=%v pending=%v reselect=%v", s.activeAttachKey, s.focused, s.notesFocusRestorePending, s.notesFocusRestoreReselect)
+	}
+	if s.notesPendingInputKey != "" || len(s.notesPendingInput) != 0 {
+		t.Fatalf("stale origin retained queued input: key=%q input=%q", s.notesPendingInputKey, s.notesPendingInput)
+	}
+}
+
+func TestNotesSessionPickerResolvesSelectedIdentity(t *testing.T) {
+	s, projectID, a, b := workspacePaneTestState(t)
+	root := t.TempDir()
+	s.cfgPath = filepath.Join(root, "config.yaml")
+	first, _ := ducklord.IdentityFromSession(a)
+	second, _ := ducklord.IdentityFromSession(b)
+	if _, err := s.activity().ProjectLayout.Place(projectID, second, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	firstBook, err := ducklord.SessionNotesIdentity(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBook, err := ducklord.SessionNotesIdentity(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ducklord.SaveScopedNotes(root, ducklord.NotesSession, firstBook, "## First\nfirst body\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ducklord.SaveScopedNotes(root, ducklord.NotesSession, secondBook, "## Second\nsecond body\n"); err != nil {
+		t.Fatal(err)
+	}
+	s.notesProjectID = projectID
+	s.notesScope = ducklord.NotesSession
+	s.notesSessionIdentity = first
+	s.notesSessionID = first.SessionID
+	choices := []string{first.Key(), second.Key()}
+	if !s.openNotesPicker("session", choices) || !s.handleNotesPicker([]byte("\x1b[B")) || !s.handleNotesPicker([]byte("\r")) {
+		t.Fatal("session picker did not accept second choice")
+	}
+	if s.notesSessionIdentity != second || len(s.notesEntries) != 1 || s.notesEntries[0].Body != "second body" {
+		t.Fatalf("selected session was not loaded: identity=%+v entries=%+v err=%q", s.notesSessionIdentity, s.notesEntries, s.outputErr)
+	}
+}
+
+func TestNotesHelpHighlightsNotebookActions(t *testing.T) {
+	s, projectID, _, _ := workspacePaneTestState(t)
+	nav, err := s.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(projectID); err != nil {
+		t.Fatal(err)
+	}
+	s.workspacePaneMode = true
+	s.workspacePaneStep = "notes"
+	s.notesProjectID = projectID
+	s.helpMode = true
+	if nav.CurrentProjectID() != projectID {
+		t.Fatalf("Notes project not selected: project=%q want=%q", nav.CurrentProjectID(), projectID)
+	}
+	// Help is rendered after the Notes modal closes; retain the Notes route marker
+	// here while bypassing the blocking modal guard for this focused rendering check.
+	s.workspacePaneMode = false
+	var out strings.Builder
+	s.renderHelpModal(&out, 100, 300)
+	rendered := out.String()
+	for _, action := range []string{
+		"  a add note",
+		"  Enter copy selected entry CONTENT only",
+	} {
+		if !strings.Contains(rendered, modalSurface+modalSelected+action) {
+			t.Fatalf("Notes action line was not highlighted: %q", action)
+		}
+	}
+}
+
+func TestSplitEditorArgsSupportsQuotesWithoutShell(t *testing.T) {
+	args, err := splitEditorArgs(`"/tmp/my editor" --wait 'draft file.md'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/tmp/my editor", "--wait", "draft file.md"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("args=%q want=%q", args, want)
+	}
+	if _, err := splitEditorArgs(`vim "unterminated`); err == nil {
+		t.Fatal("unterminated quote accepted")
+	}
+}
+
+func TestWorkspaceNewShellHostEnterDoesNotRestartDiscovery(t *testing.T) {
+	state, projectID, _, _ := workspacePaneTestState(t)
+	state.runner = fakeRunner{}
+	state.workspaceNewSessionIntent = &workspacePaneIntent{projectID: projectID, placement: ducklord.PlaceVertical}
+	state.newSessionMode = true
+	state.newSessionKind = "shell"
+	state.newSessionClient = "host"
+	state.newSessionStep = "host"
+	state.newSessionLine = "host"
+	state.newSessionDiscovering = true
+	state.newSessionRequestID = 7
+	state.newSessionCancel = func() { t.Fatal("duplicate Enter canceled active discovery") }
+	done := make(chan createDiscoveryEvent, 1)
+	if _, _, _, ready, err := state.submitCreateStep(context.Background(), done); err != nil || ready {
+		t.Fatalf("duplicate host Enter changed wizard state: ready=%v err=%v", ready, err)
+	}
+	if !state.newSessionDiscovering || state.newSessionRequestID != 7 || state.newSessionStep != "host" {
+		t.Fatalf("active discovery was restarted or advanced: discovering=%v request=%d step=%q", state.newSessionDiscovering, state.newSessionRequestID, state.newSessionStep)
 	}
 }

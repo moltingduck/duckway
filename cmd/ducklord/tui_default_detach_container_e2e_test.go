@@ -28,7 +28,7 @@ func TestDucklordDefaultDetachContainerE2E(t *testing.T) {
 	}
 	stamp := time.Now().UnixNano()
 	cliOwner := fmt.Sprintf("default-detach-cli-%d", stamp)
-	startShell := func(handle string) ducklord.RemoteSession {
+	startShell := func(handle string, logPath string) ducklord.RemoteSession {
 		t.Helper()
 		out, err := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "start", "client-a", "--name", handle,
 			"--kind", "shell", "--cwd", "/home/duck", "--config", "/root/.ducklord/config.yaml", "--", "bash").CombinedOutput()
@@ -49,16 +49,37 @@ func TestDucklordDefaultDetachContainerE2E(t *testing.T) {
 			}
 			return false
 		}, func() string { return "fixture shell not discovered" })
+		if logPath != "" {
+			program := fmt.Sprintf("export DUCKWAY_NAV_LOG=%s; : > \"$DUCKWAY_NAV_LOG\"", logPath)
+			if out, err := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "send", "client-a", handle, program, "--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil {
+				t.Fatalf("initialize originating shell log: %v (output bytes=%d)", err, len(out))
+			}
+			waitE2E(t, 10*time.Second, func() bool {
+				out, err := exec.Command(runtime, "exec", e2eContainerName("ducklion-client-a"), "test", "-f", logPath).CombinedOutput()
+				return err == nil && len(out) == 0
+			}, func() string { return "originating shell log was not initialized" })
+		}
 		return remote
 	}
 	handle := fmt.Sprintf("default-close-%x", stamp)
-	remote := startShell(handle)
+	originLog := "/tmp/" + handle + ".input"
+	remote := startShell(handle, originLog)
 	identity, ok := ducklord.IdentityFromSession(remote)
 	if !ok {
 		t.Fatal("fixture shell has no stable identity")
 	}
 	state := ducklord.NewActivityState()
-	if _, err := state.ProjectLayout.Place(ducklord.DefaultProjectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+	originPane, err := state.ProjectLayout.Place(ducklord.DefaultProjectID, identity, ducklord.PlaceNewTab, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleHandle := fmt.Sprintf("default-stale-%x", stamp)
+	staleRemote := startShell(staleHandle, "")
+	staleIdentity, ok := ducklord.IdentityFromSession(staleRemote)
+	if !ok {
+		t.Fatal("stale fixture shell has no stable identity")
+	}
+	if _, err := state.ProjectLayout.Place(ducklord.DefaultProjectID, staleIdentity, ducklord.PlaceNewTab, originPane); err != nil {
 		t.Fatal(err)
 	}
 	home := fmt.Sprintf("/tmp/ducklord-default-detach-%d-%d", os.Getpid(), stamp)
@@ -142,16 +163,59 @@ func TestDucklordDefaultDetachContainerE2E(t *testing.T) {
 	terminal, capture, stop := launch("first")
 	// Startup follows the quick-list selection, which may be a demo Session
 	// even though the fixture was seeded as Default's first tab.
-	writePTY(t, terminal, "/"+handle+"\r")
+	// Keep the search query free of lowercase `o`: direct `o` is a valid
+	// Session-list route, so typing a handle containing it would open Notes
+	// before the search is accepted. The unique prefix still selects handle.
+	writePTY(t, terminal, "/default-cl\r")
 	capture.waitCurrent(t, "Active · Enter again to focus", 20*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Session focus:", 20*time.Second)
-	writePTY(t, terminal, "\x1d")
-	capture.waitCurrent(t, "Session list pane:", 10*time.Second)
-	writePTY(t, terminal, "b")
-	capture.waitCurrent(t, "Project pane:", 10*time.Second)
-	writePTY(t, terminal, "x")
-	capture.waitCurrent(t, "Detach Session pane", 10*time.Second)
+	// A focused Default Session owns Ctrl-B d, but the destructive action is
+	// still guarded by a modal. Verify that the modal owns arrow input while
+	// the originating PTY remains focused: Up selects the destructive choice.
+	modalStart := capture.position()
+	writePTY(t, terminal, "\x02d")
+	capture.waitAfter(t, modalStart, "Detach Session pane", 10*time.Second)
+	selectionStart := capture.position()
+	writePTY(t, terminal, "\x1b[A")
+	waitE2E(t, 10*time.Second, func() bool {
+		return strings.Contains(capture.since(selectionStart), "› Detach local pane")
+	}, func() string {
+		return "detach confirmation did not own the Up arrow: " + safeTerminalDiagnostic(capture.currentText())
+	})
+	if out, err := exec.Command(runtime, "exec", controller, binary, "--name", cliOwner, "destroy", "client-a", staleHandle,
+		"--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil {
+		t.Fatalf("remove stale session during detach: %v (output bytes=%d)", err, len(out))
+	}
+	waitE2E(t, 15*time.Second, func() bool {
+		_, found := findContainerSession(t, runtime, controller, "client-a", staleRemote.SessionID)
+		return !found
+	}, func() string { return "stale session remained in remote inventory during detach" })
+	restoreStart := capture.position()
+	writePTY(t, terminal, "\x1b")
+	waitE2E(t, 10*time.Second, func() bool {
+		render := capture.since(restoreStart)
+		return len(render) > 0 && !strings.Contains(capture.currentText(), "Detach Session pane")
+	}, func() string {
+		return "Esc did not produce a fresh render after closing the detach modal: " + safeTerminalDiagnostic(capture.currentText())
+	})
+	restoreMarker := fmt.Sprintf("DEFAULT_DETACH_RESTORE_%x", stamp)
+	markerStart := capture.position()
+	writePTY(t, terminal, fmt.Sprintf("printf '%s\\n' '%s' | tee -a \"$DUCKWAY_NAV_LOG\"\r", restoreMarker, restoreMarker))
+	waitE2E(t, 10*time.Second, func() bool {
+		return strings.Contains(capture.since(markerStart), restoreMarker)
+	}, func() string {
+		return "Esc did not restore the original focused PTY: " + safeTerminalDiagnostic(capture.currentText())
+	})
+	waitE2E(t, 10*time.Second, func() bool {
+		out, err := exec.Command(runtime, "exec", e2eContainerName("ducklion-client-a"), "cat", originLog).Output()
+		return err == nil && strings.Contains(string(out), restoreMarker)
+	}, func() string { return "restore marker was not written by the originating shell" })
+
+	// Reopen the same focused-terminal route and explicitly select Detach.
+	confirmStart := capture.position()
+	writePTY(t, terminal, "\x02d")
+	capture.waitAfter(t, confirmStart, "Detach Session pane", 10*time.Second)
 	writePTY(t, terminal, "\x1b[A\r")
 	waitE2E(t, 10*time.Second, func() bool { return isClosed(loadState()) }, func() string {
 		return "confirmed Default pane closure was not persisted"
@@ -159,7 +223,7 @@ func TestDucklordDefaultDetachContainerE2E(t *testing.T) {
 
 	// A newly discovered shell must be placed and saved, proving reconciliation
 	// ran after closure instead of merely checking an unchanged state file.
-	newRemote := startShell(fmt.Sprintf("default-discover-%x", stamp))
+	newRemote := startShell(fmt.Sprintf("default-discover-%x", stamp), "")
 	newIdentity, ok := ducklord.IdentityFromSession(newRemote)
 	if !ok {
 		t.Fatal("rediscovery fixture has no stable identity")
@@ -174,10 +238,10 @@ func TestDucklordDefaultDetachContainerE2E(t *testing.T) {
 	terminal, capture, _ = launch("reload")
 	writePTY(t, terminal, "l")
 	capture.waitCurrent(t, "Detailed Sessions:", 10*time.Second)
-	writePTY(t, terminal, "/"+handle)
+	writePTY(t, terminal, "/default-cl")
 	waitE2E(t, 10*time.Second, func() bool {
 		screen := capture.currentText()
-		return strings.Contains(screen, "find › "+handle) && strings.Contains(screen, "client-a/"+handle)
+		return strings.Contains(screen, "find › default-cl") && strings.Contains(screen, "client-a/"+handle)
 	}, func() string { return "reloaded TUI did not rediscover the closed Session" })
 	writePTY(t, terminal, "\r") // Search acceptance remains a read-only preview.
 	if !isClosed(loadState()) {

@@ -219,7 +219,7 @@ func (w *WorkspaceState) SelectPane(projectID, paneID string) error {
 	}
 	for _, tab := range project.Tabs {
 		pane := tab.Root.findPane(paneID)
-		if pane == nil || pane.Session == nil {
+		if pane == nil || (pane.Session == nil && !pane.Note) {
 			continue
 		}
 		region := w.location.region
@@ -230,7 +230,9 @@ func (w *WorkspaceState) SelectPane(projectID, paneID string) error {
 			return err
 		}
 		w.location.tabID, w.location.paneID = tab.ID, paneID
-		w.lastProject[*pane.Session] = projectID
+		if pane.Session != nil {
+			w.lastProject[*pane.Session] = projectID
+		}
 		return nil
 	}
 	return fmt.Errorf("session pane no longer exists")

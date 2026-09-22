@@ -296,3 +296,37 @@ func TestWorkspaceVisiblePaneRectUsesVerticalLeafWidthAndPosition(t *testing.T) 
 		t.Fatalf("vertical split PTY rectangle=%+v visible=%v", rect, visible)
 	}
 }
+
+func TestWorkspaceNoteLeafVisibilityAndInvariant(t *testing.T) {
+	note := &SessionPane{ID: "note", Note: true}
+	if got := workspaceCollectVisiblePanes(note, WorkspaceRect{Width: 20, Height: 5}); len(got) != 0 {
+		t.Fatalf("note exposed as PTY pane: %v", got)
+	}
+	if leaves, hidden := workspaceVisibleLeaves(note, WorkspaceRect{Width: 20, Height: 5}); len(leaves) != 0 || hidden != 0 {
+		t.Fatalf("note visible session leaves: %v/%d", leaves, hidden)
+	}
+	if _, ok := workspaceFindVisiblePane(note, WorkspaceRect{Width: 20, Height: 5}, "note"); !ok {
+		t.Fatal("note geometry not discoverable")
+	}
+	session := SessionIdentity{InstanceID: "i", SessionID: "s"}
+	if err := (&SessionPane{ID: "bad", Session: &session, Note: true}).validate(map[string]bool{}, map[SessionIdentity]bool{}); err == nil {
+		t.Fatal("mixed session/note leaf accepted")
+	}
+}
+
+func TestWorkspaceNotesRendererHandlesTinyHeights(t *testing.T) {
+	node := &SessionPane{ID: "notes", Note: true}
+	notes := []NoteEntry{{Title: "First", Preview: "A short entry"}}
+	for _, height := range []int{1, 2, 3} {
+		var out bytes.Buffer
+		renderWorkspaceNode(&out, node, WorkspaceRect{X: 1, Y: 1, Width: 40, Height: height}, "notes", nil, WorkspaceRenderOptions{
+			Notes: notes, NoteIndex: 0, NoteScope: NotesProject,
+		})
+		if out.Len() == 0 {
+			t.Fatalf("height %d rendered no output", height)
+		}
+		if strings.Contains(out.String(), "1/0") {
+			t.Fatalf("height %d rendered invalid page count: %q", height, out.String())
+		}
+	}
+}

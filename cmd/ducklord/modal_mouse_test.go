@@ -76,7 +76,7 @@ func TestModalMouseHostScopedDisabledRowsHaveNoTargets(t *testing.T) {
 	s := &tuiState{hostMenuMode: true, hostScoped: true}
 	s.renderHostModal(io.Discard, 80, 24)
 	for _, r := range s.modalMouseRegions {
-		if r.action.selection == &s.hostMenuIndex && r.action.index >= 4 {
+		if r.action.selection == &s.hostMenuIndex && r.action.index >= 5 {
 			t.Fatal("disabled Host action clickable")
 		}
 	}

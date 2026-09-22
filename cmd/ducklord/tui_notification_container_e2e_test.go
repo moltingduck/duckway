@@ -22,14 +22,18 @@ func TestDucklordLocalNotificationContainerE2E(t *testing.T) {
 	runtime := requiredE2EEnv(t, "DUCKLORD_E2E_RUNTIME")
 	controller := requiredE2EEnv(t, "DUCKLORD_E2E_CONTROLLER")
 	stamp := fmt.Sprintf("%d", time.Now().UnixNano())
-	home, handle, owner := "/tmp/ducklord-notify-e2e-"+stamp, "notify-e2e-"+stamp, "notify-owner-"+stamp
-	start := exec.Command(runtime, "exec", controller, "ducklord", "start", "client-a", "--name", handle, "--kind", "shell",
+	// Keep the fixture handle free of lowercase `o`: while the Session list
+	// search is active, direct `o` is now the Notes route. This test searches
+	// the handle before entering its notification settings.
+	home, handle, owner := "/tmp/ducklord-notify-e2e-"+stamp, "nfy-e2e-"+stamp, "notify-owner-"+stamp
+	inspectorOwner := "notify-inspector-" + stamp
+	start := exec.Command(runtime, "exec", controller, "ducklord", "--name", owner, "start", "client-a", "--name", handle, "--kind", "shell",
 		"--cwd", "/home/duck/projects/alpha", "--config", "/root/.ducklord/config.yaml", "--", "sh")
 	if output, err := start.CombinedOutput(); err != nil {
 		t.Fatalf("start notification shell: %v: %s", err, output)
 	}
 	t.Cleanup(func() {
-		_, _ = exec.Command(runtime, "exec", controller, "ducklord", "destroy", "client-a", handle,
+		_, _ = exec.Command(runtime, "exec", controller, "ducklord", "--name", owner, "destroy", "client-a", handle,
 			"--config", "/root/.ducklord/config.yaml").CombinedOutput()
 	})
 	for _, args := range [][]string{
@@ -74,21 +78,66 @@ func TestDucklordLocalNotificationContainerE2E(t *testing.T) {
 		_ = command.Wait()
 	})
 	capture := newSizedTUICapture(terminal, 28, 130)
-	capture.waitCurrent(t, "PROJECTS", 20*time.Second)
-	capture.waitCurrent(t, "notify-e2e", 20*time.Second)
+	waitSessionList := func(timeout time.Duration) {
+		waitE2E(t, timeout, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, "SESSIONS") && strings.Contains(screen, handle)
+		}, func() string {
+			return "workspace did not return to the selected Session list entry: " + safeTerminalDiagnostic(capture.currentText())
+		})
+	}
+	waitSessionListAfter := func(position int, timeout time.Duration) {
+		waitE2E(t, timeout, func() bool {
+			if capture.position() <= position {
+				return false
+			}
+			screen := capture.currentText()
+			return strings.Contains(screen, "SESSIONS") && strings.Contains(screen, handle)
+		}, func() string {
+			return "workspace did not return to the selected Session list entry: " + safeTerminalDiagnostic(capture.currentText())
+		})
+	}
+	waitSessionList(20 * time.Second)
+	capture.waitCurrent(t, handle, 20*time.Second)
+	ctrlStartGlobal := capture.position()
 	writePTY(t, terminal, "\x1d") // Leave any focused PTY before opening a global modal.
+	waitSessionListAfter(ctrlStartGlobal, 10*time.Second)
 	writePTY(t, terminal, "\x0f") // Global notification settings.
 	capture.waitCurrent(t, "Global notification settings", 10*time.Second)
 	writePTY(t, terminal, "s")
 	capture.waitCurrent(t, "Restart Ducklord TUI to load settings?", 10*time.Second)
 	writePTY(t, terminal, "n") // Explicitly defer restart without Esc-chord ambiguity.
-	capture.waitCurrent(t, "PROJECTS", 10*time.Second)
+	waitSessionList(10 * time.Second)
 	writePTY(t, terminal, "h")
-	capture.waitCurrent(t, "Host actions", 10*time.Second)
-	writePTY(t, terminal, "jjjj\r") // Host actions → Notification defaults.
+	waitE2E(t, 10*time.Second, func() bool {
+		screen := capture.currentText()
+		return strings.Contains(screen, "Choose a host") && strings.Contains(screen, "› client-a")
+	}, func() string {
+		return "host selector did not select client-a: " + safeTerminalDiagnostic(capture.currentText())
+	})
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Host actions · client-a", 10*time.Second)
+	// Skills is now a Host action before Notification defaults. Deliver the
+	// selection one step at a time so the modal cannot retain the Skills route
+	// when the PTY/event loop is still processing the menu movement.
+	for i := 0; i < 5; i++ {
+		start := capture.position()
+		writePTY(t, terminal, "j")
+		waitE2E(t, 10*time.Second, func() bool {
+			return capture.position() > start && strings.Contains(capture.currentText(), "Host actions")
+		}, func() string { return "Host action selection did not repaint" })
+	}
+	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Host notification defaults", 10*time.Second)
-	writePTY(t, terminal, "j")      // task failed
-	writePTY(t, terminal, "\rjj\r") // inherit → indicator
+	writePTY(t, terminal, "j")
+	capture.waitCurrent(t, "task failed", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "› inherit global", 10*time.Second)
+	writePTY(t, terminal, "j")
+	capture.waitCurrent(t, "› off", 10*time.Second)
+	writePTY(t, terminal, "j")
+	capture.waitCurrent(t, "› indicator", 10*time.Second)
+	writePTY(t, terminal, "\r")
 	writePTY(t, terminal, "s")
 	capture.waitCurrent(t, "Restart Ducklord TUI to load settings?", 10*time.Second)
 	writePTY(t, terminal, "n")
@@ -97,7 +146,7 @@ func TestDucklordLocalNotificationContainerE2E(t *testing.T) {
 		t.Fatalf("Host notification override was not persisted: %v: %s", err, configAfter)
 	}
 	var target protocol.SessionSummary
-	for _, candidate := range listContainerSessions(t, runtime, controller, "client-a") {
+	for _, candidate := range listContainerSessionsAs(t, runtime, controller, "client-a", inspectorOwner) {
 		if candidate.Handle == handle {
 			target = candidate
 		}
@@ -109,7 +158,9 @@ func TestDucklordLocalNotificationContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Session focus", 10*time.Second)
+	ctrlStartNotifications := capture.position()
 	writePTY(t, terminal, "\x1d")
+	waitSessionListAfter(ctrlStartNotifications, 10*time.Second)
 	writePTY(t, terminal, "n")
 	capture.waitCurrent(t, "Notifications ·", 10*time.Second)
 	capture.waitCurrent(t, "ID "+target.SessionID, 10*time.Second)
@@ -119,8 +170,8 @@ func TestDucklordLocalNotificationContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Notification delivery", 10*time.Second)
 	writePTY(t, terminal, "j\rs") // inherit Host → off, then save the Session state.
-	capture.waitCurrent(t, "PROJECTS", 10*time.Second)
-	targetRemote, ok := findContainerSession(t, runtime, controller, "client-a", target.SessionID)
+	waitSessionList(10 * time.Second)
+	targetRemote, ok := findContainerSessionAs(t, runtime, controller, "client-a", target.SessionID, inspectorOwner)
 	if !ok {
 		t.Fatal("fixture Session identity missing after notification edit")
 	}
@@ -146,12 +197,12 @@ func TestDucklordLocalNotificationContainerE2E(t *testing.T) {
 		var state ducklord.ActivityState
 		return &state, json.Unmarshal(output, &state) == nil
 	}
-	if output, err := exec.Command(runtime, "exec", controller, "ducklord", "send", "client-a", handle, hook,
+	if output, err := exec.Command(runtime, "exec", controller, "ducklord", "--name", inspectorOwner, "send", "client-a", handle, hook,
 		"--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil {
 		t.Fatalf("send suppressed shell hook: %v: %s", err, output)
 	}
 	waitE2E(t, 10*time.Second, func() bool {
-		remote, exists := findContainerSession(t, runtime, controller, "client-a", target.SessionID)
+		remote, exists := findContainerSessionAs(t, runtime, controller, "client-a", target.SessionID, inspectorOwner)
 		return exists && remote.ActivitySequences[model.NotificationTaskCompleted] >= baselineSequence+1
 	}, func() string { return "suppressed hook did not reach Ducklion" })
 	waitE2E(t, 10*time.Second, func() bool {
@@ -172,18 +223,18 @@ func TestDucklordLocalNotificationContainerE2E(t *testing.T) {
 		writePTY(t, terminal, "j")
 	}
 	writePTY(t, terminal, "\rk\rs") // explicit off → inherit Host
-	capture.waitCurrent(t, "PROJECTS", 10*time.Second)
+	waitSessionList(10 * time.Second)
 	writePTY(t, terminal, "/alpha\r") // Browse another Session so fixture completion stays unread.
 	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Session focus", 10*time.Second)
 	writePTY(t, terminal, "\x1d")
-	if output, err := exec.Command(runtime, "exec", controller, "ducklord", "send", "client-a", handle, hook,
+	if output, err := exec.Command(runtime, "exec", controller, "ducklord", "--name", inspectorOwner, "send", "client-a", handle, hook,
 		"--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil {
 		t.Fatalf("send inherited shell hook: %v: %s", err, output)
 	}
 	waitE2E(t, 10*time.Second, func() bool {
-		remote, exists := findContainerSession(t, runtime, controller, "client-a", target.SessionID)
+		remote, exists := findContainerSessionAs(t, runtime, controller, "client-a", target.SessionID, inspectorOwner)
 		return exists && remote.ActivitySequences[model.NotificationTaskCompleted] >= baselineSequence+2
 	}, func() string { return "inherited hook did not advance Ducklion sequence" })
 	var log string

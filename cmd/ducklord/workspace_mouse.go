@@ -12,12 +12,14 @@ import (
 func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 	if !s.workspacePreview || s.focused || s.hostScoped || s.workspacePaneMode || s.centralModalOpen() {
 		s.workspaceDragSession = ducklord.RemoteSession{}
+		s.workspaceDragKind, s.workspaceDragProjectID, s.workspaceDragTabID = "", "", ""
 		s.workspaceDragMoved = false
 		return false, false
 	}
 	key := string(input)
 	if !strings.HasPrefix(key, "\x1b[<") {
 		s.workspaceDragSession = ducklord.RemoteSession{}
+		s.workspaceDragKind, s.workspaceDragProjectID, s.workspaceDragTabID = "", "", ""
 		s.workspaceDragMoved = false
 		return false, false
 	}
@@ -28,6 +30,7 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 	nav, err := s.workspaceNavigation()
 	if err != nil {
 		s.workspaceDragSession = ducklord.RemoteSession{}
+		s.workspaceDragKind, s.workspaceDragProjectID, s.workspaceDragTabID = "", "", ""
 		s.workspaceDragMoved = false
 		return false, false
 	}
@@ -82,6 +85,7 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 	quickOffset := s.workspaceColumnOffsets(geometry, nav, quickSessions).Quick
 	if button == 0 && strings.HasSuffix(key, "M") {
 		s.workspaceDragSession = ducklord.RemoteSession{}
+		s.workspaceDragKind, s.workspaceDragProjectID, s.workspaceDragTabID = "", "", ""
 		s.workspaceDragMoved = false
 		s.workspaceDragX, s.workspaceDragY = x, y
 		s.workspaceConfigFocus = "terminal"
@@ -105,6 +109,8 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 			projects := s.activity().ProjectLayout.Projects
 			if inside && index < len(projects) {
 				s.workspaceConfigFocus = ""
+				s.workspaceDragKind = "project"
+				s.workspaceDragProjectID = projects[index].ID
 				return true, nav.SelectProject(projects[index].ID) == nil
 			}
 		}
@@ -115,6 +121,9 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 				for i, tab := range project.Tabs {
 					cells := modalCellWidth(ducklord.WorkspaceTabLabel(tab, i, tab.ID == nav.CurrentTabID()))
 					if x >= left && x < left+cells {
+						s.workspaceDragKind = "tab"
+						s.workspaceDragProjectID = project.ID
+						s.workspaceDragTabID = tab.ID
 						if id := firstWorkspacePaneID(tab.Root); id != "" {
 							s.workspaceConfigFocus = "tab"
 							s.workspaceProjectFocus = true
@@ -129,9 +138,13 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 				}
 			}
 		}
-		for _, pane := range ducklord.WorkspaceVisiblePaneRects(&s.activity().ProjectLayout, nav, geometry) {
+		for _, pane := range ducklord.WorkspaceVisibleLeafRects(&s.activity().ProjectLayout, nav, geometry) {
 			if insideWorkspaceRect(pane.Rect, x, y) {
-				if err := nav.SelectPane(nav.CurrentProjectID(), s.projectPaneID(nav.CurrentProjectID(), pane.Identity)); err != nil {
+				target := pane.PaneID
+				if target == "" {
+					target = s.projectPaneID(nav.CurrentProjectID(), pane.Identity)
+				}
+				if err := nav.SelectPane(nav.CurrentProjectID(), target); err != nil {
 					s.outputErr = err.Error()
 					return true, false
 				}
@@ -143,7 +156,7 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 		return true, false
 	}
 	if button == 32 && strings.HasSuffix(key, "M") {
-		if s.workspaceDragSession.Client != "" {
+		if s.workspaceDragSession.Client != "" || s.workspaceDragKind != "" {
 			s.workspaceDragMoved = true
 		}
 		return true, false
@@ -154,6 +167,66 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 	source, moved := s.workspaceDragSession, s.workspaceDragMoved || x != s.workspaceDragX || y != s.workspaceDragY
 	s.workspaceDragSession = ducklord.RemoteSession{}
 	s.workspaceDragMoved = false
+	dragKind, dragProject, dragTab := s.workspaceDragKind, s.workspaceDragProjectID, s.workspaceDragTabID
+	s.workspaceDragKind, s.workspaceDragProjectID, s.workspaceDragTabID = "", "", ""
+	if dragKind != "" {
+		if !moved {
+			return true, false
+		}
+		next := s.activity().Clone()
+		before := false
+		var err error
+		dropped := false
+		if dragKind == "project" {
+			if index, inside := workspaceQuickRowAt(geometry.Projects, x, y); inside {
+				index += s.workspaceColumnOffsets(geometry, nav, quickSessions).Projects
+				projects := next.ProjectLayout.Projects
+				if index >= 0 && index < len(projects) {
+					dropped = true
+					from := -1
+					for i := range projects {
+						if projects[i].ID == dragProject {
+							from = i
+							break
+						}
+					}
+					before = index <= from
+					err = next.ProjectLayout.MoveProject(dragProject, projects[index].ID, before)
+				}
+			}
+		} else if dragKind == "tab" {
+			project := next.ProjectLayout.Project(dragProject)
+			if project != nil && insideWorkspaceRect(geometry.Terminal, x, y) && y == geometry.Terminal.Y {
+				left := geometry.Terminal.X + modalCellWidth(" "+project.Name+"  ")
+				for i := range project.Tabs {
+					cells := modalCellWidth(ducklord.WorkspaceTabLabel(project.Tabs[i], i, project.Tabs[i].ID == nav.CurrentTabID()))
+					if x >= left && x < left+cells {
+						dropped = true
+						before = x < left+cells/2
+						err = next.ProjectLayout.MoveTab(dragProject, dragTab, project.Tabs[i].ID, before)
+						break
+					}
+					left += cells
+				}
+			}
+		}
+		if err != nil {
+			s.outputErr = sanitizeTerminalText(err.Error())
+			return true, false
+		}
+		if !dropped {
+			return true, false
+		}
+		if err == nil {
+			if saveErr := s.activityStore.Save(next); saveErr != nil {
+				s.outputErr = "save layout: " + sanitizeTerminalText(saveErr.Error())
+				return true, false
+			}
+			s.activityState, s.workspacePaneChanged = next, true
+			return true, true
+		}
+		return true, false
+	}
 	if source.Client == "" {
 		return true, false
 	}

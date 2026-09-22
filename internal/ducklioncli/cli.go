@@ -25,6 +25,7 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/daemon"
 	"github.com/hackerduck/duckway/internal/ducklion/management"
 	"github.com/hackerduck/duckway/internal/ducklion/protocol"
+	ducklionskill "github.com/hackerduck/duckway/internal/ducklion/skill"
 	"github.com/hackerduck/duckway/internal/duckwayconfig"
 	"github.com/hackerduck/duckway/internal/projectregistry"
 	"github.com/hackerduck/duckway/internal/version"
@@ -52,6 +53,13 @@ type SessionOutput struct {
 }
 
 func Main(args []string, stdout io.Writer) {
+	if len(args) > 0 && args[0] == "skill" {
+		if err := ducklionskill.Run(args[1:], os.Stdin, stdout, os.Stderr); err != nil {
+			log.Print(err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(args) > 0 && args[0] == "management" {
 		if err := runManagementCommand(args[1:], stdout); err != nil {
 			log.Fatal(err)

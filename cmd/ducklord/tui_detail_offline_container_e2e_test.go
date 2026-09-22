@@ -50,8 +50,14 @@ func TestDucklordDetailedOfflineContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "alpha @client-a", 20*time.Second)
 	// The Host connections form changes only this TUI's transport desire; it
 	// must leave the known Session inventory available to detailed search.
-	writePTY(t, terminal, "h\r")
-	capture.waitCurrent(t, "Host connections", 10*time.Second)
+	hostStart := capture.position()
+	writePTY(t, terminal, "h")
+	capture.waitAfter(t, hostStart, "Hosts", 10*time.Second)
+	writePTY(t, terminal, "\r") // select client-a from the Host list.
+	capture.waitCurrent(t, "Host actions · client-a", 10*time.Second)
+	enterStart := capture.position()
+	writePTY(t, terminal, "\r")
+	capture.waitAfter(t, enterStart, "Host connections", 10*time.Second)
 	writePTY(t, terminal, " \r") // client-a is first in the disposable config.
 	capture.waitCurrent(t, "client-a:DISCONNECTED", 10*time.Second)
 	var alpha ducklord.RemoteSession
@@ -93,15 +99,23 @@ func TestDucklordDetailedOfflineContainerE2E(t *testing.T) {
 	waitE2E(t, 10*time.Second, func() bool { oldPaneID = readPaneID(); return oldPaneID != "" }, func() string {
 		return "offline alpha did not retain a local Default Project pane"
 	})
-	writePTY(t, terminal, "bp\r") // Project pane; new Terminal tab.
+	writePTY(t, terminal, "b")
+	capture.waitCurrent(t, "Project pane:", 10*time.Second)
+	writePTY(t, terminal, "p")
+	capture.waitCurrent(t, "Add Session pane", 10*time.Second)
+	writePTY(t, terminal, "\r") // new Terminal tab.
 	capture.waitCurrent(t, "New shell session", 10*time.Second)
-	writePTY(t, terminal, "\x1b[B\r") // Add existing Session.
+	writePTY(t, terminal, "\x1b[B")
+	capture.waitCurrent(t, "Add existing session", 10*time.Second)
+	writePTY(t, terminal, "\r") // Add existing session.
 	capture.waitCurrent(t, "find ›", 10*time.Second)
 	writePTY(t, terminal, "alpha")
 	capture.waitCurrent(t, "alpha @client-a", 10*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Move existing pane here", 10*time.Second)
-	writePTY(t, terminal, "\x1b[A\r") // Explicitly confirm local move.
+	writePTY(t, terminal, "\x1b[A")
+	capture.waitCurrent(t, "Move existing pane here", 10*time.Second)
+	writePTY(t, terminal, "\r") // Explicitly confirm local move.
 	waitE2E(t, 10*time.Second, func() bool { id := readPaneID(); return id != "" && id != oldPaneID }, func() string {
 		return "offline existing Session pane did not move locally"
 	})

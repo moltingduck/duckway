@@ -991,6 +991,77 @@ func TestDucklordInputAndResizeAreOwnerFenced(t *testing.T) {
 	}
 }
 
+func TestSessionRenameNegotiationRouteAndSummary(t *testing.T) {
+	server, err := Open(context.Background(), Options{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve() }()
+	defer func() { _ = server.Close(); <-serveErr }()
+
+	now := time.Now().UTC().UnixMilli()
+	session := model.Session{ID: "ABC123", Handle: "before", Kind: model.KindAgent, AgentType: "codex", CWD: t.TempDir(),
+		Status: model.StatusRecovering, Writer: &model.Owner{Kind: model.OwnerTerminal, ID: "laptop"}, OwnershipEpoch: 7,
+		RuntimeGeneration: 2, TaskState: model.TaskIdle, AdapterState: model.AdapterRecovering, CreatedAtMS: now, UpdatedAtMS: now}
+	if _, _, err := server.service.CreateSession(context.Background(), "terminal:laptop", "create-rename-route", session); err != nil {
+		t.Fatal(err)
+	}
+
+	control, err := Dial(server.SocketPath(), "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	if !control.capabilities["session_rename"] {
+		t.Fatalf("session rename was not negotiated: %v", control.capabilities)
+	}
+	beforeRevision, err := server.state.SessionSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The route itself remains restricted to Ducklord even if a caller claims
+	// the capability.
+	request := protocol.Request{ID: "wrong-role", Type: "session.rename", InstanceID: string(server.instanceID), SessionID: string(session.ID),
+		OwnershipEpoch: &session.OwnershipEpoch, RuntimeGeneration: &session.RuntimeGeneration, Body: []byte(`{"handle":"wrong"}`)}
+	response := server.route(request, []string{"session_rename"}, protocol.RoleDuckwayCC, "laptop")
+	if response.Error == nil || response.Error.Code != protocol.ErrInvalidArgument {
+		t.Fatalf("wrong-role response=%+v", response)
+	}
+
+	renamed, err := control.RenameSessionWithID(context.Background(), "rename-route-1", string(session.ID), session.OwnershipEpoch, session.RuntimeGeneration, "after")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.SessionID != string(session.ID) || renamed.Handle != "after" {
+		t.Fatalf("renamed summary=%+v", renamed)
+	}
+	afterRevision, err := server.state.SessionSnapshot(context.Background())
+	if err != nil || afterRevision.Revision != beforeRevision.Revision+1 || len(afterRevision.Sessions) != 1 || afterRevision.Sessions[0].Session.Handle != "after" {
+		t.Fatalf("revision snapshot=%+v before=%+v err=%v", afterRevision, beforeRevision, err)
+	}
+	replayed, err := control.RenameSessionWithID(context.Background(), "rename-route-1", string(session.ID), session.OwnershipEpoch, session.RuntimeGeneration, "after")
+	if err != nil || replayed.Handle != "after" {
+		t.Fatalf("replayed summary=%+v err=%v", replayed, err)
+	}
+	persisted, err := server.state.GetSession(context.Background(), session.ID)
+	if err != nil || persisted.Handle != "after" {
+		t.Fatalf("persisted session=%+v err=%v", persisted, err)
+	}
+
+	cc, err := DialCC(server.SocketPath(), "channel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	if cc.capabilities["session_rename"] {
+		t.Fatal("Duckway CC negotiated session rename")
+	}
+	if _, err := cc.RenameSession(context.Background(), string(session.ID), session.OwnershipEpoch, session.RuntimeGeneration, "cc-change"); err == nil || !strings.Contains(err.Error(), "capability") {
+		t.Fatalf("CC rename error=%v", err)
+	}
+}
+
 func TestTerminalYieldTransfersCCSessionAndSynchronizesSupervisor(t *testing.T) {
 	server, err := Open(context.Background(), Options{Root: t.TempDir()})
 	if err != nil {

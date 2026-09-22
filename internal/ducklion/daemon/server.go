@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -103,6 +104,7 @@ type Server struct {
 	sessionCleaner               func(string) error
 	retainedOutputTTL            atomic.Int64
 	hostConfigMu                 sync.Mutex
+	startedAt                    time.Time
 	retainedOutputSweep          chan struct{}
 	retainedOutputCancel         context.CancelFunc
 }
@@ -259,6 +261,7 @@ func Open(ctx context.Context, options Options) (*Server, error) {
 		activitySlots:                make(chan struct{}, maxSupervisorActivityConnections),
 		sequences:                    make(map[model.SessionID]runtimeSequence), runtimeLauncher: options.RuntimeLauncher, sessionCleaner: options.SessionCleaner,
 	}
+	server.startedAt = time.Now()
 	initialTTL, err := loadRetainedOutputTTL(root, options.RetainedOutputTTL)
 	if err != nil {
 		_ = listener.Close()
@@ -364,7 +367,7 @@ func (s *Server) handle(conn *net.UnixConn) {
 		_ = codec.Write(protocol.HandshakeResponse{Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid peer principal"}})
 		return
 	}
-	capabilities := []string{"status", "sessions_list", "retained_list", "host_config", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
+	capabilities := []string{"status", "sessions_list", "retained_list", "host_config", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "session_rename", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if remote.Role == protocol.RoleDucklord {
 		if remote.OwnerID != remote.Principal || uuid.Validate(remote.ProcessID) != nil || uuid.Validate(remote.ConnectionID) != nil ||
 			(remote.ConnectionRole != protocol.ConnectionControl && remote.ConnectionRole != protocol.ConnectionObserver) {
@@ -1851,7 +1854,7 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 	defer s.maintenanceMu.RUnlock()
 	if s.maintenance {
 		switch request.Type {
-		case "host.retention_update", "host.agent_hook_config", "session.create", "session.stop", "session.destroy", "session.lifecycle", "session.yield", "session.task_begin", "session.agent_submit", "session.input", "session.bind_discord", "session.unbind_discord":
+		case "host.retention_update", "host.agent_hook_config", "session.create", "session.stop", "session.destroy", "session.lifecycle", "session.yield", "session.rename", "session.task_begin", "session.agent_submit", "session.input", "session.bind_discord", "session.unbind_discord":
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrDraining, Message: "Ducklion is being integrated; new work is temporarily paused"}}
 		}
 	}
@@ -1859,6 +1862,29 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotFound, Message: "Ducklion instance does not match"}}
 	}
 	switch request.Type {
+	case "host.resources":
+		if role != protocol.RoleDucklord || !hasCapability(capabilities, "host_config") || request.InstanceID != string(s.instanceID) || request.SessionID != "" {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotOwner, Message: "Ducklord Host access is required"}}
+		}
+		if len(request.Body) != 0 {
+			var query struct{}
+			if err := decodeStrict(request.Body, &query); err != nil {
+				return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "invalid Host resource query"}}
+			}
+		}
+		snapshot, err := s.state.SessionSnapshot(context.Background())
+		if err != nil {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "could not inspect Host resources"}}
+		}
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		s.outputMu.Lock()
+		activePTYs := len(s.outputs)
+		s.outputMu.Unlock()
+		status := protocol.HostResourceStatus{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, CPUCount: runtime.NumCPU(), HeapAllocBytes: mem.HeapAlloc,
+			UptimeSeconds: uint64(time.Since(s.startedAt) / time.Second), ManagedSessionCount: len(snapshot.Sessions), ActivePTYCount: activePTYs}
+		body, _ := json.Marshal(status)
+		return protocol.Response{ID: request.ID, Result: body}
 	case "host.agent_hook_status":
 		if role != protocol.RoleDucklord || !hasCapability(capabilities, "host_config") || request.InstanceID != string(s.instanceID) || request.SessionID != "" {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrNotOwner, Message: "Ducklord Host access is required"}}
@@ -1987,6 +2013,11 @@ func (s *Server) route(request protocol.Request, capabilities []string, role pro
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session destroy capability was not negotiated"}}
 		}
 		return s.routeSessionDestroy(request, role, principal)
+	case "session.rename":
+		if role != protocol.RoleDucklord || !hasCapability(capabilities, "session_rename") {
+			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session rename capability was not negotiated"}}
+		}
+		return s.routeSessionRename(request, principal)
 	case "session.lifecycle":
 		if !hasCapability(capabilities, "session_lifecycle") {
 			return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session lifecycle capability was not negotiated"}}

@@ -33,6 +33,7 @@ func TestDiscordBindExistingDucklionSessionE2E(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build ducklion: %v\n%s", err, output)
 	}
+	registerDucklionRuntimeCleanup(t, binary)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	command := exec.CommandContext(ctx, binary, "daemon")
@@ -177,6 +178,7 @@ func TestDiscordYieldCommandUsesDurableDucklionBindingE2E(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build ducklion: %v\n%s", err, output)
 	}
+	registerDucklionRuntimeCleanup(t, binary)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	command := exec.CommandContext(ctx, binary, "daemon")

@@ -71,7 +71,7 @@ func (s *tuiState) openFocusedWorkspaceConfig() {
 func (s *tuiState) workspaceAreaChoices() (string, []string) {
 	switch s.workspacePaneName {
 	case "project-pane":
-		return "Project pane config", []string{"Create project", "Workspace appearance · Midnight", "Workspace appearance · Slate", "Keyboard shortcuts"}
+		return "Project pane config", []string{"Create project", "Rename project", "Configure project Hosts", "Export Project", "Import Project", "Workspace appearance · Midnight", "Workspace appearance · Slate", "Keyboard shortcuts"}
 	case "session-list":
 		return "Session list pane config", []string{"Cycle sort · " + s.quickSortMode(), "Reverse event time order", "Workspace appearance · Midnight", "Workspace appearance · Slate", "Keyboard shortcuts"}
 	default:
@@ -139,6 +139,14 @@ func (s *tuiState) handleWorkspaceAreaConfig(input []byte) {
 			s.closeWorkspacePane()
 			s.workspaceProjectFocus = true
 			s.beginWorkspaceProject()
+		case "Rename project":
+			s.beginWorkspaceProjectRename()
+		case "Configure project Hosts":
+			s.beginWorkspaceProjectHosts()
+		case "Export Project":
+			s.beginProjectTransfer("export")
+		case "Import Project":
+			s.beginProjectTransfer("import")
 		case "Create tab":
 			s.closeWorkspacePane()
 			s.beginWorkspaceNewTab()

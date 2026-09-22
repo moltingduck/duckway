@@ -629,8 +629,9 @@ func (t *Terminal) scrollUp(count int) {
 	s := t.screen()
 	count = clampInt(count, 0, t.Rows)
 	for range count {
+		recycled := s.Lines[0].Cells
 		if !t.useAlternate && t.ScrollbackMax > 0 {
-			line := cloneTerminalLine(s.Lines[0])
+			line := s.Lines[0]
 			for len(line.Cells) > 0 {
 				cell := line.Cells[len(line.Cells)-1]
 				if cell.Rune != 0 || cell.Width == 255 || cell.Combining != "" {
@@ -638,15 +639,19 @@ func (t *Terminal) scrollUp(count int) {
 				}
 				line.Cells = line.Cells[:len(line.Cells)-1]
 			}
+			// Clone after trimming so short lines do not retain a full row.
+			line = cloneTerminalLine(line)
 			t.Scrollback = append(t.Scrollback, line)
 			t.retainedCells += len(line.Cells)
 			for len(t.Scrollback) > t.ScrollbackMax || t.retainedCells+2*t.Rows*t.Cols > MaxTerminalRetainedCells {
 				t.retainedCells -= len(t.Scrollback[0].Cells)
+				t.Scrollback[0] = TerminalLine{}
 				t.Scrollback = t.Scrollback[1:]
 			}
 		}
 		copy(s.Lines, s.Lines[1:])
-		s.Lines[t.Rows-1] = TerminalLine{Cells: make([]TerminalCell, t.Cols)}
+		clear(recycled)
+		s.Lines[t.Rows-1] = TerminalLine{Cells: recycled}
 	}
 }
 

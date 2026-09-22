@@ -21,6 +21,60 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
+func TestShouldDeferWorkspaceInputYieldsToNewSessionWizard(t *testing.T) {
+	state := &tuiState{workspacePlacementInputPending: true}
+	if !shouldDeferWorkspaceInput(state, false) {
+		t.Fatal("pending workspace input should be deferred before the wizard opens")
+	}
+	state.newSessionMode = true
+	if shouldDeferWorkspaceInput(state, false) {
+		t.Fatal("new-session wizard input must not be deferred behind the old lease")
+	}
+	if shouldDeferWorkspaceInput(state, true) {
+		t.Fatal("replayed input must not be deferred")
+	}
+}
+
+func TestShouldDeferWorkspaceInputPreservesWorkspaceNavigationReplay(t *testing.T) {
+	if !shouldDeferWorkspaceInput(&tuiState{workspacePlacementInputPending: true, workspacePreview: true}, false) {
+		t.Fatal("first workspace navigation key must wait for the replacement PTY lease")
+	}
+	if shouldDeferWorkspaceInput(&tuiState{workspacePlacementInputPending: true, workspacePreview: true}, true) {
+		t.Fatal("replayed workspace navigation key must bypass the PTY fence")
+	}
+	for _, state := range []*tuiState{
+		{workspacePlacementInputPending: true, workspacePaneMode: true},
+		{workspacePlacementInputPending: true, workspaceProjectFocus: true},
+	} {
+		if shouldDeferWorkspaceInput(state, false) {
+			t.Fatalf("workspace modal input was deferred: %#v", state)
+		}
+	}
+}
+
+func TestWorkspaceReplayRoutesThroughUnfocusedNavigation(t *testing.T) {
+	if !shouldRouteWorkspaceReplayAsNavigation(true) {
+		t.Fatal("deferred workspace replay must use the unfocused navigation route")
+	}
+	if shouldRouteWorkspaceReplayAsNavigation(false) {
+		t.Fatal("ordinary replay must retain its existing routing")
+	}
+}
+
+func TestWorkspaceProjectShortcutBypassesPendingPTYFence(t *testing.T) {
+	state := &tuiState{workspacePreview: true, workspacePlacementInputPending: true}
+	if !shouldRouteWorkspaceProjectInputAsNavigation(state, []byte("b")) {
+		t.Fatal("project shortcut should route through workspace navigation while PTY restoration is fenced")
+	}
+	if shouldRouteWorkspaceProjectInputAsNavigation(state, []byte("j")) {
+		t.Fatal("ordinary shell input must remain behind the PTY fence")
+	}
+	state.focused = true
+	if shouldRouteWorkspaceProjectInputAsNavigation(state, []byte("b")) {
+		t.Fatal("focused PTY input must not be rerouted as workspace navigation")
+	}
+}
+
 func TestDucklordClientsReadsConfig(t *testing.T) {
 	config := writeConfig(t)
 	var out bytes.Buffer
@@ -628,7 +682,7 @@ func TestSessionActionsReflectKindOwnerTaskAndAdapter(t *testing.T) {
 			t.Fatalf("shell exposed agent-only action %#v", action)
 		}
 	}
-	if len(shellActions) != 6 || shellActions[1].ID != "reconnect" || !shellActions[1].Enabled || shellActions[3].Mode != protocol.SessionLifecycleImmediate {
+	if len(shellActions) != 7 || shellActions[1].ID != "reconnect" || !shellActions[1].Enabled || shellActions[3].Mode != protocol.SessionLifecycleImmediate || shellActions[6].ID != "rename-handle" {
 		t.Fatalf("shell actions=%#v", shellActions)
 	}
 
@@ -783,13 +837,17 @@ func TestTUIHelpUsesConfiguredBindingsAndCategories(t *testing.T) {
 	}
 }
 
-func TestPinnedHelpDoesNotCaptureEscapeOrNavigation(t *testing.T) {
+func TestHelpClosesOnlyWithConfiguredKey(t *testing.T) {
 	state := &tuiState{cfg: &ducklord.Config{}, helpMode: true, sessions: []ducklord.RemoteSession{{Name: "one"}, {Name: "two"}}}
-	if action := state.handleInput([]byte("\x1b")); action != "" || !state.helpMode {
-		t.Fatalf("escape action=%q help=%v", action, state.helpMode)
+	if state.handleCentralModalCancel([]byte("\x1b")) || !state.helpMode {
+		t.Fatalf("escape closed help: help=%v", state.helpMode)
 	}
-	if action := state.handleInput([]byte("j")); action != "select" || state.selected != 1 || !state.helpMode {
-		t.Fatalf("navigation action=%q selected=%d help=%v", action, state.selected, state.helpMode)
+	if state.handleCentralModalCancel([]byte("\x03")) || !state.helpMode {
+		t.Fatalf("ctrl-c closed help: help=%v", state.helpMode)
+	}
+	state.toggleHelp()
+	if state.helpMode {
+		t.Fatal("configured help key did not close help")
 	}
 }
 
@@ -876,6 +934,9 @@ func TestTUIHostMenuTargetsSelectedHostGroup(t *testing.T) {
 	state.beginHostMenu()
 	if !state.hostMenuMode || state.hostMenuTarget != "host-b" {
 		t.Fatalf("host menu mode=%v target=%q", state.hostMenuMode, state.hostMenuTarget)
+	}
+	if action := state.handleHostMenuInput([]byte("\r")); action != "" || state.hostMenuStep != "actions" {
+		t.Fatalf("host list selection action=%q step=%q", action, state.hostMenuStep)
 	}
 	if action := state.handleHostMenuInput([]byte("\r")); action != "" || state.hostMenuStep != "connections" {
 		t.Fatalf("host menu selection action=%q step=%q", action, state.hostMenuStep)
@@ -2336,6 +2397,22 @@ func TestTUICreatePromptUsesSelectedClient(t *testing.T) {
 	}
 }
 
+func TestTUICreateHostEnterRemainsOwnedByWizard(t *testing.T) {
+	state := &tuiState{
+		cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host", Host: "host"}}},
+	}
+	state.beginCreate()
+	if state.newSessionStep != "host" {
+		t.Fatalf("create step = %q", state.newSessionStep)
+	}
+	if action := state.handleCreateInput([]byte("\r")); action != "submit" {
+		t.Fatalf("host Enter action = %q", action)
+	}
+	if state.newSessionLine != "1" {
+		t.Fatalf("host selection after Enter = %q", state.newSessionLine)
+	}
+}
+
 type homeCreateRunner struct {
 	fakeRunner
 	homeClient string
@@ -3139,6 +3216,30 @@ func TestNextInputEventKeepsAltChordAtomic(t *testing.T) {
 	}
 }
 
+func TestNextInputEventKeepsLoneEscapeAmbiguousForAltChords(t *testing.T) {
+	if event, rest, ok := nextInputEvent([]byte{0x1b}); ok || event != nil || string(rest) != "\x1b" {
+		t.Fatalf("lone escape event=%q rest=%q ok=%v", event, rest, ok)
+	}
+	event, rest, ok := nextInputEvent([]byte("\x1bq"))
+	if !ok || string(event) != "\x1bq" || len(rest) != 0 {
+		t.Fatalf("Alt chord event=%q rest=%q ok=%v", event, rest, ok)
+	}
+}
+
+func TestNextInputEventKeepsEscapeAndControlSeparate(t *testing.T) {
+	for _, control := range []byte{0x03, 0x1d, 0x7f} {
+		input := append([]byte{0x1b, control}, 'x')
+		event, rest, ok := nextInputEvent(input)
+		if !ok || string(event) != "\x1b" || string(rest) != string([]byte{control, 'x'}) {
+			t.Fatalf("control=%#x event=%q rest=%q ok=%v", control, event, rest, ok)
+		}
+		event, rest, ok = nextInputEvent(rest)
+		if !ok || len(event) != 1 || event[0] != control || string(rest) != "x" {
+			t.Fatalf("control=%#x second event=%q rest=%q ok=%v", control, event, rest, ok)
+		}
+	}
+}
+
 func TestCreateModalIsCenteredColoredAndSanitizesRemoteLabels(t *testing.T) {
 	states := []*tuiState{
 		{newSessionMode: true, newSessionStep: "host", cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "host\nspoof", Host: "target\tbad"}}}},
@@ -3594,6 +3695,13 @@ func TestNextInputEventSplitsCoalescedKeys(t *testing.T) {
 	}
 }
 
+func TestNextInputEventPreservesPTYUnfocusControl(t *testing.T) {
+	event, rest, ok := nextInputEvent([]byte{0x1d, 'x'})
+	if !ok || string(event) != "\x1d" || string(rest) != "x" {
+		t.Fatalf("event=%q rest=%q ok=%v", event, rest, ok)
+	}
+}
+
 func TestNextInputEventParsesAllArrowKeysAtomically(t *testing.T) {
 	for _, sequence := range []string{"\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"} {
 		event, rest, ok := nextInputEvent([]byte(sequence + "x"))
@@ -3648,7 +3756,10 @@ type fakeRunner struct {
 	installPath      string
 }
 
-func (fakeRunner) HostLogRetention(context.Context, ducklord.Client) (int, error)  { return 7, nil }
+func (fakeRunner) HostLogRetention(context.Context, ducklord.Client) (int, error) { return 7, nil }
+func (fakeRunner) HostResources(context.Context, ducklord.Client) (protocol.HostResourceStatus, error) {
+	return protocol.HostResourceStatus{GOOS: "linux", GOARCH: "amd64", CPUCount: 2}, nil
+}
 func (fakeRunner) SetHostLogRetention(context.Context, ducklord.Client, int) error { return nil }
 func (fakeRunner) ConfigureHostAgentHook(context.Context, ducklord.Client, string, string) (protocol.HostAgentHookConfigResult, error) {
 	return protocol.HostAgentHookConfigResult{}, nil
@@ -3731,6 +3842,9 @@ func (f fakeRunner) Yield(context.Context, ducklord.Client, string, bool) (proto
 func (f fakeRunner) YieldSelected(context.Context, ducklord.Client, ducklord.RemoteSession, bool) (protocol.SessionYieldResult, error) {
 	return protocol.SessionYieldResult{}, nil
 }
+func (f fakeRunner) RenameSelected(_ context.Context, _ ducklord.Client, session ducklord.RemoteSession, handle string) (protocol.SessionSummary, error) {
+	return protocol.SessionSummary{SessionID: session.SessionID, Handle: handle, OwnershipEpoch: session.OwnershipEpoch, RuntimeGeneration: session.RuntimeGeneration}, nil
+}
 func (f fakeRunner) Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error) {
 	return f.projects, nil
 }
@@ -3797,6 +3911,9 @@ type recordingRunner struct {
 
 func (*recordingRunner) HostLogRetention(context.Context, ducklord.Client) (int, error) {
 	return 7, nil
+}
+func (*recordingRunner) HostResources(context.Context, ducklord.Client) (protocol.HostResourceStatus, error) {
+	return protocol.HostResourceStatus{GOOS: "linux", GOARCH: "amd64", CPUCount: 2}, nil
 }
 func (*recordingRunner) SetHostLogRetention(context.Context, ducklord.Client, int) error { return nil }
 func (*recordingRunner) ConfigureHostAgentHook(context.Context, ducklord.Client, string, string) (protocol.HostAgentHookConfigResult, error) {
@@ -3999,6 +4116,9 @@ func (r *recordingRunner) Yield(_ context.Context, client ducklord.Client, sessi
 func (r *recordingRunner) YieldSelected(_ context.Context, client ducklord.Client, session ducklord.RemoteSession, wait bool) (protocol.SessionYieldResult, error) {
 	r.yieldClient, r.yieldSession, r.yieldWait = client.Name, session.SessionID, wait
 	return r.yieldResult, nil
+}
+func (r *recordingRunner) RenameSelected(_ context.Context, _ ducklord.Client, session ducklord.RemoteSession, handle string) (protocol.SessionSummary, error) {
+	return protocol.SessionSummary{SessionID: session.SessionID, Handle: handle, OwnershipEpoch: session.OwnershipEpoch, RuntimeGeneration: session.RuntimeGeneration}, nil
 }
 func (r *recordingRunner) Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error) {
 	return nil, nil

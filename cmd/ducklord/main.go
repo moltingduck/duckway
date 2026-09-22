@@ -30,6 +30,8 @@ import (
 
 var errRestartTUI = errors.New("restart ducklord TUI")
 
+// Keep a lone ESC pending briefly so a normal arrow sequence can arrive in a
+// separate read without making bare-Esc cancellation feel sluggish.
 const inputEscapeAmbiguityTimeout = 25 * time.Millisecond
 
 type remoteRunner interface {
@@ -42,6 +44,7 @@ type remoteRunner interface {
 	LifecycleSelected(context.Context, ducklord.Client, ducklord.RemoteSession, protocol.SessionLifecycleOperation, protocol.SessionLifecycleMode) (protocol.SessionLifecycleResult, error)
 	Yield(context.Context, ducklord.Client, string, bool) (protocol.SessionYieldResult, error)
 	YieldSelected(context.Context, ducklord.Client, ducklord.RemoteSession, bool) (protocol.SessionYieldResult, error)
+	RenameSelected(context.Context, ducklord.Client, ducklord.RemoteSession, string) (protocol.SessionSummary, error)
 	Projects(context.Context, ducklord.Client) ([]ducklord.RemoteProject, error)
 	SuggestProjectPaths(context.Context, ducklord.Client, string) ([]string, error)
 	EnsureDirectory(context.Context, ducklord.Client, string, bool) (ducklord.RemoteDirectoryStatus, error)
@@ -49,6 +52,7 @@ type remoteRunner interface {
 	Agents(context.Context, ducklord.Client, string) ([]ducklord.RemoteAgent, error)
 	ProbeDucklion(context.Context, ducklord.Client) (ducklord.DucklionProbe, error)
 	HostLogRetention(context.Context, ducklord.Client) (int, error)
+	HostResources(context.Context, ducklord.Client) (protocol.HostResourceStatus, error)
 	SetHostLogRetention(context.Context, ducklord.Client, int) error
 	ConfigureHostAgentHook(context.Context, ducklord.Client, string, string) (protocol.HostAgentHookConfigResult, error)
 	HostAgentHookStatus(context.Context, ducklord.Client, string) (protocol.HostAgentHookStatus, error)
@@ -107,12 +111,43 @@ type hostRetentionEvent struct {
 	err        error
 	saved      bool
 }
+type hostResourceEvent struct {
+	id         uint64
+	epoch      uint64
+	instanceID string
+	host       string
+	status     protocol.HostResourceStatus
+	err        error
+}
+
+// publishHostResourceEvent never lets a refresh worker wait behind an older
+// completion. The request, host epoch, and instance checks still decide
+// whether a delivered event may affect state.
+func publishHostResourceEvent(ctx context.Context, done chan<- hostResourceEvent, event hostResourceEvent) {
+	select {
+	case done <- event:
+	case <-ctx.Done():
+	default:
+	}
+}
 
 type hostHookEvent struct {
 	id, epoch                       uint64
 	instanceID, host, agent, action string
 	result                          protocol.HostAgentHookConfigResult
 	err                             error
+}
+
+type hostSkillsEvent struct {
+	id       uint64
+	action   string
+	host     string
+	targetID string
+	skillID  string
+	preview  *ducklord.SkillPreview
+	names    []string
+	count    int
+	err      error
 }
 
 type hostHookStatusEvent struct {
@@ -237,6 +272,27 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func shouldDeferWorkspaceInput(s *tuiState, replayed bool) bool {
+	// A placement fence belongs to the asynchronous PTY handoff. Keep the first
+	// workspace key queued until the replacement control lease is accepted; the
+	// replay is then routed through workspace navigation (for example Ctrl-]
+	// followed by b, then p) instead of being consumed by the old PTY gate.
+	return s.workspacePlacementInputPending && !s.focused && !replayed && !s.newSessionMode &&
+		!s.workspacePaneMode && !s.workspaceProjectFocus
+}
+
+// shouldRouteWorkspaceProjectInputAsNavigation identifies the project-focus
+// shortcut while a replacement PTY lease is still fenced. Route this key
+// locally so the user can reach the Project pane during restoration.
+func shouldRouteWorkspaceProjectInputAsNavigation(s *tuiState, input []byte) bool {
+	return s.workspacePreview && !s.focused && !s.newSessionMode && !s.workspacePaneMode &&
+		s.shortcut("project_focus", string(input))
+}
+
+func shouldRouteWorkspaceReplayAsNavigation(deferredReplay bool) bool {
+	return deferredReplay
 }
 
 func run(args []string, out io.Writer, runner remoteRunner) error {
@@ -1329,212 +1385,328 @@ func splitCommandLine(line string) ([]string, error) {
 }
 
 type tuiState struct {
-	modalMouseRegions          []modalMouseRegion
-	modalMouseLines            map[int]modalMouseAction
-	cfg                        *ducklord.Config
-	cfgPath                    string
-	runner                     remoteRunner
-	refresh                    time.Duration
-	sessions                   []ducklord.RemoteSession
-	promoted                   map[string]bool
-	selected                   int
-	selectedGroupID            string
-	dragSession                ducklord.SessionIdentity
-	dragTargetGroup            string
-	dragTargetSession          ducklord.SessionIdentity
-	hashes                     map[string]string
-	selectedKey                string
-	outputText                 string
-	outputErr                  string
-	localWarning               string
-	notificationSink           notificationDelivery
-	attentionDeliveryAt        map[string]time.Time
-	notificationNow            func() time.Time
-	notificationObserved       map[string]map[model.NotificationCategory]uint64
-	pendingBells               uint8
-	resizeStatus               string
-	outputForKey               string
-	outputStale                bool
-	outputFresh                bool
-	outputReconnecting         bool
-	terminal                   *ducklord.Terminal
-	terminalGeneration         uint64
-	terminalOffset             uint64
-	terminalCursorValid        bool
-	activeAttachKey            string
-	activeAttachFresh          bool
-	pendingAttachKey           string
-	snapshotStore              ducklord.SnapshotStore
-	activityStore              ducklord.ActivityStateStore
-	activityState              *ducklord.ActivityState
-	focused                    bool
-	copyMode                   bool
-	copyRendering              bool
-	frameOutput                frameOutput
-	copyTerminal               *ducklord.Terminal
-	newSessionMode             bool
-	newSessionClient           string
-	newSessionLine             string
-	newSessionSelected         int
-	newSessionErr              string
-	newSessionStarting         bool
-	newSessionStartGeneration  uint64
-	newSessionStartInstance    string
-	newSessionStartEpoch       uint64
-	newSessionDiscovering      bool
-	newSessionRequestID        uint64
-	newSessionCancel           context.CancelFunc
-	createWorkers              sync.WaitGroup
-	newSessionStep             string
-	newSessionKind             model.SessionKind
-	newSessionAgent            string
-	newSessionCommand          []string
-	newSessionProjects         []ducklord.RemoteProject
-	newSessionProject          ducklord.RemoteProject
-	newSessionAgents           []ducklord.RemoteAgent
-	newSessionCWD              string
-	newSessionPathSuggestions  []string
-	newSessionPathSelected     int
-	newSessionPathRequestID    uint64
-	newSessionPathCancel       context.CancelFunc
-	newSessionPathBusy         bool
-	newSessionPathCompletion   string
-	addClientMode              bool
-	addClientStep              string
-	addClientProvisionMode     string
-	addClientModeSelected      int
-	addClientLine              string
-	addClientSelected          int
-	addClientErr               string
-	addClientHosts             []ducklord.SSHHost
-	addClientBusy              bool
-	addClientRequestID         uint64
-	addClientCancel            context.CancelFunc
-	removeClientMode           bool
-	removeClientSelected       int
-	removeClientConfirm        string
-	helpMode                   bool
-	helpOffset                 int
-	helpSearchActive           bool
-	helpSearchQuery            string
-	ptyScrollOffset            int
-	shortcutMode               bool
-	shortcutStep               string
-	shortcutIndex              int
-	shortcutLine               string
-	shortcutErr                string
-	shortcutDraft              *ducklord.Config
-	notificationConfigMode     bool
-	notificationConfigStep     string
-	notificationConfigScope    string
-	notificationConfigHost     string
-	notificationConfigIndex    int
-	notificationConfigChoice   int
-	notificationConfigPath     string
-	notificationConfigErr      string
-	notificationConfigDraft    *ducklord.Config
-	notificationConfigBase     []byte
-	hostMenuMode               bool
-	hostMenuStep               string
-	hostMenuTarget             string
-	hostMenuIndex              int
-	hostMenuSelected           map[string]bool
-	hostMenuErr                string
-	hostMenuOldDays            int
-	hostMenuDraft              string
-	hostMenuReplaceDraft       bool
-	hostMenuRequestID          uint64
-	hostHookInFlight           map[string]uint64
-	hostHookStatuses           map[string]protocol.HostAgentHookStatus
-	hostHookStatusRequestID    uint64
-	hostHookStatusLoading      bool
-	hostHookStatusErr          string
-	hostHookAgent              string
-	hostHookAction             string
-	disconnectedHosts          map[string]bool
-	hostScoped                 bool
-	ownerName                  string
-	listPaneWidth              int
-	autoHideList               bool
-	hostSync                   map[string]ducklord.SessionUpdate
-	hostConnectionEpoch        map[string]uint64
-	eventDriven                bool
-	notificationMode           bool
-	notificationIndex          int
-	notificationStaged         map[model.NotificationCategory]bool
-	notificationLevelsStaged   map[ducklord.NotificationClass]ducklord.NotificationLevel
-	notificationLevelEditing   bool
-	notificationLevelChoice    int
-	notificationTarget         ducklord.RemoteSession
-	actionMenu                 bool
-	actionIndex                int
-	actionTarget               ducklord.RemoteSession
-	actionOperation            protocol.SessionLifecycleOperation
-	actionMode                 protocol.SessionLifecycleMode
-	lifecycleConfirm           protocol.SessionLifecycleOperation
-	lifecycleReturnToAction    bool
-	lifecycleTarget            ducklord.RemoteSession
-	lifecycleMode              protocol.SessionLifecycleMode
-	lifecycleBusy              bool
-	groupMenu                  bool
-	groupMenuStep              string
-	groupMenuAction            string
-	groupMenuIndex             int
-	groupMenuLine              string
-	groupMenuErr               string
-	groupMenuTarget            string
-	groupMenuSession           ducklord.SessionIdentity
-	pooledOutput               bool
-	workspacePreview           bool
-	workspaceOutput            *ducklord.WorkspaceOutputAdapter
-	workspaceNav               *ducklord.WorkspaceState
-	workspaceProjectFocus      bool
-	workspaceConfigFocus       string
-	workspaceConfigIdentity    ducklord.SessionIdentity
-	panePrefixPending          bool
-	workspaceAttachFromProject bool
-	workspaceFocusFromProject  bool
-	workspaceMouseFocus        bool
-	workspacePaneMode          bool
-	workspacePaneStep          string
-	workspacePaneIndex         int
-	workspacePaneErr           string
-	workspacePaneName          string
-	workspacePaneHosts         []string
-	workspacePaneQuery         string
-	workspacePaneIntent        workspacePaneIntent
-	workspacePaneSourceID      string
-	workspacePaneIdentity      ducklord.SessionIdentity
-	workspacePaneCandidate     ducklord.RemoteSession
-	workspaceDragSession       ducklord.RemoteSession
-	workspaceDragMoved         bool
-	workspaceDragX             int
-	workspaceDragY             int
-	workspaceProjectOffset     int
-	workspaceQuickOffset       int
-	workspacePaneChanged       bool
-	workspaceNewSessionIntent  *workspacePaneIntent
-	pendingWorkspacePlacements []pendingWorkspacePlacement
-	detailQuery                string
-	detailFilter               ducklord.DetailFilter
-	detailSearchFocused        bool
-	detailReturnProjectFocus   bool
-	detailSelected             ducklord.SessionIdentity
-	clearOutputFocus           func()
-	searchMode                 bool
-	searchQuery                string
-	searchSelected             int
-	searchSelectedKey          string
-	searchRevision             uint64
-	searchActivatedKey         string
-	searchActivatedRevision    uint64
-	searchActivatedGeneration  uint64
-	searchErr                  string
-	searchPendingRequestID     uint64
-	searchPendingKey           string
-	searchPendingGeneration    uint64
-	searchPendingRevision      uint64
+	modalMouseRegions    []modalMouseRegion
+	modalMouseLines      map[int]modalMouseAction
+	cfg                  *ducklord.Config
+	cfgPath              string
+	runner               remoteRunner
+	refresh              time.Duration
+	sessions             []ducklord.RemoteSession
+	promoted             map[string]bool
+	selected             int
+	selectedGroupID      string
+	dragSession          ducklord.SessionIdentity
+	dragTargetGroup      string
+	dragTargetSession    ducklord.SessionIdentity
+	hashes               map[string]string
+	selectedKey          string
+	outputText           string
+	outputErr            string
+	localWarning         string
+	notificationSink     notificationDelivery
+	attentionDeliveryAt  map[string]time.Time
+	notificationNow      func() time.Time
+	notificationObserved map[string]map[model.NotificationCategory]uint64
+	pendingBells         uint8
+	resizeStatus         string
+	outputForKey         string
+	outputStale          bool
+	outputFresh          bool
+	outputReconnecting   bool
+	terminal             *ducklord.Terminal
+	terminalGeneration   uint64
+	terminalOffset       uint64
+	terminalCursorValid  bool
+	activeAttachKey      string
+	activeAttachFresh    bool
+	pendingAttachKey     string
+	snapshotStore        ducklord.SnapshotStore
+	activityStore        ducklord.ActivityStateStore
+	activityState        *ducklord.ActivityState
+	focused              bool
+	copyMode             bool
+	copyRendering        bool
+	frameOutput          frameOutput
+	// terminalCookedState is the state captured before the TUI entered raw mode.
+	// Notes editors temporarily restore it while they own the terminal.
+	terminalCookedState                *termState
+	copyTerminal                       *ducklord.Terminal
+	newSessionMode                     bool
+	newSessionClient                   string
+	newSessionLine                     string
+	newSessionSelected                 int
+	newSessionErr                      string
+	newSessionStarting                 bool
+	newSessionStartGeneration          uint64
+	newSessionStartInstance            string
+	newSessionStartEpoch               uint64
+	newSessionDiscovering              bool
+	newSessionRequestID                uint64
+	newSessionCancel                   context.CancelFunc
+	createWorkers                      sync.WaitGroup
+	newSessionStep                     string
+	newSessionKind                     model.SessionKind
+	newSessionAgent                    string
+	newSessionCommand                  []string
+	newSessionProjects                 []ducklord.RemoteProject
+	newSessionProject                  ducklord.RemoteProject
+	newSessionAgents                   []ducklord.RemoteAgent
+	newSessionCWD                      string
+	newSessionPathSuggestions          []string
+	newSessionPathSelected             int
+	newSessionPathRequestID            uint64
+	newSessionPathCancel               context.CancelFunc
+	newSessionPathBusy                 bool
+	newSessionPathCompletion           string
+	addClientMode                      bool
+	addClientStep                      string
+	addClientProvisionMode             string
+	addClientModeSelected              int
+	addClientLine                      string
+	addClientSelected                  int
+	addClientErr                       string
+	addClientHosts                     []ducklord.SSHHost
+	addClientBusy                      bool
+	addClientRequestID                 uint64
+	addClientCancel                    context.CancelFunc
+	removeClientMode                   bool
+	removeClientSelected               int
+	removeClientConfirm                string
+	helpMode                           bool
+	helpOffset                         int
+	helpSearchActive                   bool
+	helpSearchQuery                    string
+	ptyScrollOffset                    int
+	shortcutMode                       bool
+	shortcutStep                       string
+	shortcutIndex                      int
+	shortcutLine                       string
+	shortcutErr                        string
+	shortcutDraft                      *ducklord.Config
+	notificationConfigMode             bool
+	notificationConfigStep             string
+	notificationConfigScope            string
+	notificationConfigHost             string
+	notificationConfigIndex            int
+	notificationConfigChoice           int
+	notificationConfigPath             string
+	notificationConfigErr              string
+	notificationConfigDraft            *ducklord.Config
+	notificationConfigBase             []byte
+	hostMenuMode                       bool
+	hostMenuStep                       string
+	hostMenuTarget                     string
+	hostMenuIndex                      int
+	hostMenuSelected                   map[string]bool
+	hostMenuErr                        string
+	hostMenuOldDays                    int
+	hostMenuDraft                      string
+	hostMenuReplaceDraft               bool
+	hostMenuRequestID                  uint64
+	hostResourceStatus                 protocol.HostResourceStatus
+	hostSkillsIndex                    int
+	hostSkillsSourceIndex              int
+	hostSkillsField                    int
+	hostSkillsDraftURL                 string
+	hostSkillsDraftSkillID             string
+	hostSkillsDraftInsecure            bool
+	hostSkillsDraftTargetID            string
+	hostSkillsDraftTargetPath          string
+	hostSkillsSelected                 map[string]bool
+	hostSkillsRemote                   []string
+	hostSkillsErr                      string
+	hostSkillsRepoErr                  string
+	hostSkillsRepository               string
+	hostSkillsPreview                  *ducklord.SkillPreview
+	hostSkillsPreviewAction            string
+	hostSkillsTargetIndex              int
+	hostSkillsPendingID                string
+	hostSkillsPendingManagement        string
+	hostSkillsDraftImportPath          string
+	hostSkillsDraftImportID            string
+	hostSkillsBusy                     bool
+	hostSkillsRequestID                uint64
+	hostSkillsListRequestID            uint64
+	hostSkillsCancel                   context.CancelFunc
+	hostSkillsListCancel               context.CancelFunc
+	hostSkillsDone                     chan hostSkillsEvent
+	hostSkillsPane                     int // 0 managed repository, 1 agent tree
+	hostSkillsTargetRemoteIndex        int
+	hostSkillsRemoteByTarget           map[string][]string
+	hostSkillsTargetExpanded           map[string]bool
+	hostSkillsRenameOld                string
+	hostSkillsRenameDraft              string
+	hostHookInFlight                   map[string]uint64
+	hostHookStatuses                   map[string]protocol.HostAgentHookStatus
+	hostHookStatusRequestID            uint64
+	hostHookStatusLoading              bool
+	hostHookStatusErr                  string
+	hostHookAgent                      string
+	hostHookAction                     string
+	disconnectedHosts                  map[string]bool
+	hostScoped                         bool
+	ownerName                          string
+	listPaneWidth                      int
+	autoHideList                       bool
+	hostSync                           map[string]ducklord.SessionUpdate
+	hostConnectionEpoch                map[string]uint64
+	eventDriven                        bool
+	notificationMode                   bool
+	notificationIndex                  int
+	notificationStaged                 map[model.NotificationCategory]bool
+	notificationLevelsStaged           map[ducklord.NotificationClass]ducklord.NotificationLevel
+	notificationLevelEditing           bool
+	notificationLevelChoice            int
+	notificationTarget                 ducklord.RemoteSession
+	actionMenu                         bool
+	actionIndex                        int
+	actionTarget                       ducklord.RemoteSession
+	actionOperation                    protocol.SessionLifecycleOperation
+	actionMode                         protocol.SessionLifecycleMode
+	sessionRenameMode                  bool
+	sessionRenameTarget                ducklord.RemoteSession
+	sessionRenameLine                  string
+	sessionRenameErr                   string
+	lifecycleConfirm                   protocol.SessionLifecycleOperation
+	lifecycleReturnToAction            bool
+	lifecycleTarget                    ducklord.RemoteSession
+	lifecycleMode                      protocol.SessionLifecycleMode
+	lifecycleBusy                      bool
+	commandPaletteMode                 bool
+	commandPaletteQuery                string
+	commandPaletteIndex                int
+	commandPalettePreviousFocused      bool
+	commandPalettePreviousAttachKey    string
+	commandPalettePreviousProjectFocus bool
+	commandPalettePreviousProjectID    string
+	commandPalettePreviousPaneID       string
+	commandPaletteWorkspaceGeneration  uint64
+	commandPaletteInput                []byte
+	groupMenu                          bool
+	groupMenuStep                      string
+	groupMenuAction                    string
+	groupMenuIndex                     int
+	groupMenuLine                      string
+	groupMenuErr                       string
+	groupMenuTarget                    string
+	groupMenuSession                   ducklord.SessionIdentity
+	pooledOutput                       bool
+	workspacePreview                   bool
+	workspaceOutput                    *ducklord.WorkspaceOutputAdapter
+	workspaceNav                       *ducklord.WorkspaceState
+	workspaceProjectFocus              bool
+	workspaceConfigFocus               string
+	workspaceConfigIdentity            ducklord.SessionIdentity
+	panePrefixPending                  bool
+	quickShellOrigin                   *workspacePaneIntent
+	panePrefixSuffix                   string
+	panePrefixDeadline                 time.Time
+	panePrefixReplay                   []byte
+	workspaceAttachFromProject         bool
+	workspaceFocusFromProject          bool
+	workspaceMouseFocus                bool
+	workspacePaneMode                  bool
+	workspacePaneStep                  string
+	workspacePaneIndex                 int
+	workspacePaneErr                   string
+	workspacePaneName                  string
+	workspacePaneHosts                 []string
+	workspacePaneQuery                 string
+	workspacePaneIntent                workspacePaneIntent
+	workspacePaneSourceID              string
+	workspacePaneIdentity              ducklord.SessionIdentity
+	workspacePaneCandidate             ducklord.RemoteSession
+	projectTransferPath                string
+	projectTransferData                []byte
+	projectTransfer                    ducklord.ProjectTransfer
+	projectTransferPreview             ducklord.ProjectImportPreview
+	projectTransferAction              string
+	workspacePaneRestoreFocused        bool
+	workspacePaneRestoreAttachKey      string
+	workspacePaneFocusRestorePending   bool
+	workspacePaneFocusRestoreLease     bool
+	workspacePaneFocusRestoreKey       string
+	workspacePaneFocusRestoreSession   ducklord.RemoteSession
+	workspaceDragSession               ducklord.RemoteSession
+	workspaceDragKind                  string
+	workspaceDragProjectID             string
+	workspaceDragTabID                 string
+	workspaceDragMoved                 bool
+	workspaceDragX                     int
+	workspaceDragY                     int
+	workspaceProjectOffset             int
+	workspaceQuickOffset               int
+	workspacePaneChanged               bool
+	workspacePlacementFocusPending     bool
+	workspacePlacementInputPending     bool
+	notesEntries                       []ducklord.NoteEntry
+	notesScope                         ducklord.NotesScope
+	notesSessionID                     string
+	notesSessionIdentity               ducklord.SessionIdentity
+	notesEntryIndexes                  []int
+	notesEntryScopes                   []ducklord.NotesScope
+	notesEntryIdentities               []string
+	notesEntryOrigins                  []string
+	notesPickerMode                    string
+	notesPickerChoices                 []string
+	notesPickerLabels                  []string
+	notesPickerIndex                   int
+	notesQuery                         string
+	notesSearchActive                  bool
+	notesProjectID                     string
+	notesPreviousProjectID             string
+	notesPreviousPaneID                string
+	notesPreviousProjectFocus          bool
+	notesPreviousFocused               bool
+	notesFocusRestorePending           bool
+	notesPendingInputKey               string
+	notesPendingInput                  []byte
+	notesFocusRestoreReselect          bool
+	notesPreviousAttachKey             string
+	notesPreviousAttachValid           bool
+	helpFocusRestorePending            bool
+	helpPendingInputKey                string
+	notesFormActive                    bool
+	notesFormIndex                     int
+	notesFormRawIndex                  int
+	notesFormField                     int
+	notesFormTitle                     string
+	notesFormBody                      string
+	notesFormCursor                    int
+	workspaceNewSessionIntent          *workspacePaneIntent
+	pendingWorkspacePlacements         []pendingWorkspacePlacement
+	detailQuery                        string
+	detailFilter                       ducklord.DetailFilter
+	detailSearchFocused                bool
+	detailReturnProjectFocus           bool
+	detailSelected                     ducklord.SessionIdentity
+	clearOutputFocus                   func()
+	searchMode                         bool
+	terminalSearchMode                 bool
+	terminalSearchQuery                string
+	terminalSearchText                 string
+	terminalSearchSelected             int
+	terminalBookmarkMode               bool
+	terminalBookmarkLabel              string
+	terminalToolInput                  []byte
+	terminalBookmarkListMode           bool
+	terminalBookmarkSelected           int
+	terminalBookmarkPreviousFocus      string
+	searchQuery                        string
+	searchSelected                     int
+	searchSelectedKey                  string
+	searchRevision                     uint64
+	searchActivatedKey                 string
+	searchActivatedRevision            uint64
+	searchActivatedGeneration          uint64
+	searchErr                          string
+	searchPendingRequestID             uint64
+	searchPendingKey                   string
+	searchPendingGeneration            uint64
+	searchPendingRevision              uint64
 }
+
+const notesPendingInputLimit = 4096
 
 func runTUI(cfg *ducklord.Config, runner remoteRunner, cfgPath string, refresh time.Duration, owner string) error {
 	return runTUIWithOptions(cfg, runner, cfgPath, refresh, false, owner)
@@ -1597,7 +1769,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		stateWarning += warning
 	}
 	state := &tuiState{cfg: cfg, cfgPath: cfgPath, runner: runner, refresh: refresh, hashes: map[string]string{}, hostScoped: hostScoped, ownerName: owner,
-		snapshotStore: ducklord.SnapshotStore{}, activityStore: activityStore, activityState: activityState, hostSync: make(map[string]ducklord.SessionUpdate), localWarning: stateWarning,
+		terminalCookedState: oldState,
+		snapshotStore:       ducklord.SnapshotStore{}, activityStore: activityStore, activityState: activityState, hostSync: make(map[string]ducklord.SessionUpdate), localWarning: stateWarning,
 		listPaneWidth: cfg.SessionListPaneWidth(), autoHideList: cfg.SessionListAutoHide(), disconnectedHosts: make(map[string]bool),
 		workspacePreview: os.Getenv("DUCKLORD_LEGACY_TUI") != "1"}
 	state.notificationSink = newLocalNotificationSink()
@@ -1674,14 +1847,18 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	signal.Notify(resizeSignals, syscall.SIGWINCH)
 	defer signal.Stop(resizeSignals)
 	input := make(chan []byte, 8)
+	inputReady := make(chan struct{}, 1)
 	attachOut := make(chan attachOutputEvent, 32)
 	attachOutputSource := (<-chan attachOutputEvent)(attachOut)
 	resizeRequests := make(chan resizeRequest, 1)
 	resizeResults := make(chan resizeDoneEvent, 1)
 	startDone := make(chan startDoneEvent, 1)
 	hostRetentionDone := make(chan hostRetentionEvent, 1)
+	hostResourceDone := make(chan hostResourceEvent, 1)
 	hostHookDone := make(chan hostHookEvent, 1)
 	hostHookStatusDone := make(chan hostHookStatusEvent, 1)
+	hostSkillsDone := make(chan hostSkillsEvent)
+	state.hostSkillsDone = hostSkillsDone
 	var hostRetentionCancel context.CancelFunc
 	launchHostHookStatus := func(target string) {
 		state.hostHookStatusRequestID++
@@ -1730,6 +1907,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	var selectedOutputSession ducklord.RemoteSession
 	selectPooledOutput := func() {
 		if outputManager == nil {
+			return
+		}
+		if state.workspacePaneMode && state.workspacePaneStep == "notes" {
 			return
 		}
 		if len(state.sessions) == 0 {
@@ -1871,12 +2051,66 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	var controlOpenCancel context.CancelFunc
 	var attachCancel context.CancelFunc
 	attachID := 0
-	attachCanResize := false
-	attachInitialResizeQueued := false
+	var attachCanResize bool
+	var attachInitialResizeQueued bool
 	var attachReplayEndOffset uint64
 	var pendingFramebufferResize *resizeDoneEvent
-	resizeInFlight := false
+	var resizeInFlight bool
 	var queuedResize *[2]uint16
+	openControlForSession := func(s ducklord.RemoteSession) bool {
+		if outputManager == nil || !canAttach(s) || !state.hostIsLive(s.Client) {
+			return false
+		}
+		c, err := mustClient(cfg, s.Client)
+		if err != nil {
+			state.outputErr = err.Error()
+			return false
+		}
+		fencePreview()
+		state.focused = false
+		state.activeAttachKey = sessionKey(s)
+		if workspaceOutput != nil {
+			selectPooledOutput()
+		}
+		state.activeAttachFresh = state.outputFresh
+		state.pendingAttachKey = ""
+		controlID++
+		attachID++
+		resizeInFlight = false
+		queuedResize = nil
+		id := controlID
+		if !state.canResizeCurrentSession() {
+			state.focused = true
+			state.outputErr = "read-only PTY view; yield control before sending input"
+			return false
+		}
+		controlRunner, ok := runner.(interface {
+			OpenControlSession(context.Context, ducklord.Client, string) (*ducklord.ControlSession, error)
+		})
+		if !ok {
+			state.outputErr = "PTY control is unavailable"
+			state.clearAttachIdentity()
+			return false
+		}
+		state.outputErr = "opening PTY control..."
+		key := sessionKey(s)
+		if controlOpenCancel != nil {
+			controlOpenCancel()
+		}
+		controlCtx, cancelControlOpen := context.WithCancel(ctx)
+		controlOpenCancel = cancelControlOpen
+		go func() {
+			opened, openErr := controlRunner.OpenControlSession(controlCtx, c, s.SessionID)
+			select {
+			case controlOpened <- controlOpenEvent{id: id, key: key, control: opened, err: openErr}:
+			case <-ctx.Done():
+				if opened != nil {
+					_ = opened.Stdin.Close()
+				}
+			}
+		}()
+		return true
+	}
 	var bufferedAttach []attachOutputEvent
 	bufferedAttachBytes := 0
 	resizeWorkerDone := make(chan struct{})
@@ -1942,12 +2176,83 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 		}
 	}
-	acceptWorkspaceControl := func() bool {
-		if workspaceOutput == nil || control == nil || state.focused {
+	resetWorkspacePaneChange := func() bool {
+		if !state.workspacePaneChanged {
+			return false
+		}
+		state.workspacePaneChanged = false
+		controlID++
+		attachID++
+		resizeInFlight = false
+		pendingFramebufferResize = nil
+		queuedResize = nil
+		bufferedAttach = nil
+		bufferedAttachBytes = 0
+		attachOutputSource = attachOut
+		attachCanResize = false
+		attachInitialResizeQueued = false
+		attachReplayEndOffset = 0
+		if controlOpenCancel != nil {
+			controlOpenCancel()
+			controlOpenCancel = nil
+		}
+		if control != nil {
+			_ = control.Stdin.Close()
+			control, controlDone = nil, nil
+		}
+		if attachCancel != nil {
+			attachCancel()
+			attachCancel = nil
+		}
+		if attach != nil {
+			_ = attach.Stdin.Close()
+			attach = nil
+		}
+		state.clearAttachIdentity()
+		state.focused = false
+		if workspaceOutput != nil {
+			selectPooledOutput()
+		}
+		return true
+	}
+	resetWorkspacePaneChangeIfNeeded := func() bool {
+		// Closing a focused detach confirmation with Esc leaves the modal closed
+		// while the exact source Session control is being rebound.  Do not let
+		// the generic workspace reset invalidate that pending restore; once the
+		// lease is accepted, normal changes can still reset as usual.
+		if state.workspacePaneFocusRestorePending && !state.workspacePaneChanged {
+			return false
+		}
+		// A focused Default detach confirmation temporarily owns the keyboard,
+		// but must keep the originating PTY lease available for Esc restoration.
+		// Confirming the detach closes the modal first, so the normal reset still
+		// tears down the detached pane's lease.
+		if state.workspacePaneMode && state.workspacePaneStep == "detach-confirm" && state.workspacePaneRestoreFocused {
+			state.workspacePaneChanged = false
+			return false
+		}
+		return resetWorkspacePaneChange()
+	}
+	acceptWorkspaceControl := func(restored ...ducklord.RemoteSession) bool {
+		// A workspace modal owns input while it is open.  Async output/control
+		// readiness must not reclaim the PTY focus that opening the modal
+		// deliberately released; closeNotesModal restores it through the
+		// deferred focus lease.
+		if workspaceOutput == nil || control == nil || !state.workspaceControlMayAccept() {
 			return false
 		}
 		session := state.activePTYSession()
-		if _, err := state.workspacePaneRect(); err != nil || !state.hostIsLive(session.Client) || !controlMatchesSession(control, session, state.ownerName) {
+		if len(restored) != 0 {
+			session = restored[0]
+		}
+		// A focused Default detach modal is closed before its original PTY
+		// control is restored, so the workspace pane rectangle is temporarily
+		// unavailable.  The captured source session is authoritative for this
+		// handoff; requiring the modal rectangle here strands Esc on the list.
+		if (!state.workspacePaneFocusRestorePending && func() bool {
+			_, err := state.workspacePaneRect()
+			return err != nil
+		}()) || !state.hostIsLive(session.Client) || !controlMatchesSession(control, session, state.ownerName) {
 			_ = control.Stdin.Close()
 			control, controlDone = nil, nil
 			state.clearAttachIdentity()
@@ -1955,7 +2260,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			return false
 		}
 		key, ok := terminalOutputKey(session)
-		if !ok || workspaceOutput.SetInputFocus(key) != nil {
+		if !ok || !setWorkspaceInputFocus(workspaceOutput, key) {
 			return false // the visible raw-output lease may still be opening
 		}
 		state.focused = true
@@ -1975,7 +2280,24 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		}
 		return true
 	}
+	restorePendingFocus := func() bool {
+		restored := restorePendingNotesFocus(state, workspaceOutput, state.outputFresh)
+		// The output lease and the PTY writer become ready independently.  Help
+		// must not advertise terminal focus until the writer has arrived as well;
+		// otherwise the first byte after closing the overlay is silently discarded
+		// while control is still nil.
+		restored = restorePendingHelpFocusWithAttach(state, workspaceOutput, state.outputFresh, control, attach) || restored
+		if restorePendingWorkspacePaneFocus(state, workspaceOutput, state.outputFresh, control) {
+			restored = true
+		}
+		return restored
+	}
 	finishAttach := func(event attachOutputEvent) {
+		// Closing a focused Default detach modal can restore the existing
+		// control lease while the old attach stream is still finishing.  Its
+		// terminal event belongs to that old stream and must not tear down the
+		// focus that Esc just returned to the source Session.
+		preserveRestoredFocus := state.workspacePaneFocusRestoreLease || state.workspacePaneFocusRestorePending
 		attachID++
 		resizeInFlight = false
 		pendingFramebufferResize = nil
@@ -1984,8 +2306,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 		bufferedAttachBytes = 0
 		attachOutputSource = attachOut
 		wasFocused := state.focused
-		state.focused = false
-		state.clearAttachIdentity()
+		if !preserveRestoredFocus {
+			state.focused = false
+			state.clearAttachIdentity()
+		}
 		attachCanResize = false
 		attachInitialResizeQueued = false
 		attachReplayEndOffset = 0
@@ -2002,9 +2326,128 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	var startCancel context.CancelFunc
 	startID := 0
 	selectPooledOutput()
-	go readInput(ctx, input)
+	go readInput(ctx, input, inputReady)
+	inputPending := false
+	replayInput := make(chan []byte, 1)
+	replayQueued := false
+	var deferredWorkspaceInput []byte
+	deferredWorkspaceReplay := false
+	// Direct pane detach fences user bytes until the surviving pane's PTY
+	// lease is accepted. Those bytes belong to the PTY, unlike deferred
+	// workspace navigation input, so replay them with terminal focus intact.
+	deferredWorkspaceInputToPTY := false
+	clearWorkspacePlacementInput := func() {
+		state.workspacePlacementInputPending = false
+		deferredWorkspaceInput = nil
+		deferredWorkspaceReplay = false
+		deferredWorkspaceInputToPTY = false
+	}
+	panePrefixTimer := time.NewTimer(time.Hour)
+	if !panePrefixTimer.Stop() {
+		<-panePrefixTimer.C
+	}
+	stopPanePrefixTimer := func() {
+		if !panePrefixTimer.Stop() {
+			select {
+			case <-panePrefixTimer.C:
+			default:
+			}
+		}
+	}
+	resetPanePrefixTimer := func(deadline time.Time) {
+		stopPanePrefixTimer()
+		if !deadline.IsZero() {
+			d := time.Until(deadline)
+			if d < 0 {
+				d = 0
+			}
+			panePrefixTimer.Reset(d)
+		}
+	}
+	queuePaneReplay := func() {
+		if replayQueued || len(state.panePrefixReplay) == 0 {
+			return
+		}
+		replay := state.takePanePrefixReplay()
+		replayInput <- replay
+		replayQueued = true
+	}
+	defer stopPanePrefixTimer()
+	lastOutputRender := time.Time{}
+	renderOutput := func() {
+		if lastOutputRender.IsZero() || time.Since(lastOutputRender) >= 50*time.Millisecond {
+			state.render(os.Stdout)
+			lastOutputRender = time.Now()
+		}
+	}
 	for {
+		// Inventory placement selects a newly created Session asynchronously. Queue
+		// the same local attach action used by Enter so the selected pane acquires
+		// a PTY control lease before the next user bytes are handled.
+		if state.workspacePlacementFocusPending && !state.workspacePaneFocusRestorePending && !replayQueued {
+			state.workspacePlacementFocusPending = false
+			// A quick-shell placement replaces the pane owned by the current
+			// control session. Release that old writer before replaying the local
+			// attach action; otherwise the replayed Enter is delivered to the old
+			// PTY while activeAttachKey already names the newly created Session.
+			if control != nil {
+				controlID++
+				if controlOpenCancel != nil {
+					controlOpenCancel()
+					controlOpenCancel = nil
+				}
+				_ = control.Stdin.Close()
+				control = nil
+				controlDone = nil
+			}
+			state.focused = false
+			if state.clearOutputFocus != nil {
+				state.clearOutputFocus()
+			}
+			// Placement changes the selected workspace pane after the output
+			// manager has already selected the old pane.  Select the created
+			// Session before opening its writer lease, otherwise the lease
+			// completion cannot transfer raw input focus to the new PTY.
+			selectPooledOutput()
+			replayInput <- []byte("\r")
+			replayQueued = true
+		}
+		// A prefix command can finish while Help's asynchronous PTY focus lease
+		// is still pending.  Keep it queued until the lease restores terminal
+		// focus; dispatching it immediately would apply the command to the
+		// navigation pane.
+		if state.focused && !state.helpFocusRestorePending && !replayQueued && len(state.panePrefixReplay) != 0 {
+			replayInput <- state.takePanePrefixReplay()
+			replayQueued = true
+		}
+		// A continuously producing PTY can keep its output channel ready and
+		// starve keyboard input in a Go select. Once input is queued, temporarily
+		// remove the output case so controls such as Ctrl-C and Ctrl-] run first.
+		attachOutputSelect := attachOutputSource
+		outputEventsSelect := outputEvents
+		inputSelect := (<-chan []byte)(input)
+		if replayQueued {
+			inputSelect = replayInput
+		}
+		if inputPending || len(input) != 0 || replayQueued {
+			attachOutputSelect = nil
+			outputEventsSelect = nil
+		}
 		select {
+		case <-panePrefixTimer.C:
+			if state.panePrefixPending && state.panePrefixSuffix != "" && !time.Now().Before(state.panePrefixDeadline) {
+				command := state.panePrefixSuffix
+				state.panePrefixPending, state.panePrefixSuffix = false, ""
+				state.panePrefixDeadline = time.Time{}
+				state.dispatchPaneCommand(command)
+				if replay := state.takePanePrefixReplay(); len(replay) != 0 {
+					replayInput <- replay
+					replayQueued = true
+				}
+				state.render(os.Stdout)
+			}
+		case <-inputReady:
+			inputPending = true
 		case event := <-hostRetentionDone:
 			if event.id == state.hostMenuRequestID && hostRetentionCancel != nil {
 				hostRetentionCancel()
@@ -2027,6 +2470,20 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.hostMenuReplaceDraft = true
 				state.hostMenuStep = "retention-edit"
 				state.hostMenuErr = ""
+			}
+			state.render(os.Stdout)
+		case event := <-hostResourceDone:
+			watch := watchedClients[event.host]
+			if !state.acceptHostResourceEvent(event, watch.epoch) {
+				continue
+			}
+			if event.err != nil {
+				state.hostMenuErr = sanitizeTerminalText(event.err.Error())
+				state.hostMenuStep = "resources-error"
+			} else {
+				state.hostResourceStatus = event.status
+				state.hostMenuErr = ""
+				state.hostMenuStep = "resources-view"
 			}
 			state.render(os.Stdout)
 		case event := <-hostHookDone:
@@ -2061,12 +2518,47 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.hostHookStatuses = event.statuses
 			}
 			state.render(os.Stdout)
+		case event := <-hostSkillsDone:
+			if event.action == "list" {
+				if event.id != state.hostSkillsListRequestID || !state.hostMenuMode || state.hostMenuStep != "skills-dashboard" {
+					ducklord.CleanupSkillPreview(event.preview)
+					continue
+				}
+				if state.hostSkillsListCancel != nil {
+					state.hostSkillsListCancel()
+					state.hostSkillsListCancel = nil
+				}
+				state.applyHostSkillsEvent(event)
+				state.render(os.Stdout)
+				continue
+			}
+			if event.id != state.hostSkillsRequestID || !state.hostSkillsBusy {
+				ducklord.CleanupSkillPreview(event.preview)
+				continue
+			}
+			state.applyHostSkillsEvent(event)
+			state.render(os.Stdout)
 		case <-workspaceRepaint:
 			if control != nil && !state.focused {
-				acceptWorkspaceControl()
+				if state.workspacePaneFocusRestorePending {
+					restoreSession := state.activePTYSession()
+					if state.workspacePaneFocusRestoreKey != "" {
+						if captured, ok := state.sessionForKey(state.workspacePaneFocusRestoreKey); ok {
+							restoreSession = captured
+						} else if state.workspacePaneFocusRestoreSession.Client != "" {
+							restoreSession = state.workspacePaneFocusRestoreSession
+						}
+					}
+					if acceptWorkspaceControl(restoreSession) {
+						restorePendingFocus()
+					}
+				} else {
+					acceptWorkspaceControl()
+				}
 			}
 			state.render(os.Stdout)
 		case <-ctx.Done():
+			state.cleanupHostSkills()
 			state.cancelAddClientWork()
 			if controlOpenCancel != nil {
 				controlOpenCancel()
@@ -2111,7 +2603,21 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.clearAttachIdentity()
 					state.outputErr = "PTY focus timed out waiting for Session output"
 				} else {
-					acceptWorkspaceControl()
+					if state.workspacePaneFocusRestorePending {
+						restoreSession := state.activePTYSession()
+						if state.workspacePaneFocusRestoreKey != "" {
+							if captured, ok := state.sessionForKey(state.workspacePaneFocusRestoreKey); ok {
+								restoreSession = captured
+							} else if state.workspacePaneFocusRestoreSession.Client != "" {
+								restoreSession = state.workspacePaneFocusRestoreSession
+							}
+						}
+						if acceptWorkspaceControl(restoreSession) {
+							restorePendingFocus()
+						}
+					} else {
+						acceptWorkspaceControl()
+					}
 				}
 				state.render(os.Stdout)
 				continue
@@ -2130,7 +2636,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				selectPooledOutput()
 				state.render(os.Stdout)
 			}
-		case event := <-outputEvents:
+		case event := <-outputEventsSelect:
 			expectedSession := state.activePTYSession()
 			if workspaceOutput != nil {
 				expectedSession = selectedOutputSession
@@ -2240,6 +2746,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			if view.Ended {
 				state.outputErr = "PTY process ended"
 			}
+			if state.outputFresh {
+				restorePendingFocus()
+				drainNotesPendingInput(state, control)
+			}
 			if searchActivation {
 				state.outputForKey = state.searchPendingKey
 				state.activeAttachKey = state.searchPendingKey
@@ -2260,22 +2770,36 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				attachInitialResizeQueued = true
 				queueResize()
 			}
-			state.render(os.Stdout)
+			renderOutput()
 		case opened := <-controlOpened:
 			paneVisible := true
 			if state.workspacePreview {
 				_, paneErr := state.workspacePaneRect()
 				paneVisible = paneErr == nil
 			}
-			if state.workspacePaneMode || state.workspaceProjectFocus || !paneVisible || opened.id != controlID || opened.key != state.activeAttachKey || opened.control != nil && !controlMatchesSession(opened.control, state.activePTYSession(), state.ownerName) {
+			openedForCurrentAttach := opened.id == controlID && opened.key == state.activeAttachKey
+			restoringFocusedPane := state.workspacePaneFocusRestorePending && openedForCurrentAttach
+			restoreSession := state.activePTYSession()
+			if restoringFocusedPane && state.workspacePaneFocusRestoreKey != "" {
+				if captured, ok := state.sessionForKey(state.workspacePaneFocusRestoreKey); ok {
+					restoreSession = captured
+				} else if state.workspacePaneFocusRestoreSession.Client != "" {
+					restoreSession = state.workspacePaneFocusRestoreSession
+				}
+			}
+			if state.workspacePaneMode || state.workspaceProjectFocus || !paneVisible && !restoringFocusedPane || !openedForCurrentAttach || opened.control != nil && !controlMatchesSession(opened.control, restoreSession, state.ownerName) {
 				if opened.control != nil {
 					_ = opened.control.Stdin.Close()
 				}
-				if opened.id == controlID {
+				// A late result from an older attach must never clear the identity
+				// captured by a newly placed quick-shell pane.  The id alone is not
+				// sufficient when a replacement attach reuses the current lifecycle.
+				if openedForCurrentAttach {
 					if controlOpenCancel != nil {
 						controlOpenCancel()
 						controlOpenCancel = nil
 					}
+					clearWorkspacePlacementInput()
 					state.clearAttachIdentity()
 				}
 				if !paneVisible && opened.id == controlID {
@@ -2289,12 +2813,18 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			controlOpenCancel = nil
 			if opened.err != nil {
 				state.outputErr = sanitizeTerminalText(opened.err.Error())
+				if openedForCurrentAttach {
+					clearWorkspacePlacementInput()
+				}
 				state.clearAttachIdentity()
 				state.render(os.Stdout)
 				continue
 			}
 			if opened.control == nil {
 				state.outputErr = "PTY control unavailable"
+				if openedForCurrentAttach {
+					clearWorkspacePlacementInput()
+				}
 				state.clearAttachIdentity()
 				state.render(os.Stdout)
 				continue
@@ -2302,7 +2832,35 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			control = opened.control
 			controlDone = control.Done
 			if workspaceOutput != nil {
-				if !acceptWorkspaceControl() {
+				var restoreSession ducklord.RemoteSession
+				if state.workspacePaneFocusRestorePending && state.workspacePaneFocusRestoreKey != "" {
+					if captured, ok := state.sessionForKey(state.workspacePaneFocusRestoreKey); ok {
+						restoreSession = captured
+					}
+					if restoreSession.Client == "" {
+						restoreSession = state.workspacePaneFocusRestoreSession
+					}
+				}
+				if restoreSession.Client == "" {
+					if !acceptWorkspaceControl() {
+						// Keep the placement fence until the output lease is accepted.
+						// Host Skills can restore pooled output before its replacement
+						// writer; clearing here drops the first command after Ctrl-C.
+						if control != nil {
+							pendingControlSince = time.Now()
+							state.outputErr = "waiting for Session pane output before PTY input"
+						}
+						state.render(os.Stdout)
+						continue
+					}
+				} else if !acceptWorkspaceControl(restoreSession) {
+					// A restored focused pane may receive its control writer before
+					// the output lease is ready. Keep the first post-Esc command
+					// fenced until the lease is accepted; otherwise it falls through
+					// to the Session list and is lost.
+					if state.workspacePlacementInputPending && !restoringFocusedPane {
+						clearWorkspacePlacementInput()
+					}
 					if control != nil {
 						pendingControlSince = time.Now()
 						state.outputErr = "waiting for Session pane output before PTY input"
@@ -2310,10 +2868,32 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.render(os.Stdout)
 					continue
 				}
+				if state.workspacePlacementInputPending {
+					state.workspacePlacementInputPending = false
+					if len(deferredWorkspaceInput) != 0 && !replayQueued {
+						replayInput <- deferredWorkspaceInput
+						deferredWorkspaceInput = nil
+						deferredWorkspaceReplay = !deferredWorkspaceInputToPTY
+						deferredWorkspaceInputToPTY = false
+						replayQueued = true
+					}
+				}
+				restorePendingFocus()
+				drainNotesPendingInput(state, control)
 				state.render(os.Stdout)
 				continue
 			}
 			state.focused = true
+			if state.workspacePlacementInputPending {
+				state.workspacePlacementInputPending = false
+				if len(deferredWorkspaceInput) != 0 && !replayQueued {
+					replayInput <- deferredWorkspaceInput
+					deferredWorkspaceInput = nil
+					deferredWorkspaceReplay = !deferredWorkspaceInputToPTY
+					deferredWorkspaceInputToPTY = false
+					replayQueued = true
+				}
+			}
 			attachCanResize = control.ResizeBarrier != nil
 			state.outputErr = ""
 			if state.sessionFreshlyDisplayed(state.activePTYSession()) {
@@ -2326,6 +2906,30 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.render(os.Stdout)
 		case controlErr := <-controlDone:
 			controlDone = nil
+			// The previous control stream can finish after Esc has handed the
+			// saved Session back from the detach modal. Its completion belongs to
+			// that stale stream; do not tear down the newly restored focus lease.
+			if consumeWorkspaceRestoreControlDone(state) {
+				// The restored writer itself may be the stream that just completed.
+				// Reopen it against the captured Session before accepting keyboard
+				// input; otherwise the UI advertises focus with no live writer.
+				if state.activeAttachKey != "" {
+					restoreSession := state.activePTYSession()
+					if state.workspacePaneFocusRestoreKey != "" {
+						if captured, ok := state.sessionForKey(state.workspacePaneFocusRestoreKey); ok {
+							restoreSession = captured
+						}
+					}
+					state.workspacePaneFocusRestorePending = true
+					state.workspacePaneFocusRestoreKey = sessionKey(restoreSession)
+					state.workspacePaneFocusRestoreSession = restoreSession
+					state.focused = false
+					control = nil
+					state.workspacePlacementInputPending = true
+					openControlForSession(restoreSession)
+				}
+				continue
+			}
 			control = nil
 			attachCanResize = false
 			if state.focused || workspaceOutput != nil && state.activeAttachKey != "" {
@@ -2405,9 +3009,15 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 			}
 			previousActive := state.effectiveAttachKey()
+			var previousWorkspaceSelections []ducklord.TerminalSelection
+			if workspaceOutput != nil && update.ChangedSessionID != "" {
+				selected := state.currentSession()
+				previousWorkspaceSelections = state.workspaceVisibleSelections(ducklord.TerminalSelection{Client: ducklord.Client{Name: selected.Client}})
+			}
 			if !state.applySessionUpdate(update) {
 				continue
 			}
+			state.retryWorkspaceCreateDiscovery(ctx, createDone, previousHost, update)
 			if state.invalidateCreateStart(update) {
 				if startCancel != nil {
 					startCancel()
@@ -2436,7 +3046,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					}
 					outputManager.SyncHost(update.Client, update.InstanceID, true, selections)
 				}
-				if workspaceOutput != nil && (previousHost.State != update.State || previousInstance != update.InstanceID || update.ChangedSessionID != "") {
+				workspaceSelectionsChangedByUpdate := false
+				if workspaceOutput != nil && update.ChangedSessionID != "" {
+					selected := state.currentSession()
+					workspaceSelectionsChangedByUpdate = workspaceSelectionsChanged(previousWorkspaceSelections,
+						state.workspaceVisibleSelections(ducklord.TerminalSelection{Client: ducklord.Client{Name: selected.Client}}))
+				}
+				if workspaceOutput != nil && (previousHost.State != update.State || previousInstance != update.InstanceID || workspaceSelectionsChangedByUpdate) {
 					selectPooledOutput()
 				}
 			}
@@ -2566,7 +3182,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				requestPreview(false)
 			}
 			state.render(os.Stdout)
-		case chunk := <-attachOutputSource:
+		case chunk := <-attachOutputSelect:
 			if chunk.id != attachID {
 				continue
 			}
@@ -2580,7 +3196,12 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			if chunk.done {
 				finishAttach(chunk)
-				state.render(os.Stdout)
+				// A burst of PTY output can keep this select case ready. Avoid
+				// adding another potentially blocking frame write when keyboard
+				// input is already queued; the next iteration services input first.
+				if len(input) == 0 {
+					renderOutput()
+				}
 				continue
 			}
 			applyOrderedAttachChunk(state, chunk, &pendingFramebufferResize)
@@ -2596,8 +3217,38 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				queuedResize = nil
 				queueResize()
 			}
-			state.render(os.Stdout)
-		case b := <-input:
+			// Rendering each output chunk can monopolize the event loop while a
+			// command such as `yes` is producing output. Let queued controls (in
+			// particular Ctrl-C and the unfocus key) run before another frame.
+			if len(input) == 0 {
+				renderOutput()
+			}
+		case b := <-inputSelect:
+			replayedInput := replayQueued
+			if replayQueued {
+				replayQueued = false
+			}
+			workspaceNavigationReplay := deferredWorkspaceReplay
+			deferredWorkspaceReplay = false
+			if shouldRouteWorkspaceReplayAsNavigation(workspaceNavigationReplay) {
+				// The replacement lease may have restored focused before the
+				// deferred key arrives; route it through workspace navigation.
+				state.focused = false
+			}
+			inputPending = false
+			// A terminal tool owns every byte while its local modal is open.
+			// Route it before workspace replay, modal cancellation, or PTY focus
+			// handling can consume the input.
+			if state.terminalSearchMode || state.terminalBookmarkMode || state.terminalBookmarkListMode {
+				state.handleTerminalToolInput(b)
+				state.render(os.Stdout)
+				continue
+			}
+			workspaceProjectNavigation := shouldRouteWorkspaceProjectInputAsNavigation(state, b)
+			if shouldDeferWorkspaceInput(state, replayedInput) && !workspaceProjectNavigation {
+				deferredWorkspaceInput = append(deferredWorkspaceInput, b...)
+				continue
+			}
 			var selectedActionTarget *ducklord.RemoteSession
 			// Clicking another pane cancels pending focus before changing its
 			// target. Late control completions remain fenced by controlID.
@@ -2607,12 +3258,242 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					controlDone = nil
 				}
 			}
-			if handlePendingPTYInput(state, b, workspaceOutput != nil, &control, &controlOpenCancel, &controlID) {
+			// Central modals take ownership of Esc/Ctrl-C even when they were
+			// opened from a focused terminal. Handle this before the pending
+			// PTY gate so modal cancellation cannot be consumed by it.
+			if state.handleCentralModalCancel(b) {
+				if state.workspacePaneFocusRestorePending {
+					// The original control lease is still valid when a focused
+					// terminal opens the detach modal.  Keep that writer and hand
+					// its visible output lease back immediately; closing it here
+					// creates a needless asynchronous gap that can drop the first
+					// command after Esc.
+					restoreSession := state.activePTYSession()
+					if state.workspacePaneFocusRestoreKey != "" {
+						if captured, ok := state.sessionForKey(state.workspacePaneFocusRestoreKey); ok {
+							restoreSession = captured
+						}
+						if restoreSession.Client == "" {
+							restoreSession = state.workspacePaneFocusRestoreSession
+						}
+					}
+					if control != nil && controlMatchesSession(control, restoreSession, state.ownerName) {
+						state.focused = false
+						// Keep the saved snapshot pending until the visible output lease
+						// accepts input focus. The control writer may be ready first.
+						if acceptWorkspaceControl(restoreSession) {
+							restorePendingFocus()
+						}
+						state.notesFocusRestoreReselect = false
+						state.render(os.Stdout)
+						continue
+					}
+					// The modal may have been opened while the previous control
+					// lease was still connecting. Cancel that stale request before
+					// replaying Enter, otherwise the replay is consumed by the
+					// pending-input gate instead of reopening the saved PTY.
+					// A replacement control really is asynchronous, so fence the
+					// first command only on this path.
+					state.workspacePlacementInputPending = true
+					deferredWorkspaceInput = nil
+					if controlOpenCancel != nil {
+						controlOpenCancel()
+						controlOpenCancel = nil
+						controlID++
+					}
+					if control != nil {
+						_ = control.Stdin.Close()
+						control = nil
+						controlDone = nil
+					}
+					state.focused = false
+					// Keep the input fence up until the restored Session pane's
+					// control writer is accepted. Reopen the exact source Session
+					// directly; routing Esc through Project would consume the user's
+					// first shell command.
+					state.workspacePlacementInputPending = true
+					deferredWorkspaceInput = nil
+					if restoreSession.Client == "" {
+						state.outputErr = "focused Session disappeared before PTY restore"
+						state.workspacePaneFocusRestorePending = false
+					} else {
+						openControlForSession(restoreSession)
+					}
+				}
+				state.notesFocusRestoreReselect = false
+				if !state.focused && !state.workspacePaneFocusRestorePending {
+					selectPooledOutput()
+				}
+				state.render(os.Stdout)
+				continue
+			}
+			if state.handleCommandPaletteInput(b) {
+				state.render(os.Stdout)
+				continue
+			}
+			// A workspace pane modal owns keyboard input for its entire
+			// lifetime, including when it was opened from a focused terminal.
+			// Route this before the pending PTY gate and focused-terminal path so
+			// navigation and confirmation keys cannot leak to the shell. Mouse
+			// reports continue through the modal hit-test below.
+			if state.workspacePaneMode && !strings.HasPrefix(string(b), "\x1b[<") {
+				notesInput := state.workspacePaneStep == "notes"
+				if state.handleWorkspacePaneInput(b) && !notesInput && state.workspacePaneStep != "notes" {
+					// The create wizard takes ownership of the next byte immediately.
+					// A focused Default pane may still have a deferred restore lease;
+					// leave that lease attached to the workspace modal instead of
+					// allowing it to consume the host selector's first Enter.
+					state.workspacePaneFocusRestorePending = false
+					state.workspacePaneRestoreFocused = false
+					state.workspacePlacementInputPending = false
+					deferredWorkspaceInput = nil
+					state.beginCreate()
+				}
+				// Esc from a focused detach confirmation is handled by the
+				// workspace-pane dispatcher, so hand the still-matching control
+				// lease back immediately just as the central modal path does.
+				if state.workspacePaneFocusRestorePending {
+					restoreSession := state.activePTYSession()
+					if state.workspacePaneFocusRestoreKey != "" {
+						if captured, ok := state.sessionForKey(state.workspacePaneFocusRestoreKey); ok {
+							restoreSession = captured
+						}
+						if restoreSession.Client == "" {
+							restoreSession = state.workspacePaneFocusRestoreSession
+						}
+					}
+					if control != nil && controlMatchesSession(control, restoreSession, state.ownerName) {
+						state.focused = false
+						// The saved restore snapshot remains authoritative until the
+						// output focus setter accepts the handoff.
+						if acceptWorkspaceControl(restoreSession) {
+							restorePendingFocus()
+						}
+					} else {
+						// The modal can close while the original writer is still
+						// opening (or after it was detached). Reopen the exact
+						// captured Session and keep the first shell command fenced
+						// until that replacement writer is accepted.
+						state.workspacePlacementInputPending = true
+						deferredWorkspaceInput = nil
+						if controlOpenCancel != nil {
+							controlOpenCancel()
+							controlOpenCancel = nil
+							controlID++
+						}
+						if control != nil {
+							_ = control.Stdin.Close()
+							control = nil
+							controlDone = nil
+						}
+						state.focused = false
+						if restoreSession.Client == "" {
+							state.outputErr = "focused Session disappeared before PTY restore"
+							state.workspacePaneFocusRestorePending = false
+						} else {
+							openControlForSession(restoreSession)
+						}
+					}
+				}
+				resetWorkspacePaneChangeIfNeeded()
+				state.render(os.Stdout)
+				continue
+			}
+			// Help owns textual input for its entire lifetime, including while
+			// focus restoration is pending or has already completed. Handle this
+			// before the pending PTY gate so a focused close key cannot leak to the
+			// originating shell. Mouse reports continue through the modal hit-test
+			// below.
+			if state.helpMode && !state.blockingModalOpen() && !strings.HasPrefix(string(b), "\x1b[<") {
+				if state.helpSearchActive {
+					if state.shortcut("help", string(b)) {
+						state.closeHelp()
+						if !state.helpMode {
+							restorePendingHelpFocusWithAttach(state, workspaceOutput, true, control, attach)
+						}
+					} else {
+						state.handleHelpSearchInput(b)
+					}
+				} else if state.shortcut("help", string(b)) {
+					state.dispatchHelpAction("help")
+					if !state.helpMode {
+						restorePendingHelpFocusWithAttach(state, workspaceOutput, true, control, attach)
+					}
+				} else if string(b) == "/" {
+					state.helpSearchActive = true
+				}
+				state.render(os.Stdout)
+				continue
+			}
+			if !workspaceNavigationReplay && (state.notesFocusRestorePending || state.helpFocusRestorePending || state.workspacePaneFocusRestorePending) && state.outputFresh {
+				restorePendingFocus()
+				drainNotesPendingInput(state, control)
+			}
+			// Deferred workspace keys are replayed only after the replacement
+			// control lease is ready. Keep them on the workspace navigation route;
+			// passing them through the pending PTY gate would consume navigation
+			// keys such as b before handleWorkspaceProjectInput sees them.
+			pendingHandled := false
+			if !workspaceNavigationReplay && !workspaceProjectNavigation {
+				pendingHandled = handlePendingPTYInput(state, b, workspaceOutput != nil, &control, &controlOpenCancel, &controlID)
+			}
+			if pendingHandled {
+				// The writer may be ready even when the last output frame is stale.
+				// Confirm the Help lease before interpreting a completed prefix.
+				if !state.focused && state.helpFocusRestorePending {
+					restorePendingHelpFocusWithAttach(state, workspaceOutput, true, control, attach)
+				}
 				// Remember a prefix even if the writer opens between its two keys.
-				state.handlePanePrefix(b)
+				if consumed, command := state.handlePanePrefix(b); consumed && command != "" {
+					// Command palette is a local modal even when the prefix arrived
+					// while a focused PTY control was being handed off.  Open it before
+					// the generic focused-command path tears down PTY ownership; the
+					// suffix must never be replayed to the shell.
+					if command == " " {
+						state.openCommandPalette()
+						state.render(os.Stdout)
+						continue
+					}
+					// A prefix command completed while PTY focus was still opening
+					// must remain a local UI action. In particular, never forward
+					// Ctrl-B followed by ? or o to the PTY.
+					if paneNavigationCommand(command) {
+						// Control readiness can race the two bytes of a focused
+						// prefix command.  Preserve the focused handoff contract even
+						// when the pending-input gate has just observed the writer as
+						// unavailable; dispatchPaneCommand would leave the selection
+						// in the list and let the next PTY sentinel be consumed there.
+						if state.beginFocusedPaneNavigation(command) && !replayQueued {
+							replayInput <- []byte("\r")
+							replayQueued = true
+						}
+					} else if !state.focused && state.helpFocusRestorePending {
+						state.panePrefixReplay = append([]byte(shortcutInput(state.cfg.Shortcut("pane_prefix"))), []byte(command)...)
+					} else if state.focused && state.dispatchFocusedPaneCommand(command) {
+						// A direct focused detach bypasses the workspace modal branch.
+						// Run the same lease teardown, then replay Enter so the selected
+						// surviving pane opens its control writer.
+						if resetWorkspacePaneChangeIfNeeded() && state.workspaceAttachFromProject && !replayQueued {
+							// The surviving pane is selected synchronously, but its
+							// control lease opens asynchronously. Hold real shell input
+							// until that lease has been accepted.
+							state.workspacePlacementInputPending = true
+							deferredWorkspaceInputToPTY = true
+							deferredWorkspaceInput = nil
+							replayInput <- []byte("\r")
+							replayQueued = true
+						}
+					} else {
+						state.dispatchPaneCommand(command)
+					}
+				}
 				if control == nil {
 					controlDone = nil
 				}
+				state.render(os.Stdout)
+				continue
+			}
+			if state.handleDirectNotesInput(b) {
 				state.render(os.Stdout)
 				continue
 			}
@@ -2713,10 +3594,14 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			if state.helpSearchActive && !state.blockingModalOpen() {
 				if state.shortcut("help", string(b)) {
-					state.helpMode = false
-					state.helpOffset = 0
-					state.helpSearchActive = false
-					state.helpSearchQuery = ""
+					state.closeHelp()
+					if !state.helpMode {
+						// Closing Help must release its input fence even when the
+						// last framebuffer event was marked stale. The visible output
+						// lease can still be valid, and waiting for another event would
+						// consume the first command sent to the originating PTY.
+						restorePendingHelpFocusWithAttach(state, workspaceOutput, true, control, attach)
+					}
 				} else {
 					state.handleHelpSearchInput(b)
 				}
@@ -2730,8 +3615,21 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			paneCommand := ""
 			if consumed, command := state.handlePanePrefix(b); consumed {
+				resetPanePrefixTimer(state.panePrefixDeadline)
 				paneCommand = command
 				if command == "" {
+					state.render(os.Stdout)
+					continue
+				}
+				if command == " " {
+					// Space completes the local command-palette route. Keep the
+					// focused control intact so Esc can restore the exact PTY origin.
+					state.openCommandPalette()
+					state.render(os.Stdout)
+					continue
+				}
+				if strings.HasPrefix(command, "quick-shell:") {
+					state.beginQuickShell(ctx, createDone, strings.TrimPrefix(command, "quick-shell:"))
 					state.render(os.Stdout)
 					continue
 				}
@@ -2768,11 +3666,26 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						requestPreview(true)
 						b = []byte("\r")
 					} else {
-						state.openPrefixPane(command)
+						state.dispatchPaneCommand(command)
+						queuePaneReplay()
 						state.render(os.Stdout)
 						continue
 					}
 				} else {
+					if state.dispatchFocusedPaneCommand(command) {
+						if resetWorkspacePaneChangeIfNeeded() && state.workspaceAttachFromProject && !replayQueued {
+							// The surviving pane is selected synchronously, but its
+							// control lease opens asynchronously. Hold real shell input
+							// until that lease has been accepted.
+							state.workspacePlacementInputPending = true
+							deferredWorkspaceInputToPTY = true
+							deferredWorkspaceInput = nil
+							replayInput <- []byte("\r")
+							replayQueued = true
+						}
+						state.render(os.Stdout)
+						continue
+					}
 					b = []byte(shortcutInput(state.cfg.Shortcut("pty_unfocus")))
 				}
 			}
@@ -2812,7 +3725,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.render(os.Stdout)
 					continue
 				}
-				if state.shortcut("pty_unfocus", string(b)) {
+				// Ctrl-] is the built-in PTY escape. Keep it recognized even if
+				// an older or incomplete config omits the shortcut entry; under a
+				// saturated PTY the escape must never be forwarded to the shell.
+				if string(b) == "\x1d" || state.shortcut("pty_unfocus", string(b)) {
 					if outputManager == nil {
 						state.saveCurrentSnapshot()
 					}
@@ -2841,6 +3757,10 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					attachOutputSource = attachOut
 					state.focused = false
 					state.clearAttachIdentity()
+					// A busy PTY may have advanced the terminal while the cached
+					// frame still describes the focused view. Force a complete
+					// navigation repaint when returning from terminal focus.
+					state.frameOutput = frameOutput{}
 					if state.workspaceNav != nil && state.workspaceNav.InDetailMode() {
 						state.syncDetailSelection()
 					}
@@ -2849,24 +3769,31 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					attachReplayEndOffset = 0
 					attach = nil
 					if paneNavigationCommand(paneCommand) {
-						if !state.navigatePrefixPane(paneCommand) {
+						if !state.beginFocusedPaneNavigation(paneCommand) {
 							state.render(os.Stdout)
 							continue
 						}
 						requestPreview(true)
 						b = []byte("\r")
 					} else {
+						if strings.HasPrefix(paneCommand, "quick-shell:") {
+							state.beginQuickShell(ctx, createDone, strings.TrimPrefix(paneCommand, "quick-shell:"))
+							state.render(os.Stdout)
+							continue
+						}
 						requestPreview(true)
 						if paneCommand != "" {
-							state.openPrefixPane(paneCommand)
+							state.dispatchPaneCommand(paneCommand)
 						}
+						queuePaneReplay()
 						state.render(os.Stdout)
 						continue
 					}
 				}
 				if state.focused {
-					if control != nil && controlMatchesSession(control, state.activePTYSession(), state.ownerName) {
-						_, _ = control.Stdin.Write(b)
+					activeSession := state.activePTYSession()
+					if writer := focusedPTYWriter(control, attach, activeSession, state.ownerName); writer != nil {
+						_, _ = writer.Write(b)
 					} else if control != nil {
 						controlID++
 						if controlOpenCancel != nil {
@@ -2876,30 +3803,88 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						control, controlDone = nil, nil
 						attachCanResize = false
 						state.outputErr = "PTY control changed; input was not sent"
-					} else if attach != nil {
-						_, _ = attach.Stdin.Write(b)
 					}
 					continue
 				}
 			}
-			if (string(b) == "\x1b[D" || string(b) == "\x1b[C") && state.centralModalOpen() {
+			if state.shouldDiscardModalArrow(b) {
+				state.render(os.Stdout)
+				continue
+			}
+			// Help is a pinned overlay: only its configured ? binding or Esc
+			// may toggle it. Do not let quit or Ctrl-C dismiss it.
+			if state.helpMode && !state.blockingModalOpen() {
+				if state.shortcut("help", string(b)) {
+					state.dispatchHelpAction("help")
+					if !state.helpMode {
+						// See the search-close path above: focus restoration depends
+						// on the lease, rather than on a fresh repaint arriving after
+						// the close key.
+						restorePendingHelpFocusWithAttach(state, workspaceOutput, true, control, attach)
+					}
+				}
 				state.render(os.Stdout)
 				continue
 			}
 			if string(b) == "\x03" && state.centralModalOpen() {
 				switch {
 				case state.workspacePaneMode:
-					state.closeWorkspacePane()
+					if state.workspacePaneStep == "notes" {
+						state.closeNotesModal()
+					} else {
+						state.closeWorkspacePane()
+					}
 				case state.shortcutMode:
 					state.shortcutMode = false
 				case state.notificationConfigMode:
 					state.closeNotificationConfig()
 				case state.searchMode:
 					state.closeSearch()
-				case state.helpMode:
-					state.helpMode = false
+				case state.terminalSearchMode, state.terminalBookmarkMode, state.terminalBookmarkListMode:
+					state.closeTerminalTool()
 				case state.hostMenuMode:
-					state.hostMenuMode = false
+					if strings.HasPrefix(state.hostMenuStep, "skills-") {
+						state.closeHostMenuWithCtrlC()
+						// Host Skills is opened from the workspace navigation route while
+						// the existing PTY control remains alive. Restore that exact
+						// output key here so the next byte reaches the original shell.
+						if workspaceOutput != nil && state.activeAttachKey != "" {
+							if key, ok := terminalOutputKey(state.activePTYSession()); ok && setWorkspaceInputFocus(workspaceOutput, key) {
+								// The pooled output lease can be restored before the PTY
+								// writer. Keep keyboard ownership fenced until both are
+								// ready; otherwise the first command after Ctrl-C is
+								// accepted visually and dropped by a nil writer.
+								state.focused = false
+								state.workspacePlacementInputPending = true
+							}
+						}
+						// Keep an already-matching writer. Host Skills normally leaves
+						// that writer alive while its pooled output lease is restored;
+						// closing it here creates a replacement window in which the next
+						// shell command can be lost.
+						restoreSession := state.activePTYSession()
+						if control != nil && controlMatchesSession(control, restoreSession, state.ownerName) {
+							if acceptWorkspaceControl() {
+								state.workspacePlacementInputPending = false
+								if len(deferredWorkspaceInput) != 0 && !replayQueued {
+									replayInput <- deferredWorkspaceInput
+									deferredWorkspaceInput = nil
+									deferredWorkspaceReplay = true
+									replayQueued = true
+								}
+							}
+						} else {
+							if control != nil {
+								_ = control.Stdin.Close()
+								control, controlDone = nil, nil
+							}
+							if state.activeAttachKey != "" {
+								_ = openControlForSession(restoreSession)
+							}
+						}
+					} else {
+						state.hostMenuMode = false
+					}
 				case state.addClientMode:
 					state.cancelAddClient()
 				case state.removeClientMode:
@@ -2917,6 +3902,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					state.closeGroupMenu()
 				case state.actionMenu:
 					state.closeActionMenu()
+				case state.sessionRenameMode:
+					state.closeSessionHandleRename()
 				case state.lifecycleConfirm != "":
 					state.lifecycleConfirm = ""
 					state.lifecycleReturnToAction = false
@@ -2997,47 +3984,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					continue
 				}
 			}
-			if state.workspacePaneMode {
-				if state.handleWorkspacePaneInput(b) {
-					state.beginCreate()
+			if !state.workspacePaneMode && state.workspacePreview {
+				if state.syncCurrentNotes() {
+					if state.handleNotesInput(b) {
+						state.render(os.Stdout)
+						continue
+					}
 				}
-				if state.workspacePaneChanged {
-					state.workspacePaneChanged = false
-					controlID++
-					attachID++
-					resizeInFlight = false
-					pendingFramebufferResize = nil
-					queuedResize = nil
-					bufferedAttach = nil
-					bufferedAttachBytes = 0
-					attachOutputSource = attachOut
-					attachCanResize = false
-					attachInitialResizeQueued = false
-					attachReplayEndOffset = 0
-					if controlOpenCancel != nil {
-						controlOpenCancel()
-						controlOpenCancel = nil
-					}
-					if control != nil {
-						_ = control.Stdin.Close()
-						control, controlDone = nil, nil
-					}
-					if attachCancel != nil {
-						attachCancel()
-						attachCancel = nil
-					}
-					if attach != nil {
-						_ = attach.Stdin.Close()
-						attach = nil
-					}
-					state.clearAttachIdentity()
-					state.focused = false
-				}
-				if workspaceOutput != nil {
-					selectPooledOutput()
-				}
-				state.render(os.Stdout)
-				continue
 			}
 			if state.shortcutMode {
 				if state.handleShortcutInput(b) == "restart-tui" {
@@ -3063,6 +4016,22 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					connectTargets = state.changedHostMenuTargets(true)
 				}
 				switch action {
+				case "host-resources-read":
+					state.hostMenuRequestID++
+					requestID := state.hostMenuRequestID
+					client, ok := state.cfg.Client(target)
+					if !ok || state.disconnectedHosts[target] {
+						state.hostMenuStep = "resources-error"
+						state.hostMenuErr = "Host is disconnected or unavailable"
+						break
+					}
+					epoch, instanceID := watchedClients[target].epoch, state.hostSync[target].InstanceID
+					readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+					go func() {
+						defer cancel()
+						status, err := runner.HostResources(readCtx, client)
+						publishHostResourceEvent(ctx, hostResourceDone, hostResourceEvent{id: requestID, epoch: epoch, instanceID: instanceID, host: target, status: status, err: err})
+					}()
 				case "host-hooks-read":
 					launchHostHookStatus(target)
 				case "host-hook-save":
@@ -3391,6 +4360,27 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			if state.sessionRenameMode {
+				action := state.handleSessionHandleRenameInput(b)
+				if action == "rename-submit" {
+					target := state.sessionRenameTarget
+					client, clientErr := mustClient(cfg, target.Client)
+					if clientErr != nil {
+						state.sessionRenameErr = clientErr.Error()
+					} else {
+						_, renameErr := runner.RenameSelected(ctx, client, target, strings.TrimSpace(state.sessionRenameLine))
+						if renameErr != nil {
+							state.sessionRenameErr = sanitizeTerminalText(renameErr.Error())
+						} else {
+							state.closeSessionHandleRename()
+							state.outputErr = "Session handle renamed"
+							state.refreshSessions(ctx)
+						}
+					}
+				}
+				state.render(os.Stdout)
+				continue
+			}
 			if state.actionMenu {
 				action := state.handleActionMenuInput(b)
 				state.render(os.Stdout)
@@ -3429,6 +4419,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 				if action == "notifications-action" {
 					state.beginNotificationSettings()
+					state.render(os.Stdout)
+					continue
+				}
+				if action == "rename-handle-action" {
+					state.beginSessionHandleRename(target)
 					state.render(os.Stdout)
 					continue
 				}
@@ -3611,12 +4606,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			case "quit":
 				return nil
 			case "help":
-				state.helpMode = !state.helpMode
-				if !state.helpMode {
-					state.helpOffset = 0
-					state.helpSearchActive = false
-					state.helpSearchQuery = ""
-				}
+				state.dispatchHelpAction(action)
 			case "shortcut-settings":
 				state.beginShortcutSettings()
 			case "notification-settings":
@@ -3717,13 +4707,25 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					continue
 				}
 				s := state.currentSession()
-				if state.workspaceAttachFromProject {
+				if state.workspaceAttachFromProject || state.workspacePaneFocusRestorePending && state.workspacePaneFocusRestoreKey != "" {
 					state.workspaceAttachFromProject = false
-					var targetErr error
-					s, targetErr = state.workspaceSelectedPaneSession()
-					if targetErr != nil {
-						state.outputErr = targetErr.Error()
-						break
+					if state.workspacePaneFocusRestorePending && state.workspacePaneFocusRestoreKey != "" {
+						var ok bool
+						s, ok = state.sessionForKey(state.workspacePaneFocusRestoreKey)
+						if !ok {
+							if state.workspacePaneFocusRestoreSession.Client == "" {
+								state.outputErr = "focused Session disappeared before PTY restore"
+								break
+							}
+							s = state.workspacePaneFocusRestoreSession
+						}
+					} else {
+						var targetErr error
+						s, targetErr = state.workspaceSelectedPaneSession()
+						if targetErr != nil {
+							state.outputErr = targetErr.Error()
+							break
+						}
 					}
 					state.activeAttachKey = sessionKey(s)
 				}
@@ -3747,48 +4749,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				}
 				fencePreview()
 				if outputManager != nil {
-					state.focused = false
-					state.activeAttachKey = sessionKey(s)
-					if workspaceOutput != nil {
-						selectPooledOutput()
-					}
-					state.activeAttachFresh = state.outputFresh
-					state.pendingAttachKey = ""
-					controlID++
-					attachID++
-					resizeInFlight = false
-					queuedResize = nil
-					id := controlID
-					if !state.canResizeCurrentSession() {
-						state.focused = true
-						state.outputErr = "read-only PTY view; yield control before sending input"
-						break
-					}
-					controlRunner, ok := runner.(interface {
-						OpenControlSession(context.Context, ducklord.Client, string) (*ducklord.ControlSession, error)
-					})
-					if !ok {
-						state.outputErr = "PTY control is unavailable"
-						state.clearAttachIdentity()
-						break
-					}
-					state.outputErr = "opening PTY control..."
-					key := sessionKey(s)
-					if controlOpenCancel != nil {
-						controlOpenCancel()
-					}
-					controlCtx, cancelControlOpen := context.WithCancel(ctx)
-					controlOpenCancel = cancelControlOpen
-					go func() {
-						opened, openErr := controlRunner.OpenControlSession(controlCtx, c, s.SessionID)
-						select {
-						case controlOpened <- controlOpenEvent{id: id, key: key, control: opened, err: openErr}:
-						case <-ctx.Done():
-							if opened != nil {
-								_ = opened.Stdin.Close()
-							}
-						}
-					}()
+					openControlForSession(s)
 					break
 				}
 				attachCtx, cancel := context.WithCancel(ctx)
@@ -3839,7 +4800,11 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.outputErr = ""
 				state.outputStale = false
 				state.outputFresh = false
-				state.focused = true
+				// A detach modal can reopen the saved PTY while its focus lease is
+				// still pending. Keep the UI unfocused until the control writer is
+				// accepted; otherwise workspaceControlMayAccept rejects that writer
+				// and the next input falls through to the Session list.
+				state.focused = !state.workspacePaneFocusRestorePending
 				go superviseAttach(attachCtx, id, session, attachOut)
 				if initialReplayCaughtUp(session.StartOffset, session.ReplayEndOffset) && attachCanResize {
 					attachInitialResizeQueued = true
@@ -3849,6 +4814,223 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			state.render(os.Stdout)
 		}
 	}
+}
+
+type workspaceInputFocusSetter interface {
+	SetInputFocus(ducklord.OutputKey) error
+}
+
+func setWorkspaceInputFocus(output workspaceInputFocusSetter, key ducklord.OutputKey) bool {
+	return output != nil && output.SetInputFocus(key) == nil
+}
+
+// A control completion can arrive after the attach stream that was replaced
+// by an Esc restore. Keep the restored Session focus fenced until that event
+// is consumed; otherwise the late completion clears focus and routes the next
+// byte to the workspace list.
+func consumeWorkspaceRestoreControlDone(state *tuiState) bool {
+	if !state.workspacePaneFocusRestoreLease && !state.workspacePaneFocusRestorePending {
+		return false
+	}
+	state.workspacePaneFocusRestoreLease = false
+	return true
+}
+
+func restorePendingWorkspacePaneFocus(state *tuiState, output workspaceInputFocusSetter, ready bool, control *ducklord.ControlSession) bool {
+	if !state.workspacePaneFocusRestorePending || control == nil {
+		return false
+	}
+	if !ready || output == nil {
+		return false
+	}
+	session := state.activePTYSession()
+	if state.workspacePaneFocusRestoreKey != "" {
+		if restored, ok := state.sessionForKey(state.workspacePaneFocusRestoreKey); ok {
+			session = restored
+		} else if state.workspacePaneFocusRestoreSession.Client != "" {
+			session = state.workspacePaneFocusRestoreSession
+		}
+	}
+	key, ok := terminalOutputKey(session)
+	if !ok || !setWorkspaceInputFocus(output, key) {
+		return false
+	}
+	state.workspacePaneFocusRestorePending = false
+	state.workspacePaneFocusRestoreKey = ""
+	state.workspacePaneFocusRestoreLease = true
+	state.focused = true
+	return true
+}
+
+func restorePendingNotesFocus(state *tuiState, output workspaceInputFocusSetter, ready bool) bool {
+	if !state.notesFocusRestorePending {
+		return false
+	}
+	if !ready || output == nil {
+		state.focused = false
+		return false
+	}
+	key, ok := terminalOutputKey(state.activePTYSession())
+	if !ok || !setWorkspaceInputFocus(output, key) {
+		state.focused = false
+		return false
+	}
+	state.notesFocusRestorePending = false
+	state.focused = true
+	state.outputErr = ""
+	return true
+}
+
+func restorePendingHelpFocus(state *tuiState, output workspaceInputFocusSetter, ready bool, control *ducklord.ControlSession) bool {
+	return restorePendingHelpFocusWithAttach(state, output, ready, control, nil)
+}
+
+func restorePendingHelpFocusWithAttach(state *tuiState, output workspaceInputFocusSetter, ready bool, control *ducklord.ControlSession, attach *ducklord.AttachSession) bool {
+	if !state.helpFocusRestorePending || !ready || output == nil {
+		return false
+	}
+	// ControlSession is the normal writer, but an attach stream can remain the
+	// live PTY writer while control is opening or being replaced.  Treat the
+	// two writers independently so a stale control event cannot block the valid
+	// attach fallback.
+	// Help captures the originating attach key before it relinquishes focus.
+	// Use that identity when closing: selection/output bookkeeping may advance
+	// while the overlay is open, so activePTYSession can already refer to a
+	// different pane (or no pane at all).
+	origin := state.activePTYSession()
+	if state.helpPendingInputKey != "" {
+		if captured, ok := state.sessionForKey(state.helpPendingInputKey); ok {
+			origin = captured
+		}
+	}
+	controlReady := control != nil && controlMatchesSession(control, origin, state.ownerName)
+	attachReady := attach != nil && attach.Stdin != nil && state.helpPendingInputKey != "" && state.helpPendingInputKey == state.activeAttachKey
+	if !controlReady && !attachReady {
+		return false
+	}
+	key, ok := terminalOutputKey(origin)
+	if !ok || !setWorkspaceInputFocus(output, key) {
+		return false
+	}
+	state.helpFocusRestorePending = false
+	state.helpPendingInputKey = ""
+	state.focused = true
+	state.outputErr = ""
+	return true
+}
+
+func queueNotesPendingInput(state *tuiState, input []byte) bool {
+	if !state.notesFocusRestorePending || state.notesPendingInputKey == "" || len(input) == 0 {
+		return false
+	}
+	if len(state.notesPendingInput)+len(input) > notesPendingInputLimit {
+		dropNotesPendingInput(state)
+		state.notesFocusRestorePending = false
+		state.outputErr = "post-Notes input was dropped while focus was restoring"
+		return true
+	}
+	state.notesPendingInput = append(state.notesPendingInput, input...)
+	return true
+}
+
+func dropNotesPendingInput(state *tuiState) {
+	state.notesPendingInputKey = ""
+	state.notesPendingInput = nil
+}
+
+func drainNotesPendingInput(state *tuiState, control *ducklord.ControlSession) bool {
+	if state.notesFocusRestorePending || len(state.notesPendingInput) == 0 || control == nil {
+		return false
+	}
+	if state.notesPendingInputKey == "" || state.notesPendingInputKey != state.activeAttachKey || !controlMatchesSession(control, state.activePTYSession(), state.ownerName) {
+		dropNotesPendingInput(state)
+		return false
+	}
+	queued := state.notesPendingInput
+	dropNotesPendingInput(state)
+	_, err := control.Stdin.Write(queued)
+	return err == nil
+}
+
+// toggleHelp is the central dispatcher for opening and closing the help modal.
+func (s *tuiState) toggleHelp() {
+	if s.helpMode {
+		s.closeHelp()
+		// The output lease may have restored focus immediately before the
+		// closing key is dispatched. In that case the fence is stale and must
+		// not consume the first byte sent to the restored PTY. Keep it only
+		// when focus is still waiting for the asynchronous lease.
+		if s.helpFocusRestorePending && !s.focused {
+			return
+		}
+		s.helpFocusRestorePending = false
+		s.helpPendingInputKey = ""
+		return
+	}
+	if s.focused {
+		s.helpFocusRestorePending = true
+		s.helpPendingInputKey = s.activeAttachKey
+		s.focused = false
+	}
+	s.helpMode = true
+}
+
+// closeHelp retires all help-local state, including the deferred focus fence.
+// Help can be closed from both the pinned overlay and its search mode; keeping
+// the latter as a separate assignment path can leave the next PTY byte queued
+// forever after focus was restored while the close key was in flight.
+func (s *tuiState) closeHelp() {
+	s.helpMode = false
+	s.helpOffset = 0
+	s.helpSearchActive = false
+	s.helpSearchQuery = ""
+	if s.helpFocusRestorePending && !s.focused {
+		return
+	}
+	s.helpFocusRestorePending = false
+	s.helpPendingInputKey = ""
+}
+
+// dispatchHelpAction is the central event-loop action for the pinned help
+// overlay. The configured help key toggles it; Esc is handled centrally.
+func (s *tuiState) dispatchHelpAction(action string) bool {
+	if action != "help" {
+		return false
+	}
+	s.toggleHelp()
+	return true
+}
+
+// handleCentralModalCancel is the event-loop escape path for the workspace
+// modals whose close command is Esc or Ctrl-C.
+func (s *tuiState) handleCentralModalCancel(input []byte) bool {
+	if string(input) != "\x1b" && string(input) != "\x03" {
+		return false
+	}
+	switch {
+	case s.workspacePaneMode:
+		if s.workspacePaneStep == "notes" {
+			if s.notesFormActive {
+				s.notesFormActive, s.outputErr = false, ""
+			} else {
+				s.closeNotesModal()
+			}
+		} else {
+			// A focused terminal can open the Default Project's confirmation
+			// modal after temporarily lending navigation ownership to the
+			// workspace.  Cancel must return that lease to the same PTY; simply
+			// closing the modal leaves the UI on the Project/session list.
+			restoreFocusedPTY := s.workspacePaneStep == "detach-confirm" && s.workspacePaneRestoreFocused
+			restoreAttachKey := s.workspacePaneRestoreAttachKey
+			s.closeWorkspacePane()
+			if restoreFocusedPTY {
+				s.beginFocusedDefaultDetachRestore(restoreAttachKey)
+			}
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 func initialReplayCaughtUp(currentOffset, replayEndOffset uint64) bool {
@@ -4055,7 +5237,7 @@ func (s *tuiState) applySessionUpdate(update ducklord.SessionUpdate) bool {
 		}
 	}
 	s.hostSync[update.Client] = update
-	if s.newSessionMode && s.newSessionDiscovering && s.newSessionClient == update.Client &&
+	if s.newSessionMode && s.newSessionDiscovering && s.workspaceNewSessionIntent == nil && s.newSessionClient == update.Client &&
 		(update.State != "live" || update.Generation != previous.Generation || update.InstanceID != previous.InstanceID) {
 		s.cancelCreateDiscovery()
 		s.newSessionStep = "host"
@@ -4224,11 +5406,39 @@ func cancelRemovedPTYControl(s *tuiState, previousActive string, control **duckl
 // Reject early input explicitly: interpreting it as navigation could change
 // the target session while an asynchronous control request is still opening.
 func handlePendingPTYInput(s *tuiState, input []byte, workspaceOutput bool, control **ducklord.ControlSession, openCancel *context.CancelFunc, controlID *int) bool {
+	// Workspace modals own input for their entire lifetime. A pending or newly
+	// opened PTY control must never consume modal keys or report them as dropped.
+	if s.workspacePaneMode || s.newSessionMode {
+		return false
+	}
+	if s.notesFocusRestorePending {
+		if string(input) != "\x1d" && !s.shortcut("pty_unfocus", string(input)) && string(input) != "\x1b" && string(input) != "\x03" {
+			return queueNotesPendingInput(s, input)
+		}
+		dropNotesPendingInput(s)
+		s.notesFocusRestorePending = false
+	}
+	if s.helpFocusRestorePending {
+		if s.helpMode {
+			return false
+		}
+		if s.focused {
+			s.helpFocusRestorePending = false
+			s.helpPendingInputKey = ""
+			return false
+		}
+		if s.helpPendingInputKey != "" && s.helpPendingInputKey != s.activeAttachKey {
+			s.helpFocusRestorePending = false
+			s.helpPendingInputKey = ""
+			return false
+		}
+		return true
+	}
 	opening := *openCancel != nil
 	if s.focused || !opening && (!workspaceOutput || *control == nil) {
 		return false
 	}
-	if s.shortcut("pty_unfocus", string(input)) || string(input) == "\x1b" || string(input) == "\x03" {
+	if string(input) == "\x1d" || s.shortcut("pty_unfocus", string(input)) || string(input) == "\x1b" || string(input) == "\x03" {
 		*controlID++ // fence a completion already queued by the canceled request
 		if opening {
 			(*openCancel)()
@@ -4260,10 +5470,20 @@ func (s *tuiState) clearAttachIdentity() {
 	if s.clearOutputFocus != nil {
 		s.clearOutputFocus()
 	}
+	if s.workspacePaneFocusRestorePending {
+		s.workspaceFocusFromProject = false
+		s.workspaceProjectFocus = false
+		return
+	}
 	if s.workspaceNav != nil && s.workspaceNav.InDetailMode() && s.detailSelected.Key() != "" {
 		_ = s.workspaceNav.PreviewDetail(s.detailSelected)
 	}
-	if s.workspacePreview && s.workspaceNav != nil && s.activeAttachKey != "" {
+	// A quick-shell request owns focus across the asynchronous create/start
+	// sequence.  The ordinary attach teardown restores Project focus when an
+	// attach was entered from the Project pane, but doing that here would let a
+	// stale control completion steal focus from the captured Session route.
+	quickShellPlacementPending := s.workspaceNewSessionIntent != nil || len(s.pendingWorkspacePlacements) != 0 || s.workspacePlacementFocusPending
+	if s.workspacePreview && s.workspaceNav != nil && s.activeAttachKey != "" && !quickShellPlacementPending {
 		if s.workspaceFocusFromProject {
 			_ = s.workspaceNav.SelectProject(s.workspaceNav.CurrentProjectID())
 			s.workspaceProjectFocus = true
@@ -4273,6 +5493,7 @@ func (s *tuiState) clearAttachIdentity() {
 	s.activeAttachKey = ""
 	s.activeAttachFresh = false
 	s.pendingAttachKey = ""
+	s.workspacePaneFocusRestoreSession = ducklord.RemoteSession{}
 }
 
 func (s *tuiState) followSelectedPreview(ctx context.Context) {
@@ -5130,6 +6351,13 @@ func (s *tuiState) selectedClientName() string {
 func (s *tuiState) completeNewSessionStart(ctx context.Context, clientName, sessionID string, err error) {
 	s.newSessionStarting = false
 	if err != nil {
+		if s.workspaceNewSessionIntent != nil {
+			message := sanitizeTerminalText(err.Error())
+			s.cancelCreate()
+			s.newSessionErr = message
+			s.outputErr = message
+			return
+		}
 		s.newSessionErr = err.Error()
 		return
 	}
@@ -5420,6 +6648,9 @@ func (s *tuiState) activePTYSession() ducklord.RemoteSession {
 		if session, ok := s.sessionForKey(s.activeAttachKey); ok {
 			return session
 		}
+		if sessionKey(s.workspacePaneFocusRestoreSession) == s.activeAttachKey {
+			return s.workspacePaneFocusRestoreSession
+		}
 		return ducklord.RemoteSession{}
 	}
 	if s.workspacePreview && s.workspaceNav != nil && s.workspaceNav.InDetailMode() {
@@ -5449,6 +6680,11 @@ func (s *tuiState) hostOwnsActivePTY(host string, control *ducklord.ControlSessi
 func (s *tuiState) acceptHostRetentionEvent(event hostRetentionEvent, watchEpoch uint64) bool {
 	return s.hostMenuMode && s.hostMenuTarget == event.host && s.hostMenuRequestID == event.id && !s.disconnectedHosts[event.host] &&
 		watchEpoch == event.epoch && s.hostSync[event.host].InstanceID == event.instanceID
+}
+
+func (s *tuiState) acceptHostResourceEvent(event hostResourceEvent, watchEpoch uint64) bool {
+	return s.hostMenuMode && s.hostMenuTarget == event.host && s.hostMenuRequestID == event.id && strings.HasPrefix(s.hostMenuStep, "resources-") &&
+		!s.disconnectedHosts[event.host] && watchEpoch == event.epoch && s.hostSync[event.host].InstanceID == event.instanceID
 }
 
 func (s *tuiState) acceptHostHookEvent(event hostHookEvent, watchEpoch uint64) bool {
@@ -5488,6 +6724,16 @@ func controlMatchesSession(control *ducklord.ControlSession, session ducklord.Re
 		return false
 	}
 	return session.Kind == string(model.KindShell) || session.WriterKind == string(model.OwnerTerminal) && session.WriterID == owner
+}
+
+func focusedPTYWriter(control *ducklord.ControlSession, attach *ducklord.AttachSession, session ducklord.RemoteSession, owner string) io.WriteCloser {
+	if control != nil && control.Stdin != nil && controlMatchesSession(control, session, owner) {
+		return control.Stdin
+	}
+	if attach != nil && attach.Stdin != nil {
+		return attach.Stdin
+	}
+	return nil
 }
 
 func (s *tuiState) activePTYSize() (rows, cols uint16) {
@@ -5637,6 +6883,7 @@ func (s *tuiState) render(out io.Writer) {
 		s.renderCreateModal(out, width, modalHeight)
 		s.renderSearchModal(out, width, modalHeight)
 		s.renderActionModal(out, width, modalHeight)
+		s.renderSessionHandleRenameModal(out, width, modalHeight)
 		s.renderAddClientModal(out, width, modalHeight)
 		s.renderRemoveClientModal(out, width, modalHeight)
 		s.renderHelpModal(out, width, modalHeight)
@@ -5646,6 +6893,7 @@ func (s *tuiState) render(out io.Writer) {
 		s.renderGroupModal(out, width, modalHeight)
 		s.renderNotificationModal(out, width, modalHeight)
 		s.renderLifecycleModal(out, width, modalHeight)
+		s.renderCommandPalette(out, width, modalHeight)
 		return
 	}
 	if layout.overlay {
@@ -5757,6 +7005,7 @@ func (s *tuiState) render(out io.Writer) {
 	s.renderCreateModal(out, width, modalHeight)
 	s.renderSearchModal(out, width, modalHeight)
 	s.renderActionModal(out, width, modalHeight)
+	s.renderSessionHandleRenameModal(out, width, modalHeight)
 	s.renderAddClientModal(out, width, modalHeight)
 	s.renderRemoveClientModal(out, width, modalHeight)
 	s.renderHelpModal(out, width, modalHeight)
@@ -5766,6 +7015,7 @@ func (s *tuiState) render(out io.Writer) {
 	s.renderGroupModal(out, width, modalHeight)
 	s.renderNotificationModal(out, width, modalHeight)
 	s.renderLifecycleModal(out, width, modalHeight)
+	s.renderCommandPalette(out, width, modalHeight)
 	if s.focused && s.terminal != nil && !s.outputStale && s.ptyScrollOffset == 0 {
 		if cursorRow, cursorCol, visible := s.terminal.CursorPosition(height-5, contentWidth); visible {
 			fmt.Fprintf(out, "\033[%d;%dH\033[?25h", 6+cursorRow, contentX+cursorCol)
@@ -6014,6 +7264,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		{"SESSION", "session_create", "Create session"}, {"", "session_actions", "Session action menu"}, {"", "session_notifications", "Notification settings"}, {"", "session_yield", "Yield now"}, {"", "session_yield_wait", "Yield when idle"}, {"", "session_restart", "Restart session"}, {"", "session_end", "End session"}, {"", "session_destroy", "Destroy session"},
 		{"HOST", "host_actions", "Host action menu"}, {"", "host_add", "Add host configuration"}, {"", "host_remove", "Remove host configuration"},
 		{"PROJECT PANE", "project_focus", "Move keyboard focus to Project pane"}, {"", "project_notification_focus", "Toggle Project notification focus"}, {"", "project_create", "Create Project"}, {"", "project_delete", "Delete local Project"}, {"", "project_add_pane", "Add Session pane"}, {"", "project_move_pane", "Move Session pane"}, {"", "project_detach_pane", "Detach local Session pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
+		{"PANE COMMANDS", "pane_prefix", "Arm pane prefix"}, {"", "prefix+o", "o: open Project Notes; prefix+o: toggle"}, {"", "prefix+O", "o: open selected Session Notes; prefix+O: focused Session Notes"},
 		{"DETAILED SESSION LIST", "detail_list", "Open / close detailed list"}, {"", "detail_search", "Search name, Host, or Project"}, {"", "detail_filter", "Cycle state filter"}, {"", "detail_previous", "Preview previous Session"}, {"", "detail_next", "Preview next Session"}, {"", "detail_focus", "Focus preview Session pane"}, {"", "detail_jump", "Jump to selected Session's Project"},
 		{"TERMINAL AREA", "pty_copy", "Freeze screen for drag selection"}, {"", "pty_unfocus", "Return to navigation pane"},
 		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
@@ -6025,7 +7276,6 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		entries[2] = helpEntry{"", "list_sort_direction", "Reverse event-time direction"}
 		entries = append(entries[:3], append([]helpEntry{{"", "refresh", "Refresh"}}, entries[6:]...)...)
 		entries = append(entries,
-			helpEntry{"PANE COMMANDS", "pane_prefix", "Arm pane command prefix"},
 			helpEntry{"", "prefix+-", "New horizontal Session pane"},
 			helpEntry{"", "prefix+\\", "New vertical Session pane"},
 			helpEntry{"", "prefix+t", "New Terminal tab"},
@@ -6077,6 +7327,18 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		}
 	}
 	flushCategory()
+	if s.workspacePreview && s.notesProjectID != "" && s.workspacePaneStep == "notes" {
+		if s.workspacePaneMode || s.notesProjectID != "" {
+			results = append(results,
+				modalRenderLine{modalStatus, "  NOTES · SCOPED MANUSCRIPT BOOKS"},
+				modalRenderLine{modalMuted, "  g Global · p Project · s focused Session (each is an independent notes.md book)"},
+				modalRenderLine{modalMuted, "  Entries use level-two Markdown headings: ## Title; cards show a readable excerpt"},
+				modalRenderLine{modalSelected, "  a add note · e edit selected · E edit the full book"},
+				modalRenderLine{modalSelected, "  Enter copy selected entry CONTENT only · j/k or arrows select · h/l or left/right turn pages"},
+				modalRenderLine{modalSelected, "  / search title and body"},
+				modalRenderLine{modalMuted, "  Search is scoped to the selected book; Esc cancels search or returns to the prior pane"})
+		}
+	}
 	mouseHelp := "Click select · drag reorder · right-click focus/toggle"
 	if s.workspacePreview {
 		mouseHelp = "Right-click target: config · drag Session into Terminal: add pane"
@@ -6273,13 +7535,39 @@ func (s *tuiState) handleShortcutInput(input []byte) string {
 	return ""
 }
 
-var hostActions = []string{"Connections", "Reconnect", "PTY log retention", "Agent notification hooks", "Notification defaults", "Add host", "Remove host"}
+var hostActions = []string{"Connections", "Reconnect", "PTY log retention", "Agent notification hooks", "Skills", "Notification defaults", "Add host", "Remove host", "Resources"}
 
 func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 	if !s.hostMenuMode {
 		return
 	}
 	s.resetModalMouse()
+	if s.hostMenuStep == "host-list" {
+		lines := []modalRenderLine{{modalTitle, "  Hosts"}, {modalMuted, "  Choose a host to view its settings"}}
+		if len(s.cfg.Clients) == 0 {
+			lines = append(lines, modalRenderLine{modalMuted, "  (no hosts configured)"})
+		} else {
+			for index, client := range s.cfg.Clients {
+				s.modalChoice(len(lines), &s.hostMenuIndex, index, "\r")
+				style, prefix := modalInput, "  "
+				if index == s.hostMenuIndex {
+					style, prefix = modalSelected, "› "
+				}
+				state := "connected"
+				if s.disconnectedHosts[client.Name] {
+					state = "disconnected"
+				}
+				lines = append(lines, modalRenderLine{style, prefix + displayField(client.Name) + " · " + state})
+			}
+		}
+		lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter settings · Esc close"})
+		s.renderModalBox(out, cols, rows, lines)
+		return
+	}
+	if strings.HasPrefix(s.hostMenuStep, "skills-") {
+		s.renderHostSkillsModal(out, cols, rows)
+		return
+	}
 	if strings.HasPrefix(s.hostMenuStep, "retention-") {
 		lines := []modalRenderLine{{modalTitle, "  Host PTY log retention · " + displayField(s.hostMenuTarget)}}
 		switch s.hostMenuStep {
@@ -6298,6 +7586,24 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 		}
 		if s.hostMenuErr != "" && s.hostMenuStep != "retention-error" {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostMenuErr})
+		}
+		s.renderModalBox(out, cols, rows, lines)
+		return
+	}
+	if strings.HasPrefix(s.hostMenuStep, "resources-") {
+		lines := []modalRenderLine{{modalTitle, "  Host resources · " + displayField(s.hostMenuTarget)}}
+		if s.hostMenuStep == "resources-loading" {
+			lines = append(lines, modalRenderLine{modalMuted, "  Reading Host resources…"})
+		} else if s.hostMenuErr != "" {
+			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostMenuErr})
+		} else {
+			r := s.hostResourceStatus
+			lines = append(lines,
+				modalRenderLine{modalStatus, fmt.Sprintf("  OS / arch: %s / %s", r.GOOS, r.GOARCH)},
+				modalRenderLine{modalStatus, fmt.Sprintf("  CPU: %d · heap: %d bytes", r.CPUCount, r.HeapAllocBytes)},
+				modalRenderLine{modalStatus, fmt.Sprintf("  Uptime: %s", (time.Duration(r.UptimeSeconds) * time.Second).String())},
+				modalRenderLine{modalStatus, fmt.Sprintf("  Sessions: %d · PTYs: %d", r.ManagedSessionCount, r.ActivePTYCount)},
+				modalRenderLine{modalMuted, "  r refresh · Esc back"})
 		}
 		s.renderModalBox(out, cols, rows, lines)
 		return
@@ -6392,11 +7698,11 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 	}
 	lines := []modalRenderLine{{modalTitle, "  Host actions · " + displayField(s.hostMenuTarget)}}
 	for index, label := range hostActions {
-		if !s.hostScoped || index < 4 {
+		if !s.hostScoped || index < 5 {
 			s.modalChoice(len(lines), &s.hostMenuIndex, index, "\r")
 		}
 		style, prefix := "", "  "
-		if s.hostScoped && index >= 4 {
+		if s.hostScoped && index >= 5 {
 			style, label = modalDisabled, label+" (unavailable in host-scoped mode)"
 		}
 		if index == s.hostMenuIndex {
@@ -6407,22 +7713,66 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 		}
 		lines = append(lines, modalRenderLine{style, prefix + label})
 	}
-	lines = append(lines, modalRenderLine{modalMuted, "  Host connect state covers every session and notification on that host"}, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter run · Esc close"})
+	lines = append(lines, modalRenderLine{modalMuted, "  Host connect state covers every session and notification on that host"}, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter run · Esc host list"})
 	s.renderModalBox(out, cols, rows, lines)
 }
 
 func (s *tuiState) beginHostMenu() {
-	s.hostMenuTarget = s.selectedClientName()
-	if s.hostMenuTarget == "" {
+	if len(s.cfg.Clients) == 0 {
 		s.outputErr = "no host selected"
 		return
 	}
-	s.hostMenuMode, s.hostMenuStep, s.hostMenuIndex = true, "actions", 0
+	s.hostMenuTarget = s.selectedClientName()
+	s.hostMenuIndex = 0
+	for i, client := range s.cfg.Clients {
+		if client.Name == s.hostMenuTarget {
+			s.hostMenuIndex = i
+			break
+		}
+	}
+	s.hostMenuMode, s.hostMenuStep = true, "host-list"
 	s.hostMenuSelected = make(map[string]bool)
 	s.hostMenuErr = ""
 }
 
 func (s *tuiState) handleHostMenuInput(input []byte) string {
+	if s.hostMenuStep == "host-list" {
+		switch string(input) {
+		case "\x1b", "\x03":
+			s.hostMenuMode = false
+			return "cancel"
+		case "j", "\x1b[B":
+			s.hostMenuIndex = min(len(s.cfg.Clients)-1, s.hostMenuIndex+1)
+		case "k", "\x1b[A":
+			s.hostMenuIndex = max(0, s.hostMenuIndex-1)
+		case "\r", "\n":
+			if len(s.cfg.Clients) > 0 {
+				s.hostMenuTarget = s.cfg.Clients[s.hostMenuIndex].Name
+				s.hostMenuStep, s.hostMenuIndex = "actions", 0
+			}
+		}
+		return ""
+	}
+	if strings.HasPrefix(s.hostMenuStep, "resources-") {
+		switch string(input) {
+		case "r":
+			s.hostMenuStep = "resources-loading"
+			return "host-resources-read"
+		case "\r", "\n":
+			if s.hostMenuStep == "resources-error" {
+				s.hostMenuStep = "resources-loading"
+				return "host-resources-read"
+			}
+		case "\x1b":
+			s.hostMenuStep, s.hostMenuIndex = "actions", 8
+		case "\x03":
+			s.hostMenuMode = false
+		}
+		return ""
+	}
+	if strings.HasPrefix(s.hostMenuStep, "skills-") {
+		return s.handleHostSkillsInput(input)
+	}
 	if strings.HasPrefix(s.hostMenuStep, "hook-") {
 		switch string(input) {
 		case "\x03":
@@ -6500,7 +7850,7 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 				if err != nil || days < 1 || days > 3650 {
 					s.hostMenuErr = "Enter a number from 1 to 3650"
 				} else if days == s.hostMenuOldDays {
-					s.hostMenuStep, s.hostMenuIndex = "actions", 2
+					s.hostMenuStep, s.hostMenuIndex = "actions", 3
 				} else {
 					s.hostMenuStep = "retention-confirm"
 				}
@@ -6551,14 +7901,24 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 	}
 	switch string(input) {
 	case "\x1b", "\x03":
-		s.hostMenuMode = false
-		return "cancel"
+		if string(input) == "\x03" {
+			s.hostMenuMode = false
+			return "cancel"
+		}
+		s.hostMenuStep = "host-list"
+		for i, client := range s.cfg.Clients {
+			if client.Name == s.hostMenuTarget {
+				s.hostMenuIndex = i
+				break
+			}
+		}
+		return ""
 	case "j", "\x1b[B":
 		s.hostMenuIndex = min(len(hostActions)-1, s.hostMenuIndex+1)
 	case "k", "\x1b[A":
 		s.hostMenuIndex = max(0, s.hostMenuIndex-1)
 	case "\r", "\n":
-		action := []string{"host-connections", "host-reconnect", "host-retention-read", "host-hooks", "host-notification-settings", "host-add", "host-remove"}[s.hostMenuIndex]
+		action := []string{"host-connections", "host-reconnect", "host-retention-read", "host-hooks", "host-skills", "host-notification-settings", "host-add", "host-remove", "host-resources-read"}[s.hostMenuIndex]
 		if s.hostScoped && (action == "host-add" || action == "host-remove" || action == "host-notification-settings") {
 			s.outputErr = "host configuration changes are unavailable in host-scoped mode"
 			return ""
@@ -6580,6 +7940,11 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 			}
 			return ""
 		}
+		if action == "host-resources-read" {
+			s.hostMenuStep = "resources-loading"
+			s.hostMenuErr = ""
+			return action
+		}
 		if action == "host-retention-read" {
 			s.hostMenuStep = "retention-loading"
 			s.hostMenuErr = ""
@@ -6588,6 +7953,10 @@ func (s *tuiState) handleHostMenuInput(input []byte) string {
 			s.hostMenuStep, s.hostMenuIndex = "hook-select", 0
 			s.hostMenuErr = ""
 			return "host-hooks-read"
+		}
+		if action == "host-skills" {
+			s.beginHostSkills()
+			return ""
 		}
 		return action
 	}
@@ -6738,6 +8107,7 @@ func (s *tuiState) sessionActions(session ducklord.RemoteSession) []sessionActio
 		)
 	}
 	actions = append(actions, sessionAction{ID: "notifications", Key: "n", Label: "Notification settings (local)", Enabled: session.InstanceID != "" && session.SessionID != "", DisabledReason: "session identity is unavailable"})
+	renameAction := sessionAction{ID: "rename-handle", Key: "h", Label: "Rename handle", Enabled: session.InstanceID != "" && session.SessionID != "", DisabledReason: "session identity is unavailable"}
 	lifecycleEnabled := live && !s.lifecycleBusy && (session.Kind == string(model.KindShell) || session.WriterKind == string(model.OwnerTerminal) && session.WriterID == s.ownerName)
 	lifecycleReason := "host is reconnecting"
 	if s.lifecycleBusy {
@@ -6756,6 +8126,7 @@ func (s *tuiState) sessionActions(session ducklord.RemoteSession) []sessionActio
 		addLifecycle("restart", "r", "Restart shell immediately", protocol.SessionLifecycleRestart, protocol.SessionLifecycleImmediate, true, false)
 		addLifecycle("end", "e", "End shell immediately", protocol.SessionLifecycleEnd, protocol.SessionLifecycleImmediate, true, true)
 		addLifecycle("destroy", "x", "Destroy shell and logs", protocol.SessionLifecycleDestroy, protocol.SessionLifecycleImmediate, true, true)
+		actions = append(actions, renameAction)
 		return actions
 	}
 	idle := session.TaskState == string(model.TaskIdle)
@@ -6769,6 +8140,7 @@ func (s *tuiState) sessionActions(session ducklord.RemoteSession) []sessionActio
 	addLifecycle("destroy", "x", "Destroy now", protocol.SessionLifecycleDestroy, protocol.SessionLifecycleImmediate, idle, true)
 	addLifecycle("destroy-wait", "", "Destroy when idle", protocol.SessionLifecycleDestroy, protocol.SessionLifecycleWait, adapterHealthy, true)
 	addLifecycle("destroy-force", "", "Destroy and force-cancel task", protocol.SessionLifecycleDestroy, protocol.SessionLifecycleForce, adapterHealthy, true)
+	actions = append(actions, renameAction)
 	return actions
 }
 
@@ -7447,6 +8819,9 @@ func (s *tuiState) chooseActionMenuItem(action sessionAction) string {
 		s.actionMenu = false
 		s.actionOperation, s.actionMode = action.Operation, action.Mode
 		return "notifications-action"
+	case "rename-handle":
+		s.actionMenu = false
+		return "rename-handle-action"
 	default:
 		if action.Operation != "" {
 			s.actionMenu = false
@@ -8362,6 +9737,10 @@ func uniqueClientName(cfg *ducklord.Config, base string) string {
 }
 
 func (s *tuiState) beginCreate() {
+	// Opening the create modal transfers keyboard ownership away from the
+	// currently focused PTY. Otherwise the next modal key can be forwarded to
+	// the old session before newSessionMode gets a chance to handle it.
+	s.focused = false
 	if s.workspaceNewSessionIntent == nil && s.workspacePreview && s.workspaceProjectFocus && !s.hostScoped {
 		if nav, err := s.workspaceNavigation(); err == nil {
 			s.workspaceNewSessionIntent = &workspacePaneIntent{projectID: nav.CurrentProjectID(), placement: ducklord.PlaceNewTab}
@@ -8416,6 +9795,88 @@ func (s *tuiState) beginCreate() {
 	s.outputErr = ""
 }
 
+func (s *tuiState) beginQuickShell(ctx context.Context, done chan<- createDiscoveryEvent, suffix string) {
+	if !s.workspacePreview {
+		s.quickShellOrigin = nil
+		return
+	}
+	origin := s.quickShellOrigin
+	s.quickShellOrigin = nil
+	// The origin is captured when the first prefix byte is accepted while the
+	// Session is focused. Control handoff can briefly clear the live focused
+	// flag before the repeated suffix arrives; the captured origin must survive
+	// that asynchronous transition so the completed quick command does not
+	// fall through to the ordinary Add Session pane.
+	if !s.focused && origin == nil {
+		return
+	}
+	if origin == nil {
+		if s.workspaceNav != nil || s.activityState != nil {
+			return
+		}
+		session := s.activePTYSession()
+		if session.Client == "" || session.Cwd == "" || !s.hostIsLive(session.Client) {
+			return
+		}
+		origin = &workspacePaneIntent{targetID: s.activeAttachKey}
+		placement := ducklord.PlaceNewTab
+		if suffix == "-" {
+			placement = ducklord.PlaceHorizontal
+		}
+		if suffix == "\\" {
+			placement = ducklord.PlaceVertical
+		}
+		origin.placement = placement
+		s.newSessionMode, s.newSessionKind = true, model.KindShell
+		s.newSessionClient, s.newSessionCWD = session.Client, session.Cwd
+		s.workspaceNewSessionIntent = origin
+		s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "quick-shell", client: session.Client, project: ducklord.RemoteProject{Name: session.Cwd, Path: session.Cwd, Source: "path"}}, func(workCtx context.Context) createDiscoveryEvent {
+			client, err := mustClient(s.cfg, session.Client)
+			if err != nil {
+				return createDiscoveryEvent{err: err}
+			}
+			agents, err := s.runner.Agents(workCtx, client, session.Cwd)
+			return createDiscoveryEvent{agents: agents, err: err}
+		})
+		return
+	}
+	identity, ok := s.activity().ProjectLayout.PaneSession(origin.projectID, origin.targetID)
+	if !ok || identity != origin.originIdentity {
+		return
+	}
+	var session ducklord.RemoteSession
+	for _, candidate := range s.sessions {
+		if id, valid := ducklord.IdentityFromSession(candidate); valid && id == identity {
+			session = candidate
+			break
+		}
+	}
+	if session.Client == "" || session.Cwd == "" || !s.hostIsLive(session.Client) {
+		return
+	}
+	placement := ducklord.PlaceNewTab
+	if suffix == "-" {
+		placement = ducklord.PlaceHorizontal
+	}
+	if suffix == "\\" {
+		placement = ducklord.PlaceVertical
+	}
+	origin.placement = placement
+	s.newSessionMode, s.newSessionKind = true, model.KindShell
+	s.newSessionClient, s.newSessionCWD = session.Client, session.Cwd
+	s.newSessionProject = ducklord.RemoteProject{Name: session.Cwd, Path: session.Cwd, Source: "path"}
+	s.newSessionStep, s.newSessionErr = "handle", "starting shell..."
+	s.workspaceNewSessionIntent = origin
+	s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "quick-shell", client: session.Client, project: s.newSessionProject}, func(workCtx context.Context) createDiscoveryEvent {
+		client, err := mustClient(s.cfg, session.Client)
+		if err != nil {
+			return createDiscoveryEvent{err: err}
+		}
+		agents, err := s.runner.Agents(workCtx, client, session.Cwd)
+		return createDiscoveryEvent{agents: agents, err: err}
+	})
+}
+
 func (s *tuiState) cancelCreate() {
 	s.workspaceNewSessionIntent = nil
 	s.cancelCreateDiscovery()
@@ -8436,6 +9897,12 @@ func (s *tuiState) cancelCreate() {
 	s.newSessionPathSuggestions = nil
 	s.newSessionPathSelected = 0
 	s.newSessionPathCompletion = ""
+}
+
+func (s *tuiState) failQuickShell(message string) {
+	s.cancelCreate()
+	s.newSessionErr = message
+	s.outputErr = message
 }
 
 func (s *tuiState) cancelCreateDiscovery() {
@@ -8589,35 +10056,22 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 		if err != nil {
 			return "", "", nil, false, err
 		}
+		// The prompt remains visible while discovery runs, so a second Enter
+		// must not cancel and restart the active request.
+		if s.newSessionDiscovering {
+			return "", "", nil, false, nil
+		}
 		if !s.hostIsLive(clientName) {
 			return "", "", nil, false, fmt.Errorf("host %s is reconnecting; wait for synchronization", clientName)
 		}
-		client, err := mustClient(s.cfg, clientName)
+		_, err = mustClient(s.cfg, clientName)
 		if err != nil {
 			return "", "", nil, false, err
 		}
 		s.newSessionClient = clientName
 		s.newSessionLine = ""
 		s.newSessionSelected = 0
-		s.newSessionErr = "loading bookmarks..."
-		needHome := s.newSessionKind == model.KindShell || s.workspaceNewSessionIntent != nil
-		s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "projects", client: clientName}, func(workCtx context.Context) createDiscoveryEvent {
-			home := ""
-			if needHome {
-				resolver, ok := s.runner.(interface {
-					HomeDir(context.Context, ducklord.Client) (string, error)
-				})
-				if ok {
-					var homeErr error
-					home, homeErr = resolver.HomeDir(workCtx, client)
-					if homeErr != nil {
-						return createDiscoveryEvent{err: homeErr}
-					}
-				}
-			}
-			projects, projectErr := s.runner.Projects(workCtx, client)
-			return createDiscoveryEvent{projects: projects, homePath: home, err: projectErr}
-		})
+		s.startCreateHostDiscovery(ctx, done)
 		return "", "", nil, false, nil
 	case "project":
 		if line == "browse" || line == "path" {
@@ -8786,6 +10240,52 @@ func (s *tuiState) submitCreateStep(ctx context.Context, done chan<- createDisco
 	}
 }
 
+func (s *tuiState) startCreateHostDiscovery(ctx context.Context, done chan<- createDiscoveryEvent) {
+	client, err := mustClient(s.cfg, s.newSessionClient)
+	if err != nil {
+		s.newSessionErr = err.Error()
+		return
+	}
+	s.newSessionErr = "loading bookmarks..."
+	needHome := s.newSessionKind == model.KindShell || s.workspaceNewSessionIntent != nil
+	s.beginCreateDiscovery(ctx, done, createDiscoveryEvent{kind: "projects", client: s.newSessionClient}, func(workCtx context.Context) createDiscoveryEvent {
+		home := ""
+		if needHome {
+			resolver, ok := s.runner.(interface {
+				HomeDir(context.Context, ducklord.Client) (string, error)
+			})
+			if ok {
+				var homeErr error
+				home, homeErr = resolver.HomeDir(workCtx, client)
+				if homeErr != nil {
+					return createDiscoveryEvent{err: homeErr}
+				}
+			}
+		}
+		projects, projectErr := s.runner.Projects(workCtx, client)
+		return createDiscoveryEvent{projects: projects, homePath: home, err: projectErr}
+	})
+}
+
+func (s *tuiState) retryWorkspaceCreateDiscovery(ctx context.Context, done chan<- createDiscoveryEvent, previous ducklord.SessionUpdate, update ducklord.SessionUpdate) bool {
+	if s.workspaceNewSessionIntent == nil || !s.newSessionMode || s.newSessionStep != "host" || s.newSessionClient != update.Client || update.State != "live" {
+		return false
+	}
+	if previous.State == "live" && previous.Generation == update.Generation && previous.InstanceID == update.InstanceID {
+		return false
+	}
+	// A host inventory update can race with the discovery started by the
+	// user's Enter.  Do not cancel that active request and replace it: doing so
+	// fences its result and leaves the wizard stuck on the host selector.  The
+	// reconnect path sets this error while cancelling discovery, so it remains
+	// eligible for a retry below.
+	if s.newSessionDiscovering && s.newSessionCancel != nil && s.newSessionErr != "host connection changed; choose it again" {
+		return false
+	}
+	s.startCreateHostDiscovery(ctx, done)
+	return true
+}
+
 func containsProject(projects []ducklord.RemoteProject, selected ducklord.RemoteProject) bool {
 	for _, project := range projects {
 		if project.Name == selected.Name && project.Path == selected.Path && project.Source == selected.Source {
@@ -8819,7 +10319,13 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 		return "", "", nil, false
 	}
 	generation, instance := s.hostFingerprint(event.client)
-	if generation != event.generation || instance != event.instance || !s.hostIsLive(event.client) {
+	// A workspace split keeps the host connection alive while the focused
+	// session inventory is refreshed.  That refresh can publish a newer
+	// connection identity during HomeDir/Projects discovery; it does not make
+	// the selected host unusable.  Preserve the discovery result for this
+	// route, while retaining the strict fence for the general wizard.
+	if s.workspaceNewSessionIntent == nil &&
+		(generation != event.generation || instance != event.instance || !s.hostIsLive(event.client)) {
 		s.cancelCreateDiscovery()
 		s.newSessionStep = "host"
 		if event.kind == "add-project" && event.project.Path != "" {
@@ -8832,6 +10338,10 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 	s.newSessionDiscovering = false
 	s.newSessionCancel = nil
 	if event.err != nil {
+		if event.kind == "quick-shell" {
+			s.failQuickShell(sanitizeTerminalText(event.err.Error()))
+			return "", "", nil, false
+		}
 		s.newSessionErr = event.err.Error()
 		switch event.kind {
 		case "projects":
@@ -8864,6 +10374,18 @@ func (s *tuiState) applyCreateDiscovery(event createDiscoveryEvent) (clientName,
 		return "", "", nil, false
 	}
 	switch event.kind {
+	case "quick-shell":
+		shell, ok := findRemoteAgent(event.agents, "shell")
+		if !ok {
+			s.failQuickShell("remote shell is unavailable")
+			return "", "", nil, false
+		}
+		args, err := buildStartArgsProject(defaultSessionHandle(event.project.Path), model.KindShell, "", event.project.Name, event.project.Path, shell.Command)
+		if err != nil {
+			s.failQuickShell(sanitizeTerminalText(err.Error()))
+			return "", "", nil, false
+		}
+		return event.client, defaultSessionHandle(event.project.Path), args, true
 	case "path-status":
 		if event.directory.Exists {
 			s.newSessionStep, s.newSessionSelected = "project-policy", 0
@@ -9203,12 +10725,27 @@ func (s *tuiState) backCreateStep() {
 	s.newSessionErr = "choose an option"
 }
 
+// shouldDiscardModalArrow preserves the modal-level arrow behavior for modal
+// selectors while allowing the Notes form to receive its cursor movement.
+func (s *tuiState) shouldDiscardModalArrow(input []byte) bool {
+	if s.workspacePaneMode && s.workspacePaneStep == "notes" {
+		return false
+	}
+	return (string(input) == "\x1b[D" || string(input) == "\x1b[C") && s.centralModalOpen()
+}
+
 func (s *tuiState) centralModalOpen() bool {
 	return s.blockingModalOpen()
 }
 
 func (s *tuiState) blockingModalOpen() bool {
-	return s.workspacePaneMode || s.shortcutMode || s.notificationConfigMode || s.hostMenuMode || s.searchMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.lifecycleConfirm != ""
+	return s.commandPaletteMode || s.workspacePaneMode || s.shortcutMode || s.notificationConfigMode || s.hostMenuMode || s.searchMode || s.terminalSearchMode || s.terminalBookmarkMode || s.terminalBookmarkListMode || s.addClientMode || s.removeClientMode || s.newSessionMode || s.notificationMode || s.groupMenu || s.actionMenu || s.sessionRenameMode || s.lifecycleConfirm != ""
+}
+
+// workspaceControlMayAccept gates asynchronous PTY ownership. Workspace
+// modals keep ownership until they close and the deferred focus lease runs.
+func (s *tuiState) workspaceControlMayAccept() bool {
+	return !s.focused && !s.workspacePaneMode && !s.newSessionMode && !s.helpMode
 }
 
 func (s *tuiState) syncCreateSelectionToInput() {
@@ -9418,7 +10955,7 @@ func (s *tuiState) contentPanePoint(x, y int) bool {
 	return x >= contentStart && x <= width && y >= 5 && y <= height
 }
 
-func readInput(ctx context.Context, ch chan<- []byte) {
+func readInput(ctx context.Context, ch chan<- []byte, ready chan<- struct{}) {
 	raw := make(chan []byte, 1)
 	go func() {
 		buf := make([]byte, 64)
@@ -9448,6 +10985,10 @@ func readInput(ctx context.Context, ch chan<- []byte) {
 		escapeTimeout = nil
 	}
 	emit := func(event []byte) bool {
+		select {
+		case ready <- struct{}{}:
+		default:
+		}
 		select {
 		case ch <- event:
 			return true
@@ -9537,6 +11078,12 @@ func nextInputEvent(pending []byte) (event, rest []byte, ok bool) {
 	// normal-mode shortcut such as q or c.
 	if len(pending) >= 2 && pending[1] != '[' {
 		if pending[1] < utf8.RuneSelf {
+			// C0 controls are complete input events in their own right. In
+			// particular, do not merge Esc + Ctrl-] into an Alt-style chord:
+			// after a modal consumes Esc, Ctrl-] must still unfocus the PTY.
+			if pending[1] < 0x20 || pending[1] == 0x7f {
+				return append([]byte(nil), pending[:1]...), pending[1:], true
+			}
 			return append([]byte(nil), pending[:2]...), pending[2:], true
 		}
 		if !utf8.FullRune(pending[1:]) {

@@ -313,6 +313,15 @@ func (r *Runner) SetHostLogRetention(ctx context.Context, c Client, days int) er
 	return client.SetHostLogRetention(ctx, days)
 }
 
+// HostResources reads portable host and Ducklion runtime resource metrics.
+func (r *Runner) HostResources(ctx context.Context, c Client) (protocol.HostResourceStatus, error) {
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return protocol.HostResourceStatus{}, err
+	}
+	return client.HostResources(ctx)
+}
+
 // ConfigureHostAgentHook asks the running Ducklion to merge or remove only its
 // own agent callback entry from the remote user's settings.
 func (r *Runner) ConfigureHostAgentHook(ctx context.Context, c Client, agent, action string) (protocol.HostAgentHookConfigResult, error) {
@@ -1105,6 +1114,26 @@ func (r *Runner) YieldSelected(ctx context.Context, c Client, selected RemoteSes
 	summary := protocol.SessionSummary{SessionID: selected.SessionID, Kind: model.SessionKind(selected.Kind),
 		OwnershipEpoch: selected.OwnershipEpoch, RuntimeGeneration: selected.RuntimeGeneration}
 	return r.yieldSelected(ctx, c, client, selected.InstanceID, summary, wait)
+}
+
+// RenameSelected changes the handle shown by Ducklord for the exact session
+// revision selected by the user. Both the Ducklion instance and session fences
+// are checked before the durable request is sent.
+func (r *Runner) RenameSelected(ctx context.Context, c Client, selected RemoteSession, handle string) (protocol.SessionSummary, error) {
+	if r == nil || !r.hasOwner() {
+		return protocol.SessionSummary{}, fmt.Errorf("ducklord owner is not configured")
+	}
+	if selected.InstanceID == "" || selected.SessionID == "" || selected.Client != c.Name {
+		return protocol.SessionSummary{}, fmt.Errorf("invalid selected session identity")
+	}
+	client, err := r.bridgeClient(ctx, c)
+	if err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	if client.InstanceID() != selected.InstanceID {
+		return protocol.SessionSummary{}, fmt.Errorf("host instance changed; reopen the rename action")
+	}
+	return client.RenameSessionWithID(ctx, uuid.NewString(), selected.SessionID, selected.OwnershipEpoch, selected.RuntimeGeneration, handle)
 }
 
 func (r *Runner) yieldSelected(ctx context.Context, c Client, client *daemon.Client, expectedInstance string, selected protocol.SessionSummary, wait bool) (protocol.SessionYieldResult, error) {

@@ -116,7 +116,20 @@ func TestDucklordHostHookConfigContainerE2E(t *testing.T) {
 				t.Errorf("restore %s hook installed=%t: %v (remote output suppressed)", tc.agent, before.Installed, err)
 			}
 		})
-		writePTY(t, terminal, "hjjj\r")
+		writePTY(t, terminal, "h")
+		waitScreen("Hosts", 10*time.Second)
+		writePTY(t, terminal, "\r") // select client-a from the Host list.
+		waitScreen("Host actions", 10*time.Second)
+		for range 3 {
+			start := capture.position()
+			writePTY(t, terminal, "j")
+			waitE2E(t, 10*time.Second, func() bool {
+				return capture.position() > start && strings.Contains(capture.currentText(), "Host actions")
+			}, func() string {
+				return "Host actions menu did not render after selection movement; screen suppressed"
+			})
+		}
+		writePTY(t, terminal, "\r")
 		waitScreen("Agent notification hooks", 10*time.Second)
 		waitE2E(t, 15*time.Second, func() bool {
 			return strings.Contains(capture.currentText(), strings.ToUpper(tc.agent[:1])+tc.agent[1:]+":")
@@ -146,7 +159,7 @@ func TestDucklordHostHookConfigContainerE2E(t *testing.T) {
 				strings.Contains(screen, "Updating Host hook configuration"), strings.Contains(screen, "Host is disconnected"))
 		})
 		waitScreen(strings.ToUpper(tc.agent[:1])+tc.agent[1:]+": installed ·", 15*time.Second)
-		out, err := exec.Command(runtime, "exec", "-u", "duck", "ducklion-client-a", "cat", tc.path).CombinedOutput()
+		out, err := exec.Command(runtime, "exec", "-u", "duck", e2eContainerName("ducklion-client-a"), "cat", tc.path).CombinedOutput()
 		if err != nil || !strings.Contains(string(out), tc.marker) {
 			t.Fatalf("%s hook was not installed: %v", tc.agent, err)
 		}
@@ -174,7 +187,18 @@ func TestDucklordHostHookConfigContainerE2E(t *testing.T) {
 			return err == nil && status.Installed && status.Activation == "operational" && status.CallbackObserved && status.CallbackSessionID == hookSession.SessionID &&
 				status.CallbackGeneration == hookSession.RuntimeGeneration && status.CallbackUpdatedAtMS > baseline.CallbackUpdatedAtMS
 		}, func() string { return tc.agent + " callback did not reach persistent Host status" })
-		writePTY(t, terminal, "hjjj\r")
+		writePTY(t, terminal, "h")
+		waitScreen("Hosts", 10*time.Second)
+		writePTY(t, terminal, "\r") // select client-a from the Host list.
+		waitScreen("Host actions", 10*time.Second)
+		for i := 0; i < 3; i++ {
+			start := capture.position()
+			writePTY(t, terminal, "j")
+			waitE2E(t, 10*time.Second, func() bool {
+				return capture.position() > start && strings.Contains(capture.currentText(), "Host actions")
+			}, func() string { return "Host action selection did not repaint" })
+		}
+		writePTY(t, terminal, "\r")
 		waitScreen("Agent notification hooks", 10*time.Second)
 		waitScreen(strings.ToUpper(tc.agent[:1])+tc.agent[1:]+": installed · operational (advisory)", 15*time.Second)
 		removeKeys := "j"
@@ -186,7 +210,7 @@ func TestDucklordHostHookConfigContainerE2E(t *testing.T) {
 		writePTY(t, terminal, "\r")
 		waitScreen("Host hook removed", 20*time.Second)
 		waitScreen(strings.ToUpper(tc.agent[:1])+tc.agent[1:]+": not installed · advisory callback observed", 15*time.Second)
-		out, err = exec.Command(runtime, "exec", "-u", "duck", "ducklion-client-a", "cat", tc.path).CombinedOutput()
+		out, err = exec.Command(runtime, "exec", "-u", "duck", e2eContainerName("ducklion-client-a"), "cat", tc.path).CombinedOutput()
 		if err != nil || strings.Contains(string(out), tc.marker) {
 			t.Fatalf("%s hook was not removed cleanly: %v", tc.agent, err)
 		}
@@ -200,7 +224,18 @@ func TestDucklordHostHookConfigContainerE2E(t *testing.T) {
 		if err != nil || !status.Installed || status.Activation != "pending" || !status.CallbackObserved {
 			t.Fatalf("%s reinstall did not invalidate historical activation; err=%v", tc.agent, err)
 		}
-		writePTY(t, terminal, "hjjj\r")
+		writePTY(t, terminal, "h")
+		waitScreen("Hosts", 10*time.Second)
+		writePTY(t, terminal, "\r") // select client-a from the Host list.
+		waitScreen("Host actions", 10*time.Second)
+		for i := 0; i < 3; i++ {
+			start := capture.position()
+			writePTY(t, terminal, "j")
+			waitE2E(t, 10*time.Second, func() bool {
+				return capture.position() > start && strings.Contains(capture.currentText(), "Host actions")
+			}, func() string { return "Host action selection did not repaint" })
+		}
+		writePTY(t, terminal, "\r")
 		waitScreen(strings.ToUpper(tc.agent[:1])+tc.agent[1:]+": installed · pending activation", 15*time.Second)
 		if tc.agent == "codex" {
 			waitScreen("Review Codex /hooks", 10*time.Second)
@@ -217,7 +252,7 @@ func TestDucklordHostHookConfigContainerE2E(t *testing.T) {
 func restoreContainerHostHook(runtime, owner, agent, action string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, runtime, "exec", "-i", "-u", "duck", "ducklion-client-a",
+	cmd := exec.CommandContext(ctx, runtime, "exec", "-i", "-u", "duck", e2eContainerName("ducklion-client-a"),
 		"env", "HOME=/home/duck", "ducklion", "bridge", "--stdio")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

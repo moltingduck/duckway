@@ -2,6 +2,7 @@ package ducklord
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -271,11 +272,72 @@ func (o *OrganizationState) validate() error {
 }
 
 type ActivityState struct {
-	Version       int                                 `json:"version"`
-	Sessions      map[string]SessionNotificationState `json:"notifications"`
-	Organization  OrganizationState                   `json:"organization,omitempty"`
-	ProjectLayout ProjectLayout                       `json:"project_layout"`
-	ExtraSections map[string]json.RawMessage          `json:"-"`
+	Version           int                                 `json:"version"`
+	Sessions          map[string]SessionNotificationState `json:"notifications"`
+	Organization      OrganizationState                   `json:"organization,omitempty"`
+	ProjectLayout     ProjectLayout                       `json:"project_layout"`
+	TerminalBookmarks []TerminalBookmark                  `json:"terminal_bookmarks,omitempty"`
+	ExtraSections     map[string]json.RawMessage          `json:"-"`
+}
+
+// TerminalBookmark is deliberately metadata-only.  It identifies a bounded
+// terminal location without retaining terminal output in activity state.
+type TerminalBookmark struct {
+	Session     SessionIdentity `json:"session"`
+	Label       string          `json:"label"`
+	Anchor      string          `json:"anchor"`
+	Fingerprint string          `json:"fingerprint"`
+}
+
+const maxTerminalBookmarks = 4096
+
+func TerminalTextFingerprint(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func NewTerminalBookmark(session SessionIdentity, label, text string) (TerminalBookmark, error) {
+	if err := session.validate(); err != nil {
+		return TerminalBookmark{}, err
+	}
+	label = strings.TrimSpace(label)
+	if label == "" || len([]rune(label)) > 80 || !utf8.ValidString(label) {
+		return TerminalBookmark{}, fmt.Errorf("bookmark label must contain 1 to 80 valid UTF-8 code points")
+	}
+	lines := strings.Split(text, "\n")
+	last := len(lines) - 1
+	for last > 0 && lines[last] == "" {
+		last--
+	}
+	lineHash := TerminalTextFingerprint(lines[last])
+	occurrence := 0
+	for index := 0; index <= last; index++ {
+		if TerminalTextFingerprint(lines[index]) == lineHash {
+			occurrence++
+		}
+	}
+	return TerminalBookmark{Session: session, Label: label, Anchor: fmt.Sprintf("line:%d", occurrence-1), Fingerprint: lineHash}, nil
+}
+
+// TerminalBookmarkLine returns the retained line identified by a metadata-only
+// bookmark. The line hash and occurrence survive appended output, while a
+// dropped scrollback line naturally returns unavailable.
+func TerminalBookmarkLine(text string, bookmark TerminalBookmark) (int, bool) {
+	var occurrence int
+	if _, err := fmt.Sscanf(bookmark.Anchor, "line:%d", &occurrence); err != nil || occurrence < 0 {
+		return 0, false
+	}
+	seen := 0
+	for index, line := range strings.Split(text, "\n") {
+		if TerminalTextFingerprint(line) != bookmark.Fingerprint {
+			continue
+		}
+		if seen == occurrence {
+			return index, true
+		}
+		seen++
+	}
+	return 0, false
 }
 
 type SessionNotificationState struct {
@@ -337,7 +399,7 @@ func (s *ActivityState) Clone() *ActivityState {
 	if s == nil {
 		return NewActivityState()
 	}
-	clone := &ActivityState{Version: s.Version, Sessions: make(map[string]SessionNotificationState, len(s.Sessions)), Organization: s.Organization.clone(), ProjectLayout: s.ProjectLayout.Clone(), ExtraSections: make(map[string]json.RawMessage, len(s.ExtraSections))}
+	clone := &ActivityState{Version: s.Version, Sessions: make(map[string]SessionNotificationState, len(s.Sessions)), Organization: s.Organization.clone(), ProjectLayout: s.ProjectLayout.Clone(), TerminalBookmarks: append([]TerminalBookmark(nil), s.TerminalBookmarks...), ExtraSections: make(map[string]json.RawMessage, len(s.ExtraSections))}
 	for name, raw := range s.ExtraSections {
 		clone.ExtraSections[name] = append(json.RawMessage(nil), raw...)
 	}
@@ -399,14 +461,20 @@ func (s *ActivityState) UnmarshalJSON(data []byte) error {
 		}
 		delete(sections, "project_layout")
 	}
+	if raw, ok := sections["terminal_bookmarks"]; ok {
+		if err := json.Unmarshal(raw, &s.TerminalBookmarks); err != nil {
+			return fmt.Errorf("decode terminal bookmarks: %w", err)
+		}
+		delete(sections, "terminal_bookmarks")
+	}
 	s.ExtraSections = sections
 	return nil
 }
 
 func (s ActivityState) MarshalJSON() ([]byte, error) {
-	sections := make(map[string]json.RawMessage, len(s.ExtraSections)+4)
+	sections := make(map[string]json.RawMessage, len(s.ExtraSections)+5)
 	for name, raw := range s.ExtraSections {
-		if name == "version" || name == "notifications" || name == "organization" || name == "project_layout" || !json.Valid(raw) {
+		if name == "version" || name == "notifications" || name == "organization" || name == "project_layout" || name == "terminal_bookmarks" || !json.Valid(raw) {
 			return nil, fmt.Errorf("invalid Ducklord state section %q", name)
 		}
 		sections[name] = append(json.RawMessage(nil), raw...)
@@ -428,6 +496,13 @@ func (s ActivityState) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	sections["project_layout"] = projectLayout
+	if len(s.TerminalBookmarks) != 0 {
+		bookmarks, err := json.Marshal(s.TerminalBookmarks)
+		if err != nil {
+			return nil, err
+		}
+		sections["terminal_bookmarks"] = bookmarks
+	}
 	return json.Marshal(sections)
 }
 
@@ -649,6 +724,33 @@ func (s *ActivityState) Enabled(instanceID, sessionID string, category model.Not
 	return !s.Sessions[key].Disabled[category]
 }
 
+func (s *ActivityState) AddTerminalBookmark(bookmark TerminalBookmark) error {
+	if err := bookmark.Session.validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(bookmark.Label) != bookmark.Label || bookmark.Label == "" || len([]rune(bookmark.Label)) > 80 || !utf8.ValidString(bookmark.Label) {
+		return fmt.Errorf("invalid terminal bookmark label")
+	}
+	if bookmark.Anchor == "" || bookmark.Fingerprint == "" {
+		return fmt.Errorf("terminal bookmark anchor and fingerprint are required")
+	}
+	if len(s.TerminalBookmarks) >= maxTerminalBookmarks {
+		return fmt.Errorf("too many terminal bookmarks")
+	}
+	s.TerminalBookmarks = append(s.TerminalBookmarks, bookmark)
+	return nil
+}
+
+func (s *ActivityState) TerminalBookmarksFor(session SessionIdentity) []TerminalBookmark {
+	result := make([]TerminalBookmark, 0)
+	for _, bookmark := range s.TerminalBookmarks {
+		if bookmark.Session == session {
+			result = append(result, bookmark)
+		}
+	}
+	return result
+}
+
 func (s *ActivityState) validate() error {
 	if s.Version != activityStateVersion {
 		return fmt.Errorf("unsupported ducklord state version %d", s.Version)
@@ -661,6 +763,17 @@ func (s *ActivityState) validate() error {
 	}
 	if err := s.ProjectLayout.Validate(); err != nil {
 		return err
+	}
+	if len(s.TerminalBookmarks) > maxTerminalBookmarks {
+		return fmt.Errorf("too many terminal bookmarks")
+	}
+	for _, bookmark := range s.TerminalBookmarks {
+		if err := bookmark.Session.validate(); err != nil {
+			return err
+		}
+		if strings.TrimSpace(bookmark.Label) != bookmark.Label || bookmark.Label == "" || len([]rune(bookmark.Label)) > 80 || !utf8.ValidString(bookmark.Label) || bookmark.Anchor == "" || bookmark.Fingerprint == "" {
+			return fmt.Errorf("invalid terminal bookmark")
+		}
 	}
 	for key, entry := range s.Sessions {
 		parts := strings.Split(key, "/")

@@ -9,6 +9,20 @@ import (
 	"testing"
 )
 
+func TestSkillTrackingSourceNormalizeRequiresHostname(t *testing.T) {
+	source := SkillTrackingSource{SkillID: "demo", URL: "https://:443/archive.tar.gz"}
+	if err := source.Normalize(); err == nil || !strings.Contains(err.Error(), "HTTPS URL") {
+		t.Fatalf("hostname-less HTTPS source was accepted: %v", err)
+	}
+}
+
+func TestSkillTrackingSourceNormalizeAcceptsMixedCaseHTTPS(t *testing.T) {
+	source := SkillTrackingSource{SkillID: "demo", URL: "HTTPS://example.test/archive.tar.gz"}
+	if err := source.Normalize(); err != nil {
+		t.Fatalf("mixed-case HTTPS source was rejected: %v", err)
+	}
+}
+
 func TestLoadConfigNormalizesClients(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("name: desk-1\nhosts:\n  - name: vulns\n    host: vulns.ts\n    user: duck\n    group: ctf\n"), 0600); err != nil {

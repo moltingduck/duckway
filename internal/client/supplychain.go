@@ -11,7 +11,7 @@ import (
 
 // Supply-chain hardening: fetch each package manager's rc-file settings from
 // the server and merge them into a duckway-managed block in the corresponding
-// agent rc file (~/.npmrc, ~/.yarnrc.yml, ~/.config/uv/uv.toml, …). The block
+// agent rc file (~/.npmrc, ~/.config/pnpm/rc, ~/.yarnrc.yml, …). The block
 // is delimited by markers so re-running sync replaces it in place without
 // touching the user's own settings.
 
@@ -121,7 +121,7 @@ func SummarizeSupplyChainChanges(changes []SupplyChainRCChange) string {
 // strip a stale managed block when a mitigation is disabled. Kept in sync with
 // the server registry (services.SupplyChainMitigations) by hand — a short,
 // stable list.
-var knownManagedRCPaths = []string{".npmrc", ".yarnrc.yml", ".config/uv/uv.toml", ".config/go/env"}
+var knownManagedRCPaths = []string{".npmrc", ".config/pnpm/rc", ".yarnrc.yml", ".config/uv/uv.toml", ".config/go/env"}
 
 // allManagedRCPaths returns the union of the server-provided paths and the
 // known registry paths, so files whose mitigation was disabled get cleaned up.

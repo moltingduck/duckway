@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 // WorkspaceOutputAdapter presents one PaneOutputManager through the selected-
@@ -147,20 +148,37 @@ func (m *WorkspaceOutputAdapter) ForgetHost(clientKey, instanceID string) {
 	m.repaintNow()
 }
 
-func (m *WorkspaceOutputAdapter) SyncHost(clientKey, instanceID string, live bool, _ []TerminalSelection) {
+func (m *WorkspaceOutputAdapter) SyncHost(clientKey, instanceID string, live bool, selections []TerminalSelection) {
 	if !live {
 		_ = m.pane.DisconnectHost(clientKey, instanceID)
 		m.repaintNow()
+		return
 	}
+	go func() {
+		m.pane.RestoreHost(m.ctx, clientKey, instanceID, selections)
+		m.repaintNow()
+	}()
 }
+
+// Coalesce visual updates across every pane; raw VT ingestion stays lossless.
+const workspaceOutputRefreshInterval = time.Second / 30
 
 func (m *WorkspaceOutputAdapter) watchDirty() {
 	defer m.workers.Done()
+	ticker := time.NewTicker(workspaceOutputRefreshInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-m.pane.DirtyReady():
+			// Leave keys in the bounded dirty set until the next display tick.
+			// A trailing update is delivered even when output stops during the wait.
+			select {
+			case <-m.ctx.Done():
+				return
+			case <-ticker.C:
+			}
 			keys := m.pane.DrainDirty()
 			m.mu.Lock()
 			id, selected, selectedLease := m.nextID, m.selected, m.selectedLease

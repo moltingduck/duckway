@@ -14,6 +14,44 @@ The highlighted border shows where keyboard input goes. Press `?` for a pinned,
 searchable shortcut guide; press `?` again to close it. Shortcuts can be changed
 with `s`; Ducklord asks whether to restart to load the new bindings.
 
+## Search terminal output and save output bookmarks
+
+With a focused terminal, press the pane prefix followed by `/` to search the
+retained terminal output. Type a query, then use Up/Down to select matches; the
+terminal viewport moves to the selected line. Esc closes the local search and
+restores terminal input to the same pane.
+
+Press the pane prefix followed by `m` to save a labeled bookmark for the current
+retained output position. Press the prefix followed by `M` to open the bookmark
+picker. Enter reveals the saved line after later output is appended. Bookmarks
+store only a session identity and line metadata, never terminal transcript text.
+If the line has rolled out of retained scrollback, Ducklord marks it unavailable
+and Enter shows the current retained history instead.
+
+## Export or import a Project
+
+Focus the Project pane with `b`, select the Project, then press the pane prefix
+followed by `c` (by default, `Ctrl+B`, then `c`). Choose **Export Project**,
+enter an absolute destination path, and press Enter twice: once to review the
+path and once to write the file. The transfer contains the Project layout,
+scoped notes, Session descriptors, and bookmark metadata; it excludes terminal
+output, credentials, Host secrets, and SSH settings.
+
+To import, open the same Project config menu and choose **Import Project**.
+Enter the absolute path to the exported file, inspect **Project Import Preview**,
+then press Enter on **Import and persist**. The preview reports Sessions that do
+not exist locally and a Project-name collision. Missing Sessions are not created
+or connected; a colliding Project receives a deterministic suffix after your
+confirmation. Press Esc at any step to cancel or go back.
+
+When Ducklord runs in the demo container, its path is a container path. Transfer
+a file with `podman cp`, for example:
+
+```sh
+podman cp ducklord-verified-ducklord-dev:/root/project.duckproj.json ./project.duckproj.json
+podman cp ./project.duckproj.json ducklord-verified-ducklord-dev:/root/project.duckproj.json
+```
+
 ## Navigate and arrange
 
 | Key | Action |
@@ -140,11 +178,23 @@ Press `Ctrl+]` if the PTY is focused, then `v` to freeze redraws. Select text
 with your terminal's mouse and use its normal Copy action. `Esc`, `q`, `v`, or
 `Ctrl+C` resumes Ducklord. Copy mode does not detach or yield the Session.
 
-Press `a` to add a Host from your SSH configuration. `h` opens Host actions,
-including connect/disconnect, Host notification defaults, hook integration,
-and retained-log settings. Ducklord keeps its local configuration under
+Press `a` to add a Host from your SSH configuration. `h` opens the Host list;
+press Enter for that Host's settings, including connect/disconnect, Host
+notification defaults, hook integration, retained-log settings, and Skills. Ducklord keeps its local configuration under
 `~/.ducklord`. Most settings require a Ducklord restart; it prompts rather
 than restarting automatically. Host log retention is the hot-reload exception.
+
+In a Host's **Skills** setting, Ducklord opens a two-pane manager. The left
+pane is Ducklord's separate managed-skill repository; the right pane is an
+expandable list of that Host's agent skill directories. Use `Tab`, Left, or
+Right to change pane. On an agent header, Enter or Space expands its remotely
+discovered skills. Select a local skill and use `p` to mark it for push to the
+active agent, `n` to leave it unmanaged, or `m` to rename the local managed
+skill after confirmation. Select a remote skill and use `r` to preview a pull,
+or `x` to delete that remote skill after the confirmation names its Host,
+agent, directory, and skill ID. `d` deploys the active agent's selected
+push skills. `Esc` returns one step; `Ctrl+C` closes the Skills route and
+returns keyboard focus to the pane that opened it.
 
 Central dialogs use `↑`/`↓` to select, `Enter` to continue, `Esc` to go back,
 and `Ctrl+C` to close. Left/right arrows do not dismiss a dialog.

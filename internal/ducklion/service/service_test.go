@@ -12,6 +12,46 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklion/store"
 )
 
+func TestRenameSessionIsFencedAuthenticatedAndReplayable(t *testing.T) {
+	ctx := context.Background()
+	service, state := openService(t)
+	session := newAgent("ABC123", "before", model.TaskIdle)
+	if _, _, err := service.CreateSession(ctx, "cc:channel-1", "create", session); err != nil {
+		t.Fatal(err)
+	}
+	outcome, replayed, err := service.RenameSession(ctx, "cc:channel-1", "rename-1", session.ID, "  after  ", 1, 1)
+	if err != nil || replayed || outcome.Error != nil || outcome.Handle != "after" {
+		t.Fatalf("rename=%+v replayed=%v err=%v", outcome, replayed, err)
+	}
+	if got, err := state.GetSession(ctx, session.ID); err != nil || got.Handle != "after" {
+		t.Fatalf("session=%+v err=%v", got, err)
+	}
+	afterRename, err := state.SessionSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, replayed, err := service.RenameSession(ctx, "cc:channel-1", "rename-1", session.ID, "after", 1, 1)
+	if err != nil || !replayed || replay.Handle != "after" {
+		t.Fatalf("replay=%+v replayed=%v err=%v", replay, replayed, err)
+	}
+	afterReplay, err := state.SessionSnapshot(ctx)
+	if err != nil || afterReplay.Revision != afterRename.Revision {
+		t.Fatalf("replay revision=%d want=%d err=%v", afterReplay.Revision, afterRename.Revision, err)
+	}
+	unauthorized, _, err := service.RenameSession(ctx, "cc:other", "rename-2", session.ID, "bad", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	} else if unauthorized.Error == nil || unauthorized.Error.Code != protocol.ErrNotOwner {
+		t.Fatalf("unauthorized outcome=%+v", unauthorized)
+	}
+	if outcome, _, err := service.RenameSession(ctx, "cc:channel-1", "rename-3", session.ID, "stale", 1, 2); err != nil || outcome.Error == nil || outcome.Error.Code != protocol.ErrStaleGeneration {
+		t.Fatalf("stale outcome=%+v err=%v", outcome, err)
+	}
+	if _, _, err := service.RenameSession(ctx, "cc:channel-1", "rename-4", session.ID, "", 1, 1); err == nil {
+		t.Fatalf("invalid handle err=%v", err)
+	}
+}
+
 func openService(t *testing.T) (*Service, *store.SQLite) {
 	t.Helper()
 	state, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "ducklion.db"))

@@ -21,10 +21,66 @@ func New(state *store.SQLite) *Service { return &Service{state: state} }
 type Outcome struct {
 	Decision       model.YieldDecision `json:"decision,omitempty"`
 	SessionID      model.SessionID     `json:"session_id,omitempty"`
+	Handle         string              `json:"handle,omitempty"`
 	OwnershipEpoch uint64              `json:"ownership_epoch,omitempty"`
 	TaskState      model.TaskState     `json:"task_state,omitempty"`
 	Writer         *model.Owner        `json:"writer,omitempty"`
 	Error          *protocol.Error     `json:"error,omitempty"`
+}
+
+func (s *Service) RenameSession(ctx context.Context, principal, requestID string, sessionID model.SessionID, handle string, expectedEpoch, expectedGeneration uint64) (Outcome, bool, error) {
+	var err error
+	if handle, err = model.ValidateHandle(handle); err != nil {
+		return Outcome{}, false, err
+	}
+	payload, _ := json.Marshal(struct {
+		Handle     string `json:"handle"`
+		Epoch      uint64 `json:"ownership_epoch"`
+		Generation uint64 `json:"runtime_generation"`
+	}{handle, expectedEpoch, expectedGeneration})
+	key := store.MutationKey{Principal: principal, RequestID: requestID, Operation: "rename_session", SessionID: sessionID,
+		Fingerprint: store.Fingerprint("rename_session", sessionID, payload)}
+	result, err := s.state.RunMutation(ctx, key, func(tx *sql.Tx) (json.RawMessage, error) {
+		session, err := s.state.GetSessionTx(ctx, tx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		ownerKind := model.OwnerTerminal
+		if strings.HasPrefix(principal, "cc:") {
+			ownerKind = model.OwnerCC
+		}
+		ownerID := strings.TrimPrefix(strings.TrimPrefix(principal, "cc:"), "terminal:")
+		owner := model.Owner{Kind: ownerKind, ID: ownerID}
+		if session.Kind == model.KindShell {
+			if ownerKind != model.OwnerTerminal {
+				return json.Marshal(rejection(protocol.ErrNotOwner, "Discord CC cannot rename shell sessions", session))
+			}
+		} else if session.Writer == nil || *session.Writer != owner {
+			return json.Marshal(rejection(protocol.ErrNotOwner, "session writer changed", session))
+		}
+		if session.RuntimeGeneration != expectedGeneration {
+			return json.Marshal(rejection(protocol.ErrStaleGeneration, "runtime generation changed", session))
+		}
+		if session.OwnershipEpoch != expectedEpoch {
+			return json.Marshal(rejection(protocol.ErrStaleEpoch, "ownership epoch changed", session))
+		}
+		if err := s.state.RenameSessionTx(ctx, tx, sessionID, handle, expectedEpoch, expectedGeneration); err != nil {
+			return nil, err
+		}
+		session.Handle = handle
+		if err := s.audit(ctx, tx, principal, "rename_session", "ok", session); err != nil {
+			return nil, err
+		}
+		return json.Marshal(Outcome{SessionID: sessionID, Handle: handle, OwnershipEpoch: expectedEpoch})
+	})
+	if err != nil {
+		return Outcome{}, false, err
+	}
+	var outcome Outcome
+	if err := json.Unmarshal(result.JSON, &outcome); err != nil {
+		return Outcome{}, false, err
+	}
+	return outcome, result.Replayed, nil
 }
 
 type BindOutcome struct {

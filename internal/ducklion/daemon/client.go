@@ -133,7 +133,7 @@ func connectRoleContext(ctx context.Context, conn io.ReadWriteCloser, identity p
 	}()
 	codec := bridge.NewCodec(conn, conn, bridge.DefaultMaxFrame)
 	setDeadline(conn, time.Now().Add(10*time.Second))
-	offeredCapabilities := []string{"status", "sessions_list", "retained_list", "host_config", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
+	offeredCapabilities := []string{"status", "sessions_list", "retained_list", "host_config", "session_create", "session_stop", "session_destroy", "session_lifecycle", "session_yield", "session_rename", "output_subscribe", "output_unsubscribe", "session_input", "session_resize", "session_resize_barrier", "session_events"}
 	if identity.ConnectionRole == protocol.ConnectionObserver {
 		offeredCapabilities = []string{"status", "sessions_list", "retained_list", "output_subscribe", "output_unsubscribe", "session_events"}
 	}
@@ -283,6 +283,24 @@ func (c *Client) HostAgentHookStatus(ctx context.Context, agent string) (protoco
 	var status protocol.HostAgentHookStatus
 	if err := json.Unmarshal(response.Result, &status); err != nil || status.Agent != agent {
 		return protocol.HostAgentHookStatus{}, fmt.Errorf("invalid Host agent hook status")
+	}
+	return status, nil
+}
+
+func (c *Client) HostResources(ctx context.Context) (protocol.HostResourceStatus, error) {
+	if !c.capabilities["host_config"] {
+		return protocol.HostResourceStatus{}, fmt.Errorf("host configuration capability was not negotiated")
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: uuid.NewString(), Type: "host.resources", InstanceID: c.instanceID, Body: []byte(`{}`)})
+	if err != nil {
+		return protocol.HostResourceStatus{}, err
+	}
+	if response.Error != nil {
+		return protocol.HostResourceStatus{}, &RemoteError{Detail: *response.Error}
+	}
+	var status protocol.HostResourceStatus
+	if err := json.Unmarshal(response.Result, &status); err != nil || status.GOOS == "" || status.GOARCH == "" || status.CPUCount < 1 {
+		return protocol.HostResourceStatus{}, fmt.Errorf("invalid Host resource status")
 	}
 	return status, nil
 }
@@ -905,6 +923,36 @@ func (c *Client) ListSessionsContext(ctx context.Context) ([]protocol.SessionSum
 
 func (c *Client) CreateSession(ctx context.Context, request protocol.SessionCreate) (protocol.SessionSummary, error) {
 	return c.CreateSessionWithID(ctx, uuid.NewString(), request)
+}
+
+func (c *Client) RenameSession(ctx context.Context, sessionID string, epoch, generation uint64, handle string) (protocol.SessionSummary, error) {
+	return c.RenameSessionWithID(ctx, uuid.NewString(), sessionID, epoch, generation, handle)
+}
+
+func (c *Client) RenameSessionWithID(ctx context.Context, requestID, sessionID string, epoch, generation uint64, handle string) (protocol.SessionSummary, error) {
+	if err := c.requireCapability("session_rename"); err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	var err error
+	if handle, err = model.ValidateHandle(handle); err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	body, err := json.Marshal(protocol.SessionRename{Handle: handle})
+	if err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	response, err := c.CallContext(ctx, protocol.Request{ID: requestID, Type: "session.rename", InstanceID: c.instanceID, SessionID: sessionID, OwnershipEpoch: &epoch, RuntimeGeneration: &generation, Body: body})
+	if err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	if response.Error != nil {
+		return protocol.SessionSummary{}, &RemoteError{Detail: *response.Error}
+	}
+	var summary protocol.SessionSummary
+	if err := json.Unmarshal(response.Result, &summary); err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	return summary, nil
 }
 
 func (c *Client) CreateSessionWithID(ctx context.Context, requestID string, request protocol.SessionCreate) (protocol.SessionSummary, error) {

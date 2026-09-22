@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/ducklion/model"
@@ -349,5 +350,53 @@ func TestActivityStateSaveRejectsSymlinkDirectoryBeforeChmod(t *testing.T) {
 	info, statErr := os.Stat(target)
 	if statErr != nil || info.Mode().Perm() != 0755 {
 		t.Fatalf("symlink target permissions changed to %v: %v", info, statErr)
+	}
+}
+
+func TestTerminalBookmarksPersistMetadataWithoutTerminalText(t *testing.T) {
+	state := NewActivityState()
+	identity := testLayoutIdentity("ABC123")
+	secret := "password-do-not-persist-" + strings.Repeat("x", 32)
+	bookmark, err := NewTerminalBookmark(identity, "checkpoint", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.AddTerminalBookmark(bookmark); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), secret) {
+		t.Fatalf("bookmark state persisted terminal text: %s", encoded)
+	}
+	var restored ActivityState
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	got := restored.TerminalBookmarksFor(identity)
+	if len(got) != 1 || got[0].Label != "checkpoint" || !strings.HasPrefix(got[0].Anchor, "line:") || got[0].Fingerprint != TerminalTextFingerprint(secret) {
+		t.Fatalf("bookmark metadata did not round-trip: %+v", got)
+	}
+	if len(restored.TerminalBookmarksFor(testLayoutIdentity("OTHER"))) != 0 {
+		t.Fatal("bookmark leaked across session identities")
+	}
+	if TerminalTextFingerprint(secret) == TerminalTextFingerprint(secret+" changed") {
+		t.Fatal("terminal fingerprints did not change with text")
+	}
+}
+
+func TestTerminalBookmarkLineSurvivesAppendedOutput(t *testing.T) {
+	identity := testLayoutIdentity("ABC123")
+	bookmark, err := NewTerminalBookmark(identity, "checkpoint", "first\ncheckpoint\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line, ok := TerminalBookmarkLine("first\ncheckpoint\nappended\n", bookmark); !ok || line != 1 {
+		t.Fatalf("appended output moved bookmark: line=%d ok=%v", line, ok)
+	}
+	if _, ok := TerminalBookmarkLine("other\nappended\n", bookmark); ok {
+		t.Fatal("bookmark remained available after its retained line rolled out")
 	}
 }

@@ -29,8 +29,7 @@ const (
 )
 
 // rcEntry is one config setting plus its explanatory comment. key is used to
-// dedupe across managers that share a file (npm + pnpm both write ~/.npmrc and
-// both set ignore-scripts — it should appear once).
+// dedupe settings contributed to the same file.
 type rcEntry struct {
 	key     string
 	comment string
@@ -91,8 +90,8 @@ func SupplyChainMitigations() []SupplyChainMitigation {
 			},
 		},
 		{
-			ID: "pnpm", Name: "pnpm", Manager: "pnpm", RCPath: ".npmrc", Supported: true,
-			Description: "~/.npmrc: blocks all pre/post-install scripts (ignore-scripts) and refuses packages published within the cooldown window (minimum-release-age, stored in minutes). Shares the .npmrc file with npm; deduped keys appear once.",
+			ID: "pnpm", Name: "pnpm", Manager: "pnpm", RCPath: ".config/pnpm/rc", Supported: true,
+			Description: "~/.config/pnpm/rc: blocks all pre/post-install scripts (ignore-scripts) and refuses packages published within the cooldown window (minimum-release-age, stored in minutes). The pnpm-only setting is kept out of ~/.npmrc so npm does not report an unknown config warning.",
 			render: func(days int, now time.Time) []rcEntry {
 				return []rcEntry{
 					{key: "ignore-scripts", comment: "# 不執行 postinstall 等腳本", line: "ignore-scripts=true"},
@@ -194,9 +193,8 @@ func SettingKeySupplyChainEnabled(id string) string { return settingEnabledPrefi
 func SettingKeySupplyChainMinAgeDays() string { return settingMinAgeDays }
 
 // ResolveSupplyChainRC returns the rc lines to write, grouped by rc file path
-// (relative to $HOME). Managers that share a file (npm + pnpm → .npmrc) are
-// merged into one block, deduped by setting key (so ignore-scripts appears
-// once) and separated by blank lines for readability. Only supported, enabled
+// (relative to $HOME). Managers that share a file are merged into one block,
+// deduped by setting key and separated by blank lines for readability. Only supported, enabled
 // mitigations contribute. This is what the client fetches and writes into each
 // agent rc file.
 func ResolveSupplyChainRC(get func(string) string, now time.Time) map[string][]string {

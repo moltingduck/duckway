@@ -196,6 +196,24 @@ func (s *SQLite) DeleteStoppedSessionTx(ctx context.Context, tx *sql.Tx, id mode
 	return nil
 }
 
+// RenameSessionTx updates only the display handle and uses both session fences
+// so a delayed rename cannot affect a newer runtime or owner epoch.
+func (s *SQLite) RenameSessionTx(ctx context.Context, tx *sql.Tx, id model.SessionID, handle string, expectedEpoch, expectedGeneration uint64) error {
+	handle, err := model.ValidateHandle(handle)
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE sessions SET handle=?,updated_at_ms=?
+		WHERE session_id=? AND ownership_epoch=? AND runtime_generation=?`, handle, time.Now().UTC().UnixMilli(), id, expectedEpoch, expectedGeneration)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return fmt.Errorf("session fencing conflict")
+	}
+	return nil
+}
+
 func (s *SQLite) InsertSessionTx(ctx context.Context, tx *sql.Tx, session model.Session) error {
 	if err := session.Validate(); err != nil {
 		return err

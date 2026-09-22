@@ -9,6 +9,27 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
+func TestWorkspaceSelectionsChangedIgnoresUnrelatedSessionUpdates(t *testing.T) {
+	selection := ducklord.TerminalSelection{Client: ducklord.Client{Name: "host"}, InstanceID: "instance", SessionID: "session", RuntimeGeneration: 4, Rows: 20, Cols: 80}
+	if workspaceSelectionsChanged([]ducklord.TerminalSelection{selection}, []ducklord.TerminalSelection{selection}) {
+		t.Fatal("unchanged output subscription was treated as changed")
+	}
+	for name, mutate := range map[string]func(*ducklord.TerminalSelection){
+		"session":    func(s *ducklord.TerminalSelection) { s.SessionID = "other" },
+		"generation": func(s *ducklord.TerminalSelection) { s.RuntimeGeneration++ },
+		"dimensions": func(s *ducklord.TerminalSelection) { s.Cols++ },
+		"membership": func(s *ducklord.TerminalSelection) { s.InstanceID = "other-instance" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := selection
+			mutate(&changed)
+			if !workspaceSelectionsChanged([]ducklord.TerminalSelection{selection}, []ducklord.TerminalSelection{changed}) {
+				t.Fatal("changed output subscription was ignored")
+			}
+		})
+	}
+}
+
 func TestWorkspaceClosedDefaultPaneOnlyReopensOnExplicitNavigation(t *testing.T) {
 	for _, route := range []string{"quick", "detail"} {
 		t.Run(route, func(t *testing.T) {
@@ -580,5 +601,22 @@ func TestWorkspaceProjectShortcutsBrowseTabsAndSplitPanesWithoutQuickSelection(t
 		if state.selected != 0 || state.focused || state.workspaceAttachFromProject {
 			t.Fatalf("key %q changed quick selection or PTY focus", step.key)
 		}
+	}
+}
+
+func TestWorkspaceProjectAddPaneShortcutUsesProjectFocus(t *testing.T) {
+	state, projectID, _, _ := workspacePaneTestState(t)
+	nav, err := state.workspaceNavigation()
+	if err != nil || nav.SelectProject(projectID) != nil {
+		t.Fatalf("select Project: %v", err)
+	}
+
+	state.workspaceProjectFocus = false
+	if handled, _ := state.handleWorkspaceProjectInput([]byte("p")); handled {
+		t.Fatal("Project-only Add Session shortcut was consumed from Session list")
+	}
+	state.workspaceProjectFocus = true
+	if handled, _ := state.handleWorkspaceProjectInput([]byte("p")); !handled || !state.workspacePaneMode {
+		t.Fatalf("Project Add Session shortcut did not open its pane: handled=%v pane=%v", handled, state.workspacePaneMode)
 	}
 }

@@ -196,4 +196,3 @@ func truncatePreview(s string) string {
 	}
 	return s
 }
-

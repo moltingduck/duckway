@@ -109,6 +109,9 @@ func TestRunnerSelectedMutationsRejectChangedDucklionInstance(t *testing.T) {
 	if _, err := runner.YieldSelected(context.Background(), client, selected, false); err == nil || !strings.Contains(err.Error(), "host instance changed") {
 		t.Fatalf("yield instance fence error=%v", err)
 	}
+	if _, err := runner.RenameSelected(context.Background(), client, selected, "after"); err == nil || !strings.Contains(err.Error(), "host instance changed") {
+		t.Fatalf("rename instance fence error=%v", err)
+	}
 }
 
 func TestMain(m *testing.M) {

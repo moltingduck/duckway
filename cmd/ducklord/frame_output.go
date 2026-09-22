@@ -17,10 +17,11 @@ type frameOutput struct {
 	rows          []string
 	width, height int
 	cursor        string
+	frame         string
 }
 
 func (f *frameOutput) write(out io.Writer, frame string, width, height int) {
-	if width < 1 || height < 1 {
+	if width < 1 || height < 1 || f.width == width && f.height == height && f.frame == frame {
 		return
 	}
 	screen := ducklord.NewTerminal(height, width, 0)
@@ -44,6 +45,7 @@ func (f *frameOutput) write(out io.Writer, frame string, width, height int) {
 		fmt.Fprintf(&body, "\033[%d;1H\033[0m%s%s\033[0m", i+1, line, strings.Repeat(" ", max(0, width-modalCellWidth(frameStylePattern.ReplaceAllString(line, "")))))
 	}
 	if body.Len() == 0 && cursor == f.cursor {
+		f.frame = frame
 		return
 	}
 	// Disable wrapping while painting the bottom-right cell to avoid scrolling.
@@ -56,5 +58,5 @@ func (f *frameOutput) write(out io.Writer, frame string, width, height int) {
 		*f = frameOutput{}
 		return
 	}
-	f.rows, f.width, f.height, f.cursor = rows, width, height, cursor
+	f.rows, f.width, f.height, f.cursor, f.frame = rows, width, height, cursor, frame
 }

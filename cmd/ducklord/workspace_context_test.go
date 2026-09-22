@@ -42,7 +42,7 @@ func TestWorkspaceContextConfigTargets(t *testing.T) {
 			}
 			switch target {
 			case "project":
-				if !s.workspacePaneMode || s.workspacePaneStep != "project-hosts-edit" || s.workspacePaneIntent.projectID != projectID {
+				if !s.workspacePaneMode || s.workspacePaneStep != "context-config" || s.workspacePaneIntent.projectID != projectID {
 					t.Fatalf("wrong project config: %+v", s.workspacePaneIntent)
 				}
 			case "tab":
@@ -300,5 +300,19 @@ func TestWorkspaceAreaCreateProjectFromSessionFocus(t *testing.T) {
 	s.handleWorkspaceAreaConfig([]byte("\r"))
 	if !s.workspacePaneMode || s.workspacePaneStep != "project-create" {
 		t.Fatal("project action failed")
+	}
+}
+
+func TestWorkspaceProjectCopyShortcut(t *testing.T) {
+	s, _, _, _ := workspacePaneTestState(t)
+	s.workspaceProjectFocus = true
+	if handled, _ := s.handleWorkspaceProjectInput([]byte("v")); handled {
+		t.Fatal("Project swallowed copy shortcut")
+	}
+	if action := s.handleInput([]byte("v")); action != "copy-mode" {
+		t.Fatalf("copy action = %q", action)
+	}
+	if !s.helpActionAvailable("pty_copy") {
+		t.Fatal("Project copy help is not highlighted")
 	}
 }

@@ -233,6 +233,46 @@ func (m *PaneOutputManager) ReconnectVisible(ctx context.Context, selection Term
 	return nil
 }
 
+// RestoreHost rebuilds desired subscriptions after the observer bridge has
+// been replaced. OutputPool deliberately retains desired membership across a
+// host disconnect, but the workspace adapter must attach fresh readers for
+// those members when the host becomes live again.
+func (m *PaneOutputManager) RestoreHost(ctx context.Context, clientKey, instanceID string, selections []TerminalSelection) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	byKey := make(map[OutputKey]TerminalSelection, len(selections))
+	for _, selection := range selections {
+		if key := selection.key(); key.ClientKey == clientKey && key.InstanceID == instanceID {
+			byKey[key] = selection
+		}
+	}
+	for _, key := range m.pool.DesiredForHost(clientKey, instanceID) {
+		selection, ok := byKey[key]
+		if !ok {
+			continue
+		}
+		revision := OutputRevision{RuntimeGeneration: selection.RuntimeGeneration}
+		activation, err := m.pool.RestoreDesired(ctx, key, revision, func(openCtx context.Context, key OutputKey, revision OutputRevision, _ uint64) (OutputResource, error) {
+			return m.open(openCtx, selection, key, revision)
+		})
+		if err != nil {
+			continue
+		}
+		m.mu.Lock()
+		previous, had := m.leases[key]
+		m.leases[key] = activation
+		if !had || previous.Lease != activation.Lease {
+			delete(m.finals, key)
+			if cancel := m.watchers[key]; cancel != nil {
+				cancel()
+			}
+			m.watchers[key] = m.watch(key, activation.Lease)
+		}
+		m.mu.Unlock()
+		m.markDirty(key)
+	}
+}
+
 func (m *PaneOutputManager) pruneEvicted() {
 	status := m.pool.Status()
 	desired := make(map[OutputKey]bool, len(status.Desired))

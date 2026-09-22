@@ -4,6 +4,9 @@ For developers working on Duckway itself, adding new services, debugging the pro
 
 For installation, configuration, and daily operations, see [user-guide.md](user-guide.md).
 
+For agent task scope, review timing, verification, and handoffs, see
+[agent-workflow.md](agent-workflow.md).
+
 ## Contents
 
 - [Architecture](#architecture)
@@ -17,6 +20,20 @@ For installation, configuration, and daily operations, see [user-guide.md](user-
 - [Adding a new service](#adding-a-new-service)
 - [Testing](#testing)
 - [Build and release](#build-and-release)
+- [Ducklord UI route contracts](#ducklord-ui-route-contracts)
+
+## Ducklord UI route contracts
+
+Every new Ducklord UI route must be added to the route map in
+[pane-routing.md](pane-routing.md), including its entry key, exit behavior,
+scope, and stable `route.*` identifier. Update the executable
+`TestPaneRouteContract` matrix at the same time so the test invokes the real
+route handler and checks the documented transitions. Add or update the
+container TUI E2E when the route crosses the terminal, modal, editor, PTY, or
+persistent-storage boundary; keep its state isolated per run so concurrent or
+repeated runs cannot share counters, files, or sessions. The routing document,
+contract test, and container E2E are one change surface and should be reviewed
+together.
 
 ---
 

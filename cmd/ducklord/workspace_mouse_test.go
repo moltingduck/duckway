@@ -34,6 +34,34 @@ func TestWorkspaceMousePaneRequestsOwnerGatedFocus(t *testing.T) {
 	}
 }
 
+func TestWorkspaceMouseSelectsNotesLeafBody(t *testing.T) {
+	state, projectID, _, _ := workspacePaneTestState(t)
+	noteID, err := state.activity().ProjectLayout.PlaceNote(projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = nav.SelectProject(projectID); err != nil {
+		t.Fatal(err)
+	}
+	if err = nav.SelectPane(projectID, noteID); err != nil {
+		t.Fatal(err)
+	}
+	geometry := ducklord.CalculateWorkspaceGeometry(120, 40, 4)
+	leaf := ducklord.WorkspaceVisibleLeafRects(&state.activity().ProjectLayout, nav, geometry)
+	if len(leaf) == 0 || leaf[len(leaf)-1].PaneID != noteID {
+		t.Fatalf("notes leaf missing: %+v", leaf)
+	}
+	r := leaf[len(leaf)-1].Rect
+	handled, changed := state.handleWorkspaceMouse(workspaceMouse(0, r.X+1, r.Y+1, false))
+	if !handled || !changed || nav.CurrentPaneID() != noteID {
+		t.Fatalf("notes click did not select: handled=%v changed=%v pane=%s", handled, changed, nav.CurrentPaneID())
+	}
+}
+
 func TestWorkspaceMouseDragPlacesExistingSessionWithoutYield(t *testing.T) {
 	state, projectID, a, b := workspacePaneTestState(t)
 	nav, _ := state.workspaceNavigation()
@@ -65,6 +93,75 @@ func TestWorkspaceMouseDragPlacesExistingSessionWithoutYield(t *testing.T) {
 	}
 	if state.workspacePaneCandidate.Client != "" || state.workspaceDragSession.Client != "" {
 		t.Fatal("drag candidate survived modal completion")
+	}
+}
+
+func TestWorkspaceMouseDragReordersProjectsAndPersists(t *testing.T) {
+	state, firstProject, _, _ := workspacePaneTestState(t)
+	secondProject, err := state.activity().ProjectLayout.AddProject("Second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(firstProject); err != nil {
+		t.Fatal(err)
+	}
+	width, height := terminalSize()
+	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	// Work is row 1 and Second is row 2 after the Default Project title row.
+	state.handleWorkspaceMouse(workspaceMouse(0, geometry.Projects.X+1, geometry.Projects.Y+2, false))
+	state.handleWorkspaceMouse(workspaceMouse(0, geometry.Projects.X+1, geometry.Projects.Y+3, true))
+	projects := state.activity().ProjectLayout.Projects
+	if projects[1].ID != secondProject || projects[2].ID != firstProject {
+		t.Fatalf("project drag order = %q, %q; want second then first", projects[1].ID, projects[2].ID)
+	}
+	loaded, err := state.activityStore.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ProjectLayout.Projects[1].ID != secondProject || loaded.ProjectLayout.Projects[2].ID != firstProject {
+		t.Fatalf("persisted project drag order = %q, %q", loaded.ProjectLayout.Projects[1].ID, loaded.ProjectLayout.Projects[2].ID)
+	}
+}
+
+func TestWorkspaceMouseDragReordersTabs(t *testing.T) {
+	state, projectID, a, b := workspacePaneTestState(t)
+	identity, ok := ducklord.IdentityFromSession(b)
+	if !ok {
+		t.Fatal("invalid test session identity")
+	}
+	if _, err := state.activity().ProjectLayout.Place(projectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatal(err)
+	}
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(projectID); err != nil {
+		t.Fatal(err)
+	}
+	width, height := terminalSize()
+	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	project := state.activity().ProjectLayout.Project(projectID)
+	if project == nil || len(project.Tabs) != 2 {
+		t.Fatal("expected two tabs")
+	}
+	left := geometry.Terminal.X + modalCellWidth(" "+project.Name+"  ")
+	firstWidth := modalCellWidth(ducklord.WorkspaceTabLabel(project.Tabs[0], 0, true))
+	secondX := left + firstWidth + modalCellWidth(ducklord.WorkspaceTabLabel(project.Tabs[1], 1, false))/2
+	state.handleWorkspaceMouse(workspaceMouse(0, left+firstWidth/2, geometry.Terminal.Y, false))
+	state.handleWorkspaceMouse(workspaceMouse(0, secondX, geometry.Terminal.Y, true))
+	project = state.activity().ProjectLayout.Project(projectID)
+	if project.Tabs[0].ID == project.Tabs[1].ID || project.Tabs[0].Root == nil || project.Tabs[1].Root == nil {
+		t.Fatal("tab drag produced invalid tab order")
+	}
+	// The first tab contains A and the second contains B before the drag.
+	aIdentity, ok := ducklord.IdentityFromSession(a)
+	if !ok || paneIDForSession(project.Tabs[0].Root, identity) == "" || paneIDForSession(project.Tabs[1].Root, aIdentity) == "" {
+		t.Fatalf("tab drag did not move B after A: %+v", project.Tabs)
 	}
 }
 

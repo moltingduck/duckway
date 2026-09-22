@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1188,6 +1189,43 @@ func (s *Server) routeSessionDestroy(request protocol.Request, role protocol.Pee
 	return protocol.Response{ID: request.ID, Result: result}
 }
 
+func (s *Server) routeSessionRename(request protocol.Request, principal string) protocol.Response {
+	var body protocol.SessionRename
+	if request.InstanceID != string(s.instanceID) || request.OwnershipEpoch == nil || request.RuntimeGeneration == nil || decodeStrict(request.Body, &body) != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: "session identity, fences, and rename body are required"}}
+	}
+	var err error
+	if body.Handle, err = model.ValidateHandle(body.Handle); err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}}
+	}
+	sessionID, err := model.ParseSessionID(request.SessionID)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInvalidArgument, Message: err.Error()}}
+	}
+	operation := s.sessionOperation(sessionID)
+	operation.Lock()
+	defer operation.Unlock()
+	outcome, _, err := s.service.RenameSession(context.Background(), "terminal:"+principal, request.ID, sessionID, body.Handle, *request.OwnershipEpoch, *request.RuntimeGeneration)
+	if err != nil {
+		code := protocol.ErrInternal
+		if errors.Is(err, store.ErrIdempotencyConflict) {
+			code = protocol.ErrIdempotencyConflict
+		} else if errors.Is(err, store.ErrNotFound) {
+			code = protocol.ErrNotFound
+		}
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: code, Message: err.Error(), Retryable: code == protocol.ErrInternal}}
+	}
+	if outcome.Error != nil {
+		return protocol.Response{ID: request.ID, Error: outcome.Error}
+	}
+	session, err := s.state.GetSession(context.Background(), sessionID)
+	if err != nil {
+		return protocol.Response{ID: request.ID, Error: &protocol.Error{Code: protocol.ErrInternal, Message: "renamed session could not be read", Retryable: true}}
+	}
+	result, _ := json.Marshal(summaryFor(session))
+	return protocol.Response{ID: request.ID, Result: result}
+}
+
 func (s *Server) routeSessionYield(request protocol.Request, role protocol.PeerRole, principal string) protocol.Response {
 	var body protocol.SessionYield
 	if request.InstanceID != string(s.instanceID) || request.OwnershipEpoch == nil || request.RuntimeGeneration == nil || decodeStrict(request.Body, &body) != nil {
@@ -1478,6 +1516,7 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 	}
 	wait := make(chan error, 1)
 	go func() { wait <- ptySession.Wait() }()
+	reconnectDelay := 100 * time.Millisecond
 	for {
 		select {
 		case err := <-wait:
@@ -1498,9 +1537,22 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 		}
 		client, err := RegisterSupervisor(spec.SocketPath, spec.SessionID, spec.RuntimeGeneration, ed25519.PrivateKey(decoded))
 		if err != nil {
-			time.Sleep(250 * time.Millisecond)
+			timer := time.NewTimer(reconnectDelay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			}
+			if reconnectDelay < 2*time.Second {
+				reconnectDelay *= 2
+				if reconnectDelay > 2*time.Second {
+					reconnectDelay = 2 * time.Second
+				}
+			}
 			continue
 		}
+		connectionStarted := time.Now()
 		connectionCtx, cancel := context.WithCancel(ctx)
 		forwardDone := make(chan error, 1)
 		controlDone := make(chan error, 1)
@@ -1520,17 +1572,6 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 			select {
 			case <-forwardDone:
 			case <-time.After(2 * time.Second):
-			}
-			if err != nil && ptySession.FailActiveAgentTask("Agent process exited before completing the turn") {
-				for _, event := range ptySession.PendingAgentEvents() {
-					acknowledged, eventErr := client.ReportAgentEvent(event)
-					if eventErr != nil {
-						break
-					}
-					if acknowledged {
-						_ = ptySession.AckAgentEvent(event.TaskID, event.Sequence)
-					}
-				}
 			}
 			cancel()
 			_ = client.Close()
@@ -1566,7 +1607,14 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 				}
 			}
 			return ctx.Err()
-		case <-forwardDone:
+		case err := <-forwardDone:
+			if err != nil {
+				if errors.Is(err, ErrSupervisorOutputLagged) {
+					log.Printf("ducklion: supervisor output forwarding lagged for session %s; reconnecting: %v", spec.SessionID, err)
+				} else if !errors.Is(err, context.Canceled) {
+					log.Printf("ducklion: supervisor output forwarding stopped for session %s; reconnecting: %v", spec.SessionID, err)
+				}
+			}
 			select {
 			case waitErr := <-wait:
 				cancel()
@@ -1614,7 +1662,21 @@ func RunManagedSupervisor(ctx context.Context, specPath string) error {
 			case <-time.After(time.Second):
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		if time.Since(connectionStarted) >= time.Second {
+			reconnectDelay = 100 * time.Millisecond
+		} else if reconnectDelay < 2*time.Second {
+			reconnectDelay *= 2
+			if reconnectDelay > 2*time.Second {
+				reconnectDelay = 2 * time.Second
+			}
+		}
+		timer := time.NewTimer(reconnectDelay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		}
 	}
 }
 

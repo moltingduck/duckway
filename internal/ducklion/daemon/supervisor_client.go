@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -46,6 +47,17 @@ type SupervisorActivityClient struct {
 
 var errForegroundTransport = errors.New("foreground transport failed")
 var errUnsupportedActionNeededActivity = errors.New("action-needed activity capability was not negotiated")
+
+var ErrSupervisorOutputLagged = errors.New("supervisor output subscriber lagged behind")
+
+const (
+	// OutputHub frames are bounded before they reach a subscriber. Keep the
+	// supervisor queue bounded by bytes as well as frames: a frame-count-only
+	// queue made memory scale with the largest permitted frame size.
+	supervisorOutputQueueBytes = 4 << 20
+	supervisorOutputFrameBytes = 64 << 10
+	supervisorOutputQueue      = (supervisorOutputQueueBytes + supervisorOutputFrameBytes - 1) / supervisorOutputFrameBytes
+)
 
 func RegisterSupervisor(socketPath string, sessionID model.SessionID, generation uint64, privateKey ed25519.PrivateKey) (*SupervisorClient, error) {
 	return registerSupervisor(socketPath, sessionID, generation, privateKey, "")
@@ -433,6 +445,11 @@ func (c *SupervisorClient) ReportForeground(agent string) error {
 func (c *SupervisorClient) ReportAgentEvent(event protocol.SupervisorAgentEvent) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.conn == nil {
+		return false, fmt.Errorf("supervisor connection is closed")
+	}
+	_ = c.conn.SetDeadline(time.Now().Add(10 * time.Second))
+	defer func() { _ = c.conn.SetDeadline(time.Time{}) }()
 	body, _ := json.Marshal(event)
 	c.nextID++
 	requestID := fmt.Sprintf("agent-event-%d", c.nextID)
@@ -661,31 +678,72 @@ func (c *SupervisorClient) publishOutput(data []byte, initialGap bool) error {
 }
 
 func (c *SupervisorClient) ForwardOutput(ctx context.Context, output *duckruntime.OutputHub) error {
-	replay, stream, cancel, err := output.Subscribe(0, 64)
-	if err != nil {
-		return err
-	}
-	defer cancel()
-	if replay.Gap {
-		return fmt.Errorf("supervisor output replay begins with a gap")
-	}
-	if err := c.PublishOutput(replay.Data); err != nil {
-		return err
-	}
+	nextOffset := c.PublishedOffset()
 	for {
+		replay, stream, cancel, err := output.Subscribe(nextOffset, supervisorOutputQueue)
+		if err != nil {
+			return err
+		}
+		if replay.Gap {
+			// A fresh daemon hub cannot accept the live stream at offset zero
+			// after the bounded output hub has evicted its prefix. Seed it with
+			// the retained suffix, then subscribe at the suffix end.
+			if c.conn == nil {
+				cancel()
+				return fmt.Errorf("%w: supervisor output replay begins with a gap", ErrSupervisorOutputLagged)
+			}
+			log.Printf("ducklion: supervisor output snapshot resynchronization: reason=replay_gap")
+			if err := c.PublishSnapshot(replay); err != nil {
+				cancel()
+				return err
+			}
+			nextOffset = replay.Offset + uint64(len(replay.Data))
+			cancel()
+			continue
+		}
+		if err := c.PublishOutput(replay.Data); err != nil {
+			cancel()
+			return err
+		}
+		nextOffset = replay.Offset + uint64(len(replay.Data))
 		select {
 		case <-ctx.Done():
+			cancel()
 			return ctx.Err()
 		case frame, ok := <-stream:
 			if !ok {
+				_, end := output.Bounds()
+				if end > nextOffset {
+					// The hub closes a subscriber when its bounded queue overflows.
+					// Re-seed the daemon from the retained suffix and resume live
+					// frames instead of reconnecting forever at offset zero.
+					snapshot := output.Snapshot()
+					cancel()
+					log.Printf("ducklion: supervisor output snapshot resynchronization: reason=subscriber_overflow")
+					if err := c.PublishSnapshot(snapshot); err != nil {
+						return err
+					}
+					nextOffset = snapshot.Offset + uint64(len(snapshot.Data))
+					continue
+				}
+				cancel()
 				return nil
 			}
 			if frame.Gap {
-				return fmt.Errorf("supervisor output forwarding lost data")
+				cancel()
+				snapshot := output.Snapshot()
+				log.Printf("ducklion: supervisor output snapshot resynchronization: reason=stream_gap")
+				if err := c.PublishSnapshot(snapshot); err != nil {
+					return err
+				}
+				nextOffset = snapshot.Offset + uint64(len(snapshot.Data))
+				continue
 			}
 			if err := c.PublishOutput(frame.Data); err != nil {
+				cancel()
 				return err
 			}
+			nextOffset = frame.Offset + uint64(len(frame.Data))
 		}
 	}
 }

@@ -22,6 +22,28 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
+// e2eContainerName mirrors the optional fixture prefix used by
+// scripts/ducklord-tui-e2e.sh. Keeping the base names as the default preserves
+// direct invocation of these tests against the regular demo.
+func e2eContainerName(base string) string {
+	prefix := strings.TrimSuffix(os.Getenv("DUCKLORD_E2E_CONTAINER_PREFIX"), "-")
+	if prefix == "" {
+		return base
+	}
+	return prefix + "-" + base
+}
+
+func TestE2EContainerNamePrefix(t *testing.T) {
+	t.Setenv("DUCKLORD_E2E_CONTAINER_PREFIX", "run-123")
+	if got := e2eContainerName("ducklion-client-a"); got != "run-123-ducklion-client-a" {
+		t.Fatalf("prefixed container name = %q", got)
+	}
+	t.Setenv("DUCKLORD_E2E_CONTAINER_PREFIX", "")
+	if got := e2eContainerName("ducklion-client-a"); got != "ducklion-client-a" {
+		t.Fatalf("default container name = %q", got)
+	}
+}
+
 // TestDucklordCreateTUIContainerE2E retains the old TUI wizard regression as
 // an explicit legacy-only test; the production Project TUI has separate E2E.
 func TestDucklordCreateTUIContainerE2E(t *testing.T) {
@@ -282,12 +304,12 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	// Drop the real Ducklion daemon while alpha and bash are the two desired
 	// framebuffer subscriptions. Selection must remain responsive and the host
 	// restore must reconnect both views after the daemon returns.
-	if out, err := exec.Command(runtime, "exec", "-u", "duck", "ducklion-client-a", "sh", "-lc", `kill "$(cat $HOME/.duckway/ducklion-daemon.pid)"`).CombinedOutput(); err != nil {
+	if out, err := exec.Command(runtime, "exec", "-u", "duck", e2eContainerName("ducklion-client-a"), "sh", "-lc", `kill "$(cat $HOME/.duckway/ducklion-daemon.pid)"`).CombinedOutput(); err != nil {
 		t.Fatalf("stop Ducklion during TUI reconnect: %v: %s", err, out)
 	}
 	capture.waitCurrent(t, "RECONNECTING", 10*time.Second)
 	writePTY(t, terminal, "j") // selection remains local while the host is down
-	if out, err := exec.Command(runtime, "exec", "-d", "-u", "duck", "ducklion-client-a", "sh", "-lc", `nohup ducklion daemon >$HOME/.duckway/ducklion-daemon.log 2>&1 </dev/null & echo $! >$HOME/.duckway/ducklion-daemon.pid`).CombinedOutput(); err != nil {
+	if out, err := exec.Command(runtime, "exec", "-d", "-u", "duck", e2eContainerName("ducklion-client-a"), "sh", "-lc", `nohup ducklion daemon >$HOME/.duckway/ducklion-daemon.log 2>&1 </dev/null & echo $! >$HOME/.duckway/ducklion-daemon.pid`).CombinedOutput(); err != nil {
 		t.Fatalf("restart Ducklion during TUI reconnect: %v: %s", err, out)
 	}
 	capture.waitCurrent(t, "DUCKLORD_POOLED_RED", 20*time.Second)
@@ -369,8 +391,9 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Search sessions", 2*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "session focus", 10*time.Second)
+	ctrlStartHelp := capture.position()
 	writePTY(t, terminal, "\x1d")
-	capture.waitCurrent(t, "? help", 5*time.Second)
+	capture.waitAfter(t, ctrlStartHelp, "? help", 5*time.Second)
 
 	start = capture.position()
 	writePTY(t, terminal, "/"+handle+"\r")
@@ -455,7 +478,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	// Add-host uses the same centered modal and persists the selected SSH target.
 	// Make client-c's command entrypoint slow so this real PTY path proves that
 	// the modal remains responsive and a canceled, late probe cannot commit.
-	if out, err := exec.Command(runtime, "exec", "-u", "0", "ducklion-client-c", "sh", "-lc", `mv /usr/local/bin/ducklion /usr/local/bin/ducklion-real && printf '%s\n' '#!/bin/sh' 'if [ -e /tmp/slow-ducklion ]; then sleep 3; fi' 'exec /usr/local/bin/ducklion-real "$@"' >/usr/local/bin/ducklion && chmod 0755 /usr/local/bin/ducklion && touch /tmp/slow-ducklion`).CombinedOutput(); err != nil {
+	if out, err := exec.Command(runtime, "exec", "-u", "0", e2eContainerName("ducklion-client-c"), "sh", "-lc", `mv /usr/local/bin/ducklion /usr/local/bin/ducklion-real && printf '%s\n' '#!/bin/sh' 'if [ -e /tmp/slow-ducklion ]; then sleep 3; fi' 'exec /usr/local/bin/ducklion-real "$@"' >/usr/local/bin/ducklion && chmod 0755 /usr/local/bin/ducklion && touch /tmp/slow-ducklion`).CombinedOutput(); err != nil {
 		t.Fatalf("install slow client-c wrapper: %v: %s", err, out)
 	}
 	start = capture.position()
@@ -474,7 +497,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	if out, err := exec.Command(runtime, "exec", controller, "ducklord", "clients", "--config", "/root/.ducklord/config.yaml").CombinedOutput(); err != nil || bytes.Contains(out, []byte("client-c")) {
 		t.Fatalf("canceled late add-host changed config: err=%v output=%s", err, out)
 	}
-	if out, err := exec.Command(runtime, "exec", "-u", "0", "ducklion-client-c", "rm", "-f", "/tmp/slow-ducklion").CombinedOutput(); err != nil {
+	if out, err := exec.Command(runtime, "exec", "-u", "0", e2eContainerName("ducklion-client-c"), "rm", "-f", "/tmp/slow-ducklion").CombinedOutput(); err != nil {
 		t.Fatalf("disable slow client-c wrapper: %v: %s", err, out)
 	}
 	start = capture.position()
@@ -598,8 +621,7 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 		capture.waitCurrent(t, heading, 20*time.Second)
 	}
 	capture.waitCurrent(t, "◇ client-a/"+handle, 10*time.Second)
-	// Digits are deliberately unbound list keys; letters could trigger a TUI
-	// shortcut and make this a false input-isolation test.
+	// Preview input must not reach either persisted session before focus.
 	marker := fmt.Sprintf("%d", time.Now().UnixNano())
 	writePTY(t, terminal, marker)
 	assertAbsent := func() {
@@ -614,16 +636,32 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 	}
 	time.Sleep(200 * time.Millisecond)
 	assertAbsent()
+	// Establish the exact focused-terminal origin before exercising the escape
+	// and Project Add Session route.
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "▣ client-a/"+handle, 10*time.Second)
+	openAddSessionPane := func(t *testing.T) {
+		t.Helper()
+		// Ctrl-] returns to the list that owned the focused session. This
+		// session was entered from the Session list, so move to Project before
+		// using the Project-only Add Session shortcut.
+		projectStart := capture.position()
+		writePTY(t, terminal, "b")
+		capture.waitAfter(t, projectStart, "Project pane:", 10*time.Second)
+		pStart := capture.position()
+		writePTY(t, terminal, "p")
+		capture.waitAfter(t, pStart, "Add Session pane", 10*time.Second)
+	}
+	marker = fmt.Sprintf("%d", time.Now().UnixNano())
 	writePTY(t, terminal, "printf '"+marker+"'\r")
 	waitE2E(t, 10*time.Second, func() bool {
 		out, readErr := exec.Command(runtime, "exec", controller, "ducklord", "--name", "workspace-e2e-cli", "read", "client-a", handle,
 			"--lines", "50", "--config", "/root/.ducklord/config.yaml").CombinedOutput()
 		return readErr == nil && bytes.Contains(out, []byte(marker))
 	}, func() string { return "focused shell did not receive PTY input" })
+	ctrlStartShell := capture.position()
 	writePTY(t, terminal, "\x1d")
-	capture.waitCurrent(t, "◇ client-a/"+handle, 10*time.Second)
+	capture.waitAfter(t, ctrlStartShell, "◇ client-a/"+handle, 10*time.Second)
 
 	t.Run("create missing directory and save remote bookmark", func(t *testing.T) {
 		// Keep this inside the real workspace test so the normal E2E script
@@ -650,9 +688,10 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 			// rmdir cannot delete unexpected files, even on a failed test.
 			_, _ = run("ssh", "client-a", "rmdir", remotePath, remoteRoot+"/nested", remoteRoot)
 		})
-		writePTY(t, terminal, "bp")
-		capture.waitCurrent(t, "Add Session pane", 10*time.Second)
-		writePTY(t, terminal, "\r\r") // new tab, new shell
+		openAddSessionPane(t)
+		writePTY(t, terminal, "\r") // new tab
+		capture.waitCurrent(t, "New shell session", 10*time.Second)
+		writePTY(t, terminal, "\r") // new shell
 		capture.waitCurrent(t, "host ›", 10*time.Second)
 		writePTY(t, terminal, "\r")
 		capture.waitCurrent(t, "choose a directory", 15*time.Second)
@@ -733,13 +772,10 @@ func TestDucklordWorkspacePreviewContainerE2E(t *testing.T) {
 				_, _ = run(binary, "--name", "workspace-e2e-cli", "destroy", "client-a", newHandle,
 					"--config", "/root/.ducklord/config.yaml")
 			})
-			if strings.Contains(capture.currentText(), "Session list pane:") {
-				writePTY(t, terminal, "b")
-				capture.waitCurrent(t, "Project pane:", 10*time.Second)
-			}
-			writePTY(t, terminal, "p")
-			capture.waitCurrent(t, "Add Session pane", 10*time.Second)
-			writePTY(t, terminal, "\r\r")
+			openAddSessionPane(t)
+			writePTY(t, terminal, "\r")
+			capture.waitCurrent(t, "New shell session", 10*time.Second)
+			writePTY(t, terminal, "\r")
 			capture.waitCurrent(t, "host ›", 10*time.Second)
 			writePTY(t, terminal, "client-a\r")
 			capture.waitCurrent(t, "choose a directory", 15*time.Second)
@@ -860,6 +896,40 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 		_ = command.Wait()
 	})
 	capture := newSizedTUICapture(terminal, 24, 120)
+	leaveTerminalToSessionList := func(t *testing.T) {
+		t.Helper()
+		// Flood recovery can leave PTY frames queued after the marker is seen.
+		// Retry the documented escape while the TUI drains those frames, then
+		// require the list header before routing onward.
+		for attempt := 0; attempt < 20 && !strings.Contains(capture.currentText(), "Session list pane:"); attempt++ {
+			writePTY(t, terminal, "\x1d")
+			time.Sleep(250 * time.Millisecond)
+			// Returning from a pane opened through Project focus lands on the
+			// Project pane; move once more to the documented session list.
+			if strings.Contains(capture.currentText(), "Project pane:") {
+				writePTY(t, terminal, "b")
+				time.Sleep(250 * time.Millisecond)
+			}
+		}
+		capture.waitCurrent(t, "Session list pane:", 10*time.Second)
+	}
+	openAddSessionPane := func(t *testing.T) {
+		t.Helper()
+		screen := capture.currentText()
+		if strings.Contains(screen, "Session focus:") {
+			writePTY(t, terminal, "\x1d")
+			capture.waitCurrent(t, "Session list pane:", 10*time.Second)
+			screen = capture.currentText()
+		}
+		if strings.Contains(screen, "Session list pane:") {
+			writePTY(t, terminal, "b")
+			capture.waitCurrent(t, "Project pane:", 10*time.Second)
+		}
+		if strings.Contains(capture.currentText(), "Project pane:") {
+			writePTY(t, terminal, "p")
+		}
+		capture.waitCurrent(t, "Add Session pane", 10*time.Second)
+	}
 	capture.waitCurrent(t, sessions[0].Handle, 20*time.Second)
 	writePTY(t, terminal, "/"+sessions[0].Handle+"\r")
 	capture.waitCurrent(t, "Active · Enter again to focus", 20*time.Second)
@@ -891,8 +961,52 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 	}
 	writePTY(t, terminal, "\x1b")
 	capture.waitCurrent(t, copyMarker, 10*time.Second)
-	writePTY(t, terminal, "bp")
-	capture.waitCurrent(t, "Add Session pane", 10*time.Second)
+
+	// Saturate output and enter native copy with Project focus. The timeout
+	// bounds the producer even if this test aborts before sending Ctrl+C.
+	assertPTYAvailable := func(stage string) {
+		screen := capture.currentText()
+		if strings.Contains(screen, "PTY output unavailable") || strings.Contains(screen, "PTY output is unavailable") {
+			t.Fatalf("%s incorrectly reported PTY output unavailable: %s", stage, safeTerminalDiagnostic(screen))
+		}
+	}
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Session focus:", 10*time.Second)
+	writePTY(t, terminal, "timeout 30s yes DW_FLOOD\r")
+	capture.waitCurrent(t, "DW_FLOOD", 5*time.Second)
+	waitE2E(t, 5*time.Second, func() bool {
+		return strings.Count(capture.currentText(), "DW_FLOOD") >= 5
+	}, func() string { return "flood output did not reach viewport" })
+	assertPTYAvailable("flood output")
+	writePTY(t, terminal, "\x1d")
+	time.Sleep(300 * time.Millisecond)
+	writePTY(t, terminal, "b")
+	capture.waitCurrent(t, "Project pane:", 5*time.Second)
+	writePTY(t, terminal, "v")
+	capture.waitCurrent(t, "COPY MODE", 5*time.Second)
+	floodFrozen := capture.currentText()
+	assertPTYAvailable("flood copy mode")
+	time.Sleep(time.Second)
+	if capture.currentText() != floodFrozen {
+		t.Fatal("high output disturbed Project copy mode")
+	}
+	writePTY(t, terminal, "v")
+	capture.waitCurrent(t, "Project pane:", 5*time.Second)
+	// Re-focus through the TUI, arm a stale pane prefix, then verify Ctrl-C is
+	// delivered by the focused pane itself rather than an external CLI send.
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Session focus:", 10*time.Second)
+	writePTY(t, terminal, "\x02")
+	writePTY(t, terminal, "\x03")
+	time.Sleep(500 * time.Millisecond)
+	writePTY(t, terminal, "printf 'FLOOD_%s\\n' RECOVERED\r")
+	// The recovery marker can be scrolled out immediately by buffered flood
+	// frames; observe it in the TUI stream while the terminal remains focused.
+	capture.wait(t, "FLOOD_RECOVERED", 10*time.Second)
+	assertPTYAvailable("flood recovery")
+	// Leave the terminal explicitly before continuing with Project navigation.
+	leaveTerminalToSessionList(t)
+	openAddSessionPane(t)
 	writePTY(t, terminal, "j\rj\r"+sessions[1].Handle)
 	capture.waitCurrent(t, "find › "+sessions[1].Handle, 10*time.Second)
 	writePTY(t, terminal, "\r")
@@ -1071,16 +1185,15 @@ func TestDucklordWorkspaceTwoLivePanesContainerE2E(t *testing.T) {
 		_, _ = exec.Command(runtime, "exec", controller, binary, "--name", "workspace-two-cli", "destroy", "client-a", newHandle,
 			"--config", "/root/.ducklord/config.yaml").CombinedOutput()
 	})
-	writePTY(t, terminal, "b")
-	waitE2E(t, 10*time.Second, func() bool { return strings.Contains(capture.currentText(), "Project pane:") }, func() string {
-		return "Project focus header: " + safeTerminalDiagnostic(strings.Join(strings.Split(capture.currentText(), "\n")[:3], "\n"))
-	})
-	writePTY(t, terminal, "p")
-	capture.waitCurrent(t, "Add Session pane", 10*time.Second)
+	openAddSessionPane(t)
 	writePTY(t, terminal, "\r\r") // new tab, new shell
-	capture.waitCurrent(t, "host ›", 10*time.Second)
+	// Wait for the host chooser and its selected entry before submitting. The
+	// prompt marker can be present in an intermediate frame while the chooser
+	// is still being rendered.
+	capture.waitCurrent(t, "new session: choose host number/name", 10*time.Second)
+	capture.waitCurrent(t, "client-a", 10*time.Second)
 	writePTY(t, terminal, "\r")
-	capture.waitCurrent(t, "choose a directory", 15*time.Second)
+	capture.waitCurrent(t, "new shell session: host=client-a  choose directory", 15*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "handle (default", 10*time.Second)
 	writePTY(t, terminal, newHandle+"\r")
@@ -1227,6 +1340,21 @@ func TestDucklordWorkspaceDefaultNewShellSplitContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "host ›", 10*time.Second)
 	writePTY(t, terminal, "\r")
+	// Host selection starts asynchronous bookmark discovery.  Wait until the
+	// host prompt has been replaced before choosing the default home directory.
+	waitE2E(t, 15*time.Second, func() bool {
+		return !strings.Contains(capture.currentText(), "host ›")
+	}, func() string {
+		screen := capture.currentText()
+		status := "no visible creation error"
+		for _, marker := range []string{"error", "failed", "reconnecting", "unavailable", "loading bookmarks"} {
+			if strings.Contains(strings.ToLower(screen), marker) {
+				status = "visible creation status contains " + strconv.Quote(marker)
+				break
+			}
+		}
+		return fmt.Sprintf("host selector did not advance (%s); screen=%q", status, safeTerminalDiagnostic(screen))
+	})
 	capture.waitCurrent(t, "choose a directory", 15*time.Second)
 	writePTY(t, terminal, "\r") // selected host's home
 	capture.waitCurrent(t, "handle (default", 10*time.Second)
@@ -1283,11 +1411,309 @@ func TestDucklordWorkspaceDefaultNewShellSplitContainerE2E(t *testing.T) {
 	if !foundAdd {
 		t.Fatal("tab add button was not visible")
 	}
-	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<0;%d;%dm", x+1, y, x+1, y))
-	capture.waitCurrent(t, "New shell session", 10*time.Second)
+	start := capture.position()
+	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dM", x+1, y))
+	capture.waitAfter(t, start, "New shell session", 10*time.Second)
+	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dm", x+1, y))
+	firstEnter := capture.position()
 	writePTY(t, terminal, "\r")
-	capture.waitCurrent(t, "host ›", 10*time.Second)
+	capture.waitAfter(t, firstEnter, "host ›", 15*time.Second)
+	secondEnter := capture.position()
+	writePTY(t, terminal, "\r")
+	capture.waitAfter(t, secondEnter, "choose a directory", 15*time.Second)
 	writePTY(t, terminal, "\x1b") // cancel before creating another remote session
+}
+
+// runFocusedPrefixQuickShellContainerE2E verifies that a prefix route clones
+// the focused live Session into its owning tab area, retaining host and CWD.
+func runFocusedPrefixQuickShellContainerE2E(t *testing.T, route string, placement ducklord.PanePlacement) {
+	if os.Getenv("DUCKLORD_TUI_CONTAINER_E2E") != "1" {
+		t.Skip("run through scripts/ducklord-tui-e2e.sh")
+	}
+	runtime, controller := requiredE2EEnv(t, "DUCKLORD_E2E_RUNTIME"), requiredE2EEnv(t, "DUCKLORD_E2E_CONTROLLER")
+	binary := os.Getenv("DUCKLORD_E2E_BINARY")
+	if binary == "" {
+		binary = "ducklord"
+	}
+	owner := fmt.Sprintf("quick-%s-%d", placement, time.Now().UnixNano())
+	backgroundHandle := fmt.Sprintf("quick-background-%x", time.Now().UnixNano()&0xffffff)
+	targetHandle := fmt.Sprintf("quick-origin-%x", time.Now().UnixNano()&0xffffff)
+	newHandle := fmt.Sprintf("quick-created-%x", time.Now().UnixNano()&0xffffff)
+	cwd := fmt.Sprintf("/tmp/ducklord-quick-shell-%d", time.Now().UnixNano())
+	backgroundCWD := cwd + "-background"
+	createdHandle := ""
+	for _, handle := range []string{backgroundHandle, targetHandle} {
+		h := handle
+		t.Cleanup(func() {
+			_, _ = exec.Command(runtime, "exec", controller, binary, "--name", owner, "destroy", "client-a", h, "--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		})
+	}
+	t.Cleanup(func() {
+		if createdHandle != "" {
+			_, _ = exec.Command(runtime, "exec", controller, binary, "--name", owner, "destroy", "client-a", createdHandle, "--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		}
+	})
+	if out, err := exec.Command(runtime, "exec", e2eContainerName("ducklion-client-a"), "mkdir", "-p", cwd, backgroundCWD).CombinedOutput(); err != nil {
+		t.Fatalf("prepare unique cwd: %v: %s", err, out)
+	}
+	t.Cleanup(func() {
+		_, _ = exec.Command(runtime, "exec", e2eContainerName("ducklion-client-a"), "rm", "-rf", cwd, backgroundCWD).CombinedOutput()
+	})
+	if out, err := exec.Command(runtime, "exec", controller, binary, "--name", owner, "start", "client-a", "--name", backgroundHandle, "--kind", "shell", "--cwd", backgroundCWD, "--config", "/root/.ducklord/config.yaml", "--", "bash").CombinedOutput(); err != nil {
+		t.Fatalf("start background shell: %v: %s", err, out)
+	}
+	if out, err := exec.Command(runtime, "exec", controller, binary, "--name", owner, "start", "client-a", "--name", targetHandle, "--kind", "shell", "--cwd", cwd, "--config", "/root/.ducklord/config.yaml", "--", "bash").CombinedOutput(); err != nil {
+		t.Fatalf("start origin shell: %v: %s", err, out)
+	}
+	var target protocol.SessionSummary
+	waitE2E(t, 10*time.Second, func() bool {
+		for _, s := range listContainerSessions(t, runtime, controller, "client-a") {
+			if s.Handle == targetHandle {
+				target = s
+				return true
+			}
+		}
+		return false
+	}, func() string { return "origin shell was not listed" })
+	remote, found := findContainerSession(t, runtime, controller, "client-a", target.SessionID)
+	if !found {
+		t.Fatal("origin shell has no remote identity")
+	}
+	identity, ok := ducklord.IdentityFromSession(remote)
+	if !ok {
+		t.Fatal("origin shell identity unavailable")
+	}
+	backgroundSummary := protocol.SessionSummary{}
+	waitE2E(t, 10*time.Second, func() bool {
+		for _, s := range listContainerSessions(t, runtime, controller, "client-a") {
+			if s.Handle == backgroundHandle {
+				backgroundSummary = s
+				return true
+			}
+		}
+		return false
+	}, func() string { return "background shell was not listed" })
+	backgroundRemote, found := findContainerSession(t, runtime, controller, "client-a", backgroundSummary.SessionID)
+	if !found {
+		t.Fatal("background shell has no remote identity")
+	}
+	backgroundIdentity, ok := ducklord.IdentityFromSession(backgroundRemote)
+	if !ok {
+		t.Fatal("background shell identity unavailable")
+	}
+	state := ducklord.NewActivityState()
+	if err := state.ProjectLayout.Discover(backgroundIdentity); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.ProjectLayout.Place(ducklord.DefaultProjectID, identity, ducklord.PlaceNewTab, ""); err != nil {
+		t.Fatalf("place target in second tab: %v", err)
+	}
+	home := fmt.Sprintf("/tmp/ducklord-quick-home-%d", time.Now().UnixNano())
+	if out, err := exec.Command(runtime, "exec", controller, "mkdir", "-p", home+"/.ducklord").CombinedOutput(); err != nil {
+		t.Fatalf("prepare isolated home: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _, _ = exec.Command(runtime, "exec", controller, "rm", "-rf", home).CombinedOutput() })
+	localState := filepath.Join(t.TempDir(), "state.json")
+	if err := (ducklord.ActivityStateStore{Path: localState}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(runtime, "cp", localState, controller+":"+home+"/.ducklord/state.json").CombinedOutput(); err != nil {
+		t.Fatalf("install isolated layout: %v: %s", err, out)
+	}
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "HOME="+home, "TERM=xterm-256color", binary, "tui", "--name", owner, "--config", "/root/.ducklord/config.yaml")
+	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = terminal.Write([]byte("\x1d\x1bq"))
+		time.Sleep(300 * time.Millisecond)
+		killNamedContainerTUI(runtime, controller, owner, "/root/.ducklord/config.yaml")
+		_ = terminal.Close()
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	})
+	capture := newSizedTUICapture(terminal, 24, 120)
+	capture.waitCurrent(t, targetHandle, 20*time.Second)
+	writePTY(t, terminal, "/"+targetHandle+"\r")
+	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Session focus:", 10*time.Second)
+	originData, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var originPersisted ducklord.ActivityState
+	if err := json.Unmarshal(originData, &originPersisted); err != nil {
+		t.Fatal(err)
+	}
+	originProject := originPersisted.ProjectLayout.Project(ducklord.DefaultProjectID)
+	if originProject == nil {
+		t.Fatal("origin project was not persisted")
+	}
+	originTabCount := len(originProject.Tabs)
+	var countLeaves func(*ducklord.SessionPane) int
+	countLeaves = func(p *ducklord.SessionPane) int {
+		if p == nil {
+			return 0
+		}
+		if p.Session != nil {
+			return 1
+		}
+		return countLeaves(p.First) + countLeaves(p.Second)
+	}
+	originLeaves := 0
+	originTabLeaves := make(map[string]int, len(originProject.Tabs))
+	for _, tab := range originProject.Tabs {
+		leaves := countLeaves(tab.Root)
+		originLeaves += leaves
+		originTabLeaves[tab.ID] = leaves
+	}
+	var paneHasIdentity func(*ducklord.SessionPane, ducklord.SessionIdentity) bool
+	paneHasIdentity = func(p *ducklord.SessionPane, want ducklord.SessionIdentity) bool {
+		if p == nil {
+			return false
+		}
+		if p.Session != nil {
+			return *p.Session == want
+		}
+		return paneHasIdentity(p.First, want) || paneHasIdentity(p.Second, want)
+	}
+	sourceTabID, backgroundTabID := "", ""
+	for _, tab := range originProject.Tabs {
+		if paneHasIdentity(tab.Root, identity) {
+			sourceTabID = tab.ID
+		}
+		if paneHasIdentity(tab.Root, backgroundIdentity) {
+			backgroundTabID = tab.ID
+		}
+	}
+	if sourceTabID == "" || backgroundTabID == "" || sourceTabID == backgroundTabID {
+		t.Fatalf("target and background sessions are not in distinct persisted tabs: target=%q background=%q", sourceTabID, backgroundTabID)
+	}
+	if route == "tt" {
+		// Exercise the real PTY delivery pattern: Ctrl-B, t, and t can arrive
+		// in separate reads after focus/control handoff.
+		writePTY(t, terminal, "\x02")
+		time.Sleep(300 * time.Millisecond)
+		writePTY(t, terminal, "t")
+		time.Sleep(300 * time.Millisecond)
+		writePTY(t, terminal, "t")
+	} else {
+		writePTY(t, terminal, "\x02"+route)
+	}
+	capture.waitCurrent(t, "Session focus:", 5*time.Second)
+	waitE2E(t, 20*time.Second, func() bool {
+		for _, s := range listContainerSessions(t, runtime, controller, "client-a") {
+			if s.Handle != newHandle && s.Handle != targetHandle && s.Kind == model.KindShell && s.CWD == cwd {
+				newHandle = s.Handle
+				createdHandle = s.Handle
+				return true
+			}
+		}
+		return false
+	}, func() string {
+		return "quick shell did not start at origin cwd: " + safeTerminalDiagnostic(capture.currentText())
+	})
+	if strings.Contains(capture.currentText(), "New shell session") || strings.Contains(capture.currentText(), "handle (default") {
+		t.Fatalf("quick route opened creation UI: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
+	// The remote inventory can report the new Session before the local activity
+	// update has persisted its captured placement. Wait for that authoritative
+	// placement completion before exercising automatic PTY focus.
+	waitE2E(t, 20*time.Second, func() bool {
+		data, readErr := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+		if readErr != nil {
+			return false
+		}
+		var persisted ducklord.ActivityState
+		if json.Unmarshal(data, &persisted) != nil {
+			return false
+		}
+		for _, session := range listContainerSessions(t, runtime, controller, "client-a") {
+			if session.Handle == createdHandle {
+				candidateSession, found := findContainerSession(t, runtime, controller, "client-a", session.SessionID)
+				if candidate, valid := ducklord.IdentityFromSession(candidateSession); found && valid {
+					return len(persisted.ProjectLayout.ProjectsFor(candidate)) > 0
+				}
+			}
+		}
+		return false
+	}, func() string { return "created quick-shell placement was not persisted" })
+	// Placement persistence and PTY focus are separate asynchronous handoffs.
+	// Wait for the rendered focus contract after persistence so the sentinel
+	// exercises the created pane's writer rather than racing its attach open.
+	capture.waitCurrent(t, "Session focus:", 5*time.Second)
+	const sentinel = "DUCKLORD_QUICK_SHELL_FOCUS_7f3c"
+	writePTY(t, terminal, "printf '"+sentinel+"\\n'\r")
+	waitE2E(t, 10*time.Second, func() bool {
+		return strings.Contains(capture.currentText(), sentinel)
+	}, func() string {
+		return "created quick-shell PTY did not receive sentinel: " + safeTerminalDiagnostic(capture.currentText())
+	})
+	data, err := exec.Command(runtime, "exec", controller, "cat", home+"/.ducklord/state.json").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted ducklord.ActivityState
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	project := persisted.ProjectLayout.Project(ducklord.DefaultProjectID)
+	if project == nil {
+		t.Fatalf("quick shell removed origin project")
+	}
+	newLeaves := 0
+	seenTabs := make(map[string]bool, len(project.Tabs))
+	newTabLeaves := make(map[string]int, len(project.Tabs))
+	for _, tab := range project.Tabs {
+		leaves := countLeaves(tab.Root)
+		newLeaves += leaves
+		seenTabs[tab.ID] = true
+		newTabLeaves[tab.ID] = leaves
+	}
+	if placement == ducklord.PlaceNewTab && len(project.Tabs) != originTabCount+1 {
+		t.Fatalf("quick shell did not add exactly one new tab: origin tabs=%d persisted project=%+v", originTabCount, project)
+	}
+	if placement != ducklord.PlaceNewTab && (len(project.Tabs) != originTabCount || newLeaves != originLeaves+1 || newTabLeaves[sourceTabID] != originTabLeaves[sourceTabID]+1) {
+		t.Fatalf("quick shell did not add one pane in target tab: tabs %d/%d leaves %d/%d target leaves %d/%d", len(project.Tabs), originTabCount, newLeaves, originLeaves, newTabLeaves[sourceTabID], originTabLeaves[sourceTabID]+1)
+	}
+	for _, tab := range project.Tabs {
+		if tab.Root == nil {
+			t.Fatalf("quick shell created empty tab")
+		}
+	}
+	if len(project.Tabs) == 0 {
+		t.Fatalf("quick shell removed all tabs")
+	}
+	for id, leaves := range originTabLeaves {
+		if !seenTabs[id] {
+			t.Fatalf("quick shell removed original tab %q", id)
+		}
+		if placement == ducklord.PlaceNewTab || id != sourceTabID {
+			if newTabLeaves[id] != leaves {
+				t.Fatalf("quick shell changed untouched tab %q: before=%d after=%d", id, leaves, newTabLeaves[id])
+			}
+		}
+	}
+	if placement == ducklord.PlaceNewTab && len(project.Tabs) != originTabCount+1 {
+		t.Fatalf("quick shell did not add exactly one target tab")
+	}
+	assertContainerShellPWD(t, runtime, controller, binary, owner, "client-a", newHandle, cwd)
+}
+
+func TestDucklordFocusedPrefixQuickShellHorizontalContainerE2E(t *testing.T) {
+	// Quick shell requires the repeated suffix: Ctrl-B --.
+	runFocusedPrefixQuickShellContainerE2E(t, "--", ducklord.PlaceHorizontal)
+}
+
+func TestDucklordFocusedPrefixQuickShellVerticalContainerE2E(t *testing.T) {
+	// Quick shell requires the repeated suffix: Ctrl-B \\ \\.
+	runFocusedPrefixQuickShellContainerE2E(t, "\\\\", ducklord.PlaceVertical)
+}
+
+func TestDucklordFocusedPrefixQuickShellTabContainerE2E(t *testing.T) {
+	runFocusedPrefixQuickShellContainerE2E(t, "tt", ducklord.PlaceNewTab)
 }
 
 // TestDucklordWorkspaceProjectEnterFocusContainerE2E keeps quick-list selection
@@ -1407,8 +1833,9 @@ func TestDucklordWorkspaceProjectEnterFocusContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Active · Enter again to focus", 20*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Session focus:", 20*time.Second)
+	ctrlStart := capture.position()
 	writePTY(t, terminal, "\x1d")
-	capture.waitCurrent(t, "› Focus A", 20*time.Second)
+	capture.waitAfter(t, ctrlStart, "› Focus A", 20*time.Second)
 	capture.waitCurrent(t, "› "+handles[0]+" @client-a", 20*time.Second)
 	writePTY(t, terminal, "b?")
 	capture.waitCurrent(t, "Keyboard shortcuts", 10*time.Second)
@@ -1577,7 +2004,7 @@ func newSizedTUICapture(terminal *os.File, rows, cols int) *tuiCapture {
 				capture.data = append(capture.data, buffer[:n]...)
 				capture.screen.Write(buffer[:n])
 				if len(capture.watch) != 0 {
-					visible := strings.Join(capture.screen.RenderLines(capture.rows, capture.cols), "\n")
+					visible := visibleTerminalText(strings.Join(capture.screen.RenderLines(capture.rows, capture.cols), "\n"))
 					for marker, seen := range capture.watch {
 						if !seen && strings.Contains(visible, marker) {
 							capture.watch[marker] = true
@@ -1600,7 +2027,7 @@ func (c *tuiCapture) watchCurrent(marker string) {
 	if c.watch == nil {
 		c.watch = make(map[string]bool)
 	}
-	c.watch[marker] = strings.Contains(strings.Join(c.screen.RenderLines(c.rows, c.cols), "\n"), marker)
+	c.watch[marker] = strings.Contains(visibleTerminalText(strings.Join(c.screen.RenderLines(c.rows, c.cols), "\n")), marker)
 }
 
 func (c *tuiCapture) everCurrent(marker string) bool {
@@ -1612,7 +2039,16 @@ func (c *tuiCapture) everCurrent(marker string) bool {
 func (c *tuiCapture) currentText() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return strings.Join(c.screen.RenderLines(c.rows, c.cols), "\n")
+	return visibleTerminalText(strings.Join(c.screen.RenderLines(c.rows, c.cols), "\n"))
+}
+
+var terminalSGR = regexp.MustCompile(`\x1b\[[0-9;:]*m`)
+
+// visibleTerminalText removes the styling sequences emitted by RenderLines.
+// They do not occupy terminal cells, but can split a visible word in the
+// rendered string and make a literal content assertion fail.
+func visibleTerminalText(screen string) string {
+	return terminalSGR.ReplaceAllString(screen, "")
 }
 
 func (c *tuiCapture) waitCurrent(t *testing.T, needle string, timeout time.Duration) {
@@ -1765,6 +2201,15 @@ func requiredE2EEnv(t *testing.T, name string) string {
 func listContainerSessions(t *testing.T, runtime, controller, host string) []protocol.SessionSummary {
 	t.Helper()
 	sessions := listContainerRemoteSessions(t, runtime, controller, host)
+	return summarizeContainerSessions(sessions)
+}
+
+func listContainerSessionsAs(t *testing.T, runtime, controller, host, owner string) []protocol.SessionSummary {
+	t.Helper()
+	return summarizeContainerSessions(listContainerRemoteSessionsAs(t, runtime, controller, host, owner))
+}
+
+func summarizeContainerSessions(sessions []ducklord.RemoteSession) []protocol.SessionSummary {
 	result := make([]protocol.SessionSummary, 0, len(sessions))
 	for _, session := range sessions {
 		result = append(result, protocol.SessionSummary{SessionID: session.SessionID, Handle: session.Name, Kind: model.SessionKind(session.Kind), ProjectName: session.ProjectName, CWD: session.Cwd,
@@ -1793,9 +2238,24 @@ func findContainerSession(t *testing.T, runtime, controller, host, sessionID str
 	return ducklord.RemoteSession{}, false
 }
 
+func findContainerSessionAs(t *testing.T, runtime, controller, host, sessionID, owner string) (ducklord.RemoteSession, bool) {
+	t.Helper()
+	for _, session := range listContainerRemoteSessionsAs(t, runtime, controller, host, owner) {
+		if session.SessionID == sessionID {
+			return session, true
+		}
+	}
+	return ducklord.RemoteSession{}, false
+}
+
 func listContainerRemoteSessions(t *testing.T, runtime, controller, host string) []ducklord.RemoteSession {
 	t.Helper()
-	out, err := exec.Command(runtime, "exec", controller, "ducklord", "sessions", host, "--json", "--config", "/tmp/e2e-inspector.yaml").CombinedOutput()
+	return listContainerRemoteSessionsAs(t, runtime, controller, host, "e2e-inspector")
+}
+
+func listContainerRemoteSessionsAs(t *testing.T, runtime, controller, host, owner string) []ducklord.RemoteSession {
+	t.Helper()
+	out, err := exec.Command(runtime, "exec", controller, "ducklord", "--name", owner, "sessions", host, "--json", "--config", "/tmp/e2e-inspector.yaml").CombinedOutput()
 	if err != nil {
 		t.Fatalf("list sessions on %s: %v (remote output suppressed)", host, err)
 	}
@@ -1817,6 +2277,13 @@ func TestWorkspaceScreenPointIgnoresStylesAndFindsRepeatedLabels(t *testing.T) {
 	x, y, ok := workspaceScreenPoint("\x1b[38;2;1;2;3mpane\x1b[0m   pane", "pane", 7, 20)
 	if !ok || x != 8 || y != 1 {
 		t.Fatalf("styled repeated label: (%d, %d, %t)", x, y, ok)
+	}
+}
+
+func TestVisibleTerminalTextRemovesSGRWithoutChangingContent(t *testing.T) {
+	got := visibleTerminalText("Project \x1b[38;2;1;2;3mdefault\x1b[0m notes")
+	if got != "Project default notes" {
+		t.Fatalf("visible text = %q", got)
 	}
 }
 
@@ -1863,4 +2330,106 @@ func safeTerminalDiagnostic(value string) string {
 		}
 		return r
 	}, string(runes))
+}
+
+// TestDucklordOutputSearchBookmarksContainerE2E proves local terminal search and
+// metadata-only bookmarks own input and restore the focused PTY.
+func TestDucklordOutputSearchBookmarksContainerE2E(t *testing.T) {
+	if os.Getenv("DUCKLORD_TUI_CONTAINER_E2E") != "1" {
+		t.Skip("run through scripts/ducklord-tui-e2e.sh")
+	}
+	runtime := requiredE2EEnv(t, "DUCKLORD_E2E_RUNTIME")
+	controller := requiredE2EEnv(t, "DUCKLORD_E2E_CONTROLLER")
+	binary := os.Getenv("DUCKLORD_E2E_BINARY")
+	if binary == "" {
+		binary = "ducklord"
+	}
+	owner := fmt.Sprintf("terminal-tools-e2e-%d", time.Now().UnixNano())
+	command := exec.Command(runtime, "exec", "-it", controller, "env", "TERM=xterm-256color", binary, "tui", "--name", owner, "--config", "/root/.ducklord/config.yaml")
+	terminal, err := pty.StartWithSize(command, &pty.Winsize{Rows: 24, Cols: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = terminal.Write([]byte("q"))
+		killNamedContainerTUI(runtime, controller, owner, "/root/.ducklord/config.yaml")
+		_ = terminal.Close()
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	})
+	capture := newSizedTUICapture(terminal, 24, 100)
+	capture.waitCurrent(t, "Session list pane:", 20*time.Second)
+	writePTY(t, terminal, "/alpha\r")
+	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Session focus: keys go to PTY", 10*time.Second)
+
+	query := "LOCAL_SEARCH_SHOULD_NOT_REACH_PTY"
+	writePTY(t, terminal, "\x02/")
+	capture.waitCurrent(t, "search:", 10*time.Second)
+	writePTY(t, terminal, query)
+	capture.waitCurrent(t, "search: "+query, 10*time.Second)
+	writePTY(t, terminal, "\x1b")
+	waitE2E(t, 10*time.Second, func() bool { return !strings.Contains(capture.currentText(), "search: ") }, func() string { return "terminal search modal did not close" })
+	marker := "TERMINAL_TOOL_RESTORE"
+	match := "RETAINED_SNAPSHOT_MATCH"
+	matchOne := match + "_ONE"
+	matchTwo := match + "_TWO"
+	refresh := "LIVE_OUTPUT_REFRESHED"
+	// The command emits a known match, then refreshes the live PTY while the
+	// local search modal owns input. The modal must continue rendering its
+	// captured snapshot and match result during that repaint.
+	writePTY(t, terminal, "printf '%s\\n%s\\n%s\\n' "+matchOne+" "+marker+" "+matchTwo+"; for i in $(seq 1 30); do printf 'FILLER_%02d\\n' \"$i\"; done; sleep 2; printf '%s\\n' "+refresh+"\r")
+	time.Sleep(300 * time.Millisecond)
+	writePTY(t, terminal, "\x02/"+match)
+	capture.waitCurrent(t, "match 1/2", 10*time.Second)
+	writePTY(t, terminal, "\x1b[B")
+	capture.waitCurrent(t, "match 2/2", 10*time.Second)
+	time.Sleep(2500 * time.Millisecond)
+	retained := capture.currentText()
+	if !strings.Contains(retained, "search: "+match) || !strings.Contains(retained, "match 2/2 at byte") {
+		t.Fatalf("search snapshot lost its match after live refresh: %s", safeTerminalDiagnostic(retained))
+	}
+	writePTY(t, terminal, "\x1b")
+	capture.waitCurrent(t, matchTwo, 10*time.Second)
+	waitE2E(t, 10*time.Second, func() bool {
+		out, readErr := exec.Command(runtime, "exec", controller, binary, "read", "client-a", "alpha", "--lines", "100", "--config", "/root/.ducklord/config.yaml").CombinedOutput()
+		return readErr == nil && bytes.Contains(out, []byte(marker)) && bytes.Contains(out, []byte(refresh)) && !bytes.Contains(out, []byte(query))
+	}, func() string { return "search input reached PTY or focus was not restored" })
+
+	bookmarkAnchor := "BOOKMARK_REVEAL_ANCHOR"
+	writePTY(t, terminal, "printf '"+bookmarkAnchor+"\\n'\r")
+	capture.waitCurrent(t, bookmarkAnchor, 10*time.Second)
+	label := "local-checkpoint"
+	writePTY(t, terminal, "\x02m")
+	capture.waitCurrent(t, "bookmark label:", 10*time.Second)
+	writePTY(t, terminal, label+"\r")
+	writePTY(t, terminal, "\r")
+	writePTY(t, terminal, "printf 'BOOKMARK_APPEND_1\\nBOOKMARK_APPEND_2\\nBOOKMARK_APPEND_3\\n'\r")
+	capture.waitCurrent(t, "BOOKMARK_APPEND_3", 10*time.Second)
+	writePTY(t, terminal, "\x02M")
+	capture.waitCurrent(t, label+" [", 10*time.Second)
+	if !strings.Contains(capture.currentText(), "active; Enter reveals retained output") {
+		t.Fatalf("retained bookmark was incorrectly marked unavailable: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, bookmarkAnchor, 10*time.Second)
+	if !strings.Contains(capture.currentText(), bookmarkAnchor) {
+		t.Fatalf("bookmark Enter did not reveal the saved terminal line: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
+	writePTY(t, terminal, "\x1b")
+	waitE2E(t, 10*time.Second, func() bool { return !strings.Contains(capture.currentText(), "terminal tools") }, func() string { return "bookmark list did not close" })
+	// Durable workspace state must retain bookmark metadata while excluding the
+	// PTY transcript and the search query. This is the same redaction boundary
+	// used by Project export.
+	state, readErr := exec.Command(runtime, "exec", controller, "cat", "/root/.ducklord/state.json").CombinedOutput()
+	if readErr != nil {
+		t.Fatalf("read durable state: %v: %s", readErr, safeTerminalDiagnostic(string(state)))
+	}
+	if !bytes.Contains(state, []byte(label)) {
+		t.Fatalf("durable state omitted bookmark metadata %q", label)
+	}
+	if bytes.Contains(state, []byte(marker)) || bytes.Contains(state, []byte(query)) {
+		t.Fatalf("durable state leaked terminal output or search query: %s", safeTerminalDiagnostic(string(state)))
+	}
 }

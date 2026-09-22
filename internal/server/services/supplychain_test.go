@@ -83,24 +83,31 @@ func TestSupplyChainToggleAndMinAge(t *testing.T) {
 	}
 }
 
-func TestResolveSupplyChainRC_MergeDedupeByKey(t *testing.T) {
+func TestResolveSupplyChainRC_UsesManagerSpecificFiles(t *testing.T) {
 	now := time.Now()
+	rc := ResolveSupplyChainRC(mapGet(map[string]string{}), now)
+	npmrc := strings.Join(rc[".npmrc"], "\n")
+	pnpmrc := strings.Join(rc[".config/pnpm/rc"], "\n")
 
-	npmrc := strings.Join(ResolveSupplyChainRC(mapGet(map[string]string{}), now)[".npmrc"], "\n")
-
-	// ignore-scripts shared by npm+pnpm appears exactly once (dedupe by key).
 	if c := strings.Count(npmrc, "ignore-scripts=true"); c != 1 {
 		t.Errorf("ignore-scripts should appear once, got %d:\n%s", c, npmrc)
 	}
 	for _, want := range []string{
-		"min-release-age=3", "allow-git=none", "allow-remote=none", "minimum-release-age=4320",
+		"min-release-age=3", "allow-git=none", "allow-remote=none",
 	} {
 		if !strings.Contains(npmrc, want) {
 			t.Errorf(".npmrc missing %q:\n%s", want, npmrc)
 		}
 	}
+	if strings.Contains(npmrc, "minimum-release-age") {
+		t.Fatalf("pnpm-only config must not be written to .npmrc:\n%s", npmrc)
+	}
+	for _, want := range []string{"ignore-scripts=true", "minimum-release-age=4320"} {
+		if !strings.Contains(pnpmrc, want) {
+			t.Errorf("pnpm rc missing %q:\n%s", want, pnpmrc)
+		}
+	}
 
-	rc := ResolveSupplyChainRC(mapGet(map[string]string{}), now)
 	if strings.Join(rc[".yarnrc.yml"], "\n") != "# 不執行 install 腳本\nenableScripts: false" {
 		t.Errorf(".yarnrc.yml = %v", rc[".yarnrc.yml"])
 	}
@@ -114,16 +121,15 @@ func TestResolveSupplyChainRC_MergeDedupeByKey(t *testing.T) {
 		}
 	}
 
-	// Disable npm: its keys drop, pnpm still supplies ignore-scripts + min age.
-	npmrc = strings.Join(ResolveSupplyChainRC(mapGet(map[string]string{
+	// Disable npm: .npmrc disappears while pnpm's independent rc remains.
+	rc = ResolveSupplyChainRC(mapGet(map[string]string{
 		SettingKeySupplyChainEnabled("npm"): "0",
-	}), now)[".npmrc"], "\n")
-	for _, gone := range []string{"min-release-age=3", "allow-git=none", "allow-remote=none"} {
-		if strings.Contains(npmrc, gone) {
-			t.Errorf("%q should be gone when npm disabled:\n%s", gone, npmrc)
-		}
+	}), now)
+	if _, ok := rc[".npmrc"]; ok {
+		t.Errorf(".npmrc should be absent when npm is disabled: %v", rc[".npmrc"])
 	}
-	if !strings.Contains(npmrc, "ignore-scripts=true") || !strings.Contains(npmrc, "minimum-release-age=4320") {
-		t.Errorf("pnpm settings should remain when npm disabled:\n%s", npmrc)
+	pnpmrc = strings.Join(rc[".config/pnpm/rc"], "\n")
+	if !strings.Contains(pnpmrc, "ignore-scripts=true") || !strings.Contains(pnpmrc, "minimum-release-age=4320") {
+		t.Errorf("pnpm settings should remain when npm disabled:\n%s", pnpmrc)
 	}
 }

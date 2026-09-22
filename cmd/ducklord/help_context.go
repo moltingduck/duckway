@@ -32,7 +32,7 @@ func (s *tuiState) helpActionAvailable(action string) bool {
 			return true
 		}
 		if s.workspaceProjectFocus {
-			return strings.HasPrefix(action, "project_")
+			return action == "pty_copy" || strings.HasPrefix(action, "project_")
 		}
 	}
 	if strings.HasPrefix(action, "project_") || strings.HasPrefix(action, "detail_") || strings.HasPrefix(action, "prefix+") || action == "pane_prefix" || action == "pty_unfocus" {

@@ -46,7 +46,7 @@ func TestDucklordPrefixNavigationContainerE2E(t *testing.T) {
 		}
 		t.Cleanup(func() {
 			_, _ = exec.Command(runtime, "exec", controller, binary, "--name", owner+"-cli", "destroy", "client-a", handle, "--config", config).CombinedOutput()
-			_, _ = exec.Command(runtime, "exec", "ducklion-client-a", "rm", "-f", log).CombinedOutput()
+			_, _ = exec.Command(runtime, "exec", e2eContainerName("ducklion-client-a"), "rm", "-f", log).CombinedOutput()
 		})
 		if out, err := exec.Command(runtime, "exec", controller, binary, "--name", owner+"-cli", "send", "client-a", handle, program, "--config", config).CombinedOutput(); err != nil {
 			t.Fatalf("initialize navigation shell: %v: %s", err, out)
@@ -107,6 +107,17 @@ func TestDucklordPrefixNavigationContainerE2E(t *testing.T) {
 	})
 	capture := newSizedTUICapture(terminal, 30, 160)
 	capture.waitCurrent(t, handles[0], 20*time.Second)
+	// route.quick-list: b moves ownership to Project and b restores the quick
+	// list without any manual refocus. The second transition is deliberately
+	// followed by direct list input so a stale Project owner cannot consume it.
+	writePTY(t, terminal, "b")
+	capture.waitCurrent(t, "Project pane:", 10*time.Second)
+	writePTY(t, terminal, "b")
+	capture.waitCurrent(t, "Session list pane:", 10*time.Second)
+	writePTY(t, terminal, "j")
+	capture.waitCurrent(t, handles[1], 10*time.Second)
+	writePTY(t, terminal, "k")
+	capture.waitCurrent(t, handles[0], 10*time.Second)
 	geometry := ducklord.CalculateWorkspaceGeometry(160, 30, 4)
 	for _, target := range []struct {
 		rect  ducklord.WorkspaceRect
@@ -123,10 +134,22 @@ func TestDucklordPrefixNavigationContainerE2E(t *testing.T) {
 		writePTY(t, terminal, string(workspaceMouse(0, target.rect.X, target.rect.Y, false))+string(workspaceMouse(0, target.rect.X, target.rect.Y, true)))
 		writePTY(t, terminal, "\x02c")
 		capture.waitCurrent(t, target.title, 10*time.Second)
+		// Keep the modal open across a repaint-sized async interval; input must
+		// remain owned by the context modal until its explicit close.
+		time.Sleep(500 * time.Millisecond)
+		if !strings.Contains(capture.currentText(), target.title) {
+			t.Fatalf("context modal lost ownership during async repaint for %s", target.title)
+		}
 		writePTY(t, terminal, "\x1b")
 		waitE2E(t, 10*time.Second, func() bool { return !strings.Contains(capture.currentText(), target.title) }, func() string { return "prefix area config did not close" })
 	}
 
+	waitE2E(t, 10*time.Second, func() bool {
+		screen := capture.currentText()
+		return strings.Contains(screen, "Project pane:") || strings.Contains(screen, "Session list pane:")
+	}, func() string {
+		return "workspace navigation did not render after setup: " + safeTerminalDiagnostic(capture.currentText())
+	})
 	if strings.Contains(capture.currentText(), "Project pane:") {
 		writePTY(t, terminal, "b")
 		capture.waitCurrent(t, "Session list pane:", 10*time.Second)
@@ -134,26 +157,37 @@ func TestDucklordPrefixNavigationContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "/"+handles[0]+"\r")
 	capture.waitCurrent(t, "Active · Enter again to focus", 20*time.Second)
 	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Session focus: keys go to PTY", 20*time.Second)
 	want := make([]string, len(handles))
 	readLog := func(i int) string {
 		t.Helper()
-		out, err := exec.Command(runtime, "exec", "ducklion-client-a", "cat", logs[i]).Output()
+		out, err := exec.Command(runtime, "exec", e2eContainerName("ducklion-client-a"), "cat", logs[i]).Output()
 		if err != nil {
 			t.Fatalf("read native input log %d: %v", i, err)
 		}
 		return string(out)
 	}
 	for phase, step := range []struct {
-		key    string
-		target int
+		key      string
+		target   int
+		separate bool
 	}{
-		{"", 0}, {"\x1b[C", 1}, {"\x1b[D", 0},
-		{"\x1b[6~", 2}, {"\x1b[5~", 0}, {"n", 2}, {"p", 0},
+		{"", 0, false}, {"\x1b[C", 1, false}, {"\x1b[D", 0, false},
+		// The documented tab route is Ctrl-B n/p. Use the direct route keys
+		// here so the sentinel proves the transition itself, without a second
+		// focus operation in the test.
+		{"n", 2, true}, {"p", 0, true},
 	} {
 		if step.key != "" {
-			// Exercise separately delivered prefix and terminal escape sequence.
-			writePTY(t, terminal, "\x02")
-			writePTY(t, terminal, step.key)
+			if step.separate {
+				// Exercise a split PTY delivery without waiting for a redraw between
+				// the prefix and key; the final title and native log prove the route.
+				writePTY(t, terminal, "\x02")
+				writePTY(t, terminal, step.key)
+			} else {
+				// Exercise the prefix and terminal escape sequence in one PTY write.
+				writePTY(t, terminal, "\x02"+step.key)
+			}
 		}
 		activeTitle := "▣ client-a/" + handles[step.target]
 		waitE2E(t, 20*time.Second, func() bool { return strings.Contains(capture.currentText(), activeTitle) },
@@ -170,17 +204,44 @@ func TestDucklordPrefixNavigationContainerE2E(t *testing.T) {
 		capture.waitCurrent(t, marker, 15*time.Second)
 		// Check all native logs past the execution barrier to catch delayed
 		// duplicate writes or delivery to the old pane during control handoff.
-		until := time.Now().Add(500 * time.Millisecond)
-		for {
+		stableSince := time.Now()
+		waitE2E(t, 2*time.Second, func() bool {
 			for i := range handles {
 				if got := readLog(i); got != want[i] {
 					t.Fatalf("phase %d: shell %d input = %q, want %q", phase, i, got, want[i])
 				}
 			}
-			if time.Now().After(until) {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+			return time.Since(stableSince) >= 500*time.Millisecond
+		}, func() string { return fmt.Sprintf("phase %d: delayed duplicate input", phase) })
 	}
+
+	// route.help: the focused terminal owns the prefix opener, Help retains
+	// ownership across an asynchronous repaint, and closing it restores the
+	// same PTY. The sentinel must appear only after the close.
+	helpStart := capture.position()
+	writePTY(t, terminal, "\x02?")
+	capture.waitAfter(t, helpStart, "Keyboard shortcuts", 10*time.Second)
+	time.Sleep(500 * time.Millisecond)
+	if got := readLog(0); got != want[0] {
+		t.Fatalf("Help repaint leaked input to session 0: got %q want %q", got, want[0])
+	}
+	// Help is toggled closed by its configured ? key; Esc leaves the overlay
+	// pinned and must not be used as a focus restoration shortcut.
+	closeStart := capture.position()
+	writePTY(t, terminal, "?")
+	capture.waitAfter(t, closeStart, "Session focus: keys go to PTY", 10*time.Second)
+	helpMarker := fmt.Sprintf("HELP_RESTORE_%x", stamp)
+	writePTY(t, terminal, fmt.Sprintf("printf '%s\\n' '%s' | tee -a \"$DUCKWAY_NAV_LOG\"\r", helpMarker, helpMarker))
+	waitE2E(t, 10*time.Second, func() bool { return strings.Contains(readLog(0), helpMarker+"\n") }, func() string {
+		return "Help close did not restore the originating PTY"
+	})
+
+	// route.detach: this layout is a non-Default Project, so Ctrl-B d detaches
+	// the focused pane directly. The surviving pane must receive a PTY sentinel
+	// immediately, without a confirmation modal or a second focus operation.
+	writePTY(t, terminal, "\x02d")
+	capture.waitCurrent(t, handles[1], 10*time.Second)
+	detachMarker := fmt.Sprintf("DETACH_DIRECT_%x", stamp)
+	writePTY(t, terminal, fmt.Sprintf("printf '%s\\n' '%s' | tee -a \"$DUCKWAY_NAV_LOG\"\r", detachMarker, detachMarker))
+	waitE2E(t, 10*time.Second, func() bool { return strings.Contains(readLog(1), detachMarker+"\n") }, func() string { return "direct detach did not preserve surviving PTY ownership" })
 }

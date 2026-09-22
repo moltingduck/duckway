@@ -1,5 +1,16 @@
 package protocol
 
+// HostResourceStatus reports portable Host and Ducklion runtime resource metrics.
+type HostResourceStatus struct {
+	GOOS                string `json:"goos"`
+	GOARCH              string `json:"goarch"`
+	CPUCount            int    `json:"cpu_count"`
+	HeapAllocBytes      uint64 `json:"heap_alloc_bytes"`
+	UptimeSeconds       uint64 `json:"uptime_seconds"`
+	ManagedSessionCount int    `json:"managed_session_count"`
+	ActivePTYCount      int    `json:"active_pty_count"`
+}
+
 // HostRetentionUpdate is a structured, Host-scoped Ducklord control request.
 // It changes Ducklion's persisted retention policy without restarting any PTY.
 type HostRetentionUpdate struct {

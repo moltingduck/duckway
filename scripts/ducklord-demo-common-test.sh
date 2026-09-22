@@ -50,4 +50,20 @@ fi
 chmod 600 "$SECRET"
 ducklord_require_demo_secret "$SECRET"
 
+# The container E2E must derive every cleanup target from its isolated names.
+TUI_E2E="$ROOT/scripts/ducklord-tui-e2e.sh"
+grep -F 'NAME_PREFIX="${DUCKLORD_TUI_E2E_NAME_PREFIX:-ducklord-tui-e2e-${BASHPID}}"' "$TUI_E2E" >/dev/null
+grep -F 'for resource in "$DEV_CONTAINER" "$CLIENT_A" "$CLIENT_B" "$CLIENT_C" "$CLIENT_D"' "$TUI_E2E" >/dev/null
+grep -F 'container inspect -f' "$TUI_E2E" >/dev/null
+grep -F '"$RUNTIME" rm -f "$resource"' "$TUI_E2E" >/dev/null
+grep -F 'network inspect -f' "$TUI_E2E" >/dev/null
+grep -F '"$OWNER_TOKEN"' "$TUI_E2E" >/dev/null
+grep -F '"$RUNTIME" network rm "$NET"' "$TUI_E2E" >/dev/null
+DEMO_SCRIPT="$ROOT/scripts/ducklord-podman-demo.sh"
+grep -F 'NAME_PREFIX="${DUCKLORD_DEMO_NAME_PREFIX:-}"' "$DEMO_SCRIPT" >/dev/null
+grep -F 'NET="${NET:-${NAME_PREFIX}ducklord-demo}"' "$DEMO_SCRIPT" >/dev/null
+grep -F -- '--require-owned-network' "$DEMO_SCRIPT" "$TUI_E2E" >/dev/null
+grep -F 'NET_WAS_SUPPLIED=0' "$DEMO_SCRIPT" >/dev/null
+grep -F 'network inspect -f' "$DEMO_SCRIPT" >/dev/null
+
 echo "[ducklord-demo-common] PASS"

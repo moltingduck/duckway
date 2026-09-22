@@ -258,3 +258,51 @@ func TestWorkspaceOutputAdapterPublishesFinalViewAfterDetachedLease(t *testing.T
 		})
 	}
 }
+
+// A fast producer must not enqueue a render per chunk. The final dirty key must
+// still repaint after the burst ends, including when no pane is selected.
+func TestWorkspaceOutputAdapterCoalescesFloodAndTrailingUpdate(t *testing.T) {
+	adapter, err := NewWorkspaceOutputAdapter(context.Background(), 1, unusedTerminalOutputSource{}, SnapshotStore{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer adapter.Close()
+	key := paneSelection("FLOOD1").key()
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				adapter.pane.markDirty(key)
+			}
+		}
+	}()
+	deadline := time.NewTimer(250 * time.Millisecond)
+	defer deadline.Stop()
+	count := 0
+loop:
+	for {
+		select {
+		case <-adapter.RepaintReady():
+			count++
+		case <-deadline.C:
+			break loop
+		}
+	}
+	close(stop)
+	<-done
+	if count == 0 || count > 10 {
+		t.Fatalf("repaints during 250ms flood = %d", count)
+	}
+	adapter.pane.markDirty(key)
+	select {
+	case <-adapter.RepaintReady():
+	case <-time.After(time.Second):
+		t.Fatal("last update was lost")
+	}
+}

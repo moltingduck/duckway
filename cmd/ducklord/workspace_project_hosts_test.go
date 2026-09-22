@@ -84,6 +84,7 @@ func TestWorkspaceProjectEmptyHostsRemainRestricted(t *testing.T) {
 
 func TestWorkspaceProjectDirectCreateUsesAssociatedHosts(t *testing.T) {
 	s, projectID, _, _ := workspacePaneTestState(t)
+	s.focused = true
 	s.cfg.Clients = append(s.cfg.Clients, ducklord.Client{Name: "other", Host: "other"})
 	s.activity().ProjectLayout.Project(projectID).Hosts = []string{"other"}
 	nav, err := s.workspaceNavigation()
@@ -94,7 +95,7 @@ func TestWorkspaceProjectDirectCreateUsesAssociatedHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.beginCreate()
-	if !s.newSessionMode || s.workspaceNewSessionIntent == nil || s.workspaceNewSessionIntent.projectID != projectID || s.newSessionClient != "other" {
+	if s.focused || !s.newSessionMode || s.workspaceNewSessionIntent == nil || s.workspaceNewSessionIntent.projectID != projectID || s.newSessionClient != "other" {
 		t.Fatal("direct create did not inherit Project scope")
 	}
 	if got := s.createModalChoices(); len(got) != 1 || !strings.Contains(got[0], "other") {
