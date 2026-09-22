@@ -73,7 +73,7 @@ func TestProjectFilesPathUnicodeClearsSelectionAndCancelsPreviousLoad(t *testing
 	previous, previousCancel := context.WithCancel(context.Background())
 	s := &tuiState{}
 	s.projectFiles = projectFilesState{open: true, step: "browse", left: projectFilesPane{
-		endpoint: ducklord.FileEndpoint{Path: dir}, marked: map[string]bool{"old.txt": true}, selected: 2,
+		endpoint: ducklord.FileEndpoint{Path: dir}, query: "old", marked: map[string]bool{"old.txt": true}, selected: 2,
 	}, cancels: [2]context.CancelFunc{previousCancel}}
 	s.handleProjectFilesInput([]byte("g"))
 	s.handleProjectFilesInput([]byte("文"))
@@ -87,15 +87,29 @@ func TestProjectFilesPathUnicodeClearsSelectionAndCancelsPreviousLoad(t *testing
 	default:
 		t.Fatal("new pane load did not cancel the superseded request")
 	}
-	if s.projectFiles.left.selected != 0 || len(s.projectFiles.left.marked) != 0 {
+	if s.projectFiles.left.query != "" || s.projectFiles.left.selected != 0 || len(s.projectFiles.left.marked) != 0 {
 		t.Fatalf("path change retained selection: %#v", s.projectFiles.left)
+	}
+}
+
+func TestProjectFilesPathCancelPreservesCurrentDirectoryFilter(t *testing.T) {
+	dir := t.TempDir()
+	s := &tuiState{}
+	s.projectFiles = projectFilesState{open: true, step: "browse", left: projectFilesPane{
+		endpoint: ducklord.FileEndpoint{Path: dir}, query: "keep", selected: 1, marked: map[string]bool{"keep.txt": true},
+	}}
+	s.handleProjectFilesInput([]byte("g"))
+	s.handleProjectFilesInput([]byte("文"))
+	s.handleProjectFilesInput([]byte("\x1b"))
+	if s.projectFiles.step != "browse" || s.projectFiles.left.endpoint.Path != dir || s.projectFiles.left.query != "keep" || s.projectFiles.left.selected != 1 || !s.projectFiles.left.marked["keep.txt"] {
+		t.Fatalf("cancelled path edit changed current-directory state: %#v", s.projectFiles.left)
 	}
 }
 
 func TestProjectFilesEndpointPickerResetsAndShowsConfiguredName(t *testing.T) {
 	dir := t.TempDir()
 	s := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a"}, {Name: "client-b"}}}}
-	s.projectFiles = projectFilesState{open: true, step: "browse", left: projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: dir}, entries: []ducklord.FileEntry{{Name: "stale"}}, selected: 1, marked: map[string]bool{"stale": true}}, done: make(chan projectFilesEvent, 1)}
+	s.projectFiles = projectFilesState{open: true, step: "browse", left: projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: dir}, entries: []ducklord.FileEntry{{Name: "stale"}}, query: "stale", selected: 1, marked: map[string]bool{"stale": true}}, done: make(chan projectFilesEvent, 1)}
 	s.projectFiles.endpointIndex = 2
 	s.handleProjectFilesInput([]byte("h"))
 	if s.projectFiles.endpointIndex != 0 {
@@ -112,7 +126,7 @@ func TestProjectFilesEndpointPickerResetsAndShowsConfiguredName(t *testing.T) {
 	if got := s.projectFiles.left.endpoint.Path; got != "/" {
 		t.Fatalf("new remote endpoint retained local path %q", got)
 	}
-	if s.projectFiles.left.selected != 0 || len(s.projectFiles.left.entries) != 0 || len(s.projectFiles.left.marked) != 0 {
+	if s.projectFiles.left.query != "" || s.projectFiles.left.selected != 0 || len(s.projectFiles.left.entries) != 0 || len(s.projectFiles.left.marked) != 0 {
 		t.Fatalf("endpoint switch retained stale selection: %#v", s.projectFiles.left)
 	}
 	s.closeProjectFiles()

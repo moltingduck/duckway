@@ -239,7 +239,10 @@ func (s *tuiState) applyProjectFilesEndpoint(i int) {
 			return
 		}
 	}
-	p.entries, p.selected, p.marked, p.status, p.loading = nil, 0, map[string]bool{}, "Loading…", true
+	// A filter only describes the directory that was visible when it was entered.
+	// Switching endpoint starts a different directory, so do not leave entries
+	// invisibly filtered by the previous one.
+	p.entries, p.query, p.selected, p.marked, p.status, p.loading = nil, "", 0, map[string]bool{}, "Loading…", true
 	s.loadProjectFilesPane(context.Background(), s.projectFiles.active)
 }
 
@@ -393,7 +396,7 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 	case "path":
 		if text == "\r" || text == "\n" {
 			if filepath.IsAbs(p.endpoint.Path) {
-				p.entries = nil
+				p.entries, p.query = nil, ""
 				p.selected, p.marked, p.loading, p.status = 0, map[string]bool{}, true, "Loading…"
 				s.projectFiles.step = "browse"
 				s.loadProjectFilesPane(context.Background(), s.projectFiles.active)
