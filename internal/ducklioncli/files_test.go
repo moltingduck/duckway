@@ -31,11 +31,19 @@ func TestFilesTarWriteStagesAndValidatesRoot(t *testing.T) {
 	if err := runFiles([]string{"read", src}, nil, &archive); err != nil {
 		t.Fatal(err)
 	}
+	fullArchive := append([]byte(nil), archive.Bytes()...)
 	if err := runFiles([]string{"write", dst, "src"}, &archive, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dst, "src", "data"))
 	if err != nil || string(b) != "payload" {
 		t.Fatalf("received %q: %v", b, err)
+	}
+	bad := fullArchive[:len(fullArchive)-20]
+	if err := runFiles([]string{"write", dst, "broken"}, bytes.NewReader(bad), &bytes.Buffer{}); err == nil {
+		t.Fatal("accepted truncated transfer")
+	}
+	if _, err := os.Stat(filepath.Join(dst, "broken")); !os.IsNotExist(err) {
+		t.Fatalf("partial destination exists: %v", err)
 	}
 }

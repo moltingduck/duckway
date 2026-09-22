@@ -41,6 +41,7 @@ type FileCopyResult struct {
 const exchangeLimit = int64(1 << 30)
 const exchangeTimeout = 30 * time.Minute
 const exchangePayloadRoot = "__duckway_payload"
+const exchangeFooter = "__duckway_complete__"
 
 func validateEndpoint(e FileEndpoint) error {
 	if !filepath.IsAbs(e.Path) {
@@ -71,6 +72,11 @@ func ListFiles(ctx context.Context, endpoint FileEndpoint) ([]FileEntry, error) 
 		}
 		out := make([]FileEntry, 0, len(es))
 		for _, e := range es {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
 			i, err := e.Info()
 			if err != nil {
 				return nil, err
@@ -79,12 +85,18 @@ func ListFiles(ctx context.Context, endpoint FileEndpoint) ([]FileEntry, error) 
 				continue
 			}
 			out = append(out, FileEntry{Name: e.Name(), IsDir: e.IsDir(), Size: i.Size()})
+			if len(out) > 100000 {
+				return nil, fmt.Errorf("directory listing exceeds entry limit")
+			}
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 		return out, nil
 	}
 	var out []FileEntry
 	err := remoteRun(ctx, *endpoint.Client, endpoint.Client.DucklionArgs("files", "list", endpoint.Path), nil, func(r io.Reader) error { return json.NewDecoder(io.LimitReader(r, 1<<20)).Decode(&out) })
+	if err == nil && len(out) > 100000 {
+		return nil, fmt.Errorf("directory listing exceeds entry limit")
+	}
 	return out, err
 }
 
@@ -390,6 +402,8 @@ func copyTree(ctx context.Context, src, dst string) error {
 }
 
 func remoteRun(ctx context.Context, c Client, args []string, in io.Reader, consume func(io.Reader) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	parts := c.SSHCommandParts()
 	cmd := exec.CommandContext(ctx, parts[0], append(parts[1:], SSHArgs(c, false, args...)...)...)
 	cmd.Stdin = in
@@ -405,6 +419,10 @@ func remoteRun(ctx context.Context, c Client, args []string, in io.Reader, consu
 	ce := consume(stdout)
 	if ce != nil {
 		_ = stdout.Close()
+		if x, ok := in.(io.Closer); ok {
+			_ = x.Close()
+		}
+		cancel()
 	}
 	we := cmd.Wait()
 	if ce != nil {
@@ -438,8 +456,7 @@ func (b *limitedBuffer) String() string { return b.b.String() }
 
 func tarOne(src, name string, w io.Writer) error {
 	tw := tar.NewWriter(w)
-	defer tw.Close()
-	return filepath.Walk(src, func(p string, i os.FileInfo, e error) error {
+	err := filepath.Walk(src, func(p string, i os.FileInfo, e error) error {
 		if e != nil {
 			return e
 		}
@@ -475,6 +492,13 @@ func tarOne(src, name string, w io.Writer) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if err = tw.WriteHeader(&tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}); err != nil {
+		return err
+	}
+	return tw.Close()
 }
 func remoteToLocal(ctx context.Context, c Client, src, dst, name string, overwrite bool) error {
 	stage, e := os.MkdirTemp(dst, ".exchange-")
@@ -486,6 +510,16 @@ func remoteToLocal(ctx context.Context, c Client, src, dst, name string, overwri
 		return e
 	}
 	payload := filepath.Join(stage, exchangePayloadRoot)
+	if old, err := os.Lstat(filepath.Join(dst, name)); err == nil {
+		if !overwrite {
+			return fmt.Errorf("destination already exists")
+		}
+		if old.IsDir() {
+			return fmt.Errorf("refusing non-atomic directory overwrite")
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	if !overwrite {
 		if i, err := os.Lstat(payload); err == nil && !i.IsDir() {
 			if err = os.Link(payload, filepath.Join(dst, name)); err != nil {
@@ -504,7 +538,7 @@ func localToRemote(ctx context.Context, src string, c Client, dst, name string, 
 	if overwrite {
 		args = append(args, "--overwrite")
 	}
-	e := remoteRun(ctx, c, args, pr, func(io.Reader) error { return nil })
+	e := remoteRun(ctx, c, args, pr, func(r io.Reader) error { _, err := io.Copy(io.Discard, r); return err })
 	if e != nil {
 		_ = pr.CloseWithError(e)
 		<-errc
@@ -513,6 +547,8 @@ func localToRemote(ctx context.Context, src string, c Client, dst, name string, 
 	return <-errc
 }
 func remotePipe(ctx context.Context, sc Client, src string, dc Client, dst, name string, overwrite bool) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	pr, pw := io.Pipe()
 	ch := make(chan error, 1)
 	go func() {
@@ -522,9 +558,10 @@ func remotePipe(ctx context.Context, sc Client, src string, dc Client, dst, name
 	if overwrite {
 		args = append(args, "--overwrite")
 	}
-	e := remoteRun(ctx, dc, args, pr, func(io.Reader) error { return nil })
+	e := remoteRun(ctx, dc, args, pr, func(r io.Reader) error { _, err := io.Copy(io.Discard, r); return err })
 	if e != nil {
 		pr.CloseWithError(e)
+		cancel()
 		return e
 	}
 	return <-ch
@@ -532,9 +569,13 @@ func remotePipe(ctx context.Context, sc Client, src string, dc Client, dst, name
 func extractTar(r io.Reader, dst, expectedRoot string) error {
 	tr := tar.NewReader(io.LimitReader(r, exchangeLimit+1))
 	root := ""
+	complete := false
 	for {
 		h, e := tr.Next()
 		if e == io.EOF {
+			if !complete {
+				return fmt.Errorf("incomplete transfer")
+			}
 			break
 		}
 		if e != nil {
@@ -542,6 +583,13 @@ func extractTar(r io.Reader, dst, expectedRoot string) error {
 		}
 		if !safeTarPath(h.Name) {
 			return fmt.Errorf("unsafe archive path")
+		}
+		if h.Name == exchangeFooter {
+			complete = true
+			continue
+		}
+		if complete {
+			return fmt.Errorf("archive data after completion footer")
 		}
 		parts := strings.Split(filepath.ToSlash(h.Name), "/")
 		if root == "" {

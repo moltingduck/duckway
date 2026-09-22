@@ -18,6 +18,7 @@ type fileCLIEntry struct {
 }
 
 const exchangePayloadRoot = "__duckway_payload"
+const exchangeFooter = "__duckway_complete__"
 
 func runFiles(args []string, in io.Reader, out io.Writer) error {
 	if len(args) < 2 {
@@ -51,6 +52,9 @@ func runFiles(args []string, in io.Reader, out io.Writer) error {
 				continue
 			}
 			result = append(result, fileCLIEntry{Name: x.Name(), IsDir: x.IsDir(), Size: i.Size()})
+			if len(result) > 100000 {
+				return fmt.Errorf("directory listing exceeds entry limit")
+			}
 		}
 		return json.NewEncoder(out).Encode(result)
 	case "read":
@@ -72,8 +76,7 @@ func safeFileName(s string) bool {
 }
 func writeTar(src string, out io.Writer) error {
 	tw := tar.NewWriter(out)
-	defer tw.Close()
-	return filepath.Walk(src, func(p string, i os.FileInfo, e error) error {
+	err := filepath.Walk(src, func(p string, i os.FileInfo, e error) error {
 		if e != nil {
 			return e
 		}
@@ -107,6 +110,13 @@ func writeTar(src string, out io.Writer) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if err = tw.WriteHeader(&tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}); err != nil {
+		return err
+	}
+	return tw.Close()
 }
 func readTar(in io.Reader, dst, name string, overwrite bool) error {
 	if i, e := os.Lstat(dst); e != nil || !i.IsDir() || i.Mode()&os.ModeSymlink != 0 {
@@ -122,6 +132,7 @@ func readTar(in io.Reader, dst, name string, overwrite bool) error {
 	defer os.RemoveAll(stage)
 	tr := tar.NewReader(in)
 	rootSeen := false
+	complete := false
 	bytes := int64(0)
 	for {
 		h, e := tr.Next()
@@ -130,6 +141,13 @@ func readTar(in io.Reader, dst, name string, overwrite bool) error {
 		}
 		if e != nil {
 			return e
+		}
+		if h.Name == exchangeFooter {
+			complete = true
+			continue
+		}
+		if complete {
+			return fmt.Errorf("archive data after completion footer")
 		}
 		if h.Name == "" || filepath.IsAbs(h.Name) || strings.Contains(h.Name, "\\") || strings.HasPrefix(filepath.Clean(h.Name), ".."+string(filepath.Separator)) {
 			return fmt.Errorf("unsafe archive path")
@@ -182,19 +200,16 @@ func readTar(in io.Reader, dst, name string, overwrite bool) error {
 			return e
 		}
 	}
-	if !rootSeen {
+	if !rootSeen || !complete {
 		return fmt.Errorf("empty archive")
 	}
 	dest := filepath.Join(dst, name)
 	if old, err := os.Lstat(dest); err == nil {
 		if !overwrite {
-			return err
+			return fmt.Errorf("destination already exists")
 		}
 		if old.IsDir() {
 			return fmt.Errorf("refusing non-atomic directory overwrite")
-		}
-		if err = os.Remove(dest); err != nil {
-			return err
 		}
 	} else if !os.IsNotExist(err) {
 		return err
