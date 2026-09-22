@@ -1,12 +1,28 @@
 package ducklioncli
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func archiveWith(t *testing.T, headers ...*tar.Header) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	tw := tar.NewWriter(&b)
+	for _, h := range headers {
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
 
 func TestFilesTarWriteStagesAndValidatesRoot(t *testing.T) {
 	root := t.TempDir()
@@ -73,5 +89,24 @@ func TestFilesWriteCancellationNeverCommits(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dst, "cancelled")); !os.IsNotExist(err) {
 		t.Fatalf("destination committed: %v", err)
+	}
+}
+
+func TestFilesWriteRejectsTraversalAndDuplicateFooter(t *testing.T) {
+	root := t.TempDir()
+	dst := filepath.Join(root, "dst")
+	if err := os.Mkdir(dst, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, archive := range [][]byte{
+		archiveWith(t, &tar.Header{Name: exchangePayloadRoot, Typeflag: tar.TypeDir}, &tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}, &tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}),
+		archiveWith(t, &tar.Header{Name: exchangePayloadRoot, Typeflag: tar.TypeDir}, &tar.Header{Name: exchangePayloadRoot + "/../escape", Typeflag: tar.TypeReg}, &tar.Header{Name: exchangeFooter, Typeflag: tar.TypeReg}),
+	} {
+		if err := runFiles([]string{"write", dst, "result"}, bytes.NewReader(archive), &bytes.Buffer{}); err == nil {
+			t.Fatal("accepted malformed archive")
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dst, "result")); !os.IsNotExist(err) {
+		t.Fatalf("committed malformed archive: %v", err)
 	}
 }

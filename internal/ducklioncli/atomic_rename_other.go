@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package ducklioncli
 
@@ -19,4 +19,8 @@ func renameNoReplace(src, dst string) error {
 		return err
 	}
 	return os.Remove(src)
+}
+
+func renameNoReplaceAt(dir *os.File, src, dst string) error {
+	return renameNoReplace(src, dst)
 }

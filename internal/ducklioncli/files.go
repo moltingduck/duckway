@@ -3,6 +3,8 @@ package ducklioncli
 import (
 	"archive/tar"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -97,46 +99,14 @@ func safeFileName(s string) bool {
 	return s != "" && s != "." && s != ".." && filepath.Base(s) == s && !strings.ContainsAny(s, "/\\")
 }
 func writeTar(ctx context.Context, src string, out io.Writer) error {
+	root, err := os.OpenRoot(src)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	tw := tar.NewWriter(out)
-	err := filepath.Walk(src, func(p string, i os.FileInfo, e error) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if e != nil {
-			return e
-		}
-		if i.Mode()&os.ModeSymlink != 0 || !i.Mode().IsRegular() && !i.IsDir() {
-			return fmt.Errorf("unsupported file %q", p)
-		}
-		rel, _ := filepath.Rel(src, p)
-		name := exchangePayloadRoot
-		if rel != "." {
-			name = filepath.ToSlash(filepath.Join(exchangePayloadRoot, rel))
-		}
-		h := &tar.Header{Name: name, Mode: int64(i.Mode().Perm()), Size: i.Size()}
-		if i.IsDir() {
-			h.Typeflag = tar.TypeDir
-		}
-		if e = tw.WriteHeader(h); e != nil {
-			return e
-		}
-		if i.Mode().IsRegular() {
-			f, e := os.Open(p)
-			if e != nil {
-				return e
-			}
-			n, copyErr := io.Copy(tw, io.LimitReader(f, 1<<30+1))
-			if copyErr == nil && n > 1<<30 {
-				copyErr = fmt.Errorf("file exceeds transfer limit")
-			}
-			e = copyErr
-			f.Close()
-			return e
-		}
-		return nil
-	})
+	bytes := int64(0)
+	err = writeTarRoot(ctx, root, ".", exchangePayloadRoot, tw, &bytes)
 	if err != nil {
 		return err
 	}
@@ -145,18 +115,79 @@ func writeTar(ctx context.Context, src string, out io.Writer) error {
 	}
 	return tw.Close()
 }
-func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool) error {
-	if i, e := os.Lstat(dst); e != nil || !i.IsDir() || i.Mode()&os.ModeSymlink != 0 {
-		if e != nil {
-			return e
-		}
-		return fmt.Errorf("destination is not a real directory")
+
+func writeTarRoot(ctx context.Context, root *os.Root, source, name string, tw *tar.Writer, bytes *int64) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
-	stage, e := os.MkdirTemp(dst, ".exchange-")
+	i, err := root.Lstat(source)
+	if err != nil {
+		return err
+	}
+	if i.Mode()&os.ModeSymlink != 0 || (!i.Mode().IsRegular() && !i.IsDir()) {
+		return fmt.Errorf("unsupported file %q", source)
+	}
+	h := &tar.Header{Name: name, Mode: int64(i.Mode().Perm()), Size: i.Size()}
+	if i.IsDir() {
+		h.Typeflag = tar.TypeDir
+	}
+	if err = tw.WriteHeader(h); err != nil {
+		return err
+	}
+	f, err := root.Open(source)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	actual, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if actual.Mode()&os.ModeSymlink != 0 || actual.IsDir() != i.IsDir() || (!actual.Mode().IsRegular() && !actual.IsDir()) {
+		return fmt.Errorf("source changed during transfer: %q", source)
+	}
+	if actual.IsDir() {
+		for {
+			es, e := f.ReadDir(256)
+			if e == io.EOF {
+				break
+			}
+			if e != nil {
+				return e
+			}
+			for _, entry := range es {
+				if e := writeTarRoot(ctx, root, filepath.Join(source, entry.Name()), filepath.ToSlash(filepath.Join(name, entry.Name())), tw, bytes); e != nil {
+					return e
+				}
+			}
+		}
+		return nil
+	}
+	n, err := io.Copy(tw, io.LimitReader(f, 1<<30+1))
+	if err == nil && (n > 1<<30 || *bytes > 1<<30-n) {
+		err = fmt.Errorf("file exceeds transfer limit")
+	}
+	*bytes += n
+	return err
+}
+func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool) error {
+	dstRoot, e := os.OpenRoot(dst)
 	if e != nil {
 		return e
 	}
-	defer os.RemoveAll(stage)
+	defer dstRoot.Close()
+	stage, e := makeStage(dstRoot)
+	if e != nil {
+		return e
+	}
+	defer dstRoot.RemoveAll(stage)
+	stageRoot, e := dstRoot.OpenRoot(stage)
+	if e != nil {
+		return e
+	}
+	defer stageRoot.Close()
 	tr := tar.NewReader(in)
 	rootSeen := false
 	complete := false
@@ -178,13 +209,16 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 			if h.Typeflag != tar.TypeReg || h.Size != 0 {
 				return fmt.Errorf("invalid completion footer")
 			}
+			if complete {
+				return fmt.Errorf("duplicate completion footer")
+			}
 			complete = true
 			continue
 		}
 		if complete {
 			return fmt.Errorf("archive data after completion footer")
 		}
-		if h.Name == "" || filepath.IsAbs(h.Name) || strings.Contains(h.Name, "\\") || strings.HasPrefix(filepath.Clean(h.Name), ".."+string(filepath.Separator)) {
+		if h.Name == "" || filepath.IsAbs(h.Name) || strings.Contains(h.Name, "\\") || filepath.Clean(h.Name) != h.Name || strings.HasPrefix(filepath.Clean(h.Name), ".."+string(filepath.Separator)) {
 			return fmt.Errorf("unsafe archive path")
 		}
 		parts := strings.Split(filepath.ToSlash(h.Name), "/")
@@ -197,12 +231,9 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 		if parts[0] != exchangePayloadRoot {
 			return fmt.Errorf("archive contains multiple roots")
 		}
-		target := filepath.Join(stage, filepath.FromSlash(h.Name))
-		if !strings.HasPrefix(target, filepath.Clean(stage)+string(filepath.Separator)) && target != stage {
-			return fmt.Errorf("archive escapes destination")
-		}
+		target := filepath.FromSlash(h.Name)
 		if h.Typeflag == tar.TypeDir {
-			if e = os.MkdirAll(target, 0700); e != nil {
+			if e = stageRoot.MkdirAll(target, 0700); e != nil {
 				return e
 			}
 			continue
@@ -210,10 +241,10 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 		if h.Typeflag != tar.TypeReg {
 			return fmt.Errorf("unsupported archive entry")
 		}
-		if e = os.MkdirAll(filepath.Dir(target), 0700); e != nil {
+		if e = stageRoot.MkdirAll(filepath.Dir(target), 0700); e != nil {
 			return e
 		}
-		f, e := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		f, e := stageRoot.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if e != nil {
 			return e
 		}
@@ -243,8 +274,7 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 		return ctx.Err()
 	default:
 	}
-	dest := filepath.Join(dst, name)
-	if old, err := os.Lstat(dest); err == nil {
+	if old, err := dstRoot.Lstat(name); err == nil {
 		if !overwrite {
 			return fmt.Errorf("destination already exists")
 		}
@@ -259,15 +289,36 @@ func readTar(ctx context.Context, in io.Reader, dst, name string, overwrite bool
 	}
 	payload := filepath.Join(stage, exchangePayloadRoot)
 	if !overwrite {
-		if i, err := os.Lstat(payload); err == nil && !i.IsDir() {
-			if err = os.Link(payload, dest); err != nil {
+		if i, err := dstRoot.Lstat(payload); err == nil && !i.IsDir() {
+			if err = dstRoot.Link(payload, name); err != nil {
 				return err
 			}
 			return nil
 		}
 	}
 	if overwrite {
-		return os.Rename(payload, dest)
+		return dstRoot.Rename(payload, name)
 	}
-	return renameNoReplace(payload, dest)
+	dir, err := dstRoot.Open(".")
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return renameNoReplaceAt(dir, payload, name)
+}
+
+func makeStage(root *os.Root) (string, error) {
+	var b [12]byte
+	for i := 0; i < 100; i++ {
+		if _, err := rand.Read(b[:]); err != nil {
+			return "", err
+		}
+		n := ".exchange-" + hex.EncodeToString(b[:])
+		if err := root.Mkdir(n, 0700); err == nil {
+			return n, nil
+		} else if !os.IsExist(err) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("could not create exchange staging directory")
 }
