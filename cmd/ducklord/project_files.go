@@ -175,6 +175,17 @@ func (s *tuiState) visibleProjectEntries(p *projectFilesPane) []ducklord.FileEnt
 	}
 	return out
 }
+
+func projectFilesMarkedNames(p projectFilesPane) []string {
+	names := make([]string, 0, len(p.marked))
+	for name, marked := range p.marked {
+		if marked {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
 func (s *tuiState) loadProjectFilesPane(parent context.Context, side int) {
 	if previous := s.projectFiles.cancels[side]; previous != nil {
 		previous()
@@ -491,9 +502,21 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 		return true
 	case "c":
 		// Keyboard previews use the pane's current root. A previous drag target
-		// must not survive a cancelled preview.
+		// must not survive a cancelled preview, including a rejected request.
 		s.projectFiles.pendingDestination = ducklord.FileEndpoint{}
 		s.projectFiles.hasPendingDestination = false
+		if p.loading {
+			s.projectFiles.status = "Loading files…"
+			return true
+		}
+		if len(projectFilesMarkedNames(*p)) == 0 {
+			if len(entries) == 0 {
+				s.projectFiles.status = "No files to copy"
+				return true
+			}
+			s.projectFiles.status = "Select files first"
+			return true
+		}
 		s.projectFiles.copySource = s.projectFiles.active
 		s.projectFiles.step = "preview"
 		s.projectFiles.conflict = "skip"
@@ -592,15 +615,9 @@ func (s *tuiState) startProjectFilesCopy() {
 	if s.projectFiles.hasPendingDestination {
 		destination.endpoint = snapshotProjectFilesEndpoint(s.projectFiles.pendingDestination)
 	}
-	names := make([]string, 0, len(source.marked))
-	for name, marked := range source.marked {
-		if marked {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
+	names := projectFilesMarkedNames(source)
 	if len(names) == 0 {
-		s.projectFiles.status = "Select files first"
+		s.projectFiles.step, s.projectFiles.status = "browse", "Select files first"
 		s.projectFiles.pendingDestination = ducklord.FileEndpoint{}
 		s.projectFiles.hasPendingDestination = false
 		return

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
@@ -31,6 +32,78 @@ func TestProjectFilesInputSelectionAndConflictPreview(t *testing.T) {
 	s.handleProjectFilesInput([]byte("r"))
 	if s.projectFiles.conflict != "rename" {
 		t.Fatal("r should select rename")
+	}
+}
+
+func TestProjectFilesCopyPreviewWaitsForLoadedMarkedSource(t *testing.T) {
+	source, destination := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "one.txt"), []byte("one"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := &tuiState{activeAttachKey: "shell"}
+	s.projectFiles = projectFilesState{
+		open: true, step: "browse", generation: 1, panegen: [2]uint64{1, 0},
+		left:  projectFilesPane{endpoint: ducklord.FileEndpoint{Path: source}, marked: map[string]bool{}, loading: true, status: "Loading…"},
+		right: projectFilesPane{endpoint: ducklord.FileEndpoint{Path: destination}, marked: map[string]bool{}},
+		done:  make(chan projectFilesEvent, 2),
+	}
+	t.Cleanup(s.closeProjectFiles)
+
+	s.handleProjectFilesInput([]byte("c"))
+	if s.projectFiles.step != "browse" || s.projectFiles.status != "Loading files…" || !s.projectFiles.open || s.focused || s.activeAttachKey != "shell" {
+		t.Fatalf("loading copy preview changed modal ownership: %#v", s.projectFiles)
+	}
+	s.applyProjectFilesEvent(projectFilesEvent{generation: 1, panegen: 1, side: 0, entries: []ducklord.FileEntry{{Name: "one.txt"}}})
+	s.handleProjectFilesInput([]byte("c"))
+	if s.projectFiles.step != "browse" || s.projectFiles.status != "Select files first" {
+		t.Fatalf("unmarked copy preview = %#v", s.projectFiles)
+	}
+	s.handleProjectFilesInput([]byte(" "))
+	s.handleProjectFilesInput([]byte("c"))
+	if s.projectFiles.step != "preview" {
+		t.Fatalf("marked source did not open preview: %#v", s.projectFiles)
+	}
+	s.handleProjectFilesInput([]byte("\r"))
+	if s.projectFiles.step != "busy" {
+		t.Fatalf("confirmed preview did not start copy: %#v", s.projectFiles)
+	}
+	select {
+	case event := <-s.projectFiles.done:
+		s.applyProjectFilesEvent(event)
+	case <-time.After(5 * time.Second):
+		t.Fatal("copy did not complete")
+	}
+	if s.projectFiles.step != "browse" || !strings.Contains(s.projectFiles.status, "Copied 1, skipped 0") {
+		t.Fatalf("copy completion = %#v", s.projectFiles)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "one.txt")); err != nil {
+		t.Fatalf("copied file missing: %v", err)
+	}
+}
+
+func TestProjectFilesCopyPreviewRejectsEmptySource(t *testing.T) {
+	s := &tuiState{activeAttachKey: "shell"}
+	s.projectFiles = projectFilesState{open: true, step: "browse", left: projectFilesPane{marked: map[string]bool{}}, right: projectFilesPane{marked: map[string]bool{}}}
+	s.handleProjectFilesInput([]byte("c"))
+	if s.projectFiles.step != "browse" || s.projectFiles.status != "No files to copy" || !s.projectFiles.open || s.focused || s.activeAttachKey != "shell" {
+		t.Fatalf("empty source opened or released modal: %#v", s.projectFiles)
+	}
+}
+
+func TestProjectFilesEmptyPreviewConfirmationReturnsToBrowse(t *testing.T) {
+	s := &tuiState{activeAttachKey: "shell"}
+	s.projectFiles = projectFilesState{open: true, step: "preview", copySource: 0,
+		left:  projectFilesPane{marked: map[string]bool{}},
+		right: projectFilesPane{marked: map[string]bool{}},
+	}
+	s.handleProjectFilesInput([]byte("\r"))
+	if s.projectFiles.step != "browse" || s.projectFiles.status != "Select files first" || !s.projectFiles.open || s.focused || s.activeAttachKey != "shell" {
+		t.Fatalf("empty preview confirmation did not return to modal browser: %#v", s.projectFiles)
+	}
+	var out bytes.Buffer
+	s.renderProjectFilesModal(&out, 100, 20)
+	if !strings.Contains(out.String(), "Select files first") {
+		t.Fatalf("browse prompt omitted empty-preview status: %q", out.String())
 	}
 }
 
