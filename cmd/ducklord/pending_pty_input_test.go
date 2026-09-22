@@ -100,6 +100,27 @@ func TestPendingPTYInputYieldsToNewSessionWizard(t *testing.T) {
 	}
 }
 
+func TestPendingPTYInputYieldsToProjectFilesModal(t *testing.T) {
+	s := &tuiState{
+		cfg:             &ducklord.Config{},
+		activeAttachKey: "target",
+		projectFiles:    projectFilesState{open: true},
+	}
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	control := &ducklord.ControlSession{Stdin: writer}
+	var openCancel context.CancelFunc
+	id := 7
+
+	if handlePendingPTYInput(s, []byte("\x03"), true, &control, &openCancel, &id) {
+		t.Fatal("project-files cancel was consumed by the stale PTY lease")
+	}
+	if control == nil || s.activeAttachKey != "target" || id != 7 {
+		t.Fatal("project-files cancel changed the originating PTY lease")
+	}
+}
+
 func TestPendingPTYSessionRemovalBeforeControlCompletionRestoresNavigation(t *testing.T) {
 	s, _, removed, remaining := workspacePaneTestState(t)
 	s.hostSync = make(map[string]ducklord.SessionUpdate)

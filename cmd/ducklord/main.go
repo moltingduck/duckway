@@ -279,8 +279,8 @@ func shouldDeferWorkspaceInput(s *tuiState, replayed bool) bool {
 	// workspace key queued until the replacement control lease is accepted; the
 	// replay is then routed through workspace navigation (for example Ctrl-]
 	// followed by b, then p) instead of being consumed by the old PTY gate.
-	return s.workspacePlacementInputPending && !s.focused && !replayed && !s.newSessionMode &&
-		!s.workspacePaneMode && !s.workspaceProjectFocus
+	return s.workspacePlacementInputPending && !s.focused && !replayed && !s.centralModalOpen() &&
+		!s.workspaceProjectFocus
 }
 
 // shouldRouteWorkspaceProjectInputAsNavigation identifies the project-focus
@@ -5444,7 +5444,7 @@ func cancelRemovedPTYControl(s *tuiState, previousActive string, control **duckl
 func handlePendingPTYInput(s *tuiState, input []byte, workspaceOutput bool, control **ducklord.ControlSession, openCancel *context.CancelFunc, controlID *int) bool {
 	// Workspace modals own input for their entire lifetime. A pending or newly
 	// opened PTY control must never consume modal keys or report them as dropped.
-	if s.workspacePaneMode || s.newSessionMode {
+	if s.centralModalOpen() {
 		return false
 	}
 	if s.notesFocusRestorePending {

@@ -44,6 +44,8 @@ func TestShouldDeferWorkspaceInputPreservesWorkspaceNavigationReplay(t *testing.
 	}
 	for _, state := range []*tuiState{
 		{workspacePlacementInputPending: true, workspacePaneMode: true},
+		{workspacePlacementInputPending: true, commandPaletteMode: true},
+		{workspacePlacementInputPending: true, projectFiles: projectFilesState{open: true}},
 		{workspacePlacementInputPending: true, workspaceProjectFocus: true},
 	} {
 		if shouldDeferWorkspaceInput(state, false) {
