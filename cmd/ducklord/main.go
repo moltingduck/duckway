@@ -3505,6 +3505,19 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			// Project files owns mouse reports before byte-oriented modal input. This
+			// prevents the SGR sequence from being swallowed as text or reaching PTY.
+			if state.projectFiles.open && strings.HasPrefix(string(b), "\x1b[<") {
+				if button, x, y, ok := parseSGRMouse(string(b)); ok {
+					if button == 0 && strings.HasSuffix(string(b), "m") {
+						state.projectFilesMouseRelease(x, y)
+					} else if button == 0 && strings.HasSuffix(string(b), "M") {
+						state.modalMouseInput(x, y)
+					}
+					state.render(os.Stdout)
+					continue
+				}
+			}
 			if state.handleProjectFilesInput(b) {
 				state.render(os.Stdout)
 				continue
