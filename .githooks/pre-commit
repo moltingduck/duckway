@@ -4,6 +4,12 @@
 
 set -e
 
+# A test may have created a temporary Git repository while preserving Git's
+# local environment variables. Resolve this worktree first, then clear those
+# variables before any quality check or child process runs.
+. "$(git rev-parse --show-toplevel)/scripts/pre-commit-env.sh"
+duckway_prepare_precommit
+
 # ── 0. Container script portability ───────────────────────────────────────
 echo "[pre-commit] Docker/Podman runtime selection"
 ./scripts/container-runtime-test.sh

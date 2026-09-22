@@ -52,6 +52,26 @@ podman cp ducklord-verified-ducklord-dev:/root/project.duckproj.json ./project.d
 podman cp ./project.duckproj.json ducklord-verified-ducklord-dev:/root/project.duckproj.json
 ```
 
+## Exchange Project files
+
+Open **Project files** with `f` from the Project or Session list, with the pane
+prefix then `f` (by default `Ctrl+B`, `f`) from a focused terminal, or by
+choosing **Project files** in the Command palette (`Ctrl+B`, Space). The modal
+has a local/source column and a destination column. `Tab` switches columns;
+`h` chooses local, a Host, or the current Project shelf; `g` enters a path;
+`/` searches the current directory only; Space marks entries; and Enter opens a
+directory or confirms an action. Press `c` to review a copy and choose `skip`,
+`rename`, or `overwrite`. Esc backs out one level and then closes. Ctrl-C
+cancels an active copy or closes the modal.
+
+Copies leave the source unchanged. Host-to-host copies are routed through the
+controller. The Project shelf is persistent for each Project. An existing
+destination directory is refused for overwrite instead of being merged; use
+skip or rename when appropriate. Temporary destination data is cleaned up on
+cancel or failure. Remote Ducklions must support the file-exchange commands
+before Host exchange is available. Closing restores the Project, Session, or
+terminal that opened the modal, even if shell output arrived while it was open.
+
 ## Navigate and arrange
 
 | Key | Action |

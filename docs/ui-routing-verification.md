@@ -247,6 +247,13 @@ document omits a required branch.
 
 ## Capability route additions
 
+The file-exchange E2E uses real container paths on two Ducklions and the
+controller. It checks current-directory-only filtering, source-preserving copy
+semantics, the persistent per-Project shelf, and destination cleanup on cancel
+or failure. Directory overwrite is refused rather than merged; skip and rename
+are the available conflict policies. A remote Ducklion must support the
+file-exchange commands before the route is usable.
+
 The default container manifest must include these rows before any of the four
 capabilities is reported complete:
 
@@ -257,3 +264,4 @@ capabilities is reported complete:
 | `route.output-bookmarks` | Session-identity persistence, unavailable-anchor fallback, export redaction | `TestDucklordOutputSearchBookmarksContainerE2E` | Enter reveals the anchor or selects current retained history, then returns to the same PTY; only metadata survives save/export |
 | `route.host-resources` | stale Host/request response rejection and `r` refresh ownership | `TestDucklordHostResourcesContainerE2E` | delayed response for Host A cannot change Host B's Resources screen or focus |
 | `route.project-transfer` | schema rejection, preview-before-write, collision confirmation, identity skip report | `TestDucklordProjectTransferContainerE2E` | export/import round trip preserves allowed layout/notes/bookmark metadata and excludes PTY output/secrets |
+| `route.file-exchange` | `TestProjectFilesInputSelectionAndConflictPreview`, `TestProjectFilesCloseCancelsAndRestoresOrigin` | `TestDucklordFileExchangeContainerE2E` | real PTY/container copy proves client-a bytes reach client-b and the Project shelf; source remains intact, directory copy preserves nested bytes, async shell output cannot steal the modal, and Esc/Ctrl-C closes without a wizard |

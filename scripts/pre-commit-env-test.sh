@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP="$(mktemp -d -t duckway-precommit-env-test-XXXXXX)"
+trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$TMP/work/bin"
+git -C "$TMP/work" init -q
+cat >"$TMP/work/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ -z "${GIT_DIR:-}" && -z "${GIT_WORK_TREE:-}" && -z "${GIT_INDEX_FILE:-}" ]]
+printf '%s\n' "${PWD}" >"${DUCKWAY_PRECOMMIT_TEST_ROOT:?}/go-pwd"
+EOF
+chmod +x "$TMP/work/bin/go"
+
+# Use a fixture repository and a fake go command. The fake command proves the
+# environment cleanup is visible to the child process and that the hook keeps
+# the fixture as its working tree.
+DUCKWAY_PRECOMMIT_TEST_ROOT="$TMP" PATH="$TMP/work/bin:$PATH" \
+  bash -c 'cd "$1"; . "$2/scripts/pre-commit-env.sh"; GIT_DIR="$3" GIT_INDEX_FILE="$4" duckway_prepare_precommit; go test' \
+  bash "$TMP/work" "$ROOT" "$TMP/work/.git" "$TMP/missing.index"
+
+[[ "$(cat "$TMP/go-pwd")" == "$TMP/work" ]]
+echo "pre-commit environment PASS"
