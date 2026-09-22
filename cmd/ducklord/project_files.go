@@ -225,10 +225,12 @@ func (s *tuiState) applyProjectFilesEndpoint(i int) {
 	p := s.projectFilesPane()
 	if i <= 0 {
 		p.endpoint.Client = nil
+		p.endpoint.Path = s.projectFilesLocalPath()
 		p.label = "LOCAL"
 	} else if i <= len(s.cfg.Clients) {
 		client := s.cfg.Clients[i-1]
 		p.endpoint.Client = &client
+		p.endpoint.Path = s.projectFilesRemotePath(client.Name)
 		p.label = client.Name
 	} else if nav, err := s.workspaceNavigation(); err == nil {
 		if path, e := ducklord.ProjectExchangePath(s.cfgPath, nav.CurrentProjectID()); e == nil {
@@ -242,6 +244,20 @@ func (s *tuiState) applyProjectFilesEndpoint(i int) {
 	}
 	p.entries, p.selected, p.marked, p.status, p.loading = nil, 0, map[string]bool{}, "Loading…", true
 	s.loadProjectFilesPane(context.Background(), s.projectFiles.active)
+}
+
+func (s *tuiState) projectFilesLocalPath() string {
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return "/"
+}
+
+func (s *tuiState) projectFilesRemotePath(client string) string {
+	if session := s.activePTYSession(); session.Client == client && session.Cwd != "" {
+		return session.Cwd
+	}
+	return "/"
 }
 
 func removeLastRune(v string) string {
@@ -273,6 +289,18 @@ func projectClip(v string, width int) string {
 		return v
 	}
 	return modalCellTruncate(v, width)
+}
+
+func projectFilesEndpointDescription(p projectFilesPane) string {
+	label := p.label
+	if label == "" {
+		if p.endpoint.Client != nil {
+			label = p.endpoint.Client.Name
+		} else {
+			label = "LOCAL"
+		}
+	}
+	return label + ": " + p.endpoint.Path
 }
 
 func (s *tuiState) applyProjectFilesEvent(event projectFilesEvent) {
@@ -632,8 +660,8 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 		// selected names are informational and may be clipped below it.
 		lines := []modalRenderLine{
 			{modalTitle, "Copy preview · Enter confirm · Esc cancel"},
-			{modalMuted, "From: " + projectClip(src.endpoint.Path, width-6)},
-			{modalMuted, "To: " + projectClip(dst.endpoint.Path, width-4)},
+			{modalMuted, "From: " + projectClip(projectFilesEndpointDescription(src), width-6)},
+			{modalMuted, "To: " + projectClip(projectFilesEndpointDescription(dst), width-4)},
 			{modalMuted, "Conflict: [s] Skip  [r] Rename  [o] Overwrite (" + s.projectFiles.conflict + ")"},
 		}
 		names := make([]string, 0, len(src.marked))

@@ -76,7 +76,7 @@ func TestProjectFilesPathUnicodeClearsSelectionAndCancelsPreviousLoad(t *testing
 func TestProjectFilesEndpointPickerResetsAndShowsConfiguredName(t *testing.T) {
 	dir := t.TempDir()
 	s := &tuiState{cfg: &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a"}, {Name: "client-b"}}}}
-	s.projectFiles = projectFilesState{open: true, step: "browse", left: projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: dir}, marked: map[string]bool{}}, done: make(chan projectFilesEvent, 1)}
+	s.projectFiles = projectFilesState{open: true, step: "browse", left: projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: dir}, entries: []ducklord.FileEntry{{Name: "stale"}}, selected: 1, marked: map[string]bool{"stale": true}}, done: make(chan projectFilesEvent, 1)}
 	s.projectFiles.endpointIndex = 2
 	s.handleProjectFilesInput([]byte("h"))
 	if s.projectFiles.endpointIndex != 0 {
@@ -89,6 +89,41 @@ func TestProjectFilesEndpointPickerResetsAndShowsConfiguredName(t *testing.T) {
 	}
 	if s.projectFiles.left.endpoint.Client == nil || s.projectFiles.left.endpoint.Client.Name != "client-a" {
 		t.Fatalf("wrong endpoint: %#v", s.projectFiles.left.endpoint)
+	}
+	if got := s.projectFiles.left.endpoint.Path; got != "/" {
+		t.Fatalf("new remote endpoint retained local path %q", got)
+	}
+	if s.projectFiles.left.selected != 0 || len(s.projectFiles.left.entries) != 0 || len(s.projectFiles.left.marked) != 0 {
+		t.Fatalf("endpoint switch retained stale selection: %#v", s.projectFiles.left)
+	}
+	s.closeProjectFiles()
+}
+
+func TestProjectFilesEndpointUsesActiveRemoteDirectoryOnlyForMatchingHost(t *testing.T) {
+	identity := ducklord.SessionIdentity{InstanceID: "11111111-1111-4111-8111-111111111111", SessionID: "ABC123"}
+	session := ducklord.RemoteSession{Client: "client-a", InstanceID: identity.InstanceID, SessionID: identity.SessionID, Cwd: "/work/active"}
+	s := &tuiState{
+		workspacePreview: true,
+		activeAttachKey:  sessionKey(session),
+		cfg:              &ducklord.Config{Clients: []ducklord.Client{{Name: "client-a"}, {Name: "client-b"}}},
+		sessions:         []ducklord.RemoteSession{session},
+		projectFiles:     projectFilesState{open: true, active: 0, left: projectFilesPane{marked: map[string]bool{}}, done: make(chan projectFilesEvent, 2)},
+	}
+	s.applyProjectFilesEndpoint(1)
+	if got := s.projectFiles.left.endpoint.Path; got != "/work/active" {
+		t.Fatalf("matching remote endpoint path = %q, want active cwd", got)
+	}
+	s.applyProjectFilesEndpoint(2)
+	if got := s.projectFiles.left.endpoint.Path; got != "/" {
+		t.Fatalf("other remote endpoint path = %q, want root", got)
+	}
+	wantLocal, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.applyProjectFilesEndpoint(0)
+	if got := s.projectFiles.left.endpoint.Path; got != wantLocal {
+		t.Fatalf("local endpoint path = %q, want controller cwd %q", got, wantLocal)
 	}
 	s.closeProjectFiles()
 }
@@ -198,17 +233,17 @@ func TestProjectFilesEditorsAcceptSpacesAndCtrlCCancels(t *testing.T) {
 func TestProjectFilesPreviewClearsDragDestinationAndShowsIt(t *testing.T) {
 	s := &tuiState{}
 	s.projectFiles = projectFilesState{open: true, step: "preview", copySource: 0, hasPendingDestination: true,
-		pendingDestination: ducklord.FileEndpoint{Path: "/target/child"},
-		left:               projectFilesPane{endpoint: ducklord.FileEndpoint{Path: "/source"}, marked: map[string]bool{"one": true}},
-		right:              projectFilesPane{endpoint: ducklord.FileEndpoint{Path: "/target"}, marked: map[string]bool{}},
+		pendingDestination: ducklord.FileEndpoint{Path: "/shared"},
+		left:               projectFilesPane{label: "client-a", endpoint: ducklord.FileEndpoint{Path: "/shared"}, marked: map[string]bool{"one": true}},
+		right:              projectFilesPane{label: "client-b", endpoint: ducklord.FileEndpoint{Path: "/shared"}, marked: map[string]bool{}},
 	}
 	var out bytes.Buffer
 	s.renderProjectFilesModal(&out, 120, 8)
-	if !strings.Contains(out.String(), "To: /target/child") || !strings.Contains(out.String(), "Enter confirm") {
+	if !strings.Contains(out.String(), "From: client-a: /shared") || !strings.Contains(out.String(), "To: client-b: /shared") || !strings.Contains(out.String(), "Enter confirm") {
 		t.Fatalf("preview omitted actual target or controls: %q", out.String())
 	}
 	s.handleProjectFilesInput([]byte("\x1b"))
-	if s.projectFiles.hasPendingDestination || s.projectFiles.right.endpoint.Path != "/target" {
+	if s.projectFiles.hasPendingDestination || s.projectFiles.right.endpoint.Path != "/shared" {
 		t.Fatalf("Esc retained drag target or changed browsing pane: %#v", s.projectFiles)
 	}
 	s.projectFiles.pendingDestination = ducklord.FileEndpoint{Path: "/stale"}

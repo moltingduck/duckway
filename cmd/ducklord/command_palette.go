@@ -60,7 +60,10 @@ func (s *tuiState) closeCommandPalette() {
 				s.outputErr = "command palette restore: " + err.Error()
 			}
 		}
-	} else {
+	} else if s.commandPalettePreviousProjectID != "" || s.commandPalettePreviousPaneID != "" {
+		// A focused shell can exist before the user has saved a Project layout.
+		// There is no workspace position to restore in that case; preserving the
+		// still-live PTY is the exact origin restoration.
 		restored = false
 	}
 	if restored && s.commandPalettePreviousFocused && s.commandPalettePreviousAttachKey != "" {

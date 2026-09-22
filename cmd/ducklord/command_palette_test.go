@@ -112,3 +112,27 @@ func TestCommandPaletteCloseFallsBackWhenOriginPaneDisappears(t *testing.T) {
 		t.Fatalf("stale palette origin restored: focused=%v projectFocus=%v key=%q", s.focused, s.workspaceProjectFocus, s.activeAttachKey)
 	}
 }
+
+func TestCommandPaletteProjectFilesRestoresFocusedShellWithoutLayout(t *testing.T) {
+	identity := ducklord.SessionIdentity{InstanceID: "11111111-1111-4111-8111-111111111111", SessionID: "ABC123"}
+	session := ducklord.RemoteSession{Client: "client", InstanceID: identity.InstanceID, SessionID: identity.SessionID}
+	s := &tuiState{
+		focused:               true,
+		activeAttachKey:       sessionKey(session),
+		workspaceProjectFocus: false,
+		cfg:                   &ducklord.Config{Clients: []ducklord.Client{{Name: "client"}}},
+		sessions:              []ducklord.RemoteSession{session},
+	}
+	s.openCommandPalette()
+	s.commandPaletteIndex = 3 // Project files
+	if !s.handleCommandPaletteInput([]byte("\r")) || !s.projectFiles.open {
+		t.Fatal("palette did not open Project files")
+	}
+	if !s.projectFiles.originFocused || s.projectFiles.originAttachKey != sessionKey(session) {
+		t.Fatalf("Project files lost focused-shell origin: %#v", s.projectFiles)
+	}
+	s.closeProjectFiles()
+	if !s.focused || s.workspaceProjectFocus || s.activeAttachKey != sessionKey(session) {
+		t.Fatalf("close did not restore focused shell without a layout: focused=%v projectFocus=%v key=%q", s.focused, s.workspaceProjectFocus, s.activeAttachKey)
+	}
+}
