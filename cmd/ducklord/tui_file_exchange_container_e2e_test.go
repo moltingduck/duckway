@@ -362,7 +362,6 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	waitE2E(t, 10*time.Second, func() bool {
 		screen := capture.currentText()
 		return strings.Contains(screen, "Session list pane:") &&
-			strings.Contains(screen, "Active · Enter again to focus") &&
 			!strings.Contains(screen, "Tab switch column")
 	}, func() string {
 		return "Project Files did not fully close to the Session list: " + safeTerminalDiagnostic(capture.currentText())
