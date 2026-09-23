@@ -214,9 +214,28 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 		})
 		writePTY(t, terminal, " ")
 		waitE2E(t, 10*time.Second, func() bool {
-			return paneContains(activePane, "[x] "+name) && paneContains(activePane, "[x] "+alreadySelected)
+			return paneContains(activePane, "[x] "+name)
 		}, func() string {
 			return "additional source entry was not selected: " + safeTerminalDiagnostic(capture.currentText())
+		})
+		// Filtering hides unrelated rows, so clear the query before proving that
+		// both the newly selected item and the prior selection remain checked.
+		writePTY(t, terminal, "/")
+		capture.waitCurrent(t, "Filter:", 10*time.Second)
+		writePTY(t, terminal, strings.Repeat("\b", 256)+"\r")
+		waitE2E(t, 10*time.Second, func() bool {
+			screen := capture.currentText()
+			return projectFilesPanelContains(capture, 0, "LEFT") &&
+				projectFilesPanelContains(capture, 1, "RIGHT") &&
+				strings.Contains(screen, "Tab switch column") &&
+				!strings.Contains(screen, "Filter:")
+		}, func() string {
+			return "cleared source filter did not return to browse mode: " + projectFilesOwnershipDiagnostic(capture)
+		})
+		waitE2E(t, 10*time.Second, func() bool {
+			return paneContains(activePane, "[x] "+name) && paneContains(activePane, "[x] "+alreadySelected)
+		}, func() string {
+			return "clearing the filter did not preserve both source selections: " + safeTerminalDiagnostic(capture.currentText())
 		})
 	}
 	hasCopyResult := func(screen string) bool {
@@ -267,9 +286,19 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	assertRenderedTransfer := func(from, sourcePath, to, destinationPath string) {
 		t.Helper()
 		name := filepath.Base(sourcePath)
+		sourceSide, destinationSide := -1, -1
+		for side := 0; side < 2; side++ {
+			if projectFilesPanelContains(capture, side, from) {
+				sourceSide = side
+			}
+			if projectFilesPanelContains(capture, side, to) {
+				destinationSide = side
+			}
+		}
 		waitE2E(t, 10*time.Second, func() bool {
-			return projectFilesPanelRowContains(capture, 0, name, "Sent") &&
-				projectFilesPanelRowContains(capture, 1, name, "Received")
+			return sourceSide >= 0 && destinationSide >= 0 && sourceSide != destinationSide &&
+				projectFilesPanelRowContains(capture, sourceSide, name, "Sent") &&
+				projectFilesPanelRowContains(capture, destinationSide, name, "Received")
 		}, func() string {
 			return fmt.Sprintf("browse rows did not mark %s sent from %s or received at %s (endpoints %s -> %s): %s", name, sourcePath, destinationPath, from, to, projectFilesOwnershipDiagnostic(capture))
 		})
@@ -508,10 +537,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	selectEndpoint(1, clientBEndpoint, targetB, "drop-dir")
 	selectEndpoint(0, clientAEndpoint, sourceA, multiOne)
 	selectOnly(multiOne)
-	writePTY(t, terminal, "/"+multiTwo+"\r")
-	capture.waitCurrent(t, multiTwo, 10*time.Second)
-	waitProjectFiles()
-	writePTY(t, terminal, " ")
+	selectAdditional(multiTwo, multiOne)
 	copyPreview("")
 	assertRemoteText(clientB, targetB+"/"+multiOne, multiOneBytes, "first multiselect file was not copied")
 	assertRemoteText(clientB, targetB+"/"+multiTwo, multiTwoBytes, "second multiselect file was not copied")
@@ -536,10 +562,22 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	}
 	writePTY(t, terminal, "\x1b")
 	waitProjectFiles()
-	capture.waitCurrent(t, asyncHistory, 15*time.Second)
 	if !paneContains(0, "ACTIVE") || paneContains(1, "ACTIVE") {
 		t.Fatalf("history Esc did not restore the same active browser side: %s", safeTerminalDiagnostic(capture.currentText()))
 	}
+	// Closing history only reveals the Project Files modal. Close that modal as
+	// well, refocus the owning shell, and prove its queued output is delivered
+	// only after terminal ownership is restored. Then reopen the browser for the
+	// remaining transfer checks.
+	writePTY(t, terminal, "\x03")
+	capture.waitCurrent(t, "SESSIONS", 10*time.Second)
+	writePTY(t, terminal, "/"+handle+"\r")
+	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Session focus:", 10*time.Second)
+	capture.waitCurrent(t, asyncHistory, 15*time.Second)
+	writePTY(t, terminal, "\x02f")
+	waitProjectFiles()
 
 	// Client B -> client A is a separate direction with different bytes.
 	selectEndpoint(0, clientBEndpoint, sourceB, bFile)
