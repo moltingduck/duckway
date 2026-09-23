@@ -3701,7 +3701,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						requestPreview(true)
 						b = []byte("\r")
 					} else {
-						state.dispatchPaneCommand(command)
+						dispatchPaneCommandAndRestoreHelpFocus(state, command, workspaceOutput, true, control, attach)
 						queuePaneReplay()
 						state.render(os.Stdout)
 						continue
@@ -4852,6 +4852,16 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			}
 			state.render(os.Stdout)
 		}
+	}
+}
+
+// dispatchPaneCommandAndRestoreHelpFocus closes the focus lease when a Help
+// action is dispatched through the workspace prefix route (including a
+// clicked Help action). Other close paths restore focus at their input site.
+func dispatchPaneCommandAndRestoreHelpFocus(state *tuiState, command string, output workspaceInputFocusSetter, ready bool, control *ducklord.ControlSession, attach *ducklord.AttachSession) {
+	state.dispatchPaneCommand(command)
+	if command == "?" && !state.helpMode && state.helpFocusRestorePending {
+		restorePendingHelpFocusWithAttach(state, output, ready, control, attach)
 	}
 }
 

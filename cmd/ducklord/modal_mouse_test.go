@@ -108,8 +108,15 @@ func TestModalMouseNotificationLevelsAndWorkspaceConfirmation(t *testing.T) {
 }
 
 func TestModalMouseHelpUsesConfiguredShortcutsAndIgnoresExamples(t *testing.T) {
-	s := &tuiState{workspacePreview: true, focused: true, activeAttachKey: "host/session", cfg: &ducklord.Config{Shortcuts: map[string]string{"pane_prefix": "ctrl+g", "help": "F1"}}}
+	s, _, a, _ := workspacePaneTestState(t)
+	s.focused = true
+	s.activeAttachKey = sessionKey(a)
+	s.cfg.Shortcuts = map[string]string{"pane_prefix": "ctrl+g", "help": "F1"}
 	s.toggleHelp()
+	// Selection may advance while the overlay is open; close must restore the
+	// Session that owned focus when Help was opened.
+	s.selected = 1
+	s.activeAttachKey = sessionKey(s.sessions[1])
 	s.helpSearchQuery = "Open local help"
 	s.renderHelpModal(io.Discard, 100, 80)
 	foundPrefix := false
@@ -128,9 +135,15 @@ func TestModalMouseHelpUsesConfiguredShortcutsAndIgnoresExamples(t *testing.T) {
 			if !consumed || command != "?" {
 				t.Fatalf("clicked prefix sequence did not reach command routing: consumed=%v command=%q", consumed, command)
 			}
-			s.dispatchPaneCommand(command)
-			if s.helpMode || !s.helpFocusRestorePending {
-				t.Fatalf("clicked Help command did not close overlay while retaining origin restoration: help=%v pending=%v", s.helpMode, s.helpFocusRestorePending)
+			focus := &recordingWorkspaceInputFocus{}
+			control := &ducklord.ControlSession{ClientKey: a.Client, InstanceID: a.InstanceID, SessionID: a.SessionID, RuntimeGeneration: a.RuntimeGeneration}
+			dispatchPaneCommandAndRestoreHelpFocus(s, command, focus, true, control, nil)
+			if s.helpMode || !s.focused || s.helpFocusRestorePending || s.helpPendingInputKey != "" {
+				t.Fatalf("clicked Help command did not restore originating Session focus: help=%v focused=%v pending=%v key=%q", s.helpMode, s.focused, s.helpFocusRestorePending, s.helpPendingInputKey)
+			}
+			want := ducklord.OutputKey{ClientKey: a.Client, InstanceID: a.InstanceID, SessionID: a.SessionID}
+			if len(focus.keys) != 1 || focus.keys[0] != want {
+				t.Fatalf("Help click restored wrong PTY focus: got=%+v want=%+v", focus.keys, want)
 			}
 		}
 	}
@@ -144,6 +157,15 @@ func TestModalMouseHelpUsesConfiguredShortcutsAndIgnoresExamples(t *testing.T) {
 			t.Fatal("prefix shortcut unavailable outside workspace must not be clickable")
 		}
 	}
+}
+
+type recordingWorkspaceInputFocus struct {
+	keys []ducklord.OutputKey
+}
+
+func (r *recordingWorkspaceInputFocus) SetInputFocus(key ducklord.OutputKey) error {
+	r.keys = append(r.keys, key)
+	return nil
 }
 
 func TestModalMouseActionMenuOmitsDisabledOptions(t *testing.T) {
