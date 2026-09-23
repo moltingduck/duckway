@@ -34,6 +34,18 @@ type FileCopyRequest struct {
 	Source, Destination FileEndpoint
 	Names               []string
 	Conflict            string
+	Progress            func(FileCopyProgress)
+}
+
+// FileCopyProgress describes one ordered per-item file exchange transition.
+// Completed counts items committed or skipped; it never counts failed or
+// not-yet-started items.
+type FileCopyProgress struct {
+	Name        string
+	Destination string
+	State       string
+	Completed   int
+	Total       int
 }
 type FileCopyResult struct {
 	Name        string `json:"name"`
@@ -117,6 +129,9 @@ func ListFiles(ctx context.Context, endpoint FileEndpoint) ([]FileEntry, error) 
 }
 
 func CopyFiles(parent context.Context, req FileCopyRequest) ([]FileCopyResult, error) {
+	// Keep the request stable even if the caller reuses or changes its Names
+	// slice while progress callbacks are running.
+	req.Names = append([]string(nil), req.Names...)
 	if err := validateEndpoint(req.Source); err != nil {
 		return nil, err
 	}
@@ -171,6 +186,7 @@ func CopyFiles(parent context.Context, req FileCopyRequest) ([]FileCopyResult, e
 			return results, ctx.Err()
 		default:
 		}
+		emitFileCopyProgress(req, name, "", "copying", len(results))
 		if sameClient(req.Source.Client, req.Destination.Client) {
 			candidate := filepath.Join(req.Source.Path, name)
 			if rel, e := filepath.Rel(candidate, req.Destination.Path); e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -185,6 +201,7 @@ func CopyFiles(parent context.Context, req FileCopyRequest) ([]FileCopyResult, e
 		}
 		if skip {
 			results = append(results, FileCopyResult{Name: name, Destination: filepath.Join(req.Destination.Path, name), Skipped: true})
+			emitFileCopyProgress(req, name, filepath.Join(req.Destination.Path, name), "skipped", len(results))
 			continue
 		}
 		if req.Source.Client != nil && req.Destination.Client != nil {
@@ -200,8 +217,15 @@ func CopyFiles(parent context.Context, req FileCopyRequest) ([]FileCopyResult, e
 			return results, err
 		}
 		results = append(results, FileCopyResult{Name: name, Destination: filepath.Join(req.Destination.Path, destName)})
+		emitFileCopyProgress(req, name, filepath.Join(req.Destination.Path, destName), "copied", len(results))
 	}
 	return results, nil
+}
+
+func emitFileCopyProgress(req FileCopyRequest, name, destination, state string, completed int) {
+	if req.Progress != nil {
+		req.Progress(FileCopyProgress{Name: name, Destination: destination, State: state, Completed: completed, Total: len(req.Names)})
+	}
 }
 
 func sameClient(a, b *Client) bool {
@@ -258,6 +282,7 @@ func copyLocal(ctx context.Context, req FileCopyRequest) ([]FileCopyResult, erro
 			return res, ctx.Err()
 		default:
 		}
+		emitFileCopyProgress(req, n, "", "copying", len(res))
 		if rel, e := filepath.Rel(filepath.Join(req.Source.Path, n), req.Destination.Path); e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			if si, se := srcRoot.Lstat(n); se == nil && si.IsDir() {
 				return res, fmt.Errorf("destination is inside source %q", n)
@@ -283,6 +308,7 @@ func copyLocal(ctx context.Context, req FileCopyRequest) ([]FileCopyResult, erro
 		}
 		if skip {
 			res = append(res, FileCopyResult{Name: n, Destination: filepath.Join(req.Destination.Path, n), Skipped: true})
+			emitFileCopyProgress(req, n, filepath.Join(req.Destination.Path, n), "skipped", len(res))
 			continue
 		}
 		stage, err := makeExchangeStage(dstRoot)
@@ -318,7 +344,11 @@ func copyLocal(ctx context.Context, req FileCopyRequest) ([]FileCopyResult, erro
 		if err != nil {
 			return res, err
 		}
+		if err = dstRoot.RemoveAll(stage); err != nil {
+			return res, err
+		}
 		res = append(res, FileCopyResult{Name: n, Destination: filepath.Join(req.Destination.Path, dn)})
+		emitFileCopyProgress(req, n, filepath.Join(req.Destination.Path, dn), "copied", len(res))
 	}
 	return res, nil
 }
