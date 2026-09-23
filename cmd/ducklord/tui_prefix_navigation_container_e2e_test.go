@@ -246,35 +246,41 @@ func TestDucklordPrefixNavigationContainerE2E(t *testing.T) {
 	// capture is terminal-cell state; the click must route locally and close
 	// Help without sending its bytes to the focused PTY.
 	writePTY(t, terminal, "/Open local help\r")
-	capture.waitCurrent(t, "Filter: Open local help", 10*time.Second)
 	var helpRow, helpCol int
 	waitE2E(t, 10*time.Second, func() bool {
-		for _, line := range strings.Split(capture.currentText(), "\n") {
-			if !strings.Contains(line, "Open local help") || strings.Contains(line, "Filter:") {
+		// Derive both the filter check and click coordinates from one captured
+		// terminal frame. A filter header can render before its result rows, and
+		// separate snapshots could otherwise click a stale row from the prior
+		// screen.
+		screen := capture.currentText()
+		filterVisible := strings.Contains(screen, "Filter: Open local help")
+		for row, line := range strings.Split(screen, "\n") {
+			if !filterVisible || strings.Contains(line, "Filter:") || strings.Contains(line, "Keyboard shortcuts") || !strings.Contains(line, "Open local help") {
 				continue
+			}
+			if col := strings.Index(line, "Open local help"); col >= 0 {
+				helpRow, helpCol = row+1, modalCellWidth(line[:col])+1
 			}
 			return true
 		}
 		return false
-	}, func() string { return "filtered Help action row is not visible" })
-	for row, line := range strings.Split(capture.currentText(), "\n") {
-		if strings.Contains(line, "Filter:") {
-			continue
-		}
-		if col := strings.Index(line, "Open local help"); col >= 0 {
-			helpRow, helpCol = row+1, modalCellWidth(line[:col])+1
-			break
-		}
-	}
+	}, func() string { return "filtered Help action row is not visible in one current frame" })
 	if helpRow == 0 {
-		t.Fatalf("filtered Help action is not visible in terminal cells:\n%s", capture.currentText())
+		t.Fatalf("filtered Help action is not visible in terminal cells (row=%d col=%d):\n%s", helpRow, helpCol, capture.currentText())
 	}
 	if got := readLog(0); got != want[0] {
 		t.Fatalf("Help pin leaked input to session 0: got %q want %q", got, want[0])
 	}
-	closeStart := capture.position()
 	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dM", helpCol, helpRow))
-	capture.waitAfter(t, closeStart, "Session focus: keys go to PTY", 10*time.Second)
+	waitE2E(t, 10*time.Second, func() bool {
+		screen := capture.currentText()
+		return strings.Contains(screen, "Session focus: keys go to PTY") &&
+			!strings.Contains(screen, "Keyboard shortcuts and feature guide") &&
+			!strings.Contains(screen, "Filter: Open local help")
+	}, func() string {
+		return fmt.Sprintf("Help click did not close the current overlay (row=%d col=%d); screen:\n%s",
+			helpRow, helpCol, safeTerminalDiagnostic(capture.currentText()))
+	})
 	if got := readLog(0); got != want[0] {
 		t.Fatalf("clicked Help action leaked input to session 0: got %q want %q", got, want[0])
 	}
