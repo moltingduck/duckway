@@ -70,6 +70,35 @@ policy before confirming. Esc backs out of a form or closes the browser. During
 a transfer, Ctrl-C requests cancellation; wait for cleanup to finish before
 closing. Esc does not cancel a running transfer.
 
+### Read the panels and transfer results
+
+The left panel is cyan and the right panel is lavender. Each has its own border,
+host name, current path, filter and selection counts. **Active** identifies the
+panel receiving keyboard commands. On narrow terminals the panels stack.
+Folders have a 📁 icon; press `i` for ASCII folder markers if your terminal renders
+emoji poorly. Color is always accompanied by words or markers.
+
+| Status | Meaning |
+| --- | --- |
+| Amber / copying | This item is being transferred; it is not yet confirmed complete |
+| Green / copied, Sent or Received | The destination was committed; the source remains intact |
+| Yellow / skipped | The destination already existed and the skip policy kept it |
+| Red / failed | This attempted item failed; inspect the error |
+| Cancelled / not started | The active item was interrupted, or this item was never attempted |
+
+Preview shows the direction, endpoints, selected entries and conflict policy.
+Progress counts actual completed items, not estimated bytes. Renamed results
+show the destination name actually used. Highlights describe the latest batch
+and only appear for its matching host and path.
+
+Press `l` in the browser to see this Project's recent transfers. Left/Right
+selects a batch; Up/Down selects an item and its Source/Destination path details.
+Each row shows the source and actual destination filenames. Esc returns to the
+same browser panel and cursor. Press `x` inside history to clear that Project's history and
+highlights; this does not delete files. Up to 20 batches remain available after
+closing/reopening the modal, until Ducklord exits. Completed entries remain
+visible in history even if another entry failed or the transfer was cancelled.
+
 Copies leave the source unchanged. Each transferred item is limited to 1 GiB.
 Remote archives also have entry-count and path-depth limits. Copied files keep
 the owner execute bit; files and directories are otherwise private to the owner.

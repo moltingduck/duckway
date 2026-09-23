@@ -1,5 +1,130 @@
 # Current handoff
 
+## Latest checkpoint: exchange-visual-0923
+
+2026-09-23: implementation and runtime verification complete at `0036366`.
+Branch: `codex/recover-live-state-20260922`; base `db2b0df`.
+Implementation pushed to origin at `0036366`; the final documentation commit
+records the completed delivery.
+
+Two independent colored panels show endpoint, path, selection and active side;
+folder icons have an ASCII fallback. Copies show direction and truthful per-item
+outcomes, with Sent/Received highlights on exact endpoint/path matches. Each
+Project retains its latest 20 batches in memory, including actual renamed targets.
+See [visual specification](docs/file-exchange-visual-design.md),
+[operation guide](docs/ducklord-user-guide.md#exchange-project-files), and
+[routing contract](docs/pane-routing.md#workspace-capability-routes).
+
+### Validation
+
+- `GOFLAGS=-buildvcs=false go test ./...`: PASS at a8db353 (exec 92978).
+- `CGO_ENABLED=1 GOFLAGS=-buildvcs=false go test -race ./...`: PASS at cfe64d3
+  (exec 67483); affected UI normal/race checks passed after 881c0d5.
+- `scripts/check-coverage.sh`: PASS, 56.9% >= 37.5% (exec 24590).
+- `GOFLAGS=-buildvcs=false golangci-lint run ./...`: batch finding fixed in
+  f4098d8; 13 unrelated baseline findings remain, so lint is not globally clean.
+- `bash scripts/check-routing-manifest.sh`: PASS, 21 routes.
+- `bash scripts/container-runtime-test.sh`, `bash scripts/ducklord-demo-common-test.sh`,
+  `bash scripts/pre-commit-env-test.sh`: PASS.
+- Focused history/ownership unit checks: PASS at 0036366; five independent
+  integration review roles cleared findings, with affected frontend follow-up.
+- Focused real container E2E: PASS, r10, exec 98014, 26.096s; script exit 0.
+- Full default `scripts/ducklord-tui-e2e.sh`: PASS at 0036366, prefix
+  exchange-visual-0923-default1, exec 63609, 269.939s; script exit 0 including
+  teardown. The legacy create-wizard test intentionally skips.
+  Environment: PATH includes /usr/local/go/bin, CONTAINER_RUNTIME=podman,
+  GOFLAGS=-buildvcs=false; no pattern override on the default suite.
+
+The exchange E2E proves both host directions, persistent shelf transfers,
+source/nested-byte preservation, wide/narrow drag, skip/rename/overwrite,
+cancelled/failed/not-started outcomes and staging cleanup. History remains usable
+during real asynchronous shell output, survives reopening, exposes actual target
+paths, and clears correctly. Closing restores terminal control through an executed
+file sentinel. The last fixture repair scopes selected history rows to their
+outcome marker; a background workspace cursor cannot satisfy the assertion.
+
+### Retained demo and artifact identity
+
+`scripts/ducklord-podman-demo.sh` rebuilt and restarted successfully (exec 68697,
+exit 0) with prefix `ducklord-verified`, owner `ducklord-verified-20260917`,
+CONTAINER_RUNTIME=podman and GOFLAGS=-buildvcs=false. Readiness includes actual
+remote PTY send/read and native shell lifecycle. All five demo containers are Up;
+`ducklord clients` and `ducklord probe` for client-a/b/c succeed. Client-d remains
+the intentional SSH-only installation fixture.
+
+Measured SHA-256 values match the default E2E fixture exactly:
+- ducklord: 30741b03a07d46a292ed3a305aa044fff1d477301872be77b9beae555486a49a
+- ducklion: e547089b8b738315907eedf0524417b22b1c6142c15f8135e6336f2b8133e553
+- duckway: 7cc7ef026e783325169d2a03eaa541b43e0973ea6b36a07672e59eea7511cdb8
+
+```sh
+podman exec -it ducklord-verified-ducklord-dev ducklord tui --config /root/.ducklord/config.yaml
+```
+Project/quick Session list: `f`; focused terminal: `Ctrl-B`, then `f`.
+`Tab` selects a panel, `h` chooses an endpoint, `/` filters, Space marks entries,
+`c` previews a copy, `l` opens history, and `i` toggles ASCII folder markers.
+
+### Cleanup and limits
+
+Final container/network/process scan found no exchange-visual-0923 fixtures or
+workers. All batch worktrees/branches were inspected, integrated, removed and
+pruned; no owned temporary roots, generated binaries, coverage or patch backups
+remain. Script EXIT cleanup removed demo build directories and setup logs.
+Preserved baseline five .claude worktrees, three dw-* containers, seven old E2E
+networks, and 25 older setup logs (all dated September 16–22). The explicitly
+retained demo is the only refreshed persistent runtime.
+
+History is limited to the latest 20 batches per Project and does not persist
+across application restarts. Search filters the current directory. Copies stream
+through Ducklord; source files remain intact. Usage metrics are unmeasured;
+recorded in docs/agent-workflow.md, never inferred from cumulative goal usage.
+Next action after final documentation push: await the next user request.
+
+### Earlier checkpoint (superseded)
+
+Main remains `2b9a2be`; documentation edits are uncommitted. UI `15bdee5` has
+not been integrated: inspection found copy cancellation could discard its final
+acknowledgement, scroll/render and mouse coordinates disagreed, endpoint pickers
+could be clipped, and independent borders/outcome rendering were incomplete.
+The UI agent is fixing these in its existing isolated worktree.
+
+E2E commits `cf78295` and `fa02a1a` compile, but have not run against containers.
+Follow-up inspection found same-host panel checks could accept the other side,
+row checks did not require a shared row, drag lookup could match filter text,
+and a latest-batch assertion expected an earlier batch. The E2E agent is fixing
+these checks in its existing tree and coordinating the render contract with UI.
+Do not use these partial checks as completion evidence. No new runtime or
+temporary artifacts were created in this checkpoint. The next step is to inspect
+and integrate corrected commits, then perform the five integrated reviews and
+the required runtime gates. Resource ownership remains in TASK.md.
+
+## Active batch: exchange-visual-0923
+
+2026-09-23: starting visual file-exchange improvements on db2b0df. See TASK.md
+and docs/file-exchange-visual-design.md for acceptance and resource ownership.
+Checkout clean/non-bare before documentation edits; no new processes yet.
+Implementation will use isolated lower-tier backend/UI agents, followed by
+E2E and five integrated review roles. Previous v1 evidence below remains baseline,
+not evidence for this batch.
+
+Checkpoint: backend progress commit `bc7685d` reviewed and cherry-picked into main
+as `2b9a2be`. Backend agent ran `GOFLAGS=-buildvcs=false /usr/local/go/bin/go test
+./internal/ducklord -count=1` and `git diff --check` successfully. This is partial
+validation only. UI implementation remains active in its recorded worktree.
+E2E agent now owns sibling `../duckway-exchange-visual-e2e`, branch
+`codex/exchange-visual-e2e`, base `2b9a2be`; no Podman run authorized until UI is
+integrated and runtime use coordinated. Backend tree is clean and retained for
+integration audit. No batch-owned runtime started by main. Route and guide updates
+are drafts until final UI and E2E evidence agree. Previous statusline-only turn was
+no progress toward this goal; repository and live agent state have been rechecked.
+
+Subsequent checkpoint: backend worktree had clean status, no ignored artifacts,
+and an empty source/test diff against integrated main `2b9a2be`. Removed that
+worktree and its cherry-picked branch, then pruned the registry. UI and E2E agents
+remain live with uncommitted work in their assigned trees. Process/container scan
+found only the retained baseline containers and no exchange test or stress-shell
+process. Backend checks remain partial evidence; no new UI/runtime PASS claimed.
+
 
 Updated: 2026-09-22 Asia/Taipei
 
@@ -717,3 +842,7 @@ Validation:
 - Pre-commit coverage — PASS (56.2%, threshold 37.5%).
 - Pre-commit lint reported 13 existing static-analysis/unused-code issues, so
   the preservation commit used `--no-verify` after the tests passed.
+
+Checkpoint: E2E activation-render acknowledgement integrated as c8bb9a0;
+focused r4 is running in exec 87246. Full Go tests and routing manifest passed
+at a8db353 (exec 92978, 21 routes). r3 resources are gone.

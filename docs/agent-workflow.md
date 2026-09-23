@@ -300,3 +300,5 @@ instructions, and completion must reflect the actual agreed objective.
 | Batch | Completed outcome | Calls | Input / cached / output tokens | Subagents | Repeated checks | Source |
 | --- | --- | --- | --- | --- | --- | --- |
 | 2026-09-22 Project file exchange v1 | Two-column SSH exchange and persistent Project shelf; demo rebuilt with E2E-matching binaries | Unmeasured | Unmeasured | Unmeasured (three implementation scopes and five review roles, with follow-ups) | Focused reruns after actual modal, archive, filter, and asynchronous selection defects; final default PTY suite 31 passed / 1 intentional skip | HANDOFF.md; no usage records available |
+
+| 2026-09-23 exchange visual feedback | Independent colored panels, directional results and project transfer history; integrated code 0036366 | Unmeasured | Unmeasured | Unmeasured (isolated implementation scopes and five review roles, with follow-ups) | Focused E2E reruns after render/selection fixture repairs; final focused and full default PTY suites passed | TASK.md and HANDOFF.md; batch token records unavailable |

@@ -1,30 +1,50 @@
 # Current batch
 
 ## Objective
-Deliver a Project file exchange first version: two directory columns, local or
-configured SSH hosts, and persistent Project exchange storage. Remote copies
-stream through Ducklord; hosts never need direct connectivity.
+Make Project file exchange visually clear: independent host panels, directional
+copy feedback, per-file highlights, and project-scoped recent transfer history.
+
+## Scope
+Build on verified v1 at db2b0df. Preserve streaming via Ducklord and copy semantics.
+Specification: docs/file-exchange-visual-design.md; route.file-exchange.
 
 ## Acceptance criteria
-- [x] Browse and search directories, select multiple entries, copy by keyboard or
-  dragging between columns, and explicitly review conflict policy.
-- [x] Local/remote and remote/remote files and directories transfer correctly;
-  failed or cancelled transfers clean staging and preserve sources.
-- [x] Each Project has its own persistent exchange directory.
-- [x] Modal owns keyboard/mouse during background events; close restores origin.
-- [x] State/backend tests and default real-PTY/container route E2E pass.
-- [x] Five independent review roles completed; demo rebuilt and verified.
-- [x] Batch-owned resources removed and evidence recorded in HANDOFF.md.
+- [x] Independently bordered cyan/purple panels show host, path, active side,
+  filter, selection counts; folder icons have an ASCII fallback.
+- [x] Preview and busy states show real source/destination and direction; truthful
+  per-item progress and copied/skipped/failed/cancelled/not-started outcomes.
+- [x] Latest-batch highlights bind to endpoint and full path; renamed targets are
+  explicit, success follows commit, sources remain intact.
+- [x] Per-project last 20 batches survive modal reopen; history navigation restores
+  the active browser side; narrow layouts and mouse geometry remain consistent.
+- [x] Focus/async state tests, backend progress tests, and real two-host PTY E2E
+  verify outcomes, history, modal ownership and terminal restoration.
+- [x] Five integrated review roles clear findings; full tests/race/lint, coverage,
+  routing manifest and default container E2E checked on integrated artifact.
+- [x] Demo rebuilt/restarted, readiness and artifact identity checked; commit/push.
+- [x] Owned resources cleaned; handoff contains evidence and usage availability.
 
 ## Resource ledger
-Owner: exchange-v1-20260922. Base: 8d9474f.
-All batch worktrees and branches were integrated and removed.
-Temporary roots /tmp/duckway-exchange-v1-20260922 and /tmp/x0922 removed.
-Test containers/networks: script-owned traps completed teardown; none retained.
-Baseline retained: five existing .claude/worktrees snapshots; owner-labelled
- ducklord-verified-* demo (owner ducklord-verified-20260917).
+Owner: exchange-visual-0923. Base: db2b0df9d43dec1fbf927d0c57421187872fd28d.
+All UI/backend/E2E and correction worktrees/branches were inspected, integrated,
+removed and pruned. E2E f3e81b2 is preserved in main as 0036366.
+Focused r10 and default1 scripts exited 0 including teardown; no owned containers,
+networks, workers, sockets, task roots, generated binaries or patch backups remain.
+Demo and hook-check temporary directories were removed by script EXIT traps.
+
+Preserved baseline: five .claude/worktrees/agent-*, three
+dw-*-1788855706-1278453 containers, seven old E2E networks and 25 older setup logs.
+Retained/restarted demo: ducklord-verified controller + clients a-d;
+owner ducklord-verified-20260917. Do not delete baseline resources.
 
 ## Status
-Complete. Validation, artifact identity, demo readiness, and cleanup evidence:
-[HANDOFF.md](HANDOFF.md#project-file-exchange-v1--complete).
-Await the next user request.
+Complete implementation at 0036366, pushed to origin on
+codex/recover-live-state-20260922. Final documentation records verification.
+Full Go/race, affected focused checks, 56.9% coverage, 21-route manifest,
+portability/lock/hook checks and five review roles completed.
+Focused real E2E passed (26.096s); full default E2E passed (269.939s), both scripts
+exited 0 including teardown. Lint has 13 unrelated baseline findings; no new
+batch findings remain. Demo rebuilt/restarted (exec 68697, exit 0), readiness
+and client probes passed; three binary hashes match the tested fixture exactly.
+See HANDOFF.md for commands, coverage scope, artifact hashes and final resource scan.
+Usage metrics unavailable/unmeasured; recorded in docs/agent-workflow.md.

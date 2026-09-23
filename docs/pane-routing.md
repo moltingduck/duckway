@@ -214,11 +214,18 @@ Session.
 `route.file-exchange` opens Project files from Project/quick-session-list focus with
 `f`, from a focused terminal with the pane prefix followed by `f`, or from the
 Command palette's **Project files** action. The modal owns both columns while
-host and Project-shelf listings load. Its stable states are `browse`,
-`endpoints`, `path`, `filter`, `preview`, and `busy`; `Tab` changes columns,
+host and Project-shelf listings load.
+Opening selects the left local-working-directory column; the right starts at
+the active session's host/cwd when available, otherwise the Project shelf.
+The browser's stable states are `browse`,
+`endpoints`, `path`, `filter`, `preview`, `busy`, and `history`; `Tab` changes columns,
 `h` chooses local/host/Project shelf endpoints, `g` edits a path, `/` filters
 the current directory, Space marks entries, Enter opens or confirms, and `c`
-opens the copy preview. Backspace opens the parent directory and clears its
+opens the copy preview. `i` switches folder icons to ASCII. `l` opens the
+captured Project's transfer history: Left/Right selects a batch, Up/Down selects
+an item, and `x` clears that Project's history/highlights. History Esc returns
+to the same browser side and cursor; history keys never reach the PTY.
+Backspace opens the parent directory and clears its
 filter. Endpoint selection and confirmed path changes clear the old directory
 filter. Esc unwinds one form state or closes the browser; it is ignored during
 copy. Ctrl-C requests cancellation and holds the busy state until cleanup
@@ -240,7 +247,10 @@ Command palette ------------ select --+      |
                                             +-- Tab: left <-> right
                                             +-- h: Local / Host / Project shelf
                                             +-- g: path; /: filter; Enter: directory
-                                            +-- Space: select entries
+                                            +-- Space: select entries; i: icons
+                                            +-- l: History -- Esc --> same browser
+                                            |      Left/Right: batch; Up/Down: item
+                                            |      x: clear history/highlights
                                             |
                               c / drag -----+--> Copy preview
                                                   | source + destination + policy
@@ -252,6 +262,13 @@ Command palette ------------ select --+      |
                                                              browser
 Idle browser -- Esc / Ctrl-C --> exact opening pane / terminal
 ```
+
+The [visual contract](file-exchange-visual-design.md) defines independent host
+panels, narrow-screen stacking, shared render/mouse geometry, committed-only
+highlights keyed by endpoint/path, ordered per-item progress, and the last 20
+batches per Project in memory. Delayed listing/progress events cannot change
+input ownership or apply to a different generation. Partial failures retain
+completed items and distinguish the attempted item from items not started.
 
 The modal must render in the default workspace, an empty layout, and detailed
 Session mode. A palette item containing its title is not evidence that the modal
@@ -280,4 +297,4 @@ Session.
 | `route.output-bookmarks` | focused terminal; `P m` / `P M` | label form or bookmark picker | Enter reveals the retained anchor or shows the deterministic current-history fallback; Esc/Ctrl-C restores exact terminal control | bookmark write/read is fenced by Session identity | no raw terminal output in durable state/export; no PTY input leak | bookmark persistence tests; `TestDucklordOutputSearchBookmarksContainerE2E` (default E2E) |
 | `route.host-resources` | `h`, Enter Host, Resources | resource screen | Esc Host settings -> Host list -> origin | Host ID + request ID + screen mode must match | no focus change, PTY input, or Host mutation on refresh | host-resource protocol/router tests; `TestDucklordHostResourcesContainerE2E` (default E2E) |
 | `route.project-transfer` | Project navigation; `P c`, Export/Import | transfer form/preview/confirmation | Esc one parent; Ctrl-C exact origin | import document hash/name and selected Project are revalidated at confirmation | no write before confirmation; no credential/output export; no remote mutation | project-transfer unit/router tests; `TestDucklordProjectTransferContainerE2E` (default E2E) |
-| `route.file-exchange` | Project/session-list `f`, focused terminal `P f`, or Command palette **Project files** | two-column file browser; `browse`/`endpoints`/`path`/`filter`/`preview`/`busy` | Esc backs out/closes while idle; busy Ctrl-C cancels and waits for cleanup; idle close restores exact origin | listing/copy generation and endpoint identity must match the open modal; pending shell output cannot reclaim focus | no PTY bytes, source deletion, direct host-to-host connection, or destination write before preview confirmation | `TestProjectFilesInputSelectionAndConflictPreview`, `TestProjectFilesCloseCancelsAndRestoresOrigin` (state); `TestDucklordFileExchangeContainerE2E` (default E2E) |
+| `route.file-exchange` | Project/session-list `f`, focused terminal `P f`, or Command palette **Project files** | two-column file browser; `browse`/`endpoints`/`path`/`filter`/`preview`/`busy`/`history` | Esc backs out/closes while idle; history Esc restores browser side/cursor; busy Ctrl-C cancels and waits for cleanup; idle close restores exact origin | listing/copy generation and endpoint identity must match the open modal; pending shell output cannot reclaim focus | no PTY bytes, source deletion, direct host-to-host connection, or destination write before preview confirmation | `TestProjectFilesInputSelectionAndConflictPreview`, `TestProjectFilesCloseCancelsAndRestoresOrigin` (state); `TestDucklordFileExchangeContainerE2E` (default E2E) |

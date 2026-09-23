@@ -257,6 +257,18 @@ refused rather than merged; skip and rename
 are the available conflict policies. A remote Ducklion must support the
 file-exchange commands before the route is usable.
 
+The file-exchange [visual contract](file-exchange-visual-design.md) also requires
+rendered source/destination direction, committed per-item results, actual renamed
+targets, skipped-item feedback, history surviving modal reopen, and usable
+wide/narrow mouse regions. History must retain modal input ownership during
+background shell output, return to the same browser side, and ultimately restore
+the opening terminal with an executed sentinel. Unit/state tests additionally
+cover per-Project history bounds and isolation, endpoint/full-path highlight
+isolation, stale progress rejection, and partial/cancel/not-started outcomes.
+Validated at `0036366`: focused container E2E and the full default container
+suite passed. See [the batch handoff](../HANDOFF.md#latest-checkpoint-exchange-visual-0923)
+for test scope, artifact identity and cleanup evidence.
+
 The default container manifest must include these rows before any of these
 capabilities is reported complete:
 
@@ -267,4 +279,4 @@ capabilities is reported complete:
 | `route.output-bookmarks` | Session-identity persistence, unavailable-anchor fallback, export redaction | `TestDucklordOutputSearchBookmarksContainerE2E` | Enter reveals the anchor or selects current retained history, then returns to the same PTY; only metadata survives save/export |
 | `route.host-resources` | stale Host/request response rejection and `r` refresh ownership | `TestDucklordHostResourcesContainerE2E` | delayed response for Host A cannot change Host B's Resources screen or focus |
 | `route.project-transfer` | schema rejection, preview-before-write, collision confirmation, identity skip report | `TestDucklordProjectTransferContainerE2E` | export/import round trip preserves allowed layout/notes/bookmark metadata and excludes PTY output/secrets |
-| `route.file-exchange` | `TestProjectFilesInputSelectionAndConflictPreview`, `TestProjectFilesCloseCancelsAndRestoresOrigin` | `TestDucklordFileExchangeContainerE2E` | real PTY/container copy proves client-a bytes reach client-b and the Project shelf; source remains intact, directory copy preserves nested bytes, async shell output cannot steal the modal, and Esc/Ctrl-C closes without a wizard |
+| `route.file-exchange` | `TestProjectFilesInputSelectionAndConflictPreview`, `TestProjectFilesCloseCancelsAndRestoresOrigin`, `TestProjectFilesHistoryIsBoundedAndProjectScoped`, `TestProjectFilesLatestMarksOnlyCopiedAtExactEndpoint`, `TestProjectFilesScrolledMouseRegionsMatchVisibleRowsWideAndStacked` | `TestDucklordFileExchangeContainerE2E` | both host directions and Project shelf copies preserve source/nested bytes; wide/narrow drag targets the intended folder; skip/rename/overwrite and interrupted per-item outcomes match filesystem results; history remains usable during async PTY output and survives reopen; closing restores the original PTY with an executed sentinel |
