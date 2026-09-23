@@ -108,7 +108,8 @@ func TestModalMouseNotificationLevelsAndWorkspaceConfirmation(t *testing.T) {
 }
 
 func TestModalMouseHelpUsesConfiguredShortcutsAndIgnoresExamples(t *testing.T) {
-	s := &tuiState{helpMode: true, workspacePreview: true, cfg: &ducklord.Config{}}
+	s := &tuiState{workspacePreview: true, focused: true, activeAttachKey: "host/session", cfg: &ducklord.Config{Shortcuts: map[string]string{"pane_prefix": "ctrl+g", "help": "F1"}}}
+	s.toggleHelp()
 	s.helpSearchQuery = "Open local help"
 	s.renderHelpModal(io.Discard, 100, 80)
 	foundPrefix := false
@@ -119,10 +120,17 @@ func TestModalMouseHelpUsesConfiguredShortcutsAndIgnoresExamples(t *testing.T) {
 		}
 		if r.action.key == prefixHelp {
 			foundPrefix = true
-			s.helpSearchActive = true
 			key := s.modalMouseInput(r.left, r.row)
-			if string(key) != r.action.key || s.helpSearchActive {
-				t.Fatal("configured prefix shortcut did not activate from search")
+			if string(key) != r.action.key {
+				t.Fatal("configured prefix shortcut was not translated")
+			}
+			consumed, command := s.handlePanePrefix(key)
+			if !consumed || command != "?" {
+				t.Fatalf("clicked prefix sequence did not reach command routing: consumed=%v command=%q", consumed, command)
+			}
+			s.dispatchPaneCommand(command)
+			if s.helpMode || !s.helpFocusRestorePending {
+				t.Fatalf("clicked Help command did not close overlay while retaining origin restoration: help=%v pending=%v", s.helpMode, s.helpFocusRestorePending)
 			}
 		}
 	}

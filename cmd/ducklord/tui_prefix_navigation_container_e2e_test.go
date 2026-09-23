@@ -238,15 +238,46 @@ func TestDucklordPrefixNavigationContainerE2E(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	writePTY(t, terminal, "/\x1b") // Reopen search and clear the filter.
 	capture.waitCurrent(t, "SESSION LIST & GROUPS", 10*time.Second)
-	capture.waitCurrent(t, "/ search · ↑/↓ browse", 10*time.Second)
+	capture.waitCurrent(t, "/ search · ? close help", 10*time.Second)
 	if got := readLog(0); got != want[0] {
 		t.Fatalf("Help search clear leaked input to session 0: got %q want %q", got, want[0])
 	}
-	// Help is toggled closed by its configured ? key; Esc leaves the overlay
-	// pinned and must not be used as a focus restoration shortcut.
+	// Filter to a real prefix action, pin it, then click the row. The screen
+	// capture is terminal-cell state; the click must route locally and close
+	// Help without sending its bytes to the focused PTY.
+	writePTY(t, terminal, "/Open local help\r")
+	capture.waitCurrent(t, "Filter: Open local help", 10*time.Second)
+	var helpRow, helpCol int
+	waitE2E(t, 10*time.Second, func() bool {
+		for _, line := range strings.Split(capture.currentText(), "\n") {
+			if !strings.Contains(line, "Open local help") || strings.Contains(line, "Filter:") {
+				continue
+			}
+			return true
+		}
+		return false
+	}, func() string { return "filtered Help action row is not visible" })
+	for row, line := range strings.Split(capture.currentText(), "\n") {
+		if strings.Contains(line, "Filter:") {
+			continue
+		}
+		if col := strings.Index(line, "Open local help"); col >= 0 {
+			helpRow, helpCol = row+1, modalCellWidth(line[:col])+1
+			break
+		}
+	}
+	if helpRow == 0 {
+		t.Fatalf("filtered Help action is not visible in terminal cells:\n%s", capture.currentText())
+	}
+	if got := readLog(0); got != want[0] {
+		t.Fatalf("Help pin leaked input to session 0: got %q want %q", got, want[0])
+	}
 	closeStart := capture.position()
-	writePTY(t, terminal, "?")
+	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dM", helpCol, helpRow))
 	capture.waitAfter(t, closeStart, "Session focus: keys go to PTY", 10*time.Second)
+	if got := readLog(0); got != want[0] {
+		t.Fatalf("clicked Help action leaked input to session 0: got %q want %q", got, want[0])
+	}
 	helpMarker := fmt.Sprintf("HELP_RESTORE_%x", stamp)
 	writePTY(t, terminal, fmt.Sprintf("printf '%s\\n' '%s' | tee -a \"$DUCKWAY_NAV_LOG\"\r", helpMarker, helpMarker))
 	waitE2E(t, 10*time.Second, func() bool { return strings.Contains(readLog(0), helpMarker+"\n") }, func() string {

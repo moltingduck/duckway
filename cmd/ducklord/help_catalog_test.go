@@ -9,60 +9,84 @@ import (
 )
 
 func TestHelpCatalogCoversFeatureAreasAndQuickShellSequences(t *testing.T) {
-	entries := helpCatalog(false)
-	categories := map[string]bool{}
-	actions := map[string]bool{}
-	for _, entry := range entries {
-		if entry.category != "" {
-			categories[entry.category] = true
-		}
-		if entry.action != "" {
-			actions[entry.action] = true
-		}
-	}
-	for action := range ducklord.DefaultShortcuts {
-		if !actions[action] && action != "list_sort" && action != "list_sort_direction" {
-			t.Errorf("default shortcut %q is not discoverable in the catalog", action)
-		}
-	}
-	for _, category := range []string{"SESSION LIST & GROUPS", "PROJECT PANE", "TERMINAL AREA", "NOTES", "PROJECT FILES", "PROJECT TRANSFER", "HOST SKILLS", "HOST RESOURCES"} {
-		if !categories[category] {
-			t.Errorf("help catalog is missing category %q", category)
-		}
-	}
-	for _, action := range []string{"prefix+-", "prefix+\\", "prefix+--", "prefix+\\\\", "prefix+t", "prefix+tt", "prefix+space", "prefix+slash"} {
-		if !actions[action] {
-			t.Errorf("help catalog is missing supported route %q", action)
-		}
-	}
-	var verticalQuick *helpEntry
-	for i := range entries {
-		if entries[i].action == "prefix+\\\\" {
-			verticalQuick = &entries[i]
-		}
-	}
-	if verticalQuick == nil || !strings.Contains(verticalQuick.detail, "\\ twice within 500 ms") {
-		t.Fatalf("vertical quick-shell sequence is not accurately explained: %#v", verticalQuick)
-	}
-	for _, entry := range entries {
-		if entry.label == "Browse scoped Notes" && (!strings.Contains(entry.detail, "Left/Right or h/l changes scope") || !strings.Contains(entry.detail, "j/k or Up/Down selects entries")) {
-			t.Errorf("Notes scope/navigation keys are inaccurate: %q", entry.detail)
-		}
-	}
-	for _, check := range []struct{ label, text string }{
-		{"Browse Project files", "Backspace/Delete goes to parent"},
-		{"Resolve Project file conflicts", "s skips, r renames, o overwrites"},
-		{"Host Skills legacy agent list", "not Host Skills dashboard actions"},
-	} {
-		found := false
+	for _, workspace := range []bool{false, true} {
+		entries := helpCatalog(workspace)
+		categories := map[string]bool{}
+		actions := map[string]bool{}
 		for _, entry := range entries {
-			if entry.label == check.label && strings.Contains(entry.detail, check.text) {
-				found = true
+			if entry.category != "" {
+				categories[entry.category] = true
+			}
+			if entry.action != "" {
+				actions[entry.action] = true
 			}
 		}
-		if !found {
-			t.Errorf("catalog lacks accurate %s guidance containing %q", check.label, check.text)
+		for action := range ducklord.DefaultShortcuts {
+			if !actions[action] && helpShortcutAppliesInContext(action, workspace) {
+				t.Errorf("default shortcut %q is not discoverable in the catalog", action)
+			}
 		}
+		if workspace && (!actions["list_sort"] || !actions["list_sort_direction"] || actions["list_organize"]) {
+			t.Errorf("workspace catalog has inaccurate sort routes: %#v", actions)
+		}
+		if !workspace && (!actions["list_organize"] || !actions["list_groups"] || actions["list_sort"] || actions["list_sort_direction"]) {
+			t.Errorf("legacy catalog has inaccurate organization routes: %#v", actions)
+		}
+		for _, category := range []string{"SESSION LIST & GROUPS", "PROJECT PANE", "TERMINAL AREA", "NOTES", "PROJECT FILES", "PROJECT TRANSFER", "HOST SKILLS", "HOST RESOURCES"} {
+			if !categories[category] {
+				t.Errorf("help catalog is missing category %q", category)
+			}
+		}
+		for _, action := range []string{"prefix+-", "prefix+\\", "prefix+--", "prefix+\\\\", "prefix+t", "prefix+tt", "prefix+space", "prefix+slash"} {
+			if !actions[action] {
+				t.Errorf("help catalog is missing supported route %q", action)
+			}
+		}
+		var verticalQuick *helpEntry
+		for i := range entries {
+			if entries[i].action == "prefix+\\\\" {
+				verticalQuick = &entries[i]
+			}
+		}
+		if verticalQuick == nil || !strings.Contains(verticalQuick.detail, "\\ twice within 500 ms") {
+			t.Fatalf("vertical quick-shell sequence is not accurately explained: %#v", verticalQuick)
+		}
+		for _, entry := range entries {
+			if entry.label == "Browse scoped Notes" && (!strings.Contains(entry.detail, "Left/Right or h/l changes scope") || !strings.Contains(entry.detail, "j/k or Up/Down selects entries")) {
+				t.Errorf("Notes scope/navigation keys are inaccurate: %q", entry.detail)
+			}
+		}
+		for _, check := range []struct{ label, text string }{
+			{"Browse Project files", "Backspace/Delete goes to parent"},
+			{"Resolve Project file conflicts", "s skips, r renames, o overwrites"},
+			{"Host Skills legacy agent list", "not Host Skills dashboard actions"},
+			{"Host Skills dashboard", "public HTTPS"},
+			{"Create quick-shell Terminal tab", "Host and CWD"},
+			{"Browse Project files", "chooses a bookmark"},
+			{"Import Project", "adding a suffix for name collisions"},
+			{"Detach focused Session pane", "Default Project does not support"},
+		} {
+			found := false
+			for _, entry := range entries {
+				if entry.label == check.label && strings.Contains(entry.detail, check.text) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("catalog lacks accurate %s guidance containing %q", check.label, check.text)
+			}
+		}
+	}
+}
+
+func helpShortcutAppliesInContext(action string, workspace bool) bool {
+	switch action {
+	case "list_organize", "list_groups", "list_reorder_up", "list_reorder_down":
+		return !workspace
+	case "list_sort", "list_sort_direction", "project_focus", "project_create", "project_delete", "project_notification_focus", "project_add_pane", "project_move_pane", "project_detach_pane", "project_prev_tab", "project_next_tab", "project_prev_pane", "project_next_pane", "project_hosts", "detail_list", "detail_search", "detail_filter", "detail_previous", "detail_next", "detail_focus", "detail_jump", "pty_copy", "pty_unfocus", "pane_prefix":
+		return workspace
+	default:
+		return true
 	}
 }
 
@@ -121,8 +145,11 @@ func TestHelpFooterFitsTypicalTerminalWidth(t *testing.T) {
 	s := &tuiState{helpMode: true, cfg: &ducklord.Config{Shortcuts: map[string]string{"help": "F1"}}}
 	var out bytes.Buffer
 	s.renderHelpModal(&out, 80, 24)
-	if !strings.Contains(out.String(), "F1 close") {
-		t.Fatalf("80x24 help footer clipped configured close shortcut:\n%s", out.String())
+	screen := ducklord.NewTerminal(24, 80, 0)
+	screen.Write([]byte(strings.ReplaceAll(out.String(), "\n", "\r\n")))
+	visible := strings.Join(screen.RenderLines(24, 80), "\n")
+	if !strings.Contains(visible, "F1 close") {
+		t.Fatalf("80x24 help footer clipped configured close shortcut:\n%s", visible)
 	}
 }
 

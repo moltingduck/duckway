@@ -7324,15 +7324,6 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 	}
 	s.resetModalMouse()
 	entries := helpCatalog(s.workspacePreview)
-	if s.workspacePreview {
-		for i := range entries {
-			if entries[i].action == "list_organize" {
-				entries[i].action, entries[i].label = "list_sort", "Cycle time / importance / Host / type"
-				entries[i].detail = ""
-			}
-		}
-		entries = append(entries, helpEntry{category: "", action: "list_sort_direction", label: "Reverse event-time direction"})
-	}
 	query := strings.ToLower(strings.TrimSpace(s.helpSearchQuery))
 	results := []modalRenderLine{}
 	helpMouseActions := make(map[string]string)
