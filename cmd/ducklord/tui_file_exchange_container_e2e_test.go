@@ -513,25 +513,18 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	assertRemoteText(clientB, targetB+"/"+aFile, aBytes, "client-a -> client-b file copy failed")
 	assertRemoteText(clientA, sourceA+"/"+aFile, aBytes, "copy modified client-a source")
 
-	// The earlier file copy leaves its source checked. A drag adds the dragged
-	// row to the mark set rather than replacing that set, so remove the old
-	// selection and verify it is clear before testing directory drag semantics.
-	applyFilter(aFile)
+	// Reapplying the source endpoint clears marks and any narrow filter before
+	// the drag. The source row can be clipped at 50 columns, so verify the pane's
+	// mark count and the requested unmarked directory row instead of matching the
+	// prior file's full name.
+	selectEndpoint(0, clientAEndpoint, sourceA, bundle)
 	waitE2E(t, 5*time.Second, func() bool {
-		return projectFilesPanelRowContains(capture, activePane, aFile, "[x]")
+		return paneContains(0, "0 marked") && projectFilesPanelRowContains(capture, 0, bundle, "[ ]")
 	}, func() string {
-		return "prior file selection was not present before clearing it for directory drag: " + projectFilesOwnershipDiagnostic(capture)
+		return "source pane was not reset to the unmarked directory before drag: " + projectFilesOwnershipDiagnostic(capture)
 	})
-	writePTY(t, terminal, " ")
-	waitE2E(t, 5*time.Second, func() bool {
-		return projectFilesPanelRowContains(capture, activePane, aFile, "[ ]")
-	}, func() string {
-		return "prior file selection remained marked before directory drag: " + projectFilesOwnershipDiagnostic(capture)
-	})
-	applyFilter(bundle)
-	// The filter editor also renders its query. Wait for browse mode before
-	// resolving a mouse row so the drag starts on the entry region, not text
-	// that briefly matched while the query was being submitted.
+	// Wait for the endpoint/path reload to settle in browse mode before
+	// resolving mouse coordinates, so the drag starts on the rendered entry row.
 	waitProjectFiles()
 	writePTY(t, terminal, "i")
 	waitE2E(t, 5*time.Second, func() bool {
