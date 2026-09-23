@@ -135,7 +135,9 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 		}, func() string { return failure + ": " + safeTerminalDiagnostic(capture.currentText()) })
 	}
 	activePane := 0
-	currentEndpoints := [2]string{"LOCAL", "LOCAL"}
+	// A browser opened from the focused client-a shell keeps LOCAL on the left
+	// and starts the destination on that session's remote cwd.
+	currentEndpoints := [2]string{"LOCAL", endpointConfig.Hosts[clientAEndpoint-1].Name}
 	activatePane := func(want int) {
 		t.Helper()
 		if activePane != want {
@@ -323,25 +325,49 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 		t.Helper()
 		writePTY(t, terminal, "l")
 		capture.waitCurrent(t, "Transfer history", 10*time.Second)
-		waitE2E(t, 10*time.Second, func() bool {
-			screen := capture.currentText()
-			if !strings.Contains(screen, sourcePath) || !strings.Contains(screen, destinationPath) {
-				return false
-			}
-			for _, row := range projectFilesStyledRows(capture) {
-				if !strings.Contains(row.text, outcome) || !strings.Contains(row.text, sourceName) {
+		itemVisible := func(selected bool) bool {
+			rows := projectFilesStyledRows(capture)
+			for i, row := range rows {
+				if (selected && !strings.Contains(row.text, "›")) || !strings.Contains(row.text, outcome) || !strings.Contains(row.text, sourceName) {
 					continue
 				}
-				if outcome == "Skipped" || destinationName != sourceName {
-					if !strings.Contains(row.text, destinationPath) {
-						continue
-					}
+				// A narrow history modal may wrap the destination basename onto
+				// the following row. Keep item identity separate from full paths.
+				visibleText := row.text
+				if i+1 < len(rows) && strings.HasPrefix(strings.TrimSpace(rows[i+1].text), "→") {
+					visibleText += " " + rows[i+1].text
 				}
-				return true
+				if strings.Contains(visibleText, destinationName) {
+					return true
+				}
 			}
 			return false
+		}
+		selectedHistoryRow := func() string {
+			for _, row := range projectFilesStyledRows(capture) {
+				if strings.Contains(row.text, "›") {
+					return row.text
+				}
+			}
+			return ""
+		}
+		for i := 0; i < 32 && !itemVisible(true); i++ {
+			if i == 31 {
+				t.Fatalf("history did not select %s item %q → %q: %s", outcome, sourceName, destinationName, projectFilesOwnershipDiagnostic(capture))
+			}
+			previous := selectedHistoryRow()
+			writePTY(t, terminal, "j")
+			waitE2E(t, 3*time.Second, func() bool { return selectedHistoryRow() != previous }, func() string {
+				return "history selection did not advance: " + projectFilesOwnershipDiagnostic(capture)
+			})
+		}
+		waitE2E(t, 10*time.Second, func() bool {
+			screen := capture.currentText()
+			compact := strings.ReplaceAll(screen, "\n", "")
+			return itemVisible(true) && strings.Contains(screen, "Source:") && strings.Contains(screen, "Destination:") &&
+				strings.Contains(compact, sourcePath) && strings.Contains(compact, destinationPath)
 		}, func() string {
-			return fmt.Sprintf("transfer history did not render %q -> %q as %s: %s", sourcePath, destinationPath, outcome, safeTerminalDiagnostic(capture.currentText()))
+			return fmt.Sprintf("selected %s history item did not expose full source/actual destination paths %q → %q: %s", outcome, sourcePath, destinationPath, projectFilesOwnershipDiagnostic(capture))
 		})
 		writePTY(t, terminal, "\x1b")
 		waitProjectFiles()
@@ -446,8 +472,8 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	// Send them in one PTY write: the input decoder must split both key events.
 	writePTY(t, terminal, "\x1df")
 	waitProjectFiles()
-	if !paneContains(0, "LOCAL") || !paneContains(1, "LOCAL") {
-		t.Fatalf("wide file exchange did not render both independent panels: %s", projectFilesOwnershipDiagnostic(capture))
+	if !paneContains(0, "LOCAL") || !paneContains(1, endpointConfig.Hosts[clientAEndpoint-1].Name) {
+		t.Fatalf("wide file exchange did not render the documented list-origin endpoints (LOCAL -> %s): %s", endpointConfig.Hosts[clientAEndpoint-1].Name, projectFilesOwnershipDiagnostic(capture))
 	}
 	resizeTUICapture(t, terminal, capture, 32, 50)
 	waitProjectFiles()
@@ -582,14 +608,14 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	capture.waitCurrent(t, "Session focus:", 10*time.Second)
 	capture.waitCurrent(t, asyncHistory, 15*time.Second)
 	// Re-enter through the Session list so the later close assertion exercises
-	// the same list-origin route. A fresh browser starts with local endpoints
-	// and its left pane active.
+	// the same list-origin route. A fresh browser starts on the left, with the
+	// active session host as its destination.
 	writePTY(t, terminal, "\x1df")
 	waitProjectFiles()
 	activePane = 0
-	currentEndpoints = [2]string{"LOCAL", "LOCAL"}
-	if !paneContains(0, "LOCAL") || !paneContains(1, "LOCAL") {
-		t.Fatalf("reopened list-origin Project Files did not start with local endpoints: %s", projectFilesOwnershipDiagnostic(capture))
+	currentEndpoints = [2]string{"LOCAL", endpointConfig.Hosts[clientAEndpoint-1].Name}
+	if !paneContains(0, "LOCAL") || !paneContains(1, endpointConfig.Hosts[clientAEndpoint-1].Name) {
+		t.Fatalf("reopened list-origin Project Files did not start with documented endpoints (LOCAL -> %s): %s", endpointConfig.Hosts[clientAEndpoint-1].Name, projectFilesOwnershipDiagnostic(capture))
 	}
 
 	// Client B -> client A is a separate direction with different bytes.
@@ -627,7 +653,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	writePTY(t, terminal, "f")
 	waitProjectFiles()
 	activePane = 0 // every new Project files modal starts on the left.
-	currentEndpoints = [2]string{"LOCAL", "LOCAL"}
+	currentEndpoints = [2]string{"LOCAL", endpointConfig.Hosts[clientAEndpoint-1].Name}
 	// History belongs to the project, not the modal instance. Reopen it before
 	// starting another copy so this proves the previous modal's transfer remains.
 	writePTY(t, terminal, "l")
