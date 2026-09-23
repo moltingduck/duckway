@@ -227,6 +227,60 @@ func TestHelpOwnsMouseReportsAcrossPendingAndRestoredPTYFocus(t *testing.T) {
 	}
 }
 
+func TestClosedProjectFilesRendererPreservesHelpMouseAction(t *testing.T) {
+	s, _, session, _ := workspacePaneTestState(t)
+	s.focused = true
+	s.activeAttachKey = sessionKey(session)
+	s.toggleHelp()
+	s.helpSearchQuery = "Open local help"
+	// Exercise the actual renderer ordering: Help registers its action, then
+	// the deferred Project Files renderer runs last while that modal is closed.
+	s.renderWorkspacePreviewAt(io.Discard, 100, 80)
+
+	prefixHelp := shortcutInput(s.cfg.Shortcut("pane_prefix")) + "?"
+	var helpRegion modalMouseRegion
+	for _, region := range s.modalMouseRegions {
+		if region.action.key == prefixHelp {
+			helpRegion = region
+			break
+		}
+	}
+	if helpRegion.row == 0 {
+		t.Fatal("Help action row was not registered before the later closed Project Files renderer")
+	}
+
+	// The full workspace renderer invokes Project Files after Help even when
+	// that modal is closed. That inactive renderer must not erase Help's target.
+	s.renderProjectFilesModal(io.Discard, 100, 80)
+	key, owned := s.handleHelpMouseReport(0, helpRegion.left, helpRegion.row, true)
+	if !owned || string(key) != prefixHelp {
+		t.Fatalf("closed Project Files renderer erased Help click target: owned=%v key=%q", owned, key)
+	}
+	consumed, command := s.handlePanePrefix(key)
+	if !consumed || command != "?" {
+		t.Fatalf("preserved Help click did not reach prefix dispatcher: consumed=%v command=%q", consumed, command)
+	}
+	dispatchPaneCommandAndRestoreHelpFocus(s, command, &recordingWorkspaceInputFocus{}, true, nil, nil)
+	if s.helpMode {
+		t.Fatal("preserved Help action did not close the overlay")
+	}
+
+	// Once Project Files is active, it owns the shared mouse targets and must
+	// clear stale Help targets before drawing its own controls.
+	s.helpMode = true
+	s.helpSearchQuery = "Open local help"
+	s.renderHelpModal(io.Discard, 100, 80)
+	s.projectFiles.open = true
+	s.projectFiles.step = "path"
+	s.projectFiles.editorOriginal = "remote/path"
+	s.renderProjectFilesModal(io.Discard, 100, 80)
+	for _, region := range s.modalMouseRegions {
+		if region.action.key == prefixHelp {
+			t.Fatal("active Project Files modal retained stale Help click target")
+		}
+	}
+}
+
 func TestHelpConsumesNonActionMouseReportsBeforeFocusedPaneRouting(t *testing.T) {
 	s, _, session, _ := workspacePaneTestState(t)
 	s.focused = true

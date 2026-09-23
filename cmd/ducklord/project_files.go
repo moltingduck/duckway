@@ -835,10 +835,13 @@ func (s *tuiState) startProjectFilesCopy() {
 }
 
 func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
-	s.modalMouseRegions = nil
 	if !s.projectFiles.open {
 		return
 	}
+	// This renderer is called after Help in the shared screen renderers. When
+	// Project Files is closed it must leave the active modal's mouse targets
+	// intact; only an open Project Files modal owns and resets these regions.
+	s.modalMouseRegions = nil
 	s.modalMouseLines = make(map[int]modalMouseAction)
 	width := min(120, max(8, cols-2))
 	if s.projectFiles.step == "preview" {
