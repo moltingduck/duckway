@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/hackerduck/duckway/internal/ducklord"
 	"gopkg.in/yaml.v3"
 )
 
@@ -140,10 +141,7 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 		}
 	}
 	paneContains := func(side int, value string) bool {
-		return projectFilesPanelContains(capture, currentEndpoints, side, value)
-	}
-	paneStatusContains := func(side int, label, value string) bool {
-		return projectFilesPanelRowContains(capture, currentEndpoints, side, label, value)
+		return projectFilesPanelContains(capture, side, value)
 	}
 	endpointLabel := func(endpoint int) string {
 		switch {
@@ -171,8 +169,8 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 			screen := capture.currentText()
 			return strings.Contains(screen, "Tab switch column") &&
 				paneContains(active, endpointLabel(endpoint)) &&
-				(path == "" || paneContains(active, path)) &&
-				!paneStatusContains(active, endpointLabel(endpoint), "Loading…") &&
+				(path == "" || paneContains(active, projectFilesVisiblePath(capture, path))) &&
+				!paneContains(active, "Loading…") &&
 				(listed == "" || paneContains(active, listed))
 		}, func() string {
 			return "endpoint pane did not finish loading the requested entry: " + safeTerminalDiagnostic(capture.currentText())
@@ -274,9 +272,21 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 		capture.waitCurrent(t, "Transfer history", 10*time.Second)
 		waitE2E(t, 10*time.Second, func() bool {
 			screen := capture.currentText()
-			return strings.Contains(screen, sourcePath) && strings.Contains(screen, destinationPath) &&
-				strings.Contains(screen, sourceName) && strings.Contains(screen, destinationName) &&
-				strings.Contains(screen, outcome)
+			if !strings.Contains(screen, sourcePath) || !strings.Contains(screen, destinationPath) {
+				return false
+			}
+			for _, row := range projectFilesStyledRows(capture) {
+				if !strings.Contains(row.text, outcome) || !strings.Contains(row.text, sourceName) {
+					continue
+				}
+				if outcome == "Skipped" || destinationName != sourceName {
+					if !strings.Contains(row.text, destinationPath) {
+						continue
+					}
+				}
+				return true
+			}
+			return false
 		}, func() string {
 			return fmt.Sprintf("transfer history did not render %q -> %q as %s: %s", sourcePath, destinationPath, outcome, safeTerminalDiagnostic(capture.currentText()))
 		})
@@ -392,10 +402,13 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	// Client A -> client B file, directory drag/drop, and a two-file selection.
 	selectEndpoint(0, clientAEndpoint, sourceA, aFile)
 	selectEndpoint(1, clientBEndpoint, targetB, "drop-dir")
-	if !paneContains(0, "ACTIVE") || paneContains(1, "ACTIVE") {
-		t.Fatalf("narrow stacked panels do not identify the active side: %s", safeTerminalDiagnostic(capture.currentText()))
+	if paneContains(0, "ACTIVE") || !paneContains(1, "ACTIVE") {
+		t.Fatalf("narrow stacked panels did not preserve the right pane as active: %s", safeTerminalDiagnostic(capture.currentText()))
 	}
 	activatePane(0)
+	if !paneContains(0, "ACTIVE") || paneContains(1, "ACTIVE") {
+		t.Fatalf("narrow stacked panels did not switch active ownership to the left: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
 	selectOnly(aFile)
 	// Cancelling a preview must leave the destination untouched; this covers
 	// the modal cancellation path without making timing-dependent claims about
@@ -427,18 +440,18 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	}, func() string {
 		return "folder icon toggle did not restore the folder glyph: " + safeTerminalDiagnostic(capture.currentText())
 	})
-	leftX, leftY, ok := projectFilesScreenPointAny(capture, bundle)
+	leftX, leftY, ok := projectFilesScreenPointAny(capture, "📁 "+bundle)
 	if !ok {
 		t.Fatalf("could not locate source directory %q: %s", bundle, safeTerminalDiagnostic(capture.currentText()))
 	}
-	rightX, rightY, ok := projectFilesScreenPointAny(capture, "drop-dir")
+	rightX, rightY, ok := projectFilesScreenPointAny(capture, "📁 drop-dir")
 	if !ok {
 		t.Fatalf("could not locate destination directory: %s", safeTerminalDiagnostic(capture.currentText()))
 	}
 	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<0;%d;%dm", leftX, leftY, rightX, rightY))
 	capture.waitCurrent(t, "Copy preview", 10*time.Second)
-	capture.waitCurrent(t, "From: client-a: "+sourceA, 10*time.Second)
-	capture.waitCurrent(t, "To: client-b: "+targetB+"/drop-dir", 10*time.Second)
+	capture.waitCurrent(t, "From: client-a:", 10*time.Second)
+	capture.waitCurrent(t, "To: client-b:", 10*time.Second)
 	capture.waitCurrent(t, bundle, 10*time.Second)
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Copied", 20*time.Second)
@@ -447,20 +460,21 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 		t.Fatalf("dragged directory copy omitted empty directory: %v: %s; screen: %s", err, out, safeTerminalDiagnostic(capture.currentText()))
 	}
 	resizeTUICapture(t, terminal, capture, 32, 150)
-	assertRenderedTransfer("client-a", sourceA+"/"+aFile, "client-b", targetB+"/"+aFile)
+	assertRenderedTransfer("client-a", sourceA+"/"+bundle, "client-b", targetB+"/drop-dir/"+bundle)
 	waitProjectFiles()
 	// Resolve the same drag targets again after widening. This exercises mouse
 	// hit testing on each layout without relying on fixed pane header offsets.
-	leftX, leftY, ok = projectFilesScreenPointAny(capture, bundle)
+	leftX, leftY, ok = projectFilesScreenPointAny(capture, "📁 "+bundle)
 	if !ok {
 		t.Fatalf("could not locate source directory after widening: %s", safeTerminalDiagnostic(capture.currentText()))
 	}
-	rightX, rightY, ok = projectFilesScreenPointAny(capture, "drop-dir")
+	rightX, rightY, ok = projectFilesScreenPointAny(capture, "📁 drop-dir")
 	if !ok {
 		t.Fatalf("could not locate destination directory after widening: %s", safeTerminalDiagnostic(capture.currentText()))
 	}
 	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<0;%d;%dm", leftX, leftY, rightX, rightY))
 	capture.waitCurrent(t, "Copy preview", 10*time.Second)
+	capture.waitCurrent(t, "From: client-a: "+sourceA, 10*time.Second)
 	capture.waitCurrent(t, "To: client-b: "+targetB+"/drop-dir", 10*time.Second)
 	writePTY(t, terminal, "\x1b")
 	waitProjectFiles()
@@ -537,13 +551,23 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	writePTY(t, terminal, "f")
 	waitProjectFiles()
 	activePane = 0 // every new Project files modal starts on the left.
+	currentEndpoints = [2]string{"LOCAL", "LOCAL"}
 	// History belongs to the project, not the modal instance. Reopen it before
 	// starting another copy so this proves the previous modal's transfer remains.
 	writePTY(t, terminal, "l")
 	capture.waitCurrent(t, "Transfer history", 10*time.Second)
 	capture.waitCurrent(t, shelfFile, 5*time.Second)
-	if !strings.Contains(capture.currentText(), "Copied") || !strings.Contains(capture.currentText(), targetB) {
-		t.Fatalf("reopened transfer history omitted the completed shelf copy: %s", safeTerminalDiagnostic(capture.currentText()))
+	reopenedShelfOutcome := false
+	for _, row := range projectFilesStyledRows(capture) {
+		if strings.Contains(row.text, "Copied") && strings.Contains(row.text, shelfFile) {
+			reopenedShelfOutcome = true
+			break
+		}
+	}
+	if !strings.Contains(capture.currentText(), "Copied") || !strings.Contains(capture.currentText(), "PROJECT SHELF") ||
+		!strings.Contains(capture.currentText(), sourceA) || !strings.Contains(capture.currentText(), home) ||
+		strings.Contains(capture.currentText(), targetB) || !reopenedShelfOutcome {
+		t.Fatalf("reopened transfer history did not show the latest client-a -> project shelf batch: %s", safeTerminalDiagnostic(capture.currentText()))
 	}
 	writePTY(t, terminal, "\x1b")
 	waitProjectFiles()
@@ -655,22 +679,12 @@ func projectFilesScreenPointAny(capture *tuiCapture, label string) (int, int, bo
 	return workspaceScreenPoint(screen, label, 1, cols+1)
 }
 
-func projectFilesPanelContains(capture *tuiCapture, endpoints [2]string, side int, value string) bool {
-	if side < 0 || side > 1 || endpoints[side] == "" {
+func projectFilesPanelContains(capture *tuiCapture, side int, value string) bool {
+	if side < 0 || side > 1 {
 		return false
 	}
-	// Panel text is rendered with a distinct background fill. Match cells by
-	// their rendered fill, rather than guessing the split from endpoint-label
-	// coordinates (which are not panel boundaries and can occur in history).
 	rows := projectFilesStyledRows(capture)
-	anchorStyles := map[string]bool{}
-	for _, row := range rows {
-		for _, match := range row.matches(endpoints[side]) {
-			if match.style != "" {
-				anchorStyles[match.style] = true
-			}
-		}
-	}
+	anchorStyles := projectFilesPanelStyles(rows, side)
 	if len(anchorStyles) == 0 {
 		return false
 	}
@@ -684,9 +698,54 @@ func projectFilesPanelContains(capture *tuiCapture, endpoints [2]string, side in
 	return false
 }
 
-func projectFilesPanelRowContains(capture *tuiCapture, endpoints [2]string, side int, label, value string) bool {
-	return projectFilesPanelContains(capture, endpoints, side, label) &&
-		projectFilesPanelContains(capture, endpoints, side, value)
+func projectFilesPanelRowContains(capture *tuiCapture, side int, label, value string) bool {
+	if side < 0 || side > 1 {
+		return false
+	}
+	rows := projectFilesStyledRows(capture)
+	anchorStyles := projectFilesPanelStyles(rows, side)
+	for _, row := range rows {
+		for _, labelMatch := range row.matches(label) {
+			if !anchorStyles[labelMatch.style] {
+				continue
+			}
+			for _, valueMatch := range row.matches(value) {
+				if valueMatch.style == labelMatch.style {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func projectFilesPanelStyles(rows []projectFilesStyledRow, side int) map[string]bool {
+	heading := "LEFT"
+	if side == 1 {
+		heading = "RIGHT"
+	}
+	styles := map[string]bool{}
+	for _, row := range rows {
+		for _, match := range row.matches(heading) {
+			if match.style != "" {
+				styles[match.style] = true
+			}
+		}
+	}
+	return styles
+}
+
+func projectFilesVisiblePath(capture *tuiCapture, path string) string {
+	capture.mu.Lock()
+	cols := capture.cols
+	capture.mu.Unlock()
+	if cols < 58 {
+		// The stacked panel clips the end of the path at 50 columns. Its stable
+		// visible prefix still proves the expected root; wide mode asserts the
+		// complete source and destination paths after the transfer.
+		return "/home/duck/"
+	}
+	return path
 }
 
 type projectFilesStyledMatch struct {
@@ -756,4 +815,23 @@ func projectFilesStyledRows(capture *tuiCapture) []projectFilesStyledRow {
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+func TestProjectFilesPanelRenderedOwnership(t *testing.T) {
+	screen := ducklord.NewTerminal(4, 100, 0)
+	screen.Write([]byte("\x1b[48;2;12;38;52mLEFT LOCAL visible 2 marked\x1b[0m  \x1b[48;2;31;35;56mRIGHT LOCAL visible 9 marked\x1b[0m\r\n" +
+		"\x1b[48;2;12;38;52mLEFT LOCAL Loading\x1b[0m  \x1b[48;2;31;35;56mRIGHT LOCAL Ready\x1b[0m\r\n"))
+	capture := &tuiCapture{screen: screen, rows: 4, cols: 100}
+	if !projectFilesPanelContains(capture, 0, "visible") ||
+		!projectFilesPanelContains(capture, 1, "visible") {
+		t.Fatal("same-host endpoints were not distinguished by explicit panel heading")
+	}
+	if projectFilesPanelContains(capture, 0, "9") || projectFilesPanelContains(capture, 1, "2") {
+		t.Fatal("content from the opposite panel was attributed to this side")
+	}
+	if !projectFilesPanelRowContains(capture, 0, "visible", "2") ||
+		projectFilesPanelRowContains(capture, 0, "Loading", "Ready") ||
+		projectFilesPanelRowContains(capture, 0, "Loading", "visible") {
+		t.Fatal("panel row assertion did not require both values in the same rendered row and panel")
+	}
 }
