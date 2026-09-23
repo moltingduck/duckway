@@ -394,7 +394,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	writePTY(t, terminal, "\x1df")
 	waitProjectFiles()
 	if !paneContains(0, "LOCAL") || !paneContains(1, "LOCAL") {
-		t.Fatalf("wide file exchange did not render both independent panels: %s", safeTerminalDiagnostic(capture.currentText()))
+		t.Fatalf("wide file exchange did not render both independent panels: %s", projectFilesOwnershipDiagnostic(capture))
 	}
 	resizeTUICapture(t, terminal, capture, 32, 50)
 	waitProjectFiles()
@@ -696,6 +696,15 @@ func projectFilesPanelContains(capture *tuiCapture, side int, value string) bool
 		}
 	}
 	return false
+}
+
+func projectFilesOwnershipDiagnostic(capture *tuiCapture) string {
+	capture.mu.Lock()
+	screen := visibleTerminalText(strings.Join(capture.screen.RenderLines(capture.rows, capture.cols), "\n"))
+	rows, cols := capture.rows, capture.cols
+	capture.mu.Unlock()
+	return fmt.Sprintf("size=%dx%d LEFT-anchor=%t RIGHT-anchor=%t screen=%s",
+		rows, cols, strings.Contains(screen, "LEFT"), strings.Contains(screen, "RIGHT"), safeTerminalDiagnostic(screen))
 }
 
 func projectFilesPanelRowContains(capture *tuiCapture, side int, label, value string) bool {
