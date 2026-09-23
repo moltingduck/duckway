@@ -251,6 +251,14 @@ func ProjectExchangePath(configPath, projectID string) (string, error) {
 }
 
 func copyLocal(ctx context.Context, req FileCopyRequest) ([]FileCopyResult, error) {
+	return copyLocalWithStageRemover(ctx, req, func(root *os.Root, stage string) error {
+		return root.RemoveAll(stage)
+	})
+}
+
+// copyLocalWithStageRemover keeps cleanup failure handling testable without
+// relying on filesystem permission or timing races.
+func copyLocalWithStageRemover(ctx context.Context, req FileCopyRequest, removeStage func(*os.Root, string) error) ([]FileCopyResult, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -316,7 +324,7 @@ func copyLocal(ctx context.Context, req FileCopyRequest) ([]FileCopyResult, erro
 			return res, err
 		}
 		stageRel := filepath.Join(stage, dn)
-		defer dstRoot.RemoveAll(stage)
+		defer removeStage(dstRoot, stage)
 		bytes := int64(0)
 		if err = copyTreeRoot(ctx, srcRoot, dstRoot, n, stageRel, &bytes); err != nil {
 			return res, err
@@ -344,11 +352,16 @@ func copyLocal(ctx context.Context, req FileCopyRequest) ([]FileCopyResult, erro
 		if err != nil {
 			return res, err
 		}
-		if err = dstRoot.RemoveAll(stage); err != nil {
-			return res, err
+		destination := filepath.Join(req.Destination.Path, dn)
+		if err = removeStage(dstRoot, stage); err != nil {
+			// The destination is already committed. Preserve its successful item
+			// outcome while reporting the staging cleanup failure at batch level.
+			res = append(res, FileCopyResult{Name: n, Destination: destination})
+			emitFileCopyProgress(req, n, destination, "copied", len(res))
+			return res, fmt.Errorf("copy committed to %s but staging cleanup failed: %w", destination, err)
 		}
-		res = append(res, FileCopyResult{Name: n, Destination: filepath.Join(req.Destination.Path, dn)})
-		emitFileCopyProgress(req, n, filepath.Join(req.Destination.Path, dn), "copied", len(res))
+		res = append(res, FileCopyResult{Name: n, Destination: destination})
+		emitFileCopyProgress(req, n, destination, "copied", len(res))
 	}
 	return res, nil
 }

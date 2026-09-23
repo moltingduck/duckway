@@ -2,11 +2,55 @@ package ducklord
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 )
+
+func TestCopyLocalCleanupFailurePreservesCommittedOutcome(t *testing.T) {
+	root := t.TempDir()
+	src, dst := filepath.Join(root, "src"), filepath.Join(root, "dst")
+	if err := os.Mkdir(src, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dst, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "item"), []byte("committed bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cleanupErr := errors.New("injected cleanup failure")
+	cleanupAttempts := 0
+	var events []FileCopyProgress
+	req := FileCopyRequest{Source: FileEndpoint{Path: src}, Destination: FileEndpoint{Path: dst}, Names: []string{"item"}}
+	req.Progress = func(p FileCopyProgress) {
+		if p.State == "copied" && cleanupAttempts == 0 {
+			t.Error("copied event preceded staging cleanup attempt")
+		}
+		events = append(events, p)
+	}
+	results, err := copyLocalWithStageRemover(context.Background(), req, func(_ *os.Root, _ string) error {
+		cleanupAttempts++
+		return cleanupErr
+	})
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("cleanup error not returned: %v", err)
+	}
+	if cleanupAttempts == 0 {
+		t.Fatal("staging cleanup was not attempted")
+	}
+	if len(results) != 1 || results[0].Name != "item" || results[0].Destination != filepath.Join(dst, "item") {
+		t.Fatalf("committed result missing: %#v", results)
+	}
+	if got, readErr := os.ReadFile(results[0].Destination); readErr != nil || string(got) != "committed bytes" {
+		t.Fatalf("destination commit missing: %q, %v", got, readErr)
+	}
+	if len(events) != 2 || events[0].State != "copying" || events[1].State != "copied" || events[1].Completed != 1 {
+		t.Fatalf("unexpected progress outcomes: %#v", events)
+	}
+}
 
 func TestCopyFilesProgressCommitOrderAndConflicts(t *testing.T) {
 	root := t.TempDir()
