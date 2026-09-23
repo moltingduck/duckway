@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -344,6 +345,45 @@ func TestHostSkillsCtrlCCleansAndClosesWholeRoute(t *testing.T) {
 	s.closeHostMenuWithCtrlC()
 	if s.hostMenuMode || s.hostSkillsBusy || !called {
 		t.Fatalf("mode=%v busy=%v cancelled=%v", s.hostMenuMode, s.hostSkillsBusy, called)
+	}
+}
+
+func TestHostSkillsDashboardKeepsSelectedRowsAndFootersAt80x24(t *testing.T) {
+	s := testHostSkillsState()
+	repo := t.TempDir()
+	s.hostSkillsRepository = repo
+	for i := 0; i < 20; i++ {
+		dir := filepath.Join(repo, fmt.Sprintf("skill-%02d", i))
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Skill"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.hostMenuStep = "skills-dashboard"
+	s.hostSkillsIndex = 19
+	s.hostSkillsPane = 1
+	s.hostSkillsTargetIndex = 0
+	s.hostSkillsTargetRemoteIndex = 20
+	s.hostSkillsTargetExpanded = map[string]bool{"codex": true}
+	remote := make([]string, 20)
+	for i := range remote {
+		remote[i] = fmt.Sprintf("remote-%02d", i)
+	}
+	s.hostSkillsRemoteByTarget = map[string][]string{"codex": remote}
+	var out bytes.Buffer
+	s.renderHostSkillsModal(&out, 80, 24)
+	screen := renderedModalScreen(out.Bytes(), 80, 24)
+	for _, want := range []string{
+		"[none] skill-19",
+		"›     remote-19",
+		"Tab/←/→ pane · ↑/↓ select · Enter/Space expand",
+		"i import · a/f source · t target · d deploy · Esc back",
+	} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("80x24 Skills render missing %q in %q", want, screen)
+		}
 	}
 }
 

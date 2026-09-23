@@ -655,7 +655,7 @@ func (s *tuiState) renderNotesModal(out io.Writer, cols, rows int) {
 		lines = append(lines, modalRenderLine{modalInput, "  /" + s.notesQuery + "_"})
 	}
 	footer := []string{"  Enter copy content · ↑/↓ j/k select · ←/→ h/l scope", "  g/p/s scope · / search · a add · e edit · E notebook · Esc close"}
-	availableRows := rows - len(lines) - len(footer)
+	availableRows := rows - 2 - len(lines) - len(footer)
 	if s.outputErr != "" {
 		availableRows--
 	}

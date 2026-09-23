@@ -1638,6 +1638,26 @@ func TestWorkspaceNewShellHostEnterDoesNotRestartDiscovery(t *testing.T) {
 	}
 }
 
+func TestNotesLongListKeepsFootersVisibleAt80x24(t *testing.T) {
+	s := &tuiState{}
+	for i := 0; i < 24; i++ {
+		s.notesEntries = append(s.notesEntries, ducklord.NoteEntry{Title: fmt.Sprintf("note-%02d", i), Body: "body"})
+	}
+	s.workspacePaneIndex = len(s.notesEntries) - 1
+	var out strings.Builder
+	s.renderNotesModal(&out, 80, 24)
+	screen := renderedModalScreen([]byte(out.String()), 80, 24)
+	for _, want := range []string{
+		"› note-23",
+		"Enter copy content · ↑/↓ j/k select · ←/→ h/l scope",
+		"g/p/s scope · / search · a add · e edit · E notebook · Esc close",
+	} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("80x24 Notes render missing %q in %q", want, screen)
+		}
+	}
+}
+
 func TestNotesFootersDescribeHandledScopeSearchAndFormKeys(t *testing.T) {
 	s := &tuiState{}
 	var out strings.Builder
