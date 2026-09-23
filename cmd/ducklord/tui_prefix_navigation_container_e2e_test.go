@@ -225,6 +225,23 @@ func TestDucklordPrefixNavigationContainerE2E(t *testing.T) {
 	if got := readLog(0); got != want[0] {
 		t.Fatalf("Help repaint leaked input to session 0: got %q want %q", got, want[0])
 	}
+	// Search finds features that are not direct shortcuts, and the filtered
+	// result can be pinned without handing the search text to the PTY.
+	searchStart := capture.position()
+	writePTY(t, terminal, "/bookmark")
+	capture.waitAfter(t, searchStart, "terminal output bookmarks", 10*time.Second)
+	if got := readLog(0); got != want[0] {
+		t.Fatalf("Help search leaked input to session 0: got %q want %q", got, want[0])
+	}
+	writePTY(t, terminal, "\r") // Pin the filtered result.
+	capture.waitCurrent(t, "Filter: bookmark", 10*time.Second)
+	time.Sleep(300 * time.Millisecond)
+	writePTY(t, terminal, "/\x1b") // Reopen search and clear the filter.
+	capture.waitCurrent(t, "SESSION LIST & GROUPS", 10*time.Second)
+	capture.waitCurrent(t, "/ search · ↑/↓ browse", 10*time.Second)
+	if got := readLog(0); got != want[0] {
+		t.Fatalf("Help search clear leaked input to session 0: got %q want %q", got, want[0])
+	}
 	// Help is toggled closed by its configured ? key; Esc leaves the overlay
 	// pinned and must not be used as a focus restoration shortcut.
 	closeStart := capture.position()

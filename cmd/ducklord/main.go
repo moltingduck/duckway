@@ -1473,6 +1473,7 @@ type tuiState struct {
 	removeClientSelected               int
 	removeClientConfirm                string
 	helpMode                           bool
+	helpOriginFocused                  bool
 	helpOffset                         int
 	helpSearchActive                   bool
 	helpSearchQuery                    string
@@ -5006,9 +5007,12 @@ func (s *tuiState) toggleHelp() {
 		return
 	}
 	if s.focused {
+		s.helpOriginFocused = true
 		s.helpFocusRestorePending = true
 		s.helpPendingInputKey = s.activeAttachKey
 		s.focused = false
+	} else {
+		s.helpOriginFocused = false
 	}
 	s.helpMode = true
 }
@@ -5019,6 +5023,7 @@ func (s *tuiState) toggleHelp() {
 // forever after focus was restored while the close key was in flight.
 func (s *tuiState) closeHelp() {
 	s.helpMode = false
+	s.helpOriginFocused = false
 	s.helpOffset = 0
 	s.helpSearchActive = false
 	s.helpSearchQuery = ""
@@ -7318,36 +7323,15 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		return
 	}
 	s.resetModalMouse()
-	type helpEntry struct{ category, action, label string }
-	entries := []helpEntry{
-		{"SESSION LIST & GROUPS", "list_search", "Search sessions"}, {"", "list_organize", "Cycle custom / host / type"}, {"", "list_groups", "Manage custom groups"}, {"", "list_reorder_up", "Move session up"}, {"", "list_reorder_down", "Move session down"}, {"", "refresh", "Refresh"},
-		{"SESSION", "session_create", "Create session"}, {"", "session_actions", "Session action menu"}, {"", "session_notifications", "Notification settings"}, {"", "session_yield", "Yield now"}, {"", "session_yield_wait", "Yield when idle"}, {"", "session_restart", "Restart session"}, {"", "session_end", "End session"}, {"", "session_destroy", "Destroy session"},
-		{"HOST", "host_actions", "Host action menu"}, {"", "host_add", "Add host configuration"}, {"", "host_remove", "Remove host configuration"},
-		{"PROJECT PANE", "project_focus", "Move keyboard focus to Project pane"}, {"", "project_notification_focus", "Toggle Project notification focus"}, {"", "project_create", "Create Project"}, {"", "project_delete", "Delete local Project"}, {"", "project_add_pane", "Add Session pane"}, {"", "project_move_pane", "Move Session pane"}, {"", "project_detach_pane", "Detach local Session pane"}, {"", "project_prev_tab", "Previous Terminal tab"}, {"", "project_next_tab", "Next Terminal tab"}, {"", "project_prev_pane", "Previous visible Session pane"}, {"", "project_next_pane", "Next visible Session pane"},
-		{"PANE COMMANDS", "pane_prefix", "Arm pane prefix"}, {"", "prefix+o", "o: open Project Notes; prefix+o: toggle"}, {"", "prefix+O", "o: open selected Session Notes; prefix+O: focused Session Notes"},
-		{"DETAILED SESSION LIST", "detail_list", "Open / close detailed list"}, {"", "detail_search", "Search name, Host, or Project"}, {"", "detail_filter", "Cycle state filter"}, {"", "detail_previous", "Preview previous Session"}, {"", "detail_next", "Preview next Session"}, {"", "detail_focus", "Focus preview Session pane"}, {"", "detail_jump", "Jump to selected Session's Project"},
-		{"TERMINAL AREA", "pty_copy", "Freeze screen for drag selection"}, {"", "pty_unfocus", "Return to navigation pane"},
-		{"APPLICATION", "help", "Open / close this help"}, {"", "quit", "Quit Ducklord"},
-		{"", "shortcut_settings", "Configure shortcuts"}, {"", "notification_settings", "Global notification settings"},
-	}
+	entries := helpCatalog(s.workspacePreview)
 	if s.workspacePreview {
-		entries[0] = helpEntry{"SESSION LIST PANE", "list_search", "Search sessions"}
-		entries[1] = helpEntry{"", "list_sort", "Cycle time / importance / Host / type"}
-		entries[2] = helpEntry{"", "list_sort_direction", "Reverse event-time direction"}
-		entries = append(entries[:3], append([]helpEntry{{"", "refresh", "Refresh"}}, entries[6:]...)...)
-		entries = append(entries,
-			helpEntry{"", "prefix+-", "New horizontal Session pane"},
-			helpEntry{"", "prefix+\\", "New vertical Session pane"},
-			helpEntry{"", "prefix+t", "New Terminal tab"},
-			helpEntry{"", "prefix+,", "Rename Terminal tab"},
-			helpEntry{"", "prefix+c", "Configure focused item or pane (also right-click)"},
-			helpEntry{"", "prefix+up", "Focus Session pane above"},
-			helpEntry{"", "prefix+down", "Focus Session pane below"},
-			helpEntry{"", "prefix+left", "Focus Session pane to the left"},
-			helpEntry{"", "prefix+right", "Focus Session pane to the right"},
-			helpEntry{"", "prefix+p", "Previous Terminal tab"},
-			helpEntry{"", "prefix+n", "Next Terminal tab"},
-			helpEntry{"", "project_hosts", "Edit Project SSH hosts"})
+		for i := range entries {
+			if entries[i].action == "list_organize" {
+				entries[i].action, entries[i].label = "list_sort", "Cycle time / importance / Host / type"
+				entries[i].detail = ""
+			}
+		}
+		entries = append(entries, helpEntry{category: "", action: "list_sort_direction", label: "Reverse event-time direction"})
 	}
 	query := strings.ToLower(strings.TrimSpace(s.helpSearchQuery))
 	results := []modalRenderLine{}
@@ -7363,51 +7347,85 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		categoryEntries = nil
 	}
 	for _, entry := range entries {
-		if s.hostScoped && (entry.action == "host_add" || entry.action == "host_remove" || entry.action == "session_create" || entry.action == "shortcut_settings" || entry.action == "notification_settings") {
-			continue
-		}
 		if entry.category != "" {
 			flushCategory()
 			category = entry.category
 		}
-		shortcut := s.cfg.Shortcut(entry.action)
-		keyInput := shortcutInput(shortcut)
+		shortcut, keyInput := "", ""
 		if strings.HasPrefix(entry.action, "prefix+") {
 			suffix := strings.TrimPrefix(entry.action, "prefix+")
-			shortcut = s.cfg.Shortcut("pane_prefix") + " " + suffix
-			keyInput = shortcutInput(s.cfg.Shortcut("pane_prefix")) + shortcutInput(suffix)
-		}
-		if query == "" || strings.Contains(strings.ToLower(category+" "+entry.action+" "+entry.label+" "+shortcut), query) {
-			style := modalInput
-			if s.helpActionAvailable(entry.action) {
-				style = modalSelected
+			displaySuffix := suffix
+			switch suffix {
+			case "slash":
+				displaySuffix = "/"
+			case "space":
+				displaySuffix = "Space"
+			case "up":
+				displaySuffix = "↑"
+			case "down":
+				displaySuffix = "↓"
+			case "left":
+				displaySuffix = "←"
+			case "right":
+				displaySuffix = "→"
 			}
-			categoryEntries = append(categoryEntries, modalRenderLine{style, fmt.Sprintf("  %-12s %s", shortcut, entry.label)})
-			helpMouseActions[categoryEntries[len(categoryEntries)-1].text] = keyInput
+			quickSequence := suffix == "--" || suffix == "\\\\" || suffix == "tt"
+			if quickSequence {
+				displaySuffix = suffix
+			}
+			shortcut = s.cfg.Shortcut("pane_prefix") + " " + displaySuffix
+			if suffix == "slash" {
+				keyInput = shortcutInput(s.cfg.Shortcut("pane_prefix")) + "/"
+			} else if suffix == "space" {
+				keyInput = shortcutInput(s.cfg.Shortcut("pane_prefix")) + " "
+			} else if quickSequence {
+				keyInput = shortcutInput(s.cfg.Shortcut("pane_prefix")) + suffix
+			} else {
+				keyInput = shortcutInput(s.cfg.Shortcut("pane_prefix")) + shortcutInput(suffix)
+			}
+		} else if entry.action != "" {
+			shortcut = s.cfg.Shortcut(entry.action)
+			keyInput = shortcutInput(shortcut)
+		}
+		searchText := strings.ToLower(category + " " + entry.action + " " + entry.label + " " + entry.detail + " " + shortcut)
+		if query == "" || strings.Contains(searchText, query) {
+			text := "  " + fmt.Sprintf("%-14s %s", shortcut, entry.label)
+			if entry.detail != "" {
+				text += " · " + entry.detail
+			}
+			style := modalMuted
+			if entry.action != "" && keyInput != "" {
+				style = modalInput
+				available := s.helpActionAvailable(entry.action)
+				if s.helpOriginFocused && s.helpFocusRestorePending {
+					available = s.helpActionAvailableFromTerminalOrigin(entry.action)
+				}
+				if available {
+					style = modalSelected
+				}
+			}
+			wrapped := wrapHelpEntry(text, min(68, max(1, cols-4)), "                  ")
+			for _, line := range wrapped {
+				categoryEntries = append(categoryEntries, modalRenderLine{style, line})
+			}
+			quickSequence := entry.action == "prefix+--" || entry.action == "prefix+\\\\" || entry.action == "prefix+tt"
+			if keyInput != "" && !quickSequence && s.helpActionAvailable(entry.action) && strings.HasPrefix(entry.action, "prefix+") {
+				helpMouseActions[wrapped[0]] = keyInput
+			}
 		}
 	}
 	flushCategory()
-	if s.workspacePreview && s.notesProjectID != "" && s.workspacePaneStep == "notes" {
-		if s.workspacePaneMode || s.notesProjectID != "" {
-			results = append(results,
-				modalRenderLine{modalStatus, "  NOTES · SCOPED MANUSCRIPT BOOKS"},
-				modalRenderLine{modalMuted, "  g Global · p Project · s focused Session (each is an independent notes.md book)"},
-				modalRenderLine{modalMuted, "  Entries use level-two Markdown headings: ## Title; cards show a readable excerpt"},
-				modalRenderLine{modalSelected, "  a add note · e edit selected · E edit the full book"},
-				modalRenderLine{modalSelected, "  Enter copy selected entry CONTENT only · j/k or arrows select · h/l or left/right turn pages"},
-				modalRenderLine{modalSelected, "  / search title and body"},
-				modalRenderLine{modalMuted, "  Search is scoped to the selected book; Esc cancels search or returns to the prior pane"})
-		}
-	}
-	mouseHelp := "Click select · drag reorder · right-click focus/toggle"
+	mouseHelp := "Click a prefix shortcut to send its sequence · drag reorder · right-click focus/toggle"
 	if s.workspacePreview {
-		mouseHelp = "Right-click target: config · drag Session into Terminal: add pane"
+		mouseHelp = "Click a prefix shortcut to send its sequence · right-click target: config · drag Session into Terminal: add pane"
 	}
 	if query == "" || strings.Contains(strings.ToLower("mouse "+mouseHelp), query) {
-		results = append(results, modalRenderLine{modalStatus, "  MOUSE"}, modalRenderLine{modalMuted, "  " + mouseHelp})
+		results = append(results, modalRenderLine{modalStatus, "  MOUSE"})
+		results = append(results, helpWrappedLines("  "+mouseHelp, min(68, max(1, cols-4)), "  ")...)
 	}
 	if query == "" || strings.Contains("modals choose enter confirm esc back ctrl+c close", query) {
-		results = append(results, modalRenderLine{modalStatus, "  MODALS"}, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter confirm · Esc back · Ctrl+C close"})
+		results = append(results, modalRenderLine{modalStatus, "  MODAL CONTROLS"})
+		results = append(results, helpWrappedLines("  ↑/↓ choose · Enter confirm · Esc back · Ctrl+C close; forms may use Tab to move fields", min(68, max(1, cols-4)), "  ")...)
 	}
 	if query == "" || strings.Contains("host connect disconnect reconnect sessions notifications", query) {
 		results = append(results, modalRenderLine{modalMuted, "  Host connect/disconnect/reconnect affects all host sessions and notifications"})
@@ -7416,17 +7434,21 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		results = append(results, modalRenderLine{modalMuted, "  No matching shortcuts"})
 	}
 	helpKey := s.cfg.Shortcut("help")
-	searchHint := "  / search shortcuts · " + helpKey + " close help"
+	searchHint := "  / search · " + helpKey + " close help"
 	if s.helpSearchActive {
-		searchHint = "  Search: " + s.helpSearchQuery + "_"
+		searchHint = "  Search: " + s.helpSearchQuery + "_ · ↑/↓ browse · Esc clear"
 	} else if s.helpSearchQuery != "" {
-		searchHint = "  Filter: " + s.helpSearchQuery + "  (/ edit · Esc in search clears)"
+		searchHint = "  Filter: " + s.helpSearchQuery + "  (/ edit · search then Esc clears)"
 	}
 	maxVisible := max(1, rows-5)
 	s.helpOffset = min(max(s.helpOffset, 0), max(0, len(results)-maxVisible))
-	lines := []modalRenderLine{{modalTitle, "  Keyboard shortcuts · background = available here"}, {modalInput, searchHint}}
+	lines := []modalRenderLine{{modalTitle, "  Keyboard shortcuts and feature guide"}, {modalInput, searchHint}}
 	lines = append(lines, results[s.helpOffset:min(len(results), s.helpOffset+maxVisible)]...)
-	lines = append(lines, modalRenderLine{modalMuted, "  Pinned help · / search · Enter pin results · Esc clear · " + helpKey + " close"})
+	footer := "  Pinned · / search · Enter pins search · " + helpKey + " close"
+	if s.helpSearchQuery != "" {
+		footer = "  Filtered · / edit · search then Esc clears · " + helpKey + " close"
+	}
+	lines = append(lines, modalRenderLine{modalMuted, footer})
 	for i, line := range lines {
 		if key := helpMouseActions[line.text]; key != "" {
 			s.modalChoice(i, nil, 0, key)
@@ -7446,12 +7468,47 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		footer := lines[len(lines)-1].text
 		for _, button := range []struct{ label, key string }{{"/ search", "/"}, {helpKey + " close", shortcutInput(helpKey)}} {
 			start := strings.LastIndex(footer, button.label)
+			if start < 0 {
+				continue
+			}
 			column := modalCellWidth(footer[:start])
 			if column+modalCellWidth(button.label) <= width-2 {
 				s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left + column, left + column + modalCellWidth(button.label) - 1, row, modalMouseAction{key: button.key}})
 			}
 		}
 	}
+}
+
+func wrapHelpEntry(text string, width int, continuationIndent string) []string {
+	lines := helpWrappedLines(text, width, continuationIndent)
+	out := make([]string, len(lines))
+	for i := range lines {
+		out[i] = lines[i].text
+	}
+	return out
+}
+
+func helpWrappedLines(text string, width int, continuationIndent string) []modalRenderLine {
+	if width < 1 {
+		return []modalRenderLine{{modalMuted, text}}
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []modalRenderLine{{modalMuted, ""}}
+	}
+	lines := []modalRenderLine{}
+	line := words[0]
+	lineWidth := width
+	for _, word := range words[1:] {
+		if modalCellWidth(line)+1+modalCellWidth(word) > lineWidth {
+			lines = append(lines, modalRenderLine{modalMuted, line})
+			line = continuationIndent + word
+			lineWidth = max(1, width-modalCellWidth(continuationIndent))
+			continue
+		}
+		line += " " + word
+	}
+	return append(lines, modalRenderLine{modalMuted, line})
 }
 
 func (s *tuiState) handleHelpSearchInput(input []byte) {

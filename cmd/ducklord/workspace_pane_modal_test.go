@@ -1587,18 +1587,27 @@ func TestNotesHelpHighlightsNotebookActions(t *testing.T) {
 	if nav.CurrentProjectID() != projectID {
 		t.Fatalf("Notes project not selected: project=%q want=%q", nav.CurrentProjectID(), projectID)
 	}
-	// Help is rendered after the Notes modal closes; retain the Notes route marker
-	// here while bypassing the blocking modal guard for this focused rendering check.
+	// Help documents Notes as searchable guidance; it does not dispatch notebook
+	// shortcuts while the pinned help overlay owns input.
 	s.workspacePaneMode = false
+	for _, entry := range helpCatalog(false) {
+		if entry.label == "Browse scoped Notes" && (!strings.Contains(entry.detail, "g/p/s selects scope directly") || !strings.Contains(entry.detail, "Left/Right or h/l changes scope")) {
+			t.Fatalf("Notes scope guidance missing or inaccurate: %q", entry.detail)
+		}
+		if entry.label == "Copy selected note content" && !strings.Contains(entry.detail, "system clipboard") {
+			t.Fatalf("Notes copy guidance missing: %q", entry.detail)
+		}
+	}
+	s.helpSearchQuery = "Browse scoped Notes"
 	var out strings.Builder
 	s.renderHelpModal(&out, 100, 300)
 	rendered := out.String()
-	for _, action := range []string{
-		"  a add note",
-		"  Enter copy selected entry CONTENT only",
-	} {
-		if !strings.Contains(rendered, modalSurface+modalSelected+action) {
-			t.Fatalf("Notes action line was not highlighted: %q", action)
+	if !strings.Contains(rendered, "Browse scoped Notes") {
+		t.Fatalf("searchable Notes guidance missing: %q", rendered)
+	}
+	for _, entry := range helpCatalog(false) {
+		if entry.label == "Add note" && entry.action != "" {
+			t.Fatal("Notes informational guidance must not masquerade as a directly dispatchable key")
 		}
 	}
 }

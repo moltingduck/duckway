@@ -825,11 +825,34 @@ func TestTUIHelpUsesConfiguredBindingsAndCategories(t *testing.T) {
 	state.helpMode = true
 	var out bytes.Buffer
 	state.renderHelpModal(&out, 100, 60)
-	for _, want := range []string{"Keyboard shortcuts", "SESSION LIST & GROUPS", "SESSION", "HOST", "PROJECT PANE", "TERMINAL AREA", "MOUSE", "MODALS", "!", "Previous Terminal tab", "Next visible Session pane"} {
+	for _, want := range []string{"Keyboard shortcuts", "SESSION LIST & GROUPS", "SESSION", "HOST", "!"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("help missing %q: %q", want, out.String())
 		}
 	}
+	for _, query := range []string{"PROJECT PANE", "TERMINAL AREA", "Previous Terminal tab", "Next visible Session pane"} {
+		state.helpSearchActive, state.helpSearchQuery = true, strings.ToLower(query)
+		out.Reset()
+		state.renderHelpModal(&out, 100, 60)
+		if !strings.Contains(strings.ToLower(out.String()), strings.ToLower(query)) {
+			t.Fatalf("search did not reveal %q: %q", query, out.String())
+		}
+	}
+	state.helpSearchActive = true
+	state.helpSearchQuery = "mouse"
+	out.Reset()
+	state.renderHelpModal(&out, 100, 60)
+	if !strings.Contains(out.String(), "MOUSE") || !strings.Contains(out.String(), "Click a prefix shortcut") {
+		t.Fatalf("search did not reveal mouse guidance: %q", out.String())
+	}
+	state.helpSearchQuery = "modal"
+	out.Reset()
+	state.renderHelpModal(&out, 100, 60)
+	if !strings.Contains(out.String(), "MODAL CONTROLS") || !strings.Contains(out.String(), "Ctrl+C close") {
+		t.Fatalf("search did not reveal modal guidance: %q", out.String())
+	}
+	state.helpSearchActive = false
+	state.helpSearchQuery = ""
 	if action := state.handleInput([]byte("!")); action != "help" {
 		t.Fatalf("configured help toggle action=%q", action)
 	}

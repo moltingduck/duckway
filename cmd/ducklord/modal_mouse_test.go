@@ -108,24 +108,33 @@ func TestModalMouseNotificationLevelsAndWorkspaceConfirmation(t *testing.T) {
 }
 
 func TestModalMouseHelpUsesConfiguredShortcutsAndIgnoresExamples(t *testing.T) {
-	s := &tuiState{helpMode: true, cfg: &ducklord.Config{}}
+	s := &tuiState{helpMode: true, workspacePreview: true, cfg: &ducklord.Config{}}
+	s.helpSearchQuery = "Open local help"
 	s.renderHelpModal(io.Discard, 100, 80)
-	found := false
+	foundPrefix := false
+	prefixHelp := shortcutInput(s.cfg.Shortcut("pane_prefix")) + "?"
 	for _, r := range s.modalMouseRegions {
 		if r.action.key == "\r" && r.action.before == nil {
 			t.Fatal("explanatory Enter hint must not activate underlying Session")
 		}
-		if r.action.key == shortcutInput(s.cfg.Shortcut("session_create")) {
-			found = true
+		if r.action.key == prefixHelp {
+			foundPrefix = true
 			s.helpSearchActive = true
 			key := s.modalMouseInput(r.left, r.row)
 			if string(key) != r.action.key || s.helpSearchActive {
-				t.Fatal("help action stayed trapped in search")
+				t.Fatal("configured prefix shortcut did not activate from search")
 			}
 		}
 	}
-	if !found {
-		t.Fatal("help shortcut row has no mouse target")
+	if !foundPrefix {
+		t.Fatal("configured prefix shortcut row has no mouse target")
+	}
+	withoutWorkspace := &tuiState{helpMode: true, cfg: s.cfg, helpSearchQuery: "Open local help"}
+	withoutWorkspace.renderHelpModal(io.Discard, 100, 80)
+	for _, r := range withoutWorkspace.modalMouseRegions {
+		if r.action.key == prefixHelp {
+			t.Fatal("prefix shortcut unavailable outside workspace must not be clickable")
+		}
 	}
 }
 
