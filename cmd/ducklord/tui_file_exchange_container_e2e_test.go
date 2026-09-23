@@ -340,7 +340,7 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 		itemVisible := func(selected bool) bool {
 			rows := projectFilesStyledRows(capture)
 			for i, row := range rows {
-				if (selected && !strings.Contains(row.text, "›")) || !strings.Contains(row.text, outcome) || !strings.Contains(row.text, sourceName) {
+				if (selected && !projectFilesHistoryRowSelected(row)) || !strings.Contains(row.text, outcome) || !strings.Contains(row.text, sourceName) {
 					continue
 				}
 				// A narrow history modal may wrap the destination basename onto
@@ -357,7 +357,7 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 		}
 		selectedHistoryRow := func() string {
 			for _, row := range projectFilesStyledRows(capture) {
-				if strings.Contains(row.text, "›") {
+				if projectFilesHistoryRowSelected(row) {
 					return row.text
 				}
 			}
@@ -923,6 +923,7 @@ func projectFilesVisiblePath(capture *tuiCapture, path string) string {
 
 type projectFilesStyledMatch struct {
 	style string
+	cell  int
 }
 
 type projectFilesStyledRow struct {
@@ -939,10 +940,41 @@ func (row projectFilesStyledRow) matches(label string) []projectFilesStyledMatch
 		}
 		offset += start
 		cell := modalCellWidth(row.text[:offset])
-		matches = append(matches, projectFilesStyledMatch{style: row.styles[cell]})
+		matches = append(matches, projectFilesStyledMatch{style: row.styles[cell], cell: cell})
 		start = offset + len(label)
 	}
 	return matches
+}
+
+func projectFilesHistoryRowSelected(row projectFilesStyledRow) bool {
+	markers := row.matches("› ")
+	if len(markers) == 0 {
+		return false
+	}
+	for _, outcome := range []string{"✓ Copied", "! Skipped", "× Failed", "× Cancelled", "· Not started", "· Queued", "▶ Copying"} {
+		for _, match := range row.matches(outcome) {
+			// History rows render the selection marker immediately before the
+			// outcome, with exactly one blank cell between them. A workspace
+			// cursor visible beside the modal is elsewhere on the same screen row.
+			for _, marker := range markers {
+				if match.cell-marker.cell == 2 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func TestProjectFilesHistorySelectionIgnoresWorkspaceCursor(t *testing.T) {
+	backgroundCursor := projectFilesStyledRow{text: "› workspace  · Not started · pending.txt"}
+	if projectFilesHistoryRowSelected(backgroundCursor) {
+		t.Fatal("workspace cursor beside modal counted as selected history item")
+	}
+	selectedItem := projectFilesStyledRow{text: "› · Not started · pending.txt"}
+	if !projectFilesHistoryRowSelected(selectedItem) {
+		t.Fatal("rendered selected history item was not recognized")
+	}
 }
 
 func projectFilesStyledRows(capture *tuiCapture) []projectFilesStyledRow {
