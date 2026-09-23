@@ -1099,6 +1099,67 @@ func projectFilesEntryText(e ducklord.FileEntry, p projectFilesPane, selected, a
 	return cursor + mark + " " + icon + " " + e.Name
 }
 
+func projectFilesHistoryItemDestination(batch projectFilesBatch, item projectFilesItem) string {
+	if item.destination != "" {
+		return item.destination
+	}
+	return filepath.Join(batch.destination.Path, item.name)
+}
+
+func projectFilesHistoryItemLines(mark string, batch projectFilesBatch, item projectFilesItem, width int) []modalRenderLine {
+	style := projectFilesStatusStyle(item.state)
+	source := filepath.Base(item.name)
+	destination := filepath.Base(projectFilesHistoryItemDestination(batch, item))
+	text := mark + projectFilesItemRow(projectFilesItem{name: source, state: item.state})
+	target := " → " + destination
+	if item.err != "" {
+		target += " · " + item.err
+	}
+	if modalCellWidth(sanitizeTerminalText(text+target)) <= max(1, width-4) {
+		return []modalRenderLine{{style, projectClip(text+target, width-4)}}
+	}
+	lines := []modalRenderLine{
+		{style, projectClip(text, width-4)},
+		{style, projectClip("    → "+destination, width-4)},
+	}
+	if item.err != "" {
+		lines = append(lines, modalRenderLine{style, "    Error: " + projectClip(item.err, width-15)})
+	}
+	return lines
+}
+
+func projectFilesHistoryPathLines(label, path string, width int) []modalRenderLine {
+	const continuation = "        "
+	available := max(1, width-4)
+	prefix := label + ": "
+	value := sanitizeTerminalText(path)
+	if value == "" {
+		return []modalRenderLine{{modalMuted, prefix}}
+	}
+
+	lines := make([]modalRenderLine, 0, 2)
+	for len(value) > 0 {
+		limit := max(1, available-modalCellWidth(prefix))
+		used, end := 0, 0
+		for end < len(value) {
+			r, size := utf8.DecodeRuneInString(value[end:])
+			cells := modalRuneWidth(r)
+			if end > 0 && used+cells > limit {
+				break
+			}
+			used += cells
+			end += size
+			if used >= limit {
+				break
+			}
+		}
+		lines = append(lines, modalRenderLine{modalMuted, prefix + value[:end]})
+		value = value[end:]
+		prefix = continuation
+	}
+	return lines
+}
+
 func (s *tuiState) projectFilesHistoryLines(width, rows int) []modalRenderLine {
 	lines := []modalRenderLine{{modalTitle, "Transfer history · ←/→ batch · ↑/↓ item · x clear · Esc browser"}}
 	if len(s.projectFiles.history) == 0 {
@@ -1113,27 +1174,60 @@ func (s *tuiState) projectFilesHistoryLines(width, rows int) []modalRenderLine {
 	lines = append(lines, modalRenderLine{modalMuted, projectClip(batchText, width-4)})
 	lines = append(lines, modalRenderLine{modalMuted, "Sent: " + projectClip(projectFilesEndpointDescription(projectFilesPane{label: b.sourceLabel, endpoint: b.source}), width-9)}, modalRenderLine{modalMuted, "Received: " + projectClip(projectFilesEndpointDescription(projectFilesPane{label: b.destinationLabel, endpoint: b.destination}), width-12)})
 	if len(b.items) == 0 {
-		lines = append(lines, modalRenderLine{modalMuted, "No items started"})
+		return append(lines, modalRenderLine{modalMuted, "No items started"})
 	}
-	maxItems := max(0, rows-7)
-	start := max(0, s.projectFiles.historyItem-maxItems+1)
-	end := min(len(b.items), start+maxItems)
-	for i := start; i < end; i++ {
-		item := b.items[i]
-		style := projectFilesStatusStyle(item.state)
+
+	selected := min(max(0, s.projectFiles.historyItem), len(b.items)-1)
+	item := b.items[selected]
+	sourcePath := filepath.Join(b.source.Path, item.name)
+	destinationPath := projectFilesHistoryItemDestination(b, item)
+	detail := append(
+		projectFilesHistoryPathLines("Source", sourcePath, width),
+		projectFilesHistoryPathLines("Destination", destinationPath, width)...,
+	)
+	// Keep the selected item's row navigable in a short modal. Full wrapped paths
+	// are retained whenever they fit; otherwise the row carries the complete target
+	// basename and these two lines identify both truncated absolute paths.
+	detailBudget := max(0, rows-2-len(lines)-len(projectFilesHistoryItemLines("› ", b, item, width)))
+	if len(detail) > detailBudget {
+		detail = []modalRenderLine{
+			{modalMuted, "Source: " + projectClip(sourcePath, width-12)},
+			{modalMuted, "Destination: " + projectClip(destinationPath, width-17)},
+		}
+		if detailBudget < len(detail) {
+			detail = detail[:detailBudget]
+		}
+	}
+	available := max(0, rows-2-len(lines)-len(detail))
+	itemLines := func(i int) []modalRenderLine {
 		mark := "  "
-		if i == s.projectFiles.historyItem {
+		if i == selected {
 			mark = "› "
 		}
-		text := mark + projectFilesItemRow(item)
-		if item.destination != "" && item.destination != item.name {
-			text += " → " + item.destination
-		}
-		if item.err != "" {
-			text += " · " + item.err
-		}
-		lines = append(lines, modalRenderLine{style, projectClip(text, width-4)})
+		return projectFilesHistoryItemLines(mark, b, b.items[i], width)
 	}
+	start, used := selected, len(itemLines(selected))
+	for start > 0 {
+		previous := len(itemLines(start - 1))
+		if used+previous > available {
+			break
+		}
+		start--
+		used += previous
+	}
+	end, emitted := start, 0
+	for end < len(b.items) {
+		n := len(itemLines(end))
+		if emitted+n > available {
+			break
+		}
+		emitted += n
+		end++
+	}
+	for i := start; i < end; i++ {
+		lines = append(lines, itemLines(i)...)
+	}
+	lines = append(lines, detail...)
 	if b.err != "" && len(lines) < rows-2 {
 		lines = append(lines, modalRenderLine{modalDanger, "Error: " + projectClip(b.err, width-10)})
 	}

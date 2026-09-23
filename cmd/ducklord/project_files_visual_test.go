@@ -379,3 +379,78 @@ func TestProjectFilesScrolledMouseRegionsMatchVisibleRowsWideAndStacked(t *testi
 		})
 	}
 }
+
+func TestProjectFilesHistoryShowsRenamedTargetAndWrappedSelectedPaths(t *testing.T) {
+	sourceRoot := "/source-root/very-long-source-directory-0123456789"
+	destinationRoot := "/destination-root/very-long-destination-directory-0123456789"
+	item := projectFilesItem{
+		name:        "source-original-name.txt",
+		destination: destinationRoot + "/renamed-target-final-suffix.txt",
+		state:       "copied",
+	}
+	sourcePath := sourceRoot + "/" + item.name
+	for _, cols := range []int{50, 120} {
+		t.Run(fmt.Sprintf("cols-%d", cols), func(t *testing.T) {
+			s := &tuiState{projectFiles: projectFilesState{
+				open: true, step: "history", history: []projectFilesBatch{{
+					sourceLabel: "LOCAL", destinationLabel: "client-a",
+					source: ducklord.FileEndpoint{Path: sourceRoot}, destination: ducklord.FileEndpoint{Path: destinationRoot},
+					items: []projectFilesItem{item},
+				}},
+			}}
+			var frame strings.Builder
+			s.renderProjectFilesModal(&frame, cols, 32)
+			screen := ducklord.NewTerminal(32, cols, 0)
+			screen.Write([]byte(strings.ReplaceAll(frame.String(), "\n", "\r\n")))
+			view := strings.Join(screen.RenderLines(32, cols), "\n")
+			for _, want := range []string{"Copied", "source-original-name.txt", "renamed-target-final-suffix.txt", "Source:", "Destination:"} {
+				if !strings.Contains(view, want) {
+					t.Fatalf("terminal omitted %q: %q", want, view)
+				}
+			}
+			if cols == 120 {
+				for _, want := range []string{sourcePath, item.destination} {
+					if !strings.Contains(view, want) {
+						t.Fatalf("wide terminal omitted selected path %q: %q", want, view)
+					}
+				}
+			} else {
+				for _, want := range []string{"/source-root/very-long-source-direct", "/destination-root/very-long-des"} {
+					if !strings.Contains(view, want) {
+						t.Fatalf("narrow terminal omitted wrapped path component %q: %q", want, view)
+					}
+				}
+				if len(projectFilesHistoryPathLines("Destination", item.destination, cols-2)) < 2 {
+					t.Fatal("narrow destination path was not wrapped")
+				}
+			}
+		})
+	}
+}
+
+func TestProjectFilesHistoryShortModalKeepsSelectedItemVisible(t *testing.T) {
+	items := make([]projectFilesItem, 5)
+	for i := range items {
+		items[i] = projectFilesItem{
+			name:        fmt.Sprintf("source-%d.txt", i),
+			destination: "/destination-root/very-long-destination-directory-0123456789/renamed-target-final-suffix.txt",
+			state:       "copied",
+		}
+	}
+	items[len(items)-1].state = "failed"
+	items[len(items)-1].err = "permission denied"
+	s := &tuiState{projectFiles: projectFilesState{
+		open: true, step: "history", historyItem: len(items) - 1,
+		history: []projectFilesBatch{{source: ducklord.FileEndpoint{Path: "/source-root/very-long-source-directory-0123456789"}, items: items}},
+	}}
+	var frame strings.Builder
+	s.renderProjectFilesModal(&frame, 50, 11)
+	screen := ducklord.NewTerminal(11, 50, 0)
+	screen.Write([]byte(strings.ReplaceAll(frame.String(), "\n", "\r\n")))
+	view := strings.Join(screen.RenderLines(11, 50), "\n")
+	for _, want := range []string{"Failed", "source-4.txt", "renamed-target-final-suffix.txt", "Error: permission denied", "Source:", "Destination:"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("short history modal omitted %q: %q", want, view)
+		}
+	}
+}
