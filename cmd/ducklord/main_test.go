@@ -2236,6 +2236,37 @@ func TestTUINotificationMenuStagesAndAtomicallySaves(t *testing.T) {
 	}
 }
 
+func renderedModalScreen(rendered []byte, cols, rows int) string {
+	screen := ducklord.NewTerminal(rows, cols, 0)
+	screen.Write(rendered)
+	return strings.Join(screen.RenderLines(rows, cols), "\n")
+}
+
+func TestNotificationFooterDescribesSourceAndDeliveryActions(t *testing.T) {
+	instance := string(model.NewInstanceID())
+	s := &tuiState{activityState: ducklord.NewActivityState(), sessions: []ducklord.RemoteSession{{Client: "host-a", InstanceID: instance, SessionID: "ABC123", Name: "agent"}}}
+	s.beginNotificationSettings()
+	var out bytes.Buffer
+	s.renderNotificationModal(&out, 80, 24)
+	screen := renderedModalScreen(out.Bytes(), 80, 24)
+	for _, want := range []string{"a/r all · x none · Space toggle source · Enter edit delivery", "↑/↓ select · s save · Esc cancel"} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("notification footer missing %q in %q", want, screen)
+		}
+	}
+	s.handleNotificationInput([]byte("x"))
+	for _, category := range model.NotificationCategories() {
+		if s.notificationStaged[category] {
+			t.Fatalf("x did not disable %s", category)
+		}
+	}
+	s.notificationIndex = len(model.NotificationCategories())
+	s.handleNotificationInput([]byte("\r"))
+	if !s.notificationLevelEditing {
+		t.Fatal("Enter did not open the delivery editor")
+	}
+}
+
 func TestTUINotificationSaveFailureLeavesLiveStateUntouched(t *testing.T) {
 	instance := string(model.NewInstanceID())
 	badTarget := filepath.Join(t.TempDir(), "state-is-a-directory")

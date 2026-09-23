@@ -260,7 +260,13 @@ func (s *tuiState) renderTerminalTool(out io.Writer, cols, rows int) {
 			lines = append(lines, modalRenderLine{text: "no bookmarks"})
 		}
 	}
-	lines = append(lines, modalRenderLine{style: modalMuted, text: "Enter/Esc close"})
+	footer := "Enter close · Esc/Ctrl+C cancel"
+	if s.terminalBookmarkMode {
+		footer = "Enter save bookmark · Esc/Ctrl+C cancel"
+	} else if s.terminalBookmarkListMode {
+		footer = "↑/↓ or j/k choose · Enter reveal · Esc/Ctrl+C close"
+	}
+	lines = append(lines, modalRenderLine{style: modalMuted, text: footer})
 	renderModalBox(out, cols, rows, lines)
 }
 

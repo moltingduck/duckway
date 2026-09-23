@@ -228,12 +228,12 @@ func (s *tuiState) renderProjectTransfer(out io.Writer, cols, rows int) {
 		if s.workspacePaneErr != "" {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.workspacePaneErr})
 		}
-		lines = append(lines, modalRenderLine{modalMuted, "  Enter continue · Esc cancel"})
+		lines = append(lines, modalRenderLine{modalMuted, "  Enter continue · Esc/Ctrl+C cancel"})
 		s.renderModalBox(out, cols, rows, lines)
 		return
 	}
 	if s.projectTransferAction == "export" {
-		lines := []modalRenderLine{{modalTitle, "  Confirm Project Export"}, {modalMuted, "  Write project layout, notes, and bookmark metadata to:"}, {modalMuted, "  " + displayField(s.projectTransferPath)}, {modalMuted, "  Terminal output and secrets are never included."}, {modalSelected, "  Write export file"}, {modalMuted, "  Esc cancel"}}
+		lines := []modalRenderLine{{modalTitle, "  Confirm Project Export"}, {modalMuted, "  Write project layout, notes, and bookmark metadata to:"}, {modalMuted, "  " + displayField(s.projectTransferPath)}, {modalMuted, "  Terminal output and secrets are never included."}, {modalSelected, "  Write export file"}, {modalMuted, "  Enter write export · Esc/Ctrl+C cancel"}}
 		if s.workspacePaneErr != "" {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.workspacePaneErr})
 		}
@@ -262,7 +262,7 @@ func (s *tuiState) renderProjectTransfer(out io.Writer, cols, rows int) {
 			lines = append(lines, modalRenderLine{modalMuted, "    " + displayField(identity.Key())})
 		}
 	}
-	lines = append(lines, modalRenderLine{modalSelected, "  Import and persist"}, modalRenderLine{modalMuted, "  Esc cancel"})
+	lines = append(lines, modalRenderLine{modalSelected, "  Import and persist"}, modalRenderLine{modalMuted, "  Enter import and persist · Esc/Ctrl+C cancel"})
 	if s.workspacePaneErr != "" {
 		lines = append(lines, modalRenderLine{modalDanger, "  " + s.workspacePaneErr})
 	}

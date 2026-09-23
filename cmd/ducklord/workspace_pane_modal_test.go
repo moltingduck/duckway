@@ -1637,3 +1637,22 @@ func TestWorkspaceNewShellHostEnterDoesNotRestartDiscovery(t *testing.T) {
 		t.Fatalf("active discovery was restarted or advanced: discovering=%v request=%d step=%q", state.newSessionDiscovering, state.newSessionRequestID, state.newSessionStep)
 	}
 }
+
+func TestNotesFootersDescribeHandledScopeSearchAndFormKeys(t *testing.T) {
+	s := &tuiState{}
+	var out strings.Builder
+	s.renderNotesModal(&out, 80, 24)
+	screen := renderedModalScreen([]byte(out.String()), 80, 24)
+	for _, want := range []string{"Enter copy content · ↑/↓ j/k select · ←/→ h/l scope", "g/p/s scope · / search · a add · e edit · E notebook · Esc close"} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("notes footer missing %q in %q", want, screen)
+		}
+	}
+	s.notesFormActive = true
+	out.Reset()
+	s.renderNotesModal(&out, 80, 24)
+	screen = renderedModalScreen([]byte(out.String()), 80, 24)
+	if !strings.Contains(screen, "Enter next/save · Tab field · ←/→ cursor") {
+		t.Fatalf("form footer missing Enter behavior: %q", screen)
+	}
+}

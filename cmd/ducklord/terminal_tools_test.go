@@ -124,3 +124,25 @@ func TestTerminalToolCloseFallsBackWithNoSessions(t *testing.T) {
 		t.Fatalf("zero-session origin restored: focused=%v projectFocus=%v key=%q", state.focused, state.workspaceProjectFocus, state.activeAttachKey)
 	}
 }
+
+func TestTerminalToolFooterDescribesCurrentMode(t *testing.T) {
+	state := &tuiState{focused: true, terminal: ducklord.NewTerminal(8, 80, 64), activeAttachKey: "instance/session", activityState: ducklord.NewActivityState()}
+	for _, tc := range []struct {
+		name  string
+		setup func()
+		want  string
+	}{
+		{"search", func() { state.terminalSearchMode = true }, "Enter close · Esc/Ctrl+C cancel"},
+		{"bookmark create", func() { state.terminalSearchMode, state.terminalBookmarkMode = false, true }, "Enter save bookmark · Esc/Ctrl+C cancel"},
+		{"bookmark list", func() { state.terminalBookmarkMode, state.terminalBookmarkListMode = false, true }, "↑/↓ or j/k choose · Enter reveal · Esc/Ctrl+C close"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.setup()
+			var rendered strings.Builder
+			state.renderTerminalTool(&rendered, 100, 24)
+			if !strings.Contains(rendered.String(), tc.want) {
+				t.Fatalf("footer missing %q in %q", tc.want, rendered.String())
+			}
+		})
+	}
+}

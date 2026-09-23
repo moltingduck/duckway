@@ -415,3 +415,42 @@ func TestProjectFilesPreviewKeepsControlsBeforeLongSelection(t *testing.T) {
 		t.Fatalf("short preview lost confirmation control: %q", out.String())
 	}
 }
+
+func TestProjectFilesFootersDescribeHandledActions(t *testing.T) {
+	s := &tuiState{}
+	s.projectFiles = projectFilesState{open: true, step: "preview", conflict: "skip", left: projectFilesPane{marked: map[string]bool{"one.txt": true}}, right: projectFilesPane{marked: map[string]bool{}}}
+	var out bytes.Buffer
+	s.renderProjectFilesModal(&out, 80, 24)
+	screen := renderedModalScreen(out.Bytes(), 80, 24)
+	if !strings.Contains(screen, "s skip · r rename · o overwrite · Esc/q cancel") {
+		t.Fatalf("preview footer missing conflict keys: %q", screen)
+	}
+	s.handleProjectFilesInput([]byte("r"))
+	if s.projectFiles.conflict != "rename" {
+		t.Fatalf("r did not select rename: %q", s.projectFiles.conflict)
+	}
+	s.projectFiles.step, s.projectFiles.history = "history", []projectFilesBatch{{}}
+	out.Reset()
+	s.renderProjectFilesModal(&out, 80, 24)
+	screen = renderedModalScreen(out.Bytes(), 80, 24)
+	for _, want := range []string{"←/→ h/l batch · ↑/↓ j/k item", "x clear · Esc browser · Ctrl+C close"} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("history footer missing handled key %q in %q", want, screen)
+		}
+	}
+	s.projectFiles.step = "browse"
+	s.projectFiles.left.entries = []ducklord.FileEntry{{Name: "source.txt"}}
+	s.projectFiles.right.entries = []ducklord.FileEntry{{Name: "destination.txt"}}
+	out.Reset()
+	s.renderProjectFilesModal(&out, 80, 24)
+	screen = renderedModalScreen(out.Bytes(), 80, 24)
+	for _, want := range []string{
+		"h endpoints · g path · / filter · Space select · i icons",
+		"↑/↓ j/k select · Enter open · Backspace parent",
+		"Tab column · c copy · l history · Esc/Ctrl+C close",
+	} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("browse footer missing handled key %q in %q", want, screen)
+		}
+	}
+}

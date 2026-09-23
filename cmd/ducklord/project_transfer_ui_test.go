@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -56,5 +58,26 @@ func TestProjectImportPreviewCountsExistingSessionNotes(t *testing.T) {
 	}}
 	if got := state.projectImportSessionNoteConflicts(); got != 1 {
 		t.Fatalf("session note conflicts = %d, want 1", got)
+	}
+}
+
+func TestProjectTransferFootersDescribeConfirmAndCancel(t *testing.T) {
+	s := &tuiState{workspacePaneMode: true, workspacePaneStep: "project-transfer-path", projectTransferAction: "export"}
+	var out bytes.Buffer
+	s.renderProjectTransfer(&out, 100, 24)
+	if !strings.Contains(out.String(), "Enter continue · Esc/Ctrl+C cancel") {
+		t.Fatalf("path footer missing: %q", out.String())
+	}
+	s.workspacePaneStep, s.projectTransferPath = "project-transfer-confirm", "/tmp/project.yaml"
+	out.Reset()
+	s.renderProjectTransfer(&out, 100, 24)
+	if !strings.Contains(out.String(), "Enter write export · Esc/Ctrl+C cancel") {
+		t.Fatalf("export footer missing: %q", out.String())
+	}
+	s.workspacePaneStep, s.projectTransferAction = "project-transfer-preview", "import"
+	out.Reset()
+	s.renderProjectTransfer(&out, 100, 24)
+	if !strings.Contains(out.String(), "Enter import and persist · Esc/Ctrl+C cancel") {
+		t.Fatalf("import footer missing: %q", out.String())
 	}
 }

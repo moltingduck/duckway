@@ -242,6 +242,6 @@ func (s *tuiState) renderCommandPalette(out io.Writer, cols, rows int) {
 		}
 		lines = append(lines, modalRenderLine{style, prefix + item.label})
 	}
-	lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter run · Esc close"})
+	lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ or j/k choose · Enter run · Esc/Ctrl+C close"})
 	s.renderModalBox(out, cols, rows, lines)
 }

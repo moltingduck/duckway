@@ -639,7 +639,7 @@ func (s *tuiState) renderNotesModal(out io.Writer, cols, rows int) {
 		if s.outputErr != "" {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.outputErr})
 		}
-		lines = append(lines, modalRenderLine{modalMuted, "  Tab switch field · ←/→ move cursor · Ctrl+S save · Ctrl+K clear · Esc cancel"})
+		lines = append(lines, modalRenderLine{modalMuted, "  Enter next/save · Tab field · ←/→ cursor"}, modalRenderLine{modalMuted, "  Ctrl+S save · Ctrl+K clear · Esc cancel"})
 		s.renderModalBox(out, cols, rows, lines)
 		return
 	}
@@ -654,8 +654,8 @@ func (s *tuiState) renderNotesModal(out io.Writer, cols, rows int) {
 	if s.notesSearchActive {
 		lines = append(lines, modalRenderLine{modalInput, "  /" + s.notesQuery + "_"})
 	}
-	footer := "  Enter copies selected CONTENT · ↑/↓ choose · ←/→ scope · a add · e edit · Esc close · Ctrl-B o"
-	availableRows := rows - len(lines) - 1
+	footer := []string{"  Enter copy content · ↑/↓ j/k select · ←/→ h/l scope", "  g/p/s scope · / search · a add · e edit · E notebook · Esc close"}
+	availableRows := rows - len(lines) - len(footer)
 	if s.outputErr != "" {
 		availableRows--
 	}
@@ -680,7 +680,9 @@ func (s *tuiState) renderNotesModal(out io.Writer, cols, rows int) {
 	if s.outputErr != "" {
 		lines = append(lines, modalRenderLine{modalDanger, "  " + s.outputErr})
 	}
-	lines = append(lines, modalRenderLine{modalMuted, footer})
+	for _, line := range footer {
+		lines = append(lines, modalRenderLine{modalMuted, line})
+	}
 	s.renderModalBox(out, cols, rows, lines)
 }
 

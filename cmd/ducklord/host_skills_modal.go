@@ -159,7 +159,7 @@ func (s *tuiState) renderHostSkillsModal(out io.Writer, cols, rows int) {
 		}
 		lines = append(lines, modalRenderLine{modalMuted, "  Enter confirm and apply · Esc cancel"})
 	case "skills-result":
-		lines = append(lines, modalRenderLine{modalStatus, "  " + s.hostSkillsErr}, modalRenderLine{modalMuted, "  Enter or Esc return to agent list"})
+		lines = append(lines, modalRenderLine{modalStatus, "  " + s.hostSkillsErr}, modalRenderLine{modalMuted, "  Enter or Esc return to Skills dashboard"})
 	case "skills-busy":
 		lines = append(lines, modalRenderLine{modalStatus, "  Working on Host Skills…"}, modalRenderLine{modalMuted, "  Esc/Ctrl-C cancel · terminal output remains in the background"})
 	case "skills-rename":
@@ -242,20 +242,35 @@ func (s *tuiState) renderHostSkillsDashboard(out io.Writer, cols, rows int, line
 		}
 	}
 	maxRows := max(len(names), len(targetRows))
-	if maxRows == 0 {
+	// Reserve the three instruction rows so a long repository/target list cannot
+	// hide the controls that operate the dashboard. Each pane scrolls enough to
+	// keep its current selection visible.
+	maxRows = min(maxRows, max(0, rows-2-len(lines)-3))
+	if maxRows == 0 && rows >= len(lines)+6 {
 		maxRows = 1
 	}
+	leftStart := max(0, s.hostSkillsIndex-maxRows+1)
+	targetSelected := 0
+	for i, target := range targetRows {
+		if target.targetIndex == s.hostSkillsTargetIndex && target.remoteIndex == s.hostSkillsTargetRemoteIndex {
+			targetSelected = i
+			break
+		}
+	}
+	rightStart := max(0, targetSelected-maxRows+1)
 	for row := 0; row < maxRows; row++ {
 		left := "  "
-		if row < len(names) {
-			left = fmt.Sprintf("%-2s[%-4s] %s", "  ", s.hostSkillManagement(names[row]), names[row])
-			if s.hostSkillsPane == 0 && row == s.hostSkillsIndex {
-				left = fmt.Sprintf("› [%-4s] %s", s.hostSkillManagement(names[row]), names[row])
+		leftRow := row + leftStart
+		if leftRow < len(names) {
+			left = fmt.Sprintf("%-2s[%-4s] %s", "  ", s.hostSkillManagement(names[leftRow]), names[leftRow])
+			if s.hostSkillsPane == 0 && leftRow == s.hostSkillsIndex {
+				left = fmt.Sprintf("› [%-4s] %s", s.hostSkillManagement(names[leftRow]), names[leftRow])
 			}
 		}
 		right := ""
-		if row < len(targetRows) {
-			r := targetRows[row]
+		rightRow := row + rightStart
+		if rightRow < len(targetRows) {
+			r := targetRows[rightRow]
 			right = r.text
 			if s.hostSkillsPane == 1 && r.targetIndex == s.hostSkillsTargetIndex && r.remoteIndex == s.hostSkillsTargetRemoteIndex {
 				right = "› " + right
@@ -263,8 +278,9 @@ func (s *tuiState) renderHostSkillsDashboard(out io.Writer, cols, rows int, line
 		}
 		lines = append(lines, modalRenderLine{modalInput, left + "    " + right})
 	}
-	lines = append(lines, modalRenderLine{modalMuted, "  Tab/←/→ pane · ↑/↓ select · Enter/Space expand · p push · n none · m rename"})
-	lines = append(lines, modalRenderLine{modalMuted, "  i import · a/e/f source · t target · r pull · x delete remote · d deploy · Esc host settings"})
+	lines = append(lines, modalRenderLine{modalMuted, "  Tab/←/→ pane · ↑/↓ select · Enter/Space expand"})
+	lines = append(lines, modalRenderLine{modalMuted, "  p push · n none · m rename · r pull · x delete"})
+	lines = append(lines, modalRenderLine{modalMuted, "  i import · a/f source · t target · d deploy · Esc back"})
 	if s.hostSkillsErr != "" {
 		lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostSkillsErr})
 	}

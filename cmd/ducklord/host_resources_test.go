@@ -131,3 +131,16 @@ func TestHostResourcesDelayedHostSwitchCannotOverwriteSelectedHost(t *testing.T)
 		t.Fatalf("selected Host B status was not applied: %+v", s.hostResourceStatus)
 	}
 }
+
+func TestHostResourcesErrorShowsRetryInstruction(t *testing.T) {
+	s := testHostSkillsState()
+	s.hostMenuStep, s.hostMenuErr = "resources-error", "Host is unavailable"
+	var out bytes.Buffer
+	s.renderHostModal(&out, 100, 24)
+	if !strings.Contains(out.String(), "Host is unavailable") || !strings.Contains(out.String(), "Enter retry · Esc back") {
+		t.Fatalf("resource error omitted recovery instruction: %q", out.String())
+	}
+	if action := s.handleHostMenuInput([]byte("\r")); action != "host-resources-read" || s.hostMenuStep != "resources-loading" {
+		t.Fatalf("retry action=%q step=%q", action, s.hostMenuStep)
+	}
+}

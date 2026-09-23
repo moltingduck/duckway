@@ -346,3 +346,29 @@ func TestHostSkillsCtrlCCleansAndClosesWholeRoute(t *testing.T) {
 		t.Fatalf("mode=%v busy=%v cancelled=%v", s.hostMenuMode, s.hostSkillsBusy, called)
 	}
 }
+
+func TestHostSkillsResultAndDashboardFootersMatchRoutes(t *testing.T) {
+	s := testHostSkillsState()
+	s.hostMenuStep, s.hostSkillsErr = "skills-result", "Applied source"
+	var out bytes.Buffer
+	s.renderHostSkillsModal(&out, 80, 24)
+	screen := renderedModalScreen(out.Bytes(), 80, 24)
+	if !strings.Contains(screen, "Enter or Esc return to Skills dashboard") {
+		t.Fatalf("result footer missing dashboard route: %q", screen)
+	}
+	s.handleHostSkillsInput([]byte("\r"))
+	if s.hostMenuStep != "skills-dashboard" {
+		t.Fatalf("result Enter step=%q, want skills-dashboard", s.hostMenuStep)
+	}
+	out.Reset()
+	s.renderHostSkillsModal(&out, 80, 24)
+	screen = renderedModalScreen(out.Bytes(), 80, 24)
+	for _, want := range []string{"Tab/←/→ pane · ↑/↓ select · Enter/Space expand", "p push · n none · m rename · r pull · x delete", "i import · a/f source · t target · d deploy · Esc back"} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("dashboard footer missing %q in %q", want, screen)
+		}
+	}
+	if strings.Contains(screen, "a/e/f source") {
+		t.Fatalf("dashboard source footer does not match handler: %q", screen)
+	}
+}

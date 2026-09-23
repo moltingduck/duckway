@@ -3845,8 +3845,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
-			// Help is a pinned overlay: only its configured ? binding or Esc
-			// may toggle it. Do not let quit or Ctrl-C dismiss it.
+			// Help is a pinned overlay: only its configured binding may toggle it.
+			// Esc, quit, and Ctrl-C do not dismiss it.
 			if state.helpMode && !state.blockingModalOpen() {
 				if state.shortcut("help", string(b)) {
 					state.dispatchHelpAction("help")
@@ -7656,6 +7656,9 @@ func (s *tuiState) renderHostModal(out io.Writer, cols, rows int) {
 			lines = append(lines, modalRenderLine{modalMuted, "  Reading Host resources…"})
 		} else if s.hostMenuErr != "" {
 			lines = append(lines, modalRenderLine{modalDanger, "  " + s.hostMenuErr})
+			if s.hostMenuStep == "resources-error" {
+				lines = append(lines, modalRenderLine{modalMuted, "  Enter retry · Esc back"})
+			}
 		} else {
 			r := s.hostResourceStatus
 			lines = append(lines,
@@ -8738,7 +8741,7 @@ func (s *tuiState) renderNotificationModal(out io.Writer, cols, rows int) {
 		return
 	}
 	selected := min(max(s.notificationIndex, 0), len(categories)+len(notificationConfigClasses)-1)
-	maxChoices := max(1, rows-7)
+	maxChoices := max(1, rows-8)
 	start := max(0, selected-maxChoices/2)
 	start = min(start, max(0, len(categories)+len(notificationConfigClasses)-maxChoices))
 	lines := []modalRenderLine{{modalTitle, fmt.Sprintf("  Notifications · %s / %s", target.Client, target.Name)}}
@@ -8770,7 +8773,9 @@ func (s *tuiState) renderNotificationModal(out io.Writer, cols, rows int) {
 	if s.outputErr != "" {
 		status = "  Not saved: " + s.outputErr
 	}
-	lines = append(lines, modalRenderLine{modalStatus, status}, modalRenderLine{modalMuted, "  Enter/Space toggle source or edit level · s save · Esc cancel"})
+	lines = append(lines, modalRenderLine{modalStatus, status},
+		modalRenderLine{modalMuted, "  a/r all · x none · Space toggle source · Enter edit delivery"},
+		modalRenderLine{modalMuted, "  ↑/↓ select · s save · Esc cancel"})
 	if rows < 7 {
 		lines = lines[:min(len(lines), 2)]
 	}

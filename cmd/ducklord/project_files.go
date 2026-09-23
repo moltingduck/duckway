@@ -849,7 +849,7 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 		if s.projectFiles.hasPendingDestination {
 			dst.endpoint = snapshotProjectFilesEndpoint(s.projectFiles.pendingDestination)
 		}
-		lines := []modalRenderLine{{modalTitle, "Copy preview · Enter confirm · Esc cancel"}, {modalMuted, "From: " + projectClip(projectFilesEndpointDescription(src), width-6)}, {modalMuted, "To: " + projectClip(projectFilesEndpointDescription(dst), width-4)}, {modalMuted, "Conflict policy: " + s.projectFiles.conflict + " (Overwrite means selected policy; replacement is not confirmed)"}}
+		lines := []modalRenderLine{{modalTitle, "Copy preview · Enter confirm"}, {modalMuted, "s skip · r rename · o overwrite · Esc/q cancel"}, {modalMuted, "From: " + projectClip(projectFilesEndpointDescription(src), width-6)}, {modalMuted, "To: " + projectClip(projectFilesEndpointDescription(dst), width-4)}, {modalMuted, "Conflict: " + s.projectFiles.conflict}}
 		for _, name := range projectFilesMarkedNames(src) {
 			if len(lines) >= rows-2 {
 				break
@@ -972,7 +972,11 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 		}
 		lines = append(lines, modalRenderLine{modalMuted, parts[0] + "  " + parts[1]})
 	}
-	lines = append(lines, modalRenderLine{modalMuted, "h endpoint · g path · / filter · Space select · i folder icons [D] · c copy preview"}, modalRenderLine{modalMuted, "Tab switch column · Enter open · Esc back/close · Ctrl+C cancel · l history"})
+	lines = append(lines,
+		modalRenderLine{modalMuted, "h endpoints · g path · / filter · Space select · i icons"},
+		modalRenderLine{modalMuted, "↑/↓ j/k select · Enter open · Backspace parent"},
+		modalRenderLine{modalMuted, "Tab column · c copy · l history · Esc/Ctrl+C close"},
+	)
 	if s.projectFiles.step == "path" {
 		lines = append(lines, modalRenderLine{modalInput, "Path: " + projectClip(s.projectFilesPane().endpoint.Path, width-8) + "  Enter apply · Esc cancel"})
 	}
@@ -988,7 +992,7 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 			}
 			lines = append(lines, modalRenderLine{modalMuted, mark + n})
 		}
-		lines = append(lines, modalRenderLine{modalMuted, "j/k choose · Enter apply · Esc cancel"})
+		lines = append(lines, modalRenderLine{modalMuted, "j/k or ↑/↓ choose · Enter apply · Esc cancel"})
 	}
 	renderModalBoxWidthANSI(out, cols, rows, width, lines)
 	if s.projectFiles.step != "browse" {
@@ -1161,7 +1165,7 @@ func projectFilesHistoryPathLines(label, path string, width int) []modalRenderLi
 }
 
 func (s *tuiState) projectFilesHistoryLines(width, rows int) []modalRenderLine {
-	lines := []modalRenderLine{{modalTitle, "Transfer history · ←/→ batch · ↑/↓ item · x clear · Esc browser"}}
+	lines := []modalRenderLine{{modalTitle, "Transfer history"}, {modalMuted, "←/→ h/l batch · ↑/↓ j/k item"}, {modalMuted, "x clear · Esc browser · Ctrl+C close"}}
 	if len(s.projectFiles.history) == 0 {
 		return append(lines, modalRenderLine{modalMuted, "No batches for this Project"})
 	}

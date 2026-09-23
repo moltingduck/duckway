@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/hackerduck/duckway/internal/ducklord"
@@ -134,5 +135,22 @@ func TestCommandPaletteProjectFilesRestoresFocusedShellWithoutLayout(t *testing.
 	s.closeProjectFiles()
 	if !s.focused || s.workspaceProjectFocus || s.activeAttachKey != sessionKey(session) {
 		t.Fatalf("close did not restore focused shell without a layout: focused=%v projectFocus=%v key=%q", s.focused, s.workspaceProjectFocus, s.activeAttachKey)
+	}
+}
+
+func TestCommandPaletteFooterMatchesHandledKeys(t *testing.T) {
+	s := &tuiState{}
+	s.openCommandPalette()
+	var rendered strings.Builder
+	s.renderCommandPalette(&rendered, 100, 24)
+	want := "↑/↓ or j/k choose · Enter run · Esc/Ctrl+C close"
+	if !strings.Contains(rendered.String(), want) {
+		t.Fatalf("footer missing %q in %q", want, rendered.String())
+	}
+	if !s.handleCommandPaletteInput([]byte("j")) || s.commandPaletteIndex != 1 {
+		t.Fatalf("j did not select next item: index=%d", s.commandPaletteIndex)
+	}
+	if !s.handleCommandPaletteInput([]byte("\x03")) || s.commandPaletteMode {
+		t.Fatal("Ctrl+C did not close palette")
 	}
 }
