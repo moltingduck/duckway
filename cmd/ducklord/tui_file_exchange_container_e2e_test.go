@@ -186,7 +186,7 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 			return "endpoint pane did not finish loading the requested entry: " + safeTerminalDiagnostic(capture.currentText())
 		})
 	}
-	selectOnly := func(name string) {
+	applyFilter := func(name string) {
 		t.Helper()
 		writePTY(t, terminal, "/")
 		waitE2E(t, 10*time.Second, func() bool {
@@ -204,38 +204,27 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 				!strings.Contains(screen, "Enter apply · Esc cancel") &&
 				paneContains(activePane, name)
 		}, func() string {
-			return "filter did not resolve the requested source entry: " + projectFilesOwnershipDiagnostic(capture)
+			return "filter did not resolve the requested active-pane entry: " + projectFilesOwnershipDiagnostic(capture)
 		})
+	}
+	selectOnly := func(name string) {
+		t.Helper()
+		applyFilter(name)
 		writePTY(t, terminal, " ")
 		waitE2E(t, 10*time.Second, func() bool {
-			return paneContains(activePane, "[x] "+name)
+			return projectFilesPanelRowContains(capture, activePane, name, "[x]")
 		}, func() string {
-			return "source entry was not selected in its active pane: " + safeTerminalDiagnostic(capture.currentText())
+			return "source entry was not selected in its active pane: " + projectFilesOwnershipDiagnostic(capture)
 		})
 	}
 	selectAdditional := func(name, alreadySelected string) {
 		t.Helper()
-		writePTY(t, terminal, "/")
-		waitE2E(t, 10*time.Second, func() bool {
-			screen := capture.currentText()
-			return strings.Contains(screen, "Filter:") && strings.Contains(screen, "Enter apply · Esc cancel")
-		}, func() string {
-			return "filter editor did not open for additional selection: " + projectFilesOwnershipDiagnostic(capture)
-		})
-		writePTY(t, terminal, strings.Repeat("\b", 256)+name+"\r")
-		waitE2E(t, 10*time.Second, func() bool {
-			screen := capture.currentText()
-			return strings.Contains(screen, "Tab switch column") &&
-				!strings.Contains(screen, "Enter apply · Esc cancel") &&
-				paneContains(activePane, name)
-		}, func() string {
-			return "filter did not resolve the additional source entry: " + projectFilesOwnershipDiagnostic(capture)
-		})
+		applyFilter(name)
 		writePTY(t, terminal, " ")
 		waitE2E(t, 10*time.Second, func() bool {
-			return paneContains(activePane, "[x] "+name)
+			return projectFilesPanelRowContains(capture, activePane, name, "[x]")
 		}, func() string {
-			return "additional source entry was not selected: " + safeTerminalDiagnostic(capture.currentText())
+			return "additional source entry was not selected: " + projectFilesOwnershipDiagnostic(capture)
 		})
 		// Filtering hides unrelated rows, so clear the query before proving that
 		// both the newly selected item and the prior selection remain checked.
@@ -258,9 +247,10 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 			return "cleared source filter did not return to browse mode: " + projectFilesOwnershipDiagnostic(capture)
 		})
 		waitE2E(t, 10*time.Second, func() bool {
-			return paneContains(activePane, "[x] "+name) && paneContains(activePane, "[x] "+alreadySelected)
+			return projectFilesPanelRowContains(capture, activePane, name, "[x]") &&
+				projectFilesPanelRowContains(capture, activePane, alreadySelected, "[x]")
 		}, func() string {
-			return "clearing the filter did not preserve both source selections: " + safeTerminalDiagnostic(capture.currentText())
+			return "clearing the filter did not preserve both source selections: " + projectFilesOwnershipDiagnostic(capture)
 		})
 	}
 	hasCopyResult := func(screen string) bool {
@@ -523,8 +513,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	assertRemoteText(clientB, targetB+"/"+aFile, aBytes, "client-a -> client-b file copy failed")
 	assertRemoteText(clientA, sourceA+"/"+aFile, aBytes, "copy modified client-a source")
 
-	writePTY(t, terminal, "/"+bundle+"\r")
-	capture.waitCurrent(t, bundle, 10*time.Second)
+	applyFilter(bundle)
 	// The filter editor also renders its query. Wait for browse mode before
 	// resolving a mouse row so the drag starts on the entry region, not text
 	// that briefly matched while the query was being submitted.
@@ -971,7 +960,15 @@ func TestProjectFilesPanelRenderedOwnership(t *testing.T) {
 		t.Run(fmt.Sprintf("%d-columns", cols), func(t *testing.T) {
 			state := &tuiState{projectFiles: projectFilesState{
 				open: true, step: "browse", active: 0,
-				left:  projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: "/left/root"}, entries: []ducklord.FileEntry{{Name: "left-only.txt"}}},
+				left: projectFilesPane{
+					label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: "/left/root"},
+					entries: []ducklord.FileEntry{
+						{Name: "left-only.txt"},
+						{Name: "selected-file.txt"},
+						{Name: "selected-dir", IsDir: true},
+					},
+					marked: map[string]bool{"selected-file.txt": true, "selected-dir": true},
+				},
 				right: projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: "/right/root"}, entries: []ducklord.FileEntry{{Name: "right-only.txt"}}},
 			}}
 			var rendered bytes.Buffer
@@ -989,6 +986,10 @@ func TestProjectFilesPanelRenderedOwnership(t *testing.T) {
 			if !projectFilesPanelRowContains(capture, 0, "left-only.txt", "[ ]") ||
 				projectFilesPanelRowContains(capture, 0, "left-only.txt", "right-only.txt") {
 				t.Fatal("panel row assertion did not require values on the same rendered row")
+			}
+			if !projectFilesPanelRowContains(capture, 0, "selected-file.txt", "[x]") ||
+				!projectFilesPanelRowContains(capture, 0, "selected-dir", "[x]") {
+				t.Fatalf("selected file and directory marks did not render on their entry rows: %s", projectFilesOwnershipDiagnostic(capture))
 			}
 		})
 	}
