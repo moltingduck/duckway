@@ -279,9 +279,23 @@ func TestDucklordPrefixNavigationContainerE2E(t *testing.T) {
 		t.Fatalf("clicked Help action leaked input to session 0: got %q want %q", got, want[0])
 	}
 	helpMarker := fmt.Sprintf("HELP_RESTORE_%x", stamp)
-	writePTY(t, terminal, fmt.Sprintf("printf '%s\\n' '%s' | tee -a \"$DUCKWAY_NAV_LOG\"\r", helpMarker, helpMarker))
+	writePTY(t, terminal, fmt.Sprintf("printf '%%s\\n' '%s' | tee -a \"$DUCKWAY_NAV_LOG\"\r", helpMarker))
+	recentOutput := func() string {
+		capture.mu.Lock()
+		defer capture.mu.Unlock()
+		data := capture.data
+		if len(data) > 4096 {
+			data = data[len(data)-4096:]
+		}
+		return safeTerminalDiagnostic(string(data))
+	}
 	waitE2E(t, 10*time.Second, func() bool { return strings.Contains(readLog(0), helpMarker+"\n") }, func() string {
-		return "Help close did not restore the originating PTY"
+		var logs strings.Builder
+		for i := range handles {
+			fmt.Fprintf(&logs, " session[%d]=%q", i, readLog(i))
+		}
+		return fmt.Sprintf("Help close did not restore the originating PTY; native logs:%s\nscreen:\n%s\nrecent terminal output:\n%s",
+			logs.String(), safeTerminalDiagnostic(capture.currentText()), recentOutput())
 	})
 
 	// route.detach: this layout is a non-Default Project, so Ctrl-B d detaches
