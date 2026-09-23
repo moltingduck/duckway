@@ -189,15 +189,22 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	selectOnly := func(name string) {
 		t.Helper()
 		writePTY(t, terminal, "/")
-		capture.waitCurrent(t, "Filter:", 10*time.Second)
-		writePTY(t, terminal, name+"\r")
+		waitE2E(t, 10*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, "Filter:") && strings.Contains(screen, "Enter apply · Esc cancel")
+		}, func() string {
+			return "filter editor did not open: " + projectFilesOwnershipDiagnostic(capture)
+		})
+		// Browse summaries retain the previous query. Replace it explicitly so
+		// selection is independent of whichever item was filtered last.
+		writePTY(t, terminal, strings.Repeat("\b", 256)+name+"\r")
 		waitE2E(t, 10*time.Second, func() bool {
 			screen := capture.currentText()
 			return strings.Contains(screen, "Tab switch column") &&
-				!strings.Contains(screen, "Filter:") &&
+				!strings.Contains(screen, "Enter apply · Esc cancel") &&
 				paneContains(activePane, name)
 		}, func() string {
-			return "filter did not resolve the requested source entry: " + safeTerminalDiagnostic(capture.currentText())
+			return "filter did not resolve the requested source entry: " + projectFilesOwnershipDiagnostic(capture)
 		})
 		writePTY(t, terminal, " ")
 		waitE2E(t, 10*time.Second, func() bool {
@@ -209,15 +216,20 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	selectAdditional := func(name, alreadySelected string) {
 		t.Helper()
 		writePTY(t, terminal, "/")
-		capture.waitCurrent(t, "Filter:", 10*time.Second)
-		writePTY(t, terminal, name+"\r")
+		waitE2E(t, 10*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, "Filter:") && strings.Contains(screen, "Enter apply · Esc cancel")
+		}, func() string {
+			return "filter editor did not open for additional selection: " + projectFilesOwnershipDiagnostic(capture)
+		})
+		writePTY(t, terminal, strings.Repeat("\b", 256)+name+"\r")
 		waitE2E(t, 10*time.Second, func() bool {
 			screen := capture.currentText()
 			return strings.Contains(screen, "Tab switch column") &&
-				!strings.Contains(screen, "Filter:") &&
+				!strings.Contains(screen, "Enter apply · Esc cancel") &&
 				paneContains(activePane, name)
 		}, func() string {
-			return "filter did not resolve the additional source entry: " + safeTerminalDiagnostic(capture.currentText())
+			return "filter did not resolve the additional source entry: " + projectFilesOwnershipDiagnostic(capture)
 		})
 		writePTY(t, terminal, " ")
 		waitE2E(t, 10*time.Second, func() bool {
@@ -228,14 +240,20 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 		// Filtering hides unrelated rows, so clear the query before proving that
 		// both the newly selected item and the prior selection remain checked.
 		writePTY(t, terminal, "/")
-		capture.waitCurrent(t, "Filter:", 10*time.Second)
+		waitE2E(t, 10*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, "Filter:") && strings.Contains(screen, "Enter apply · Esc cancel")
+		}, func() string {
+			return "filter editor did not reopen to clear query: " + projectFilesOwnershipDiagnostic(capture)
+		})
 		writePTY(t, terminal, strings.Repeat("\b", 256)+"\r")
 		waitE2E(t, 10*time.Second, func() bool {
 			screen := capture.currentText()
 			return projectFilesPanelContains(capture, 0, "LEFT") &&
 				projectFilesPanelContains(capture, 1, "RIGHT") &&
 				strings.Contains(screen, "Tab switch column") &&
-				!strings.Contains(screen, "Filter:")
+				!strings.Contains(screen, "Enter apply · Esc cancel") &&
+				!paneContains(activePane, "Filter:")
 		}, func() string {
 			return "cleared source filter did not return to browse mode: " + projectFilesOwnershipDiagnostic(capture)
 		})
@@ -319,8 +337,7 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 			return projectFilesPanelContains(capture, 0, "LEFT") &&
 				projectFilesPanelContains(capture, 1, "RIGHT") &&
 				strings.Contains(screen, "Tab switch column") &&
-				!strings.Contains(screen, "Filter:") &&
-				!strings.Contains(screen, "Enter apply") &&
+				!strings.Contains(screen, "Enter apply · Esc cancel") &&
 				!strings.Contains(screen, "Endpoint picker")
 		}, func() string {
 			return "Project Files did not reach browse mode: " + projectFilesOwnershipDiagnostic(capture)
@@ -812,8 +829,22 @@ func projectFilesOwnershipDiagnostic(capture *tuiCapture) string {
 	screen := visibleTerminalText(strings.Join(capture.screen.RenderLines(capture.rows, capture.cols), "\n"))
 	rows, cols := capture.rows, capture.cols
 	capture.mu.Unlock()
-	return fmt.Sprintf("size=%dx%d LEFT-anchor=%t RIGHT-anchor=%t screen=%s",
-		rows, cols, strings.Contains(screen, "LEFT"), strings.Contains(screen, "RIGHT"), safeTerminalDiagnostic(screen))
+	styledRows := projectFilesStyledRows(capture)
+	panelText := func(side int) string {
+		styles := projectFilesPanelStyles(styledRows, side)
+		var lines []string
+		for _, row := range styledRows {
+			for _, style := range row.styles {
+				if styles[style] {
+					lines = append(lines, strings.TrimRight(row.text, " "))
+					break
+				}
+			}
+		}
+		return safeTerminalDiagnostic(strings.Join(lines, "\n"))
+	}
+	return fmt.Sprintf("size=%dx%d LEFT-anchor=%t RIGHT-anchor=%t left-panel=%s right-panel=%s screen=%s",
+		rows, cols, strings.Contains(screen, "LEFT"), strings.Contains(screen, "RIGHT"), panelText(0), panelText(1), safeTerminalDiagnostic(screen))
 }
 
 func projectFilesPanelRowContains(capture *tuiCapture, side int, label, value string) bool {
