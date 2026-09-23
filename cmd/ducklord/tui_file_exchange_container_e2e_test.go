@@ -39,6 +39,7 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	targetB := fmt.Sprintf("/home/duck/exchange-b-target-%d", stamp)
 	aFile, bFile := fmt.Sprintf("a-file-%d.txt", stamp), fmt.Sprintf("b-file-%d.txt", stamp)
 	cancelFile, failureFile := fmt.Sprintf("cancel-%d.txt", stamp), fmt.Sprintf("failure-%d.txt", stamp)
+	notStartedFile := fmt.Sprintf("not-started-%d.txt", stamp)
 	multiOne, multiTwo := fmt.Sprintf("multi-one-%d.txt", stamp), fmt.Sprintf("multi-two-%d.txt", stamp)
 	shelfFile, bundle, emptyDir := fmt.Sprintf("shelf-%d.txt", stamp), fmt.Sprintf("bundle-%d", stamp), fmt.Sprintf("empty-%d", stamp)
 	terminalMarker := fmt.Sprintf("/home/duck/terminal-ready-%d", stamp)
@@ -52,10 +53,10 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	cancelBytes := fmt.Sprintf("cancel bytes %d\n", stamp)
 	failureBytes := fmt.Sprintf("failure bytes %d\n", stamp)
 
-	prepareA := fmt.Sprintf("rm -rf %s %s; mkdir -p %s/%s %s/drop-dir %s/%s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s/nested.txt",
+	prepareA := fmt.Sprintf("rm -rf %s %s; mkdir -p %s/%s %s/drop-dir %s/%s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s; printf %q > %s/%s/nested.txt",
 		sourceA, targetA, sourceA, bundle, targetA, sourceA, bundle, emptyDir,
 		aBytes, sourceA, aFile, multiOneBytes, sourceA, multiOne, multiTwoBytes, sourceA, multiTwo,
-		shelfBytes, sourceA, shelfFile, cancelBytes, sourceA, cancelFile, failureBytes, sourceA, failureFile, nestedBytes, sourceA, bundle)
+		shelfBytes, sourceA, shelfFile, cancelBytes, sourceA, cancelFile, failureBytes, sourceA, failureFile, []byte("not started\n"), sourceA, notStartedFile, nestedBytes, sourceA, bundle)
 	prepareB := fmt.Sprintf("rm -rf %s %s; mkdir -p %s %s/drop-dir; printf %q > %s/%s",
 		sourceB, targetB, sourceB, targetB, bBytes, sourceB, bFile)
 	for client, command := range map[string]string{clientA: prepareA, clientB: prepareB} {
@@ -196,6 +197,26 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 			return paneContains(activePane, "[x] "+name)
 		}, func() string {
 			return "source entry was not selected in its active pane: " + safeTerminalDiagnostic(capture.currentText())
+		})
+	}
+	selectAdditional := func(name, alreadySelected string) {
+		t.Helper()
+		writePTY(t, terminal, "/")
+		capture.waitCurrent(t, "Filter:", 10*time.Second)
+		writePTY(t, terminal, name+"\r")
+		waitE2E(t, 10*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, "Tab switch column") &&
+				!strings.Contains(screen, "Filter:") &&
+				paneContains(activePane, name)
+		}, func() string {
+			return "filter did not resolve the additional source entry: " + safeTerminalDiagnostic(capture.currentText())
+		})
+		writePTY(t, terminal, " ")
+		waitE2E(t, 10*time.Second, func() bool {
+			return paneContains(activePane, "[x] "+name) && paneContains(activePane, "[x] "+alreadySelected)
+		}, func() string {
+			return "additional source entry was not selected: " + safeTerminalDiagnostic(capture.currentText())
 		})
 	}
 	hasCopyResult := func(screen string) bool {
@@ -615,6 +636,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	selectEndpoint(1, clientBEndpoint, targetB, "drop-dir")
 	activatePane(0)
 	selectOnly(cancelFile)
+	selectAdditional(notStartedFile, cancelFile)
 	writePTY(t, terminal, "c\r")
 	capture.waitCurrent(t, "Copying", 10*time.Second)
 	waitExchangeStage(clientB, targetB, "cancelled transfer never created destination staging")
@@ -622,6 +644,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	capture.waitCurrent(t, "Cancelled: copied 0, skipped 0", 15*time.Second)
 	waitProjectFiles()
 	assertHistoryItem(sourceA+"/"+cancelFile, targetB+"/"+cancelFile, cancelFile, cancelFile, "Cancelled")
+	assertHistoryItem(sourceA+"/"+notStartedFile, targetB+"/"+notStartedFile, notStartedFile, notStartedFile, "Not started")
 	assertRemoteText(clientA, sourceA+"/"+cancelFile, cancelBytes, "cancelled transfer modified source bytes")
 	assertRemoteMissing(clientB, targetB+"/"+cancelFile, "cancelled transfer committed destination file")
 	assertNoExchangeStage(clientB, targetB, "cancelled transfer left destination staging")
@@ -632,6 +655,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	selectEndpoint(0, clientAEndpoint, sourceA, failureFile)
 	activatePane(0)
 	selectOnly(failureFile)
+	selectAdditional(notStartedFile, failureFile)
 	writePTY(t, terminal, "c\r")
 	capture.waitCurrent(t, "Copying", 10*time.Second)
 	waitExchangeStage(clientB, targetB, "failed transfer never created destination staging")
@@ -641,6 +665,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	capture.waitCurrent(t, "Copied 0, skipped 0; partial:", 15*time.Second)
 	waitProjectFiles()
 	assertHistoryItem(sourceA+"/"+failureFile, targetB+"/"+failureFile, failureFile, failureFile, "Failed")
+	assertHistoryItem(sourceA+"/"+notStartedFile, targetB+"/"+notStartedFile, notStartedFile, notStartedFile, "Not started")
 	assertRemoteText(clientA, sourceA+"/"+failureFile, failureBytes, "failed transfer modified source bytes")
 	assertRemoteMissing(clientB, targetB+"/"+failureFile, "failed transfer committed destination file")
 	assertNoExchangeStage(clientB, targetB, "failed transfer left destination staging")
