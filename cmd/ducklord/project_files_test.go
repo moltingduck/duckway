@@ -447,7 +447,7 @@ func TestProjectFilesFootersDescribeHandledActions(t *testing.T) {
 	for _, want := range []string{
 		"h endpoints · g path · / filter · Space select · i icons",
 		"↑/↓ j/k select · Enter open · Backspace parent",
-		"Tab column · c copy · l history · Esc/Ctrl+C close",
+		"Tab switch column · c copy · l history · Esc/Ctrl+C close",
 	} {
 		if !strings.Contains(screen, want) {
 			t.Fatalf("browse footer missing handled key %q in %q", want, screen)

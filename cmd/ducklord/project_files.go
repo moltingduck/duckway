@@ -975,7 +975,7 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 	lines = append(lines,
 		modalRenderLine{modalMuted, "h endpoints · g path · / filter · Space select · i icons"},
 		modalRenderLine{modalMuted, "↑/↓ j/k select · Enter open · Backspace parent"},
-		modalRenderLine{modalMuted, "Tab column · c copy · l history · Esc/Ctrl+C close"},
+		modalRenderLine{modalMuted, "Tab switch column · c copy · l history · Esc/Ctrl+C close"},
 	)
 	if s.projectFiles.step == "path" {
 		lines = append(lines, modalRenderLine{modalInput, "Path: " + projectClip(s.projectFilesPane().endpoint.Path, width-8) + "  Enter apply · Esc cancel"})
@@ -1176,13 +1176,23 @@ func (s *tuiState) projectFilesHistoryLines(width, rows int) []modalRenderLine {
 		batchText += " · Error: " + b.err
 	}
 	lines = append(lines, modalRenderLine{modalMuted, projectClip(batchText, width-4)})
-	lines = append(lines, modalRenderLine{modalMuted, "Sent: " + projectClip(projectFilesEndpointDescription(projectFilesPane{label: b.sourceLabel, endpoint: b.source}), width-9)}, modalRenderLine{modalMuted, "Received: " + projectClip(projectFilesEndpointDescription(projectFilesPane{label: b.destinationLabel, endpoint: b.destination}), width-12)})
+	endpointLines := []modalRenderLine{
+		{modalMuted, "Sent: " + projectClip(projectFilesEndpointDescription(projectFilesPane{label: b.sourceLabel, endpoint: b.source}), width-9)},
+		{modalMuted, "Received: " + projectClip(projectFilesEndpointDescription(projectFilesPane{label: b.destinationLabel, endpoint: b.destination}), width-12)},
+	}
 	if len(b.items) == 0 {
-		return append(lines, modalRenderLine{modalMuted, "No items started"})
+		return append(append(lines, endpointLines...), modalRenderLine{modalMuted, "No items started"})
 	}
 
 	selected := min(max(0, s.projectFiles.historyItem), len(b.items)-1)
 	item := b.items[selected]
+	selectedItemLines := projectFilesHistoryItemLines("› ", b, item, width)
+	// On a short screen, the selected transfer and its source and destination
+	// take priority over the endpoint summary. The paths identify the actual
+	// renamed target, while the summary remains visible whenever it fits too.
+	if rows-2-len(lines)-len(endpointLines)-len(selectedItemLines) >= 2 {
+		lines = append(lines, endpointLines...)
+	}
 	sourcePath := filepath.Join(b.source.Path, item.name)
 	destinationPath := projectFilesHistoryItemDestination(b, item)
 	detail := append(
@@ -1192,7 +1202,7 @@ func (s *tuiState) projectFilesHistoryLines(width, rows int) []modalRenderLine {
 	// Keep the selected item's row navigable in a short modal. Full wrapped paths
 	// are retained whenever they fit; otherwise the row carries the complete target
 	// basename and these two lines identify both truncated absolute paths.
-	detailBudget := max(0, rows-2-len(lines)-len(projectFilesHistoryItemLines("› ", b, item, width)))
+	detailBudget := max(0, rows-2-len(lines)-len(selectedItemLines))
 	if len(detail) > detailBudget {
 		detail = []modalRenderLine{
 			{modalMuted, "Source: " + projectClip(sourcePath, width-12)},

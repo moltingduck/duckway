@@ -1105,7 +1105,7 @@ func TestNotesModalRendersManuscriptExcerptWithinHeight(t *testing.T) {
 	var out strings.Builder
 	s.renderWorkspacePaneModal(&out, 100, 8)
 	rendered := out.String()
-	for _, want := range []string{"Notes Codex", "Chronicle", "first line with a very long body", "Enter copies selected CONTENT"} {
+	for _, want := range []string{"Notes Codex", "Chronicle", "first line with a very long body", "Enter copy content"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("Notes modal missing %q in %q", want, rendered)
 		}
