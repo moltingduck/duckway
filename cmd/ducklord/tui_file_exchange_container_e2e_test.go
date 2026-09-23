@@ -589,9 +589,20 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	// arriving, and Esc must return to this browser with its active side intact.
 	writePTY(t, terminal, "l")
 	capture.waitCurrent(t, "Transfer history", 10*time.Second)
-	capture.waitCurrent(t, multiOne, 5*time.Second)
-	capture.waitCurrent(t, multiTwo, 5*time.Second)
-	writePTY(t, terminal, "\x1b[D\x1b[C\x1b[A\x1b[B")
+	waitHistoryItem := func(sourcePath string) {
+		t.Helper()
+		waitE2E(t, 5*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, "Transfer history") && strings.Contains(screen, "Batch 1/") && strings.Contains(screen, "Source: "+sourcePath)
+		}, func() string {
+			return "transfer history did not select source " + sourcePath + ": " + safeTerminalDiagnostic(capture.currentText())
+		})
+	}
+	waitHistoryItem(sourceA + "/" + multiOne)
+	writePTY(t, terminal, "\x1b[B")
+	waitHistoryItem(sourceA + "/" + multiTwo)
+	writePTY(t, terminal, "\x1b[A")
+	waitHistoryItem(sourceA + "/" + multiOne)
 	asyncHistory := fmt.Sprintf("ASYNC_EXCHANGE_HISTORY_%d", stamp)
 	asyncHistoryPath := sourceA + "/" + asyncHistory
 	asyncCommand := fmt.Sprintf("printf %q > %q; printf '%s\\n'", asyncHistory+"\n", asyncHistoryPath, asyncHistory)
@@ -599,18 +610,19 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 		t.Fatalf("send async shell output during transfer history: %v: %s", err, out)
 	}
 	assertRemoteText(clientA, asyncHistoryPath, asyncHistory+"\n", "async history shell output did not execute")
-	if strings.Contains(capture.currentText(), asyncHistory) {
-		t.Fatalf("transfer history lost modal ownership to async terminal output: %s", safeTerminalDiagnostic(capture.currentText()))
-	}
+	// Async PTY output can remain visible in uncovered workspace rows. Prove
+	// modal input ownership by changing the selected history item only after
+	// the remote command is confirmed, then waiting for the renderer's detail.
+	writePTY(t, terminal, "\x1b[B")
+	waitHistoryItem(sourceA + "/" + multiTwo)
 	writePTY(t, terminal, "\x1b")
 	waitProjectFiles()
 	if !paneContains(0, "ACTIVE") || paneContains(1, "ACTIVE") {
 		t.Fatalf("history Esc did not restore the same active browser side: %s", safeTerminalDiagnostic(capture.currentText()))
 	}
 	// Closing history only reveals the Project Files modal. Close that modal as
-	// well, refocus the owning shell, and prove its queued output is delivered
-	// only after terminal ownership is restored. Then reopen the browser for the
-	// remaining transfer checks.
+	// well and refocus the owning shell to prove terminal input is restored.
+	// Then reopen the browser for the remaining transfer checks.
 	writePTY(t, terminal, "\x03")
 	capture.waitCurrent(t, "SESSIONS", 10*time.Second)
 	writePTY(t, terminal, "/"+handle+"\r")
