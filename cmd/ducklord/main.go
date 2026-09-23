@@ -8097,7 +8097,11 @@ func (s *tuiState) renderGroupModal(out io.Writer, cols, rows int) {
 	if status == "" {
 		status = "Changes are local to Ducklord"
 	}
-	lines = append(lines, modalRenderLine{modalStatus, "  " + status}, modalRenderLine{modalMuted, "  ↑/↓ or j/k choose · Enter confirm · Esc cancel"})
+	footer := "  ↑/↓ or j/k choose · Enter confirm · Esc cancel"
+	if s.groupMenuStep == "name" {
+		footer = "  Type name · Enter confirm · Esc cancel"
+	}
+	lines = append(lines, modalRenderLine{modalStatus, "  " + status}, modalRenderLine{modalMuted, footer})
 	s.renderModalBox(out, cols, rows, lines)
 }
 

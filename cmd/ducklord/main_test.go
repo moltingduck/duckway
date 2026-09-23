@@ -4184,3 +4184,21 @@ type nopWriteCloser struct{}
 
 func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (nopWriteCloser) Close() error                { return nil }
+
+func TestTUICustomGroupNameFooterDescribesTextEntryAt80x24(t *testing.T) {
+	state := &tuiState{activityState: ducklord.NewActivityState(), groupMenu: true, groupMenuStep: "name", groupMenuAction: "create"}
+	var out bytes.Buffer
+	state.renderGroupModal(&out, 80, 24)
+	screen := renderedModalScreen(out.Bytes(), 80, 24)
+	if !strings.Contains(screen, "Type name · Enter confirm · Esc cancel") {
+		t.Fatalf("group name footer missing text-entry instruction: %q", screen)
+	}
+	state.handleGroupMenuInput([]byte("名"))
+	if state.groupMenuLine != "名" {
+		t.Fatalf("name input was not accepted: %q", state.groupMenuLine)
+	}
+	state.handleGroupMenuInput([]byte("\x1b"))
+	if state.groupMenu {
+		t.Fatal("Esc did not cancel name entry")
+	}
+}

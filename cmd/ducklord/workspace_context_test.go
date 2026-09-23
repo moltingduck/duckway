@@ -316,3 +316,18 @@ func TestWorkspaceProjectCopyShortcut(t *testing.T) {
 		t.Fatal("Project copy help is not highlighted")
 	}
 }
+
+func TestWorkspaceAreaConfigFooterDescribesOpenAndApplyAt80x24(t *testing.T) {
+	s, _, _, _ := workspacePaneTestState(t)
+	s.beginWorkspaceAreaConfig("project-pane")
+	var out bytes.Buffer
+	s.renderWorkspaceAreaConfig(&out, 80, 24)
+	screen := renderedModalScreen(out.Bytes(), 80, 24)
+	if !strings.Contains(screen, "↑/↓ choose · Enter open/apply · Esc close") {
+		t.Fatalf("workspace config footer missing open/apply instruction: %q", screen)
+	}
+	s.handleWorkspaceAreaConfig([]byte("\r"))
+	if !s.workspacePaneMode || s.workspacePaneStep != "project-create" {
+		t.Fatalf("Create project did not open its child flow: mode=%v step=%q", s.workspacePaneMode, s.workspacePaneStep)
+	}
+}

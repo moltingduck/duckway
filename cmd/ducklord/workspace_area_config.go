@@ -91,7 +91,7 @@ func (s *tuiState) renderWorkspaceAreaConfig(out io.Writer, cols, rows int) {
 		s.modalChoice(len(lines), &s.workspacePaneIndex, i, "\r")
 		lines = append(lines, modalRenderLine{style, "  " + choice})
 	}
-	lines = append(lines, modalRenderLine{modalStatus, "  " + s.workspacePaneErr}, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter apply · Esc close"})
+	lines = append(lines, modalRenderLine{modalStatus, "  " + s.workspacePaneErr}, modalRenderLine{modalMuted, "  ↑/↓ choose · Enter open/apply · Esc close"})
 	s.renderModalBox(out, cols, rows, lines)
 }
 
