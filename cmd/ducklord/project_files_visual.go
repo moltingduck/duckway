@@ -33,16 +33,16 @@ func projectFilesGeometry(cols, rows, headerLines int) (int, int, [2]projectFile
 	stacked := width < 58
 	var panels [2]projectFilesPanelGeometry
 	if stacked {
-		cw := max(1, width-4)
+		cw := max(3, width-6)
 		entryStart := headerLines + 4
-		available := max(0, rows-2-entryStart-3)
+		available := max(0, rows-2-entryStart-5)
 		per := available / 2
 		for i := range panels {
 			panels[i] = projectFilesPanelGeometry{start: headerLines + i*(3+per), width: cw, entriesStart: headerLines + i*(3+per) + 3, rows: per, left: 2, right: cw + 1}
 		}
 		return width, max(1, cw), panels
 	}
-	cw := max(1, (width-8)/2)
+	cw := max(3, (width-12)/2)
 	entryStart := headerLines + 3
 	available := max(0, rows-2-entryStart-3)
 	for i := range panels {
@@ -53,6 +53,10 @@ func projectFilesGeometry(cols, rows, headerLines int) (int, int, [2]projectFile
 		panels[i] = projectFilesPanelGeometry{start: headerLines, width: cw, entriesStart: entryStart, rows: available, left: left, right: left + cw - 1}
 	}
 	return width, cw, panels
+}
+
+func projectFilesVisibleOffset(selected, visibleRows int) int {
+	return max(0, selected-visibleRows+1)
 }
 
 func projectFilesPanelColor(side int, active bool) string {
@@ -110,6 +114,30 @@ func projectFilesEndpointKey(endpoint ducklord.FileEndpoint) string {
 		host = fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s", client.Name, client.Host, client.User, client.SSH, client.Ducklion)
 	}
 	return host + "\x00" + filepath.Clean(endpoint.Path)
+}
+
+func (s *tuiState) projectFilesEndpointDirection(endpoint ducklord.FileEndpoint) string {
+	if len(s.projectFiles.history) == 0 {
+		return ""
+	}
+	b := s.projectFiles.history[0]
+	key := projectFilesEndpointKey(endpoint)
+	for _, item := range b.items {
+		if item.state != "copied" {
+			continue
+		}
+		if key == projectFilesEndpointKey(b.source) {
+			return " · Sent"
+		}
+		dest := item.destination
+		if dest == "" {
+			dest = filepath.Join(b.destination.Path, item.name)
+		}
+		if key == projectFilesEndpointKey(b.destination) && filepath.Dir(filepath.Clean(dest)) == filepath.Clean(endpoint.Path) {
+			return " · Received"
+		}
+	}
+	return ""
 }
 
 func projectFilesItemRow(item projectFilesItem) string {

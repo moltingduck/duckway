@@ -1863,6 +1863,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 	state.hostSkillsDone = hostSkillsDone
 	projectFilesDone := make(chan projectFilesEvent, 8)
 	state.projectFiles.done = projectFilesDone
+	state.projectFiles.lifecycle = ctx
 	var hostRetentionCancel context.CancelFunc
 	launchHostHookStatus := func(target string) {
 		state.hostHookStatusRequestID++

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -34,6 +35,9 @@ func TestProjectFilesHistoryIsBoundedAndProjectScoped(t *testing.T) {
 }
 
 func TestProjectFilesGeometryWideStackedAndUnicode(t *testing.T) {
+	if projectFilesVisibleOffset(11, 5) != 7 || projectFilesVisibleOffset(2, 5) != 0 {
+		t.Fatal("visible offset is not shared scroll logic")
+	}
 	_, _, wide := projectFilesGeometry(150, 32, 1)
 	if wide[0].rows <= 0 || wide[1].entriesStart != wide[0].entriesStart || wide[1].left <= wide[0].right {
 		t.Fatalf("wide geometry: %#v", wide)
@@ -106,5 +110,92 @@ func TestProjectFilesHistorySelectionScrollsAndRendererScopesANSI(t *testing.T) 
 	renderModalBoxWidthANSI(&exchange, 80, 20, 40, []modalRenderLine{{text: projectFilesPanelColor(0, true) + "safe" + modalReset}})
 	if !strings.Contains(exchange.String(), projectFilesPanelColor(0, true)) {
 		t.Fatal("trusted exchange renderer stripped panel color")
+	}
+}
+
+func TestProjectFilesCompletionAckWaitsForConsumerAfterCopyCancel(t *testing.T) {
+	lifecycle, stop := context.WithCancel(context.Background())
+	defer stop()
+	done := make(chan projectFilesEvent, 1)
+	done <- projectFilesEvent{progress: &ducklord.FileCopyProgress{State: "copied"}}
+	ack := projectFilesEvent{copy: true, generation: 9, err: context.Canceled}
+	sent := make(chan struct{})
+	go func() { sendProjectFilesCompletion(lifecycle, done, ack); close(sent) }()
+	select {
+	case <-sent:
+		t.Fatal("ack unexpectedly dropped or bypassed full event channel")
+	case <-time.After(20 * time.Millisecond):
+	}
+	<-done
+	select {
+	case <-sent:
+	case <-time.After(time.Second):
+		t.Fatal("completion acknowledgement remained blocked")
+	}
+	if got := <-done; got.generation != 9 || !got.copy || got.err != context.Canceled {
+		t.Fatalf("completion acknowledgement = %#v", got)
+	}
+}
+
+func TestProjectFilesCompletionAckStopsWhenAppLifecycleEnds(t *testing.T) {
+	lifecycle, stop := context.WithCancel(context.Background())
+	done := make(chan projectFilesEvent)
+	stop()
+	finished := make(chan struct{})
+	go func() { sendProjectFilesCompletion(lifecycle, done, projectFilesEvent{copy: true}); close(finished) }()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("sender did not exit after application lifecycle ended")
+	}
+}
+
+func TestProjectFilesNarrowRenderKeepsSelectedRowsAndPanelColors(t *testing.T) {
+	entries := make([]ducklord.FileEntry, 12)
+	for i := range entries {
+		entries[i] = ducklord.FileEntry{Name: fmt.Sprintf("file-%02d", i)}
+	}
+	s := &tuiState{}
+	s.projectFiles.open, s.projectFiles.step = true, "browse"
+	s.projectFiles.left = projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: "/tmp/source"}, entries: entries, selected: 11, marked: map[string]bool{}}
+	s.projectFiles.right = projectFilesPane{label: "DEST", endpoint: ducklord.FileEndpoint{Path: "/tmp/destination"}, entries: entries, selected: 11, marked: map[string]bool{}}
+	var out strings.Builder
+	s.renderProjectFilesModal(&out, 50, 32)
+	view := out.String()
+	if !strings.Contains(view, "LEFT") || !strings.Contains(view, "RIGHT") || !strings.Contains(view, "file-11") {
+		t.Fatalf("narrow viewport omitted panel/selected entry: %q", view)
+	}
+	if strings.Count(view, "│") < 4 || !strings.Contains(view, projectFilesPanelColor(0, true)) || !strings.Contains(view, projectFilesPanelColor(1, false)) {
+		t.Fatalf("independent panel frames/colors missing: %q", view)
+	}
+}
+
+func TestProjectFilesScrolledMouseRegionsMatchVisibleRowsWideAndStacked(t *testing.T) {
+	for _, cols := range []int{50, 150} {
+		t.Run(fmt.Sprint(cols), func(t *testing.T) {
+			entries := make([]ducklord.FileEntry, 20)
+			for i := range entries {
+				entries[i] = ducklord.FileEntry{Name: fmt.Sprintf("item-%02d", i)}
+			}
+			s := &tuiState{}
+			s.projectFiles.open, s.projectFiles.step = true, "browse"
+			s.projectFiles.left = projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: "/src"}, entries: entries, selected: 19, marked: map[string]bool{}}
+			s.projectFiles.right = projectFilesPane{label: "REMOTE", endpoint: ducklord.FileEndpoint{Path: "/dst"}, entries: entries, selected: 17, marked: map[string]bool{}}
+			var out strings.Builder
+			s.renderProjectFilesModal(&out, cols, 32)
+			for side, selected := range []int{19, 17} {
+				foundSelected := false
+				for _, region := range s.modalMouseRegions {
+					if (side == 0 && region.action.selection == &s.projectFiles.left.selected) || (side == 1 && region.action.selection == &s.projectFiles.right.selected) {
+						if region.action.index == selected {
+							foundSelected = true
+						}
+					}
+				}
+				if !foundSelected {
+					t.Fatalf("side %d selected item %d has no mouse region", side, selected)
+				}
+			}
+		})
 	}
 }
