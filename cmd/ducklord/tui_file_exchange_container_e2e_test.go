@@ -515,6 +515,11 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	resizeTUICapture(t, terminal, capture, 32, 150)
 	assertRenderedTransfer("client-a", sourceA+"/"+bundle, "client-b", targetB+"/drop-dir/"+bundle)
 	waitProjectFiles()
+	// The narrow drag commits drop-dir as the visible destination path. Return
+	// the right pane to targetB before the wide drag so the child row exists as
+	// a hit target again.
+	selectEndpoint(1, clientBEndpoint, targetB, "drop-dir")
+	activatePane(0)
 	// Resolve the same drag targets again after widening. This exercises mouse
 	// hit testing on each layout without relying on fixed pane header offsets.
 	leftX, leftY, ok = projectFilesScreenPointAny(capture, "📁 "+bundle)
