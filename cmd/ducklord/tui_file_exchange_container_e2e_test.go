@@ -465,7 +465,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	capture.waitCurrent(t, "Session focus:", 10*time.Second)
 
 	// A terminal prefix opens the same modal. Output arriving while it is open
-	// must remain hidden by the modal, then appear after closing it.
+	// must not take keyboard ownership from the modal.
 	ready := fmt.Sprintf("TERMINAL_READY_%d", stamp)
 	writePTY(t, terminal, fmt.Sprintf("printf %q > %s; printf '%s\\n'\r", ready+"\n", terminalMarker, ready))
 	capture.waitCurrent(t, ready, 10*time.Second)
@@ -602,6 +602,21 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	writePTY(t, terminal, "\x1b[B")
 	waitHistoryItem(sourceA + "/" + multiTwo)
 	writePTY(t, terminal, "\x1b[A")
+	waitHistoryItem(sourceA + "/" + multiOne)
+	waitPreviousHistoryBatch := func() {
+		t.Helper()
+		waitE2E(t, 5*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, "Transfer history") && strings.Contains(screen, "Batch 2/") &&
+				strings.Contains(screen, "Source: "+sourceA+"/"+bundle) &&
+				strings.Contains(screen, "Destination: "+targetB+"/drop-dir/"+bundle)
+		}, func() string {
+			return "transfer history did not select the preceding directory-copy batch: " + safeTerminalDiagnostic(capture.currentText())
+		})
+	}
+	writePTY(t, terminal, "\x1b[C")
+	waitPreviousHistoryBatch()
+	writePTY(t, terminal, "\x1b[D")
 	waitHistoryItem(sourceA + "/" + multiOne)
 	asyncHistory := fmt.Sprintf("ASYNC_EXCHANGE_HISTORY_%d", stamp)
 	asyncHistoryPath := sourceA + "/" + asyncHistory
