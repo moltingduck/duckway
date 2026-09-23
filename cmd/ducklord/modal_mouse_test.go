@@ -159,6 +159,125 @@ func TestModalMouseHelpUsesConfiguredShortcutsAndIgnoresExamples(t *testing.T) {
 	}
 }
 
+func TestHelpOwnsMouseReportsAcrossPendingAndRestoredPTYFocus(t *testing.T) {
+	for _, restored := range []bool{false, true} {
+		name := "pending focus"
+		if restored {
+			name = "restored focus"
+		}
+		t.Run(name, func(t *testing.T) {
+			s, _, session, _ := workspacePaneTestState(t)
+			s.focused = true
+			s.activeAttachKey = sessionKey(session)
+			s.toggleHelp()
+			focus := &recordingWorkspaceInputFocus{}
+			control := &ducklord.ControlSession{ClientKey: session.Client, InstanceID: session.InstanceID, SessionID: session.SessionID, RuntimeGeneration: session.RuntimeGeneration}
+			if restored && !restorePendingHelpFocusWithAttach(s, focus, true, control, nil) {
+				t.Fatal("expected ready PTY control to restore focus while Help remained open")
+			}
+			wantKey := sessionKey(session)
+			if s.activeAttachKey != wantKey {
+				t.Fatalf("Help lost originating attach identity before click: got=%q want=%q", s.activeAttachKey, wantKey)
+			}
+			s.helpSearchQuery = "Open local help"
+			s.renderHelpModal(io.Discard, 100, 80)
+			var action modalMouseRegion
+			found := false
+			for _, region := range s.modalMouseRegions {
+				if region.action.key == shortcutInput(s.cfg.Shortcut("pane_prefix"))+"?" {
+					action, found = region, true
+					break
+				}
+			}
+			if !found {
+				t.Fatal("search result has no actionable Help shortcut row")
+			}
+			key, owned := s.handleHelpMouseReport(0, action.left, action.row, true)
+			if !owned || string(key) != action.action.key {
+				t.Fatalf("Help action click was not routed as owned input: owned=%v key=%q want=%q", owned, key, action.action.key)
+			}
+			if s.activeAttachKey != wantKey || s.focused != restored || s.helpFocusRestorePending != !restored {
+				t.Fatalf("Help mouse dispatch changed PTY lease before routing: active=%q focused=%v pending=%v", s.activeAttachKey, s.focused, s.helpFocusRestorePending)
+			}
+			consumed, command := s.handlePanePrefix(key)
+			if !consumed || command != "?" {
+				t.Fatalf("clicked Help action did not reach prefix dispatcher: consumed=%v command=%q", consumed, command)
+			}
+			if restored {
+				if !s.dispatchFocusedPaneCommand(command) {
+					t.Fatal("focused prefix dispatcher did not handle the Help close action")
+				}
+			} else {
+				dispatchPaneCommandAndRestoreHelpFocus(s, command, focus, true, nil, nil)
+			}
+			if s.helpMode || s.activeAttachKey != wantKey {
+				t.Fatalf("Help close lost its origin: help=%v active=%q", s.helpMode, s.activeAttachKey)
+			}
+			if restored {
+				if !s.focused || s.helpFocusRestorePending || s.helpPendingInputKey != "" {
+					t.Fatalf("restored PTY focus was not preserved after click: focused=%v pending=%v key=%q", s.focused, s.helpFocusRestorePending, s.helpPendingInputKey)
+				}
+				if len(focus.keys) != 1 || focus.keys[0] != (ducklord.OutputKey{ClientKey: session.Client, InstanceID: session.InstanceID, SessionID: session.SessionID}) {
+					t.Fatalf("wrong output focus restored before click: %+v", focus.keys)
+				}
+			} else if s.focused || !s.helpFocusRestorePending || s.helpPendingInputKey != wantKey {
+				t.Fatalf("pending origin lease should stay fenced until ready: focused=%v pending=%v key=%q", s.focused, s.helpFocusRestorePending, s.helpPendingInputKey)
+			}
+		})
+	}
+}
+
+func TestHelpConsumesNonActionMouseReportsBeforeFocusedPaneRouting(t *testing.T) {
+	s, _, session, _ := workspacePaneTestState(t)
+	s.focused = true
+	s.activeAttachKey = sessionKey(session)
+	s.toggleHelp()
+	control := &ducklord.ControlSession{ClientKey: session.Client, InstanceID: session.InstanceID, SessionID: session.SessionID, RuntimeGeneration: session.RuntimeGeneration}
+	focus := &recordingWorkspaceInputFocus{}
+	if !restorePendingHelpFocusWithAttach(s, focus, true, control, nil) {
+		t.Fatal("expected PTY focus restoration while Help remains open")
+	}
+	s.renderHelpModal(io.Discard, 100, 80)
+	blankX, blankY := 0, 0
+	for _, region := range s.modalMouseRegions {
+		for _, y := range []int{region.row - 1, region.row + 1} {
+			x := (region.left + region.right) / 2
+			if x >= 14 && x <= 85 && y > 0 && y < 79 && !s.modalMouseHit(x, y) {
+				blankX, blankY = x, y
+				break
+			}
+		}
+		if blankX != 0 {
+			break
+		}
+	}
+	if blankX == 0 {
+		t.Fatal("could not locate blank interior Help cell")
+	}
+	for _, report := range []struct {
+		name   string
+		button int
+		x, y   int
+		press  bool
+	}{
+		{name: "outside click", button: 0, x: 1, y: 1, press: true},
+		{name: "blank interior click", button: 0, x: blankX, y: blankY, press: true},
+		{name: "release", button: 0, x: 1, y: 1, press: false},
+		{name: "right click", button: 2, x: 1, y: 1, press: true},
+		{name: "wheel", button: 64, x: 1, y: 1, press: true},
+	} {
+		t.Run(report.name, func(t *testing.T) {
+			key, owned := s.handleHelpMouseReport(report.button, report.x, report.y, report.press)
+			if !owned || len(key) != 0 {
+				t.Fatalf("non-action report escaped Help ownership: owned=%v key=%q", owned, key)
+			}
+			if !s.focused || s.activeAttachKey != sessionKey(session) {
+				t.Fatalf("non-action report changed focused PTY lease: focused=%v attach=%q", s.focused, s.activeAttachKey)
+			}
+		})
+	}
+}
+
 type recordingWorkspaceInputFocus struct {
 	keys []ducklord.OutputKey
 }

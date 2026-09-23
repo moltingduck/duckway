@@ -3528,7 +3528,13 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			mouseReport := strings.HasPrefix(string(b), "\x1b[<")
 			var helpMouseKey []byte
 			if button, x, y, ok := parseSGRMouse(string(b)); ok {
-				if state.blockingModalOpen() {
+				if key, owned := state.handleHelpMouseReport(button, x, y, button == 0 && strings.HasSuffix(string(b), "M")); owned {
+					if len(key) == 0 {
+						state.render(os.Stdout)
+						continue
+					}
+					helpMouseKey = key
+				} else if state.blockingModalOpen() {
 					if state.projectFiles.open && button == 0 && strings.HasSuffix(string(b), "m") {
 						b = state.projectFilesMouseRelease(x, y)
 						if len(b) == 0 {
@@ -3544,12 +3550,6 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						}
 					}
 				} else {
-					if state.helpMode && state.modalMouseHit(x, y) {
-						if button != 0 || !strings.HasSuffix(string(b), "M") {
-							continue
-						}
-						helpMouseKey = state.modalMouseInput(x, y)
-					}
 					// Mouse reports are always local UI input. Never inject their
 					// escape sequences into a focused remote PTY.
 					if (button == 64 || button == 65) && state.contentPanePoint(x, y) && state.viewportTerminal() != nil {

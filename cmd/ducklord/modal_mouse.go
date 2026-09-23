@@ -82,6 +82,20 @@ func (s *tuiState) modalMouseInput(x, y int) []byte {
 	return nil
 }
 
+// Help owns every mouse report while it is open. Only a left-button press on
+// an explicitly actionable Help row becomes keyboard input; all other reports
+// are consumed before generic focused-pane mouse handling can tear down the
+// originating PTY attachment.
+func (s *tuiState) handleHelpMouseReport(button, x, y int, press bool) ([]byte, bool) {
+	if !s.helpMode || s.blockingModalOpen() {
+		return nil, false
+	}
+	if button != 0 || !press || !s.modalMouseHit(x, y) {
+		return nil, true
+	}
+	return s.modalMouseInput(x, y), true
+}
+
 // Only explicit keyboard hints become buttons. Explanatory text and input
 // values cannot accidentally become activation targets.
 var modalHintKey = regexp.MustCompile(`(^|[ ·])((?:Ctrl\+C|Enter/Space|Enter|Esc|Space|s|w|f|y|n))(?:[ /·]|$)`)
