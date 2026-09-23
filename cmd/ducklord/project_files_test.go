@@ -67,11 +67,14 @@ func TestProjectFilesCopyPreviewWaitsForLoadedMarkedSource(t *testing.T) {
 	if s.projectFiles.step != "busy" {
 		t.Fatalf("confirmed preview did not start copy: %#v", s.projectFiles)
 	}
-	select {
-	case event := <-s.projectFiles.done:
-		s.applyProjectFilesEvent(event)
-	case <-time.After(5 * time.Second):
-		t.Fatal("copy did not complete")
+	deadline := time.After(5 * time.Second)
+	for s.projectFiles.step == "busy" {
+		select {
+		case event := <-s.projectFiles.done:
+			s.applyProjectFilesEvent(event)
+		case <-deadline:
+			t.Fatal("copy did not complete")
+		}
 	}
 	if s.projectFiles.step != "browse" || !strings.Contains(s.projectFiles.status, "Copied 1, skipped 0") {
 		t.Fatalf("copy completion = %#v", s.projectFiles)

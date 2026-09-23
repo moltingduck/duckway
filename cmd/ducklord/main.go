@@ -1569,6 +1569,7 @@ type tuiState struct {
 	sessionRenameErr                   string
 	lifecycleConfirm                   protocol.SessionLifecycleOperation
 	projectFiles                       projectFilesState
+	projectFilesHistory                map[string][]projectFilesBatch
 	lifecycleReturnToAction            bool
 	lifecycleTarget                    ducklord.RemoteSession
 	lifecycleMode                      protocol.SessionLifecycleMode
@@ -7166,6 +7167,16 @@ func renderModalBox(out io.Writer, cols, rows int, lines []modalRenderLine) {
 // renderModalBoxWidth keeps the rendered frame, its clipping, and mouse layout
 // on the same width for wide modals such as Project files.
 func renderModalBoxWidth(out io.Writer, cols, rows, preferredWidth int, lines []modalRenderLine) {
+	renderModalBoxWidthInternal(out, cols, rows, preferredWidth, lines, false)
+}
+
+// renderModalBoxWidthANSI is reserved for callers that compose trusted SGR
+// styling with independently sanitized dynamic text.
+func renderModalBoxWidthANSI(out io.Writer, cols, rows, preferredWidth int, lines []modalRenderLine) {
+	renderModalBoxWidthInternal(out, cols, rows, preferredWidth, lines, true)
+}
+
+func renderModalBoxWidthInternal(out io.Writer, cols, rows, preferredWidth int, lines []modalRenderLine, allowANSI bool) {
 	if cols < 8 || rows < 3 || len(lines) == 0 {
 		return
 	}
@@ -7180,7 +7191,11 @@ func renderModalBoxWidth(out io.Writer, cols, rows, preferredWidth int, lines []
 	left := max(1, (cols-boxWidth)/2+1)
 	fmt.Fprintf(out, "\033[%d;%dH%s╭%s╮%s", top, left, modalSurface+modalBorder, strings.Repeat("─", innerWidth), modalReset)
 	for index, line := range lines {
-		text := modalCellPad(modalCellTruncate(modalDisplayText(line.text), innerWidth), innerWidth)
+		textValue := modalDisplayText(line.text)
+		if allowANSI {
+			textValue = modalDisplayANSI(line.text)
+		}
+		text := modalCellPad(modalCellTruncate(textValue, innerWidth), innerWidth)
 		fmt.Fprintf(out, "\033[%d;%dH%s│%s%s%s│%s", top+index+1, left, modalSurface+modalBorder, modalSurface+line.style, text, modalReset+modalSurface+modalBorder, modalReset)
 	}
 	fmt.Fprintf(out, "\033[%d;%dH%s╰%s╯%s", top+boxHeight-1, left, modalSurface+modalBorder, strings.Repeat("─", innerWidth), modalReset)
@@ -8465,10 +8480,60 @@ func modalRuneWidth(r rune) int {
 	}
 }
 
+// modalDisplayANSI preserves only SGR color sequences while sanitizing all
+// other control bytes. It is used by the few views that color independent
+// regions within one modal line.
+func modalDisplayANSI(value string) string {
+	var b strings.Builder
+	for i := 0; i < len(value); {
+		if value[i] == '\x1b' && i+1 < len(value) && value[i+1] == '[' {
+			j := i + 2
+			for j < len(value) && (value[j] >= '0' && value[j] <= '9' || value[j] == ';' || value[j] == ':') {
+				j++
+			}
+			if j < len(value) && value[j] == 'm' {
+				b.WriteString(value[i : j+1])
+				i = j + 1
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(value[i:])
+		if r == utf8.RuneError && size == 1 {
+			i++
+			continue
+		}
+		if r >= ' ' && r != '\x7f' && !unicode.IsControl(r) {
+			b.WriteRune(r)
+		}
+		i += size
+	}
+	return b.String()
+}
+
+func modalANSISequence(value string, i int) int {
+	if i+1 >= len(value) || value[i] != '\x1b' || value[i+1] != '[' {
+		return i
+	}
+	j := i + 2
+	for j < len(value) && (value[j] >= '0' && value[j] <= '9' || value[j] == ';' || value[j] == ':') {
+		j++
+	}
+	if j < len(value) && value[j] == 'm' {
+		return j + 1
+	}
+	return i
+}
+
 func modalCellWidth(value string) int {
 	width := 0
-	for _, r := range value {
+	for i := 0; i < len(value); {
+		if next := modalANSISequence(value, i); next != i {
+			i = next
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(value[i:])
 		width += modalRuneWidth(r)
+		i += size
 	}
 	return width
 }
@@ -8484,15 +8549,26 @@ func modalCellTruncate(value string, cells int) string {
 	limit := max(0, cells-modalCellWidth(ellipsis))
 	var b strings.Builder
 	used := 0
-	for _, r := range value {
+	for i := 0; i < len(value); {
+		if next := modalANSISequence(value, i); next != i {
+			b.WriteString(value[i:next])
+			i = next
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(value[i:])
 		w := modalRuneWidth(r)
 		if used+w > limit {
 			break
 		}
-		b.WriteRune(r)
+		b.WriteString(value[i : i+size])
 		used += w
+		i += size
 	}
-	return b.String() + ellipsis
+	b.WriteString(ellipsis)
+	if strings.Contains(value, "\x1b[") {
+		b.WriteString("\x1b[0m")
+	}
+	return b.String()
 }
 
 func modalCellPad(value string, cells int) string {

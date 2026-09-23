@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -23,6 +24,25 @@ type projectFilesPane struct {
 	query    string
 	status   string
 	loading  bool
+}
+
+func (s *projectFilesState) applyCopyProgress(progress ducklord.FileCopyProgress) {
+	for i := range s.items {
+		if s.items[i].name != progress.Name {
+			continue
+		}
+		s.items[i].state = progress.State
+		if progress.Destination != "" {
+			s.items[i].destination = progress.Destination
+		}
+		break
+	}
+	s.status = fmt.Sprintf("Copying %d of %d", progress.Completed+1, progress.Total)
+	if len(s.history) > 0 {
+		b := s.history[0]
+		b.items = append([]projectFilesItem(nil), s.items...)
+		s.history[0] = b
+	}
 }
 
 type projectFilesState struct {
@@ -53,6 +73,13 @@ type projectFilesState struct {
 	hasPendingDestination     bool
 	copyDestination           int
 	copyCancelling            bool
+	asciiFolders              bool
+	historyProject            string
+	history                   []projectFilesBatch
+	historyBatch              int
+	historyItem               int
+	items                     []projectFilesItem
+	copyStarted               time.Time
 }
 
 type projectFilesEvent struct {
@@ -63,6 +90,7 @@ type projectFilesEvent struct {
 	result     []ducklord.FileCopyResult
 	err        error
 	copy       bool
+	progress   *ducklord.FileCopyProgress
 }
 
 func (s *tuiState) openProjectFiles() {
@@ -91,6 +119,8 @@ func (s *tuiState) openProjectFiles() {
 	}
 	if nav, err := s.workspaceNavigation(); err == nil {
 		s.projectFiles.originProject, s.projectFiles.originPane, s.projectFiles.originTab = nav.CurrentProjectID(), nav.CurrentPaneID(), nav.CurrentTabID()
+		s.projectFiles.historyProject = nav.CurrentProjectID()
+		s.projectFiles.history = s.projectFilesHistory[s.projectFiles.historyProject]
 		if q.endpoint.Path == "" {
 			if shelf, e := ducklord.ProjectExchangePath(s.cfgPath, nav.CurrentProjectID()); e == nil {
 				q.label, q.endpoint = "PROJECT SHELF", ducklord.FileEndpoint{Path: shelf}
@@ -319,6 +349,10 @@ func (s *tuiState) applyProjectFilesEvent(event projectFilesEvent) {
 		return
 	}
 	if event.copy {
+		if event.progress != nil {
+			s.projectFiles.applyCopyProgress(*event.progress)
+			return
+		}
 		s.projectFiles.copyCancel = nil
 		copied, skipped := 0, 0
 		for _, result := range event.result {
@@ -328,6 +362,51 @@ func (s *tuiState) applyProjectFilesEvent(event projectFilesEvent) {
 				copied++
 			}
 		}
+		for i := range s.projectFiles.items {
+			item := &s.projectFiles.items[i]
+			if item.state == "queued" {
+				if s.projectFiles.copyCancelling {
+					item.state = "cancelled"
+				} else if event.err != nil {
+					item.state = "not started"
+				}
+			}
+		}
+		if event.err != nil && !s.projectFiles.copyCancelling {
+			for i := range s.projectFiles.items {
+				if s.projectFiles.items[i].state == "copying" {
+					s.projectFiles.items[i].state = "failed"
+					s.projectFiles.items[i].err = sanitizeTerminalText(event.err.Error())
+					break
+				}
+			}
+		} else if s.projectFiles.copyCancelling {
+			for i := range s.projectFiles.items {
+				if s.projectFiles.items[i].state == "copying" {
+					s.projectFiles.items[i].state = "cancelled"
+				}
+			}
+		} else {
+			for i := range s.projectFiles.items {
+				if s.projectFiles.items[i].state == "copying" {
+					s.projectFiles.items[i].state = "copied"
+				}
+			}
+		}
+		for _, result := range event.result {
+			for i := range s.projectFiles.items {
+				if s.projectFiles.items[i].name == result.Name {
+					if result.Skipped {
+						s.projectFiles.items[i].state = "skipped"
+					} else {
+						s.projectFiles.items[i].state = "copied"
+					}
+					if result.Destination != "" {
+						s.projectFiles.items[i].destination = result.Destination
+					}
+				}
+			}
+		}
 		if s.projectFiles.copyCancelling {
 			s.projectFiles.copyCancelling = false
 			s.projectFiles.status = fmt.Sprintf("Cancelled: copied %d, skipped %d", copied, skipped)
@@ -335,6 +414,18 @@ func (s *tuiState) applyProjectFilesEvent(event projectFilesEvent) {
 			s.projectFiles.status = fmt.Sprintf("Copied %d, skipped %d; partial: %s", copied, skipped, sanitizeTerminalText(event.err.Error()))
 		} else {
 			s.projectFiles.status = fmt.Sprintf("Copied %d, skipped %d", copied, skipped)
+		}
+		if len(s.projectFiles.history) > 0 {
+			b := s.projectFiles.history[0]
+			b.items = append([]projectFilesItem(nil), s.projectFiles.items...)
+			if event.err != nil {
+				b.err = sanitizeTerminalText(event.err.Error())
+			}
+			s.projectFiles.history[0] = b
+			if h := s.projectFilesHistory[s.projectFilesProjectKey()]; len(h) > 0 {
+				h[0] = b
+				s.projectFilesHistory[s.projectFilesProjectKey()] = h
+			}
 		}
 		s.projectFiles.step = "browse"
 		// A cancelled copy can have completed work. Always reload the destination
@@ -385,6 +476,38 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 		s.closeProjectFiles()
 		return true
 	}
+	if s.projectFiles.step == "history" {
+		switch text {
+		case "\x1b":
+			s.projectFiles.step = "browse"
+		case "x":
+			s.projectFilesHistory[s.projectFilesProjectKey()] = nil
+			s.projectFiles.history = nil
+			s.projectFiles.historyBatch, s.projectFiles.historyItem = 0, 0
+		case "\x1b[C", "l":
+			if len(s.projectFiles.history) > 0 {
+				s.projectFiles.historyBatch = (s.projectFiles.historyBatch + 1) % len(s.projectFiles.history)
+				s.projectFiles.historyItem = 0
+			}
+		case "\x1b[D", "h":
+			if len(s.projectFiles.history) > 0 {
+				s.projectFiles.historyBatch = (s.projectFiles.historyBatch + len(s.projectFiles.history) - 1) % len(s.projectFiles.history)
+				s.projectFiles.historyItem = 0
+			}
+		case "\x1b[B", "j":
+			if len(s.projectFiles.history) > 0 {
+				items := s.projectFiles.history[s.projectFiles.historyBatch].items
+				if s.projectFiles.historyItem < len(items)-1 {
+					s.projectFiles.historyItem++
+				}
+			}
+		case "\x1b[A", "k":
+			if s.projectFiles.historyItem > 0 {
+				s.projectFiles.historyItem--
+			}
+		}
+		return true
+	}
 	if s.projectFiles.step == "filter" {
 		if text == "\r" || text == "\n" {
 			s.projectFiles.step = "browse"
@@ -423,6 +546,35 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 			p.endpoint.Path = removeLastRune(p.endpoint.Path)
 		} else if projectFilesEditorText(text) {
 			p.endpoint.Path += text
+		}
+		return true
+	}
+	if s.projectFiles.step == "history" {
+		switch text {
+		case "\x1b":
+			s.projectFiles.step = "browse"
+		case "\x1b[D":
+			if s.projectFiles.historyBatch < len(s.projectFiles.history)-1 {
+				s.projectFiles.historyBatch++
+				s.projectFiles.historyItem = 0
+			}
+		case "\x1b[C":
+			if s.projectFiles.historyBatch > 0 {
+				s.projectFiles.historyBatch--
+				s.projectFiles.historyItem = 0
+			}
+		case "\x1b[A":
+			if s.projectFiles.historyItem > 0 {
+				s.projectFiles.historyItem--
+			}
+		case "\x1b[B":
+			if s.projectFiles.historyBatch < len(s.projectFiles.history) && s.projectFiles.historyItem < len(s.projectFiles.history[s.projectFiles.historyBatch].items)-1 {
+				s.projectFiles.historyItem++
+			}
+		case "x":
+			s.projectFilesHistory[s.projectFilesProjectKey()] = nil
+			s.projectFiles.history = nil
+			s.projectFiles.historyBatch, s.projectFiles.historyItem = 0, 0
 		}
 		return true
 	}
@@ -481,10 +633,18 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 	case "\t":
 		s.projectFiles.active = 1 - s.projectFiles.active
 		return true
+	case "l":
+		s.projectFiles.history = append([]projectFilesBatch(nil), s.projectFilesHistory[s.projectFilesProjectKey()]...)
+		s.projectFiles.historyBatch, s.projectFiles.historyItem = 0, 0
+		s.projectFiles.step = "history"
+		return true
 	case "/":
 		s.projectFiles.editorOriginal = p.query
 		p.query = ""
 		s.projectFiles.step = "filter"
+		return true
+	case "i":
+		s.projectFiles.asciiFolders = !s.projectFiles.asciiFolders
 		return true
 	case "h":
 		// Start at Local on every open so keyboard choices are deterministic.
@@ -646,25 +806,41 @@ func (s *tuiState) startProjectFilesCopy() {
 	gen := s.projectFiles.generation
 	done := s.projectFiles.done
 	req := ducklord.FileCopyRequest{Source: snapshotProjectFilesEndpoint(source.endpoint), Destination: snapshotProjectFilesEndpoint(destination.endpoint), Names: names, Conflict: s.projectFiles.conflict}
+	s.projectFiles.items = make([]projectFilesItem, len(names))
+	for i, name := range names {
+		s.projectFiles.items[i] = projectFilesItem{name: name, state: "queued"}
+	}
+	s.projectFiles.copyStarted = time.Now()
+	s.projectFilesRememberBatch(projectFilesBatch{at: s.projectFiles.copyStarted, source: req.Source, destination: req.Destination, sourceLabel: source.label, destinationLabel: destination.label, names: append([]string(nil), names...), conflict: req.Conflict, items: append([]projectFilesItem(nil), s.projectFiles.items...)})
+	req.Progress = func(progress ducklord.FileCopyProgress) {
+		if done != nil {
+			p := progress
+			select {
+			case done <- projectFilesEvent{generation: gen, copy: true, progress: &p}:
+			case <-ctx.Done():
+			}
+		}
+	}
 	go func() {
 		result, err := ducklord.CopyFiles(ctx, req)
 		if done != nil {
 			// Deliver cancellation acknowledgement so busy state cannot overlap a
 			// second copy while the backend unwinds.
-			done <- projectFilesEvent{generation: gen, result: result, err: err, copy: true}
+			select {
+			case done <- projectFilesEvent{generation: gen, result: result, err: err, copy: true}:
+			case <-ctx.Done():
+			}
 		}
 	}()
 }
 
 func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
+	s.modalMouseRegions = nil
 	if !s.projectFiles.open {
 		return
 	}
 	s.modalMouseLines = make(map[int]modalMouseAction)
-	// Match the width used by the shared modal renderer and mouse coordinate
-	// mapping. A two-cell separator leaves two independently addressable panes.
 	width := min(110, max(8, cols-2))
-	cw := max(1, (width-4)/2)
 	if s.projectFiles.step == "preview" {
 		src, dst := s.projectFiles.left, s.projectFiles.right
 		if s.projectFiles.copySource == 1 {
@@ -673,54 +849,134 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 		if s.projectFiles.hasPendingDestination {
 			dst.endpoint = snapshotProjectFilesEndpoint(s.projectFiles.pendingDestination)
 		}
-		// Put confirmation first so it remains reachable on a short terminal;
-		// selected names are informational and may be clipped below it.
-		lines := []modalRenderLine{
-			{modalTitle, "Copy preview · Enter confirm · Esc cancel"},
-			{modalMuted, "From: " + projectClip(projectFilesEndpointDescription(src), width-6)},
-			{modalMuted, "To: " + projectClip(projectFilesEndpointDescription(dst), width-4)},
-			{modalMuted, "Conflict: [s] Skip  [r] Rename  [o] Overwrite (" + s.projectFiles.conflict + ")"},
-		}
-		names := make([]string, 0, len(src.marked))
-		for name, marked := range src.marked {
-			if marked {
-				names = append(names, name)
-			}
-		}
-		sort.Strings(names)
-		available := max(0, rows-2-len(lines))
-		for i, name := range names {
-			if i >= available {
+		lines := []modalRenderLine{{modalTitle, "Copy preview · Enter confirm · Esc cancel"}, {modalMuted, "From: " + projectClip(projectFilesEndpointDescription(src), width-6)}, {modalMuted, "To: " + projectClip(projectFilesEndpointDescription(dst), width-4)}, {modalMuted, "Conflict policy: " + s.projectFiles.conflict + " (Overwrite means selected policy; replacement is not confirmed)"}}
+		for _, name := range projectFilesMarkedNames(src) {
+			if len(lines) >= rows-2 {
 				break
 			}
 			lines = append(lines, modalRenderLine{modalMuted, "  " + projectClip(name, width-4)})
 		}
-		if len(names) > available && available > 0 {
-			lines[len(lines)-1] = modalRenderLine{modalMuted, fmt.Sprintf("  +%d more selected", len(names)-available+1)}
-		}
-		s.renderModalBox(out, cols, rows, lines)
+		renderModalBoxWidthANSI(out, cols, rows, width, lines)
 		return
 	}
-
-	leftLabel, rightLabel := s.projectFiles.left.label, s.projectFiles.right.label
-	lines := []modalRenderLine{
-		{modalTitle, "Project files"},
-		{modalMuted, modalCellPad(projectClip(leftLabel, cw), cw) + "  " + modalCellPad(projectClip(rightLabel, cw), cw)},
-		{modalInput, modalCellPad(projectClip(s.projectFiles.left.endpoint.Path, cw), cw) + "  " + modalCellPad(projectClip(s.projectFiles.right.endpoint.Path, cw), cw)},
+	if s.projectFiles.step == "history" {
+		lines := s.projectFilesHistoryLines(width, rows)
+		renderModalBoxWidthANSI(out, cols, rows, width, lines)
+		return
 	}
-	leftStatus, rightStatus := s.projectFiles.left.status, s.projectFiles.right.status
-	if leftStatus == "" {
-		leftStatus = s.projectFiles.status
+	left, right := s.visibleProjectEntries(&s.projectFiles.left), s.visibleProjectEntries(&s.projectFiles.right)
+	baseLines := []modalRenderLine{{modalTitle, "Project file exchange · Tab switch · l history"}}
+	_, cw, geometry := projectFilesGeometry(cols, rows, len(baseLines))
+	stacked := width < 58
+	panes := [2]projectFilesPane{s.projectFiles.left, s.projectFiles.right}
+	entries := [2][]ducklord.FileEntry{left, right}
+	lines := append([]modalRenderLine(nil), baseLines...)
+	entryOffsets := [2]int{}
+	for side := 0; side < 2; side++ {
+		p := panes[side]
+		visible, marked := len(entries[side]), len(projectFilesMarkedNames(p))
+		filter := ""
+		if p.query != "" {
+			filter = " · Filter: " + p.query
+		}
+		active := ""
+		if s.projectFiles.active == side {
+			active = "  ACTIVE"
+		}
+		label := fmt.Sprintf("%s%s · %d visible / %d marked%s", p.label, active, visible, marked, filter)
+		path := projectClip(p.endpoint.Path, cw-2)
+		status := p.status
+		if status == "" {
+			status = s.projectFiles.status
+		}
+		if stacked {
+			g := geometry[side]
+			for len(lines) < g.start {
+				lines = append(lines, modalRenderLine{modalMuted, ""})
+			}
+			for _, val := range []string{label, path, status} {
+				lines = append(lines, modalRenderLine{modalMuted, projectFilesPanelText(side, s.projectFiles.active == side, projectClip(val, g.width), g.width)})
+			}
+			entryOffsets[side] = len(lines)
+			for i := 0; i < g.rows; i++ {
+				text := ""
+				idx := i
+				if idx < len(entries[side]) {
+					text = projectFilesEntryText(entries[side][idx], p, idx == p.selected, s.projectFiles.asciiFolders)
+					if mark := s.projectFilesLatestMark(p, entries[side][idx]); mark != "" {
+						text += "  " + mark
+					}
+				}
+				lines = append(lines, modalRenderLine{modalMuted, projectFilesPanelText(side, s.projectFiles.active == side, projectClip(text, g.width), g.width)})
+			}
+		} else {
+			_ = label
+			_ = path
+			_ = status
+		}
 	}
-	if rightStatus == "" {
-		rightStatus = s.projectFiles.status
+	if !stacked {
+		lines = baseLines
+		for _, row := range []int{0, 1, 2} {
+			parts := [2]string{}
+			for side := 0; side < 2; side++ {
+				p := panes[side]
+				visible, marked := len(entries[side]), len(projectFilesMarkedNames(p))
+				filter := ""
+				if p.query != "" {
+					filter = " · Filter: " + p.query
+				}
+				active := ""
+				if s.projectFiles.active == side {
+					active = " · ACTIVE"
+				}
+				value := p.status
+				if row == 0 {
+					value = fmt.Sprintf("%s%s · %d visible / %d marked%s", p.label, active, visible, marked, filter)
+				}
+				if row == 1 {
+					value = p.endpoint.Path
+				}
+				if row == 2 && value == "" {
+					value = s.projectFiles.status
+				}
+				parts[side] = projectFilesPanelText(side, s.projectFiles.active == side, projectClip(value, cw), cw)
+			}
+			lines = append(lines, modalRenderLine{modalMuted, parts[0] + "  " + parts[1]})
+		}
+		entryOffsets = [2]int{len(lines), len(lines)}
+		maxRows := geometry[0].rows
+		offsets := [2]int{}
+		for side := 0; side < 2; side++ {
+			if maxRows > 0 && panes[side].selected >= maxRows {
+				offsets[side] = panes[side].selected - maxRows + 1
+			}
+		}
+		for row := 0; row < maxRows; row++ {
+			parts := [2]string{}
+			for side := 0; side < 2; side++ {
+				idx := row + offsets[side]
+				value := ""
+				if idx < len(entries[side]) {
+					value = projectFilesEntryText(entries[side][idx], panes[side], idx == panes[side].selected, s.projectFiles.asciiFolders)
+					if mark := s.projectFilesLatestMark(panes[side], entries[side][idx]); mark != "" {
+						value += "  " + mark
+					}
+				}
+				parts[side] = projectFilesPanelText(side, s.projectFiles.active == side, projectClip(value, cw), cw)
+			}
+			lines = append(lines, modalRenderLine{modalMuted, parts[0] + "  " + parts[1]})
+		}
+		entryOffsets = [2]int{len(lines) - maxRows, len(lines) - maxRows}
+		entryOffsets[0] += offsets[0]
+		entryOffsets[1] += offsets[1]
 	}
-	lines = append(lines, modalRenderLine{modalMuted, modalCellPad(projectClip(leftStatus, cw), cw) + "  " + modalCellPad(projectClip(rightStatus, cw), cw)})
+	lines = append(lines, modalRenderLine{modalMuted, "h endpoint · g path · / filter · Space select · i folder icons [D] · c copy preview"}, modalRenderLine{modalMuted, "Tab switch column · Enter open · Esc back/close · Ctrl+C cancel · l history"})
 	if s.projectFiles.step == "path" {
-		lines = append(lines, modalRenderLine{modalInput, "Path: " + projectClip(s.projectFilesPane().endpoint.Path, width-8) + "  (Enter apply, Esc cancel)"})
+		lines = append(lines, modalRenderLine{modalInput, "Path: " + projectClip(s.projectFilesPane().endpoint.Path, width-8) + "  Enter apply · Esc cancel"})
 	}
 	if s.projectFiles.step == "filter" {
-		lines = append(lines, modalRenderLine{modalInput, "Filter: " + projectClip(s.projectFilesPane().query, width-8) + "  (Enter apply, Esc cancel)"})
+		lines = append(lines, modalRenderLine{modalInput, "Filter: " + projectClip(s.projectFilesPane().query, width-8) + "  Enter apply · Esc cancel"})
 	}
 	if s.projectFiles.step == "endpoints" {
 		lines = append(lines, modalRenderLine{modalTitle, "Endpoint picker"})
@@ -733,76 +989,104 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 		}
 		lines = append(lines, modalRenderLine{modalMuted, "j/k choose · Enter apply · Esc cancel"})
 	}
-	left, right := s.visibleProjectEntries(&s.projectFiles.left), s.visibleProjectEntries(&s.projectFiles.right)
-	n := max(len(left), len(right))
-	// The common renderer can show rows-2 content lines. Reserve the footer
-	// after every step-specific header so no invisible entry receives a hitbox.
-	maxRows := max(0, rows-2-len(lines)-3)
-	offsetL, offsetR := 0, 0
-	if maxRows > 0 && s.projectFiles.left.selected >= maxRows {
-		offsetL = s.projectFiles.left.selected - maxRows + 1
-	}
-	if maxRows > 0 && s.projectFiles.right.selected >= maxRows {
-		offsetR = s.projectFiles.right.selected - maxRows + 1
-	}
-	for i := 0; i < n && i < maxRows; i++ {
-		li, ri := i+offsetL, i+offsetR
-		l, r := "", ""
-		if li < len(left) {
-			l = left[li].Name
-			if left[li].IsDir {
-				l += "/"
-			}
-			if s.projectFiles.left.marked[left[li].Name] {
-				l = "[x] " + l
-			}
-		}
-		if ri < len(right) {
-			r = right[ri].Name
-			if right[ri].IsDir {
-				r += "/"
-			}
-			if s.projectFiles.right.marked[right[ri].Name] {
-				r = "[x] " + r
-			}
-		}
-		if li == s.projectFiles.left.selected && s.projectFiles.active == 0 {
-			l = "› " + l
-		}
-		if ri == s.projectFiles.right.selected && s.projectFiles.active == 1 {
-			r = "› " + r
-		}
-		lines = append(lines, modalRenderLine{modalMuted, modalCellPad(projectClip(l, cw), cw) + "  " + modalCellPad(projectClip(r, cw), cw)})
-	}
-	lines = append(lines, modalRenderLine{modalMuted, s.projectFiles.status}, modalRenderLine{modalMuted, "Tab switch column · h endpoint · g path · / filter · Space select"}, modalRenderLine{modalMuted, "c copy preview · Enter open/confirm · Esc back/close · Ctrl+C cancel"})
-	s.renderModalBox(out, cols, rows, lines)
-	// Register independent hit regions after box rendering; modalChoice cannot represent two columns on one row.
+	renderModalBoxWidthANSI(out, cols, rows, width, lines)
 	if s.projectFiles.step != "browse" {
 		return
 	}
 	visible := min(len(lines), rows-2)
 	top := max(1, (rows-visible-2)/2+1)
-	entryStart := 4
-	for i := 0; i < n && i < maxRows; i++ {
-		row := top + entryStart + i + 1
-		base := max(1, (cols-width)/2+2)
-		if i+offsetL < len(left) {
-			s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: base, right: base + cw - 1, row: row, action: modalMouseAction{selection: &s.projectFiles.left.selected, index: i + offsetL, key: " "}})
-		}
-		if i+offsetR < len(right) {
-			x := base + cw + 2
-			s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: x, right: x + cw - 1, row: row, action: modalMouseAction{selection: &s.projectFiles.right.selected, index: i + offsetR, key: " "}})
+	boxLeft := max(1, (cols-width)/2+1)
+	for side := 0; side < 2; side++ {
+		g := geometry[side]
+		for row := 0; row < g.rows; row++ {
+			idx := row
+			if !stacked && g.rows > 0 && panes[side].selected >= g.rows {
+				idx += panes[side].selected - g.rows + 1
+			}
+			if stacked && panes[side].selected >= g.rows {
+				idx += panes[side].selected - g.rows + 1
+			}
+			if idx >= len(entries[side]) {
+				if len(entries[side]) != 0 {
+					continue
+				}
+				idx = -1
+			}
+			lineIndex := entryOffsets[side] + row
+			if lineIndex >= visible {
+				continue
+			}
+			sel := &s.projectFiles.left.selected
+			if side == 1 {
+				sel = &s.projectFiles.right.selected
+			}
+			l := boxLeft + g.left
+			r := boxLeft + g.right
+			s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: l, right: r, row: top + lineIndex + 1, action: modalMouseAction{selection: sel, index: idx, key: " "}})
 		}
 	}
-	// An empty destination is still a valid drop root.
-	if maxRows > 0 {
-		base, row := max(1, (cols-width)/2+2), top+entryStart+1
-		if len(left) == 0 {
-			s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: base, right: base + cw - 1, row: row, action: modalMouseAction{selection: &s.projectFiles.left.selected, index: -1, key: " "}})
-		}
-		if len(right) == 0 {
-			x := base + cw + 2
-			s.modalMouseRegions = append(s.modalMouseRegions, modalMouseRegion{left: x, right: x + cw - 1, row: row, action: modalMouseAction{selection: &s.projectFiles.right.selected, index: -1, key: " "}})
+}
+
+func projectFilesPanelText(side int, active bool, value string, width int) string {
+	return projectFilesPanelColor(side, active) + modalCellPad(value, width) + modalReset
+}
+
+func projectFilesEntryText(e ducklord.FileEntry, p projectFilesPane, selected, ascii bool) string {
+	icon := "  "
+	if e.IsDir {
+		icon = "📁"
+		if ascii {
+			icon = "[D]"
 		}
 	}
+	mark := "[ ]"
+	if p.marked[e.Name] {
+		mark = "[x]"
+	}
+	cursor := "  "
+	if selected {
+		cursor = "› "
+	}
+	return cursor + mark + " " + icon + " " + e.Name
+}
+
+func (s *tuiState) projectFilesHistoryLines(width, rows int) []modalRenderLine {
+	lines := []modalRenderLine{{modalTitle, "Transfer history · ←/→ batch · ↑/↓ item · x clear · Esc browser"}}
+	if len(s.projectFiles.history) == 0 {
+		return append(lines, modalRenderLine{modalMuted, "No batches for this Project"})
+	}
+	idx := min(s.projectFiles.historyBatch, len(s.projectFiles.history)-1)
+	b := s.projectFiles.history[idx]
+	batchText := fmt.Sprintf("Batch %d/%d · %s · %s → %s · %s", idx+1, len(s.projectFiles.history), b.at.Format("15:04:05"), b.sourceLabel, b.destinationLabel, b.conflict)
+	if b.err != "" {
+		batchText += " · Error: " + b.err
+	}
+	lines = append(lines, modalRenderLine{modalMuted, projectClip(batchText, width-4)})
+	lines = append(lines, modalRenderLine{modalMuted, "Sent: " + projectClip(projectFilesEndpointDescription(projectFilesPane{label: b.sourceLabel, endpoint: b.source}), width-9)}, modalRenderLine{modalMuted, "Received: " + projectClip(projectFilesEndpointDescription(projectFilesPane{label: b.destinationLabel, endpoint: b.destination}), width-12)})
+	if len(b.items) == 0 {
+		lines = append(lines, modalRenderLine{modalMuted, "No items started"})
+	}
+	maxItems := max(0, rows-7)
+	start := max(0, s.projectFiles.historyItem-maxItems+1)
+	end := min(len(b.items), start+maxItems)
+	for i := start; i < end; i++ {
+		item := b.items[i]
+		style := projectFilesStatusStyle(item.state)
+		mark := "  "
+		if i == s.projectFiles.historyItem {
+			mark = "› "
+		}
+		text := mark + projectFilesItemRow(item)
+		if item.destination != "" && item.destination != item.name {
+			text += " → " + item.destination
+		}
+		if item.err != "" {
+			text += " · " + item.err
+		}
+		lines = append(lines, modalRenderLine{style, projectClip(text, width-4)})
+	}
+	if b.err != "" && len(lines) < rows-2 {
+		lines = append(lines, modalRenderLine{modalDanger, "Error: " + projectClip(b.err, width-10)})
+	}
+	return lines
 }
