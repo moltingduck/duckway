@@ -324,7 +324,10 @@ func copyLocalWithStageRemover(ctx context.Context, req FileCopyRequest, removeS
 			return res, err
 		}
 		stageRel := filepath.Join(stage, dn)
-		defer removeStage(dstRoot, stage)
+		defer func() {
+			// Best-effort fallback; the explicit cleanup below reports failures.
+			_ = removeStage(dstRoot, stage)
+		}()
 		bytes := int64(0)
 		if err = copyTreeRoot(ctx, srcRoot, dstRoot, n, stageRel, &bytes); err != nil {
 			return res, err
