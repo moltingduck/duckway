@@ -14,6 +14,7 @@ type helpEntry struct {
 func helpCatalog(workspace bool) []helpEntry {
 	entries := []helpEntry{
 		{"SESSION LIST & GROUPS", "list_search", "Search sessions", "filter the visible list"},
+		{"", "", "Open selected Session", "Enter attaches the selected Session; in custom organization, Enter on a group expands or collapses it"},
 		{"", "", "Open Project files", "f opens file browsing from navigation; unavailable while a Terminal has focus"},
 		{"", "refresh", "Refresh sessions and hosts", ""},
 		{"SESSION", "session_create", "Create session", "wizard selects Agent or Shell, host, directory bookmark or remote Browse path (missing directories can be created recursively), then add the path as a bookmark or use it once and choose runtime/handle; arrows choose, Enter advances, Esc/Ctrl+C cancels"},
@@ -24,7 +25,7 @@ func helpCatalog(workspace bool) []helpEntry {
 		{"", "session_restart", "Restart session", ""},
 		{"", "session_end", "End session", ""},
 		{"", "session_destroy", "Destroy session", ""},
-		{"HOST", "host_actions", "Open host list and actions", "host list stages connect/disconnect with Space then Enter; host actions include Connections, Reconnect, PTY log retention, Agent notification hooks, and Add/Remove host; host-scoped menu exposes only supported host actions"},
+		{"HOST", "host_actions", "Open host list and actions", "Enter opens actions for the selected Host; Connections stages connect/disconnect with Space, then Enter applies; other actions include Reconnect, PTY log retention, Agent notification hooks, and Add/Remove host"},
 		{"", "host_add", "Add host configuration", ""},
 		{"", "host_remove", "Remove host configuration", ""},
 		{"", "shortcut_settings", "Configure shortcuts", "arrows choose an action; Enter edits its binding; Enter saves and Esc returns; after save y/Enter restarts now, n/Esc keeps current bindings"},
@@ -98,6 +99,7 @@ func helpCatalog(workspace bool) []helpEntry {
 	}
 	if workspace {
 		entries = append(entries,
+			helpEntry{"PROJECT PANE", "", "Activate selected Project pane", "Enter attaches the selected Session pane; an empty Project opens the Terminal tab creation flow"},
 			helpEntry{"SESSION LIST & GROUPS", "list_sort", "Cycle time / importance / Host / type", ""},
 			helpEntry{"", "list_sort_direction", "Reverse event-time direction", ""},
 		)

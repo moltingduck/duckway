@@ -13,7 +13,9 @@ func TestHelpCatalogCoversFeatureAreasAndQuickShellSequences(t *testing.T) {
 		entries := helpCatalog(workspace)
 		categories := map[string]bool{}
 		actions := map[string]bool{}
+		entryByLabel := map[string]helpEntry{}
 		for _, entry := range entries {
+			entryByLabel[entry.label] = entry
 			if entry.category != "" {
 				categories[entry.category] = true
 			}
@@ -36,6 +38,21 @@ func TestHelpCatalogCoversFeatureAreasAndQuickShellSequences(t *testing.T) {
 			if !categories[category] {
 				t.Errorf("help catalog is missing category %q", category)
 			}
+		}
+		if sessionEntry := entryByLabel["Open selected Session"]; sessionEntry.action != "" || !strings.Contains(sessionEntry.detail, "Enter attaches the selected Session") || !strings.Contains(sessionEntry.detail, "group expands or collapses") {
+			t.Errorf("selected Session Enter route is missing or inaccurate: %#v", sessionEntry)
+		}
+		hostEntry := entryByLabel["Open host list and actions"]
+		if !strings.Contains(hostEntry.detail, "Enter opens actions") || !strings.Contains(hostEntry.detail, "Connections stages connect/disconnect with Space, then Enter applies") || strings.Contains(hostEntry.detail, "host list stages connect/disconnect") {
+			t.Errorf("Host list and Connections routes are conflated or inaccurate: %q", hostEntry.detail)
+		}
+		if workspace {
+			projectEntry := entryByLabel["Activate selected Project pane"]
+			if projectEntry.action != "" || !strings.Contains(projectEntry.detail, "Enter attaches the selected Session pane") || !strings.Contains(projectEntry.detail, "empty Project opens the Terminal tab creation flow") {
+				t.Errorf("Project-focus Enter route is missing or inaccurate: %#v", projectEntry)
+			}
+		} else if _, found := entryByLabel["Activate selected Project pane"]; found {
+			t.Error("legacy catalog should not advertise the workspace-only Project pane Enter route")
 		}
 		for _, action := range []string{"prefix+-", "prefix+\\", "prefix+--", "prefix+\\\\", "prefix+t", "prefix+tt", "prefix+space", "prefix+slash"} {
 			if !actions[action] {
