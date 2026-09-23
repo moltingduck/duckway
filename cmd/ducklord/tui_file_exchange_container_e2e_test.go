@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -407,7 +408,6 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	copyPreview("")
 	assertRemoteText(clientB, targetB+"/"+aFile, aBytes, "client-a -> client-b file copy failed")
 	assertRemoteText(clientA, sourceA+"/"+aFile, aBytes, "copy modified client-a source")
-	assertRenderedTransfer("client-a", sourceA+"/"+aFile, "client-b", targetB+"/"+aFile)
 
 	writePTY(t, terminal, "/"+bundle+"\r")
 	capture.waitCurrent(t, bundle, 10*time.Second)
@@ -447,6 +447,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 		t.Fatalf("dragged directory copy omitted empty directory: %v: %s; screen: %s", err, out, safeTerminalDiagnostic(capture.currentText()))
 	}
 	resizeTUICapture(t, terminal, capture, 32, 150)
+	assertRenderedTransfer("client-a", sourceA+"/"+aFile, "client-b", targetB+"/"+aFile)
 	waitProjectFiles()
 	// Resolve the same drag targets again after widening. This exercises mouse
 	// hit testing on each layout without relying on fixed pane header offsets.
@@ -655,35 +656,29 @@ func projectFilesScreenPointAny(capture *tuiCapture, label string) (int, int, bo
 }
 
 func projectFilesPanelContains(capture *tuiCapture, endpoints [2]string, side int, value string) bool {
-	anchors := projectFilesScreenPoints(capture, endpoints[0])
-	if len(anchors) == 0 || side < 0 || side > 1 {
+	if side < 0 || side > 1 || endpoints[side] == "" {
 		return false
 	}
-	if endpoints[0] != endpoints[1] {
-		anchors = append(anchors, projectFilesScreenPoints(capture, endpoints[1])...)
+	// Panel text is rendered with a distinct background fill. Match cells by
+	// their rendered fill, rather than guessing the split from endpoint-label
+	// coordinates (which are not panel boundaries and can occur in history).
+	rows := projectFilesStyledRows(capture)
+	anchorStyles := map[string]bool{}
+	for _, row := range rows {
+		for _, match := range row.matches(endpoints[side]) {
+			if match.style != "" {
+				anchorStyles[match.style] = true
+			}
+		}
 	}
-	if len(anchors) < 2 {
+	if len(anchorStyles) == 0 {
 		return false
 	}
-	// The visual contract keeps left/right order in wide mode and top/bottom
-	// order when stacked. Infer the axis from the host labels themselves.
-	axisX := absInt(anchors[1][0]-anchors[0][0]) >= absInt(anchors[1][1]-anchors[0][1])
-	first, second := anchors[0], anchors[1]
-	if (axisX && first[0] > second[0]) || (!axisX && first[1] > second[1]) {
-		first, second = second, first
-	}
-	points := projectFilesScreenPoints(capture, value)
-	for _, point := range points {
-		coordinate, boundary, a, b := point[0], (first[0]+second[0])/2, first[0], second[0]
-		if !axisX {
-			coordinate, boundary, a, b = point[1], (first[1]+second[1])/2, first[1], second[1]
-		}
-		belongsFirst := coordinate <= boundary
-		if a == b {
-			belongsFirst = point == first
-		}
-		if (side == 0) == belongsFirst {
-			return true
+	for _, row := range rows {
+		for _, match := range row.matches(value) {
+			if anchorStyles[match.style] {
+				return true
+			}
 		}
 	}
 	return false
@@ -694,33 +689,71 @@ func projectFilesPanelRowContains(capture *tuiCapture, endpoints [2]string, side
 		projectFilesPanelContains(capture, endpoints, side, value)
 }
 
-func projectFilesScreenPoints(capture *tuiCapture, label string) [][2]int {
-	capture.mu.Lock()
-	screen := strings.Join(capture.screen.RenderLines(capture.rows, capture.cols), "\n")
-	cols := capture.cols
-	capture.mu.Unlock()
-	screen = regexp.MustCompile(`\x1b\[[0-9;:]*m`).ReplaceAllString(screen, "")
-	var points [][2]int
-	for row, line := range strings.Split(screen, "\n") {
-		for start := 0; start < len(line); {
-			offset := strings.Index(line[start:], label)
-			if offset < 0 {
-				break
-			}
-			offset += start
-			column := modalCellWidth(line[:offset]) + 1
-			if column >= 1 && column <= cols {
-				points = append(points, [2]int{column, row + 1})
-			}
-			start = offset + len(label)
-		}
-	}
-	return points
+type projectFilesStyledMatch struct {
+	style string
 }
 
-func absInt(value int) int {
-	if value < 0 {
-		return -value
+type projectFilesStyledRow struct {
+	text   string
+	styles map[int]string
+}
+
+func (row projectFilesStyledRow) matches(label string) []projectFilesStyledMatch {
+	var matches []projectFilesStyledMatch
+	for start := 0; start < len(row.text); {
+		offset := strings.Index(row.text[start:], label)
+		if offset < 0 {
+			break
+		}
+		offset += start
+		cell := modalCellWidth(row.text[:offset])
+		matches = append(matches, projectFilesStyledMatch{style: row.styles[cell]})
+		start = offset + len(label)
 	}
-	return value
+	return matches
+}
+
+func projectFilesStyledRows(capture *tuiCapture) []projectFilesStyledRow {
+	capture.mu.Lock()
+	lines := capture.screen.RenderLines(capture.rows, capture.cols)
+	capture.mu.Unlock()
+	ansi := regexp.MustCompile(`\x1b\[([0-9;:]*)m`)
+	rows := make([]projectFilesStyledRow, 0, len(lines))
+	for _, raw := range lines {
+		row := projectFilesStyledRow{styles: make(map[int]string)}
+		style := ""
+		cell := 0
+		for len(raw) > 0 {
+			loc := ansi.FindStringSubmatchIndex(raw)
+			chunk := raw
+			if loc != nil {
+				chunk = raw[:loc[0]]
+			}
+			for _, r := range chunk {
+				row.text += string(r)
+				width := modalCellWidth(string(r))
+				for n := 0; n < width; n++ {
+					row.styles[cell+n] = style
+				}
+				cell += width
+			}
+			if loc == nil {
+				break
+			}
+			params := strings.Split(raw[loc[2]:loc[3]], ";")
+			for i := 0; i < len(params); i++ {
+				code, _ := strconv.Atoi(params[i])
+				if code == 0 || code == 49 {
+					style = ""
+				}
+				if code == 48 && i+4 < len(params) && params[i+1] == "2" {
+					style = strings.Join(params[i:i+5], ";")
+					i += 4
+				}
+			}
+			raw = raw[loc[1]:]
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
