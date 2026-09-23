@@ -513,6 +513,21 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	assertRemoteText(clientB, targetB+"/"+aFile, aBytes, "client-a -> client-b file copy failed")
 	assertRemoteText(clientA, sourceA+"/"+aFile, aBytes, "copy modified client-a source")
 
+	// The earlier file copy leaves its source checked. A drag adds the dragged
+	// row to the mark set rather than replacing that set, so remove the old
+	// selection and verify it is clear before testing directory drag semantics.
+	applyFilter(aFile)
+	waitE2E(t, 5*time.Second, func() bool {
+		return projectFilesPanelRowContains(capture, activePane, aFile, "[x]")
+	}, func() string {
+		return "prior file selection was not present before clearing it for directory drag: " + projectFilesOwnershipDiagnostic(capture)
+	})
+	writePTY(t, terminal, " ")
+	waitE2E(t, 5*time.Second, func() bool {
+		return projectFilesPanelRowContains(capture, activePane, aFile, "[ ]")
+	}, func() string {
+		return "prior file selection remained marked before directory drag: " + projectFilesOwnershipDiagnostic(capture)
+	})
 	applyFilter(bundle)
 	// The filter editor also renders its query. Wait for browse mode before
 	// resolving a mouse row so the drag starts on the entry region, not text
