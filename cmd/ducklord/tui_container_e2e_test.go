@@ -2021,6 +2021,18 @@ func newSizedTUICapture(terminal *os.File, rows, cols int) *tuiCapture {
 	return capture
 }
 
+func resizeTUICapture(t *testing.T, terminal *os.File, capture *tuiCapture, rows, cols int) {
+	t.Helper()
+	if err := pty.Setsize(terminal, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}); err != nil {
+		t.Fatalf("resize TUI PTY to %dx%d: %v", rows, cols, err)
+	}
+	capture.mu.Lock()
+	capture.rows, capture.cols = rows, cols
+	capture.screen.Resize(rows, cols)
+	capture.mu.Unlock()
+	time.Sleep(150 * time.Millisecond)
+}
+
 func (c *tuiCapture) watchCurrent(marker string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

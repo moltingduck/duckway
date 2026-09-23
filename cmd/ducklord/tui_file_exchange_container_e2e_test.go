@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -129,6 +130,7 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 		}, func() string { return failure + ": " + safeTerminalDiagnostic(capture.currentText()) })
 	}
 	activePane := 0
+	currentEndpoints := [2]string{"LOCAL", "LOCAL"}
 	activatePane := func(want int) {
 		t.Helper()
 		if activePane != want {
@@ -136,30 +138,11 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 			activePane = want
 		}
 	}
-	paneBounds := func(side int) (int, int) {
-		if side == 0 {
-			return 0, 75
-		}
-		return 75, 151
-	}
 	paneContains := func(side int, value string) bool {
-		minX, maxX := paneBounds(side)
-		_, _, found := projectFilesScreenPoint(capture, value, minX, maxX)
-		return found
+		return projectFilesPanelContains(capture, currentEndpoints, side, value)
 	}
 	paneStatusContains := func(side int, label, value string) bool {
-		minX, maxX := paneBounds(side)
-		_, labelRow, found := projectFilesScreenPoint(capture, label, minX, maxX)
-		if !found {
-			return false
-		}
-		lines := strings.Split(capture.currentText(), "\n")
-		statusRow := labelRow + 1 // label, path, then the per-pane status row.
-		if statusRow >= len(lines) {
-			return false
-		}
-		_, _, found = workspaceScreenPoint(lines[statusRow], value, minX, maxX)
-		return found
+		return projectFilesPanelRowContains(capture, currentEndpoints, side, label, value)
 	}
 	endpointLabel := func(endpoint int) string {
 		switch {
@@ -173,6 +156,7 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	}
 	selectEndpoint := func(active int, endpoint int, path string, listed string) {
 		t.Helper()
+		currentEndpoints[active] = endpointLabel(endpoint)
 		activatePane(active)
 		writePTY(t, terminal, "h")
 		capture.waitCurrent(t, "Endpoint picker", 10*time.Second)
@@ -258,6 +242,16 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 			return "copy preview did not complete successfully: " + safeTerminalDiagnostic(capture.currentText())
 		})
 	}
+	assertRenderedTransfer := func(from, sourcePath, to, destinationPath string) {
+		t.Helper()
+		waitE2E(t, 10*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, "Sent: "+from+": "+sourcePath) &&
+				strings.Contains(screen, "Received: "+to+": "+destinationPath)
+		}, func() string {
+			return fmt.Sprintf("rendered transfer direction did not show %s -> %s: %s", from+": "+sourcePath, to+": "+destinationPath, safeTerminalDiagnostic(capture.currentText()))
+		})
+	}
 	waitProjectFiles := func() {
 		t.Helper()
 		// The palette retains its selected "Project files" command while it is
@@ -272,6 +266,21 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 		}, func() string {
 			return "Project Files did not reach browse mode: " + safeTerminalDiagnostic(capture.currentText())
 		})
+	}
+	assertHistoryItem := func(sourcePath, destinationPath, sourceName, destinationName, outcome string) {
+		t.Helper()
+		writePTY(t, terminal, "l")
+		capture.waitCurrent(t, "Transfer history", 10*time.Second)
+		waitE2E(t, 10*time.Second, func() bool {
+			screen := capture.currentText()
+			return strings.Contains(screen, sourcePath) && strings.Contains(screen, destinationPath) &&
+				strings.Contains(screen, sourceName) && strings.Contains(screen, destinationName) &&
+				strings.Contains(screen, outcome)
+		}, func() string {
+			return fmt.Sprintf("transfer history did not render %q -> %q as %s: %s", sourcePath, destinationPath, outcome, safeTerminalDiagnostic(capture.currentText()))
+		})
+		writePTY(t, terminal, "\x1b")
+		waitProjectFiles()
 	}
 	assertRemoteMissing := func(client, path, failure string) {
 		t.Helper()
@@ -373,10 +382,18 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	// Send them in one PTY write: the input decoder must split both key events.
 	writePTY(t, terminal, "\x1df")
 	waitProjectFiles()
+	if !paneContains(0, "LOCAL") || !paneContains(1, "LOCAL") {
+		t.Fatalf("wide file exchange did not render both independent panels: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
+	resizeTUICapture(t, terminal, capture, 32, 50)
+	waitProjectFiles()
 
 	// Client A -> client B file, directory drag/drop, and a two-file selection.
 	selectEndpoint(0, clientAEndpoint, sourceA, aFile)
 	selectEndpoint(1, clientBEndpoint, targetB, "drop-dir")
+	if !paneContains(0, "ACTIVE") || paneContains(1, "ACTIVE") {
+		t.Fatalf("narrow stacked panels do not identify the active side: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
 	activatePane(0)
 	selectOnly(aFile)
 	// Cancelling a preview must leave the destination untouched; this covers
@@ -390,6 +407,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	copyPreview("")
 	assertRemoteText(clientB, targetB+"/"+aFile, aBytes, "client-a -> client-b file copy failed")
 	assertRemoteText(clientA, sourceA+"/"+aFile, aBytes, "copy modified client-a source")
+	assertRenderedTransfer("client-a", sourceA+"/"+aFile, "client-b", targetB+"/"+aFile)
 
 	writePTY(t, terminal, "/"+bundle+"\r")
 	capture.waitCurrent(t, bundle, 10*time.Second)
@@ -397,11 +415,23 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	// resolving a mouse row so the drag starts on the entry region, not text
 	// that briefly matched while the query was being submitted.
 	waitProjectFiles()
-	leftX, leftY, ok := projectFilesScreenPoint(capture, bundle, 0, 74)
+	writePTY(t, terminal, "i")
+	waitE2E(t, 5*time.Second, func() bool {
+		return paneContains(0, "[D] "+bundle)
+	}, func() string {
+		return "ASCII folder icon toggle did not label the source directory: " + safeTerminalDiagnostic(capture.currentText())
+	})
+	writePTY(t, terminal, "i")
+	waitE2E(t, 5*time.Second, func() bool {
+		return paneContains(0, "📁 "+bundle)
+	}, func() string {
+		return "folder icon toggle did not restore the folder glyph: " + safeTerminalDiagnostic(capture.currentText())
+	})
+	leftX, leftY, ok := projectFilesScreenPointAny(capture, bundle)
 	if !ok {
 		t.Fatalf("could not locate source directory %q: %s", bundle, safeTerminalDiagnostic(capture.currentText()))
 	}
-	rightX, rightY, ok := projectFilesScreenPoint(capture, "drop-dir", 75, 150)
+	rightX, rightY, ok := projectFilesScreenPointAny(capture, "drop-dir")
 	if !ok {
 		t.Fatalf("could not locate destination directory: %s", safeTerminalDiagnostic(capture.currentText()))
 	}
@@ -416,6 +446,23 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	if out, err := exec.Command(runtime, "exec", "-u", "duck", clientB, "test", "-d", targetB+"/drop-dir/"+bundle+"/"+emptyDir).CombinedOutput(); err != nil {
 		t.Fatalf("dragged directory copy omitted empty directory: %v: %s; screen: %s", err, out, safeTerminalDiagnostic(capture.currentText()))
 	}
+	resizeTUICapture(t, terminal, capture, 32, 150)
+	waitProjectFiles()
+	// Resolve the same drag targets again after widening. This exercises mouse
+	// hit testing on each layout without relying on fixed pane header offsets.
+	leftX, leftY, ok = projectFilesScreenPointAny(capture, bundle)
+	if !ok {
+		t.Fatalf("could not locate source directory after widening: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
+	rightX, rightY, ok = projectFilesScreenPointAny(capture, "drop-dir")
+	if !ok {
+		t.Fatalf("could not locate destination directory after widening: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
+	writePTY(t, terminal, fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<0;%d;%dm", leftX, leftY, rightX, rightY))
+	capture.waitCurrent(t, "Copy preview", 10*time.Second)
+	capture.waitCurrent(t, "To: client-b: "+targetB+"/drop-dir", 10*time.Second)
+	writePTY(t, terminal, "\x1b")
+	waitProjectFiles()
 
 	// Dragging onto drop-dir makes that child the pending destination; reset the
 	// target pane before the following root-level multiselect transfer.
@@ -429,6 +476,30 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	copyPreview("")
 	assertRemoteText(clientB, targetB+"/"+multiOne, multiOneBytes, "first multiselect file was not copied")
 	assertRemoteText(clientB, targetB+"/"+multiTwo, multiTwoBytes, "second multiselect file was not copied")
+	assertRenderedTransfer("client-a", sourceA+"/"+multiOne, "client-b", targetB+"/"+multiOne)
+	assertRenderedTransfer("client-a", sourceA+"/"+multiTwo, "client-b", targetB+"/"+multiTwo)
+	// History navigation must leave focus in the modal while terminal output is
+	// arriving, and Esc must return to this browser with its active side intact.
+	writePTY(t, terminal, "l")
+	capture.waitCurrent(t, "Transfer history", 10*time.Second)
+	capture.waitCurrent(t, multiOne, 5*time.Second)
+	capture.waitCurrent(t, multiTwo, 5*time.Second)
+	writePTY(t, terminal, "\x1b[D\x1b[C\x1b[A\x1b[B")
+	asyncHistory := fmt.Sprintf("ASYNC_EXCHANGE_HISTORY_%d", stamp)
+	asyncHistoryPath := sourceA + "/" + asyncHistory
+	asyncCommand := fmt.Sprintf("printf %q > %q; printf '%s\\n'", asyncHistory+"\n", asyncHistoryPath, asyncHistory)
+	if out, err := exec.Command(runtime, "exec", controller, "ducklord", "--name", owner+"-output", "send", "client-a", handle, asyncCommand, "--config", configPath).CombinedOutput(); err != nil {
+		t.Fatalf("send async shell output during transfer history: %v: %s", err, out)
+	}
+	assertRemoteText(clientA, asyncHistoryPath, asyncHistory+"\n", "async history shell output did not execute")
+	if strings.Contains(capture.currentText(), asyncHistory) {
+		t.Fatalf("transfer history lost modal ownership to async terminal output: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
+	writePTY(t, terminal, "\x1b")
+	waitProjectFiles()
+	if !paneContains(0, "ACTIVE") || paneContains(1, "ACTIVE") {
+		t.Fatalf("history Esc did not restore the same active browser side: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
 
 	// Client B -> client A is a separate direction with different bytes.
 	selectEndpoint(0, clientBEndpoint, sourceB, bFile)
@@ -437,6 +508,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	selectOnly(bFile)
 	copyPreview("")
 	assertRemoteText(clientA, targetA+"/"+bFile, bBytes, "client-b -> client-a copy failed")
+	assertRenderedTransfer("client-b", sourceB+"/"+bFile, "client-a", targetA+"/"+bFile)
 
 	// The per-project shelf survives closing and reopening the modal.
 	selectEndpoint(0, clientAEndpoint, sourceA, shelfFile)
@@ -464,6 +536,19 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	writePTY(t, terminal, "f")
 	waitProjectFiles()
 	activePane = 0 // every new Project files modal starts on the left.
+	// History belongs to the project, not the modal instance. Reopen it before
+	// starting another copy so this proves the previous modal's transfer remains.
+	writePTY(t, terminal, "l")
+	capture.waitCurrent(t, "Transfer history", 10*time.Second)
+	capture.waitCurrent(t, shelfFile, 5*time.Second)
+	if !strings.Contains(capture.currentText(), "Copied") || !strings.Contains(capture.currentText(), targetB) {
+		t.Fatalf("reopened transfer history omitted the completed shelf copy: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
+	writePTY(t, terminal, "\x1b")
+	waitProjectFiles()
+	if !paneContains(0, "ACTIVE") || paneContains(1, "ACTIVE") {
+		t.Fatalf("history Esc after modal reopen did not restore the left browser side: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
 	selectEndpoint(0, clientBEndpoint, targetB, "drop-dir")
 	selectEndpoint(1, shelfEndpoint, "", shelfFile)
 	activatePane(1)
@@ -481,10 +566,13 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	activatePane(0)
 	copyPreview("s")
 	assertRemoteText(clientB, targetB+"/"+aFile, "conflict bytes\n", "skip policy changed destination bytes")
+	assertHistoryItem(sourceA+"/"+aFile, targetB+"/"+aFile, aFile, aFile, "Skipped")
 	copyPreview("r")
 	assertRemoteText(clientB, targetB+"/"+aFile+" (1)", aBytes, "rename policy did not create suffixed file")
+	assertHistoryItem(sourceA+"/"+aFile, targetB+"/"+aFile+" (1)", aFile, aFile+" (1)", "Copied")
 	copyPreview("o")
 	assertRemoteText(clientB, targetB+"/"+aFile, aBytes, "overwrite policy did not replace destination bytes")
+	assertHistoryItem(sourceA+"/"+aFile, targetB+"/"+aFile, aFile, aFile, "Copied")
 
 	// Make one source read block before it emits an archive, then cancel from
 	// the busy state. The destination writer has already opened its isolated
@@ -524,6 +612,18 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	assertNoExchangeStage(clientB, targetB, "failed transfer left destination staging")
 	restoreControlledReadFailures()
 
+	// Clearing history is scoped to the project record and does not undo any
+	// already verified destination bytes.
+	writePTY(t, terminal, "l")
+	capture.waitCurrent(t, "Transfer history", 10*time.Second)
+	writePTY(t, terminal, "x")
+	capture.waitCurrent(t, "No batches for this Project", 10*time.Second)
+	writePTY(t, terminal, "\x1b")
+	waitProjectFiles()
+	if !paneContains(0, "ACTIVE") || paneContains(1, "ACTIVE") {
+		t.Fatalf("clearing history did not restore the active browser side: %s", safeTerminalDiagnostic(capture.currentText()))
+	}
+
 	// This modal was opened from list focus, so close must return to the list.
 	// Re-enter the selected shell explicitly before proving terminal ownership.
 	writePTY(t, terminal, "\x03")
@@ -544,4 +644,83 @@ func projectFilesScreenPoint(capture *tuiCapture, label string, minX, maxX int) 
 	screen := strings.Join(capture.screen.RenderLines(capture.rows, capture.cols), "\n")
 	capture.mu.Unlock()
 	return workspaceScreenPoint(screen, label, minX, maxX)
+}
+
+func projectFilesScreenPointAny(capture *tuiCapture, label string) (int, int, bool) {
+	capture.mu.Lock()
+	screen := strings.Join(capture.screen.RenderLines(capture.rows, capture.cols), "\n")
+	cols := capture.cols
+	capture.mu.Unlock()
+	return workspaceScreenPoint(screen, label, 1, cols+1)
+}
+
+func projectFilesPanelContains(capture *tuiCapture, endpoints [2]string, side int, value string) bool {
+	anchors := projectFilesScreenPoints(capture, endpoints[0])
+	if len(anchors) == 0 || side < 0 || side > 1 {
+		return false
+	}
+	if endpoints[0] != endpoints[1] {
+		anchors = append(anchors, projectFilesScreenPoints(capture, endpoints[1])...)
+	}
+	if len(anchors) < 2 {
+		return false
+	}
+	// The visual contract keeps left/right order in wide mode and top/bottom
+	// order when stacked. Infer the axis from the host labels themselves.
+	axisX := absInt(anchors[1][0]-anchors[0][0]) >= absInt(anchors[1][1]-anchors[0][1])
+	first, second := anchors[0], anchors[1]
+	if (axisX && first[0] > second[0]) || (!axisX && first[1] > second[1]) {
+		first, second = second, first
+	}
+	points := projectFilesScreenPoints(capture, value)
+	for _, point := range points {
+		coordinate, boundary, a, b := point[0], (first[0]+second[0])/2, first[0], second[0]
+		if !axisX {
+			coordinate, boundary, a, b = point[1], (first[1]+second[1])/2, first[1], second[1]
+		}
+		belongsFirst := coordinate <= boundary
+		if a == b {
+			belongsFirst = point == first
+		}
+		if (side == 0) == belongsFirst {
+			return true
+		}
+	}
+	return false
+}
+
+func projectFilesPanelRowContains(capture *tuiCapture, endpoints [2]string, side int, label, value string) bool {
+	return projectFilesPanelContains(capture, endpoints, side, label) &&
+		projectFilesPanelContains(capture, endpoints, side, value)
+}
+
+func projectFilesScreenPoints(capture *tuiCapture, label string) [][2]int {
+	capture.mu.Lock()
+	screen := strings.Join(capture.screen.RenderLines(capture.rows, capture.cols), "\n")
+	cols := capture.cols
+	capture.mu.Unlock()
+	screen = regexp.MustCompile(`\x1b\[[0-9;:]*m`).ReplaceAllString(screen, "")
+	var points [][2]int
+	for row, line := range strings.Split(screen, "\n") {
+		for start := 0; start < len(line); {
+			offset := strings.Index(line[start:], label)
+			if offset < 0 {
+				break
+			}
+			offset += start
+			column := modalCellWidth(line[:offset]) + 1
+			if column >= 1 && column <= cols {
+				points = append(points, [2]int{column, row + 1})
+			}
+			start = offset + len(label)
+		}
+	}
+	return points
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
