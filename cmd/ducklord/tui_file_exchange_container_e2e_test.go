@@ -5,9 +5,11 @@ package main
 // it.
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -243,27 +245,28 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 	}
 	assertRenderedTransfer := func(from, sourcePath, to, destinationPath string) {
 		t.Helper()
+		name := filepath.Base(sourcePath)
 		waitE2E(t, 10*time.Second, func() bool {
-			screen := capture.currentText()
-			return strings.Contains(screen, "Sent: "+from+": "+sourcePath) &&
-				strings.Contains(screen, "Received: "+to+": "+destinationPath)
+			return projectFilesPanelRowContains(capture, 0, name, "Sent") &&
+				projectFilesPanelRowContains(capture, 1, name, "Received")
 		}, func() string {
-			return fmt.Sprintf("rendered transfer direction did not show %s -> %s: %s", from+": "+sourcePath, to+": "+destinationPath, safeTerminalDiagnostic(capture.currentText()))
+			return fmt.Sprintf("browse rows did not mark %s sent from %s or received at %s (endpoints %s -> %s): %s", name, sourcePath, destinationPath, from, to, projectFilesOwnershipDiagnostic(capture))
 		})
 	}
 	waitProjectFiles := func() {
 		t.Helper()
-		// The palette retains its selected "Project files" command while it is
-		// still open. Filter, path, and endpoint editors share the footer, so
-		// wait until the actual browse view has returned before using entry rows.
+		// Path is a permanent browse header now; LEFT and RIGHT are the browse
+		// identity, while editor-only prompts distinguish path/filter/picker.
 		waitE2E(t, 15*time.Second, func() bool {
 			screen := capture.currentText()
-			return strings.Contains(screen, "Tab switch column") &&
+			return projectFilesPanelContains(capture, 0, "LEFT") &&
+				projectFilesPanelContains(capture, 1, "RIGHT") &&
+				strings.Contains(screen, "Tab switch column") &&
 				!strings.Contains(screen, "Filter:") &&
-				!strings.Contains(screen, "Path:") &&
+				!strings.Contains(screen, "Enter apply") &&
 				!strings.Contains(screen, "Endpoint picker")
 		}, func() string {
-			return "Project Files did not reach browse mode: " + safeTerminalDiagnostic(capture.currentText())
+			return "Project Files did not reach browse mode: " + projectFilesOwnershipDiagnostic(capture)
 		})
 	}
 	assertHistoryItem := func(sourcePath, destinationPath, sourceName, destinationName, outcome string) {
@@ -512,6 +515,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	}
 	writePTY(t, terminal, "\x1b")
 	waitProjectFiles()
+	capture.waitCurrent(t, asyncHistory, 15*time.Second)
 	if !paneContains(0, "ACTIVE") || paneContains(1, "ACTIVE") {
 		t.Fatalf("history Esc did not restore the same active browser side: %s", safeTerminalDiagnostic(capture.currentText()))
 	}
@@ -591,6 +595,9 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	activatePane(0)
 	copyPreview("s")
 	assertRemoteText(clientB, targetB+"/"+aFile, "conflict bytes\n", "skip policy changed destination bytes")
+	if projectFilesPanelRowContains(capture, 0, aFile, "Sent") || projectFilesPanelRowContains(capture, 1, aFile, "Received") {
+		t.Fatalf("skipped file was marked as transferred in browse rows: %s", projectFilesOwnershipDiagnostic(capture))
+	}
 	assertHistoryItem(sourceA+"/"+aFile, targetB+"/"+aFile, aFile, aFile, "Skipped")
 	copyPreview("r")
 	assertRemoteText(clientB, targetB+"/"+aFile+" (1)", aBytes, "rename policy did not create suffixed file")
@@ -614,6 +621,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	writePTY(t, terminal, "\x03")
 	capture.waitCurrent(t, "Cancelled: copied 0, skipped 0", 15*time.Second)
 	waitProjectFiles()
+	assertHistoryItem(sourceA+"/"+cancelFile, targetB+"/"+cancelFile, cancelFile, cancelFile, "Cancelled")
 	assertRemoteText(clientA, sourceA+"/"+cancelFile, cancelBytes, "cancelled transfer modified source bytes")
 	assertRemoteMissing(clientB, targetB+"/"+cancelFile, "cancelled transfer committed destination file")
 	assertNoExchangeStage(clientB, targetB, "cancelled transfer left destination staging")
@@ -632,6 +640,7 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	}
 	capture.waitCurrent(t, "Copied 0, skipped 0; partial:", 15*time.Second)
 	waitProjectFiles()
+	assertHistoryItem(sourceA+"/"+failureFile, targetB+"/"+failureFile, failureFile, failureFile, "Failed")
 	assertRemoteText(clientA, sourceA+"/"+failureFile, failureBytes, "failed transfer modified source bytes")
 	assertRemoteMissing(clientB, targetB+"/"+failureFile, "failed transfer committed destination file")
 	assertNoExchangeStage(clientB, targetB, "failed transfer left destination staging")
@@ -662,13 +671,6 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	writePTY(t, terminal, fmt.Sprintf("printf %q > %s; printf 'FILE_%%s\\n' '%s'\r", "FILE_"+closed+"\n", terminalMarker, closed))
 	capture.waitAfter(t, startAt, "FILE_"+closed, 15*time.Second)
 	assertRemoteText(clientA, terminalMarker, "FILE_"+closed+"\n", "terminal sentinel did not execute after returning from list-origin Project files")
-}
-
-func projectFilesScreenPoint(capture *tuiCapture, label string, minX, maxX int) (int, int, bool) {
-	capture.mu.Lock()
-	screen := strings.Join(capture.screen.RenderLines(capture.rows, capture.cols), "\n")
-	capture.mu.Unlock()
-	return workspaceScreenPoint(screen, label, minX, maxX)
 }
 
 func projectFilesScreenPointAny(capture *tuiCapture, label string) (int, int, bool) {
@@ -749,10 +751,10 @@ func projectFilesVisiblePath(capture *tuiCapture, path string) string {
 	cols := capture.cols
 	capture.mu.Unlock()
 	if cols < 58 {
-		// The stacked panel clips the end of the path at 50 columns. Its stable
-		// visible prefix still proves the expected root; wide mode asserts the
-		// complete source and destination paths after the transfer.
-		return "/home/duck/"
+		// The stacked panel clips long paths. Keep enough of the root-specific
+		// prefix to distinguish source and destination, rather than accepting
+		// the shared /home/duck/ prefix for either endpoint.
+		return path[:min(len(path), 32)]
 	}
 	return path
 }
@@ -827,20 +829,29 @@ func projectFilesStyledRows(capture *tuiCapture) []projectFilesStyledRow {
 }
 
 func TestProjectFilesPanelRenderedOwnership(t *testing.T) {
-	screen := ducklord.NewTerminal(4, 100, 0)
-	screen.Write([]byte("\x1b[48;2;12;38;52mLEFT LOCAL visible 2 marked\x1b[0m  \x1b[48;2;31;35;56mRIGHT LOCAL visible 9 marked\x1b[0m\r\n" +
-		"\x1b[48;2;12;38;52mLEFT LOCAL Loading\x1b[0m  \x1b[48;2;31;35;56mRIGHT LOCAL Ready\x1b[0m\r\n"))
-	capture := &tuiCapture{screen: screen, rows: 4, cols: 100}
-	if !projectFilesPanelContains(capture, 0, "visible") ||
-		!projectFilesPanelContains(capture, 1, "visible") {
-		t.Fatal("same-host endpoints were not distinguished by explicit panel heading")
-	}
-	if projectFilesPanelContains(capture, 0, "9") || projectFilesPanelContains(capture, 1, "2") {
-		t.Fatal("content from the opposite panel was attributed to this side")
-	}
-	if !projectFilesPanelRowContains(capture, 0, "visible", "2") ||
-		projectFilesPanelRowContains(capture, 0, "Loading", "Ready") ||
-		projectFilesPanelRowContains(capture, 0, "Loading", "visible") {
-		t.Fatal("panel row assertion did not require both values in the same rendered row and panel")
+	for _, cols := range []int{150, 50} {
+		t.Run(fmt.Sprintf("%d-columns", cols), func(t *testing.T) {
+			state := &tuiState{projectFiles: projectFilesState{
+				open: true, step: "browse", active: 0,
+				left:  projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: "/left/root"}, entries: []ducklord.FileEntry{{Name: "left-only.txt"}}},
+				right: projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: "/right/root"}, entries: []ducklord.FileEntry{{Name: "right-only.txt"}}},
+			}}
+			var rendered bytes.Buffer
+			state.renderProjectFilesModal(&rendered, cols, 32)
+			screen := ducklord.NewTerminal(32, cols, 0)
+			screen.Write(rendered.Bytes())
+			capture := &tuiCapture{screen: screen, rows: 32, cols: cols}
+			if !projectFilesPanelContains(capture, 0, "visible") || !projectFilesPanelContains(capture, 1, "visible") {
+				t.Fatalf("production renderer did not preserve both panel identities: %s", projectFilesOwnershipDiagnostic(capture))
+			}
+			if !projectFilesPanelContains(capture, 0, "left-only.txt") || projectFilesPanelContains(capture, 0, "right-only.txt") ||
+				!projectFilesPanelContains(capture, 1, "right-only.txt") || projectFilesPanelContains(capture, 1, "left-only.txt") {
+				t.Fatalf("production render lost independent panel ownership: %s", projectFilesOwnershipDiagnostic(capture))
+			}
+			if !projectFilesPanelRowContains(capture, 0, "left-only.txt", "[ ]") ||
+				projectFilesPanelRowContains(capture, 0, "left-only.txt", "right-only.txt") {
+				t.Fatal("panel row assertion did not require values on the same rendered row")
+			}
+		})
 	}
 }
