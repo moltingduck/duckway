@@ -576,8 +576,16 @@ chmod 0755 /usr/local/bin/ducklion`, sourceA+"/"+cancelFile, sourceA+"/"+failure
 	writePTY(t, terminal, "\r")
 	capture.waitCurrent(t, "Session focus:", 10*time.Second)
 	capture.waitCurrent(t, asyncHistory, 15*time.Second)
-	writePTY(t, terminal, "\x02f")
+	// Re-enter through the Session list so the later close assertion exercises
+	// the same list-origin route. A fresh browser starts with local endpoints
+	// and its left pane active.
+	writePTY(t, terminal, "\x1df")
 	waitProjectFiles()
+	activePane = 0
+	currentEndpoints = [2]string{"LOCAL", "LOCAL"}
+	if !paneContains(0, "LOCAL") || !paneContains(1, "LOCAL") {
+		t.Fatalf("reopened list-origin Project Files did not start with local endpoints: %s", projectFilesOwnershipDiagnostic(capture))
+	}
 
 	// Client B -> client A is a separate direction with different bytes.
 	selectEndpoint(0, clientBEndpoint, sourceB, bFile)
