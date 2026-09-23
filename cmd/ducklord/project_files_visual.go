@@ -29,26 +29,32 @@ type projectFilesPanelGeometry struct {
 
 // projectFilesGeometry is the sole source for entry drawing and mouse regions.
 func projectFilesGeometry(cols, rows, headerLines int) (int, int, [2]projectFilesPanelGeometry) {
-	width := min(110, max(8, cols-2))
+	// A 120-cell modal gives each wide panel enough room for a readable remote
+	// root while still leaving a clear margin on a typical terminal. Panels use
+	// the entire modal interior; the same positions drive mouse hit regions.
+	width := min(120, max(8, cols-2))
 	stacked := width < 58
 	var panels [2]projectFilesPanelGeometry
 	if stacked {
-		cw := max(3, width-6)
+		cw := max(3, width-2)
 		entryStart := headerLines + 4
 		available := max(0, rows-2-entryStart-5)
 		per := available / 2
 		for i := range panels {
-			panels[i] = projectFilesPanelGeometry{start: headerLines + i*(3+per), width: cw, entriesStart: headerLines + i*(3+per) + 3, rows: per, left: 2, right: cw + 1}
+			panels[i] = projectFilesPanelGeometry{start: headerLines + i*(3+per), width: cw, entriesStart: headerLines + i*(3+per) + 3, rows: per, left: 1, right: cw}
 		}
 		return width, max(1, cw), panels
 	}
-	cw := max(3, (width-12)/2)
+	// The modal inner area is width-2. Two panels and their two-cell separator
+	// exactly fill it, avoiding the old unused side gutter and needless path
+	// clipping.
+	cw := max(3, (width-4)/2)
 	entryStart := headerLines + 3
 	available := max(0, rows-2-entryStart-3)
 	for i := range panels {
-		left := 2
+		left := 1
 		if i == 1 {
-			left = cw + 4
+			left = cw + 3
 		}
 		panels[i] = projectFilesPanelGeometry{start: headerLines, width: cw, entriesStart: entryStart, rows: available, left: left, right: left + cw - 1}
 	}

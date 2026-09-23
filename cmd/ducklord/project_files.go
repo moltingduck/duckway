@@ -98,6 +98,20 @@ func sendProjectFilesCompletion(lifecycle context.Context, done chan<- projectFi
 	}
 }
 
+// projectFilesLifecycle is the root for modal work. Tests and callers that do
+// not run through runTUI still get a usable context, while normal TUI workers
+// stop when the application context ends.
+func (s *tuiState) projectFilesLifecycle() context.Context {
+	if s.projectFiles.lifecycle != nil {
+		return s.projectFiles.lifecycle
+	}
+	return context.Background()
+}
+
+func (s *tuiState) projectFilesWorkerContext() (context.Context, context.CancelFunc) {
+	return context.WithCancel(s.projectFilesLifecycle())
+}
+
 type projectFilesEvent struct {
 	generation uint64
 	panegen    uint64
@@ -158,8 +172,8 @@ func (s *tuiState) openProjectFiles() {
 	s.projectFiles.status = "Loading…"
 	s.focused = false
 	s.projectFiles.generation++
-	s.loadProjectFilesPane(context.Background(), 0)
-	s.loadProjectFilesPane(context.Background(), 1)
+	s.loadProjectFilesPane(s.projectFilesLifecycle(), 0)
+	s.loadProjectFilesPane(s.projectFilesLifecycle(), 1)
 }
 
 func (s *tuiState) closeProjectFiles() {
@@ -300,7 +314,7 @@ func (s *tuiState) applyProjectFilesEndpoint(i int) {
 	// Switching endpoint starts a different directory, so do not leave entries
 	// invisibly filtered by the previous one.
 	p.entries, p.query, p.selected, p.marked, p.status, p.loading = nil, "", 0, map[string]bool{}, "Loading…", true
-	s.loadProjectFilesPane(context.Background(), s.projectFiles.active)
+	s.loadProjectFilesPane(s.projectFilesLifecycle(), s.projectFiles.active)
 }
 
 func (s *tuiState) projectFilesLocalPath() string {
@@ -381,9 +395,7 @@ func (s *tuiState) applyProjectFilesEvent(event projectFilesEvent) {
 		for i := range s.projectFiles.items {
 			item := &s.projectFiles.items[i]
 			if item.state == "queued" {
-				if s.projectFiles.copyCancelling {
-					item.state = "cancelled"
-				} else if event.err != nil {
+				if s.projectFiles.copyCancelling || event.err != nil {
 					item.state = "not started"
 				}
 			}
@@ -446,7 +458,7 @@ func (s *tuiState) applyProjectFilesEvent(event projectFilesEvent) {
 		s.projectFiles.step = "browse"
 		// A cancelled copy can have completed work. Always reload the destination
 		// that the request actually used, including a dragged child directory.
-		s.loadProjectFilesPane(context.Background(), s.projectFiles.copyDestination)
+		s.loadProjectFilesPane(s.projectFilesLifecycle(), s.projectFiles.copyDestination)
 		return
 	}
 	if event.side == 0 {
@@ -549,7 +561,7 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 				p.entries, p.query = nil, ""
 				p.selected, p.marked, p.loading, p.status = 0, map[string]bool{}, true, "Loading…"
 				s.projectFiles.step = "browse"
-				s.loadProjectFilesPane(context.Background(), s.projectFiles.active)
+				s.loadProjectFilesPane(s.projectFilesLifecycle(), s.projectFiles.active)
 			}
 			return true
 		}
@@ -682,7 +694,7 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 		parent := filepath.Dir(p.endpoint.Path)
 		if parent != p.endpoint.Path {
 			p.endpoint.Path, p.query, p.selected, p.marked, p.entries, p.loading, p.status = parent, "", 0, map[string]bool{}, nil, true, "Loading…"
-			s.loadProjectFilesPane(context.Background(), s.projectFiles.active)
+			s.loadProjectFilesPane(s.projectFilesLifecycle(), s.projectFiles.active)
 		}
 		return true
 	case "\r", "\n":
@@ -694,7 +706,7 @@ func (s *tuiState) handleProjectFilesInput(b []byte) bool {
 			p.endpoint.Path = filepath.Join(p.endpoint.Path, e.Name)
 			p.query = ""
 			p.selected, p.marked, p.entries, p.loading, p.status = 0, map[string]bool{}, nil, true, "Loading…"
-			s.loadProjectFilesPane(context.Background(), s.projectFiles.active)
+			s.loadProjectFilesPane(s.projectFilesLifecycle(), s.projectFiles.active)
 		}
 		return true
 	}
@@ -787,7 +799,7 @@ func (s *tuiState) startProjectFilesCopy() {
 			s.projectFiles.cancels[i] = nil
 		}
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := s.projectFilesWorkerContext()
 	s.projectFiles.cancel = cancel
 	s.projectFiles.copyCancel = cancel
 	gen := s.projectFiles.generation
@@ -825,7 +837,7 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 		return
 	}
 	s.modalMouseLines = make(map[int]modalMouseAction)
-	width := min(110, max(8, cols-2))
+	width := min(120, max(8, cols-2))
 	if s.projectFiles.step == "preview" {
 		src, dst := s.projectFiles.left, s.projectFiles.right
 		if s.projectFiles.copySource == 1 {
@@ -862,107 +874,94 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 	visibleOffsets := [2]int{}
 	lines := append([]modalRenderLine(nil), baseLines...)
 	entryOffsets := [2]int{}
-	for side := 0; side < 2; side++ {
+	panelSummary := func(side int) (string, string, string) {
 		p := panes[side]
-		visible, marked := len(entries[side]), len(projectFilesMarkedNames(p))
-		filter := ""
-		if p.query != "" {
-			filter = " · Filter: " + p.query
-		}
 		active := ""
 		if s.projectFiles.active == side {
-			active = "  ACTIVE"
+			active = " · ACTIVE"
 		}
-		label := fmt.Sprintf("%s%s%s · %d visible / %d marked%s", []string{"LEFT", "RIGHT"}[side], active, s.projectFilesEndpointDirection(p.endpoint), visible, marked, filter)
-		path := projectClip(projectFilesEndpointDescription(p), cw-2)
-		status := p.status
-		if status == "" {
-			status = s.projectFiles.status
+		top := fmt.Sprintf(" %s%s%s ", []string{"LEFT", "RIGHT"}[side], active, s.projectFilesEndpointDirection(p.endpoint))
+		host := "Host: " + projectFilesEndpointLabel(p)
+		summary := fmt.Sprintf("%d visible · %d marked", len(entries[side]), len(projectFilesMarkedNames(p)))
+		if p.query != "" {
+			summary += " · Filter: " + p.query
 		}
-		if stacked {
+		if p.status != "" {
+			summary += " · " + p.status
+		} else if s.projectFiles.status != "" {
+			summary += " · " + s.projectFiles.status
+		}
+		return top, host, summary
+	}
+	entryText := func(side, idx, panelWidth int) string {
+		if idx < 0 || idx >= len(entries[side]) {
+			return ""
+		}
+		p := panes[side]
+		value := projectFilesEntryText(entries[side][idx], p, idx == p.selected, s.projectFiles.asciiFolders)
+		if mark := s.projectFilesLatestMark(p, entries[side][idx]); mark != "" {
+			return projectClip(value, panelWidth-12) + "  " + mark
+		}
+		return projectClip(value, panelWidth-2)
+	}
+	if stacked {
+		for side := 0; side < 2; side++ {
 			g := geometry[side]
-			visibleOffsets[side] = projectFilesVisibleOffset(p.selected, g.rows)
 			for len(lines) < g.start {
 				lines = append(lines, modalRenderLine{modalMuted, ""})
 			}
-			for _, val := range []string{label, path, status} {
-				lines = append(lines, modalRenderLine{modalMuted, projectFilesPanelText(side, s.projectFiles.active == side, projectClip("┌ "+val, g.width-2), g.width)})
-			}
+			top, host, summary := panelSummary(side)
+			active := s.projectFiles.active == side
+			lines = append(lines,
+				modalRenderLine{modalMuted, projectFilesPanelTop(side, active, top, g.width)},
+				modalRenderLine{modalMuted, projectFilesPanelText(side, active, projectClip(host, g.width-2), g.width)},
+				modalRenderLine{modalMuted, projectFilesPanelText(side, active, projectClip("Path: "+panes[side].endpoint.Path, g.width-2), g.width)},
+				modalRenderLine{modalMuted, projectFilesPanelText(side, active, projectClip(summary, g.width-2), g.width)},
+			)
+			panelRows := max(0, g.rows-2)
+			visibleOffsets[side] = projectFilesVisibleOffset(panes[side].selected, panelRows)
 			entryOffsets[side] = len(lines)
-			for i := 0; i < g.rows; i++ {
-				text := ""
-				idx := i
-				idx += visibleOffsets[side]
-				if idx < len(entries[side]) {
-					text = projectFilesEntryText(entries[side][idx], p, idx == p.selected, s.projectFiles.asciiFolders)
-					if mark := s.projectFilesLatestMark(p, entries[side][idx]); mark != "" {
-						text = projectClip(text, g.width-12) + "  " + mark
-					} else {
-						text = projectClip(text, g.width-2)
-					}
-				}
-				lines = append(lines, modalRenderLine{modalMuted, projectFilesPanelText(side, s.projectFiles.active == side, text, g.width)})
+			for row := 0; row < panelRows; row++ {
+				lines = append(lines, modalRenderLine{modalMuted, projectFilesPanelText(side, active, entryText(side, row+visibleOffsets[side], g.width), g.width)})
 			}
-		} else {
-			_ = label
-			_ = path
-			_ = status
+			lines = append(lines, modalRenderLine{modalMuted, projectFilesPanelBottom(side, active, g.width)})
 		}
-	}
-	if !stacked {
-		lines = baseLines
-		for _, row := range []int{0, 1, 2} {
+	} else {
+		for row := 0; row < 4; row++ {
 			parts := [2]string{}
 			for side := 0; side < 2; side++ {
-				p := panes[side]
-				visible, marked := len(entries[side]), len(projectFilesMarkedNames(p))
-				filter := ""
-				if p.query != "" {
-					filter = " · Filter: " + p.query
+				top, host, summary := panelSummary(side)
+				active := s.projectFiles.active == side
+				switch row {
+				case 0:
+					parts[side] = projectFilesPanelTop(side, active, top, cw)
+				case 1:
+					parts[side] = projectFilesPanelText(side, active, projectClip(host, cw-2), cw)
+				case 2:
+					parts[side] = projectFilesPanelText(side, active, projectClip("Path: "+panes[side].endpoint.Path, cw-2), cw)
+				case 3:
+					parts[side] = projectFilesPanelText(side, active, projectClip(summary, cw-2), cw)
 				}
-				active := ""
-				if s.projectFiles.active == side {
-					active = " · ACTIVE"
-				}
-				value := p.status
-				if row == 0 {
-					value = fmt.Sprintf("┌ %s%s%s · %s · %d visible / %d marked%s", []string{"LEFT", "RIGHT"}[side], active, s.projectFilesEndpointDirection(p.endpoint), p.label, visible, marked, filter)
-				}
-				if row == 1 {
-					value = projectFilesEndpointDescription(p)
-				}
-				if row == 2 && value == "" {
-					value = s.projectFiles.status
-				}
-				parts[side] = projectFilesPanelText(side, s.projectFiles.active == side, value, cw)
 			}
 			lines = append(lines, modalRenderLine{modalMuted, parts[0] + "  " + parts[1]})
+		}
+		panelRows := max(0, geometry[0].rows-2)
+		for side := 0; side < 2; side++ {
+			visibleOffsets[side] = projectFilesVisibleOffset(panes[side].selected, panelRows)
 		}
 		entryOffsets = [2]int{len(lines), len(lines)}
-		maxRows := geometry[0].rows
-		offsets := [2]int{}
-		for side := 0; side < 2; side++ {
-			offsets[side] = projectFilesVisibleOffset(panes[side].selected, maxRows)
-			visibleOffsets[side] = offsets[side]
-		}
-		for row := 0; row < maxRows; row++ {
+		for row := 0; row < panelRows; row++ {
 			parts := [2]string{}
 			for side := 0; side < 2; side++ {
-				idx := row + offsets[side]
-				value := ""
-				if idx < len(entries[side]) {
-					value = projectFilesEntryText(entries[side][idx], panes[side], idx == panes[side].selected, s.projectFiles.asciiFolders)
-					if mark := s.projectFilesLatestMark(panes[side], entries[side][idx]); mark != "" {
-						value = projectClip(value, cw-14) + "  " + mark
-					} else {
-						value = projectClip(value, cw-2)
-					}
-				}
-				parts[side] = projectFilesPanelText(side, s.projectFiles.active == side, value, cw)
+				parts[side] = projectFilesPanelText(side, s.projectFiles.active == side, entryText(side, row+visibleOffsets[side], cw), cw)
 			}
 			lines = append(lines, modalRenderLine{modalMuted, parts[0] + "  " + parts[1]})
 		}
-		entryOffsets = [2]int{len(lines) - maxRows, len(lines) - maxRows}
+		parts := [2]string{}
+		for side := 0; side < 2; side++ {
+			parts[side] = projectFilesPanelBottom(side, s.projectFiles.active == side, cw)
+		}
+		lines = append(lines, modalRenderLine{modalMuted, parts[0] + "  " + parts[1]})
 	}
 	lines = append(lines, modalRenderLine{modalMuted, "h endpoint · g path · / filter · Space select · i folder icons [D] · c copy preview"}, modalRenderLine{modalMuted, "Tab switch column · Enter open · Esc back/close · Ctrl+C cancel · l history"})
 	if s.projectFiles.step == "path" {
@@ -991,7 +990,8 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 	boxLeft := max(1, (cols-width)/2+1)
 	for side := 0; side < 2; side++ {
 		g := geometry[side]
-		for row := 0; row < g.rows; row++ {
+		panelRows := g.rows - 2
+		for row := 0; row < max(0, panelRows); row++ {
 			idx := row + visibleOffsets[side]
 			if idx >= len(entries[side]) {
 				if len(entries[side]) != 0 {
@@ -1045,6 +1045,30 @@ func projectFilesPanelText(side int, active bool, value string, width int) strin
 		return projectFilesPanelColor(side, active) + modalCellPad(value, width) + modalReset
 	}
 	return projectFilesPanelColor(side, active) + "│" + modalCellPad(value, width-2) + "│" + modalReset
+}
+
+func projectFilesPanelTop(side int, active bool, value string, width int) string {
+	if width < 2 {
+		return projectFilesPanelColor(side, active) + modalCellPad(value, width) + modalReset
+	}
+	return projectFilesPanelColor(side, active) + "┌" + modalCellPad(projectClip(value, width-2), width-2) + "┐" + modalReset
+}
+
+func projectFilesPanelBottom(side int, active bool, width int) string {
+	if width < 2 {
+		return projectFilesPanelColor(side, active) + modalReset
+	}
+	return projectFilesPanelColor(side, active) + "└" + strings.Repeat("─", width-2) + "┘" + modalReset
+}
+
+func projectFilesEndpointLabel(p projectFilesPane) string {
+	if p.label != "" {
+		return p.label
+	}
+	if p.endpoint.Client != nil {
+		return p.endpoint.Client.Name
+	}
+	return "LOCAL"
 }
 
 func projectFilesEntryText(e ducklord.FileEntry, p projectFilesPane, selected, ascii bool) string {

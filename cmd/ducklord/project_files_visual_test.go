@@ -85,6 +85,28 @@ func TestProjectFilesPartialFailureAndStaleProgress(t *testing.T) {
 	}
 }
 
+func TestProjectFilesCancellationLeavesQueuedItemsNotStarted(t *testing.T) {
+	s := &tuiState{}
+	s.projectFiles = projectFilesState{
+		open:            true,
+		generation:      6,
+		step:            "busy",
+		copyCancelling:  true,
+		copyDestination: 1,
+		items: []projectFilesItem{
+			{name: "in-flight", state: "copying"},
+			{name: "queued", state: "queued"},
+		},
+	}
+	s.applyProjectFilesEvent(projectFilesEvent{generation: 6, copy: true, err: context.Canceled})
+	if got := s.projectFiles.items[0].state; got != "cancelled" {
+		t.Fatalf("in-flight item state = %q, want cancelled", got)
+	}
+	if got := s.projectFiles.items[1].state; got != "not started" {
+		t.Fatalf("queued item state = %q, want not started", got)
+	}
+}
+
 func TestProjectFilesHistorySelectionScrollsAndRendererScopesANSI(t *testing.T) {
 	s := &tuiState{}
 	items := make([]projectFilesItem, 12)
@@ -150,6 +172,19 @@ func TestProjectFilesCompletionAckStopsWhenAppLifecycleEnds(t *testing.T) {
 	}
 }
 
+func TestProjectFilesCopyWorkerContextStopsWithApplicationLifecycle(t *testing.T) {
+	lifecycle, shutdown := context.WithCancel(context.Background())
+	s := &tuiState{projectFiles: projectFilesState{lifecycle: lifecycle}}
+	ctx, cancel := s.projectFilesWorkerContext()
+	defer cancel()
+	shutdown()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("copy worker context remained live after application shutdown")
+	}
+}
+
 func TestProjectFilesNarrowRenderKeepsSelectedRowsAndPanelColors(t *testing.T) {
 	entries := make([]ducklord.FileEntry, 12)
 	for i := range entries {
@@ -167,6 +202,88 @@ func TestProjectFilesNarrowRenderKeepsSelectedRowsAndPanelColors(t *testing.T) {
 	}
 	if strings.Count(view, "│") < 4 || !strings.Contains(view, projectFilesPanelColor(0, true)) || !strings.Contains(view, projectFilesPanelColor(1, false)) {
 		t.Fatalf("independent panel frames/colors missing: %q", view)
+	}
+}
+
+func TestProjectFilesPanelsUseCompleteBordersAndSeparateIdentityFields(t *testing.T) {
+	entries := []ducklord.FileEntry{{Name: "one.txt"}}
+	for _, cols := range []int{50, 150} {
+		t.Run(fmt.Sprintf("cols-%d", cols), func(t *testing.T) {
+			s := &tuiState{}
+			s.projectFiles.open, s.projectFiles.step = true, "browse"
+			s.projectFiles.left = projectFilesPane{label: "client-a", endpoint: ducklord.FileEndpoint{Path: "/left"}, entries: entries, query: "go", marked: map[string]bool{}}
+			s.projectFiles.right = projectFilesPane{label: "PROJECT SHELF", endpoint: ducklord.FileEndpoint{Path: "/right"}, entries: entries, marked: map[string]bool{}}
+			var out strings.Builder
+			s.renderProjectFilesModal(&out, cols, 32)
+			view := out.String()
+			if strings.Count(view, "┌") != 2 || strings.Count(view, "└") != 2 {
+				t.Fatalf("panels need one complete frame each: %q", view)
+			}
+			for _, want := range []string{"LEFT", "RIGHT", "Host: client-a", "Host: PROJECT SHELF", "Path: /left", "Path: /right", "1 visible · 0 marked", "Filter: go"} {
+				if !strings.Contains(view, want) {
+					t.Fatalf("panel metadata %q missing: %q", want, view)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectFilesPanelIdentitySurvivesTerminalRendering(t *testing.T) {
+	path := "/home/duck/exchange-a-source-" + strings.Repeat("9", 19)
+	for _, cols := range []int{50, 150} {
+		t.Run(fmt.Sprintf("cols-%d", cols), func(t *testing.T) {
+			s := &tuiState{}
+			s.projectFiles.open, s.projectFiles.step = true, "browse"
+			s.projectFiles.left = projectFilesPane{label: "client-a", endpoint: ducklord.FileEndpoint{Path: path}, entries: []ducklord.FileEntry{{Name: "source.txt"}}, marked: map[string]bool{}}
+			s.projectFiles.right = projectFilesPane{label: "client-b", endpoint: ducklord.FileEndpoint{Path: "/home/duck/target"}, entries: []ducklord.FileEntry{{Name: "target.txt"}}, marked: map[string]bool{}}
+			var frame strings.Builder
+			s.renderProjectFilesModal(&frame, cols, 32)
+
+			screen := ducklord.NewTerminal(32, cols, 0)
+			screen.Write([]byte(strings.ReplaceAll(frame.String(), "\n", "\r\n")))
+			view := strings.Join(screen.RenderLines(32, cols), "\n")
+			for _, want := range []string{"LEFT", "RIGHT", "Host: client-a", "Host: client-b", "source.txt", "target.txt"} {
+				if !strings.Contains(view, want) {
+					t.Fatalf("terminal omitted %q: %q", want, view)
+				}
+			}
+
+			_, panelWidth, _ := projectFilesGeometry(cols, 32, 1)
+			wantPath := projectClip("Path: "+path, panelWidth-2)
+			if !strings.Contains(view, wantPath) {
+				t.Fatalf("terminal path clipping differs from panel geometry: want %q in %q", wantPath, view)
+			}
+		})
+	}
+}
+
+func TestProjectFilesLongPanelMetadataDoesNotPushOutRightHeader(t *testing.T) {
+	s := &tuiState{}
+	s.projectFiles.open, s.projectFiles.step = true, "browse"
+	s.projectFiles.left = projectFilesPane{
+		label:    "client-a-" + strings.Repeat("very-long-name-", 12),
+		endpoint: ducklord.FileEndpoint{Path: "/home/duck/source"},
+		entries:  []ducklord.FileEntry{{Name: "source.txt"}},
+		status:   "Loading " + strings.Repeat("slowly ", 20),
+		marked:   map[string]bool{},
+	}
+	s.projectFiles.right = projectFilesPane{
+		label:    "client-b-" + strings.Repeat("very-long-name-", 12),
+		endpoint: ducklord.FileEndpoint{Path: "/home/duck/destination"},
+		entries:  []ducklord.FileEntry{{Name: "destination.txt"}},
+		status:   "Loading " + strings.Repeat("slowly ", 20),
+		marked:   map[string]bool{},
+	}
+	var frame strings.Builder
+	s.renderProjectFilesModal(&frame, 150, 32)
+
+	screen := ducklord.NewTerminal(32, 150, 0)
+	screen.Write([]byte(strings.ReplaceAll(frame.String(), "\n", "\r\n")))
+	view := strings.Join(screen.RenderLines(32, 150), "\n")
+	for _, want := range []string{"LEFT", "RIGHT", "Host: client-a-", "Host: client-b-", "Loading slowly"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("long panel metadata hid %q: %q", want, view)
+		}
 	}
 }
 
