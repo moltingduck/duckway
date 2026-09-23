@@ -144,6 +144,11 @@ func TestDucklordFileExchangeContainerE2E(t *testing.T) {
 			writePTY(t, terminal, "\t")
 			activePane = want
 		}
+		waitE2E(t, 10*time.Second, func() bool {
+			return projectFilesPanelContains(capture, want, "ACTIVE") && !projectFilesPanelContains(capture, 1-want, "ACTIVE")
+		}, func() string {
+			return fmt.Sprintf("Project Files did not acknowledge pane %d activation: %s", want, projectFilesOwnershipDiagnostic(capture))
+		})
 	}
 	paneContains := func(side int, value string) bool {
 		return projectFilesPanelContains(capture, side, value)
