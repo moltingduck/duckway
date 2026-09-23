@@ -478,6 +478,9 @@ func (s *tuiState) applyProjectFilesEvent(event projectFilesEvent) {
 	} else {
 		pane.status = fmt.Sprintf("%d items", len(event.entries))
 	}
+	if !s.projectFiles.left.loading && !s.projectFiles.right.loading && s.projectFiles.status == "Loading…" {
+		s.projectFiles.status = ""
+	}
 	if pane.selected >= len(s.visibleProjectEntries(pane)) {
 		pane.selected = max(0, len(s.visibleProjectEntries(pane))-1)
 	}
@@ -867,6 +870,12 @@ func (s *tuiState) renderProjectFilesModal(out io.Writer, cols, rows int) {
 	}
 	left, right := s.visibleProjectEntries(&s.projectFiles.left), s.visibleProjectEntries(&s.projectFiles.right)
 	baseLines := []modalRenderLine{{modalTitle, "Project file exchange · Tab switch · l history"}}
+	// Pane status reports the current directory listing. Keep the result of the
+	// last transfer separate so a completed, partial, or cancelled copy remains
+	// visible after the destination refresh replaces its pane status with a count.
+	if s.projectFiles.status != "" {
+		baseLines = append(baseLines, modalRenderLine{modalMuted, "Transfer: " + projectClip(s.projectFiles.status, width-2)})
+	}
 	_, cw, geometry := projectFilesGeometry(cols, rows, len(baseLines))
 	stacked := width < 58
 	panes := [2]projectFilesPane{s.projectFiles.left, s.projectFiles.right}

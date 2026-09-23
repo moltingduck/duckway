@@ -287,6 +287,68 @@ func TestProjectFilesLongPanelMetadataDoesNotPushOutRightHeader(t *testing.T) {
 	}
 }
 
+func TestProjectFilesTransferResultSurvivesPaneRefresh(t *testing.T) {
+	results := []string{
+		"Cancelled: copied 1, skipped 0",
+		"Copied 1, skipped 0; partial: disk full",
+	}
+	for _, cols := range []int{50, 150} {
+		for _, result := range results {
+			t.Run(fmt.Sprintf("cols-%d/%s", cols, result), func(t *testing.T) {
+				s := &tuiState{}
+				s.projectFiles.open, s.projectFiles.step = true, "browse"
+				s.projectFiles.status = result
+				s.projectFiles.left = projectFilesPane{
+					label:    "LOCAL",
+					endpoint: ducklord.FileEndpoint{Path: "/source"},
+					entries:  []ducklord.FileEntry{{Name: "source.txt"}},
+					status:   "1 items",
+					marked:   map[string]bool{},
+				}
+				s.projectFiles.right = projectFilesPane{
+					label:    "client-a",
+					endpoint: ducklord.FileEndpoint{Path: "/destination"},
+					entries:  []ducklord.FileEntry{{Name: "destination.txt"}},
+					status:   "1 items",
+					marked:   map[string]bool{},
+				}
+				var frame strings.Builder
+				s.renderProjectFilesModal(&frame, cols, 32)
+
+				screen := ducklord.NewTerminal(32, cols, 0)
+				screen.Write([]byte(strings.ReplaceAll(frame.String(), "\n", "\r\n")))
+				view := strings.Join(screen.RenderLines(32, cols), "\n")
+				width, _, _ := projectFilesGeometry(cols, 32, 2)
+				wantResult := projectClip("Transfer: "+result, width-2)
+				for _, want := range []string{wantResult, "1 items", "LEFT", "RIGHT"} {
+					if !strings.Contains(view, want) {
+						t.Fatalf("terminal omitted %q after pane refresh: %q", want, view)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestProjectFilesListingCompletionClearsInitialGlobalLoadingStatus(t *testing.T) {
+	s := &tuiState{projectFiles: projectFilesState{
+		open:       true,
+		generation: 4,
+		status:     "Loading…",
+		left:       projectFilesPane{loading: true},
+		right:      projectFilesPane{loading: true},
+		panegen:    [2]uint64{2, 3},
+	}}
+	s.applyProjectFilesEvent(projectFilesEvent{generation: 4, panegen: 2, side: 0, entries: []ducklord.FileEntry{{Name: "source.txt"}}})
+	if got := s.projectFiles.status; got != "Loading…" {
+		t.Fatalf("first listing changed initial status = %q", got)
+	}
+	s.applyProjectFilesEvent(projectFilesEvent{generation: 4, panegen: 3, side: 1, entries: []ducklord.FileEntry{{Name: "destination.txt"}}})
+	if got := s.projectFiles.status; got != "" {
+		t.Fatalf("initial loading status remained after both listings = %q", got)
+	}
+}
+
 func TestProjectFilesScrolledMouseRegionsMatchVisibleRowsWideAndStacked(t *testing.T) {
 	for _, cols := range []int{50, 150} {
 		t.Run(fmt.Sprint(cols), func(t *testing.T) {
@@ -296,6 +358,7 @@ func TestProjectFilesScrolledMouseRegionsMatchVisibleRowsWideAndStacked(t *testi
 			}
 			s := &tuiState{}
 			s.projectFiles.open, s.projectFiles.step = true, "browse"
+			s.projectFiles.status = "Cancelled: copied 1, skipped 0"
 			s.projectFiles.left = projectFilesPane{label: "LOCAL", endpoint: ducklord.FileEndpoint{Path: "/src"}, entries: entries, selected: 19, marked: map[string]bool{}}
 			s.projectFiles.right = projectFilesPane{label: "REMOTE", endpoint: ducklord.FileEndpoint{Path: "/dst"}, entries: entries, selected: 17, marked: map[string]bool{}}
 			var out strings.Builder
