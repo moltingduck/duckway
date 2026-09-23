@@ -1,5 +1,99 @@
 # Current handoff
 
+## Completed batch: help-audit-0924
+
+Objective: audit all Ducklord TUI operations against their dispatchers, complete
+searchable `?` Help, and correct misleading operation messages and footers.
+Branch `codex/recover-live-state-20260922`; base `f41677e`; integrated code `ff2cbcd`.
+See [operation inventory](docs/help-operation-audit.md), [user guide](docs/ducklord-user-guide.md),
+[routing contract](docs/pane-routing.md), and [verification](docs/ui-routing-verification.md).
+
+### Outcome and review
+
+Help covers Session/Project navigation, configured shortcuts, quick-shell
+sequences, Notes, file exchange/history, Project transfer, Host Skills/resources,
+terminal search/bookmarks, forms/settings and mouse operations. Child-dialog
+hints now describe their actual handlers; Notes/Skills footers remain visible on
+long lists. Search, context highlighting and supported clickable actions have
+regression coverage, including actual 80x24 terminal cells.
+
+Five independent integration review roles completed; security/race found no
+concrete defects. Quality, frontend and API findings were repaired and affected
+reviews report no findings. Implementation used lower-tier agents in isolated
+worktrees; main integrated and executed actual runtime gates.
+
+Actual E2E exposed Help mouse ownership and hitbox lifetime defects. The final
+repair returns from the inactive Project files renderer before clearing shared
+modal hitboxes. The full workspace-render regression proves Help targets survive;
+active Project files still owns its own targets. The real PTY test requires Help
+absent from current terminal cells and a sentinel executed in the exact original
+shell; a focus footer under an open overlay cannot satisfy it.
+
+### Validation
+
+- Full `GOFLAGS=-buildvcs=false go test ./...`: PASS at c14798b, exec 98537.
+- Full `CGO_ENABLED=1 GOFLAGS=-buildvcs=false go test -race ./...`: PASS at
+  c14798b, exec 45885.
+- `scripts/check-coverage.sh`: PASS at 42b3f43, all packages; 57.1% >= 37.5%.
+- Affected cmd/ducklord race: PASS at 42b3f43, exec 68499; subsequent focused
+  Help/mouse/Project-files normal and race regressions passed at ff2cbcd.
+- Final affected package `go test ./cmd/ducklord -count=1` and
+  `CGO_ENABLED=1 go test -race ./cmd/ducklord -count=1`: PASS at ff2cbcd,
+  exec 34362 (GOFLAGS=-buildvcs=false).
+- Fresh-cache lint exec 81974: 13 unchanged baseline findings; NOT lint clean.
+  Baseline: command_palette unreachable/SA6003; host_skills_modal QF1003 and
+  unused helpers; pane_prefix QF1001; skill_https SA1019; unused main helpers,
+  Notes E2E shellQuote and skill-test makeSkill. No new finding or stale-cache warning.
+- Routing manifest: PASS, 21 routes. Container-runtime, demo-common and
+  pre-commit environment checks: PASS, exec 48102. Diff/local document links pass.
+- Actual focused PrefixNavigation E2E: PASS at ff2cbcd, exec 87380, 16.50s.
+- Full default `scripts/ducklord-tui-e2e.sh`: PASS at ff2cbcd, exec 53657,
+  268.387s, 31 top-level passes and one intentional legacy wizard skip.
+  No pattern override; PATH=/usr/local/go/bin:$PATH, CONTAINER_RUNTIME=podman,
+  GOFLAGS=-buildvcs=false, DUCKLORD_TUI_E2E_NAME_PREFIX=help-audit-0924-e2e.
+  Script exit 0 includes fixture teardown. Earlier failed iterations were repaired
+  before this acceptance run; no timeout relaxation was used to obtain the pass.
+
+### Demo and artifact identity
+
+Full E2E fixture SHA-256:
+- ducklord `f2298484bf0cd3d579269275bb7ad932968642937d4b0d4b1bb7e63babf30c63`
+- ducklion `e547089b8b738315907eedf0524417b22b1c6142c15f8135e6336f2b8133e553`
+
+Demo rebuild `scripts/ducklord-podman-demo.sh`: PASS, exec 53616, exit 0.
+Environment: PATH=/usr/local/go/bin:$PATH, GOFLAGS=-buildvcs=false,
+CONTAINER_RUNTIME=podman, DUCKLORD_DEMO_NAME_PREFIX=ducklord-verified,
+DUCKLORD_DEMO_OWNER_TOKEN=ducklord-verified-20260917; WORK inside owned task root.
+All five retained demo containers are running; clients a/b/c probe available;
+client-d is intentionally SSH-only. Script verified native PTY input/read,
+daemon recovery, shell lifecycle and retained output permissions. Deployed
+binary hashes exactly match both E2E hashes above.
+Retained demo: ducklord-verified, owner ducklord-verified-20260917.
+Launch: `podman exec -it ducklord-verified-ducklord-dev ducklord tui --config /root/.ducklord/config.yaml`.
+
+### Resource ledger / usage
+
+Owner help-audit-0924. UI, hints and focus sibling worktrees were inspected clean,
+reviewed and patch-equivalent in main, removed, their integrated branches deleted,
+and registry pruned. E2E containers/network/setup log and wrapper output root
+were removed by script EXIT traps. Exec 34362 completed and its check log/root was trap-removed. Demo exec 53616
+completed and removed its build/work/log root. Final scan: no owned processes,
+containers, networks, sibling directories/branches/worktrees, /tmp entries,
+ignored artifacts or tmp/help-audit-0924 root remain. Resource-free source/docs
+and the named persistent demo are retained.
+Preserve baseline: five .claude/worktrees/agent-*; three dw-*-1788855706-1278453
+containers; existing demo, seven older E2E networks and 25 older setup logs.
+Calls/input/cached/output tokens and exact subagent count: unmeasured; no batch
+usage record available. Repeated checks were required by actual failures or repairs.
+
+### Delivery
+
+Commit/push the integrated code and this documentation checkpoint on the named
+branch; compare origin HEAD with local HEAD before the completion report. Manual
+hook bypass is limited to the documented 13 unchanged lint findings; required
+normal/race/coverage, actual default E2E and readiness gates passed independently.
+No remaining implementation work or owned transient runtime.
+
 ## Latest checkpoint: exchange-visual-0923
 
 2026-09-23: implementation and runtime verification complete at `0036366`.

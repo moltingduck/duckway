@@ -105,6 +105,12 @@ default-container E2E is required completion evidence. Help opens and closes
 only with `?`; Esc and Ctrl-C leave the overlay pinned while preserving its
 ownership.
 
+Help also exposes searchable guidance for child dialogs and multi-step actions.
+`/` gives its search field input ownership; Enter pins results and Esc/Ctrl-C
+clears the active search without closing Help. Only supported actionable rows
+may dispatch input. The [Help coverage checklist](help-operation-audit.md)
+tracks the handler, context and hint review required when operations change.
+
 ## Developer requirement
 
 Every new UI/UX route must add a stable `route.*` entry to this matrix, a
@@ -183,8 +189,8 @@ workspace or focused terminal -- P Space --> Command palette
                                            | Session result: select Session preview in navigation
                                            ` Esc / Ctrl-C: exact captured origin
 
-focused terminal -- P / --> Output search modal -- Enter --> next retained-screen match
-                                                   ` Esc / Ctrl-C: exact terminal control
+focused terminal -- P / --> Output search modal -- Up/Down --> select retained-screen match
+                                                   ` Enter / Esc / Ctrl-C: exact terminal control
 focused terminal -- P m --> Bookmark label form --> saved bookmark (session identity + line metadata)
 focused terminal -- P M --> Bookmark picker ----- > selected retained-screen match / unavailable message
 

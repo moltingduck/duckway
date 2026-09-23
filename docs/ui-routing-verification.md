@@ -11,6 +11,11 @@ row, alongside its state-router contract and
 `TestWorkspaceHelpInterceptionAvailability` coverage. Help opens and closes
 only with `?`; Esc and Ctrl-C leave it pinned.
 
+The Help scenario also searches for a previously omitted operation, pins the
+results and clears the search before closing. Catalog and hint regression tests
+complement this PTY proof; use the [operation audit](help-operation-audit.md)
+to keep child dialogs and configured shortcuts covered.
+
 A targeted `DUCKLORD_TUI_E2E_PATTERN` is useful while developing one test, but
 is not acceptance evidence for the complete route manifest. The default command
 below is the required gate. A current-screen text match alone is never enough:

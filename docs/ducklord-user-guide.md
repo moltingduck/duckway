@@ -10,9 +10,20 @@ Start the TUI with `ducklord tui`. The normal workspace has three regions:
 - **Terminal area**: the selected Project's tabs and split Session panes. A
   Session pane is a view of one Ducklion Session, not another agent process.
 
-The highlighted border shows where keyboard input goes. Press `?` for a pinned,
-searchable shortcut guide; press `?` again to close it. Shortcuts can be changed
-with `s`; Ducklord asks whether to restart to load the new bindings.
+The highlighted border shows where keyboard input goes. In navigation, press
+`?` for the shortcut guide; from a focused terminal, use the pane prefix then
+`?` (by default `Ctrl+B`, `?`). Press `?` again to close Help and return to its
+origin. Shortcuts can be changed with `s`; Ducklord asks whether to restart to
+load the new bindings.
+
+In Help, press `/` and type a feature or operation, such as `notes`, `skills`,
+or `bookmark`. Up/Down browses while searching; Enter pins the filtered results.
+Press `/` then Esc to clear the filter. Esc and Ctrl+C keep Help open. Highlighted
+entries indicate operations available from the originating pane. Click a
+supported prefix shortcut to activate it; multi-key quick-create sequences
+remain keyboard-only. The guide includes child
+forms and multi-step operations; those instructions describe where to use a key.
+See the [Help coverage checklist](help-operation-audit.md) for developer checks.
 
 ## Search terminal output and save output bookmarks
 
@@ -42,7 +53,9 @@ Enter the absolute path to the exported file, inspect **Project Import Preview**
 then press Enter on **Import and persist**. The preview reports Sessions that do
 not exist locally and a Project-name collision. Missing Sessions are not created
 or connected; a colliding Project receives a deterministic suffix after your
-confirmation. Press Esc at any step to cancel or go back.
+confirmation. Session notebooks with colliding identities are replaced when you
+confirm the import; inspect these warnings in the preview. Press Esc at any step
+to cancel or go back.
 
 When Ducklord runs in the demo container, its path is a container path. Transfer
 a file with `podman cp`, for example:
