@@ -54,14 +54,32 @@ const (
 )
 
 type WorkspaceRenderOptions struct {
-	Offsets    WorkspaceColumnOffsets
-	Focus      WorkspaceFocus
-	Theme      WorkspaceTheme
-	Notes      []NoteEntry
-	NoteIndex  int
-	NoteOffset int
-	NoteScope  NotesScope
-	NoteQuery  string
+	Offsets      WorkspaceColumnOffsets
+	Focus        WorkspaceFocus
+	Theme        WorkspaceTheme
+	Notes        []NoteEntry
+	NoteIndex    int
+	NoteOffset   int
+	NoteScope    NotesScope
+	NoteQuery    string
+	ProjectTotal int
+	SessionTotal int
+}
+
+// WorkspaceScrollbar describes the proportional thumb inside a list's row area.
+// TrackX is the final pane column and TrackY starts below the title row.
+type WorkspaceScrollbar struct{ TrackX, TrackY, TrackHeight, ThumbY, ThumbHeight int }
+
+func CalculateWorkspaceScrollbar(rect WorkspaceRect, total, offset int) (WorkspaceScrollbar, bool) {
+	visible := rect.Height - 1
+	if rect.Width < 2 || visible < 1 || total <= visible {
+		return WorkspaceScrollbar{}, false
+	}
+	maxOffset := total - visible
+	offset = min(max(0, offset), maxOffset)
+	thumb := max(1, visible*visible/total)
+	start := (visible - thumb) * offset / maxOffset
+	return WorkspaceScrollbar{TrackX: rect.X + rect.Width - 1, TrackY: rect.Y + 1, TrackHeight: visible, ThumbY: rect.Y + 1 + start, ThumbHeight: thumb}, true
 }
 
 // WorkspaceListOffset keeps the selected row visible while preserving the
@@ -116,6 +134,18 @@ func CalculateWorkspaceGeometry(width, height, top int) WorkspaceGeometry {
 	return geometry
 }
 
+// WorkspaceScrollbarOffset maps a pointer row to the offset represented by the thumb.
+func WorkspaceScrollbarOffset(bar WorkspaceScrollbar, total, y int) int {
+	visible := bar.TrackHeight
+	maxOffset := max(0, total-visible)
+	travel := max(0, visible-bar.ThumbHeight)
+	if maxOffset == 0 || travel == 0 {
+		return 0
+	}
+	start := min(max(0, y-bar.TrackY-bar.ThumbHeight/2), travel)
+	return start * maxOffset / travel
+}
+
 // RenderWorkspaceBody renders the Project pane, quick Session list pane, and
 // one Project's tab/split tree. It is presentation-only: no PTY input, resize,
 // unread mutation, or yield can occur here.
@@ -162,8 +192,12 @@ func RenderWorkspaceBodyWithOptions(out io.Writer, geometry WorkspaceGeometry, l
 			if project.ID == nav.NotificationFocusProjectID() {
 				suffix += " ◎"
 			}
-			return workspaceMarkedRow(prefix, project.Name, suffix, geometry.Projects.Width)
-		})
+			rowWidth := geometry.Projects.Width
+			if _, overflow := CalculateWorkspaceScrollbar(geometry.Projects, options.ProjectTotal, offsets.Projects); overflow {
+				rowWidth--
+			}
+			return workspaceMarkedRow(prefix, project.Name, suffix, rowWidth)
+		}, offsets.Projects, options.ProjectTotal)
 	}
 	if geometry.Quick.Width > 0 {
 		renderWorkspaceColumn(out, geometry.Quick, " SESSIONS ", options.Theme, options.Focus == WorkspaceFocusSessions, func(index int) string {
@@ -179,8 +213,12 @@ func RenderWorkspaceBodyWithOptions(out io.Writer, geometry WorkspaceGeometry, l
 			if item.Unread {
 				suffix = " •"
 			}
-			return workspaceMarkedRow(prefix, item.Name+" @"+item.Host, suffix, geometry.Quick.Width)
-		})
+			rowWidth := geometry.Quick.Width
+			if _, overflow := CalculateWorkspaceScrollbar(geometry.Quick, options.SessionTotal, offsets.Quick); overflow {
+				rowWidth--
+			}
+			return workspaceMarkedRow(prefix, item.Name+" @"+item.Host, suffix, rowWidth)
+		}, offsets.Quick, options.SessionTotal)
 	}
 	terminal := geometry.Terminal
 	if terminal.Width <= 0 || terminal.Height <= 0 {
@@ -425,7 +463,7 @@ func workspaceVisibleLeaves(node *SessionPane, rect WorkspaceRect) ([]SessionIde
 	return append(first, second...), firstHidden + secondHidden
 }
 
-func renderWorkspaceColumn(out io.Writer, rect WorkspaceRect, title string, theme WorkspaceTheme, focused bool, row func(int) string) {
+func renderWorkspaceColumn(out io.Writer, rect WorkspaceRect, title string, theme WorkspaceTheme, focused bool, row func(int) string, offset, total int) {
 	if rect.Height <= 0 {
 		return
 	}
@@ -437,6 +475,15 @@ func renderWorkspaceColumn(out io.Writer, rect WorkspaceRect, title string, them
 			color = "\x1b[1m" + theme.style(focused)
 		}
 		workspaceWrite(out, rect.X, rect.Y+1+i, rect.Width, line, color)
+	}
+	if bar, ok := CalculateWorkspaceScrollbar(rect, total, offset); ok {
+		for i := 0; i < bar.TrackHeight; i++ {
+			glyph, style := "│", "\x1b[38;5;240m"
+			if i >= bar.ThumbY-bar.TrackY && i < bar.ThumbY-bar.TrackY+bar.ThumbHeight {
+				glyph, style = "█", "\x1b[38;5;81m"
+			}
+			workspaceWrite(out, bar.TrackX, bar.TrackY+i, 1, glyph, style)
+		}
 	}
 }
 

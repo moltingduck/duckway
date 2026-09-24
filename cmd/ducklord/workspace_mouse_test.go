@@ -287,3 +287,78 @@ func TestWorkspaceQuickMousePressUsesScrolledRow(t *testing.T) {
 		t.Fatalf("scrolled first row selected %q, want %q", state.workspaceDragSession.SessionID, expected.SessionID)
 	}
 }
+
+func TestWorkspaceScrollbarTrackPagesThumbDragAndRelease(t *testing.T) {
+	state, firstID, _, _ := workspacePaneTestState(t)
+	state.workspacePreview = true
+	state.focused = false
+	for i := 0; i < 100; i++ {
+		if _, err := state.activity().ProjectLayout.AddProject(fmt.Sprintf("Scroll %03d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(firstID); err != nil {
+		t.Fatal(err)
+	}
+	width, height := terminalSize()
+	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	bar, ok := ducklord.CalculateWorkspaceScrollbar(geometry.Projects, len(state.activity().ProjectLayout.Projects), 0)
+	if !ok {
+		t.Skip("terminal is too short to show workspace list overflow")
+	}
+	// A track click below the thumb pages by the visible row count.
+	handled, changed := state.handleWorkspaceMouse(workspaceMouse(0, bar.TrackX, bar.TrackY+bar.TrackHeight-1, false))
+	if !handled || !changed || nav.CurrentProjectID() == firstID {
+		t.Fatalf("track click failed to page: handled=%v changed=%v project=%q", handled, changed, nav.CurrentProjectID())
+	}
+	// Thumb press captures without moving, then movement preserves the grab offset.
+	offsets := state.workspaceColumnOffsets(geometry, nav, state.workspaceQuickSessions())
+	bar, _ = ducklord.CalculateWorkspaceScrollbar(geometry.Projects, len(state.activity().ProjectLayout.Projects), offsets.Projects)
+	before := nav.CurrentProjectID()
+	handled, changed = state.handleWorkspaceMouse(workspaceMouse(0, bar.TrackX, bar.ThumbY, false))
+	if !handled || changed || nav.CurrentProjectID() != before || state.workspaceScrollbarDrag != "projects" {
+		t.Fatalf("thumb press jumped or failed capture: handled=%v changed=%v", handled, changed)
+	}
+	state.handleWorkspaceMouse(workspaceMouse(32, bar.TrackX, bar.TrackY+bar.TrackHeight-1, false))
+	if nav.CurrentProjectID() == before {
+		t.Fatal("thumb drag did not update project selection")
+	}
+	offsets = state.workspaceColumnOffsets(geometry, nav, state.workspaceQuickSessions())
+	bar, _ = ducklord.CalculateWorkspaceScrollbar(geometry.Projects, len(state.activity().ProjectLayout.Projects), offsets.Projects)
+	if bar.ThumbY+bar.ThumbHeight != bar.TrackY+bar.TrackHeight {
+		t.Fatalf("dragging to track bottom left thumb at %d, want bottom %d", bar.ThumbY+bar.ThumbHeight, bar.TrackY+bar.TrackHeight)
+	}
+	handled, _ = state.handleWorkspaceMouse(workspaceMouse(0, 1, 1, true))
+	if !handled || state.workspaceScrollbarDrag != "" {
+		t.Fatal("release outside scrollbar did not clear capture")
+	}
+}
+
+func TestWorkspaceSessionPageDownUsesVisibleQuickRows(t *testing.T) {
+	state, _, _, base := workspacePaneTestState(t)
+	state.workspacePreview = true
+	state.workspaceProjectFocus = false
+	state.sessions = []ducklord.RemoteSession{state.sessions[0]}
+	for i := 1; i < 80; i++ {
+		session := base
+		session.SessionID = fmt.Sprintf("PAGE%03d", i)
+		session.Name = fmt.Sprintf("Page %03d", i)
+		state.sessions = append(state.sessions, session)
+	}
+	state.selected = 0
+	_, height := terminalSize()
+	page := max(1, ducklord.CalculateWorkspaceGeometry(100, height, 4).Quick.Height-1)
+	if len(state.sessions) <= page {
+		t.Fatalf("fixture has %d sessions, needs more than page size %d", len(state.sessions), page)
+	}
+	if got := state.handleInput([]byte("\x1b[6~")); got != "select" {
+		t.Fatalf("PageDown action = %q, want select", got)
+	}
+	if state.selected != page {
+		t.Fatalf("PageDown selected row %d, want visible-page step %d", state.selected, page)
+	}
+}

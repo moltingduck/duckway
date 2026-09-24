@@ -90,6 +90,55 @@ func (s *tuiState) handleHelpMouseReport(button, x, y int, press bool) ([]byte, 
 	if !s.helpMode || s.blockingModalOpen() {
 		return nil, false
 	}
+	_, rows := terminalSize()
+	visible := max(1, rows-5)
+	boxTop := max(1, (rows-min(visible+3, rows-2)-2)/2+1)
+	trackY, trackHeight := boxTop+3, visible
+	thumbHeight := max(1, visible*visible/max(1, s.helpResultTotal))
+	maxOffset := max(0, s.helpResultTotal-visible)
+	thumbY := 0
+	if maxOffset > 0 {
+		thumbY = (visible - thumbHeight) * min(maxOffset, max(0, s.helpOffset)) / maxOffset
+	}
+	if s.helpScrollbarDrag {
+		if !press {
+			s.helpScrollbarDrag = false
+			s.helpScrollbarDragGrab = 0
+			return nil, true
+		}
+		if button == 32 {
+			start := min(visible-thumbHeight, max(0, y-trackY-s.helpScrollbarDragGrab))
+			s.helpOffset = start * maxOffset / max(1, visible-thumbHeight)
+			return nil, true
+		}
+		return nil, true
+	}
+	if button == 64 || button == 65 {
+		step := -3
+		if button == 65 {
+			step = 3
+		}
+		s.helpOffset = min(maxOffset, max(0, s.helpOffset+step))
+		return nil, true
+	}
+	width, _ := terminalSize()
+	boxWidth := min(72, max(8, width-2))
+	left := max(1, (width-boxWidth)/2+1)
+	trackX := left + boxWidth - 2
+	if button == 0 && press && x == trackX && y >= trackY && y < trackY+trackHeight && maxOffset > 0 {
+		thumbY += trackY
+		if y >= thumbY && y < thumbY+thumbHeight {
+			s.helpScrollbarDrag = true
+			s.helpScrollbarDragGrab = y - thumbY
+		} else {
+			page := visible
+			if y < thumbY {
+				page = -page
+			}
+			s.helpOffset = min(maxOffset, max(0, s.helpOffset+page))
+		}
+		return nil, true
+	}
 	if button != 0 || !press || !s.modalMouseHit(x, y) {
 		return nil, true
 	}

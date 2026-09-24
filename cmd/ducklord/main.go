@@ -1639,6 +1639,11 @@ type tuiState struct {
 	workspaceDragY                     int
 	workspaceProjectOffset             int
 	workspaceQuickOffset               int
+	workspaceScrollbarDrag             string
+	workspaceScrollbarDragGrab         int
+	helpScrollbarDrag                  bool
+	helpScrollbarDragGrab              int
+	helpResultTotal                    int
 	workspacePaneChanged               bool
 	workspacePlacementFocusPending     bool
 	workspacePlacementInputPending     bool
@@ -3422,7 +3427,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						if !state.helpMode {
 							restorePendingHelpFocusWithAttach(state, workspaceOutput, true, control, attach)
 						}
-					} else {
+					} else if !state.scrollHelpInput(b) {
 						state.handleHelpSearchInput(b)
 					}
 				} else if state.shortcut("help", string(b)) {
@@ -3432,6 +3437,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					}
 				} else if string(b) == "/" {
 					state.helpSearchActive = true
+				} else if state.scrollHelpInput(b) {
+					// Help owns scrolling keys even while the original terminal is focused.
 				}
 				state.render(os.Stdout)
 				continue
@@ -3528,7 +3535,7 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 			mouseReport := strings.HasPrefix(string(b), "\x1b[<")
 			var helpMouseKey []byte
 			if button, x, y, ok := parseSGRMouse(string(b)); ok {
-				if key, owned := state.handleHelpMouseReport(button, x, y, button == 0 && strings.HasSuffix(string(b), "M")); owned {
+				if key, owned := state.handleHelpMouseReport(button, x, y, strings.HasSuffix(string(b), "M")); owned {
 					if len(key) == 0 {
 						state.render(os.Stdout)
 						continue
@@ -7442,6 +7449,7 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		searchHint = "  Filter: " + s.helpSearchQuery + "  (/ edit · search then Esc clears)"
 	}
 	maxVisible := max(1, rows-5)
+	s.helpResultTotal = len(results)
 	s.helpOffset = min(max(s.helpOffset, 0), max(0, len(results)-maxVisible))
 	lines := []modalRenderLine{{modalTitle, "  Keyboard shortcuts and feature guide"}, {modalInput, searchHint}}
 	lines = append(lines, results[s.helpOffset:min(len(results), s.helpOffset+maxVisible)]...)
@@ -7462,6 +7470,22 @@ func (s *tuiState) renderHelpModal(out io.Writer, cols, rows int) {
 		s.modalChoice(1, nil, 0, "/")
 	}
 	s.renderModalBox(out, cols, rows, lines)
+	if len(results) > maxVisible && cols >= 8 && rows >= 8 {
+		boxWidth := min(72, max(8, cols-2))
+		left := max(1, (cols-boxWidth)/2+1)
+		top := max(1, (rows-min(len(lines), rows-2)-2)/2+1)
+		trackX, trackY := left+boxWidth-2, top+3
+		thumbHeight := max(1, maxVisible*maxVisible/len(results))
+		maxOffset := len(results) - maxVisible
+		thumbTop := trackY + (maxVisible-thumbHeight)*s.helpOffset/maxOffset
+		for row := 0; row < maxVisible; row++ {
+			glyph, color := "│", "2;90"
+			if row >= thumbTop-trackY && row < thumbTop-trackY+thumbHeight {
+				glyph, color = "█", "1;97"
+			}
+			fmt.Fprintf(out, "\x1b[%d;%dH\x1b[%sm%s\x1b[0m", trackY+row, trackX, color, glyph)
+		}
+	}
 	if cols >= 8 && rows >= 3 && len(lines) <= rows-2 {
 		width := min(72, max(8, cols-2))
 		left := max(1, (cols-width)/2+1) + 1
@@ -7510,6 +7534,29 @@ func helpWrappedLines(text string, width int, continuationIndent string) []modal
 		line += " " + word
 	}
 	return append(lines, modalRenderLine{modalMuted, line})
+}
+
+func (s *tuiState) scrollHelpInput(input []byte) bool {
+	step := 0
+	page := false
+	switch string(input) {
+	case "\x1b[A":
+		step = -1
+	case "\x1b[B":
+		step = 1
+	case "\x1b[5~":
+		step, page = -1, true
+	case "\x1b[6~":
+		step, page = 1, true
+	default:
+		return false
+	}
+	if page {
+		_, rows := terminalSize()
+		step *= max(1, rows-5)
+	}
+	s.helpOffset = max(0, s.helpOffset+step)
+	return true
 }
 
 func (s *tuiState) handleHelpSearchInput(input []byte) {
@@ -9410,6 +9457,26 @@ func (s *tuiState) handleInput(b []byte) string {
 			return "group-toggle"
 		}
 		return "attach"
+	case s.workspacePreview && (text == "\x1b[5~" || text == "\x1b[6~"):
+		width, height := terminalSize()
+		page := max(1, ducklord.CalculateWorkspaceGeometry(width, height, 4).Quick.Height-1)
+		direction := 1
+		if text == "\x1b[5~" {
+			direction = -1
+		}
+		changed := false
+		for range page {
+			if !s.moveListSelection(direction) {
+				break
+			}
+			changed = true
+		}
+		if changed {
+			if s.selectedGroupID != "" {
+				return "group-select"
+			}
+			return "select"
+		}
 	case text == "j" || text == "\x1b[B":
 		if s.moveListSelection(1) {
 			if s.selectedGroupID != "" {

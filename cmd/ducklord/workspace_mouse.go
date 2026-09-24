@@ -10,6 +10,113 @@ import (
 // handleWorkspaceMouse keeps drag-and-drop local to Ducklord. It never writes
 // mouse escape sequences to a PTY or changes Ducklion writer ownership.
 func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
+	// List wheel reports are always local. In terminal focus they are consumed
+	// without changing selection, preserving the exact attached Session.
+	if s.workspacePreview && !s.hostScoped && !s.workspacePaneMode && !s.centralModalOpen() {
+		if button, x, y, ok := parseSGRMouse(string(input)); ok && (button == 64 || button == 65) {
+			width, height := terminalSize()
+			geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+			if insideWorkspaceRect(geometry.Projects, x, y) || insideWorkspaceRect(geometry.Quick, x, y) {
+				if s.focused {
+					return true, false
+				}
+				nav, err := s.workspaceNavigation()
+				if err != nil {
+					return true, false
+				}
+				// Detail mode has its own session list and viewport geometry.
+				// Leave its mouse behavior to the established detail handler.
+				if nav.InDetailMode() {
+					return true, false
+				}
+				delta := -3
+				if button == 65 {
+					delta = -delta
+				}
+				if insideWorkspaceRect(geometry.Projects, x, y) {
+					projects := s.activity().ProjectLayout.Projects
+					selected := 0
+					for i := range projects {
+						if projects[i].ID == nav.CurrentProjectID() {
+							selected = i
+							break
+						}
+					}
+					selected = min(max(0, selected+delta), len(projects)-1)
+					if len(projects) > 0 {
+						s.workspaceProjectFocus = true
+						s.workspaceConfigFocus = "project-pane"
+						return true, nav.SelectProject(projects[selected].ID) == nil
+					}
+					return true, false
+				}
+				quick := s.workspaceQuickSessions()
+				if len(quick) == 0 {
+					return true, false
+				}
+				selected := 0
+				current := sessionKey(s.currentSession())
+				for i := range quick {
+					if sessionKey(quick[i]) == current {
+						selected = i
+						break
+					}
+				}
+				selected = min(max(0, selected+delta), len(quick)-1)
+				s.workspaceProjectFocus = false
+				s.workspaceConfigFocus = "session-list"
+				if s.selectSessionKey(sessionKey(quick[selected])) {
+					return true, s.workspaceFollowQuickSelection()
+				}
+				return true, false
+			}
+		}
+	}
+	if s.workspacePreview && !s.focused && !s.hostScoped && !s.workspacePaneMode && !s.centralModalOpen() {
+		if button, x, y, ok := parseSGRMouse(string(input)); ok {
+			width, height := terminalSize()
+			geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+			nav, navErr := s.workspaceNavigation()
+			if s.workspaceScrollbarDrag != "" {
+				if strings.HasSuffix(string(input), "m") {
+					s.workspaceScrollbarDrag = ""
+					s.workspaceScrollbarDragGrab = 0
+					return true, false
+				}
+				if navErr == nil && button == 32 && strings.HasSuffix(string(input), "M") {
+					return true, s.workspaceScrollTo(geometry, nav, s.workspaceScrollbarDrag, y-s.workspaceScrollbarDragGrab)
+				}
+			}
+			if button == 0 && strings.HasSuffix(string(input), "M") && navErr == nil {
+				quick := s.workspaceQuickSessions()
+				offsets := s.workspaceColumnOffsets(geometry, nav, quick)
+				if bar, yes := ducklord.CalculateWorkspaceScrollbar(geometry.Projects, len(s.activity().ProjectLayout.Projects), offsets.Projects); yes && x == bar.TrackX && y >= bar.TrackY && y < bar.TrackY+bar.TrackHeight {
+					if y >= bar.ThumbY && y < bar.ThumbY+bar.ThumbHeight {
+						s.workspaceScrollbarDrag = "projects"
+						s.workspaceScrollbarDragGrab = y - bar.ThumbY
+						return true, false
+					}
+					page := max(1, geometry.Projects.Height-1)
+					if y < bar.ThumbY {
+						page = -page
+					}
+					return true, s.workspaceScrollPage(geometry, nav, "projects", page)
+				}
+				if bar, yes := ducklord.CalculateWorkspaceScrollbar(geometry.Quick, len(quick), offsets.Quick); yes && x == bar.TrackX && y >= bar.TrackY && y < bar.TrackY+bar.TrackHeight {
+					if y >= bar.ThumbY && y < bar.ThumbY+bar.ThumbHeight {
+						s.workspaceScrollbarDrag = "sessions"
+						s.workspaceScrollbarDragGrab = y - bar.ThumbY
+						return true, false
+					}
+					page := max(1, geometry.Quick.Height-1)
+					if y < bar.ThumbY {
+						page = -page
+					}
+					return true, s.workspaceScrollPage(geometry, nav, "sessions", page)
+				}
+			}
+		}
+	}
 	if !s.workspacePreview || s.focused || s.hostScoped || s.workspacePaneMode || s.centralModalOpen() {
 		s.workspaceDragSession = ducklord.RemoteSession{}
 		s.workspaceDragKind, s.workspaceDragProjectID, s.workspaceDragTabID = "", "", ""
@@ -262,6 +369,74 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 		s.beginWorkspaceDrop(source, identity, nav.CurrentProjectID(), "")
 	}
 	return true, false
+}
+
+func (s *tuiState) workspaceScrollPage(g ducklord.WorkspaceGeometry, nav *ducklord.WorkspaceState, kind string, delta int) bool {
+	quick := s.workspaceQuickSessions()
+	if kind == "projects" {
+		projects := s.activity().ProjectLayout.Projects
+		index := 0
+		for i := range projects {
+			if projects[i].ID == nav.CurrentProjectID() {
+				index = i
+				break
+			}
+		}
+		index = min(len(projects)-1, max(0, index+delta))
+		if len(projects) == 0 {
+			return false
+		}
+		return nav.SelectProject(projects[index].ID) == nil
+	}
+	index := 0
+	current := sessionKey(s.currentSession())
+	for i := range quick {
+		if sessionKey(quick[i]) == current {
+			index = i
+			break
+		}
+	}
+	index = min(len(quick)-1, max(0, index+delta))
+	if len(quick) == 0 {
+		return false
+	}
+	if s.selectSessionKey(sessionKey(quick[index])) {
+		return s.workspaceFollowQuickSelection()
+	}
+	return false
+}
+
+func (s *tuiState) workspaceScrollTo(g ducklord.WorkspaceGeometry, nav *ducklord.WorkspaceState, kind string, y int) bool {
+	quick := s.workspaceQuickSessions()
+	offsets := s.workspaceColumnOffsets(g, nav, quick)
+	if kind == "projects" {
+		projects := s.activity().ProjectLayout.Projects
+		bar, ok := ducklord.CalculateWorkspaceScrollbar(g.Projects, len(projects), offsets.Projects)
+		if !ok || len(projects) == 0 {
+			return false
+		}
+		thumbTop := min(bar.TrackY+bar.TrackHeight-bar.ThumbHeight, max(bar.TrackY, y))
+		offset := ducklord.WorkspaceScrollbarOffset(bar, len(projects), thumbTop)
+		index := min(len(projects)-1, offset)
+		s.workspaceProjectOffset = offset
+		s.workspaceProjectFocus = true
+		s.workspaceConfigFocus = "project-pane"
+		return nav.SelectProject(projects[index].ID) == nil
+	}
+	bar, ok := ducklord.CalculateWorkspaceScrollbar(g.Quick, len(quick), offsets.Quick)
+	if !ok || len(quick) == 0 {
+		return false
+	}
+	thumbTop := min(bar.TrackY+bar.TrackHeight-bar.ThumbHeight, max(bar.TrackY, y))
+	offset := ducklord.WorkspaceScrollbarOffset(bar, len(quick), thumbTop)
+	index := min(len(quick)-1, offset)
+	s.workspaceQuickOffset = offset
+	s.workspaceProjectFocus = false
+	s.workspaceConfigFocus = "session-list"
+	if s.selectSessionKey(sessionKey(quick[index])) {
+		return s.workspaceFollowQuickSelection()
+	}
+	return false
 }
 
 func insideWorkspaceRect(rect ducklord.WorkspaceRect, x, y int) bool {

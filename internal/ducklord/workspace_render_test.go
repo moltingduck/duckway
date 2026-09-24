@@ -330,3 +330,20 @@ func TestWorkspaceNotesRendererHandlesTinyHeights(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkspaceScrollbarGeometryTracksOverflowAndBounds(t *testing.T) {
+	rect := WorkspaceRect{X: 3, Y: 5, Width: 10, Height: 6}
+	if _, ok := CalculateWorkspaceScrollbar(rect, 5, 0); ok {
+		t.Fatal("no scrollbar at exact fit")
+	}
+	bar, ok := CalculateWorkspaceScrollbar(rect, 20, 999)
+	if !ok || bar.TrackX != 12 || bar.TrackY != 6 || bar.TrackHeight != 5 || bar.ThumbHeight != 1 || bar.ThumbY != 10 {
+		t.Fatalf("clamped bottom scrollbar = %+v, %t", bar, ok)
+	}
+	if _, ok := CalculateWorkspaceScrollbar(WorkspaceRect{Height: 1, Width: 8}, 10, 0); ok {
+		t.Fatal("short bounds produced a scrollbar")
+	}
+	if _, ok := CalculateWorkspaceScrollbar(WorkspaceRect{Height: 5, Width: 1}, 10, 0); ok {
+		t.Fatal("one-column bounds produced a scrollbar")
+	}
+}

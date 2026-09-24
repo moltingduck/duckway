@@ -354,3 +354,43 @@ func TestModalMouseActionMenuOmitsDisabledOptions(t *testing.T) {
 		t.Fatal("enabled local notification action missing")
 	}
 }
+
+func TestHelpScrollMouseDispatcherWheelTrackDragAndRelease(t *testing.T) {
+	s := &tuiState{helpMode: true}
+	width, height := terminalSize()
+	s.renderHelpModal(io.Discard, width, height)
+	if s.helpResultTotal <= height-5 {
+		t.Skip("terminal is too tall to overflow Help")
+	}
+	key, owned := s.handleHelpMouseReport(65, 1, 1, true)
+	if !owned || len(key) != 0 || s.helpOffset != 3 {
+		t.Fatalf("Help wheel dispatch: owned=%v key=%q offset=%d", owned, key, s.helpOffset)
+	}
+	visible := max(1, height-5)
+	boxWidth := min(72, max(8, width-2))
+	left := max(1, (width-boxWidth)/2+1)
+	boxTop := max(1, (height-min(visible+3, height-2)-2)/2+1)
+	trackX, trackY := left+boxWidth-2, boxTop+3
+	// A track press pages while a thumb press captures without jumping.
+	key, owned = s.handleHelpMouseReport(0, trackX, trackY+visible-1, true)
+	if !owned || len(key) != 0 || s.helpOffset <= 3 {
+		t.Fatalf("Help track did not page: owned=%v offset=%d", owned, s.helpOffset)
+	}
+	thumbHeight := max(1, visible*visible/s.helpResultTotal)
+	maxOffset := s.helpResultTotal - visible
+	thumbY := trackY + (visible-thumbHeight)*s.helpOffset/maxOffset
+	offset := s.helpOffset
+	grab := min(1, thumbHeight-1)
+	key, owned = s.handleHelpMouseReport(0, trackX, thumbY+grab, true)
+	if !owned || len(key) != 0 || !s.helpScrollbarDrag || s.helpOffset != offset {
+		t.Fatalf("Help thumb press moved/capture failed: offset=%d before=%d", s.helpOffset, offset)
+	}
+	_, owned = s.handleHelpMouseReport(32, trackX, trackY+visible-1, true)
+	if !owned || s.helpOffset <= offset {
+		t.Fatal("Help held drag did not scroll")
+	}
+	_, owned = s.handleHelpMouseReport(0, 1, 1, false)
+	if !owned || s.helpScrollbarDrag {
+		t.Fatal("Help release outside track did not clear drag")
+	}
+}

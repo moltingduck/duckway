@@ -325,7 +325,7 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 	if key == "f" {
 		return false, false
 	}
-	if key != "j" && key != "k" && key != "\x1b[A" && key != "\x1b[B" {
+	if key != "j" && key != "k" && key != "\x1b[A" && key != "\x1b[B" && key != "\x1b[5~" && key != "\x1b[6~" {
 		return true, false
 	}
 	nav, err := s.workspaceNavigation()
@@ -341,16 +341,29 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 			break
 		}
 	}
-	if key == "j" || key == "\x1b[B" {
+	page := 1
+	if key == "\x1b[5~" || key == "\x1b[6~" {
+		width, height := terminalSize()
+		page = max(1, ducklord.CalculateWorkspaceGeometry(width, height, 4).Projects.Height-1)
+	}
+	if key == "j" || key == "\x1b[B" || key == "\x1b[6~" {
 		if key == "\x1b[B" && index == len(projects)-1 {
 			s.workspaceProjectFocus = false
 			s.selected = 0
 			s.workspaceFollowQuickSelection()
 			return true, true
 		}
-		index = min(len(projects)-1, index+1)
+		delta := page
+		if key == "j" || key == "\x1b[B" {
+			delta = 1
+		}
+		index = min(len(projects)-1, index+delta)
 	} else {
-		index = max(0, index-1)
+		delta := page
+		if key == "k" || key == "\x1b[A" {
+			delta = 1
+		}
+		index = max(0, index-delta)
 	}
 	if len(projects) == 0 || projects[index].ID == nav.CurrentProjectID() {
 		return true, false
@@ -661,7 +674,8 @@ func (s *tuiState) renderWorkspacePreviewAt(out io.Writer, width, height int) {
 		return ducklord.WorkspacePaneView{Title: "Session unavailable", Stale: true}
 	}, ducklord.WorkspaceRenderOptions{Offsets: offsets, Focus: focus, Theme: theme, Notes: s.notesEntries, NoteIndex: s.workspacePaneIndex,
 		NoteScope: s.notesScope, NoteQuery: s.notesQuery,
-		NoteOffset: ducklord.WorkspaceListOffset(0, s.workspacePaneIndex, noteVisible, len(s.notesEntries))})
+		NoteOffset:   ducklord.WorkspaceListOffset(0, s.workspacePaneIndex, noteVisible, len(s.notesEntries)),
+		ProjectTotal: len(s.activity().ProjectLayout.Projects), SessionTotal: len(quickSessions)})
 	s.renderCreateModal(out, width, height)
 	s.renderWorkspacePaneModal(out, width, height)
 	s.renderSearchModal(out, width, height)
