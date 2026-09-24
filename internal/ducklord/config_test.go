@@ -194,6 +194,8 @@ func TestProjectTabShortcutDefaultsAvoidListPagingKeys(t *testing.T) {
 		t.Fatalf("next Project tab shortcut = %q, want ]", got)
 	}
 	legacy := &Config{Shortcuts: map[string]string{"project_prev_tab": "pageup", "project_next_tab": "pagedown"}}
+	// Preserve serialized user choices, although the Project-focus route reserves
+	// plain PageUp/PageDown for list paging.
 	if legacy.Shortcut("project_prev_tab") != "pageup" || legacy.Shortcut("project_next_tab") != "pagedown" {
 		t.Fatal("explicit Project tab shortcut overrides were rewritten")
 	}

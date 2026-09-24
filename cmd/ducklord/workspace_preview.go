@@ -297,6 +297,8 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		return true, false
 	}
 	pageKey := key == "\x1b[5~" || key == "\x1b[6~"
+	// Plain page keys belong to Project-list scrolling even if older configs
+	// still bind them to direct tab cycling. Prefix tab commands remain available.
 	if !pageKey && (s.shortcut("project_prev_tab", key) || s.shortcut("project_next_tab", key) ||
 		s.shortcut("project_prev_pane", key) || s.shortcut("project_next_pane", key)) {
 		nav, err := s.workspaceNavigation()
