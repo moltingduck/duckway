@@ -148,6 +148,6 @@ func TestShellHookPeerMustBelongToRootProcessTree(t *testing.T) {
 		t.Fatal("foreign process tree was accepted")
 	}
 	if parent, ok := procParentPID(os.Getpid()); !ok || parent <= 0 {
-		t.Fatal("could not parse /proc parent PID")
+		t.Fatal("could not read process parent PID")
 	}
 }

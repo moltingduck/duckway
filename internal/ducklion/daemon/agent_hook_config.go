@@ -303,7 +303,7 @@ func openPrivateSettingsDir(dir string) (int, error) {
 		return -1, err
 	}
 	var opened unix.Stat_t
-	if err := unix.Fstat(fd, &opened); err != nil || opened.Dev != uint64(stat.Dev) || opened.Ino != stat.Ino || opened.Uid != uint32(os.Getuid()) || opened.Mode&0022 != 0 {
+	if err := unix.Fstat(fd, &opened); err != nil || uint64(opened.Dev) != uint64(stat.Dev) || opened.Ino != stat.Ino || opened.Uid != uint32(os.Getuid()) || opened.Mode&0022 != 0 {
 		unix.Close(fd)
 		return -1, errors.New("agent settings directory changed")
 	}
@@ -344,7 +344,7 @@ func readPrivateSettingsAt(dirfd int, filename string) ([]byte, os.FileInfo, err
 
 func sameStatIdentity(entry *unix.Stat_t, info os.FileInfo) bool {
 	opened, ok := info.Sys().(*syscall.Stat_t)
-	return ok && entry.Dev == uint64(opened.Dev) && entry.Ino == opened.Ino
+	return ok && uint64(entry.Dev) == uint64(opened.Dev) && entry.Ino == opened.Ino
 }
 
 func validateSettingsFile(info os.FileInfo) error {
