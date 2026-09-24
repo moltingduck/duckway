@@ -128,11 +128,12 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		if column <= 0 {
 			t.Fatalf("%s scrollbar column is invalid: %d", where, column)
 		}
-		if where == "Project list" {
+		switch where {
+		case "Project list":
 			findScrollCellsInRows(capture.currentText(), column, geometry.Projects.Y+1, geometry.Projects.Y+geometry.Projects.Height-1)
-		} else if where == "Session list" {
+		case "Session list":
 			findScrollCellsInRows(capture.currentText(), column, geometry.Quick.Y+1, geometry.Quick.Y+geometry.Quick.Height-1)
-		} else {
+		default:
 			findScrollCellsInColumn(capture.currentText(), column)
 		}
 	}
