@@ -63,7 +63,7 @@ func TestPostgresMigrationsCreateAndRecoverMessageDeliveryTable(t *testing.T) {
 	})
 
 	q := u.Query()
-	q.Set("search_path", schema)
+	q.Set("search_path", schema+",public")
 	u.RawQuery = q.Encode()
 	db, err := openPostgresTestDB(u.String())
 	if err != nil {
@@ -96,7 +96,7 @@ func TestPostgresMigrationsCreateAndRecoverMessageDeliveryTable(t *testing.T) {
 	t.Cleanup(func() { _, _ = adminDB.Exec(`DROP SCHEMA ` + quotePostgresIdentifier(partialSchema) + ` CASCADE`) })
 	partialURL := *u
 	partialQuery := partialURL.Query()
-	partialQuery.Set("search_path", partialSchema)
+	partialQuery.Set("search_path", partialSchema+",public")
 	partialURL.RawQuery = partialQuery.Encode()
 	partialDB, err := openPostgresTestDB(partialURL.String())
 	if err != nil {
@@ -163,6 +163,9 @@ func openPostgresTestDB(dsn string) (*sql.DB, error) {
 func assertMessageDigestRoundTrip(t *testing.T, db *sql.DB) {
 	t.Helper()
 	digest := []byte{0, 1, 2, 127, 128, 255}
+	if _, err := db.Exec(`INSERT INTO clients (id, name, token_hash) VALUES ('pg-blob-client', 'pg-blob-client', 'pg-blob-token') ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatalf("insert client: %v", err)
+	}
 	if _, err := db.Exec(`INSERT INTO services (id, name, display_name, upstream_url, host_pattern) VALUES ('pg-blob-service', 'pg-blob-service', 'test', '', '') ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatalf("insert service: %v", err)
 	}
@@ -172,7 +175,7 @@ func assertMessageDigestRoundTrip(t *testing.T, db *sql.DB) {
 	if _, err := db.Exec(`INSERT INTO control_channels (id, name, service_id, api_key_id, client_id) VALUES ('pg-blob-test', 'test', 'pg-blob-service', 'pg-blob-key-id', 'pg-blob-client') ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatalf("insert control channel: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO cc_channels (handle, cc_id, name) VALUES ('pg-blob-handle', 'pg-blob-test', 'test') ON CONFLICT DO NOTHING`); err != nil {
+	if _, err := db.Exec(`INSERT INTO cc_channels (handle, cc_id, client_id, name) VALUES ('pg-blob-handle', 'pg-blob-test', 'pg-blob-client', 'test') ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatalf("insert CC channel: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO cc_message_deliveries (cc_id, channel_handle, delivery_key, content_digest) VALUES ('pg-blob-test', 'pg-blob-handle', 'pg-blob-key', ?)
