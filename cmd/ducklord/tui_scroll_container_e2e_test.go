@@ -138,6 +138,14 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		}
 		return strings.TrimSpace(lines[row])
 	}
+	paneHeading := func(screen string) string {
+		lines := strings.Split(screen, "\n")
+		row := geometry.Terminal.Y
+		if row < 0 || row >= len(lines) {
+			return ""
+		}
+		return strings.TrimSpace(lines[row])
+	}
 	scrollFailure := func(where string) string {
 		screen := capture.currentText()
 		footer := ""
@@ -367,22 +375,19 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		return strings.Contains(projectHeading(capture.currentText()), "Scroll active project")
 	}, func() string { return scrollFailure("Project-list wheel did not restore the origin Project selection") })
 	projectColumn := geometry.Projects.X + geometry.Projects.Width - 1
-	_, projectThumbStart, _ := findScrollCellsInColumn(capture.currentText(), projectColumn)
 	writePTY(t, terminal, "\x1b[6~")
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
-		_, y, _, ready := tryFindScrollCellsInColumn(screen, projectColumn)
-		return ready && y > projectThumbStart
-	}, func() string { return scrollFailure("Project PageDown did not move its current viewport") })
-	_, projectThumbEnd, _ := findScrollCellsInColumn(capture.currentText(), projectColumn)
+		return strings.Contains(projectHeading(screen), "Scroll project 02") && strings.Contains(screen, "Project pane:")
+	}, func() string {
+		return scrollFailure("Project PageDown did not select the third visible Project while retaining Project focus")
+	})
 	writePTY(t, terminal, "\x1b[5~")
 	waitE2E(t, 5*time.Second, func() bool {
-		screen := capture.currentText()
-		_, y, _, ready := tryFindScrollCellsInColumn(screen, projectColumn)
-		return ready && y < projectThumbEnd
-	}, func() string { return scrollFailure("Project PageUp did not move its current viewport") })
+		return strings.Contains(projectHeading(capture.currentText()), "Scroll active project")
+	}, func() string { return scrollFailure("Project PageUp did not restore the original selected Project") })
 	projectTrackX := projectColumn
-	projectTrackY := geometry.Projects.Y + geometry.Projects.Height - 2
+	projectTrackY := geometry.Projects.Y + geometry.Projects.Height - 1
 	for page := 0; page < 8 && !strings.Contains(capture.currentText(), "Scroll project 15"); page++ {
 		beforeHeading := projectHeading(capture.currentText())
 		writePTY(t, terminal, string(workspaceMouse(0, projectTrackX, projectTrackY, false))+string(workspaceMouse(0, projectTrackX, projectTrackY, true)))
@@ -398,9 +403,15 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		t.Fatal("Project scrollbar click activated a Project item")
 	}
 	projectThumbX, projectThumbY, _ := findScrollCellsInColumn(capture.currentText(), geometry.Projects.X+geometry.Projects.Width-1)
-	projectDragEnd := geometry.Projects.Y + 2
+	projectDragEnd := geometry.Projects.Y + 1
 	writePTY(t, terminal, string(workspaceMouse(0, projectThumbX, projectThumbY, false))+string(workspaceMouse(32, projectThumbX, projectDragEnd, false))+string(workspaceMouse(0, projectThumbX+3, projectDragEnd, true)))
-	capture.waitCurrent(t, "Scroll project 00", 5*time.Second)
+	waitE2E(t, 5*time.Second, func() bool {
+		screen := capture.currentText()
+		_, thumbY, _, ready := tryFindScrollCellsInColumn(screen, projectColumn)
+		return ready && thumbY == projectDragEnd && strings.Contains(projectHeading(screen), "Default Project")
+	}, func() string {
+		return scrollFailure("Project thumb drag did not return the viewport and selection to the top")
+	})
 	if got := readLog(); got != expectedShellLog {
 		t.Fatalf("Project scrolling changed the exact active Session: %q", got)
 	}
@@ -413,46 +424,51 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	if !strings.Contains(capture.currentText(), handles[0]) {
 		t.Fatal("origin Session was not visible before Session list scrolling")
 	}
+	if !strings.Contains(paneHeading(capture.currentText()), handles[0]) {
+		t.Fatalf("origin Session was not the current preview before Session list scrolling: pane=%q\n%s", paneHeading(capture.currentText()), safeTerminalDiagnostic(capture.currentText()))
+	}
 	sessionColumn := geometry.Quick.X + geometry.Quick.Width - 1
-	_, sessionPageStart, _ := findScrollCellsInColumn(capture.currentText(), sessionColumn)
 	writePTY(t, terminal, "\x1b[6~")
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
 		_, y, _, ready := tryFindScrollCellsInColumn(screen, sessionColumn)
-		return ready && y > sessionPageStart
-	}, func() string { return scrollFailure("Session PageDown did not move its current viewport") })
-	_, sessionPageEnd, _ := findScrollCellsInColumn(capture.currentText(), sessionColumn)
+		return ready && y > geometry.Quick.Y+1 && strings.Contains(paneHeading(screen), handles[sessionCount-2])
+	}, func() string {
+		return scrollFailure("Session PageDown did not select the last row of the next page and move the viewport")
+	})
 	writePTY(t, terminal, "\x1b[5~")
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
 		_, y, _, ready := tryFindScrollCellsInColumn(screen, sessionColumn)
-		return ready && y < sessionPageEnd
-	}, func() string { return scrollFailure("Session PageUp did not move its current viewport") })
+		return ready && y == geometry.Quick.Y+1 && strings.Contains(paneHeading(screen), handles[0])
+	}, func() string { return scrollFailure("Session PageUp did not restore the first Session and viewport") })
 	quick := geometry.Quick
 	trackX := quick.X + quick.Width - 1
-	trackY := quick.Y + quick.Height - 2
-	_, sessionThumbBefore, _ := findScrollCellsInColumn(capture.currentText(), geometry.Quick.X+geometry.Quick.Width-1)
+	trackY := quick.Y + quick.Height - 1
 	writePTY(t, terminal, string(workspaceMouse(65, trackX-1, quick.Y+2, false)))
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
-		_, y, _, ready := tryFindScrollCellsInColumn(screen, geometry.Quick.X+geometry.Quick.Width-1)
-		return ready && y != sessionThumbBefore
+		return strings.Contains(paneHeading(screen), handles[3]) && strings.Contains(screen, "Session list pane:") && readLog() == expectedShellLog
 	}, func() string {
-		return scrollFailure("Session list mouse wheel did not move its current scrollbar thumb")
+		return scrollFailure("Session list mouse wheel did not select the fourth Session while retaining list focus")
 	})
 	writePTY(t, terminal, string(workspaceMouse(0, trackX, trackY, false))+string(workspaceMouse(0, trackX, trackY, true)))
-	waitE2E(t, 5*time.Second, func() bool { return strings.Contains(capture.currentText(), handles[sessionCount-1]) }, func() string { return scrollFailure("Session scrollbar track click did not page to the end") })
+	waitE2E(t, 5*time.Second, func() bool {
+		screen := capture.currentText()
+		return strings.Contains(paneHeading(screen), handles[sessionCount-1]) && strings.Contains(screen, "Session list pane:")
+	}, func() string {
+		return scrollFailure("Session scrollbar track click did not select the last Session while retaining list focus")
+	})
 	if strings.Contains(capture.currentText(), "Session focus: keys go to PTY") {
 		t.Fatal("Session scrollbar click activated a Session")
 	}
 	sessionThumbX, sessionThumbY, _ := findScrollCellsInColumn(capture.currentText(), sessionColumn)
-	sessionThumbBeforeDrag := sessionThumbY
-	sessionDragEnd := quick.Y + 2
+	sessionDragEnd := quick.Y + 1
 	writePTY(t, terminal, string(workspaceMouse(0, sessionThumbX, sessionThumbY, false))+string(workspaceMouse(32, sessionThumbX, sessionDragEnd, false))+string(workspaceMouse(0, sessionThumbX+3, sessionDragEnd, true)))
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
 		_, y, _, ready := tryFindScrollCellsInColumn(screen, sessionColumn)
-		return ready && y < sessionThumbBeforeDrag && strings.Contains(screen, handles[0])
+		return ready && y == sessionDragEnd && strings.Contains(paneHeading(screen), handles[0])
 	}, func() string {
 		return scrollFailure("Session thumb drag did not return the current viewport to the first Session")
 	})
