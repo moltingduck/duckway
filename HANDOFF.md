@@ -1,3 +1,70 @@
+# Completed batch: pane-scroll-0924 / build-dist-0924
+
+## Outcome
+Darwin build failure came from Linux-only GetsockoptUcred/SO_PEERCRED and /proc
+identity logic in a shared source file. df1cf81 splits Linux/Darwin implementations
+and makes device comparison portable. Darwin uses LOCAL_PEERCRED/LOCAL_PEERPID
+and kern.proc.pid identity. Unsupported platforms fail closed. 17ff0a8 adds
+`scripts/check-client-dist-crossbuild.sh` for all twelve distribution targets.
+Native Darwin runtime is untested; the script is not yet wired to CI.
+
+Help, Project and Session overflow gestures have actual PTY coverage. Plain page
+keys page lists; brackets switch Project tabs; prefix tab commands remain.
+Selection and terminal preview follow list scrolling without acquiring terminal
+input focus. Specs and user guide match the dispatcher. e192366 preserves the
+new Session route while rejecting an old pooled control after quick-shell
+placement. Independent affected review found no issues. Its regression exercises
+real placement plus stale teardown; it does not prove the cause of every earlier
+intermittent E2E failure. Final code checkpoint 72b6099 only changes a test helper
+conditional to a switch for lint.
+
+## Verification
+- Go 1.25 twelve-target cross-build: PASS, exec 13042.
+- Full normal tests: PASS 73651; full race: PASS 60928; coverage: PASS 17890,
+  57.2% >= 37.5%, at 38e1b3f. Subsequent affected package normal/race tests passed.
+- Final affected normal/race after e192366: PASS 4252 / 56799,
+  `GOFLAGS=-buildvcs=false go test [-race] ./cmd/ducklord ./internal/ducklord`.
+- Full default Podman TUI E2E 92277 at e192366: PASS, 32 tests plus one intentional
+  legacy-create SKIP, 297.289s. Includes Scroll (26.87s), all quick-shell variants,
+  PrefixNavigation, two-live-pane output stress, Notes, Host Skills and exchange.
+- Mechanical test-only lint cleanup at 72b6099: helper regression PASS 16677;
+  behavior unchanged; no production binary change. Manifest: 22 routes PASS.
+- Final full lint 47308: thirteen pre-existing findings, NOT lint clean:
+  command_palette unreachable/SA6003; host_skills_modal three QF1003/two unused;
+  pane_prefix QF1001; skill_https SA1019; two unused main helpers/fields;
+  unused Notes E2E shellQuote and skill-test makeSkill. New test QF1003 fixed.
+- Five integration review roles and affected follow-ups complete; no remaining
+  in-scope findings. Diff check, shell syntax, container/demo helper and
+  pre-commit environment checks passed. Hooks bypassed for integration/docs
+  commits using the recorded manual gates and known baseline lint findings.
+
+Earlier full E2E 16345/98159/43147 failures are retained as uncertainty:
+quick-shell focus intermittently failed; 98159 initial two-pane search output
+activation timed out; 43147 prefix+n phase 3 failed. Fixture/key/scroll endpoint
+assertion errors were repaired, and e192366 repairs a proven route identity loss.
+The old failure logs do not establish that all observations shared that cause.
+Final E2E passed unchanged focus/sentinel assertions; no claim of exhaustive
+absence of timing defects is made.
+
+## Demo and final resource scan
+Demo rebuild/restart 49566 PASS: inventory, PTY read/write, daemon recovery,
+native shell restart/end and retained-output permissions. Five retained containers
+are running under ducklord-verified, owner ducklord-verified-20260917.
+E2E and restarted demo SHA-256 match:
+- ducklord: d8e450a759311acad511528da0e0a42c26928ba22df299265658f15d12bda601
+- ducklion: a5c4f4baaab590ee1d452980d238e4b6e840233f67d798ba66c5fe21a1eeedf6
+
+Launch: `podman exec -it ducklord-verified-ducklord-dev ducklord tui --config /root/.ducklord/config.yaml`
+
+Final scan: all five batch sibling worktrees and their branches removed after
+integration; pruned. Both owned tmp roots and /tmp/9 absent; no owned executable
+process, socket, log, generated binary, coverage or patch backup remains.
+E2E containers/network and Go cross-build container gone. Preserved baseline five
+.claude worktrees, three dw live containers, seven old E2E networks and older logs.
+Only the named demo is retained. Calls/input/cache/output tokens and total
+subagent count unmeasured. Main owns planning/integration/verification; code was
+written by lower-tier agents with bounded briefs and isolated worktrees.
+
 # Current handoff
 
 ## Completed batch: help-audit-0924
@@ -940,3 +1007,14 @@ Validation:
 Checkpoint: E2E activation-render acknowledgement integrated as c8bb9a0;
 focused r4 is running in exec 87246. Full Go tests and routing manifest passed
 at a8db353 (exec 92978, 21 routes). r3 resources are gone.
+
+Checkpoint 423d06c: track-click endpoint assertion corrected and independently
+reviewed against track paging versus thumb dragging; no findings. E2E worktree
+was clean and all patches integrated before normal worktree removal and branch
+prune. Full default E2E exec 43147 is running; tested binary hashes unchanged.
+
+Owned follow-up: ../duckway-pane-scroll-0924-focus branch codex/pane-scroll-0924-focus,
+base 423d06c, owner pane-scroll-0924. Diagnose recurrent quick-shell focus loss
+(default full E2E 43147 vertical variant, earlier 16345 tab variant). Agent owns
+focused code/tests only; no containers or runtime. Remove worktree/branch after
+reviewed integration; all transient files under its ignored tmp/pane-scroll-0924.

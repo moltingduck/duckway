@@ -29,9 +29,10 @@ dragged; filtering and the Help footer stay in place.
 See the [Help coverage checklist](help-operation-audit.md) for developer checks.
 
 When the Project or Session list is longer than its pane, scroll with the mouse
-wheel or use the visible right-edge scrollbar. Click the track to page, or drag
-the thumb to move through the list. These gestures only scroll the list; use the
-keyboard to choose or open an entry.
+wheel, PageUp/PageDown, or the visible right-edge scrollbar. Click the track to
+page, or drag the thumb to move through the list. Scrolling moves the list
+selection and its terminal preview while retaining navigation focus. Press Enter
+to enter the selected Session; scrolling does not send input to its shell.
 
 ## Search terminal output and save output bookmarks
 
@@ -151,7 +152,8 @@ links and special files are not selectable sources.
 | `Ctrl+B`, then `←` / `→` / `↑` / `↓` | Move to the visible pane in that direction |
 | `Ctrl+B`, then `PageUp` / `PageDown` | Previous / next Terminal tab |
 | `w` | Edit the selected Project's SSH hosts |
-| `PageUp` / `PageDown` | Previous / next Terminal tab in Project navigation |
+| `PageUp` / `PageDown` | Page through the focused Project or Session list |
+| `[` / `]` | Previous / next Terminal tab in Project navigation |
 | `(` / `)` | Previous / next visible Session pane in traversal order |
 | `u` / `x` | Move / detach the selected local Session pane |
 | `i` | Toggle Project notification focus |
@@ -171,9 +173,12 @@ Shortcut design rules: ordinary actions use lowercase letters or control keys;
 uppercase letters are reserved for important or destructive actions, such as
 `Y` (yield when idle), `E` (end), `R` (restart), `X` (destroy), `Z` (delete
 Project), and `A` (remove Host). Prefix arrows follow the visible pane layout;
-PageUp/PageDown switch tabs. New shortcut defaults must avoid conflicts across
-active contexts. Explicit customized bindings are preserved; the table shows
-defaults. In config, PageUp/PageDown are spelled `pageup`/`pagedown`.
+prefix+PageUp/PageDown switches tabs; plain PageUp/PageDown pages through lists.
+New shortcut defaults must avoid conflicts across active contexts. Explicit
+customized bindings are preserved; the table shows defaults. List paging takes
+precedence over a tab shortcut bound to PageUp/PageDown. Use `[`/`]`, or
+prefix+`n`/`p`, to switch tabs. In config, PageUp/PageDown are spelled
+`pageup`/`pagedown`.
 
 Use `p` while the Project pane is focused: choose a new tab or horizontal or
 vertical split, then **New shell session** or **Add existing session**. The
