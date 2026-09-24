@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UI="$ROOT/docs/ui-routing-verification.md"
 PANES="$ROOT/docs/pane-routing.md"
 E2E="$ROOT/scripts/ducklord-tui-e2e.sh"
-TESTDIR="$ROOT/cmd/ducklord"
+TESTDIRS=("$ROOT/cmd/ducklord" "$ROOT/internal/ducklord")
 
 mapfile -t ui_rows < <(awk -F'|' '/^\| `route\./ { print $2 "\t" $3 "\t" $4 }' "$UI" | sed 's/^ *//; s/ *\t/\t/; s/ *$//')
 mapfile -t pane_routes < <(awk -F'|' '/^\| `route\./ { print $2 }' "$PANES" | sed 's/^ *//; s/ *$//' | sort -u)
@@ -31,7 +31,7 @@ for row in "${ui_rows[@]}"; do
 	fi
 	while read -r test_name; do
 		[[ -z "$test_name" ]] && continue
-		if ! rg -q "^[[:space:]]*func ${test_name}\(" "$TESTDIR"; then
+		if ! rg -q "^[[:space:]]*func ${test_name}\(" "${TESTDIRS[@]}"; then
 			printf '%s: missing test function %s\n' "$route" "$test_name" >&2
 			failures=$((failures + 1))
 		fi

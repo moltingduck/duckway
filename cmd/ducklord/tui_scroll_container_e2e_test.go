@@ -128,6 +128,20 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		}
 		findScrollCellsInColumn(capture.currentText(), column)
 	}
+	helpViewport := func(screen string) string {
+		lines := strings.Split(screen, "\n")
+		const first, afterLast = 3, 14 // Help results occupy rows 4 through 14.
+		if len(lines) < afterLast {
+			return ""
+		}
+		rows := make([]string, 0, afterLast-first)
+		for _, line := range lines[first:afterLast] {
+			line = strings.ReplaceAll(line, "█", " ")
+			line = strings.ReplaceAll(line, "│", " ")
+			rows = append(rows, strings.TrimRight(line, " "))
+		}
+		return strings.Join(rows, "\n")
+	}
 
 	// The Help page has many more rows than this compact terminal. Page keys
 	// must move its current viewport, and pending remote output must not take
@@ -136,57 +150,64 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Keyboard shortcuts", 10*time.Second)
 	helpColumn := (100-72)/2 + 1 + 72 - 2
 	assertScrollbar("Help", helpColumn)
-	_, helpThumbStart, _ := findScrollCellsInColumn(capture.currentText(), helpColumn)
+	helpAtStart := helpViewport(capture.currentText())
 	writePTY(t, terminal, "\x1b[6~") // PageDown
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), helpColumn)
-		return y > helpThumbStart
-	}, func() string { return "Help PageDown did not move its current scrollbar thumb" })
-	_, helpAfterPage, _ := findScrollCellsInColumn(capture.currentText(), helpColumn)
+		screen := capture.currentText()
+		_, _, _, ready := tryFindScrollCellsInColumn(screen, helpColumn)
+		return ready && helpViewport(screen) != helpAtStart
+	}, func() string { return "Help PageDown did not change the visible result rows" })
+	helpAfterPage := helpViewport(capture.currentText())
 	writePTY(t, terminal, "\x1b[5~") // PageUp
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), helpColumn)
-		return y < helpAfterPage
-	}, func() string { return "Help PageUp did not move its current scrollbar thumb" })
+		screen := capture.currentText()
+		_, _, _, ready := tryFindScrollCellsInColumn(screen, helpColumn)
+		return ready && helpViewport(screen) != helpAfterPage
+	}, func() string { return "Help PageUp did not change the visible result rows" })
 	// Move beyond the initial viewport in both directions so this proves the
 	// Help-local arrows change the current result viewport, not merely its cursor.
-	_, helpBeforeArrows, _ := findScrollCellsInColumn(capture.currentText(), helpColumn)
+	helpBeforeArrows := helpViewport(capture.currentText())
 	writePTY(t, terminal, strings.Repeat("\x1b[B", 12))
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), helpColumn)
-		return y > helpBeforeArrows
+		screen := capture.currentText()
+		_, _, _, ready := tryFindScrollCellsInColumn(screen, helpColumn)
+		return ready && helpViewport(screen) != helpBeforeArrows
 	}, func() string { return "Help Down did not move its current result viewport" })
-	_, helpAfterDown, _ := findScrollCellsInColumn(capture.currentText(), helpColumn)
+	helpAfterDown := helpViewport(capture.currentText())
 	writePTY(t, terminal, strings.Repeat("\x1b[A", 12))
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), helpColumn)
-		return y < helpAfterDown
+		screen := capture.currentText()
+		_, _, _, ready := tryFindScrollCellsInColumn(screen, helpColumn)
+		return ready && helpViewport(screen) != helpAfterDown
 	}, func() string { return "Help Up did not move its current result viewport" })
 	writePTY(t, terminal, "/session")
 	capture.waitCurrent(t, "Search: session", 5*time.Second)
 	writePTY(t, terminal, "\r") // pin the search filter
 	capture.waitCurrent(t, "Filter: session", 5*time.Second)
 	filtered := capture.currentText()
-	_, filteredThumbBefore, _ := findScrollCellsInColumn(filtered, helpColumn)
+	filteredRowsBefore := helpViewport(filtered)
 	writePTY(t, terminal, "\x1b[6~")
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), helpColumn)
-		return y > filteredThumbBefore && strings.Contains(capture.currentText(), "Filter: session")
-	}, func() string { return "Help PageDown lost search or failed to move its filtered viewport" })
+		screen := capture.currentText()
+		_, _, _, ready := tryFindScrollCellsInColumn(screen, helpColumn)
+		return ready && helpViewport(screen) != filteredRowsBefore && strings.Contains(screen, "Filter: session")
+	}, func() string { return "Help PageDown lost search or failed to change its filtered result rows" })
 	// The mouse wheel and thumb drag use the actual current scrollbar cells.
 	helpX, helpThumbY, helpTrackY := findScrollCellsInColumn(capture.currentText(), helpColumn)
-	beforeWheelY := helpThumbY
+	beforeWheelRows := helpViewport(capture.currentText())
 	writePTY(t, terminal, string(workspaceMouse(64, helpX-1, helpThumbY, false)))
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), helpColumn)
-		return y < beforeWheelY && strings.Contains(capture.currentText(), "Filter: session")
+		screen := capture.currentText()
+		_, _, _, ready := tryFindScrollCellsInColumn(screen, helpColumn)
+		return ready && helpViewport(screen) != beforeWheelRows && strings.Contains(screen, "Filter: session")
 	}, func() string { return "Help mouse wheel did not move its thumb while preserving search" })
 	_, helpThumbY, helpTrackY = findScrollCellsInColumn(capture.currentText(), helpColumn)
 	beforeDragY := helpThumbY
 	writePTY(t, terminal, string(workspaceMouse(0, helpX, helpThumbY, false))+string(workspaceMouse(32, helpX, helpTrackY, false))+string(workspaceMouse(0, helpX+4, helpTrackY, true)))
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), helpColumn)
-		return y > beforeDragY && strings.Contains(capture.currentText(), "Filter: session")
+		screen := capture.currentText()
+		_, y, _, ready := tryFindScrollCellsInColumn(screen, helpColumn)
+		return ready && y > beforeDragY && strings.Contains(screen, "Filter: session")
 	}, func() string { return "Help thumb drag did not scroll while preserving search" })
 	if got := readLog(); got != "" {
 		t.Fatalf("Help paging leaked bytes to origin shell: %q", got)
@@ -218,7 +239,10 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	// consumed no-op: it must not switch the selected Session or PTY.
 	writePTY(t, terminal, string(workspaceMouse(65, geometry.Projects.X+2, geometry.Projects.Y+2, false)))
 	waitE2E(t, 3*time.Second, func() bool {
-		return strings.Contains(capture.currentText(), marker) && readLog() == expectedShellLog
+		screen := capture.currentText()
+		_, _, _, projectReady := tryFindScrollCellsInColumn(screen, geometry.Projects.X+geometry.Projects.Width-1)
+		_, _, _, sessionReady := tryFindScrollCellsInColumn(screen, geometry.Quick.X+geometry.Quick.Width-1)
+		return projectReady && sessionReady && strings.Contains(screen, marker) && readLog() == expectedShellLog
 	}, func() string { return "terminal focus or exact origin PTY changed after list wheel" })
 	if got := readLog(); got != expectedShellLog {
 		t.Fatalf("list wheel leaked input to origin shell: %q", got)
@@ -247,14 +271,16 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	_, projectThumbStart, _ := findScrollCellsInColumn(capture.currentText(), projectColumn)
 	writePTY(t, terminal, "\x1b[6~")
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), projectColumn)
-		return y > projectThumbStart
+		screen := capture.currentText()
+		_, y, _, ready := tryFindScrollCellsInColumn(screen, projectColumn)
+		return ready && y > projectThumbStart
 	}, func() string { return "Project PageDown did not move its current viewport" })
 	_, projectThumbEnd, _ := findScrollCellsInColumn(capture.currentText(), projectColumn)
 	writePTY(t, terminal, "\x1b[5~")
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), projectColumn)
-		return y < projectThumbEnd
+		screen := capture.currentText()
+		_, y, _, ready := tryFindScrollCellsInColumn(screen, projectColumn)
+		return ready && y < projectThumbEnd
 	}, func() string { return "Project PageUp did not move its current viewport" })
 	projectTrackX := projectColumn
 	projectTrackY := geometry.Projects.Y + geometry.Projects.Height - 2
@@ -286,14 +312,16 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	_, sessionPageStart, _ := findScrollCellsInColumn(capture.currentText(), sessionColumn)
 	writePTY(t, terminal, "\x1b[6~")
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), sessionColumn)
-		return y > sessionPageStart
+		screen := capture.currentText()
+		_, y, _, ready := tryFindScrollCellsInColumn(screen, sessionColumn)
+		return ready && y > sessionPageStart
 	}, func() string { return "Session PageDown did not move its current viewport" })
 	_, sessionPageEnd, _ := findScrollCellsInColumn(capture.currentText(), sessionColumn)
 	writePTY(t, terminal, "\x1b[5~")
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), sessionColumn)
-		return y < sessionPageEnd
+		screen := capture.currentText()
+		_, y, _, ready := tryFindScrollCellsInColumn(screen, sessionColumn)
+		return ready && y < sessionPageEnd
 	}, func() string { return "Session PageUp did not move its current viewport" })
 	quick := geometry.Quick
 	trackX := quick.X + quick.Width - 1
@@ -301,8 +329,9 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	_, sessionThumbBefore, _ := findScrollCellsInColumn(capture.currentText(), geometry.Quick.X+geometry.Quick.Width-1)
 	writePTY(t, terminal, string(workspaceMouse(65, trackX-1, quick.Y+2, false)))
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), geometry.Quick.X+geometry.Quick.Width-1)
-		return y != sessionThumbBefore
+		screen := capture.currentText()
+		_, y, _, ready := tryFindScrollCellsInColumn(screen, geometry.Quick.X+geometry.Quick.Width-1)
+		return ready && y != sessionThumbBefore
 	}, func() string { return "Session list mouse wheel did not move its current scrollbar thumb" })
 	writePTY(t, terminal, string(workspaceMouse(0, trackX, trackY, false))+string(workspaceMouse(0, trackX, trackY, true)))
 	waitE2E(t, 5*time.Second, func() bool { return strings.Contains(capture.currentText(), handles[sessionCount-1]) }, func() string { return "Session scrollbar track click did not page to the end" })
@@ -314,8 +343,9 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	sessionDragEnd := quick.Y + 2
 	writePTY(t, terminal, string(workspaceMouse(0, sessionThumbX, sessionThumbY, false))+string(workspaceMouse(32, sessionThumbX, sessionDragEnd, false))+string(workspaceMouse(0, sessionThumbX+3, sessionDragEnd, true)))
 	waitE2E(t, 5*time.Second, func() bool {
-		_, y, _ := findScrollCellsInColumn(capture.currentText(), sessionColumn)
-		return y < sessionThumbBeforeDrag && strings.Contains(capture.currentText(), handles[0])
+		screen := capture.currentText()
+		_, y, _, ready := tryFindScrollCellsInColumn(screen, sessionColumn)
+		return ready && y < sessionThumbBeforeDrag && strings.Contains(screen, handles[0])
 	}, func() string { return "Session thumb drag did not return the current viewport to the first Session" })
 	writePTY(t, terminal, "\x1b[6~")
 	if got := readLog(); got != expectedShellLog {
@@ -326,6 +356,14 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 // findScrollCellsInColumn scopes workspace-list assertions to the requested
 // pane edge so another overflowing list cannot satisfy the check.
 func findScrollCellsInColumn(screen string, column int) (x, thumbY, trackY int) {
+	x, thumbY, trackY, ok := tryFindScrollCellsInColumn(screen, column)
+	if !ok {
+		panic(fmt.Sprintf("scrollbar not found in column %d of current screen: %q", column, safeTerminalDiagnostic(screen)))
+	}
+	return x, thumbY, trackY
+}
+
+func tryFindScrollCellsInColumn(screen string, column int) (x, thumbY, trackY int, ok bool) {
 	for row, line := range strings.Split(screen, "\n") {
 		for start := 0; start < len(line); {
 			next := strings.IndexAny(line[start:], "█│")
@@ -347,8 +385,5 @@ func findScrollCellsInColumn(screen string, column int) (x, thumbY, trackY int) 
 			start = at + len(glyph)
 		}
 	}
-	if x == 0 || thumbY == 0 || trackY == 0 {
-		panic(fmt.Sprintf("scrollbar not found in column %d of current screen: %q", column, safeTerminalDiagnostic(screen)))
-	}
-	return x, thumbY, trackY
+	return x, thumbY, trackY, x != 0 && thumbY != 0 && trackY != 0
 }
