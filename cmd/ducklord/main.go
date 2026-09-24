@@ -3437,8 +3437,8 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 					}
 				} else if string(b) == "/" {
 					state.helpSearchActive = true
-				} else if state.scrollHelpInput(b) {
-					// Help owns scrolling keys even while the original terminal is focused.
+				} else {
+					state.scrollHelpInput(b)
 				}
 				state.render(os.Stdout)
 				continue
