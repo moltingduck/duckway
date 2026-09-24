@@ -265,7 +265,7 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		t.Fatalf("request asynchronous PTY output: %v: %s", err, out)
 	}
 	waitE2E(t, 10*time.Second, func() bool {
-		return readLog() == asyncMarker+"\n" && strings.Contains(capture.currentText(), "Keyboard shortcuts")
+		return readLog() == expectedShellLog+asyncMarker+"\n" && strings.Contains(capture.currentText(), "Keyboard shortcuts")
 	}, func() string { return "async PTY output did not arrive while Help remained open" })
 	expectedShellLog += asyncMarker + "\n"
 	writePTY(t, terminal, "?")
