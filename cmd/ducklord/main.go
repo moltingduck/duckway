@@ -3576,7 +3576,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 						continue
 					}
 					if button == 64 || button == 65 {
-						continue
+						if !state.workspaceListWheelOwnsInput(x, y) {
+							continue
+						}
 					}
 					if state.copyMode {
 						continue

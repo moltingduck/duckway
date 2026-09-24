@@ -16,6 +16,44 @@ func workspaceMouse(button, x, y int, release bool) []byte {
 	return []byte(fmt.Sprintf("\x1b[<%d;%d;%d%s", button, x, y, suffix))
 }
 
+func TestWorkspaceProjectWheelDispatchPassesListReportToWorkspaceHandler(t *testing.T) {
+	state, projectID, _, _ := workspacePaneTestState(t)
+	state.workspacePreview = true
+	state.focused = false
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(projectID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := state.activity().ProjectLayout.AddProject(fmt.Sprintf("Wheel %02d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	width, height := terminalSize()
+	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	x, y := geometry.Projects.X+2, geometry.Projects.Y+2
+	if !state.workspaceListWheelOwnsInput(x, y) {
+		t.Fatalf("Project-list wheel at (%d,%d) was claimed by generic wheel handling", x, y)
+	}
+	state.focused = true
+	if state.workspaceListWheelOwnsInput(x, y) {
+		t.Fatal("focused terminal wheel was routed to the workspace list")
+	}
+	state.focused = false
+	if handled, changed := state.handleWorkspaceMouse(workspaceMouse(65, x, y, false)); !handled || !changed {
+		t.Fatalf("Project-list wheel was not applied locally: handled=%t changed=%t", handled, changed)
+	}
+	if nav.CurrentProjectID() != state.activity().ProjectLayout.Projects[4].ID {
+		t.Fatalf("Project-list wheel selected %q, want third project after origin", nav.CurrentProjectID())
+	}
+	if state.focused || !state.workspaceProjectFocus || state.workspaceMouseFocus {
+		t.Fatalf("Project-list wheel changed terminal ownership: focused=%t projectFocus=%t mouseFocus=%t", state.focused, state.workspaceProjectFocus, state.workspaceMouseFocus)
+	}
+}
+
 func TestWorkspaceMousePaneRequestsOwnerGatedFocus(t *testing.T) {
 	state, projectID, _, _ := workspacePaneTestState(t)
 	nav, _ := state.workspaceNavigation()

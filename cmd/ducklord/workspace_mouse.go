@@ -7,6 +7,19 @@ import (
 	"github.com/hackerduck/duckway/internal/ducklord"
 )
 
+// workspaceListWheelOwnsInput reports whether an unfocused workspace list owns
+// a wheel report. The main input loop uses this before its generic wheel
+// consumer, which otherwise drops reports before handleWorkspaceMouse sees
+// them. Focused terminal output keeps its existing wheel behavior.
+func (s *tuiState) workspaceListWheelOwnsInput(x, y int) bool {
+	if !s.workspacePreview || s.focused || s.hostScoped || s.workspacePaneMode || s.centralModalOpen() {
+		return false
+	}
+	width, height := terminalSize()
+	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	return insideWorkspaceRect(geometry.Projects, x, y) || insideWorkspaceRect(geometry.Quick, x, y)
+}
+
 // handleWorkspaceMouse keeps drag-and-drop local to Ducklord. It never writes
 // mouse escape sequences to a PTY or changes Ducklion writer ownership.
 func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
