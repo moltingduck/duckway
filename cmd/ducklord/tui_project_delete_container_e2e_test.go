@@ -140,7 +140,7 @@ func TestDucklordProjectDeleteContainerE2E(t *testing.T) {
 	// Default also contains the demo's other Sessions. Navigate its tabs to
 	// the rehomed fixture before checking the live framebuffer.
 	for tab := 0; tab < defaultTabCount && !strings.Contains(capture.currentText(), "client-a/"+handle); tab++ {
-		writePTY(t, terminal, "\x1b[6~")
+		writePTY(t, terminal, "]") // Next Terminal tab; plain PageDown pages the Project list.
 		time.Sleep(150 * time.Millisecond)
 	}
 	capture.waitCurrent(t, "client-a/"+handle, 10*time.Second)

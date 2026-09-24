@@ -130,9 +130,9 @@ func TestDucklordForegroundAgentLabelsContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "bj")
 	capture.waitCurrent(t, "› "+projectName, 10*time.Second)
 	capture.waitCurrent(t, "client-a/"+fixtures[0].handle+" [codex?]", 15*time.Second)
-	writePTY(t, terminal, "\x1b[6~")
+	writePTY(t, terminal, "]") // Next Terminal tab; plain PageDown pages the Project list.
 	capture.waitCurrent(t, "client-a/"+fixtures[1].handle+" [claude?]", 15*time.Second)
-	writePTY(t, terminal, "\x1b[6~")
+	writePTY(t, terminal, "]")
 	capture.waitCurrent(t, "client-a/"+fixtures[2].handle+" [other agent?]", 15*time.Second)
 	for _, item := range fixtures {
 		latest, found := findContainerSession(t, runtime, controller, "client-a", item.session.SessionID)
