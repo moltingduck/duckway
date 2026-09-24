@@ -128,7 +128,13 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		if column <= 0 {
 			t.Fatalf("%s scrollbar column is invalid: %d", where, column)
 		}
-		findScrollCellsInColumn(capture.currentText(), column)
+		if where == "Project list" {
+			findScrollCellsInRows(capture.currentText(), column, geometry.Projects.Y+1, geometry.Projects.Y+geometry.Projects.Height-1)
+		} else if where == "Session list" {
+			findScrollCellsInRows(capture.currentText(), column, geometry.Quick.Y+1, geometry.Quick.Y+geometry.Quick.Height-1)
+		} else {
+			findScrollCellsInColumn(capture.currentText(), column)
+		}
 	}
 	projectHeading := func(screen string) string {
 		lines := strings.Split(screen, "\n")
@@ -148,8 +154,8 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	}
 	selectedQuickRow := func(screen string) string {
 		lines := strings.Split(screen, "\n")
-		firstDataRow := geometry.Quick.Y
-		lastDataRow := min(len(lines), geometry.Quick.Y+geometry.Quick.Height)
+		firstDataRow := max(0, geometry.Quick.Y)
+		lastDataRow := min(len(lines), geometry.Quick.Y+geometry.Quick.Height-1)
 		for row := firstDataRow; row < lastDataRow; row++ {
 			if strings.Contains(lines[row], "›") {
 				return strings.TrimSpace(lines[row])
@@ -339,8 +345,8 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	writePTY(t, terminal, string(workspaceMouse(65, geometry.Projects.X+2, geometry.Projects.Y+2, false)))
 	waitE2E(t, 3*time.Second, func() bool {
 		screen := capture.currentText()
-		_, _, _, projectReady := tryFindScrollCellsInColumn(screen, geometry.Projects.X+geometry.Projects.Width-1)
-		_, _, _, sessionReady := tryFindScrollCellsInColumn(screen, geometry.Quick.X+geometry.Quick.Width-1)
+		_, _, _, projectReady := tryFindScrollCellsInRows(screen, geometry.Projects.X+geometry.Projects.Width-1, geometry.Projects.Y+1, geometry.Projects.Y+geometry.Projects.Height-1)
+		_, _, _, sessionReady := tryFindScrollCellsInRows(screen, geometry.Quick.X+geometry.Quick.Width-1, geometry.Quick.Y+1, geometry.Quick.Y+geometry.Quick.Height-1)
 		return projectReady && sessionReady && strings.Contains(screen, marker) && readLog() == expectedShellLog
 	}, func() string { return "terminal focus or exact origin PTY changed after list wheel" })
 	if got := readLog(); got != expectedShellLog {
@@ -354,7 +360,7 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "b")
 	capture.waitCurrent(t, "Project pane:", 5*time.Second)
 	assertScrollbar("Project list", geometry.Projects.X+geometry.Projects.Width-1)
-	if x, _, _ := findScrollCellsInColumn(capture.currentText(), geometry.Projects.X+geometry.Projects.Width-1); x != geometry.Projects.X+geometry.Projects.Width-1 {
+	if x, _, _ := findScrollCellsInRows(capture.currentText(), geometry.Projects.X+geometry.Projects.Width-1, geometry.Projects.Y+1, geometry.Projects.Y+geometry.Projects.Height-1); x != geometry.Projects.X+geometry.Projects.Width-1 {
 		t.Fatalf("Project scrollbar appeared at column %d, want pane edge %d", x, geometry.Projects.X+geometry.Projects.Width-1)
 	}
 	projectLine := -1
@@ -413,12 +419,12 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	if strings.Contains(capture.currentText(), "Session focus: keys go to PTY") || strings.Contains(capture.currentText(), "Add Session pane") {
 		t.Fatal("Project scrollbar click activated a Project item")
 	}
-	projectThumbX, projectThumbY, _ := findScrollCellsInColumn(capture.currentText(), geometry.Projects.X+geometry.Projects.Width-1)
+	projectThumbX, projectThumbY, _ := findScrollCellsInRows(capture.currentText(), geometry.Projects.X+geometry.Projects.Width-1, geometry.Projects.Y+1, geometry.Projects.Y+geometry.Projects.Height-1)
 	projectDragEnd := geometry.Projects.Y + 1
 	writePTY(t, terminal, string(workspaceMouse(0, projectThumbX, projectThumbY, false))+string(workspaceMouse(32, projectThumbX, projectDragEnd, false))+string(workspaceMouse(0, projectThumbX+3, projectDragEnd, true)))
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
-		_, thumbY, _, ready := tryFindScrollCellsInColumn(screen, projectColumn)
+		_, thumbY, _, ready := tryFindScrollCellsInRows(screen, projectColumn, geometry.Projects.Y+1, geometry.Projects.Y+geometry.Projects.Height-1)
 		return ready && thumbY == projectDragEnd && strings.Contains(projectHeading(screen), "Default Project")
 	}, func() string {
 		return scrollFailure("Project thumb drag did not return the viewport and selection to the top")
@@ -437,7 +443,7 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "b")
 	capture.waitCurrent(t, "Session list pane:", 10*time.Second)
 	assertScrollbar("Session list", geometry.Quick.X+geometry.Quick.Width-1)
-	if x, _, _ := findScrollCellsInColumn(capture.currentText(), geometry.Quick.X+geometry.Quick.Width-1); x != geometry.Quick.X+geometry.Quick.Width-1 {
+	if x, _, _ := findScrollCellsInRows(capture.currentText(), geometry.Quick.X+geometry.Quick.Width-1, geometry.Quick.Y+1, geometry.Quick.Y+geometry.Quick.Height-1); x != geometry.Quick.X+geometry.Quick.Width-1 {
 		t.Fatalf("Session scrollbar appeared at column %d, want pane edge %d", x, geometry.Quick.X+geometry.Quick.Width-1)
 	}
 	// The Quick list spans the whole inventory, including Sessions outside the
@@ -467,7 +473,7 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\x1b[6~")
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
-		_, y, _, ready := tryFindScrollCellsInColumn(screen, sessionColumn)
+		_, y, _, ready := tryFindScrollCellsInRows(screen, sessionColumn, geometry.Quick.Y+1, geometry.Quick.Y+geometry.Quick.Height-1)
 		return ready && y > geometry.Quick.Y+1 && strings.Contains(paneHeading(screen), handles[sessionCount-2])
 	}, func() string {
 		return scrollFailure("Session PageDown did not select the last row of the next page and move the viewport")
@@ -475,7 +481,7 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "\x1b[5~")
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
-		_, y, _, ready := tryFindScrollCellsInColumn(screen, sessionColumn)
+		_, y, _, ready := tryFindScrollCellsInRows(screen, sessionColumn, geometry.Quick.Y+1, geometry.Quick.Y+geometry.Quick.Height-1)
 		return ready && y == geometry.Quick.Y+1 && strings.Contains(paneHeading(screen), handles[0])
 	}, func() string { return scrollFailure("Session PageUp did not restore the first Session and viewport") })
 	quick := geometry.Quick
@@ -498,16 +504,16 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	if strings.Contains(capture.currentText(), "Session focus: keys go to PTY") {
 		t.Fatal("Session scrollbar click activated a Session")
 	}
-	sessionThumbX, sessionThumbY, _ := findScrollCellsInColumn(capture.currentText(), sessionColumn)
+	sessionThumbX, sessionThumbY, _ := findScrollCellsInRows(capture.currentText(), sessionColumn, geometry.Quick.Y+1, geometry.Quick.Y+geometry.Quick.Height-1)
 	sessionDragEnd := quick.Y + 1
 	writePTY(t, terminal, string(workspaceMouse(0, sessionThumbX, sessionThumbY, false))+string(workspaceMouse(32, sessionThumbX, sessionDragEnd, false))+string(workspaceMouse(0, sessionThumbX+3, sessionDragEnd, true)))
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
-		_, y, _, ready := tryFindScrollCellsInColumn(screen, sessionColumn)
+		_, y, _, ready := tryFindScrollCellsInRows(screen, sessionColumn, geometry.Quick.Y+1, geometry.Quick.Y+geometry.Quick.Height-1)
 		lines := strings.Split(screen, "\n")
 		firstRow := ""
-		if geometry.Quick.Y+1 < len(lines) {
-			firstRow = strings.TrimSpace(lines[geometry.Quick.Y+1])
+		if geometry.Quick.Y < len(lines) {
+			firstRow = strings.TrimSpace(lines[geometry.Quick.Y])
 		}
 		return ready && y == sessionDragEnd && selectedQuickRow(screen) == firstRow &&
 			strings.Contains(screen, "Session list pane:") && readLog() == expectedShellLog
@@ -531,7 +537,23 @@ func findScrollCellsInColumn(screen string, column int) (x, thumbY, trackY int) 
 }
 
 func tryFindScrollCellsInColumn(screen string, column int) (x, thumbY, trackY int, ok bool) {
-	for row, line := range strings.Split(screen, "\n") {
+	lines := strings.Split(screen, "\n")
+	return tryFindScrollCellsInRows(screen, column, 1, len(lines))
+}
+
+func findScrollCellsInRows(screen string, column, firstRow, lastRow int) (x, thumbY, trackY int) {
+	x, thumbY, trackY, ok := tryFindScrollCellsInRows(screen, column, firstRow, lastRow)
+	if !ok {
+		panic(fmt.Sprintf("scrollbar not found in column %d rows %d..%d of current screen: %q", column, firstRow, lastRow, safeTerminalDiagnostic(screen)))
+	}
+	return x, thumbY, trackY
+}
+
+// Row bounds are inclusive, one-based terminal coordinates.
+func tryFindScrollCellsInRows(screen string, column, firstRow, lastRow int) (x, thumbY, trackY int, ok bool) {
+	lines := strings.Split(screen, "\n")
+	for row := max(0, firstRow-1); row < min(len(lines), lastRow); row++ {
+		line := lines[row]
 		for start := 0; start < len(line); {
 			next := strings.IndexAny(line[start:], "█│")
 			if next < 0 {
@@ -553,4 +575,25 @@ func tryFindScrollCellsInColumn(screen string, column int) (x, thumbY, trackY in
 		}
 	}
 	return x, thumbY, trackY, x != 0 && thumbY != 0 && trackY != 0
+}
+
+func TestScrollContainerScrollbarFinderScopesSameColumnPanes(t *testing.T) {
+	screen := strings.Join([]string{
+		"",
+		"    █", // Project thumb, row 2.
+		"    │",
+		"    │",
+		"",
+		"    │", // Quick track begins lower in the same column.
+		"    █", // Quick thumb, row 7.
+		"    │",
+	}, "\n")
+	_, projectThumb, _, ok := tryFindScrollCellsInRows(screen, 5, 2, 4)
+	if !ok || projectThumb != 2 {
+		t.Fatalf("Project scan got thumb row %d (ok=%t), want row 2", projectThumb, ok)
+	}
+	_, quickThumb, _, ok := tryFindScrollCellsInRows(screen, 5, 6, 8)
+	if !ok || quickThumb != 7 {
+		t.Fatalf("Quick scan got thumb row %d (ok=%t), want row 7", quickThumb, ok)
+	}
 }
