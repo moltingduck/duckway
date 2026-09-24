@@ -502,9 +502,9 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	writePTY(t, terminal, string(workspaceMouse(0, trackX, trackY, false))+string(workspaceMouse(0, trackX, trackY, true)))
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
-		firstVisible := quickDataRow(screen, quick)
+		lastVisible := quickLastDataRow(screen, quick)
 		selected := selectedQuickRow(screen)
-		return selected != "" && selected == firstVisible && quickThumbBottom(screen, trackX, quick.Y+1, quick.Y+quick.Height-1) == quick.Y+quick.Height-1 &&
+		return selected != "" && selected == lastVisible && quickThumbBottom(screen, trackX, quick.Y+1, quick.Y+quick.Height-1) == quick.Y+quick.Height-1 &&
 			quickSelectedPreviewMatches(screen, selected, paneHeading) && strings.Contains(screen, "Session list pane:") && readLog() == expectedShellLog
 	}, func() string {
 		return scrollFailure("Session scrollbar track click did not reach the global inventory end while retaining list focus")
@@ -585,9 +585,9 @@ func tryFindScrollCellsInRows(screen string, column, firstRow, lastRow int) (x, 
 	return x, thumbY, trackY, x != 0 && thumbY != 0 && trackY != 0
 }
 
-func quickDataRow(screen string, quick ducklord.WorkspaceRect) string {
+func quickLastDataRow(screen string, quick ducklord.WorkspaceRect) string {
 	lines := strings.Split(screen, "\n")
-	row := quick.Y // zero-based line for the first one-based data row (Y+1)
+	row := quick.Y + quick.Height - 2 // zero-based line for the last data row (Y+Height-1)
 	if row < 0 || row >= len(lines) {
 		return ""
 	}
@@ -641,5 +641,11 @@ func TestScrollContainerScrollbarFinderScopesSameColumnPanes(t *testing.T) {
 	_, quickThumb, _, ok := tryFindScrollCellsInRows(screen, 5, 6, 8)
 	if !ok || quickThumb != 7 {
 		t.Fatalf("Quick scan got thumb row %d (ok=%t), want row 7", quickThumb, ok)
+	}
+	if got := quickThumbBottom(screen, 5, 6, 8); got != 7 {
+		t.Fatalf("Quick thumb bottom got row %d, want row 7", got)
+	}
+	if got := quickLastDataRow(screen, ducklord.WorkspaceRect{Y: 5, Height: 4}); got != "│" {
+		t.Fatalf("Quick last data row got %q, want row 8", got)
 	}
 }
