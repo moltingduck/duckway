@@ -23,7 +23,15 @@ entries indicate operations available from the originating pane. Click a
 supported prefix shortcut to activate it; multi-key quick-create sequences
 remain keyboard-only. The guide includes child
 forms and multi-step operations; those instructions describe where to use a key.
+When Help has more results than fit on screen, use Up/Down, PageUp/PageDown, or
+the mouse wheel to browse. Its right-edge scrollbar can be clicked to page or
+dragged; filtering and the Help footer stay in place.
 See the [Help coverage checklist](help-operation-audit.md) for developer checks.
+
+When the Project or Session list is longer than its pane, scroll with the mouse
+wheel or use the visible right-edge scrollbar. Click the track to page, or drag
+the thumb to move through the list. These gestures only scroll the list; use the
+keyboard to choose or open an entry.
 
 ## Search terminal output and save output bookmarks
 
