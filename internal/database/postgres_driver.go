@@ -112,6 +112,9 @@ func postgresQuery(query string) string {
 	upperQuery := strings.ToUpper(strings.TrimSpace(query))
 	if strings.HasPrefix(upperQuery, "CREATE TABLE") || strings.HasPrefix(upperQuery, "ALTER TABLE") {
 		query = strings.ReplaceAll(query, "INTEGER", "BIGINT")
+		// Convert the binary CC delivery digest declaration used by migration 32
+		// and its post-migration recovery statement.
+		query = strings.ReplaceAll(query, "content_digest BLOB NOT NULL", "content_digest BYTEA NOT NULL")
 	}
 	var b strings.Builder
 	b.Grow(len(query) + 16)
