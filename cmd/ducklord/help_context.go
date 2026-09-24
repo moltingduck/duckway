@@ -31,7 +31,7 @@ func helpCatalog(workspace bool) []helpEntry {
 		{"", "shortcut_settings", "Configure shortcuts", "arrows choose an action; Enter edits its binding; Enter saves and Esc returns; after save y/Enter restarts now, n/Esc keeps current bindings"},
 		{"", "notification_settings", "Global notification settings", "configure per-class delivery and sound paths; Host levels can inherit Global; Other-Project focus has a threshold; s stages save and prompts for restart"},
 		{"PROJECT PANE", "project_focus", "Focus Project pane", ""},
-		{"", "", "Scroll Project list", "PageUp/PageDown or the mouse wheel moves by one visible page; the Session list uses the same keys"},
+		{"", "", "Scroll Project list", "PageUp/PageDown moves by one visible page; use the mouse wheel or scrollbar to scroll; the Session list supports the same controls"},
 		{"", "project_create", "Create Project", ""},
 		{"", "project_delete", "Delete local Project", ""},
 		{"", "project_notification_focus", "Toggle Project notification focus", ""},
