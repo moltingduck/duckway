@@ -150,4 +150,34 @@ func TestShellHookPeerMustBelongToRootProcessTree(t *testing.T) {
 	if parent, ok := procParentPID(os.Getpid()); !ok || parent <= 0 {
 		t.Fatal("could not read process parent PID")
 	}
+	parent, start, ok := procIdentity(os.Getpid())
+	if !ok || parent <= 0 || start == 0 {
+		t.Fatal("could not read current process identity")
+	}
+	parentAgain, startAgain, ok := procIdentity(os.Getpid())
+	if !ok || parentAgain != parent || startAgain != start {
+		t.Fatal("current process identity was not stable")
+	}
+	for _, invalidPID := range []int{0, -1, 1 << 30} {
+		if _, _, ok := procIdentity(invalidPID); ok {
+			t.Fatalf("invalid process ID %d had an identity", invalidPID)
+		}
+	}
+}
+
+func TestShellHookPeerRejectsClosedUnixSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "closed.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	client, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Close()
+	if shellHookPeerIsDescendant(client, os.Getpid(), 1) {
+		t.Fatal("closed Unix socket was accepted as a shell-hook peer")
+	}
 }
