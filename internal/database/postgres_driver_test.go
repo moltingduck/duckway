@@ -52,14 +52,18 @@ func TestPostgresMigrationsCreateAndRecoverMessageDeliveryTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect to PostgreSQL test server: %v", err)
 	}
-	t.Cleanup(func() { _ = adminDB.Close() })
+	t.Cleanup(func() {
+		if err := adminDB.Close(); err != nil {
+			t.Errorf("close PostgreSQL admin connection: %v", err)
+		}
+	})
 
 	schema := fmt.Sprintf("duckway_migration32_%d", time.Now().UnixNano())
 	if _, err := adminDB.Exec(`CREATE SCHEMA ` + quotePostgresIdentifier(schema)); err != nil {
 		t.Fatalf("create isolated schema: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = adminDB.Exec(`DROP SCHEMA ` + quotePostgresIdentifier(schema) + ` CASCADE`)
+		dropPostgresTestSchema(t, adminDB, schema)
 	})
 
 	q := u.Query()
@@ -69,7 +73,14 @@ func TestPostgresMigrationsCreateAndRecoverMessageDeliveryTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect to isolated schema: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	dbOpen := true
+	t.Cleanup(func() {
+		if dbOpen {
+			if err := db.Close(); err != nil {
+				t.Errorf("close fresh migration connection: %v", err)
+			}
+		}
+	})
 
 	if err := runPostgresMigrations(db); err != nil {
 		t.Fatalf("fresh PostgreSQL migrations: %v", err)
@@ -88,12 +99,17 @@ func TestPostgresMigrationsCreateAndRecoverMessageDeliveryTable(t *testing.T) {
 	if string(got) != string([]byte{0, 1, 2, 127, 128, 255}) {
 		t.Fatalf("retry changed digest to %v", got)
 	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close fresh migration connection: %v", err)
+	}
+	dbOpen = false
+	dropPostgresTestSchema(t, adminDB, schema)
 
 	partialSchema := schema + "_partial"
 	if _, err := adminDB.Exec(`CREATE SCHEMA ` + quotePostgresIdentifier(partialSchema)); err != nil {
 		t.Fatalf("create partial schema: %v", err)
 	}
-	t.Cleanup(func() { _, _ = adminDB.Exec(`DROP SCHEMA ` + quotePostgresIdentifier(partialSchema) + ` CASCADE`) })
+	t.Cleanup(func() { dropPostgresTestSchema(t, adminDB, partialSchema) })
 	partialURL := *u
 	partialQuery := partialURL.Query()
 	partialQuery.Set("search_path", partialSchema+",public")
@@ -102,7 +118,11 @@ func TestPostgresMigrationsCreateAndRecoverMessageDeliveryTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect to partial schema: %v", err)
 	}
-	t.Cleanup(func() { _ = partialDB.Close() })
+	t.Cleanup(func() {
+		if err := partialDB.Close(); err != nil {
+			t.Errorf("close partial migration connection: %v", err)
+		}
+	})
 	for _, statement := range postgresCompatibilityFunctions {
 		if _, err := partialDB.Exec(statement); err != nil {
 			t.Fatalf("install compatibility function for partial schema: %v", err)
@@ -142,6 +162,13 @@ func TestPostgresMigrationsCreateAndRecoverMessageDeliveryTable(t *testing.T) {
 	}
 	if string(got) != string([]byte{0, 1, 2, 127, 128, 255}) {
 		t.Fatalf("partial migration recovery changed digest to %v", got)
+	}
+}
+
+func dropPostgresTestSchema(t *testing.T, db *sql.DB, schema string) {
+	t.Helper()
+	if _, err := db.Exec(`DROP SCHEMA IF EXISTS ` + quotePostgresIdentifier(schema) + ` CASCADE`); err != nil {
+		t.Errorf("drop isolated PostgreSQL schema %q: %v", schema, err)
 	}
 }
 
