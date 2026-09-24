@@ -152,6 +152,44 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		return strings.Join(rows, "\n")
 	}
 
+	// Establish a real Help origin instead of relying on the startup selection.
+	// The firstHandle can appear in the quick list while another Project still
+	// owns navigation, in which case closing Help correctly returns to that list.
+	writePTY(t, terminal, "b")
+	capture.waitCurrent(t, "Project pane:", 5*time.Second)
+	selectedTargetProject := false
+	for step := 0; step < 24; step++ {
+		if strings.Contains(projectHeading(capture.currentText()), "Scroll active project") {
+			selectedTargetProject = true
+			break
+		}
+		before := projectHeading(capture.currentText())
+		writePTY(t, terminal, "\x1b[B")
+		waitE2E(t, 5*time.Second, func() bool {
+			heading := projectHeading(capture.currentText())
+			return heading != "" && heading != before
+		}, func() string { return "Project navigation did not advance while selecting the scroll fixture Project" })
+	}
+	if !selectedTargetProject && strings.Contains(projectHeading(capture.currentText()), "Scroll active project") {
+		selectedTargetProject = true
+	}
+	if !selectedTargetProject {
+		t.Fatalf("could not select Scroll active project before attaching origin PTY: heading=%q\n%s", projectHeading(capture.currentText()), safeTerminalDiagnostic(capture.currentText()))
+	}
+	writePTY(t, terminal, "b") // return to the Session list for this Project
+	capture.waitCurrent(t, "Session list pane:", 5*time.Second)
+	writePTY(t, terminal, "/"+firstHandle+"\r")
+	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
+	writePTY(t, terminal, "\r")
+	capture.waitCurrent(t, "Session focus: keys go to PTY", 10*time.Second)
+	originMarker := fmt.Sprintf("SCROLL_ORIGIN_%x", stamp)
+	writePTY(t, terminal, fmt.Sprintf("printf '%%s\\n' '%s' | tee -a \"$DUCKWAY_SCROLL_LOG\"\r", originMarker))
+	var expectedShellLog string
+	waitE2E(t, 10*time.Second, func() bool {
+		expectedShellLog = readLog()
+		return expectedShellLog == originMarker+"\n" && strings.Contains(capture.currentText(), originMarker)
+	}, func() string { return "origin PTY did not execute its setup sentinel before Help" })
+
 	// The Help page has many more rows than this compact terminal. Page keys
 	// must move its current viewport, and pending remote output must not take
 	// input ownership or close it.
@@ -218,8 +256,8 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		_, y, _, ready := tryFindScrollCellsInColumn(screen, helpColumn)
 		return ready && y > beforeDragY && strings.Contains(screen, "Filter: session")
 	}, func() string { return "Help thumb drag did not scroll while preserving search" })
-	if got := readLog(); got != "" {
-		t.Fatalf("Help paging leaked bytes to origin shell: %q", got)
+	if got := readLog(); got != expectedShellLog {
+		t.Fatalf("Help paging leaked bytes to origin shell: got %q want %q", got, expectedShellLog)
 	}
 	asyncMarker := fmt.Sprintf("SCROLL_ASYNC_%x", stamp)
 	if out, err := exec.Command(runtime, "exec", controller, binary, "--name", owner+"-cli", "send", "client-a", firstHandle,
@@ -229,7 +267,7 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	waitE2E(t, 10*time.Second, func() bool {
 		return readLog() == asyncMarker+"\n" && strings.Contains(capture.currentText(), "Keyboard shortcuts")
 	}, func() string { return "async PTY output did not arrive while Help remained open" })
-	expectedShellLog := asyncMarker + "\n"
+	expectedShellLog += asyncMarker + "\n"
 	writePTY(t, terminal, "?")
 	waitE2E(t, 10*time.Second, func() bool {
 		screen := capture.currentText()
