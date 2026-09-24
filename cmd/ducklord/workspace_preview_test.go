@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -643,7 +644,7 @@ func TestWorkspaceProjectShortcutsBrowseTabsAndSplitPanesWithoutQuickSelection(t
 	for _, step := range []struct {
 		key, want string
 	}{
-		{")", second}, {"(", first}, {"\x1b[6~", third}, {"\x1b[5~", first},
+		{")", second}, {"(", first}, {"[", third}, {"]", first},
 	} {
 		handled, changed := state.handleWorkspaceProjectInput([]byte(step.key))
 		if !handled || !changed || nav.CurrentPaneID() != step.want || nav.Region() != ducklord.RegionProjects {
@@ -652,6 +653,46 @@ func TestWorkspaceProjectShortcutsBrowseTabsAndSplitPanesWithoutQuickSelection(t
 		if state.selected != 0 || state.focused || state.workspaceAttachFromProject {
 			t.Fatalf("key %q changed quick selection or PTY focus", step.key)
 		}
+	}
+}
+
+func TestWorkspaceProjectPageDownPagesProjectListBeforeTabShortcuts(t *testing.T) {
+	state, projectID, _, _ := workspacePaneTestState(t)
+	state.cfg.Shortcuts = map[string]string{"project_prev_tab": "pageup", "project_next_tab": "pagedown"}
+	for i := 0; i < 24; i++ {
+		if _, err := state.activity().ProjectLayout.AddProject(fmt.Sprintf("Page %02d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nav, err := state.workspaceNavigation()
+	if err != nil || nav.SelectProject(projectID) != nil {
+		t.Fatalf("select Project: %v", err)
+	}
+	projects := state.activity().ProjectLayout.Projects
+	start := -1
+	for i := range projects {
+		if projects[i].ID == projectID {
+			start = i
+			break
+		}
+	}
+	width, height := terminalSize()
+	page := max(1, ducklord.CalculateWorkspaceGeometry(width, height, 4).Projects.Height-1)
+	if start < 0 || start+page >= len(projects) {
+		t.Fatalf("fixture too small for a full Project page: start=%d page=%d items=%d", start, page, len(projects))
+	}
+	beforePTY := sessionKey(state.activePTYSession())
+	beforeTab := nav.CurrentPaneID()
+	handled, changed := state.handleWorkspaceProjectInput([]byte("\x1b[6~"))
+	if !handled || !changed || nav.CurrentProjectID() != projects[start+page].ID {
+		t.Fatalf("PageDown did not page Project selection: handled=%v changed=%v project=%q want=%q", handled, changed, nav.CurrentProjectID(), projects[start+page].ID)
+	}
+	if sessionKey(state.activePTYSession()) != beforePTY || state.selected != 0 || state.focused || state.workspaceAttachFromProject {
+		t.Fatal("Project PageDown changed active PTY, quick selection, or PTY focus")
+	}
+	handled, changed = state.handleWorkspaceProjectInput([]byte("\x1b[5~"))
+	if !handled || !changed || nav.CurrentProjectID() != projectID || nav.CurrentPaneID() != beforeTab {
+		t.Fatalf("PageUp did not return to the original Project tab: handled=%v changed=%v project=%q pane=%q want project=%q pane=%q", handled, changed, nav.CurrentProjectID(), nav.CurrentPaneID(), projectID, beforeTab)
 	}
 }
 

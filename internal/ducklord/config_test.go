@@ -186,6 +186,19 @@ func TestShortcutDefaultsAndLegacyOverridesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestProjectTabShortcutDefaultsAvoidListPagingKeys(t *testing.T) {
+	if got := (&Config{}).Shortcut("project_prev_tab"); got != "[" {
+		t.Fatalf("previous Project tab shortcut = %q, want [", got)
+	}
+	if got := (&Config{}).Shortcut("project_next_tab"); got != "]" {
+		t.Fatalf("next Project tab shortcut = %q, want ]", got)
+	}
+	legacy := &Config{Shortcuts: map[string]string{"project_prev_tab": "pageup", "project_next_tab": "pagedown"}}
+	if legacy.Shortcut("project_prev_tab") != "pageup" || legacy.Shortcut("project_next_tab") != "pagedown" {
+		t.Fatal("explicit Project tab shortcut overrides were rewritten")
+	}
+}
+
 func TestSaveConfigRejectsUnsafePaths(t *testing.T) {
 	dir := t.TempDir()
 	config := &Config{Clients: []Client{}}

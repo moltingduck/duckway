@@ -381,7 +381,7 @@ func contextualShortcutPair(a, b string) bool {
 // Ordinary actions use lowercase letters or control keys; uppercase letters are
 // reserved for important or destructive actions. Keep defaults conflict-free and
 // preserve explicit user overrides. Pane prefix arrows follow spatial layout;
-// PageUp/PageDown switch tabs.
+// Brackets switch tabs; PageUp/PageDown page through the Project list.
 var DefaultShortcuts = map[string]string{
 	"help": "?", "quit": "q", "host_actions": "h", "host_add": "a", "host_remove": "A", "notification_settings": "ctrl-o",
 	"session_create": "c", "session_actions": "m", "session_notifications": "n", "session_yield": "y", "session_yield_wait": "Y",
@@ -390,7 +390,7 @@ var DefaultShortcuts = map[string]string{
 	"project_focus":    "b",
 	"pane_prefix":      "ctrl-b",
 	"project_hosts":    "w",
-	"project_prev_tab": "pageup", "project_next_tab": "pagedown", "project_prev_pane": "(", "project_next_pane": ")",
+	"project_prev_tab": "[", "project_next_tab": "]", "project_prev_pane": "(", "project_next_pane": ")",
 	"project_add_pane":           "p",
 	"project_create":             "e",
 	"project_delete":             "Z",

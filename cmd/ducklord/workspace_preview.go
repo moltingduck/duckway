@@ -296,8 +296,9 @@ func (s *tuiState) handleWorkspaceProjectInput(input []byte) (handled, changed b
 		s.workspaceProjectFocus = false
 		return true, false
 	}
-	if s.shortcut("project_prev_tab", key) || s.shortcut("project_next_tab", key) ||
-		s.shortcut("project_prev_pane", key) || s.shortcut("project_next_pane", key) {
+	pageKey := key == "\x1b[5~" || key == "\x1b[6~"
+	if !pageKey && (s.shortcut("project_prev_tab", key) || s.shortcut("project_next_tab", key) ||
+		s.shortcut("project_prev_pane", key) || s.shortcut("project_next_pane", key)) {
 		nav, err := s.workspaceNavigation()
 		if err == nil {
 			switch {
