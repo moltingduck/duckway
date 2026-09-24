@@ -471,10 +471,15 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	}
 	sessionColumn := geometry.Quick.X + geometry.Quick.Width - 1
 	writePTY(t, terminal, "\x1b[6~")
+	var pageDownThumbY int
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
 		_, y, _, ready := tryFindScrollCellsInRows(screen, sessionColumn, geometry.Quick.Y+1, geometry.Quick.Y+geometry.Quick.Height-1)
-		return ready && y > geometry.Quick.Y+1 && strings.Contains(paneHeading(screen), handles[sessionCount-2])
+		if ready && y > geometry.Quick.Y+1 && strings.Contains(paneHeading(screen), handles[sessionCount-2]) {
+			pageDownThumbY = y
+			return true
+		}
+		return false
 	}, func() string {
 		return scrollFailure("Session PageDown did not select the last row of the next page and move the viewport")
 	})
@@ -482,7 +487,7 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
 		_, y, _, ready := tryFindScrollCellsInRows(screen, sessionColumn, geometry.Quick.Y+1, geometry.Quick.Y+geometry.Quick.Height-1)
-		return ready && y == geometry.Quick.Y+1 && strings.Contains(paneHeading(screen), handles[0])
+		return ready && y < pageDownThumbY && strings.Contains(selectedQuickRow(screen), firstHandlePrefix) && strings.Contains(paneHeading(screen), handles[0])
 	}, func() string { return scrollFailure("Session PageUp did not restore the first Session and viewport") })
 	quick := geometry.Quick
 	trackX := quick.X + quick.Width - 1
@@ -497,9 +502,12 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	writePTY(t, terminal, string(workspaceMouse(0, trackX, trackY, false))+string(workspaceMouse(0, trackX, trackY, true)))
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
-		return strings.Contains(paneHeading(screen), handles[sessionCount-1]) && strings.Contains(screen, "Session list pane:")
+		firstVisible := quickDataRow(screen, quick)
+		selected := selectedQuickRow(screen)
+		return selected != "" && selected == firstVisible && quickThumbBottom(screen, trackX, quick.Y+1, quick.Y+quick.Height-1) == quick.Y+quick.Height-1 &&
+			quickSelectedPreviewMatches(screen, selected, paneHeading) && strings.Contains(screen, "Session list pane:") && readLog() == expectedShellLog
 	}, func() string {
-		return scrollFailure("Session scrollbar track click did not select the last Session while retaining list focus")
+		return scrollFailure("Session scrollbar track click did not reach the global inventory end while retaining list focus")
 	})
 	if strings.Contains(capture.currentText(), "Session focus: keys go to PTY") {
 		t.Fatal("Session scrollbar click activated a Session")
@@ -575,6 +583,44 @@ func tryFindScrollCellsInRows(screen string, column, firstRow, lastRow int) (x, 
 		}
 	}
 	return x, thumbY, trackY, x != 0 && thumbY != 0 && trackY != 0
+}
+
+func quickDataRow(screen string, quick ducklord.WorkspaceRect) string {
+	lines := strings.Split(screen, "\n")
+	row := quick.Y // zero-based line for the first one-based data row (Y+1)
+	if row < 0 || row >= len(lines) {
+		return ""
+	}
+	return strings.TrimSpace(lines[row])
+}
+
+func quickThumbBottom(screen string, column, firstRow, lastRow int) int {
+	lines := strings.Split(screen, "\n")
+	thumbBottom := 0
+	for row := max(0, firstRow-1); row < min(len(lines), lastRow); row++ {
+		line := lines[row]
+		for start := 0; start < len(line); {
+			next := strings.IndexAny(line[start:], "█│")
+			if next < 0 {
+				break
+			}
+			at := start + next
+			glyph := line[at : at+len("█")]
+			if modalCellWidth(line[:at])+1 == column {
+				if glyph == "█" {
+					thumbBottom = row + 1
+				}
+			}
+			start = at + len(glyph)
+		}
+	}
+	return thumbBottom
+}
+
+func quickSelectedPreviewMatches(screen, selected string, paneHeading func(string) string) bool {
+	selected = strings.TrimSpace(strings.TrimPrefix(selected, "›"))
+	name, _, ok := strings.Cut(selected, " @")
+	return ok && name != "" && strings.Contains(paneHeading(screen), "/"+name)
 }
 
 func TestScrollContainerScrollbarFinderScopesSameColumnPanes(t *testing.T) {
