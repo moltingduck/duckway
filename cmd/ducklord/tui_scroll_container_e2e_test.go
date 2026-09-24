@@ -146,6 +146,17 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		}
 		return strings.TrimSpace(lines[row])
 	}
+	selectedQuickRow := func(screen string) string {
+		lines := strings.Split(screen, "\n")
+		firstDataRow := geometry.Quick.Y
+		lastDataRow := min(len(lines), geometry.Quick.Y+geometry.Quick.Height)
+		for row := firstDataRow; row < lastDataRow; row++ {
+			if strings.Contains(lines[row], "›") {
+				return strings.TrimSpace(lines[row])
+			}
+		}
+		return ""
+	}
 	scrollFailure := func(where string) string {
 		screen := capture.currentText()
 		footer := ""
@@ -415,11 +426,36 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	if got := readLog(); got != expectedShellLog {
 		t.Fatalf("Project scrolling changed the exact active Session: %q", got)
 	}
+	// The top Project is the default Project, while the fixture Sessions belong
+	// to Scroll active project. Return there before opening the Quick list.
+	writePTY(t, terminal, "\x1b[B")
+	waitE2E(t, 5*time.Second, func() bool {
+		return strings.Contains(projectHeading(capture.currentText()), "Scroll active project")
+	}, func() string {
+		return scrollFailure("could not restore the fixture Project after dragging the Project list to the top")
+	})
 	writePTY(t, terminal, "b")
 	capture.waitCurrent(t, "Session list pane:", 10*time.Second)
 	assertScrollbar("Session list", geometry.Quick.X+geometry.Quick.Width-1)
 	if x, _, _ := findScrollCellsInColumn(capture.currentText(), geometry.Quick.X+geometry.Quick.Width-1); x != geometry.Quick.X+geometry.Quick.Width-1 {
 		t.Fatalf("Session scrollbar appeared at column %d, want pane edge %d", x, geometry.Quick.X+geometry.Quick.Width-1)
+	}
+	// The Quick list spans the whole inventory, including Sessions outside the
+	// fixture Project. Walk its actual selected row to handle0 instead of
+	// assuming the fixture begins at index zero.
+	firstHandlePrefix := strings.TrimSuffix(handles[0], fmt.Sprintf("%x", stamp))
+	for step := 0; step < 64 && !strings.Contains(selectedQuickRow(capture.currentText()), firstHandlePrefix); step++ {
+		before := selectedQuickRow(capture.currentText())
+		writePTY(t, terminal, "\x1b[B")
+		waitE2E(t, 5*time.Second, func() bool {
+			row := selectedQuickRow(capture.currentText())
+			return row != "" && row != before
+		}, func() string {
+			return scrollFailure("Session navigation did not advance while selecting fixture handle0")
+		})
+	}
+	if !strings.Contains(selectedQuickRow(capture.currentText()), firstHandlePrefix) {
+		t.Fatalf("could not select fixture handle0 in Quick list: row=%q\n%s", selectedQuickRow(capture.currentText()), safeTerminalDiagnostic(capture.currentText()))
 	}
 	if !strings.Contains(capture.currentText(), handles[0]) {
 		t.Fatal("origin Session was not visible before Session list scrolling")
@@ -468,9 +504,15 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	waitE2E(t, 5*time.Second, func() bool {
 		screen := capture.currentText()
 		_, y, _, ready := tryFindScrollCellsInColumn(screen, sessionColumn)
-		return ready && y == sessionDragEnd && strings.Contains(paneHeading(screen), handles[0])
+		lines := strings.Split(screen, "\n")
+		firstRow := ""
+		if geometry.Quick.Y+1 < len(lines) {
+			firstRow = strings.TrimSpace(lines[geometry.Quick.Y+1])
+		}
+		return ready && y == sessionDragEnd && selectedQuickRow(screen) == firstRow &&
+			strings.Contains(screen, "Session list pane:") && readLog() == expectedShellLog
 	}, func() string {
-		return scrollFailure("Session thumb drag did not return the current viewport to the first Session")
+		return scrollFailure("Session thumb drag did not select the first inventory row and return the viewport to the top")
 	})
 	writePTY(t, terminal, "\x1b[6~")
 	if got := readLog(); got != expectedShellLog {
