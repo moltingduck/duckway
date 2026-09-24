@@ -121,12 +121,21 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		}
 		return string(out)
 	}
+	geometry := ducklord.CalculateWorkspaceGeometry(100, 16, 4)
 	assertScrollbar := func(where string, column int) {
 		t.Helper()
 		if column <= 0 {
 			t.Fatalf("%s scrollbar column is invalid: %d", where, column)
 		}
 		findScrollCellsInColumn(capture.currentText(), column)
+	}
+	projectHeading := func(screen string) string {
+		lines := strings.Split(screen, "\n")
+		row := geometry.Terminal.Y - 1
+		if row < 0 || row >= len(lines) {
+			return ""
+		}
+		return strings.TrimSpace(lines[row])
 	}
 	helpViewport := func(screen string) string {
 		lines := strings.Split(screen, "\n")
@@ -234,7 +243,6 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	// Project and Session list overflow controls are exercised while their own
 	// navigation pane owns the mouse. A scrollbar click scrolls the viewport;
 	// it must not enter a Project or transfer terminal control.
-	geometry := ducklord.CalculateWorkspaceGeometry(100, 16, 4)
 	// With terminal focus, hovering the Project list and wheeling over it is a
 	// consumed no-op: it must not switch the selected Session or PTY.
 	writePTY(t, terminal, string(workspaceMouse(65, geometry.Projects.X+2, geometry.Projects.Y+2, false)))
@@ -267,6 +275,25 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	if projectLine < 0 {
 		t.Fatal("first synthetic Project was not visible before scrolling")
 	}
+	// With Project focus, a wheel over the Project list moves the selected
+	// Project and its current terminal heading, while retaining navigation
+	// focus and leaving the attached origin PTY untouched.
+	writePTY(t, terminal, string(workspaceMouse(65, geometry.Projects.X+2, geometry.Projects.Y+2, false)))
+	waitE2E(t, 5*time.Second, func() bool {
+		screen := capture.currentText()
+		return strings.Contains(projectHeading(screen), "Scroll project 02") &&
+			strings.Contains(screen, "Project pane:") &&
+			!strings.Contains(screen, "Session focus: keys go to PTY") && readLog() == expectedShellLog
+	}, func() string {
+		return "Project-list wheel did not advance the selected Project while retaining Project focus"
+	})
+	if got := readLog(); got != expectedShellLog {
+		t.Fatalf("Project-list wheel leaked input to the origin PTY: %q", got)
+	}
+	writePTY(t, terminal, string(workspaceMouse(64, geometry.Projects.X+2, geometry.Projects.Y+2, false)))
+	waitE2E(t, 5*time.Second, func() bool {
+		return strings.Contains(projectHeading(capture.currentText()), "Scroll active project")
+	}, func() string { return "Project-list wheel did not restore the origin Project selection" })
 	projectColumn := geometry.Projects.X + geometry.Projects.Width - 1
 	_, projectThumbStart, _ := findScrollCellsInColumn(capture.currentText(), projectColumn)
 	writePTY(t, terminal, "\x1b[6~")
@@ -285,8 +312,12 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	projectTrackX := projectColumn
 	projectTrackY := geometry.Projects.Y + geometry.Projects.Height - 2
 	for page := 0; page < 8 && !strings.Contains(capture.currentText(), "Scroll project 15"); page++ {
+		beforeHeading := projectHeading(capture.currentText())
 		writePTY(t, terminal, string(workspaceMouse(0, projectTrackX, projectTrackY, false))+string(workspaceMouse(0, projectTrackX, projectTrackY, true)))
-		time.Sleep(120 * time.Millisecond)
+		waitE2E(t, 5*time.Second, func() bool {
+			screen := capture.currentText()
+			return projectHeading(screen) != "" && projectHeading(screen) != beforeHeading
+		}, func() string { return "Project scrollbar track click did not change the current selected Project" })
 	}
 	waitE2E(t, 5*time.Second, func() bool { return strings.Contains(capture.currentText(), "Scroll project 15") }, func() string { return "Project scrollbar track click did not page to the end" })
 	if strings.Contains(capture.currentText(), "Session focus: keys go to PTY") || strings.Contains(capture.currentText(), "Add Session pane") {
