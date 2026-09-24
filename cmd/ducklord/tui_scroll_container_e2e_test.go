@@ -163,6 +163,8 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		return y < helpAfterDown
 	}, func() string { return "Help Up did not move its current result viewport" })
 	writePTY(t, terminal, "/session")
+	capture.waitCurrent(t, "Search: session", 5*time.Second)
+	writePTY(t, terminal, "\r") // pin the search filter
 	capture.waitCurrent(t, "Filter: session", 5*time.Second)
 	filtered := capture.currentText()
 	_, filteredThumbBefore, _ := findScrollCellsInColumn(filtered, helpColumn)
@@ -195,11 +197,9 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		t.Fatalf("request asynchronous PTY output: %v: %s", err, out)
 	}
 	waitE2E(t, 10*time.Second, func() bool {
-		return strings.Contains(readLog(), asyncMarker+"\n") && strings.Contains(capture.currentText(), "Keyboard shortcuts")
+		return readLog() == asyncMarker+"\n" && strings.Contains(capture.currentText(), "Keyboard shortcuts")
 	}, func() string { return "async PTY output did not arrive while Help remained open" })
-	if got := readLog(); got != "" {
-		t.Fatalf("Help ownership leaked input during async output: %q", got)
-	}
+	expectedShellLog := asyncMarker + "\n"
 	writePTY(t, terminal, "?")
 	waitE2E(t, 10*time.Second, func() bool {
 		screen := capture.currentText()
@@ -207,7 +207,8 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	}, func() string { return "? did not close Help in current terminal cells" })
 	marker := fmt.Sprintf("SCROLL_RESTORED_%x", stamp)
 	writePTY(t, terminal, fmt.Sprintf("printf '%%s\\n' '%s' | tee -a \"$DUCKWAY_SCROLL_LOG\"\r", marker))
-	waitE2E(t, 10*time.Second, func() bool { return strings.Contains(readLog(), marker+"\n") }, func() string { return "Help close did not restore the exact origin shell" })
+	waitE2E(t, 10*time.Second, func() bool { return readLog() == expectedShellLog+marker+"\n" }, func() string { return "Help close did not restore the exact origin shell without leaked input" })
+	expectedShellLog += marker + "\n"
 
 	// Project and Session list overflow controls are exercised while their own
 	// navigation pane owns the mouse. A scrollbar click scrolls the viewport;
@@ -217,9 +218,9 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	// consumed no-op: it must not switch the selected Session or PTY.
 	writePTY(t, terminal, string(workspaceMouse(65, geometry.Projects.X+2, geometry.Projects.Y+2, false)))
 	waitE2E(t, 3*time.Second, func() bool {
-		return strings.Contains(capture.currentText(), marker) && strings.Contains(readLog(), marker+"\n")
+		return strings.Contains(capture.currentText(), marker) && readLog() == expectedShellLog
 	}, func() string { return "terminal focus or exact origin PTY changed after list wheel" })
-	if got := readLog(); got != marker+"\n" {
+	if got := readLog(); got != expectedShellLog {
 		t.Fatalf("list wheel leaked input to origin shell: %q", got)
 	}
 	if strings.Contains(capture.currentText(), "Project pane:") || strings.Contains(capture.currentText(), "Session list pane:") {
@@ -269,7 +270,7 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	projectDragEnd := geometry.Projects.Y + 2
 	writePTY(t, terminal, string(workspaceMouse(0, projectThumbX, projectThumbY, false))+string(workspaceMouse(32, projectThumbX, projectDragEnd, false))+string(workspaceMouse(0, projectThumbX+3, projectDragEnd, true)))
 	capture.waitCurrent(t, "Scroll project 00", 5*time.Second)
-	if got := readLog(); got != marker+"\n" {
+	if got := readLog(); got != expectedShellLog {
 		t.Fatalf("Project scrolling changed the exact active Session: %q", got)
 	}
 	writePTY(t, terminal, "b")
@@ -308,12 +309,16 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 	if strings.Contains(capture.currentText(), "Session focus: keys go to PTY") {
 		t.Fatal("Session scrollbar click activated a Session")
 	}
-	sessionThumbX, sessionThumbY, _ := findScrollCellsInColumn(capture.currentText(), geometry.Quick.X+geometry.Quick.Width-1)
-	sessionDragEnd := quick.Y + quick.Height - 2
+	sessionThumbX, sessionThumbY, _ := findScrollCellsInColumn(capture.currentText(), sessionColumn)
+	sessionThumbBeforeDrag := sessionThumbY
+	sessionDragEnd := quick.Y + 2
 	writePTY(t, terminal, string(workspaceMouse(0, sessionThumbX, sessionThumbY, false))+string(workspaceMouse(32, sessionThumbX, sessionDragEnd, false))+string(workspaceMouse(0, sessionThumbX+3, sessionDragEnd, true)))
-	capture.waitCurrent(t, handles[sessionCount-1], 5*time.Second)
+	waitE2E(t, 5*time.Second, func() bool {
+		_, y, _ := findScrollCellsInColumn(capture.currentText(), sessionColumn)
+		return y < sessionThumbBeforeDrag && strings.Contains(capture.currentText(), handles[0])
+	}, func() string { return "Session thumb drag did not return the current viewport to the first Session" })
 	writePTY(t, terminal, "\x1b[6~")
-	if got := readLog(); got != marker+"\n" {
+	if got := readLog(); got != expectedShellLog {
 		t.Fatalf("list paging leaked input to origin shell: %q", got)
 	}
 }
