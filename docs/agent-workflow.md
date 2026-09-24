@@ -271,6 +271,7 @@ counts are not monetary cost or subscription quota consumption.
 
 | Batch | Completed outcome | Calls | Input / cached / output tokens | Subagents | Repeated checks | Source |
 | --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-24 pg-blob-0924 | PostgreSQL migration32 BYTEA fix; actual admin restart and demo ready | Unmeasured | Unmeasured | 2 | Fixture failure repairs, actual PostgreSQL race tests and public-extension variant | HANDOFF.md; token usage not collected |
 | 2026-09-15 demo refresh | Standing restart instruction and current demo ready | Unmeasured | Unmeasured | 0 | No runtime test reruns; startup/readiness checks passed | TASK.md and HANDOFF.md; token usage not collected |
 | 2026-09-15 tab navigation | Prefix+n/p and empty Project Enter | Unmeasured | Unmeasured | 0 | No repeated checks; container E2E blocked by existing fixture | TASK.md and HANDOFF.md; token usage not collected |
 | 2026-09-15 workflow | Repository instructions and batch/handoff procedure | Unmeasured | Unmeasured | 0 | No runtime tests or reruns | Current task; token usage not collected |

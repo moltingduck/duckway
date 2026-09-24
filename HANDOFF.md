@@ -1,3 +1,60 @@
+# Completed batch: pg-blob-0924
+
+## Outcome and delivery
+Migration 32 used SQLite BLOB for cc_message_deliveries.content_digest without
+PostgreSQL translation. ca652df maps that specific DDL declaration to BYTEA,
+including the required-schema retry path; SQLite remains unchanged. Test fixture
+followups 8762b15/a0616c7 retain valid client relations and isolate extension
+lifetimes. Code checkpoint a0616c7. Delivery branch is
+codex/recover-live-state-20260922; main is unchanged (last observed 40c9011).
+Rebuild the admin image with the deployment's existing Compose files/profile
+after pulling. Restarting an old image cannot load the fix. Existing databases
+can retry migrations without deleting their volumes.
+
+## Verification
+- Baseline actual PostgreSQL 17 + admin reproduced migration 32 BLOB failure,
+  exec 13699.
+- Normal affected tests PASS, exec 12326:
+  GOFLAGS=-buildvcs=false go test ./internal/database/... ./internal/server ./cmd/admin
+- Final PostgreSQL 17 with DUCKWAY_POSTGRES_TEST_URL and affected race tests PASS,
+  exec 38642: go test -race ./internal/database/... ./internal/server -count=1.
+  Covers fresh migrations, retry with binary data retention, pre-32 recovery
+  preserving a sentinel row, and BYTEA binary roundtrip. SQLite tests also ran.
+  A second integration run with pgcrypto preinstalled in public PASS (0.190s);
+  both runs left zero owned schemas; the preinstalled extension was preserved.
+- Final go vet ./internal/database/... ./internal/server ./cmd/admin and
+  git diff --check PASS, exec 7690cf.
+- Actual admin first startup and same-database restart /healthz both returned ok;
+  information_schema confirmed bytea, exec 54494.
+- Independent reviewer pg_blob_review: no findings at a0616c7 vs 154525f.
+- Earlier fixture failures 20252/51118 exposed missing client relations and
+  pgcrypto ownership across schemas; both repaired and runtime rerun passed.
+- Small backend batch: affected tests/runtime smoke used; full repository lint
+  and TUI E2E not rerun. Integration/docs hooks bypassed with these manual gates
+  and the known baseline lint findings recorded in the previous batch below.
+
+## Demo and final resource scan
+Retained demo rebuilt/restarted successfully, exec 83229: inventory, PTY I/O,
+daemon recovery and native shell lifecycle checks PASS. Later edits only affect
+test fixtures. All five ducklord-verified containers are running, retained owner
+ducklord-verified-20260917.
+Launch: `podman exec -it ducklord-verified-ducklord-dev ducklord tui --config /root/.ducklord/config.yaml`
+
+Final scan exec 868c99: clean implementation worktree inspected against integrated
+files (identical), removed with branch, worktrees pruned. Owner pg-blob-0924
+container absent; admin process stopped/waited by EXIT trap. Empty temporary
+root tmp/pg-blob-0924 removed, so owned binaries/logs/sockets/fixtures are gone.
+Preserved baseline five .claude worktrees, three dw-*-1788855706-1278453
+containers, old images/networks/logs and named persistent demo.
+
+## Usage
+Two lower-tier subagents (implementation, independent review); root integrated
+and verified. Calls/input/cached/output tokens unmeasured. Repeated checks were
+driven by the two fixture failures and the preinstalled-extension variant.
+Next action: await user deployment feedback.
+
+---
+
 # Completed batch: pane-scroll-0924 / build-dist-0924
 
 ## Outcome
