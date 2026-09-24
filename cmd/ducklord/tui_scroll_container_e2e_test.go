@@ -202,7 +202,7 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		return ready && helpViewport(screen) != filteredRowsBefore && strings.Contains(screen, "Filter: session")
 	}, func() string { return "Help PageDown lost search or failed to change its filtered result rows" })
 	// The mouse wheel and thumb drag use the actual current scrollbar cells.
-	helpX, helpThumbY, helpTrackY := findScrollCellsInColumn(capture.currentText(), helpColumn)
+	helpX, helpThumbY, _ := findScrollCellsInColumn(capture.currentText(), helpColumn)
 	beforeWheelRows := helpViewport(capture.currentText())
 	writePTY(t, terminal, string(workspaceMouse(64, helpX-1, helpThumbY, false)))
 	waitE2E(t, 5*time.Second, func() bool {
@@ -210,7 +210,7 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		_, _, _, ready := tryFindScrollCellsInColumn(screen, helpColumn)
 		return ready && helpViewport(screen) != beforeWheelRows && strings.Contains(screen, "Filter: session")
 	}, func() string { return "Help mouse wheel did not move its thumb while preserving search" })
-	_, helpThumbY, helpTrackY = findScrollCellsInColumn(capture.currentText(), helpColumn)
+	_, helpThumbY, helpTrackY := findScrollCellsInColumn(capture.currentText(), helpColumn)
 	beforeDragY := helpThumbY
 	writePTY(t, terminal, string(workspaceMouse(0, helpX, helpThumbY, false))+string(workspaceMouse(32, helpX, helpTrackY, false))+string(workspaceMouse(0, helpX+4, helpTrackY, true)))
 	waitE2E(t, 5*time.Second, func() bool {
@@ -235,9 +235,32 @@ func TestDucklordScrollContainerE2E(t *testing.T) {
 		screen := capture.currentText()
 		return !strings.Contains(screen, "Keyboard shortcuts") && !strings.Contains(screen, "Help ·")
 	}, func() string { return "? did not close Help in current terminal cells" })
+	// Help can disappear one event before its asynchronous PTY focus lease is
+	// restored. Wait for the visible terminal-focus indicator and the unique
+	// output marker before sending the restoration sentinel, so a timeout tells
+	// us whether focus failed independently of shell input/output.
+	var restoreScreen, restoreLog string
+	waitE2E(t, 10*time.Second, func() bool {
+		restoreScreen = capture.currentText()
+		restoreLog = readLog()
+		return strings.Contains(restoreScreen, "Session focus: keys go to PTY") &&
+			strings.Contains(restoreScreen, asyncMarker) && restoreLog == expectedShellLog
+	}, func() string {
+		return fmt.Sprintf("Help closed but origin focus/output was not restored: log=%q focused=%t asyncVisible=%t\n%s",
+			restoreLog,
+			strings.Contains(restoreScreen, "Session focus: keys go to PTY"),
+			strings.Contains(restoreScreen, asyncMarker), safeTerminalDiagnostic(restoreScreen))
+	})
 	marker := fmt.Sprintf("SCROLL_RESTORED_%x", stamp)
 	writePTY(t, terminal, fmt.Sprintf("printf '%%s\\n' '%s' | tee -a \"$DUCKWAY_SCROLL_LOG\"\r", marker))
-	waitE2E(t, 10*time.Second, func() bool { return readLog() == expectedShellLog+marker+"\n" }, func() string { return "Help close did not restore the exact origin shell without leaked input" })
+	var sentinelLog string
+	waitE2E(t, 10*time.Second, func() bool {
+		sentinelLog = readLog()
+		return sentinelLog == expectedShellLog+marker+"\n"
+	}, func() string {
+		return fmt.Sprintf("restored origin PTY did not execute the sentinel: log=%q want=%q\n%s",
+			sentinelLog, expectedShellLog+marker+"\\n", safeTerminalDiagnostic(capture.currentText()))
+	})
 	expectedShellLog += marker + "\n"
 
 	// Project and Session list overflow controls are exercised while their own
