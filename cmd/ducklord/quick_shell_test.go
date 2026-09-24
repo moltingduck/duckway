@@ -262,10 +262,22 @@ func TestQuickShellPlacementKeepsCreatedSessionFocus(t *testing.T) {
 	if !ok || selected != identity {
 		t.Fatalf("created Session was not selected after placement: project=%q pane=%q selected=%+v", nav.CurrentProjectID(), nav.CurrentPaneID(), selected)
 	}
-	// A late control completion must leave the newly selected Session in focus.
-	s.activeAttachKey = sessionKey(created)
+	// Inventory placement happens before the old pooled control is rejected.
+	// Its teardown must clear old output focus without erasing the new route.
+	wantAttachKey := sessionKey(created)
+	if s.activeAttachKey != wantAttachKey {
+		t.Fatalf("created Session route missing before stale teardown: got=%q want=%q", s.activeAttachKey, wantAttachKey)
+	}
 	s.clearAttachIdentity()
 	if s.workspaceProjectFocus || s.workspaceFocusFromProject {
 		t.Fatalf("late teardown stole created Session focus: project=%v fromProject=%v", s.workspaceProjectFocus, s.workspaceFocusFromProject)
+	}
+	if s.activeAttachKey != wantAttachKey || !s.workspacePlacementFocusPending {
+		t.Fatalf("late teardown erased pending created Session route: attach=%q pending=%v", s.activeAttachKey, s.workspacePlacementFocusPending)
+	}
+	active, ok := ducklord.IdentityFromSession(s.activePTYSession())
+	createdIdentity, _ := ducklord.IdentityFromSession(created)
+	if !ok || active != createdIdentity {
+		t.Fatalf("synthetic Enter would target the wrong Session after stale teardown: active=%+v want=%+v", active, createdIdentity)
 	}
 }

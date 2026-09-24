@@ -5548,6 +5548,13 @@ func (s *tuiState) clearAttachIdentity() {
 	// attach was entered from the Project pane, but doing that here would let a
 	// stale control completion steal focus from the captured Session route.
 	quickShellPlacementPending := s.workspaceNewSessionIntent != nil || len(s.pendingWorkspacePlacements) != 0 || s.workspacePlacementFocusPending
+	if s.workspacePlacementFocusPending {
+		// Inventory refresh can select the newly placed Session before the old
+		// pooled control is rejected. Keep that new route until the synthetic
+		// Enter acquires its control; only the stale output focus was cleared above.
+		s.workspaceFocusFromProject = false
+		return
+	}
 	if s.workspacePreview && s.workspaceNav != nil && s.activeAttachKey != "" && !quickShellPlacementPending {
 		if s.workspaceFocusFromProject {
 			_ = s.workspaceNav.SelectProject(s.workspaceNav.CurrentProjectID())
