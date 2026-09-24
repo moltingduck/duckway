@@ -10,16 +10,7 @@ import (
 // handleWorkspaceMouse keeps drag-and-drop local to Ducklord. It never writes
 // mouse escape sequences to a PTY or changes Ducklion writer ownership.
 func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
-	// A captured list drag belongs only to the workspace overview route. Drop
-	// it as soon as another route can own mouse input, including terminal focus
-	// and modal/detail transitions, so later releases cannot act on hidden lists.
-	if !s.workspacePreview || s.focused || s.hostScoped || s.workspacePaneMode || s.centralModalOpen() {
-		s.workspaceScrollbarDrag = ""
-		s.workspaceScrollbarDragGrab = 0
-	} else if s.workspaceScrollbarDrag != "" && s.workspaceNav != nil && s.workspaceNav.InDetailMode() {
-		s.workspaceScrollbarDrag = ""
-		s.workspaceScrollbarDragGrab = 0
-	}
+	s.clearWorkspaceScrollbarCaptureIfRouteChanged()
 	// List wheel reports are always local. In terminal focus they are consumed
 	// without changing selection, preserving the exact attached Session.
 	if s.workspacePreview && !s.hostScoped && !s.workspacePaneMode && !s.centralModalOpen() {
@@ -379,6 +370,24 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 		s.beginWorkspaceDrop(source, identity, nav.CurrentProjectID(), "")
 	}
 	return true, false
+}
+
+// prepareWorkspaceMouseDispatch runs at the event-loop route boundary, before
+// modal handlers can consume a mouse report and bypass handleWorkspaceMouse.
+func (s *tuiState) prepareWorkspaceMouseDispatch(input []byte) {
+	if strings.HasPrefix(string(input), "\x1b[<") {
+		s.clearWorkspaceScrollbarCaptureIfRouteChanged()
+	}
+}
+
+func (s *tuiState) clearWorkspaceScrollbarCaptureIfRouteChanged() {
+	if !s.workspacePreview || s.focused || s.hostScoped || s.workspacePaneMode || s.helpMode || s.centralModalOpen() {
+		s.workspaceScrollbarDrag = ""
+		s.workspaceScrollbarDragGrab = 0
+	} else if s.workspaceScrollbarDrag != "" && s.workspaceNav != nil && s.workspaceNav.InDetailMode() {
+		s.workspaceScrollbarDrag = ""
+		s.workspaceScrollbarDragGrab = 0
+	}
 }
 
 func (s *tuiState) workspaceScrollPage(g ducklord.WorkspaceGeometry, nav *ducklord.WorkspaceState, kind string, delta int) bool {

@@ -3515,6 +3515,9 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				state.render(os.Stdout)
 				continue
 			}
+			// Retire a workspace scrollbar capture before any modal route can
+			// consume this report without reaching handleWorkspaceMouse.
+			state.prepareWorkspaceMouseDispatch(b)
 			// Project files owns mouse reports before byte-oriented modal input. This
 			// prevents the SGR sequence from being swallowed as text or reaching PTY.
 			if state.projectFiles.open && strings.HasPrefix(string(b), "\x1b[<") {

@@ -454,6 +454,25 @@ func TestWorkspaceScrollbarCaptureClearsWhenRouteLosesOwnership(t *testing.T) {
 	})
 }
 
+func TestWorkspaceScrollbarCaptureClearsBeforeBlockingModalConsumesRelease(t *testing.T) {
+	state, _, _, _ := workspacePaneTestState(t)
+	state.workspacePreview = true
+	state.workspaceScrollbarDrag = "projects"
+	state.workspaceScrollbarDragGrab = 1
+	state.actionMenu = true
+	release := workspaceMouse(0, 80, 12, true)
+
+	// The event loop invokes this route-boundary hook before its modal branch;
+	// that branch consumes releases without calling handleWorkspaceMouse.
+	state.prepareWorkspaceMouseDispatch(release)
+	if !state.blockingModalOpen() {
+		t.Fatal("fixture must route the release to a blocking modal")
+	}
+	if state.workspaceScrollbarDrag != "" || state.workspaceScrollbarDragGrab != 0 {
+		t.Fatalf("modal-consumed release left stale workspace capture: drag=%q grab=%d", state.workspaceScrollbarDrag, state.workspaceScrollbarDragGrab)
+	}
+}
+
 func TestWorkspaceSessionPageDownUsesVisibleQuickRows(t *testing.T) {
 	state, _, _, base := workspacePaneTestState(t)
 	state.workspacePreview = true
