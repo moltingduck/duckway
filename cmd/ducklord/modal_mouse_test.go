@@ -394,3 +394,17 @@ func TestHelpScrollMouseDispatcherWheelTrackDragAndRelease(t *testing.T) {
 		t.Fatal("Help release outside track did not clear drag")
 	}
 }
+
+func TestCloseHelpCancelsScrollbarCapture(t *testing.T) {
+	s := &tuiState{helpMode: true, helpScrollbarDrag: true, helpScrollbarDragGrab: 2, helpOffset: 17, helpSearchActive: true, helpSearchQuery: "needle"}
+	s.closeHelp()
+	if s.helpMode || s.helpScrollbarDrag || s.helpScrollbarDragGrab != 0 || s.helpOffset != 0 || s.helpSearchActive || s.helpSearchQuery != "" {
+		t.Fatalf("closing Help retained modal state: mode=%t drag=%t grab=%d offset=%d search=%t query=%q", s.helpMode, s.helpScrollbarDrag, s.helpScrollbarDragGrab, s.helpOffset, s.helpSearchActive, s.helpSearchQuery)
+	}
+	// Reopening and receiving the old release must not inherit its capture.
+	s.helpMode = true
+	_, owned := s.handleHelpMouseReport(0, 1, 1, false)
+	if !owned || s.helpScrollbarDrag || s.helpScrollbarDragGrab != 0 {
+		t.Fatalf("stale release after reopen inherited capture: owned=%t drag=%t grab=%d", owned, s.helpScrollbarDrag, s.helpScrollbarDragGrab)
+	}
+}

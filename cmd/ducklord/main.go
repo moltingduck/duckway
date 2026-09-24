@@ -5042,6 +5042,8 @@ func (s *tuiState) closeHelp() {
 	s.helpMode = false
 	s.helpOriginFocused = false
 	s.helpOffset = 0
+	s.helpScrollbarDrag = false
+	s.helpScrollbarDragGrab = 0
 	s.helpSearchActive = false
 	s.helpSearchQuery = ""
 	if s.helpFocusRestorePending && !s.focused {

@@ -10,6 +10,16 @@ import (
 // handleWorkspaceMouse keeps drag-and-drop local to Ducklord. It never writes
 // mouse escape sequences to a PTY or changes Ducklion writer ownership.
 func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
+	// A captured list drag belongs only to the workspace overview route. Drop
+	// it as soon as another route can own mouse input, including terminal focus
+	// and modal/detail transitions, so later releases cannot act on hidden lists.
+	if !s.workspacePreview || s.focused || s.hostScoped || s.workspacePaneMode || s.centralModalOpen() {
+		s.workspaceScrollbarDrag = ""
+		s.workspaceScrollbarDragGrab = 0
+	} else if s.workspaceScrollbarDrag != "" && s.workspaceNav != nil && s.workspaceNav.InDetailMode() {
+		s.workspaceScrollbarDrag = ""
+		s.workspaceScrollbarDragGrab = 0
+	}
 	// List wheel reports are always local. In terminal focus they are consumed
 	// without changing selection, preserving the exact attached Session.
 	if s.workspacePreview && !s.hostScoped && !s.workspacePaneMode && !s.centralModalOpen() {

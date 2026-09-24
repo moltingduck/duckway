@@ -405,6 +405,55 @@ func TestWorkspaceScrollbarTrackDoesNotReactToHiddenWorkspaceInDetailMode(t *tes
 	}
 }
 
+func TestWorkspaceScrollbarCaptureClearsWhenRouteLosesOwnership(t *testing.T) {
+	t.Run("terminal focus release", func(t *testing.T) {
+		state, _, _, _ := workspacePaneTestState(t)
+		state.workspacePreview = true
+		state.focused = true
+		state.workspaceScrollbarDrag = "projects"
+		state.workspaceScrollbarDragGrab = 2
+		handled, _ := state.handleWorkspaceMouse(workspaceMouse(0, 1, 1, true))
+		if handled || state.workspaceScrollbarDrag != "" || state.workspaceScrollbarDragGrab != 0 {
+			t.Fatalf("release after terminal focus retained list capture: handled=%t drag=%q grab=%d", handled, state.workspaceScrollbarDrag, state.workspaceScrollbarDragGrab)
+		}
+	})
+
+	t.Run("detail transition motion", func(t *testing.T) {
+		state, firstID, _, _ := workspacePaneTestState(t)
+		state.workspacePreview = true
+		state.focused = false
+		for i := 0; i < 80; i++ {
+			if _, err := state.activity().ProjectLayout.AddProject(fmt.Sprintf("Capture %03d", i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		nav, err := state.workspaceNavigation()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := nav.SelectProject(firstID); err != nil {
+			t.Fatal(err)
+		}
+		width, height := terminalSize()
+		geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+		offsets := state.workspaceColumnOffsets(geometry, nav, state.workspaceQuickSessions())
+		bar, ok := ducklord.CalculateWorkspaceScrollbar(geometry.Projects, len(state.activity().ProjectLayout.Projects), offsets.Projects)
+		if !ok {
+			t.Skip("terminal is too short to show workspace list overflow")
+		}
+		_, _ = state.handleWorkspaceMouse(workspaceMouse(0, bar.TrackX, bar.ThumbY, false))
+		if state.workspaceScrollbarDrag != "projects" {
+			t.Fatal("Project thumb press did not capture drag")
+		}
+		nav.EnterDetail()
+		before := nav.CurrentProjectID()
+		_, _ = state.handleWorkspaceMouse(workspaceMouse(32, bar.TrackX, bar.TrackY+bar.TrackHeight-1, false))
+		if state.workspaceScrollbarDrag != "" || state.workspaceScrollbarDragGrab != 0 || nav.CurrentProjectID() != before {
+			t.Fatalf("drag crossed into detail route: drag=%q grab=%d project=%q before=%q", state.workspaceScrollbarDrag, state.workspaceScrollbarDragGrab, nav.CurrentProjectID(), before)
+		}
+	})
+}
+
 func TestWorkspaceSessionPageDownUsesVisibleQuickRows(t *testing.T) {
 	state, _, _, base := workspacePaneTestState(t)
 	state.workspacePreview = true
