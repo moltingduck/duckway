@@ -347,3 +347,21 @@ func TestWorkspaceScrollbarGeometryTracksOverflowAndBounds(t *testing.T) {
 		t.Fatal("one-column bounds produced a scrollbar")
 	}
 }
+
+func TestWorkspaceScrollbarOffsetUsesThumbTopAtMultiCellEndpoints(t *testing.T) {
+	rect := WorkspaceRect{X: 1, Y: 4, Width: 10, Height: 11}
+	top, ok := CalculateWorkspaceScrollbar(rect, 20, 0)
+	if !ok || top.ThumbHeight <= 1 {
+		t.Fatalf("fixture needs a multi-cell thumb: %+v, %t", top, ok)
+	}
+	if got := WorkspaceScrollbarOffset(top, 20, top.TrackY); got != 0 {
+		t.Fatalf("top thumb maps to offset %d, want 0", got)
+	}
+	bottom, ok := CalculateWorkspaceScrollbar(rect, 20, 10_000)
+	if !ok {
+		t.Fatal("bottom scrollbar missing")
+	}
+	if got := WorkspaceScrollbarOffset(bottom, 20, bottom.TrackY+bottom.TrackHeight-bottom.ThumbHeight); got != 10 {
+		t.Fatalf("bottom thumb maps to offset %d, want 10", got)
+	}
+}

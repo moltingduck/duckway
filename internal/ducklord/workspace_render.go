@@ -134,15 +134,15 @@ func CalculateWorkspaceGeometry(width, height, top int) WorkspaceGeometry {
 	return geometry
 }
 
-// WorkspaceScrollbarOffset maps a pointer row to the offset represented by the thumb.
-func WorkspaceScrollbarOffset(bar WorkspaceScrollbar, total, y int) int {
+// WorkspaceScrollbarOffset maps the thumb's top row to its viewport offset.
+func WorkspaceScrollbarOffset(bar WorkspaceScrollbar, total, thumbTopY int) int {
 	visible := bar.TrackHeight
 	maxOffset := max(0, total-visible)
 	travel := max(0, visible-bar.ThumbHeight)
 	if maxOffset == 0 || travel == 0 {
 		return 0
 	}
-	start := min(max(0, y-bar.TrackY-bar.ThumbHeight/2), travel)
+	start := min(max(0, thumbTopY-bar.TrackY), travel)
 	return start * maxOffset / travel
 }
 

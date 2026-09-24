@@ -292,6 +292,8 @@ func TestWorkspaceScrollbarTrackPagesThumbDragAndRelease(t *testing.T) {
 	state, firstID, _, _ := workspacePaneTestState(t)
 	state.workspacePreview = true
 	state.focused = false
+	state.workspaceProjectFocus = false
+	state.workspaceConfigFocus = "session-list"
 	for i := 0; i < 100; i++ {
 		if _, err := state.activity().ProjectLayout.AddProject(fmt.Sprintf("Scroll %03d", i)); err != nil {
 			t.Fatal(err)
@@ -315,6 +317,9 @@ func TestWorkspaceScrollbarTrackPagesThumbDragAndRelease(t *testing.T) {
 	if !handled || !changed || nav.CurrentProjectID() == firstID {
 		t.Fatalf("track click failed to page: handled=%v changed=%v project=%q", handled, changed, nav.CurrentProjectID())
 	}
+	if !state.workspaceProjectFocus || state.workspaceConfigFocus != "project-pane" || state.focused {
+		t.Fatalf("Project track click did not focus local Project navigation: project=%t config=%q terminal=%t", state.workspaceProjectFocus, state.workspaceConfigFocus, state.focused)
+	}
 	// Thumb press captures without moving, then movement preserves the grab offset.
 	offsets := state.workspaceColumnOffsets(geometry, nav, state.workspaceQuickSessions())
 	bar, _ = ducklord.CalculateWorkspaceScrollbar(geometry.Projects, len(state.activity().ProjectLayout.Projects), offsets.Projects)
@@ -335,6 +340,68 @@ func TestWorkspaceScrollbarTrackPagesThumbDragAndRelease(t *testing.T) {
 	handled, _ = state.handleWorkspaceMouse(workspaceMouse(0, 1, 1, true))
 	if !handled || state.workspaceScrollbarDrag != "" {
 		t.Fatal("release outside scrollbar did not clear capture")
+	}
+}
+
+func TestWorkspaceSessionTrackClickFocusesListWithoutAttaching(t *testing.T) {
+	state, _, _, base := workspacePaneTestState(t)
+	state.workspacePreview = true
+	state.focused = false
+	state.workspaceProjectFocus = true
+	for i := 0; i < 80; i++ {
+		session := base
+		session.SessionID = fmt.Sprintf("TRACK%03d", i)
+		session.Name = session.SessionID
+		state.sessions = append(state.sessions, session)
+	}
+	width, height := terminalSize()
+	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	rows := state.workspaceQuickSessions()
+	bar, ok := ducklord.CalculateWorkspaceScrollbar(geometry.Quick, len(rows), 0)
+	if !ok {
+		t.Skip("terminal is too short to show session list overflow")
+	}
+	before := state.currentKey()
+	handled, changed := state.handleWorkspaceMouse(workspaceMouse(0, bar.TrackX, bar.TrackY+bar.TrackHeight-1, false))
+	if !handled || !changed || state.currentKey() == before {
+		t.Fatalf("session track click failed to page: handled=%v changed=%v key=%q", handled, changed, state.currentKey())
+	}
+	if state.workspaceProjectFocus || state.workspaceConfigFocus != "session-list" || state.focused || state.workspaceMouseFocus {
+		t.Fatalf("session track click did not focus local list: project=%t config=%q terminal=%t mouse=%t", state.workspaceProjectFocus, state.workspaceConfigFocus, state.focused, state.workspaceMouseFocus)
+	}
+}
+
+func TestWorkspaceScrollbarTrackDoesNotReactToHiddenWorkspaceInDetailMode(t *testing.T) {
+	state, firstID, _, _ := workspacePaneTestState(t)
+	state.workspacePreview = true
+	state.focused = false
+	for i := 0; i < 80; i++ {
+		if _, err := state.activity().ProjectLayout.AddProject(fmt.Sprintf("Detail %03d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nav, err := state.workspaceNavigation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nav.SelectProject(firstID); err != nil {
+		t.Fatal(err)
+	}
+	nav.EnterDetail()
+	width, height := terminalSize()
+	geometry := ducklord.CalculateWorkspaceGeometry(width, height, 4)
+	bar, ok := ducklord.CalculateWorkspaceScrollbar(geometry.Projects, len(state.activity().ProjectLayout.Projects), 0)
+	if !ok {
+		t.Skip("terminal is too short to show workspace list overflow")
+	}
+	handled, _ := state.handleWorkspaceMouse(workspaceMouse(0, bar.TrackX, bar.TrackY+bar.TrackHeight-1, false))
+	if !handled || nav.CurrentProjectID() != firstID || state.workspaceScrollbarDrag != "" {
+		t.Fatalf("hidden Project scrollbar reacted in detail mode: handled=%v project=%q drag=%q", handled, nav.CurrentProjectID(), state.workspaceScrollbarDrag)
+	}
+	before := state.selected
+	_, _ = state.handleWorkspaceMouse(workspaceMouse(64, geometry.Projects.X+1, geometry.Projects.Y+1, false))
+	if state.selected != before || nav.CurrentProjectID() != firstID {
+		t.Fatalf("workspace wheel changed hidden selection in detail mode: selected=%d project=%q", state.selected, nav.CurrentProjectID())
 	}
 }
 

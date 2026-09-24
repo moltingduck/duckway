@@ -87,7 +87,7 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 					return true, s.workspaceScrollTo(geometry, nav, s.workspaceScrollbarDrag, y-s.workspaceScrollbarDragGrab)
 				}
 			}
-			if button == 0 && strings.HasSuffix(string(input), "M") && navErr == nil {
+			if button == 0 && strings.HasSuffix(string(input), "M") && navErr == nil && !nav.InDetailMode() {
 				quick := s.workspaceQuickSessions()
 				offsets := s.workspaceColumnOffsets(geometry, nav, quick)
 				if bar, yes := ducklord.CalculateWorkspaceScrollbar(geometry.Projects, len(s.activity().ProjectLayout.Projects), offsets.Projects); yes && x == bar.TrackX && y >= bar.TrackY && y < bar.TrackY+bar.TrackHeight {
@@ -374,6 +374,8 @@ func (s *tuiState) handleWorkspaceMouse(input []byte) (handled, changed bool) {
 func (s *tuiState) workspaceScrollPage(g ducklord.WorkspaceGeometry, nav *ducklord.WorkspaceState, kind string, delta int) bool {
 	quick := s.workspaceQuickSessions()
 	if kind == "projects" {
+		s.workspaceProjectFocus = true
+		s.workspaceConfigFocus = "project-pane"
 		projects := s.activity().ProjectLayout.Projects
 		index := 0
 		for i := range projects {
@@ -388,6 +390,8 @@ func (s *tuiState) workspaceScrollPage(g ducklord.WorkspaceGeometry, nav *ducklo
 		}
 		return nav.SelectProject(projects[index].ID) == nil
 	}
+	s.workspaceProjectFocus = false
+	s.workspaceConfigFocus = "session-list"
 	index := 0
 	current := sessionKey(s.currentSession())
 	for i := range quick {
