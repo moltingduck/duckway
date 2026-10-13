@@ -3,6 +3,7 @@ package handlers
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -82,6 +83,7 @@ func (h *ProxyHandler) WithCrypto(c *services.Crypto) *ProxyHandler {
 
 const maxCapturedBytes = 64 * 1024 // 64 KB cap per body
 const maxInspectableRequestBodyBytes = 16 * 1024 * 1024
+const maxCodexAccountResponseBytes = 1 * 1024 * 1024
 
 var capturedBodySecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`),
@@ -385,6 +387,13 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, result.Error, http.StatusForbidden)
 		return
 	}
+	// Native Codex uses a stable phantom account ID in its local credentials.
+	// Keep that ID scoped to refreshable ChatGPT OAuth credentials; ordinary
+	// OpenAI API keys and other providers must retain their own account routing.
+	codexSourceAccountID := ""
+	if serviceName == "openai-chatgpt" && result.IsRefreshable {
+		codexSourceAccountID = h.codexOAuthSourceAccountID(result)
+	}
 	if websocketUpgrade {
 		if _, ok := w.(http.Hijacker); !ok {
 			jsonError(w, "websocket bridge unavailable", http.StatusInternalServerError)
@@ -480,6 +489,9 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			upstreamReq.Header.Add(key, v)
 		}
 	}
+	if codexSourceAccountID != "" && strings.TrimSpace(upstreamReq.Header.Get("ChatGPT-Account-Id")) == "duckway-account" {
+		upstreamReq.Header.Set("ChatGPT-Account-Id", codexSourceAccountID)
+	}
 	if websocketUpgrade {
 		upstreamReq.Header.Set("Connection", "Upgrade")
 		upstreamReq.Header.Set("Upgrade", "websocket")
@@ -493,6 +505,9 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	scanUsage := h.convUsage != nil && (isLLMService(serviceName) ||
 		strings.EqualFold(strings.TrimSpace(svc.Category), "llm") || strings.TrimSpace(svc.UsageMetering) != "")
 	if scanUsage {
+		upstreamReq.Header.Set("Accept-Encoding", "identity")
+	}
+	if codexSourceAccountID != "" && r.Method == http.MethodGet && upstreamPath == "/backend-api/wham/accounts/check" {
 		upstreamReq.Header.Set("Accept-Encoding", "identity")
 	}
 
@@ -595,9 +610,11 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	defer resp.Body.Close()
 	if websocketUpgrade && resp.StatusCode == http.StatusSwitchingProtocols {
 		if !isProxyWebSocketUpgradeResponse(resp) {
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
 			jsonError(w, "invalid upstream websocket response", http.StatusBadGateway)
 			return
 		}
@@ -609,6 +626,10 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if codexSourceAccountID != "" && r.Method == http.MethodGet && upstreamPath == "/backend-api/wham/accounts/check" {
+		rewriteCodexAccountCheckResponse(resp, codexSourceAccountID)
+	}
+	defer resp.Body.Close()
 
 	captureDetail := h.captureDetailEnabledFor(client.ID)
 
@@ -828,20 +849,27 @@ func shouldForwardCodexWebSocketHeader(name string) bool {
 }
 
 func (h *ProxyHandler) relayProxyWebSocket(w http.ResponseWriter, upstreamResp *http.Response, onUsage func(*services.TokenUsage)) {
+	if upstreamResp == nil || upstreamResp.Body == nil {
+		return
+	}
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
+		_ = upstreamResp.Body.Close()
 		return
 	}
 	upstream, ok := upstreamResp.Body.(io.ReadWriteCloser)
 	if !ok {
+		_ = upstreamResp.Body.Close()
 		return
 	}
 	clientConn, rw, err := hijacker.Hijack()
 	if err != nil {
+		_ = upstream.Close()
 		return
 	}
 	if err := writeProxyUpgradeResponse(rw.Writer, upstreamResp); err != nil {
 		clientConn.Close()
+		_ = upstream.Close()
 		return
 	}
 	relayProxyWebSocketStreams(clientConn, rw.Reader, upstream, onUsage)
@@ -1525,6 +1553,146 @@ func requestBodyRequiredForProxyACL(layers []proxyACLLayer, method, path string)
 	}
 	return false
 }
+
+func (h *ProxyHandler) codexOAuthSourceAccountID(result *services.ResolveResult) string {
+	if h.apiKeys == nil || result == nil || result.APIKeyID == "" {
+		return ""
+	}
+	key, err := h.apiKeys.GetByID(result.APIKeyID)
+	if err != nil {
+		return ""
+	}
+	subInfo, err := parseSubscriptionInfo(key.SubscriptionInfo)
+	if err != nil || !isCodexOAuthInfo(subInfo, key.TokenEndpoint) {
+		return ""
+	}
+	for _, token := range []string{result.RealKey, stringFromMap(subInfo, "id_token")} {
+		if token == "" || isDuckwayCodexPhantomJWT(token) {
+			continue
+		}
+		claims := parseJWTClaims(token)
+		auth, _ := claims["https://api.openai.com/auth"].(map[string]interface{})
+		accountID, _ := auth["chatgpt_account_id"].(string)
+		if accountID != "" && accountID != "duckway-account" {
+			return accountID
+		}
+	}
+	return ""
+}
+
+func stringFromMap(values map[string]interface{}, key string) string {
+	value, _ := values[key].(string)
+	return value
+}
+
+// rewriteCodexAccountCheckResponse changes only the account identity fields
+// consumed by Codex's account discovery parser. It is deliberately bounded and
+// leaves malformed, oversized, and unrelated response content untouched.
+func rewriteCodexAccountCheckResponse(resp *http.Response, sourceAccountID string) {
+	if resp == nil || resp.Body == nil || sourceAccountID == "" ||
+		!strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "json") {
+		return
+	}
+	original := resp.Body
+	encodedBody, err := io.ReadAll(io.LimitReader(original, maxCodexAccountResponseBytes+1))
+	if err != nil {
+		resp.Body = &joinedReadCloser{Reader: io.MultiReader(bytes.NewReader(encodedBody), original), closer: original}
+		return
+	}
+	if len(encodedBody) > maxCodexAccountResponseBytes {
+		resp.Body = &joinedReadCloser{Reader: io.MultiReader(bytes.NewReader(encodedBody), original), closer: original}
+		return
+	}
+	_ = original.Close()
+	body := encodedBody
+	contentEncoding := strings.TrimSpace(strings.ToLower(resp.Header.Get("Content-Encoding")))
+	switch contentEncoding {
+	case "":
+	case "gzip":
+		reader, err := gzip.NewReader(bytes.NewReader(encodedBody))
+		if err != nil {
+			resp.Body = io.NopCloser(bytes.NewReader(encodedBody))
+			return
+		}
+		decoded, readErr := io.ReadAll(io.LimitReader(reader, maxCodexAccountResponseBytes+1))
+		_ = reader.Close()
+		if readErr != nil || len(decoded) > maxCodexAccountResponseBytes {
+			resp.Body = io.NopCloser(bytes.NewReader(encodedBody))
+			return
+		}
+		body = decoded
+	default:
+		resp.Body = io.NopCloser(bytes.NewReader(encodedBody))
+		return
+	}
+	var payload map[string]interface{}
+	if json.Unmarshal(body, &payload) != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(encodedBody))
+		return
+	}
+	changed := false
+	if accounts, ok := payload["accounts"].([]interface{}); ok {
+		for _, item := range accounts {
+			account, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if id, _ := account["id"].(string); id == sourceAccountID {
+				account["id"] = "duckway-account"
+				changed = true
+			}
+		}
+	} else if accounts, ok := payload["accounts"].(map[string]interface{}); ok {
+		for _, item := range accounts {
+			accountEntry, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if account, ok := accountEntry["account"].(map[string]interface{}); ok {
+				if id, _ := account["account_id"].(string); id == sourceAccountID {
+					account["account_id"] = "duckway-account"
+					changed = true
+				}
+			}
+		}
+	}
+	if account, ok := payload["account"].(map[string]interface{}); ok {
+		if id, _ := account["account_id"].(string); id == sourceAccountID {
+			account["account_id"] = "duckway-account"
+			changed = true
+		}
+	}
+	if id, _ := payload["default_account_id"].(string); id == sourceAccountID {
+		payload["default_account_id"] = "duckway-account"
+		changed = true
+	}
+	if changed {
+		if rewritten, err := json.Marshal(payload); err == nil {
+			body = rewritten
+			if contentEncoding == "gzip" {
+				resp.Header.Del("Content-Encoding")
+			}
+			// These validators describe the upstream bytes, not the rewritten
+			// representation. Forwarding them could make Codex reject or cache
+			// the modified response under an invalid validator.
+			resp.Header.Del("Content-MD5")
+			resp.Header.Del("Digest")
+			resp.Header.Del("ETag")
+			resp.ContentLength = int64(len(body))
+			resp.Header.Set("Content-Length", fmt.Sprint(len(body)))
+		}
+	} else {
+		body = encodedBody
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+}
+
+type joinedReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (r *joinedReadCloser) Close() error { return r.closer.Close() }
 
 func rewriteCodexRefreshResponse(body []byte, placeholderID, placeholder string) []byte {
 	var obj map[string]interface{}

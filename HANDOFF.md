@@ -1,3 +1,112 @@
+# Completed batch: codex-account-routing-0924
+
+## Fix
+Codex 0.156.1 presents Duckway's synthetic `duckway-account` ID during
+workspace discovery, while `/backend-api/wham/accounts/check` returns the real
+OAuth account ID. The proxy now maps the synthetic ID to the source account ID
+only for the intended discovery request, then rewrites known account identity
+fields in that route's bounded response back to the synthetic ID. This fixes
+bootstrap while keeping the real account ID out of client credentials.
+
+Response rewriting handles gzip, caps the body at 1 MiB, updates length and
+encoding headers, and removes stale content digests/ETag. The request asks for
+identity encoding. Failed/invalid WebSocket upgrades now close their underlying
+connection. Regression tests cover route scoping, account mapping and exclusions,
+compression, oversized-body passthrough, stale headers and connection cleanup.
+
+## Verification
+- `GOFLAGS=-buildvcs=false go test ./...` — PASS.
+- `GOFLAGS=-buildvcs=false go test -race ./internal/server/handlers` — PASS.
+- `GOFLAGS=-buildvcs=false go vet ./internal/server/handlers` — PASS.
+- `golangci-lint run ./internal/server/handlers` — PASS, 0 issues.
+- Full `golangci-lint run` — 13 pre-existing repository findings; not globally
+  lint-clean. It also warned about a source path in a deleted prior sibling
+  worktree. No new findings in changed files.
+- Codex 0.156.1 live test with local credentials, isolated HOME and synthetic
+  Duckway auth — PASS. `account/read` completed and a prompt returned
+  `duckway-account-routing-ok`; LLM and WebSocket checks passed. Credentials
+  were mounted read-only, and no token or raw live transcript was retained.
+- Independent security, code-quality, race/concurrency and backend API reviews
+  passed. API follow-up verified removal of stale validators after body rewrite.
+  Frontend/E2E review was not applicable to this backend-only protocol change.
+- `git diff --check` — PASS.
+
+The corrected live harness passed after fixing its temporary repository-root
+calculation; the initial harness abort was not a product build failure. The
+remote `hermes@orb` instance is not verified because orb DNS does not resolve
+in this environment. No remote deploy was performed.
+
+## Demo and cleanup
+Rebuilt/restarted retained demo using
+`DUCKLORD_DEMO_NAME_PREFIX=ducklord-verified DUCKLORD_DEMO_OWNER_TOKEN=ducklord-verified-20260917 CONTAINER_RUNTIME=podman GOFLAGS=-buildvcs=false scripts/ducklord-podman-demo.sh`.
+Readiness, inventory, PTY input, recovery and shell lifecycle checks passed;
+all five `ducklord-verified-*` containers are running.
+
+Launch: `podman exec -it ducklord-verified-ducklord-dev ducklord tui --config /root/.ducklord/config.yaml`
+
+Owner `codex-account-routing-0924`: temporary live root/logs removed, ephemeral
+Podman test container absent, implementation sibling worktree and branch
+removed, worktree registry pruned. Final resource scan found only the retained
+demo and preserved baseline resources: five `.claude` worktrees and three older
+`dw-*-1788855706-1278453` containers. Usage metrics unavailable/unmeasured.
+
+---
+
+# Diagnostic checkpoint: codex-routing-0924 (2026-09-24)
+
+## Local live credential result
+User requested a local live credential test for Codex 0.156.1 bootstrap through
+Duckway. Product base ec757fe; no production changes, commit or push in this batch.
+Read the valid local ~/.codex/auth.json once; used isolated HOME/CODEX_HOME copies,
+without editing or refreshing the source. The repository live-credentials fixture
+had expired, so it was not used. No credentials or account identities are recorded.
+
+Commands exercised initialize/initialized/account/read with refreshToken:false:
+- Direct: `codex app-server --listen stdio://` — signed in, 596 ms.
+- Proxy: `duckway proxy exec -- codex --no-daemon app-server` — -32603,
+  safely classified `selected workspace missing`, 941 ms. Synced auth was verified
+  as phantom by JWT header marker. Discovery GET
+  `/backend-api/wham/accounts/check` returned HTTP 200.
+- Causal experiment: a separate copy changed only phantom tokens.account_id and
+  access/id JWT chatgpt_account_id claims to the source account ID. Through the
+  same gateway, account/read signed in, 640 ms. Tokens remained fake.
+
+This establishes a local account-ID mismatch: oauth.go hardcodes duckway-account,
+whereas discovery returns upstream account identities. It does not establish the
+cause of the remote timeout, test an interactive prompt, or demonstrate a fix.
+orb DNS is unavailable here. Existing oauth_codex/proxy_codex tests explicitly
+forbid exposing real account IDs in phantom auth; do not ship the causal mutation.
+Remaining repair needs privacy-preserving identity mapping plus regression tests
+and live verification. The original product issue remains open.
+
+## Validation and cleanup
+Initial harness omitted the child environment and misfiltered service names;
+those results are invalid. Final harness explicitly passed sanitized environments,
+used byte-based JSONL framing with bounded waits, and logged only allowlisted
+metadata. Independent reviewer live_probe_review checked the corrected source.
+Main inspected the diagnostic source and full diff. Python AST check and diff
+check passed. The one-off machine-specific harness is intentionally not integrated;
+the protocol and sanitized results above preserve its useful evidence.
+
+Owner codex-routing-0924-probe: sibling worktree/branch
+duckway-codex-routing-0924-probe / codex/codex-routing-0924-probe at ec757fe.
+Agent removed its tmp/codex-routing-0924 root (credential copies, database, logs,
+binaries) and Python bytecode after terminating owned process groups. Independent
+scan found no owned runtime; ports 19091/19092 closed. Main inspected all changes,
+preserved the sanitized evidence here, then removed the reviewed diagnostic
+worktree/branch and pruned the registry. Final scan confirms their absence and
+closed test ports; only main TASK.md/HANDOFF.md are modified.
+Retained demo rebuilt/restarted, exec session 38024: readiness, PTY I/O, daemon
+recovery and native shell lifecycle passed; all five containers are running.
+This unchanged product build does not contain a fix for the diagnosed defect.
+Launch: `podman exec -it ducklord-verified-ducklord-dev ducklord tui --config /root/.ducklord/config.yaml`
+Baseline five .claude worktrees, old dw-*-1788855706-1278453 containers and unrelated
+processes are preserved. Retained demo: ducklord-verified, owner
+ducklord-verified-20260917. Three lower-tier diagnostic/review agents used;
+calls/input/cached/output tokens unavailable/unmeasured.
+
+---
+
 # Completed batch: pg-blob-0924
 
 ## Outcome and delivery

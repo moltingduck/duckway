@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -568,7 +570,7 @@ func TestHandleOpenAIChatGPTProxyUsesOpenAIKeyForNativeCodex(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	crypto := services.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
-	realAccess := testCodexJWT(`{"exp":1893456001,"scope":"access"}`)
+	realAccess := testCodexJWT(`{"exp":1893456001,"scope":"access","https://api.openai.com/auth":{"chatgpt_account_id":"acct-source-test"}}`)
 	encAccess, err := crypto.Encrypt(realAccess)
 	if err != nil {
 		t.Fatal(err)
@@ -597,6 +599,8 @@ func TestHandleOpenAIChatGPTProxyUsesOpenAIKeyForNativeCodex(t *testing.T) {
 
 	var upstreamURL string
 	var upstreamAuth string
+	var upstreamAccountID string
+	var upstreamAcceptEncoding string
 	h := NewProxyHandler(
 		svcQ,
 		queries.NewAPIKeyQueries(db),
@@ -609,10 +613,16 @@ func TestHandleOpenAIChatGPTProxyUsesOpenAIKeyForNativeCodex(t *testing.T) {
 	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		upstreamURL = req.URL.String()
 		upstreamAuth = req.Header.Get("Authorization")
+		upstreamAccountID = req.Header.Get("ChatGPT-Account-Id")
+		upstreamAcceptEncoding = req.Header.Get("Accept-Encoding")
+		responseBody := `{"ok":true}`
+		if req.URL.Path == "/backend-api/wham/accounts/check" {
+			responseBody = `{"accounts":{"workspace":{"account":{"account_id":"acct-source-test","name":"work"},"note":"acct-source-test"}},"default_account_id":"acct-source-test"}`
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Body:       io.NopCloser(strings.NewReader(responseBody)),
 			Request:    req,
 		}, nil
 	})}
@@ -639,6 +649,48 @@ func TestHandleOpenAIChatGPTProxyUsesOpenAIKeyForNativeCodex(t *testing.T) {
 		if upstreamAuth != "Bearer "+realAccess {
 			t.Fatalf("auth %q upstream Authorization = %q", auth, upstreamAuth)
 		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/proxy/openai-chatgpt/backend-api/wham/accounts/check", nil)
+	req.Header.Set("Authorization", "Bearer sk-proj-dw_fake_chatgpt")
+	req.Header.Set("ChatGPT-Account-Id", "duckway-account")
+	client := &models.Client{ID: "client-chatgpt", Name: "client"}
+	req = req.WithContext(context.WithValue(req.Context(), middleware.ClientKey, client))
+	rec := httptest.NewRecorder()
+	h.Handle(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("account check status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if upstreamAccountID != "acct-source-test" {
+		t.Fatalf("upstream ChatGPT-Account-Id = %q, want source account ID", upstreamAccountID)
+	}
+	if upstreamAcceptEncoding != "identity" {
+		t.Fatalf("upstream Accept-Encoding = %q, want identity", upstreamAcceptEncoding)
+	}
+	var accountCheck map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &accountCheck); err != nil {
+		t.Fatal(err)
+	}
+	accounts := accountCheck["accounts"].(map[string]interface{})
+	workspace := accounts["workspace"].(map[string]interface{})
+	account := workspace["account"].(map[string]interface{})
+	if account["account_id"] != "duckway-account" || accountCheck["default_account_id"] != "duckway-account" {
+		t.Fatalf("account IDs were not rewritten: %s", rec.Body.String())
+	}
+	if workspace["note"] != "acct-source-test" {
+		t.Fatalf("unrelated value was rewritten: %s", rec.Body.String())
+	}
+	if got := h.codexOAuthSourceAccountID(&services.ResolveResult{APIKeyID: "key-chatgpt", RealKey: realAccess}); got != "acct-source-test" {
+		t.Fatalf("Codex OAuth source account ID = %q", got)
+	}
+	staticKey, err := crypto.Encrypt(realAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (id,service_id,name,key_encrypted,subscription_info) VALUES ('key-openai-static',?,'static',?,'{}')`, openaiSvc.ID, staticKey); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.codexOAuthSourceAccountID(&services.ResolveResult{APIKeyID: "key-openai-static", RealKey: realAccess}); got != "" {
+		t.Fatalf("static key was treated as Codex OAuth with source account ID %q", got)
 	}
 
 	var wsAuth, wsConnection, wsUpgrade string
@@ -728,6 +780,158 @@ func TestHandleOpenAIChatGPTProxyUsesOpenAIKeyForNativeCodex(t *testing.T) {
 	}
 	if wsAuth != "Bearer "+realAccess || !strings.EqualFold(wsConnection, "Upgrade") || !strings.EqualFold(wsUpgrade, "websocket") {
 		t.Fatalf("upstream websocket headers auth=%q connection=%q upgrade=%q", wsAuth, wsConnection, wsUpgrade)
+	}
+
+	closedBody := &closeTrackingReadWriteCloser{}
+	h.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			Status:     "101 Switching Protocols",
+			Proto:      "HTTP/1.1",
+			Header:     http.Header{"Upgrade": []string{"websocket"}}, // Missing Connection: Upgrade.
+			Body:       closedBody,
+			Request:    req,
+		}, nil
+	})}
+	badConn, err := net.Dial("tcp", strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer badConn.Close()
+	_, _ = fmt.Fprintf(badConn, "GET /proxy/openai-chatgpt/backend-api/codex/responses HTTP/1.1\r\nHost: duckway\r\nAuthorization: Bearer %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGVzdC1rZXktMTIzNDU2Nw==\r\n\r\n", wsPhantom)
+	badResp, err := http.ReadResponse(bufio.NewReader(badConn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if badResp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("invalid websocket handshake status=%d, want %d", badResp.StatusCode, http.StatusBadGateway)
+	}
+	_, _ = io.ReadAll(badResp.Body)
+	if !closedBody.closed {
+		t.Fatal("invalid upstream websocket response body was not closed")
+	}
+}
+
+type closeTrackingReadWriteCloser struct{ closed bool }
+
+func (c *closeTrackingReadWriteCloser) Read([]byte) (int, error)    { return 0, io.EOF }
+func (c *closeTrackingReadWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (c *closeTrackingReadWriteCloser) Close() error {
+	c.closed = true
+	return nil
+}
+
+func TestRelayProxyWebSocketClosesUpstreamWhenSetupFails(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		w    http.ResponseWriter
+	}{
+		{name: "no hijacker", w: httptest.NewRecorder()},
+		{name: "hijack error", w: hijackErrorResponseWriter{header: make(http.Header)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := &closeTrackingReadWriteCloser{}
+			h := &ProxyHandler{}
+			h.relayProxyWebSocket(tc.w, &http.Response{Body: body}, nil)
+			if !body.closed {
+				t.Fatal("upstream websocket body was not closed after relay setup failed")
+			}
+		})
+	}
+}
+
+type hijackErrorResponseWriter struct{ header http.Header }
+
+func (w hijackErrorResponseWriter) Header() http.Header         { return w.header }
+func (w hijackErrorResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (w hijackErrorResponseWriter) WriteHeader(int)             {}
+func (hijackErrorResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, fmt.Errorf("test hijack error")
+}
+
+func TestRewriteCodexAccountCheckResponseSupportsNormalizedAccountsList(t *testing.T) {
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"application/json"}},
+		Body:   io.NopCloser(strings.NewReader(`{"accounts":[{"id":"acct-source-test","label":"main"},{"id":"other-account"}],"metadata":{"id":"acct-source-test"}}`)),
+	}
+	rewriteCodexAccountCheckResponse(resp, "acct-source-test")
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	accounts := got["accounts"].([]interface{})
+	if accounts[0].(map[string]interface{})["id"] != "duckway-account" || accounts[1].(map[string]interface{})["id"] != "other-account" {
+		t.Fatalf("normalized accounts = %s", body)
+	}
+	if got["metadata"].(map[string]interface{})["id"] != "acct-source-test" {
+		t.Fatalf("unrelated id field was rewritten: %s", body)
+	}
+}
+
+func TestRewriteCodexAccountCheckResponsePreservesOversizedBody(t *testing.T) {
+	prefix := `{"accounts":{"workspace":{"account":{"account_id":"acct-source-test"}}}}`
+	payload := prefix + strings.Repeat(" ", maxCodexAccountResponseBytes+1)
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"application/json"}},
+		Body:   io.NopCloser(strings.NewReader(payload)),
+	}
+	rewriteCodexAccountCheckResponse(resp, "acct-source-test")
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != payload {
+		t.Fatalf("oversized body was not preserved exactly (got %d bytes, want %d)", len(body), len(payload))
+	}
+}
+
+func TestRewriteCodexAccountCheckResponseDecodesGzip(t *testing.T) {
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write([]byte(`{"accounts":[{"id":"acct-source-test"}],"default_account_id":"acct-source-test"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resp := &http.Response{
+		Header: http.Header{
+			"Content-Type":     []string{"application/json"},
+			"Content-Encoding": []string{"gzip"},
+			"Content-Md5":      []string{"stale-md5"},
+			"Digest":           []string{"sha-256=stale"},
+			"Etag":             []string{`"stale-etag"`},
+		},
+		Body:          io.NopCloser(bytes.NewReader(compressed.Bytes())),
+		ContentLength: int64(compressed.Len()),
+	}
+	rewriteCodexAccountCheckResponse(resp, "acct-source-test")
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Fatalf("Content-Encoding = %q, want removed after decode", resp.Header.Get("Content-Encoding"))
+	}
+	if resp.ContentLength != int64(len(body)) {
+		t.Fatalf("ContentLength = %d, body length = %d", resp.ContentLength, len(body))
+	}
+	for _, header := range []string{"Content-MD5", "Digest", "ETag"} {
+		if got := resp.Header.Get(header); got != "" {
+			t.Errorf("stale %s header was forwarded: %q", header, got)
+		}
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	accounts := got["accounts"].([]interface{})
+	if accounts[0].(map[string]interface{})["id"] != "duckway-account" || got["default_account_id"] != "duckway-account" {
+		t.Fatalf("gzip account IDs were not rewritten: %s", body)
 	}
 }
 
