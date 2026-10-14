@@ -384,6 +384,68 @@ func TestAPIKeyTestGitHubAppMinterMintsReadOnlyRepoToken(t *testing.T) {
 	}
 }
 
+func TestAPIKeyLoadGitHubAppRepositoriesReturnsMetadataWithoutSecrets(t *testing.T) {
+	var gotTokenBody struct {
+		Repositories []string          `json:"repositories"`
+		Permissions  map[string]string `json:"permissions"`
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/app/installations/123/access_tokens":
+			if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+				t.Fatalf("missing JWT authorization")
+			}
+			if err := json.NewDecoder(r.Body).Decode(&gotTokenBody); err != nil {
+				t.Fatalf("decode mint body: %v", err)
+			}
+			w.Write([]byte(`{"token":"ghs_transient_secret","expires_at":"2026-07-08T12:30:00Z","permissions":{"contents":"read"}}`))
+		case "/installation/repositories":
+			if got := r.Header.Get("Authorization"); got != "Bearer ghs_transient_secret" {
+				t.Fatalf("repository request auth = %q", got)
+			}
+			w.Write([]byte(`{"total_count":1,"repositories":[{"full_name":"OWNER/REPO","private":true,"html_url":"https://github.com/OWNER/REPO"}]}`))
+		default:
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+	h := handlers.NewAPIKeyHandler(nil, nil, nil).WithHTTPClient(upstream.Client())
+	cred := map[string]interface{}{"type": "github_app", "app_id": 99, "installation_id": 123, "private_key": testRSAPrivateKeyPEM(t), "base_url": upstream.URL}
+	credJSON, _ := json.Marshal(cred)
+	req := httptest.NewRequest(http.MethodPost, "/api/keys/github-app/repositories", strings.NewReader(`{"credential":`+strconvQuote(string(credJSON))+`}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://example.com")
+	rec := httptest.NewRecorder()
+	h.LoadGitHubAppRepositories(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(gotTokenBody.Repositories) != 0 || gotTokenBody.Permissions["contents"] != "read" || len(gotTokenBody.Permissions) != 1 {
+		t.Fatalf("mint scope = %+v", gotTokenBody)
+	}
+	resp := rec.Body.String()
+	for _, leaked := range []string{"ghs_transient_secret", "PRIVATE KEY", "private_key", "installation_id", "Authorization", "expires_at", "permissions"} {
+		if strings.Contains(strings.ToLower(resp), strings.ToLower(leaked)) {
+			t.Fatalf("response leaked %q: %s", leaked, resp)
+		}
+	}
+	if !strings.Contains(resp, `"full_name":"OWNER/REPO"`) || !strings.Contains(resp, `"total_count":1`) {
+		t.Fatalf("response missing repository metadata: %s", resp)
+	}
+}
+
+func TestAPIKeyLoadGitHubAppRepositoriesRejectsCrossOrigin(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/keys/github-app/repositories", strings.NewReader(`{}`))
+	req.Header.Set("Origin", "http://evil.example")
+	req.Host = "example.com"
+	rec := httptest.NewRecorder()
+	handlers.NewAPIKeyHandler(nil, nil, nil).LoadGitHubAppRepositories(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAPIKeyListMarksGitHubAppCredentialAsMintable(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

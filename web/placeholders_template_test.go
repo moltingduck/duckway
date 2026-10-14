@@ -117,6 +117,44 @@ func TestAPIKeysTemplateShowsMintableBadge(t *testing.T) {
 	}
 }
 
+func TestAPIKeysTemplateExplainsGitHubAppMinterSetup(t *testing.T) {
+	body, err := Content.ReadFile("templates/api_keys.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	required := []string{
+		`<details class="text-sm mt-1">`,
+		`<summary>Set up a GitHub App for minting tokens</summary>`,
+		`https://github.com/settings/apps/new`,
+		`https://github.com/organizations/ORG/settings/apps/new`,
+		`Contents: read-only`,
+		`Contents: read and write`,
+		`App ID</strong> from the App settings page. Use App ID, not Client ID.`,
+		`/settings/installations/ID`,
+		`Private keys`,
+		`BEGIN`,
+		`END`,
+		`Setup URL</strong> is an optional redirect after installation; it is not a URL to enter in Duckway.`,
+		`Duckway stores it server-side and mints short-lived, scoped installation tokens.`,
+		`id="ak-ghapp-load-btn" onclick="loadGitHubAppTestRepos()">Test load</button>`,
+		`/api/keys/github-app/repositories`,
+		`id="ak-ghapp-test-repo" aria-label="Repository to test mint" disabled`,
+		`Load repositories with the current credential and select one first.`,
+		`function isCurrentGitHubAppMintTest(credential, repo, stateVersion)`,
+		`if (!isCurrentGitHubAppMintTest(credential, repo, stateVersion)) return;`,
+		`if (isCurrentGitHubAppMintTest(credential, repo, stateVersion)) updateGitHubAppTestMintAvailability();`,
+	}
+	for _, want := range required {
+		if !strings.Contains(html, want) {
+			t.Fatalf("api keys template missing GitHub App setup guide contract: %s", want)
+		}
+	}
+	if strings.Index(html, `>Test load</button>`) > strings.Index(html, `>Test mint</button>`) {
+		t.Fatal("Test load must appear before Test mint")
+	}
+}
+
 func TestDocsExplainGitHubAppRepoScopeAssignment(t *testing.T) {
 	body, err := Content.ReadFile("templates/docs.html")
 	if err != nil {

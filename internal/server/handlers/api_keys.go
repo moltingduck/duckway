@@ -248,6 +248,72 @@ func (h *APIKeyHandler) ListGitHubAppRepositories(w http.ResponseWriter, r *http
 	})
 }
 
+// LoadGitHubAppRepositories validates an unsaved GitHub App credential and uses
+// it transiently to return repository metadata for the Add API Key form.
+func (h *APIKeyHandler) LoadGitHubAppRepositories(w http.ResponseWriter, r *http.Request) {
+	if !sameOriginRequest(r) {
+		jsonError(w, "cross-origin request denied", http.StatusForbidden)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+	var req struct {
+		Credential string `json:"credential"`
+	}
+	if err := parseRequest(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	cred, ok, err := parseGitHubAppCredential(req.Credential)
+	if err != nil || !ok {
+		jsonError(w, "credential must be a valid github_app credential", http.StatusBadRequest)
+		return
+	}
+	if err := validateGitHubAppBaseURL(req.Credential); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	baseURL := strings.TrimRight(cred.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "https://api.github.com"
+	}
+	if err := validateGitHubAppBaseURLValue(baseURL); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	parsedBaseURL, err := url.Parse(baseURL)
+	if err != nil || parsedBaseURL.User != nil || parsedBaseURL.RawQuery != "" || parsedBaseURL.Fragment != "" {
+		jsonError(w, "github_app base_url must not contain user info, query, or fragment", http.StatusBadRequest)
+		return
+	}
+	jwt, err := githubAppJWT(cred.AppID, cred.PrivateKey, time.Now())
+	if err != nil {
+		jsonError(w, "failed to sign github app jwt", http.StatusBadRequest)
+		return
+	}
+	body, err := json.Marshal(githubInstallationTokenRequest{Permissions: map[string]string{"contents": "read"}})
+	if err != nil {
+		jsonError(w, "failed to encode github app token request", http.StatusInternalServerError)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	minted, err := mintGitHubInstallationToken(ctx, h.client, cred, baseURL, jwt, body, time.Now())
+	if err != nil {
+		jsonError(w, "github app token mint failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if minted.Permissions["contents"] != "read" {
+		jsonError(w, "github app token mint did not grant contents: read permission", http.StatusBadGateway)
+		return
+	}
+	repos, err := listGitHubInstallationRepositories(ctx, h.client, baseURL, minted.Token)
+	if err != nil {
+		jsonError(w, "github app repository list failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{"total_count": len(repos), "repositories": repos})
+}
+
 func listGitHubInstallationRepositories(ctx context.Context, httpClient *http.Client, baseURL, token string) ([]map[string]interface{}, error) {
 	var out []map[string]interface{}
 	for page := 1; page <= 100; page++ {

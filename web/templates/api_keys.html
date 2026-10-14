@@ -54,28 +54,31 @@
         <label>API Key</label>
         <input type="text" id="ak-key" name="key" required oninput="validateKey()">
         <div id="ak-github-app-fields" style="display:none">
+          <details class="text-sm mt-1">
+            <summary>Set up a GitHub App for minting tokens</summary>
+            <ol>
+              <li>Register a GitHub App in your personal account at <a href="https://github.com/settings/apps/new" target="_blank" rel="noopener noreferrer">Personal account settings</a>, or in an organization at <code>https://github.com/organizations/ORG/settings/apps/new</code> (replace <code>ORG</code> with its name).</li>
+              <li>Under Repository permissions, grant <strong>Contents: read-only</strong> for clone and pull. Grant <strong>Contents: read and write</strong> only if this key needs to push. Add other permissions only when the client needs those GitHub features.</li>
+              <li>Save the App, then install it and grant access to the repositories Duckway should reach. The installation must include the target repository.</li>
+              <li>Enter the <strong>App ID</strong> from the App settings page. Use App ID, not Client ID.</li>
+              <li>Enter the <strong>Installation ID</strong> from the App's <strong>Install App</strong> page: choose <strong>Configure</strong> for the personal or organization installation. Its URL ends in <code>/settings/installations/ID</code>; the final number is the Installation ID. You can also get it from GitHub's <a href="https://docs.github.com/en/rest/apps/apps#list-installations-for-the-authenticated-app" target="_blank" rel="noopener noreferrer">List installations API</a>.</li>
+              <li>On the App settings page, create a key under <strong>Private keys</strong>. Paste the complete PEM contents, including the <code>BEGIN</code> and <code>END</code> lines, into the private key field below.</li>
+            </ol>
+            <p><strong>Setup URL</strong> is an optional redirect after installation; it is not a URL to enter in Duckway. A private key is a sensitive, long-lived credential: keep it secret and rotate or revoke it if exposed. Duckway stores it server-side and mints short-lived, scoped installation tokens.</p>
+          </details>
           <div class="grid-2">
-            <input type="number" id="ak-ghapp-app-id" placeholder="App ID, e.g. 4244336" oninput="validateKey()">
+            <input type="number" id="ak-ghapp-app-id" aria-label="GitHub App ID" placeholder="App ID, e.g. 4244336" oninput="clearGitHubAppTestRepos();validateKey()">
             <div style="display:flex;gap:0.35rem;align-items:center">
-              <input type="number" id="ak-ghapp-installation-id" placeholder="Installation ID, e.g. 12345678" oninput="validateKey()" style="flex:1;min-width:0">
-              <button type="button" class="btn btn-sm" title="How to find Installation ID" aria-label="How to find Installation ID" onclick="toggleGitHubInstallationHelp()">?</button>
+              <input type="number" id="ak-ghapp-installation-id" aria-label="GitHub App Installation ID" placeholder="Installation ID, e.g. 12345678" oninput="clearGitHubAppTestRepos();validateKey()" style="flex:1;min-width:0">
             </div>
           </div>
-          <div id="ak-ghapp-installation-help" class="text-sm text-muted mt-1" style="display:none">
-            Install the GitHub App first, then open its Configure page under
-            <code>https://github.com/settings/installations</code> or
-            <code>https://github.com/organizations/&lt;ORG&gt;/settings/installations</code>.
-            The number at the end of the Configure URL is the Installation ID.
-            You can also find it with a GitHub App JWT via
-            <code>GET /repos/{owner}/{repo}/installation</code>,
-            <code>GET /orgs/{org}/installation</code>, or
-            <code>GET /app/installations</code>. Client ID can replace App ID for JWT issuer, but it does not replace Installation ID.
-          </div>
-          <textarea id="ak-ghapp-private-key" oninput="validateKey()" style="min-height:170px;font-family:monospace;font-size:0.75rem" placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"></textarea>
+          <textarea id="ak-ghapp-private-key" aria-label="GitHub App private key PEM" oninput="clearGitHubAppTestRepos();validateKey()" style="min-height:170px;font-family:monospace;font-size:0.75rem" placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"></textarea>
           <div class="grid-2">
-            <input type="text" id="ak-ghapp-test-repo" placeholder="owner/repo">
-            <button type="button" class="btn" id="ak-ghapp-test-btn" onclick="testGitHubAppMinter()">Test mint</button>
+            <button type="button" class="btn" id="ak-ghapp-load-btn" onclick="loadGitHubAppTestRepos()">Test load</button>
+            <select id="ak-ghapp-test-repo" aria-label="Repository to test mint" disabled onchange="updateGitHubAppTestMintAvailability()"><option value="">Load repositories first</option></select>
           </div>
+          <div class="mt-1"><button type="button" class="btn" id="ak-ghapp-test-btn" onclick="testGitHubAppMinter()" disabled>Test mint</button></div>
+          <div id="ak-ghapp-load-result" class="text-sm mt-1" style="display:none" role="status" aria-live="polite"></div>
           <div id="ak-ghapp-test-result" class="text-sm mt-1" style="display:none"></div>
         </div>
         <div id="ak-hint" class="text-muted text-sm mt-1" style="display:none"></div>
@@ -484,6 +487,7 @@ function onServiceChange() {
 }
 
 function onGitHubModeChange() {
+  clearGitHubAppTestRepos();
   var svc = getSelectedService();
   var keyInput = document.getElementById('ak-key');
   var appFields = document.getElementById('ak-github-app-fields');
@@ -560,9 +564,85 @@ function buildGitHubAppCredentialJSON() {
   });
 }
 
-function toggleGitHubInstallationHelp() {
-  var el = document.getElementById('ak-ghapp-installation-help');
-  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+var githubAppTestRepos = [];
+var githubAppTestCredential = '';
+var githubAppTestStateVersion = 0;
+
+function clearGitHubAppTestRepos() {
+  githubAppTestStateVersion++;
+  githubAppTestRepos = [];
+  githubAppTestCredential = '';
+  var select = document.getElementById('ak-ghapp-test-repo');
+  select.innerHTML = '';
+  var option = document.createElement('option');
+  option.value = '';
+  option.textContent = 'Load repositories first';
+  select.appendChild(option);
+  select.disabled = true;
+  document.getElementById('ak-ghapp-test-btn').disabled = true;
+  document.getElementById('ak-ghapp-test-result').style.display = 'none';
+}
+
+function updateGitHubAppTestMintAvailability() {
+  var selected = document.getElementById('ak-ghapp-test-repo').value;
+  document.getElementById('ak-ghapp-test-btn').disabled = !selected || githubAppTestRepos.indexOf(selected) === -1 || githubAppTestCredential !== buildGitHubAppCredentialJSON();
+}
+
+function isCurrentGitHubAppMintTest(credential, repo, stateVersion) {
+  var svc = getSelectedService();
+  return stateVersion === githubAppTestStateVersion && svc && svc.name === 'github' && document.getElementById('ak-github-mode').value === 'app' &&
+    credential === buildGitHubAppCredentialJSON() && repo === document.getElementById('ak-ghapp-test-repo').value;
+}
+
+function loadGitHubAppTestRepos() {
+  var svc = getSelectedService();
+  if (!svc || svc.name !== 'github' || document.getElementById('ak-github-mode').value !== 'app') return;
+  validateKey();
+  if (document.getElementById('ak-error').style.display !== 'none') return;
+  clearGitHubAppTestRepos();
+  var credential = buildGitHubAppCredentialJSON();
+  var result = document.getElementById('ak-ghapp-load-result');
+  var btn = document.getElementById('ak-ghapp-load-btn');
+  result.textContent = 'Loading repositories...';
+  result.style.color = '';
+  result.style.display = 'block';
+  btn.disabled = true;
+  fetch('/api/keys/github-app/repositories', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({credential: credential}),
+    credentials: 'same-origin'
+  })
+  .then(function(r) { return r.json().then(function(data) { data._status = r.status; return data; }); })
+  .then(function(data) {
+    if (data.error) throw new Error(data.error);
+    if (credential !== buildGitHubAppCredentialJSON()) throw new Error('Credential fields changed while loading. Load repositories again.');
+    var repos = Array.isArray(data.repositories) ? data.repositories.filter(function(repo) { return repo && typeof repo.full_name === 'string' && repo.full_name; }) : [];
+    githubAppTestRepos = repos.map(function(repo) { return repo.full_name; });
+    githubAppTestCredential = credential;
+    var select = document.getElementById('ak-ghapp-test-repo');
+    select.innerHTML = '';
+    var first = document.createElement('option');
+    first.value = '';
+    first.textContent = repos.length ? 'Select a repository...' : 'No repositories available';
+    select.appendChild(first);
+    repos.forEach(function(repo) {
+      var option = document.createElement('option');
+      option.value = repo.full_name;
+      option.textContent = repo.full_name + (repo.private ? ' (private)' : '');
+      select.appendChild(option);
+    });
+    select.disabled = repos.length === 0;
+    result.textContent = 'Loaded ' + repos.length + ' repositories. Choose one before testing a mint.';
+    result.style.color = '';
+    updateGitHubAppTestMintAvailability();
+  })
+  .catch(function(err) {
+    result.textContent = 'Repository load failed: ' + err.message;
+    result.style.color = 'var(--danger)';
+    showToast('GitHub App repository load failed', 'error');
+  })
+  .finally(function() { btn.disabled = false; });
 }
 
 function testGitHubAppMinter() {
@@ -570,15 +650,24 @@ function testGitHubAppMinter() {
   if (!svc || svc.name !== 'github' || document.getElementById('ak-github-mode').value !== 'app') return;
   validateKey();
   if (document.getElementById('ak-error').style.display !== 'none') return;
-  var repo = document.getElementById('ak-ghapp-test-repo').value.trim();
+  var repo = document.getElementById('ak-ghapp-test-repo').value;
   var result = document.getElementById('ak-ghapp-test-result');
   var btn = document.getElementById('ak-ghapp-test-btn');
-  if (!repo) {
-    result.textContent = 'Enter a repository as owner/repo.';
+  updateGitHubAppTestMintAvailability();
+  if (btn.disabled) {
+    result.textContent = 'Load repositories with the current credential and select one first.';
     result.style.color = 'var(--danger)';
     result.style.display = 'block';
     return;
   }
+  if (!repo || githubAppTestRepos.indexOf(repo) === -1 || githubAppTestCredential !== buildGitHubAppCredentialJSON()) {
+    result.textContent = 'Load repositories with the current credential and select one first.';
+    result.style.color = 'var(--danger)';
+    result.style.display = 'block';
+    return;
+  }
+  var credential = buildGitHubAppCredentialJSON();
+  var stateVersion = githubAppTestStateVersion;
   result.textContent = 'Testing...';
   result.style.color = '';
   result.style.display = 'block';
@@ -586,11 +675,12 @@ function testGitHubAppMinter() {
   fetch('/api/keys/github-app/test', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({credential: buildGitHubAppCredentialJSON(), repository: repo}),
+    body: JSON.stringify({credential: credential, repository: repo}),
     credentials: 'same-origin'
   })
   .then(function(r) { return r.json().then(function(data) { data._status = r.status; return data; }); })
   .then(function(data) {
+    if (!isCurrentGitHubAppMintTest(credential, repo, stateVersion)) return;
     if (data.error) {
       result.textContent = data.error;
       result.style.color = 'var(--danger)';
@@ -602,12 +692,13 @@ function testGitHubAppMinter() {
     showToast('GitHub App mint test passed', 'success');
   })
   .catch(function(err) {
+    if (!isCurrentGitHubAppMintTest(credential, repo, stateVersion)) return;
     result.textContent = 'Test failed: ' + err.message;
     result.style.color = 'var(--danger)';
     showToast('GitHub App mint test failed', 'error');
   })
   .finally(function() {
-    btn.disabled = false;
+    if (isCurrentGitHubAppMintTest(credential, repo, stateVersion)) updateGitHubAppTestMintAvailability();
   });
 }
 

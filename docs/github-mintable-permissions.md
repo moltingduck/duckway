@@ -2,6 +2,20 @@
 
 This document defines per-client authorization for GitHub App installation tokens minted by Duckway. The policy is attached to a placeholder-key assignment and is enforced before a request reaches GitHub.
 
+## Creating the GitHub App credential
+
+Register an App for a personal account at <https://github.com/settings/apps/new>, or for an organization at `https://github.com/organizations/ORG/settings/apps/new` (replace `ORG` with the organization name). Under repository permissions, grant **Contents: read-only** for clone and pull. Grant **Contents: read and write** only when a client needs to push. Grant other permissions only for GitHub features that clients will use; Duckway requests the minimum permission required for each operation.
+
+Save the App, install it, and grant access to the repositories Duckway should reach. Then enter these values in the GitHub App installation minter form:
+
+- **App ID:** the App ID on the App settings page. Do not use the Client ID.
+- **Installation ID:** open the App's **Install App** page and choose **Configure** for the personal or organization installation. The Configure URL ends in `/settings/installations/ID`; its final number is the Installation ID. It can also be retrieved through GitHub's [List installations API](https://docs.github.com/en/rest/apps/apps#list-installations-for-the-authenticated-app).
+- **Private key:** create one under **Private keys** in App settings and paste its complete PEM contents, including the `BEGIN` and `END` lines.
+
+The App's optional **Setup URL** is a redirect after installation, not a URL to enter in Duckway. The private key is a sensitive, long-lived credential: keep it secret, and rotate or revoke it if exposed. Duckway stores it server-side and mints short-lived, scoped installation tokens.
+
+In the Add API Key form, use **Test load** to fetch the repositories available to that installation. Duckway sends the unsaved credential to its authenticated admin API, uses it server-side to request a short-lived token with Contents read permission, and returns repository names and visibility only. The credential and minted token are not persisted or returned by this action. Select a listed repository before **Test mint**; the mint test requests a short-lived token scoped to that one repository with Contents read permission.
+
 ## Security model
 
 Authorization has three independent layers:
