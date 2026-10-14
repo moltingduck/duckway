@@ -174,6 +174,10 @@ func (h *ClientHandler) Update(w http.ResponseWriter, r *http.Request) {
 // RotateToken replaces a client's non-expiring credential and returns the new
 // plaintext token once. Existing client identity and assignments are retained.
 func (h *ClientHandler) RotateToken(w http.ResponseWriter, r *http.Request) {
+	if !sameOriginRequest(r) {
+		jsonError(w, "cross-origin request denied", http.StatusForbidden)
+		return
+	}
 	id := r.PathValue("id")
 	client, err := h.clients.GetByID(id)
 	if err != nil {

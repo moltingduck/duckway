@@ -85,3 +85,30 @@ func TestRotateClientTokenNotFound(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestRotateClientTokenRejectsCrossOrigin(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	clients := queries.NewClientQueries(db)
+	oldToken := "old-client-token"
+	if _, err := db.Exec(`INSERT INTO clients (id, short_id, name, token_hash, is_active)
+		VALUES ('client-rotate', 'rotate', 'rotate me', ?, 1)`, services.HashToken(oldToken)); err != nil {
+		t.Fatal(err)
+	}
+	h := handlers.NewClientHandler(clients, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "http://admin.example/api/clients/client-rotate/rotate-token", nil)
+	req.SetPathValue("id", "client-rotate")
+	req.Header.Set("Origin", "https://sibling.example")
+	rec := httptest.NewRecorder()
+	h.RotateToken(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := clients.GetByTokenHash(services.HashToken(oldToken)); err != nil {
+		t.Fatalf("cross-origin request rotated the client token: %v", err)
+	}
+}

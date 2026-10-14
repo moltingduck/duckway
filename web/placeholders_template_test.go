@@ -98,6 +98,26 @@ func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
 	}
 }
 
+func TestClientsTemplateMakesClientReconfigurationDiscoverable(t *testing.T) {
+	body, err := Content.ReadFile("templates/clients.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	required := []string{
+		`onclick="openClientDetail('{{.ID}}')">Reconfigure connection info</button>`,
+		`Reconfiguring connection info revokes the current client token immediately. Existing client and API key assignments remain in place. The new token and setup instructions are shown once.`,
+		`>Reconfigure Connection Info</button>`,
+		`The current token will be revoked immediately. Existing client and API key assignments will remain in place. The new token and setup instructions will be shown once.`,
+		`showClientToken(result.body, true)`,
+	}
+	for _, want := range required {
+		if !strings.Contains(html, want) {
+			t.Fatalf("clients template missing client reconfiguration contract: %s", want)
+		}
+	}
+}
+
 func TestAPIKeysTemplateShowsMintableBadge(t *testing.T) {
 	body, err := Content.ReadFile("templates/api_keys.html")
 	if err != nil {

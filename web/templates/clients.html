@@ -156,6 +156,7 @@
     </div>
     <div class="flex gap-sm">
       <button class="btn btn-sm btn-primary" onclick="openAssignModal('{{.ID}}','{{.Name}}')">Assign Key</button>
+      <button class="btn btn-sm" onclick="openClientDetail('{{.ID}}')">Reconfigure connection info</button>
       {{if .CanaryEnabled}}<button class="btn btn-sm" onclick="genCanary('{{.ID}}','{{.Name}}','{{.ShortID}}')">Gen Canary</button>{{end}}
       <button class="btn btn-sm {{if .CanaryEnabled}}btn-primary{{else}}{{end}}" id="canary-btn-{{.ID}}"
         onclick="toggleCanary('{{.ID}}', {{if .CanaryEnabled}}false{{else}}true{{end}})">
@@ -469,9 +470,11 @@ sudo loginctl enable-linger "$USER"</code></pre>
         <div id="cd-suite-summary" class="text-sm text-muted">Loading…</div>
       </div>
 
+      <p class="text-sm text-muted mt-1">Reconfiguring connection info revokes the current client token immediately. Existing client and API key assignments remain in place. The new token and setup instructions are shown once.</p>
+
       <div class="modal-actions mt-1">
         <button type="button" class="btn" onclick="document.getElementById('client-detail-modal').style.display='none'">Close</button>
-		<button type="button" class="btn btn-danger" onclick="rotateClientToken()">Rotate Token</button>
+		<button type="button" class="btn btn-danger" onclick="rotateClientToken()">Reconfigure Connection Info</button>
         <button type="button" class="btn btn-primary" onclick="switchToClientEdit()">Edit</button>
       </div>
     </div>
@@ -593,7 +596,7 @@ function switchToClientView() {
 
 function rotateClientToken() {
 	if (!currentClient) return;
-	if (!confirm('Rotate the client token for ' + currentClient.name + '? The previous token will stop authenticating new requests immediately. Existing assignments and client data will be kept.')) return;
+	if (!confirm('Reconfigure connection info for ' + currentClient.name + '? The current token will be revoked immediately. Existing client and API key assignments will remain in place. The new token and setup instructions will be shown once.')) return;
 	fetch('/api/clients/' + encodeURIComponent(currentClient.id) + '/rotate-token', {
 		method: 'POST',
 		credentials: 'same-origin'
