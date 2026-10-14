@@ -98,6 +98,23 @@ func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
 	}
 }
 
+func TestClientsTemplateDefaultsFirstUseApprovalOffAndKeepsOptIn(t *testing.T) {
+	body, err := Content.ReadFile("templates/clients.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	if !strings.Contains(html, `<input type="checkbox" id="assign-approval"> Require admin approval on first use`) {
+		t.Fatal("first-use admin approval should be unchecked by default")
+	}
+	if strings.Contains(html, `<input type="checkbox" id="assign-approval" checked`) {
+		t.Fatal("first-use admin approval checkbox should not be checked on initial render")
+	}
+	if !strings.Contains(html, `requires_approval: document.getElementById('assign-approval').checked`) {
+		t.Fatal("assignment should preserve explicit first-use approval opt-in")
+	}
+}
+
 func TestClientsTemplateMakesClientReconfigurationDiscoverable(t *testing.T) {
 	body, err := Content.ReadFile("templates/clients.html")
 	if err != nil {
