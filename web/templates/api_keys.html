@@ -77,6 +77,8 @@
             <button type="button" class="btn" id="ak-ghapp-load-btn" onclick="loadGitHubAppTestRepos()">Test load</button>
             <select id="ak-ghapp-test-repo" aria-label="Repository to test mint" disabled onchange="updateGitHubAppTestMintAvailability()"><option value="">Load repositories first</option></select>
           </div>
+          <label for="ak-ghapp-test-repo-search" class="text-sm mt-1">Search loaded repositories</label>
+          <input type="search" id="ak-ghapp-test-repo-search" aria-label="Search loaded repositories" placeholder="Search by repository name" disabled oninput="renderGitHubAppTestRepos()">
           <div class="mt-1"><button type="button" class="btn" id="ak-ghapp-test-btn" onclick="testGitHubAppMinter()" disabled>Test mint</button></div>
           <div id="ak-ghapp-load-result" class="text-sm mt-1" style="display:none" role="status" aria-live="polite"></div>
           <div id="ak-ghapp-test-result" class="text-sm mt-1" style="display:none"></div>
@@ -565,12 +567,14 @@ function buildGitHubAppCredentialJSON() {
 }
 
 var githubAppTestRepos = [];
+var githubAppTestPrivateRepos = {};
 var githubAppTestCredential = '';
 var githubAppTestStateVersion = 0;
 
 function clearGitHubAppTestRepos() {
   githubAppTestStateVersion++;
   githubAppTestRepos = [];
+  githubAppTestPrivateRepos = {};
   githubAppTestCredential = '';
   var select = document.getElementById('ak-ghapp-test-repo');
   select.innerHTML = '';
@@ -579,8 +583,39 @@ function clearGitHubAppTestRepos() {
   option.textContent = 'Load repositories first';
   select.appendChild(option);
   select.disabled = true;
+  var search = document.getElementById('ak-ghapp-test-repo-search');
+  search.value = '';
+  search.disabled = true;
   document.getElementById('ak-ghapp-test-btn').disabled = true;
   document.getElementById('ak-ghapp-test-result').style.display = 'none';
+}
+
+function renderGitHubAppTestRepos() {
+  var select = document.getElementById('ak-ghapp-test-repo');
+  var search = document.getElementById('ak-ghapp-test-repo-search');
+  var selected = select.value;
+  var query = search.value.trim().toLowerCase();
+  var filtered = githubAppTestRepos.filter(function(repo) { return repo.toLowerCase().indexOf(query) !== -1; });
+  select.innerHTML = '';
+  var first = document.createElement('option');
+  first.value = '';
+  first.textContent = githubAppTestRepos.length ? 'Select a repository...' : 'No repositories available';
+  select.appendChild(first);
+  filtered.forEach(function(repo) {
+    var option = document.createElement('option');
+    option.value = repo;
+    option.textContent = repo + (githubAppTestPrivateRepos[repo] ? ' (private)' : '');
+    select.appendChild(option);
+  });
+  if (selected && githubAppTestRepos.indexOf(selected) !== -1 && filtered.indexOf(selected) === -1) {
+    var selectedOption = document.createElement('option');
+    selectedOption.value = selected;
+    selectedOption.textContent = selected + (githubAppTestPrivateRepos[selected] ? ' (private)' : '') + ' (selected; does not match search)';
+    select.appendChild(selectedOption);
+  }
+  select.disabled = githubAppTestRepos.length === 0;
+  select.value = selected && githubAppTestRepos.indexOf(selected) !== -1 ? selected : '';
+  updateGitHubAppTestMintAvailability();
 }
 
 function updateGitHubAppTestMintAvailability() {
@@ -619,23 +654,13 @@ function loadGitHubAppTestRepos() {
     if (credential !== buildGitHubAppCredentialJSON()) throw new Error('Credential fields changed while loading. Load repositories again.');
     var repos = Array.isArray(data.repositories) ? data.repositories.filter(function(repo) { return repo && typeof repo.full_name === 'string' && repo.full_name; }) : [];
     githubAppTestRepos = repos.map(function(repo) { return repo.full_name; });
+    githubAppTestPrivateRepos = {};
+    repos.forEach(function(repo) { githubAppTestPrivateRepos[repo.full_name] = !!repo.private; });
     githubAppTestCredential = credential;
-    var select = document.getElementById('ak-ghapp-test-repo');
-    select.innerHTML = '';
-    var first = document.createElement('option');
-    first.value = '';
-    first.textContent = repos.length ? 'Select a repository...' : 'No repositories available';
-    select.appendChild(first);
-    repos.forEach(function(repo) {
-      var option = document.createElement('option');
-      option.value = repo.full_name;
-      option.textContent = repo.full_name + (repo.private ? ' (private)' : '');
-      select.appendChild(option);
-    });
-    select.disabled = repos.length === 0;
+    renderGitHubAppTestRepos();
+    document.getElementById('ak-ghapp-test-repo-search').disabled = repos.length === 0;
     result.textContent = 'Loaded ' + repos.length + ' repositories. Choose one before testing a mint.';
     result.style.color = '';
-    updateGitHubAppTestMintAvailability();
   })
   .catch(function(err) {
     result.textContent = 'Repository load failed: ' + err.message;
