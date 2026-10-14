@@ -670,11 +670,16 @@ func SyncCodexConfig(proxyPort int) error {
 func SyncCodexOAuthCredentials(configDir string, cfg *Config) bool {
 	api := NewAPIClient(cfg.ServerURL, cfg.Token)
 	creds, err := api.FetchCodexCredentials()
-	if err != nil || creds == nil {
+	if err != nil {
+		log.Printf("Warning: cannot fetch Codex OAuth credentials from Duckway; falling back to API-key proxy config. Check server connectivity and confirm this client has an assigned OpenAI refreshable key with Codex OAuth metadata. Ensure sync and Codex use the same CODEX_HOME.")
+		return false
+	}
+	if creds == nil {
+		log.Printf("Warning: Duckway returned no usable Codex OAuth credentials; falling back to API-key proxy config. Check server connectivity and confirm this client has an assigned OpenAI refreshable key with Codex OAuth metadata. Ensure sync and Codex use the same CODEX_HOME.")
 		return false
 	}
 	if !codexCredentialsHaveIDToken(creds) {
-		log.Printf("Warning: Codex OAuth credentials from server are missing tokens.id_token; re-upload the full ~/.codex/auth.json in Refreshable Tokens")
+		log.Printf("Warning: Duckway Codex OAuth credentials are missing tokens.id_token; falling back to API-key proxy config. Re-upload the full Codex auth.json in Refreshable Tokens and confirm this client has an assigned OpenAI refreshable key with Codex OAuth metadata. Ensure sync and Codex use the same CODEX_HOME.")
 		return false
 	}
 	authPath, err := codexAuthJSONPath()
@@ -694,7 +699,7 @@ func SyncCodexOAuthCredentials(configDir string, cfg *Config) bool {
 		return false
 	}
 	ClearCodexOAuthMode(configDir)
-	log.Printf("Codex phantom OAuth auth.json synced to %s", authPath)
+	log.Printf("Codex phantom OAuth auth.json synced to %q. If Codex still asks to log in, confirm it uses this auth path and the same CODEX_HOME as sync.", authPath)
 	return true
 }
 

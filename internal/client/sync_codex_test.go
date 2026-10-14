@@ -1,7 +1,9 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -156,12 +158,111 @@ func TestSyncCodexAuthConfigUsesNativeOAuthWhenCredentialsExist(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousOutput) })
 	cfg := &Config{ServerURL: srv.URL, Token: "tok", ProxyPort: 18080}
 	if err := SyncCodexAuthConfig(configDir, cfg); err != nil {
 		t.Fatal(err)
 	}
 
 	assertCodexNativeOAuthMode(t, home)
+	if got := logs.String(); !strings.Contains(got, "Codex phantom OAuth auth.json synced") || !strings.Contains(got, "confirm it uses this auth path") || !strings.Contains(got, "same CODEX_HOME") {
+		t.Errorf("success log missing OAuth sync/path confirmation:\n%s", got)
+	} else if strings.Contains(got, "falling back to API-key proxy config") {
+		t.Errorf("successful OAuth sync logged fallback warning:\n%s", got)
+	}
+}
+
+func TestSyncCodexAuthConfigExplainsOAuthFallback(t *testing.T) {
+	tests := []struct {
+		name             string
+		status           int
+		credentials      map[string]interface{}
+		body             string
+		want             string
+		wantConnectivity bool
+	}{
+		{
+			name:             "credentials unavailable",
+			status:           http.StatusNoContent,
+			want:             "returned no usable Codex OAuth credentials",
+			wantConnectivity: true,
+		},
+		{
+			name:             "empty success response",
+			status:           http.StatusOK,
+			body:             "",
+			want:             "returned no usable Codex OAuth credentials",
+			wantConnectivity: true,
+		},
+		{
+			name:             "malformed success response",
+			status:           http.StatusOK,
+			body:             "not-json",
+			want:             "returned no usable Codex OAuth credentials",
+			wantConnectivity: true,
+		},
+		{
+			name:        "missing id token",
+			status:      http.StatusOK,
+			credentials: map[string]interface{}{"tokens": map[string]interface{}{"access_token": "secret-must-not-appear"}},
+			want:        "missing tokens.id_token",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			configDir := t.TempDir()
+			writeCodexConfigWithDuckwayProvider(t, home)
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/client/codex-credentials" {
+					http.NotFound(w, r)
+					return
+				}
+				w.WriteHeader(tt.status)
+				if tt.body != "" {
+					_, _ = w.Write([]byte(tt.body))
+				} else if tt.credentials != nil {
+					_ = json.NewEncoder(w).Encode(tt.credentials)
+				}
+			}))
+			defer srv.Close()
+
+			var logs bytes.Buffer
+			previousOutput := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(previousOutput) })
+			cfg := &Config{ServerURL: srv.URL, Token: "tok", ProxyPort: 18080}
+			if err := SyncCodexAuthConfig(configDir, cfg); err != nil {
+				t.Fatal(err)
+			}
+
+			gotLog := logs.String()
+			wants := []string{tt.want, "assigned OpenAI refreshable key", "same CODEX_HOME"}
+			if tt.wantConnectivity {
+				wants = append(wants, "Check server connectivity")
+			}
+			for _, want := range wants {
+				if !strings.Contains(gotLog, want) {
+					t.Errorf("log missing %q:\n%s", want, gotLog)
+				}
+			}
+			if strings.Contains(gotLog, "secret-must-not-appear") {
+				t.Errorf("log exposed credential data: %s", gotLog)
+			}
+			configData, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(configData), `model_provider = "duckway-openai"`) {
+				t.Fatalf("API-key fallback config was not written:\n%s", configData)
+			}
+		})
+	}
 }
 
 func TestCCWatchCodexOAuthSyncUsesNativeOAuth(t *testing.T) {
