@@ -808,6 +808,7 @@ func configuredGitRepos(keys []client.PlaceholderKeyInfo) []configuredGitRepo {
 
 func gitReposFromPermissionConfig(configJSON string) []configuredGitRepo {
 	var config struct {
+		Version      string `json:"version"`
 		Provider     string `json:"provider"`
 		Repositories map[string]struct {
 			Capabilities struct {
@@ -827,15 +828,17 @@ func gitReposFromPermissionConfig(configJSON string) []configuredGitRepo {
 		return nil
 	}
 	modes := map[string]string{}
-	for repo, assignment := range config.Repositories {
-		if !gitRepoArgPattern.MatchString(repo) || !assignment.Capabilities.Clone {
-			continue
+	if config.Version == "2" {
+		for repo, assignment := range config.Repositories {
+			if !gitRepoArgPattern.MatchString(repo) || !assignment.Capabilities.Clone {
+				continue
+			}
+			mode := "deploy"
+			if assignment.Capabilities.Push {
+				mode = "dev"
+			}
+			modes[repo] = mode
 		}
-		mode := "deploy"
-		if assignment.Capabilities.Push {
-			mode = "dev"
-		}
-		modes[repo] = mode
 	}
 	for _, rule := range config.Rules {
 		for _, ep := range rule.Endpoints {

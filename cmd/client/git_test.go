@@ -59,6 +59,20 @@ func TestConfiguredGitReposFromV2PermissionConfig(t *testing.T) {
 	}
 }
 
+func TestConfiguredGitReposUsesV2CloneAssignments(t *testing.T) {
+	policy := `{"version":"2","provider":"github","repositories":{"ExampleOrg/ReadOnly":{"capabilities":{"clone":true,"push":false,"issues_read":true}},"ExampleOrg/ReadWrite":{"capabilities":{"clone":true,"push":true}},"ExampleOrg/IssuesOnly":{"capabilities":{"issues_read":true}},"bad/repo/extra":{"capabilities":{"clone":true,"push":false}}}}`
+	got := configuredGitRepos([]client.PlaceholderKeyInfo{
+		{ServiceName: "github", Placeholder: "github_pat_dw_repo", PermissionConfig: policy},
+	})
+	want := []configuredGitRepo{
+		{Repo: "ExampleOrg/ReadOnly", Mode: "deploy", Placeholder: "github_pat_dw_repo"},
+		{Repo: "ExampleOrg/ReadWrite", Mode: "dev", Placeholder: "github_pat_dw_repo"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("configuredGitRepos = %#v, want %#v", got, want)
+	}
+}
+
 func TestConfiguredGitReposMergesV1AndV2PermissionConfig(t *testing.T) {
 	acl := `{"version":"2","provider":"github","repositories":{"OWNER/DEV":{"capabilities":{"clone":true,"push":true}}},"rules":[{"endpoints":[{"method":"GET","path":"/ORG/DEPLOY.git/info/refs","allow":true},{"method":"POST","path":"/ORG/DEPLOY.git/git-upload-pack","allow":true}]}]}`
 	got := gitReposFromPermissionConfig(acl)
