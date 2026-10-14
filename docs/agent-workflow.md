@@ -37,14 +37,40 @@ git worktree add ../duckway-<batch>-<role> -b codex/<batch>-<role> <base-commit>
 
 The subagent brief must include the base commit, exact scope, acceptance criteria,
 allowed checks, runtime resources it must use, and a request to report its branch
-and process IDs. The main agent reviews status and diff before integrating. Do not
-have two worktrees modify the same file or branch. Integrate sequentially when
-changes overlap, then remove completed worktrees:
+and process IDs. The main agent coordinates a lower-tier implementation agent,
+which reviews status and diff before integrating. Do not have two worktrees
+modify the same file or branch. Integrate sequentially when changes overlap,
+then remove completed worktrees:
 
 ```bash
 git worktree remove ../duckway-<batch>-<role>
 git worktree prune
 ```
+
+### Model ownership and feature delivery gates
+
+- The high-tier main agent plans and coordinates only: scope the batch, set
+  acceptance criteria, delegate work, and assess reports. Lower-tier subagents
+  own implementation, integration edits, and fixes. The main agent may issue
+  Git operations needed to coordinate delivery, but does not write feature code
+  or run its tests.
+- Use multiple lower-tier subagents for independent scopes when that shortens
+  the batch. Give each a separate worktree and branch when it edits files or
+  runs checks. Avoid overlapping file ownership and shared runtime resources.
+- Before committing or merging a feature, freeze the integrated candidate and
+  assign its checks to an independent lower-tier test agent, separate from the
+  implementation agent. Run the applicable unit tests, E2E scenarios, race
+  checks, lint, and other risk-based verification from section 3 against that
+  candidate. Test agents report results and do not edit the candidate. If a
+  check fails, delegate the fix and rerun affected checks on the updated
+  candidate before proceeding.
+- Before merge, an independent lower-tier security reviewer must inspect the
+  feature candidate and report findings. Resolve findings through the
+  implementation agent and request review of affected changes before merge.
+- When all required tests and security review pass, merge the feature branch
+  into `main` and push `main` to its configured remote. If a required gate,
+  repository policy, or access issue blocks delivery, keep the branch and report
+  the exact blocker; do not report the feature as merged or pushed.
 
 ## 1b. Own and dispose of development resources
 
@@ -156,10 +182,11 @@ Return: actionable findings with file/line, impact, and suggested check;
         say explicitly if no findings. Do not edit or run broad tests unless assigned.
 ```
 
-The main agent integrates findings and records each as fixed, deferred with a
-reason, or not applicable. Send changed files and the fix summary back only to
-affected reviewers. Start another broad review only if changes introduce broader
-risk. Avoid having every reviewer run the same suite or reread all project history.
+The main agent coordinates the implementation agent's resolution of findings and
+records each as fixed, deferred with a reason, or not applicable. Send changed
+files and the fix summary back only to affected reviewers. Start another broad
+review only if changes introduce broader risk. Avoid having every reviewer run
+the same suite or reread all project history.
 
 ## 3. Verify according to the change
 

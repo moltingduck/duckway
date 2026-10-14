@@ -17,13 +17,16 @@
 
 - Search narrowly, read relevant ranges, and batch independent reads. Expand the
   search when evidence requires it; do not repeatedly dump entire files or logs.
-- Use subagents only when the user or an applicable workflow calls for them and
-  there is a bounded, independent task. Supply explicit files, scope, and output.
-- For simple, bounded work that can be independently checked—such as narrow code
-  searches, documentation review, test-log triage, or an initial focused review—
-  prefer an available lower-tier model. Keep architecture decisions, changes that
-  cross component boundaries, integration, and final verification with the main
-  agent. Choose a stronger model when the task's risk or ambiguity warrants it.
+- The high-tier main agent handles planning and coordination: define acceptance
+  criteria, divide the work, assign owners, and assess their reports. Delegate
+  implementation, integration edits, fixes, and test execution to lower-tier
+  model subagents; the main agent does not write feature code or execute the
+  feature's test suite. If a lower-tier model is not available, report the
+  blocker and ask the user how to proceed.
+- Use multiple lower-tier subagents when tasks are independent and parallel work
+  can shorten the batch. Give each an explicit scope, files, acceptance criteria,
+  model tier, and output. Keep architecture decisions and integration planning
+  with the main agent; have subagents implement and integrate the agreed design.
 - Use `fork_turns: "none"` with a self-contained brief. Reuse a reviewer for fixes
   in the same scope; give a new task a fresh brief.
 - For substantial Duckway code batches, use the five review roles described in
@@ -35,25 +38,29 @@
 
 ### Subagent worktrees
 
-- Use a separate Git worktree for a subagent when it will make code changes, run
-  long tests, or need an isolated branch. Read the current `TASK.md` and
-  `HANDOFF.md` before creating it.
+- Use a separate Git worktree and unique branch for every subagent that changes
+  files or runs tests. Read the current `TASK.md` and `HANDOFF.md` before creating
+  it. A lower-tier implementation agent integrates reviewed changes and resolves
+  code conflicts; the main agent coordinates that work and reviews the report.
 - Create worktrees beside the checkout, never inside it. Use a unique branch and
   directory based on the bounded batch, for example:
   `git worktree add ../duckway-<batch>-<role> -b codex/<batch>-<role>`.
 - Give each subagent one bounded scope and tell it the base commit, files it may
   change, acceptance criteria, and checks it owns. Use `fork_turns: "none"` so
   the worktree does not inherit an unrelated conversation.
-- Do not let two worktrees edit the same files or share a branch. The main agent
-  owns integration, conflict resolution, and the final verification.
+- Do not let two worktrees edit the same files or share a branch. Lower-tier
+  implementation agents own integration edits and conflict resolution; separate
+  lower-tier test agents own final verification.
 - Keep worktree-local build output, logs, sockets, databases, and fixture data
   isolated. Never assume that separate Git directories isolate runtime state.
-- Before merging, inspect each worktree's status and diff, run focused checks in
-  the worktree, then integrate one bounded batch at a time. Remove the worktree
+- Before merging, have independent lower-tier test and security agents inspect
+  the integrated candidate. The implementation agent handles resulting fixes
+  and reassigns affected checks. Remove the worktree
   and prune its branch only after the result is integrated or explicitly
   abandoned.
-- Worktrees do not reduce model usage by themselves. Parallel subagents can
-  increase token use, so use them only when the work is genuinely independent.
+- Assign independent implementation, test, and security-review work to separate
+  lower-tier subagents/worktrees where their inputs do not conflict. Test agents
+  must test the integrated feature commit or candidate branch without changing it.
 
 ### Resource ownership and disposal
 
@@ -87,8 +94,18 @@
   confirmation is needed. Verify readiness and provide the TUI launch command.
   If restart fails, report the concrete blocker instead of claiming it is ready.
 
-- Follow the risk-based test sequence in `docs/agent-workflow.md`. Run required
-  checks; repeat a passed check only after relevant changes or new evidence.
+- Follow the feature completion gates in `docs/agent-workflow.md`. Before any
+  feature commit or merge, an independent lower-tier test agent must run the
+  required unit, E2E, race, lint, and other risk-based checks against the exact
+  integrated candidate. An independent lower-tier security agent must complete
+  the security review before merge. Test and security agents must be independent
+  of the implementation agent. The main agent coordinates and evaluates
+  reports; it does not execute these checks.
+- After all required checks and security review pass, merge the feature branch
+  into `main` and push `main` to its configured remote. If repository policy,
+  access, branch protection, or a failed required gate prevents this, keep the
+  branch intact and report the precise blocker; do not claim the feature is
+  complete or pushed.
 - Report concise failure excerpts and test summaries. Keep raw logs in ignored
   local storage; never copy secrets, credentials, or raw live agent transcripts.
 - Track long-running process IDs and use bounded waits, not rapid empty polling.
