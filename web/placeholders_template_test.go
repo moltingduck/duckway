@@ -60,23 +60,16 @@ func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
 		`/api/keys/' + encodeURIComponent(key.id) + '/github-app/repositories`,
 		`assign-github-repo-enabled`,
 		`data-capability`,
-		`github-policy-preset`,
+		`repo-grant-section-label">Capabilities`,
 		`github-workflows`,
 		`github-refs`,
 		`installation_permissions`,
 		`function githubCapabilityRequirement(capability)`,
-		`function githubPresetMissingPermissions(preset, permissions)`,
-		`Read only</strong> needs`,
-		`Developer</strong> needs`,
-		`CI/CD operator</strong> needs`,
-		`repo-grant-permission-note`,
-		`GitHub App installation permission is insufficient`,
-		`repo-grant-header`,
-		`max-height:52vh`,
+		`GitHub App installation permission is insufficient: requires `,
 		`title="' + escHTML(name) + '"`,
 		`function onGitHubGrantToggle(input)`,
-		`row.querySelector('.github-workflows').value='ci.yml'`,
-		`row.querySelector('.github-refs').value='main'`,
+		`if (el && !(el.disabled && !value)) el.checked=value;`,
+		`repo-grant-controls`,
 		`function selectedAssignGitHubRepoGrants()`,
 		`function selectedGitHubRepoGrants(scopeSelector)`,
 		`body.permission_config = JSON.stringify(gitACLForRepoGrants(grants));`,
@@ -99,6 +92,9 @@ func TestClientsTemplateSupportsMintableGitHubRepoAssignment(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("clients template missing mintable GitHub repo assignment contract: %s", want)
 		}
+	}
+	if strings.Contains(html, `github-policy-preset`) || strings.Contains(html, `<details class="repo-grant-details"`) {
+		t.Fatal("mintable GitHub assignment capabilities should be directly visible without presets")
 	}
 }
 

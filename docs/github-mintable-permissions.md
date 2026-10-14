@@ -69,20 +69,9 @@ Repository administration, secrets, variables, hooks, deployments, environment a
 
 `environment_allowlist` constrains the `inputs.environment` dispatch input when present. It does not grant permission to create or modify GitHub environments. A workflow that derives an environment by another mechanism remains responsible for its own GitHub environment protection rules.
 
-## Presets
+## Assignment UI
 
-The UI exposes presets as editing conveniences. Presets are expanded into an explicit policy before storage.
-
-| Preset | Capabilities |
-| --- | --- |
-| Read only | `clone`, issue/PR/release read, and `actions_read` |
-| Developer | Read only plus `push`, issue write, and PR write |
-| CI/CD operator | Read only plus workflow dispatch, rerun, and cancel |
-| Custom | Individually selected capabilities and constraints |
-
-Changing a preset never changes the GitHub App installation itself.
-
-The assignment UI treats the installation token's returned `permissions` as a hard upper bound. Capabilities and presets that require a missing or weaker GitHub App permission are disabled. Hovering a disabled capability explains the required provider permission. Existing out-of-range capability values remain visible but locked during editing so unrelated changes do not silently rewrite the stored policy.
+The assignment UI shows each repository's capabilities directly as checkboxes so the operator can grant only the access that client needs. Capabilities requiring a missing or weaker GitHub App installation permission are disabled; hovering a disabled capability explains the required provider permission. Existing out-of-range capability values remain visible but locked during editing so unrelated changes do not silently rewrite the stored policy. Workflow, ref, and environment allowlists are edited alongside the capabilities.
 
 ## Enforcement flow
 
@@ -103,6 +92,6 @@ Unknown future versions fail closed. Changing either the assignment policy or Gi
 
 ## Testing
 
-Unit tests cover schema rejection, capability dependencies, endpoint compilation, request-body constraints, least-privilege token requests, cache invalidation, and v1 compatibility. Browser tests cover presets, custom controls, repository selection, and edit round trips.
+Unit tests cover schema rejection, capability dependencies, endpoint compilation, request-body constraints, least-privilege token requests, cache invalidation, and v1 compatibility. Browser tests cover direct capability controls, repository selection, and edit round trips.
 
 Live tests use the git-ignored credentials described in the live-credential section of `docs/developer-guide.md`. They skip when credentials are absent and keep refresh, clone, and GitHub API capability checks independent so one unavailable operation does not hide another result.
