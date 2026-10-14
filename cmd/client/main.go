@@ -808,8 +808,14 @@ func configuredGitRepos(keys []client.PlaceholderKeyInfo) []configuredGitRepo {
 
 func gitReposFromPermissionConfig(configJSON string) []configuredGitRepo {
 	var config struct {
-		Provider string `json:"provider"`
-		Rules    []struct {
+		Provider     string `json:"provider"`
+		Repositories map[string]struct {
+			Capabilities struct {
+				Clone bool `json:"clone"`
+				Push  bool `json:"push"`
+			} `json:"capabilities"`
+		} `json:"repositories"`
+		Rules []struct {
 			Endpoints []struct {
 				Method string `json:"method"`
 				Path   string `json:"path"`
@@ -821,6 +827,16 @@ func gitReposFromPermissionConfig(configJSON string) []configuredGitRepo {
 		return nil
 	}
 	modes := map[string]string{}
+	for repo, assignment := range config.Repositories {
+		if !gitRepoArgPattern.MatchString(repo) || !assignment.Capabilities.Clone {
+			continue
+		}
+		mode := "deploy"
+		if assignment.Capabilities.Push {
+			mode = "dev"
+		}
+		modes[repo] = mode
+	}
 	for _, rule := range config.Rules {
 		for _, ep := range rule.Endpoints {
 			repo, ok := repoFromGitHubACLEndpoint(ep.Method, ep.Path, ep.Allow)

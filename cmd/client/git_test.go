@@ -47,6 +47,30 @@ func TestConfiguredGitReposFromPermissionConfig(t *testing.T) {
 	}
 }
 
+func TestConfiguredGitReposFromV2PermissionConfig(t *testing.T) {
+	acl := `{"version":"2","provider":"github","repositories":{"OWNER/DEV":{"capabilities":{"clone":true,"push":true}},"ORG/DEPLOY":{"capabilities":{"clone":true,"push":false}},"ORG/NOCLONE":{"capabilities":{"clone":false,"push":true}},"invalid":{"capabilities":{"clone":true}},"ORG/TOO/MANY":{"capabilities":{"clone":true}}}}`
+	got := gitReposFromPermissionConfig(acl)
+	want := []configuredGitRepo{
+		{Repo: "ORG/DEPLOY", Mode: "deploy"},
+		{Repo: "OWNER/DEV", Mode: "dev"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gitReposFromPermissionConfig(v2) = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfiguredGitReposMergesV1AndV2PermissionConfig(t *testing.T) {
+	acl := `{"version":"2","provider":"github","repositories":{"OWNER/DEV":{"capabilities":{"clone":true,"push":true}}},"rules":[{"endpoints":[{"method":"GET","path":"/ORG/DEPLOY.git/info/refs","allow":true},{"method":"POST","path":"/ORG/DEPLOY.git/git-upload-pack","allow":true}]}]}`
+	got := gitReposFromPermissionConfig(acl)
+	want := []configuredGitRepo{
+		{Repo: "ORG/DEPLOY", Mode: "deploy"},
+		{Repo: "OWNER/DEV", Mode: "dev"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gitReposFromPermissionConfig(mixed) = %#v, want %#v", got, want)
+	}
+}
+
 func TestConfiguredGitReposSkipsEmptyPlaceholder(t *testing.T) {
 	acl := `{"version":"1","provider":"github","rules":[{"endpoints":[{"method":"GET","path":"/OWNER/REPO.git/info/refs","allow":true},{"method":"POST","path":"/OWNER/REPO.git/git-upload-pack","allow":true}]}]}`
 	got := configuredGitRepos([]client.PlaceholderKeyInfo{
