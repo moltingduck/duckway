@@ -83,7 +83,7 @@ func runDucklordUpdate(args []string, out io.Writer) error {
 	if err != nil || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || base.Path != "" || base.Opaque != "" {
 		return errors.New("invalid Duckway server URL")
 	}
-	if !(base.Scheme == "https" || base.Scheme == "http" && isLoopbackHost(base.Hostname())) {
+	if base.Scheme != "https" && (base.Scheme != "http" || !isLoopbackHost(base.Hostname())) {
 		return errors.New("ducklord updates require HTTPS (HTTP is allowed only for loopback servers)")
 	}
 	base.Path = strings.TrimRight(base.Path, "/")
@@ -117,7 +117,7 @@ func runDucklordUpdate(args []string, out io.Writer) error {
 	wantBinary := "ducklord-" + runtime.GOOS + "-" + runtime.GOARCH
 	_, hashErr := hex.DecodeString(manifest.SHA256)
 	if manifest.OS != runtime.GOOS || manifest.Arch != runtime.GOARCH || manifest.Binary != wantBinary || manifest.DownloadPath != "/download/"+wantBinary || manifest.Size <= 0 || len(manifest.SHA256) != 64 || hashErr != nil {
-		return errors.New("Duckway server returned an invalid or unsupported Ducklord artifact")
+		return errors.New("duckway server returned an invalid or unsupported Ducklord artifact")
 	}
 	current := version.Get()
 	fmt.Fprintf(out, "Ducklord: %s (recommended %s)\n", current, manifest.Version)
@@ -157,6 +157,14 @@ func runDucklordUpdate(args []string, out io.Writer) error {
 		return fmt.Errorf("lock Ducklord update: %w", err)
 	}
 	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
+	alreadyUpdated, err := installedBinaryMatches(exe, manifest)
+	if err != nil {
+		return fmt.Errorf("recheck installed Ducklord after acquiring update lock: %w", err)
+	}
+	if alreadyUpdated {
+		fmt.Fprintf(out, "Ducklord is already updated to %s.\n", manifest.Version)
+		return nil
+	}
 	downloadURL := *base
 	downloadURL.Path += manifest.DownloadPath
 	dl, err := client.Get(downloadURL.String())
@@ -165,7 +173,7 @@ func runDucklordUpdate(args []string, out io.Writer) error {
 	}
 	defer dl.Body.Close()
 	if dl.StatusCode != http.StatusOK {
-		return fmt.Errorf("Duckway artifact download failed with status %d", dl.StatusCode)
+		return fmt.Errorf("duckway artifact download failed with status %d", dl.StatusCode)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(exe), ".ducklord-update-*")
 	if err != nil {
@@ -228,12 +236,31 @@ func validRecommendedVersion(v string) bool {
 		return false
 	}
 	for _, r := range v {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(".-_+", r) {
-			continue
+		if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_+", r) {
+			return false
 		}
-		return false
 	}
 	return true
+}
+
+func installedBinaryMatches(executable string, manifest ducklordUpdateManifest) (bool, error) {
+	info, err := os.Stat(executable)
+	if err != nil {
+		return false, err
+	}
+	if info.Size() != manifest.Size {
+		return false, nil
+	}
+	f, err := os.Open(executable)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return false, err
+	}
+	return hex.EncodeToString(h.Sum(nil)) == strings.ToLower(manifest.SHA256), nil
 }
 
 func updateMetadataPath(home, executable string) string {

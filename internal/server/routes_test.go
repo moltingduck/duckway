@@ -114,12 +114,12 @@ func TestHandleDucklordUpdateInfoRejectsInvalidRecommendedVersion(t *testing.T) 
 }
 
 func TestValidInstallBaseURLRejectsHeaderInjection(t *testing.T) {
-	for _, raw := range []string{"https://duckway.test", "http://localhost:8080", "https://[::1]:8443"} {
+	for _, raw := range []string{"https://duckway.test", "http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080", "https://[::1]:8443"} {
 		if !validInstallBaseURL(raw) {
 			t.Errorf("rejected valid URL %q", raw)
 		}
 	}
-	for _, raw := range []string{"https://duckway.test\";touch /tmp/pwned", "https://duckway.test:99999", "https://bad_host.test", "javascript://evil", "https://user@duckway.test", "https://duckway.test/path", "https://duckway.test,evil"} {
+	for _, raw := range []string{"https://duckway.test\";touch /tmp/pwned", "http://duckway.test", "http://192.168.1.2", "https://duckway.test:99999", "https://bad_host.test", "javascript://evil", "https://user@duckway.test", "https://duckway.test/path", "https://duckway.test,evil"} {
 		if validInstallBaseURL(raw) {
 			t.Errorf("accepted unsafe URL %q", raw)
 		}
@@ -190,7 +190,9 @@ func TestInstallScriptSupportsUserLocalInstall(t *testing.T) {
 		`download_tool "$DUCKLORD_BINARY" "$TMP_DIR/ducklord"`,
 		`DUCKLORD_DEST="$DEST_DIR/ducklord"`,
 		`DUCKLORD_DEST="$DEST"`,
-		`$HOME/.ducklord/updates/$update_key.json`,
+		`update_meta="$update_home/.ducklord/updates/$update_key.json"`,
+		`update_home=$(printf '%%s' "$sudo_passwd_entry" | cut -d: -f6)`,
+		`chown "$update_owner" "$update_meta_tmp"`,
 		`"server_url"`,
 		`Install location:`,
 		`read choice < /dev/tty`,

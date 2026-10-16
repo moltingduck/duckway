@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -57,6 +59,25 @@ func TestValidRecommendedVersion(t *testing.T) {
 		if validRecommendedVersion(value) {
 			t.Errorf("accepted %q", value)
 		}
+	}
+}
+
+func TestInstalledBinaryMatchesManifest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ducklord")
+	contents := []byte("same release")
+	if err := os.WriteFile(path, contents, 0700); err != nil {
+		t.Fatal(err)
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256(contents))
+	manifest := ducklordUpdateManifest{Size: int64(len(contents)), SHA256: hash}
+	matched, err := installedBinaryMatches(path, manifest)
+	if err != nil || !matched {
+		t.Fatalf("matching installed binary: matched=%v err=%v", matched, err)
+	}
+	manifest.SHA256 = strings.Repeat("0", 64)
+	matched, err = installedBinaryMatches(path, manifest)
+	if err != nil || matched {
+		t.Fatalf("different installed binary: matched=%v err=%v", matched, err)
 	}
 }
 

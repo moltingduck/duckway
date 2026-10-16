@@ -630,6 +630,9 @@ func validInstallBaseURL(raw string) bool {
 	if host == "" || net.ParseIP(host) == nil && !validInstallHostname(host) {
 		return false
 	}
+	if u.Scheme == "http" && !isInstallLoopbackHost(host) {
+		return false
+	}
 	if port := u.Port(); port != "" {
 		for _, r := range port {
 			if r < '0' || r > '9' {
@@ -644,6 +647,10 @@ func validInstallBaseURL(raw string) bool {
 	return true
 }
 
+func isInstallLoopbackHost(host string) bool {
+	return strings.EqualFold(host, "localhost") || net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()
+}
+
 func validInstallHostname(host string) bool {
 	if len(host) > 253 {
 		return false
@@ -653,7 +660,7 @@ func validInstallHostname(host string) bool {
 			return false
 		}
 		for _, r := range label {
-			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+			if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-", r) {
 				return false
 			}
 		}
@@ -801,16 +808,23 @@ func handleDucklordUpdateInfo(w http.ResponseWriter, r *http.Request, downloadDi
 		return
 	}
 	path := filepath.Join(downloadDir, binary)
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		handlers.JsonErrorPublic(w, "Ducklord artifact not available", http.StatusNotFound)
-		return
-	}
-	sum, err := fileSHA256(path)
+	artifact, err := os.Open(path)
 	if err != nil {
 		handlers.JsonErrorPublic(w, "Ducklord artifact not available", http.StatusNotFound)
 		return
 	}
+	defer artifact.Close()
+	info, err := artifact.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		handlers.JsonErrorPublic(w, "Ducklord artifact not available", http.StatusNotFound)
+		return
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, artifact); err != nil {
+		handlers.JsonErrorPublic(w, "Ducklord artifact not available", http.StatusNotFound)
+		return
+	}
+	sum := hex.EncodeToString(hash.Sum(nil))
 	recommended := os.Getenv("DUCKLORD_RECOMMENDED_VERSION")
 	if recommended == "" {
 		recommended = version.Get()
@@ -828,7 +842,7 @@ func validDucklordVersion(v string) bool {
 		return false
 	}
 	for _, r := range v {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(".-_+", r)) {
+		if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_+", r) {
 			return false
 		}
 	}
@@ -1027,7 +1041,29 @@ if [ "$INSTALL_COMPONENT" = "client" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
 fi
 if [ "$INSTALL_COMPONENT" = "ducklord" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
   echo "Installed: $DUCKLORD_DEST"
-  mkdir -p "$HOME/.ducklord/updates"
+  update_home="$HOME"
+  update_owner=""
+  if [ "$(id -u)" = "0" ] && [ -n "${SUDO_USER:-}" ]; then
+    if command -v getent >/dev/null 2>&1; then
+      sudo_passwd_entry=$(getent passwd "$SUDO_USER" || true)
+      update_home=$(printf '%%s' "$sudo_passwd_entry" | cut -d: -f6)
+    elif command -v dscl >/dev/null 2>&1; then
+      update_home=$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null | sed 's/^[^ ]* //')
+    fi
+    update_uid=$(id -u "$SUDO_USER" 2>/dev/null || true)
+    update_gid=$(id -g "$SUDO_USER" 2>/dev/null || true)
+    if [ -z "$update_home" ] || [ ! -d "$update_home" ] || [ -z "$update_uid" ] || [ -z "$update_gid" ]; then
+      echo "Error: cannot resolve the invoking user's home and ownership for update metadata"
+      exit 1
+    fi
+    update_owner="$update_uid:$update_gid"
+  fi
+  if [ ! -d "$update_home/.ducklord" ]; then
+    mkdir -p "$update_home/.ducklord"
+    if [ -n "$update_owner" ]; then chown "$update_owner" "$update_home/.ducklord"; fi
+  fi
+  mkdir -p "$update_home/.ducklord/updates"
+  if [ -n "$update_owner" ]; then chown "$update_owner" "$update_home/.ducklord/updates"; fi
   if command -v sha256sum >/dev/null 2>&1; then
   update_key=$(printf '%%s' "$DUCKLORD_DEST" | sha256sum | cut -d ' ' -f 1)
   elif command -v shasum >/dev/null 2>&1; then
@@ -1036,11 +1072,12 @@ if [ "$INSTALL_COMPONENT" = "ducklord" ] || [ "$INSTALL_COMPONENT" = "all" ]; th
     echo "Error: sha256sum or shasum required to record Ducklord update metadata"
     exit 1
   fi
-  update_meta="$HOME/.ducklord/updates/$update_key.json"
+  update_meta="$update_home/.ducklord/updates/$update_key.json"
   umask 077
   update_path_json=$(printf '%%s' "$DUCKLORD_DEST" | sed 's/\\/\\\\/g; s/"/\\"/g')
   update_meta_tmp="$update_meta.$$"
   printf '{"managed":true,"executable_path":"%%s","server_url":"%%s"}\n' "$update_path_json" "$DUCKWAY_SERVER" > "$update_meta_tmp"
+  if [ -n "$update_owner" ]; then chown "$update_owner" "$update_meta_tmp"; fi
   mv -f "$update_meta_tmp" "$update_meta"
 fi
 case ":$PATH:" in
