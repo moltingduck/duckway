@@ -135,7 +135,9 @@ func Stop(ctx context.Context, root, pidPath string) error {
 				_ = syscall.Close(lockFD)
 			}
 		}
-		_ = conn.Close()
+		if conn != nil {
+			_ = conn.Close()
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
