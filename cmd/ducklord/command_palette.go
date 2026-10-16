@@ -233,14 +233,18 @@ func (s *tuiState) renderCommandPalette(out io.Writer, cols, rows int) {
 	}
 	lines := []modalRenderLine{{modalTitle, "Command palette"}, {modalMuted, fmt.Sprintf("> %s", s.commandPaletteQuery)}}
 	items := s.commandPaletteItems()
-	for i, item := range items {
-		style := modalMuted
-		prefix := "  "
-		if i == s.commandPaletteIndex {
-			style = modalInput
-			prefix = "› "
+	if len(items) == 0 {
+		lines = append(lines, modalRenderLine{modalMuted, "  No matching commands, Projects, or Sessions"})
+	} else {
+		for i, item := range items {
+			style := modalMuted
+			prefix := "  "
+			if i == s.commandPaletteIndex {
+				style = modalInput
+				prefix = "› "
+			}
+			lines = append(lines, modalRenderLine{style, prefix + item.label})
 		}
-		lines = append(lines, modalRenderLine{style, prefix + item.label})
 	}
 	lines = append(lines, modalRenderLine{modalMuted, "  ↑/↓ or j/k choose · Enter run · Esc/Ctrl+C close"})
 	s.renderModalBox(out, cols, rows, lines)
