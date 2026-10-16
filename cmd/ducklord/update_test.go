@@ -87,8 +87,7 @@ func TestDownloadVerifiedDucklordStopsWhenVersionChangesOnRefresh(t *testing.T) 
 		switch r.URL.Path {
 		case "/ducklord/update-info":
 			manifestRequests++
-			version := "v1.2.3"
-			version = "v1.2.4"
+			version := "v1.2.4"
 			writeTestManifest(t, w, version, name, []byte("not matching downloaded artifact"))
 		case "/download/" + name:
 			downloadRequests++
