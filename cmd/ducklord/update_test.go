@@ -161,7 +161,7 @@ func TestUpdateMetadataIsScopedToExecutable(t *testing.T) {
 }
 
 func TestValidRecommendedVersion(t *testing.T) {
-	for _, value := range []string{"v1.2.3", "1.0.0-rc.1+build_2"} {
+	for _, value := range []string{"v1.2.3", "1.0.0-rc.1+build_2", "commit abc1234 (built 2026-04-30, go1.25)", "dev (go1.25)"} {
 		if !validRecommendedVersion(value) {
 			t.Errorf("rejected %q", value)
 		}

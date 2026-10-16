@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/hackerduck/duckway/internal/version"
 )
 
 func TestHandleClientUpdateInfoReturnsPinnedBinaryManifest(t *testing.T) {
@@ -97,6 +98,27 @@ func TestHandleDucklordUpdateInfoManifest(t *testing.T) {
 	}
 	if sha, _ := got["sha256"].(string); len(sha) != 64 {
 		t.Fatalf("sha256=%q", sha)
+	}
+}
+
+func TestHandleDucklordUpdateInfoUsesDisplayVersionFallback(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ducklord-darwin-arm64"), []byte("artifact"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DUCKLORD_RECOMMENDED_VERSION", "")
+	req := httptest.NewRequest(http.MethodGet, "/ducklord/update-info?os=darwin&arch=arm64", nil)
+	rec := httptest.NewRecorder()
+	handleDucklordUpdateInfo(rec, req, dir)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["recommended_version"] != version.Get() {
+		t.Fatalf("recommended_version=%q, want %q", got["recommended_version"], version.Get())
 	}
 }
 

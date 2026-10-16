@@ -269,7 +269,7 @@ func validRecommendedVersion(v string) bool {
 		return false
 	}
 	for _, r := range v {
-		if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_+", r) {
+		if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_+ (),", r) {
 			return false
 		}
 	}

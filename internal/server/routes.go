@@ -853,7 +853,10 @@ func validDucklordVersion(v string) bool {
 		return false
 	}
 	for _, r := range v {
-		if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_+", r) {
+		// version.Get() includes display metadata such as "commit abc1234
+		// (built 2026-04-30, go1.25)". Keep its punctuation while rejecting
+		// separators and other characters that could be used in a path/header.
+		if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_+ (),", r) {
 			return false
 		}
 	}
