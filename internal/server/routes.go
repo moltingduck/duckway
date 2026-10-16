@@ -8,9 +8,12 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
@@ -605,12 +608,57 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 			scheme = "https"
 		}
 		if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
-			scheme = fwd
+			scheme = strings.ToLower(strings.TrimSpace(fwd))
 		}
 		baseURL := scheme + "://" + serverURL
+		if !validInstallBaseURL(baseURL) {
+			http.Error(w, "invalid install server URL", http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintf(w, installScript, baseURL, baseURL, baseURL)
+		quoted := "'" + strings.ReplaceAll(baseURL, "'", "'\\''") + "'"
+		fmt.Fprintf(w, installScript, quoted, baseURL, baseURL)
 	})
+}
+
+func validInstallBaseURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || u.RawPath != "" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" || net.ParseIP(host) == nil && !validInstallHostname(host) {
+		return false
+	}
+	if port := u.Port(); port != "" {
+		for _, r := range port {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		p, err := strconv.Atoi(port)
+		if err != nil || p < 1 || p > 65535 {
+			return false
+		}
+	}
+	return true
+}
+
+func validInstallHostname(host string) bool {
+	if len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func configuredDownloadDir() string {
@@ -767,8 +815,24 @@ func handleDucklordUpdateInfo(w http.ResponseWriter, r *http.Request, downloadDi
 	if recommended == "" {
 		recommended = version.Get()
 	}
+	if !validDucklordVersion(recommended) {
+		handlers.JsonErrorPublic(w, "invalid Ducklord recommended version", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"recommended_version": recommended, "os": osName, "arch": arch, "binary": binary, "download_path": "/download/" + binary, "size": info.Size(), "sha256": sum})
+}
+
+func validDucklordVersion(v string) bool {
+	if v == "" || len(v) > 128 {
+		return false
+	}
+	for _, r := range v {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(".-_+", r)) {
+			return false
+		}
+	}
+	return true
 }
 
 func fileSHA256(path string) (string, error) {
@@ -787,7 +851,7 @@ func fileSHA256(path string) (string, error) {
 
 const installScript = `#!/bin/sh
 set -e
-DUCKWAY_SERVER="%s"
+DUCKWAY_SERVER=%s
 echo "Duckway client installer"
 echo "Server: $DUCKWAY_SERVER"
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -945,6 +1009,7 @@ DUCKLORD_DEST="$DEST_DIR/ducklord"
 if [ "$INSTALL_COMPONENT" = "ducklord" ]; then
   DUCKLORD_DEST="$DEST"
 fi
+case "$DUCKLORD_DEST" in /*) ;; *) DUCKLORD_DEST="$PWD/$DUCKLORD_DEST" ;; esac
 if [ "$INSTALL_MODE" = "system" ] && [ ! -w "$DEST_DIR" ]; then
   sudo mkdir -p "$DEST_DIR"
   if [ -f "$TMP_DIR/duckway" ]; then sudo mv "$TMP_DIR/duckway" "$DEST"; fi
@@ -962,10 +1027,21 @@ if [ "$INSTALL_COMPONENT" = "client" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
 fi
 if [ "$INSTALL_COMPONENT" = "ducklord" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
   echo "Installed: $DUCKLORD_DEST"
-  mkdir -p "$HOME/.ducklord"
-  escaped_server=$(printf '%s' "$DUCKWAY_SERVER" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  printf '{"managed":true,"server_url":"%%s"}\n' "$escaped_server" > "$HOME/.ducklord/update.json"
-  chmod 600 "$HOME/.ducklord/update.json"
+  mkdir -p "$HOME/.ducklord/updates"
+  if command -v sha256sum >/dev/null 2>&1; then
+  update_key=$(printf '%%s' "$DUCKLORD_DEST" | sha256sum | cut -d ' ' -f 1)
+  elif command -v shasum >/dev/null 2>&1; then
+    update_key=$(printf '%%s' "$DUCKLORD_DEST" | shasum -a 256 | cut -d ' ' -f 1)
+  else
+    echo "Error: sha256sum or shasum required to record Ducklord update metadata"
+    exit 1
+  fi
+  update_meta="$HOME/.ducklord/updates/$update_key.json"
+  umask 077
+  update_path_json=$(printf '%%s' "$DUCKLORD_DEST" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  update_meta_tmp="$update_meta.$$"
+  printf '{"managed":true,"executable_path":"%%s","server_url":"%%s"}\n' "$update_path_json" "$DUCKWAY_SERVER" > "$update_meta_tmp"
+  mv -f "$update_meta_tmp" "$update_meta"
 fi
 case ":$PATH:" in
   *":$DEST_DIR:"*) ;;

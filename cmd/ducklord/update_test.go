@@ -1,7 +1,13 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,5 +32,68 @@ func TestUpdateOriginAndLoopbackRules(t *testing.T) {
 		if got := isLoopbackHost(u.Hostname()); got != tc.loopback {
 			t.Errorf("isLoopbackHost(%q)=%v", tc.url, got)
 		}
+	}
+}
+
+func TestUpdateMetadataIsScopedToExecutable(t *testing.T) {
+	home := t.TempDir()
+	a := updateMetadataPath(home, "/usr/local/bin/ducklord")
+	b := updateMetadataPath(home, "/opt/duckway/ducklord")
+	if a == b {
+		t.Fatal("different installs share update metadata")
+	}
+	if !strings.HasPrefix(a, filepath.Join(home, ".ducklord", "updates")) {
+		t.Fatalf("unexpected metadata path %q", a)
+	}
+}
+
+func TestValidRecommendedVersion(t *testing.T) {
+	for _, value := range []string{"v1.2.3", "1.0.0-rc.1+build_2"} {
+		if !validRecommendedVersion(value) {
+			t.Errorf("rejected %q", value)
+		}
+	}
+	for _, value := range []string{"", "../bin/ducklord", "v1;touch /tmp/pwned", strings.Repeat("x", 129)} {
+		if validRecommendedVersion(value) {
+			t.Errorf("accepted %q", value)
+		}
+	}
+}
+
+func TestPromoteDucklordBinaryAtomicAndFailurePreservesExecutable(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "ducklord")
+	if err := os.WriteFile(exe, []byte("old"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(dir, "staged")
+	if err := os.WriteFile(staged, []byte("new"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := promoteDucklordBinary(exe, staged); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(exe)
+	prev, _ := os.ReadFile(exe + ".previous")
+	if string(got) != "new" || string(prev) != "old" {
+		t.Fatalf("current=%q previous=%q", got, prev)
+	}
+	if err := promoteDucklordBinary(exe, filepath.Join(dir, "missing")); err == nil || !strings.Contains(err.Error(), "original executable remains") {
+		t.Fatalf("expected clear failed promotion, got %v", err)
+	}
+	got, _ = os.ReadFile(exe)
+	if string(got) != "new" {
+		t.Fatalf("failed promotion changed executable to %q", got)
+	}
+}
+
+func TestUpdateRejectsInvalidManifestBeforePrompt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(ducklordUpdateManifest{Version: "bad;version", OS: "linux", Arch: "amd64", Binary: "ducklord-linux-amd64", DownloadPath: "/download/ducklord-linux-amd64", Size: 1, SHA256: strings.Repeat("a", 64)})
+	}))
+	defer server.Close()
+	err := runDucklordUpdate([]string{"--check", "--server", server.URL}, &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "invalid recommended version") {
+		t.Fatalf("got %v", err)
 	}
 }

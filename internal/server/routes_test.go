@@ -99,6 +99,33 @@ func TestHandleDucklordUpdateInfoManifest(t *testing.T) {
 	}
 }
 
+func TestHandleDucklordUpdateInfoRejectsInvalidRecommendedVersion(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ducklord-linux-amd64"), []byte("artifact"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DUCKLORD_RECOMMENDED_VERSION", "../bad;version")
+	req := httptest.NewRequest(http.MethodGet, "/ducklord/update-info?os=linux&arch=amd64", nil)
+	rec := httptest.NewRecorder()
+	handleDucklordUpdateInfo(rec, req, dir)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestValidInstallBaseURLRejectsHeaderInjection(t *testing.T) {
+	for _, raw := range []string{"https://duckway.test", "http://localhost:8080", "https://[::1]:8443"} {
+		if !validInstallBaseURL(raw) {
+			t.Errorf("rejected valid URL %q", raw)
+		}
+	}
+	for _, raw := range []string{"https://duckway.test\";touch /tmp/pwned", "https://duckway.test:99999", "https://bad_host.test", "javascript://evil", "https://user@duckway.test", "https://duckway.test/path", "https://duckway.test,evil"} {
+		if validInstallBaseURL(raw) {
+			t.Errorf("accepted unsafe URL %q", raw)
+		}
+	}
+}
+
 func TestServeClientDownloadOnlyAllowsPinnedBinaries(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "duckway-client-linux-amd64"), []byte("ok"), 0600); err != nil {
@@ -163,7 +190,7 @@ func TestInstallScriptSupportsUserLocalInstall(t *testing.T) {
 		`download_tool "$DUCKLORD_BINARY" "$TMP_DIR/ducklord"`,
 		`DUCKLORD_DEST="$DEST_DIR/ducklord"`,
 		`DUCKLORD_DEST="$DEST"`,
-		`$HOME/.ducklord/update.json`,
+		`$HOME/.ducklord/updates/$update_key.json`,
 		`"server_url"`,
 		`Install location:`,
 		`read choice < /dev/tty`,

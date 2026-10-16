@@ -12,10 +12,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/hackerduck/duckway/internal/version"
 )
@@ -52,25 +55,36 @@ func runDucklordUpdate(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		b, err := os.ReadFile(filepath.Join(home, ".ducklord", "update.json"))
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Geteuid() == 0 {
+			if u, e := userHome(sudoUser); e == nil {
+				home = u
+			}
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		metadataPath := updateMetadataPath(home, exe)
+		b, err := os.ReadFile(metadataPath)
 		if err != nil {
 			return errors.New("this Ducklord is not managed by Duckway; install it with Duckway or update it manually")
 		}
 		var metadata struct {
 			Managed bool   `json:"managed"`
+			Path    string `json:"executable_path"`
 			Server  string `json:"server_url"`
 		}
-		if json.Unmarshal(b, &metadata) != nil || !metadata.Managed || metadata.Server == "" {
-			return errors.New("Duckway update metadata is invalid; reinstall Ducklord with Duckway or update it manually")
+		if json.Unmarshal(b, &metadata) != nil || !metadata.Managed || metadata.Path != filepath.Clean(exe) || metadata.Server == "" {
+			return errors.New("duckway update metadata is invalid; reinstall Ducklord with Duckway or update it manually")
 		}
 		server = metadata.Server
 	}
 	base, err := url.Parse(server)
-	if err != nil || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+	if err != nil || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || base.Path != "" || base.Opaque != "" {
 		return errors.New("invalid Duckway server URL")
 	}
-	if base.Scheme != "https" && !(base.Scheme == "http" && isLoopbackHost(base.Hostname())) {
-		return errors.New("Ducklord updates require HTTPS (HTTP is allowed only for loopback servers)")
+	if !(base.Scheme == "https" || base.Scheme == "http" && isLoopbackHost(base.Hostname())) {
+		return errors.New("ducklord updates require HTTPS (HTTP is allowed only for loopback servers)")
 	}
 	base.Path = strings.TrimRight(base.Path, "/")
 	manifestURL := *base
@@ -91,11 +105,14 @@ func runDucklordUpdate(args []string, out io.Writer) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Duckway server has no Ducklord update for %s/%s", runtime.GOOS, runtime.GOARCH)
+		return fmt.Errorf("duckway server has no Ducklord update for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	var manifest ducklordUpdateManifest
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&manifest); err != nil {
 		return fmt.Errorf("invalid update manifest: %w", err)
+	}
+	if !validRecommendedVersion(manifest.Version) {
+		return errors.New("duckway server returned an invalid recommended version")
 	}
 	wantBinary := "ducklord-" + runtime.GOOS + "-" + runtime.GOARCH
 	_, hashErr := hex.DecodeString(manifest.SHA256)
@@ -131,6 +148,15 @@ func runDucklordUpdate(args []string, out io.Writer) error {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("refusing to update a non-regular or symlink executable")
 	}
+	lock, err := os.OpenFile(exe+".update.lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return fmt.Errorf("open update lock (system installs may require sudo): %w", err)
+	}
+	defer lock.Close()
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
+		return fmt.Errorf("lock Ducklord update: %w", err)
+	}
+	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
 	downloadURL := *base
 	downloadURL.Path += manifest.DownloadPath
 	dl, err := client.Get(downloadURL.String())
@@ -169,16 +195,58 @@ func runDucklordUpdate(args []string, out io.Writer) error {
 		return err
 	}
 	previous := exe + ".previous"
-	_ = os.Remove(previous)
-	if err := os.Rename(exe, previous); err != nil {
-		return fmt.Errorf("preserve previous Ducklord executable: %w", err)
-	}
-	if err := os.Rename(tmpName, exe); err != nil {
-		_ = os.Rename(previous, exe)
-		return fmt.Errorf("install updated Ducklord: %w", err)
+	if err := promoteDucklordBinary(exe, tmpName); err != nil {
+		return err
 	}
 	fmt.Fprintf(out, "Updated Ducklord to %s. Previous executable: %s\n", manifest.Version, previous)
 	return nil
+}
+
+func promoteDucklordBinary(executable, staged string) error {
+	previous := executable + ".previous"
+	backupStage := previous + ".new"
+	if err := os.Remove(backupStage); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove incomplete rollback staging file: %w", err)
+	}
+	if err := os.Link(executable, backupStage); err != nil {
+		return fmt.Errorf("preserve previous Ducklord executable (system installs may require sudo): %w", err)
+	}
+	if err := os.Rename(backupStage, previous); err != nil {
+		if cleanupErr := os.Remove(backupStage); cleanupErr != nil && !os.IsNotExist(cleanupErr) {
+			return fmt.Errorf("record previous Ducklord executable: %w; temporary backup remains at %s (cleanup failed: %v)", err, backupStage, cleanupErr)
+		}
+		return fmt.Errorf("record previous Ducklord executable: %w; live executable remains in place", err)
+	}
+	if err := os.Rename(staged, executable); err != nil {
+		return fmt.Errorf("install updated Ducklord atomically: %w; original executable remains in place and was preserved at %s", err, previous)
+	}
+	return nil
+}
+
+func validRecommendedVersion(v string) bool {
+	if v == "" || len(v) > 128 {
+		return false
+	}
+	for _, r := range v {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(".-_+", r) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func updateMetadataPath(home, executable string) string {
+	sum := sha256.Sum256([]byte(filepath.Clean(executable)))
+	return filepath.Join(home, ".ducklord", "updates", hex.EncodeToString(sum[:])+".json")
+}
+
+func userHome(name string) (string, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return "", err
+	}
+	return u.HomeDir, nil
 }
 
 func isLoopbackHost(host string) bool {
