@@ -1483,6 +1483,9 @@ type tuiState struct {
 	addClientSelected                  int
 	addClientErr                       string
 	addClientHosts                     []ducklord.SSHHost
+	addClientRestoreFocused            bool
+	addClientRestoreAttachKey          string
+	addClientRestoreSession            ducklord.RemoteSession
 	addClientBusy                      bool
 	addClientRequestID                 uint64
 	addClientCancel                    context.CancelFunc
@@ -1595,6 +1598,7 @@ type tuiState struct {
 	commandPaletteMode                 bool
 	commandPaletteQuery                string
 	commandPaletteIndex                int
+	commandPaletteAction               string
 	commandPalettePreviousFocused      bool
 	commandPalettePreviousAttachKey    string
 	commandPalettePreviousProjectFocus bool
@@ -3361,6 +3365,21 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			if state.handleCommandPaletteInput(b) {
+				switch state.commandPaletteAction {
+				case "host-add":
+					state.commandPaletteAction = ""
+					state.beginAddClient()
+				case "create-session":
+					state.commandPaletteAction = ""
+					state.workspaceNewSessionIntent = nil
+					state.beginCreate()
+				case "refresh":
+					state.commandPaletteAction = ""
+					state.refreshSessions(ctx)
+					if state.activeAttachKey == "" {
+						requestPreview(true)
+					}
+				}
 				state.render(os.Stdout)
 				continue
 			}
@@ -9642,10 +9661,24 @@ func (s *tuiState) scrollPTY(delta int) {
 
 func (s *tuiState) beginAddClient() {
 	hosts, err := ducklord.LoadSSHConfigHosts("")
+	s.beginAddClientWithHosts(hosts, err)
+}
+
+func (s *tuiState) beginAddClientWithHosts(hosts []ducklord.SSHHost, err error) {
 	if err != nil {
 		s.outputErr = err.Error()
 		return
 	}
+	// Add host owns keyboard input, even when invoked from a focused terminal.
+	// Save the exact PTY origin so cancel and completion can restore it safely.
+	s.addClientRestoreFocused = s.focused
+	s.addClientRestoreAttachKey = s.activeAttachKey
+	if s.addClientRestoreFocused && s.addClientRestoreAttachKey != "" {
+		s.addClientRestoreSession, _ = s.sessionForKey(s.addClientRestoreAttachKey)
+	} else {
+		s.addClientRestoreSession = ducklord.RemoteSession{}
+	}
+	s.focused = false
 	s.addClientMode = true
 	s.addClientStep = "mode"
 	s.addClientProvisionMode = ""
@@ -9667,6 +9700,22 @@ func (s *tuiState) cancelAddClient() {
 	s.addClientSelected = 0
 	s.addClientErr = ""
 	s.addClientHosts = nil
+	if s.addClientRestoreFocused && s.addClientRestoreAttachKey != "" && s.activeAttachKey == s.addClientRestoreAttachKey {
+		origin := s.addClientRestoreSession
+		current, ok := s.sessionForKey(s.addClientRestoreAttachKey)
+		if ok && origin.Client != "" && origin.InstanceID != "" && origin.SessionID != "" && origin.RuntimeGeneration != 0 && current.Client == origin.Client &&
+			current.InstanceID == origin.InstanceID && current.SessionID == origin.SessionID &&
+			current.RuntimeGeneration == origin.RuntimeGeneration {
+			s.focused = true
+		} else {
+			// A reused session key may now identify a different runtime. Leave
+			// keyboard ownership with workspace navigation rather than the old PTY.
+			s.focused, s.workspaceProjectFocus, s.activeAttachKey = false, true, ""
+		}
+	}
+	s.addClientRestoreFocused = false
+	s.addClientRestoreAttachKey = ""
+	s.addClientRestoreSession = ducklord.RemoteSession{}
 }
 
 func (s *tuiState) cancelAddClientWork() {
@@ -11047,7 +11096,7 @@ func (s *tuiState) blockingModalOpen() bool {
 // workspaceControlMayAccept gates asynchronous PTY ownership. Workspace
 // modals keep ownership until they close and the deferred focus lease runs.
 func (s *tuiState) workspaceControlMayAccept() bool {
-	return !s.focused && !s.workspacePaneMode && !s.newSessionMode && !s.helpMode && !s.projectFiles.open
+	return !s.focused && !s.workspacePaneMode && !s.addClientMode && !s.newSessionMode && !s.helpMode && !s.projectFiles.open
 }
 
 func (s *tuiState) syncCreateSelectionToInput() {

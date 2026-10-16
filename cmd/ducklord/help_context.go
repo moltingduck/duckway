@@ -57,7 +57,7 @@ func helpCatalog(workspace bool) []helpEntry {
 		{"", "prefix+o", "Open Notes", "Project scope from Project focus; selected-session scope from Session list or terminal"},
 		{"", "prefix+O", "Open focused-session Notes", "terminal only"},
 		{"", "prefix+?", "Open local help", "terminal output stays in the background"},
-		{"", "prefix+space", "Open command palette", "type to fuzzy-filter Notes, Help, Host list, Project files, Projects, and sessions; Up/Down or j/k moves; Enter opens; Esc/Ctrl+C closes; Backspace does not edit the query"},
+		{"", "prefix+space", "Open command palette", "type to fuzzy-filter navigation and available operations; Up/Down or j/k moves; Enter opens or runs; Backspace/Delete removes one character; Add host and Create session are unavailable in host-scoped mode; Esc/Ctrl+C closes"},
 		{"", "prefix+f", "Open Project files", "browse local, Host, and Project shelf files; filter, select, copy, and review history"},
 		{"", "prefix+slash", "Search terminal output", "search retained output; Up/Down selects a match and scrolls it into view"},
 		{"", "prefix+m", "Add terminal output bookmark", ""},
@@ -94,7 +94,7 @@ func helpCatalog(workspace bool) []helpEntry {
 		{"HOST SKILLS", "", "Host Skills dashboard", "Tab/Left/Right switches panes; arrows/j/k select; Enter/Space expands. Selected skill: p push, n none, m rename, i import, a add source, f fetch, t target, r pull. Target pane: t target; remote row r pulls and x deletes; d deploys. Sources are public HTTPS URLs; insecure TLS is explicit; review file diffs before applying"},
 		{"", "", "Host Skills legacy agent list", "Contextual legacy list supports e edit and R pull by ID; these keys are not Host Skills dashboard actions"},
 		{"HOST RESOURCES", "", "View Host resources", "Host actions → Resources; r retries load, Enter retries an error, Esc returns to Host actions; Ctrl+C closes"},
-		{"", "", "Command palette navigation", "typing fuzzy-filters; Up/Down or j/k moves; Enter selects; Esc/Ctrl+C closes; input has no Backspace editing"},
+		{"", "", "Command palette navigation and operations", "typing fuzzy-filters; Up/Down or j/k moves; Enter opens Notes, Help, Host list, Project files, Projects, or Sessions, or runs Refresh, Add host, or Create session; Add host and Create session are unavailable in host-scoped mode; Backspace/Delete edits the query; Esc/Ctrl+C closes"},
 		{"APPLICATION", "help", "Open or close this help", "Esc and Ctrl+C leave help pinned"},
 		{"", "quit", "Quit Ducklord", ""},
 	}

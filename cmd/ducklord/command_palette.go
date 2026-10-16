@@ -38,6 +38,7 @@ func (s *tuiState) openCommandPalette() {
 		s.commandPalettePreviousProjectID, s.commandPalettePreviousPaneID = nav.CurrentProjectID(), nav.CurrentPaneID()
 	}
 	s.commandPaletteMode, s.commandPaletteQuery, s.commandPaletteIndex = true, "", 0
+	s.commandPaletteAction = ""
 	s.commandPaletteInput = nil
 	s.focused = false
 }
@@ -84,7 +85,10 @@ func (s *tuiState) closeCommandPalette() {
 }
 
 func (s *tuiState) commandPaletteItems() []commandPaletteItem {
-	items := []commandPaletteItem{{"Notes", "notes", "", ""}, {"Help", "help", "", ""}, {"Host list", "host", "", ""}, {"Project files", "project-files", "", ""}}
+	items := []commandPaletteItem{{"Notes", "notes", "", ""}, {"Help", "help", "", ""}, {"Host list", "host", "", ""}, {"Project files", "project-files", "", ""}, {"Refresh sessions and hosts", "refresh", "", ""}}
+	if !s.hostScoped {
+		items = append(items, commandPaletteItem{"Add host configuration", "host-add", "", ""}, commandPaletteItem{"Create session", "create-session", "", ""})
+	}
 	if s.activityState != nil {
 		for _, p := range s.activity().ProjectLayout.Projects {
 			items = append(items, commandPaletteItem{p.Name, "project", p.ID, ""})
@@ -125,9 +129,9 @@ func (s *tuiState) commandPaletteItems() []commandPaletteItem {
 // paletteFuzzyMatch reports whether query's characters occur in order in label.
 // Matching is case-insensitive and deliberately keeps the original item order.
 func paletteFuzzyMatch(label, query string) bool {
-	labelRunes, queryRunes := []rune(strings.ToLower(label)), []rune(strings.ToLower(query))
+	labelRunes := []rune(strings.ToLower(label))
 	labelIndex := 0
-	for _, queryRune := range queryRunes {
+	for _, queryRune := range strings.ToLower(query) {
 		for labelIndex < len(labelRunes) && labelRunes[labelIndex] != queryRune {
 			labelIndex++
 		}
@@ -161,13 +165,23 @@ func (s *tuiState) handleCommandPaletteInput(input []byte) bool {
 		s.closeCommandPalette()
 		return true
 	case "\x1b[A", "k":
-		if s.commandPaletteIndex > 0 {
-			s.commandPaletteIndex--
+		if n := len(s.commandPaletteItems()); n > 0 {
+			s.commandPaletteIndex = min(max(0, s.commandPaletteIndex), n-1)
+			if s.commandPaletteIndex > 0 {
+				s.commandPaletteIndex--
+			}
+		} else {
+			s.commandPaletteIndex = 0
 		}
 		return true
 	case "\x1b[B", "j":
-		if n := len(s.commandPaletteItems()); n > 0 && s.commandPaletteIndex < n-1 {
-			s.commandPaletteIndex++
+		if n := len(s.commandPaletteItems()); n > 0 {
+			s.commandPaletteIndex = min(max(0, s.commandPaletteIndex), n-1)
+			if s.commandPaletteIndex < n-1 {
+				s.commandPaletteIndex++
+			}
+		} else {
+			s.commandPaletteIndex = 0
 		}
 		return true
 	case "\r", "\n":
@@ -186,6 +200,9 @@ func (s *tuiState) handleCommandPaletteInput(input []byte) bool {
 			s.beginHostMenu()
 		case "project-files":
 			s.openProjectFiles()
+		case "host-add", "create-session", "refresh":
+			// These actions need event-loop resources (context and refresh callbacks).
+			s.commandPaletteAction = item.kind
 		case "project":
 			if s.commandPaletteGeneration() != s.commandPaletteWorkspaceGeneration {
 				s.outputErr = "command palette target is stale"
@@ -209,6 +226,14 @@ func (s *tuiState) handleCommandPaletteInput(input []byte) bool {
 			}
 		}
 		return true
+	case "\b", "\x7f":
+		if s.commandPaletteQuery != "" {
+			runes := []rune(s.commandPaletteQuery)
+			s.commandPaletteQuery = string(runes[:len(runes)-1])
+			s.commandPaletteIndex = 0
+		}
+		s.commandPaletteInput = nil
+		return true
 	default:
 		s.commandPaletteInput = append(s.commandPaletteInput, input...)
 		for len(s.commandPaletteInput) > 0 {
@@ -222,9 +247,11 @@ func (s *tuiState) handleCommandPaletteInput(input []byte) bool {
 				s.commandPaletteIndex = 0
 			}
 		}
+		if n := len(s.commandPaletteItems()); s.commandPaletteIndex >= n {
+			s.commandPaletteIndex = max(0, n-1)
+		}
 		return true
 	}
-	return true
 }
 
 func (s *tuiState) renderCommandPalette(out io.Writer, cols, rows int) {

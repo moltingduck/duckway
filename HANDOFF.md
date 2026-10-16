@@ -1,3 +1,54 @@
+# Candidate handoff: tui-palette-actions-20261016
+
+Owner `tui-palette-actions-20261016`; branch
+`codex/tui-palette-actions-impl`; worktree
+`/home/cjiso1117/duckway-tui-palette-actions-impl`; base
+`1f7384a88d2d63965b9b698c997552617b28f5ed` (`origin/main`). Implementation commit
+`94c1922154b053f70564eb0b00087804ea6e8704`; amended locally for these
+documentation updates; worktree clean. No push: the
+Claude live E2E gate remains blocked by credential preflight HTTP 401 and OAuth
+refresh-only HTTP 502, as required by `AGENTS.md` lines 90–95.
+
+Changed palette behavior:
+- Added Refresh sessions and hosts, Add host configuration, and Create session
+  using the existing refresh, host-add, and session-create handlers. Host add
+  and session creation are hidden in host-scoped mode. Refresh dispatch occurs
+  in the TUI event loop where context and preview callbacks are available.
+- Backspace (`0x08`) and DEL (`0x7f`) remove one Unicode rune from the query;
+  empty deletion is a no-op and resets selection. `readInput` emits these as
+  separate one-byte events. Selection is clamped on movement with an empty
+  result set.
+- Existing project/session generation checks remain in place. Help and tests
+  now cover operational actions, both delete encodings, multibyte query text,
+  action dispatch, unavailable host-scoped actions, and no-match navigation.
+- Add host takes keyboard ownership away from a focused PTY. Cancel or
+  completion restores the originating PTY only if its client, instance, session ID,
+  and nonzero runtime generation still match; replaced runtimes leave focus with
+  workspace navigation. SSH config load errors preserve existing focus. Workspace control
+  acceptance stays fenced while that modal is open. Regression coverage checks
+  focused-pane ownership, cancel restoration, load-error preservation, and the
+  workspace-control gate.
+
+Independent review commands used for this candidate:
+- Tests: `GOFLAGS=-buildvcs=false go test -count=1 ./cmd/ducklord`
+- Broader test follow-up: `GOFLAGS=-buildvcs=false go test -count=1 ./...`
+- Security review: inspect `git diff 1f7384a88d2d63965b9b698c997552617b28f5ed`
+  in this worktree, especially palette action dispatch and preservation of the
+  workspace generation fence.
+
+Independent validation on the integrated candidate:
+- `TMPDIR=/tmp GOFLAGS=-buildvcs=false go test -count=1 ./cmd/ducklord` — PASS.
+- `TMPDIR=/tmp GOFLAGS=-buildvcs=false go test -count=1 ./...` — PASS.
+- `TMPDIR=/tmp GOFLAGS=-buildvcs=false go test -race -count=1 ./cmd/ducklord` — PASS.
+- `GOFLAGS=-buildvcs=false go build -o tmp/tui-palette-actions-20261016/bin/ducklord ./cmd/ducklord` — PASS.
+- Isolated Podman TUI E2E (`TestDucklordCommandPaletteContainerE2E`) — PASS.
+- Scoped `golangci-lint run ./cmd/ducklord` — 9 existing findings, none on candidate changes. Full lint has those 9 plus 2 unrelated findings in sibling worktrees.
+- Live Codex agent E2E — PASS, including retained response after Ducklion restart. Claude live E2E is blocked: credential preflight returned HTTP 401 and OAuth refresh-only returned HTTP 502, so no Claude task ran. Push remains blocked until both live gates pass.
+
+The retained demo was rebuilt and restarted from this commit. Readiness and inventory checks passed; all five `ducklord-verified-*` containers are running. Candidate-owned isolated E2E containers and networks were cleaned by the test worktree; the retained demo network was preserved.
+
+---
+
 # Completed batch: codex-account-routing-0924
 
 ## Fix
