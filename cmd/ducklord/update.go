@@ -149,63 +149,9 @@ func runDucklordUpdate(args []string, out io.Writer) error {
 		fmt.Fprintf(out, "Ducklord is already updated to %s.\n", manifest.Version)
 		return nil
 	}
-	var tmpName string
-	for attempt := 0; attempt < 2; attempt++ {
-		downloadURL := *base
-		downloadURL.Path += manifest.DownloadPath
-		dl, err := client.Get(downloadURL.String())
-		if err != nil {
-			return fmt.Errorf("download Ducklord update: %w", err)
-		}
-		if dl.StatusCode != http.StatusOK {
-			dl.Body.Close()
-			return fmt.Errorf("duckway artifact download failed with status %d", dl.StatusCode)
-		}
-		tmp, err := os.CreateTemp(filepath.Dir(exe), ".ducklord-update-*")
-		if err != nil {
-			dl.Body.Close()
-			return err
-		}
-		tmpName = tmp.Name()
-		h := sha256.New()
-		n, copyErr := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(dl.Body, manifest.Size+1))
-		dl.Body.Close()
-		if copyErr != nil {
-			tmp.Close()
-			os.Remove(tmpName)
-			return copyErr
-		}
-		if n != manifest.Size || hex.EncodeToString(h.Sum(nil)) != strings.ToLower(manifest.SHA256) {
-			tmp.Close()
-			os.Remove(tmpName)
-			if attempt != 0 {
-				return errors.New("downloaded Ducklord failed size or SHA-256 verification after refreshing update information")
-			}
-			refreshed, refreshErr := fetchDucklordManifest(client, manifestURL)
-			if refreshErr != nil {
-				return fmt.Errorf("artifact changed during publication and manifest refresh failed: %w", refreshErr)
-			}
-			if refreshed.Version != manifest.Version {
-				return errors.New("ducklord update changed during download; rerun update to review the new version")
-			}
-			manifest = refreshed
-			continue
-		}
-		if err := tmp.Chmod(info.Mode().Perm() | 0100); err != nil {
-			tmp.Close()
-			os.Remove(tmpName)
-			return err
-		}
-		if err := tmp.Sync(); err != nil {
-			tmp.Close()
-			os.Remove(tmpName)
-			return err
-		}
-		if err := tmp.Close(); err != nil {
-			os.Remove(tmpName)
-			return err
-		}
-		break
+	tmpName, manifest, err := downloadVerifiedDucklord(client, *base, manifestURL, manifest, filepath.Dir(exe), info.Mode())
+	if err != nil {
+		return err
 	}
 	defer os.Remove(tmpName)
 	previous := exe + ".previous"
@@ -214,6 +160,67 @@ func runDucklordUpdate(args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "Updated Ducklord to %s. Previous executable: %s\n", manifest.Version, previous)
 	return nil
+}
+
+func downloadVerifiedDucklord(client *http.Client, base, manifestURL url.URL, manifest ducklordUpdateManifest, dir string, mode os.FileMode) (string, ducklordUpdateManifest, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		downloadURL := base
+		downloadURL.Path += manifest.DownloadPath
+		dl, err := client.Get(downloadURL.String())
+		if err != nil {
+			return "", manifest, fmt.Errorf("download Ducklord update: %w", err)
+		}
+		if dl.StatusCode != http.StatusOK {
+			dl.Body.Close()
+			return "", manifest, fmt.Errorf("duckway artifact download failed with status %d", dl.StatusCode)
+		}
+		tmp, err := os.CreateTemp(dir, ".ducklord-update-*")
+		if err != nil {
+			dl.Body.Close()
+			return "", manifest, err
+		}
+		tmpName := tmp.Name()
+		h := sha256.New()
+		n, copyErr := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(dl.Body, manifest.Size+1))
+		dl.Body.Close()
+		if copyErr != nil {
+			tmp.Close()
+			os.Remove(tmpName)
+			return "", manifest, copyErr
+		}
+		if n != manifest.Size || hex.EncodeToString(h.Sum(nil)) != strings.ToLower(manifest.SHA256) {
+			tmp.Close()
+			os.Remove(tmpName)
+			if attempt != 0 {
+				return "", manifest, errors.New("downloaded Ducklord failed size or SHA-256 verification after refreshing update information")
+			}
+			refreshed, refreshErr := fetchDucklordManifest(client, manifestURL)
+			if refreshErr != nil {
+				return "", manifest, fmt.Errorf("artifact changed during publication and manifest refresh failed: %w", refreshErr)
+			}
+			if refreshed.Version != manifest.Version {
+				return "", manifest, errors.New("ducklord update changed during download; rerun update to review the new version")
+			}
+			manifest = refreshed
+			continue
+		}
+		if err := tmp.Chmod(mode.Perm() | 0100); err != nil {
+			tmp.Close()
+			os.Remove(tmpName)
+			return "", manifest, err
+		}
+		if err := tmp.Sync(); err != nil {
+			tmp.Close()
+			os.Remove(tmpName)
+			return "", manifest, err
+		}
+		if err := tmp.Close(); err != nil {
+			os.Remove(tmpName)
+			return "", manifest, err
+		}
+		return tmpName, manifest, nil
+	}
+	return "", manifest, errors.New("downloaded Ducklord failed size or SHA-256 verification")
 }
 
 func fetchDucklordManifest(client *http.Client, manifestURL url.URL) (ducklordUpdateManifest, error) {

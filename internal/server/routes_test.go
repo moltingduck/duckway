@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -208,6 +209,76 @@ func TestInstallScriptSupportsUserLocalInstall(t *testing.T) {
 		if !strings.Contains(installScript, want) {
 			t.Fatalf("installScript missing %q", want)
 		}
+	}
+}
+
+func TestInstallScriptRefusesSymlinkedUpdateMetadataDirectory(t *testing.T) {
+	dir := t.TempDir()
+	home, bin, tmp, downloads := installScriptTestDirs(t, dir)
+	writeInstallScriptTestDownloads(t, downloads)
+	writeInstallScriptTestCurl(t, filepath.Join(bin, "curl"))
+	writeInstallScriptTestCommand(t, filepath.Join(bin, "id"), `#!/bin/sh
+case "$1:$2" in
+  -u:) echo 0 ;;
+  -u:duckway-test-user) echo 1234 ;;
+  -g:duckway-test-user) echo 1234 ;;
+  *) exec /usr/bin/id "$@" ;;
+esac
+`)
+	writeInstallScriptTestCommand(t, filepath.Join(bin, "getent"), `#!/bin/sh
+if [ "$1" = passwd ] && [ "$2" = duckway-test-user ]; then
+  printf 'duckway-test-user:x:1234:1234::%s:/bin/sh\n' "$DUCKWAY_TEST_USER_HOME"
+  exit 0
+fi
+exit 1
+`)
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0711); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(target, "keep")
+	if err := os.WriteFile(marker, []byte("unchanged"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(home, ".ducklord"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".ducklord", "updates")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "install.sh")
+	if err := os.WriteFile(script, []byte(fmt.Sprintf(installScript, "http://duckway.test", "http://duckway.test", "http://duckway.test")), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", script)
+	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "HOME="+home, "TMPDIR="+tmp,
+		"DUCKWAY_INSTALL=user", "DUCKWAY_INSTALL_COMPONENT=ducklord", "DUCKWAY_TEST_DOWNLOADS="+downloads,
+		"DUCKWAY_TEST_USER_HOME="+home, "SUDO_USER=duckway-test-user")
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "refusing symlinked Ducklord update metadata directory") {
+		t.Fatalf("expected symlink refusal, err=%v output=%s", err, out)
+	}
+	after, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Mode() != after.Mode() || before.Sys().(*syscall.Stat_t).Uid != after.Sys().(*syscall.Stat_t).Uid || before.Sys().(*syscall.Stat_t).Gid != after.Sys().(*syscall.Stat_t).Gid {
+		t.Fatalf("symlink target metadata changed: before=%v after=%v", before, after)
+	}
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "unchanged" {
+		t.Fatalf("symlink target file changed: contents=%q err=%v", got, err)
+	}
+}
+
+func writeInstallScriptTestCommand(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0700); err != nil {
+		t.Fatal(err)
 	}
 }
 

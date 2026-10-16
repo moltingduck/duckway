@@ -38,6 +38,102 @@ func TestUpdateOriginAndLoopbackRules(t *testing.T) {
 	}
 }
 
+func TestDownloadVerifiedDucklordRefreshesManifestAfterArtifactMismatch(t *testing.T) {
+	refreshed := []byte("artifact matching refreshed manifest")
+	manifestRequests, downloadRequests := 0, 0
+	name := "ducklord-" + runtime.GOOS + "-" + runtime.GOARCH
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ducklord/update-info":
+			manifestRequests++
+			writeTestManifest(t, w, "v1.2.3", name, refreshed)
+		case "/download/" + name:
+			downloadRequests++
+			if downloadRequests == 1 {
+				_, _ = w.Write([]byte("artifact from replaced deployment"))
+			} else {
+				_, _ = w.Write(refreshed)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	base, _ := url.Parse(server.URL)
+	manifestURL, _ := url.Parse(server.URL + "/ducklord/update-info")
+	initial := testManifest("v1.2.3", name, []byte("artifact originally published"))
+	path, gotManifest, err := downloadVerifiedDucklord(server.Client(), *base, *manifestURL, initial, t.TempDir(), 0700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(path)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(refreshed) || gotManifest.SHA256 != testManifest("v1.2.3", name, refreshed).SHA256 {
+		t.Fatalf("retry returned artifact %q and manifest %+v", got, gotManifest)
+	}
+	if manifestRequests != 1 || downloadRequests != 2 {
+		t.Fatalf("manifest refreshes=%d download requests=%d; want 1 and 2", manifestRequests, downloadRequests)
+	}
+}
+
+func TestDownloadVerifiedDucklordStopsWhenVersionChangesOnRefresh(t *testing.T) {
+	name := "ducklord-" + runtime.GOOS + "-" + runtime.GOARCH
+	manifestRequests, downloadRequests := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ducklord/update-info":
+			manifestRequests++
+			version := "v1.2.3"
+			version = "v1.2.4"
+			writeTestManifest(t, w, version, name, []byte("not matching downloaded artifact"))
+		case "/download/" + name:
+			downloadRequests++
+			_, _ = w.Write([]byte("stale artifact"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	base, _ := url.Parse(server.URL)
+	manifestURL, _ := url.Parse(server.URL + "/ducklord/update-info")
+	initial := testManifest("v1.2.3", name, []byte("different expected artifact"))
+	dir := t.TempDir()
+	path, _, err := downloadVerifiedDucklord(server.Client(), *base, *manifestURL, initial, dir, 0700)
+	if err == nil || !strings.Contains(err.Error(), "rerun update") {
+		t.Fatalf("expected version-change error, got path=%q err=%v", path, err)
+	}
+	if manifestRequests != 1 || downloadRequests != 1 {
+		t.Fatalf("manifest refreshes=%d download requests=%d; want 1 each", manifestRequests, downloadRequests)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("failed update left staged files: %v", entries)
+	}
+}
+
+func testManifest(version, name string, artifact []byte) ducklordUpdateManifest {
+	return ducklordUpdateManifest{
+		Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Binary: name,
+		DownloadPath: "/download/" + name, Size: int64(len(artifact)),
+		SHA256: fmt.Sprintf("%x", sha256.Sum256(artifact)),
+	}
+}
+
+func writeTestManifest(t *testing.T, w http.ResponseWriter, version, name string, artifact []byte) {
+	t.Helper()
+	if err := json.NewEncoder(w).Encode(testManifest(version, name, artifact)); err != nil {
+		t.Errorf("encode test manifest: %v", err)
+	}
+}
+
 func TestUpdateMetadataIsScopedToExecutable(t *testing.T) {
 	home := t.TempDir()
 	a := updateMetadataPath(home, "/usr/local/bin/ducklord")
