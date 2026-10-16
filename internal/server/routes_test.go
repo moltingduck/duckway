@@ -115,12 +115,12 @@ func TestHandleDucklordUpdateInfoRejectsInvalidRecommendedVersion(t *testing.T) 
 }
 
 func TestValidInstallBaseURLRejectsHeaderInjection(t *testing.T) {
-	for _, raw := range []string{"https://duckway.test", "http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080", "https://[::1]:8443"} {
+	for _, raw := range []string{"https://duckway.test", "http://duckway.test", "http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080", "https://[::1]:8443"} {
 		if !validInstallBaseURL(raw) {
 			t.Errorf("rejected valid URL %q", raw)
 		}
 	}
-	for _, raw := range []string{"https://duckway.test\";touch /tmp/pwned", "http://duckway.test", "http://192.168.1.2", "https://duckway.test:99999", "https://bad_host.test", "javascript://evil", "https://user@duckway.test", "https://duckway.test/path", "https://duckway.test,evil"} {
+	for _, raw := range []string{"https://duckway.test\";touch /tmp/pwned", "https://duckway.test:99999", "https://bad_host.test", "javascript://evil", "https://user@duckway.test", "https://duckway.test/path", "https://duckway.test,evil"} {
 		if validInstallBaseURL(raw) {
 			t.Errorf("accepted unsafe URL %q", raw)
 		}

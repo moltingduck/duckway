@@ -630,9 +630,6 @@ func validInstallBaseURL(raw string) bool {
 	if host == "" || net.ParseIP(host) == nil && !validInstallHostname(host) {
 		return false
 	}
-	if u.Scheme == "http" && !isInstallLoopbackHost(host) {
-		return false
-	}
 	if port := u.Port(); port != "" {
 		for _, r := range port {
 			if r < '0' || r > '9' {
@@ -645,10 +642,6 @@ func validInstallBaseURL(raw string) bool {
 		}
 	}
 	return true
-}
-
-func isInstallLoopbackHost(host string) bool {
-	return strings.EqualFold(host, "localhost") || net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()
 }
 
 func validInstallHostname(host string) bool {

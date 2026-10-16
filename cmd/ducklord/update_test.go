@@ -14,16 +14,16 @@ import (
 	"testing"
 )
 
-func TestUpdateOriginAndLoopbackRules(t *testing.T) {
+func TestUpdateOriginRules(t *testing.T) {
 	base, _ := url.Parse("https://duckway.example")
 	for _, tc := range []struct {
-		url            string
-		same, loopback bool
+		url  string
+		same bool
 	}{
-		{"https://duckway.example/download/a", true, false},
-		{"https://other.example/download/a", false, false},
-		{"http://localhost:8080", false, true},
-		{"http://10.0.0.2", false, false},
+		{"https://duckway.example/download/a", true},
+		{"https://other.example/download/a", false},
+		{"http://localhost:8080", false},
+		{"http://10.0.0.2", false},
 	} {
 		u, err := url.Parse(tc.url)
 		if err != nil {
@@ -32,8 +32,23 @@ func TestUpdateOriginAndLoopbackRules(t *testing.T) {
 		if got := sameOrigin(base, u); got != tc.same {
 			t.Errorf("sameOrigin(%q)=%v", tc.url, got)
 		}
-		if got := isLoopbackHost(u.Hostname()); got != tc.loopback {
-			t.Errorf("isLoopbackHost(%q)=%v", tc.url, got)
+	}
+}
+
+func TestUpdateServerURLAcceptsHTTPForRemoteHosts(t *testing.T) {
+	for _, raw := range []string{"http://duckway.example", "https://duckway.example", "http://localhost:8080"} {
+		base, err := url.Parse(raw)
+		if err != nil || !validDucklordUpdateBaseURL(base) {
+			t.Errorf("rejected valid server URL %q: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{"ftp://duckway.example", "https://user@duckway.example", "https://duckway.example/path", "https://duckway.example?query=1"} {
+		base, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if validDucklordUpdateBaseURL(base) {
+			t.Errorf("accepted invalid server URL %q", raw)
 		}
 	}
 }

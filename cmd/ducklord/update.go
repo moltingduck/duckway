@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -80,11 +79,8 @@ func runDucklordUpdate(args []string, out io.Writer) error {
 		server = metadata.Server
 	}
 	base, err := url.Parse(server)
-	if err != nil || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || (base.Path != "" && base.Path != "/") || base.Opaque != "" {
+	if err != nil || !validDucklordUpdateBaseURL(base) {
 		return errors.New("invalid Duckway server URL")
-	}
-	if base.Scheme != "https" && (base.Scheme != "http" || !isLoopbackHost(base.Hostname())) {
-		return errors.New("ducklord updates require HTTPS (HTTP is allowed only for loopback servers)")
 	}
 	base.Path = ""
 	manifestURL := *base
@@ -313,11 +309,8 @@ func userHome(name string) (string, error) {
 	return u.HomeDir, nil
 }
 
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
 func sameOrigin(a, b *url.URL) bool { return a.Scheme == b.Scheme && strings.EqualFold(a.Host, b.Host) }
+
+func validDucklordUpdateBaseURL(base *url.URL) bool {
+	return base != nil && (base.Scheme == "http" || base.Scheme == "https") && base.Host != "" && base.User == nil && base.RawQuery == "" && base.Fragment == "" && (base.Path == "" || base.Path == "/") && base.Opaque == ""
+}
