@@ -1058,12 +1058,15 @@ if [ "$INSTALL_COMPONENT" = "ducklord" ] || [ "$INSTALL_COMPONENT" = "all" ]; th
     fi
     update_owner="$update_uid:$update_gid"
   fi
-  if [ ! -d "$update_home/.ducklord" ]; then
-    mkdir -p "$update_home/.ducklord"
-    if [ -n "$update_owner" ]; then chown "$update_owner" "$update_home/.ducklord"; fi
+  if [ -L "$update_home" ] || [ -L "$update_home/.ducklord" ] || [ -L "$update_home/.ducklord/updates" ]; then
+    echo "Error: refusing symlinked Ducklord update metadata directory"
+    exit 1
   fi
   mkdir -p "$update_home/.ducklord/updates"
-  if [ -n "$update_owner" ]; then chown "$update_owner" "$update_home/.ducklord/updates"; fi
+  if [ -L "$update_home/.ducklord" ] || [ -L "$update_home/.ducklord/updates" ]; then
+    echo "Error: refusing symlinked Ducklord update metadata directory"
+    exit 1
+  fi
   if command -v sha256sum >/dev/null 2>&1; then
   update_key=$(printf '%%s' "$DUCKLORD_DEST" | sha256sum | cut -d ' ' -f 1)
   elif command -v shasum >/dev/null 2>&1; then
@@ -1077,7 +1080,6 @@ if [ "$INSTALL_COMPONENT" = "ducklord" ] || [ "$INSTALL_COMPONENT" = "all" ]; th
   update_path_json=$(printf '%%s' "$DUCKLORD_DEST" | sed 's/\\/\\\\/g; s/"/\\"/g')
   update_meta_tmp="$update_meta.$$"
   printf '{"managed":true,"executable_path":"%%s","server_url":"%%s"}\n' "$update_path_json" "$DUCKWAY_SERVER" > "$update_meta_tmp"
-  if [ -n "$update_owner" ]; then chown "$update_owner" "$update_meta_tmp"; fi
   mv -f "$update_meta_tmp" "$update_meta"
 fi
 case ":$PATH:" in

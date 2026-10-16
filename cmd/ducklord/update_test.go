@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -116,5 +117,19 @@ func TestUpdateRejectsInvalidManifestBeforePrompt(t *testing.T) {
 	err := runDucklordUpdate([]string{"--check", "--server", server.URL}, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "invalid recommended version") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestUpdateServerURLAllowsSingleTrailingSlash(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ducklord/update-info" {
+			t.Errorf("manifest path=%q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(ducklordUpdateManifest{Version: "dev", OS: runtime.GOOS, Arch: runtime.GOARCH, Binary: "ducklord-" + runtime.GOOS + "-" + runtime.GOARCH, DownloadPath: "/download/ducklord-" + runtime.GOOS + "-" + runtime.GOARCH, Size: 1, SHA256: strings.Repeat("a", 64)})
+	}))
+	defer server.Close()
+	err := runDucklordUpdate([]string{"--check", "--server", server.URL + "/"}, &strings.Builder{})
+	if err != nil {
+		t.Fatalf("server URL with trailing slash rejected: %v", err)
 	}
 }
