@@ -593,6 +593,9 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 	s.mux.HandleFunc("GET /client/update-info", func(w http.ResponseWriter, r *http.Request) {
 		handleClientUpdateInfo(w, r, downloadDir)
 	})
+	s.mux.HandleFunc("GET /ducklord/update-info", func(w http.ResponseWriter, r *http.Request) {
+		handleDucklordUpdateInfo(w, r, downloadDir)
+	})
 
 	// Install script
 	s.mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
@@ -730,6 +733,42 @@ func isAllowedClientBinary(binary string) bool {
 	default:
 		return false
 	}
+}
+
+func handleDucklordUpdateInfo(w http.ResponseWriter, r *http.Request, downloadDir string) {
+	osName, arch := r.URL.Query().Get("os"), r.URL.Query().Get("arch")
+	if osName == "" {
+		osName = "linux"
+	}
+	if arch == "" {
+		arch = "amd64"
+	}
+	if (osName != "linux" && osName != "darwin") || (arch != "amd64" && arch != "arm64") {
+		handlers.JsonErrorPublic(w, "unsupported platform", http.StatusBadRequest)
+		return
+	}
+	binary := fmt.Sprintf("ducklord-%s-%s", osName, arch)
+	if !isAllowedClientBinary(binary) {
+		http.NotFound(w, r)
+		return
+	}
+	path := filepath.Join(downloadDir, binary)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		handlers.JsonErrorPublic(w, "Ducklord artifact not available", http.StatusNotFound)
+		return
+	}
+	sum, err := fileSHA256(path)
+	if err != nil {
+		handlers.JsonErrorPublic(w, "Ducklord artifact not available", http.StatusNotFound)
+		return
+	}
+	recommended := os.Getenv("DUCKLORD_RECOMMENDED_VERSION")
+	if recommended == "" {
+		recommended = version.Get()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"recommended_version": recommended, "os": osName, "arch": arch, "binary": binary, "download_path": "/download/" + binary, "size": info.Size(), "sha256": sum})
 }
 
 func fileSHA256(path string) (string, error) {
@@ -923,6 +962,10 @@ if [ "$INSTALL_COMPONENT" = "client" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
 fi
 if [ "$INSTALL_COMPONENT" = "ducklord" ] || [ "$INSTALL_COMPONENT" = "all" ]; then
   echo "Installed: $DUCKLORD_DEST"
+  mkdir -p "$HOME/.ducklord"
+  escaped_server=$(printf '%s' "$DUCKWAY_SERVER" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  printf '{"managed":true,"server_url":"%%s"}\n' "$escaped_server" > "$HOME/.ducklord/update.json"
+  chmod 600 "$HOME/.ducklord/update.json"
 fi
 case ":$PATH:" in
   *":$DEST_DIR:"*) ;;

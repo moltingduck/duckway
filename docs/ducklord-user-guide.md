@@ -337,3 +337,15 @@ Default Project 維持接納所有 Hosts，舊 Project 未設定範圍時也維�
 點擊 tab 列的 `+` 可新增 tab，再選擇建立 Session 或加入既有 Session。
 `Ctrl+B` 後按 `,` 可重新命名目前 tab；空白名稱恢復預設編號。
 新 Shell Session 直接使用遠端 SSH 帳號的預設互動式 shell，不再要求選擇 shell。
+# Ducklord self-update
+
+Ducklord installed by the Duckway installer can check and apply updates from its originating Duckway server:
+
+```sh
+ducklord update --check
+ducklord update
+```
+
+The check command only reads the server manifest. The update command asks before replacing the executable. On installation, the installer records a managed marker and server URL in `~/.ducklord/update.json`; package-manager installs and other unmanaged copies should be updated through their original installer. `--server https://host` is available for an explicit server override.
+
+Updates are available only when the server publishes the current platform's allowlisted Ducklord artifact. The client requires HTTPS; HTTP is accepted only for loopback development servers. Redirects to another origin are rejected. The manifest supplies the recommended version, artifact basename, size, and SHA-256. Ducklord verifies size and digest, stages the executable beside the installed binary, and preserves the replaced executable as `<path>.previous` for recovery. Updates reject symlink/non-regular executable paths.

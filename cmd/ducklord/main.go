@@ -309,6 +309,8 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 		return fmt.Errorf("command is required")
 	}
 	switch args[0] {
+	case "update":
+		return runDucklordUpdate(args[1:], out)
 	case "ssh-hosts":
 		path := ""
 		rest := args[1:]
@@ -11609,5 +11611,6 @@ Usage:
   ducklord restart <client> <session> [-f|--force] [--config <path>]
   ducklord destroy <client> <session> [-w|--wait|-f|--force] [--config <path>]
   ducklord yield <client> <session> [-w|--wait] [--config <path>]
+  ducklord update [--check] [--server <https://duckway-server>]
   ducklord version`)
 }

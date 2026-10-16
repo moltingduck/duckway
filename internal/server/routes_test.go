@@ -74,6 +74,31 @@ func TestHandleClientUpdateInfoRejectsUnsupportedPlatform(t *testing.T) {
 	}
 }
 
+func TestHandleDucklordUpdateInfoManifest(t *testing.T) {
+	dir := t.TempDir()
+	artifact := []byte("ducklord test artifact")
+	if err := os.WriteFile(filepath.Join(dir, "ducklord-darwin-arm64"), artifact, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DUCKLORD_RECOMMENDED_VERSION", "v-ducklord")
+	req := httptest.NewRequest(http.MethodGet, "/ducklord/update-info?os=darwin&arch=arm64", nil)
+	rec := httptest.NewRecorder()
+	handleDucklordUpdateInfo(rec, req, dir)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["recommended_version"] != "v-ducklord" || got["binary"] != "ducklord-darwin-arm64" || got["download_path"] != "/download/ducklord-darwin-arm64" || got["size"] != float64(len(artifact)) {
+		t.Fatalf("unexpected manifest: %#v", got)
+	}
+	if sha, _ := got["sha256"].(string); len(sha) != 64 {
+		t.Fatalf("sha256=%q", sha)
+	}
+}
+
 func TestServeClientDownloadOnlyAllowsPinnedBinaries(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "duckway-client-linux-amd64"), []byte("ok"), 0600); err != nil {
@@ -138,6 +163,8 @@ func TestInstallScriptSupportsUserLocalInstall(t *testing.T) {
 		`download_tool "$DUCKLORD_BINARY" "$TMP_DIR/ducklord"`,
 		`DUCKLORD_DEST="$DEST_DIR/ducklord"`,
 		`DUCKLORD_DEST="$DEST"`,
+		`$HOME/.ducklord/update.json`,
+		`"server_url"`,
 		`Install location:`,
 		`read choice < /dev/tty`,
 		`DEST="${DUCKWAY_INSTALL_PATH:-$HOME/.local/bin/$PRIMARY_NAME}"`,
