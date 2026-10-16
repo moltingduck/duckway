@@ -475,13 +475,28 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 			return err
 		}
 		if len(rest) != 1 {
-			return fmt.Errorf("usage: ducklord install-ducklion <client> [--source <path>] [--dest <remote-path>] [--config <path>]")
+			return fmt.Errorf("usage: ducklord install-ducklion <client> [--source <local-path>] [--dest <remote-path>] [--config <path>]")
 		}
 		c, err := mustClient(cfg, rest[0])
 		if err != nil {
 			return err
 		}
-		installed, err := runner.InstallDucklion(context.Background(), c, source, dest)
+		var installed string
+		if strings.TrimSpace(source) != "" {
+			installed, err = runner.InstallDucklion(context.Background(), c, source, dest)
+		} else if installer, ok := runner.(remoteDucklionInstaller); ok {
+			probe, probeErr := runner.ProbeDucklion(context.Background(), c)
+			if probeErr != nil {
+				return probeErr
+			}
+			var binary []byte
+			binary, err = downloadDucklion(context.Background(), runner, probe.OS, probe.Arch)
+			if err == nil {
+				installed, err = installer.InstallDucklionBytes(context.Background(), c, binary, dest)
+			}
+		} else {
+			err = fmt.Errorf("remote Ducklion installer is unavailable")
+		}
 		if err != nil {
 			return err
 		}
@@ -9862,7 +9877,17 @@ func runAddClientWithMode(ctx context.Context, runner remoteRunner, client duckl
 		if progress != nil {
 			progress("installing ducklion on " + client.Name + "...")
 		}
-		installedPath, err := runner.InstallDucklion(ctx, client, "", "")
+		installer, ok := runner.(remoteDucklionInstaller)
+		if !ok {
+			result.err = fmt.Errorf("cannot securely install Ducklion on %s: remote artifact installer is unavailable", client.Name)
+			return result
+		}
+		binary, err := downloadDucklion(ctx, runner, probe.OS, probe.Arch)
+		if err != nil {
+			result.err = fmt.Errorf("download Ducklion for %s: %w", client.Name, err)
+			return result
+		}
+		installedPath, err := installer.InstallDucklionBytes(ctx, client, binary, "")
 		if err != nil {
 			result.err = fmt.Errorf("ducklion was not installed on %s; host was not saved: %w", client.Name, err)
 			return result
@@ -11603,7 +11628,7 @@ Usage:
   ducklord hook-status <client> <codex|claude> [--config <path>]
   ducklord agents <client> <directory-path> [--config <path>]
   ducklord probe <client> [--config <path>]
-  ducklord install-ducklion <client> [--source <path>] [--dest <remote-path>] [--config <path>]
+  ducklord install-ducklion <client> [--source <local-path>] [--dest <remote-path>] [--config <path>]
   ducklord tui [--config <path>] [--name <owner>] [--refresh 2s]
   ducklord attach-host <client> [--config <path>]
   ducklord attach <client> <session> [--config <path>]

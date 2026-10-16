@@ -684,11 +684,17 @@ Ducklord both look for a real `ducklion` executable first. When `duckway` and
 `ducklion` are installed side by side, Duckway client PTY runners can still find
 the companion binary even if the service `PATH` does not include that directory.
 
-Ducklord can also install Ducklion over SSH when the developer laptop already
-has a local `ducklion` binary:
+When Ducklion is missing, Add Host probes the remote OS and architecture and
+downloads the matching Ducklion artifact from the configured Duckway server.
+The server is taken from Ducklord's managed update metadata, or from
+`DUCKWAY_SERVER_URL` for an unmanaged install. The manifest's fixed artifact
+path, platform name, size, and SHA-256 are checked before the binary is sent
+over SSH. To install without Add Host, omit `--source` for the same server
+download, or pass `--source` to explicitly install a local binary:
 
 ```bash
 ducklord import-ssh-hosts --config ~/.ducklord/config.yaml
+ducklord install-ducklion vulns --config ~/.ducklord/config.yaml
 ducklord install-ducklion vulns --source ./ducklion-linux-amd64 --config ~/.ducklord/config.yaml
 ducklord probe vulns --config ~/.ducklord/config.yaml
 ```
@@ -885,18 +891,17 @@ Inside the TUI:
 Ducklord probes the remote host over SSH. It checks `ducklion version`, runs
 `ducklion list --json` to verify the session manager entry point, and records
 the host entry in `/root/.ducklord/config.yaml`. If Ducklion is missing,
-Ducklord attempts to install the local `ducklion` binary to
-`~/.local/bin/ducklion` over SSH, probes again, then records the resolved remote
-path. If installation is not possible because the local binary is missing or SSH
-cannot write the target path, Ducklord still adds the host and shows a clear
-status message so the operator can enable the remote entry point manually.
+Ducklord downloads the matching artifact from the configured Duckway server,
+verifies its manifest and bytes, installs it to `~/.local/bin/ducklion` over
+SSH, probes again, then records the resolved remote path. If the download or
+installation fails, Ducklord reports the error and does not save the host.
 
 Press `d` on a selected row to remove that host entry from the current
 `config.yaml`. Removing a host entry does not stop remote Ducklion sessions; it
 only removes the host from Ducklord's local inventory.
 
-For a host that is reachable over SSH but still missing Ducklion, install the
-local binary explicitly:
+For a host that is reachable over SSH but still missing Ducklion, install from
+the configured server by default. To explicitly use a local binary instead:
 
 ```bash
 podman exec ducklord-dev ducklord install-ducklion client-c \
@@ -1336,11 +1341,13 @@ Old Duckway clients do not have `ducklion`. They remain compatible because:
 - Existing `~/.duckway/cc-sessions.json` records are not imported or renamed.
 - `ducklord` shows a clear remote error when `ducklion` is missing.
 
-Operators can migrate old hosts one at a time by installing Ducklion over SSH:
+Operators can migrate old hosts one at a time by installing Ducklion over SSH
+from the configured server, or by explicitly selecting a local binary:
 
 ```bash
 ducklord tui --config ~/.ducklord/config.yaml
 ducklord import-ssh-hosts --config ~/.ducklord/config.yaml
+ducklord install-ducklion <client> --config ~/.ducklord/config.yaml
 ducklord install-ducklion <client> --source ./ducklion-linux-amd64 --config ~/.ducklord/config.yaml
 ```
 
