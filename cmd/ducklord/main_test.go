@@ -531,7 +531,7 @@ func TestTUIRenderShowsMenuAndContentPane(t *testing.T) {
 	var out bytes.Buffer
 	state.render(&out)
 	got := out.String()
-	for _, want := range []string{"sessions", "content", "client-a", "alpha", "line 1", " [2Jline 2"} {
+	for _, want := range []string{"SESSIONS  ·  CUSTOM", "content", "client-a", "alpha", "line 1", " [2Jline 2"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("render missing %q in %q", want, got)
 		}

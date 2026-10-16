@@ -104,7 +104,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	capture := newTUICapture(terminal)
 	capture.wait(t, "ducklord remote agents", 20*time.Second)
 	capture.wait(t, "client-a alpha tick", 20*time.Second)
-	capture.waitCurrent(t, "sessions [custom]", 10*time.Second)
+	capture.waitCurrent(t, "SESSIONS  ·  CUSTOM", 10*time.Second)
 	capture.waitCurrent(t, "[Ungrouped] •", 10*time.Second)
 	if screen := capture.currentText(); !strings.Contains(screen, "[Ungrouped] •") || !strings.Contains(screen, "• client-a") {
 		t.Fatalf("background agent completion did not render session/group unread: %q", safeTerminalDiagnostic(screen))
@@ -114,7 +114,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	writePTY(t, terminal, "/"+notificationHandle+"\r")
 	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
 	writePTY(t, terminal, "\r")
-	capture.waitCurrent(t, "session focus", 10*time.Second)
+	capture.waitCurrent(t, "SESSION FOCUS", 10*time.Second)
 	writePTY(t, terminal, "\x1d")
 	waitE2E(t, 10*time.Second, func() bool {
 		data, readErr := exec.Command(runtime, "exec", controller, "cat", "/root/.ducklord/state.json").Output()
@@ -158,7 +158,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 		t.Fatalf("copy mode redraw disturbed selectable text: before=%q after=%q", safeTerminalDiagnostic(frozen), safeTerminalDiagnostic(current))
 	}
 	writePTY(t, terminal, "\x1b")
-	capture.waitCurrent(t, "sessions [custom]", 5*time.Second)
+	capture.waitCurrent(t, "SESSIONS  ·  CUSTOM", 5*time.Second)
 	capture.waitCurrent(t, copyMarker, 10*time.Second)
 
 	// The unified desired-state form disconnects only Ducklord's transport.
@@ -181,11 +181,11 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	}
 	capture.waitCurrent(t, reconnectedMarker, 15*time.Second)
 	writePTY(t, terminal, "o")
-	capture.waitCurrent(t, "sessions [host]", 2*time.Second)
+	capture.waitCurrent(t, "SESSIONS  ·  HOST", 2*time.Second)
 	writePTY(t, terminal, "o")
-	capture.waitCurrent(t, "sessions [type]", 2*time.Second)
+	capture.waitCurrent(t, "SESSIONS  ·  TYPE", 2*time.Second)
 	writePTY(t, terminal, "o")
-	capture.waitCurrent(t, "sessions [custom]", 2*time.Second)
+	capture.waitCurrent(t, "SESSIONS  ·  CUSTOM", 2*time.Second)
 
 	var bashSession protocol.SessionSummary
 	for _, session := range before {
@@ -390,7 +390,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
 	capture.waitCurrent(t, "Search sessions", 2*time.Second)
 	writePTY(t, terminal, "\r")
-	capture.waitCurrent(t, "session focus", 10*time.Second)
+	capture.waitCurrent(t, "SESSION FOCUS", 10*time.Second)
 	ctrlStartHelp := capture.position()
 	writePTY(t, terminal, "\x1d")
 	capture.waitAfter(t, ctrlStartHelp, "? help", 5*time.Second)
@@ -400,7 +400,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	capture.waitCurrent(t, "Active · Enter again to focus", 10*time.Second)
 	capture.waitCurrent(t, handle, 2*time.Second)
 	writePTY(t, terminal, "\r")
-	capture.waitAfter(t, start, "session focus", 10*time.Second)
+	capture.waitAfter(t, start, "SESSION FOCUS", 10*time.Second)
 	marker := "DUCKLORD_TUI_INPUT_OK"
 	writePTY(t, terminal, "printf "+marker+"\r")
 	waitE2E(t, 10*time.Second, func() bool {
@@ -516,7 +516,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 	// Leave a non-default mode, stop this Ducklord cleanly, and prove a fresh
 	// process restores organization state from the same local state file.
 	writePTY(t, terminal, "o")
-	capture.waitCurrent(t, "sessions [host]", 2*time.Second)
+	capture.waitCurrent(t, "SESSIONS  ·  HOST", 2*time.Second)
 	writePTY(t, terminal, "q")
 	if err := command.Wait(); err != nil {
 		t.Fatalf("stop first Ducklord TUI: %v", err)
@@ -534,7 +534,7 @@ func TestDucklordCreateTUIContainerE2E(t *testing.T) {
 		_ = restartedCommand.Wait()
 	}()
 	restartedCapture := newTUICapture(restartedTerminal)
-	restartedCapture.waitCurrent(t, "sessions [host]", 20*time.Second)
+	restartedCapture.waitCurrent(t, "SESSIONS  ·  HOST", 20*time.Second)
 }
 
 // TestDucklordWorkspacePreviewContainerE2E proves that the new three-region

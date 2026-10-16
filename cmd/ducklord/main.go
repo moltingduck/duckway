@@ -6931,27 +6931,27 @@ func (s *tuiState) render(out io.Writer) {
 		status = "  " + s.resizeStatus
 	}
 	header := fmt.Sprintf("ducklord remote agents  owner:%s%s%s", displayField(s.ownerName), s.hostSyncLabel(), truncate(status, renderWidth/2))
-	fmt.Fprintln(out, truncate(header, renderWidth))
+	fmt.Fprintf(out, "%s%s%s\n", modalTitle, truncate(header, renderWidth), modalReset)
 	if s.localWarning != "" {
-		fmt.Fprintln(out, truncate("warning: "+sanitizeTerminalText(s.localWarning), renderWidth))
+		fmt.Fprintf(out, "%s%s%s\n", modalDanger, truncate("warning: "+sanitizeTerminalText(s.localWarning), renderWidth), modalReset)
 	} else if s.focused {
-		fmt.Fprintln(out, truncate("session focus  keys go to session  ctrl-] menu", renderWidth))
+		fmt.Fprintf(out, "%s%s%s\n", modalSelected, truncate("  ●  SESSION FOCUS   keys go to session   ctrl-] menu", renderWidth), modalReset)
 	} else if s.addClientMode {
-		fmt.Fprintln(out, truncate("add ducklion host: ssh config number/name or user@host  enter add  esc cancel", renderWidth))
+		fmt.Fprintf(out, "%s%s%s\n", modalMuted, truncate("add ducklion host: ssh config number/name or user@host  enter add  esc cancel", renderWidth), modalReset)
 	} else if s.newSessionMode {
-		fmt.Fprintln(out, truncate(s.createHeader()+"  enter next  esc cancel", renderWidth))
+		fmt.Fprintf(out, "%s%s%s\n", modalMuted, truncate(s.createHeader()+"  enter next  esc cancel", renderWidth), modalReset)
 	} else if s.searchMode {
-		fmt.Fprintln(out, truncate("search sessions  type to filter  ↑/↓ move  enter activate  esc close", renderWidth))
+		fmt.Fprintf(out, "%s%s%s\n", modalMuted, truncate("search sessions  type to filter  ↑/↓ move  enter activate  esc close", renderWidth), modalReset)
 	} else if s.actionMenu {
-		fmt.Fprintln(out, truncate("session actions  ↑/↓ or j/k move  enter choose  esc close", renderWidth))
+		fmt.Fprintf(out, "%s%s%s\n", modalMuted, truncate("session actions  ↑/↓ or j/k move  enter choose  esc close", renderWidth), modalReset)
 	} else if s.groupMenu {
-		fmt.Fprintln(out, truncate("custom groups  ↑/↓ choose  enter confirm  esc close", renderWidth))
+		fmt.Fprintf(out, "%s%s%s\n", modalMuted, truncate("custom groups  ↑/↓ choose  enter confirm  esc close", renderWidth), modalReset)
 	} else if s.lifecycleConfirm != "" {
-		fmt.Fprintln(out, truncate("lifecycle confirmation open; use the modal controls", renderWidth))
+		fmt.Fprintf(out, "%s%s%s\n", modalStatus, truncate("lifecycle confirmation open; use the modal controls", renderWidth), modalReset)
 	} else {
-		fmt.Fprintln(out, truncate(s.cfg.Shortcut("help")+" help · Enter focus/group · "+s.cfg.Shortcut("pty_unfocus")+" leave PTY", renderWidth))
+		fmt.Fprintf(out, "%s%s%s\n", modalMuted, truncate(s.cfg.Shortcut("help")+" help · Enter focus/group · "+s.cfg.Shortcut("pty_unfocus")+" leave PTY", renderWidth), modalReset)
 	}
-	fmt.Fprintln(out, strings.Repeat("-", renderWidth))
+	fmt.Fprintf(out, "%s%s%s\n", modalBorder, strings.Repeat("─", renderWidth), modalReset)
 	if len(s.sessions) == 0 {
 		fmt.Fprintln(out, truncate("No sessions.", renderWidth))
 		s.renderCreateModal(out, width, modalHeight)
@@ -6983,10 +6983,10 @@ func (s *tuiState) render(out io.Writer) {
 		if layout.overlay {
 			clear = ""
 		}
-		heading := truncate("sessions ["+string(s.organizationMode())+"]", menuWidth)
-		fmt.Fprintf(out, "\033[4;1H%-*s%s%s", menuWidth, heading, separator, clear)
+		heading := truncate("SESSIONS  ·  "+strings.ToUpper(string(s.organizationMode())), menuWidth)
+		fmt.Fprintf(out, "\033[4;1H%s%-*s%s%s%s", modalTitle, menuWidth, heading, modalReset, separator, clear)
 	} else {
-		fmt.Fprintf(out, "\033[4;1H%s\033[K", truncate("content", renderWidth))
+		fmt.Fprintf(out, "\033[4;1H%s%s%s\033[K", modalTitle, "CONTENT", modalReset)
 	}
 	row := 5
 	for _, listRow := range s.sessionListRows() {
@@ -7018,7 +7018,9 @@ func (s *tuiState) render(out io.Writer) {
 				clear = ""
 			}
 			plain := modalCellPad(modalCellTruncate(groupLabel, menuWidth), menuWidth)
-			if s.organizationMode() == ducklord.OrganizationHost {
+			if s.selectedGroupID == listRow.groupID {
+				plain = modalSelected + plain + modalReset
+			} else if s.organizationMode() == ducklord.OrganizationHost {
 				plain = s.hostRowStyle(listRow.groupID) + plain + modalReset
 			}
 			fmt.Fprintf(out, "\033[%d;1H%s%s%s", row, plain, separator, clear)
@@ -7071,7 +7073,11 @@ func (s *tuiState) render(out io.Writer) {
 			clear = ""
 		}
 		plain := modalCellPad(modalCellTruncate(line, menuWidth), menuWidth)
-		fmt.Fprintf(out, "\033[%d;1H%s%s%s%s%s", row, s.hostRowStyle(sess.Client), plain, modalReset, separator, clear)
+		style := s.hostRowStyle(sess.Client)
+		if s.selectedGroupID == "" && i == s.selected {
+			style = modalSelected
+		}
+		fmt.Fprintf(out, "\033[%d;1H%s%s%s%s%s", row, style, plain, modalReset, separator, clear)
 		row++
 	}
 	if !layout.overlay {
