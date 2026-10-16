@@ -602,23 +602,41 @@ func (s *Server) SetupGatewayRoutes(ss *SharedServices) {
 
 	// Install script
 	s.mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
-		serverURL := r.Host
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
-			scheme = strings.ToLower(strings.TrimSpace(fwd))
-		}
-		baseURL := scheme + "://" + serverURL
-		if !validInstallBaseURL(baseURL) {
+		body, err := generatedInstallScript(r)
+		if err != nil {
 			http.Error(w, "invalid install server URL", http.StatusBadRequest)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		quoted := "'" + strings.ReplaceAll(baseURL, "'", "'\\''") + "'"
-		fmt.Fprintf(w, installScript, quoted, baseURL, baseURL)
+		_, _ = w.Write(body)
 	})
+	s.mux.HandleFunc("GET /install.sh.sha256", func(w http.ResponseWriter, r *http.Request) {
+		body, err := generatedInstallScript(r)
+		if err != nil {
+			http.Error(w, "invalid install server URL", http.StatusBadRequest)
+			return
+		}
+		sum := sha256.Sum256(body)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = fmt.Fprintf(w, "%s  install.sh\n", hex.EncodeToString(sum[:]))
+	})
+}
+
+func generatedInstallScript(r *http.Request) ([]byte, error) {
+	serverURL := r.Host
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
+		scheme = strings.ToLower(strings.TrimSpace(fwd))
+	}
+	baseURL := scheme + "://" + serverURL
+	if !validInstallBaseURL(baseURL) {
+		return nil, fmt.Errorf("invalid install server URL")
+	}
+	quoted := "'" + strings.ReplaceAll(baseURL, "'", "'\\''") + "'"
+	return []byte(fmt.Sprintf(installScript, quoted, baseURL, baseURL)), nil
 }
 
 func validInstallBaseURL(raw string) bool {

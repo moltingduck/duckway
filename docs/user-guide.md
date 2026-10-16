@@ -57,6 +57,8 @@ The Duckway server hosts an installer at `/install.sh`. From the agent machine:
 curl -fsSL http://your-duckway-host/install.sh | sh
 ```
 
+The Clients admin page shows SHA-256 values for the generated installer and each available Ducklord platform binary. To check a saved installer, download it to `install.sh` and run `sha256sum install.sh`; check a downloaded Ducklord binary with `sha256sum <binary>`. `GET /install.sh.sha256` returns the checksum for the installer generated for that request host and scheme.
+
 By default this installs to `/usr/local/bin/duckway` and uses `sudo` when that
 directory is not writable. When run from an interactive terminal, the installer
 asks where to install:

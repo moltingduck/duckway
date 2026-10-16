@@ -138,6 +138,15 @@
   </div>
 </div>
 
+<div class="card mb-1">
+  <strong>Download SHA-256 checksums</strong>
+  <p class="text-sm text-muted">Compare these values with <code>sha256sum</code> after downloading. The install script hash is generated for the configured gateway URL.</p>
+  <div class="text-sm" style="margin:.5rem 0"><strong>install.sh</strong> <code id="install-sha256">Loading…</code><br><code>sha256sum install.sh</code></div>
+  <div style="overflow-x:auto">
+    <table class="table"><thead><tr><th>Ducklord platform</th><th>Binary</th><th>SHA-256</th></tr></thead><tbody id="ducklord-sha256-list"><tr><td colspan="3" class="text-muted">Loading…</td></tr></tbody></table>
+  </div>
+</div>
+
 <div id="canary-alert" style="display:none;background:rgba(245,158,11,0.1);border:1px solid var(--warning);border-radius:var(--radius);padding:0.75rem;margin-bottom:1rem">
   Canary tokens require an alert email. <a href="/admin/canary">Configure in Canary Tokens settings</a>.
 </div>
@@ -668,6 +677,7 @@ document.addEventListener('DOMContentLoaded', function() {
         gatewayURL = s.gateway_url;
         gatewayURLValid = true;
         document.getElementById('install-cmd').textContent = 'curl -fsSL ' + gatewayURL + '/install.sh | sh';
+        loadDownloadChecksums();
       } else {
         // Probe current origin for /install.sh
         fetch('/install.sh', {method: 'HEAD'})
@@ -675,6 +685,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (r.ok) {
               gatewayURLValid = true;
               document.getElementById('install-cmd').textContent = 'curl -fsSL ' + gatewayURL + '/install.sh | sh';
+              loadDownloadChecksums();
             } else {
               document.getElementById('install-cmd').innerHTML =
                 '<span style="color:var(--danger)">Gateway URL not configured.</span> ' +
@@ -806,6 +817,45 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 });
+
+function loadDownloadChecksums() {
+  var base = gatewayURL.replace(/\/$/, '');
+  var installTarget = document.getElementById('install-sha256');
+  fetch(base + '/install.sh.sha256')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+    .then(function(value) { installTarget.textContent = value.trim(); })
+    .catch(function() { installTarget.textContent = 'Unavailable'; });
+
+  var platforms = [['linux','amd64'],['linux','arm64'],['darwin','amd64'],['darwin','arm64']];
+  var body = document.getElementById('ducklord-sha256-list');
+  Promise.all(platforms.map(function(p) {
+    return fetch(base + '/ducklord/update-info?os=' + p[0] + '&arch=' + p[1])
+      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(info) { return {platform:p[0] + '/' + p[1], binary:info.binary, sha256:info.sha256}; })
+      .catch(function() { return {platform:p[0] + '/' + p[1], binary:'Unavailable', sha256:'Unavailable'}; });
+  })).then(function(rows) {
+    body.textContent = '';
+    rows.forEach(function(row) {
+      var tr = document.createElement('tr');
+      [row.platform, row.binary, row.sha256].forEach(function(value) {
+        var td = document.createElement('td');
+        var code = document.createElement('code');
+        code.textContent = value;
+        td.appendChild(code);
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+      var commandRow = document.createElement('tr');
+      var commandCell = document.createElement('td');
+      commandCell.colSpan = 3;
+      var command = document.createElement('code');
+      command.textContent = 'sha256sum ' + row.binary;
+      commandCell.appendChild(command);
+      commandRow.appendChild(commandCell);
+      body.appendChild(commandRow);
+    });
+  });
+}
 
 function toggleSection(id, header) {
   var el = document.getElementById(id);
