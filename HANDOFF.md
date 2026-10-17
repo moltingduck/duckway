@@ -1349,8 +1349,12 @@ quality review's timer-window flakiness finding was addressed by widening the
 test timing margin; no other blocking findings.
 
 Final diff check passed against base `a4f82c03f263df69609362b50899db17db976aee`.
-The remote `origin/main` still points to that base before push. Rebuild/restart
-the owner-labelled Podman demo, verify readiness, then push the candidate to
-`main`. Preserve the primary checkout's unrelated dirty state. Remove only the
-owned implementation and verification worktrees/branches after recording
-completion; preserve the retained demo.
+The owner-labelled Podman demo rebuilt and passed readiness, SSH shell lifecycle,
+and remote session checks. TUI launch command:
+`podman exec -it ducklord-verified-ducklord-dev ducklord tui --config /root/.ducklord/config.yaml`.
+
+Pushed `dc9c6858bbff7785b849a4a90053a38ce50a7c8c` to `origin/main`; fetched
+`origin/main` matches. The feature commits are `d782c60`, `a1b8638`, `82e2fe0`,
+and `bc52b17`; `dc9c685` records verification and workflow results. Preserve
+the primary checkout's unrelated dirty state. Remove only the owned
+implementation and verification worktrees/branches; preserve the retained demo.
