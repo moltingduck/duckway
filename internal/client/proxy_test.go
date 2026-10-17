@@ -165,6 +165,40 @@ func (b *blockingProxyRequestBody) Close() error {
 	return nil
 }
 
+func TestRequestBodyTimeoutDoesNotExpireAfterClose(t *testing.T) {
+	closeCount := 0
+	canceled := false
+	body := &cancelRequestBodyOnTimeout{
+		ReadCloser: testProxyRequestBody{close: func() { closeCount++ }},
+		cancel:     func() { canceled = true },
+	}
+	body.timer = time.NewTimer(time.Hour)
+	if err := body.Close(); err != nil {
+		t.Fatalf("close request body: %v", err)
+	}
+
+	// Simulate an already-scheduled timer callback arriving after transport
+	// completion. It must not cancel the request context or close it twice.
+	body.expire()
+	if canceled {
+		t.Fatal("completed request was canceled by a late timeout callback")
+	}
+	if closeCount != 1 {
+		t.Fatalf("request body closed %d times, want 1", closeCount)
+	}
+}
+
+type testProxyRequestBody struct {
+	close func()
+}
+
+func (testProxyRequestBody) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (b testProxyRequestBody) Close() error {
+	b.close()
+	return nil
+}
+
 func TestProxyHandlerBoundsStalledRequestBodyUpload(t *testing.T) {
 	const requestBodyTimeout = 100 * time.Millisecond
 	upstreamReadingBody := make(chan struct{})

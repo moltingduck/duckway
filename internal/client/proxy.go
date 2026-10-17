@@ -133,12 +133,11 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if requestBodyTimeout <= 0 {
 			requestBodyTimeout = localProxyRequestBodyTimeout
 		}
-		requestBody := &cancelRequestBodyOnTimeout{ReadCloser: proxyReq.Body}
+		requestBody := &cancelRequestBodyOnTimeout{ReadCloser: proxyReq.Body, cancel: cancelRequest}
 		timerReady := make(chan struct{})
 		uploadTimer = time.AfterFunc(requestBodyTimeout, func() {
 			<-timerReady
-			cancelRequest()
-			_ = requestBody.Close()
+			requestBody.expire()
 		})
 		requestBody.timer = uploadTimer
 		close(timerReady)
@@ -177,18 +176,41 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type cancelRequestBodyOnTimeout struct {
 	io.ReadCloser
 	timer     *time.Timer
+	cancel    context.CancelFunc
+	mu        sync.Mutex
+	done      bool
 	closeOnce sync.Once
 	closeErr  error
 }
 
 func (b *cancelRequestBodyOnTimeout) Close() error {
+	b.mu.Lock()
+	b.done = true
+	if b.timer != nil {
+		b.timer.Stop()
+	}
+	b.mu.Unlock()
+	b.closeBody()
+	return b.closeErr
+}
+
+func (b *cancelRequestBodyOnTimeout) expire() {
+	b.mu.Lock()
+	if b.done {
+		b.mu.Unlock()
+		return
+	}
+	b.done = true
+	b.mu.Unlock()
+
+	b.cancel()
+	b.closeBody()
+}
+
+func (b *cancelRequestBodyOnTimeout) closeBody() {
 	b.closeOnce.Do(func() {
-		if b.timer != nil {
-			b.timer.Stop()
-		}
 		b.closeErr = b.ReadCloser.Close()
 	})
-	return b.closeErr
 }
 
 func isEventStreamContentType(contentType string) bool {
