@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -93,5 +94,113 @@ func TestProxyHandlerFlushesSSEBeforeUpstreamCompletes(t *testing.T) {
 	}
 	if got, want := line, "data: first\n"; got != want {
 		t.Fatalf("first event line = %q, want %q", got, want)
+	}
+}
+
+func TestProxyHandlerAppliesBodyTimeoutToNonSSE(t *testing.T) {
+	const bodyTimeout = 50 * time.Millisecond
+	upstreamCanceled := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+		close(upstreamCanceled)
+	}))
+	proxy := httptest.NewServer(&proxyHandler{
+		serverURL:   upstream.URL,
+		client:      newLocalProxyHTTPClient(),
+		bodyTimeout: bodyTimeout,
+	})
+	t.Cleanup(proxy.Close)
+	t.Cleanup(upstream.Close)
+
+	resp, err := http.Get(proxy.URL + "/response")
+	if err != nil {
+		t.Fatalf("GET proxied response: %v", err)
+	}
+	defer resp.Body.Close()
+	firstByte := make([]byte, 1)
+	if _, err := io.ReadFull(resp.Body, firstByte); err != nil {
+		t.Fatalf("read first response byte: %v", err)
+	}
+	if string(firstByte) != "{" {
+		t.Fatalf("first response byte = %q, want '{'", firstByte)
+	}
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, resp.Body)
+		readDone <- err
+	}()
+	select {
+	case <-upstreamCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("non-SSE upstream request was not canceled by body timeout")
+	}
+	select {
+	case <-readDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy response body did not finish after timeout cancellation")
+	}
+}
+
+func TestProxyHandlerExemptsEventStreamFromBodyTimeout(t *testing.T) {
+	const bodyTimeout = 50 * time.Millisecond
+	upstreamCanceled := make(chan struct{})
+	firstChunkSent := make(chan struct{})
+	allowUpstreamFinish := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "Text/Event-Stream; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: first\n\n"))
+		w.(http.Flusher).Flush()
+		close(firstChunkSent)
+		select {
+		case <-r.Context().Done():
+			close(upstreamCanceled)
+		case <-allowUpstreamFinish:
+			_, _ = w.Write([]byte("data: second\n\n"))
+		}
+	}))
+	proxy := httptest.NewServer(&proxyHandler{
+		serverURL:   upstream.URL,
+		client:      newLocalProxyHTTPClient(),
+		bodyTimeout: bodyTimeout,
+	})
+	t.Cleanup(proxy.Close)
+	t.Cleanup(func() {
+		select {
+		case <-allowUpstreamFinish:
+		default:
+			close(allowUpstreamFinish)
+		}
+		upstream.Close()
+	})
+
+	resp, err := http.Get(proxy.URL + "/events")
+	if err != nil {
+		t.Fatalf("GET proxied event stream: %v", err)
+	}
+	defer resp.Body.Close()
+	select {
+	case <-firstChunkSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream did not send first event")
+	}
+	// Wait beyond the configured body timeout while the upstream stays open.
+	select {
+	case <-upstreamCanceled:
+		t.Fatal("event-stream request was canceled by the body timeout")
+	case <-time.After(3 * bodyTimeout):
+	}
+	close(allowUpstreamFinish)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read completed event stream: %v", err)
+	}
+	if want := "data: first\n\ndata: second\n\n"; string(body) != want {
+		t.Fatalf("event stream body = %q, want %q", body, want)
 	}
 }

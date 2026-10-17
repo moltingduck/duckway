@@ -1,9 +1,11 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -12,6 +14,8 @@ import (
 )
 
 const localProxyHost = "127.0.0.1"
+
+const localProxyResponseBodyTimeout = 120 * time.Second
 
 func LocalProxyURL(port int) string {
 	return fmt.Sprintf("http://%s:%d", localProxyHost, port)
@@ -75,9 +79,10 @@ func RunProxy(cfg *Config, syncInterval time.Duration) error {
 	}
 
 	handler := &proxyHandler{
-		serverURL: cfg.ServerURL,
-		token:     cfg.Token,
-		client:    newLocalProxyHTTPClient(),
+		serverURL:   cfg.ServerURL,
+		token:       cfg.Token,
+		client:      newLocalProxyHTTPClient(),
+		bodyTimeout: localProxyResponseBodyTimeout,
 	}
 
 	addr := localProxyListenAddr(cfg.ProxyPort)
@@ -88,9 +93,10 @@ func RunProxy(cfg *Config, syncInterval time.Duration) error {
 }
 
 type proxyHandler struct {
-	serverURL string
-	token     string
-	client    *http.Client
+	serverURL   string
+	token       string
+	client      *http.Client
+	bodyTimeout time.Duration
 }
 
 func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +106,9 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetURL += "?" + r.URL.RawQuery
 	}
 
-	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+	requestCtx, cancelRequest := context.WithCancel(r.Context())
+	defer cancelRequest()
+	proxyReq, err := http.NewRequestWithContext(requestCtx, r.Method, targetURL, r.Body)
 	if err != nil {
 		http.Error(w, `{"error":"failed to create proxy request"}`, http.StatusInternalServerError)
 		return
@@ -131,9 +139,22 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
+	if !isEventStreamContentType(resp.Header.Get("Content-Type")) {
+		bodyTimeout := p.bodyTimeout
+		if bodyTimeout <= 0 {
+			bodyTimeout = localProxyResponseBodyTimeout
+		}
+		timer := time.AfterFunc(bodyTimeout, cancelRequest)
+		defer timer.Stop()
+	}
 	if err := copyProxyResponseBody(w, resp.Body); err != nil {
 		log.Printf("Proxy response copy failed: %v", err)
 	}
+}
+
+func isEventStreamContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	return err == nil && strings.EqualFold(mediaType, "text/event-stream")
 }
 
 // copyProxyResponseBody flushes each upstream read so clients and intermediate
