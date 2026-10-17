@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -18,6 +19,23 @@ func LocalProxyURL(port int) string {
 
 func localProxyListenAddr(port int) string {
 	return fmt.Sprintf("%s:%d", localProxyHost, port)
+}
+
+func newLocalProxyHTTPClient() *http.Client {
+	return &http.Client{
+		// Do not set Client.Timeout: it covers response-body reads too, so it
+		// would terminate long-running SSE generations after a fixed duration.
+		// Bound connection setup and waiting for the first response byte instead.
+		Transport: &http.Transport{
+			ForceAttemptHTTP2:     true,
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 2 * time.Minute,
+			IdleConnTimeout:       90 * time.Second,
+			MaxIdleConnsPerHost:   4,
+		},
+	}
 }
 
 // RunProxy starts a local HTTP proxy that forwards requests to the Duckway server.
@@ -59,7 +77,7 @@ func RunProxy(cfg *Config, syncInterval time.Duration) error {
 	handler := &proxyHandler{
 		serverURL: cfg.ServerURL,
 		token:     cfg.Token,
-		client:    &http.Client{Timeout: 120 * time.Second},
+		client:    newLocalProxyHTTPClient(),
 	}
 
 	addr := localProxyListenAddr(cfg.ProxyPort)
@@ -113,7 +131,37 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	if err := copyProxyResponseBody(w, resp.Body); err != nil {
+		log.Printf("Proxy response copy failed: %v", err)
+	}
+}
+
+// copyProxyResponseBody flushes each upstream read so clients and intermediate
+// proxies receive SSE events while the response is still in progress.
+func copyProxyResponseBody(w http.ResponseWriter, src io.Reader) error {
+	flusher, canFlush := w.(http.Flusher)
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			written, writeErr := w.Write(buf[:n])
+			if writeErr != nil {
+				return writeErr
+			}
+			if written != n {
+				return io.ErrShortWrite
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return nil
+			}
+			return readErr
+		}
+	}
 }
 
 // PrintProxyEnv writes shell `export` statements for the local proxy to
