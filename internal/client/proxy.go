@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
 const localProxyHost = "127.0.0.1"
 
 const localProxyResponseBodyTimeout = 120 * time.Second
+const localProxyRequestBodyTimeout = 120 * time.Second
 
 func LocalProxyURL(port int) string {
 	return fmt.Sprintf("http://%s:%d", localProxyHost, port)
@@ -79,10 +81,11 @@ func RunProxy(cfg *Config, syncInterval time.Duration) error {
 	}
 
 	handler := &proxyHandler{
-		serverURL:   cfg.ServerURL,
-		token:       cfg.Token,
-		client:      newLocalProxyHTTPClient(),
-		bodyTimeout: localProxyResponseBodyTimeout,
+		serverURL:          cfg.ServerURL,
+		token:              cfg.Token,
+		client:             newLocalProxyHTTPClient(),
+		requestBodyTimeout: localProxyRequestBodyTimeout,
+		bodyTimeout:        localProxyResponseBodyTimeout,
 	}
 
 	addr := localProxyListenAddr(cfg.ProxyPort)
@@ -93,10 +96,11 @@ func RunProxy(cfg *Config, syncInterval time.Duration) error {
 }
 
 type proxyHandler struct {
-	serverURL   string
-	token       string
-	client      *http.Client
-	bodyTimeout time.Duration
+	serverURL          string
+	token              string
+	client             *http.Client
+	requestBodyTimeout time.Duration
+	bodyTimeout        time.Duration
 }
 
 func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +127,24 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Inject client token
 	proxyReq.Header.Set("X-Duckway-Token", p.token)
+	var uploadTimer *time.Timer
+	if proxyReq.Body != nil && proxyReq.Body != http.NoBody {
+		requestBodyTimeout := p.requestBodyTimeout
+		if requestBodyTimeout <= 0 {
+			requestBodyTimeout = localProxyRequestBodyTimeout
+		}
+		requestBody := &cancelRequestBodyOnTimeout{ReadCloser: proxyReq.Body}
+		timerReady := make(chan struct{})
+		uploadTimer = time.AfterFunc(requestBodyTimeout, func() {
+			<-timerReady
+			cancelRequest()
+			_ = requestBody.Close()
+		})
+		requestBody.timer = uploadTimer
+		close(timerReady)
+		proxyReq.Body = requestBody
+		defer uploadTimer.Stop()
+	}
 
 	resp, err := p.client.Do(proxyReq)
 	if err != nil {
@@ -150,6 +172,23 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := copyProxyResponseBody(w, resp.Body); err != nil {
 		log.Printf("Proxy response copy failed: %v", err)
 	}
+}
+
+type cancelRequestBodyOnTimeout struct {
+	io.ReadCloser
+	timer     *time.Timer
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (b *cancelRequestBodyOnTimeout) Close() error {
+	b.closeOnce.Do(func() {
+		if b.timer != nil {
+			b.timer.Stop()
+		}
+		b.closeErr = b.ReadCloser.Close()
+	})
+	return b.closeErr
 }
 
 func isEventStreamContentType(contentType string) bool {

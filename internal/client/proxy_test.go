@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -98,7 +99,7 @@ func TestProxyHandlerFlushesSSEBeforeUpstreamCompletes(t *testing.T) {
 }
 
 func TestProxyHandlerAppliesBodyTimeoutToNonSSE(t *testing.T) {
-	const bodyTimeout = 50 * time.Millisecond
+	const bodyTimeout = 500 * time.Millisecond
 	upstreamCanceled := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -143,6 +144,78 @@ func TestProxyHandlerAppliesBodyTimeoutToNonSSE(t *testing.T) {
 	case <-readDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("proxy response body did not finish after timeout cancellation")
+	}
+}
+
+type blockingProxyRequestBody struct {
+	readStarted chan struct{}
+	closed      chan struct{}
+	startOnce   sync.Once
+	closeOnce   sync.Once
+}
+
+func (b *blockingProxyRequestBody) Read([]byte) (int, error) {
+	b.startOnce.Do(func() { close(b.readStarted) })
+	<-b.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (b *blockingProxyRequestBody) Close() error {
+	b.closeOnce.Do(func() { close(b.closed) })
+	return nil
+}
+
+func TestProxyHandlerBoundsStalledRequestBodyUpload(t *testing.T) {
+	const requestBodyTimeout = 100 * time.Millisecond
+	upstreamReadingBody := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(upstreamReadingBody)
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	body := &blockingProxyRequestBody{
+		readStarted: make(chan struct{}),
+		closed:      make(chan struct{}),
+	}
+	handler := &proxyHandler{
+		serverURL:          upstream.URL,
+		client:             newLocalProxyHTTPClient(),
+		requestBodyTimeout: requestBodyTimeout,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/upload", nil)
+	req.Body = body
+	req.ContentLength = -1
+	response := httptest.NewRecorder()
+	serveDone := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(response, req)
+		close(serveDone)
+	}()
+
+	select {
+	case <-body.readStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream transport did not start reading request body")
+	}
+	select {
+	case <-upstreamReadingBody:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream server did not receive the upload")
+	}
+	select {
+	case <-serveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not return after stalled request body timeout")
+	}
+	select {
+	case <-body.closed:
+	default:
+		t.Fatal("timed-out request body was not closed")
+	}
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadGateway)
 	}
 }
 
