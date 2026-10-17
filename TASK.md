@@ -1,3 +1,35 @@
+# Current batch: live-credential-path-20261017
+
+## Objective and acceptance
+Share ignored live credential files across worktrees through the
+`DUCKWAY_LIVE_CREDENTIALS_DIR` environment variable or shared Git config
+`duckway.liveCredentialsDir`, while preserving per-script `live-credentials`
+fallback and explicit `CODEX_AUTH`/`CLAUDE_AUTH` overrides. Relative configured
+paths resolve from the primary worktree where Git exposes that root. Add
+credential-free regression coverage and keep secrets untouched.
+
+## Candidate status
+Implementation on `codex/live-credential-path-impl`, base
+`04ca844e04eb023a03d69c71aad5b41ce19a19e0`. Shared resolver is used by all six
+live credential consumer scripts and `find-oauth-tokens.sh`; user-facing hints
+now describe the configured path. Credential-free shell regression covers env
+over config, config over fallback, relative path normalization, linked
+worktree root anchoring, separate-git-dir primary checkout behavior, and
+explicit CODEX_AUTH/CLAUDE_AUTH child preflight precedence using mock paths
+with each agent mode selected explicitly. Separate-git-dir linked worktrees
+now fail clearly when Git cannot identify the primary checkout root, avoiding
+an ambiguous relative path. Resolver failure in the Claude OAuth script exits
+with a clear error. Final independent tests and security review passed. The
+demo was rebuilt and passed readiness under owner `ducklord-verified-20260917`;
+the existing five named containers were retained. Credential inspection was
+metadata-only: the shared directory's Codex file is currently missing or
+nonregular, and no credential contents were read or changed. No provider tests
+were run. Commit-hook gates: container-runtime/demo-common PASS;
+`go test -race ./...` PASS; coverage 57.4% (threshold 37.5%) PASS. `golangci-lint`
+reported 11 unrelated pre-existing Go issues, including warnings for other
+worktrees and a removed path; this shell-only change contains no Go changes.
+This candidate is ready for the root agent to commit and push.
+
 # Current batch: tui-palette-actions-20261016
 
 ## Objective and acceptance
