@@ -26,17 +26,6 @@ func TestRunRejectsSymlinkTarget(t *testing.T) {
 	}
 }
 
-func makeSkill(t *testing.T, root, id string) {
-	t.Helper()
-	d := filepath.Join(root, id)
-	if err := os.MkdirAll(d, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("skill"), 0600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func tarData(t *testing.T, entries int, size int64) *bytes.Buffer {
 	t.Helper()
 	var b bytes.Buffer

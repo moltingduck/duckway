@@ -1524,7 +1524,6 @@ type tuiState struct {
 	hostSkillsPreviewAction            string
 	hostSkillsTargetIndex              int
 	hostSkillsPendingID                string
-	hostSkillsPendingManagement        string
 	hostSkillsDraftImportPath          string
 	hostSkillsDraftImportID            string
 	hostSkillsBusy                     bool
@@ -4940,10 +4939,6 @@ func restorePendingNotesFocus(state *tuiState, output workspaceInputFocusSetter,
 	state.focused = true
 	state.outputErr = ""
 	return true
-}
-
-func restorePendingHelpFocus(state *tuiState, output workspaceInputFocusSetter, ready bool, control *ducklord.ControlSession) bool {
-	return restorePendingHelpFocusWithAttach(state, output, ready, control, nil)
 }
 
 func restorePendingHelpFocusWithAttach(state *tuiState, output workspaceInputFocusSetter, ready bool, control *ducklord.ControlSession, attach *ducklord.AttachSession) bool {

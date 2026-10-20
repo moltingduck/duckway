@@ -1,8 +1,10 @@
 package client
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"os"
@@ -649,6 +651,16 @@ func mergeProxySettings(path string, proxyPort int) error {
 //
 // which the duckway local proxy forwards to the server as-is.
 func SyncCodexConfig(proxyPort int) error {
+	unlock, err := lockCodexConfig()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return syncCodexConfigLocked(proxyPort)
+}
+
+// Caller holds the Codex configuration lock.
+func syncCodexConfigLocked(proxyPort int) error {
 	configPath, err := codexConfigTOMLPath()
 	if err != nil {
 		return err
@@ -657,58 +669,170 @@ func SyncCodexConfig(proxyPort int) error {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(configPath), err)
 	}
 
-	existing, _ := os.ReadFile(configPath)
+	existing, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	next := replaceTopLevelTOMLString(string(existing), "model_provider", "duckway-openai")
 	next = replaceTOMLSection(next, "model_providers.duckway-openai", codexDuckwayProviderSection(proxyPort))
-	if err := os.WriteFile(configPath, []byte(next), 0600); err != nil {
+	if err := writeFileAtomic(configPath, []byte(next), 0600); err != nil {
 		return err
 	}
 	log.Printf("Codex config synced to %s (provider=duckway-openai)", configPath)
 	return nil
 }
 
+type codexOAuthSyncResult int
+
+const (
+	codexOAuthAbsent codexOAuthSyncResult = iota
+	codexOAuthSynced
+	codexOAuthPreserved
+)
+
+// SyncCodexOAuthCredentials reports whether native OAuth remains configured.
+// SyncCodexAuthConfig also propagates local publication failures to its caller.
 func SyncCodexOAuthCredentials(configDir string, cfg *Config) bool {
-	api := NewAPIClient(cfg.ServerURL, cfg.Token)
-	creds, err := api.FetchCodexCredentials()
+	result, err := syncCodexOAuthCredentials(configDir, cfg, false)
 	if err != nil {
-		log.Printf("Warning: cannot fetch Codex OAuth credentials from Duckway; falling back to API-key proxy config. Check server connectivity and confirm this client has an assigned OpenAI refreshable key with Codex OAuth metadata. Ensure sync and Codex use the same CODEX_HOME.")
-		return false
+		log.Printf("Warning: cannot sync Codex OAuth credentials: %v", err)
+	}
+	return err == nil && result != codexOAuthAbsent
+}
+
+func syncCodexOAuthCredentials(configDir string, cfg *Config, fallback bool) (codexOAuthSyncResult, error) {
+	api := NewAPIClient(cfg.ServerURL, cfg.Token)
+	// Fetch outside the lock; decide preservation and publish under one lock.
+	creds, fetchErr := api.FetchCodexCredentials()
+	unlock, err := lockCodexConfig()
+	if err != nil {
+		return codexOAuthAbsent, err
+	}
+	defer unlock()
+	absent := func() (codexOAuthSyncResult, error) {
+		if fallback {
+			return codexOAuthAbsent, syncCodexConfigLocked(cfg.ProxyPort)
+		}
+		return codexOAuthAbsent, nil
+	}
+	if fetchErr != nil {
+		preserve := existingCodexPhantomOAuthConfigured()
+		if preserve {
+			log.Printf("Warning: cannot fetch Codex OAuth credentials from Duckway; preserving existing Duckway phantom native OAuth configuration until the next sync.")
+			return codexOAuthPreserved, nil
+		}
+		log.Printf("Warning: cannot fetch usable Codex OAuth credentials from Duckway; falling back to API-key proxy config. Check server connectivity and confirm this client has an assigned OpenAI refreshable key with Codex OAuth metadata. Ensure sync and Codex use the same CODEX_HOME.")
+		return absent()
 	}
 	if creds == nil {
 		log.Printf("Warning: Duckway returned no usable Codex OAuth credentials; falling back to API-key proxy config. Check server connectivity and confirm this client has an assigned OpenAI refreshable key with Codex OAuth metadata. Ensure sync and Codex use the same CODEX_HOME.")
-		return false
+		return absent()
 	}
 	if !codexCredentialsHaveIDToken(creds) {
 		log.Printf("Warning: Duckway Codex OAuth credentials are missing tokens.id_token; falling back to API-key proxy config. Re-upload the full Codex auth.json in Refreshable Tokens and confirm this client has an assigned OpenAI refreshable key with Codex OAuth metadata. Ensure sync and Codex use the same CODEX_HOME.")
-		return false
+		return absent()
 	}
+	authPath, err := codexAuthJSONPath()
+	if err != nil {
+		return codexOAuthAbsent, err
+	}
+	if err := os.MkdirAll(filepath.Dir(authPath), 0700); err != nil {
+		return codexOAuthAbsent, fmt.Errorf("create Codex auth dir: %w", err)
+	}
+	data, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		return codexOAuthAbsent, err
+	}
+	// Publish complete credentials before selecting their file store. Existing
+	// readers retain the old complete file across periodic syncs.
+	if err := writeFileAtomic(authPath, data, 0600); err != nil {
+		return codexOAuthAbsent, fmt.Errorf("publish Codex OAuth credentials: %w", err)
+	}
+	if err := syncCodexNativeOAuthConfig(); err != nil {
+		return codexOAuthAbsent, fmt.Errorf("configure Codex native OAuth file store: %w", err)
+	}
+	ClearCodexOAuthMode(configDir)
+	log.Printf("Codex phantom OAuth auth.json synced to %q. If Codex still asks to log in, confirm it uses this auth path and the same CODEX_HOME as sync.", authPath)
+	return codexOAuthSynced, nil
+}
+
+func SyncCodexAuthConfig(configDir string, cfg *Config) error {
+	_, err := syncCodexOAuthCredentials(configDir, cfg, true)
+	return err
+}
+
+// existingCodexPhantomOAuthConfigured only recognizes the native file setup
+// managed by Duckway. Call with the Codex configuration lock held. It is an availability check,
+// not token authentication; the proxy continues to enforce server assignment.
+func existingCodexPhantomOAuthConfigured() bool {
 	authPath, err := codexAuthJSONPath()
 	if err != nil {
 		return false
 	}
-	if err := os.MkdirAll(filepath.Dir(authPath), 0700); err != nil {
-		log.Printf("Warning: cannot create Codex auth dir: %v", err)
+	info, err := os.Stat(authPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
 		return false
 	}
-	data, err := json.MarshalIndent(creds, "", "  ")
+	file, err := os.Open(authPath)
 	if err != nil {
 		return false
 	}
-	if err := os.WriteFile(authPath, data, 0600); err != nil {
-		log.Printf("Warning: cannot write Codex OAuth credentials: %v", err)
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	if err != nil || len(data) > 1<<20 {
 		return false
 	}
-	ClearCodexOAuthMode(configDir)
-	log.Printf("Codex phantom OAuth auth.json synced to %q. If Codex still asks to log in, confirm it uses this auth path and the same CODEX_HOME as sync.", authPath)
-	return true
-}
-
-func SyncCodexAuthConfig(configDir string, cfg *Config) error {
-	if SyncCodexOAuthCredentials(configDir, cfg) {
-		ClearCodexOAuthMode(configDir)
-		return DisableCodexDuckwayProvider()
+	var auth map[string]interface{}
+	if json.Unmarshal(data, &auth) != nil || auth["auth_mode"] != "chatgpt" {
+		return false
 	}
-	return SyncCodexConfig(cfg.ProxyPort)
+	tokens, ok := auth["tokens"].(map[string]interface{})
+	if !ok || tokens["account_id"] != "duckway-account" {
+		return false
+	}
+	refresh, _ := tokens["refresh_token"].(string)
+	placeholder, ok := strings.CutPrefix(refresh, "rt.duckway.")
+	if !ok || placeholder == "" {
+		return false
+	}
+	for _, key := range []string{"access_token", "id_token"} {
+		token, _ := tokens[key].(string)
+		parts := strings.Split(token, ".")
+		if len(parts) != 3 || parts[2] == "" {
+			return false
+		}
+		header, err := base64.RawURLEncoding.DecodeString(parts[0])
+		var claims map[string]interface{}
+		if err != nil || json.Unmarshal(header, &claims) != nil || claims["kid"] != "duckway-phantom" {
+			return false
+		}
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		claims = nil
+		if err != nil || json.Unmarshal(payload, &claims) != nil || claims["sub"] != "auth0|duckway-phantom" || claims["https://duckway.dev/placeholder"] != placeholder {
+			return false
+		}
+		account, ok := claims["https://api.openai.com/auth"].(map[string]interface{})
+		if !ok || account["chatgpt_account_id"] != "duckway-account" {
+			return false
+		}
+	}
+	configPath, err := codexConfigTOMLPath()
+	if err != nil {
+		return false
+	}
+	config, err := os.ReadFile(configPath)
+	if err != nil || removeTopLevelTOMLStringValue(string(config), "cli_auth_credentials_store", "file") == string(config) {
+		return false
+	}
+	for _, stmt := range tomlStatements(string(config)) {
+		if stmt.header != "" {
+			break
+		}
+		if stmt.isKey("model_provider") && !stmt.stringIs("openai") {
+			return false
+		}
+	}
+	return true
 }
 
 func codexCredentialsHaveIDToken(creds map[string]interface{}) bool {
@@ -733,7 +857,31 @@ func CodexOAuthModeActive(configDir string) bool {
 	return err == nil && strings.TrimSpace(string(data)) == "oauth"
 }
 
+// syncCodexNativeOAuthConfig selects the auth.json store that Duckway owns and
+// removes its API-key provider in the same publication. A keyring, auto, or
+// ephemeral store can otherwise ignore the phantom credentials on disk.
+// Call with the Codex configuration lock held.
+func syncCodexNativeOAuthConfig() error {
+	configPath, err := codexConfigTOMLPath()
+	if err != nil {
+		return err
+	}
+	existing, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	next := replaceTopLevelTOMLString(string(existing), "cli_auth_credentials_store", "file")
+	next = removeTopLevelTOMLStringValue(next, "model_provider", "duckway-openai")
+	next = removeTOMLSection(next, "model_providers.duckway-openai")
+	return writeFileAtomic(configPath, []byte(next), 0600)
+}
+
 func DisableCodexDuckwayProvider() error {
+	unlock, err := lockCodexConfig()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	configPath, err := codexConfigTOMLPath()
 	if err != nil {
 		return err
@@ -750,7 +898,7 @@ func DisableCodexDuckwayProvider() error {
 	if next == string(existing) {
 		return nil
 	}
-	if err := os.WriteFile(configPath, []byte(next), 0600); err != nil {
+	if err := writeFileAtomic(configPath, []byte(next), 0600); err != nil {
 		return err
 	}
 	log.Printf("Codex Duckway OpenAI provider disabled in %s (using native Codex OAuth)", configPath)
@@ -811,70 +959,6 @@ func grokConfigTOMLPath() (string, error) {
 	return filepath.Join(home, ".grok", "config.toml"), nil
 }
 
-func removeTopLevelTOMLStringValue(input, key, value string) string {
-	lines := strings.Split(input, "\n")
-	prefix := key + " = "
-	target := prefix + tomlQuote(value)
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if strings.TrimSpace(line) == target {
-			continue
-		}
-		out = append(out, line)
-	}
-	return strings.Join(out, "\n")
-}
-
-func removeTOMLSection(input, section string) string {
-	lines := strings.Split(input, "\n")
-	header := "[" + section + "]"
-	out := make([]string, 0, len(lines))
-	skipping := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			if trimmed == header {
-				skipping = true
-				continue
-			}
-			skipping = false
-		}
-		if !skipping {
-			out = append(out, line)
-		}
-	}
-	result := strings.TrimRight(strings.Join(out, "\n"), "\n")
-	if result == "" {
-		return ""
-	}
-	return result + "\n"
-}
-
-func replaceTopLevelTOMLString(input, key, value string) string {
-	lines := strings.Split(input, "\n")
-	replacement := key + " = " + tomlQuote(value)
-	out := make([]string, 0, len(lines)+1)
-	replaced := false
-	inserted := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if !inserted && !replaced && strings.HasPrefix(trimmed, "[") {
-			out = append(out, replacement)
-			inserted = true
-		}
-		if !inserted && !replaced && isTOMLKeyLine(trimmed, key) {
-			out = append(out, replacement)
-			replaced = true
-			continue
-		}
-		out = append(out, line)
-	}
-	if !inserted && !replaced {
-		out = append(out, replacement)
-	}
-	return strings.Join(out, "\n")
-}
-
 func replaceTOMLSectionStringKey(input, section, key, value string) string {
 	lines := strings.Split(input, "\n")
 	header := "[" + section + "]"
@@ -920,21 +1004,42 @@ func replaceTOMLSectionStringKey(input, section, key, value string) string {
 
 func normalizeTOMLSectionHeader(line string) string {
 	trimmed := strings.TrimSpace(line)
-	if !strings.HasPrefix(trimmed, "[") || !strings.HasSuffix(trimmed, "]") {
+	if !strings.HasPrefix(trimmed, "[") {
+		return ""
+	}
+	// A table header may have an inline comment. Respect quoted table names
+	// so a '#' inside a project path remains part of that name.
+	var quote rune
+	escaped := false
+	for i, r := range trimmed {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+			} else if r == '\\' && quote == '"' {
+				escaped = true
+			} else if r == quote {
+				quote = 0
+			}
+		} else if r == '"' || r == '\'' {
+			quote = r
+		} else if r == '#' {
+			trimmed = strings.TrimSpace(trimmed[:i])
+			break
+		}
+	}
+	if !strings.HasSuffix(trimmed, "]") {
 		return ""
 	}
 	return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"))
 }
 
 func isTOMLKeyLine(line, key string) bool {
-	if strings.HasPrefix(line, "#") {
+	name, _, ok := strings.Cut(line, "=")
+	if !ok {
 		return false
 	}
-	if !strings.HasPrefix(line, key) {
-		return false
-	}
-	rest := strings.TrimSpace(strings.TrimPrefix(line, key))
-	return strings.HasPrefix(rest, "=")
+	name = strings.TrimSpace(name)
+	return name == key || name == tomlQuote(key) || name == "'"+key+"'"
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {

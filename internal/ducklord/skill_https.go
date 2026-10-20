@@ -256,7 +256,7 @@ func extractHTTPSkillTar(r io.Reader, root string) error {
 			if err := os.MkdirAll(dest, 0700); err != nil {
 				return err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg, 0: // Accept legacy zero typeflag as a regular file.
 			if files >= MaxSkillFiles || h.Size < 0 || h.Size > MaxSkillBytes-total {
 				return fmt.Errorf("skill archive exceeds limits")
 			}

@@ -304,10 +304,6 @@ func TestDucklordNotesTUIContainerE2E(t *testing.T) {
 	}
 }
 
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
 type notesE2EContainerIdentity struct {
 	id    string
 	owner string

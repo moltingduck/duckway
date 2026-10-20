@@ -96,7 +96,9 @@ func TestSupervisedEnvironmentIncludesProxyTrustButNotCredentials(t *testing.T) 
 	for name, value := range map[string]string{
 		"HTTP_PROXY": "http://127.0.0.1:18080", "HTTPS_PROXY": "http://127.0.0.1:18080",
 		"NO_PROXY": "localhost,127.0.0.1", "NODE_EXTRA_CA_CERTS": "/tmp/ca.pem",
-		"OPENAI_API_KEY": "must-not-pass", "ANTHROPIC_AUTH_TOKEN": "must-not-pass",
+		"CODEX_HOME": "/custom/codex home", "CODEX_API_KEY": "must-not-pass",
+		"OPENAI_API_KEY": "must-not-pass", "OPENAI_AUTH_TOKEN": "must-not-pass",
+		"ANTHROPIC_AUTH_TOKEN": "must-not-pass",
 	} {
 		t.Setenv(name, value)
 	}
@@ -115,13 +117,57 @@ func TestSupervisedEnvironmentIncludesProxyTrustButNotCredentials(t *testing.T) 
 			t.Fatalf("supervisor environment omitted %s: %q", name, env)
 		}
 	}
-	for _, name := range []string{"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
+	for _, name := range []string{"CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_AUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"} {
 		if strings.Contains(env, name+"=") {
 			t.Fatalf("supervisor environment leaked %s: %q", name, env)
 		}
 	}
 	if shellEnv := strings.Join(supervisedEnvironment("shell"), "\n"); strings.Contains(shellEnv, "HTTP_PROXY=") {
 		t.Fatalf("shell supervisor unexpectedly inherited agent proxy: %q", shellEnv)
+	}
+}
+
+func TestSupervisedEnvironmentPreservesCodexHomeOnlyForCodex(t *testing.T) {
+	const home = "/custom/codex home"
+	t.Setenv("CODEX_HOME", home)
+	for _, agent := range []string{"codex", "CoDeX", "claude", "claude_code", "shell", "custom", ""} {
+		t.Run(agent, func(t *testing.T) {
+			var homes []string
+			for _, entry := range supervisedEnvironment(agent) {
+				if strings.HasPrefix(entry, "CODEX_HOME=") {
+					homes = append(homes, strings.TrimPrefix(entry, "CODEX_HOME="))
+				}
+			}
+			if agent == "codex" || agent == "CoDeX" {
+				if len(homes) != 1 || homes[0] != home {
+					t.Fatalf("Codex home = %q, want exactly %q", homes, home)
+				}
+			} else if len(homes) != 0 {
+				t.Fatalf("non-Codex agent inherited CODEX_HOME: %q", homes)
+			}
+		})
+	}
+}
+
+func TestSupervisedEnvironmentOmitsAbsentCodexHome(t *testing.T) {
+	for _, unset := range []bool{false, true} {
+		name := "empty"
+		if unset {
+			name = "unset"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CODEX_HOME", "")
+			if unset {
+				if err := os.Unsetenv("CODEX_HOME"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, entry := range supervisedEnvironment("codex") {
+				if strings.HasPrefix(entry, "CODEX_HOME=") {
+					t.Fatalf("absent Codex home was exported: %q", entry)
+				}
+			}
+		})
 	}
 }
 

@@ -125,9 +125,9 @@ func (s *tuiState) commandPaletteItems() []commandPaletteItem {
 // paletteFuzzyMatch reports whether query's characters occur in order in label.
 // Matching is case-insensitive and deliberately keeps the original item order.
 func paletteFuzzyMatch(label, query string) bool {
-	labelRunes, queryRunes := []rune(strings.ToLower(label)), []rune(strings.ToLower(query))
+	labelRunes := []rune(strings.ToLower(label))
 	labelIndex := 0
-	for _, queryRune := range queryRunes {
+	for _, queryRune := range strings.ToLower(query) {
 		for labelIndex < len(labelRunes) && labelRunes[labelIndex] != queryRune {
 			labelIndex++
 		}
@@ -224,7 +224,6 @@ func (s *tuiState) handleCommandPaletteInput(input []byte) bool {
 		}
 		return true
 	}
-	return true
 }
 
 func (s *tuiState) renderCommandPalette(out io.Writer, cols, rows int) {

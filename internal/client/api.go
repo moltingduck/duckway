@@ -353,8 +353,9 @@ func (c *APIClient) FetchClaudeCredentials() (map[string]interface{}, error) {
 	return result, nil
 }
 
-// FetchCodexCredentials gets real Codex OAuth credentials for clients assigned
-// a Codex OAuth refreshable OpenAI key.
+// FetchCodexCredentials gets phantom Codex OAuth credentials for an assigned
+// refreshable OpenAI key. Nil credentials mean authoritative absence; errors
+// mean the server could not provide an authoritative response.
 func (c *APIClient) FetchCodexCredentials() (map[string]interface{}, error) {
 	req, err := http.NewRequest("GET", c.baseURL+"/client/codex-credentials", nil)
 	if err != nil {
@@ -364,17 +365,26 @@ func (c *APIClient) FetchCodexCredentials() (map[string]interface{}, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, nil
+		return nil, errors.New("fetch Codex credentials: transport failure")
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return nil, nil
+	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNoContent || (resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusRequestTimeout && resp.StatusCode != http.StatusTooManyRequests) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("fetch Codex credentials: HTTP %d", resp.StatusCode)
 	}
 
 	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, nil
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&result); err != nil {
+		// Never include the body or decode error: either may contain credentials.
+		return nil, errors.New("decode Codex credentials response")
+	}
+	var trailing interface{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errors.New("decode Codex credentials response")
 	}
 	if _, ok := result["tokens"]; !ok {
 		return nil, nil

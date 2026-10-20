@@ -339,21 +339,6 @@ func (s *tuiState) hostSkillsTargetSummary() string {
 	}
 	return strings.Join(p, ", ")
 }
-func (s *tuiState) saveHostSkills() error {
-	i := s.hostClientIndex()
-	if i < 0 {
-		return fmt.Errorf("host %q not found", s.hostMenuTarget)
-	}
-	v := make([]string, 0, len(s.hostSkillsSelected))
-	for n, on := range s.hostSkillsSelected {
-		if on {
-			v = append(v, n)
-		}
-	}
-	sort.Strings(v)
-	s.cfg.Clients[i].SelectedSkills = v
-	return s.saveHostSkillConfig()
-}
 func (s *tuiState) saveHostSkillConfig() error {
 	if s.cfgPath == "" {
 		return nil
@@ -440,9 +425,8 @@ func (s *tuiState) handleHostSkillsInput(input []byte) string {
 		return ""
 	}
 	if s.hostMenuStep == "skills-delete-confirm" {
-		if t == "\r" || t == "\n" {
-			s.deleteHostSkillRemote()
-		} else if t == "y" || t == "Y" {
+		switch t {
+		case "\r", "\n", "y", "Y":
 			s.deleteHostSkillRemote()
 		}
 		return ""
@@ -832,9 +816,10 @@ func (s *tuiState) handleHostSkillSource(t string) string {
 		return ""
 	}
 	if t == "\x7f" || t == "\b" {
-		if s.hostSkillsField == 0 {
+		switch s.hostSkillsField {
+		case 0:
 			s.hostSkillsDraftSkillID = trimLastRune(s.hostSkillsDraftSkillID)
-		} else if s.hostSkillsField == 1 {
+		case 1:
 			s.hostSkillsDraftURL = trimLastRune(s.hostSkillsDraftURL)
 		}
 		return ""
@@ -859,13 +844,14 @@ func (s *tuiState) handleHostSkillSource(t string) string {
 		s.hostMenuStep, s.hostSkillsErr = "skills-dashboard", ""
 		return ""
 	}
-	if s.hostSkillsField == 0 {
+	switch s.hostSkillsField {
+	case 0:
 		for _, r := range t {
 			if len(s.hostSkillsDraftSkillID) < 128 && r >= 32 {
 				s.hostSkillsDraftSkillID += string(r)
 			}
 		}
-	} else if s.hostSkillsField == 1 {
+	case 1:
 		for _, r := range t {
 			if len(s.hostSkillsDraftURL) < 512 && r >= 32 {
 				s.hostSkillsDraftURL += string(r)
@@ -1101,18 +1087,6 @@ func (s *tuiState) hostSkillsEventOwnedBySelection(event hostSkillsEvent) bool {
 	}
 	target, ok := s.selectedHostSkillTarget()
 	return ok && target.ID == event.targetID
-}
-
-func (s *tuiState) remoteSkillsForTargetID(targetID string) []string {
-	if targetID == "" {
-		return nil
-	}
-	for _, target := range s.cfg.Clients[s.hostClientIndex()].SkillTargets {
-		if target.ID == targetID {
-			return s.remoteSkillsForTarget(target)
-		}
-	}
-	return append([]string(nil), s.hostSkillsRemoteByTarget[targetID]...)
 }
 
 func (s *tuiState) startHostSkillsOperation(action string, work func(context.Context) hostSkillsEvent) {

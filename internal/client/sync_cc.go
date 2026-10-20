@@ -258,6 +258,11 @@ func codexAuthJSONPath() (string, error) {
 }
 
 func writeCodexMCP(configDir string, ccs []CCStateAssignment) error {
+	unlock, err := lockCodexConfig()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	configPath, err := codexConfigTOMLPath()
 	if err != nil {
 		return err
@@ -266,9 +271,12 @@ func writeCodexMCP(configDir string, ccs []CCStateAssignment) error {
 		return err
 	}
 
-	existing, _ := os.ReadFile(configPath)
+	existing, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	next := replaceTOMLSection(string(existing), "mcp_servers.duckway-cc", codexMCPSection(configDir))
-	if err := os.WriteFile(configPath, []byte(next), 0600); err != nil {
+	if err := writeFileAtomic(configPath, []byte(next), 0600); err != nil {
 		return err
 	}
 
@@ -292,42 +300,6 @@ func codexMCPSection(configDir string) string {
 	return "[mcp_servers.duckway-cc]\n" +
 		"command = \"duckway\"\n" +
 		"args = [" + strings.Join(quoted, ", ") + "]\n"
-}
-
-func replaceTOMLSection(input, section, replacement string) string {
-	lines := strings.Split(input, "\n")
-	header := "[" + section + "]"
-	out := make([]string, 0, len(lines)+4)
-	replaced := false
-	skipping := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			if trimmed == header {
-				if !replaced {
-					if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
-						out = append(out, "")
-					}
-					out = append(out, strings.TrimRight(replacement, "\n"))
-					replaced = true
-				}
-				skipping = true
-				continue
-			}
-			skipping = false
-		}
-		if !skipping {
-			out = append(out, line)
-		}
-	}
-	result := strings.TrimRight(strings.Join(out, "\n"), "\n")
-	if !replaced {
-		if result != "" {
-			result += "\n\n"
-		}
-		result += strings.TrimRight(replacement, "\n")
-	}
-	return result + "\n"
 }
 
 func tomlQuote(s string) string {

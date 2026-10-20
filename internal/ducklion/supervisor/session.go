@@ -830,6 +830,10 @@ func supervisedEnvironment(agentType string) []string {
 			"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
 		)
 	}
+	if strings.EqualFold(agentType, "codex") {
+		// Match the credential/config home used by native Codex sync.
+		allowed = append(allowed, "CODEX_HOME")
+	}
 	environment := make([]string, 0, len(allowed))
 	hasTERM, hasColorTERM := false, false
 	for _, name := range allowed {

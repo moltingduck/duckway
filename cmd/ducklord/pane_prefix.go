@@ -214,7 +214,7 @@ func (s *tuiState) openPrefixPane(command string) {
 		s.notesScope = ducklord.NotesProject
 		if command == "O" || s.focused {
 			identity, ok := ducklord.IdentityFromSession(s.activePTYSession())
-			if (!s.focused && !(command == "O" && !wasProjectFocus)) || !ok || identity.Key() == "" {
+			if (!s.focused && (command != "O" || wasProjectFocus)) || !ok || identity.Key() == "" {
 				s.outputErr = "Session Notes unavailable: no focused session"
 				return
 			}
