@@ -124,6 +124,24 @@ func TestDucklordCommandPaletteContainerE2E(t *testing.T) {
 		return string(out)
 	}
 	waitE2E(t, 10*time.Second, func() bool { return readLog() == "" }, func() string { return "command palette query reached the shell: " + readLog() })
+	// Backspace must edit the palette query, and selecting Add host must keep
+	// subsequent input inside the modal instead of sending it to the focused PTY.
+	paletteStart = capture.position()
+	writePTY(t, terminal, "\x02 ")
+	capture.waitAfter(t, paletteStart, "Command palette", 10*time.Second)
+	writePTY(t, terminal, "add hosx\x7f\r")
+	capture.waitCurrent(t, "Add Ducklion host · who manages Ducklion?", 10*time.Second)
+	leakedMarker := fmt.Sprintf("PALETTE_ADD_HOST_LEAK_%x", stamp)
+	writePTY(t, terminal, fmt.Sprintf("printf '%s\\n' '%s' | tee -a \"$DUCKWAY_NAV_LOG\"\r", leakedMarker, leakedMarker))
+	writePTY(t, terminal, "\x1b")
+	// The first Esc returns from host selection to the mode choice; the second
+	// closes Add host and restores the focused PTY.
+	writePTY(t, terminal, "\x1b")
+	waitE2E(t, 10*time.Second, func() bool { return !strings.Contains(capture.currentText(), "Add Ducklion host") }, func() string {
+		return "Esc did not close Add host modal: " + safeTerminalDiagnostic(capture.currentText())
+	})
+	writePTY(t, terminal, "\r")
+	waitE2E(t, 10*time.Second, func() bool { return readLog() == "" }, func() string { return "Add host modal input reached the focused shell: " + readLog() })
 	restoreMarker := fmt.Sprintf("PALETTE_RESTORE_%x", stamp)
 	markerStart := capture.position()
 	writePTY(t, terminal, fmt.Sprintf("printf '%s\\n' '%s' | tee -a \"$DUCKWAY_NAV_LOG\"\r", restoreMarker, restoreMarker))

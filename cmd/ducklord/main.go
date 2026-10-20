@@ -475,13 +475,28 @@ func run(args []string, out io.Writer, runner remoteRunner) error {
 			return err
 		}
 		if len(rest) != 1 {
-			return fmt.Errorf("usage: ducklord install-ducklion <client> [--source <path>] [--dest <remote-path>] [--config <path>]")
+			return fmt.Errorf("usage: ducklord install-ducklion <client> [--source <local-path>] [--dest <remote-path>] [--config <path>]")
 		}
 		c, err := mustClient(cfg, rest[0])
 		if err != nil {
 			return err
 		}
-		installed, err := runner.InstallDucklion(context.Background(), c, source, dest)
+		var installed string
+		if strings.TrimSpace(source) != "" {
+			installed, err = runner.InstallDucklion(context.Background(), c, source, dest)
+		} else if installer, ok := runner.(remoteDucklionInstaller); ok {
+			probe, probeErr := runner.ProbeDucklion(context.Background(), c)
+			if probeErr != nil {
+				return probeErr
+			}
+			var binary []byte
+			binary, err = downloadDucklion(context.Background(), runner, probe.OS, probe.Arch)
+			if err == nil {
+				installed, err = installer.InstallDucklionBytes(context.Background(), c, binary, dest)
+			}
+		} else {
+			err = fmt.Errorf("remote Ducklion installer is unavailable")
+		}
 		if err != nil {
 			return err
 		}
@@ -1468,6 +1483,9 @@ type tuiState struct {
 	addClientSelected                  int
 	addClientErr                       string
 	addClientHosts                     []ducklord.SSHHost
+	addClientRestoreFocused            bool
+	addClientRestoreAttachKey          string
+	addClientRestoreSession            ducklord.RemoteSession
 	addClientBusy                      bool
 	addClientRequestID                 uint64
 	addClientCancel                    context.CancelFunc
@@ -1579,6 +1597,7 @@ type tuiState struct {
 	commandPaletteMode                 bool
 	commandPaletteQuery                string
 	commandPaletteIndex                int
+	commandPaletteAction               string
 	commandPalettePreviousFocused      bool
 	commandPalettePreviousAttachKey    string
 	commandPalettePreviousProjectFocus bool
@@ -3345,6 +3364,21 @@ func runTUIWithOptions(cfg *ducklord.Config, runner remoteRunner, cfgPath string
 				continue
 			}
 			if state.handleCommandPaletteInput(b) {
+				switch state.commandPaletteAction {
+				case "host-add":
+					state.commandPaletteAction = ""
+					state.beginAddClient()
+				case "create-session":
+					state.commandPaletteAction = ""
+					state.workspaceNewSessionIntent = nil
+					state.beginCreate()
+				case "refresh":
+					state.commandPaletteAction = ""
+					state.refreshSessions(ctx)
+					if state.activeAttachKey == "" {
+						requestPreview(true)
+					}
+				}
 				state.render(os.Stdout)
 				continue
 			}
@@ -9622,10 +9656,24 @@ func (s *tuiState) scrollPTY(delta int) {
 
 func (s *tuiState) beginAddClient() {
 	hosts, err := ducklord.LoadSSHConfigHosts("")
+	s.beginAddClientWithHosts(hosts, err)
+}
+
+func (s *tuiState) beginAddClientWithHosts(hosts []ducklord.SSHHost, err error) {
 	if err != nil {
 		s.outputErr = err.Error()
 		return
 	}
+	// Add host owns keyboard input, even when invoked from a focused terminal.
+	// Save the exact PTY origin so cancel and completion can restore it safely.
+	s.addClientRestoreFocused = s.focused
+	s.addClientRestoreAttachKey = s.activeAttachKey
+	if s.addClientRestoreFocused && s.addClientRestoreAttachKey != "" {
+		s.addClientRestoreSession, _ = s.sessionForKey(s.addClientRestoreAttachKey)
+	} else {
+		s.addClientRestoreSession = ducklord.RemoteSession{}
+	}
+	s.focused = false
 	s.addClientMode = true
 	s.addClientStep = "mode"
 	s.addClientProvisionMode = ""
@@ -9647,6 +9695,22 @@ func (s *tuiState) cancelAddClient() {
 	s.addClientSelected = 0
 	s.addClientErr = ""
 	s.addClientHosts = nil
+	if s.addClientRestoreFocused && s.addClientRestoreAttachKey != "" && s.activeAttachKey == s.addClientRestoreAttachKey {
+		origin := s.addClientRestoreSession
+		current, ok := s.sessionForKey(s.addClientRestoreAttachKey)
+		if ok && origin.Client != "" && origin.InstanceID != "" && origin.SessionID != "" && origin.RuntimeGeneration != 0 && current.Client == origin.Client &&
+			current.InstanceID == origin.InstanceID && current.SessionID == origin.SessionID &&
+			current.RuntimeGeneration == origin.RuntimeGeneration {
+			s.focused = true
+		} else {
+			// A reused session key may now identify a different runtime. Leave
+			// keyboard ownership with workspace navigation rather than the old PTY.
+			s.focused, s.workspaceProjectFocus, s.activeAttachKey = false, true, ""
+		}
+	}
+	s.addClientRestoreFocused = false
+	s.addClientRestoreAttachKey = ""
+	s.addClientRestoreSession = ducklord.RemoteSession{}
 }
 
 func (s *tuiState) cancelAddClientWork() {
@@ -9857,7 +9921,17 @@ func runAddClientWithMode(ctx context.Context, runner remoteRunner, client duckl
 		if progress != nil {
 			progress("installing ducklion on " + client.Name + "...")
 		}
-		installedPath, err := runner.InstallDucklion(ctx, client, "", "")
+		installer, ok := runner.(remoteDucklionInstaller)
+		if !ok {
+			result.err = fmt.Errorf("cannot securely install Ducklion on %s: remote artifact installer is unavailable", client.Name)
+			return result
+		}
+		binary, err := downloadDucklion(ctx, runner, probe.OS, probe.Arch)
+		if err != nil {
+			result.err = fmt.Errorf("download Ducklion for %s: %w", client.Name, err)
+			return result
+		}
+		installedPath, err := installer.InstallDucklionBytes(ctx, client, binary, "")
 		if err != nil {
 			result.err = fmt.Errorf("ducklion was not installed on %s; host was not saved: %w", client.Name, err)
 			return result
@@ -11017,7 +11091,7 @@ func (s *tuiState) blockingModalOpen() bool {
 // workspaceControlMayAccept gates asynchronous PTY ownership. Workspace
 // modals keep ownership until they close and the deferred focus lease runs.
 func (s *tuiState) workspaceControlMayAccept() bool {
-	return !s.focused && !s.workspacePaneMode && !s.newSessionMode && !s.helpMode && !s.projectFiles.open
+	return !s.focused && !s.workspacePaneMode && !s.addClientMode && !s.newSessionMode && !s.helpMode && !s.projectFiles.open
 }
 
 func (s *tuiState) syncCreateSelectionToInput() {
@@ -11598,7 +11672,7 @@ Usage:
   ducklord hook-status <client> <codex|claude> [--config <path>]
   ducklord agents <client> <directory-path> [--config <path>]
   ducklord probe <client> [--config <path>]
-  ducklord install-ducklion <client> [--source <path>] [--dest <remote-path>] [--config <path>]
+  ducklord install-ducklion <client> [--source <local-path>] [--dest <remote-path>] [--config <path>]
   ducklord tui [--config <path>] [--name <owner>] [--refresh 2s]
   ducklord attach-host <client> [--config <path>]
   ducklord attach <client> <session> [--config <path>]

@@ -1,16 +1,23 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
+	"mime"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
 const localProxyHost = "127.0.0.1"
+
+const localProxyResponseBodyTimeout = 120 * time.Second
+const localProxyRequestBodyTimeout = 120 * time.Second
 
 func LocalProxyURL(port int) string {
 	return fmt.Sprintf("http://%s:%d", localProxyHost, port)
@@ -18,6 +25,23 @@ func LocalProxyURL(port int) string {
 
 func localProxyListenAddr(port int) string {
 	return fmt.Sprintf("%s:%d", localProxyHost, port)
+}
+
+func newLocalProxyHTTPClient() *http.Client {
+	return &http.Client{
+		// Do not set Client.Timeout: it covers response-body reads too, so it
+		// would terminate long-running SSE generations after a fixed duration.
+		// Bound connection setup and waiting for the first response byte instead.
+		Transport: &http.Transport{
+			ForceAttemptHTTP2:     true,
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 2 * time.Minute,
+			IdleConnTimeout:       90 * time.Second,
+			MaxIdleConnsPerHost:   4,
+		},
+	}
 }
 
 // RunProxy starts a local HTTP proxy that forwards requests to the Duckway server.
@@ -57,9 +81,11 @@ func RunProxy(cfg *Config, syncInterval time.Duration) error {
 	}
 
 	handler := &proxyHandler{
-		serverURL: cfg.ServerURL,
-		token:     cfg.Token,
-		client:    &http.Client{Timeout: 120 * time.Second},
+		serverURL:          cfg.ServerURL,
+		token:              cfg.Token,
+		client:             newLocalProxyHTTPClient(),
+		requestBodyTimeout: localProxyRequestBodyTimeout,
+		bodyTimeout:        localProxyResponseBodyTimeout,
 	}
 
 	addr := localProxyListenAddr(cfg.ProxyPort)
@@ -70,9 +96,11 @@ func RunProxy(cfg *Config, syncInterval time.Duration) error {
 }
 
 type proxyHandler struct {
-	serverURL string
-	token     string
-	client    *http.Client
+	serverURL          string
+	token              string
+	client             *http.Client
+	requestBodyTimeout time.Duration
+	bodyTimeout        time.Duration
 }
 
 func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +110,9 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetURL += "?" + r.URL.RawQuery
 	}
 
-	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+	requestCtx, cancelRequest := context.WithCancel(r.Context())
+	defer cancelRequest()
+	proxyReq, err := http.NewRequestWithContext(requestCtx, r.Method, targetURL, r.Body)
 	if err != nil {
 		http.Error(w, `{"error":"failed to create proxy request"}`, http.StatusInternalServerError)
 		return
@@ -97,6 +127,23 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Inject client token
 	proxyReq.Header.Set("X-Duckway-Token", p.token)
+	var uploadTimer *time.Timer
+	if proxyReq.Body != nil && proxyReq.Body != http.NoBody {
+		requestBodyTimeout := p.requestBodyTimeout
+		if requestBodyTimeout <= 0 {
+			requestBodyTimeout = localProxyRequestBodyTimeout
+		}
+		requestBody := &cancelRequestBodyOnTimeout{ReadCloser: proxyReq.Body, cancel: cancelRequest}
+		timerReady := make(chan struct{})
+		uploadTimer = time.AfterFunc(requestBodyTimeout, func() {
+			<-timerReady
+			requestBody.expire()
+		})
+		requestBody.timer = uploadTimer
+		close(timerReady)
+		proxyReq.Body = requestBody
+		defer uploadTimer.Stop()
+	}
 
 	resp, err := p.client.Do(proxyReq)
 	if err != nil {
@@ -113,7 +160,90 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	if !isEventStreamContentType(resp.Header.Get("Content-Type")) {
+		bodyTimeout := p.bodyTimeout
+		if bodyTimeout <= 0 {
+			bodyTimeout = localProxyResponseBodyTimeout
+		}
+		timer := time.AfterFunc(bodyTimeout, cancelRequest)
+		defer timer.Stop()
+	}
+	if err := copyProxyResponseBody(w, resp.Body); err != nil {
+		log.Printf("Proxy response copy failed: %v", err)
+	}
+}
+
+type cancelRequestBodyOnTimeout struct {
+	io.ReadCloser
+	timer     *time.Timer
+	cancel    context.CancelFunc
+	mu        sync.Mutex
+	done      bool
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (b *cancelRequestBodyOnTimeout) Close() error {
+	b.mu.Lock()
+	b.done = true
+	if b.timer != nil {
+		b.timer.Stop()
+	}
+	b.mu.Unlock()
+	b.closeBody()
+	return b.closeErr
+}
+
+func (b *cancelRequestBodyOnTimeout) expire() {
+	b.mu.Lock()
+	if b.done {
+		b.mu.Unlock()
+		return
+	}
+	b.done = true
+	b.mu.Unlock()
+
+	b.cancel()
+	b.closeBody()
+}
+
+func (b *cancelRequestBodyOnTimeout) closeBody() {
+	b.closeOnce.Do(func() {
+		b.closeErr = b.ReadCloser.Close()
+	})
+}
+
+func isEventStreamContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	return err == nil && strings.EqualFold(mediaType, "text/event-stream")
+}
+
+// copyProxyResponseBody flushes each upstream read so clients and intermediate
+// proxies receive SSE events while the response is still in progress.
+func copyProxyResponseBody(w http.ResponseWriter, src io.Reader) error {
+	flusher, canFlush := w.(http.Flusher)
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			written, writeErr := w.Write(buf[:n])
+			if writeErr != nil {
+				return writeErr
+			}
+			if written != n {
+				return io.ErrShortWrite
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return nil
+			}
+			return readErr
+		}
+	}
 }
 
 // PrintProxyEnv writes shell `export` statements for the local proxy to

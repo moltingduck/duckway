@@ -14,7 +14,7 @@ Options:
   --home DIR
       Home directory to inspect. Default: $HOME.
   --duckway-live-dir DIR
-      Local ignored live credential directory. Default: ./live-credentials.
+      Local ignored live credential directory. Default: configured Duckway live credential directory.
   --codex-home DIR
       Codex config directory to inspect. Default: $CODEX_HOME or ~/.codex.
   --print-values
@@ -26,8 +26,9 @@ Common files:
   Claude OAuth:       ~/.claude/.credentials.json
   Claude config:      ~/.claude.json, ~/.claude/settings.json, or $CLAUDE_CONFIG_DIR/*
   Codex OAuth:        ~/.codex/auth.json or $CODEX_HOME/auth.json
-  Duckway live tests: ./live-credentials/claude-credentials.json
-                      ./live-credentials/codex-auth.json
+  Duckway live tests: configured live credential directory/claude-credentials.json
+                      configured live credential directory/codex-auth.json
+                      (DUCKWAY_LIVE_CREDENTIALS_DIR or duckway.liveCredentialsDir)
 EOF
 }
 
@@ -35,7 +36,8 @@ MODE="auto"
 HOME_DIR="${HOME:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DUCKWAY_LIVE_DIR="$REPO_ROOT/live-credentials"
+source "$SCRIPT_DIR/live-credentials-dir.sh"
+DUCKWAY_LIVE_DIR="$(duckway_resolve_live_credentials_dir "$REPO_ROOT")"
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME_DIR/.codex}"
 PRINT_VALUES=0
 
@@ -282,4 +284,4 @@ if [[ "$MODE" == "auto" || "$MODE" == "enterprise" ]]; then
 fi
 
 echo
-echo "Tip: real OAuth refresh-token files should be mode 600. Duckway live credentials belong under live-credentials/ and are git-ignored."
+echo "Tip: real OAuth refresh-token files should be mode 600. Duckway live credentials use the configured live credential directory; keep it private."

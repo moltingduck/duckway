@@ -4,6 +4,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/live-credentials-dir.sh"
+LIVE_CREDENTIALS_DIR="$(duckway_resolve_live_credentials_dir "$ROOT")"
+CODEX_AUTH="${CODEX_AUTH:-$LIVE_CREDENTIALS_DIR/codex-auth.json}"
+CLAUDE_AUTH="${CLAUDE_AUTH:-$LIVE_CREDENTIALS_DIR/claude-credentials.json}"
 source "$ROOT/scripts/container-runtime.sh"
 source "$ROOT/scripts/ducklord-demo-common.sh"
 duckway_init_container_runtime
@@ -26,14 +30,14 @@ if [ "${AGENTS[*]}" = codex ]; then credential_kind=codex; fi
 if [ "${AGENTS[*]}" = claude ]; then credential_kind=claude; fi
 for agent in "${AGENTS[@]}"; do
   case "$agent" in
-    codex) ducklord_require_demo_secret "$ROOT/live-credentials/codex-auth.json" ;;
-    claude) ducklord_require_demo_secret "$ROOT/live-credentials/claude-credentials.json" ;;
+    codex) ducklord_require_demo_secret "$CODEX_AUTH" ;;
+    claude) ducklord_require_demo_secret "$CLAUDE_AUTH" ;;
   esac
 done
 if [ "$credential_kind" != codex ]; then
   echo "[live-tui] validating Claude OAuth before starting containers"
   "$ROOT/scripts/claude-oauth-live-e2e.sh" --llm-only || {
-    echo "[live-tui] Claude credential is unavailable; refresh live-credentials/claude-credentials.json" >&2
+    echo "[live-tui] Claude credential at $CLAUDE_AUTH is unavailable; refresh it and retry" >&2
     exit 1
   }
 fi

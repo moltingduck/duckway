@@ -1,3 +1,72 @@
+# Current batch: live-credential-path-20261017
+
+## Objective and acceptance
+Share ignored live credential files across worktrees through the
+`DUCKWAY_LIVE_CREDENTIALS_DIR` environment variable or shared Git config
+`duckway.liveCredentialsDir`, while preserving per-script `live-credentials`
+fallback and explicit `CODEX_AUTH`/`CLAUDE_AUTH` overrides. Relative configured
+paths resolve from the primary worktree where Git exposes that root. Add
+credential-free regression coverage and keep secrets untouched.
+
+## Candidate status
+Implementation on `codex/live-credential-path-impl`, base
+`04ca844e04eb023a03d69c71aad5b41ce19a19e0`. Shared resolver is used by all six
+live credential consumer scripts and `find-oauth-tokens.sh`; user-facing hints
+now describe the configured path. Credential-free shell regression covers env
+over config, config over fallback, relative path normalization, linked
+worktree root anchoring, separate-git-dir primary checkout behavior, and
+explicit CODEX_AUTH/CLAUDE_AUTH child preflight precedence using mock paths
+with each agent mode selected explicitly. Separate-git-dir linked worktrees
+now fail clearly when Git cannot identify the primary checkout root, avoiding
+an ambiguous relative path. Resolver failure in the Claude OAuth script exits
+with a clear error. Final independent tests and security review passed. The
+demo was rebuilt and passed readiness under owner `ducklord-verified-20260917`;
+the existing five named containers were retained. Credential inspection was
+metadata-only: the shared directory's Codex file is currently missing or
+nonregular, and no credential contents were read or changed. No provider tests
+were run. Commit-hook gates: container-runtime/demo-common PASS;
+`go test -race ./...` PASS; coverage 57.4% (threshold 37.5%) PASS. `golangci-lint`
+reported 11 unrelated pre-existing Go issues, including warnings for other
+worktrees and a removed path; this shell-only change contains no Go changes.
+This candidate is ready for the root agent to commit and push.
+
+# Current batch: tui-palette-actions-20261016
+
+## Objective and acceptance
+Implement the bounded command palette action batch: add useful operational
+commands through existing flows, support both terminal Backspace encodings with
+Unicode-rune deletion, keep fuzzy search/navigation correct with no matches, add
+regressions and update help. Preserve project/session generation fencing.
+
+## Candidate and resource ledger
+Owner `tui-palette-actions-20261016`; branch
+`codex/tui-palette-actions-impl`; worktree
+`/home/cjiso1117/duckway-tui-palette-actions-impl`; base
+`1f7384a88d2d63965b9b698c997552617b28f5ed` (`origin/main`). Implementation commit
+`94c1922154b053f70564eb0b00087804ea6e8704`; amended locally for these
+documentation updates; worktree clean. No push: Claude
+live E2E credential preflight returned HTTP 401 and OAuth refresh-only returned
+HTTP 502, so the `AGENTS.md` push gate remains closed. No feature-owned temporary
+root or build outputs remain; the retained demo is tracked below.
+
+## Status
+Implementation and task/handoff updates complete. Independent full tests, race,
+build, and isolated PTY E2E pass on the integrated candidate. Scoped lint has
+9 existing findings with no findings on candidate changes. Codex live agent E2E
+passes; Claude live E2E is blocked by credential preflight (401) and OAuth
+refresh-only (502). Push remains prohibited by `AGENTS.md` until both live gates pass; Claude is blocked by HTTP 401/502.
+Add host dispatch transfers focused PTY ownership to the modal; cancel and
+completion restore the source PTY only when client, instance, session ID, and
+runtime generation still match. Replaced runtimes leave focus with workspace
+navigation; SSH config load errors preserve focus. Asynchronous workspace control acceptance is fenced
+while the add-host modal owns keyboard input.
+The retained demo was rebuilt and restarted from this commit and reports ready;
+all five `ducklord-verified-*` containers are running. Launch with `podman exec
+-it ducklord-verified-ducklord-dev ducklord tui --config
+/root/.ducklord/config.yaml`.
+
+---
+
 # Current batch: codex-routing-0924
 
 ## Objective

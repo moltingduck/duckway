@@ -5,11 +5,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/live-credentials-dir.sh"
+LIVE_CREDENTIALS_DIR="$(duckway_resolve_live_credentials_dir "$ROOT")"
+CODEX_AUTH="${CODEX_AUTH:-$LIVE_CREDENTIALS_DIR/codex-auth.json}"
+CLAUDE_AUTH="${CLAUDE_AUTH:-$LIVE_CREDENTIALS_DIR/claude-credentials.json}"
 source "$ROOT/scripts/container-runtime.sh"
 duckway_init_container_runtime
 RUNTIME="$CONTAINER_RUNTIME"
-CODEX_AUTH="${CODEX_AUTH:-$ROOT/live-credentials/codex-auth.json}"
-CLAUDE_AUTH="${CLAUDE_AUTH:-$ROOT/live-credentials/claude-credentials.json}"
 KEEP="${DUCKWAY_LIVE_KEEP:-0}"
 RUN_ID="${DUCKWAY_LIVE_RUN_ID:-$(date +%s)-$$}"
 SAFE_ID="$(printf '%s' "$RUN_ID" | tr -cd 'a-zA-Z0-9_.-' | cut -c1-32)"

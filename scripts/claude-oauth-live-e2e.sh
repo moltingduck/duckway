@@ -4,7 +4,12 @@
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CLAUDE_AUTH="${CLAUDE_AUTH:-$ROOT/live-credentials/claude-credentials.json}"
+source "$ROOT/scripts/live-credentials-dir.sh"
+if ! LIVE_CREDENTIALS_DIR="$(duckway_resolve_live_credentials_dir "$ROOT")"; then
+  echo "Failed to resolve Duckway live credential directory" >&2
+  exit 2
+fi
+CLAUDE_AUTH="${CLAUDE_AUTH:-$LIVE_CREDENTIALS_DIR/claude-credentials.json}"
 RUN_REFRESH=1
 RUN_LLM=1
 

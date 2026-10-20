@@ -4,6 +4,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/live-credentials-dir.sh"
+LIVE_CREDENTIALS_DIR="$(duckway_resolve_live_credentials_dir "$ROOT")"
+CODEX_AUTH="${CODEX_AUTH:-$LIVE_CREDENTIALS_DIR/codex-auth.json}"
+CLAUDE_AUTH="${CLAUDE_AUTH:-$LIVE_CREDENTIALS_DIR/claude-credentials.json}"
 source "$ROOT/scripts/container-runtime.sh"
 source "$ROOT/scripts/ducklord-demo-common.sh"
 duckway_init_container_runtime
@@ -32,13 +36,13 @@ fi
 require_secret() {
   ducklord_require_demo_secret "$1" || exit 2
 }
-[ "$RUN_CODEX" = 0 ] || require_secret "$ROOT/live-credentials/codex-auth.json"
-[ "$RUN_CLAUDE" = 0 ] || require_secret "$ROOT/live-credentials/claude-credentials.json"
+[ "$RUN_CODEX" = 0 ] || require_secret "$CODEX_AUTH"
+[ "$RUN_CLAUDE" = 0 ] || require_secret "$CLAUDE_AUTH"
 
 if [ "$RUN_CLAUDE" = 1 ]; then
   echo "[claude_code] validating the live credential before starting a PTY"
   if ! "$ROOT/scripts/claude-oauth-live-e2e.sh" --llm-only; then
-    echo "[claude_code] FAIL: refresh live-credentials/claude-credentials.json and retry" >&2
+    echo "[claude_code] FAIL: Claude credential at $CLAUDE_AUTH is unavailable; refresh it and retry" >&2
     exit 1
   fi
 fi

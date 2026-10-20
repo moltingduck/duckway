@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -334,6 +336,34 @@ func TestDucklordInstallDucklionUpdatesConfig(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Installed ducklion on client-a") {
 		t.Fatalf("install output = %q", out.String())
+	}
+}
+
+func TestDucklordInstallDucklionDownloadsByDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	config := writeConfig(t)
+	runner := &recordingRunner{
+		installPath: "/home/duck/.local/bin/ducklion",
+		probes:      []ducklord.DucklionProbe{{Available: false, OS: "linux", Arch: "arm64"}},
+	}
+	var out bytes.Buffer
+	err := run([]string{"install-ducklion", "client-a", "--dest", "~/.local/bin/ducklion", "--config", config}, &out, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.downloadedOS != "linux" || runner.downloadedArch != "arm64" || runner.installSource != "<downloaded>" {
+		t.Fatalf("download platform=%s/%s source=%q", runner.downloadedOS, runner.downloadedArch, runner.installSource)
+	}
+	if runner.installClient != "client-a" || runner.installDest != "~/.local/bin/ducklion" {
+		t.Fatalf("install client=%q dest=%q", runner.installClient, runner.installDest)
+	}
+	cfg, err := ducklord.LoadConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, ok := cfg.Client("client-a")
+	if !ok || client.Ducklion != "/home/duck/.local/bin/ducklion" {
+		t.Fatalf("installed client = %+v, found=%t", client, ok)
 	}
 }
 
@@ -2895,7 +2925,7 @@ func TestTUIAddClientInstallsMissingDucklionAndReprobes(t *testing.T) {
 	runner := &recordingRunner{
 		installPath: "/home/duck/.local/bin/ducklion",
 		probes: []ducklord.DucklionProbe{
-			{Available: false},
+			{Available: false, OS: "linux", Arch: "arm64"},
 			{Available: true, Command: "/home/duck/.local/bin/ducklion", Version: "ducklion v2", Manager: "standalone", ListOK: true, Sessions: 1},
 		},
 	}
@@ -2909,8 +2939,8 @@ func TestTUIAddClientInstallsMissingDucklionAndReprobes(t *testing.T) {
 	if err := state.submitAddClient(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if runner.installClient != "client-a" || runner.probeCalls != 2 {
-		t.Fatalf("installClient=%q probeCalls=%d", runner.installClient, runner.probeCalls)
+	if runner.installClient != "client-a" || runner.probeCalls != 2 || runner.downloadedOS != "linux" || runner.downloadedArch != "arm64" {
+		t.Fatalf("installClient=%q probeCalls=%d downloaded=%s/%s", runner.installClient, runner.probeCalls, runner.downloadedOS, runner.downloadedArch)
 	}
 	loaded, err := ducklord.LoadConfig(config)
 	if err != nil {
@@ -3931,6 +3961,30 @@ func (f fakeRunner) InstallDucklion(context.Context, ducklord.Client, string, st
 	}
 	return "/home/duck/.local/bin/ducklion", nil
 }
+func makeTestDucklionArtifact(osName, arch string) remoteDucklionArtifact {
+	binary := make([]byte, 1<<20)
+	for i := range binary {
+		binary[i] = byte(i)
+	}
+	sum := sha256.Sum256(binary)
+	return remoteDucklionArtifact{
+		OS: osName, Arch: arch, Binary: "ducklion-" + osName + "-" + arch,
+		Size: int64(len(binary)), SHA256: hex.EncodeToString(sum[:]), Bytes: binary,
+	}
+}
+
+func (fakeRunner) DownloadDucklion(_ context.Context, osName, arch string) (remoteDucklionArtifact, error) {
+	return makeTestDucklionArtifact(osName, arch), nil
+}
+func (f fakeRunner) InstallDucklionBytes(_ context.Context, _ ducklord.Client, binary []byte, _ string) (string, error) {
+	if len(binary) == 0 {
+		return "", errors.New("empty test artifact")
+	}
+	if f.installPath != "" {
+		return f.installPath, nil
+	}
+	return "/home/duck/.local/bin/ducklion", nil
+}
 func (f fakeRunner) Attach(ducklord.Client, string) error { return nil }
 func (f fakeRunner) AttachStream(context.Context, ducklord.Client, string) (*ducklord.AttachSession, error) {
 	stdinR, stdinW := io.Pipe()
@@ -3952,6 +4006,8 @@ type recordingRunner struct {
 	installSource    string
 	installDest      string
 	installPath      string
+	downloadedOS     string
+	downloadedArch   string
 	probes           []ducklord.DucklionProbe
 	probeCalls       int
 	sessionsByClient map[string][]ducklord.RemoteSession
@@ -4193,6 +4249,20 @@ func (r *recordingRunner) InstallDucklion(_ context.Context, client ducklord.Cli
 	r.installClient = client.Name
 	r.installSource = source
 	r.installDest = dest
+	if r.installPath != "" {
+		return r.installPath, nil
+	}
+	return "/home/duck/.local/bin/ducklion", nil
+}
+func (r *recordingRunner) DownloadDucklion(_ context.Context, osName, arch string) (remoteDucklionArtifact, error) {
+	r.downloadedOS, r.downloadedArch = osName, arch
+	return makeTestDucklionArtifact(osName, arch), nil
+}
+func (r *recordingRunner) InstallDucklionBytes(_ context.Context, client ducklord.Client, binary []byte, dest string) (string, error) {
+	if len(binary) == 0 {
+		return "", errors.New("empty test artifact")
+	}
+	r.installClient, r.installSource, r.installDest = client.Name, "<downloaded>", dest
 	if r.installPath != "" {
 		return r.installPath, nil
 	}

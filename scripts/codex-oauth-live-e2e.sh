@@ -28,7 +28,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PODMAN="${PODMAN:-podman}"
-CODEX_AUTH="${CODEX_AUTH:-$REPO_ROOT/live-credentials/codex-auth.json}"
+source "$SCRIPT_DIR/live-credentials-dir.sh"
+LIVE_CREDENTIALS_DIR="$(duckway_resolve_live_credentials_dir "$REPO_ROOT")"
+CODEX_AUTH="${CODEX_AUTH:-$LIVE_CREDENTIALS_DIR/codex-auth.json}"
 IMAGE="${DUCKWAY_LIVE_IMAGE:-docker.io/library/golang:1.25-alpine}"
 PROMPT="${DUCKWAY_CODEX_PROMPT:-hello?}"
 CHECK_TOKEN=0

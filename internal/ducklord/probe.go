@@ -18,6 +18,8 @@ type DucklionProbe struct {
 	ListError      string
 	Manager        string
 	DuckwayPresent bool
+	OS             string
+	Arch           string
 }
 
 const ducklionProbeScript = `
@@ -64,6 +66,11 @@ else
     printf 'missing\n'
   fi
 fi
+os=$(uname -s 2>/dev/null || true)
+arch=$(uname -m 2>/dev/null || true)
+case "$os" in Linux) os=linux ;; Darwin) os=darwin ;; *) os=unknown ;; esac
+case "$arch" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) arch=unknown ;; esac
+printf 'platform\t%s\t%s\n' "$os" "$arch"
 `
 
 func (*Runner) ProbeDucklion(ctx context.Context, c Client) (DucklionProbe, error) {
@@ -76,18 +83,31 @@ func (*Runner) ProbeDucklion(ctx context.Context, c Client) (DucklionProbe, erro
 
 func ParseDucklionProbeOutput(out string) (DucklionProbe, error) {
 	lines := nonEmptyLines(out)
-	if len(lines) == 0 || lines[0] == "missing" {
+	if len(lines) == 0 {
 		return DucklionProbe{Available: false}, nil
 	}
+	probe := DucklionProbe{}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "platform\t") {
+			parts := strings.Split(strings.TrimPrefix(line, "platform\t"), "\t")
+			if len(parts) == 2 {
+				probe.OS, probe.Arch = parts[0], parts[1]
+			}
+		}
+	}
+	if lines[0] == "missing" {
+		return probe, nil
+	}
 	if lines[0] == "missing-duckway" {
-		return DucklionProbe{DuckwayPresent: true}, nil
+		probe.DuckwayPresent = true
+		return probe, nil
 	}
 	kind, versionText, ok := strings.Cut(lines[0], "\t")
 	if !ok {
 		return DucklionProbe{}, fmt.Errorf("invalid ducklion probe output: %q", lines[0])
 	}
 	versionText = strings.TrimSpace(versionText)
-	probe := DucklionProbe{Available: true, Version: versionText}
+	probe.Available, probe.Version = true, versionText
 	if configured, ok := strings.CutPrefix(kind, "configured:"); ok {
 		probe.Command = strings.TrimSpace(configured)
 		if probe.Command == "" {

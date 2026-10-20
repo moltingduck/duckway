@@ -4,6 +4,10 @@ set -euo pipefail
 # DUCKLORD_DEMO_NAME_PREFIX when a caller needs an isolated fixture namespace.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/live-credentials-dir.sh"
+LIVE_CREDENTIALS_DIR="$(duckway_resolve_live_credentials_dir "$ROOT")"
+CODEX_AUTH="${CODEX_AUTH:-$LIVE_CREDENTIALS_DIR/codex-auth.json}"
+CLAUDE_AUTH="${CLAUDE_AUTH:-$LIVE_CREDENTIALS_DIR/claude-credentials.json}"
 source "$ROOT/scripts/container-runtime.sh"
 source "$ROOT/scripts/ducklord-demo-common.sh"
 duckway_init_container_runtime
@@ -14,8 +18,6 @@ for arg in "$@"; do
     *) echo "[ducklord-demo] unknown option: $arg" >&2; exit 2 ;;
   esac
 done
-CODEX_AUTH="$ROOT/live-credentials/codex-auth.json"
-CLAUDE_AUTH="$ROOT/live-credentials/claude-credentials.json"
 WORK_PARENT="${WORK:-${TMPDIR:-/tmp}}"
 RUNTIME="$CONTAINER_RUNTIME"
 IMAGE="${IMAGE:-duckway-ducklord-demo:local}"

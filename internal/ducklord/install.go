@@ -15,6 +15,8 @@ import (
 )
 
 const defaultDucklionInstallPath = "~/.local/bin/ducklion"
+const maxDucklionInstallSize = 128 << 20
+const remoteDucklionInstallTimeout = 5 * time.Minute
 
 const remoteDucklionInstallScript = `set -eu
 dest="$1"
@@ -77,25 +79,48 @@ func (*Runner) InstallDucklion(ctx context.Context, c Client, source, dest strin
 		return "", err
 	}
 	defer f.Close()
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, f); err != nil {
+	return installDucklionReader(ctx, c, f, dest)
+}
+
+// InstallDucklionBytes installs a binary fetched and verified by the caller.
+// It deliberately accepts bytes rather than a local path so default remote
+// host setup cannot accidentally stream the controller's Ducklion binary.
+func (*Runner) InstallDucklionBytes(ctx context.Context, c Client, binary []byte, dest string) (string, error) {
+	return installDucklionReader(ctx, c, bytes.NewReader(binary), dest)
+}
+
+func installDucklionReader(ctx context.Context, c Client, f io.Reader, dest string) (string, error) {
+	if strings.TrimSpace(dest) == "" {
+		dest = defaultDucklionInstallPath
+	}
+	if !safeRemoteInstallPath(dest) {
+		return "", fmt.Errorf("invalid remote install path %q", dest)
+	}
+	content, err := io.ReadAll(io.LimitReader(f, maxDucklionInstallSize+1))
+	if err != nil {
 		return "", err
 	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return "", err
+	if len(content) > maxDucklionInstallSize {
+		return "", fmt.Errorf("ducklion binary exceeds maximum size of %d bytes", maxDucklionInstallSize)
 	}
-	wantSHA := hex.EncodeToString(hasher.Sum(nil))
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	hash := sha256.Sum256(content)
+	wantSHA := hex.EncodeToString(hash[:])
 	args := SSHArgs(c, false, "sh", "-lc", remoteDucklionInstallScript, "ducklord-install-ducklion", dest, wantSHA)
 	sshParts := c.SSHCommandParts()
-	cmd := exec.CommandContext(ctx, sshParts[0], append(sshParts[1:], args...)...)
-	cmd.Stdin = f
+	installCtx := ctx
+	var cancel context.CancelFunc
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline || time.Until(deadline) > remoteDucklionInstallTimeout {
+		installCtx, cancel = context.WithTimeout(ctx, remoteDucklionInstallTimeout)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(installCtx, sshParts[0], append(sshParts[1:], args...)...)
+	cmd.Stdin = bytes.NewReader(content)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
-	if ctx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("ssh install to %s timed out", c.Name)
+	if installCtx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("ssh install to %s timed out: %w", c.Name, installCtx.Err())
 	}
 	if err != nil {
 		msg := strings.TrimSpace(stderr.String())

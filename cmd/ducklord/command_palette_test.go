@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -72,6 +74,152 @@ func TestCommandPaletteAccumulatesSplitUTF8Input(t *testing.T) {
 	s.handleCommandPaletteInput([]byte{0x83, 0x86}) // テ
 	if s.commandPaletteQuery != "テ" {
 		t.Fatalf("query = %q, want split UTF-8 rune", s.commandPaletteQuery)
+	}
+}
+
+func TestCommandPaletteDeleteKeysRemoveOneUnicodeRune(t *testing.T) {
+	for _, key := range [][]byte{{0x08}, {0x7f}} {
+		s := &tuiState{}
+		s.openCommandPalette()
+		s.commandPaletteQuery = "a猫"
+		s.commandPaletteIndex = 2
+		s.handleCommandPaletteInput(key)
+		if s.commandPaletteQuery != "a" || s.commandPaletteIndex != 0 {
+			t.Fatalf("delete %x left query=%q index=%d", key, s.commandPaletteQuery, s.commandPaletteIndex)
+		}
+		s.handleCommandPaletteInput(key)
+		if s.commandPaletteQuery != "" {
+			t.Fatalf("delete %x on one rune left query=%q", key, s.commandPaletteQuery)
+		}
+		s.handleCommandPaletteInput(key)
+		if s.commandPaletteQuery != "" {
+			t.Fatalf("delete %x on empty query changed it to %q", key, s.commandPaletteQuery)
+		}
+	}
+}
+
+func TestCommandPaletteOperationalActionsAreRealAndSearchable(t *testing.T) {
+	want := []struct {
+		kind, label, query string
+	}{
+		{"host-add", "Add host configuration", "addhost"},
+		{"create-session", "Create session", "createsession"},
+		{"refresh", "Refresh sessions and hosts", "refresh"},
+	}
+	for _, tc := range want {
+		s := &tuiState{}
+		if tc.kind == "host-add" {
+			identity := ducklord.SessionIdentity{InstanceID: "11111111-1111-4111-8111-111111111111", SessionID: "ABC123"}
+			s.focused = true
+			s.activeAttachKey = "client/" + identity.Key()
+			s.sessions = []ducklord.RemoteSession{{Client: "client", InstanceID: identity.InstanceID, SessionID: identity.SessionID, RuntimeGeneration: 5}}
+		}
+		s.openCommandPalette()
+		s.commandPaletteQuery = tc.query
+		items := s.commandPaletteItems()
+		found := false
+		for i, item := range items {
+			if item.kind == tc.kind && item.label == tc.label {
+				s.commandPaletteIndex = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("query %q did not find operational action %q (%q): %#v", tc.query, tc.kind, tc.label, items)
+		}
+		if !s.handleCommandPaletteInput([]byte("\r")) || s.commandPaletteAction != tc.kind {
+			t.Fatalf("dispatch for %q = %q", tc.kind, s.commandPaletteAction)
+		}
+		if tc.kind == "host-add" {
+			// The event loop starts the existing Add host flow after palette dispatch.
+			s.beginAddClientWithHosts(nil, nil)
+			if !s.addClientMode || s.focused || s.activeAttachKey == "" {
+				t.Fatalf("Add host dispatch did not take keyboard ownership from the focused PTY: modal=%v focused=%v key=%q", s.addClientMode, s.focused, s.activeAttachKey)
+			}
+			s.cancelAddClient()
+			if !s.focused || s.activeAttachKey == "" {
+				t.Fatalf("Add host cancel did not restore focused PTY: focused=%v key=%q", s.focused, s.activeAttachKey)
+			}
+		}
+	}
+
+	s := &tuiState{}
+	s.openCommandPalette()
+	s.commandPaletteQuery = "zz-no-match"
+	if got := s.commandPaletteItems(); len(got) != 0 {
+		t.Fatalf("no-match query returned %#v", got)
+	}
+	if !s.handleCommandPaletteInput([]byte("j")) || s.commandPaletteIndex != 0 {
+		t.Fatalf("navigation moved selection with no matches: %d", s.commandPaletteIndex)
+	}
+
+	s.hostScoped = true
+	s.commandPaletteQuery = ""
+	for _, item := range s.commandPaletteItems() {
+		if item.kind == "host-add" || item.kind == "create-session" {
+			t.Fatalf("host-scoped palette exposes unavailable action %q", item.kind)
+		}
+	}
+}
+
+func TestAddClientModalOwnsWorkspaceKeyboardAndControl(t *testing.T) {
+	identity := ducklord.SessionIdentity{InstanceID: "11111111-1111-4111-8111-111111111111", SessionID: "ABC123"}
+	key := "client/" + identity.Key()
+	s := &tuiState{focused: true, activeAttachKey: key, sessions: []ducklord.RemoteSession{{Client: "client", InstanceID: identity.InstanceID, SessionID: identity.SessionID, RuntimeGeneration: 5}}}
+	s.beginAddClientWithHosts(nil, nil)
+	if s.focused {
+		t.Fatal("Add host kept keyboard ownership with the focused PTY")
+	}
+	if !s.addClientMode {
+		t.Fatal("Add host modal did not open")
+	}
+	if s.workspaceControlMayAccept() {
+		t.Fatal("workspace control accepted focus while Add host modal owns input")
+	}
+	s.cancelAddClient()
+	if !s.focused || s.activeAttachKey != key {
+		t.Fatalf("Add host cancel did not restore original PTY focus: focused=%v key=%q", s.focused, s.activeAttachKey)
+	}
+}
+
+func TestAddClientLoadErrorPreservesFocusedPTY(t *testing.T) {
+	s := &tuiState{focused: true, activeAttachKey: "client/session"}
+	s.beginAddClientWithHosts(nil, errors.New("bad ssh config"))
+	if !s.focused || s.activeAttachKey != "client/session" || s.addClientMode {
+		t.Fatalf("SSH config error changed focus/modal state: focused=%v key=%q modal=%v", s.focused, s.activeAttachKey, s.addClientMode)
+	}
+}
+
+func TestAddClientCancelDoesNotRestoreReplacedPTYGeneration(t *testing.T) {
+	identity := ducklord.SessionIdentity{InstanceID: "11111111-1111-4111-8111-111111111111", SessionID: "ABC123"}
+	key := "client/" + identity.Key()
+	s := &tuiState{focused: true, activeAttachKey: key, sessions: []ducklord.RemoteSession{{Client: "client", InstanceID: identity.InstanceID, SessionID: identity.SessionID, RuntimeGeneration: 5}}}
+	s.beginAddClientWithHosts(nil, nil)
+	s.sessions[0].RuntimeGeneration = 6
+	s.cancelAddClient()
+	if s.focused || !s.workspaceProjectFocus || s.activeAttachKey != "" {
+		t.Fatalf("replacement runtime inherited stale PTY focus: focused=%v workspace=%v key=%q", s.focused, s.workspaceProjectFocus, s.activeAttachKey)
+	}
+}
+
+func TestAddClientCompletionRestoresFocusedPTY(t *testing.T) {
+	identity := ducklord.SessionIdentity{InstanceID: "11111111-1111-4111-8111-111111111111", SessionID: "ABC123"}
+	key := "client/" + identity.Key()
+	s := &tuiState{
+		focused:         true,
+		activeAttachKey: key,
+		sessions:        []ducklord.RemoteSession{{Client: "client", InstanceID: identity.InstanceID, SessionID: identity.SessionID, RuntimeGeneration: 5}},
+		cfg:             &ducklord.Config{},
+		cfgPath:         filepath.Join(t.TempDir(), "config.yaml"),
+	}
+	s.beginAddClientWithHosts(nil, nil)
+	err := s.applyAddClientResult(addClientDoneEvent{client: ducklord.Client{Name: "new", Host: "new.example"}})
+	if err != nil {
+		t.Fatalf("complete Add host: %v", err)
+	}
+	if s.addClientMode || !s.focused || s.activeAttachKey != key {
+		t.Fatalf("Add host completion did not restore originating PTY: modal=%v focused=%v key=%q", s.addClientMode, s.focused, s.activeAttachKey)
 	}
 }
 
