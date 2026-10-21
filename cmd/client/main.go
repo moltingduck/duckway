@@ -104,6 +104,20 @@ func main() {
 	configDir := client.DefaultConfigDir()
 
 	switch os.Args[1] {
+	case "completion":
+		if len(os.Args) != 3 {
+			fmt.Fprintln(os.Stderr, "usage: duckway completion <bash|zsh|fish>")
+			os.Exit(1)
+		}
+		if err := writeCompletion(os.Stdout, os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "__complete":
+		for _, candidate := range completionCandidates(configDir, os.Args[2:]) {
+			fmt.Println(candidate)
+		}
+
 	case "init":
 		cmdInit(configDir)
 	case "sync":
@@ -278,6 +292,8 @@ Usage:
   duckway git setup      Sync GitHub phantom credential for native git
   duckway git clone OWNER/REPO [DIR]
                          Clone a configured repo and write local git proxy config
+  duckway completion <bash|zsh|fish>
+                         Print a shell completion script
   duckway version        Print the duckway version
 
 Proxy flags:

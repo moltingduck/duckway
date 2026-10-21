@@ -63,6 +63,9 @@ func SyncKeys(configDir string, cfg *Config) (int, error) {
 		snapshot = &ClientSyncSnapshot{Keys: keys, Services: services}
 	}
 	keys := snapshot.Keys
+	if err := saveGitCompletionRepos(configDir, keys); err != nil {
+		log.Printf("Warning: cannot update Git completion hints: %v", err)
+	}
 	if err := saveServiceMetadata(configDir, snapshot.Services); err != nil {
 		return 0, fmt.Errorf("write service routing metadata: %w", err)
 	}
