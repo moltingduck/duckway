@@ -27,6 +27,7 @@ import (
 )
 
 type ProxyHandler struct {
+	remoteControl *queries.CodexRemoteQueries
 	services     *queries.ServiceQueries
 	apiKeys      *queries.APIKeyQueries
 	resolver     *services.KeyResolver
@@ -301,6 +302,10 @@ func (h *ProxyHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if serviceName == "openai-auth" {
 		h.handleOpenAIAuthProxy(w, r, upstreamPath, startTime)
+		return
+	}
+	if serviceName == "openai-chatgpt" && strings.HasPrefix(upstreamPath, "/backend-api/wham/remote/control/") {
+		h.handleCodexRemote(w, r, upstreamPath)
 		return
 	}
 

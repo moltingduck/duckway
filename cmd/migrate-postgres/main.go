@@ -22,7 +22,7 @@ import (
 var tableOrder = []string{
 	"admin_users", "services", "clients", "api_keys", "api_key_groups",
 	"api_key_group_members", "key_groups", "key_group_members", "key_suites",
-	"placeholder_keys", "approvals", "request_log", "request_log_detail",
+	"placeholder_keys", "codex_remote_enrollments", "approvals", "request_log", "request_log_detail",
 	"notification_channels", "canary_settings", "canary_tokens",
 	"client_runtime_status", "client_update_rollouts", "client_update_jobs",
 	"oauth_credentials", "settings", "control_channels", "cc_channels",

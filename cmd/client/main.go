@@ -1948,11 +1948,16 @@ func cmdProxyExec(configDir string, args []string) {
 		log.Fatal(err)
 	}
 
+	env := proxyExecEnv(client.ProxyExecKeyEnv(os.Environ(), configDir, args[0]), cfg.ProxyPort, configDir)
+	args, err = client.ProxyExecArgs(args, env)
+	if err != nil {
+		log.Fatal(err)
+	}
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = proxyExecEnv(os.Environ(), cfg.ProxyPort, configDir)
+	cmd.Env = env
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError

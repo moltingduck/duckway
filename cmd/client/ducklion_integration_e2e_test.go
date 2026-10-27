@@ -160,14 +160,26 @@ func TestDucklionStandaloneIntegrationE2E(t *testing.T) {
 	for {
 		select {
 		case <-ctx.Done():
-			t.Fatal("shell did not exit after integration")
+			t.Fatal("shell did not retire after integration")
 		default:
 		}
-		sessions, err := conn.ListSessions()
+		sessions, err := conn.ListSessionsContext(ctx)
 		if err == nil {
+			selectable := false
 			for _, session := range sessions {
-				if session.SessionID == created.SessionID && session.Status == model.StatusStopped {
-					return
+				selectable = selectable || session.SessionID == created.SessionID
+			}
+			// Naturally exited shell roots retire from the selectable inventory.
+			// Check the generation-fenced exit record rather than a stopped row.
+			retained, retainedErr := conn.ListRetainedShellsContext(ctx)
+			if !selectable && retainedErr == nil {
+				for _, shell := range retained {
+					if shell.SessionID == created.SessionID && shell.RuntimeGeneration == created.RuntimeGeneration {
+						if !shell.ExitSuccess {
+							t.Fatalf("shell failed after integration: %s", shell.ExitReason)
+						}
+						return
+					}
 				}
 			}
 		}

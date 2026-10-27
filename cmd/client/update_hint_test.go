@@ -266,6 +266,9 @@ func TestProxyExecEnvInjectsCAForNodeClients(t *testing.T) {
 
 func TestProxyExecCommandInjectsEnv(t *testing.T) {
 	configDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configDir, "keys.env"), []byte("ANTHROPIC_API_KEY=assigned-key\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("server_url: http://duckway.test\ntoken: test-token\nproxy_port: 19090\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +280,7 @@ func TestProxyExecCommandInjectsEnv(t *testing.T) {
 		"--",
 		"sh",
 		"-c",
-		`printf '%s\n%s\n%s\n' "$HTTPS_PROXY" "$NO_PROXY" "$ALL_PROXY"`,
+		`printf '%s\n%s\n%s\n%s\n' "$HTTPS_PROXY" "$NO_PROXY" "$ALL_PROXY" "$ANTHROPIC_API_KEY"`,
 	}, sep)
 	cmd := exec.Command(os.Args[0], "-test.run=TestProxyExecCommandHelper")
 	cmd.Env = append(os.Environ(),
@@ -286,6 +289,7 @@ func TestProxyExecCommandInjectsEnv(t *testing.T) {
 		"DUCKWAY_CONFIG_DIR="+configDir,
 		"HTTPS_PROXY=http://old-proxy",
 		"NO_PROXY=chatgpt.com",
+		"ANTHROPIC_API_KEY=inherited-key",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -296,6 +300,7 @@ func TestProxyExecCommandInjectsEnv(t *testing.T) {
 		"http://127.0.0.1:19090",
 		"localhost,127.0.0.1,::1",
 		"http://127.0.0.1:19090",
+		"assigned-key",
 	}, "\n")
 	if got != want {
 		t.Fatalf("proxy exec output = %q, want %q", got, want)

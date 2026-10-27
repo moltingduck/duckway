@@ -431,6 +431,18 @@ var migrations = []string{
 		created_at  TEXT NOT NULL DEFAULT (datetime('now')),
 		UNIQUE(suite_id, service_id)
 	)`,
+	`CREATE TABLE IF NOT EXISTS codex_remote_enrollments (
+		capability_hash TEXT PRIMARY KEY,
+		client_id TEXT NOT NULL,
+		placeholder TEXT NOT NULL,
+		api_key_id TEXT NOT NULL,
+		account_hash TEXT NOT NULL,
+		server_id TEXT NOT NULL,
+		installation_id TEXT NOT NULL,
+		token_encrypted TEXT NOT NULL,
+		expires_at BIGINT NOT NULL,
+		UNIQUE(client_id, placeholder, server_id, installation_id)
+	)`,
 }
 
 func runMigrations(db *sql.DB) error {
