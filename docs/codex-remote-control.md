@@ -1,18 +1,39 @@
 # Native Codex remote control through Duckway
 
 Run `duckway proxy serve` and, in another terminal, run
-`duckway proxy exec -- codex remote-control --no-daemon`.
-Keep that foreground host running. Its backend inherits Duckway's proxy,
-CA and synced credential environment. `duckway proxy exec -- codex` also selects
-foreground mode automatically; resume and fork use the same path. Existing
-CODEX_HOME, history and unrelated shared daemon sessions are preserved.
+`duckway proxy exec -- codex` or
+`duckway proxy exec -- codex remote-control start --json`.
+Duckway preserves Codex's native daemon default, original arguments, CODEX_HOME,
+authentication and history. It never adds `--no-daemon`. Explicit foreground
+commands, including bare `remote-control --json`, retain native behavior.
 
-The installed CLI must advertise `--no-daemon`; Duckway checks local help with
-a three-second timeout before adding the root flag. Upgrade Codex if this check
-fails. Codex exec, login and other independent subcommands retain their arguments.
-Shared daemon lifecycle operations and remote-control start/stop/pair cannot
-operate on this private foreground host and return an actionable error. Do not
-restart a shared daemon just to change Duckway settings.
+On Linux, Duckway starts a missing backend with the supported native
+`app-server daemon start` command. Before attaching it verifies the actual Unix
+socket peer, backend and updater process environments, proxy and credential
+settings, and a startup fingerprint covering CA bytes. A private stable token
+under the Duckway config directory identifies daemons started by this wrapper.
+Existing daemons without proof of these startup settings, or with stale proxy,
+credentials or CA bytes, cause a clear conflict and are left untouched. Finish
+that daemon's work and explicitly stop it before retrying. Duckway never kills
+or automatically restarts a conflicting daemon. Daemon verification currently
+requires Linux; other platforms can use explicit native foreground execution.
+
+Native `remote-control start`, `stop`, `pair` and daemon lifecycle commands remain
+available. Operations that can stop or replace the backend require verified
+Duckway ownership. `remote-control stop` stops the shared daemon;
+`app-server daemon disable-remote-control` disables remote control while retaining
+the backend. Successful lifecycle commands verify replacement backend settings.
+Root feature/configuration overrides retain native interpretation and require
+ownership because native feature changes can request a restart; other root
+options that select embedded execution retain that behavior. Explicit remote
+endpoints and remote sessions are refused because the local socket cannot prove
+their environment. Codex exec, login and help remain independent.
+
+Verification is a startup check, not an atomic lock on Codex's native lifecycle.
+Another same-user process can replace a daemon between verification and native
+attachment. Avoid concurrent external lifecycle changes during launch. Changing
+CA bytes or proxy credentials requires an explicit owned daemon restart; changing
+a CA file in place cannot update trust already loaded by an existing backend.
 
 For an explicit manual pairing connection, run
 `duckway proxy exec -- codex app-server --listen stdio://` and keep stdin open.
@@ -52,7 +73,7 @@ server process writing this database; multiple independent writers are unsupport
 
 ## Protocol evidence
 
-Pinned upstream: OpenAI Codex rust-v0.164.0, commit
+Protocol source: OpenAI Codex rust-v0.164.0, commit
 `6aaac694803004a63c6f393d153c96d22521a6b9` (annotated tag
 `fe3b29455488c2e189e43ad5526a107900c5e1b7`). No inferred endpoint schema.
 
@@ -78,3 +99,14 @@ policy changes apply to established relays; rate limits are charged on the initi
 request, not each monitor tick. Database lookup failure or timeout closes the
 relay. Cancellation and capability expiry independently close the socket while
 the bounded checker exits; stopping the watcher joins that checker.
+
+Daemon integration was checked against the official Codex rust-v0.165.0 CLI.
+Its [TUI startup policy](https://github.com/openai/codex/blob/rust-v0.165.0/codex-rs/tui/src/daemon_startup.rs)
+and [daemon implementation](https://github.com/openai/codex/tree/rust-v0.165.0/codex-rs/app-server-daemon)
+retain the relevant 0.164 behavior. The opt-in Linux regression
+`TestCodexDaemonNativeProxy` uses `DUCKWAY_TEST_CODEX` for the actual binary and
+`t.TempDir` under the runner's scoped `TMPDIR`. It uses dummy credentials and a
+private TLS CA, maps only its fixture ChatGPT hostname through a CONNECT proxy,
+and checks enrollment, relay upgrade/ping-pong, native client reattachment through
+a newly observed proxy tunnel with the same daemon PID, pairing, stale-setting
+refusal and native stop. It does not establish live provider acceptance.

@@ -1953,6 +1953,10 @@ func cmdProxyExec(configDir string, args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	preparation, env, err := client.PrepareCodexDaemon(args, env, configDir)
+	if err != nil {
+		log.Fatal(err)
+	}
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -1966,6 +1970,10 @@ func cmdProxyExec(configDir string, args []string) {
 		}
 		log.Fatalf("duckway proxy exec: %v", err)
 	}
+	if err := preparation.VerifyAfter(); err != nil {
+		log.Fatal(err)
+	}
+
 }
 
 func proxyExecEnv(base []string, port int, configDir string) []string {
@@ -1986,6 +1994,9 @@ func proxyExecEnv(base []string, port int, configDir string) []string {
 			override[key] = value
 		}
 	}
+	if ca := override["SSL_CERT_FILE"]; ca != "" {
+		override["CODEX_CA_CERTIFICATE"] = ca
+	}
 	out := make([]string, 0, len(base)+len(override))
 	for _, kv := range base {
 		key, _, ok := strings.Cut(kv, "=")
@@ -1998,7 +2009,7 @@ func proxyExecEnv(base []string, port int, configDir string) []string {
 		}
 		out = append(out, kv)
 	}
-	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"} {
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy", "CODEX_CA_CERTIFICATE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"} {
 		if value, ok := override[key]; ok {
 			out = append(out, key+"="+value)
 		}
