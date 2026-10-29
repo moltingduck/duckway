@@ -31,7 +31,7 @@ PODMAN="${PODMAN:-podman}"
 source "$SCRIPT_DIR/live-credentials-dir.sh"
 LIVE_CREDENTIALS_DIR="$(duckway_resolve_live_credentials_dir "$REPO_ROOT")"
 CODEX_AUTH="${CODEX_AUTH:-$LIVE_CREDENTIALS_DIR/codex-auth.json}"
-IMAGE="${DUCKWAY_LIVE_IMAGE:-docker.io/library/golang:1.25-alpine}"
+IMAGE="${DUCKWAY_LIVE_IMAGE:-docker.io/library/golang:1.26.10-alpine@sha256:5cb67f19c5e7994dcb80c074f7cfca8aeeada45bbdca035f73df269cefdcce61}"
 PROMPT="${DUCKWAY_CODEX_PROMPT:-hello?}"
 CHECK_TOKEN=0
 CC_WATCH=0

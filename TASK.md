@@ -1,3 +1,14 @@
+# Current batch: duckway-plugin-publish-20261029
+
+## Objective and acceptance
+Add an explicit offline `duckway plugin install-local --dir PATH` flow for a local plugin package (`manifest.json` plus declared artifacts), preserving server-managed by-name install/update. Validate API v1, platform, artifact size/hash, and safe local file access; preserve plugin data and refuse managed/local provenance changes. Local install/list/run must avoid Duckway-server requests and local records must stay out of server reports. Deliver the reviewed source to `origin/main` with an ordinary push, then install the verified Duckllo package into the local registry and upgrade only the local Duckway client. Do not deploy a Duckway server or restart live daemons.
+
+## Resource ledger
+Owner `duckway-plugin-publish-20261029`. Candidate worktree `/home/cjiso1117/duckway-plugin-publish-20261029-integration`, branch `codex/duckway-plugin-publish-20261029-integration`, base `557fc8e`. Reviewer worktrees reserved at `/home/cjiso1117/duckway-plugin-publish-20261029-test` and `...-security`; verify agent owns local fixture `/home/cjiso1117/duckway-plugin-publish-20261029-test/tmp/duckway-plugin-publish-20261029-test/package`. Baseline services: Duckllo 8081, unrelated 8080, retained preview 18882; do not alter them. Planned ephemeral toolchain container `duckway-plugin-publish-20261029-local-verify`, pinned Go1.26.10 image, `--rm`, source mount only; owns only container-local module/build/test temporaries and exits/removes before handoff. Requested retained outputs after approval: current local Duckway client binary, recoverable old-binary backup, and local `duckllo` plugin registration in the normal client registry. No production server deployment or daemon restart.
+
+## Status
+The exact 50-path candidate is independently approved (digest recorded in HANDOFF). Functional, security, concurrency, quality, backend API, and lint comparisons are complete. The current Duckllo package passed offline local install/run checks in the reviewer worktree. Source commit, normal push, local client replacement, and local registry install are authorized and in progress. Production server deployment, release/tag/image publication, and daemon changes remain out of scope.
+
 # Current batch: live-credential-path-20261017
 
 ## Objective and acceptance
@@ -149,3 +160,19 @@ ephemeral Podman test container is absent; implementation worktree and branch
 were removed and the worktree registry pruned. Final `git diff --check` passed.
 Preserved baseline five `.claude` worktrees and older `dw-*-1788855706-1278453`
 containers, plus the retained demo. Usage metrics unavailable/unmeasured.
+# Current batch: duckway-plugin-publish-20261029
+
+## Objective
+Rebase the existing Duckway plugin server, authenticated client installer, admin UI, and Go security toolchain candidate onto synchronized `origin/main`; independently verify and publish only after all required gates pass.
+
+## Acceptance
+- [ ] Preserve all upstream changes from base `557fc8e` and candidate plugin intent.
+- [ ] Freeze a source-only candidate inventory and complete independent test and security reviews.
+- [ ] Build, restart, and smoke-test the verified candidate without disturbing existing services.
+- [ ] Commit and push only after all gates pass; report exact remote result and support state.
+
+## Resource ledger
+Owner `duckway-plugin-publish-20261029`. Integration worktree `/home/cjiso1117/duckway-plugin-publish-20261029-integration`, branch `codex/duckway-plugin-publish-20261029-integration`, base `557fc8e` (synchronized origin/main). Reserved independent review siblings: `/home/cjiso1117/duckway-plugin-publish-20261029-test` / `codex/plugin-publish-20261029-test`; `/home/cjiso1117/duckway-plugin-publish-20261029-security` / `codex/plugin-publish-20261029-security`. Existing retained preview owner `duckllo-plugin-verified-preview` on 18882, Duckllo app 8081, and unrelated service 8080 are baseline and must remain intact. Record exact ownership before allocating any new build/runtime resources.
+
+## Status
+In progress. Candidate source transfer is in progress. The only overlapping source conflict so far is client command dispatch: preserve upstream shell completion commands together with plugin commands and foreground plugin dispatch. No commit or push yet.

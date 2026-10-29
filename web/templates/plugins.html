@@ -1,0 +1,45 @@
+{{define "content"}}
+<div id="plugins-page">
+  <div class="page-header">
+    <h1>Plugins</h1>
+    <button type="button" class="btn" id="plugins-refresh">Refresh</button>
+  </div>
+
+  <p class="mb-1">Register a plugin source, check for a release, and explicitly publish it before clients install it with <code>duckway plugin install NAME</code>.</p>
+  <p class="text-muted text-sm mb-1">Disabling a plugin blocks future server distribution. It does not stop or remove plugins already installed on clients. Client versions appear only after clients report them; this page does not track running processes.</p>
+
+  <section class="card" aria-labelledby="plugin-import-heading">
+    <h2 id="plugin-import-heading" style="font-size:1rem;margin-bottom:0.75rem">Register a plugin source</h2>
+    <p id="plugin-import-help" class="text-sm text-muted mb-1">Only publish a source you trust: plugins run native code on clients. Registration checks the manifest. Publishing downloads every declared artifact and verifies its size and SHA-256 before enabling distribution. These integrity checks do not assess whether the code is safe.</p>
+    <form id="plugin-import-form" aria-describedby="plugin-import-help">
+      <div class="grid-2">
+        <div class="form-group">
+          <label for="plugin-name">Plugin name</label>
+          <input id="plugin-name" name="name" type="text" placeholder="duckllo" maxlength="63" pattern="[a-z][a-z0-9\-]{0,62}" required autocomplete="off" spellcheck="false">
+        </div>
+        <div class="form-group">
+          <label for="plugin-manifest-url">Manifest URL</label>
+          <input id="plugin-manifest-url" name="manifest_url" type="url" placeholder="https://releases.example.com/plugin-manifest.json" maxlength="2048" required autocomplete="off" spellcheck="false" aria-describedby="plugin-source-help">
+        </div>
+      </div>
+      <p id="plugin-source-help" class="text-sm text-muted mb-1">The source URL is saved and shown to administrators. Use a public release URL without credentials, query parameters, or fragments. Checks use this same saved source. The server checks automatically every 6 hours by default; publication and client updates remain explicit actions.</p>
+      <button type="submit" class="btn btn-primary" id="plugin-import-submit">Register and check</button>
+    </form>
+  </section>
+
+  <div id="plugins-status" class="mb-1 text-sm" role="status" aria-live="polite">Loading plugins…</div>
+  <div id="plugins-error" class="card" role="alert" hidden></div>
+  <section aria-labelledby="managed-plugins-heading" aria-busy="true" id="plugins-catalog">
+    <h2 id="managed-plugins-heading" style="font-size:1rem;margin-bottom:0.75rem">Managed plugins</h2>
+    <div id="plugins-empty" class="card" hidden>No plugin sources have been registered. Register a trusted manifest above, publish its available version, then run <code>duckway plugin install NAME</code> on a client connected to this server.</div>
+    <div style="overflow:auto" id="plugins-table-wrap" hidden>
+      <table>
+        <thead><tr><th scope="col">Plugin</th><th scope="col">Published and available versions</th><th scope="col">Platforms and integrity</th><th scope="col">Distribution</th><th scope="col">Actions</th></tr></thead>
+        <tbody id="plugins-rows"></tbody>
+      </table>
+    </div>
+  </section>
+  <noscript><p class="card">JavaScript is required to load and manage plugins.</p></noscript>
+</div>
+<script src="/static/plugins.js" defer></script>
+{{end}}

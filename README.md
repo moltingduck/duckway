@@ -121,7 +121,14 @@ curl -fsSL http://duckway-gw/install.sh | sh
 # Register Client → "Full Setup" — installs and registers in one shot.
 ```
 
-For more, see the [User Guide](docs/user-guide.md).
+For more, see the [User Guide](docs/user-guide.md). Client API v1 also supports
+server-managed plugins through `duckway plugin install NAME` and
+`duckway NAME ARGS`; see [Client plugins](docs/client-plugins.md) for the manifest
+contract, Duckllo setup, and existing Ducklion session supervision.
+For offline local development packages, use the explicit
+`duckway plugin install-local --dir PATH` command; it does not contact a Duckway
+server or alter client config. See the same guide for package layout and trust
+boundaries.
 
 ## Architecture
 

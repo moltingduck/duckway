@@ -64,7 +64,8 @@ fi
 mkdir -p "$WORK" "$DUCKLORD_DIR"
 
 cat >"$WORK/Containerfile" <<'EOF'
-FROM docker.io/library/golang:1.25-alpine AS build
+FROM docker.io/library/golang:1.26.10-alpine@sha256:5cb67f19c5e7994dcb80c074f7cfca8aeeada45bbdca035f73df269cefdcce61 AS build
+ENV GOTOOLCHAIN=local
 ARG DUCKWAY_VERSION=podman
 WORKDIR /src
 COPY go.mod go.sum ./

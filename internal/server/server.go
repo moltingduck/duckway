@@ -66,6 +66,7 @@ func New(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	// can wire its manual-refresh endpoint to it.
 	s.startOAuthRefresher(ss)
 	s.SetupAdminRoutes(contentFS, ss)
+	s.startPluginChecker()
 	s.SetupGatewayRoutes(ss)
 	s.startApprovalListeners()
 	s.startApprovalSweeper(ss)
@@ -98,6 +99,7 @@ func NewAdmin(config *Config, db *sql.DB, contentFS fs.FS) (*Server, error) {
 	ss := s.initShared()
 	s.startOAuthRefresher(ss)
 	s.SetupAdminRoutes(contentFS, ss)
+	s.startPluginChecker()
 	s.startApprovalListeners()
 	s.startApprovalSweeper(ss)
 

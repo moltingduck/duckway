@@ -87,7 +87,7 @@ func NewAdminHandler(
 	// Parse each page template paired with the layout
 	pageNames := []string{
 		"dashboard", "services", "api_keys", "usage", "oauth", "placeholders",
-		"clients", "client_updates", "groups", "key_groups", "key_group_detail", "key_suites", "approvals", "logs", "notifications", "canary", "supplychain", "settings", "docs", "cc", "onboarding",
+		"clients", "client_updates", "plugins", "groups", "key_groups", "key_group_detail", "key_suites", "approvals", "logs", "notifications", "canary", "supplychain", "settings", "docs", "cc", "onboarding",
 	}
 
 	pages := make(map[string]*template.Template)

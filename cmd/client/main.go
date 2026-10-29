@@ -117,7 +117,8 @@ func main() {
 		for _, candidate := range completionCandidates(configDir, os.Args[2:]) {
 			fmt.Println(candidate)
 		}
-
+	case "plugin":
+		cmdPlugin(configDir, os.Args[2:], false)
 	case "init":
 		cmdInit(configDir)
 	case "sync":
@@ -215,9 +216,7 @@ func main() {
 	case "help", "--help", "-h":
 		printUsage()
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
-		printUsage()
-		os.Exit(1)
+		cmdPlugin(configDir, os.Args[1:], true)
 	}
 }
 
@@ -225,6 +224,17 @@ func printUsage() {
 	fmt.Println(`duckway — API proxy client for AI agents
 
 Usage:
+  duckway plugin install NAME
+                         Install an approved plugin from the configured Duckway server
+  duckway plugin install-local --dir PATH
+                         Install or replace a plugin from a verified local package
+  duckway plugin list    List the server plugin catalog
+  duckway plugin installed
+                         List locally installed plugins
+  duckway plugin update NAME
+                         Update a plugin from its original configured Duckway server
+  duckway plugin run NAME -- [ARGS...]
+  duckway NAME [ARGS...]  Run a foreground plugin (Ducklion can supervise it)
   duckway init           Register this machine with a Duckway server
   duckway sync           Fetch placeholder keys + statusline from server
   duckway start          Start Ducklion, proxy, and cc-watch daemons
@@ -470,6 +480,9 @@ func cmdSync(configDir string) {
 	}
 
 	fmt.Printf("Synced %d placeholder keys to %s\n", count, client.KeysEnvPath(configDir))
+	if err := client.ReportPluginInventory(context.Background(), configDir, cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "Warning: plugin status was not reported to the server; it will retry on the next sync or control heartbeat.")
+	}
 
 	// Apply supply-chain hardening to package-manager rc files and tell the
 	// user exactly which files changed and what was written.
