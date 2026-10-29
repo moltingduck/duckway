@@ -35,7 +35,7 @@ func RunDoctor(configDir string) DoctorReport {
 }
 
 func RunDoctorWithConfig(configDir string, cfg *Config) DoctorReport {
-	report := DoctorReport{ConfigDir: configDir, Version: version.Get()}
+	report := DoctorReport{ConfigDir: doctorPath(configDir), Version: version.Get()}
 	if cfg == nil {
 		loaded, err := LoadConfig(configDir)
 		if err != nil {
@@ -48,32 +48,31 @@ func RunDoctorWithConfig(configDir string, cfg *Config) DoctorReport {
 		}
 		cfg = loaded
 	}
-	report.Client = cfg.ClientName
-	report.ServerURL = cfg.ServerURL
-	report.add("config", "OK", fmt.Sprintf("client=%s server=%s", emptyDash(cfg.ClientName), emptyDash(cfg.ServerURL)), "")
+	report.Client = fmt.Sprintf("%q", cfg.ClientName)
+	report.ServerURL = "configured (URL hidden)"
+	report.add("config", "OK", fmt.Sprintf("client=%s server=%s", fmt.Sprintf("%q", cfg.ClientName), "configured (URL hidden)"), "")
 
 	api := NewAPIClient(cfg.ServerURL, cfg.Token)
 	if err := api.Ping(); err != nil {
-		report.add("server auth", "ERROR", err.Error(), "check server URL/token or re-run `duckway init`")
+		report.add("server auth", "ERROR", "server unreachable or authentication rejected", "check server URL/token or re-run `duckway init`")
 	} else {
 		report.add("server auth", "OK", "client token accepted", "")
 	}
 	if info, err := CheckUpdateInfo(cfg.ServerURL, version.Get()); err != nil {
-		report.add("updates", "WARN", err.Error(), "server may be old or unreachable")
+		report.add("updates", "WARN", "update metadata unavailable or invalid", "server may be old or unreachable")
 	} else if info.UpdateRequired {
-		report.add("updates", "MISSING", "client update required: "+info.ClientRecommendedVersion, "run `duckway update --restart`")
+		report.add("updates", "MISSING", "client update required; see duckway update", "run `duckway update --restart`")
 	} else if info.UpdateRecommended {
-		report.add("updates", "WARN", "client update available: "+info.ClientRecommendedVersion, "run `duckway update --restart`")
+		report.add("updates", "WARN", "client update available; see duckway update", "run `duckway update --restart`")
 	} else {
 		report.add("updates", "OK", "up to date", "")
 	}
 	if ccs, err := api.FetchCC(); err != nil {
-		report.add("cc assignment", "WARN", err.Error(), "run `duckway sync` after server connectivity is fixed")
+		report.add("cc assignment", "WARN", "assignment metadata unavailable or invalid", "run `duckway sync` after server connectivity is fixed")
 	} else if len(ccs) == 0 {
 		report.add("cc assignment", "MISSING", "no CC assigned to this client", "assign a control channel on the server")
 	} else {
-		cc := ccs[0]
-		report.add("cc assignment", "OK", fmt.Sprintf("%s (%s)", emptyDash(cc.CCName), emptyDash(cc.AgentType)), "")
+		report.add("cc assignment", "OK", "assigned channel", "")
 	}
 	report.addDaemonChecks(configDir, cfg)
 	report.addLocalOnlyChecks(configDir, cfg)
@@ -96,7 +95,7 @@ func (r *DoctorReport) addDaemonChecks(configDir string, cfg *Config) {
 		r.add("local proxy port", "MISSING", proxyURL+" not reachable", "start the proxy daemon")
 	}
 	if state, err := LoadCCState(configDir); err != nil {
-		r.add("cc sync state", "WARN", err.Error(), "run `duckway sync`")
+		r.add("cc sync state", "WARN", "synced assignment state unreadable or invalid", "run `duckway sync`")
 	} else if len(state.CCs) == 0 {
 		r.add("cc sync state", "MISSING", "no synced CC assignment", "run `duckway sync` after assigning CC")
 	} else {
@@ -110,6 +109,7 @@ func (r *DoctorReport) addDaemonChecks(configDir string, cfg *Config) {
 }
 
 func (r *DoctorReport) addLocalOnlyChecks(configDir string, cfg *Config) {
+	r.addCredentialChecks(configDir, cfg)
 	r.addDucklionCheck()
 	r.addCCRunnerModeCheck()
 	agents := availableAgents()
@@ -119,7 +119,7 @@ func (r *DoctorReport) addLocalOnlyChecks(configDir string, cfg *Config) {
 		r.add("agent binaries", "OK", strings.Join(agents, ", "), "")
 	}
 	if projects, err := NewCCProjectStore(configDir).List(); err != nil {
-		r.add("projects", "WARN", err.Error(), "fix cc-projects.json or re-add projects")
+		r.add("projects", "WARN", "saved projects unreadable or invalid", "fix cc-projects.json or re-add projects")
 	} else if len(projects) == 0 {
 		r.add("projects", "MISSING", "no saved projects", "run `duckway projects add <path>`")
 	} else {
@@ -183,7 +183,7 @@ func (r *DoctorReport) addCACheck(configDir string) {
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		r.add("CA cert", "WARN", err.Error(), "re-run `duckway init`")
+		r.add("CA cert", "WARN", "invalid X.509 certificate", "re-run `duckway init`")
 		return
 	}
 	now := time.Now()
@@ -248,11 +248,4 @@ func availableAgents() []string {
 		}
 	}
 	return out
-}
-
-func emptyDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }

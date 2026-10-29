@@ -1634,20 +1634,45 @@ func TestHandleClientCommand_DuckwayVersion(t *testing.T) {
 }
 
 func TestHandleClientCommand_DuckwayDoctor(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", home)
 	fake := newFakeServer(t)
 	w := stubWatch(t, t.TempDir(), fake)
 
 	sendClientCommand(t, w, "dwch_mgmt", "!duckway-doctor", nil)
 
 	msgs := fake.snapshotMessages()
-	if len(msgs) != 1 {
-		t.Fatalf("expected one reply, got %d", len(msgs))
+	if len(msgs) == 0 {
+		t.Fatal("expected doctor reply")
 	}
-	got := msgs[0]["content"]
-	for _, want := range []string{"Duckway doctor", "Config:", "server auth", "ducklion"} {
+	var report strings.Builder
+	for i, msg := range msgs {
+		if msg["_path"] != "/client/cc/channels/dwch_mgmt/messages" {
+			t.Fatalf("unexpected reply destination %q", msg["_path"])
+		}
+		content := msg["content"]
+		if len(msgs) > 1 {
+			prefix := fmt.Sprintf("(part %d/%d)\n", i+1, len(msgs))
+			if !strings.HasPrefix(content, prefix) {
+				t.Fatalf("missing ordered chunk prefix %q", prefix)
+			}
+			content = strings.TrimPrefix(content, prefix)
+		}
+		if n := len([]rune(content)); n == 0 || n > discordMessageChunkLimit {
+			t.Fatalf("invalid reply chunk length %d", n)
+		}
+		report.WriteString(content)
+	}
+	got := report.String()
+	for _, want := range []string{"Duckway doctor", "Config:", "server auth", "ducklion", "Codex credential source", "Claude credential source", "observed requests"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("doctor reply missing %q:\n%s", want, got)
 		}
+	}
+	if !strings.HasPrefix(got, "```text\n") || !strings.HasSuffix(got, "\n```") {
+		t.Fatal("doctor reply lost report formatting")
 	}
 }
 

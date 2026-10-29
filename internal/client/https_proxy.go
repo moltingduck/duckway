@@ -70,6 +70,7 @@ type loanedToken struct {
 }
 
 type httpsProxy struct {
+	doctor     doctorObservations
 	serverURL  string
 	token      string
 	ca         *services.CAManager
@@ -230,6 +231,14 @@ func RunHTTPSProxy(cfg *Config, syncInterval time.Duration, debug bool) error {
 }
 
 func (p *httpsProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/proxy/doctor" {
+		if !r.URL.IsAbs() || doctorLocalAuthority(r, r.URL.Host) {
+			p.serveDoctor(w, r)
+			return
+		}
+		// This is an ordinary external request, never forward local diagnostic auth.
+		r.Header.Del("X-Duckway-Token")
+	}
 	if r.Method == http.MethodConnect {
 		p.handleConnect(w, r)
 		return
@@ -245,6 +254,12 @@ func (p *httpsProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.IsAbs() {
 		p.handleHTTPForwardProxy(w, r)
 		return
+	}
+
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/proxy/"), "/")
+	if strings.HasPrefix(r.URL.Path, "/proxy/") && len(parts) > 0 {
+		entry := hostEntry{Service: parts[0]}
+		p.observeDoctor(entry, r, requestUsesDuckwayPhantom(entry, r))
 	}
 
 	// Historical local-proxy behavior: requests already addressed to the
@@ -295,6 +310,7 @@ func (p *httpsProxy) handleHTTPForwardProxy(w http.ResponseWriter, r *http.Reque
 	p.hostMu.RUnlock()
 
 	usesPhantom := requestUsesDuckwayPhantom(entry, r)
+	p.observeDoctor(entry, r, usesPhantom)
 	if known && entry.Service != "" && usesPhantom {
 		if status, message := phantomAssignmentError(entry); status != 0 {
 			http.Error(w, message, status)
@@ -484,6 +500,7 @@ func (p *httpsProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			entry.Assigned = false
 		}
 		usesPhantom := requestUsesDuckwayPhantom(entry, req)
+		p.observeDoctor(entry, req, usesPhantom)
 		if !usesPhantom {
 			if entry.Service == "github" && githubNeedsCredentialChallenge(req) {
 				if !entry.AssignmentKnown {

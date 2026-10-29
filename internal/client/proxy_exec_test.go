@@ -61,12 +61,3 @@ func TestProxyExecKeyEnvAssignmentsAndNativeOAuth(t *testing.T) {
 		})
 	}
 }
-
-func TestProxyExecArgsPreservesNativeIntent(t *testing.T) {
-	for _, args := range [][]string{{"codex"}, {"codex", "remote-control", "start"}, {"codex", "--no-daemon"}, {"codex", "exec", "hello"}} {
-		got, err := ProxyExecArgs(args, nil)
-		if err != nil || !reflect.DeepEqual(got, args) {
-			t.Fatalf("argv changed: %v", err)
-		}
-	}
-}

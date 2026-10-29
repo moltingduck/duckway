@@ -1949,14 +1949,6 @@ func cmdProxyExec(configDir string, args []string) {
 	}
 
 	env := proxyExecEnv(client.ProxyExecKeyEnv(os.Environ(), configDir, args[0]), cfg.ProxyPort, configDir)
-	args, err = client.ProxyExecArgs(args, env)
-	if err != nil {
-		log.Fatal(err)
-	}
-	preparation, env, err := client.PrepareCodexDaemon(args, env, configDir)
-	if err != nil {
-		log.Fatal(err)
-	}
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -1969,9 +1961,6 @@ func cmdProxyExec(configDir string, args []string) {
 			os.Exit(exitErr.ExitCode())
 		}
 		log.Fatalf("duckway proxy exec: %v", err)
-	}
-	if err := preparation.VerifyAfter(); err != nil {
-		log.Fatal(err)
 	}
 
 }

@@ -760,7 +760,23 @@ duckway doctor
 The report checks the current client's config, server token, update status,
 proxy daemon, local proxy port, CC assignment/sync state, `cc watch`, companion
 `ducklion`, supported agent binaries, saved projects, CA certificate, and proxy
-port.
+port. It also reports the selected Codex `CODEX_HOME/auth.json`, Claude credential
+file candidate and environment/helper overrides, bounded credential-file failures,
+and whether configured phantoms match the local synced key. These are static
+file observations, not proof of the headers an agent sent. Doctor never executes
+credential helpers or refreshes/syncs credentials.
+
+The local proxy keeps only in-memory counters for four fixed provider categories:
+phantom, missing auth headers, and nonphantom auth headers. Doctor retrieves them
+from an authenticated loopback-only endpoint. Counts cover the proxy process
+lifetime; no observations (or an older proxy) report UNKNOWN. Reproduce a request
+then rerun doctor. Public requests without auth can be normal, and counters do
+not prove successful authentication or identify a specific agent.
+
+`duckway proxy exec -- CMD ARG...` preserves the command and arguments and prepares
+proxy, CA, and synced-key environment variables. If an existing Codex native
+daemon inherited an earlier environment, stop it manually with
+`codex app-server daemon stop`, then launch `duckway proxy exec -- codex`.
 
 From a CC management channel, run the same current-client diagnosis remotely:
 

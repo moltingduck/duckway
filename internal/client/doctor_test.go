@@ -40,7 +40,7 @@ func TestRunDoctorReportsLocalProjectRegistry(t *testing.T) {
 	if !strings.Contains(got, "[OK] projects: 1 saved project(s)") {
 		t.Fatalf("doctor report =\n%s", got)
 	}
-	if !strings.Contains(got, "Client: local") {
+	if !strings.Contains(got, `Client: "local"`) {
 		t.Fatalf("doctor report missing client name:\n%s", got)
 	}
 }
