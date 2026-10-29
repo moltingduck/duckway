@@ -203,28 +203,6 @@ func (r *DoctorReport) add(name, status, detail, missing string) {
 	r.Lines = append(r.Lines, DoctorLine{Name: name, Status: status, Detail: detail, Missing: missing})
 }
 
-func (r DoctorReport) FormatText() string {
-	var b strings.Builder
-	b.WriteString("Duckway doctor\n")
-	b.WriteString("Version: " + r.Version + "\n")
-	b.WriteString("Config: " + r.ConfigDir + "\n")
-	if r.Client != "" {
-		b.WriteString("Client: " + r.Client + "\n")
-	}
-	if r.ServerURL != "" {
-		b.WriteString("Server: " + r.ServerURL + "\n")
-	}
-	b.WriteString("\n")
-	for _, line := range r.Lines {
-		fmt.Fprintf(&b, "[%s] %s: %s", line.Status, line.Name, line.Detail)
-		if line.Missing != "" {
-			b.WriteString(" | fix: " + line.Missing)
-		}
-		b.WriteByte('\n')
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
 func doctorReadPID(path string) (int, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {

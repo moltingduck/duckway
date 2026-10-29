@@ -2633,7 +2633,7 @@ func cmdStatus(configDir string) {
 }
 
 func cmdDoctor(configDir string) {
-	fmt.Println(client.RunDoctor(configDir).FormatText())
+	fmt.Println(client.RunDoctor(configDir).FormatTextWithColor(isTTY))
 }
 
 func cmdHosts(configDir string) {
