@@ -71,7 +71,7 @@
       <label>Client name <span style="color:var(--danger)">*</span></label>
       <input type="text" id="client-name" placeholder="e.g. dev-laptop" autofocus>
     </div>
-    <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1rem">
+    <div style="display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.5rem;margin-top:1rem">
       <button class="btn btn-primary" data-action="createClient">Create &amp; Continue →</button>
     </div>
   </div>
@@ -91,9 +91,9 @@
       </select>
     </div>
     <div id="suite-entries-preview" style="display:none;margin-top:.5rem;padding:.75rem;background:var(--bg-input);border-radius:var(--radius);font-size:.85rem"></div>
-    <div style="display:flex;justify-content:space-between;margin-top:1rem">
+    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;margin-top:1rem">
       <button class="btn" data-action="goStep" data-step="1">← Back</button>
-      <div style="display:flex;gap:.5rem">
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem">
         <button class="btn" data-action="goStep" data-step="3">Skip</button>
         <button class="btn btn-primary" data-action="assignSuite">Assign &amp; Continue →</button>
       </div>
@@ -132,9 +132,9 @@
       <select id="cc-key" data-on-change="onCCKeyChange"></select>
     </div>
     <div id="cc-config-fields"></div>
-    <div style="display:flex;justify-content:space-between;margin-top:1rem">
+    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;margin-top:1rem">
       <button class="btn" data-action="goStep" data-step="2">← Back</button>
-      <div style="display:flex;gap:.5rem">
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem">
         <button class="btn" data-action="finishOnboarding">Skip</button>
         <button class="btn btn-primary" data-action="createCC">Create CC &amp; Finish →</button>
       </div>
@@ -149,7 +149,7 @@
     <h2 style="margin-bottom:1.5rem">Client onboarded</h2>
     <div id="summary" style="text-align:left;display:inline-block;min-width:min(320px,100%);max-width:480px;margin-bottom:1.5rem"></div>
     <div id="setup-commands" style="text-align:left;max-width:760px;margin:0 auto 1.5rem"></div>
-    <div style="display:flex;gap:.75rem;justify-content:center">
+    <div style="display:flex;flex-wrap:wrap;gap:.75rem;justify-content:center">
       <a href="/admin/clients" class="btn btn-primary">View Clients</a>
       <button class="btn" data-action="resetWizard">Onboard Another</button>
     </div>

@@ -1,12 +1,12 @@
 {{define "content"}}
 {{with .KeyGroup}}
-<div class="page-header" style="display:flex;align-items:center;gap:1rem">
+<div class="page-header" style="display:flex;flex-wrap:wrap;align-items:center;gap:1rem">
   <a href="/admin/key-groups" class="btn btn-sm">&larr; Key Groups</a>
   <h1 style="margin:0">{{.Name}}</h1>
   <span class="badge badge-blue">{{.ServiceName}}</span>
   <span class="badge badge-purple">{{.RotationStrategy}}</span>
   {{if .Description}}<span class="text-muted text-sm">{{.Description}}</span>{{end}}
-  <div style="margin-left:auto;display:flex;gap:.5rem">
+  <div style="margin-left:auto;display:flex;flex-wrap:wrap;gap:.5rem">
     <button class="btn btn-sm" data-action="modal-open" data-target="#edit-modal">Edit Settings</button>
     <button class="btn btn-sm" data-action="modal-open" data-target="#add-member-modal">Add Key</button>
   </div>

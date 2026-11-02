@@ -373,8 +373,8 @@ code, .mono {
 .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.25rem; }
 
 /* Grid helpers */
-.flex { display: flex; }
-.flex-between { display: flex; justify-content: space-between; align-items: center; }
+.flex { display: flex; flex-wrap: wrap; }
+.flex-between { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: space-between; align-items: center; }
 .gap-sm { gap: 0.5rem; }
 .gap-md { gap: 1rem; }
 .mt-1 { margin-top: 0.5rem; }

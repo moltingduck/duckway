@@ -8,12 +8,12 @@
   {{if .KeyGroups}}
   {{range .KeyGroups}}
   <div class="group-block" style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin-bottom:1rem">
-    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.75rem">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;margin-bottom:.75rem">
       <strong>{{.Name}}</strong>
       <span class="badge badge-blue">{{.ServiceName}}</span>
       <span class="badge badge-purple" title="Rotation strategy">{{.RotationStrategy}}</span>
       {{if .Description}}<span class="text-muted text-sm">{{.Description}}</span>{{end}}
-      <div style="margin-left:auto;display:flex;gap:.5rem">
+      <div style="margin-left:auto;display:flex;flex-wrap:wrap;gap:.5rem">
         <a href="/admin/key-groups/{{.ID}}" class="btn btn-sm">View</a>
         <button class="btn btn-sm" data-action="openEdit" data-id="{{.ID}}" data-name="{{.Name}}" data-description="{{.Description}}" data-strategy="{{.RotationStrategy}}">Edit</button>
         <button class="btn btn-sm" data-action="openAddMember" data-id="{{.ID}}">Add Key</button>

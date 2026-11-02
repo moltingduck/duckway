@@ -12,10 +12,10 @@
   {{if .KeySuites}}
   {{range .KeySuites}}
   <div class="group-block" style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin-bottom:1rem">
-    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;margin-bottom:.5rem">
       <strong>{{.Name}}</strong>
       {{if .Description}}<span class="text-muted text-sm">{{.Description}}</span>{{end}}
-      <div style="margin-left:auto;display:flex;gap:.5rem">
+      <div style="margin-left:auto;display:flex;flex-wrap:wrap;gap:.5rem">
         <button class="btn btn-sm" data-action="openSuiteEntries" data-id="{{.ID}}" data-name="{{.Name}}">Manage Entries</button>
         <button class="btn btn-sm btn-primary" data-action="openAssign" data-id="{{.ID}}" data-name="{{.Name}}">Assign to Client</button>
         <button class="btn btn-sm" data-action="openEditSuite" data-id="{{.ID}}" data-name="{{.Name}}" data-description="{{.Description}}">Edit</button>
@@ -295,11 +295,11 @@ async function refreshEntries(suiteID) {
     return;
   }
   DW.setHTML(list, DW.html`${data.entries.map(e => DW.html`
-    <div style="display:flex;align-items:center;gap:.5rem;padding:.4rem 0;border-bottom:1px solid var(--border)">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;padding:.4rem 0;border-bottom:1px solid var(--border)">
       <span class="badge badge-blue">${e.service_name}</span>
       <span class="text-sm">${e.api_key_name || e.group_name || '—'}</span>
       <span class="text-muted text-sm mono">${e.env_name}</span>
-      <div style="margin-left:auto;display:flex;gap:.5rem">
+      <div style="margin-left:auto;display:flex;flex-wrap:wrap;gap:.5rem">
         <button class="btn btn-sm btn-danger" data-action="removeEntry" data-suite-id="${suiteID}" data-entry-id="${e.id}">Remove</button>
       </div>
     </div>`)}`);
