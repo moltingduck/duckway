@@ -135,7 +135,14 @@ case "$1" in
     resolve "$1" > "$ST/img-$(echo "$2" | tr '/:' '__')"
     exit 0
     ;;
-  ps) [ -n "${STUB_LEFTOVER:-}" ] && printf '%s\n' $STUB_LEFTOVER; exit 0 ;;
+  ps)
+    # Labelled leftovers only when filtered by the one-off label; a plain name
+    # filter would also (wrongly) return the unlabelled ones.
+    case "$*" in
+      *label=duckway.oneoff=upgrade-backup*) [ -n "${STUB_LEFTOVER:-}" ] && printf '%s\n' $STUB_LEFTOVER ;;
+      *) [ -n "${STUB_LEFTOVER:-}${STUB_UNLABELED:-}" ] && printf '%s\n' ${STUB_LEFTOVER:-} ${STUB_UNLABELED:-} ;;
+    esac
+    exit 0 ;;
   stop|rm) exit 0 ;;
   cp)
     # docker cp CONTAINER:SRC DEST
@@ -309,10 +316,11 @@ assert "tag before build" before 'docker tag ' 'docker compose .* build'
 assert "build before backup" before 'docker compose .* build' 'backup-tmp-20260102T030405Z'
 assert "backup probe before backup" before "Usage: backup --out" 'backup-tmp-20260102T030405Z'
 assert "backup before recreate" before 'backup-tmp-20260102T030405Z' 'docker compose .* up -d'
-assert "backup runs as a one-off container of the NEW image" in_log 'compose .* run --rm -T --no-deps --name duckway-backup-[^ ]+ --entrypoint sh admin-prod -c .*backup-tmp-20260102T030405Z.*duckway-admin backup --out'
+assert "backup runs as a one-off container of the NEW image" in_log 'compose .* run --rm -T --no-deps -l duckway.oneoff=upgrade-backup --name duckway-backup-[^ ]+ --entrypoint sh admin-prod -c .*backup-tmp-20260102T030405Z.*duckway-admin backup --out'
 assert_not "running (old) container is never asked to back up" in_log 'exec .* backup'
 assert_not "backup probe never executes the binary" in_log 'backup --help'
 assert "one-off backup container has a deterministic name" in_log '--name duckway-backup-20260102T030405Z'
+assert "one-off backup containers carry the cleanup label" in_log '-l duckway.oneoff=upgrade-backup'
 assert "one-off backup container is force-removed" in_log 'docker rm -f duckway-backup-20260102T030405Z'
 assert "restore-side umask and sha check present in rollback" true
 assert "wget probes have a timeout" in_log 'wget -T 5 '
@@ -565,9 +573,19 @@ STUB_LEFTOVER="duckway-backup-20250101T000000Z" run_prod "" -- rollback --to bac
 assert "rollback proceeds after lock cleared" [ "$RC" -eq 0 ]
 assert "leftover one-off containers removed once the lock is held" in_log 'docker rm -f duckway-backup-20250101T000000Z'
 restore_proj
+STUB_LEFTOVER="duckway-backup-foo duckway-backup-20250101T000000Z" STUB_UNLABELED="duckway-backup-20240101T000000Z" run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "labelled exact-pattern leftover removed" in_log 'docker rm -f duckway-backup-20250101T000000Z'
+assert_not "wrongly named container survives" in_log 'rm -f duckway-backup-foo'
+assert_not "unlabelled container survives" in_log 'rm -f duckway-backup-20240101T000000Z'
+restore_proj
 STUB_NO_CONFIG_IMAGE=1 STUB_CONFIG_IMAGES="img-duckway-admin img-duckway-gateway" run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
 assert "missing container accepted when in configured images" [ "$RC" -eq 0 ]
 assert "configured-images match noted" in_out "matches the deployment's configured images"
+restore_proj
+sed -i 's|"image_name":"img-duckway-admin"|"image_name":"img-duckway-gateway"|' "$RB/manifest.json"
+STUB_NO_CONFIG_IMAGE=1 STUB_CONFIG_IMAGES="img-duckway-admin img-duckway-gateway" run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "configured name but foreign-repo tag refused" [ "$RC" -ne 0 ]
+assert "repo mismatch explained" in_out 'different repositories'
 restore_proj
 STUB_NO_CONFIG_IMAGE=1 STUB_CONFIG_IMAGES="img-duckway-gateway" run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
 assert "missing container refused when absent from configured images" [ "$RC" -ne 0 ]
@@ -575,6 +593,7 @@ assert_not "absent from configured images changes nothing" in_log 'docker (tag|s
 restore_proj
 STUB_INSPECT_ERROR=1 run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
 assert "other inspect errors refuse" [ "$RC" -ne 0 ]
+assert_not "generic 'not found' is not treated as a missing container" bash -c "grep -q 'does not exist; ' '$OUT'"
 assert "inspect error reported" in_out 'cannot inspect duckway-admin'
 assert_not "inspect error changes nothing" in_log 'docker (tag|stop) |compose .* (up|run) '
 restore_proj
@@ -680,7 +699,7 @@ assert "combined upgrade exits 0" [ "$RC" -eq 0 ]
 assert "combined builds server only" in_log 'build server-prod$'
 assert "combined recreates server" in_log 'up -d --no-deps --force-recreate server-prod'
 assert_not "combined never touches gateway" in_log 'gateway'
-assert "combined backup runs as one-off server-prod container" in_log 'run --rm -T --no-deps --name duckway-backup-[^ ]+ --entrypoint sh server-prod -c .*backup-tmp-20260102T030405Z.*duckway-server backup --out'
+assert "combined backup runs as one-off server-prod container" in_log 'run --rm -T --no-deps -l duckway.oneoff=upgrade-backup --name duckway-backup-[^ ]+ --entrypoint sh server-prod -c .*backup-tmp-20260102T030405Z.*duckway-server backup --out'
 
 # ================================================================ postgres
 echo "# postgres backend"

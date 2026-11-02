@@ -346,6 +346,7 @@ upgrade_check() {
 # compose client was stopped by a timeout).
 remove_oneoff() { "$CONTAINER_RUNTIME" rm -f "$1" >/dev/null 2>&1 || true; }
 BACKUP_CONTAINER=""
+ONEOFF_LABEL="duckway.oneoff=upgrade-backup"
 # cleanup_backup_tmp: remove the temporary DB copy a (possibly force-killed)
 # backup container may have left on the data volume.
 cleanup_backup_tmp() {
@@ -360,7 +361,9 @@ UPGRADE_LOCK_HELD=0
 # list_backup_containers: leftover one-off backup containers (created only by
 # this tool, always named duckway-backup-<stamp>).
 list_backup_containers() {
-  "$CONTAINER_RUNTIME" ps -a --filter name=duckway-backup- --format '{{.Names}}' 2>/dev/null | grep '^duckway-backup-' || true
+  # Select by label AND the exact generated name: never touch other containers.
+  "$CONTAINER_RUNTIME" ps -a --filter "label=$ONEOFF_LABEL" --format '{{.Names}}' 2>/dev/null \
+    | grep -E '^duckway-backup-[0-9]{8}T[0-9]{6}Z$' || true
 }
 remove_leftover_backup_containers() {
   local n
@@ -422,7 +425,7 @@ backup_sqlite() {
   # Inspect the binary instead of executing it: an image that predates the
   # subcommand would start a full server (migrations, integrations) on
   # `backup --help`. The marker is the subcommand's usage line.
-  if ! with_timeout 120 "${COMPOSE[@]}" run --rm -T --no-deps --name "$cname" --entrypoint sh "$svc" -c \
+  if ! with_timeout 120 "${COMPOSE[@]}" run --rm -T --no-deps -l "$ONEOFF_LABEL" --name "$cname" --entrypoint sh "$svc" -c \
       "grep -a -q -F -- 'Usage: backup --out' \"\$(command -v $bin)\"" >/dev/null 2>&1; then
     remove_oneoff "$cname"
     echo "The new $bin image has no 'backup --out' subcommand marker; refusing to run it (it could start a server)." >&2
@@ -431,7 +434,7 @@ backup_sqlite() {
   remove_oneoff "$cname"
   echo "Backing up SQLite via VACUUM INTO using the new image on the data volume (services keep running)..."
   rc=0
-  with_timeout 900 "${COMPOSE[@]}" run --rm -T --no-deps --name "$cname" --entrypoint sh "$svc" -c \
+  with_timeout 900 "${COMPOSE[@]}" run --rm -T --no-deps -l "$ONEOFF_LABEL" --name "$cname" --entrypoint sh "$svc" -c \
       "umask 077; d=/data/.backup-tmp-$STAMP; mkdir -m 700 \"\$d\" && f=\"\$d/duckway.db\" && trap 'rm -rf \"\$d\"' EXIT INT TERM && $bin backup --out \"\$f\" >&2 && sha256sum \"\$f\" | awk '{print \"DUCKWAY_BACKUP_SHA256=\" \$1}' >&2 && cat \"\$f\"" \
       > "$part" 2> "$errf" || rc=$?
   remove_oneoff "$cname"
@@ -858,9 +861,13 @@ do_rollback() {
         echo "Error: manifest image name '$name' does not match $c's current image '$cur'; refusing to retag an arbitrary image." >&2
         exit 1
       fi
-    elif grep -qiE 'no such (object|container)|not found|does not exist' "$ROLLBACK_ERR" 2>/dev/null; then
+    elif grep -qiE 'no such (object|container)|no container with name' "$ROLLBACK_ERR" 2>/dev/null; then
       # The container is gone (e.g. a failed recreate removed it): validate the
       # name against the images the deployment is configured with.
+      if [ "$(img_repo "$name")" != "$(img_repo "$tag")" ]; then
+        echo "Error: $c does not exist and manifest image '$name' and rollback tag '$tag' are in different repositories; refusing to retag." >&2
+        exit 1
+      fi
       cfg_images="$("${COMPOSE[@]}" config --images 2>/dev/null || true)"
       if [ -n "$cfg_images" ]; then
         if ! printf '%s\n' "$cfg_images" | grep -qxF -- "$name"; then
@@ -869,11 +876,7 @@ do_rollback() {
         fi
         echo "Note: $c does not exist; manifest image '$name' matches the deployment's configured images."
       else
-        echo "WARNING: $c does not exist and the compose image list is unavailable; falling back to a same-repository check." >&2
-        if [ "$(img_repo "$name")" != "$(img_repo "$tag")" ]; then
-          echo "Error: manifest image '$name' and rollback tag '$tag' are in different repositories; refusing to retag." >&2
-          exit 1
-        fi
+        echo "WARNING: $c does not exist and the compose image list is unavailable; falling back to the same-repository check (already satisfied)." >&2
         echo "Note: $c does not exist; accepting manifest image '$name' (same repository as its rollback tag)."
       fi
     else
