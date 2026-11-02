@@ -11,6 +11,8 @@ For internals, code layout, or how the phantom-token swap works under the hood, 
 - [First-time setup](#first-time-setup)
 - [Daily operations](#daily-operations)
 - [Production deployment](#production-deployment)
+- [Upgrading](#upgrading)
+- [Reverse proxy and live updates](#reverse-proxy-and-live-updates)
 - [Refreshable tokens (Claude, OpenAI/Codex, generic OAuth)](#refreshable-tokens-claude-openaicodex-generic-oauth)
 - [Setting up agents](#setting-up-agents)
 - [Managing remote agent sessions with Ducklord](#managing-remote-agent-sessions-with-ducklord)
@@ -223,6 +225,8 @@ DISCORD_CHANNEL_ID=
 ./scripts/prod.sh logs          # follow logs
 ./scripts/prod.sh status        # container + Tailscale status
 ./scripts/prod.sh password      # show first-run admin password (if still in logs)
+./scripts/prod.sh upgrade       # consistent backup, build, recreate, smoke test (see Upgrading)
+./scripts/prod.sh rollback --to backups/upgrade-<ts>  # restore previous images and database
 ./scripts/prod.sh nuke          # asks confirmation, deletes all data
 ```
 
@@ -246,6 +250,131 @@ You **must** set the gateway URL in **Settings → Gateway URL** (e.g. `http://d
 If you don't set it, the clients page warns:
 
 > Gateway URL not configured. Set it in Settings (this admin panel does not serve `/install.sh` in split mode).
+
+---
+
+## Upgrading
+
+`scripts/prod.sh` can upgrade a running production install with a consistent
+backup, smoke tests and a one-command rollback. Pull or check out the new
+revision first, then:
+
+```bash
+./scripts/prod.sh upgrade --check     # read-only preflight, changes nothing
+./scripts/prod.sh upgrade             # asks for confirmation (--yes to skip)
+./scripts/prod.sh rollback --to backups/upgrade-<UTC timestamp> [--keep-data] [--yes]
+```
+
+### What `upgrade --check` reports
+
+It only reads: running image IDs and versions, the target commit (with a
+warning if the working tree is dirty), `DUCKWAY_PROD_MODE`, the database
+backend, free disk space versus the data size (it needs about twice the data
+size plus 50 MB), and a reminder that schema migrations are append-only by
+policy, so the previous image keeps working against an upgraded database. If
+`DUCKWAY_ADMIN_PUBLIC_URL` is set in `.prod.env` (for example
+`https://duckway.example.com`), it also fetches `/admin/login` through your
+reverse proxy and warns when the `Content-Security-Policy` header is missing or
+differs from Duckway's. It exits non-zero only for blocking problems such as an
+app container that is not running or insufficient disk space.
+
+### What `upgrade` does
+
+1. Runs the check and aborts on a blocking problem.
+2. Creates `backups/upgrade-<UTC timestamp>/` (mode 700) and takes a consistent
+   backup while Duckway keeps serving:
+   - SQLite: `duckway-admin backup --out ...` (`duckway-server backup` in
+     combined mode) runs inside the container and uses `VACUUM INTO`, a
+     transactionally consistent copy that never overwrites an existing file,
+     saved as `duckway.db`.
+   - PostgreSQL: `pg_dump -Fc` inside the `duckway-postgres` container, saved as
+     `duckway.pgdump` and verified with `pg_restore -l`.
+   - `data-files.tar` holds the encryption key, CA material and other files in
+     `/data` (everything except the live database files).
+3. Tags each running app image `<image>:rollback-<timestamp>`.
+4. Writes `manifest.json` (previous image IDs and rollback tags, commit before
+   and after, mode, backend, backup file names with sha256).
+5. Builds the new images before touching any running container.
+6. Recreates the app services and smoke-tests them (`/admin/login` returns 200
+   with a `Content-Security-Policy` header, `/api/events` answers 401, the
+   gateway answers `/healthz`), then prints the rollback command.
+
+Any failure before step 6 starts leaves the running services untouched. A
+failure after recreation prints the exact `rollback` command and marks the
+manifest `failed`. `.prod.env` and Tailscale state are not part of the backup.
+
+### Downtime
+
+- Split mode: admin is recreated first and smoke-tested before the gateway is
+  touched. The admin UI is briefly unavailable; agent traffic through the
+  gateway is interrupted only for the gateway container swap (seconds).
+- Combined mode: the single server container serves both, so admin and gateway
+  traffic are interrupted together during the swap.
+
+### Rolling back
+
+`rollback --to DIR` reads the manifest, requires you to type the backup
+directory name (or pass `--yes`), re-tags the saved images and recreates the
+app services. Unless `--keep-data` is given it first stops the app services and
+restores the database from the backup (SQLite file copy into the data volume;
+PostgreSQL `pg_restore --single-transaction --clean`). Every write made after
+the backup (approvals, request logs, new keys and clients) is lost. With
+`--keep-data` only the images are rolled back and the current database is kept,
+which relies on the append-only migration policy.
+
+### PostgreSQL notes
+
+The backup needs `duckway-postgres` running; `upgrade --check` blocks if it is
+not. The dump is taken while PostgreSQL serves traffic and is consistent as of
+one snapshot. Restores replace the contents of the configured database, so use
+a rollback of data only when you accept losing later writes. Mode and backend
+in `.prod.env` must match the manifest for `rollback` to proceed.
+
+---
+
+## Reverse proxy and live updates
+
+The admin console streams change notifications over Server-Sent Events at
+`/api/events` so the Approvals, Request log, Rollouts and Overview pages update
+without reloading. If the console is published through a reverse proxy, that
+proxy must not buffer or time out long-lived responses. Without it the pages
+fall back to polling and the top bar shows "Polling".
+
+**Do not override `Content-Security-Policy` in the proxy.** Duckway sends a
+per-request nonce policy; a proxy that replaces or adds its own CSP breaks the
+console scripts. `./scripts/prod.sh upgrade --check` warns about this when
+`DUCKWAY_ADMIN_PUBLIC_URL` is set.
+
+nginx:
+
+```nginx
+location /api/events {
+    proxy_pass http://duckway-admin:9091;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_read_timeout 1h;
+}
+```
+
+(Duckway also sends `X-Accel-Buffering: no`; keep the `location /` block's
+`proxy_pass` and do not use `add_header Content-Security-Policy` there.)
+
+Caddy:
+
+```caddy
+duckway.example.com {
+    reverse_proxy duckway-admin:9091 {
+        flush_interval -1
+    }
+}
+```
+
+Tailscale serve proxies to the local port without buffering, so no extra
+settings are needed; just do not add a header-rewriting proxy in front of it.
+For the built-in Tailscale profiles the sidecars already forward to the
+containers.
 
 ---
 
