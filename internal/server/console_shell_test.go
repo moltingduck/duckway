@@ -143,7 +143,7 @@ func TestEveryAdminPageRendersWithNonceAndShell(t *testing.T) {
 		"/admin/clients", "/admin/client-updates", "/admin/groups", "/admin/key-groups",
 		"/admin/key-groups/" + g.ID, "/admin/key-suites", "/admin/approvals", "/admin/logs",
 		"/admin/notifications", "/admin/canary", "/admin/oauth", "/admin/cc", "/admin/onboarding",
-		"/admin/settings", "/admin/supply-chain", "/admin/docs",
+		"/admin/settings", "/admin/supply-chain", "/admin/docs", "/admin/plugins",
 	}
 	for _, p := range paths {
 		req := httptest.NewRequest(http.MethodGet, p, nil)

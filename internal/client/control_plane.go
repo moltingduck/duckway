@@ -181,6 +181,9 @@ func controlHeartbeatOnce(ctx context.Context, configDir string, cfg *Config, co
 			return 0, fmt.Errorf("received a different job while %s is active", state.Command.ID)
 		}
 	}
+	if err := ReportPluginInventory(ctx, configDir, cfg); err != nil {
+		log.Printf("[%s] plugin status not reported; retrying on next heartbeat", component)
+	}
 	return time.Duration(response.NextHeartbeatSeconds) * time.Second, nil
 }
 
