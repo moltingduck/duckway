@@ -370,7 +370,7 @@ code, .mono {
   overflow-y: auto;
 }
 .modal h2 { font-size: 1.125rem; margin-bottom: 1rem; }
-.modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.25rem; }
+.modal-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; margin-top: 1.25rem; }
 
 /* Grid helpers */
 .flex { display: flex; flex-wrap: wrap; }
@@ -583,6 +583,11 @@ td .mono, td code { overflow-wrap: anywhere; word-break: break-word; }
 .client-tabs { overflow-x: auto; }
 img, svg, video { max-width: 100%; }
 pre { overflow-x: auto; max-width: 100%; }
+/* Long unbreakable inline content (hashes, JSON snippets) wraps instead of widening the page. */
+code, kbd, samp { overflow-wrap: anywhere; word-break: break-word; }
+pre code, pre kbd, pre samp { overflow-wrap: normal; word-break: normal; }
+.card { min-width: 0; overflow-wrap: break-word; }
+.main { overflow-wrap: break-word; }
 
 /* Narrow screens: drawer navigation */
 @media (max-width: 900px) {

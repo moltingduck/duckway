@@ -543,7 +543,7 @@ function renderOnboardingPreflightResult(d) {
   });
   var color = d.ok ? '#22c55e' : '#ef4444';
   var head = d.ok ? DW.raw('<strong style="color:#22c55e">Permissions OK</strong>') : DW.raw('<strong style="color:#ef4444">Permission check failed</strong>');
-  return DW.html`<div style="background:var(--bg-input);border-left:3px solid ${color};padding:.75rem;border-radius:var(--radius)">${head}<table style="width:100%;margin-top:.5rem">${rows}</table></div>`;
+  return DW.html`<div style="background:var(--bg-input);border-left:3px solid ${color};padding:.75rem;border-radius:var(--radius)">${head}<div class="table-wrap"><table style="width:100%;margin-top:.5rem">${rows}</table></div></div>`;
 }
 
 function createCC() {
@@ -590,7 +590,7 @@ function renderSummary() {
   var ccRow = state.ccID
     ? DW.html`<tr><td class="text-muted">Control Channel</td><td>${state.ccName} created</td></tr>`
     : DW.raw('<tr><td class="text-muted">Control Channel</td><td class="text-muted">Skipped</td></tr>');
-  DW.setHTML(document.getElementById('summary'), DW.html`<table class="detail-table" style="width:100%"><tr><td class="text-muted">Client</td><td><strong>${state.clientName}</strong> <code class="text-sm">${state.clientID}</code></td></tr>${suiteRow}${ccRow}</table>`);
+  DW.setHTML(document.getElementById('summary'), DW.html`<div class="table-wrap"><table class="detail-table" style="width:100%"><tr><td class="text-muted">Client</td><td><strong>${state.clientName}</strong> <code class="text-sm">${state.clientID}</code></td></tr>${suiteRow}${ccRow}</table></div>`);
   renderSetupCommands();
 }
 
