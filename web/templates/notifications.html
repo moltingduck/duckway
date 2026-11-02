@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="page-header">
   <h1>Notification Channels</h1>
-  <button class="btn btn-primary" onclick="openAddModal()">Add Channel</button>
+  <button class="btn btn-primary" data-action="openAddModal">Add Channel</button>
 </div>
 
 <div class="card">
@@ -12,7 +12,7 @@
     <tbody id="channels-list">
       {{range .Channels}}
       <tr id="notif-{{.ID}}">
-        <td><a href="#" onclick="openDetail('{{.ID}}');return false"><strong>{{.Name}}</strong></a></td>
+        <td><a href="#" data-action="openDetail" data-id="{{.ID}}"><strong>{{.Name}}</strong></a></td>
         <td><span class="badge badge-blue">{{.ChannelType}}</span></td>
         <td class="text-sm text-muted" id="detail-{{.ID}}"></td>
         <td>{{if .IsActive}}<span class="badge badge-green">Active</span>{{else}}<span class="badge badge-red">Inactive</span>{{end}}</td>
@@ -32,13 +32,13 @@
 </div>
 
 <!-- Add Channel Modal -->
-<div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="add-modal" class="modal-backdrop" style="display:none">
   <div class="modal">
     <h2>Add Notification Channel</h2>
     <form id="add-channel-form">
       <div class="form-group"><label>Name</label><input type="text" id="ch-name" placeholder="My Alert Channel" required></div>
       <div class="form-group"><label>Type</label>
-        <select id="ch-type" onchange="onTypeChange()">
+        <select id="ch-type" data-on-change="onTypeChange">
           <option value="telegram">Telegram Bot</option>
           <option value="discord">Discord Webhook</option>
           <option value="discord_bot">Discord Bot</option>
@@ -61,7 +61,7 @@
         <div class="form-group"><label>Secret (optional)</label><input type="text" id="wh-secret"></div>
       </div>
       <div class="modal-actions">
-        <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
         <button type="submit" class="btn btn-primary">Add Channel</button>
       </div>
     </form>
@@ -69,7 +69,7 @@
 </div>
 
 <!-- Detail / Edit modal -->
-<div id="detail-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="detail-modal" class="modal-backdrop" style="display:none">
   <div class="modal">
     <h2 id="detail-title">Channel Details</h2>
     <div id="detail-view">
@@ -85,9 +85,9 @@
         <pre id="d-config" class="mono text-sm" style="background:var(--bg-card);border:1px solid var(--border);border-radius:4px;padding:0.5rem;margin-top:0.25rem;white-space:pre-wrap"></pre>
       </div>
       <div class="modal-actions mt-1">
-        <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
-        <button type="button" class="btn" onclick="testFromDetail()">Test</button>
-        <button type="button" class="btn btn-primary" onclick="switchToEdit()">Edit</button>
+        <button type="button" class="btn" data-action="modal-close">Close</button>
+        <button type="button" class="btn" data-action="testFromDetail">Test</button>
+        <button type="button" class="btn btn-primary" data-action="switchToEdit">Edit</button>
       </div>
     </div>
     <div id="detail-edit" style="display:none">
@@ -112,8 +112,8 @@
           <div class="form-group"><label>Secret</label><input type="text" id="edit-wh-secret"></div>
         </div>
         <div class="modal-actions">
-          <button type="button" class="btn" onclick="switchToView()">Back</button>
-          <button type="button" class="btn" onclick="testFromEdit()">Test</button>
+          <button type="button" class="btn" data-action="switchToView">Back</button>
+          <button type="button" class="btn" data-action="testFromEdit">Test</button>
           <button type="submit" class="btn btn-primary">Save</button>
         </div>
       </form>
@@ -121,7 +121,7 @@
   </div>
 </div>
 
-<script>
+<script nonce="{{.CSPNonce}}">
 var channels = [
   {{range .Channels}}{id:"{{.ID}}", type:"{{.ChannelType}}", config:{{.Config}} },{{end}}
 ];
@@ -134,19 +134,19 @@ document.addEventListener('DOMContentLoaded', function() {
     var cfg = ch.config;
     switch(ch.type) {
       case 'telegram':
-        el.innerHTML = 'Bot: <code>' + ((cfg.bot_token||'').substring(0,10)) + '...</code> Chat: <code>' + (cfg.chat_id||'') + '</code>'; break;
+        DW.setHTML(el, DW.html`Bot: <code>${(cfg.bot_token||'').substring(0,10)}...</code> Chat: <code>${cfg.chat_id||''}</code>`); break;
       case 'discord':
-        el.innerHTML = 'Webhook: <code>' + ((cfg.webhook_url||'').replace('https://discord.com/api/webhooks/','').substring(0,20)) + '...</code>'; break;
+        DW.setHTML(el, DW.html`Webhook: <code>${(cfg.webhook_url||'').replace('https://discord.com/api/webhooks/','').substring(0,20)}...</code>`); break;
       case 'discord_bot':
-        el.innerHTML = 'Bot: <code>' + ((cfg.bot_token||'').substring(0,12)) + '...</code> Channel: <code>' + (cfg.channel_id||'') + '</code>'; break;
+        DW.setHTML(el, DW.html`Bot: <code>${(cfg.bot_token||'').substring(0,12)}...</code> Channel: <code>${cfg.channel_id||''}</code>`); break;
       case 'webhook':
-        el.innerHTML = 'URL: <code>' + ((cfg.url||'').substring(0,40)) + '</code>' + (cfg.secret ? ' (with secret)' : ''); break;
+        DW.setHTML(el, DW.html`URL: <code>${(cfg.url||'').substring(0,40)}</code>${cfg.secret ? ' (with secret)' : ''}`); break;
     }
   });
 });
 
 function openDetail(id) {
-  fetch('/api/notifications/' + id, {credentials:'same-origin'})
+  fetch('/api/notifications/' + encodeURIComponent(id), {credentials:'same-origin'})
     .then(function(r) { return r.json(); })
     .then(function(ch) {
       if (ch.error) { showToast(ch.error, 'error'); return; }
@@ -154,8 +154,8 @@ function openDetail(id) {
       document.getElementById('detail-title').textContent = ch.name;
       document.getElementById('d-id').textContent = ch.id;
       document.getElementById('d-name').textContent = ch.name;
-      document.getElementById('d-type').innerHTML = '<span class="badge badge-blue">' + ch.channel_type + '</span>';
-      document.getElementById('d-status').innerHTML = ch.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>';
+      DW.setHTML(document.getElementById('d-type'), DW.html`<span class="badge badge-blue">${ch.channel_type}</span>`);
+      DW.setHTML(document.getElementById('d-status'), ch.is_active ? DW.raw('<span class="badge badge-green">Active</span>') : DW.raw('<span class="badge badge-red">Inactive</span>'));
       document.getElementById('d-created').textContent = ch.created_at || '—';
       try {
         var cfg = JSON.parse(ch.config);
@@ -169,7 +169,7 @@ function openDetail(id) {
       } catch(e) { document.getElementById('d-config').textContent = ch.config; }
       document.getElementById('detail-view').style.display = '';
       document.getElementById('detail-edit').style.display = 'none';
-      document.getElementById('detail-modal').style.display = 'flex';
+      DW.modal.open('#detail-modal');
     });
 }
 
@@ -228,6 +228,14 @@ document.getElementById('edit-channel-form').addEventListener('submit', function
   });
 });
 
+DW.actions.openAddModal = function() { openAddModal(); };
+DW.actions.openDetail = function(el) { openDetail(el.dataset.id); };
+DW.actions.onTypeChange = function() { onTypeChange(); };
+DW.actions.testFromDetail = function() { testFromDetail(); };
+DW.actions.switchToEdit = function() { switchToEdit(); };
+DW.actions.switchToView = function() { switchToView(); };
+DW.actions.testFromEdit = function() { testFromEdit(); };
+
 function testFromDetail() { if (currentChannel) doTest(currentChannel.id); }
 function testFromEdit() {
   var id = document.getElementById('edit-ch-id').value;
@@ -255,7 +263,7 @@ function openAddModal() {
   document.getElementById('ch-name').value = '';
   document.getElementById('ch-type').value = 'telegram';
   onTypeChange();
-  document.getElementById('add-modal').style.display = 'flex';
+  DW.modal.open('#add-modal');
 }
 
 function onTypeChange() {

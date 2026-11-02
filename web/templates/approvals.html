@@ -2,8 +2,8 @@
 <div class="page-header">
   <h1>Approvals</h1>
   <div class="flex gap-sm">
-    <button class="btn btn-sm btn-primary" id="tab-pending" onclick="switchTab('pending')">Pending <span id="pending-count" class="text-muted text-sm"></span></button>
-    <button class="btn btn-sm" id="tab-history" onclick="switchTab('history')">History</button>
+    <button class="btn btn-sm btn-primary" id="tab-pending" data-action="switchTab" data-tab="pending">Pending <span id="pending-count" class="text-muted text-sm"></span></button>
+    <button class="btn btn-sm" id="tab-history" data-action="switchTab" data-tab="history">History</button>
   </div>
 </div>
 
@@ -11,19 +11,19 @@
   <div class="flex gap-md mb-1" style="flex-wrap:wrap">
     <div class="form-group" style="flex:1;min-width:180px">
       <label>Client</label>
-      <select id="f-client" onchange="onFilterChange()">
+      <select id="f-client" data-on-change="onFilterChange">
         <option value="">All clients</option>
       </select>
     </div>
     <div class="form-group" style="flex:1;min-width:180px">
       <label>Service</label>
-      <select id="f-service" onchange="onFilterChange()">
+      <select id="f-service" data-on-change="onFilterChange">
         <option value="">All services</option>
       </select>
     </div>
     <div class="form-group" id="status-filter-row" style="flex:1;min-width:180px;display:none">
       <label>Status</label>
-      <select id="f-status" onchange="onFilterChange()">
+      <select id="f-status" data-on-change="onFilterChange">
         <option value="approved,rejected,ignored">All non-pending</option>
         <option value="approved">Approved only</option>
         <option value="rejected">Rejected only</option>
@@ -35,13 +35,13 @@
     <span id="approval-count" class="text-muted text-sm"></span>
     <div class="flex gap-sm" style="align-items:center">
       <label class="text-sm text-muted" for="f-perpage">Per page</label>
-      <select id="f-perpage" onchange="onPerPageChange()" style="width:auto">
+      <select id="f-perpage" data-on-change="onPerPageChange" style="width:auto">
         <option value="15">15</option>
         <option value="30">30</option>
         <option value="50">50</option>
         <option value="100">100</option>
       </select>
-      <button class="btn btn-sm" onclick="loadApprovals()">Refresh</button>
+      <button class="btn btn-sm" data-action="loadApprovals">Refresh</button>
     </div>
   </div>
 
@@ -56,7 +56,7 @@
   <p class="text-sm text-muted mt-1" id="ttl-note"></p>
 </div>
 
-<script>
+<script nonce="{{.CSPNonce}}">
 var allApprovals = [];
 var allClients = [];
 var allServices = [];
@@ -118,34 +118,25 @@ function render() {
   }
 
   var tbody = document.getElementById('approval-body');
-  tbody.innerHTML = '';
+  tbody.replaceChildren();
 
   if (allApprovals.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="text-muted">No approvals.</td></tr>';
+    DW.setHTML(tbody, DW.html`<tr><td colspan="8" class="text-muted">No approvals.</td></tr>`);
     renderPager(totalPages);
     return;
   }
 
+  var dash = DW.raw('<span class="text-muted">—</span>');
   page.forEach(function(a) {
     var info = {};
-    try { info = JSON.parse(a.request_info || '{}'); } catch(e) {}
-    var statusBadge = renderStatus(a.status);
+    try { info = JSON.parse(a.request_info || '{}') || {}; } catch(e) {}
     var actions = '';
     if (a.status === 'pending') {
-      actions = '<button class="btn btn-sm btn-primary" onclick="approveOne(\'' + a.id + '\')">Approve</button> ' +
-                '<button class="btn btn-sm btn-danger" onclick="rejectOne(\'' + a.id + '\')">Reject</button>';
+      actions = DW.html`<button class="btn btn-sm btn-primary" data-action="approveOne" data-id="${a.id}">Approve</button> <button class="btn btn-sm btn-danger" data-action="rejectOne" data-id="${a.id}">Reject</button>`;
     }
     var tr = document.createElement('tr');
     tr.id = 'approval-' + a.id;
-    tr.innerHTML =
-      '<td class="text-muted text-sm" style="white-space:nowrap">' + a.created_at + '</td>' +
-      '<td>' + (a.client_name || '<span class="text-muted">—</span>') + '</td>' +
-      '<td><span class="badge badge-blue">' + (a.service_name || '?') + '</span></td>' +
-      '<td class="text-sm">' + (a.env_name || '<span class="text-muted">—</span>') + '</td>' +
-      '<td>' + (info.method ? '<span class="badge badge-blue">' + info.method + '</span>' : '—') + '</td>' +
-      '<td class="mono text-sm">' + (info.path || '—') + '</td>' +
-      '<td>' + statusBadge + '</td>' +
-      '<td class="text-right" style="white-space:nowrap">' + actions + '</td>';
+    DW.setHTML(tr, DW.html`<td class="text-muted text-sm" style="white-space:nowrap">${a.created_at}</td><td>${a.client_name || dash}</td><td><span class="badge badge-blue">${a.service_name || '?'}</span></td><td class="text-sm">${a.env_name || dash}</td><td>${info.method ? DW.html`<span class="badge badge-blue">${info.method}</span>` : '—'}</td><td class="mono text-sm">${info.path || '—'}</td><td>${renderStatus(a.status)}</td><td class="text-right" style="white-space:nowrap">${actions}</td>`);
     tbody.appendChild(tr);
   });
 
@@ -159,19 +150,19 @@ function render() {
 
 function renderStatus(s) {
   switch (s) {
-    case 'pending':  return '<span class="badge badge-yellow">Pending</span>';
-    case 'approved': return '<span class="badge badge-green">Approved</span>';
-    case 'rejected': return '<span class="badge badge-red">Rejected</span>';
-    case 'ignored':  return '<span class="badge badge-gray">Ignored</span>';
-    default:         return '<span class="badge badge-gray">' + s + '</span>';
+    case 'pending':  return DW.raw('<span class="badge badge-yellow">Pending</span>');
+    case 'approved': return DW.raw('<span class="badge badge-green">Approved</span>');
+    case 'rejected': return DW.raw('<span class="badge badge-red">Rejected</span>');
+    case 'ignored':  return DW.raw('<span class="badge badge-gray">Ignored</span>');
+    default:         return DW.html`<span class="badge badge-gray">${s}</span>`;
   }
 }
 
 function renderPager(totalPages) {
   var pager = document.getElementById('approval-pager');
-  if (totalPages <= 1) { pager.style.display = 'none'; pager.innerHTML = ''; return; }
+  if (totalPages <= 1) { pager.style.display = 'none'; pager.replaceChildren(); return; }
   pager.style.display = '';
-  pager.innerHTML = '';
+  pager.replaceChildren();
 
   function btn(label, page, opts) {
     opts = opts || {};
@@ -179,7 +170,7 @@ function renderPager(totalPages) {
     b.className = 'btn btn-sm' + (opts.active ? ' btn-primary' : '');
     b.textContent = label;
     if (opts.disabled) b.disabled = true;
-    else b.onclick = function() { goToPage(page); };
+    else { b.setAttribute('data-action', 'goToPage'); b.dataset.page = String(page); }
     return b;
   }
   pager.appendChild(btn('‹ Prev', currentPage - 1, {disabled: currentPage <= 1}));
@@ -207,7 +198,7 @@ function renderPager(totalPages) {
 }
 
 function approveOne(id) {
-  fetch('/api/approvals/' + id + '/approve', {
+  fetch('/api/approvals/' + encodeURIComponent(id) + '/approve', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: '{}',
@@ -222,7 +213,7 @@ function approveOne(id) {
 }
 
 function rejectOne(id) {
-  fetch('/api/approvals/' + id + '/reject', {
+  fetch('/api/approvals/' + encodeURIComponent(id) + '/reject', {
     method: 'POST',
     credentials: 'same-origin'
   })
@@ -233,6 +224,14 @@ function rejectOne(id) {
     loadApprovals();
   });
 }
+
+DW.actions.switchTab = function(el) { switchTab(el.dataset.tab); };
+DW.actions.loadApprovals = function() { loadApprovals(); };
+DW.actions.onFilterChange = function() { onFilterChange(); };
+DW.actions.onPerPageChange = function() { onPerPageChange(); };
+DW.actions.goToPage = function(el) { goToPage(parseInt(el.dataset.page, 10) || 1); };
+DW.actions.approveOne = function(el) { approveOne(el.dataset.id); };
+DW.actions.rejectOne = function(el) { rejectOne(el.dataset.id); };
 
 document.addEventListener('DOMContentLoaded', function() {
   // Populate filter dropdowns from /api/clients and /api/services
