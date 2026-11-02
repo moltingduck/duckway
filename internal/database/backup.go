@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -64,6 +65,10 @@ func BackupSQLite(ctx context.Context, dataDir, outPath string) error {
 	// in every SQLite build.
 	lit := "'" + strings.ReplaceAll(tmpOut, "'", "''") + "'"
 	if _, err := db.ExecContext(ctx, "VACUUM INTO "+lit); err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "locked") || strings.Contains(msg, "busy") {
+			return fmt.Errorf("vacuum into: database is busy or locked (%w); online backup needs the data directory on a local filesystem shared by one kernel (not NFS or a network/virtiofs bind mount); retry, or stop the app services and copy the database offline", err)
+		}
 		return fmt.Errorf("vacuum into: %w", err)
 	}
 	if err := os.Chmod(tmpOut, 0o600); err != nil {
@@ -71,14 +76,53 @@ func BackupSQLite(ctx context.Context, dataDir, outPath string) error {
 	}
 	// Link (not rename) so an existing destination is never overwritten.
 	if err := os.Link(tmpOut, absOut); err != nil {
-		if _, serr := os.Lstat(absOut); serr == nil {
+		switch {
+		case errors.Is(err, os.ErrExist):
 			return fmt.Errorf("refusing to overwrite existing file %s", absOut)
-		}
-		if rerr := os.Rename(tmpOut, absOut); rerr != nil {
-			return fmt.Errorf("move backup into place: %w", rerr)
+		case linkUnsupported(err):
+			// Filesystem without hard links: no-clobber copy (O_EXCL).
+			if cerr := copyNoClobber(tmpOut, absOut); cerr != nil {
+				return cerr
+			}
+		default:
+			return fmt.Errorf("move backup into place: %w", err)
 		}
 	}
 	return nil
+}
+
+func linkUnsupported(err error) bool {
+	return errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EPERM) ||
+		errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.EXDEV) || errors.Is(err, syscall.EOPNOTSUPP)
+}
+
+// copyNoClobber copies src to dst with mode 0600, failing if dst exists. A
+// partial dst is removed on error.
+func copyNoClobber(src, dst string) (err error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open temp backup: %w", err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("refusing to overwrite existing file %s", dst)
+		}
+		return fmt.Errorf("create backup file: %w", err)
+	}
+	defer func() {
+		if cerr := out.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			_ = os.Remove(dst)
+		}
+	}()
+	if _, err = io.Copy(out, in); err != nil {
+		return fmt.Errorf("copy backup: %w", err)
+	}
+	return out.Sync()
 }
 
 // RunBackupCommand implements `duckway-server backup --out PATH` (also used by

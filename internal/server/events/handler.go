@@ -125,6 +125,9 @@ func (s *Service) Handler(cfg HandlerConfig) http.Handler {
 			case <-ctx.Done():
 				return
 			case <-life.C:
+				// Tell the client this is a planned close so it reconnects
+				// immediately without counting a failure.
+				write("event: bye\ndata: {\"reason\":\"lifetime\"}\n\n")
 				return
 			case <-hb.C:
 				if cfg.ValidateSession != nil {

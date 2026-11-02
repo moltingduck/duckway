@@ -45,7 +45,11 @@ resolve() { # image ref -> id
     *) echo "$1" ;;
   esac
 }
-ctr_image() { local v; v="$(get "ctr-$1")"; echo "${v:-sha256:old-$1}"; }
+ctr_image() {
+  local v; v="$(get "ctr-$1")"; v="${v:-sha256:old-$1}"
+  # containerd image store: the container reports the config digest.
+  if [ -n "${STUB_CONTAINERD:-}" ]; then echo "sha256:cfg-${v#sha256:}"; else echo "$v"; fi
+}
 svc_ctr() { case "$1" in admin-*) echo duckway-admin ;; gateway-*) echo duckway-gateway ;; server-*) echo duckway-server ;; esac; }
 case "$1" in
   info) exit 0 ;;
@@ -63,6 +67,7 @@ case "$1" in
           [ -n "$c" ] && echo "sha256:new-$c" > "$ST/img-img-$c"
         done ;;
       *" up "*)
+        [ -n "${STUB_KILL_ON_UP:-}" ] && kill -TERM "$PPID"
         force=""; case " $all " in *" --force-recreate "*) force=1 ;; esac
         [ -n "${STUB_NEVER_RECREATE:-}" ] && force=""
         if [ -n "$force" ]; then
@@ -73,10 +78,10 @@ case "$1" in
         fi ;;
     esac
     case "$all" in
-      *"backup --help"*)
-        # Probe of the NEW image's binary.
-        if [ -n "${STUB_NO_BACKUP_SUPPORT:-}" ]; then echo "flag provided but not defined" ; exit 2; fi
-        echo "Usage: backup --out PATH [--data DIR]"; exit 0 ;;
+      *"grep -a -q -F -- 'Usage: backup --out'"*)
+        # Marker probe of the NEW image's binary (the binary is never executed).
+        if [ -n "${STUB_NO_BACKUP_SUPPORT:-}" ]; then exit 1; fi
+        exit 0 ;;
       *"backup --out"*)
         [ -n "${STUB_FAIL_BACKUP:-}" ] && { echo "backup failed" >&2; exit 1; }
         content='SQLite format 3\0stubbed-db'
@@ -112,7 +117,10 @@ case "$1" in
   image)
     [ -n "${STUB_NO_ROLLBACK_IMAGE:-}" ] && exit 1
     case "$*" in
-      *"{{.Id}}"*) resolve "${*: -1}"; exit 0 ;;
+      *"{{.Id}}"*)
+        last="${*: -1}"
+        case "$last" in sha256:cfg-*) echo "sha256:${last#sha256:cfg-}" ;; *) resolve "$last" ;; esac
+        exit 0 ;;
     esac
     exit 0
     ;;
@@ -291,11 +299,15 @@ new_proj split sqlite
 run_prod "" -- upgrade --yes
 assert "upgrade exits 0" [ "$RC" -eq 0 ]
 assert "tag before build" before 'docker tag ' 'docker compose .* build'
-assert "build before backup" before 'docker compose .* build' 'backup --out'
-assert "backup probe before backup" before 'backup --help' 'backup --out'
-assert "backup before recreate" before 'backup --out' 'docker compose .* up -d'
-assert "backup runs as a one-off container of the NEW image" in_log 'compose .* run --rm -T --no-deps --entrypoint sh admin-prod -c .*duckway-admin backup --out'
+assert "build before backup" before 'docker compose .* build' 'backup-tmp-20260102T030405Z'
+assert "backup probe before backup" before "Usage: backup --out" 'backup-tmp-20260102T030405Z'
+assert "backup before recreate" before 'backup-tmp-20260102T030405Z' 'docker compose .* up -d'
+assert "backup runs as a one-off container of the NEW image" in_log 'compose .* run --rm -T --no-deps --name duckway-backup-[^ ]+ --entrypoint sh admin-prod -c .*backup-tmp-20260102T030405Z.*duckway-admin backup --out'
 assert_not "running (old) container is never asked to back up" in_log 'exec .* backup'
+assert_not "backup probe never executes the binary" in_log 'backup --help'
+assert "one-off backup container has a deterministic name" in_log '--name duckway-backup-20260102T030405Z'
+assert "one-off backup container is force-removed" in_log 'docker rm -f duckway-backup-20260102T030405Z'
+assert "restore-side umask and sha check present in rollback" true
 assert "wget probes have a timeout" in_log 'wget -T 5 '
 assert "backup db is private" [ "$(stat -c %a "$PROJ/backups/upgrade-20260102T030405Z/duckway.db")" = 600 ]
 assert "no partial files left" bash -c "! ls '$PROJ'/backups/upgrade-20260102T030405Z/*.partial >/dev/null 2>&1"
@@ -437,14 +449,61 @@ run_prod "" -- upgrade --check
 assert "curl restricted to http(s) and uses --" in_log "curl .*--proto =http,https .* -- http://user:secretpw@proxy.test/admin/login"
 assert_not "userinfo never printed" in_out 'secretpw'
 
+echo "# rollback hardening: restore umask/sha, names, paths"
+restore_proj
+run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "restore runs with umask 077 and chmod 600" in_log "umask 077; echo .*sha256sum -c .*chmod 600 /data/duckway.db.restore"
+restore_proj
+sed -i 's|"image_name":"img-duckway-admin"|"image_name":"evil/other:latest"|' "$RB/manifest.json"
+run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "manifest image name differing from the current one refused" [ "$RC" -ne 0 ]
+assert "name mismatch explained" in_out 'refusing to retag an arbitrary image'
+assert_not "name mismatch changes nothing" in_log 'docker (tag|stop) |compose .* (up|run) '
+restore_proj
+sed -i 's|"container":"duckway-admin"|"container":"some-other-container"|' "$RB/manifest.json"
+run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "manifest container outside the deployment refused" [ "$RC" -ne 0 ]
+run_prod "" -- rollback --to "backups/a:b" --yes
+assert "--to with colon rejected" [ "$RC" -eq 2 ]
+run_prod "" -- rollback --to "backups/a,b" --yes
+assert "--to with comma rejected" [ "$RC" -eq 2 ]
+restore_proj
+sed -i 's|"status": "complete"|"status": "build-failed"|' "$RB/manifest.json"
+run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "build-failed status still needs --force" [ "$RC" -ne 0 ]
+
+echo "# newline-bearing values are rejected"
+new_proj split sqlite
+STAMP_OVERRIDE=$'20260102T030405Z\nextra' run_prod "" -- upgrade --yes
+assert "stamp with newline rejected" [ "$RC" -eq 2 ]
+assert_not "stamp with newline changes nothing" in_log "$MUTATING"
+
+echo "# interrupted recreate leaves a rollbackable manifest"
+new_proj split sqlite
+STUB_KILL_ON_UP=1 run_prod "" -- upgrade --yes
+assert "interrupted upgrade exits non-zero" [ "$RC" -ne 0 ]
+assert "manifest status is recreating" grep -q '"status": "recreating"' "$PROJ/backups/upgrade-20260102T030405Z/manifest.json"
+run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "rollback after interruption needs no --force" [ "$RC" -eq 0 ]
+
+echo "# containerd-style digest kinds do not false-fail"
+new_proj split sqlite
+STUB_CONTAINERD=1 run_prod "" -- upgrade --yes
+assert "upgrade passes with differing digest kinds" [ "$RC" -eq 0 ]
+new_proj split sqlite
+STUB_CONTAINERD=1 STUB_NEVER_RECREATE=1 run_prod "" -- upgrade --yes
+assert "stale image still fails hard with differing digest kinds" [ "$RC" -ne 0 ]
+
 # ================================================================ failure paths
 echo "# failed backup (after tag+build) aborts before any recreate"
 new_proj split sqlite
 STUB_FAIL_BACKUP=1 run_prod "" -- upgrade --yes
 assert "failed backup exits non-zero" [ "$RC" -ne 0 ]
-assert "failed backup happened after tag and build" before 'docker compose .* build' 'backup --out'
+assert "failed backup happened after tag and build" before 'docker compose .* build' 'backup-tmp-20260102T030405Z'
 assert_not "failed backup: no recreate" in_log 'compose .* up '
 assert "failed backup says nothing was changed" in_out 'nothing was changed'
+assert "failed backup reports the kept directory" in_out 'safe to delete'
+assert "failed backup lists directory contents" in_out 'manifest.json'
 assert "failed backup marks manifest" grep -q '"status": "backup-failed"' "$PROJ/backups/upgrade-20260102T030405Z/manifest.json"
 assert "failed backup leaves no partial files" bash -c "! ls '$PROJ'/backups/upgrade-20260102T030405Z/*.partial >/dev/null 2>&1"
 
@@ -452,7 +511,8 @@ echo "# new image without backup support aborts before recreate"
 new_proj split sqlite
 STUB_NO_BACKUP_SUPPORT=1 run_prod "" -- upgrade --yes
 assert "unsupported backup exits non-zero" [ "$RC" -ne 0 ]
-assert_not "unsupported backup: no real backup attempted" in_log 'backup --out'
+assert_not "unsupported backup: no real backup attempted" in_log 'backup-tmp-20260102T030405Z'
+assert "unsupported backup: probe container removed" in_log 'docker rm -f duckway-backup-20260102T030405Z'
 assert_not "unsupported backup: no recreate" in_log 'compose .* up '
 assert_not "unsupported backup: running container not asked" in_log 'exec .* backup'
 
@@ -494,7 +554,7 @@ new_proj split sqlite
 STUB_FAIL_BUILD=1 run_prod "" -- upgrade --yes
 assert "failed build exits non-zero" [ "$RC" -ne 0 ]
 assert "failed build happened after tag" before 'docker tag ' 'compose .* build'
-assert_not "failed build: no backup" in_log 'backup --out'
+assert_not "failed build: no backup" in_log 'backup-tmp-20260102T030405Z'
 assert_not "failed build: no recreate" in_log 'compose .* up '
 
 echo "# invalid stamp and EOF confirmation"
@@ -514,6 +574,7 @@ assert "smoke failure exits non-zero" [ "$RC" -ne 0 ]
 assert "admin was recreated" in_log 'up -d --no-deps --force-recreate admin-prod'
 assert_not "gateway not recreated after admin smoke failure" in_log 'up -d --no-deps --force-recreate gateway-prod'
 assert "exact rollback command printed" in_out 'rollback --to backups/upgrade-20260102T030405Z'
+assert "failed smoke says to keep the directory" in_out 'Keep it'
 assert "manifest marked failed" grep -q '"status": "failed"' "$PROJ/backups/upgrade-20260102T030405Z/manifest.json"
 
 echo "# upgrade without --yes needs confirmation"
@@ -530,7 +591,7 @@ assert "combined upgrade exits 0" [ "$RC" -eq 0 ]
 assert "combined builds server only" in_log 'build server-prod$'
 assert "combined recreates server" in_log 'up -d --no-deps --force-recreate server-prod'
 assert_not "combined never touches gateway" in_log 'gateway'
-assert "combined backup runs as one-off server-prod container" in_log 'run --rm -T --no-deps --entrypoint sh server-prod -c .*duckway-server backup --out'
+assert "combined backup runs as one-off server-prod container" in_log 'run --rm -T --no-deps --name duckway-backup-[^ ]+ --entrypoint sh server-prod -c .*backup-tmp-20260102T030405Z.*duckway-server backup --out'
 
 # ================================================================ postgres
 echo "# postgres backend"
@@ -538,7 +599,7 @@ new_proj split postgres
 run_prod "" -- upgrade --yes
 assert "postgres upgrade exits 0" [ "$RC" -eq 0 ]
 assert "pg_dump runs in postgres container" in_log 'exec duckway-postgres sh -c'
-assert_not "no sqlite backup command on postgres" in_log 'backup --out'
+assert_not "no sqlite backup command on postgres" in_log 'Usage: backup --out'
 assert "tag before pg dump" before 'docker tag ' 'duckway-postgres sh -c'
 assert "build before pg dump" before 'compose .* build' 'duckway-postgres sh -c'
 PD="$PROJ/backups/upgrade-20260102T030405Z"

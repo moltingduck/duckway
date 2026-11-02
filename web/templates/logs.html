@@ -138,10 +138,13 @@ function applyLiveNew() { loadLogs(true); }
 // Live: with tail on (and the list on page 1, no modal open, tab visible)
 // refetch; otherwise queue and show an "N new" indicator.
 DW.live.on('logs', function(d) {
-  // Synthetic events (polling fallback, reconnect catch-up) carry no count:
-  // refresh silently rather than nagging with an indicator.
+  // Synthetic events (polling fallback, reconnect catch-up) carry no count.
+  // Refresh silently when the tail is live on page 1; otherwise record that
+  // something may be new so visibilitychange / the modal-close check applies
+  // it (never drop it).
   if (d && d.synthetic) {
-    if (!document.hidden && !DW.live.modalOpen()) loadLogs(true);
+    if (canAutoApply()) loadLogs(true);
+    else { newUnknown = true; updateNewIndicator(); }
     return;
   }
   if (canAutoApply()) { loadLogs(true); return; }
@@ -154,9 +157,13 @@ document.addEventListener('visibilitychange', function() {
 });
 // DW.modal has no close event, so apply entries queued while the detail modal
 // was open shortly after it closes (tail on, page 1). Cheap: counters only.
-setInterval(function() {
+var queuedTimer = setInterval(function() {
+  // Back off after a failed fetch so a failing /api/logs is not hammered.
+  if (Date.now() - lastLogsFailure < 10000) return;
   if ((newCount > 0 || newUnknown) && !logsLoading && canAutoApply()) loadLogs(true);
 }, 1000);
+window.addEventListener('pagehide', function() { clearInterval(queuedTimer); });
+var lastLogsFailure = 0;
 
 var logsSeq = 0;
 var logsLoading = false;
@@ -167,10 +174,12 @@ function loadLogs(live) {
   fetch('/api/logs', {credentials:'same-origin'})
     .then(function(r) {
       if (r.status === 401) { window.location = '/admin/login'; return; }
+      if (!r.ok) throw new Error('logs ' + r.status);
       return r.json();
     })
     .then(function(data) {
       if (seq === logsSeq) logsLoading = false;
+      if (Array.isArray(data)) lastLogsFailure = 0;
       if (!data || seq !== logsSeq) return; // out-of-order response
       allLogs = data;
       if (!live) currentPage = 1;
@@ -180,7 +189,7 @@ function loadLogs(live) {
       buildFilterOptions();
       applyFilters();
     })
-    .catch(function() { if (seq === logsSeq) logsLoading = false; });
+    .catch(function() { lastLogsFailure = Date.now(); if (seq === logsSeq) logsLoading = false; });
 }
 
 function onPerPageChange() {

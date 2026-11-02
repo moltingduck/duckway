@@ -151,12 +151,16 @@ with_timeout() {
   if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; else "$@"; fi
 }
 # Input validation for values that reach runtime/CLI arguments or paths.
-valid_stamp() { printf '%s' "$1" | grep -qE '^[0-9]{8}T[0-9]{6}Z$'; }
+# grep -E matches per line, so a value with an embedded newline could slip a
+# valid-looking line past it; reject newlines explicitly first.
+has_newline() { case "$1" in *$'\n'*) return 0 ;; esac; return 1; }
+valid_stamp() { has_newline "$1" && return 1; printf '%s' "$1" | grep -qE '^[0-9]{8}T[0-9]{6}Z$'; }
 valid_image_ref() {
+  has_newline "$1" && return 1
   case "$1" in -*|'') return 1 ;; esac
   printf '%s' "$1" | grep -qE '^[A-Za-z0-9._/:@-]+$'
 }
-valid_sha256() { printf '%s' "$1" | grep -qE '^[0-9a-f]{64}$'; }
+valid_sha256() { has_newline "$1" && return 1; printf '%s' "$1" | grep -qE '^[0-9a-f]{64}$'; }
 # redact_url URL: drop any user:password@ part before printing.
 redact_url() { printf '%s' "$1" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@#\1#'; }
 file_bytes() { wc -c < "$1" | tr -d ' '; }
@@ -316,25 +320,41 @@ upgrade_check() {
   echo "Check passed."
 }
 
+# remove_oneoff NAME: force-remove a one-off container (also kills a run whose
+# compose client was stopped by a timeout).
+remove_oneoff() { "$CONTAINER_RUNTIME" rm -f "$1" >/dev/null 2>&1 || true; }
+BACKUP_CONTAINER=""
+
 # backup_sqlite DIR: runs the NEW image's binary in a one-off container on the
 # data volume (the running binary may predate the `backup` subcommand, and
 # invoking an unknown subcommand on it would start a second server). The copy
 # is streamed to the host through stdout; nothing is left in the container.
 backup_sqlite() {
-  local dir="$1" svc bin probe part errf want got
+  local dir="$1" svc bin part errf want got cname rc
   svc="$(primary_service)"
   bin="$(svc_binary "$svc")"
   part="$dir/duckway.db.partial"
   errf="$dir/backup.stderr.partial"
+  cname="duckway-backup-$STAMP"
+  BACKUP_CONTAINER="$cname"
   echo "Checking that the new $bin image supports 'backup'..."
-  probe="$(with_timeout 120 "${COMPOSE[@]}" run --rm -T --no-deps --entrypoint sh "$svc" -c "$bin backup --help 2>&1")" \
-    || { echo "The new image's '$bin backup --help' failed (exit non-zero)." >&2; return 1; }
-  printf '%s\n' "$probe" | grep -q -- '--out' \
-    || { echo "The new image's '$bin backup --help' does not mention --out; refusing to rely on it." >&2; return 1; }
+  # Inspect the binary instead of executing it: an image that predates the
+  # subcommand would start a full server (migrations, integrations) on
+  # `backup --help`. The marker is the subcommand's usage line.
+  if ! with_timeout 120 "${COMPOSE[@]}" run --rm -T --no-deps --name "$cname" --entrypoint sh "$svc" -c \
+      "grep -a -q -F -- 'Usage: backup --out' \"\$(command -v $bin)\"" >/dev/null 2>&1; then
+    remove_oneoff "$cname"
+    echo "The new $bin image has no 'backup --out' subcommand marker; refusing to run it (it could start a server)." >&2
+    return 1
+  fi
+  remove_oneoff "$cname"
   echo "Backing up SQLite via VACUUM INTO using the new image on the data volume (services keep running)..."
-  if ! with_timeout 900 "${COMPOSE[@]}" run --rm -T --no-deps --entrypoint sh "$svc" -c \
-      "umask 077; f=/tmp/duckway-upgrade-backup.db; trap 'rm -f \"\$f\"' EXIT INT TERM; $bin backup --out \"\$f\" >&2 && sha256sum \"\$f\" | awk '{print \"DUCKWAY_BACKUP_SHA256=\" \$1}' >&2 && cat \"\$f\"" \
-      > "$part" 2> "$errf"; then
+  rc=0
+  with_timeout 900 "${COMPOSE[@]}" run --rm -T --no-deps --name "$cname" --entrypoint sh "$svc" -c \
+      "umask 077; d=/data/.backup-tmp-$STAMP; mkdir -m 700 \"\$d\" && f=\"\$d/duckway.db\" && trap 'rm -rf \"\$d\"' EXIT INT TERM && $bin backup --out \"\$f\" >&2 && sha256sum \"\$f\" | awk '{print \"DUCKWAY_BACKUP_SHA256=\" \$1}' >&2 && cat \"\$f\"" \
+      > "$part" 2> "$errf" || rc=$?
+  remove_oneoff "$cname"
+  if [ "$rc" -ne 0 ]; then
     cat "$errf" >&2 2>/dev/null || true
     rm -f "$part" "$errf"
     return 1
@@ -419,19 +439,45 @@ write_manifest() {
   mv "$out" "$dir/manifest.json"
 }
 
+# report_backup_dir: say what is left in the run directory after a failure.
+# keep_for_rollback=yes means it is needed by `rollback`.
+report_backup_dir() {
+  local f
+  echo "Backup directory $UP_DIR was kept (not deleted automatically). Contents:" >&2
+  for f in "$UP_DIR"/*; do
+    [ -e "$f" ] && echo "  $(basename "$f") ($(file_bytes "$f") bytes)" >&2
+  done
+  if [ "${1:-}" = "rollback" ]; then
+    echo "  Keep it: 'rollback' needs it. Delete it only after the stack is verified healthy." >&2
+  else
+    echo "  Nothing was recreated, so it is safe to delete it (rm -rf) once you no longer need the files." >&2
+  fi
+}
 norm_id() { printf '%s' "${1#sha256:}"; }
 # verify_container_image CONTAINER EXPECTED_ID: the running container must use
 # exactly that image. `compose up -d` alone only restarts an existing container
 # (podman-compose does this even after the tag moved), so never trust it.
 verify_container_image() {
-  local got
+  local got want="$2" ref="${3:-}" ref_id res
   got="$("$CONTAINER_RUNTIME" inspect --format '{{.Image}}' "$1" 2>/dev/null || true)"
-  [ -n "$got" ] && [ -n "$2" ] && [ "$(norm_id "$got")" = "$(norm_id "$2")" ]
+  [ -n "$got" ] && [ -n "$want" ] || return 1
+  [ "$(norm_id "$got")" = "$(norm_id "$want")" ] && return 0
+  # Docker's containerd image store can report different digest kinds for the
+  # container (config digest) and the image (manifest/index digest). Resolve
+  # both sides through `image inspect` before declaring a mismatch.
+  res="$("$CONTAINER_RUNTIME" image inspect --format '{{.Id}}' -- "$got" 2>/dev/null || true)"
+  [ -n "$res" ] && [ "$(norm_id "$res")" = "$(norm_id "$want")" ] && return 0
+  if [ -n "$ref" ]; then
+    ref_id="$("$CONTAINER_RUNTIME" image inspect --format '{{.Id}}' -- "$ref" 2>/dev/null || true)"
+    [ -n "$ref_id" ] && [ "$(norm_id "$ref_id")" = "$(norm_id "$got")" ] && return 0
+    [ -n "$res" ] && [ -n "$ref_id" ] && [ "$(norm_id "$res")" = "$(norm_id "$ref_id")" ] && return 0
+  fi
+  return 1
 }
 # upgrade_verify_image INDEX: running image == the image built in this run.
 upgrade_verify_image() {
   local i="$1" c="${UP_CONTAINERS[$1]}"
-  if verify_container_image "$c" "${UP_NEW_IDS[$i]}"; then
+  if verify_container_image "$c" "${UP_NEW_IDS[$i]}" "${UP_NAMES[$i]}"; then
     echo "  verified: $c runs the newly built image ${UP_NEW_IDS[$i]}"
     return 0
   fi
@@ -445,6 +491,7 @@ upgrade_fail_after_recreate() {
   echo "  $0 rollback --to backups/$(basename "$UP_DIR")" >&2
   echo "(add --keep-data to roll back images only and keep the current database)" >&2
   write_manifest "$UP_DIR" failed || true
+  report_backup_dir rollback
   exit 1
 }
 
@@ -490,7 +537,7 @@ do_upgrade() {
   # Partial files never outlive a failed or interrupted run, and the run
   # directory is removed again when nothing was written to it (rmdir fails on a
   # non-empty directory, which keeps every backup or manifest).
-  trap 'rm -f "$UP_DIR"/*.partial; rmdir "$UP_DIR" 2>/dev/null || true' EXIT
+  trap 'rm -f "$UP_DIR"/*.partial; [ -z "$BACKUP_CONTAINER" ] || remove_oneoff "$BACKUP_CONTAINER"; rmdir "$UP_DIR" 2>/dev/null || true' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
@@ -539,6 +586,7 @@ do_upgrade() {
   if ! "${COMPOSE[@]}" build $(app_services); then
     echo "Build failed; running services were not touched. Rollback tags remain (harmless)." >&2
     write_manifest "$UP_DIR" build-failed || true
+    report_backup_dir
     exit 1
   fi
 
@@ -548,6 +596,7 @@ do_upgrade() {
     if [ -z "$id" ]; then
       echo "Cannot resolve the freshly built image ${UP_NAMES[$i]}; nothing was changed." >&2
       write_manifest "$UP_DIR" build-failed || true
+      report_backup_dir
       exit 1
     fi
     UP_NEW_IDS+=("$id")
@@ -559,15 +608,18 @@ do_upgrade() {
   echo ""
   echo "=== Step 3/5: consistent backup into $UP_DIR ==="
   if [ "$DATABASE_BACKEND" = "postgres" ]; then
-    backup_postgres "$UP_DIR" || { echo "Backup failed; nothing was changed. Partial files are in $UP_DIR" >&2; write_manifest "$UP_DIR" backup-failed || true; exit 1; }
+    backup_postgres "$UP_DIR" || { echo "Backup failed; nothing was changed. Partial files are in $UP_DIR" >&2; write_manifest "$UP_DIR" backup-failed || true; report_backup_dir; exit 1; }
   else
-    backup_sqlite "$UP_DIR" || { echo "Backup failed; nothing was changed. Partial files are in $UP_DIR" >&2; write_manifest "$UP_DIR" backup-failed || true; exit 1; }
+    backup_sqlite "$UP_DIR" || { echo "Backup failed; nothing was changed. Partial files are in $UP_DIR" >&2; write_manifest "$UP_DIR" backup-failed || true; report_backup_dir; exit 1; }
   fi
-  backup_data_files "$UP_DIR" || { echo "Backup of data files failed; nothing was changed. Partial files are in $UP_DIR" >&2; write_manifest "$UP_DIR" backup-failed || true; exit 1; }
+  backup_data_files "$UP_DIR" || { echo "Backup of data files failed; nothing was changed. Partial files are in $UP_DIR" >&2; write_manifest "$UP_DIR" backup-failed || true; report_backup_dir; exit 1; }
   write_manifest "$UP_DIR" prepared
   echo "Manifest with backup checksums: $UP_DIR/manifest.json"
 
   # Step 4: recreate (split: admin first, smoke it, then the gateway).
+  # From here on the stack may be half-recreated if this run is interrupted:
+  # `recreating` lets rollback proceed without --force.
+  write_manifest "$UP_DIR" recreating
   echo ""
   echo "=== Step 4/5: recreate app services ==="
   if [ "$MODE" = "split" ]; then
@@ -614,8 +666,28 @@ manifest_field() {
   sed -n "s/^  \"$2\": \"\\([^\"]*\\)\".*\$/\\1/p" "$1" | head -1
 }
 
+# verify_backup_files DIR: every manifest-listed file exists and matches its
+# sha256 and size. Prints the reason on failure.
+verify_backup_files() {
+  local dir="$1" fname fsha fbytes
+  while IFS='|' read -r fname fsha fbytes; do
+    case "$fname" in
+      duckway.db|duckway.pgdump|data-files.tar) ;;
+      *) echo "Error: manifest lists unexpected backup file '$fname'; nothing was changed." >&2; return 1 ;;
+    esac
+    if [ ! -f "$dir/$fname" ]; then
+      echo "Error: backup file $dir/$fname is missing; nothing was changed." >&2
+      return 1
+    fi
+    if ! valid_sha256 "$fsha" || [ "$(file_sha256 "$dir/$fname")" != "$fsha" ] || [ "$(file_bytes "$dir/$fname")" != "$fbytes" ]; then
+      echo "Error: backup file $dir/$fname does not match the manifest checksum/size; refusing to roll back." >&2
+      return 1
+    fi
+  done < <(manifest_files "$dir/manifest.json")
+}
+
 do_rollback() {
-  local dir="" keep_data=false assume_yes=false force=false m_mode m_backend m_status images dbfile typed svc c name tag id fname fsha fbytes rb_bad
+  local dir="" keep_data=false assume_yes=false force=false m_mode m_backend m_status images dbfile typed svc c name tag id rb_bad want_db cur
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -637,6 +709,12 @@ do_rollback() {
     *) dir="$BACKUP_ROOT/$dir" ;;
   esac
   dir="${dir%/}"
+  case "$dir" in
+    *:*|*,*|*$'\n'*)
+      echo "Error: --to path must not contain ':' ',' or newlines (volume spec injection)" >&2
+      exit 2
+      ;;
+  esac
   if [ ! -f "$dir/manifest.json" ]; then
     echo "Error: $dir/manifest.json not found" >&2
     exit 1
@@ -649,10 +727,10 @@ do_rollback() {
   fi
   m_status="$(manifest_field "$dir/manifest.json" status)"
   case "$m_status" in
-    complete|failed) ;;
+    complete|failed|recreating) ;;
     *)
       if [ "$force" != "true" ]; then
-        echo "Error: manifest status is '${m_status:-unknown}' (want complete or failed); the upgrade never finished its backup/recreate steps. Use --force to override." >&2
+        echo "Error: manifest status is '${m_status:-unknown}' (want complete, failed or recreating); the upgrade never finished its backup/recreate steps. Use --force to override." >&2
         exit 1
       fi
       echo "WARNING: --force: manifest status is '${m_status:-unknown}'." >&2
@@ -663,9 +741,21 @@ do_rollback() {
     echo "Error: manifest lists no images" >&2
     exit 1
   fi
-  while IFS='|' read -r _ _ name id tag; do
+  while IFS='|' read -r _ c name id tag; do
     if ! valid_image_ref "$name" || ! valid_image_ref "$id" || ! valid_image_ref "$tag"; then
       echo "Error: manifest contains an invalid image reference ('$name' '$id' '$tag'); nothing was changed." >&2
+      exit 1
+    fi
+    # Only retag the images of this deployment's own app containers: the
+    # manifest container must be one of them and its image name must be the
+    # one that container is configured with now.
+    if ! app_services_containers | grep -qx -- "$c"; then
+      echo "Error: manifest container '$c' is not an app service of this deployment; nothing was changed." >&2
+      exit 1
+    fi
+    cur="$("$CONTAINER_RUNTIME" inspect --format '{{.Config.Image}}' "$c" 2>/dev/null || true)"
+    if [ -z "$cur" ] || [ "$cur" != "$name" ]; then
+      echo "Error: manifest image name '$name' does not match $c's current image '${cur:-unknown}'; refusing to retag an arbitrary image." >&2
       exit 1
     fi
   done <<< "$images"
@@ -677,20 +767,7 @@ do_rollback() {
       echo "Error: manifest does not list $dbfile; cannot restore" >&2
       exit 1
     fi
-    while IFS='|' read -r fname fsha fbytes; do
-      case "$fname" in
-        duckway.db|duckway.pgdump|data-files.tar) ;;
-        *) echo "Error: manifest lists unexpected backup file '$fname'; nothing was changed." >&2; exit 1 ;;
-      esac
-      if [ ! -f "$dir/$fname" ]; then
-        echo "Error: backup file $dir/$fname is missing; nothing was changed." >&2
-        exit 1
-      fi
-      if ! valid_sha256 "$fsha" || [ "$(file_sha256 "$dir/$fname")" != "$fsha" ] || [ "$(file_bytes "$dir/$fname")" != "$fbytes" ]; then
-        echo "Error: backup file $dir/$fname does not match the manifest checksum/size; refusing to roll back. Nothing was changed." >&2
-        exit 1
-      fi
-    done < <(manifest_files "$dir/manifest.json")
+    verify_backup_files "$dir" || exit 1
     echo "Backup files verified against manifest checksums."
     if [ ! -s "$dir/$dbfile" ]; then
       echo "Error: backup file $dir/$dbfile is empty" >&2
@@ -724,6 +801,9 @@ do_rollback() {
     for c in $(app_services_containers); do
       "$CONTAINER_RUNTIME" stop "$c" >/dev/null || { echo "Failed to stop $c; nothing restored." >&2; exit 1; }
     done
+    # Re-hash immediately before restoring (the files could have changed since
+    # the first verification).
+    verify_backup_files "$dir" || { echo "App services are stopped; fix the backup or restart them with: ${COMPOSE[*]} up -d --no-deps $(app_services)" >&2; exit 1; }
     if [ "$DATABASE_BACKEND" = "postgres" ]; then
       echo "Restoring PostgreSQL from $dir/duckway.pgdump ..."
       "$CONTAINER_RUNTIME" exec -i duckway-postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --single-transaction --clean --if-exists --no-owner' < "$dir/duckway.pgdump" \
@@ -731,8 +811,9 @@ do_rollback() {
     else
       echo "Restoring SQLite database from $dir/duckway.db ..."
       svc="$(primary_service)"
+      want_db="$(manifest_files "$dir/manifest.json" | sed -n 's/^duckway\.db|\([0-9a-f]*\)|.*$/\1/p')"
       "${COMPOSE[@]}" run --rm --no-deps -v "$dir:/restore:ro" --entrypoint sh "$svc" -c \
-        'cp /restore/duckway.db /data/duckway.db.restore && rm -f /data/duckway.db-journal /data/duckway.db-wal /data/duckway.db-shm && mv /data/duckway.db.restore /data/duckway.db' \
+        'umask 077; echo "'"$want_db"'  /restore/duckway.db" | sha256sum -c - >/dev/null && cp /restore/duckway.db /data/duckway.db.restore && chmod 600 /data/duckway.db.restore && rm -f /data/duckway.db-journal /data/duckway.db-wal /data/duckway.db-shm && mv /data/duckway.db.restore /data/duckway.db' \
         || { echo "SQLite restore FAILED. App services are stopped; retry or restore $dir/duckway.db manually." >&2; exit 1; }
     fi
   fi
@@ -754,8 +835,8 @@ do_rollback() {
   # Verify the containers really run the previous images; a plain restart of
   # the existing containers would keep the new image while looking healthy.
   rb_bad=0
-  while IFS='|' read -r _ c _ id _; do
-    if verify_container_image "$c" "$id"; then
+  while IFS='|' read -r _ c name id tag; do
+    if verify_container_image "$c" "$id" "$tag"; then
       echo "  verified: $c runs the previous image $id"
     else
       echo "ROLLBACK FAILED: $c is not running the previous image $id (running '$("$CONTAINER_RUNTIME" inspect --format '{{.Image}}' "$c" 2>/dev/null || true)')." >&2

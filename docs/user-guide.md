@@ -291,15 +291,22 @@ app container that is not running or insufficient disk space.
 4. Takes a consistent backup while Duckway keeps serving, using the newly built
    image where a Duckway binary is needed:
    - SQLite: a one-off container of the NEW image (`docker compose run --rm
-     --no-deps`) on the data volume first checks that `backup --help` works and
-     mentions `--out`, then runs `duckway-admin backup --out ...`
+     --no-deps --name duckway-backup-<timestamp>`, force-removed afterwards) on
+     the data volume first checks, without executing it, that the binary
+     contains the `backup --out` subcommand (an image without it would start a
+     server), then runs `duckway-admin backup --out ...`
      (`duckway-server backup` in combined mode), which uses `VACUUM INTO`, a
      transactionally consistent copy that never overwrites an existing file. The
      copy is streamed to the host and its sha256 is checked against the one
      computed in the container; nothing is left behind in the container. This
      means a first upgrade from an image that predates the `backup` subcommand
      works: the old binary is never asked to run `backup` (it would start a
-     second server). The file is created with mode 600.
+     second server). The file is created with mode 600. The temporary copy lives in
+     `/data/.backup-tmp-<timestamp>` (mode 700, removed afterwards). Online
+     backup shares the SQLite database with the running services, so the data
+     directory must be on a local filesystem (a Docker/Podman named volume or a
+     local bind mount), not NFS or a network or virtiofs mount; a locked/busy
+     database is reported with this explanation.
    - PostgreSQL: `pg_dump -Fc` inside the `duckway-postgres` container, saved as
      `duckway.pgdump` and verified with `pg_restore -l`.
    - `data-files.tar` holds the encryption key, CA material and other files in
@@ -317,8 +324,11 @@ this run; a mismatch fails the upgrade with guidance. An aborted run that wrote
 nothing removes its empty `backups/upgrade-<ts>/` directory.
 
 Any failure before step 6 starts leaves the running services untouched (the
-manifest is marked `build-failed` or `backup-failed`). A failure after
-recreation prints the exact `rollback` command and marks the manifest `failed`.
+manifest is marked `build-failed` or `backup-failed`, and the kept backup
+directory and its contents are printed with a note that it is safe to delete;
+it is never deleted automatically unless it is empty). Just before recreating,
+the manifest is marked `recreating`, so an interrupted run can be rolled back
+without `--force`. A failure after recreation prints the exact `rollback` command and marks the manifest `failed`.
 `.prod.env` and Tailscale state are not part of the backup.
 
 ### Downtime
@@ -333,9 +343,11 @@ recreation prints the exact `rollback` command and marks the manifest `failed`.
 
 `rollback --to DIR` reads the manifest, then, before changing anything:
 
-- requires the manifest status to be `complete` or `failed` (pass `--force` to
-  roll back from an unfinished upgrade);
-- validates the image names in the manifest;
+- requires the manifest status to be `complete`, `failed` or `recreating`
+  (pass `--force` for `prepared`, `build-failed` or `backup-failed`);
+- validates the image names in the manifest and requires each to equal the
+  image its app container is configured with now (no retagging of arbitrary
+  images); `--to` paths containing `:` or `,` are refused;
 - verifies the sha256 and size of every backup file against the manifest and
   refuses on any mismatch (skipped with `--keep-data`, which uses no backup).
 
@@ -396,7 +408,11 @@ In the Polling state the pages keep working and refresh every 15 seconds.
 A single stream lives at most 30 minutes. The server then closes it and the
 browser reconnects through normal authentication, so a logged-out or expired
 session stops receiving events; the session is also re-checked on every
-heartbeat. Besides the per-session limit there is a per-user limit of 16
+heartbeat. Before closing at the lifetime limit the server sends an
+`event: bye` and the page reconnects immediately without counting a failure.
+Sessions are stateless signed cookies, so a logout or password change does not
+revoke an existing session: open streams end when the next heartbeat check
+fails (expiry) or at the lifetime limit. Besides the per-session limit there is a per-user limit of 16
 concurrent streams.
 
 **Do not override `Content-Security-Policy` in the proxy.** Duckway sends a

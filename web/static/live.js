@@ -159,11 +159,12 @@
     return base / 2 + Math.random() * base / 2;
   }
 
-  function connect() {
+  // silent: a planned reconnect (server "bye") keeps the status as is.
+  function connect(silent) {
     clearRetry();
     closeES();
     if (typeof window.EventSource !== 'function') { startPolling(); return; }
-    if (state !== 'polling') setState(everConnected ? 'reconnecting' : 'connecting');
+    if (state !== 'polling' && silent !== true) setState(everConnected ? 'reconnecting' : 'connecting');
     var src;
     try { src = new EventSource(URL_); } catch (e) { onFail(); return; }
     es = src;
@@ -176,6 +177,15 @@
       stopPolling();
       setState('live');
       baselineInvalidate();
+    });
+    // Planned close at the server's stream lifetime limit: reconnect right
+    // away; this is not a failure and never triggers the polling fallback.
+    src.addEventListener('bye', function () {
+      if (es !== src) return;
+      closeES();
+      upSince = 0;
+      clearRetry();
+      retryTimer = setTimeout(function () { connect(true); }, 200);
     });
     TOPICS.forEach(function (topic) {
       src.addEventListener(topic, function (ev) {

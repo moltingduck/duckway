@@ -168,3 +168,27 @@ func TestRunBackupCommandHelpExitsZeroAndMentionsOut(t *testing.T) {
 		t.Fatalf("help does not mention --out: %q", se.String())
 	}
 }
+
+func TestCopyNoClobber(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyNoClobber(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "data" {
+		t.Fatalf("dst=%q", b)
+	}
+	if st, _ := os.Stat(dst); st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode=%o", st.Mode().Perm())
+	}
+	if err := copyNoClobber(src, dst); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("second copy err=%v", err)
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "data" {
+		t.Fatal("existing file was clobbered")
+	}
+}

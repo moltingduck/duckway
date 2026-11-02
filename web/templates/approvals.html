@@ -77,23 +77,35 @@ function switchTab(tab) {
 
 var loadSeq = 0;
 var queuedData = null; // live refetch held back while the user is interacting with the rows
+var queuedKey = '';    // approvalsKey() when queuedData was fetched
+var lastPointer = 0;   // last pointer activity over the rows
+var queueTimer = null;
 
 function approvalsKey() {
   return currentTab + '|' + document.getElementById('f-status').value + '|' +
     document.getElementById('f-client').value + '|' + document.getElementById('f-service').value;
 }
-// True while the pointer is over the rows or focus is inside them: rows must
-// not shift under an Approve/Reject click.
+// True while the pointer is over the rows (with recent pointer activity) or
+// keyboard focus is inside them: rows must not shift under an Approve/Reject
+// click. Pointer focus (a button left focused after a click) does not count,
+// and a pointer resting for >5s (or sticky :hover on touch) stops holding.
 function interactingWithRows() {
   var tbody = document.getElementById('approval-body');
-  return tbody.matches(':hover') || tbody.contains(document.activeElement);
+  if (tbody.querySelector(':focus-visible')) return true;
+  return tbody.matches(':hover') && Date.now() - lastPointer < 5000;
+}
+function clearQueue() {
+  queuedData = null;
+  if (queueTimer) { clearInterval(queueTimer); queueTimer = null; }
 }
 function showNudge(on) { document.getElementById('approval-nudge').hidden = !on; }
 function flushQueued() {
   if (!queuedData) return;
-  allApprovals = queuedData;
-  queuedData = null;
+  var data = queuedData, key = queuedKey;
+  clearQueue();
   showNudge(false);
+  if (key !== approvalsKey()) return; // tab/filters changed: stale, discard
+  allApprovals = data;
   render();
 }
 function maybeFlushQueued() {
@@ -121,10 +133,12 @@ function loadApprovals(live) {
       if (!data || seq !== loadSeq || key !== approvalsKey()) return;
       if (live === true && interactingWithRows()) {
         queuedData = data;
+        queuedKey = key;
         showNudge(true);
+        if (!queueTimer) queueTimer = setInterval(maybeFlushQueued, 1000);
         return;
       }
-      queuedData = null;
+      clearQueue();
       showNudge(false);
       allApprovals = data;
       render();
@@ -278,7 +292,15 @@ DW.live.on('approvals', function() { loadApprovals(true); }, {defer: true});
 DW.actions.flushApprovals = function() { flushQueued(); };
 (function() {
   var tbody = document.getElementById('approval-body');
-  tbody.addEventListener('mouseleave', maybeFlushQueued);
+  ['pointermove', 'pointerdown'].forEach(function(t) {
+    tbody.addEventListener(t, function() { lastPointer = Date.now(); });
+  });
+  tbody.addEventListener('mouseleave', function() {
+    // A button focused by a click (not the keyboard) must not hold the queue.
+    var a = document.activeElement;
+    if (a && tbody.contains(a) && !a.matches(':focus-visible')) a.blur();
+    maybeFlushQueued();
+  });
   tbody.addEventListener('focusout', function() { setTimeout(maybeFlushQueued, 0); });
 })();
 

@@ -469,7 +469,10 @@ func TestHandlerClosesAtMaxLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Body.Close()
-	readToEOF(t, r, 3*time.Second)
+	body, _ := io.ReadAll(r.Body)
+	if !strings.Contains(string(body), "event: bye") {
+		t.Fatalf("no bye event before lifetime close: %q", body)
+	}
 	deadline := time.Now().Add(2 * time.Second)
 	for svc.Hub.Subscribers() != 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
