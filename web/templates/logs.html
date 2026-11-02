@@ -157,13 +157,20 @@ document.addEventListener('visibilitychange', function() {
 });
 // DW.modal has no close event, so apply entries queued while the detail modal
 // was open shortly after it closes (tail on, page 1). Cheap: counters only.
-var queuedTimer = setInterval(function() {
-  // Back off after a failed fetch so a failing /api/logs is not hammered.
-  if (Date.now() - lastLogsFailure < 10000) return;
-  if ((newCount > 0 || newUnknown) && !logsLoading && canAutoApply()) loadLogs(true);
-}, 1000);
-window.addEventListener('pagehide', function() { clearInterval(queuedTimer); });
+var queuedTimer = null;
 var lastLogsFailure = 0;
+function startQueuedTimer() {
+  if (queuedTimer) return;
+  queuedTimer = setInterval(function() {
+    // Back off after a failed fetch so a failing /api/logs is not hammered.
+    if (Date.now() - lastLogsFailure < 10000) return;
+    if ((newCount > 0 || newUnknown) && !logsLoading && canAutoApply()) loadLogs(true);
+  }, 1000);
+}
+window.addEventListener('pagehide', function() { clearInterval(queuedTimer); queuedTimer = null; });
+// Back/forward cache restore: pagehide cleared the timer.
+window.addEventListener('pageshow', function(e) { if (e.persisted) startQueuedTimer(); });
+startQueuedTimer();
 
 var logsSeq = 0;
 var logsLoading = false;

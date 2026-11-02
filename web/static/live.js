@@ -183,6 +183,7 @@
     src.addEventListener('bye', function () {
       if (es !== src) return;
       closeES();
+      if (upSince && Date.now() - upSince >= STABLE_MS) failures = 0;
       upSince = 0;
       clearRetry();
       retryTimer = setTimeout(function () { connect(true); }, 200);

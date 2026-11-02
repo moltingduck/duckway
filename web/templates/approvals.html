@@ -79,6 +79,7 @@ var loadSeq = 0;
 var queuedData = null; // live refetch held back while the user is interacting with the rows
 var queuedKey = '';    // approvalsKey() when queuedData was fetched
 var lastPointer = 0;   // last pointer activity over the rows
+var pointerType = 'mouse'; // 'mouse' | 'touch' | 'pen' of the last pointer event
 var queueTimer = null;
 
 function approvalsKey() {
@@ -92,7 +93,13 @@ function approvalsKey() {
 function interactingWithRows() {
   var tbody = document.getElementById('approval-body');
   if (tbody.querySelector(':focus-visible')) return true;
-  return tbody.matches(':hover') && Date.now() - lastPointer < 5000;
+  // Never flush while the pointer rests on a button in the rows.
+  if (tbody.querySelector('button:hover')) return true;
+  if (!tbody.matches(':hover')) return false;
+  // Mouse: hold while hovering (mouseleave and the nudge release it). Touch
+  // and pen have sticky :hover, so those expire after 5s without activity.
+  if (pointerType === 'mouse') return true;
+  return Date.now() - lastPointer < 5000;
 }
 function clearQueue() {
   queuedData = null;
@@ -293,7 +300,10 @@ DW.actions.flushApprovals = function() { flushQueued(); };
 (function() {
   var tbody = document.getElementById('approval-body');
   ['pointermove', 'pointerdown'].forEach(function(t) {
-    tbody.addEventListener(t, function() { lastPointer = Date.now(); });
+    tbody.addEventListener(t, function(e) {
+      lastPointer = Date.now();
+      pointerType = e.pointerType || 'mouse';
+    });
   });
   tbody.addEventListener('mouseleave', function() {
     // A button focused by a click (not the keyboard) must not hold the queue.
