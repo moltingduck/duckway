@@ -57,6 +57,9 @@ case "$1" in
     shift
     [ "$1" = "version" ] && exit 0
     all="$*"
+    case " $all " in
+      *" config "*"--images"*) [ -n "${STUB_CONFIG_IMAGES:-}" ] && printf '%s\n' $STUB_CONFIG_IMAGES; exit 0 ;;
+    esac
     for a in "$@"; do
       if [ "$a" = "build" ] && [ -n "${STUB_FAIL_BUILD:-}" ]; then exit 1; fi
     done
@@ -105,7 +108,8 @@ case "$1" in
       shift
     done
     if [ -n "${STUB_NOT_RUNNING:-}" ] && [ "$fmt" = '{{.State.Running}}' ]; then echo false; exit 0; fi
-    if [ -n "${STUB_NO_CONFIG_IMAGE:-}" ] && [ "$fmt" = '{{.Config.Image}}' ]; then exit 1; fi
+    if [ -n "${STUB_NO_CONFIG_IMAGE:-}" ] && [ "$fmt" = '{{.Config.Image}}' ]; then echo "Error: No such object: $name" >&2; exit 1; fi
+    if [ -n "${STUB_INSPECT_ERROR:-}" ] && [ "$fmt" = '{{.Config.Image}}' ]; then echo "Cannot connect to the Docker daemon" >&2; exit 1; fi
     case "$fmt" in
       '{{.State.Running}}') echo true ;;
       '{{.Image}}') ctr_image "$name" ;;
@@ -131,6 +135,7 @@ case "$1" in
     resolve "$1" > "$ST/img-$(echo "$2" | tr '/:' '__')"
     exit 0
     ;;
+  ps) [ -n "${STUB_LEFTOVER:-}" ] && printf '%s\n' $STUB_LEFTOVER; exit 0 ;;
   stop|rm) exit 0 ;;
   cp)
     # docker cp CONTAINER:SRC DEST
@@ -521,6 +526,7 @@ restore_proj
 STUB_NO_CONFIG_IMAGE=1 run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
 assert "rollback proceeds when containers no longer exist" [ "$RC" -eq 0 ]
 assert "missing container noted" in_out 'does not exist; accepting manifest image'
+assert "unavailable compose listing warns" in_out 'compose image list is unavailable'
 restore_proj
 sed -i 's|"image_name":"img-duckway-admin"|"image_name":"evil/other"|' "$RB/manifest.json"
 STUB_NO_CONFIG_IMAGE=1 run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
@@ -542,6 +548,40 @@ rm -rf "$PROJ/backups/.upgrade.lock"
 STAMP_OVERRIDE=20270101T000000Z run_prod "" -- upgrade --yes
 assert "upgrade runs once the lock is gone" [ "$RC" -eq 0 ]
 assert "lock released after the run" [ ! -e "$PROJ/backups/.upgrade.lock" ]
+
+echo "# lock wording, leftovers, config images, tag format"
+restore_proj
+mkdir -p "$PROJ/backups/.upgrade.lock"
+run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "fresh lock without pid asks to wait" in_out 'owner unknown or still starting; wait a few seconds and retry'
+assert_not "fresh lock without pid does not suggest rm" in_out 'rm -rf'
+touch -d '5 minutes ago' "$PROJ/backups/.upgrade.lock"
+STUB_LEFTOVER="duckway-backup-20250101T000000Z" run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "old lock without pid is stale" in_out 'stale lock'
+assert "stale lock lists leftover backup containers" in_out 'duckway-backup-20250101T000000Z'
+assert "stale lock explains container removal" in_out 'rm -f duckway-backup-20250101T000000Z'
+rm -rf "$PROJ/backups/.upgrade.lock"
+STUB_LEFTOVER="duckway-backup-20250101T000000Z" run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "rollback proceeds after lock cleared" [ "$RC" -eq 0 ]
+assert "leftover one-off containers removed once the lock is held" in_log 'docker rm -f duckway-backup-20250101T000000Z'
+restore_proj
+STUB_NO_CONFIG_IMAGE=1 STUB_CONFIG_IMAGES="img-duckway-admin img-duckway-gateway" run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "missing container accepted when in configured images" [ "$RC" -eq 0 ]
+assert "configured-images match noted" in_out "matches the deployment's configured images"
+restore_proj
+STUB_NO_CONFIG_IMAGE=1 STUB_CONFIG_IMAGES="img-duckway-gateway" run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "missing container refused when absent from configured images" [ "$RC" -ne 0 ]
+assert_not "absent from configured images changes nothing" in_log 'docker (tag|stop) |compose .* (up|run) '
+restore_proj
+STUB_INSPECT_ERROR=1 run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "other inspect errors refuse" [ "$RC" -ne 0 ]
+assert "inspect error reported" in_out 'cannot inspect duckway-admin'
+assert_not "inspect error changes nothing" in_log 'docker (tag|stop) |compose .* (up|run) '
+restore_proj
+sed -i 's|img-duckway-admin:rollback-20260102T030405Z|img-duckway-admin:latest|' "$RB/manifest.json"
+run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "rollback tag without the stamp format refused" [ "$RC" -ne 0 ]
+assert "tag format explained" in_out 'is not of the form'
 
 # ================================================================ failure paths
 echo "# failed backup (after tag+build) aborts before any recreate"

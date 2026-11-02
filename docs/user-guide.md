@@ -337,10 +337,19 @@ next one reports a stale lock; remove it with `rm -rf backups/.upgrade.lock`
 once you are sure nothing is running. The preflight also checks that the data
 volume has room for the staged backup copy, and an upgrade first removes
 leftover `/data/.backup-tmp-*` directories from earlier killed runs (they are
-also excluded from `data-files.tar`). Rollback additionally checks that each
-`rollback_tag` still points at the manifest's previous image before retagging;
-if an app container no longer exists, the manifest image name is accepted only
-when it shares a repository with its rollback tag.
+also excluded from `data-files.tar`). The lock covers only `upgrade` and `rollback`; it does **not** cover `up`,
+`down`, `restart`, `ui`, `nuke` or `migrate-postgres`, so do not run those
+while an upgrade or rollback is in progress. A lock whose owner is unknown or
+still starting asks you to wait and retry; only a dead owner (or a lock older
+than a minute with no recorded PID) is reported as stale, together with any
+leftover `duckway-backup-*` one-off containers (the next run that takes the
+lock removes them; you can also `docker rm -f` them). Rollback tags must be of
+the form `<image>:rollback-<timestamp>`, and when an app container no longer
+exists the manifest image name must be one of the deployment's configured
+images (`compose config --images`; the same-repository check is only a
+fallback with a warning when that listing is unavailable). Any other inspect
+error makes the rollback refuse. Rollback additionally checks that each
+`rollback_tag` still points at the manifest's previous image before retagging.
 
 ### Downtime
 

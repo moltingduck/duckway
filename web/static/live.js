@@ -192,7 +192,7 @@
         // close: back off (>=5s) and count it so repeats reach polling.
         failures += 1;
         if (failures >= FAIL_LIMIT) { startPolling(); delay = SSE_RETRY_POLLING_MS; }
-        else delay = Math.max(5000, backoff());
+        else { setState('reconnecting'); delay = Math.max(5000, backoff()); }
       }
       upSince = 0;
       retryTimer = setTimeout(function () { connect(true); }, delay);

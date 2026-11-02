@@ -357,21 +357,48 @@ cleanup_backup_tmp() {
 # owner's PID. A stale lock (dead PID) is reported, never silently taken over.
 UPGRADE_LOCK="$BACKUP_ROOT/.upgrade.lock"
 UPGRADE_LOCK_HELD=0
+# list_backup_containers: leftover one-off backup containers (created only by
+# this tool, always named duckway-backup-<stamp>).
+list_backup_containers() {
+  "$CONTAINER_RUNTIME" ps -a --filter name=duckway-backup- --format '{{.Names}}' 2>/dev/null | grep '^duckway-backup-' || true
+}
+remove_leftover_backup_containers() {
+  local n
+  for n in $(list_backup_containers); do
+    echo "Removing leftover one-off backup container $n"
+    remove_oneoff "$n"
+  done
+}
 acquire_upgrade_lock() {
-  local pid
+  local pid leftovers n
   mkdir -p "$BACKUP_ROOT"
   chmod 700 "$BACKUP_ROOT"
   if mkdir "$UPGRADE_LOCK" 2>/dev/null; then
     echo "$$" > "$UPGRADE_LOCK/pid"
     UPGRADE_LOCK_HELD=1
+    # One-off backup containers are only created by this tool: anything left
+    # over belongs to an earlier killed run.
+    remove_leftover_backup_containers
     return 0
   fi
   pid="$(cat "$UPGRADE_LOCK/pid" 2>/dev/null || true)"
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     echo "Error: another upgrade/rollback is already running (PID $pid; lock $UPGRADE_LOCK)." >&2
+  elif [ -z "$pid" ] && [ -n "$(find "$UPGRADE_LOCK" -maxdepth 0 -mmin -1 2>/dev/null)" ]; then
+    echo "Error: lock exists, owner unknown or still starting; wait a few seconds and retry ($UPGRADE_LOCK)." >&2
   else
-    echo "Error: stale lock $UPGRADE_LOCK (owner PID '${pid:-unknown}' is not running)." >&2
-    echo "If no upgrade or rollback is in progress, remove it and retry: rm -rf '$UPGRADE_LOCK'" >&2
+    if [ -n "$pid" ]; then
+      echo "Error: stale lock $UPGRADE_LOCK (owner PID $pid is not running)." >&2
+    else
+      echo "Error: stale lock $UPGRADE_LOCK (no owner PID recorded and the lock is older than a minute)." >&2
+    fi
+    leftovers="$(list_backup_containers)"
+    if [ -n "$leftovers" ]; then
+      echo "Leftover one-off backup containers from that run:" >&2
+      for n in $leftovers; do echo "  $n   (remove: $CONTAINER_RUNTIME rm -f $n)" >&2; done
+      echo "(they are also removed automatically by the next run that takes the lock)" >&2
+    fi
+    echo "If no upgrade or rollback is in progress, remove the lock and retry: rm -rf '$UPGRADE_LOCK'" >&2
   fi
   exit 1
 }
@@ -749,7 +776,7 @@ verify_backup_files() {
 }
 
 do_rollback() {
-  local dir="" keep_data=false assume_yes=false force=false m_mode m_backend m_status images dbfile typed svc c name tag id rb_bad want_db cur tag_id id_id
+  local dir="" keep_data=false assume_yes=false force=false m_mode m_backend m_status images dbfile typed svc c name tag id rb_bad want_db cur tag_id id_id m_stamp cfg_images
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -787,6 +814,11 @@ do_rollback() {
     echo "Error: manifest was made in mode=$m_mode backend=$m_backend but .prod.env now says mode=$MODE backend=$DATABASE_BACKEND" >&2
     exit 1
   fi
+  m_stamp="$(manifest_field "$dir/manifest.json" timestamp)"
+  if ! valid_stamp "$m_stamp"; then
+    echo "Error: manifest timestamp '$m_stamp' is invalid; nothing was changed." >&2
+    exit 1
+  fi
   m_status="$(manifest_field "$dir/manifest.json" status)"
   case "$m_status" in
     complete|failed|recreating) ;;
@@ -803,11 +835,17 @@ do_rollback() {
     echo "Error: manifest lists no images" >&2
     exit 1
   fi
+  ROLLBACK_ERR="$(mktemp)"
+  trap 'rm -f "$ROLLBACK_ERR"' EXIT
   while IFS='|' read -r _ c name id tag; do
     if ! valid_image_ref "$name" || ! valid_image_ref "$id" || ! valid_image_ref "$tag"; then
       echo "Error: manifest contains an invalid image reference ('$name' '$id' '$tag'); nothing was changed." >&2
       exit 1
     fi
+    case "$tag" in
+      *":rollback-$m_stamp") ;;
+      *) echo "Error: rollback tag '$tag' is not of the form <image>:rollback-$m_stamp; nothing was changed." >&2; exit 1 ;;
+    esac
     # Only retag the images of this deployment's own app containers: the
     # manifest container must be one of them and its image name must be the
     # one that container is configured with now.
@@ -815,19 +853,32 @@ do_rollback() {
       echo "Error: manifest container '$c' is not an app service of this deployment; nothing was changed." >&2
       exit 1
     fi
-    cur="$("$CONTAINER_RUNTIME" inspect --format '{{.Config.Image}}' "$c" 2>/dev/null || true)"
-    if [ -n "$cur" ]; then
+    if cur="$("$CONTAINER_RUNTIME" inspect --format '{{.Config.Image}}' "$c" 2>"$ROLLBACK_ERR")" && [ -n "$cur" ]; then
       if [ "$cur" != "$name" ]; then
         echo "Error: manifest image name '$name' does not match $c's current image '$cur'; refusing to retag an arbitrary image." >&2
         exit 1
       fi
-    elif [ "$(img_repo "$name")" != "$(img_repo "$tag")" ]; then
-      # The container is gone (e.g. a failed recreate removed it): the strict
-      # comparison is impossible, so require name and rollback tag to share a repository.
-      echo "Error: $c does not exist and manifest image '$name' / rollback tag '$tag' are in different repositories; refusing to retag." >&2
-      exit 1
+    elif grep -qiE 'no such (object|container)|not found|does not exist' "$ROLLBACK_ERR" 2>/dev/null; then
+      # The container is gone (e.g. a failed recreate removed it): validate the
+      # name against the images the deployment is configured with.
+      cfg_images="$("${COMPOSE[@]}" config --images 2>/dev/null || true)"
+      if [ -n "$cfg_images" ]; then
+        if ! printf '%s\n' "$cfg_images" | grep -qxF -- "$name"; then
+          echo "Error: $c does not exist and manifest image '$name' is not one of this deployment's configured images; refusing to retag." >&2
+          exit 1
+        fi
+        echo "Note: $c does not exist; manifest image '$name' matches the deployment's configured images."
+      else
+        echo "WARNING: $c does not exist and the compose image list is unavailable; falling back to a same-repository check." >&2
+        if [ "$(img_repo "$name")" != "$(img_repo "$tag")" ]; then
+          echo "Error: manifest image '$name' and rollback tag '$tag' are in different repositories; refusing to retag." >&2
+          exit 1
+        fi
+        echo "Note: $c does not exist; accepting manifest image '$name' (same repository as its rollback tag)."
+      fi
     else
-      echo "Note: $c does not exist; accepting manifest image '$name' (same repository as its rollback tag)."
+      echo "Error: cannot inspect $c ($(head -c 200 "$ROLLBACK_ERR" 2>/dev/null | tr '\n' ' ')); refusing to roll back. Nothing was changed." >&2
+      exit 1
     fi
   done <<< "$images"
   # Verify every backup file (checksum and size) before anything destructive.
@@ -846,7 +897,7 @@ do_rollback() {
     fi
   fi
   acquire_upgrade_lock
-  trap 'release_upgrade_lock' EXIT
+  trap 'release_upgrade_lock; rm -f "$ROLLBACK_ERR"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   echo "Rollback target: $dir"
