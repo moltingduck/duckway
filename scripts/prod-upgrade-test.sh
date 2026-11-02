@@ -29,6 +29,24 @@ tar -cf "$STUB/data.tar" -C "$ROOT/tarsrc" encryption.key
 cat > "$STUB/docker" <<'EOF'
 #!/usr/bin/env bash
 echo "docker $*" >> "$STUB_LOG"
+# Runtime state model: container -> image id, image name -> image id. `compose
+# up` WITHOUT --force-recreate only restarts the existing container (it keeps
+# the image it was created from), like podman-compose does.
+ST="$STUB_DIR/state"
+mkdir -p "$ST"
+get() { [ -f "$ST/$1" ] && cat "$ST/$1"; }
+resolve() { # image ref -> id
+  local v; v="$(get "img-$(echo "$1" | tr '/:' '__')")"
+  if [ -n "$v" ]; then echo "$v"; return; fi
+  case "$1" in
+    sha256:*) echo "$1" ;;
+    img-*:rollback-*) echo "sha256:old-${1%%:*}" | sed 's/old-img-/old-/' ;;
+    img-*) echo "sha256:old-${1#img-}" ;;
+    *) echo "$1" ;;
+  esac
+}
+ctr_image() { local v; v="$(get "ctr-$1")"; echo "${v:-sha256:old-$1}"; }
+svc_ctr() { case "$1" in admin-*) echo duckway-admin ;; gateway-*) echo duckway-gateway ;; server-*) echo duckway-server ;; esac; }
 case "$1" in
   info) exit 0 ;;
   compose)
@@ -38,6 +56,22 @@ case "$1" in
     for a in "$@"; do
       if [ "$a" = "build" ] && [ -n "${STUB_FAIL_BUILD:-}" ]; then exit 1; fi
     done
+    case " $all " in
+      *" build "*)
+        for a in "$@"; do
+          c="$(svc_ctr "$a")"
+          [ -n "$c" ] && echo "sha256:new-$c" > "$ST/img-img-$c"
+        done ;;
+      *" up "*)
+        force=""; case " $all " in *" --force-recreate "*) force=1 ;; esac
+        [ -n "${STUB_NEVER_RECREATE:-}" ] && force=""
+        if [ -n "$force" ]; then
+          for a in "$@"; do
+            c="$(svc_ctr "$a")"
+            [ -n "$c" ] && resolve "img-$c" > "$ST/ctr-$c"
+          done
+        fi ;;
+    esac
     case "$all" in
       *"backup --help"*)
         # Probe of the NEW image's binary.
@@ -68,7 +102,7 @@ case "$1" in
     if [ -n "${STUB_NOT_RUNNING:-}" ] && [ "$fmt" = '{{.State.Running}}' ]; then echo false; exit 0; fi
     case "$fmt" in
       '{{.State.Running}}') echo true ;;
-      '{{.Image}}') echo "sha256:old-$name" ;;
+      '{{.Image}}') ctr_image "$name" ;;
       '{{.Config.Image}}') echo "img-$name" ;;
       '{{json .Config.Labels}}') echo '{}' ;;
       *) echo "" ;;
@@ -77,9 +111,18 @@ case "$1" in
     ;;
   image)
     [ -n "${STUB_NO_ROLLBACK_IMAGE:-}" ] && exit 1
+    case "$*" in
+      *"{{.Id}}"*) resolve "${*: -1}"; exit 0 ;;
+    esac
     exit 0
     ;;
-  tag|stop|rm) exit 0 ;;
+  tag)
+    [ -n "${STUB_FAIL_TAG:-}" ] && exit 1
+    shift; [ "$1" = "--" ] && shift
+    resolve "$1" > "$ST/img-$(echo "$2" | tr '/:' '__')"
+    exit 0
+    ;;
+  stop|rm) exit 0 ;;
   cp)
     # docker cp CONTAINER:SRC DEST
     printf 'SQLite format 3\0stubbed-db' > "$3"
@@ -172,6 +215,7 @@ new_proj() { # new_proj MODE BACKEND [extra .prod.env lines...]
   git -C "$PROJ" add -A
   git -C "$PROJ" -c user.name=t -c user.email=t@example.invalid commit -q -m init
   : > "$LOG"
+  rm -rf "$STUB/state"
 }
 
 OUT=""
@@ -255,9 +299,12 @@ assert_not "running (old) container is never asked to back up" in_log 'exec .* b
 assert "wget probes have a timeout" in_log 'wget -T 5 '
 assert "backup db is private" [ "$(stat -c %a "$PROJ/backups/upgrade-20260102T030405Z/duckway.db")" = 600 ]
 assert "no partial files left" bash -c "! ls '$PROJ'/backups/upgrade-20260102T030405Z/*.partial >/dev/null 2>&1"
+assert "recreate uses --force-recreate" in_log 'up -d --no-deps --force-recreate admin-prod'
+assert "upgrade verifies the admin image" in_out 'verified: duckway-admin runs the newly built image sha256:new-duckway-admin'
+assert "upgrade verifies the gateway image" in_out 'verified: duckway-gateway runs the newly built image sha256:new-duckway-gateway'
 assert "build before recreate" before 'docker compose .* build' 'docker compose .* up -d'
-assert "admin recreated before smoke" before 'up -d --no-deps admin-prod' 'wget .*9091/admin/login'
-assert "admin smoke before gateway recreate" before 'wget .*9091/admin/login' 'up -d --no-deps gateway-prod'
+assert "admin recreated before smoke" before 'up -d --no-deps --force-recreate admin-prod' 'wget .*9091/admin/login'
+assert "admin smoke before gateway recreate" before 'wget .*9091/admin/login' 'up -d --no-deps --force-recreate gateway-prod'
 assert "build covers both app services" in_log 'build admin-prod gateway-prod'
 assert "images tagged with rollback stamp" in_log 'docker tag -- sha256:old-duckway-admin img-duckway-admin:rollback-20260102T030405Z'
 assert "gateway image tagged" in_log 'docker tag -- sha256:old-duckway-gateway img-duckway-gateway:rollback-20260102T030405Z'
@@ -310,10 +357,13 @@ assert_not "empty stdin changes nothing" in_log "docker (tag|stop) |compose .* (
 : > "$LOG"
 run_prod "upgrade-20260102T030405Z" -- rollback --to "backups/upgrade-20260102T030405Z"
 assert "typed confirmation proceeds" [ "$RC" -eq 0 ]
+assert "rollback verifies the previous admin image is running" in_out 'verified: duckway-admin runs the previous image sha256:old-duckway-admin'
+assert "rollback verifies the previous gateway image is running" in_out 'verified: duckway-gateway runs the previous image sha256:old-duckway-gateway'
+assert "rollback recreates with --force-recreate" in_log 'up -d --no-deps --force-recreate gateway-prod'
 assert "stop before DB restore" before 'docker stop ' 'compose .* run --rm --no-deps -v .*restore'
 assert "DB restore before re-tag" before 'compose .* run --rm' 'docker tag -- img-duckway-admin:rollback'
-assert "re-tag before recreate" before 'docker tag -- img-duckway-admin:rollback' 'up -d --no-deps admin-prod'
-assert "admin recreated before gateway" before 'up -d --no-deps admin-prod' 'up -d --no-deps gateway-prod'
+assert "re-tag before recreate" before 'docker tag -- img-duckway-admin:rollback' 'up -d --no-deps --force-recreate admin-prod'
+assert "admin recreated before gateway" before 'up -d --no-deps --force-recreate admin-prod' 'up -d --no-deps --force-recreate gateway-prod'
 assert "re-tag restores original image name" in_log 'docker tag -- img-duckway-admin:rollback-20260102T030405Z img-duckway-admin$'
 : > "$LOG"
 run_prod "" -- rollback --to "backups/upgrade-20260102T030405Z" --keep-data --yes
@@ -322,7 +372,7 @@ assert_not "--keep-data does not stop services" in_log 'docker stop '
 assert_not "--keep-data skips DB restore" in_log 'compose .* run '
 assert_not "--keep-data skips pg_restore" in_log 'pg_restore'
 assert "--keep-data still re-tags images" in_log 'docker tag -- img-duckway-admin:rollback'
-assert "--keep-data still recreates" in_log 'up -d --no-deps admin-prod'
+assert "--keep-data still recreates" in_log 'up -d --no-deps --force-recreate admin-prod'
 : > "$LOG"
 STUB_NO_ROLLBACK_IMAGE=1 run_prod "" -- rollback --to "backups/upgrade-20260102T030405Z" --yes
 assert "missing rollback image fails" [ "$RC" -ne 0 ]
@@ -413,6 +463,32 @@ assert "bad stream exits non-zero" [ "$RC" -ne 0 ]
 assert_not "bad stream: no recreate" in_log 'compose .* up '
 assert "bad stream: no db kept" [ ! -e "$PROJ/backups/upgrade-20260102T030405Z/duckway.db" ]
 
+echo "# runtime that only restarts containers (no image swap) is detected"
+new_proj split sqlite
+STUB_NEVER_RECREATE=1 run_prod "" -- upgrade --yes
+assert "upgrade without image swap exits non-zero" [ "$RC" -ne 0 ]
+assert "upgrade reports the stale image" in_out 'not running the newly built image'
+assert "upgrade marks manifest failed" grep -q '"status": "failed"' "$PROJ/backups/upgrade-20260102T030405Z/manifest.json"
+assert_not "upgrade does not claim completion" in_out 'Upgrade complete'
+assert_not "gateway untouched after admin image mismatch" in_log 'up -d --no-deps --force-recreate gateway-prod'
+restore_proj
+mkdir -p "$STUB/state"
+for c in duckway-admin duckway-gateway; do echo "sha256:new-$c" > "$STUB/state/ctr-$c"; done # containers run the upgraded images
+STUB_NEVER_RECREATE=1 run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "rollback without image swap exits non-zero" [ "$RC" -ne 0 ]
+assert "rollback fails loudly" in_out 'ROLLBACK FAILED'
+assert "rollback gives manual guidance" in_out 'force-recreate'
+assert_not "rollback does not claim completion" in_out 'Rollback complete'
+
+echo "# early abort leaves no empty backup directory"
+new_proj split sqlite
+STUB_FAIL_TAG=1 run_prod "" -- upgrade --yes
+assert "tag failure exits non-zero" [ "$RC" -ne 0 ]
+assert "empty run directory removed" [ ! -e "$PROJ/backups/upgrade-20260102T030405Z" ]
+new_proj split sqlite
+STUB_FAIL_BUILD=1 run_prod "" -- upgrade --yes
+assert "directory with a manifest is kept" [ -s "$PROJ/backups/upgrade-20260102T030405Z/manifest.json" ]
+
 echo "# failed build leaves running services untouched"
 new_proj split sqlite
 STUB_FAIL_BUILD=1 run_prod "" -- upgrade --yes
@@ -435,8 +511,8 @@ echo "# post-recreate smoke failure prints rollback, gateway untouched"
 new_proj split sqlite
 STUB_NO_CSP=1 run_prod "" -- upgrade --yes
 assert "smoke failure exits non-zero" [ "$RC" -ne 0 ]
-assert "admin was recreated" in_log 'up -d --no-deps admin-prod'
-assert_not "gateway not recreated after admin smoke failure" in_log 'up -d --no-deps gateway-prod'
+assert "admin was recreated" in_log 'up -d --no-deps --force-recreate admin-prod'
+assert_not "gateway not recreated after admin smoke failure" in_log 'up -d --no-deps --force-recreate gateway-prod'
 assert "exact rollback command printed" in_out 'rollback --to backups/upgrade-20260102T030405Z'
 assert "manifest marked failed" grep -q '"status": "failed"' "$PROJ/backups/upgrade-20260102T030405Z/manifest.json"
 
@@ -452,7 +528,7 @@ new_proj combined sqlite
 run_prod "" -- upgrade --yes
 assert "combined upgrade exits 0" [ "$RC" -eq 0 ]
 assert "combined builds server only" in_log 'build server-prod$'
-assert "combined recreates server" in_log 'up -d --no-deps server-prod'
+assert "combined recreates server" in_log 'up -d --no-deps --force-recreate server-prod'
 assert_not "combined never touches gateway" in_log 'gateway'
 assert "combined backup runs as one-off server-prod container" in_log 'run --rm -T --no-deps --entrypoint sh server-prod -c .*duckway-server backup --out'
 

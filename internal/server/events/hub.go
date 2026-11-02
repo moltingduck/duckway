@@ -44,7 +44,7 @@ type Limits struct {
 }
 
 // DefaultLimits are used when a Hub is created with zero Limits.
-var DefaultLimits = Limits{MaxSubscribers: 64, MaxPerSession: 4, MaxPerUser: 8}
+var DefaultLimits = Limits{MaxSubscribers: 64, MaxPerSession: 8, MaxPerUser: 16}
 
 // Hub fans events out to subscribers. Publishing never blocks: each
 // subscriber keeps at most one pending event per topic (latest wins), so a

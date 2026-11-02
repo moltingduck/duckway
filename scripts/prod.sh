@@ -419,6 +419,25 @@ write_manifest() {
   mv "$out" "$dir/manifest.json"
 }
 
+norm_id() { printf '%s' "${1#sha256:}"; }
+# verify_container_image CONTAINER EXPECTED_ID: the running container must use
+# exactly that image. `compose up -d` alone only restarts an existing container
+# (podman-compose does this even after the tag moved), so never trust it.
+verify_container_image() {
+  local got
+  got="$("$CONTAINER_RUNTIME" inspect --format '{{.Image}}' "$1" 2>/dev/null || true)"
+  [ -n "$got" ] && [ -n "$2" ] && [ "$(norm_id "$got")" = "$(norm_id "$2")" ]
+}
+# upgrade_verify_image INDEX: running image == the image built in this run.
+upgrade_verify_image() {
+  local i="$1" c="${UP_CONTAINERS[$1]}"
+  if verify_container_image "$c" "${UP_NEW_IDS[$i]}"; then
+    echo "  verified: $c runs the newly built image ${UP_NEW_IDS[$i]}"
+    return 0
+  fi
+  upgrade_fail_after_recreate "$c is not running the newly built image (expected ${UP_NEW_IDS[$i]}, got '$("$CONTAINER_RUNTIME" inspect --format '{{.Image}}' "$c" 2>/dev/null || true)'). The runtime restarted the old container instead of recreating it; try: ${COMPOSE[*]} up -d --no-deps --force-recreate ${UP_SVCS[$i]}"
+}
+
 upgrade_fail_after_recreate() {
   echo "" >&2
   echo "UPGRADE FAILED after app services were recreated: $1" >&2
@@ -430,7 +449,7 @@ upgrade_fail_after_recreate() {
 }
 
 do_upgrade() {
-  local assume_yes=false svc c cand confirm name id tag admin_svc gw_svc
+  local assume_yes=false svc c cand confirm name id tag admin_svc gw_svc i
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -468,8 +487,14 @@ do_upgrade() {
     exit 1
   fi
   mkdir -m 700 "$UP_DIR"
+  # Partial files never outlive a failed or interrupted run, and the run
+  # directory is removed again when nothing was written to it (rmdir fails on a
+  # non-empty directory, which keeps every backup or manifest).
+  trap 'rm -f "$UP_DIR"/*.partial; rmdir "$UP_DIR" 2>/dev/null || true' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
-  UP_SVCS=(); UP_CONTAINERS=(); UP_NAMES=(); UP_IDS=(); UP_TAGS=()
+  UP_SVCS=(); UP_CONTAINERS=(); UP_NAMES=(); UP_IDS=(); UP_TAGS=(); UP_NEW_IDS=()
   UP_COMMIT_AFTER="$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
   UP_DIRTY=false
   if [ -n "$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null)" ]; then
@@ -483,8 +508,6 @@ do_upgrade() {
     UP_COMMIT_BEFORE="$(git -C "$PROJECT_DIR" rev-parse --verify --quiet "$cand^{commit}" 2>/dev/null || echo "$cand")"
   fi
 
-  # Partial backup files never outlive a failed or interrupted run.
-  trap 'rm -f "$UP_DIR"/*.partial' EXIT INT TERM
 
   # Step 1: tag the running images so they survive the rebuild (the build
   # replaces the tags the running containers were created from).
@@ -519,6 +542,17 @@ do_upgrade() {
     exit 1
   fi
 
+  # Remember which image each service must run after the recreate.
+  for ((i = 0; i < ${#UP_SVCS[@]}; i++)); do
+    id="$("$CONTAINER_RUNTIME" image inspect --format '{{.Id}}' -- "${UP_NAMES[$i]}" 2>/dev/null || true)"
+    if [ -z "$id" ]; then
+      echo "Cannot resolve the freshly built image ${UP_NAMES[$i]}; nothing was changed." >&2
+      write_manifest "$UP_DIR" build-failed || true
+      exit 1
+    fi
+    UP_NEW_IDS+=("$id")
+  done
+
   # Step 3: backup. SQLite uses the freshly built image's binary, so a first
   # upgrade from an image that predates the `backup` subcommand works. Any
   # failure here still leaves running services untouched.
@@ -539,12 +573,15 @@ do_upgrade() {
   if [ "$MODE" = "split" ]; then
     set -- $(app_services)
     admin_svc="$1"; gw_svc="$2"
-    "${COMPOSE[@]}" up -d --no-deps "$admin_svc" || upgrade_fail_after_recreate "recreating $admin_svc failed"
+    "${COMPOSE[@]}" up -d --no-deps --force-recreate "$admin_svc" || upgrade_fail_after_recreate "recreating $admin_svc failed"
+    upgrade_verify_image 0
     echo "Smoke-testing admin before touching the gateway..."
     smoke_service "$admin_svc" strict || upgrade_fail_after_recreate "admin smoke test failed; the gateway was NOT recreated"
-    "${COMPOSE[@]}" up -d --no-deps "$gw_svc" || upgrade_fail_after_recreate "recreating $gw_svc failed"
+    "${COMPOSE[@]}" up -d --no-deps --force-recreate "$gw_svc" || upgrade_fail_after_recreate "recreating $gw_svc failed"
+    upgrade_verify_image 1
   else
-    "${COMPOSE[@]}" up -d --no-deps $(app_services) || upgrade_fail_after_recreate "recreating $(app_services) failed"
+    "${COMPOSE[@]}" up -d --no-deps --force-recreate $(app_services) || upgrade_fail_after_recreate "recreating $(app_services) failed"
+    upgrade_verify_image 0
   fi
 
   echo ""
@@ -578,7 +615,7 @@ manifest_field() {
 }
 
 do_rollback() {
-  local dir="" keep_data=false assume_yes=false force=false m_mode m_backend m_status images dbfile typed svc c name tag id fname fsha fbytes
+  local dir="" keep_data=false assume_yes=false force=false m_mode m_backend m_status images dbfile typed svc c name tag id fname fsha fbytes rb_bad
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -709,10 +746,27 @@ do_rollback() {
   echo "Recreating app services from the previous images..."
   if [ "$MODE" = "split" ]; then
     set -- $(app_services)
-    "${COMPOSE[@]}" up -d --no-deps "$1" || { echo "Recreating $1 failed." >&2; exit 1; }
-    "${COMPOSE[@]}" up -d --no-deps "$2" || { echo "Recreating $2 failed." >&2; exit 1; }
+    "${COMPOSE[@]}" up -d --no-deps --force-recreate "$1" || { echo "Recreating $1 failed." >&2; exit 1; }
+    "${COMPOSE[@]}" up -d --no-deps --force-recreate "$2" || { echo "Recreating $2 failed." >&2; exit 1; }
   else
-    "${COMPOSE[@]}" up -d --no-deps $(app_services) || { echo "Recreating app services failed." >&2; exit 1; }
+    "${COMPOSE[@]}" up -d --no-deps --force-recreate $(app_services) || { echo "Recreating app services failed." >&2; exit 1; }
+  fi
+  # Verify the containers really run the previous images; a plain restart of
+  # the existing containers would keep the new image while looking healthy.
+  rb_bad=0
+  while IFS='|' read -r _ c _ id _; do
+    if verify_container_image "$c" "$id"; then
+      echo "  verified: $c runs the previous image $id"
+    else
+      echo "ROLLBACK FAILED: $c is not running the previous image $id (running '$("$CONTAINER_RUNTIME" inspect --format '{{.Image}}' "$c" 2>/dev/null || true)')." >&2
+      rb_bad=1
+    fi
+  done <<< "$images"
+  if [ "$rb_bad" -ne 0 ]; then
+    echo "The database may already be restored, but the app containers still run the new image." >&2
+    echo "Recreate them manually: ${COMPOSE[*]} up -d --no-deps --force-recreate $(app_services)" >&2
+    echo "(the previous images are tagged as the original image names and as the manifest rollback_tag values)" >&2
+    exit 1
   fi
   for svc in $(app_services); do
     smoke_service "$svc" lenient || { echo "Smoke test failed after rollback for $svc; inspect with: $0 logs" >&2; exit 1; }

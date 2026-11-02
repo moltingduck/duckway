@@ -169,6 +169,9 @@ type RequestLogEntry struct {
 	// back to the phantom-token detail view.
 	Placeholder string `json:"placeholder"`
 	CreatedAt   string `json:"created_at"`
+	// HasDetail reports whether captured headers/bodies exist, so the UI can
+	// skip the detail request (a 404) for rows logged with capture off.
+	HasDetail bool `json:"has_detail"`
 }
 
 func (q *RequestLogQueries) Recent(limit int) ([]RequestLogEntry, error) {
@@ -176,7 +179,8 @@ func (q *RequestLogQueries) Recent(limit int) ([]RequestLogEntry, error) {
 		`SELECT r.id, r.service_name, r.method, r.path, r.status_code,
 		 r.client_id, COALESCE(c.name, ''),
 		 r.placeholder_id, COALESCE(p.env_name, ''), COALESCE(p.placeholder, ''),
-		 r.created_at
+		 r.created_at,
+		 EXISTS(SELECT 1 FROM request_log_detail d WHERE d.log_id = r.id)
 		 FROM request_log r
 		 LEFT JOIN clients c ON r.client_id = c.id
 		 LEFT JOIN placeholder_keys p ON r.placeholder_id = p.id
@@ -192,7 +196,7 @@ func (q *RequestLogQueries) Recent(limit int) ([]RequestLogEntry, error) {
 		var l RequestLogEntry
 		if err := rows.Scan(&l.ID, &l.ServiceName, &l.Method, &l.Path, &l.StatusCode,
 			&l.ClientID, &l.ClientName, &l.PlaceholderID, &l.EnvName, &l.Placeholder,
-			&l.CreatedAt); err != nil {
+			&l.CreatedAt, &l.HasDetail); err != nil {
 			return nil, err
 		}
 		result = append(result, l)

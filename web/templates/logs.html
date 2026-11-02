@@ -152,6 +152,11 @@ DW.live.on('logs', function(d) {
 document.addEventListener('visibilitychange', function() {
   if (!document.hidden && (newCount > 0 || newUnknown) && canAutoApply()) loadLogs(true);
 });
+// DW.modal has no close event, so apply entries queued while the detail modal
+// was open shortly after it closes (tail on, page 1). Cheap: counters only.
+setInterval(function() {
+  if ((newCount > 0 || newUnknown) && !logsLoading && canAutoApply()) loadLogs(true);
+}, 1000);
 
 var logsSeq = 0;
 var logsLoading = false;
@@ -448,6 +453,9 @@ function onCaptureToggle() {
 // If capture was on for this request, the modal also shows headers + bodies;
 // otherwise that section says "no details recorded".
 function openLogDetail(l) {
+  // The list says whether details were captured; skip the request (which
+  // would 404 and log a console error) when they were not.
+  if (l.has_detail === false) { renderLogDetail(l, null); return; }
   fetch('/api/logs/' + l.id + '/detail', {credentials:'same-origin'})
     .then(function(r) {
       if (r.status === 404) return null; // expected when capture was off

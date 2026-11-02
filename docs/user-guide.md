@@ -310,6 +310,12 @@ app container that is not running or insufficient disk space.
    with a `Content-Security-Policy` header, `/api/events` answers 401, the
    gateway answers `/healthz`), then prints the rollback command.
 
+Recreation uses `up -d --no-deps --force-recreate` (plain `up -d` only restarts
+an existing container, which under podman-compose keeps the old image), and the
+script then verifies that each container's image ID equals the image built in
+this run; a mismatch fails the upgrade with guidance. An aborted run that wrote
+nothing removes its empty `backups/upgrade-<ts>/` directory.
+
 Any failure before step 6 starts leaves the running services untouched (the
 manifest is marked `build-failed` or `backup-failed`). A failure after
 recreation prints the exact `rollback` command and marks the manifest `failed`.
@@ -341,6 +347,10 @@ backup (SQLite file copy into the data volume; PostgreSQL `pg_restore
 request logs, new keys and clients) is lost. With `--keep-data` only the images
 are rolled back and the current database is kept, which relies on the
 append-only migration policy.
+
+After recreating with `--force-recreate`, rollback verifies that every app
+container runs the manifest's `previous_image_id` and fails loudly (with the
+manual recreate command) if not, instead of printing "Rollback complete".
 
 Rollback restores the database and the images, but **not** `data-files.tar`
 (encryption key and CA material). The archive is kept in the backup directory
@@ -374,7 +384,7 @@ Requirements for the proxy on `/api/events`:
   Duckway sends as an SSE comment. Use a generous value such as one hour.
 - Forward the `Cookie` header unchanged. The stream is authenticated with the
   admin session cookie; an unauthenticated request gets 401 or 403.
-- Limits: at most 4 concurrent streams per session and 8 per user (further
+- Limits: at most 8 concurrent streams per session and 16 per user (further
   ones get `429 Too Many Requests`) and 64 in total (further ones get
   `503 Service Unavailable`), both with `Retry-After: 5`. The browser keeps one
   stream per open tab, so many tabs on one session can hit the per-session limit.
@@ -386,7 +396,7 @@ In the Polling state the pages keep working and refresh every 15 seconds.
 A single stream lives at most 30 minutes. The server then closes it and the
 browser reconnects through normal authentication, so a logged-out or expired
 session stops receiving events; the session is also re-checked on every
-heartbeat. Besides the per-session limit there is a per-user limit of 8
+heartbeat. Besides the per-session limit there is a per-user limit of 16
 concurrent streams.
 
 **Do not override `Content-Security-Policy` in the proxy.** Duckway sends a

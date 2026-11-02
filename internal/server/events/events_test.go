@@ -507,3 +507,9 @@ func TestHubRejectsEmptySessionAndLimitsUser(t *testing.T) {
 		t.Fatalf("after close: %v", err)
 	}
 }
+
+func TestDefaultLimits(t *testing.T) {
+	if DefaultLimits.MaxPerSession != 8 || DefaultLimits.MaxPerUser != 16 || DefaultLimits.MaxSubscribers != 64 {
+		t.Fatalf("DefaultLimits = %+v", DefaultLimits)
+	}
+}
