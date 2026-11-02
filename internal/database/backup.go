@@ -66,7 +66,7 @@ func BackupSQLite(ctx context.Context, dataDir, outPath string) error {
 	lit := "'" + strings.ReplaceAll(tmpOut, "'", "''") + "'"
 	if _, err := db.ExecContext(ctx, "VACUUM INTO "+lit); err != nil {
 		msg := strings.ToLower(err.Error())
-		if strings.Contains(msg, "locked") || strings.Contains(msg, "busy") {
+		if strings.Contains(msg, "locked") || strings.Contains(msg, "busy") || strings.Contains(msg, "disk i/o") || strings.Contains(msg, "protocol") {
 			return fmt.Errorf("vacuum into: database is busy or locked (%w); online backup needs the data directory on a local filesystem shared by one kernel (not NFS or a network/virtiofs bind mount); retry, or stop the app services and copy the database offline", err)
 		}
 		return fmt.Errorf("vacuum into: %w", err)

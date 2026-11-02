@@ -331,6 +331,17 @@ the manifest is marked `recreating`, so an interrupted run can be rolled back
 without `--force`. A failure after recreation prints the exact `rollback` command and marks the manifest `failed`.
 `.prod.env` and Tailscale state are not part of the backup.
 
+Only one `upgrade` or `rollback` runs at a time: they hold
+`backups/.upgrade.lock` (with the owner's PID). If a run was killed hard, the
+next one reports a stale lock; remove it with `rm -rf backups/.upgrade.lock`
+once you are sure nothing is running. The preflight also checks that the data
+volume has room for the staged backup copy, and an upgrade first removes
+leftover `/data/.backup-tmp-*` directories from earlier killed runs (they are
+also excluded from `data-files.tar`). Rollback additionally checks that each
+`rollback_tag` still points at the manifest's previous image before retagging;
+if an app container no longer exists, the manifest image name is accepted only
+when it shares a repository with its rollback tag.
+
 ### Downtime
 
 - Split mode: admin is recreated first and smoke-tested before the gateway is

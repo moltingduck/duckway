@@ -183,10 +183,19 @@
     src.addEventListener('bye', function () {
       if (es !== src) return;
       closeES();
-      if (upSince && Date.now() - upSince >= STABLE_MS) failures = 0;
-      upSince = 0;
       clearRetry();
-      retryTimer = setTimeout(function () { connect(true); }, 200);
+      var delay = 200;
+      if (upSince && Date.now() - upSince >= STABLE_MS) {
+        failures = 0;
+      } else {
+        // A stream that said bye almost immediately is not a healthy planned
+        // close: back off (>=5s) and count it so repeats reach polling.
+        failures += 1;
+        if (failures >= FAIL_LIMIT) { startPolling(); delay = SSE_RETRY_POLLING_MS; }
+        else delay = Math.max(5000, backoff());
+      }
+      upSince = 0;
+      retryTimer = setTimeout(function () { connect(true); }, delay);
     });
     TOPICS.forEach(function (topic) {
       src.addEventListener(topic, function (ev) {

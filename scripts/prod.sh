@@ -225,7 +225,7 @@ smoke_service() {
 # upgrade_check: strictly read-only (runtime inspect/exec-read, git, df, curl GET).
 # Returns non-zero only for blocking problems.
 upgrade_check() {
-  local blockers=0 svc c head need_kb data_kb free_kb data_path ver url hdrs csp disk_dir
+  local blockers=0 vol_free_kb svc c head need_kb data_kb free_kb data_path ver url hdrs csp disk_dir
   echo "=== Duckway upgrade check (read-only) ==="
   echo "Mode:      $MODE"
   echo "Database:  $DATABASE_BACKEND"
@@ -283,6 +283,28 @@ upgrade_check() {
       fi
       ;;
   esac
+  if [ "$DATABASE_BACKEND" != "postgres" ]; then
+    c="$(svc_container "$(primary_service)")"
+    vol_free_kb=""
+    if rt_running "$c"; then
+      vol_free_kb="$("$CONTAINER_RUNTIME" exec "$c" df -Pk /data 2>/dev/null | awk 'NR==2{print $4}' || true)"
+    fi
+    case "$vol_free_kb" in
+      ''|*[!0-9]*) echo "Data volume free space: unknown" ;;
+      *)
+        echo "Data volume free space: ${vol_free_kb} KB (the online backup stages a copy of the database there)"
+        case "$data_kb" in
+          ''|*[!0-9]*) ;;
+          *)
+            if [ "$vol_free_kb" -lt $((data_kb + 10240)) ]; then
+              echo "BLOCKER: the data volume has less free space than the database size plus 10 MB; the staged backup copy would not fit."
+              blockers=$((blockers + 1))
+            fi
+            ;;
+        esac
+        ;;
+    esac
+  fi
   echo ""
   echo "--- Schema migrations ---"
   echo "Migrations are append-only by policy: a new image only adds schema, so the"
@@ -324,6 +346,38 @@ upgrade_check() {
 # compose client was stopped by a timeout).
 remove_oneoff() { "$CONTAINER_RUNTIME" rm -f "$1" >/dev/null 2>&1 || true; }
 BACKUP_CONTAINER=""
+# cleanup_backup_tmp: remove the temporary DB copy a (possibly force-killed)
+# backup container may have left on the data volume.
+cleanup_backup_tmp() {
+  [ -n "${STAMP:-}" ] || return 0
+  "$CONTAINER_RUNTIME" exec "$(svc_container "$(primary_service)")" rm -rf "/data/.backup-tmp-$STAMP" >/dev/null 2>&1 || true
+}
+
+# Only one upgrade/rollback at a time: a mkdir lock under backups/ holding the
+# owner's PID. A stale lock (dead PID) is reported, never silently taken over.
+UPGRADE_LOCK="$BACKUP_ROOT/.upgrade.lock"
+UPGRADE_LOCK_HELD=0
+acquire_upgrade_lock() {
+  local pid
+  mkdir -p "$BACKUP_ROOT"
+  chmod 700 "$BACKUP_ROOT"
+  if mkdir "$UPGRADE_LOCK" 2>/dev/null; then
+    echo "$$" > "$UPGRADE_LOCK/pid"
+    UPGRADE_LOCK_HELD=1
+    return 0
+  fi
+  pid="$(cat "$UPGRADE_LOCK/pid" 2>/dev/null || true)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    echo "Error: another upgrade/rollback is already running (PID $pid; lock $UPGRADE_LOCK)." >&2
+  else
+    echo "Error: stale lock $UPGRADE_LOCK (owner PID '${pid:-unknown}' is not running)." >&2
+    echo "If no upgrade or rollback is in progress, remove it and retry: rm -rf '$UPGRADE_LOCK'" >&2
+  fi
+  exit 1
+}
+release_upgrade_lock() {
+  if [ "$UPGRADE_LOCK_HELD" = 1 ]; then rm -rf "$UPGRADE_LOCK"; UPGRADE_LOCK_HELD=0; fi
+}
 
 # backup_sqlite DIR: runs the NEW image's binary in a one-off container on the
 # data volume (the running binary may predate the `backup` subcommand, and
@@ -354,6 +408,7 @@ backup_sqlite() {
       "umask 077; d=/data/.backup-tmp-$STAMP; mkdir -m 700 \"\$d\" && f=\"\$d/duckway.db\" && trap 'rm -rf \"\$d\"' EXIT INT TERM && $bin backup --out \"\$f\" >&2 && sha256sum \"\$f\" | awk '{print \"DUCKWAY_BACKUP_SHA256=\" \$1}' >&2 && cat \"\$f\"" \
       > "$part" 2> "$errf" || rc=$?
   remove_oneoff "$cname"
+  cleanup_backup_tmp
   if [ "$rc" -ne 0 ]; then
     cat "$errf" >&2 2>/dev/null || true
     rm -f "$part" "$errf"
@@ -379,7 +434,7 @@ backup_data_files() {
   local dir="$1" c
   c="$(svc_container "$(primary_service)")"
   echo "Archiving key and CA files from $c:/data (excluding live database files)..."
-  "$CONTAINER_RUNTIME" exec "$c" tar -cf - -C /data --exclude './duckway.db*' . > "$dir/data-files.tar.partial" \
+  "$CONTAINER_RUNTIME" exec "$c" tar -cf - -C /data --exclude './duckway.db*' --exclude './.backup-tmp-*' . > "$dir/data-files.tar.partial" \
     || { rm -f "$dir/data-files.tar.partial"; return 1; }
   tar -tf "$dir/data-files.tar.partial" >/dev/null || { echo "data-files.tar is not a valid archive" >&2; rm -f "$dir/data-files.tar.partial"; return 1; }
   chmod 600 "$dir/data-files.tar.partial"
@@ -526,6 +581,8 @@ do_upgrade() {
     exit 2
   fi
   umask 077
+  acquire_upgrade_lock
+  trap 'release_upgrade_lock' EXIT
   UP_DIR="$BACKUP_ROOT/upgrade-$STAMP"
   mkdir -p "$BACKUP_ROOT"
   chmod 700 "$BACKUP_ROOT"
@@ -537,9 +594,14 @@ do_upgrade() {
   # Partial files never outlive a failed or interrupted run, and the run
   # directory is removed again when nothing was written to it (rmdir fails on a
   # non-empty directory, which keeps every backup or manifest).
-  trap 'rm -f "$UP_DIR"/*.partial; [ -z "$BACKUP_CONTAINER" ] || remove_oneoff "$BACKUP_CONTAINER"; rmdir "$UP_DIR" 2>/dev/null || true' EXIT
+  trap 'rm -f "$UP_DIR"/*.partial; [ -z "$BACKUP_CONTAINER" ] || { remove_oneoff "$BACKUP_CONTAINER"; cleanup_backup_tmp; }; release_upgrade_lock; rmdir "$UP_DIR" 2>/dev/null || true' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+
+  # Remove leftovers of earlier force-killed backups (full DB copies).
+  if [ "$DATABASE_BACKEND" != "postgres" ]; then
+    "$CONTAINER_RUNTIME" exec "$(svc_container "$(primary_service)")" sh -c 'rm -rf /data/.backup-tmp-*' >/dev/null 2>&1 || true
+  fi
 
   UP_SVCS=(); UP_CONTAINERS=(); UP_NAMES=(); UP_IDS=(); UP_TAGS=(); UP_NEW_IDS=()
   UP_COMMIT_AFTER="$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -687,7 +749,7 @@ verify_backup_files() {
 }
 
 do_rollback() {
-  local dir="" keep_data=false assume_yes=false force=false m_mode m_backend m_status images dbfile typed svc c name tag id rb_bad want_db cur
+  local dir="" keep_data=false assume_yes=false force=false m_mode m_backend m_status images dbfile typed svc c name tag id rb_bad want_db cur tag_id id_id
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -754,9 +816,18 @@ do_rollback() {
       exit 1
     fi
     cur="$("$CONTAINER_RUNTIME" inspect --format '{{.Config.Image}}' "$c" 2>/dev/null || true)"
-    if [ -z "$cur" ] || [ "$cur" != "$name" ]; then
-      echo "Error: manifest image name '$name' does not match $c's current image '${cur:-unknown}'; refusing to retag an arbitrary image." >&2
+    if [ -n "$cur" ]; then
+      if [ "$cur" != "$name" ]; then
+        echo "Error: manifest image name '$name' does not match $c's current image '$cur'; refusing to retag an arbitrary image." >&2
+        exit 1
+      fi
+    elif [ "$(img_repo "$name")" != "$(img_repo "$tag")" ]; then
+      # The container is gone (e.g. a failed recreate removed it): the strict
+      # comparison is impossible, so require name and rollback tag to share a repository.
+      echo "Error: $c does not exist and manifest image '$name' / rollback tag '$tag' are in different repositories; refusing to retag." >&2
       exit 1
+    else
+      echo "Note: $c does not exist; accepting manifest image '$name' (same repository as its rollback tag)."
     fi
   done <<< "$images"
   # Verify every backup file (checksum and size) before anything destructive.
@@ -774,6 +845,10 @@ do_rollback() {
       exit 1
     fi
   fi
+  acquire_upgrade_lock
+  trap 'release_upgrade_lock' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   echo "Rollback target: $dir"
   echo "  mode=$m_mode backend=$m_backend commit_before=$(manifest_field "$dir/manifest.json" git_commit_before)"
   echo "  App images will be re-tagged to the pre-upgrade images and the services recreated."
@@ -792,8 +867,16 @@ do_rollback() {
     fi
   fi
 
-  while IFS='|' read -r _ _ _ _ tag; do
+  while IFS='|' read -r _ c _ id tag; do
     "$CONTAINER_RUNTIME" image inspect -- "$tag" >/dev/null 2>&1 || { echo "Error: rollback image $tag no longer exists; nothing was changed." >&2; exit 1; }
+    # The tag must still point at the image recorded in the manifest (with the
+    # containerd digest-kind tolerance), or it could retag a different image.
+    tag_id="$("$CONTAINER_RUNTIME" image inspect --format '{{.Id}}' -- "$tag" 2>/dev/null || true)"
+    id_id="$("$CONTAINER_RUNTIME" image inspect --format '{{.Id}}' -- "$id" 2>/dev/null || true)"
+    if [ -z "$tag_id" ] || { [ "$(norm_id "$tag_id")" != "$(norm_id "$id")" ] && { [ -z "$id_id" ] || [ "$(norm_id "$tag_id")" != "$(norm_id "$id_id")" ]; }; }; then
+      echo "Error: rollback tag $tag resolves to '${tag_id:-nothing}', not the recorded previous image $id for $c; refusing to retag. Nothing was changed." >&2
+      exit 1
+    fi
   done <<< "$images"
 
   if [ "$keep_data" != "true" ]; then

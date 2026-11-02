@@ -105,6 +105,7 @@ case "$1" in
       shift
     done
     if [ -n "${STUB_NOT_RUNNING:-}" ] && [ "$fmt" = '{{.State.Running}}' ]; then echo false; exit 0; fi
+    if [ -n "${STUB_NO_CONFIG_IMAGE:-}" ] && [ "$fmt" = '{{.Config.Image}}' ]; then exit 1; fi
     case "$fmt" in
       '{{.State.Running}}') echo true ;;
       '{{.Image}}') ctr_image "$name" ;;
@@ -142,6 +143,7 @@ case "$1" in
     ctr="$1"; shift
     case "$1" in
       du) printf '1024\t%s\n' "$3"; exit 0 ;;
+      df) printf 'Filesystem 1K-blocks Used Available Use%% Mounted\nstub 1 1 %s 1%% /data\n' "${STUB_VOL_FREE_KB:-90000000}"; exit 0 ;;
       rm) exit 0 ;;
       tar) cat "$STUB_DIR/data.tar"; exit 0 ;;
       sh) printf 'PGDMP-stub'; exit 0 ;;
@@ -494,6 +496,53 @@ new_proj split sqlite
 STUB_CONTAINERD=1 STUB_NEVER_RECREATE=1 run_prod "" -- upgrade --yes
 assert "stale image still fails hard with differing digest kinds" [ "$RC" -ne 0 ]
 
+echo "# data volume hygiene and preflight"
+new_proj split sqlite
+run_prod "" -- upgrade --yes
+assert "data-files archive excludes backup temp dirs" in_log "--exclude ./.backup-tmp-"
+assert "stale backup temp dirs removed before the first mutation" before 'rm -rf /data/.backup-tmp-\*' 'docker tag '
+assert "temp dir cleaned after the backup" in_log 'exec duckway-admin rm -rf /data/.backup-tmp-20260102T030405Z'
+new_proj split sqlite
+STUB_VOL_FREE_KB=10 run_prod "" -- upgrade --check
+assert "tiny data volume is blocking" [ "$RC" -ne 0 ]
+assert "volume free space reported" in_out 'Data volume free space: 10 KB'
+new_proj split sqlite
+STUB_FAIL_BACKUP=1 run_prod "" -- upgrade --yes
+assert "failed backup cleans the temp dir" in_log 'exec duckway-admin rm -rf /data/.backup-tmp-20260102T030405Z'
+
+echo "# rollback: tag identity, missing container, lock"
+restore_proj
+sed -i 's|"rollback_tag":"img-duckway-admin:rollback-20260102T030405Z"|"rollback_tag":"img-duckway-gateway:rollback-20260102T030405Z"|' "$RB/manifest.json"
+run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "rollback tag resolving to another image refused" [ "$RC" -ne 0 ]
+assert "wrong tag explained" in_out 'refusing to retag'
+assert_not "wrong tag changes nothing" in_log 'docker (tag|stop) |compose .* (up|run) '
+restore_proj
+STUB_NO_CONFIG_IMAGE=1 run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "rollback proceeds when containers no longer exist" [ "$RC" -eq 0 ]
+assert "missing container noted" in_out 'does not exist; accepting manifest image'
+restore_proj
+sed -i 's|"image_name":"img-duckway-admin"|"image_name":"evil/other"|' "$RB/manifest.json"
+STUB_NO_CONFIG_IMAGE=1 run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "missing container with foreign image name refused" [ "$RC" -ne 0 ]
+restore_proj
+mkdir -p "$PROJ/backups/.upgrade.lock"; echo "$$" > "$PROJ/backups/.upgrade.lock/pid"
+run_prod "" -- rollback --to backups/upgrade-20260102T030405Z --yes
+assert "rollback refused while a live lock is held" [ "$RC" -ne 0 ]
+assert "live lock explained" in_out 'already running'
+assert_not "live lock changes nothing" in_log 'docker (tag|stop) |compose .* (up|run) '
+run_prod "" -- upgrade --yes
+assert "upgrade refused while a live lock is held" [ "$RC" -ne 0 ]
+echo 999999999 > "$PROJ/backups/.upgrade.lock/pid"
+run_prod "" -- upgrade --yes
+assert "stale lock refused with guidance" in_out 'stale lock'
+assert "stale lock guidance names the removal command" in_out "rm -rf"
+assert "lock directory kept for the operator" [ -d "$PROJ/backups/.upgrade.lock" ]
+rm -rf "$PROJ/backups/.upgrade.lock"
+STAMP_OVERRIDE=20270101T000000Z run_prod "" -- upgrade --yes
+assert "upgrade runs once the lock is gone" [ "$RC" -eq 0 ]
+assert "lock released after the run" [ ! -e "$PROJ/backups/.upgrade.lock" ]
+
 # ================================================================ failure paths
 echo "# failed backup (after tag+build) aborts before any recreate"
 new_proj split sqlite
@@ -511,7 +560,7 @@ echo "# new image without backup support aborts before recreate"
 new_proj split sqlite
 STUB_NO_BACKUP_SUPPORT=1 run_prod "" -- upgrade --yes
 assert "unsupported backup exits non-zero" [ "$RC" -ne 0 ]
-assert_not "unsupported backup: no real backup attempted" in_log 'backup-tmp-20260102T030405Z'
+assert_not "unsupported backup: no real backup attempted" in_log 'umask 077; d=/data/.backup-tmp-'
 assert "unsupported backup: probe container removed" in_log 'docker rm -f duckway-backup-20260102T030405Z'
 assert_not "unsupported backup: no recreate" in_log 'compose .* up '
 assert_not "unsupported backup: running container not asked" in_log 'exec .* backup'
