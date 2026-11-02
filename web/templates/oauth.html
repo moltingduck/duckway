@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="page-header">
   <h1>Refreshable Tokens</h1>
-  <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Upload Token</button>
+  <button class="btn btn-primary" data-action="modal-open" data-target="#add-modal">Upload Token</button>
 </div>
 
 <div class="card">
@@ -33,13 +33,13 @@
 </div>
 
 <!-- Upload modal -->
-<div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="add-modal" class="modal-backdrop" style="display:none">
   <div class="modal" style="max-width:600px">
     <h2>Upload Refreshable Token</h2>
 
     <div class="form-group">
       <label>Paste provider token JSON <span class="text-muted">(auto-fills fields when recognized)</span></label>
-      <textarea id="oauth-paste" style="min-height:72px;font-family:monospace;font-size:0.75rem" oninput="parseOAuthPaste()"></textarea>
+      <textarea id="oauth-paste" style="min-height:72px;font-family:monospace;font-size:0.75rem" data-on-input="parseOAuthPaste"></textarea>
       <p id="oauth-paste-help" class="text-sm text-muted mt-1">
         Claude: run <code>claude login</code>, then copy <code>~/.claude/.credentials.json</code>.
       </p>
@@ -64,8 +64,8 @@
         <textarea id="oauth-sub" style="min-height:40px;font-family:monospace;font-size:0.75rem" placeholder='{"subscriptionType":"max","rateLimitTier":"..."}'></textarea>
       </div>
       <div class="modal-actions">
-        <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
-        <button type="button" class="btn" id="test-oauth-btn" onclick="testOAuthUpload()">Test</button>
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
+        <button type="button" class="btn" id="test-oauth-btn" data-action="testOAuthUpload">Test</button>
         <button type="submit" class="btn btn-primary">Upload</button>
       </div>
     </form>
@@ -73,7 +73,7 @@
 </div>
 
 <!-- Detail / Edit modal -->
-<div id="detail-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="detail-modal" class="modal-backdrop" style="display:none">
   <div class="modal" style="max-width:600px">
     <h2 id="detail-title">Token Details</h2>
     <div id="detail-view">
@@ -94,11 +94,11 @@
       </table>
       <div id="d-rate-limits" class="mt-1"></div>
       <div class="modal-actions mt-1">
-        <button type="button" class="btn" onclick="document.getElementById('detail-modal').style.display='none'">Close</button>
-        <button type="button" class="btn" id="refresh-now-btn" onclick="refreshNow()">Refresh Now</button>
+        <button type="button" class="btn" data-action="modal-close">Close</button>
+        <button type="button" class="btn" id="refresh-now-btn" data-action="refreshNow">Refresh Now</button>
         <a class="btn" id="d-usage-detail-link" href="/admin/usage">View usage details</a>
-        <button type="button" class="btn btn-danger" onclick="prepareDeleteCurrent()">Delete</button>
-        <button type="button" class="btn btn-primary" onclick="switchToEdit()">Edit</button>
+        <button type="button" class="btn btn-danger" data-action="prepareDeleteCurrent">Delete</button>
+        <button type="button" class="btn btn-primary" data-action="switchToEdit">Edit</button>
       </div>
     </div>
     <div id="detail-edit" style="display:none">
@@ -127,11 +127,11 @@
         </div>
         <div class="form-group">
           <label>Paste provider token JSON to update tokens <span class="text-muted">(optional)</span></label>
-          <textarea id="edit-paste" style="min-height:52px;font-family:monospace;font-size:0.75rem" placeholder='{"claudeAiOauth":{"accessToken":"...","refreshToken":"..."}} or {"access_token":"...","refresh_token":"..."}' oninput="parseEditPaste()"></textarea>
+          <textarea id="edit-paste" style="min-height:52px;font-family:monospace;font-size:0.75rem" placeholder='{"claudeAiOauth":{"accessToken":"...","refreshToken":"..."}} or {"access_token":"...","refresh_token":"..."}' data-on-input="parseEditPaste"></textarea>
         </div>
         <div class="modal-actions">
-          <button type="button" class="btn" onclick="switchToView()">Back</button>
-          <button type="button" class="btn" id="test-edit-oauth-btn" onclick="testOAuthEdit()">Test</button>
+          <button type="button" class="btn" data-action="switchToView">Back</button>
+          <button type="button" class="btn" id="test-edit-oauth-btn" data-action="testOAuthEdit">Test</button>
           <button type="submit" class="btn btn-primary">Save</button>
         </div>
       </form>
@@ -140,18 +140,18 @@
 </div>
 
 <!-- Delete impact modal -->
-<div id="delete-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="delete-modal" class="modal-backdrop" style="display:none">
   <div class="modal" style="max-width:680px">
     <h2>Delete Refreshable Token</h2>
     <div id="delete-impact-body"></div>
     <div class="modal-actions">
-      <button type="button" class="btn" onclick="document.getElementById('delete-modal').style.display='none'">Cancel</button>
-      <button type="button" class="btn btn-danger" id="confirm-delete-btn" onclick="confirmDeleteToken()">Delete and clean references</button>
+      <button type="button" class="btn" data-action="modal-close">Cancel</button>
+      <button type="button" class="btn btn-danger" id="confirm-delete-btn" data-action="confirmDeleteToken">Delete and clean references</button>
     </div>
   </div>
 </div>
 
-<script>
+<script nonce="{{.CSPNonce}}">
 var oauthHelpByService = {
   claude: {
     pastePlaceholder: '{\n  "claudeAiOauth": {\n    "accessToken": "sk-ant-oat01-...",\n    "refreshToken": "sk-ant-ort01-...",\n    "expiresAt": 1760000000000,\n    "subscriptionType": "max",\n    "rateLimitTier": "...",\n    "scopes": ["user:inference"]\n  }\n}',
@@ -187,11 +187,18 @@ var oauthHelpByService = {
 var oauthSuggestedNames = ['Claude OAuth', 'Claude Code OAuth', 'Codex OAuth', 'Generic OAuth Token'];
 var lastParsedOAuthKind = '';
 
-function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
+DW.actions.parseOAuthPaste = function() { parseOAuthPaste(); };
+DW.actions.parseEditPaste = function() { parseEditPaste(); };
+DW.actions.testOAuthUpload = function() { testOAuthUpload(); };
+DW.actions.refreshNow = function() { refreshNow(); };
+DW.actions.prepareDeleteCurrent = function() { prepareDeleteCurrent(); };
+DW.actions.switchToEdit = function() { switchToEdit(); };
+DW.actions.switchToView = function() { switchToView(); };
+DW.actions.testOAuthEdit = function() { testOAuthEdit(); };
+DW.actions.confirmDeleteToken = function() { confirmDeleteToken(); };
+DW.actions.openDetail = function(el) { openDetail(el.dataset.id); };
+DW.actions.refreshTokenById = function(el) { refreshTokenById(el.dataset.id, el); };
+DW.actions.prepareDeleteToken = function(el) { prepareDeleteToken(el.dataset.id); };
 
 function selectedOAuthKind() {
   var sel = document.getElementById('oauth-service');
@@ -488,23 +495,25 @@ function openDetail(id) {
       if (data.expires_at > 0) {
         var mins = Math.round((data.expires_at - now) / 60000);
         var expired = data.expires_at < now;
-        document.getElementById('d-expires').innerHTML = expired
-          ? '<span class="badge badge-red">Expired</span> (' + Math.abs(mins) + ' min ago)'
-          : '<span class="badge badge-green">' + mins + ' min remaining</span>';
+        DW.setHTML(document.getElementById('d-expires'), expired
+          ? DW.html`<span class="badge badge-red">Expired</span> (${Math.abs(mins)} min ago)`
+          : DW.html`<span class="badge badge-green">${mins} min remaining</span>`);
       } else {
         document.getElementById('d-expires').textContent = 'N/A';
       }
 
       document.getElementById('d-usage').textContent = data.usage_count;
       loadOAuthUsageSummary(data.id);
-      document.getElementById('d-status').innerHTML = data.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>';
+      DW.setHTML(document.getElementById('d-status'), data.is_active ? DW.html`<span class="badge badge-green">Active</span>` : DW.html`<span class="badge badge-red">Inactive</span>`);
       document.getElementById('d-last-used').textContent = data.last_used_at || 'Never';
       document.getElementById('d-created').textContent = data.created_at;
-      document.getElementById('d-rate-limits').innerHTML = renderUsageSnapshot(data.usage_snapshot);
+      var rateLimits = document.getElementById('d-rate-limits');
+      var snapshotHTML = renderUsageSnapshot(data.usage_snapshot);
+      if (snapshotHTML) DW.setHTML(rateLimits, snapshotHTML); else rateLimits.replaceChildren();
 
       document.getElementById('detail-view').style.display = '';
       document.getElementById('detail-edit').style.display = 'none';
-      document.getElementById('detail-modal').style.display = 'flex';
+      DW.modal.open('#detail-modal');
     });
 }
 
@@ -541,7 +550,7 @@ function prepareDeleteToken(id) {
     if (data.error) { showToast(data.error, 'error'); return; }
     pendingDeleteID = id;
     renderDeleteImpact(data.impact || {});
-    document.getElementById('delete-modal').style.display = 'flex';
+    DW.modal.open('#delete-modal');
   }).catch(function(err) {
     showToast('Delete preview failed: ' + err.message, 'error');
   });
@@ -549,11 +558,11 @@ function prepareDeleteToken(id) {
 
 function renderImpactList(items, emptyText, renderItem) {
   if (!items || items.length === 0) {
-    return '<p class="text-sm text-muted">' + esc(emptyText) + '</p>';
+    return DW.html`<p class="text-sm text-muted">${emptyText}</p>`;
   }
-  return '<ul class="text-sm">' + items.map(function(item) {
-    return '<li>' + renderItem(item) + '</li>';
-  }).join('') + '</ul>';
+  return DW.html`<ul class="text-sm">${items.map(function(item) {
+    return DW.html`<li>${renderItem(item)}</li>`;
+  })}</ul>`;
 }
 
 function renderDeleteImpact(impact) {
@@ -561,28 +570,24 @@ function renderDeleteImpact(impact) {
   var clients = impact.clients || [];
   var ccs = impact.control_channels || [];
   var total = suites.length + clients.length + ccs.length;
-  var html =
-    '<p class="text-sm">Review every place using <strong>' + esc(impact.key_name || pendingDeleteID) + '</strong> before deleting.</p>' +
-    '<div class="card mt-1" style="background:var(--bg-input);border-left:3px solid var(--danger);padding:0.75rem">' +
-      '<strong style="color:var(--danger)">This action removes the refreshable token and cleans references.</strong>' +
-      '<p class="text-sm text-muted mt-1">Client phantom tokens below will be unassigned. Key Suite entries below will be removed. Control Channels below will be disabled and must be assigned a new bot token before they can run.</p>' +
-    '</div>';
-  if (total === 0) {
-    html += '<p class="text-sm text-muted mt-1">No key suites, clients, or control channels currently use this token.</p>';
-  }
-  html += '<h3 class="text-sm mt-1">Key Suites <span class="badge badge-gray">' + suites.length + '</span></h3>';
-  html += renderImpactList(suites, 'No key suite entries use this token.', function(s) {
-    return '<strong>' + esc(s.suite_name) + '</strong> · ' + esc(s.service_name) + (s.env_name ? ' · <code>' + esc(s.env_name) + '</code>' : '');
+  var emptyNote = total === 0 ? DW.html`<p class="text-sm text-muted mt-1">No key suites, clients, or control channels currently use this token.</p>` : '';
+  var suiteList = renderImpactList(suites, 'No key suite entries use this token.', function(s) {
+    return DW.html`<strong>${s.suite_name}</strong> · ${s.service_name}${s.env_name ? DW.html` · <code>${s.env_name}</code>` : ''}`;
   });
-  html += '<h3 class="text-sm mt-1">Clients <span class="badge badge-gray">' + clients.length + '</span></h3>';
-  html += renderImpactList(clients, 'No clients use this token directly or through a suite assignment.', function(c) {
-    return '<strong>' + esc(c.client_name) + '</strong> · ' + esc(c.service_name) + ' · <code>' + esc(c.env_name) + '</code>' + (c.suite_id ? ' <span class="badge badge-gray">suite</span>' : '');
+  var clientList = renderImpactList(clients, 'No clients use this token directly or through a suite assignment.', function(c) {
+    return DW.html`<strong>${c.client_name}</strong> · ${c.service_name} · <code>${c.env_name}</code>${c.suite_id ? DW.html` <span class="badge badge-gray">suite</span>` : ''}`;
   });
-  html += '<h3 class="text-sm mt-1">Control Channels <span class="badge badge-red">' + ccs.length + '</span></h3>';
-  html += renderImpactList(ccs, 'No control channels use this token.', function(cc) {
-    return '<strong>' + esc(cc.name) + '</strong> · ' + esc(cc.client_name) + ' · ' + esc(cc.agent_type) + ' <span class="badge badge-red">will be disabled; reassign key</span>';
+  var ccList = renderImpactList(ccs, 'No control channels use this token.', function(cc) {
+    return DW.html`<strong>${cc.name}</strong> · ${cc.client_name} · ${cc.agent_type} <span class="badge badge-red">will be disabled; reassign key</span>`;
   });
-  document.getElementById('delete-impact-body').innerHTML = html;
+  DW.setHTML(document.getElementById('delete-impact-body'), DW.html`<p class="text-sm">Review every place using <strong>${impact.key_name || pendingDeleteID}</strong> before deleting.</p>
+    <div class="card mt-1" style="background:var(--bg-input);border-left:3px solid var(--danger);padding:0.75rem">
+      <strong style="color:var(--danger)">This action removes the refreshable token and cleans references.</strong>
+      <p class="text-sm text-muted mt-1">Client phantom tokens below will be unassigned. Key Suite entries below will be removed. Control Channels below will be disabled and must be assigned a new bot token before they can run.</p>
+    </div>${emptyNote}
+    <h3 class="text-sm mt-1">Key Suites <span class="badge badge-gray">${suites.length}</span></h3>${suiteList}
+    <h3 class="text-sm mt-1">Clients <span class="badge badge-gray">${clients.length}</span></h3>${clientList}
+    <h3 class="text-sm mt-1">Control Channels <span class="badge badge-red">${ccs.length}</span></h3>${ccList}`);
 }
 
 function confirmDeleteToken() {
@@ -601,8 +606,8 @@ function confirmDeleteToken() {
     btn.disabled = false;
     if (data.error) { showToast(data.error, 'error'); return; }
     showToast('Refreshable token deleted and references cleaned', 'success');
-    document.getElementById('delete-modal').style.display = 'none';
-    document.getElementById('detail-modal').style.display = 'none';
+    DW.modal.close('#delete-modal');
+    DW.modal.close('#detail-modal');
     location.reload();
   }).catch(function(err) {
     btn.textContent = orig;
@@ -776,7 +781,7 @@ document.addEventListener('DOMContentLoaded', function() {
       var tbody = document.getElementById('refreshable-list');
       var refreshable = keys.filter(function(k) { return k.is_refreshable; });
       if (refreshable.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-muted">No refreshable tokens. Upload Claude or other OAuth credentials.</td></tr>';
+        DW.setHTML(tbody, DW.html`<tr><td colspan="6" class="text-muted">No refreshable tokens. Upload Claude or other OAuth credentials.</td></tr>`);
         return;
       }
       refreshable.forEach(function(k) {
@@ -791,13 +796,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
         var tr = document.createElement('tr');
         tr.id = 'rk-' + k.id;
-        tr.innerHTML =
-          '<td><a href="#" onclick="openDetail(\'' + esc(k.id) + '\');return false"><strong>' + esc(k.name) + '</strong></a></td>' +
-          '<td><span class="badge badge-blue">' + esc(k.service_name) + '</span></td>' +
-          '<td>' + (info ? '<span class="badge badge-gray">' + esc(info) + '</span>' : '—') + '</td>' +
-          '<td>' + (expired ? '<span class="badge badge-red">Expired</span>' : expiresIn) + '</td>' +
-          '<td>' + (k.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>') + '</td>' +
-          '<td class="text-right"><button class="btn btn-sm" onclick="refreshTokenById(\'' + esc(k.id) + '\', this)">Refresh</button> <button class="btn btn-sm btn-danger" onclick="prepareDeleteToken(\'' + esc(k.id) + '\')">Delete</button></td>';
+        DW.setHTML(tr, DW.html`<td><a href="#" data-action="openDetail" data-id="${k.id}"><strong>${k.name}</strong></a></td>
+          <td><span class="badge badge-blue">${k.service_name}</span></td>
+          <td>${info ? DW.html`<span class="badge badge-gray">${info}</span>` : '—'}</td>
+          <td>${expired ? DW.html`<span class="badge badge-red">Expired</span>` : expiresIn}</td>
+          <td>${k.is_active ? DW.html`<span class="badge badge-green">Active</span>` : DW.html`<span class="badge badge-red">Inactive</span>`}</td>
+          <td class="text-right"><button class="btn btn-sm" data-action="refreshTokenById" data-id="${k.id}">Refresh</button> <button class="btn btn-sm btn-danger" data-action="prepareDeleteToken" data-id="${k.id}">Delete</button></td>`);
         tbody.appendChild(tr);
       });
     });

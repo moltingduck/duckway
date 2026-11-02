@@ -13,12 +13,12 @@ func TestOAuthTemplateShowsAndRepairsActiveStatus(t *testing.T) {
 	html := string(body)
 	required := []string{
 		`<tr><td class="text-muted">Status</td><td id="d-status"></td></tr>`,
-		`document.getElementById('d-status').innerHTML = data.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>';`,
+		`DW.setHTML(document.getElementById('d-status'), data.is_active ? DW.html` + "`" + `<span class="badge badge-green">Active</span>` + "`" + ` : DW.html` + "`" + `<span class="badge badge-red">Inactive</span>` + "`" + `);`,
 		`if (parsed.accessToken && parsed.refreshToken) document.getElementById('edit-active').checked = true;`,
 		`if (accessToken && refreshToken) body.is_active = true;`,
 		`subInfo.credential_kind = 'codex_oauth';`,
 		`subInfo.source = 'codex';`,
-		`id="test-edit-oauth-btn" onclick="testOAuthEdit()"`,
+		`id="test-edit-oauth-btn" data-action="testOAuthEdit"`,
 		`fetch('/api/oauth/' + currentDetail.id + '/validate',`,
 		`function buildOAuthEditBody()`,
 	}

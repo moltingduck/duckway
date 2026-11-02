@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="page-header">
   <h1>Key Groups</h1>
-  <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">Add Key Group</button>
+  <button class="btn btn-primary" data-action="modal-open" data-target="#add-modal">Add Key Group</button>
 </div>
 
 <div class="card">
@@ -15,9 +15,9 @@
       {{if .Description}}<span class="text-muted text-sm">{{.Description}}</span>{{end}}
       <div style="margin-left:auto;display:flex;gap:.5rem">
         <a href="/admin/key-groups/{{.ID}}" class="btn btn-sm">View</a>
-        <button class="btn btn-sm" onclick="openEdit('{{.ID}}','{{.Name}}','{{.Description}}','{{.RotationStrategy}}')">Edit</button>
-        <button class="btn btn-sm" onclick="openAddMember('{{.ID}}')">Add Key</button>
-        <button class="btn btn-sm btn-danger" onclick="deleteGroup('{{.ID}}')">Delete</button>
+        <button class="btn btn-sm" data-action="openEdit" data-id="{{.ID}}" data-name="{{.Name}}" data-description="{{.Description}}" data-strategy="{{.RotationStrategy}}">Edit</button>
+        <button class="btn btn-sm" data-action="openAddMember" data-id="{{.ID}}">Add Key</button>
+        <button class="btn btn-sm btn-danger" data-action="deleteGroup" data-id="{{.ID}}">Delete</button>
       </div>
     </div>
     <div class="text-muted text-sm" style="margin-bottom:.5rem">ID: <span class="mono">{{.ID}}</span> &middot; Created {{.CreatedAt}}</div>
@@ -32,10 +32,10 @@
 </div>
 
 <!-- Add Group Modal -->
-<div id="add-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="add-modal" class="modal-backdrop" style="display:none">
   <div class="modal">
     <h2>Add Key Group</h2>
-    <form id="add-group-form" onsubmit="createGroup(event)">
+    <form id="add-group-form" data-on-submit="createGroup">
       <div class="form-group"><label>Name</label><input type="text" id="kg-name" placeholder="Anthropic Production Pool" required></div>
       <div class="form-group"><label>Description</label><input type="text" id="kg-desc" placeholder="Optional description"></div>
       <div class="form-group">
@@ -56,7 +56,7 @@
         </select>
       </div>
       <div class="modal-actions">
-        <button type="button" class="btn" onclick="document.getElementById('add-modal').style.display='none'">Cancel</button>
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
         <button type="submit" class="btn btn-primary">Create</button>
       </div>
     </form>
@@ -64,10 +64,10 @@
 </div>
 
 <!-- Edit Group Modal -->
-<div id="edit-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="edit-modal" class="modal-backdrop" style="display:none">
   <div class="modal">
     <h2>Edit Key Group</h2>
-    <form id="edit-group-form" onsubmit="saveGroup(event)">
+    <form id="edit-group-form" data-on-submit="saveGroup">
       <input type="hidden" id="edit-group-id">
       <div class="form-group"><label>Name</label><input type="text" id="edit-kg-name" required></div>
       <div class="form-group"><label>Description</label><input type="text" id="edit-kg-desc"></div>
@@ -81,7 +81,7 @@
         </select>
       </div>
       <div class="modal-actions">
-        <button type="button" class="btn" onclick="document.getElementById('edit-modal').style.display='none'">Cancel</button>
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
         <button type="submit" class="btn btn-primary">Save</button>
       </div>
     </form>
@@ -89,10 +89,10 @@
 </div>
 
 <!-- Add Member Modal -->
-<div id="add-member-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="add-member-modal" class="modal-backdrop" style="display:none">
   <div class="modal">
     <h2>Add Key to Group</h2>
-    <form id="add-member-form" onsubmit="addMember(event)">
+    <form id="add-member-form" data-on-submit="addMember">
       <input type="hidden" id="am-group-id">
       <div class="form-group">
         <label>API Key</label>
@@ -103,19 +103,19 @@
       </div>
       <div class="form-group"><label>Position (lower = higher priority)</label><input type="number" id="am-position" value="0" min="0"></div>
       <div class="modal-actions">
-        <button type="button" class="btn" onclick="document.getElementById('add-member-modal').style.display='none'">Cancel</button>
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
         <button type="submit" class="btn btn-primary">Add</button>
       </div>
     </form>
   </div>
 </div>
 
-<script>
+<script nonce="{{.CSPNonce}}">
 function formatTokens(remaining, limit) {
-  if (remaining === null || remaining === undefined) return '<span class="text-muted">—</span>';
+  if (remaining === null || remaining === undefined) return DW.html`<span class="text-muted">—</span>`;
   const pct = limit ? Math.round(remaining / limit * 100) : 0;
   const color = pct > 50 ? 'var(--success)' : pct > 20 ? '#f59e0b' : 'var(--danger)';
-  return `<div style="display:flex;align-items:center;gap:.5rem">
+  return DW.html`<div style="display:flex;align-items:center;gap:.5rem">
     <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden">
       <div style="width:${pct}%;height:100%;background:${color}"></div>
     </div>
@@ -129,7 +129,7 @@ function formatExhausted(exhaustedUntil) {
   const now = new Date();
   if (reset <= now) return '';
   const secs = Math.round((reset - now) / 1000);
-  return `<span class="badge badge-red" title="Resets at ${exhaustedUntil}">exhausted (${secs}s)</span>`;
+  return DW.html`<span class="badge badge-red" title="Resets at ${exhaustedUntil}">exhausted (${secs}s)</span>`;
 }
 
 // Render group members from API response
@@ -139,24 +139,28 @@ document.addEventListener('htmx:afterRequest', function(e) {
     const data = JSON.parse(e.detail.xhr.responseText);
     const members = data.members || [];
     if (members.length === 0) {
-      e.detail.elt.innerHTML = '<p class="text-muted text-sm">No keys in this group.</p>';
+      DW.setHTML(e.detail.elt, DW.html`<p class="text-muted text-sm">No keys in this group.</p>`);
       return;
     }
-    let html = '<table><thead><tr><th>Key</th><th>Tokens Remaining</th><th>Bound Clients</th><th>Score</th><th>Status</th><th></th></tr></thead><tbody>';
-    members.forEach(m => {
-      html += `<tr>
+    const rows = members.map(m => DW.html`<tr>
         <td><strong>${m.key_name}</strong><br><span class="mono text-sm text-muted">${m.api_key_id}</span></td>
         <td>${formatTokens(m.tokens_remaining, m.tokens_limit)}</td>
         <td>${m.bound_clients}</td>
         <td class="mono text-sm">${m.score ? m.score.toFixed(0) : '—'}</td>
-        <td>${formatExhausted(m.exhausted_until) || '<span class="badge badge-green">active</span>'}</td>
-        <td><button class="btn btn-sm btn-danger" onclick="removeMember('${data.id}','${m.api_key_id}','${e.detail.elt.id}')">Remove</button></td>
-      </tr>`;
-    });
-    html += '</tbody></table>';
-    e.detail.elt.innerHTML = html;
+        <td>${formatExhausted(m.exhausted_until) || DW.html`<span class="badge badge-green">active</span>`}</td>
+        <td><button class="btn btn-sm btn-danger" data-action="removeMember" data-group-id="${data.id}" data-key-id="${m.api_key_id}" data-container-id="${e.detail.elt.id}">Remove</button></td>
+      </tr>`);
+    DW.setHTML(e.detail.elt, DW.html`<table><thead><tr><th>Key</th><th>Tokens Remaining</th><th>Bound Clients</th><th>Score</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>`);
   } catch(ex) {}
 });
+
+DW.actions.removeMember = (el) => removeMember(el.dataset.groupId, el.dataset.keyId, el.dataset.containerId);
+DW.actions.openAddMember = (el) => openAddMember(el.dataset.id);
+DW.actions.openEdit = (el) => openEdit(el.dataset.id, el.dataset.name, el.dataset.description, el.dataset.strategy);
+DW.actions.deleteGroup = (el) => deleteGroup(el.dataset.id);
+DW.actions.createGroup = (el, e) => createGroup(e);
+DW.actions.saveGroup = (el, e) => saveGroup(e);
+DW.actions.addMember = (el, e) => addMember(e);
 
 function removeMember(groupID, keyID, containerId) {
   if (!confirm('Remove this key from the group?')) return;
@@ -166,7 +170,7 @@ function removeMember(groupID, keyID, containerId) {
 
 function openAddMember(groupID) {
   document.getElementById('am-group-id').value = groupID;
-  document.getElementById('add-member-modal').style.display = 'flex';
+  DW.modal.open('#add-member-modal');
 }
 
 function openEdit(id, name, desc, strategy) {
@@ -174,7 +178,7 @@ function openEdit(id, name, desc, strategy) {
   document.getElementById('edit-kg-name').value = name;
   document.getElementById('edit-kg-desc').value = desc;
   document.getElementById('edit-kg-strategy').value = strategy;
-  document.getElementById('edit-modal').style.display = 'flex';
+  DW.modal.open('#edit-modal');
 }
 
 function createGroup(e) {
@@ -217,7 +221,7 @@ function addMember(e) {
     })
   }).then(r => {
     if (r.ok) {
-      document.getElementById('add-member-modal').style.display = 'none';
+      DW.modal.close('#add-member-modal');
       const container = document.getElementById('members-' + groupID);
       if (container) htmx.trigger(container, 'load');
     } else {

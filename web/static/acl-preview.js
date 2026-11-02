@@ -13,42 +13,38 @@ function renderACLPreview(textareaId, previewId) {
     // Show inherited info
     var inherited = textarea.dataset.inherited;
     if (inherited) {
-      preview.innerHTML = '<span class="text-muted text-sm">Inherited from ' + textarea.dataset.inheritedFrom + ':</span>' +
-        renderACLSummary(inherited);
+      DW.setHTML(preview, DW.html`<span class="text-muted text-sm">Inherited from ${textarea.dataset.inheritedFrom}:</span>${renderACLSummary(inherited)}`);
     } else {
-      preview.innerHTML = '<span class="badge badge-green">allow-all</span> <span class="text-muted text-sm">(no ACL set at any layer)</span>';
+      DW.setHTML(preview, DW.html`<span class="badge badge-green">allow-all</span> <span class="text-muted text-sm">(no ACL set at any layer)</span>`);
     }
     return;
   }
 
   try {
-    var config = JSON.parse(json);
-    preview.innerHTML = renderACLSummary(json);
+    JSON.parse(json);
+    DW.setHTML(preview, renderACLSummary(json));
   } catch(e) {
-    preview.innerHTML = '<span class="badge badge-red">Invalid JSON</span> <span class="text-muted text-sm">' + e.message + '</span>';
+    DW.setHTML(preview, DW.html`<span class="badge badge-red">Invalid JSON</span> <span class="text-muted text-sm">${e.message}</span>`);
   }
 }
 
+// Returns DW SafeHTML.
 function renderACLSummary(json) {
-  if (!json) return '<span class="badge badge-green">allow-all</span>';
+  var allowAll = DW.html`<span class="badge badge-green">allow-all</span>`;
+  if (!json) return allowAll;
 
   var config;
-  try { config = JSON.parse(json); } catch(e) { return '<span class="badge badge-red">parse error</span>'; }
+  try { config = JSON.parse(json); } catch(e) { return DW.html`<span class="badge badge-red">parse error</span>`; }
 
-  if (!config.rules || config.rules.length === 0) return '<span class="badge badge-green">allow-all</span>';
+  if (!config.rules || config.rules.length === 0) return allowAll;
 
-  var html = '<div class="acl-preview-rules">';
-
-  config.rules.forEach(function(rule) {
+  var ruleBlocks = config.rules.map(function(rule) {
     var name = rule.name || 'unnamed';
-    html += '<div class="acl-rule">';
-    html += '<strong class="text-sm">' + name + '</strong>';
-    if (rule.deny_all_other) html += ' <span class="badge badge-yellow" style="font-size:0.6rem">deny unlisted</span>';
-    html += '<table style="margin:0.25rem 0;font-size:0.75rem"><tbody>';
+    var denyBadge = rule.deny_all_other ? DW.html` <span class="badge badge-yellow" style="font-size:0.6rem">deny unlisted</span>` : '';
 
-    (rule.endpoints || []).forEach(function(ep) {
+    var rows = (rule.endpoints || []).map(function(ep) {
       var icon = ep.allow !== false ? '✅' : '🚫';
-      var cls = ep.allow !== false ? '' : 'style="opacity:0.6"';
+      var rowStyle = ep.allow !== false ? '' : 'opacity:0.6';
       var constraints = '';
       if (ep.constraints && ep.constraints.body) {
         var parts = [];
@@ -59,25 +55,23 @@ function renderACLSummary(json) {
           if (c.min !== undefined) parts.push(field + '≥' + c.min);
           if (c.forbidden) parts.push(field + '🚫');
         }
-        if (parts.length) constraints = ' <span class="text-muted">(' + parts.join(', ') + ')</span>';
+        if (parts.length) constraints = DW.html` <span class="text-muted">(${parts.join(', ')})</span>`;
       }
-      html += '<tr ' + cls + '><td>' + icon + '</td><td><code>' + ep.method + '</code></td><td><code>' + ep.path + '</code></td><td>' + constraints + '</td></tr>';
+      return DW.html`<tr style="${rowStyle}"><td>${icon}</td><td><code>${ep.method}</code></td><td><code>${ep.path}</code></td><td>${constraints}</td></tr>`;
     });
 
-    html += '</tbody></table>';
-
+    var rateLimit = '';
     if (rule.rate_limit) {
       var rl = [];
       if (rule.rate_limit.requests_per_minute) rl.push(rule.rate_limit.requests_per_minute + '/min');
       if (rule.rate_limit.requests_per_hour) rl.push(rule.rate_limit.requests_per_hour + '/hr');
       if (rule.rate_limit.requests_per_day) rl.push(rule.rate_limit.requests_per_day + '/day');
-      if (rl.length) html += '<span class="text-muted text-sm">Rate limit: ' + rl.join(', ') + '</span>';
+      if (rl.length) rateLimit = DW.html`<span class="text-muted text-sm">Rate limit: ${rl.join(', ')}</span>`;
     }
-    html += '</div>';
+    return DW.html`<div class="acl-rule"><strong class="text-sm">${name}</strong>${denyBadge}<table style="margin:0.25rem 0;font-size:0.75rem"><tbody>${rows}</tbody></table>${rateLimit}</div>`;
   });
 
-  html += '</div>';
-  return html;
+  return DW.html`<div class="acl-preview-rules">${ruleBlocks}</div>`;
 }
 
 // Load inherited ACL for a textarea

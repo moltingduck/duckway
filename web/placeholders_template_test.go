@@ -145,7 +145,7 @@ func TestAPIKeysTemplateShowsMintableBadge(t *testing.T) {
 		`{{if .IsRefreshable}}<span class="badge badge-green">Refreshable</span>{{end}}`,
 		`{{if .IsMintable}}<span class="badge badge-purple">Mintable</span>{{end}}`,
 		`id="d-mintable"`,
-		`k.is_mintable ? '<span class="badge badge-purple">Yes</span>' : 'No'`,
+		`k.is_mintable ? DW.html` + "`" + `<span class="badge badge-purple">Yes</span>` + "`" + ` : DW.html` + "`" + `No` + "`",
 	}
 	for _, want := range required {
 		if !strings.Contains(html, want) {
@@ -174,11 +174,11 @@ func TestAPIKeysTemplateExplainsGitHubAppMinterSetup(t *testing.T) {
 		`END`,
 		`Setup URL</strong> is an optional redirect after installation; it is not a URL to enter in Duckway.`,
 		`Duckway stores it server-side and mints short-lived, scoped installation tokens.`,
-		`id="ak-ghapp-load-btn" onclick="loadGitHubAppTestRepos()">Test load</button>`,
+		`id="ak-ghapp-load-btn" data-action="loadGitHubAppTestRepos">Test load</button>`,
 		`/api/keys/github-app/repositories`,
 		`id="ak-ghapp-test-repo" aria-label="Repository to test mint" disabled`,
 		`for="ak-ghapp-test-repo-search"`,
-		`id="ak-ghapp-test-repo-search" aria-label="Search loaded repositories" placeholder="Search by repository name" disabled oninput="renderGitHubAppTestRepos()"`,
+		`id="ak-ghapp-test-repo-search" aria-label="Search loaded repositories" placeholder="Search by repository name" disabled data-on-input="renderGitHubAppTestRepos"`,
 		`function renderGitHubAppTestRepos()`,
 		`var filtered = githubAppTestRepos.filter(function(repo) { return repo.toLowerCase().indexOf(query) !== -1; });`,
 		`(selected; does not match search)`,

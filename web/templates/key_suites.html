@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="page-header">
   <h1>Key Suites</h1>
-  <button class="btn btn-primary" onclick="document.getElementById('add-suite-modal').style.display='flex'">New Suite</button>
+  <button class="btn btn-primary" data-action="modal-open" data-target="#add-suite-modal">New Suite</button>
 </div>
 
 <p class="text-muted" style="margin-bottom:1.25rem">
@@ -16,10 +16,10 @@
       <strong>{{.Name}}</strong>
       {{if .Description}}<span class="text-muted text-sm">{{.Description}}</span>{{end}}
       <div style="margin-left:auto;display:flex;gap:.5rem">
-        <button class="btn btn-sm" onclick="openSuiteEntries('{{.ID}}','{{.Name}}')">Manage Entries</button>
-        <button class="btn btn-sm btn-primary" onclick="openAssign('{{.ID}}','{{.Name}}')">Assign to Client</button>
-        <button class="btn btn-sm" onclick="openEditSuite('{{.ID}}','{{.Name}}','{{.Description}}')">Edit</button>
-        <button class="btn btn-sm btn-danger" onclick="deleteSuite('{{.ID}}')">Delete</button>
+        <button class="btn btn-sm" data-action="openSuiteEntries" data-id="{{.ID}}" data-name="{{.Name}}">Manage Entries</button>
+        <button class="btn btn-sm btn-primary" data-action="openAssign" data-id="{{.ID}}" data-name="{{.Name}}">Assign to Client</button>
+        <button class="btn btn-sm" data-action="openEditSuite" data-id="{{.ID}}" data-name="{{.Name}}" data-description="{{.Description}}">Edit</button>
+        <button class="btn btn-sm btn-danger" data-action="deleteSuite" data-id="{{.ID}}">Delete</button>
       </div>
     </div>
     <div class="text-muted text-sm">ID: <span class="mono">{{.ID}}</span> &middot; Created {{.CreatedAt}}</div>
@@ -34,14 +34,14 @@
 </div>
 
 <!-- New Suite Modal -->
-<div id="add-suite-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="add-suite-modal" class="modal-backdrop" style="display:none">
   <div class="modal">
     <h2>New Key Suite</h2>
-    <form onsubmit="createSuite(event)">
+    <form data-on-submit="createSuite">
       <div class="form-group"><label>Name</label><input type="text" id="suite-name" placeholder="My Dev Stack" required></div>
       <div class="form-group"><label>Description</label><input type="text" id="suite-desc" placeholder="Optional description"></div>
       <div class="modal-actions">
-        <button type="button" class="btn" onclick="document.getElementById('add-suite-modal').style.display='none'">Cancel</button>
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
         <button type="submit" class="btn btn-primary">Create</button>
       </div>
     </form>
@@ -49,15 +49,15 @@
 </div>
 
 <!-- Edit Suite Modal -->
-<div id="edit-suite-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="edit-suite-modal" class="modal-backdrop" style="display:none">
   <div class="modal">
     <h2>Edit Suite</h2>
-    <form onsubmit="saveSuite(event)">
+    <form data-on-submit="saveSuite">
       <input type="hidden" id="edit-suite-id">
       <div class="form-group"><label>Name</label><input type="text" id="edit-suite-name" required></div>
       <div class="form-group"><label>Description</label><input type="text" id="edit-suite-desc"></div>
       <div class="modal-actions">
-        <button type="button" class="btn" onclick="document.getElementById('edit-suite-modal').style.display='none'">Cancel</button>
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
         <button type="submit" class="btn btn-primary">Save</button>
       </div>
     </form>
@@ -65,7 +65,7 @@
 </div>
 
 <!-- Manage Entries Modal -->
-<div id="entries-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="entries-modal" class="modal-backdrop" style="display:none">
   <div class="modal" style="max-width:680px;width:95%">
     <h2>Suite Entries: <span id="entries-suite-name"></span></h2>
     <div id="entries-list" style="margin-bottom:1rem;min-height:3rem">
@@ -73,11 +73,11 @@
     </div>
     <hr style="margin:.75rem 0">
     <h3 style="margin-bottom:.5rem">Add Entry</h3>
-    <form onsubmit="addEntry(event)" style="display:flex;flex-direction:column;gap:.5rem">
+    <form data-on-submit="addEntry" style="display:flex;flex-direction:column;gap:.5rem">
       <input type="hidden" id="entry-suite-id">
       <div class="form-group" style="margin:0">
         <label>Service</label>
-        <select id="entry-service" onchange="refreshEntryKeyOptions()">
+        <select id="entry-service" data-on-change="refreshEntryKeyOptions">
           {{range .Services}}
           <option value="{{.ID}}">{{.DisplayName}} ({{.Name}})</option>
           {{end}}
@@ -85,7 +85,7 @@
       </div>
       <div class="form-group" style="margin:0">
         <label>Key Source</label>
-        <select id="entry-key-type" onchange="updateKeySource()">
+        <select id="entry-key-type" data-on-change="updateKeySource">
           <option value="key">Single API Key</option>
           <option value="group">Key Group (round-robin)</option>
         </select>
@@ -108,7 +108,7 @@
         <input type="text" id="entry-env-name" placeholder="AUTO">
       </div>
       <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:.25rem">
-        <button type="button" class="btn" onclick="document.getElementById('entries-modal').style.display='none'">Close</button>
+        <button type="button" class="btn" data-action="modal-close">Close</button>
         <button type="submit" class="btn btn-primary">Add Entry</button>
       </div>
     </form>
@@ -116,7 +116,7 @@
 </div>
 
 <!-- Assign Modal -->
-<div id="assign-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+<div id="assign-modal" class="modal-backdrop" style="display:none">
   <div class="modal">
     <h2>Assign Suite: <span id="assign-suite-name"></span></h2>
     <div id="assign-conflict-warning" style="display:none;background:var(--warning-bg,#fff3cd);border:1px solid #ffc107;border-radius:4px;padding:.75rem;margin-bottom:1rem">
@@ -124,7 +124,7 @@
       <p class="text-sm" id="assign-conflict-detail" style="margin:.25rem 0 0"></p>
       <p class="text-sm" style="margin:.25rem 0 0">Individual assignments take priority. Conflicting services will be skipped. Proceed anyway?</p>
     </div>
-    <form onsubmit="assignSuite(event)">
+    <form data-on-submit="assignSuite">
       <input type="hidden" id="assign-suite-id">
       <input type="hidden" id="assign-force" value="false">
       <div class="form-group">
@@ -137,21 +137,28 @@
       </div>
       <div id="assign-result" style="display:none;margin-top:.5rem"></div>
       <div class="modal-actions">
-        <button type="button" class="btn" onclick="document.getElementById('assign-modal').style.display='none'">Cancel</button>
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
         <button type="submit" id="assign-btn" class="btn btn-primary">Assign</button>
       </div>
     </form>
   </div>
 </div>
 
-<script>
+<script nonce="{{.CSPNonce}}">
 var entryKeyOptions = [];
 
-function esc(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
-    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
-  });
-}
+DW.actions.openSuiteEntries = (el) => openSuiteEntries(el.dataset.id, el.dataset.name);
+DW.actions.openAssign = (el) => openAssign(el.dataset.id, el.dataset.name);
+DW.actions.openEditSuite = (el) => openEditSuite(el.dataset.id, el.dataset.name, el.dataset.description);
+DW.actions.deleteSuite = (el) => deleteSuite(el.dataset.id);
+DW.actions.createSuite = (el, e) => createSuite(e);
+DW.actions.saveSuite = (el, e) => saveSuite(e);
+DW.actions.addEntry = (el, e) => addEntry(e);
+DW.actions.assignSuite = (el, e) => assignSuite(e);
+DW.actions.refreshEntryKeyOptions = () => refreshEntryKeyOptions();
+DW.actions.updateKeySource = () => updateKeySource();
+DW.actions.unassignSuiteClient = (el) => unassignSuiteClient(el.dataset.suiteId, el.dataset.clientId, el.dataset.clientName);
+DW.actions.removeEntry = (el) => removeEntry(el.dataset.suiteId, el.dataset.entryId);
 
 document.addEventListener('DOMContentLoaded', function() {
   cacheEntryKeyOptions();
@@ -178,7 +185,7 @@ function refreshEntryKeyOptions() {
   const sel = document.getElementById('entry-key-id');
   if (!sel) return;
   const matches = entryKeyOptions.filter(function(k) { return k.serviceID === svcID; });
-  sel.innerHTML = '';
+  sel.replaceChildren();
   if (matches.length === 0) {
     const opt = document.createElement('option');
     opt.value = '';
@@ -200,25 +207,22 @@ async function refreshSuitePreview(suiteID) {
   if (!el) return;
   const res = await fetch('/api/key-suites/' + suiteID, {credentials:'same-origin'});
   if (!res.ok) {
-    el.innerHTML = '<span class="text-sm text-muted">Failed to load suite status.</span>';
+    DW.setHTML(el, DW.html`<span class="text-sm text-muted">Failed to load suite status.</span>`);
     return;
   }
   const data = await res.json();
   const entries = data.entries || [];
   const clients = data.clients || [];
   const entryHTML = entries.length
-    ? entries.map(e => '<span class="badge badge-blue">' + esc(e.service_name) + '</span> <span class="text-sm">' + esc(e.api_key_name || e.group_name || '—') + '</span>').join('<span class="text-muted"> · </span>')
-    : '<span class="text-muted text-sm">No entries</span>';
+    ? entries.map(e => DW.html`<span class="badge badge-blue">${e.service_name}</span> <span class="text-sm">${e.api_key_name || e.group_name || '—'}</span>`)
+        .reduce((acc, x, i) => i === 0 ? DW.html`${x}` : DW.html`${acc}<span class="text-muted"> · </span>${x}`, '')
+    : DW.html`<span class="text-muted text-sm">No entries</span>`;
   const clientHTML = clients.length
     ? clients.map(c =>
-        '<span class="badge badge-gray" style="display:inline-flex;align-items:center;gap:.35rem">' +
-          esc(c.name) + ' · ' + c.service_count + ' service' + (c.service_count === 1 ? '' : 's') +
-          '<button class="btn btn-sm" style="padding:.1rem .35rem" onclick="event.stopPropagation(); unassignSuiteClient(\'' + esc(suiteID) + '\', \'' + esc(c.id) + '\', \'' + esc(c.name) + '\')">Remove</button>' +
-        '</span>').join(' ')
-    : '<span class="text-muted text-sm">No assigned clients</span>';
-  el.innerHTML =
-    '<div class="text-sm"><strong>Entries:</strong> ' + entryHTML + '</div>' +
-    '<div class="text-sm" style="margin-top:.35rem"><strong>Assigned clients:</strong> ' + clientHTML + '</div>';
+        DW.html`<span class="badge badge-gray" style="display:inline-flex;align-items:center;gap:.35rem">${c.name} · ${c.service_count} service${c.service_count === 1 ? '' : 's'}<button class="btn btn-sm" style="padding:.1rem .35rem" data-action="unassignSuiteClient" data-suite-id="${suiteID}" data-client-id="${c.id}" data-client-name="${c.name}">Remove</button></span>`)
+        .reduce((acc, x, i) => i === 0 ? DW.html`${x}` : DW.html`${acc} ${x}`, '')
+    : DW.html`<span class="text-muted text-sm">No assigned clients</span>`;
+  DW.setHTML(el, DW.html`<div class="text-sm"><strong>Entries:</strong> ${entryHTML}</div><div class="text-sm" style="margin-top:.35rem"><strong>Assigned clients:</strong> ${clientHTML}</div>`);
 }
 
 async function unassignSuiteClient(suiteID, clientID, clientName) {
@@ -251,7 +255,7 @@ function openEditSuite(id, name, desc) {
   document.getElementById('edit-suite-id').value = id;
   document.getElementById('edit-suite-name').value = name;
   document.getElementById('edit-suite-desc').value = desc;
-  document.getElementById('edit-suite-modal').style.display = 'flex';
+  DW.modal.open('#edit-suite-modal');
 }
 
 async function saveSuite(e) {
@@ -279,7 +283,7 @@ async function openSuiteEntries(suiteID, suiteName) {
   document.getElementById('entry-suite-id').value = suiteID;
   refreshEntryKeyOptions();
   await refreshEntries(suiteID);
-  document.getElementById('entries-modal').style.display = 'flex';
+  DW.modal.open('#entries-modal');
 }
 
 async function refreshEntries(suiteID) {
@@ -287,18 +291,18 @@ async function refreshEntries(suiteID) {
   const data = await res.json();
   const list = document.getElementById('entries-list');
   if (!data.entries || data.entries.length === 0) {
-    list.innerHTML = '<p class="text-muted">No entries yet.</p>';
+    DW.setHTML(list, DW.html`<p class="text-muted">No entries yet.</p>`);
     return;
   }
-  list.innerHTML = data.entries.map(e => `
+  DW.setHTML(list, DW.html`${data.entries.map(e => DW.html`
     <div style="display:flex;align-items:center;gap:.5rem;padding:.4rem 0;border-bottom:1px solid var(--border)">
-      <span class="badge badge-blue">${esc(e.service_name)}</span>
-      <span class="text-sm">${esc(e.api_key_name || e.group_name || '—')}</span>
-      <span class="text-muted text-sm mono">${esc(e.env_name)}</span>
+      <span class="badge badge-blue">${e.service_name}</span>
+      <span class="text-sm">${e.api_key_name || e.group_name || '—'}</span>
+      <span class="text-muted text-sm mono">${e.env_name}</span>
       <div style="margin-left:auto;display:flex;gap:.5rem">
-        <button class="btn btn-sm btn-danger" onclick="removeEntry('${suiteID}','${e.id}')">Remove</button>
+        <button class="btn btn-sm btn-danger" data-action="removeEntry" data-suite-id="${suiteID}" data-entry-id="${e.id}">Remove</button>
       </div>
-    </div>`).join('');
+    </div>`)}`);
 }
 
 function updateKeySource() {
@@ -358,12 +362,13 @@ function openAssign(suiteID, suiteName) {
   document.getElementById('assign-conflict-warning').style.display = 'none';
   document.getElementById('assign-result').style.display = 'none';
   document.getElementById('assign-btn').textContent = 'Assign';
-  document.getElementById('assign-btn').onclick = null;
-  document.getElementById('assign-modal').style.display = 'flex';
+  delete document.getElementById('assign-btn').dataset.done;
+  DW.modal.open('#assign-modal');
 }
 
 async function assignSuite(e) {
   e.preventDefault();
+  if (document.getElementById('assign-btn').dataset.done === '1') { DW.modal.close('#assign-modal'); return; }
   const suiteID = document.getElementById('assign-suite-id').value;
   const clientID = document.getElementById('assign-client-id').value;
   const force = document.getElementById('assign-force').value === 'true';
@@ -388,12 +393,9 @@ async function assignSuite(e) {
     await refreshSuitePreview(suiteID);
     const resultEl = document.getElementById('assign-result');
     resultEl.style.display = '';
-    resultEl.innerHTML = `<p class="text-sm" style="color:green">Assigned: ${j.assigned.join(', ') || 'none'}</p>`
-      + (j.skipped.length ? `<p class="text-sm text-muted">Skipped (conflicts): ${j.skipped.join(', ')}</p>` : '');
+    DW.setHTML(resultEl, DW.html`<p class="text-sm" style="color:green">Assigned: ${j.assigned.join(', ') || 'none'}</p>${j.skipped.length ? DW.html`<p class="text-sm text-muted">Skipped (conflicts): ${j.skipped.join(', ')}</p>` : ''}`);
     document.getElementById('assign-btn').textContent = 'Done';
-    document.getElementById('assign-btn').onclick = () => {
-      document.getElementById('assign-modal').style.display = 'none';
-    };
+    document.getElementById('assign-btn').dataset.done = '1';
   } else {
     const j = await res.json().catch(() => ({}));
     alert('Assign failed: ' + (j.error || res.status));
