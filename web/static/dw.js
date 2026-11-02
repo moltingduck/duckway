@@ -1,6 +1,6 @@
 /*
  * dw.js - Duckway console foundation. Plain ES2020, no dependencies.
- * Load FIRST (before other static scripts). Every <script> needs nonce="{{.CSPNonce}}".
+ * Load FIRST (before other static scripts). Every <script> needs nonce="{{$.CSPNonce}}".
  *
  * USAGE
  *   Escaping:    DW.esc(value)                      -> escaped string (null/undefined -> '')
@@ -57,6 +57,7 @@
   function setHTML(el, safe) {
     if (!(safe instanceof SafeHTML)) throw new TypeError('DW.setHTML requires SafeHTML (use DW.html)');
     el.innerHTML = safe.__html;
+    if (typeof labelControls === 'function' && el.querySelector) labelControls(el);
     return el;
   }
 
@@ -85,6 +86,7 @@
 
   /* Keyboard activation for non-native controls: <tr|div|span data-action role="button" tabindex="0">. */
   document.addEventListener('keydown', (e) => {
+    if (e.repeat) return;
     if (e.key !== 'Enter' && e.key !== ' ') return;
     const t = e.target;
     if (!(t instanceof Element) || !t.matches('[data-action][role="button"]')) return;
@@ -152,9 +154,20 @@
     if (dlg) {
       dlg.setAttribute('role', 'dialog'); dlg.setAttribute('aria-modal', 'true');
       if (!dlg.hasAttribute('tabindex')) dlg.setAttribute('tabindex', '-1');
-      if (!dlg.hasAttribute('aria-labelledby') && !dlg.hasAttribute('aria-label')) {
+      // Auto-label from the first heading. Recomputed on every activation when we set it
+      // (data-dw-labelled), because some pages rebuild the dialog body each time it opens.
+      const auto = dlg.hasAttribute('data-dw-labelled');
+      const cur = dlg.getAttribute('aria-labelledby');
+      const stale = auto && (!cur || !dlg.querySelector('[id="' + cur + '"]'));
+      if (stale || (!cur && !dlg.hasAttribute('aria-label'))) {
         const h = dlg.querySelector('h2,h3');
-        if (h) { if (!h.id) h.id = uid('dw-modal-title'); dlg.setAttribute('aria-labelledby', h.id); }
+        if (h) {
+          if (!h.id) h.id = uid('dw-modal-title');
+          dlg.setAttribute('aria-labelledby', h.id);
+          dlg.setAttribute('data-dw-labelled', '');
+        } else if (stale) {
+          dlg.removeAttribute('aria-labelledby');
+        }
       }
       labelControls(dlg);
     }

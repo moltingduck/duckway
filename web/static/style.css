@@ -575,8 +575,8 @@ code, .mono { font-family: var(--mono); }
 
 /* Tables wrap or scroll inside cards; the page itself never scrolls sideways. */
 .card { max-width: 100%; }
-/* Only cards that hold tables scroll sideways, so dropdowns and focus rings in other cards are not clipped. */
-.card:has(table) { overflow-x: auto; }
+/* Wide tables scroll inside .table-wrap; cards never clip dropdowns, tooltips or focus rings. */
+.table-wrap { overflow-x: auto; max-width: 100%; }
 td, th { overflow-wrap: anywhere; }
 td .mono, td code { overflow-wrap: anywhere; word-break: break-word; }
 .page-header { flex-wrap: wrap; gap: 0.75rem; }

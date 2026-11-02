@@ -11,10 +11,12 @@
     an MCP/skill bundle written by <code>duckway sync</code>.
     Bot token = security boundary — clients sharing one CC can interact with each other&rsquo;s channels.
   </p>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Name</th><th>Client (agent)</th><th>Bot Token</th><th>Config</th><th>Active</th><th></th></tr></thead>
     <tbody id="cc-list"><tr><td colspan="6" class="text-muted">Loading…</td></tr></tbody>
   </table>
+  </div>
 </div>
 
 <!-- Create modal -->
@@ -76,10 +78,12 @@
     </table>
     <div class="mt-1">
       <strong class="text-sm">Channels</strong>
+      <div class="table-wrap">
       <table class="mt-1">
         <thead><tr><th>Kind</th><th>Name</th><th>Handle</th><th>Session id</th></tr></thead>
         <tbody id="d-channels"><tr><td colspan="4" class="text-muted">None</td></tr></tbody>
       </table>
+      </div>
     </div>
     <div id="d-test-result" class="mt-1"></div>
     <div class="modal-actions mt-1">

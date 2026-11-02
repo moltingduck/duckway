@@ -9,6 +9,7 @@
     <input type="text" id="search-services" placeholder="Search or filter (e.g. auth:bearer name:openai)">
     <span class="count" id="count-services"></span>
   </div>
+  <div class="table-wrap">
   <table>
     <thead>
       <tr><th>Name</th><th>Upstream URL</th><th>Auth</th><th>Mode</th><th>Key Format</th><th>Status</th><th></th></tr>
@@ -35,6 +36,7 @@
       {{end}}
     </tbody>
   </table>
+  </div>
 </div>
 
 <div id="add-modal" class="modal-backdrop" style="display:none">

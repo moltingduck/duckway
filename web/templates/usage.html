@@ -17,6 +17,7 @@
 .usage-progress > span { display:block; height:100%; border-radius:4px; }
 .usage-status { white-space:nowrap; }
 .usage-key-table { margin:.5rem 0 .75rem 2rem; width:calc(100% - 2rem); }
+.usage-toggle { background:none; border:0; padding:0; font:inherit; color:inherit; cursor:pointer; text-align:left; display:inline-flex; align-items:center; }
 .usage-caret { display:inline-block; width:1rem; color:var(--text-muted); }
 .usage-detail-toolbar { display:grid; grid-template-columns:minmax(220px,1fr) auto; gap:.75rem; align-items:end; margin-bottom:1rem; }
 .usage-detail-toolbar .form-group { margin:0; }
@@ -72,6 +73,7 @@
   </div>
 
   <div class="usage-table-wrap">
+    <div class="table-wrap">
     <table>
       <thead>
         <tr>
@@ -87,6 +89,7 @@
       </thead>
       <tbody id="client-rows"></tbody>
     </table>
+    </div>
   </div>
 </div>
 
@@ -125,10 +128,12 @@
       <section aria-labelledby="usage-model-title">
         <h3 id="usage-model-title">Models</h3>
         <div class="usage-table-wrap">
+          <div class="table-wrap">
           <table>
             <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache</th><th>Total</th><th>Cost</th></tr></thead>
             <tbody id="usage-detail-models"></tbody>
           </table>
+          </div>
         </div>
       </section>
       <section aria-labelledby="usage-heatmap-title">
@@ -159,10 +164,12 @@
     </select>
   </div>
   <div class="usage-table-wrap">
+    <div class="table-wrap">
     <table>
       <thead><tr><th>Agent</th><th>Service</th><th>Requests</th><th>Errors</th><th>Last seen</th></tr></thead>
       <tbody id="session-rows"></tbody>
     </table>
+    </div>
   </div>
 </div>
 
@@ -270,8 +277,8 @@ function renderClients() {
     var id = slugId(c.client_id || c.client_name || 'unknown');
     var services = (c.services || []).map(function(s){ return DW.html`<span class="badge badge-blue">${s}</span>`; });
     var servicesHTML = services.reduce(function(acc, x, i){ return i === 0 ? x : DW.html`${acc} ${x}`; }, '');
-    return DW.html`<tr data-action="toggleClient" data-id="${id}" role="button" tabindex="0" aria-expanded="false" aria-controls="${'client-detail-' + id}" style="cursor:pointer">
-      <td><span class="usage-caret" id="${'caret-client-' + id}">▸</span><strong>${c.client_name || c.client_id || '(unknown)'}</strong></td>
+    return DW.html`<tr data-action="toggleClient" data-id="${id}" style="cursor:pointer">
+      <td><button type="button" class="usage-toggle" data-action="toggleClient" data-id="${id}" aria-expanded="false" aria-controls="${'client-detail-' + id}"><span class="usage-caret" id="${'caret-client-' + id}" aria-hidden="true">▸</span><strong>${c.client_name || c.client_id || '(unknown)'}</strong></button></td>
       <td>${fmtInt(c.total_tokens)}</td>
       <td>${fmtInt(c.requests)}</td>
       <td>${fmtInt(c.keys_used)}</td>
@@ -313,7 +320,7 @@ function renderClientKeys(keys) {
 }
 
 function toggleClient(id) {
-  var trigger = document.querySelector('tr[data-action="toggleClient"][data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+  var trigger = document.querySelector('button[data-action="toggleClient"][data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
   var row = document.getElementById('client-detail-' + id);
   var caret = document.getElementById('caret-client-' + id);
   if (!row) return;

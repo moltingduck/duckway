@@ -99,6 +99,7 @@ duckway init</code></pre>
 <div class="card" id="services">
   <h3>4. Services &amp; API Keys</h3>
   <p>A <strong>Service</strong> = an upstream API. Each service configures:</p>
+  <div class="table-wrap">
   <table>
     <tr><td><strong>Name</strong></td><td>Slug for proxy URL: <code>/proxy/{name}/...</code></td></tr>
     <tr><td><strong>Upstream URL</strong></td><td>e.g., <code>https://api.openai.com</code></td></tr>
@@ -107,6 +108,7 @@ duckway init</code></pre>
     <tr><td><strong>Key Directory</strong></td><td>Where keys are deployed on client (e.g., <code>~/.config/openai/credentials</code>)</td></tr>
     <tr><td><strong>Default ACL</strong></td><td>Service-level access control — applies to all keys unless overridden</td></tr>
   </table>
+  </div>
   <p class="mt-1"><strong>API Keys</strong> are your real credentials, stored AES-256-GCM encrypted. Each key can have its own ACL. Edit name, rotate the key value, or change ACL from the API Keys page.</p>
   <p class="mt-1">For Grok Build, add the real xAI API key under service <code>xai</code> and assign it to clients as <code>XAI_API_KEY</code>. <code>duckway sync</code> writes the phantom token into <code>~/.grok/config.toml</code> for <code>grok-4.5</code>; Grok traffic to <code>cli-chat-proxy.grok.com</code> then routes through Duckway and the real key stays server-side.</p>
 </div>
@@ -123,6 +125,7 @@ duckway init</code></pre>
   <p class="text-sm text-muted">Example: Service allows all OpenAI endpoints. Key restricts to chat + embeddings. Phantom token restricts to gpt-4o-mini only. An agent using this phantom token can only call chat completions with gpt-4o-mini — the intersection of all three layers.</p>
 
   <h4 class="mt-1">Pre-built templates (22)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Service</th><th>Templates</th></tr></thead>
     <tbody>
@@ -133,6 +136,7 @@ duckway init</code></pre>
       <tr><td>Telegram</td><td>allow-all, send-only, read-only, no-admin</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Custom ACL JSON</h4>
   <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code>{
@@ -166,17 +170,20 @@ duckway init</code></pre>
   </ol>
 
   <h4 class="mt-1">Per-client settings</h4>
+  <div class="table-wrap">
   <table>
     <tr><td><strong>Canary: ON/OFF</strong></td><td>Toggle canary token deployment per client</td></tr>
     <tr><td><strong>Phantom tokens</strong></td><td>Each editable: env name, key path, approval, TTL</td></tr>
     <tr><td><strong>Canary tokens</strong></td><td>View deployed tokens, links to canarytokens.org management</td></tr>
   </table>
+  </div>
 </div>
 
 <!-- 7 -->
 <div class="card" id="placeholders">
   <h3>7. Phantom Tokens</h3>
   <p>Fake credentials matching real key format with <code>dw_</code> marker:</p>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Service</th><th>Real</th><th>Phantom Token</th></tr></thead>
     <tbody>
@@ -185,13 +192,16 @@ duckway init</code></pre>
       <tr><td>GitHub</td><td><code>github_pat_ABC...</code></td><td><code>github_pat_dw_9c3e...</code></td></tr>
     </tbody>
   </table>
+  </div>
   <p class="mt-1">Each phantom token has configurable:</p>
+  <div class="table-wrap">
   <table>
     <tr><td><strong>Env Name</strong></td><td>e.g., <code>OPENAI_API_KEY</code></td></tr>
     <tr><td><strong>Key Path</strong></td><td>Deploy location (inherits from service, overridable)</td></tr>
     <tr><td><strong>Requires Approval</strong></td><td>ON/OFF</td></tr>
     <tr><td><strong>TTL</strong></td><td>How long an approval lasts: 60m, 1440m (1d), 10080m (1w), 0 (no approval)</td></tr>
   </table>
+  </div>
 
   <h4 class="mt-1">GitHub App Repo Scope</h4>
   <p>GitHub App installation minter keys are uploaded once under API Keys and shown as <strong>Mintable</strong>. Repo access is assigned directly from <strong>Clients</strong> → <strong>Assign Key</strong>: choose the GitHub App minter key, select available repositories from the repo selector when Duckway can list them, or enter allowed repositories manually as <code>OWNER/REPO</code>, then pick deploy pull-only or development pull/push mode.</p>
@@ -199,6 +209,7 @@ duckway init</code></pre>
 
   <h4 class="mt-1">Refreshable Token Upload Formats</h4>
   <p>Refreshable tokens are stored as API keys with encrypted access + refresh tokens. Upload formats vary by provider:</p>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Provider</th><th>What to paste</th><th>How to get it</th></tr></thead>
     <tbody>
@@ -207,6 +218,7 @@ duckway init</code></pre>
       <tr><td>Manual</td><td>Access token, refresh token, token endpoint, optional Unix-ms expiry</td><td>Copy values from the provider CLI, dashboard, or saved token JSON</td></tr>
     </tbody>
   </table>
+  </div>
   <p class="text-sm text-muted mt-1">Deleting a refreshable token first shows impacted Key Suites, clients, and Control Channels. Confirming removes suite entries, unassigns client phantom tokens, and disables affected Control Channels in red until a replacement bot token is assigned.</p>
   <pre style="background:var(--bg-input);padding:0.75rem;border-radius:var(--radius);font-size:0.8rem"><code># Claude local credentials
 jq -r '.claudeAiOauth | [.accessToken, .refreshToken, (.expiresAt // 0)] | @tsv' ~/.claude/.credentials.json
@@ -250,6 +262,7 @@ curl https://api.openai.com/v1/chat/completions ...
 <!-- 10 -->
 <div class="card" id="groups">
   <h3>10. Key Groups &amp; Load Balancing</h3>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Strategy</th><th>Behavior</th></tr></thead>
     <tbody>
@@ -258,6 +271,7 @@ curl https://api.openai.com/v1/chat/completions ...
       <tr><td><code>failover</code></td><td>Uses first active key; falls back to next</td></tr>
     </tbody>
   </table>
+  </div>
 </div>
 
 <!-- 11 -->
@@ -266,6 +280,7 @@ curl https://api.openai.com/v1/chat/completions ...
   <p>Auto-deployed decoy credentials via <a href="https://canarytokens.org/nest/" target="_blank">canarytokens.org</a>. Enabled by default. Per-client email tagging: <code>admin+shortid@gmail.com</code>.</p>
 
   <h4>16 types (9 default-enabled)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Type</th><th>Deploy Path</th><th>Mode</th><th>Default</th></tr></thead>
     <tbody>
@@ -287,6 +302,7 @@ curl https://api.openai.com/v1/chat/completions ...
       <tr><td>Git Credentials</td><td><code>~/.git-credentials</code></td><td>merge</td><td>off</td></tr>
     </tbody>
   </table>
+  </div>
   <p class="text-sm text-muted mt-1"><strong>merge</strong> = append to existing file. <strong>create</strong> = new file (skip if exists). Admin can view/delete tokens on canarytokens.org via management links.</p>
 </div>
 
@@ -295,6 +311,7 @@ curl https://api.openai.com/v1/chat/completions ...
   <h3>12. Notifications &amp; Interactive Approval</h3>
 
   <h4>Channels</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Type</th><th>Config</th><th>Interactive Approval</th></tr></thead>
     <tbody>
@@ -304,6 +321,7 @@ curl https://api.openai.com/v1/chat/completions ...
       <tr><td><span class="badge badge-blue">Webhook</span></td><td>url + optional secret</td><td>No (fire-and-forget)</td></tr>
     </tbody>
   </table>
+  </div>
   <p class="mt-1">No public endpoints needed — Discord uses outbound WSS, Telegram uses outbound HTTP long-polling.</p>
   <p>Each channel has <strong>Edit</strong>, <strong>Test</strong> (round-trip: send + wait for interaction), and <strong>Delete</strong> buttons.</p>
 </div>
@@ -315,6 +333,7 @@ curl https://api.openai.com/v1/chat/completions ...
   <p>A <strong>Control Channel (CC)</strong> binds <strong>one client to one Discord category</strong> via a bot. Inside that category every channel maps to an agent session — when a human posts a message, an on-machine daemon runs Claude Code or Codex and posts the response back. A separate "management" channel accepts text commands like <code>!new</code> for opening new task channels.</p>
 
   <h4>Mental model (CC v2)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Concept</th><th>What it is</th><th>Where it lives</th></tr></thead>
     <tbody>
@@ -326,6 +345,7 @@ curl https://api.openai.com/v1/chat/completions ...
       <tr><td><strong>Handle</strong></td><td>Opaque <code>dwch_…</code> id the agent + daemon see</td><td>Maps to real <code>channel_id</code> server-side</td></tr>
     </tbody>
   </table>
+  </div>
   <p class="text-sm text-muted mt-1">Real Discord IDs (channel_id, guild_id, category_id) never leave the server. Agents and the daemon only hold opaque handles.</p>
 
   <h4 class="mt-1">Discord bot setup (one-time, ~10 min)</h4>
@@ -370,6 +390,7 @@ journalctl --user -u duckway-cc-watch -f</code></pre>
   <p class="text-sm text-muted">Daemon needs the selected agent binary (<code>claude</code>, <code>codex</code>, or <code>openclaw</code>) in <code>$PATH</code>. Codex always uses Duckway's local <code>duckway-openai</code> provider and <code>OPENAI_API_KEY</code> placeholder. When the assigned OpenAI key is Codex OAuth, Duckway writes a fake <code>~/.codex/auth.json</code>, intercepts <code>auth.openai.com/oauth/token</code> refreshes, and swaps the real refresh token only at the gateway. OpenAI Platform API keys must allow <code>api.responses.write</code>. OpenClaw uses <code>openclaw agent --message-file --json</code> with agent id from <code>DUCKWAY_CC_OPENCLAW_AGENT</code> or <code>default</code>. Per-channel <code>cwd</code> defaults to <code>~/.duckway/cc-workspace/&lt;handle&gt;/</code> (auto-created); override with <code>!new --cwd /path</code>. For launch debugging, use <code>duckway cc watch --debug</code> or <code>DUCKWAY_CC_DEBUG=1 duckway cc watch -d</code>; logs include agent type, runner mode, sandbox/permission fields, and sanitized argv with only prompt head/tail.</p>
 
   <h4 class="mt-1">Management channel commands</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Command</th><th>Where</th><th>What it does</th></tr></thead>
     <tbody>
@@ -384,9 +405,11 @@ journalctl --user -u duckway-cc-watch -f</code></pre>
       <tr><td><code>!help</code></td><td>either</td><td>Print this list</td></tr>
     </tbody>
   </table>
+  </div>
   <p class="text-sm text-muted">Server-side commands are handled immediately. Client-owned commands such as <code>!sessions</code> and <code>!duckway-update</code> are forwarded to the assigned <code>duckway cc watch</code> daemon. Agent prompts, direct <code>!!</code> shell commands, and daemon-side <code>!</code> commands use independent bounded queues: each remains FIFO, while different queues can run concurrently.</p>
 
   <h4 class="mt-1">MCP tools (inside an agent session)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
     <tbody>
@@ -401,6 +424,7 @@ journalctl --user -u duckway-cc-watch -f</code></pre>
       <tr><td><code>discord_request_approval</code></td><td>Reaction-vote — posts the question with ✅/❌ (or 1️⃣2️⃣3️⃣) reactions and BLOCKS until someone clicks one</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Security boundary</h4>
   <ul>
@@ -414,6 +438,7 @@ journalctl --user -u duckway-cc-watch -f</code></pre>
   <p>A server-side WSS gateway holds one connection per unique bot token. <code>MESSAGE_CREATE</code> / <code>UPDATE</code> / <code>DELETE</code> + <code>CHANNEL_DELETE</code> + <code>MESSAGE_REACTION_ADD</code> events get filtered by the cc_channels cache, written to <code>discord_inbox</code>, and pushed live via the SSE hub to any connected daemon.</p>
   <p class="text-sm text-muted">Codex tmux turns are allowed to run past five minutes for long-running prompts such as <code>/goal</code>. The channel stays busy and the final reply is posted when Codex writes its completion event.</p>
   <p class="text-sm text-muted">Tunable via Settings:</p>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Key</th><th>Default</th></tr></thead>
     <tbody>
@@ -422,6 +447,7 @@ journalctl --user -u duckway-cc-watch -f</code></pre>
       <tr><td><code>cc_inbox_cleanup_interval_minutes</code></td><td>10</td></tr>
     </tbody>
   </table>
+  </div>
   <p class="text-sm text-muted">Test/dev: <code>DUCKWAY_CC_DISABLE_GATEWAY=1</code> skips the WSS dial. <code>DUCKWAY_CC_DEBUG_INJECT=1</code> exposes <code>POST /api/cc/{id}/inject_event</code> for synthetic events (used by the e2e suite).</p>
 
   <h4 class="mt-1">Lifecycle</h4>
@@ -473,6 +499,7 @@ duckway update            # Compare with server, replace binary if drifted</code
   <h3>15. API Reference</h3>
 
   <h4>Auth</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -480,8 +507,10 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/auth/logout</code></td><td>Logout</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Services (admin)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -493,8 +522,10 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/services/{id}/acl-templates</code></td><td>Apply ACL template</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">API Keys (admin)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -508,8 +539,10 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/keys/{id}/acl</code></td><td>Set custom ACL JSON</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Clients (admin)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -520,8 +553,10 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/clients/{id}</code></td><td>Delete client</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Phantom Tokens (admin)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -532,8 +567,10 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/placeholders/{id}</code></td><td>Delete placeholder</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Notifications (admin)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -544,8 +581,10 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/notifications/{id}</code></td><td>Delete channel</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Canary Tokens (admin)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -557,8 +596,10 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/api/canary/tokens/{id}</code></td><td>Delete single token</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Proxy (client auth: X-Duckway-Token)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -566,8 +607,10 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/proxy/heartbeat/ping</code></td><td>Connectivity test</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Client API (X-Duckway-Token)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -580,9 +623,11 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/claude-credentials</code></td><td>Phantom Claude OAuth credentials.json</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Control Channel client API (X-Duckway-Token)</h4>
   <p class="text-sm text-muted">CC v2: <code>cc_id</code> is implicit (1:1 client↔CC). Real Discord IDs (channel_id, guild_id, category_id) never appear in responses — agents see opaque <code>dwch_…</code> handles. Used by <code>duckway mcp serve</code> and <code>duckway cc watch</code>.</p>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -599,8 +644,10 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/client/cc/inbox?since=N&amp;channels=h1,h2&amp;timeout=30</code></td><td>Long-poll buffered gateway events (cold-start replay)</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Control Channel admin API (session cookie)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -614,8 +661,10 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-blue">POST</span></td><td><code>/api/cc/{id}/inject_event</code></td><td>DEBUG ONLY (gated on <code>DUCKWAY_CC_DEBUG_INJECT=1</code>) — publish synthetic events for e2e</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Public (no auth)</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
     <tbody>
@@ -625,6 +674,7 @@ duckway update            # Compare with server, replace binary if drifted</code
       <tr><td><span class="badge badge-green">GET</span></td><td><code>/download/{binary}</code></td><td>Client binaries</td></tr>
     </tbody>
   </table>
+  </div>
 </div>
 
 <!-- 16 -->
@@ -656,6 +706,7 @@ cp .env.example .dev.env
 # Auto-seeds: 8 API keys, 6 clients, 18 phantom tokens</code></pre>
 
   <h4 class="mt-1">Compose Files</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>File</th><th>Mode</th><th>Tailscale</th><th>Ports</th></tr></thead>
     <tbody>
@@ -664,8 +715,10 @@ cp .env.example .dev.env
       <tr><td class="mono text-sm">docker-compose.yml + docker-compose.dev.yml</td><td>Dev</td><td>No</td><td>127.0.0.1</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Environment Files</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>File</th><th>Purpose</th><th>In git</th></tr></thead>
     <tbody>
@@ -674,8 +727,10 @@ cp .env.example .dev.env
       <tr><td class="mono text-sm">.prod.env</td><td>Prod secrets (Tailscale key)</td><td>No</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Docker Images</h4>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Target</th><th>Binary</th><th>Size</th></tr></thead>
     <tbody>
@@ -685,6 +740,7 @@ cp .env.example .dev.env
       <tr><td>client</td><td>duckway client CLI</td><td>~10MB</td></tr>
     </tbody>
   </table>
+  </div>
 
   <h4 class="mt-1">Tailscale Integration</h4>
   <p>Production compose uses unprivileged userspace Tailscale sidecars. Each app shares its sidecar network namespace and listens only on loopback; Tailscale forwards tailnet TCP port 80 to that listener without certificate-domain or HTTP Host matching.</p>

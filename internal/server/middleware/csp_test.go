@@ -18,7 +18,7 @@ func TestCSPNonceUniqueAndHeader(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/", nil))
 		headers = append(headers, rec.Header().Get("Content-Security-Policy"))
 		if rec.Header().Get("Content-Security-Policy-Report-Only") != "" {
-			t.Fatal("report-only header set while EnforceCSP=true")
+			t.Fatal("report-only header set while SetEnforceCSP(true)")
 		}
 	}
 	if seen[0] == "" || seen[0] == seen[1] {
@@ -34,7 +34,7 @@ func TestCSPNonceUniqueAndHeader(t *testing.T) {
 
 func TestCSPDefaultsToEnforcing(t *testing.T) {
 	if !EnforceCSPEnabled() {
-		t.Fatal("EnforceCSP must default to true")
+		t.Fatal("enforcement must default to true")
 	}
 }
 

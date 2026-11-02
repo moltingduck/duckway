@@ -66,10 +66,12 @@
     <h3 style="margin:0">How It Works <span class="toggle-arrow">&#9654;</span></h3>
   </div>
   <div id="howitworks-body" style="display:none;margin-top:1rem">
+    <div class="table-wrap">
     <table>
       <thead><tr><th>Type</th><th>Category</th><th>What gets deployed</th><th>Deploy Path</th></tr></thead>
       <tbody id="types-reference"></tbody>
     </table>
+    </div>
     <p class="text-sm text-muted mt-1"><strong>API tokens</strong> call canarytokens.org to generate real tripwire credentials. <strong>Local decoy files</strong> are self-generated with embedded DNS canary hostnames — when an attacker resolves the hostname (e.g., by curling a URL in the file), you get alerted.</p>
     <p class="text-sm text-muted">All canary files are placed at paths that look realistic but use <code>.bak</code> suffixes or non-standard locations. They are <strong>NOT</strong> in <code>keys.env</code>, so AI agents use the real phantom tokens and ignore these decoys.</p>
   </div>
@@ -214,7 +216,7 @@ function loadClientCanaries() {
           : DW.html`<span class="mono text-sm text-muted">${tokenShort}</span>`;
         return DW.html`<tr id="ct-${t.id}"><td><span class="badge badge-blue">${t.token_type}</span></td><td>${manageLink}</td><td class="mono text-sm">~/${t.deploy_path}</td><td class="text-muted text-sm">${t.created_at}</td><td class="text-right"><button class="btn btn-sm btn-danger" data-action="deleteCanaryToken" data-token-id="${t.id}">Delete</button></td></tr>`;
       });
-      DW.setHTML(div, DW.html`<table class="mt-1"><thead><tr><th>Type</th><th>Token ID</th><th>Deploy Path</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table><div class="mt-1 flex gap-sm"><button class="btn btn-sm" data-action="generateCanaries" data-client-id="${clientId}" data-client-name="${clientName}">Regenerate All</button><button class="btn btn-sm btn-danger" data-action="deleteAllCanaries" data-client-id="${clientId}">Delete All</button></div>`);
+      DW.setHTML(div, DW.html`<div class="table-wrap"><table class="mt-1"><thead><tr><th>Type</th><th>Token ID</th><th>Deploy Path</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table></div><div class="mt-1 flex gap-sm"><button class="btn btn-sm" data-action="generateCanaries" data-client-id="${clientId}" data-client-name="${clientName}">Regenerate All</button><button class="btn btn-sm btn-danger" data-action="deleteAllCanaries" data-client-id="${clientId}">Delete All</button></div>`);
     });
 }
 

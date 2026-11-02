@@ -150,7 +150,7 @@ document.addEventListener('htmx:afterRequest', function(e) {
         <td>${formatExhausted(m.exhausted_until) || DW.html`<span class="badge badge-green">active</span>`}</td>
         <td><button class="btn btn-sm btn-danger" data-action="removeMember" data-group-id="${data.id}" data-key-id="${m.api_key_id}" data-container-id="${e.detail.elt.id}">Remove</button></td>
       </tr>`);
-    DW.setHTML(e.detail.elt, DW.html`<table><thead><tr><th>Key</th><th>Tokens Remaining</th><th>Bound Clients</th><th>Score</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>`);
+    DW.setHTML(e.detail.elt, DW.html`<div class="table-wrap"><table><thead><tr><th>Key</th><th>Tokens Remaining</th><th>Bound Clients</th><th>Score</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`);
   } catch(ex) {}
 });
 

@@ -9,6 +9,7 @@
     <input type="text" id="search-ph" placeholder="Search or filter (e.g. service:openai client:laptop approval:auto)">
     <span class="count" id="count-ph"></span>
   </div>
+  <div class="table-wrap">
   <table>
     <thead>
       <tr><th>Client</th><th>API Key</th><th>Service</th><th>Phantom Token</th><th>Approval</th><th>Usage</th><th></th></tr>
@@ -35,6 +36,7 @@
       {{end}}
     </tbody>
   </table>
+  </div>
 </div>
 
 <div id="add-modal" class="modal-backdrop" style="display:none">

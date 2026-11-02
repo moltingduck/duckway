@@ -143,7 +143,9 @@
   <p class="text-sm text-muted">Compare these values with <code>sha256sum</code> after downloading. The install script hash is generated for the configured gateway URL.</p>
   <div class="text-sm" style="margin:.5rem 0"><strong>install.sh</strong> <code id="install-sha256">Loading…</code><br><code>sha256sum install.sh</code></div>
   <div style="overflow-x:auto">
+    <div class="table-wrap">
     <table class="table"><thead><tr><th>Ducklord platform</th><th>Binary</th><th>SHA-256</th></tr></thead><tbody id="ducklord-sha256-list"><tr><td colspan="3" class="text-muted">Loading…</td></tr></tbody></table>
+    </div>
   </div>
 </div>
 
@@ -185,10 +187,12 @@
       <strong class="text-sm">API Keys &amp; Phantom Tokens <span class="toggle-arrow">&#9654;</span></strong>
     </div>
     <div id="keys-section-{{.ID}}" style="display:none">
+      <div class="table-wrap">
       <table>
         <thead><tr><th>API Key</th><th>Service</th><th>Phantom Token</th><th>Approval</th><th>Valid Until</th><th>TTL</th><th>Usage</th><th></th></tr></thead>
         <tbody id="keys-{{.ID}}"></tbody>
       </table>
+      </div>
     </div>
   </div>
 
@@ -198,10 +202,12 @@
       <strong class="text-sm">Canary Tokens {{if not .CanaryEnabled}}<span class="badge badge-gray">Disabled</span>{{end}} <span class="toggle-arrow">&#9654;</span></strong>
     </div>
     <div id="canary-section-{{.ID}}" style="display:none">
+      <div class="table-wrap">
       <table>
         <thead><tr><th>Type</th><th>Token / Hostname</th><th>Deploy Path</th><th>Created</th></tr></thead>
         <tbody id="canaries-{{.ID}}"></tbody>
       </table>
+      </div>
     </div>
   </div>
 </div>

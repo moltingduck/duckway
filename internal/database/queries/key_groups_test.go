@@ -40,10 +40,25 @@ func TestGetKeyGroupWithMembersToleratesEmptyUsageSnapshot(t *testing.T) {
 	if len(got.Members) != 2 {
 		t.Fatalf("members = %d, want 2", len(got.Members))
 	}
-	if got.Members[1].TokensRemaining == nil || *got.Members[1].TokensRemaining != 50 {
-		t.Fatalf("valid snapshot not parsed: %+v", got.Members[1])
+	byID := map[string]int{}
+	for i, m := range got.Members {
+		byID[m.APIKeyID] = i
 	}
-	if _, err := queries.SelectKeyForGroup(db, g.ID, "", "score"); err != nil {
-		t.Fatalf("SelectKeyForGroup with empty snapshot: %v", err)
+	empty, ok := got.Members[byID["k-empty"]], got.Members[byID["k-ok"]]
+	if empty.TokensRemaining != nil || empty.TokensLimit != nil || empty.RequestsRemaining != nil || empty.RequestsLimit != nil {
+		t.Fatalf("empty snapshot should yield nil token/request fields: %+v", empty)
+	}
+	if ok.TokensRemaining == nil || *ok.TokensRemaining != 50 || ok.TokensLimit == nil || *ok.TokensLimit != 100 {
+		t.Fatalf("valid snapshot not parsed: %+v", ok)
+	}
+	// Unknown usage is preferred over a known-low remainder.
+	for _, strategy := range []string{"score", "round_robin", "failover"} {
+		id, err := queries.SelectKeyForGroup(db, g.ID, "", strategy)
+		if err != nil {
+			t.Fatalf("SelectKeyForGroup(%s): %v", strategy, err)
+		}
+		if strategy == "score" && id != "k-empty" {
+			t.Fatalf("score selected %q, want k-empty (unknown usage preferred)", id)
+		}
 	}
 }

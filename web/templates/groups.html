@@ -5,6 +5,7 @@
 </div>
 
 <div class="card">
+  <div class="table-wrap">
   <table>
     <thead>
       <tr><th>Name</th><th>Service</th><th>Strategy</th><th>Members</th><th></th></tr>
@@ -29,6 +30,7 @@
       {{end}}
     </tbody>
   </table>
+  </div>
 </div>
 
 <div id="add-modal" class="modal-backdrop" style="display:none">
@@ -71,10 +73,12 @@
 
       <div class="mt-1">
         <strong class="text-sm">Members</strong>
+        <div class="table-wrap">
         <table class="mt-1">
           <thead><tr><th>Key Name</th><th>Service</th><th>Total calls</th><th>Rate-limit usage</th><th></th></tr></thead>
           <tbody id="d-members"></tbody>
         </table>
+        </div>
       </div>
       <div id="d-member-details" class="mt-1"></div>
 
