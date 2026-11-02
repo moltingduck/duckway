@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -89,5 +90,39 @@ func drain(ch chan string) []string {
 		case <-time.After(200 * time.Millisecond):
 			return out
 		}
+	}
+}
+
+func TestHTTPServerShutdownClosesOpenEventStreamPromptly(t *testing.T) {
+	s, shared := newShellTestServer(t)
+	t.Cleanup(s.Shutdown)
+	ts := httptest.NewUnstartedServer(s)
+	ts.Config.RegisterOnShutdown(s.CloseStreams)
+	ts.Start()
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/events", nil)
+	req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	br := bufio.NewReader(resp.Body)
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := ts.Config.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown with open stream: %v after %s", err, time.Since(start))
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("shutdown took %s", d)
 	}
 }

@@ -340,6 +340,26 @@ without reloading. If the console is published through a reverse proxy, that
 proxy must not buffer or time out long-lived responses. Without it the pages
 fall back to polling and the top bar shows "Polling".
 
+Requirements for the proxy on `/api/events`:
+
+- Do not buffer the response. Duckway sends `X-Accel-Buffering: no`, but nginx
+  `proxy_buffering off` / Caddy `flush_interval -1` is still recommended.
+- Do not compress it (no gzip/brotli on `/api/events`); Duckway already sends
+  `Cache-Control: no-cache, no-transform`.
+- Idle and read timeouts must be longer than the 15 second heartbeat that
+  Duckway sends as an SSE comment. Use a generous value such as one hour.
+- Forward the `Cookie` header unchanged. The stream is authenticated with the
+  admin session cookie; an unauthenticated request gets 401 or 403.
+- Limits: at most 4 concurrent streams per session (further ones get
+  `429 Too Many Requests`) and 64 in total (further ones get
+  `503 Service Unavailable`), both with `Retry-After: 5`. The browser keeps one
+  stream per open tab, so many tabs on one session can hit the per-session limit.
+
+The top bar shows the connection state: **Live** when the stream is connected,
+**Reconnecting** while the browser retries with backoff, and **Polling** when
+the stream is unavailable (for example a buffering proxy or a limit response).
+In the Polling state the pages keep working and refresh every 15 seconds.
+
 **Do not override `Content-Security-Policy` in the proxy.** Duckway sends a
 per-request nonce policy; a proxy that replaces or adds its own CSP breaks the
 console scripts. `./scripts/prod.sh upgrade --check` warns about this when
@@ -354,7 +374,9 @@ location /api/events {
     proxy_set_header Connection "";
     proxy_buffering off;
     proxy_cache off;
+    gzip off;
     proxy_read_timeout 1h;
+    proxy_send_timeout 1h;
 }
 ```
 

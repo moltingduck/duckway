@@ -96,6 +96,9 @@ func main() {
 
 	httpSrv := &http.Server{Addr: config.ListenAddr, Handler: srv}
 
+	// Close SSE streams as soon as Shutdown begins; otherwise it waits for them.
+	httpSrv.RegisterOnShutdown(srv.CloseStreams)
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 	go func() {

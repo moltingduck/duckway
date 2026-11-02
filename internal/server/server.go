@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/hackerduck/duckway/internal/server/events"
 	"io/fs"
 	"log"
 	"net/http"
@@ -27,8 +28,9 @@ type Server struct {
 	notifier *services.Notifier
 
 	stopOnce sync.Once
-	stopCh   chan struct{} // closed to stop anonymous sweeper goroutines
-	stoppers []stopper     // services with their own Stop()
+	stopCh   chan struct{}   // closed to stop anonymous sweeper goroutines
+	stoppers []stopper       // services with their own Stop()
+	events   *events.Service // SSE hub; closed early so streams do not block http.Server.Shutdown
 }
 
 // Shutdown stops all background goroutines and services. Call after
@@ -41,6 +43,15 @@ func (s *Server) Shutdown() {
 			svc.Stop()
 		}
 	})
+}
+
+// CloseStreams ends long-lived streaming responses (the /api/events SSE
+// streams) so http.Server.Shutdown does not wait for them. Register it with
+// http.Server.RegisterOnShutdown. Safe to call more than once.
+func (s *Server) CloseStreams() {
+	if s.events != nil {
+		s.events.Hub.Close()
+	}
 }
 
 func (s *Server) register(svc stopper) stopper {
