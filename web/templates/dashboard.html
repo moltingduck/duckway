@@ -72,25 +72,29 @@
       return DW.html`<tr><td class="text-muted text-sm">${l.created_at}</td><td>${l.client_name || dash}</td><td><span class="badge badge-blue">${l.service_name}</span></td><td><span class="badge badge-blue">${l.method}</span></td><td class="mono text-sm">${l.path}</td><td>${status}</td></tr>`;
     })}`);
   }
-  function refreshRecent() {
-    getJSON('/api/logs').then(function(d) { if (Array.isArray(d)) renderRecent(d); });
+  // Latest-wins per target: drop responses that arrive out of order.
+  var seqs = {};
+  function latest(key, url, apply) {
+    var n = (seqs[key] || 0) + 1;
+    seqs[key] = n;
+    getJSON(url).then(function(d) { if (seqs[key] === n && Array.isArray(d)) apply(d); });
   }
+  function refreshRecent() { latest('recent', '/api/logs', renderRecent); }
   function refreshPending() {
-    getJSON('/api/approvals').then(function(d) {
-      if (Array.isArray(d)) document.getElementById('c-pending').textContent = String(d.length);
-    });
+    latest('pending', '/api/approvals', function(d) { document.getElementById('c-pending').textContent = String(d.length); });
   }
   var lastCounts = 0;
-  function refreshCounts() {
+  // force bypasses the throttle (polling / reconnect catch-up, approvals).
+  function refreshCounts(force) {
     var now = Date.now();
-    if (now - lastCounts < 30000) return; // these lists are heavier; throttle
+    if (now - lastCounts < (force ? 2000 : 30000)) return; // these lists are heavier; throttle
     lastCounts = now;
     [['/api/services', 'c-services'], ['/api/keys', 'c-keys'], ['/api/clients', 'c-clients'], ['/api/placeholders', 'c-phantoms']].forEach(function(p) {
-      getJSON(p[0]).then(function(d) { if (Array.isArray(d)) document.getElementById(p[1]).textContent = String(d.length); });
+      latest(p[1], p[0], function(d) { document.getElementById(p[1]).textContent = String(d.length); });
     });
   }
-  DW.live.on('logs', function() { refreshRecent(); refreshCounts(); }, {defer: true});
-  DW.live.on('approvals', refreshPending, {defer: true});
+  DW.live.on('logs', function(d) { refreshRecent(); refreshCounts(!!(d && d.synthetic)); }, {defer: true});
+  DW.live.on('approvals', function(d) { refreshPending(); refreshCounts(!!(d && d.synthetic)); }, {defer: true});
 })();
 </script>
 {{end}}

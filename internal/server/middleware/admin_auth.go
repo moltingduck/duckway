@@ -45,6 +45,15 @@ func (a *AdminAuth) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+// SessionUser reports the username of a valid session cookie on r.
+func (a *AdminAuth) SessionUser(r *http.Request) (string, bool) {
+	c, err := r.Cookie("duckway_session")
+	if err != nil {
+		return "", false
+	}
+	return a.validateSession(c.Value)
+}
+
 func (a *AdminAuth) unauthorized(w http.ResponseWriter, r *http.Request) {
 	// HTML page requests → redirect to login
 	if strings.HasPrefix(r.URL.Path, "/admin/") {

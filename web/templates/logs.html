@@ -80,7 +80,7 @@
       <label class="text-sm" for="live-tail" style="display:inline-flex;align-items:center;gap:0.35rem;cursor:pointer">
         <input type="checkbox" id="live-tail" checked data-on-change="onLiveTailToggle"> Live tail
       </label>
-      <span id="live-new" class="live-new text-sm" hidden role="status"><span id="live-new-text"></span> <button class="btn btn-sm" data-action="applyLiveNew">Show</button></span>
+      <span class="sr-only" id="live-new-announce" role="status" aria-live="polite"></span><span id="live-new" class="live-new text-sm" hidden aria-live="off"><span id="live-new-text"></span> <button class="btn btn-sm" data-action="applyLiveNew">Show</button></span>
       <button class="btn btn-sm" data-action="loadLogs">Refresh</button>
     </div>
   </div>
@@ -127,6 +127,9 @@ function canAutoApply() { return liveTailOn() && !DW.live.modalOpen() && !docume
 function updateNewIndicator() {
   var box = document.getElementById('live-new');
   var any = newCount > 0 || newUnknown;
+  // Announce only the first appearance, not every count change.
+  if (any && box.hidden) document.getElementById('live-new-announce').textContent = 'New log entries available';
+  if (!any) document.getElementById('live-new-announce').textContent = '';
   box.hidden = !any;
   document.getElementById('live-new-text').textContent = newCount > 0 ? newCount + ' new' : 'New entries';
 }
@@ -135,6 +138,12 @@ function applyLiveNew() { loadLogs(true); }
 // Live: with tail on (and the list on page 1, no modal open, tab visible)
 // refetch; otherwise queue and show an "N new" indicator.
 DW.live.on('logs', function(d) {
+  // Synthetic events (polling fallback, reconnect catch-up) carry no count:
+  // refresh silently rather than nagging with an indicator.
+  if (d && d.synthetic) {
+    if (!document.hidden && !DW.live.modalOpen()) loadLogs(true);
+    return;
+  }
   if (canAutoApply()) { loadLogs(true); return; }
   var maxId = d && typeof d.max_id === 'number' ? d.max_id : 0;
   if (maxId > lastMaxId) newCount = maxId - lastMaxId; else newUnknown = true;
@@ -144,14 +153,20 @@ document.addEventListener('visibilitychange', function() {
   if (!document.hidden && (newCount > 0 || newUnknown) && canAutoApply()) loadLogs(true);
 });
 
+var logsSeq = 0;
+var logsLoading = false;
+function hasQueued() { return (newCount > 0 || newUnknown) && !logsLoading; }
 function loadLogs(live) {
+  var seq = ++logsSeq;
+  logsLoading = true;
   fetch('/api/logs', {credentials:'same-origin'})
     .then(function(r) {
       if (r.status === 401) { window.location = '/admin/login'; return; }
       return r.json();
     })
     .then(function(data) {
-      if (!data) return;
+      if (seq === logsSeq) logsLoading = false;
+      if (!data || seq !== logsSeq) return; // out-of-order response
       allLogs = data;
       if (!live) currentPage = 1;
       lastMaxId = data.reduce(function(m, l) { return l.id > m ? l.id : m; }, 0);
@@ -159,7 +174,8 @@ function loadLogs(live) {
       updateNewIndicator();
       buildFilterOptions();
       applyFilters();
-    });
+    })
+    .catch(function() { if (seq === logsSeq) logsLoading = false; });
 }
 
 function onPerPageChange() {
@@ -172,11 +188,13 @@ function onPerPageChange() {
 function onFilterChange() {
   currentPage = 1;
   applyFilters();
+  if (hasQueued()) loadLogs(true);
 }
 
 function goToPage(p) {
   currentPage = p;
   applyFilters();
+  if (p === 1 && hasQueued()) loadLogs(true);
   // Scroll the table back to the top so the user sees the new page from row 1
   document.getElementById('log-body').scrollIntoView({behavior:'smooth', block:'start'});
 }
@@ -197,6 +215,12 @@ function buildFilterOptions() {
 function fillSelect(id, obj, allLabel) {
   var sel = document.getElementById(id);
   var current = sel.value;
+  // Always keep the selected value available, even if no loaded row has it.
+  if (current && !Object.prototype.hasOwnProperty.call(obj, current)) obj[current] = true;
+  var wanted = Object.keys(obj).sort();
+  var have = [];
+  for (var i = 1; i < sel.options.length; i++) have.push(sel.options[i].value);
+  if (have.length === wanted.length && have.every(function(v, i) { return v === wanted[i]; })) return; // unchanged
   var first = document.createElement('option');
   first.value = '';
   first.textContent = allLabel;

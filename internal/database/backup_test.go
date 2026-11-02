@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -126,5 +127,44 @@ func TestRunBackupCommand(t *testing.T) {
 	se.Reset()
 	if rc := RunBackupCommand([]string{"--out", out + "2"}, dir, &so, &se); rc != 2 || !strings.Contains(se.String(), "pg_dump") {
 		t.Fatalf("pg rc=%d %s", rc, se.String())
+	}
+}
+
+func TestBackupSQLiteFilePrivateAndNoTempLeftover(t *testing.T) {
+	dir, _ := seedDB(t)
+	oldMask := syscall.Umask(0)
+	t.Cleanup(func() { syscall.Umask(oldMask) })
+	outDir := t.TempDir()
+	out := filepath.Join(outDir, "b.db")
+	if err := BackupSQLite(context.Background(), dir, out); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode=%o want 600", st.Mode().Perm())
+	}
+	ents, _ := os.ReadDir(outDir)
+	if len(ents) != 1 {
+		t.Fatalf("leftover entries in %s: %v", outDir, ents)
+	}
+	// Failure path (database missing) also leaves nothing behind.
+	if err := BackupSQLite(context.Background(), t.TempDir(), filepath.Join(outDir, "c.db")); err == nil {
+		t.Fatal("expected error")
+	}
+	if ents, _ := os.ReadDir(outDir); len(ents) != 1 {
+		t.Fatalf("leftover after failure: %v", ents)
+	}
+}
+
+func TestRunBackupCommandHelpExitsZeroAndMentionsOut(t *testing.T) {
+	var so, se strings.Builder
+	if rc := RunBackupCommand([]string{"--help"}, "", &so, &se); rc != 0 {
+		t.Fatalf("rc=%d", rc)
+	}
+	if !strings.Contains(so.String()+se.String(), "--out") {
+		t.Fatalf("help does not mention --out: %q", se.String())
 	}
 }

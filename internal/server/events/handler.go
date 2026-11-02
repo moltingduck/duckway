@@ -5,15 +5,26 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 )
+
+// DefaultMaxLifetime bounds how long one stream stays open. The browser
+// reconnects through authentication afterwards.
+const DefaultMaxLifetime = 30 * time.Minute
 
 // HandlerConfig tunes the SSE handler.
 type HandlerConfig struct {
 	Heartbeat    time.Duration // default 15s, capped at 15s
 	Retry        time.Duration // client reconnect hint, default 3s
 	WriteTimeout time.Duration // per-write deadline extension, default 20s
+	MaxLifetime  time.Duration // stream lifetime cap, default 30m
+	// ValidateSession, if set, returns the authenticated username and
+	// whether the request's session is still valid. It is called before
+	// subscribing and on every heartbeat; an invalid session closes the
+	// stream.
+	ValidateSession func(r *http.Request) (user string, ok bool)
 }
 
 // Handler serves GET /api/events. Mount it behind admin auth.
@@ -27,19 +38,36 @@ func (s *Service) Handler(cfg HandlerConfig) http.Handler {
 	if cfg.WriteTimeout <= 0 {
 		cfg.WriteTimeout = 20 * time.Second
 	}
+	if cfg.MaxLifetime <= 0 {
+		cfg.MaxLifetime = DefaultMaxLifetime
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fl, ok := w.(http.Flusher)
 		rc := http.NewResponseController(w)
-		if !ok {
-			if err := rc.Flush(); err != nil {
-				http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		// Refuse to stream without a per-write deadline: a stalled client
+		// would otherwise pin the goroutine forever.
+		if err := rc.SetWriteDeadline(time.Now().Add(cfg.WriteTimeout)); err != nil {
+			log.Printf("[events] write deadlines unsupported, refusing stream: %v", err)
+			http.Error(w, "streaming unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		user := ""
+		if cfg.ValidateSession != nil {
+			u, ok := cfg.ValidateSession(r)
+			if !ok {
+				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
 			}
+			user = u
 		}
-		sub, err := s.Hub.Subscribe(sessionKey(r))
+		key := sessionKey(r)
+		if key == "" {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		sub, err := s.Hub.SubscribeUser(key, user)
 		if err != nil {
 			status := http.StatusServiceUnavailable
-			if errors.Is(err, ErrSessionLimit) {
+			if errors.Is(err, ErrSessionLimit) || errors.Is(err, ErrUserLimit) {
 				status = http.StatusTooManyRequests
 			}
 			w.Header().Set("Retry-After", "5")
@@ -60,12 +88,7 @@ func (s *Service) Handler(cfg HandlerConfig) http.Handler {
 			if _, err := fmt.Fprintf(w, format, args...); err != nil {
 				return false
 			}
-			if ok {
-				fl.Flush()
-			} else if rc.Flush() != nil {
-				return false
-			}
-			return true
+			return rc.Flush() == nil
 		}
 		if !write("retry: %d\n", cfg.Retry.Milliseconds()) ||
 			!write("event: hello\ndata: {\"v\":1}\n\n") {
@@ -77,6 +100,8 @@ func (s *Service) Handler(cfg HandlerConfig) http.Handler {
 			ok  bool
 		}
 		ctx := r.Context()
+		life := time.NewTimer(cfg.MaxLifetime)
+		defer life.Stop()
 		hb := time.NewTicker(cfg.Heartbeat)
 		defer hb.Stop()
 		ch := make(chan batch)
@@ -99,7 +124,14 @@ func (s *Service) Handler(cfg HandlerConfig) http.Handler {
 			select {
 			case <-ctx.Done():
 				return
+			case <-life.C:
+				return
 			case <-hb.C:
+				if cfg.ValidateSession != nil {
+					if _, ok := cfg.ValidateSession(r); !ok {
+						return
+					}
+				}
 				if !write(": hb\n\n") {
 					return
 				}

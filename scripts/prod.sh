@@ -143,11 +143,27 @@ rt_running() {
   [ "$("$CONTAINER_RUNTIME" inspect --format '{{.State.Running}}' "$1" 2>/dev/null || true)" = "true" ]
 }
 file_sha256() { sha256sum "$1" | awk '{print $1}'; }
+
+# with_timeout SECS CMD...: bound a host-side command when `timeout` exists.
+with_timeout() {
+  local secs="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; else "$@"; fi
+}
+# Input validation for values that reach runtime/CLI arguments or paths.
+valid_stamp() { printf '%s' "$1" | grep -qE '^[0-9]{8}T[0-9]{6}Z$'; }
+valid_image_ref() {
+  case "$1" in -*|'') return 1 ;; esac
+  printf '%s' "$1" | grep -qE '^[A-Za-z0-9._/:@-]+$'
+}
+valid_sha256() { printf '%s' "$1" | grep -qE '^[0-9a-f]{64}$'; }
+# redact_url URL: drop any user:password@ part before printing.
+redact_url() { printf '%s' "$1" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@#\1#'; }
 file_bytes() { wc -c < "$1" | tr -d ' '; }
 
 # http_probe CONTAINER URL: wget -S inside the container; prints status line and headers.
 http_probe() {
-  "$CONTAINER_RUNTIME" exec "$1" wget -S -q -O /dev/null "$2" 2>&1 || true
+  with_timeout 30 "$CONTAINER_RUNTIME" exec "$1" wget -T 5 -S -q -O /dev/null "$2" 2>&1 || true
 }
 probe_status() { printf '%s\n' "$1" | awk '/^ *HTTP\//{s=$2} END{print s}'; }
 probe_has_header() { printf '%s\n' "$1" | grep -qi "^ *$2:"; }
@@ -274,19 +290,19 @@ upgrade_check() {
   if [ -z "$url" ]; then
     echo "DUCKWAY_ADMIN_PUBLIC_URL is not set; skipping proxy probe."
   elif ! command -v curl >/dev/null 2>&1; then
-    echo "curl not installed; skipping proxy probe of $url"
+    echo "curl not installed; skipping proxy probe of $(redact_url "$url")"
   else
-    hdrs="$(curl -sS -m 10 -o /dev/null -D - "${url%/}/admin/login" 2>&1 || true)"
+    hdrs="$(curl -sS -m 10 --proto '=http,https' -o /dev/null -D - -- "${url%/}/admin/login" 2>&1 || true)"
     if [ -z "$hdrs" ]; then
-      echo "WARNING: no response from ${url%/}/admin/login"
+      echo "WARNING: no response from $(redact_url "${url%/}")/admin/login"
     else
       csp="$(printf '%s\n' "$hdrs" | tr -d '\r' | awk 'tolower($0) ~ /^content-security-policy:/{sub(/^[^:]*: */,""); print; exit}')"
       if [ -z "$csp" ]; then
-        echo "WARNING: $url sends no Content-Security-Policy; a proxy is stripping or overriding Duckway's CSP."
+        echo "WARNING: $(redact_url "$url") sends no Content-Security-Policy; a proxy is stripping or overriding Duckway's CSP."
       elif ! printf '%s' "$csp" | grep -q "'nonce-" || ! printf '%s' "$csp" | grep -q "strict-dynamic"; then
-        echo "WARNING: Content-Security-Policy at $url differs from Duckway's (no nonce/strict-dynamic); the proxy is probably overriding it. Do not override CSP."
+        echo "WARNING: Content-Security-Policy at $(redact_url "$url") differs from Duckway's (no nonce/strict-dynamic); the proxy is probably overriding it. Do not override CSP."
       else
-        echo "CSP at $url matches Duckway's nonce policy."
+        echo "CSP at $(redact_url "$url") matches Duckway's nonce policy."
       fi
     fi
     echo "Reminder: live updates use SSE at /api/events. The proxy must not buffer it"
@@ -300,19 +316,42 @@ upgrade_check() {
   echo "Check passed."
 }
 
+# backup_sqlite DIR: runs the NEW image's binary in a one-off container on the
+# data volume (the running binary may predate the `backup` subcommand, and
+# invoking an unknown subcommand on it would start a second server). The copy
+# is streamed to the host through stdout; nothing is left in the container.
 backup_sqlite() {
-  local dir="$1" svc c bin tmp
+  local dir="$1" svc bin probe part errf want got
   svc="$(primary_service)"
-  c="$(svc_container "$svc")"
   bin="$(svc_binary "$svc")"
-  tmp="/tmp/duckway-upgrade-backup-$STAMP.db"
-  echo "Backing up SQLite via VACUUM INTO inside $c (services keep running)..."
-  "$CONTAINER_RUNTIME" exec "$c" "$bin" backup --out "$tmp" || return 1
-  "$CONTAINER_RUNTIME" cp "$c:$tmp" "$dir/duckway.db" || return 1
-  "$CONTAINER_RUNTIME" exec "$c" rm -f "$tmp" >/dev/null 2>&1 || true
-  [ -s "$dir/duckway.db" ] || { echo "backup file is empty" >&2; return 1; }
-  [ "$(head -c 15 "$dir/duckway.db")" = "SQLite format 3" ] || { echo "backup is not a SQLite database" >&2; return 1; }
-  chmod 600 "$dir/duckway.db"
+  part="$dir/duckway.db.partial"
+  errf="$dir/backup.stderr.partial"
+  echo "Checking that the new $bin image supports 'backup'..."
+  probe="$(with_timeout 120 "${COMPOSE[@]}" run --rm -T --no-deps --entrypoint sh "$svc" -c "$bin backup --help 2>&1")" \
+    || { echo "The new image's '$bin backup --help' failed (exit non-zero)." >&2; return 1; }
+  printf '%s\n' "$probe" | grep -q -- '--out' \
+    || { echo "The new image's '$bin backup --help' does not mention --out; refusing to rely on it." >&2; return 1; }
+  echo "Backing up SQLite via VACUUM INTO using the new image on the data volume (services keep running)..."
+  if ! with_timeout 900 "${COMPOSE[@]}" run --rm -T --no-deps --entrypoint sh "$svc" -c \
+      "umask 077; f=/tmp/duckway-upgrade-backup.db; trap 'rm -f \"\$f\"' EXIT INT TERM; $bin backup --out \"\$f\" >&2 && sha256sum \"\$f\" | awk '{print \"DUCKWAY_BACKUP_SHA256=\" \$1}' >&2 && cat \"\$f\"" \
+      > "$part" 2> "$errf"; then
+    cat "$errf" >&2 2>/dev/null || true
+    rm -f "$part" "$errf"
+    return 1
+  fi
+  want="$(sed -n 's/^DUCKWAY_BACKUP_SHA256=\([0-9a-f]\{64\}\)$/\1/p' "$errf" | tail -1)"
+  grep -v '^DUCKWAY_BACKUP_SHA256=' "$errf" >&2 2>/dev/null || true
+  rm -f "$errf"
+  [ -s "$part" ] || { echo "backup file is empty" >&2; rm -f "$part"; return 1; }
+  [ "$(head -c 15 "$part")" = "SQLite format 3" ] || { echo "backup is not a SQLite database" >&2; rm -f "$part"; return 1; }
+  got="$(file_sha256 "$part")"
+  if [ -z "$want" ] || [ "$want" != "$got" ]; then
+    echo "backup stream failed verification (container sha256 '${want:-none}' vs host '$got')" >&2
+    rm -f "$part"
+    return 1
+  fi
+  chmod 600 "$part"
+  mv "$part" "$dir/duckway.db"
 }
 
 # Keys, CA material and anything else in /data except the live DB files.
@@ -320,18 +359,23 @@ backup_data_files() {
   local dir="$1" c
   c="$(svc_container "$(primary_service)")"
   echo "Archiving key and CA files from $c:/data (excluding live database files)..."
-  "$CONTAINER_RUNTIME" exec "$c" tar -cf - -C /data --exclude './duckway.db*' . > "$dir/data-files.tar" || return 1
-  tar -tf "$dir/data-files.tar" >/dev/null || { echo "data-files.tar is not a valid archive" >&2; return 1; }
-  chmod 600 "$dir/data-files.tar"
+  "$CONTAINER_RUNTIME" exec "$c" tar -cf - -C /data --exclude './duckway.db*' . > "$dir/data-files.tar.partial" \
+    || { rm -f "$dir/data-files.tar.partial"; return 1; }
+  tar -tf "$dir/data-files.tar.partial" >/dev/null || { echo "data-files.tar is not a valid archive" >&2; rm -f "$dir/data-files.tar.partial"; return 1; }
+  chmod 600 "$dir/data-files.tar.partial"
+  mv "$dir/data-files.tar.partial" "$dir/data-files.tar"
 }
 
 backup_postgres() {
   local dir="$1"
   echo "Backing up PostgreSQL with pg_dump inside duckway-postgres..."
-  "$CONTAINER_RUNTIME" exec duckway-postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$dir/duckway.pgdump" || return 1
-  [ -s "$dir/duckway.pgdump" ] || { echo "pg_dump produced no data" >&2; return 1; }
-  "$CONTAINER_RUNTIME" exec -i duckway-postgres pg_restore -l < "$dir/duckway.pgdump" >/dev/null || { echo "pg_dump archive failed verification" >&2; return 1; }
-  chmod 600 "$dir/duckway.pgdump"
+  "$CONTAINER_RUNTIME" exec duckway-postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$dir/duckway.pgdump.partial" \
+    || { rm -f "$dir/duckway.pgdump.partial"; return 1; }
+  [ -s "$dir/duckway.pgdump.partial" ] || { echo "pg_dump produced no data" >&2; rm -f "$dir/duckway.pgdump.partial"; return 1; }
+  "$CONTAINER_RUNTIME" exec -i duckway-postgres pg_restore -l < "$dir/duckway.pgdump.partial" >/dev/null \
+    || { echo "pg_dump archive failed verification" >&2; rm -f "$dir/duckway.pgdump.partial"; return 1; }
+  chmod 600 "$dir/duckway.pgdump.partial"
+  mv "$dir/duckway.pgdump.partial" "$dir/duckway.pgdump"
 }
 
 # write_manifest DIR STATUS (uses the UP_* globals). One image object per line so
@@ -402,11 +446,20 @@ do_upgrade() {
   fi
   if [ "$assume_yes" != "true" ]; then
     echo ""
-    read -r -p "Back up, build, and recreate the app services now? [y/N] " confirm
+    if ! read -r -p "Tag current images, build, back up, and recreate the app services now? [y/N] " confirm; then
+      echo ""
+      echo "Cancelled (no input); nothing was changed."
+      exit 1
+    fi
     case "$confirm" in y|Y|yes|YES) ;; *) echo "Cancelled; nothing was changed."; exit 1 ;; esac
   fi
 
   STAMP="${DUCKWAY_UPGRADE_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
+  if ! valid_stamp "$STAMP"; then
+    echo "Error: DUCKWAY_UPGRADE_STAMP must look like 20260102T030405Z (got '$STAMP')" >&2
+    exit 2
+  fi
+  umask 077
   UP_DIR="$BACKUP_ROOT/upgrade-$STAMP"
   mkdir -p "$BACKUP_ROOT"
   chmod 700 "$BACKUP_ROOT"
@@ -430,19 +483,13 @@ do_upgrade() {
     UP_COMMIT_BEFORE="$(git -C "$PROJECT_DIR" rev-parse --verify --quiet "$cand^{commit}" 2>/dev/null || echo "$cand")"
   fi
 
-  # Step 1: backup. Any failure here leaves running services untouched.
-  echo ""
-  echo "=== Step 1/5: consistent backup into $UP_DIR ==="
-  if [ "$DATABASE_BACKEND" = "postgres" ]; then
-    backup_postgres "$UP_DIR" || { echo "Backup failed; nothing was changed. Partial files are in $UP_DIR" >&2; exit 1; }
-  else
-    backup_sqlite "$UP_DIR" || { echo "Backup failed; nothing was changed. Partial files are in $UP_DIR" >&2; exit 1; }
-  fi
-  backup_data_files "$UP_DIR" || { echo "Backup of data files failed; nothing was changed. Partial files are in $UP_DIR" >&2; exit 1; }
+  # Partial backup files never outlive a failed or interrupted run.
+  trap 'rm -f "$UP_DIR"/*.partial' EXIT INT TERM
 
-  # Step 2: tag the running images so they survive the rebuild.
+  # Step 1: tag the running images so they survive the rebuild (the build
+  # replaces the tags the running containers were created from).
   echo ""
-  echo "=== Step 2/5: tag current images for rollback ==="
+  echo "=== Step 1/5: tag current images for rollback ==="
   for svc in $(app_services); do
     c="$(svc_container "$svc")"
     name="$("$CONTAINER_RUNTIME" inspect --format '{{.Config.Image}}' "$c" 2>/dev/null || true)"
@@ -452,21 +499,39 @@ do_upgrade() {
       exit 1
     fi
     tag="$(img_repo "$name"):rollback-$STAMP"
-    "$CONTAINER_RUNTIME" tag "$id" "$tag" || { echo "Tagging the $c image failed; nothing was changed." >&2; exit 1; }
+    if ! valid_image_ref "$name" || ! valid_image_ref "$id" || ! valid_image_ref "$tag"; then
+      echo "Unexpected image reference for $c ('$name' / '$id'); nothing was changed." >&2
+      exit 1
+    fi
+    "$CONTAINER_RUNTIME" tag -- "$id" "$tag" || { echo "Tagging the $c image failed; nothing was changed." >&2; exit 1; }
     echo "  $c: $id -> $tag"
     UP_SVCS+=("$svc"); UP_CONTAINERS+=("$c"); UP_NAMES+=("$name"); UP_IDS+=("$id"); UP_TAGS+=("$tag")
   done
   write_manifest "$UP_DIR" prepared
   echo "Manifest: $UP_DIR/manifest.json"
 
-  # Step 3: build before touching anything that is running.
+  # Step 2: build before touching anything that is running.
   echo ""
-  echo "=== Step 3/5: build new images (running services untouched) ==="
+  echo "=== Step 2/5: build new images (running services untouched) ==="
   if ! "${COMPOSE[@]}" build $(app_services); then
     echo "Build failed; running services were not touched. Rollback tags remain (harmless)." >&2
     write_manifest "$UP_DIR" build-failed || true
     exit 1
   fi
+
+  # Step 3: backup. SQLite uses the freshly built image's binary, so a first
+  # upgrade from an image that predates the `backup` subcommand works. Any
+  # failure here still leaves running services untouched.
+  echo ""
+  echo "=== Step 3/5: consistent backup into $UP_DIR ==="
+  if [ "$DATABASE_BACKEND" = "postgres" ]; then
+    backup_postgres "$UP_DIR" || { echo "Backup failed; nothing was changed. Partial files are in $UP_DIR" >&2; write_manifest "$UP_DIR" backup-failed || true; exit 1; }
+  else
+    backup_sqlite "$UP_DIR" || { echo "Backup failed; nothing was changed. Partial files are in $UP_DIR" >&2; write_manifest "$UP_DIR" backup-failed || true; exit 1; }
+  fi
+  backup_data_files "$UP_DIR" || { echo "Backup of data files failed; nothing was changed. Partial files are in $UP_DIR" >&2; write_manifest "$UP_DIR" backup-failed || true; exit 1; }
+  write_manifest "$UP_DIR" prepared
+  echo "Manifest with backup checksums: $UP_DIR/manifest.json"
 
   # Step 4: recreate (split: admin first, smoke it, then the gateway).
   echo ""
@@ -493,7 +558,8 @@ do_upgrade() {
   write_manifest "$UP_DIR" complete
   echo ""
   echo "Upgrade complete. Backup and manifest: $UP_DIR"
-  echo "To roll back (restores the pre-upgrade database; later writes are lost):"
+  echo "To roll back (restores the pre-upgrade database and images; later writes are lost."
+  echo "data-files.tar (keys/CA) is NOT restored automatically; it is kept for manual recovery):"
   echo "  $0 rollback --to backups/upgrade-$STAMP"
   echo "Images only (keep current data):"
   echo "  $0 rollback --to backups/upgrade-$STAMP --keep-data"
@@ -503,24 +569,29 @@ do_upgrade() {
 manifest_images() {
   sed -n 's/^ *{"service":"\([^"]*\)","container":"\([^"]*\)","image_name":"\([^"]*\)","previous_image_id":"\([^"]*\)","rollback_tag":"\([^"]*\)"}.*$/\1|\2|\3|\4|\5/p' "$1"
 }
+# Prints: name|sha256|bytes
+manifest_files() {
+  sed -n 's/^ *{"name":"\([^"]*\)","sha256":"\([^"]*\)","bytes":\([0-9]*\)}.*$/\1|\2|\3/p' "$1"
+}
 manifest_field() {
   sed -n "s/^  \"$2\": \"\\([^\"]*\\)\".*\$/\\1/p" "$1" | head -1
 }
 
 do_rollback() {
-  local dir="" keep_data=false assume_yes=false m_mode m_backend images dbfile typed svc c name tag
+  local dir="" keep_data=false assume_yes=false force=false m_mode m_backend m_status images dbfile typed svc c name tag id fname fsha fbytes
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
       --to) dir="${2:-}"; shift ;;
       --keep-data) keep_data=true ;;
       --yes|-y) assume_yes=true ;;
+      --force) force=true ;;
       *) echo "Unknown option for rollback: $1" >&2; exit 2 ;;
     esac
     shift
   done
   if [ -z "$dir" ]; then
-    echo "Usage: $0 rollback --to backups/upgrade-<UTC timestamp> [--keep-data] [--yes]" >&2
+    echo "Usage: $0 rollback --to backups/upgrade-<UTC timestamp> [--keep-data] [--yes] [--force]" >&2
     exit 2
   fi
   case "$dir" in
@@ -539,16 +610,53 @@ do_rollback() {
     echo "Error: manifest was made in mode=$m_mode backend=$m_backend but .prod.env now says mode=$MODE backend=$DATABASE_BACKEND" >&2
     exit 1
   fi
+  m_status="$(manifest_field "$dir/manifest.json" status)"
+  case "$m_status" in
+    complete|failed) ;;
+    *)
+      if [ "$force" != "true" ]; then
+        echo "Error: manifest status is '${m_status:-unknown}' (want complete or failed); the upgrade never finished its backup/recreate steps. Use --force to override." >&2
+        exit 1
+      fi
+      echo "WARNING: --force: manifest status is '${m_status:-unknown}'." >&2
+      ;;
+  esac
   images="$(manifest_images "$dir/manifest.json")"
   if [ -z "$images" ]; then
     echo "Error: manifest lists no images" >&2
     exit 1
   fi
+  while IFS='|' read -r _ _ name id tag; do
+    if ! valid_image_ref "$name" || ! valid_image_ref "$id" || ! valid_image_ref "$tag"; then
+      echo "Error: manifest contains an invalid image reference ('$name' '$id' '$tag'); nothing was changed." >&2
+      exit 1
+    fi
+  done <<< "$images"
+  # Verify every backup file (checksum and size) before anything destructive.
   if [ "$keep_data" != "true" ]; then
     dbfile=duckway.db
     [ "$DATABASE_BACKEND" = "postgres" ] && dbfile=duckway.pgdump
+    if ! manifest_files "$dir/manifest.json" | grep -q "^$dbfile|"; then
+      echo "Error: manifest does not list $dbfile; cannot restore" >&2
+      exit 1
+    fi
+    while IFS='|' read -r fname fsha fbytes; do
+      case "$fname" in
+        duckway.db|duckway.pgdump|data-files.tar) ;;
+        *) echo "Error: manifest lists unexpected backup file '$fname'; nothing was changed." >&2; exit 1 ;;
+      esac
+      if [ ! -f "$dir/$fname" ]; then
+        echo "Error: backup file $dir/$fname is missing; nothing was changed." >&2
+        exit 1
+      fi
+      if ! valid_sha256 "$fsha" || [ "$(file_sha256 "$dir/$fname")" != "$fsha" ] || [ "$(file_bytes "$dir/$fname")" != "$fbytes" ]; then
+        echo "Error: backup file $dir/$fname does not match the manifest checksum/size; refusing to roll back. Nothing was changed." >&2
+        exit 1
+      fi
+    done < <(manifest_files "$dir/manifest.json")
+    echo "Backup files verified against manifest checksums."
     if [ ! -s "$dir/$dbfile" ]; then
-      echo "Error: backup file $dir/$dbfile is missing or empty" >&2
+      echo "Error: backup file $dir/$dbfile is empty" >&2
       exit 1
     fi
   fi
@@ -562,7 +670,8 @@ do_rollback() {
     echo "  $(manifest_field "$dir/manifest.json" timestamp) (approvals, logs, new keys and clients) will be LOST."
   fi
   if [ "$assume_yes" != "true" ]; then
-    read -r -p "Type the backup directory name ($(basename "$dir")) to continue: " typed
+    typed=""
+    read -r -p "Type the backup directory name ($(basename "$dir")) to continue: " typed || echo ""
     if [ "$typed" != "$(basename "$dir")" ]; then
       echo "Confirmation did not match; nothing was changed."
       exit 1
@@ -570,7 +679,7 @@ do_rollback() {
   fi
 
   while IFS='|' read -r _ _ _ _ tag; do
-    "$CONTAINER_RUNTIME" image inspect "$tag" >/dev/null 2>&1 || { echo "Error: rollback image $tag no longer exists; nothing was changed." >&2; exit 1; }
+    "$CONTAINER_RUNTIME" image inspect -- "$tag" >/dev/null 2>&1 || { echo "Error: rollback image $tag no longer exists; nothing was changed." >&2; exit 1; }
   done <<< "$images"
 
   if [ "$keep_data" != "true" ]; then
@@ -593,7 +702,7 @@ do_rollback() {
 
   echo "Re-tagging previous images..."
   while IFS='|' read -r _ _ name _ tag; do
-    "$CONTAINER_RUNTIME" tag "$tag" "$name" || { echo "Re-tagging $tag failed." >&2; exit 1; }
+    "$CONTAINER_RUNTIME" tag -- "$tag" "$name" || { echo "Re-tagging $tag failed." >&2; exit 1; }
     echo "  $tag -> $name"
   done <<< "$images"
 
@@ -867,9 +976,9 @@ case "${1:-up}" in
     echo "  upgrade --check"
     echo "            Read-only preflight: versions, mode, backend, disk, proxy headers"
     echo "  upgrade [--yes]"
-    echo "            Consistent backup, tag rollback images, build, recreate, smoke-test"
+    echo "            Tag rollback images, build, consistent backup (new image), recreate, smoke-test"
     echo "            (backups/upgrade-<UTC ts>/manifest.json records everything)"
-    echo "  rollback --to backups/upgrade-<ts> [--keep-data] [--yes]"
+    echo "  rollback --to backups/upgrade-<ts> [--keep-data] [--yes] [--force]"
     echo "            Restore previous images (and, unless --keep-data, the pre-upgrade database)"
     echo "  migrate-postgres  Offline backup, import, verify, and switch from SQLite"
     echo ""

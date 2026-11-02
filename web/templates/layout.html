@@ -24,7 +24,7 @@
       <div class="nav-group" role="group" aria-labelledby="ng0">
         <div class="nav-group-label" id="ng0">Overview</div>
         <a href="/admin/"{{if eq .Active "dashboard"}} class="active" aria-current="page"{{end}}>Overview</a>
-        <a href="/admin/approvals"{{if eq .Active "approvals"}} class="active" aria-current="page"{{end}}>Approvals{{if gt .PendingApprovals 0}}<span class="nav-badge" aria-label="{{.PendingApprovals}} pending">{{.PendingApprovals}}</span>{{end}}</a>
+        <a href="/admin/approvals"{{if eq .Active "approvals"}} class="active" aria-current="page"{{end}}>Approvals{{if gt .PendingApprovals 0}}<span class="nav-badge">{{.PendingApprovals}}<span class="sr-only"> pending</span></span>{{end}}</a>
       </div>
       <div class="nav-group" role="group" aria-labelledby="ng1">
         <div class="nav-group-label" id="ng1">Fleet</div>
@@ -75,7 +75,8 @@
       <header class="topbar">
         <button type="button" class="btn btn-sm menu-btn" id="menu-btn" data-action="toggleNav" aria-controls="sidebar" aria-expanded="false" aria-label="Menu">&#9776; Menu</button>
         <span class="topbar-title">{{.Title}}</span>
-        <span class="live-status" id="live-status" role="status" aria-live="polite" data-state="connecting"><span class="live-icon" aria-hidden="true">&#9676;</span><span class="live-text">Connecting&hellip;</span></span>
+        <span class="sr-only" id="live-announce" role="status" aria-live="polite"></span>
+        <span class="live-status" id="live-status" data-state="connecting"><span class="live-icon" aria-hidden="true">&#9676;</span><span class="live-text">Connecting&hellip;</span></span>
       </header>
       <main class="main" id="main" tabindex="-1">
         {{template "content" .}}

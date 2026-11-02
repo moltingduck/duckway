@@ -98,3 +98,20 @@ func TestRunMigrationsSeedsXAIService(t *testing.T) {
 		t.Fatalf("xai key/deploy config = prefix:%q len:%d dir:%q mode:%q", keyPrefix, keyLength, keyDirectory, deliveryMode)
 	}
 }
+
+func TestRunMigrationsCreatesWatcherIndexesIdempotently(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := runMigrations(db); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	for _, name := range []string{"idx_approvals_watch", "idx_client_update_jobs_watch"} {
+		var got string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`, name).Scan(&got); err != nil {
+			t.Fatalf("%s missing: %v", name, err)
+		}
+	}
+}

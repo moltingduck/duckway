@@ -25,6 +25,8 @@ var Topics = []string{TopicApprovals, TopicLogs, TopicRollouts, TopicBadge}
 var (
 	ErrTooManySubscribers = errors.New("events: too many subscribers")
 	ErrSessionLimit       = errors.New("events: too many streams for this session")
+	ErrUserLimit          = errors.New("events: too many streams for this user")
+	ErrNoSession          = errors.New("events: missing session key")
 	ErrClosed             = errors.New("events: hub closed")
 )
 
@@ -38,10 +40,11 @@ type Event struct {
 type Limits struct {
 	MaxSubscribers int // global
 	MaxPerSession  int
+	MaxPerUser     int // per authenticated username; sessions of one user share it
 }
 
 // DefaultLimits are used when a Hub is created with zero Limits.
-var DefaultLimits = Limits{MaxSubscribers: 64, MaxPerSession: 4}
+var DefaultLimits = Limits{MaxSubscribers: 64, MaxPerSession: 4, MaxPerUser: 8}
 
 // Hub fans events out to subscribers. Publishing never blocks: each
 // subscriber keeps at most one pending event per topic (latest wins), so a
@@ -51,6 +54,7 @@ type Hub struct {
 	limits    Limits
 	subs      map[*Subscription]struct{}
 	bySession map[string]int
+	byUser    map[string]int
 	closed    bool
 	onActive  func(active bool)
 }
@@ -66,13 +70,17 @@ func NewHub(l Limits, onActive func(bool)) *Hub {
 	if l.MaxPerSession <= 0 {
 		l.MaxPerSession = DefaultLimits.MaxPerSession
 	}
-	return &Hub{limits: l, subs: map[*Subscription]struct{}{}, bySession: map[string]int{}, onActive: onActive}
+	if l.MaxPerUser <= 0 {
+		l.MaxPerUser = DefaultLimits.MaxPerUser
+	}
+	return &Hub{limits: l, subs: map[*Subscription]struct{}{}, bySession: map[string]int{}, byUser: map[string]int{}, onActive: onActive}
 }
 
 // Subscription receives coalesced events. Use Next to read.
 type Subscription struct {
 	hub     *Hub
 	session string
+	user    string
 	notify  chan struct{} // cap 1
 	done    chan struct{}
 	once    sync.Once
@@ -82,9 +90,18 @@ type Subscription struct {
 	order   []string
 }
 
-// Subscribe registers a subscriber for session (an opaque key; empty is
-// allowed and shares one bucket).
+// Subscribe registers a subscriber for session (an opaque non-empty key)
+// with no user identity.
 func (h *Hub) Subscribe(session string) (*Subscription, error) {
+	return h.SubscribeUser(session, "")
+}
+
+// SubscribeUser registers a subscriber for session and, when user is not
+// empty, also counts it against the per-user limit.
+func (h *Hub) SubscribeUser(session, user string) (*Subscription, error) {
+	if session == "" {
+		return nil, ErrNoSession
+	}
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -98,9 +115,16 @@ func (h *Hub) Subscribe(session string) (*Subscription, error) {
 		h.mu.Unlock()
 		return nil, ErrSessionLimit
 	}
-	s := &Subscription{hub: h, session: session, notify: make(chan struct{}, 1), done: make(chan struct{}), pending: map[string]Event{}}
+	if user != "" && h.byUser[user] >= h.limits.MaxPerUser {
+		h.mu.Unlock()
+		return nil, ErrUserLimit
+	}
+	s := &Subscription{hub: h, session: session, user: user, notify: make(chan struct{}, 1), done: make(chan struct{}), pending: map[string]Event{}}
 	h.subs[s] = struct{}{}
 	h.bySession[session]++
+	if user != "" {
+		h.byUser[user]++
+	}
 	first := len(h.subs) == 1
 	cb := h.onActive
 	h.mu.Unlock()
@@ -210,6 +234,13 @@ func (s *Subscription) Close() {
 			delete(h.bySession, s.session)
 		} else {
 			h.bySession[s.session]--
+		}
+		if s.user != "" {
+			if h.byUser[s.user] <= 1 {
+				delete(h.byUser, s.user)
+			} else {
+				h.byUser[s.user]--
+			}
 		}
 		last := len(h.subs) == 0 && !h.closed
 		cb := h.onActive

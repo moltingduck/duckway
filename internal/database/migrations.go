@@ -550,6 +550,10 @@ func runMigrations(db *sql.DB) error {
 		 WHERE name = 'github' AND key_prefix = 'ghp_' AND key_length = 40 AND delivery_mode = 'loan_proxy'`,
 		`UPDATE services SET host_pattern = 'api.github.com,github.com'
 		 WHERE name = 'github' AND upstream_url = 'https://api.github.com' AND host_pattern = 'api.github.com'`,
+		// Live-update watcher fingerprints (internal/server/events). Append-only;
+		// shared by SQLite and PostgreSQL because both run runMigrations.
+		`CREATE INDEX IF NOT EXISTS idx_approvals_watch ON approvals(status, approved_at, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_client_update_jobs_watch ON client_update_jobs(status, updated_at)`,
 	}
 	for i, statement := range required {
 		if _, err := db.Exec(statement); err != nil {

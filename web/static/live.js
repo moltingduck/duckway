@@ -9,7 +9,7 @@
  *
  * Topics: approvals, logs, rollouts, badge. Events are invalidation hints
  * only; handlers refetch through the normal authenticated JSON APIs. After
- * 3 consecutive failures (or without EventSource) the module switches to
+ * 3 consecutive failures (a connection must stay up 10s to reset the count) (or without EventSource) the module switches to
  * polling mode: synthetic invalidations ({synthetic:true}) every 15s while SSE
  * is retried every 60s.
  */
@@ -22,6 +22,8 @@
   var MAX_BACKOFF_MS = 30000;
   var FAIL_LIMIT = 3;
   var DEBOUNCE_MS = 250;
+  var STABLE_MS = 10000;     // a connection must stay up this long to reset failures
+  var BASELINE_MIN_MS = 5000; // min gap between (re)connect catch-up invalidations
 
   var listeners = {};
   TOPICS.forEach(function (t) { listeners[t] = []; });
@@ -32,11 +34,30 @@
   var failures = 0;
   var state = 'connecting';
   var everConnected = false;
+  var upSince = 0;
+  var lastBaseline = 0;
+  var baselineTimer = null;
   var started = false;
 
   function statusEl() { return document.getElementById('live-status'); }
+  var ANNOUNCE = {
+    reconnecting: 'Live updates disconnected. Reconnecting.',
+    polling: 'Live updates unavailable. Refreshing periodically.'
+  };
+  // Announce only degraded states and the return to Live from one; never
+  // "Live" on a normal page load.
+  function announce(prev, next) {
+    if (prev === next) return;
+    var msg = ANNOUNCE[next];
+    if (!msg && next === 'live' && (prev === 'reconnecting' || prev === 'polling')) msg = 'Live updates restored.';
+    if (!msg) return;
+    var a = document.getElementById('live-announce');
+    if (a) a.textContent = msg;
+  }
   function setState(next) {
+    var prev = state;
     state = next;
+    announce(prev, next);
     var el = statusEl();
     if (!el) return;
     var map = {
@@ -89,6 +110,24 @@
   function invalidateAll(detail) {
     TOPICS.forEach(function (t) { schedule(t, detail); });
   }
+  // Catch-up after (re)connect: anything may have changed while disconnected
+  // (or before the stream began), so refresh once, at most every
+  // BASELINE_MIN_MS. A request inside the window is deferred to its end.
+  function baselineInvalidate() {
+    var now = Date.now();
+    var wait = lastBaseline + BASELINE_MIN_MS - now;
+    if (wait <= 0) {
+      lastBaseline = now;
+      invalidateAll({ synthetic: true });
+      return;
+    }
+    if (baselineTimer) return;
+    baselineTimer = setTimeout(function () {
+      baselineTimer = null;
+      lastBaseline = Date.now();
+      invalidateAll({ synthetic: true });
+    }, wait);
+  }
 
   function modalOpen() {
     var list = document.getElementsByClassName('modal-backdrop');
@@ -129,14 +168,14 @@
     try { src = new EventSource(URL_); } catch (e) { onFail(); return; }
     es = src;
     src.addEventListener('hello', function () {
-      var reconnect = everConnected || failures > 0 || state === 'polling';
-      failures = 0;
+      // failures is NOT reset here: only a connection that stays up for
+      // STABLE_MS counts as healthy (see onFail), so a proxy that drops the
+      // stream right after hello still reaches the polling fallback.
       everConnected = true;
+      upSince = Date.now();
       stopPolling();
       setState('live');
-      // Anything may have changed while disconnected; the first connection
-      // does not need this because pages load their data themselves.
-      if (reconnect) invalidateAll({ synthetic: true });
+      baselineInvalidate();
     });
     TOPICS.forEach(function (topic) {
       src.addEventListener(topic, function (ev) {
@@ -155,6 +194,8 @@
   }
 
   function onFail() {
+    if (upSince && Date.now() - upSince >= STABLE_MS) failures = 0;
+    upSince = 0;
     failures += 1;
     var delay;
     if (failures >= FAIL_LIMIT) {
@@ -205,7 +246,10 @@
       link.appendChild(badge);
     }
     badge.textContent = String(n);
-    badge.setAttribute('aria-label', n + ' pending');
+    var sr = document.createElement('span');
+    sr.className = 'sr-only';
+    sr.textContent = ' pending';
+    badge.appendChild(sr);
   }
   on('badge', function (d) {
     if (d && typeof d.pending === 'number') { setBadge(d.pending); return; }
@@ -220,7 +264,20 @@
     if (state === 'polling') invalidateAll({ synthetic: true });
     flushHeld();
   });
-  window.addEventListener('pagehide', function () { clearRetry(); stopPolling(); closeES(); });
+  window.addEventListener('pagehide', function () {
+    clearRetry(); stopPolling(); closeES();
+    if (baselineTimer) { clearTimeout(baselineTimer); baselineTimer = null; }
+    upSince = 0;
+    setState('reconnecting');
+  });
+  // Restored from the back/forward cache: the stream was closed on pagehide
+  // and the data is stale.
+  window.addEventListener('pageshow', function (e) {
+    if (!e.persisted || !started) return;
+    failures = 0;
+    connect();
+    baselineInvalidate();
+  });
 
   window.DW = window.DW || {};
   DW.live = {
@@ -228,7 +285,7 @@
     off: off,
     state: function () { return state; },
     modalOpen: modalOpen,
-        start: start
+    start: start
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();

@@ -30,7 +30,9 @@ func TestEventsEndpointStreamsApprovalChangesFromSQLite(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/events", nil)
 	req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
-	resp, err := http.DefaultClient.Do(req)
+	tr := &http.Transport{}
+	t.Cleanup(tr.CloseIdleConnections)
+	resp, err := (&http.Client{Transport: tr}).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +105,9 @@ func TestHTTPServerShutdownClosesOpenEventStreamPromptly(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/events", nil)
 	req.AddCookie(shared.AdminAuth.CreateSession("duckway", req))
-	resp, err := http.DefaultClient.Do(req)
+	tr := &http.Transport{}
+	t.Cleanup(tr.CloseIdleConnections)
+	resp, err := (&http.Client{Transport: tr}).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

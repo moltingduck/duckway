@@ -109,7 +109,7 @@ func TestAdminShellShowsPendingApprovalsBadge(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if body := render(); !strings.Contains(body, `class="nav-badge" aria-label="2 pending">2<`) {
+	if body := render(); !strings.Contains(body, `class="nav-badge">2<span class="sr-only"> pending</span>`) {
 		t.Fatalf("badge for 2 pending not rendered")
 	}
 }

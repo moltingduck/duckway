@@ -126,8 +126,11 @@ function renderHistory() {
     return DW.html`<tr><td class="text-sm">${r.created_at}</td><td class="mono text-sm">${r.target_version}</td><td>${statusBadge(r.status)}</td><td>${progress(r)}</td><td>${r.max_concurrency}</td><td>${r.start_interval_seconds}s</td><td><button class="btn btn-sm" data-action="showRollout" data-id="${r.id}">Detail</button></td></tr>`;
   })}`);
 }
+var updatesSeq = 0;
 function loadUpdates() {
+  var seq = ++updatesSeq;
   fetch('/api/client-updates', {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d) {
+    if (seq !== updatesSeq) return; // out-of-order response
     if (d.error) { showToast(d.error,'error'); return; }
     updateData = d; renderSummary(); renderActive(); renderHistory();
     document.getElementById('rollout-refresh').textContent = 'Updated '+new Date().toLocaleTimeString();

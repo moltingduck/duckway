@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -240,7 +242,10 @@ func TestHandlerHeadersHelloHeartbeatEventAndDisconnect(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL, nil)
-	resp, err := http.DefaultClient.Do(req)
+	req.AddCookie(&http.Cookie{Name: "duckway_session", Value: "leak"})
+	tr := &http.Transport{}
+	client := &http.Client{Transport: tr}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,6 +303,7 @@ func TestHandlerHeadersHelloHeartbeatEventAndDisconnect(t *testing.T) {
 
 	cancel()
 	resp.Body.Close()
+	tr.CloseIdleConnections()
 	deadline := time.Now().Add(3 * time.Second)
 	for svc.Hub.Subscribers() != 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -306,6 +312,7 @@ func TestHandlerHeadersHelloHeartbeatEventAndDisconnect(t *testing.T) {
 		t.Fatal("handler did not unsubscribe on disconnect")
 	}
 	srv.Close()
+	tr.CloseIdleConnections()
 	svc.Stop()
 	deadline = time.Now().Add(3 * time.Second)
 	for runtime.NumGoroutine() > before+2 && time.Now().Before(deadline) {
@@ -322,11 +329,7 @@ func TestHandlerLimitStatusCodes(t *testing.T) {
 	srv := httptest.NewServer(svc.Handler(HandlerConfig{}))
 	t.Cleanup(srv.Close)
 	open := func(cookie string) *http.Response {
-		req, _ := http.NewRequest("GET", srv.URL, nil)
-		if cookie != "" {
-			req.AddCookie(&http.Cookie{Name: "duckway_session", Value: cookie})
-		}
-		r, err := http.DefaultClient.Do(req)
+		r, err := getWithSession(t, srv.URL, cookie)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -351,7 +354,7 @@ func TestHandlerEndsOnServiceStop(t *testing.T) {
 	svc, _ := newTestService(t, Limits{})
 	srv := httptest.NewServer(svc.Handler(HandlerConfig{}))
 	t.Cleanup(srv.Close)
-	resp, err := http.Get(srv.URL)
+	resp, err := getWithSession(t, srv.URL, "stop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,5 +370,140 @@ func TestHandlerEndsOnServiceStop(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("stream not closed by Stop")
+	}
+}
+
+func getWithSession(t *testing.T, url, session string) (*http.Response, error) {
+	t.Helper()
+	req, _ := http.NewRequest("GET", url, nil)
+	if session != "" {
+		req.AddCookie(&http.Cookie{Name: "duckway_session", Value: session})
+	}
+	tr := &http.Transport{}
+	t.Cleanup(tr.CloseIdleConnections)
+	return (&http.Client{Transport: tr}).Do(req)
+}
+
+func TestHandlerRejectsMissingSessionCookie(t *testing.T) {
+	svc, _ := newTestService(t, Limits{})
+	srv := httptest.NewServer(svc.Handler(HandlerConfig{}))
+	t.Cleanup(srv.Close)
+	r, err := getWithSession(t, srv.URL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d", r.StatusCode)
+	}
+	if svc.Hub.Subscribers() != 0 {
+		t.Fatal("subscribed without session")
+	}
+}
+
+func TestHandlerPerUserLimitAcrossSessions(t *testing.T) {
+	svc, _ := newTestService(t, Limits{MaxPerUser: 2})
+	srv := httptest.NewServer(svc.Handler(HandlerConfig{
+		ValidateSession: func(*http.Request) (string, bool) { return "alice", true },
+	}))
+	t.Cleanup(srv.Close)
+	for i, want := range []int{200, 200, http.StatusTooManyRequests} {
+		r, err := getWithSession(t, srv.URL, fmt.Sprintf("sess-%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { r.Body.Close() })
+		if r.StatusCode != want {
+			t.Fatalf("stream %d status=%d want %d", i, r.StatusCode, want)
+		}
+	}
+}
+
+func readToEOF(t *testing.T, r *http.Response, within time.Duration) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { _, _ = io.Copy(io.Discard, r.Body); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(within):
+		t.Fatal("stream not closed in time")
+	}
+}
+
+func TestHandlerClosesWhenSessionBecomesInvalid(t *testing.T) {
+	svc, _ := newTestService(t, Limits{})
+	var valid atomic.Bool
+	valid.Store(true)
+	srv := httptest.NewServer(svc.Handler(HandlerConfig{
+		Heartbeat:       20 * time.Millisecond,
+		ValidateSession: func(*http.Request) (string, bool) { return "bob", valid.Load() },
+	}))
+	t.Cleanup(srv.Close)
+	r, err := getWithSession(t, srv.URL, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	if r.StatusCode != 200 {
+		t.Fatal(r.Status)
+	}
+	valid.Store(false)
+	readToEOF(t, r, 3*time.Second)
+	// A fresh connection with the now-invalid session is refused.
+	r2, err := getWithSession(t, srv.URL, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Body.Close()
+	if r2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d", r2.StatusCode)
+	}
+}
+
+func TestHandlerClosesAtMaxLifetime(t *testing.T) {
+	svc, _ := newTestService(t, Limits{})
+	srv := httptest.NewServer(svc.Handler(HandlerConfig{MaxLifetime: 100 * time.Millisecond}))
+	t.Cleanup(srv.Close)
+	r, err := getWithSession(t, srv.URL, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	readToEOF(t, r, 3*time.Second)
+	deadline := time.Now().Add(2 * time.Second)
+	for svc.Hub.Subscribers() != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if svc.Hub.Subscribers() != 0 {
+		t.Fatal("subscription leaked after lifetime close")
+	}
+}
+
+func TestHandlerRefusesWithoutWriteDeadlineSupport(t *testing.T) {
+	svc, _ := newTestService(t, Limits{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "duckway_session", Value: "s"})
+	svc.Handler(HandlerConfig{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code=%d", rec.Code)
+	}
+}
+
+func TestHubRejectsEmptySessionAndLimitsUser(t *testing.T) {
+	h := NewHub(Limits{MaxPerUser: 1}, nil)
+	if _, err := h.Subscribe(""); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("empty session: %v", err)
+	}
+	a, err := h.SubscribeUser("s1", "u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.SubscribeUser("s2", "u"); !errors.Is(err, ErrUserLimit) {
+		t.Fatalf("user limit: %v", err)
+	}
+	a.Close()
+	if _, err := h.SubscribeUser("s2", "u"); err != nil {
+		t.Fatalf("after close: %v", err)
 	}
 }

@@ -410,7 +410,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	eventsSvc := events.NewService(queries.NewWatchQueries(s.db), events.ServiceOptions{})
 	s.register(eventsSvc)
 	s.events = eventsSvc
-	adminAPIMux.Handle("GET /api/events", eventsSvc.Handler(events.HandlerConfig{}))
+	adminAPIMux.Handle("GET /api/events", eventsSvc.Handler(events.HandlerConfig{ValidateSession: ss.AdminAuth.SessionUser}))
 
 	s.mux.Handle("/api/", ss.AdminAuth.Middleware(adminAPIMux))
 

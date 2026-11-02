@@ -32,7 +32,7 @@
     </div>
   </div>
   <div class="flex-between mb-1">
-    <span id="approval-count" class="text-muted text-sm"></span>
+    <span class="text-sm"><span id="approval-count" class="text-muted"></span> <span id="approval-nudge" class="live-new" hidden role="status"><button type="button" class="btn btn-sm" data-action="flushApprovals">Updates available &mdash; Refresh</button></span></span>
     <div class="flex gap-sm" style="align-items:center">
       <label class="text-sm text-muted" for="f-perpage">Per page</label>
       <select id="f-perpage" data-on-change="onPerPageChange" style="width:auto">
@@ -75,7 +75,33 @@ function switchTab(tab) {
   loadApprovals();
 }
 
-function loadApprovals() {
+var loadSeq = 0;
+var queuedData = null; // live refetch held back while the user is interacting with the rows
+
+function approvalsKey() {
+  return currentTab + '|' + document.getElementById('f-status').value + '|' +
+    document.getElementById('f-client').value + '|' + document.getElementById('f-service').value;
+}
+// True while the pointer is over the rows or focus is inside them: rows must
+// not shift under an Approve/Reject click.
+function interactingWithRows() {
+  var tbody = document.getElementById('approval-body');
+  return tbody.matches(':hover') || tbody.contains(document.activeElement);
+}
+function showNudge(on) { document.getElementById('approval-nudge').hidden = !on; }
+function flushQueued() {
+  if (!queuedData) return;
+  allApprovals = queuedData;
+  queuedData = null;
+  showNudge(false);
+  render();
+}
+function maybeFlushQueued() {
+  if (queuedData && !interactingWithRows()) flushQueued();
+}
+
+// live=true: background refresh from the live channel (may be held back).
+function loadApprovals(live) {
   var statuses = currentTab === 'pending' ? 'pending' : document.getElementById('f-status').value;
   var url = '/api/approvals/list?status=' + encodeURIComponent(statuses);
   var clientID = document.getElementById('f-client').value;
@@ -83,13 +109,23 @@ function loadApprovals() {
   if (clientID) url += '&client_id=' + encodeURIComponent(clientID);
   if (serviceID) url += '&service_id=' + encodeURIComponent(serviceID);
 
+  var seq = ++loadSeq;
+  var key = approvalsKey();
   fetch(url, {credentials:'same-origin'})
     .then(function(r) {
       if (r.status === 401) { window.location = '/admin/login'; return; }
       return r.json();
     })
     .then(function(data) {
-      if (!data) return;
+      // Drop out-of-order responses and ones for a tab/filter no longer shown.
+      if (!data || seq !== loadSeq || key !== approvalsKey()) return;
+      if (live === true && interactingWithRows()) {
+        queuedData = data;
+        showNudge(true);
+        return;
+      }
+      queuedData = null;
+      showNudge(false);
       allApprovals = data;
       render();
     });
@@ -238,7 +274,13 @@ DW.actions.rejectOne = function(el) { rejectOne(el.dataset.id); };
 // Live: refetch on approval changes. Filters, page and tab live in module
 // state and render() clamps the page, so the view is preserved. Deferred while
 // a modal/confirm is open or the tab is hidden, then runs once.
-DW.live.on('approvals', function() { loadApprovals(); }, {defer: true});
+DW.live.on('approvals', function() { loadApprovals(true); }, {defer: true});
+DW.actions.flushApprovals = function() { flushQueued(); };
+(function() {
+  var tbody = document.getElementById('approval-body');
+  tbody.addEventListener('mouseleave', maybeFlushQueued);
+  tbody.addEventListener('focusout', function() { setTimeout(maybeFlushQueued, 0); });
+})();
 
 document.addEventListener('DOMContentLoaded', function() {
   // Populate filter dropdowns from /api/clients and /api/services

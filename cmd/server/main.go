@@ -19,12 +19,8 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "backup" {
-		def := os.Getenv("DUCKWAY_DATA_DIR")
-		if def == "" {
-			def = server.DefaultConfig().DataDir
-		}
-		os.Exit(database.RunBackupCommand(os.Args[2:], def, os.Stdout, os.Stderr))
+	if code, ok := server.RunBackupIfRequested(os.Args, os.Stdout, os.Stderr); ok {
+		os.Exit(code)
 	}
 	port := flag.Int("port", 0, "Listen port (overrides DUCKWAY_LISTEN)")
 	addr := flag.String("listen", "", "Listen address, e.g. :8080 (overrides DUCKWAY_LISTEN)")

@@ -225,7 +225,7 @@ DISCORD_CHANNEL_ID=
 ./scripts/prod.sh logs          # follow logs
 ./scripts/prod.sh status        # container + Tailscale status
 ./scripts/prod.sh password      # show first-run admin password (if still in logs)
-./scripts/prod.sh upgrade       # consistent backup, build, recreate, smoke test (see Upgrading)
+./scripts/prod.sh upgrade       # tag images, build, back up, recreate, smoke test (see Upgrading)
 ./scripts/prod.sh rollback --to backups/upgrade-<ts>  # restore previous images and database
 ./scripts/prod.sh nuke          # asks confirmation, deletes all data
 ```
@@ -262,7 +262,7 @@ revision first, then:
 ```bash
 ./scripts/prod.sh upgrade --check     # read-only preflight, changes nothing
 ./scripts/prod.sh upgrade             # asks for confirmation (--yes to skip)
-./scripts/prod.sh rollback --to backups/upgrade-<UTC timestamp> [--keep-data] [--yes]
+./scripts/prod.sh rollback --to backups/upgrade-<UTC timestamp> [--keep-data] [--yes] [--force]
 ```
 
 ### What `upgrade --check` reports
@@ -280,28 +280,40 @@ app container that is not running or insufficient disk space.
 
 ### What `upgrade` does
 
-1. Runs the check and aborts on a blocking problem.
-2. Creates `backups/upgrade-<UTC timestamp>/` (mode 700) and takes a consistent
-   backup while Duckway keeps serving:
-   - SQLite: `duckway-admin backup --out ...` (`duckway-server backup` in
-     combined mode) runs inside the container and uses `VACUUM INTO`, a
-     transactionally consistent copy that never overwrites an existing file,
-     saved as `duckway.db`.
+1. Runs the check and aborts on a blocking problem. Without `--yes` it asks for
+   confirmation; closed stdin counts as "no" and prints `Cancelled`.
+2. Creates `backups/upgrade-<UTC timestamp>/` (mode 700; the timestamp comes from
+   `DUCKWAY_UPGRADE_STAMP` if set and must look like `20260102T030405Z`) and
+   tags each running app image `<image>:rollback-<timestamp>`. This happens
+   before the build because the build replaces the tags the running containers
+   use.
+3. Builds the new images; running containers are not touched.
+4. Takes a consistent backup while Duckway keeps serving, using the newly built
+   image where a Duckway binary is needed:
+   - SQLite: a one-off container of the NEW image (`docker compose run --rm
+     --no-deps`) on the data volume first checks that `backup --help` works and
+     mentions `--out`, then runs `duckway-admin backup --out ...`
+     (`duckway-server backup` in combined mode), which uses `VACUUM INTO`, a
+     transactionally consistent copy that never overwrites an existing file. The
+     copy is streamed to the host and its sha256 is checked against the one
+     computed in the container; nothing is left behind in the container. This
+     means a first upgrade from an image that predates the `backup` subcommand
+     works: the old binary is never asked to run `backup` (it would start a
+     second server). The file is created with mode 600.
    - PostgreSQL: `pg_dump -Fc` inside the `duckway-postgres` container, saved as
      `duckway.pgdump` and verified with `pg_restore -l`.
    - `data-files.tar` holds the encryption key, CA material and other files in
      `/data` (everything except the live database files).
-3. Tags each running app image `<image>:rollback-<timestamp>`.
-4. Writes `manifest.json` (previous image IDs and rollback tags, commit before
-   and after, mode, backend, backup file names with sha256).
-5. Builds the new images before touching any running container.
+5. Writes `manifest.json` (previous image IDs and rollback tags, commit before
+   and after, mode, backend, backup file names with sha256 and size).
 6. Recreates the app services and smoke-tests them (`/admin/login` returns 200
    with a `Content-Security-Policy` header, `/api/events` answers 401, the
    gateway answers `/healthz`), then prints the rollback command.
 
-Any failure before step 6 starts leaves the running services untouched. A
-failure after recreation prints the exact `rollback` command and marks the
-manifest `failed`. `.prod.env` and Tailscale state are not part of the backup.
+Any failure before step 6 starts leaves the running services untouched (the
+manifest is marked `build-failed` or `backup-failed`). A failure after
+recreation prints the exact `rollback` command and marks the manifest `failed`.
+`.prod.env` and Tailscale state are not part of the backup.
 
 ### Downtime
 
@@ -313,14 +325,26 @@ manifest `failed`. `.prod.env` and Tailscale state are not part of the backup.
 
 ### Rolling back
 
-`rollback --to DIR` reads the manifest, requires you to type the backup
-directory name (or pass `--yes`), re-tags the saved images and recreates the
-app services. Unless `--keep-data` is given it first stops the app services and
-restores the database from the backup (SQLite file copy into the data volume;
-PostgreSQL `pg_restore --single-transaction --clean`). Every write made after
-the backup (approvals, request logs, new keys and clients) is lost. With
-`--keep-data` only the images are rolled back and the current database is kept,
-which relies on the append-only migration policy.
+`rollback --to DIR` reads the manifest, then, before changing anything:
+
+- requires the manifest status to be `complete` or `failed` (pass `--force` to
+  roll back from an unfinished upgrade);
+- validates the image names in the manifest;
+- verifies the sha256 and size of every backup file against the manifest and
+  refuses on any mismatch (skipped with `--keep-data`, which uses no backup).
+
+It then requires you to type the backup directory name (or pass `--yes`),
+re-tags the saved images and recreates the app services. Unless `--keep-data`
+is given it first stops the app services and restores the database from the
+backup (SQLite file copy into the data volume; PostgreSQL `pg_restore
+--single-transaction --clean`). Every write made after the backup (approvals,
+request logs, new keys and clients) is lost. With `--keep-data` only the images
+are rolled back and the current database is kept, which relies on the
+append-only migration policy.
+
+Rollback restores the database and the images, but **not** `data-files.tar`
+(encryption key and CA material). The archive is kept in the backup directory
+for manual recovery; extract it into the data volume yourself if you need it.
 
 ### PostgreSQL notes
 
@@ -350,8 +374,8 @@ Requirements for the proxy on `/api/events`:
   Duckway sends as an SSE comment. Use a generous value such as one hour.
 - Forward the `Cookie` header unchanged. The stream is authenticated with the
   admin session cookie; an unauthenticated request gets 401 or 403.
-- Limits: at most 4 concurrent streams per session (further ones get
-  `429 Too Many Requests`) and 64 in total (further ones get
+- Limits: at most 4 concurrent streams per session and 8 per user (further
+  ones get `429 Too Many Requests`) and 64 in total (further ones get
   `503 Service Unavailable`), both with `Retry-After: 5`. The browser keeps one
   stream per open tab, so many tabs on one session can hit the per-session limit.
 
@@ -359,6 +383,11 @@ The top bar shows the connection state: **Live** when the stream is connected,
 **Reconnecting** while the browser retries with backoff, and **Polling** when
 the stream is unavailable (for example a buffering proxy or a limit response).
 In the Polling state the pages keep working and refresh every 15 seconds.
+A single stream lives at most 30 minutes. The server then closes it and the
+browser reconnects through normal authentication, so a logged-out or expired
+session stops receiving events; the session is also re-checked on every
+heartbeat. Besides the per-session limit there is a per-user limit of 8
+concurrent streams.
 
 **Do not override `Content-Security-Policy` in the proxy.** Duckway sends a
 per-request nonce policy; a proxy that replaces or adds its own CSP breaks the

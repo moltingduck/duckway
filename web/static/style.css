@@ -184,9 +184,11 @@ a:hover { color: var(--accent-hover); }
   top: 0;
   z-index: 40;
 }
-.topbar-title { font-size: 0.95rem; font-weight: 600; }
+.topbar-title { font-size: 0.95rem; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-btn { display: none; }
-.live-status { margin-left: auto; display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; color: var(--text-muted); white-space: nowrap; }
+.live-status { margin-left: auto; display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; color: var(--text-muted); white-space: nowrap; min-width: 0; flex-shrink: 1; }
+.live-status .live-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.live-status .live-icon { flex: none; }
 .live-status[data-state="live"] .live-icon { color: var(--ok-text); }
 .live-status[data-state="reconnecting"] .live-icon,
 .live-status[data-state="polling"] .live-icon { color: var(--warn-text); }

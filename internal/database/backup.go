@@ -35,9 +35,21 @@ func BackupSQLite(ctx context.Context, dataDir, outPath string) error {
 	if st, err := os.Stat(dbPath); err != nil || st.IsDir() {
 		return fmt.Errorf("sqlite database not found at %s", dbPath)
 	}
-	if err := os.MkdirAll(filepath.Dir(absOut), 0o700); err != nil {
+	outDir := filepath.Dir(absOut)
+	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
+	// VACUUM INTO creates its file with the process umask, which can be
+	// world-readable. Write into a private (0700) temp directory next to the
+	// destination, restrict the file, then move it into place. The temp
+	// directory is always removed, including on failure.
+	tmpDir, err := os.MkdirTemp(outDir, ".duckway-backup-*")
+	if err != nil {
+		return fmt.Errorf("create private temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	tmpOut := filepath.Join(tmpDir, "backup.db")
+
 	u := url.URL{Scheme: "file", Path: dbPath}
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(30000)")
@@ -50,13 +62,21 @@ func BackupSQLite(ctx context.Context, dataDir, outPath string) error {
 	db.SetMaxOpenConns(1)
 	// Quote the path for the SQL literal; VACUUM INTO does not take parameters
 	// in every SQLite build.
-	lit := "'" + strings.ReplaceAll(absOut, "'", "''") + "'"
+	lit := "'" + strings.ReplaceAll(tmpOut, "'", "''") + "'"
 	if _, err := db.ExecContext(ctx, "VACUUM INTO "+lit); err != nil {
-		_ = os.Remove(absOut)
 		return fmt.Errorf("vacuum into: %w", err)
 	}
-	if err := os.Chmod(absOut, 0o600); err != nil {
+	if err := os.Chmod(tmpOut, 0o600); err != nil {
 		return fmt.Errorf("chmod backup: %w", err)
+	}
+	// Link (not rename) so an existing destination is never overwritten.
+	if err := os.Link(tmpOut, absOut); err != nil {
+		if _, serr := os.Lstat(absOut); serr == nil {
+			return fmt.Errorf("refusing to overwrite existing file %s", absOut)
+		}
+		if rerr := os.Rename(tmpOut, absOut); rerr != nil {
+			return fmt.Errorf("move backup into place: %w", rerr)
+		}
 	}
 	return nil
 }
@@ -68,7 +88,14 @@ func RunBackupCommand(args []string, dataDirDefault string, stdout, stderr io.Wr
 	fs.SetOutput(stderr)
 	out := fs.String("out", "", "Path of the SQLite backup file to create (must not exist)")
 	data := fs.String("data", "", "Data directory (default: DUCKWAY_DATA_DIR)")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: backup --out PATH [--data DIR]")
+		fs.PrintDefaults()
+	}
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("DUCKWAY_DATABASE_DRIVER")), "postgres") {

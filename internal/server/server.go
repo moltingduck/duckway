@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/hackerduck/duckway/internal/server/events"
 	"io/fs"
 	"log"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/hackerduck/duckway/internal/database/queries"
 	"github.com/hackerduck/duckway/internal/models"
+	"github.com/hackerduck/duckway/internal/server/events"
 	"github.com/hackerduck/duckway/internal/server/services"
 	"golang.org/x/crypto/bcrypt"
 )
