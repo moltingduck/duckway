@@ -111,7 +111,7 @@
   <p class="text-sm text-muted mt-1">In split mode, agents only access the gateway. Admin panel runs on a separate node protected by Tailscale ACL. Use <code>./scripts/prod.sh</code> to start production profiles.</p>
 </div>
 
-<script>
+<script nonce="{{.CSPNonce}}">
 document.addEventListener('DOMContentLoaded', function() {
   fetch('/api/settings', {credentials:'same-origin'})
     .then(function(r) { return r.json(); })
