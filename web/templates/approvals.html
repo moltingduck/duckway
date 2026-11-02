@@ -235,6 +235,11 @@ DW.actions.goToPage = function(el) { goToPage(parseInt(el.dataset.page, 10) || 1
 DW.actions.approveOne = function(el) { approveOne(el.dataset.id); };
 DW.actions.rejectOne = function(el) { rejectOne(el.dataset.id); };
 
+// Live: refetch on approval changes. Filters, page and tab live in module
+// state and render() clamps the page, so the view is preserved. Deferred while
+// a modal/confirm is open or the tab is hidden, then runs once.
+DW.live.on('approvals', function() { loadApprovals(); }, {defer: true});
+
 document.addEventListener('DOMContentLoaded', function() {
   // Populate filter dropdowns from /api/clients and /api/services
   fetch('/api/clients', {credentials:'same-origin'}).then(function(r) { return r.json(); }).then(function(cs) {

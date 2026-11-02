@@ -6,23 +6,23 @@
 <div class="stats">
   <div class="stat-card">
     <div class="label">Services</div>
-    <div class="value">{{.ServiceCount}}</div>
+    <div class="value" id="c-services">{{.ServiceCount}}</div>
   </div>
   <div class="stat-card">
     <div class="label">API Keys</div>
-    <div class="value">{{.KeyCount}}</div>
+    <div class="value" id="c-keys">{{.KeyCount}}</div>
   </div>
   <div class="stat-card">
     <div class="label">Clients</div>
-    <div class="value">{{.ClientCount}}</div>
+    <div class="value" id="c-clients">{{.ClientCount}}</div>
   </div>
   <div class="stat-card">
     <div class="label">Pending approvals</div>
-    <div class="value"><a href="/admin/approvals">{{.PendingApprovals}}</a></div>
+    <div class="value"><a href="/admin/approvals" id="c-pending">{{.PendingApprovals}}</a></div>
   </div>
   <div class="stat-card">
     <div class="label">Phantom Tokens</div>
-    <div class="value">{{.PlaceholderCount}}</div>
+    <div class="value" id="c-phantoms">{{.PlaceholderCount}}</div>
   </div>
 </div>
 
@@ -34,7 +34,7 @@
     <thead>
       <tr><th>Time</th><th>Client</th><th>Service</th><th>Method</th><th>Path</th><th>Status</th></tr>
     </thead>
-    <tbody>
+    <tbody id="recent-body">
       {{range .RecentLogs}}
       <tr>
         <td class="text-muted text-sm">{{.CreatedAt}}</td>
@@ -51,4 +51,46 @@
   </table>
   </div>
 </div>
+
+<script nonce="{{$.CSPNonce}}">
+(function() {
+  function getJSON(url) {
+    return fetch(url, {credentials: 'same-origin'}).then(function(r) {
+      if (r.status === 401) { window.location = '/admin/login'; return null; }
+      return r.ok ? r.json() : null;
+    }).catch(function() { return null; });
+  }
+  var dash = DW.raw('<span class="text-muted">\u2014</span>');
+
+  function renderRecent(list) {
+    var body = document.getElementById('recent-body');
+    var rows = list.slice(0, 10);
+    if (!rows.length) { DW.setHTML(body, DW.raw('<tr><td colspan="6" class="text-muted">No requests yet</td></tr>')); return; }
+    DW.setHTML(body, DW.html`${rows.map(function(l) {
+      var code = l.status_code;
+      var status = code ? DW.html`<span class="badge ${code < 400 ? 'badge-green' : 'badge-red'}">${code}</span>` : '';
+      return DW.html`<tr><td class="text-muted text-sm">${l.created_at}</td><td>${l.client_name || dash}</td><td><span class="badge badge-blue">${l.service_name}</span></td><td><span class="badge badge-blue">${l.method}</span></td><td class="mono text-sm">${l.path}</td><td>${status}</td></tr>`;
+    })}`);
+  }
+  function refreshRecent() {
+    getJSON('/api/logs').then(function(d) { if (Array.isArray(d)) renderRecent(d); });
+  }
+  function refreshPending() {
+    getJSON('/api/approvals').then(function(d) {
+      if (Array.isArray(d)) document.getElementById('c-pending').textContent = String(d.length);
+    });
+  }
+  var lastCounts = 0;
+  function refreshCounts() {
+    var now = Date.now();
+    if (now - lastCounts < 30000) return; // these lists are heavier; throttle
+    lastCounts = now;
+    [['/api/services', 'c-services'], ['/api/keys', 'c-keys'], ['/api/clients', 'c-clients'], ['/api/placeholders', 'c-phantoms']].forEach(function(p) {
+      getJSON(p[0]).then(function(d) { if (Array.isArray(d)) document.getElementById(p[1]).textContent = String(d.length); });
+    });
+  }
+  DW.live.on('logs', function() { refreshRecent(); refreshCounts(); }, {defer: true});
+  DW.live.on('approvals', refreshPending, {defer: true});
+})();
+</script>
 {{end}}

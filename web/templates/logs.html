@@ -77,6 +77,10 @@
         <option value="50">50</option>
         <option value="100">100</option>
       </select>
+      <label class="text-sm" for="live-tail" style="display:inline-flex;align-items:center;gap:0.35rem;cursor:pointer">
+        <input type="checkbox" id="live-tail" checked data-on-change="onLiveTailToggle"> Live tail
+      </label>
+      <span id="live-new" class="live-new text-sm" hidden role="status"><span id="live-new-text"></span> <button class="btn btn-sm" data-action="applyLiveNew">Show</button></span>
       <button class="btn btn-sm" data-action="loadLogs">Refresh</button>
     </div>
   </div>
@@ -105,12 +109,42 @@ DW.actions.onCaptureToggle = function() { onCaptureToggle(); };
 DW.actions.onFilterChange = function() { onFilterChange(); };
 DW.actions.onPerPageChange = function() { onPerPageChange(); };
 DW.actions.loadLogs = function() { loadLogs(); };
+DW.actions.onLiveTailToggle = function(el) {
+  if (el.checked && (newCount > 0 || newUnknown) && canAutoApply()) applyLiveNew();
+};
+DW.actions.applyLiveNew = function() { applyLiveNew(); };
 
 var allLogs = [];
 var currentPage = 1;
 var perPage = 15;
 
-function loadLogs() {
+var lastMaxId = 0;   // highest log id currently loaded
+var newCount = 0;    // queued entries not yet shown
+var newUnknown = false;
+
+function liveTailOn() { return document.getElementById('live-tail').checked; }
+function canAutoApply() { return liveTailOn() && !DW.live.modalOpen() && !document.hidden && currentPage === 1; }
+function updateNewIndicator() {
+  var box = document.getElementById('live-new');
+  var any = newCount > 0 || newUnknown;
+  box.hidden = !any;
+  document.getElementById('live-new-text').textContent = newCount > 0 ? newCount + ' new' : 'New entries';
+}
+function applyLiveNew() { loadLogs(true); }
+
+// Live: with tail on (and the list on page 1, no modal open, tab visible)
+// refetch; otherwise queue and show an "N new" indicator.
+DW.live.on('logs', function(d) {
+  if (canAutoApply()) { loadLogs(true); return; }
+  var maxId = d && typeof d.max_id === 'number' ? d.max_id : 0;
+  if (maxId > lastMaxId) newCount = maxId - lastMaxId; else newUnknown = true;
+  updateNewIndicator();
+});
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden && (newCount > 0 || newUnknown) && canAutoApply()) loadLogs(true);
+});
+
+function loadLogs(live) {
   fetch('/api/logs', {credentials:'same-origin'})
     .then(function(r) {
       if (r.status === 401) { window.location = '/admin/login'; return; }
@@ -119,7 +153,10 @@ function loadLogs() {
     .then(function(data) {
       if (!data) return;
       allLogs = data;
-      currentPage = 1;
+      if (!live) currentPage = 1;
+      lastMaxId = data.reduce(function(m, l) { return l.id > m ? l.id : m; }, 0);
+      newCount = 0; newUnknown = false;
+      updateNewIndicator();
       buildFilterOptions();
       applyFilters();
     });

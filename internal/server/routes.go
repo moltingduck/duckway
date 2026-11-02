@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/hackerduck/duckway/internal/database/queries"
+	"github.com/hackerduck/duckway/internal/server/events"
 	"github.com/hackerduck/duckway/internal/server/handlers"
 	"github.com/hackerduck/duckway/internal/server/middleware"
 	"github.com/hackerduck/duckway/internal/server/services"
@@ -404,6 +405,11 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 			"enabled": req.Enabled,
 		})
 	})
+
+	// Live updates (SSE). Invalidation hints only; see internal/server/events.
+	eventsSvc := events.NewService(queries.NewWatchQueries(s.db), events.ServiceOptions{})
+	s.register(eventsSvc)
+	adminAPIMux.Handle("GET /api/events", eventsSvc.Handler(events.HandlerConfig{}))
 
 	s.mux.Handle("/api/", ss.AdminAuth.Middleware(adminAPIMux))
 

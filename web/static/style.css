@@ -186,6 +186,12 @@ a:hover { color: var(--accent-hover); }
 }
 .topbar-title { font-size: 0.95rem; font-weight: 600; }
 .menu-btn { display: none; }
+.live-status { margin-left: auto; display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; color: var(--text-muted); white-space: nowrap; }
+.live-status[data-state="live"] .live-icon { color: var(--ok-text); }
+.live-status[data-state="reconnecting"] .live-icon,
+.live-status[data-state="polling"] .live-icon { color: var(--warn-text); }
+.live-new { display: inline-flex; align-items: center; gap: 0.5rem; }
+.live-new[hidden] { display: none; }
 .nav-scrim { display: none; }
 .main { flex: 1; min-width: 0; padding: 2rem; }
 

@@ -57,7 +57,6 @@
 
 <script nonce="{{$.CSPNonce}}">
 var updateData = null;
-var refreshTimer = null;
 
 function statusBadge(status) {
   var cls = status === 'healthy' || status === 'completed' || status === 'up_to_date' ? 'badge-green' :
@@ -161,6 +160,10 @@ DW.actions.openRollout = function() { openRollout(); };
 DW.actions.rolloutAction = function(el) { rolloutAction(el.dataset.id, el.dataset.rolloutAction); };
 DW.actions.showRollout = function(el) { showRollout(el.dataset.id); };
 DW.actions.closeRollout = function() { renderActive(); };
-document.addEventListener('DOMContentLoaded', function(){loadUpdates();refreshTimer=setInterval(loadUpdates,10000);});
+// Live: refetch on rollout changes (SSE) or every 15s in polling fallback.
+// Skipped while a modal is open or the tab is hidden; the next event or the
+// visibility change catches up.
+DW.live.on('rollouts', function() { loadUpdates(); }, {defer: true});
+document.addEventListener('DOMContentLoaded', function(){loadUpdates();});
 </script>
 {{end}}
