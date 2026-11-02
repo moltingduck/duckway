@@ -76,6 +76,13 @@ func (q *ApprovalQueries) ListPending() ([]models.Approval, error) {
 	return result, rows.Err()
 }
 
+// CountPending returns the number of approvals awaiting a decision.
+func (q *ApprovalQueries) CountPending() (int, error) {
+	var n int
+	err := q.db.QueryRow(`SELECT COUNT(*) FROM approvals WHERE status = 'pending'`).Scan(&n)
+	return n, err
+}
+
 func (q *ApprovalQueries) Create(a *models.Approval) error {
 	_, err := q.db.Exec(
 		"INSERT INTO approvals (id, placeholder_id, status, request_info) VALUES (?, ?, ?, ?)",

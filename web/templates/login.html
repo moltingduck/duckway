@@ -1,26 +1,29 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="auto">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark light">
   <title>Login — Duckway</title>
+  <script nonce="{{.CSPNonce}}">(function(){var m='auto';try{var v=localStorage.getItem('dw-theme');if(v==='light'||v==='dark')m=v}catch(e){}document.documentElement.setAttribute('data-theme',m)})();</script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="login-page">
-  <div class="login-box">
+  <main class="login-box">
     <h1>Duckway</h1>
-    {{if .Error}}<div class="toast-msg error" style="margin-bottom:1rem">{{.Error}}</div>{{end}}
-    <form method="POST" action="/admin/login">
+    {{if .Error}}<div class="field-error" id="login-error" role="alert" tabindex="-1">{{.Error}}</div>{{end}}
+    <form method="POST" action="/admin/login"{{if .Error}} aria-describedby="login-error"{{end}}>
       <div class="form-group">
-        <label>Username</label>
-        <input type="text" name="username" required autofocus>
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" autocomplete="username" required{{if not .Error}} autofocus{{end}}{{if .Error}} aria-invalid="true"{{end}}>
       </div>
       <div class="form-group">
-        <label>Password</label>
-        <input type="password" name="password" required>
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required{{if .Error}} aria-invalid="true"{{end}}>
       </div>
-      <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:0.5rem">Sign In</button>
+      <button type="submit" class="btn btn-primary login-submit">Sign In</button>
     </form>
-  </div>
+  </main>
+  <script nonce="{{.CSPNonce}}" src="/static/login.js"></script>
 </body>
 </html>

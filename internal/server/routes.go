@@ -124,8 +124,8 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 
 	// Admin pages
-	s.mux.HandleFunc("GET /admin/login", adminPageH.LoginPage)
-	s.mux.HandleFunc("POST /admin/login", adminPageH.LoginSubmit)
+	s.mux.Handle("GET /admin/login", middleware.CSP(http.HandlerFunc(adminPageH.LoginPage)))
+	s.mux.Handle("POST /admin/login", middleware.CSP(http.HandlerFunc(adminPageH.LoginSubmit)))
 
 	adminPageMux := http.NewServeMux()
 	adminPageMux.HandleFunc("GET /admin/", adminPageH.Dashboard)
@@ -151,7 +151,7 @@ func (s *Server) SetupAdminRoutes(contentFS fs.FS, ss *SharedServices) {
 	adminPageMux.HandleFunc("GET /admin/docs", adminPageH.DocsPage)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/approve", adminPageH.ApproveAction)
 	adminPageMux.HandleFunc("POST /admin/approvals/{id}/reject", adminPageH.RejectAction)
-	s.mux.Handle("/admin/", ss.AdminAuth.Middleware(adminPageMux))
+	s.mux.Handle("/admin/", middleware.CSP(ss.AdminAuth.Middleware(adminPageMux)))
 
 	// Public API routes
 	s.mux.HandleFunc("POST /api/auth/login", authH.Login)

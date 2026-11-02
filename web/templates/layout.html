@@ -1,67 +1,85 @@
 {{define "layout"}}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="auto">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark light">
   <title>{{.Title}} — Duckway</title>
+  <script nonce="{{.CSPNonce}}">(function(){var m='auto';try{var v=localStorage.getItem('dw-theme');if(v==='light'||v==='dark')m=v}catch(e){}document.documentElement.setAttribute('data-theme',m)})();</script>
   <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/htmx.min.js"></script>
-  <script src="/static/search.js"></script>
-  <script src="/static/acl-preview.js"></script>
-  <script src="/static/usage-snapshot.js"></script>
+  <script nonce="{{.CSPNonce}}" src="/static/dw.js"></script>
+  <script nonce="{{.CSPNonce}}" src="/static/htmx.min.js"></script>
+  <script nonce="{{.CSPNonce}}" src="/static/search.js"></script>
+  <script nonce="{{.CSPNonce}}" src="/static/acl-preview.js"></script>
+  <script nonce="{{.CSPNonce}}" src="/static/usage-snapshot.js"></script>
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <div class="layout">
-    <nav class="sidebar">
+    <nav class="sidebar" id="sidebar" aria-label="Primary">
       <div class="sidebar-brand">Duckway<small>API Proxy Manager</small></div>
-      <a href="/admin/" {{if eq .Active "dashboard"}}class="active"{{end}}>Dashboard</a>
-      <a href="/admin/services" {{if eq .Active "services"}}class="active"{{end}}>Services</a>
-      <a href="/admin/keys" {{if eq .Active "keys"}}class="active"{{end}}>API Keys</a>
-      <a href="/admin/usage" {{if eq .Active "usage"}}class="active"{{end}}>Usage</a>
-      <a href="/admin/oauth" {{if eq .Active "oauth"}}class="active"{{end}}>Refreshable Tokens</a>
-      <a href="/admin/placeholders" {{if eq .Active "placeholders"}}class="active"{{end}}>Phantom Tokens</a>
-      <a href="/admin/key-groups" {{if eq .Active "key_groups"}}class="active"{{end}}>Key Groups</a>
-      <a href="/admin/key-suites" {{if eq .Active "key_suites"}}class="active"{{end}}>Key Suites</a>
-      <a href="/admin/onboarding" {{if eq .Active "onboarding"}}class="active"{{end}}>Onboard Client</a>
-      <a href="/admin/clients" {{if eq .Active "clients"}}class="active"{{end}}>Clients</a>
-      <a href="/admin/cc" {{if eq .Active "cc"}}class="active"{{end}}>Control Channels</a>
-      <a href="/admin/approvals" {{if eq .Active "approvals"}}class="active"{{end}}>Approvals</a>
-      <a href="/admin/logs" {{if eq .Active "logs"}}class="active"{{end}}>Request Log</a>
-      <a href="/admin/notifications" {{if eq .Active "notifications"}}class="active"{{end}}>Notifications</a>
-      <a href="/admin/canary" {{if eq .Active "canary"}}class="active"{{end}}>Canary Tokens</a>
-      <a href="/admin/supply-chain" {{if eq .Active "supplychain"}}class="active"{{end}}>Supply Chain</a>
-      <a href="/admin/settings" {{if eq .Active "settings"}}class="active"{{end}}>Settings</a>
-      <a href="/admin/docs" {{if eq .Active "docs"}}class="active"{{end}}>Docs</a>
-      <div style="margin-top:auto;padding:1rem 1.25rem;border-top:1px solid var(--border)">
-        <a href="#" hx-post="/api/auth/logout" hx-target="body" onclick="window.location='/admin/login'">Logout</a>
+      <div class="nav-group" role="group" aria-labelledby="ng0">
+        <div class="nav-group-label" id="ng0">Overview</div>
+        <a href="/admin/"{{if eq .Active "dashboard"}} class="active" aria-current="page"{{end}}>Overview</a>
+        <a href="/admin/approvals"{{if eq .Active "approvals"}} class="active" aria-current="page"{{end}}>Approvals{{if gt .PendingApprovals 0}}<span class="nav-badge" aria-label="{{.PendingApprovals}} pending">{{.PendingApprovals}}</span>{{end}}</a>
+      </div>
+      <div class="nav-group" role="group" aria-labelledby="ng1">
+        <div class="nav-group-label" id="ng1">Fleet</div>
+        <a href="/admin/clients"{{if eq .Active "clients"}} class="active" aria-current="page"{{end}}>Clients</a>
+        <a href="/admin/onboarding"{{if eq .Active "onboarding"}} class="active" aria-current="page"{{end}}>Onboard client</a>
+        <a href="/admin/cc"{{if eq .Active "cc"}} class="active" aria-current="page"{{end}}>Control channels</a>
+      </div>
+      <div class="nav-group" role="group" aria-labelledby="ng2">
+        <div class="nav-group-label" id="ng2">Credentials</div>
+        <a href="/admin/services"{{if eq .Active "services"}} class="active" aria-current="page"{{end}}>Services</a>
+        <a href="/admin/keys"{{if eq .Active "keys"}} class="active" aria-current="page"{{end}}>API keys</a>
+        <a href="/admin/oauth"{{if eq .Active "oauth"}} class="active" aria-current="page"{{end}}>Refreshable tokens</a>
+        <a href="/admin/key-groups"{{if eq .Active "key_groups"}} class="active" aria-current="page"{{end}}>Key pools</a>
+        <a href="/admin/key-suites"{{if eq .Active "key_suites"}} class="active" aria-current="page"{{end}}>Key bundles</a>
+      </div>
+      <div class="nav-group" role="group" aria-labelledby="ng3">
+        <div class="nav-group-label" id="ng3">Access</div>
+        <a href="/admin/placeholders"{{if eq .Active "placeholders"}} class="active" aria-current="page"{{end}}>Phantom tokens</a>
+      </div>
+      <div class="nav-group" role="group" aria-labelledby="ng4">
+        <div class="nav-group-label" id="ng4">Observe</div>
+        <a href="/admin/logs"{{if eq .Active "logs"}} class="active" aria-current="page"{{end}}>Request log</a>
+        <a href="/admin/usage"{{if eq .Active "usage"}} class="active" aria-current="page"{{end}}>Usage</a>
+      </div>
+      <div class="nav-group" role="group" aria-labelledby="ng5">
+        <div class="nav-group-label" id="ng5">Security</div>
+        <a href="/admin/canary"{{if eq .Active "canary"}} class="active" aria-current="page"{{end}}>Canary tokens</a>
+        <a href="/admin/supply-chain"{{if eq .Active "supplychain"}} class="active" aria-current="page"{{end}}>Supply chain</a>
+      </div>
+      <div class="nav-group" role="group" aria-labelledby="ng6">
+        <div class="nav-group-label" id="ng6">System</div>
+        <a href="/admin/notifications"{{if eq .Active "notifications"}} class="active" aria-current="page"{{end}}>Notifications</a>
+        <a href="/admin/settings"{{if eq .Active "settings"}} class="active" aria-current="page"{{end}}>Settings</a>
+        <a href="/admin/docs"{{if eq .Active "docs"}} class="active" aria-current="page"{{end}}>Docs</a>
+      </div>
+      <div class="sidebar-foot">
+        <div class="theme-switch" role="group" aria-label="Theme">
+          <button type="button" class="btn btn-sm" data-action="setTheme" data-theme-choice="auto" aria-pressed="false">Auto</button>
+          <button type="button" class="btn btn-sm" data-action="setTheme" data-theme-choice="light" aria-pressed="false">Light</button>
+          <button type="button" class="btn btn-sm" data-action="setTheme" data-theme-choice="dark" aria-pressed="false">Dark</button>
+        </div>
+        <button type="button" class="btn btn-sm btn-link-logout" data-action="logout">Logout</button>
       </div>
     </nav>
-    <main class="main">
-      {{template "content" .}}
-    </main>
+    <div class="nav-scrim" data-action="closeNav"></div>
+    <div class="shell-main">
+      <header class="topbar">
+        <button type="button" class="btn btn-sm menu-btn" id="menu-btn" data-action="toggleNav" aria-controls="sidebar" aria-expanded="false" aria-label="Menu">&#9776; Menu</button>
+        <span class="topbar-title">{{.Title}}</span>
+      </header>
+      <main class="main" id="main" tabindex="-1">
+        {{template "content" .}}
+      </main>
+    </div>
   </div>
-  <div id="toast"></div>
-  <script>
-    document.body.addEventListener('htmx:afterRequest', function(e) {
-      if (e.detail.xhr && e.detail.xhr.status >= 400) {
-        try {
-          const err = JSON.parse(e.detail.xhr.responseText);
-          showToast(err.error || 'Request failed', 'error');
-        } catch(ex) {
-          showToast('Request failed', 'error');
-        }
-      }
-    });
-    function showToast(msg, type) {
-      const t = document.getElementById('toast');
-      const el = document.createElement('div');
-      el.className = 'toast-msg ' + (type || '');
-      el.textContent = msg;
-      t.appendChild(el);
-      setTimeout(() => el.remove(), 4000);
-    }
-  </script>
+  <div id="toast" aria-live="polite" aria-atomic="false"></div>
+  <script nonce="{{.CSPNonce}}" src="/static/shell.js"></script>
 </body>
 </html>
 {{end}}

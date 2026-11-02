@@ -176,6 +176,10 @@ type pageData struct {
 	Title  string
 	Active string
 	Error  string
+	// CSPNonce is the per-request script nonce; every <script> must carry it.
+	CSPNonce string
+	// PendingApprovals feeds the nav badge.
+	PendingApprovals int
 	// Dashboard
 	ServiceCount     int
 	KeyCount         int
@@ -198,7 +202,7 @@ type pageData struct {
 }
 
 func (h *AdminHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
-	h.loginTmpl.ExecuteTemplate(w, "login.html", pageData{})
+	h.loginTmpl.ExecuteTemplate(w, "login.html", pageData{CSPNonce: middleware.CSPNonce(r.Context())})
 }
 
 func (h *AdminHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -208,12 +212,12 @@ func (h *AdminHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.users.GetByUsername(username)
 	if err != nil {
-		h.loginTmpl.ExecuteTemplate(w, "login.html", pageData{Error: "Invalid credentials"})
+		h.loginTmpl.ExecuteTemplate(w, "login.html", pageData{Error: "Invalid credentials", CSPNonce: middleware.CSPNonce(r.Context())})
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		h.loginTmpl.ExecuteTemplate(w, "login.html", pageData{Error: "Invalid credentials"})
+		h.loginTmpl.ExecuteTemplate(w, "login.html", pageData{Error: "Invalid credentials", CSPNonce: middleware.CSPNonce(r.Context())})
 		return
 	}
 
@@ -229,8 +233,8 @@ func (h *AdminHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	phs, _ := h.placeholders.List("", "")
 	logs, _ := h.requestLog.Recent(10)
 
-	h.render(w, "dashboard", pageData{
-		Title:            "Dashboard",
+	h.render(w, r, "dashboard", pageData{
+		Title:            "Overview",
 		Active:           "dashboard",
 		ServiceCount:     len(svcs),
 		KeyCount:         len(keys),
@@ -242,7 +246,7 @@ func (h *AdminHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminHandler) ServicesPage(w http.ResponseWriter, r *http.Request) {
 	svcs, _ := h.services.List()
-	h.render(w, "services", pageData{
+	h.render(w, r, "services", pageData{
 		Title:    "Services",
 		Active:   "services",
 		Services: svcs,
@@ -253,7 +257,7 @@ func (h *AdminHandler) KeysPage(w http.ResponseWriter, r *http.Request) {
 	keys, _ := h.apiKeys.List("")
 	keys = h.markMintableKeys(keys)
 	svcs, _ := h.services.List()
-	h.render(w, "api_keys", pageData{
+	h.render(w, r, "api_keys", pageData{
 		Title:    "API Keys",
 		Active:   "keys",
 		Keys:     keys,
@@ -268,7 +272,7 @@ func (h *AdminHandler) PlaceholdersPage(w http.ResponseWriter, r *http.Request) 
 	keys, _ := h.apiKeys.List("")
 	keys = h.markMintableKeys(keys)
 	groups, _ := h.groups.List("")
-	h.render(w, "placeholders", pageData{
+	h.render(w, r, "placeholders", pageData{
 		Title:        "Placeholders",
 		Active:       "placeholders",
 		Placeholders: phs,
@@ -293,7 +297,7 @@ func (h *AdminHandler) ClientsPage(w http.ResponseWriter, r *http.Request) {
 		allCanaries = append(allCanaries, ct...)
 	}
 
-	h.render(w, "clients", pageData{
+	h.render(w, r, "clients", pageData{
 		Title:        "Clients",
 		Active:       "clients",
 		Clients:      clients,
@@ -305,7 +309,7 @@ func (h *AdminHandler) ClientsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminHandler) ClientUpdatesPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "client_updates", pageData{Title: "Client Updates", Active: "clients"})
+	h.render(w, r, "client_updates", pageData{Title: "Client Updates", Active: "clients"})
 }
 
 func (h *AdminHandler) GroupsPage(w http.ResponseWriter, r *http.Request) {
@@ -315,7 +319,7 @@ func (h *AdminHandler) GroupsPage(w http.ResponseWriter, r *http.Request) {
 		members, _ := h.groups.GetMembers(groups[i].ID)
 		groups[i].Members = members
 	}
-	h.render(w, "groups", pageData{
+	h.render(w, r, "groups", pageData{
 		Title:    "Key Groups",
 		Active:   "groups",
 		Groups:   groups,
@@ -332,7 +336,7 @@ func (h *AdminHandler) KeyGroupsPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	keys, _ := h.apiKeys.List("")
-	h.render(w, "key_groups", pageData{
+	h.render(w, r, "key_groups", pageData{
 		Title:     "Key Groups",
 		Active:    "key_groups",
 		KeyGroups: keyGroups,
@@ -353,7 +357,7 @@ func (h *AdminHandler) KeyGroupDetailPage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	keys, _ := h.apiKeys.List("")
-	h.render(w, "key_group_detail", pageData{
+	h.render(w, r, "key_group_detail", pageData{
 		Title:    "Key Group",
 		Active:   "key_groups",
 		KeyGroup: group,
@@ -372,7 +376,7 @@ func (h *AdminHandler) KeySuitesPage(w http.ResponseWriter, r *http.Request) {
 	svcs, _ := h.services.List()
 	keys, _ := h.apiKeys.List("")
 	clients, _ := h.clients.List()
-	h.render(w, "key_suites", pageData{
+	h.render(w, r, "key_suites", pageData{
 		Title:     "Key Suites",
 		Active:    "key_suites",
 		KeySuites: suites,
@@ -384,7 +388,7 @@ func (h *AdminHandler) KeySuitesPage(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminHandler) ApprovalsPage(w http.ResponseWriter, r *http.Request) {
 	approvals, _ := h.approvals.ListPending()
-	h.render(w, "approvals", pageData{
+	h.render(w, r, "approvals", pageData{
 		Title:     "Approvals",
 		Active:    "approvals",
 		Approvals: approvals,
@@ -393,7 +397,7 @@ func (h *AdminHandler) ApprovalsPage(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminHandler) LogsPage(w http.ResponseWriter, r *http.Request) {
 	logs, _ := h.requestLog.Recent(100)
-	h.render(w, "logs", pageData{
+	h.render(w, r, "logs", pageData{
 		Title:  "Request Log",
 		Active: "logs",
 		Logs:   logs,
@@ -401,56 +405,56 @@ func (h *AdminHandler) LogsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminHandler) UsagePage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "usage", pageData{
+	h.render(w, r, "usage", pageData{
 		Title:  "Usage",
 		Active: "usage",
 	})
 }
 
 func (h *AdminHandler) OAuthPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "oauth", pageData{
+	h.render(w, r, "oauth", pageData{
 		Title:  "OAuth Tokens",
 		Active: "oauth",
 	})
 }
 
 func (h *AdminHandler) CCPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "cc", pageData{
+	h.render(w, r, "cc", pageData{
 		Title:  "Control Channels",
 		Active: "cc",
 	})
 }
 
 func (h *AdminHandler) OnboardingPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "onboarding", pageData{
+	h.render(w, r, "onboarding", pageData{
 		Title:  "Onboard Client",
 		Active: "onboarding",
 	})
 }
 
 func (h *AdminHandler) SettingsPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "settings", pageData{
+	h.render(w, r, "settings", pageData{
 		Title:  "Settings",
 		Active: "settings",
 	})
 }
 
 func (h *AdminHandler) SupplyChainPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "supplychain", pageData{
+	h.render(w, r, "supplychain", pageData{
 		Title:  "Supply Chain",
 		Active: "supplychain",
 	})
 }
 
 func (h *AdminHandler) DocsPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "docs", pageData{
+	h.render(w, r, "docs", pageData{
 		Title:  "Documentation",
 		Active: "docs",
 	})
 }
 
 func (h *AdminHandler) CanaryPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "canary", pageData{
+	h.render(w, r, "canary", pageData{
 		Title:  "Canary Tokens",
 		Active: "canary",
 	})
@@ -458,7 +462,7 @@ func (h *AdminHandler) CanaryPage(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminHandler) NotificationsPage(w http.ResponseWriter, r *http.Request) {
 	channels, _ := h.notifications.List()
-	h.render(w, "notifications", pageData{
+	h.render(w, r, "notifications", pageData{
 		Title:    "Notifications",
 		Active:   "notifications",
 		Channels: channels,
@@ -477,7 +481,14 @@ func (h *AdminHandler) RejectAction(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/approvals", http.StatusSeeOther)
 }
 
-func (h *AdminHandler) render(w http.ResponseWriter, page string, data pageData) {
+func (h *AdminHandler) render(w http.ResponseWriter, r *http.Request, page string, data pageData) {
+	data.CSPNonce = middleware.CSPNonce(r.Context())
+	if h.approvals != nil {
+		if n, err := h.approvals.CountPending(); err == nil {
+			data.PendingApprovals = n
+		}
+	}
+
 	var tmpl *template.Template
 
 	if h.liveReload {
