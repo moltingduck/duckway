@@ -16,9 +16,9 @@ func TestCSPNonceUniqueAndHeader(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/", nil))
-		headers = append(headers, rec.Header().Get("Content-Security-Policy-Report-Only"))
-		if rec.Header().Get("Content-Security-Policy") != "" {
-			t.Fatal("enforcing header set while EnforceCSP=false")
+		headers = append(headers, rec.Header().Get("Content-Security-Policy"))
+		if rec.Header().Get("Content-Security-Policy-Report-Only") != "" {
+			t.Fatal("report-only header set while EnforceCSP=true")
 		}
 	}
 	if seen[0] == "" || seen[0] == seen[1] {
@@ -32,12 +32,18 @@ func TestCSPNonceUniqueAndHeader(t *testing.T) {
 	}
 }
 
-func TestCSPEnforceToggle(t *testing.T) {
-	EnforceCSP = true
-	t.Cleanup(func() { EnforceCSP = false })
+func TestCSPDefaultsToEnforcing(t *testing.T) {
+	if !EnforceCSP {
+		t.Fatal("EnforceCSP must default to true")
+	}
+}
+
+func TestCSPReportOnlyToggle(t *testing.T) {
+	EnforceCSP = false
+	t.Cleanup(func() { EnforceCSP = true })
 	rec := httptest.NewRecorder()
 	CSP(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rec.Header().Get("Content-Security-Policy") == "" || rec.Header().Get("Content-Security-Policy-Report-Only") != "" {
+	if rec.Header().Get("Content-Security-Policy-Report-Only") == "" || rec.Header().Get("Content-Security-Policy") != "" {
 		t.Fatalf("headers = %v", rec.Header())
 	}
 }

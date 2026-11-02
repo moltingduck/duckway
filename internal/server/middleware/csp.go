@@ -10,12 +10,11 @@ import (
 
 // EnforceCSP selects the CSP header name used by the CSP middleware.
 //
-// It defaults to false, which sends Content-Security-Policy-Report-Only so
+// When false it sends Content-Security-Policy-Report-Only so
 // templates that still carry inline scripts or handlers keep working while
-// they are converted. The integrator flips it to true (enforcing
-// Content-Security-Policy) once every admin template is clean. Set it before
+// they are converted. It defaults to true (enforcing Content-Security-Policy). Set it before
 // the server starts serving; it is read on every request without locking.
-var EnforceCSP = false
+var EnforceCSP = true
 
 type cspNonceKey struct{}
 
